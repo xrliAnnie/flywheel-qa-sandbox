@@ -25,6 +25,7 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ClaimsClaimer, ClaimsReader } from "../LeadAlertNotifier.js";
 import type { CaptureFn } from "../LeadWatchdog.js";
+import { type LeadWindowRef, probeV2LeadPane } from "../LeadWindowLocator.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -258,12 +259,44 @@ export function createBlockedMarkerReader(
  */
 export function defaultLeadPaneCapture(
 	session: string = DEFAULT_TMUX_SESSION,
+	execFn: typeof execFileAsync = execFileAsync,
 ): CaptureFn {
-	return async (windowId, lines) => {
+	return async (window, lines) => {
+		const windowRef: LeadWindowRef =
+			typeof window === "string"
+				? { windowId: window, windowName: window }
+				: window;
+		if (windowRef.carrier === "v2") {
+			if (
+				!(await probeV2LeadPane(
+					windowRef,
+					execFn as unknown as import("../LeadWindowLocator.js").ExecFn,
+					"capture",
+				))
+			) {
+				throw new Error("private Lead body pane identity is indeterminate");
+			}
+			const { stdout } = await execFn(
+				"tmux",
+				[
+					"-S",
+					windowRef.socketPath,
+					"capture-pane",
+					"-t",
+					windowRef.bodyPaneTarget,
+					"-p",
+					"-S",
+					`-${lines}`,
+				],
+				{ encoding: "utf-8", timeout: 5000 },
+			);
+			return stdout;
+		}
+		const { windowId } = windowRef;
 		const target = windowId.startsWith("@")
 			? windowId
 			: `${session}:${windowId}`;
-		const { stdout } = await execFileAsync(
+		const { stdout } = await execFn(
 			"tmux",
 			["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
 			{ encoding: "utf-8", timeout: 5000 },

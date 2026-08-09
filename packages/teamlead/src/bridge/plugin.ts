@@ -4195,6 +4195,32 @@ export async function startBridge(
 	});
 	fleetPoller.start();
 	console.log("[Bridge] FleetPoller started (30s evidence collection)");
+	const leadRuntimeStateDir =
+		process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
+	const locateFleetLeadWindow = async (projectName: string, leadId: string) => {
+		const key = `${projectName}-${leadId}`;
+		const observed = fleetPoller
+			.snapshot()
+			?.leads.find((candidate) => candidate.key === key);
+		if (observed?.carrier.plistCarrier !== "v2") {
+			return locateLeadWindow(projectName, leadId);
+		}
+		try {
+			const manifest = JSON.parse(
+				ffReadFileSync(
+					join(leadRuntimeStateDir, "manifests", `${key}.json`),
+					"utf8",
+				),
+			) as Record<string, unknown>;
+			return locateLeadWindow(projectName, leadId, {
+				carrier: "v2",
+				stateDir: leadRuntimeStateDir,
+				manifest,
+			});
+		} catch {
+			return null;
+		}
+	};
 	// Default-off gate (R1#6): zero-config deployments keep a byte-identical
 	// SSE payload — the fleet key only appears when ≥1 lead opts in. The gate
 	// reads the CURRENT snapshot, so hot-adding config appears without a
@@ -8910,13 +8936,13 @@ export async function startBridge(
 			listPendingAlerts: () => store.listActiveAlertThreads(),
 			kickstart: makeKickstart({ log: (m) => console.warn(m) }),
 			captureLeadPane: async (projectName, leadId) => {
-				const w = await locateLeadWindow(projectName, leadId);
+				const w = await locateFleetLeadWindow(projectName, leadId);
 				if (!w) return null;
-				return leadPaneCaptureFn(w.windowId, 200);
+				return leadPaneCaptureFn(w, 200);
 			},
 			sendEnterToLead: async (projectName, leadId) => {
-				const w = await locateLeadWindow(projectName, leadId);
-				if (w) await sendEnterToWindow(w.windowId);
+				const w = await locateFleetLeadWindow(projectName, leadId);
+				if (w) await sendEnterToWindow(w);
 			},
 			isResumeMenu: isSafeResumeMenuForEnter,
 			// FLY-871 Lead ②: revalidate the runner's LIVE pane before closing it.
@@ -9180,9 +9206,9 @@ export async function startBridge(
 					// Reconcile capture: locate the Lead window + grab its pane (null when
 					// no window) — the restart-safe recovery truth source.
 					capturePane: async (projectName, leadId) => {
-						const w = await locateLeadWindow(projectName, leadId);
+						const w = await locateFleetLeadWindow(projectName, leadId);
 						if (!w) return null;
-						return leadPaneCaptureFn(w.windowId, 200);
+						return leadPaneCaptureFn(w, 200);
 					},
 					// FLY-368 (Codex code R1 HIGH-1): runner reconcile capture — resolve a
 					// runner alert thread once the runner's terminal advanced past the
@@ -9901,8 +9927,7 @@ export async function startBridge(
 		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
 		// when enabled; otherwise this is the raw notifier — byte-compat).
 		notifier: (payload) => routedAlertSink.alert(payload),
-		locateWindowFn: (projectName, leadId) =>
-			locateLeadWindow(projectName, leadId),
+		locateWindowFn: locateFleetLeadWindow,
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,

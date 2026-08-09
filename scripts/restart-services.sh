@@ -47,6 +47,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 # shellcheck source=lib/restart-cmux-watcher.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
+# shellcheck source=lib/supervisor.sh
+source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
 if [[ -f "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh" ]]; then
     source "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh"
@@ -1177,28 +1179,19 @@ stop_bridge() {
 }
 
 start_bridge() {
-    # FLY-151: prefer launchd-managed Bridge (env loaded by
-    # flywheel-bridge-wrapper.sh, single source of truth). Fall back to
-    # legacy nohup branch if the plist is not loaded for this user.
-    # TODO(v1.28+): remove the nohup fallback once everyone has migrated
-    # per docs/operations/bridge-daemon-management.md.
-    local label="com.flywheel.bridge"
-    local target="gui/$(id -u)/${label}"
-    if launchctl print "$target" >/dev/null 2>&1; then
-        if launchctl kickstart -k "$target" >/dev/null 2>&1; then
-            log "Bridge restart requested via launchctl ($target)"
-            return 0
-        fi
-        log "WARNING: launchctl kickstart failed for $target — falling back to nohup"
-    else
-        log "WARNING: FLY-151 plist not installed (launchctl has no $label). " \
-            "Using legacy nohup. Install per docs/operations/bridge-daemon-management.md"
+    if ! supervisor_assert_keepalive bridge; then
+        log "ERROR: com.flywheel.bridge is not loaded with KeepAlive=true; refusing orphan fallback. Run scripts/install-bridge-launchd.sh first."
+        return 1
     fi
-    cd "$FLYWHEEL_DIR"
-    nohup npx tsx scripts/run-bridge.ts \
-        >> /tmp/flywheel-bridge.log 2>&1 &
-    log "Bridge started (PID $!) via legacy nohup"
-    cd - > /dev/null
+    if ! supervisor_restart bridge >/dev/null 2>&1; then
+        log "ERROR: launchd kickstart failed for com.flywheel.bridge"
+        return 1
+    fi
+    if ! supervisor_assert_keepalive bridge; then
+        log "ERROR: com.flywheel.bridge lost its loaded KeepAlive contract after kickstart"
+        return 1
+    fi
+    log "Bridge restart requested via canonical launchd job"
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -1379,6 +1372,36 @@ restart_lead() {
             return 1
         fi
         local backend="$LEAD_RESTART_BACKEND"
+
+        # FLY-1663 v2: launchd already owns the one body. A regular rebirth is
+        # one native kickstart; no bootout choreography, body sweep, global
+        # tmux lock, replacement marker, or adoption/recovery loop participates.
+        if [[ "$LEAD_RESTART_CARRIER" == "v2" ]]; then
+            local v2_probe v2_old_pid="" v2_old_start="" v2_attempt
+            v2_probe="$(lead_restart_launchd_probe "$daemon_target")"
+            if [[ "$v2_probe" != loaded$'\t'* ]]; then
+                log "ERROR: v2 Lead $lead_id is not loaded; refusing any unmanaged fallback"
+                return 1
+            fi
+            v2_old_pid="${v2_probe#*$'\t'}"
+            [[ "$v2_old_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+            v2_old_start="$(lead_restart_process_start_identity "$v2_old_pid")" || return 1
+            [[ -n "$v2_old_start" ]] || return 1
+            if ! launchctl kickstart -k "$daemon_target" >/dev/null 2>&1; then
+                log "ERROR: native launchd kickstart failed for v2 Lead $lead_id"
+                return 1
+            fi
+            for (( v2_attempt=1; v2_attempt<=LEAD_VERIFY_ATTEMPTS; v2_attempt++ )); do
+                if launchd_lead_outcome_ready "$daemon_target" "$v2_old_pid" "$v2_old_start"; then
+                    log "Lead $lead_id restarted via native launchd carrier v2 (PID $VERIFIED_LEAD_PID)"
+                    return 0
+                fi
+                (( v2_attempt < LEAD_VERIFY_ATTEMPTS )) && sleep "$LEAD_VERIFY_INTERVAL"
+            done
+            log "ERROR: v2 Lead $lead_id did not produce a fresh launchd PID (${LEAD_RESTART_OUTCOME_REASON:-unknown})"
+            return 1
+        fi
+
         local probe old_pid="" old_start="" probe_pid=""
         local replacement_marker="" replacement_attempt=""
         local gate_root="${HOME}/.flywheel/restart-ledger"
@@ -1480,68 +1503,10 @@ restart_lead() {
         return 1
     fi
 
-    # Legacy path: manual nohup (Lead not daemon-managed)
-    local old_pid="" old_start=""
-    if [[ -f "$pid_file" ]]; then
-        old_pid="$(cat "$pid_file" 2>/dev/null || true)"
-        if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null; then
-            old_start="$(lead_restart_process_start_identity "$old_pid")" || return 1
-            kill -TERM "$old_pid" 2>/dev/null || true
-            local wait_count=0
-            while kill -0 "$old_pid" 2>/dev/null && (( wait_count < LEAD_STOP_WAIT_SECONDS )); do
-                sleep 1
-                wait_count=$((wait_count + 1))
-            done
-            if kill -0 "$old_pid" 2>/dev/null; then
-                local now_start=""
-                now_start="$(lead_restart_process_start_identity "$old_pid")" || return 1
-                if [[ "$now_start" == "$old_start" ]]; then
-                    kill -KILL "$old_pid" 2>/dev/null || return 1
-                fi
-            fi
-        fi
-    fi
-    local legacy_clear_rc=0
-    lead_body_hard_clear "$project_name" "$lead_id" claude-code || legacy_clear_rc=$?
-    if (( legacy_clear_rc != 0 )); then
-        log "ERROR: legacy Lead $lead_id body hard-clear did not converge (rc=$legacy_clear_rc)"
-        return 1
-    fi
-    rm -f "$pid_file"
-
-    # Replay LEAD_WORKSPACE if manifest recorded a custom one.
-    # FLY-143: also propagate FLYWHEEL_LEAD_MCP_EXCLUDE / FLYWHEEL_LEAD_CHROME_ENABLED
-    # so per-Lead MCP scope matches the launchd path. Use `env` with explicit
-    # arguments — late-expanded `NAME=value` words are NOT recognized as env
-    # assignments by bash (assignment recognition happens before parameter
-    # expansion), so a `$_chrome_env` style would launch
-    # "FLYWHEEL_LEAD_CHROME_ENABLED=true" as the command name.
-    local lead_env=(
-      "DISCORD_STATE_DIR=$discord_state_dir"
-      "DISCORD_BOT_TOKEN=${!bot_token_env}"
-      "FLYWHEEL_LEAD_MCP_EXCLUDE=$mcp_exclude"
-    )
-    if [[ -n "$workspace" && "$workspace" != "null" ]]; then
-        lead_env+=("LEAD_WORKSPACE=$workspace")
-    fi
-    if [[ "$chrome_enabled" == "true" ]]; then
-        lead_env+=("FLYWHEEL_LEAD_CHROME_ENABLED=true")
-    fi
-    nohup env "${lead_env[@]}" \
-        "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
-        "$lead_id" "$project_dir" "$project_name" $subdir_args \
-        --bot-token-env "$bot_token_env" \
-        >> "/tmp/flywheel-lead-${lead_id}.log" 2>&1 &
-    local new_pid=$!
-    # Brief liveness check: wait 3s and verify process didn't exit immediately
-    sleep 3
-    if ! kill -0 "$new_pid" 2>/dev/null; then
-        log "ERROR: Lead $lead_id (PID $new_pid) exited within 3s of startup — likely preflight failure"
-        alert_warning "lead-exited-early-${lead_id}" "Lead exited early" \
-            "Lead $lead_id 启动后 3 秒内退出，请检查日志: /tmp/flywheel-lead-${lead_id}.log"
-        return 1
-    fi
-    log "Lead $lead_id restarted (PID $new_pid, liveness check OK)"
+    log "ERROR: Lead $lead_id has no launchd job; refusing to create an unmanaged body. Install its canonical plist first."
+    alert_warning "lead-restart-unmanaged-${lead_id}" "Lead restart refused" \
+        "Lead $lead_id 没有 canonical launchd job；已拒绝 nohup/orphan fallback，请先安装 plist。"
+    return 1
 }
 
 # FLY-98 + FLY-129 Phase 8: Trigger cmux linked-session refresh + (Path A)

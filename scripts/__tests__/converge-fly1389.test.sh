@@ -33,7 +33,10 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
     { echo '#!/bin/bash' > "$fr/scripts/lib/tmux-server-rescue.sh"; }
   cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$fr/scripts/"
   local f i
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh meta-alert.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+      flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
+      flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh \
+      lib/lead-address.sh meta-alert.sh; do
     { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$fr/scripts/$f"
   done
   chmod 0755 "$fr/scripts/meta-alert.sh"
@@ -69,8 +72,9 @@ chmod +x "$ALERT"
 seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   mkdir -p "$1/bin/lib"
   local f
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh \
-           restart-storm-gate.py lib/bounded-run.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+           flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
+           restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
     cp "$2/scripts/$f" "$1/bin/$f"
   done
   ln -sfn "$2/scripts/meta-alert.sh" "$1/bin/meta-alert.sh"

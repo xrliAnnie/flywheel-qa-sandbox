@@ -61,6 +61,7 @@ PO_PACKAGE_ASSETS=${PO_PACKAGE_ASSETS:-"teamlead:prompts teamlead:lead-rules-bas
 # (mufasa launchers, test-*, verify-*) that must NOT ship (internal slugs,
 # machine-specific paths). This is the launcher runtime closure only.
 PO_PACKAGE_ASSET_FILES=${PO_PACKAGE_ASSET_FILES:-"teamlead:scripts/claude-lead.sh
+teamlead:scripts/lead-body.sh
 teamlead:scripts/codex-lead.sh
 teamlead:scripts/codex-lead-tui-home.sh
 teamlead:scripts/lead-rules-bundle.sh
@@ -75,7 +76,8 @@ teamlead:scripts/lib/lead-launch-authority.sh
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
 teamlead:scripts/lib/tmux-supervisor-guard.sh
-teamlead:scripts/lib/resume-recovery.sh"}
+teamlead:scripts/lib/resume-recovery.sh
+teamlead:scripts/lib/lead-body-receipt.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
 # entry here must have a row in the packaged-path audit table
@@ -88,6 +90,8 @@ provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper.sh
+flywheel-lead-wrapper-v2.sh
+flywheel-lead-attach.sh
 restart-storm-gate.py
 lead-alert.sh
 meta-alert.sh
@@ -103,6 +107,7 @@ lib/buddy-captain-preview.sh
 lib/buddy-connect.sh
 lib/fleet-sanitize.sh
 lib/host-config.sh
+lib/lead-address.sh
 lib/platform-deps.sh
 lib/script-sanity.sh
 lib/path-hygiene.sh

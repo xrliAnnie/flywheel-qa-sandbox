@@ -351,7 +351,8 @@ phase_flywheel_home() {
   # write-protected 555 — a degenerate source must fail the provision loudly,
   # never install silently; bare cp is banned for <state>/bin).
   local f
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+      flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh; do
     if [ -f "$REPO_ROOT/scripts/$f" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
@@ -362,14 +363,12 @@ phase_flywheel_home() {
       fi
     fi
   done
-  # FLY-1062 (Codex R2#2): PREBUILT mode installs the wrappers' support-lib
-  # closure alongside them — a copied wrapper sources $SELF_DIR/lib/host-config.sh
-  # and would otherwise silently fall back to ~/Dev/flywheel. Monorepo mode is
-  # untouched (production wrappers keep today's resolution behavior).
-  if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-    run mkdir -p "$FW/bin/lib"
-    for f in lib/host-config.sh; do
-      [ -f "$REPO_ROOT/scripts/$f" ] || die "prebuilt tree missing support lib: scripts/$f"
+  # The installed v1/v2 wrappers source support libs beside themselves. Publish
+  # that closure in both monorepo and prebuilt installs; a partial bin tree can
+  # never be a safe carrier cutover target.
+  run mkdir -p "$FW/bin/lib"
+  for f in lib/host-config.sh lib/lead-address.sh; do
+      [ -f "$REPO_ROOT/scripts/$f" ] || die "tree missing support lib: scripts/$f"
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"
       else
@@ -377,8 +376,7 @@ phase_flywheel_home() {
         install_script_atomic "$REPO_ROOT/scripts/$f" "$FW/bin/$f" \
           || die "support lib failed sanity/atomic install: $f"
       fi
-    done
-  fi
+  done
   # FLY-1185 §2.7 (prevention leg): machine-level playwright default-off. A host
   # without a Claude settings file yet is narrated, not failed — the runbook's
   # first Claude login creates it and the operator re-runs this script then.
@@ -449,10 +447,25 @@ _fleet_linux_specs() {
   jq -nc --arg fw "$fw" '{name:"flywheel-bridge",kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-bridge-wrapper.sh"),keepAlive:true,stdout:"/tmp/flywheel-bridge.log"}'
   jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-pending.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
   jq -nc --arg fw "$fw" '{name:"flywheel-daily-standup",kind:"timer",exec:("/bin/bash "+$fw+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
-  local m
+  local m carrier project_name lead_id wrapper
   for m in "$FW/manifests"/*.json; do
     [ -e "$m" ] || continue
-    jq -c --arg fw "$fw" --arg m "$m" '{name:("flywheel-lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-lead-wrapper.sh "+$m),keepAlive:true}' "$m"
+    project_name=$(jq -er '.projectName' "$m") || return 1
+    lead_id=$(jq -er '.leadId' "$m") || return 1
+    carrier=v1
+    if [ -f "$FW/projects.json" ]; then
+      carrier=$(jq -er --arg p "$project_name" --arg l "$lead_id" \
+        '[.[] | select(.projectName == $p) | .leads[] | select(.agentId == $l)]
+         | if length == 1 then (.[0].carrier // "v1") else error("Lead row not unique") end' \
+        "$FW/projects.json") || return 1
+    fi
+    case "$carrier" in
+      v1) wrapper=flywheel-lead-wrapper.sh ;;
+      v2) wrapper=flywheel-lead-wrapper-v2.sh ;;
+      *) return 1 ;;
+    esac
+    jq -c --arg st "$st" --arg m "$m" --arg wrapper "$wrapper" \
+      '{name:("flywheel-lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$st+"/bin/"+$wrapper+" "+$m),keepAlive:true}' "$m"
   done
 }
 

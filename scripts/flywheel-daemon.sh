@@ -199,6 +199,48 @@ install_wrapper() {
     error "wrapper failed sanity/atomic install: ${src}"
   fi
   log "Wrapper installed: ${dst} (mode 555)"
+
+  # FLY-1663 mixed-fleet closure. v1 and v2 are immutable, side-by-side
+  # carriers; the per-Lead plist chooses one. The v2 address helper is installed
+  # atomically before its wrapper so a cutover never exposes a partial closure.
+  local v2_src="${FLYWHEEL_DIR}/scripts/flywheel-lead-wrapper-v2.sh"
+  local v2_dst="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
+  local address_src="${FLYWHEEL_DIR}/scripts/lib/lead-address.sh"
+  local address_dst="${FLYWHEEL_BIN}/lib/lead-address.sh"
+  local attach_src="${FLYWHEEL_DIR}/scripts/flywheel-lead-attach.sh"
+  local attach_dst="${FLYWHEEL_BIN}/flywheel-lead-attach.sh"
+  [ -f "$v2_src" ] || error "Wrapper v2 source not found: ${v2_src}"
+  [ -f "$address_src" ] || error "Lead address helper not found: ${address_src}"
+  [ -f "$attach_src" ] || error "Lead attach helper not found: ${attach_src}"
+  mkdir -p "${FLYWHEEL_BIN}/lib"
+  if ! install_script_atomic "$address_src" "$address_dst" \
+    || ! install_script_atomic "$attach_src" "$attach_dst" \
+    || ! install_script_atomic "$v2_src" "$v2_dst"; then
+    error "v2 wrapper closure failed sanity/atomic install"
+  fi
+  log "Wrapper v2 installed: ${v2_dst} (mode 555)"
+}
+
+lead_wrapper_path() {
+  case "$1" in
+    v1) printf '%s/flywheel-lead-wrapper.sh\n' "$FLYWHEEL_BIN" ;;
+    v2) printf '%s/flywheel-lead-wrapper-v2.sh\n' "$FLYWHEEL_BIN" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Exact observed plist carrier. Unknown is evidence and must never normalize to
+# v1; a file containing both paths is also unknown.
+classify_plist_lead_carrier() {
+  local plist="$1" v1 v2 has_v1=0 has_v2=0
+  v1="$(lead_wrapper_path v1)" || return 1
+  v2="$(lead_wrapper_path v2)" || return 1
+  grep -qF "<string>${v1}</string>" "$plist" 2>/dev/null && has_v1=1
+  grep -qF "<string>${v2}</string>" "$plist" 2>/dev/null && has_v2=1
+  if [ "$has_v1" -eq 1 ] && [ "$has_v2" -eq 0 ]; then printf 'v1\n'
+  elif [ "$has_v2" -eq 1 ] && [ "$has_v1" -eq 0 ]; then printf 'v2\n'
+  else printf 'unknown\n'
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -233,9 +275,18 @@ generate_plist_to() {
   local manifest_source_path="$2"
   local runtime_manifest_path="$3"
   local output_path="$4"
+	local carrier="${5:-v1}"
   local label
   label=$(plist_label "$daemon_key")
-  local wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
+  local wrapper
+  case "$carrier" in
+    v1) wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh" ;;
+    v2) wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh" ;;
+    *)
+      log "ERROR: unknown Lead carrier '${carrier}' (expected v1|v2); refusing to generate plist"
+      return 1
+      ;;
+  esac
   local logfile
   logfile=$(log_path "$daemon_key")
 
@@ -478,7 +529,9 @@ runtime_claude_confirmed() {
   command -v ps >/dev/null 2>&1 || return 2
   command -v pgrep >/dev/null 2>&1 || return 2
   # self-probe: if ps cannot even report PID 1, the tool is broken
-  ps -o command= -p 1 >/dev/null 2>&1 || return 2
+  if [ "${FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE:-0}" != "1" ]; then
+    ps -o command= -p 1 >/dev/null 2>&1 || return 2
+  fi
   # (a) process-tree traits of the launchd pid
   if process_tree_has_claude "$pid"; then
     return 0
@@ -546,7 +599,11 @@ install_one_staged() {
     fail_staged "prepared" "prep_failed_plist_label_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
-  if ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$staged_plist"; then
+  local desired_carrier expected_wrapper staged_carrier
+  desired_carrier=$(jq -r --arg k "$daemon_key" '.leads[$k].desired.carrier // "v1"' "$txn_json" 2>/dev/null || echo unknown)
+  expected_wrapper="$(lead_wrapper_path "$desired_carrier" 2>/dev/null || true)"
+  staged_carrier="$(classify_plist_lead_carrier "$staged_plist")"
+  if [ -z "$expected_wrapper" ] || [ "$staged_carrier" != "$desired_carrier" ]; then
     fail_staged "prepared" "prep_failed_plist_wrapper_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
@@ -600,8 +657,10 @@ install_one_staged() {
   # wrapper — a bespoke takeover during staging must not be booted out.
   local cm_ident
   cm_ident=$(jq -r '(.projectName // "") + "-" + (.leadId // "")' "$canonical_manifest" 2>/dev/null || echo "")
+  local canonical_carrier
+  canonical_carrier="$(classify_plist_lead_carrier "$canonical_plist")"
   if [ "$cm_ident" != "$daemon_key" ] \
-    || ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$canonical_plist" \
+    || [ "$canonical_carrier" = "unknown" ] \
     || ! grep -qF "<string>${canonical_manifest}</string>" "$canonical_plist" \
     || ! grep -qF "<string>${label}</string>" "$canonical_plist"; then
     fail_staged "prepared" "prep_failed_evidence_regate" "" "" false "unknown" "$EXIT_PREP_FAILED"

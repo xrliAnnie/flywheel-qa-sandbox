@@ -49,9 +49,11 @@ for f in lib/script-sanity.sh lib/path-hygiene.sh lib/bounded-run.sh \
   cp "$REAL_REPO_ROOT/scripts/$f" "$FR/scripts/$f"
 done
 chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh"
-for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+         flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
 done
+{ echo '#!/bin/bash'; pad 'echo r-lead-address'; } > "$FR/scripts/lib/lead-address.sh"
 { echo '#!/usr/bin/env python3'; echo 'import sys'; pad "print('g')  #"; echo 'sys.exit(0)'; } \
   > "$FR/scripts/restart-storm-gate.py"
 
@@ -182,8 +184,9 @@ run_converge() {  # <state-dir> [extra env...] → rc; converge uses the REAL le
 seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   local st="$1" f
   rm -rf "$st"; mkdir -p "$st/bin/lib"
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh \
-           restart-storm-gate.py lib/bounded-run.sh; do
+  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+           flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
+           lib/bounded-run.sh lib/lead-address.sh; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"

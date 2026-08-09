@@ -119,13 +119,17 @@ RR="$SANDBOX/repo"
 mkdir -p "$RR/scripts/launchd" "$RR/scripts/lib"
 # FLY-954: fixture wrappers must PASS source sanity (the 12-byte stub shape is
 # now exactly what the provisioner refuses to install — see P10 for that case).
-for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-services.sh; do
+for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+    flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'
     echo "# sane fixture for $f (FLY-954)"
     i=1; while [ "$i" -le 60 ]; do echo "echo fixture-$f-line-$i >/dev/null"; i=$((i+1)); done
   } > "$RR/scripts/$f"
   chmod +x "$RR/scripts/$f"
 done
+cp "$REPO_ROOT/scripts/lib/host-config.sh" "$RR/scripts/lib/host-config.sh"
+cp "$REPO_ROOT/scripts/lib/lead-address.sh" "$RR/scripts/lib/lead-address.sh"
+chmod +x "$RR/scripts/lib/host-config.sh" "$RR/scripts/lib/lead-address.sh"
 echo '#!/bin/bash' > "$RR/scripts/flywheel-fleet.sh"; chmod +x "$RR/scripts/flywheel-fleet.sh"
 echo '# lib' > "$RR/scripts/lib/fleet-sanitize.sh"
 echo '# bridge plist' > "$RR/scripts/launchd/com.flywheel.bridge.plist"

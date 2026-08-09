@@ -3,6 +3,7 @@
  * poller, and watchdog membership.
  */
 import { describe, expect, it } from "vitest";
+import { deriveLeadSocketPath } from "../../lead-address.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { buildDashboardPayload } from "../dashboard-data.js";
 import {
@@ -110,12 +111,14 @@ const KEY = "geo-product-lead";
 const M_PATH = `${HOME}/.flywheel/manifests/${KEY}.json`;
 const P_PATH = `${HOME}/Library/LaunchAgents/com.flywheel.lead.${KEY}.plist`;
 const WRAPPER = `${HOME}/.flywheel/bin/flywheel-lead-wrapper.sh`;
+const WRAPPER_V2 = `${HOME}/.flywheel/bin/flywheel-lead-wrapper-v2.sh`;
 
-function goodPlist(model?: string): string {
+function goodPlist(model?: string, carrier: "v1" | "v2" = "v1"): string {
 	const env = model
 		? `<key>EnvironmentVariables</key><dict><key>FLYWHEEL_LEAD_MODEL</key><string>${model}</string></dict>`
 		: "";
-	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${WRAPPER}</string><string>${M_PATH}</string>${env}</dict></plist>`;
+	const wrapper = carrier === "v2" ? WRAPPER_V2 : WRAPPER;
+	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${wrapper}</string><string>${M_PATH}</string>${env}</dict></plist>`;
 }
 
 function project(lead: Partial<ProjectEntry["leads"][0]> = {}): ProjectEntry {
@@ -144,6 +147,8 @@ interface DepsOverride {
 		dead?: boolean;
 	}> | null;
 	tmuxCalls?: { count: number };
+	privatePanes?: DepsOverride["panes"];
+	privateTmuxCalls?: { sockets: string[] };
 	processCommands?: Record<number, string[] | null>;
 }
 
@@ -164,6 +169,17 @@ function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
 			if (o.panes === undefined) return [];
 			if (o.panes === null) return null;
 			return o.panes.map((p) => ({
+				windowName: p.windowName,
+				command: p.command,
+				panePid: p.panePid ?? 0,
+				dead: p.dead ?? false,
+			}));
+		},
+		listPanesAtSocket: async (socketPath) => {
+			o.privateTmuxCalls?.sockets.push(socketPath);
+			if (o.privatePanes === undefined) return [];
+			if (o.privatePanes === null) return null;
+			return o.privatePanes.map((p) => ({
 				windowName: p.windowName,
 				command: p.command,
 				panePid: p.panePid ?? 0,
@@ -202,7 +218,83 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 		expect(l.observed.management).toBe("standard-confirmed");
 		expect(l.observed.runtime).toBe("claude-confirmed");
 		expect(l.presentation).toBe("ONLINE");
-		expect(l.drift).toEqual({ model: false, backend: false, effort: false });
+		expect(l.drift).toEqual({
+			model: false,
+			backend: false,
+			effort: false,
+			carrier: false,
+		});
+	});
+
+	it("v2 plist is standard-managed and carrier-aligned", async () => {
+		const socketPath = deriveLeadSocketPath(KEY, `${HOME}/.flywheel`);
+		const privateTmuxCalls = { sockets: [] as string[] };
+		const deps = makeDeps({
+			files: {
+				[M_PATH]: JSON.stringify({
+					pid: 42,
+					projectName: "geo",
+					leadId: "product-lead",
+					socketPath,
+				}),
+				[P_PATH]: goodPlist(undefined, "v2"),
+			},
+			panes: [],
+			privatePanes: [{ windowName: "main", command: "claude" }],
+			privateTmuxCalls,
+		});
+		const snap = await collectFleetSnapshot(
+			[project({ carrier: "v2" })],
+			() => undefined,
+			deps,
+		);
+		expect(snap.leads[0]!.observed.management).toBe("standard-confirmed");
+		expect(snap.leads[0]!.carrier.plistCarrier).toBe("v2");
+		expect(snap.leads[0]!.drift?.carrier).toBe(false);
+		expect(snap.leads[0]!.observed.runtime).toBe("claude-confirmed");
+		expect(privateTmuxCalls.sockets).toEqual([socketPath]);
+	});
+
+	it("v2 fails closed when the manifest publishes a noncanonical socket", async () => {
+		const privateTmuxCalls = { sockets: [] as string[] };
+		const deps = makeDeps({
+			files: {
+				[M_PATH]: JSON.stringify({
+					pid: 42,
+					projectName: "geo",
+					leadId: "product-lead",
+					socketPath: "/tmp/attacker.sock",
+				}),
+				[P_PATH]: goodPlist(undefined, "v2"),
+			},
+			privatePanes: [{ windowName: "main", command: "claude" }],
+			privateTmuxCalls,
+		});
+		const snap = await collectFleetSnapshot(
+			[project({ carrier: "v2" })],
+			() => undefined,
+			deps,
+		);
+		expect(snap.leads[0]!.observed.management).toBe("external-confirmed");
+		expect(privateTmuxCalls.sockets).toEqual([]);
+	});
+
+	it("unknown wrapper remains external and carrier drift is loud", async () => {
+		const deps = makeDeps({
+			files: {
+				[M_PATH]: JSON.stringify({
+					pid: 42,
+					projectName: "geo",
+					leadId: "product-lead",
+				}),
+				[P_PATH]: `<plist><string>/bespoke/wrapper</string><string>${M_PATH}</string><string>com.flywheel.lead.${KEY}</string></plist>`,
+			},
+			panes: [],
+		});
+		const snap = await collectFleetSnapshot([project()], () => undefined, deps);
+		expect(snap.leads[0]!.observed.management).toBe("external-confirmed");
+		expect(snap.leads[0]!.carrier.plistCarrier).toBe("unknown");
+		expect(snap.leads[0]!.drift?.carrier).toBe(true);
 	});
 
 	it("model drift visible (config differs from manifest/plist)", async () => {
@@ -413,8 +505,8 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 describe("ConfigSnapshotProvider", () => {
 	const boot = [project()];
 
-	it("fleet-field overlay: model/backend hot-update onto boot topology", () => {
-		let fresh = [project({ model: "fab-2" })];
+	it("fleet-field overlay: model/backend/carrier hot-update onto boot topology", () => {
+		let fresh = [project({ model: "fab-2", carrier: "v2" })];
 		const prov = new ConfigSnapshotProvider(boot, {
 			loadProjects: () => fresh,
 			envPinned: false,
@@ -423,11 +515,13 @@ describe("ConfigSnapshotProvider", () => {
 		prov.refresh();
 		expect(prov.snapshot().state).toBe("live");
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBe("fab-2");
+		expect(prov.snapshot().projects[0]!.leads[0]!.carrier).toBe("v2");
 		expect(prov.hasExplicitFleetConfig()).toBe(true);
 		// removal also flows (absent → deleted, not stale)
 		fresh = [project()];
 		prov.refresh();
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBeUndefined();
+		expect(prov.snapshot().projects[0]!.leads[0]!.carrier).toBeUndefined();
 		expect(prov.hasExplicitFleetConfig()).toBe(false);
 	});
 

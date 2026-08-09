@@ -546,7 +546,7 @@ echo "[lead] Working directory: ${LEAD_WORKSPACE}"
 MANIFEST_DIR="${HOME}/.flywheel/manifests"
 MANIFEST_FILE="${MANIFEST_DIR}/${PROJECT_NAME}-${LEAD_ID}.json"
 mkdir -p "$MANIFEST_DIR"
-if command -v jq >/dev/null 2>&1; then
+if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" != "1" ] && command -v jq >/dev/null 2>&1; then
   # FLY-143: preserve per-Lead MCP scope fields across manifest rewrites.
   # Source of truth: env (set by wrapper from prior manifest read). Falling
   # back to existing manifest values stops a launchd restart from silently
@@ -2608,7 +2608,8 @@ _launch_claude() {
 
   # Manifest is now write-only launch evidence. Preserve unrelated fields,
   # publish raw SSOT spelling plus actual canonical argv, and never read it.
-  if command -v jq >/dev/null 2>&1 && [ -f "${MANIFEST_FILE:-}" ]; then
+  if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" != "1" ] \
+    && command -v jq >/dev/null 2>&1 && [ -f "${MANIFEST_FILE:-}" ]; then
     local _fly1496_manifest_tmp="${MANIFEST_FILE}.tmp.$$"
     jq \
       --arg rawModel "$_fly1496_raw_model" \
@@ -2842,6 +2843,36 @@ _launch_claude() {
     return 0
   fi
 
+  # FLY-1663: in the launchd-native carrier this shell already IS the private
+  # server's body pane. Launch Claude once as our child, preserving the pane's
+  # tmux identity for flywheel-comm, and return its status to the one-shot
+  # receipt path below. No shared-session creation or lifecycle gate is used.
+  if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+    local -a child_env=()
+    local _v2_env
+    for _v2_env in "${env_args[@]}"; do
+      [ "$_v2_env" = "-e" ] && continue
+      child_env+=("$_v2_env")
+    done
+    [ -z "${TERM:-}" ] || child_env+=("TERM=${TERM}")
+    [ -z "${TMPDIR:-}" ] || child_env+=("TMPDIR=${TMPDIR}")
+    [ -z "${LANG:-}" ] || child_env+=("LANG=${LANG}")
+    [ -z "${LC_ALL:-}" ] || child_env+=("LC_ALL=${LC_ALL}")
+    [ -z "${LC_CTYPE:-}" ] || child_env+=("LC_CTYPE=${LC_CTYPE}")
+    [ -z "${TMUX:-}" ] || child_env+=("TMUX=${TMUX}")
+    [ -z "${TMUX_PANE:-}" ] || child_env+=("TMUX_PANE=${TMUX_PANE}")
+
+    env -i "${child_env[@]}" claude "${launch_args[@]}" &
+    CLAUDE_CHILD_PID=$!
+    if wait "$CLAUDE_CHILD_PID"; then
+      CLAUDE_EXIT=0
+    else
+      CLAUDE_EXIT=$?
+    fi
+    CLAUDE_CHILD_PID=""
+    return 0
+  fi
+
   # FLY-1659: close the create-client crash window after launch-plan
   # materialization. A pending intent, live client fence, or reserved
   # temporary window is launch ownership evidence; none may be bypassed by a
@@ -3014,6 +3045,14 @@ _wait_tmux_window() {
 cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
+
+  if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+    if [ -n "${CLAUDE_CHILD_PID:-}" ] && kill -0 "$CLAUDE_CHILD_PID" 2>/dev/null; then
+      kill -TERM "$CLAUDE_CHILD_PID" 2>/dev/null || true
+      wait "$CLAUDE_CHILD_PID" 2>/dev/null || true
+    fi
+    exit 143
+  fi
 
   # FLY-109: expect-dev-channels.exp lives under scripts/ now — nothing to clean up.
 
@@ -3809,12 +3848,17 @@ RULES_BUNDLE_STATE_DIR="${HOME}/.flywheel/lead-rules-bundles"
 RULES_BUNDLE_RECEIPT_PATH="${RULES_BUNDLE_STATE_DIR}/${PROJECT_NAME}-${LEAD_ID}.active.json"
 
 # Compute this once and reuse it for filename, receipt, cleanup, and FLY-1309.
-LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+  LEAD_LEASE_SUPERVISOR_START="$(LC_ALL=C ps -p "$$" -o lstart= 2>/dev/null || true)"
+else
+  LEAD_LEASE_SUPERVISOR_START="$(tmux_supervisor_process_start_identity "$$" || true)"
+fi
 LEAD_LAUNCH_LABEL="com.flywheel.lead.${PROJECT_NAME}-${LEAD_ID}"
 LEAD_LAUNCH_TARGET="gui/$(id -u)/${LEAD_LAUNCH_LABEL}"
 LEAD_LAUNCH_PLIST="${HOME}/Library/LaunchAgents/${LEAD_LAUNCH_LABEL}.plist"
 LEAD_LAUNCH_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] \
+  && [ "${FLYWHEEL_LEAD_BODY_V2:-0}" != "1" ]; then
   _lead_authority_backoff=3
   while ! lead_launch_authority_prepare \
     "$MANIFEST_FILE" "$LEAD_LAUNCH_PLIST" "$LEAD_LAUNCH_PROJECTS_FILE" \
@@ -4072,6 +4116,64 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
   else
     log "FLY-898: core-room-gate CLI/helper not built or jq missing — skip"
   fi
+fi
+
+# FLY-1663: launchd-native carrier. This is the complete lifecycle of one body
+# invocation: choose resume/fresh once, run one Claude child, persist one exit
+# receipt, then close this private server. launchd owns every later restart.
+if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+  # shellcheck source=lib/lead-body-receipt.sh
+  source "${SCRIPT_DIR}/lib/lead-body-receipt.sh"
+
+  _v2_is_resume=false
+  _v2_session_id=""
+  if [ -s "$SESSION_ID_FILE" ]; then
+    _v2_session_id="$(head -1 "$SESSION_ID_FILE" 2>/dev/null || true)"
+    [ -z "$_v2_session_id" ] || _v2_is_resume=true
+  fi
+
+  if [ "$_v2_is_resume" = true ]; then
+    log "Resuming session ${_v2_session_id} (one-shot v2 body)"
+    _v2_launch_args=("${CLAUDE_ARGS[@]}" --resume "$_v2_session_id")
+  else
+    _v2_session_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    log "Fresh session ${_v2_session_id} (one-shot v2 body)"
+    if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
+      send_bootstrap
+    elif [ "$IS_EXTERNAL_ROLE" = true ]; then
+      log "External: skipping engineering bootstrap"
+    else
+      log "Companion: skipping engineering bootstrap"
+    fi
+    _v2_session_tmp="${SESSION_ID_FILE}.tmp.$$"
+    (umask 077 && printf '%s\n' "$_v2_session_id" > "$_v2_session_tmp") \
+      && mv "$_v2_session_tmp" "$SESSION_ID_FILE" \
+      || { rm -f "$_v2_session_tmp"; log "FATAL: failed to persist session identity"; exit 1; }
+    _v2_launch_args=("${CLAUDE_ARGS[@]}" --session-id "$_v2_session_id")
+  fi
+
+  if ! _rules_bundle_commit_once; then
+    log "FATAL: failed to commit active Lead rules receipt"
+    exit 1
+  fi
+
+  CLAUDE_EXIT=1
+  _v2_started_at="$(date +%s)"
+  _launch_claude "${_v2_launch_args[@]}"
+  _v2_duration=$(( $(date +%s) - _v2_started_at ))
+  _v2_receipt_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/lead-resume"
+  _v2_receipt_file="${_v2_receipt_dir}/${PROJECT_NAME}-${LEAD_ID}.json"
+  if ! lead_body_write_receipt \
+    "$_v2_receipt_file" "${PROJECT_NAME}/${LEAD_ID}" "$_v2_session_id" \
+    "$CLAUDE_EXIT" "$_v2_duration" "$_v2_is_resume" "$SESSION_ID_FILE"; then
+    log "WARNING: failed to persist Lead exit receipt: $_v2_receipt_file"
+  fi
+
+  # Primary shutdown path. TMUX was injected by this private server into %0.
+  # The pane-exited hook is an independent fallback if this body is SIGKILLed.
+  _v2_exit="$CLAUDE_EXIT"
+  tmux kill-server 2>/dev/null || true
+  exit "$_v2_exit"
 fi
 
 # GEO-285: Crash recovery with exponential backoff.

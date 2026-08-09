@@ -66,7 +66,10 @@ export type LocateWindowFn = (
 	leadId: string,
 ) => Promise<LeadWindowRef | null>;
 
-export type CaptureFn = (windowId: string, lines: number) => Promise<string>;
+export type CaptureFn = (
+	window: LeadWindowRef | string,
+	lines: number,
+) => Promise<string>;
 
 export type NotifierFn = (payload: AlertPayload) => Promise<AlertResult>;
 
@@ -335,7 +338,7 @@ export class LeadWatchdog {
 		// 3. Capture pane content.
 		let pane: string;
 		try {
-			pane = await this.config.captureFn(windowRef.windowId, 200);
+			pane = await this.config.captureFn(windowRef, 200);
 		} catch (err) {
 			this.logger(
 				`captureFn failed for ${leadId}@${windowRef.windowId}: ${(err as Error).message}`,

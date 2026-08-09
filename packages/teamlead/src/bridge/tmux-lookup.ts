@@ -659,12 +659,44 @@ export async function sendKeysToWindow(
  * must gate this behind their live-pane safety check.
  */
 export async function sendEnterToWindow(
-	tmuxWindow: string,
+	tmuxWindow: string | import("../LeadWindowLocator.js").LeadWindowRef,
+	execFn: typeof execFileAsync = execFileAsync,
 ): Promise<{ sent: boolean; error?: string }> {
 	try {
-		await execFileAsync("tmux", ["send-keys", "-t", tmuxWindow, "Enter"], {
-			timeout: TMUX_TIMEOUT,
-		});
+		if (typeof tmuxWindow !== "string" && tmuxWindow.carrier === "v2") {
+			const { probeV2LeadPane } = await import("../LeadWindowLocator.js");
+			if (
+				!(await probeV2LeadPane(
+					tmuxWindow,
+					execFn as unknown as import("../LeadWindowLocator.js").ExecFn,
+					"send",
+					TMUX_TIMEOUT,
+				))
+			) {
+				return {
+					sent: false,
+					error: "private Lead body pane is not a proven Claude foreground",
+				};
+			}
+			await execFn(
+				"tmux",
+				[
+					"-S",
+					tmuxWindow.socketPath,
+					"send-keys",
+					"-t",
+					tmuxWindow.bodyPaneTarget,
+					"Enter",
+				],
+				{ timeout: TMUX_TIMEOUT },
+			);
+		} else {
+			const target =
+				typeof tmuxWindow === "string" ? tmuxWindow : tmuxWindow.windowId;
+			await execFn("tmux", ["send-keys", "-t", target, "Enter"], {
+				timeout: TMUX_TIMEOUT,
+			});
+		}
 		return { sent: true };
 	} catch (err) {
 		const msg = (err as Error).message ?? String(err);
