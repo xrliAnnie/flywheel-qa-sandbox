@@ -80,7 +80,7 @@ export function leadAddressFromManifest(
 	if (manifest.projectName !== projectName || manifest.leadId !== leadId) {
 		return null;
 	}
-	const exactKey = `${projectName}-${leadId}`;
+	const exactKey = `${projectName}/${leadId}`;
 	const canonical = deriveLeadAddress(exactKey, stateDir);
 	return manifest.socketPath === canonical.socketPath ? canonical : null;
 }

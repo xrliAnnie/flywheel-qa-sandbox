@@ -47,7 +47,8 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FLEET="${REPO_ROOT}/scripts/flywheel-fleet.sh"
 
-SANDBOX="$(mktemp -d -t fly247-fleet-XXXXXX)"
+# Keep HOME short enough to exercise the real macOS tmux socket budget.
+SANDBOX="$(mktemp -d /tmp/fly247-fleet.XXXXXX)"
 LIVE_PIDS=()
 cleanup() {
   for p in "${LIVE_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
@@ -110,6 +111,10 @@ chmod +x "$SANDBOX/launchctl-stub"
 cat > "$SANDBOX/tmux-stub" <<'EOF'
 #!/bin/bash
 CTL="${LAUNCHCTL_STUB_CTL:?}"
+if [ "${1:-}" = "-S" ]; then
+  printf '0\tmain\tmain\t0\tclaude\n'
+  exit 0
+fi
 cat "$CTL/tmux_out" 2>/dev/null || true
 EOF
 chmod +x "$SANDBOX/tmux-stub"
@@ -149,7 +154,10 @@ case "$1" in
       mp="$(cat "$CTL/manifest_path")"
       np="$(cat "$CTL/pid.last" 2>/dev/null || echo 0)"
       if [ -f "$mp" ] && [ "$np" != "0" ]; then
-        jq --argjson pid "$np" '.pid = $pid' "$mp" > "$mp.stubtmp" && mv "$mp.stubtmp" "$mp"
+        socket="$(cat "$CTL/socket_path" 2>/dev/null || true)"
+        jq --argjson pid "$np" --arg socket "$socket" \
+          '.pid = $pid | if $socket == "" then . else .socketPath = $socket end' \
+          "$mp" > "$mp.stubtmp" && mv "$mp.stubtmp" "$mp"
       fi
     fi
     echo "bootstrap $3" >> "$CTL/calls.log"
@@ -840,6 +848,9 @@ NEXT=$(spawn_live)
 echo "$LIVE" > "$CTL/kill_on_bootout"
 echo "$NEXT" > "$CTL/next_pid"
 echo "$MANIFEST" > "$CTL/manifest_path"
+# shellcheck source=../lib/lead-address.sh
+source "$REPO_ROOT/scripts/lib/lead-address.sh"
+derive_lead_socket "geo/product-lead" "$SANDBOX/.flywheel" > "$CTL/socket_path"
 OUT=$(FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub2" bash "$FLEET" apply --lead "$KEY" --carrier v2 --yes 2>&1); RC=$?
 if [ "$RC" -eq 0 ] \
   && [ "$(jq -r '.[0].leads[0].carrier' "$PROJECTS")" = v2 ] \

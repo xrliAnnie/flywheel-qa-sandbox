@@ -203,30 +203,33 @@ export interface FleetProbeDeps {
 	 */
 	processCommandsOf(pid: number): Promise<string[] | null>;
 	homeDir(): string;
+	/** Runtime state root; defaults to $HOME/.flywheel. */
+	stateDir?(): string;
 	now(): Date;
 }
 
 const PLIST_PREFIX = "com.flywheel.lead";
 
-function manifestPathFor(home: string, key: string): string {
-	return join(home, ".flywheel", "manifests", `${key}.json`);
+function manifestPathFor(stateDir: string, key: string): string {
+	return join(stateDir, "manifests", `${key}.json`);
 }
 function plistPathFor(home: string, key: string): string {
 	return join(home, "Library", "LaunchAgents", `${PLIST_PREFIX}.${key}.plist`);
 }
-function wrapperPathFor(home: string): string {
-	return join(home, ".flywheel", "bin", "flywheel-lead-wrapper.sh");
+function wrapperPathFor(stateDir: string): string {
+	return join(stateDir, "bin", "flywheel-lead-wrapper.sh");
 }
-function wrapperV2PathFor(home: string): string {
-	return join(home, ".flywheel", "bin", "flywheel-lead-wrapper-v2.sh");
+function wrapperV2PathFor(stateDir: string): string {
+	return join(stateDir, "bin", "flywheel-lead-wrapper-v2.sh");
 }
 
 export function classifyLeadPlistCarrier(
 	plist: string,
 	home: string,
+	stateDir = join(home, ".flywheel"),
 ): "v1" | "v2" | "unknown" {
-	const v1 = plist.includes(`<string>${wrapperPathFor(home)}</string>`);
-	const v2 = plist.includes(`<string>${wrapperV2PathFor(home)}</string>`);
+	const v1 = plist.includes(`<string>${wrapperPathFor(stateDir)}</string>`);
+	const v2 = plist.includes(`<string>${wrapperV2PathFor(stateDir)}</string>`);
 	if (v1 === v2) return "unknown";
 	return v2 ? "v2" : "v1";
 }
@@ -252,6 +255,7 @@ interface CarrierRead {
 
 function readCarrier(
 	home: string,
+	stateDir: string,
 	key: string,
 	projectName: string,
 	leadId: string,
@@ -272,7 +276,7 @@ function readCarrier(
 		identityOk: false,
 		probeFailed: false,
 	};
-	const mPath = manifestPathFor(home, key);
+	const mPath = manifestPathFor(stateDir, key);
 	const pPath = plistPathFor(home, key);
 	try {
 		out.manifestExists = deps.fileExists(mPath);
@@ -322,7 +326,7 @@ function readCarrier(
 				/<key>\s*FLYWHEEL_LEAD_EFFORT\s*<\/key>\s*<string>([^<]*)<\/string>/,
 			);
 			out.plistEffort = effortMatch?.[1] ?? null;
-			out.plistCarrier = classifyLeadPlistCarrier(plist, home);
+			out.plistCarrier = classifyLeadPlistCarrier(plist, home, stateDir);
 			out.plistOk =
 				out.plistCarrier !== "unknown" &&
 				plist.includes(`<string>${mPath}</string>`) &&
@@ -331,7 +335,7 @@ function readCarrier(
 				out.identityOk =
 					out.identityOk &&
 					out.manifestSocketPath ===
-						deriveLeadSocketPath(key, join(home, ".flywheel"));
+						deriveLeadSocketPath(`${projectName}/${leadId}`, stateDir);
 			}
 		} catch {
 			out.probeFailed = true;
@@ -438,6 +442,7 @@ export async function collectFleetSnapshot(
 	configState: ConfigSnapshotState = "live",
 ): Promise<FleetSnapshot> {
 	const home = deps.homeDir();
+	const stateDir = deps.stateDir?.() ?? join(home, ".flywheel");
 	const collectedAt = deps.now().toISOString();
 	// ONE batched tmux query per refresh (F9/R6#5).
 	let panes: Array<{
@@ -465,6 +470,7 @@ export async function collectFleetSnapshot(
 			try {
 				carrier = readCarrier(
 					home,
+					stateDir,
 					key,
 					project.projectName,
 					lead.agentId,
@@ -1087,6 +1093,8 @@ export function buildDefaultFleetProbeDeps(): FleetProbeDeps {
 			return out;
 		},
 		homeDir: () => homedir(),
+		stateDir: () =>
+			process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel"),
 		now: () => new Date(),
 	};
 }

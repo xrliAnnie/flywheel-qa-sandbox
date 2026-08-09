@@ -22,8 +22,9 @@ TEAMLEAD_API_TOKEN=bridge-secret
 FLYWHEEL_COMM_BACKEND=mailbox
 ENV
 cat > "$TMP/manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","unknown":{"keep":true}}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"unknown":{"keep":true}}
 JSON
+mkdir -p "$TMP/custom-workspace"
 
 out="$(
   HOME="$TMP/home" \
@@ -45,11 +46,12 @@ fi
 
 conf="$(sed -n 's/^V2_CONF=//p' <<<"$out" | tail -1)"
 if [ -f "$conf" ] \
+  && [[ "$conf" == */run/leads/demo-ops-lead/tmux.conf ]] \
   && grep -qF 'set -g exit-empty on' "$conf" \
   && grep -qF '#{hook_pane}' "$conf" \
   && grep -qF '= %0' "$conf" \
   && grep -qF 'tmux -S ' "$conf" \
-  && grep -qF 'new-session -d -s main' "$conf" \
+  && grep -qF 'new-session -d -s main -n main' "$conf" \
   && grep -qF 'packages/teamlead/scripts/lead-body.sh' "$conf"; then
   pass "wrapper emits the body-pane-bound three-layer shutdown config"
 else
@@ -75,19 +77,35 @@ mkdir -p "$TMP/body-fixture"
 cp "$ROOT/packages/teamlead/scripts/lead-body.sh" "$TMP/body-fixture/lead-body.sh"
 cat > "$TMP/body-fixture/claude-lead.sh" <<'BODY_STUB'
 #!/bin/bash
-printf '%s\n' "${DISCORD_BOT_TOKEN:-}" > "${FLY1663_BODY_TOKEN_OUT:?}"
+jq -n \
+  --arg token "${DISCORD_BOT_TOKEN:-}" \
+  --arg workspace "${LEAD_WORKSPACE:-}" \
+  --arg mcpExclude "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}" \
+  --arg chromeEnabled "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" \
+  --arg alertChannel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
+  '{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,chromeEnabled:$chromeEnabled,alertChannel:$alertChannel}' \
+  > "${FLY1663_BODY_OUT:?}"
 BODY_STUB
 cat > "$TMP/body.env" <<'ENV'
 DISCORD_BOT_TOKEN=wrong-global-token
 OPS_TOKEN=right-lead-token
+FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=alert-channel-123
 ENV
-FLY1663_BODY_TOKEN_OUT="$TMP/body-token.out" \
+FLY1663_BODY_OUT="$TMP/body.out" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
   bash "$TMP/body-fixture/lead-body.sh" "$TMP/manifest.json"
-if [ "$(cat "$TMP/body-token.out" 2>/dev/null || true)" = right-lead-token ]; then
-  pass "body reprojects the manifest-selected Discord token after loading .env"
+if jq -e \
+    --arg workspace "$TMP/custom-workspace" \
+    '.token == "right-lead-token"
+      and .workspace == $workspace
+      and .mcpExclude == "dangerous-mcp,chrome"
+      and .chromeEnabled == "true"
+      and .alertChannel == "alert-channel-123"' \
+    "$TMP/body.out" >/dev/null; then
+  pass "body preserves v1 manifest projection and exports launcher configuration to helpers"
 else
-  fail "body manifest-selected Discord token projection"
+  fail "body manifest/environment projection"
+  cat "$TMP/body.out" 2>/dev/null || true
 fi
 
 if grep -qF 'restart-storm-gate' "$WRAPPER" \
@@ -151,9 +169,9 @@ JSON
     sleep 0.1
   done
   live_pane="$(tmux -S "$live_socket" list-panes -t '%0' \
-    -F '#{pane_id}|#{session_name}|#{pane_start_command}' 2>/dev/null || true)"
-  if [[ "$live_pane" == '%0|main|'*lead-body.sh* ]]; then
-    pass "real private server exposes immutable main/%0 body identity"
+    -F '#{pane_id}|#{session_name}|#{window_name}|#{pane_start_command}' 2>/dev/null || true)"
+  if [[ "$live_pane" == '%0|main|main|'*lead-body.sh* ]]; then
+    pass "real private server exposes immutable main/main/%0 body identity"
   else
     fail "real private body pane identity: [$live_pane]"
   fi
@@ -179,6 +197,13 @@ JSON
   wait "$wrapper_pid" 2>/dev/null || true
 else
   pass "real private tmux test skipped (tmux unavailable)"
+fi
+
+if grep -q '_launch_claude .*|| _v2_launch_rc=' \
+    "$ROOT/packages/teamlead/scripts/claude-lead.sh"; then
+  pass "v2 launch failures remain inside the receipt path"
+else
+  fail "v2 launch failure can bypass the receipt path under set -e"
 fi
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"

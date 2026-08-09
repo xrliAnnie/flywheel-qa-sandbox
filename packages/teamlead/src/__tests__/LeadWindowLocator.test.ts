@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
+import { deriveLeadSocketPath } from "../lead-address.js";
 
 describe("LeadWindowLocator", () => {
 	it("returns windowId + windowName for matching project-lead combo", async () => {
@@ -92,8 +93,10 @@ describe("LeadWindowLocator", () => {
 
 	it("v2 resolves the canonical private socket and immutable %0 body pane", async () => {
 		const calls: string[][] = [];
-		const socketPath =
-			"/tmp/fw-state/sock/fw-geo-product-lead-1ac2981642a474b0.sock";
+		const socketPath = deriveLeadSocketPath(
+			"geo/product-lead",
+			"/tmp/fw-state",
+		);
 		const result = await locateLeadWindow("geo", "product-lead", {
 			stateDir: "/tmp/fw-state",
 			manifest: { projectName: "geo", leadId: "product-lead", socketPath },

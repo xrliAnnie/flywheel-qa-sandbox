@@ -105,7 +105,6 @@ import {
 	LeadWatchdog,
 	leadWatchdogIntervalMs,
 } from "../LeadWatchdog.js";
-import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
@@ -271,6 +270,7 @@ import {
 	type FleetSnapshot,
 	filterPaneWatchedLeads,
 } from "./fleet-data.js";
+import { locateConfiguredLeadWindow } from "./fleet-lead-locator.js";
 import {
 	handleApply,
 	handleStage,
@@ -4197,30 +4197,12 @@ export async function startBridge(
 	console.log("[Bridge] FleetPoller started (30s evidence collection)");
 	const leadRuntimeStateDir =
 		process.env.FLYWHEEL_STATE_DIR?.trim() || join(homedir(), ".flywheel");
-	const locateFleetLeadWindow = async (projectName: string, leadId: string) => {
-		const key = `${projectName}-${leadId}`;
-		const observed = fleetPoller
-			.snapshot()
-			?.leads.find((candidate) => candidate.key === key);
-		if (observed?.carrier.plistCarrier !== "v2") {
-			return locateLeadWindow(projectName, leadId);
-		}
-		try {
-			const manifest = JSON.parse(
-				ffReadFileSync(
-					join(leadRuntimeStateDir, "manifests", `${key}.json`),
-					"utf8",
-				),
-			) as Record<string, unknown>;
-			return locateLeadWindow(projectName, leadId, {
-				carrier: "v2",
-				stateDir: leadRuntimeStateDir,
-				manifest,
-			});
-		} catch {
-			return null;
-		}
-	};
+	const locateFleetLeadWindow = (projectName: string, leadId: string) =>
+		locateConfiguredLeadWindow(projectName, leadId, {
+			homeDir: homedir(),
+			stateDir: leadRuntimeStateDir,
+			readFile: (path) => ffReadFileSync(path, "utf8"),
+		});
 	// Default-off gate (R1#6): zero-config deployments keep a byte-identical
 	// SSE payload — the fleet key only appears when ≥1 lead opts in. The gate
 	// reads the CURRENT snapshot, so hot-adding config appears without a

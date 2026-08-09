@@ -25,11 +25,12 @@
 # automatically on first install.
 set -euo pipefail
 
-FLYWHEEL_DIR="${HOME}/Dev/flywheel"
-MANIFEST_DIR="${HOME}/.flywheel/manifests"
+FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+MANIFEST_DIR="${FLYWHEEL_STATE_DIR}/manifests"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
-FLYWHEEL_BIN="${HOME}/.flywheel/bin"
-PID_DIR="${HOME}/.flywheel/pids"
+FLYWHEEL_BIN="${FLYWHEEL_STATE_DIR}/bin"
+PID_DIR="${FLYWHEEL_STATE_DIR}/pids"
 PLIST_PREFIX="com.flywheel.lead"
 GUI_DOMAIN="gui/$(id -u)"
 
@@ -499,8 +500,46 @@ $(ps -o command= -p "$g" 2>/dev/null || true)"
 claude_pane_evidence() {
   local daemon_key="$1"
   command -v "$TMUX_BIN" >/dev/null 2>&1 || return 2
-  local panes rc
-  panes=$("$TMUX_BIN" list-panes -a -F '#{pane_dead}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  local plist carrier manifest socket project lead canonical address_lib
+  plist="$(plist_path "$daemon_key")"
+  if [ -f "$plist" ]; then
+    carrier="$(classify_plist_lead_carrier "$plist")" || return 2
+  else
+    # Pre-install/manual legacy observations have no plist authority. Preserve
+    # the historical shared-server probe until an explicit carrier exists.
+    carrier=v1
+  fi
+
+  local panes rc private=0
+  if [ "$carrier" = "v2" ]; then
+    private=1
+    manifest="${MANIFEST_DIR}/${daemon_key}.json"
+    [ -f "$manifest" ] || return 2
+    project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    lead="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    socket="$(jq -er '.socketPath | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    if ! declare -F derive_lead_socket >/dev/null 2>&1; then
+      address_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/lead-address.sh"
+      [ -f "$address_lib" ] || address_lib="${FLYWHEEL_DIR}/scripts/lib/lead-address.sh"
+      [ -f "$address_lib" ] || address_lib="${FLYWHEEL_BIN}/lib/lead-address.sh"
+      [ -f "$address_lib" ] || return 2
+      # shellcheck source=lib/lead-address.sh
+      source "$address_lib"
+      declare -F derive_lead_socket >/dev/null 2>&1 || return 2
+    fi
+    canonical="$(derive_lead_socket "${project}/${lead}" "$FLYWHEEL_STATE_DIR")" || return 2
+    [ "$socket" = "$canonical" ] || return 2
+    panes=$("$TMUX_BIN" -S "$socket" list-panes -t '%0' \
+      -F '#{pane_dead}	#{session_name}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  elif [ "$carrier" = "v1" ]; then
+    panes=$("$TMUX_BIN" list-panes -a \
+      -F '#{pane_dead}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  else
+    return 2
+  fi
   rc=$?
   if [ "$rc" -ne 0 ]; then
     if printf '%s' "$panes" | grep -qiE 'no server running|no current client'; then
@@ -508,10 +547,20 @@ claude_pane_evidence() {
     fi
     return 2
   fi
-  local dead window pane_pid cmd
-  while IFS=$'\t' read -r dead window pane_pid cmd; do
+  local dead session window pane_pid cmd
+  while IFS=$'\t' read -r dead session window pane_pid cmd; do
+    if [ "$private" -eq 0 ]; then
+      cmd="$pane_pid"
+      pane_pid="$window"
+      window="$session"
+      session=""
+    fi
     [ "$dead" = "0" ] || continue
-    case "$window" in *"$daemon_key"*) ;; *) continue ;; esac
+    if [ "$private" -eq 1 ]; then
+      [ "$session" = "main" ] && [ "$window" = "main" ] || continue
+    else
+      case "$window" in *"$daemon_key"*) ;; *) continue ;; esac
+    fi
     if printf '%s' "$cmd" | grep -qiE 'claude'; then
       return 0
     fi

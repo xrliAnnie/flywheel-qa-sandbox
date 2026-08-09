@@ -2793,6 +2793,9 @@ _launch_claude() {
   if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
+  if [ "${FLYWHEEL_LEAD_CARRIER:-}" = "v2" ]; then
+    env_args+=(-e "FLYWHEEL_LEAD_CARRIER=v2")
+  fi
 
   # FLY-314 Phase 2 (Part b) / FLY-535 / FLY-569: roundtable reply-in-thread
   # plugin flags. The Discord plugin (MCP server) reads these from process.env.
@@ -4159,7 +4162,11 @@ if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
 
   CLAUDE_EXIT=1
   _v2_started_at="$(date +%s)"
-  _launch_claude "${_v2_launch_args[@]}"
+  _v2_launch_rc=0
+  _launch_claude "${_v2_launch_args[@]}" || _v2_launch_rc=$?
+  if [ "$_v2_launch_rc" -ne 0 ]; then
+    CLAUDE_EXIT="$_v2_launch_rc"
+  fi
   _v2_duration=$(( $(date +%s) - _v2_started_at ))
   _v2_receipt_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state/lead-resume"
   _v2_receipt_file="${_v2_receipt_dir}/${PROJECT_NAME}-${LEAD_ID}.json"

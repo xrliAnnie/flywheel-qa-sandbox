@@ -150,6 +150,7 @@ interface DepsOverride {
 	privatePanes?: DepsOverride["panes"];
 	privateTmuxCalls?: { sockets: string[] };
 	processCommands?: Record<number, string[] | null>;
+	stateDir?: string;
 }
 
 function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
@@ -189,6 +190,7 @@ function makeDeps(o: DepsOverride = {}): FleetProbeDeps {
 		processCommandsOf: async (pid) =>
 			o.processCommands?.[pid] === undefined ? [] : o.processCommands[pid],
 		homeDir: () => HOME,
+		stateDir: () => o.stateDir ?? `${HOME}/.flywheel`,
 		now: () => new Date("2026-06-11T00:00:00Z"),
 	};
 }
@@ -227,7 +229,10 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 	});
 
 	it("v2 plist is standard-managed and carrier-aligned", async () => {
-		const socketPath = deriveLeadSocketPath(KEY, `${HOME}/.flywheel`);
+		const socketPath = deriveLeadSocketPath(
+			"geo/product-lead",
+			`${HOME}/.flywheel`,
+		);
 		const privateTmuxCalls = { sockets: [] as string[] };
 		const deps = makeDeps({
 			files: {
@@ -253,6 +258,34 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 		expect(snap.leads[0]!.drift?.carrier).toBe(false);
 		expect(snap.leads[0]!.observed.runtime).toBe("claude-confirmed");
 		expect(privateTmuxCalls.sockets).toEqual([socketPath]);
+	});
+
+	it("honors an injected state directory for v2 manifest and socket authority", async () => {
+		const stateDir = "/custom/flywheel-state";
+		const manifestPath = `${stateDir}/manifests/${KEY}.json`;
+		const socketPath = deriveLeadSocketPath("geo/product-lead", stateDir);
+		const deps = makeDeps({
+			stateDir,
+			files: {
+				[manifestPath]: JSON.stringify({
+					pid: 42,
+					projectName: "geo",
+					leadId: "product-lead",
+					socketPath,
+				}),
+				[P_PATH]: goodPlist(undefined, "v2")
+					.replace(M_PATH, manifestPath)
+					.replace(WRAPPER_V2, `${stateDir}/bin/flywheel-lead-wrapper-v2.sh`),
+			},
+			privatePanes: [{ windowName: "main", command: "claude" }],
+		});
+		const snap = await collectFleetSnapshot(
+			[project({ carrier: "v2" })],
+			() => undefined,
+			deps,
+		);
+		expect(snap.leads[0]!.observed.management).toBe("standard-confirmed");
+		expect(snap.leads[0]!.observed.runtime).toBe("claude-confirmed");
 	});
 
 	it("v2 fails closed when the manifest publishes a noncanonical socket", async () => {

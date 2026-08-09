@@ -712,7 +712,7 @@ derive_lead_roster() {
         LEAD_ROSTER_REASONS="roster-authority-unavailable: Lead address helper missing"
         return 1
       }
-      canonical_socket=$(derive_lead_socket "$title" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}") || {
+      canonical_socket=$(derive_lead_socket "${project}/${lead}" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}") || {
         LEAD_ROSTER_REASONS="roster-authority-unavailable: cannot derive private socket $slug"
         return 1
       }
@@ -8086,7 +8086,7 @@ $keeper_evidence"
       return 2
     }
     if [[ "$carrier" == "claude-private" ]]; then
-      canonical_socket=$(derive_lead_socket "$title" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}") || return 2
+      canonical_socket=$(derive_lead_socket "${project}/${lead}" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}") || return 2
       [[ "$socket" == "$canonical_socket" ]] || {
         _verify_sidebar_inconclusive "target-authority-unavailable: noncanonical private socket $title"
         return 2

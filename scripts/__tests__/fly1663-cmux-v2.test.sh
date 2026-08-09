@@ -43,7 +43,7 @@ else
   fail "v2 carrier classification"
 fi
 
-socket="$(derive_lead_socket demo-ops-lead "$HOME/.flywheel")"
+socket="$(derive_lead_socket demo/ops-lead "$HOME/.flywheel")"
 expected="env -u TMUX '$HOME/.flywheel/bin/flywheel-lead-attach.sh' '$socket'"
 if [[ "$(build_lead_attach_command "$socket")" == "$expected" ]]; then
   pass "v2 cmux command is a canonical direct-socket reconnect command"

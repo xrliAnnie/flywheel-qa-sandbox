@@ -63,16 +63,10 @@ BACKEND="$(jq -r '.backend // "claude-code"' <<<"$LEAD_ROW")"
 [ "$BACKEND" = claude-code ] \
   || fatal "v2 carrier supports claude-code only (got $BACKEND)"
 
-ROLE=standard
-if [ "$(jq -r '.external // false' <<<"$LEAD_ROW")" = true ]; then
-  ROLE=external
-elif [ "$(jq -r '.companion // false' <<<"$LEAD_ROW")" = true ]; then
-  ROLE=companion
-fi
-
 ensure_lead_socket_dir "$FLYWHEEL_STATE_DIR" || fatal "Unsafe Lead socket directory"
 LEAD_KEY="${PROJECT_NAME}-${LEAD_ID}"
-SOCKET_PATH="$(derive_lead_socket "$LEAD_KEY" "$FLYWHEEL_STATE_DIR")" \
+SOCKET_KEY="${PROJECT_NAME}/${LEAD_ID}"
+SOCKET_PATH="$(derive_lead_socket "$SOCKET_KEY" "$FLYWHEEL_STATE_DIR")" \
   || fatal "Unable to derive a safe socket path"
 
 # Runtime fields are wrapper-owned. Preserve every static and future field.
@@ -95,16 +89,19 @@ if [ "${FLYWHEEL_LEAD_V2_TEST_MODE:-0}" = 1 ]; then
 fi
 [ -f "$BODY_SCRIPT" ] || fatal "Lead body not found: $BODY_SCRIPT"
 
-TMUX_CONF="${RUN_DIR}/tmux.$$.conf"
+TMUX_CONF="${RUN_DIR}/tmux.conf"
+TMUX_CONF_TMP="${TMUX_CONF}.tmp.$$"
 
 # hook_pane is expanded by the hook event. run-shell must address the private
 # socket explicitly because the server's global environment has no TMUX value.
 {
   printf 'set -g exit-empty on\n'
   printf 'set-hook -g pane-exited '\''run-shell "if [ #{hook_pane} = %%0 ]; then tmux -S %q kill-server; fi"'\''\n' "$SOCKET_PATH"
-  printf 'new-session -d -s main -x 220 -y 50 "exec bash %q %q"\n' "$BODY_SCRIPT" "$MANIFEST"
-} > "$TMUX_CONF"
-chmod 600 "$TMUX_CONF"
+  printf 'new-session -d -s main -n main -x 220 -y 50 "exec bash %q %q"\n' "$BODY_SCRIPT" "$MANIFEST"
+} > "$TMUX_CONF_TMP" \
+  && chmod 600 "$TMUX_CONF_TMP" \
+  && mv "$TMUX_CONF_TMP" "$TMUX_CONF" \
+  || { rm -f "$TMUX_CONF_TMP"; fatal "Atomic tmux config update failed"; }
 
 SERVER_ENV=(
   "HOME=$HOME"
@@ -113,7 +110,6 @@ SERVER_ENV=(
   "FLYWHEEL_DIR=$FLYWHEEL_DIR"
   "FLYWHEEL_STATE_DIR=$FLYWHEEL_STATE_DIR"
   "FLYWHEEL_PROJECTS_FILE=$PROJECTS_FILE"
-  "FLYWHEEL_LEAD_ROLE=$ROLE"
   "FLYWHEEL_LEAD_CARRIER=v2"
 )
 for name in TMPDIR LANG LC_ALL LC_CTYPE CLAUDE_CONFIG_DIR; do
@@ -126,7 +122,7 @@ SERVER_ENV+=("DISCORD_BOT_TOKEN=${!BOT_TOKEN_ENV:-}")
 SERVER_ENV+=("DISCORD_STATE_DIR=${HOME}/.claude/channels/discord-${LEAD_ID}")
 
 if [ "${FLYWHEEL_LEAD_V2_DRY_RUN:-0}" = 1 ]; then
-  printf 'V2_SOCKET=%s\nV2_CONF=%s\nV2_ROLE=%s\n' "$SOCKET_PATH" "$TMUX_CONF" "$ROLE"
+  printf 'V2_SOCKET=%s\nV2_CONF=%s\n' "$SOCKET_PATH" "$TMUX_CONF"
   exit 0
 fi
 

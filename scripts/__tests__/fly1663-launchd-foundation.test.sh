@@ -38,6 +38,16 @@ else
   fail "S2 distinct exact keys collided"
 fi
 
+# The project/Lead boundary is part of the hash input. Hyphenated pairs that
+# collide under plain `${project}-${lead}` concatenation must stay distinct.
+socket_pair_a="$(derive_lead_socket "geo-forge/product-lead" "$SHORT_STATE")"
+socket_pair_b="$(derive_lead_socket "geo/forge-product-lead" "$SHORT_STATE")"
+if [ "$socket_pair_a" != "$socket_pair_b" ]; then
+  pass "S2b structured project/Lead key prevents concatenation ambiguity"
+else
+  fail "S2b structured project/Lead keys collided"
+fi
+
 # S3: overlong HOME/state roots fail loudly before tmux sees sun_path.
 long_root="$SANDBOX/$(printf 'x%.0s' {1..100})"
 if ! derive_lead_socket "flywheel-eng-lead" "$long_root" >/dev/null 2>&1; then
@@ -127,6 +137,38 @@ if grep -q 'LEAD_RESTART_CARRIER.*v2' <<< "$restart_block" \
   pass "C5 Lead restart has a native v2 path and no orphan fallback"
 else
   fail "C5 Lead restart still carries a manual body creation path"
+fi
+
+ci="$REPO_ROOT/.github/workflows/ci.yml"
+ci_ok=true
+for suite in fly1663-launchd-foundation.test.sh fly1663-lead-v2-runtime.test.sh \
+  fly1663-cmux-v2.test.sh fly1663-bridge-launchd.test.sh; do
+  grep -qF "scripts/__tests__/$suite" "$ci" || ci_ok=false
+done
+if [ "$ci_ok" = true ]; then
+  pass "C6 every FLY-1663 shell suite is registered in CI"
+else
+  fail "C6 FLY-1663 shell suite missing from CI"
+fi
+
+export FLYWHEEL_STATE_DIR="$SHORT_STATE"
+socket_v2="$(derive_lead_socket "flywheel/eng-lead" "$FLYWHEEL_STATE_DIR")"
+jq --arg socketPath "$socket_v2" '. + {socketPath: $socketPath}' \
+  "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+cp "$v2_plist" "$PLIST_DIR/com.flywheel.lead.flywheel-eng-lead.plist"
+cat > "$SANDBOX/tmux-private-stub" <<'TMUX'
+#!/bin/bash
+printf '%s\n' "$*" > "${FLY1663_TMUX_ARGS:?}"
+printf '0\tmain\tmain\t0\tclaude\n'
+TMUX
+chmod +x "$SANDBOX/tmux-private-stub"
+TMUX_BIN="$SANDBOX/tmux-private-stub"
+export FLY1663_TMUX_ARGS="$SANDBOX/tmux-private.args"
+if claude_pane_evidence "flywheel-eng-lead" \
+    && grep -qF -- "-S $socket_v2 list-panes -t %0" "$FLY1663_TMUX_ARGS"; then
+  pass "C7 daemon runtime evidence follows the canonical v2 private socket"
+else
+  fail "C7 daemon runtime evidence ignored the v2 private socket"
 fi
 
 echo "=================================="

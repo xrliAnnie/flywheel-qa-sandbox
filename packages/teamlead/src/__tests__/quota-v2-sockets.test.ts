@@ -114,7 +114,7 @@ describe("FLY-1663 quota observer private Lead sockets", () => {
 		mkdirSync(join(stateDir, "manifests"), { recursive: true });
 		mkdirSync(launchAgentsDir, { recursive: true });
 		const key = "demo-ops-lead";
-		const socketPath = deriveLeadSocketPath(key, stateDir);
+		const socketPath = deriveLeadSocketPath("demo/ops-lead", stateDir);
 		writeFileSync(
 			join(stateDir, "manifests", `${key}.json`),
 			JSON.stringify({ projectName: "demo", leadId: "ops-lead", socketPath }),

@@ -42,7 +42,12 @@ describe("deriveLeadSocketPath", () => {
 	});
 
 	it("keeps hyphenated project and Lead identities unambiguous", () => {
-		const address = deriveLeadAddress("geo-forge-product-lead", "/tmp/state");
+		const address = deriveLeadAddress("geo-forge/product-lead", "/tmp/state");
+		const ambiguousUnderConcatenation = deriveLeadAddress(
+			"geo/forge-product-lead",
+			"/tmp/state",
+		);
+		expect(address.socketPath).not.toBe(ambiguousUnderConcatenation.socketPath);
 		expect(
 			leadAddressFromManifest("geo-forge", "product-lead", "/tmp/state", {
 				projectName: "geo-forge",
