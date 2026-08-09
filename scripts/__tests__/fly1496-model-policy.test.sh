@@ -48,9 +48,11 @@ jq -n '{
       original: {
         projectModel: "claude-not-a-model",
         projectEffort: "null",
-        projectEffortTouched: false
+        projectEffortTouched: false,
+        projectCarrier: "v1",
+        projectCarrierTouched: false
       },
-      desired: {model: "claude-fable-5", effort: ""}
+      desired: {model: "claude-fable-5", effort: "", carrier: "v1"}
     }
   }
 }' > "$TXN"
