@@ -1,14 +1,13 @@
 ---
 issue: FLY-202
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-09T22:56:14.385Z
-nextStep: none — design node terminal; artifacts on branch
-  project-slot-2-FLY-202-f5c3e82b
+phase: implement
+phaseCursor: 1/4
+updated: 2026-08-09T22:59:43.888Z
+nextStep: create sandbox notes from the verified repository snapshot
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (6/6)
-**next**: none — design node terminal; artifacts on branch project-slot-2-FLY-202-f5c3e82b
+**phase**: implement (1/4)
+**next**: create sandbox notes from the verified repository snapshot
