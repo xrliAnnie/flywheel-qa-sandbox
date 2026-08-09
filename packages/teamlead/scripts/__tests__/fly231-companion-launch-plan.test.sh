@@ -127,6 +127,8 @@ printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'          && ok "T2 
 printf '%s\n' "$PLAN" | grep -qF 'founder-local-time.md'              && ok "T2 has founder-local-time" || bad "T2 has founder-local-time"
 printf '%s\n' "$PLAN" | grep -qF $'MCP_SERVER\tflywheel-terminal'     && ok "T2 has terminal MCP" || bad "T2 has terminal MCP"
 printf '%s\n' "$PLAN" | has $'PANE_ENV\tTEAMLEAD_API_TOKEN\tset'      && ok "T2 token SET (unchanged)" || bad "T2 token set"
+printf '%s\n' "$PLAN" | has $'PANE_ENV\tUSER\tset'                    && ok "T2 v1 preserves OS USER" || bad "T2 v1 USER missing"
+printf '%s\n' "$PLAN" | has $'PANE_ENV\tLOGNAME\tset'                 && ok "T2 v1 preserves OS LOGNAME" || bad "T2 v1 LOGNAME missing"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                     && bad "T2 must NOT have --effort" || ok "T2 no --effort"
 printf '%s\n' "$PLAN" | grep -qF 'companion-safety-contract.md'       && bad "T2 must NOT have safety-contract" || ok "T2 no safety-contract"
 printf '%s\n' "$PLAN" | grep -qF 'FLYWHEEL_LEAD_COMPANION'            && bad "T2 must NOT have companion marker" || ok "T2 no companion marker"
@@ -240,20 +242,27 @@ env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_STATE_DIR=set
+env=FLYWHEEL_CHAT_RECEIPTS=empty
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
 env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
+env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
+env=LOGNAME=set
 env=OPENAI_API_KEY=empty
 env=PATH=set
 env=PROJECT_NAME=set
 env=TEAMLEAD_API_TOKEN=set
 env=TEAMLEAD_ISSUE_PREFIXES=set
+env=USER=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard
@@ -283,20 +292,27 @@ env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
 env=DISCORD_STATE_DIR=set
+env=FLYWHEEL_CHAT_RECEIPTS=empty
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
 env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
+env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
+env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
+env=LOGNAME=set
 env=OPENAI_API_KEY=empty
 env=PATH=set
 env=PROJECT_NAME=set
 env=TEAMLEAD_API_TOKEN=set
 env=TEAMLEAD_ISSUE_PREFIXES=set
+env=USER=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard

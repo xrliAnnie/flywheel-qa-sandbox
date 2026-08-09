@@ -546,7 +546,12 @@ echo "[lead] Working directory: ${LEAD_WORKSPACE}"
 MANIFEST_DIR="${HOME}/.flywheel/manifests"
 MANIFEST_FILE="${MANIFEST_DIR}/${PROJECT_NAME}-${LEAD_ID}.json"
 mkdir -p "$MANIFEST_DIR"
-if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" != "1" ] && command -v jq >/dev/null 2>&1; then
+if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+  # The v2 wrapper owns the canonical manifest and publishes runtime identity
+  # from inside the proven-live tmux server. Skipping the legacy writer here is
+  # intentional and must not be reported as a missing-jq failure.
+  :
+elif command -v jq >/dev/null 2>&1; then
   # FLY-143: preserve per-Lead MCP scope fields across manifest rewrites.
   # Source of truth: env (set by wrapper from prior manifest read). Falling
   # back to existing manifest values stops a launchd restart from silently
@@ -2690,6 +2695,19 @@ _launch_claude() {
     _cz_comm_db=""
     _cz_openai_key=""
   fi
+  # Claude resolves its persisted login against the OS account named by USER.
+  # Both v1 (tmux new-window) and v2 (direct child env -i) cross an explicit
+  # environment boundary here, so derive the identity from the kernel account
+  # instead of trusting caller-provided USER/LOGNAME values.
+  local _lead_os_user
+  _lead_os_user="$(/usr/bin/id -un 2>/dev/null)" || {
+    log "ERROR: unable to resolve the Lead OS user"
+    return 1
+  }
+  [ -n "$_lead_os_user" ] || {
+    log "ERROR: resolved Lead OS user is empty"
+    return 1
+  }
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
     -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
@@ -2731,6 +2749,8 @@ _launch_claude() {
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${_cz_openai_key}"
     -e "HOME=${HOME}"
+    -e "USER=${_lead_os_user}"
+    -e "LOGNAME=${_lead_os_user}"
     -e "PATH=${PATH}"
     # GEO-151 QA cycle 1 fix: L3 screencapture skill prompt references
     # `$FLYWHEEL_TEAMLEAD_SCRIPT_DIR/find-window.sh`. Export at line ~1215

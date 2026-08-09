@@ -178,8 +178,13 @@ SERVER_ENV=()
 while IFS= read -r name; do
   SERVER_ENV+=("$name=$(jq -r --arg name "$name" '.[$name]' <<<"$LAUNCH_ENVIRONMENT")")
 done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
+OS_USER="$(/usr/bin/id -un 2>/dev/null)" \
+  || fatal "Unable to resolve the launchd job's OS user"
+[ -n "$OS_USER" ] || fatal "Resolved OS user is empty"
 SERVER_ENV+=(
   "HOME=$HOME"
+  "USER=$OS_USER"
+  "LOGNAME=$OS_USER"
   "PATH=$PATH"
   "TERM=${TERM:-xterm-256color}"
   "FLYWHEEL_DIR=$FLYWHEEL_DIR"

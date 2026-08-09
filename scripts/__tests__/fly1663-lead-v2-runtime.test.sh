@@ -16,9 +16,11 @@ fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 # shellcheck source=../lib/lead-address.sh
 source "$ADDRESS_LIB"
 
-mkdir -p "$TMP/home/.flywheel" "$TMP/project" "$TMP/bin"
+mkdir -p "$TMP/home/.flywheel" "$TMP/project/.lead/ops-lead" "$TMP/bin"
+printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
+  > "$TMP/project/.lead/ops-lead/identity.md"
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
-[{"projectName":"demo","projectRoot":"$TMP/project","leads":[{"agentId":"ops-lead"}]}]
+[{"projectName":"demo","projectRoot":"$TMP/project","leads":[{"agentId":"ops-lead","chatChannel":"123456789012345678","match":{"labels":["Operations"]}}]}]
 JSON
 cat > "$TMP/home/.flywheel/.env" <<'ENV'
 OPS_TOKEN=discord-secret
@@ -26,7 +28,7 @@ TEAMLEAD_API_TOKEN=bridge-secret
 FLYWHEEL_COMM_BACKEND=mailbox
 ENV
 cat > "$TMP/manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"launchEnvironment":{"DISCORD_STATE_DIR":"$TMP/discord-state","FLYWHEEL_WRAPPER_ENV_FILE":"$TMP/body.env","FLYWHEEL_LEAD_ROLE":"cos","FLYWHEEL_LEAD_RULES_BUNDLE":"legacy","FLYWHEEL_LEAD_MODEL":"claude-fable-5","FLYWHEEL_LEAD_EFFORT":"max","FLYWHEEL_TEST_PLIST_ONLY":"preserved"},"unknown":{"keep":true}}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"launchEnvironment":{"DISCORD_STATE_DIR":"$TMP/discord-state","FLYWHEEL_WRAPPER_ENV_FILE":"$TMP/body.env","FLYWHEEL_LEAD_ROLE":"cos","FLYWHEEL_LEAD_RULES_BUNDLE":"legacy","FLYWHEEL_LEAD_MODEL":"claude-fable-5","FLYWHEEL_LEAD_EFFORT":"max","FLYWHEEL_TEST_PLIST_ONLY":"preserved","USER":"manifest-user","LOGNAME":"manifest-logname"},"unknown":{"keep":true}}
 JSON
 mkdir -p "$TMP/custom-workspace"
 
@@ -136,7 +138,10 @@ cat >> "$TMP/body.env" <<'ENV'
 FLYWHEEL_LEAD_ROLE=lead
 FLYWHEEL_LEAD_RULES_BUNDLE=bundle
 ENV
+os_user="$(/usr/bin/id -un)"
 if HOME="$TMP/home" \
+  USER=untrusted-user \
+  LOGNAME=untrusted-logname \
   PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
   FLYWHEEL_DIR="$ROOT" \
@@ -150,14 +155,74 @@ if HOME="$TMP/home" \
   && grep -qF 'FLYWHEEL_TEST_PLIST_ONLY=preserved' "$TMP/server.env" \
   && grep -qF "DISCORD_STATE_DIR=$TMP/discord-state" "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
+  && grep -qF "USER=$os_user" "$TMP/server.env" \
+  && grep -qF "LOGNAME=$os_user" "$TMP/server.env" \
+  && ! grep -qF 'USER=untrusted-user' "$TMP/server.env" \
+  && ! grep -qF 'LOGNAME=untrusted-logname' "$TMP/server.env" \
+  && ! grep -qF 'USER=manifest-user' "$TMP/server.env" \
+  && ! grep -qF 'LOGNAME=manifest-logname' "$TMP/server.env" \
   && ! grep -qF 'TEAMLEAD_API_TOKEN=bridge-secret' "$TMP/server.env"; then
-  pass "wrapper expands launchd's minimal PATH and preserves the plist environment"
+  pass "wrapper preserves required launch identity without trusting inherited names"
 else
   fail "wrapper plist environment projection"
   cat "$TMP/wrapper.out" 2>/dev/null || true
   cat "$TMP/server.env" 2>/dev/null || true
 fi
 rm -f "$TMP/home/.local/bin/tmux"
+
+# The Claude child crosses a second env -i boundary inside claude-lead.sh.
+# Its structured dry-run plan is the authoritative projection consumed by both
+# the v1 tmux path and the v2 direct-child path. The v2 path must carry the OS
+# identity through that boundary and must not emit the legacy manifest writer's
+# jq warning when it intentionally delegates manifest ownership to the wrapper.
+projects_json="$(<"$TMP/home/.flywheel/projects.json")"
+child_plan="$({
+  env -i \
+    HOME="$TMP/home" \
+    PATH="$PATH" \
+    USER=untrusted-user \
+    LOGNAME=untrusted-logname \
+    FLYWHEEL_LEAD_DRY_RUN=1 \
+    FLYWHEEL_LEAD_BODY_V2=1 \
+    FLYWHEEL_LEAD_CARRIER=v2 \
+    FLYWHEEL_PROJECTS="$projects_json" \
+    DISCORD_BOT_TOKEN=fixture-token \
+    bash "$ROOT/packages/teamlead/scripts/claude-lead.sh" \
+      ops-lead "$TMP/project" demo
+} 2>&1)" || true
+if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$child_plan" \
+    && ! grep -qF 'WARNING: jq not found. Manifest not written' <<<"$child_plan"; then
+  pass "Claude child keeps OS login identity and v2 skips the legacy manifest warning"
+else
+  fail "Claude child identity/warning contract"
+  printf '%s\n' "$child_plan"
+fi
+
+v1_plan="$({
+  env -i \
+    HOME="$TMP/home" \
+    PATH="$PATH" \
+    USER=untrusted-user \
+    LOGNAME=untrusted-logname \
+    FLYWHEEL_LEAD_DRY_RUN=1 \
+    FLYWHEEL_PROJECTS="$projects_json" \
+    DISCORD_BOT_TOKEN=fixture-token \
+    bash "$ROOT/packages/teamlead/scripts/claude-lead.sh" \
+      ops-lead "$TMP/project" demo
+} 2>&1)" || true
+v1_env_keys="$(sed -n $'s/^PANE_ENV\\t\\([^\\t]*\\)\\t.*$/\\1/p' <<<"$v1_plan" | LC_ALL=C sort -u)"
+v2_env_keys="$(sed -n $'s/^PANE_ENV\\t\\([^\\t]*\\)\\t.*$/\\1/p' <<<"$child_plan" | LC_ALL=C sort -u)"
+v1_only="$(comm -23 <(printf '%s\n' "$v1_env_keys") <(printf '%s\n' "$v2_env_keys"))"
+v2_only="$(comm -13 <(printf '%s\n' "$v1_env_keys") <(printf '%s\n' "$v2_env_keys"))"
+if [ -z "$v1_only" ] \
+    && [ "$v2_only" = FLYWHEEL_LEAD_CARRIER ] \
+    && grep -qF $'PANE_ENV\tUSER\tset' <<<"$v1_plan" \
+    && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$v1_plan"; then
+  pass "v1/v2 Claude child env keys match except the v2 carrier marker"
+else
+  fail "v1/v2 Claude child env characterization: v1_only=[$v1_only] v2_only=[$v2_only]"
+fi
 
 cat > "$TMP/unsafe-manifest.json" <<JSON
 {"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"../demo","botTokenEnv":"OPS_TOKEN"}
