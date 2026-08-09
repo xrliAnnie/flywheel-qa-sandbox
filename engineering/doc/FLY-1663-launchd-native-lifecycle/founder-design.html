@@ -143,7 +143,7 @@
       <li>cmux 侧边栏每个 Lead 还是一行，名字不变；点开 = 直连它的私有终端（带自动重连：Lead 重启后你打开的那一页不会变成死窗口，这条写进了验收）。</li>
       <li>Lead 行的来源从「扫终端窗口」改成「读 launchd 名册」——launchd 配置本身就是权威名单。</li>
       <li>你也可以在任何终端一条命令直接看某个 Lead，比现在更直接。</li>
-      <li>Runner 的显示机制原样不动（Runner 不在本单范围）。</li>
+      <li><strong>Runner 窗口怎么办（今晚你亲历的问题）</strong>：今晚 FLY-1663 的 runner 明明在跑、你却在 cmux 里看不到它 40 分钟——病灶正是这套镜像机器又卡死了。判定：它和 Lead 侧是<strong>同一种病</strong>（都是「多窗挤一个会话」的补偿物）。本单先把 Lead 摘出来（机器负担减半以上），Runner 侧机制暂不动；<strong>整台退役走后续单</strong>：把 Runner 也改成和 Lead 同形的「一人一间、直连」，这台机器就没东西可镜像、自然消失。不并进本单是为了不把两场迁移绑在一个窗口里（不做大爆炸）。过渡期它再坏，用已有的运维恢复命令修，不再打补丁。</li>
     </ul>
     <div class="cbox"><label>留言（可选）</label><textarea data-sec-key="s6" placeholder="对这一节有什么想法…"></textarea></div>
   </div>

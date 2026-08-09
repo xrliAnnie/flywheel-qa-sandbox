@@ -207,6 +207,17 @@ LeadAddress = {
 
 **排序硬约束（R1）**：PR-C 在任何生产 Lead cutover 之前完成并验收，Phase 2/3 依赖新显示层。
 
+### 4.1 Runner 窗口与 watcher/ledger 机器的判定（r5.1 addendum，Tadashi 指令 + 活体实证 2026-08-08）
+
+**活体证据**：本单进行当晚，FLY-1663 的 runner 本体正常运行，却在 cmux 隐身 40 分钟——`flywheel-cmux-sync --watch` 的 linked-view ledger 机器每轮在 `prepare_linked_view_state` pre 阶段失败（WAL 残留隔离后仍卡，疑 keeper inventory escrow 会话 snapshot 读回失败）→ refresh 永久 skipped → 新 runner workspace 永不自动创建，founder 亲历「看不到 1663 的 session」。
+
+**判定（目标形态下 Lead / Runner 可见性分开回答）**：
+
+1. **Lead**：§4 名册驱动直连。view-session / link-window / WAL / keeper / escrow **这台机器对 Lead 零参与**（保留的只有 §4 收缩版 workspace ownership 收据，那是 cmux 行的账，不是 tmux 镜像机器）。
+2. **Runner**：本单机制不动（仍是 `runner-<project>` 多窗 session + view-session + ledger）。但这台 ledger/keeper/escrow 机器被本 design **判定为同病器官**：它是"多窗共享 session、多 client 抢当前窗"的补偿物，病理与 Lead 侧完全同构——今晚的 wedge 就是第 N 例（前有 FLY-1578/1596）。
+3. **整台退役的路径 = 后续单把 Runner 迁到与 Lead 同形**：每 runner 一个 session（或 socket）+ 直连 + roster 驱动行——TmuxAdapter 建 per-runner session 而非 per-project 多窗 session，view 机器随之无物可镜像、整台退役。**不并入本单**：全舰 Lead 迁移已是本单血量上限，把两场迁移绑进一个窗口违反"不做大爆炸"红线。
+4. **本单的间接收益与诚实边界**：Lead 退出后这台机器的负载与爆炸半径显著缩小（view/ledger 行减半以上），但 runner 行的 wedge 类故障在后续单落地前仍可能复发——按宪法**不再给它打补丁**，坏了走 FLY-1596 已落地的 `--verify-sidebar` / `--rebuild-views` 运维路径恢复。
+
 ## 5. 必答 4：防双 body
 
 1. **launchd 单 label 单实例**（OS）：同 label 同 GUI domain 只有一个 job 进程。
@@ -343,6 +354,7 @@ lease 不只在写路径。退役顺序：**先抽出通用函数 →  逐消费
 | FLY-1651（已 Cancel） | 遗产吸收：installer+断言堵漂移；死亡留痕 = launchd runs + 日志 |
 | FLY-1655 self-ship | 独立单，设计语言对齐（§10），文件零交集 |
 | FLY-1659 / 1657 / 1649 等补丁族 | 机制整体退役，不再投入补丁 |
+| cmux runner view/ledger 机器 | 判定同病器官（§4.1）；整台退役走后续单（Runner per-session 直连迁移），本单不并入 |
 
 ## 14. 实施切分（founder 批准后）
 
