@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 3/5
-updated: 2026-08-09T09:59:23.226Z
-nextStep: Run FLY-1663 suites and full repository gates
+phaseCursor: 4/5
+updated: 2026-08-09T10:20:56.702Z
+nextStep: Commit, push PR 794, and request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (3/5)
-**next**: Run FLY-1663 suites and full repository gates
+**phase**: implement (4/5)
+**next**: Commit, push PR 794, and request code review
