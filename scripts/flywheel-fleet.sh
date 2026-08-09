@@ -36,7 +36,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # keeps fleet and daemon classification logic from drifting.
 export FLYWHEEL_DAEMON_SOURCED=1
 # shellcheck disable=SC1091
-source "${SCRIPT_DIR}/flywheel-daemon.sh"
+if ! source "${SCRIPT_DIR}/flywheel-daemon.sh"; then
+  echo "[fleet] ERROR: daemon helpers failed to load; refusing to continue with a partial control plane" >&2
+  if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 1; else exit 1; fi
+fi
 set +e  # daemon's set -e must not make fleet's probe negatives fatal
 
 # FLY-247 inc2a: batch-mode libs (config-write flock, write-ahead journal, and
@@ -491,16 +494,16 @@ manifest_projection_sha() {
     echo "__absent-or-invalid__"
     return
   fi
-  # FLY-671: effort is launch-affecting (it flows to the plist → `--effort`), so
-  # it MUST participate in the rollback CAS projection — otherwise a manifest-only
-  # effort edit would be invisible to the CAS and a stale restore could clobber it
-  # (Codex design review R2 BLOCKER-5).
+  # Every launch-affecting manifest field must participate in rollback CAS.
+  # launchEnvironment is the v2 body's explicit process contract; omitting it
+  # would make a v1 self-write that deletes the field invisible to recovery.
   jq -S -c '{leadId: (.leadId // null), projectName: (.projectName // null),
              projectDir: (.projectDir // null), subdir: (.subdir // null),
              workspace: (.workspace // null), botTokenEnv: (.botTokenEnv // null),
              mcpExclude: (.mcpExclude // null), chromeEnabled: (.chromeEnabled // null),
              model: (.model // null), effort: (.effort // null),
-             leadBackend: (.leadBackend // null)}' \
+             leadBackend: (.leadBackend // null),
+             launchEnvironment: (.launchEnvironment // null)}' \
     "$manifest" 2>/dev/null | shasum -a 256 | awk '{print $1}'
 }
 

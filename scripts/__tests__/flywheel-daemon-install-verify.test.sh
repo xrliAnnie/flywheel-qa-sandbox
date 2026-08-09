@@ -155,7 +155,7 @@ reset_txn() {
   echo '[{"projectName":"geo"}]' > "$HOME/.flywheel/projects.json"
   jq -n --argjson pid "$RESET_OLD_PID" \
     '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",pid:$pid}' > "$CANON_MANIFEST"
-  generate_plist "$KEY" "$CANON_MANIFEST" >/dev/null
+  generate_plist "$KEY" "$CANON_MANIFEST" v1 >/dev/null
   local cfg_sha m_sha p_sha
   cfg_sha=$(file_sha "$HOME/.flywheel/projects.json")
   m_sha=$(file_sha "$CANON_MANIFEST")

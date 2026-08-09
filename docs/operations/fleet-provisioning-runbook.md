@@ -83,7 +83,9 @@ engine and reports `not-installed/no-carrier` on a clean host). Instead:
    1. Run `claude-lead.sh` once (foreground/manual) to **generate that Lead's
       manifest**, then stop that manual process.
    2. `flywheel-daemon.sh install <lead>` — generate the plist + bootstrap from
-      the now-existing manifest.
+      the now-existing manifest. This resolves the Lead's declared `carrier`
+      from `projects.json` and fails closed if the identity is missing or
+      ambiguous; it must never silently rewrite a v2 Lead onto the v1 wrapper.
    (This mirrors the setup-new-project.sh cutover checklist.)
 4. Verify: `flywheel-daemon.sh status` — expect all leads loaded.
 

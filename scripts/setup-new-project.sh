@@ -391,9 +391,11 @@ manage Runners and do NOT produce deliverables — you route work to the dept Le
 - #leads-roundtable: cross-dept, mention-gated only
 
 ## Role
-- \`canSpawnRunners: false\`. The launchd plist MUST set \`FLYWHEEL_LEAD_ROLE=cos\`
-  or the CoS base rules (cos-lead-rules.md) will NOT load and you'd be treated as
-  a dept Lead.
+- \`canSpawnRunners: false\`. The launch environment MUST set
+  \`FLYWHEEL_LEAD_ROLE=cos\` or the CoS base rules (cos-lead-rules.md) will NOT
+  load and you'd be treated as a dept Lead. On carrier v2, persist this through
+  the fleet transaction's manifest \`launchEnvironment\`; never hand-edit only
+  the plist.
 - **Triage → present to the founder → wait for explicit confirmation → apply the
   dept routing label → route to the dept Lead** via \`/api/chat-threads/send\`
   (issue thread, not a top-level Discord post). Label-before-route is your job
@@ -441,8 +443,11 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     memoryAllowedUsers (memory validation is fail-closed).
  6. Run claude-lead.sh once per Lead to generate + validate the manifest,
     then stop that manual process.
- 7. Install/reload the launchd plist per Lead. The CoS plist MUST set
-    FLYWHEEL_LEAD_ROLE=cos (verify: launchctl print … | grep FLYWHEEL_LEAD_ROLE).
+ 7. Install/reload the launchd plist per Lead. For carrier v2, use
+    flywheel-fleet.sh apply --lead <project-lead> --carrier v2 --yes so the
+    manifest launchEnvironment and plist are updated together; never hand-edit
+    the plist. The CoS launch environment MUST set FLYWHEEL_LEAD_ROLE=cos.
+    Verify both the manifest launchEnvironment and launchctl print output.
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
  9. Verify: bots online + reply in their channels + a real founder chat.
 10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into

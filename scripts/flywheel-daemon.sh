@@ -37,6 +37,7 @@ fi
 
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+PROJECTS_JSON="${FLYWHEEL_STATE_DIR}/projects.json"
 MANIFEST_DIR="${FLYWHEEL_STATE_DIR}/manifests"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
 FLYWHEEL_BIN="${FLYWHEEL_STATE_DIR}/bin"
@@ -435,17 +436,68 @@ EOF
   mv "$tmp" "$output_path"
 }
 
-# Legacy entry point (byte-compat shim): same signature/behavior as the
-# pre-FLY-247 generate_plist — reads model from AND embeds the same canonical
-# manifest path, writes to the canonical plist location.
+# Resolve the routine install carrier from the same exact project/Lead identity
+# that fleet cutover persists. A missing carrier is the explicit mixed-fleet v1
+# default; missing/ambiguous identities and invalid values fail closed. Routine
+# `install --all` must never infer v1 from the helper's argument default after a
+# Lead has been cut over to v2.
+resolve_manifest_carrier() {
+  local manifest_path="$1"
+  [ -f "$PROJECTS_JSON" ] || {
+    log "ERROR: projects config not found: ${PROJECTS_JSON}; refusing to infer Lead carrier"
+    return 1
+  }
+  jq empty "$PROJECTS_JSON" >/dev/null 2>&1 || {
+    log "ERROR: projects config is invalid: ${PROJECTS_JSON}; refusing to infer Lead carrier"
+    return 1
+  }
+
+  local project lead_id
+  project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest_path" 2>/dev/null)" || {
+    log "ERROR: manifest projectName is missing or invalid: ${manifest_path}"
+    return 1
+  }
+  lead_id="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest_path" 2>/dev/null)" || {
+    log "ERROR: manifest leadId is missing or invalid: ${manifest_path}"
+    return 1
+  }
+
+  local carrier
+  carrier="$(jq -er --arg project "$project" --arg lead "$lead_id" '
+    [
+      .[] |
+      select(.projectName == $project) |
+      (.leads // [])[] |
+      select(.agentId == $lead)
+    ] |
+    if length == 1
+    then (.[0].carrier // "v1")
+    else error("project lead identity is missing or ambiguous")
+    end |
+    select(. == "v1" or . == "v2")
+  ' "$PROJECTS_JSON" 2>/dev/null)" || {
+    log "ERROR: projects config has no unique v1/v2 carrier for ${project}/${lead_id}; refusing install"
+    return 1
+  }
+  printf '%s\n' "$carrier"
+}
+
+# Routine entry point: reads model from AND embeds the same canonical manifest
+# path, writes to the canonical plist location, and derives the authoritative
+# carrier from projects.json unless a test/transaction passes it explicitly.
 generate_plist() {
   local daemon_key="$1"
   local manifest_path="$2"
+  local carrier="${3:-}"
   local plist
   plist=$(plist_path "$daemon_key")
 
+  if [ -z "$carrier" ]; then
+    carrier="$(resolve_manifest_carrier "$manifest_path")" || return 1
+  fi
+
   mkdir -p "$PLIST_DIR"
-  generate_plist_to "$daemon_key" "$manifest_path" "$manifest_path" "$plist" || return 1
+  generate_plist_to "$daemon_key" "$manifest_path" "$manifest_path" "$plist" "$carrier" || return 1
 
   log "Plist generated: ${plist}"
 }

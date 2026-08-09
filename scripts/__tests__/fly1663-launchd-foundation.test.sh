@@ -98,6 +98,49 @@ else
   fail "C1 plist did not select versioned wrappers"
 fi
 
+# The routine daemon install path must derive the carrier from projects.json.
+# Otherwise `install --all` can silently rewrite every migrated v2 Lead back
+# to the v1 wrapper while projects.json still declares v2.
+jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead",carrier:"v2"}]}' \
+  | jq -s '.' > "$FLYWHEEL_STATE_DIR/projects.json"
+generate_plist "flywheel-eng-lead" "$manifest" >/dev/null
+installed_plist="$(plist_path "flywheel-eng-lead")"
+if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$installed_plist"; then
+  pass "C1b routine plist generation preserves the projects.json v2 carrier"
+else
+  fail "C1b routine plist generation silently reverted v2 to the v1 wrapper"
+fi
+
+launchctl_state="$SANDBOX/launchctl-state"
+launchctl_calls="$SANDBOX/launchctl-calls"
+launchctl_stub="$SANDBOX/launchctl-stub"
+cat > "$launchctl_stub" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_LAUNCHCTL_CALLS"
+case "$1" in
+  print)
+    [ -f "$FLY1663_LAUNCHCTL_STATE" ] || exit 1
+    echo '    pid = 4242'
+    ;;
+  bootstrap) touch "$FLY1663_LAUNCHCTL_STATE" ;;
+  bootout) rm -f "$FLY1663_LAUNCHCTL_STATE" ;;
+esac
+STUB
+chmod +x "$launchctl_stub"
+export FLY1663_LAUNCHCTL_STATE="$launchctl_state"
+export FLY1663_LAUNCHCTL_CALLS="$launchctl_calls"
+LAUNCHCTL="$launchctl_stub"
+rm -f "$installed_plist" "$launchctl_state" "$launchctl_calls"
+sleep() { :; }
+install_one_manifest "$manifest" >/dev/null
+unset -f sleep
+if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$installed_plist" \
+  && grep -q '^bootstrap ' "$launchctl_calls"; then
+  pass "C1c daemon install bootstraps the projects.json-declared v2 carrier"
+else
+  fail "C1c daemon install did not preserve the declared v2 carrier"
+fi
+
 if ! generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$SANDBOX/bad.plist" "bespoke" >/dev/null 2>&1; then
   pass "C2 unknown carrier fails closed"
 else
@@ -130,6 +173,46 @@ if grep -qxF "$relocated_state/projects.json" <<<"$fleet_paths" \
   pass "C3b fleet and daemon share the relocated state root"
 else
   fail "C3b split state-root paths: $fleet_paths"
+fi
+
+invalid_home="$SANDBOX/invalid-host-home"
+mkdir -p "$invalid_home/.flywheel"
+printf '{not-json\n' > "$invalid_home/.flywheel/host.json"
+if invalid_source_out="$(
+    env -u FLYWHEEL_STATE_DIR -u FLYWHEEL_DIR \
+      HOME="$invalid_home" FLYWHEEL_FLEET_SOURCED=1 \
+      bash -c 'source "$1"' _ "$REPO_ROOT/scripts/flywheel-fleet.sh" 2>&1
+  )"; then
+  invalid_source_rc=0
+else
+  invalid_source_rc=$?
+fi
+if [ "$invalid_source_rc" -ne 0 ] \
+  && grep -qF 'daemon helpers failed to load' <<<"$invalid_source_out" \
+  && ! grep -qF 'command not found' <<<"$invalid_source_out"; then
+  pass "C3c fleet fails once and clearly when daemon host config is invalid"
+else
+  fail "C3c invalid host config left a partial daemon source: rc=$invalid_source_rc $invalid_source_out"
+fi
+
+manifest_without_env="$SANDBOX/manifest-without-env.json"
+manifest_with_env="$SANDBOX/manifest-with-env.json"
+jq 'del(.launchEnvironment)' "$manifest" > "$manifest_without_env"
+jq '.launchEnvironment = {FLYWHEEL_LEAD_ROLE:"cos"}' "$manifest" > "$manifest_with_env"
+projection_without_env="$(
+  FLYWHEEL_FLEET_SOURCED=1 bash -c \
+    'source "$1"; manifest_projection_sha "$2"' \
+    _ "$REPO_ROOT/scripts/flywheel-fleet.sh" "$manifest_without_env"
+)"
+projection_with_env="$(
+  FLYWHEEL_FLEET_SOURCED=1 bash -c \
+    'source "$1"; manifest_projection_sha "$2"' \
+    _ "$REPO_ROOT/scripts/flywheel-fleet.sh" "$manifest_with_env"
+)"
+if [ "$projection_without_env" != "$projection_with_env" ]; then
+  pass "C3d rollback CAS includes the launch environment"
+else
+  fail "C3d launchEnvironment mutation was invisible to rollback CAS"
 fi
 
 # restart-services must recognize v2 authority and use only launchd's native
