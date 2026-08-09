@@ -1,13 +1,13 @@
 ---
 issue: FLY-1663
 phase: implement
-phaseCursor: 5/5
-updated: 2026-08-09T10:31:14.051Z
-nextStep: Independent QA retest on PR 794
+phaseCursor: 1/5
+updated: 2026-08-09T12:03:45.101Z
+nextStep: add RED regressions for shell isolation and verify budget; repair CI fixtures
 chunks: []
 pointers: {}
 ---
 
 # FLY-1663 progress
-**phase**: implement (5/5)
-**next**: Independent QA retest on PR 794
+**phase**: implement (1/5)
+**next**: add RED regressions for shell isolation and verify budget; repair CI fixtures
