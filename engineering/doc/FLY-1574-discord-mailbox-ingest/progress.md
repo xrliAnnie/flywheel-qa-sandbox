@@ -1,14 +1,13 @@
 ---
 issue: FLY-1574
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-10T19:43:31.687Z
-nextStep: implement atomic Discord lane arbitration, renderer, partition key,
-  and live flag reader
+phaseCursor: 2/6
+updated: 2026-08-10T20:06:45.902Z
+nextStep: Implement canonical Discord plugin write-ahead ingest intent and live cutover
 chunks: []
 pointers: {}
 ---
 
 # FLY-1574 progress
-**phase**: implement (1/6)
-**next**: implement atomic Discord lane arbitration, renderer, partition key, and live flag reader
+**phase**: implement (2/6)
+**next**: Implement canonical Discord plugin write-ahead ingest intent and live cutover
