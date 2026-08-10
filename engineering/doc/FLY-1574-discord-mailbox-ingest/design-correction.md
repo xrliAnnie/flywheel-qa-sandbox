@@ -2,7 +2,7 @@
 
 Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-批次2-discord-收编不再直推统一走-mailbox)
 日期: 2026-08-10
-基于: plan.md(R7,implementation-node cross-family review 修订)
+基于: plan.md(R8,implementation-node cross-family review 修订)
 
 ## 触发
 
@@ -20,6 +20,6 @@ Lead 指令 `[lead-instruction 71b5bf84-69ac-4640-9d15-0ad9d86a2227]`,转达 fou
 
 ## 不变项
 
-- founder 的 ship-enabled 结论不动;implementation-node 复审发现的 route 保真、headless socket、Discord 静默 DEAD、OFF mutex 逃生与双 runtime socket ownership 问题已在 plan R7 修正,以 R7 为技术权威;
+- founder 的 ship-enabled 结论不动;implementation-node 复审发现的 route 保真、headless socket、Discord 静默 DEAD、OFF mutex 逃生、双 runtime socket ownership、lock-unavailable 与 poison-row claim wedge 问题已在 plan R8 修正,以 R8 为技术权威;
 - OFF 作为回滚手段的可用性与测试(哨兵)不动;
 - flag 删除仍归全家族清理单。
