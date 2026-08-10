@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 1/5
-updated: 2026-08-10T04:45:38.072Z
-nextStep: refresh sandbox-notes.md sections 1-4
+phaseCursor: 4/5
+updated: 2026-08-10T04:46:30.828Z
+nextStep: commit + open PR against sandbox main
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (1/5)
-**next**: refresh sandbox-notes.md sections 1-4
+**phase**: implement (4/5)
+**next**: commit + open PR against sandbox main
