@@ -66,6 +66,7 @@ FLY-202-design.html
 design.md
 plan.md
 progress.md
+workflow-output.json
 
 doc/architecture:
 archive
@@ -95,5 +96,4 @@ doc/engineer/deep-research:
 002-decision-layer-chatgpt.md
 003-stripe-minions-part1.md
 004-stripe-minions-part2.md
-005-cloudflare-code-mode.md
 ```
