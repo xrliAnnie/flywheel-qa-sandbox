@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -186,6 +186,7 @@ describe("credential-backed qa-result delivery", () => {
 		vi.stubEnv("FLYWHEEL_BRIDGE_URL", "http://127.0.0.1:9876");
 		vi.stubEnv("FLYWHEEL_INGEST_TOKEN", "fleet-secret");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL", "");
+		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED", "");
 		const fetchMock = vi.fn().mockImplementation(
 			async () =>
 				new Response(JSON.stringify({ ok: true }), {
@@ -209,11 +210,15 @@ describe("credential-backed qa-result delivery", () => {
 		expect(init.headers.Authorization).toBe("Bearer fleet-secret");
 	});
 
-	it("failure marker is opaque: digest + retry identity, never event body or credential", () => {
+	it("failure marker preserves the recoverable verdict but never the credential", () => {
 		const marker = buildQaResultFailureMarker({
 			execId: "qa-1",
 			requestId: "request-1",
-			body: { credential: "do-not-persist", summary: "private report" },
+			body: {
+				credential: "do-not-persist",
+				status: "fail",
+				summary: "blocking regression reproduced",
+			},
 			lastError: "Bridge returned 503",
 			timestamp: "2026-07-14T00:00:00.000Z",
 		});
@@ -221,10 +226,26 @@ describe("credential-backed qa-result delivery", () => {
 			execution_id: "qa-1",
 			client_request_id: "request-1",
 			error: "Bridge returned 503",
+			status: "fail",
+			summary: "blocking regression reproduced",
 			body_digest: expect.stringMatching(/^[0-9a-f]{64}$/),
 		});
 		expect(JSON.stringify(marker)).not.toContain("do-not-persist");
-		expect(JSON.stringify(marker)).not.toContain("private report");
+	});
+
+	it("extracts the verdict from the legacy /events payload shape", () => {
+		const marker = buildQaResultFailureMarker({
+			execId: "qa-2",
+			requestId: "request-2",
+			body: {
+				payload: { status: "pass", summary: "full chain verified" },
+			},
+			lastError: "Bridge returned 503",
+		});
+		expect(marker).toMatchObject({
+			status: "pass",
+			summary: "full chain verified",
+		});
 	});
 });
 
@@ -351,7 +372,9 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 	});
 
 	it("fails immediately on a deterministic reason and accepts the legacy error field", async () => {
+		const home = mkdtempSync(join(tmpdir(), "fly1655-qa-marker-"));
 		stubBaseEnv();
+		vi.stubEnv("HOME", home);
 		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED", "1");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL", "scoped-secret");
 		const fetchMock = vi.fn().mockImplementation(
@@ -372,6 +395,19 @@ describe("FLY-1425 qa-result fail-loud contract", () => {
 		).rejects.toThrow("exit:1");
 		expect(exit).toHaveBeenCalledWith(1);
 		expect(fetchMock).toHaveBeenCalledOnce();
+		const markerPath = join(
+			home,
+			".flywheel",
+			"state",
+			"qa-result-failed",
+			"qa-engine.json",
+		);
+		expect(statSync(markerPath).mode & 0o777).toBe(0o600);
+		expect(JSON.parse(readFileSync(markerPath, "utf8"))).toMatchObject({
+			status: "pass",
+		});
+		expect(readFileSync(markerPath, "utf8")).not.toContain("scoped-secret");
+		rmSync(home, { recursive: true, force: true });
 	});
 
 	it("explains replay_payload_mismatch without claiming the current verdict landed", async () => {

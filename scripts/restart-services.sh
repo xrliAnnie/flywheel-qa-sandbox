@@ -47,6 +47,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 # shellcheck source=lib/restart-cmux-watcher.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
+# shellcheck source=lib/deploy-build-identity.sh
+source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/supervisor.sh
 source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
@@ -810,6 +812,7 @@ restart_bridge=false
 restart_all_leads=false
 need_install=false
 SKIP_BUILD=false
+BRIDGE_HEALTH_JSON=""
 
 # ════════════════════════════════════════════════════════════════
 # Mutual exclusion lock
@@ -1004,6 +1007,17 @@ fi
 
 if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" && "$need_install" == "false" ]]; then
     SKIP_BUILD=true
+fi
+
+# Built artifacts carry an immutable build SHA. Metadata never re-labels old
+# bytes as new: a built deployment may skip only when the artifact was produced
+# from this exact intended checkout. Source mode requires an explicit override.
+BRIDGE_DEPLOY_MODE="${FLYWHEEL_BRIDGE_DEPLOY_MODE:-built}"
+BRIDGE_ARTIFACT_SHA="$(jq -r '.artifactBuildSha // empty' \
+    "${FLYWHEEL_DIR}/packages/teamlead/dist/build-identity.json" 2>/dev/null || true)"
+if ! dbi_skip_build_allowed "$BRIDGE_DEPLOY_MODE" "$CURRENT_HEAD" "$BRIDGE_ARTIFACT_SHA"; then
+    SKIP_BUILD=false
+    log "Build identity requires rebuild (mode=${BRIDGE_DEPLOY_MODE} artifact=${BRIDGE_ARTIFACT_SHA:-missing})"
 fi
 
 # FLY-1434: the only restart scope is full fleet.
@@ -1877,10 +1891,12 @@ deploy_and_verify() {
         # a fast boot still passes in seconds; only a genuinely dead Bridge
         # waits the full window before rolling back.
         local hc_tries="${FLYWHEEL_BRIDGE_HEALTH_TRIES:-450}"   # ×2s = 15 min default
-        local hc_ok=false
+        local hc_ok=false health_json=""
         for i in $(seq 1 "$hc_tries"); do
-            if curl -sf "$BRIDGE_URL/health" | jq -e '.ok' > /dev/null 2>&1; then
+            if health_json="$(curl -sf "$BRIDGE_URL/health")" \
+                && jq -e '.ok' <<<"$health_json" > /dev/null 2>&1; then
                 hc_ok=true
+                BRIDGE_HEALTH_JSON="$health_json"
                 break
             fi
             if (( i % 15 == 0 )); then
@@ -1903,6 +1919,20 @@ deploy_and_verify() {
         fi
         log "Bridge health check: OK"
         resume_admission_best_effort
+        if ! dbi_accept_health_identity "$FLYWHEEL_DIR" "$CURRENT_HEAD" "$BRIDGE_HEALTH_JSON" "$BRIDGE_DEPLOY_MODE"; then
+            local identity_marker="${HOME}/.flywheel/state/deploy-build-identity-${CURRENT_HEAD}"
+            log "ERROR: Bridge build identity rejected (${DBI_REASON}); deployed-sha NOT advanced."
+            if [[ ! -f "$identity_marker" ]]; then
+                alert_warning "deploy-build-identity-${CURRENT_HEAD}" \
+                    "Flywheel build identity mismatch" \
+                    "Bridge 健康但运行身份未证明包含 intended ${CURRENT_HEAD:0:7} (${DBI_REASON})。deployed-sha 未推进；请重建并重试。"
+                mkdir -p "$(dirname "$identity_marker")" 2>/dev/null || true
+                : > "$identity_marker" 2>/dev/null || true
+            fi
+            RESTART_TERMINAL_REPORTED=true
+            return 1
+        fi
+        rm -f "${HOME}/.flywheel/state/deploy-build-identity-${CURRENT_HEAD}"
     fi
 
     # Step 4: Restart Leads (after Bridge is confirmed healthy)

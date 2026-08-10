@@ -58,12 +58,6 @@
     textarea{width:100%;min-height:76px;padding:12px 14px;border:1px solid #c7c7cc;border-radius:12px;background:#fff;color:#1d1d1f;resize:vertical}
     textarea:focus{outline:none;border-color:#0071e3;box-shadow:0 0 0 4px rgba(0,113,227,.13)}
     .decision{border-color:#cbdffc;background:linear-gradient(150deg,#fff 0%,#f2f7ff 100%)}
-    .choice-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
-    .choice{display:flex;align-items:flex-start;gap:12px;padding:17px;border:1px solid #d2d2d7;border-radius:15px;background:#fff;cursor:pointer}
-    .choice:has(input:checked){border-color:#0071e3;box-shadow:0 0 0 3px rgba(0,113,227,.12)}
-    .choice input{width:20px;height:20px;margin:2px 0 0;accent-color:#0071e3}
-    .choice strong,.choice small{display:block}
-    .choice small{margin-top:3px;color:#6e6e73}
     .export{margin-top:18px;padding:18px;border-radius:16px;background:#1d1d1f;color:#fff}
     .export-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
     .primary{border:0;border-radius:999px;padding:11px 18px;background:#0a84ff;color:#fff;font-weight:720;cursor:pointer}
@@ -71,7 +65,7 @@
     .status{font-size:13px;color:#d1e7ff}
     #feedback-output{margin-top:14px;min-height:150px;border-color:#424245;background:#2c2c2e;color:#f5f5f7;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
     .footer{padding:24px 4px;color:#86868b;font-size:12px;text-align:center}
-    @media(max-width:760px){.page{width:min(100% - 20px,1120px);padding-top:10px}.hero,.report-section{padding:22px;border-radius:18px}.meta,.grid,.metrics,.evidence,.choice-row{grid-template-columns:1fr}h1{font-size:39px}}
+    @media(max-width:760px){.page{width:min(100% - 20px,1120px);padding-top:10px}.hero,.report-section{padding:22px;border-radius:18px}.meta,.grid,.metrics,.evidence{grid-template-columns:1fr}h1{font-size:39px}}
     @media print{body{background:#fff}.page{width:100%;padding:0}.hero,.report-section{break-inside:avoid;box-shadow:none}.comment-box,.export{display:none}}
   </style>
 </head>
@@ -230,26 +224,16 @@
   </section>
 
   <section class="report-section decision" data-section="decision">
-    <p class="section-kicker">07 · 你的决定</p>
-    <h2>是否 ship？</h2>
-    <p class="lead">勾选后点“复制决定”，再把文本贴回这个 issue thread。Lead 会收到明确的区域评论和 ship / 不 ship 信号。</p>
-    <div class="choice-row" role="radiogroup" aria-label="Ship verdict">
-      <label class="choice">
-        <input type="radio" name="ship-verdict" value="yes">
-        <span><strong>Ship</strong><small>证据够了，同意进入 ship。</small></span>
-      </label>
-      <label class="choice">
-        <input type="radio" name="ship-verdict" value="no">
-        <span><strong>不 Ship</strong><small>按下面评论打回重修。</small></span>
-      </label>
-    </div>
+    <p class="section-kicker">07 · 批准入口</p>
+    <h2>请只在 ship 卡片上决定</h2>
+    <p class="lead">系统仅认 founder 在 ship 卡片上的 ✅ reaction，或 founder 在该卡片 thread 内的直接回复。本报告只收集逐区评论，不承载 ship 批准。</p>
     <div class="comment-box">
       <label for="comment-decision">裁决说明（可选）</label>
-      <textarea id="comment-decision" data-k="verdict-note" data-name="裁决说明" placeholder="例如：先补完诚实边界里的真机测试再回来。"></textarea>
+      <textarea id="comment-decision" data-k="feedback-note" data-name="补充说明" placeholder="例如：先补完诚实边界里的真机测试再回来。"></textarea>
     </div>
     <div class="export">
       <div class="export-actions">
-        <button class="primary" id="copy-feedback" type="button">复制决定与逐区评论</button>
+        <button class="primary" id="copy-feedback" type="button">复制逐区评论</button>
         <span class="status" id="copy-status" role="status" aria-live="polite">内容会自动保存在这份报告的专属路径下。</span>
       </div>
       <label for="feedback-output" style="display:block;margin-top:14px;font-size:12px">可复制文本预览（剪贴板失败时可手动复制）</label>
@@ -265,7 +249,6 @@
   const issue = document.querySelector('meta[name="ship-report-issue"]')?.content || "UNKNOWN";
   const storageKey = "flywheel:ship-report:" + location.pathname;
   const fields = Array.from(document.querySelectorAll("textarea[data-k]"));
-  const verdicts = Array.from(document.querySelectorAll('input[name="ship-verdict"]'));
   const output = document.getElementById("feedback-output");
   const status = document.getElementById("copy-status");
 
@@ -276,17 +259,15 @@
   function save() {
     const comments = {};
     fields.forEach((field) => { comments[field.dataset.k] = field.value; });
-    const verdict = verdicts.find((input) => input.checked)?.value || "undecided";
-    try { localStorage.setItem(storageKey, JSON.stringify({ verdict, comments })); }
+    try { localStorage.setItem(storageKey, JSON.stringify({ comments })); }
     catch { /* The export still works when storage is unavailable. */ }
     render();
   }
   function payload() {
-    const verdict = verdicts.find((input) => input.checked)?.value || "undecided";
     const lines = [
-      "SHIP-VERDICT: " + verdict,
       "ISSUE: " + issue,
       "REPORT: " + location.href,
+      "SHIP DECISION: use the bound ship card only",
       ""
     ];
     fields.forEach((field) => {
@@ -302,10 +283,6 @@
   fields.forEach((field) => {
     field.value = saved.comments?.[field.dataset.k] || "";
     field.addEventListener("input", save);
-  });
-  verdicts.forEach((input) => {
-    input.checked = saved.verdict === input.value;
-    input.addEventListener("change", save);
   });
   document.getElementById("copy-feedback").addEventListener("click", async () => {
     const text = payload();

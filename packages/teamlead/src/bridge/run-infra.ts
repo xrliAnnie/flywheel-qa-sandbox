@@ -57,6 +57,8 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	type StateStore,
 } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
@@ -634,16 +636,27 @@ export function createRunInfraWorkflowClaimsAdmission(
 		admit: (input) => {
 			const run = store.getActiveWorkflowRun(input.projectName, input.issueId);
 			if (!run) throw new Error("active workflow run not found");
-			const now = Date.now();
+			const now = new Date();
+			const credentialWindow = run.snapshot
+				? credentialWindowForNode(
+						parseWorkflowRunSnapshot(run.snapshot),
+						input.node,
+						now,
+					)
+				: {
+						expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
+						absoluteDeadlineAt: new Date(
+							now.getTime() + 2 * 60 * 60_000,
+						).toISOString(),
+					};
 			const admitted = store.admitWorkflowExecution({
 				runId: run.run_id,
 				nodeId: input.node,
 				executionId: input.executionId,
 				attempt: input.attempt,
 				family: "qa_verdict",
-				now: new Date(now).toISOString(),
-				expiresAt: new Date(now + 30 * 60_000).toISOString(),
-				absoluteDeadlineAt: new Date(now + 2 * 60 * 60_000).toISOString(),
+				now: now.toISOString(),
+				...credentialWindow,
 			});
 			if (!admitted.ok) throw new Error(admitted.reason);
 			return { credential: admitted.credential };

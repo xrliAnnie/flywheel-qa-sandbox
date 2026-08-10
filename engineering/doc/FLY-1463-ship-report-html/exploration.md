@@ -4,6 +4,8 @@ Issue: FLY-1463 (https://linear.app/geoforge3d/issue/FLY-1463/机制founder-可�
 日期: 2026-07-24
 基于: 无
 
+> **2026-08-09 更正:** 本文保留当时的取证，但其 HTML 内 ship / 不 ship 裁决及 `SHIP-VERDICT` 回传指引已废止。现行批准只认 ship 卡片上的 founder ✅ reaction 或卡片 thread 内 founder 直接回复。
+
 ## 1. 问题(Annie 直令 2026-07-24)
 
 design 阶段有设计 HTML,但 **ship gate 冒出来时没有一份"总账"**。Annie 每次要拍板 ship/不 ship,都得在 thread 里追着 Lead 问:这个怎么修的?QA 怎么测的?有没有 e2e?——今天一上午就是活证明。她要的是:**gate 冒出来的同一时刻,手里就有一份一页看清全貌、能直接在页面上拍板的 interactive HTML**。

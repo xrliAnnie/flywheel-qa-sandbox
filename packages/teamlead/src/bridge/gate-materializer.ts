@@ -88,7 +88,7 @@ export async function materializeWorkflowGateHolder(
 	const run = deps.store.getWorkflowRun(holder.run_id);
 	if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
 	const now = deps.now ?? (() => new Date().toISOString());
-	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.`;
+	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.`;
 
 	if (
 		STAGE_ORDER[holder.materialization_stage] < STAGE_ORDER.question_written

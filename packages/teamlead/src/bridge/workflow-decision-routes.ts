@@ -319,7 +319,24 @@ export function createWorkflowDecisionRouter(
 						approveQuestionId,
 					);
 				if (!binding || binding.superseded_at) {
-					throw new Error("ship_target_binding_unavailable");
+					const authorityMode = holder?.authority_mode ?? "legacy_runner_ship";
+					const required =
+						authorityMode === "runner_ship" ||
+						authorityMode === "legacy_runner_ship";
+					res.status(409).json({
+						ok: false,
+						reason: "ship_target_binding_unavailable",
+						binding: {
+							required,
+							reason: binding?.superseded_at
+								? "binding_superseded"
+								: required
+									? `${authorityMode}_binding_missing`
+									: `not_required_for_${authorityMode}_authority`,
+							authorityMode,
+						},
+					});
+					return;
 				}
 				if (holder) {
 					if (

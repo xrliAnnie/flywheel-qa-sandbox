@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
@@ -5,7 +6,10 @@ import {
 import { describe, expect, it } from "vitest";
 import { makeGateAuthorityView } from "../bridge/approval-signal/gate-authority-view.js";
 import { StateStore } from "../StateStore.js";
-import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
+import {
+	buildWorkflowRunSnapshotV1,
+	buildWorkflowRunSnapshotV2,
+} from "../workflow-run-snapshot.js";
 
 const HEAD = "a".repeat(40);
 const WORKFLOW_ON = {
@@ -14,6 +18,7 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 };
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 function landSnapshot(): string {
 	return JSON.stringify(
@@ -97,6 +102,51 @@ function landSnapshot(): string {
 				},
 				terminal_node: { node: "land" },
 				ship_claims: ["qa_passed", "founder_approved"],
+			},
+		}),
+	);
+}
+
+function claimlessLandSnapshot(): string {
+	return JSON.stringify(
+		buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_claimless_land", revision: 1 },
+			canonicalRoot: REPO_ROOT,
+			manifest: {
+				schema_version: 2,
+				nodes: [
+					{
+						id: "craft",
+						type: "generic",
+						role: "generic",
+						vendor: "claude",
+						model: "claude-opus-5",
+						effort: "xhigh",
+					},
+					{ id: "decision", type: "gate" },
+					{ id: "publish", type: "land", execution: "engine" },
+				],
+				edges: [
+					{
+						id: "crafted",
+						from: "craft",
+						to: "decision",
+						condition: "node_done",
+					},
+					{
+						id: "approved",
+						from: "decision",
+						to: "publish",
+						condition: "founder_approved",
+					},
+				],
+				loops: [],
+				approval_gate: {
+					node: "decision",
+					predicate: "founder_approved",
+				},
+				terminal_node: { node: "publish" },
+				ship_claims: ["founder_approved"],
 			},
 		}),
 	);
@@ -260,6 +310,118 @@ function activateFounderRework(
 }
 
 describe("StateStore land lifecycle ledger", () => {
+	it("opens a claimless land gate only when completion head has one current PR binding", async () => {
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-claimless",
+			issueId: "FLY-1655",
+			projectName: "flywheel",
+			snapshotJson: claimlessLandSnapshot(),
+			claimsReadEnrolled: true,
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET engine_owned = 1, gate_carrier_epoch = 1, current_node_id = 'craft' WHERE run_id = 'run-claimless'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-claimless",
+			nodeId: "craft",
+			attempt: 1,
+			state: "running",
+			executionId: "craft-exec",
+		});
+
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "run-claimless",
+				nodeId: "craft",
+				attempt: 1,
+				executionId: "craft-exec",
+				outcome: "node_done",
+				subjectDigest: HEAD,
+				now: "2026-08-09T18:00:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "land_head_unavailable" });
+		expect(store.getWorkflowRun("run-claimless")).toMatchObject({
+			current_node_id: "craft",
+			status: "active",
+		});
+		expect(store.getWorkflowRunNode("run-claimless", "craft", 1)).toMatchObject(
+			{ state: "running" },
+		);
+		expect(
+			store.getCurrentWorkflowGateHolder("run-claimless", "decision"),
+		).toBe(undefined);
+
+		bindPr(store, {
+			runId: "run-claimless",
+			nodeId: "craft",
+			attempt: 1,
+			head: HEAD,
+			receiptId: "run-claimless:craft:1",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "run-claimless",
+				nodeId: "craft",
+				attempt: 1,
+				executionId: "craft-exec",
+				outcome: "node_done",
+				subjectDigest: HEAD,
+				now: "2026-08-09T18:01:00.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			gateOpened: true,
+			targetNodeId: "decision",
+		});
+		const holder = store.getCurrentWorkflowGateHolder(
+			"run-claimless",
+			"decision",
+		)!;
+		expect(holder).toMatchObject({
+			authority_mode: "land",
+			subject_kind: "git_head",
+			head_sha: HEAD,
+		});
+		store.advanceWorkflowGateHolderMaterialization({
+			questionId: holder.question_id,
+			stage: "card_bound",
+			cardMessageId: "claimless-card",
+			now: "2026-08-09T18:02:00.000Z",
+		});
+		const sourcePayload = {
+			schema_version: 1,
+			run_id: "run-claimless",
+			issue_id: "FLY-1655",
+			question_id: holder.question_id,
+			response: { approved: true },
+			actor: "founder",
+			approved_head: HEAD,
+			classification: "founder_reaction",
+			authority_id: holder.question_id,
+		};
+		store.applyWorkflowSourceEvent({
+			project: "flywheel",
+			sourceEventId: `founder-approval:${holder.question_id}`,
+			kind: "founder_approval",
+			payloadJson: canonicalJsonString(sourcePayload),
+			payloadDigest: canonicalSubmissionDigest(sourcePayload),
+			schemaVersion: 1,
+		});
+		expect(store.getWorkflowRun("run-claimless")).toMatchObject({
+			status: "active",
+			current_node_id: "publish",
+		});
+		expect(
+			store.getWorkflowRunNode("run-claimless", "publish", 1),
+		).toMatchObject({ state: "pending" });
+		store.close();
+	});
+
 	it("creates the deterministic gate holder in the same QA-pass transition", async () => {
 		const store = await StateStore.create(":memory:");
 		store.createWorkflowRun({

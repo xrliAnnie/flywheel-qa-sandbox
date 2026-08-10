@@ -3,6 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	getModelRegistryEntry,
+	getNodeTypeRegistryEntry,
 	WORKFLOW_MENU_SHAPES,
 	type WorkflowMenuShapeId,
 	workflowMenuTemplateId,
@@ -219,8 +220,8 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 		nodeIds.add(node.id);
 	}
 	const gates = nodes.filter((node) => node.type === "gate");
-	if (gates.length !== 1 || gates[0]!.id !== "founder_gate") {
-		throw new Error(`${source} must contain exactly one founder_gate`);
+	if (gates.length !== 1) {
+		throw new Error(`${source} must contain exactly one gate`);
 	}
 	if (!Array.isArray(raw.edges))
 		throw new Error(`${source}.edges must be an array`);
@@ -333,25 +334,52 @@ function resolveAlias(alias: string): {
 export function compileWorkflowMenuSeed(
 	menu: WorkflowMenuShape,
 ): LoadedWorkflowSeed {
+	const approvalGate = menu.nodes.find((node) => node.type === "gate")!;
+	const hasPrProducer = menu.nodes.some(
+		(node) =>
+			node.type !== "gate" &&
+			getNodeTypeRegistryEntry(nodeType(node)).capabilities.creates_pr,
+	);
+	let terminalNode = "land";
+	while (menu.nodes.some((node) => node.id === terminalNode)) {
+		terminalNode = `${terminalNode}_`;
+	}
 	const manifest = validateWorkflowManifest({
 		schema_version: 2,
-		nodes: menu.nodes.map((node) => {
-			const type = nodeType(node);
-			if (type === "gate") return { id: node.id, type };
-			const defaultPolicy = node.models!.find(
-				(model) => model.model === node.defaultModel,
-			)!;
-			const resolved = resolveAlias(defaultPolicy.model);
-			return {
-				id: node.id,
-				type,
-				role: node.role,
-				vendor: resolved.vendor,
-				model: resolved.model,
-				effort: defaultPolicy.defaultEffort,
-			};
-		}),
-		edges: menu.edges,
+		nodes: [
+			...menu.nodes.map((node) => {
+				const type = nodeType(node);
+				if (type === "gate") return { id: node.id, type };
+				const defaultPolicy = node.models!.find(
+					(model) => model.model === node.defaultModel,
+				)!;
+				const resolved = resolveAlias(defaultPolicy.model);
+				return {
+					id: node.id,
+					type,
+					role: node.role,
+					vendor: resolved.vendor,
+					model: resolved.model,
+					effort: defaultPolicy.defaultEffort,
+				};
+			}),
+			...(hasPrProducer
+				? [{ id: terminalNode, type: "land", execution: "engine" }]
+				: []),
+		],
+		edges: [
+			...menu.edges,
+			...(hasPrProducer
+				? [
+						{
+							id: `${approvalGate.id}_approved`,
+							from: approvalGate.id,
+							to: terminalNode,
+							condition: "founder_approved",
+						},
+					]
+				: []),
+		],
 		loops: menu.loops.map((loop) => ({
 			id: loop.id,
 			from: loop.from,
@@ -361,10 +389,20 @@ export function compileWorkflowMenuSeed(
 			max_iterations: loop.maxIterations,
 			on_limit: loop.onLimit,
 		})),
-		terminal_gate: {
-			node: "founder_gate",
-			predicate: "founder_approved",
-		},
+		...(hasPrProducer
+			? {
+					approval_gate: {
+						node: approvalGate.id,
+						predicate: "founder_approved",
+					},
+					terminal_node: { node: terminalNode },
+				}
+			: {
+					terminal_gate: {
+						node: approvalGate.id,
+						predicate: "founder_approved",
+					},
+				}),
 		ship_claims:
 			menu.shape === "code"
 				? ["qa_passed", "founder_approved"]

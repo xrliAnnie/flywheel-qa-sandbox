@@ -21,12 +21,30 @@ const enabled = {
 };
 
 const roots: string[] = [];
+const HELD_LAND_ACTOR_HEAD = "b".repeat(40);
 
 afterEach(() => {
 	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
 	}
 });
+
+function bindActorHead(
+	store: StateStore,
+	executionId: string,
+	nodeId: string,
+	head: string,
+	issueId = "FLY-1423",
+) {
+	store.upsertSession({
+		execution_id: executionId,
+		issue_id: issueId,
+		project_name: "flywheel",
+		status: "completed",
+		workflow_node_id: nodeId,
+	});
+	store.patchSessionMetadata(executionId, { pr_head_sha: head });
+}
 
 function createEngineRun(store: StateStore, runId = "run-rework") {
 	const root = mkdtempSync(join(tmpdir(), "fly1423-rework-"));
@@ -143,6 +161,122 @@ async function createHeavyEngineRun(dbPath = ":memory:"): Promise<StateStore> {
 		state: "running",
 		executionId: "design-exec",
 	});
+	return store;
+}
+
+async function createHeldTerminalLandRun(
+	error: "pr_head_mismatch" | "merge_failed",
+): Promise<StateStore> {
+	const store = await StateStore.create(":memory:");
+	const root = mkdtempSync(join(tmpdir(), "fly1655-land-rework-"));
+	roots.push(root);
+	mkdirSync(join(root, "agents"));
+	writeFileSync(join(root, "agents", "generic.md"), "Execute safely.\n");
+	const snapshot = buildWorkflowRunSnapshotV2({
+		template: { id: "tpl-land-rework", revision: 1 },
+		canonicalRoot: root,
+		manifest: {
+			schema_version: 2,
+			nodes: [
+				{
+					id: "craft",
+					type: "generic",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "low",
+					agent_file: "agents/generic.md",
+				},
+				{ id: "decision", type: "gate" },
+				{ id: "publish", type: "land", execution: "engine" },
+			],
+			edges: [
+				{
+					id: "crafted",
+					from: "craft",
+					to: "decision",
+					condition: "node_done",
+				},
+				{
+					id: "approved",
+					from: "decision",
+					to: "publish",
+					condition: "founder_approved",
+				},
+			],
+			loops: [],
+			approval_gate: {
+				node: "decision",
+				predicate: "founder_approved",
+			},
+			terminal_node: { node: "publish" },
+			ship_claims: ["founder_approved"],
+		},
+	});
+	store.createWorkflowRun({
+		runId: "run-held-land",
+		issueId: "FLY-1655",
+		projectName: "flywheel",
+		snapshotJson: JSON.stringify(snapshot),
+		claimsReadEnrolled: true,
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-held-land",
+		nodeId: "craft",
+		attempt: 1,
+		state: "done",
+		executionId: "craft-exec",
+		endedAt: "2026-08-10T06:11:54.000Z",
+	});
+	bindActorHead(store, "craft-exec", "craft", HELD_LAND_ACTOR_HEAD, "FLY-1655");
+	store.upsertWorkflowRunNode({
+		runId: "run-held-land",
+		nodeId: "publish",
+		attempt: 1,
+		state: "pending",
+		executionId: "publish-exec",
+	});
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'publish' WHERE run_id = 'run-held-land'",
+	);
+	const operation = store.ensureLandOperation({
+		runId: "run-held-land",
+		issueId: "FLY-1655",
+		projectName: "flywheel",
+		prNumber: 795,
+		approvedHead: "a".repeat(40),
+		now: "2026-08-10T06:20:26.000Z",
+	});
+	const claim = store.claimLandOperation({
+		operationId: operation.operation_id,
+		ownerId: "land-worker",
+		now: "2026-08-10T06:20:27.000Z",
+		leaseExpiresAt: "2026-08-10T06:21:27.000Z",
+	});
+	if (!claim) throw new Error("land operation not claimed");
+	store.setLandOperationDisposition({
+		operationId: operation.operation_id,
+		ownerId: claim.ownerId,
+		generation: claim.generation,
+		state: "held",
+		error,
+		now: "2026-08-10T06:20:28.000Z",
+	});
+	expect(
+		store.holdWorkflowLandNode({
+			runId: "run-held-land",
+			nodeId: "publish",
+			attempt: 1,
+			executionId: "publish-exec",
+			operationId: operation.operation_id,
+			reason: error,
+			now: "2026-08-10T06:20:29.000Z",
+		}),
+	).toEqual({ ok: true, idempotentReplay: false });
 	return store;
 }
 
@@ -553,6 +687,11 @@ describe("FLY-1423 durable unified rework request", () => {
 				evidence,
 				now: "2026-07-23T00:10:00.000Z",
 			};
+			expect(store.openOperatorRework(input)).toEqual({
+				ok: false,
+				reason: "base_revision_unavailable",
+			});
+			bindActorHead(store, "implement-exec", "implement", "b".repeat(40));
 
 			const opened = store.openOperatorRework(input);
 
@@ -592,6 +731,76 @@ describe("FLY-1423 durable unified rework request", () => {
 				...opened,
 				idempotentReplay: true,
 			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("reopens only an engine-owned terminal land hold caused by PR head mismatch", async () => {
+		const store = await createHeldTerminalLandRun("pr_head_mismatch");
+		try {
+			const opened = store.openOperatorRework({
+				runId: "run-held-land",
+				targetNodeId: "craft",
+				feedback: "adopt and verify the current PR head",
+				clientRequestId: "operator-land-head-mismatch",
+				principal: "master",
+				evidence: store
+					.listRunAttributedExecutions("run-held-land")
+					.map((executionId) => ({
+						executionId,
+						sessionStatus: null,
+						lifecycleRevision: null,
+						liveness: "dead" as const,
+						observedAt: "2026-08-10T06:21:00.000Z",
+					})),
+				now: "2026-08-10T06:21:00.000Z",
+			});
+
+			expect(opened).toMatchObject({
+				ok: true,
+				targetNodeId: "craft",
+				targetAttempt: 2,
+				preferredActorExecutionId: "craft-exec",
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			const request = store.getWorkflowReworkRequest(opened.requestId);
+			expect(request?.base_revision).toBe(HELD_LAND_ACTOR_HEAD);
+			expect(request?.base_revision).not.toBe(
+				JSON.parse(store.getWorkflowRun("run-held-land")!.snapshot!)
+					.snapshot_digest,
+			);
+			expect(store.getWorkflowRun("run-held-land")).toMatchObject({
+				status: "active",
+				current_node_id: "craft",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps other terminal land hold reasons non-reworkable", async () => {
+		const store = await createHeldTerminalLandRun("merge_failed");
+		try {
+			expect(
+				store.openOperatorRework({
+					runId: "run-held-land",
+					targetNodeId: "craft",
+					feedback: "retry an unrelated land failure",
+					clientRequestId: "operator-land-merge-failed",
+					principal: "master",
+					evidence: store
+						.listRunAttributedExecutions("run-held-land")
+						.map((executionId) => ({
+							executionId,
+							sessionStatus: null,
+							lifecycleRevision: null,
+							liveness: "dead" as const,
+							observedAt: "2026-08-10T06:21:00.000Z",
+						})),
+					now: "2026-08-10T06:21:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "run_not_reworkable" });
 		} finally {
 			store.close();
 		}
@@ -1209,16 +1418,20 @@ describe("FLY-1423 durable unified rework request", () => {
 					now,
 				});
 			}
+			bindActorHead(store, "implement-exec", "implement", "a".repeat(40));
 
 			const evidence = store
 				.listRunAttributedExecutions("run-heavy")
-				.map((executionId) => ({
-					executionId,
-					sessionStatus: null,
-					lifecycleRevision: null,
-					liveness: "dead" as const,
-					observedAt: "2026-07-23T00:26:30.000Z",
-				}));
+				.map((executionId) => {
+					const session = store.getSession(executionId);
+					return {
+						executionId,
+						sessionStatus: session?.status ?? null,
+						lifecycleRevision: session?.lifecycle_revision ?? null,
+						liveness: "dead" as const,
+						observedAt: "2026-07-23T00:26:30.000Z",
+					};
+				});
 			const reopened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",

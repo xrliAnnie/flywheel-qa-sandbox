@@ -6,7 +6,10 @@ import type {
 	StateStore,
 } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import { isWorkflowManifestV1Land } from "../workflow-template.js";
+import {
+	isWorkflowManifestLand,
+	workflowApprovalGate,
+} from "../workflow-template.js";
 import { computeAuthoritativeShipDecision } from "./merge-ship-gate.js";
 
 const execFileAsync = promisify(execFile);
@@ -137,12 +140,12 @@ async function authorizeLandOperation(
 	} catch {
 		return { ok: false, reason: "snapshot_invalid" };
 	}
-	if (!isWorkflowManifestV1Land(snapshot.manifest)) {
+	if (!isWorkflowManifestLand(snapshot.manifest)) {
 		return { ok: false, reason: "land_manifest_required" };
 	}
 	const holder = store.getCurrentWorkflowGateHolder(
 		operation.run_id,
-		snapshot.manifest.approval_gate.node,
+		workflowApprovalGate(snapshot.manifest).node,
 	);
 	if (!holder || holder.state !== "approved") {
 		return {

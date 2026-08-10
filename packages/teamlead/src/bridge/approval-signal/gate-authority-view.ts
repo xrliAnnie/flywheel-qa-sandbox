@@ -6,8 +6,9 @@ import {
 	type WorkflowGateSubjectKind,
 } from "../../workflow-run-snapshot.js";
 import {
-	isWorkflowManifestV1Land,
+	isWorkflowManifestLand,
 	workflowApprovalGate,
+	workflowTerminalNode,
 } from "../../workflow-template.js";
 
 export interface EngineGateAuthority {
@@ -36,7 +37,7 @@ export interface GateAuthorityView {
 
 /**
  * Engine-only approval authority. Both engine ownership and the pinned
- * land_v1 snapshot are required; a question shape alone can never opt into
+ * land snapshot are required; a question shape alone can never opt into
  * this path. Legacy session authority remains outside this adapter.
  */
 export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
@@ -65,7 +66,7 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 		const subjectKind = holder.subject_kind ?? "git_head";
 		if (
 			(holder.authority_mode == null &&
-				!isWorkflowManifestV1Land(snapshot.manifest)) ||
+				!isWorkflowManifestLand(snapshot.manifest)) ||
 			derived.mode !== authorityMode ||
 			derived.subjectKind !== subjectKind ||
 			(holder.authority_mode === "runner_ship" &&
@@ -78,8 +79,8 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 		const expectedCurrentNode =
 			holder.state === "approved" &&
 			authorityMode === "land" &&
-			isWorkflowManifestV1Land(snapshot.manifest)
-				? snapshot.manifest.terminal_node.node
+			isWorkflowManifestLand(snapshot.manifest)
+				? workflowTerminalNode(snapshot.manifest)
 				: holder.gate_node_id;
 		if (run.current_node_id !== expectedCurrentNode) return undefined;
 		const source = store.getSession(holder.source_execution_id);

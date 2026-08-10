@@ -64,7 +64,7 @@ The page must include:
 1. **How it was fixed:** explain before → root cause → fix → result. Author several Mermaid diagrams (at least root-cause, changed path, and data flow), then pre-render them with `/opt/homebrew/bin/mmdc` and embed the output as **inline SVG**. If mmdc is unavailable, embed compressed PNGs; if both fail, keep the textual flow and publish rather than silently omitting the report.
 2. **QA evidence:** exact unit/integration counts, real-machine validation, and the verified head. For Discord-capable work, include the clickable **529 thread link** plus an embedded 529 GIF when it fits; otherwise embed compressed keyframes and always retain the link.
 3. **Honest boundary (`honest boundary`):** say what was not tested, why, the risk, and when it will be covered.
-4. **Founder feedback:** preserve the comment box under every region, the Ship / 不 Ship choice, localStorage, and the structured `SHIP-VERDICT` copy-export. The founder pastes that export into the same issue thread so the Lead receives the verdict and section-keyed comments.
+4. **Founder feedback:** preserve the comment box under every region, localStorage, and the section-keyed comment export. The report is not an approval surface: the founder decides only by reacting ✅ on the ship card or replying directly in that card's thread.
 
 Before publishing, self-check:
 

@@ -400,6 +400,7 @@ export class TerminalReceiptSettlementProjector {
 				intent.issue_id,
 			]);
 			const receiptIds = db.listReceiptRootsForExecution(intent.execution_id);
+			const receiptQuestionIds = new Map<string, string>();
 			for (const receiptId of receiptIds) {
 				const lineage = db.getReceiptSettlementLineage(receiptId);
 				if (
@@ -409,25 +410,39 @@ export class TerminalReceiptSettlementProjector {
 				) {
 					throw new Error(`receipt lineage mismatch for ${receiptId}`);
 				}
+				receiptQuestionIds.set(receiptId, lineage.questionId);
 			}
 
-			const shipSettledReceiptIds = new Set<string>();
+			const handledShipReceiptIds = new Set<string>();
 			for (const question of db.getPendingGatesByRunner(intent.execution_id)) {
 				if (question.checkpoint !== "approve_to_ship") continue;
+				if (
+					this.options.store.workflowGatePresentationDisposition({
+						executionId: intent.execution_id,
+						checkpoint: question.checkpoint,
+						questionId: question.id,
+					}).reason === "holder_authoritative"
+				) {
+					for (const [receiptId, questionId] of receiptQuestionIds) {
+						if (questionId === question.id)
+							handledShipReceiptIds.add(receiptId);
+					}
+					continue;
+				}
 				const result = db.supersedeShipGateAndReceiptFamily({
 					questionId: question.id,
 					reason: "superseded_session_terminal",
 					now: new Date((this.options.now ?? Date.now)()).toISOString(),
 				});
 				for (const receiptId of result.receiptIds) {
-					shipSettledReceiptIds.add(receiptId);
+					handledShipReceiptIds.add(receiptId);
 				}
 			}
 
 			const nowMs = (this.options.now ?? Date.now)();
 			const now = new Date(nowMs).toISOString();
 			for (const receiptId of receiptIds) {
-				if (shipSettledReceiptIds.has(receiptId)) continue;
+				if (handledShipReceiptIds.has(receiptId)) continue;
 				db.settleReceiptFamilyForTerminalSubject({
 					receiptId,
 					expectedExecutionId: intent.execution_id,

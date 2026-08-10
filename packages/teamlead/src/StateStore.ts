@@ -71,12 +71,13 @@ import {
 import {
 	applyWorkflowOverride,
 	isGeneralizedTemplatesEnabled,
-	isWorkflowManifestV1Land,
+	isWorkflowManifestLand,
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
 	type WorkflowTemplateOverride,
 	workflowApprovalGate,
 	workflowSeedContentHash,
+	workflowTerminalNode,
 } from "./workflow-template.js";
 import {
 	isLandNodeEnabled,
@@ -1470,6 +1471,20 @@ export class StateStore {
 				"expires_at",
 				"permanent",
 			],
+			workflow_submission_credential: [
+				"id",
+				"activation_id",
+				"credential_hash",
+				"run_id",
+				"node_id",
+				"execution_id",
+				"attempt",
+				"family",
+				"expires_at",
+				"absolute_deadline_at",
+				"permanent",
+				"revoked",
+			],
 			workflow_claim_revocation: ["claim_id"],
 			workflow_ship_target_binding: [
 				"approve_question_id",
@@ -1884,6 +1899,22 @@ export class StateStore {
 		}
 	}
 
+	private migrateWorkflowSubmissionCredentialPermanent(): void {
+		if (
+			this.workflowTableColumns("workflow_submission_credential").has(
+				"permanent",
+			)
+		) {
+			return;
+		}
+		this.db.run(
+			"ALTER TABLE workflow_submission_credential ADD COLUMN permanent INTEGER NOT NULL DEFAULT 0",
+		);
+		this.db.run(
+			"UPDATE workflow_submission_credential SET permanent = 1 WHERE family = 'qa_verdict'",
+		);
+	}
+
 	private createWorkflowActorAndActivationTables(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_actor (
@@ -1918,6 +1949,11 @@ export class StateStore {
 				)
 				.get()
 		) {
+			const permanent = this.workflowTableColumns(
+				"workflow_submission_credential",
+			).has("permanent")
+				? "c.permanent"
+				: "CASE WHEN c.family = 'qa_verdict' THEN 1 ELSE 0 END";
 			this.db.raw.exec(`
 				DROP INDEX IF EXISTS ux_workflow_submission_live;
 				CREATE TABLE workflow_submission_credential_next (
@@ -1933,6 +1969,7 @@ export class StateStore {
 					issued_at TEXT NOT NULL,
 					expires_at TEXT NOT NULL,
 					absolute_deadline_at TEXT NOT NULL,
+					permanent INTEGER NOT NULL DEFAULT 0,
 					consumed_at TEXT,
 					consumed_client_request_id TEXT,
 					consumed_submission_digest TEXT,
@@ -1946,11 +1983,11 @@ export class StateStore {
 				INSERT INTO workflow_submission_credential_next
 					(id, activation_id, credential_hash, run_id, node_id, execution_id,
 					 attempt, family, decision_capability_id, issued_at, expires_at,
-					 absolute_deadline_at, consumed_at, consumed_client_request_id,
+					 absolute_deadline_at, permanent, consumed_at, consumed_client_request_id,
 					 consumed_submission_digest, claim_id, revoked, revoked_reason)
 				SELECT c.id, b.activation_id, c.credential_hash, c.run_id, c.node_id,
 				       c.execution_id, c.attempt, c.family, c.decision_capability_id,
-				       c.issued_at, c.expires_at, c.absolute_deadline_at, c.consumed_at,
+				       c.issued_at, c.expires_at, c.absolute_deadline_at, ${permanent}, c.consumed_at,
 				       c.consumed_client_request_id, c.consumed_submission_digest,
 				       c.claim_id, c.revoked, c.revoked_reason
 				  FROM workflow_submission_credential c
@@ -4705,6 +4742,12 @@ export class StateStore {
 			isOperationalTerminalStatus(previousStatus);
 		const isOperationalTerminal = isOperationalTerminalStatus(nextStatus);
 		if (isOperationalTerminal && !wasOperationalTerminal) {
+			this.db.run(
+				`UPDATE workflow_submission_credential
+				    SET revoked = 1, revoked_reason = ?
+				  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+				[`session_terminal:${nextStatus}`, executionId],
+			);
 			this.db.run(
 				`UPDATE sessions
 				    SET terminal_lifecycle_id = COALESCE(terminal_lifecycle_id, ?)
@@ -15919,6 +15962,7 @@ export class StateStore {
 				issued_at TEXT NOT NULL,
 				expires_at TEXT NOT NULL,
 				absolute_deadline_at TEXT NOT NULL,
+				permanent INTEGER NOT NULL DEFAULT 0,
 				consumed_at TEXT,
 				consumed_client_request_id TEXT,
 				consumed_submission_digest TEXT,
@@ -15931,6 +15975,7 @@ export class StateStore {
 				FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
 			)
 		`);
+		this.migrateWorkflowSubmissionCredentialPermanent();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_submission_live
 			ON workflow_submission_credential(run_id, node_id, attempt)
@@ -17327,7 +17372,7 @@ export class StateStore {
 			? applyWorkflowOverride(base, input.override)
 			: { manifest: base, override: undefined };
 		if (
-			isWorkflowManifestV1Land(applied.manifest) &&
+			isWorkflowManifestLand(applied.manifest) &&
 			!isLandNodeEnabled(input.env ?? process.env)
 		) {
 			throw new Error("land workflow node is disabled by flag");
@@ -17361,7 +17406,7 @@ export class StateStore {
 									},
 								}
 							: {}),
-					})
+				})
 				: undefined;
 		const engineSnapshot =
 			applied.manifest.schema_version === 1 && input.startReservation
@@ -19557,8 +19602,8 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
 				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
-				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    issued_at, expires_at, absolute_deadline_at, permanent)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					context.binding.activation_id,
 					hashCapabilityToken(submissionCredential),
@@ -19570,6 +19615,7 @@ export class StateStore {
 					input.now,
 					expiry.expiresAt,
 					expiry.absoluteDeadlineAt,
+					family === "qa_verdict" ? 1 : 0,
 				],
 			);
 			this.appendWorkflowRunEventTx({
@@ -19685,8 +19731,8 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
 				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
-				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    issued_at, expires_at, absolute_deadline_at, permanent)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					context.binding.activation_id,
 					hashCapabilityToken(submissionCredential),
@@ -19698,6 +19744,7 @@ export class StateStore {
 					input.now,
 					expiry.expiresAt,
 					expiry.absoluteDeadlineAt,
+					family === "qa_verdict" ? 1 : 0,
 				],
 			);
 			this.appendWorkflowRunEventTx({
@@ -20122,8 +20169,8 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO workflow_submission_credential
 				   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
-				    issued_at, expires_at, absolute_deadline_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				    issued_at, expires_at, absolute_deadline_at, permanent)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				[
 					`activation:${input.executionId}:${input.runId}:${input.nodeId}:${input.attempt}`,
 					credentialHash,
@@ -20135,6 +20182,7 @@ export class StateStore {
 					nowIso,
 					input.expiresAt,
 					input.absoluteDeadlineAt,
+					input.family === "qa_verdict" ? 1 : 0,
 				],
 			);
 			const credentialRow = this.workflowSelectAll(
@@ -22239,8 +22287,8 @@ export class StateStore {
 				this.db.run(
 					`INSERT INTO workflow_submission_credential
 					   (activation_id, credential_hash, run_id, node_id, execution_id, attempt, family,
-					    issued_at, expires_at, absolute_deadline_at)
-					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					    issued_at, expires_at, absolute_deadline_at, permanent)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 					[
 						activationId,
 						hashCapabilityToken(submissionCredential),
@@ -22252,6 +22300,7 @@ export class StateStore {
 						now,
 						input.expiresAt,
 						input.absoluteDeadlineAt,
+						decisionFamily === "qa_verdict" ? 1 : 0,
 					],
 				);
 			}
@@ -23225,12 +23274,27 @@ export class StateStore {
 				: undefined;
 			const heldNeedsLead =
 				run?.status === "held" && needsLeadRequestId && needsLeadRoute;
+			let heldLandHeadMismatch = false;
+			if (run?.status === "held" && run.snapshot) {
+				try {
+					const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+					const land = this.getLandOperationForRun(input.runId);
+					heldLandHeadMismatch =
+						isWorkflowManifestLand(snapshot.manifest) &&
+						run.current_node_id === workflowTerminalNode(snapshot.manifest) &&
+						land?.state === "held" &&
+						land.last_error === "pr_head_mismatch";
+				} catch {
+					// Invalid snapshots remain non-reworkable below.
+				}
+			}
 			if (
 				!run?.snapshot ||
 				run.engine_owned !== 1 ||
 				(run.status !== "active" &&
 					run.status !== "completed" &&
-					!heldNeedsLead)
+					!heldNeedsLead &&
+					!heldLandHeadMismatch)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
 				return;
@@ -23377,6 +23441,13 @@ export class StateStore {
 				result = { ok: false, reason: "target_actor_history_missing" };
 				return;
 			}
+			const baseRevision = this.getSession(
+				preferredActorExecutionId,
+			)?.pr_head_sha?.trim().toLowerCase();
+			if (!baseRevision || !/^[0-9a-f]{40}$/.test(baseRevision)) {
+				result = { ok: false, reason: "base_revision_unavailable" };
+				return;
+			}
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -23469,7 +23540,7 @@ export class StateStore {
 					sourceEventId,
 					sourceNodeId,
 					sourceAttempt,
-					snapshot.snapshot_digest,
+					baseRevision,
 					authorityContextJson,
 					authorityContextDigest,
 					input.feedback.trim(),
@@ -24601,7 +24672,8 @@ export class StateStore {
 					`UPDATE ${table}
 					    SET revoked = 1, revoked_reason = 'dead_execution_rolled_back'
 					  WHERE run_id = ? AND node_id = ? AND attempt = ?
-					    AND execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					    AND execution_id = ? AND consumed_at IS NULL
+					    AND (revoked = 0 OR revoked_reason LIKE 'session_terminal:%')`,
 					[input.runId, input.nodeId, input.attempt, input.deadExecutionId],
 				);
 			}
@@ -25001,10 +25073,8 @@ export class StateStore {
 		if (!run?.snapshot) return false;
 		try {
 			const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-			return (
-				(snapshot.schema_version === 1 &&
-					isWorkflowManifestV1Land(snapshot.manifest)) ||
-				resolveWorkflowGateAuthority(snapshot).mode === "runner_ship"
+			return ["land", "runner_ship"].includes(
+				resolveWorkflowGateAuthority(snapshot).mode,
 			);
 		} catch {
 			return false;
@@ -26944,6 +27014,7 @@ export class StateStore {
 			issued_at: row.issued_at as string,
 			expires_at: row.expires_at as string,
 			absolute_deadline_at: row.absolute_deadline_at as string,
+			permanent: Number(row.permanent),
 			consumed_at: (row.consumed_at as string) ?? null,
 			consumed_client_request_id:
 				(row.consumed_client_request_id as string) ?? null,
@@ -26989,24 +27060,9 @@ export class StateStore {
 		now?: string;
 	}): WorkflowCredentialSubmissionResult {
 		const nowIso = input.now ?? new Date().toISOString();
-		if (
-			!StateStore.workflowFiniteTimestamp(nowIso) ||
-			!StateStore.workflowFiniteTimestamp(input.claimExpiresAt)
-		) {
+		if (!StateStore.workflowFiniteTimestamp(nowIso)) {
 			return { ok: false, reason: "invalid_timestamp" };
 		}
-		const digest = canonicalSubmissionDigest({
-			clientRequestId: input.clientRequestId,
-			predicate: input.predicate,
-			subjectKind: "git_head",
-			subjectDigest: input.subjectDigest,
-			issuerVendor: input.issuerVendor,
-			issuerModel: input.issuerModel,
-			subjectProducerExecutionId: input.subjectProducerExecutionId ?? null,
-			subjectProducerVendor: input.subjectProducerVendor ?? null,
-			claimExpiresAt: input.claimExpiresAt,
-			evidence: input.evidence ?? null,
-		});
 		let result: WorkflowCredentialSubmissionResult = {
 			ok: false,
 			reason: "credential_not_found",
@@ -27022,6 +27078,29 @@ export class StateStore {
 					result = { ok: false, reason: "credential_not_found" };
 					return;
 				}
+				const permanent = Number(credential.permanent) === 1;
+				if (
+					!permanent &&
+					!StateStore.workflowFiniteTimestamp(input.claimExpiresAt)
+				) {
+					result = { ok: false, reason: "invalid_timestamp" };
+					return;
+				}
+				const digest = canonicalSubmissionDigest({
+					clientRequestId: input.clientRequestId,
+					predicate: input.predicate,
+					subjectKind: "git_head",
+					subjectDigest: input.subjectDigest,
+					issuerVendor: input.issuerVendor,
+					issuerModel: input.issuerModel,
+					subjectProducerExecutionId:
+						input.subjectProducerExecutionId ?? null,
+					subjectProducerVendor: input.subjectProducerVendor ?? null,
+					...(permanent
+						? { claimLifetime: "permanent" }
+						: { claimExpiresAt: input.claimExpiresAt }),
+					evidence: input.evidence ?? null,
+				});
 				if (credential.consumed_at != null) {
 					if (
 						credential.consumed_client_request_id === input.clientRequestId &&
@@ -27047,10 +27126,11 @@ export class StateStore {
 					return;
 				}
 				if (
-					!StateStore.workflowFiniteTimestamp(
+					!permanent &&
+					(!StateStore.workflowFiniteTimestamp(
 						credential.expires_at as string,
 					) ||
-					StateStore.workflowExpired(credential.expires_at as string, nowIso)
+						StateStore.workflowExpired(credential.expires_at as string, nowIso))
 				) {
 					result = { ok: false, reason: "credential_expired" };
 					return;
@@ -27117,6 +27197,9 @@ export class StateStore {
 				// the ledger's authority chain explicit and is consumed in this txn.
 				const capabilityToken = generateCapabilityToken();
 				const capabilityHash = hashCapabilityToken(capabilityToken);
+				const capabilityExpiresAt = new Date(
+					Date.parse(nowIso) + 5 * 60_000,
+				).toISOString();
 				this.db.run(
 					`INSERT INTO workflow_decision_capability
 				   (token_hash, run_id, node_id, execution_id, attempt,
@@ -27132,8 +27215,8 @@ export class StateStore {
 						family,
 						input.subjectDigest,
 						nowIso,
-						credential.expires_at,
-						credential.absolute_deadline_at,
+						capabilityExpiresAt,
+						capabilityExpiresAt,
 					],
 				);
 				const cap = this.workflowSelectAll(
@@ -27151,7 +27234,7 @@ export class StateStore {
 				    expires_at, permanent, submission_digest, client_request_id,
 				    evidence, authority_id)
 				 VALUES (?, ?, ?, ?, ?, ?, ?, 'runner_node', ?, ?, ?, ?, ?,
-				         'git_head', ?, ?, 0, ?, ?, ?, ?)`,
+				         'git_head', ?, ?, ?, ?, ?, ?, ?)`,
 					[
 						serverSeq,
 						run.issue_id,
@@ -27166,7 +27249,8 @@ export class StateStore {
 						input.issuerModel,
 						input.subjectProducerExecutionId ?? null,
 						input.subjectDigest,
-						input.claimExpiresAt,
+						permanent ? null : input.claimExpiresAt,
+						permanent ? 1 : 0,
 						digest,
 						input.clientRequestId,
 						input.evidence === undefined
@@ -27639,9 +27723,7 @@ export class StateStore {
 					: undefined;
 			const authorityDrivenGate =
 				source?.type === "gate" &&
-				((snapshot.schema_version === 1 &&
-					"manifest_variant" in snapshot.manifest &&
-					snapshot.manifest.manifest_variant === "land_v1") ||
+				(isWorkflowManifestLand(snapshot.manifest) ||
 					(run.gate_carrier_epoch === 1 &&
 						exactGateHolder !== undefined &&
 						(input.outcome === "founder_feedback_kickback" ||
@@ -27710,11 +27792,19 @@ export class StateStore {
 					gateAuthority.mode === "runner_ship" &&
 					!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
 				) {
-					// A runner-ship gate is always bound to an immutable git head. Refuse
-					// the transition before mutating the source attempt; a missing head is
-					// a held/evidence state, never an exception that escapes as HTTP 500.
 					result = { ok: false, reason: "runner_ship_head_unavailable" };
 					return;
+				}
+				if (gateAuthority.mode === "land") {
+					const head = input.subjectDigest?.trim().toLowerCase();
+					if (
+						!head ||
+						!/^[0-9a-f]{40}$/.test(head) ||
+						!this.getCurrentWorkflowNodePrBindingForHead(input.runId, head)
+					) {
+						result = { ok: false, reason: "land_head_unavailable" };
+						return;
+					}
 				}
 			}
 			const activePathRow = this.workflowSelectAll(
@@ -28251,16 +28341,9 @@ export class StateStore {
 						alertIdentity: input.alertIdentity,
 						now,
 					});
-				} else if (
-					snapshot.schema_version === 1 &&
-					"manifest_variant" in snapshot.manifest &&
-					snapshot.manifest.manifest_variant === "land_v1"
-				) {
-					if (
-						(!activePath && source.type !== "qa") ||
-						!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
-					) {
-						throw new Error("land_gate_holder_requires_qa_head");
+					} else if (isWorkflowManifestLand(snapshot.manifest)) {
+						if (!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")) {
+							throw new Error("land_gate_holder_requires_head");
 					}
 					const head = input.subjectDigest!.toLowerCase();
 					const questionId = `workflow-gate:${canonicalSubmissionDigest({
@@ -29689,7 +29772,10 @@ export class StateStore {
 							subjectDigest: approvedHead,
 							now: new Date().toISOString(),
 						});
-						if (!transition.ok || transition.targetNodeId !== "land") {
+						if (
+							!transition.ok ||
+							transition.targetNodeId !== workflowTerminalNode(snapshot.manifest)
+						) {
 							throw new Error(
 								`founder approval source land activation failed: ${transition.ok ? "wrong_target" : transition.reason}`,
 							);
@@ -29748,7 +29834,7 @@ export class StateStore {
 						});
 					}
 				} else if (
-					isWorkflowManifestV1Land(snapshot.manifest) &&
+					isWorkflowManifestLand(snapshot.manifest) &&
 					run.current_node_id === snapshot.manifest.approval_gate.node
 				) {
 					if (
@@ -29781,7 +29867,10 @@ export class StateStore {
 						subjectDigest: approvedHead,
 						now: new Date().toISOString(),
 					});
-					if (!transition.ok || transition.targetNodeId !== "land") {
+					if (
+						!transition.ok ||
+						transition.targetNodeId !== workflowTerminalNode(snapshot.manifest)
+					) {
 						throw new Error(
 							`founder approval source land activation failed: ${transition.ok ? "wrong_target" : transition.reason}`,
 						);
@@ -29799,7 +29888,7 @@ export class StateStore {
 					});
 				} else if (
 					snapshot.schema_version === 2 &&
-					run.current_node_id === snapshot.manifest.terminal_gate.node
+					run.current_node_id === workflowApprovalGate(snapshot.manifest).node
 				) {
 					const ship = this.resolveEngineWorkflowShipClaims({
 						runId,
@@ -29809,14 +29898,14 @@ export class StateStore {
 						this.db.run(
 							`UPDATE workflow_run SET status = 'completed'
 							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
-							[runId, snapshot.manifest.terminal_gate.node],
+							[runId, workflowApprovalGate(snapshot.manifest).node],
 						);
 						if (this.db.getRowsModified() === 1) {
 							this.appendWorkflowRunEventTx({
 								runId,
 								eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
 								kind: "run_completed",
-								nodeId: snapshot.manifest.terminal_gate.node,
+								nodeId: workflowApprovalGate(snapshot.manifest).node,
 								payload: {
 									predicate: "founder_approved",
 									subjectDigest: approvedHead,
@@ -29969,10 +30058,10 @@ export class StateStore {
 		const required = input.snapshot.manifest.ship_claims.filter(
 			(predicate) => predicate !== "founder_approved",
 		);
-		if (authority.mode === "runner_ship" && required.length === 0) {
+		if (authority.mode !== "engine_terminal" && required.length === 0) {
 			const headSha = input.runnerShipHeadSha?.trim().toLowerCase();
 			if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) {
-				throw new Error("workflow_gate_runner_ship_head_unavailable");
+				throw new Error("workflow_gate_head_unavailable");
 			}
 			return {
 				subjectKind: "git_head",
@@ -30975,7 +31064,7 @@ export class StateStore {
 			}
 			if (
 				snapshot.schema_version !== 1 ||
-				isWorkflowManifestV1Land(snapshot.manifest) ||
+				isWorkflowManifestLand(snapshot.manifest) ||
 				!engineeringTemplates.has(snapshot.template.id) ||
 				!snapshot.manifest.ship_claims.includes("qa_passed")
 			) {
@@ -36745,6 +36834,7 @@ export interface WorkflowSubmissionCredentialRow {
 	issued_at: string;
 	expires_at: string;
 	absolute_deadline_at: string;
+	permanent: number;
 	consumed_at: string | null;
 	consumed_client_request_id: string | null;
 	consumed_submission_digest: string | null;

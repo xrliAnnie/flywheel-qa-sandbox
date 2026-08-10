@@ -22,14 +22,23 @@ manifest:
         max_bytes: 262144
     - id: founder_gate
       type: gate
+    - id: land
+      type: land
+      execution: engine
   edges:
     - id: execute_done
       from: execute
       to: founder_gate
       condition: node_done
+    - id: founder_approved
+      from: founder_gate
+      to: land
+      condition: founder_approved
   loops: []
-  terminal_gate:
+  approval_gate:
     node: founder_gate
     predicate: founder_approved
+  terminal_node:
+    node: land
   ship_claims:
     - founder_approved

@@ -26,7 +26,7 @@ import { encodeSenderRef } from "../sender-ref.js";
  * never drive redelivery.
  */
 
-const NOW = "2026-08-06T00:00:00.000Z";
+const NOW = "2099-08-06T00:00:00.000Z";
 const LEAD = "fly1646-lead";
 
 function begin(dbPath: string, messageId: string): void {

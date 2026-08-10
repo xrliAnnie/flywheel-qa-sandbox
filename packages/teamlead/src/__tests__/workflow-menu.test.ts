@@ -235,12 +235,46 @@ describe("founder-approved workflow menu source", () => {
 				false,
 			);
 			for (const node of seed.manifest.nodes.filter(
-				(candidate) => candidate.type !== "gate",
+				(candidate) => candidate.type !== "gate" && candidate.type !== "land",
 			)) {
 				expect(node.role).toBeTruthy();
 				expect(node.agent_file).toBeUndefined();
 			}
 		}
+	});
+
+	it("derives approval and terminal nodes from topology instead of node names", () => {
+		const menu = structuredClone(
+			loadWorkflowMenuLibrary().find(
+				(candidate) => candidate.shape === "generic",
+			)!,
+		);
+		const gate = menu.nodes.find((node) => node.type === "gate")!;
+		const oldGateId = gate.id;
+		gate.id = "decision";
+		for (const edge of menu.edges) {
+			if (edge.from === oldGateId) edge.from = gate.id;
+			if (edge.to === oldGateId) edge.to = gate.id;
+		}
+
+		const seed = compileWorkflowMenuSeed(menu);
+		expect(seed.manifest).toMatchObject({
+			approval_gate: { node: "decision" },
+			terminal_node: { node: expect.any(String) },
+		});
+		const terminalId = (seed.manifest as { terminal_node: { node: string } })
+			.terminal_node.node;
+		expect(seed.manifest.nodes.find((node) => node.id === terminalId)).toEqual({
+			id: terminalId,
+			type: "land",
+			execution: "engine",
+		});
+		expect(seed.manifest.edges).toContainEqual({
+			id: expect.any(String),
+			from: "decision",
+			to: terminalId,
+			condition: "founder_approved",
+		});
 	});
 
 	it("resolves coherent gate authority for every compiled menu snapshot", () => {
@@ -252,10 +286,23 @@ describe("founder-approved workflow menu source", () => {
 				canonicalRoot: REPO_ROOT,
 			});
 
-			expect(
-				() => resolveWorkflowGateAuthority(snapshot),
-				menu.shape,
-			).not.toThrow();
+			expect(resolveWorkflowGateAuthority(snapshot), menu.shape).toEqual({
+				mode: "land",
+				subjectKind: "git_head",
+			});
+			for (const node of snapshot.resolved.nodes.filter(
+				(candidate) => candidate.dispatch,
+			)) {
+				expect(node.capabilities, `${menu.shape}:${node.id}`).toMatchObject({
+					can_ship: false,
+					can_land: false,
+					approval_gate_holder: false,
+				});
+			}
+			expect(snapshot.resolved.nodes.at(-1)).toMatchObject({
+				type: "land",
+				capabilities: { can_ship: true, can_land: true },
+			});
 		}
 	});
 

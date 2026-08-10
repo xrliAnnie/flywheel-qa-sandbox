@@ -141,7 +141,7 @@ import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	ensureDefaultWorkflowBindings,
 	importBundledWorkflowSeeds,
-	isWorkflowManifestV1Land,
+	isWorkflowManifestLand,
 	migrateSystemWorkflowBindingsToLand,
 } from "../workflow-template.js";
 import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
@@ -191,6 +191,7 @@ import {
 	writeCleanMarker,
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
+import { resolveBridgeBuildIdentity } from "./build-identity.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
 import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
@@ -1256,6 +1257,7 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
 
@@ -1497,6 +1499,11 @@ export function createBridgeApp(
 			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
+			buildMode: buildIdentity.mode,
+			buildSha: buildIdentity.buildSha,
+			...(buildIdentity.mode === "built"
+				? { artifactBuildSha: buildIdentity.artifactBuildSha }
+				: {}),
 			admissionPause: {
 				active: admissionPause?.active === true,
 				remainingSeconds: admissionPause?.remainingSeconds ?? 0,
@@ -5845,7 +5852,7 @@ export async function startBridge(
 							);
 							if (run?.snapshot && run.engine_owned === 1) {
 								const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-								if (!isWorkflowManifestV1Land(snapshot.manifest)) {
+								if (!isWorkflowManifestLand(snapshot.manifest)) {
 									throw new Error("land_manifest_not_enabled_for_run");
 								}
 								const holder = store.getCurrentWorkflowGateHolder(

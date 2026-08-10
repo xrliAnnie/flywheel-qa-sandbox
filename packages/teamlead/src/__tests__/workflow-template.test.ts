@@ -607,6 +607,52 @@ describe("workflow template manifest v1", () => {
 });
 
 describe("workflow template manifest v2", () => {
+	it("accepts an engine-owned terminal land node without relying on node ids", () => {
+		const manifest = validateWorkflowManifest({
+			schema_version: 2,
+			nodes: [
+				{
+					id: "craft",
+					type: "generic",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+					effort: "low",
+					agent_file: "agents/generic.md",
+				},
+				{ id: "decision", type: "gate" },
+				{ id: "publish", type: "land", execution: "engine" },
+			],
+			edges: [
+				{
+					id: "crafted",
+					from: "craft",
+					to: "decision",
+					condition: "node_done",
+				},
+				{
+					id: "approved",
+					from: "decision",
+					to: "publish",
+					condition: "founder_approved",
+				},
+			],
+			loops: [],
+			approval_gate: { node: "decision", predicate: "founder_approved" },
+			terminal_node: { node: "publish" },
+			ship_claims: ["founder_approved"],
+		});
+
+		expect(manifest).toMatchObject({
+			approval_gate: { node: "decision" },
+			terminal_node: { node: "publish" },
+		});
+		expect(manifest.nodes.at(-1)).toEqual({
+			id: "publish",
+			type: "land",
+			execution: "engine",
+		});
+	});
+
 	it("legacy-repair keeps an existing legacy pin parseable", () => {
 		// A published revision naming a legacy id must stay readable so it can be
 		// inspected and republished — there is no blocklist to trip over.

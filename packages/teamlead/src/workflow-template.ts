@@ -110,7 +110,7 @@ export type WorkflowManifestV1 =
 	| WorkflowManifestV1Legacy
 	| WorkflowManifestV1Land;
 
-export interface WorkflowManifestV2 {
+export interface WorkflowManifestV2Legacy {
 	schema_version: 2;
 	nodes: WorkflowManifestNode[];
 	edges: WorkflowManifestEdge[];
@@ -121,6 +121,23 @@ export interface WorkflowManifestV2 {
 	>;
 	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
 }
+
+export interface WorkflowManifestV2Land {
+	schema_version: 2;
+	nodes: WorkflowManifestNode[];
+	edges: WorkflowManifestEdge[];
+	loops: WorkflowManifestLoop[];
+	approval_gate: { node: string; predicate: "founder_approved" };
+	terminal_node: { node: string };
+	ship_claims: Array<
+		"qa_passed" | "design_review_approved" | "founder_approved"
+	>;
+	tier_presets?: Partial<Record<EngTier, WorkflowTemplateOverride>>;
+}
+
+export type WorkflowManifestV2 =
+	| WorkflowManifestV2Legacy
+	| WorkflowManifestV2Land;
 
 export type WorkflowManifest = WorkflowManifestV1 | WorkflowManifestV2;
 
@@ -774,10 +791,16 @@ export function isWorkflowManifestV1Land(
 	);
 }
 
+export function isWorkflowManifestLand(
+	manifest: WorkflowManifestV1 | WorkflowManifestV2,
+): manifest is WorkflowManifestV1Land | WorkflowManifestV2Land {
+	return isWorkflowManifestV1Land(manifest) || "approval_gate" in manifest;
+}
+
 export function workflowApprovalGate(
 	manifest: WorkflowManifestV1 | WorkflowManifestV2,
 ): { node: string; predicate: "founder_approved" } {
-	return isWorkflowManifestV1Land(manifest)
+	return isWorkflowManifestLand(manifest)
 		? manifest.approval_gate
 		: manifest.terminal_gate;
 }
@@ -785,7 +808,7 @@ export function workflowApprovalGate(
 export function workflowTerminalNode(
 	manifest: WorkflowManifestV1 | WorkflowManifestV2,
 ): string {
-	return isWorkflowManifestV1Land(manifest)
+	return isWorkflowManifestLand(manifest)
 		? manifest.terminal_node.node
 		: manifest.terminal_gate.node;
 }
@@ -823,17 +846,31 @@ function validateWorkflowManifestV2(
 ): WorkflowManifestV2 {
 	const modelSnapshot = options.modelSnapshot ?? getModelConfigSnapshot();
 	const root = record(value, "manifest");
+	const isLandVariant =
+		Object.hasOwn(root, "approval_gate") ||
+		Object.hasOwn(root, "terminal_node");
 	exactKeys(
 		root,
-		[
-			"schema_version",
-			"nodes",
-			"edges",
-			"loops",
-			"terminal_gate",
-			"ship_claims",
-			"tier_presets",
-		],
+		isLandVariant
+			? [
+					"schema_version",
+					"nodes",
+					"edges",
+					"loops",
+					"approval_gate",
+					"terminal_node",
+					"ship_claims",
+					"tier_presets",
+				]
+			: [
+					"schema_version",
+					"nodes",
+					"edges",
+					"loops",
+					"terminal_gate",
+					"ship_claims",
+					"tier_presets",
+				],
 		"manifest",
 	);
 	if (root.schema_version !== GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION) {
@@ -868,6 +905,7 @@ function validateWorkflowManifestV2(
 				"produces_output",
 				"output",
 				"submissionWindowMinutes",
+				...(isLandVariant ? ["execution"] : []),
 			],
 			nodePath,
 		);
@@ -876,13 +914,43 @@ function validateWorkflowManifestV2(
 		nodeIds.add(id);
 		const type = oneOf(
 			node.type,
-			["design", "implement", "qa", "gate", "generic", "review"] as const,
+			(isLandVariant
+				? ["design", "implement", "qa", "gate", "land", "generic", "review"]
+				: [
+						"design",
+						"implement",
+						"qa",
+						"gate",
+						"generic",
+						"review",
+					]) as readonly WorkflowNodeType[],
 			`${nodePath}.type`,
 		);
 		const submissionWindowMinutes = optionalPositiveInteger(
 			node.submissionWindowMinutes,
 			`${nodePath}.submissionWindowMinutes`,
 		);
+		if (type === "land") {
+			if (node.execution !== "engine") {
+				throw new Error(`land node ${id} must define execution: engine`);
+			}
+			for (const key of [
+				"role",
+				"vendor",
+				"model",
+				"effort",
+				"handoff_pointer",
+				"agent_file",
+				"produces_output",
+				"output",
+				"submissionWindowMinutes",
+			]) {
+				if (node[key] !== undefined) {
+					throw new Error(`land node ${id} cannot define ${key}`);
+				}
+			}
+			return { id, type, execution: "engine" };
+		}
 		if (type === "gate") {
 			for (const key of [
 				"role",
@@ -893,6 +961,7 @@ function validateWorkflowManifestV2(
 				"agent_file",
 				"produces_output",
 				"output",
+				"execution",
 			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`gate node ${id} cannot define ${key}`);
@@ -903,6 +972,9 @@ function validateWorkflowManifestV2(
 				type,
 				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 			};
+		}
+		if (node.execution !== undefined) {
+			throw new Error(`node ${id} of type ${type} cannot define execution`);
 		}
 		if (type !== "generic") {
 			for (const key of ["agent_file", "produces_output", "output"]) {
@@ -1107,7 +1179,12 @@ function validateWorkflowManifestV2(
 			),
 			exit_when: oneOf(
 				loop.exit_when,
-				["qa_pass", "review_pass"] as const,
+				(isLandVariant
+					? ["qa_pass", "review_pass", "founder_approved"]
+					: [
+							"qa_pass",
+							"review_pass",
+						]) as readonly WorkflowManifestLoop["exit_when"][],
 				`manifest.loops[${index}].exit_when`,
 			),
 			max_iterations: Number(loop.max_iterations),
@@ -1119,20 +1196,38 @@ function validateWorkflowManifestV2(
 		};
 	});
 
-	const terminal = record(root.terminal_gate, "manifest.terminal_gate");
-	exactKeys(terminal, ["node", "predicate"], "manifest.terminal_gate");
-	const terminalNode = nonempty(terminal.node, "manifest.terminal_gate.node");
-	if (nodes.find((node) => node.id === terminalNode)?.type !== "gate") {
-		throw new Error("terminal_gate.node must identify a gate node");
+	const gatePath = isLandVariant
+		? "manifest.approval_gate"
+		: "manifest.terminal_gate";
+	const gateRoot = record(
+		isLandVariant ? root.approval_gate : root.terminal_gate,
+		gatePath,
+	);
+	exactKeys(gateRoot, ["node", "predicate"], gatePath);
+	const approvalGateNode = nonempty(gateRoot.node, `${gatePath}.node`);
+	if (nodes.find((node) => node.id === approvalGateNode)?.type !== "gate") {
+		throw new Error(`${gatePath}.node must identify a gate node`);
 	}
-	const terminalGate = {
-		node: terminalNode,
+	const approvalGate = {
+		node: approvalGateNode,
 		predicate: oneOf(
-			terminal.predicate,
+			gateRoot.predicate,
 			["founder_approved"] as const,
-			"terminal_gate.predicate",
+			`${gatePath}.predicate`,
 		),
 	};
+	let terminalNode = approvalGateNode;
+	if (isLandVariant) {
+		const terminal = record(root.terminal_node, "manifest.terminal_node");
+		exactKeys(terminal, ["node"], "manifest.terminal_node");
+		terminalNode = nonempty(terminal.node, "manifest.terminal_node.node");
+		if (nodes.find((node) => node.id === terminalNode)?.type !== "land") {
+			throw new Error("terminal_node.node must identify a land node");
+		}
+		if (nodes.filter((node) => node.type === "land").length !== 1) {
+			throw new Error("land workflow must contain exactly one land node");
+		}
+	}
 	const shipClaims = root.ship_claims.map((claim, index) =>
 		oneOf(
 			claim,
@@ -1201,7 +1296,7 @@ function validateWorkflowManifestV2(
 		const nodeLoops = loops.filter((loop) => loop.from === node.id);
 		if (node.id === terminalNode) {
 			if (conditions.length || nodeLoops.length)
-				throw new Error("terminal gate cannot have outgoing edges");
+				throw new Error("terminal node cannot have outgoing edges or loops");
 			continue;
 		}
 		const expected =
@@ -1215,7 +1310,9 @@ function validateWorkflowManifestV2(
 							? "node_done"
 							: node.type === "review"
 								? "review_pass"
-								: undefined;
+								: isLandVariant && node.id === approvalGateNode
+									? "founder_approved"
+									: undefined;
 		if (!expected || conditions.length !== 1 || conditions[0] !== expected) {
 			throw new Error(
 				`node ${node.id} outgoing conditions are incomplete or ambiguous`,
@@ -1243,19 +1340,40 @@ function validateWorkflowManifestV2(
 					`review node ${node.id} requires a review_fail loop to its direct upstream with review_pass exit`,
 				);
 			}
+		} else if (isLandVariant && node.id === approvalGateNode) {
+			if (
+				nodeLoops.length > 1 ||
+				(nodeLoops.length === 1 &&
+					(nodeLoops[0]!.loop_when !== "founder_feedback_kickback" ||
+						nodeLoops[0]!.exit_when !== "founder_approved"))
+			) {
+				throw new Error(
+					`approval gate ${node.id} accepts at most one founder feedback loop`,
+				);
+			}
 		} else if (nodeLoops.length > 0) {
 			throw new Error(`node ${node.id} cannot own a loop`);
 		}
 	}
 
-	const manifest: WorkflowManifestV2 = {
-		schema_version: 2,
-		nodes,
-		edges,
-		loops,
-		terminal_gate: terminalGate,
-		ship_claims: shipClaims,
-	};
+	const manifest: WorkflowManifestV2 = isLandVariant
+		? {
+				schema_version: 2,
+				nodes,
+				edges,
+				loops,
+				approval_gate: approvalGate,
+				terminal_node: { node: terminalNode },
+				ship_claims: shipClaims,
+			}
+		: {
+				schema_version: 2,
+				nodes,
+				edges,
+				loops,
+				terminal_gate: approvalGate,
+				ship_claims: shipClaims,
+			};
 	const tierPresets = validateTierPresets(
 		manifest,
 		root.tier_presets,

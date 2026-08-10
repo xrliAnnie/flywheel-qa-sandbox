@@ -19,7 +19,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
@@ -413,8 +413,9 @@ function writeMarker(args: {
 		writeFileSync(
 			markerPath,
 			JSON.stringify(buildQaResultFailureMarker(args), null, 2),
-			"utf8",
+			{ encoding: "utf8", mode: 0o600 },
 		);
+		chmodSync(markerPath, 0o600);
 		return true;
 	} catch (err) {
 		console.error(
@@ -426,7 +427,7 @@ function writeMarker(args: {
 	}
 }
 
-/** Opaque retry marker: enough to correlate/replay from logs, no body/token. */
+/** Recoverable verdict marker: keeps status/summary, never the credential. */
 export function buildQaResultFailureMarker(args: {
 	execId: string;
 	requestId: string;
@@ -439,7 +440,21 @@ export function buildQaResultFailureMarker(args: {
 	error: string | undefined;
 	timestamp: string;
 	body_digest: string;
+	status?: "pass" | "fail";
+	summary?: string;
 } {
+	const body =
+		args.body && typeof args.body === "object" && !Array.isArray(args.body)
+			? (args.body as Record<string, unknown>)
+			: {};
+	const payload =
+		body.payload &&
+		typeof body.payload === "object" &&
+		!Array.isArray(body.payload)
+			? (body.payload as Record<string, unknown>)
+			: {};
+	const status = body.status ?? payload.status;
+	const summary = body.summary ?? payload.summary;
 	return {
 		execution_id: args.execId,
 		client_request_id: args.requestId,
@@ -448,5 +463,7 @@ export function buildQaResultFailureMarker(args: {
 		body_digest: createHash("sha256")
 			.update(JSON.stringify(args.body))
 			.digest("hex"),
+		...(status === "pass" || status === "fail" ? { status } : {}),
+		...(typeof summary === "string" && summary ? { summary } : {}),
 	};
 }

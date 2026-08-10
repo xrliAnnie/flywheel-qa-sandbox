@@ -4,6 +4,8 @@ Issue: FLY-1463 (https://linear.app/geoforge3d/issue/FLY-1463/机制founder-可�
 日期: 2026-07-24
 基于: research.md
 
+> **2026-08-09 更正:** 本计划记录当时方案；其 HTML ship / 不 ship 裁决及 `SHIP-VERDICT` 回传设计已废止。现行批准只认 ship 卡片上的 founder ✅ reaction 或卡片 thread 内 founder 直接回复。
+
 ## 0. 一句话
 
 QA runner 在发 `qa-result --status pass` **之前**,必须产出并 publish 一份 founder 语言的 interactive ship-report HTML 到 parent issue thread(gate 冒出的地方)——机制照 FLY-1461:义务写进 `.flywheel/agents/engineering/qa-executor.md` 自持有 + CI 守卫,引擎只加一处**送信**管道(`publish-report --issue`),永不加 gate。

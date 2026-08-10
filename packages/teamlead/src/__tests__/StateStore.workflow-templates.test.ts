@@ -48,6 +48,7 @@ function generalizedOpsSeed() {
 					agent_file: "agents/generic-executor.md",
 				},
 				{ id: "founder_gate", type: "gate" as const },
+				{ id: "land", type: "land" as const, execution: "engine" as const },
 			],
 			edges: [
 				{
@@ -56,12 +57,19 @@ function generalizedOpsSeed() {
 					to: "founder_gate",
 					condition: "node_done" as const,
 				},
+				{
+					id: "founder_approved",
+					from: "founder_gate",
+					to: "land",
+					condition: "founder_approved" as const,
+				},
 			],
 			loops: [],
-			terminal_gate: {
+			approval_gate: {
 				node: "founder_gate",
 				predicate: "founder_approved" as const,
 			},
+			terminal_node: { node: "land" },
 			ship_claims: ["founder_approved" as const],
 		},
 	};

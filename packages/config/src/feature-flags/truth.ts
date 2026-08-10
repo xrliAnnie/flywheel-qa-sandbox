@@ -17,6 +17,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
 	// plumbing / paths
 	FLYWHEEL_BRIDGE_URL: "plumbing: bridge base URL",
+	FLYWHEEL_BRIDGE_SOURCE_MODE:
+		"plumbing: source-run build identity marker, not a rollout gate",
 	FLYWHEEL_SANDBOX_REMOTE_URL: "plumbing: remote sandbox service URL",
 	FLYWHEEL_COMM_DB: "plumbing: comm db path",
 	FLYWHEEL_COMM_DIR: "plumbing: comm dir path",

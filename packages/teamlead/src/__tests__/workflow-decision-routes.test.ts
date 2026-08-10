@@ -134,6 +134,15 @@ async function reviewFixture(options: {
 		route: "needs_review",
 		sourceEventId: "produce-complete",
 		completionSubmission: { decision: { route: "needs_review" } },
+		subjectDigest: worktree.head,
+		prBinding: {
+			prNumber: 1307,
+			headSha: worktree.head,
+			targetRepoIdentity: "__main__",
+			probeRepoSlug: "geoforge3d/flywheel",
+			targetRepoPath: worktree.path,
+			worktreeBindingGeneration: "review-fixture",
+		},
 		now: T0,
 	});
 	if (!produceCompletion.ok) {
@@ -500,6 +509,48 @@ describe("workflow decision routes", () => {
 			await f.close();
 		}
 	});
+
+	it.each([
+		["runner_ship", true, "runner_ship_binding_missing"],
+		["engine_terminal", false, "not_required_for_engine_terminal_authority"],
+	] as const)(
+		"explains a missing %s ship target binding",
+		async (authorityMode, required, reason) => {
+			const f = await fixture();
+			try {
+				const db = (
+					f.store as unknown as {
+						db: { run(sql: string, params?: unknown[]): void };
+					}
+				).db;
+				db.run(
+					`INSERT INTO workflow_gate_holder
+					   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+					    question_id, authority_mode, subject_kind, carrier_binding_state,
+					    state, materialization_stage, created_at, updated_at)
+					 VALUES ('run-1', 'founder_gate', 1, ?, 'qa-exec', ?, ?, 'git_head',
+					         'bound', 'awaiting_review', 'completed', ?, ?)`,
+					[f.worktree.head, `${authorityMode}-q`, authorityMode, T0, T0],
+				);
+				const response = await fetch(`${f.baseUrl}/head-authority`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						execution_id: "qa-exec",
+						approve_question_id: `${authorityMode}-q`,
+					}),
+				});
+				expect(response.status).toBe(409);
+				expect(await response.json()).toEqual({
+					ok: false,
+					reason: "ship_target_binding_unavailable",
+					binding: { required, reason, authorityMode },
+				});
+			} finally {
+				await f.close();
+			}
+		},
+	);
 
 	it("resolves a legacy approve question without requiring a workflow gate holder", async () => {
 		const f = await fixture();

@@ -4,6 +4,8 @@ Issue: FLY-1463 (https://linear.app/geoforge3d/issue/FLY-1463/机制founder-可�
 日期: 2026-07-24
 基于: plan.md · 验证 head 8f524845 (origin/flywheel-FLY-1463)
 
+> **2026-08-09 更正:** 本报告保留当时 QA 证据；其 HTML ship / 不 ship 裁决及 `SHIP-VERDICT` 回传已废止。现行批准只认 ship 卡片上的 founder ✅ reaction 或卡片 thread 内 founder 直接回复。
+
 ## 结论：PASS
 
 机制成立且可用。契约（qa-executor.md + 模板）被 CI 守卫钉死；投递管道（`--issue` → 解析 parent thread、多 Lead 歧义 fail-closed、绝不 fallback 大频道、byte-compat）单测/集成全绿；**这一页本身在真实 Vercel hosting 的严格 CSP 下真渲染并可交互**——Annie 亲定的四条验收 + localStorage 隔离全部在真机上过。

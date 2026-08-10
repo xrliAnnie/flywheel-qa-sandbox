@@ -1694,6 +1694,7 @@ BO_LAUNCH_STATE="$BO_CALLS/lead.state"
 mkdir -p \
   "$BO_FLYWHEEL/scripts/lib" \
   "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
+  "$BO_FLYWHEEL/packages/teamlead/dist" \
   "$BO_FLYWHEEL/packages/flywheel-comm/dist" \
   "$BO_HOME/.flywheel/manifests" \
   "$BO_HOME/Library/LaunchAgents" \
@@ -1704,6 +1705,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
@@ -1724,6 +1726,8 @@ chmod +x "$BO_FLYWHEEL/scripts/converge-flywheel-bin.sh"
 git -C "$BO_FLYWHEEL" init -q
 git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 BO_HEAD_1=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+printf '{"artifactBuildSha":"%s"}\n' "$BO_HEAD_1" \
+  > "$BO_FLYWHEEL/packages/teamlead/dist/build-identity.json"
 
 cat > "$BO_SHIMS/launchctl" <<EOF
 #!/bin/bash
@@ -1837,6 +1841,9 @@ EOF
 cat > "$BO_SHIMS/pnpm" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/pnpm.calls"
+head_sha="\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)"
+printf '{"artifactBuildSha":"%s"}\n' "\$head_sha" \
+  > "$BO_FLYWHEEL/packages/teamlead/dist/build-identity.json"
 exit 0
 EOF
 cat > "$BO_SHIMS/node" <<EOF
@@ -1866,9 +1873,10 @@ if [[ "\$url" == *"discord.com/api"* ]]; then
   cat >/dev/null || true
   exit 0
 fi
-body='{"ok":true,"sessions_count":0}'
+head_sha="\${FAKE_BUILD_SHA:-\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)}"
+body="{\"ok\":true,\"sessions_count\":0,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 if [[ "\${FAKE_IDLE_BUSY:-0}" == "1" && -z "\$output_file" ]]; then
-  body='{"ok":true,"sessions_count":3}'
+  body="{\"ok\":true,\"sessions_count\":3,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 fi
 if [[ -n "\$output_file" ]]; then
   if [[ "\${FAKE_COMPLETION_PROBE_FAIL:-0}" == "1" ]]; then
@@ -2112,22 +2120,45 @@ else
     fail "FLY-1434 order: SHA match — rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -3)"
 fi
 
-# ── 2) doc-only delta also skips build but never skips restart ──
+# ── 2) a new checkout rebuilds its immutable identity even for doc-only deltas ──
 echo "new doc" > "$BO_FLYWHEEL/README.md"
 git -C "$BO_FLYWHEEL" add README.md
 git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: readme"
 BO_HEAD_2=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
 out=$(bo_run) && rc=0 || rc=$?
-if (( rc == 0 )) && echo "$out" | grep -q "Build skipped" \
+if (( rc == 0 )) && echo "$out" | grep -q "Build successful" \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
-   && [[ -z "$(bo_calls pnpm)" ]] \
+   && [[ -n "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
    && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
    && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"; then
-    pass "FLY-1434 order: doc-only delta skips build and restarts the full fleet"
+    pass "FLY-1655 doc-only checkout rebuilds its identity and restarts the full fleet"
 else
     fail "FLY-1434 order: doc-only mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -3)"
 fi
+
+# ── 2b) stale runtime identity cannot advance deployed-sha and alerts once ──
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+identity_marker="$BO_HOME/.flywheel/state/deploy-build-identity-${BO_HEAD_2}"
+rm -f "$identity_marker"
+out=$(FAKE_BUILD_SHA="$BO_HEAD_1" bo_run) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 1 )) \
+   && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_1" ]] \
+   && [[ -f "$identity_marker" ]] \
+   && [[ "$(echo "$alerts" | grep -c "deploy-build-identity-${BO_HEAD_2}" || true)" == "1" ]] \
+   && echo "$out" | grep -q "intended_not_ancestor"; then
+    pass "FLY-1655 stale Bridge identity blocks deployed-sha and alerts once"
+else
+    fail "FLY-1655 stale identity mismatch: rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") alerts='$alerts' out tail: $(echo "$out" | tail -4)"
+fi
+out=$(FAKE_BUILD_SHA="$BO_HEAD_1" bo_run) && rc=0 || rc=$?
+if (( rc == 1 )) && [[ -z "$(bo_calls lead-alert)" ]]; then
+    pass "FLY-1655 repeated stale identity is deduplicated"
+else
+    fail "FLY-1655 stale identity dedupe mismatch: rc=$rc alerts='$(bo_calls lead-alert)'"
+fi
+rm -f "$identity_marker"
 
 # ── 3) dry-run exposes full scope + reason with no side effects ──
 echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
@@ -2336,10 +2367,11 @@ bo_busy_curl_shim() {
 echo "\$*" >> "$BO_CALLS/curl.calls"
 n=\$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0)
 n=\$((n + 1)); echo "\$n" > "$BO_CALLS/health.n"
+head_sha="\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)"
 if (( n <= 1 )); then
-    echo '{"ok":true,"sessions_count":3}'
+    echo "{\"ok\":true,\"sessions_count\":3,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 else
-    echo '{"ok":true,"sessions_count":0}'
+    echo "{\"ok\":true,\"sessions_count\":0,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 fi
 EOF
     chmod +x "$BO_SHIMS/curl"

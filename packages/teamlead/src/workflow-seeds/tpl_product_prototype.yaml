@@ -21,6 +21,9 @@ manifest:
       effort: high
     - id: founder_gate
       type: gate
+    - id: land
+      type: land
+      execution: engine
   edges:
     - id: build_done
       from: build
@@ -30,6 +33,10 @@ manifest:
       from: review
       to: founder_gate
       condition: review_pass
+    - id: founder_approved
+      from: founder_gate
+      to: land
+      condition: founder_approved
   loops:
     - id: review_kickback
       from: review
@@ -38,9 +45,11 @@ manifest:
       exit_when: review_pass
       max_iterations: 2
       on_limit: escalate
-  terminal_gate:
+  approval_gate:
     node: founder_gate
     predicate: founder_approved
+  terminal_node:
+    node: land
   ship_claims:
     - design_review_approved
     - founder_approved

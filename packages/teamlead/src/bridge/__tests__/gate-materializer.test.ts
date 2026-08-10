@@ -35,13 +35,15 @@ describe("workflow gate materializer", () => {
 			now: "2026-07-21T20:00:00.000Z",
 		});
 		let posts = 0;
+		let cardContent = "";
 		const deps = {
 			store,
 			commDbPath: commPath,
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
-			postCard: async () => {
+			postCard: async (input: { content: string }) => {
 				posts += 1;
+				cardContent = input.content;
 				return { messageId: "discord-card-1" };
 			},
 			now: () => "2026-07-21T20:01:00.000Z",
@@ -54,6 +56,9 @@ describe("workflow gate materializer", () => {
 			await materializeWorkflowGateHolder(deps, "workflow-gate-run-1"),
 		).toMatchObject({ ok: true, idempotentReplay: true });
 		expect(posts).toBe(1);
+		expect(cardContent).toContain(
+			"Approval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.",
+		);
 		const comm = CommDB.openReadonly(commPath);
 		try {
 			expect(comm.getPendingQuestions("flywheel-eng-lead")).toMatchObject([

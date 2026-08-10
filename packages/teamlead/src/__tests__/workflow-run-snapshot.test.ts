@@ -56,6 +56,49 @@ function fixture() {
 	};
 }
 
+function terminalLandFixture() {
+	const { root } = fixture();
+	return {
+		root,
+		manifest: {
+			schema_version: 2 as const,
+			nodes: [
+				{
+					id: "craft",
+					type: "generic" as const,
+					vendor: "codex" as const,
+					model: "gpt-5.6-sol",
+					effort: "low" as const,
+					agent_file: "agents/generic.md",
+				},
+				{ id: "decision", type: "gate" as const },
+				{ id: "publish", type: "land" as const, execution: "engine" as const },
+			],
+			edges: [
+				{
+					id: "crafted",
+					from: "craft",
+					to: "decision",
+					condition: "node_done" as const,
+				},
+				{
+					id: "approved",
+					from: "decision",
+					to: "publish",
+					condition: "founder_approved" as const,
+				},
+			],
+			loops: [],
+			approval_gate: {
+				node: "decision",
+				predicate: "founder_approved" as const,
+			},
+			terminal_node: { node: "publish" },
+			ship_claims: ["founder_approved" as const],
+		},
+	};
+}
+
 describe("typed generalized workflow snapshot", () => {
 	it("pins the engineering Gate-feedback topology digest", () => {
 		const manifest = loadBundledWorkflowSeeds()[0]!.manifest;
@@ -313,6 +356,35 @@ describe("typed generalized workflow snapshot", () => {
 			},
 		});
 		expect(execute?.agent?.content).toBe("Do the bounded task.\n");
+	});
+
+	it("assigns ship authority only to an arbitrary terminal land node", () => {
+		const { root, manifest } = terminalLandFixture();
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_land", revision: 1 },
+			manifest,
+			canonicalRoot: root,
+		});
+
+		expect(resolveWorkflowGateAuthority(snapshot)).toEqual({
+			mode: "land",
+			subjectKind: "git_head",
+		});
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "craft")?.capabilities,
+		).toMatchObject({
+			creates_pr: true,
+			can_ship: false,
+			can_land: false,
+			approval_gate_holder: false,
+		});
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "publish")
+				?.capabilities,
+		).toMatchObject({ can_ship: true, can_land: true });
+		expect(parseWorkflowRunSnapshot(JSON.stringify(snapshot))).toEqual(
+			snapshot,
+		);
 	});
 
 	it("binds a founder-only generic ship carrier to git-head authority", () => {

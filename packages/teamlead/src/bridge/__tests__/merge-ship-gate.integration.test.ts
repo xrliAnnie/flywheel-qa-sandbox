@@ -144,9 +144,13 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 	}
 
-	function upsert(status: string, reviewQuestionId?: string): void {
+	function upsert(
+		status: string,
+		reviewQuestionId?: string,
+		executionId = EXEC,
+	): void {
 		store.upsertSession({
-			execution_id: EXEC,
+			execution_id: executionId,
 			issue_id: ISSUE,
 			project_name: PROJECT,
 			pr_number: 869,
@@ -155,7 +159,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			branch: "fly-869",
 			worktree_path: worktreePath,
 		});
-		store.setReviewBinding(EXEC, {
+		store.setReviewBinding(executionId, {
 			questionId: reviewQuestionId ?? null,
 			prHeadSha: HEAD,
 		});
@@ -219,7 +223,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			executionId: EXEC,
 			attempt: 1,
 			now: "2026-07-16T00:11:00.000Z",
-			expiresAt: "2027-07-16T00:11:00.000Z",
+			expiresAt: "2026-07-16T00:11:30.000Z",
 			absoluteDeadlineAt: "2027-07-17T00:11:00.000Z",
 			env: WORKFLOW_ON,
 		});
@@ -288,21 +292,53 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				now: "2026-07-16T00:05:00.000Z",
 			}).ok,
 		).toBe(true);
-		expect(
-			store.commitWorkflowTransitionTx({
-				runId: "product-run",
-				nodeId: "produce",
-				attempt: 1,
-				executionId: "product-produce",
-				outcome: "node_done",
-				successorExecutionId: EXEC,
-				now: "2026-07-16T00:10:00.000Z",
-			}).ok,
-		).toBe(true);
+		const produce = store.admitGeneralizedWorkflowExecution({
+			runId: "product-run",
+			nodeId: "produce",
+			executionId: "product-produce",
+			attempt: 1,
+			now: "2026-07-16T00:06:00.000Z",
+			expiresAt: "2027-07-16T00:06:00.000Z",
+			absoluteDeadlineAt: "2027-07-17T00:06:00.000Z",
+			env: flags,
+		});
+		if (!produce.ok || !produce.outputCredential) {
+			throw new Error("product produce admission failed");
+		}
+		const output = store.submitWorkflowNodeOutput({
+			token: produce.outputCredential,
+			clientRequestId: "product-produce-output",
+			payload: '{"result":"ready"}',
+			now: "2026-07-16T00:07:00.000Z",
+		});
+		if (!output.ok) throw new Error(output.reason);
+		const completion = store.commitEnrolledCompletion({
+			executionId: "product-produce",
+			route: "needs_review",
+			sourceEventId: "product-produce-complete",
+			completionSubmission: { decision: { route: "needs_review" } },
+			subjectDigest: HEAD,
+			prBinding: {
+				prNumber: 869,
+				headSha: HEAD,
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "geoforge3d/flywheel",
+				targetRepoPath: worktreePath,
+				worktreeBindingGeneration: "product-fixture",
+			},
+			now: "2026-07-16T00:10:00.000Z",
+		});
+		if (!completion.ok) throw new Error(completion.reason);
+		const reviewExecution = store.getWorkflowRunNode(
+			"product-run",
+			"review",
+			1,
+		)?.execution_id;
+		if (!reviewExecution) throw new Error("product review successor missing");
 		const review = store.admitGeneralizedWorkflowExecution({
 			runId: "product-run",
 			nodeId: "review",
-			executionId: EXEC,
+			executionId: reviewExecution,
 			attempt: 1,
 			now: "2026-07-16T00:11:00.000Z",
 			expiresAt: "2027-07-16T00:11:00.000Z",
@@ -338,8 +374,8 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				authorityId: "product-founder",
 			}).ok,
 		).toBe(true);
-		upsert("approved_to_ship");
-		return submitted;
+		upsert("approved_to_ship", undefined, reviewExecution);
+		return { ...submitted, executionId: reviewExecution };
 	}
 
 	// ── Group ① — FLY-120: genuinely approved + merged → eligible → completed ──
@@ -392,6 +428,10 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 
 	it("engine-owned terminalization additively requires every snapshot ship claim at USE time", async () => {
 		const { qaClaimId } = engineQaAtFounderGate();
+		expect(store.getWorkflowClaim(qaClaimId)).toMatchObject({
+			expires_at: null,
+			permanent: 1,
+		});
 		const session = store.getSession(EXEC)!;
 		const off = {
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
@@ -584,8 +624,10 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	});
 
 	it("recovered product merge resolves its materialized head through the production authority port", async () => {
-		expect(productWithReviewPredicate("design_review_approved").ok).toBe(true);
-		const session = store.getSession(EXEC)!;
+		const product = productWithReviewPredicate("design_review_approved");
+		expect(product.ok).toBe(true);
+		if (!product.ok) throw new Error(product.reason);
+		const session = store.getSession(product.executionId)!;
 		parkMergeBlock(store, session, HEAD, {
 			eligible: false,
 			mergeApprovalOk: false,
@@ -598,7 +640,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			store,
 			{} as BridgeConfig,
 			[],
-			EXEC,
+			product.executionId,
 			undefined,
 			{
 				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
@@ -614,8 +656,8 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		);
 
 		expect(completed).toBe(true);
-		expect(isMergeBlocked(store.getSession(EXEC))).toBe(false);
-		expect(store.getSession(EXEC)?.status).toBe("completed");
+		expect(isMergeBlocked(store.getSession(product.executionId))).toBe(false);
+		expect(store.getSession(product.executionId)?.status).toBe("completed");
 	});
 
 	// ── FLY-907 (Codex R1 MED-2): the recovered-merge path is the FOURTH

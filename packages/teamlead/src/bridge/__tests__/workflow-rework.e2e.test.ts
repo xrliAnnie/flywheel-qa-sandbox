@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -17,10 +18,14 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 	FLYWHEEL_WORKFLOW_REWORK_REENTRY: "1",
 };
-const BASE_HEAD = "a".repeat(40);
-const FIX_HEAD = "b".repeat(40);
 const NOW = new Date("2026-07-23T00:20:00.000Z");
 const roots: string[] = [];
+
+function git(worktree: string, ...args: string[]) {
+	return execFileSync("git", ["-C", worktree, ...args], {
+		encoding: "utf8",
+	}).trim();
+}
 
 afterEach(() => {
 	for (const root of roots.splice(0)) {
@@ -31,6 +36,15 @@ afterEach(() => {
 async function createHarness() {
 	const root = mkdtempSync(join(tmpdir(), "fly1423-rework-e2e-"));
 	roots.push(root);
+	const worktree = join(root, "worktree");
+	mkdirSync(worktree);
+	git(worktree, "init", "-q");
+	git(worktree, "config", "user.email", "fly1423@test.invalid");
+	git(worktree, "config", "user.name", "FLY-1423");
+	writeFileSync(join(worktree, "artifact.txt"), "base\n");
+	git(worktree, "add", "artifact.txt");
+	git(worktree, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "base");
+	const baseHead = git(worktree, "rev-parse", "HEAD");
 	const store = await StateStore.create(join(root, "state.db"));
 	const comm = new CommDB(join(root, "comm.db"));
 	const seed = structuredClone(
@@ -137,9 +151,9 @@ async function createHarness() {
 			session_role: role,
 			chat_thread_role: role,
 			tmux_session: `tmux:${executionId}`,
-			worktree_path: root,
+			worktree_path: worktree,
 		});
-		store.patchSessionMetadata(executionId, { pr_head_sha: BASE_HEAD });
+		store.patchSessionMetadata(executionId, { pr_head_sha: baseHead });
 		comm.registerSession(
 			executionId,
 			`tmux:${executionId}`,
@@ -172,7 +186,18 @@ async function createHarness() {
 			getActorSession: (executionId) => store.getSession(executionId),
 			probeRegistered: async () => "alive",
 			probePersisted: async () => "alive",
-			assertWorktreeReady: async () => ({ ok: true }),
+			assertWorktreeReady: async (session, expectedHeadSha) => {
+				if (!session.worktree_path) {
+					return { ok: false, reason: "worktree_path_missing" };
+				}
+				if (git(session.worktree_path, "status", "--porcelain")) {
+					return { ok: false, reason: "worktree_dirty" };
+				}
+				const actual = git(session.worktree_path, "rev-parse", "HEAD");
+				return actual === expectedHeadSha
+					? { ok: true }
+					: { ok: false, reason: `head_mismatch:${actual}:${expectedHeadSha}` };
+			},
 			grantTurn: async (input) => {
 				const grantedAt = NOW.toISOString();
 				const epoch = comm.grantTurn(
@@ -209,12 +234,13 @@ async function createHarness() {
 		},
 	});
 
-	return { store, comm, coordinator, wakes };
+	return { store, comm, coordinator, wakes, worktree, baseHead };
 }
 
 describe("FLY-1423 capability-level rework flow", () => {
 	it("re-enters the same implement and QA actors from fail through retest", async () => {
-		const { store, comm, coordinator, wakes } = await createHarness();
+		const { store, comm, coordinator, wakes, worktree, baseHead } =
+			await createHarness();
 		try {
 			const sideEffectsBefore = store.listWorkflowSideEffects("run-e2e");
 			const failed = store.commitWorkflowTransitionTx({
@@ -223,7 +249,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				attempt: 1,
 				executionId: "qa-exec",
 				outcome: "qa_fail",
-				subjectDigest: BASE_HEAD,
+				subjectDigest: baseHead,
 				now: "2026-07-23T00:10:00.000Z",
 			});
 			expect(failed).toMatchObject({
@@ -266,6 +292,10 @@ describe("FLY-1423 capability-level rework flow", () => {
 				current_node_id: "implement",
 				current_attempt: 2,
 			});
+			writeFileSync(join(worktree, "artifact.txt"), "fixed\n");
+			git(worktree, "add", "artifact.txt");
+			git(worktree, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fix");
+			const fixHead = git(worktree, "rev-parse", "HEAD");
 
 			const completion = {
 				decision: { route: "needs_review" },
@@ -276,7 +306,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				route: "needs_review",
 				sourceEventId: "complete-implement-attempt-2",
 				completionSubmission: completion,
-				subjectDigest: FIX_HEAD,
+				subjectDigest: fixHead,
 				workflowActivation: {
 					activationId: implementActivation!.activation_id,
 					runId: implementActivation!.run_id,
@@ -293,7 +323,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 					route: "needs_review",
 					sourceEventId: "complete-implement-attempt-2-replay",
 					completionSubmission: completion,
-					subjectDigest: FIX_HEAD,
+					subjectDigest: fixHead,
 					workflowActivation: {
 						activationId: implementActivation!.activation_id,
 						runId: implementActivation!.run_id,
@@ -312,7 +342,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			const qaRequestId = pending[0]!.request_id;
 			expect(store.getWorkflowReworkRequest(qaRequestId)).toMatchObject({
 				authority: "qa",
-				base_revision: FIX_HEAD,
+				base_revision: fixHead,
 				source_node_id: "implement",
 				source_attempt: 2,
 			});
@@ -355,7 +385,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				attempt: 2,
 				executionId: "qa-exec",
 				outcome: "qa_pass",
-				subjectDigest: FIX_HEAD,
+				subjectDigest: fixHead,
 				now: "2026-07-23T00:25:00.000Z",
 			});
 			expect(passed).toMatchObject({
@@ -370,7 +400,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 					attempt: 2,
 					executionId: "qa-exec",
 					outcome: "qa_pass",
-					subjectDigest: FIX_HEAD,
+					subjectDigest: fixHead,
 					now: "2026-07-23T00:26:00.000Z",
 				}),
 			).toMatchObject({ ok: true, idempotentReplay: true });

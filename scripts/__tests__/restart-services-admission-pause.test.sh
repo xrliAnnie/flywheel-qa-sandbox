@@ -83,10 +83,15 @@ if [[ "$notify_line" =~ ^[0-9]+$ && "$pause_line" =~ ^[0-9]+$ && "$stop_line" =~
 else
 	fail "deploy Step 0 ordering is wrong"
 fi
-grep -q 'Bridge health check: OK' "$deploy_body" && \
-	grep -A1 'Bridge health check: OK' "$deploy_body" | grep -q 'resume_admission_best_effort' \
-	&& pass "healthy replacement explicitly resumes admission" \
-	|| fail "post-health resume missing"
+health_line=$(grep -n 'Bridge health check: OK' "$deploy_body" | cut -d: -f1)
+identity_line=$(grep -n 'dbi_accept_health_identity' "$deploy_body" | cut -d: -f1)
+resume_line=$(grep -n 'resume_admission_best_effort' "$deploy_body" | awk -F: -v health="$health_line" '$1 > health { print $1; exit }')
+if [[ "$health_line" =~ ^[0-9]+$ && "$resume_line" =~ ^[0-9]+$ && "$identity_line" =~ ^[0-9]+$ ]] \
+	&& (( health_line < resume_line && resume_line < identity_line )); then
+	pass "healthy replacement resumes admission before identity rejection can return"
+else
+	fail "post-health admission resume ordering is wrong"
+fi
 grep -B12 'if ! stop_bridge' "$rollback_body" | grep -q 'pause_admission_best_effort' \
 	&& pass "rollback also pauses before stopping Bridge" \
 	|| fail "rollback pause ordering missing"

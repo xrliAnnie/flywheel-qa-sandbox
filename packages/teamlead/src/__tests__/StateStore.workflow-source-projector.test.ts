@@ -343,7 +343,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		}
 	});
 
-	it("atomically terminalizes a product v2 run only when founder source completes all ship claims", async () => {
+	it("advances an approved product v2 run to its terminal land node", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "fly1307-product-source-"));
 		mkdirSync(join(root, "agents"));
@@ -392,20 +392,55 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 				successorExecutionId: "product-produce",
 			}).ok,
 		).toBe(true);
+		const produce = store.admitGeneralizedWorkflowExecution({
+			runId: "product-run",
+			nodeId: "produce",
+			executionId: "product-produce",
+			attempt: 1,
+			now: "2026-07-16T00:05:00.000Z",
+			expiresAt: "2027-07-16T00:05:00.000Z",
+			absoluteDeadlineAt: "2027-07-17T00:05:00.000Z",
+			env: flags,
+		});
+		if (!produce.ok || !produce.outputCredential) {
+			throw new Error("produce admission failed");
+		}
 		expect(
-			store.commitWorkflowTransitionTx({
-				runId: "product-run",
-				nodeId: "produce",
-				attempt: 1,
-				executionId: "product-produce",
-				outcome: "node_done",
-				successorExecutionId: "product-review",
+			store.submitWorkflowNodeOutput({
+				token: produce.outputCredential,
+				clientRequestId: "produce-output",
+				payload: '{"result":"ready"}',
+				now: "2026-07-16T00:06:00.000Z",
 			}).ok,
 		).toBe(true);
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "product-produce",
+				route: "needs_review",
+				sourceEventId: "produce-complete",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: HEAD,
+				prBinding: {
+					prNumber: 1307,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: root,
+					worktreeBindingGeneration: "product-fixture",
+				},
+				now: "2026-07-16T00:07:00.000Z",
+			}).ok,
+		).toBe(true);
+		const reviewExecution = store.getWorkflowRunNode(
+			"product-run",
+			"review",
+			1,
+		)?.execution_id;
+		if (!reviewExecution) throw new Error("review successor missing");
 		const review = store.admitGeneralizedWorkflowExecution({
 			runId: "product-run",
 			nodeId: "review",
-			executionId: "product-review",
+			executionId: reviewExecution,
 			attempt: 1,
 			now: "2026-07-16T00:10:00.000Z",
 			expiresAt: "2027-07-16T00:10:00.000Z",
@@ -430,32 +465,49 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			}).ok,
 		).toBe(true);
 		expect(store.getWorkflowRun("product-run")?.status).toBe("active");
+		const holder = store
+			.listWorkflowRunEvents("product-run")
+			.find((event) => event.kind === "gate_holder_created");
+		if (!holder) throw new Error("founder gate holder missing");
+		const questionId = (holder.payload as { questionId: string }).questionId;
+		store.advanceWorkflowGateHolderMaterialization({
+			questionId,
+			stage: "card_bound",
+			cardMessageId: "product-founder-card",
+			now: "2026-07-16T00:11:30.000Z",
+		});
 		const payload = {
 			schema_version: 1,
 			run_id: "product-run",
 			issue_id: "FLY-1307",
-			question_id: "product-founder",
+			question_id: questionId,
 			response: { approved: true },
 			actor: "bridge",
 			approved_head: HEAD,
 			classification: "dashboard_founder_action",
-			authority_id: "product-founder",
+			authority_id: questionId,
 		};
 		store.applyWorkflowSourceEvent({
 			project: "flywheel",
-			sourceEventId: "founder-approval:product-founder",
+			sourceEventId: `founder-approval:${questionId}`,
 			kind: "founder_approval",
 			payloadJson: canonicalJsonString(payload),
 			payloadDigest: canonicalSubmissionDigest(payload),
 			schemaVersion: 1,
 		});
 
-		expect(store.getWorkflowRun("product-run")?.status).toBe("completed");
+		expect(store.getWorkflowRun("product-run")).toMatchObject({
+			status: "active",
+			current_node_id: "land",
+		});
+		expect(store.getWorkflowRunNode("product-run", "land", 1)).toMatchObject({
+			state: "pending",
+		});
 		expect(
 			store
 				.listWorkflowRunEvents("product-run")
 				.filter((event) => event.kind === "run_completed"),
-		).toHaveLength(1);
+		).toHaveLength(0);
 		store.close();
 		rmSync(root, { recursive: true, force: true });
 	});

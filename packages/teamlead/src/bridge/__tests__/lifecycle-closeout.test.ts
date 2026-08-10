@@ -289,6 +289,41 @@ describe("closeoutIssue — canceled disposition", () => {
 });
 
 describe("closeoutIssue — shipped disposition", () => {
+	it("identifier-only roots close only for exact ship authority", async () => {
+		const store = await freshStore();
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+		}));
+		store.upsertSession({
+			execution_id: "identifier-only",
+			issue_id: "FLY-202",
+			issue_identifier: "FLY-202",
+			project_name: "proj",
+			status: "completed",
+		});
+		const deps = baseDeps(store, { closeRunnerFn: closeRunnerFn as never });
+		const nonShip = await closeoutIssue(deps, {
+			issueKey: "FLY-202",
+			projectName: "proj",
+			disposition: "canceled",
+			authority: "linear_reconcile",
+		});
+		expect(nonShip.outcome).toBe("blocked");
+		expect(closeRunnerFn).not.toHaveBeenCalled();
+
+		const ship = await closeoutIssue(deps, {
+			issueKey: "FLY-202",
+			projectName: "proj",
+			disposition: "shipped",
+			authority: "ship_complete",
+		});
+		expect(ship.outcome).toBe("complete");
+		expect(ship.nodes).toHaveLength(1);
+		expect(closeRunnerFn).toHaveBeenCalledOnce();
+	});
+
 	it("non-PASS QA child is closed with CANCELED semantics (terminate, never fabricated completed)", async () => {
 		const store = await freshStore();
 		seedSession(store, "root-e", "completed");
@@ -332,6 +367,93 @@ describe("closeoutIssue — shipped disposition", () => {
 			expect.anything(),
 		);
 	});
+
+	it.each([
+		["dead_pin", "complete", 1],
+		["gone", "complete", 1],
+		["alive", "blocked", 0],
+	] as const)(
+		"preserves failed forensics with %s liveness evidence and closes only dead execution",
+		async (evidence, expectedOutcome, expectedIssueItemCalls) => {
+			const store = await freshStore();
+			seedSession(store, "completed-e", "completed");
+			seedSession(store, "failed-e", "failed");
+			const closeRunnerFn = vi.fn(async (opts: { executionId: string }) =>
+				opts.executionId === "failed-e"
+					? {
+							closed: false,
+							commDbFinalized: false,
+							retiredGateCount: 0,
+							preserved: true,
+							reason: "crash_preserve" as const,
+						}
+					: {
+							closed: true,
+							alreadyGone: true,
+							commDbFinalized: true,
+							retiredGateCount: 1,
+						},
+			);
+			const finalizeCommDbSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 1,
+			}));
+			const archiveThreads = vi.fn(async () => undefined);
+			const linearConsistency = vi.fn(async () => undefined);
+			const probeLiveness = vi.fn(async () =>
+				evidence === "alive" ? ("alive" as const) : ("dead_pin" as const),
+			);
+
+			const report = await closeoutIssue(
+				baseDeps(store, {
+					closeRunnerFn: closeRunnerFn as never,
+					finalizeCommDbSessionFn,
+					lookupTarget: ((executionId: string) =>
+						executionId === "failed-e" && evidence !== "gone"
+							? {
+									kind: "found",
+									target: { tmuxWindow: "w:failed" },
+								}
+							: { kind: "gone" }) as never,
+					probeLiveness,
+					archiveThreads,
+					linearConsistency,
+				}),
+				{
+					issueKey: UUID,
+					projectName: "proj",
+					disposition: "shipped",
+					authority: "ship_complete",
+				},
+			);
+
+			expect(report.outcome).toBe(expectedOutcome);
+			expect(store.getSession("failed-e")?.status).toBe("failed");
+			expect(closeRunnerFn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					executionId: "failed-e",
+					forcePreserved: false,
+				}),
+				expect.anything(),
+			);
+			expect(
+				report.nodes.find((node) => node.node.executionId === "failed-e"),
+			).toMatchObject({
+				confirmedGone: evidence !== "alive",
+				communicationsFinalized: evidence !== "alive",
+				teardown: { state: "skipped", reason: "crash_preserve" },
+			});
+			expect(probeLiveness).toHaveBeenCalledTimes(evidence === "gone" ? 0 : 1);
+			expect(finalizeCommDbSessionFn).toHaveBeenCalledTimes(
+				expectedIssueItemCalls,
+			);
+			expect(archiveThreads).toHaveBeenCalledTimes(expectedIssueItemCalls);
+			expect(linearConsistency).toHaveBeenCalledTimes(expectedIssueItemCalls);
+		},
+	);
 });
 
 describe("disposition arbitration (plan §4 #36/#39)", () => {
@@ -390,6 +512,94 @@ describe("issue-level items (plan §4 #32)", () => {
 		);
 		expect(archiveThreads).not.toHaveBeenCalled();
 		expect(report.outcome).toBe("blocked");
+	});
+
+	it("audits the exact per-node branches that block issue-level closeout", async () => {
+		const store = await freshStore();
+		seedSession(store, "e-transition", "running");
+		seedSession(store, "e-gone", "terminated");
+		seedSession(store, "e-comm", "completed");
+		const audit = vi.fn();
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				audit,
+				transitionOpts: { store, fsm: new WorkflowFSM({}) },
+				closeRunnerFn: vi.fn(async ({ executionId }) => ({
+					closed: true,
+					commDbFinalized: executionId !== "e-comm",
+					retiredGateCount: 1,
+				})) as never,
+				lookupTarget: ((executionId: string) =>
+					executionId === "e-gone"
+						? {
+								kind: "found",
+								target: { tmuxWindow: "w:1" },
+							}
+						: { kind: "gone" }) as never,
+				probeLiveness: async () => "alive" as const,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(audit).toHaveBeenCalledWith("closeout_issue_items_blocked", {
+			rootKey: UUID,
+			reason: "nodes_not_confirmed_gone",
+			nodes: expect.arrayContaining([
+				{
+					executionId: "e-transition",
+					blockedBy: [
+						"transition_blocked",
+						"confirmed_gone_false",
+						"communications_finalized_false",
+					],
+				},
+				{
+					executionId: "e-gone",
+					blockedBy: ["confirmed_gone_false"],
+				},
+				{
+					executionId: "e-comm",
+					blockedBy: ["communications_finalized_false"],
+				},
+			]),
+		});
+	});
+
+	it("audits a liveness exception instead of silently collapsing it into confirmedGone=false", async () => {
+		const store = await freshStore();
+		seedSession(store, "e-probe", "completed");
+		const audit = vi.fn();
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				audit,
+				lookupTarget: (() => ({
+					kind: "found",
+					target: { tmuxWindow: "w:probe" },
+				})) as never,
+				probeLiveness: async () => {
+					throw new Error("probe exploded");
+				},
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(audit).toHaveBeenCalledWith("closeout_node_liveness_error", {
+			executionId: "e-probe",
+			projectName: "proj",
+			error: "probe exploded",
+		});
 	});
 
 	it("blocked_open_pr style operator items → needs_operator; Linear runs after archive", async () => {

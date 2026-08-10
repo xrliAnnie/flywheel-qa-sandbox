@@ -15,6 +15,7 @@ import {
 } from "./work-kind.js";
 import { resolveMenuAgentFile } from "./workflow-menu.js";
 import {
+	isWorkflowManifestLand,
 	isWorkflowManifestV1Land,
 	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
@@ -146,7 +147,7 @@ export function resolveWorkflowGateAuthority(
 		snapshot.manifest.ship_claims.some((claim) => claim !== "founder_approved")
 			? "git_head"
 			: "snapshot_digest";
-	if (isWorkflowManifestV1Land(snapshot.manifest)) {
+	if (isWorkflowManifestLand(snapshot.manifest)) {
 		return { mode: "land", subjectKind: "git_head" };
 	}
 	const shipCapable = snapshot.resolved.nodes.filter((node) => {
@@ -357,6 +358,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 	const hasArtifactProducingGeneric = validated.nodes.some(
 		(node) => node.type === "generic" && node.produces_output === true,
 	);
+	const landVariant = isWorkflowManifestLand(validated);
 	const resolved: ResolvedWorkflowNode[] = validated.nodes.map((node) => {
 		const registry = getNodeTypeRegistryEntry(node.type);
 		const isAuxiliaryGeneric =
@@ -365,6 +367,16 @@ export function buildWorkflowRunSnapshotV2(input: {
 			hasArtifactProducingGeneric;
 		const capabilities: WorkflowNodeCapabilities = {
 			...registry.capabilities,
+			...(landVariant && node.type !== "land"
+				? {
+						can_ship: false,
+						can_land: false,
+						approval_gate_holder: false,
+					}
+				: {}),
+			...(landVariant && node.id === validated.approval_gate.node
+				? { can_request_ship_approval: true }
+				: {}),
 			...(isAuxiliaryGeneric
 				? {
 						creates_pr: false,
@@ -388,7 +400,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 			capabilities,
 			`workflow node ${node.id}`,
 		);
-		if (node.type === "gate") {
+		if (node.type === "gate" || node.type === "land") {
 			return { id: node.id, type: node.type, capabilities };
 		}
 		if (!node.vendor || !node.model || !node.effort) {
@@ -622,7 +634,7 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			const capabilities = parseCapabilities(
 				nodeRaw.capabilities,
 				`${path}.capabilities`,
-				manifest.schema_version === 1 && isWorkflowManifestV1Land(manifest),
+				isWorkflowManifestLand(manifest),
 			);
 			assertDesignNodeCompletionCapabilities(capabilities, path);
 			if (manifestNode.type === "gate" || manifestNode.type === "land") {

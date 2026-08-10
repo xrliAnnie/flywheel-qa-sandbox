@@ -865,54 +865,57 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("durably escalates a post-merge cleanup partial without holding the run", async () => {
-		const store = await storeWithLandIntent();
-		const landExecutor = vi.fn(async (operationId: string) => {
-			const claim = store.claimLandOperation({
-				operationId,
-				ownerId: "land-test-worker",
-				now: "2026-07-21T20:02:00.000Z",
-				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+	it.each(["issue_closeout_incomplete", "ship_workflow_pending"])(
+		"durably escalates land partial %s without holding the run",
+		async (reason) => {
+			const store = await storeWithLandIntent();
+			const landExecutor = vi.fn(async (operationId: string) => {
+				const claim = store.claimLandOperation({
+					operationId,
+					ownerId: "land-test-worker",
+					now: "2026-07-21T20:02:00.000Z",
+					leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+				});
+				if (!claim) throw new Error("land operation was not claimable");
+				store.setLandOperationDisposition({
+					operationId,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					state: "partial",
+					error: reason,
+					now: "2026-07-21T20:02:01.000Z",
+				});
+				return {
+					status: "partial" as const,
+					reason,
+				};
 			});
-			if (!claim) throw new Error("land operation was not claimable");
-			store.setLandOperationDisposition({
-				operationId,
-				ownerId: claim.ownerId,
-				generation: claim.generation,
-				state: "partial",
-				error: "issue_closeout_incomplete",
-				now: "2026-07-21T20:02:01.000Z",
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fakeStartDispatcher(store).dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-21T20:02:02.000Z"),
+				landExecutor,
+				resolveRunAlertIdentity: (projectName) => ({
+					leadId: "flywheel-eng-lead",
+					projectName,
+					leadResolution: "resolved",
+				}),
 			});
-			return {
-				status: "partial" as const,
-				reason: "issue_closeout_incomplete",
-			};
-		});
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fakeStartDispatcher(store).dispatcher,
-			env: WORKFLOW_ON,
-			now: () => new Date("2026-07-21T20:02:02.000Z"),
-			landExecutor,
-			resolveRunAlertIdentity: (projectName) => ({
-				leadId: "flywheel-eng-lead",
-				projectName,
-				leadResolution: "resolved",
-			}),
-		});
 
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
-		const partial = store
-			.listWorkflowRunEvents("run-land")
-			.find((event) => event.kind === "land_partial");
-		expect(partial).toBeDefined();
-		expect(store.getWorkflowAlertOutbox(partial!.event_uid)).toMatchObject({
-			state: "pending",
-			run_id: "run-land",
-		});
-		store.close();
-	});
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+			const partial = store
+				.listWorkflowRunEvents("run-land")
+				.find((event) => event.kind === "land_partial");
+			expect(partial).toBeDefined();
+			expect(store.getWorkflowAlertOutbox(partial!.event_uid)).toMatchObject({
+				state: "pending",
+				run_id: "run-land",
+			});
+			store.close();
+		},
+	);
 
 	it.each([
 		["v1", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],

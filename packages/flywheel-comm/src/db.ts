@@ -2743,18 +2743,24 @@ export class CommDB {
 					const questionId = input.targetQuestionId?.trim() as string;
 					const question = this.db
 						.prepare(
-							`SELECT id, from_agent, resolved_at, superseded_at, relay_state
+							`SELECT id, from_agent, checkpoint, resolved_at, superseded_at, relay_state
 							   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
 						)
 						.get(questionId) as
 						| {
 								id: string;
 								from_agent: string;
+								checkpoint: string | null;
 								resolved_at: string | null;
 								superseded_at: string | null;
 								relay_state: string;
 						  }
 						| undefined;
+					if (question?.checkpoint === "approve_to_ship") {
+						throw new Error(
+							`approve_to_ship_requires_founder_writer: ${questionId}`,
+						);
+					}
 					if (
 						!question ||
 						question.resolved_at !== null ||

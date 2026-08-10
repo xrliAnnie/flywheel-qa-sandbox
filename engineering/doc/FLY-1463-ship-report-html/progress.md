@@ -35,6 +35,8 @@ chunks:
 pointers: {}
 ---
 
+> **2026-08-09 更正:** 下文的 HTML ship 裁决 / `SHIP-VERDICT` 仅是历史交付记录，不再是操作指引。现行批准只认 ship 卡片上的 founder ✅ reaction 或卡片 thread 内 founder 直接回复。
+
 # FLY-1463 progress
 **phase**: implement (4/4)
 **next**: Request code review, then open PR

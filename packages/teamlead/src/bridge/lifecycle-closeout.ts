@@ -534,7 +534,12 @@ export async function closeoutIssue(
 		input.issueKey,
 		deps.extraAliases ?? [],
 	);
-	if (!resolution.ok) {
+	const identifierShip =
+		!resolution.ok &&
+		resolution.reason === "no_uuid_mapping" &&
+		input.disposition === "shipped" &&
+		input.authority === "ship_complete";
+	if (!resolution.ok && !identifierShip) {
 		audit("closeout_root_unresolved", {
 			issueKey: input.issueKey,
 			reason: resolution.reason,
@@ -549,12 +554,19 @@ export async function closeoutIssue(
 			outcome: "blocked",
 		};
 	}
+	const resolved = resolution.ok
+		? resolution
+		: {
+				rootKey: input.issueKey,
+				aliasKeys: resolution.aliasKeys,
+				lockKeys: resolution.lockKeys,
+			};
 
 	if (opts?.alreadyLocked) {
-		return closeoutIssueLocked(deps, input, resolution, audit);
+		return closeoutIssueLocked(deps, input, resolved, audit);
 	}
-	return deps.withIssueMutex(resolution.lockKeys, () =>
-		closeoutIssueLocked(deps, input, resolution, audit),
+	return deps.withIssueMutex(resolved.lockKeys, () =>
+		closeoutIssueLocked(deps, input, resolved, audit),
 	);
 }
 
@@ -1106,6 +1118,21 @@ async function closeoutIssueLocked(
 		audit("closeout_issue_items_blocked", {
 			rootKey,
 			reason: "nodes_not_confirmed_gone",
+			nodes: report.nodes.flatMap((nodeReport) => {
+				const blockedBy: string[] = [];
+				if (nodeReport.transition.state === "blocked") {
+					blockedBy.push("transition_blocked");
+				}
+				if (!nodeReport.confirmedGone) {
+					blockedBy.push("confirmed_gone_false");
+				}
+				if (!nodeReport.communicationsFinalized) {
+					blockedBy.push("communications_finalized_false");
+				}
+				return blockedBy.length > 0
+					? [{ executionId: nodeReport.node.executionId, blockedBy }]
+					: [];
+			}),
 		});
 	}
 
@@ -1340,6 +1367,7 @@ async function closeoutOneNode(
 		}
 	}
 	if (!consume("teardown")) return result;
+	let preserved = false;
 	try {
 		const closeRes = await closeRunnerFn(
 			{
@@ -1396,6 +1424,7 @@ async function closeoutOneNode(
 						error: closeRes.error ?? "commdb_finalize_failed:unknown",
 					};
 		} else if (closeRes.preserved) {
+			preserved = true;
 			result.teardown = { state: "skipped", reason: "crash_preserve" };
 		} else {
 			result.teardown = {
@@ -1428,8 +1457,8 @@ async function closeoutOneNode(
 			result.confirmedGone = true;
 		} else if (look.kind === "found") {
 			const live = await probeLiveness(look.target.tmuxWindow);
-			result.confirmedGone =
-				live === "absent" || live === "dead_pin" ? live === "absent" : false;
+			// A dead pin preserves the forensic window, but its process is provably dead.
+			result.confirmedGone = live === "absent" || live === "dead_pin";
 			if (!result.confirmedGone) {
 				log(
 					`node ${node.executionId} teardown ran but window still ${live} — blocked`,
@@ -1438,8 +1467,39 @@ async function closeoutOneNode(
 		} else {
 			result.confirmedGone = false; // lookup error → fail-closed
 		}
-	} catch {
+	} catch (err) {
+		audit("closeout_node_liveness_error", {
+			executionId: node.executionId,
+			projectName: node.projectName,
+			error: err instanceof Error ? err.message : String(err),
+		});
 		result.confirmedGone = false;
+	}
+	// Physical crash evidence stays intact; only its communication ledger closes.
+	if (preserved && result.confirmedGone) {
+		const finalized = finalizeCommDbSessionFn(
+			node.executionId,
+			node.projectName,
+		);
+		store.recordCommDbFinalizeOutcome({
+			executionId: node.executionId,
+			issueId: node.issueKey,
+			projectName: node.projectName,
+			ok: finalized.ok,
+			error: finalized.error,
+			audit: {
+				retiredGateCount: finalized.retiredGateCount,
+				retiredAskCount: finalized.retiredAskCount,
+				source: "bridge.lifecycle-closeout",
+			},
+		});
+		result.communicationsFinalized = finalized.ok;
+		if (!finalized.ok) {
+			result.teardown = {
+				state: "failed",
+				error: `commdb_finalize_failed:${finalized.error ?? "unknown"}`,
+			};
+		}
 	}
 	return result;
 }

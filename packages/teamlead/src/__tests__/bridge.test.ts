@@ -42,6 +42,8 @@ describe("Bridge scaffold", () => {
 		expect(body.shuttingDown).toBe(false);
 		expect(typeof body.uptime).toBe("number");
 		expect(body.sessions_count).toBe(0);
+		expect(body.buildMode).toBe("unknown");
+		expect(body.buildSha).toBeNull();
 
 		store.close();
 	});
