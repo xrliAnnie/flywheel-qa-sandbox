@@ -2,9 +2,9 @@
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
 https://linear.app/studio/issue/FLY-202
-**Date**: 2026-08-09
-**Status**: Complete (design node deliverable)
-**Node**: generalized workflow design node (bounded — 不派发后继节点,不 ship)
+**Date**: 2026-08-10
+**Status**: Active (repeatable fixture refresh)
+**Node**: sandbox real-Runner E2E execution
 
 ## 1. 一句话总结
 
@@ -19,8 +19,9 @@ https://linear.app/studio/issue/FLY-202
 - FLY-197 发现文档里引用的 `FLY-SBX-1` 并不存在——本 issue 就是补这个缺口的**常驻夹具(fixture)**。
 - 任务刻意设计成"多步、慢速、零风险":每一步产出可独立验证,步与步之间给 QA 留出
   观察 Runner mid-work 状态的窗口(idle watchdog、gate、心跳等场景都需要这种窗口)。
-- 历史上已跑过两轮(sandbox PR #29 建立、#30 刷新);baseline 重置后当前树中
-  `doc/qa/sandbox-notes.md` 不存在,每次 run 视作全新创建/刷新,**天然幂等**。
+- 该 fixture 会被 sandbox slot 重复注入;当前 baseline 已包含上一轮
+  `doc/qa/sandbox-notes.md`,所以每次 run 都应按**当前仓库快照原位刷新**同一文件,
+  既产生可 review 的真实 diff,又不累积按 run 命名的垃圾文件。
 
 ## 3. 实现设计(implement 节点的合同)
 
@@ -61,7 +62,7 @@ https://linear.app/studio/issue/FLY-202
 | issue 形态 | 真 Linear issue(本 issue) | mock PreHydrator 响应 — 偏离真实链路,框架明确 "no synthetic mode";复用生产 issue — 污染生产看板 |
 | 任务类型 | 纯文档 5 步 | 改代码任务 — 有生产风险且 CI 不稳;单步任务 — mid-work 窗口太短,QA 观察不到中间态 |
 | 文档落点 | `doc/qa/sandbox-notes.md` | 仓库根 — 与现有 QA 文档区(doc/qa/)割裂;每次 run 新文件名 — 破坏幂等,垃圾堆积 |
-| 幂等策略 | 同名文件重建/刷新 | 追加式累积 — 文件无限膨胀,历史 PR #30 已验证"刷新"模式可行 |
+| 幂等策略 | 同名文件按当前快照原位刷新 | 删除后原样重建 — 没有有效 review 信号;每次新增 run-stamped 文件 — 垃圾累积且破坏稳定路径 |
 
 ## 5. 诚实边界
 
@@ -71,7 +72,7 @@ https://linear.app/studio/issue/FLY-202
 
 **本设计不做**:
 - 不验证 Discord 推送/merge 流程(merge 为 founder-gated,属 harness 观察面而非本任务)。
-- 不保证 §2 目录表长期准确 — 内容以每次 run 的仓库快照为准,baseline 变了表就变。
+- 不保证 §2 目录表长期准确 — 内容以每次 run 的 tracked 顶层目录快照为准,baseline 变了表就变。
 - 不供生产 Lead/Runner 使用:issue 标题已标 "do not pick up",本 fixture 仅限 test-slot 注入。
 - 设计交付不等 founder review(节点合同);后续 founder 意见由当时 TURN 持有者以
   design-correction.md 增量修正。
