@@ -104,7 +104,6 @@ Stage the four listed files and commit with `docs(FLY-202): refresh QA sandbox f
 
 Push the feature branch and run `gh pr create --base main`. Expect a new PR URL in `xrliAnnie/flywheel-qa-sandbox` with base `main`.
 
-- [ ] **Step 4: Follow Flywheel review and landing**
+- [ ] **Step 4: Submit the workflow handoff**
 
-Register the mandatory request-driven code review for the frozen PR head, poll the exact returned question id, probe `gh pr checks` without `--watch`, write the required landing signal, and open the founder-bound `approve_to_ship` gate only after review and CI are green.
-
+Write and submit the generalized workflow output JSON, verify the local `HEAD` exactly matches the PR `headRefOid`, then complete this bounded node with route `needs_review`. The DAG orchestrator owns review, approval, and landing.
