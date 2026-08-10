@@ -20,6 +20,6 @@ Lead 指令 `[lead-instruction 71b5bf84-69ac-4640-9d15-0ad9d86a2227]`,转达 fou
 
 ## 不变项
 
-- founder 的 ship-enabled 结论不动;implementation-node 复审发现的 route 保真、headless socket、Discord 静默 DEAD 和 OFF mutex 逃生问题已在 plan R6 修正,以 R6 为技术权威;
+- founder 的 ship-enabled 结论不动;implementation-node 复审发现的 route 保真、headless socket、Discord 静默 DEAD、OFF mutex 逃生与双 runtime socket ownership 问题已在 plan R7 修正,以 R7 为技术权威;
 - OFF 作为回滚手段的可用性与测试(哨兵)不动;
 - flag 删除仍归全家族清理单。

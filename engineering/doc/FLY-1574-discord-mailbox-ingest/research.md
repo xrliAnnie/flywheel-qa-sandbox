@@ -65,7 +65,7 @@ MailboxQueue.enqueue(carrier='inbox', recipient_kind='lead', msg_class='model', 
       claimLeadBatch(打批,当前一 tick 一批,maxBatchSize 默认 10,000)
   → LeadDeliveryAdapter.deliverBatch()
       Claude: writeMailboxBatch → inbox.json + sidecar → Lead 官方 poller 注入
-      Codex : unix socket → CodexLeadInboxServer(TUI 托管)→ journal → turn
+      Codex : unix socket → CodexLeadInboxServer(TUI/headless 唯一 owner 托管)→ journal → turn
   → durable-accept receipt → markAuditDelivered → ackBatch(C 期口径:ACKED)
   失败:recordLeadDeliveryFailure(退避重试,maxModelAttempts=5,death→quarantine 告警)
 ```
@@ -101,8 +101,9 @@ enqueue({ carrier:'inbox', recipient_kind:'lead', msg_class:'model',
           type:'discord_chat', id:'chat:<leadId>:<discordMessageId>',
           from_agent:<founder|lead-id|discord-cross-department>,
           priority:1(保持 Discord 到达 seq,不按发件人重排),
-          collapse_key:'discord-route:<canonical route hash>',
-          content:<复刻直推格式的 <channel> 文本,含信封头> })
+          collapse_key:null,
+          content:<含 route/附件真相的 machine envelope>,
+          delivery_content:<复刻直推格式的干净 <channel> 文本> })
 → POST /api/lead-inbox/nudge(尽力而为,失败只记日志 —— comm.db 是权威,丢 nudge 最多慢一个 tick)
 → 结束(不 notify、不 complete、不 settle、不进重投 worker)
 ```
@@ -112,7 +113,7 @@ enqueue({ carrier:'inbox', recipient_kind:'lead', msg_class:'model',
 
 ### 3.2 内容格式:复刻直推
 
-MCP notification 的 meta(chat_id / message_id / user / user_id / ts / attachments)如今由 claude-code 渲染成 `<channel source="discord" ...>` 标签注入。收编后由**发送端**把同等信息渲染进 mailbox `content`。Claude 最后一公里写 raw member content,所以 mailbox id 在 `<channel receipt_id="...">` 里;Codex model batch 另有既有 `[receipt:<delivery_id>]` 头。Lead 的回复纪律零改动。机器信封同时持久化 resolver 已算好的 `replyChannelId/replyRoute`,供 Codex socket/journal 原样恢复;不同 route hash 不合批。
+MCP notification 的 meta(chat_id / message_id / user / user_id / ts / attachments)如今由 claude-code 渲染成 `<channel source="discord" ...>` 标签注入。收编后由**发送端**把同等信息渲染进 mailbox `delivery_content`;Claude 最后一公里写 raw delivery content,所以 mailbox id 在 `<channel receipt_id="...">` 里;Codex model batch 另有既有 `[receipt:<delivery_id>]` 头。Lead 的回复纪律零改动。DB `content` 单独持久化 resolver 已算好的 `replyChannelId/replyRoute` 与附件 machine envelope,供 Bridge claim/socket/journal 恢复;claim 从 envelope 导出 route key,不同 route 不合批,不借用预留的 `collapse_key`。
 
 ### 3.3 flag:`FLYWHEEL_MAILBOX_DISCORD`
 
@@ -154,14 +155,14 @@ typing indicator(第 6 步,不动)从收到消息起持续到 reply,UX 上盖住
 | -- | -- | -- |
 | R1 | 翻转窗口双轨:OFF 期欠账(external pending)在 ON 后仍需收尾 | 重投 worker 只认 `carrier='external'`(现状谓词),ON 行结构性不可见;flip 前跑一次 `chat-receipt pending` 清账(runbook 步骤) |
 | R2 | nudge 端点鉴权失败(env 缺)→ 30s 最坏延迟 | 插件 env 已实测持有 token(reply-guard 同源);缺 env 时记日志并依赖 tick 兜底,不 fail |
-| R3 | Codex socket 不在(TUI/headless 重启窗口)→ 通用 model lane 5 次后静默 DEAD | headless 补同构 consumer;`discord_chat` 不耗尽重试 + stall episode 告警,恢复后继续送 |
+| R3 | Codex socket 不在(TUI/headless 重启窗口)→ 通用 model lane 5 次后静默 DEAD | headless 补同构 consumer + 常驻 socket-owner 锁;暂态 `discord_chat` 不耗尽并周期告警,确定性 poison 先告警再 quarantine |
 | R4 | Lead 官方 poller 对「非 bridge 来源」内容的注入形态差异 | content 由我们渲染,poller 只是搬运文本;QA 真机验 `<channel>` 形态与 reply 工具可用性 |
 | R5 | 罕见类型(DM、attachment-only、permission reply)走错道 | permission reply 在分叉点之前拦截(不变);DM/attachment 全走信道,附件仍是元数据+按需下载 |
 | R6 | flag 极性/读点写错 → 「以为 OFF 其实 ON」 | registry 声明 + reverse-compat 哨兵测试(OFF = 逐字节旧行为);QA ON→OFF→ON 三段真机 |
 
 ## 6. 与 D 单(FLY-1573)的接口约定(并行开发不打架)
 
-- E 写入队侧普通行,并补两个 Discord 正确性 fence:同 route `collapse_key` 才可合批、D 未接管前 `discord_chat` 不静默 DEAD;不实现租约/60s 窗/通用死信闸;
+- E 写入队侧普通行,并补两个 Discord 正确性 fence:从 machine envelope 导出的同 route 才可合批、D 未接管前 `discord_chat` 不静默 DEAD;不实现租约/60s 窗/通用死信闸;
 - D **只改投递环与状态机**:租约/合批窗/死信闸对「从哪来的行」无感 —— E 的行天然被 D 的能力覆盖;
-- 两单共享 mailbox 行语义(C 单 schema,双方都不改列);E 复用既有 `collapse_key`,route 真相留在 machine envelope。
+- 两单共享 mailbox 行语义(C 单 schema,双方都不改列);E 不占预留 `collapse_key`,route 真相留在 machine envelope。
 - 验收交叉项:E 的验收 2(60s 合批)在 D 合入后才可完整验证;E 先落地时按 C 期语义验「同 tick 到达合为一批」。
