@@ -8,7 +8,7 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 
 ## 0. 一句话
 
-flag `FLYWHEEL_MAILBOX_DISCORD=1` 时,Discord 入站消息过完 gate 后**只写一行 `carrier='inbox'` 的普通 mailbox 信 + 尽力而为按门铃**,由现有投递环送达(Claude:inbox.json;Codex:unix socket);OFF(缺省)= 旧直推流字节等价。双轨共存靠 **per-message lane 仲裁协议(五态,§2.0)** 保证同一条 Discord 消息恰好被一条道拥有;**ON 路径不存在 raw 直推**——入队失败走 durable intent 延迟送达,恰好一次不被牺牲(§2.4)。删除旧机制留给全家族清理单。
+flag `FLYWHEEL_MAILBOX_DISCORD=1` 时,Discord 入站消息过完 gate 后**只写一行 `carrier='inbox'` 的普通 mailbox 信 + 尽力而为按门铃**,由现有投递环送达(Claude:inbox.json;Codex:unix socket);OFF = 旧直推流字节等价。双轨共存靠 **per-message lane 仲裁协议(五态,§2.0)** 保证同一条 Discord 消息恰好被一条道拥有;**ON 路径不存在 raw 直推**——入队失败走 durable intent 延迟送达,恰好一次不被牺牲(§2.4)。删除旧机制留给全家族清理单。**交付终态 = ON**(founder 2026-08-10 指令,见 design-correction.md):置 ON 并实测生效是 ship 完成定义的一部分,OFF 仅作运行时回滚手段保留。
 
 ## 1. 交付物与仓库分布
 
@@ -107,7 +107,7 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 
 ### Phase 2 — flag 注册(`packages/config`)
 
-- `registry.ts` 增 `mailbox_discord`:完整 `FeatureFlagSpec`(source `env`/envVar/valueKind `bool`/polarity `opt_in`/default OFF/category `feature`/scope `bridge_global`);
+- `registry.ts` 增 `mailbox_discord`:完整 `FeatureFlagSpec`(source `env`/envVar/valueKind `bool`/polarity `opt_in`/category `feature`/scope `bridge_global`);**交付合同(founder 2026-08-10,design-correction.md):极性 opt_in 只是取值机制(ON 时点须受 §6.1 栅栏控制),不是交付形态 —— 生产终态 = ON,「代码合入未置 ON」只允许作为 ship 序列中的中间态存在**;
 - readSites 只登记本仓可扫描位点(flywheel-comm reader + Codex strategy 调用点,timing `dotenv_live`);插件 fork consumer 记在 note + 契约 fixture;
 - **toggleability = `readonly`**(R2 MEDIUM-6:当前流程为人工原子改文件,不是 console 直切);
 - 测试:registry 结构套件。
@@ -186,7 +186,8 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 3. `#leads-roundtable` 跨 Lead 走 mailbox(含 Mufasa Codex 路径);
 4. **结构检查**:ON 路径直推调用点仅存在于 OFF 分支函数(单测/结构测试证明;**唯一 fenced 例外 = 0c 第 3 格 `legacy_xdept_pending` recovery,独立单测锁定**)+ 窗口内 `carrier='external'` 增量 = 0;
 5. 回归:延迟实测给数 —— SLO 分开:Claude(有 nudge)≤3.5s;Codex 无 nudge 最坏 +30s(单列已知项);`#flywheel-core` / issue thread 路由正常;
-6. ON 期同一 message_id 恰一行(inbox 道)+ Phase 5 脚本全量一窗。
+6. ON 期同一 message_id 恰一行(inbox 道)+ Phase 5 脚本全量一窗;
+7. **ship-enabled 验证环(founder 2026-08-10 指令)**:部署后**实测新流真的在跑**(founder 真发一条 → mailbox `discord_chat` 行出现、该消息零直推)→ OFF 回切实测旧流 OK → **再回 ON 并停在 ON**;「配置写了」不算完成,以行为证据为准。ship 未走完这一环 = 本单未交付。
 
 ## 4. 清理单交接清单(本单列全,不删)
 
@@ -205,7 +206,9 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 
 ## 6. flip runbook(生产)
 
-### 6.1 翻转前置(census → 清账)
+### 6.1 上线序列(census → 清账 → **置 ON = ship 收尾的无条件动作**)
+
+> founder 2026-08-10 指令(design-correction.md):**ship 完成的定义包含「flag 已置 ON 且实测生效」**。下面 1-4 是 ON 的受控前置(防裂脑),不是把 ON 变成可选 —— 栅栏全绿后必须立即走 5-6,不存在「合了等人来开」的停留态。
 
 1. 主仓兼容版本部署(OFF,验旧流无回归);
 2. 插件 fleet 全量部署 + Lead 重启;
