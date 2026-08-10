@@ -1,13 +1,13 @@
 ---
 issue: FLY-1574
 phase: design
-phaseCursor: 3/4
-updated: 2026-08-10T17:09:01.292Z
-nextStep: codex-design-review 循环至 APPROVED
+phaseCursor: 4/4
+updated: 2026-08-10T18:13:15.472Z
+nextStep: founder HTML 制作+发布
 chunks: []
 pointers: {}
 ---
 
 # FLY-1574 progress
-**phase**: design (3/4)
-**next**: codex-design-review 循环至 APPROVED
+**phase**: design (4/4)
+**next**: founder HTML 制作+发布
