@@ -91,6 +91,7 @@ Run a bounded parser that asserts three introductory paragraphs, exactly ten sum
 - Commit: `doc/FLY-202-qa-sandbox-fixture/design.md`
 - Commit: `doc/FLY-202-qa-sandbox-fixture/plan.md`
 - Commit: `doc/FLY-202-qa-sandbox-fixture/progress.md`
+- Commit: `doc/FLY-202-qa-sandbox-fixture/workflow-output.json`
 
 - [ ] **Step 1: Inspect the final diff and Lead inbox**
 
@@ -98,12 +99,12 @@ Run `git diff --check` and `git diff --stat origin/main...HEAD`. Expect Markdown
 
 - [ ] **Step 2: Commit the refreshed deliverable**
 
-Stage the four listed files and commit with `docs(FLY-202): refresh QA sandbox fixture notes`.
+Write the final workflow-output JSON first, then stage all five listed files and commit with `docs(FLY-202): refresh QA sandbox fixture notes`. If the refreshed files are already byte-identical to the committed branch, keep the existing commit instead of issuing an empty `git commit`.
 
-- [ ] **Step 3: Push and create the PR**
+- [ ] **Step 3: Push and create or reuse the PR**
 
-Push the feature branch and run `gh pr create --base main`. Expect a new PR URL in `xrliAnnie/flywheel-qa-sandbox` with base `main`.
+Push the feature branch, then query `gh pr list --head "$(git branch --show-current)" --base main --state open`. Reuse the matching open PR when one exists; otherwise run `gh pr create --base main`. Expect exactly one open PR in `xrliAnnie/flywheel-qa-sandbox` with base `main` and the current branch as its head.
 
 - [ ] **Step 4: Submit the workflow handoff**
 
-Write and submit the generalized workflow output JSON, verify the local `HEAD` exactly matches the PR `headRefOid`, then complete this bounded node with route `needs_review`. The DAG orchestrator owns review, approval, and landing.
+After the final push, do not run `flywheel-comm progress` or create any further commit. Re-read the selected PR and verify local `HEAD` exactly matches its `headRefOid`; if it does not, push the current head and repeat the check. Submit the already-committed generalized workflow output JSON with `workflow-output --payload-file <absolute-json-path>`, then complete this bounded node with `complete --route needs_review --pr <number>`. The DAG orchestrator owns review, approval, and landing.
