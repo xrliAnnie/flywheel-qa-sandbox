@@ -23,6 +23,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readMailboxDiscordFlag } from "flywheel-comm/discord-chat-ingest";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -40,6 +41,12 @@ import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
 } from "./CodexDiscordGateway.js";
+import { CodexDiscordMailboxStrategy } from "./CodexDiscordMailboxStrategy.js";
+import { CodexDiscordRuntimeOwnership } from "./CodexDiscordRuntimeOwnership.js";
+import {
+	CodexLeadInboxServer,
+	resolveCodexLeadInboxSocketPath,
+} from "./CodexLeadInboxSocket.js";
 import { type ChildTransport, CodexLeadProcess } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -1611,6 +1618,12 @@ export function buildCodexLeadRuntime(
 						}
 					: {}),
 			});
+			const inboxServer = new CodexLeadInboxServer({
+				socketPath: resolveCodexLeadInboxSocketPath(config.stateDir),
+				leadId: config.leadId,
+				router,
+				authSecret: config.botToken,
+			});
 			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
 			// mention AND route replies back to the source channel (chat/core stay
 			// always-handled + reply in chat). No cross-dept → neither hook → byte-compat.
@@ -1644,12 +1657,24 @@ export function buildCodexLeadRuntime(
 					? (m: DiscordInboundMessage) =>
 							crossDeptSet.has(m.channelId) ? m.channelId : undefined
 					: undefined;
+			const mailboxStrategy = new CodexDiscordMailboxStrategy({
+				leadId: config.leadId,
+				...(config.founderId ? { founderId: config.founderId } : {}),
+				dbPath: config.commDbPath,
+				queue: externalReceiptQueue,
+				journal,
+				router,
+				externalReceiptSaga,
+				mailboxReady: () => ownership?.mailboxReady() === true,
+				logger,
+			});
 			const gateway = new CodexDiscordGateway({
 				source,
 				router,
 				botUserId: config.botUserId,
 				channelIds: config.channelIds,
 				externalReceiptSaga,
+				durableAccept: (input) => mailboxStrategy.accept(input),
 				...(shouldHandle ? { shouldHandle } : {}),
 				// FLY-314 Phase 2 ON → registry allowlist + structured route supersede
 				// resolveReplyChannelId; OFF → FLY-267 source-channel routing.
@@ -1662,6 +1687,33 @@ export function buildCodexLeadRuntime(
 						? { resolveReplyChannelId }
 						: {}),
 			});
+			const ownership = new CodexDiscordRuntimeOwnership({
+				stateDir: config.stateDir,
+				leadId: config.leadId,
+				authSecret: config.botToken,
+				server: inboxServer,
+				gateway: {
+					start: async () => {
+						await gateway.start();
+						try {
+							await replyInThread?.start();
+						} catch (error) {
+							await gateway.stop();
+							throw error;
+						}
+					},
+					stop: async () => {
+						try {
+							await replyInThread?.stop();
+						} finally {
+							await gateway.stop();
+						}
+					},
+				},
+				readFlag: () =>
+					readMailboxDiscordFlag(join(homedir(), ".flywheel", ".env")),
+				logger,
+			});
 			return {
 				recover: () => router.recover(),
 				startGateway: async () => {
@@ -1671,21 +1723,17 @@ export function buildCodexLeadRuntime(
 						// accepted rows but never guesses that a message is absent.
 						absenceProvenThroughMessageId: "0",
 					});
+					// Open Bridge batch ingress after journal recovery and before Discord intake.
 					// FLY-314 Phase 2 (Codex code review #1): START THE GATEWAY FIRST so
 					// `source.onMessage(handler)` is installed BEFORE discovery's
 					// `addChannel()` can drain a resumed thread — otherwise drained downtime
 					// messages hit a missing handler (safe-to-advance) and are dropped while
 					// the cursor advances past them.
-					await gateway.start();
-					await replyInThread?.start();
+					await ownership.start();
 				},
 				stopGateway: async () => {
-					// Stop discovery first (no addChannel mid-shutdown), then the gateway.
-					await replyInThread?.stop();
-					// FLY-404 (Codex review LOW): close the typing keepalive in a
-					// `finally` so a throwing gateway.stop() can never leak the interval.
 					try {
-						await gateway.stop();
+						await ownership.stop();
 					} finally {
 						typing?.close();
 						externalReceiptQueue.close();

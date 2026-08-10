@@ -241,6 +241,8 @@ export class LeadJournal {
 		batchId: string;
 		memberIds: readonly string[];
 		payload: string;
+		replyChannelId?: string;
+		replyRoute?: RoundtableReplyRoute;
 	}): BatchAcceptResult {
 		if (!args.batchId.trim())
 			throw new Error("LeadJournal.acceptBatch: batchId is required");
@@ -261,6 +263,8 @@ export class LeadJournal {
 				idempotencyKey: args.batchId,
 				source: "mailbox",
 				payload: args.payload,
+				...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
+				...(args.replyRoute ? { replyRoute: args.replyRoute } : {}),
 				state: "accepted",
 				createdAt: ts,
 				updatedAt: ts,

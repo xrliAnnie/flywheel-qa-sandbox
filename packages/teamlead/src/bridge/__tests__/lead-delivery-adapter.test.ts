@@ -1,5 +1,6 @@
 import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,6 +17,7 @@ import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
 	type LeadDeliveryBatch,
+	LeadDeliveryUnavailableError,
 } from "../lead-delivery-adapter.js";
 
 const servers: CodexLeadInboxServer[] = [];
@@ -119,5 +121,54 @@ describe("LeadDeliveryAdapter", () => {
 		}).deliverBatch(batch);
 		expect(receipt.status).toBe("accepted_new");
 		await router.whenIdle();
+	});
+
+	it("uses v1 only for ordinary batches and refuses to downgrade Discord routes", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "fly1574-v1-adapter-"));
+		const socketPath = resolveCodexLeadInboxSocketPath(stateDir);
+		const requests: Array<{ method: string; version: number }> = [];
+		const server = createServer({ allowHalfOpen: true }, (socket) => {
+			let raw = "";
+			socket.on("data", (chunk) => {
+				raw += chunk.toString("utf8");
+			});
+			socket.once("end", () => {
+				const request = JSON.parse(raw) as { method: string; version: number };
+				requests.push(request);
+				socket.end(
+					request.method === "capabilities"
+						? `${JSON.stringify({ ok: false, error: "malformed submitBatch request" })}\n`
+						: `${JSON.stringify({ ok: true, status: "accepted_new", entryId: "entry-1" })}\n`,
+				);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			const adapter = new CodexLeadDeliveryAdapter({
+				stateDir,
+				leadId: "lead-a",
+				authSecret: "lead-bot-token",
+			});
+			await expect(adapter.deliverBatch(batch)).resolves.toMatchObject({
+				status: "accepted_new",
+			});
+			await expect(
+				adapter.deliverBatch({
+					...batch,
+					batchId: "discord-batch",
+					kind: "discord_chat",
+					replyChannelId: "123456789012345678",
+				}),
+			).rejects.toBeInstanceOf(LeadDeliveryUnavailableError);
+			expect(
+				requests.map(({ method, version }) => ({ method, version })),
+			).toEqual([
+				{ method: "capabilities", version: 2 },
+				{ method: "submitBatch", version: 1 },
+				{ method: "capabilities", version: 2 },
+			]);
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
 	});
 });

@@ -3172,4 +3172,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
+	{
+		name: "mailbox_discord",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_MAILBOX_DISCORD",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1574: route inbound Discord messages through the durable mailbox; =0 preserves the legacy direct path during the validation window",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/discord-chat-ingest.ts",
+				"readMailboxDiscordFlag",
+				"dotenv_live",
+				"dynamic",
+			),
+			envSite(
+				"packages/teamlead/src/lead-backends/codex/CodexDiscordMailboxStrategy.ts",
+				"CodexDiscordMailboxStrategy.accept",
+				"dotenv_live",
+				"dynamic",
+			),
+		],
+		toggleable: "readonly",
+		note: "Founder-required temporary rollback flag; remove with the family cleanup issue after live validation. The canonical Discord plugin reads the same dotenv value at message time.",
+	},
 ];

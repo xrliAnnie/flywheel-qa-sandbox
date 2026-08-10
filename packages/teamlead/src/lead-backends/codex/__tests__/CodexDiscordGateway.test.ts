@@ -226,6 +226,18 @@ describe("CodexDiscordGateway — forwarding + filters", () => {
 		]);
 	});
 
+	it("lets the mailbox strategy handle, retry, or fall through to legacy", () => {
+		const handled = make({ durableAccept: () => "handled" });
+		expect(handled.gw.handle(msg())).toBe(true);
+		expect(handled.router.submits).toHaveLength(0);
+		const retry = make({ durableAccept: () => "retry" });
+		expect(retry.gw.handle(msg())).toBe(false);
+		expect(retry.router.submits).toHaveLength(0);
+		const legacy = make({ durableAccept: () => "legacy" });
+		expect(legacy.gw.handle(msg())).toBe(true);
+		expect(legacy.router.submits).toHaveLength(1);
+	});
+
 	it("prefixes the original payload with the message instant in founder local time", () => {
 		const { gw, router } = make({
 			founderTimezone: () => "America/Los_Angeles",

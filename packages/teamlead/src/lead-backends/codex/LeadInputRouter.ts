@@ -112,6 +112,8 @@ export interface LeadInputBatch {
 	memberIds: readonly string[];
 	/** One packaged model input containing every regular member. */
 	payload: string;
+	replyChannelId?: string;
+	replyRoute?: RoundtableReplyRoute;
 }
 
 export interface LeadInputRouterOptions {
@@ -215,6 +217,9 @@ export class LeadInputRouter {
 	} {
 		const result = this.journal.acceptBatch(input);
 		if (result.status === "accepted_new") {
+			if (result.entry.replyRoute) {
+				this.onTopicEngaged?.(result.entry.replyRoute);
+			}
 			this.queue.push(result.entry.id);
 			void this.pump();
 		}

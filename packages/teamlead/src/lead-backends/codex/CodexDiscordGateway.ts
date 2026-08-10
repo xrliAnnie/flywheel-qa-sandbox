@@ -110,6 +110,13 @@ export interface CodexDiscordGatewayOptions {
 		}) => void;
 		complete: (messageId: string) => void;
 	};
+	durableAccept?: (input: {
+		message: DiscordInboundMessage;
+		payload: string;
+		createdAt: string;
+		replyChannelId?: string;
+		replyRoute?: RoundtableReplyRoute;
+	}) => "handled" | "legacy" | "retry";
 	/** Current founder timezone provider (injectable for deterministic tests). */
 	founderTimezone?: () => string;
 	logger?: {
@@ -133,6 +140,7 @@ export class CodexDiscordGateway {
 	};
 	private readonly registry?: { has: (channelId: string) => boolean };
 	private readonly externalReceiptSaga?: CodexDiscordGatewayOptions["externalReceiptSaga"];
+	private readonly durableAccept?: CodexDiscordGatewayOptions["durableAccept"];
 	private readonly founderTimezone: () => string;
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
@@ -154,6 +162,7 @@ export class CodexDiscordGateway {
 		this.resolveReplyRoute = opts.resolveReplyRoute;
 		this.registry = opts.registry;
 		this.externalReceiptSaga = opts.externalReceiptSaga;
+		this.durableAccept = opts.durableAccept;
 		this.founderTimezone = opts.founderTimezone ?? resolveFounderTimezone;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
@@ -206,13 +215,23 @@ export class CodexDiscordGateway {
 				sentAt === null
 					? msg.content
 					: `[sent ${formatFounderLocal(new Date(sentAt), this.founderTimezone())} — founder 当前时区渲染]\n${msg.content}`;
+			const createdAt = new Date(sentAt ?? Date.now()).toISOString();
+			const durable = this.durableAccept?.({
+				message: msg,
+				payload,
+				createdAt,
+				...(replyChannelId ? { replyChannelId } : {}),
+				...(replyRoute ? { replyRoute } : {}),
+			});
+			if (durable === "handled") return true;
+			if (durable === "retry") return false;
 			const crossDepartment = Boolean(replyChannelId || replyRoute);
 			if (crossDepartment && this.externalReceiptSaga) {
 				this.externalReceiptSaga.begin({
 					messageId: msg.id,
 					channelId: msg.channelId,
 					content: payload,
-					createdAt: new Date(sentAt ?? Date.now()).toISOString(),
+					createdAt,
 				});
 			}
 			this.router.submit({

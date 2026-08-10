@@ -25,9 +25,11 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { readMailboxDiscordFlag } from "flywheel-comm/discord-chat-ingest";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -37,6 +39,8 @@ import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
 } from "./CodexDiscordGateway.js";
+import { CodexDiscordMailboxStrategy } from "./CodexDiscordMailboxStrategy.js";
+import { CodexDiscordRuntimeOwnership } from "./CodexDiscordRuntimeOwnership.js";
 import {
 	CodexLeadInboxServer,
 	resolveCodexLeadInboxSocketPath,
@@ -644,12 +648,24 @@ function buildTuiGeneration(
 								? (msg: DiscordInboundMessage) =>
 										crossDeptSet.has(msg.channelId) ? msg.channelId : undefined
 								: undefined;
+						const mailboxStrategy = new CodexDiscordMailboxStrategy({
+							leadId: config.leadId,
+							...(config.founderId ? { founderId: config.founderId } : {}),
+							dbPath: config.commDbPath,
+							queue: externalReceiptQueue,
+							journal,
+							router,
+							externalReceiptSaga,
+							mailboxReady: () => ownership?.mailboxReady() === true,
+							logger,
+						});
 						const gateway = new CodexDiscordGateway({
 							source,
 							router,
 							botUserId: config.botUserId,
 							channelIds: config.channelIds,
 							externalReceiptSaga,
+							durableAccept: (input) => mailboxStrategy.accept(input),
 							...(shouldHandle ? { shouldHandle } : {}),
 							...(replyInThread
 								? {
@@ -659,6 +675,33 @@ function buildTuiGeneration(
 								: resolveReplyChannelId
 									? { resolveReplyChannelId }
 									: {}),
+						});
+						const ownership = new CodexDiscordRuntimeOwnership({
+							stateDir: config.stateDir,
+							leadId: config.leadId,
+							authSecret: config.botToken,
+							server: inboxServer,
+							gateway: {
+								start: async () => {
+									await gateway.start();
+									try {
+										await replyInThread?.start();
+									} catch (error) {
+										await gateway.stop();
+										throw error;
+									}
+								},
+								stop: async () => {
+									try {
+										await replyInThread?.stop();
+									} finally {
+										await gateway.stop();
+									}
+								},
+							},
+							readFlag: () =>
+								readMailboxDiscordFlag(join(homedir(), ".flywheel", ".env")),
+							logger,
 						});
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon
 						// persists a thread's rollout only at its FIRST TURN — a turnless
@@ -755,19 +798,11 @@ function buildTuiGeneration(
 								// messages are dropped + cursor advances past them).
 								// FLY-1373: open Bridge batch ingress only AFTER journal recovery
 								// (CodexLeadRuntime orders recover() before startGateway()).
-								await inboxServer.listen();
-								await gateway.start();
-								await replyInThread?.start();
+								await ownership.start();
 							},
 							stopGateway: async () => {
-								// Stop both intake surfaces before tearing down their shared router.
-								await inboxServer.close();
-								await replyInThread?.stop();
-								// FLY-404 (Codex review LOW): close the typing keepalive in a
-								// `finally` so a throwing gateway.stop() can never leak the
-								// interval across a generation rebuild.
 								try {
-									await gateway.stop();
+									await ownership.stop();
 								} finally {
 									typing?.close();
 									externalReceiptQueue.close();

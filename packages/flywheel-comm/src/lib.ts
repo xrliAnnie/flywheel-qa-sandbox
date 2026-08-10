@@ -34,6 +34,15 @@ export type {
 	RunnerShutdownControl,
 } from "./db.js";
 export { askHygieneEnabled, CommDB } from "./db.js";
+export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";
+export {
+	discordBatchPartitionKey,
+	ingestDiscordChat,
+	MAILBOX_DISCORD_ENV,
+	parseDiscordChatRoute,
+	readMailboxDiscordFlag,
+	renderDiscordChatContent,
+} from "./discord-chat-ingest.js";
 export type {
 	AuditDecision,
 	AuditDecisionSource,
@@ -46,6 +55,7 @@ export {
 export type { LeadInboxNudgeArgs } from "./lead-inbox-nudge.js";
 export { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 export type {
+	DiscordLaneVerdict,
 	EnqueueMailboxInput,
 	EnqueueMailboxResult,
 	MailboxLoopHeartbeat,
