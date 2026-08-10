@@ -155,7 +155,7 @@ typing indicator(第 6 步,不动)从收到消息起持续到 reply,UX 上盖住
 | -- | -- | -- |
 | R1 | 翻转窗口双轨:OFF 期欠账(external pending)在 ON 后仍需收尾 | 重投 worker 只认 `carrier='external'`(现状谓词),ON 行结构性不可见;flip 前跑一次 `chat-receipt pending` 清账(runbook 步骤) |
 | R2 | nudge 端点鉴权失败(env 缺)→ 30s 最坏延迟 | 插件 env 已实测持有 token(reply-guard 同源);缺 env 时记日志并依赖 tick 兜底,不 fail |
-| R3 | Codex socket 不在(TUI/headless 重启窗口)→ 通用 model lane 5 次后静默 DEAD | headless 补同构 consumer + typed/retrying 常驻 socket-owner 锁与认证 live probe;helper unavailable 时 OFF 仅 legacy Discord fail-open并持续告警;暂态 `discord_chat` 不耗尽,确定性 poison 先告警再 quarantine |
+| R3 | Codex socket 不在(TUI/headless 重启窗口)→ model lane 5 次后静默 DEAD | headless 补同构 consumer + typed/retrying 常驻 socket-owner 锁与认证 live probe;永不无锁 bind;helper unavailable 时 OFF 仅 legacy Discord fail-open并持续告警,该 Lead 全部 model rows 在 socket outage 期间不耗尽;确定性 Discord poison 先告警再 quarantine |
 | R4 | Lead 官方 poller 对「非 bridge 来源」内容的注入形态差异 | content 由我们渲染,poller 只是搬运文本;QA 真机验 `<channel>` 形态与 reply 工具可用性 |
 | R5 | 罕见类型(DM、attachment-only、permission reply)走错道 | permission reply 在分叉点之前拦截(不变);DM/attachment 全走信道,附件仍是元数据+按需下载 |
 | R6 | flag 极性/读点写错 → 「以为 OFF 其实 ON」 | registry 声明 + reverse-compat 哨兵测试(OFF = 逐字节旧行为);QA ON→OFF→ON 三段真机 |

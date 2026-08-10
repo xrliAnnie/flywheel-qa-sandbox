@@ -1,7 +1,7 @@
 # FLY-1574 Discord 收编:不再直推,统一走 mailbox — 实施计划
 
 Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-批次2-discord-收编不再直推统一走-mailbox)
-日期: 2026-08-10(R8,按 implementation-node cross-family design review 修订)
+日期: 2026-08-10(R9,按 implementation-node cross-family design review 修订)
 基于: research.md
 
 ---
@@ -70,9 +70,9 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 | * | 任一 journal/xdept lookup 或 complete 失败 | 返回 false(cursor 不前移,RestPoll 重投重试) |
 
 - **两层所有权硬件(R4 BLOCKER-1 + implementation review R2/R3 HIGH)**。TUI/headless 复用一个最小 `ProcessLifetimeFileLock`(`fcntl.flock` helper + parent stdin pipe),但持有两个不同锁;acquire 返回 typed `acquired | conflict | unavailable`,不把「活 owner」与「helper/FS 故障」混为一谈:
-  1. `codex-mailbox-socket.lock` **与 flag 无关、runtime 全生命期持有**。正常启动顺序固定为「先取 socket-owner 锁 → 再 listen socket → 再启动 gateway」;只有 socket owner 才允许创建 `CodexLeadInboxServer` 并尝试下述 ingress 锁。`conflict` 先对现 socket 发认证 `capabilities` probe:probe 成功=已有活 owner,本 runtime 进入 standby,绝不 unlink/rebind/启动 gateway;probe 失败=记录并告警。`unavailable` 时 **ON fail-stop**;**OFF 保留旧 Discord escape hatch**:可启动 legacy gateway,但不伪装拥有 socket,普通 mailbox last-mile 缺失会持续告警。无锁 fallback 只允许「socket path 不存在时 bind」;存在但 probe 失败的 stale socket 不做不安全 unlink;
+  1. `codex-mailbox-socket.lock` **与 flag 无关、runtime 全生命期持有**。不变量只有一句:**永远不无锁 bind socket;只有 lock holder 能 unlink stale path 后 bind**。正常启动顺序固定为「先取 socket-owner 锁 → owner unlink/bind socket → 再启动 gateway」;只有 owner 才创建 `CodexLeadInboxServer` 并尝试下述 ingress 锁。`conflict` 与 `unavailable` 都先发认证 `capabilities` probe:probe 成功=已有活 owner,本 runtime standby,绝不启动第二 gateway;probe 失败则告警并重试。确定无人服务且 `unavailable` 时 **ON fail-stop(进程活着但不注册 handler/gateway)**;**OFF 仅启动 legacy Discord gateway** 维持 escape hatch,绝不 bind/unlink socket,普通 mailbox last-mile 缺失持续告警。owner 取得 lock 后若 bind 失败,保留 lock、按同一 jitter backoff 重试 bind;OFF 可在告警下先跑 owner 的 legacy gateway,ON 在 bind 成功前 fail-stop;
   2. `discord-inbound.lock` 只约束新道:socket owner 在 ON 时必须持有,OFF 时释放并 bypass;运行中 OFF→ON 异步取锁,取锁完成前 `handle` 返回 false(cursor 不前移),ON→OFF 立即释锁并恢复旧流。
-  两锁失败都使用带 jitter 的 capped backoff(250ms→30s,进程生命期持续重试,无热旋):`conflict` 首次发 `codex_socket_owner_standby`,`unavailable`/活 owner probe 失败发高优先级 `codex_socket_owner_unavailable`,每 30 分钟续告,取得后发 recovered。helper 取锁后回 ready byte,再阻塞读 stdin 到 EOF;父进程死亡/close → EOF → helper 退出释锁;helper 意外退出时相应 owner 状态 fail-stop 并进入同一 retry。Python 用绝对 `/usr/bin/python3`(存在性先验),禁止 PID file/`mkdir`/lease 库;删 lock 文件不是解锁手段。测试覆盖 TUI-vs-TUI/TUI-vs-headless winner 对齐、重启 EOF race 最终 takeover、helper spawn/EMFILE/不可写 stateDir、live probe 成败、OFF legacy fallback、ON fail-stop、告警去重与恢复。
+  两锁与 owner bind 失败都使用带 jitter 的 capped backoff(250ms→30s,进程生命期持续重试,无热旋):`conflict` 首次发 `codex_socket_owner_standby`,`unavailable`/probe/bind 失败发高优先级 `codex_socket_owner_unavailable`,每 30 分钟续告,取得并 listen 后发 recovered。helper 取锁后回 ready byte,再阻塞读 stdin 到 EOF;父进程死亡/close → EOF → helper 退出释锁;helper 意外退出时相应 owner 状态 fail-stop 并进入同一 retry。Python 用绝对 `/usr/bin/python3`(存在性先验),禁止 PID file/`mkdir`/lease 库;删 lock 文件不是解锁手段。测试覆盖 TUI-vs-TUI/TUI-vs-headless winner 对齐、重启 EOF race 最终 takeover、helper spawn/EMFILE/不可写 stateDir、live probe 成败、owner bind 失败恢复、OFF legacy-only fallback、ON fail-stop、告警去重与恢复。
 - 测试矩阵:表 1-5 逐格;旧消息 accepted 后翻 ON + Gateway 重放;`xdept:` submit 后/complete 前崩溃(断言补 ACK);`xdept:` begin 后 journal 前崩溃再 ON(断言经 3 格收敛且行 ACK);**ON commit → cursor 持久化前崩溃 → OFF 重放(断言第 4 格跳过,零双 turn)**;**顺序 OFF 胜 → ON 后到者命中第 2 格 `legacy_codex_accepted`(journal hit,不是 `legacy_external`)**;mutex:ON 时 TUI-vs-TUI、TUI-vs-headless 双启动恰一胜,winner 同时持两锁,loser 零新道提交且零 socket accept/ACK;父进程 SIGKILL 后 helper 收 EOF 释锁;活 holder 不可被 socket unlink 顶掉;helper 独立崩溃时 fail-stop;OFF 时 ingress 锁退出但 socket owner/last-mile 继续,ON→OFF→ON 可实时回切。
 
 ### Phase 1 — flywheel-comm 入队侧
@@ -112,9 +112,9 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 
 - 不加 schema 列、不占 `collapse_key`:结构化 `replyChannelId`/`replyRoute` 已在受信 `content` machine envelope 中持久化;claim 事务只对 `type='discord_chat'` 调用 **total** `discordBatchPartitionKey(row)`——内部 catch 所有 parse/validation 错误,合法行返回 canonical route key,未知/坏行返回 `invalid:<delivery_id>` sentinel,因此坏行只形成 singleton batch,永不从 shared claim primitive 抛错或堵住别的 model row;
 - `claimLeadBatch` 冻结 `discord_chat` batch 时只更新同 `type + derived route key` 的候选,不与普通 model 信或不同 route 的 Discord 信混批;同 route 的连发信仍可由 D 的窗口策略合批,本单不改变其窗口机械;
-- `LeadDeliveryBatch`/Codex socket request 带一份 batch-level route metadata;socket v2 是 **additive**:server 接受 v1/v2,client 新发 v2;v2 route 字段严格校验且参与 HMAC,旧 v1 consumer 遇 v2 必须拒绝而非 `ok:true` 丢字段;新 server 可接旧 v1 普通 batch,但 v1 payload 若匹配受控 Discord `<channel source="discord"` wrapper 必拒绝(防旧 Bridge 把 route-bearing Discord 行当无 route ACK)。协议另加认证、lead-bound、零 journal 副作用的 `capabilities` method,返回 `{protocolVersions:[1,2],features:['discord_route_v2'],ownerEpoch}`。`CodexLeadInboxServer` 将 v2 route 传给 `LeadJournal.acceptBatch`,journal entry 仍是 `source:'mailbox'`(不触发旧 `ExternalReceiptSaga`),但保留 `replyChannelId`/`replyRoute`;`LeadInputRouter.submitBatch` 显式补与 `submit` 同构的 `onTopicEngaged` 调用,于是 `ensureReplyRoute`、budget seed、typing 和 outbound reply target 都保留;
+- `LeadDeliveryBatch` 带结构化 `kind:'discord_chat'|'model'` 与 batch-level route metadata。Codex adapter 每个 socket generation 先走认证 `capabilities` negotiation:server additive 接 v1/v2;支持 `discord_route_v2` 就发 v2(route 严格校验并进 HMAC),旧 v1 server 则只给 `kind='model'` 发 v1,对 `discord_chat` 明确返回 retryable `route_protocol_unavailable`、绝不降级。协议 probe lead-bound、零 journal 副作用,返回 `{protocolVersions:[1,2],features:['discord_route_v2'],socketOwnerId}`;`socketOwnerId=randomUUID()` 每 runtime 启动生成,结构化 startup log 同时记录 pid/lock helper pid 供 census 对照。`CodexLeadInboxServer` 将 v2 route 传给 `LeadJournal.acceptBatch`,journal entry 仍是 `source:'mailbox'`(不触发旧 `ExternalReceiptSaga`),但保留 `replyChannelId`/`replyRoute`;`LeadInputRouter.submitBatch` 显式补与 `submit` 同构的 `onTopicEngaged` 调用,于是 `ensureReplyRoute`、budget seed、typing 和 outbound reply target 都保留;
 - route parser 在 **delivery path** 再严格解析;route 失败、v2 同 batch route 不一致或 sentinel singleton = undeliverable 流程,绝不降级到 default chat;claim path 本身不抛错;
-- 现 C 期通用 model lane 在 5 次 adapter 失败后转 DEAD。本单仅对 route-homogeneous `type='discord_chat'` batch 区分两类:(a) transport/consumer 暂时不可用→不耗尽、继续 bounded backoff,第 5 次起发结构化 `discord_mailbox_delivery_stalled`,持续未恢复时每 30 分钟重告一次,恢复后清 episode;(b) ingest 边界本应排除但历史/损坏数据触发的 route parse 或 `membership_conflict`→**先**发结构化 `discord_mailbox_undeliverable`,再以明确 `dead_reason=discord_undeliverable:<reason>` 进可查询 quarantine,绝不静默 DEAD。audit 对任何 Discord DEAD 行要求同 id 告警证据。D 合入后由其 dead-letter gate 接管此特例。
+- 现 C 期通用 model lane 在 5 次 adapter 失败后转 DEAD。本单把失败分三类:(a) Codex socket/capability **transport unavailable** 是 Lead 级 outage——该 Lead 的**所有 model row** 均不耗尽、继续 bounded backoff,复用 `codex_socket_owner_unavailable` 周期告警,避免 Runner question/lead event 在锁故障下先 DEAD;(b) Discord 其他暂态 transport error→不耗尽,第 5 次起 `discord_mailbox_delivery_stalled`,每 30 分钟重告,恢复后清 episode;(c) ingest 边界本应排除但历史/损坏数据触发的 route parse 或 `membership_conflict`→**先**发 `discord_mailbox_undeliverable`,再以 `dead_reason=discord_undeliverable:<reason>` 进可查询 quarantine。其他非 Discord、非 socket-outage 的既有 5 次语义不动。audit 对任何 Discord DEAD 行要求同 id 告警证据。D 合入后由其 dead-letter gate 接管此特例。
 
 ### Phase 2 — flag 注册(`packages/config`)
 
@@ -127,13 +127,13 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 
 接入点 = `CodexDiscordGateway.handle(msg): boolean`(`CodexDiscordGateway.ts:186`),`passesFilters` 与 reply-route 解析之后,注入式 durable-accept strategy(TUI + headless 两处 wiring 同一 strategy):
 
-- **第 0 步 = socket owner + live guard**:两 runtime 先按 typed acquire + probe/retry 竞争常驻 socket-owner 锁;正常只有 winner 才 listen inbox socket 与启动 gateway,winner 再运行 §0c 的 `LiveDiscordLaneGuard`。OFF 释放 ingress 锁但保留 socket owner/last mile;只有 typed `unavailable` 故障可在告警下启动 legacy-only gateway;ON 未取两锁时 handler 返回 false。两锁都不加第二 flag;
+- **第 0 步 = socket owner + live guard**:两 runtime 先按 typed acquire + probe/retry 竞争常驻 socket-owner 锁;正常只有 winner 才 listen inbox socket 与启动 gateway,winner 再运行 §0c 的 `LiveDiscordLaneGuard`。OFF 释放 ingress 锁但保留 socket owner/last mile;typed `unavailable` 且 probe 证明无人服务时可在告警下启动 legacy-only gateway;ON 未取两锁时 gateway/handler 均不注册,进程保活重试。两锁都不加第二 flag;
 - **两种 flag 状态都先过 0c transition table**(R3 BLOCKER-1):ON 走到第 5 格才同步 `ingestDiscordChat`(better-sqlite3 同步事务,兼容 sync boolean),并把已解析的 `replyChannelId`/`replyRoute` 与正文一起持久化;任一「已有归属」verdict 均不进 `LeadInputRouter`、不注入 turn、不写 saga → 返回 true(cursor 前移);nudge 异步尽力而为(无凭据记 debug,tick 兜底,最坏 +30s 单列 SLO);
 - **ON 且 enqueue 抛错:返回 false(cursor 不前移)→ RestPoll 自然重投 = 内建重试**;连续失败记结构化 ingest-stall 日志(该 channel 队头暂停 = 已知语义,flag OFF 为逃生口;RestPoll cursor 即 durable NACK,故 Codex 侧无需 write-ahead intent);
 - OFF:0c 第 1-4 格照跑(过渡保护;第 4 格防翻转双 turn),第 5 格 = 现路径字节等价(哨兵);OFF 不声称修复旧流的双 runtime 运维风险;
 - **headless 不得只写不读**:`codex-lead-runtime.ts` 补与 TUI 同构的 `CodexLeadInboxServer`;`startGateway` 先走 socket-owner typed acquire/probe/retry,owner 才 `inboxServer.listen()` 并启动 gateway;OFF infrastructure-unavailable 才可 legacy-only gateway。`stopGateway` 反序停 gateway→close socket→释 owner 锁。Bridge 的 `CodexLeadDeliveryAdapter` 因此在 TUI/headless 两种形态都有唯一 last-mile consumer;
 - 字段降级显式化:authorName=authorId、attachments=[]、msgKind 按现有 channel 信息;attachment-only 消息今天就被 `passesFilters` 丢弃,保持;
-- 测试四层:Gateway(0c 全矩阵、route 保真、失败 false 重投、cursor 语义)/ route-aware batch(同 route 可合、跨 route 必分、坏 envelope singleton 且后续普通行可 claim)/ RestPoll(回归)/ wiring(TUI+headless 都有 strategy + inbox socket,headless 缺 socket 的结构测试必红);另锁定新 client→旧 v1 server route batch 必拒绝、旧 v1普通 batch→新 server 可收、旧 v1 Discord wrapper→新 server 必拒绝、`capabilities` 零 journal 写、`submitBatch` roundtable 只 seed 一次、双 runtime loser 不能 accept/ACK。
+- 测试四层:Gateway(0c 全矩阵、route 保真、失败 false 重投、cursor 语义)/ route-aware batch(同 route 可合、跨 route 必分、坏 envelope singleton 且后续普通行可 claim)/ RestPoll(回归)/ wiring(TUI+headless 都有 strategy + inbox socket,headless 缺 socket 的结构测试必红);另锁定 capability negotiation:新 client→旧 v1 server 的普通 batch 自动 v1,Discord batch retry 不发送;新 server 接 v1/v2;`capabilities` 零 journal 写;socket outage 下普通 model 跨过 5 次不 DEAD;`submitBatch` roundtable 只 seed 一次;双 runtime loser 不能 accept/ACK。
 
 ### Phase 4 — Discord 插件 fork(插件仓,独立 PR)
 
@@ -188,7 +188,7 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 | Q6 | **失败注入(零直推)**:注坏 comm.db | 消息**不直推**、write-ahead intent 已先落盘;退避重试无热旋(窗口内 CLI 调用数有上限);超阈值出 stall 通告;**无新消息也自恢复**(定时唤醒);修复 db 后经 inbox 道送达**恰好一次**;窗口全程 external 增量 0 |
 | Q7 | 幂等:Gateway 重放同 message_id | mailbox 一行不重,Lead 只见一次 |
 | Q8 | 翻转竞态:OFF 直推后立刻 ON 重放 / 反向 / 顺序竞争 | 0b 表逐格验证;**按胜者分组断言:ON 胜 → OFF 败者 `active_inbox`;OFF 胜 → ON 败者 `legacy_external`**;零双投零 identity-conflict 日志 |
-| Q9 | Codex transition 全矩阵 + mutex | 0c 表 1-5 格全验;ON 双 runtime 的同一 winner 同时持 socket-owner + ingress READY,败者零新道提交、零 socket accept/ACK;EOF race 经 jitter retry 自动 takeover;helper unavailable 时 OFF legacy gateway 仍收 Discord 且持续告警、ON fail-stop;认证 capabilities probe 零 journal 副作用;OFF→ON 取锁窗口 cursor 不前移,ON→OFF→ON 真时回切 |
+| Q9 | Codex transition 全矩阵 + mutex | 0c 表 1-5 格全验;ON 双 runtime 的同一 winner 同时持 socket-owner + ingress READY,败者零新道提交、零 socket accept/ACK;EOF race 经 jitter retry 自动 takeover;helper unavailable 先 probe,无人服务时 OFF legacy-only gateway 仍收 Discord且**零 socket bind**,ON 不注册 handler;owner bind 失败可恢复;认证 capabilities probe 零 journal 副作用;OFF→ON→OFF 真时回切 |
 | Q10 | 序列与 route batch | 允许的普通用户先发、founder 后发时仍按 seq 出现;同 route 可合批,不同 channel/thread 必分批 |
 
 ### 3.2 生产验收(映射 issue 验收 1-6)
@@ -224,12 +224,12 @@ Codex strategy 对每条入站按序跨 store 判定。saga 真实协议 = `begi
 
 1. 主仓兼容版本部署(OFF,验旧流无回归);
 2. 插件 fleet 全量部署 + Lead 重启;
-3. **部署/能力顺序**:flag 保持 OFF;同一新 artifact 先重启全部 Codex Lead consumer,用认证 `capabilities` method 验证 v2 route feature + ownerEpoch(零 journal 写),再重启 Bridge 到 v2 client;随后每个 Lead/shard 探 `chat-ingest --version-probe` + 插件启动日志 + guard/helper 取放锁。OFF 期每 Lead 必须恰一个 socket-owner、无 ingress holder,翻 ON 后同一 runtime 必须再成为唯一 ingress READY holder,全绿才继续;反向回滚必须先置 OFF、停新 Discord 入队,再按 Bridge(v1 client)→Lead(v1 server) 顺序回退;
+3. **部署/能力顺序**:flag 保持 OFF,沿用 `restart-services.sh` 的 Bridge-first 顺序:新 Bridge adapter 先 probe;旧 consumer 无 v2 feature 时普通 model 自动发 v1,且 OFF 期没有新 Discord mailbox 行,因此 skew 窗安全;随后 Lead restart 到新 consumer。全舰队用认证 `capabilities` 验证 `discord_route_v2 + socketOwnerId`(零 journal 写),再查每个 shard 的 `chat-ingest --version-probe`、插件启动日志、guard/helper。OFF 期每 Lead 必须恰一个 socket-owner、无 ingress holder,翻 ON 后同一 runtime 必须再成为唯一 ingress READY holder,全绿才继续;反向回滚先置 OFF、停新 Discord 入队,adapter negotiation 同样允许 Bridge/Lead 任一顺序;
 4. 清旧账:全 shard `chat-receipt pending` 清零 + Codex `xdept:` reconciler 水位确认;
 5. 原子改写 `~/.flywheel/.env` 置 ON(mktemp+mv);
 6. 立刻真 Discord 完整对话一轮(founder 参与)+ Phase 5 对账脚本一窗。
 
-mutex 诊断:两个锁文件都是稳定 inode,不删;优先用认证 `capabilities` 取 live ownerEpoch,再用 `lsof <stateDir>/codex-mailbox-socket.lock` 与 `lsof <stateDir>/discord-inbound.lock` 交叉验证;两者在 ON 时必须归属同一 runtime,OFF 时只有 socket 锁在场。若 helper 无父 runtime,先将 flag 置 OFF(新道停用),再终止该 orphan helper;不用 unlink 伪装解锁。`codex_socket_owner_unavailable` 未 recovered 时普通 mailbox last-mile 未恢复,不得仅凭 legacy Discord 可用宣告健康。
+mutex 诊断:两个锁文件都是稳定 inode,不删;优先用认证 `capabilities` 取 live `socketOwnerId`,对照同一 structured startup log 的 runtime pid/helper pid,再用 `lsof <stateDir>/codex-mailbox-socket.lock` 与 `lsof <stateDir>/discord-inbound.lock` 交叉验证;两者在 ON 时必须归属同一 runtime,OFF 时只有 socket 锁在场。若 helper 无父 runtime,先将 flag 置 OFF(新道停用),再终止该 orphan helper;不用 unlink 伪装解锁。`codex_socket_owner_unavailable` 未 recovered 时普通 mailbox last-mile 未恢复,不得仅凭 legacy Discord 可用宣告健康。
 
 ### 6.2 回滚语义(诚实版)
 
