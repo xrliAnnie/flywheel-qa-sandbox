@@ -17,7 +17,7 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 | `mailbox` 表**仍有 `carrier` 列**(`'inbox'|'external'`) | `mailbox-schema.ts:41` + 四个 partial index 按 `carrier='inbox'` 过滤 |
 | Bridge 已有门铃端点 `/api/lead-inbox/nudge`(Bearer token) | `plugin.ts:2263-2281`,`tokenAuthMiddleware(config.apiToken, ...)` |
 | Discord 插件进程已持有 `BRIDGE_URL` + `TEAMLEAD_API_TOKEN` + `LEAD_ID` + `PROJECT_NAME` | 插件 `server.ts:353-356`(reply-guard 调用已在用同一组 env) |
-| Codex TUI runtime 已托管 mailbox 最后一公里(unix socket server) | `codex-lead-tui-runtime.ts:612-758`(`CodexLeadInboxServer.listen()`) |
+| Codex TUI runtime 已托管 mailbox 最后一公里;headless 缺失 consumer | TUI:`codex-lead-tui-runtime.ts:612-758`;headless `codex-lead-runtime.ts` 无 `CodexLeadInboxServer`(实施记账) |
 | 同链路延迟实测:Runner 报告经 mailbox → Lead 眼前 2~3.5s | FLY-208 QA 真机重放记录(vs 事故前 9 分钟) |
 
 ## 1. 现状代码审计 — 直推链路逐跳
@@ -100,18 +100,19 @@ carrier='external':external_delivery ACKED 290 / DEAD 162(影子账)
 enqueue({ carrier:'inbox', recipient_kind:'lead', msg_class:'model',
           type:'discord_chat', id:'chat:<leadId>:<discordMessageId>',
           from_agent:<founder|lead-id|discord-cross-department>,
-          priority:<founder=0, 其他=1>(沿用现算法),
+          priority:1(保持 Discord 到达 seq,不按发件人重排),
+          collapse_key:'discord-route:<canonical route hash>',
           content:<复刻直推格式的 <channel> 文本,含信封头> })
 → POST /api/lead-inbox/nudge(尽力而为,失败只记日志 —— comm.db 是权威,丢 nudge 最多慢一个 tick)
 → 结束(不 notify、不 complete、不 settle、不进重投 worker)
 ```
 
 - **幂等**:`id` 沿用 `chat:<leadId>:<messageId>` 决定论构造;`MailboxQueue.enqueue` 对重复 id 返回 archived/已存在 → Discord Gateway 重连重放同一条消息不会双投。
-- **优先级**:founder=0 抢在普通事件(lead_event priority 2)前面,`mailbox_claim` 索引本来就按 `(priority, seq)` 排。
+- **优先级**:Discord 统一为 1,仍抢在普通 lead event(priority 2)前面,但允许用户与 founder 在同会话里严格按 seq 出现。
 
 ### 3.2 内容格式:复刻直推
 
-MCP notification 的 meta(chat_id / message_id / user / user_id / ts / attachments)如今由 claude-code 渲染成 `<channel source="discord" ...>` 标签注入。收编后由**发送端**(插件)把同等信息渲染进 mailbox `content`,Lead 眼前的文本形态与今天一致(外加一行 `[receipt:<delivery_id>]` 头)。Lead 的回复纪律(带 chat_id 的 reply、reply_to、download_attachment)与 lead-rules 文档零改动。
+MCP notification 的 meta(chat_id / message_id / user / user_id / ts / attachments)如今由 claude-code 渲染成 `<channel source="discord" ...>` 标签注入。收编后由**发送端**把同等信息渲染进 mailbox `content`。Claude 最后一公里写 raw member content,所以 mailbox id 在 `<channel receipt_id="...">` 里;Codex model batch 另有既有 `[receipt:<delivery_id>]` 头。Lead 的回复纪律零改动。机器信封同时持久化 resolver 已算好的 `replyChannelId/replyRoute`,供 Codex socket/journal 原样恢复;不同 route hash 不合批。
 
 ### 3.3 flag:`FLYWHEEL_MAILBOX_DISCORD`
 
@@ -129,13 +130,13 @@ MCP notification 的 meta(chat_id / message_id / user / user_id / ts / attachmen
 ### 3.5 fail 方向反转(必须在 plan 里写死并测死)
 
 - 旧流 fail-open:「记账失败 → 照样直推」(可用性优先,代价是账缺一行);
-- 新流唯一入口:**enqueue 失败 = 投递失败**。此时不允许静默丢:①立刻重试一次;②仍失败 → **fallback 直推 + loud stderr + 给 Lead 的内容前置一条 `[MAILBOX-BYPASS]` 标记行**(可查询口径:grep 插件日志 + Lead 收件内容都能发现绕行)。founder 消息永远不消失是底线;绕行必须留下可查的痕迹是硬检查要求。
+- 新流唯一入口:**enqueue 失败 = 投递尚未提交**。插件在第一次 CLI 前先落 durable ingest intent,无权威 verdict 就保留 intent 按有界退避重放;Codex RestPoll 以 cursor 不前移作 durable NACK。**ON 绝无 fallback raw 直推**,flag OFF 才是唯一旧流逃生口。
 
 ### 3.6 硬检查(mailbox id)落地口径
 
-1. ON 路径投递内容自带 `[receipt:<delivery_id>]`(投递环既有渲染);
-2. 对账查询(只读脚本/文档化 SQL):Lead 收件箱 sidecar(`<inbox>.flywheel.jsonl` 的 flywheelId)⟕ `mailbox.delivery_id` —— 出现在 sidecar 而 mailbox 无账的即绕行;
-3. §3.5 的 `[MAILBOX-BYPASS]` 日志。
+1. Codex 内容带 `[receipt:<delivery_id>]`;Claude `<channel>` 带 `receipt_id=<delivery_id>`;
+2. 对账查询:Claude sidecar flywheelId / Codex journal batch member id ⟕ `mailbox.delivery_id`;
+3. ON 分叉的结构测试证明无 lane verdict 保护的 raw notify/router.submit 调用不可达。
 
 ## 4. 延迟预算(验收 5 的定量依据)
 
@@ -153,14 +154,14 @@ typing indicator(第 6 步,不动)从收到消息起持续到 reply,UX 上盖住
 | -- | -- | -- |
 | R1 | 翻转窗口双轨:OFF 期欠账(external pending)在 ON 后仍需收尾 | 重投 worker 只认 `carrier='external'`(现状谓词),ON 行结构性不可见;flip 前跑一次 `chat-receipt pending` 清账(runbook 步骤) |
 | R2 | nudge 端点鉴权失败(env 缺)→ 30s 最坏延迟 | 插件 env 已实测持有 token(reply-guard 同源);缺 env 时记日志并依赖 tick 兜底,不 fail |
-| R3 | Codex 侧 socket server 没起(TUI 重启窗口)→ 投递环 adapter 报错重试 | 既有 retry/backoff + quarantine 告警链路;属 C 单已验证行为 |
+| R3 | Codex socket 不在(TUI/headless 重启窗口)→ 通用 model lane 5 次后静默 DEAD | headless 补同构 consumer;`discord_chat` 不耗尽重试 + stall episode 告警,恢复后继续送 |
 | R4 | Lead 官方 poller 对「非 bridge 来源」内容的注入形态差异 | content 由我们渲染,poller 只是搬运文本;QA 真机验 `<channel>` 形态与 reply 工具可用性 |
 | R5 | 罕见类型(DM、attachment-only、permission reply)走错道 | permission reply 在分叉点之前拦截(不变);DM/attachment 全走信道,附件仍是元数据+按需下载 |
 | R6 | flag 极性/读点写错 → 「以为 OFF 其实 ON」 | registry 声明 + reverse-compat 哨兵测试(OFF = 逐字节旧行为);QA ON→OFF→ON 三段真机 |
 
 ## 6. 与 D 单(FLY-1573)的接口约定(并行开发不打架)
 
-- E **只写入队侧**:`carrier='inbox'` 普通行,不碰投递环内部;
+- E 写入队侧普通行,并补两个 Discord 正确性 fence:同 route `collapse_key` 才可合批、D 未接管前 `discord_chat` 不静默 DEAD;不实现租约/60s 窗/通用死信闸;
 - D **只改投递环与状态机**:租约/合批窗/死信闸对「从哪来的行」无感 —— E 的行天然被 D 的能力覆盖;
-- 两单唯一共享物 = mailbox 行语义(C 单 schema,双方都不改列);
+- 两单共享 mailbox 行语义(C 单 schema,双方都不改列);E 复用既有 `collapse_key`,route 真相留在 machine envelope。
 - 验收交叉项:E 的验收 2(60s 合批)在 D 合入后才可完整验证;E 先落地时按 C 期语义验「同 tick 到达合为一批」。

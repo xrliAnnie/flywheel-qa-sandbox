@@ -34,7 +34,7 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 
 | 选项 | 说明 | 判断 |
 | -- | -- | -- |
-| **A1 适配器内改(选定)** | Claude:插件 `handleInbound` 里 gate 之后分叉;Codex:`codex-lead-tui-runtime` 入站处理里同位置分叉 | ✅ gate/allowlist/roundtable 路由/permission 拦截/typing/反应 emoji 全部不动;改动面 = 「投递动作」一个点 |
+| **A1 适配器内改(选定)** | Claude:插件 `handleInbound` 里 gate 之后分叉;Codex:TUI/headless 共用 Gateway strategy | ✅ gate/allowlist/roundtable resolver/permission 拦截/typing/反应 emoji 全部不动;改动面 = 「投递动作」一个点 |
 | A2 新建独立 ingest 进程(Bridge 拉 Discord) | Bridge 自己连 Discord Gateway 收消息 | ❌ 重复建一套 bot 连接与 gate 逻辑;违背「适配器不变」总纲;改动面爆炸 |
 | A3 插件照旧直推,Bridge 收到后转写 mailbox | 在 Lead 侧加 hook 把直推内容回写队列 | ❌ 还是两条真相链;等于把影子行反过来做一遍,病根没除 |
 
@@ -53,7 +53,7 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 | **C1 复刻直推格式(选定)** | content 渲染成与今天 MCP notification 注入等价的 `<channel source="discord" chat_id=... message_id=... user=...>` 文本(含附件清单) | ✅ Lead 的回复纪律(reply 工具带 chat_id / reply_to、download_attachment)零改动;lead-rules 文档零改动;回归面最小 |
 | C2 新设计一种信格式 | 结构化 JSON 信封 | ❌ 所有 Lead 的 Discord 行为规则要跟着改写,回归面失控;信息一样,只是皮不同 |
 
-投递环已有的 `[receipt:<delivery_id>]` 头继续保留 —— 它同时就是「硬检查」的载体(见 §6)。
+投递后每个后端都有可见 id:Codex 是既有 `[receipt:<delivery_id>]` 头;Claude 的 raw member content 没有该头,所以由受控 `<channel ... receipt_id="<delivery_id>">` 承载。
 
 ### 选择点 D:旧机制(影子行 + complete/settle + 重投 worker)删不删?
 
@@ -66,13 +66,13 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 
 | 选项 | 说明 | 判断 |
 | -- | -- | -- |
-| **E1 审计口径 + 旁路日志(选定)** | ① ON 路径投递内容天然带 `[receipt:<delivery_id>]`;② 提供一个只读对账查询:Lead 收件箱 sidecar 里的 flywheelId ↔ mailbox.delivery_id 连接,查出「出现在 Lead 眼前但 mailbox 无账」的内容;③ ON 状态下适配器若走了直推分支,写一条 loud stderr 日志 | ✅ 满足 issue「至少留一条日志/一个可查询的口径」;不给热路径加硬闸 |
+| **E1 审计口径 + 旁路日志(选定)** | ① Codex `[receipt:]` / Claude `<channel receipt_id>` 都携 id;② 提供只读对账:Claude sidecar flywheelId 或 Codex journal batch member id ↔ mailbox.delivery_id;③ ON 状态下适配器直推结构测试必红 | ✅ 满足 issue「至少留一条日志/一个可查询的口径」;不给热路径加新单点硬闸 |
 | E2 transport 层硬拦(无 id 拒写) | 在 `writeMailboxBatch` / MCP notify 处强制校验 | ❌ Bridge 事件、bootstrap、permission 通知等合法非信内容也会撞闸;会把「审计」做成「新的单点故障」 |
 
 ## 5. 明确不做(本单边界)
 
 - ❌ 不动 Discord **出站**(Lead 回复 founder 的 reply 工具链路,一行不改)
-- ❌ 不动最后一公里(inbox.json + sidecar / unix socket / 官方 poller)
+- ❌ 不替换最后一公里(inbox.json + sidecar / unix socket / 官方 poller 仍是原通道);Codex socket 只扩 route metadata,headless 补缺失的同构 consumer
 - ❌ 不实现租约到期重投 / 60s 合批窗 / 死信闸(D 单,FLY-1573,并行开发中)
 - ❌ 不删 carrier / external_delivery / chat-receipt 机制(全家族清理单;本单交付易删边界)
 - ❌ 不动 permission-reply 拦截、pairing、typing keepalive、ack reaction(它们不是「信」,是通道控制面)
@@ -82,7 +82,7 @@ Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-
 
 1. **延迟劣化**(验收 5):直推是亚秒级;mailbox 路径 = enqueue → nudge → 投递环 tick → inbox.json → Lead 官方 poller。已有同链路实测(FLY-208:Runner 报告 2~3.5s 到 Lead 眼前)。靠 nudge(已有 `/api/lead-inbox/nudge` 端点 + 插件已持有 `TEAMLEAD_API_TOKEN`)压掉 30s 空闲 tick 的最坏情况;typing indicator 在 UX 上盖住剩余间隙。
 2. **翻转窗口的双轨一致性**:flag 从 OFF→ON 的瞬间,已存在的 external 影子行(旧账)仍由旧机制(重投 worker/complete)收尾;ON 后新消息只走 inbox 道。两道互不认账,靠 id 前缀(`chat:` 同前缀但 carrier 不同)区分。需要一条明确规则:**重投 worker 只服务 external 行,永不碰 inbox 行**(现状已如此,谓词按 carrier 隔离)。
-3. **Codex Lead 的对等性**:Mufasa(TUI full-access)入站是另一条代码路径(RestPoll → mention-gate → 注入 turn + ExternalReceiptSaga)。E 必须两个后端同刀,否则「统一走 mailbox」只统一了一半。Codex 最后一公里(CodexLeadInboxServer socket)已在 TUI runtime 里活着,可直接复用。
+3. **Codex Lead 的对等性**:Mufasa 入站是另一条代码路径(RestPoll → mention-gate → 注入 turn + ExternalReceiptSaga)。TUI 已有 `CodexLeadInboxServer`,headless 却没有;另外旧 router 会把 `replyChannelId/replyRoute` 存进 journal,普通 mailbox batch 不会。E 必须补 headless consumer 并使 batch route-aware,否则会丢信或回错 channel/thread。
 
 ## 7. 为什么这个方向是对的(收益复述)
 

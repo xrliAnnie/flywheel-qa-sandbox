@@ -2,7 +2,7 @@
 
 Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-批次2-discord-收编不再直推统一走-mailbox)
 日期: 2026-08-10
-基于: plan.md(R5,Codex 5 轮 APPROVED)
+基于: plan.md(R6,implementation-node cross-family review 修订)
 
 ## 触发
 
@@ -12,7 +12,7 @@ Lead 指令 `[lead-instruction 71b5bf84-69ac-4640-9d15-0ad9d86a2227]`,转达 fou
 
 背景:本周三次发生「做了但 flag 没开导致没生效」(auto-QA / Opus 4.6 / FLY-1663 v2 carrier)。
 
-## 更正内容(对 plan.md 的增量修订,不改已批准的技术协议)
+## 更正内容(对 plan.md 的交付约束)
 
 1. **交付终态 = ON**。`FLYWHEEL_MAILBOX_DISCORD` 的置 ON 动作从「runbook 里的一步」升格为 **ship 完成的定义的一部分**:代码合入但未置 ON 且未实测生效 = ship 未完成,不存在「合了等人来开」的交付状态。
 2. **机制不变**:flag 读法(dotenv_live 现读)、OFF 路径字节等价、运行时回切(founder 08-05 回滚要求)全部保留;registry 极性仍为显式取值(`'1'`=ON)——因为 §6.1 的 census/清账栅栏要求 ON 的时点受控(Codex R1 #10 裂脑防护),**受控 ≠ 可选**:栅栏步骤全绿后置 ON 是无条件的收尾动作。
@@ -20,6 +20,6 @@ Lead 指令 `[lead-instruction 71b5bf84-69ac-4640-9d15-0ad9d86a2227]`,转达 fou
 
 ## 不变项
 
-- lane 仲裁 / write-ahead intent / mutex / 清理单交接等全部技术协议不动(Codex APPROVED 的内容零改动);
+- founder 的 ship-enabled 结论不动;implementation-node 复审发现的 route 保真、headless socket、Discord 静默 DEAD 和 OFF mutex 逃生问题已在 plan R6 修正,以 R6 为技术权威;
 - OFF 作为回滚手段的可用性与测试(哨兵)不动;
 - flag 删除仍归全家族清理单。
