@@ -2,7 +2,7 @@
 
 Issue: FLY-1574 (https://linear.app/geoforge3d/issue/FLY-1574/消息层重构-e-批次2-discord-收编不再直推统一走-mailbox)
 日期: 2026-08-10
-基于: plan.md(R6,implementation-node cross-family review 修订)
+基于: plan.md(R7,implementation-node cross-family review 修订)
 
 ## 触发
 
