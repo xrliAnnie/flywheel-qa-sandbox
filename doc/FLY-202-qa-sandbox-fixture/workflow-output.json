@@ -1,0 +1,18 @@
+{
+	"issue": "FLY-202",
+	"status": "needs_review",
+	"summary": "Refreshed doc/qa/sandbox-notes.md from the current sandbox repository snapshot and verified all five fixture requirements.",
+	"pr": {
+		"number": 61,
+		"url": "https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/61",
+		"base": "main",
+		"head": "project-slot-2-FLY-202"
+	},
+	"verification": [
+		"three repository-purpose paragraphs",
+		"all 17 tracked top-level directories",
+		"exactly 10 QA framework README summary bullets",
+		"embedded output exactly matches ls -R doc/ | head -50",
+		"git diff --check"
+	]
+}

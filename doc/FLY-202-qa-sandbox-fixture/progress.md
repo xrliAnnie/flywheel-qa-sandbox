@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 4/4
-updated: 2026-08-09T23:12:29.707Z
-nextStep: complete needs_review handoff for PR 84
+phase: design
+phaseCursor: 5/5
+updated: 2026-08-10T07:57:26.297Z
+nextStep: commit HIGH-finding plan corrections and request a new design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/4)
-**next**: complete needs_review handoff for PR 84
+**phase**: design (5/5)
+**next**: commit HIGH-finding plan corrections and request a new design review

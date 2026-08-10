@@ -64,7 +64,9 @@ FLY-202-d3-doc-model.mmd
 FLY-202-d3-doc-model.svg
 FLY-202-design.html
 design.md
+plan.md
 progress.md
+workflow-output.json
 
 doc/architecture:
 archive
@@ -94,6 +96,4 @@ doc/engineer/deep-research:
 002-decision-layer-chatgpt.md
 003-stripe-minions-part1.md
 004-stripe-minions-part2.md
-005-cloudflare-code-mode.md
-006-boris-cherny-claude-code-future.md
 ```
