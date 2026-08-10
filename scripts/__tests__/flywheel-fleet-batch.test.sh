@@ -22,6 +22,8 @@ fail() { FAILED=$((FAILED + 1)); echo "[TEST] ✗ $1"; }
 
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/fleetbatch.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
+export FLYWHEEL_STATE_DIR="$TMP/.flywheel"
+export FLYWHEEL_DIR="$TMP/Dev/flywheel"
 PJ="${TMP}/projects.json"
 
 # Production-ish config: peter on Fable, oliver on account default (no model).
@@ -150,6 +152,23 @@ fleet_batch_restore_key_fields "$PJ2" "geo-oliver" "claude-fable-5" "null" 1 "hi
 if [ "$rc" -eq 2 ] && [ "$(fleet_batch_current_effort "$PJ2" geo-oliver)" = "max" ]; then
   pass "B18 composite restore refuses on external effort change (rc2, no clobber)"
 else fail "B18 expected rc2/no-clobber, rc=$rc effort=$(fleet_batch_current_effort "$PJ2" geo-oliver)"; fi
+
+# FLY-1663: carrier is the third field in the same atomic composite write.
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 0 null 1 v2
+if [ "$(fleet_batch_current_carrier "$PJ2" geo-oliver)" = v2 ]; then
+  pass "B19 composite write sets explicit carrier"
+else fail "B19 carrier composite write failed"; fi
+
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 0 null 0 v1
+if [ "$(fleet_batch_current_carrier "$PJ2" geo-oliver)" = v2 ]; then
+  pass "B20 touch_carrier=0 preserves the exact current carrier"
+else fail "B20 ordinary apply changed carrier"; fi
+
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 0 null 1 v1
+fleet_batch_restore_key_fields "$PJ2" "geo-oliver" "claude-fable-5" "claude-fable-5" 0 null null 1 v1 v2
+if [ "$(fleet_batch_current_carrier "$PJ2" geo-oliver)" = v2 ]; then
+  pass "B21 conditional restore restores carrier in the same composite write"
+else fail "B21 carrier conditional restore failed"; fi
 
 echo "=================================="
 echo "fleet-batch tests: ${PASSED} passed, ${FAILED} failed"

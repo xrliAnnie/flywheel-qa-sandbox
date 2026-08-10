@@ -1,5 +1,9 @@
 import { execFile as nodeExecFile } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
+import { leadAddressFromManifest } from "../lead-address.js";
 import { type ModelCapVerdict, parseModelCap } from "./model-cap.js";
 import type { QuotaMonitorAlert } from "./quota-monitor.js";
 import {
@@ -53,6 +57,8 @@ export function classifyQuotaPane(capture: string): QuotaPaneClass {
 }
 
 export interface QuotaPaneRef {
+	/** Absolute private Lead socket. Absent means the configured Runner socket. */
+	socket?: string;
 	paneId: string;
 	panePid: number;
 	sessionName: string;
@@ -90,7 +96,7 @@ export interface ScanQuotaPanesInput {
 	socket: string;
 	qaInjectionEnabled: boolean;
 	listPanes: () => Promise<QuotaPaneRef[]>;
-	capturePane: (paneId: string) => Promise<string>;
+	capturePane: (paneId: string, socket?: string) => Promise<string>;
 	maxPanes?: number;
 	captureTimeoutMs?: number;
 	captureConcurrency?: number;
@@ -168,7 +174,7 @@ export async function scanQuotaPanes(
 
 	const unique = new Map<string, QuotaPaneRef>();
 	for (const pane of listed) {
-		const key = `${pane.paneId}:${pane.panePid}`;
+		const key = `${pane.socket ?? input.socket}:${pane.paneId}:${pane.panePid}`;
 		if (!unique.has(key)) unique.set(key, pane);
 	}
 	const panes = [...unique.values()].sort(paneOrder);
@@ -183,7 +189,9 @@ export async function scanQuotaPanes(
 			if (pane === undefined) break;
 			try {
 				const capture = await captureWithTimeout(
-					input.capturePane(pane.paneId),
+					pane.socket
+						? input.capturePane(pane.paneId, pane.socket)
+						: input.capturePane(pane.paneId),
 					captureTimeoutMs,
 				);
 				const managed = isManagedClaudePane(
@@ -241,10 +249,16 @@ export function isManagedClaudePane(
 	capture: string,
 	qaInjectionEnabled: boolean,
 ): boolean {
+	const privateLeadShape =
+		typeof pane.socket === "string" &&
+		pane.socket.startsWith("/") &&
+		pane.sessionName === "main" &&
+		pane.windowName === "main";
 	if (
 		pane.dead ||
-		!FLYWHEEL_SESSION.test(pane.sessionName) ||
-		!FLYWHEEL_WINDOW.test(pane.windowName)
+		(!privateLeadShape &&
+			(!FLYWHEEL_SESSION.test(pane.sessionName) ||
+				!FLYWHEEL_WINDOW.test(pane.windowName)))
 	) {
 		return false;
 	}
@@ -269,8 +283,11 @@ export interface ReviveScanInput {
 	monitorOnly: boolean;
 	qaInjectionEnabled: boolean;
 	listPanes: () => Promise<QuotaPaneRef[]>;
-	capturePane: (paneId: string) => Promise<string>;
-	sendContinue: (paneId: string) => Promise<{ sent: boolean; error?: string }>;
+	capturePane: (paneId: string, socket?: string) => Promise<string>;
+	sendContinue: (
+		paneId: string,
+		socket?: string,
+	) => Promise<{ sent: boolean; error?: string }>;
 	persistState: (state: QuotaMonitorState) => Promise<void>;
 	alert: (alert: QuotaMonitorAlert) => Promise<void>;
 	/** Pre-captured fleet view. When present, list/capture seams are not called. */
@@ -285,7 +302,7 @@ export interface ReviveScanResult {
 }
 
 function paneInstanceKey(socket: string, pane: QuotaPaneRef): string {
-	return `${socket}:${pane.paneId}:${pane.panePid}`;
+	return `${pane.socket ?? socket}:${pane.paneId}:${pane.panePid}`;
 }
 
 export async function reviveScan(
@@ -374,7 +391,9 @@ export async function reviveScan(
 			continue;
 		}
 
-		const sent = await input.sendContinue(pane.paneId);
+		const sent = pane.socket
+			? await input.sendContinue(pane.paneId, pane.socket)
+			: await input.sendContinue(pane.paneId);
 		if (!sent.sent) {
 			pending++;
 			continue;
@@ -438,6 +457,7 @@ export interface TmuxReviveOptions {
 }
 
 function tmuxPrefix(socket: string): string[] {
+	if (socket.startsWith("/")) return ["-S", socket];
 	return socket.length > 0 ? ["-L", socket] : [];
 }
 
@@ -531,4 +551,132 @@ export function makeTmuxReviveDeps(opts: TmuxReviveOptions): {
 			}
 		},
 	};
+}
+
+export interface TmuxFleetReviveOptions {
+	runnerSocket: string;
+	leadSockets: string[];
+	execFile?: ExecFileFn;
+	timeoutMs?: number;
+}
+
+/**
+ * One bounded observer over the Runner server plus each private Lead server.
+ * An unavailable private socket is an expected restart boundary and does not
+ * suppress observations/actions on every other independent server.
+ */
+export function makeTmuxFleetReviveDeps(opts: TmuxFleetReviveOptions): {
+	listPanes: () => Promise<QuotaPaneRef[]>;
+	capturePane: (paneId: string, socket?: string) => Promise<string>;
+	sendContinue: (
+		paneId: string,
+		socket?: string,
+	) => Promise<{ sent: boolean; error?: string }>;
+} {
+	const runner = makeTmuxReviveDeps({
+		socket: opts.runnerSocket,
+		execFile: opts.execFile,
+		timeoutMs: opts.timeoutMs,
+	});
+	const privateDeps = new Map(
+		[...new Set(opts.leadSockets)].map((socket) => [
+			socket,
+			makeTmuxReviveDeps({
+				socket,
+				execFile: opts.execFile,
+				timeoutMs: opts.timeoutMs,
+			}),
+		]),
+	);
+	return {
+		async listPanes(): Promise<QuotaPaneRef[]> {
+			const panes = await runner.listPanes();
+			for (const [socket, deps] of privateDeps) {
+				try {
+					panes.push(
+						...(await deps.listPanes()).map((pane) => ({ ...pane, socket })),
+					);
+				} catch {
+					// LeadWatchdog owns private-server absence alerts. The quota
+					// observer must not couple unrelated servers during restart.
+				}
+			}
+			return panes;
+		},
+		capturePane(paneId, socket) {
+			if (!socket) return runner.capturePane(paneId);
+			const deps = privateDeps.get(socket);
+			if (!deps)
+				return Promise.reject(new Error("unknown private Lead socket"));
+			return deps.capturePane(paneId);
+		},
+		sendContinue(paneId, socket) {
+			if (!socket) return runner.sendContinue(paneId);
+			const deps = privateDeps.get(socket);
+			if (!deps) {
+				return Promise.resolve({
+					sent: false,
+					error: "unknown private Lead socket",
+				});
+			}
+			return deps.sendContinue(paneId);
+		},
+	};
+}
+
+export interface PrivateLeadSocketDiscoveryOptions {
+	stateDir?: string;
+	launchAgentsDir?: string;
+}
+
+/** Read the v2 launchd roster and accept only exact canonical manifest output. */
+export function discoverPrivateLeadSockets(
+	opts: PrivateLeadSocketDiscoveryOptions = {},
+): string[] {
+	const stateDir = opts.stateDir ?? join(homedir(), ".flywheel");
+	const launchAgentsDir =
+		opts.launchAgentsDir ?? join(homedir(), "Library", "LaunchAgents");
+	const wrapper = `${stateDir}/bin/flywheel-lead-wrapper-v2.sh`;
+	const sockets = new Set<string>();
+	let files: string[];
+	try {
+		files = readdirSync(launchAgentsDir);
+	} catch {
+		return [];
+	}
+	for (const file of files.sort()) {
+		const match = /^com\.flywheel\.lead\.([A-Za-z0-9._-]+)\.plist$/.exec(file);
+		if (!match) continue;
+		const key = match[1];
+		try {
+			const plist = readFileSync(join(launchAgentsDir, file), "utf8");
+			if (!plist.includes(`<string>${wrapper}</string>`)) continue;
+			const manifest = JSON.parse(
+				readFileSync(join(stateDir, "manifests", `${key}.json`), "utf8"),
+			) as Record<string, unknown>;
+			const projectName =
+				typeof manifest.projectName === "string" ? manifest.projectName : "";
+			const leadId = typeof manifest.leadId === "string" ? manifest.leadId : "";
+			if (
+				!projectName ||
+				!leadId ||
+				!plist.includes(
+					`<string>com.flywheel.lead.${projectName}-${leadId}</string>`,
+				)
+			) {
+				continue;
+			}
+			const address = leadAddressFromManifest(
+				projectName,
+				leadId,
+				stateDir,
+				manifest,
+			);
+			if (address) sockets.add(address.socketPath);
+		} catch {
+			// One malformed candidate cannot authorize a socket or suppress the
+			// independently valid roster entries.
+		}
+	}
+	return [...sockets].sort();
 }

@@ -51,7 +51,8 @@ else
 fi
 
 closure_ok=1
-for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh; do
+for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh \
+  flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh lib/lead-address.sh; do
   [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
 done
 if [ "$closure_ok" -eq 1 ]; then
@@ -260,7 +261,8 @@ echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # dependencies (both ship in a packaged tree — see the S0 closure check above),
 # so steady state now has to include them or this case counts their repairs.
 mkdir -p "$H/.flywheel/bin/lib"
-for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh; do
+for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+  flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?

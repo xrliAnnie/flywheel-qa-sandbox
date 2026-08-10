@@ -459,6 +459,23 @@ lead_restart_project_backend() {
   ' "$projects_file" 2>/dev/null
 }
 
+lead_restart_project_carrier() {
+  local projects_file="$1" project="$2" lead_id="$3"
+  jq -er --arg project "$project" --arg lead "$lead_id" '
+    [
+      .[] |
+      select(.projectName == $project) |
+      (.leads // [])[] |
+      select(.agentId == $lead)
+    ] |
+    if length == 1
+    then (.[0].carrier // "v1")
+    else error("project lead identity is missing or ambiguous")
+    end |
+    select(. == "v1" or . == "v2")
+  ' "$projects_file" 2>/dev/null
+}
+
 _lead_restart_config_identity_for_key() {
   local projects_file="$1" key="$2"
   jq -er --arg key "$key" '
@@ -475,6 +492,7 @@ _lead_restart_config_identity_for_key() {
 }
 
 LEAD_RESTART_BACKEND=""
+LEAD_RESTART_CARRIER=""
 LEAD_RESTART_PROJECT=""
 LEAD_RESTART_LEAD_ID=""
 LEAD_RESTART_LABEL=""
@@ -488,7 +506,7 @@ LEAD_RESTART_PROJECTS_DIGEST=""
 _lead_restart_validate_authority_once() {
   local manifest="$1" plist="$2" projects_file="$3" expected_label="$4"
   local identity project lead_id plist_json label argc arg0 wrapper arg2=""
-  local wrapper_base manifest_backend project_backend backend
+  local wrapper_base manifest_backend project_backend project_carrier backend carrier
   identity="$(_lead_restart_manifest_identity "$manifest")" || return 1
   project="${identity%%$'\t'*}"
   lead_id="${identity#*$'\t'}"
@@ -503,6 +521,7 @@ _lead_restart_validate_authority_once() {
   wrapper_base="${wrapper##*/}"
   manifest_backend="$(jq -er '.leadBackend.backendId // ""' "$manifest" 2>/dev/null)" || return 1
   project_backend="$(lead_restart_project_backend "$projects_file" "$project" "$lead_id")" || return 1
+  project_carrier="$(lead_restart_project_carrier "$projects_file" "$project" "$lead_id")" || return 1
 
   case "$wrapper_base" in
     flywheel-lead-wrapper.sh)
@@ -510,8 +529,20 @@ _lead_restart_validate_authority_once() {
       arg2="$(printf '%s' "$plist_json" | jq -er '.argv[2]')" || return 1
       [ "$arg2" = "$manifest" ] || return 1
       [ "$project_backend" = "claude-code" ] || return 1
+      [ "$project_carrier" = "v1" ] || return 1
       case "$manifest_backend" in ""|claude-code) ;; *) return 1 ;; esac
       backend="claude-code"
+      carrier="v1"
+      ;;
+    flywheel-lead-wrapper-v2.sh)
+      [ "$argc" -eq 3 ] || return 1
+      arg2="$(printf '%s' "$plist_json" | jq -er '.argv[2]')" || return 1
+      [ "$arg2" = "$manifest" ] || return 1
+      [ "$project_backend" = "claude-code" ] || return 1
+      [ "$project_carrier" = "v2" ] || return 1
+      case "$manifest_backend" in ""|claude-code) ;; *) return 1 ;; esac
+      backend="claude-code"
+      carrier="v2"
       ;;
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)
       [ "$argc" -eq 2 ] || return 1
@@ -519,6 +550,7 @@ _lead_restart_validate_authority_once() {
       [ "$project_backend" = "codex-app-server" ] || return 1
       case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
       backend="codex-app-server"
+      carrier="v1"
       ;;
     flywheel-codex-lead-wrapper-codex-infra-bot.sh)
       [ "$argc" -eq 2 ] || return 1
@@ -526,6 +558,7 @@ _lead_restart_validate_authority_once() {
       [ "$project_backend" = "codex-app-server" ] || return 1
       case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
       backend="codex-app-server"
+      carrier="v1"
       ;;
     *)
       # Includes the retired mufasa-tui.sh carrier and any future carrier not
@@ -535,6 +568,7 @@ _lead_restart_validate_authority_once() {
   esac
 
   LEAD_RESTART_BACKEND="$backend"
+  LEAD_RESTART_CARRIER="$carrier"
   LEAD_RESTART_PROJECT="$project"
   LEAD_RESTART_LEAD_ID="$lead_id"
   LEAD_RESTART_LABEL="$label"
@@ -560,7 +594,7 @@ lead_restart_validate_authority() {
 }
 
 lead_restart_authority_unchanged() {
-  local backend="$LEAD_RESTART_BACKEND" project="$LEAD_RESTART_PROJECT"
+  local backend="$LEAD_RESTART_BACKEND" carrier="$LEAD_RESTART_CARRIER" project="$LEAD_RESTART_PROJECT"
   local lead_id="$LEAD_RESTART_LEAD_ID" label="$LEAD_RESTART_LABEL"
   local manifest_digest plist_digest projects_digest
   [ -n "$LEAD_RESTART_MANIFEST_FILE" ] && [ -n "$LEAD_RESTART_PLIST_FILE" ] \
@@ -575,6 +609,7 @@ lead_restart_authority_unchanged() {
     "$LEAD_RESTART_MANIFEST_FILE" "$LEAD_RESTART_PLIST_FILE" \
     "$LEAD_RESTART_PROJECTS_FILE" "$label" || return 1
   [ "$LEAD_RESTART_BACKEND" = "$backend" ] \
+    && [ "$LEAD_RESTART_CARRIER" = "$carrier" ] \
     && [ "$LEAD_RESTART_PROJECT" = "$project" ] \
     && [ "$LEAD_RESTART_LEAD_ID" = "$lead_id" ] \
     && [ "$LEAD_RESTART_LABEL" = "$label" ]

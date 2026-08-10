@@ -2443,7 +2443,8 @@ export function authorizeLeadWrite(
 	const hasLeadMarker = Boolean(
 		env.FLYWHEEL_LEAD_ID ||
 			env.FLYWHEEL_LEAD_LEASE_KEY ||
-			env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
+			env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID ||
+			env.FLYWHEEL_LEAD_CARRIER,
 	);
 	if (
 		resolution.status !== "source_error" &&
@@ -2598,6 +2599,16 @@ export function authorizeLeadWrite(
 		} finally {
 			store?.close();
 		}
+	}
+	if (
+		backend === "claude-code" &&
+		resolution.lead.carrier === "v2" &&
+		env.FLYWHEEL_LEAD_CARRIER === "v2"
+	) {
+		return {
+			disposition: "carrier_passthrough",
+			provenance: writerProvenance,
+		};
 	}
 	if (backend === "codex-app-server") {
 		const carrier = validateLeadCarrierAuthorization(

@@ -384,10 +384,12 @@ fi
 
 # ── X0 · launcher runtime closure stays complete ──────────────────────────────
 default_asset_files="$(env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; printf "%s\n" "$PO_PACKAGE_ASSET_FILES"' _ "$PO")"
-if grep -qx 'teamlead:scripts/lib/lead-identity-preflight.sh' <<<"$default_asset_files"; then
-  pass "X0 Lead identity preflight ships with the Lead launcher runtime closure"
+if grep -qx 'teamlead:scripts/lib/lead-identity-preflight.sh' <<<"$default_asset_files" \
+    && grep -qx 'teamlead:scripts/lead-body.sh' <<<"$default_asset_files" \
+    && grep -qx 'teamlead:scripts/lib/lead-body-receipt.sh' <<<"$default_asset_files"; then
+  pass "X0 Lead v1/v2 body assets ship with the launcher runtime closure"
 else
-  fail "X0 lead-identity-preflight.sh missing from PO_PACKAGE_ASSET_FILES"
+  fail "X0 Lead launcher body assets missing from PO_PACKAGE_ASSET_FILES"
 fi
 
 # ── X1 · audit-table closure over the REAL default whitelist ─────────────────

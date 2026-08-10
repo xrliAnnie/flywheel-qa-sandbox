@@ -59,17 +59,55 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	function writeProjects(backend: "claude-code" | "codex-app-server"): void {
+	function writeProjects(
+		backend: "claude-code" | "codex-app-server",
+		carrier?: "v1" | "v2",
+	): void {
 		writeFileSync(
 			env.FLYWHEEL_PROJECTS_FILE!,
 			JSON.stringify([
 				{
 					projectName: "flywheel",
-					leads: [{ agentId: "eng-lead", backend }],
+					leads: [
+						{ agentId: "eng-lead", backend, ...(carrier ? { carrier } : {}) },
+					],
 				},
 			]),
 		);
 	}
+
+	it("lets a canonically configured v2 Claude carrier write without a legacy lease", async () => {
+		writeProjects("claude-code", "v2");
+		setMode("enforce");
+		env.FLYWHEEL_LEAD_CARRIER = "v2";
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "launchd-owned carrier",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
+	});
+
+	it("does not trust a v2 marker unless canonical config also selects v2", async () => {
+		setMode("enforce");
+		env.FLYWHEEL_LEAD_CARRIER = "v2";
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-intruder",
+				content: "untrusted carrier marker",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toBeInstanceOf(LeadLeaseDeniedError);
+	});
 
 	function setMode(mode: "off" | "audit_only" | "enforce"): void {
 		new LeadLeaseModeStore(env.FLYWHEEL_LEAD_LEASE_MODE_FILE!, env).set(

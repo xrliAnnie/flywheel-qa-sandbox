@@ -25,11 +25,23 @@
 # automatically on first install.
 set -euo pipefail
 
-FLYWHEEL_DIR="${HOME}/Dev/flywheel"
-MANIFEST_DIR="${HOME}/.flywheel/manifests"
+DAEMON_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$DAEMON_SCRIPT_DIR/lib/host-config.sh" ]; then
+  # shellcheck source=lib/host-config.sh
+  source "$DAEMON_SCRIPT_DIR/lib/host-config.sh"
+  if ! host_config_load >/dev/null; then
+    echo "[daemon] ERROR: host.json invalid (fail-closed)" >&2
+    if [ "${BASH_SOURCE[0]}" != "$0" ]; then return 1; else exit 1; fi
+  fi
+fi
+
+FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+PROJECTS_JSON="${FLYWHEEL_STATE_DIR}/projects.json"
+MANIFEST_DIR="${FLYWHEEL_STATE_DIR}/manifests"
 PLIST_DIR="${HOME}/Library/LaunchAgents"
-FLYWHEEL_BIN="${HOME}/.flywheel/bin"
-PID_DIR="${HOME}/.flywheel/pids"
+FLYWHEEL_BIN="${FLYWHEEL_STATE_DIR}/bin"
+PID_DIR="${FLYWHEEL_STATE_DIR}/pids"
 PLIST_PREFIX="com.flywheel.lead"
 GUI_DOMAIN="gui/$(id -u)"
 
@@ -199,6 +211,48 @@ install_wrapper() {
     error "wrapper failed sanity/atomic install: ${src}"
   fi
   log "Wrapper installed: ${dst} (mode 555)"
+
+  # FLY-1663 mixed-fleet closure. v1 and v2 are immutable, side-by-side
+  # carriers; the per-Lead plist chooses one. The v2 address helper is installed
+  # atomically before its wrapper so a cutover never exposes a partial closure.
+  local v2_src="${FLYWHEEL_DIR}/scripts/flywheel-lead-wrapper-v2.sh"
+  local v2_dst="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
+  local address_src="${FLYWHEEL_DIR}/scripts/lib/lead-address.sh"
+  local address_dst="${FLYWHEEL_BIN}/lib/lead-address.sh"
+  local attach_src="${FLYWHEEL_DIR}/scripts/flywheel-lead-attach.sh"
+  local attach_dst="${FLYWHEEL_BIN}/flywheel-lead-attach.sh"
+  [ -f "$v2_src" ] || error "Wrapper v2 source not found: ${v2_src}"
+  [ -f "$address_src" ] || error "Lead address helper not found: ${address_src}"
+  [ -f "$attach_src" ] || error "Lead attach helper not found: ${attach_src}"
+  mkdir -p "${FLYWHEEL_BIN}/lib"
+  if ! install_script_atomic "$address_src" "$address_dst" \
+    || ! install_script_atomic "$attach_src" "$attach_dst" \
+    || ! install_script_atomic "$v2_src" "$v2_dst"; then
+    error "v2 wrapper closure failed sanity/atomic install"
+  fi
+  log "Wrapper v2 installed: ${v2_dst} (mode 555)"
+}
+
+lead_wrapper_path() {
+  case "$1" in
+    v1) printf '%s/flywheel-lead-wrapper.sh\n' "$FLYWHEEL_BIN" ;;
+    v2) printf '%s/flywheel-lead-wrapper-v2.sh\n' "$FLYWHEEL_BIN" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Exact observed plist carrier. Unknown is evidence and must never normalize to
+# v1; a file containing both paths is also unknown.
+classify_plist_lead_carrier() {
+  local plist="$1" v1 v2 has_v1=0 has_v2=0
+  v1="$(lead_wrapper_path v1)" || return 1
+  v2="$(lead_wrapper_path v2)" || return 1
+  grep -qF "<string>${v1}</string>" "$plist" 2>/dev/null && has_v1=1
+  grep -qF "<string>${v2}</string>" "$plist" 2>/dev/null && has_v2=1
+  if [ "$has_v1" -eq 1 ] && [ "$has_v2" -eq 0 ]; then printf 'v1\n'
+  elif [ "$has_v2" -eq 1 ] && [ "$has_v1" -eq 0 ]; then printf 'v2\n'
+  else printf 'unknown\n'
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════
@@ -220,6 +274,34 @@ xml_escape() {
     -e "s/'/\&apos;/g"
 }
 
+# Return a canonical JSON object for a launchd EnvironmentVariables dict.
+# Values cross an exec boundary, so fail closed on invalid names, non-strings,
+# or control characters instead of silently rendering a different environment.
+normalize_launch_environment_json() {
+  jq -ce '
+    if type != "object" then error("launch environment must be an object")
+    elif all(to_entries[];
+      (.key | test("^[A-Za-z_][A-Za-z0-9_]*$"))
+      and (.value | type == "string")
+      and ([.value | explode[] | select(. < 32 or . == 127)] | length == 0))
+    then .
+    else error("invalid launch environment entry")
+    end'
+}
+
+read_plist_environment_json() {
+  local plist="$1"
+  if [ ! -f "$plist" ]; then
+    printf '{}\n'
+    return 0
+  fi
+  command -v "$PLUTIL" >/dev/null 2>&1 || return 1
+  local plist_json
+  plist_json="$("$PLUTIL" -convert json -o - "$plist" 2>/dev/null)" || return 1
+  jq -c '.EnvironmentVariables // {}' <<<"$plist_json" \
+    | normalize_launch_environment_json
+}
+
 # FLY-247 R5#4: plist generation takes TWO manifest paths —
 #   manifest_source_path:  where to READ the model from (staged manifest in
 #                          staged mode; canonical manifest in legacy mode)
@@ -233,9 +315,18 @@ generate_plist_to() {
   local manifest_source_path="$2"
   local runtime_manifest_path="$3"
   local output_path="$4"
+	local carrier="${5:-v1}"
   local label
   label=$(plist_label "$daemon_key")
-  local wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
+  local wrapper
+  case "$carrier" in
+    v1) wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh" ;;
+    v2) wrapper="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh" ;;
+    *)
+      log "ERROR: unknown Lead carrier '${carrier}' (expected v1|v2); refusing to generate plist"
+      return 1
+      ;;
+  esac
   local logfile
   logfile=$(log_path "$daemon_key")
 
@@ -266,22 +357,35 @@ generate_plist_to() {
     esac
   fi
 
-  # Emit the EnvironmentVariables dict when model OR effort is set; each key is
-  # conditional. byte-compat: model-set/effort-unset yields the exact pre-FLY-671
-  # single-MODEL-line block. Key order is fixed model→effort.
+  # The fleet transaction captures the current plist EnvironmentVariables in
+  # the staged manifest. Preserve that entire explicit launch contract while
+  # model/effort remain projections of their canonical top-level fields.
+  local launch_environment
+  launch_environment="$(jq -c '.launchEnvironment // {}' "$manifest_source_path" 2>/dev/null \
+    | normalize_launch_environment_json)" || {
+      log "ERROR: manifest launchEnvironment is invalid; refusing to generate plist"
+      return 1
+    }
+  local updated_launch_environment
+  updated_launch_environment="$(jq -c --arg model "$model" --arg effort "$effort" '
+    (if $model != "" then .FLYWHEEL_LEAD_MODEL = $model else del(.FLYWHEEL_LEAD_MODEL) end)
+    | (if $effort != "" then .FLYWHEEL_LEAD_EFFORT = $effort else del(.FLYWHEEL_LEAD_EFFORT) end)' \
+    <<<"$launch_environment")" || return 1
+  launch_environment="$updated_launch_environment"
+
+  # Byte compatibility remains exact when the object is empty. Otherwise use
+  # deterministic key order so hashes do not depend on plist insertion order.
   local env_block=""
-  if [ -n "$model" ] || [ -n "$effort" ]; then
+  if [ "$(jq -r 'length' <<<"$launch_environment")" -gt 0 ]; then
     env_block="    <key>EnvironmentVariables</key>
     <dict>
 "
-    if [ -n "$model" ]; then
-      env_block="${env_block}        <key>FLYWHEEL_LEAD_MODEL</key><string>$(xml_escape "$model")</string>
+    local env_name env_value
+    while IFS= read -r env_name; do
+      env_value="$(jq -r --arg name "$env_name" '.[$name]' <<<"$launch_environment")"
+      env_block="${env_block}        <key>$(xml_escape "$env_name")</key><string>$(xml_escape "$env_value")</string>
 "
-    fi
-    if [ -n "$effort" ]; then
-      env_block="${env_block}        <key>FLYWHEEL_LEAD_EFFORT</key><string>$(xml_escape "$effort")</string>
-"
-    fi
+    done < <(jq -r 'keys[]' <<<"$launch_environment")
     env_block="${env_block}    </dict>
 "
   fi
@@ -332,17 +436,68 @@ EOF
   mv "$tmp" "$output_path"
 }
 
-# Legacy entry point (byte-compat shim): same signature/behavior as the
-# pre-FLY-247 generate_plist — reads model from AND embeds the same canonical
-# manifest path, writes to the canonical plist location.
+# Resolve the routine install carrier from the same exact project/Lead identity
+# that fleet cutover persists. A missing carrier is the explicit mixed-fleet v1
+# default; missing/ambiguous identities and invalid values fail closed. Routine
+# `install --all` must never infer v1 from the helper's argument default after a
+# Lead has been cut over to v2.
+resolve_manifest_carrier() {
+  local manifest_path="$1"
+  [ -f "$PROJECTS_JSON" ] || {
+    log "ERROR: projects config not found: ${PROJECTS_JSON}; refusing to infer Lead carrier"
+    return 1
+  }
+  jq empty "$PROJECTS_JSON" >/dev/null 2>&1 || {
+    log "ERROR: projects config is invalid: ${PROJECTS_JSON}; refusing to infer Lead carrier"
+    return 1
+  }
+
+  local project lead_id
+  project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest_path" 2>/dev/null)" || {
+    log "ERROR: manifest projectName is missing or invalid: ${manifest_path}"
+    return 1
+  }
+  lead_id="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest_path" 2>/dev/null)" || {
+    log "ERROR: manifest leadId is missing or invalid: ${manifest_path}"
+    return 1
+  }
+
+  local carrier
+  carrier="$(jq -er --arg project "$project" --arg lead "$lead_id" '
+    [
+      .[] |
+      select(.projectName == $project) |
+      (.leads // [])[] |
+      select(.agentId == $lead)
+    ] |
+    if length == 1
+    then (.[0].carrier // "v1")
+    else error("project lead identity is missing or ambiguous")
+    end |
+    select(. == "v1" or . == "v2")
+  ' "$PROJECTS_JSON" 2>/dev/null)" || {
+    log "ERROR: projects config has no unique v1/v2 carrier for ${project}/${lead_id}; refusing install"
+    return 1
+  }
+  printf '%s\n' "$carrier"
+}
+
+# Routine entry point: reads model from AND embeds the same canonical manifest
+# path, writes to the canonical plist location, and derives the authoritative
+# carrier from projects.json unless a test/transaction passes it explicitly.
 generate_plist() {
   local daemon_key="$1"
   local manifest_path="$2"
+  local carrier="${3:-}"
   local plist
   plist=$(plist_path "$daemon_key")
 
+  if [ -z "$carrier" ]; then
+    carrier="$(resolve_manifest_carrier "$manifest_path")" || return 1
+  fi
+
   mkdir -p "$PLIST_DIR"
-  generate_plist_to "$daemon_key" "$manifest_path" "$manifest_path" "$plist" || return 1
+  generate_plist_to "$daemon_key" "$manifest_path" "$manifest_path" "$plist" "$carrier" || return 1
 
   log "Plist generated: ${plist}"
 }
@@ -448,8 +603,46 @@ $(ps -o command= -p "$g" 2>/dev/null || true)"
 claude_pane_evidence() {
   local daemon_key="$1"
   command -v "$TMUX_BIN" >/dev/null 2>&1 || return 2
-  local panes rc
-  panes=$("$TMUX_BIN" list-panes -a -F '#{pane_dead}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  local plist carrier manifest socket project lead canonical address_lib
+  plist="$(plist_path "$daemon_key")"
+  if [ -f "$plist" ]; then
+    carrier="$(classify_plist_lead_carrier "$plist")" || return 2
+  else
+    # Pre-install/manual legacy observations have no plist authority. Preserve
+    # the historical shared-server probe until an explicit carrier exists.
+    carrier=v1
+  fi
+
+  local panes rc private=0
+  if [ "$carrier" = "v2" ]; then
+    private=1
+    manifest="${MANIFEST_DIR}/${daemon_key}.json"
+    [ -f "$manifest" ] || return 2
+    project="$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    lead="$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    socket="$(jq -er '.socketPath | select(type == "string" and length > 0)' "$manifest" 2>/dev/null)" \
+      || return 2
+    if ! declare -F derive_lead_socket >/dev/null 2>&1; then
+      address_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/lead-address.sh"
+      [ -f "$address_lib" ] || address_lib="${FLYWHEEL_DIR}/scripts/lib/lead-address.sh"
+      [ -f "$address_lib" ] || address_lib="${FLYWHEEL_BIN}/lib/lead-address.sh"
+      [ -f "$address_lib" ] || return 2
+      # shellcheck source=lib/lead-address.sh
+      source "$address_lib"
+      declare -F derive_lead_socket >/dev/null 2>&1 || return 2
+    fi
+    canonical="$(derive_lead_socket "${project}/${lead}" "$FLYWHEEL_STATE_DIR")" || return 2
+    [ "$socket" = "$canonical" ] || return 2
+    panes=$("$TMUX_BIN" -S "$socket" list-panes -t '%0' \
+      -F '#{pane_dead}	#{session_name}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  elif [ "$carrier" = "v1" ]; then
+    panes=$("$TMUX_BIN" list-panes -a \
+      -F '#{pane_dead}	#{window_name}	#{pane_pid}	#{pane_current_command}' 2>&1)
+  else
+    return 2
+  fi
   rc=$?
   if [ "$rc" -ne 0 ]; then
     if printf '%s' "$panes" | grep -qiE 'no server running|no current client'; then
@@ -457,10 +650,20 @@ claude_pane_evidence() {
     fi
     return 2
   fi
-  local dead window pane_pid cmd
-  while IFS=$'\t' read -r dead window pane_pid cmd; do
+  local dead session window pane_pid cmd
+  while IFS=$'\t' read -r dead session window pane_pid cmd; do
+    if [ "$private" -eq 0 ]; then
+      cmd="$pane_pid"
+      pane_pid="$window"
+      window="$session"
+      session=""
+    fi
     [ "$dead" = "0" ] || continue
-    case "$window" in *"$daemon_key"*) ;; *) continue ;; esac
+    if [ "$private" -eq 1 ]; then
+      [ "$session" = "main" ] && [ "$window" = "main" ] || continue
+    else
+      case "$window" in *"$daemon_key"*) ;; *) continue ;; esac
+    fi
     if printf '%s' "$cmd" | grep -qiE 'claude'; then
       return 0
     fi
@@ -478,7 +681,9 @@ runtime_claude_confirmed() {
   command -v ps >/dev/null 2>&1 || return 2
   command -v pgrep >/dev/null 2>&1 || return 2
   # self-probe: if ps cannot even report PID 1, the tool is broken
-  ps -o command= -p 1 >/dev/null 2>&1 || return 2
+  if [ "${FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE:-0}" != "1" ]; then
+    ps -o command= -p 1 >/dev/null 2>&1 || return 2
+  fi
   # (a) process-tree traits of the launchd pid
   if process_tree_has_claude "$pid"; then
     return 0
@@ -546,7 +751,11 @@ install_one_staged() {
     fail_staged "prepared" "prep_failed_plist_label_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
-  if ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$staged_plist"; then
+  local desired_carrier expected_wrapper staged_carrier
+  desired_carrier=$(jq -r --arg k "$daemon_key" '.leads[$k].desired.carrier // "v1"' "$txn_json" 2>/dev/null || echo unknown)
+  expected_wrapper="$(lead_wrapper_path "$desired_carrier" 2>/dev/null || true)"
+  staged_carrier="$(classify_plist_lead_carrier "$staged_plist")"
+  if [ -z "$expected_wrapper" ] || [ "$staged_carrier" != "$desired_carrier" ]; then
     fail_staged "prepared" "prep_failed_plist_wrapper_mismatch" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
@@ -583,7 +792,7 @@ install_one_staged() {
     fail_staged "prepared" "prep_failed_txn_incomplete" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
-  if [ "$(file_sha "${HOME}/.flywheel/projects.json")" != "$txn_config_sha" ]; then
+  if [ "$(file_sha "${FLYWHEEL_STATE_DIR}/projects.json")" != "$txn_config_sha" ]; then
     fail_staged "prepared" "prep_failed_config_changed" "" "" false "unknown" "$EXIT_PREP_FAILED"
     return $?
   fi
@@ -600,8 +809,10 @@ install_one_staged() {
   # wrapper — a bespoke takeover during staging must not be booted out.
   local cm_ident
   cm_ident=$(jq -r '(.projectName // "") + "-" + (.leadId // "")' "$canonical_manifest" 2>/dev/null || echo "")
+  local canonical_carrier
+  canonical_carrier="$(classify_plist_lead_carrier "$canonical_plist")"
   if [ "$cm_ident" != "$daemon_key" ] \
-    || ! grep -qF "<string>${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh</string>" "$canonical_plist" \
+    || [ "$canonical_carrier" = "unknown" ] \
     || ! grep -qF "<string>${canonical_manifest}</string>" "$canonical_plist" \
     || ! grep -qF "<string>${label}</string>" "$canonical_plist"; then
     fail_staged "prepared" "prep_failed_evidence_regate" "" "" false "unknown" "$EXIT_PREP_FAILED"

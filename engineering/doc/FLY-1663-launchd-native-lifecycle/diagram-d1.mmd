@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph today["现状:三层(病在中间那层)"]
+        direction TB
+        L1["launchd 系统管家<br/>(macOS 自带的进程保姆)"] --> S1["自研保姆层 ≈17,000 行<br/>supervisor 循环 / 全局锁 / 身份租约<br/>preflight 预检 / 收养 / 档案"]
+        S1 --> T1["共享终端机(tmux server)<br/>全部 Lead 挤在一个 session 里"]
+        T1 --> B1["Lead 本体(claude 程序)<br/>—— 一次都没病过"]
+    end
+    subgraph target["目标:两层(中间层整层拆掉)"]
+        direction TB
+        L2["launchd 系统管家<br/>死了 30 秒内自动重拉<br/>同名任务保证只跑一份"] --> W2["薄启动器(约百行)<br/>只做:查身份 → 装环境 → 交棒"]
+        W2 --> T2["每个 Lead 自己的私有终端机<br/>(tmux server = launchd 直接持有的那个进程)"]
+        T2 --> B2["Lead 本体(claude 程序)<br/>死了 → 终端机跟着退 → launchd 重拉"]
+    end
+    today -.->|"拆除:8 类事故的产生机制<br/>从此不存在"| target
+    style S1 fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style B1 fill:#e8f7ee,stroke:#34c759
+    style B2 fill:#e8f7ee,stroke:#34c759
+    style L2 fill:#e9f2ff,stroke:#007aff
+    style T2 fill:#e9f2ff,stroke:#007aff

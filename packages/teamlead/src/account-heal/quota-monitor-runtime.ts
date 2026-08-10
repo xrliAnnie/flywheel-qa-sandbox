@@ -68,10 +68,11 @@ import {
 	writeQuotaMonitorState,
 } from "./quota-monitor-state.js";
 import {
-	makeTmuxReviveDeps,
+	discoverPrivateLeadSockets,
+	makeTmuxFleetReviveDeps,
+	type makeTmuxReviveDeps,
 	reviveScan,
 	scanQuotaPanes,
-	type TmuxReviveOptions,
 } from "./quota-revive-scan.js";
 import {
 	type AccountUsageResult,
@@ -228,9 +229,10 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 			));
 	const tmux =
 		opts.tmux ??
-		makeTmuxReviveDeps({
-			socket: process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "",
-		} satisfies TmuxReviveOptions);
+		makeTmuxFleetReviveDeps({
+			runnerSocket: process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "",
+			leadSockets: discoverPrivateLeadSockets(),
+		});
 	const tmuxSocket = process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "default";
 	let projectionFailureStreak = 0;
 	const recordObservation = async (

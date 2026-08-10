@@ -71,6 +71,7 @@ mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" "$FR/scripts/"
 cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
+  "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
   "$FR/scripts/lib/"
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
@@ -98,6 +99,40 @@ fi
 sleep 300
 STUBLEAD
 chmod +x "$FR/packages/teamlead/scripts/claude-lead.sh"
+
+# Thin carrier fixture: launchctl starts this exact process. It projects the
+# manifest environment, publishes launchd PID/socket evidence, then emulates
+# the real body readiness contract without invoking resident lifecycle code.
+cat > "$FR/scripts/flywheel-lead-wrapper-v2.sh" <<'STUBCARRIER'
+#!/bin/bash
+# fly1389-stub-lead-marker
+set -euo pipefail
+MANIFEST="$1"
+while IFS=$'\t' read -r name value; do
+  printf -v "$name" '%s' "$value"
+  export "$name"
+done < <(jq -r '.launchEnvironment | to_entries[] | [.key,.value] | @tsv' "$MANIFEST")
+source "$FLYWHEEL_WRAPPER_ENV_FILE"
+AGENT=$(jq -r '.leadId' "$MANIFEST")
+PROJ=$(jq -r '.projectName' "$MANIFEST")
+TOKEN_ENV=$(jq -r '.botTokenEnv' "$MANIFEST")
+export DISCORD_BOT_TOKEN="${!TOKEN_ENV:-}"
+SOCKET="/tmp/fly1389-${AGENT}.sock"
+TMP_MANIFEST="${MANIFEST}.tmp.$$"
+jq --arg socket "$SOCKET" --argjson pid "$$" '. + {pid:$pid,socketPath:$socket}' \
+  "$MANIFEST" > "$TMP_MANIFEST" && mv "$TMP_MANIFEST" "$MANIFEST"
+SD="$(dirname "$DISCORD_STATE_DIR")"
+cd "$(dirname "$0")/../packages/teamlead"
+env | sort > "$SD/lead-env.txt"
+pwd > "$SD/lead-cwd.txt"
+echo $$ > "$SD/lead-shell-pid.txt"
+mkdir -p "$HOME/.flywheel/comm/$PROJ"
+if [[ "$AGENT" != "flywheel-test-30" ]]; then
+  printf '{"pid": %s}\n' $$ > "$HOME/.flywheel/comm/$PROJ/.inbox-ready-$AGENT"
+fi
+sleep 300
+STUBCARRIER
+chmod +x "$FR/scripts/flywheel-lead-wrapper-v2.sh"
 
 # Local bare "sandbox remote" with a main branch.
 SRCREPO="$SB/srcrepo"
@@ -145,12 +180,56 @@ EOF
 cat > "$STUB_BIN/tmux" <<'EOF'
 #!/bin/bash
 echo "$*" >> "${TMUX_STUB_LOG:-/dev/null}"
+if [[ "$*" == *"capture-pane"* ]]; then echo "Loading development channels"; exit 0; fi
+if [[ "$*" == *"has-session"* ]]; then exit 0; fi
 case "$1" in
   list-windows) [ -n "${TMUX_STUB_WINDOW:-}" ] && echo "@1 ${TMUX_STUB_WINDOW}"; exit 0 ;;
   capture-pane) echo "Loading development channels"; exit 0 ;;
 esac
 exit 0
 EOF
+cat > "$STUB_BIN/launchctl" <<'LAUNCHCTL'
+#!/bin/bash
+set -euo pipefail
+state="${FLY1389_LAUNCHCTL_STATE:?}"
+mkdir -p "$state"
+case "$1" in
+  bootstrap)
+    plist="$3"
+    python3 - "$plist" "$state" <<'PY'
+import os, plistlib, subprocess, sys
+plist, state = sys.argv[1:]
+with open(plist, "rb") as f:
+    job = plistlib.load(f)
+env = {"PATH": os.environ["PATH"], "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
+env.update(job.get("EnvironmentVariables", {}))
+log_path = job.get("StandardOutPath", os.devnull)
+log = open(log_path, "ab", buffering=0)
+p = subprocess.Popen(job["ProgramArguments"], env=env, stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, start_new_session=True)
+with open(os.path.join(state, job["Label"] + ".pid"), "w") as f: f.write(str(p.pid))
+PY
+    ;;
+  print)
+    label="${2##*/}"; pid_file="$state/$label.pid"
+    [ -f "$pid_file" ] || exit 113
+    pid=$(cat "$pid_file")
+    kill -0 "$pid" 2>/dev/null || exit 113
+    printf 'pid = %s\n' "$pid"
+    ;;
+  bootout)
+    label="${2##*/}"; pid_file="$state/$label.pid"
+    if [ -f "$pid_file" ]; then
+      pid=$(cat "$pid_file")
+      kill "$pid" 2>/dev/null || true
+      for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+      kill -9 "$pid" 2>/dev/null || true
+      unlink "$pid_file" 2>/dev/null || true
+    fi
+    ;;
+  *) exit 64 ;;
+esac
+LAUNCHCTL
 chmod +x "$STUB_BIN"/*
 
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
@@ -203,6 +282,11 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TMPDIR=/tmp \
       TMUX_STUB_LOG="$home/tmux-calls.log" \
       TMUX_STUB_WINDOW="" \
+      FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
+      FLYWHEEL_QA_LEAD_WRAPPER="$FR/scripts/flywheel-lead-wrapper-v2.sh" \
+      FLYWHEEL_QA_TMUX="$STUB_BIN/tmux" \
+      FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL=0.01 \
       FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       LEAD_WORKSPACE="/malicious/prod-workspace" \
@@ -232,6 +316,8 @@ run_teardown() {  # <home> <slot>
       PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)")" \
       TMPDIR=/tmp \
       TMUX_STUB_LOG="$home/tmux-calls.log" \
+      FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$home/cmux-mutator.lock" \
       FLYWHEEL_CMUX_MAINTENANCE_MARKER="$home/cmux-maintenance" \
@@ -277,6 +363,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
   E_OK=1
   E_JSON="$(extract_json "$E_OUT")"
   jq -e '.noLead == false' <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: default path must report noLead=false"; }
+  jq -e '.leadCarrier == "launchd-v2" and (.leadLaunchdLabel | startswith("com.flywheel.qa.lead.slot-31.")) and (.leadSocket | length > 0)' \
+    <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: deploy JSON lacks launchd-v2 topology evidence"; }
   [[ -n "$(jq -r '.leadPidFile' <<<"$E_JSON")" ]] || { E_OK=0; fail "E: leadPidFile must be non-empty on the default path"; }
   # P0-a: caller leak cleared, LEAD_WORKSPACE pinned slot-local.
   LE="$E_SLOT_DIR/lead-env.txt"
@@ -291,6 +379,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     grep -q "^DISCORD_BOT_TOKEN=tok-31$" "$LE" || { E_OK=0; fail "E: slot token not delivered"; }
     grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$LE" \
       || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Lead env"; }
+    grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$LE" \
+      || { E_OK=0; fail "E/FLY-1663: Lead delivery secret path not slot-local"; }
   else
     E_OK=0; fail "E: stub Lead env dump missing" "$LE"
   fi
@@ -310,6 +400,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     grep -q "^FLYWHEEL_HOOKS_DIR=${E_SLOT_DIR}/hooks$" "$BE" || { E_OK=0; fail "E/P1-a: FLYWHEEL_HOOKS_DIR not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$BE" \
       || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Bridge env"; }
+    grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$BE" \
+      || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
@@ -428,6 +520,7 @@ if ( cd "$SB" && \
   N_OK=1
   N_JSON="$(extract_json "$N_OUT")"
   jq -e '.noLead == true' <<<"$N_JSON" >/dev/null 2>&1 || { N_OK=0; fail "N: JSON noLead must be true"; }
+  jq -e '.leadCarrier == "none"' <<<"$N_JSON" >/dev/null 2>&1 || { N_OK=0; fail "N: no-lead carrier must be none"; }
   [[ "$(jq -r '.leadPidFile' <<<"$N_JSON")" == "" ]] || { N_OK=0; fail "N: leadPidFile must be empty"; }
   [[ "$(jq -r '.leadLog' <<<"$N_JSON")" == "" ]] || { N_OK=0; fail "N: leadLog must be empty"; }
   # No Lead started: no lease, no stub-lead env dump, no 'Starting test Lead'.
@@ -446,6 +539,8 @@ if ( cd "$SB" && \
     || { N_OK=0; fail "N/P0-d: stale session-id survived"; }
   # Bridge really answered /health (deploy exiting 0 proves it, but pin it).
   grep -q "Bridge ready on port" "$N_ERR" || { N_OK=0; fail "N: Bridge /health never answered"; }
+  grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${N_SLOT_DIR}/state/delivery-secret$" "$N_SLOT_DIR/bridge-env.txt" \
+    || { N_OK=0; fail "N/FLY-1663: no-lead Bridge secret path not slot-local"; }
   [[ "$N_OK" == "1" ]] && pass "N: --no-lead E2E — Bridge /health on a GeoForge3D-less HOME, rules sentinel not staged, zero Lead artifacts"
   if run_teardown "$FH2" "$NOLEAD_SLOT"; then
     [[ ! -d "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" ]] \
@@ -497,19 +592,18 @@ else
     || fail "X2b: wrong failure point" "$(cat "$X2B_ERR")"
 fi
 
-# Extra-lead path source sentinels (campaign not hermetically E2E-runnable):
-# the extra-Lead env must clear the same leak set + pin LEAD_WORKSPACE under
-# XDIR, and the campaign manifest's leadWorkspace must live under the OWNER
-# slot's extra-leads dir (teardown consumes that same field).
+# Extra-lead source sentinels: the v2 manifest builder gets an explicit
+# slot-local workspace, and the campaign manifest points at the same path.
+# Inherited caller values cannot enter launchd because only the constructed
+# launchEnvironment object is rendered into the job.
 TD_SRC="${SCRIPT_DIR}/test-deploy.sh"
 X3_OK=1
-grep -q 'LEAD_WORKSPACE="${XDIR}/lead-workspace"' "$TD_SRC" || { X3_OK=0; fail "X3: extra-lead LEAD_WORKSPACE pin missing"; }
+grep -q '"${XDIR}/lead-workspace" "$XLEAD_LOG"' "$TD_SRC" || { X3_OK=0; fail "X3: extra-lead workspace argument missing"; }
 grep -q 'leadWorkspace: ($slotdir + "/extra-leads/slot-" + (.slotId | tostring) + "/lead-workspace")' "$TD_SRC" \
   || { X3_OK=0; fail "X3: campaign manifest leadWorkspace not under extra-leads dir"; }
-# Both Lead env blocks carry the full -u leak-clear set.
-[[ "$(grep -c -- '-u LEAD_WORKSPACE' "$TD_SRC")" -ge 2 ]] || { X3_OK=0; fail "X3: -u LEAD_WORKSPACE missing from a Lead env block"; }
-[[ "$(grep -c -- '-u CLAUDE_CONFIG_DIR' "$TD_SRC")" -ge 2 ]] || { X3_OK=0; fail "X3: -u CLAUDE_CONFIG_DIR missing from a Lead env block"; }
-[[ "$X3_OK" == "1" ]] && pass "X3: extra-lead sanitize + manifest leadWorkspace sentinels"
+grep -q 'launch_env=$(qa_slot_launch_env_json' "$TD_SRC" \
+  || { X3_OK=0; fail "X3: explicit launchEnvironment builder missing"; }
+[[ "$X3_OK" == "1" ]] && pass "X3: extra-lead explicit launch env + manifest workspace sentinels"
 
 echo ""
 echo "Results: ${PASSED} passed, ${FAILED} failed"

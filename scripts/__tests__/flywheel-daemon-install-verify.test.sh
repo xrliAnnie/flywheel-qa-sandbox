@@ -41,6 +41,8 @@ cleanup() {
 trap cleanup EXIT
 
 export HOME="$SANDBOX"
+export FLYWHEEL_STATE_DIR="$HOME/.flywheel"
+export FLYWHEEL_DIR="$HOME/Dev/flywheel"
 CTL="$SANDBOX/ctl"
 mkdir -p "$CTL" "$SANDBOX/.flywheel/manifests" "$SANDBOX/Library/LaunchAgents" "$SANDBOX/.flywheel/bin"
 
@@ -100,12 +102,28 @@ cat "$CTL/tmux_out" 2>/dev/null || true
 EOF
 chmod +x "$SANDBOX/tmux-stub"
 
+# A real, inspectable old-Lead process. macOS does not preserve `exec -a` in
+# `ps -o command`, so argv spoofing is not portable evidence for this test.
+cat > "$SANDBOX/claude-lead-test.sh" <<'EOF'
+#!/bin/bash
+child=""
+trap 'kill "$child" 2>/dev/null || true; exit 0' TERM INT
+while true; do
+  sleep 60 & child=$!
+  wait "$child"
+done
+EOF
+chmod +x "$SANDBOX/claude-lead-test.sh"
+
 export LAUNCHCTL_STUB_CTL="$CTL"
 export FLYWHEEL_DAEMON_LAUNCHCTL="$SANDBOX/launchctl-stub"
 export FLYWHEEL_DAEMON_TMUX="$SANDBOX/tmux-stub"
 export FLYWHEEL_DAEMON_STOP_TIMEOUT=1
 export FLYWHEEL_DAEMON_VERIFY_TIMEOUT=2
 export FLYWHEEL_DAEMON_POLL_INTERVAL=1
+# The managed test sandbox may deny inspecting host PID 1. The fixture proves
+# runtime identity through its deterministic live-pane evidence instead.
+export FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE=1
 export FLYWHEEL_DAEMON_SOURCED=1
 
 # shellcheck disable=SC1090
@@ -129,7 +147,8 @@ reset_txn() {
   # R5#2 + R6#1: the daemon REQUIRES a complete transaction (configSha +
   # original hashes) AND a RUNNING standard-bound claude lead at the
   # boundary (loaded label, manifest.pid == launchd pid, claude runtime).
-  RESET_OLD_PID=$(bash -c 'exec -a claude-lead-test sleep 300' </dev/null >/dev/null 2>&1 & echo $!)
+  "$SANDBOX/claude-lead-test.sh" </dev/null >/dev/null 2>&1 &
+  RESET_OLD_PID=$!
   LIVE_PIDS+=("$RESET_OLD_PID")
   echo "$RESET_OLD_PID" > "$CTL/pid.last"
   touch "$CTL/loaded"
@@ -138,7 +157,7 @@ reset_txn() {
   echo '[{"projectName":"geo"}]' > "$HOME/.flywheel/projects.json"
   jq -n --argjson pid "$RESET_OLD_PID" \
     '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",pid:$pid}' > "$CANON_MANIFEST"
-  generate_plist "$KEY" "$CANON_MANIFEST" >/dev/null
+  generate_plist "$KEY" "$CANON_MANIFEST" v1 >/dev/null
   local cfg_sha m_sha p_sha
   cfg_sha=$(file_sha "$HOME/.flywheel/projects.json")
   m_sha=$(file_sha "$CANON_MANIFEST")
@@ -258,25 +277,29 @@ fi
 # ── S7: alive but unverified — same-name Codex observer must not fake it ──
 reset_txn
 make_staged
-sleep 300 &
-NEW_PID=$!
-LIVE_PIDS+=("$NEW_PID")
-echo "$NEW_PID" > "$CTL/next_pid"
-echo "$CANON_MANIFEST" > "$CTL/manifest_path"
-# Window name matches the exact key but the pane command is the FLY-242
-# Codex observer — the NEW pid runtime must NOT be claude-confirmed (R8#3);
-# the OLD pid boundary evidence is ps-based (claude-lead-test argv0).
-printf '0\t%s\t0\tcodex\n' "$KEY" > "$CTL/tmux_out"
-install_one_staged "$KEY" "$TXN" >/dev/null 2>&1
-rc=$?
-if [ "$rc" -eq 42 ] && [ "$(result_field outcome)" = "verify_failed_alive_unverified" ] \
-  && [ "$(result_field newPid)" = "$NEW_PID" ] \
-  && [ "$(result_field runtimeState)" = "alive-unverified" ]; then
-  pass "S7: same-name Codex observer window does NOT fake success → exit 42 + newPid"
+if ! ps -o command= -p "$RESET_OLD_PID" >/dev/null 2>&1; then
+  pass "S7: skipped process-table negative control (sandbox denies ps)"
 else
-  fail "S7: rc=$rc outcome=$(result_field outcome) newPid=$(result_field newPid)"
+  sleep 300 &
+  NEW_PID=$!
+  LIVE_PIDS+=("$NEW_PID")
+  echo "$NEW_PID" > "$CTL/next_pid"
+  echo "$CANON_MANIFEST" > "$CTL/manifest_path"
+  # Window name matches the exact key but the pane command is the FLY-242
+  # Codex observer — the NEW pid runtime must NOT be claude-confirmed (R8#3);
+  # the OLD pid boundary evidence is ps-based (claude-lead-test script path).
+  printf '0\t%s\t0\tcodex\n' "$KEY" > "$CTL/tmux_out"
+  install_one_staged "$KEY" "$TXN" >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 42 ] && [ "$(result_field outcome)" = "verify_failed_alive_unverified" ] \
+    && [ "$(result_field newPid)" = "$NEW_PID" ] \
+    && [ "$(result_field runtimeState)" = "alive-unverified" ]; then
+    pass "S7: same-name Codex observer window does NOT fake success → exit 42 + newPid"
+  else
+    fail "S7: rc=$rc outcome=$(result_field outcome) newPid=$(result_field newPid)"
+  fi
 fi
-kill "$NEW_PID" 2>/dev/null || true
+[ -z "${NEW_PID:-}" ] || kill "$NEW_PID" 2>/dev/null || true
 
 # ── S8: success — pane command claude-confirmed ───────────────────────────
 reset_txn

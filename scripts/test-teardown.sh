@@ -20,6 +20,8 @@ log() { echo "[test-teardown] $(date +%H:%M:%S) $*" >&2; }
 TEARDOWN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/qa-multilead.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
+# shellcheck source=lib/qa-launchd-lead.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
 if [[ ! -r "$_CMUX_PROCESS_CENSUS_LIB" ]]; then
   log "ERROR: required cmux process census library unavailable"
@@ -694,6 +696,12 @@ teardown_slot() {
     SLOT_MODE_VAL=$(cat "/tmp/flywheel-test-slot-${SLOT}.lock/mode" 2>/dev/null || echo "unknown")
   fi
   log "Tearing down slot ${SLOT} (agent: ${AGENT_ID}, mode: ${SLOT_MODE_VAL})"
+
+  # A signal cannot stop a KeepAlive service; launchd would immediately pull
+  # it back up. Boot out every slot-owned label before any legacy PID/socket
+  # cleanup. Missing registry remains compatible with pre-FLY-1663 slots.
+  qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json" \
+    || { log "ERROR: failed to bootout one or more slot launchd Leads"; return 1; }
 
   # FLY-1189: owner-slot campaign cleanup — stop the extra Leads + release the
   # borrowed slot locks BEFORE the legacy single-Lead teardown below. Absent

@@ -58,11 +58,12 @@ STUB_PATH="$STUB_BIN:/usr/bin:/bin"
 mk_root() {
   local rr="$1" prebuilt="${2:-}"
   mkdir -p "$rr/scripts/lib" "$rr/scripts/packaged"
-  for f in flywheel-lead-wrapper.sh flywheel-bridge-wrapper.sh daily-standup.sh \
+  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+           flywheel-lead-attach.sh flywheel-bridge-wrapper.sh daily-standup.sh \
            materialize-lead-manifests.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
-  for f in lib/host-config.sh lib/script-sanity.sh lib/supervisor.sh; do
+  for f in lib/host-config.sh lib/lead-address.sh lib/script-sanity.sh lib/supervisor.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
   cp -p "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" "$rr/scripts/packaged/"
@@ -157,7 +158,10 @@ out="$(_prov "$H" "$RR" "$FD" flywheel-home)"; rc=$?
 if [ "$rc" -eq 0 ] \
    && [ -f "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" ] \
    && [ -f "$H/.flywheel/bin/flywheel-lead-wrapper.sh" ] \
+   && [ -f "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" ] \
+   && [ -f "$H/.flywheel/bin/flywheel-lead-attach.sh" ] \
    && [ -f "$H/.flywheel/bin/lib/host-config.sh" ] \
+   && [ -f "$H/.flywheel/bin/lib/lead-address.sh" ] \
    && [ ! -e "$H/.flywheel/bin/restart-services.sh" ]; then
   pass "P3a flywheel-home prebuilt: wrappers + host-config lib closure, no restart-services.sh"
 else

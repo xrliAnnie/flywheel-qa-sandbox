@@ -74,6 +74,10 @@ fleet_batch_validate_request() {
           then ("to.effort not a valid level: " + (.key | tostring))
         elif ((.from? // {} | has("effort")) and (okeffort(.from.effort) | not))
           then ("from.effort not a valid level: " + (.key | tostring))
+        elif ((.to | has("carrier")) and (.to.carrier as $c | ["v1","v2"] | index($c) == null))
+          then ("to.carrier must be v1|v2: " + (.key | tostring))
+        elif ((.from? // {} | has("carrier")) and (.from.carrier as $c | ["v1","v2","absent"] | index($c) == null))
+          then ("from.carrier must be v1|v2|absent: " + (.key | tostring))
         else empty end ] | (.[0] // "")' "$cf" 2>/dev/null)
   if [ -n "$bad" ]; then echo "$bad" >&2; return 1; fi
 
@@ -133,6 +137,20 @@ fleet_batch_current_effort() {
     | (.[0] // null) | if . == null then "null" else . end' "$pj" 2>/dev/null
 }
 
+# fleet_batch_current_carrier <projects_json> <exact_key>
+#   FLY-1663 three-state carrier: v1 | v2 | absent. Absence is intentionally
+#   distinct from v1 so ordinary model/effort writes can preserve it exactly.
+fleet_batch_current_carrier() {
+  local pj="$1" key="$2"
+  jq -r --arg key "$key" '
+    [ .[] | .projectName as $p | .leads[]
+      | select(($p + "-" + .agentId) == $key)
+      | if has("carrier") then .carrier else "absent" end ]
+    | (.[0] // "absent")
+    | if . == "v1" or . == "v2" or . == "absent" then .
+      else "invalid:" + (. | tostring) end' "$pj" 2>/dev/null
+}
+
 # fleet_batch_write_key_fields <pj> <key> <model> <touch_effort> <effort>
 #   FLY-671 COMPOSITE atomic write (Codex design review R2 BLOCKER-2): set/delete
 #   model AND (when <touch_effort> = "1") set/delete effort in ONE jq + temp +
@@ -142,15 +160,23 @@ fleet_batch_current_effort() {
 #   fleet_batch_write_key_model). "null" means delete that field. MUST hold the lock.
 fleet_batch_write_key_fields() {
   local pj="$1" key="$2" model="$3" touch_effort="$4" effort="${5:-null}"
+  local touch_carrier="${6:-0}" carrier="${7:-absent}"
   local tmp="${pj}.write.$$"
+  if [ "$touch_carrier" = "1" ]; then
+    case "$carrier" in v1|v2|absent) ;; *) echo "invalid carrier '${carrier}'" >&2; return 1 ;; esac
+  fi
   if jq --arg key "$key" --arg model "$model" \
-        --arg touch "$touch_effort" --arg effort "$effort" '
+        --arg touch "$touch_effort" --arg effort "$effort" \
+        --arg touchCarrier "$touch_carrier" --arg carrier "$carrier" '
         map( .projectName as $p
              | .leads |= map(
                  if ($p + "-" + .agentId) == $key
                  then (if $model == "null" then del(.model) else .model = $model end)
                       | (if $touch == "1"
                          then (if $effort == "null" then del(.effort) else .effort = $effort end)
+                         else . end)
+                      | (if $touchCarrier == "1"
+                         then (if $carrier == "absent" then del(.carrier) else .carrier = $carrier end)
                          else . end)
                  else . end ) )' "$pj" >"$tmp" 2>/dev/null &&
      jq empty "$tmp" 2>/dev/null; then
@@ -172,7 +198,8 @@ fleet_batch_write_key_fields() {
 fleet_batch_restore_key_fields() {
   local pj="$1" key="$2" written_model="$3" orig_model="$4"
   local touch_effort="$5" written_effort="${6:-null}" orig_effort="${7:-null}"
-  local cur_model cur_effort
+  local touch_carrier="${8:-0}" written_carrier="${9:-absent}" orig_carrier="${10:-absent}"
+  local cur_model cur_effort cur_carrier
   cur_model=$(fleet_batch_current_model "$pj" "$key")
   if [ "$cur_model" != "$written_model" ]; then
     echo "config-restore-conflict for ${key}: model current='${cur_model}' != written='${written_model}'" >&2
@@ -185,7 +212,15 @@ fleet_batch_restore_key_fields() {
       return 2
     fi
   fi
-  fleet_batch_write_key_fields "$pj" "$key" "$orig_model" "$touch_effort" "$orig_effort"
+  if [ "$touch_carrier" = "1" ]; then
+    cur_carrier=$(fleet_batch_current_carrier "$pj" "$key")
+    if [ "$cur_carrier" != "$written_carrier" ]; then
+      echo "config-restore-conflict for ${key}: carrier current='${cur_carrier}' != written='${written_carrier}'" >&2
+      return 2
+    fi
+  fi
+  fleet_batch_write_key_fields "$pj" "$key" "$orig_model" "$touch_effort" "$orig_effort" \
+    "$touch_carrier" "$orig_carrier"
 }
 
 # fleet_batch_restore_key <projects_json> <exact_key> <written_to> <original_from>
@@ -249,6 +284,17 @@ fleet_batch_verify_baseline() {
       cur_e=$(fleet_batch_current_effort "$pj" "$key")
       if [ "$from_e" != "$cur_e" ]; then
         echo "baseline mismatch for ${key}: reviewed effort from='${from_e}' but current='${cur_e}'" >&2
+        return 1
+      fi
+    fi
+    local has_from_carrier
+    has_from_carrier=$(jq -r --argjson i "$i" '.changes[$i].from | has("carrier")' "$cf")
+    if [ "$has_from_carrier" = "true" ]; then
+      local from_c cur_c
+      from_c=$(jq -r --argjson i "$i" '.changes[$i].from.carrier' "$cf")
+      cur_c=$(fleet_batch_current_carrier "$pj" "$key")
+      if [ "$from_c" != "$cur_c" ]; then
+        echo "baseline mismatch for ${key}: reviewed carrier from='${from_c}' but current='${cur_c}'" >&2
         return 1
       fi
     fi
@@ -334,7 +380,7 @@ fleet_batch_apply() {
   local n i stop=0
   n=$(jq -r '.changes | length' "$cf")
   for ((i = 0; i < n; i++)); do
-    local key to from touch_effort to_e from_e
+    local key to from touch_effort to_e from_e touch_carrier to_c from_c
     key=$(jq -r --argjson i "$i" '.changes[$i].key' "$cf")
     to=$(jq -r --argjson i "$i" '.changes[$i].to.model // null
           | if . == null then "null" else . end' "$cf")
@@ -344,6 +390,9 @@ fleet_batch_apply() {
     touch_effort=$(jq -r --argjson i "$i" 'if .changes[$i].to | has("effort") then "1" else "0" end' "$cf")
     to_e=$(jq -r --argjson i "$i" '.changes[$i].to.effort // null | if . == null then "null" else . end' "$cf")
     from_e=$(jq -r --argjson i "$i" '.changes[$i].from.effort // null | if . == null then "null" else . end' "$cf")
+    touch_carrier=$(jq -r --argjson i "$i" 'if .changes[$i].to | has("carrier") then "1" else "0" end' "$cf")
+    to_c=$(jq -r --argjson i "$i" '.changes[$i].to.carrier // "absent"' "$cf")
+    from_c=$(jq -r --argjson i "$i" '.changes[$i].from.carrier // "absent"' "$cf")
 
     if [ "$stop" = "1" ]; then
       batch_key_set_status "$batch_id" "$key" skipped
@@ -353,7 +402,7 @@ fleet_batch_apply() {
     # ① write-ahead config-writing → composite (model + effort) write under lock.
     batch_key_set_status "$batch_id" "$key" config-writing
     if ! config_write_locked "$lock" "$deadline" \
-          bash "$_FLEET_BATCH_LIB" write-key-fields "$pj" "$key" "$to" "$touch_effort" "$to_e"; then
+          bash "$_FLEET_BATCH_LIB" write-key-fields "$pj" "$key" "$to" "$touch_effort" "$to_e" "$touch_carrier" "$to_c"; then
       # Per-key forward-write contention (already accepted) → unapplied, stop.
       batch_key_set_status "$batch_id" "$key" unapplied
       stop=1
@@ -368,17 +417,22 @@ fleet_batch_apply() {
     export FLEET_PROJECT_PREIMAGE_MODEL="$from"
     export FLEET_PROJECT_PREIMAGE_EFFORT="$from_e"
     export FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT="$touch_effort"
+    export FLEET_PROJECT_PREIMAGE_CARRIER="$from_c"
+    export FLEET_PROJECT_PREIMAGE_TOUCH_CARRIER="$touch_carrier"
     if "$cutover" "$key"; then
-      unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT
+      unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT \
+        FLEET_PROJECT_PREIMAGE_CARRIER FLEET_PROJECT_PREIMAGE_TOUCH_CARRIER
       batch_key_set_status "$batch_id" "$key" applied
       continue
     fi
-    unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT
+    unset FLEET_PROJECT_PREIMAGE_MODEL FLEET_PROJECT_PREIMAGE_EFFORT FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT \
+      FLEET_PROJECT_PREIMAGE_CARRIER FLEET_PROJECT_PREIMAGE_TOUCH_CARRIER
 
     # ③ cutover failed → composite conditional restore under the lock, then stop.
     batch_key_set_status "$batch_id" "$key" config-restoring
     config_write_locked "$lock" "$deadline" \
-      bash "$_FLEET_BATCH_LIB" restore-key-fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e"
+      bash "$_FLEET_BATCH_LIB" restore-key-fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e" \
+        "$touch_carrier" "$to_c" "$from_c"
     case $? in
       0)  batch_key_set_status "$batch_id" "$key" failed-restored ;;
       2)  batch_key_set_status "$batch_id" "$key" config-restore-conflict ;;
@@ -419,7 +473,7 @@ fi
 #   Reconcile ONE non-terminal key using config presence + journaled status.
 fleet_batch_reconcile_key() {
   local pj="$1" bid="$2" key="$3"
-  local path st to from cur touch_effort to_e from_e cur_e
+  local path st to from cur touch_effort to_e from_e cur_e touch_carrier to_c from_c cur_c
   path="$(batch_journal_path "$bid")"
   st=$(batch_key_status "$bid" "$key")
   to=$(jq -r --arg k "$key" '.keys[$k].to.model // null | if .==null then "null" else . end' "$path")
@@ -430,6 +484,10 @@ fleet_batch_reconcile_key() {
   to_e=$(jq -r --arg k "$key" '.keys[$k].to.effort // null | if .==null then "null" else . end' "$path")
   from_e=$(jq -r --arg k "$key" '.keys[$k].from.effort // null | if .==null then "null" else . end' "$path")
   cur_e=$(fleet_batch_current_effort "$pj" "$key")
+  touch_carrier=$(jq -r --arg k "$key" 'if .keys[$k].to | has("carrier") then "1" else "0" end' "$path")
+  to_c=$(jq -r --arg k "$key" '.keys[$k].to.carrier // "absent"' "$path")
+  from_c=$(jq -r --arg k "$key" '.keys[$k].from.carrier // "absent"' "$path")
+  cur_c=$(fleet_batch_current_carrier "$pj" "$key")
   case "$st" in
     applied|failed-restored|config-restore-conflict|skipped|unapplied|manual-intervention)
       : ;; # already terminal — leave as-is
@@ -443,6 +501,7 @@ fleet_batch_reconcile_key() {
       local landed=1
       [ "$cur" = "$to" ] || landed=0
       if [ "$touch_effort" = "1" ] && [ "$cur_e" != "$to_e" ]; then landed=0; fi
+      if [ "$touch_carrier" = "1" ] && [ "$cur_c" != "$to_c" ]; then landed=0; fi
       if [ "$landed" = "1" ]; then
         # config ahead of the carrier (cutover never confirmed) → needs a human
         # / the inner inc1 recover; surface it, don't silently claim applied.
@@ -455,7 +514,8 @@ fleet_batch_reconcile_key() {
       batch_key_set_status "$bid" "$key" manual-intervention ;;
     config-restoring)
       # finish the composite conditional restore if THIS batch's values are still present.
-      if fleet_batch_restore_key_fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e" 2>/dev/null; then
+      if fleet_batch_restore_key_fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e" \
+        "$touch_carrier" "$to_c" "$from_c" 2>/dev/null; then
         batch_key_set_status "$bid" "$key" failed-restored
       else
         batch_key_set_status "$bid" "$key" config-restore-conflict

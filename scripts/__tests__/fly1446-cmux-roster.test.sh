@@ -68,8 +68,8 @@ lead_plist_wrapper_basename() {
 }
 derive_lead_roster
 expect_eq "$LEAD_ROSTER_STATE" "ok" "valid loaded jobs produce one complete roster snapshot"
-if grep -qx 'claude-tmux|com.flywheel.lead.flywheel-eng-lead|flywheel-eng-lead' <<< "$LEAD_ROSTER_ROWS" \
-    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead' <<< "$LEAD_ROSTER_ROWS"; then
+if grep -qx 'claude-tmux|com.flywheel.lead.flywheel-eng-lead|flywheel-eng-lead|' <<< "$LEAD_ROSTER_ROWS" \
+    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|' <<< "$LEAD_ROSTER_ROWS"; then
   pass "derived roster uses manifest projectName/leadId and the TUI label identity"
 else
   fail "derived roster rows mismatch: [$LEAD_ROSTER_ROWS]"

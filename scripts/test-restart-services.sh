@@ -1707,6 +1707,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/supervisor.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/lib/bounded-run.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
@@ -1760,6 +1761,15 @@ elif [[ "\${1:-}" == "bootstrap" ]]; then
     --root "$BO_HOME/.flywheel/restart-ledger" lead.flywheel-eng >/dev/null 2>&1 || true
 fi
 exit 0
+EOF
+cat > "$BO_SHIMS/plutil" <<'EOF'
+#!/bin/bash
+if [[ "${1:-}" == "-extract" && "${2:-}" == "KeepAlive" && "${3:-}" == "raw" ]] \
+  && grep -q '<key>KeepAlive</key><true/>' "${6:-}"; then
+  printf 'true\n'
+  exit 0
+fi
+exit 1
 EOF
 cat > "$BO_SHIMS/tmux" <<EOF
 #!/bin/bash
@@ -1916,6 +1926,14 @@ cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
 <string>$BO_HOME/.flywheel/manifests/flywheel-eng.json</string>
 </array></dict></plist>
 EOF
+cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.bridge.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.flywheel.bridge</string>
+<key>KeepAlive</key><true/>
+</dict></plist>
+EOF
 printf '<plist/>\n' > "$BO_HOME/Library/LaunchAgents/com.flywheel.cmux-watcher.plist"
 
 bo_run() {
@@ -1934,6 +1952,7 @@ bo_run() {
         FAKE_TMUX_RECOVER_AFTER="${FAKE_TMUX_RECOVER_AFTER:-0}" \
         FAKE_TMUX_INVENTORY_FAIL_ONCE="${FAKE_TMUX_INVENTORY_FAIL_ONCE:-0}" \
         FAKE_SUPERVISOR_STALE="${FAKE_SUPERVISOR_STALE:-0}" \
+        FLYWHEEL_SUPERVISOR_BACKEND=launchd \
         FLYWHEEL_RESTART_BOUNDED_RUN_BIN="$BO_SHIMS/bounded-run" \
         FAKE_IDLE_BUSY="${FAKE_IDLE_BUSY:-0}" \
         FAKE_COMPLETION_PROBE_FAIL="${FAKE_COMPLETION_PROBE_FAIL:-0}" \

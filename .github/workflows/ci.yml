@@ -220,6 +220,17 @@ jobs:
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
 
+      # FLY-1663: launchd-native lifecycle contracts are root shell suites and
+      # are not discovered by package Vitest jobs. Keep all four migration
+      # seams explicit: carrier foundation, body runtime, cmux, and Bridge.
+      - name: Test — FLY-1663 launchd-native Lead lifecycle
+        run: |
+          bash scripts/__tests__/fly1663-launchd-foundation.test.sh
+          bash scripts/__tests__/fly1663-lead-v2-runtime.test.sh
+          bash scripts/__tests__/fly1663-cmux-v2.test.sh
+          bash scripts/__tests__/fly1663-bridge-launchd.test.sh
+          bash scripts/__tests__/fly1663-qa-launchd.test.sh
+
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
       # the git boundary. `scan_for_secrets fleet/` fails CI if the committed

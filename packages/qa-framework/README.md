@@ -51,9 +51,28 @@ driver; `restart-services.sh` only audits and alerts on detached residue.
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>` (slot-suffixed basename so WorktreeManager-derived Runner branches don't collide on the sandbox remote when two slots run the same issue), start test Bridge with `FLYWHEEL_RUNNER_START_POINT=refs/remotes/origin/<br>`, start test Lead. Default branch is sandbox `main`. |
+| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>`, start the slot Bridge, then start each real test Lead as its own isolated launchd v2 job and private tmux server. Default branch is sandbox `main`. |
 | `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
-| `scripts/test-teardown.sh <N>` | Kill Runner tmux, Lead, Bridge; clean FLY-95 worktrees + slot-local branches; remove `SLOT_DIR` + CommDB. |
+| `scripts/test-teardown.sh <N>` | `bootout` slot Lead labels first, then stop Runner/Bridge, clean FLY-95 worktrees + slot-local branches, and remove `SLOT_DIR` + CommDB. |
+
+### Lead carrier evidence (FLY-1663)
+
+529 Room is the real-machine proof path for the launchd-native Lead topology.
+`test-deploy.sh` no longer starts `claude-lead.sh` directly. For every main or
+extra Lead it creates a unique `com.flywheel.qa.lead.slot-N.*` label, a
+slot-local plist/manifest/projects/env set, and a private socket. Deploy passes
+only after all three positive facts agree:
+
+1. launchd reports a live job PID;
+2. the v2 manifest reports the same PID and its private socket;
+3. that socket exposes the canonical `main` tmux session, followed by the
+   existing inbox-ready lease. The FLY-529 smoke scripts then exercise the real
+   Discord send/receive capability.
+
+The deploy JSON exposes `leadCarrier`, `leadLaunchdLabel`, `leadSocket`, and
+`launchdRegistry` for independent QA evidence. The slot Bridge also pins
+`FLYWHEEL_DELIVERY_SECRET_PATH` under `${SLOT_DIR}/state`; a test Bridge cannot
+read, create, or rotate the resident fleet delivery secret.
 
 ### Pre-requisites
 

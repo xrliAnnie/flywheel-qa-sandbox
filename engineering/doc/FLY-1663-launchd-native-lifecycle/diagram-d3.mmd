@@ -1,0 +1,11 @@
+flowchart LR
+    P0["阶段 0<br/>写码 + QA 房真机彩排<br/>生产 0 重启"] --> P1["阶段 1<br/>先铺兼容层:Bridge 和<br/>显示层同时认识新旧两种形态<br/>Bridge 重启 1 次"]
+    P1 --> P2["阶段 2<br/>金丝雀:挑 1 个低风险 Lead<br/>切到新形态,盯一个观察窗<br/>该 Lead 重启 1 次"]
+    P2 --> P3["阶段 3<br/>其余 Lead 逐个切换<br/>每个间隔 5 秒防负载尖峰<br/>每个 Lead 重启 1 次"]
+    P3 --> P4["阶段 4<br/>稳定 48 小时后<br/>删掉全部旧机制(净删除主体)<br/>搭车例行部署,0 额外重启"]
+    P2 -.->|"任何一步出问题:<br/>只把出问题的 Lead<br/>切回旧形态(1 次重启)"| RB["回滚<br/>旧脚本/旧状态全程在盘<br/>单个 Lead 可独立回退"]
+    P3 -.-> RB
+    style P0 fill:#f5f0ff,stroke:#af52de
+    style P2 fill:#fff8e6,stroke:#ff9500,stroke-width:2px
+    style P4 fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+    style RB fill:#ffebe9,stroke:#ff3b30

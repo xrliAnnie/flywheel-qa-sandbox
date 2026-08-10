@@ -25,6 +25,8 @@ scripts/provision-fleet-host.sh
 scripts/daily-standup.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-lead-wrapper.sh
+scripts/flywheel-lead-wrapper-v2.sh
+scripts/flywheel-lead-attach.sh
 scripts/restart-storm-gate.py
 scripts/lead-alert.sh
 scripts/meta-alert.sh
@@ -40,6 +42,7 @@ scripts/lib/buddy-captain-preview.sh
 scripts/lib/buddy-connect.sh
 scripts/lib/fleet-sanitize.sh
 scripts/lib/host-config.sh
+scripts/lib/lead-address.sh
 scripts/lib/platform-deps.sh
 scripts/lib/script-sanity.sh
 scripts/lib/path-hygiene.sh
@@ -67,6 +70,7 @@ node_modules/flywheel-teamlead/lead-rules-base/*
 node_modules/flywheel-teamlead/static/*
 # teamlead launcher runtime closure (per-file — ops/test scripts must NOT ship)
 node_modules/flywheel-teamlead/scripts/claude-lead.sh
+node_modules/flywheel-teamlead/scripts/lead-body.sh
 node_modules/flywheel-teamlead/scripts/codex-lead.sh
 node_modules/flywheel-teamlead/scripts/codex-lead-tui-home.sh
 node_modules/flywheel-teamlead/scripts/lead-rules-bundle.sh
@@ -79,6 +83,7 @@ node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
 node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
 node_modules/flywheel-teamlead/scripts/lib/lead-launch-authority.sh
 node_modules/flywheel-teamlead/scripts/lib/resume-recovery.sh
+node_modules/flywheel-teamlead/scripts/lib/lead-body-receipt.sh
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
 node_modules/flywheel-teamlead/scripts/lib/tmux-supervisor-guard.sh

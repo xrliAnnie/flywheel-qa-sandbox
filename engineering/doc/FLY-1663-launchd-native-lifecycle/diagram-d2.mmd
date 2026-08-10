@@ -1,0 +1,11 @@
+flowchart LR
+    A["Lead 本体退出<br/>(正常/崩溃都一样)"] --> B["守护脚本写下退出收据<br/>(退出码/运行时长,给下次启动参考)"]
+    B --> C["① 主路径:守护脚本亲手<br/>关掉自己的终端机"]
+    C --> E["终端机进程退出<br/>= launchd 眼里任务死了"]
+    A -.-> D["② 后备:终端机自带的<br/>pane 死亡钩子兜底关机"]
+    D -.-> E
+    E --> F["launchd KeepAlive<br/>30 秒节奏内自动重拉"]
+    F --> G["全新终端机 + 全新 Lead 本体<br/>用退出收据决定:接着上次记忆继续<br/>还是(连崩 3 次后)全新开始"]
+    style C fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+    style D fill:#fff8e6,stroke:#ff9500
+    style F fill:#e9f2ff,stroke:#007aff,stroke-width:2px
