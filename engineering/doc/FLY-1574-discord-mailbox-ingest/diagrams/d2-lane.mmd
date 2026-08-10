@@ -1,0 +1,9 @@
+flowchart TD
+  M["一条 Discord 消息<br/>编号 = chat:Lead名:消息号"] --> Q{"查所有权登记<br/>(mailbox_identity, 单事务)"}
+  Q -->|"无记录, 开关 ON"| I1["占新道 inserted_inbox<br/>入队成功"]
+  Q -->|"无记录, 开关 OFF"| I2["占旧道 inserted_external<br/>照旧直推"]
+  Q -->|"新道已占有"| A1["active_inbox<br/>幂等跳过, 不重复投"]
+  Q -->|"旧道已占有"| L1["legacy_external<br/>跳过, 由旧机制收尾"]
+  Q -->|"已归档"| AR["archived<br/>两道都不再动作"]
+  I1 --> DL["投递环送达, 恰好一次"]
+  I2 --> DP["直推送达(旧路)"]
