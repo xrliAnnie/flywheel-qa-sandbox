@@ -1,13 +1,13 @@
 ---
 issue: FLY-1574
 phase: design
-phaseCursor: 4/4
-updated: 2026-08-10T18:37:26.273Z
-nextStep: design 节点完结(phase_design_complete)
+phaseCursor: 5/6
+updated: 2026-08-10T19:11:03.678Z
+nextStep: commit R6 corrections, push, request a new design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1574 progress
-**phase**: design (4/4)
-**next**: design 节点完结(phase_design_complete)
+**phase**: design (5/6)
+**next**: commit R6 corrections, push, request a new design review
