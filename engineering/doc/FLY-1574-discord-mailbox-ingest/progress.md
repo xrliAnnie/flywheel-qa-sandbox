@@ -2,13 +2,14 @@
 issue: FLY-1574
 phase: implement
 phaseCursor: 2/3
-updated: 2026-08-11T01:43:57.726Z
-nextStep: Code-level recheck all green at ba16b8da; now running FLY-529
-  real-Discord N-to-N
+updated: 2026-08-11T01:59:03.944Z
+nextStep: "PARKED per Lead 2fe9f35f: R2 FAIL (plugin ingestFlags missing route
+  params). TURN with implement for both PRs. Awaiting re-test wake; harnesses
+  warm in scratchpad"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1574 progress
 **phase**: implement (2/3)
-**next**: Code-level recheck all green at ba16b8da; now running FLY-529 real-Discord N-to-N
+**next**: PARKED per Lead 2fe9f35f: R2 FAIL (plugin ingestFlags missing route params). TURN with implement for both PRs. Awaiting re-test wake; harnesses warm in scratchpad
