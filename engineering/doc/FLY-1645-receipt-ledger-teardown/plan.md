@@ -14,7 +14,7 @@ Issue: FLY-1645 (https://linear.app/geoforge3d/issue/FLY-1645/消息层重裁-b-
 
 拆除消息层收据账本机器(FLY-1426 时代:收据铸造 / relay 义务列消费 / mailbox_log settlement / 重投直到 settle / 关闭动词),使以下三条成为**结构性不可能**而非"被修好":
 
-- **N1(不铸债)**:任何入站消息不再铸出「需要有人来关」的收据行;SQL 不变式 `relay_state='open' ⇔ type='question'` 恒成立(出生即定,非 question 行出生即 `terminal_disposed`)。
+- **N1(不铸债)**:任何入站消息不再铸出「需要有人来关」的收据行;SQL 不变式 **`type != 'question' ⇒ relay_state = 'terminal_disposed'`**(等价:`relay_state IN ('open','protected') ⇒ type='question'`——question 行自身合法经历 open/protected/terminal_disposed 三态,Codex R1 #5 修正)恒成立,并由 **schema 触发器结构性强制**(closeout sweep 之后安装,拦截 INSERT/UPDATE 铸出非 question 活账;迁移路径的历史 relay_state 覆写隔离在迁移代码内)。
 - **N2(不重催)**:不存在任何按「办没办」重投的发射器;仅存的重投是 1573 投递层的租约语义(送到没送到)。
 - **N3(不再有第二本账)**:`mailbox_log` 不再接受 processed/disposed 新事件;「办没办」唯一归宿 = FLY-1575 task 表(ack 同事务建,agent done/no_action 关)。
 
@@ -43,14 +43,14 @@ flowchart TB
 
 | # | 手术 | 切法 |
 |---|---|---|
-| S1 | `supersedeShipGateAndReceiptFamily`(db.ts:1131) | 删整函数;3 个终局权威调用点(issue_done / pr_merged / session_terminal)改指既有 `retireShipGate`(db.ts:1096-1122,同款双守卫 gate CAS、零收据接触,已有 3 个生产调用先例) |
-| S2 | `trustedFounderApprovalAndReceipt`(:2962)/ `trustedFounderGateResponseAndReceipt`(:3035)/ `respondAndReceipt`(:2866) | 前两者保 gate-response + founder-attribution 事务、摘 settle、更名去 `AndReceipt`;`respondAndReceipt` 与 `handleReceipt` relay/respond 的业务半边统一收敛到既有 `respond` 动词(insertResponse + markQuestionTerminalDisposed) |
+| S1 | `supersedeShipGateAndReceiptFamily`(db.ts:1131)+ terminal-receipt-settlement projector | **`retireShipGate` 不是等价替身**(Codex R1 #3:缺 `resolved_via`、`superseded_at` 仅在传 supersededBy 时写、用 db-now 非权威时间戳),且删 projector 后 session_terminal 退休无人做。改为:新建**无收据的终局权威 gate 退休原语** `retireGateForTerminalAuthority`(显式 `now` + reason→`resolved_via` + 未答/已答 CAS + supersede 审计字段,语义对齐原函数 gate 半边);issue_done / pr_merged 由各自 reconciler(done-thread / external-merge)直连并保留**每次不可逆动作前的权威复验**;session_terminal 改为**派生幂等 patrol**(从 sessions 终态直接推导,无 intent 表),保留 `workflowGatePresentationDisposition === "holder_authoritative"` 否决;原 terminal-settlement 测试改写为 gate-retirement 测试(响应竞态/holder 否决/中途 reopen/未知权威/重试/三权威全覆盖),不是整删 |
+| S2 | `trustedFounderApprovalAndReceipt`(:2962)/ `trustedFounderGateResponseAndReceipt`(:3035)/ `respondAndReceipt`(:2866)/ `respond` 动词 | 前两者保 gate-response + founder-attribution 事务、摘 settle、更名去 `AndReceipt`。**`respond` 现状对非 approve_to_ship 问题缺守卫**(Codex R1 #4:`insertResponse` db.ts:1576-1612 不查 `resolved_at`/`superseded_at`/过期/终态——已退休问题可被迟到回答):`respond` 改用从 `insertResponseIfGateOpen` 泛化的**守卫式立即事务响应原语**(expected owner/checkpoint + founder 路由所需 scope/排除检查);原 routeFounderReply 测试的 stale/scope/竞态断言(候选在选中与写入之间被答/被退休)移植到新原语测试 |
 | S3 | `listExternalPending`(mailbox-queue.ts:653) | 去 `NOT EXISTS settlement` 子句,终态只认 `state='ACKED'`;前置存量 sweep 保证「settled-未-ACKED」集合为空(§4-2),上线前生产谓词预演 |
 | S4 | `ExternalReceiptSaga.handle()`(:71-98) | 摘 settle 调用,其余(begin/complete/reconcile)逐字节不变 |
-| S5 | plugin `acceptInbound`(:179-195) | 收敛为无条件 `ingest()`;`FLYWHEEL_MAILBOX_DISCORD` / `FLYWHEEL_CHAT_RECEIPTS` 两开关删除(耐久入站不再可关);ingest 全家(intent/worker/retry/codec/RecorderMode 能力门/roundtable 路由)逐字节保留 |
+| S5 | plugin `acceptInbound`(:179-195)+ **主仓/Codex 侧全部 flag 面**(Codex R1 #1) | plugin 收敛为无条件 `ingest()`;两开关(`FLYWHEEL_MAILBOX_DISCORD`/`FLYWHEEL_CHAT_RECEIPTS`)**全仓拔除**:discord-chat-ingest.ts:14/:150 readMailboxDiscordFlag + lib.ts 再导出 + registry.ts:3205 注册项 + 两个 Codex runtime 的 env 注入 + `CodexDiscordMailboxStrategy.ts:41-98` 的 legacy verdict 分支 + `CodexDiscordRuntimeOwnership` 的 flag 判定(**硬定 enabled 姿态**:保 mailboxReady 重试/fail-closed、socket ownership、ingress lock,绝不回落到无主直连路径)+ claude-lead.sh:2937 的 `FLYWHEEL_CHAT_RECEIPTS` 透传;Claude plugin + Codex headless + Codex TUI 三载体 ownership 各测;ingest 全家逐字节保留 |
 | S6 | plugin.ts:7231 | founder-decision convergence 的 question_retired 判定改读 `resolved_at`/`superseded_at`(teamlead 对 relay_state 引用归零) |
-| S7 | `enqueue()`(mailbox-queue.ts:392) | 出生不变式:`relay_state = type==='question' ? 'open' : 'terminal_disposed'`(显式入参仍优先——迁移 replay 保真);`materializeForDelivery` 的 question→protected 不动。**动机声明**(前轮 review 警惕通用 insert 改动,故写明):非 question 行的 relay_state 零运行时读者,此改零行为差;唯一目的 = 让 N1 成为一条 SQL 可断言的结构不变式,根治「把标签当实体」审计陷阱(8-11 两位 Lead 各栽一次)。review 若判为不值,可降级为纯文档口径,N1 改由 sweep 后基线 + 周期审计语句维持 |
-| S8 | gate-poller.ts:3177-3182 handoff 文本 + lead-rules-base/discord-reply-contract.md:20-45 + plugin 三段 MCP 文案(recorder:238-251) | 同批改写为纯路由指示(转交 gate 用 `respond`;无收据关闭义务);`meta.receipt_id` 停发与文案停示配对落地 |
+| S7 | `enqueue()`(mailbox-queue.ts:392)+ N1 触发器 | 出生规则:`relay_state = type==='question' ? 'open' : 'terminal_disposed'`(显式入参仍优先——迁移 replay 保真);sweep 后安装 N1 schema 触发器(§1)做结构强制。**⚠️ 投影哈希兼容**(Codex R1 #6):enqueue 的 SHA-256 投影含 relay_state 且永久存于 `mailbox_identity.insert_projection_hash`(update guard 禁改)——稳定 ID 生产者(lead-event-queue.ts:22 / ExternalReceiptSaga.begin / 死信告警)的确定性重放会撞旧哈希。补**窄兼容规则**:既有非 question identity 且调用方未显式传 relayState 时,按 `relay_state='open'` 重算逐字节相同才接受旧哈希;其余差异与显式覆写维持 conflict。测试覆盖活/已归档 identity + 升级前铸造的 lead-event 重放 |
+| S8 | gate-poller.ts:3177-3182 handoff 文本 + lead-rules-base/discord-reply-contract.md:20-45 + plugin 三段 MCP 文案(recorder:238-251)+ **`<channel>` 可见属性**(Codex R1 #9) | 同批改写为纯路由指示(转交 gate 用 `respond`;无收据关闭义务);`meta.receipt_id` 停发与文案停示配对落地;主仓 `discord-chat-ingest.ts:53` 渲染进投递 XML 的 `receipt_id` 属性更名 `delivery_id`(内部 `chat:` dedupe 公式保留为传输身份),`scripts/audit-discord-mailbox-ingest.sh:29` 断言同步 |
 
 ## 3. 变更清单(按仓/文件)
 
@@ -65,13 +65,15 @@ flowchart TB
 | commands/ | 删 handle-receipt.ts、route-founder-reply.ts;chat-receipt.ts 删五个子命令壳,envelope codec(`chatReceiptId`/encode/parse/normalize/`CHAT_RECEIPT_ENVELOPE_PREFIX`)迁至 ingest 侧模块(discord-chat-ingest.ts 或新 chat-envelope.ts),`chat:` id 公式保留作 dedupe 键 |
 | index.ts | 删 3 个 CLI 注册 + usage 文本;`chat-ingest`/`pending`(question 域)/`ack-event` 不动 |
 | founder-reply-routing.ts | 删(hub root id 铸造与路由态机) |
-| mailbox-migration.ts | settlement replay 改统一直写 mailbox_log(历史保真,不再依赖 `settle()`);`classifyLead` 的 legacy→ACKED/DEAD 映射不动 |
+| discord-chat-ingest.ts / lib.ts | 删 `readMailboxDiscordFlag`(:14/:150)与 lib.ts 再导出(S5);`renderDiscordChatContent` 的 `receipt_id` 属性更名 `delivery_id`(S8);ingest 主体不动 |
+| scripts/audit-discord-mailbox-ingest.sh | :29 属性断言同步 `delivery_id`(S8) |
+| mailbox-migration.ts | **迁移引擎是 receipt_root_lineage 的活消费者(Codex R1 #2),须先重写再删表**::645 从 lineage 反推 orphan question sender → 改为无收据、fail-loud 的 sender 推导;:848-852 lineage 回填/校验、:949 迁移期 drop 触发器、:1059-1068 重建触发器 → 三段整删;:822 settle replay 改直写 mailbox_log(确定性 event id + 同 evidence 冲突检查,历史保真);`classifyLead` 的 legacy→ACKED/DEAD 映射不动。测试:legacy 库全迁 / 已迁库幂等 / 中断重放 / 终态 `sqlite_master` 残留集断言 |
 
 **packages/teamlead**
 | 文件 | 变更 |
 |---|---|
-| bridge/terminal-receipt-settlement.ts | 删整文件;done-thread-reconcile / external-merge-reconcile 的 `settleIssueReceipts`/`settleMergedReceipts` dep 改为「retire 未答 ship gate」薄函数(指 `retireShipGate`);plugin.ts 接线同步 |
-| StateStore.ts | 删 `receipt_settlement_intent` 表+全套 ensure/claim/fence/retry/complete + 终态转换热路径上的 intent 铸造(保 `terminal_lifecycle_id`);删 `receipt_unprocessed%` 检测 lane 四函数 + `detection_escalations.source_receipt_id` 列(幂等 DROP COLUMN 迁移;若 SQLite 因引用拒绝则列留存+tombstone 注释,代码零消费) |
+| bridge/terminal-receipt-settlement.ts | 删整文件,按 S1 落地替身:`retireGateForTerminalAuthority` 原语 + done-thread / external-merge reconciler 直连(权威复验保留)+ session_terminal 派生幂等 patrol(holder_authoritative 否决保留);plugin.ts 接线同步;测试改写非整删(S1) |
+| StateStore.ts | 删 `receipt_settlement_intent` 表+全套 ensure/claim/fence/retry/complete + 终态转换热路径上的 intent 铸造(保 `terminal_lifecycle_id`);**detection-lineage 三列族整体处置(Codex R1 #7,不许只删一列)**:`source_receipt_id`/`source_execution_id`/`source_question_id` 三列 + `DETECTION_ESCALATION_COLUMNS` 静态列表 + parser 索引 + 通用 upsert/backfill SQL + `getDetectionEscalationBySourceReceiptId`/`attachDetectionSettlementLineage`/`receipt_unprocessed%` 四函数 + `stuck-remanage-routes.ts:75/:380` 消费点,整族删除(workflow 表里同名列不动);升级测试从**有数据的** StateStore 跑;sql.js 运行时 `DROP COLUMN` 集成测试(宿主 SQLite 3.51 已核可行,sql.js 需实测),被拒则三列 tombstone(零运行时 SELECT/INSERT/UPDATE) |
 | bridge/founder-reply-deliverer.ts | 删 hub root 铸造与两处 settleFounderHubRoot;投递/路由/审批半边不动 |
 | bridge/gate-poller.ts | 删 `receiptFoundationEnabled` 全家 + off 告警;S8 文本改写 |
 | bridge/plugin.ts | 删 projector 接线 + flag 接入;S6 |
@@ -79,6 +81,8 @@ flowchart TB
 | LeadAlertNotifier / LeadWatchdog / infra-event-router / kind-contract | 删 `receipt_foundation_off` alert kind |
 | lead-rules-base/discord-reply-contract.md | 删 :20-45 收据节(:1-18 FLY-387 保留) |
 | lead-backends/codex/ExternalReceiptSaga.ts | S4 |
+| lead-backends/codex/CodexDiscordMailboxStrategy.ts / CodexDiscordRuntimeOwnership.ts / 两个 codex runtime | S5:删 flag 注入与 legacy verdict 分支,硬定 enabled 姿态(mailboxReady fail-closed / socket ownership / ingress lock 保留,绝不回落无主直连);headless + TUI ownership 各测 |
+| scripts/claude-lead.sh | :2937 删 `FLYWHEEL_CHAT_RECEIPTS` 透传(S5) |
 | 测试 | 收据域测试整删(terminal-receipt-settlement ×2、discord-chat-receipt-contract、gate-poller-founder-reply 的 route-founder-reply 断言、handle-receipt/chat-receipt/founder-reply-routing/fly1646-replay-bound 等);幸存域测试改断言(lead-inbox-loop 载荷、kind-contract) |
 
 **packages/config**:删 feature-flags/receipt-foundation.ts + registry 三项(`receipt_foundation` / `mailbox_discord` / plugin 侧 `FLYWHEEL_CHAT_RECEIPTS` 对应项若在册)。
@@ -94,7 +98,10 @@ CommDB(每项目 shard,CommDB open 时执行,幂等可重放):
 5. **保留**:`mailbox_log` 表 + 两个 append-only 触发器 + 全部历史行(processed 43,921 / disposed 10,351 一行不动;行数守恒断言);`receipt_alert_outbox`(runner wake,域 C);`session_receipt_lineage`(runner 身份,runner-stopped.ts 在用);`mailbox` 表结构不变(三列留租户 A)。
 6. 后置:`PRAGMA foreign_key_check` + `quick_check`;迁移标记落 `mailbox_log`(kind=migration_snapshot 惯例)。
 
-StateStore(既有 migration ladder 追加):`DROP TABLE IF EXISTS receipt_settlement_intent`;`detection_escalations` 的 `source_receipt_id` 列 `ALTER TABLE ... DROP COLUMN`(先 `DROP INDEX IF EXISTS` 其上索引;若 SQLite 因引用拒绝则列留存 + tombstone 注释,代码零消费)。
+7. **N1 触发器安装**:closeout sweep 确认 `relay_state IN ('open','protected') AND type != 'question'` 集合为空后,`CREATE TRIGGER IF NOT EXISTS mailbox_no_nonquestion_open`(BEFORE INSERT/UPDATE,违例 RAISE(ABORT))——顺序硬约束:**先清后装**,否则触发器拦住 sweep 自己。
+8. **迁移引擎重写**(R1 #2,与 DROP 同 PR、先码后删):orphan sender 无收据推导 + lineage 三段删除 + settle replay 直写化(§3.1 mailbox-migration 行);legacy 库/已迁库/中断重放/残留集四类测试全绿后才允许 DROP 步生效。
+
+StateStore(既有 migration ladder 追加):`DROP TABLE IF EXISTS receipt_settlement_intent`;detection-lineage **三列族**(`source_receipt_id`/`source_execution_id`/`source_question_id`)先 `DROP INDEX IF EXISTS` 其上索引再逐列 `ALTER TABLE ... DROP COLUMN`(sql.js 运行时集成实测;被拒则三列 tombstone,零运行时读写)。升级测试从有数据的 StateStore 快照跑。
 
 **scripts/**:新增一次性 sweep 程式(§4),仿 FLY-1648 closeout 形态:默认 dry-run 物理只读、`--apply` 前 online backup、逐账事务、幂等重放、operator(Tadashi/founder)执行。
 
@@ -128,7 +135,7 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 
 0. **旧流退役解锁门**(registry 里 `mailbox_discord` default=false、=0 是 founder 要求的验证窗回滚路径——退役必须凭证据,不默认成立):①产线 `.env` 与活 Bridge env 均 =1(2026-08-11 实测);②1574 lane 产线健康流转(inbox chat 行实测在投);③存量 external 行 sweep 有界排干(§4);④#797 合入后验证窗运行记录由 ship 节点落 PR。四门齐 → 删旧流 = 执行 founder「if it works, delete old flow immediately」。
 1. 主仓 PR 与 plugin PR 同批开、同窗 merge(互相在 PR 描述里链接)。
-2. 危险配对唯一是「旧 plugin + 新 CLI」(收据动词消失 → 旧 plugin 重试刷 spool/advisory)。部署序:merge 两仓 → `update-discord-plugin.sh` 刷 cache → sweep 程式(§4)→ 统一重启(restart-services.sh,Bridge+全 Lead 一波)。重启前旧+旧继续正常;重启后新+新;不存在混窗。
+2. **静默切换(quiesced cutover,Codex R1 #8——旧序「先 sweep 后重启」会让仍 pin 旧 plugin 的活 Lead 在 sweep 与重启之间继续铸行/结账,且新 CLI 若先可见会撞旧 plugin 的已删动词)**:① stage 两仓构建 + plugin cache 刷新(此刻活 Lead 仍 pin 旧拷贝,无行为变化);② **fence 全部旧生产者**(停 Bridge + 全 Lead,统一重启的停机半场);③ 跑 closeout sweep + schema 迁移(§4/§3.4,含 per-shard online backup);④ 验证 S3 与 N1 两个残留谓词为空 + N1 触发器就位;⑤ 启动配对的新 Bridge + 新 Lead(新 plugin cache);⑥ 重开入站,跑 V2–V6。**回滚 = 逐 shard 恢复 backup + plugin cache pin 还原 + 旧构建重启**,不是裸 `git revert`(表已 drop、行已终局)。
 3. ship 走 founder-gated 流程(本 design 节点不请求 ship);自托管重启纪律照 spin.md 3.4。
 
 ## 6. TDD 测试计划(RED → GREEN)
@@ -146,7 +153,9 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 - T8 S6:founder-decision convergence 的 question_retired 判定在「已 resolve」「已 supersede」「仍 pending」三态下行为与现状一致。
 
 **拆除完成性**
-- T9 grep 门(CI 级):`getSettlement|settleFounderHubRoot|receipt_root_lineage|receipt_settlement_intent|reconcilePendingPass|receiptFoundationEnabled|route-founder-reply|handle-receipt` 全仓(源码,非 docs/历史)零命中;`relay_state` 命中全部落在 research §2 白名单函数。
+- T9 grep 门(CI 级,**机器可读 allow/deny 清单**跨两仓,Codex R1 #9):deny 集 = `getSettlement|settleFounderHubRoot|receipt_root_lineage|receipt_settlement_intent|reconcilePendingPass|receiptFoundationEnabled|route-founder-reply|handle-receipt|FLYWHEEL_MAILBOX_DISCORD|FLYWHEEL_CHAT_RECEIPTS|receipt_handle_requests|AndReceipt|source_receipt_id`(源码,排除 docs/build/cache);**不许用裸 `receipt` 全局禁令**(域 C 的 disposition/started receipts、runner 身份字段合法);`relay_state` 命中全部落在 research §2 白名单函数;实现期以**实现 merge-base** 重校准全部 file:line(本 plan 引用基于 d6536134/0bc79ae6)。
+- T12 迁移四类(R1 #2):legacy 库全迁 / 已迁库幂等 / 中断重放 / `sqlite_master` 残留集断言;S7 投影哈希兼容:升级前铸造的稳定 ID(lead-event / xdept / 死信)重放不冲突,显式差异仍冲突。
+- T13 StateStore 升级(R1 #7):有数据快照上跑 DROP COLUMN 迁移(sql.js 实测);tombstone 回退分支同测。
 - T10 plugin:入站消息在 enabled 模式恒走 chat-ingest;`meta.receipt_id` 不再出现;MCP instructions 为 STOCK 三段;ingest intent 恢复(重启后 spool 重放)仍绿。
 - T11 sweep 程式:副本库上 dry-run 零写入;apply 幂等(重放二次零变化);S3 前置集合 apply 后为空;`mailbox_log` 行数前后不变。
 
@@ -159,7 +168,7 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 | V1 | 收据机器代码/表征全灭:grep 无收据域 relay_state 消费者、无 settle CLI、无重投扫描 | T9 grep 门 + 纯收据 schema 对象(lineage/handle_requests/settlement_intent/settlement_slot)在产线库 `sqlite_master` 零残留 |
 | V2 | 一轮真实对话零收据行残留 | 真机:founder 发消息→Lead 回复,复跑 issue 口径查询:零新 external/founder_msg 行、零新 settlement 事件、`open AND type!='question'`=0 |
 | V3 | Lead 冷启动零历史重播洪水(FLY-1677 反向清单) | 真机:重启一个 Lead,session 头部零 `[redelivery]`、零批量历史灌入(对照:8-10 实弹 837 条) |
-| V4 | founder 消息处理义务在 task 层可见可关 | **移交 1575 落地时联合验收**(前置豁免,lead-instruction 047a2ee0)。移交的验收合同(防「验收成消息被弃置」):每条 Lead 消息 ack 在**同一事务**恰建 1 条 task;建 task 失败则 ack 回滚;重复 ack 不重复建;task 带 owner/消息/issue 溯源、被忽视时保持 OPEN;`done`/`no_action+原因` 可关;ack 后零 mailbox 重投;Runner 消息不建 task。间隙姿态(1575 未上线期间):义务承接止于 ack 层(送到即止)——与今天等价(收据账本的义务追踪从未有效工作过) |
+| V4 | founder 消息处理义务在 task 层可见可关 | **移交 1575 落地时联合验收**(前置豁免,lead-instruction 047a2ee0——豁免下达于该简报的「scope(founder 裁定)」段,即临时空窗经 founder 线批示;若 review 要求更强背书,由 Lead 升级 founder 拍,不由本节点自行扩权)。移交的验收合同(防「验收成消息被弃置」):每条 Lead 消息 ack 在**同一事务**恰建 1 条 task;建 task 失败则 ack 回滚;重复 ack 不重复建;task 带 owner/消息/issue 溯源、被忽视时保持 OPEN;`done`/`no_action+原因` 可关;ack 后零 mailbox 重投;Runner 消息不建 task。间隙姿态(1575 未上线期间):义务承接止于 ack 层(送到即止)——与今天等价(收据账本的义务追踪从未有效工作过) |
 | V5 | 全舰静止窗口零收据活动;operator sweep 从此不再需要 | ≥15 分钟静止窗:settlement 事件零增量、无重投、`open AND type!='question'` 恒 0(修前阴性基线:77→77 纹丝不动) |
 | V6 | 幸存域零回归 | T3–T8 + 全仓门;真机 founder 审批一次(approve gate 走通) |
 
