@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isAbsolute } from "node:path";
 import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
@@ -1544,204 +1542,87 @@ export function applyWorkflowOverride(
 	};
 }
 
-const BUNDLED_SEED_FILES = [
-	"tpl_eng_heavy.yaml",
-	"tpl_eng_light.yaml",
-	"tpl_eng_trivial.yaml",
-	"tpl_product_v1.yaml",
-	"tpl_eng_heavy_land_v1.yaml",
-	"tpl_eng_light_land_v1.yaml",
-	"tpl_eng_trivial_land_v1.yaml",
-	// Additive identities remain append-only. Removed dormant identities are not
-	// retained merely to preserve their former array positions.
-	"tpl_eng.yaml",
-	"tpl_eng_land_v1.yaml",
-	"tpl_product_designer.yaml",
-	"tpl_product_prototype.yaml",
-	"tpl_generic.yaml",
+export const RETIRED_BUNDLED_TEMPLATE_IDS = [
+	"tpl_eng_heavy",
+	"tpl_product_v1",
+	"tpl_product_designer",
+	"tpl_product_prototype",
+	"tpl_generic",
+	"tpl_eng",
+	"tpl_eng_land_v1",
+	"tpl_eng_heavy_land_v1",
+	"tpl_eng_light",
+	"tpl_eng_light_land_v1",
+	"tpl_eng_trivial",
+	"tpl_eng_trivial_land_v1",
 ] as const;
 
-export function loadBundledWorkflowSeeds(): LoadedWorkflowSeed[] {
-	const directory = fileURLToPath(
-		new URL("./workflow-seeds/", import.meta.url),
-	);
-	return BUNDLED_SEED_FILES.map((filename) => {
-		const raw = record(
-			parse(readFileSync(join(directory, filename), "utf8")),
-			`seed ${filename}`,
-		);
-		exactKeys(
-			raw,
-			["template_id", "name", "project_scope", "manifest"],
-			`seed ${filename}`,
-		);
-		const manifest = validateWorkflowManifest(raw.manifest);
-		const seed = {
-			templateId: nonempty(raw.template_id, `${filename}.template_id`),
-			name: nonempty(raw.name, `${filename}.name`),
-			projectScope: nonempty(raw.project_scope, `${filename}.project_scope`),
-			manifest,
-		};
-		return { ...seed, contentHash: workflowSeedContentHash(seed) };
-	});
-}
+const RETIREMENT_OWNER = "system:FLY-1693-retirement";
+const RETIREMENT_REASON = "FLY-1693 founder-approved template retirement";
+const RETIRABLE_SYSTEM_BINDING_OWNERS = new Set([
+	"system:bundled-default",
+	"system:FLY-1434-land-migration",
+	"system:FLY-1434-land-rollback",
+]);
 
-export function importBundledWorkflowSeeds(
-	store: Pick<StateStore, "importWorkflowTemplateSeed">,
-	env: EnvLike = process.env,
-	_log: (message: string) => void = (message) => console.log(message),
-): void {
-	for (const seed of loadBundledWorkflowSeeds()) {
-		store.importWorkflowTemplateSeed(seed, env);
-	}
-}
-
-export const DEFAULT_BUNDLED_WORKFLOW_TEMPLATE_ID = "tpl_eng_heavy";
-
-export const DEFAULT_ENGINEERING_WORKFLOW_BINDINGS = [
-	{ taskCategory: "*", templateId: "tpl_eng_heavy_land_v1" },
-	{ taskCategory: "light", templateId: "tpl_eng_light_land_v1" },
-	{ taskCategory: "trivial", templateId: "tpl_eng_trivial_land_v1" },
-] as const;
-
-const ENGINEERING_LAND_BINDING_MIGRATION = [
-	{
-		taskCategory: "*",
-		legacyTemplateId: "tpl_eng_heavy",
-		landTemplateId: "tpl_eng_heavy_land_v1",
-	},
-	{
-		taskCategory: "light",
-		legacyTemplateId: "tpl_eng_light",
-		landTemplateId: "tpl_eng_light_land_v1",
-	},
-	{
-		taskCategory: "trivial",
-		legacyTemplateId: "tpl_eng_trivial",
-		landTemplateId: "tpl_eng_trivial_land_v1",
-	},
-] as const;
-
-const BUNDLED_DEFAULT_OWNER = "system:bundled-default";
-const LAND_MIGRATION_OWNER = "system:FLY-1434-land-migration";
-const LAND_ROLLBACK_OWNER = "system:FLY-1434-land-rollback";
-
-/**
- * Seed the bundled engineering tiers only for projects with no binding
- * authority yet. Any existing binding means a founder or migration already
- * owns the project registry, so boot must not widen its candidate surface.
- */
-export function ensureDefaultWorkflowBindings(
+export function retireLegacyWorkflowTemplates(
 	store: Pick<
 		StateStore,
-		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
+		| "listWorkflowCategoryBindings"
+		| "unbindWorkflowCategory"
+		| "retireWorkflowTemplate"
 	>,
-	projectNames: readonly string[],
-): void {
-	for (const project of [...new Set(projectNames.map((name) => name.trim()))]
-		.filter(Boolean)
-		.sort((a, b) => a.localeCompare(b))) {
-		const existing = store.listWorkflowCategoryBindings(project);
-		if (existing.length > 0) continue;
-		for (const binding of DEFAULT_ENGINEERING_WORKFLOW_BINDINGS) {
-			store.bindWorkflowCategory({
-				project,
-				taskCategory: binding.taskCategory,
-				templateId: binding.templateId,
-				updatedBy: BUNDLED_DEFAULT_OWNER,
-			});
-		}
-	}
-}
-
-function migrateSystemEngineeringBindings(input: {
-	store: Pick<
-		StateStore,
-		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
-	>;
-	projectNames: readonly string[];
-	direction: "to_land" | "from_land";
-	log: (message: string) => void;
-}): number {
-	let migrated = 0;
-	const allowedOwners =
-		input.direction === "to_land"
-			? new Set([BUNDLED_DEFAULT_OWNER, LAND_ROLLBACK_OWNER])
-			: new Set([BUNDLED_DEFAULT_OWNER, LAND_MIGRATION_OWNER]);
-	for (const project of [
-		...new Set(input.projectNames.map((name) => name.trim())),
-	]
-		.filter(Boolean)
-		.sort((a, b) => a.localeCompare(b))) {
-		const existing = input.store.listWorkflowCategoryBindings(project);
-		for (const migration of ENGINEERING_LAND_BINDING_MIGRATION) {
-			const binding = existing.find(
-				(row) => row.task_category === migration.taskCategory,
+	log: (message: string) => void = (message) => console.warn(message),
+): { unbound: number; retired: number; blocked: string[]; errors: string[] } {
+	const retiredIds = new Set<string>(RETIRED_BUNDLED_TEMPLATE_IDS);
+	const result = {
+		unbound: 0,
+		retired: 0,
+		blocked: [] as string[],
+		errors: [] as string[],
+	};
+	for (const binding of store.listWorkflowCategoryBindings()) {
+		if (!retiredIds.has(binding.template_id)) continue;
+		if (!RETIRABLE_SYSTEM_BINDING_OWNERS.has(binding.updated_by)) {
+			log(
+				`[workflow-template] FLY-1693 preserved custom binding ${binding.project}/${binding.task_category}: ${binding.template_id} owner=${binding.updated_by}`,
 			);
-			if (!binding) continue;
-			const sourceTemplate =
-				input.direction === "to_land"
-					? migration.legacyTemplateId
-					: migration.landTemplateId;
-			const targetTemplate =
-				input.direction === "to_land"
-					? migration.landTemplateId
-					: migration.legacyTemplateId;
-			if (binding.template_id !== sourceTemplate) continue;
-			if (!allowedOwners.has(binding.updated_by)) {
-				input.log(
-					`[workflow-template] FLY-1434 preserved custom binding ${project}/${binding.task_category}: ${binding.template_id} owner=${binding.updated_by}`,
-				);
-				continue;
-			}
-			input.store.bindWorkflowCategory({
-				project,
-				taskCategory: binding.task_category,
-				templateId: targetTemplate,
-				updatedBy:
-					input.direction === "to_land"
-						? LAND_MIGRATION_OWNER
-						: LAND_ROLLBACK_OWNER,
-			});
-			migrated += 1;
+			continue;
+		}
+		const unbound = store.unbindWorkflowCategory({
+			project: binding.project,
+			taskCategory: binding.task_category,
+			expectedTemplateId: binding.template_id,
+			expectedUpdatedBy: binding.updated_by,
+			updatedBy: RETIREMENT_OWNER,
+		});
+		if (unbound.status === "removed") {
+			result.unbound += 1;
+		} else {
+			result.errors.push(
+				`${binding.project}/${binding.task_category}:${unbound.status}`,
+			);
 		}
 	}
-	return migrated;
-}
-
-/**
- * FLY-1434: move only system-owned engineering defaults onto the land-v1
- * graphs. Founder/custom bindings remain authoritative and are never rewritten.
- */
-export function migrateSystemWorkflowBindingsToLand(
-	store: Pick<
-		StateStore,
-		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
-	>,
-	projectNames: readonly string[],
-	log: (message: string) => void = (message) => console.warn(message),
-): number {
-	return migrateSystemEngineeringBindings({
-		store,
-		projectNames,
-		direction: "to_land",
-		log,
-	});
-}
-
-/** Explicit operator rollback for the FLY-1434 system binding migration. */
-export function rollbackSystemWorkflowBindingsFromLand(
-	store: Pick<
-		StateStore,
-		"listWorkflowCategoryBindings" | "bindWorkflowCategory"
-	>,
-	projectNames: readonly string[],
-	log: (message: string) => void = (message) => console.warn(message),
-): number {
-	return migrateSystemEngineeringBindings({
-		store,
-		projectNames,
-		direction: "from_land",
-		log,
-	});
+	for (const templateId of RETIRED_BUNDLED_TEMPLATE_IDS) {
+		const retired = store.retireWorkflowTemplate({
+			templateId,
+			actor: RETIREMENT_OWNER,
+			reason: RETIREMENT_REASON,
+		});
+		if (retired.status === "retired") {
+			result.retired += 1;
+			continue;
+		}
+		if (retired.status !== "refused_bound") continue;
+		for (const ref of retired.refs) {
+			result.blocked.push(`${templateId}:${ref.project}/${ref.taskCategory}`);
+		}
+		log(
+			`[workflow-template] FLY-1693 retirement blocked for ${templateId}: ${retired.refs
+				.map((ref) => `${ref.project}/${ref.taskCategory}`)
+				.join(", ")}`,
+		);
+	}
+	return result;
 }

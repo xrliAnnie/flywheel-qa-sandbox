@@ -1,0 +1,13 @@
+flowchart TB
+    subgraph PR["一个 PR 原子落地(不存在危险中间态)"]
+        direction TB
+        S0["第 0 步(审计新发现)\n解绑 5 条旧绑定\n(带审计记录,founder 手动绑定绝不碰)"]
+        S1["第 1 步\n给 12 个模板打退役标记\n(retired_at)"]
+        S2["第 2 步\n删除整套 bundled-seed 读取机器\n(不留空转死代码)"]
+        S3["第 3 步(修正版)\n删除默认绑定播种 + 死常量\n(不改指向,直接删)"]
+        S4["第 4 步\n删 12 个 YAML 文件\n+ 修好 build/CI 连坐"]
+        S0 --> S1 --> S2 --> S3 --> S4
+    end
+    PR --> M["merge 后重启 Bridge"]
+    M --> B["Bridge 启动时自动执行\nretireLegacyWorkflowTemplates\n(幂等:重启多少次结果都一样)"]
+    B --> V["验收:12 退役 / 5 保留\n绑定只剩 flywheel 的 5 条 menu 绑定\n审计表落 5 条 unbind + 12 条 retire"]

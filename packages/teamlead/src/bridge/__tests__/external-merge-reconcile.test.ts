@@ -12,9 +12,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { type Session, StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import type { BridgeConfig } from "../types.js";
 
 // Spy the finalization orchestrator — the sweeper's job ends at invoking it
@@ -104,7 +104,7 @@ function bindEngineRun(store: StateStore, executionId = "exec-1"): void {
 		process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH = "1";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE = "1";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "1";
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);

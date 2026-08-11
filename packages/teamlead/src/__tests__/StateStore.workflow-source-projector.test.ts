@@ -9,7 +9,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { drainWorkflowSourceEvents } from "../bridge/founder-approval-projector.js";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -132,7 +132,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 
 	it("projects a run-attributed TURN into the owning engine run atomically", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -231,7 +231,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		const commPath = join(root, "comm.db");
 		const store = await StateStore.create(join(root, "teamlead.db"));
 		try {
-			const seed = loadBundledWorkflowSeeds().find(
+			const seed = legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_eng_heavy",
 			)!;
 			store.importWorkflowTemplateSeed(seed);
@@ -351,7 +351,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			join(root, "agents", "generic-executor.md"),
 			"Execute the pinned node.\n",
 		);
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
 		const flags = WORKFLOW_ON;

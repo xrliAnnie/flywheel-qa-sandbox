@@ -20,7 +20,7 @@ import type { BridgeConfig } from "../bridge/plugin.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const testProjects = [
 	{
@@ -161,7 +161,7 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 describe("FLY-1385 enrolled teardown seam", () => {
 	it("persists a failed signal and returns before legacy terminal hooks", async () => {
 		const { store, sink } = await harness();
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		const env = {
@@ -256,7 +256,7 @@ describe("FLY-1385 enrolled teardown seam", () => {
 	it("refuses an evidence-less design completion without invoking legacy completion hooks", async () => {
 		const { store, sink } = await harness();
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		const env = {

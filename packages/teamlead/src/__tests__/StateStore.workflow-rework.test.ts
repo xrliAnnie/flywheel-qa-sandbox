@@ -11,7 +11,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const enabled = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
@@ -126,7 +126,7 @@ function admit(
 
 async function createHeavyEngineRun(dbPath = ":memory:"): Promise<StateStore> {
 	const store = await StateStore.create(dbPath);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	);
 	if (!seed) throw new Error("tpl_eng_heavy seed missing");

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
@@ -928,7 +928,7 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 
 	async function engineRun(runId: string) {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);

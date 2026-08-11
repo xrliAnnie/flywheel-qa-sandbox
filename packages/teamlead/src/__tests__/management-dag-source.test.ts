@@ -5,13 +5,13 @@ import {
 } from "../bridge/management-dag-source.js";
 import { StateStore } from "../StateStore.js";
 import {
-	importBundledWorkflowSeeds,
-	loadBundledWorkflowSeeds,
-} from "../workflow-template.js";
+	importLegacyWorkflowSeeds,
+	legacyWorkflowSeeds,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 async function catalog() {
 	const store = await StateStore.create(":memory:");
-	importBundledWorkflowSeeds(store);
+	importLegacyWorkflowSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		taskCategory: "*",
@@ -55,7 +55,7 @@ describe("management DAG source", () => {
 			reader: store,
 			projectNames: ["flywheel"],
 		}).projectDags[0]!.dags[0]!;
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(item) => item.templateId === "tpl_eng_heavy",
 		)!;
 		const changed = {
@@ -91,7 +91,7 @@ describe("management DAG source", () => {
 	});
 
 	it("surfaces missing revisions as errors but keeps retired models repairable", () => {
-		const base = loadBundledWorkflowSeeds()[0]!;
+		const base = legacyWorkflowSeeds()[0]!;
 		const binding = {
 			project: "flywheel",
 			task_category: "*",

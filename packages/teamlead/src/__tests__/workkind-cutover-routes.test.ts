@@ -15,7 +15,7 @@ import {
 } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const servers: Server[] = [];
 const stores: StateStore[] = [];
@@ -45,7 +45,7 @@ async function makeDeps(
 ): Promise<WorkKindCutoverRouteDeps> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	importBundledWorkflowSeeds(store);
+	importLegacyWorkflowSeeds(store);
 	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",

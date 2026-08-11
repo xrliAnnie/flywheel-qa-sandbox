@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	executeLandOperation,
 	type LandMergeDriver,
@@ -26,7 +26,7 @@ async function fixture() {
 describe("land executor", () => {
 	it("rejects a nested repository before calling the merge driver", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
 		)!;
 		store.createWorkflowRun({

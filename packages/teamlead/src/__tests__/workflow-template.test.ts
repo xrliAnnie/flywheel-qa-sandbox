@@ -1,8 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { StateStore } from "../StateStore.js";
-import { WORK_KIND_CATEGORIES } from "../work-kind.js";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
@@ -10,145 +8,15 @@ import {
 } from "../workflow-run-snapshot.js";
 import {
 	applyWorkflowOverride,
-	DEFAULT_ENGINEERING_WORKFLOW_BINDINGS,
-	ensureDefaultWorkflowBindings,
-	importBundledWorkflowSeeds,
 	isGeneralizedTemplatesEnabled,
 	isWorkflowManifestV1Land,
-	loadBundledWorkflowSeeds,
-	migrateSystemWorkflowBindingsToLand,
 	parseWorkflowManifestYaml,
-	rollbackSystemWorkflowBindingsFromLand,
 	validatePinnedWorkflowManifest,
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
 import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
-
-describe("bundled workflow default bindings", () => {
-	it("seeds three-tier defaults only for empty projects and leaves existing project authority untouched", async () => {
-		const store = await StateStore.create(":memory:");
-		importBundledWorkflowSeeds(store);
-		store.bindWorkflowCategory({
-			project: "custom",
-			taskCategory: "light",
-			templateId: "tpl_eng_light",
-			updatedBy: "founder",
-		});
-		store.bindWorkflowCategory({
-			project: "production-shaped",
-			taskCategory: "*",
-			templateId: "tpl_eng_heavy",
-			updatedBy: "system:bundled-default",
-		});
-		const productionBindingsBefore =
-			store.listWorkflowCategoryBindings("production-shaped");
-		const productionAuditBefore = store.listWorkflowTemplateAudit().length;
-
-		ensureDefaultWorkflowBindings(store, [
-			"beta",
-			"alpha",
-			"alpha",
-			"custom",
-			"production-shaped",
-		]);
-		expect(store.listWorkflowCategoryBindings("alpha")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
-			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
-		]);
-		expect(store.listWorkflowCategoryBindings("beta")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
-			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
-		]);
-		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
-			{ task_category: "light", template_id: "tpl_eng_light" },
-		]);
-		expect(store.listWorkflowCategoryBindings("production-shaped")).toEqual(
-			productionBindingsBefore,
-		);
-		expect(store.listWorkflowTemplateAudit()).toHaveLength(
-			productionAuditBefore + 6,
-		);
-		const auditCount = store.listWorkflowTemplateAudit().length;
-
-		ensureDefaultWorkflowBindings(store, ["alpha", "beta", "custom"]);
-		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
-		store.close();
-	});
-
-	it("migrates only system defaults to land, is idempotent, and supports explicit rollback", async () => {
-		const store = await StateStore.create(":memory:");
-		importBundledWorkflowSeeds(store);
-		for (const [taskCategory, templateId] of [
-			["*", "tpl_eng_heavy"],
-			["light", "tpl_eng_light"],
-			["trivial", "tpl_eng_trivial"],
-		] as const) {
-			store.bindWorkflowCategory({
-				project: "system",
-				taskCategory,
-				templateId,
-				updatedBy: "system:bundled-default",
-			});
-			store.bindWorkflowCategory({
-				project: "custom",
-				taskCategory,
-				templateId,
-				updatedBy: "founder",
-			});
-		}
-		const warnings: string[] = [];
-		expect(
-			migrateSystemWorkflowBindingsToLand(
-				store,
-				["system", "custom"],
-				(message) => warnings.push(message),
-			),
-		).toBe(3);
-		expect(store.listWorkflowCategoryBindings("system")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy_land_v1" },
-			{ task_category: "light", template_id: "tpl_eng_light_land_v1" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial_land_v1" },
-		]);
-		expect(store.listWorkflowCategoryBindings("custom")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy" },
-			{ task_category: "light", template_id: "tpl_eng_light" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
-		]);
-		expect(warnings).toHaveLength(3);
-		const auditCount = store.listWorkflowTemplateAudit().length;
-		expect(
-			migrateSystemWorkflowBindingsToLand(
-				store,
-				["system", "custom"],
-				() => {},
-			),
-		).toBe(0);
-		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditCount);
-
-		expect(
-			rollbackSystemWorkflowBindingsFromLand(store, ["system"], () => {}),
-		).toBe(3);
-		expect(store.listWorkflowCategoryBindings("system")).toMatchObject([
-			{ task_category: "*", template_id: "tpl_eng_heavy" },
-			{ task_category: "light", template_id: "tpl_eng_light" },
-			{ task_category: "trivial", template_id: "tpl_eng_trivial" },
-		]);
-		store.close();
-	});
-
-	it("keeps every work-kind category out of the boot binding defaults", () => {
-		expect(
-			DEFAULT_ENGINEERING_WORKFLOW_BINDINGS.filter((binding) =>
-				WORK_KIND_CATEGORIES.includes(
-					binding.taskCategory as (typeof WORK_KIND_CATEGORIES)[number],
-				),
-			),
-		).toEqual([]);
-	});
-});
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const generalizedManifest = () => ({
 	schema_version: 2,
@@ -313,11 +181,10 @@ describe("workflow template manifest v1", () => {
 			type: "land",
 			execution: "engine",
 		});
-		expect(loadBundledWorkflowSeeds().slice(0, 3)).toHaveLength(3);
 	});
 
 	it("rejects mixed legacy and land_v1 vocabularies", () => {
-		const legacy = loadBundledWorkflowSeeds()[0]!.manifest;
+		const legacy = legacyWorkflowSeeds()[0]!.manifest;
 		expect(() =>
 			validateWorkflowManifest({
 				...legacy,
@@ -328,156 +195,8 @@ describe("workflow template manifest v1", () => {
 		).toThrow(/mixed|unknown key|land_v1/i);
 	});
 
-	it("loads the legacy rollback set plus the dormant work-kind templates", () => {
-		const seeds = loadBundledWorkflowSeeds();
-		expect(seeds.map((seed) => seed.templateId)).toEqual([
-			"tpl_eng_heavy",
-			"tpl_eng_light",
-			"tpl_eng_trivial",
-			"tpl_product_v1",
-			"tpl_eng_heavy_land_v1",
-			"tpl_eng_light_land_v1",
-			"tpl_eng_trivial_land_v1",
-			"tpl_eng",
-			"tpl_eng_land_v1",
-			"tpl_product_designer",
-			"tpl_product_prototype",
-			"tpl_generic",
-		]);
-
-		const heavy = seeds[0]!.manifest;
-		expect(heavy.nodes).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					id: "design",
-					vendor: "claude",
-					model: "claude-fable-5",
-				}),
-				expect.objectContaining({
-					id: "implement",
-					vendor: "codex",
-					model: "gpt-5.6-sol",
-					effort: "xhigh",
-				}),
-				expect.objectContaining({
-					id: "qa",
-					type: "qa",
-					vendor: "claude",
-					model: "claude-opus-5",
-					submissionWindowMinutes: 180,
-				}),
-			]),
-		);
-		expect(heavy.loops).toEqual([
-			expect.objectContaining({
-				from: "qa",
-				to: "implement",
-				loop_when: "qa_fail",
-				exit_when: "qa_pass",
-				max_iterations: 3,
-				on_limit: "escalate",
-			}),
-			expect.objectContaining({
-				from: "founder_gate",
-				to: "implement",
-				loop_when: "founder_feedback_kickback",
-				exit_when: "founder_approved",
-				max_iterations: 3,
-				on_limit: "escalate",
-			}),
-		]);
-		expect(heavy.ship_claims).toEqual(["qa_passed", "founder_approved"]);
-
-		const light = seeds[1]!.manifest;
-		expect(
-			light.nodes.find((node) => node.id === "qa")?.submissionWindowMinutes,
-		).toBeUndefined();
-		expect(light.nodes.find((node) => node.id === "design")).toMatchObject({
-			vendor: "codex",
-			model: "gpt-5.6-sol",
-		});
-		const trivial = seeds[2]!.manifest;
-		expect(trivial.nodes.find((node) => node.id === "design")).toMatchObject({
-			vendor: "codex",
-			model: "gpt-5.6-sol",
-		});
-		expect(trivial.nodes.find((node) => node.id === "qa")).toMatchObject({
-			type: "qa",
-			vendor: "claude",
-			model: "claude-fable-5",
-		});
-		for (const seed of seeds.slice(0, 3)) {
-			expect(() => validateWorkflowManifest(seed.manifest)).not.toThrow();
-			expect(
-				seed.manifest.nodes.filter((node) => node.type === "qa"),
-			).toHaveLength(1);
-			for (const node of seed.manifest.nodes.filter(
-				(node) => node.type !== "gate",
-			)) {
-				expect(node.handoff_pointer).toEqual({
-					worktree: true,
-					design_doc: true,
-				});
-			}
-		}
-		for (const seed of seeds.slice(4, 7)) {
-			expect(isWorkflowManifestV1Land(seed.manifest)).toBe(true);
-			expect(seed.manifest.nodes.at(-1)).toEqual({
-				id: "land",
-				type: "land",
-				execution: "engine",
-			});
-		}
-		expect(
-			seeds
-				.find((seed) => seed.templateId === "tpl_eng_heavy_land_v1")!
-				.manifest.nodes.find((node) => node.id === "qa")
-				?.submissionWindowMinutes,
-		).toBe(180);
-		expect(
-			seeds
-				.filter((seed) =>
-					[
-						"tpl_product_v1",
-						"tpl_product_designer",
-						"tpl_product_prototype",
-						"tpl_generic",
-					].includes(seed.templateId),
-				)
-				.map((seed) => seed.manifest.schema_version),
-		).toEqual([2, 2, 2, 2]);
-	});
-
-	it("reproduces every legacy engineering tier as a complete effective manifest", () => {
-		const seeds = loadBundledWorkflowSeeds();
-		const tiered = seeds.find((seed) => seed.templateId === "tpl_eng")!;
-		const tieredLand = seeds.find(
-			(seed) => seed.templateId === "tpl_eng_land_v1",
-		)!;
-		for (const tier of ["heavy", "light", "trivial"] as const) {
-			const legacy = seeds.find(
-				(seed) => seed.templateId === `tpl_eng_${tier}`,
-			)!;
-			const legacyLand = seeds.find(
-				(seed) => seed.templateId === `tpl_eng_${tier}_land_v1`,
-			)!;
-			expect(
-				applyWorkflowOverride(
-					tiered.manifest,
-					tiered.manifest.tier_presets![tier]!,
-				).manifest,
-			).toEqual(legacy.manifest);
-			expect(
-				applyWorkflowOverride(
-					tieredLand.manifest,
-					tieredLand.manifest.tier_presets![tier]!,
-				).manifest,
-			).toEqual(legacyLand.manifest);
-		}
-	});
-
 	it("rejects unknown keys, inline handoffs, unsupported schemas, and invalid graphs", () => {
-		const valid = loadBundledWorkflowSeeds()[0]!.manifest;
+		const valid = legacyWorkflowSeeds()[0]!.manifest;
 		expect(WORKFLOW_OUTCOME_VOCABULARY.qa_fail).toEqual({
 			claim: "qa_failed",
 			edge: "qa_fail",
@@ -530,7 +249,7 @@ describe("workflow template manifest v1", () => {
 	});
 
 	it("rejects an engineering manifest that omits the independent QA node", () => {
-		const valid = loadBundledWorkflowSeeds()[0]!.manifest;
+		const valid = legacyWorkflowSeeds()[0]!.manifest;
 		expect(() =>
 			validateWorkflowManifest({
 				...valid,
@@ -550,7 +269,7 @@ describe("workflow template manifest v1", () => {
 	});
 
 	it("rejects model/vendor/effort combinations outside the canonical registry", () => {
-		const valid = loadBundledWorkflowSeeds()[0]!.manifest;
+		const valid = legacyWorkflowSeeds()[0]!.manifest;
 		expect(() =>
 			validateWorkflowManifest({
 				...valid,
@@ -570,7 +289,7 @@ describe("workflow template manifest v1", () => {
 	});
 
 	it("applies only reasoned model/effort/skip overrides and consumes skip before validation", () => {
-		const heavy = loadBundledWorkflowSeeds()[0]!.manifest;
+		const heavy = legacyWorkflowSeeds()[0]!.manifest;
 		expect(() => applyWorkflowOverride(heavy, { reason: "" })).toThrow(
 			/reason/i,
 		);
@@ -663,7 +382,7 @@ describe("workflow template manifest v2", () => {
 		).not.toThrow();
 		expect(() => validatePinnedWorkflowManifest(v2)).not.toThrow();
 
-		const v1 = structuredClone(loadBundledWorkflowSeeds()[0]!.manifest);
+		const v1 = structuredClone(legacyWorkflowSeeds()[0]!.manifest);
 		const claudeNode = v1.nodes.find((node) => node.vendor === "claude");
 		expect(claudeNode).toBeDefined();
 		if (claudeNode) claudeNode.model = "claude-opus-4-8[1m]";
@@ -703,9 +422,8 @@ describe("workflow template manifest v2", () => {
 
 	it("accepts submission windows only on nodes identified by verdict topology", () => {
 		const heavy = structuredClone(
-			loadBundledWorkflowSeeds().find(
-				(seed) => seed.templateId === "tpl_eng_heavy",
-			)!.manifest,
+			legacyWorkflowSeeds().find((seed) => seed.templateId === "tpl_eng_heavy")!
+				.manifest,
 		);
 		for (const value of [0, -1, 1.5, "180"]) {
 			const invalid = structuredClone(heavy);
@@ -851,16 +569,6 @@ describe("workflow template manifest v2", () => {
 				nodes: { produce: { skip: true } },
 			}),
 		).toThrow(/cannot skip.*produce/i);
-
-		const product = loadBundledWorkflowSeeds().find(
-			(seed) => seed.templateId === "tpl_product_v1",
-		)!.manifest;
-		expect(() =>
-			applyWorkflowOverride(product, {
-				reason: "the deliverable is still mandatory",
-				nodes: { produce: { skip: true } },
-			}),
-		).toThrow(/cannot skip.*produce.*output|output.*produce/i);
 	});
 
 	it("validates tier presets and applies vendor plus model atomically", () => {
@@ -913,29 +621,9 @@ describe("workflow template manifest v2", () => {
 		).toThrow(/incompatible/i);
 	});
 
-	it("materializes every bundled v2 seed from the real shipped agent files", () => {
-		const canonicalRoot = resolve(process.cwd(), "../..");
-		for (const seed of loadBundledWorkflowSeeds().filter(
-			(candidate) => candidate.manifest.schema_version === 2,
-		)) {
-			const snapshot = buildWorkflowRunSnapshotV2({
-				template: { id: seed.templateId, revision: 1 },
-				manifest: seed.manifest,
-				canonicalRoot,
-			});
-			expect(snapshot.template.id).toBe(seed.templateId);
-			expect(snapshot.resolved.nodes).toHaveLength(seed.manifest.nodes.length);
-			for (const node of snapshot.resolved.nodes.filter(
-				(candidate) => candidate.type === "generic",
-			)) {
-				expect(node.agent?.content.trim()).not.toBe("");
-			}
-		}
-	});
-
 	it("resolves coherent gate authority for every bundled seed snapshot", () => {
 		const canonicalRoot = resolve(process.cwd(), "../..");
-		for (const seed of loadBundledWorkflowSeeds()) {
+		for (const seed of legacyWorkflowSeeds()) {
 			const template = { id: seed.templateId, revision: 1 };
 			const snapshot =
 				seed.manifest.schema_version === 1

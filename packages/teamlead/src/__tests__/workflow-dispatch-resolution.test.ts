@@ -5,10 +5,8 @@ import { resetModelConfigCacheForTests } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
-import {
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../workflow-template.js";
+import { workflowSeedContentHash } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
@@ -25,7 +23,7 @@ afterEach(() => {
 async function v1Run() {
 	const store = await StateStore.create(":memory:");
 	cleanups.push(() => store.close());
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);

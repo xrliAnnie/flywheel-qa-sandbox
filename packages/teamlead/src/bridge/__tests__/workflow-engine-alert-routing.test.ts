@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import { resolveWorkflowRunAlertIdentity } from "../plugin.js";
 
 const WORKFLOW_ON = {
@@ -38,7 +38,7 @@ afterEach(() => {
 async function runSelectedBy(selectedBy: string): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);

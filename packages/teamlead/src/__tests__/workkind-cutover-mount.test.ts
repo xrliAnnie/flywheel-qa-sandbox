@@ -6,7 +6,7 @@ import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const servers: http.Server[] = [];
 const stores: StateStore[] = [];
@@ -48,7 +48,7 @@ const projects: ProjectEntry[] = [
 async function boot(apiToken?: string): Promise<string> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	importBundledWorkflowSeeds(store);
+	importLegacyWorkflowSeeds(store);
 	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",

@@ -3,9 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
 import type { WorkflowShipReadyArm } from "../../workflow-ship-ready.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import type { IStartDispatcher } from "../retry-dispatcher.js";
 import { WorkflowEngineDispatcher } from "../workflow-engine-dispatcher.js";
 import { createWorkflowRunnerShipMergedClassifier } from "../workflow-ship-ready-arm.js";
@@ -22,7 +22,7 @@ const engineFlags = {
 
 async function engineRun(dbPath = ":memory:"): Promise<StateStore> {
 	const store = await StateStore.create(dbPath);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);

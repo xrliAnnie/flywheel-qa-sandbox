@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createWorkflowTemplateRouter } from "../bridge/workflow-template-routes.js";
 import { StateStore } from "../StateStore.js";
 import {
-	importBundledWorkflowSeeds,
-	loadBundledWorkflowSeeds,
-} from "../workflow-template.js";
+	importLegacyWorkflowSeeds,
+	legacyWorkflowSeeds,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const close: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -30,7 +30,7 @@ describe("workflow template read model", () => {
 	it("serves templates, revisions, and category bindings but no mutation endpoints", async () => {
 		const store = await StateStore.create(":memory:");
 		close.push(() => store.close());
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "*",
@@ -47,7 +47,7 @@ describe("workflow template read model", () => {
 				(template: { template_id: string }) => template.template_id,
 			),
 		).toEqual(
-			loadBundledWorkflowSeeds()
+			legacyWorkflowSeeds()
 				.map((seed) => seed.templateId)
 				.sort(),
 		);

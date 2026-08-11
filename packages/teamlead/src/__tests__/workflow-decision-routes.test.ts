@@ -9,7 +9,7 @@ import { ConfirmTokenStore } from "../bridge/fleet-admin.js";
 import type { MaterializedHeadAuthority } from "../bridge/materialized-head-authority.js";
 import { createWorkflowDecisionRouter } from "../bridge/workflow-decision-routes.js";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -56,7 +56,7 @@ async function reviewFixture(options: {
 }) {
 	const store = await StateStore.create(":memory:");
 	const worktree = gitWorktree();
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
@@ -1129,7 +1129,7 @@ describe("Gate carrier rebind recovery", () => {
 describe("generic workflow loop reentry", () => {
 	it("stages one non-founder loop, commits it once, and receipt-first replays after the token is consumed", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);

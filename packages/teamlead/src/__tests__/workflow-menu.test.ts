@@ -20,7 +20,6 @@ import {
 	buildWorkflowRunSnapshotV2,
 	resolveWorkflowGateAuthority,
 } from "../workflow-run-snapshot.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
 import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -323,19 +322,14 @@ describe("founder-approved workflow menu source", () => {
 		store.close();
 	});
 
-	it("keeps bundled and menu seed imports idempotent across repeated boots", async () => {
+	it("keeps menu seed imports idempotent across repeated boots", async () => {
 		const store = await StateStore.create(":memory:");
 		for (let boot = 0; boot < 3; boot += 1) {
-			importBundledWorkflowSeeds(store);
 			importWorkflowMenuSeeds(store);
 		}
-		expect(store.listWorkflowTemplateRevisions("tpl_generic")).toHaveLength(1);
 		expect(
 			store.listWorkflowTemplateRevisions("tpl_generic_menu"),
 		).toHaveLength(1);
-		expect(store.getWorkflowTemplate("tpl_generic")?.name).toBe(
-			"Generic single-session task",
-		);
 		expect(store.getWorkflowTemplate("tpl_generic_menu")?.name).toBe(
 			"generic menu",
 		);

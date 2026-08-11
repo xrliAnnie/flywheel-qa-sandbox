@@ -4,15 +4,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import {
-	importBundledWorkflowSeeds,
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../workflow-template.js";
+import { workflowSeedContentHash } from "../workflow-template.js";
 import {
 	resolveWorkflowTemplateCandidateSchema,
 	resolveWorkflowTemplateSelection,
 } from "../workflow-template-selection.js";
+import {
+	importLegacyWorkflowSeeds,
+	legacyWorkflowSeeds,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -123,7 +123,7 @@ describe("workflow template selection", () => {
 				taskCategory: "research",
 			}),
 		).toBeNull();
-		const v1 = loadBundledWorkflowSeeds()[0]!;
+		const v1 = legacyWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(v1);
 		store.bindWorkflowCategory({
 			project: "flywheel",
@@ -158,7 +158,7 @@ describe("workflow template selection", () => {
 
 	it("keeps an enabled v1 candidate on the incumbent path without entry authority or a stable key", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -222,7 +222,7 @@ describe("workflow template selection", () => {
 			...enabled,
 			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "0",
 		};
-		importBundledWorkflowSeeds(store, off);
+		importLegacyWorkflowSeeds(store, off);
 		expect(
 			store.getWorkflowTemplate("tpl_generic")?.current_published_revision,
 		).toBe(1);
@@ -263,7 +263,7 @@ describe("workflow template selection", () => {
 			"FLYWHEEL_WORKFLOW_CLAIMS_READ",
 		] as const) {
 			const store = await StateStore.create(":memory:");
-			const v1 = loadBundledWorkflowSeeds().find(
+			const v1 = legacyWorkflowSeeds().find(
 				(seed) => seed.manifest.schema_version === 1,
 			)!;
 			store.importWorkflowTemplateSeed(v1);
@@ -305,7 +305,7 @@ describe("workflow template selection", () => {
 
 	it("materializes an enabled engineering v1 candidate as an enrolled typed engine run", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -360,7 +360,7 @@ describe("workflow template selection", () => {
 
 	it("falls back from an unbound engineering category to the project default binding", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -687,6 +687,125 @@ describe("workflow template selection", () => {
 			}),
 		).rejects.toMatchObject({ code: "TEMPLATE_NOT_FRESH_ELIGIBLE" });
 		expect(store.getActiveWorkflowRunForIssue("FLY-RETIRED")).toBeUndefined();
+		store.close();
+	});
+
+	it("rejects a retired direct template when work-kind enforcement is off", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		const internal = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_template SET retired_at = ? WHERE template_id = ?",
+			["2026-08-11T00:00:00.000Z", seed.templateId],
+		);
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-RETIRED-NON-ENFORCED",
+				leadTemplateId: seed.templateId,
+				leadReason: "explicit research flow",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "retired-non-enforced-key",
+				env: enabled,
+			}),
+		).rejects.toThrow(/retired.*tpl_research_test|tpl_research_test.*retired/i);
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-RETIRED-NON-ENFORCED"),
+		).toBeUndefined();
+		store.close();
+	});
+
+	it("rejects a retired template reached through a stale binding", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "founder:fixture",
+		});
+		const internal = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run(
+			"UPDATE workflow_template SET retired_at = ? WHERE template_id = ?",
+			["2026-08-11T00:00:00.000Z", seed.templateId],
+		);
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-RETIRED-BINDING",
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "retired-binding-key",
+				env: enabled,
+			}),
+		).rejects.toThrow(/retired.*tpl_research_test|tpl_research_test.*retired/i);
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-RETIRED-BINDING"),
+		).toBeUndefined();
+		store.close();
+	});
+
+	it("refuses a retirement race at the final materialization boundary", async () => {
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		const originalGetTemplate = store.getWorkflowTemplate.bind(store);
+		let reads = 0;
+		store.getWorkflowTemplate = ((templateId) => {
+			reads += 1;
+			if (reads === 3) {
+				(
+					store as unknown as {
+						db: { run(sql: string, params?: unknown[]): void };
+					}
+				).db.run(
+					"UPDATE workflow_template SET retired_at = ? WHERE template_id = ?",
+					["2026-08-11T00:00:00.000Z", seed.templateId],
+				);
+			}
+			return originalGetTemplate(templateId);
+		}) as typeof store.getWorkflowTemplate;
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: "FLY-RETIREMENT-RACE",
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "retirement-race",
+				entryKind: "workflow_v2",
+				env: enabled,
+			}),
+		).rejects.toThrow(/candidate changed during materialization/i);
+		expect(
+			store.getActiveWorkflowRunForIssue("FLY-RETIREMENT-RACE"),
+		).toBeUndefined();
+		expect(
+			store.getWorkflowStartReservation("retirement-race"),
+		).toBeUndefined();
 		store.close();
 	});
 

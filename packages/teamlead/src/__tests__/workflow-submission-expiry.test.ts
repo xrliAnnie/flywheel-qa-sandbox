@@ -4,7 +4,7 @@ import {
 	computeSubmissionExpiry,
 	credentialWindowForNode,
 } from "../workflow-submission-expiry.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 describe("workflow submission expiry", () => {
 	it("reserves the configured window and clamps it to the absolute deadline", () => {
@@ -28,7 +28,7 @@ describe("workflow submission expiry", () => {
 
 	it("uses the live QA default only for verdict-topology decision nodes", () => {
 		const manifest = structuredClone(
-			loadBundledWorkflowSeeds().find(
+			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_eng_heavy",
 			)!.manifest,
 		);
@@ -52,7 +52,7 @@ describe("workflow submission expiry", () => {
 	});
 
 	it("keeps an explicit manifest window ahead of the live registry default", () => {
-		const manifest = loadBundledWorkflowSeeds().find(
+		const manifest = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!.manifest;
 		const snapshot = buildWorkflowRunSnapshotV1({

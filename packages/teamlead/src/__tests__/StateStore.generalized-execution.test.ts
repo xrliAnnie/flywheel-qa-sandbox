@@ -11,10 +11,8 @@ import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
-import {
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../workflow-template.js";
+import { workflowSeedContentHash } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const cleanups: string[] = [];
 afterEach(() => {
@@ -135,7 +133,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			let nodeId: string;
 			let executionId: string;
 			if (schemaVersion === 1) {
-				const seed = loadBundledWorkflowSeeds().find(
+				const seed = legacyWorkflowSeeds().find(
 					(candidate) => candidate.templateId === "tpl_eng_heavy",
 				)!;
 				store.importWorkflowTemplateSeed(seed);
@@ -305,7 +303,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		mkdirSync(join(root, "agents"));
 		writeFileSync(join(root, "agents", "generic-executor.md"), "Execute.\n");
 		const seed = structuredClone(
-			loadBundledWorkflowSeeds().find(
+			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_product_v1",
 			)!,
 		);

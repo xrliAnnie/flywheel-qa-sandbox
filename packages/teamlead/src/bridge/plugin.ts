@@ -139,10 +139,8 @@ import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
-	ensureDefaultWorkflowBindings,
-	importBundledWorkflowSeeds,
 	isWorkflowManifestLand,
-	migrateSystemWorkflowBindingsToLand,
+	retireLegacyWorkflowTemplates,
 } from "../workflow-template.js";
 import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 import {
@@ -4079,10 +4077,11 @@ export async function startBridge(
 	await terminalCommDbSync.warmProjects(
 		projects.map((project) => project.projectName),
 	);
-	// FLY-1244: deterministic boot import. Content hashes make restarts no-ops;
-	// a founder-owned seed mismatch is audited and refused by StateStore.
-	importBundledWorkflowSeeds(store);
 	importWorkflowMenuSeeds(store);
+	const retirement = retireLegacyWorkflowTemplates(store);
+	console.warn(
+		`[workflow-template] FLY-1693 retirement reconcile: unbound=${retirement.unbound} retired=${retirement.retired} blocked=${JSON.stringify(retirement.blocked)} errors=${JSON.stringify(retirement.errors)}`,
+	);
 	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
 	if (strandedGeneralized.length > 0) {
 		console.warn(
@@ -4319,14 +4318,6 @@ export async function startBridge(
 				parse: parseAndValidateProjects,
 				warm: async (nextProjects) => {
 					await ffConfigCache.get(nextProjects);
-					ensureDefaultWorkflowBindings(
-						store,
-						nextProjects.map((project) => project.projectName),
-					);
-					migrateSystemWorkflowBindingsToLand(
-						store,
-						nextProjects.map((project) => project.projectName),
-					);
 				},
 			});
 			await managementProjectSource.initialize();

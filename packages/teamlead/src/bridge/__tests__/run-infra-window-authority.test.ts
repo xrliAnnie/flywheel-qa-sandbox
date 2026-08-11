@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../../workflow-submission-expiry.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	createRunInfraWorkflowClaimsAdmission,
 	resolveWorkflowTmuxWindowAuthority,
@@ -70,7 +70,7 @@ describe("createRunInfraWorkflowClaimsAdmission", () => {
 		["registry default", true],
 	])("uses credentialWindowForNode for the %s", (_label, removeOverride) => {
 		const manifest = structuredClone(
-			loadBundledWorkflowSeeds().find(
+			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_eng_heavy",
 			)!.manifest,
 		);

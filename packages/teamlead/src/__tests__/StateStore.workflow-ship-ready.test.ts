@@ -6,7 +6,7 @@ import {
 	StateStore as WorkflowStateStore,
 } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const HEAD_SHA = "a".repeat(40);
 const GATE_OPENED_AT = "2026-07-22T01:00:00.000Z";
@@ -32,7 +32,7 @@ function testDb(store: StateStore): TestDb {
 
 async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 	const store = await WorkflowStateStore.create(":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	);
 	if (!seed) throw new Error("tpl_eng_heavy seed unavailable");
@@ -249,7 +249,7 @@ describe("workflow ship-ready StateStore contract", () => {
 
 	it("excludes land_v1 and non-engineering template scopes", async () => {
 		const store = await WorkflowStateStore.create(":memory:");
-		const seeds = loadBundledWorkflowSeeds();
+		const seeds = legacyWorkflowSeeds();
 		const land = seeds.find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
 		);

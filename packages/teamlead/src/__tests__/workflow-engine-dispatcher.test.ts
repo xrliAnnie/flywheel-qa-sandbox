@@ -22,10 +22,8 @@ import type {
 	WorkflowShipReadyArm,
 	WorkflowShipReadyNotice,
 } from "../workflow-ship-ready.js";
-import {
-	isWorkflowManifestV1Land,
-	loadBundledWorkflowSeeds,
-} from "../workflow-template.js";
+import { isWorkflowManifestV1Land } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const generalizedRecoveryMocks = vi.hoisted(() => ({
 	waitForDelivery: vi.fn(),
@@ -136,7 +134,7 @@ function deadExecEngineClockBaseMs(): number {
 
 async function storeWithIntent(target: "design" | "implement" | "qa") {
 	const store = await StateStore.create(":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);
@@ -232,7 +230,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 
 async function storeWithLandIntent() {
 	const store = await StateStore.create(":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
 	)!;
 	if (!isWorkflowManifestV1Land(seed.manifest)) {
@@ -367,7 +365,7 @@ async function storeWithProductOutputIntent() {
 		join(canonicalRoot, "agents", "generic-executor.md"),
 		"Execute the pinned node.\n",
 	);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
 	const env = {
@@ -425,7 +423,7 @@ async function storeWithBundledOutputFirstIntent(input: {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), `${input.runId}-agent-`));
 	mkdirSync(join(canonicalRoot, "agents"));
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === input.templateId,
 	)!;
 	const producer = seed.manifest.nodes.find(
@@ -2048,7 +2046,7 @@ describe("WorkflowEngineDispatcher", () => {
 	it("delivers a scoped decision credential to an engine-produced QA node", async () => {
 		const store = await storeWithIntent("qa");
 		const liveManifest = structuredClone(
-			loadBundledWorkflowSeeds().find(
+			legacyWorkflowSeeds().find(
 				(candidate) => candidate.templateId === "tpl_eng_heavy",
 			)!.manifest,
 		);

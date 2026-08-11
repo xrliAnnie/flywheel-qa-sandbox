@@ -4173,7 +4173,7 @@ export class StateStore {
 				action TEXT NOT NULL CHECK (
 					action IN (
 						'seed_import','publish','rebind','create','run_override',
-						'template_retire'
+						'template_retire','unbind'
 					)
 				),
 				template_id TEXT,
@@ -4191,7 +4191,7 @@ export class StateStore {
 		)?.sql;
 		if (
 			workflowTemplateAuditSql &&
-			!workflowTemplateAuditSql.includes("template_retire")
+			!workflowTemplateAuditSql.includes("unbind")
 		) {
 			this.db.raw.transaction(() => {
 				this.db.raw.exec(`
@@ -4206,7 +4206,7 @@ export class StateStore {
 						action TEXT NOT NULL CHECK (
 							action IN (
 								'seed_import','publish','rebind','create','run_override',
-								'template_retire'
+								'template_retire','unbind'
 							)
 						),
 						template_id TEXT,
@@ -17165,6 +17165,67 @@ export class StateStore {
 		return result;
 	}
 
+	unbindWorkflowCategory(input: {
+		project: string;
+		taskCategory: string;
+		expectedTemplateId: string;
+		expectedUpdatedBy: string;
+		updatedBy: string;
+	}): WorkflowCategoryUnbindResult {
+		const actor = input.updatedBy.trim();
+		if (!actor) {
+			throw new Error("workflow category unbind actor must be non-empty");
+		}
+		let result: WorkflowCategoryUnbindResult = { status: "not_found" };
+		this.db.transaction(() => {
+			const current = this.getWorkflowCategoryBindingExact(
+				input.project,
+				input.taskCategory,
+			);
+			if (!current) return;
+			if (
+				current.template_id !== input.expectedTemplateId ||
+				current.updated_by !== input.expectedUpdatedBy
+			) {
+				result = { status: "drifted" };
+				return;
+			}
+			this.db.run(
+				`DELETE FROM workflow_category_binding
+				 WHERE project = ? AND task_category = ?
+				   AND template_id = ? AND updated_by = ?`,
+				[
+					input.project,
+					input.taskCategory,
+					input.expectedTemplateId,
+					input.expectedUpdatedBy,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { status: "drifted" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_template_audit
+				 (actor, action, template_id, detail)
+				 VALUES (?, 'unbind', ?, ?)`,
+				[
+					actor,
+					input.expectedTemplateId,
+					JSON.stringify({
+						project: input.project,
+						task_category: input.taskCategory,
+						removed_template_id: input.expectedTemplateId,
+						previous_owner: input.expectedUpdatedBy,
+					}),
+				],
+			);
+			result = { status: "removed" };
+		});
+		if (result.status === "removed") this.save();
+		return result;
+	}
+
 	bindWorkflowCategory(input: {
 		project: string;
 		taskCategory?: string;
@@ -17706,6 +17767,9 @@ export class StateStore {
 		if (!template?.current_published_revision) {
 			throw new Error("workflow template has no published revision");
 		}
+		if (template.retired_at !== null) {
+			throw new Error(`workflow template is retired: ${selectedTemplateId}`);
+		}
 		if (
 			template.project_scope !== "global" &&
 			template.project_scope !== input.projectName
@@ -17861,6 +17925,7 @@ export class StateStore {
 					currentSelectionDigest !== expected.selectionDigest ||
 					currentTemplateId !== expected.templateId ||
 					currentSource !== expected.selectionSource ||
+					currentTemplate?.retired_at != null ||
 					currentTemplate?.current_published_revision !== expected.revision ||
 					currentRevision?.manifest_digest !== expected.manifestDigest ||
 					currentRevision?.schema_version !== expected.schemaVersion
@@ -37847,7 +37912,8 @@ export interface WorkflowTemplateAuditRow {
 		| "rebind"
 		| "create"
 		| "run_override"
-		| "template_retire";
+		| "template_retire"
+		| "unbind";
 	template_id: string | null;
 	revision: number | null;
 	run_id: string | null;
@@ -37867,6 +37933,10 @@ export type WorkflowTemplateRetireResult =
 			status: "refused_bound";
 			refs: Array<{ project: string; taskCategory: string }>;
 	  };
+
+export type WorkflowCategoryUnbindResult = {
+	status: "removed" | "not_found" | "drifted";
+};
 
 export type WorkflowTemplateSeedImportResult = {
 	status: "imported" | "updated" | "unchanged" | "refused";

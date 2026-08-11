@@ -54,7 +54,7 @@ import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const QA_SCRIPT = resolve(
@@ -274,7 +274,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		launchctl.loaded.add("org.example.alpha-daily");
 
 		store = await StateStore.create(":memory:");
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "alpha",
 			taskCategory: "*",

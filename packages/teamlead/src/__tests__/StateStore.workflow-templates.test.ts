@@ -6,11 +6,11 @@ import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import { workflowSeedContentHash } from "../workflow-template.js";
 import {
-	importBundledWorkflowSeeds,
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../workflow-template.js";
+	importLegacyWorkflowSeeds,
+	legacyWorkflowSeeds,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -105,7 +105,7 @@ describe("StateStore workflow templates", () => {
 			);
 			const seed =
 				schemaVersion === 1
-					? loadBundledWorkflowSeeds().find(
+					? legacyWorkflowSeeds().find(
 							(candidate) => candidate.templateId === "tpl_eng_heavy",
 						)!
 					: generalizedOpsSeed();
@@ -154,7 +154,7 @@ describe("StateStore workflow templates", () => {
 
 	it("atomically pins a typed v1 snapshot and engine ownership only with a start reservation", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -206,7 +206,7 @@ describe("StateStore workflow templates", () => {
 
 	it("freezes the gate carrier flag per run so a live toggle affects only the next materialization", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -247,7 +247,7 @@ describe("StateStore workflow templates", () => {
 
 	it("refuses to materialize a land snapshot while the land kill switch is off", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -282,47 +282,6 @@ describe("StateStore workflow templates", () => {
 		).toThrow(/land workflow node is disabled/);
 		expect(store.getWorkflowRun("run-land-disabled")).toBeUndefined();
 		store.close();
-	});
-
-	it("boot import installs and publishes every bundled seed while generalized routing is off", async () => {
-		const offStore = await StateStore.create(":memory:");
-		const skipped: string[] = [];
-		importBundledWorkflowSeeds(offStore, {}, (message) =>
-			skipped.push(message),
-		);
-		const bundledIds = loadBundledWorkflowSeeds()
-			.map((seed) => seed.templateId)
-			.sort();
-		expect(
-			offStore.listWorkflowTemplates().map((row) => row.template_id),
-		).toEqual(bundledIds);
-		expect(skipped).toEqual([]);
-		const offAuditCount = offStore.listWorkflowTemplateAudit().length;
-		importBundledWorkflowSeeds(offStore, {}, (message) =>
-			skipped.push(message),
-		);
-		expect(offStore.listWorkflowTemplateAudit()).toHaveLength(offAuditCount);
-		for (const row of offStore.listWorkflowTemplates()) {
-			expect(
-				offStore.listWorkflowTemplateRevisions(row.template_id),
-			).toHaveLength(1);
-			expect(row.current_published_revision).toBe(1);
-		}
-		offStore.close();
-
-		const onStore = await StateStore.create(":memory:");
-		const env = { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" };
-		importBundledWorkflowSeeds(onStore, env, () => {});
-		expect(
-			onStore.listWorkflowTemplates().map((row) => row.template_id),
-		).toEqual(bundledIds);
-		importBundledWorkflowSeeds(onStore, env, () => {});
-		for (const row of onStore.listWorkflowTemplates()) {
-			expect(
-				onStore.listWorkflowTemplateRevisions(row.template_id),
-			).toHaveLength(1);
-		}
-		onStore.close();
 	});
 
 	it("gates all schema-v2 mutation seams independently and requires the dispatch predicate before materialization", async () => {
@@ -428,7 +387,7 @@ describe("StateStore workflow templates", () => {
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const dbPath = join(dir, "state.db");
 		const store = await StateStore.create(dbPath);
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		const imported = store.importWorkflowTemplateSeed(seed);
 		expect(imported).toMatchObject({ status: "imported", revision: 1 });
 		expect(store.importWorkflowTemplateSeed(seed)).toEqual({
@@ -517,8 +476,7 @@ describe("StateStore workflow templates", () => {
 
 	it("retires only unbound templates and keeps retired or unpublished templates out of bindings", async () => {
 		const store = await StateStore.create(":memory:");
-		const [boundSeed, retiredSeed, unpublishedSeed] =
-			loadBundledWorkflowSeeds();
+		const [boundSeed, retiredSeed, unpublishedSeed] = legacyWorkflowSeeds();
 		store.importWorkflowTemplateSeed(boundSeed!);
 		store.importWorkflowTemplateSeed(retiredSeed!);
 		store.importWorkflowTemplateSeed(unpublishedSeed!);
@@ -656,7 +614,10 @@ describe("StateStore workflow templates", () => {
 				at TEXT NOT NULL DEFAULT (datetime('now')),
 				actor TEXT NOT NULL,
 				action TEXT NOT NULL CHECK (
-					action IN ('seed_import','publish','rebind','create','run_override')
+					action IN (
+						'seed_import','publish','rebind','create','run_override',
+						'template_retire'
+					)
 				),
 				template_id TEXT,
 				revision INTEGER,
@@ -697,6 +658,7 @@ describe("StateStore workflow templates", () => {
 			)
 			.get() as { sql: string; rootpage: number };
 		expect(table.sql).toContain("template_retire");
+		expect(table.sql).toContain("unbind");
 		expect(
 			migrated
 				.prepare(
@@ -753,6 +715,16 @@ describe("StateStore workflow templates", () => {
 				.prepare("SELECT actor FROM workflow_template_audit WHERE id=7")
 				.get(),
 		).toEqual({ actor: "system" });
+		expect(
+			migrated
+				.prepare(
+					`INSERT INTO workflow_template_audit
+					 (actor, action, template_id, detail)
+					 VALUES ('system:FLY-1693-retirement', 'unbind',
+					         'tpl_eng_heavy', '{"project":"growth"}')`,
+				)
+				.run().lastInsertRowid,
+		).toBe(8);
 		const migratedRootpage = table.rootpage;
 		migrated.close();
 
@@ -772,13 +744,13 @@ describe("StateStore workflow templates", () => {
 			reopened
 				.prepare("SELECT COUNT(*) AS count FROM workflow_template_audit")
 				.get(),
-		).toEqual({ count: 1 });
+		).toEqual({ count: 2 });
 		reopened.close();
 	});
 
 	it("imports a changed system seed as a new published revision", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(seed);
 		const revisedManifest = {
 			...seed.manifest,
@@ -809,7 +781,7 @@ describe("StateStore workflow templates", () => {
 
 	it("refuses to overwrite a founder-owned seed and audits the refusal", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(seed);
 		const founderManifest = {
 			...seed.manifest,
@@ -846,7 +818,7 @@ describe("StateStore workflow templates", () => {
 
 	it("treats seed name and project scope as content and enforces the scope at bind/materialize", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(seed);
 		store.bindWorkflowCategory({
 			project: "flywheel",
@@ -892,7 +864,7 @@ describe("StateStore workflow templates", () => {
 
 	it("marks a founder publication pointer as founder-owned before later seed import", async () => {
 		const store = await StateStore.create(":memory:");
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		store.importWorkflowTemplateSeed(seed);
 		const systemManifest = {
 			...seed.manifest,
@@ -934,7 +906,7 @@ describe("StateStore workflow templates", () => {
 
 	it("pins the selected published revision plus reasoned override into the run snapshot", async () => {
 		const store = await StateStore.create(":memory:");
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "small",
@@ -976,7 +948,7 @@ describe("StateStore workflow templates", () => {
 
 	it("atomically appends and publishes one revision, with conflict rollback and run pinning", async () => {
 		const store = await StateStore.create(":memory:");
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "heavy",
@@ -991,7 +963,7 @@ describe("StateStore workflow templates", () => {
 			claimsReadEnrolled: false,
 			actor: "test",
 		});
-		const seed = loadBundledWorkflowSeeds()[0]!;
+		const seed = legacyWorkflowSeeds()[0]!;
 		const changed = {
 			...seed.manifest,
 			nodes: seed.manifest.nodes.map((node) =>

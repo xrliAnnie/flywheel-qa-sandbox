@@ -26,8 +26,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import {
 	computeAuthoritativeShipDecision,
 	computeEngineWorkflowShipPrecondition,
@@ -166,7 +166,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	}
 
 	function engineQaAtFounderGate(): { qaClaimId: number } {
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
@@ -250,7 +250,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	function productWithReviewPredicate(
 		predicate: "codex_approved" | "design_review_approved",
 	) {
-		const seed = loadBundledWorkflowSeeds().find(
+		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_product_v1",
 		)!;
 		const flags = WORKFLOW_ON;

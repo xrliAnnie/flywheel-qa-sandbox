@@ -5,7 +5,7 @@ import { WORKFLOW_MENU_BINDINGS } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
-import { importBundledWorkflowSeeds } from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const BASELINE = [{ taskCategory: "*", templateId: "tpl_eng_heavy" }] as const;
 
@@ -16,7 +16,7 @@ const TARGET_SORTED = [...TARGET].sort((a, b) =>
 
 async function seededStore(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
-	importBundledWorkflowSeeds(store);
+	importLegacyWorkflowSeeds(store);
 	importWorkflowMenuSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
@@ -117,7 +117,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		const dbPath = join(directory, "state.db");
 		try {
 			const first = await StateStore.create(dbPath);
-			importBundledWorkflowSeeds(first);
+			importLegacyWorkflowSeeds(first);
 			importWorkflowMenuSeeds(first);
 			first.bindWorkflowCategory({
 				project: "flywheel",

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -16,7 +16,7 @@ async function engineRunWithImplement(
 	sessionStatus: "running" | "failed" = "failed",
 ): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);
@@ -173,7 +173,7 @@ async function engineRunWithOutputFromDeadExecution(
 		join(canonicalRoot, "agents", "generic-executor.md"),
 		"Produce the requested artifact.\n",
 	);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);

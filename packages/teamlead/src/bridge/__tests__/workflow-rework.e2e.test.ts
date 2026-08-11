@@ -4,11 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
-import {
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../../workflow-template.js";
+import { workflowSeedContentHash } from "../../workflow-template.js";
 import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
 
 const WORKFLOW_ON = {
@@ -48,7 +46,7 @@ async function createHarness() {
 	const store = await StateStore.create(join(root, "state.db"));
 	const comm = new CommDB(join(root, "comm.db"));
 	const seed = structuredClone(
-		loadBundledWorkflowSeeds().find(
+		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		),
 	);

@@ -7,14 +7,12 @@ import { readManagementDags } from "../bridge/management-dag-source.js";
 import { applyManagementDagEdit } from "../bridge/management-dag-writer.js";
 import { createManagementDagWriter } from "../bridge/management-existing-writers.js";
 import { StateStore } from "../StateStore.js";
-import {
-	importBundledWorkflowSeeds,
-	validateWorkflowManifest,
-} from "../workflow-template.js";
+import { validateWorkflowManifest } from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 async function setup() {
 	const store = await StateStore.create(":memory:");
-	importBundledWorkflowSeeds(store);
+	importLegacyWorkflowSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		taskCategory: "*",
@@ -178,7 +176,7 @@ describe("management DAG writer", () => {
 		const root = mkdtempSync(join(tmpdir(), "management-dag-isolation-"));
 		const dbPath = join(root, "state.db");
 		let store = await StateStore.create(dbPath);
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		const templates = store.listWorkflowTemplates();
 		const invalid = templates[0]!;
 		const valid = templates.find(
@@ -245,7 +243,7 @@ describe("management DAG writer", () => {
 		const root = mkdtempSync(join(tmpdir(), "management-dag-retired-model-"));
 		const dbPath = join(root, "state.db");
 		let store = await StateStore.create(dbPath);
-		importBundledWorkflowSeeds(store);
+		importLegacyWorkflowSeeds(store);
 		store.bindWorkflowCategory({
 			project: "flywheel",
 			taskCategory: "*",

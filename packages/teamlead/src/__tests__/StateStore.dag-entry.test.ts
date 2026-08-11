@@ -19,7 +19,7 @@ import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const stores: StateStore[] = [];
 const cleanups: Array<() => void> = [];
@@ -37,7 +37,7 @@ const DAG_FLAGS_ON = {
 async function storeWithEngHeavy(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
 	stores.push(store);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);

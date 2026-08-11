@@ -24,13 +24,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
-import {
-	loadBundledWorkflowSeeds,
-	workflowSeedContentHash,
-} from "../../workflow-template.js";
+import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 import { createRunsRouter } from "../runs-route.js";
 
@@ -230,7 +228,7 @@ async function startHarness(options: {
 			? { templateId: options.bindingTemplateId ?? "tpl_code" }
 			: options.templateSchema === 2
 				? v2Seed()
-				: loadBundledWorkflowSeeds().find(
+				: legacyWorkflowSeeds().find(
 						(candidate) => candidate.templateId === "tpl_eng_heavy",
 					)!;
 		if (!options.menuMode) store.importWorkflowTemplateSeed(seed, process.env);

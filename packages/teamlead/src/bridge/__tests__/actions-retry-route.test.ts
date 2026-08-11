@@ -19,8 +19,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import { createActionRouter } from "../actions.js";
 import type { IRetryDispatcher, RetryRequest } from "../retry-dispatcher.js";
 
@@ -65,7 +65,7 @@ function bindPredecessorToGeneralizedWorkflow(): void {
 		join(generalizedRoot, "agents", "generic-executor.md"),
 		"Execute the pinned node.\n",
 	);
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);

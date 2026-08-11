@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const HEAD = "a".repeat(40);
 const NOW = "2026-07-23T12:00:00.000Z";
 
 async function fixture() {
 	const store = await StateStore.create(":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
 	)!;
 	store.createWorkflowRun({

@@ -1,0 +1,15 @@
+flowchart LR
+    subgraph before["改动前(生产库实查)"]
+        direction TB
+        T1["workflow_template 表:17 行\n12 个待退役 + 5 个保留\n全部标着「可用」"]
+        B1["绑定表 workflow_category_binding\nflywheel → 5 条 menu 绑定 ✅\n另外 5 个项目 → 各 1 条指向\ntpl_eng_heavy_land_v1(待退役)⚠️"]
+        T1 --- B1
+    end
+    subgraph after["改动后"]
+        direction TB
+        T2["workflow_template 表:17 行不删\n12 行打上 retired_at 时间戳\n5 行保持可用\n(历史 run 记录与定义全部可查)"]
+        B2["绑定表\n只剩 flywheel 的 5 条 menu 绑定\n其余 5 个项目零绑定\n→ 派单自动走原有 legacy 路径\n(与它们今天的实际行为一致)"]
+        T2 --- B2
+    end
+    before -->|"boot reconcile\n(解绑 → 退役,全程留审计)"| after
+    after --> G["三道守卫从此生效:\n① 绑定表拒绝再指向退役模板\n② 新单候选解析拒绝退役模板\n③ 建 run 事务内再复核一次(防竞态)"]

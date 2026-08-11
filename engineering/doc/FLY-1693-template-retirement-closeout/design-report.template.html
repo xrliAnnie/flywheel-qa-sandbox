@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1693 模板退役收尾 — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, sans-serif; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 8px 0 4px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta code { font-family: 'SF Mono', monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card h2 { font-size: 18px; margin-bottom: 10px; color: #1a365d; }
+  .card h3 { font-size: 15px; margin: 14px 0 6px; }
+  .card p, .card li { font-size: 14.5px; }
+  .card ul, .card ol { padding-left: 22px; margin: 8px 0; }
+  .card li { margin: 4px 0; }
+  code { font-family: 'SF Mono', monospace; font-size: 0.92em; background: #f0f0f2; border-radius: 4px; padding: 1px 5px; }
+  .diagram { overflow-x: auto; margin: 12px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5e7; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #fafafc; color: #1a365d; }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; border-radius: 5px; padding: 2px 8px; margin-right: 6px; vertical-align: 1px; }
+  .badge.warn { background: #fff3e0; color: #b26a00; }
+  .kv { color: #86868b; font-size: 12.5px; }
+  .comment-box { margin-top: 16px; border-top: 1px dashed #e5e5e7; padding-top: 12px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px; font-family: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-list { white-space: pre-wrap; font-size: 14px; background: #fbfbfd; border: 1px solid #e5e5e7; border-radius: 8px; padding: 12px; min-height: 40px; }
+  #copy-all { margin-top: 10px; background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  .empty-hint { color: #86868b; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1693 模板退役收尾 — 设计方案</h1>
+  <div class="meta">Issue: FLY-1693 · 2026-08-11 · 设计节点交付 · Codex design review <strong>5 轮 APPROVED</strong> · 全文档:<code>engineering/doc/FLY-1693-template-retirement-closeout/</code></div>
+
+  <div class="card green" data-section="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>按你 8-11 拍板的清单,把 17 个 workflow 模板(派单时决定「一个单要经过哪些环节」的流程图纸)中的 <strong>12 个打上退役标记、保留 5 个</strong>;为了不炸生产,拆成一个 PR 里的五步原子动作:<strong>先解绑 → 再退役 → 摘掉启动时读文件的死机器 → 删掉指向它们的默认值 → 最后才删文件</strong>,并且顺手把「已退役的模板从此再也派不出新单」焊成硬规则。</p>
+    <p style="margin-top:8px" class="kv">保留 5:tpl_code · tpl_generic_menu · tpl_prd · tpl_design · tpl_prototype(全部由 menu 体系生成,是生产主力)。退役 12:tpl_eng_heavy 一族 ×7、tpl_eng 一族 ×2、tpl_product_v1、tpl_product_designer、tpl_product_prototype、tpl_generic。</p>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="为什么不能直接删文件">
+    <h2>② 为什么不能「直接删 12 个文件」</h2>
+    <p>你最初的指令是直接删仓库文件。核实后没有照做,因为会当场炸,而且会把 8-10 晚上坑过 Product Lead 的事故形状放大五倍:</p>
+    <div class="diagram"><!--SVG3--></div>
+    <p class="kv">「BUNDLED_SEED_FILES」= 代码里写死的文件清单,Bridge(调度中枢)每次启动都逐个读这些文件,缺一个就起不来。</p>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="核心流程">
+    <h2>③ 核心流程:五步一个 PR,顺序不能反</h2>
+    <p>比 issue 原文多出的<strong>第 0 步</strong>是审计新发现:数据库里有 5 个项目(geoforge3d / growth / joycon-typeless / personal-assistant / tidal-echo)各有一条旧绑定指着待退役模板,而退役接口遇到「还被绑着」的模板会直接拒绝——所以必须先解绑。</p>
+    <div class="diagram"><!--SVG1--></div>
+    <p class="kv">「幂等」= 同一个动作执行多少遍,结果都和执行一遍一样;Bridge 每次重启都会跑这段收敛逻辑,但第二次起自动零动作。</p>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与结构模型">
+    <h2>④ 数据与结构:改动前 → 改动后</h2>
+    <div class="diagram"><!--SVG2--></div>
+    <h3>关键事实(生产库只读实查)</h3>
+    <ul>
+      <li>那 5 个项目的旧绑定<strong>从来没有真正派过单</strong>(引擎 run 历史约等于零)——解绑后它们自动走回今天实际在走的老路径,行为零变化。</li>
+      <li>退役名单里只有 tpl_eng_heavy 有 9 个暂停中的历史 run,它们靠开工时固化的快照恢复,<strong>不回头读当前模板</strong>,退役不影响。</li>
+      <li>退役是打标记不删记录:12 个模板的完整定义与历史永远可查,以后要复用(比如给保留模板补「founder 打回返工环」)随时能抄——那条返工环的定义已原样存档进 research.md 附录。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="关键取舍与弃案">
+    <h2>⑤ 关键取舍与弃案(两处对你原指令的显式修正)</h2>
+    <table>
+      <tr><th>决策点</th><th>最终选择</th><th>弃案与原因</th></tr>
+      <tr>
+        <td>5 条旧绑定怎么处理</td>
+        <td><strong>解绑</strong>(删掉绑定,留审计)</td>
+        <td><span class="badge warn">弃</span>改绑到 tpl_code——Codex 评审抓出硬伤:tpl_code 这类 menu 模板派单时必须读目标项目的 <code>.flywheel/menus/</code> 角色配置,而那 5 个项目都没有这份配置,改绑等于把「以后不会用」变成「以后一用就报错」。解绑后走老路径 = 和今天完全一样。</td>
+      </tr>
+      <tr>
+        <td>「两处默认值」</td>
+        <td><strong>直接删除</strong>(默认绑定播种机制 + 一个死常量)</td>
+        <td><span class="badge warn">弃</span>按 issue 原文改指向——其一是全仓零调用的死代码,改完还是死的;其二(新项目默认绑定)同样撞上面的 menu 配置问题。删除后新项目不再自动拿到引擎绑定,派单走老路径,以后哪个项目接入 menu 体系时单独做接入(独立后续单)。</td>
+      </tr>
+      <tr>
+        <td>退役执行机制</td>
+        <td>Bridge 启动时的幂等收敛(自动、可重复、留审计)</td>
+        <td><span class="badge warn">弃</span>一次性手术脚本——那套重仪式是给「改 run 台账」准备的;这里改的是配置层,底层接口本身会拒绝一切不安全操作。</td>
+      </tr>
+      <tr>
+        <td>退役后还能不能被派单</td>
+        <td><strong>不能</strong>:候选解析拒 + 建 run 事务内复核(连并发竞态窗口也关掉)</td>
+        <td><span class="badge warn">弃</span>初稿曾把「Lead 显式点名退役模板仍可派」留作口子——评审裁定这正是「看起来修好了」的形状,已改成硬边界。</td>
+      </tr>
+      <tr>
+        <td>回滚怎么做</td>
+        <td>随 PR 入库的回滚脚本:默认只读试跑,正式执行单事务、验够凭据才动手,绝不覆盖你手动改过的绑定</td>
+        <td><span class="badge warn">弃</span>「出事再手写 SQL」——评审连追三轮把它钉成了带测试矩阵的可执行合同。</td>
+      </tr>
+    </table>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="诚实边界">
+    <h2>⑥ 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>12 退役 / 5 保留,含隐藏第 0 步解绑;全程审计可查</li>
+      <li>「已退役 = 派不出新单」成为硬规则(含并发竞态防护)</li>
+      <li>删净整套 bundled-seed 死机器、旧迁移代码、死默认值(净删除约 190 行 + 12 个文件)</li>
+      <li>build / CI / 40 来个测试文件 / 9 个历史脚本的连坐全部修好</li>
+      <li>可执行、带测试的回滚脚本</li>
+    </ul>
+    <h3>不做(各有明确归属)</h3>
+    <ul>
+      <li><strong>不</strong>给保留模板补 founder 返工环——你已排期的后续单;定义已原样存档(含「3 次太少要调大」的备注)</li>
+      <li><strong>不</strong>给那 5 个项目做 menu 体系接入——未来各项目独立接入</li>
+      <li><strong>不</strong>删数据库里的模板行与历史 revision——退役只打标记,历史永远可查</li>
+      <li><strong>不</strong>动 FLY-1436 切换的历史存证;其「恢复到旧世界」按钮从此会被响亮拒绝(旧世界已被你判死,这是正确行为)</li>
+    </ul>
+    <p style="margin-top:10px" class="kv">下一步:实施节点按本计划 TDD 落地(11 组测试),独立 QA 在副本库彩排全部断言 + 回滚脚本实跑后,才碰生产。</p>
+    <div class="comment-box"><label>对这一节的评论(自动保存在本机)</label><textarea data-key="s6" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="评论汇总">
+    <h2>📋 你的评论汇总</h2>
+    <div id="summary-list"><span class="empty-hint">还没有评论——在上面任意小节的输入框里写,这里会实时汇总。</span></div>
+    <button id="copy-all" type="button">复制全部评论</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1693-comments:" + location.pathname + ":";
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitle(area) {
+    var card = area.closest("[data-section]");
+    return card ? card.getAttribute("data-section") : area.getAttribute("data-key");
+  }
+  function load(key) {
+    try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(PREFIX + key, value); } catch (e) { /* 隐私模式等场景下静默降级 */ }
+  }
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var text = area.value.trim();
+      if (text) parts.push("【" + sectionTitle(area) + "】\n" + text);
+    });
+    return parts;
+  }
+  function renderSummary() {
+    var list = document.getElementById("summary-list");
+    var parts = collect();
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (parts.length === 0) {
+      var hint = document.createElement("span");
+      hint.className = "empty-hint";
+      hint.textContent = "还没有评论——在上面任意小节的输入框里写,这里会实时汇总。";
+      list.appendChild(hint);
+    } else {
+      list.textContent = parts.join("\n\n");
+    }
+  }
+  function setStatus(message) {
+    var status = document.getElementById("copy-status");
+    status.textContent = message;
+    setTimeout(function () { status.textContent = ""; }, 2500);
+  }
+  function legacyCopy(text) {
+    var helper = document.createElement("textarea");
+    helper.value = text;
+    helper.setAttribute("readonly", "");
+    helper.style.position = "fixed";
+    helper.style.left = "-9999px";
+    document.body.appendChild(helper);
+    helper.select();
+    var done = false;
+    try { done = document.execCommand("copy"); } catch (e) { done = false; }
+    document.body.removeChild(helper);
+    setStatus(done ? "已复制 ✓" : "复制失败,请手动全选汇总框");
+  }
+
+  areas.forEach(function (area) {
+    area.value = load(area.getAttribute("data-key"));
+    area.addEventListener("input", function () {
+      save(area.getAttribute("data-key"), area.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = collect().join("\n\n");
+    if (!text) { setStatus("暂无评论可复制"); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus("已复制 ✓"); },
+        function () { legacyCopy(text); }
+      );
+    } else {
+      legacyCopy(text);
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -94,6 +94,9 @@ function resolveWorkflowTemplateCandidate(
 			`workflow template ${templateId} is not active, published, and fresh-eligible`,
 		);
 	}
+	if (template?.retired_at != null) {
+		throw new Error(`workflow template ${templateId} is retired`);
+	}
 	if (!template?.current_published_revision) {
 		throw new Error("workflow template candidate has no published revision");
 	}

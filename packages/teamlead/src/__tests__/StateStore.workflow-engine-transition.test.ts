@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const engineFlags = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -16,7 +16,7 @@ async function engineRun(
 	options: { gateCarrier?: boolean; dbPath?: string } = {},
 ): Promise<StateStore> {
 	const store = await StateStore.create(options.dbPath ?? ":memory:");
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);

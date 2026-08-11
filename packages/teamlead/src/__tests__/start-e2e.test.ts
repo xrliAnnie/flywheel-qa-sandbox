@@ -17,10 +17,7 @@ import {
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import {
-	ensureDefaultWorkflowBindings,
-	importBundledWorkflowSeeds,
-} from "../workflow-template.js";
+import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 // Mock @linear/sdk for pre-flight issue check.
 // FLY-127: default issue carries "Product" label so the default product-lead
@@ -1184,8 +1181,12 @@ pipeline:
 			) as Record<(typeof flagNames)[number], string | undefined>;
 			for (const name of flagNames.slice(0, 4)) process.env[name] = "1";
 			delete process.env.FLYWHEEL_THREE_STAGE;
-			importBundledWorkflowSeeds(store, process.env);
-			ensureDefaultWorkflowBindings(store, ["TestProject"]);
+			importLegacyWorkflowSeeds(store, process.env);
+			store.bindWorkflowCategory({
+				project: "TestProject",
+				templateId: "tpl_eng_heavy_land_v1",
+				updatedBy: "test:legacy-fixture",
+			});
 		});
 
 		afterEach(() => {

@@ -18,9 +18,9 @@ import { join } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
-import { loadBundledWorkflowSeeds } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 
 // Bound the ghost-guard / delivery waits BEFORE the route module loads (the
@@ -117,11 +117,11 @@ async function startHarness(): Promise<Harness> {
 		store.close();
 		rmSync(stateDir, { recursive: true, force: true });
 	});
-	const seed = loadBundledWorkflowSeeds().find(
+	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_heavy",
 	)!;
 	store.importWorkflowTemplateSeed(seed);
-	const lightSeed = loadBundledWorkflowSeeds().find(
+	const lightSeed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_eng_light",
 	)!;
 	store.importWorkflowTemplateSeed(lightSeed);

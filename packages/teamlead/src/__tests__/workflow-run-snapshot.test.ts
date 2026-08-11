@@ -10,7 +10,7 @@ import {
 	resolveWorkflowGateAuthority,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
-import { loadBundledWorkflowSeeds } from "../workflow-template.js";
+import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -101,7 +101,7 @@ function terminalLandFixture() {
 
 describe("typed generalized workflow snapshot", () => {
 	it("pins the engineering Gate-feedback topology digest", () => {
-		const manifest = loadBundledWorkflowSeeds()[0]!.manifest;
+		const manifest = legacyWorkflowSeeds()[0]!.manifest;
 		const snapshot = buildWorkflowRunSnapshotV1({
 			template: { id: "tpl_eng_heavy", revision: 1 },
 			manifest,
