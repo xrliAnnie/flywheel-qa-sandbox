@@ -1,14 +1,14 @@
 ---
 issue: FLY-1574
 phase: implement
-phaseCursor: 1/2
-updated: 2026-08-10T21:16:53.938Z
-nextStep: QA round 1 = FAIL at 7ff8c68a (4 blocking). Await repaired head; run
-  FLY-529 N-to-N before any PASS
+phaseCursor: 2/3
+updated: 2026-08-11T01:43:57.726Z
+nextStep: Code-level recheck all green at ba16b8da; now running FLY-529
+  real-Discord N-to-N
 chunks: []
 pointers: {}
 ---
 
 # FLY-1574 progress
-**phase**: implement (1/2)
-**next**: QA round 1 = FAIL at 7ff8c68a (4 blocking). Await repaired head; run FLY-529 N-to-N before any PASS
+**phase**: implement (2/3)
+**next**: Code-level recheck all green at ba16b8da; now running FLY-529 real-Discord N-to-N
