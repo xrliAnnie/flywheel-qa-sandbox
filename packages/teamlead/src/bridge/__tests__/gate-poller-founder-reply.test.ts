@@ -137,7 +137,8 @@ describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-re
 			"FLY-1392",
 		);
 		const encoded = appendLeadEvent.mock.calls[0]?.[3];
-		expect(JSON.parse(encoded ?? "{}")).toMatchObject({
+		const hookPayload = JSON.parse(encoded ?? "{}") as { action: string };
+		expect(hookPayload).toMatchObject({
 			event_type: "founder_reply",
 			status: "founder_reply",
 			summary: founderText,
@@ -145,9 +146,12 @@ describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-re
 			founder_message_id: "m1",
 			comm_db_path: "/tmp/flywheel-comm.db",
 			action: expect.stringContaining(
-				"flywheel-comm route-founder-reply --msg m1",
+				'flywheel-comm respond <qid> "<founder-answer>"',
 			),
 		});
+		expect(hookPayload.action).toContain("--source-thread T1");
+		expect(hookPayload.action).not.toContain("receipt");
+		expect(hookPayload.action).not.toContain("route-founder-reply");
 		expect(deliver).not.toHaveBeenCalled();
 	});
 

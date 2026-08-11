@@ -173,9 +173,9 @@ async function setup(opts?: {
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
-	settleMergedReceipts?: Parameters<
+	retireMergedGates?: Parameters<
 		typeof createExternalMergeReconciler
-	>[0]["settleMergedReceipts"];
+	>[0]["retireMergedGates"];
 }): Promise<Setup> {
 	const store = await StateStore.create(
 		join(tmpRoot, `state-${stateDbSequence++}.db`),
@@ -212,7 +212,7 @@ async function setup(opts?: {
 		checkPrMerge: checkPr as never,
 		hasTrustedApprovalImpl: () => opts?.trusted ?? true,
 		finalizeThreeStagePhases: opts?.finalizeThreeStagePhases,
-		settleMergedReceipts: opts?.settleMergedReceipts,
+		retireMergedGates: opts?.retireMergedGates,
 		alertLead: (_s, title) => {
 			alerts.push({ title });
 		},
@@ -261,8 +261,8 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		});
 	});
 
-	it("offers only a fresh MERGED proof to receipt settlement", async () => {
-		const settleMergedReceipts = vi.fn(
+	it("offers only a fresh MERGED proof to gate retirement", async () => {
+		const retireMergedGates = vi.fn(
 			async (input: {
 				revalidate: () => Promise<"authorized" | "unknown">;
 			}) => {
@@ -270,13 +270,13 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			},
 		);
 		const s = await setup({
-			settleMergedReceipts: settleMergedReceipts as never,
+			retireMergedGates: retireMergedGates as never,
 		});
 		seedSession(s.store);
 
 		await s.pass();
 
-		expect(settleMergedReceipts).toHaveBeenCalledWith(
+		expect(retireMergedGates).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectName: "proj",
 				canonicalIssueId: "FLY-921",

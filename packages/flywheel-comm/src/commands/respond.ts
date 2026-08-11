@@ -26,6 +26,9 @@ export interface RespondArgs {
 	dbPath: string;
 	bridgeUrl?: string;
 	projectName?: string;
+	sourceThread?: string;
+	expectedOwner?: string;
+	expectedCheckpoint?: string | null;
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 	authorizationDeps?: LeadWriteAuthorizationDeps;
@@ -104,16 +107,105 @@ export async function respond(args: RespondArgs): Promise<void> {
 			retireMarker(args.questionId, question.from_agent, env);
 			return;
 		}
+		if (args.sourceThread) {
+			const bridgeUrl =
+				args.bridgeUrl?.trim() ||
+				env.BRIDGE_URL?.trim() ||
+				env.FLYWHEEL_BRIDGE_URL?.trim();
+			if (!bridgeUrl) {
+				throw new Error(
+					"flywheel-comm: --source-thread requires --bridge-url or BRIDGE_URL; no local fallback is permitted.",
+				);
+			}
+			await routeFounderResponseThroughBridge({
+				bridgeUrl,
+				questionId: args.questionId,
+				leadId: args.fromAgent,
+				answer: args.answer,
+				sourceThread: args.sourceThread,
+				expectedOwner: args.expectedOwner ?? question.from_agent,
+				expectedCheckpoint:
+					args.expectedCheckpoint === undefined
+						? question.checkpoint
+						: args.expectedCheckpoint,
+				authorization,
+				env,
+				fetchImpl: args.fetchImpl,
+			});
+			retireMarker(args.questionId, question.from_agent, env);
+			return;
+		}
 
-		db.insertResponse(
-			args.questionId,
-			args.fromAgent,
-			args.answer,
-			authorization.provenance,
-		);
+		db.insertGuardedResponse({
+			questionId: args.questionId,
+			authenticatedLead: args.fromAgent,
+			content: args.answer,
+			expectedOwner: args.expectedOwner,
+			expectedCheckpoint: args.expectedCheckpoint,
+			now: new Date().toISOString(),
+			provenance: authorization.provenance,
+		});
 		retireMarker(args.questionId, question.from_agent, env);
 	} finally {
 		db.close();
+	}
+}
+
+async function routeFounderResponseThroughBridge(opts: {
+	bridgeUrl: string;
+	questionId: string;
+	leadId: string;
+	answer: string;
+	sourceThread: string;
+	expectedOwner: string;
+	expectedCheckpoint: string | null;
+	authorization: LeadWriteAuthorization;
+	env: NodeJS.ProcessEnv;
+	fetchImpl?: typeof fetch;
+}): Promise<void> {
+	const token = opts.env.TEAMLEAD_API_TOKEN;
+	if (!token) {
+		throw new Error(
+			"flywheel-comm: TEAMLEAD_API_TOKEN required when routing a founder-thread response via Bridge.",
+		);
+	}
+	const url = `${opts.bridgeUrl.replace(/\/+$/, "")}/api/founder-routing/runner-response`;
+	const body = {
+		questionId: opts.questionId,
+		leadId: opts.leadId,
+		answer: opts.answer,
+		sourceThread: opts.sourceThread,
+		expectedOwner: opts.expectedOwner,
+		expectedCheckpoint: opts.expectedCheckpoint,
+		leaseClaim: opts.authorization.leaseClaim,
+		provenance: opts.authorization.provenance,
+	};
+	const headers = {
+		"content-type": "application/json",
+		Authorization: `Bearer ${token}`,
+	};
+	const fetchImpl = opts.fetchImpl ?? fetch;
+	const response = opts.authorization.carrierClaim
+		? await postCarrierClaim({
+				url,
+				carrierClaim: opts.authorization.carrierClaim,
+				body,
+				headers,
+				fetchImpl,
+			})
+		: await fetchImpl(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(body),
+			});
+	if (!response.ok) {
+		let detail = `HTTP ${response.status}`;
+		try {
+			detail = JSON.stringify(await response.json());
+		} catch {}
+		throw new Error(
+			`flywheel-comm: Bridge refused founder-thread response (HTTP ${response.status}): ${detail}. Retry after Bridge/scope recovery; no local write occurred.`,
+		);
 	}
 }
 

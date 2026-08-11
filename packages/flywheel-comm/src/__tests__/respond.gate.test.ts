@@ -11,6 +11,7 @@ let auditPath: string;
 
 function seed(checkpoint?: string): string {
 	const db = new CommDB(dbPath, true);
+	db.registerSession("exec-1", "runner", "Proj", "issue-1", "lead-x");
 	const qid = db.insertQuestion("exec-1", "lead-x", "ship?", { checkpoint });
 	db.close();
 	return qid;
@@ -95,6 +96,36 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			"/api/founder-consent/runner-gate-response",
 		);
 		// CLI must NOT write — the wrapper owns the write on allow.
+		expect(hasResponse(qid)).toBe(false);
+	});
+
+	it("source-thread routes an ordinary response through Bridge with typed scope guards", async () => {
+		const qid = seed();
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ ok: true, responseId: "response-1" }),
+		})) as unknown as typeof fetch;
+		await respond({
+			questionId: qid,
+			fromAgent: "lead-x",
+			answer: "routed answer",
+			dbPath,
+			sourceThread: "thread-1",
+			bridgeUrl: "http://localhost:9999",
+			env: { TEAMLEAD_API_TOKEN: "tok" },
+			fetchImpl,
+		});
+
+		const [url, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]!;
+		expect(String(url)).toContain("/api/founder-routing/runner-response");
+		expect(JSON.parse(String(init?.body))).toMatchObject({
+			questionId: qid,
+			leadId: "lead-x",
+			sourceThread: "thread-1",
+			expectedOwner: "exec-1",
+			expectedCheckpoint: null,
+		});
 		expect(hasResponse(qid)).toBe(false);
 	});
 

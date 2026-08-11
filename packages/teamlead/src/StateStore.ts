@@ -721,22 +721,6 @@ export interface WorkflowEngineParkOutboxRow {
 	created_at: string;
 }
 
-export interface ReceiptSettlementIntent {
-	intent_id: string;
-	authority_kind: "session_terminal" | "issue_done" | "pr_merged";
-	project_name: string;
-	execution_id: string | null;
-	issue_id: string;
-	terminal_lifecycle_id: string | null;
-	lifecycle_revision: number | null;
-	authority_credential: string | null;
-	state: "pending" | "applying" | "completed" | "fenced";
-	claim_token: string | null;
-	last_error: string | null;
-	created_at: string;
-	updated_at: string;
-}
-
 /** FLY-1282 Part D: prepare-time receipt facts (the route builds the FINAL
  * sanitized content here — delivery never reconstructs semantics). */
 export interface DispositionReceiptPrepareInput {
@@ -2739,34 +2723,7 @@ export class StateStore {
 			/* exists */
 		}
 		this.addColumnIfMissing("sessions", "terminal_lifecycle_id", "TEXT");
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS receipt_settlement_intent (
-				intent_id TEXT PRIMARY KEY,
-				authority_kind TEXT NOT NULL
-					CHECK(authority_kind IN ('session_terminal','issue_done','pr_merged')),
-				project_name TEXT NOT NULL,
-				execution_id TEXT,
-				issue_id TEXT NOT NULL,
-				terminal_lifecycle_id TEXT,
-				lifecycle_revision INTEGER,
-				authority_credential TEXT,
-				state TEXT NOT NULL DEFAULT 'pending'
-					CHECK(state IN ('pending','applying','completed','fenced')),
-				claim_token TEXT,
-				last_error TEXT,
-				created_at TEXT NOT NULL,
-				updated_at TEXT NOT NULL,
-				UNIQUE(authority_kind, execution_id, terminal_lifecycle_id)
-			)
-		`);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS idx_receipt_settlement_intent_state ON receipt_settlement_intent(state, created_at)",
-		);
-		this.addColumnIfMissing(
-			"receipt_settlement_intent",
-			"authority_credential",
-			"TEXT",
-		);
+		this.db.run("DROP TABLE IF EXISTS receipt_settlement_intent");
 		this.backfillTerminalLifecycleIds();
 
 		// FLY-1185 §2.1: worktree authority binding — an INDEPENDENT column group
@@ -4765,17 +4722,6 @@ export class StateStore {
 					[randomUUID(), row.execution_id],
 				);
 			}
-			for (const row of this.workflowSelectAll(
-				`SELECT execution_id, terminal_lifecycle_id
-				   FROM sessions
-				  WHERE terminal_lifecycle_id IS NOT NULL`,
-				[],
-			)) {
-				this.ensureTerminalSettlementIntentTx(
-					row.execution_id as string,
-					row.terminal_lifecycle_id as string,
-				);
-			}
 		});
 	}
 
@@ -4828,34 +4774,7 @@ export class StateStore {
 				  WHERE execution_id = ?`,
 				[randomUUID(), executionId],
 			);
-			const row = this.workflowSelectAll(
-				`SELECT terminal_lifecycle_id FROM sessions
-				  WHERE execution_id = ?`,
-				[executionId],
-			)[0];
-			if (typeof row?.terminal_lifecycle_id === "string") {
-				this.ensureTerminalSettlementIntentTx(
-					executionId,
-					row.terminal_lifecycle_id,
-					previousStatus !== undefined && previousStatus !== nextStatus ? 1 : 0,
-				);
-			}
 		} else if (!isOperationalTerminal) {
-			const oldLifecycle = this.workflowSelectAll(
-				`SELECT terminal_lifecycle_id FROM sessions WHERE execution_id = ?`,
-				[executionId],
-			)[0]?.terminal_lifecycle_id;
-			if (typeof oldLifecycle === "string") {
-				this.db.run(
-					`UPDATE receipt_settlement_intent
-					    SET state = 'fenced', updated_at = datetime('now'),
-					        last_error = 'terminal_lifecycle_ended_before_claim'
-					  WHERE authority_kind = 'session_terminal'
-					    AND execution_id = ? AND terminal_lifecycle_id = ?
-					    AND state = 'pending'`,
-					[executionId, oldLifecycle],
-				);
-			}
 			this.db.run(
 				"UPDATE sessions SET terminal_lifecycle_id = NULL WHERE execution_id = ?",
 				[executionId],
@@ -4932,390 +4851,6 @@ export class StateStore {
 		return result;
 	}
 
-	private receiptSettlementIntentFromRow(
-		row: Record<string, unknown>,
-	): ReceiptSettlementIntent {
-		return {
-			intent_id: row.intent_id as string,
-			authority_kind: row.authority_kind as ReceiptSettlementIntent["authority_kind"],
-			project_name: row.project_name as string,
-			execution_id: (row.execution_id as string | null) ?? null,
-			issue_id: row.issue_id as string,
-			terminal_lifecycle_id:
-				(row.terminal_lifecycle_id as string | null) ?? null,
-			lifecycle_revision:
-				typeof row.lifecycle_revision === "number"
-					? row.lifecycle_revision
-					: null,
-			authority_credential:
-				(row.authority_credential as string | null) ?? null,
-			state: row.state as ReceiptSettlementIntent["state"],
-			claim_token: (row.claim_token as string | null) ?? null,
-			last_error: (row.last_error as string | null) ?? null,
-			created_at: row.created_at as string,
-			updated_at: row.updated_at as string,
-		};
-	}
-
-	private ensureTerminalSettlementIntentTx(
-		executionId: string,
-		terminalLifecycleId: string,
-		revisionIncrement = 0,
-	): ReceiptSettlementIntent | undefined {
-		const session = this.workflowSelectAll(
-			`SELECT issue_id, project_name, status, lifecycle_revision,
-			        terminal_lifecycle_id
-			   FROM sessions WHERE execution_id = ?`,
-			[executionId],
-		)[0];
-		if (
-			!session ||
-			!isOperationalTerminalStatus(session.status as string) ||
-			session.terminal_lifecycle_id !== terminalLifecycleId
-		) {
-			return undefined;
-		}
-		const intentId = `session_terminal:${executionId}:${terminalLifecycleId}`;
-		this.db.run(
-			`INSERT OR IGNORE INTO receipt_settlement_intent
-			   (intent_id, authority_kind, project_name, execution_id, issue_id,
-			    terminal_lifecycle_id, lifecycle_revision, state, created_at, updated_at)
-			 VALUES (?, 'session_terminal', ?, ?, ?, ?, ?, 'pending',
-			         datetime('now'), datetime('now'))`,
-			[
-				intentId,
-				session.project_name,
-				executionId,
-				session.issue_id,
-				terminalLifecycleId,
-				Number(session.lifecycle_revision) + revisionIncrement,
-			],
-		);
-		return this.getReceiptSettlementIntent(intentId);
-	}
-
-	ensureTerminalSettlementIntent(
-		executionId: string,
-		terminalLifecycleId: string,
-	): ReceiptSettlementIntent | undefined {
-		let result: ReceiptSettlementIntent | undefined;
-		this.db.transaction(() => {
-			result = this.ensureTerminalSettlementIntentTx(
-				executionId,
-				terminalLifecycleId,
-			);
-		});
-		return result;
-	}
-
-	/**
-	 * FLY-1448 E1: persist one issue-authority settlement intent for every
-	 * session reached through the exact issue alias set. The credential is the
-	 * fresh Linear terminal observation (canonical UUID + updatedAt), so a
-	 * reopen followed by a later Done episode cannot reuse a completed intent.
-	 */
-	ensureIssueDoneSettlementIntents(input: {
-		projectName: string;
-		canonicalIssueId: string;
-		issueAliases: readonly string[];
-		authorityCredential: string;
-	}): ReceiptSettlementIntent[] {
-		const intents: ReceiptSettlementIntent[] = [];
-		this.db.transaction(() => {
-			const rows = this.getSessionsForIssueAliases([
-				...new Set([
-					input.canonicalIssueId,
-					...input.issueAliases.filter(Boolean),
-				]),
-			]).filter((row) => row.project_name === input.projectName);
-			const credentialHash = createHash("sha256")
-				.update(input.authorityCredential)
-				.digest("hex");
-			for (const row of rows) {
-				const intentId = `issue_done:${input.projectName}:${row.execution_id}:${credentialHash}`;
-				this.db.run(
-					`INSERT OR IGNORE INTO receipt_settlement_intent
-					   (intent_id, authority_kind, project_name, execution_id, issue_id,
-					    terminal_lifecycle_id, lifecycle_revision, authority_credential,
-					    state, created_at, updated_at)
-					 VALUES (?, 'issue_done', ?, ?, ?, NULL, ?, ?, 'pending',
-					         datetime('now'), datetime('now'))`,
-					[
-						intentId,
-						input.projectName,
-						row.execution_id,
-						input.canonicalIssueId,
-						row.lifecycle_revision,
-						input.authorityCredential,
-					],
-				);
-				const intent = this.getReceiptSettlementIntent(intentId);
-				if (intent) intents.push(intent);
-			}
-		});
-		return intents;
-	}
-
-	/** FLY-1448 E1: persist PR-MERGED authority separately from issue-Done. */
-	ensurePrMergedSettlementIntents(input: {
-		projectName: string;
-		canonicalIssueId: string;
-		issueAliases: readonly string[];
-		prNumber: number;
-		authorityCredential: string;
-	}): ReceiptSettlementIntent[] {
-		const intents: ReceiptSettlementIntent[] = [];
-		this.db.transaction(() => {
-			const rows = this.getSessionsForIssueAliases([
-				...new Set([
-					input.canonicalIssueId,
-					...input.issueAliases.filter(Boolean),
-				]),
-			]).filter(
-				(row) =>
-					row.project_name === input.projectName &&
-					this.getSession(row.execution_id)?.pr_number === input.prNumber,
-			);
-			const credentialHash = createHash("sha256")
-				.update(input.authorityCredential)
-				.digest("hex");
-			for (const row of rows) {
-				const intentId = `pr_merged:${input.projectName}:${input.prNumber}:${row.execution_id}:${credentialHash}`;
-				this.db.run(
-					`INSERT OR IGNORE INTO receipt_settlement_intent
-					   (intent_id, authority_kind, project_name, execution_id, issue_id,
-					    terminal_lifecycle_id, lifecycle_revision, authority_credential,
-					    state, created_at, updated_at)
-					 VALUES (?, 'pr_merged', ?, ?, ?, NULL, ?, ?, 'pending',
-					         datetime('now'), datetime('now'))`,
-					[
-						intentId,
-						input.projectName,
-						row.execution_id,
-						input.canonicalIssueId,
-						row.lifecycle_revision,
-						input.authorityCredential,
-					],
-				);
-				const intent = this.getReceiptSettlementIntent(intentId);
-				if (intent) intents.push(intent);
-			}
-		});
-		return intents;
-	}
-
-	getReceiptSettlementIntent(
-		intentId: string,
-	): ReceiptSettlementIntent | undefined {
-		const row = this.workflowSelectAll(
-			"SELECT * FROM receipt_settlement_intent WHERE intent_id = ?",
-			[intentId],
-		)[0];
-		return row ? this.receiptSettlementIntentFromRow(row) : undefined;
-	}
-
-	listReceiptSettlementIntents(
-		states?: readonly ReceiptSettlementIntent["state"][],
-	): ReceiptSettlementIntent[] {
-		if (states?.length === 0) return [];
-		const rows = states
-			? this.workflowSelectAll(
-					`SELECT * FROM receipt_settlement_intent
-					  WHERE state IN (${states.map(() => "?").join(",")})
-					  ORDER BY created_at, intent_id`,
-					[...states],
-				)
-			: this.workflowSelectAll(
-					"SELECT * FROM receipt_settlement_intent ORDER BY created_at, intent_id",
-					[],
-				);
-		return rows.map((row) => this.receiptSettlementIntentFromRow(row));
-	}
-
-	claimTerminalSettlementIntent(
-		intentId: string,
-		terminalLifecycleId: string,
-	): ReceiptSettlementIntent | undefined {
-		let result: ReceiptSettlementIntent | undefined;
-		this.db.transaction(() => {
-			const intent = this.getReceiptSettlementIntent(intentId);
-			if (
-				!intent ||
-				intent.authority_kind !== "session_terminal" ||
-				intent.terminal_lifecycle_id !== terminalLifecycleId
-			) {
-				return;
-			}
-			if (intent.state === "applying" && intent.claim_token) {
-				result = intent;
-				return;
-			}
-			if (intent.state !== "pending" || !intent.execution_id) return;
-			const session = this.workflowSelectAll(
-				`SELECT status, terminal_lifecycle_id
-				   FROM sessions WHERE execution_id = ?`,
-				[intent.execution_id],
-			)[0];
-			if (
-				!session ||
-				!isOperationalTerminalStatus(session.status as string) ||
-				session.terminal_lifecycle_id !== terminalLifecycleId
-			) {
-				this.db.run(
-					`UPDATE receipt_settlement_intent
-					    SET state = 'fenced', updated_at = datetime('now'),
-					        last_error = 'terminal_lifecycle_fence_mismatch'
-					  WHERE intent_id = ? AND state = 'pending'`,
-					[intentId],
-				);
-				return;
-			}
-			const claimToken = randomUUID();
-			this.db.run(
-				`UPDATE receipt_settlement_intent
-				    SET state = 'applying', claim_token = ?,
-				        updated_at = datetime('now'), last_error = NULL
-				  WHERE intent_id = ? AND state = 'pending'`,
-				[claimToken, intentId],
-			);
-			if (this.db.getRowsModified() === 1) {
-				result = this.getReceiptSettlementIntent(intentId);
-			}
-		});
-		return result;
-	}
-
-	/**
-	 * Claim an issue-authority intent after the caller has freshly revalidated
-	 * Linear. Session status is deliberately not a guard: a Done issue may still
-	 * own a running runner, which is the debt this authority kind exists to clear.
-	 */
-	claimIssueDoneSettlementIntent(
-		intentId: string,
-		authorityCredential: string,
-	): ReceiptSettlementIntent | undefined {
-		let result: ReceiptSettlementIntent | undefined;
-		this.db.transaction(() => {
-			const intent = this.getReceiptSettlementIntent(intentId);
-			if (
-				!intent ||
-				intent.authority_kind !== "issue_done" ||
-				intent.authority_credential !== authorityCredential
-			) {
-				return;
-			}
-			if (intent.state === "applying" && intent.claim_token) {
-				result = intent;
-				return;
-			}
-			if (intent.state !== "pending" || !intent.execution_id) return;
-			const claimToken = randomUUID();
-			this.db.run(
-				`UPDATE receipt_settlement_intent
-				    SET state = 'applying', claim_token = ?,
-				        updated_at = datetime('now'), last_error = NULL
-				  WHERE intent_id = ? AND state = 'pending'
-				    AND authority_kind = 'issue_done'
-				    AND authority_credential = ?`,
-				[claimToken, intentId, authorityCredential],
-			);
-			if (this.db.getRowsModified() === 1) {
-				result = this.getReceiptSettlementIntent(intentId);
-			}
-		});
-		return result;
-	}
-
-	claimPrMergedSettlementIntent(
-		intentId: string,
-		authorityCredential: string,
-	): ReceiptSettlementIntent | undefined {
-		let result: ReceiptSettlementIntent | undefined;
-		this.db.transaction(() => {
-			const intent = this.getReceiptSettlementIntent(intentId);
-			if (
-				!intent ||
-				intent.authority_kind !== "pr_merged" ||
-				intent.authority_credential !== authorityCredential
-			) {
-				return;
-			}
-			if (intent.state === "applying" && intent.claim_token) {
-				result = intent;
-				return;
-			}
-			if (intent.state !== "pending" || !intent.execution_id) return;
-			const claimToken = randomUUID();
-			this.db.run(
-				`UPDATE receipt_settlement_intent
-				    SET state = 'applying', claim_token = ?,
-				        updated_at = datetime('now'), last_error = NULL
-				  WHERE intent_id = ? AND state = 'pending'
-				    AND authority_kind = 'pr_merged'
-				    AND authority_credential = ?`,
-				[claimToken, intentId, authorityCredential],
-			);
-			if (this.db.getRowsModified() === 1) {
-				result = this.getReceiptSettlementIntent(intentId);
-			}
-		});
-		return result;
-	}
-
-	fenceReceiptSettlementIntent(intentId: string, reason: string): boolean {
-		this.db.run(
-			`UPDATE receipt_settlement_intent
-			    SET state = 'fenced', updated_at = datetime('now'),
-			        last_error = ?
-			  WHERE intent_id = ? AND state IN ('pending','applying')`,
-			[reason.slice(0, 500), intentId],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	/**
-	 * A transient external-authority lookup is not negative authority. Release
-	 * any in-flight claim back to pending while preserving the durable error so
-	 * the same credential can be retried on the next convergence pass.
-	 */
-	retryReceiptSettlementIntent(intentId: string, reason: string): boolean {
-		this.db.run(
-			`UPDATE receipt_settlement_intent
-			    SET state = 'pending', claim_token = NULL,
-			        updated_at = datetime('now'), last_error = ?
-			  WHERE intent_id = ? AND state IN ('pending','applying')`,
-			[reason.slice(0, 500), intentId],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	completeReceiptSettlementIntent(
-		intentId: string,
-		claimToken: string,
-	): boolean {
-		this.db.run(
-			`UPDATE receipt_settlement_intent
-			    SET state = 'completed', updated_at = datetime('now'),
-			        last_error = NULL
-			  WHERE intent_id = ? AND state = 'applying' AND claim_token = ?`,
-			[intentId, claimToken],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	recordReceiptSettlementIntentError(
-		intentId: string,
-		claimToken: string,
-		error: string,
-	): boolean {
-		this.db.run(
-			`UPDATE receipt_settlement_intent
-			    SET last_error = ?, updated_at = datetime('now')
-			  WHERE intent_id = ? AND state = 'applying' AND claim_token = ?`,
-			[error.slice(0, 500), intentId, claimToken],
-		);
-		return this.db.getRowsModified() === 1;
-	}
 
 	/**
 	 * Persist a status change that has already been validated by FSM.
@@ -8967,11 +8502,12 @@ export class StateStore {
 				thread_id: string;
 				channel_id: string;
 				issue_id: string;
+				lead_id: string;
 				session_role: ChatThreadRole;
 		  }
 		| undefined {
 		const mainStmt = this.db.prepare(
-			"SELECT thread_id, channel_id, issue_id FROM chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
+			"SELECT thread_id, channel_id, issue_id, lead_id FROM chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
 		);
 		mainStmt.bind([threadId]);
 		if (mainStmt.step()) {
@@ -8981,12 +8517,13 @@ export class StateStore {
 				thread_id: row.thread_id as string,
 				channel_id: row.channel_id as string,
 				issue_id: row.issue_id as string,
+				lead_id: row.lead_id as string,
 				session_role: "main",
 			};
 		}
 		mainStmt.free();
 		const phaseStmt = this.db.prepare(
-			"SELECT thread_id, channel_id, issue_id, session_role FROM phase_chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
+			"SELECT thread_id, channel_id, issue_id, lead_id, session_role FROM phase_chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
 		);
 		phaseStmt.bind([threadId]);
 		if (phaseStmt.step()) {
@@ -8996,6 +8533,7 @@ export class StateStore {
 				thread_id: row.thread_id as string,
 				channel_id: row.channel_id as string,
 				issue_id: row.issue_id as string,
+				lead_id: row.lead_id as string,
 				session_role: normalizeChatThreadRole(row.session_role as string),
 			};
 		}

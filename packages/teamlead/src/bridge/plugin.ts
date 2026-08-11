@@ -288,6 +288,7 @@ import {
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
+import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import {
 	emitFounderStuckNotification,
@@ -522,7 +523,7 @@ import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
 } from "./terminal-commdb-sync.js";
-import { TerminalReceiptSettlementProjector } from "./terminal-receipt-settlement.js";
+import { TerminalGateRetirement } from "./terminal-gate-retirement.js";
 import {
 	createTerminalArchiveEnqueueBuffer,
 	isRetryableOutcome,
@@ -2288,6 +2289,26 @@ export function createBridgeApp(
 			);
 		}
 	}
+
+	app.use(
+		"/api/founder-routing/runner-response",
+		config.apiToken
+			? tokenAuthMiddleware(config.apiToken)
+			: (((_req, res) => {
+					res.status(503).json({
+						error:
+							"founder routing response endpoint requires TEAMLEAD_API_TOKEN",
+					});
+				}) as express.RequestHandler),
+		createFounderRoutingResponseRouter({
+			getThreadById: (threadId) => store.getChatThreadByThreadId(threadId),
+			getSessionsByIssue: (issueId) => store.getSessionsByIssue(issueId),
+			commDbPathForProject,
+			logger: {
+				warn: (message) => console.warn(message),
+			},
+		}),
+	);
 
 	// GEO-270: Close stale tmux session (resource cleanup, no status change)
 	// FLY-1373 doorbell: a best-effort latency hint only. comm.db remains the
@@ -6551,11 +6572,11 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1448: populated once receipt infrastructure is assembled below. The
+	// FLY-1448: populated once gate-retirement infrastructure is assembled below. The
 	// done-thread scheduler starts with a delay, and a defensive absent holder
-	// simply defers receipt settlement to its next fresh-Linear pass.
-	const terminalReceiptSettlementHolder: {
-		current?: TerminalReceiptSettlementProjector;
+	// simply defers gate retirement to its next fresh-Linear pass.
+	const terminalGateRetirementHolder: {
+		current?: TerminalGateRetirement;
 	} = {};
 
 	// FLY-1165: done-thread reconcile — boot pass + periodic tick. The
@@ -6599,8 +6620,8 @@ export async function startBridge(
 						// Codex R2#5: D's fresh-Linear authority (reopen wins).
 						freshAuthority: input.freshAuthority,
 					}),
-				settleIssueReceipts: (input) =>
-					terminalReceiptSettlementHolder.current?.settleIssueDone({
+				retireIssueGates: (input) =>
+					terminalGateRetirementHolder.current?.retireIssueDone({
 						projectName: input.projectName,
 						canonicalIssueId: input.canonicalIssueId,
 						issueAliases: input.issueAliases,
@@ -7055,8 +7076,8 @@ export async function startBridge(
 		// FLY-1204: external merge is a real ship path — reclaim the parked
 		// three-stage phase sessions here too (shared finalizer, same as run-infra).
 		finalizeThreeStagePhases,
-		settleMergedReceipts: (input) =>
-			terminalReceiptSettlementHolder.current?.settlePrMerged({
+		retireMergedGates: (input) =>
+			terminalGateRetirementHolder.current?.retirePrMerged({
 				projectName: input.projectName,
 				canonicalIssueId: input.canonicalIssueId,
 				issueAliases: input.issueAliases,
@@ -7213,12 +7234,12 @@ export async function startBridge(
 			landOperationSweepRunning = false;
 		}
 	};
-	const terminalReceiptSettlement = new TerminalReceiptSettlementProjector({
+	const terminalGateRetirement = new TerminalGateRetirement({
 		store,
 		projectNames: projects.map((project) => project.projectName),
 		commDbPathForProject,
 	});
-	terminalReceiptSettlementHolder.current = terminalReceiptSettlement;
+	terminalGateRetirementHolder.current = terminalGateRetirement;
 	const founderDecisionConvergenceTick = () =>
 		runFounderDecisionConvergencePass({
 			store,
@@ -7308,7 +7329,7 @@ export async function startBridge(
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,
 			});
-			await terminalReceiptSettlement.pass();
+			await terminalGateRetirement.pass();
 		},
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();

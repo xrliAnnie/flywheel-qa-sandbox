@@ -69,7 +69,6 @@ export class ExternalReceiptSaga {
 	}
 
 	handle(messageId: string, journalEntryId: string): void {
-		const receiptId = this.receiptId(messageId);
 		const accepted = this.options.journal.getByIdempotencyKey(messageId);
 		if (!accepted) {
 			throw new Error(
@@ -81,20 +80,6 @@ export class ExternalReceiptSaga {
 				`external receipt journal mapping mismatch for ${messageId}: ${accepted.id}`,
 			);
 		}
-		this.options.queue.settle({
-			messageOrDeliveryId: receiptId,
-			event: "processed",
-			now: this.now(),
-			evidence: {
-				v: 1,
-				kind: "journal_outbound",
-				ref: journalEntryId,
-				actor: this.options.leadId,
-				actor_kind: "lead",
-				fence: { leadId: this.options.leadId },
-				basis: ["journal_inbound_turn_outbound"],
-			},
-		});
 	}
 
 	reconcile(input: {

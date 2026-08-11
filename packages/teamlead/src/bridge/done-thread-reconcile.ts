@@ -188,11 +188,11 @@ export interface DoneThreadReconcileDeps {
 	}) => Promise<{ nodes: unknown[]; outcome: string } | undefined>;
 	/**
 	 * FLY-1448 E1: fresh Linear Done/Canceled is independent authority for
-	 * receipt settlement, including running sessions and issues without a ship
-	 * gate. The implementation must call `revalidate` before every irreversible
-	 * mutation; reopen/unknown wins.
+	 * gate retirement, including running sessions and issues without a ship gate.
+	 * The implementation must call `revalidate` before every irreversible mutation;
+	 * reopen/unknown wins.
 	 */
-	settleIssueReceipts?: (input: {
+	retireIssueGates?: (input: {
 		projectName: string;
 		canonicalIssueId: string;
 		issueAliases: string[];
@@ -465,9 +465,9 @@ export async function reconcileDoneThreads(
 					result.skippedNotDone++;
 					continue;
 				}
-				if (obsProject && deps.settleIssueReceipts && !dryRun) {
+				if (obsProject && deps.retireIssueGates && !dryRun) {
 					try {
-						await deps.settleIssueReceipts({
+						await deps.retireIssueGates({
 							projectName: obsProject,
 							canonicalIssueId: linear.id,
 							issueAliases: aliasKeys,
@@ -480,7 +480,7 @@ export async function reconcileDoneThreads(
 					} catch (err) {
 						result.failed++;
 						log(
-							`${thread.issue_id}: issue receipt settlement failed: ${err instanceof Error ? err.message : String(err)}`,
+							`${thread.issue_id}: issue gate retirement failed: ${err instanceof Error ? err.message : String(err)}`,
 						);
 					}
 				}
@@ -857,8 +857,8 @@ export async function reconcileDoneThreads(
 							[issueKey, linear.id, linear.identifier].filter(Boolean),
 						),
 					];
-					if (deps.settleIssueReceipts && !dryRun) {
-						await deps.settleIssueReceipts({
+					if (deps.retireIssueGates && !dryRun) {
+						await deps.retireIssueGates({
 							projectName: residueProject,
 							canonicalIssueId: linear.id,
 							issueAliases: residueAliases,

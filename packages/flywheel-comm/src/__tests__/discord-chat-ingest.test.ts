@@ -2,10 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-	beginChatReceipt,
-	settleChatReceipt,
-} from "../commands/chat-receipt.js";
+import { CommDB } from "../db.js";
 import {
 	discordBatchPartitionKey,
 	ingestDiscordChat,
@@ -56,14 +53,15 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(row.type).toBe("discord_chat");
 		expect(row.carrier).toBe("inbox");
 		expect(row.priority).toBe(1);
+		expect(row.relay_state).toBe("terminal_disposed");
 		expect(row.collapse_key).toBeNull();
-		expect(row.content).toContain("[discord-chat-receipt v1]");
+		expect(row.content).toContain("[discord-chat-delivery v1]");
 		expect(row.content).toContain('"replyChannelId":"123456789012345678"');
 		expect(row.delivery_content).toContain(
-			`receipt_id="chat:${args.leadId}:${args.messageId}"`,
+			`delivery_id="chat:${args.leadId}:${args.messageId}"`,
 		);
 		expect(row.delivery_content).toContain('source="plugin:discord:discord"');
-		expect(row.delivery_content).not.toContain("[discord-chat-receipt v1]");
+		expect(row.delivery_content).not.toContain("[discord-chat-delivery v1]");
 		expect(row.delivery_content).not.toContain("</channel>\nworld");
 		expect(row.delivery_content).toContain(
 			'the new flow doesn\'t work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out',
@@ -85,25 +83,21 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		founderQueue.close();
 	});
 
-	it("makes OFF replays and late reply settlement respect an inbox winner", () => {
+	it("uses an existing CommDB connection without racing itself", () => {
 		const { dbPath, args } = fixture();
-		ingestDiscordChat({ dbPath, ...args });
-		expect(beginChatReceipt({ dbPath, ...args, priority: 1 })).toMatchObject({
-			lane: "active_inbox",
+		const db = new CommDB(dbPath);
+		expect(db.ingestDiscordChat(args)).toMatchObject({
+			lane: "inserted_inbox",
 		});
-		expect(
-			settleChatReceipt({
-				dbPath,
-				leadId: args.leadId,
-				messageId: args.messageId,
-				replyId: "423456789012345678",
-				now: "2026-08-10T12:01:00.000Z",
-			}),
-		).toMatchObject({ outcome: "ignored_inbox" });
+		expect(db.ingestDiscordChat(args)).toMatchObject({ lane: "active_inbox" });
+		db.close();
 		const queue = new MailboxQueue(dbPath);
 		expect(
-			queue.getSettlement(`chat:${args.leadId}:${args.messageId}`),
-		).toBeUndefined();
+			queue.getById(`chat:${args.leadId}:${args.messageId}`),
+		).toMatchObject({
+			carrier: "inbox",
+			relay_state: "terminal_disposed",
+		});
 		queue.close();
 	});
 

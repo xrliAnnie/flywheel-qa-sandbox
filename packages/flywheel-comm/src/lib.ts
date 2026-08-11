@@ -63,12 +63,9 @@ export type {
 	MailboxPriority,
 	MailboxRecipientKind,
 	MailboxRow,
-	MailboxSettlement,
 	MailboxState,
-	ProcessedEvidenceV1,
 } from "./mailbox-queue.js";
 export {
-	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	MailboxQueue,

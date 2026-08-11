@@ -436,40 +436,6 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
-	it("uses one settlement slot for processed and disposed evidence", () => {
-		const queue = new MailboxQueue(":memory:");
-		try {
-			enqueueLead(queue, "q1");
-			const evidence = { actor: "lead-a", ref: "response-1" };
-			expect(
-				queue.settle({
-					messageOrDeliveryId: "q1",
-					event: "processed",
-					now: NOW,
-					evidence,
-				}),
-			).toBe("inserted");
-			expect(
-				queue.settle({
-					messageOrDeliveryId: "q1",
-					event: "processed",
-					now: NOW,
-					evidence,
-				}),
-			).toBe("idempotent");
-			expect(() =>
-				queue.settle({
-					messageOrDeliveryId: "q1",
-					event: "disposed",
-					now: NOW,
-					evidence: { actor: "lead-a", reason: "no_action" },
-				}),
-			).toThrow(/settlement conflict/);
-		} finally {
-			queue.close();
-		}
-	});
-
 	it("claims each Runner row once and leaves successful doorbells LEASED for pull ACK", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {

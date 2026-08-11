@@ -47,7 +47,7 @@ describe("StateStore terminal lifecycle identity", () => {
 		expect(second).not.toBe(first);
 	});
 
-	it("keeps one terminal lifecycle and settlement intent across recoverable terminal states", async () => {
+	it("keeps one terminal lifecycle across recoverable terminal states", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		const fields = { issue_id: "FLY-1448", project_name: "flywheel" };
@@ -64,15 +64,6 @@ describe("StateStore terminal lifecycle identity", () => {
 				lifecycleId,
 			);
 		}
-
-		expect(store.listReceiptSettlementIntents()).toEqual([
-			expect.objectContaining({
-				authority_kind: "session_terminal",
-				terminal_lifecycle_id: lifecycleId,
-				state: "pending",
-				last_error: null,
-			}),
-		]);
 	});
 
 	it("CAS repair mints once only for the exact observed terminal revision", async () => {
@@ -128,7 +119,10 @@ describe("StateStore terminal lifecycle identity", () => {
 			initial.close();
 
 			const raw = new BetterSqlite3(dbPath);
-			raw.exec("ALTER TABLE sessions DROP COLUMN terminal_lifecycle_id");
+			raw.exec(`
+				ALTER TABLE sessions DROP COLUMN terminal_lifecycle_id;
+				CREATE TABLE receipt_settlement_intent (intent_id TEXT PRIMARY KEY);
+			`);
 			raw.close();
 
 			const migrated = await StateStore.create(dbPath);
@@ -137,6 +131,15 @@ describe("StateStore terminal lifecycle identity", () => {
 			expect(first).toMatch(/^[0-9a-f-]{36}$/);
 			migrated.close();
 			stores.splice(stores.indexOf(migrated), 1);
+			const verify = new BetterSqlite3(dbPath, { readonly: true });
+			expect(
+				verify
+					.prepare(
+						"SELECT 1 FROM sqlite_master WHERE name='receipt_settlement_intent'",
+					)
+					.get(),
+			).toBeUndefined();
+			verify.close();
 
 			const reopened = await StateStore.create(dbPath);
 			stores.push(reopened);

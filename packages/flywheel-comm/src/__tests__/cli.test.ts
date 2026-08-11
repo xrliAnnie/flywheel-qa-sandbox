@@ -74,6 +74,18 @@ describe("CLI", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	function bindDefaultRunner(): void {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"runner",
+			"runner",
+			"test",
+			"issue-runner",
+			"product-lead",
+		);
+		db.close();
+	}
+
 	describe("ask", () => {
 		it("should output question ID", () => {
 			const result = runCli([
@@ -168,6 +180,7 @@ globalThis.fetch = async () => {
 		});
 
 		it("should output answer when responded", () => {
+			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",
@@ -204,6 +217,7 @@ globalThis.fetch = async () => {
 		});
 
 		it("should output JSON with --json", () => {
+			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",
@@ -278,6 +292,7 @@ globalThis.fetch = async () => {
 
 	describe("respond", () => {
 		it("should confirm response", () => {
+			bindDefaultRunner();
 			const qId = runCli([
 				"ask",
 				"--lead",

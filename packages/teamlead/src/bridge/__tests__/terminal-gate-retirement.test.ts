@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { materializeWorkflowGateHolder } from "../gate-materializer.js";
-import { TerminalReceiptSettlementProjector } from "../terminal-receipt-settlement.js";
+import { TerminalGateRetirement } from "../terminal-gate-retirement.js";
 
 const roots: string[] = [];
 const WORKFLOW_ON = {
@@ -22,7 +22,7 @@ afterEach(() => {
 	}
 });
 
-describe("terminal receipt settlement", () => {
+describe("terminal gate retirement", () => {
 	it("keeps the authoritative engine gate answerable after its source session ends", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-gate-"));
 		roots.push(root);
@@ -180,7 +180,7 @@ describe("terminal receipt settlement", () => {
 				questionId: holder.question_id,
 			}),
 		).toEqual({ allow: true, reason: "holder_authoritative" });
-		await new TerminalReceiptSettlementProjector({
+		await new TerminalGateRetirement({
 			store,
 			projectNames: ["flywheel"],
 			commDbPathForProject: () => commPath,

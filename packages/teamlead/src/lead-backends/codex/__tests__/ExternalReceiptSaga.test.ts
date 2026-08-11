@@ -54,7 +54,7 @@ describe("ExternalReceiptSaga", () => {
 		});
 	});
 
-	it("settles only from the owning Lead journal outbound mapping", () => {
+	it("validates the owning Lead journal outbound mapping without a second ledger", () => {
 		const receipts = queue();
 		const mappings = new Map<string, { id: string }>();
 		const saga = new ExternalReceiptSaga({
@@ -76,24 +76,16 @@ describe("ExternalReceiptSaga", () => {
 		expect(() => saga.handle("discord-2", "journal-entry-2")).toThrow(
 			/journal mapping is unavailable/,
 		);
-		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toBeUndefined();
+		expect(receipts.getById("xdept:lead-a:discord-2")?.state).toBe("ACKED");
 		mappings.set("discord-2", { id: "journal-entry-other" });
 		expect(() => saga.handle("discord-2", "journal-entry-2")).toThrow(
 			/journal mapping mismatch/,
 		);
-		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toBeUndefined();
+		expect(receipts.getById("xdept:lead-a:discord-2")?.state).toBe("ACKED");
 
 		mappings.set("discord-2", { id: "journal-entry-2" });
 		saga.handle("discord-2", "journal-entry-2");
-		expect(receipts.getSettlement("xdept:lead-a:discord-2")).toMatchObject({
-			event: "processed",
-			at: "2026-07-21T12:00:00.000Z",
-			evidence: {
-				kind: "journal_outbound",
-				actor: "lead-a",
-				ref: "journal-entry-2",
-			},
-		});
+		expect(receipts.getById("xdept:lead-a:discord-2")?.state).toBe("ACKED");
 	});
 
 	it("reconciles accepted, proven-absent, and unreadable journal branches", () => {

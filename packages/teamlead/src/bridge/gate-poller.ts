@@ -3174,11 +3174,11 @@ export class GatePoller {
 				founder_message_id: msgId,
 				comm_db_path: commDbPath,
 				action:
-					`Handle this founder message as Lead. Relay it with ` +
-					`flywheel-comm route-founder-reply --msg ${msgId} --lead ${lead.agentId} ` +
-					`--db ${commDbPath} --to-question <qid>. If no runner action is needed, ` +
-					`close the handled receipt with flywheel-comm route-founder-reply --msg ${msgId} ` +
-					`--lead ${lead.agentId} --db ${commDbPath} --no-route --reason lead_handled.`,
+					`Handle this founder message as Lead. If it answers a Runner question, route it with ` +
+					`flywheel-comm respond <qid> "<founder-answer>" --lead ${lead.agentId} ` +
+					`--db ${commDbPath} --source-thread ${String(payload.threadId ?? "")} ` +
+					`--bridge-url "$BRIDGE_URL". If no Runner action is needed, close the ` +
+					`corresponding FLY-1575 task as no_action with a reason.`,
 			};
 			const seq = this.config.store.appendLeadEvent(
 				lead.agentId,

@@ -19,6 +19,7 @@ describe("respond canonical mailbox write", () => {
 		const dbPath = join(root, "comm.db");
 		const markerDir = join(root, "markers");
 		const db = new CommDB(dbPath);
+		db.registerSession("exec-1", "runner", "flywheel", "issue-1", "lead-a");
 		const questionId = db.insertQuestion("exec-1", "lead-a", "question");
 		db.close();
 		writeAskMarker(markerDir, {

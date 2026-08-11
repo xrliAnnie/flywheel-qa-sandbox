@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { founderMessageRootId } from "flywheel-comm/founder-reply-routing";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryInboundCursorStore } from "../../lead-backends/codex/InboundCursorStore.js";
@@ -14,6 +13,7 @@ import {
 } from "../founder-reply-deliverer.js";
 
 const OWNER = "123456789012345678";
+const THREAD = "223456789012345678";
 const DISCORD_EPOCH = 1_420_070_400_000;
 
 function snowflakeAt(ms: number): string {
@@ -39,7 +39,7 @@ function ctx(dbPath: string): FounderReplyThreadCtx {
 	return {
 		issueId: "FLY-1392",
 		projectName: "flywheel",
-		threadId: "T1",
+		threadId: THREAD,
 		botToken: "bot",
 		ownerUserId: OWNER,
 		graceMs: 10 * 60_000,
@@ -76,7 +76,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		dbPath = join(dir, "comm.db");
 		new CommDB(dbPath).close();
 		cursor = new InMemoryInboundCursorStore();
-		cursor.save("T1", snowflakeAt(Date.now() - 2 * 60 * 60_000));
+		cursor.save(THREAD, snowflakeAt(Date.now() - 2 * 60 * 60_000));
 	});
 
 	afterEach(() => {
@@ -139,19 +139,21 @@ describe("FLY-1392 v2 founder ingress", () => {
 		expect(handoff).toHaveBeenCalledOnce();
 		expect(handoff.mock.calls[0]?.[1]).toEqual({
 			issueId: "FLY-1392",
-			threadId: "T1",
+			threadId: THREAD,
 			msgId: msg.id,
 			answer: msg.content,
 			commDbPath: dbPath,
 		});
 		const queue = new MailboxQueue(dbPath);
-		const row = queue.getById(founderMessageRootId("test-lead", msg.id));
+		const row = queue.getById(`chat:test-lead:${msg.id}`);
 		expect(row).toMatchObject({
 			to_agent: "test-lead",
-			ref_id: msg.id,
+			type: "discord_chat",
+			relay_state: "terminal_disposed",
 			carrier: "inbox",
+			priority: 1,
 		});
-		expect(JSON.parse(row?.content ?? "{}").answer).toBe(msg.content);
+		expect(row?.delivery_content).toContain(msg.content);
 		queue.close();
 	});
 
@@ -171,7 +173,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		});
 
 		expect(handoff).toHaveBeenCalledOnce();
-		expect(cursor.load("T1")).toBe(msg.id);
+		expect(cursor.load(THREAD)).toBe(msg.id);
 	});
 
 	it("ignores non-founder and bot-authored traffic", async () => {
@@ -189,7 +191,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		});
 
 		expect(handoff).not.toHaveBeenCalled();
-		expect(cursor.load("T1")).toBe(latest);
+		expect(cursor.load(THREAD)).toBe(latest);
 	});
 
 	it("pins the cursor when the durable Lead handoff is absent or fails", async () => {
@@ -198,7 +200,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			content: "do not drop me",
 			author: { id: OWNER },
 		};
-		const before = cursor.load("T1");
+		const before = cursor.load(THREAD);
 
 		const missing = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
 			store: store(),
@@ -209,7 +211,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			result: "process_failed",
 			stage: "lead_handoff_missing",
 		});
-		expect(cursor.load("T1")).toBe(before);
+		expect(cursor.load(THREAD)).toBe(before);
 
 		const failed = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
 			store: store(),
@@ -221,7 +223,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 			result: "process_failed",
 			stage: "lead_handoff_failed",
 		});
-		expect(cursor.load("T1")).toBe(before);
+		expect(cursor.load(THREAD)).toBe(before);
 	});
 
 	it("retries an idempotent canonical row and advances after handoff recovery", async () => {
@@ -247,16 +249,14 @@ describe("FLY-1392 v2 founder ingress", () => {
 		expect(
 			(await emitFounderReplyDeliveryForThread(ctx(dbPath), [], deps)).result,
 		).toBe("advanced");
-		expect(cursor.load("T1")).toBe(msg.id);
+		expect(cursor.load(THREAD)).toBe(msg.id);
 		const queue = new MailboxQueue(dbPath);
-		expect(
-			queue.getById(founderMessageRootId("test-lead", msg.id)),
-		).toBeDefined();
+		expect(queue.getById(`chat:test-lead:${msg.id}`)).toBeDefined();
 		queue.close();
 	});
 
 	it("does not advance on a Discord read failure", async () => {
-		const before = cursor.load("T1");
+		const before = cursor.load(THREAD);
 		const outcome = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
 			store: store(),
 			fetchImpl: discordGet([], false),
@@ -265,7 +265,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		});
 
 		expect(outcome.result).toBe("read_failed");
-		expect(cursor.load("T1")).toBe(before);
+		expect(cursor.load(THREAD)).toBe(before);
 	});
 
 	it("bootstraps an unseen thread at its current head without replaying history", async () => {
@@ -280,7 +280,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		});
 
 		expect(outcome.result).toBe("noop");
-		expect(freshCursor.load("T1")).toBe(head);
+		expect(freshCursor.load(THREAD)).toBe(head);
 		expect(handoff).not.toHaveBeenCalled();
 	});
 });

@@ -188,11 +188,11 @@ export interface ExternalMergeReconcileDeps {
 		projectName: string,
 	) => Promise<void>;
 	/**
-	 * FLY-1448 E1: settle receipt debt using this reconciler's independent
+	 * FLY-1448 E1: retire stale gates using this reconciler's independent
 	 * GitHub authority. The sink must invoke `revalidate` before every
 	 * irreversible mutation; only a fresh MERGED probe authorizes work.
 	 */
-	settleMergedReceipts?: (input: {
+	retireMergedGates?: (input: {
 		projectName: string;
 		canonicalIssueId: string;
 		issueAliases: string[];
@@ -874,7 +874,7 @@ export function createExternalMergeReconciler(
 							continue;
 						}
 						negativeMergeCache.delete(cacheKey);
-						if (deps.settleMergedReceipts) {
+						if (deps.retireMergedGates) {
 							const authorityCredential = `${projectName}:${candidate.prNumber}:${info.mergeCommitOid ?? info.headRefOid ?? "merged"}`;
 							const issueAliases = [
 								...new Set(
@@ -889,7 +889,7 @@ export function createExternalMergeReconciler(
 									].filter((value): value is string => !!value),
 								),
 							];
-							await deps.settleMergedReceipts({
+							await deps.retireMergedGates({
 								projectName,
 								canonicalIssueId: candidate.issueId,
 								issueAliases,

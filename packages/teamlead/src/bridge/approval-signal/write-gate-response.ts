@@ -72,12 +72,11 @@ export interface GateResponseDb {
 		payload: unknown;
 		provenance?: MessageProvenance;
 	}): boolean;
-	trustedFounderGateResponseAndReceipt?(input: {
+	trustedFounderGateResponse?(input: {
 		questionId: string;
 		fromAgent: string;
 		content: string;
 		expectedOwner: string;
-		rootId: string;
 		msgId: string;
 		now: string;
 		approvalSource?: {
@@ -88,8 +87,7 @@ export interface GateResponseDb {
 	}): { responseId: string };
 }
 
-export interface FounderGateReceiptContext {
-	rootId: string;
+export interface FounderGateMessageContext {
 	msgId: string;
 	now: string;
 }
@@ -145,7 +143,7 @@ export interface WriteGateResponseArgs {
 	/** Canonical founder identity used to distinguish trusted approval writers. */
 	founderId?: string;
 	/** FLY-1392: present only for founder thread/card ingress. */
-	founderReceipt?: FounderGateReceiptContext;
+	founderMessage?: FounderGateMessageContext;
 	/** Frozen source metadata for a claims-enrolled workflow run. */
 	founderSource?: {
 		project: string;
@@ -513,27 +511,26 @@ export async function writeGateResponseAndRunPostWrite(
 	const trustedFounderDecision =
 		trustedFounderSourceDecision &&
 		args.db.insertFounderApprovalResponseWithSource !== undefined;
-	const trustedFounderReceipt =
-		args.founderReceipt &&
+	const trustedFounderMessage =
+		args.founderMessage &&
 		isTrustedApprovalAttribution(args.actor, args.founderId) &&
-		args.db.trustedFounderGateResponseAndReceipt !== undefined &&
+		args.db.trustedFounderGateResponse !== undefined &&
 		(!isApproval(args.answer) || founderSource !== undefined);
-	if (trustedFounderReceipt) {
-		const receipt = args.founderReceipt!;
+	if (trustedFounderMessage) {
+		const founderMessage = args.founderMessage!;
 		const source = founderSource;
-		args.db.trustedFounderGateResponseAndReceipt!({
+		args.db.trustedFounderGateResponse!({
 			questionId: args.questionId,
 			fromAgent: args.actor,
 			content: args.answer,
 			expectedOwner: args.executionId,
-			rootId: receipt.rootId,
-			msgId: receipt.msgId,
-			now: receipt.now,
+			msgId: founderMessage.msgId,
+			now: founderMessage.now,
 			...(trustedFounderSourceDecision && source
 				? {
 						approvalSource: {
 							project: source.project,
-							sourceEventId: `${approved ? "founder-approval" : "founder-feedback"}:${args.questionId}:${receipt.msgId}`,
+							sourceEventId: `${approved ? "founder-approval" : "founder-feedback"}:${args.questionId}:${founderMessage.msgId}`,
 							payload: {
 								schema_version: 1,
 								run_id: source.runId,
@@ -550,7 +547,7 @@ export async function writeGateResponseAndRunPostWrite(
 								approved_head: source.approvedHead,
 								classification: source.classification,
 								authority_id: source.authorityId,
-								msg_id: receipt.msgId,
+								msg_id: founderMessage.msgId,
 							},
 						},
 					}

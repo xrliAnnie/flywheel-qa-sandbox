@@ -30,7 +30,6 @@
 		"./sender-ref": "./dist/sender-ref.js",
 		"./lead-inbox-nudge": "./dist/lead-inbox-nudge.js",
 		"./discord-chat-ingest": "./dist/discord-chat-ingest.js",
-		"./founder-reply-routing": "./dist/founder-reply-routing.js",
 		"./approval-intent": "./dist/approval-intent.js",
 		"./design-html-evidence": "./dist/design-html-evidence.js"
 	},
