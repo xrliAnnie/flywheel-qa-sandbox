@@ -4,7 +4,7 @@ Issue: FLY-1645 (https://linear.app/geoforge3d/issue/FLY-1645/消息层重裁-b-
 日期: 2026-08-11
 基于: research.md
 
-**Status**: design review R6 CHANGES_REQUESTED 已全量折入(阻塞项:Bridge founder-thread catch-up 的真实投递载体、closeout archive snapshot 合同;advisory:Bridge outage contract/change matrix);等待 fresh review
+**Status**: design review R7 CHANGES_REQUESTED 已全量折入(阻塞项:closeout 按 carrier 精确切 lane;advisory:S10 same-connection/canonical-envelope contract;R5–R6 findings 已折入);等待 fresh review
 **Scope**: 主仓 `packages/flywheel-comm` + `packages/teamlead` + `packages/config`;第二仓 `claude-plugins-official` fork(`external_plugins/discord`)
 **排期前置**:FLY-1572 重迁已上线(mailbox 产线活跃);**FLY-1575 前置已豁免**(lead-instruction 047a2ee0,2026-08-11:义务账由 1573/1574 新信箱队列接管,task 层验收移交 1575 落地时联合执行,见 §7-V4);legacy 旧流退役走 §5 解锁门(产线 `FLYWHEEL_MAILBOX_DISCORD=1` + 1574 lane 健康流转已实测)
 
@@ -56,7 +56,7 @@ flowchart TB
 | S7 | `enqueue()`(mailbox-queue.ts:392)+ N1 触发器 | 出生规则:`relay_state = type==='question' ? 'open' : 'terminal_disposed'`(显式入参仍优先——迁移 replay 保真);sweep 后安装 N1 schema 触发器(§1)做结构强制。**⚠️ 投影哈希兼容**(Codex R1 #6):enqueue 的 SHA-256 投影含 relay_state 且永久存于 `mailbox_identity.insert_projection_hash`(update guard 禁改)——稳定 ID 生产者(lead-event-queue.ts:22 / ExternalReceiptSaga.begin / 死信告警)的确定性重放会撞旧哈希。补**窄兼容规则**:既有非 question identity 且调用方未显式传 relayState 时,按 `relay_state='open'` 重算逐字节相同才接受旧哈希;其余差异与显式覆写维持 conflict。测试覆盖活/已归档 identity + 升级前铸造的 lead-event 重放 |
 | S9 | FLY-1448 审批路径上的收据根契约(Codex R2 #3):`founder-reply-deliverer.ts` / `founder-ship-approval-factory.ts` / `founder-ship-approval-handler.ts` / `approval-signal/write-gate-response.ts` 贯穿传递 `founderReceipt`/`FounderGateReceiptContext`/`rootId` | 四文件 + 测试全进变更矩阵:替换为**无收据的 founder 决策 source context**(载 `msgId`/`now`;Discord `msgId` 保留——source-event 幂等承重),删 `rootId`;DB 接口/factory/handler/deliverer 一体更新;text/card/JSON 三形态 source-event id 与 attribution 行为逐字节保留 |
 | S8 | gate-poller.ts:3177-3182 handoff 文本 + lead-rules-base/discord-reply-contract.md:20-45 + plugin 三段 MCP 文案(recorder:238-251)+ **`<channel>` 可见属性**(Codex R1 #9) | 同批改写为纯路由指示(转交 gate 用 `respond`;无收据关闭义务);`meta.receipt_id` 停发与文案停示配对落地;主仓 `discord-chat-ingest.ts:53` 渲染进投递 XML 的 `receipt_id` 属性更名 `delivery_id`(内部 `chat:` dedupe 公式保留为传输身份),`scripts/audit-discord-mailbox-ingest.sh:29` 断言同步 |
-| S10 | Bridge founder-thread REST catch-up 的 canonical transport(R6 HIGH) | `founder_msg:` hub root 不能直接删而不补 transport:`emitFounderReplyDeliveryForThread` 对每条 founder 消息在任何 cursor advance / dead-letter skip / approval classification **之前**,调用与 plugin 共用的 `ingestDiscordChat` 写同一个 `chat:<lead>:<discord-msg>` inbox identity;ingest 失败→本轮 process_failed + cursor 不前进,成功后才允许后续处置。plugin 与 Bridge 双观察由 `claimDiscordLane` 收敛为一行(active/inserted inbox),Bridge crash-after-ingest-before-cursor-save 的重跑同样幂等。`makeAmbiguousHandoff` 保持 audit-only + doorbell,不伪装成投递行;随后删 `enqueueFounderHubRoot`/settle/root contract。测试:gateway offline 时 REST catch-up 仍入 1573;plugin/Bridge 双入不双投;ingest 失败不越 cursor;crash 窗重跑;direct approval/dead-letter/ambiguous 三分支都先有 canonical chat row;全程零 `founder_msg:` |
+| S10 | Bridge founder-thread REST catch-up 的 canonical transport(R6 HIGH + R7 advisory) | `founder_msg:` hub root 不能直接删而不补 transport:`emitFounderReplyDeliveryForThread` 对每条 founder 消息在任何 cursor advance / dead-letter skip / approval classification **之前**,调用与 plugin 共用的 `ingestDiscordChatOnQueue` 写同一个 `chat:<lead>:<discord-msg>` inbox identity。为避免 Bridge 对同一 shard 另开 connection,`discord-chat-ingest.ts` 抽出接受既有 `MailboxQueue` 的 core;`CommDB.ingestDiscordChat` 用自己的 private better-sqlite3 connection 包装它,CLI/path wrapper 仍自行开关连接。Bridge issue-thread 固定 canonical envelope:`chatId=threadId`,`originChannelId=threadId`,`replyChannelId=threadId`,`replyRoute=undefined`,`msgKind='guild'`,founder priority=0,author/text/attachments/ts 与 Discord raw message逐字段相同;plugin issue-thread 合同测试必须产生同样 route-bearing envelope/delivery_content,first-writer 不改变回复路由。ingest 失败→本轮 process_failed + cursor 不前进,成功后才允许后续处置;plugin 与 Bridge 双观察由 `claimDiscordLane` 收敛为一行(active/inserted inbox),Bridge crash-after-ingest-before-cursor-save 的重跑同样幂等。`makeAmbiguousHandoff` 保持 audit-only + doorbell,不伪装成投递行;随后删 `enqueueFounderHubRoot`/settle/root contract。测试:gateway offline 时 REST catch-up 仍入 1573;plugin/Bridge 两侧 envelope/route 等价且双入不双投;同 connection 无 SQLITE_BUSY 自竞态;ingest 失败不越 cursor;crash 窗重跑;direct approval/dead-letter/ambiguous 三分支都先有 canonical chat row;全程零 `founder_msg:` |
 
 ## 3. 变更清单(按仓/文件)
 
@@ -65,7 +65,7 @@ flowchart TB
 **packages/flywheel-comm**
 | 文件 | 变更 |
 |---|---|
-| mailbox-queue.ts | 删 `settle()`/`getSettlement()`/`MailboxSettlement`/`ProcessedEvidenceV1`+validator;S3 谓词;S7 出生不变式;`claimDiscordLane` 收窄 external 二值(与 plugin 同批);从 `archiveFamily` 抽出 canonical snapshot/GC/identity helper 给 T11 operator archive 复用 |
+| mailbox-queue.ts / discord-chat-ingest.ts | 删 `settle()`/`getSettlement()`/`MailboxSettlement`/`ProcessedEvidenceV1`+validator;S3 谓词;S7 出生不变式;`claimDiscordLane` 收窄 external 二值(与 plugin 同批);从 `archiveFamily` 抽出 canonical snapshot/GC/identity helper 给 T11 operator archive 复用;抽 `ingestDiscordChatOnQueue` 并由 path wrapper + `CommDB` 同连接 wrapper 共用(S10) |
 | mailbox-schema.ts | 删 `mailbox_log_settlement_slot` 索引、`receipt_root_lineage` 表+触发器、`receipt_handle_requests` 表(新库);既有库走 §3.4 迁移;`mailbox_log` 表/触发器/event CHECK **不动**(processed/disposed 保留为历史合法值,不收窄 CHECK——收窄需重建表,零收益) |
 | db.ts | 删 `handleReceipt`/`routeFounderReply`/`enqueueFounderHubRoot`/`settleFounderHubRoot`/`listReceiptRootsForExecution`/`getReceiptSettlementLineage`/`settleReceiptFamilyForTerminalSubject`/`respondAndReceipt`/`supersedeShipGateAndReceiptFamily`/`listChatReceiptPending`/`quarantineChatReceipt`/`TERMINAL_RECEIPT_DISPOSAL_KINDS`+equiv helper;S1/S2 手术;question 域 40+ 位点零接触 |
 | commands/ | 删 handle-receipt.ts、route-founder-reply.ts;chat-receipt.ts 删五个子命令壳,envelope codec(`chatReceiptId`/encode/parse/normalize/`CHAT_RECEIPT_ENVELOPE_PREFIX`)迁至 ingest 侧模块(discord-chat-ingest.ts 或新 chat-envelope.ts),`chat:` id 公式保留作 dedupe 键 |
@@ -135,8 +135,8 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 1. **预检**:记录三条 lane + uuid 杂项的 open/external/死信基数(前后对照留档)。
 2. **S3 前置(external 行收敛真值表,Codex R2 #1——markDead 满足不了后置条件[DEAD 仍匹配集合且对保留谓词可见],故整表不用 markDead)**:
    - `xdept:*`(存活 lane)→ 一行不动;
-   - `chat:*` 全量(ACKED/QUEUED/LEASED/DEAD;settlement 有无均同)→ **一次性 closeout archive**,不伪造 `acked_at`:每条先落 **closeout manifest 记录**(mailbox_log 之外的带校验和清单文件,随 ops 工件归档):{shard,id,原 state/relay 三列快照,disposition,backup checksum};12 条未投递 QUEUED 行的 disposition 三选一 **fail-closed**:matched_1574_delivery(已有对应 1574 identity 投达)/ manually_completed(操作员处理 + 证据引用)/ unresolved——存在 unresolved 时 `--apply` 拒绝执行。resolved manifest 校验完成后,抽取/复用 `MailboxQueue.archiveFamily` 的 snapshot helper:同一 shard 事务内先写 `event='archived'` + **完整 canonical row_json**(含 content_ref archive),再排 `content_ref_gc_outbox`,写 `mailbox_identity.archived_at`,最后删除 mailbox 投影;无法安全 snapshot/排 GC 即 fail-close。`getIdentityCarrier` 因 archived snapshot 仍返回原 `external`,稳定 ID 重放返回 archived;不存在 ACKED+NULL acked_at 永久人口,也不把取证历史押在临时 backup 上;
-   - apply 后**双后置断言**:全局 `carrier='external' AND state<>'ACKED' AND EXISTS settlement` = 0;退役前缀(`chat:`)的非 ACKED 行 = 0(⇒ S3 改谓词后不存在任何对保留调用方[仅 xdept idPrefix]可见的复活行)。
+   - **只选 `id LIKE 'chat:%' AND carrier='external'` 的旧 lane**(ACKED/QUEUED/LEASED/DEAD;settlement 有无均同)→一次性 closeout archive;`chat:` 是新旧 lane 共用的 dedupe identity 公式,**绝不是退役判据**,所有 `carrier='inbox'` 行(包括未投递 1574/S10 行)逐字节排除且不要求 drain。每条旧 external 行先落 **closeout manifest 记录**(mailbox_log 之外的带校验和清单文件,随 ops 工件归档):{shard,id,carrier,原 state/relay 三列快照,disposition,backup checksum};12 条旧 external QUEUED 行的 disposition 三选一 fail-closed:matched_1574_delivery/manually_completed/unresolved,存在 unresolved 时 `--apply` 拒绝。resolved manifest 校验完成后,抽取/复用 `MailboxQueue.archiveFamily` snapshot helper:同一 shard 事务内先写 `event='archived'` + 完整 canonical row_json,再排 content_ref GC,写 identity.archived_at,最后删旧 external 投影;`getIdentityCarrier` 保原 external,稳定 ID 重放返回 archived;
+   - apply 后**双后置断言**:全局 `carrier='external' AND state<>'ACKED' AND EXISTS settlement` = 0;`id LIKE 'chat:%' AND carrier='external'` 活投影 = 0。另有负向守恒断言:`carrier='inbox' AND id LIKE 'chat:%'` 的 id/state/seq/count 前后逐字节相同(⇒ ingest-intent 重启后仍可继续投递,不会被 archived identity 吞掉)。
 3. **义务行终局化**:`relay_state='open' AND type!='question'` → `terminal_disposed` + `resolved_via='fly1645_teardown_final_sweep'`(最后一次 relay 账写入;历史口径自洽)。**前置人工步**:founder_msg/hub-root open 行(个位数)逐条 review,该办的办完/建 task 再扫。
 4. **死信残留 3 条**:按 `dead_reason` + id 前缀(非单一 type)核对后终局化。
 5. **范围**:所有项目 shard 的 comm.db(不只 flywheel);逐库事务 + busy retry + 幂等重放;既有 `mailbox_log` 历史零改写,只 append T11 明列的 archived snapshot + migration marker,绝不新增 processed/disposed。
@@ -152,7 +152,7 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 
 **结构不变式(N1)**
 - T1 出生/迁移规则(R3 #3 定稿口径,替代旧「三列逐列保真」措辞):enqueue 非 question 行 ⇒ `relay_state='terminal_disposed'` 出生,question 行 ⇒ 'open';迁移 = **question 行保留 legacy relay 生命周期,非 question 行 commit 前归一化 `terminal_disposed`**(含 legacy 缺失/open 两形态用例);S7 投影哈希兼容分支同测。
-- T2 一轮模拟 Discord 入站(chat-ingest)+Bridge REST catch-up 双观察⇒ 同一 `chat:` inbox identity、零 external 行、零 `founder_msg:` 行、零 settlement 事件;`open AND type!='question'` 计数=0;catch-up ingest 失败/崩溃重跑不越 cursor。
+- T2 一轮模拟 Discord 入站(chat-ingest)+Bridge REST catch-up 双观察⇒ 同一 `chat:` inbox identity + 等价 route envelope、零 external 行、零 `founder_msg:` 行、零 settlement 事件;`open AND type!='question'` 计数=0;catch-up 同 connection,ingest 失败/崩溃重跑不越 cursor。
 
 **幸存域回归(最重的一半)**
 - T3 question 生命周期全绿:既有 gate/ask/supersede/hygiene 测试零改动跑绿,行为等价面显式枚举——`retireShipGate`/`resolveGate`/`retireQuestionGuarded`/`markQuestionProtected`/`insertResponse*` 三写入器/`finalizeSession`/zombie-gate hygiene/supersede 巡逻/`getPendingQuestions`/ask 宽限(不靠「两个函数源码没动」推断)。
@@ -167,7 +167,7 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 - T12 迁移四类(R1 #2):legacy 库全迁 / 已迁库幂等 / 中断重放 / `sqlite_master` 残留集断言;S7 投影哈希兼容:升级前铸造的稳定 ID(lead-event / xdept / 死信)重放不冲突,显式差异仍冲突。
 - T13 StateStore 升级(R1 #7):有数据快照上跑 DROP COLUMN 迁移(sql.js 实测);tombstone 回退分支同测。
 - T10 plugin:入站消息在 enabled 模式恒走 chat-ingest;`meta.receipt_id` 不再出现;MCP instructions 为 STOCK 三段;ingest intent 恢复(重启后 spool 重放)仍绿。
-- T11 sweep 程式:副本库上 dry-run 零写入;apply 幂等(重放二次零变化);S3 前置双后置断言;**既有 processed/disposed 行集合逐字节不变且零新增**,新增 archived 数 = 删除投影数,另允许且只允许预期的 migration_snapshot marker;**manifest 全覆盖**(每条被归档行有记录、原态保真可回放)+ 存在 unresolved 时 `--apply` 拒绝;archive snapshot 含完整 canonical row,mailbox 投影为零、identity.archived_at 在位、getIdentityCarrier 保原 carrier、content_ref GC 有界、稳定 ID 重放仍返回 archived。
+- T11 sweep 程式:副本库上 dry-run 零写入;apply 幂等(重放二次零变化);S3 前置双后置断言;**只归档 `chat:% + carrier=external`**,混入 QUEUED/LEASED/ACKED/DEAD inbox fixture 并断言 id/state/seq/count/identity 全不变;既有 processed/disposed 行集合逐字节不变且零新增,新增 archived 数 = 删除的 external 投影数,另允许且只允许预期 migration_snapshot marker;manifest 全覆盖 + unresolved 拒绝;archive snapshot 含完整 canonical row、external 投影为零、identity.archived_at 在位、getIdentityCarrier 保 external、content_ref GC 有界、稳定 ID 重放仍返回 archived。
 
 **全仓门**:`pnpm lint` + `pnpm -r build` + `pnpm test:packages:run` + plugin 仓测试(FLY-224/248 教训:全仓不是只跑改动包)。
 
