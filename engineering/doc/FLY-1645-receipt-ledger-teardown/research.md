@@ -4,7 +4,17 @@ Issue: FLY-1645 (https://linear.app/geoforge3d/issue/FLY-1645/消息层重裁-b-
 日期: 2026-08-11
 基于: exploration.md
 
-调研方法:4 路并行代码审计(flywheel-comm 全量 / teamlead+edge-worker 全量 / Discord plugin fork 全量 / 重投发射器定向)+ 产线 comm.db 只读取证 + 旧修复 plan(origin @78ade7f7)病理对照。所有 file:line 均为本 worktree(main @ d6536134)实测。
+调研方法:4 路并行代码审计(flywheel-comm 全量 / teamlead+edge-worker 全量 / Discord plugin fork 全量 / 重投发射器定向)+ 产线 comm.db 只读取证 + 旧修复 plan(origin @78ade7f7)病理对照 + **前轮保全审计对照**(`origin/flywheel-FLY-1645-audit-preserve`,Lead 指令 047a2ee0 指定必读——本轮独立审计与其两租户结论完全收敛,见 §0)。所有 file:line 均为本 worktree(main @ d6536134)实测。
+
+## 0. 前轮保全审计对照(独立双审计收敛 + 三处口径修正)
+
+本轮 4 路审计与前轮(audit-preserve)在**互不知情**的情况下得出同一核心结构:relay_state 两租户(A=gate/question 40+ 消费点不许碰;B=收据台账,拆除对象)、settle 只写 mailbox_log 不碰行、`NOT EXISTS settlement` 是账本唯一行为级消费者。前轮另有三个本轮据此修正口径的发现:
+
+1. **「零系统自动结清」是度量假象**:issue 的判据查的是行本体三列(半账 A)——而自动结清路(`settleChatReceipt`)**按设计只写 mailbox_log(半账 B)**,产线有 1,554 条 `discord_explicit_reply` processed 结算证明触发点一直在正常触发。真实的病不是「机器没转」,是**一条收据的关闭被拆成两个互不相干的半账、没有任何代码保证一致**(前轮实测两半分歧率 ~85%,跨 growth/tidal-echo 项目库同型复现)。半账 A 全库只有运维 sweep 写过——它是一根**没人读**的列(chat 通路上)。
+2. **chat lane 的 settle 驱动重投已被 FLY-1646/#784 切断**(`state <> 'ACKED'` 主闸恢复):前轮实测当前 `listExternalPending` pending 集合仅 3 条(全在 QA 测试槽),生产 Lead = 0。8-10 实弹的两条腿因此归因更准:boot 洪水 = E1 对**未 ACKED**存量的重播;无限批重投 = E2(founder_msg inbox 行,租约级,见 §8)。
+3. **1573 队列结构性拒绝义务账**(前轮 §6 逐边证明):`ackBatchByRecipient` LEASED→ACKED 后**不存在 ACKED→QUEUED 回头边**(仅有的两处回 QUEUED 写法都带 `state='LEASED'` 硬闸)——队列按铁律①设计,ack 即终局、永不再催。⇒ 拆除后「acked 但没办」的义务追踪只能由 1575 task 表承担;**1575 前置已由 Lead/founder 豁免**(lead-instruction 047a2ee0:「义务账由 FLY-1573/1574 新信箱队列接管(1575 前置已豁免)」),间隙姿态 = ack 层承接(送到即止),task 层验收移交 1575 落地时联合执行。
+
+**新增活体病例(lead-instruction 69f1369b,2026-08-11)**:`publish-report` 的 bot 回声消息(claw-infra-bot 自动发的交付贴)也给 Lead 铸 chat receipt;而 v2 载体下 `handle-receipt` 因 lease 未绑直接报错(handle-receipt.ts:44),唯一能走通的结清路是往 thread 里发一条带 `reply_to` 的回复——**被迫制造噪音才能关账**。机器替 agent 建了一张它关不掉的账的现行犯。
 
 ---
 
@@ -56,6 +66,7 @@ Issue: FLY-1645 (https://linear.app/geoforge3d/issue/FLY-1645/消息层重裁-b-
 | db.ts:2962 `trustedFounderApprovalAndReceipt` / :3035 `trustedFounderGateResponseAndReceipt` | 域 B 承重函数,settle 只是搭车 | **手术**:保 gate-response + founder attribution 事务,摘除 settle 调用;更名去掉 `AndReceipt` 谎名(调用点少,同 PR 内完成) |
 | db.ts:1131 `supersedeShipGateAndReceiptFamily` | 一事务两域:gate CAS(留)+ receipt family settle(拆);幂等键还从账本侧派生(:1167-1169) | **删整函数**,3 个终局权威调用点改指既有 `retireShipGate`(db.ts:1096-1122,同款双守卫 CAS、零收据接触;issue-gate-supersede.ts:207 / zombie-gate-hygiene.ts:386 / plugin.ts:6914 已在用) |
 | mailbox-schema.ts:182-203 | `receipt_root_lineage` 表 + `mailbox_receipt_root_lineage_insert` 触发器(**hot path**:每条 Lead-bound question INSERT 都触发) | **删**(消费者仅 projector + supersede 家族 settle,全在拆除面内) |
+| (产线库残留,源码零消费者——本轮 grep 实证) | `receipt_activation_episodes` / `receipt_resend_deliveries` / `receipt_exemption_audit` 三张 FLY-1426 时代遗留表 | **迁移步 DROP**(仅产线库存在;schema 源码已无定义) |
 | founder-reply-routing.ts | `founder_msg:` id 铸造(:20)及路由态机 | **删**(随 hub root) |
 
 ### 3.3 external carrier 与重投谓词
@@ -141,7 +152,7 @@ relay_state='open':201(8-08 后新增 29,持续累积)          死信残留:fou
 
 ## 9. 决策记录(exploration §6 的 D1–D5 收敛)
 
-- **D1(裁定:legacy chat lane 整拆,含 =0 旧流)**:重投发射器是机器心脏(「无重投扫描」是 issue 验收原文),留半台机器 = 留一台还在铸行没人关账的机器。`FLYWHEEL_MAILBOX_DISCORD` 已 ON 且 1574 已产线跑通(inbox chat 行实测在流转);founder 原话「if it works, we should delete old flow immediately」。本单把 Discord 入站旧流(plugin begin/deliver legacy 路径)与该 flag 一并删除,即:**本单承载 flag 家族清理单中 Discord 入站一支**(`FLYWHEEL_MAILBOX_DISCORD` + `FLYWHEEL_CHAT_RECEIPTS` + `FLYWHEEL_RECEIPT_FOUNDATION` 三个开关全删)。1573 的 `FLYWHEEL_MAILBOX_QUEUE`/deploy barrier 与 1575 的 `FLYWHEEL_MAILBOX_TASKS` 不在本单。
+- **D1(裁定:legacy chat lane 整拆,含 =0 旧流——带显式解锁门)**:重投发射器是机器心脏(「无重投扫描」是 issue 验收原文),留半台机器 = 留一台还在铸行没人关账的机器。注意 registry 里 `mailbox_discord` **default=false、=0 是 founder 要求的验证窗回滚路径**(registry.ts:3201-3226)——因此旧流退役必须带**解锁门证据**而非默认成立:①产线 `.env` 与活 Bridge env 均 =1(本轮实测);②1574 lane 产线健康流转(inbox chat 行 8 ACKED + 2 LEASED 实测);③存量 external 行由 sweep 有界排干(§7);④验证窗观察证据(1574 于 #797 合入后的产线运行记录)由 ship 节点在 PR 里落账。满足后本单删除旧流 = **执行** founder「if it works, delete old flow immediately」的后半句,即本单承载 flag 家族清理单中 Discord 入站一支(`FLYWHEEL_MAILBOX_DISCORD` + `FLYWHEEL_CHAT_RECEIPTS` + `FLYWHEEL_RECEIPT_FOUNDATION` 三个开关全删)。1573 的 `FLYWHEEL_MAILBOX_QUEUE`/deploy barrier 与 1575 的 `FLYWHEEL_MAILBOX_TASKS` 不在本单。
 - **D2(裁定:列留人走)**:§2。附加一条低成本出生不变式:非 question 行 insert 时显式 `relay_state='terminal_disposed'`(enqueue 单点改),使 `open ⇔ 活 question` 成为可 SQL 断言的结构不变式,审计陷阱绝迹。[待 design review 确认:也可不加,靠 sweep+文档;倾向加,一行代价换一条永久不变式]
 - **D3(裁定:一次性 sweep 程式)**:§7。
 - **D4(裁定:不加新 flag)**:拆除不留开关(留开关=机器还在);回滚 = git revert + Bridge 重启。与 founder flag 家族 mandate 不冲突:mandate 针对**新流上线**(1573/1574/1575),本单是**旧机器拆除**,且实际是删 3 个旧 flag。

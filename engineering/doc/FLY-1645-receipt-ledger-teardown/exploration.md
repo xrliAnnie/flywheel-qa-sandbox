@@ -39,18 +39,20 @@ FLY-1677 并入本单的实弹证据:
 - **缺陷④(HL 对照组)**:`route-founder-reply --no-route` ×13 全部正确写入 mailbox_log(basis 齐全)→ **重投照旧**;对照 = 被 settler 直接改过 mailbox 行的 301 条 → 停。⇒ 重投驱动只认 mailbox 行的 `relay_state`,settlement 账写得再对也无效——**用对命令、写对账、照样不生效**。
 - **缺陷⑤(Cass 机制)**:`handle-receipt --action ack` 要求 lease provenance(`FLYWHEEL_LEAD_CARRIER_INSTANCE_ID`),该 env 只有 Codex 载体设置 ⇒ **所有 Claude 载体 Lead 的 ack 结构性不可用**。
 
-### 2.3 全库零条系统自动结清(定性收口,2026-08-11)
+### 2.3 「零条系统自动结清」的精确读法(前轮保全审计修正口径,2026-08-11)
 
 两条 lane 溯源(`resolved_via` 来源核查——「核健康行怎么变健康的」方法论):
 
 ```
 chat lane   全部 terminal_disposed:2,477 条,resolved_via 全是 operator sweep 标签
 founder_msg lane 全部 terminal_disposed:137 条,同上
-系统自动结清样本:全库 0 条
+行本体三列的系统自动写入:全库 0 条
 全舰静止 15 分钟(10 runner 全 parked):open 积压 77 → 77,一条未降
 ```
 
-⇒ **结清通路从来没有生效过一次**。目前唯一压住积压的是人工 sweep(无排期、无人知其为承重墙)。这不是「修 bug」量级的问题——是整个器官从未工作过、也不该存在。
+**前轮保全审计(audit-preserve 分支)修正了这条证据的读法**:自动结清路(`settleChatReceipt`)**按设计只写 mailbox_log 半账**,产线有 1,554 条 `discord_explicit_reply` 结算证明它一直在触发——「resolved_via 全是 sweep」证明的不是「机器没转」,而是**行本体那半账从设计上就没有任何系统写入方**。真实的病:一条收据的关闭被拆成两个互不相干的半账(行本体三列 vs mailbox_log 事件),没有任何代码保证一致(实测分歧率 ~85%),而各台重投机各自只认其中一半——写对哪半都止不住另一台。⇒ 依旧不是「修 bug」量级:是账本身不该存在。
+
+**追加活体病例(2026-08-11,Lead 补充)**:`publish-report` 的 bot 回声消息也给 Lead 铸 chat receipt,而 v2 载体下 `handle-receipt` 因 lease 未绑直接报错——唯一能走通的结清路是往 thread 里发一条带 `reply_to` 的凑数回复,**被迫制造噪音才能关账**。
 
 ### 2.4 产线现状(2026-08-11 本节点实测,`~/.flywheel/comm/flywheel/comm.db` 只读)
 
