@@ -2,6 +2,7 @@ import { CommDB } from "flywheel-comm/db";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import { messageProvenanceFromSenderRef } from "flywheel-comm/sender-ref";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
+import type { MailboxQueueConfig } from "./mailbox-queue-config.js";
 
 export interface RunnerMailboxEnvelope {
 	mailboxId: string;
@@ -57,6 +58,9 @@ export class ProductionRunnerMailboxDeliveryAdapter
 			fromAgent: envelope.fromAgent,
 			content: envelope.content,
 			metadata: envelope.metadata,
+			...(typeof envelope.metadata.durableBatchId === "string"
+				? { verified: true }
+				: {}),
 			...(vendor === null || vendor === undefined ? {} : { backend: vendor }),
 		});
 		if (result.ok) return { status: "delivered" };
@@ -137,6 +141,51 @@ export interface RunnerMailboxLaneOptions {
 	retryBackoffBaseMs?: number;
 	retryBackoffCapMs?: number;
 	maxPerTick?: number;
+	queueConfig?: () => MailboxQueueConfig;
+	recipientState?: (
+		executionId: string,
+	) => "alive" | "terminal_or_missing" | "unknown";
+	resolveOwningLead?: (executionId: string) => string | undefined;
+}
+
+export function renderRunnerMailboxBatchEnvelope(
+	rows: readonly MailboxRow[],
+	resolveQuestion?: (questionId: string) => RunnerQuestion | undefined,
+): RunnerMailboxEnvelope {
+	const first = rows[0];
+	if (!first?.batch_id || rows.some((row) => row.batch_id !== first.batch_id)) {
+		throw new Error("Runner mailbox batch has invalid membership");
+	}
+	const attempt = first.lease_retry_count;
+	if (rows.some((row) => row.lease_retry_count !== attempt)) {
+		throw new Error("Runner mailbox batch mixes lease retry attempts");
+	}
+	const rendered = rows.map((row) =>
+		renderRunnerMailboxEnvelope(
+			row,
+			row.ref_id ? resolveQuestion?.(row.ref_id) : undefined,
+		),
+	);
+	const transportBatchId = `${first.batch_id}#r${attempt}`;
+	const ackInstruction =
+		first.type === "response"
+			? `run 'flywheel-comm check ${first.ref_id}'`
+			: `run 'flywheel-comm inbox --exec-id ${first.to_agent}'`;
+	return {
+		mailboxId: first.batch_id,
+		executionId: first.to_agent,
+		fromAgent: first.from_agent,
+		type: first.type,
+		kind: rendered[0]!.kind,
+		content: `[mailbox-batch ${first.batch_id} | ${rows.length} messages | from ${first.from_agent}]\nYou must ack this batch (${ackInstruction}); once 3 batches are unacked, no further batch will be delivered.\n\n${rendered.map(({ content }) => content).join("\n\n")}`,
+		metadata: {
+			flywheelId: transportBatchId,
+			durableBatchId: first.batch_id,
+			memberIds: rows.map(({ delivery_id }) => delivery_id),
+			execId: first.to_agent,
+		},
+		intentKey: `mailbox-batch:${transportBatchId}`,
+	};
 }
 
 export class RunnerMailboxLane {
@@ -157,26 +206,105 @@ export class RunnerMailboxLane {
 	}
 
 	async tick(): Promise<RunnerMailboxTickResult> {
+		const queueConfig = this.opts.queueConfig?.() ?? {
+			enabled: false,
+			ackLeaseMs: 1_800_000,
+			batchWindowMs: 60_000,
+			batchMaxSize: 5,
+			inflightMaxBatches: 3,
+			leaseRetryMax: 3,
+			deadLetterWindowMs: 1_800_000,
+		};
 		const result: RunnerMailboxTickResult = {
 			delivered: 0,
 			failed: 0,
 			dead: 0,
 		};
-		for (let index = 0; index < this.maxPerTick; index++) {
-			const row = this.opts.queue.claimRunner({
+		if (queueConfig.enabled) {
+			const recipientStates = new Map<
+				string,
+				"alive" | "terminal_or_missing" | "unknown"
+			>();
+			const recipientState = (executionId: string) => {
+				const cached = recipientStates.get(executionId);
+				if (cached) return cached;
+				const resolved = this.opts.recipientState?.(executionId) ?? "unknown";
+				recipientStates.set(executionId, resolved);
+				return resolved;
+			};
+			const reconciled = this.opts.queue.reconcileExpiredLeases({
 				ownerEpoch: this.opts.ownerEpoch,
 				now: this.now().toISOString(),
-				claimTtlMs: this.claimTtlMs,
+				recipientKind: "runner",
+				leaseRetryMax: queueConfig.leaseRetryMax,
+				recipientState,
+				maxBatches: this.maxPerTick,
+				maxTerminalRows: this.maxPerTick,
 			});
-			if (!row) break;
+			result.dead += reconciled.dead;
+			if (this.opts.resolveOwningLead) {
+				const leadByRecipient = new Map<string, string | undefined>();
+				this.opts.queue.scanAndInsertDeadLetterNotices({
+					ownerEpoch: this.opts.ownerEpoch,
+					now: this.now().toISOString(),
+					windowMs: queueConfig.deadLetterWindowMs,
+					maxRecipients: this.maxPerTick,
+					maxDeadRowsPerRecipient: 20,
+					maxSummaryBytes: 4_000,
+					resolveOwningLead: (executionId) => {
+						if (leadByRecipient.has(executionId)) {
+							return leadByRecipient.get(executionId);
+						}
+						const resolved = this.opts.resolveOwningLead?.(executionId);
+						leadByRecipient.set(executionId, resolved);
+						return resolved;
+					},
+				});
+			}
+		}
+		for (let index = 0; index < this.maxPerTick; index++) {
+			const batch = queueConfig.enabled
+				? this.opts.queue.claimRunnerBatch({
+						ownerEpoch: this.opts.ownerEpoch,
+						now: this.now().toISOString(),
+						transportClaimTtlMs: this.claimTtlMs,
+						batchWindowMs: queueConfig.batchWindowMs,
+						batchMaxSize: queueConfig.batchMaxSize,
+						inflightMaxBatches: queueConfig.inflightMaxBatches,
+					})
+				: (() => {
+						// FLY-1573 legacy (pre-queue) path — delete with
+						// FLYWHEEL_MAILBOX_QUEUE cleanup.
+						const row = this.opts.queue.claimRunner({
+							ownerEpoch: this.opts.ownerEpoch,
+							now: this.now().toISOString(),
+							claimTtlMs: this.claimTtlMs,
+						});
+						return row ? [row] : undefined;
+					})();
+			if (!batch) break;
+			const row = batch[0]!;
 			try {
-				const envelope = renderRunnerMailboxEnvelope(
-					row,
-					row.ref_id ? this.opts.resolveQuestion?.(row.ref_id) : undefined,
-				);
+				const envelope = queueConfig.enabled
+					? renderRunnerMailboxBatchEnvelope(batch, this.opts.resolveQuestion)
+					: renderRunnerMailboxEnvelope(
+							row,
+							row.ref_id ? this.opts.resolveQuestion?.(row.ref_id) : undefined,
+						);
 				const delivered = await this.opts.deliver(envelope);
 				if (delivered.status === "failed") throw new Error(delivered.error);
-				if (
+				if (queueConfig.enabled) {
+					if (
+						this.opts.queue.recordRunnerBatchDelivered({
+							batchId: row.batch_id!,
+							ownerEpoch: this.opts.ownerEpoch,
+							now: this.now().toISOString(),
+							ackLeaseTtlMs: queueConfig.ackLeaseMs,
+						}) === "lost_race"
+					) {
+						throw new Error("runner claim fence lost after delivery");
+					}
+				} else if (
 					!this.opts.queue.recordRunnerDeliverySuccess({
 						id: row.id,
 						ownerEpoch: this.opts.ownerEpoch,
@@ -184,17 +312,28 @@ export class RunnerMailboxLane {
 				) {
 					throw new Error("runner claim fence lost after delivery");
 				}
-				result.delivered++;
+				result.delivered += batch.length;
 			} catch (error) {
-				const failure = this.opts.queue.recordRunnerDeliveryFailure({
-					id: row.id,
-					ownerEpoch: this.opts.ownerEpoch,
-					now: this.now().toISOString(),
-					nextRetryAt: this.nextRetryAt(row.retry_count),
-					error: error instanceof Error ? error.message : String(error),
-					maxAttempts: this.maxAttempts,
-				});
-				result.failed++;
+				const errorText =
+					error instanceof Error ? error.message : String(error);
+				const failure = queueConfig.enabled
+					? this.opts.queue.recordRunnerBatchDeliveryFailure({
+							batchId: row.batch_id!,
+							ownerEpoch: this.opts.ownerEpoch,
+							now: this.now().toISOString(),
+							nextRetryAt: this.nextRetryAt(row.retry_count),
+							error: errorText,
+							maxAttempts: this.maxAttempts,
+						})
+					: this.opts.queue.recordRunnerDeliveryFailure({
+							id: row.id,
+							ownerEpoch: this.opts.ownerEpoch,
+							now: this.now().toISOString(),
+							nextRetryAt: this.nextRetryAt(row.retry_count),
+							error: errorText,
+							maxAttempts: this.maxAttempts,
+						});
+				result.failed += batch.length;
 				if (failure.deadLettered) result.dead++;
 			}
 		}

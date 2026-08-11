@@ -979,6 +979,12 @@ export interface Session {
 	terminal_lifecycle_id?: string;
 }
 
+export interface RunnerRecipientState {
+	state: "alive" | "terminal_or_missing";
+	projectName?: string;
+	issueLabels?: string;
+}
+
 // FLY-163: CleanupCandidate removed (CleanupService gone).
 
 /** FLY-245 D2: one durable (gateway request id → successor execution id)
@@ -1250,6 +1256,37 @@ export interface LegacyCutoverQuarantineRow {
 	created_at: string;
 	accepted_at: string | null;
 	replayed_at: string | null;
+}
+
+export type DeadLetterAlertSourceKind = "lead_unacked" | "runner_unroutable";
+export type AlertDeliveryReceiptOutcome =
+	| "sent"
+	| "queued_durable"
+	| "deadlettered_durable";
+
+export interface DeadLetterAlertRow {
+	id: string;
+	source_kind: DeadLetterAlertSourceKind;
+	recipient: string;
+	through_dead_seq: number;
+	lead_id: string;
+	project_name: string;
+	dead_count: number;
+	summary: string;
+	state: "pending" | "accepted";
+	created_at: string;
+	attempted_at: string | null;
+	reclaim_at: string | null;
+	accepted_at: string | null;
+	claim_token: string | null;
+	last_error: string | null;
+}
+
+export function deadLetterAlertReclaimAt(
+	attemptedAt: string,
+	windowMs: number,
+): string {
+	return new Date(Date.parse(attemptedAt) + windowMs).toISOString();
 }
 
 export class StateStore {
@@ -2878,6 +2915,43 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_legacy_quarantine_active ON legacy_cutover_quarantine(seq) WHERE replayed_at IS NULL",
 		);
+
+		// FLY-1573: Lead/unroutable-runner dead letters must escape the mailbox
+		// itself. This outbox is source-driven from CommDB and settled only by a
+		// real delivery receipt, never by a pre-POST duplicate claim.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS dead_letter_alerts (
+				id TEXT PRIMARY KEY,
+				source_kind TEXT NOT NULL CHECK(source_kind IN ('lead_unacked','runner_unroutable')),
+				recipient TEXT NOT NULL,
+				through_dead_seq INTEGER NOT NULL,
+				lead_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				dead_count INTEGER NOT NULL,
+				summary TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','accepted')),
+				created_at TEXT NOT NULL,
+				attempted_at TEXT,
+				reclaim_at TEXT,
+				accepted_at TEXT,
+				claim_token TEXT,
+				last_error TEXT,
+				UNIQUE(source_kind, recipient, through_dead_seq)
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_dead_letter_alert_pending_recipient ON dead_letter_alerts(recipient) WHERE state = 'pending'",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_dead_letter_alert_due ON dead_letter_alerts(state, reclaim_at, created_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_delivery_receipts (
+				event_id TEXT PRIMARY KEY,
+				outcome TEXT NOT NULL CHECK(outcome IN ('sent','queued_durable','deadlettered_durable')),
+				recorded_at TEXT NOT NULL
+			)
+		`);
 
 		// FLY-1586 B (code review R1 HIGH-5): a row whose payload is valid JSON but
 		// the WRONG SHAPE. The renderer dereferences typed fields and throws an
@@ -5635,6 +5709,19 @@ export class StateStore {
 		}
 		stmt.free();
 		return undefined;
+	}
+
+	/** FLY-1573 narrow StateStore truth used by the mailbox lease/dead-letter lane. */
+	resolveRunnerRecipientState(executionId: string): RunnerRecipientState {
+		const session = this.getSession(executionId);
+		if (!session) return { state: "terminal_or_missing" };
+		return {
+			state: TERMINAL_STATUSES.has(session.status)
+				? "terminal_or_missing"
+				: "alive",
+			projectName: session.project_name,
+			issueLabels: session.issue_labels,
+		};
 	}
 
 	getSessionByIssue(issueId: string): Session | undefined {
@@ -10828,6 +10915,190 @@ export class StateStore {
 				 WHERE seq = ? AND state = 'pending_alert'`,
 			)
 			.run(now, seq);
+	}
+
+	recordAlertDeliveryReceipt(
+		eventId: string,
+		outcome: AlertDeliveryReceiptOutcome,
+		now: string,
+	): void {
+		this.db.raw
+			.prepare(
+				`INSERT INTO alert_delivery_receipts(event_id, outcome, recorded_at)
+				 VALUES (?, ?, ?)
+				 ON CONFLICT(event_id) DO NOTHING`,
+			)
+			.run(eventId, outcome, now);
+	}
+
+	getAlertDeliveryReceipt(eventId: string):
+		| { event_id: string; outcome: AlertDeliveryReceiptOutcome; recorded_at: string }
+		| undefined {
+		return this.db.raw
+			.prepare("SELECT * FROM alert_delivery_receipts WHERE event_id = ?")
+			.get(eventId) as
+			| {
+					event_id: string;
+					outcome: AlertDeliveryReceiptOutcome;
+					recorded_at: string;
+			  }
+			| undefined;
+	}
+
+	listDeadLetterAlertCursors(): Array<{
+		sourceKind: DeadLetterAlertSourceKind;
+		recipient: string;
+		throughDeadSeq: number;
+	}> {
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT source_kind, recipient, MAX(through_dead_seq) AS through_dead_seq
+					 FROM dead_letter_alerts GROUP BY source_kind, recipient`,
+				)
+				.all() as Array<{
+				source_kind: DeadLetterAlertSourceKind;
+				recipient: string;
+				through_dead_seq: number;
+			}>
+		).map((row) => ({
+			sourceKind: row.source_kind,
+			recipient: row.recipient,
+			throughDeadSeq: row.through_dead_seq,
+		}));
+	}
+
+	createDeadLetterAlertIntent(input: {
+		id: string;
+		sourceKind: DeadLetterAlertSourceKind;
+		recipient: string;
+		throughDeadSeq: number;
+		leadId: string;
+		projectName: string;
+		deadCount: number;
+		summary: string;
+		now: string;
+		windowMs: number;
+	}): "created" | "pending" | "rate_limited" | "idempotent" {
+		if (!Number.isSafeInteger(input.throughDeadSeq) || input.throughDeadSeq <= 0)
+			throw new Error("throughDeadSeq must be a positive safe integer");
+		if (!Number.isFinite(input.windowMs) || input.windowMs <= 0)
+			throw new Error("windowMs must be positive");
+		return this.db.raw.transaction(() => {
+			const existing = this.db.raw
+				.prepare("SELECT state FROM dead_letter_alerts WHERE id = ?")
+				.get(input.id) as { state: string } | undefined;
+			if (existing) return "idempotent";
+			const pending = this.db.raw
+				.prepare(
+					"SELECT 1 FROM dead_letter_alerts WHERE recipient = ? AND state = 'pending' LIMIT 1",
+				)
+				.get(input.recipient);
+			if (pending) return "pending";
+			const latest = this.db.raw
+				.prepare(
+					`SELECT accepted_at FROM dead_letter_alerts
+					 WHERE recipient = ? AND state = 'accepted'
+					 ORDER BY accepted_at DESC LIMIT 1`,
+				)
+				.get(input.recipient) as { accepted_at: string } | undefined;
+			if (
+				latest?.accepted_at &&
+				Date.parse(input.now) <
+					Date.parse(latest.accepted_at) + input.windowMs
+			) {
+				return "rate_limited";
+			}
+			this.db.raw
+				.prepare(
+					`INSERT INTO dead_letter_alerts(
+					   id, source_kind, recipient, through_dead_seq, lead_id,
+					   project_name, dead_count, summary, state, created_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+				)
+				.run(
+					input.id,
+					input.sourceKind,
+					input.recipient,
+					input.throughDeadSeq,
+					input.leadId,
+					input.projectName,
+					input.deadCount,
+					input.summary,
+					input.now,
+				);
+			return "created";
+		})();
+	}
+
+	listDueDeadLetterAlerts(now: string, limit = 100): DeadLetterAlertRow[] {
+		return this.db.raw
+			.prepare(
+				`SELECT * FROM dead_letter_alerts
+				 WHERE state = 'pending'
+				   AND (
+				     EXISTS (SELECT 1 FROM alert_delivery_receipts r WHERE r.event_id = dead_letter_alerts.id)
+				     OR attempted_at IS NULL OR reclaim_at <= ?
+				   )
+				 ORDER BY created_at, id LIMIT ?`,
+			)
+			.all(now, limit) as DeadLetterAlertRow[];
+	}
+
+	claimDeadLetterAlert(input: {
+		id: string;
+		claimToken: string;
+		now: string;
+		windowMs: number;
+	}): boolean {
+		const reclaimAt = deadLetterAlertReclaimAt(input.now, input.windowMs);
+		return (
+			this.db.raw
+				.prepare(
+					`UPDATE dead_letter_alerts SET
+					   attempted_at = ?, reclaim_at = ?, claim_token = ?, last_error = NULL
+					 WHERE id = ? AND state = 'pending'
+					   AND (attempted_at IS NULL OR reclaim_at <= ?)`,
+				)
+				.run(input.now, reclaimAt, input.claimToken, input.id, input.now)
+				.changes === 1
+		);
+	}
+
+	settleDeadLetterAlertFromReceipt(id: string, eventId: string): boolean {
+		return this.db.raw.transaction(() => {
+			const receipt = this.getAlertDeliveryReceipt(eventId);
+			if (!receipt) return false;
+			return (
+				this.db.raw
+					.prepare(
+						`UPDATE dead_letter_alerts SET
+						   state = 'accepted', accepted_at = ?, claim_token = NULL,
+						   last_error = NULL
+						 WHERE id = ? AND state = 'pending'`,
+					)
+					.run(receipt.recorded_at, id).changes === 1
+			);
+		})();
+	}
+
+	recordDeadLetterAlertFailure(
+		id: string,
+		claimToken: string,
+		errorDetail: string,
+	): void {
+		this.db.raw
+			.prepare(
+				`UPDATE dead_letter_alerts SET claim_token = NULL, last_error = ?
+				 WHERE id = ? AND state = 'pending' AND claim_token = ?`,
+			)
+			.run(errorDetail, id, claimToken);
+	}
+
+	getDeadLetterAlert(id: string): DeadLetterAlertRow | undefined {
+		return this.db.raw
+			.prepare("SELECT * FROM dead_letter_alerts WHERE id = ?")
+			.get(id) as DeadLetterAlertRow | undefined;
 	}
 
 	/**

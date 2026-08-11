@@ -20,6 +20,8 @@ export interface LeadActionsConfig {
 	explicitAliases: Record<string, string>;
 	/** Dir for the durable proactive-send audit log. */
 	stateDir: string;
+	/** Project CommDB used for durable mailbox batch ACK protocol rows. */
+	commDbPath: string;
 	/** Per-channel send cap per window (loop-safety). */
 	rateMaxPerWindow: number;
 	/** Rate-limit window length (ms). */
@@ -55,6 +57,7 @@ export function parseLeadActionsConfig(
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_LEAD_ACTIONS_STATE_DIR");
+	const commDbPath = req("FLYWHEEL_COMM_DB");
 	if (missing.length > 0) {
 		throw new Error(
 			`lead-actions: missing required env: ${missing.join(", ")}`,
@@ -76,6 +79,7 @@ export function parseLeadActionsConfig(
 			env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES,
 		),
 		stateDir,
+		commDbPath,
 		rateMaxPerWindow: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_MAX, 5),
 		rateWindowMs: posIntEnv(env.FLYWHEEL_LEAD_ACTIONS_RATE_WINDOW_MS, 60_000),
 		idempotencyTtlMs: posIntEnv(

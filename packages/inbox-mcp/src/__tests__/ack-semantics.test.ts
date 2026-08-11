@@ -15,6 +15,7 @@ import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	handleAck,
+	handleBatchAck,
 	handleEventAck,
 	processPendingDeliveries,
 } from "../delivery.js";
@@ -182,6 +183,35 @@ describe("inbox-mcp delivery + ack state machine", () => {
 
 		expect(result).toMatchObject({ ok: false });
 		expect(db.getPendingAckReceipts()).toEqual([]);
+	});
+
+	it("batch ack writes the backend-neutral protocol row for the calling Lead", () => {
+		const result = handleBatchAck(db, {
+			leadId,
+			batchId: "mailbox-batch:durable-1",
+		});
+
+		expect(result).toEqual({ ok: true, batchId: "mailbox-batch:durable-1" });
+		const row = (db as any).db
+			.prepare("SELECT * FROM mailbox WHERE type = 'ack_batch'")
+			.get() as Record<string, unknown>;
+		expect(row).toMatchObject({
+			from_agent: leadId,
+			to_agent: "bridge",
+			recipient_kind: "bridge",
+			msg_class: "protocol",
+			content: JSON.stringify({ batch_id: "mailbox-batch:durable-1" }),
+		});
+	});
+
+	it("batch ack rejects an empty id without writing", () => {
+		expect(handleBatchAck(db, { leadId, batchId: "  " })).toMatchObject({
+			ok: false,
+		});
+		const count = (db as any).db
+			.prepare("SELECT COUNT(*) AS count FROM mailbox WHERE type = 'ack_batch'")
+			.get() as { count: number };
+		expect(count.count).toBe(0);
 	});
 
 	it("delivery preserves FIFO order", async () => {

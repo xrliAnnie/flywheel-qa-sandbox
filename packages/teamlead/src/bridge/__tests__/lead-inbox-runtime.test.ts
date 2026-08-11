@@ -3,8 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LeadAlertNotifier } from "../../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
+import { StateStore } from "../../StateStore.js";
 import {
 	LeadInboxRuntime,
 	resolveCodexLeadStateDir,
@@ -16,6 +20,20 @@ const runtimes: LeadInboxRuntime[] = [];
 afterEach(() => {
 	for (const runtime of runtimes.splice(0)) runtime.close();
 });
+
+function runtimeStoreStub(
+	recipientState: "alive" | "terminal_or_missing" = "terminal_or_missing",
+) {
+	return {
+		getActiveSessions: () => [],
+		resolveRunnerRecipientState: () => ({
+			state: recipientState,
+		}),
+		listDeadLetterAlertCursors: () => [],
+		createDeadLetterAlertIntent: vi.fn(),
+		listDueDeadLetterAlerts: () => [],
+	};
+}
 
 const projects: ProjectEntry[] = [
 	{
@@ -71,7 +89,7 @@ describe("LeadInboxRuntime", () => {
 			status: "accepted_new" as const,
 		}));
 		const store = {
-			getActiveSessions: () => [],
+			...runtimeStoreStub(),
 			markLeadEventDelivered: vi.fn(),
 		};
 		const runtime = new LeadInboxRuntime({
@@ -143,7 +161,7 @@ describe("LeadInboxRuntime", () => {
 		const deliver = vi.fn(async () => ({ status: "delivered" as const }));
 		const runtime = new LeadInboxRuntime({
 			projects,
-			store: { getActiveSessions: () => [] } as never,
+			store: runtimeStoreStub("alive") as never,
 			registry,
 			commDbPathForProject: () => dbPath,
 			ownerEpoch: "owner-1",
@@ -187,7 +205,7 @@ describe("LeadInboxRuntime", () => {
 			.mockResolvedValue(undefined);
 		const runtime = new LeadInboxRuntime({
 			projects,
-			store: { getActiveSessions: () => [] } as never,
+			store: runtimeStoreStub() as never,
 			registry,
 			commDbPathForProject: (project) => join(root, `${project}.db`),
 			ownerEpoch: "owner-1",
@@ -203,5 +221,313 @@ describe("LeadInboxRuntime", () => {
 		await vi.waitFor(() => expect(cutover).toHaveBeenCalledTimes(1));
 		runtime.nudge("lead-a", "project-a");
 		await vi.waitFor(() => expect(cutover).toHaveBeenCalledTimes(2));
+	});
+
+	it("derives a Lead dead-letter intent and settles it only after the sink records delivery", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1573-alert-runtime-"));
+		const dbPath = join(root, "project-a.db");
+		const commDb = new CommDB(dbPath);
+		commDb.close();
+		const queue = new MailboxQueue(dbPath);
+		queue.enqueue({
+			id: "dead-lead-message",
+			fromAgent: "runner-a",
+			toAgent: "lead-a",
+			recipientKind: "lead",
+			type: "question",
+			content: "unacknowledged",
+			senderRef: encodeSenderRef(),
+		});
+		queue.markDead(
+			"dead-lead-message",
+			new Date().toISOString(),
+			"lease_expired_unacked",
+		);
+		queue.close();
+		const store = await StateStore.create(":memory:");
+		const sink = vi.fn(async (input: { eventId: string }) => {
+			store.recordAlertDeliveryReceipt(
+				input.eventId,
+				"sent",
+				new Date().toISOString(),
+			);
+		});
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-alert",
+			adapterForLead: () => ({
+				deliverBatch: vi.fn(async () => {
+					throw new Error("unexpected mailbox delivery");
+				}),
+			}),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+			onDeadLetterAlert: sink,
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		await vi.waitFor(() => expect(sink).toHaveBeenCalledTimes(1));
+		const eventId = sink.mock.calls[0]?.[0].eventId as string;
+		expect(sink).toHaveBeenCalledWith(
+			expect.objectContaining({ replayAfterAmbiguousAttempt: false }),
+		);
+		expect(store.getDeadLetterAlert(eventId)).toMatchObject({
+			state: "accepted",
+			recipient: "lead-a",
+			source_kind: "lead_unacked",
+		});
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+		store.close();
+	});
+
+	it("routes an ownerless Runner dead-letter alert to the project's primary Lead", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1573-runner-alert-runtime-"));
+		const dbPath = join(root, "project-a.db");
+		const commDb = new CommDB(dbPath);
+		commDb.close();
+		const queue = new MailboxQueue(dbPath);
+		queue.enqueue({
+			id: "dead-ownerless-runner-message",
+			fromAgent: "lead-a",
+			toAgent: "missing-execution",
+			recipientKind: "runner",
+			type: "instruction",
+			content: "unacknowledged",
+			senderRef: encodeSenderRef(),
+		});
+		queue.markDead(
+			"dead-ownerless-runner-message",
+			new Date().toISOString(),
+			"recipient_terminal",
+		);
+		queue.close();
+		const store = await StateStore.create(":memory:");
+		const sink = vi.fn(
+			async (input: {
+				eventId: string;
+				leadId: string;
+				projectName: string;
+			}) => {
+				store.recordAlertDeliveryReceipt(
+					input.eventId,
+					"sent",
+					new Date().toISOString(),
+				);
+			},
+		);
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-runner-alert",
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+			onDeadLetterAlert: sink,
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		await vi.waitFor(() => expect(sink).toHaveBeenCalledTimes(1));
+		expect(sink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				leadId: "lead-a",
+				projectName: "project-a",
+				recipient: "missing-execution",
+				sourceKind: "runner_unroutable",
+			}),
+		);
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+		store.close();
+	});
+
+	it("replays a claimed/no-receipt dead-letter after the existing reclaim fence and unblocks later windows", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1573-alert-claim-seam-"));
+		const dbPath = join(root, "project-a.db");
+		const db = new CommDB(dbPath);
+		db.close();
+		const store = await StateStore.create(":memory:");
+		const windowMs = 30 * 60_000;
+		const eventId = "dead_letter_alert:runner_unroutable:runner-a:40";
+		store.createDeadLetterAlertIntent({
+			id: eventId,
+			sourceKind: "runner_unroutable",
+			recipient: "runner-a",
+			throughDeadSeq: 40,
+			leadId: "lead-a",
+			projectName: "project-a",
+			deadCount: 3,
+			summary: "three dead messages",
+			now: "2026-08-10T10:00:00.000Z",
+			windowMs,
+		});
+		store.claimDeadLetterAlert({
+			id: eventId,
+			claimToken: "claim-before-crash",
+			now: "2026-08-10T10:01:00.000Z",
+			windowMs,
+		});
+		store.recordDeadLetterAlertFailure(eventId, "claim-before-crash", "Crash");
+		store.tryClaimLeadEvent("lead-a", eventId, "mailbox_dead_letter", "{}");
+
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+		});
+		const claimsReader = vi.fn(async () => new Set([eventId]));
+		const claimsClaimer = vi.fn(async () => false);
+		const alertProjects: ProjectEntry[] = [
+			{
+				...projects[0]!,
+				leads: [
+					{
+						...projects[0]!.leads[0]!,
+						alertChannel: "alert-channel",
+						botToken: "test-token",
+					},
+				],
+			},
+		];
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: alertProjects,
+			fetchFn,
+			queueDir: join(root, "alert-queue"),
+			deadLetterDir: join(root, "alert-deadletter"),
+			claimsReader,
+			claimsClaimer,
+		});
+		const sink = vi.fn(
+			async (input: {
+				eventId: string;
+				replayAfterAmbiguousAttempt: boolean;
+			}) => {
+				await notifier.alert(
+					{
+						leadId: "lead-a",
+						projectName: "project-a",
+						eventId: input.eventId,
+						eventType: "mailbox_dead_letter",
+						title: "dead letters",
+						body: "decide replay, discard, or reassign",
+						severity: "warning",
+					},
+					{
+						replayAfterAmbiguousAttempt: input.replayAfterAmbiguousAttempt,
+					},
+				);
+			},
+		);
+		const runtime = new LeadInboxRuntime({
+			projects: alertProjects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+			onDeadLetterAlert: sink,
+		});
+		runtimes.push(runtime);
+
+		await runtime.drainDeadLetterAlertsNow();
+
+		expect(sink).toHaveBeenCalledWith(
+			expect.objectContaining({
+				eventId,
+				replayAfterAmbiguousAttempt: true,
+			}),
+		);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(claimsReader).not.toHaveBeenCalled();
+		expect(claimsClaimer).not.toHaveBeenCalled();
+		expect(store.getAlertDeliveryReceipt(eventId)).toMatchObject({
+			outcome: "sent",
+		});
+		const settled = store.getDeadLetterAlert(eventId);
+		expect(settled?.state).toBe("accepted");
+		const acceptedAt = settled?.accepted_at;
+		expect(acceptedAt).toBeTruthy();
+		expect(
+			store.createDeadLetterAlertIntent({
+				id: "dead_letter_alert:runner_unroutable:runner-a:41",
+				sourceKind: "runner_unroutable",
+				recipient: "runner-a",
+				throughDeadSeq: 41,
+				leadId: "lead-a",
+				projectName: "project-a",
+				deadCount: 1,
+				summary: "one later dead message",
+				now: new Date(Date.parse(acceptedAt!) + windowMs).toISOString(),
+				windowMs,
+			}),
+		).toBe("created");
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+		store.close();
+	});
+
+	it("settles from the notifier receipt after a post-receipt crash without posting twice", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1573-alert-receipt-"));
+		const dbPath = join(root, "project-a.db");
+		const db = new CommDB(dbPath);
+		db.close();
+		const store = await StateStore.create(":memory:");
+		const now = new Date().toISOString();
+		const eventId = "dead_letter_alert:lead_unacked:lead-a:99";
+		store.createDeadLetterAlertIntent({
+			id: eventId,
+			sourceKind: "lead_unacked",
+			recipient: "lead-a",
+			throughDeadSeq: 99,
+			leadId: "lead-a",
+			projectName: "project-a",
+			deadCount: 1,
+			summary: "one dead message",
+			now,
+			windowMs: 30 * 60_000,
+		});
+		const sink = vi.fn(async (input: { eventId: string }) => {
+			store.recordAlertDeliveryReceipt(input.eventId, "sent", now);
+			throw new Error("crash after receipt write");
+		});
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+			onDeadLetterAlert: sink,
+		});
+		runtimes.push(runtime);
+		await runtime.drainDeadLetterAlertsNow();
+		expect(store.getDeadLetterAlert(eventId)?.state).toBe("pending");
+		await runtime.drainDeadLetterAlertsNow();
+		expect(store.getDeadLetterAlert(eventId)?.state).toBe("accepted");
+		expect(sink).toHaveBeenCalledTimes(1);
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+		store.close();
 	});
 });

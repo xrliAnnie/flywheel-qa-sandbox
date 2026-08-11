@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
@@ -87,6 +88,7 @@ describe("ProtocolIngress mailbox ACK", () => {
 		db.close();
 		const ingress = new ProtocolIngress({
 			store,
+			queue,
 			secretProvider: { getActive: () => secret },
 		});
 		expect(await ingress.handle(claim())).toEqual({
@@ -107,6 +109,7 @@ describe("ProtocolIngress mailbox ACK", () => {
 		db.close();
 		const ingress = new ProtocolIngress({
 			store,
+			queue,
 			secretProvider: { getActive: () => secret },
 		});
 		expect(await ingress.handle(claim())).toEqual({
@@ -127,10 +130,61 @@ describe("ProtocolIngress mailbox ACK", () => {
 		})!;
 		const ingress = new ProtocolIngress({
 			store,
+			queue,
 			secretProvider: { getActive: () => secret },
 		});
 		await expect(ingress.handle(forged)).rejects.toThrow(
 			"ACK sender does not own the event",
 		);
+	});
+
+	it("applies a recipient-authorized batch ACK protocol row", async () => {
+		queue.enqueue({
+			id: "model-1",
+			fromAgent: "runner-1",
+			toAgent: "lead-1",
+			recipientKind: "lead",
+			type: "question",
+			content: "question",
+			createdAt: now,
+			senderRef: encodeSenderRef(),
+		});
+		queue.claimLeadBatchQueue({
+			toAgent: "lead-1",
+			msgClass: "model",
+			ownerEpoch: "epoch-1",
+			batchId: "batch-1",
+			now,
+			transportClaimTtlMs: 10_000,
+			batchWindowMs: 60_000,
+			batchMaxSize: 5,
+			inflightMaxBatches: 3,
+		});
+		queue.recordLeadBatchDelivered({
+			batchId: "batch-1",
+			ownerEpoch: "epoch-1",
+			now,
+			ackLeaseTtlMs: 30_000,
+		});
+		queue.enqueue({
+			id: "ack-batch-1",
+			fromAgent: "lead-1",
+			toAgent: "bridge",
+			recipientKind: "bridge",
+			type: "ack_batch",
+			msgClass: "protocol",
+			content: JSON.stringify({ batch_id: "batch-1" }),
+			createdAt: now,
+			senderRef: encodeSenderRef(),
+		});
+		const ingress = new ProtocolIngress({
+			store,
+			queue,
+			secretProvider: { getActive: () => secret },
+		});
+		expect(await ingress.handle(queue.getById("ack-batch-1")!)).toEqual({
+			disposition: "batch_ack_applied",
+		});
+		expect(queue.getById("model-1")?.state).toBe("ACKED");
 	});
 });

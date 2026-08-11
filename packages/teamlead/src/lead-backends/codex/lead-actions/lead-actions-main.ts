@@ -20,6 +20,7 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { runDiscordSend } from "../discord-send-core.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
@@ -33,12 +34,14 @@ import {
 // exposes EXACTLY one tool; assert that invariant at load so the literal
 // below and the gate constant can never drift apart.
 const DISCORD_SEND_TOOL = "discord_send";
+const ACK_BATCH_TOOL = "ack_batch";
 if (
-	LEAD_ACTIONS_TOOLS.length !== 1 ||
-	LEAD_ACTIONS_TOOLS[0] !== DISCORD_SEND_TOOL
+	LEAD_ACTIONS_TOOLS.length !== 2 ||
+	LEAD_ACTIONS_TOOLS[0] !== DISCORD_SEND_TOOL ||
+	LEAD_ACTIONS_TOOLS[1] !== ACK_BATCH_TOOL
 ) {
 	throw new Error(
-		`lead-actions: LEAD_ACTIONS_TOOLS must be exactly ["${DISCORD_SEND_TOOL}"] (got ${JSON.stringify(LEAD_ACTIONS_TOOLS)})`,
+		`lead-actions: LEAD_ACTIONS_TOOLS must be exactly ${JSON.stringify([DISCORD_SEND_TOOL, ACK_BATCH_TOOL])} (got ${JSON.stringify(LEAD_ACTIONS_TOOLS)})`,
 	);
 }
 
@@ -66,7 +69,9 @@ export async function leadActionsMain(
 ): Promise<void> {
 	const cfg = parseLeadActionsConfig(env);
 
-	// Fail closed if the child did not receive its by-name token.
+	// Fail closed if the full-access Lead child did not receive its by-name
+	// Discord credential. The deploy probe supplies a non-live sentinel token;
+	// it lists tools only and never invokes discord_send.
 	const botToken = resolveLeadActionsBotToken(env);
 
 	const rateLimiter = new SlidingWindowRateLimiter({
@@ -141,10 +146,28 @@ export async function leadActionsMain(
 		},
 	);
 
+	const commDb = new CommDB(cfg.commDbPath);
+	server.tool(
+		ACK_BATCH_TOOL,
+		"Acknowledge a durable mailbox batch after processing every message in it. Use the batch_id from the mailbox-batch header. Idempotent; late acknowledgements are safe.",
+		{
+			batch_id: z.string().min(1).describe("The durable mailbox batch id"),
+		},
+		async ({ batch_id }) => {
+			const batchId = batch_id.trim();
+			try {
+				commDb.insertBatchAckReceipt(cfg.leadId, batchId);
+				return asText(`batch ACK queued: ${batchId}`);
+			} catch (error) {
+				return asText(`Error: ${(error as Error).message}`, true);
+			}
+		},
+	);
+
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 	process.stderr.write(
-		`[lead-actions] ${cfg.leadId}@${cfg.projectName} ready (chat=${cfg.chatChannelId}, crossDept=${cfg.crossDeptChannelIds.length})\n`,
+		`[lead-actions] ${cfg.leadId}@${cfg.projectName} ready (chat=${cfg.chatChannelId}, crossDept=${cfg.crossDeptChannelIds.length}, discord=${botToken ? "enabled" : "disabled"}, mailboxAck=enabled)\n`,
 	);
 }
 

@@ -86,6 +86,21 @@ export type EventAckResult =
 	| { ok: true; eventSeq: number }
 	| { ok: false; error: string };
 
+export type BatchAckResult =
+	| { ok: true; batchId: string }
+	| { ok: false; error: string };
+
+/** Enqueue the same durable protocol row for both Lead backends. */
+export function handleBatchAck(
+	db: CommDB,
+	input: { leadId: string; batchId: string },
+): BatchAckResult {
+	const batchId = input.batchId.trim();
+	if (!batchId) return { ok: false, error: "batch_id is required" };
+	db.insertBatchAckReceipt(input.leadId, batchId);
+	return { ok: true, batchId };
+}
+
 /**
  * FLY-1279: enqueue a bearer-capability receipt for a logical Lead event.
  *

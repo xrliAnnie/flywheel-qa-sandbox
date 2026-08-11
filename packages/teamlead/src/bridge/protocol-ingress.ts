@@ -1,6 +1,6 @@
 /** FLY-1373 typed ACK receipt protocol effect. */
 
-import type { MailboxRow } from "flywheel-comm/mailbox-queue";
+import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import type { StateStore } from "../StateStore.js";
 import {
 	type DeliverySecretProvider,
@@ -15,7 +15,19 @@ interface AckReceiptPayload {
 
 export interface ProtocolIngressOptions {
 	store: StateStore;
+	queue: MailboxQueue;
 	secretProvider: DeliverySecretProvider;
+}
+
+function parseBatchAck(content: string): string | null {
+	try {
+		const parsed = JSON.parse(content) as { batch_id?: unknown };
+		return typeof parsed.batch_id === "string" && parsed.batch_id.trim()
+			? parsed.batch_id
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 function parseReceipt(content: string): AckReceiptPayload | null {
@@ -39,7 +51,30 @@ export class ProtocolIngress {
 	constructor(private readonly opts: ProtocolIngressOptions) {}
 
 	async handle(row: MailboxRow): Promise<{ disposition: string }> {
-		if (row.msg_class !== "protocol" || row.type !== "ack_receipt") {
+		if (row.msg_class !== "protocol") {
+			throw new Error(`unsupported protocol message type: ${row.type}`);
+		}
+		if (row.type === "ack_batch") {
+			if (row.to_agent !== "bridge") {
+				throw new Error("batch ACK must target bridge");
+			}
+			const batchId = parseBatchAck(row.content);
+			if (!batchId) throw new Error("malformed batch ACK protocol row");
+			const ack = this.opts.queue.ackBatchByRecipient({
+				batchId,
+				fromAgent: row.from_agent,
+				now: new Date().toISOString(),
+			});
+			return {
+				disposition:
+					ack === "applied"
+						? "batch_ack_applied"
+						: ack === "duplicate"
+							? "batch_ack_duplicate"
+							: "batch_ack_late_noop",
+			};
+		}
+		if (row.type !== "ack_receipt") {
 			throw new Error(`unsupported protocol message type: ${row.type}`);
 		}
 		const payload = parseReceipt(row.content);

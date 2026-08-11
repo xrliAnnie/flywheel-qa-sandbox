@@ -7,7 +7,10 @@ export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
 
 /** The EXACT set of model-callable tools the lead-actions server exposes.
  * Linear create/assign is a FLY-351 follow-on (added here when it lands). */
-export const LEAD_ACTIONS_TOOLS: readonly string[] = ["discord_send"];
+export const LEAD_ACTIONS_TOOLS: readonly string[] = [
+	"discord_send",
+	"ack_batch",
+];
 
 /** Keys that must NEVER appear as literal MCP-server env values. */
 const FORBIDDEN_ENV_KEY = /TOKEN|SECRET|KEY/i;
@@ -125,6 +128,7 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 	chatChannelId: string;
 	crossDeptChannelIds: string[];
 	stateDir: string;
+	commDbPath: string;
 	explicitAliases?: string;
 	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed). When true, the child
 	 * fail-soft refuses proactive discord_send(target="roundtable") (FLY-680). Non-secret. */
@@ -143,6 +147,7 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: opts.chatChannelId,
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: opts.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: opts.stateDir,
+		FLYWHEEL_COMM_DB: opts.commDbPath,
 	};
 	if (opts.explicitAliases) {
 		env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES = opts.explicitAliases;

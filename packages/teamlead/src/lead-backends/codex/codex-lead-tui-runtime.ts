@@ -890,6 +890,7 @@ export async function main(
 			chatChannelId: config.chatChannelId,
 			crossDeptChannelIds: config.crossDeptChannelIds,
 			stateDir,
+			commDbPath: config.commDbPath,
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
 			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
 			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access

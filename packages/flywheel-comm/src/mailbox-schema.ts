@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS mailbox (
     CHECK(state IN ('QUEUED','LEASED','ACKED','DEAD')),
   claimed_by TEXT,
   claim_expires_at TEXT,
+  delivered_at TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0,
+  lease_retry_count INTEGER NOT NULL DEFAULT 0,
   next_retry_at TEXT,
   last_error TEXT,
   acked_at TEXT,
@@ -53,6 +55,9 @@ CREATE INDEX IF NOT EXISTS mailbox_lead_reclaim
   ON mailbox(to_agent, msg_class, priority, seq)
   WHERE carrier = 'inbox' AND state = 'LEASED'
     AND recipient_kind = 'lead' AND batch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
+  ON mailbox(claim_expires_at)
+  WHERE state = 'LEASED' AND carrier = 'inbox';
 CREATE INDEX IF NOT EXISTS mailbox_claim_runner
   ON mailbox(priority, seq)
   WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'runner';

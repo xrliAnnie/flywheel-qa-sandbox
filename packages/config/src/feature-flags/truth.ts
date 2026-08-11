@@ -219,6 +219,18 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_IDLE_POLL_MS:
 		"tuning knob: RunnerIdleWatchdog W-1 pane scan cadence ms, default 3s (FLY-1393)",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
+	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
+		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
+	FLYWHEEL_MAILBOX_BATCH_WINDOW_MS:
+		"numeric tuning: mailbox grouping window (FLY-1573)",
+	FLYWHEEL_MAILBOX_BATCH_MAX:
+		"numeric tuning: mailbox messages per batch (FLY-1573)",
+	FLYWHEEL_MAILBOX_INFLIGHT_BATCHES:
+		"numeric tuning: mailbox in-flight batch limit (FLY-1573)",
+	FLYWHEEL_MAILBOX_LEASE_RETRY_MAX:
+		"numeric tuning: mailbox unacked lease retry limit (FLY-1573)",
+	FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS:
+		"numeric tuning: mailbox dead-letter notification window (FLY-1573)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:

@@ -11,6 +11,7 @@ import {
 	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
+	ensureMailboxQueueSchema,
 	MailboxQueue,
 	type MailboxRow,
 	type ProcessedEvidenceV1,
@@ -765,6 +766,7 @@ export class CommDB {
 			if (!isVirgin) assertMailboxGeneration(this.db, dbPath);
 			phase = "schema";
 			this.db.exec(SCHEMA);
+			ensureMailboxQueueSchema(this.db);
 			phase = "migrations";
 			this.db
 				.transaction(() => {
@@ -1630,6 +1632,27 @@ export class CommDB {
 			type: "ack_receipt",
 			msgClass: "protocol",
 			content: JSON.stringify({ event_seq: eventSeq, ack_token: ackToken }),
+			createdAt: new Date().toISOString(),
+			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
+			senderRef: encodeSenderRef(),
+		});
+		return id;
+	}
+
+	insertBatchAckReceipt(fromAgent: string, batchId: string): string {
+		const normalizedBatchId = batchId.trim();
+		if (!fromAgent.trim()) throw new Error("fromAgent is required");
+		if (!normalizedBatchId) throw new Error("batchId is required");
+		const id = randomUUID();
+		new MailboxQueue(this.db).enqueue({
+			id,
+			deliveryId: `ack_batch:${fromAgent}:${id}`,
+			fromAgent,
+			toAgent: "bridge",
+			recipientKind: "bridge",
+			type: "ack_batch",
+			msgClass: "protocol",
+			content: JSON.stringify({ batch_id: normalizedBatchId }),
 			createdAt: new Date().toISOString(),
 			expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
 			senderRef: encodeSenderRef(),
