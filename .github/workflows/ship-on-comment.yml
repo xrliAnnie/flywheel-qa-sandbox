@@ -143,6 +143,7 @@ jobs:
       run: pnpm test:packages:run
 
     - name: "✅ Merge PR"
+      id: merge-pr
       if: success()
       uses: actions/github-script@v7
       env:
@@ -151,7 +152,13 @@ jobs:
         HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
         HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
+        # SHIP_PAT (classic PAT, repo + workflow scope) — the default Actions
+        # token is hard-blocked from merging any PR that touches
+        # .github/workflows/* (403 "refusing to allow a GitHub App to update
+        # workflow without workflows permission"), which stranded every
+        # workflow-touching :cool: ship. An unset secret evaluates to '', so
+        # without SHIP_PAT this falls back to today's token unchanged.
+        github-token: ${{ secrets.SHIP_PAT || secrets.GITHUB_TOKEN }}
         script: |
           const prNumber = parseInt(process.env.PR_NUMBER, 10);
           await github.rest.pulls.merge({

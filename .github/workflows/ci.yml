@@ -607,6 +607,9 @@ jobs:
       - name: Release workflow structure lint (founder-gate contract)
         run: bash scripts/__tests__/release-workflows-structure.test.sh
 
+      - name: Ship merge-token contract (SHIP_PAT first, GITHUB_TOKEN fallback)
+        run: bash scripts/__tests__/ship-merge-token.test.sh
+
       - name: Publish broker structure lint (zero-build commit + token scrub + default-off)
         run: bash scripts/__tests__/publish-broker-structure.test.sh
 
