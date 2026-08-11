@@ -3,8 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
+import { LeadDeliveryUnavailableError } from "../lead-delivery-adapter.js";
 import {
 	LeadInboxRuntime,
 	resolveCodexLeadStateDir,
@@ -102,6 +105,98 @@ describe("LeadInboxRuntime", () => {
 		await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(1));
 		expect(store.markLeadEventDelivered).toHaveBeenCalledWith(9);
 		expect(registry.nudgeLeadInbox("lead-a", "project-a")).toBe(true);
+	});
+
+	it("forwards model transport stall context to the production wiring seam", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1574-runtime-stall-"));
+		const stalled = vi.fn(async () => undefined);
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: {
+				getActiveSessions: () => [],
+				markLeadEventDelivered: vi.fn(),
+			} as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: (project) => join(root, `${project}.db`),
+			ownerEpoch: "owner-1",
+			adapterForLead: () => ({
+				async deliverBatch() {
+					throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+				},
+			}),
+			onModelTransportStall: stalled,
+		});
+		runtimes.push(runtime);
+		runtime.enqueueLeadEvent(
+			{
+				seq: 10,
+				eventId: "event-10",
+				event: { event_type: "session_completed" },
+				sessionKey: "exec-10",
+				leadId: "lead-a",
+				timestamp: "2026-08-10T21:30:00.000Z",
+			},
+			"payload",
+		);
+		runtime.start();
+		await vi.waitFor(() =>
+			expect(stalled).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectName: "project-a",
+					leadId: "lead-a",
+					error: "socket unavailable",
+				}),
+			),
+		);
+	});
+
+	it("forwards Discord quarantine evidence before marking the row DEAD", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1574-runtime-quarantine-"));
+		const dbPath = join(root, "project-a.db");
+		const queue = new MailboxQueue(dbPath);
+		queue.enqueue({
+			id: "chat:lead-a:bad",
+			fromAgent: "founder",
+			toAgent: "lead-a",
+			recipientKind: "lead",
+			type: "discord_chat",
+			content: "malformed",
+			senderRef: encodeSenderRef(),
+		});
+		queue.close();
+		const undeliverable = vi.fn(async () => {
+			const snapshot = new MailboxQueue(dbPath);
+			try {
+				expect(snapshot.getById("chat:lead-a:bad")?.state).toBe("LEASED");
+			} finally {
+				snapshot.close();
+			}
+		});
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: { getActiveSessions: () => [] } as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-1",
+			adapterForLead: () => ({
+				async deliverBatch() {
+					throw new Error("adapter must not receive malformed Discord");
+				},
+			}),
+			onDiscordUndeliverable: undeliverable,
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		await vi.waitFor(() => expect(undeliverable).toHaveBeenCalledOnce());
+		const result = new MailboxQueue(dbPath);
+		try {
+			expect(result.getById("chat:lead-a:bad")).toMatchObject({
+				state: "DEAD",
+				dead_reason: expect.stringContaining("discord_undeliverable"),
+			});
+		} finally {
+			result.close();
+		}
 	});
 
 	it("prefers an existing legacy Codex state dir, otherwise uses injective identity", () => {

@@ -4577,10 +4577,71 @@ export async function startBridge(
 			reason: string;
 		}) => Promise<void>;
 	} = {};
+	type ModelTransportStall = {
+		projectName: string;
+		leadId: string;
+		error: string;
+		at: string;
+	};
+	type ModelTransportRecovery = Omit<ModelTransportStall, "error">;
+	const pendingModelTransportStalls = new Map<string, ModelTransportStall>();
+	const modelTransportAlertSink: {
+		current?: {
+			stall: (input: ModelTransportStall) => Promise<void>;
+			recovered: (input: ModelTransportRecovery) => Promise<void>;
+		};
+	} = {};
+	type DiscordMailboxAlert = {
+		projectName: string;
+		leadId: string;
+		deliveryIds: string[];
+		at: string;
+	};
+	type DiscordMailboxUndeliverable = DiscordMailboxAlert & { reason: string };
+	type DiscordMailboxStall = DiscordMailboxAlert & {
+		batchId: string;
+		error: string;
+	};
+	const pendingDiscordMailboxStalls = new Map<string, DiscordMailboxStall>();
+	const discordMailboxAlertSink: {
+		current?: {
+			undeliverable: (input: DiscordMailboxUndeliverable) => Promise<void>;
+			stall: (input: DiscordMailboxStall) => Promise<void>;
+		};
+	} = {};
 	const leadInboxRuntime = new LeadInboxRuntime({
 		onQuarantineAlert: async (input) => {
 			const send = quarantineAlertSink.current;
 			if (!send) throw new Error("quarantine alert sink not ready");
+			await send(input);
+		},
+		onModelTransportStall: async (input) => {
+			const key = `${input.projectName}\u001f${input.leadId}`;
+			const send = modelTransportAlertSink.current?.stall;
+			if (!send) {
+				pendingModelTransportStalls.set(key, input);
+				return;
+			}
+			await send(input);
+		},
+		onModelTransportRecovered: async (input) => {
+			pendingModelTransportStalls.delete(
+				`${input.projectName}\u001f${input.leadId}`,
+			);
+			await modelTransportAlertSink.current?.recovered(input);
+		},
+		onDiscordUndeliverable: async (input) => {
+			const send = discordMailboxAlertSink.current?.undeliverable;
+			if (!send) throw new Error("Discord mailbox alert sink not ready");
+			await send(input);
+		},
+		onDiscordDeliveryStall: async (input) => {
+			const key = `${input.projectName}\u001f${input.leadId}`;
+			const send = discordMailboxAlertSink.current?.stall;
+			if (!send) {
+				pendingDiscordMailboxStalls.set(key, input);
+				return;
+			}
 			await send(input);
 		},
 		projects,
@@ -7425,6 +7486,85 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	modelTransportAlertSink.current = {
+		stall: async (input) => {
+			await leadAlertNotifier.alert({
+				leadId: input.leadId,
+				projectName: input.projectName,
+				eventId:
+					`codex_model_transport_unavailable:${input.leadId}:` +
+					Math.floor(Date.parse(input.at) / (30 * 60_000)),
+				eventType: "inbox_loop_stalled",
+				title: "Codex Lead mailbox transport unavailable",
+				body:
+					`Mailbox delivery to ${input.leadId} cannot reach the Codex inbox ` +
+					`transport and is retrying without exhausting rows. Error: ${input.error}`,
+				severity: "severe",
+			});
+		},
+		recovered: async (input) => {
+			console.info("codex_model_transport_recovered", input);
+		},
+	};
+	for (const input of pendingModelTransportStalls.values()) {
+		void modelTransportAlertSink.current.stall(input).catch((error) => {
+			console.warn("codex_model_transport_alert_flush_failed", {
+				leadId: input.leadId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+	pendingModelTransportStalls.clear();
+	discordMailboxAlertSink.current = {
+		undeliverable: async (input) => {
+			const result = await leadAlertNotifier.alert({
+				leadId: input.leadId,
+				projectName: input.projectName,
+				eventId:
+					`discord_mailbox_undeliverable:${input.leadId}:` +
+					createHash("sha256")
+						.update(input.deliveryIds.join("\n"))
+						.digest("hex")
+						.slice(0, 16),
+				eventType: "delivery_dead_letter",
+				title: "Discord mailbox message quarantined",
+				body:
+					`Discord mailbox delivery to ${input.leadId} was quarantined before ` +
+					`reaching the Lead. Delivery IDs: ${input.deliveryIds.join(", ")}. ` +
+					`Reason: ${input.reason}`,
+				severity: "severe",
+			});
+			if (result.deadLettered || result.skipped) {
+				throw new Error(
+					`Discord mailbox quarantine alert not delivered: ${result.skipped ?? "dead_lettered"}`,
+				);
+			}
+		},
+		stall: async (input) => {
+			await leadAlertNotifier.alert({
+				leadId: input.leadId,
+				projectName: input.projectName,
+				eventId:
+					`discord_mailbox_delivery_stalled:${input.leadId}:` +
+					Math.floor(Date.parse(input.at) / (30 * 60_000)),
+				eventType: "inbox_loop_stalled",
+				title: "Discord mailbox delivery stalled",
+				body:
+					`Mailbox delivery to ${input.leadId} cannot reach the Discord route ` +
+					`and is retrying without exhausting rows. Error: ${input.error}`,
+				severity: "severe",
+			});
+		},
+	};
+	for (const input of pendingDiscordMailboxStalls.values()) {
+		void discordMailboxAlertSink.current.stall(input).catch((error) => {
+			console.warn("discord_mailbox_stall_alert_flush_failed", {
+				leadId: input.leadId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+	}
+	pendingDiscordMailboxStalls.clear();
 	// FLY-1586 R2 HIGH-5 — bind the quarantine alert sink now that the notifier
 	// exists. Direct Discord path on purpose: an alert about the inbox being
 	// wedged must not travel through the inbox.

@@ -457,6 +457,70 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(stalled).toHaveBeenCalledOnce();
 	});
 
+	it("quarantines and alerts after a bounded permanent Discord failure", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345679",
+			"423456789012345679",
+		);
+		const warn = vi.fn();
+		const undeliverable = vi.fn(async () => {
+			expect(queue.getById("chat:lead-a:323456789012345679")?.state).toBe(
+				"LEASED",
+			);
+		});
+		const result = await loop(
+			queue,
+			{
+				async deliverBatch() {
+					throw new Error("Codex Lead inbox rejected: authentication rejected");
+				},
+			},
+			{
+				maxModelAttempts: 1,
+				logger: { warn },
+				onDiscordUndeliverable: undeliverable,
+			},
+		).tick();
+		expect(result.ok).toBe(false);
+		expect(queue.getById("chat:lead-a:323456789012345679")).toMatchObject({
+			state: "DEAD",
+			dead_reason: expect.stringContaining("discord_undeliverable"),
+		});
+		expect(warn).toHaveBeenCalledWith(
+			"discord_mailbox_undeliverable",
+			expect.objectContaining({
+				deliveryIds: ["chat:lead-a:323456789012345679"],
+			}),
+		);
+		expect(undeliverable).toHaveBeenCalledOnce();
+	});
+
+	it("keeps an undeliverable Discord row leased when its alert is rejected", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(queue, "chat:lead-a:alert-failed", "423456789012345680");
+		const result = await loop(
+			queue,
+			{
+				async deliverBatch() {
+					throw new Error("permanent rejection");
+				},
+			},
+			{
+				maxModelAttempts: 1,
+				onDiscordUndeliverable: async () => {
+					throw new Error("operator alert rejected");
+				},
+			},
+		).tick();
+		expect(result.ok).toBe(false);
+		expect(queue.getById("chat:lead-a:alert-failed")).toMatchObject({
+			state: "LEASED",
+			dead_reason: null,
+		});
+	});
+
 	it("rate-limits Discord stall alerts and clears the episode on recovery", async () => {
 		const queue = makeQueue();
 		enqueueDiscord(
@@ -467,11 +531,16 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
 		let failing = true;
 		const warn = vi.fn();
+		const stalled = vi.fn();
 		const consumer = loop(
 			queue,
 			{
 				async deliverBatch(batch) {
-					if (failing) throw new Error("socket unavailable");
+					if (failing)
+						throw new LeadDeliveryUnavailableError(
+							"discord",
+							"socket unavailable",
+						);
 					return receipt(batch);
 				},
 			},
@@ -480,6 +549,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				retryBackoffBaseMs: 1,
 				retryBackoffCapMs: 1,
 				logger: { warn },
+				onDiscordDeliveryStall: stalled,
 			},
 		);
 		for (let attempt = 0; attempt < 5; attempt++) {
@@ -491,6 +561,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 				([event]) => event === "discord_mailbox_delivery_stalled",
 			),
 		).toHaveLength(1);
+		expect(stalled).toHaveBeenCalledOnce();
 		failing = false;
 		expect((await consumer.tick()).ok).toBe(true);
 		expect(warn).toHaveBeenCalledWith("discord_mailbox_delivery_recovered", {

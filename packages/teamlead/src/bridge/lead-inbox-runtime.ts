@@ -73,6 +73,32 @@ export interface LeadInboxRuntimeOptions {
 		projectName: string;
 		reason: string;
 	}) => Promise<void>;
+	onModelTransportStall?: (input: {
+		projectName: string;
+		leadId: string;
+		error: string;
+		at: string;
+	}) => Promise<void>;
+	onModelTransportRecovered?: (input: {
+		projectName: string;
+		leadId: string;
+		at: string;
+	}) => Promise<void>;
+	onDiscordUndeliverable?: (input: {
+		projectName: string;
+		leadId: string;
+		deliveryIds: string[];
+		reason: string;
+		at: string;
+	}) => Promise<void>;
+	onDiscordDeliveryStall?: (input: {
+		projectName: string;
+		leadId: string;
+		batchId: string;
+		deliveryIds: string[];
+		error: string;
+		at: string;
+	}) => Promise<void>;
 }
 
 export class LeadInboxRuntime {
@@ -191,6 +217,42 @@ export class LeadInboxRuntime {
 						if (Number.isSafeInteger(seq) && seq > 0)
 							opts.store.markLeadEventDelivered(seq);
 					},
+					...(opts.onModelTransportStall
+						? {
+								onModelTransportStall: (input) =>
+									opts.onModelTransportStall?.({
+										...input,
+										projectName: project.projectName,
+									}),
+							}
+						: {}),
+					...(opts.onModelTransportRecovered
+						? {
+								onModelTransportRecovered: (input) =>
+									opts.onModelTransportRecovered?.({
+										...input,
+										projectName: project.projectName,
+									}),
+							}
+						: {}),
+					...(opts.onDiscordUndeliverable
+						? {
+								onDiscordUndeliverable: (input) =>
+									opts.onDiscordUndeliverable?.({
+										...input,
+										projectName: project.projectName,
+									}),
+							}
+						: {}),
+					...(opts.onDiscordDeliveryStall
+						? {
+								onDiscordDeliveryStall: (input) =>
+									opts.onDiscordDeliveryStall?.({
+										...input,
+										projectName: project.projectName,
+									}),
+							}
+						: {}),
 					logger: console,
 					afterTickStarted: opts.afterTickStartedForLead
 						? () =>

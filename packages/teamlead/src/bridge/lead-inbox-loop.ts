@@ -69,9 +69,24 @@ export interface LeadInboxLoopOptions {
 	onModelTransportStall?: (context: {
 		leadId: string;
 		error: string;
+		at: string;
 	}) => Promise<void> | void;
 	onModelTransportRecovered?: (context: {
 		leadId: string;
+		at: string;
+	}) => Promise<void> | void;
+	onDiscordUndeliverable?: (context: {
+		leadId: string;
+		deliveryIds: string[];
+		reason: string;
+		at: string;
+	}) => Promise<void> | void;
+	onDiscordDeliveryStall?: (context: {
+		leadId: string;
+		batchId: string;
+		deliveryIds: string[];
+		error: string;
+		at: string;
 	}) => Promise<void> | void;
 	setTimer?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 	clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
@@ -348,7 +363,10 @@ export class LeadInboxLoop {
 					throw new Error("Discord batch route mismatch");
 				}
 			} catch (error) {
-				this.quarantineDiscord(rows, `route_parse:${describeError(error)}`);
+				await this.quarantineDiscord(
+					rows,
+					`route_parse:${describeError(error)}`,
+				);
 				return;
 			}
 		}
@@ -377,7 +395,7 @@ export class LeadInboxLoop {
 			const receipt = await this.opts.adapter.deliverBatch(batch);
 			if (receipt.status === "membership_conflict") {
 				if (discord) {
-					this.quarantineDiscord(rows, `membership_conflict:${batchId}`);
+					await this.quarantineDiscord(rows, `membership_conflict:${batchId}`);
 					return;
 				}
 				const quarantined = rows.filter((row) =>
@@ -422,6 +440,7 @@ export class LeadInboxLoop {
 				this.lastTransportAlertMs = 0;
 				await this.opts.onModelTransportRecovered?.({
 					leadId: this.opts.leadId,
+					at: this.isoNow(),
 				});
 			}
 			if (discord && this.discordStalled) {
@@ -434,21 +453,30 @@ export class LeadInboxLoop {
 		} catch (error) {
 			const unavailable = error instanceof LeadDeliveryUnavailableError;
 			const leadUnavailable = unavailable && error.scope === "lead";
-			const nonExhausting = leadUnavailable || discord;
-			this.opts.queue.recordLeadDeliveryFailure({
-				ownerEpoch: this.opts.ownerEpoch,
-				batchId,
-				error: describeError(error),
-				now: this.isoNow(),
-				nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
-				maxAttempts: nonExhausting
-					? Number.MAX_SAFE_INTEGER
-					: this.maxModelAttempts,
-			});
+			const nonExhausting = unavailable;
+			const attempt = (rows[0]?.retry_count ?? 0) + 1;
+			if (discord && !nonExhausting && attempt >= this.maxModelAttempts) {
+				await this.quarantineDiscord(
+					rows,
+					`delivery_attempts_exhausted:${describeError(error)}`,
+				);
+			} else {
+				this.opts.queue.recordLeadDeliveryFailure({
+					ownerEpoch: this.opts.ownerEpoch,
+					batchId,
+					error: describeError(error),
+					now: this.isoNow(),
+					nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+					maxAttempts: nonExhausting
+						? Number.MAX_SAFE_INTEGER
+						: this.maxModelAttempts,
+				});
+			}
 			if (leadUnavailable) await this.noteTransportStall(describeError(error));
 			if (
 				discord &&
-				(rows[0]?.retry_count ?? 0) + 1 >= 5 &&
+				nonExhausting &&
+				attempt >= 5 &&
 				(this.lastDiscordStallAlertMs === 0 ||
 					this.now().getTime() - this.lastDiscordStallAlertMs >= 30 * 60_000)
 			) {
@@ -460,23 +488,37 @@ export class LeadInboxLoop {
 					deliveryIds: rows.map(({ delivery_id }) => delivery_id),
 					error: describeError(error),
 				});
+				await this.opts.onDiscordDeliveryStall?.({
+					leadId: this.opts.leadId,
+					batchId,
+					deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+					error: describeError(error),
+					at: this.isoNow(),
+				});
 			}
 			throw error;
 		}
 	}
 
-	private quarantineDiscord(rows: MailboxRow[], reason: string): void {
+	private async quarantineDiscord(
+		rows: MailboxRow[],
+		reason: string,
+	): Promise<void> {
+		const at = this.isoNow();
+		const deliveryIds = rows.map(({ delivery_id }) => delivery_id);
+		await this.opts.onDiscordUndeliverable?.({
+			leadId: this.opts.leadId,
+			deliveryIds,
+			reason,
+			at,
+		});
 		this.opts.logger?.warn("discord_mailbox_undeliverable", {
 			leadId: this.opts.leadId,
-			deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+			deliveryIds,
 			reason,
 		});
 		const changed = rows.filter((row) =>
-			this.opts.queue.markDead(
-				row.id,
-				this.isoNow(),
-				`discord_undeliverable:${reason}`,
-			),
+			this.opts.queue.markDead(row.id, at, `discord_undeliverable:${reason}`),
 		).length;
 		if (changed !== rows.length) {
 			throw new Error("owner fence lost while quarantining Discord batch");
@@ -499,6 +541,7 @@ export class LeadInboxLoop {
 		await this.opts.onModelTransportStall?.({
 			leadId: this.opts.leadId,
 			error,
+			at: this.isoNow(),
 		});
 	}
 

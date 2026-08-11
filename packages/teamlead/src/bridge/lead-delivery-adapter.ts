@@ -6,6 +6,7 @@ import {
 	writeMailboxBatch,
 } from "flywheel-agent-team-transport";
 import {
+	CodexLeadInboxRejectedError,
 	probeCodexLeadInboxCapabilities,
 	resolveCodexLeadInboxSocketPath,
 	submitCodexLeadInboxBatch,
@@ -121,7 +122,13 @@ export class CodexLeadDeliveryAdapter implements LeadDeliveryAdapter {
 		} catch (error) {
 			// A v1 server rejects the additive capabilities method. Connection-level
 			// failures are Lead-wide and must not exhaust queued model rows.
-			if (!(error as Error).message.includes("malformed submitBatch request")) {
+			if (
+				!(
+					error instanceof CodexLeadInboxRejectedError &&
+					error.reason === "malformed submitBatch request"
+				)
+			) {
+				if (error instanceof CodexLeadInboxRejectedError) throw error;
 				throw new LeadDeliveryUnavailableError(
 					"lead",
 					`Codex Lead inbox capability probe failed: ${(error as Error).message}`,
@@ -156,6 +163,7 @@ export class CodexLeadDeliveryAdapter implements LeadDeliveryAdapter {
 				...(this.opts.timeoutMs ? { timeoutMs: this.opts.timeoutMs } : {}),
 			});
 		} catch (error) {
+			if (error instanceof CodexLeadInboxRejectedError) throw error;
 			throw new LeadDeliveryUnavailableError(
 				"lead",
 				`Codex Lead inbox submit failed: ${(error as Error).message}`,

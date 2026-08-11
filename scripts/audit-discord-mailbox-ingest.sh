@@ -61,6 +61,7 @@ if [ -n "$INGRESS_LOG" ]; then
 fi
 
 if [ "$bad_rows" -ne 0 ] || [ "$external_rows" -ne 0 ] \
-  || [ "$duplicate_rows" -ne 0 ] || [ "$missing_ingress" -ne 0 ]; then
+  || [ "$duplicate_rows" -ne 0 ] || [ "$dead_rows" -ne 0 ] \
+  || [ "$missing_ingress" -ne 0 ]; then
   exit 1
 fi

@@ -32,11 +32,20 @@ function escapeXml(value: string): string {
 		);
 }
 
+function escapeXmlText(value: string): string {
+	return value
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replace(/\p{Cc}/gu, (char) =>
+			char === "\n" || char === "\r" || char === "\t" ? char : "�",
+		);
+}
+
 export function renderDiscordChatContent(
 	envelope: ChatReceiptEnvelopeV1,
 ): string {
 	const attrs = {
-		source: "discord",
+		source: "plugin:discord:discord",
 		chat_id: envelope.chatId,
 		message_id: envelope.messageId,
 		user: envelope.authorName,
@@ -52,7 +61,7 @@ export function renderDiscordChatContent(
 		.map(([key, value]) => `${key}="${escapeXml(value)}"`)
 		.join(
 			" ",
-		)}>\n${[escapeXml(envelope.text), ...attachments].join("\n")}\n</channel>`;
+		)}>\n${[escapeXmlText(envelope.text), ...attachments].join("\n")}\n</channel>`;
 }
 
 export function ingestDiscordChat(
@@ -69,7 +78,7 @@ export function ingestDiscordChat(
 		authorId: args.authorId,
 		authorName: args.authorName,
 		ts: args.ts,
-		priority: founder ? 0 : 1,
+		priority: 1,
 		msgKind: args.msgKind,
 		attachments: args.attachments,
 		text: args.text,
@@ -87,7 +96,7 @@ export function ingestDiscordChat(
 			sourceRef: envelope.receiptId,
 			type: "discord_chat",
 			msgClass: "model",
-			priority: founder ? 0 : 1,
+			priority: 1,
 			content: `${encodeChatReceiptEnvelope(envelope)}\n${envelope.authorName}: ${envelope.text}`,
 			deliveryContent: renderDiscordChatContent(envelope),
 			createdAt: envelope.ts,

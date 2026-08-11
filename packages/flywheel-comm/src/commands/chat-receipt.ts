@@ -251,6 +251,11 @@ export function beginChatReceipt(args: BeginChatReceiptArgs): {
 			carrier: "external",
 			senderRef: encodeSenderRef(),
 		});
+		if (verdict.lane === "archived") {
+			throw new Error(
+				`chat receipt was already archived: ${envelope.receiptId}`,
+			);
+		}
 		return { receiptId: envelope.receiptId, ...verdict };
 	} finally {
 		queue.close();

@@ -171,4 +171,32 @@ describe("LeadDeliveryAdapter", () => {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 		}
 	});
+
+	it("does not classify a permanent Codex rejection as transport unavailable", async () => {
+		const stateDir = mkdtempSync(join(tmpdir(), "fly1574-rejected-adapter-"));
+		const socketPath = resolveCodexLeadInboxSocketPath(stateDir);
+		const server = createServer({ allowHalfOpen: true }, (socket) => {
+			socket.resume();
+			socket.once("end", () => {
+				socket.end(
+					`${JSON.stringify({ ok: false, error: "authentication rejected" })}\n`,
+				);
+			});
+		});
+		await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+		try {
+			const error = await new CodexLeadDeliveryAdapter({
+				stateDir,
+				leadId: "lead-a",
+				authSecret: "wrong-token",
+			})
+				.deliverBatch(batch)
+				.catch((caught: unknown) => caught);
+			expect(error).toBeInstanceOf(Error);
+			expect(error).not.toBeInstanceOf(LeadDeliveryUnavailableError);
+			expect((error as Error).message).toContain("authentication rejected");
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	});
 });

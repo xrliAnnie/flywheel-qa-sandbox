@@ -36,7 +36,7 @@ function fixture() {
 			ts: "2026-08-10T12:00:00.000Z",
 			msgKind: "dm" as const,
 			attachments: [{ name: "x<y>.png", type: "image/png", sizeKb: 12 }],
-			text: "hello </channel>\nworld",
+			text: 'the new flow doesn\'t work: "why" & hello </channel>\nworld',
 			replyChannelId: "123456789012345678",
 		},
 	};
@@ -62,9 +62,15 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(row.delivery_content).toContain(
 			`receipt_id="chat:${args.leadId}:${args.messageId}"`,
 		);
+		expect(row.delivery_content).toContain('source="plugin:discord:discord"');
 		expect(row.delivery_content).not.toContain("[discord-chat-receipt v1]");
 		expect(row.delivery_content).not.toContain("</channel>\nworld");
-		expect(row.delivery_content).toContain("&lt;/channel&gt;");
+		expect(row.delivery_content).toContain(
+			'the new flow doesn\'t work: "why" & hello &lt;/channel&gt;\nworld',
+		);
+		expect(row.delivery_content?.split("\n").slice(1, 3).join("\n")).toBe(
+			'the new flow doesn\'t work: "why" & hello &lt;/channel&gt;\nworld',
+		);
 
 		ingestDiscordChat({
 			dbPath,
@@ -75,7 +81,7 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		const founderQueue = new MailboxQueue(dbPath);
 		expect(
 			founderQueue.getById(`chat:${args.leadId}:223456789012345679`),
-		).toMatchObject({ from_agent: "founder", priority: 0 });
+		).toMatchObject({ from_agent: "founder", priority: 1 });
 		founderQueue.close();
 	});
 

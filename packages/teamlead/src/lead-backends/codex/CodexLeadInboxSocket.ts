@@ -220,6 +220,13 @@ export class CodexLeadInboxServer {
 	}
 }
 
+export class CodexLeadInboxRejectedError extends Error {
+	constructor(readonly reason: string) {
+		super(`Codex Lead inbox rejected: ${reason}`);
+		this.name = "CodexLeadInboxRejectedError";
+	}
+}
+
 export async function submitCodexLeadInboxBatch(args: {
 	socketPath: string;
 	leadId: string;
@@ -246,8 +253,7 @@ export async function submitCodexLeadInboxBatch(args: {
 		args.timeoutMs ?? 5_000,
 	);
 	const response = JSON.parse(raw) as SubmitBatchResponse | ErrorResponse;
-	if (!response.ok)
-		throw new Error(`Codex Lead inbox rejected: ${response.error}`);
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
 	return { status: response.status, entryId: response.entryId };
 }
 
@@ -274,8 +280,7 @@ export async function probeCodexLeadInboxCapabilities(args: {
 	const response = JSON.parse(raw) as
 		| { ok: true; capabilities: CodexLeadInboxCapabilities }
 		| ErrorResponse;
-	if (!response.ok)
-		throw new Error(`Codex Lead inbox rejected: ${response.error}`);
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
 	return response.capabilities;
 }
 

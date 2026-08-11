@@ -118,6 +118,32 @@ describe("FLY-1426 chat-receipt command", () => {
 		queue.close();
 	});
 
+	it("fails loud when begin replays an archived Discord receipt", () => {
+		const dbPath = freshDb();
+		const first = begin(dbPath);
+		completeChatReceipt({
+			dbPath,
+			leadId: "flywheel-eng-lead",
+			messageId: "100000000000000003",
+			now: "2026-07-22T12:01:00.000Z",
+		});
+		const queue = new MailboxQueue(dbPath);
+		try {
+			expect(
+				queue.archiveFamily({
+					id: first.receiptId,
+					now: "2026-07-22T12:02:00.000Z",
+					retentionMs: 0,
+				}),
+			).toBe("archived");
+		} finally {
+			queue.close();
+		}
+		expect(() => begin(dbPath)).toThrow(
+			`chat receipt was already archived: ${first.receiptId}`,
+		);
+	});
+
 	it("coexists with the founder lane for the same Discord message id", () => {
 		const dbPath = freshDb();
 		const queue = new MailboxQueue(dbPath);

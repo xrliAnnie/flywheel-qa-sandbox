@@ -35,3 +35,11 @@ if "$AUDIT" --db "$DB_PATH" --since 2026-08-10T00:00:00.000Z >/dev/null 2>&1; th
 else
   printf '[TEST] ok - missing visible mailbox id fails the audit\n'
 fi
+
+sqlite3 "$DB_PATH" "UPDATE mailbox SET delivery_content='<channel receipt_id=\"' || delivery_id || '\">ok</channel>', state='DEAD' WHERE type='discord_chat';"
+if "$AUDIT" --db "$DB_PATH" --since 2026-08-10T00:00:00.000Z >/dev/null 2>&1; then
+  printf '[TEST] FAIL - Discord DEAD row passed the audit\n' >&2
+  exit 1
+else
+  printf '[TEST] ok - Discord DEAD row fails the audit\n'
+fi
