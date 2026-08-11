@@ -124,6 +124,35 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		).toBe("discord-invalid:bad");
 	});
 
+	it("partitions route-less Discord rows by chat", () => {
+		const { dbPath, args } = fixture();
+		const { replyChannelId: _replyChannelId, ...routeLessArgs } = args;
+		ingestDiscordChat({ dbPath, ...routeLessArgs, msgKind: "guild" });
+		ingestDiscordChat({
+			dbPath,
+			...routeLessArgs,
+			chatId: "123456789012345679",
+			originChannelId: "123456789012345679",
+			messageId: "223456789012345679",
+			msgKind: "guild",
+		});
+		const queue = new MailboxQueue(dbPath);
+		const first = queue.getById(`chat:${args.leadId}:${args.messageId}`)!;
+		const second = queue.getById(`chat:${args.leadId}:223456789012345679`)!;
+		queue.close();
+		expect(discordBatchPartitionKey(first)).not.toBe(
+			discordBatchPartitionKey(second),
+		);
+	});
+
+	it("rejects a roundtable input without a reply route", () => {
+		const { dbPath, args } = fixture();
+		const { replyChannelId: _replyChannelId, ...routeLessArgs } = args;
+		expect(() =>
+			ingestDiscordChat({ dbPath, ...routeLessArgs, msgKind: "roundtable" }),
+		).toThrow("roundtable Discord chat requires a reply route");
+	});
+
 	it("freezes only one Discord route and respects a byte bound", () => {
 		const { dbPath, args } = fixture();
 		for (const [messageId, replyChannelId] of [

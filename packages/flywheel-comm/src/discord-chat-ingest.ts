@@ -66,6 +66,13 @@ export function renderDiscordChatContent(
 export function ingestDiscordChat(
 	args: IngestDiscordChatArgs,
 ): DiscordLaneVerdict {
+	if (
+		args.msgKind === "roundtable" &&
+		!args.replyChannelId &&
+		!args.replyRoute
+	) {
+		throw new Error("roundtable Discord chat requires a reply route");
+	}
 	const founder = args.founderId === args.authorId;
 	const envelope = normalizeChatReceiptEnvelope({
 		v: 1,
@@ -117,6 +124,7 @@ export function discordBatchPartitionKey(row: {
 	try {
 		const envelope = parseChatReceiptEnvelope(row.content);
 		const route = JSON.stringify({
+			chatId: envelope.chatId,
 			replyChannelId: envelope.replyChannelId ?? null,
 			replyRoute: envelope.replyRoute ?? null,
 		});
