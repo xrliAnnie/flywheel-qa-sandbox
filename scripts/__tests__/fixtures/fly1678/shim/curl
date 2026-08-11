@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# FLY-1678 test shim — curl must NEVER run during these tests. Calling it means
+# the renderer entered refresh_cache, which would hit the real Anthropic usage
+# endpoint / the real Keychain and burn the ~5-calls-per-token budget. Record the
+# call so the suite can assert it never happened, then fail.
+echo "curl $*" >> "${FLY1678_MARKER:?FLY1678_MARKER must be set}"
+exit 1

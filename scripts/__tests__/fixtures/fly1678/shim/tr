@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# FLY-1678 test shim — deterministic `tr` for the two bar-glyph forms.
+#
+# Measured on the production Mac (see plan section 5.1.1): the deciding variable
+# is the LOCALE, not BSD-vs-GNU. BSD /usr/bin/tr emits lone 0xe2 bytes under
+# LC_ALL=C and complete e2 96 93 glyphs under a UTF-8 locale; GNU tr 9.11 emits
+# lone 0xe2 under BOTH locales because coreutils tr is byte-oriented. So neither
+# a locale pin nor the host binary can give Mac and Linux the same bar bytes.
+#
+# This shim is independent of both: one COMPLETE glyph per input space, always —
+# and those are the bytes a UTF-8 terminal actually shows the founder. Production
+# make_bar() is deliberately left untouched.
+#
+# Everything else delegates to the real tr. That matters because this shim sits
+# on PATH for a whole process tree, not just the renderer: the installer itself
+# uses plain ASCII idioms like `tr -d ' '`, and failing those closed would break
+# the program under test for reasons that have nothing to do with bar glyphs.
+# Multibyte replacements OTHER than the two known glyphs still fail closed, since
+# those are exactly the cases where BSD and GNU would silently disagree.
+set -u
+
+if [ $# -eq 2 ] && [ "$1" = " " ]; then
+  case "$2" in
+    '▓'|'░')
+      exec python3 -c '
+import sys
+data = sys.stdin.buffer.read()
+glyph = sys.argv[1].encode("utf-8")
+sys.stdout.buffer.write(b"".join(glyph if b == 0x20 else bytes([b]) for b in data))
+' "$2"
+      ;;
+  esac
+fi
+
+# Fail closed on any OTHER non-ASCII argument — that is where BSD and GNU differ.
+for arg in "$@"; do
+  case "$arg" in
+    *[!\ -~]*)
+      echo "fly1678 tr shim: refusing unknown multibyte invocation: $*" >&2
+      exit 64
+      ;;
+  esac
+done
+
+if [ -x /usr/bin/tr ]; then exec /usr/bin/tr "$@"; fi
+exec /bin/tr "$@"

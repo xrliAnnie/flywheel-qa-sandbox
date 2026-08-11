@@ -258,6 +258,17 @@ jobs:
       - name: Test — FLY-1609 four-arm analysis contract
         run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
 
+      # FLY-1678: the statusline renders on every Lead and Runner pane and is
+      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
+      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
+      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
+      # AND implementation; curl/security are forbidden-call markers so CI can
+      # never touch the real usage API or Keychain).
+      - name: Test — FLY-1678 statusline model-scoped bar + installer
+        run: |
+          bash scripts/__tests__/fly1678-statusline-fable.test.sh
+          bash scripts/__tests__/fly1678-install-statusline.test.sh
+
       # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
       # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
       # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead

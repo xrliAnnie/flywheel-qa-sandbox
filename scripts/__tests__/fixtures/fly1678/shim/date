@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# FLY-1678 test shim — deterministic `date` covering EXACTLY the BSD forms that
+# scripts/statusline-command.sh invokes. Any other form fails closed, so a future
+# edit to the production script cannot silently fall through to the host `date`
+# and reintroduce host dependence.
+#
+# Why a shim at all: the production script is BSD-only (`date -juf`, `-v+1d`,
+# `-jf`). GNU date rejects those outright, so the renderer suite could never run
+# on the Ubuntu `script-tests` runner without this. Pinning the clock also stops
+# golden drift — a real clock turns "tmrw 07:00" into a weekday label overnight.
+#
+# LC_TIME is forced to C here as well: `+%a` would otherwise inherit a localised
+# weekday name from the host and make a supposedly deterministic golden
+# host-dependent (Codex design review R3).
+set -u
+export LC_ALL=C LC_TIME=C
+
+NOW="${FLY1678_FAKE_NOW:?FLY1678_FAKE_NOW must be set for the deterministic date shim}"
+
+die() { echo "fly1678 date shim: unsupported invocation: $*" >&2; exit 64; }
+
+fmt_epoch() { # <epoch> <strftime-format-without-plus>
+  python3 -c '
+import sys, datetime
+e = int(sys.argv[1]); f = sys.argv[2]
+print(datetime.datetime.fromtimestamp(e, datetime.timezone.utc).strftime(f), end="")
+' "$1" "$2"
+  echo
+}
+
+case "$1" in
+  # date +%s | date +%Y-%m-%d
+  +%s)        echo "$NOW" ;;
+  +%Y-%m-%d)  fmt_epoch "$NOW" "%Y-%m-%d" ;;
+
+  # date -v+1d +%Y-%m-%d
+  -v+1d)
+    [ "${2:-}" = "+%Y-%m-%d" ] || die "$@"
+    fmt_epoch "$(( NOW + 86400 ))" "%Y-%m-%d"
+    ;;
+
+  # date -juf "%Y-%m-%dT%H:%M:%S" "<iso>" +%s   — parse an ISO instant AS UTC
+  -juf)
+    [ "${2:-}" = "%Y-%m-%dT%H:%M:%S" ] && [ "${4:-}" = "+%s" ] || die "$@"
+    # BSD `date -juf` parses the LEADING match and merely warns about trailing
+    # characters ("Ignoring 1 extraneous characters in date string (Z)"), which
+    # the production caller discards with 2>/dev/null. A strict parser here would
+    # make the harness reject timestamps the real formatter accepts — the tests
+    # would then disagree with production about which forms work.
+    python3 -c '
+import sys, datetime
+raw = sys.argv[1]
+try:
+    d = datetime.datetime.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")
+except ValueError:
+    sys.exit(1)
+print(int(d.replace(tzinfo=datetime.timezone.utc).timestamp()))
+' "$3" || exit 1
+    ;;
+
+  # date -jf "%s" "<epoch>" +%Y-%m-%d | +%H:%M | +%a
+  -jf)
+    [ "${2:-}" = "%s" ] || die "$@"
+    case "${4:-}" in
+      +%Y-%m-%d) fmt_epoch "$3" "%Y-%m-%d" ;;
+      +%H:%M)    fmt_epoch "$3" "%H:%M" ;;
+      +%a)       fmt_epoch "$3" "%a" ;;
+      *)         die "$@" ;;
+    esac
+    ;;
+
+  *) die "$@" ;;
+esac

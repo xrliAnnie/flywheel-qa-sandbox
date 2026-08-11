@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# FLY-1678 test shim — deterministic `stat`, covering only `stat -f %m <file>`.
+#
+# GNU `stat -f` means "filesystem status" and prints several lines, so the
+# production `$(( $(date +%s) - $(stat -f %m "$CACHE") ))` becomes an arithmetic
+# syntax error on Linux. Returning the pinned now makes every cache read look
+# perfectly fresh, which is what keeps `refresh_cache` (and therefore any real
+# network call) out of the test path entirely.
+set -u
+NOW="${FLY1678_FAKE_NOW:?FLY1678_FAKE_NOW must be set for the deterministic stat shim}"
+if [ "${1:-}" = "-f" ] && [ "${2:-}" = "%m" ] && [ -n "${3:-}" ]; then
+  echo "$NOW"; exit 0
+fi
+echo "fly1678 stat shim: unsupported invocation: $*" >&2
+exit 64
