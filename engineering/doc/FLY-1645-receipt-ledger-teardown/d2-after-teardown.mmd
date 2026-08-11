@@ -1,0 +1,14 @@
+flowchart TB
+    F["👩‍💼 founder 在 Discord 发一条消息"]
+    F --> I["discord_chat 投递行<br/>(唯一路径,carrier=inbox)"]
+    I --> L["1573 租约合批投递<br/>(送到没送到:租约到期重投,3 次进死信)"]
+    L --> A["Lead ack_batch<br/>(队列职责到此结束)"]
+    A --> K["FLY-1575: 同一事务自动建 task OPEN<br/>(义务账,Lead 看得见)"]
+    K --> D1["Lead: done + 证据"]
+    K --> D2["Lead: no_action + 原因<br/>(合法出口)"]
+    style I fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style L fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style A fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style K fill:#e3f2fd,stroke:#007aff,stroke-width:2px
+    style D1 fill:#e3f2fd,stroke:#007aff,stroke-width:2px
+    style D2 fill:#e3f2fd,stroke:#007aff,stroke-width:2px

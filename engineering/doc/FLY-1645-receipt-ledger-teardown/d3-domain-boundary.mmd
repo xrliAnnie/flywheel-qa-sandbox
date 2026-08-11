@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph DEMO["🔨 拆除:收据账本机器(域 A)"]
+        A1["收据铸造<br/>chat: / founder_msg: 双胞胎"]
+        A2["settlement 账<br/>mailbox_log processed/disposed"]
+        A3["重投发射器<br/>reconcilePendingPass 等"]
+        A4["关闭动词 CLI<br/>handle-receipt / route-founder-reply<br/>/ chat-receipt settle"]
+        A5["终局清算 projector<br/>+ StateStore 意向账"]
+        A6["3 个旧开关<br/>RECEIPT_FOUNDATION 等"]
+    end
+    subgraph KEEP1["✅ 保留:question/gate 生命周期"]
+        B1["relay_state 三列<br/>(引擎自己写自己读,<br/>收据只是蹭了这根列)"]
+    end
+    subgraph KEEP2["✅ 保留:founder 审批电路 (FLY-1448)"]
+        B2["approve_to_ship 门<br/>+ founder 归因 + ✅ reaction"]
+    end
+    subgraph KEEP3["✅ 保留:投递层 (1573/1574)"]
+        B3["mailbox 租约/合批/死信<br/>+ Discord 耐久入站"]
+    end
+    subgraph NEW["📋 接班:FLY-1575 task 表"]
+        C1["ack 同事务建 task<br/>done / no_action 关闭"]
+    end
+    DEMO -.->|"义务账交接"| NEW
+    style DEMO fill:#fff5f5,stroke:#ff3b30,stroke-width:2px
+    style KEEP1 fill:#f0faf1,stroke:#34c759,stroke-width:2px
+    style KEEP2 fill:#f0faf1,stroke:#34c759,stroke-width:2px
+    style KEEP3 fill:#f0faf1,stroke:#34c759,stroke-width:2px
+    style NEW fill:#eef5ff,stroke:#007aff,stroke-width:2px
