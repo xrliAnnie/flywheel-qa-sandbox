@@ -1,13 +1,16 @@
 ---
 issue: FLY-1645
-phase: implement
-phaseCursor: 5/5
-updated: 2026-08-11T13:38:12.484Z
-nextStep: request and poll fresh code review for main d0e03baa and plugin 3c72cd9
+phase: design
+phaseCursor: 6/6
+updated: 2026-08-11T15:26:43.010Z
+nextStep: "design node redelivered (docs adopted, HTML published+reported).
+  Branch truth: implement 5/5 done; R2 MEDIUM folded @4d3a4098; next = fresh
+  code review for main 4d3a4098 + plugin 3c72cd9, then QA (tenant-A/B mechanical
+  evidence, real-conversation zero-residue, dual-repo pairing)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1645 progress
-**phase**: implement (5/5)
-**next**: request and poll fresh code review for main d0e03baa and plugin 3c72cd9
+**phase**: design (6/6)
+**next**: design node redelivered (docs adopted, HTML published+reported). Branch truth: implement 5/5 done; R2 MEDIUM folded @4d3a4098; next = fresh code review for main 4d3a4098 + plugin 3c72cd9, then QA (tenant-A/B mechanical evidence, real-conversation zero-residue, dual-repo pairing)
