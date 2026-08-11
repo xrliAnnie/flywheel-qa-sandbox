@@ -59,7 +59,12 @@ describe("FLY-1426 chat-receipt command", () => {
 		const dbPath = freshDb();
 		const first = begin(dbPath);
 		const replay = begin(dbPath);
-		expect(replay).toEqual(first);
+		expect(first).toMatchObject({ lane: "inserted_external", seq: 1 });
+		expect(replay).toEqual({
+			receiptId: first.receiptId,
+			lane: "legacy_external",
+			deliveryId: first.deliveryId,
+		});
 
 		const queue = new MailboxQueue(dbPath);
 		try {
@@ -100,11 +105,42 @@ describe("FLY-1426 chat-receipt command", () => {
 		}
 	});
 
-	it("rejects a replay that changes fields under the same Discord message id", () => {
+	it("keeps the first lane projection when a replay changes fields", () => {
 		const dbPath = freshDb();
 		begin(dbPath);
-		expect(() => begin(dbPath, { authorName: "Someone else" })).toThrow(
-			/identity conflict/,
+		expect(begin(dbPath, { authorName: "Someone else" }).lane).toBe(
+			"legacy_external",
+		);
+		const queue = new MailboxQueue(dbPath);
+		expect(
+			queue.getById("chat:flywheel-eng-lead:100000000000000003")?.content,
+		).toContain('"authorName":"Annie"');
+		queue.close();
+	});
+
+	it("fails loud when begin replays an archived Discord receipt", () => {
+		const dbPath = freshDb();
+		const first = begin(dbPath);
+		completeChatReceipt({
+			dbPath,
+			leadId: "flywheel-eng-lead",
+			messageId: "100000000000000003",
+			now: "2026-07-22T12:01:00.000Z",
+		});
+		const queue = new MailboxQueue(dbPath);
+		try {
+			expect(
+				queue.archiveFamily({
+					id: first.receiptId,
+					now: "2026-07-22T12:02:00.000Z",
+					retentionMs: 0,
+				}),
+			).toBe("archived");
+		} finally {
+			queue.close();
+		}
+		expect(() => begin(dbPath)).toThrow(
+			`chat receipt was already archived: ${first.receiptId}`,
 		);
 	});
 

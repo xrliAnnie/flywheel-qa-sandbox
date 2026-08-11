@@ -79,6 +79,7 @@ import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
+import { ingestDiscordChat } from "./discord-chat-ingest.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
@@ -106,6 +107,7 @@ Commands:
             eligible pending question, or explicitly close it as no-route (Lead use)
   handle-receipt  Category-agnostic Lead action: ack/no-route/relay/respond a receipt
   chat-receipt  Durable Discord-chat receipt producer (begin|complete|settle|pending|quarantine)
+  chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
@@ -226,6 +228,9 @@ async function main(): Promise<void> {
 			break;
 		case "chat-receipt":
 			runChatReceipt(commandArgs);
+			break;
+		case "chat-ingest":
+			await runChatIngest(commandArgs);
 			break;
 		case "send":
 			await runSend(commandArgs);
@@ -825,6 +830,104 @@ function runChatReceipt(args: string[]): void {
 		now: new Date().toISOString(),
 	});
 	output(result, result.receiptId);
+}
+
+async function runChatIngest(args: string[]): Promise<void> {
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			"version-probe": { type: "boolean", default: false },
+			json: { type: "boolean", default: false },
+			lead: { type: "string" },
+			"chat-id": { type: "string" },
+			"origin-channel-id": { type: "string" },
+			"message-id": { type: "string" },
+			"author-id": { type: "string" },
+			"author-name": { type: "string" },
+			"founder-id": { type: "string" },
+			ts: { type: "string" },
+			"msg-kind": { type: "string" },
+			"attachments-json": { type: "string" },
+			"reply-channel-id": { type: "string" },
+			"reply-route-json": { type: "string" },
+			"content-stdin": { type: "boolean", default: false },
+			db: { type: "string" },
+			project: { type: "string" },
+		},
+		allowPositionals: true,
+	});
+	if (positionals.length > 0)
+		throw new Error("chat-ingest accepts no positionals");
+	if (values["version-probe"]) {
+		console.log(
+			JSON.stringify({ command: "chat-ingest", protocolVersion: 1, ok: true }),
+		);
+		return;
+	}
+	if (!values["content-stdin"]) {
+		throw new Error("chat-ingest requires --content-stdin");
+	}
+	const required = (name: keyof typeof values): string => {
+		const value = values[name];
+		if (typeof value !== "string" || !value) {
+			throw new Error(`--${String(name)} is required`);
+		}
+		return value;
+	};
+	let attachments: unknown;
+	let replyRoute: unknown;
+	try {
+		attachments = JSON.parse(values["attachments-json"] ?? "[]");
+		replyRoute = values["reply-route-json"]
+			? JSON.parse(values["reply-route-json"])
+			: undefined;
+	} catch (error) {
+		throw new Error(
+			`chat-ingest JSON option is invalid: ${(error as Error).message}`,
+		);
+	}
+	const result = ingestDiscordChat({
+		dbPath: resolveDbPath({ db: values.db, project: values.project }),
+		leadId: required("lead"),
+		chatId: required("chat-id"),
+		originChannelId: required("origin-channel-id"),
+		messageId: required("message-id"),
+		authorId: required("author-id"),
+		authorName: required("author-name"),
+		...(values["founder-id"] ? { founderId: values["founder-id"] } : {}),
+		ts: required("ts"),
+		msgKind: required("msg-kind") as "dm" | "guild" | "roundtable",
+		attachments: attachments as Array<{
+			name: string;
+			type: string;
+			sizeKb: number;
+		}>,
+		text: readFileSync(0, "utf8"),
+		...(values["reply-channel-id"]
+			? { replyChannelId: values["reply-channel-id"] }
+			: {}),
+		...(replyRoute
+			? {
+					replyRoute: replyRoute as {
+						kind: "roundtable_thread_from_message";
+						parentChannelId: string;
+						sourceMessageId: string;
+						threadId: string;
+						threadName?: string;
+					},
+				}
+			: {}),
+	});
+	// Commit evidence must precede the best-effort doorbell.
+	console.log(JSON.stringify(result));
+	if (result.lane === "inserted_inbox") {
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: process.env.BRIDGE_URL,
+			leadId: required("lead"),
+			project: values.project ?? process.env.PROJECT_NAME,
+			apiToken: process.env.TEAMLEAD_API_TOKEN,
+		});
+	}
 }
 
 async function runSend(args: string[]): Promise<void> {

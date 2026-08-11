@@ -7,8 +7,8 @@
  * socket keeps durable accept + pump in that owning process.
  */
 
-import { createHmac, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, unlinkSync } from "node:fs";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 import {
 	createConnection,
 	createServer,
@@ -19,7 +19,7 @@ import { join } from "node:path";
 import type { LeadInputBatch, LeadInputRouter } from "./LeadInputRouter.js";
 import type { BatchAcceptStatus } from "./LeadJournal.js";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_REQUEST_BYTES = 5 * 1024 * 1024;
 
 export interface CodexLeadInboxOwnerBinding {
@@ -28,11 +28,20 @@ export interface CodexLeadInboxOwnerBinding {
 }
 
 interface SubmitBatchRequest extends CodexLeadInboxOwnerBinding {
-	version: typeof PROTOCOL_VERSION;
+	version: 1 | 2;
 	method: "submitBatch";
 	batch: LeadInputBatch;
 	auth: string;
 }
+
+interface CapabilitiesRequest {
+	version: 2;
+	method: "capabilities";
+	leadId: string;
+	auth: string;
+}
+
+type InboxRequest = SubmitBatchRequest | CapabilitiesRequest;
 
 interface SubmitBatchResponse {
 	ok: true;
@@ -45,6 +54,12 @@ interface ErrorResponse {
 	error: string;
 }
 
+export interface CodexLeadInboxCapabilities {
+	protocolVersions: [1, 2];
+	features: ["discord_route_v2"];
+	socketOwnerId: string;
+}
+
 export function resolveCodexLeadInboxSocketPath(stateDir: string): string {
 	return join(stateDir, "lead-inbox.sock");
 }
@@ -55,6 +70,7 @@ export interface CodexLeadInboxServerOptions {
 	router: Pick<LeadInputRouter, "submitBatch">;
 	/** Lead bot token shared only by Bridge and the owning TUI process. */
 	authSecret: string;
+	socketOwnerId?: string;
 	/** Crash seam: throw after journal commit to simulate response loss. */
 	afterCommit?: () => void | Promise<void>;
 }
@@ -62,6 +78,9 @@ export interface CodexLeadInboxServerOptions {
 export class CodexLeadInboxServer {
 	private server: Server | undefined;
 	private readonly sockets = new Set<Socket>();
+	private readonly socketOwnerId: string;
+	private accepting = false;
+	private boundIdentity?: { dev: number; ino: number };
 
 	constructor(private readonly opts: CodexLeadInboxServerOptions) {
 		if (!opts.socketPath || !opts.leadId.trim() || !opts.authSecret.trim()) {
@@ -69,6 +88,7 @@ export class CodexLeadInboxServer {
 				"CodexLeadInboxServer requires socketPath + leadId + authSecret",
 			);
 		}
+		this.socketOwnerId = opts.socketOwnerId ?? randomUUID();
 	}
 
 	async listen(): Promise<void> {
@@ -77,6 +97,10 @@ export class CodexLeadInboxServer {
 		// Keep the writable half open after the client finishes its request so the
 		// asynchronous journal commit can return a receipt on the same connection.
 		const server = createServer({ allowHalfOpen: true }, (socket) => {
+			if (!this.accepting) {
+				socket.destroy();
+				return;
+			}
 			this.sockets.add(socket);
 			socket.once("close", () => this.sockets.delete(socket));
 			this.handle(socket);
@@ -89,13 +113,40 @@ export class CodexLeadInboxServer {
 			});
 		});
 		chmodSync(this.opts.socketPath, 0o600);
+		const stat = lstatSync(this.opts.socketPath);
+		this.boundIdentity = { dev: stat.dev, ino: stat.ino };
+		this.accepting = true;
 		this.server = server;
+	}
+
+	pauseAccepting(): void {
+		this.accepting = false;
+		for (const socket of this.sockets) socket.destroy();
+	}
+
+	resumeIfBoundPathCurrent(): boolean {
+		if (!this.server || !this.boundIdentity) return false;
+		try {
+			const stat = lstatSync(this.opts.socketPath);
+			if (
+				stat.dev !== this.boundIdentity.dev ||
+				stat.ino !== this.boundIdentity.ino
+			) {
+				return false;
+			}
+			this.accepting = true;
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	async close(): Promise<void> {
 		const server = this.server;
 		if (!server) return;
 		this.server = undefined;
+		this.accepting = false;
+		this.boundIdentity = undefined;
 		for (const socket of this.sockets) socket.destroy();
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		try {
@@ -139,6 +190,15 @@ export class CodexLeadInboxServer {
 			if (!authenticateRequest(request, this.opts.authSecret)) {
 				throw new Error("authentication rejected");
 			}
+			if (request.method === "capabilities") {
+				const capabilities: CodexLeadInboxCapabilities = {
+					protocolVersions: [1, 2],
+					features: ["discord_route_v2"],
+					socketOwnerId: this.socketOwnerId,
+				};
+				socket.end(`${JSON.stringify({ ok: true, capabilities })}\n`);
+				return;
+			}
 			const result = this.opts.router.submitBatch(request.batch);
 			try {
 				await this.opts.afterCommit?.();
@@ -160,16 +220,24 @@ export class CodexLeadInboxServer {
 	}
 }
 
+export class CodexLeadInboxRejectedError extends Error {
+	constructor(readonly reason: string) {
+		super(`Codex Lead inbox rejected: ${reason}`);
+		this.name = "CodexLeadInboxRejectedError";
+	}
+}
+
 export async function submitCodexLeadInboxBatch(args: {
 	socketPath: string;
 	leadId: string;
 	ownerEpoch: string;
 	authSecret: string;
 	batch: LeadInputBatch;
+	protocolVersion?: 1 | 2;
 	timeoutMs?: number;
 }): Promise<{ status: BatchAcceptStatus; entryId: string }> {
 	const unsigned = {
-		version: PROTOCOL_VERSION,
+		version: args.protocolVersion ?? 1,
 		method: "submitBatch",
 		leadId: args.leadId,
 		ownerEpoch: args.ownerEpoch,
@@ -185,15 +253,49 @@ export async function submitCodexLeadInboxBatch(args: {
 		args.timeoutMs ?? 5_000,
 	);
 	const response = JSON.parse(raw) as SubmitBatchResponse | ErrorResponse;
-	if (!response.ok)
-		throw new Error(`Codex Lead inbox rejected: ${response.error}`);
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
 	return { status: response.status, entryId: response.entryId };
 }
 
-function parseRequest(raw: string): SubmitBatchRequest {
-	const value = JSON.parse(raw.trim()) as Partial<SubmitBatchRequest>;
+export async function probeCodexLeadInboxCapabilities(args: {
+	socketPath: string;
+	leadId: string;
+	authSecret: string;
+	timeoutMs?: number;
+}): Promise<CodexLeadInboxCapabilities> {
+	const unsigned = {
+		version: PROTOCOL_VERSION,
+		method: "capabilities",
+		leadId: args.leadId,
+	} as const;
+	const request: CapabilitiesRequest = {
+		...unsigned,
+		auth: signRequest(unsigned, args.authSecret),
+	};
+	const raw = await requestResponse(
+		args.socketPath,
+		`${JSON.stringify(request)}\n`,
+		args.timeoutMs ?? 5_000,
+	);
+	const response = JSON.parse(raw) as
+		| { ok: true; capabilities: CodexLeadInboxCapabilities }
+		| ErrorResponse;
+	if (!response.ok) throw new CodexLeadInboxRejectedError(response.error);
+	return response.capabilities;
+}
+
+function parseRequest(raw: string): InboxRequest {
+	const value = JSON.parse(raw.trim()) as Partial<InboxRequest>;
 	if (
-		value.version !== PROTOCOL_VERSION ||
+		value.method === "capabilities" &&
+		value.version === 2 &&
+		typeof value.leadId === "string" &&
+		typeof value.auth === "string"
+	) {
+		return value as CapabilitiesRequest;
+	}
+	if (
+		(value.version !== 1 && value.version !== 2) ||
 		value.method !== "submitBatch" ||
 		typeof value.leadId !== "string" ||
 		typeof value.ownerEpoch !== "string" ||
@@ -206,23 +308,38 @@ function parseRequest(raw: string): SubmitBatchRequest {
 	) {
 		throw new Error("malformed submitBatch request");
 	}
+	if (
+		value.version === 1 &&
+		(value.batch.replyChannelId !== undefined ||
+			value.batch.replyRoute !== undefined)
+	) {
+		throw new Error("v1 submitBatch cannot carry Discord route metadata");
+	}
 	return value as SubmitBatchRequest;
 }
 
-type UnsignedSubmitBatchRequest = Omit<SubmitBatchRequest, "auth">;
+type UnsignedInboxRequest =
+	| Omit<SubmitBatchRequest, "auth">
+	| Omit<CapabilitiesRequest, "auth">;
 
-function canonicalRequest(request: UnsignedSubmitBatchRequest): string {
-	return JSON.stringify({
-		version: request.version,
-		method: request.method,
-		leadId: request.leadId,
-		ownerEpoch: request.ownerEpoch,
-		batch: request.batch,
-	});
+function canonicalRequest(request: UnsignedInboxRequest): string {
+	return request.method === "capabilities"
+		? JSON.stringify({
+				version: request.version,
+				method: request.method,
+				leadId: request.leadId,
+			})
+		: JSON.stringify({
+				version: request.version,
+				method: request.method,
+				leadId: request.leadId,
+				ownerEpoch: request.ownerEpoch,
+				batch: request.batch,
+			});
 }
 
 function signRequest(
-	request: UnsignedSubmitBatchRequest,
+	request: UnsignedInboxRequest,
 	authSecret: string,
 ): string {
 	return createHmac("sha256", authSecret)
@@ -231,19 +348,25 @@ function signRequest(
 }
 
 function authenticateRequest(
-	request: SubmitBatchRequest,
+	request: InboxRequest,
 	authSecret: string,
 ): boolean {
 	if (!/^[0-9a-f]{64}$/i.test(request.auth)) return false;
 	const expected = Buffer.from(
 		signRequest(
-			{
-				version: request.version,
-				method: request.method,
-				leadId: request.leadId,
-				ownerEpoch: request.ownerEpoch,
-				batch: request.batch,
-			},
+			request.method === "capabilities"
+				? {
+						version: request.version,
+						method: request.method,
+						leadId: request.leadId,
+					}
+				: {
+						version: request.version,
+						method: request.method,
+						leadId: request.leadId,
+						ownerEpoch: request.ownerEpoch,
+						batch: request.batch,
+					},
 			authSecret,
 		),
 		"hex",

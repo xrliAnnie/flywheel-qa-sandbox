@@ -7,11 +7,16 @@
  */
 
 import { randomUUID } from "node:crypto";
+import {
+	discordBatchPartitionKey,
+	parseDiscordChatRoute,
+} from "flywheel-comm/discord-chat-ingest";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import type {
 	LeadDeliveryAdapter,
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
+import { LeadDeliveryUnavailableError } from "./lead-delivery-adapter.js";
 import type { MailboxQueueConfig } from "./mailbox-queue-config.js";
 
 export const ACTIVE_LEAD_INBOX_INTERVAL_MS = 1_000;
@@ -64,6 +69,30 @@ export interface LeadInboxLoopOptions {
 	activeIntervalMs?: number;
 	idleIntervalMs?: number;
 	maxBatchSize?: number;
+	maxBatchBytes?: number;
+	onModelTransportStall?: (context: {
+		leadId: string;
+		error: string;
+		at: string;
+	}) => Promise<void> | void;
+	onModelTransportRecovered?: (context: {
+		leadId: string;
+		at: string;
+	}) => Promise<void> | void;
+	onDiscordUndeliverable?: (context: {
+		leadId: string;
+		deliveryIds: string[];
+		reason: string;
+		attempt: number;
+		at: string;
+	}) => Promise<void> | void;
+	onDiscordDeliveryStall?: (context: {
+		leadId: string;
+		batchId: string;
+		deliveryIds: string[];
+		error: string;
+		at: string;
+	}) => Promise<void> | void;
 	setTimer?: (fn: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
 	clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
 	logger?: { warn: (message: string, context?: unknown) => void };
@@ -87,6 +116,7 @@ export class LeadInboxLoop {
 	private readonly leaseTtlMs: number;
 	private readonly claimTtlMs: number;
 	private readonly maxBatchSize: number;
+	private readonly maxBatchBytes: number;
 	private readonly maxProtocolAttempts: number;
 	private readonly maxModelAttempts: number;
 	private readonly retryBackoffBaseMs: number;
@@ -99,6 +129,10 @@ export class LeadInboxLoop {
 	private running = false;
 	private stopped = true;
 	private nudgePending = false;
+	private transportStalled = false;
+	private lastTransportAlertMs = 0;
+	private discordStalled = false;
+	private lastDiscordStallAlertMs = 0;
 
 	constructor(private readonly opts: LeadInboxLoopOptions) {
 		this.activeIntervalMs =
@@ -107,6 +141,7 @@ export class LeadInboxLoop {
 		this.leaseTtlMs = opts.leaseTtlMs ?? 10_000;
 		this.claimTtlMs = opts.claimTtlMs ?? 15_000;
 		this.maxBatchSize = opts.maxBatchSize ?? 10_000;
+		this.maxBatchBytes = opts.maxBatchBytes ?? 4 * 1024 * 1024;
 		this.maxProtocolAttempts = opts.maxProtocolAttempts ?? 3;
 		this.maxModelAttempts = opts.maxModelAttempts ?? 5;
 		this.retryBackoffBaseMs = opts.retryBackoffBaseMs ?? 5_000;
@@ -261,6 +296,8 @@ export class LeadInboxLoop {
 						batchWindowMs: queueConfig.batchWindowMs,
 						batchMaxSize: queueConfig.batchMaxSize,
 						inflightMaxBatches: queueConfig.inflightMaxBatches,
+						maxBatchBytes: this.maxBatchBytes,
+						partitionKey: discordBatchPartitionKey,
 					})
 				: this.opts.queue.claimLeadBatch({
 						// FLY-1573 legacy (pre-queue) path — delete with
@@ -272,6 +309,8 @@ export class LeadInboxLoop {
 						now: this.isoNow(),
 						claimTtlMs: this.claimTtlMs,
 						maxBatchSize: this.maxBatchSize,
+						maxBatchBytes: this.maxBatchBytes,
+						partitionKey: discordBatchPartitionKey,
 					});
 			if (claimed.length > 0) {
 				const freshBatch = claimed[0]?.batch_id === candidateBatchId;
@@ -352,6 +391,30 @@ export class LeadInboxLoop {
 		if (!this.opts.queue.isCurrentOwner(this.opts.ownerEpoch, this.isoNow())) {
 			throw new Error("owner fence lost before transport handoff");
 		}
+		const discord = rows[0]?.type === "discord_chat";
+		if (discord !== rows.every((row) => row.type === "discord_chat")) {
+			throw new Error("claimed model batch mixes Discord and regular rows");
+		}
+		let route: ReturnType<typeof parseDiscordChatRoute> = {};
+		if (discord) {
+			try {
+				const routes = rows.map((row) => parseDiscordChatRoute(row.content));
+				route = routes[0] ?? {};
+				if (
+					routes.some(
+						(candidate) => JSON.stringify(candidate) !== JSON.stringify(route),
+					)
+				) {
+					throw new Error("Discord batch route mismatch");
+				}
+			} catch (error) {
+				await this.quarantineDiscord(
+					rows,
+					`route_parse:${describeError(error)}`,
+				);
+				return;
+			}
+		}
 		const attempt = rows[0]?.lease_retry_count ?? 0;
 		if (rows.some((row) => row.lease_retry_count !== attempt)) {
 			throw new Error("claimed model batch mixes lease retry attempts");
@@ -369,6 +432,7 @@ export class LeadInboxLoop {
 			batchId: transportBatchId,
 			leadId: this.opts.leadId,
 			ownerEpoch: this.opts.ownerEpoch,
+			kind: discord ? "discord_chat" : "model",
 			members: rows.map((row, index) => {
 				const content = row.delivery_content ?? row.content;
 				const modelContent = queueConfig.enabled
@@ -390,10 +454,15 @@ export class LeadInboxLoop {
 					)
 					.join("\n\n")
 			}`,
+			...route,
 		};
 		try {
 			const receipt = await this.opts.adapter.deliverBatch(batch);
 			if (receipt.status === "membership_conflict") {
+				if (discord) {
+					await this.quarantineDiscord(rows, `membership_conflict:${batchId}`);
+					return;
+				}
 				const quarantined = rows.filter((row) =>
 					this.opts.queue.markDead(
 						row.id,
@@ -442,17 +511,140 @@ export class LeadInboxLoop {
 			) {
 				throw new Error("owner fence lost before queue consume");
 			}
+			if (this.transportStalled) {
+				this.transportStalled = false;
+				this.lastTransportAlertMs = 0;
+				await this.opts.onModelTransportRecovered?.({
+					leadId: this.opts.leadId,
+					at: this.isoNow(),
+				});
+			}
+			if (discord && this.discordStalled) {
+				this.discordStalled = false;
+				this.lastDiscordStallAlertMs = 0;
+				this.opts.logger?.warn("discord_mailbox_delivery_recovered", {
+					leadId: this.opts.leadId,
+				});
+			}
 		} catch (error) {
-			this.opts.queue.recordLeadDeliveryFailure({
-				ownerEpoch: this.opts.ownerEpoch,
-				batchId,
-				error: describeError(error),
-				now: this.isoNow(),
-				nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
-				maxAttempts: this.maxModelAttempts,
-			});
+			const unavailable = error instanceof LeadDeliveryUnavailableError;
+			const leadUnavailable = unavailable && error.scope === "lead";
+			const nonExhausting = unavailable;
+			const attempt = (rows[0]?.retry_count ?? 0) + 1;
+			if (discord && !nonExhausting && attempt >= this.maxModelAttempts) {
+				await this.quarantineDiscord(
+					rows,
+					`delivery_attempts_exhausted:${describeError(error)}`,
+				);
+			} else {
+				this.opts.queue.recordLeadDeliveryFailure({
+					ownerEpoch: this.opts.ownerEpoch,
+					batchId,
+					error: describeError(error),
+					now: this.isoNow(),
+					nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+					maxAttempts: nonExhausting
+						? Number.MAX_SAFE_INTEGER
+						: this.maxModelAttempts,
+				});
+			}
+			if (leadUnavailable) await this.noteTransportStall(describeError(error));
+			if (
+				discord &&
+				nonExhausting &&
+				attempt >= 5 &&
+				(this.lastDiscordStallAlertMs === 0 ||
+					this.now().getTime() - this.lastDiscordStallAlertMs >= 30 * 60_000)
+			) {
+				this.discordStalled = true;
+				this.lastDiscordStallAlertMs = this.now().getTime();
+				this.opts.logger?.warn("discord_mailbox_delivery_stalled", {
+					leadId: this.opts.leadId,
+					batchId,
+					deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+					error: describeError(error),
+				});
+				await this.opts.onDiscordDeliveryStall?.({
+					leadId: this.opts.leadId,
+					batchId,
+					deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+					error: describeError(error),
+					at: this.isoNow(),
+				});
+			}
 			throw error;
 		}
+	}
+
+	private async quarantineDiscord(
+		rows: MailboxRow[],
+		reason: string,
+	): Promise<void> {
+		const at = this.isoNow();
+		const deliveryIds = rows.map(({ delivery_id }) => delivery_id);
+		const batchId = rows[0]?.batch_id;
+		if (!batchId) throw new Error("Discord quarantine batch id is missing");
+		const attempt = (rows[0]?.retry_count ?? 0) + 1;
+		try {
+			await this.opts.onDiscordUndeliverable?.({
+				leadId: this.opts.leadId,
+				deliveryIds,
+				reason,
+				attempt,
+				at,
+			});
+		} catch (error) {
+			this.opts.logger?.warn("discord_mailbox_alert_failed", {
+				leadId: this.opts.leadId,
+				deliveryIds,
+				error: describeError(error),
+			});
+			const changed = this.opts.queue.recordLeadDeliveryFailure({
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId,
+				error: `quarantine_alert_failed:${describeError(error)}`,
+				now: at,
+				nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+				maxAttempts: Number.MAX_SAFE_INTEGER,
+			});
+			if (changed !== rows.length) {
+				throw new Error(
+					"owner fence lost while backing off Discord quarantine alert",
+				);
+			}
+			return;
+		}
+		this.opts.logger?.warn("discord_mailbox_undeliverable", {
+			leadId: this.opts.leadId,
+			deliveryIds,
+			reason,
+		});
+		const changed = rows.filter((row) =>
+			this.opts.queue.markDead(row.id, at, `discord_undeliverable:${reason}`),
+		).length;
+		if (changed !== rows.length) {
+			throw new Error("owner fence lost while quarantining Discord batch");
+		}
+	}
+
+	private async noteTransportStall(error: string): Promise<void> {
+		const now = this.now().getTime();
+		if (
+			this.lastTransportAlertMs !== 0 &&
+			now - this.lastTransportAlertMs < 30 * 60_000
+		)
+			return;
+		this.transportStalled = true;
+		this.lastTransportAlertMs = now;
+		this.opts.logger?.warn("codex_model_transport_unavailable", {
+			leadId: this.opts.leadId,
+			error,
+		});
+		await this.opts.onModelTransportStall?.({
+			leadId: this.opts.leadId,
+			error,
+			at: this.isoNow(),
+		});
 	}
 
 	private async runAndSchedule(): Promise<void> {

@@ -10,6 +10,7 @@ import {
 	type DurableAcceptReceipt,
 	type LeadDeliveryAdapter,
 	type LeadDeliveryBatch,
+	LeadDeliveryUnavailableError,
 } from "../lead-delivery-adapter.js";
 import {
 	ACTIVE_LEAD_INBOX_INTERVAL_MS,
@@ -51,6 +52,40 @@ function receipt(batch: LeadDeliveryBatch): DurableAcceptReceipt {
 		memberIds: batch.members.map(({ deliveryId }) => deliveryId),
 		status: "accepted_new",
 	};
+}
+
+function enqueueDiscord(
+	queue: MailboxQueue,
+	id: string,
+	replyChannelId: string,
+	content = "hello",
+): void {
+	const envelope = {
+		v: 1,
+		receiptId: id,
+		leadId: "lead-a",
+		chatId: "123456789012345678",
+		originChannelId: "123456789012345678",
+		messageId: id.split(":").at(-1),
+		authorId: "223456789012345678",
+		authorName: "Annie",
+		ts: "2099-07-19T12:00:00.000Z",
+		priority: 1,
+		msgKind: "guild",
+		attachments: [],
+		text: content,
+		replyChannelId,
+	};
+	queue.enqueue({
+		id,
+		fromAgent: "founder",
+		toAgent: "lead-a",
+		recipientKind: "lead",
+		type: "discord_chat",
+		content: `[discord-chat-receipt v1] ${JSON.stringify(envelope)}`,
+		deliveryContent: content,
+		senderRef: encodeSenderRef(),
+	});
 }
 
 function loop(
@@ -419,6 +454,219 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(queue.getById("A")).toMatchObject({
 			state: "DEAD",
 			dead_reason: "membership_conflict:batch-1",
+		});
+	});
+
+	it("delivers one route-homogeneous Discord batch with route metadata", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345678",
+			"423456789012345678",
+		);
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345679",
+			"423456789012345678",
+		);
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345680",
+			"423456789012345680",
+		);
+		const delivered: LeadDeliveryBatch[] = [];
+		expect(
+			await loop(
+				queue,
+				{
+					async deliverBatch(batch) {
+						delivered.push(batch);
+						return receipt(batch);
+					},
+				},
+				{ queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG }) },
+			).tick(),
+		).toMatchObject({ ok: true, modelConsumed: 2 });
+		expect(delivered[0]).toMatchObject({
+			kind: "discord_chat",
+			replyChannelId: "423456789012345678",
+		});
+		expect(queue.getById("chat:lead-a:323456789012345680")?.state).toBe(
+			"QUEUED",
+		);
+	});
+
+	it("quarantines one malformed Discord singleton without calling the adapter", async () => {
+		const queue = makeQueue();
+		queue.enqueue({
+			id: "bad-discord",
+			fromAgent: "founder",
+			toAgent: "lead-a",
+			recipientKind: "lead",
+			type: "discord_chat",
+			content: "broken",
+			senderRef: encodeSenderRef(),
+		});
+		enqueueModel(queue, "normal-after");
+		const adapter = { deliverBatch: vi.fn(async (batch) => receipt(batch)) };
+		expect(await loop(queue, adapter).tick()).toMatchObject({ ok: true });
+		expect(queue.getById("bad-discord")).toMatchObject({
+			state: "DEAD",
+			dead_reason: expect.stringContaining("discord_undeliverable:route_parse"),
+		});
+		expect(adapter.deliverBatch).not.toHaveBeenCalled();
+		expect(
+			await loop(queue, adapter, { batchIdFactory: () => "batch-2" }).tick(),
+		).toMatchObject({
+			ok: true,
+			modelConsumed: 1,
+		});
+	});
+
+	it("does not exhaust ordinary model rows during a Codex transport outage", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "question-transport");
+		const stalled = vi.fn();
+		const result = await loop(
+			queue,
+			{
+				async deliverBatch() {
+					throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+				},
+			},
+			{ maxModelAttempts: 1, onModelTransportStall: stalled },
+		).tick();
+		expect(result.ok).toBe(false);
+		expect(queue.getById("question-transport")).toMatchObject({
+			state: "LEASED",
+			retry_count: 1,
+		});
+		expect(stalled).toHaveBeenCalledOnce();
+	});
+
+	it("quarantines and alerts after a bounded permanent Discord failure", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345679",
+			"423456789012345679",
+		);
+		const warn = vi.fn();
+		const undeliverable = vi.fn(async () => {
+			expect(queue.getById("chat:lead-a:323456789012345679")?.state).toBe(
+				"LEASED",
+			);
+		});
+		const result = await loop(
+			queue,
+			{
+				async deliverBatch() {
+					throw new Error("Codex Lead inbox rejected: authentication rejected");
+				},
+			},
+			{
+				maxModelAttempts: 1,
+				logger: { warn },
+				onDiscordUndeliverable: undeliverable,
+			},
+		).tick();
+		expect(result.ok).toBe(false);
+		expect(queue.getById("chat:lead-a:323456789012345679")).toMatchObject({
+			state: "DEAD",
+			dead_reason: expect.stringContaining("discord_undeliverable"),
+		});
+		expect(warn).toHaveBeenCalledWith(
+			"discord_mailbox_undeliverable",
+			expect.objectContaining({
+				deliveryIds: ["chat:lead-a:323456789012345679"],
+			}),
+		);
+		expect(undeliverable).toHaveBeenCalledOnce();
+		expect(undeliverable).toHaveBeenCalledWith(
+			expect.objectContaining({ attempt: 1 }),
+		);
+	});
+
+	it("backs off an unalertable Discord row without blocking ordinary model mail", async () => {
+		const queue = makeQueue();
+		const discordId = "chat:lead-a:323456789012345680";
+		enqueueDiscord(queue, discordId, "423456789012345680");
+		enqueueModel(queue, "question-after-alert-failure", 2);
+		let batch = 0;
+		const consumer = loop(
+			queue,
+			{
+				async deliverBatch(batch) {
+					if (batch.kind === "discord_chat")
+						throw new Error("permanent rejection");
+					return receipt(batch);
+				},
+			},
+			{
+				maxModelAttempts: 1,
+				batchIdFactory: () => `batch-${++batch}`,
+				onDiscordUndeliverable: async () => {
+					throw new Error("operator alert rejected");
+				},
+			},
+		);
+		const first = await consumer.tick();
+		expect(queue.getById(discordId)).toMatchObject({
+			state: "LEASED",
+			dead_reason: null,
+			retry_count: 1,
+			next_retry_at: expect.any(String),
+		});
+		expect(first.ok).toBe(false);
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(queue.getById("question-after-alert-failure")?.state).toBe("ACKED");
+	});
+
+	it("rate-limits Discord stall alerts and clears the episode on recovery", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345678",
+			"423456789012345678",
+		);
+		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
+		let failing = true;
+		const warn = vi.fn();
+		const stalled = vi.fn();
+		const consumer = loop(
+			queue,
+			{
+				async deliverBatch(batch) {
+					if (failing)
+						throw new LeadDeliveryUnavailableError(
+							"discord",
+							"socket unavailable",
+						);
+					return receipt(batch);
+				},
+			},
+			{
+				now: () => new Date(nowMs),
+				retryBackoffBaseMs: 1,
+				retryBackoffCapMs: 1,
+				logger: { warn },
+				onDiscordDeliveryStall: stalled,
+			},
+		);
+		for (let attempt = 0; attempt < 5; attempt++) {
+			expect((await consumer.tick()).ok).toBe(false);
+			nowMs += 1;
+		}
+		expect(
+			warn.mock.calls.filter(
+				([event]) => event === "discord_mailbox_delivery_stalled",
+			),
+		).toHaveLength(1);
+		expect(stalled).toHaveBeenCalledOnce();
+		failing = false;
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(warn).toHaveBeenCalledWith("discord_mailbox_delivery_recovered", {
+			leadId: "lead-a",
 		});
 	});
 

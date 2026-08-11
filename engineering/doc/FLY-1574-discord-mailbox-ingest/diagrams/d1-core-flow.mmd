@@ -1,0 +1,18 @@
+flowchart TB
+  subgraph old["今天的旧流(开关 OFF)— 直推 + 影子账两本账"]
+    direction LR
+    A1["Discord 消息进来"] --> B1["gate 安检<br/>(allowlist / 点名判定)"]
+    B1 --> C1["写一行影子收据<br/>(carrier=external<br/>只记账不投递)"]
+    B1 --> D1["直推进 Lead 眼前<br/>(绕过队列)"]
+    D1 --> E1["事后销账<br/>complete / settle"]
+    C1 -. "两本账靠事后缝合<br/>缝裂开 = FLY-1646 风暴" .-> E1
+  end
+  subgraph new["收编后的新流(开关 ON)— 唯一入口"]
+    direction LR
+    A2["Discord 消息进来"] --> B2["gate 安检<br/>(逻辑不动)"]
+    B2 --> C2["只写一封普通信<br/>mailbox 表<br/>状态 QUEUED"]
+    C2 --> D2["按门铃 nudge<br/>(丢了也不丢信)"]
+    D2 --> E2["投递环打批送达<br/>(和 Runner 的信<br/>同一条流水线)"]
+    E2 --> F2["Lead 收到<br/>内容自带 receipt 编号"]
+  end
+  old ~~~ new

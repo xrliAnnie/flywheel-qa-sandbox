@@ -2,11 +2,12 @@ import { CommDB } from "../db.js";
 import {
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
+	type DiscordLaneVerdict,
 	MailboxQueue,
 } from "../mailbox-queue.js";
 import { encodeSenderRef } from "../sender-ref.js";
 
-const ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";
+export const CHAT_RECEIPT_ENVELOPE_PREFIX = "[discord-chat-receipt v1] ";
 const DISCORD_SNOWFLAKE = /^\d+$/;
 
 export type ChatReceiptMessageKind = "dm" | "guild" | "roundtable";
@@ -31,6 +32,14 @@ export interface ChatReceiptEnvelopeV1 {
 	msgKind: ChatReceiptMessageKind;
 	attachments: ChatReceiptAttachment[];
 	text: string;
+	replyChannelId?: string;
+	replyRoute?: {
+		kind: "roundtable_thread_from_message";
+		parentChannelId: string;
+		sourceMessageId: string;
+		threadId: string;
+		threadName?: string;
+	};
 }
 
 function requiredText(value: unknown, field: string): string {
@@ -90,7 +99,7 @@ export function chatReceiptId(leadId: string, messageId: string): string {
 	)}`;
 }
 
-function normalizeEnvelope(
+export function normalizeChatReceiptEnvelope(
 	value: Record<string, unknown>,
 ): ChatReceiptEnvelopeV1 {
 	if (value.v !== 1) throw new Error("chat receipt v1 envelope is required");
@@ -107,6 +116,41 @@ function normalizeEnvelope(
 	if (typeof value.text !== "string") {
 		throw new Error("text must be a string");
 	}
+	const replyChannelId =
+		value.replyChannelId === undefined
+			? undefined
+			: snowflake(value.replyChannelId, "replyChannelId");
+	let replyRoute: ChatReceiptEnvelopeV1["replyRoute"];
+	if (value.replyRoute !== undefined) {
+		if (
+			!value.replyRoute ||
+			typeof value.replyRoute !== "object" ||
+			Array.isArray(value.replyRoute)
+		) {
+			throw new Error("replyRoute must be an object");
+		}
+		const route = value.replyRoute as Record<string, unknown>;
+		if (route.kind !== "roundtable_thread_from_message") {
+			throw new Error("replyRoute.kind is invalid");
+		}
+		replyRoute = {
+			kind: route.kind,
+			parentChannelId: snowflake(
+				route.parentChannelId,
+				"replyRoute.parentChannelId",
+			),
+			sourceMessageId: snowflake(
+				route.sourceMessageId,
+				"replyRoute.sourceMessageId",
+			),
+			threadId: snowflake(route.threadId, "replyRoute.threadId"),
+			...(route.threadName === undefined
+				? {}
+				: {
+						threadName: requiredText(route.threadName, "replyRoute.threadName"),
+					}),
+		};
+	}
 	return {
 		v: 1,
 		receiptId,
@@ -121,19 +165,27 @@ function normalizeEnvelope(
 		msgKind: messageKind(value.msgKind),
 		attachments: attachments(value.attachments),
 		text: value.text,
+		...(replyChannelId ? { replyChannelId } : {}),
+		...(replyRoute ? { replyRoute } : {}),
 	};
+}
+
+export function encodeChatReceiptEnvelope(
+	envelope: ChatReceiptEnvelopeV1,
+): string {
+	return `${CHAT_RECEIPT_ENVELOPE_PREFIX}${JSON.stringify(envelope)}`;
 }
 
 export function parseChatReceiptEnvelope(
 	content: string,
 ): ChatReceiptEnvelopeV1 {
 	const firstLine = content.split("\n", 1)[0] ?? "";
-	if (!firstLine.startsWith(ENVELOPE_PREFIX)) {
+	if (!firstLine.startsWith(CHAT_RECEIPT_ENVELOPE_PREFIX)) {
 		throw new Error("chat receipt v1 envelope header is missing");
 	}
 	let decoded: unknown;
 	try {
-		decoded = JSON.parse(firstLine.slice(ENVELOPE_PREFIX.length));
+		decoded = JSON.parse(firstLine.slice(CHAT_RECEIPT_ENVELOPE_PREFIX.length));
 	} catch (error) {
 		throw new Error(
 			`chat receipt v1 envelope JSON is invalid: ${(error as Error).message}`,
@@ -142,7 +194,7 @@ export function parseChatReceiptEnvelope(
 	if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
 		throw new Error("chat receipt v1 envelope must be an object");
 	}
-	return normalizeEnvelope(decoded as Record<string, unknown>);
+	return normalizeChatReceiptEnvelope(decoded as Record<string, unknown>);
 }
 
 export interface BeginChatReceiptArgs {
@@ -162,9 +214,11 @@ export interface BeginChatReceiptArgs {
 
 export function beginChatReceipt(args: BeginChatReceiptArgs): {
 	receiptId: string;
-	seq: number;
+	lane: DiscordLaneVerdict["lane"];
+	seq?: number;
+	deliveryId?: string;
 } {
-	const envelope = normalizeEnvelope({
+	const envelope = normalizeChatReceiptEnvelope({
 		v: 1,
 		receiptId: chatReceiptId(args.leadId, args.messageId),
 		leadId: args.leadId,
@@ -181,7 +235,7 @@ export function beginChatReceipt(args: BeginChatReceiptArgs): {
 	});
 	const queue = new MailboxQueue(args.dbPath);
 	try {
-		const row = queue.enqueue({
+		const verdict = queue.claimDiscordLane({
 			id: envelope.receiptId,
 			fromAgent: "founder",
 			toAgent: envelope.leadId,
@@ -191,18 +245,18 @@ export function beginChatReceipt(args: BeginChatReceiptArgs): {
 			type: "external_delivery",
 			msgClass: "model",
 			priority: envelope.priority,
-			content: `${ENVELOPE_PREFIX}${JSON.stringify(envelope)}\n${envelope.authorName}: ${envelope.text}`,
+			content: `${encodeChatReceiptEnvelope(envelope)}\n${envelope.authorName}: ${envelope.text}`,
 			refId: null,
 			createdAt: envelope.ts,
 			carrier: "external",
 			senderRef: encodeSenderRef(),
 		});
-		if (row.outcome === "archived") {
+		if (verdict.lane === "archived") {
 			throw new Error(
 				`chat receipt was already archived: ${envelope.receiptId}`,
 			);
 		}
-		return { receiptId: row.row.id, seq: row.row.seq };
+		return { receiptId: envelope.receiptId, ...verdict };
 	} finally {
 		queue.close();
 	}
@@ -233,11 +287,26 @@ export function settleChatReceipt(args: {
 	messageId: string;
 	replyId: string;
 	now: string;
-}): { receiptId: string; processed: true } {
+}): {
+	receiptId: string;
+	outcome: "processed" | "ignored_inbox" | "ignored_unknown_archived";
+	processed?: true;
+} {
 	const receiptId = chatReceiptId(args.leadId, args.messageId);
 	const replyId = snowflake(args.replyId, "replyId");
 	const queue = new MailboxQueue(args.dbPath);
 	try {
+		const carrier = queue.getIdentityCarrier(receiptId);
+		if (carrier === "inbox") return { receiptId, outcome: "ignored_inbox" };
+		if (carrier === "unknown_archived") {
+			process.stderr.write(
+				`[flywheel-comm] archived chat receipt lane unknown: ${receiptId}\n`,
+			);
+			return { receiptId, outcome: "ignored_unknown_archived" };
+		}
+		if (carrier === undefined) {
+			throw new Error(`chat receipt not found: ${receiptId}`);
+		}
 		queue.settle({
 			messageOrDeliveryId: receiptId,
 			event: "processed",
@@ -255,7 +324,7 @@ export function settleChatReceipt(args: {
 				basis: ["discord_reply_reference"],
 			},
 		});
-		return { receiptId, processed: true };
+		return { receiptId, outcome: "processed", processed: true };
 	} finally {
 		queue.close();
 	}

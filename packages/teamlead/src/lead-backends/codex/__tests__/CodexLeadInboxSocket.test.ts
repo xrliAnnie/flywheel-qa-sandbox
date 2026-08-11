@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	CodexLeadInboxServer,
+	probeCodexLeadInboxCapabilities,
 	submitCodexLeadInboxBatch,
 } from "../CodexLeadInboxSocket.js";
 import { LeadInputRouter } from "../LeadInputRouter.js";
@@ -76,6 +77,70 @@ describe("CodexLeadInboxSocket", () => {
 		await h.router.whenIdle();
 		expect(h.getTurns()).toBe(1);
 		expect(h.store.listMemberIds(first.entryId)).toEqual(batch.memberIds);
+	});
+
+	it("probes v2 capabilities without touching the journal", async () => {
+		const h = harness();
+		await h.server.listen();
+		await expect(
+			probeCodexLeadInboxCapabilities({
+				socketPath: h.socketPath,
+				leadId: "lead-a",
+				authSecret: "lead-bot-token",
+			}),
+		).resolves.toMatchObject({
+			protocolVersions: [1, 2],
+			features: ["discord_route_v2"],
+			socketOwnerId: expect.any(String),
+		});
+		expect(h.store.listUnfinished()).toEqual([]);
+	});
+
+	it("pauses after lock loss and resumes only while the bound inode is current", async () => {
+		const h = harness();
+		await h.server.listen();
+		h.server.pauseAccepting();
+		await expect(
+			probeCodexLeadInboxCapabilities({
+				socketPath: h.socketPath,
+				leadId: "lead-a",
+				authSecret: "lead-bot-token",
+			}),
+		).rejects.toThrow();
+		expect(h.server.resumeIfBoundPathCurrent()).toBe(true);
+		await expect(
+			probeCodexLeadInboxCapabilities({
+				socketPath: h.socketPath,
+				leadId: "lead-a",
+				authSecret: "lead-bot-token",
+			}),
+		).resolves.toMatchObject({ features: ["discord_route_v2"] });
+	});
+
+	it("persists v2 Discord reply route metadata", async () => {
+		const h = harness();
+		await h.server.listen();
+		const accepted = await submitCodexLeadInboxBatch({
+			socketPath: h.socketPath,
+			leadId: "lead-a",
+			ownerEpoch: "epoch-1",
+			authSecret: "lead-bot-token",
+			protocolVersion: 2,
+			batch: {
+				...batch,
+				replyChannelId: "123456789012345678",
+				replyRoute: {
+					kind: "roundtable_thread_from_message",
+					parentChannelId: "123456789012345679",
+					sourceMessageId: "123456789012345680",
+					threadId: "123456789012345680",
+				},
+			},
+		});
+		expect(h.store.getById(accepted.entryId)).toMatchObject({
+			replyChannelId: "123456789012345678",
+			replyRoute: { threadId: "123456789012345680" },
+		});
 	});
 
 	it("rejects a wrong Lead or unauthenticated caller before journal accept", async () => {

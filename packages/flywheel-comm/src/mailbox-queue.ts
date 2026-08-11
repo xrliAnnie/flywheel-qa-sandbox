@@ -159,6 +159,12 @@ export type EnqueueMailboxResult =
 	| { outcome: "inserted" | "active"; row: MailboxRow }
 	| { outcome: "archived" };
 
+export type DiscordLaneVerdict =
+	| { lane: "inserted_inbox" | "active_inbox"; deliveryId: string; seq: number }
+	| { lane: "inserted_external"; deliveryId: string; seq: number }
+	| { lane: "legacy_external"; deliveryId: string }
+	| { lane: "archived" };
+
 export interface MailboxSettlement {
 	event: "processed" | "disposed";
 	at: string;
@@ -477,10 +483,88 @@ export class MailboxQueue {
 			.immediate();
 	}
 
+	/** Atomically awards one Discord message identity to the inbox or legacy lane. */
+	claimDiscordLane(
+		input: EnqueueMailboxInput & { carrier: "inbox" | "external" },
+	): DiscordLaneVerdict {
+		return this.db
+			.transaction((): DiscordLaneVerdict => {
+				const identity = this.db
+					.prepare(
+						"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
+					)
+					.get(input.id, input.deliveryId ?? input.id) as
+					| { id: string; archived_at: string | null }
+					| undefined;
+				if (identity?.archived_at !== null && identity !== undefined) {
+					return { lane: "archived" };
+				}
+				if (identity) {
+					const row = this.getById(identity.id);
+					if (!row)
+						throw new Error(
+							`active mailbox identity has no row: ${identity.id}`,
+						);
+					return row.carrier === "inbox"
+						? {
+								lane: "active_inbox",
+								deliveryId: row.delivery_id,
+								seq: row.seq,
+							}
+						: { lane: "legacy_external", deliveryId: row.delivery_id };
+				}
+				const inserted = this.enqueue(input);
+				if (inserted.outcome === "archived") return { lane: "archived" };
+				return input.carrier === "inbox"
+					? {
+							lane: "inserted_inbox",
+							deliveryId: inserted.row.delivery_id,
+							seq: inserted.row.seq,
+						}
+					: {
+							lane: "inserted_external",
+							deliveryId: inserted.row.delivery_id,
+							seq: inserted.row.seq,
+						};
+			})
+			.immediate();
+	}
+
 	getById(idOrDeliveryId: string): MailboxRow | undefined {
 		return this.db
 			.prepare("SELECT * FROM mailbox WHERE id = ? OR delivery_id = ?")
 			.get(idOrDeliveryId, idOrDeliveryId) as MailboxRow | undefined;
+	}
+
+	getIdentityCarrier(
+		idOrDeliveryId: string,
+	): "inbox" | "external" | "unknown_archived" | undefined {
+		const live = this.getById(idOrDeliveryId);
+		if (live) return live.carrier;
+		const identity = this.db
+			.prepare(
+				"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
+			)
+			.get(idOrDeliveryId, idOrDeliveryId) as
+			| { id: string; archived_at: string | null }
+			| undefined;
+		if (!identity) return undefined;
+		if (!identity.archived_at) return undefined;
+		const archived = this.db
+			.prepare(
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+			)
+			.get(identity.id) as { row_json: string } | undefined;
+		if (!archived) return "unknown_archived";
+		try {
+			const carrier = (JSON.parse(archived.row_json) as { carrier?: unknown })
+				.carrier;
+			return carrier === "inbox" || carrier === "external"
+				? carrier
+				: "unknown_archived";
+		} catch {
+			return "unknown_archived";
+		}
 	}
 
 	countDeliverable(toAgent?: string): number {
@@ -743,6 +827,8 @@ export class MailboxQueue {
 		now: string;
 		claimTtlMs: number;
 		maxBatchSize?: number;
+		maxBatchBytes?: number;
+		partitionKey?: (row: MailboxRow) => string;
 	}): MailboxRow[] {
 		const claimExpiresAt = addMilliseconds(input.now, input.claimTtlMs);
 		return this.db
@@ -794,7 +880,7 @@ export class MailboxQueue {
 				if (!Number.isSafeInteger(limit) || limit <= 0) {
 					throw new Error("maxBatchSize must be a positive safe integer");
 				}
-				const rows = this.db
+				let rows = this.db
 					.prepare(
 						`SELECT * FROM mailbox
 					  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
@@ -803,6 +889,31 @@ export class MailboxQueue {
 					  ORDER BY priority, seq LIMIT ?`,
 					)
 					.all(input.toAgent, input.msgClass, input.now, limit) as MailboxRow[];
+				if (rows.length > 0 && input.partitionKey) {
+					const firstKey = input.partitionKey(rows[0]!);
+					const boundary = rows.findIndex(
+						(row) => input.partitionKey?.(row) !== firstKey,
+					);
+					if (boundary >= 0) rows = rows.slice(0, boundary);
+				}
+				if (input.maxBatchBytes !== undefined) {
+					if (
+						!Number.isSafeInteger(input.maxBatchBytes) ||
+						input.maxBatchBytes <= 0
+					) {
+						throw new Error("maxBatchBytes must be a positive safe integer");
+					}
+					let bytes = 0;
+					const bounded: MailboxRow[] = [];
+					for (const row of rows) {
+						const next =
+							Buffer.byteLength(row.delivery_content ?? row.content) + 128;
+						if (bounded.length > 0 && bytes + next > input.maxBatchBytes) break;
+						bounded.push(row);
+						bytes += next;
+					}
+					rows = bounded;
+				}
 				const ids = rows.map(({ id }) => id);
 				if (ids.length === 0) return [];
 				const updated = this.db
@@ -832,6 +943,8 @@ export class MailboxQueue {
 		batchWindowMs: number;
 		batchMaxSize: number;
 		inflightMaxBatches: number;
+		maxBatchBytes?: number;
+		partitionKey?: (row: MailboxRow) => string;
 	}): MailboxRow[] {
 		if (!Number.isSafeInteger(input.batchWindowMs) || input.batchWindowMs < 0) {
 			throw new Error("batchWindowMs must be a non-negative safe integer");
@@ -843,6 +956,12 @@ export class MailboxQueue {
 			if (!Number.isSafeInteger(value) || value <= 0) {
 				throw new Error(`${name} must be a positive safe integer`);
 			}
+		}
+		if (
+			input.maxBatchBytes !== undefined &&
+			(!Number.isSafeInteger(input.maxBatchBytes) || input.maxBatchBytes <= 0)
+		) {
+			throw new Error("maxBatchBytes must be a positive safe integer");
 		}
 		const claimExpiresAt = addMilliseconds(
 			input.now,
@@ -962,7 +1081,7 @@ export class MailboxQueue {
 					input.recipientKind === "runner" && ackClass === "response"
 						? 1
 						: input.batchMaxSize;
-				const rows = this.db
+				let rows = this.db
 					.prepare(
 						`SELECT * FROM mailbox
 						  WHERE recipient_kind = ? AND carrier = 'inbox'
@@ -991,6 +1110,25 @@ export class MailboxQueue {
 						ackClass,
 						effectiveLimit,
 					) as MailboxRow[];
+				if (rows.length > 0 && input.partitionKey) {
+					const firstKey = input.partitionKey(rows[0]!);
+					const boundary = rows.findIndex(
+						(row) => input.partitionKey?.(row) !== firstKey,
+					);
+					if (boundary >= 0) rows = rows.slice(0, boundary);
+				}
+				if (input.maxBatchBytes !== undefined) {
+					let bytes = 0;
+					const bounded: MailboxRow[] = [];
+					for (const row of rows) {
+						const next =
+							Buffer.byteLength(row.delivery_content ?? row.content) + 128;
+						if (bounded.length > 0 && bytes + next > input.maxBatchBytes) break;
+						bounded.push(row);
+						bytes += next;
+					}
+					rows = bounded;
+				}
 				if (rows.length === 0) return [];
 				const ids = rows.map(({ id }) => id);
 				const updated = this.db
@@ -1021,6 +1159,8 @@ export class MailboxQueue {
 		batchWindowMs: number;
 		batchMaxSize: number;
 		inflightMaxBatches: number;
+		maxBatchBytes?: number;
+		partitionKey?: (row: MailboxRow) => string;
 	}): MailboxRow[] {
 		return this.claimQueueBatch({ ...input, recipientKind: "lead" });
 	}
