@@ -1502,10 +1502,8 @@ export class CommDB {
 						`SELECT question.id, question.from_agent, question.to_agent,
 						        question.kind, question.checkpoint, question.expires_at,
 						        question.resolved_at, question.superseded_at,
-						        question.relay_state, owner.lead_id AS session_lead_id,
-						        owner.status AS session_status
+						        question.relay_state
 						   FROM mailbox question
-						   JOIN sessions owner ON owner.execution_id = question.from_agent
 						  WHERE question.id = ? AND question.type = 'question'`,
 					)
 					.get(input.questionId) as
@@ -1519,8 +1517,6 @@ export class CommDB {
 							resolved_at: string | null;
 							superseded_at: string | null;
 							relay_state: string;
-							session_lead_id: string | null;
-							session_status: string;
 					  }
 					| undefined;
 				const checkpointMatches =
@@ -1529,7 +1525,6 @@ export class CommDB {
 				if (
 					!question ||
 					question.to_agent !== leadId ||
-					question.session_lead_id !== leadId ||
 					(input.expectedOwner !== undefined &&
 						question.from_agent !== input.expectedOwner) ||
 					!checkpointMatches
@@ -1537,7 +1532,6 @@ export class CommDB {
 					throw new Error(`question ${input.questionId} scope mismatch`);
 				}
 				if (
-					question.kind === "report" ||
 					question.checkpoint === "approve_to_ship" ||
 					question.checkpoint === "review_design" ||
 					question.checkpoint === "review_code"
@@ -1558,7 +1552,6 @@ export class CommDB {
 					question.resolved_at !== null ||
 					question.superseded_at !== null ||
 					question.relay_state === "terminal_disposed" ||
-					question.session_status !== "running" ||
 					(question.expires_at !== null &&
 						Date.parse(question.expires_at) <= Date.parse(input.now))
 				) {

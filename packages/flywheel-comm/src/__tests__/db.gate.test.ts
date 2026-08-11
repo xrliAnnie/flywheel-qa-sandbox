@@ -312,6 +312,56 @@ describe("CommDB gate methods", () => {
 				}),
 			).toThrow(/already answered/);
 		});
+
+		it("keeps ordinary asks answerable after their Runner session completes", () => {
+			const id = db.insertQuestion(
+				"exec-guarded",
+				"lead-1",
+				"DONE: PR is ready",
+			);
+			db.updateSessionStatusIfRunning("exec-guarded", "completed");
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "please address one follow-up",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
+
+		it("routes checkpoint-less asks by their explicit target Lead", () => {
+			const id = db.insertQuestion(
+				"exec-guarded",
+				"lead-2",
+				"need cross-department help",
+			);
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-2",
+					content: "here is the answer",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
+
+		it("allows a Lead to reply to a fire-and-forget report", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "DONE: QA", {
+				kind: "report",
+			});
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "acknowledged",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
 	});
 
 	// ── FLY-1188 HIGH-2 (Codex full-PR review): a gate-timeout synthetic response
