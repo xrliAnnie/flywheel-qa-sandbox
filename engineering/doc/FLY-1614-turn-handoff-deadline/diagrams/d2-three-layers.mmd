@@ -1,0 +1,22 @@
+flowchart TB
+    subgraph L1["第 1 层 · 根因: 引擎交棒不丢 (主体)"]
+        A1["批准/裁决落库时<br/>同一事务写下『必须交棒』的意图行"]
+        A2["专职协调器盯着意图行<br/>一次性交付全束:<br/>棒 + 目标绑定 + 凭据 + 唤醒 + 收据"]
+        A3["自校验: 引擎账本 vs 棒账本<br/>对不上就大声告警 (只告警不改写)"]
+        A1 --> A2 --> A3
+    end
+    subgraph L2["第 2 层 · 当事人: 等棒 runner 自动喊人"]
+        B1["runner 照常轮询 turn 命令"]
+        B2["命令内部记等待账<br/>超 20 分钟自动替 runner<br/>给 Lead 发一条去重的提问"]
+        B1 --> B2
+    end
+    subgraph L3["第 3 层 · 担架: Lead 手动交棒正式化"]
+        C1["走引擎正规通路的 re-drive 入口<br/>(带鉴权 + 审计)"]
+        C2["直改数据库降级为最后手段<br/>5 条已知副作用写进手册"]
+        C1 --> C2
+    end
+    A3 -- "告警内容附带<br/>第 3 层的处置指令" --> C1
+    B2 -- "Lead 判断后可用" --> C1
+    style L1 fill:#e3f2fd,stroke:#007aff
+    style L2 fill:#e8f5e9,stroke:#34c759
+    style L3 fill:#fff3e0,stroke:#ff9500

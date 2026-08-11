@@ -320,6 +320,17 @@ export interface PhaseOrchestratorDeps {
 			args: WakePhaseRunnerArgs,
 		): Promise<{ ok: boolean; error?: string }>;
 		/**
+		 * FLY-1614: a stale-belt recovery is itself a handoff. Persist and wake the
+		 * newly granted holder so a parked runner cannot miss the new epoch while
+		 * waiting on its own polling loop.
+		 */
+		wakeRecoveredTurn?(args: {
+			session: PhaseSession;
+			epoch: number;
+			previousHolderExecId: string;
+			reason: string;
+		}): Promise<{ ok: boolean; error?: string }>;
+		/**
 		 * FLY-887: fail-closed pre-wake worktree check (mirrors the close path's
 		 * dirty guard, on the wake path). `{ ok:false, reason }` → do NOT grant the
 		 * TURN, do NOT wake — alert the Lead. Verifies persisted worktree_path
@@ -2321,9 +2332,15 @@ export class PhaseOrchestrator {
 					projectName,
 					sourceEventId: `turn:recovery:${turn.issue_id}:${turn.holder_exec_id}:${turn.epoch}:${cand.execution_id}`,
 				});
+				const wake = await this.deps.effects.wakeRecoveredTurn?.({
+					session: cand,
+					epoch: turn.epoch + 1,
+					previousHolderExecId: turn.holder_exec_id,
+					reason: staleReason,
+				});
 				await this.failClosed(
 					cand,
-					`turn-belt recovered a STALE TURN on ${turn.issue_id}: ${staleReason}; holder ${turn.holder_exec_id} (epoch ${turn.epoch}) → ${cand.execution_id} (${phase}, epoch ${turn.epoch + 1}). The parked ${phase} phase can now re-acquire the worktree turn.`,
+					`turn-belt recovered a STALE TURN on ${turn.issue_id}: ${staleReason}; holder ${turn.holder_exec_id} (epoch ${turn.epoch}) → ${cand.execution_id} (${phase}, epoch ${turn.epoch + 1}). ${wake?.ok ? `The parked ${phase} phase was actively woken.` : `Durable wake is pending${wake?.error ? ` (${wake.error})` : ""}.`}`,
 				);
 				return;
 			}

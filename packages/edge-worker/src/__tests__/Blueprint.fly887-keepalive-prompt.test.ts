@@ -214,6 +214,11 @@ describe("FLY-887 keep-alive prompts — default ON", () => {
 		expect(p).toContain("park --exec-id");
 		expect(p).toContain("parked until ship");
 		expect(p).toContain("turn --exec-id");
+		expect(p).toContain("TURN WAIT LAW (all runner vendors)");
+		expect(p).toContain(
+			"not-yours` is a normal wait state and is NEVER blocked",
+		);
+		expect(p).toContain("60–90 seconds");
 		// executable spelling only — never the non-existent declare-state subcommand
 		expect(p).not.toContain("declare-state");
 	});
@@ -262,6 +267,7 @@ describe("FLY-887 keep-alive prompts — kill-switch OFF reverts to legacy", () 
 		});
 		expect(p).toContain("IMPLEMENT phase");
 		expect(p).not.toContain("Three-stage keep-alive");
+		expect(p).toContain("TURN WAIT LAW (all runner vendors)");
 	});
 
 	it("QA FAIL reverts to the legacy close-and-respawn wording when keep-alive=0", async () => {

@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { formatTurnStatus, turnStatus } from "../commands/turn.js";
+import {
+	formatTurnStatus,
+	isTurnDebugOverride,
+	recordTurnCommandSideEffects,
+	recordTurnWait,
+	turnStatus,
+	turnWaitAskAfterMs,
+} from "../commands/turn.js";
 import { CommDB } from "../db.js";
 
 /**
@@ -90,6 +97,137 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 			nodeId: "implement",
 			attempt: 2,
 		});
+	});
+
+	it("durably retries a TURN wake once and acknowledges only the exact activation", () => {
+		const wakeId = "carrier-wake:approve-1:activation-2:epoch:1";
+		db.enqueueTurnWake({
+			wakeId,
+			executionId: "exec-impl",
+			issueId: "ISSUE-1",
+			epoch: 1,
+			activationId: "activation-2",
+			purpose: "workflow_ship_carrier",
+			envelope: {
+				fromAgent: "bridge",
+				content: "TURN is ready",
+				metadata: { wakeId, epoch: 1, activationId: "activation-2" },
+			},
+			backend: "codex",
+			createdAtMs: T0,
+		});
+		const first = db.claimDueTurnWake({
+			nowMs: T0,
+			retryAfterMs: 60_000,
+			leaseMs: 10_000,
+		});
+		expect(first).toMatchObject({ wake_id: wakeId, push_count: 0 });
+		db.finishTurnWakePush({
+			wakeId,
+			claimToken: first!.claim_token!,
+			pushedAtMs: T0,
+			result: "ok",
+		});
+		expect(
+			db.claimDueTurnWake({
+				nowMs: T0 + 59_999,
+				retryAfterMs: 60_000,
+				leaseMs: 10_000,
+			}),
+		).toBeNull();
+		const retry = db.claimDueTurnWake({
+			nowMs: T0 + 60_000,
+			retryAfterMs: 60_000,
+			leaseMs: 10_000,
+		});
+		expect(retry).toMatchObject({ wake_id: wakeId, push_count: 1 });
+		db.finishTurnWakePush({
+			wakeId,
+			claimToken: retry!.claim_token!,
+			pushedAtMs: T0 + 60_000,
+			result: "ok",
+		});
+		expect(
+			db.claimDueTurnWake({
+				nowMs: T0 + 180_000,
+				retryAfterMs: 60_000,
+				leaseMs: 10_000,
+			}),
+		).toBeNull();
+
+		expect(
+			db.ackTurnWakes({
+				executionId: "exec-impl",
+				epoch: 2,
+				activationId: "activation-2",
+				ackedAtMs: T0 + 180_001,
+			}),
+		).toBe(0);
+		expect(
+			db.ackTurnWakes({
+				executionId: "exec-impl",
+				epoch: 1,
+				activationId: "activation-2",
+				ackedAtMs: T0 + 180_002,
+			}),
+		).toBe(1);
+		expect(db.getTurnWake(wakeId)).toMatchObject({
+			state: "acked",
+			push_count: 2,
+			acked_at: T0 + 180_002,
+		});
+		expect(db.listUnprojectedTurnWakeReceipts()).toMatchObject([
+			{ wake_id: wakeId, activation_id: "activation-2" },
+		]);
+		expect(db.markTurnWakeReceiptProjected(wakeId, T0 + 180_003)).toBe(true);
+		expect(db.listUnprojectedTurnWakeReceipts()).toEqual([]);
+	});
+
+	it("materializes one T2 Lead alert for an unacknowledged wake episode", () => {
+		db.registerSession(
+			"exec-impl",
+			"win:1",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		const wakeId = "wake:no-receipt";
+		db.enqueueTurnWake({
+			wakeId,
+			executionId: "exec-impl",
+			issueId: "ISSUE-1",
+			epoch: 7,
+			purpose: "legacy_recovery",
+			envelope: { fromAgent: "bridge", content: "recover TURN" },
+			backend: "claude-code",
+			createdAtMs: T0,
+		});
+		const claim = db.claimDueTurnWake({
+			nowMs: T0,
+			retryAfterMs: 60_000,
+			leaseMs: 10_000,
+		})!;
+		db.finishTurnWakePush({
+			wakeId,
+			claimToken: claim.claim_token!,
+			pushedAtMs: T0,
+			result: "ok",
+		});
+		expect(
+			db.materializeTurnWakeNoReceiptAlerts({
+				nowMs: T0 + 20 * 60_000,
+				alertAfterMs: 20 * 60_000,
+			}),
+		).toEqual(["turn-wake-alert:wake:no-receipt"]);
+		expect(
+			db.materializeTurnWakeNoReceiptAlerts({
+				nowMs: T0 + 21 * 60_000,
+				alertAfterMs: 20 * 60_000,
+			}),
+		).toEqual([]);
+		expect(db.getPendingQuestions("flywheel-eng-lead")).toMatchObject([
+			{ id: "turn-wake-alert:wake:no-receipt" },
+		]);
 	});
 
 	it("never exposes an activation after the holder or epoch has advanced", () => {
@@ -195,6 +333,38 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 		db = new CommDB(dbPath); // afterEach closes this
 	});
 
+	it("migrates legacy wait ledgers with no-turn hysteresis columns", () => {
+		db.close();
+		const legacy = new Database(dbPath);
+		legacy.exec(`
+			DROP TABLE turn_wait_ledger;
+			CREATE TABLE turn_wait_ledger (
+				execution_id TEXT NOT NULL,
+				holder_exec_id TEXT NOT NULL,
+				epoch INTEGER NOT NULL,
+				first_seen_at INTEGER NOT NULL,
+				asked_at INTEGER,
+				question_id TEXT,
+				last_error TEXT,
+				PRIMARY KEY (execution_id, holder_exec_id, epoch)
+			);
+		`);
+		legacy.close();
+
+		db = new CommDB(dbPath);
+		const migrated = new Database(dbPath, { readonly: true });
+		try {
+			const columns = migrated
+				.prepare("PRAGMA table_info(turn_wait_ledger)")
+				.all() as Array<{ name: string }>;
+			expect(columns.map(({ name }) => name)).toEqual(
+				expect.arrayContaining(["no_turn_streak", "last_no_turn_at"]),
+			);
+		} finally {
+			migrated.close();
+		}
+	});
+
 	it("readonly reader tolerates a missing table (returns null, never throws)", () => {
 		const roDir = mkdtempSync(join(tmpdir(), "flywheel-turn-ro-"));
 		const roPath = join(roDir, "comm.db");
@@ -256,6 +426,7 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 describe("turnStatus (FLY-887 runner self-check)", () => {
 	let db: CommDB;
 	let tmpDir: string;
+	const T0 = 1_700_000_000_000;
 
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-turn-status-"));
@@ -296,6 +467,250 @@ describe("turnStatus (FLY-887 runner self-check)", () => {
 			epoch: 1,
 			holderExecId: "exec-impl",
 		});
+	});
+
+	it("asks the Lead once per handoff event even after CommDB reopen and replay", () => {
+		db.registerSession(
+			"exec-qa",
+			"win:2",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		db.grantTurn("ISSUE-1", "exec-impl", "implement", 1_700_000_000_000);
+		const status = turnStatus(db, "exec-qa");
+		expect(
+			recordTurnWait(db, "exec-qa", status, {
+				observedAtMs: 1_700_000_000_000,
+				askAfterMs: 20 * 60_000,
+			}),
+		).toEqual({ asked: false });
+		expect(
+			recordTurnWait(db, "exec-qa", status, {
+				observedAtMs: 1_700_001_200_000,
+				askAfterMs: 20 * 60_000,
+			}),
+		).toEqual({
+			asked: true,
+			questionId: "turn-wait:exec-qa:exec-impl:1",
+		});
+
+		db.close();
+		db = new CommDB(join(tmpDir, "comm.db"));
+		for (let replay = 0; replay < 3; replay += 1) {
+			expect(
+				recordTurnWait(db, "exec-qa", turnStatus(db, "exec-qa"), {
+					observedAtMs: 1_700_001_200_001 + replay,
+					askAfterMs: 20 * 60_000,
+				}),
+			).toEqual({
+				asked: false,
+				questionId: "turn-wait:exec-qa:exec-impl:1",
+			});
+		}
+		expect(db.getPendingQuestions("flywheel-eng-lead")).toMatchObject([
+			{
+				id: "turn-wait:exec-qa:exec-impl:1",
+				from_agent: "exec-qa",
+				to_agent: "flywheel-eng-lead",
+			},
+		]);
+	});
+
+	it("clears a wait only after two spaced no-turn observations", () => {
+		db.registerSession(
+			"exec-qa",
+			"win:2",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		db.grantTurn("ISSUE-1", "exec-impl", "implement", T0);
+		recordTurnWait(db, "exec-qa", turnStatus(db, "exec-qa"), {
+			observedAtMs: T0,
+			askAfterMs: 20 * 60_000,
+		});
+
+		const noTurn = { answer: "no-turn" as const };
+		recordTurnWait(db, "exec-qa", noTurn, {
+			observedAtMs: T0 + 1_000,
+			askAfterMs: 20 * 60_000,
+			noTurnClearMinMs: 30_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")).toMatchObject([
+			{ epoch: 1, noTurnStreak: 1, lastNoTurnAt: T0 + 1_000 },
+		]);
+
+		// A hot poll is not a second independent observation.
+		recordTurnWait(db, "exec-qa", noTurn, {
+			observedAtMs: T0 + 20_000,
+			askAfterMs: 20 * 60_000,
+			noTurnClearMinMs: 30_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")[0]?.noTurnStreak).toBe(1);
+
+		recordTurnWait(db, "exec-qa", noTurn, {
+			observedAtMs: T0 + 31_000,
+			askAfterMs: 20 * 60_000,
+			noTurnClearMinMs: 30_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")).toEqual([]);
+	});
+
+	it("resets tentative no-turn state on a concrete tuple and clears on grant", () => {
+		db.registerSession(
+			"exec-qa",
+			"win:2",
+			"flywheel",
+			"ISSUE-1",
+			"flywheel-eng-lead",
+		);
+		db.grantTurn("ISSUE-1", "exec-impl", "implement", T0);
+		const waiting = turnStatus(db, "exec-qa");
+		recordTurnWait(db, "exec-qa", waiting, {
+			observedAtMs: T0,
+			askAfterMs: 20 * 60_000,
+		});
+		recordTurnWait(
+			db,
+			"exec-qa",
+			{ answer: "no-turn" },
+			{
+				observedAtMs: T0 + 1_000,
+				askAfterMs: 20 * 60_000,
+			},
+		);
+		recordTurnWait(db, "exec-qa", waiting, {
+			observedAtMs: T0 + 2_000,
+			askAfterMs: 20 * 60_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")[0]).toMatchObject({
+			epoch: 1,
+			noTurnStreak: 0,
+			lastNoTurnAt: null,
+		});
+
+		db.grantTurn("ISSUE-1", "exec-qa", "qa", T0 + 3_000);
+		recordTurnWait(db, "exec-qa", turnStatus(db, "exec-qa"), {
+			observedAtMs: T0 + 3_000,
+			askAfterMs: 20 * 60_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")).toEqual([]);
+	});
+
+	it("replaces an obsolete wait tuple when the TURN epoch changes", () => {
+		db.registerSession("exec-qa", "win:2", "flywheel", "ISSUE-1", "lead");
+		db.grantTurn("ISSUE-1", "exec-impl", "implement", T0);
+		recordTurnWait(db, "exec-qa", turnStatus(db, "exec-qa"), {
+			observedAtMs: T0,
+			askAfterMs: 20 * 60_000,
+		});
+		db.grantTurn("ISSUE-1", "exec-design", "design", T0 + 1_000);
+		recordTurnWait(db, "exec-qa", turnStatus(db, "exec-qa"), {
+			observedAtMs: T0 + 1_000,
+			askAfterMs: 20 * 60_000,
+		});
+		expect(db.listTurnWaitLedger("exec-qa")).toMatchObject([
+			{ holderExecId: "exec-design", epoch: 2 },
+		]);
+	});
+
+	it("validates the TURN wait threshold and identifies debug overrides", () => {
+		expect(turnWaitAskAfterMs({})).toBe(20 * 60_000);
+		expect(turnWaitAskAfterMs({ FLYWHEEL_TURN_WAIT_ASK_MINUTES: "5" })).toBe(
+			5 * 60_000,
+		);
+		expect(turnWaitAskAfterMs({ FLYWHEEL_TURN_WAIT_ASK_MINUTES: "720" })).toBe(
+			720 * 60_000,
+		);
+		for (const invalid of ["4", "721", "5.5", "-5", "abc", ""]) {
+			expect(
+				turnWaitAskAfterMs({ FLYWHEEL_TURN_WAIT_ASK_MINUTES: invalid }),
+			).toBe(20 * 60_000);
+		}
+
+		expect(isTurnDebugOverride(undefined, "exec-self")).toBe(false);
+		expect(isTurnDebugOverride("exec-self", "exec-self")).toBe(false);
+		expect(isTurnDebugOverride("exec-other", "exec-self")).toBe(true);
+		expect(isTurnDebugOverride("exec-self", undefined)).toBe(true);
+	});
+
+	it("keeps wait-ledger and wake-ack side effects off for both debug quadrants", () => {
+		const quadrants = [
+			{
+				explicit: undefined,
+				env: "exec-self",
+				execId: "exec-self",
+				live: true,
+			},
+			{
+				explicit: "exec-self-2",
+				env: "exec-self-2",
+				execId: "exec-self-2",
+				live: true,
+			},
+			{
+				explicit: "exec-debug",
+				env: "exec-env",
+				execId: "exec-debug",
+				live: false,
+			},
+			{
+				explicit: "exec-no-env",
+				env: undefined,
+				execId: "exec-no-env",
+				live: false,
+			},
+		] as const;
+		for (const [index, quadrant] of quadrants.entries()) {
+			const waitIssue = `WAIT-${index}`;
+			const ackIssue = `ACK-${index}`;
+			const waiter = `${quadrant.execId}-wait`;
+			const actor = `${quadrant.execId}-ack`;
+			db.registerSession(
+				waiter,
+				`win:w:${index}`,
+				"flywheel",
+				waitIssue,
+				"lead",
+			);
+			db.grantTurn(waitIssue, `holder-${index}`, "implement", T0);
+			const debugOverride = isTurnDebugOverride(
+				quadrant.explicit,
+				quadrant.env,
+			);
+			recordTurnCommandSideEffects(db, waiter, turnStatus(db, waiter), {
+				observedAtMs: T0,
+				askAfterMs: 20 * 60_000,
+				debugOverride,
+			});
+
+			db.registerSession(actor, `win:a:${index}`, "flywheel", ackIssue, "lead");
+			const epoch = db.grantTurn(ackIssue, actor, "qa", T0);
+			const wakeId = `debug-quadrant:${index}`;
+			db.enqueueTurnWake({
+				wakeId,
+				executionId: actor,
+				issueId: ackIssue,
+				epoch,
+				purpose: "test",
+				envelope: { fromAgent: "bridge", content: "test wake" },
+				backend: "codex",
+				createdAtMs: T0,
+			});
+			recordTurnCommandSideEffects(db, actor, turnStatus(db, actor), {
+				observedAtMs: T0 + 1,
+				askAfterMs: 20 * 60_000,
+				debugOverride,
+			});
+
+			expect(db.listTurnWaitLedger(waiter).length, quadrant.execId).toBe(
+				quadrant.live ? 1 : 0,
+			);
+			expect(db.getTurnWake(wakeId)?.state, quadrant.execId).toBe(
+				quadrant.live ? "acked" : "pending",
+			);
+		}
 	});
 
 	it("formatTurnStatus renders the runner-facing single-line contract", () => {

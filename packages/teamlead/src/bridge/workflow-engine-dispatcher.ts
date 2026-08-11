@@ -56,6 +56,10 @@ import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
 import type { WorkflowReworkCoordinatorOutcome } from "./workflow-rework-coordinator.js";
+import {
+	drainWorkflowShipCarrierDeliveries,
+	type WorkflowShipCarrierDeliveryOutcome,
+} from "./workflow-ship-carrier-coordinator.js";
 
 interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
@@ -107,6 +111,9 @@ interface WorkflowEngineDispatcherOptions {
 	reconcileWorkflowRework?: (
 		requestId: string,
 	) => Promise<WorkflowReworkCoordinatorOutcome>;
+	reconcileWorkflowCarrier?: (
+		questionId: string,
+	) => Promise<WorkflowShipCarrierDeliveryOutcome>;
 	/** FLY-1638: checked before durable execution admission/credential writes. */
 	admissionProbe?: () => AdmissionDecision;
 }
@@ -299,6 +306,7 @@ export class WorkflowEngineDispatcher {
 				await this.reconcileDeadExecutions();
 			}
 			await this.reconcileWorkflowReworks(result);
+			await this.reconcileWorkflowCarriers(result);
 			if (this.unlaunchedTripwireEnabled()) {
 				this.reconcileWorkflowReworkStalls();
 				await this.reconcileUnlaunchedWorkflowStalls();
@@ -967,6 +975,27 @@ export class WorkflowEngineDispatcher {
 			if (!heldRecoveryCandidates.has(requestId)) {
 				this.heldReworkRecoveryProbeAt.delete(requestId);
 			}
+		}
+	}
+
+	private async reconcileWorkflowCarriers(
+		result: WorkflowEngineReconcileResult,
+	): Promise<void> {
+		const reconcile = this.options.reconcileWorkflowCarrier;
+		if (!reconcile) return;
+		try {
+			const drained = await drainWorkflowShipCarrierDeliveries({
+				store: this.options.store,
+				reconcile,
+				now: this.now().toISOString(),
+			});
+			result.started += drained.delivered;
+			result.held += drained.held;
+		} catch (error) {
+			result.held += 1;
+			this.log(
+				`workflow carrier delivery scan held: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 	}
 
@@ -2385,6 +2414,7 @@ export class WorkflowEngineDispatcher {
 				generalizedExecution: {
 					engineOwned: true,
 					executionId: intent.execution_id,
+					activationId: admitted.activationId,
 					runId: intent.run_id,
 					nodeId: intent.node_id,
 					attempt: intent.attempt,
@@ -2399,6 +2429,7 @@ export class WorkflowEngineDispatcher {
 					launchGateToken,
 					launchGeneration,
 					commitWorkflowLaunch,
+					projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
 				},
 			});
 		} catch (error) {

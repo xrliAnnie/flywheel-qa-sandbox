@@ -237,6 +237,29 @@ function approveRunnerShipGate(
 	).toMatchObject({ kind: "founder_claim", status: "applied" });
 }
 
+async function approvedCarrierRun() {
+	const store = await engineRun({ gateCarrier: true });
+	const holder = await openRunnerShipGate(store);
+	bindRunnerShipAuthority(store, holder);
+	approveRunnerShipGate(store, holder);
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "awaiting_review",
+		pr_number: 1624,
+		pr_head_sha: "a".repeat(40),
+		review_question_id: holder.question_id,
+	});
+	return { store, holder };
+}
+
+const carrierAlertIdentity = {
+	leadId: "flywheel-eng-lead",
+	projectName: "flywheel",
+	leadResolution: "resolved" as const,
+};
+
 describe("engine-owned snapshot transition transaction", () => {
 	it("exposes park evidence only for the exact current activation and generation", async () => {
 		const store = await engineRun();
@@ -689,6 +712,212 @@ describe("engine-owned snapshot transition transaction", () => {
 			status: "active",
 			current_node_id: "founder_gate",
 		});
+		expect(store.getWorkflowCarrierDelivery(holder!.question_id)).toMatchObject(
+			{
+				run_id: "run-1",
+				gate_node_id: "founder_gate",
+				gate_attempt: 1,
+				approved_head: "a".repeat(40),
+				source_execution_id: "implement-1",
+				state: "pending",
+			},
+		);
+		const redrive = store.resolveWorkflowCarrierRedriveCanonical({
+			runId: "run-1",
+			questionId: holder!.question_id,
+			approvedHead: "a".repeat(40),
+			reason: "Lead confirmed the carrier is parked",
+		});
+		expect(redrive).toMatchObject({
+			requestId: expect.stringMatching(/^carrier-redrive:[0-9a-f]{64}$/),
+			sourceExecutionId: "implement-1",
+		});
+		if (!redrive) throw new Error("carrier redrive canonical missing");
+		const redriveInput = {
+			requestId: redrive.requestId,
+			questionId: redrive.questionId,
+			canonicalDigest: canonicalSubmissionDigest(redrive),
+			principal: "master" as const,
+			reason: redrive.reason,
+			now: "2026-07-16T01:16:30.000Z",
+		};
+		expect(store.redriveWorkflowCarrierDelivery(redriveInput)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.redriveWorkflowCarrierDelivery(redriveInput)).toEqual({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(store.getWorkflowCarrierDelivery(holder!.question_id)).toMatchObject(
+			{
+				state: "pending",
+				redrive_generation: 1,
+				turn_epoch: null,
+			},
+		);
+		const carrier = store.getWorkflowCarrierDelivery(holder!.question_id)!;
+		const carrierClaim = store.claimWorkflowCarrierDelivery({
+			questionId: holder!.question_id,
+			ownerId: "receipt-test",
+			now: "2026-07-16T01:17:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:18:00.000Z",
+		});
+		expect(carrierClaim).toMatchObject({ ok: true });
+		if (!carrierClaim.ok) throw new Error("carrier claim failed");
+		// A pending delivery, including a live lease/backoff window, is healthy and
+		// must not create a cross-ledger TURN expectation yet.
+		expect(
+			store
+				.listWorkflowTurnExpectations()
+				.filter((item) => item.source === "carrier"),
+		).toEqual([]);
+		expect(
+			store.advanceWorkflowCarrierDelivery({
+				questionId: holder!.question_id,
+				ownerId: "receipt-test",
+				generation: carrierClaim.generation,
+				from: "pending",
+				to: "grant_started",
+				now: "2026-07-16T01:17:01.000Z",
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.recordWorkflowCarrierActivationTurn({
+				questionId: holder!.question_id,
+				ownerId: "receipt-test",
+				generation: carrierClaim.generation,
+				activationId: carrier.carrier_activation_id,
+				issueId: "FLY-1307",
+				executionId: "implement-1",
+				epoch: 7,
+				sourceEventId: "ship-turn:receipt-test",
+				grantedAt: "2026-07-16T01:17:02.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const wakeClaim = store.claimWorkflowWakeSend({
+			wakeId: "carrier-wake:receipt-test",
+			runId: "run-1",
+			nodeId: "founder_gate",
+			attempt: 1,
+			executionId: "implement-1",
+			activationId: carrier.carrier_activation_id,
+			epoch: 7,
+			ownerId: "receipt-test",
+			now: "2026-07-16T01:17:02.100Z",
+			leaseExpiresAt: "2026-07-16T01:17:32.100Z",
+		});
+		expect(wakeClaim).toMatchObject({ ok: true });
+		if (!wakeClaim.ok) throw new Error("wake claim failed");
+		expect(
+			store.completeWorkflowWakeSend({
+				wakeId: "carrier-wake:receipt-test",
+				ownerId: "receipt-test",
+				generation: wakeClaim.generation,
+				now: "2026-07-16T01:17:02.200Z",
+				result: "sent",
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.inspectWorkflowTurnWakeRetry({
+				wakeId: "carrier-wake:receipt-test",
+				executionId: "implement-1",
+				activationId: carrier.carrier_activation_id,
+				epoch: 7,
+			}),
+		).toEqual({ disposition: "deliver" });
+		expect(
+			store.advanceWorkflowCarrierDelivery({
+				questionId: holder!.question_id,
+				ownerId: "receipt-test",
+				generation: carrierClaim.generation,
+				from: "turn_granted",
+				to: "wake_delivered",
+				now: "2026-07-16T01:17:03.000Z",
+				releaseOwner: true,
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.recordWorkflowCarrierWakeReceipt({
+				activationId: carrier.carrier_activation_id,
+				executionId: "implement-1",
+				epoch: 7,
+				ackedAt: "2026-07-16T01:17:04.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowCarrierDelivery(holder!.question_id)?.state).toBe(
+			"receipt_started",
+		);
+		const turnExpectation = store
+			.listWorkflowTurnExpectations()
+			.find((item) => item.source === "carrier")!;
+		expect(turnExpectation).toMatchObject({
+			executionId: "implement-1",
+			epoch: 7,
+			activationId: carrier.carrier_activation_id,
+		});
+		const divergence = {
+			expectationKey: turnExpectation.expectationKey,
+			runId: turnExpectation.runId,
+			issueId: turnExpectation.issueId,
+			projectName: turnExpectation.projectName,
+			expectedExecutionId: turnExpectation.executionId,
+			expectedEpoch: turnExpectation.epoch,
+			expectedActivationId: turnExpectation.activationId,
+			observedExecutionId: "qa-old",
+			observedEpoch: 6,
+			observedActivationId: null,
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			},
+		};
+		expect(
+			store.observeWorkflowTurnDivergence({
+				...divergence,
+				now: "2026-07-16T01:23:00.000Z",
+				alertEnabled: false,
+			}),
+		).toEqual({ opened: true, alerted: false });
+		expect(
+			store.observeWorkflowTurnDivergence({
+				...divergence,
+				now: "2026-07-16T01:24:00.000Z",
+			}),
+		).toEqual({ opened: false, alerted: true });
+		expect(store.listOpenWorkflowTurnDivergences()).toHaveLength(1);
+		expect(
+			store.closeWorkflowTurnDivergence({
+				expectationKey: turnExpectation.expectationKey,
+				now: "2026-07-16T01:25:00.000Z",
+				reason: "recovered",
+			}),
+		).toBe(true);
+		expect(store.listOpenWorkflowTurnDivergences()).toEqual([]);
+		expect(
+			store.observeWorkflowTurnDivergence({
+				...divergence,
+				now: "2026-07-16T01:26:00.000Z",
+			}),
+		).toEqual({ opened: true, alerted: true });
+		expect(
+			store
+				.listWorkflowAlertOutbox()
+				.filter(
+					(alert) =>
+						alert.payload.metadata.workflowEngine.disposition ===
+						"turn_ledger_divergence",
+				),
+		).toHaveLength(2);
+		expect(
+			store.resolveWorkflowCarrierRedriveCanonical({
+				runId: "run-1",
+				questionId: holder!.question_id,
+				approvedHead: "a".repeat(40),
+				reason: "must not duplicate a consumed carrier",
+			}),
+		).toBeUndefined();
 		expect(
 			store.resolveEngineWorkflowShipClaims({
 				runId: "run-1",
@@ -1051,6 +1280,596 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.listWorkflowGateHoldersForMaterialization()).toEqual([]);
 		store.close();
 	});
+
+	it("settles an owned carrier when its workflow run becomes terminal", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const claim = store.claimWorkflowCarrierDelivery({
+			questionId: holder.question_id,
+			ownerId: "carrier-terminal-test",
+			now: "2026-07-16T01:17:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:18:00.000Z",
+		});
+		expect(claim).toMatchObject({ ok: true });
+		if (!claim.ok) throw new Error("carrier claim failed");
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'",
+		);
+
+		expect(
+			store.settleWorkflowCarrierFailure({
+				questionId: holder.question_id,
+				ownerId: "carrier-terminal-test",
+				generation: claim.generation,
+				reason: "carrier_context_unavailable",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:17:01.000Z",
+			}),
+		).toEqual({
+			ok: true,
+			holdCount: 0,
+			state: "completed",
+			nextRetryAt: null,
+		});
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "completed",
+			owner_id: null,
+			lease_expires_at: null,
+			next_retry_at: null,
+			last_error: "run_terminal:completed",
+		});
+		expect(
+			store.listWorkflowCarrierDeliveries({
+				now: "2026-07-16T01:30:00.000Z",
+			}),
+		).toEqual([]);
+		expect(
+			store.listWorkflowRunEvents("run-1").map((event) => event.kind),
+		).toContain("carrier_delivery_cancelled");
+		expect(store.listWorkflowAlertOutbox()).toEqual([
+			expect.objectContaining({
+				escalation_uid: `carrier_delivery_cancelled:${holder.question_id}`,
+				payload: expect.objectContaining({
+					eventId: `carrier_delivery_cancelled:${holder.question_id}`,
+					body: expect.stringContaining("request operator rework"),
+					metadata: {
+						workflowEngine: expect.objectContaining({
+							disposition: "carrier_delivery_cancelled",
+						}),
+					},
+				}),
+			}),
+		]);
+		store.close();
+	});
+
+	it("holds an owned carrier visibly and preserves active-run retry budget", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const claim = store.claimWorkflowCarrierDelivery({
+			questionId: holder.question_id,
+			ownerId: "carrier-held-test",
+			now: "2026-07-16T01:17:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:18:00.000Z",
+		});
+		if (!claim.ok) throw new Error("carrier claim failed");
+		const request = {
+			runId: "run-1",
+			reason: "pane loss recovery",
+			clientRequestId: "hold-carrier-run",
+			principal: "master",
+			evidence: [],
+			now: "2026-07-16T01:17:01.000Z",
+		};
+		expect(store.holdWorkflowRunByOperator(request)).toMatchObject({
+			ok: true,
+			status: "held",
+		});
+
+		const settled = store.settleWorkflowCarrierFailure({
+			questionId: holder.question_id,
+			ownerId: "carrier-held-test",
+			generation: claim.generation,
+			reason: "run is temporarily held",
+			alertIdentity: carrierAlertIdentity,
+			now: "2026-07-16T01:17:02.000Z",
+		});
+		expect(settled).toEqual({
+			ok: true,
+			holdCount: 0,
+			state: "held",
+			nextRetryAt: null,
+		});
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "held",
+			hold_count: 0,
+			last_error: "run_inactive:held",
+		});
+		expect(
+			store.listWorkflowRunEvents("run-1").map((event) => event.kind),
+		).toContain("carrier_delivery_held");
+		expect(store.listWorkflowAlertOutbox()).toEqual([
+			expect.objectContaining({
+				escalation_uid: `carrier_delivery_held:${holder.question_id}:${claim.generation}`,
+				payload: expect.objectContaining({
+					eventId: `carrier_delivery_held:${holder.question_id}:${claim.generation}`,
+					body: expect.stringMatching(
+						/recover the held workflow run.*automatically revive.*only if the run is active/is,
+					),
+					metadata: {
+						workflowEngine: expect.objectContaining({
+							disposition: "carrier_delivery_held",
+						}),
+					},
+				}),
+			}),
+		]);
+		expect(
+			store.settleWorkflowCarrierFailure({
+				questionId: holder.question_id,
+				ownerId: "carrier-held-test",
+				generation: claim.generation,
+				reason: "replayed failure",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:17:03.000Z",
+			}),
+		).toEqual({ ok: false, reason: "stale_delivery_owner" });
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		store.close();
+	});
+
+	it("keeps the existing active-run carrier retry behavior byte-compatible", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const claim = store.claimWorkflowCarrierDelivery({
+			questionId: holder.question_id,
+			ownerId: "carrier-active-test",
+			now: "2026-07-16T01:17:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:18:00.000Z",
+		});
+		if (!claim.ok) throw new Error("carrier claim failed");
+
+		expect(
+			store.settleWorkflowCarrierFailure({
+				questionId: holder.question_id,
+				ownerId: "carrier-active-test",
+				generation: claim.generation,
+				reason: "temporary delivery error",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:17:01.000Z",
+			}),
+		).toEqual({
+			ok: true,
+			holdCount: 1,
+			state: "pending",
+			nextRetryAt: "2026-07-16T01:18:01.000Z",
+		});
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "pending",
+			hold_count: 1,
+			last_error: "temporary delivery error",
+		});
+		expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		store.close();
+	});
+
+	it("keeps carrier failure identities unique after operator redrive resets hold count", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const firstClaim = store.claimWorkflowCarrierDelivery({
+			questionId: holder.question_id,
+			ownerId: "carrier-before-redrive",
+			now: "2026-07-16T01:17:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:18:00.000Z",
+		});
+		if (!firstClaim.ok) throw new Error("first carrier claim failed");
+		expect(
+			store.settleWorkflowCarrierFailure({
+				questionId: holder.question_id,
+				ownerId: "carrier-before-redrive",
+				generation: firstClaim.generation,
+				reason: "first delivery failure",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:17:01.000Z",
+			}),
+		).toMatchObject({ ok: true, holdCount: 1, state: "pending" });
+
+		const redrive = store.resolveWorkflowCarrierRedriveCanonical({
+			runId: "run-1",
+			questionId: holder.question_id,
+			approvedHead: "a".repeat(40),
+			reason: "retry the approved carrier",
+		});
+		if (!redrive) throw new Error("carrier redrive canonical missing");
+		expect(
+			store.redriveWorkflowCarrierDelivery({
+				requestId: redrive.requestId,
+				questionId: redrive.questionId,
+				canonicalDigest: canonicalSubmissionDigest(redrive),
+				principal: "master",
+				reason: redrive.reason,
+				now: "2026-07-16T01:17:30.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+
+		const secondClaim = store.claimWorkflowCarrierDelivery({
+			questionId: holder.question_id,
+			ownerId: "carrier-after-redrive",
+			now: "2026-07-16T01:18:00.000Z",
+			leaseExpiresAt: "2026-07-16T01:19:00.000Z",
+		});
+		if (!secondClaim.ok) throw new Error("second carrier claim failed");
+		expect(
+			store.settleWorkflowCarrierFailure({
+				questionId: holder.question_id,
+				ownerId: "carrier-after-redrive",
+				generation: secondClaim.generation,
+				reason: "failure after operator redrive",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:18:01.000Z",
+			}),
+		).toMatchObject({ ok: true, holdCount: 1, state: "pending" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "carrier_delivery_retry")
+				.map((event) => event.event_uid),
+		).toEqual([
+			`carrier_delivery_failure:${holder.question_id}:${firstClaim.generation}:1`,
+			`carrier_delivery_failure:${holder.question_id}:${secondClaim.generation}:1`,
+		]);
+		store.close();
+	});
+
+	it("emits a fresh exhaustion episode when a redriven carrier exhausts again", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const baseMs = Date.parse("2026-07-16T01:17:00.000Z");
+		let attemptIndex = 0;
+		const failOnce = (episode: string) => {
+			const nowMs = baseMs + attemptIndex * 10 * 60_000;
+			attemptIndex += 1;
+			const claim = store.claimWorkflowCarrierDelivery({
+				questionId: holder.question_id,
+				ownerId: `carrier-${episode}-${attemptIndex}`,
+				now: new Date(nowMs).toISOString(),
+				leaseExpiresAt: new Date(nowMs + 60_000).toISOString(),
+			});
+			if (!claim.ok) throw new Error(`carrier ${episode} claim failed`);
+			return {
+				generation: claim.generation,
+				result: store.settleWorkflowCarrierFailure({
+					questionId: holder.question_id,
+					ownerId: `carrier-${episode}-${attemptIndex}`,
+					generation: claim.generation,
+					reason: `${episode} failure ${attemptIndex}`,
+					alertIdentity: carrierAlertIdentity,
+					now: new Date(nowMs + 1_000).toISOString(),
+				}),
+			};
+		};
+
+		let firstExhaustionGeneration = 0;
+		for (let index = 0; index < 5; index += 1) {
+			const failed = failOnce("before-redrive");
+			firstExhaustionGeneration = failed.generation;
+			expect(failed.result).toMatchObject({
+				ok: true,
+				holdCount: index + 1,
+				state: index === 4 ? "needs_lead" : "pending",
+			});
+		}
+
+		const redrive = store.resolveWorkflowCarrierRedriveCanonical({
+			runId: "run-1",
+			questionId: holder.question_id,
+			approvedHead: "a".repeat(40),
+			reason: "retry after first exhaustion",
+		});
+		if (!redrive) throw new Error("carrier redrive canonical missing");
+		expect(
+			store.redriveWorkflowCarrierDelivery({
+				requestId: redrive.requestId,
+				questionId: redrive.questionId,
+				canonicalDigest: canonicalSubmissionDigest(redrive),
+				principal: "master",
+				reason: redrive.reason,
+				now: new Date(
+					baseMs + attemptIndex * 10 * 60_000 - 1_000,
+				).toISOString(),
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+
+		let secondExhaustionGeneration = 0;
+		for (let index = 0; index < 5; index += 1) {
+			const failed = failOnce("after-redrive");
+			secondExhaustionGeneration = failed.generation;
+			expect(failed.result).toMatchObject({
+				ok: true,
+				holdCount: index + 1,
+				state: index === 4 ? "needs_lead" : "pending",
+			});
+		}
+		expect(
+			store.listWorkflowAlertOutbox().map((alert) => alert.escalation_uid),
+		).toEqual([
+			`carrier_delivery_exhausted:${holder.question_id}:${firstExhaustionGeneration}`,
+			`carrier_delivery_exhausted:${holder.question_id}:${secondExhaustionGeneration}`,
+		]);
+		store.close();
+	});
+
+	it("revives held carriers atomically with pane-loss run recovery", async () => {
+		const { store, holder } = await approvedCarrierRun();
+		const opened = store.openOperatorRework({
+			runId: "run-1",
+			targetNodeId: "implement",
+			feedback: "replace the missing carrier actor",
+			clientRequestId: "operator-rework-for-pane-loss",
+			principal: "master",
+			evidence: [],
+			now: "2026-07-16T01:18:00.000Z",
+		});
+		if (!opened.ok) throw new Error(opened.reason);
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`UPDATE workflow_carrier_delivery
+			    SET state = 'held', hold_count = 2, generation = 3,
+			        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+			        last_error = 'run_inactive:held'
+			  WHERE question_id = ?`,
+			[holder.question_id],
+		);
+		raw.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
+		raw.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'held', last_error = 'persisted_target_missing'
+			  WHERE request_id = ?`,
+			[opened.requestId],
+		);
+		raw.run(
+			"UPDATE sessions SET status = 'failed' WHERE execution_id = 'implement-1'",
+		);
+		for (const [questionId, generation, lastError] of [
+			["carrier-second-episode", 7, "run_inactive:held"],
+			["carrier-manual-hold", 11, "operator_pause"],
+		] as const) {
+			raw.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, authority_mode, subject_kind, carrier_binding_state,
+				    state, materialization_stage, superseded_reason, created_at, updated_at)
+				 VALUES ('run-1', ?, 1, ?, ?, ?, 'runner_ship', 'git_head', 'bound',
+				         'superseded', 'completed', 'test_fixture', ?, ?)`,
+				[
+					`gate-${questionId}`,
+					"b".repeat(40),
+					`exec-${questionId}`,
+					questionId,
+					"2026-07-16T01:18:30.000Z",
+					"2026-07-16T01:18:30.000Z",
+				],
+			);
+			raw.run(
+				`INSERT INTO workflow_carrier_delivery
+				   (question_id, run_id, gate_node_id, gate_attempt, approved_head,
+				    source_execution_id, carrier_activation_id, generation, state,
+				    hold_count, last_error, created_at, updated_at)
+				 VALUES (?, 'run-1', ?, 1, ?, ?, ?, ?, 'held', 3, ?, ?, ?)`,
+				[
+					questionId,
+					`gate-${questionId}`,
+					"b".repeat(40),
+					`exec-${questionId}`,
+					`activation-${questionId}`,
+					generation,
+					lastError,
+					"2026-07-16T01:18:30.000Z",
+					"2026-07-16T01:18:30.000Z",
+				],
+			);
+		}
+
+		expect(
+			store.materializeWorkflowReworkReplacement({
+				requestId: opened.requestId,
+				deadExecutionId: "implement-1",
+				newExecutionId: "implement-replacement",
+				reason: "persisted target disappeared",
+				observedAt: "2026-07-16T01:19:00.000Z",
+				recoverHeldPaneLoss: true,
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "pending",
+			hold_count: 2,
+			owner_id: null,
+			lease_expires_at: null,
+			next_retry_at: null,
+			last_error: "pane_loss_recovery:persisted target disappeared",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "carrier_delivery_revived"),
+		).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					event_uid: `carrier_delivery_revived:${holder.question_id}:3`,
+				}),
+				expect.objectContaining({
+					event_uid: "carrier_delivery_revived:carrier-second-episode:7",
+				}),
+			]),
+		);
+		expect(
+			store.getWorkflowCarrierDelivery("carrier-second-episode"),
+		).toMatchObject({
+			state: "pending",
+			hold_count: 3,
+			last_error: "pane_loss_recovery:persisted target disappeared",
+		});
+		expect(
+			store.getWorkflowCarrierDelivery("carrier-manual-hold"),
+		).toMatchObject({
+			state: "held",
+			hold_count: 3,
+			last_error: "operator_pause",
+		});
+		expect(
+			store.claimWorkflowCarrierDelivery({
+				questionId: holder.question_id,
+				ownerId: "revived-carrier-owner",
+				now: "2026-07-16T01:19:00.000Z",
+				leaseExpiresAt: "2026-07-16T01:20:00.000Z",
+			}),
+		).toMatchObject({ ok: true, generation: 4 });
+		store.close();
+	});
+
+	it.each([
+		["pending", true],
+		["grant_started", true],
+		["turn_granted", true],
+		["held", true],
+		["wake_delivered", false],
+		["receipt_started", false],
+	] as const)(
+		"operator rework %s carrier cancellation=%s",
+		async (state, cancelled) => {
+			const { store, holder } = await approvedCarrierRun();
+			const raw = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			raw.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = ?, generation = 4, owner_id = 'carrier-owner',
+				        lease_expires_at = '2026-07-16T01:20:00.000Z',
+				        next_retry_at = '2026-07-16T01:21:00.000Z'
+				  WHERE question_id = ?`,
+				[state, holder.question_id],
+			);
+
+			const opened = store.openOperatorRework({
+				runId: "run-1",
+				targetNodeId: "implement",
+				feedback: "replace the approved implementation",
+				clientRequestId: `operator-rework-carrier-${state}`,
+				principal: "master",
+				evidence: [],
+				now: "2026-07-16T01:18:00.000Z",
+			});
+			expect(opened).toMatchObject({ ok: true });
+			expect(
+				store.getWorkflowCarrierDelivery(holder.question_id),
+			).toMatchObject(
+				cancelled
+					? {
+							state: "completed",
+							owner_id: null,
+							lease_expires_at: null,
+							next_retry_at: null,
+							last_error: "operator_rework_superseded",
+						}
+					: {
+							state,
+							owner_id: "carrier-owner",
+							lease_expires_at: "2026-07-16T01:20:00.000Z",
+							next_retry_at: "2026-07-16T01:21:00.000Z",
+						},
+			);
+			const cancellationEvents = store
+				.listWorkflowRunEvents("run-1")
+				.filter(
+					(event) =>
+						event.event_uid ===
+						`carrier_delivery_cancelled:${holder.question_id}:4:operator_rework`,
+				);
+			expect(cancellationEvents).toHaveLength(cancelled ? 1 : 0);
+			store.close();
+		},
+	);
+
+	it.each(["pending", "held"] as const)(
+		"operator termination closes a %s carrier exactly once",
+		async (state) => {
+			const { store, holder } = await approvedCarrierRun();
+			const raw = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			if (state === "held") {
+				expect(
+					store.holdWorkflowRunByOperator({
+						runId: "run-1",
+						reason: "pane loss recovery",
+						clientRequestId: "operator-hold-before-terminate",
+						principal: "master",
+						evidence: [],
+						now: "2026-07-16T01:17:00.000Z",
+					}),
+				).toMatchObject({ ok: true, status: "held" });
+			}
+			raw.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = ?, generation = 5, owner_id = 'carrier-owner',
+				        lease_expires_at = '2026-07-16T01:20:00.000Z',
+				        next_retry_at = '2026-07-16T01:21:00.000Z',
+				        last_error = ?
+				  WHERE question_id = ?`,
+				[
+					state,
+					state === "held" ? "run_inactive:held" : null,
+					holder.question_id,
+				],
+			);
+			const terminate = {
+				runId: "run-1",
+				reason: "operator closed the run",
+				clientRequestId: `operator-terminate-carrier-${state}`,
+				principal: "master",
+				evidence: [],
+				now: "2026-07-16T01:18:00.000Z",
+			};
+			expect(store.terminateWorkflowRunByOperator(terminate)).toMatchObject({
+				ok: true,
+				status: "terminated",
+				idempotentReplay: false,
+			});
+			expect(store.terminateWorkflowRunByOperator(terminate)).toMatchObject({
+				ok: true,
+				status: "terminated",
+				idempotentReplay: true,
+			});
+			expect(
+				store.getWorkflowCarrierDelivery(holder.question_id),
+			).toMatchObject({
+				state: "completed",
+				owner_id: null,
+				lease_expires_at: null,
+				next_retry_at: null,
+				last_error: "operator_terminate:operator closed the run",
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter(
+						(event) =>
+							event.event_uid ===
+							`carrier_delivery_cancelled:${holder.question_id}:5:operator_terminate`,
+					),
+			).toHaveLength(1);
+			store.close();
+		},
+	);
 
 	it("distinguishes legacy, unavailable, and conflicting runner-ship repository authority", async () => {
 		const store = await engineRun({ gateCarrier: true });

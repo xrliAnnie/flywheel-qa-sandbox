@@ -304,5 +304,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).not.toContain("flywheel-land");
 		expect(prompt).not.toContain("Landing signal path");
 		expect(prompt).not.toContain("Three-stage keep-alive (implement phase)");
+		expect(prompt).toContain("TURN WAIT LAW (all runner vendors)");
+		expect(prompt).toContain("not-yours` is a normal wait state");
 	});
 });

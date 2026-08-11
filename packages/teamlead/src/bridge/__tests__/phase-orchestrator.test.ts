@@ -54,6 +54,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const probeGhostTmux = vi.fn(async () => "absent" as const);
 	const parkPhaseRunner = vi.fn(async () => {});
 	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
+	const wakeRecoveredTurn = vi.fn(async () => ({ ok: true }));
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const listStrandedDesignPhases = vi.fn((): PhaseSession[] => []);
 	const listStrandedImplementPhases = vi.fn((): PhaseSession[] => []);
@@ -85,6 +86,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 			probeGhostTmux,
 			parkPhaseRunner,
 			wakePhaseRunner,
+			wakeRecoveredTurn,
 			assertPhaseWorktreeReady,
 		},
 		resolveThreeStage: () => ({ enabled: true }),
@@ -111,6 +113,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		probeGhostTmux,
 		parkPhaseRunner,
 		wakePhaseRunner,
+		wakeRecoveredTurn,
 		assertPhaseWorktreeReady,
 		listStrandedDesignPhases,
 		listStrandedImplementPhases,
@@ -1600,7 +1603,7 @@ describe("FLY-921 Fix C — turn-belt stale-holder reconcile", () => {
 			status: "design_done",
 		});
 
-	it("holder terminal (failed, FLY-543 kill shape) → TURN re-granted to probed-alive design; alert once", async () => {
+	it("holder terminal (failed, FLY-543 kill shape) → TURN re-granted then durably wakes the target; alert once", async () => {
 		const h = makeBeltDeps({
 			turn: turnRow(),
 			holderSession: session({
@@ -1625,6 +1628,16 @@ describe("FLY-921 Fix C — turn-belt stale-holder reconcile", () => {
 				phase: "design",
 				projectName: "flywheel",
 			}),
+		);
+		expect(h.wakeRecoveredTurn).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session: expect.objectContaining({ execution_id: "design-alive" }),
+				epoch: 4,
+				previousHolderExecId: "qa-dead",
+			}),
+		);
+		expect(h.grantTurn.mock.invocationCallOrder[0]).toBeLessThan(
+			h.wakeRecoveredTurn.mock.invocationCallOrder[0]!,
 		);
 		expect(h.alertLeadPipelineError).toHaveBeenCalledOnce();
 		const reason = h.alertLeadPipelineError.mock.calls[0]![0].reason;

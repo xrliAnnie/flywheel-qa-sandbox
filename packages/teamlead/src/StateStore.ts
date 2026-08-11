@@ -15756,6 +15756,100 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_workflow_gate_holder_question ON workflow_gate_holder(question_id, state)",
 		);
+		// FLY-1614: runner_ship approval is not complete until the approved
+		// carrier has a durable delivery intent. The coordinator may crash at
+		// any later point; this row is committed in the founder-approval
+		// transaction and is therefore the recovery source of truth.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_carrier_delivery (
+				question_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				gate_node_id TEXT NOT NULL,
+				gate_attempt INTEGER NOT NULL CHECK (gate_attempt > 0),
+				approved_head TEXT NOT NULL,
+				source_execution_id TEXT NOT NULL,
+				carrier_activation_id TEXT NOT NULL UNIQUE,
+				owner_id TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				lease_expires_at TEXT,
+				state TEXT NOT NULL DEFAULT 'pending'
+				  CHECK (state IN ('pending','grant_started','turn_granted',
+				                   'wake_delivered','receipt_started','completed',
+				                   'held','needs_lead')),
+				hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
+				redrive_generation INTEGER NOT NULL DEFAULT 0 CHECK (redrive_generation >= 0),
+				next_retry_at TEXT,
+				turn_epoch INTEGER CHECK (turn_epoch > 0),
+				turn_source_event_id TEXT UNIQUE,
+				turn_granted_at TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (question_id) REFERENCES workflow_gate_holder(question_id),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		try {
+			this.db.run(
+				"ALTER TABLE workflow_carrier_delivery ADD COLUMN redrive_generation INTEGER NOT NULL DEFAULT 0 CHECK (redrive_generation >= 0)",
+			);
+		} catch {
+			/* column already exists */
+		}
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_wake_send_claim (
+				wake_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				execution_id TEXT NOT NULL,
+				activation_id TEXT NOT NULL,
+				epoch INTEGER NOT NULL CHECK (epoch > 0),
+				state TEXT NOT NULL CHECK (state IN ('sending','retryable','sent','cancelled')),
+				owner_id TEXT NOT NULL,
+				generation INTEGER NOT NULL DEFAULT 1 CHECK (generation > 0),
+				lease_expires_at TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_turn_divergence_episode (
+				expectation_key TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				expected_execution_id TEXT NOT NULL,
+				expected_epoch INTEGER NOT NULL CHECK (expected_epoch > 0),
+				expected_activation_id TEXT,
+				observed_execution_id TEXT,
+				observed_epoch INTEGER,
+				observed_activation_id TEXT,
+				state TEXT NOT NULL CHECK (state IN ('open','closed')),
+				first_observed_at TEXT NOT NULL,
+				last_observed_at TEXT NOT NULL,
+				alerted_at TEXT,
+				recovered_at TEXT,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_carrier_redrive_receipt (
+				request_id TEXT PRIMARY KEY,
+				canonical_digest TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				question_id TEXT NOT NULL,
+				principal TEXT NOT NULL CHECK (principal = 'master'),
+				reason TEXT NOT NULL,
+				applied_at TEXT NOT NULL,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id),
+				FOREIGN KEY (question_id) REFERENCES workflow_carrier_delivery(question_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_carrier_delivery_work ON workflow_carrier_delivery(state, lease_expires_at, updated_at)",
+		);
 		// FLY-1441: immutable Gate-entry proof. Each non-founder prerequisite
 		// frozen by the manifest contributes exactly one row; later approval is
 		// independent of the short-lived submission credential.
@@ -20894,6 +20988,11 @@ export class StateStore {
 				if (this.db.getRowsModified() !== 1) {
 					throw new Error("workflow_rework_pane_loss_delivery_cas_failed");
 				}
+				this.reviveHeldWorkflowCarrierDeliveriesTx({
+					runId: request.run_id,
+					now: input.observedAt,
+					reason: `pane_loss_recovery:${input.reason}`,
+				});
 			}
 			for (const table of [
 				"workflow_output_credential",
@@ -23183,6 +23282,109 @@ export class StateStore {
 			: { ok: false, executionIds: [...live].sort() };
 	}
 
+	private reviveHeldWorkflowCarrierDeliveriesTx(input: {
+		runId: string;
+		now: string;
+		reason: string;
+	}): number {
+		const deliveries = this.workflowSelectAll(
+			`SELECT question_id, gate_node_id, source_execution_id, generation,
+			        last_error
+			   FROM workflow_carrier_delivery
+			  WHERE run_id = ? AND state = 'held'
+			    AND last_error LIKE 'run_inactive:%'
+			  ORDER BY question_id`,
+			[input.runId],
+		);
+		let revived = 0;
+		for (const delivery of deliveries) {
+			const questionId = String(delivery.question_id);
+			const generation = Number(delivery.generation);
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = 'pending', owner_id = NULL, lease_expires_at = NULL,
+				        next_retry_at = NULL, last_error = ?, updated_at = ?
+				  WHERE question_id = ? AND state = 'held' AND generation = ?
+				    AND last_error = ?`,
+				[
+					input.reason,
+					input.now,
+					questionId,
+					generation,
+					delivery.last_error,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) continue;
+			revived += 1;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `carrier_delivery_revived:${questionId}:${generation}`,
+				kind: "carrier_delivery_revived",
+				nodeId: String(delivery.gate_node_id),
+				executionId: String(delivery.source_execution_id),
+				payload: {
+					questionId,
+					generation,
+					previousReason: delivery.last_error,
+					reason: input.reason,
+				},
+			});
+		}
+		return revived;
+	}
+
+	private cancelOpenWorkflowCarrierDeliveriesTx(input: {
+		runId: string;
+		now: string;
+		reason: string;
+		eventSuffix: "operator_rework" | "operator_terminate";
+	}): number {
+		const deliveries = this.workflowSelectAll(
+			`SELECT question_id, gate_node_id, source_execution_id, generation, state
+			   FROM workflow_carrier_delivery
+			  WHERE run_id = ?
+			    AND state IN ('pending','grant_started','turn_granted','held')
+			  ORDER BY question_id`,
+			[input.runId],
+		);
+		let cancelled = 0;
+		for (const delivery of deliveries) {
+			const questionId = String(delivery.question_id);
+			const generation = Number(delivery.generation);
+			const previousState = String(delivery.state);
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = 'completed', owner_id = NULL, lease_expires_at = NULL,
+				        next_retry_at = NULL, last_error = ?, updated_at = ?
+				  WHERE question_id = ? AND generation = ? AND state = ?`,
+				[
+					input.reason,
+					input.now,
+					questionId,
+					generation,
+					previousState,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) continue;
+			cancelled += 1;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `carrier_delivery_cancelled:${questionId}:${generation}:${input.eventSuffix}`,
+				kind: "carrier_delivery_cancelled",
+				nodeId: String(delivery.gate_node_id),
+				executionId: String(delivery.source_execution_id),
+				payload: {
+					questionId,
+					generation,
+					previousState,
+					reason: input.reason,
+					operatorAction: input.eventSuffix,
+				},
+			});
+		}
+		return cancelled;
+	}
+
 	private changeWorkflowRunStateByOperator(input: {
 		runId: string;
 		reason: string;
@@ -23369,6 +23571,14 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				result = { ok: false, reason: "run_state_changed" };
 				return;
+			}
+			if (input.target === "terminated") {
+				this.cancelOpenWorkflowCarrierDeliveriesTx({
+					runId: input.runId,
+					now: input.now,
+					reason: `operator_terminate:${input.reason}`,
+					eventSuffix: "operator_terminate",
+				});
 			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
@@ -23898,6 +24108,12 @@ export class StateStore {
 				    AND state IN ('materializing','awaiting_review','approved')`,
 				[input.now, input.runId],
 			);
+			this.cancelOpenWorkflowCarrierDeliveriesTx({
+				runId: input.runId,
+				now: input.now,
+				reason: "operator_rework_superseded",
+				eventSuffix: "operator_rework",
+			});
 			this.db.run(
 				`UPDATE workflow_run
 				    SET status = 'active', current_node_id = ?
@@ -30095,6 +30311,26 @@ export class StateStore {
 							},
 						});
 					} else {
+						const now = new Date().toISOString();
+						const carrierActivationId = `carrier:${runId}:${gateNodeId}:${Number(holder.attempt)}:${questionId}`;
+						this.db.run(
+							`INSERT INTO workflow_carrier_delivery
+							   (question_id, run_id, gate_node_id, gate_attempt,
+							    approved_head, source_execution_id, carrier_activation_id,
+							    state, created_at, updated_at)
+							 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+							[
+								questionId,
+								runId,
+								gateNodeId,
+								Number(holder.attempt),
+								approvedHead,
+								holder.source_execution_id as string,
+								carrierActivationId,
+								now,
+								now,
+							],
+						);
 						this.appendWorkflowRunEventTx({
 							runId,
 							eventUid: `runner_ship_approved:${input.project}:${input.sourceEventId}`,
@@ -32581,6 +32817,1366 @@ export class StateStore {
 			  LIMIT 1`,
 			[executionId],
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getWorkflowCarrierDelivery(
+		questionId: string,
+	): WorkflowCarrierDeliveryRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_carrier_delivery WHERE question_id = ?",
+			[questionId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			question_id: row.question_id as string,
+			run_id: row.run_id as string,
+			gate_node_id: row.gate_node_id as string,
+			gate_attempt: Number(row.gate_attempt),
+			approved_head: row.approved_head as string,
+			source_execution_id: row.source_execution_id as string,
+			carrier_activation_id: row.carrier_activation_id as string,
+			owner_id: (row.owner_id as string | null) ?? null,
+			generation: Number(row.generation),
+			lease_expires_at: (row.lease_expires_at as string | null) ?? null,
+			state: row.state as WorkflowCarrierDeliveryRow["state"],
+			hold_count: Number(row.hold_count),
+			redrive_generation: Number(row.redrive_generation ?? 0),
+			next_retry_at: (row.next_retry_at as string | null) ?? null,
+			turn_epoch:
+				row.turn_epoch == null ? null : Number(row.turn_epoch),
+			turn_source_event_id:
+				(row.turn_source_event_id as string | null) ?? null,
+			turn_granted_at: (row.turn_granted_at as string | null) ?? null,
+			last_error: (row.last_error as string | null) ?? null,
+			created_at: row.created_at as string,
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	resolveWorkflowCarrierRedriveCanonical(input: {
+		runId: string;
+		questionId: string;
+		approvedHead: string;
+		reason: string;
+	}): WorkflowCarrierRedriveCanonical | undefined {
+		const approvedHead = input.approvedHead.trim().toLowerCase();
+		const reason = input.reason.trim();
+		if (
+			!input.runId.trim() ||
+			!input.questionId.trim() ||
+			!/^[0-9a-f]{40}$/.test(approvedHead) ||
+			!reason ||
+			reason.length > 500
+		) {
+			return undefined;
+		}
+		const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+			input.questionId,
+		);
+		const run = this.getWorkflowRun(input.runId);
+		const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+		if (
+			!holder ||
+			!run ||
+			holder.run_id !== input.runId ||
+			holder.state !== "approved" ||
+			holder.authority_mode !== "runner_ship" ||
+			holder.head_sha.toLowerCase() !== approvedHead ||
+			!holder.source_execution_id ||
+			run.engine_owned !== 1 ||
+			run.status !== "active" ||
+			run.current_node_id !== holder.gate_node_id ||
+			(delivery !== undefined &&
+				(delivery.run_id !== input.runId ||
+					delivery.approved_head.toLowerCase() !== approvedHead ||
+					delivery.source_execution_id !== holder.source_execution_id ||
+					delivery.state === "receipt_started" ||
+					delivery.state === "completed"))
+		) {
+			return undefined;
+		}
+		const identity = {
+			runId: input.runId,
+			questionId: input.questionId,
+			gateNodeId: holder.gate_node_id,
+			gateAttempt: holder.attempt,
+			approvedHead,
+			sourceExecutionId: holder.source_execution_id,
+			reason,
+		};
+		return {
+			requestId: `carrier-redrive:${canonicalSubmissionDigest(identity)}`,
+			...identity,
+		};
+	}
+
+	getWorkflowCarrierRedriveReceipt(
+		requestId: string,
+	): WorkflowCarrierRedriveReceipt | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_carrier_redrive_receipt WHERE request_id = ?`,
+			[requestId],
+		)[0];
+		if (!row) return undefined;
+		return {
+			requestId: String(row.request_id),
+			canonicalDigest: String(row.canonical_digest),
+			questionId: String(row.question_id),
+			appliedAt: String(row.applied_at),
+		};
+	}
+
+	redriveWorkflowCarrierDelivery(input: {
+		requestId: string;
+		questionId: string;
+		canonicalDigest: string;
+		principal: "master";
+		reason: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!/^carrier-redrive:[0-9a-f]{64}$/i.test(input.requestId) ||
+			!input.questionId ||
+			!input.canonicalDigest ||
+			input.principal !== "master" ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_carrier_redrive" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "carrier_redrive_not_applied",
+		};
+		this.db.transaction(() => {
+			const prior = this.getWorkflowCarrierRedriveReceipt(input.requestId);
+			if (prior) {
+				result =
+					prior.canonicalDigest === input.canonicalDigest &&
+					prior.questionId === input.questionId
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "carrier_redrive_request_conflict" };
+				return;
+			}
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+				input.questionId,
+			);
+			if (!holder) {
+				result = { ok: false, reason: "carrier_approval_not_current" };
+				return;
+			}
+			const canonical = this.resolveWorkflowCarrierRedriveCanonical({
+				runId: holder.run_id,
+				questionId: input.questionId,
+				approvedHead: holder.head_sha,
+				reason: input.reason,
+			});
+			if (
+				!canonical ||
+				canonical.requestId !== input.requestId ||
+				canonicalSubmissionDigest(canonical) !== input.canonicalDigest
+			) {
+				result = { ok: false, reason: "carrier_redrive_state_changed" };
+				return;
+			}
+			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+			if (delivery) {
+				this.db.run(
+					`UPDATE workflow_carrier_delivery
+					    SET state = 'pending', owner_id = NULL, lease_expires_at = NULL,
+					        hold_count = 0, redrive_generation = redrive_generation + 1,
+					        next_retry_at = NULL, turn_epoch = NULL,
+					        turn_source_event_id = NULL, turn_granted_at = NULL,
+					        last_error = ?, updated_at = ?
+					  WHERE question_id = ? AND state != 'completed'`,
+					[`operator_redrive:${input.reason.trim()}`, input.now, input.questionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "carrier_redrive_state_changed" };
+					return;
+				}
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_carrier_delivery
+					   (question_id, run_id, gate_node_id, gate_attempt, approved_head,
+					    source_execution_id, carrier_activation_id, state,
+					    redrive_generation, last_error, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?)`,
+					[
+						canonical.questionId,
+						canonical.runId,
+						canonical.gateNodeId,
+						canonical.gateAttempt,
+						canonical.approvedHead,
+						canonical.sourceExecutionId,
+						`carrier:${canonical.runId}:${canonical.gateNodeId}:${canonical.gateAttempt}:${canonical.questionId}`,
+						`operator_redrive:${input.reason.trim()}`,
+						input.now,
+						input.now,
+					],
+				);
+			}
+			this.db.run(
+				`INSERT INTO workflow_carrier_redrive_receipt
+				   (request_id, canonical_digest, run_id, question_id, principal,
+				    reason, applied_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.requestId,
+					input.canonicalDigest,
+					canonical.runId,
+					canonical.questionId,
+					input.principal,
+					input.reason.trim(),
+					input.now,
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: canonical.runId,
+				eventUid: `carrier_redrive_applied:${input.requestId}`,
+				kind: "carrier_redrive_applied",
+				nodeId: canonical.gateNodeId,
+				executionId: canonical.sourceExecutionId,
+				payload: {
+					requestId: input.requestId,
+					questionId: input.questionId,
+					principal: input.principal,
+					reason: input.reason.trim(),
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowCarrierDeliveries(input?: {
+		states?: WorkflowCarrierDeliveryRow["state"][];
+		now?: string;
+	}): WorkflowCarrierDeliveryRow[] {
+		const states = input?.states ?? ["pending", "grant_started", "turn_granted"];
+		if (states.length === 0) return [];
+		const placeholders = states.map(() => "?").join(", ");
+		const now = input?.now ?? new Date().toISOString();
+		return this.workflowSelectAll(
+			`SELECT question_id FROM workflow_carrier_delivery
+			  WHERE state IN (${placeholders})
+			    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+			  ORDER BY updated_at, question_id`,
+			[...states, now],
+		)
+			.map((row) =>
+				this.getWorkflowCarrierDelivery(row.question_id as string),
+			)
+			.filter((row): row is WorkflowCarrierDeliveryRow => row !== undefined);
+	}
+
+	claimWorkflowCarrierDelivery(input: {
+		questionId: string;
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): WorkflowCarrierDeliveryClaimResult {
+		if (
+			!input.questionId ||
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_delivery_claim" };
+		}
+		let result: WorkflowCarrierDeliveryClaimResult = {
+			ok: false,
+			reason: "carrier_delivery_not_found",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+			if (!delivery) return;
+			if (!(["pending", "grant_started", "turn_granted"] as const).includes(delivery.state as never)) {
+				result = { ok: false, reason: "delivery_settled", state: delivery.state };
+				return;
+			}
+			if (
+				delivery.next_retry_at &&
+				Date.parse(delivery.next_retry_at) > Date.parse(input.now)
+			) {
+				result = { ok: false, reason: "delivery_backoff" };
+				return;
+			}
+			const leaseLive =
+				delivery.lease_expires_at !== null &&
+				Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
+			if (delivery.owner_id && delivery.owner_id !== input.ownerId && leaseLive) {
+				result = { ok: false, reason: "delivery_busy" };
+				return;
+			}
+			if (delivery.owner_id === input.ownerId && leaseLive) {
+				result = {
+					ok: true,
+					generation: delivery.generation,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			const generation = delivery.generation + 1;
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
+				        next_retry_at = NULL, last_error = NULL, updated_at = ?
+				  WHERE question_id = ? AND generation = ? AND state = ?`,
+				[
+					input.ownerId,
+					generation,
+					input.leaseExpiresAt,
+					input.now,
+					input.questionId,
+					delivery.generation,
+					delivery.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "delivery_busy" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: delivery.run_id,
+				eventUid: `carrier_delivery_claimed:${input.questionId}:${generation}`,
+				kind: "carrier_delivery_claimed",
+				nodeId: delivery.gate_node_id,
+				executionId: delivery.source_execution_id,
+				payload: { questionId: input.questionId, generation },
+			});
+			result = { ok: true, generation, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	advanceWorkflowCarrierDelivery(input: {
+		questionId: string;
+		ownerId: string;
+		generation: number;
+		from: WorkflowCarrierDeliveryRow["state"];
+		to: WorkflowCarrierDeliveryRow["state"];
+		now: string;
+		error?: string;
+		releaseOwner?: boolean;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_carrier_delivery_advance" };
+		}
+		this.db.run(
+			`UPDATE workflow_carrier_delivery
+			    SET state = ?, owner_id = ?, lease_expires_at = ?,
+			        last_error = ?, updated_at = ?
+			  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+			[
+				input.to,
+				input.releaseOwner ? null : input.ownerId,
+				input.releaseOwner ? null : this.getWorkflowCarrierDelivery(input.questionId)?.lease_expires_at ?? null,
+				input.error ?? null,
+				input.now,
+				input.questionId,
+				input.ownerId,
+				input.generation,
+				input.from,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	recordWorkflowCarrierActivationTurn(input: {
+		questionId: string;
+		ownerId: string;
+		generation: number;
+		activationId: string;
+		issueId: string;
+		executionId: string;
+		epoch: number;
+		sourceEventId: string;
+		grantedAt: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.grantedAt)
+		) {
+			return { ok: false, reason: "invalid_carrier_activation_turn" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "carrier_activation_turn_not_recorded",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+			const run = delivery ? this.getWorkflowRun(delivery.run_id) : undefined;
+			if (
+				!delivery ||
+				!run ||
+				run.issue_id !== input.issueId ||
+				delivery.source_execution_id !== input.executionId ||
+				delivery.carrier_activation_id !== input.activationId
+			) {
+				result = { ok: false, reason: "carrier_activation_turn_identity_conflict" };
+				return;
+			}
+			if (delivery.turn_epoch !== null) {
+				result =
+					delivery.turn_epoch === input.epoch &&
+					delivery.turn_source_event_id === input.sourceEventId &&
+					delivery.turn_granted_at === input.grantedAt
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "carrier_activation_turn_conflict" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = 'turn_granted', turn_epoch = ?,
+				        turn_source_event_id = ?, turn_granted_at = ?, updated_at = ?
+				  WHERE question_id = ? AND owner_id = ? AND generation = ?
+				    AND state = 'grant_started' AND turn_epoch IS NULL`,
+				[
+					input.epoch,
+					input.sourceEventId,
+					input.grantedAt,
+					input.grantedAt,
+					input.questionId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: delivery.run_id,
+				eventUid: `carrier_turn_granted:${input.sourceEventId}`,
+				kind: "carrier_turn_granted",
+				nodeId: delivery.gate_node_id,
+				executionId: input.executionId,
+				payload: {
+					questionId: input.questionId,
+					activationId: input.activationId,
+					epoch: input.epoch,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	recordWorkflowCarrierWakeReceipt(input: {
+		activationId: string;
+		executionId: string;
+		epoch: number;
+		ackedAt: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| {
+				ok: false;
+				reason:
+					| "invalid_carrier_wake_receipt"
+					| "carrier_not_found"
+					| "carrier_wake_receipt_identity_conflict"
+					| "carrier_wake_receipt_not_ready";
+		  } {
+		if (
+			!input.activationId ||
+			!input.executionId ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.ackedAt)
+		) {
+			return { ok: false, reason: "invalid_carrier_wake_receipt" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| {
+					ok: false;
+					reason:
+						| "carrier_not_found"
+						| "carrier_wake_receipt_identity_conflict"
+						| "carrier_wake_receipt_not_ready";
+			  } = { ok: false, reason: "carrier_not_found" };
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT * FROM workflow_carrier_delivery
+				  WHERE carrier_activation_id = ?`,
+				[input.activationId],
+			)[0];
+			if (!row) return;
+			if (
+				row.source_execution_id !== input.executionId ||
+				Number(row.turn_epoch) !== input.epoch
+			) {
+				result = {
+					ok: false,
+					reason: "carrier_wake_receipt_identity_conflict",
+				};
+				return;
+			}
+			if (row.state === "receipt_started" || row.state === "completed") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (row.state !== "wake_delivered") {
+				result = { ok: false, reason: "carrier_wake_receipt_not_ready" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = 'receipt_started', updated_at = ?
+				  WHERE question_id = ? AND state = 'wake_delivered'
+				    AND carrier_activation_id = ? AND source_execution_id = ?
+				    AND turn_epoch = ?`,
+				[
+					input.ackedAt,
+					row.question_id,
+					input.activationId,
+					input.executionId,
+					input.epoch,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "carrier_wake_receipt_not_ready" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(row.run_id),
+				eventUid: `carrier_wake_receipt:${input.activationId}:${input.epoch}`,
+				kind: "carrier_wake_receipt_started",
+				nodeId: String(row.gate_node_id),
+				executionId: input.executionId,
+				payload: {
+					questionId: row.question_id,
+					activationId: input.activationId,
+					epoch: input.epoch,
+					ackedAt: input.ackedAt,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowTurnExpectations(): WorkflowTurnExpectationRow[] {
+		const expectations: WorkflowTurnExpectationRow[] = [];
+		const activationRows = this.workflowSelectAll(
+			`SELECT t.activation_id, t.issue_id, t.execution_id, t.epoch,
+			        t.granted_at, b.run_id, b.node_id, b.attempt,
+			        b.rework_request_id, r.project_name, r.snapshot,
+			        d.state AS rework_delivery_state
+			   FROM workflow_activation_turn t
+			   JOIN workflow_execution_binding b ON b.activation_id = t.activation_id
+			   JOIN workflow_run r ON r.run_id = b.run_id
+			   JOIN workflow_run_node n
+			     ON n.run_id = b.run_id AND n.node_id = b.node_id
+			    AND n.attempt = b.attempt
+			   LEFT JOIN workflow_rework_delivery d
+			     ON d.request_id = b.rework_request_id
+			  WHERE r.engine_owned = 1 AND r.status = 'active'
+			    AND r.current_node_id = b.node_id
+			    AND n.execution_id = t.execution_id
+			    AND n.state IN ('admitted','running')`,
+			[],
+		);
+		for (const row of activationRows) {
+			let phaseNode = false;
+			try {
+				const snapshot = parseWorkflowRunSnapshot(String(row.snapshot));
+				const node = snapshot.manifest.nodes.find(
+					(candidate) => candidate.id === row.node_id,
+				);
+				phaseNode =
+					node?.type === "design" ||
+					node?.type === "implement" ||
+					node?.type === "qa";
+			} catch {
+				// Corrupt snapshots have their own engine fail-close path. Never infer
+				// TURN ownership from an unreadable manifest.
+			}
+			const openRework =
+				row.rework_request_id != null &&
+				(row.rework_delivery_state === "turn_granted" ||
+					row.rework_delivery_state === "wake_delivered");
+			if (!phaseNode && !openRework) continue;
+			expectations.push({
+				expectationKey: `activation:${row.run_id}:${row.node_id}:${row.attempt}:${row.activation_id}:${row.epoch}`,
+				runId: String(row.run_id),
+				nodeId: String(row.node_id),
+				issueId: String(row.issue_id),
+				projectName: String(row.project_name),
+				executionId: String(row.execution_id),
+				epoch: Number(row.epoch),
+				activationId: String(row.activation_id),
+				requiredSince: String(row.granted_at),
+				source: "activation",
+			});
+		}
+		for (const row of this.workflowSelectAll(
+			`SELECT d.*, r.issue_id, r.project_name
+			   FROM workflow_carrier_delivery d
+			   JOIN workflow_run r ON r.run_id = d.run_id
+			  WHERE r.engine_owned = 1 AND r.status = 'active'
+			    AND r.current_node_id = d.gate_node_id
+			    AND d.state IN ('turn_granted','wake_delivered','receipt_started')
+			    AND d.turn_epoch IS NOT NULL AND d.turn_granted_at IS NOT NULL`,
+			[],
+		)) {
+			expectations.push({
+				expectationKey: `carrier:${row.question_id}:${row.turn_epoch}`,
+				runId: String(row.run_id),
+				nodeId: String(row.gate_node_id),
+				issueId: String(row.issue_id),
+				projectName: String(row.project_name),
+				executionId: String(row.source_execution_id),
+				epoch: Number(row.turn_epoch),
+				activationId: String(row.carrier_activation_id),
+				requiredSince: String(row.turn_granted_at),
+				source: "carrier",
+			});
+		}
+		return expectations.sort((left, right) =>
+			left.expectationKey.localeCompare(right.expectationKey),
+		);
+	}
+
+	private static workflowTurnDivergenceFromRow(
+		row: Record<string, unknown>,
+	): WorkflowTurnDivergenceEpisodeRow {
+		return {
+			expectationKey: String(row.expectation_key),
+			runId: String(row.run_id),
+			issueId: String(row.issue_id),
+			projectName: String(row.project_name),
+			expectedExecutionId: String(row.expected_execution_id),
+			expectedEpoch: Number(row.expected_epoch),
+			expectedActivationId:
+				(row.expected_activation_id as string | null) ?? null,
+			observedExecutionId:
+				(row.observed_execution_id as string | null) ?? null,
+			observedEpoch:
+				row.observed_epoch == null ? null : Number(row.observed_epoch),
+			observedActivationId:
+				(row.observed_activation_id as string | null) ?? null,
+			state: row.state as "open" | "closed",
+			firstObservedAt: String(row.first_observed_at),
+			lastObservedAt: String(row.last_observed_at),
+			alertedAt: (row.alerted_at as string | null) ?? null,
+			recoveredAt: (row.recovered_at as string | null) ?? null,
+		};
+	}
+
+	listOpenWorkflowTurnDivergences(): WorkflowTurnDivergenceEpisodeRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_turn_divergence_episode
+			  WHERE state = 'open' ORDER BY first_observed_at, expectation_key`,
+			[],
+		).map((row) => StateStore.workflowTurnDivergenceFromRow(row));
+	}
+
+	observeWorkflowTurnDivergence(input: {
+		expectationKey: string;
+		runId: string;
+		issueId: string;
+		projectName: string;
+		expectedExecutionId: string;
+		expectedEpoch: number;
+		expectedActivationId: string | null;
+		observedExecutionId: string | null;
+		observedEpoch: number | null;
+		observedActivationId: string | null;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		alertEnabled?: boolean;
+	}): { opened: boolean; alerted: boolean } {
+		if (
+			!input.expectationKey ||
+			!input.runId ||
+			!input.issueId ||
+			!input.projectName ||
+			!input.expectedExecutionId ||
+			!Number.isSafeInteger(input.expectedEpoch) ||
+			input.expectedEpoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { opened: false, alerted: false };
+		}
+		let opened = false;
+		let alerted = false;
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				`SELECT * FROM workflow_turn_divergence_episode
+				  WHERE expectation_key = ?`,
+				[input.expectationKey],
+			)[0];
+			if (!prior) {
+				this.db.run(
+					`INSERT INTO workflow_turn_divergence_episode
+					   (expectation_key, run_id, issue_id, project_name,
+					    expected_execution_id, expected_epoch, expected_activation_id,
+					    observed_execution_id, observed_epoch, observed_activation_id,
+					    state, first_observed_at, last_observed_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+					[
+						input.expectationKey,
+						input.runId,
+						input.issueId,
+						input.projectName,
+						input.expectedExecutionId,
+						input.expectedEpoch,
+						input.expectedActivationId,
+						input.observedExecutionId,
+						input.observedEpoch,
+						input.observedActivationId,
+						input.now,
+						input.now,
+					],
+				);
+				opened = true;
+			} else if (prior.state === "closed") {
+				this.db.run(
+					`UPDATE workflow_turn_divergence_episode
+					    SET run_id = ?, issue_id = ?, project_name = ?,
+					        expected_execution_id = ?, expected_epoch = ?,
+					        expected_activation_id = ?, observed_execution_id = ?,
+					        observed_epoch = ?, observed_activation_id = ?, state = 'open',
+					        first_observed_at = ?, last_observed_at = ?,
+					        alerted_at = NULL, recovered_at = NULL
+					  WHERE expectation_key = ? AND state = 'closed'`,
+					[
+						input.runId,
+						input.issueId,
+						input.projectName,
+						input.expectedExecutionId,
+						input.expectedEpoch,
+						input.expectedActivationId,
+						input.observedExecutionId,
+						input.observedEpoch,
+						input.observedActivationId,
+						input.now,
+						input.now,
+						input.expectationKey,
+					],
+				);
+				opened = this.db.getRowsModified() === 1;
+			} else {
+				this.db.run(
+					`UPDATE workflow_turn_divergence_episode
+					    SET observed_execution_id = ?, observed_epoch = ?,
+					        observed_activation_id = ?, last_observed_at = ?
+					  WHERE expectation_key = ? AND state = 'open'`,
+					[
+						input.observedExecutionId,
+						input.observedEpoch,
+						input.observedActivationId,
+						input.now,
+						input.expectationKey,
+					],
+				);
+			}
+			const current = this.workflowSelectAll(
+				`SELECT * FROM workflow_turn_divergence_episode
+				  WHERE expectation_key = ? AND state = 'open'`,
+				[input.expectationKey],
+			)[0];
+			if (!current) return;
+			const episodeUid = `turn_ledger_divergence:${input.expectationKey}:${current.first_observed_at}`;
+			if (input.alertEnabled !== false && current.alerted_at == null) {
+				this.enqueueWorkflowEngineAlertTx({
+				escalationUid: episodeUid,
+				runId: input.runId,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: episodeUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${input.runId}`,
+					title: `TURN ledger divergence for ${input.issueId}`,
+					body: `Engine expects holder ${input.expectedExecutionId}, epoch ${input.expectedEpoch}, activation ${input.expectedActivationId ?? "legacy"}; CommDB reports holder ${input.observedExecutionId ?? "none"}, epoch ${input.observedEpoch ?? "none"}, activation ${input.observedActivationId ?? "none"}. Re-drive the owning carrier/rework delivery through the guarded recovery route; do not patch engine-owned TURN with SQL.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: input.issueId,
+							nodeId: "turn",
+							executionId: input.expectedExecutionId,
+							disposition: "turn_ledger_divergence",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+				});
+				this.db.run(
+					`UPDATE workflow_turn_divergence_episode SET alerted_at = ?
+					  WHERE expectation_key = ? AND state = 'open' AND alerted_at IS NULL`,
+					[input.now, input.expectationKey],
+				);
+				alerted = this.db.getRowsModified() === 1;
+			}
+			if (opened) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: episodeUid,
+					kind: "turn_ledger_divergence_opened",
+					executionId: input.expectedExecutionId,
+					payload: {
+						expectationKey: input.expectationKey,
+						expectedEpoch: input.expectedEpoch,
+						observedEpoch: input.observedEpoch,
+					},
+				});
+			}
+		});
+		if (opened || alerted) this.save();
+		return { opened, alerted };
+	}
+
+	closeWorkflowTurnDivergence(input: {
+		expectationKey: string;
+		now: string;
+		reason: "recovered" | "no_longer_required";
+	}): boolean {
+		if (
+			!input.expectationKey ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return false;
+		}
+		let closed = false;
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT * FROM workflow_turn_divergence_episode
+				  WHERE expectation_key = ? AND state = 'open'`,
+				[input.expectationKey],
+			)[0];
+			if (!row) return;
+			this.db.run(
+				`UPDATE workflow_turn_divergence_episode
+				    SET state = 'closed', recovered_at = ?, last_observed_at = ?
+				  WHERE expectation_key = ? AND state = 'open'`,
+				[input.now, input.now, input.expectationKey],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			closed = true;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(row.run_id),
+				eventUid: `turn_ledger_divergence_closed:${input.expectationKey}:${row.first_observed_at}`,
+				kind: "turn_ledger_divergence_closed",
+				executionId: String(row.expected_execution_id),
+				payload: { expectationKey: input.expectationKey, reason: input.reason },
+			});
+		});
+		if (closed) this.save();
+		return closed;
+	}
+
+	settleWorkflowCarrierFailure(input: {
+		questionId: string;
+		ownerId: string;
+		generation: number;
+		reason: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| {
+				ok: true;
+				holdCount: number;
+				state:
+					| "pending"
+					| "grant_started"
+					| "turn_granted"
+					| "completed"
+					| "held"
+					| "needs_lead";
+				nextRetryAt: string | null;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_carrier_failure" };
+		}
+		let result:
+			| {
+					ok: true;
+					holdCount: number;
+					state:
+						| "pending"
+						| "grant_started"
+						| "turn_granted"
+						| "completed"
+						| "held"
+						| "needs_lead";
+					nextRetryAt: string | null;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "carrier_failure_not_settled",
+		};
+		this.db.transaction(() => {
+			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+			const run = delivery ? this.getWorkflowRun(delivery.run_id) : undefined;
+			if (!delivery || !run || run.engine_owned !== 1) {
+				result = { ok: false, reason: "carrier_context_unavailable" };
+				return;
+			}
+			if (
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				!(["pending", "grant_started", "turn_granted"] as const).includes(delivery.state as never)
+			) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			if (run.status !== "active") {
+				const terminal =
+					run.status === "completed" || run.status === "terminated";
+				const nextState = terminal ? "completed" : "held";
+				const inactiveReason = `${terminal ? "run_terminal" : "run_inactive"}:${run.status}`;
+				this.db.run(
+					`UPDATE workflow_carrier_delivery
+					    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
+					        next_retry_at = NULL, last_error = ?, updated_at = ?
+					  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+					[
+						nextState,
+						inactiveReason,
+						input.now,
+						input.questionId,
+						input.ownerId,
+						input.generation,
+						delivery.state,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "stale_delivery_owner" };
+					return;
+				}
+				const eventKind = terminal
+					? "carrier_delivery_cancelled"
+					: "carrier_delivery_held";
+				const escalationUid = terminal
+					? `carrier_delivery_cancelled:${input.questionId}`
+					: `carrier_delivery_held:${input.questionId}:${input.generation}`;
+				this.appendWorkflowRunEventCheckedTx({
+					runId: delivery.run_id,
+					eventUid: terminal
+						? `carrier_delivery_cancelled:${input.questionId}:${input.generation}`
+						: escalationUid,
+					kind: eventKind,
+					nodeId: delivery.gate_node_id,
+					executionId: delivery.source_execution_id,
+					payload: {
+						questionId: input.questionId,
+						runStatus: run.status,
+						reason: inactiveReason,
+					},
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: delivery.run_id,
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${delivery.run_id}`,
+						title: terminal
+							? `Approved ship carrier cancelled for ${run.issue_id}`
+							: `Approved ship carrier paused for ${run.issue_id}`,
+						body: terminal
+							? `Approved carrier ${delivery.source_execution_id} was cancelled because workflow run ${delivery.run_id} became ${run.status}. To continue, request operator rework and obtain a fresh founder approval; ignore this alert only when termination was intentional.`
+							: `Approved carrier ${delivery.source_execution_id} paused because workflow run ${delivery.run_id} is held. First recover the held workflow run; recovery will automatically revive this carrier delivery. Use guarded carrier redrive only if the run is active and automatic revival did not occur.`,
+						metadata: {
+							workflowEngine: {
+								runId: delivery.run_id,
+								issueId: run.issue_id,
+								nodeId: delivery.gate_node_id,
+								executionId: delivery.source_execution_id,
+								disposition: terminal
+									? "carrier_delivery_cancelled"
+									: "carrier_delivery_held",
+								questionId: input.questionId,
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+				result = {
+					ok: true,
+					holdCount: delivery.hold_count,
+					state: nextState,
+					nextRetryAt: null,
+				};
+				return;
+			}
+			const holdCount = delivery.hold_count + 1;
+			const exhausted = holdCount >= 5;
+			const nextRetryAt = exhausted
+				? null
+				: new Date(Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1)).toISOString();
+			const nextState:
+				| "pending"
+				| "grant_started"
+				| "turn_granted"
+				| "needs_lead" = exhausted
+				? "needs_lead"
+				: (delivery.state as "pending" | "grant_started" | "turn_granted");
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
+				        hold_count = ?, next_retry_at = ?, last_error = ?, updated_at = ?
+				  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+				[
+					nextState,
+					holdCount,
+					nextRetryAt,
+					input.reason,
+					input.now,
+					input.questionId,
+					input.ownerId,
+					input.generation,
+					delivery.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "stale_delivery_owner" };
+				return;
+			}
+			const eventUid = `carrier_delivery_failure:${input.questionId}:${input.generation}:${holdCount}`;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: delivery.run_id,
+				eventUid,
+				kind: exhausted ? "carrier_delivery_exhausted" : "carrier_delivery_retry",
+				nodeId: delivery.gate_node_id,
+				executionId: delivery.source_execution_id,
+				payload: { questionId: input.questionId, holdCount, nextRetryAt, reason: input.reason },
+			});
+			if (exhausted) {
+				const escalationUid = `carrier_delivery_exhausted:${input.questionId}:${input.generation}`;
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: delivery.run_id,
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${delivery.run_id}`,
+						title: `Ship carrier handoff exhausted for ${run.issue_id}`,
+						body: `Approved carrier ${delivery.source_execution_id} did not receive TURN after ${holdCount} attempts (${input.reason}). Re-drive carrier delivery ${input.questionId}.`,
+						metadata: {
+							workflowEngine: {
+								runId: delivery.run_id,
+								issueId: run.issue_id,
+								nodeId: delivery.gate_node_id,
+								executionId: delivery.source_execution_id,
+								disposition: "carrier_delivery_exhausted",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+			}
+			result = { ok: true, holdCount, state: nextState, nextRetryAt };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	claimWorkflowWakeSend(input: {
+		wakeId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		activationId: string;
+		epoch: number;
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): WorkflowWakeSendClaimResult {
+		if (
+			!input.wakeId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_wake_send_claim" };
+		}
+		let result: WorkflowWakeSendClaimResult = { ok: false, reason: "target_changed" };
+		this.db.transaction(() => {
+			const prior = this.workflowSelectAll(
+				"SELECT * FROM workflow_wake_send_claim WHERE wake_id = ?",
+				[input.wakeId],
+			)[0];
+			if (prior) {
+				const matches =
+					prior.run_id === input.runId &&
+					prior.node_id === input.nodeId &&
+					Number(prior.attempt) === input.attempt &&
+					prior.execution_id === input.executionId &&
+					prior.activation_id === input.activationId &&
+					Number(prior.epoch) === input.epoch;
+				if (!matches) {
+					result = { ok: false, reason: "wake_send_conflict" };
+					return;
+				}
+				if (prior.state === "sent") {
+					result = { ok: false, reason: "wake_already_sent" };
+					return;
+				}
+				if (prior.state === "cancelled") {
+					result = { ok: false, reason: "target_terminal" };
+					return;
+				}
+				if (
+					prior.state === "sending" &&
+					Date.parse(String(prior.lease_expires_at)) > Date.parse(input.now)
+				) {
+					result =
+						prior.owner_id === input.ownerId
+							? { ok: true, generation: Number(prior.generation), idempotentReplay: true }
+							: { ok: false, reason: "wake_send_busy" };
+					return;
+				}
+			}
+			const delivery = this.workflowSelectAll(
+				`SELECT d.*, r.status AS run_status, r.current_node_id, n.state AS node_state,
+				        s.status AS session_status
+				   FROM workflow_carrier_delivery d
+				   JOIN workflow_run r ON r.run_id = d.run_id
+				   JOIN workflow_run_node n
+				     ON n.run_id = d.run_id AND n.node_id = d.gate_node_id
+				    AND n.attempt = d.gate_attempt
+				   LEFT JOIN sessions s ON s.execution_id = d.source_execution_id
+				  WHERE d.carrier_activation_id = ?`,
+				[input.activationId],
+			)[0];
+			const terminalNode = new Set(["done", "failed", "superseded", "completed"]);
+			if (
+				!delivery ||
+				delivery.run_id !== input.runId ||
+				delivery.gate_node_id !== input.nodeId ||
+				Number(delivery.gate_attempt) !== input.attempt ||
+				delivery.source_execution_id !== input.executionId ||
+				Number(delivery.turn_epoch) !== input.epoch ||
+				delivery.state !== "turn_granted" ||
+				delivery.run_status !== "active" ||
+				delivery.current_node_id !== input.nodeId
+			) {
+				result = { ok: false, reason: "target_changed" };
+				return;
+			}
+			if (
+				terminalNode.has(String(delivery.node_state)) ||
+				(delivery.session_status &&
+					isStateStoreIrreversibleTerminalForZombie(String(delivery.session_status)))
+			) {
+				result = { ok: false, reason: "target_terminal" };
+				return;
+			}
+			const generation = prior ? Number(prior.generation) + 1 : 1;
+			if (prior) {
+				this.db.run(
+					`UPDATE workflow_wake_send_claim
+					    SET state = 'sending', owner_id = ?, generation = ?, lease_expires_at = ?,
+					        updated_at = ?, last_error = NULL
+					  WHERE wake_id = ? AND state IN ('sending','retryable') AND generation = ?`,
+					[input.ownerId, generation, input.leaseExpiresAt, input.now, input.wakeId, Number(prior.generation)],
+				);
+			} else {
+				this.db.run(
+					`INSERT INTO workflow_wake_send_claim
+					   (wake_id, run_id, node_id, attempt, execution_id, activation_id,
+					    epoch, state, owner_id, generation, lease_expires_at, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, 'sending', ?, 1, ?, ?, ?)`,
+					[
+						input.wakeId,
+						input.runId,
+						input.nodeId,
+						input.attempt,
+						input.executionId,
+						input.activationId,
+						input.epoch,
+						input.ownerId,
+						input.leaseExpiresAt,
+						input.now,
+						input.now,
+					],
+				);
+			}
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "wake_send_busy" };
+				return;
+			}
+			result = { ok: true, generation, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	completeWorkflowWakeSend(input: {
+		wakeId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+		result: "sent" | "cancelled" | "retryable";
+		error?: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.wakeId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_wake_send_completion" };
+		}
+		this.db.run(
+			`UPDATE workflow_wake_send_claim
+			    SET state = ?, lease_expires_at = NULL, last_error = ?, updated_at = ?
+			  WHERE wake_id = ? AND owner_id = ? AND generation = ? AND state = 'sending'`,
+			[
+				input.result,
+				input.error ?? null,
+				input.now,
+				input.wakeId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_wake_send_owner" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	inspectWorkflowTurnWakeRetry(input: {
+		wakeId: string;
+		executionId: string;
+		activationId?: string;
+		epoch: number;
+	}): { disposition: "deliver" | "cancel" | "wait"; reason?: string } {
+		if (
+			!input.wakeId ||
+			!input.executionId ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1
+		) {
+			return { disposition: "cancel", reason: "invalid_wake_identity" };
+		}
+		const session = this.getSession(input.executionId);
+		if (
+			session &&
+			isStateStoreIrreversibleTerminalForZombie(String(session.status))
+		) {
+			return { disposition: "cancel", reason: "session_terminal" };
+		}
+		if (!input.activationId) return { disposition: "deliver" };
+
+		const carrier = this.workflowSelectAll(
+			`SELECT d.*, r.status AS run_status, r.current_node_id,
+			        n.state AS node_state, c.state AS claim_state
+			   FROM workflow_carrier_delivery d
+			   JOIN workflow_run r ON r.run_id = d.run_id
+			   JOIN workflow_run_node n
+			     ON n.run_id = d.run_id AND n.node_id = d.gate_node_id
+			    AND n.attempt = d.gate_attempt
+			   LEFT JOIN workflow_wake_send_claim c ON c.wake_id = ?
+			  WHERE d.carrier_activation_id = ?`,
+			[input.wakeId, input.activationId],
+		)[0];
+		if (carrier) {
+			if (
+				carrier.source_execution_id !== input.executionId ||
+				Number(carrier.turn_epoch) !== input.epoch
+			) {
+				return { disposition: "cancel", reason: "carrier_identity_changed" };
+			}
+			if (
+				carrier.run_status !== "active" ||
+				carrier.current_node_id !== carrier.gate_node_id ||
+				new Set(["done", "failed", "superseded", "completed"]).has(
+					String(carrier.node_state),
+				)
+			) {
+				return { disposition: "cancel", reason: "carrier_target_terminal" };
+			}
+			if (carrier.claim_state === "cancelled") {
+				return { disposition: "cancel", reason: "carrier_send_cancelled" };
+			}
+			if (
+				carrier.claim_state !== "retryable" &&
+				carrier.claim_state !== "sent"
+			) {
+				return { disposition: "wait", reason: "carrier_send_fence_owned" };
+			}
+			return { disposition: "deliver" };
+		}
+
+		const binding = this.getWorkflowActivation(input.activationId);
+		if (!binding || binding.execution_id !== input.executionId) {
+			return { disposition: "cancel", reason: "activation_not_current" };
+		}
+		const run = this.getWorkflowRun(binding.run_id);
+		const node = this.getWorkflowRunNode(
+			binding.run_id,
+			binding.node_id,
+			binding.attempt,
+		);
+		if (
+			!run ||
+			!node ||
+			run.status !== "active" ||
+			run.current_node_id !== binding.node_id ||
+			node.execution_id !== input.executionId ||
+			new Set(["done", "failed", "superseded", "completed"]).has(node.state)
+		) {
+			return { disposition: "cancel", reason: "activation_target_terminal" };
+		}
+		return { disposition: "deliver" };
 	}
 
 	getCurrentWorkflowNodePrBindingForHead(
@@ -36691,6 +38287,112 @@ export interface WorkflowReworkDeliveryRow {
 	updated_at: string;
 }
 
+export interface WorkflowCarrierDeliveryRow {
+	question_id: string;
+	run_id: string;
+	gate_node_id: string;
+	gate_attempt: number;
+	approved_head: string;
+	source_execution_id: string;
+	carrier_activation_id: string;
+	owner_id: string | null;
+	generation: number;
+	lease_expires_at: string | null;
+	state:
+		| "pending"
+		| "grant_started"
+		| "turn_granted"
+		| "wake_delivered"
+		| "receipt_started"
+		| "completed"
+		| "held"
+		| "needs_lead";
+	hold_count: number;
+	redrive_generation: number;
+	next_retry_at: string | null;
+	turn_epoch: number | null;
+	turn_source_event_id: string | null;
+	turn_granted_at: string | null;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowTurnExpectationRow {
+	expectationKey: string;
+	runId: string;
+	nodeId: string;
+	issueId: string;
+	projectName: string;
+	executionId: string;
+	epoch: number;
+	activationId: string | null;
+	requiredSince: string;
+	source: "activation" | "carrier";
+}
+
+export interface WorkflowTurnDivergenceEpisodeRow {
+	expectationKey: string;
+	runId: string;
+	issueId: string;
+	projectName: string;
+	expectedExecutionId: string;
+	expectedEpoch: number;
+	expectedActivationId: string | null;
+	observedExecutionId: string | null;
+	observedEpoch: number | null;
+	observedActivationId: string | null;
+	state: "open" | "closed";
+	firstObservedAt: string;
+	lastObservedAt: string;
+	alertedAt: string | null;
+	recoveredAt: string | null;
+}
+
+export interface WorkflowCarrierRedriveCanonical {
+	requestId: string;
+	runId: string;
+	questionId: string;
+	gateNodeId: string;
+	gateAttempt: number;
+	approvedHead: string;
+	sourceExecutionId: string;
+	reason: string;
+}
+
+export interface WorkflowCarrierRedriveReceipt {
+	requestId: string;
+	canonicalDigest: string;
+	questionId: string;
+	appliedAt: string;
+}
+
+export type WorkflowCarrierDeliveryClaimResult =
+	| { ok: true; generation: number; idempotentReplay: boolean }
+	| {
+			ok: false;
+			reason:
+				| "invalid_delivery_claim"
+				| "carrier_delivery_not_found"
+				| "delivery_busy"
+				| "delivery_backoff"
+				| "delivery_settled";
+			state?: WorkflowCarrierDeliveryRow["state"];
+	  };
+
+export type WorkflowWakeSendClaimResult =
+	| { ok: true; generation: number; idempotentReplay: boolean }
+	| {
+			ok: false;
+			reason:
+				| "invalid_wake_send_claim"
+				| "target_changed"
+				| "target_terminal"
+				| "wake_send_conflict"
+				| "wake_send_busy"
+				| "wake_already_sent";
+	  };
+
 export interface WorkflowReworkVerificationPathRow {
 	request_id: string;
 	run_id: string;
@@ -37030,6 +38732,10 @@ export interface WorkflowEngineAlertPayload {
 				| "rework_suppressed_idle_spin"
 				| "rework_retry_exhausted"
 				| "rework_held_recovery_exhausted"
+				| "carrier_delivery_exhausted"
+				| "carrier_delivery_held"
+				| "carrier_delivery_cancelled"
+				| "turn_ledger_divergence"
 				| "probe_unknown"
 				| "stale_resubmission"
 				| "dead_execution_activity_after_replacement"

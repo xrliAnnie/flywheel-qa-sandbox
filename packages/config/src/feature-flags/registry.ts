@@ -2945,6 +2945,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Rollout flag only. The run-frozen gate_carrier_epoch, not the live env, owns prompt, fence, holder, and scanner behavior.",
 	},
 	{
+		name: "workflow_turn_divergence_alerts",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1614: emit severe Lead alerts for durable engine/CommDB TURN divergence. Default off keeps detection and episode recording in shadow mode.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/workflow-turn-ledger-validator.ts",
+				"workflowTurnDivergenceAlertsEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"workflow-turn-ledger-validator test mutates the injected env and the next read changes",
+		note: "Set =1 after observing the shadow episodes. Set =0 to stop new severe alerts without disabling comparison, recovery closure, or durable episode evidence.",
+	},
+	{
 		name: "land_node",
 		category: "kill_switch",
 		source: "env",

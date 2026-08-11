@@ -277,6 +277,32 @@ describe("complete command", () => {
 		});
 	});
 
+	it("does not attach a ship-carrier activation to the runner completion", async () => {
+		activateCompletion();
+		const db = new CommDB(process.env.FLYWHEEL_COMM_DB!);
+		try {
+			db.grantTurn("issue-108", "exec-108", "implement", 1_700_000_001_000, {
+				project: "geoforge3d",
+				sourceEventId: "runner_ship_approved:approve-1",
+				targetRunId: "run-1",
+				activation: {
+					activationId: "carrier:run-1:approve-1",
+					runId: "run-1",
+					nodeId: "founder_gate",
+					attempt: 1,
+					context: { kind: "runner_ship_carrier" },
+				},
+			});
+		} finally {
+			db.close();
+		}
+
+		await complete({ route: "needs_review", merged: false });
+
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.workflowActivation).toBeUndefined();
+	});
+
 	it("FLY-191: --question-id travels as payload.reviewQuestionId (review binding)", async () => {
 		await complete({
 			route: "needs_review",

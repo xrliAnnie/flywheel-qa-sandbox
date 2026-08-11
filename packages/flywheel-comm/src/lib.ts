@@ -32,6 +32,7 @@ export type {
 	PhaseWakeInput,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
+	TurnWakeOutboxRow,
 } from "./db.js";
 export { askHygieneEnabled, CommDB } from "./db.js";
 export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";

@@ -67,7 +67,13 @@ import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { runTokenReport } from "./commands/token-report.js";
-import { formatTurnStatus, turnStatus } from "./commands/turn.js";
+import {
+	formatTurnStatus,
+	isTurnDebugOverride,
+	recordTurnCommandSideEffects,
+	turnStatus,
+	turnWaitAskAfterMs,
+} from "./commands/turn.js";
 import { verifyApprovalWithBridgeHead } from "./commands/verify-approval.js";
 import {
 	type VisualCaptureArgs,
@@ -1145,13 +1151,12 @@ function runTurn(args: string[]): void {
 	const db = new CommDB(dbPath);
 	try {
 		const status = turnStatus(db, execId);
-		db.ackRunnerReceiptWakesStarted(
-			execId,
+		const debugOverride = isTurnDebugOverride(values["exec-id"], envExecId);
+		recordTurnCommandSideEffects(db, execId, status, {
 			observedAtMs,
-			values["exec-id"] && values["exec-id"] !== envExecId
-				? "debug_override"
-				: "exec_cli",
-		);
+			askAfterMs: turnWaitAskAfterMs(process.env),
+			debugOverride,
+		});
 		if (values.json) {
 			console.log(JSON.stringify(status));
 		} else {

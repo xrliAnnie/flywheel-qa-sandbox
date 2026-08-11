@@ -65,6 +65,45 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
   target_attempt  INTEGER,
   activation_id   TEXT
 );
+CREATE TABLE IF NOT EXISTS turn_wait_ledger (
+  execution_id       TEXT NOT NULL,
+  holder_exec_id     TEXT NOT NULL,
+  epoch              INTEGER NOT NULL CHECK(epoch > 0),
+  first_seen_at      INTEGER NOT NULL,
+  asked_at           INTEGER,
+  question_id        TEXT,
+  last_error         TEXT,
+  no_turn_streak     INTEGER NOT NULL DEFAULT 0,
+  last_no_turn_at    INTEGER,
+  PRIMARY KEY (execution_id, holder_exec_id, epoch)
+);
+CREATE TABLE IF NOT EXISTS turn_wake_outbox (
+  wake_id           TEXT PRIMARY KEY,
+  execution_id      TEXT NOT NULL,
+  issue_id          TEXT NOT NULL,
+  epoch             INTEGER NOT NULL CHECK(epoch > 0),
+  activation_id     TEXT,
+  purpose           TEXT NOT NULL,
+  envelope_json     TEXT NOT NULL,
+  backend           TEXT NOT NULL,
+  state             TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(state IN ('pending','sent','acked','cancelled')),
+  push_count        INTEGER NOT NULL DEFAULT 0 CHECK(push_count BETWEEN 0 AND 2),
+  first_push_at     INTEGER,
+  last_push_at      INTEGER,
+  last_push_result  TEXT,
+  claim_token       TEXT,
+  claim_expires_at  INTEGER,
+  acked_at          INTEGER,
+	  receipt_projected_at INTEGER,
+  cancel_reason     TEXT,
+  episode_id        TEXT NOT NULL,
+  alerted_at        INTEGER,
+  alert_question_id TEXT,
+  created_at        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turn_wake_due
+  ON turn_wake_outbox(state, push_count, last_push_at, claim_expires_at);
 CREATE TABLE IF NOT EXISTS runner_workflow_activation (
   execution_id          TEXT NOT NULL,
   epoch                 INTEGER NOT NULL,
@@ -241,6 +280,31 @@ export interface RunnerWorkflowActivation {
 	submission_credential: string | null;
 	context_json: string;
 	context_digest: string;
+	created_at: number;
+}
+
+export interface TurnWakeOutboxRow {
+	wake_id: string;
+	execution_id: string;
+	issue_id: string;
+	epoch: number;
+	activation_id: string | null;
+	purpose: string;
+	envelope_json: string;
+	backend: string;
+	state: "pending" | "sent" | "acked" | "cancelled";
+	push_count: number;
+	first_push_at: number | null;
+	last_push_at: number | null;
+	last_push_result: string | null;
+	claim_token: string | null;
+	claim_expires_at: number | null;
+	acked_at: number | null;
+	receipt_projected_at: number | null;
+	cancel_reason: string | null;
+	episode_id: string;
+	alerted_at: number | null;
+	alert_question_id: string | null;
 	created_at: number;
 }
 
@@ -932,6 +996,26 @@ export class CommDB {
 					throw error;
 				}
 			}
+		}
+		const wakeColumns = this.db
+			.prepare("PRAGMA table_info(turn_wake_outbox)")
+			.all() as Array<{ name: string }>;
+		if (!wakeColumns.some((column) => column.name === "receipt_projected_at")) {
+			this.db.exec(
+				"ALTER TABLE turn_wake_outbox ADD COLUMN receipt_projected_at INTEGER",
+			);
+		}
+		const waitColumns = this.db
+			.prepare("PRAGMA table_info(turn_wait_ledger)")
+			.all() as Array<{ name: string }>;
+		for (const [name, sqlType] of [
+			["no_turn_streak", "INTEGER NOT NULL DEFAULT 0"],
+			["last_no_turn_at", "INTEGER"],
+		] as const) {
+			if (waitColumns.some((column) => column.name === name)) continue;
+			this.db.exec(
+				`ALTER TABLE turn_wait_ledger ADD COLUMN ${name} ${sqlType}`,
+			);
 		}
 		this.db.exec(`
 			CREATE TABLE IF NOT EXISTS runner_workflow_activation (
@@ -4447,8 +4531,7 @@ export class CommDB {
 					!activation.runId.trim() ||
 					!activation.nodeId.trim() ||
 					!Number.isInteger(activation.attempt) ||
-					activation.attempt < 1 ||
-					activation.nodeId !== phase)
+					activation.attempt < 1)
 			) {
 				throw new Error("invalid workflow TURN activation");
 			}
@@ -4691,6 +4774,635 @@ export class CommDB {
 			throw err;
 		}
 		return row ?? null;
+	}
+
+	/**
+	 * Record one not-yours observation and, after the threshold, materialize one
+	 * deterministic Lead question for the exact (waiter, holder, epoch) event.
+	 * Question + asked_at commit in one SQLite transaction, so crash/concurrent
+	 * replay cannot enqueue a second mailbox message.
+	 */
+	observeTurnWait(input: {
+		executionId: string;
+		holderExecId: string;
+		phase: string;
+		epoch: number;
+		observedAtMs: number;
+		askAfterMs: number;
+	}): { asked: boolean; questionId?: string } {
+		if (
+			!input.executionId.trim() ||
+			!input.holderExecId.trim() ||
+			!input.phase.trim() ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!Number.isSafeInteger(input.observedAtMs) ||
+			input.observedAtMs < 0 ||
+			!Number.isFinite(input.askAfterMs) ||
+			input.askAfterMs < 0
+		) {
+			throw new Error("invalid TURN wait observation");
+		}
+		let result: { asked: boolean; questionId?: string } = { asked: false };
+		this.db
+			.transaction(() => {
+				// Seeing a concrete TURN tuple proves every older tuple for this waiter
+				// is obsolete. It also resets any tentative no-turn clearing streak.
+				this.db
+					.prepare(
+						`DELETE FROM turn_wait_ledger
+					  WHERE execution_id = ?
+					    AND (holder_exec_id != ? OR epoch != ?)`,
+					)
+					.run(input.executionId, input.holderExecId, input.epoch);
+				this.db
+					.prepare(
+						`INSERT INTO turn_wait_ledger
+					   (execution_id, holder_exec_id, epoch, first_seen_at)
+					 VALUES (?, ?, ?, ?)
+					 ON CONFLICT(execution_id, holder_exec_id, epoch) DO NOTHING`,
+					)
+					.run(
+						input.executionId,
+						input.holderExecId,
+						input.epoch,
+						input.observedAtMs,
+					);
+				this.db
+					.prepare(
+						`UPDATE turn_wait_ledger
+					    SET no_turn_streak = 0, last_no_turn_at = NULL
+					  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+					)
+					.run(input.executionId, input.holderExecId, input.epoch);
+				const row = this.db
+					.prepare(
+						`SELECT first_seen_at, asked_at, question_id
+					   FROM turn_wait_ledger
+					  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+					)
+					.get(input.executionId, input.holderExecId, input.epoch) as {
+					first_seen_at: number;
+					asked_at: number | null;
+					question_id: string | null;
+				};
+				if (row.asked_at !== null) {
+					result = {
+						asked: false,
+						...(row.question_id ? { questionId: row.question_id } : {}),
+					};
+					return;
+				}
+				if (input.observedAtMs - row.first_seen_at < input.askAfterMs) return;
+				const identity = this.db
+					.prepare(
+						`SELECT COALESCE(s.lead_id, l.lead_id) AS lead_id,
+					        COALESCE(s.issue_id, l.issue_id) AS issue_id
+					   FROM session_receipt_lineage l
+					   LEFT JOIN sessions s ON s.execution_id = l.execution_id
+					  WHERE l.execution_id = ?`,
+					)
+					.get(input.executionId) as
+					| { lead_id: string | null; issue_id: string | null }
+					| undefined;
+				const leadId = identity?.lead_id?.trim();
+				if (!leadId) {
+					this.db
+						.prepare(
+							`UPDATE turn_wait_ledger SET last_error = 'lead_id_missing'
+						  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+						)
+						.run(input.executionId, input.holderExecId, input.epoch);
+					return;
+				}
+				const questionId = `turn-wait:${input.executionId}:${input.holderExecId}:${input.epoch}`;
+				try {
+					this.insertQuestion(
+						input.executionId,
+						leadId,
+						`TURN handoff overdue for ${identity?.issue_id ?? "unknown issue"}: ${input.executionId} is waiting while ${input.holderExecId} still holds ${input.phase} epoch ${input.epoch}. Please inspect the engine delivery and belt ledgers.`,
+						{ id: questionId },
+					);
+					const updated = this.db
+						.prepare(
+							`UPDATE turn_wait_ledger
+						    SET asked_at = ?, question_id = ?, last_error = NULL
+						  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?
+						    AND asked_at IS NULL`,
+						)
+						.run(
+							input.observedAtMs,
+							questionId,
+							input.executionId,
+							input.holderExecId,
+							input.epoch,
+						);
+					result = { asked: updated.changes === 1, questionId };
+				} catch (error) {
+					this.db
+						.prepare(
+							`UPDATE turn_wait_ledger SET last_error = ?
+						  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+						)
+						.run(
+							error instanceof Error ? error.message : String(error),
+							input.executionId,
+							input.holderExecId,
+							input.epoch,
+						);
+				}
+			})
+			.immediate();
+		return result;
+	}
+
+	clearTurnWaitOnGrant(executionId: string): number {
+		if (!executionId.trim()) return 0;
+		return this.db
+			.prepare("DELETE FROM turn_wait_ledger WHERE execution_id = ?")
+			.run(executionId).changes;
+	}
+
+	observeNoTurnForWaiter(input: {
+		executionId: string;
+		observedAtMs: number;
+		minimumIntervalMs: number;
+	}): { cleared: boolean } {
+		if (
+			!input.executionId.trim() ||
+			!Number.isSafeInteger(input.observedAtMs) ||
+			input.observedAtMs < 0 ||
+			!Number.isFinite(input.minimumIntervalMs) ||
+			input.minimumIntervalMs < 1
+		) {
+			throw new Error("invalid no-TURN observation");
+		}
+		let cleared = false;
+		this.db
+			.transaction(() => {
+				const rows = this.db
+					.prepare(
+						`SELECT holder_exec_id, epoch, no_turn_streak, last_no_turn_at
+					   FROM turn_wait_ledger WHERE execution_id = ?`,
+					)
+					.all(input.executionId) as Array<{
+					holder_exec_id: string;
+					epoch: number;
+					no_turn_streak: number;
+					last_no_turn_at: number | null;
+				}>;
+				for (const row of rows) {
+					const increment =
+						row.last_no_turn_at === null ||
+						input.observedAtMs - row.last_no_turn_at >= input.minimumIntervalMs;
+					if (!increment) continue;
+					const streak = row.no_turn_streak + 1;
+					if (streak >= 2) {
+						this.db
+							.prepare(
+								`DELETE FROM turn_wait_ledger
+							  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+							)
+							.run(input.executionId, row.holder_exec_id, row.epoch);
+						cleared = true;
+					} else {
+						this.db
+							.prepare(
+								`UPDATE turn_wait_ledger
+							    SET no_turn_streak = ?, last_no_turn_at = ?
+							  WHERE execution_id = ? AND holder_exec_id = ? AND epoch = ?`,
+							)
+							.run(
+								streak,
+								input.observedAtMs,
+								input.executionId,
+								row.holder_exec_id,
+								row.epoch,
+							);
+					}
+				}
+			})
+			.immediate();
+		return { cleared };
+	}
+
+	listTurnWaitLedger(executionId: string): Array<{
+		holderExecId: string;
+		epoch: number;
+		noTurnStreak: number;
+		lastNoTurnAt: number | null;
+	}> {
+		if (!executionId.trim()) return [];
+		return (
+			this.db
+				.prepare(
+					`SELECT holder_exec_id, epoch, no_turn_streak, last_no_turn_at
+					   FROM turn_wait_ledger WHERE execution_id = ?
+					  ORDER BY epoch, holder_exec_id`,
+				)
+				.all(executionId) as Array<{
+				holder_exec_id: string;
+				epoch: number;
+				no_turn_streak: number;
+				last_no_turn_at: number | null;
+			}>
+		).map((row) => ({
+			holderExecId: row.holder_exec_id,
+			epoch: row.epoch,
+			noTurnStreak: row.no_turn_streak,
+			lastNoTurnAt: row.last_no_turn_at,
+		}));
+	}
+
+	enqueueTurnWake(input: {
+		wakeId: string;
+		executionId: string;
+		issueId: string;
+		epoch: number;
+		activationId?: string;
+		purpose: string;
+		envelope: {
+			fromAgent: string;
+			content: string;
+			metadata?: Record<string, unknown>;
+		};
+		backend: string;
+		createdAtMs: number;
+	}): { idempotentReplay: boolean } {
+		if (
+			!input.wakeId.trim() ||
+			!input.executionId.trim() ||
+			!input.issueId.trim() ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!input.purpose.trim() ||
+			!input.envelope.fromAgent.trim() ||
+			!input.envelope.content.trim() ||
+			!input.backend.trim() ||
+			!Number.isSafeInteger(input.createdAtMs) ||
+			input.createdAtMs < 0
+		) {
+			throw new Error("invalid TURN wake envelope");
+		}
+		const envelopeJson = canonicalJsonString(input.envelope);
+		const prior = this.getTurnWake(input.wakeId);
+		if (prior) {
+			const matches =
+				prior.execution_id === input.executionId &&
+				prior.issue_id === input.issueId &&
+				prior.epoch === input.epoch &&
+				prior.activation_id === (input.activationId ?? null) &&
+				prior.purpose === input.purpose &&
+				prior.envelope_json === envelopeJson &&
+				prior.backend === input.backend;
+			if (!matches) {
+				throw new Error(`TURN wake identity conflict: ${input.wakeId}`);
+			}
+			return { idempotentReplay: true };
+		}
+		this.db
+			.prepare(
+				`INSERT INTO turn_wake_outbox
+				   (wake_id, execution_id, issue_id, epoch, activation_id, purpose,
+				    envelope_json, backend, episode_id, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			)
+			.run(
+				input.wakeId,
+				input.executionId,
+				input.issueId,
+				input.epoch,
+				input.activationId ?? null,
+				input.purpose,
+				envelopeJson,
+				input.backend,
+				`turn-wake-no-receipt:${input.wakeId}`,
+				input.createdAtMs,
+			);
+		return { idempotentReplay: false };
+	}
+
+	getTurnWake(wakeId: string): TurnWakeOutboxRow | null {
+		return (
+			(this.db
+				.prepare("SELECT * FROM turn_wake_outbox WHERE wake_id = ?")
+				.get(wakeId) as TurnWakeOutboxRow | undefined) ?? null
+		);
+	}
+
+	claimDueTurnWake(input: {
+		nowMs: number;
+		retryAfterMs: number;
+		leaseMs: number;
+		excludeWakeIds?: string[];
+	}): TurnWakeOutboxRow | null {
+		if (
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0 ||
+			!Number.isFinite(input.retryAfterMs) ||
+			input.retryAfterMs < 0 ||
+			!Number.isFinite(input.leaseMs) ||
+			input.leaseMs <= 0
+		) {
+			throw new Error("invalid TURN wake claim window");
+		}
+		const excludeWakeIds = [
+			...new Set(
+				(input.excludeWakeIds ?? []).filter((wakeId) => wakeId.trim()),
+			),
+		];
+		const exclusionSql = excludeWakeIds.length
+			? `AND wake_id NOT IN (${excludeWakeIds.map(() => "?").join(",")})`
+			: "";
+		let claimed: TurnWakeOutboxRow | null = null;
+		this.db
+			.transaction(() => {
+				const row = this.db
+					.prepare(
+						`SELECT * FROM turn_wake_outbox
+					  WHERE state IN ('pending','sent')
+					    AND push_count < 2
+					    AND (claim_token IS NULL OR claim_expires_at <= ?)
+					    AND (
+					      push_count = 0 OR
+					      (push_count = 1 AND last_push_at <= ?)
+					    )
+					    ${exclusionSql}
+					  ORDER BY created_at, wake_id
+					  LIMIT 1`,
+					)
+					.get(
+						input.nowMs,
+						input.nowMs - input.retryAfterMs,
+						...excludeWakeIds,
+					) as TurnWakeOutboxRow | undefined;
+				if (!row) return;
+				const claimToken = randomUUID();
+				const updated = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+					    SET claim_token = ?, claim_expires_at = ?
+					  WHERE wake_id = ? AND state = ? AND push_count = ?
+					    AND (claim_token IS NULL OR claim_expires_at <= ?)`,
+					)
+					.run(
+						claimToken,
+						input.nowMs + input.leaseMs,
+						row.wake_id,
+						row.state,
+						row.push_count,
+						input.nowMs,
+					);
+				if (updated.changes !== 1) return;
+				claimed = {
+					...row,
+					claim_token: claimToken,
+					claim_expires_at: input.nowMs + input.leaseMs,
+				};
+			})
+			.immediate();
+		return claimed;
+	}
+
+	claimTurnWakeById(input: {
+		wakeId: string;
+		nowMs: number;
+		retryAfterMs: number;
+		leaseMs: number;
+	}): TurnWakeOutboxRow | null {
+		if (
+			!input.wakeId.trim() ||
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0 ||
+			!Number.isFinite(input.retryAfterMs) ||
+			input.retryAfterMs < 0 ||
+			!Number.isFinite(input.leaseMs) ||
+			input.leaseMs <= 0
+		) {
+			throw new Error("invalid TURN wake claim window");
+		}
+		let claimed: TurnWakeOutboxRow | null = null;
+		this.db
+			.transaction(() => {
+				const row = this.getTurnWake(input.wakeId);
+				if (
+					!row ||
+					(row.state !== "pending" && row.state !== "sent") ||
+					row.push_count >= 2 ||
+					(row.claim_token !== null &&
+						(row.claim_expires_at ?? Number.POSITIVE_INFINITY) > input.nowMs) ||
+					(row.push_count === 1 &&
+						(row.last_push_at ?? Number.POSITIVE_INFINITY) >
+							input.nowMs - input.retryAfterMs)
+				) {
+					return;
+				}
+				const claimToken = randomUUID();
+				const updated = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+					    SET claim_token = ?, claim_expires_at = ?
+					  WHERE wake_id = ? AND state = ? AND push_count = ?
+					    AND (claim_token IS NULL OR claim_expires_at <= ?)`,
+					)
+					.run(
+						claimToken,
+						input.nowMs + input.leaseMs,
+						row.wake_id,
+						row.state,
+						row.push_count,
+						input.nowMs,
+					);
+				if (updated.changes !== 1) return;
+				claimed = {
+					...row,
+					claim_token: claimToken,
+					claim_expires_at: input.nowMs + input.leaseMs,
+				};
+			})
+			.immediate();
+		return claimed;
+	}
+
+	finishTurnWakePush(input: {
+		wakeId: string;
+		claimToken: string;
+		pushedAtMs: number;
+		result: string;
+	}): void {
+		if (
+			!input.wakeId.trim() ||
+			!input.claimToken.trim() ||
+			!Number.isSafeInteger(input.pushedAtMs) ||
+			input.pushedAtMs < 0 ||
+			!input.result.trim()
+		) {
+			throw new Error("invalid TURN wake push result");
+		}
+		const updated = this.db
+			.prepare(
+				`UPDATE turn_wake_outbox
+				    SET state = 'sent', push_count = push_count + 1,
+				        first_push_at = COALESCE(first_push_at, ?), last_push_at = ?,
+				        last_push_result = ?, claim_token = NULL, claim_expires_at = NULL
+				  WHERE wake_id = ? AND claim_token = ?
+				    AND state IN ('pending','sent') AND push_count < 2`,
+			)
+			.run(
+				input.pushedAtMs,
+				input.pushedAtMs,
+				input.result,
+				input.wakeId,
+				input.claimToken,
+			);
+		if (updated.changes !== 1) {
+			throw new Error(`stale TURN wake push claim: ${input.wakeId}`);
+		}
+	}
+
+	releaseTurnWakeClaim(wakeId: string, claimToken: string): boolean {
+		if (!wakeId.trim() || !claimToken.trim()) return false;
+		return (
+			this.db
+				.prepare(
+					`UPDATE turn_wake_outbox
+					    SET claim_token = NULL, claim_expires_at = NULL
+					  WHERE wake_id = ? AND claim_token = ?
+					    AND state IN ('pending','sent')`,
+				)
+				.run(wakeId, claimToken).changes === 1
+		);
+	}
+
+	ackTurnWakes(input: {
+		executionId: string;
+		epoch: number;
+		activationId?: string;
+		ackedAtMs: number;
+	}): number {
+		if (
+			!input.executionId.trim() ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!Number.isSafeInteger(input.ackedAtMs) ||
+			input.ackedAtMs < 0
+		) {
+			throw new Error("invalid TURN wake acknowledgment");
+		}
+		return this.db
+			.prepare(
+				`UPDATE turn_wake_outbox
+				    SET state = 'acked', acked_at = ?, claim_token = NULL,
+				        claim_expires_at = NULL
+				  WHERE execution_id = ? AND epoch = ? AND activation_id IS ?
+				    AND state IN ('pending','sent')`,
+			)
+			.run(
+				input.ackedAtMs,
+				input.executionId,
+				input.epoch,
+				input.activationId ?? null,
+			).changes;
+	}
+
+	listUnprojectedTurnWakeReceipts(limit = 100): TurnWakeOutboxRow[] {
+		if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+			throw new Error("invalid TURN wake receipt projection limit");
+		}
+		return this.db
+			.prepare(
+				`SELECT * FROM turn_wake_outbox
+				  WHERE state = 'acked' AND acked_at IS NOT NULL
+				    AND receipt_projected_at IS NULL
+				  ORDER BY acked_at, wake_id LIMIT ?`,
+			)
+			.all(limit) as TurnWakeOutboxRow[];
+	}
+
+	markTurnWakeReceiptProjected(wakeId: string, projectedAtMs: number): boolean {
+		if (
+			!wakeId.trim() ||
+			!Number.isSafeInteger(projectedAtMs) ||
+			projectedAtMs < 0
+		) {
+			return false;
+		}
+		return (
+			this.db
+				.prepare(
+					`UPDATE turn_wake_outbox SET receipt_projected_at = ?
+					  WHERE wake_id = ? AND state = 'acked'
+					    AND acked_at IS NOT NULL AND receipt_projected_at IS NULL`,
+				)
+				.run(projectedAtMs, wakeId).changes === 1
+		);
+	}
+
+	cancelTurnWake(wakeId: string, reason: string): boolean {
+		if (!wakeId.trim() || !reason.trim()) return false;
+		return (
+			this.db
+				.prepare(
+					`UPDATE turn_wake_outbox
+					    SET state = 'cancelled', cancel_reason = ?,
+					        claim_token = NULL, claim_expires_at = NULL
+					  WHERE wake_id = ? AND state IN ('pending','sent')`,
+				)
+				.run(reason, wakeId).changes === 1
+		);
+	}
+
+	materializeTurnWakeNoReceiptAlerts(input: {
+		nowMs: number;
+		alertAfterMs: number;
+	}): string[] {
+		if (
+			!Number.isSafeInteger(input.nowMs) ||
+			input.nowMs < 0 ||
+			!Number.isFinite(input.alertAfterMs) ||
+			input.alertAfterMs < 0
+		) {
+			throw new Error("invalid TURN wake alert window");
+		}
+		const created: string[] = [];
+		this.db
+			.transaction(() => {
+				const due = this.db
+					.prepare(
+						`SELECT w.*, COALESCE(s.lead_id, l.lead_id) AS lead_id
+					   FROM turn_wake_outbox w
+					   LEFT JOIN sessions s ON s.execution_id = w.execution_id
+					   LEFT JOIN session_receipt_lineage l ON l.execution_id = w.execution_id
+					  WHERE w.state = 'sent' AND w.acked_at IS NULL
+					    AND w.alerted_at IS NULL AND w.first_push_at IS NOT NULL
+					    AND w.first_push_at <= ?
+					  ORDER BY w.first_push_at, w.wake_id`,
+					)
+					.all(input.nowMs - input.alertAfterMs) as Array<
+					TurnWakeOutboxRow & { lead_id: string | null }
+				>;
+				for (const row of due) {
+					const leadId = row.lead_id?.trim();
+					if (!leadId) continue;
+					const questionId = `turn-wake-alert:${row.wake_id}`;
+					this.insertQuestion(
+						"bridge",
+						leadId,
+						`TURN wake has no runner receipt for ${row.issue_id}: ${row.execution_id}, epoch ${row.epoch}, activation ${row.activation_id ?? "legacy"}, wake ${row.wake_id}. Inspect the target runner and exact belt tuple.`,
+						{ id: questionId },
+					);
+					const updated = this.db
+						.prepare(
+							`UPDATE turn_wake_outbox
+						    SET alerted_at = ?, alert_question_id = ?
+						  WHERE wake_id = ? AND alerted_at IS NULL AND state = 'sent'`,
+						)
+						.run(input.nowMs, questionId, row.wake_id);
+					if (updated.changes === 1) created.push(questionId);
+				}
+			})
+			.immediate();
+		return created;
 	}
 
 	getRunnerWorkflowActivation(

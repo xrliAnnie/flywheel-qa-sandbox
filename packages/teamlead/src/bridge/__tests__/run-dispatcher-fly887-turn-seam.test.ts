@@ -145,10 +145,12 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			generalizedExecution: {
 				engineOwned: true,
 				executionId: "engine-design",
+				activationId: "activation:engine-design",
 				runId: "engine-run",
 				nodeId: "design",
 				attempt: 1,
 				snapshotDigest: "snapshot",
+				gateCarrierEpoch: 1,
 				dispatch: { vendor: "codex", model: "gpt-5.6-sol" },
 				capabilities: {
 					completion_route: "phase_design_complete",
@@ -156,15 +158,25 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 				},
 				agentContent: "Design the change.",
 				idempotencyKey: "engine:run:design:1",
+				projectTurn: vi.fn(() => ({
+					ok: true as const,
+					idempotentReplay: false,
+				})),
 			},
 		});
 		await dispatcher.drain();
 		const db = new CommDB(commDbPathForProject("proj"));
 		const source = db.listWorkflowSourceEvents()[0]!;
 		const history = db.listTurnSourceHistory("issue-1")[0]!;
+		const turn = db.getTurn("issue-1");
 		db.close();
 		expect(JSON.parse(source.payload).target_run_id).toBe("engine-run");
 		expect(history.target_run_id).toBe("engine-run");
+		expect(turn).toMatchObject({
+			target_node_id: "design",
+			target_attempt: 1,
+			activation_id: "activation:engine-design",
+		});
 	});
 
 	it("FLY-1257: phase retry atomically transfers the existing TURN before launch and increments epoch", async () => {

@@ -353,7 +353,13 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 			h.store.getWorkflowStartReservationForRun(json.workflowRunId as string),
 		).toBeTruthy();
 		expect(h.calls).toHaveLength(1);
-		expect(h.calls[0]!.generalizedExecution?.engineOwned).toBe(true);
+		expect(h.calls[0]!.generalizedExecution).toMatchObject({
+			engineOwned: true,
+			activationId: expect.any(String),
+		});
+		expect(h.calls[0]!.generalizedExecution?.projectTurn).toEqual(
+			expect.any(Function),
+		);
 	});
 
 	it("#2 workflow_template_dispatch OFF → legacy single-session path (canonical rollback lever)", async () => {

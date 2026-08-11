@@ -1,0 +1,8 @@
+flowchart LR
+  A["founder 批准 ship<br/>系统立「交棒字据」"] --> B{"run 状态?"}
+  B -- "正常" --> C["发棒 → 唤醒 → ship 执行"]
+  B -- "runner 画面恰好挂掉<br/>run 被暂停 (held)" --> D["字据跟着挂起"]
+  D -. "修复前: 静默终态化<br/>run 恢复后字据不复活、零告警<br/>批准过的 ship 永远不发生" .-> E["❌ 只剩管理员<br/>手工救回一条路"]
+  D == "修复后: 挂起即告警 Lead<br/>run 恢复瞬间字据自动复活" ==> C
+  style E fill:#ffe5e3,stroke:#ff3b30
+  style C fill:#e8f8ee,stroke:#34c759

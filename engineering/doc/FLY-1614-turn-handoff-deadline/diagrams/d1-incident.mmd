@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph DONE["节点完成 (例如 QA 判完)"]
+        V["裁决正常落库"]
+    end
+    subgraph ENGINE["引擎自己的账本"]
+        N["current_node 翻到下一节点<br/>(引擎认为: 我推进了)"]
+    end
+    subgraph BELT["接力棒账本 three_stage_turn"]
+        T["棒还停在上一棒手里<br/>(grant 没发生)"]
+    end
+    subgraph RUNNER["下一棒 runner"]
+        R["每分钟自查: 该我了吗?<br/>答案永远是 not-yours<br/>空等 9 分钟 ~ 2.5 小时"]
+    end
+    V --> N
+    N -. "断点: 没有任何组件<br/>校验这一步真的发生" .-x T
+    T --> R
+    style DONE fill:#e8f5e9,stroke:#34c759
+    style ENGINE fill:#e3f2fd,stroke:#007aff
+    style BELT fill:#fff3e0,stroke:#ff9500
+    style RUNNER fill:#ffebee,stroke:#ff3b30

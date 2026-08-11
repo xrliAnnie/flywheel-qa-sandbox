@@ -55,6 +55,7 @@ import {
 } from "./role-adapter-resolver.js";
 import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
 import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
+import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
 
 /**
  * FLY-1232 module ②: the narrow seam RunDispatcher.start() drives — the
@@ -874,12 +875,14 @@ export class RetryDispatcher implements IRetryDispatcher {
 				try {
 					const db = new CommDB(defaultGetCommDbPath(req.projectName));
 					try {
-						db.grantTurn(req.issueId, newExecutionId, role, Date.now(), {
-							project: req.projectName,
-							sourceEventId: `turn:spawn:${newExecutionId}`,
-							...(req.generalizedExecution?.engineOwned && {
-								targetRunId: req.generalizedExecution.runId,
-							}),
+						grantPrelaunchWorkflowTurn({
+							db,
+							issueId: req.issueId,
+							projectName: req.projectName,
+							executionId: newExecutionId,
+							phase: role,
+							grantedAtMs: Date.now(),
+							generalizedExecution: req.generalizedExecution,
 						});
 					} finally {
 						db.close();
@@ -1511,12 +1514,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					const dbPath = defaultGetCommDbPath(req.projectName);
 					const db = new CommDB(dbPath);
 					try {
-						db.grantTurn(req.issueId, executionId, role, Date.now(), {
-							project: req.projectName,
-							sourceEventId: `turn:spawn:${executionId}`,
-							...(req.generalizedExecution?.engineOwned && {
-								targetRunId: req.generalizedExecution.runId,
-							}),
+						grantPrelaunchWorkflowTurn({
+							db,
+							issueId: req.issueId,
+							projectName: req.projectName,
+							executionId,
+							phase: role,
+							grantedAtMs: Date.now(),
+							generalizedExecution: req.generalizedExecution,
 						});
 					} finally {
 						db.close();

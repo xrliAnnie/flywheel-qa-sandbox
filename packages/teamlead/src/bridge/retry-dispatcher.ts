@@ -21,6 +21,8 @@ export interface GeneralizedExecutionDispatch {
 	/** True only for a typed run whose transitions are owned by the DAG engine. */
 	engineOwned?: boolean;
 	executionId: string;
+	/** Exact StateStore admission bound before dispatch. Required when engineOwned. */
+	activationId?: string;
 	runId: string;
 	nodeId: string;
 	attempt: number;
@@ -38,6 +40,15 @@ export interface GeneralizedExecutionDispatch {
 	idempotencyKey: string;
 	launchGateToken?: string;
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
+	/** Persist CommDB's granted TURN epoch into the activation ledger before launch. */
+	projectTurn?: (input: {
+		activationId: string;
+		issueId: string;
+		executionId: string;
+		epoch: number;
+		sourceEventId: string;
+		grantedAt: string;
+	}) => { ok: true; idempotentReplay: boolean } | { ok: false; reason: string };
 	/** Current launch-owner generation, used to bind physical tmux identity. */
 	launchGeneration?: number;
 }

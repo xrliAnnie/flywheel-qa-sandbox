@@ -184,6 +184,9 @@ describe("FLY-1188 executor-identity discriminant (gate text by runnerBackend)",
 		expect(prompt).toContain("POLL for the reply");
 		expect(prompt).not.toContain("resumed automatically");
 		expect(prompt).toContain("gate/review pending is NEVER blocked");
+		expect(prompt).toContain(
+			"A successful `turn` answer of `not-yours` is a wait state, NOT a command failure.",
+		);
 	});
 
 	it("runnerBackend=codex-tmux WITH vendor=codex → same codex gate text (unchanged combo)", async () => {

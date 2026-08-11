@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant F as Founder
+    participant S as 引擎账本 (StateStore)
+    participant C as 交棒协调器 (新)
+    participant B as 棒账本 (comm.db)
+    participant R as Ship runner
+
+    F->>S: 批准 ship
+    Note over S: 同一事务:<br/>记批准 + 写『交棒意图』行
+    C->>S: 认领意图 (带租约, 崩溃可续)
+    C->>C: 校验 runner 活着 / 工作区就位 / 目标未终态
+    C->>B: 一次性写全束: 棒 + 目标绑定 + 凭据
+    C->>R: 发唤醒信 (先登记收据行)
+    R->>B: 自查 turn: 该我了 (epoch 匹配)
+    B-->>C: 收据打钩 (精确匹配才算)
+    Note over C: 任一步失败: 1/2/4/8 分钟退避重试<br/>第 5 次转人工 + 一次性告警

@@ -35,7 +35,7 @@ import {
 	reconcileLeaseEpisodeQueue,
 	recoverLeaseEpisode,
 } from "flywheel-comm/lead-lease";
-import { wakeRunnerMailbox } from "flywheel-comm/wake";
+import { deliverDurableTurnWake } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (固化 default-on since FLY-1243).
 import {
 	createLocalAnalysisStore,
@@ -559,6 +559,7 @@ import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
+import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
 import {
@@ -571,6 +572,7 @@ import {
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
 } from "./watchdog-minimum-set.js";
+import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
@@ -583,10 +585,18 @@ import {
 } from "./workflow-rework-coordinator.js";
 import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import {
+	grantWorkflowShipCarrierTurn,
+	WorkflowShipCarrierDeliveryHandler,
+} from "./workflow-ship-carrier-coordinator.js";
+import {
 	createWorkflowShipReadyArm,
 	enrichPrHeadViaGh,
 } from "./workflow-ship-ready-arm.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
+import {
+	reconcileWorkflowTurnLedgers,
+	workflowTurnDivergenceAlertsEnabled,
+} from "./workflow-turn-ledger-validator.js";
 import {
 	createWorkKindCutoverRouter,
 	type Fly1436ActivationEvidence,
@@ -1398,6 +1408,14 @@ export function createBridgeApp(
 						},
 					}
 				: {}),
+		}),
+	);
+	app.use(
+		"/api/workflow",
+		createWorkflowCarrierRedriveRouter({
+			store,
+			tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
+			apiToken: config.apiToken,
 		}),
 	);
 	app.use("/api/workflow", createWorkflowTemplateRouter(store));
@@ -4938,6 +4956,9 @@ export async function startBridge(
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
 	} = { current: undefined };
+	const workflowShipCarrierDeliveryHolder: {
+		current: WorkflowShipCarrierDeliveryHandler | undefined;
+	} = { current: undefined };
 
 	// FLY-887 (founder-visibility status line, Finding B): the refresh function
 	// is only ready once phaseQaEffects is built (post-listen), but
@@ -5789,6 +5810,12 @@ export async function startBridge(
 					Promise.resolve({
 						kind: "retryable" as const,
 						reason: "rework_coordinator_unavailable",
+					}),
+				reconcileWorkflowCarrier: (questionId) =>
+					workflowShipCarrierDeliveryHolder.current?.reconcile(questionId) ??
+					Promise.resolve({
+						kind: "retryable" as const,
+						reason: "carrier_handler_unavailable",
 					}),
 				probeUnlaunchedExternalEvidence,
 				cleanupUnlaunchedWorkflowWindow: (identity) =>
@@ -7303,6 +7330,53 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onReconcilePatrolTick: async () => {
+			await drainTurnWakeOutbox({
+				projectNames: projects.map((project) => project.projectName),
+				commDbPathForProject,
+				canDeliver: async (wake) =>
+					store.inspectWorkflowTurnWakeRetry({
+						wakeId: wake.wake_id,
+						executionId: wake.execution_id,
+						...(wake.activation_id ? { activationId: wake.activation_id } : {}),
+						epoch: wake.epoch,
+					}),
+				onReceipt: async (receipt) => {
+					if (
+						receipt.purpose !== "workflow_ship_carrier" ||
+						!receipt.activation_id ||
+						receipt.acked_at === null
+					) {
+						return "not_applicable";
+					}
+					const projected = store.recordWorkflowCarrierWakeReceipt({
+						activationId: receipt.activation_id,
+						executionId: receipt.execution_id,
+						epoch: receipt.epoch,
+						ackedAt: new Date(receipt.acked_at).toISOString(),
+					});
+					if (projected.ok) return "projected";
+					console.warn(
+						`[turn-wake] carrier receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
+					);
+					return "retry";
+				},
+			});
+			await reconcileWorkflowTurnLedgers({
+				store,
+				commDbPathForProject,
+				alertEnabled: workflowTurnDivergenceAlertsEnabled(),
+				resolveAlertIdentity: (expectation) =>
+					resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
+						projectName: expectation.projectName,
+						issueId: expectation.issueId,
+						runId: expectation.runId,
+						log: (message) => console.warn(`[workflow-turn-ledger] ${message}`),
+					}),
+				onError: (message) => console.warn(`[workflow-turn-ledger] ${message}`),
+			});
 			await projectWorkflowEngineParkOutbox({
 				store,
 				projectNames: projects.map((project) => project.projectName),
@@ -8605,14 +8679,29 @@ export async function startBridge(
 								kind === "fix"
 									? `Three-stage QA FIX round ${round ?? "?"}: the QA phase FAILED this branch. Its findings / failing tests / report are ALREADY COMMITTED on this branch at ${headSha}. FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer (this wake text is context, not authority). Then fix exactly what they name in THIS worktree, push, re-run Codex review, re-request review (gate approve_to_ship --no-block + complete --route needs_review), then park again and WAIT. QA summary: ${qaSummary ?? "(none)"}`
 									: `Three-stage RE-TEST: Bridge observed an implement completion at head ${headSha} and selected this QA phase for re-verification. This message does not assert what changed. Your worktree is ALREADY at that head (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
-							const res = await wakeRunnerMailbox({
+							const turn = db.getTurn(session.issue_id);
+							if (!turn || turn.holder_exec_id !== session.execution_id) {
+								return {
+									ok: false,
+									error: `TURN not granted to wake target ${session.execution_id}`,
+								};
+							}
+							const wakeId = `phase-handoff:${session.issue_id}:${session.execution_id}:${turn.epoch}:${kind}:${headSha}`;
+							const res = await deliverDurableTurnWake({
 								db,
+								wakeId,
 								execId: session.execution_id,
+								issueId: session.issue_id,
+								epoch: turn.epoch,
+								purpose:
+									kind === "fix" ? "three_stage_fix" : "three_stage_retest",
 								fromAgent: "bridge",
 								content,
 								metadata: {
 									kind:
 										kind === "fix" ? "three_stage_fix" : "three_stage_retest",
+									wakeId,
+									epoch: turn.epoch,
 									headSha,
 									...(round !== undefined ? { round } : {}),
 								},
@@ -8630,6 +8719,57 @@ export async function startBridge(
 							// FLY-907 (Step 4.2): the park marker was just cleared — the
 							// woken phase must flip back to ▶ (FLY-543 rework display).
 							// This is also the normal TURN re-grant path. Fire-and-forget.
+							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+						}
+					},
+					wakeRecoveredTurn: async ({
+						session,
+						epoch,
+						previousHolderExecId,
+						reason,
+					}) => {
+						const adapter = store.getSession(
+							session.execution_id,
+						)?.adapter_type;
+						const transport =
+							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+								? EXECUTOR_TO_TRANSPORT[
+										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+									]
+								: "claude-code";
+						if (transport === "none") {
+							return {
+								ok: false,
+								error: `no-transport backend (${adapter}) cannot receive a wake`,
+							};
+						}
+						const wakeId = `turn-recovery:${session.issue_id}:${previousHolderExecId}:${epoch - 1}:${session.execution_id}`;
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							db.clearDeclaredState(session.execution_id);
+							return await deliverDurableTurnWake({
+								db,
+								wakeId,
+								execId: session.execution_id,
+								issueId: session.issue_id,
+								epoch,
+								purpose: "turn_recovery",
+								fromAgent: "bridge",
+								content: `[phase-wake ${wakeId}] TURN recovery granted epoch ${epoch} after ${previousHolderExecId} became stale. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Recovery reason: ${reason}`,
+								metadata: {
+									kind: "turn_recovery",
+									wakeId,
+									epoch,
+									previousHolderExecId,
+								},
+								backend: transport,
+							});
+						} catch (error) {
+							return { ok: false, error: (error as Error).message };
+						} finally {
+							db.close();
 							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 						}
 					},
@@ -8844,9 +8984,14 @@ export async function startBridge(
 						);
 						try {
 							db.clearDeclaredState(session.execution_id);
-							const res = await wakeRunnerMailbox({
+							const res = await deliverDurableTurnWake({
 								db,
+								wakeId,
 								execId: session.execution_id,
+								issueId: session.issue_id,
+								epoch,
+								activationId,
+								purpose: "workflow_rework",
 								fromAgent: "bridge",
 								content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
 								metadata: {
@@ -8872,6 +9017,139 @@ export async function startBridge(
 					},
 				},
 			});
+			workflowShipCarrierDeliveryHolder.current =
+				new WorkflowShipCarrierDeliveryHandler({
+					store,
+					ownerId: `bridge:${process.pid}:ship-carrier`,
+					resolveAlertIdentity: (run) =>
+						resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) =>
+								console.warn(`[workflow-ship-carrier] ${message}`),
+						}),
+					effects: {
+						getActorSession: (executionId) =>
+							store.getSession(executionId) as PhaseSession | undefined,
+						assertWorktreeReady: async (session, expectedHeadSha) => {
+							const worktree = store.getSession(
+								session.execution_id,
+							)?.worktree_path;
+							if (!worktree) {
+								return { ok: false, reason: "worktree_path_missing" };
+							}
+							if (!ffExistsSync(worktree)) {
+								return {
+									ok: false,
+									reason: `worktree_missing:${worktree}`,
+								};
+							}
+							const clean = await gitWorktreeClean(worktree);
+							if (clean !== true) {
+								return {
+									ok: false,
+									reason:
+										clean === false
+											? "worktree_dirty"
+											: "worktree_unverifiable",
+								};
+							}
+							try {
+								const { stdout } = await execFileP("git", [
+									"-C",
+									worktree,
+									"rev-parse",
+									"HEAD",
+								]);
+								const actual = stdout.trim().toLowerCase();
+								if (actual !== expectedHeadSha.trim().toLowerCase()) {
+									return {
+										ok: false,
+										reason: `head_mismatch:${actual}:${expectedHeadSha}`,
+									};
+								}
+							} catch (error) {
+								return {
+									ok: false,
+									reason: `head_probe_failed:${(error as Error).message}`,
+								};
+							}
+							return { ok: true };
+						},
+						activateActorForWake: (session) =>
+							activateWakeHolder(session, "workflow_rework"),
+						grantTurn: async (input) => {
+							const db = new CommDB(commDbPathForProject(input.projectName));
+							try {
+								return grantWorkflowShipCarrierTurn(db, input, Date.now());
+							} finally {
+								db.close();
+							}
+						},
+						wakeActor: async ({
+							session,
+							wakeId,
+							activationId,
+							epoch,
+							context,
+						}) => {
+							const adapter = store.getSession(
+								session.execution_id,
+							)?.adapter_type;
+							const transport =
+								adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+									? EXECUTOR_TO_TRANSPORT[
+											adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+										]
+									: "claude-code";
+							if (transport === "none") {
+								return {
+									ok: false,
+									error: `wake_transport_missing:${adapter}`,
+								};
+							}
+							const db = new CommDB(
+								commDbPathForProject(session.project_name ?? ""),
+							);
+							try {
+								db.clearDeclaredState(session.execution_id);
+								const res = await deliverDurableTurnWake({
+									db,
+									wakeId,
+									execId: session.execution_id,
+									issueId: session.issue_id,
+									epoch,
+									activationId,
+									purpose: "workflow_ship_carrier",
+									fromAgent: "bridge",
+									content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
+									metadata: {
+										kind: "workflow_ship_carrier",
+										wakeId,
+										activationId,
+										epoch,
+									},
+									backend: transport,
+								});
+								return res.ok
+									? { ok: true }
+									: {
+											ok: false,
+											error: res.error ?? res.skippedReason ?? "wake_failed",
+										};
+							} catch (error) {
+								return { ok: false, error: (error as Error).message };
+							} finally {
+								db.close();
+								issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+							}
+						},
+					},
+				});
 			// FLY-793 (Codex full-PR R2 #1): re-drive any Design phase stranded at
 			// design_done by the boot marker drain (which ran before this orchestrator
 			// existed). Mirrors autoQaCoordinator.reconcileOnStartup — best-effort,

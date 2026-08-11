@@ -22,6 +22,29 @@ export function currentWorkflowActivationFromEnv(
 	}
 }
 
+export function currentWorkflowCompletionActivationFromEnv(
+	executionId: string,
+	env: NodeJS.ProcessEnv = process.env,
+): RunnerWorkflowActivation | null {
+	const activation = currentWorkflowActivationFromEnv(executionId, env);
+	if (!activation) return null;
+	try {
+		const context = JSON.parse(activation.context_json) as unknown;
+		if (
+			context &&
+			typeof context === "object" &&
+			!Array.isArray(context) &&
+			(context as Record<string, unknown>).kind === "runner_ship_carrier"
+		) {
+			return null;
+		}
+	} catch {
+		// Preserve the activation so the Bridge can fail closed on malformed
+		// workflow authority instead of silently falling back by execution id.
+	}
+	return activation;
+}
+
 export function currentWorkflowCredentialFromEnv(input: {
 	executionId: string;
 	kind: "submission" | "output";

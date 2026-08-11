@@ -31,7 +31,7 @@ import {
 } from "../design-html-evidence.js";
 import { resolveRunnerStateDir } from "../runner-state.js";
 import { truncateCodePoints } from "../text-truncate.js";
-import { currentWorkflowActivationFromEnv } from "./workflow-activation.js";
+import { currentWorkflowCompletionActivationFromEnv } from "./workflow-activation.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
 // no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
@@ -288,7 +288,7 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		};
 	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
-	const workflowActivation = currentWorkflowActivationFromEnv(execId);
+	const workflowActivation = currentWorkflowCompletionActivationFromEnv(execId);
 
 	const payload: Payload = {
 		decision: { route: opts.route },

@@ -61,6 +61,8 @@ Not every task uses every stage. Simple tasks may skip the brainstorm/research *
 
 ## Failure path
 
+If this run uses a shared-worktree TURN, `not-yours` is a normal wait state, never a reason to mark the run blocked, and never a command failure. Keep polling `flywheel-comm turn` every 60–90 seconds; write only after `yours`. The command automatically reports a prolonged wait to your Lead exactly once, so do not send duplicate escalations. Only a persistently absent `no-turn` record or an explicit Lead instruction changes this behavior.
+
 If you hit a hard block (env broken, ambiguous spec the user can't clarify, dependency missing):
 
 ```

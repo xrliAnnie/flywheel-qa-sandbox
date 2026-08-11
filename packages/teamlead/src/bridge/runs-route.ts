@@ -2917,6 +2917,7 @@ export function createRunsRouter(
 							generalizedExecution: {
 								engineOwned: true,
 								executionId: generalizedSelection.executionId,
+								activationId: workflowAdmission.activationId,
 								runId: generalizedSelection.runId,
 								nodeId: generalizedSelection.nodeId,
 								attempt: 1,
@@ -2931,6 +2932,7 @@ export function createRunsRouter(
 								launchGateToken,
 								launchGeneration,
 								commitWorkflowLaunch,
+								projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
 							},
 						});
 					} catch (error) {

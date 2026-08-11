@@ -1838,6 +1838,23 @@ export class Blueprint {
 			];
 		}
 
+		const usesSharedTurn =
+			isDesignPhase ||
+			isImplementPhase ||
+			isQaPhase ||
+			(isGeneralizedExecution &&
+				ctx.workflowCapabilities?.shared_branch_writer === true);
+		if (usesSharedTurn) {
+			systemPromptLines.push(
+				"",
+				"TURN WAIT LAW (all runner vendors):",
+				"A successful `turn` answer of `not-yours` is a normal wait state and is NEVER blocked; it is not a command failure.",
+				"Do not stop the runner's wait loop. Keep polling `turn` unhurriedly every 60–90 seconds and touch the shared worktree only after `yours`.",
+				"The `turn` command automatically reports a prolonged same-handoff wait to your Lead exactly once; do not send duplicate escalations yourself.",
+				"Only a persistently absent `no-turn` record or an explicit Lead instruction changes this behavior.",
+			);
+		}
+
 		if (isDesignNodeCompletion) {
 			const designHtmlIssueIdentifier =
 				ctx.issueIdentifier?.trim() ||
@@ -2179,6 +2196,7 @@ export class Blueprint {
 				"CODEX GATE WAIT LAW (resident goal lifecycle):",
 				"Eligibility to update a goal to blocked is NOT an instruction to do so: gate/review pending is NEVER blocked.",
 				"Poll pending gates unhurriedly across turns; a slow human response has no finite retry or turn limit.",
+				"A successful `turn` answer of `not-yours` is a wait state, NOT a command failure.",
 				"Only an explicit fail-close timeout, rejection, or persistent command failure may justify blocked; fail-open timeout means continue.",
 			);
 		};

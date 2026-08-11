@@ -74,6 +74,116 @@ export function turnStatus(db: CommDB, execId: string): TurnStatus {
 	};
 }
 
+export function recordTurnWait(
+	db: CommDB,
+	execId: string,
+	status: TurnStatus,
+	options: {
+		observedAtMs: number;
+		askAfterMs: number;
+		noTurnClearMinMs?: number;
+	},
+): { asked: boolean; questionId?: string } {
+	if (status.answer === "yours") {
+		db.clearTurnWaitOnGrant(execId);
+		return { asked: false };
+	}
+	if (status.answer === "no-turn") {
+		db.observeNoTurnForWaiter({
+			executionId: execId,
+			observedAtMs: options.observedAtMs,
+			minimumIntervalMs: options.noTurnClearMinMs ?? 30_000,
+		});
+		return { asked: false };
+	}
+	if (!status.holderExecId || !status.phase || status.epoch === undefined) {
+		return { asked: false };
+	}
+	return db.observeTurnWait({
+		executionId: execId,
+		holderExecId: status.holderExecId,
+		phase: status.phase,
+		epoch: status.epoch,
+		observedAtMs: options.observedAtMs,
+		askAfterMs: options.askAfterMs,
+	});
+}
+
+const DEFAULT_TURN_WAIT_ASK_MINUTES = 20;
+const MIN_TURN_WAIT_ASK_MINUTES = 5;
+const MAX_TURN_WAIT_ASK_MINUTES = 720;
+
+/** Parse the operator override without allowing an accidental alert storm. */
+export function turnWaitAskAfterMs(
+	env: Record<string, string | undefined>,
+): number {
+	const raw = env.FLYWHEEL_TURN_WAIT_ASK_MINUTES;
+	if (raw !== undefined && /^\d+$/.test(raw)) {
+		const minutes = Number(raw);
+		if (
+			Number.isSafeInteger(minutes) &&
+			minutes >= MIN_TURN_WAIT_ASK_MINUTES &&
+			minutes <= MAX_TURN_WAIT_ASK_MINUTES
+		) {
+			return minutes * 60_000;
+		}
+	}
+	return DEFAULT_TURN_WAIT_ASK_MINUTES * 60_000;
+}
+
+/** An explicit id is a debug-only read when it is not this runner's identity. */
+export function isTurnDebugOverride(
+	explicitExecId: string | undefined,
+	envExecId: string | undefined,
+): boolean {
+	return Boolean(explicitExecId && explicitExecId !== envExecId);
+}
+
+export function recordTurnCommandSideEffects(
+	db: CommDB,
+	execId: string,
+	status: TurnStatus,
+	options: {
+		observedAtMs: number;
+		askAfterMs: number;
+		debugOverride: boolean;
+	},
+): { waitAsked: boolean; turnWakeAcks: number; runnerReceiptAcks: number } {
+	if (options.debugOverride) {
+		return { waitAsked: false, turnWakeAcks: 0, runnerReceiptAcks: 0 };
+	}
+	const wait = recordTurnWait(db, execId, status, options);
+	return {
+		waitAsked: wait.asked,
+		turnWakeAcks: recordTurnWakeReceipt(
+			db,
+			execId,
+			status,
+			options.observedAtMs,
+		),
+		runnerReceiptAcks: db.ackRunnerReceiptWakesStarted(
+			execId,
+			options.observedAtMs,
+			"exec_cli",
+		),
+	};
+}
+
+export function recordTurnWakeReceipt(
+	db: CommDB,
+	execId: string,
+	status: TurnStatus,
+	ackedAtMs: number,
+): number {
+	if (status.answer !== "yours" || status.epoch === undefined) return 0;
+	return db.ackTurnWakes({
+		executionId: execId,
+		epoch: status.epoch,
+		...(status.activationId ? { activationId: status.activationId } : {}),
+		ackedAtMs,
+	});
+}
+
 /** Format a TurnStatus for the CLI's single stdout line (the runner-facing contract). */
 export function formatTurnStatus(status: TurnStatus): string {
 	if (status.answer === "no-turn") {

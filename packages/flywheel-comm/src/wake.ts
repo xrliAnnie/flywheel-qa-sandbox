@@ -62,6 +62,17 @@ export interface WakeRunnerArgs {
 		>;
 }
 
+export interface DurableTurnWakeArgs extends WakeRunnerArgs {
+	wakeId: string;
+	issueId: string;
+	epoch: number;
+	activationId?: string;
+	purpose: string;
+	nowMs?: number;
+	retryAfterMs?: number;
+	leaseMs?: number;
+}
+
 export async function wakeRunnerMailbox(
 	args: WakeRunnerArgs,
 ): Promise<WakeResult> {
@@ -141,4 +152,70 @@ export async function wakeRunnerMailbox(
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
 	}
+}
+
+/**
+ * Persist a TURN wake before transport I/O. Replays use the same wake id and
+ * can perform at most one T1 retry; the retry is verified read-after-write.
+ */
+export async function deliverDurableTurnWake(
+	args: DurableTurnWakeArgs,
+): Promise<WakeResult> {
+	const nowMs = args.nowMs ?? Date.now();
+	const retryAfterMs = args.retryAfterMs ?? 3 * 60_000;
+	const leaseMs = args.leaseMs ?? 30_000;
+	args.db.enqueueTurnWake({
+		wakeId: args.wakeId,
+		executionId: args.execId,
+		issueId: args.issueId,
+		epoch: args.epoch,
+		...(args.activationId ? { activationId: args.activationId } : {}),
+		purpose: args.purpose,
+		envelope: {
+			fromAgent: args.fromAgent,
+			content: args.content,
+			...(args.metadata ? { metadata: args.metadata } : {}),
+		},
+		backend: args.backend ?? "claude-code",
+		createdAtMs: nowMs,
+	});
+	const claim = args.db.claimTurnWakeById({
+		wakeId: args.wakeId,
+		nowMs,
+		retryAfterMs,
+		leaseMs,
+	});
+	if (!claim) {
+		const row = args.db.getTurnWake(args.wakeId);
+		if (row?.state === "acked" || row?.last_push_result === "ok") {
+			return { ok: true };
+		}
+		return {
+			ok: false,
+			error:
+				row?.state === "cancelled"
+					? `wake_cancelled:${row.cancel_reason ?? "unknown"}`
+					: (row?.last_push_result?.replace(/^error:/, "") ??
+						"wake_pending_retry"),
+		};
+	}
+	const outcome = await wakeRunnerMailbox({
+		db: args.db,
+		execId: args.execId,
+		fromAgent: args.fromAgent,
+		content: args.content,
+		metadata: args.metadata,
+		backend: args.backend,
+		verified: claim.push_count === 1,
+		transportFactory: args.transportFactory,
+	});
+	args.db.finishTurnWakePush({
+		wakeId: args.wakeId,
+		claimToken: claim.claim_token!,
+		pushedAtMs: nowMs,
+		result: outcome.ok
+			? "ok"
+			: `error:${outcome.error ?? outcome.skippedReason ?? "wake_failed"}`,
+	});
+	return outcome;
 }
