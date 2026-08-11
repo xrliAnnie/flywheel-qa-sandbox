@@ -26,6 +26,7 @@ export interface TerminalGateRetirementOptions {
 	now?: () => number;
 	openDb?: (path: string) => CommDB;
 	maxGatesPerPass?: number;
+	maxSessionsPerPass?: number;
 	logger?: (message: string) => void;
 }
 
@@ -38,6 +39,7 @@ export class TerminalGateRetirement {
 	private readonly openDb: (path: string) => CommDB;
 	private readonly logger: (message: string) => void;
 	private nextProjectOffset = 0;
+	private readonly nextSessionCursorByProject = new Map<string, string>();
 
 	constructor(private readonly options: TerminalGateRetirementOptions) {
 		this.openDb = options.openDb ?? ((path) => new CommDB(path, false));
@@ -48,25 +50,51 @@ export class TerminalGateRetirement {
 
 	async pass(): Promise<void> {
 		const projects = this.rotatedProjects();
-		let remaining = this.options.maxGatesPerPass ?? 100;
+		let remainingGates = this.options.maxGatesPerPass ?? 100;
+		let remainingSessions = this.options.maxSessionsPerPass ?? 100;
 		for (const projectName of projects) {
-			if (remaining <= 0) break;
-			for (const session of this.options.store.getProjectSessions(
+			if (remainingGates <= 0 || remainingSessions <= 0) break;
+			let cursor = this.nextSessionCursorByProject.get(projectName) ?? "";
+			let sessions = this.options.store.getTerminalProjectSessionsAfter(
 				projectName,
-			)) {
-				if (
-					remaining <= 0 ||
-					!isOperationalTerminalStatus(session.status) ||
-					!session.terminal_lifecycle_id
-				) {
-					continue;
-				}
-				remaining -= this.retireSessionGates(
-					session,
-					"superseded_session_terminal",
-					remaining,
+				cursor,
+				remainingSessions,
+			);
+			if (sessions.length === 0 && cursor) {
+				cursor = "";
+				sessions = this.options.store.getTerminalProjectSessionsAfter(
+					projectName,
+					cursor,
+					remainingSessions,
 				);
 			}
+			if (sessions.length === 0) {
+				this.nextSessionCursorByProject.delete(projectName);
+				continue;
+			}
+			let db: CommDB | undefined;
+			let lastScannedExecutionId = cursor;
+			try {
+				db = this.openDb(this.options.commDbPathForProject(projectName));
+				for (const session of sessions) {
+					if (remainingGates <= 0 || remainingSessions <= 0) break;
+					lastScannedExecutionId = session.execution_id;
+					remainingSessions -= 1;
+					remainingGates -= this.retireSessionGatesInDb(
+						db,
+						session,
+						"superseded_session_terminal",
+						remainingGates,
+					);
+				}
+			} catch (error) {
+				this.logger(
+					`${projectName}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			} finally {
+				db?.close();
+			}
+			this.nextSessionCursorByProject.set(projectName, lastScannedExecutionId);
 		}
 	}
 
@@ -86,7 +114,8 @@ export class TerminalGateRetirement {
 		return [...projects.slice(offset), ...projects.slice(0, offset)];
 	}
 
-	private retireSessionGates(
+	private retireSessionGatesInDb(
+		db: CommDB,
 		snapshot: Session,
 		reason:
 			| "superseded_session_terminal"
@@ -94,12 +123,8 @@ export class TerminalGateRetirement {
 			| "superseded_merged",
 		limit: number,
 	): number {
-		let db: CommDB | undefined;
 		let attempted = 0;
 		try {
-			db = this.openDb(
-				this.options.commDbPathForProject(snapshot.project_name),
-			);
 			for (const question of db.getPendingGatesByRunner(
 				snapshot.execution_id,
 			)) {
@@ -133,8 +158,6 @@ export class TerminalGateRetirement {
 			this.logger(
 				`${snapshot.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
 			);
-		} finally {
-			db?.close();
 		}
 		return attempted;
 	}
@@ -162,7 +185,7 @@ export class TerminalGateRetirement {
 					} catch {
 						verdict = "unknown";
 					}
-					if (verdict !== "authorized") return;
+					if (verdict !== "authorized") break;
 					db.retireGateForTerminalAuthority({
 						questionId: question.id,
 						reason,

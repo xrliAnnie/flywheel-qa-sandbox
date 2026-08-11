@@ -435,7 +435,7 @@ export class LeadInboxLoop {
 			members: rows.map((row, index) => {
 				const content = row.delivery_content ?? row.content;
 				const modelContent = queueConfig.enabled
-					? `${index === 0 ? `${header}\n\n` : ""}[receipt:${row.delivery_id}]\n${content}`
+					? `${index === 0 ? `${header}\n\n` : ""}${content}`
 					: content;
 				return {
 					deliveryId: transportMemberIds[index]!,
@@ -446,12 +446,7 @@ export class LeadInboxLoop {
 			}),
 			modelPayload: `${header}${header ? "\n\n" : ""}${
 				this.opts.renderModelBatch?.(rows) ??
-				rows
-					.map(
-						(row) =>
-							`[receipt:${row.delivery_id}]\n${row.delivery_content ?? row.content}`,
-					)
-					.join("\n\n")
+				rows.map((row) => row.delivery_content ?? row.content).join("\n\n")
 			}`,
 			...route,
 		};

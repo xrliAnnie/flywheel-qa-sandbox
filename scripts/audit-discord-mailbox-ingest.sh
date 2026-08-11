@@ -26,7 +26,7 @@ bad_rows="$(sqlite3 -bail "$DB_PATH" "
   SELECT count(*) FROM mailbox
    WHERE type = 'discord_chat' AND created_at >= '$SINCE'
      AND (carrier <> 'inbox'
-       OR instr(COALESCE(delivery_content, ''), 'receipt_id=\"' || delivery_id || '\"') = 0);")"
+       OR instr(COALESCE(delivery_content, ''), 'delivery_id=\"' || delivery_id || '\"') = 0);")"
 external_rows="$(sqlite3 -bail "$DB_PATH" "
   SELECT count(*) FROM mailbox
    WHERE source_kind = 'discord_chat' AND carrier = 'external'

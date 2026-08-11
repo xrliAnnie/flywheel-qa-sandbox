@@ -110,3 +110,23 @@ test("excludes negative tests from the production residue scan", () => {
 	const result = scanReceiptResidue({ mainRoot, pluginRoot, config });
 	assert.equal(result.ok, true);
 });
+
+test("supports a main-only CI scan without a sibling plugin checkout", () => {
+	const { mainRoot, config } = fixture();
+	writeFileSync(
+		join(mainRoot, "src", "migration.ts"),
+		"DROP TABLE IF EXISTS legacy_receipt_table;\n",
+	);
+	writeFileSync(
+		join(mainRoot, "src", "questions.ts"),
+		"const field = 'relay_state';\n",
+	);
+
+	const result = scanReceiptResidue({
+		mainRoot,
+		config,
+		repos: ["main"],
+	});
+	assert.equal(result.ok, true);
+	assert.deepEqual(result.scannedFiles, { main: 2 });
+});

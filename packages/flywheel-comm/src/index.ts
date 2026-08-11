@@ -164,6 +164,10 @@ Global options:
   --json            Output as JSON
 
 respond options:
+	<question-id> <answer> --lead <lead> [--db <path> | --project <name>]
+	[--expect-owner <execution-id>]
+	[--expect-checkpoint <checkpoint> | --expect-no-checkpoint]
+	[--source-thread <discord-thread-id>] [--bridge-url <url>]
   --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
                       founder-consent wrapper (FLY-175). Required for the
                       approve_to_ship checkpoint unless BRIDGE_URL env is set;

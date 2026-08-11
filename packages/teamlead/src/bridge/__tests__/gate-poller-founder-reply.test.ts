@@ -99,6 +99,29 @@ type PrivHandoff = {
 };
 
 describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-review #2/#3)", () => {
+	it("rejects a new founder handoff without a source thread", async () => {
+		const appendLeadEvent = vi.fn(() => 42);
+		const store = {
+			isLeadEventDelivered: vi.fn(() => false),
+			appendLeadEvent,
+		} as unknown as GatePollerConfig["store"];
+		const poller = makePoller({ store });
+		const handoff = (poller as unknown as PrivHandoff).makeAmbiguousHandoff(
+			{ agentId: "test-lead" },
+			"flywheel",
+		);
+
+		await expect(
+			handoff("founder-reply-missing-thread", {
+				issueId: "FLY-1645",
+				msgId: "m1",
+				answer: "answer",
+				commDbPath: "/tmp/flywheel-comm.db",
+			}),
+		).rejects.toThrow("founder_reply_source_thread_missing");
+		expect(appendLeadEvent).not.toHaveBeenCalled();
+	});
+
 	it("passes the founder text to Lead unchanged without an attribution hint", async () => {
 		const appendLeadEvent = vi.fn(() => 42);
 		const store = {

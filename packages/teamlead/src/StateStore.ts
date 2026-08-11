@@ -85,7 +85,10 @@ import {
 	workflowTemplateDispatchBlockMessage,
 	workflowTemplateDispatchBlockReason,
 } from "./workflow-template-dispatch.js";
-import { isOperationalTerminalStatus } from "./operational-terminal-status.js";
+import {
+	isOperationalTerminalStatus,
+	OPERATIONAL_TERMINAL_STATUSES,
+} from "./operational-terminal-status.js";
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
@@ -5856,6 +5859,35 @@ export class StateStore {
 			"SELECT * FROM sessions WHERE project_name = ?",
 		);
 		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-1645: bounded keyset page for the terminal-gate patrol. */
+	getTerminalProjectSessionsAfter(
+		projectName: string,
+		afterExecutionId: string,
+		limit: number,
+	): Session[] {
+		if (!Number.isSafeInteger(limit) || limit < 1) return [];
+		const statuses = [...OPERATIONAL_TERMINAL_STATUSES];
+		const placeholders = statuses.map(() => "?").join(",");
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			  WHERE project_name = ?
+			    AND execution_id > ?
+			    AND terminal_lifecycle_id IS NOT NULL
+			    AND status IN (${placeholders})
+			  ORDER BY execution_id
+			  LIMIT ?`,
+		);
+		stmt.bind([projectName, afterExecutionId, ...statuses, limit]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(

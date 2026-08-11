@@ -3063,6 +3063,10 @@ export class GatePoller {
 			const answer = String(payload.answer ?? "");
 			const msgId = String(payload.msgId ?? "");
 			const commDbPath = String(payload.commDbPath ?? "");
+			const sourceThread = String(payload.threadId ?? "").trim();
+			if (!sourceThread) {
+				throw new Error("founder_reply_source_thread_missing");
+			}
 			const hookPayload: HookPayload = {
 				event_type: "founder_reply",
 				execution_id: "",
@@ -3070,13 +3074,13 @@ export class GatePoller {
 				project_name: projectName,
 				status: "founder_reply",
 				summary: answer,
-				chat_thread_id: String(payload.threadId ?? ""),
+				chat_thread_id: sourceThread,
 				founder_message_id: msgId,
 				comm_db_path: commDbPath,
 				action:
 					`Handle this founder message as Lead. If it answers a Runner question, route it with ` +
 					`flywheel-comm respond <qid> "<founder-answer>" --lead ${lead.agentId} ` +
-					`--db ${commDbPath} --source-thread ${String(payload.threadId ?? "")} ` +
+					`--db ${commDbPath} --source-thread ${sourceThread} ` +
 					`--bridge-url "$BRIDGE_URL". If no Runner action is needed, close the ` +
 					`corresponding FLY-1575 task as no_action with a reason.`,
 			};

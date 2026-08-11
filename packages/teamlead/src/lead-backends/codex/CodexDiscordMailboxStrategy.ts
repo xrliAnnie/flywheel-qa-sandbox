@@ -69,7 +69,7 @@ export class CodexDiscordMailboxStrategy {
 				return "handled";
 			}
 			if (this.opts.mailboxReady && !this.opts.mailboxReady()) return "retry";
-			const verdict = ingestDiscordChat({
+			ingestDiscordChat({
 				dbPath: this.opts.dbPath,
 				leadId: this.opts.leadId,
 				chatId: message.channelId,
@@ -87,7 +87,7 @@ export class CodexDiscordMailboxStrategy {
 					: {}),
 				...(input.replyRoute ? { replyRoute: input.replyRoute } : {}),
 			});
-			return verdict.lane === "inserted_external" ? "legacy" : "handled";
+			return "handled";
 		} catch (error) {
 			this.logger.warn("discord_mailbox_ingest_failed", {
 				messageId: message.id,

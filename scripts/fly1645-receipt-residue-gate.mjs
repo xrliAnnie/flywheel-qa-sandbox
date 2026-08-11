@@ -71,11 +71,20 @@ function allowedMatch(rule, repo, relativePath, line) {
 	});
 }
 
-export function scanReceiptResidue({ mainRoot, pluginRoot, config }) {
-	const roots = {
-		main: resolve(mainRoot),
-		plugin: resolve(pluginRoot),
-	};
+export function scanReceiptResidue({
+	mainRoot,
+	pluginRoot,
+	config,
+	repos = ["main", "plugin"],
+}) {
+	const availableRoots = { main: mainRoot, plugin: pluginRoot };
+	const roots = Object.fromEntries(
+		repos.map((repo) => {
+			const root = availableRoots[repo];
+			if (!root) throw new Error(`${repo} scan root is required`);
+			return [repo, resolve(root)];
+		}),
+	);
 	const source = {};
 	for (const [repo, root] of Object.entries(roots)) {
 		source[repo] = repositoryFiles(root, config.repositories[repo]).map(
@@ -90,6 +99,7 @@ export function scanReceiptResidue({ mainRoot, pluginRoot, config }) {
 	const allowedCounts = new Map();
 	for (const rule of config.deniedSymbols) {
 		for (const repo of rule.repos ?? Object.keys(roots)) {
+			if (!source[repo]) continue;
 			for (const file of source[repo]) {
 				file.lines.forEach((line, index) => {
 					if (!line.includes(rule.pattern)) return;
@@ -154,11 +164,16 @@ function parseArgs(argv) {
 		pluginRoot: process.env.FLYWHEEL_DISCORD_PLUGIN_REPO,
 		configPath: DEFAULT_CONFIG_PATH,
 		json: false,
+		mainOnly: false,
 	};
 	for (let index = 0; index < argv.length; index += 1) {
 		const arg = argv[index];
 		if (arg === "--json") {
 			args.json = true;
+			continue;
+		}
+		if (arg === "--main-only") {
+			args.mainOnly = true;
 			continue;
 		}
 		const next = argv[index + 1];
@@ -169,7 +184,7 @@ function parseArgs(argv) {
 		else throw new Error(`unknown argument: ${arg}`);
 		index += 1;
 	}
-	if (!args.pluginRoot) {
+	if (!args.mainOnly && !args.pluginRoot) {
 		throw new Error(
 			"--plugin-root (or FLYWHEEL_DISCORD_PLUGIN_REPO) is required for the cross-repo gate",
 		);
@@ -183,13 +198,15 @@ export function runReceiptResidueGate(argv = process.argv.slice(2)) {
 		mainRoot: args.mainRoot,
 		pluginRoot: args.pluginRoot,
 		config: readConfig(args.configPath),
+		repos: args.mainOnly ? ["main"] : ["main", "plugin"],
 	});
 	if (args.json) {
 		process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 	} else if (result.ok) {
-		process.stdout.write(
-			`FLY-1645 residue gate passed (${result.scannedFiles.main} main files, ${result.scannedFiles.plugin} plugin files)\n`,
-		);
+		const counts = Object.entries(result.scannedFiles)
+			.map(([repo, count]) => `${count} ${repo} files`)
+			.join(", ");
+		process.stdout.write(`FLY-1645 residue gate passed (${counts})\n`);
 	} else {
 		for (const violation of result.violations) {
 			if (violation.path) {
