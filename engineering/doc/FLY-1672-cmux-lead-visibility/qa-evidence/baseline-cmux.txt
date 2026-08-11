@@ -1,0 +1,36 @@
+=== date ===
+2026-08-10T21:39:59Z
+=== cmux list-workspaces ===
+  workspace:416  claw-infra
+  workspace:421  tadashi
+  workspace:438  tidal-echo-tidal-echo-cos-lead
+  workspace:437  tidal-echo-tidal-echo-content-lead
+  workspace:436  tidal-echo-sub-lead
+  workspace:435  env -u TMUX '/Users/xiaorongli/.flywheel/bin/flywheel-lead-attach.sh' '/Users/xiaorongli/.flywheel/sock/fw-personal-assistant-b-fb1358a030a83e9e.sock'
+  workspace:424  env -u TMUX tmux attach -t '=cmux-FLY-1672-implement-codex-G-bug-cmux-Lead-14-per-Le'
+  workspace:423  env -u TMUX tmux attach -t '=cmux-FLY-1678-runner-claude-Opus-statusline-Fable-5h-7d'
+  workspace:442  env -u TMUX tmux attach -t '=cmux-FLY-1573-qa-claude-Opus-D-2'
+  workspace:441  env -u TMUX tmux attach -t '=cmux-FLY-1574-qa-claude-Opus-E-2-Discord-mailbox'
+  workspace:440  env -u TMUX tmux attach -t '=cmux-FLY-1676-implement-codex-G-chore-Discord-plugin-fo'
+  workspace:439  env -u TMUX tmux attach -t '=cmux-FLY-1679-runner-claude-Opus-wrapper-v2-dev-channel'
+  workspace:422  FLY-1573-implement-codex-G-D-2
+  workspace:420  FLY-1574-implement-codex-G-E-2-Discord-mailbox
+  workspace:410  FLY-1574-design
+  workspace:418  FLY-1672-design-claude-Fable-bug-cmux-Lead-14-per-
+  workspace:433  growth-reflection-lead
+  workspace:432  growth-rafiki-lead
+  workspace:431  geoforge3d-product-lead
+  workspace:434  joycon-typeless-joycon-lead
+  workspace:430  geoforge3d-ops-lead
+  workspace:429  geoforge3d-cos-lead
+  workspace:428  env -u TMUX '/Users/xiaorongli/.flywheel/bin/flywheel-lead-attach.sh' '/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-pr-e76a69077823e6f5.sock'
+* workspace:427  flywheel-flywheel-eng-lead  [selected]
+  workspace:443  env -u TMUX tmux attach -t '=cmux-FLY-1672-qa-claude-Opus-bug-cmux-Lead-14-per-Lead-'
+  workspace:426  env -u TMUX '/Users/xiaorongli/.flywheel/bin/flywheel-lead-attach.sh' '/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-co-9d22d6f755a2c9ae.sock'
+  workspace:419  FLY-1676-design-claude-Fable-chore-Discord-plugin-
+  workspace:425  flywheel-claude-infra-bot-lead
+  workspace:409  FLY-1573-design
+=== tmux version ===
+tmux 3.5a
+=== uptime ===
+14:39  up 9 days,  3:58, 33 users, load averages: 10.45 14.32 21.22

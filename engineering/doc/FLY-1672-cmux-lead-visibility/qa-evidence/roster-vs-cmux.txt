@@ -1,0 +1,17 @@
+=== roster Lead -> cmux workspace title (production, PRE-fix code) ===
+NAMED-VISIBLE  flywheel-claude-infra-bot-lead  [claude-private]
+RAW-TITLE      flywheel-flywheel-cos-lead  [claude-private] (workspace exists but shows the attach command)
+NAMED-VISIBLE  flywheel-flywheel-eng-lead  [claude-private]
+RAW-TITLE      flywheel-flywheel-product-lead  [claude-private] (workspace exists but shows the attach command)
+NAMED-VISIBLE  geoforge3d-cos-lead  [claude-private]
+NAMED-VISIBLE  geoforge3d-ops-lead  [claude-private]
+NAMED-VISIBLE  geoforge3d-product-lead  [claude-private]
+NOT-IN-CMUX    growth-mufasa-lead  [codex-tui-cmux]
+NAMED-VISIBLE  growth-rafiki-lead  [claude-private]
+NAMED-VISIBLE  growth-reflection-lead  [claude-private]
+NAMED-VISIBLE  joycon-typeless-joycon-lead  [claude-private]
+RAW-TITLE      personal-assistant-belle-lead  [claude-private] (workspace exists but shows the attach command)
+NAMED-VISIBLE  tidal-echo-sub-lead  [claude-private]
+NAMED-VISIBLE  tidal-echo-tidal-echo-content-lead  [claude-private]
+NAMED-VISIBLE  tidal-echo-tidal-echo-cos-lead  [claude-private]
+=== total cmux workspaces: 29 ===

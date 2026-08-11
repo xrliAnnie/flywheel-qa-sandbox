@@ -1,0 +1,21 @@
+sequenceDiagram
+  autonumber
+  participant W as 同步程序
+  participant T as tmux
+  participant X as 目标窗口<br/>已经消失
+  participant Z as 当前窗口<br/>空壳 永远活着
+
+  Note over W,Z: 现状 —— 问了问题，却没核对答的是谁
+  W->>T: 28465 号窗还活着吗
+  T--xX: 28465 号已经不存在
+  T->>Z: 悄悄改问当前那个窗
+  Z-->>T: 我活着
+  T-->>W: 活着（不报错）
+  Note over W: 判定活着 → 真的去建显示条目<br/>白花约 1 秒，结果必然是孤儿
+
+  Note over W,Z: 修复后 —— 要求对方自报身份
+  W->>T: 28465 号窗，报上编号和死活
+  T->>Z: 同样悄悄改问当前窗
+  Z-->>T: 我是 1362 号，我活着
+  T-->>W: 1362 号 / 活着
+  Note over W: 编号对不上 → 判定已消失 → 跳过<br/>队列秒级排空

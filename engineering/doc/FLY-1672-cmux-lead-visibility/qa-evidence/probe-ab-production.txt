@@ -1,0 +1,8 @@
+### FLY-1672 read-only probe A/B on PRODUCTION tmux server (2026-08-10T21:44:39Z)
+-- tmux version: tmux 3.5a
+wid=@30858 | OLD-format rc=0 out='0' | NEW-format rc=0 out='@1362|0'
+wid=@30857 | OLD-format rc=0 out='0' | NEW-format rc=0 out='@1362|0'
+wid=@1362 | OLD-format rc=0 out='0' | NEW-format rc=0 out='@1362|0'
+wid=@25246 | OLD-format rc=0 out='0' | NEW-format rc=0 out='@25246|0'
+-- @30858/@30857 = probe windows from the 11:57 storm, long gone (log shows 'exited 893s ago' at 13:05)
+-- @1362 = zsh (live), @25246 = growth-mufasa-lead (live)

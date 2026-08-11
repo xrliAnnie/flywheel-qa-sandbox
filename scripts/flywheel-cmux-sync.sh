@@ -2227,9 +2227,12 @@ is_pane_alive() {
 # dead — fail-closed for the create path, where the bug IS creating a tab
 # for a dead window; a missed create is retried by the next event/scan.
 window_source_pane_alive() {
-  local sess="$1" wid="$2" dead
-  dead=$(tmux display-message -p -t "=${sess}:${wid}" "#{pane_dead}" 2>/dev/null || echo "1")
-  [[ "$dead" == "0" ]]
+  # tmux 3.5a silently falls back to the session's current window when wid is
+  # gone, so pane_dead alone can report a different window as alive.
+  local sess="$1" wid="$2" observed
+  observed=$(tmux display-message -p -t "=${sess}:${wid}" \
+    '#{window_id}|#{pane_dead}' 2>/dev/null) || return 1
+  [[ "$observed" == "$wid|0" ]]
 }
 
 cleanup_workspace_for() {

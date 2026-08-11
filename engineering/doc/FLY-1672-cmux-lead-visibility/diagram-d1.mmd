@@ -1,0 +1,19 @@
+flowchart TB
+  subgraph FACT["实际情况（12:05 实测）"]
+    L["14 个 Lead 全部健在<br/>私有 tmux server 都在跑"]
+    C["cmux 侧栏：0 个 Lead<br/>只有 Runner 和一个旧手工窗"]
+  end
+  L -.->|"应该出现，却没有"| C
+
+  subgraph CHAIN["中间发生了什么"]
+    direction TB
+    A["每 15 秒醒一次的同步程序<br/>（watcher）"]
+    B["第一步：处理事件队列<br/>3231 条，全是早已消失的窗"]
+    D["每条都当真去建一个显示条目<br/>约 1 秒一条 → 排空要约 54 分钟"]
+    E["第四步：把 Lead 建进侧栏<br/>每 60 秒才轮一次"]
+    A --> B --> D
+    D -->|"一直没做完"| E
+    E -.->|"永远轮不到"| X["Lead 进不了侧栏"]
+  end
+
+  C --- X

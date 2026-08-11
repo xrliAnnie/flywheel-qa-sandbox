@@ -1,0 +1,15 @@
+flowchart LR
+  subgraph SCOPE["本单修（一处）"]
+    P1["存活探针<br/>window_source_pane_alive<br/>问：这个窗还活着吗"]
+    P1 --> U1["用途一：要不要建显示条目"]
+    P1 --> U2["用途二：要不要授权改名"]
+  end
+
+  subgraph OUT["明确不修（各有归属）"]
+    O1["全舰 Discord 卡在确认框<br/>P0，另一条链，已上报"]
+    O2["旧形态的建窗失败循环<br/>形态已退役，随清理一并删"]
+    O3["另两处只验名字的探针<br/>触发面小，建议另开单"]
+  end
+
+  style P1 fill:#e8f4ff,stroke:#007aff,stroke-width:2px
+  style OUT fill:#fff7e6,stroke:#ff9500
