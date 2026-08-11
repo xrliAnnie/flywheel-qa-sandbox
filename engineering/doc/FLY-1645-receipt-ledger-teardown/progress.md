@@ -1,14 +1,14 @@
 ---
 issue: FLY-1645
 phase: implement
-phaseCursor: 3/5
-updated: 2026-08-11T12:40:46.840Z
-nextStep: add legacy projection-hash replay compatibility, closeout migration,
-  and semantic residue gate
+phaseCursor: 4/5
+updated: 2026-08-11T12:56:13.477Z
+nextStep: add cross-repo semantic residue gate and legacy delivery-envelope hash
+  compatibility, then run full QA
 chunks: []
 pointers: {}
 ---
 
 # FLY-1645 progress
-**phase**: implement (3/5)
-**next**: add legacy projection-hash replay compatibility, closeout migration, and semantic residue gate
+**phase**: implement (4/5)
+**next**: add cross-repo semantic residue gate and legacy delivery-envelope hash compatibility, then run full QA
