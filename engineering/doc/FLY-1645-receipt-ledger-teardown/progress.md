@@ -1,13 +1,13 @@
 ---
 issue: FLY-1645
 phase: design
-phaseCursor: 2/6
-updated: 2026-08-11T08:12:01.714Z
-nextStep: await 2 audits; write research.md
+phaseCursor: 3/6
+updated: 2026-08-11T08:13:17.552Z
+nextStep: await emitter audit; write research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1645 progress
-**phase**: design (2/6)
-**next**: await 2 audits; write research.md
+**phase**: design (3/6)
+**next**: await emitter audit; write research.md
