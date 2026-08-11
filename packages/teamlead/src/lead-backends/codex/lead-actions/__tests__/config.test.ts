@@ -6,6 +6,7 @@ const baseEnv = (): NodeJS.ProcessEnv => ({
 	FLYWHEEL_PROJECT_NAME: "growth",
 	FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
 	FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/tmp/state",
+	FLYWHEEL_COMM_DB: "/tmp/comm.db",
 });
 
 describe("parseLeadActionsConfig", () => {
@@ -17,6 +18,7 @@ describe("parseLeadActionsConfig", () => {
 		expect(cfg.leadId).toBe("mufasa-lead");
 		expect(cfg.projectName).toBe("growth");
 		expect(cfg.chatChannelId).toBe("1500600400238084307");
+		expect(cfg.commDbPath).toBe("/tmp/comm.db");
 		expect(cfg.crossDeptChannelIds).toEqual(["1512578695468941333"]);
 		expect(cfg.rateMaxPerWindow).toBe(5);
 		expect(cfg.rateWindowMs).toBe(60_000);

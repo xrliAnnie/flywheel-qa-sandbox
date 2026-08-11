@@ -131,6 +131,9 @@ describe("LeadAlertNotifier", () => {
 		expect(typeof init.body).toBe("string");
 		const body = JSON.parse(init.body as string);
 		expect(body.content).toContain("Lead silent pane");
+		expect(store.getAlertDeliveryReceipt(payload.eventId)).toMatchObject({
+			outcome: "sent",
+		});
 	});
 
 	it("returns skipped=duplicate and does not POST on second call with same eventId", async () => {
@@ -203,6 +206,48 @@ describe("LeadAlertNotifier", () => {
 		expect(b).toEqual({ skipped: "duplicate" });
 		expect(fetchFn).toHaveBeenCalledTimes(1);
 		expect(claimsClaimer).toHaveBeenCalledTimes(2);
+	});
+
+	it("replays after the caller's ambiguous-attempt fence without treating durable claims as delivery", async () => {
+		const eventId = "dead_letter_alert:runner_unroutable:runner-a:40";
+		const payload = buildPayload({
+			eventId,
+			eventType: "mailbox_dead_letter",
+		});
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+		});
+		const claimsReader = vi.fn(async () => new Set([eventId]));
+		const claimsClaimer = vi.fn(async () => false);
+		store.tryClaimLeadEvent(
+			payload.leadId,
+			payload.eventId,
+			payload.eventType,
+			JSON.stringify(payload),
+		);
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			claimsReader,
+			claimsClaimer,
+		});
+
+		const result = await notifier.alert(payload, {
+			replayAfterAmbiguousAttempt: true,
+		});
+
+		expect(result).toEqual({ sent: true });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(claimsReader).not.toHaveBeenCalled();
+		expect(claimsClaimer).not.toHaveBeenCalled();
+		expect(store.getAlertDeliveryReceipt(eventId)).toMatchObject({
+			outcome: "sent",
+		});
 	});
 
 	it("Fix 2: claimsClaimer null (infra failure) falls through to Bridge-side dedup", async () => {

@@ -376,6 +376,7 @@ import {
 	describeActivityEvidence,
 } from "./liveness-evidence.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import { releaseMailboxQueueDeployBarrier } from "./mailbox-queue-deploy-barrier.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import {
 	createManagementCronProvider,
@@ -2008,6 +2009,38 @@ export function createBridgeApp(
 				selfOrigin,
 			);
 			res.status(r.code).json(r.body);
+		});
+
+		// FLY-1573: deploy-only readiness release. The durable ownership token is
+		// issued before the new Bridge starts; loopback + same-origin prevents a
+		// browser or remote caller from presenting it. The handler performs the
+		// persistent/live CAS and clears the marker only after both are ON.
+		app.post("/api/fleet/mailbox-queue-barrier/release", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const { targetSha, ownershipToken } = (req.body ?? {}) as {
+				targetSha?: string;
+				ownershipToken?: string;
+			};
+			if (!targetSha || !ownershipToken) {
+				res.status(400).json({ error: "targetSha/ownershipToken required" });
+				return;
+			}
+			const result = releaseMailboxQueueDeployBarrier(
+				{ envPath: join(homedir(), ".flywheel", ".env") },
+				targetSha,
+				ownershipToken,
+			);
+			res
+				.status(result.ok ? 200 : result.code)
+				.json(result.ok ? result : { error: result.reason, code: result.code });
 		});
 
 		// FLY-709 P5: runner-default stage/apply — same loopback + same-origin +
@@ -4612,6 +4645,18 @@ export async function startBridge(
 			stall: (input: DiscordMailboxStall) => Promise<void>;
 		};
 	} = {};
+	const deadLetterAlertSink: {
+		current?: (input: {
+			eventId: string;
+			leadId: string;
+			projectName: string;
+			recipient: string;
+			sourceKind: "lead_unacked" | "runner_unroutable";
+			deadCount: number;
+			summary: string;
+			replayAfterAmbiguousAttempt: boolean;
+		}) => Promise<void>;
+	} = {};
 	const leadInboxRuntime = new LeadInboxRuntime({
 		onQuarantineAlert: async (input) => {
 			const send = quarantineAlertSink.current;
@@ -4645,6 +4690,11 @@ export async function startBridge(
 				pendingDiscordMailboxStalls.set(key, input);
 				return;
 			}
+			await send(input);
+		},
+		onDeadLetterAlert: async (input) => {
+			const send = deadLetterAlertSink.current;
+			if (!send) throw new Error("dead-letter alert sink not ready");
 			await send(input);
 		},
 		projects,
@@ -7598,11 +7648,31 @@ export async function startBridge(
 			);
 		}
 	};
+	deadLetterAlertSink.current = async (input) => {
+		await leadAlertNotifier.alert(
+			{
+				leadId: input.leadId,
+				projectName: input.projectName,
+				eventId: input.eventId,
+				eventType: "mailbox_dead_letter",
+				title:
+					input.sourceKind === "lead_unacked"
+						? `${input.recipient} mailbox messages were not acknowledged`
+						: `Mailbox dead letters have no owning Lead: ${input.recipient}`,
+				body: `${input.summary}\n\nDecide whether to replay, discard, or reassign these ${input.deadCount} messages.`,
+				severity: "warning",
+			},
+			{
+				replayAfterAmbiguousAttempt: input.replayAfterAmbiguousAttempt,
+			},
+		);
+	};
 	// R3 HIGH — the loop starts long before this binding exists, so cutover may
 	// already have burned a retry attempt against an unbound sink. Drain once now
 	// that a real notifier is available, otherwise a same-boot quarantine waits
 	// for the NEXT restart to even be attempted.
 	void leadInboxRuntime.drainQuarantineAlertsNow();
+	void leadInboxRuntime.drainDeadLetterAlertsNow();
 	// FLY-907: build the unified issue-display refresher. The holder is read
 	// late-bound by EVERY trigger surface (applyTransition hook,
 	// DirectEventSink, event router, actions router, park/wake effects, sweep,

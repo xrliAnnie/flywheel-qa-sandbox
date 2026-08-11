@@ -1,0 +1,7 @@
+72:  ✗ real tmux liveness identity mismatch gone_rc=0 live_rc=0
+627:  ✗ identity contract observed=[@1|0] legacy=0 topology=0 live=0 dead=1 unreadable=1
+629:  ✗ mixed drain stale=8 live=1 witness=1 witness_events=0 processing=0 ops=[new-workspace --command env -u TMUX tmux attach -t '=cmux-FLY-1672-stale-1'
+1153:  ✗ vanished source inherited title authority rc=0 ops=[rename-workspace --workspace workspace:1672 FLY-1672-design-claude
+────────────────────────────
+Results: 567 passed, 4 failed
+❌ Some tests failed

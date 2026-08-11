@@ -302,7 +302,11 @@ topo_tmux() {
       sid=$(topo_session_field "$session" 2); group=$(topo_session_field "$session" 3); owner=$(topo_session_field "$session" 4); marker=$(topo_session_field "$session" 5)
       [[ -n "$group" ]] && grouped=1 || grouped=0
       if [[ -n "$TOPO_TARGET_WINDOW" ]]; then
-        row=$(topo_window_row "$session" "$TOPO_TARGET_WINDOW") || return 1
+        row=$(topo_window_row "$session" "$TOPO_TARGET_WINDOW")
+        # tmux 3.5a resolves a vanished id to the session's active window.
+        if [[ -z "$row" ]]; then
+          row=$(awk -F'|' -v s="$session" '$1 == s && $4 == 1 { print; exit }' "$TOPO_WINDOWS")
+        fi
       else
         row=$(awk -F'|' -v s="$session" '$1 == s && $4 == 1 { print; exit }' "$TOPO_WINDOWS")
       fi
@@ -315,6 +319,7 @@ topo_tmux() {
         '#{session_grouped}') printf '%s\n' "$grouped" ;;
         '#{session_group}') printf '%s\n' "$group" ;;
         '#{window_id}') printf '%s\n' "$wid" ;;
+        '#{window_id}|#{pane_dead}') printf '%s|%s\n' "$wid" "$dead" ;;
         '#{session_id}|#{session_grouped}|#{window_id}|#{@flywheel_cmux_owner}|#{@flywheel_cmux_placeholder}') printf '%s|%s|%s|%s|%s\n' "$sid" "$grouped" "$wid" "$owner" "$marker" ;;
         *) printf '%s\n' "$wname" ;;
       esac
@@ -488,17 +493,41 @@ tmux() {
       local session="${clean%%:*}"
       local wname="${clean##*:}"
       local original_target="$wname"
+      local resolved_id="" row="" dead=""
       case "$fmt" in
         '#{pid}') printf '%s\n' "$MOCK_TMUX_SERVER_PID"; return 0 ;;
         '#{socket_path}') printf '%s\n' "$MOCK_TMUX_SOCKET_PATH"; return 0 ;;
       esac
       if [[ "$wname" == @* ]]; then
-        local resolved_name
-        resolved_name=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v s="$session" -v w="$wname" '$1 == s && $2 == w { print $3; exit }')
-        [[ -n "$resolved_name" ]] && wname="$resolved_name"
+        row=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v s="$session" -v w="$wname" \
+          '$1 == s && $2 == w { print; exit }')
+        # Legacy fixtures have no active bit; their first session row models
+        # tmux 3.5a's vanished-id fallback to the current window.
+        if [[ -z "$row" ]]; then
+          row=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v s="$session" '$1 == s { print; exit }')
+        fi
+      else
+        row=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v s="$session" -v w="$wname" \
+          '$1 == s && $3 == w { print; exit }')
       fi
-      echo "$MOCK_PANE_DEAD" | awk -F= -v k1="${session}:${original_target}" -v k2="${session}:${wname}" \
-        '$1 == k1 || $1 == k2 { print $2; found=1; exit } END { if (!found) print "1" }'
+      if [[ -n "$row" ]]; then
+        IFS='|' read -r _ resolved_id wname <<< "$row"
+      elif [[ "$original_target" == @* ]]; then
+        return 1
+      else
+        resolved_id="$original_target"
+      fi
+      dead=$(echo "$MOCK_PANE_DEAD" | awk -F= \
+        -v k1="${session}:${original_target}" -v k2="${session}:${resolved_id}" -v k3="${session}:${wname}" \
+        '$1 == k1 || $1 == k2 || $1 == k3 { print $2; found=1; exit } END { if (!found) print "1" }')
+      case "$fmt" in
+        '#{pane_dead}') printf '%s\n' "$dead" ;;
+        '#{window_id}') printf '%s\n' "$resolved_id" ;;
+        '#{window_name}') printf '%s\n' "$wname" ;;
+        '#{window_id}|#{pane_dead}') printf '%s|%s\n' "$resolved_id" "$dead" ;;
+        '#{window_name}|#{pane_dead}') printf '%s|%s\n' "$wname" "$dead" ;;
+        *) printf '%s\n' "$dead" ;;
+      esac
       ;;
     set-hook)
       MOCK_TMUX_HOOKS+="$*"$'\n'
@@ -1642,6 +1671,43 @@ else
     else
       fail "expected window_name=int-test-win, got window_name=$wname"
     fi
+  fi
+
+  # Calibrate the probe against a private real tmux server. Some tmux versions
+  # reject a vanished @id; 3.5a falls back to the active window. Both must make
+  # the product reject the vanished id and accept the survivor.
+  TMUX_INT_GONE_ID=$(command tmux -S "$TMUX_INT_SOCKET" display-message -p \
+    -t "=$TMUX_INT_SESSION:initial" '#{window_id}')
+  command tmux -S "$TMUX_INT_SOCKET" new-window -t "$TMUX_INT_SESSION:" -n fly1672-survivor 2>/dev/null
+  TMUX_INT_LIVE_ID=$(command tmux -S "$TMUX_INT_SOCKET" display-message -p \
+    -t "=$TMUX_INT_SESSION:fly1672-survivor" '#{window_id}')
+  command tmux -S "$TMUX_INT_SOCKET" kill-window -t "=$TMUX_INT_SESSION:$TMUX_INT_GONE_ID" 2>/dev/null
+
+  TMUX_INT_RAW_RC=0
+  TMUX_INT_RAW_ID=$(command tmux -S "$TMUX_INT_SOCKET" -N display-message -p \
+    -t "=$TMUX_INT_SESSION:$TMUX_INT_GONE_ID" '#{window_id}' 2>/dev/null) || TMUX_INT_RAW_RC=$?
+  if [[ "$TMUX_INT_RAW_RC" -eq 0 && "$TMUX_INT_RAW_ID" != "$TMUX_INT_GONE_ID" ]]; then
+    pass "real tmux calibrator: vanished @id falls back to $TMUX_INT_RAW_ID"
+  elif [[ "$TMUX_INT_RAW_RC" -ne 0 ]]; then
+    pass "real tmux calibrator: vanished @id is rejected by this tmux version"
+  else
+    fail "real tmux calibrator returned the vanished id itself: $TMUX_INT_RAW_ID"
+  fi
+
+  TMUX_INT_GONE_RC=0
+  (
+    tmux() { command tmux -S "$TMUX_INT_SOCKET" -N "$@"; }
+    window_source_pane_alive "$TMUX_INT_SESSION" "$TMUX_INT_GONE_ID"
+  ) || TMUX_INT_GONE_RC=$?
+  TMUX_INT_LIVE_RC=0
+  (
+    tmux() { command tmux -S "$TMUX_INT_SOCKET" -N "$@"; }
+    window_source_pane_alive "$TMUX_INT_SESSION" "$TMUX_INT_LIVE_ID"
+  ) || TMUX_INT_LIVE_RC=$?
+  if [[ "$TMUX_INT_GONE_RC" -ne 0 && "$TMUX_INT_LIVE_RC" -eq 0 ]]; then
+    pass "real tmux liveness probe rejects the vanished id and accepts the live id"
+  else
+    fail "real tmux liveness identity mismatch gone_rc=$TMUX_INT_GONE_RC live_rc=$TMUX_INT_LIVE_RC"
   fi
 
   fi  # tmux new-session probe close
@@ -5243,6 +5309,61 @@ test_fly867_fixB_mixed_creates_live_only() {
   fi
 }
 
+test_fly1672_window_probe_identity_and_failure_contracts() {
+  echo "Test: FLY-1672 — liveness proves window identity and preserves failure directions"
+  local observed legacy_missing=0 topology_missing=0 live=0 dead=0 unreadable=0
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-fly1672|@1|FLY-1672-live\nrunner-fly1672|@2|FLY-1672-dead'
+  MOCK_PANE_DEAD=$'runner-fly1672:@1=0\nrunner-fly1672:@2=1'
+  MOCK_TMUX_SESSIONS='runner-fly1672'
+  observed=$(tmux display-message -p -t '=runner-fly1672:@404' '#{window_id}|#{pane_dead}')
+  window_source_pane_alive runner-fly1672 @404 || legacy_missing=$?
+  window_source_pane_alive runner-fly1672 @1 || live=$?
+  window_source_pane_alive runner-fly1672 @2 || dead=$?
+  MOCK_TMUX_DISPLAY_FAIL=1
+  window_source_pane_alive runner-fly1672 @1 || unreadable=$?
+
+  reset_mocks
+  MOCK_TOPOLOGY_MODE=1
+  topo_add_session runner-fly1672 '$1672'
+  topo_add_window runner-fly1672 @1 FLY-1672-live 1 0
+  window_source_pane_alive runner-fly1672 @404 || topology_missing=$?
+  if [[ "$observed" == '@1|0' && "$legacy_missing" -ne 0 && "$topology_missing" -ne 0 \
+      && "$live" -eq 0 && "$dead" -ne 0 && "$unreadable" -ne 0 ]]; then
+    pass "both fallback models reject the wrong @id; live/dead/unreadable contracts hold"
+  else
+    fail "identity contract observed=[$observed] legacy=$legacy_missing topology=$topology_missing live=$live dead=$dead unreadable=$unreadable"
+  fi
+}
+
+test_fly1672_event_backlog_does_not_starve_additive_create() {
+  echo "Test: FLY-1672 — stale backlog drains while live event and additive witness create"
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-fly1672|@1|FLY-1672-live\nrunner-fly1672|@2|FLY-1672-additive-witness'
+  MOCK_PANE_DEAD=$'runner-fly1672:@1=0\nrunner-fly1672:@2=0'
+  MOCK_TMUX_SESSIONS='runner-fly1672'
+  : > "$EVENT_FILE"
+  local i=1 stale live witness witness_in_events processing
+  while [[ "$i" -le 8 ]]; do
+    printf 'create|runner-fly1672|@gone-%s|FLY-1672-stale-%s\n' "$i" "$i" >> "$EVENT_FILE"
+    i=$((i + 1))
+  done
+  printf 'create|runner-fly1672|@1|FLY-1672-live\n' >> "$EVENT_FILE"
+  witness_in_events=$(grep -cF FLY-1672-additive-witness "$EVENT_FILE" || true)
+  drain_events >/dev/null 2>&1
+  [[ -e "${EVENT_FILE}.processing" ]] && processing=1 || processing=0
+  sync_additive >/dev/null 2>&1
+  stale=$(grep -c 'new-workspace.*FLY-1672-stale-' <<< "$MOCK_CMUX_OPS" || true)
+  live=$(grep -c 'new-workspace.*cmux-FLY-1672-live' <<< "$MOCK_CMUX_OPS" || true)
+  witness=$(grep -c 'new-workspace.*cmux-FLY-1672-additive-witness' <<< "$MOCK_CMUX_OPS" || true)
+  if [[ "$stale" -eq 0 && "$live" -eq 1 && "$witness" -eq 1 \
+      && "$witness_in_events" -eq 0 && "$processing" -eq 0 ]]; then
+    pass "stale rows create nothing; event and event-free additive controls each create once"
+  else
+    fail "mixed drain stale=$stale live=$live witness=$witness witness_events=$witness_in_events processing=$processing ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
 # FLY-867 Fix C (husk-window auto-reaper) — dropped to follow-up per lead
 # (CRASH_PRESERVE forensics boundary; sidebar-visible fix is covered by A+B).
 
@@ -5253,6 +5374,8 @@ test_fly867_mock_select_name_ambiguity
 test_fly867_fixA_create_by_id_survives_dup_name
 test_fly867_fixB_create_skips_dead_husk
 test_fly867_fixB_mixed_creates_live_only
+test_fly1672_window_probe_identity_and_failure_contracts
+test_fly1672_event_backlog_does_not_starve_additive_create
 
 # ════════════════════════════════════════════════════════════════
 # FLY-1272 P0/P1: linked-view topology model + staging WAL
@@ -10058,6 +10181,36 @@ fly1605_seed_strict_managed_window() {
   topo_add_window "cmux-$title" "$wid" "$title" 1 0
 }
 
+test_fly1672_title_reconcile_refuses_vanished_source_id() {
+  echo "Test: FLY-1672 — title reconcile gives a vanished source id zero authority"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_SOCK_IDENT=cmux-generation-1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_TOPOLOGY_MODE=1
+  local source=runner-fly1672 gone=@1672 live=@1 title=FLY-1672-design-claude
+  local raw roster before rc=0
+  topo_add_session "$source" '$1672'
+  topo_add_window "$source" "$live" FLY-1672-current-window 1 0
+  topo_add_session "cmux-$title" '$2672' '' "$source" 0
+  topo_add_window "cmux-$title" "$gone" "$title" 1 0
+  roster="$source|$gone|$title"
+  raw=$(build_attach_command "cmux-$title")
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1672\",\"title\":\"$raw\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1672;;surface:1672;;terminal;;true;;$raw"
+  printf 'committed|cmux-generation-1|workspace:other|other-title\n' > "$VIEW_LEDGER"
+  before=$(cat "$VIEW_LEDGER")
+  test_ensure_mutator_lease
+  MOCK_CMUX_OPS=''
+  reconcile_workspace_titles "$roster" >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 0 && -z "$MOCK_CMUX_OPS" && "$(cat "$VIEW_LEDGER")" == "$before" ]]; then
+    pass "vanished source preserves the stock candidate and ledger byte-for-byte"
+  else
+    fail "vanished source inherited title authority rc=$rc ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
 test_fly1605_named_stock_adoption_is_receipt_only_and_idempotent() {
   echo "Test: FLY-1605 — exact managed named stock receives authority without cmux mutation"
   reset_mocks
@@ -10523,6 +10676,7 @@ test_fly1605_prepared_title_migration_renames_tab_and_commits
 test_fly1605_prepared_title_migration_refuses_foreign_surface
 test_fly1605_prepared_recovery_uses_shared_surface_guard
 test_fly1605_prepared_surface_drift_does_not_block_additive_pass
+test_fly1672_title_reconcile_refuses_vanished_source_id
 test_fly1605_named_stock_adoption_is_receipt_only_and_idempotent
 test_fly1605_steady_state_stays_within_cmux_ipc_budget
 test_fly1605_topology_refusal_warns_only_on_transition

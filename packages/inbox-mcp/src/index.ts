@@ -24,6 +24,7 @@ import {
 import {
 	type DeliveryMessage,
 	handleAck,
+	handleBatchAck,
 	handleEventAck,
 	processPendingDeliveries,
 } from "./delivery.js";
@@ -121,6 +122,33 @@ server.tool(
 			content: [{ type: "text" as const, text: `Error: ${result.error}` }],
 			isError: true,
 		};
+	},
+);
+
+server.tool(
+	"flywheel_inbox_ack_batch",
+	"Acknowledge a durable mailbox batch after processing every message in it. Use the batch_id from the mailbox-batch header. Idempotent; a late acknowledgement is safely ignored by Bridge.",
+	{
+		batch_id: z.string().min(1).describe("The durable mailbox batch id"),
+	},
+	async ({ batch_id }) => {
+		const result = handleBatchAck(commDb, {
+			leadId: leadId!,
+			batchId: batch_id,
+		});
+		return result.ok
+			? {
+					content: [
+						{
+							type: "text" as const,
+							text: `batch ACK queued: ${result.batchId}`,
+						},
+					],
+				}
+			: {
+					content: [{ type: "text" as const, text: `Error: ${result.error}` }],
+					isError: true,
+				};
 	},
 );
 

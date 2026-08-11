@@ -1,0 +1,9 @@
+flowchart LR
+  A["Lead 监护器每几秒<br/>开一个临时窗口 @30858"] --> B["窗口几秒后消失"]
+  B --> C["排队里仍留着<br/>『给 @30858 建标签页』"]
+  C --> D{"旧探针问 tmux：<br/>@30858 还活着吗？"}
+  D -->|"tmux 悄悄换答另一个窗<br/>回答『活着』"| E["当成活窗<br/>真的去建一次标签页"]
+  E --> F["每条约 1 秒<br/>3231 条排到 53 分钟"]
+  F --> G["Lead 的侧栏项<br/>永远排不到 → 侧栏空"]
+  classDef bad fill:#ffe5e2,stroke:#ff3b30,color:#1d1d1f
+  class D,E,F,G bad

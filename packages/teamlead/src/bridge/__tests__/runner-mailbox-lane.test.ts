@@ -6,6 +6,7 @@ import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_MAILBOX_QUEUE_CONFIG } from "../mailbox-queue-config.js";
 import {
 	ProductionRunnerMailboxDeliveryAdapter,
 	RunnerMailboxLane,
@@ -148,6 +149,10 @@ describe("RunnerMailboxLane", () => {
 				ownerEpoch: "owner-1",
 				deliver,
 				now: () => new Date(NOW),
+				queueConfig: () => ({
+					...DEFAULT_MAILBOX_QUEUE_CONFIG,
+					enabled: false,
+				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 2, failed: 0 });
 			expect(
@@ -188,6 +193,10 @@ describe("RunnerMailboxLane", () => {
 				now: () => new Date(nowMs),
 				retryBackoffBaseMs: 5_000,
 				retryBackoffCapMs: 5_000,
+				queueConfig: () => ({
+					...DEFAULT_MAILBOX_QUEUE_CONFIG,
+					enabled: false,
+				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 0, failed: 1 });
 			expect(q.getById("instruction-1")?.state).toBe("QUEUED");
@@ -199,6 +208,173 @@ describe("RunnerMailboxLane", () => {
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 1, failed: 0 });
 			expect(q.getById("instruction-1")?.state).toBe("LEASED");
+		} finally {
+			q.close();
+		}
+	});
+
+	it("ON groups three instructions into one verified attempt-scoped doorbell", async () => {
+		const q = queue();
+		try {
+			for (let index = 0; index < 3; index += 1) {
+				q.enqueue({
+					id: `instruction-${index}`,
+					fromAgent: "lead-a",
+					toAgent: "exec-1",
+					recipientKind: "runner",
+					type: "instruction",
+					content: `do-${index}`,
+					createdAt: new Date(Date.parse(NOW) + index).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+			}
+			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver,
+				now: () => new Date(NOW),
+				queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+				recipientState: () => "alive",
+			});
+			expect(await lane.tick()).toMatchObject({ delivered: 3, failed: 0 });
+			expect(deliver).toHaveBeenCalledTimes(1);
+			const envelope = deliver.mock.calls[0]?.[0];
+			expect(envelope?.metadata.flywheelId).toMatch(/#r0$/);
+			expect(envelope?.content).toContain("| 3 messages | from lead-a");
+			for (let index = 0; index < 3; index += 1) {
+				expect(envelope?.content).toContain(
+					`[lead-instruction instruction-${index}]`,
+				);
+				expect(q.getById(`instruction-${index}`)).toMatchObject({
+					state: "LEASED",
+					delivered_at: NOW,
+				});
+			}
+		} finally {
+			q.close();
+		}
+	});
+
+	it("hot-toggles between ticks and snapshots configuration once per tick", async () => {
+		const q = queue();
+		try {
+			for (let index = 0; index < 3; index += 1) {
+				q.enqueue({
+					id: `hot-${index}`,
+					fromAgent: "lead-a",
+					toAgent: "exec-hot",
+					recipientKind: "runner",
+					type: "instruction",
+					content: `hot-${index}`,
+					createdAt: new Date(Date.parse(NOW) + index).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+			}
+			let enabled = false;
+			const queueConfig = vi.fn(() => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled,
+			}));
+			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver,
+				now: () => new Date(NOW),
+				queueConfig,
+				recipientState: () => "alive",
+			});
+
+			expect(await lane.tick()).toMatchObject({ delivered: 3 });
+			expect(deliver).toHaveBeenCalledTimes(3); // legacy OFF path
+			expect(queueConfig).toHaveBeenCalledTimes(1);
+
+			for (let index = 3; index < 6; index += 1) {
+				q.enqueue({
+					id: `hot-${index}`,
+					fromAgent: "lead-a",
+					toAgent: "exec-hot",
+					recipientKind: "runner",
+					type: "instruction",
+					content: `hot-${index}`,
+					createdAt: new Date(Date.parse(NOW) + index).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+			}
+			enabled = true;
+			expect(await lane.tick()).toMatchObject({ delivered: 3 });
+			expect(deliver).toHaveBeenCalledTimes(4); // ON path = one batch doorbell
+			expect(queueConfig).toHaveBeenCalledTimes(2);
+			expect(deliver.mock.calls[3]?.[0].content).toContain("| 3 messages |");
+		} finally {
+			q.close();
+		}
+	});
+
+	it("runs 600 empty active ticks with zero outbound messages", async () => {
+		const q = queue();
+		try {
+			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver,
+				now: () => new Date(NOW),
+				queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+				recipientState: () => "alive",
+			});
+			for (let tick = 0; tick < 600; tick += 1) {
+				expect(await lane.tick()).toMatchObject({ delivered: 0, failed: 0 });
+			}
+			expect(deliver).not.toHaveBeenCalled();
+		} finally {
+			q.close();
+		}
+	});
+
+	it("bounds recipient-state and dead-letter routing lookups to the tick budget", async () => {
+		const q = queue();
+		try {
+			for (let index = 0; index < 20; index += 1) {
+				q.enqueue({
+					id: `live-${index}`,
+					fromAgent: "lead-a",
+					toAgent: `exec-live-${index}`,
+					recipientKind: "runner",
+					type: "instruction",
+					content: `live-${index}`,
+					createdAt: new Date(Date.parse(NOW) + index).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+				q.enqueue({
+					id: `dead-${index}`,
+					fromAgent: "lead-a",
+					toAgent: `exec-dead-${index}`,
+					recipientKind: "runner",
+					type: "instruction",
+					content: `dead-${index}`,
+					createdAt: new Date(Date.parse(NOW) + 100 + index).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+				q.markDead(`dead-${index}`, NOW, "recipient_terminal");
+			}
+			const recipientState = vi.fn(() => "alive" as const);
+			const resolveOwningLead = vi.fn(() => "lead-a");
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver: vi.fn(async () => ({ status: "delivered" as const })),
+				now: () => new Date(NOW),
+				maxPerTick: 2,
+				queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+				recipientState,
+				resolveOwningLead,
+			});
+
+			await lane.tick();
+			expect(recipientState.mock.calls.length).toBeLessThanOrEqual(2);
+			expect(resolveOwningLead.mock.calls.length).toBeLessThanOrEqual(2);
 		} finally {
 			q.close();
 		}

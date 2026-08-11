@@ -131,3 +131,17 @@ surface is machine evidence and no extra ACK is needed.
 
 If the event was already handled, ACK it rather than ignoring a reminder.
 Invalid/expired tokens are not authorization; use the newest reminder's token.
+
+## 6. Durable mailbox batch ACK — process the whole batch, then ACK once (FLY-1573)
+
+A delivery headed **`[mailbox-batch <batch_id> | N messages | from ...]`** is one
+durable batch, not a collapsed message. Process all N independent messages, then
+acknowledge the batch exactly once using its header id:
+
+- Claude Lead: `flywheel_inbox_ack_batch({ batch_id: "<batch_id>" })`.
+- Codex Lead: `ack_batch({ batch_id: "<batch_id>" })` from `lead_actions`.
+
+Do not ACK individual rows in a batch. Until the batch ACK lands it occupies one
+of three in-flight slots; an expired lease re-delivers the same rows under the
+same durable batch id. ACK is therefore part of handling the delivery, not
+optional cleanup.

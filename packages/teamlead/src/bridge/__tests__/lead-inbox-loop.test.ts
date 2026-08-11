@@ -1,20 +1,23 @@
 import { mkdtempSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MailboxQueue, type MailboxRow } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-	DurableAcceptReceipt,
-	LeadDeliveryAdapter,
-	LeadDeliveryBatch,
+import {
+	ClaudeLeadDeliveryAdapter,
+	type DurableAcceptReceipt,
+	type LeadDeliveryAdapter,
+	type LeadDeliveryBatch,
+	LeadDeliveryUnavailableError,
 } from "../lead-delivery-adapter.js";
-import { LeadDeliveryUnavailableError } from "../lead-delivery-adapter.js";
 import {
 	ACTIVE_LEAD_INBOX_INTERVAL_MS,
 	IDLE_LEAD_INBOX_INTERVAL_MS,
 	LeadInboxLoop,
 } from "../lead-inbox-loop.js";
+import { DEFAULT_MAILBOX_QUEUE_CONFIG } from "../mailbox-queue-config.js";
 
 const queues: MailboxQueue[] = [];
 afterEach(() => {
@@ -99,11 +102,91 @@ function loop(
 		handleProtocol: async () => ({ disposition: "protocol_applied" }),
 		now: () => new Date("2099-07-19T12:00:00.000Z"),
 		batchIdFactory: () => "batch-1",
+		queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG, enabled: false }),
 		...overrides,
 	});
 }
 
 describe("LeadInboxLoop mailbox consumption", () => {
+	it("ON delivers one attempt-scoped batch and waits for agent ACK", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		enqueueModel(queue, "B");
+		enqueueModel(queue, "C");
+		let delivered!: LeadDeliveryBatch;
+		const consumer = loop(
+			queue,
+			{
+				async deliverBatch(batch) {
+					delivered = batch;
+					return receipt(batch);
+				},
+			},
+			{
+				queueConfig: () => ({
+					...DEFAULT_MAILBOX_QUEUE_CONFIG,
+					ackLeaseMs: 30_000,
+				}),
+			},
+		);
+
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 3 });
+		expect(delivered.batchId).toBe("batch-1#r0");
+		expect(delivered.members.map(({ deliveryId }) => deliveryId)).toEqual([
+			"A#r0",
+			"B#r0",
+			"C#r0",
+		]);
+		expect(delivered.modelPayload).toContain(
+			"[mailbox-batch batch-1 | 3 messages",
+		);
+		expect(delivered.modelPayload).toContain("[receipt:A]");
+		expect(queue.getById("A")).toMatchObject({
+			state: "LEASED",
+			batch_id: "batch-1",
+			delivered_at: "2099-07-19T12:00:00.000Z",
+		});
+		expect(
+			queue.ackBatchByRecipient({
+				batchId: "batch-1",
+				fromAgent: "lead-a",
+				now: "2099-07-19T12:00:01.000Z",
+			}),
+		).toBe("applied");
+		expect(queue.getById("A")?.state).toBe("ACKED");
+	});
+
+	it("ON exposes the batch ACK contract through the real Claude mailbox adapter", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "A");
+		enqueueModel(queue, "B");
+		const dir = mkdtempSync(join(tmpdir(), "fly1573-claude-loop-"));
+		const inboxPath = join(dir, "lead-a.json");
+		const consumer = loop(
+			queue,
+			new ClaudeLeadDeliveryAdapter({
+				inboxPath,
+				sidecarPath: `${inboxPath}.flywheel.jsonl`,
+			}),
+			{
+				ackInstruction: "flywheel_inbox_ack_batch",
+				queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG }),
+			},
+		);
+
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 2 });
+		const inbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
+			text: string;
+		}>;
+		expect(inbox).toHaveLength(2);
+		expect(inbox[0]?.text).toContain("[mailbox-batch batch-1 | 2 messages");
+		expect(inbox[0]?.text).toContain(
+			"You must ack this batch with flywheel_inbox_ack_batch",
+		);
+		expect(inbox[0]?.text).toContain("[receipt:A]");
+		expect(inbox[1]?.text).toContain("[receipt:B]");
+		expect(queue.getById("A")?.state).toBe("LEASED");
+	});
 	it("records heartbeat and ACKs only after adapter receipt plus audit", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");
@@ -393,12 +476,16 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		);
 		const delivered: LeadDeliveryBatch[] = [];
 		expect(
-			await loop(queue, {
-				async deliverBatch(batch) {
-					delivered.push(batch);
-					return receipt(batch);
+			await loop(
+				queue,
+				{
+					async deliverBatch(batch) {
+						delivered.push(batch);
+						return receipt(batch);
+					},
 				},
-			}).tick(),
+				{ queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG }) },
+			).tick(),
 		).toMatchObject({ ok: true, modelConsumed: 2 });
 		expect(delivered[0]).toMatchObject({
 			kind: "discord_chat",

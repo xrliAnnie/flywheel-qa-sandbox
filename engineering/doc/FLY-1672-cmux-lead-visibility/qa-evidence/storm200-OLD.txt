@@ -1,0 +1,14 @@
+=== FLY-1672 storm harness :: storm200OLD ===
+script_under_test   : ./sut/cmux-sync-OLD.sh
+tmux_version        : tmux 3.5a
+seeded_event_rows   : 201 (200 vanished + 1 live control)
+session_current_win : |   <- what a vanished id falls back to
+live_control_id     : @0
+drain_wall_seconds  : 255
+creates_logged_stale: 200     <- MUST be 0
+creates_logged_live : 1     <- MUST be 1
+cmux new-workspace stale: 0   <- MUST be 0
+cmux new-workspace live : 1   <- MUST be 1
+total_cmux_ops      : 404
+processing_leftover : 0   <- MUST be 0 (batch fully consumed)
+evidence_dir        : /tmp/fly1672-qa-storm200OLD.6OCahU

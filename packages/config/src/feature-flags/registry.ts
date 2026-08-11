@@ -170,6 +170,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "行为读取是 call-time；=0 会在 Bridge 启动时立即告警并按小时周期重复告警，不得作为常态运行方式。它不会恢复 Bridge 代答或停止入账。事故结束后恢复开启并按 Bridge 重启边界验证。",
 	},
+	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
+	{
+		name: "mailbox_queue",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_MAILBOX_QUEUE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"mailbox 租约原地重投、合批投递与死信闸(=0 运行时回切 FLY-1572 旧投递流)",
+		readSites: [
+			envSite(
+				"packages/config/src/feature-flags/mailbox-queue.ts",
+				"mailboxQueueEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/mailbox-queue-config.test.ts",
+		note: "每个 lane tick 开头解析一次不可变快照；默认 ON，只有精确值 0 回旧流。",
+	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
 		// FLY-1329 (A1): the FLY-1319 incident. `handoff()` read liveness `absent`

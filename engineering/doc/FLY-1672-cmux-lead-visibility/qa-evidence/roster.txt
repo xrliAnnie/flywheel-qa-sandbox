@@ -1,0 +1,18 @@
+=== derive_lead_roster (read-only) ===
+state=ok reasons=
+claude-private|com.flywheel.lead.flywheel-claude-infra-bot-lead|flywheel-claude-infra-bot-lead|/Users/xiaorongli/.flywheel/sock/fw-flywheel-claude-infr-a64677d0f712ca3b.sock
+claude-private|com.flywheel.lead.flywheel-flywheel-cos-lead|flywheel-flywheel-cos-lead|/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-co-9d22d6f755a2c9ae.sock
+claude-private|com.flywheel.lead.flywheel-flywheel-eng-lead|flywheel-flywheel-eng-lead|/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-en-97a3783099afee93.sock
+claude-private|com.flywheel.lead.flywheel-flywheel-product-lead|flywheel-flywheel-product-lead|/Users/xiaorongli/.flywheel/sock/fw-flywheel-flywheel-pr-e76a69077823e6f5.sock
+claude-private|com.flywheel.lead.geoforge3d-cos-lead|geoforge3d-cos-lead|/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-cos-lead-13f3418412f5ecb9.sock
+claude-private|com.flywheel.lead.geoforge3d-ops-lead|geoforge3d-ops-lead|/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-ops-lead-4f6ff936768743e1.sock
+claude-private|com.flywheel.lead.geoforge3d-product-lead|geoforge3d-product-lead|/Users/xiaorongli/.flywheel/sock/fw-geoforge3d-product-l-250e15fa2e2e6230.sock
+codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|
+claude-private|com.flywheel.lead.growth-rafiki-lead|growth-rafiki-lead|/Users/xiaorongli/.flywheel/sock/fw-growth-rafiki-lead-d7720336bc6311d7.sock
+claude-private|com.flywheel.lead.growth-reflection-lead|growth-reflection-lead|/Users/xiaorongli/.flywheel/sock/fw-growth-reflection-le-da6fc9c713ddc5f6.sock
+claude-private|com.flywheel.lead.joycon-typeless-joycon-lead|joycon-typeless-joycon-lead|/Users/xiaorongli/.flywheel/sock/fw-joycon-typeless-joyc-3adda1a9ff3a733b.sock
+claude-private|com.flywheel.lead.personal-assistant-belle-lead|personal-assistant-belle-lead|/Users/xiaorongli/.flywheel/sock/fw-personal-assistant-b-fb1358a030a83e9e.sock
+claude-private|com.flywheel.lead.tidal-echo-sub-lead|tidal-echo-sub-lead|/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-sub-lead-f730c5babd40c1eb.sock
+claude-private|com.flywheel.lead.tidal-echo-tidal-echo-content-lead|tidal-echo-tidal-echo-content-lead|/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-tidal-ech-5a26bc72c7008234.sock
+claude-private|com.flywheel.lead.tidal-echo-tidal-echo-cos-lead|tidal-echo-tidal-echo-cos-lead|/Users/xiaorongli/.flywheel/sock/fw-tidal-echo-tidal-ech-0150ace5cbae1418.sock
+--- rows: 15

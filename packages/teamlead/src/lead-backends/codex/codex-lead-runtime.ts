@@ -877,6 +877,7 @@ function fullAccessLeadActionsMcpConfig(
 		| "chatChannelId"
 		| "crossDeptChannelIds"
 		| "stateDir"
+		| "commDbPath"
 		| "leadActionsChannelAliases"
 	>,
 	entry: string,
@@ -892,6 +893,7 @@ function fullAccessLeadActionsMcpConfig(
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
 		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: config.crossDeptChannelIds.join(","),
 		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: config.stateDir,
+		FLYWHEEL_COMM_DB: config.commDbPath,
 		// R1#2: forward explicit alias pins so the documented roundtable
 		// disambiguation works for full-access (non-secret).
 		...(config.leadActionsChannelAliases

@@ -234,22 +234,23 @@ append_full_access_lead_actions_mcp() {
   local cross
   cross="$(normalized_cross_dept_ids)"
   local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
+  local comm_db="${FLYWHEEL_COMM_DB:-}"
   local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
   for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" "FLYWHEEL_LEAD_ID=$lead_id" \
     "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
-    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir"; do
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir" "FLYWHEEL_COMM_DB=$comm_db"; do
     case "$pair" in *=) die "append_full_access_lead_actions_mcp: missing required env ${pair%=}" ;; esac
   done
   # env table: non-secret coords ONLY, NO broker socket (token is by NAME via env_vars).
   local rt_eff
   rt_eff="$(roundtable_autocontinue_effective)"  # FLY-676 — see helper; gate-matched
   local env_toml
-  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$aliases" "$rt_eff" <<'PYENV'
+  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$comm_db" "$aliases" "$rt_eff" <<'PYENV'
 import sys, json
 keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
         "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
-        "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
-vals = sys.argv[1:7]
+        "FLYWHEEL_COMM_DB","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
+vals = sys.argv[1:8]
 pairs = []
 for k, v in zip(keys, vals):
     if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
@@ -259,7 +260,7 @@ for k, v in zip(keys, vals):
     pairs.append(f"{k} = {json.dumps(v)}")
 # FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
 # full-access builder's conditional include; preserves the prior OFF env shape).
-if len(sys.argv) > 7 and sys.argv[7] == "1":
+if len(sys.argv) > 8 and sys.argv[8] == "1":
     pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
 print(", ".join(pairs))
 PYENV

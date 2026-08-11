@@ -189,6 +189,7 @@ describe("buildCodexLeadMcpArgv — FLY-304 full-access leadActions (proactive d
 			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
 			FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
 			FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/state",
+			FLYWHEEL_COMM_DB: "/state/comm.db",
 		},
 		envVarNames: ["DISCORD_BOT_TOKEN"],
 	};

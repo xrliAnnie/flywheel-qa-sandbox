@@ -808,6 +808,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Lead delivery dead-lettered";
 		case "inbox_loop_stalled":
 			return "Lead inbox consume loop stalled";
+		case "mailbox_dead_letter":
+			return "Mailbox messages exhausted their acknowledgement lease";
 		case "legacy_row_quarantined":
 			return "Legacy inbox row quarantined during cutover";
 		// FLY-1402: emitted only by the Claude launcher through lead-alert.sh.
@@ -1055,6 +1057,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
 		case "inbox_loop_stalled":
 			return "A Lead inbox consume loop stopped completing or has queue-native deadlines overdue. Inspect that Lead's loop heartbeat and pending comm.db rows.";
+		case "mailbox_dead_letter":
+			return "Mailbox messages exhausted their acknowledgement leases or could not be routed to an owning Lead. Inspect the dead-letter summaries and decide replay, discard, or reassignment.";
 		case "legacy_row_quarantined":
 			return "The boot cutover refused a deterministically-bad legacy lead_event row and skipped it so the rest of the fleet could recover. The row was NOT delivered. Inspect legacy_cutover_quarantine for the seq and reason, then decide replay or discard.";
 		// FLY-1402: the launcher supplies generation-specific evidence in the

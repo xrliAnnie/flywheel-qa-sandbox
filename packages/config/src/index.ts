@@ -39,6 +39,7 @@ export type {
 export {
 	FEATURE_FLAGS,
 	isDirectToggleMetadata,
+	mailboxQueueEnabled,
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
 	receiptFoundationEnabled,

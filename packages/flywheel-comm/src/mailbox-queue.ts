@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
@@ -8,13 +8,46 @@ import {
 	normalizeInboxContent,
 } from "./inbox-write-normalize.js";
 import { MAILBOX_SCHEMA } from "./mailbox-schema.js";
-import { decodeSenderRef } from "./sender-ref.js";
+import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
 export type MailboxState = "QUEUED" | "LEASED" | "ACKED" | "DEAD";
 export type MailboxRecipientKind = "lead" | "runner" | "bridge";
 export type MailboxMessageClass = "protocol" | "model";
 export type MailboxPriority = 0 | 1 | 2 | 3;
+export type MailboxRecipientState = "alive" | "terminal_or_missing" | "unknown";
+export type MailboxBatchDeliveryResult =
+	| "applied"
+	| "already_settled"
+	| "lost_race";
+export interface MailboxBatchFailureResult {
+	outcome: "applied" | "already_settled" | "lost_race";
+	deadLettered: boolean;
+}
+export type MailboxBatchAckResult = "applied" | "duplicate" | "ack_late_noop";
+
+export interface ReconcileExpiredLeasesResult {
+	requeued: number;
+	dead: number;
+	frozenResend: string[];
+	skippedUnknown: number;
+	remaining: boolean;
+}
+
+export interface DeadLetterNoticeScanResult {
+	inserted: string[];
+	rateLimited: string[];
+	unroutable: string[];
+	uncoveredRemaining: boolean;
+}
+
+export interface DeadLetterAlertCandidate {
+	sourceKind: "lead_unacked" | "runner_unroutable";
+	recipient: string;
+	throughDeadSeq: number;
+	deadCount: number;
+	summary: string;
+}
 
 export const CHAT_DELIVERY_UNCONFIRMED_REASON =
 	"chat_delivery_unconfirmed" as const;
@@ -76,7 +109,9 @@ export interface MailboxRow {
 	state: MailboxState;
 	claimed_by: string | null;
 	claim_expires_at: string | null;
+	delivered_at: string | null;
 	retry_count: number;
+	lease_retry_count: number;
 	next_retry_at: string | null;
 	last_error: string | null;
 	acked_at: string | null;
@@ -234,14 +269,92 @@ function placeholders(count: number): string {
 	return Array.from({ length: count }, () => "?").join(",");
 }
 
+function utf8Prefix(value: string, maxBytes: number): string {
+	if (maxBytes <= 0) return "";
+	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+	let end = value.length;
+	while (end > 0 && Buffer.byteLength(value.slice(0, end), "utf8") > maxBytes) {
+		end -= 1;
+	}
+	return value.slice(0, end);
+}
+
+const upgradedMailboxConnections = new WeakSet<object>();
+
+function hasMailboxColumn(db: Database.Database, name: string): boolean {
+	return (
+		db
+			.prepare("SELECT 1 FROM pragma_table_info('mailbox') WHERE name = ?")
+			.get(name) !== undefined
+	);
+}
+
+function addMailboxColumn(
+	db: Database.Database,
+	name: "delivered_at" | "lease_retry_count",
+	sql: string,
+): void {
+	if (hasMailboxColumn(db, name)) return;
+	try {
+		db.exec(sql);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		if (!new RegExp(`duplicate column name:\\s*${name}`, "i").test(message)) {
+			throw error;
+		}
+	}
+	if (!hasMailboxColumn(db, name)) {
+		throw new Error(`mailbox schema upgrade did not create ${name}`);
+	}
+}
+
+/**
+ * FLY-1573: upgrade an already-materialized FLY-1572 mailbox in place.
+ * Every connection runs this before queue statements are prepared; repeated
+ * wrappers around the same connection are a no-op after the first success.
+ */
+export function ensureMailboxQueueSchema(db: Database.Database): void {
+	if (upgradedMailboxConnections.has(db)) return;
+	const mailboxExists = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'mailbox'",
+		)
+		.get();
+	if (!mailboxExists) {
+		throw new Error("mailbox table must exist before queue schema upgrade");
+	}
+	addMailboxColumn(
+		db,
+		"delivered_at",
+		"ALTER TABLE mailbox ADD COLUMN delivered_at TEXT",
+	);
+	addMailboxColumn(
+		db,
+		"lease_retry_count",
+		"ALTER TABLE mailbox ADD COLUMN lease_retry_count INTEGER NOT NULL DEFAULT 0",
+	);
+	db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
+		ON mailbox(claim_expires_at)
+		WHERE state = 'LEASED' AND carrier = 'inbox'`);
+	upgradedMailboxConnections.add(db);
+}
+
 export class MailboxQueue {
 	private readonly db: Database.Database;
 	private readonly ownsConnection: boolean;
+	private runnerTerminalScanCursor?: { toAgent: string; seq: number };
+	private readonly expiredBatchScanCursors = new Map<string, number>();
+	private runnerDeadNoticeScanAfterAgent = "";
+	private deadAlertScanCursor?: {
+		recipientKind: "lead" | "runner";
+		toAgent: string;
+	};
 
 	constructor(dbPathOrConnection: string | Database.Database) {
 		if (typeof dbPathOrConnection !== "string") {
 			this.db = dbPathOrConnection;
 			this.ownsConnection = false;
+			ensureMailboxQueueSchema(this.db);
 			return;
 		}
 		if (dbPathOrConnection !== ":memory:") {
@@ -252,6 +365,7 @@ export class MailboxQueue {
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(MAILBOX_SCHEMA);
+		ensureMailboxQueueSchema(this.db);
 	}
 
 	enqueue(input: EnqueueMailboxInput): EnqueueMailboxResult {
@@ -818,6 +932,908 @@ export class MailboxQueue {
 			.immediate();
 	}
 
+	private claimQueueBatch(input: {
+		recipientKind: "lead" | "runner";
+		toAgent?: string;
+		msgClass?: MailboxMessageClass;
+		ownerEpoch: string;
+		batchId: string;
+		now: string;
+		transportClaimTtlMs: number;
+		batchWindowMs: number;
+		batchMaxSize: number;
+		inflightMaxBatches: number;
+		maxBatchBytes?: number;
+		partitionKey?: (row: MailboxRow) => string;
+	}): MailboxRow[] {
+		if (!Number.isSafeInteger(input.batchWindowMs) || input.batchWindowMs < 0) {
+			throw new Error("batchWindowMs must be a non-negative safe integer");
+		}
+		for (const [name, value] of [
+			["batchMaxSize", input.batchMaxSize],
+			["inflightMaxBatches", input.inflightMaxBatches],
+		] as const) {
+			if (!Number.isSafeInteger(value) || value <= 0) {
+				throw new Error(`${name} must be a positive safe integer`);
+			}
+		}
+		if (
+			input.maxBatchBytes !== undefined &&
+			(!Number.isSafeInteger(input.maxBatchBytes) || input.maxBatchBytes <= 0)
+		) {
+			throw new Error("maxBatchBytes must be a positive safe integer");
+		}
+		const claimExpiresAt = addMilliseconds(
+			input.now,
+			input.transportClaimTtlMs,
+		);
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return [];
+
+				const frozen = this.db
+					.prepare(
+						`SELECT batch_id FROM mailbox
+						  WHERE recipient_kind = ? AND carrier = 'inbox'
+						    AND (? IS NULL OR to_agent = ?)
+						    AND (? IS NULL OR msg_class = ?)
+						    AND state = 'LEASED' AND batch_id IS NOT NULL
+						    AND delivered_at IS NULL
+						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+						    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)
+						  ORDER BY priority, seq LIMIT 1`,
+					)
+					.get(
+						input.recipientKind,
+						input.toAgent ?? null,
+						input.toAgent ?? null,
+						input.msgClass ?? null,
+						input.msgClass ?? null,
+						input.now,
+						input.ownerEpoch,
+						input.now,
+					) as { batch_id: string } | undefined;
+				if (frozen) {
+					const remaining = this.db
+						.prepare(
+							`SELECT id FROM mailbox
+							  WHERE batch_id = ? AND state = 'LEASED'
+							    AND delivered_at IS NULL
+							    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+							    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)
+							  ORDER BY priority, seq`,
+						)
+						.all(
+							frozen.batch_id,
+							input.now,
+							input.ownerEpoch,
+							input.now,
+						) as Array<{ id: string }>;
+					if (remaining.length === 0) return [];
+					const result = this.db
+						.prepare(
+							`UPDATE mailbox SET claimed_by = ?, claim_expires_at = ?, last_error = NULL
+							  WHERE id IN (${placeholders(remaining.length)}) AND state = 'LEASED'
+							    AND delivered_at IS NULL
+							    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)`,
+						)
+						.run(
+							input.ownerEpoch,
+							claimExpiresAt,
+							...remaining.map(({ id }) => id),
+							input.ownerEpoch,
+							input.now,
+						);
+					if (result.changes !== remaining.length) return [];
+					return this.db
+						.prepare(
+							"SELECT * FROM mailbox WHERE batch_id = ? AND state IN ('LEASED','ACKED') ORDER BY priority, seq",
+						)
+						.all(frozen.batch_id) as MailboxRow[];
+				}
+
+				if (input.recipientKind === "lead") {
+					const inflight = this.db
+						.prepare(
+							`SELECT COUNT(DISTINCT batch_id) AS count FROM mailbox
+							  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
+							    AND state = 'LEASED' AND delivered_at IS NOT NULL
+							    AND claim_expires_at > ? AND batch_id IS NOT NULL`,
+						)
+						.get(input.toAgent, input.now) as { count: number };
+					if (inflight.count >= input.inflightMaxBatches) return [];
+				}
+
+				const head = this.db
+					.prepare(
+						`SELECT * FROM mailbox AS candidate
+						  WHERE candidate.recipient_kind = ? AND candidate.carrier = 'inbox'
+						    AND (? IS NULL OR candidate.to_agent = ?)
+						    AND (? IS NULL OR candidate.msg_class = ?)
+						    AND candidate.state = 'QUEUED' AND candidate.batch_id IS NULL
+						    AND (candidate.next_retry_at IS NULL OR candidate.next_retry_at <= ?)
+						    AND (? = 'lead' OR (
+						      SELECT COUNT(DISTINCT active.batch_id) FROM mailbox AS active
+						       WHERE active.to_agent = candidate.to_agent
+						         AND active.recipient_kind = 'runner' AND active.carrier = 'inbox'
+						         AND active.state = 'LEASED' AND active.delivered_at IS NOT NULL
+						         AND active.claim_expires_at > ? AND active.batch_id IS NOT NULL
+						    ) < ?)
+						  ORDER BY candidate.priority, candidate.seq LIMIT 1`,
+					)
+					.get(
+						input.recipientKind,
+						input.toAgent ?? null,
+						input.toAgent ?? null,
+						input.msgClass ?? null,
+						input.msgClass ?? null,
+						input.now,
+						input.recipientKind,
+						input.now,
+						input.inflightMaxBatches,
+					) as MailboxRow | undefined;
+				if (!head) return [];
+				const ackClass = head.type === "response" ? "response" : "instruction";
+				const windowEnd = new Date(
+					Date.parse(head.created_at) + input.batchWindowMs,
+				).toISOString();
+				const effectiveLimit =
+					input.recipientKind === "runner" && ackClass === "response"
+						? 1
+						: input.batchMaxSize;
+				let rows = this.db
+					.prepare(
+						`SELECT * FROM mailbox
+						  WHERE recipient_kind = ? AND carrier = 'inbox'
+						    AND to_agent = ? AND from_agent = ? AND msg_class = ?
+						    AND state = 'QUEUED' AND batch_id IS NULL
+						    AND lease_retry_count = ? AND retry_count = ?
+						    AND created_at >= ? AND created_at <= ?
+						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+						    AND (? = 'lead'
+						      OR (? = 'response' AND type = 'response')
+						      OR (? = 'instruction' AND type <> 'response'))
+						  ORDER BY priority, seq LIMIT ?`,
+					)
+					.all(
+						input.recipientKind,
+						head.to_agent,
+						head.from_agent,
+						head.msg_class,
+						head.lease_retry_count,
+						head.retry_count,
+						head.created_at,
+						windowEnd,
+						input.now,
+						input.recipientKind,
+						ackClass,
+						ackClass,
+						effectiveLimit,
+					) as MailboxRow[];
+				if (rows.length > 0 && input.partitionKey) {
+					const firstKey = input.partitionKey(rows[0]!);
+					const boundary = rows.findIndex(
+						(row) => input.partitionKey?.(row) !== firstKey,
+					);
+					if (boundary >= 0) rows = rows.slice(0, boundary);
+				}
+				if (input.maxBatchBytes !== undefined) {
+					let bytes = 0;
+					const bounded: MailboxRow[] = [];
+					for (const row of rows) {
+						const next =
+							Buffer.byteLength(row.delivery_content ?? row.content) + 128;
+						if (bounded.length > 0 && bytes + next > input.maxBatchBytes) break;
+						bounded.push(row);
+						bytes += next;
+					}
+					rows = bounded;
+				}
+				if (rows.length === 0) return [];
+				const ids = rows.map(({ id }) => id);
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'LEASED', batch_id = ?, claimed_by = ?,
+						   claim_expires_at = ?, delivered_at = NULL
+						 WHERE id IN (${placeholders(ids.length)})
+						   AND state = 'QUEUED' AND batch_id IS NULL`,
+					)
+					.run(input.batchId, input.ownerEpoch, claimExpiresAt, ...ids);
+				if (updated.changes !== ids.length) return [];
+				return this.db
+					.prepare(
+						"SELECT * FROM mailbox WHERE batch_id = ? ORDER BY priority, seq",
+					)
+					.all(input.batchId) as MailboxRow[];
+			})
+			.immediate();
+	}
+
+	claimLeadBatchQueue(input: {
+		toAgent: string;
+		msgClass: MailboxMessageClass;
+		ownerEpoch: string;
+		batchId: string;
+		now: string;
+		transportClaimTtlMs: number;
+		batchWindowMs: number;
+		batchMaxSize: number;
+		inflightMaxBatches: number;
+		maxBatchBytes?: number;
+		partitionKey?: (row: MailboxRow) => string;
+	}): MailboxRow[] {
+		return this.claimQueueBatch({ ...input, recipientKind: "lead" });
+	}
+
+	claimRunnerBatch(input: {
+		ownerEpoch: string;
+		now: string;
+		transportClaimTtlMs: number;
+		batchWindowMs: number;
+		batchMaxSize: number;
+		inflightMaxBatches: number;
+	}): MailboxRow[] | undefined {
+		const rows = this.claimQueueBatch({
+			...input,
+			recipientKind: "runner",
+			batchId: `mailbox-batch:${randomUUID()}`,
+		});
+		return rows.length > 0 ? rows : undefined;
+	}
+
+	private recordBatchDelivered(input: {
+		batchId: string;
+		ownerEpoch: string;
+		now: string;
+		ackLeaseTtlMs: number;
+		recipientKind: "lead" | "runner";
+	}): MailboxBatchDeliveryResult {
+		const expiresAt = addMilliseconds(input.now, input.ackLeaseTtlMs);
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now))
+					return "lost_race";
+				const rows = this.db
+					.prepare(
+						"SELECT state, claimed_by FROM mailbox WHERE batch_id = ? AND recipient_kind = ? ORDER BY priority, seq",
+					)
+					.all(input.batchId, input.recipientKind) as Array<{
+					state: MailboxState;
+					claimed_by: string | null;
+				}>;
+				if (rows.length === 0) return "lost_race";
+				const leased = rows.filter(({ state }) => state === "LEASED");
+				if (leased.length === 0) {
+					return rows.every(({ state }) => state === "ACKED")
+						? "already_settled"
+						: "lost_race";
+				}
+				if (leased.some(({ claimed_by }) => claimed_by !== input.ownerEpoch)) {
+					return "lost_race";
+				}
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET delivered_at = COALESCE(delivered_at, ?),
+						   claim_expires_at = ?, last_error = NULL, next_retry_at = NULL
+						 WHERE batch_id = ? AND recipient_kind = ? AND state = 'LEASED'
+						   AND claimed_by = ?`,
+					)
+					.run(
+						input.now,
+						expiresAt,
+						input.batchId,
+						input.recipientKind,
+						input.ownerEpoch,
+					);
+				return updated.changes === leased.length ? "applied" : "lost_race";
+			})
+			.immediate();
+	}
+
+	recordLeadBatchDelivered(input: {
+		batchId: string;
+		ownerEpoch: string;
+		now: string;
+		ackLeaseTtlMs: number;
+	}): MailboxBatchDeliveryResult {
+		return this.recordBatchDelivered({ ...input, recipientKind: "lead" });
+	}
+
+	recordRunnerBatchDelivered(input: {
+		batchId: string;
+		ownerEpoch: string;
+		now: string;
+		ackLeaseTtlMs: number;
+	}): MailboxBatchDeliveryResult {
+		return this.recordBatchDelivered({ ...input, recipientKind: "runner" });
+	}
+
+	ackBatchByRecipient(input: {
+		batchId: string;
+		fromAgent: string;
+		now: string;
+	}): MailboxBatchAckResult {
+		return this.db
+			.transaction(() => {
+				const rows = this.db
+					.prepare("SELECT to_agent, state FROM mailbox WHERE batch_id = ?")
+					.all(input.batchId) as Array<{
+					to_agent: string;
+					state: MailboxState;
+				}>;
+				if (rows.length === 0) return "ack_late_noop";
+				if (rows.some(({ to_agent }) => to_agent !== input.fromAgent)) {
+					throw new Error("mailbox batch recipient mismatch");
+				}
+				const leased = rows.filter(({ state }) => state === "LEASED").length;
+				if (leased === 0) {
+					return rows.every(({ state }) => state === "ACKED")
+						? "duplicate"
+						: "ack_late_noop";
+				}
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
+						   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL
+						 WHERE batch_id = ? AND state = 'LEASED'`,
+					)
+					.run(input.now, input.batchId);
+				return updated.changes === leased ? "applied" : "ack_late_noop";
+			})
+			.immediate();
+	}
+
+	reconcileExpiredLeases(input: {
+		ownerEpoch: string;
+		now: string;
+		recipientKind: "lead" | "runner";
+		toAgent?: string;
+		leaseRetryMax: number;
+		recipientState: (toAgent: string) => MailboxRecipientState;
+		maxBatches: number;
+		maxTerminalRows: number;
+	}): ReconcileExpiredLeasesResult {
+		if (!Number.isSafeInteger(input.leaseRetryMax) || input.leaseRetryMax < 0) {
+			throw new Error("leaseRetryMax must be a non-negative safe integer");
+		}
+		return this.db
+			.transaction(() => {
+				const result: ReconcileExpiredLeasesResult = {
+					requeued: 0,
+					dead: 0,
+					frozenResend: [],
+					skippedUnknown: 0,
+					remaining: false,
+				};
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
+					result.remaining = true;
+					return result;
+				}
+
+				let terminalScanAtLimit = false;
+				if (input.recipientKind === "runner" && input.maxTerminalRows > 0) {
+					type TerminalScanRow = {
+						id: string;
+						to_agent: string;
+						seq: number;
+					};
+					let queued: TerminalScanRow[];
+					if (input.toAgent) {
+						queued = this.db
+							.prepare(
+								`SELECT id, to_agent, seq FROM mailbox
+								  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+								    AND state = 'QUEUED' AND to_agent = ?
+								  ORDER BY seq LIMIT ?`,
+							)
+							.all(input.toAgent, input.maxTerminalRows) as TerminalScanRow[];
+					} else {
+						const cursor = this.runnerTerminalScanCursor;
+						queued = cursor
+							? (this.db
+									.prepare(
+										`SELECT id, to_agent, seq FROM mailbox
+										  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+										    AND state = 'QUEUED'
+										    AND (to_agent > ? OR (to_agent = ? AND seq > ?))
+										  ORDER BY to_agent, seq LIMIT ?`,
+									)
+									.all(
+										cursor.toAgent,
+										cursor.toAgent,
+										cursor.seq,
+										input.maxTerminalRows,
+									) as TerminalScanRow[])
+							: [];
+						if (queued.length < input.maxTerminalRows) {
+							const remaining = input.maxTerminalRows - queued.length;
+							const wrapped = cursor
+								? (this.db
+										.prepare(
+											`SELECT id, to_agent, seq FROM mailbox
+											  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+											    AND state = 'QUEUED'
+											    AND (to_agent < ? OR (to_agent = ? AND seq <= ?))
+											  ORDER BY to_agent, seq LIMIT ?`,
+										)
+										.all(
+											cursor.toAgent,
+											cursor.toAgent,
+											cursor.seq,
+											remaining,
+										) as TerminalScanRow[])
+								: (this.db
+										.prepare(
+											`SELECT id, to_agent, seq FROM mailbox
+											  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+											    AND state = 'QUEUED'
+											  ORDER BY to_agent, seq LIMIT ?`,
+										)
+										.all(remaining) as TerminalScanRow[]);
+							queued.push(...wrapped);
+						}
+						const last = queued.at(-1);
+						if (last) {
+							this.runnerTerminalScanCursor = {
+								toAgent: last.to_agent,
+								seq: last.seq,
+							};
+						}
+					}
+					terminalScanAtLimit = queued.length === input.maxTerminalRows;
+					for (const row of queued) {
+						const state = input.recipientState(row.to_agent);
+						if (state === "unknown") {
+							result.skippedUnknown += 1;
+							continue;
+						}
+						if (state !== "terminal_or_missing") continue;
+						const changed = this.db
+							.prepare(
+								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
+								   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
+								   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
+								   batch_id = NULL, delivered_at = NULL
+								 WHERE id = ? AND state = 'QUEUED'`,
+							)
+							.run(input.now, row.id).changes;
+						result.dead += changed;
+					}
+				}
+
+				const expiredCursorKey = `${input.recipientKind}\u001f${input.toAgent ?? ""}`;
+				const expiredCursor =
+					this.expiredBatchScanCursors.get(expiredCursorKey) ?? 0;
+				const selectExpired = (
+					comparison: ">" | "<=",
+					cursor: number,
+					limit: number,
+				) =>
+					this.db
+						.prepare(
+							`SELECT batch_id, MIN(seq) AS first_seq, to_agent
+							  FROM mailbox
+							 WHERE recipient_kind = ? AND carrier = 'inbox' AND state = 'LEASED'
+							   AND batch_id IS NOT NULL AND claim_expires_at <= ?
+							   AND (? IS NULL OR to_agent = ?)
+							 GROUP BY batch_id, to_agent HAVING MIN(seq) ${comparison} ?
+							 ORDER BY first_seq LIMIT ?`,
+						)
+						.all(
+							input.recipientKind,
+							input.now,
+							input.toAgent ?? null,
+							input.toAgent ?? null,
+							cursor,
+							limit,
+						) as Array<{
+						batch_id: string;
+						first_seq: number;
+						to_agent: string;
+					}>;
+				const expired = selectExpired(">", expiredCursor, input.maxBatches);
+				const remainingExpired = input.maxBatches - expired.length;
+				if (remainingExpired > 0 && expiredCursor > 0) {
+					expired.push(...selectExpired("<=", expiredCursor, remainingExpired));
+				}
+				const lastExpired = expired.at(-1);
+				if (lastExpired) {
+					this.expiredBatchScanCursors.set(
+						expiredCursorKey,
+						lastExpired.first_seq,
+					);
+				}
+				for (const batch of expired) {
+					const recipientState =
+						input.recipientKind === "runner"
+							? input.recipientState(batch.to_agent)
+							: "alive";
+					if (recipientState === "unknown") {
+						result.skippedUnknown += 1;
+						continue;
+					}
+					const members = this.db
+						.prepare(
+							`SELECT id, delivered_at, lease_retry_count FROM mailbox
+							  WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?
+							  ORDER BY priority, seq`,
+						)
+						.all(batch.batch_id, input.now) as Array<{
+						id: string;
+						delivered_at: string | null;
+						lease_retry_count: number;
+					}>;
+					if (members.length === 0) continue;
+					if (recipientState === "terminal_or_missing") {
+						const changed = this.db
+							.prepare(
+								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
+								   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
+								   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
+								   batch_id = NULL
+								 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
+							)
+							.run(input.now, batch.batch_id, input.now).changes;
+						result.dead += changed;
+						continue;
+					}
+					if (members.every(({ delivered_at }) => delivered_at === null)) {
+						this.db
+							.prepare(
+								`UPDATE mailbox SET claimed_by = NULL
+								 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
+							)
+							.run(batch.batch_id, input.now);
+						result.frozenResend.push(batch.batch_id);
+						continue;
+					}
+					if (
+						members.some(
+							({ lease_retry_count }) =>
+								lease_retry_count >= input.leaseRetryMax,
+						)
+					) {
+						const changed = this.db
+							.prepare(
+								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
+								   dead_reason = 'lease_expired_unacked',
+								   last_error = 'lease_expired_unacked', claimed_by = NULL,
+								   claim_expires_at = NULL, next_retry_at = NULL, batch_id = NULL
+								 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
+							)
+							.run(input.now, batch.batch_id, input.now).changes;
+						result.dead += changed;
+						continue;
+					}
+					const changed = this.db
+						.prepare(
+							`UPDATE mailbox SET state = 'QUEUED',
+							   lease_retry_count = lease_retry_count + 1,
+							   claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL,
+							   delivered_at = NULL, next_retry_at = NULL,
+							   last_error = 'lease_expired_unacked'
+							 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
+						)
+						.run(batch.batch_id, input.now).changes;
+					result.requeued += changed;
+				}
+
+				const moreExpired = this.db
+					.prepare(
+						`SELECT 1 FROM mailbox WHERE recipient_kind = ? AND carrier = 'inbox'
+						   AND state = 'LEASED' AND claim_expires_at <= ?
+						   AND (? IS NULL OR to_agent = ?) LIMIT 1`,
+					)
+					.get(
+						input.recipientKind,
+						input.now,
+						input.toAgent ?? null,
+						input.toAgent ?? null,
+					);
+				result.remaining = terminalScanAtLimit || moreExpired !== undefined;
+				return result;
+			})
+			.immediate();
+	}
+
+	scanAndInsertDeadLetterNotices(input: {
+		ownerEpoch: string;
+		now: string;
+		windowMs: number;
+		maxRecipients: number;
+		maxDeadRowsPerRecipient: number;
+		maxSummaryBytes: number;
+		resolveOwningLead: (recipient: string) => string | undefined;
+	}): DeadLetterNoticeScanResult {
+		for (const [name, value, allowZero] of [
+			["windowMs", input.windowMs, true],
+			["maxRecipients", input.maxRecipients, false],
+			["maxDeadRowsPerRecipient", input.maxDeadRowsPerRecipient, false],
+			["maxSummaryBytes", input.maxSummaryBytes, false],
+		] as const) {
+			if (
+				!Number.isSafeInteger(value) ||
+				(allowZero ? value < 0 : value <= 0)
+			) {
+				throw new Error(`${name} is invalid`);
+			}
+		}
+		return this.db
+			.transaction(() => {
+				const result: DeadLetterNoticeScanResult = {
+					inserted: [],
+					rateLimited: [],
+					unroutable: [],
+					uncoveredRemaining: false,
+				};
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
+					result.uncoveredRemaining = true;
+					return result;
+				}
+				const scanLimit = input.maxRecipients + 1;
+				const recipients = this.db
+					.prepare(
+						`SELECT to_agent FROM mailbox
+						  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
+						    AND to_agent > ?
+						  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
+					)
+					.all(this.runnerDeadNoticeScanAfterAgent, scanLimit) as Array<{
+					to_agent: string;
+				}>;
+				if (recipients.length < scanLimit) {
+					const wrapped = this.db
+						.prepare(
+							`SELECT to_agent FROM mailbox
+							  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
+							    AND to_agent <= ?
+							  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
+						)
+						.all(
+							this.runnerDeadNoticeScanAfterAgent,
+							scanLimit - recipients.length,
+						) as Array<{ to_agent: string }>;
+					recipients.push(...wrapped);
+				}
+				if (recipients.length > input.maxRecipients) {
+					result.uncoveredRemaining = true;
+				}
+				for (const { to_agent: recipient } of recipients.slice(
+					0,
+					input.maxRecipients,
+				)) {
+					this.runnerDeadNoticeScanAfterAgent = recipient;
+					const latestNotice = this.db
+						.prepare(
+							`SELECT id, created_at FROM mailbox
+							  WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter'
+							    AND source_ref = ?
+							  ORDER BY seq DESC LIMIT 1`,
+						)
+						.get(recipient) as { id: string; created_at: string } | undefined;
+					const cursorRaw = latestNotice?.id.split(":").at(-1);
+					const cursor =
+						cursorRaw && /^\d+$/.test(cursorRaw) ? Number(cursorRaw) : 0;
+					const aggregate = this.db
+						.prepare(
+							`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
+							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ?`,
+						)
+						.get(recipient, cursor) as {
+						count: number;
+						through_seq: number | null;
+					};
+					if (aggregate.count === 0 || aggregate.through_seq === null) continue;
+					if (
+						latestNotice &&
+						Date.parse(input.now) - Date.parse(latestNotice.created_at) <
+							input.windowMs
+					) {
+						result.rateLimited.push(recipient);
+						result.uncoveredRemaining = true;
+						continue;
+					}
+					const leadId = input.resolveOwningLead(recipient);
+					if (!leadId) {
+						result.unroutable.push(recipient);
+						result.uncoveredRemaining = true;
+						continue;
+					}
+					const summaries = this.db
+						.prepare(
+							`SELECT type, from_agent, content FROM mailbox
+							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
+							  ORDER BY seq LIMIT ?`,
+						)
+						.all(recipient, cursor, input.maxDeadRowsPerRecipient) as Array<{
+						type: string;
+						from_agent: string;
+						content: string;
+					}>;
+					const header = `${recipient} 有 ${aggregate.count} 封信始终没 ack，可能已下线。`;
+					const footer = "请决定：重新派 / 丢弃 / 转给别人。";
+					let content = `${header}\n摘要：`;
+					for (const summary of summaries) {
+						const line = `\n- ${summary.type} from ${summary.from_agent}: ${summary.content.slice(0, 120)}`;
+						if (
+							Buffer.byteLength(`${content}${line}\n${footer}`, "utf8") >
+							input.maxSummaryBytes
+						) {
+							break;
+						}
+						content += line;
+					}
+					content = utf8Prefix(`${content}\n${footer}`, input.maxSummaryBytes);
+					const id = `dead_letter:${encodeURIComponent(recipient)}:${aggregate.through_seq}`;
+					const inserted = this.enqueue({
+						id,
+						fromAgent: "bridge",
+						toAgent: leadId,
+						recipientKind: "lead",
+						sourceKind: "dead_letter",
+						sourceRef: recipient,
+						type: "dead_letter_notice",
+						msgClass: "model",
+						content,
+						createdAt: input.now,
+						priority: 1,
+						senderRef: encodeSenderRef(),
+					});
+					if (inserted.outcome !== "archived") result.inserted.push(id);
+				}
+				return result;
+			})
+			.immediate();
+	}
+
+	listUncoveredLeadDeadLetters(input: {
+		sinceCursor: Array<{
+			sourceKind: "lead_unacked" | "runner_unroutable";
+			recipient: string;
+			throughDeadSeq: number;
+		}>;
+		limit: number;
+		maxRowsPerRecipient: number;
+		maxSummaryBytes: number;
+		resolveOwningLead: (recipient: string) => string | undefined;
+	}): DeadLetterAlertCandidate[] {
+		for (const [name, value] of [
+			["limit", input.limit],
+			["maxRowsPerRecipient", input.maxRowsPerRecipient],
+			["maxSummaryBytes", input.maxSummaryBytes],
+		] as const) {
+			if (!Number.isSafeInteger(value) || value <= 0) {
+				throw new Error(`${name} is invalid`);
+			}
+		}
+		const cursors = new Map(
+			input.sinceCursor.map((cursor) => [
+				`${cursor.sourceKind}\u001f${cursor.recipient}`,
+				cursor.throughDeadSeq,
+			]),
+		);
+		// Ring-cursor fairness lets each tick stay inside the caller's exact
+		// resolution budget without permanently hiding recipients behind routable
+		// or already-covered rows.
+		const scanLimit = input.limit;
+		const cursor = this.deadAlertScanCursor;
+		const recipients = cursor
+			? (this.db
+					.prepare(
+						`SELECT recipient_kind, to_agent FROM mailbox
+						 WHERE carrier = 'inbox' AND state = 'DEAD'
+						   AND recipient_kind IN ('lead','runner')
+						   AND (recipient_kind > ? OR (recipient_kind = ? AND to_agent > ?))
+						 GROUP BY recipient_kind, to_agent
+						 ORDER BY recipient_kind, to_agent LIMIT ?`,
+					)
+					.all(
+						cursor.recipientKind,
+						cursor.recipientKind,
+						cursor.toAgent,
+						scanLimit,
+					) as Array<{
+					recipient_kind: "lead" | "runner";
+					to_agent: string;
+				}>)
+			: [];
+		if (recipients.length < scanLimit) {
+			const wrapped = cursor
+				? (this.db
+						.prepare(
+							`SELECT recipient_kind, to_agent FROM mailbox
+							 WHERE carrier = 'inbox' AND state = 'DEAD'
+							   AND recipient_kind IN ('lead','runner')
+							   AND (recipient_kind < ? OR (recipient_kind = ? AND to_agent <= ?))
+							 GROUP BY recipient_kind, to_agent
+							 ORDER BY recipient_kind, to_agent LIMIT ?`,
+						)
+						.all(
+							cursor.recipientKind,
+							cursor.recipientKind,
+							cursor.toAgent,
+							scanLimit - recipients.length,
+						) as Array<{
+						recipient_kind: "lead" | "runner";
+						to_agent: string;
+					}>)
+				: (this.db
+						.prepare(
+							`SELECT recipient_kind, to_agent FROM mailbox
+							 WHERE carrier = 'inbox' AND state = 'DEAD'
+							   AND recipient_kind IN ('lead','runner')
+							 GROUP BY recipient_kind, to_agent
+							 ORDER BY recipient_kind, to_agent LIMIT ?`,
+						)
+						.all(scanLimit) as Array<{
+						recipient_kind: "lead" | "runner";
+						to_agent: string;
+					}>);
+			recipients.push(...wrapped);
+		}
+		const result: DeadLetterAlertCandidate[] = [];
+		for (const row of recipients) {
+			this.deadAlertScanCursor = {
+				recipientKind: row.recipient_kind,
+				toAgent: row.to_agent,
+			};
+			const sourceKind =
+				row.recipient_kind === "lead" ? "lead_unacked" : "runner_unroutable";
+			if (
+				row.recipient_kind === "runner" &&
+				input.resolveOwningLead(row.to_agent)
+			) {
+				continue;
+			}
+			const cursor = cursors.get(`${sourceKind}\u001f${row.to_agent}`) ?? 0;
+			const aggregate = this.db
+				.prepare(
+					`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
+					 WHERE carrier = 'inbox' AND state = 'DEAD'
+					   AND recipient_kind = ? AND to_agent = ? AND seq > ?`,
+				)
+				.get(row.recipient_kind, row.to_agent, cursor) as {
+				count: number;
+				through_seq: number | null;
+			};
+			if (aggregate.count === 0 || aggregate.through_seq === null) continue;
+			const summaries = this.db
+				.prepare(
+					`SELECT type, from_agent, content FROM mailbox
+					 WHERE carrier = 'inbox' AND state = 'DEAD'
+					   AND recipient_kind = ? AND to_agent = ? AND seq > ?
+					 ORDER BY seq LIMIT ?`,
+				)
+				.all(
+					row.recipient_kind,
+					row.to_agent,
+					cursor,
+					input.maxRowsPerRecipient,
+				) as Array<{ type: string; from_agent: string; content: string }>;
+			let summary = `${row.to_agent} has ${aggregate.count} mailbox messages that were never acknowledged.`;
+			for (const item of summaries) {
+				const line = `\n- ${item.type} from ${item.from_agent}: ${item.content.slice(0, 120)}`;
+				if (
+					Buffer.byteLength(`${summary}${line}`, "utf8") > input.maxSummaryBytes
+				) {
+					break;
+				}
+				summary += line;
+			}
+			result.push({
+				sourceKind,
+				recipient: row.to_agent,
+				throughDeadSeq: aggregate.through_seq,
+				deadCount: aggregate.count,
+				summary: utf8Prefix(summary, input.maxSummaryBytes),
+			});
+			if (result.length >= input.limit) break;
+		}
+		return result;
+	}
+
 	claimBridgeProtocol(input: {
 		fromAgent: string;
 		ownerEpoch: string;
@@ -938,6 +1954,78 @@ export class MailboxQueue {
 			);
 		if (updated.changes !== 1) throw new Error("runner claim fence lost");
 		return { deadLettered: this.getById(input.id)?.state === "DEAD" };
+	}
+
+	recordRunnerBatchDeliveryFailure(input: {
+		batchId: string;
+		ownerEpoch: string;
+		now: string;
+		nextRetryAt: string;
+		error: string;
+		maxAttempts: number;
+	}): MailboxBatchFailureResult {
+		return this.db
+			.transaction((): MailboxBatchFailureResult => {
+				const rows = this.db
+					.prepare(
+						`SELECT state, claimed_by, retry_count FROM mailbox
+						  WHERE batch_id = ? AND recipient_kind = 'runner'
+						  ORDER BY priority, seq`,
+					)
+					.all(input.batchId) as Array<{
+					state: MailboxState;
+					claimed_by: string | null;
+					retry_count: number;
+				}>;
+				if (rows.length === 0) {
+					return { outcome: "lost_race", deadLettered: false };
+				}
+				const leased = rows.filter(({ state }) => state === "LEASED");
+				if (leased.length === 0) {
+					return {
+						outcome: rows.every(({ state }) => state === "ACKED")
+							? "already_settled"
+							: "lost_race",
+						deadLettered: rows.some(({ state }) => state === "DEAD"),
+					};
+				}
+				if (leased.some(({ claimed_by }) => claimed_by !== input.ownerEpoch)) {
+					return { outcome: "lost_race", deadLettered: false };
+				}
+				const deadLettered = leased.some(
+					({ retry_count }) => retry_count + 1 >= input.maxAttempts,
+				);
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox SET retry_count = retry_count + 1, last_error = ?,
+						   next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ? END,
+						   state = CASE WHEN retry_count + 1 >= ? THEN 'DEAD' ELSE 'LEASED' END,
+						   dead_at = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_at END,
+						   dead_reason = CASE WHEN retry_count + 1 >= ?
+						     THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
+						   batch_id = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE batch_id END,
+						   claimed_by = NULL, claim_expires_at = NULL, delivered_at = NULL
+						 WHERE batch_id = ? AND recipient_kind = 'runner'
+						   AND state = 'LEASED' AND claimed_by = ?`,
+					)
+					.run(
+						input.error,
+						input.maxAttempts,
+						input.nextRetryAt,
+						input.maxAttempts,
+						input.maxAttempts,
+						input.now,
+						input.maxAttempts,
+						input.maxAttempts,
+						input.batchId,
+						input.ownerEpoch,
+					);
+				return {
+					outcome: updated.changes === leased.length ? "applied" : "lost_race",
+					deadLettered,
+				};
+			})
+			.immediate();
 	}
 
 	recordBridgeDeliveryFailure(input: {

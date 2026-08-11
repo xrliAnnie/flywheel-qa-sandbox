@@ -78,6 +78,9 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// FLY-1373: the alert is already founder-directed; no infra bot should
 	// create a second response loop for the consume loop itself.
 	"inbox_loop_stalled",
+	// FLY-1573: dead mailbox rows require an explicit replay/discard/reassign
+	// decision, so the founder-directed alert must not acquire an infra-bot ARC.
+	"mailbox_dead_letter",
 	// FLY-1586: same family as inbox_loop_stalled — a REAL notification is being
 	// held back and only a human can decide replay vs discard. An infra bot has
 	// no way to know whether the withheld message still matters.

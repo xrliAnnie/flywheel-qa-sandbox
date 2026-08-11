@@ -86,6 +86,9 @@ export const ALERT_EVENT_TYPES = [
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
 	"auto_qa_stuck",
+	// FLY-1573: mailbox messages exhausted their agent-ack lease. This alert is
+	// deliberately delivered outside the mailbox to break recursive dead-lettering.
+	"mailbox_dead_letter",
 	// FLY-827: a session reached awaiting_review but Codex code review is NOT
 	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
 	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
@@ -534,6 +537,21 @@ export interface AlertPayload {
 	sourceFingerprint?: string;
 }
 
+export interface AlertAttemptOptions {
+	/**
+	 * FLY-1573: the durable dead-letter outbox already waited its shared
+	 * ambiguous-attempt reclaim fence and is now replaying an attempt that has no
+	 * delivery receipt. `alert_claims` and `lead_events` prove only that an
+	 * attempt was claimed; neither proves Discord/durable delivery. A fenced
+	 * replay therefore bypasses those attempt-only dedup checks, but still must
+	 * write an `alert_delivery_receipts` row before the outbox settles.
+	 *
+	 * This is intentionally a call option rather than serialized payload state:
+	 * only the outbox that owns the reclaim fence may grant it.
+	 */
+	replayAfterAmbiguousAttempt?: boolean;
+}
+
 /**
  * FLY-1082 (Task 1.4): the routing sentinel for fleet/system alerts. A payload
  * with this projectName carries NO projects.json lead — machine-scoped
@@ -691,6 +709,28 @@ export class LeadAlertNotifier {
 	private rateLimiter?: AlertRateLimiter;
 	private episodeDbPath: string;
 
+	private withDeliveryReceipt(
+		payload: AlertPayload,
+		result: AlertResult,
+		outcome: "sent" | "queued_durable" | "deadlettered_durable",
+	): AlertResult {
+		try {
+			this.store.recordAlertDeliveryReceipt(
+				payload.eventId,
+				outcome,
+				new Date().toISOString(),
+			);
+		} catch (error) {
+			// The visible/durable delivery already happened. Keep alert()'s historical
+			// never-throw contract; the FLY-1573 outbox will leave its intent pending
+			// and apply the shared 30-minute ambiguous-attempt fence before replay.
+			this.logger(
+				`delivery receipt write failed event=${payload.eventId}: ${(error as Error).message}`,
+			);
+		}
+		return result;
+	}
+
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
 		this.projects = config.projects;
@@ -784,7 +824,10 @@ export class LeadAlertNotifier {
 		);
 	}
 
-	async alert(payload: AlertPayload): Promise<AlertResult> {
+	async alert(
+		payload: AlertPayload,
+		attempt: AlertAttemptOptions = {},
+	): Promise<AlertResult> {
 		const resolved = this.resolveLead(payload.leadId, payload.projectName);
 		// FLY-1082 (Task 1.4): a deliverable fleet payload proceeds WITHOUT a
 		// projects.json lead (unified channel + send chain need none); `lead` and
@@ -800,7 +843,11 @@ export class LeadAlertNotifier {
 			// (deadLetter() also fires the Discord-independent meta-alert) so the
 			// dropped payload is recorded, not just announced.
 			await this.deadLetter(payload, "unknown-lead");
-			return { skipped: "unknown-lead", deadLettered: true };
+			return this.withDeliveryReceipt(
+				payload,
+				{ skipped: "unknown-lead", deadLettered: true },
+				"deadlettered_durable",
+			);
 		}
 		const lead = resolved?.lead ?? null;
 		const project = resolved?.project ?? null;
@@ -808,7 +855,7 @@ export class LeadAlertNotifier {
 		// Step 1: shell-side fast-path read. Avoids building a payload when
 		// shell has already posted an alert for this eventId. Not the
 		// load-bearing dedup — that's Step 2.
-		if (this.claimsReader) {
+		if (!attempt.replayAfterAmbiguousAttempt && this.claimsReader) {
 			try {
 				const claimed = await this.claimsReader();
 				if (claimed.has(payload.eventId)) {
@@ -827,7 +874,7 @@ export class LeadAlertNotifier {
 		// `false` and skips. On infrastructure failure (`null`) we proceed
 		// to the Bridge-only dedup so a partial outage doesn't silence
 		// alerts entirely.
-		if (this.claimsClaimer) {
+		if (!attempt.replayAfterAmbiguousAttempt && this.claimsClaimer) {
 			try {
 				const won = await this.claimsClaimer(
 					payload.eventId,
@@ -857,8 +904,13 @@ export class LeadAlertNotifier {
 			JSON.stringify(payload),
 			payload.sessionKey,
 		);
-		if (!firstClaim) {
+		if (!firstClaim && !attempt.replayAfterAmbiguousAttempt) {
 			return { skipped: "duplicate" };
+		}
+		if (attempt.replayAfterAmbiguousAttempt) {
+			this.logger(
+				`replaying after ambiguous-attempt fence event=${payload.eventId}`,
+			);
 		}
 
 		// Step 4: Resolve channel (PERMANENT failure → dead-letter; config doesn't
@@ -866,7 +918,11 @@ export class LeadAlertNotifier {
 		const channel = this.resolveChannel(lead, project);
 		if (!channel) {
 			await this.deadLetter(payload, "no-channel");
-			return { skipped: "no-channel", deadLettered: true };
+			return this.withDeliveryReceipt(
+				payload,
+				{ skipped: "no-channel", deadLettered: true },
+				"deadlettered_durable",
+			);
 		}
 
 		// FLY-927 (T1): unified-channel root-message rate cap. Over the per-minute
@@ -881,7 +937,11 @@ export class LeadAlertNotifier {
 		) {
 			this.rateLimiter.noteOverflow(payload.eventType);
 			this.enqueue(payload, "rate-limited");
-			return { queued: true };
+			return this.withDeliveryReceipt(
+				payload,
+				{ queued: true },
+				"queued_durable",
+			);
 		}
 
 		// Step 5: Fire the Discord POST.
@@ -896,10 +956,18 @@ export class LeadAlertNotifier {
 			if (!sent.ok) {
 				if (sent.transient) {
 					this.enqueue(payload, `discord-${sent.status ?? "net"}`);
-					return { queued: true };
+					return this.withDeliveryReceipt(
+						payload,
+						{ queued: true },
+						"queued_durable",
+					);
 				}
 				await this.deadLetter(payload, `discord-${sent.status ?? "4xx"}`);
-				return { deadLettered: true };
+				return this.withDeliveryReceipt(
+					payload,
+					{ deadLettered: true },
+					"deadlettered_durable",
+				);
 			}
 			messageId = sent.messageId;
 			usedToken = sent.usedToken ?? null;
@@ -909,16 +977,28 @@ export class LeadAlertNotifier {
 			const token = lead ? this.resolveToken(lead) : null;
 			if (!token) {
 				await this.deadLetter(payload, "no-token");
-				return { skipped: "no-token", deadLettered: true };
+				return this.withDeliveryReceipt(
+					payload,
+					{ skipped: "no-token", deadLettered: true },
+					"deadlettered_durable",
+				);
 			}
 			const outcome = await this.postMessage(channel, token, payload);
 			if (!outcome.ok) {
 				if (outcome.transient) {
 					this.enqueue(payload, `discord-${outcome.status ?? "net"}`);
-					return { queued: true };
+					return this.withDeliveryReceipt(
+						payload,
+						{ queued: true },
+						"queued_durable",
+					);
 				}
 				await this.deadLetter(payload, `discord-${outcome.status ?? "4xx"}`);
-				return { deadLettered: true };
+				return this.withDeliveryReceipt(
+					payload,
+					{ deadLettered: true },
+					"deadlettered_durable",
+				);
 			}
 			messageId = outcome.messageId;
 			usedToken = token;
@@ -942,7 +1022,7 @@ export class LeadAlertNotifier {
 			base.channelId = channel;
 			if (messageId) base.messageId = messageId;
 		}
-		return base;
+		return this.withDeliveryReceipt(payload, base, "sent");
 	}
 
 	/**

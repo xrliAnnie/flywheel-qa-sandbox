@@ -101,6 +101,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
 	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	inbox_loop_stalled: { owner: "founder_direct", arc: "none_escalate" },
+	mailbox_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	// FLY-1586: a real notification was held back by the cutover. It needs a
 	// human decision (replay or discard), so it escalates rather than
 	// auto-repairing — nothing here can know whether the held-back message

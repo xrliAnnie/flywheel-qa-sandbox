@@ -9,7 +9,11 @@ import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
-import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
+import {
+	type LeadConfig,
+	type ProjectEntry,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	ClaudeLeadDeliveryAdapter,
@@ -21,6 +25,7 @@ import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { resolveMailboxQueueConfig } from "./mailbox-queue-config.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
 import {
@@ -100,6 +105,17 @@ export interface LeadInboxRuntimeOptions {
 		error: string;
 		at: string;
 	}) => Promise<void>;
+	onDeadLetterAlert?: (input: {
+		eventId: string;
+		leadId: string;
+		projectName: string;
+		recipient: string;
+		sourceKind: "lead_unacked" | "runner_unroutable";
+		deadCount: number;
+		summary: string;
+		/** The existing reclaim fence elapsed after an attempt with no receipt. */
+		replayAfterAmbiguousAttempt: boolean;
+	}) => Promise<void>;
 }
 
 export class LeadInboxRuntime {
@@ -141,12 +157,45 @@ export class LeadInboxRuntime {
 			this.queues.set(project.projectName, queue);
 			const runnerAdapter = runnerAdapterForProject(project, dbPath);
 			this.runnerAdapters.push(runnerAdapter);
+			const resolveOwningLead = (executionId: string): string | undefined => {
+				const recipient = opts.store.resolveRunnerRecipientState(executionId);
+				if (!recipient.projectName) return undefined;
+				let labels: string[] = [];
+				if (recipient.issueLabels) {
+					try {
+						const parsed = JSON.parse(recipient.issueLabels) as unknown;
+						labels = Array.isArray(parsed)
+							? parsed.filter(
+									(value): value is string => typeof value === "string",
+								)
+							: [];
+					} catch {
+						labels = recipient.issueLabels
+							.split(",")
+							.map((value) => value.trim())
+							.filter(Boolean);
+					}
+				}
+				try {
+					return resolveLeadForIssue(
+						opts.projects,
+						recipient.projectName,
+						labels,
+					).lead.agentId;
+				} catch {
+					return undefined;
+				}
+			};
 			const runnerLane = new RunnerMailboxLane({
 				queue,
 				ownerEpoch: this.ownerEpoch,
 				deliver: (envelope) => runnerAdapter.deliver(envelope),
 				resolveQuestion: (questionId) =>
 					runnerAdapter.resolveQuestion(questionId),
+				queueConfig: resolveMailboxQueueConfig,
+				recipientState: (executionId) =>
+					opts.store.resolveRunnerRecipientState(executionId).state,
+				resolveOwningLead,
 			});
 			for (const [leadIndex, lead] of project.leads.entries()) {
 				if (this.projectByLead.has(lead.agentId)) {
@@ -165,6 +214,7 @@ export class LeadInboxRuntime {
 				this.admissions.push(admission);
 				const protocol = new ProtocolIngress({
 					store: opts.store,
+					queue,
 					secretProvider,
 				});
 				const loop = new LeadInboxLoop({
@@ -172,6 +222,14 @@ export class LeadInboxRuntime {
 					leadId: lead.agentId,
 					ownerEpoch: this.ownerEpoch,
 					adapter: adapterForLead(project, lead),
+					queueConfig: resolveMailboxQueueConfig,
+					ackInstruction:
+						effectiveLeadBackend(
+							lead.backend,
+							process.env.FLYWHEEL_LEAD_BACKEND,
+						).backend === "codex-app-server"
+							? "lead_actions.ack_batch"
+							: "flywheel_inbox_ack_batch",
 					hasLiveSession: () =>
 						opts.store.getActiveSessions().some((session) => {
 							try {
@@ -186,7 +244,21 @@ export class LeadInboxRuntime {
 							: undefined,
 					admit: async () => {
 						await this.ensureCutover();
-						if (leadIndex === 0) await runnerLane.tick();
+						if (leadIndex === 0) {
+							await runnerLane.tick();
+							const queueConfig = resolveMailboxQueueConfig();
+							if (queueConfig.enabled) {
+								this.reconcileDeadLetterAlertIntents({
+									project,
+									queue,
+									resolveOwningLead,
+									windowMs: queueConfig.deadLetterWindowMs,
+								});
+								await this.drainDeadLetterAlerts(
+									queueConfig.deadLetterWindowMs,
+								);
+							}
+						}
 					},
 					handleProtocol: (row) => protocol.handle(row),
 					onProtocolQuarantine: (row, error) => {
@@ -339,6 +411,104 @@ export class LeadInboxRuntime {
 	/** Public entry so the late-bound sink can trigger a catch-up pass. */
 	async drainQuarantineAlertsNow(): Promise<void> {
 		await this.drainQuarantineAlerts();
+	}
+
+	async drainDeadLetterAlertsNow(): Promise<void> {
+		await this.drainDeadLetterAlerts(
+			resolveMailboxQueueConfig().deadLetterWindowMs,
+		);
+	}
+
+	private reconcileDeadLetterAlertIntents(input: {
+		project: ProjectEntry;
+		queue: MailboxQueue;
+		resolveOwningLead: (executionId: string) => string | undefined;
+		windowMs: number;
+	}): void {
+		const now = new Date().toISOString();
+		for (const candidate of input.queue.listUncoveredLeadDeadLetters({
+			sinceCursor: this.opts.store.listDeadLetterAlertCursors(),
+			limit: 100,
+			maxRowsPerRecipient: 20,
+			maxSummaryBytes: 4_096,
+			resolveOwningLead: input.resolveOwningLead,
+		})) {
+			const destinationLead =
+				candidate.sourceKind === "lead_unacked"
+					? candidate.recipient
+					: input.project.leads[0]?.agentId;
+			if (!destinationLead) continue;
+			const eventId = `dead_letter_alert:${candidate.sourceKind}:${encodeURIComponent(candidate.recipient)}:${candidate.throughDeadSeq}`;
+			this.opts.store.createDeadLetterAlertIntent({
+				id: eventId,
+				sourceKind: candidate.sourceKind,
+				recipient: candidate.recipient,
+				throughDeadSeq: candidate.throughDeadSeq,
+				leadId: destinationLead,
+				projectName: input.project.projectName,
+				deadCount: candidate.deadCount,
+				summary: candidate.summary,
+				now,
+				windowMs: input.windowMs,
+			});
+		}
+	}
+
+	private async drainDeadLetterAlerts(windowMs: number): Promise<void> {
+		const sink = this.opts.onDeadLetterAlert;
+		if (!sink) return;
+		for (const row of this.opts.store.listDueDeadLetterAlerts(
+			new Date().toISOString(),
+		)) {
+			const eventId = row.id;
+			// Capture this BEFORE claimDeadLetterAlert updates attempted_at. Only a
+			// previously attempted row has waited the durable ambiguous-attempt fence
+			// and may bypass attempt-only notifier dedup.
+			const replayAfterAmbiguousAttempt = row.attempted_at !== null;
+			if (this.opts.store.settleDeadLetterAlertFromReceipt(row.id, eventId)) {
+				continue;
+			}
+			const claimToken = randomUUID();
+			const now = new Date().toISOString();
+			if (
+				!this.opts.store.claimDeadLetterAlert({
+					id: row.id,
+					claimToken,
+					now,
+					windowMs,
+				})
+			) {
+				continue;
+			}
+			try {
+				if (this.opts.store.settleDeadLetterAlertFromReceipt(row.id, eventId)) {
+					continue;
+				}
+				await sink({
+					eventId,
+					leadId: row.lead_id,
+					projectName: row.project_name,
+					recipient: row.recipient,
+					sourceKind: row.source_kind,
+					deadCount: row.dead_count,
+					summary: row.summary,
+					replayAfterAmbiguousAttempt,
+				});
+				if (
+					!this.opts.store.settleDeadLetterAlertFromReceipt(row.id, eventId)
+				) {
+					throw new Error(
+						"dead-letter alert sink returned without a delivery receipt",
+					);
+				}
+			} catch (error) {
+				this.opts.store.recordDeadLetterAlertFailure(
+					row.id,
+					claimToken,
+					(error as Error).message,
+				);
+			}
+		}
 	}
 
 	private async drainQuarantineAlerts(): Promise<void> {

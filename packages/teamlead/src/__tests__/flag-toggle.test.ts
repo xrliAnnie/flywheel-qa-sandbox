@@ -9,6 +9,11 @@ import {
 	type FlagToggleDeps,
 	isDirectToggleable,
 } from "../bridge/flag-toggle.js";
+import {
+	beginMailboxQueueDeployBarrier,
+	defaultMailboxQueueBarrierMarkerPath,
+	readMailboxQueueDeployBarrierMarker,
+} from "../bridge/mailbox-queue-deploy-barrier.js";
 
 const ENV_CONTENT = "# env\nFLYWHEEL_OTHER=1\n";
 const SHA = computeEnvSha(ENV_CONTENT);
@@ -238,5 +243,44 @@ describe("applyFlagToggle — real .env lock + interleaving", () => {
 		expect(finalContent).toContain(`${flagA.envVar}=`);
 		expect(finalContent).not.toContain(`${flagB.envVar}=`);
 		expect(existsSync(`${envPath}.lock`)).toBe(false);
+	});
+
+	it("an operator mailbox OFF no-op invalidates deploy ownership under that same lock", () => {
+		const dir = mkdtempSync(join(tmpdir(), "ff-mailbox-barrier-lock-"));
+		const envPath = join(dir, ".env");
+		writeFileSync(envPath, "OTHER=1\n");
+		const env: Record<string, string | undefined> = {};
+		const begin = beginMailboxQueueDeployBarrier(
+			{ envPath, env, newToken: () => "deploy-owner" },
+			"a".repeat(40),
+		);
+		expect(begin).toMatchObject({ ok: true, owned: true });
+		const offBytes = readFileSync(envPath, "utf8");
+
+		const result = applyFlagToggle(
+			{
+				envPath,
+				readFile: (p: string) => readFileSync(p, "utf8"),
+				env,
+				mailboxQueueBarrierNewToken: () => "operator-owner",
+			},
+			{
+				name: "mailbox_queue",
+				rawFrom: "0",
+				rawTo: "0",
+				fileSha: computeEnvSha(offBytes),
+			},
+		);
+
+		expect(result).toMatchObject({ ok: true });
+		expect(readFileSync(envPath, "utf8")).toBe(offBytes);
+		expect(
+			readMailboxQueueDeployBarrierMarker(
+				defaultMailboxQueueBarrierMarkerPath(envPath),
+			),
+		).toMatchObject({
+			phase: "operator_override",
+			ownershipToken: "operator-owner",
+		});
 	});
 });

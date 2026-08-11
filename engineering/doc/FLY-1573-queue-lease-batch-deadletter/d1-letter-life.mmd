@@ -1,0 +1,9 @@
+stateDiagram-v2
+    direction LR
+    [*] --> QUEUED: 有人发信(表里一行)
+    QUEUED --> LEASED: 投递循环取走<br/>盖 30 分钟租约
+    LEASED --> ACKED: 收件人签收(ack)<br/>队列职责到此结束
+    LEASED --> QUEUED: 租约到期 · 收件人活着 · 重投未满 3 次<br/>同一行原地变回可见(绝不复制)
+    LEASED --> DEAD: 到期且重投满 3 次<br/>或收件人已终止
+    QUEUED --> DEAD: 收件人已终止(立刻作废,不再等)
+    DEAD --> [*]: 打包成一封新信交给它的 Lead<br/>每个收件人每 30 分钟最多一封

@@ -171,13 +171,16 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 				leaseTtlMs: 60_000,
 			}),
 		).toBe(true);
-		const claimed = queue.claimLeadBatch({
+		const claimed = queue.claimLeadBatchQueue({
 			toAgent: args.leadId,
 			msgClass: "model",
 			ownerEpoch: "owner",
 			batchId: "batch-1",
 			now: "2026-08-10T12:00:01.000Z",
-			claimTtlMs: 60_000,
+			transportClaimTtlMs: 60_000,
+			batchWindowMs: 60_000,
+			batchMaxSize: 5,
+			inflightMaxBatches: 3,
 			maxBatchBytes: 64 * 1024,
 			partitionKey: discordBatchPartitionKey,
 		});

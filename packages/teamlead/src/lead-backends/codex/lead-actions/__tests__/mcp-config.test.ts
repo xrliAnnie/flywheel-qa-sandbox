@@ -15,6 +15,7 @@ describe("FLY-398 full-access lead_actions", () => {
 		chatChannelId: "1500600400238084307",
 		crossDeptChannelIds: ["1512578695468941333"],
 		stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
+		commDbPath: "/Users/x/.flywheel/comm/growth/comm.db",
 	});
 
 	describe("buildFullAccessLeadActionsMcpServerConfig", () => {
@@ -25,6 +26,9 @@ describe("FLY-398 full-access lead_actions", () => {
 				"/Users/x/dist/lead-actions/lead-actions-main.js",
 			]);
 			expect(cfg.env.FLYWHEEL_LEAD_ID).toBe("mufasa-lead");
+			expect(cfg.env.FLYWHEEL_COMM_DB).toBe(
+				"/Users/x/.flywheel/comm/growth/comm.db",
+			);
 			expect(cfg.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS).toBe(
 				"1512578695468941333",
 			);
