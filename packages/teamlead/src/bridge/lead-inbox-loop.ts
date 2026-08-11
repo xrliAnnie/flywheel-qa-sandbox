@@ -79,6 +79,7 @@ export interface LeadInboxLoopOptions {
 		leadId: string;
 		deliveryIds: string[];
 		reason: string;
+		attempt: number;
 		at: string;
 	}) => Promise<void> | void;
 	onDiscordDeliveryStall?: (context: {
@@ -506,12 +507,38 @@ export class LeadInboxLoop {
 	): Promise<void> {
 		const at = this.isoNow();
 		const deliveryIds = rows.map(({ delivery_id }) => delivery_id);
-		await this.opts.onDiscordUndeliverable?.({
-			leadId: this.opts.leadId,
-			deliveryIds,
-			reason,
-			at,
-		});
+		const batchId = rows[0]?.batch_id;
+		if (!batchId) throw new Error("Discord quarantine batch id is missing");
+		const attempt = (rows[0]?.retry_count ?? 0) + 1;
+		try {
+			await this.opts.onDiscordUndeliverable?.({
+				leadId: this.opts.leadId,
+				deliveryIds,
+				reason,
+				attempt,
+				at,
+			});
+		} catch (error) {
+			this.opts.logger?.warn("discord_mailbox_alert_failed", {
+				leadId: this.opts.leadId,
+				deliveryIds,
+				error: describeError(error),
+			});
+			const changed = this.opts.queue.recordLeadDeliveryFailure({
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId,
+				error: `quarantine_alert_failed:${describeError(error)}`,
+				now: at,
+				nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+				maxAttempts: Number.MAX_SAFE_INTEGER,
+			});
+			if (changed !== rows.length) {
+				throw new Error(
+					"owner fence lost while backing off Discord quarantine alert",
+				);
+			}
+			return;
+		}
 		this.opts.logger?.warn("discord_mailbox_undeliverable", {
 			leadId: this.opts.leadId,
 			deliveryIds,

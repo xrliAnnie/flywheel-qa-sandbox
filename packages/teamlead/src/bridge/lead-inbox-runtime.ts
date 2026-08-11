@@ -89,6 +89,7 @@ export interface LeadInboxRuntimeOptions {
 		leadId: string;
 		deliveryIds: string[];
 		reason: string;
+		attempt: number;
 		at: string;
 	}) => Promise<void>;
 	onDiscordDeliveryStall?: (input: {

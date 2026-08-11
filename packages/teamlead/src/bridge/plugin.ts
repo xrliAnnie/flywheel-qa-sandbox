@@ -4597,7 +4597,10 @@ export async function startBridge(
 		deliveryIds: string[];
 		at: string;
 	};
-	type DiscordMailboxUndeliverable = DiscordMailboxAlert & { reason: string };
+	type DiscordMailboxUndeliverable = DiscordMailboxAlert & {
+		reason: string;
+		attempt: number;
+	};
 	type DiscordMailboxStall = DiscordMailboxAlert & {
 		batchId: string;
 		error: string;
@@ -7525,7 +7528,8 @@ export async function startBridge(
 					createHash("sha256")
 						.update(input.deliveryIds.join("\n"))
 						.digest("hex")
-						.slice(0, 16),
+						.slice(0, 16) +
+					`:${input.attempt}`,
 				eventType: "delivery_dead_letter",
 				title: "Discord mailbox message quarantined",
 				body:
@@ -7534,6 +7538,7 @@ export async function startBridge(
 					`Reason: ${input.reason}`,
 				severity: "severe",
 			});
+			if (result.skipped === "duplicate") return;
 			if (result.deadLettered || result.skipped) {
 				throw new Error(
 					`Discord mailbox quarantine alert not delivered: ${result.skipped ?? "dead_lettered"}`,

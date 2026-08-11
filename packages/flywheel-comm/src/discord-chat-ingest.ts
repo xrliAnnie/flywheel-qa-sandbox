@@ -35,7 +35,6 @@ function escapeXml(value: string): string {
 function escapeXmlText(value: string): string {
 	return value
 		.replaceAll("<", "&lt;")
-		.replaceAll(">", "&gt;")
 		.replace(/\p{Cc}/gu, (char) =>
 			char === "\n" || char === "\r" || char === "\t" ? char : "�",
 		);

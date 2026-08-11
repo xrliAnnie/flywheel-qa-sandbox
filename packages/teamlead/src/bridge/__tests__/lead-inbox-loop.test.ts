@@ -495,30 +495,44 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			}),
 		);
 		expect(undeliverable).toHaveBeenCalledOnce();
+		expect(undeliverable).toHaveBeenCalledWith(
+			expect.objectContaining({ attempt: 1 }),
+		);
 	});
 
-	it("keeps an undeliverable Discord row leased when its alert is rejected", async () => {
+	it("backs off an unalertable Discord row without blocking ordinary model mail", async () => {
 		const queue = makeQueue();
-		enqueueDiscord(queue, "chat:lead-a:alert-failed", "423456789012345680");
-		const result = await loop(
+		const discordId = "chat:lead-a:323456789012345680";
+		enqueueDiscord(queue, discordId, "423456789012345680");
+		enqueueModel(queue, "question-after-alert-failure", 2);
+		let batch = 0;
+		const consumer = loop(
 			queue,
 			{
-				async deliverBatch() {
-					throw new Error("permanent rejection");
+				async deliverBatch(batch) {
+					if (batch.kind === "discord_chat")
+						throw new Error("permanent rejection");
+					return receipt(batch);
 				},
 			},
 			{
 				maxModelAttempts: 1,
+				batchIdFactory: () => `batch-${++batch}`,
 				onDiscordUndeliverable: async () => {
 					throw new Error("operator alert rejected");
 				},
 			},
-		).tick();
-		expect(result.ok).toBe(false);
-		expect(queue.getById("chat:lead-a:alert-failed")).toMatchObject({
+		);
+		const first = await consumer.tick();
+		expect(queue.getById(discordId)).toMatchObject({
 			state: "LEASED",
 			dead_reason: null,
+			retry_count: 1,
+			next_retry_at: expect.any(String),
 		});
+		expect(first.ok).toBe(false);
+		expect((await consumer.tick()).ok).toBe(true);
+		expect(queue.getById("question-after-alert-failure")?.state).toBe("ACKED");
 	});
 
 	it("rate-limits Discord stall alerts and clears the episode on recovery", async () => {

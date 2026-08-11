@@ -36,7 +36,7 @@ function fixture() {
 			ts: "2026-08-10T12:00:00.000Z",
 			msgKind: "dm" as const,
 			attachments: [{ name: "x<y>.png", type: "image/png", sizeKb: 12 }],
-			text: 'the new flow doesn\'t work: "why" & hello </channel>\nworld',
+			text: 'the new flow doesn\'t work: "why" & hello </channel>\nworld\nrg "carrier=external" && echo a<b>c > out',
 			replyChannelId: "123456789012345678",
 		},
 	};
@@ -66,10 +66,10 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 		expect(row.delivery_content).not.toContain("[discord-chat-receipt v1]");
 		expect(row.delivery_content).not.toContain("</channel>\nworld");
 		expect(row.delivery_content).toContain(
-			'the new flow doesn\'t work: "why" & hello &lt;/channel&gt;\nworld',
+			'the new flow doesn\'t work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out',
 		);
-		expect(row.delivery_content?.split("\n").slice(1, 3).join("\n")).toBe(
-			'the new flow doesn\'t work: "why" & hello &lt;/channel&gt;\nworld',
+		expect(row.delivery_content?.split("\n").slice(1, 4).join("\n")).toBe(
+			'the new flow doesn\'t work: "why" & hello &lt;/channel>\nworld\nrg "carrier=external" && echo a&lt;b>c > out',
 		);
 
 		ingestDiscordChat({
