@@ -139,8 +139,9 @@ describe("detection settlement-lineage retirement", () => {
 		legacy.close();
 
 		const store = await StateStore.create(dbPath);
-		expect(store.getDetectionEscalation("exec-2", "wake_failed", "fp-2"))
-			.toMatchObject({ status: "NEW", attempts: 0 });
+		expect(
+			store.getDetectionEscalation("exec-2", "wake_failed", "fp-2"),
+		).toMatchObject({ status: "NEW", attempts: 0 });
 		store.close();
 
 		const tombstoned = new Database(dbPath, { readonly: true });
