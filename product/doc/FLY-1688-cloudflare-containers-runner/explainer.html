@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1688 · Cloudflare 容器能不能当 Runner 的底座</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --line:#e5e5ea;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+    line-height:1.68; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:48px 20px 96px}
+  header.top{margin-bottom:34px}
+  .eyebrow{font-size:12px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);font-weight:600}
+  h1{font-size:34px;line-height:1.25;margin:8px 0 12px;letter-spacing:-0.02em}
+  .sub{color:var(--dim);font-size:15px;margin:0}
+  .meta{margin-top:14px;font-size:13px;color:var(--dim)}
+  .meta a{color:var(--blue);text-decoration:none}
+
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:22px 24px;margin:16px 0}
+  .card.red{border-left:4px solid var(--red)}
+  .card.amber{border-left:4px solid var(--amber)}
+  .card.blue{border-left:4px solid var(--blue)}
+  .card.green{border-left:4px solid var(--green)}
+  .card.purple{border-left:4px solid var(--purple)}
+  .card.gray{border-left:4px solid var(--dim)}
+
+  .section-title{display:flex;align-items:center;gap:10px;font-size:21px;font-weight:650;margin:44px 0 6px;letter-spacing:-0.01em}
+  .section-title .n{font-size:13px;color:var(--dim);font-weight:600;font-variant-numeric:tabular-nums}
+  .section-lede{color:var(--dim);font-size:14px;margin:0 0 14px}
+
+  h3{font-size:16px;margin:0 0 8px;font-weight:650}
+  p{margin:0 0 12px}
+  ul{margin:0 0 12px;padding-left:20px}
+  li{margin:5px 0}
+  strong{font-weight:650}
+
+  .answer{font-size:17px;font-weight:600;margin:0 0 10px;letter-spacing:-0.01em}
+  .answer .tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.05em;padding:3px 9px;border-radius:999px;vertical-align:middle;margin-right:9px;position:relative;top:-1px}
+  .t-good{background:rgba(52,199,89,.14);color:#1c7a3a}
+  .t-warn{background:rgba(255,149,0,.16);color:#96590a}
+  .t-bad{background:rgba(255,59,48,.13);color:#b3271f}
+
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:10px 0 4px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);font-weight:650;white-space:nowrap}
+  td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+  .tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  tr.hi td{background:rgba(0,122,255,.045)}
+
+  code,.mono{font-family:"SF Mono",ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+  code{background:#f0f0f3;padding:2px 6px;border-radius:5px}
+  pre{background:#1d1d1f;color:#f5f5f7;padding:14px 16px;border-radius:10px;overflow-x:auto;margin:10px 0}
+  pre code{background:none;color:inherit;padding:0;font-size:12.5px;line-height:1.75}
+
+  .big{display:flex;flex-wrap:wrap;gap:12px;margin:6px 0 2px}
+  .stat{flex:1 1 190px;background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px}
+  .stat .k{font-size:12px;color:var(--dim);font-weight:600;letter-spacing:.03em}
+  .stat .v{font-size:27px;font-weight:680;letter-spacing:-0.025em;margin:5px 0 3px;font-variant-numeric:tabular-nums}
+  .stat .n2{font-size:12.5px;color:var(--dim);line-height:1.5}
+  .v-red{color:var(--red)} .v-green{color:#1c7a3a} .v-amber{color:#96590a} .v-navy{color:var(--navy)}
+
+  .src{font-size:12px;color:var(--dim);margin-top:10px;padding-top:9px;border-top:1px solid var(--line)}
+  .badge{display:inline-block;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;margin-right:5px;letter-spacing:.03em}
+  .b-vendor{background:rgba(0,122,255,.11);color:#0058b8}
+  .b-measured{background:rgba(52,199,89,.14);color:#1c7a3a}
+  .b-audit{background:rgba(175,82,222,.12);color:#7d2fa3}
+  .b-unknown{background:rgba(255,59,48,.11);color:#b3271f}
+  .b-infer{background:rgba(255,149,0,.15);color:#96590a}
+
+  .quote{border-left:3px solid var(--line);padding:2px 0 2px 14px;margin:10px 0;color:#3a3a3c;font-size:14px}
+  .quote .en{font-style:normal;color:#48484a}
+
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:14px;margin:8px 0}
+  .kv dt{color:var(--dim);white-space:nowrap}
+  .kv dd{margin:0}
+
+  hr.soft{border:none;border-top:1px solid var(--line);margin:22px 0}
+  .foot{margin-top:52px;padding-top:20px;border-top:1px solid var(--line);font-size:13px;color:var(--dim)}
+  @media (max-width:640px){ h1{font-size:27px} .wrap{padding:32px 16px 72px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">FLY-1688 · Research · 不是建议,是事实</div>
+  <h1>Cloudflare 的云容器,能不能当 Runner 的底座?</h1>
+  <p class="sub">把三个未知量测出来 —— 凭据安全、价格、出问题时能不能点进去看 —— 让 2026-06-24「先物理机、出于安全」那个决定,可以在有数字的情况下重新拍一次。</p>
+  <div class="meta">
+    2026-08-10 ·
+    <a href="https://linear.app/geoforge3d/issue/FLY-1688/researchhl-cloudflare-containers-作为-runner-底座-价格-凭据安全-远程-tmux-可观测性fly">FLY-1688</a> ·
+    上游 FLY-1005(多机方案,已完成)/ FLY-555(先物理机的原判断)/ FLY-624(远程看终端)
+  </div>
+</header>
+
+<div class="card gray">
+  <h3>这页不做什么</h3>
+  <p style="margin:0">不给结论、不写 PRD、不建议采纳。这是一张摆事实和取舍的研究页,给 Annie 和 Honey Lemon 一起评估用。每个数字都标了来源;厂商自己说的数字标了
+  <span class="badge b-vendor">厂商自报</span>;我在这台机器上量的标
+  <span class="badge b-measured">实测</span>;读代码得到的标
+  <span class="badge b-audit">审计</span>;我推出来的标
+  <span class="badge b-infer">推断</span>;查不到的直接写
+  <span class="badge b-unknown">查不到</span>,不猜。</p>
+</div>
+
+<!-- ============ 30 秒版 ============ -->
+<div class="section-title"><span class="n">30 秒版</span> 三个问题,三个不一样的答案</div>
+
+<div class="big">
+  <div class="stat">
+    <div class="k">① 凭据安全</div>
+    <div class="v v-amber">只解决一半</div>
+    <div class="n2">GitHub 那半能收到「单个仓库 + 一小时过期」。<b>Claude 订阅登录态那半收不了</b> —— 只能给一份一年期的全账号凭据。而那正是你当初选物理机的理由。</div>
+  </div>
+  <div class="stat">
+    <div class="k">② 价格 <span style="font-weight:400">(含「免费」判定)</span></div>
+    <div class="v v-red">约 17 倍</div>
+    <div class="n2"><b>容器没有免费版</b> —— $5/月是入场费,不是用量费。按我们真实并发每月约 <b>$400–1,550</b>。<b>17 倍是上界</b>(它假设自有机器免费吸收全部并发,而我们有反例);算进拥塞成本后倍数会低一些,<b>但方向不变:云仍然更贵</b>。</div>
+  </div>
+  <div class="stat">
+    <div class="k">③ 出问题能不能点进去</div>
+    <div class="v v-green">能,比预期好</div>
+    <div class="n2">有一条官方命令、自 5 月起默认开启、不开公网端口。形状跟 FLY-624 原来设计的那条一模一样,只是「哪台机器」换成「哪个容器」。</div>
+  </div>
+</div>
+
+<div class="card blue">
+  <p style="margin:0"><b>一句话:</b>这个方案买的不是省钱,是<b>弹性和隔离</b>。看终端的问题它解决得很干净;价格上它比自有机器贵一个数量级;而安全上,它缓解了大部分风险,<b>唯独没能缓解你最在意的那一条</b>。</p>
+</div>
+
+<!-- ============ ① ============ -->
+<div class="section-title"><span class="n">问题 ①</span> 凭据安全</div>
+<p class="section-lede">你明确说这条最关心。所以先审我们自己:一个 Runner 今天到底带着什么。</p>
+
+<div class="card purple">
+  <h3>先审自己:Runner 现在手上有什么</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th>凭据</th><th>存在哪</th><th>能干什么 / 多久过期</th></tr>
+    <tr class="hi"><td><b>Claude 登录态</b></td><td>你 Mac 的钥匙串</td><td><b>整个 Claude 账号</b>;长期有效</td></tr>
+    <tr><td>GitHub</td><td><code>~/.config/gh/hosts.yml</code></td><td>账号级(除非换成受限令牌)</td></tr>
+    <tr><td>Codex / Kimi</td><td><code>~/.codex/</code>、<code>~/.kimi-code/</code></td><td>各自账号级</td></tr>
+    <tr><td>Linear key</td><td><code>.env</code> —— <b>Bridge 读,Runner 读不到</b></td><td>工作区级</td></tr>
+    <tr><td>Discord 机器人令牌</td><td><code>.env</code> —— <b>Runner 读不到</b></td><td>—</td></tr>
+  </table>
+  </div>
+  <p style="margin-top:12px"><b>今天有一个很好的性质:</b>Runner 并没有被塞进这些令牌。它是<b>隐式继承</b>你这台机器上已经登录好的 <code>gh</code> 和钥匙串。所以一个 Runner 出事,炸的是「这台机的 GitHub + 你的 Claude 账号」,<b>不是整个 .env</b>。</p>
+  <p style="margin:0"><b>上云会把这个隐式继承变成显式投递</b> —— 云上的容器里没有你的钥匙串,凭据必须被主动塞进去。这既是机会(可以趁机收窄),也是新的暴露面(它们变成容器里的明文环境变量)。</p>
+  <div class="src"><span class="badge b-audit">审计</span> Bridge 只把 <code>FLYWHEEL_INGEST_TOKEN</code> 注入 Runner(<code>TmuxAdapter.ts:468</code>);Linear key 由 Bridge 持有(<code>teamlead/config.ts:154</code>)。 <span class="badge b-measured">实测</span> 各凭据文件位置与权限位。</div>
+</div>
+
+<div class="card blue">
+  <h3>Cloudflare 那边提供什么</h3>
+  <ul>
+    <li><b>可以做到「每个容器实例拿一份不一样的凭据」</b> —— 官方文档明确支持 per-instance 环境变量:「Each instance gets a different set of environment variables」。这让「每个 issue 一份专属令牌」在架构上成立。</li>
+    <li>官方也自己警告:<b>不要用明文环境变量装敏感信息</b>,要用 secrets 或 Secrets Store。</li>
+    <li>但 Secrets Store 目前是 <b>公开测试(open beta)</b>,还不是正式版;而且<b>谁能读、怎么轮换、有没有审计日志 —— 文档里查不到</b><span class="badge b-unknown">查不到</span>。真要拿它当凭据面,这三条得先问清楚。</li>
+    <li>容器之间是 <b>各自独立的虚拟机</b>,隔离级别高(「strong isolation」)。</li>
+    <li>出网默认是开的,但可以整个关掉,或者只放行白名单里的域名。</li>
+  </ul>
+  <p style="margin:0"><b>关键落点:</b>Cloudflare 这条路是「把凭据<b>安全地送到容器门口</b>」,<b>不是</b>「让容器永远看不到凭据」。送进去之后,它就是容器进程里的普通环境变量。</p>
+  <div class="src"><span class="badge b-vendor">厂商自报</span> Cloudflare Containers 文档:env-vars-and-secrets / platform-details / outbound-traffic;Secrets Store overview。</div>
+</div>
+
+<div class="card red">
+  <h3>爆炸半径:一个容器被攻破会怎样</h3>
+  <p>三件事叠起来:</p>
+  <ul>
+    <li>我们的 Runner 是<b>跳过权限确认</b>跑的 <span class="badge b-audit">审计</span>(<code>Blueprint.ts:2682</code>)。</li>
+    <li>Anthropic 自己的文档对这个组合写得很直白:</li>
+  </ul>
+  <div class="quote"><span class="en">「When executed with <code>--dangerously-skip-permissions</code>, dev containers do not prevent a malicious project from exfiltrating anything accessible inside the container, <b>including the Claude Code credentials</b>. … prefer repository-scoped or short-lived tokens.」</span><br><span style="font-size:12.5px;color:#86868b">—— Claude Code 官方文档,dev container 页 <span class="badge b-vendor">厂商自报</span></span></div>
+  <ul>
+    <li>容器里的凭据就是普通环境变量。</li>
+  </ul>
+  <p><b>⇒ 一个被攻破的 Runner 容器,等于它手上那份 Claude 令牌 + 那份 GitHub 令牌全部外泄。</b>容器之间不会互相波及(虚拟机隔离),但<b>单个容器内部没有第二道墙</b>。</p>
+  <hr class="soft">
+  <p style="margin:0"><b>还有一条容易漏掉的:</b>解决问题 ③ 的那条 SSH 命令,同时是一条新的凭据通路 —— <b>任何对该容器有写权限的 Cloudflare 账号身份,都能 shell 进一个正在跑的 Runner</b>,而它此刻正拿着上面两份凭据。也就是说,<b>Cloudflare 账号本身会变成一个必须按最高等级来守的新东西</b>。</p>
+</div>
+
+<div class="card amber">
+  <h3>能不能做到「一次性、最小权限」?—— 分两半,答案不一样</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th style="width:120px">哪一半</th><th>能不能</th><th>为什么</th></tr>
+    <tr>
+      <td><b>GitHub</b></td>
+      <td><b style="color:#1c7a3a">能</b></td>
+      <td>GitHub App 令牌约 1 小时过期、可锁到单个仓库。<b>我们内部已经有两个现成模式</b>:FLY-350/245 的受限令牌经 broker 投递(不进模型环境),以及 Anna 那套 scoped 令牌 + 隔离验证脚本。配上 Cloudflare 的 per-instance 环境变量,「每个 issue 一个只能碰那个仓、一小时过期的令牌」是成立的。</td>
+    </tr>
+    <tr class="hi">
+      <td><b>Claude</b></td>
+      <td><b style="color:#b3271f">不能</b></td>
+      <td>容器里没有钥匙串。无人值守容器要跑 Claude Code,官方给的路是生成一个长期令牌 —— <b>有效期一年、认证整个订阅账号</b>。它只能发模型请求(开不了远程控制、拉不了 connectors),算收窄了一点点,<b>但不是按 issue、按仓、按小时的最小权限</b>。</td>
+    </tr>
+  </table>
+  </div>
+  <p style="margin-top:12px">唯一真正能收窄 Claude 那半的替代是换成 <b>API key</b>(可撤销、可设支出上限)。但那等于<b>从订阅制换成按用量计费</b> —— 那是一个独立的、量级很大的成本决定,不能当凭据方案顺手做掉。</p>
+  <p style="margin:0"><b>⚠️ 这条跟 Cloudflare 无关。</b>换成 AWS、Google、或者自己在别处放一台 Linux 机器,结论一样:只要 Claude Code 跑在你不物理控制的机器上,它就带着一份一年期的全账号订阅凭据。</p>
+</div>
+
+<div class="card green">
+  <h3>回到你的原问题:「先物理机、出于安全」被缓解了吗?</h3>
+  <p class="answer"><span class="tag t-warn">分轴回答</span>大部分被缓解了,<b>唯独你最在意的那一条基本没变</b>。</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>轴</th><th>原来的顾虑</th><th>上 Cloudflare 之后</th></tr>
+    <tr><td>GitHub 写权限</td><td>泄漏 = 账号级</td><td><b style="color:#1c7a3a">被缓解</b> — 可收到单仓 + 一小时</td></tr>
+    <tr><td>Linear / Discord / 其它</td><td>不想让它们出机器</td><td><b style="color:#1c7a3a">本来就不用出</b> — Runner 今天也没拿</td></tr>
+    <tr><td>一个出事会不会波及其它</td><td>—</td><td><b style="color:#1c7a3a">被缓解</b> — 每个容器一个独立虚拟机</td></tr>
+    <tr class="hi"><td><b>Claude 订阅登录态</b></td><td><b>不想让它离开我的机器</b></td><td><b style="color:#b3271f">基本没变</b> — 仍是一年期全账号凭据,而且现在放在一台你不拥有的机器上,还多了一条经 Cloudflare 账号进去的 shell 通路</td></tr>
+    <tr><td>攻击面形状</td><td>家里机器、无公网入站</td><td><b style="color:#96590a">变了</b> — 多一个必须最高等级守的 Cloudflare 账号</td></tr>
+  </table>
+  </div>
+</div>
+
+<div class="card red">
+  <h3>🔴 一条独立的安全约束 —— 比「要不要上 Cloudflare」更重要</h3>
+  <p><b>这条不是关于 Cloudflare,也不是事故记录。</b>它是审计过程中暴露出来的、<b>当下就成立</b>的设计约束。</p>
+  <p><b>约束:</b>Runner 跑「跳过权限确认」模式 ⇒ <b>它执行的任何命令都没有人工拦截层</b>。因此:</p>
+  <ul>
+    <li><b>任何能读到凭据的命令</b> —— 读钥匙串、打开凭据文件、打印环境变量 —— <b>一旦被执行,凭据就落进那次会话的记录里</b>(本机日志 + 发往模型的上下文)。没有任何机制会拦下它或告警。</li>
+    <li><b>这跟「谁在跑那条命令」无关。</b>agent 出于正当目的审计时会这么做(这次就发生了);一个被注入的恶意仓库也会这么做。<b>在这个模式下,系统分不出这两者,也不试图分。</b></li>
+    <li><b>它是靠执行者自报才被发现的。</b>没有自报,这次就不会有人知道 —— <b>「靠 agent 自觉」不是控制措施。</b></li>
+    <li><b>上云不改善这一条,只放大它。</b>同一条命令在自己机器上是打进自己的日志;在云上是打进<b>别人家的日志和别人家的上下文</b>,而且上面那条 SSH 还多开了一条进入活体 Runner 的通路。</li>
+  </ul>
+  <p style="margin:0"><b>⇒ 推论(对任何底座都成立):</b>只要 Runner 保持这个模式,<b>「把凭据本身收窄」就是唯一还剩的那道墙</b> —— 因为「不让它执行到凭据」这道墙根本不存在。所以凭据收窄(单仓、短期、可撤销)不是可选的加固项,是这个架构下的<b>唯一</b>防线。</p>
+  <p style="margin:10px 0 0;font-size:13.5px;color:#86868b"><b>本单不对此提方案</b> —— 那是独立的工程/产品决定,应另开单。这里只把约束陈述清楚。</p>
+</div>
+
+<div class="card red">
+  <h3>⚠️ 一个必须报告的事:本次审计我自己泄了一次</h3>
+  <p>为了搞清楚「Claude 登录态到底存在哪」,我跑了一条读钥匙串的命令,<b>它把你的 Claude 令牌明文打进了本次会话记录</b> —— 因此进了本机的会话日志文件,以及发往模型 API 的上下文。</p>
+  <ul>
+    <li><b>范围</b>:是你自己的 Claude 账号令牌,收方是签发方本身,泄漏面小 —— 但不为零。</li>
+    <li><b>我没有</b>把它写进任何文档、这张页面或任何提交,也没有再跑第二次。</li>
+    <li><b>要不要轮换(重新登录一次 Claude)由你决定</b> —— 我不擅自动生产登录态。</li>
+  </ul>
+  <p style="margin:0"><b>它同时是上面那段分析的实证:</b>这份凭据距离「任何以你的身份运行的进程」只有一条命令。这不是抽象风险。</p>
+</div>
+
+<!-- ============ ② ============ -->
+<div class="section-title"><span class="n">问题 ②</span> 价格</div>
+<p class="section-lede">按你 8/10 的要求拆成三块:<b>(1) 官网价目表原样</b> · <b>(2)「免费」到底免在哪一层</b> · <b>(3) 按我们真实形态估月成本</b>。</p>
+
+<div class="card gray">
+  <h3>(1) 官网价目表原样 —— 三张表,不合并</h3>
+  <p style="margin:0 0 4px">跑一个 Runner 容器会<b>同时踩到三个产品</b>的计费:<b>Workers</b>(入口)→ <b>Durable Objects</b>(路由到实例)→ <b>Container</b>(真正干活的)。所以三张表都得看。以下全部 <span class="badge b-vendor">厂商自报</span>,<b>抓取日期均为 2026-08-10</b>。</p>
+</div>
+
+<div class="card blue">
+  <h3>(a) Workers —— 入口层</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th></th><th>Free 计划</th><th>Paid 计划</th></tr>
+    <tr><td><b>月费</b></td><td class="num"><b>$0</b></td><td class="num"><b>$5 起</b></td></tr>
+    <tr><td>请求数</td><td class="num">100,000 / <b>天</b></td><td class="num">1,000 万 / 月包含<br>超出 +$0.30 / 百万</td></tr>
+    <tr><td>CPU 时间</td><td class="num">每次调用 <b>10 毫秒</b></td><td class="num">3,000 万 CPU·毫秒 / 月包含<br>超出 +$0.02 / 百万</td></tr>
+    <tr><td>运行时长</td><td class="num">不计费</td><td class="num">不计费也不限制<br><span style="color:#86868b">(单次上限 5 分钟)</span></td></tr>
+    <tr class="hi"><td><b>超额怎么办</b></td><td><b style="color:#b3271f">硬限:每日 00:00 UTC 重置,超了操作直接失败</b></td><td>按上面单价计费</td></tr>
+  </table>
+  </div>
+  <p style="margin:10px 0 0">Free 计划<b>明确不含</b>:KV 后端的 Durable Objects、Trace Events Logpush、Enterprise 用量模型。</p>
+  <div class="src">来源 <code>developers.cloudflare.com/workers/platform/pricing/</code> · 页面标注最后更新 <b>2026-07-07</b> · 抓取 2026-08-10</div>
+</div>
+
+<div class="card blue">
+  <h3>(b) Containers —— 干活层</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th>维度</th><th>怎么算</th><th>单价</th><th>每月包含额度</th></tr>
+    <tr><td><b>内存</b></td><td>按<b>已分配</b>算(不管你用没用满)</td><td class="num">$0.0000025 / GiB·秒</td><td class="num">25 GiB·小时</td></tr>
+    <tr><td><b>CPU</b></td><td>只按<b>真正在算</b>的时间</td><td class="num">$0.000020 / vCPU·秒</td><td class="num">375 vCPU·分钟</td></tr>
+    <tr><td><b>磁盘</b></td><td>按<b>已分配</b>算</td><td class="num">$0.00000007 / GB·秒</td><td class="num">200 GB·小时</td></tr>
+    <tr><td><b>出网</b> 北美/欧洲</td><td>按流量</td><td class="num">$0.025 / GB</td><td class="num">1 TB</td></tr>
+    <tr><td><b>出网</b> 大洋洲/韩/台</td><td>按流量</td><td class="num">$0.05 / GB</td><td class="num">500 GB</td></tr>
+    <tr><td><b>出网</b> 其它</td><td>按流量</td><td class="num">$0.04 / GB</td><td class="num">500 GB</td></tr>
+  </table>
+  </div>
+  <p style="margin:10px 0 0">计费粒度<b>每 10 毫秒</b>;实例闲置超时后停止计费(可缩到零)。页面自己声明 Workers 请求、Durable Objects、日志<b>另行计费</b>。<b>入网算不算钱</b> —— <span class="badge b-unknown">查不到</span>,公开表只列了出网。</p>
+  <p style="margin:8px 0 0;font-size:15px"><b style="color:#b3271f">页面原话:「The Free plan offers no container access.」</b></p>
+  <div class="src">来源 <code>developers.cloudflare.com/containers/pricing/</code> · 页面标注最后更新 <b>2026-04-21</b> · 抓取 2026-08-10</div>
+</div>
+
+<div class="card blue">
+  <h3>(c) Durable Objects —— 路由层</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th>维度</th><th>Free 计划</th><th>Paid 计划</th></tr>
+    <tr><td>存储后端</td><td><b>仅 SQLite</b></td><td>SQLite + KV<span style="color:#86868b">(KV 仅限已有 namespace 的账号)</span></td></tr>
+    <tr><td>请求数</td><td class="num">100,000 / 天</td><td class="num">100 万 / 月 + $0.15 / 百万</td></tr>
+    <tr><td>时长</td><td class="num">13,000 GB·秒 / 天</td><td class="num">400,000 GB·秒 / 月 + $12.50 / 百万</td></tr>
+    <tr><td>SQLite 读行 / 写行</td><td class="num">500 万 / 天 · 10 万 / 天</td><td class="num">250 亿 · 5,000 万 / 月</td></tr>
+    <tr><td>SQLite 存储</td><td class="num">共 5 GB</td><td class="num">5 GB·月 + $0.20 / GB·月</td></tr>
+  </table>
+  </div>
+  <p style="margin:10px 0 0">⚠️ 一条跟我们特别相关的注:官网写「时长费用在对象<b>正在执行、或者醒着但闲着(不满足休眠条件)</b>时都要计」。我们的 Runner 停在门口等你回复时,<b>这一层是不是也在计费、能不能休眠 —— </b><span class="badge b-unknown">查不到</span>,<b>本单没建模</b>。</p>
+  <div class="src">来源 <code>developers.cloudflare.com/durable-objects/platform/pricing/</code> · 页面标注最后更新 <b>2026-08-10</b> · 抓取 2026-08-10</div>
+</div>
+
+<div class="card red">
+  <h3>(2)「免费」到底免在哪一层 —— 直接判定</h3>
+  <p>三层摊开,一眼看清边界落在哪:</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>层</th><th>有没有免费版</th><th>对「跑一个 Runner」意味着什么</th></tr>
+    <tr><td>Workers</td><td><b style="color:#1c7a3a">✅ 有</b>($0,10 万请求/天)</td><td>入口是免费的</td></tr>
+    <tr class="hi"><td><b>Containers</b></td><td><b style="color:#b3271f">❌ 完全没有</b></td><td><b>这一层直接把你挡在门外</b></td></tr>
+    <tr><td>Durable Objects</td><td><b style="color:#1c7a3a">✅ 有</b>(仅 SQLite)</td><td>但容器进不去,这个额度对我们没意义</td></tr>
+  </table>
+  </div>
+  <p style="margin-top:12px"><b>官网证据两处,互相印证:</b></p>
+  <div class="quote"><span class="en">「<b>The Free plan offers no container access.</b>」</span><br><span style="font-size:12.5px;color:#86868b">—— Containers 定价页</span></div>
+  <div class="quote"><span class="en">「<b>Available on Workers Paid plan</b>」</span><br><span style="font-size:12.5px;color:#86868b">—— Containers 概览页 <code>developers.cloudflare.com/containers/</code></span></div>
+  <p style="margin:12px 0 0"><b>⇒ 想跑容器,$5/月是入场费,不是用量费。</b>交完这 $5,容器的内存/CPU/磁盘/出网<b>再按上面 (b) 那张表另外收</b>。</p>
+  <hr class="soft">
+  <p style="margin:0"><b>还有一个容易踩的坑:免费版超额不是多收钱,是跑不动。</b>Workers Free 是<b>硬限</b> —— 每日 00:00 UTC 重置,超了操作直接失败;Paid 才是「包含额度 + 超额单价」。这两种「超出」性质完全不同。</p>
+</div>
+
+<div class="card amber">
+  <h3>判定那条小红书说法:「免 VPS、免 Docker、免费的电脑」</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th style="width:130px">说法</th><th style="width:110px">判定</th><th>官网证据</th></tr>
+    <tr class="hi">
+      <td><b>「免费的电脑」</b></td>
+      <td><b style="color:#b3271f">❌ 错</b></td>
+      <td>容器不在免费版里(上面两处原话)。最低 Workers Paid <b>$5/月</b>起步,之上还要按量付内存/CPU/磁盘/出网。按我们真实形态每月约 <b>$402–1,549</b>。</td>
+    </tr>
+    <tr>
+      <td><b>「免 VPS」</b></td>
+      <td><b style="color:#1c7a3a">✅ 成立</b><br><span style="font-size:12.5px;color:#86868b">但要说清</span></td>
+      <td>你确实不用租、不用运维一台服务器,Cloudflare 管调度和生命周期。但这是<b>把「租机器」换成「按秒付费」,不是不花钱</b> —— 而按我们的量,它比自己一台机器贵约 17 倍。</td>
+    </tr>
+    <tr>
+      <td><b>「免 Docker」</b></td>
+      <td><b style="color:#96590a">⚠️ 一半错</b></td>
+      <td>免的是<b>自己运维 Docker 主机</b>,<b>不免 Dockerfile</b>。官网原话:「<span class="en">Docker or a Docker-compatible CLI tool <b>must be running</b> for Wrangler to build and push images. This is not necessary if you are using a pre-built image.</span>」⇒ 除非直接用现成镜像,否则本地仍需要 Docker 才能构建。</td>
+    </tr>
+  </table>
+  </div>
+  <div class="src">来源 <code>developers.cloudflare.com/containers/image-management/</code> · 抓取 2026-08-10</div>
+</div>
+
+<div class="card purple">
+  <h3>你看到的那个标题「Its Fast Lane Isn't Free」说的是什么</h3>
+  <p>它说的<b>不是 Cloudflare Containers</b>,而是 <b><code>@cloudflare/computer</code></b> —— 也就是那条小红书帖的原主角。</p>
+  <p><b>出处</b>:<code>aifounders.cz</code>,发布日期 <b>2026-08-07</b>。⚠️ <b>这是第三方博客,不是 Cloudflare 官方</b> —— 以下是该文的说法,不是官网证据。</p>
+  <ul>
+    <li>代码是 <b>MIT 开源、免费</b>;</li>
+    <li>但三个执行后端里被当成「快速默认」的那个(isolate-shell 模式)<b>只跑在付费的 Dynamic Workers 上</b>,按每个 worker、每百万请求、每百万 CPU 毫秒计费 ——「change a byte and the meter resets」;</li>
+    <li>该文同时说:<b>container 模式走的是常规容器计费</b>,不需要 Dynamic Workers。</li>
+  </ul>
+  <p><b>⇒ 那个标题和那条小红书帖说的是同一件事的两面,而且都不假</b> —— 代码开源免费是真的,跑起来要钱也是真的。<b>对我们没有矛盾</b>:我们要的是 container 模式(跑终端 + Claude),它本来就走常规容器计费,跟 fast lane 那条无关。</p>
+  <p style="margin:0"><b>⚠️ 但请注意:<code>@cloudflare/computer</code> 本身这一单没有评估。</b>本单评估的是 Cloudflare Containers。上面这段只是为了回答「那条帖子说的免费到底是什么」,<b>不构成对 <code>@cloudflare/computer</code> 的任何判断</b>。</p>
+</div>
+
+<div class="card gray">
+  <h3>(3) 按我们真实形态估月成本</h3>
+  <p style="margin:0">峰值约 27 并发、单个 4–13 小时 —— 下面四张卡。</p>
+</div>
+
+<div class="card amber">
+  <h3>我们该选哪一档</h3>
+  <p><span class="badge b-measured">实测</span> 这台机器上现在活着的 Claude 进程,每个占 <b>0.41–0.56 GB</b>(12 个采样)。FLY-1005 记的是每个 Runner 约 <b>1.3–1.4 GB</b> —— 两个数不矛盾:前者只是命令行工具本身,后者是整个 Runner(还要跑装依赖、编译、跑测试,那才是内存大头)。</p>
+  <p style="margin:0">⇒ 最小的那几档装不下我们这个仓。现实档位是 <b>standard-2</b>(6 GiB / 1 CPU)或 <b>standard-3</b>(8 GiB / 2 CPU)。<span class="badge b-infer">推断</span> —— 没在 Cloudflare 上实跑验证过。</p>
+</div>
+
+<div class="card blue">
+  <h3>每个 Runner 每小时多少钱</h3>
+  <div class="tblwrap">
+  <table>
+    <tr><th>档位</th><th>固定部分<br><span style="font-weight:400;text-transform:none">(内存+磁盘)</span></th><th>CPU 忙 15%</th><th>CPU 忙 30%</th><th>CPU 忙 100%</th></tr>
+    <tr class="hi"><td><b>standard-2</b><br><span style="color:#86868b;font-size:13px">6 GiB / 1 CPU</span></td><td class="num">$0.057/时</td><td class="num"><b>$0.068/时</b></td><td class="num"><b>$0.079/时</b></td><td class="num">$0.129/时</td></tr>
+    <tr><td><b>standard-3</b><br><span style="color:#86868b;font-size:13px">8 GiB / 2 CPU</span></td><td class="num">$0.076/时</td><td class="num"><b>$0.098/时</b></td><td class="num"><b>$0.119/时</b></td><td class="num">$0.220/时</td></tr>
+  </table>
+  </div>
+  <p style="margin:10px 0 0"><b>CPU 忙的比例是我给的假设参数</b>(agent 大量时间在等模型返回、等你回话,不在烧 CPU)。真实值只能实跑测 —— 三档都列出来,是为了让你看到区间,而不是一个假精确的单点。</p>
+</div>
+
+<div class="card amber">
+  <h3>按我们真实并发,一个月多少钱</h3>
+  <p>你给的生产数据:近 21 天峰值 <b>27</b>;408 个采样时刻里 340 个 ≥5、192 个 ≥10。<span class="badge b-infer">推断</span> 从这三个点能<b>夹出</b>平均并发在 <b>6.5 – 16.6</b> 之间。所以按 7 / 12 / 27 三档算(27 = 一直顶在峰值的最坏情况)。</p>
+  <div class="tblwrap">
+  <table>
+    <tr><th>平均并发</th><th>每月 Runner·小时</th><th>standard-2</th><th>standard-3</th></tr>
+    <tr><td>7</td><td class="num">5,110</td><td class="num"><b>≈ $402</b></td><td class="num">≈ $609</td></tr>
+    <tr class="hi"><td>12</td><td class="num">8,760</td><td class="num"><b>≈ $689</b></td><td class="num">≈ $1,044</td></tr>
+    <tr><td>27(一直顶峰)</td><td class="num">19,710</td><td class="num"><b>≈ $1,549</b></td><td class="num">≈ $2,349</td></tr>
+  </table>
+  </div>
+  <p style="margin:10px 0 0">免费额度基本可忽略:25 GiB·小时内存,在 6 GiB 的实例上只够跑约 4 小时。</p>
+  <div class="src"><span class="badge b-infer">推断</span> 单价来自厂商价目表,并发口径用你在 issue 里给的数(你自己标注了这个口径会高估,当上界看)。</div>
+</div>
+
+<div class="card red">
+  <h3>跟自己买机器比:盈亏平衡点在哪</h3>
+  <p>机器的成本是<b>固定的</b>(用不用都在),云是<b>按用量的</b>。所以平衡点可以写成一个公式,你代入自己真实的机器价就行:</p>
+  <pre><code>盈亏平衡(Runner·小时/月) = (机器价 ÷ 摊销月数 + 每月电费) ÷ 云上每 Runner·小时单价</code></pre>
+  <p>代入一组<b>假设</b>参数(不是报价):机器 $2,000、摊 36 个月、电费约 $13/月 → 固定成本约 <b>$68.6/月</b>。对 standard-2($0.079/时):</p>
+  <div class="big" style="margin:14px 0 8px">
+    <div class="stat" style="flex:1 1 260px">
+      <div class="k">盈亏平衡点</div>
+      <div class="v v-red">1.2 个并发</div>
+      <div class="n2">只要你持续跑得动 <b>约 1.2 个以上</b>的并发 Runner,一台自己的机器就已经比云便宜了。我们实测平均并发是 <b>6.5–16.6</b>。</div>
+    </div>
+    <div class="stat" style="flex:1 1 260px">
+      <div class="k">单位成本差距</div>
+      <div class="v v-red">约 17 倍</div>
+      <div class="n2">一台 64 GB 机器若能装约 20 个 Runner 槽位 → 每槽位约 <b>$3.4/月</b>;Cloudflare 每槽位约 <b>$57.4/月</b>。</div>
+    </div>
+  </div>
+  <p style="margin:8px 0 0"><b>内存装得下吗:</b>12 并发约 17 GB,峰值 27 约 38 GB —— <b>一台 64 GB 的机器基本覆盖当前峰值</b>。(FLY-517 那次装不下,是因为机器只有 16 GB,不是「必须上云」。)⚠️ 这只算了<b>内存</b>装不装得下,没算 CPU、IO 和下面那条拥塞成本 —— <b>「装得下」不等于「跑得动 27 个还不降级」</b>。</p>
+</div>
+
+<div class="card amber">
+  <h3>⚠️ 这个「17 倍」里藏着一个假设 —— 必须说出来</h3>
+  <p><b>它默认那台物理机能「免费吸收」全部并发。</b></p>
+  <p>注意上面两个数的口径其实不同:平衡点写的是 <b>1.2 并发</b>,而 17 倍用的是「一台机器装 20 个槽位」。<b>如果一台机器真的只能扛 1.2 个并发,那 27 并发就需要二十几台</b> —— 物理侧成本会跟着涨上去,17 倍就不成立了。</p>
+  <p><b>而且我们有反例,说明那台机器并不是免费吸收的:</b></p>
+  <ul>
+    <li><b>1M context 的 runner 曾经把内存吃爆</b>(swap 耗尽),所以 1M 被改成<b>显式手动开启</b>;</li>
+    <li><b>高 load 时段是 chrome 断连等故障的复发温床</b>。</li>
+  </ul>
+  <p>这两条都说明:<b>物理机的并发是有拥塞成本的,不是免费的。</b></p>
+  <p style="margin:0"><b>⇒ 所以 17 倍是「忽略物理机拥塞成本」前提下的<u>上界</u>比值。</b>把机器的拥塞/降级成本算进去之后,<b>真实倍数会低于 17 倍,但方向不变 —— 云仍然更贵</b>。精确倍数需要「单台机器真实能扛多少并发」的数据,<b>这一单没有,也没有去测</b>。</p>
+  <div class="src">这两条反例由 Honey Lemon 提供(2026-08-10),<b>本单未独立核实</b>。</div>
+</div>
+
+<div class="card purple">
+  <h3>一个结构性的计费错配 —— 精准命中我们的形态</h3>
+  <p><b>内存是按「已分配」计费的,不看 CPU 忙不忙。</b>而我们的 Runner 有一大段时间是<b>停在门口等你回复</b> —— 那段时间几乎不用 CPU,但内存一直被占着、一直在计费。一个 Runner 在门口等 10 小时,光内存就是约 <b>$0.54</b>,而它什么都没干。</p>
+  <p style="margin:12px 0 8px"><b>这不是一般性缺点,是精准命中我们形态的一条。</b></p>
+  <div style="background:rgba(175,82,222,.07);border-left:3px solid var(--purple);border-radius:0 8px 8px 0;padding:14px 16px;margin:0 0 12px;font-size:14px;line-height:1.7">
+    <p style="margin:0 0 8px"><b>等待占比约 24%</b>(Honey Lemon 实测,本单未独立复核)。</p>
+    <p style="margin:0 0 8px"><b>口径</b>:完成单中 founder_gate 处于打开状态的时长 ÷ 整单跨度;仅统计 gate 已正常关闭的单,<b>n=5</b>(span 603 分钟 / 节点工作 459 分钟 / founder gate 144 分钟)。</p>
+    <p style="margin:0 0 8px">⚠️ 此数早前有一版「67% 在等」是错的,<b>已公开撤回</b>。错因:原查询对未关闭的 gate 用了「算到现在」,而 9 个完成单里有 5 个 gate 从未关闭 —— 等待时长被虚高约 3 倍。现值为修正后的版本。</p>
+    <p style="margin:0">⚠️ <b>n=5 样本很小,只能作方向性判断,不要当精确值使用。</b>真实占比可能在此上下浮动;本单未重新测量。</p>
+  </div>
+  <p style="margin:0 0 12px"><b>这段等待时间在自己的机器上是免费的,在容器上按内存计费</b> —— 这是我们这种「要等人拍板」的形态<b>特有的成本放大</b>,一个纯自动化的 CI 负载不会有这一条。</p>
+  <p><b>能不能让它先睡过去省钱?不改架构的话不能。</b>因为 Cloudflare 明确写着:磁盘是临时的,<b>睡醒之后拿到的是一块全新的、按镜像重建的磁盘</b>。</p>
+  <p style="margin:0">⇒ <b>睡一觉 = 工作区和终端会话全没了。</b>一个做到一半的 issue 不能靠睡觉省钱。要绕开只能改形态(等门之前先提交推送、等完之后重建容器重进会话)—— 那是一个真实的产品/工程决定,不是一个配置开关。<b>这也是为什么上面那个月成本估算,是下不去的。</b></p>
+  <div class="src"><span class="badge b-vendor">厂商自报</span> Containers FAQ:「All disk is ephemeral」/「when it goes to sleep, the next time it is started, it will have a fresh disk」。</div>
+</div>
+
+<!-- ============ ③ ============ -->
+<div class="section-title"><span class="n">问题 ③</span> 出问题时能不能马上点进去看</div>
+<p class="section-lede">你的要求很具体:不需要一直显示,只要出问题时有一条<b>成熟、随时可用的命令</b>点进去看它在跑什么。</p>
+
+<div class="card green">
+  <h3>Cloudflare 有,而且是官方一等公民</h3>
+  <p class="answer"><span class="tag t-good">已解决</span>自 2026-05-12 起<b>默认开启</b>,不需要额外配置。</p>
+  <pre><code>wrangler containers instances          # 列出正在跑的容器,拿到实例 ID
+wrangler containers ssh &lt;实例ID&gt;       # 开一个交互终端
+wrangler containers ssh &lt;实例ID&gt; -- tmux attach -t &lt;会话名&gt;   # ← 你要的那一条</code></pre>
+  <p>也可以当成标准 SSH 的跳板用,直接接进你惯用的 SSH 客户端。</p>
+  <p style="margin:0"><b>这跟 FLY-624 当初设计的那条命令是同一个形状</b> —— 只是寻址从「哪台机器」换成「哪个容器实例」。所以 <b>FLY-624 的设计不需要推翻</b>,只要在「位置标识」那一栏留一个既能装机器名、也能装容器 ID 的抽象。Tailscale 那层在纯 Cloudflare 路径上不需要;混合形态(自有机器 + 云节点)则两种寻址都要支持。</p>
+  <div class="src"><span class="badge b-vendor">厂商自报</span> Cloudflare Containers SSH 文档 + wrangler 命令参考 + 三条 changelog(2026-03-12 支持 / 2026-05-12 默认开启 / 2026-05-28 支持 ProxyCommand)。</div>
+</div>
+
+<div class="card amber">
+  <h3>限制(得知道)</h3>
+  <ul>
+    <li><b style="color:#1c7a3a">好的一面:</b>不开公网端口 —— 唯一入口是经 Cloudflare 账号鉴权的官方命令行工具。这比裸开 SSH 端口安全。</li>
+    <li><b>容器必须还活着才能点进去。</b>官方明说 SSH 不会把停掉的容器叫醒,而且「光有一个 SSH 连接<b>不足以</b>让容器保持存活」。⇒ <b>已经睡掉的 Runner,你点不进去看。</b></li>
+    <li>只支持一种密钥类型(ed25519),公钥要提前写进容器配置。</li>
+    <li><b>谁能进:</b>任何对该容器有写权限的 Cloudflare 账号身份 —— 见上面「爆炸半径」那段。</li>
+    <li><b>日志侧比 SSH 弱不少:</b>容器的输出自动汇进 Cloudflare 日志目前<b>还是一个待做的功能请求,不是已发布能力</b>;<code>wrangler containers</code> 也还没有 <code>logs</code> / <code>stop</code> / <code>start</code> 这些子命令(同样是 open issue)。日志保留期:付费版 7 天。</li>
+  </ul>
+</div>
+
+<div class="card gray">
+  <h3>顺带核实了你在 issue 里已经写的三条 —— 全部为真</h3>
+  <dl class="kv">
+    <dt>无硬性运行时长上限</dt><dd>✅ 官方原话:不会在跑到某个时长后主动关掉你的容器。但<b>宿主机重启是不定期的,不承诺任何在线时长</b>。</dd>
+    <dt>关闭序列</dt><dd>✅ 先 SIGTERM,15 分钟后 SIGKILL。</dd>
+    <dt>冷启动</dt><dd>⚠️ 官方说「通常 1–3 秒,取决于镜像大小」。<b>但我们的镜像要装一整套工具链,而且磁盘是临时的 —— 每次还得重新 clone 仓库、装依赖。那不是秒级。</b>这条<b>没验证过</b>。</dd>
+  </dl>
+</div>
+
+<!-- ============ 没覆盖 ============ -->
+<div class="section-title"><span class="n">边界</span> 这一单没覆盖什么</div>
+<p class="section-lede">写清楚,免得被当成已验证。</p>
+
+<div class="card red">
+  <ul style="margin-bottom:0">
+    <li><b>零动手验证。</b>没有 Cloudflare 账号、没部署过、没真跑过一个 Runner 容器。<b>所有 Cloudflare 结论都是读文档推出来的。</b>要往前走,第一件事应该是一个小实验:真起一个容器,跑通命令行工具 + 终端 + 那条 SSH。</li>
+    <li><b>冷启动真实数字没测</b> —— 加上 clone 仓库和装依赖之后到底多久,未知。</li>
+    <li><b>Claude 命令行工具在 Cloudflare 的容器运行时下能不能正常跑,没验证</b> —— 尤其是交互式终端界面这一块。</li>
+    <li><b>三张官网价目表已抄录,但月成本只算了容器那一张。</b>Workers 请求、Durable Objects(尤其是「醒着但闲着」的时长)、日志都另计费,<b>没有按我们的形态建模</b> —— 所以上面那个月成本是<b>下界,不是全额账单</b>。入网算不算钱查不到。</li>
+    <li><b>物理机对照用的是假设参数,不是报价</b> —— 给的是公式,数字要代入真实机器价重算。</li>
+    <li><b>CPU 忙的比例是假设</b>,不是实测 —— 这是月成本估算里最大的不确定项之一。</li>
+    <li><b>Secrets Store 的权限模型 / 轮换 / 审计日志查不到。</b></li>
+    <li><b>没有横向比其它云</b>(AWS、Fly.io、Google 等)。本单只回答「Cloudflare 容器这一个具体底座」,不回答「云里哪家最好」。</li>
+    <li><b>没重做 FLY-1005 的多机架构</b>(Bridge 怎么暴露和鉴权、跨机唤醒、温池、按用途分池)。那些在云上一条不少,<b>成本和复杂度都不在上面的数字里</b>。</li>
+    <li><b>没评估 Lead 上云</b> —— FLY-555 已定不上,本单不重开。</li>
+    <li><b>并发数据没重查生产库</b>,直接用了你在 issue 里给的三个数和你自己标的高估口径。</li>
+    <li>顺带记一笔:Cloudflare 另有一个 <b>Sandbox SDK</b>(建在容器之上、专门给 AI agent 跑代码用,带 WebSocket 终端),<b>目前是 preview,本单没深入评估</b> —— 列在这里免得漏掉。</li>
+  </ul>
+</div>
+
+<div class="foot">
+  FLY-1688 · 研究页(不含结论/建议)· 2026-08-10 · 完整过程文档见分支
+  <code>product/doc/FLY-1688-cloudflare-containers-runner/</code>(exploration.md + research.md)。<br>
+  上游:FLY-555(先物理机的原判断)· FLY-1005(多机方案,已完成)· FLY-624(远程看终端)· FLY-1072 / FLY-517(并发天花板 / 内存事故)
+</div>
+
+</div>
+</body>
+</html>
