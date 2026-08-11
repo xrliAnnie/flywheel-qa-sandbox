@@ -386,7 +386,8 @@ fi
 default_asset_files="$(env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; printf "%s\n" "$PO_PACKAGE_ASSET_FILES"' _ "$PO")"
 if grep -qx 'teamlead:scripts/lib/lead-identity-preflight.sh' <<<"$default_asset_files" \
     && grep -qx 'teamlead:scripts/lead-body.sh' <<<"$default_asset_files" \
-    && grep -qx 'teamlead:scripts/lib/lead-body-receipt.sh' <<<"$default_asset_files"; then
+    && grep -qx 'teamlead:scripts/lib/lead-body-receipt.sh' <<<"$default_asset_files" \
+    && env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "lib/lead-body-evidence.sh" <<<"$PO_SCRIPT_FILES"' _ "$PO"; then
   pass "X0 Lead v1/v2 body assets ship with the launcher runtime closure"
 else
   fail "X0 Lead launcher body assets missing from PO_PACKAGE_ASSET_FILES"

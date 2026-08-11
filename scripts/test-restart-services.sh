@@ -61,10 +61,12 @@ else
 
     clean_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 3 0 0 "" "" \
-      known "" ok 87 "17m03s" healthy "pid=222")
+      known "" ok 87 "17m03s" healthy "pid=222" 3 0 0)
     if [[ "$clean_message" == *"✅ Flywheel 全量重启完成"* ]] \
       && [[ "$clean_message" == *'版本: `1111111` → `2222222`'* ]] \
-      && [[ "$clean_message" == *"Lead: 3/3 重启成功"* ]] \
+      && [[ "$clean_message" == *"Lead: 3/3 supervisor 换代收敛"* ]] \
+      && [[ "$clean_message" == *"本体: 3 新建 / 0 接管(未换) / 0 未知"* ]] \
+      && [[ "$clean_message" != *"新本体已起、model 一致"* ]] \
       && [[ "$clean_message" == *"Bridge: healthy (/health 实测 87ms)"* ]] \
       && [[ "$clean_message" == *"cmux watcher: healthy"* ]] \
       && [[ "$clean_message" == *"总耗时: 17m03s"* ]]; then
@@ -75,9 +77,10 @@ else
 
     degraded_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 4 1 1 \
-      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s" healthy "pid=222")
+      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s" healthy "pid=222" 1 1 0)
     if [[ "$degraded_message" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
       && [[ "$degraded_message" == *"4 个里 2 个成功、1 个失败: flywheel-eng-lead、1 个跳过(无 manifest): growth-lead"* ]] \
+      && [[ "$degraded_message" == *"⚠️ 本体: 1 新建 / 1 接管(未换) / 0 未知"* ]] \
       && [[ "$degraded_message" == *"详情见 <#1518793447165661254>"* ]] \
       && [[ "$degraded_message" != *"完成"* ]] \
       && [[ "$degraded_message" != *"✅"* ]]; then
@@ -85,6 +88,12 @@ else
     else
         fail "FLY-1603 degraded payload is misleading: $degraded_message"
     fi
+
+    invalid_body_counts=$(rn_render_completion_message \
+      "1111111" "2222222" "deploy" 3 0 0 "" "" known "" ok 10 "2s" healthy "" 2 0 0)
+    [[ "$invalid_body_counts" == *"本体: 观测失败(未知)"* ]] \
+      && pass "FLY-1671 impossible body arithmetic degrades the observation line only" \
+      || fail "FLY-1671 impossible body arithmetic was rendered as fact: $invalid_body_counts"
 
     no_candidates=$(rn_render_completion_message \
       "" "2222222bbbbbbbb" "deploy" 0 0 0 "" "" known "" ok 10 "2s")
@@ -95,8 +104,9 @@ else
       || fail "FLY-1603 no-candidate output falsely claimed success: $no_candidates"
 
     unreadable_message=$(rn_render_completion_message \
-      "1111111" "2222222" "deploy" 0 0 0 "" "" unreadable "" fail - unknown)
+      "1111111" "2222222" "deploy" 0 0 0 "" "" unreadable "" fail - unknown healthy "" 0 0 0)
     [[ "$unreadable_message" == *"重启结果无法读取"* ]] \
+      && [[ "$unreadable_message" == *"本体: 观测失败(未知)"* ]] \
       && [[ "$unreadable_message" != *"波次未执行"* ]] \
       && [[ "$unreadable_message" != *"完成"* ]] \
       && pass "FLY-1603 unreadable results are distinct from an unexecuted wave" \
@@ -104,8 +114,9 @@ else
 
     wave_message=$(rn_render_completion_message \
       "1111111" "2222222" "deploy" 0 1 0 "" "" wave_not_run \
-      "清单收敛失败" ok 12 "8s")
+      "清单收敛失败" ok 12 "8s" healthy "" 0 0 0)
     [[ "$wave_message" == *"重启波次未执行(清单收敛失败),Lead 总数未知"* ]] \
+      && [[ "$wave_message" == *"本体: 观测失败(未知)"* ]] \
       && [[ "$wave_message" != *"重启结果无法读取"* ]] \
       && [[ "$wave_message" != *"完成"* ]] \
       && pass "FLY-1603 unexecuted waves preserve their explicit producer reason" \
@@ -331,6 +342,8 @@ rn_skip_result=$(bash -c '
   log() { :; }
   alert_warning() { :; }
   record_lead_restart_detail() { :; }
+  register_restart_transient_file() { :; }
+  record_successful_lead_body_observation() { :; }
   restart_lead() { printf "%s\n" "$1" >> "$calls"; }
   lead_restart_collect_candidates() {
     printf "test-slot-flywheel-test-1\ttest-slot\tflywheel-test-1\t-\tskip-test\tmanifest\n" > "$4"
@@ -340,6 +353,9 @@ rn_skip_result=$(bash -c '
   FLYWHEEL_DIR="$root/repo"
   TMPDIR="$root"
   LEAD_RESTART_NAMES_FILE="$root/names"
+  LEAD_BODY_OBSERVATIONS_FILE=""
+  VERIFIED_LEAD_PID=""
+  VERIFIED_LEAD_START=""
   do_restart_all_leads
 ' _ "$rn_restart_all_func" "$rn_skip_root" "$rn_skip_manifest" "$rn_skip_calls")
 if [[ "$rn_skip_result" == "skipped:0 failed:0 total:1" ]] \
@@ -1992,6 +2008,7 @@ bo_run() {
         RESTART_LEAD_QUIESCENCE_INTERVAL=0 \
         RESTART_LEAD_VERIFY_ATTEMPTS="${RESTART_LEAD_VERIFY_ATTEMPTS:-2}" \
         RESTART_LEAD_VERIFY_INTERVAL="${RESTART_LEAD_VERIFY_INTERVAL:-0}" \
+        LEAD_BODY_EVIDENCE_WAIT_SECONDS=0 \
         FLYWHEEL_RESTART_FOREGROUND=1 \
         bash "$BO_FLYWHEEL/scripts/restart-services.sh" "$@" 2>&1
 }
@@ -2295,7 +2312,8 @@ discord_calls=$(bo_calls discord)
 if (( rc == 0 )) \
    && echo "$discord_calls" | grep -q 'channels/1521630422918758472/messages' \
    && echo "$discord_calls" | grep -q '✅ Flywheel 全量重启完成' \
-   && echo "$discord_calls" | grep -q 'Lead: 1/1 重启成功' \
+   && echo "$discord_calls" | grep -q 'Lead: 1/1 supervisor 换代收敛' \
+   && echo "$discord_calls" | grep -q '本体: 0 新建 / 0 接管(未换) / 1 未知' \
    && echo "$discord_calls" | grep -q 'Bridge: healthy (/health 实测 87ms)' \
    && echo "$discord_calls" | grep -q '总耗时: 2m03s' \
    && echo "$discord_calls" | grep -q "${BO_HEAD_5:0:7}" \

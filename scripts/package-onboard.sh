@@ -117,6 +117,7 @@ lib/lead-restart-lifecycle.sh
 lib/lead-body-sweep.sh
 lib/tmux-server-rescue.sh
 lib/self-ship-queue.sh
+lib/lead-body-evidence.sh
 lib/bounded-run.sh
 packaged/create-compat-mirror.sh
 packaged/bootstrap-services.sh

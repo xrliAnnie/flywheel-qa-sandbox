@@ -182,6 +182,28 @@ else
   pass "T8b matching live checker contract allows ordinary future pulls"
 fi
 
+# ── T9: restart-only markers carry no PR/issue identity. They must still ack,
+#        but must never fabricate a deployment_events row. ───────────────────
+rm -rf "$SELF_SHIP_PENDING_DIR" "$SELF_SHIP_BLOCKED_DIR"; ssq_init_dirs
+ssq_enqueue "$SHA1" "" "restart-only" "" >/dev/null
+REPORT_CALLS="${TMP}/report.calls"; : > "$REPORT_CALLS"
+_orig_report="$(declare -f report_deployment)"
+report_deployment() { printf 'called\n' >> "$REPORT_CALLS"; return 0; }
+T9_LOG="${TMP}/t9.log"
+SELF_SHIP_DEPLOY_CMD=stub_deploy_ok process_due_markers >"$T9_LOG" 2>&1
+eval "$_orig_report"
+if [[ "$(ssq_pending_count)" == "0" ]]; then
+  pass "T9 restart-only marker is acked"
+else
+  fail "T9 restart-only marker remained pending"
+fi
+if [[ ! -s "$REPORT_CALLS" ]] \
+  && grep -q 'no PR/issue identity.*skipping deployment event; acking' "$T9_LOG"; then
+  pass "T9 restart-only marker emits zero deployment events with an audit log"
+else
+  fail "T9 restart-only marker polluted deployment reporting: calls=$(cat "$REPORT_CALLS") log=$(cat "$T9_LOG")"
+fi
+
 echo ""
 echo "update-flywheel-queue: PASSED=$PASSED FAILED=$FAILED"
 [[ "$FAILED" -eq 0 ]]

@@ -214,6 +214,40 @@ source "${FLYWHEEL_ROOT}/scripts/lib/tmux-server-rescue.sh"
 # FLY-1285: generation-bound Lead pane archive + duplicate-process takeover.
 # shellcheck source=lib/tmux-supervisor-guard.sh
 source "${SCRIPT_DIR}/lib/tmux-supervisor-guard.sh"
+# FLY-1671: optional body-provenance observation. The packaged and monorepo
+# roots both expose this path through FLYWHEEL_ROOT. A missing/corrupt library
+# must not affect Lead availability; restart reporting degrades to unknown.
+_LEAD_BODY_EVIDENCE_LIB="${FLYWHEEL_ROOT}/scripts/lib/lead-body-evidence.sh"
+if [ -f "$_LEAD_BODY_EVIDENCE_LIB" ]; then
+  # shellcheck source=../../../scripts/lib/lead-body-evidence.sh
+  if ! source "$_LEAD_BODY_EVIDENCE_LIB"; then
+    log "DEBUG: body evidence library could not be sourced; provenance will be unknown"
+  fi
+fi
+
+record_lead_body_evidence_best_effort() {
+  local provenance="${1:-}" body_pid="${2:-}" body_start="${3:-}"
+  local carrier_pid="" carrier_start=""
+  if [ "$#" -ge 4 ]; then
+    # v2 callers pass the captured tuple explicitly. Keep an invalid/empty
+    # handoff invalid so reporting becomes unknown instead of inventing a
+    # carrier identity from this body shell.
+    carrier_pid="${4:-}"
+    carrier_start="${5:-}"
+  else
+    # Legacy claude-lead.sh is itself the launchd carrier.
+    carrier_pid="$$"
+  fi
+  declare -F lbe_record >/dev/null 2>&1 || return 0
+  if [ "$#" -lt 4 ] && [ -z "$carrier_start" ]; then
+    carrier_start="$(tmux_supervisor_process_start_identity "$carrier_pid" 2>/dev/null || true)"
+  fi
+  if ! lbe_record "$PROJECT_NAME" "$LEAD_ID" "$provenance" \
+      "$body_pid" "$body_start" "$carrier_pid" "$carrier_start"; then
+    log "DEBUG: body provenance evidence write failed; restart reporting will use unknown"
+  fi
+  return 0
+}
 # FLY-1309: canonical Lead lease orchestration + exact argv preflight. Source it
 # after the tmux guard so the production guard can consume the shared matcher.
 # shellcheck source=lib/lead-identity-preflight.sh
@@ -1898,6 +1932,7 @@ _lead_try_adopt_body() {
   LEAD_WINDOW_ID="$a_window"
   TMUX_SERVER_PID="$a_server"
   LEAD_BODY_PROVENANCE=adopted
+  record_lead_body_evidence_best_effort adopted "$a_pane" "$a_start"
   log "Adopted existing Lead body PID ${a_pane} (window ${LEAD_WINDOW_ID}); resuming KeepAlive monitoring"
   return 0
 }
@@ -1920,6 +1955,12 @@ _lead_bound_body_ready() {
     && [ "$TMUX_ARCHIVE_PANE_START" = "$LEAD_LEASE_ORPHAN_HOLDER_START" ] \
     || return 3
   [ -n "${LEAD_BODY_PROVENANCE:-}" ] || LEAD_BODY_PROVENANCE=adopted
+  if command -v record_lead_body_evidence_best_effort >/dev/null 2>&1; then
+    record_lead_body_evidence_best_effort adopted \
+      "$LEAD_LEASE_ORPHAN_HOLDER_PID" "$LEAD_LEASE_ORPHAN_HOLDER_START" \
+      || true
+  fi
+  return 0
 }
 
 _lead_pending_file() {
@@ -2655,6 +2696,7 @@ EOF
   rm -f "$out_file" "$err_file" 2>/dev/null || true
   TMUX_SERVER_PID="$created_pid"
   LEAD_BODY_PROVENANCE=launched
+  record_lead_body_evidence_best_effort launched "$pane_pid" "$pane_start"
   return 0
 }
 
@@ -3103,6 +3145,12 @@ _launch_claude() {
 
     env -i "${child_env[@]}" claude "${launch_args[@]}" &
     CLAUDE_CHILD_PID=$!
+    local _v2_child_start=""
+    _v2_child_start="$(tmux_supervisor_process_start_identity "$CLAUDE_CHILD_PID" 2>/dev/null || true)"
+    record_lead_body_evidence_best_effort launched \
+      "$CLAUDE_CHILD_PID" "$_v2_child_start" \
+      "${_FLYWHEEL_LEAD_CARRIER_PID_CAPTURED:-}" \
+      "${_FLYWHEEL_LEAD_CARRIER_START_CAPTURED:-}"
     if wait "$CLAUDE_CHILD_PID"; then
       CLAUDE_EXIT=0
     else

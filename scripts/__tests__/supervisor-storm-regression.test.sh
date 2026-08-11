@@ -459,6 +459,9 @@ else
   eval "$CREATE_ARCHIVE_MATCH_SRC"
   eval "$CLEANUP_FAILED_SRC"
   eval "$CREATE_SRC"
+  # FLY-1671 provenance is observational and not part of this create/ledger
+  # state-machine harness.
+  record_lead_body_evidence_best_effort() { :; }
   CREATE_DIR="$(mktemp -d -t fly1659-create.XXXXXX)"
   mkdir -p "$CREATE_DIR/bin" "$CREATE_DIR/work"
   printf '%s\n' \

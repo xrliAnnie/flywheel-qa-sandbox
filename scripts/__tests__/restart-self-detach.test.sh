@@ -82,11 +82,11 @@ else
   fail "foreground escape hatch detached (parent=$parent_pgid child=$foreground_pgid output=$output)"
 fi
 
-if rg -q 'FLYWHEEL_RESTART_FOREGROUND=1 "\$\{SCRIPT_DIR\}/restart-services\.sh"' \
+if rg -q 'FLYWHEEL_RESTART_FOREGROUND=1 "\$\{SCRIPT_DIR\}/restart-services\.sh" --reason updater' \
   "$ROOT/scripts/update-flywheel.sh"; then
-  pass "updater explicitly preserves the restart exit-code contract"
+  pass "updater preserves restart exit-code contract and identifies itself in the report"
 else
-  fail "updater does not select synchronous restart execution"
+  fail "updater does not select synchronous restart execution with reason=updater"
 fi
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

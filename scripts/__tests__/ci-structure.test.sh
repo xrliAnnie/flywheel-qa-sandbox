@@ -336,6 +336,9 @@ for required_command in (
     "bash scripts/__tests__/supervisor-adoption.test.sh",
     "bash scripts/__tests__/supervisor-storm-regression.test.sh",
     "bash scripts/__tests__/restart-self-detach.test.sh",
+    "bash scripts/__tests__/lead-body-evidence.test.sh",
+    "bash scripts/__tests__/lead-body-provenance.test.sh",
+    "bash scripts/__tests__/request-restart.test.sh",
 ):
     require(
         sum(required_command in run for run in script_runs) == 1,

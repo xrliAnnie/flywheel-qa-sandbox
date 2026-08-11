@@ -56,6 +56,9 @@ _tmux_target_matches_archive() {
 }
 _lead_identity_conflict_excluding() { return "$FIXTURE_CONFLICT_RC"; }
 log() { :; }
+# FLY-1671 evidence is deliberately observational; these adoption unit tests
+# exercise the pre-existing state machine without requiring its sidecar writer.
+record_lead_body_evidence_best_effort() { :; }
 
 echo "[TEST] holder_orphaned adoption requires the exact frozen body tuple"
 _lead_try_adopt_body 4200 pane-start

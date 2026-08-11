@@ -6,9 +6,11 @@ Manual `launchctl kickstart` / kill+relaunch of the Bridge or a Lead daemon
 skips `pnpm build` (old code keeps running), skips the core-channel deploy
 broadcast (the founder's deploy audit trail breaks), and has no health-check
 rollback. Verbal promises and agent memory do not enforce behavior — this hook
-does, physically, at the Bash boundary. The one legitimate path is
-`scripts/restart-services.sh` (and the updater / self-ship flow), whose
-internal launchctl calls run in a child process the hook never sees.
+does, physically, at the Bash boundary. The default legitimate path is
+`scripts/request-restart.sh`, which enqueues the standalone updater; the
+updater's internal `restart-services.sh` / launchctl calls run in a child
+process the hook never sees. Direct `restart-services.sh` remains an explicit
+emergency path.
 
 Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
 
@@ -111,19 +113,20 @@ DENY_REASON = (
     "手动 kickstart / kill+重拉会:漏 pnpm build(重启后跑的还是旧代码)、"
     "漏 core 频道部署播报(founder 的部署审计断链)、没有健康检查回滚。\n"
     "正确做法:\n"
-    "  • 重启/部署 Bridge 或 Lead:bash ~/Dev/flywheel/scripts/restart-services.sh"
-    "(FLY-1224 默认不等 idle;--wait-idle 恢复等待;--dry-run 预览)\n"
+    "  • founder 拍板后的统一重启:bash ~/Dev/flywheel/scripts/request-restart.sh"
+    "(入队给独立 com.flywheel.updater;发起 Lead 也会换本体)\n"
     "  • 纯 env 改动(无代码 delta)要重启 Bridge:"
-    "bash ~/Dev/flywheel/scripts/restart-services.sh --reason env-change(FLY-1434)\n"
+    "仍走 request-restart.sh;先确保目标 main 已含配置(FLY-1434)\n"
     "  • self-ship:走既有 ship flow(flywheel-land / :cool: 部署),不要手动 kickstart。\n"
-    "  • 若 restart-services.sh 本身故障:报告 Lead/founder,由人工在裸终端处理。"
+    "  • 紧急兜底:仅在 updater/队列入口故障且 Lead/founder 明确知情时,"
+    "直跑 restart-services.sh 或由人工在裸终端处理。"
 )
 
 BYPASS_FAIL_REASON = (
     "🚫 Flywheel 部署护栏(FLY-913):bypass 记账失败,拒绝放行。\n"
     "bypass 的放行前置是「审计日志写入成功 + 告警确认送达/入队」缺一不可 —— "
     "本次未全部满足(告警通道或日志路径故障)。\n"
-    "请改用 bash ~/Dev/flywheel/scripts/restart-services.sh,"
+    "请改用 bash ~/Dev/flywheel/scripts/request-restart.sh,"
     "或先修复告警通道后重试;若仍被拦,报告 Lead/founder 人工处理。"
 )
 

@@ -665,6 +665,7 @@ update_project_shas() {
 # cannot leak per-run sidecars before the cleanup trap exists.
 PROJECT_SHA_UPDATES_FILE=""
 LEAD_RESTART_NAMES_FILE=""
+LEAD_BODY_OBSERVATIONS_FILE=""
 RESTART_TRANSIENT_FILES=""
 
 register_restart_transient_file() {
@@ -703,6 +704,70 @@ lead_restart_wave_error() {
     }
     awk -F '\t' '$1 == "wave_error" { print $2; exit }' \
         "$LEAD_RESTART_NAMES_FILE" 2>/dev/null || printf '\n'
+    return 0
+}
+
+record_successful_lead_body_observation() {
+    local key="${1:-}" project="${2:-}" lead="${3:-}"
+    local carrier_pid="${4:-}" carrier_start="${5:-}"
+    [[ -n "${LEAD_BODY_OBSERVATIONS_FILE:-}" ]] || return 0
+    case "$key$project$lead$carrier_start" in *$'\t'*|*$'\n'*) return 0 ;; esac
+    [[ "$carrier_pid" =~ ^[1-9][0-9]*$ && -n "$carrier_start" ]] || {
+        carrier_pid="-"
+        carrier_start="-"
+    }
+    { printf '%s\t%s\t%s\t%s\t%s\n' \
+        "$key" "$project" "$lead" "$carrier_pid" "$carrier_start" \
+        >> "$LEAD_BODY_OBSERVATIONS_FILE"; } 2>/dev/null || true
+    return 0
+}
+
+# Print: <launched-count> TAB <adopted-count> TAB <unknown-count>.
+# The optional wait is one total observation budget, never a per-Lead delay.
+summarize_lead_body_observations() {
+    local observations="${1:-}" wait_seconds="${LEAD_BODY_EVIDENCE_WAIT_SECONDS:-10}"
+    local deadline=0 now=0 unresolved=0 result="" provenance="" snapshot=""
+    local key project lead carrier_pid carrier_start
+    [[ -r "$observations" ]] || { printf '0\t0\t0\n'; return 0; }
+    [[ "$wait_seconds" =~ ^[0-9]+$ ]] || wait_seconds=10
+    (( wait_seconds <= 10 )) || wait_seconds=10
+    now="$(date +%s 2>/dev/null || printf '0')"
+    [[ "$now" =~ ^[0-9]+$ ]] || now=0
+    deadline=$((now + wait_seconds))
+    snapshot="$(mktemp "${TMPDIR:-/tmp}/flywheel-body-summary.XXXXXX" 2>/dev/null)" \
+      || { printf '0\t0\t0\n'; return 0; }
+
+    while :; do
+        : > "$snapshot"
+        unresolved=0
+        while IFS=$'\t' read -r key project lead carrier_pid carrier_start; do
+            [[ -n "$key" ]] || continue
+            provenance=""
+            if declare -F lbe_read_matching >/dev/null 2>&1; then
+                provenance="$(lbe_read_matching \
+                    "$project" "$lead" "$carrier_pid" "$carrier_start" 2>/dev/null || true)"
+            fi
+            case "$provenance" in
+              launched|adopted) printf '%s\n' "$provenance" >> "$snapshot" ;;
+              *) printf 'unknown\n' >> "$snapshot"; unresolved=$((unresolved + 1)) ;;
+            esac
+        done < "$observations"
+        (( unresolved == 0 || wait_seconds == 0 )) && break
+        now="$(date +%s 2>/dev/null || printf '%s' "$deadline")"
+        [[ "$now" =~ ^[0-9]+$ ]] || now="$deadline"
+        (( now >= deadline )) && break
+        sleep 1
+    done
+
+    result="$(awk '
+      $0 == "launched" { launched++ }
+      $0 == "adopted" { adopted++ }
+      $0 == "unknown" { unknown++ }
+      END { printf "%d\t%d\t%d", launched+0, adopted+0, unknown+0 }
+    ' "$snapshot" 2>/dev/null)"
+    rm -f "$snapshot" 2>/dev/null || true
+    [[ -n "$result" ]] || result=$'0\t0\t0'
+    printf '%s\n' "$result"
     return 0
 }
 
@@ -882,6 +947,12 @@ PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
 if ! LEAD_RESTART_NAMES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-results-XXXXXX"); then
     log "ERROR: cannot allocate Lead restart result sidecar; terminal message will report incomplete evidence"
     LEAD_RESTART_NAMES_FILE=""
+fi
+if LEAD_BODY_OBSERVATIONS_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-bodies-XXXXXX"); then
+    register_restart_transient_file "$LEAD_BODY_OBSERVATIONS_FILE"
+else
+    log "ERROR: cannot allocate Lead body observation sidecar; body provenance will be unknown"
+    LEAD_BODY_OBSERVATIONS_FILE=""
 fi
 
 # ════════════════════════════════════════════════════════════════
@@ -1216,6 +1287,13 @@ source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh"
 # shellcheck source=lib/lead-body-sweep.sh
 # shellcheck disable=SC1091
 source "${FLYWHEEL_DIR}/scripts/lib/lead-body-sweep.sh"
+# FLY-1671: optional provenance reader. Missing/corrupt evidence is unknown and
+# never changes the launchd carrier verdict established below.
+if [[ -f "${FLYWHEEL_DIR}/scripts/lib/lead-body-evidence.sh" ]]; then
+    # shellcheck source=lib/lead-body-evidence.sh
+    source "${FLYWHEEL_DIR}/scripts/lib/lead-body-evidence.sh" \
+      || log "DEBUG: body evidence library unavailable; provenance will be unknown"
+fi
 # FLY-1602 lifecycle helpers were sourced before global lock acquisition.
 
 # One Lead verdict: launchd has loaded a replacement supervisor tuple.
@@ -1300,6 +1378,9 @@ restart_lead_recover_job_after_failure() {
 # Args: <manifest_path>  (caller passes the manifest directly, no re-globbing)
 restart_lead() {
     local manifest="$1"
+
+    VERIFIED_LEAD_PID=""
+    VERIFIED_LEAD_START=""
 
     local lead_id project_dir project_name subdir bot_token_env workspace mcp_exclude chrome_enabled
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
@@ -1583,6 +1664,9 @@ do_restart_all_leads() {
     if [[ -n "${LEAD_RESTART_NAMES_FILE:-}" ]]; then
         { : > "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
     fi
+    if [[ -n "${LEAD_BODY_OBSERVATIONS_FILE:-}" ]]; then
+        { : > "$LEAD_BODY_OBSERVATIONS_FILE"; } 2>/dev/null || true
+    fi
 
     # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
     # a corrupted wrapper takes the fleet down (2026-07-06: 12-byte stub +
@@ -1677,6 +1761,9 @@ do_restart_all_leads() {
                 if (( rc != 0 )); then
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
+                else
+                    record_successful_lead_body_observation \
+                      "$key" "$pn" "$lid" "$VERIFIED_LEAD_PID" "$VERIFIED_LEAD_START"
                 fi
                 ;;
             manifestless)
@@ -2086,12 +2173,20 @@ deploy_and_verify() {
         duration_str=$(rn_format_duration "$((end_epoch - SCRIPT_START_EPOCH))")
     fi
 
+    local body_new=0 body_adopted=0 body_unknown=0 body_counts=""
+    if [[ "$lead_result_state" == "known" && "$leads_total" =~ ^[0-9]+$ \
+      && "$leads_failed" =~ ^[0-9]+$ && "$leads_skipped" =~ ^[0-9]+$ \
+      && -n "${LEAD_BODY_OBSERVATIONS_FILE:-}" ]]; then
+        body_counts=$(summarize_lead_body_observations "$LEAD_BODY_OBSERVATIONS_FILE")
+        IFS=$'\t' read -r body_new body_adopted body_unknown <<< "$body_counts" || true
+    fi
     local completion_msg=""
     completion_msg=$(rn_render_completion_message \
         "$DEPLOYED_SHA" "$CURRENT_HEAD" "$RESTART_REASON" \
         "$leads_total" "$leads_failed" "$leads_skipped" \
         "$failed_names" "$skipped_names" "$lead_result_state" "$lead_result_detail" \
         "$bridge_state" "$bridge_ms" "$duration_str" "$watcher_state" "$watcher_detail" \
+        "$body_new" "$body_adopted" "$body_unknown" \
         2>/dev/null) || completion_msg=""
     if [[ -z "$completion_msg" ]]; then
         completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。cmux watcher: ${watcher_state}。总耗时: ${duration_str}。"

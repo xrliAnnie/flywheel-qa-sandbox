@@ -1,0 +1,11 @@
+flowchart TB
+    A["👤 founder 拍板<br/>Lead 执行一条命令 request-restart.sh"] --> B["📮 往队列文件夹放一张『重启申请单』(marker 文件)"]
+    B --> C["⏰ macOS 系统服务 launchd 看到队列非空,自动拉起 updater"]
+    C --> D["🔄 updater 独立重启器<br/>不属于任何 Lead,站在被重启集合之外"]
+    D --> E["执行既有的全量重启脚本 restart-services.sh"]
+    E --> F["✅ Bridge + 15 个 Lead 全部换上新本体,无人被豁免"]
+    F --> G["🧾 申请单确认销账 + 给 founder 发播报(注明 reason=updater)"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style D fill:#e6f9ed,stroke:#34c759,stroke-width:3px
+    style F fill:#e6f9ed,stroke:#34c759
+    style G fill:#fff7e6,stroke:#ff9500

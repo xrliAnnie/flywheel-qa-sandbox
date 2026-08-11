@@ -10,6 +10,22 @@ MANIFEST="${1:?Usage: lead-body.sh <manifest-path>}"
 command -v jq >/dev/null 2>&1 || { echo '[lead-body] ERROR: jq is required' >&2; exit 1; }
 [ -f "$MANIFEST" ] || { echo "[lead-body] ERROR: manifest not found: $MANIFEST" >&2; exit 1; }
 
+# The v2 wrapper becomes the foreground tmux carrier via exec, so its PID/start
+# tuple is the identity restart-services verifies. Capture it before sourcing
+# the host .env: operator configuration may contain stale public variables and
+# must never rewrite this per-launch handoff. Malformed input degrades the
+# optional body observation to unknown; it never blocks Lead startup.
+_FLYWHEEL_LEAD_CARRIER_PID_CAPTURED=""
+_FLYWHEEL_LEAD_CARRIER_START_CAPTURED=""
+if [[ "${FLYWHEEL_LEAD_CARRIER_PID:-}" =~ ^[1-9][0-9]*$ ]] \
+  && [ -n "${FLYWHEEL_LEAD_CARRIER_START:-}" ] \
+  && [[ "$FLYWHEEL_LEAD_CARRIER_START" != *$'\t'* ]] \
+  && [[ "$FLYWHEEL_LEAD_CARRIER_START" != *$'\n'* ]]; then
+  _FLYWHEEL_LEAD_CARRIER_PID_CAPTURED="$FLYWHEEL_LEAD_CARRIER_PID"
+  _FLYWHEEL_LEAD_CARRIER_START_CAPTURED="$FLYWHEEL_LEAD_CARRIER_START"
+fi
+unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
+
 # Read launcher configuration into this body shell. Helper subprocesses used
 # during assembly retain the v1 launcher's exported configuration, while the
 # eventual Claude child still crosses claude-lead.sh's explicit env -i barrier.
@@ -23,6 +39,7 @@ if [ -f "$ENV_FILE" ]; then
   [ "$_v2_body_allexport_was_on" = true ] || set +a
   unset _v2_body_allexport_was_on
 fi
+unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
 
 LEAD_ID="$(jq -er '.leadId' "$MANIFEST")"
 PROJECT_DIR="$(jq -er '.projectDir' "$MANIFEST")"

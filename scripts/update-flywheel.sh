@@ -103,7 +103,7 @@ default_deploy() {
   if ! git -C "$FLYWHEEL_DIR" pull origin main --ff-only --quiet 2>/dev/null; then
     log "git pull --ff-only failed (transient: untracked collision / non-ff)"; return 2
   fi
-  if FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh"; then return 0; else
+  if FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater; then return 0; else
     log "restart-services.sh failed (deterministic)"; return 3
   fi
 }
@@ -165,7 +165,9 @@ process_due_markers() {
       mtarget="$(ssq_marker_field "$f" targetSha)"
       mpr="$(ssq_marker_field "$f" prNumber)"
       missue="$(ssq_marker_field "$f" issueIdentifier)"
-      if ! report_deployment "$missue" "$mpr" "$mtarget" "$deployed"; then
+      if [[ -z "$missue" && -z "$mpr" ]]; then
+        log "marker $(basename "$f") has no PR/issue identity — restart-only marker, skipping deployment event; acking"
+      elif ! report_deployment "$missue" "$mpr" "$mtarget" "$deployed"; then
         log "marker $(basename "$f") satisfied; deployment-event report not durable (best-effort — digest event may be delayed/lost). Acking anyway; self-ship deploy must not wedge."
       fi
       ssq_delete_ack "$f"

@@ -176,6 +176,23 @@ done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
 OS_USER="$(/usr/bin/id -un 2>/dev/null)" \
   || fatal "Unable to resolve the launchd job's OS user"
 [ -n "$OS_USER" ] || fatal "Resolved OS user is empty"
+LEAD_CARRIER_PS_BIN="${FLYWHEEL_LEAD_V2_PS_BIN:-/bin/ps}"
+CARRIER_START=""
+CARRIER_PROBE_ERROR=""
+if [ ! -x "$LEAD_CARRIER_PS_BIN" ]; then
+  CARRIER_PROBE_ERROR="probe is not executable: $LEAD_CARRIER_PS_BIN"
+elif ! CARRIER_START="$(LC_ALL=C "$LEAD_CARRIER_PS_BIN" -p "$$" -o lstart= 2>/dev/null \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"; then
+  CARRIER_PROBE_ERROR="ps command failed"
+elif [ -z "$CARRIER_START" ]; then
+  CARRIER_PROBE_ERROR="start identity was empty"
+elif [[ "$CARRIER_START" == *$'\t'* || "$CARRIER_START" == *$'\n'* ]]; then
+  CARRIER_PROBE_ERROR="start identity was malformed"
+fi
+if [ -n "$CARRIER_PROBE_ERROR" ]; then
+  log "WARNING: carrier identity probe unavailable ($CARRIER_PROBE_ERROR); body provenance will be reported as unknown"
+  CARRIER_START=""
+fi
 SERVER_ENV+=(
   "HOME=$HOME"
   "USER=$OS_USER"
@@ -188,6 +205,12 @@ SERVER_ENV+=(
   "FLYWHEEL_LEAD_ID=$LEAD_ID"
   "FLYWHEEL_LEAD_CARRIER=v2"
 )
+if [ -n "$CARRIER_START" ]; then
+  SERVER_ENV+=(
+    "FLYWHEEL_LEAD_CARRIER_PID=$$"
+    "FLYWHEEL_LEAD_CARRIER_START=$CARRIER_START"
+  )
+fi
 for name in TMPDIR LANG LC_ALL LC_CTYPE CLAUDE_CONFIG_DIR; do
   [ -z "${!name:-}" ] || SERVER_ENV+=("$name=${!name}")
 done

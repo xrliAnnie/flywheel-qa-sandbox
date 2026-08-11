@@ -405,6 +405,15 @@ jobs:
           bash scripts/__tests__/supervisor-adoption.test.sh
           bash scripts/__tests__/supervisor-storm-regression.test.sh
 
+      # FLY-1671: manual restarts enter through the standalone updater, and
+      # restart reporting distinguishes a newly launched Lead body from an
+      # adopted pre-existing one without changing the restart verdict.
+      - name: Test — FLY-1671 updater trigger + body provenance contracts
+        run: |
+          bash scripts/__tests__/lead-body-evidence.test.sh
+          bash scripts/__tests__/lead-body-provenance.test.sh
+          bash scripts/__tests__/request-restart.test.sh
+
       # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
       # npm install --prefix (registry fetch for the dependency union) →
       # compat mirror → bare-import matrix → better-sqlite3 native load →

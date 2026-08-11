@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1671 设计:给系统装一个「外部重启按钮」</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    line-height: 1.7; padding: 32px 16px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .section { margin-bottom: 30px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px;
+  }
+  .card.blue   { border-left: 4px solid #007aff; }
+  .card.green  { border-left: 4px solid #34c759; }
+  .card.red    { border-left: 4px solid #ff3b30; }
+  .card.amber  { border-left: 4px solid #ff9500; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.gray   { border-left: 4px solid #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; }
+  .card ul, .card ol { padding-left: 20px; margin: 6px 0; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; }
+  .term { border-bottom: 1px dotted #af52de; }
+  .plain { color: #6e6e73; font-size: 13px; }
+  .diagram-box {
+    background: #fff; border-radius: 12px; padding: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px;
+    overflow-x: auto;
+  }
+  .diagram-box svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; text-align: left; }
+  th { background: #f5f5f7; color: #1a365d; }
+  code, .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px; background: #f5f5f7; padding: 1px 5px; border-radius: 4px; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 8px;
+    border-radius: 10px; margin-right: 6px; vertical-align: middle;
+  }
+  .badge.ok    { background: #e6f9ed; color: #1d804b; }
+  .badge.warn  { background: #fff3e0; color: #b45f06; }
+  .badge.bad   { background: #ffe8e6; color: #c92a1f; }
+  .badge.info  { background: #e8f0fe; color: #1a56b0; }
+  .comment-block { margin: 4px 0 0 0; }
+  .comment-block textarea {
+    width: 100%; min-height: 56px; border: 1px dashed #c7c7cc; border-radius: 8px;
+    padding: 10px 12px; font-family: inherit; font-size: 13px; color: #1d1d1f;
+    background: #fbfbfd; resize: vertical;
+  }
+  .comment-block textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .comment-block .hint { font-size: 11px; color: #aeaeb2; margin-top: 2px; }
+  #comment-summary .item { margin-bottom: 10px; }
+  #comment-summary .item .sec { font-weight: 700; font-size: 13px; color: #1a365d; }
+  #comment-summary .item .txt { font-size: 13px; white-space: pre-wrap; }
+  #copy-all {
+    background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px;
+  }
+  #copy-all:active { opacity: 0.7; }
+  #copy-status { font-size: 12px; color: #34c759; margin-left: 10px; }
+  .quote { border-left: 3px solid #af52de; padding: 4px 12px; color: #48484a; font-size: 13.5px; background: #faf7fd; border-radius: 0 8px 8px 0; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>给系统装一个「外部重启按钮」</h1>
+<div class="meta">FLY-1671 · 设计文档(founder 版) · 2026-08-11 · 设计已过 Codex 独立评审 3 轮 APPROVED · 仓库路径 <code>engineering/doc/FLY-1671-manual-restart-trigger/</code></div>
+
+<!-- ═══════════ 1 ═══════════ -->
+<div class="section" data-title="1 一句话总结">
+  <div class="section-title">1 · 一句话总结</div>
+  <div class="card blue">
+    <p class="lede">你说得对:独立重启器早就有了。我们只给它加一个「手动按钮」—— 以后统一重启由它执行,它自己不在被重启的名单里,所以 15 个 Lead 全部都会被换上新本体,不再有那个「永远换不掉自己的发起者」。</p>
+    <p style="margin-top:8px">整个方案<strong>几乎不写新机制</strong>:排队、监听、执行、失败重试、告警,全部复用现成的(FLY-270 造好的那套)。新增的只有:①一个几十行的申请脚本;②重启报告里加一行「本体新建了几个 / 被接管了几个」的诚实账。</p>
+  </div>
+  <div class="comment-block"><textarea data-sec="1 一句话总结" placeholder="对这一节留言……(自动保存)"></textarea><div class="hint">留言自动保存在本机浏览器,页尾可一键复制全部</div></div>
+</div>
+
+<!-- ═══════════ 2 ═══════════ -->
+<div class="section" data-title="2 背景:8月10日发生了什么">
+  <div class="section-title">2 · 背景:8月10日发生了什么</div>
+  <div class="card red">
+    <h3>实测:发起重启的那个 Lead,自己的本体没换</h3>
+    <p class="plain">「本体」= Lead 真正在干活的那个 AI 进程;「换本体」= 杀掉旧进程、用新代码起一个新的。</p>
+    <table>
+      <tr><th>Lead</th><th>本体启动时间</th><th>判定</th></tr>
+      <tr><td>其他 14 个生产 Lead</td><td>8月10日 08:48(重启当刻)</td><td><span class="badge ok">✅ 新本体</span></td></tr>
+      <tr><td><strong>flywheel-eng-lead(发起者)</strong></td><td><strong>8月8日 16:16(两天前)</strong></td><td><span class="badge bad">⚠️ 唯一没换的</span></td></tr>
+    </table>
+    <p>而重启报告写的是「<strong>Lead: 15/15 重启成功</strong>」—— 从报告上完全看不出有一个没换。这次运气好(那批改动没动 Lead 规则文件),但那是运气不是机制。</p>
+  </div>
+  <div class="card purple">
+    <h3>为什么会这样(结构性矛盾,不是 bug)</h3>
+    <p>只要重启由舰队里的某个 Lead 发起,它就必须保护自己 —— 否则跑到一半把自己杀了,整场重启中断。你的两次批示把方向定死了:</p>
+    <div class="quote">「重启为什么要由某个实例去发起呢?……不应该让你去发起这个重启,不然你永远都没办法把自己给弄掉,我们的架构是有问题的。」</div>
+    <div class="quote">「独立重启器我们不是已经有了吗?」—— 查证属实:<code>com.flywheel.updater</code>(FLY-270)就是,不建新的,只补手动触发入口。</div>
+  </div>
+  <div class="comment-block"><textarea data-sec="2 背景" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 3 ═══════════ -->
+<div class="section" data-title="3 修法核心:发起者移到集合外">
+  <div class="section-title">3 · 修法核心:发起者移到集合外(前后对比)</div>
+  <div class="diagram-box">__SVG_D2__</div>
+  <div class="card green">
+    <p>关键洞察:<span class="term">updater</span><span class="plain">(独立重启器,一个不属于任何 Lead 的系统级小程序,由 macOS 的后台服务管家 launchd 托管)</span>发起全量重启,<strong>本来就是生产上反复走过的路</strong> —— 每次代码合并后的自动上线(self-ship)就是它干的。它重启的名单里没有它自己,所以谁都不用被豁免。缺的只有一件事:<strong>没有新代码合并时,没有任何入口能让它动手</strong>。本单就补这个入口。</p>
+  </div>
+  <div class="comment-block"><textarea data-sec="3 修法核心" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 4 ═══════════ -->
+<div class="section" data-title="4 手动重启的完整链路">
+  <div class="section-title">4 · 手动重启的完整链路</div>
+  <div class="diagram-box">__SVG_D1__</div>
+  <div class="card blue">
+    <h3>逐步说明</h3>
+    <ol>
+      <li>你拍板后,Lead 跑一条命令 <code>request-restart.sh</code>,它往一个约定的队列文件夹里放一张「申请单」<span class="plain">(一个小 JSON 文件,写着要收敛到的代码版本号)</span></li>
+      <li><span class="term">launchd</span><span class="plain">(macOS 自带的后台服务管家)</span>监听着这个文件夹,发现非空就自动拉起 updater —— 这个监听是系统级的,不依赖任何 Lead 活着</li>
+      <li>updater 拿到申请单,执行现成的全量重启脚本;因为它不在被重启名单里,15 个 Lead 一视同仁全部换新</li>
+      <li>重启完成、目标版本确认上线后,申请单销账删除;你会收到播报,注明 <code>reason=updater</code>(和 Lead 手跑的 <code>reason=manual</code> 区分开)</li>
+    </ol>
+    <p style="margin-top:6px"><strong>就算没有新代码</strong>,这条链也完整走通:重启脚本在「代码没变」时只是跳过编译,重启照做(已逐行核实)。</p>
+  </div>
+  <div class="comment-block"><textarea data-sec="4 完整链路" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 5 ═══════════ -->
+<div class="section" data-title="5 申请单的一生(数据模型)">
+  <div class="section-title">5 · 申请单的一生(数据/结构模型)</div>
+  <div class="diagram-box">__SVG_D3__</div>
+  <div class="card gray">
+    <h3>申请单长什么样(复用现有格式,零改动)</h3>
+    <p><code>~/.flywheel/self-ship-pending.d/&lt;版本号&gt;.&lt;随机码&gt;.json</code></p>
+    <p class="mono" style="display:block;padding:10px;margin-top:6px;white-space:pre-wrap">{ targetSha: 要收敛到的代码版本(40位指纹),
+  prNumber/issueIdentifier: 手动重启时留空(见第7节的账本保护),
+  attempts / nextAttemptAt: 失败重试的记账,
+  createdAt: 创建时间 }</p>
+    <p style="margin-top:6px">失败不会无限重试:临时故障(网络抖动)按 30 秒→翻倍退避;确定性故障(比如代码目录不干净)连续 5 次就把申请单移进「冻结区」并<strong>严重告警直达你</strong> —— 这些全是现成机制。</p>
+  </div>
+  <div class="card amber">
+    <h3>报告的新「本体」行(你提的最低要求)</h3>
+    <p>重启播报从此多一行诚实账,例如:</p>
+    <p style="margin:6px 0"><code>本体: 14 新建 / 1 未知</code> &nbsp;或出问题时&nbsp; <code>⚠️ 本体: 13 新建 / 1 接管(未换) / 1 未知</code></p>
+    <ul>
+      <li>数据来源:每个 Lead 的看管进程在起本体时,顺手写一张「出生证」<span class="plain">(记录这个本体是新建的还是接管的旧进程,以及是哪一代看管进程写的)</span>;重启脚本收尾时凭「代际精确对号」来统计,对不上号一律记「未知」,绝不虚报</li>
+      <li>顺带修掉一个旧假话:现在报告里那句「新本体已起、model 一致」其实没有任何证据支撑,这次改成只说核实过的事</li>
+      <li>这行只是「观测」,永远不影响重启成功/失败的判定(遵守 FLY-1634 你批过的简化原则)</li>
+    </ul>
+  </div>
+  <div class="comment-block"><textarea data-sec="5 数据模型" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 6 ═══════════ -->
+<div class="section" data-title="6 改动清单">
+  <div class="section-title">6 · 改动清单(7 项,大小心里有数)</div>
+  <div class="card blue">
+    <table>
+      <tr><th>#</th><th>改什么</th><th>体量</th></tr>
+      <tr><td>A</td><td>「出生证」读写小库(独立文件,可单独测试;打进安装包清单)</td><td>新文件 ~60 行</td></tr>
+      <tr><td>B</td><td>重启脚本记下每个成功 Lead 的代际凭证,收尾时对号统计</td><td>~50 行</td></tr>
+      <tr><td>C</td><td>播报:删旧假话 + 加「本体」行(带算术自检,对不上就整行降级「未知」)</td><td>~45 行</td></tr>
+      <tr><td>D</td><td>手动申请单不写进「部署账本」(防止把一次重启记成一个已上线的功能)</td><td>~10 行</td></tr>
+      <tr><td>E</td><td>申请脚本 request-restart.sh + 播报注明 reason=updater</td><td>新文件 ~70 行 + 1 行</td></tr>
+      <tr><td>F</td><td>护栏与文档:拦截手动乱重启的护栏文案改指向新入口;两份运维文档同步</td><td>文案级</td></tr>
+      <tr><td>G</td><td><strong>复活生产 updater</strong>(评审发现它当前根本没在运行,见第 8 节)</td><td>运维操作</td></tr>
+    </table>
+    <p class="plain">实施顺序讲究:先把「报告必须诚实」做实,再放出手动入口 —— 不发一个报告明知是盲的按钮。</p>
+  </div>
+  <div class="comment-block"><textarea data-sec="6 改动清单" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 7 ═══════════ -->
+<div class="section" data-title="7 关键取舍与被否掉的方案">
+  <div class="section-title">7 · 关键取舍与被否掉的方案</div>
+  <div class="card green">
+    <h3>选定:复用现有申请单格式,目标 = 线上主分支当前版本</h3>
+    <p>零新格式、零队列改动、失败处理全继承。语义上要向你讲清:<strong>手动重启 = 「收敛到主分支最新版 + 全量重启」</strong>。若恰好有已合并但未上线的代码,会顺带上线 —— 这是收敛,不是副作用。</p>
+  </div>
+  <div class="card gray">
+    <h3>否掉的三个方案(为什么)</h3>
+    <ul>
+      <li><strong>发明一种新申请单</strong>(不带版本号的「纯重启单」):现有校验会把它当垃圾清进冻结区;要支持就得改动整条经过多轮评审的失败处理链 —— 改动大、收益零</li>
+      <li><strong>直接踢一脚 updater</strong>(不放申请单):没有新代码时它会说「没事干」就退出,重启根本不会发生;而且没有留痕,撞上它正在忙就把意图弄丢了</li>
+      <li><strong>在旧架构上打补丁</strong>(重启末尾单独换发起者/换人发起/接管时比对版本):都没解决「发起者在名单里」这个结构矛盾,你已裁定不走</li>
+      <li><strong>给每张申请单单独归因重启原因</strong>:一次重启可以同时满足好几张单,归因不唯一;单据文件本身已留痕,不做</li>
+    </ul>
+  </div>
+  <div class="comment-block"><textarea data-sec="7 取舍" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 8 ═══════════ -->
+<div class="section" data-title="8 评审过程的两个重大发现">
+  <div class="section-title">8 · 评审过程的两个重大发现(Codex 3 轮,15 项反馈全折入)</div>
+  <div class="card red">
+    <h3>发现一:生产机上的 updater 现在根本没在运行 🚨</h3>
+    <p>独立评审实测:updater 的系统服务<strong>当前未挂载</strong>,而且机器上装的还是 7 月 5 日的旧配置 —— <strong>连队列监听功能都没有</strong>。这意味着:不光手动按钮没法用,<strong>现在每次代码合并后的自动上线申请单其实也在原地腐烂</strong>(靠每天两次的定时兜底在顶着)。方案里已加入「复活 updater」步骤(改动 G):装回仓库里的正确配置、挂载、验证监听生效 —— 这是恢复既有件,不是建新件,会在你拍板的运维窗口执行。</p>
+  </div>
+  <div class="card amber">
+    <h3>发现二:「出生证」最初的对号方式是错的</h3>
+    <p>我第一稿想让本体自己报自己的进程号来对号,评审逐层核实了进程结构后指出:看管进程和本体是两个不同进程,那样对号 14 个 Lead 会<strong>全部对不上、全记「未知」</strong> —— 报告行直接变盲。已改为:看管进程把自己的「身份凭证」显式传给本体,出生证只认传下来的凭证(并有测试证明配置文件覆盖不了它)。</p>
+    <p class="plain" style="margin-top:6px">这两个发现正是设计评审的价值:两处如果直接开工,一处让验收假绿,一处让新按钮第一次按下去就失败。</p>
+  </div>
+  <div class="comment-block"><textarea data-sec="8 评审发现" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 9 ═══════════ -->
+<div class="section" data-title="9 诚实边界">
+  <div class="section-title">9 · 诚实边界:这个设计不做什么</div>
+  <div class="card gray">
+    <ul>
+      <li><strong>不提供「重启但保持旧代码」</strong>:手动重启永远收敛到主分支最新版</li>
+      <li><strong>Mufasa 暂无「出生证」</strong>:15 个 Lead 里 Mufasa 用的是另一种壳(Codex 终端形态),第一版不给它发出生证,报告里它记「未知」,新旧由 QA 直接测量;补齐另立单</li>
+      <li><strong>不改「接管」的判定规则</strong>(FLY-1659/1663 的地盘):发起者问题靠移出名单消失,不靠改接管逻辑</li>
+      <li><strong>紧急兜底保留</strong>:Lead 直接跑重启脚本的老路不封死(真出事时要有手动挡),但那条路下发起者仍可能被接管 —— 从此「本体」行会把它如实亮出来,不再是暗账</li>
+      <li><strong>「本体」行永远只是观测</strong>:它不改变重启成功/失败的判定,也不阻塞任何流程</li>
+      <li><strong>本设计不含实施</strong>:写码/测试/上线由后续节点承接,上线合并照旧等你拍板</li>
+    </ul>
+  </div>
+  <div class="comment-block"><textarea data-sec="9 诚实边界" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ 10 ═══════════ -->
+<div class="section" data-title="10 验收怎么验">
+  <div class="section-title">10 · 验收怎么验(就用你定的标准)</div>
+  <div class="card green">
+    <ol>
+      <li>前置:updater 复活完成(挂载 + 监听验证通过)</li>
+      <li>独立 QA 先记下 15 个 Lead 的本体启动时间做底账(不由执行者自报)</li>
+      <li>你拍板 → Lead 跑一条命令申请重启</li>
+      <li><strong>硬标准(你的原话):15/15 全部拿到新本体,包括原来的发起 Lead,无任何豁免</strong> —— QA 直接量本体启动时间,不只看报告</li>
+      <li>播报出现 <code>reason=updater</code> + <code>本体: 14 新建 / 1 未知</code>(Mufasa 那 1 个由 QA 直测补证)</li>
+      <li>部署账本零污染:确认「无新代码的纯手动重启」不新增任何「已上线」记录</li>
+    </ol>
+  </div>
+  <div class="comment-block"><textarea data-sec="10 验收" placeholder="对这一节留言……(自动保存)"></textarea></div>
+</div>
+
+<!-- ═══════════ comment summary ═══════════ -->
+<div class="section" data-title="留言汇总">
+  <div class="section-title">📋 · 你的留言汇总</div>
+  <div class="card purple" id="comment-summary">
+    <p id="no-comments" class="plain">(还没有留言 —— 在任意小节下方的虚线框里输入即可,自动保存)</p>
+    <div id="comment-items"></div>
+    <button id="copy-all" type="button">复制全部留言</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<div class="meta" style="text-align:center;margin-top:20px">FLY-1671 · engineering/doc/FLY-1671-manual-restart-trigger/ · 图均为本地渲染的自包含 SVG,页面零外部依赖</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var PREFIX = 'fly1671-comment:' + location.pathname + ':';
+
+  function lsGet(key) {
+    try { return localStorage.getItem(PREFIX + key) || ''; } catch (e) { return ''; }
+  }
+  function lsSet(key, val) {
+    try { localStorage.setItem(PREFIX + key, val); } catch (e) { /* storage unavailable */ }
+  }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('.comment-block textarea'));
+
+  function renderSummary() {
+    var items = document.getElementById('comment-items');
+    var empty = document.getElementById('no-comments');
+    while (items.firstChild) items.removeChild(items.firstChild);
+    var count = 0;
+    areas.forEach(function (ta) {
+      var sec = ta.getAttribute('data-sec') || '';
+      var val = ta.value.trim();
+      if (!val) return;
+      count++;
+      var item = document.createElement('div');
+      item.className = 'item';
+      var s = document.createElement('div');
+      s.className = 'sec';
+      s.textContent = '【' + sec + '】';
+      var t = document.createElement('div');
+      t.className = 'txt';
+      t.textContent = val;
+      item.appendChild(s);
+      item.appendChild(t);
+      items.appendChild(item);
+    });
+    empty.style.display = count === 0 ? '' : 'none';
+  }
+
+  areas.forEach(function (ta) {
+    var sec = ta.getAttribute('data-sec') || '';
+    ta.value = lsGet(sec);
+    ta.addEventListener('input', function () {
+      lsSet(sec, ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function buildAllText() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var val = ta.value.trim();
+      if (!val) return;
+      parts.push('【' + (ta.getAttribute('data-sec') || '') + '】\n' + val);
+    });
+    return parts.join('\n\n');
+  }
+
+  function legacyCopy(text) {
+    var tmp = document.createElement('textarea');
+    tmp.value = text;
+    tmp.setAttribute('readonly', '');
+    tmp.style.position = 'fixed';
+    tmp.style.left = '-9999px';
+    document.body.appendChild(tmp);
+    tmp.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(tmp);
+    return ok;
+  }
+
+  function showStatus(ok) {
+    var st = document.getElementById('copy-status');
+    st.textContent = ok ? '✅ 已复制' : '❌ 复制失败,请手动全选';
+    setTimeout(function () { st.textContent = ''; }, 3000);
+  }
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var text = buildAllText();
+    if (!text) { showStatus(false); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus(true); },
+        function () { showStatus(legacyCopy(text)); }
+      );
+    } else {
+      showStatus(legacyCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>

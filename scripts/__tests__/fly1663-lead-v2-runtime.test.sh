@@ -17,6 +17,18 @@ fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 source "$ADDRESS_LIB"
 
 mkdir -p "$TMP/home/.flywheel" "$TMP/project/.lead/ops-lead" "$TMP/bin"
+cat > "$TMP/bin/ps" <<'PS_STUB'
+#!/bin/bash
+case "${FLYWHEEL_LEAD_V2_PS_MODE:-ok}" in
+  ok) printf 'Mon Aug 11 12:34:56 2026\n' ;;
+  empty) exit 0 ;;
+  fail) printf 'simulated ps failure\n' >&2; exit 7 ;;
+  tabbed) printf 'Mon Aug 11\t12:34:56 2026\n' ;;
+  *) exit 64 ;;
+esac
+PS_STUB
+chmod +x "$TMP/bin/ps"
+export FLYWHEEL_LEAD_V2_PS_BIN="$TMP/bin/ps"
 printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
   > "$TMP/project/.lead/ops-lead/identity.md"
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
@@ -158,6 +170,8 @@ if HOME="$TMP/home" \
   && grep -qF 'FLYWHEEL_TEST_PLIST_ONLY=preserved' "$TMP/server.env" \
   && grep -qF "DISCORD_STATE_DIR=$TMP/discord-state" "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
+  && grep -Eq '^FLYWHEEL_LEAD_CARRIER_PID=[1-9][0-9]*$' "$TMP/server.env" \
+  && grep -qF 'FLYWHEEL_LEAD_CARRIER_START=Mon Aug 11 12:34:56 2026' "$TMP/server.env" \
   && grep -qF "USER=$os_user" "$TMP/server.env" \
   && grep -qF "LOGNAME=$os_user" "$TMP/server.env" \
   && ! grep -qF 'USER=untrusted-user' "$TMP/server.env" \
@@ -171,6 +185,36 @@ else
   cat "$TMP/wrapper.out" 2>/dev/null || true
   cat "$TMP/server.env" 2>/dev/null || true
 fi
+
+# Carrier provenance is observational. If ps cannot produce one trustworthy
+# start identity, the wrapper must still exec the Lead and omit only the two
+# tuple fields so downstream reporting degrades to unknown.
+for ps_mode in empty fail tabbed; do
+  rm -f "$TMP/server.env"
+  set +e
+  HOME="$TMP/home" \
+    USER=untrusted-user \
+    LOGNAME=untrusted-logname \
+    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+    FLYWHEEL_DIR="$ROOT" \
+    FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
+    FLYWHEEL_LEAD_V2_PS_MODE="$ps_mode" \
+    bash "$WRAPPER" "$TMP/manifest.json" >"$TMP/wrapper-$ps_mode.out" 2>&1
+  probe_rc=$?
+  set -e
+  if [ "$probe_rc" -eq 0 ] \
+      && [ -f "$TMP/server.env" ] \
+      && ! grep -q '^FLYWHEEL_LEAD_CARRIER_PID=' "$TMP/server.env" \
+      && ! grep -q '^FLYWHEEL_LEAD_CARRIER_START=' "$TMP/server.env" \
+      && grep -q 'WARNING: carrier identity probe unavailable' "$TMP/wrapper-$ps_mode.out"; then
+    pass "wrapper carrier probe $ps_mode fails open to unknown provenance"
+  else
+    fail "wrapper carrier probe $ps_mode blocked launch or published an invalid tuple (rc=$probe_rc)"
+    cat "$TMP/wrapper-$ps_mode.out" 2>/dev/null || true
+    cat "$TMP/server.env" 2>/dev/null || true
+  fi
+done
 rm -f "$TMP/home/.local/bin/tmux"
 
 # The Claude child crosses a second env -i boundary inside claude-lead.sh.

@@ -123,7 +123,8 @@ rn_render_completion_message() {
     local duration_str="${13:-}"
     local watcher_state="${14:-healthy}"
     local watcher_detail="${15:-}"
-    local old_display="" new_display="" first_line="" lead_line="" bridge_line="" watcher_line=""
+    local body_new="${16:-}" body_adopted="${17:-}" body_unknown="${18:-}"
+    local old_display="" new_display="" first_line="" lead_line="" body_line="" bridge_line="" watcher_line=""
     local lead_success=0 clean_leads=false
 
     [[ -n "$reason" ]] || reason="unknown"
@@ -192,7 +193,7 @@ rn_render_completion_message() {
         if (( lead_total == 0 )); then
             lead_line="Lead: 未发现可重启候选(0)"
         elif (( lead_failed == 0 && lead_skipped == 0 )); then
-            lead_line="Lead: ${lead_success}/${lead_total} 重启成功(新本体已起、model 一致;未单独探测 Discord 可达性)"
+            lead_line="Lead: ${lead_success}/${lead_total} supervisor 换代收敛(body 见『本体』行;未单独探测 Discord 可达性)"
         else
             lead_line="Lead: ${lead_total} 个里 ${lead_success} 个成功"
             if (( lead_failed > 0 )); then
@@ -207,6 +208,19 @@ rn_render_completion_message() {
         ;;
     esac
 
+    body_line="本体: 观测失败(未知)"
+    if [[ "$lead_result_state" == "known" ]] && (( lead_total > 0 )) \
+      && [[ "$body_new" =~ ^[0-9]+$ ]] \
+      && [[ "$body_adopted" =~ ^[0-9]+$ ]] \
+      && [[ "$body_unknown" =~ ^[0-9]+$ ]] \
+      && (( body_new + body_adopted + body_unknown == lead_success )); then
+        if (( body_adopted > 0 )); then
+            body_line="⚠️ 本体: ${body_new} 新建 / ${body_adopted} 接管(未换) / ${body_unknown} 未知"
+        else
+            body_line="本体: ${body_new} 新建 / 0 接管(未换) / ${body_unknown} 未知"
+        fi
+    fi
+
     if [[ "$bridge_state" == "ok" && "$bridge_ms" =~ ^[0-9]+$ ]]; then
         bridge_line="Bridge: healthy (/health 实测 ${bridge_ms}ms)"
     else
@@ -219,8 +233,8 @@ rn_render_completion_message() {
         watcher_line="cmux watcher: ⚠️ ${watcher_state}${watcher_detail:+ (${watcher_detail})}"
     fi
 
-    printf '%s\n版本: %s → %s\n%s\n%s\n%s\n总耗时: %s' \
-        "$first_line" "$old_display" "$new_display" "$lead_line" "$bridge_line" "$watcher_line" "$duration_str"
+    printf '%s\n版本: %s → %s\n%s\n%s\n%s\n%s\n总耗时: %s' \
+        "$first_line" "$old_display" "$new_display" "$lead_line" "$body_line" "$bridge_line" "$watcher_line" "$duration_str"
     if [[ "$first_line" == *"degraded"* ]]; then
         printf '\n详情见 <#1518793447165661254>'
     fi

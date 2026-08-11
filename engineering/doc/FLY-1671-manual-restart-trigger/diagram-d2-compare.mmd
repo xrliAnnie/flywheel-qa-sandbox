@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph OLD["❌ 以前:Lead 自己发起"]
+        direction TB
+        O0["8月10日实测"] --> O1["某个 Lead 在自己的会话里<br/>直接跑重启脚本"]
+        O1 --> O2["它必须保护自己<br/>否则跑到一半自杀,重启中断"]
+        O2 --> O3["其他 14 个 Lead:换上新本体 ✅"]
+        O2 --> O4["发起者自己:旧本体被『接管』<br/>继续带着旧代码跑 ⚠️"]
+        O4 --> O5["报告却写『15/15 成功』<br/>没人看得出来"]
+    end
+    subgraph NEW["✅ 现在:updater 发起"]
+        direction TB
+        N0["发起者在集合外"] --> N1["updater 是系统级独立服务<br/>不在被重启的名单里"]
+        N1 --> N2["重启谁都不用手下留情"]
+        N2 --> N3["15/15 全部换新本体<br/>包括原来的发起 Lead"]
+        N3 --> N4["报告加『本体』行:<br/>新建几个/接管几个,一目了然"]
+    end
+    OLD ~~~ NEW
+    style OLD fill:#fff5f5,stroke:#ff3b30
+    style NEW fill:#f0fdf4,stroke:#34c759
+    style O0 fill:#fff,stroke:#ff3b30,stroke-dasharray: 4 3
+    style N0 fill:#fff,stroke:#34c759,stroke-dasharray: 4 3
+    style O4 fill:#ffe8e6,stroke:#ff3b30
+    style O5 fill:#ffe8e6,stroke:#ff3b30
+    style N3 fill:#e6f9ed,stroke:#34c759
