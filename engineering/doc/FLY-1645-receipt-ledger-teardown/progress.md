@@ -2,15 +2,17 @@
 issue: FLY-1645
 phase: implement
 phaseCursor: 5/5
-updated: 2026-08-11T16:21:59.136Z
-nextStep: "Implementation audit complete: main full build + lint green; 262
-  focused tests + 3 shell harnesses green; PR #808 exact code head CI 9/9 green;
-  plugin head 3c72cd9 173/173 + cross-repo residue gate green. Next: fresh
-  exact-head two-repo code review, then push/open companion PR and handoff."
+updated: 2026-08-11T16:26:26.033Z
+nextStep: "Completion audit found and fixed S6/T8 mismatch: founder-decision
+  convergence now classifies response/resolved/superseded/pending without
+  relay_state; production teamlead relay_state grep is zero and residue
+  allowlist tightened. Commit 65790762; 133 affected tests, teamlead build,
+  lint, and cross-repo residue gate green. Next: fresh exact-head two-repo code
+  review."
 chunks: []
 pointers: {}
 ---
 
 # FLY-1645 progress
 **phase**: implement (5/5)
-**next**: Implementation audit complete: main full build + lint green; 262 focused tests + 3 shell harnesses green; PR #808 exact code head CI 9/9 green; plugin head 3c72cd9 173/173 + cross-repo residue gate green. Next: fresh exact-head two-repo code review, then push/open companion PR and handoff.
+**next**: Completion audit found and fixed S6/T8 mismatch: founder-decision convergence now classifies response/resolved/superseded/pending without relay_state; production teamlead relay_state grep is zero and residue allowlist tightened. Commit 65790762; 133 affected tests, teamlead build, lint, and cross-repo residue gate green. Next: fresh exact-head two-repo code review.
