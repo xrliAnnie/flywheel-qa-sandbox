@@ -161,6 +161,16 @@ describe("FLY-1645 receipt teardown closeout", () => {
 		expect(readFileSync(manifestPath, "utf8")).toContain(
 			"chat:lead-a:external-1",
 		);
+		expect(JSON.parse(readFileSync(manifestPath, "utf8"))).toMatchObject({
+			schema_version: 2,
+			shards: [
+				{
+					shard: commDb,
+					status: "applied",
+					post_apply_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+				},
+			],
+		});
 
 		const db = new Database(commDb, { readonly: true });
 		expect(
@@ -228,12 +238,79 @@ describe("FLY-1645 receipt teardown closeout", () => {
 			apply: true,
 			confirmQuiesced: true,
 			resolutions: [],
+			manifestPath: join(root, "replay-manifest.json"),
 			now: "2026-08-11T01:05:00.000Z",
 		});
 		expect(replay.shards[0]).toMatchObject({
 			externalChatCount: 0,
 			nonQuestionActiveRelayCount: 0,
 		});
+	});
+
+	it("checkpoints each shard in the manifest before and after mutation", async () => {
+		const first = seed();
+		const second = seed();
+		const dbPaths = [first.commDb, second.commDb].sort();
+		const failingDb = dbPaths[1]!;
+		const raw = new Database(failingDb);
+		raw.exec(`
+			CREATE TRIGGER fly1645_test_abort_external_delete
+			BEFORE DELETE ON mailbox
+			WHEN OLD.id = 'chat:lead-a:external-1'
+			BEGIN
+				SELECT RAISE(ABORT, 'synthetic shard failure');
+			END;
+		`);
+		raw.close();
+		const manifestPath = join(first.root, "failure-manifest.json");
+
+		await expect(
+			runReceiptTeardownCloseout({
+				dbPaths,
+				stateDbPath: first.stateDb,
+				apply: true,
+				confirmQuiesced: true,
+				resolutions: dbPaths.map((shard) => ({
+					shard,
+					id: "chat:lead-a:external-1",
+					disposition: "manually_completed" as const,
+				})),
+				manifestPath,
+				now: "2026-08-11T01:30:00.000Z",
+			}),
+		).rejects.toThrow("synthetic shard failure");
+
+		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+		expect(manifest.shards).toMatchObject([
+			{
+				shard: dbPaths[0],
+				status: "applied",
+				post_apply_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+			},
+			{
+				shard: failingDb,
+				status: "failed",
+				error: expect.stringContaining("synthetic shard failure"),
+			},
+		]);
+		const applied = new Database(dbPaths[0]!, { readonly: true });
+		expect(
+			applied
+				.prepare(
+					"SELECT COUNT(*) AS count FROM mailbox WHERE carrier='external' AND id LIKE 'chat:%'",
+				)
+				.get(),
+		).toEqual({ count: 0 });
+		applied.close();
+		const failed = new Database(failingDb, { readonly: true });
+		expect(
+			failed
+				.prepare(
+					"SELECT COUNT(*) AS count FROM mailbox WHERE carrier='external' AND id LIKE 'chat:%'",
+				)
+				.get(),
+		).toEqual({ count: 1 });
+		failed.close();
 	});
 
 	it("fails closed before backup or mutation when an external row is unresolved", async () => {

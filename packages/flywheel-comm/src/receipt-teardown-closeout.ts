@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
+	renameSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
@@ -75,6 +76,24 @@ export interface ReceiptTeardownManifestRecord {
 	backup_sha256: string;
 }
 
+interface ReceiptTeardownManifestShard {
+	shard: string;
+	backup_path: string;
+	backup_sha256: string;
+	status: "planned" | "applying" | "applied" | "failed";
+	post_apply_sha256?: string;
+	error?: string;
+}
+
+interface ReceiptTeardownManifest {
+	schema_version: 2;
+	issue: "FLY-1645";
+	created_at: string;
+	state_backup: { source: string; path: string; sha256: string };
+	shards: ReceiptTeardownManifestShard[];
+	records: ReceiptTeardownManifestRecord[];
+}
+
 export interface ReceiptTeardownCloseoutResult {
 	issue: "FLY-1645";
 	mode: "dry-run" | "apply";
@@ -108,6 +127,16 @@ const RECEIPT_SCHEMA_NAMES = [
 
 function sha256File(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function writeManifest(path: string, manifest: ReceiptTeardownManifest): void {
+	mkdirSync(dirname(path), { recursive: true });
+	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+		mode: 0o600,
+		flag: "wx",
+	});
+	renameSync(temporaryPath, path);
 }
 
 function assertDatabaseExists(path: string): void {
@@ -340,6 +369,23 @@ function archiveExternalRow(
 	}
 }
 
+function assertExternalContentRefsReadable(
+	inspections: ShardInspection[],
+): void {
+	for (const inspection of inspections) {
+		for (const row of inspection.externalRows) {
+			if (!row.content_ref) continue;
+			try {
+				readFileSync(row.content_ref);
+			} catch (error) {
+				throw new Error(
+					`closeout_content_ref_unreadable:${inspection.path}:${row.id}:${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+	}
+}
+
 function applyShard(
 	inspection: ShardInspection,
 	resolutionMap: Map<string, Fly1645ExternalDisposition>,
@@ -385,6 +431,7 @@ function applyShard(
 				}),
 			);
 		}).immediate();
+		db.pragma("wal_checkpoint(TRUNCATE)");
 	} finally {
 		db.close();
 	}
@@ -453,6 +500,8 @@ export async function runReceiptTeardownCloseout(
 			`unresolved_external_chat:${unresolved.map((row) => row.id).join(",")}`,
 		);
 	}
+	if (!options.manifestPath) throw new Error("closeout_manifest_required");
+	assertExternalContentRefsReadable(before);
 
 	const backups = [];
 	for (const path of dbPaths) backups.push(await backupDatabase(path, now));
@@ -476,30 +525,44 @@ export async function runReceiptTeardownCloseout(
 				backup_sha256: backup.sha256,
 			});
 		}
-		applyShard(inspection, resolutionMap, now);
 	}
+	const manifest: ReceiptTeardownManifest = {
+		schema_version: 2,
+		issue: "FLY-1645",
+		created_at: now,
+		state_backup: stateBackup,
+		shards: backups.map((backup) => ({
+			shard: backup.source,
+			backup_path: backup.path,
+			backup_sha256: backup.sha256,
+			status: "planned",
+		})),
+		records: manifestRecords,
+	};
+	writeManifest(options.manifestPath, manifest);
 
-	const after = dbPaths.map((path) => inspectShard(path, resolutionMap));
+	const after: ShardInspection[] = [];
 	for (let index = 0; index < before.length; index += 1) {
-		assertPostconditions(before[index]!, after[index]!);
-	}
-	if (options.manifestPath) {
-		mkdirSync(dirname(options.manifestPath), { recursive: true });
-		writeFileSync(
-			options.manifestPath,
-			`${JSON.stringify(
-				{
-					schema_version: 1,
-					issue: "FLY-1645",
-					created_at: now,
-					state_backup: stateBackup,
-					records: manifestRecords,
-				},
-				null,
-				2,
-			)}\n`,
-			{ mode: 0o600 },
-		);
+		const inspection = before[index]!;
+		const manifestShard = manifest.shards[index]!;
+		manifestShard.status = "applying";
+		writeManifest(options.manifestPath, manifest);
+		try {
+			applyShard(inspection, resolutionMap, now);
+			const appliedInspection = inspectShard(inspection.path, resolutionMap);
+			assertPostconditions(inspection, appliedInspection);
+			after.push(appliedInspection);
+			manifestShard.status = "applied";
+			manifestShard.post_apply_sha256 = sha256File(inspection.path);
+			writeManifest(options.manifestPath, manifest);
+		} catch (error) {
+			manifestShard.status = "failed";
+			manifestShard.error =
+				error instanceof Error ? error.message : String(error);
+			manifestShard.post_apply_sha256 = sha256File(inspection.path);
+			writeManifest(options.manifestPath, manifest);
+			throw error;
+		}
 	}
 	return {
 		...base,
@@ -507,6 +570,6 @@ export async function runReceiptTeardownCloseout(
 		backups,
 		stateBackup,
 		manifestRecords,
-		...(options.manifestPath ? { manifestPath: options.manifestPath } : {}),
+		manifestPath: options.manifestPath,
 	};
 }
