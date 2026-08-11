@@ -223,6 +223,8 @@ jobs:
       # FLY-1663: launchd-native lifecycle contracts are root shell suites and
       # are not discovered by package Vitest jobs. Keep all four migration
       # seams explicit: carrier foundation, body runtime, cmux, and Bridge.
+      # FLY-1679 rides here as a fifth seam: the dev-channels auto-confirm the
+      # carrier migration dropped, whose absence parks every Lead cold start.
       - name: Test — FLY-1663 launchd-native Lead lifecycle
         run: |
           bash scripts/__tests__/fly1663-launchd-foundation.test.sh
@@ -230,6 +232,7 @@ jobs:
           bash scripts/__tests__/fly1663-cmux-v2.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
 
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at

@@ -1213,10 +1213,15 @@ else
 log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME}, mode=${MODE}, channel=${EFFECTIVE_CHANNEL_LABEL}=${CHAT_CHANNEL_ID})"
 
 # Private-socket equivalent of the old shared-window dev-channels workaround.
+# FLY-1679 note: since the launcher itself auto-confirms on the v2 carrier
+# (_poll_dev_channels_dialog_v2), this compensating poller is normally a no-op —
+# it just reports "no dev-channels prompt observed". Setting
+# SKIP_DEV_CHANNELS_WORKAROUND=1 removes it entirely, which is how a QA slot
+# proves the production startup chain confirms the dialog with zero keypresses.
 confirm_dev_channels_prompt() {
   local socket="$1" lead_name="$2" pane="" i hit=false
   if [[ "${SKIP_DEV_CHANNELS_WORKAROUND:-0}" == "1" ]]; then
-    log "SKIP_DEV_CHANNELS_WORKAROUND=1 — ${lead_name} relies on expect-dev-channels.exp"
+    log "SKIP_DEV_CHANNELS_WORKAROUND=1 — ${lead_name} relies on the launcher's own dev-channels auto-confirm (FLY-1679)"
     return 0
   fi
   log "Polling private Lead socket for ${lead_name} dev-channels prompt"

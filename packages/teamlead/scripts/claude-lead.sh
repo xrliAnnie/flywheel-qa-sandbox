@@ -1236,6 +1236,8 @@ SHOULD_EXIT=0
 # tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
 LEAD_BODY_PROVENANCE=""
+# FLY-1679: PID of the v2 carrier's dev-channels auto-confirm poller, if any.
+_V2_DIALOG_POLLER_PID=""
 
 # FLY-109: Dev-channels dialog auto-confirm via tmux capture-pane.
 #
@@ -1490,6 +1492,184 @@ _poll_dev_channels_dialog() {
   done
 
   _log_startup "dialog-poller: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s"
+  return 0
+}
+
+# FLY-1679: is Claude actually being launched with a development channel?
+#
+# The dialog appears if and only if `--dangerously-load-development-channels` is
+# on the command line, so the poller must gate on THAT — the argv we are about
+# to pass — and never on a proxy for it.
+#
+# The proxy this replaces was `INBOX_MCP_ENABLED`. It is exactly equivalent
+# today because one site adds the flag and that site is gated on the same
+# variable, which is why the original port copied it. But companion/external
+# roles deliberately set `INBOX_MCP_ENABLED=false`, so the moment anything else
+# contributes a development channel the proxy reads false while the dialog
+# still renders: a companion Lead would park on it with no poller to answer,
+# launchd still reporting healthy. That is the FLY-1672 fleet-outage shape, and
+# FLY-1676 (an unconditional `plugin:discord@flywheel-plugins`) is precisely
+# that trigger. Deriving from argv means any future contributor of a
+# development channel gets the poller for free, with no second place to update.
+_dev_channels_flag_active() {
+  local arg
+  for arg in ${CLAUDE_ARGS[@]+"${CLAUDE_ARGS[@]}"}; do
+    [ "$arg" = "--dangerously-load-development-channels" ] && return 0
+  done
+  return 1
+}
+
+# FLY-1679: the dev-channels dialog's own text, taken verbatim from the Claude
+# source under test (DevChannelsDialog.tsx: the Dialog title, the standalone
+# approved-channels line, and option 1's label). All three must be on screen at
+# once. Any single fragment also appears in ordinary conversation about this
+# flag, and interactiveHelpers.tsx legitimately skips the dialog when channels
+# are gated off or there is no OAuth token — which would otherwise leave the
+# poller scanning a restored transcript for its whole budget.
+#
+# Here-strings, not pipes: `set -o pipefail` is active in this launcher and a
+# short-circuiting `grep -q` can SIGPIPE its producer.
+_dev_channels_dialog_present() {
+  local text="$1"
+  grep -qF 'WARNING: Loading development channels' <<<"$text" || return 1
+  grep -qF 'I am using this for local development' <<<"$text" || return 1
+  grep -qF 'Please use --channels to run a list of approved channels.' <<<"$text" || return 1
+  return 0
+}
+
+# FLY-1679: launchd-native (v2) carrier port of the FLY-109 auto-confirm.
+# The v1 supervisor polls the shared session's Lead window; a v2 body has no
+# such window — it IS the private server's pane and Claude is its direct child.
+# Without this port every cold start parks on the dev-channels dialog until a
+# human presses a key, while launchd still reports the job as running.
+# Args: $1 = timeout_sec. Runs as a background job of the body shell.
+#
+# Every _log_startup call here is `|| true`. This function inherits errexit, and
+# it is the thing standing between a cold start and a parked Lead: if an
+# unwritable startup log (bad mode/owner, a misconfigured FLYWHEEL_EXPECT_LOG,
+# a full disk) could abort it, observability failure would silently disable the
+# safety mechanism and hand back exactly the incident this fixes — invisibly,
+# because launchd would still report the job as running.
+_poll_dev_channels_dialog_v2() {
+  local timeout_sec="${1:-90}"
+  local elapsed=0 socket pane pane_text send_rc verify capture_rc probe_rc probe_out send_out
+
+  # Address the private server explicitly. FLYWHEEL_TMUX_SOCKET_OVERRIDE is a
+  # shared-topology (v1) concept and must never retarget these keystrokes.
+  if [ -z "${TMUX:-}" ]; then
+    _log_startup "dialog-poller-v2: no tmux identity — auto-confirm skipped" || true
+    return 0
+  fi
+  socket="${TMUX%%,*}"
+  # %0 is guaranteed by the carrier: wrapper-v2 creates `-s main -n main` and
+  # the generated tmux.conf's pane-exited hook keys on `#{hook_pane} = %0`.
+  pane="${TMUX_PANE:-%0}"
+
+  _log_startup "dialog-poller-v2: start pane=${pane} timeout=${timeout_sec}s" || true
+
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    # Every tmux call here MUST run inside a command substitution.
+    #
+    # This function is a background job of the body shell, and the body shell
+    # IS the pane process. A BARE external command in that position gets
+    # exec-replaced by bash's subshell optimization: the tmux client takes over
+    # the poller's process, runs, exits — and the rest of this loop never runs.
+    # Measured on the real carrier: the poller logged `start`, probed once, and
+    # vanished, leaving the Lead parked on the dialog it was there to dismiss.
+    # `$( )` forks a child for the client, so this job survives to keep polling.
+    probe_rc=0
+    probe_out="$(command tmux -S "$socket" display-message -p -t "$pane" '#{pane_id}' 2>/dev/null)" \
+      || probe_rc=$?
+    if [ "$probe_rc" -ne 0 ] || [ -z "$probe_out" ]; then
+      _log_startup "dialog-poller-v2: pane gone, exiting" || true
+      return 0
+    fi
+
+    # A transient capture failure is not evidence of anything. Treat it as
+    # "nothing matched this tick"; the pane probe at the top of the next
+    # iteration remains the only authority on pane death.
+    capture_rc=0
+    pane_text="$(command tmux -S "$socket" capture-pane -t "$pane" -p 2>/dev/null)" || capture_rc=$?
+    [ "$capture_rc" -eq 0 ] || pane_text=""
+
+    if _dev_channels_dialog_present "$pane_text"; then
+      _log_startup "dialog-poller-v2: matched dev-channels dialog, sending '1'" || true
+      # '1' alone accepts: the dialog's Select leaves numeric selection enabled
+      # (select.tsx resolves disableSelection to false), so the digit fires
+      # onChange immediately. No Enter is ever sent — an unconditional Enter
+      # would land on whatever renders next, and interactiveHelpers.tsx can
+      # show Chrome onboarding the moment this dialog is accepted.
+      # Command substitution here too — same exec-replacement hazard. send-keys
+      # prints nothing; the substitution exists purely to fork.
+      send_rc=0
+      send_out="$(command tmux -S "$socket" send-keys -t "$pane" "1" 2>/dev/null)" || send_rc=$?
+      : "${send_out:-}"
+      if [ "$send_rc" -ne 0 ]; then
+        _log_startup "dialog-poller-v2: DEV_CHANNELS_SEND_FAILED rc=${send_rc}" || true
+        return 0
+      fi
+
+      # Confirmation is only claimed on evidence: a SUCCESSFUL capture that no
+      # longer shows the dialog. A failed capture is transport loss, not proof
+      # the dialog closed — swallowing it would let an offline Lead be logged
+      # as confirmed and poison the production acceptance evidence.
+      verify=0
+      while [ "$verify" -lt 10 ]; do
+        sleep 0.3
+        capture_rc=0
+        pane_text="$(command tmux -S "$socket" capture-pane -t "$pane" -p 2>/dev/null)" || capture_rc=$?
+        if [ "$capture_rc" -ne 0 ]; then
+          _log_startup "dialog-poller-v2: DEV_CHANNELS_VERIFY_FAILED rc=${capture_rc} (no confirmation evidence)" || true
+          return 0
+        fi
+        if ! _dev_channels_dialog_present "$pane_text"; then
+          _log_startup "dialog-poller-v2: confirmed=1" || true
+          return 0
+        fi
+        verify=$((verify + 1))
+      done
+      _log_startup "dialog-poller-v2: DEV_CHANNELS_CONFIRM_UNVERIFIED (sent '1', dialog still present)" || true
+      return 0
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  _log_startup "dialog-poller-v2: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s" || true
+  return 0
+}
+
+# FLY-1679: is this PID still a RUNNING async job of THIS shell?
+#
+# The poller self-terminates within FLYWHEEL_DIALOG_TIMEOUT_SEC while
+# _launch_claude stays blocked for the entire Claude lifetime — hours or days.
+# At reap time the poller is therefore almost always long gone and its PID
+# number is free for reuse; signalling the stored number unconditionally would
+# eventually terminate an unrelated process.
+#
+# `jobs -pr` with NO argument, matched line-exact, is the only form that works
+# here. Measured on the production platform (GNU bash 3.2.57, macOS):
+# `jobs -pr <pid>` fails with "no such job" for a live job AND a finished one,
+# so a PID-argument guard would silently degrade into "never signal anything".
+_v2_dialog_poller_is_running() {
+  local pid="$1" running
+  running="$(jobs -pr 2>/dev/null || true)"
+  grep -qxF -- "$pid" <<<"$running"
+}
+
+# FLY-1679: single reaping point, used by both the normal post-launch path and
+# the signal path. Must run BEFORE the child is terminated so no keystroke can
+# be delivered into a pane that is being torn down. Idempotent.
+_v2_reap_dialog_poller() {
+  local pid="${_V2_DIALOG_POLLER_PID:-}"
+  [ -n "$pid" ] || return 0
+  if _v2_dialog_poller_is_running "$pid"; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  # Consume the saved exit status either way; harmless if already reaped.
+  wait "$pid" 2>/dev/null || true
+  _V2_DIALOG_POLLER_PID=""
   return 0
 }
 
@@ -3070,6 +3250,10 @@ cleanup() {
   log "Shutdown signal received..."
 
   if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
+    # FLY-1679: stop the auto-confirm poller FIRST. This branch exits before
+    # the normal post-launch reap, and a poller left alive here could deliver a
+    # keystroke into a pane that is already being torn down.
+    _v2_reap_dialog_poller
     if [ -n "${CLAUDE_CHILD_PID:-}" ] && kill -0 "$CLAUDE_CHILD_PID" 2>/dev/null; then
       kill -TERM "$CLAUDE_CHILD_PID" 2>/dev/null || true
       wait "$CLAUDE_CHILD_PID" 2>/dev/null || true
@@ -4183,7 +4367,18 @@ if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
   CLAUDE_EXIT=1
   _v2_started_at="$(date +%s)"
   _v2_launch_rc=0
+  # FLY-1679: the v2 _launch_claude blocks in `wait` for the whole Claude
+  # lifetime, so the dev-channels auto-confirm poller must already be running
+  # when the child paints the dialog. Same INBOX_MCP_ENABLED gate as v1; no
+  # LEAD_WINDOW_ID guard, which is the half of the gap that made a v1-shaped
+  # copy of this call a no-op on the launchd-native carrier.
+  _V2_DIALOG_POLLER_PID=""
+  if _dev_channels_flag_active; then
+    _poll_dev_channels_dialog_v2 "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
+    _V2_DIALOG_POLLER_PID=$!
+  fi
   _launch_claude "${_v2_launch_args[@]}" || _v2_launch_rc=$?
+  _v2_reap_dialog_poller
   if [ "$_v2_launch_rc" -ne 0 ]; then
     CLAUDE_EXIT="$_v2_launch_rc"
   fi
@@ -4522,7 +4717,12 @@ while true; do
   # FLY-109: Start background dev-channels dialog poller. capture-pane is
   # ANSI-proof (unlike expect which fails on Ink TUI escape codes).
   # Only poll when dev-channels flag is active.
-  if [ "$INBOX_MCP_ENABLED" = "true" ] && [ -n "${LEAD_WINDOW_ID:-}" ]; then
+  # FLY-1679: that comment always stated the intent; the condition used to state
+  # a proxy for it (`INBOX_MCP_ENABLED`). Now it reads the argv directly, so the
+  # two agree. This is a no-op on today's tree — one site adds the flag and it
+  # is gated on that same variable — and it keeps v1 from acquiring the
+  # companion/external blind spot the moment a second contributor appears.
+  if _dev_channels_flag_active && [ -n "${LEAD_WINDOW_ID:-}" ]; then
     _poll_dev_channels_dialog "$LEAD_WINDOW_ID" "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
     _DIALOG_POLLER_PID=$!
   fi
