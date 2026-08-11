@@ -4,7 +4,7 @@ Issue: FLY-1645 (https://linear.app/geoforge3d/issue/FLY-1645/消息层重裁-b-
 日期: 2026-08-11
 基于: research.md
 
-**Status**: draft(待 codex-design-review)
+**Status**: codex-approved(design review 4 轮:R1 9 项 + R2 8 项 + R3 4 项全采纳;R3 后触发 3 轮安全阀,Lead 裁定 A 续轮并对路由载体取舍拍「删概念优先」;R4 APPROVED + 2 条非阻塞加固已折入 §9)
 **Scope**: 主仓 `packages/flywheel-comm` + `packages/teamlead` + `packages/config`;第二仓 `claude-plugins-official` fork(`external_plugins/discord`)
 **排期前置**:FLY-1572 重迁已上线(mailbox 产线活跃);**FLY-1575 前置已豁免**(lead-instruction 047a2ee0,2026-08-11:义务账由 1573/1574 新信箱队列接管,task 层验收移交 1575 落地时联合执行,见 §7-V4);legacy 旧流退役走 §5 解锁门(产线 `FLYWHEEL_MAILBOX_DISCORD=1` + 1574 lane 健康流转已实测)
 
@@ -186,3 +186,8 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 4. **双仓协同**:plugin cache 被 ~20 个活 Lead pin;部署序(§5)消除混窗;若 plugin merge 先行而主仓延后,新 plugin + 旧 CLI 兼容(chat-ingest 已存在)。
 5. **`detection_escalations.source_receipt_id` DROP COLUMN** 若被 SQLite 引用检查拒绝,回退为列留存+零消费(tombstone 注释),不 rebuild 共享表。
 6. **HeartbeatService/legacy-lead-event-reconciler**(research §8 E5)休眠代码不在本单——不删不改,避免范围膨胀;grep 门白名单注明。
+
+## 9. 实现期加固备注(Codex R4 非阻塞,随 APPROVED 折入)
+
+1. **scope 派生 = 具名 fail-closed seam**:S2 的线程→issue 派生复用 Bridge 认证的 by-thread 查询(或同语义共享 helper);未注册线程/缺 session 元数据/project 空值一律拒绝;结果直接喂给守卫式响应调用——**不把模型手写的 `--expect-project/--expect-issue` 文本当真相源**。S2 端到端套件加负例:未知线程 / session 元数据缺失 / 线程与问题 issue 不匹配。
+2. **manifest 带 shard 命名空间 + 崩溃围栏**:sweep 横跨全部项目 shard,行 id 单独不构成定位符——每条 manifest 记录带稳定 shard/project 标识 + 对应 pre-apply backup checksum;先写全量 resolved manifest 并校验和,再动 shard;shard 事务 commit 后补记 applied 结果/校验和——重启后可分辨 planned-only 与 committed。补钉一测:故意 ACKED 且 `acked_at` 为 NULL 的行保持不可投递、不被 projection/归档代码误读为真实投递证据。
