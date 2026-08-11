@@ -121,12 +121,6 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
-	receipt_foundation_off: {
-		owner: "claude",
-		arc: "human_by_design",
-		remediationRef:
-			"restore FLYWHEEL_RECEIPT_FOUNDATION and restart Bridge (FLY-1392)",
-	},
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "human_by_design",

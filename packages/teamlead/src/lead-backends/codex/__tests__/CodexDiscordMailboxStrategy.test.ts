@@ -10,7 +10,7 @@ import { InMemoryJournalStore, LeadJournal } from "../LeadJournal.js";
 const queues: MailboxQueue[] = [];
 afterEach(() => queues.splice(0).forEach((queue) => queue.close()));
 
-function setup(enabled: boolean) {
+function setup() {
 	const dbPath = join(
 		mkdtempSync(join(tmpdir(), "fly1574-codex-strategy-")),
 		"comm.db",
@@ -28,7 +28,6 @@ function setup(enabled: boolean) {
 		journal,
 		router: { submit },
 		externalReceiptSaga: { complete },
-		readFlag: () => ({ enabled }),
 	});
 	const input = {
 		message: {
@@ -45,61 +44,57 @@ function setup(enabled: boolean) {
 }
 
 describe("CodexDiscordMailboxStrategy", () => {
-	it("enqueues ON and preserves OFF legacy byte path", () => {
-		const on = setup(true);
-		expect(on.strategy.accept(on.input)).toBe("handled");
-		expect(on.submit).not.toHaveBeenCalled();
-		expect(on.queue.getById("chat:lead-a:323456789012345678")).toMatchObject({
-			type: "discord_chat",
-			state: "QUEUED",
-		});
-		const off = setup(false);
-		expect(off.strategy.accept(off.input)).toBe("legacy");
-		expect(off.queue.getById("chat:lead-a:323456789012345678")).toBeUndefined();
+	it("always enqueues Discord input through the mailbox", () => {
+		const state = setup();
+		expect(state.strategy.accept(state.input)).toBe("handled");
+		expect(state.submit).not.toHaveBeenCalled();
+		expect(state.queue.getById("chat:lead-a:323456789012345678")).toMatchObject(
+			{
+				type: "discord_chat",
+				state: "QUEUED",
+			},
+		);
 	});
 
-	it("skips an inbox winner even after the flag flips OFF", () => {
-		const state = setup(true);
+	it("skips an existing inbox winner on replay", () => {
+		const state = setup();
 		expect(state.strategy.accept(state.input)).toBe("handled");
-		const off = new CodexDiscordMailboxStrategy({
+		const replay = new CodexDiscordMailboxStrategy({
 			leadId: "lead-a",
 			dbPath: join("unused"),
 			queue: state.queue,
 			journal: state.journal,
 			router: { submit: state.submit },
 			externalReceiptSaga: { complete: state.complete },
-			readFlag: () => ({ enabled: false }),
 		});
-		expect(off.accept(state.input)).toBe("handled");
+		expect(replay.accept(state.input)).toBe("handled");
 		expect(state.submit).not.toHaveBeenCalled();
 	});
 
-	it("lets a journal-accepted OFF winner fence a later ON replay", () => {
-		const state = setup(false);
-		expect(state.strategy.accept(state.input)).toBe("legacy");
+	it("lets a journal-accepted winner fence a mailbox replay", () => {
+		const state = setup();
 		state.journal.accept({
 			idempotencyKey: state.input.message.id,
 			source: "discord",
 			payload: state.input.payload,
 		});
-		const on = new CodexDiscordMailboxStrategy({
+		const replay = new CodexDiscordMailboxStrategy({
 			leadId: "lead-a",
 			dbPath: join("unused"),
 			queue: state.queue,
 			journal: state.journal,
 			router: { submit: state.submit },
 			externalReceiptSaga: { complete: state.complete },
-			readFlag: () => ({ enabled: true }),
 		});
-		expect(on.accept(state.input)).toBe("handled");
+		expect(replay.accept(state.input)).toBe("handled");
 		expect(
 			state.queue.getById(`chat:lead-a:${state.input.message.id}`),
 		).toBeUndefined();
 		expect(state.submit).not.toHaveBeenCalled();
 	});
 
-	it("pins the cursor while ON until this runtime owns the ingress lock", () => {
-		const state = setup(true);
+	it("pins the cursor until this runtime owns the ingress lock", () => {
+		const state = setup();
 		const guarded = new CodexDiscordMailboxStrategy({
 			leadId: "lead-a",
 			dbPath: join("unused"),
@@ -107,7 +102,6 @@ describe("CodexDiscordMailboxStrategy", () => {
 			journal: state.journal,
 			router: { submit: state.submit },
 			externalReceiptSaga: { complete: state.complete },
-			readFlag: () => ({ enabled: true }),
 			mailboxReady: () => false,
 		});
 		expect(guarded.accept(state.input)).toBe("retry");
@@ -118,7 +112,7 @@ describe("CodexDiscordMailboxStrategy", () => {
 	});
 
 	it("repairs both cross-department crash seams without creating a second turn", () => {
-		const afterSubmit = setup(false);
+		const afterSubmit = setup();
 		afterSubmit.saga.begin({
 			messageId: afterSubmit.input.message.id,
 			channelId: afterSubmit.input.message.channelId,
@@ -137,7 +131,7 @@ describe("CodexDiscordMailboxStrategy", () => {
 				?.state,
 		).toBe("ACKED");
 
-		const afterBegin = setup(true);
+		const afterBegin = setup();
 		afterBegin.saga.begin({
 			messageId: afterBegin.input.message.id,
 			channelId: afterBegin.input.message.channelId,

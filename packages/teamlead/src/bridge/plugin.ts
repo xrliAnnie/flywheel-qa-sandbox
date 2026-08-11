@@ -50,7 +50,6 @@ import {
 	type CommBackend,
 	phaseMessageTag,
 	readEnvFileSource,
-	receiptFoundationEnabled,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
@@ -7377,7 +7376,6 @@ export async function startBridge(
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
-		receiptFoundationEnabled: () => receiptFoundationEnabled(),
 		tryFounderShipApproval: founderShipApprovalCallback,
 		readCurrentBinding: (executionId, questionId, prHeadSha) =>
 			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),

@@ -225,16 +225,12 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 			chatThreadsEnabled: true,
 			discordOwnerUserId: OWNER,
 			founderReplyDeliverGraceMs: 0,
-			receiptFoundationEnabled: () => true,
 		}) as unknown as Priv;
 
 		await poller.founderReplyDeliverPass();
 		expect(emitSpy).toHaveBeenCalledTimes(1);
 		expect(emitSpy.mock.calls[0]?.[0]).toMatchObject({ threadId: "T-empty" });
 		expect(emitSpy.mock.calls[0]?.[1]).toEqual([]);
-		expect(emitSpy.mock.calls[0]?.[2]).not.toHaveProperty(
-			"receiptFoundationEnabled",
-		);
 		expect(emitSpy.mock.calls[0]?.[2]).not.toHaveProperty("receiptOwnerEpoch");
 	});
 });

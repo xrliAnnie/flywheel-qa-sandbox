@@ -23,7 +23,6 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readMailboxDiscordFlag } from "flywheel-comm/discord-chat-ingest";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -1712,8 +1711,6 @@ export function buildCodexLeadRuntime(
 						}
 					},
 				},
-				readFlag: () =>
-					readMailboxDiscordFlag(join(homedir(), ".flywheel", ".env")),
 				logger,
 			});
 			return {

@@ -42,7 +42,6 @@ export {
 	mailboxQueueEnabled,
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
-	receiptFoundationEnabled,
 	resolveAllFlags,
 	resolveFlag,
 	validateFlagTruthEnvironment,

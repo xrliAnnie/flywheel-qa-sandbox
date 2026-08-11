@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -6,7 +6,6 @@ import { CommDB } from "../db.js";
 import {
 	discordBatchPartitionKey,
 	ingestDiscordChat,
-	readMailboxDiscordFlag,
 } from "../discord-chat-ingest.js";
 import { MailboxQueue } from "../mailbox-queue.js";
 
@@ -183,26 +182,5 @@ describe("FLY-1574 Discord mailbox ingest", () => {
 			`chat:${args.leadId}:223456789012345679`,
 		]);
 		queue.close();
-	});
-
-	it("reads the live flag strictly and fails OFF", () => {
-		const { dir } = fixture();
-		const envPath = join(dir, ".env");
-		const cases = JSON.parse(
-			readFileSync(
-				join(import.meta.dirname, "../__fixtures__/mailbox-discord-flag.json"),
-				"utf8",
-			),
-		) as Array<{ text: string; enabled: boolean }>;
-		for (const flagCase of cases) {
-			writeFileSync(envPath, flagCase.text);
-			expect(readMailboxDiscordFlag(envPath)).toEqual({
-				enabled: flagCase.enabled,
-			});
-		}
-		expect(readMailboxDiscordFlag(join(dir, "missing"))).toMatchObject({
-			enabled: false,
-			readError: expect.any(String),
-		});
 	});
 });

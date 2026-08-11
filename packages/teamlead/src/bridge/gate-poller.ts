@@ -237,14 +237,6 @@ export interface GatePollerConfig {
 	 * targeting when more than one ship gate is pending in the issue thread.
 	 */
 	readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
-	/** FLY-1392 system wiring is default-on; explicit seam keeps unit fixtures stable. */
-	receiptFoundationEnabled?: () => boolean;
-	/**
-	 * FLY-1392 emergency-rollback warning cadence (default 1200, about 1h at
-	 * 3s). The warning is in addition to the immediate startup alert and shares
-	 * this poller's timer; it never creates a second interval.
-	 */
-	receiptFoundationOffAlertEveryNTicks?: number;
 	/** Retained convergence riders; piggyback this poller's timer. */
 	onReconcilePatrolTick?: () => void | Promise<void>;
 	/** Reconcile patrol cadence (default 20, about 60s in production). */
@@ -322,7 +314,6 @@ export interface GatePollerConfig {
 }
 
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
-const DEFAULT_RECEIPT_FOUNDATION_OFF_ALERT_EVERY_N_TICKS = 1_200;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
@@ -423,7 +414,6 @@ export function isSupersededShipGate(
 export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
-	private readonly receiptFoundationOffBootMs = Date.now();
 	private reconcilePatrolPass: Promise<void> | null = null;
 	// FLY-1099 §7.2: retained unreachable-runner consistency watchdog.
 	private readonly founderReplyWatchdog: FounderReplyWatchdog;
@@ -499,9 +489,6 @@ export class GatePoller {
 
 	start(): void {
 		if (this.timerHandle) return;
-		if (this.receiptFoundationOff()) {
-			this.emitReceiptFoundationOffAlert("startup", 0);
-		}
 		// FLY-639: guard the timer callback so an async poll() that somehow rejects
 		// can never become an unhandled rejection that exits the Bridge. poll()'s
 		// internals are already wrapped (per-lead + founder-reply try/catch), this
@@ -549,13 +536,6 @@ export class GatePoller {
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
-
-			if (
-				this.receiptFoundationOff() &&
-				this.tickCount % this.receiptFoundationOffAlertEveryNTicks() === 0
-			) {
-				this.emitReceiptFoundationOffAlert("periodic", this.tickCount);
-			}
 
 			if (
 				this.config.onReconcilePatrolTick &&
@@ -1039,86 +1019,6 @@ export class GatePoller {
 			1,
 			this.config.reconcilePatrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS,
 		);
-	}
-
-	private receiptFoundationOffAlertEveryNTicks(): number {
-		return Math.max(
-			1,
-			this.config.receiptFoundationOffAlertEveryNTicks ??
-				DEFAULT_RECEIPT_FOUNDATION_OFF_ALERT_EVERY_N_TICKS,
-		);
-	}
-
-	/**
-	 * The callback is optional only for narrow unit fixtures. Production always
-	 * wires it; only an explicit false means receipt chasing is paused and owes
-	 * the fail-loud alerts. Founder transport remains Lead-only in either state.
-	 */
-	private receiptFoundationOff(): boolean {
-		const enabled = this.config.receiptFoundationEnabled;
-		if (!enabled) return false;
-		try {
-			return enabled() === false;
-		} catch (error) {
-			console.error(
-				`[GatePoller] CRITICAL: receipt foundation state unreadable; treating it as OFF: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return true;
-		}
-	}
-
-	private emitReceiptFoundationOffAlert(
-		phase: "startup" | "periodic",
-		tick: number,
-	): void {
-		const title = "receipt foundation OFF — 追办已暂停";
-		console.error(
-			`[GatePoller] CRITICAL: ${title}. FLYWHEEL_RECEIPT_FOUNDATION=0 is an emergency temporary rollback, not a supported steady state.`,
-		);
-
-		const sink = this.config.leadAlertSink;
-		const route = this.infraAlertRoute();
-		if (!sink || !route) {
-			console.error(
-				"[GatePoller] CRITICAL: receipt-foundation OFF alert has no durable Lead alert route",
-			);
-			return;
-		}
-
-		const episode = `${process.pid}:${this.receiptFoundationOffBootMs}`;
-		const eventId =
-			phase === "startup"
-				? `receipt-foundation-off:startup:${episode}`
-				: `receipt-foundation-off:periodic:${episode}:${tick}`;
-		void sink
-			.alert({
-				leadId: route.leadId,
-				projectName: route.projectName,
-				eventId,
-				eventType: "receipt_foundation_off",
-				title,
-				body:
-					"FLYWHEEL_RECEIPT_FOUNDATION=0 has paused receipt deadline advance, resend, and escalation. " +
-					"Founder transport remains Lead-only; restore receipt chasing after the incident is contained.",
-				severity: "severe",
-			})
-			.then((result) => {
-				if (
-					!result.sent &&
-					!result.queued &&
-					!result.dmSent &&
-					result.skipped !== "duplicate"
-				) {
-					console.error(
-						`[GatePoller] CRITICAL: receipt-foundation OFF durable alert was not delivered (${result.skipped ?? "unknown"})`,
-					);
-				}
-			})
-			.catch((error) => {
-				console.error(
-					`[GatePoller] CRITICAL: receipt-foundation OFF durable alert failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			});
 	}
 
 	private runReconcilePatrolPass(): Promise<void> {

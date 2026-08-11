@@ -147,29 +147,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "Lead blocked-marker 修改后需重启 Bridge。",
 	},
-	// ─── FLY-1392: receipt foundation ───
-	{
-		name: "receipt_foundation",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_RECEIPT_FOUNDATION",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"category-agnostic Lead 防漏收据闭环(=0 事故紧急临时回退时只暂停 deadline、重发与升级;入账、投递与 Lead handle 保持可用)",
-		readSites: [
-			envSite(
-				"packages/config/src/feature-flags/receipt-foundation.ts",
-				"receiptFoundationEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "行为读取是 call-time；=0 会在 Bridge 启动时立即告警并按小时周期重复告警，不得作为常态运行方式。它不会恢复 Bridge 代答或停止入账。事故结束后恢复开启并按 Bridge 重启边界验证。",
-	},
 	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
 	{
 		name: "mailbox_queue",
@@ -3196,33 +3173,5 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "conversational",
-	},
-	{
-		name: "mailbox_discord",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_MAILBOX_DISCORD",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1574: route inbound Discord messages through the durable mailbox; =0 preserves the legacy direct path during the validation window",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/discord-chat-ingest.ts",
-				"readMailboxDiscordFlag",
-				"dotenv_live",
-				"dynamic",
-			),
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/CodexDiscordMailboxStrategy.ts",
-				"CodexDiscordMailboxStrategy.accept",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "readonly",
-		note: "Founder-required temporary rollback flag; remove with the family cleanup issue after live validation. The canonical Discord plugin reads the same dotenv value at message time.",
 	},
 ];

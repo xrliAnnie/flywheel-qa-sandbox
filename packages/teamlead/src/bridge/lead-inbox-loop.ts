@@ -45,7 +45,6 @@ export interface LeadInboxLoopOptions {
 	retryBackoffBaseMs?: number;
 	retryBackoffCapMs?: number;
 	unprocessedWindowMs?: number;
-	receiptFoundationEnabled?: () => boolean;
 	onProtocolQuarantine?: (
 		row: MailboxRow,
 		error: Error,

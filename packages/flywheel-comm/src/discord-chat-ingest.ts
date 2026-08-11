@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
 	type ChatDeliveryAttachment,
 	type ChatDeliveryEnvelopeV1,
@@ -11,8 +10,6 @@ import {
 } from "./chat-delivery-envelope.js";
 import { type DiscordLaneVerdict, MailboxQueue } from "./mailbox-queue.js";
 import { encodeSenderRef } from "./sender-ref.js";
-
-export const MAILBOX_DISCORD_ENV = "FLYWHEEL_MAILBOX_DISCORD";
 
 export interface IngestDiscordChatArgs {
 	dbPath: string;
@@ -163,19 +160,4 @@ export function parseDiscordChatRoute(content: string): {
 			: {}),
 		...(envelope.replyRoute ? { replyRoute: envelope.replyRoute } : {}),
 	};
-}
-
-export function readMailboxDiscordFlag(envPath: string): {
-	enabled: boolean;
-	readError?: string;
-} {
-	try {
-		const prefix = `${MAILBOX_DISCORD_ENV}=`;
-		const line = readFileSync(envPath, "utf8")
-			.split(/\r?\n/)
-			.find((candidate) => candidate.startsWith(prefix));
-		return { enabled: line?.slice(prefix.length) === "1" };
-	} catch (error) {
-		return { enabled: false, readError: (error as Error).message };
-	}
 }

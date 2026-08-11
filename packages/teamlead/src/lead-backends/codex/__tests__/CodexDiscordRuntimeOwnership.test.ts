@@ -13,7 +13,6 @@ function handle(): ProcessLockHandle {
 }
 
 function harness(args: {
-	flag: () => boolean;
 	acquire: ProcessLockAcquire;
 	probe?: () => Promise<unknown>;
 }) {
@@ -30,7 +29,6 @@ function harness(args: {
 		authSecret: "secret",
 		server,
 		gateway,
-		readFlag: () => ({ enabled: args.flag() }),
 		acquireLock: args.acquire,
 		probe:
 			args.probe ??
@@ -44,7 +42,7 @@ function harness(args: {
 }
 
 describe("CodexDiscordRuntimeOwnership", () => {
-	it("elects exactly one ON winner across two competing runtime shapes", async () => {
+	it("elects exactly one winner across two competing runtime shapes", async () => {
 		const stateDir = mkdtempSync(join(tmpdir(), "fly1574-runtime-owner-"));
 		const make = () => {
 			const server = {
@@ -66,7 +64,6 @@ describe("CodexDiscordRuntimeOwnership", () => {
 					authSecret: "secret",
 					server,
 					gateway,
-					readFlag: () => ({ enabled: true }),
 					probe: async () => ({ socketOwnerId: "winner" }),
 					autoRefresh: false,
 					logger: { info: vi.fn(), warn: vi.fn() },
@@ -87,10 +84,9 @@ describe("CodexDiscordRuntimeOwnership", () => {
 		rmSync(stateDir, { recursive: true, force: true });
 	});
 
-	it("starts the socket and gateway only after the same runtime holds both ON locks", async () => {
+	it("starts the socket and gateway only after the same runtime holds both locks", async () => {
 		const paths: string[] = [];
 		const { owner, server, gateway } = harness({
-			flag: () => true,
 			acquire: async (path) => {
 				paths.push(path);
 				return { status: "acquired", handle: handle() };
@@ -109,7 +105,6 @@ describe("CodexDiscordRuntimeOwnership", () => {
 
 	it("stands by when a live socket owner answers the authenticated probe", async () => {
 		const { owner, server, gateway } = harness({
-			flag: () => false,
 			acquire: async () => ({ status: "conflict" }),
 			probe: async () => ({ socketOwnerId: "other" }),
 		});
@@ -119,21 +114,8 @@ describe("CodexDiscordRuntimeOwnership", () => {
 		await owner.stop();
 	});
 
-	it("keeps the OFF legacy gateway available when locking and probing are unavailable", async () => {
+	it("fails stopped when neither lock ownership nor a live owner is proven", async () => {
 		const { owner, server, gateway } = harness({
-			flag: () => false,
-			acquire: async () => ({ status: "unavailable", error: "EMFILE" }),
-		});
-		await owner.start();
-		expect(server.listen).not.toHaveBeenCalled();
-		expect(gateway.start).toHaveBeenCalledOnce();
-		expect(owner.mailboxReady()).toBe(false);
-		await owner.stop();
-	});
-
-	it("fails stopped while ON when neither lock ownership nor a live owner is proven", async () => {
-		const { owner, server, gateway } = harness({
-			flag: () => true,
 			acquire: async () => ({ status: "unavailable", error: "EACCES" }),
 		});
 		await owner.start();
@@ -143,34 +125,9 @@ describe("CodexDiscordRuntimeOwnership", () => {
 		await owner.stop();
 	});
 
-	it("releases only the ingress lock on a live ON to OFF flip", async () => {
-		let enabled = false;
-		const socket = handle();
-		const ingress = handle();
-		const { owner } = harness({
-			flag: () => enabled,
-			acquire: async (path) => ({
-				status: "acquired",
-				handle: path.endsWith("discord-inbound.lock") ? ingress : socket,
-			}),
-		});
-		await owner.start();
-		expect(owner.mailboxReady()).toBe(false);
-		enabled = true;
-		await owner.refresh();
-		expect(owner.mailboxReady()).toBe(true);
-		enabled = false;
-		await owner.refresh();
-		expect(owner.mailboxReady()).toBe(false);
-		expect(ingress.close).toHaveBeenCalledOnce();
-		expect(socket.close).not.toHaveBeenCalled();
-		await owner.stop();
-	});
-
 	it("fails stopped without unlinking a successor socket when its helper dies", async () => {
 		let socketLost: ((error: string) => void) | undefined;
 		const { owner, server, gateway } = harness({
-			flag: () => true,
 			acquire: async (path, onLost) => {
 				if (path.endsWith("codex-mailbox-socket.lock")) socketLost = onLost;
 				return { status: "acquired", handle: handle() };

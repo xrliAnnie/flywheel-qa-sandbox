@@ -673,12 +673,9 @@ export interface DetectionEscalationRow {
 	attempts: number;
 	/** How a RESOLVED row got there. Machine-proven clears (`recovery` and
 	 * `residue_harvest`) may revive on later re-detection; `lead` (a human
-	 * receipt) follows legacy identical-content semantics and never revives.
+	 * acknowledgment) follows legacy identical-content semantics and never revives.
 	 * NULL = pre-migration → treated as `lead` (conservative). */
 	resolved_via: "recovery" | "residue_harvest" | "lead" | null;
-	source_receipt_id: string | null;
-	source_execution_id: string | null;
-	source_question_id: string | null;
 }
 
 export type FounderDecisionClassification =
@@ -1815,6 +1812,51 @@ export class StateStore {
 		this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 	}
 
+	private migrateDetectionEscalationLineageColumns(): void {
+		const retiredColumns = [
+			"source_receipt_id",
+			"source_execution_id",
+			"source_question_id",
+		] as const;
+		const present = retiredColumns.filter((column) =>
+			this.workflowTableColumns("detection_escalations").has(column),
+		);
+		if (present.length === 0) return;
+
+		try {
+			this.db.raw
+				.transaction(() => {
+					const lineageIndexes = this.db.raw
+						.prepare(
+							"SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'detection_escalations'",
+						)
+						.all() as Array<{ name: string; sql: string | null }>;
+					for (const index of lineageIndexes) {
+						if (
+							!index.sql ||
+							!retiredColumns.some((column) =>
+								new RegExp(`\\b${column}\\b`).test(index.sql!),
+							)
+						) {
+							continue;
+						}
+						const quotedName = `"${index.name.replaceAll('"', '""')}"`;
+						this.db.raw.exec(`DROP INDEX IF EXISTS ${quotedName}`);
+					}
+					for (const column of present) {
+						this.db.raw.exec(
+							`ALTER TABLE detection_escalations DROP COLUMN ${column}`,
+						);
+					}
+				})
+				.immediate();
+		} catch (err) {
+			console.warn(
+				`[state-store] detection lineage retirement rolled back; legacy columns remain inert: ${(err as Error).message}`,
+			);
+		}
+	}
+
 	private migrateWorkflowReworkDeliveryBudget(): void {
 		const table = this.db.raw
 			.prepare(
@@ -2920,8 +2962,8 @@ export class StateStore {
 		// not make a REAL notification disappear. So it is delivered as raw JSON
 		// and the downgrade is recorded here. Separate from the quarantine table on
 		// purpose: this row IS delivered, and nothing may suggest it was held back.
-		// FLY-1586 R3 BLOCKER: a `receipt_unprocessed` detection escalation whose
-		// subject root was frozen as stock. Its payload carries the root's
+		// FLY-1586 R3 BLOCKER: a detection escalation whose subject root was
+		// frozen as stock. Its payload carries the root's
 		// contentSummary and tells the Lead to complete the routing side effect —
 		// for a founder root that IS the old instruction, arriving above the
 		// watermark through a journal mirror the freeze never saw.
@@ -3819,9 +3861,6 @@ export class StateStore {
 				status TEXT NOT NULL DEFAULT 'NEW',
 				attempts INTEGER NOT NULL DEFAULT 0,
 				resolved_via TEXT,
-				source_receipt_id TEXT,
-				source_execution_id TEXT,
-				source_question_id TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				PRIMARY KEY (target_key, kind, episode_fingerprint)
 			)
@@ -3835,13 +3874,7 @@ export class StateStore {
 		} catch {
 			/* column already exists */
 		}
-		for (const column of [
-			"source_receipt_id",
-			"source_execution_id",
-			"source_question_id",
-		]) {
-			this.addColumnIfMissing("detection_escalations", column, "TEXT");
-		}
+		this.migrateDetectionEscalationLineageColumns();
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_detection_escalations_status ON detection_escalations(status)",
 		);
@@ -11839,7 +11872,7 @@ export class StateStore {
 	}
 
 	private static readonly DETECTION_ESCALATION_COLUMNS =
-		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via, source_receipt_id, source_execution_id, source_question_id";
+		"target_key, kind, episode_fingerprint, issue_id, owner_lead_id, first_detected_at_ms, lead_notified_at_ms, lead_ack_at_ms, founder_paged_at_ms, clearing_since_ms, status, attempts, resolved_via";
 
 	private detectionEscalationFromValues(
 		row: unknown[],
@@ -11862,9 +11895,6 @@ export class StateStore {
 				| "residue_harvest"
 				| "lead"
 				| null,
-			source_receipt_id: (row[13] as string | null) ?? null,
-			source_execution_id: (row[14] as string | null) ?? null,
-			source_question_id: (row[15] as string | null) ?? null,
 		};
 	}
 
@@ -11884,26 +11914,6 @@ export class StateStore {
 		return row ? this.detectionEscalationFromValues(row) : undefined;
 	}
 
-	/** Resolve a receipt-derived episode by its bounded parent id. Ambiguous
-	 * lineage fails closed instead of acknowledging an arbitrary row. */
-	getDetectionEscalationBySourceReceiptId(
-		targetKey: string,
-		kind: string,
-		sourceReceiptId: string,
-	): DetectionEscalationRow | undefined {
-		const result = this.db.exec(
-			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
-			 FROM detection_escalations
-			 WHERE target_key = ? AND kind = ? AND source_receipt_id = ?
-			 LIMIT 2`,
-			[targetKey, kind, sourceReceiptId],
-		);
-		const rows = result[0]?.values ?? [];
-		return rows.length === 1
-			? this.detectionEscalationFromValues(rows[0]!)
-			: undefined;
-	}
-
 	/**
 	 * Insert a NEW episode, or return the existing row untouched — episode
 	 * continuity: re-observing an episode must never reset its detection clock
@@ -11916,16 +11926,12 @@ export class StateStore {
 		issueId?: string | null;
 		ownerLeadId?: string | null;
 		firstDetectedAtMs: number;
-		sourceReceiptId?: string | null;
-		sourceExecutionId?: string | null;
-		sourceQuestionId?: string | null;
 	}): { created: boolean; row: DetectionEscalationRow } {
 		this.db.run(
 			`INSERT OR IGNORE INTO detection_escalations
 			   (target_key, kind, episode_fingerprint, issue_id, owner_lead_id,
-			    first_detected_at_ms, source_receipt_id, source_execution_id,
-			    source_question_id)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			    first_detected_at_ms)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
 			[
 				input.targetKey,
 				input.kind,
@@ -11933,28 +11939,9 @@ export class StateStore {
 				input.issueId ?? null,
 				input.ownerLeadId ?? null,
 				input.firstDetectedAtMs,
-				input.sourceReceiptId ?? null,
-				input.sourceExecutionId ?? null,
-				input.sourceQuestionId ?? null,
 			],
 		);
 		let created = this.db.getRowsModified() > 0;
-		if (
-			!created &&
-			input.sourceReceiptId &&
-			input.sourceExecutionId
-		) {
-			this.attachDetectionSettlementLineage(
-				input.targetKey,
-				input.kind,
-				input.episodeFingerprint,
-				{
-					sourceReceiptId: input.sourceReceiptId,
-					sourceExecutionId: input.sourceExecutionId,
-					sourceQuestionId: input.sourceQuestionId ?? null,
-				},
-			);
-		}
 		if (created) this.save();
 		let row = this.getDetectionEscalation(
 			input.targetKey,
@@ -12015,158 +12002,6 @@ export class StateStore {
 			}
 		}
 		return { created, row };
-	}
-
-	attachDetectionSettlementLineage(
-		targetKey: string,
-		kind: string,
-		episodeFingerprint: string,
-		lineage: {
-			sourceReceiptId: string;
-			sourceExecutionId: string;
-			sourceQuestionId: string | null;
-		},
-	): boolean {
-		const row = this.getDetectionEscalation(
-			targetKey,
-			kind,
-			episodeFingerprint,
-		);
-		if (!row) return false;
-		const current = [
-			row.source_receipt_id,
-			row.source_execution_id,
-			row.source_question_id,
-		];
-		const expected = [
-			lineage.sourceReceiptId,
-			lineage.sourceExecutionId,
-			lineage.sourceQuestionId,
-		];
-		if (current.some((value) => value !== null)) {
-			if (current.every((value, index) => value === expected[index])) {
-				return true;
-			}
-			throw new Error(
-				`detection settlement lineage conflict for ${targetKey}/${kind}/${episodeFingerprint}`,
-			);
-		}
-		this.db.run(
-			`UPDATE detection_escalations
-			    SET source_receipt_id = ?, source_execution_id = ?,
-			        source_question_id = ?
-			  WHERE target_key = ? AND kind = ? AND episode_fingerprint = ?
-			    AND source_receipt_id IS NULL
-			    AND source_execution_id IS NULL
-			    AND source_question_id IS NULL`,
-			[
-				lineage.sourceReceiptId,
-				lineage.sourceExecutionId,
-				lineage.sourceQuestionId,
-				targetKey,
-				kind,
-				episodeFingerprint,
-			],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	listActiveLegacyReceiptDetections(input: {
-		projectName: string;
-		issueAliases: readonly string[];
-	}): DetectionEscalationRow[] {
-		const issueAliases = [
-			...new Set(input.issueAliases.filter((value) => value.trim().length > 0)),
-		];
-		const issueClause =
-			issueAliases.length > 0
-				? `AND (issue_id IS NULL OR issue_id IN (${issueAliases
-						.map(() => "?")
-						.join(",")}))`
-				: "AND issue_id IS NULL";
-		const result = this.db.exec(
-			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
-			   FROM detection_escalations
-			  WHERE kind LIKE 'receipt_unprocessed%'
-			    AND status != 'RESOLVED'
-			    AND source_receipt_id IS NULL
-			    AND substr(target_key, 1, length(?) + 1) = ? || ':'
-			    ${issueClause}
-			  ORDER BY first_detected_at_ms, target_key, kind, episode_fingerprint`,
-			[input.projectName, input.projectName, ...issueAliases],
-		);
-		return (result[0]?.values ?? []).map((row) =>
-			this.detectionEscalationFromValues(row),
-		);
-	}
-
-	listActiveLegacyReceiptDetectionsForReceipt(
-		receiptId: string,
-	): DetectionEscalationRow[] {
-		const result = this.db.exec(
-			`SELECT ${StateStore.DETECTION_ESCALATION_COLUMNS}
-			   FROM detection_escalations
-			  WHERE episode_fingerprint = ?
-			    AND kind LIKE 'receipt_unprocessed%'
-			    AND status != 'RESOLVED'
-			    AND source_receipt_id IS NULL
-			  ORDER BY first_detected_at_ms, target_key, kind`,
-			[receiptId],
-		);
-		return (result[0]?.values ?? []).map((row) =>
-			this.detectionEscalationFromValues(row),
-		);
-	}
-
-	attachLegacyReceiptDetectionLineage(
-		receiptId: string,
-		lineage: {
-			sourceExecutionId: string;
-			sourceQuestionId: string;
-		},
-	): number {
-		const candidates = this.workflowSelectAll(
-			`SELECT target_key, kind, episode_fingerprint
-			   FROM detection_escalations
-			  WHERE episode_fingerprint = ?
-			    AND kind LIKE 'receipt_unprocessed%'`,
-			[receiptId],
-		);
-		if (candidates.length > 1) {
-			throw new Error(
-				`ambiguous legacy receipt detection lineage for ${receiptId}`,
-			);
-		}
-		if (candidates.length === 0) return 0;
-		const candidate = candidates[0]!;
-		return this.attachDetectionSettlementLineage(
-			candidate.target_key as string,
-			candidate.kind as string,
-			candidate.episode_fingerprint as string,
-			{
-				sourceReceiptId: receiptId,
-				sourceExecutionId: lineage.sourceExecutionId,
-				sourceQuestionId: lineage.sourceQuestionId,
-			},
-		)
-			? 1
-			: 0;
-	}
-
-	resolveReceiptDetectionsForExecution(
-		executionId: string,
-		atMs: number,
-	): number {
-		this.db.run(
-			`UPDATE detection_escalations
-			    SET status = 'RESOLVED', lead_ack_at_ms = COALESCE(lead_ack_at_ms, ?),
-			        resolved_via = 'recovery'
-			  WHERE source_execution_id = ?
-			    AND kind LIKE 'receipt_unprocessed%'
-			    AND status != 'RESOLVED'`,
-			[atMs, executionId],
-		);
-		return this.db.getRowsModified();
 	}
 
 	/**

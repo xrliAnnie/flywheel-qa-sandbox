@@ -38,9 +38,7 @@ export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";
 export {
 	discordBatchPartitionKey,
 	ingestDiscordChat,
-	MAILBOX_DISCORD_ENV,
 	parseDiscordChatRoute,
-	readMailboxDiscordFlag,
 	renderDiscordChatContent,
 } from "./discord-chat-ingest.js";
 export type {
