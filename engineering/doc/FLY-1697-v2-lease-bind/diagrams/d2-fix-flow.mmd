@@ -1,0 +1,20 @@
+flowchart TB
+    S["v2 Lead body 启动"] --> P["① 领工牌 (acquire)<br/>向登记簿申请本代身份"]
+    P -->|"拿到新工牌"| B["② 立即盖章 (bind)<br/>body 自己既是管家也是持有人"]
+    P -->|"登记簿坏了"| D["降级启动:不带工牌<br/>普通消息照发,收据保持关闭<br/>+ 发告警"]
+    P -->|"别人还持有着"| H["等待重试(3→30秒退避)<br/>+ 按类型发告警<br/>旧持有者退出后自然轮到"]
+    B -->|"盖章成功"| E["③ 工牌号写进环境变量<br/>(复用既有注入逻辑,零改动)"]
+    B -->|"盖章结果不明"| V["回读核验 (verify-bound)<br/>登记簿里到底盖没盖上?"]
+    V -->|"其实盖上了"| E
+    V -->|"确实没盖上"| H2["首轮静默重试<br/>连续第2轮起升级告警<br/>(绝无静默卡死路径)"]
+    H2 --> P
+    H --> P
+    E --> L["④ 启动 Claude<br/>收据结算恢复 ✅"]
+    D --> L2["启动 Claude<br/>(收据仍关闭,等修好登记簿)"]
+
+    style S fill:#eef4ff,stroke:#007aff
+    style E fill:#d7f5dd,stroke:#34c759
+    style L fill:#d7f5dd,stroke:#34c759
+    style D fill:#fff3d6,stroke:#ff9500
+    style H fill:#fff3d6,stroke:#ff9500
+    style H2 fill:#fff3d6,stroke:#ff9500

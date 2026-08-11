@@ -1,0 +1,13 @@
+flowchart TB
+    W["Lead 发起一次写入<br/>(发消息 / 结算收据…)"] --> C{"环境变量里<br/>有工牌信息吗?"}
+    C -->|"有工牌号"| V["走完整校验(与 v1 同轨)<br/>登记簿核对:是当代吗?盖章了吗?"]
+    C -->|"有『降级』标记"| DN["不再走捷径(本次修复)<br/>audit_only 记账放行<br/>enforce 真拒 — 写边界恢复关闭"]
+    C -->|"什么都没有<br/>(旧版 body)"| PT["通行捷径 passthrough<br/>字节不变 — 混跑期兼容"]
+    V -->|"校验通过"| OK["带工牌签名放行<br/>普通写入 ✅ + 收据结算 ✅"]
+    V -->|"工牌过期(有历史)"| AU["audit_only:放行+记一笔账<br/>enforce:拒绝<br/>(恢复 v1 时代同轨行为)"]
+    PT --> PW["普通写入 ✅<br/>收据结算 ⛔(签名缺失)"]
+
+    style OK fill:#d7f5dd,stroke:#34c759
+    style AU fill:#fff3d6,stroke:#ff9500
+    style DN fill:#fff3d6,stroke:#ff9500
+    style PW fill:#ffe9e7,stroke:#ff3b30

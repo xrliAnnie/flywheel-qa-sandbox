@@ -191,6 +191,113 @@ lead_identity_bind_lease() {
   [ "$status" = "bound" ]
 }
 
+# FLY-1697: launchd-native (v2) body identity step. The body process is its
+# own supervisor and holder, so acquire and bind happen back-to-back before
+# any session or receipt side effect.
+# rc 0: bound; LEAD_LEASE_KEY/LEAD_LEASE_GENERATION carry the claim.
+# rc 1: degraded store; launch may proceed without a claim.
+# rc 2: held; LEAD_LEASE_HOLD_REASON describes the retry reason.
+lead_identity_v2_acquire_bind() {
+  local lead_id="$1" project="$2" body_pid="$3" body_start="$4"
+  local prepare_rc=0 bind_rc=0 verify_rc=0
+
+  if [ -z "$body_start" ]; then
+    LEAD_LEASE_KEY=""
+    LEAD_LEASE_GENERATION=""
+    LEAD_LEASE_DEGRADED="store_error"
+    LEAD_LEASE_HOLD_REASON=""
+    LEAD_LEASE_FRESH=0
+    return 1
+  fi
+
+  lead_identity_prepare_lease "$lead_id" "$project" "$body_pid" "$body_start" \
+    || prepare_rc=$?
+  case "$prepare_rc" in
+    0)
+      if [ -n "$LEAD_LEASE_KEY" ] && [ -n "$LEAD_LEASE_GENERATION" ]; then
+        lead_identity_bind_lease \
+          "$LEAD_LEASE_KEY" "$LEAD_LEASE_GENERATION" \
+          "$body_pid" "$body_start" "$body_pid" "$body_start" || bind_rc=$?
+        [ "$bind_rc" -ne 0 ] || return 0
+        if [ "$bind_rc" -eq 2 ]; then
+          LEAD_LEASE_HOLD_REASON="v2_bind_store_error"
+          return 2
+        fi
+
+        # The bind transaction may have committed before its CLI response was
+        # lost. Resolve that ambiguity with an exact read-back before holding.
+        lead_identity_v2_verify_bound \
+          "$LEAD_LEASE_KEY" "$LEAD_LEASE_GENERATION" \
+          "$body_pid" "$body_start" || verify_rc=$?
+        case "$verify_rc" in
+          0) return 0 ;;
+          2) LEAD_LEASE_HOLD_REASON="v2_bind_verify_store_error" ;;
+          *) LEAD_LEASE_HOLD_REASON="v2_bind_unverified" ;;
+        esac
+        return 2
+      fi
+      return 1
+      ;;
+    4)
+      # A one-shot body cannot adopt a foreign legacy pane. Hold until that
+      # holder exits, then the next acquire can advance the generation.
+      LEAD_LEASE_HOLD_REASON="denied_holder_alive"
+      return 2
+      ;;
+    5)
+      # Recovery after a bind commit whose response was lost: prepare reports
+      # our exact already-bound tuple. Never accept a foreign holder tuple.
+      if [ "$LEAD_LEASE_ORPHAN_HOLDER_PID" = "$body_pid" ] \
+        && [ "$LEAD_LEASE_ORPHAN_HOLDER_START" = "$body_start" ]; then
+        return 0
+      fi
+      LEAD_LEASE_HOLD_REASON="denied_holder_alive"
+      return 2
+      ;;
+    *)
+      [ -n "${LEAD_LEASE_HOLD_REASON:-}" ] \
+        || LEAD_LEASE_HOLD_REASON="v2_unexpected_prepare_rc_${prepare_rc}"
+      return 2
+      ;;
+  esac
+}
+
+# Read-after-write disambiguation for a bind whose CLI response was lost.
+# rc 0 only when the current store row is bound to this exact body tuple and
+# generation; rc 2 means store/CLI failure, rc 1 is a definite mismatch.
+lead_identity_v2_verify_bound() {
+  local lead_key="$1" expected_generation="$2" body_pid="$3" body_start="$4"
+  local output="" rc=0 status="" generation=""
+  output="$(lead_identity_cli verify-bound \
+    --lead-key "$lead_key" \
+    --supervisor-pid "$body_pid" \
+    --supervisor-start "$body_start" \
+    --holder-pid "$body_pid" \
+    --holder-start "$body_start" \
+    --json)" || rc=$?
+  [ "$rc" -ne 2 ] || return 2
+  status="$(printf '%s' "$output" | lead_identity_json_field status 2>/dev/null || true)"
+  generation="$(printf '%s' "$output" | lead_identity_json_field generation 2>/dev/null || true)"
+  [ "$rc" -eq 0 ] \
+    && [ "$status" = "verified" ] \
+    && [ "$generation" = "$expected_generation" ]
+}
+
+# Pure alert classifier for the v2 HOLD loop. The first definite bind mismatch
+# gets one silent retry; a repeated identical mismatch must become visible.
+lead_identity_v2_hold_alert_kind() {
+  local reason="$1" count="${2:-1}"
+  case "$reason" in
+    denied_holder_alive) printf 'lead_dual_active\n' ;;
+    denied_sensor_degraded) printf 'lead_dual_active_sensor_degraded\n' ;;
+    v2_bind_store_error|v2_bind_verify_store_error) printf 'lead_lease_store_broken\n' ;;
+    v2_bind_unverified)
+      [ "$count" -lt 2 ] || printf 'lead_identity_source_broken\n'
+      ;;
+    *) printf 'lead_identity_source_broken\n' ;;
+  esac
+}
+
 # Exact token matcher for the production Claude launch shape. It deliberately
 # checks the executable basename before inspecting flags, preventing a wrapper,
 # prompt, --agent-id, or substring from impersonating a Lead process.

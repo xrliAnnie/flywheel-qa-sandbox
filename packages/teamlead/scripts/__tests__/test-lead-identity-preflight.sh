@@ -63,6 +63,9 @@ FAKE_RESOLVE_STATUS=ok
 FAKE_ACQUIRE_STATUS=acquired
 FAKE_GENERATION=1
 FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
+FAKE_VERIFY_STATUS=verified
+FAKE_VERIFY_RC=0
 FAKE_ACQUIRE_RC=0
 FAKE_HOLDER_PID=800
 FAKE_HOLDER_START="holder-start"
@@ -87,7 +90,12 @@ lead_identity_cli() {
       ;;
     bind)
       printf '{"status":"%s","generation":%s}\n' "$FAKE_BIND_STATUS" "$FAKE_GENERATION"
-      [ "$FAKE_BIND_STATUS" = bound ]
+      return "$FAKE_BIND_RC"
+      ;;
+    verify-bound)
+      printf '{"status":"%s","generation":%s}\n' \
+        "$FAKE_VERIFY_STATUS" "${FAKE_VERIFY_GENERATION:-$FAKE_GENERATION}"
+      return "$FAKE_VERIFY_RC"
       ;;
   esac
 }
@@ -210,15 +218,202 @@ else
 fi
 
 FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
 FAKE_GENERATION=9
 lead_identity_bind_lease flywheel-eng-lead 9 700 "supervisor-start" 800 "pane-start" \
   && ok "bind commit accepts the exact pane generation" \
   || bad "valid bind failed"
 FAKE_BIND_STATUS=stale_generation
+FAKE_BIND_RC=1
 if lead_identity_bind_lease flywheel-eng-lead 9 700 "supervisor-start" 800 "pane-start"; then
   bad "stale bind was accepted"
 else
   ok "stale bind fails for generation-bound cleanup"
+fi
+
+# FLY-1697: the launchd-native body is both supervisor and holder. Exercise
+# the source-only v2 identity seam as a state machine; no filesystem or process
+# mutation is needed at this layer.
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_ACQUIRE_RC=0
+FAKE_GENERATION=12
+FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
+FAKE_VERIFY_STATUS=verified
+FAKE_VERIFY_RC=0
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" \
+  && [ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] \
+  && [ "$LEAD_LEASE_GENERATION" = 12 ]; then
+  ok "v2 body acquires and binds its own generation"
+else
+  bad "v2 body did not acquire and bind its own generation"
+fi
+
+FAKE_ACQUIRE_STATUS=idempotent
+FAKE_BIND_STATUS=stale_generation
+FAKE_BIND_RC=1
+FAKE_VERIFY_STATUS=mismatch
+FAKE_VERIFY_RC=3
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "definite bind mismatch was accepted"
+elif [ "$?" -eq 2 ] \
+  && [ "$LEAD_LEASE_HOLD_REASON" = v2_bind_unverified ] \
+  && [ "$LEAD_LEASE_GENERATION" = 12 ]; then
+  ok "v2 body holds a definite bind mismatch on the same generation"
+else
+  bad "v2 definite bind mismatch lost its typed evidence"
+fi
+FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" \
+  && [ "$LEAD_LEASE_GENERATION" = 12 ]; then
+  ok "v2 self-unbound retry converges without generation churn"
+else
+  bad "v2 self-unbound retry did not converge"
+fi
+
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_BIND_STATUS=stale_generation
+FAKE_BIND_RC=1
+FAKE_VERIFY_STATUS=mismatch
+FAKE_VERIFY_RC=3
+lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1 || true
+[ "$LEAD_LEASE_HOLD_REASON" = v2_bind_unverified ] \
+  && [ -z "$(lead_identity_v2_hold_alert_kind "$LEAD_LEASE_HOLD_REASON" 1)" ] \
+  && [ "$(lead_identity_v2_hold_alert_kind "$LEAD_LEASE_HOLD_REASON" 2)" = lead_identity_source_broken ] \
+  && ok "repeated v2 bind mismatch escalates after one silent retry" \
+  || bad "v2 bind mismatch escalation classification drifted"
+
+FAKE_VERIFY_STATUS=verified
+FAKE_VERIFY_RC=0
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" \
+  && [ "$LEAD_LEASE_GENERATION" = 12 ]; then
+  ok "read-after-write verification accepts an ambiguously reported bind"
+else
+  bad "read-after-write verification did not recover an ambiguous bind"
+fi
+
+FAKE_VERIFY_GENERATION=13
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "read-after-write verification accepted a different generation"
+elif [ "$?" -eq 2 ] && [ "$LEAD_LEASE_HOLD_REASON" = v2_bind_unverified ]; then
+  ok "read-after-write verification rejects a different generation on the same tuple"
+else
+  bad "read-after-write generation mismatch lost its typed hold reason"
+fi
+unset FAKE_VERIFY_GENERATION
+
+FAKE_ACQUIRE_STATUS=idempotent_adopted
+FAKE_HOLDER_PID=700
+FAKE_HOLDER_START=body-start
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" \
+  && [ "$LEAD_LEASE_GENERATION" = 12 ]; then
+  ok "v2 body accepts its own already-bound tuple after a lost bind response"
+else
+  bad "v2 body rejected its own already-bound tuple"
+fi
+
+FAKE_HOLDER_PID=800
+FAKE_HOLDER_START=foreign-holder-start
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "v2 body adopted a foreign live holder"
+elif [ "$?" -eq 2 ] && [ "$LEAD_LEASE_HOLD_REASON" = denied_holder_alive ]; then
+  ok "v2 body refuses a foreign already-bound holder"
+else
+  bad "v2 foreign holder refusal lost its typed reason"
+fi
+
+FAKE_ACQUIRE_STATUS=holder_orphaned
+FAKE_HOLDER_PID=800
+FAKE_HOLDER_START=foreign-holder-start
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "v2 body adopted a legacy orphan holder"
+elif [ "$?" -eq 2 ] && [ "$LEAD_LEASE_HOLD_REASON" = denied_holder_alive ]; then
+  ok "v2 body holds instead of adopting a legacy orphan holder"
+else
+  bad "v2 legacy orphan refusal lost its typed reason"
+fi
+
+FAKE_ACQUIRE_STATUS=error
+FAKE_ACQUIRE_RC=2
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "v2 store degradation returned a bound identity"
+elif [ "$?" -eq 1 ] \
+  && [ "$LEAD_LEASE_DEGRADED" = store_error ] \
+  && [ -z "$LEAD_LEASE_KEY" ] \
+  && [ -z "$LEAD_LEASE_GENERATION" ]; then
+  ok "v2 store degradation launches without a generation claim"
+else
+  bad "v2 store degradation did not preserve fail-open-at-launch evidence"
+fi
+
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_ACQUIRE_RC=0
+FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "" >/dev/null 2>&1; then
+  bad "v2 body accepted an empty immutable start identity"
+elif [ "$?" -eq 1 ] \
+  && [ "$LEAD_LEASE_DEGRADED" = store_error ] \
+  && [ -z "$LEAD_LEASE_KEY" ] \
+  && [ -z "$LEAD_LEASE_GENERATION" ]; then
+  ok "v2 body degrades safely when lstart is unavailable"
+else
+  bad "v2 empty lstart did not clear stale identity output"
+fi
+
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_BIND_STATUS=error
+FAKE_BIND_RC=2
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "v2 bind store error returned success"
+elif [ "$?" -eq 2 ] && [ "$LEAD_LEASE_HOLD_REASON" = v2_bind_store_error ]; then
+  ok "v2 bind store error is a typed hold"
+else
+  bad "v2 bind store error classification drifted"
+fi
+
+FAKE_BIND_STATUS=stale_generation
+FAKE_BIND_RC=1
+FAKE_VERIFY_STATUS=error
+FAKE_VERIFY_RC=2
+if lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1; then
+  bad "v2 verify store error returned success"
+elif [ "$?" -eq 2 ] && [ "$LEAD_LEASE_HOLD_REASON" = v2_bind_verify_store_error ]; then
+  ok "v2 verify store error is a typed hold"
+else
+  bad "v2 verify store error classification drifted"
+fi
+
+[ "$(lead_identity_v2_hold_alert_kind denied_holder_alive 1)" = lead_dual_active ] \
+  && [ "$(lead_identity_v2_hold_alert_kind denied_sensor_degraded 1)" = lead_dual_active_sensor_degraded ] \
+  && [ "$(lead_identity_v2_hold_alert_kind v2_bind_store_error 1)" = lead_lease_store_broken ] \
+  && [ "$(lead_identity_v2_hold_alert_kind v2_bind_verify_store_error 1)" = lead_lease_store_broken ] \
+  && [ "$(lead_identity_v2_hold_alert_kind identity_source_error 1)" = lead_identity_source_broken ] \
+  && [ "$(lead_identity_v2_hold_alert_kind unexpected_reason 1)" = lead_identity_source_broken ] \
+  && ok "v2 identity hold reasons map to non-overlapping alert kinds" \
+  || bad "v2 identity alert classification table drifted"
+
+FAKE_ACQUIRE_STATUS=acquired
+FAKE_ACQUIRE_RC=0
+FAKE_BIND_STATUS=bound
+FAKE_BIND_RC=0
+prepare_rc=caller-prepare
+bind_rc=caller-bind
+verify_rc=caller-verify
+output=caller-output
+rc=caller-rc
+status=caller-status
+lead_identity_v2_acquire_bind eng-lead flywheel 700 "body-start" >/dev/null 2>&1 || true
+if [ "$prepare_rc" = caller-prepare ] \
+  && [ "$bind_rc" = caller-bind ] \
+  && [ "$verify_rc" = caller-verify ] \
+  && [ "$output" = caller-output ] \
+  && [ "$rc" = caller-rc ] \
+  && [ "$status" = caller-status ]; then
+  ok "v2 identity helpers do not leak temporary variables into the sourcing shell"
+else
+  bad "v2 identity helper leaked a temporary variable into the sourcing shell"
 fi
 
 if rg -q 'source .*lead-identity-preflight\.sh' "$LEAD_SH" \

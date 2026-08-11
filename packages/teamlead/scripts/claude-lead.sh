@@ -4413,9 +4413,70 @@ fi
 # FLY-1663: launchd-native carrier. This is the complete lifecycle of one body
 # invocation: choose resume/fresh once, run one Claude child, persist one exit
 # receipt, then close this private server. launchd owns every later restart.
+LEAD_LEASE_KEY=""
+LEAD_LEASE_GENERATION=""
+LEAD_LEASE_DEGRADED=""
+LEAD_LEASE_HOLD_REASON=""
+# FLY-1402 computed this once before rules materialization; the lease, bundle
+# generation, receipt, and cleanup proof must all consume the identical value.
+LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+
+_lead_identity_alert() {
+  local kind="$1" title="$2" body="$3"
+  [ -x "$LEAD_ALERT_SH" ] || return 0
+  "$LEAD_ALERT_SH" \
+    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+    --kind "$kind" --severity severe --title "$title" --body "$body" \
+    || true
+}
+
 if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
   # shellcheck source=lib/lead-body-receipt.sh
   source "${SCRIPT_DIR}/lib/lead-body-receipt.sh"
+
+  # FLY-1697: establish the body generation before consuming a session
+  # decision or launching Claude. Exiting on a HOLD would tear down the private
+  # tmux server and churn cmux, so the body retries in place with bounded
+  # backoff while the lease store remains the split-brain authority.
+  _v2_identity_backoff=3
+  _v2_identity_rc=0
+  _v2_hold_streak=0
+  _v2_prev_hold_reason=""
+  while :; do
+    _v2_identity_rc=0
+    lead_identity_v2_acquire_bind \
+      "$LEAD_ID" "$PROJECT_NAME" "$$" "$LEAD_LEASE_SUPERVISOR_START" \
+      || _v2_identity_rc=$?
+    [ "$_v2_identity_rc" -eq 2 ] || break
+    if [ "$LEAD_LEASE_HOLD_REASON" = "$_v2_prev_hold_reason" ]; then
+      _v2_hold_streak=$((_v2_hold_streak + 1))
+    else
+      _v2_hold_streak=1
+      _v2_prev_hold_reason="$LEAD_LEASE_HOLD_REASON"
+    fi
+    _v2_alert_kind="$(lead_identity_v2_hold_alert_kind \
+      "$LEAD_LEASE_HOLD_REASON" "$_v2_hold_streak")"
+    if [ -n "$_v2_alert_kind" ]; then
+      _lead_identity_alert "$_v2_alert_kind" \
+        "Lead identity held before launch" \
+        "${PROJECT_NAME}/${LEAD_ID} is held before launch: ${LEAD_LEASE_HOLD_REASON}."
+    fi
+    log "Lead identity HOLD (${LEAD_LEASE_HOLD_REASON}); retrying in ${_v2_identity_backoff}s"
+    interruptible_sleep "$_v2_identity_backoff"
+    if [ "$SHOULD_EXIT" -ne 0 ]; then
+      log "Shutdown requested during identity hold — exiting body."
+      exit 0
+    fi
+    [ "$_v2_identity_backoff" -ge 30 ] \
+      || _v2_identity_backoff=$((_v2_identity_backoff * 2))
+    [ "$_v2_identity_backoff" -le 30 ] || _v2_identity_backoff=30
+  done
+  if [ "$_v2_identity_rc" -eq 1 ]; then
+    log "WARNING: Lead lease store unavailable; launching degraded without a generation claim"
+    _lead_identity_alert lead_lease_store_broken \
+      "Lead lease store unavailable" \
+      "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and receipt settlement remains fail-closed."
+  fi
 
   _v2_is_resume=false
   _v2_session_id=""
@@ -4525,23 +4586,6 @@ if [ -f "$PID_FILE" ]; then
 fi
 echo $$ > "$PID_FILE"
 log "PID file written: ${PID_FILE} (PID $$)"
-
-LEAD_LEASE_KEY=""
-LEAD_LEASE_GENERATION=""
-LEAD_LEASE_DEGRADED=""
-LEAD_LEASE_HOLD_REASON=""
-# FLY-1402 computed this once before rules materialization; the lease, bundle
-# generation, receipt, and cleanup proof must all consume the identical value.
-LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
-
-_lead_identity_alert() {
-  local kind="$1" title="$2" body="$3"
-  [ -x "$LEAD_ALERT_SH" ] || return 0
-  "$LEAD_ALERT_SH" \
-    --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-    --kind "$kind" --severity severe --title "$title" --body "$body" \
-    || true
-}
 
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"

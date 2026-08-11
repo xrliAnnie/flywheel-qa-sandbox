@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph OLD["旧启动方式 v1(8月10日之前) — 链条完整"]
+        direction TB
+        A1["Lead 管家进程启动"] --> A2["① 领工牌<br/>(acquire: 在登记簿里登记新一代身份)"]
+        A2 --> A3["② 开工作窗口 (tmux)"]
+        A3 --> A4["③ 盖章生效<br/>(bind: 把工牌和真实进程绑定)"]
+        A4 --> A5["④ 把工牌号写进 Lead 的环境变量"]
+        A5 --> A6["Lead 干活:结算收据 ✅"]
+    end
+
+    subgraph NEW["新启动方式 v2(8月10日 launchd 切换后) — 三处断路"]
+        direction TB
+        B1["launchd 直接建好窗口"] --> B2["Lead body 一次性启动"]
+        B2 --> B3["❌ 断点1:整套工牌流程<br/>在代码里的位置根本走不到"]
+        B3 --> B4["❌ 断点2:环境变量里<br/>没有工牌号"]
+        B4 --> B5["❌ 断点3:通行捷径(passthrough)<br/>不携带工牌信息"]
+        B5 --> B6["结算收据 ⛔<br/>『需要有效工牌』双层检查拒绝"]
+    end
+
+    style OLD fill:#f0faf2,stroke:#34c759
+    style NEW fill:#fff5f5,stroke:#ff3b30
+    style A6 fill:#d7f5dd,stroke:#34c759
+    style B6 fill:#ffd9d6,stroke:#ff3b30
