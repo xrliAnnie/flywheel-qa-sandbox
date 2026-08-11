@@ -406,6 +406,48 @@ else
   log_fail "T18 non-CoS core left OPEN: requireMention=false + allowFrom=[]"
 fi
 
+# ── T19: production default resolves the pointer installPath ───────────────
+log_test "T19 default preflight resolves server.ts through the managed pointer checker"
+POINTER_HOME="$TMP_DIR/pointer-home"
+mkdir -p "$POINTER_HOME/.flywheel/bin" "$POINTER_HOME/pointer-install"
+cp "$SUPPORTED_SRV" "$POINTER_HOME/pointer-install/server.ts"
+cat > "$POINTER_HOME/.flywheel/bin/check-discord-plugin.sh" <<EOF
+#!/bin/bash
+if [ "\${1:-}" = --print-install-path ]; then
+  printf '%s\\n' "$POINTER_HOME/pointer-install"
+  exit 0
+fi
+exit 2
+EOF
+chmod +x "$POINTER_HOME/.flywheel/bin/check-discord-plugin.sh"
+P="$TMP_DIR/t19.json"; make_access "$P"
+if HOME="$POINTER_HOME" bash "$SCRIPT" \
+    --access-file "$P" --channel-id "$CORE" --id-only >/dev/null 2>&1 \
+    && [ "$(jq -c '.groups["'"$CORE"'"].mentionPatterns' "$P")" = "[]" ]; then
+  log_pass "default capability probe followed discord@flywheel-plugins installPath"
+else
+  log_fail "T19 default capability probe did not follow the pointer installPath"
+fi
+
+# ── T20: pointer integrity failure is explicit, never a silent downgrade ───
+log_test "T20 default preflight names a failed pointer integrity check"
+BROKEN_HOME="$TMP_DIR/broken-pointer-home"
+mkdir -p "$BROKEN_HOME/.flywheel/bin"
+cat > "$BROKEN_HOME/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
+#!/bin/bash
+exit 1
+EOF
+chmod +x "$BROKEN_HOME/.flywheel/bin/check-discord-plugin.sh"
+Q="$TMP_DIR/t20.json"; make_access "$Q"
+if HOME="$BROKEN_HOME" bash "$SCRIPT" \
+    --access-file "$Q" --channel-id "$CORE" --id-only >"$TMP_DIR/t20.out" 2>"$TMP_DIR/t20.err" \
+    && grep -Fq 'managed pointer checker rejected the local plugin' "$TMP_DIR/t20.err" \
+    && [ "$(jq -r '.groups["'"$CORE"'"] | has("mentionPatterns")' "$Q")" = false ]; then
+  log_pass "failed pointer integrity is loud and id-only remains deferred"
+else
+  log_fail "T20 pointer integrity failure was silent or wrote id-only state"
+fi
+
 # ── Summary ─────────────────────────────────────────────────────────────────
 echo ""
 echo "═════════════════════════════════════════"

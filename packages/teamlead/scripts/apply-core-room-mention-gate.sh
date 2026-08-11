@@ -56,9 +56,12 @@ USAGE
 }
 
 # ── Runtime plugin source (for the per-group preflight) ─────────────────────
-# The RUNTIME path Claude Code executes the MCP server from is the marketplace
-# dir. Overridable for tests.
-PLUGIN_SERVER="${FLYWHEEL_DISCORD_PLUGIN_SERVER:-$HOME/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord/server.ts}"
+# The RUNTIME path comes from the managed pointer registry. Tests may provide
+# an explicit server fixture; production resolves the installPath lazily only
+# when --id-only actually needs the capability proof.
+PLUGIN_SERVER="${FLYWHEEL_DISCORD_PLUGIN_SERVER:-}"
+PLUGIN_CHECKER="${HOME}/.flywheel/bin/check-discord-plugin.sh"
+PREFLIGHT_DETAIL=""
 # The support marker proving the RUNTIME plugin genuinely gates the core room on
 # per-group patterns. An EXPLICIT sentinel (Codex R2 MEDIUM) — not a code-shape grep:
 # a shape like `resolveGroupMentionPatterns(policy` could match a helper DEFINITION or
@@ -116,8 +119,28 @@ fi
 # Returns 0 (supported) / 1 (not). A missing server.ts → not supported (safe:
 # we won't write id-only fields that the old plugin would silently ignore).
 preflight_per_group() {
-  [ -f "$PLUGIN_SERVER" ] || return 1
-  grep -q "$PER_GROUP_MARKER" "$PLUGIN_SERVER" 2>/dev/null
+  local server="$PLUGIN_SERVER" install_path=""
+  PREFLIGHT_DETAIL=""
+  if [ -z "$server" ]; then
+    if [ ! -x "$PLUGIN_CHECKER" ]; then
+      PREFLIGHT_DETAIL="managed pointer checker is missing: $PLUGIN_CHECKER"
+      return 1
+    fi
+    if ! install_path="$($PLUGIN_CHECKER --print-install-path 2>/dev/null)"; then
+      PREFLIGHT_DETAIL="managed pointer checker rejected the local plugin"
+      return 1
+    fi
+    server="${install_path}/server.ts"
+  fi
+  if [ ! -f "$server" ]; then
+    PREFLIGHT_DETAIL="runtime server.ts is missing: $server"
+    return 1
+  fi
+  if ! grep -q "$PER_GROUP_MARKER" "$server" 2>/dev/null; then
+    PREFLIGHT_DETAIL="runtime server.ts lacks the per-group capability marker: $server"
+    return 1
+  fi
+  return 0
 }
 
 # ── Atomic edit with optimistic-concurrency guard (the plugin also writes
@@ -209,7 +232,7 @@ apply_one() {
       want_id_only=1
     else
       log "WARNING: --id-only requested but runtime plugin lacks per-group mentionPatterns support"
-      log "         ($PLUGIN_SERVER) — applying requireMention:true ONLY (bare-name still passes)."
+      log "         (${PREFLIGHT_DETAIL:-capability probe failed}) — applying requireMention:true ONLY (bare-name still passes)."
       log "         id-only NOT active: sync the fork plugin, then re-run to complete the id-only gate."
     fi
   fi

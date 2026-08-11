@@ -1,0 +1,14 @@
+flowchart TB
+    S["每天定时:自动同步任务启动"] --> F["拉取官方最新代码<br/>(4 个月累计 2818 个更新)"]
+    F --> RB["把我们的 20 个定制改动<br/>重新叠到最新代码上(rebase)"]
+    RB -- "叠加成功<br/>(官方 4 个月没碰 Discord 插件,天然不冲突)" --> G["守卫:逐字节核对<br/>Discord 插件内容一丝未变?"]
+    RB -- "叠加冲突(极少见)" --> X1["立刻发 Discord 告警 + 记工单<br/>任务标红,等人工处理"]
+    G -- "通过" --> P["推回我们的插件仓<br/>(用新钥匙 SYNC_PAT —— 旧钥匙没有<br/>'workflows 权限',100 次全被拒收,这就是<br/>同步烂了 3 个月的根因)"]
+    G -- "有差异" --> X2["拦下不推 + 发告警<br/>等人工审查"]
+    P --> OK["同步完成,插件仓保持:<br/>官方最新 + 我们的定制"]
+    X3["任何其他环节失败"] --> AL["兜底告警:一律发 Discord<br/>(以前失败是静默的,没人知道)"]
+    style OK fill:#e8f9ee,stroke:#34c759
+    style X1 fill:#fff8e6,stroke:#ff9500
+    style X2 fill:#fff8e6,stroke:#ff9500
+    style AL fill:#ffebe9,stroke:#ff3b30
+    style P fill:#eef4ff,stroke:#007aff

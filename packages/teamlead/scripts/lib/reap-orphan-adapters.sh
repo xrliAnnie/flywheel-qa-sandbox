@@ -61,10 +61,8 @@ _reap_ps_snapshot() {
   fi
 }
 
-# True if the string (argv or cwd) points at the discord plugin, in EITHER
-# install layout: cache (.../claude-plugins-official/discord/) or marketplace
-# (.../claude-plugins-official/external_plugins/discord) -- the marketplace
-# path is the actual runtime path per update-discord-plugin.sh.
+# True if the string (argv or cwd) points at the discord plugin in the legacy
+# official cache/marketplace layouts or the FLY-1676 pointer marketplace cache.
 #
 # Codex R2 MEDIUM: match the `discord` segment at an exact directory boundary
 # (the dir itself or something inside it). The old `external_plugins/discord*`
@@ -77,6 +75,8 @@ _is_discord_path() {
     */claude-plugins-official/discord/*) return 0 ;;
     */claude-plugins-official/external_plugins/discord) return 0 ;;
     */claude-plugins-official/external_plugins/discord/*) return 0 ;;
+    */flywheel-plugins/discord) return 0 ;;
+    */flywheel-plugins/discord/*) return 0 ;;
   esac
   return 1
 }

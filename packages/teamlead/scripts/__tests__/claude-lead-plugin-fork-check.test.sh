@@ -78,22 +78,37 @@ fi
 
 make_home() {
   local home="$1"
-  mkdir -p "$home/.flywheel/bin"
+  mkdir -p "$home/.flywheel/bin" "$home/.flywheel-root/scripts"
   cat > "$home/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == --print-contract ]]; then
+  if [[ "${TEST_CONTRACT_MODE:-pointer}" == pointer ]]; then
+    printf 'discord@flywheel-plugins/v1\n'
+  else
+    printf 'OK: legacy checker ignored the argument\n'
+  fi
+  exit 0
+fi
 count_file="${TEST_CALL_DIR}/check.count"
 count=0
 [[ -f "$count_file" ]] && count="$(cat "$count_file")"
 count=$((count + 1))
 printf '%s\n' "$count" > "$count_file"
+[[ "${TEST_CHECK_MODE:-}" != "always-fail" ]] || exit 1
 [[ -f "${TEST_CALL_DIR}/updated" ]]
 EOF
   cat > "$home/.flywheel/bin/update-discord-plugin.sh" <<'EOF'
 #!/usr/bin/env bash
+[[ "${TEST_UPDATE_MODE:-}" != "fail" ]] || exit 1
 touch "${TEST_CALL_DIR}/updated"
 EOF
+  cat > "$home/.flywheel-root/scripts/lead-alert.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${TEST_CALL_DIR}/alerts.log"
+EOF
   chmod +x "$home/.flywheel/bin/check-discord-plugin.sh" \
-    "$home/.flywheel/bin/update-discord-plugin.sh"
+    "$home/.flywheel/bin/update-discord-plugin.sh" \
+    "$home/.flywheel-root/scripts/lead-alert.sh"
 }
 
 run_case() {
@@ -105,6 +120,9 @@ run_case() {
       HOME="$home" \
       PATH="/usr/bin:/bin" \
       TEST_CALL_DIR="$call_dir" \
+      FLYWHEEL_ROOT="$home/.flywheel-root" \
+      LEAD_ID="test-lead" \
+      PROJECT_NAME="test-project" \
       "$@" \
       bash -c 'set -euo pipefail; log() { printf "%s\n" "$*" >> "${TEST_CALL_DIR}/launcher.log"; }; source "$1"' \
       _ "$BLOCK"
@@ -124,6 +142,86 @@ if run_case default "$H1" "$C1"; then
   fi
 else
   fail "unset flag" "production preflight exited non-zero"
+fi
+
+# All three production integrity failures are fail-stop and emit exactly one
+# claims-deduplicated alert through the shared shell alert face.
+for variant in missing-tool legacy-contract update-failed recheck-failed; do
+  H="$ROOT/home-failure-$variant"; C="$ROOT/calls-failure-$variant"; make_home "$H"
+  args=()
+  if [[ "$variant" == "missing-tool" ]]; then
+    rm "$H/.flywheel/bin/check-discord-plugin.sh"
+  elif [[ "$variant" == "legacy-contract" ]]; then
+    args+=(TEST_CONTRACT_MODE=legacy)
+  elif [[ "$variant" == "update-failed" ]]; then
+    args+=(TEST_UPDATE_MODE=fail)
+  else
+    args+=(TEST_CHECK_MODE=always-fail)
+  fi
+  if run_case "$variant" "$H" "$C" "${args[@]}"; then
+    fail "$variant" "Discord integrity failure did not stop the launcher"
+  elif [[ "$(wc -l < "$C/alerts.log" | tr -d ' ')" == "1" ]] \
+      && grep -q -- '--kind discord_plugin_integrity_failed' "$C/alerts.log"; then
+    pass "$variant fails closed with exactly one Discord integrity alert"
+  else
+    fail "$variant" "expected exactly one discord_plugin_integrity_failed alert"
+  fi
+done
+
+# Execute the launcher's real channel-argument block. A source grep for the
+# pointer selector false-greened when the CLI rejected that selector at its
+# approved-channel gate: the adapter process still started, but Discord inbound
+# was silently absent. The private pointer marketplace must therefore travel
+# through the development-channel path in both launcher modes; the local inbox
+# server is the only conditional argument.
+CHANNEL_BLOCK="$ROOT/channel-config.sh"
+awk '
+  /^# FLY-47: Channel configuration$/ { in_block = 1; next }
+  in_block && /^# FLY-80:/ { exit }
+  in_block { print }
+' "$LAUNCHER" > "$CHANNEL_BLOCK"
+
+run_channel_case() {
+  local inbox_enabled="$1" output="$2"
+  (
+    set -euo pipefail
+    CLAUDE_ARGS=()
+    INBOX_MCP_ENABLED="$inbox_enabled"
+    SCRIPT_DIR="$(dirname "$LAUNCHER")"
+    log() { :; }
+    rules_bundle_add() { :; }
+    source "$CHANNEL_BLOCK"
+    printf '%s\n' "${CLAUDE_ARGS[@]}"
+  ) > "$output"
+}
+
+if [[ ! -s "$CHANNEL_BLOCK" ]]; then
+  fail "channel fixture" "could not extract the launcher's channel argument block"
+else
+  CHANNEL_FALSE_ACTUAL="$ROOT/channel-false.actual"
+  CHANNEL_FALSE_EXPECTED="$ROOT/channel-false.expected"
+  printf '%s\n' \
+    '--dangerously-load-development-channels' \
+    'plugin:discord@flywheel-plugins' > "$CHANNEL_FALSE_EXPECTED"
+  if run_channel_case false "$CHANNEL_FALSE_ACTUAL" \
+      && cmp -s "$CHANNEL_FALSE_EXPECTED" "$CHANNEL_FALSE_ACTUAL"; then
+    pass "pointer Discord is registered as a development channel without inbox MCP"
+  else
+    fail "selector without inbox" "pointer Discord did not use the development-channel path"
+  fi
+
+  CHANNEL_TRUE_ACTUAL="$ROOT/channel-true.actual"
+  CHANNEL_TRUE_EXPECTED="$ROOT/channel-true.expected"
+  printf '%s\n' \
+    '--dangerously-load-development-channels' \
+    'plugin:discord@flywheel-plugins' \
+    'server:flywheel-inbox' > "$CHANNEL_TRUE_EXPECTED"
+  if run_channel_case true "$CHANNEL_TRUE_ACTUAL" \
+      && cmp -s "$CHANNEL_TRUE_EXPECTED" "$CHANNEL_TRUE_ACTUAL"; then
+    pass "pointer Discord and inbox MCP share one development-channel argument list"
+  else
+    fail "selector with inbox" "development-channel arguments drifted from the registered pair"
+  fi
 fi
 
 # Flag-only, mismatched, and canonical/aliased production-root paths must fail

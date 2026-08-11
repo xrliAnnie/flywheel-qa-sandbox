@@ -1696,6 +1696,7 @@ mkdir -p \
   "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
   "$BO_FLYWHEEL/packages/teamlead/dist" \
   "$BO_FLYWHEEL/packages/flywheel-comm/dist" \
+  "$BO_HOME/.flywheel/bin" \
   "$BO_HOME/.flywheel/manifests" \
   "$BO_HOME/Library/LaunchAgents" \
   "$BO_SHIMS" "$BO_CALLS"
@@ -1918,6 +1919,23 @@ printf '%s\n' "\$*" >> "$BO_CALLS/lead-alert.calls"
 exit 0
 EOF
 chmod +x "$BO_FLYWHEEL/scripts/lead-alert.sh"
+cat > "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
+#!/bin/bash
+# Hermetic default: the managed pointer is already current. Individual tests
+# replace/remove this executable when exercising integrity failure paths.
+if [[ "${1:-}" == --print-contract ]]; then
+  printf 'discord@flywheel-plugins/v1\n'
+  exit 0
+fi
+exit 0
+EOF
+cat > "$BO_HOME/.flywheel/bin/update-discord-plugin.sh" <<'EOF'
+#!/bin/bash
+exit 0
+EOF
+chmod +x \
+  "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" \
+  "$BO_HOME/.flywheel/bin/update-discord-plugin.sh"
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
 {"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
 EOF

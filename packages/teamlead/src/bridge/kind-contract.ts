@@ -165,6 +165,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	bridge_boot_stale_checkout: { owner: "claude", arc: "human_by_design" },
 	bridge_wrapper_fail: { owner: "claude", arc: "human_by_design" },
 	bin_integrity_drift: { owner: "claude", arc: "human_by_design" },
+	discord_plugin_integrity_failed: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	external_merge_suspect: { owner: "claude", arc: "human_by_design" },
 	notify_digest_failed: { owner: "claude", arc: "human_by_design" },
 	// FLY-1099: founder-reply ingest reliability kinds — all human-investigation

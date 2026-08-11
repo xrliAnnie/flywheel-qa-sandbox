@@ -37,6 +37,8 @@
 #       NON-absolute / `--entry=` option-value tokens (Codex R4 + R5).
 #   T14 shape-3 cwd-probe rejects an ABS non-plugin server.ts even when cwd is a
 #       discord dir (Codex R4 MEDIUM#2).
+#   T15 pointer-marketplace cache launch shapes match without widening to a
+#       discord-backup sibling (FLY-1676 cutover authority map).
 
 set -uo pipefail
 
@@ -102,6 +104,7 @@ spawn_orphan() {
 
 CACHE="/u/.claude/plugins/cache/claude-plugins-official/discord/0.0.4"
 MKT="/u/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord"
+POINTER="/u/.claude/plugins/cache/flywheel-plugins/discord/0.0.5"
 
 # ── T1: matcher + ppid gate (synthetic table, dry-run) ──────────────────
 log_test "T1 matcher + ppid gate (dry-run, synthetic table)"
@@ -327,6 +330,21 @@ if command -v lsof >/dev/null 2>&1; then
 else
   log_pass "T14 skipped (lsof unavailable)"
 fi
+
+# ── T15: FLY-1676 pointer marketplace launch shapes MUST match ──────────
+log_test "T15 pointer marketplace adapter shapes match with exact boundaries"
+T15_TABLE='printf "%s\n" \
+"1501 1 bun '"$POINTER"'/server.ts" \
+"1502 1 bun run --cwd '"$POINTER"' --shell=bun --silent start" \
+"1503 1 /bin/bash '"$POINTER"'/start-adapter.sh" \
+"1504 1 bun /u/.claude/plugins/cache/flywheel-plugins/discord-backup/0.0.5/server.ts"'
+OUT15="$(FLY183_PS_OVERRIDE="$T15_TABLE" FLY183_REAP_DRY_RUN=1 reap_orphan_adapters 2>&1)"
+ok=1
+for p in 1501 1502 1503; do
+  echo "$OUT15" | grep -q "WOULD reap pid=$p" || { ok=0; log_fail "T15 pointer adapter shape pid=$p NOT matched: $OUT15"; }
+done
+echo "$OUT15" | grep -q "pid=1504" && { ok=0; log_fail "T15 matched pointer discord-backup sibling: $OUT15"; }
+[ "$ok" = 1 ] && log_pass "T15 pointer inner/wrapper/launcher matched; discord-backup skipped"
 
 # ── Summary ─────────────────────────────────────────────────────────────
 echo ""

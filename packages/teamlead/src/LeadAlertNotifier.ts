@@ -177,6 +177,11 @@ export const ALERT_EVENT_TYPES = [
 	// scripts/converge-flywheel-bin.sh (shell path via lead-alert.sh; the
 	// Bridge never emits this kind itself — union parity only).
 	"bin_integrity_drift",
+	// FLY-1676: a launcher or fleet restart could not prove that the active
+	// Discord adapter is the fork-backed pointer at fork/main with all critical
+	// collaboration markers. Shell-emitted; union parity keeps queued delivery
+	// and ticket routing fail-loud.
+	"discord_plugin_integrity_failed",
 	// FLY-945 Fix D: the external-merge reconcile pass found a merged PR it
 	// cannot verify (no founder-attributed approval, or the merged head differs
 	// from the head the approval was bound to) OR an externally-merged parked

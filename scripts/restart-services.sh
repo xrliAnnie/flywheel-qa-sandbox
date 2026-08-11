@@ -378,6 +378,14 @@ alert_severe() {
         ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
 }
 
+alert_discord_plugin_integrity() {
+    # $1 = daily signature reason, $2 = diagnostic body
+    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+        --kind discord_plugin_integrity_failed --severity severe \
+        --title "Discord plugin integrity failed" --body "$2" \
+        --signature "$1-$(date -u +%Y%m%d)" 1>&2 || true
+}
+
 # FLY-929 W3b ②: ROUTINE notices (✅/🔄/⏳ — progress/result, no human action
 # needed) ride the Claude Infra Bot → #flywheel-notify when BOTH
 # CLAUDE_INFRA_BOT_TOKEN and FLYWHEEL_NOTIFY_CHANNEL are set (P-identity).
@@ -455,85 +463,65 @@ restart_on_exit() {
 # Discord plugin fork detection
 # ════════════════════════════════════════════════════════════════
 
-DISCORD_FORK_DIR="${HOME}/.flywheel/repos/claude-plugins-official"
 DISCORD_PLUGIN_UPDATE="${HOME}/.flywheel/bin/update-discord-plugin.sh"
 DISCORD_PLUGIN_CHECK="${HOME}/.flywheel/bin/check-discord-plugin.sh"
+DISCORD_PLUGIN_CONTRACT="discord@flywheel-plugins/v1"
 
-# Returns: 0=updated, 1=no update needed, 2=skipped or failed
+# Returns: 0=updated, 1=no update needed, 2=hard failure
 check_discord_plugin_fork() {
-    # Guard: required scripts must exist
-    if [[ ! -f "$DISCORD_PLUGIN_CHECK" ]]; then
-        log "Discord plugin check script not found, skipping fork detection"
+    # The canonical checker owns registry/installPath/remote-SHA authority.
+    # restart-services must not maintain a second clone-based freshness model.
+    if [[ ! -x "$DISCORD_PLUGIN_CHECK" || ! -x "$DISCORD_PLUGIN_UPDATE" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "DRY RUN: managed Discord plugin operations are missing; the real restart would fail before mutation"
+            return 1
+        fi
+        log "ERROR: managed Discord plugin operations are missing or not executable"
+        alert_discord_plugin_integrity "restart-tools-missing" \
+            "restart-services refused the fleet wave because the managed Discord checker/updater is missing. Re-run scripts/install-discord-plugin-ops.sh from the deployed checkout."
         return 2
     fi
-    if [[ ! -f "$DISCORD_PLUGIN_UPDATE" ]]; then
-        log "Discord plugin update script not found, skipping fork detection"
+    local live_contract=""
+    live_contract="$($DISCORD_PLUGIN_CHECK --print-contract 2>/dev/null || true)"
+    if [[ "$live_contract" != "$DISCORD_PLUGIN_CONTRACT" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "DRY RUN: live Discord checker is still legacy; the guarded FLY-1676 cutover is required before deployment"
+            return 1
+        fi
+        log "ERROR: live Discord checker does not match the deployed pointer selector"
+        alert_discord_plugin_integrity "restart-contract-mismatch" \
+            "restart-services refused the fleet wave because the deployed launcher selects discord@flywheel-plugins but the live checker/updater still belongs to the legacy overlay. Run the guarded FLY-1676 cutover instead of a normal restart."
         return 2
     fi
 
-    # Dry-run mode: only report, no side effects (no git fetch, no update)
+    # Dry-run mode: checker is read-only (bounded remote SHA lookup), updater is
+    # never invoked.
     if [[ "$DRY_RUN" == "true" ]]; then
-        local runtime_ok=true
-        bash "$DISCORD_PLUGIN_CHECK" > /dev/null 2>&1 || runtime_ok=false
-        local fork_behind=false
-        if [[ -d "$DISCORD_FORK_DIR/.git" ]]; then
-            # Use cached origin/main ref (no fetch — dry-run must not modify state)
-            local local_sha remote_sha
-            local_sha=$(git -C "$DISCORD_FORK_DIR" rev-parse HEAD 2>/dev/null || echo "?")
-            remote_sha=$(git -C "$DISCORD_FORK_DIR" rev-parse origin/main 2>/dev/null || echo "?")
-            [[ "$local_sha" != "$remote_sha" ]] && fork_behind=true
+        if bash "$DISCORD_PLUGIN_CHECK" >/dev/null 2>&1; then
+            log "DRY RUN: Discord plugin pointer is current"
+            return 1
         fi
-        log "DRY RUN: Discord plugin — runtime_ok=$runtime_ok fork_behind=$fork_behind (fork status may be stale without fetch)"
-        if [[ "$runtime_ok" == "false" || "$fork_behind" == "true" ]]; then
-            log "DRY RUN: Would run update-discord-plugin.sh and force Lead restart"
-            return 0
-        fi
+        log "DRY RUN: Would update discord@flywheel-plugins and force Lead restart"
+        return 0
+    fi
+
+    if bash "$DISCORD_PLUGIN_CHECK" >/dev/null 2>&1; then
+        log "Discord plugin pointer: up to date and runtime healthy"
         return 1
     fi
 
-    # Step 1: Check runtime integrity (canonical check)
-    local runtime_ok=true
-    if ! bash "$DISCORD_PLUGIN_CHECK" > /dev/null 2>&1; then
-        log "Discord plugin runtime check failed — needs update"
-        runtime_ok=false
-    fi
-
-    # Step 2: Check fork for new commits (if clone exists)
-    local fork_updated=false
-    if [[ -d "$DISCORD_FORK_DIR/.git" ]]; then
-        if git -C "$DISCORD_FORK_DIR" fetch origin main --quiet 2>/dev/null; then
-            local local_sha remote_sha
-            local_sha=$(git -C "$DISCORD_FORK_DIR" rev-parse HEAD 2>/dev/null)
-            remote_sha=$(git -C "$DISCORD_FORK_DIR" rev-parse origin/main 2>/dev/null)
-            if [[ -n "$local_sha" && -n "$remote_sha" && "$local_sha" != "$remote_sha" ]]; then
-                log "Discord plugin fork: ${local_sha:0:7} → ${remote_sha:0:7}"
-                fork_updated=true
-            fi
-        else
-            log "WARN: Failed to fetch Discord plugin fork (network issue?)"
-        fi
-    fi
-
-    # Step 3: If nothing needs updating, we're done
-    if [[ "$runtime_ok" == "true" && "$fork_updated" == "false" ]]; then
-        log "Discord plugin: up to date and runtime healthy"
-        return 1
-    fi
-
-    # Step 4: Run update
-    log "Updating Discord plugin (runtime_ok=$runtime_ok fork_updated=$fork_updated)..."
+    log "Discord plugin pointer is stale or invalid; updating through Claude CLI..."
     if ! bash "$DISCORD_PLUGIN_UPDATE"; then
         log "ERROR: Discord plugin update failed"
-        alert_warning "plugin-update-failed" "Discord plugin update failed" \
-            "Discord plugin 更新失败 (runtime_ok=$runtime_ok fork_updated=$fork_updated)。Lead 启动时 preflight 会重试。"
+        alert_discord_plugin_integrity "restart-update-failed" \
+            "restart-services stopped the fleet wave because discord@flywheel-plugins could not update to fork main. No Lead restart was attempted."
         return 2
     fi
 
-    # Step 5: Verify update succeeded
-    if ! bash "$DISCORD_PLUGIN_CHECK" > /dev/null 2>&1; then
+    if ! bash "$DISCORD_PLUGIN_CHECK" >/dev/null 2>&1; then
         log "ERROR: Discord plugin update completed but re-check still fails"
-        alert_warning "plugin-update-recheck-failed" "Discord plugin re-check failed" \
-            "Discord plugin update 执行成功但 re-check 失败。请手动检查。"
+        alert_discord_plugin_integrity "restart-recheck-failed" \
+            "restart-services stopped the fleet wave because discord@flywheel-plugins still failed SHA/marker verification after update. Vanilla bytes may be present."
         return 2
     fi
 
@@ -912,6 +900,9 @@ check_discord_plugin_fork || fork_rc=$?
 if (( fork_rc == 0 )); then
     plugin_needs_restart=true
     log "Discord plugin updated — will force Lead restart"
+elif (( fork_rc == 2 )); then
+    log "ERROR: Discord plugin integrity could not be established; aborting the fleet restart before build/service mutation"
+    exit 1
 fi
 
 # ════════════════════════════════════════════════════════════════

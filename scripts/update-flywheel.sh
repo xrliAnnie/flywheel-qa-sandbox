@@ -69,6 +69,20 @@ severe_alert() { # $1 = signature slug, $2 = body
     ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
 }
 
+discord_pointer_cutover_required() {
+  local incoming_launcher="" checker="${HOME}/.flywheel/bin/check-discord-plugin.sh"
+  local live_contract=""
+  incoming_launcher="$(git -C "$FLYWHEEL_DIR" show \
+    origin/main:packages/teamlead/scripts/claude-lead.sh 2>/dev/null)" || return 1
+  printf '%s\n' "$incoming_launcher" \
+    | grep -Fq 'CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")' \
+    || return 1
+  if [[ -x "$checker" ]]; then
+    live_contract="$($checker --print-contract 2>/dev/null || true)"
+  fi
+  [[ "$live_contract" != "discord@flywheel-plugins/v1" ]]
+}
+
 # ── Deploy step (injectable) ────────────────────────────────────────────────
 # Pull main to origin/main and run the real restart-services.sh. Returns:
 #   0  deploy succeeded (deployed-sha advanced by restart-services.sh)
@@ -81,6 +95,10 @@ default_deploy() {
   fi
   if ! git -C "$FLYWHEEL_DIR" fetch origin main --quiet 2>/dev/null; then
     log "git fetch failed (transient)"; return 2
+  fi
+  if discord_pointer_cutover_required; then
+    log "origin/main selects discord@flywheel-plugins but the live checker is still legacy — refusing to pull before the guarded FLY-1676 cutover"
+    return 3
   fi
   if ! git -C "$FLYWHEEL_DIR" pull origin main --ff-only --quiet 2>/dev/null; then
     log "git pull --ff-only failed (transient: untracked collision / non-ff)"; return 2

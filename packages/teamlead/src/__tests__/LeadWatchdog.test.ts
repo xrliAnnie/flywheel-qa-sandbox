@@ -82,6 +82,15 @@ describe("LeadWatchdog", () => {
 		);
 	});
 
+	it("describes Discord plugin integrity failures with recovery guidance", () => {
+		expect(titleFor("discord_plugin_integrity_failed")).toBe(
+			"Discord plugin fork integrity failed",
+		);
+		expect(bodyFor("discord_plugin_integrity_failed", "ignored")).toBe(
+			"A Lead could not prove the configured Discord plugin came from the Flywheel fork at the expected remote SHA. Keep that Lead stopped, repair the pointer install, then rerun the integrity check before restarting it.",
+		);
+	});
+
 	it("defaults the Lead scan cadence to 10min and accepts a positive ms override", () => {
 		expect(DEFAULT_LEAD_WATCHDOG_INTERVAL_MS).toBe(10 * 60_000);
 		expect(leadWatchdogIntervalMs({})).toBe(10 * 60_000);

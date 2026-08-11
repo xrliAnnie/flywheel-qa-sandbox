@@ -152,6 +152,36 @@ if [[ "$(ssq_pending_count)" == "0" ]]; then pass "T7 satisfied marker acked des
 bn="$(find "$SELF_SHIP_BLOCKED_DIR" -name '*.json' | wc -l | tr -d ' ')"
 if [[ "$bn" == "0" ]]; then pass "T7b non-durable report did NOT block the marker (no severe_alert)"; else fail "T7b marker blocked on report failure ($bn)"; fi
 
+# ── T8: the updater inspects fetched origin/main before pull. A selector-flip
+#        commit may only enter the deployed checkout after the guarded cutover
+#        has installed the matching live checker contract. ──────────────────
+mkdir -p "$FLYWHEEL_DIR/packages/teamlead/scripts" "$HOME/.flywheel/bin"
+printf '%s\n' 'CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")' \
+  > "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh"
+git -C "$FLYWHEEL_DIR" add packages/teamlead/scripts/claude-lead.sh
+git -C "$FLYWHEEL_DIR" commit -qm pointer-selector
+git -C "$FLYWHEEL_DIR" update-ref refs/remotes/origin/main HEAD
+cat > "$HOME/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'OK: legacy overlay checker ignored the new argument\n'
+EOF
+chmod +x "$HOME/.flywheel/bin/check-discord-plugin.sh"
+if discord_pointer_cutover_required; then
+  pass "T8 incoming pointer selector is held before pull while live checker is legacy"
+else
+  fail "T8 incoming pointer selector escaped the pre-pull cutover guard"
+fi
+cat > "$HOME/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'discord@flywheel-plugins/v1\n'
+EOF
+chmod +x "$HOME/.flywheel/bin/check-discord-plugin.sh"
+if discord_pointer_cutover_required; then
+  fail "T8b matching live checker contract still blocks an ordinary future pull"
+else
+  pass "T8b matching live checker contract allows ordinary future pulls"
+fi
+
 echo ""
 echo "update-flywheel-queue: PASSED=$PASSED FAILED=$FAILED"
 [[ "$FAILED" -eq 0 ]]

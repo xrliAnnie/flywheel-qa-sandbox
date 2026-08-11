@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph before["现状(危险)"]
+        direction TB
+        U1["官方插件商店目录"] --> L1["Lead 从这里加载 Discord 插件"]
+        W1["官方刷新会直接覆写这个目录"] -.->|"冲掉定制"| U1
+    end
+    subgraph after["改造后(安全)"]
+        direction TB
+        FK["我们的插件仓<br/>(官方最新 + 定制,每日自动同步)"] --> MP["我们自建的'小商店'<br/>(只有一个条目,指向插件仓;<br/>官方刷新永远碰不到它)"]
+        MP --> L2["Lead 从这里加载 Discord 插件"]
+        OF["官方插件商店目录<br/>(继续存在,服务其他插件)"] -.->|"随便刷,与 Discord 无关"| OF
+    end
+    before ==>|"一次性整体切换<br/>(不允许一半 Lead 新、一半旧)"| after
+    style before fill:#fff5f5,stroke:#ff3b30
+    style after fill:#f0fff4,stroke:#34c759
+    style MP fill:#eef4ff,stroke:#007aff,stroke-width:2px

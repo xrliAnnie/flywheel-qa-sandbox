@@ -92,6 +92,8 @@ const CMUX_SYNC_KINDS = [
 	"tmux_rescue_hold",
 ] as const;
 
+const DISCORD_PLUGIN_KINDS = ["discord_plugin_integrity_failed"] as const;
+
 describe("FLY-1082 kind contract (Task 1.1)", () => {
 	it("every kind in the union has a contract entry (runtime exhaustiveness)", () => {
 		for (const kind of ALERT_EVENT_TYPES) {
@@ -192,6 +194,17 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		expect(INFORMATIONAL_KINDS.has("cmux_flag_state")).toBe(true);
 		expect(INFORMATIONAL_KINDS.has("cmux_cleanup")).toBe(false);
 		expect(INFORMATIONAL_KINDS.has("tmux_rescue_hold")).toBe(false);
+	});
+
+	it("FLY-1676 routes Discord fork integrity failures to a human-owned ticket", () => {
+		for (const kind of DISCORD_PLUGIN_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(KIND_CONTRACTS[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+			expect(INFORMATIONAL_KINDS.has(kind)).toBe(false);
+		}
 	});
 
 	it("routes review governance audit events to a human-owned contract", () => {

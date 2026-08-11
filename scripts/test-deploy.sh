@@ -561,16 +561,25 @@ echo "$MODE" > "/tmp/flywheel-test-slot-${SLOT}.lock/mode"
 # Verify (a) channel exists, (b) bot has View Channel permission, (c) bot is a
 # channel member — before paying the cost of starting Lead + Bridge. Send
 # Messages permission can't be tested via GET; smoke Phase A's ephemeral
-# POST/DELETE catches that later. Plugin server.ts grep guards against the
-# Discord plugin cache being stale-without-allowBots-field.
+# POST/DELETE catches that later. Resolve the pointer installPath from the
+# canonical registry-aware checker; never guess from orphaned version dirs.
 if [[ "$MODE" == "mirror" ]]; then
-  PLUGIN_BASE="${HOME}/.claude/plugins/cache/claude-plugins-official/discord"
-  if [[ -d "$PLUGIN_BASE" ]]; then
-    LATEST_PLUGIN=$(ls -dt "${PLUGIN_BASE}"/*/ 2>/dev/null | head -1)
-    if [[ -n "$LATEST_PLUGIN" && -f "${LATEST_PLUGIN}/server.ts" ]]; then
-      grep -q "access.allowBots" "${LATEST_PLUGIN}/server.ts" \
-        || { echo "ERROR: Discord plugin at ${LATEST_PLUGIN} does not consume access.allowBots — mirror mode cascade will silently fail. Run: claude plugin update discord@claude-plugins-official" >&2; rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1; }
-    fi
+  PLUGIN_CHECK="${HOME}/.flywheel/bin/check-discord-plugin.sh"
+  if [[ ! -x "$PLUGIN_CHECK" ]]; then
+    echo "ERROR: managed Discord plugin checker is missing: ${PLUGIN_CHECK}" >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    exit 1
+  fi
+  if ! ACTIVE_PLUGIN="$("$PLUGIN_CHECK" --print-install-path)"; then
+    echo "ERROR: discord@flywheel-plugins does not match fork main; mirror QA refuses to start. Run: claude plugin update discord@flywheel-plugins --scope user" >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    exit 1
+  fi
+  if [[ ! -f "${ACTIVE_PLUGIN}/server.ts" ]] \
+      || ! grep -q "access.allowBots" "${ACTIVE_PLUGIN}/server.ts"; then
+    echo "ERROR: Discord plugin at ${ACTIVE_PLUGIN} does not consume access.allowBots — mirror mode cascade will silently fail. Run: claude plugin update discord@flywheel-plugins --scope user" >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    exit 1
   fi
 
   log "Probing mirror channel ${MIRROR_CHANNEL_ID} accessibility for bot ${AGENT_ID}"

@@ -922,6 +922,25 @@ fi
 FLYWHEEL_BIN="${HOME}/.flywheel/bin"
 CHECK_SCRIPT="${FLYWHEEL_BIN}/check-discord-plugin.sh"
 UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
+DISCORD_PLUGIN_CONTRACT="discord@flywheel-plugins/v1"
+
+alert_discord_plugin_integrity() {
+  local reason="$1" body="$2"
+  local alert_script="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+  if [ ! -x "$alert_script" ]; then
+    log "WARNING: cannot emit Discord plugin integrity alert; missing ${alert_script}"
+    return 0
+  fi
+  "$alert_script" \
+    --lead "$LEAD_ID" \
+    --project "$PROJECT_NAME" \
+    --kind discord_plugin_integrity_failed \
+    --severity severe \
+    --title "Discord plugin integrity failed" \
+    --body "$body" \
+    --signature "${reason}-$(date -u +%Y%m%d)" \
+    || log "WARNING: Discord plugin integrity alert delivery returned non-zero"
+}
 
 # FLY-231 dry-run: the launch-plan test runs in an isolated HOME with no
 # ~/.flywheel/bin scripts — skip the plugin fork check/update (it mutates the
@@ -942,16 +961,33 @@ else
     log "ERROR: Discord plugin fork scripts not found or not executable:"
     log "  check:  $CHECK_SCRIPT"
     log "  update: $UPDATE_SCRIPT"
-    log "Run GEO-296 setup first. Aborting."
+    log "Run scripts/install-discord-plugin-ops.sh from the deployed Flywheel checkout. Aborting."
+    alert_discord_plugin_integrity "tools-missing" \
+      "Lead ${LEAD_ID} refused to start because the managed Discord checker/updater is missing. Re-run the deployed Discord operations installer."
+    exit 1
+  fi
+
+  _discord_contract="$($CHECK_SCRIPT --print-contract 2>/dev/null || true)"
+  if [ "$_discord_contract" != "$DISCORD_PLUGIN_CONTRACT" ]; then
+    log "ERROR: Discord plugin selector/checker contract mismatch. Aborting."
+    alert_discord_plugin_integrity "contract-mismatch" \
+      "Lead ${LEAD_ID} refused to start because the deployed launcher selects discord@flywheel-plugins but the live checker/updater is still the legacy overlay. Complete or roll back the guarded FLY-1676 cutover."
     exit 1
   fi
 
   if ! "$CHECK_SCRIPT"; then
-    log "Discord plugin cache is not fork version, updating..."
-    "$UPDATE_SCRIPT"
+    log "Discord plugin does not match fork main, updating through Claude CLI..."
+    if ! "$UPDATE_SCRIPT"; then
+      log "ERROR: Discord plugin update failed. Aborting."
+      alert_discord_plugin_integrity "update-failed" \
+        "Lead ${LEAD_ID} refused to start because discord@flywheel-plugins could not update to fork main. Inspect the CLI registry and fork availability."
+      exit 1
+    fi
     # Re-check after update — hard fail if still not matching
     if ! "$CHECK_SCRIPT"; then
       log "ERROR: Discord plugin still not fork version after update. Aborting."
+      alert_discord_plugin_integrity "recheck-failed" \
+        "Lead ${LEAD_ID} refused to start because discord@flywheel-plugins still failed SHA/marker verification after update. Vanilla bytes may be present."
       exit 1
     fi
   fi
@@ -3580,12 +3616,13 @@ else
 fi
 
 # FLY-47: Channel configuration
-# Discord plugin: approved via GrowthBook allowlist → --channels
-# Inbox MCP server: not on allowlist → --dangerously-load-development-channels (sets dev:true, bypasses gate)
-# These are SEPARATE flags — --channels for allowlisted plugins, dev flag for local MCP servers.
-CLAUDE_ARGS+=(--channels "plugin:discord@claude-plugins-official")
+# The private pointer marketplace is not on Claude's approved-channel allowlist.
+# Load it through the same development-channel path as the local inbox server;
+# FLY-1679 must be deployed before cutover so v2 cold starts confirm this path
+# without a human keypress.
+CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")
 if [ "$INBOX_MCP_ENABLED" = "true" ]; then
-  CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-inbox")
+  CLAUDE_ARGS+=("server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
 
   # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file

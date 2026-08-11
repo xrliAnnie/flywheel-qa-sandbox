@@ -897,6 +897,10 @@ export function titleFor(kind: AlertEventType): string {
 		// exhaustiveness.
 		case "bin_integrity_drift":
 			return "bin runtime script drift";
+		// FLY-1676: emitted by the launcher / deploy guard through
+		// lead-alert.sh. This case keeps the shared alert-kind union exhaustive.
+		case "discord_plugin_integrity_failed":
+			return "Discord plugin fork integrity failed";
 		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile
 		// pass builds its own title); case exists for switch exhaustiveness.
 		case "external_merge_suspect":
@@ -1132,6 +1136,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-954: never emitted by LeadWatchdog (converge-flywheel-bin.sh builds its own body via lead-alert.sh).
 		case "bin_integrity_drift":
 			return "A ~/.flywheel/bin runtime script drifted from its repo source. This kind is emitted by scripts/converge-flywheel-bin.sh via lead-alert.sh (shell path) — the Watchdog never raises it; see the shell alert body for file + sha details (FLY-954).";
+		// FLY-1676: shell callers include concrete SHA/root evidence in the live
+		// alert body; this fallback keeps queued rendering actionable.
+		case "discord_plugin_integrity_failed":
+			return "A Lead could not prove the configured Discord plugin came from the Flywheel fork at the expected remote SHA. Keep that Lead stopped, repair the pointer install, then rerun the integrity check before restarting it.";
 		// FLY-945: never emitted by LeadWatchdog (the external-merge reconcile pass builds its own body).
 		case "external_merge_suspect":
 			return "The external-merge reconcile pass found a merged PR it cannot verify (missing founder-attributed approval, or the merged head differs from the approved head). The session was NOT finalized/archived — review the merge.";

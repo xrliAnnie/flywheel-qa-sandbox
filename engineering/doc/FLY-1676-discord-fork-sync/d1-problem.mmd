@@ -1,0 +1,13 @@
+flowchart TB
+    subgraph writers["同一个目录,两个'写入者'在打架"]
+        direction LR
+        A["Anthropic 官方插件商店刷新<br/>(每次 Claude 启动后 0–10 分钟内可能触发,一天多次)"] -- "铺上官方原版<br/>(我们的定制被抹掉)" --> R
+        B["我们的恢复脚本<br/>(Lead 启动时自动检查+修复)"] -- "铺回定制版" --> R
+        R["运行中的 Discord 插件目录<br/>~/.claude/plugins/.../discord/"]
+    end
+    R --> C{"谁最后写,谁说了算"}
+    C -- "官方刷新最后写" --> D["Lead 互通 / 圆桌 / 卡片审批<br/>随时可能全断<br/>(已发生 4 次,最近两次在同一天)"]
+    C -- "我们最后写" --> E["一切正常"]
+    style D fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style E fill:#e8f9ee,stroke:#34c759
+    style R fill:#fff8e6,stroke:#ff9500,stroke-width:2px
