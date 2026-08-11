@@ -1548,11 +1548,15 @@ export class CommDB {
 					}
 					throw new Error(`question ${input.questionId} is already answered`);
 				}
+				// H2 protection (default on) retains unanswered actionable rows
+				// through expiry — mirror every other answerable predicate and only
+				// enforce the expiry cutoff in explicit legacy mode.
 				if (
 					question.resolved_at !== null ||
 					question.superseded_at !== null ||
 					question.relay_state === "terminal_disposed" ||
-					(question.expires_at !== null &&
+					(!commDbProtectionEnabled() &&
+						question.expires_at !== null &&
 						Date.parse(question.expires_at) <= Date.parse(input.now))
 				) {
 					throw new Error(`question ${input.questionId} is no longer open`);

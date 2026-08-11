@@ -192,6 +192,7 @@ research.md §6 清单全量:删 legacy begin/deliver/settle/pending/quarantine 
 4. **双仓协同**:plugin cache 被 ~20 个活 Lead pin;部署序(§5)消除混窗;若 plugin merge 先行而主仓延后,新 plugin + 旧 CLI 兼容(chat-ingest 已存在)。
 5. **`detection_escalations` 三列族 DROP COLUMN** 若被 SQLite 引用检查拒绝,整族回退为列留存+零消费(tombstone 注释),不允许半 drop,不 rebuild 共享表。
 6. **HeartbeatService/legacy-lead-event-reconciler**(research §8 E5)休眠代码不在本单——不删不改,避免范围膨胀;grep 门白名单注明。
+7. **S2「过期」新鲜度守卫与 `commdb_protection` 对齐**(code review R2 MEDIUM 折入,2026-08-11):`insertGuardedResponse` 的 expiry 拒绝仅在 `FLYWHEEL_COMMDB_PROTECTION=0`(显式 legacy 模式)生效;protection ON(默认)沿用全库兄弟原语口径——未答 actionable 行跨 expiry 保留且仍可答(registry `commdb_protection` 合同,FLY-1279 H2)。§4-S2 列的「过期」守卫据此读作 protection-conditional,resolved/superseded/terminal_disposed 守卫无条件不变;两态各有测试(db.gate.test.ts)。
 
 ## 9. 实现期加固备注(Codex R4 非阻塞,随 APPROVED 折入)
 

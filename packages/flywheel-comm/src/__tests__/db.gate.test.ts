@@ -362,6 +362,60 @@ describe("CommDB gate methods", () => {
 				}),
 			).toMatchObject({ responseId: expect.any(String) });
 		});
+
+		it("expired unanswered ask remains answerable while H2 protection is on", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "slow question");
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
+				)
+				.run(id);
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "late but retained",
+					now: new Date().toISOString(),
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+			expect(db.getResponse(id)?.content).toBe("late but retained");
+		});
+
+		it("rejects an expired ask in explicit legacy mode (protection off)", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "slow question");
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
+				)
+				.run(id);
+			const prior = process.env.FLYWHEEL_COMMDB_PROTECTION;
+			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
+			try {
+				expect(() =>
+					db.insertGuardedResponse({
+						questionId: id,
+						authenticatedLead: "lead-1",
+						content: "too late",
+						now: new Date().toISOString(),
+					}),
+				).toThrow(/no longer open/);
+			} finally {
+				if (prior === undefined) {
+					delete process.env.FLYWHEEL_COMMDB_PROTECTION;
+				} else {
+					process.env.FLYWHEEL_COMMDB_PROTECTION = prior;
+				}
+			}
+		});
 	});
 
 	// ── FLY-1188 HIGH-2 (Codex full-PR review): a gate-timeout synthetic response
