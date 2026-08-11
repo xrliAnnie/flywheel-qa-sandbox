@@ -283,6 +283,7 @@ import {
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
 import {
+	classifyFounderDecisionQuestionResolution,
 	recordFounderDecisionAck,
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
@@ -7245,14 +7246,17 @@ export async function startBridge(
 			resolve: (row) => {
 				const db = new CommDB(commDbPathForProject(row.project_name), false);
 				try {
-					if (db.getResponse(row.question_id)) return "response";
-					const question = db.getMessageById(row.question_id);
-					if (
-						question?.relay_state === "terminal_disposed" ||
-						question?.resolved_at
-					) {
-						return "question_retired";
+					if (db.getResponse(row.question_id)) {
+						return classifyFounderDecisionQuestionResolution({
+							hasResponse: true,
+						});
 					}
+					const question = db.getMessageById(row.question_id);
+					const questionResolution = classifyFounderDecisionQuestionResolution({
+						hasResponse: false,
+						question,
+					});
+					if (questionResolution) return questionResolution;
 				} finally {
 					db.close();
 				}

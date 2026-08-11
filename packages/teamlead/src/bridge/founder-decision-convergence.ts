@@ -20,6 +20,20 @@ export interface FounderDecisionConvergencePassDeps {
 	logger?: (message: string) => void;
 }
 
+export function classifyFounderDecisionQuestionResolution(input: {
+	hasResponse: boolean;
+	question?: {
+		resolved_at: string | null;
+		superseded_at: string | null;
+	} | null;
+}): "response" | "question_retired" | null {
+	if (input.hasResponse) return "response";
+	if (input.question?.resolved_at || input.question?.superseded_at) {
+		return "question_retired";
+	}
+	return null;
+}
+
 export async function recordFounderDecisionAck(input: {
 	react(): Promise<{ ok: boolean; status?: number }>;
 	recordAudit(

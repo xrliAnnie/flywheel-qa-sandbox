@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FounderDecisionConvergenceRow } from "../../StateStore.js";
 import {
+	classifyFounderDecisionQuestionResolution,
 	recordFounderDecisionAck,
 	runFounderDecisionConvergencePass,
 } from "../founder-decision-convergence.js";
@@ -26,6 +27,43 @@ const row = (
 });
 
 describe("founder decision convergence pass", () => {
+	it.each([
+		{
+			name: "response",
+			hasResponse: true,
+			question: { resolved_at: null, superseded_at: null },
+			expected: "response",
+		},
+		{
+			name: "resolved question",
+			hasResponse: false,
+			question: {
+				resolved_at: "2026-08-11T12:00:00.000Z",
+				superseded_at: null,
+			},
+			expected: "question_retired",
+		},
+		{
+			name: "superseded question",
+			hasResponse: false,
+			question: {
+				resolved_at: null,
+				superseded_at: "2026-08-11T12:00:00.000Z",
+			},
+			expected: "question_retired",
+		},
+		{
+			name: "pending question",
+			hasResponse: false,
+			question: { resolved_at: null, superseded_at: null },
+			expected: null,
+		},
+	])("classifies $name without consulting relay state", (input) => {
+		expect(classifyFounderDecisionQuestionResolution(input)).toBe(
+			input.expected,
+		);
+	});
+
 	it("audits a failed founder question-mark reaction without rejecting the durable alert", async () => {
 		const recordAudit = vi.fn();
 

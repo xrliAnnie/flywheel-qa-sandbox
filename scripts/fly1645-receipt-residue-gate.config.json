@@ -153,7 +153,6 @@
 		"packages/flywheel-comm/src/mailbox-queue.ts",
 		"packages/flywheel-comm/src/mailbox-schema.ts",
 		"packages/flywheel-comm/src/receipt-teardown-closeout.ts",
-		"packages/flywheel-comm/src/types.ts",
-		"packages/teamlead/src/bridge/plugin.ts"
+		"packages/flywheel-comm/src/types.ts"
 	]
 }
