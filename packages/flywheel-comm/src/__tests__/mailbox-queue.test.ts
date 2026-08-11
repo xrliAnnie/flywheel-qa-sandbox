@@ -37,6 +37,134 @@ function enqueueLead(
 }
 
 describe("FLY-1572 MailboxQueue", () => {
+	it("births only questions with an open relay state", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			const instruction = queue.enqueue({
+				id: "instruction-terminal-at-birth",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "continue",
+				createdAt: NOW,
+				senderRef: SENDER_REF,
+			});
+			expect(instruction.outcome).toBe("inserted");
+			if (instruction.outcome !== "inserted") throw new Error("not inserted");
+			expect(instruction.row.relay_state).toBe("terminal_disposed");
+			const question = enqueueLead(queue, "question-open");
+			expect(question.outcome).toBe("inserted");
+			if (question.outcome !== "inserted") throw new Error("not inserted");
+			expect(question.row.relay_state).toBe("open");
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("replays a pre-upgrade non-question identity without changing its projection", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1645-mailbox-hash-"));
+		const dbPath = join(dir, "comm.db");
+		const input = {
+			id: "stable-lead-event",
+			fromAgent: "bridge",
+			toAgent: "lead-a",
+			recipientKind: "lead" as const,
+			type: "stage_changed",
+			content: "stage changed",
+			createdAt: NOW,
+			senderRef: SENDER_REF,
+		};
+		try {
+			const legacy = new MailboxQueue(dbPath);
+			const raw = new Database(dbPath);
+			try {
+				raw.exec(`
+					DROP TRIGGER IF EXISTS mailbox_non_question_relay_insert_guard;
+					DROP TRIGGER IF EXISTS mailbox_non_question_relay_update_guard;
+				`);
+			} finally {
+				raw.close();
+			}
+			expect(legacy.enqueue({ ...input, relayState: "open" }).outcome).toBe(
+				"inserted",
+			);
+			legacy.close();
+
+			const upgraded = new MailboxQueue(dbPath);
+			try {
+				expect(upgraded.enqueue(input).outcome).toBe("active");
+				expect(upgraded.getById(input.id)?.relay_state).toBe("open");
+			} finally {
+				upgraded.close();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("guards relay deltas without blocking delivery updates on a legacy row", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1645-mailbox-trigger-"));
+		const dbPath = join(dir, "comm.db");
+		try {
+			const seed = new MailboxQueue(dbPath);
+			const raw = new Database(dbPath);
+			try {
+				raw.exec(`
+					DROP TRIGGER IF EXISTS mailbox_non_question_relay_insert_guard;
+					DROP TRIGGER IF EXISTS mailbox_non_question_relay_update_guard;
+				`);
+			} finally {
+				raw.close();
+			}
+			seed.enqueue({
+				id: "legacy-open-instruction",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "legacy",
+				createdAt: NOW,
+				relayState: "open",
+				senderRef: SENDER_REF,
+			});
+			seed.close();
+
+			const upgraded = new MailboxQueue(dbPath);
+			try {
+				expect(upgraded.ack("legacy-open-instruction", NOW)).toBe(true);
+				expect(() =>
+					upgraded.enqueue({
+						id: "new-open-instruction",
+						fromAgent: "lead-a",
+						toAgent: "runner-a",
+						recipientKind: "runner",
+						type: "instruction",
+						content: "invalid",
+						createdAt: NOW,
+						relayState: "open",
+						senderRef: SENDER_REF,
+					}),
+				).toThrow(/only questions may have an active relay state/i);
+			} finally {
+				upgraded.close();
+			}
+
+			const verify = new Database(dbPath);
+			try {
+				expect(() =>
+					verify
+						.prepare("UPDATE mailbox SET relay_state='protected' WHERE id=?")
+						.run("legacy-open-instruction"),
+				).toThrow(/only questions may have an active relay state/i);
+			} finally {
+				verify.close();
+			}
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("reserves identities before insert and canonical-compares every replay", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {

@@ -17,6 +17,8 @@ import {
 	type ProcessedEvidenceV1,
 } from "./mailbox-queue.js";
 import {
+	dropReceiptLedgerSchema,
+	installMailboxRelayInvariantTriggers,
 	MAILBOX_POISON_VIEWS,
 	MAILBOX_SCHEMA,
 	MAILBOX_SCHEMA_GENERATION,
@@ -774,9 +776,11 @@ export class CommDB {
 						"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
 					);
 					this.applyMigrations();
+					dropReceiptLedgerSchema(this.db);
 					this.db.exec(MAILBOX_POISON_VIEWS);
 				})
 				.immediate();
+			installMailboxRelayInvariantTriggers(this.db);
 			phase = "purge";
 			if (archiveOnOpen) this.purgeExpired();
 		} catch (error) {

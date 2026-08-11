@@ -1,4 +1,42 @@
+import type Database from "better-sqlite3";
+
 export const MAILBOX_SCHEMA_GENERATION = "mailbox_v1" as const;
+
+export function installMailboxRelayInvariantTriggers(
+	db: Database.Database,
+): void {
+	db.exec(`
+CREATE TRIGGER IF NOT EXISTS mailbox_non_question_relay_insert_guard
+BEFORE INSERT ON mailbox
+WHEN NEW.type != 'question' AND NEW.relay_state != 'terminal_disposed'
+BEGIN
+  SELECT RAISE(ABORT, 'only questions may have an active relay state');
+END;
+
+CREATE TRIGGER IF NOT EXISTS mailbox_non_question_relay_update_guard
+BEFORE UPDATE OF relay_state, type ON mailbox
+WHEN (NEW.relay_state IS NOT OLD.relay_state OR NEW.type IS NOT OLD.type)
+  AND NEW.type != 'question'
+  AND NEW.relay_state != 'terminal_disposed'
+BEGIN
+  SELECT RAISE(ABORT, 'only questions may have an active relay state');
+END;
+`);
+}
+
+export function dropReceiptLedgerSchema(db: Database.Database): void {
+	db.exec(`
+DROP TRIGGER IF EXISTS mailbox_receipt_root_lineage_insert;
+DROP TRIGGER IF EXISTS receipt_root_lineage_no_update;
+DROP TRIGGER IF EXISTS receipt_root_lineage_no_delete;
+DROP TABLE IF EXISTS receipt_root_lineage;
+DROP TABLE IF EXISTS receipt_handle_requests;
+DROP TABLE IF EXISTS receipt_activation_episodes;
+DROP TABLE IF EXISTS receipt_resend_deliveries;
+DROP TABLE IF EXISTS receipt_exemption_audit;
+DROP INDEX IF EXISTS mailbox_log_settlement_slot;
+`);
+}
 
 export const MAILBOX_CORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
@@ -155,8 +193,6 @@ CREATE TABLE IF NOT EXISTS mailbox_log (
 CREATE INDEX IF NOT EXISTS mailbox_log_message ON mailbox_log(message_id);
 CREATE INDEX IF NOT EXISTS mailbox_log_subject
   ON mailbox_log(subject_id) WHERE subject_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS mailbox_log_settlement_slot
-  ON mailbox_log(subject_id) WHERE event IN ('processed','disposed');
 CREATE TRIGGER IF NOT EXISTS mailbox_log_no_update
 BEFORE UPDATE ON mailbox_log
 BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
@@ -179,29 +215,6 @@ CREATE TABLE IF NOT EXISTS content_ref_gc_outbox (
 CREATE INDEX IF NOT EXISTS content_ref_gc_due
   ON content_ref_gc_outbox(next_retry_at, created_at) WHERE state = 'pending';
 
-CREATE TABLE IF NOT EXISTS receipt_root_lineage (
-  receipt_id TEXT PRIMARY KEY,
-  execution_id TEXT NOT NULL,
-  question_id TEXT NOT NULL,
-  root_lead_id TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_receipt_root_lineage_execution
-  ON receipt_root_lineage(execution_id, receipt_id);
-CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_update
-BEFORE UPDATE ON receipt_root_lineage
-BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS receipt_root_lineage_no_delete
-BEFORE DELETE ON receipt_root_lineage
-BEGIN SELECT RAISE(ABORT, 'receipt_root_lineage is append-only'); END;
-CREATE TRIGGER IF NOT EXISTS mailbox_receipt_root_lineage_insert
-AFTER INSERT ON mailbox
-WHEN NEW.type = 'question' AND NEW.recipient_kind = 'lead'
-BEGIN
-  INSERT INTO receipt_root_lineage
-    (receipt_id, execution_id, question_id, root_lead_id)
-  VALUES (NEW.delivery_id, NEW.from_agent, NEW.id, NEW.to_agent);
-END;
-
 CREATE TABLE IF NOT EXISTS receipt_alert_outbox (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,
@@ -210,14 +223,6 @@ CREATE TABLE IF NOT EXISTS receipt_alert_outbox (
   delivered_at TEXT,
   canceled_at TEXT,
   cancel_reason TEXT
-);
-CREATE TABLE IF NOT EXISTS receipt_handle_requests (
-  request_id TEXT PRIMARY KEY,
-  receipt_id TEXT NOT NULL,
-  action TEXT NOT NULL,
-  payload_digest TEXT NOT NULL,
-  result_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS loop_owner (
   singleton INTEGER PRIMARY KEY CHECK(singleton = 1),

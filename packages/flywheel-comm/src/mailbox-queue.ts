@@ -7,7 +7,11 @@ import {
 	assertNoLoneSurrogate,
 	normalizeInboxContent,
 } from "./inbox-write-normalize.js";
-import { MAILBOX_SCHEMA } from "./mailbox-schema.js";
+import {
+	dropReceiptLedgerSchema,
+	installMailboxRelayInvariantTriggers,
+	MAILBOX_SCHEMA,
+} from "./mailbox-schema.js";
 import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
@@ -269,6 +273,10 @@ function placeholders(count: number): string {
 	return Array.from({ length: count }, () => "?").join(",");
 }
 
+function mailboxProjectionHash(projection: unknown): string {
+	return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+}
+
 function utf8Prefix(value: string, maxBytes: number): string {
 	if (maxBytes <= 0) return "";
 	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
@@ -366,10 +374,13 @@ export class MailboxQueue {
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(MAILBOX_SCHEMA);
 		ensureMailboxQueueSchema(this.db);
+		dropReceiptLedgerSchema(this.db);
+		installMailboxRelayInvariantTriggers(this.db);
 	}
 
 	enqueue(input: EnqueueMailboxInput): EnqueueMailboxResult {
 		const normalizedContent = normalizeInboxContent(input.content).text;
+		const messageType = requiredText(input.type, "type");
 		const projection = {
 			id: requiredText(input.id, "id"),
 			delivery_id: requiredText(input.deliveryId ?? input.id, "deliveryId"),
@@ -378,7 +389,7 @@ export class MailboxQueue {
 			recipient_kind: input.recipientKind,
 			source_kind: input.sourceKind ?? null,
 			source_ref: input.sourceRef ?? null,
-			type: requiredText(input.type, "type"),
+			type: messageType,
 			msg_class: input.msgClass ?? "model",
 			content: normalizedContent,
 			delivery_content: input.deliveryContent ?? null,
@@ -389,7 +400,9 @@ export class MailboxQueue {
 			checkpoint: input.checkpoint ?? null,
 			deadline_at: input.deadlineAt ?? null,
 			expires_at: input.expiresAt ?? null,
-			relay_state: input.relayState ?? "open",
+			relay_state:
+				input.relayState ??
+				(messageType === "question" ? "open" : "terminal_disposed"),
 			resolved_at: input.resolvedAt ?? null,
 			resolved_via: input.resolvedVia ?? null,
 			superseded_at: input.supersededAt ?? null,
@@ -418,9 +431,11 @@ export class MailboxQueue {
 			throw new Error("priority must be an integer from 0 through 3");
 		}
 		decodeSenderRef(projection.sender_ref);
-		const projectionHash = createHash("sha256")
-			.update(JSON.stringify(projection))
-			.digest("hex");
+		const projectionHash = mailboxProjectionHash(projection);
+		const legacyOpenProjectionHash =
+			input.relayState === undefined && messageType !== "question"
+				? mailboxProjectionHash({ ...projection, relay_state: "open" })
+				: undefined;
 
 		return this.db
 			.transaction((): EnqueueMailboxResult => {
@@ -440,7 +455,8 @@ export class MailboxQueue {
 					if (
 						identity.id !== projection.id ||
 						identity.delivery_id !== projection.delivery_id ||
-						identity.insert_projection_hash !== projectionHash
+						(identity.insert_projection_hash !== projectionHash &&
+							identity.insert_projection_hash !== legacyOpenProjectionHash)
 					) {
 						throw new Error(`mailbox identity conflict: ${projection.id}`);
 					}
