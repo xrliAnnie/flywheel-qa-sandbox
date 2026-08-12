@@ -1,13 +1,14 @@
 ---
 issue: FLY-1715
 phase: implement
-phaseCursor: 1/7
-updated: 2026-08-12T19:05:02.520Z
-nextStep: audit every active Claude spawn surface and establish focused green baseline
+phaseCursor: 2/7
+updated: 2026-08-12T19:18:42.035Z
+nextStep: TDD canonical non-Lead forbidden-plugin settings merge across every
+  Claude spawn surface
 chunks: []
 pointers: {}
 ---
 
 # FLY-1715 progress
-**phase**: implement (1/7)
-**next**: audit every active Claude spawn surface and establish focused green baseline
+**phase**: implement (2/7)
+**next**: TDD canonical non-Lead forbidden-plugin settings merge across every Claude spawn surface
