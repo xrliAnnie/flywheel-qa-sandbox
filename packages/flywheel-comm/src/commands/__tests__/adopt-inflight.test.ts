@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	existsSync,
@@ -8,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommDB } from "../../db.js";
@@ -120,8 +122,9 @@ describe("flywheel-comm adopt-inflight", () => {
 		writer.close();
 	});
 
-	it("adopts with no schema ensure side effects", () => {
+	it("runs the real CLI without opening the default path or ensuring schema", () => {
 		const dbPath = join(root(), "comm.db");
+		const defaultPath = join(root(), "must-not-open.db");
 		const commDb = new CommDB(dbPath);
 		commDb.close();
 		const queue = new MailboxQueue(dbPath);
@@ -141,23 +144,45 @@ describe("flywheel-comm adopt-inflight", () => {
 		db.prepare(
 			"UPDATE mailbox SET state = 'LEASED', batch_id = 'batch-1' WHERE id = 'm1'",
 		).run();
+		const schemaBefore = db
+			.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")
+			.all();
 		db.close();
 
-		const result = run([
-			"--db",
-			dbPath,
-			"--recipient",
-			"lead-a",
-			"--kind",
-			"lead",
-		]);
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--import",
+				"tsx",
+				fileURLToPath(new URL("../../index.ts", import.meta.url)),
+				"adopt-inflight",
+				"--db",
+				dbPath,
+				"--recipient",
+				"lead-a",
+				"--kind",
+				"lead",
+			],
+			{
+				encoding: "utf8",
+				env: { ...process.env, FLYWHEEL_COMM_DB: defaultPath },
+			},
+		);
 
 		expect(result).toMatchObject({
-			exitCode: 0,
-			stdout: ["adopted: 1"],
-			stderr: [],
+			status: 0,
+			stdout: "adopted: 1\n",
+			stderr: "",
 		});
+		expect(existsSync(defaultPath)).toBe(false);
 		const inspected = new Database(dbPath);
+		expect(
+			inspected
+				.prepare(
+					"SELECT type, name, sql FROM sqlite_schema ORDER BY type, name",
+				)
+				.all(),
+		).toEqual(schemaBefore);
 		expect(
 			inspected
 				.prepare(

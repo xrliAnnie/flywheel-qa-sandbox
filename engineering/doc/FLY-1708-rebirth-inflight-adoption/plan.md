@@ -30,7 +30,7 @@ Review: Codex design review **R5 APPROVED**(R1 5项 → R2 3项 → R3 1项 → 
 | F9 | Codex Lead 的 journal 是身份键耐久对话现场,daemon 启动自带 recovery(`redispatch/reconcile/resend_output`)—— 结构上已「只认身份」,不需要也不应该再叠出生对账 | `LeadJournal.ts:181-186` |
 | F10 | 死信有**两个生产输出面**(R1 修正,原稿只见其一):① routable runner 死信:`scanAndInsertDeadLetterNotices`(措辞硬编码「可能已下线」+「请决定:重新派/丢弃/转给别人」),调用点 `runner-mailbox-lane.ts:247-262`;② Lead 自身 unacked + 无主 runner:`listUncoveredLeadDeadLetters`(摘要 "never acknowledged",`mailbox-queue.ts:1691-1831`)→ durable alert intent → `plugin.ts:7716-7728` sink(正文 "Decide whether to replay, discard, or reassign",无验活前置) | `mailbox-queue.ts:1655-1656` / `runner-mailbox-lane.ts:247-262` / `plugin.ts:7716-7728` |
 | F11 | 部署链先 build 后重启(`diff → idle wait → build → restart`),新 launcher 与新 `flywheel-comm` dist 在 Lead 重生前就位 | `scripts/restart-services.sh:3` |
-| F12 | Lead 出生有**两条现役路径**(R1 修正,原稿漏 v2):**v2 one-shot body** —— `lead-body.sh:64-77` 设 `FLYWHEEL_LEAD_BODY_V2=1` 后 source 同一 launcher,v2 分支在 `lead_identity_v2_acquire_bind` 后直接 `_launch_claude`(`claude-lead.sh:4526`)然后 exit,**不进** v1 while 循环;**v1 supervisor 循环** —— fresh lease 后经 tmux ensure / takeover / preflight / rules commit 等多道 HOLD 门,最终 `_launch_claude --resume`(`:4792`)或 fresh `--session-id`(`:4832`)。另有 dry-run 调用(`:4331`)与 rc=4/rc=5 收养/监控路径(不 fork 新身体) | `claude-lead.sh:4331,4433-4544,4526,4594-4717,4719-4771,4792,4832` |
+| F12 | #806 后 Lead 出生只剩**一条现役路径**:**v2 one-shot body** —— `lead-body.sh` source launcher,v2 在 `lead_identity_v2_acquire_bind` 的 HOLD 重试与 rules receipt 之后直接 `_launch_claude` 然后 exit。v1 supervisor carrier 已删除;另有 dry-run 调用,但它不 fork 真实 Lead body | `packages/teamlead/scripts/claude-lead.sh:2702,2800-2929` |
 | F13 | **`delivered_at IS NULL` 存在真实崩溃孤儿窗**(R1 #2):生产顺序 = adapter receipt → audit → `recordLeadBatchDelivered`(`lead-inbox-loop.ts:459-503`),而 Claude 批在返回 receipt 前已写 main inbox + finalize sidecar(`ClaudeMailboxCodec.ts:268-298`)。Bridge 在两步之间崩溃 → 行是 `LEASED + batch_id + delivered_at NULL`,但旧身体可能已吸取标 read;既有 frozenResend 复用同一 `#r{attempt}` → sidecar 只回 duplicate 不追加 unread → 该类孤儿靠 frozenResend 解不了冻 | `lead-inbox-loop.ts:459-503` + `ClaudeMailboxCodec.ts:268-298` + `mailbox-queue.ts:1480-1488` |
 
 ## 2. 改动清单
@@ -78,14 +78,10 @@ WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
 
 **2.3 出生接线(`packages/teamlead/scripts/claude-lead.sh`)**
 
-- **hook 定义 =「即将实际 fork 一个新 Claude body」**(R1 #1),抽一个 launcher helper(集中 `node "$FLYWHEEL_COMM_CLI" adopt-inflight --recipient "$LEAD_ID" --kind lead` + WARNING 日志;调用形态必须带 `node`,与既有 lease helper 一致,`lead-identity-preflight.sh:24-27`),接在**三个真启动调用**之前、各自所有 HOLD/shutdown 门之后:
-  1. v2 one-shot 启动(`claude-lead.sh:4526` 前,rules receipt commit 之后);
-  2. v1 resume 启动(`:4792` 前);
-  3. v1 fresh 启动(`:4832` 前)。
-- **不触发**:dry-run(`:4331`);rc=4/rc=5 收养/监控路径(不经过上述三点,天然不调用 —— 不靠 rc 特判)。
-- 放在 HOLD 门之后的原因(R1 #1):若在 lease rc=0 就跑,后续 tmux ensure/takeover/preflight 任一 HOLD 会让「尚未造出身体就反复对账」,每轮白烧 lease retry。
-- v1 resume 路径也跑(R1 #1 采纳):`--resume` 恢复的会话虽然带着旧上下文,但不能指望恢复体主动翻旧账;对账保证投递确定性,代价是有界重复(§4)。
-- 幂等:重复运行天然 no-op(没有 LEASED 行就零变更),supervisor 重试循环安全。
+- **hook 定义 =「即将实际 fork 一个新 Claude body」**(R1 #1),抽一个 launcher helper(集中 `node "$FLYWHEEL_COMM_CLI" adopt-inflight --recipient "$LEAD_ID" --kind lead` + WARNING 日志;调用形态必须带 `node`,与既有 lease helper 一致),只接在 **v2 one-shot 的唯一真实 `_launch_claude` 调用之前**,且位于 acquire-bind HOLD 循环与 rules receipt 之后。
+- **不触发**:dry-run;HOLD 重试;任何未到真实 child fork 的路径。
+- 放在 HOLD 门之后的原因:若在 lease acquire 就跑,后续 HOLD 会让「尚未造出身体就反复对账」,每轮白烧 lease retry。
+- 幂等:重复运行天然 no-op(没有 LEASED 行就零变更),v2 body 重生安全。
 
 **2.4 为什么这样就到达 founder 语义**
 
@@ -132,6 +128,9 @@ WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
   - (b) **聋 runner + sessions/runs-start 视图矛盾**(exec 5f13771a:GET /api/sessions 查无、POST /api/runs/start 称占位):出生接管**天然不覆盖** —— 这是活实体上的**投递面死亡**(投递目标解析指向无人监听的信箱),没有出生事件可挂钩 → **拆独立单**(由 Lead 建单;标题建议「sessions/runs-start 视图不一致 — 槽位既不可用也不可释放」)。
   - (c) **阈值标定**:已折入 §2(2.5-2.7)。
   - (c') **真 pane 直读探针接线**(R1 #5 新增):死信通知附真实 pane 活性 facts → **拆伴随单**(由 Lead 建单;标题建议「dead-letter 通知接真 pane 探针 facts — Bridge 渲染层、队列事务外」)。v1 先以 StateStore 视图 facts + 显式 caveat 顶上。
+  - (d) **mailbox 积压旁路可观测性**(Lead 产线实测追加):当前积压告警仍可能走同一条已冻结 mailbox,无法自证可达。本单不新增 Bridge 常驻机制,故**明示出界并留 follow-up**:在不经过 mailbox 的 readiness/alert 旁路暴露 `queued_count` 与 `oldest_queued_age`,冻结时仍可被观察。
+  - (e) **换代后批量排空**(Lead 产线实测追加):出生接管会立即释放 3 个在途槽,但现役循环首 tick 仍只发 3 批;43 条积压约需 14 个来回。本单红线禁止改 Bridge 投递循环,故**明示出界并留 follow-up**:评估 Lead 主动批量领取/批量 ack API,或仅在出生接管后的首轮提高投递批量;验收应锁定大积压无需逐 turn 人工啃完。
+  - (f) **Runner writer 双账本一致性**(attempt 2 实证):同一 execution 在 CommDB `sessions` 为 `running`,StateStore 却仍为 `completed`,导致 TURN 已合法回交但 `progress` 拒绝 active writer。本单不改 workflow 控制面,故**明示出界并留 follow-up**:统一 writer 判定权威源,或在 QA fail → implement retry 激活时原子回写两份状态,避免人工拆墙。
 - **术语精确化(评论 4,写进实现注释与死信文档)**:「**聋**」= 投递面死亡(消息进无人监听的信箱,根本没收到);「**签收断链**」= 已送达实体但 ack 永不来(本单)。两类病,两种修法,通知措辞不得混用。
 
 ### §4 部署自举
@@ -139,7 +138,7 @@ WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
 修复自身要经过「会冻结的系统」上船,链路必须自洽:
 
 1. merge → updater `git pull` → `restart-services.sh`(先 build 后重启,F11)→ 全舰重启**本身就是一次换代**,会制造新一批在途孤儿。
-2. 但重启后每个 Lead 新身体跑的已是新 launcher + 新 `flywheel-comm` dist → 三个真启动点(2.3)出生第一步 adopt → **本次部署制造的孤儿被本修复自己收编**。零人工步骤。
+2. 但重启后每个 Lead 新身体跑的已是新 launcher + 新 `flywheel-comm` dist → v2 唯一真启动点(2.3)出生第一步 adopt → **本次部署制造的孤儿被本修复自己收编**。零人工步骤。
 3. 退化安全:任何一环缺失(dist 未 build / CLI 报错 / 库世代不符)→ fail-open 起 Lead → 行为退回今天的 30min lease 兜底 + 死信通知,不比现状差;下次重启自愈。
 4. ship 观察项(不阻塞 merge):部署重启后 `sqlite3 comm.db "SELECT COUNT(*) FROM mailbox WHERE state='LEASED'"` 应在 Lead 出生后即刻归零、QUEUED 随 tick 排空;launcher 日志应见 `adopted: <n>`。
 
@@ -157,21 +156,21 @@ WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
 
 **formatter 测试(`dead-letter-format.test.ts`)**:三通知类(routable runner / lead_unacked / runner_unroutable)快照,**逐类断言 facts 来源与 caveat**(runner=StateStore 视图行;lead_unacked=不可得;R2 #2);probeFacts 有/无 两态(探针行永远渲染);合同三要素逐条断言;Map 缺项 → 不可得。
 
-**CLI 测试**:参数校验(exit 2);**no-create/no-mutate 证明(R1 #3 + R2 #1 + R3 #1 分型)**:① missing path → exit 0 且路径未被创建;② rollback-journal legacy 库(sidecar 原本不存在)→ exit 0、main 逐字节不变、**零新文件**(header 短路);③ **live-writer WAL 库**(另一连接保持打开)世代不符 → exit 0、main SHA + WAL SHA 不变(SHM 显式排除);④ 正常路径 `adopted: <n>`;⑤ **非 vacuous schema-ensure 反证(R4 #1)**:构造世代正确、必需列齐全但缺 `mailbox_lease_expiry` index 的库 → adoption 成功且该 index 仍不存在(证明 CLI 真没走 `ensureMailboxQueueSchema`)。
+**CLI 测试**:参数校验(exit 2);**no-create/no-mutate 证明(R1 #3 + R2 #1 + R3 #1 分型)**:① missing path → exit 0 且路径未被创建;② rollback-journal legacy 库(sidecar 原本不存在)→ exit 0、main 逐字节不变、**零新文件**(header 短路);③ **live-writer WAL 库**(另一连接保持打开)世代不符 → exit 0、main SHA + WAL SHA 不变(SHM 显式排除);④ 正常路径 `adopted: <n>`;⑤ **真实 `index.ts` CLI 边界的 schema-ensure 反证**:显式 `--db` 指向世代正确但缺 `mailbox_lease_expiry` index 的临时库,同时把 `FLYWHEEL_COMM_DB` 指向另一个临时毒针路径 → adoption 成功、毒针路径不存在、完整 `sqlite_schema` 前后不变(证明 CLI 启动与 adoption 均没走 `CommDB` / `ensureMailboxQueueSchema`)。
 
-**shell(`scripts/__tests__/test-claude-lead-adopt-inflight.test.sh`,R1 #1 覆盖面)**:hermetic 台架(CLI 打桩记录调用):① 经真实 `lead-body.sh` / v2 manifest 路径恰好调用一次且在 `_launch_claude` 前;② v1 resume 路径调用一次;③ v1 fresh 路径调用一次;④ dry-run 零调用;⑤ prelaunch HOLD(如 tmux ensure 失败)时零调用;⑥ CLI 失败(非零/缺失)不阻断 launch。
+**shell(`scripts/__tests__/test-claude-lead-adopt-inflight.test.sh`)**:hermetic 台架(CLI 打桩记录调用):① v2 唯一真实 fork 前恰好调用一次;② dry-run 零调用;③ acquire-bind HOLD 与 rules receipt 均先于 adoption;④ CLI 失败(非零/缺失)不阻断 launch。
 
-**真机验收(issue 原文,由独立 QA 节点执行)**:模拟换代(杀 Lead 体重生,529 房或隔离 comm.db + 真 launcher)→ 在途批零人工自动续流;founder 视角零盲区(积压排空、无手工捞 batch_id)。
+**真机验收(issue 原文,由独立 QA 节点执行)**:模拟换代(杀 Lead 体重生,529 房或隔离 comm.db + 真 launcher)→ 在途批零人工自动续流;founder 视角零盲区(无手工捞 batch_id)。首轮仍受 3 批上限约束,大量积压的快速排空归 §3(e) follow-up,不得把「释放冻结」误报为「单轮清空全部积压」。
 
 **门**:`pnpm lint` 全仓 + `pnpm -r build` + `pnpm test:packages:run` + 新 shell 测试。
 
 ## 4. 诚实边界
 
-- **有界重复投递**:三类来源 ——(i)换代瞬间「已投进文件但旧身体未吸取」的行;(ii)F13 崩溃窗行与仍在完成的旧 transport write 竞态;(iii)v1 resume 路径恢复体上下文里已有的批 —— 新身体都会既见旧件又收 `#r{n+1}` 重投件(≤3 批 × ≤5 条,仅出生时)。at-least-once 是既有契约(30min 到期重投今天就产生同类重复);去重需解析 stock 收件文件 read 标记,增加格式耦合 —— 按 founder 删复杂度原则**接受重复、拒绝耦合**(rejected alternative #1)。
+- **有界重复投递**:两类来源 ——(i)换代瞬间「已投进文件但旧身体未吸取」的行;(ii)F13 崩溃窗行与仍在完成的旧 transport write 竞态 —— 新身体可能既见旧件又收 `#r{n+1}` 重投件(≤3 批 × ≤5 条,仅出生时)。at-least-once 是既有契约(30min 到期重投今天就产生同类重复);去重需解析 stock 收件文件 read 标记,增加格式耦合 —— 按 founder 删复杂度原则**接受重复、拒绝耦合**(rejected alternative #1)。
 - **每次换代烧 1 次 lease retry**:连续 3 次换代仍无人 ack 的批会 DEAD + 死信通知 —— 这是「同一封信历经三代身体都没被处理」的真实病理信号,判死正确。
 - **v1 死信探针 facts 是登记视图不是 pane 实况**(措辞里显式 caveat);真 pane facts 拆伴随单(§3 c')。
 - **Codex Lead 不接线**(F9):journal recovery 已覆盖;叠加对账会双重重放。若未来 Codex journal recovery 被证伪,再补接线(同一 CLI 一行)。
-- **不修**聋 runner / 视图不一致(§3 b 拆单)、runner 出生接线(§3 a 拆单)、Bridge 投递循环(红线)。
+- **不修**聋 runner / 视图不一致(§3 b 拆单)、runner 出生接线(§3 a 拆单)、mailbox 积压旁路可观测性(§3 d follow-up)、大积压批量排空(§3 e follow-up)、Bridge 投递循环(红线)。
 - **rejected alternatives**:①文件核对去重(上文);②Bridge 侧换代探测触发对账 —— 违红线且引入常驻机制;③缩短 ack lease 加快兜底 —— 违评论 2 阈值裁定(≥30min);④出生盲 ack 清槽 —— 内容没人处理过就签收 = 丢信,违 at-least-once;⑤在 lease rc=0 处接 hook —— HOLD 门前对账会空烧 retry(R1 #1)。
 
 ## 5. 改动面汇总
@@ -183,7 +182,7 @@ WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
 | `packages/flywheel-comm/src/dead-letter-format.ts`(新) | 纯措辞 formatter(合同三要素 + probeFacts 数据参数) |
 | `packages/flywheel-comm/package.json` | `exports` map 新增 `./dead-letter-format` 子路径(R2 #3,跨包导入合法化;全仓 build 作解析门) |
 | `packages/flywheel-comm/src/commands/adopt-inflight.ts`(新) + `index.ts` | CLI `adopt-inflight`(no-create、generation 校验、fail-open) |
-| `packages/teamlead/scripts/claude-lead.sh` | adopt helper + 三个真启动点前调用(v2 `:4526` / v1 resume `:4792` / v1 fresh `:4832`);dry-run、rc=4/5 不触发 |
+| `packages/teamlead/scripts/claude-lead.sh` | adopt helper + v2 唯一真启动点前调用;dry-run / HOLD 不触发 |
 | `packages/teamlead/src/bridge/lead-inbox-runtime.ts` | scan 前(事务外)构建逐 runner 不可变 facts Map(R2 #2) |
 | `packages/teamlead/src/bridge/runner-mailbox-lane.ts` | 把 facts Map 作纯数据传给 scan |
 | `packages/teamlead/src/bridge/plugin.ts:7716-7728` | 死信 alert sink 正文改用 formatter(`lead_unacked` facts=不可得,见 2.6) |

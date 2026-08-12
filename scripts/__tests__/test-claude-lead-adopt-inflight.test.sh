@@ -13,11 +13,9 @@ ok() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 
 # Pin the production source, not a mirrored test implementation: one call at
-# each real child fork (v2, v1 resume, v1 fresh), and none at the dry-run fork.
+# the v2 child fork and none at the dry-run fork.
 call_count="$(grep -c '^[[:space:]]*_adopt_inflight_before_launch$' "$LEAD_SH")"
 v2_line="$(grep -n '_launch_claude "${_v2_launch_args\[@\]}"' "$LEAD_SH" | cut -d: -f1)"
-resume_line="$(grep -n '_launch_claude "${CLAUDE_ARGS\[@\]}" --resume' "$LEAD_SH" | cut -d: -f1)"
-fresh_line="$(grep -n '_launch_claude "${CLAUDE_ARGS\[@\]}" --session-id "\$SESSION_ID"' "$LEAD_SH" | tail -1 | cut -d: -f1)"
 dry_line="$(grep -n '_launch_claude "${CLAUDE_ARGS\[@\]}" --session-id "DRY-RUN-SESSION"' "$LEAD_SH" | cut -d: -f1)"
 
 previous_is_adopt() {
@@ -25,13 +23,10 @@ previous_is_adopt() {
   [ "$(sed -n "$((line - 1))p" "$LEAD_SH" | tr -d '[:space:]')" = "_adopt_inflight_before_launch" ]
 }
 
-if [ "$call_count" -eq 3 ] \
-  && previous_is_adopt "$v2_line" \
-  && previous_is_adopt "$resume_line" \
-  && previous_is_adopt "$fresh_line"; then
-  ok "v2, v1 resume, and v1 fresh each adopt exactly at the real fork"
+if [ "$call_count" -eq 1 ] && previous_is_adopt "$v2_line"; then
+  ok "v2 adopts exactly at the real fork"
 else
-  bad "the three physical fork sites are not each preceded by exactly one adoption"
+  bad "the v2 physical fork is not preceded by exactly one adoption"
 fi
 
 if [ -n "$dry_line" ] && ! previous_is_adopt "$dry_line"; then
@@ -89,15 +84,13 @@ else
   bad "CLI failure did not fail open"
 fi
 
-# HOLD/adoption paths are structurally before every call site: v1 only reaches
-# them after prepare/preflight/rules gates, while v2 reaches its call only after
-# the acquire-bind retry loop and rules receipt.
-first_call="$(grep -n '^[[:space:]]*_adopt_inflight_before_launch$' "$LEAD_SH" | head -1 | cut -d: -f1)"
+# The v2 acquire-bind HOLD loop and rules receipt are structurally before the
+# only adoption call, so a held body cannot consume a retry generation.
+adopt_call="$(grep -n '^[[:space:]]*_adopt_inflight_before_launch$' "$LEAD_SH" | cut -d: -f1)"
 v2_bind="$(grep -n '^[[:space:]]*lead_identity_v2_acquire_bind \\' "$LEAD_SH" | head -1 | cut -d: -f1)"
-v1_prepare="$(grep -n '^[[:space:]]*if _prepare_lead_launch; then' "$LEAD_SH" | cut -d: -f1)"
-second_call="$(grep -n '^[[:space:]]*_adopt_inflight_before_launch$' "$LEAD_SH" | sed -n '2p' | cut -d: -f1)"
-if [ "$v2_bind" -lt "$first_call" ] && [ "$v1_prepare" -lt "$second_call" ]; then
-  ok "identity HOLD and v1 prelaunch HOLD gates precede adoption"
+rules_commit="$(grep -n '^[[:space:]]*if ! _rules_bundle_commit_once; then' "$LEAD_SH" | tail -1 | cut -d: -f1)"
+if [ "$v2_bind" -lt "$adopt_call" ] && [ "$rules_commit" -lt "$adopt_call" ]; then
+  ok "v2 identity HOLD and rules gates precede adoption"
 else
   bad "adoption moved before a HOLD gate"
 fi
