@@ -1,0 +1,34 @@
+[
+	{
+		"a": "alex_prompter",
+		"id": "2086548276053180892",
+		"t": "2026-08-09T20:20",
+		"v": "15924",
+		"img": null,
+		"x": "Risk level is the wrong way to gate your AI agent's actions. Reversibility is the right one. Most permission systems ask how dangerous an action is."
+	},
+	{
+		"a": "MengTo",
+		"id": "2087098248997617799",
+		"t": "2026-08-11T08:46",
+		"v": "27530",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2087097653083668480/img/4qcRDi68T7Wx_g45.jpg",
+		"x": "I open-sourced my 3d towers building site and the skills I used to create well-textured three.js models. Entire site is 1.38mb gzipped."
+	},
+	{
+		"a": "xiaoying_eth",
+		"id": "2086983459030089768",
+		"t": "2026-08-11T01:10",
+		"v": "377814",
+		"img": null,
+		"x": "50 个看似违法但完全合法的网站(工具清单)"
+	},
+	{
+		"a": "ForwardEditor",
+		"id": "2086786388469715008",
+		"t": "2026-08-10T12:07",
+		"v": null,
+		"img": null,
+		"x": "codex tip: I always use define-goal instead of /goal..."
+	}
+]

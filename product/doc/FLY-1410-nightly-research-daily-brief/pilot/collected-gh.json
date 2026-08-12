@@ -1,0 +1,146 @@
+[
+	{
+		"repo": "cathrynlavery/diagram-design",
+		"desc": "29 editorial diagram types for Claude Code. Self-contained HTML + SVG. No shadows, no Mermaid-slop.",
+		"lang": "HTML",
+		"stars": null,
+		"stars_today": "1,612",
+		"url": "https://github.com/cathrynlavery/diagram-design"
+	},
+	{
+		"repo": "msitarzewski/agency-agents",
+		"desc": "A complete AI agency at your fingertips - From frontend wizards to Reddit community ninjas, from whimsy injectors to reality checkers. Each agent is a specialized expert with personality, processes, and proven deliverables.",
+		"lang": "Shell",
+		"stars": null,
+		"stars_today": "971",
+		"url": "https://github.com/msitarzewski/agency-agents"
+	},
+	{
+		"repo": "semantica-agi/semantica",
+		"desc": "Graph-Native Infrastructure for Context and Accountable AI Systems",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "884",
+		"url": "https://github.com/semantica-agi/semantica"
+	},
+	{
+		"repo": "nvm-sh/nvm",
+		"desc": "Node Version Manager - POSIX-compliant bash script to manage multiple active node.js versions",
+		"lang": "Shell",
+		"stars": null,
+		"stars_today": "18",
+		"url": "https://github.com/nvm-sh/nvm"
+	},
+	{
+		"repo": "addyosmani/agent-skills",
+		"desc": "Production-grade engineering skills for AI coding agents.",
+		"lang": "JavaScript",
+		"stars": null,
+		"stars_today": "571",
+		"url": "https://github.com/addyosmani/agent-skills"
+	},
+	{
+		"repo": "ZhuLinsen/daily_stock_analysis",
+		"desc": "LLM 驱动的多市场股票智能分析系统：多源行情、实时新闻、决策看板与自动推送，支持零成本定时运行。 LLM-powered multi-market stock analysis system with multi-source market data, real-time news, decision dashboard, automated notifications, and cost-free scheduled runs.",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "317",
+		"url": "https://github.com/ZhuLinsen/daily_stock_analysis"
+	},
+	{
+		"repo": "vitali87/code-graph-rag",
+		"desc": "The ultimate RAG for your monorepo. Query, understand, and edit multi-language codebases with the power of AI and knowledge graphs",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "339",
+		"url": "https://github.com/vitali87/code-graph-rag"
+	},
+	{
+		"repo": "anthropics/skills",
+		"desc": "Public repository for Agent Skills",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "468",
+		"url": "https://github.com/anthropics/skills"
+	},
+	{
+		"repo": "3b1b/manim",
+		"desc": "Animation engine for explanatory math videos",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "246",
+		"url": "https://github.com/3b1b/manim"
+	},
+	{
+		"repo": "HKUDS/DeepTutor",
+		"desc": "DeepTutor: Lifelong Personalized Tutoring. https://deeptutor.info/.",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "829",
+		"url": "https://github.com/HKUDS/DeepTutor"
+	},
+	{
+		"repo": "stablyai/orca",
+		"desc": "Orca is the ADE for working with a fleet of parallel agents. Run any coding agent with your own subscription. Available on desktop, mobile and VPS.",
+		"lang": "TypeScript",
+		"stars": null,
+		"stars_today": "881",
+		"url": "https://github.com/stablyai/orca"
+	},
+	{
+		"repo": "paperclipai/paperclip",
+		"desc": "The open-source app everyone uses to manage agents at work",
+		"lang": "TypeScript",
+		"stars": null,
+		"stars_today": "743",
+		"url": "https://github.com/paperclipai/paperclip"
+	},
+	{
+		"repo": "huggingface/transformers",
+		"desc": "🤗 Transformers: the model-definition framework for state-of-the-art machine learning models in text, vision, audio, and multimodal models, for both inference and training.",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "69",
+		"url": "https://github.com/huggingface/transformers"
+	},
+	{
+		"repo": "harveyai/harvey-labs",
+		"desc": "A benchmark built to evaluate and improve agent capabilities for supporting legal work.",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "24",
+		"url": "https://github.com/harveyai/harvey-labs"
+	},
+	{
+		"repo": "jaywcjlove/awesome-mac",
+		"desc": " This project is dedicated to collecting high-quality macOS software and organizing them systematically by different categories for easy search and use.",
+		"lang": "Swift",
+		"stars": null,
+		"stars_today": "334",
+		"url": "https://github.com/jaywcjlove/awesome-mac"
+	},
+	{
+		"repo": "calesthio/OpenMontage",
+		"desc": "World's first open-source, agentic video production system. 12 production pipelines, 100+ tools, 700+ agent skill and production-knowledge files. Turn your AI coding assistant into a full video production studio.",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "436",
+		"url": "https://github.com/calesthio/OpenMontage"
+	},
+	{
+		"repo": "practical-tutorials/project-based-learning",
+		"desc": "Curated list of project-based tutorials",
+		"lang": "Python",
+		"stars": null,
+		"stars_today": "394",
+		"url": "https://github.com/practical-tutorials/project-based-learning"
+	},
+	{
+		"repo": "PrimeIntellect-ai/prime-agent",
+		"desc": "A self-improving RLM agent for coding workflows and long-running autonomous tasks.",
+		"lang": "TypeScript",
+		"stars": null,
+		"stars_today": "1,148",
+		"url": "https://github.com/PrimeIntellect-ai/prime-agent"
+	}
+]

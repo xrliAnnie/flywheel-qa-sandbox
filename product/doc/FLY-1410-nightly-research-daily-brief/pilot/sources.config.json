@@ -1,0 +1,118 @@
+{
+	"_doc": "FLY-1410 夜间研究 agent — 源配置。加源/减源/换号只改这个文件,不改代码。",
+	"_contract": {
+		"enabled": "false = 今晚不扫这个源(源状态栏仍会写明它被关掉了,不是静默消失)",
+		"needs_browser": "true = 抢浏览器,必须与其他 needs_browser 源串行;false = 纯 HTTP,可并行",
+		"max_items": "该源本晚硬上限。上限是成本闸,不是产量预测",
+		"window_hours": "只是抓完之后的过滤器 —— 绝不用来当抓取的刹车(算法流里位置不等于时间)",
+		"stop_after_scrolls": "抓取的真正停止条件 = 滚动深度 + 条数,不是时间",
+		"scroll_pace_ms": "每次滚动之间的停顿。已定 2000ms",
+		"target": "该源本晚想扫到多少条。这是目标,不是上限",
+		"cost_brake": "花费硬上限;null = 不设(Annie 2026-08-12)",
+		"stop_when": "停止条件:scanned 达标 或 连续 N 轮零新增,满足其一即停"
+	},
+	"delivery": {
+		"generate_at": "00:30",
+		"_note": "PRD R11(Annie 2026-08-12 拍):删掉 deliver_at —— 采完即投,不再等钟点。她原话:你不管 3 点发还是 4 点发都没关系,我醒来能看到就行。",
+		"gate_pass_max": 8,
+		"_gate_note": "Annie 2026-08-11 定位纠正后从 3 调到 8:早报是【发现工具】不是核实报告 —— 宁可多给几条浅的,不要少给几条深的。仍然可以少于 8,不能多于 8。",
+		"card_shape": "一句话是什么 + 一句话为什么可能有意思 + 链接。核实降为一行提示,不展开。"
+	},
+	"sources": [
+		{
+			"id": "x-justinsuntron",
+			"kind": "x_account",
+			"handle": "justinsuntron",
+			"label": "X · @justinsuntron",
+			"enabled": false,
+			"_why_disabled": "Annie 2026-08-11 拍板:不要专门的账号,直接读她的 For you feed",
+			"needs_browser": true,
+			"max_items": 25,
+			"window_hours": 336,
+			"stop_after_scrolls": 3,
+			"scroll_pace_ms": 2000
+		},
+		{
+			"id": "x-sunyuchentron",
+			"kind": "x_account",
+			"handle": "sunyuchentron",
+			"label": "X · @sunyuchentron",
+			"enabled": false,
+			"_why_disabled": "同上 — Annie 拍板改走 For you",
+			"needs_browser": true,
+			"max_items": 25,
+			"window_hours": 336,
+			"stop_after_scrolls": 3,
+			"scroll_pace_ms": 2000
+		},
+		{
+			"id": "x-for-you",
+			"kind": "x_foryou",
+			"label": "X · For you 首页流",
+			"enabled": true,
+			"needs_browser": true,
+			"window_hours": 24,
+			"scroll_pace_ms": 2000,
+			"target": 100,
+			"cost_brake": null,
+			"stop_when": {
+				"scanned": 100,
+				"consecutive_empty_rounds": 3
+			},
+			"_prd": "R3:目标/成本闸/停止条件三件事必须分开。target=100 是 Annie 定的『每晚看 100 条』;cost_brake=null 是她说的『暂时不需要成本闸』;stop_when 两条满足其一即停。"
+		},
+		{
+			"id": "gh-trending-daily",
+			"kind": "github_trending",
+			"url": "https://github.com/trending?since=daily",
+			"label": "GitHub Trending · daily",
+			"enabled": true,
+			"needs_browser": false,
+			"max_items": 30,
+			"window_hours": 24,
+			"verify_via": "gh api repos/{full_name}"
+		},
+		{
+			"id": "hn-front-page",
+			"kind": "hn_algolia",
+			"url": "https://hn.algolia.com/api/v1/search?tags=front_page",
+			"label": "Hacker News · 主榜",
+			"enabled": true,
+			"needs_browser": false,
+			"max_items": 20,
+			"min_points": 100,
+			"window_hours": 24,
+			"_prd": "Q6:本轮开。接口已实测(200/20 条/免 key),不抢浏览器,可与 X 并行。"
+		}
+	],
+	"gate": {
+		"_doc": "闸门判据 v0 —— 三维各 0-3 分。注意:『跟我们什么关系』这一维留在闸门里(它决定选谁),但【不在卡片上展开成一段】。",
+		"dimensions": [
+			{
+				"id": "interface",
+				"weight": 3,
+				"label": "跟我们有没有接口",
+				"_note": "权重最高:没有这一段的条目应该被砍掉,不是照登"
+			},
+			{
+				"id": "verifiable",
+				"weight": 2,
+				"label": "可核实性",
+				"_note": "必须进闸门 —— 没有原物可核的条目,核实环节根本无法执行"
+			},
+			{
+				"id": "novelty",
+				"weight": 1,
+				"label": "新颖度"
+			}
+		],
+		"hard_veto": ["纯营销", "招聘", "融资新闻", "过去30天已报过的同一项目"]
+	},
+	"check_states": {
+		"_doc": "🔴 硬要求:条目变多、深度变浅之后『扫到但没核』会成为多数,不能让没核的看起来像核过的。三态必须一眼可分。",
+		"verified": "我去看了原物(GitHub API / notebook / 官方页),数字和说法对得上",
+		"scanned": "我只看了帖子本身,没去核原物。⚠️ 这不是『可信』,这是『未知』",
+		"mismatch": "我核了,发现帖子的具体数字与原物不符 —— 标一行,不展开"
+	},
+	"_prd_authority": "本文件已按 FLY-1410 PRD 定稿版对齐(prd.md,2026-08-12)。若本文件与 PRD 冲突,以 PRD 为准并回来修本文件 —— 不要照着旧字段实现。"
+}
