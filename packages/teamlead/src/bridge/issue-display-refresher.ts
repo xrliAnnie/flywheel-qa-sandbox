@@ -187,6 +187,7 @@ export function stampStageEmojiForSession(
 
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
+	if (thread.archived_at) return; // archived issue threads stay silent
 
 	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
 	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
@@ -250,6 +251,7 @@ export function pinRunnerAttachForSession(
 
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
+	if (thread.archived_at) return; // archived issue threads stay silent
 
 	const resolvedChannel = chatChannel;
 	const resolvedToken = botToken;
@@ -393,6 +395,27 @@ const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
 	"design_done",
 ]);
 
+type IssueConclusionStore = Pick<
+	StateStore,
+	"hasFinalizationCompletedForIssue" | "hasMergeConfirmedForIssue"
+>;
+
+/**
+ * FLY-1709: `terminated` is concluded cleanup only when the issue has durable
+ * ship evidence. A historical completed session is not sufficient: generalized
+ * DAGs can leave several main-role rows on one issue, and a later abandoned node
+ * must not inherit an earlier node's success.
+ */
+export function hasDurableIssueConclusion(
+	store: IssueConclusionStore,
+	issueId: string,
+): boolean {
+	return (
+		store.hasFinalizationCompletedForIssue(issueId) ||
+		store.hasMergeConfirmedForIssue(issueId)
+	);
+}
+
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
  * display fingerprint — per-role latest {role, status, exec} + the issue's
@@ -405,6 +428,7 @@ export function computeSessionsFingerprint(
 	store: Pick<
 		StateStore,
 		| "hasFinalizationCompletedForIssue"
+		| "hasMergeConfirmedForIssue"
 		| "getLatestPhaseSessionsForIssue"
 		| "getSessionByIssue"
 	>,
@@ -416,12 +440,14 @@ export function computeSessionsFingerprint(
 		e: s.execution_id,
 	}));
 	const main = store.getSessionByIssue(issueId);
+	const issueConcluded = hasDurableIssueConclusion(store, issueId);
 	return JSON.stringify({
 		p: phases,
 		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
 		// so a non-empty result is the same three-stage guard used by derivation.
 		// Single-session issues retain the pre-FLY-1225 zero-query path.
 		fc: phases.length > 0 && store.hasFinalizationCompletedForIssue(issueId),
+		cc: issueConcluded,
 		m: main
 			? { st: main.status, sg: main.session_stage ?? "", e: main.execution_id }
 			: null,
@@ -653,9 +679,23 @@ export class IssueDisplayRefresher {
 		const thread = store.getChatThreadByIssue(issueId, chatChannel);
 		if (!thread) return; // no thread → nothing to render (and no fingerprint home)
 		const threadId = thread.thread_id;
+		if (thread.archived_at) {
+			const fingerprint: DisplayFingerprint = {
+				s: computeSessionsFingerprint(store, issueId),
+				c: JSON.stringify({ archived: true }),
+			};
+			store.setChatThreadDisplayFingerprint(
+				issueId,
+				chatChannel,
+				JSON.stringify(fingerprint),
+				new Date().toISOString(),
+			);
+			return;
+		}
 
 		const latestPhase = store.getLatestPhaseSessionsForIssue(issueId);
 		const isThreeStage = latestPhase.length > 0;
+		const issueConcluded = hasDurableIssueConclusion(store, issueId);
 
 		// Park probes — once per involved exec (the map dedupes).
 		const parkByExec = new Map<string, ParkProbe>();
@@ -677,7 +717,12 @@ export class IssueDisplayRefresher {
 			phaseStatuses.set(role, s.status);
 			phaseStates.set(
 				role,
-				derivePhaseDisplayState({ role, status: s.status, park: parkFor(s) }),
+				derivePhaseDisplayState({
+					role,
+					status: s.status,
+					park: parkFor(s),
+					issueConcluded,
+				}),
 			);
 		}
 		const shipFinalizationClaimed =
@@ -690,6 +735,7 @@ export class IssueDisplayRefresher {
 			shipFinalizationClaimed,
 			mainSessionStage: anySession.session_stage,
 			mainSessionStatus: anySession.status,
+			issueConcluded,
 		});
 		// FLY-579/827 interaction (feedback: founder status must be QA-gated): a
 		// single-session issue whose independent auto-QA is in flight shows 🧪QA

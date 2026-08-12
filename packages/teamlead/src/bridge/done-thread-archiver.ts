@@ -37,12 +37,26 @@
 import { randomUUID } from "node:crypto";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import type {
+	ReopenVetoCandidates,
+	StateStore,
+	ThreadArchiveCompensationCause,
+} from "../StateStore.js";
 import {
 	type ArchiveChatThreadResult,
 	archiveChatThread,
+	classifyThreadReopener,
+	getChannelName,
+	getLatestThreadMessageId,
 	removeUserFromChatThread,
+	unarchiveChatThread,
 } from "./chat-thread-utils.js";
+import {
+	lookupTmuxTarget,
+	probeRunnerProcessLiveness,
+	type RunnerLiveness,
+	type TmuxTargetLookup,
+} from "./tmux-lookup.js";
 
 // ── Shared archive sink (single token-bearing path) ─────────────────────────
 
@@ -61,6 +75,16 @@ export interface ArchiveThreadDeps {
 	 * Defaults to this module's source.
 	 */
 	auditSource?: string;
+	probeFn?: typeof getChannelName;
+	classifyFn?: typeof classifyThreadReopener;
+	frontierFn?: typeof getLatestThreadMessageId;
+	unarchiveFn?: typeof unarchiveChatThread;
+	targetLookupFn?: (
+		executionId: string,
+		projectName: string,
+	) => TmuxTargetLookup;
+	livenessProbeFn?: (tmuxWindow: string) => Promise<RunnerLiveness>;
+	nowMs?: () => number;
 }
 
 export interface ArchiveThreadInput {
@@ -80,6 +104,169 @@ export interface ArchiveThreadInput {
  */
 const threadArchiveLocks = new Map<string, Promise<unknown>>();
 
+/** Narrow protection for a just-admitted run before its tmux target exists. */
+export const REOPEN_ADMISSION_GRACE_MS = 5 * 60_000;
+
+export type ArchiveEpoch = { startMs: number; endMs: number };
+
+/** Parse new ISO-millisecond epochs and legacy SQLite second-wide epochs. */
+export function archiveEpochInterval(raw: string): ArchiveEpoch | null {
+	const legacy = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/.exec(raw);
+	if (legacy) {
+		const startMs = Date.parse(`${legacy[1]}T${legacy[2]}Z`);
+		return Number.isFinite(startMs)
+			? { startMs, endMs: startMs + 1_000 }
+			: null;
+	}
+	const point = stateTimestampMs(raw);
+	return point !== null ? { startMs: point, endMs: point } : null;
+}
+
+/** Parse StateStore UTC strings, including SQLite-style timestamps. */
+export function stateTimestampMs(raw: string): number | null {
+	const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)
+		? `${raw.replace(" ", "T")}Z`
+		: raw;
+	const value = Date.parse(normalized);
+	return Number.isFinite(value) ? value : null;
+}
+
+/** Materialized candidates only: never hold a SQLite statement across awaits. */
+export async function resolveReopenVeto(
+	candidates: ReopenVetoCandidates,
+	archivedAtRaw: string,
+	deps: Pick<
+		ArchiveThreadDeps,
+		"targetLookupFn" | "livenessProbeFn" | "nowMs"
+	> = {},
+): Promise<{ executionId: string } | null> {
+	const epoch = archiveEpochInterval(archivedAtRaw);
+	if (!epoch) return candidates.sessions[0] ?? candidates.claims[0] ?? null;
+	const nowMs = (deps.nowMs ?? Date.now)();
+	const lookup = deps.targetLookupFn ?? lookupTmuxTarget;
+	const probe = deps.livenessProbeFn ?? probeRunnerProcessLiveness;
+	const sessionIds = new Set(candidates.sessions.map((row) => row.executionId));
+
+	for (const session of candidates.sessions) {
+		const startedMs = session.startedAt
+			? (stateTimestampMs(session.startedAt) ?? Number.NaN)
+			: Number.NaN;
+		if (
+			Number.isFinite(startedMs) &&
+			startedMs > epoch.endMs &&
+			nowMs - startedMs <= REOPEN_ADMISSION_GRACE_MS
+		) {
+			return { executionId: session.executionId };
+		}
+		let target: TmuxTargetLookup;
+		try {
+			target = lookup(session.executionId, session.projectName);
+		} catch {
+			return { executionId: session.executionId };
+		}
+		if (target.kind === "error") return { executionId: session.executionId };
+		if (target.kind === "gone") continue;
+		let liveness: RunnerLiveness;
+		try {
+			liveness = await probe(target.target.tmuxWindow);
+		} catch {
+			liveness = "indeterminate";
+		}
+		if (liveness === "alive" || liveness === "indeterminate") {
+			return { executionId: session.executionId };
+		}
+	}
+
+	for (const claim of candidates.claims) {
+		if (sessionIds.has(claim.executionId)) continue;
+		const createdMs = stateTimestampMs(claim.createdAt) ?? Number.NaN;
+		if (
+			Number.isFinite(createdMs) &&
+			createdMs > epoch.endMs &&
+			nowMs - createdMs <= REOPEN_ADMISSION_GRACE_MS
+		) {
+			return { executionId: claim.executionId };
+		}
+	}
+	return null;
+}
+
+/** Shared with explicit lifecycle reactivation so both mutations serialize. */
+export async function runUnderThreadArchiveLock<T>(
+	threadId: string,
+	run: () => Promise<T>,
+): Promise<T> {
+	const prev = threadArchiveLocks.get(threadId) ?? Promise.resolve(undefined);
+	const cur = prev.catch(() => undefined).then(run);
+	threadArchiveLocks.set(threadId, cur);
+	try {
+		return await cur;
+	} finally {
+		if (threadArchiveLocks.get(threadId) === cur) {
+			threadArchiveLocks.delete(threadId);
+		}
+	}
+}
+
+/**
+ * Explicit new-run reactivation. A pending compensation receipt is discharged
+ * to verified-open before the archive epoch is cleared; failure stays durable
+ * and never blocks the session-start path.
+ */
+export async function reactivateChatThreadForStartedSession(
+	store: StateStore,
+	input: ArchiveThreadInput,
+	botToken: string,
+	deps: Pick<ArchiveThreadDeps, "probeFn" | "unarchiveFn" | "fetchImpl"> = {},
+): Promise<boolean> {
+	try {
+		return await runUnderThreadArchiveLock(input.threadId, async () => {
+			const pending = store.getChatThreadCompensationPending(input.threadId);
+			if (pending) {
+				const probeFn = deps.probeFn ?? getChannelName;
+				const unarchiveFn = deps.unarchiveFn ?? unarchiveChatThread;
+				const restDeps = { fetchImpl: deps.fetchImpl };
+				let probe = await probeFn(input.threadId, botToken, restDeps);
+				if (!probe.ok || probe.archived === undefined) {
+					throw new Error(
+						probe.ok ? "Discord archive state is missing" : probe.error,
+					);
+				}
+				if (probe.archived) {
+					await unarchiveFn(input.threadId, botToken, restDeps);
+					probe = await probeFn(input.threadId, botToken, restDeps);
+					if (!probe.ok || probe.archived !== false) {
+						throw new Error(
+							probe.ok ? "reactivation did not verify open" : probe.error,
+						);
+					}
+				}
+			}
+			store.commitReactivation(input.threadId);
+			return true;
+		});
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(
+			`[done-thread-archiver] reactivation of ${input.threadId} (${input.issueId}) deferred: ${message}`,
+		);
+		try {
+			store.insertEvent({
+				event_id: `chat-thread-reactivation-failed-fly1709-${randomUUID()}`,
+				execution_id: input.executionId,
+				issue_id: input.issueId,
+				project_name: input.projectName,
+				event_type: "chat_thread_reactivation_failed",
+				source: "direct-event-sink",
+				payload: { threadId: input.threadId, error: message },
+			});
+		} catch {
+			// The warning above remains the loud failure trace if StateStore failed.
+		}
+		return false;
+	}
+}
+
 /**
  * The ONE place a chat thread is archived — the close cascade, the on-demand
  * endpoint, the reconcile sweep, AND the post-ship path (FLY-1165 folded it
@@ -87,12 +274,10 @@ const threadArchiveLocks = new Map<string, Promise<unknown>>();
  * (Bridge holds the token), marks `archived_at` on success, and writes an
  * audit event either way. Never throws.
  *
- * Sink-level archive-once (FLY-1165): a FRESH `store.isChatThreadArchived`
- * read runs INSIDE the per-thread critical section — a thread with
- * `archived_at` set is never re-PATCHed (and its owner never re-removed), so
- * a founder re-open (Discord auto-unarchive on a new message) is not fought
- * by ANY caller. That case returns `reason: "already_archived"` (an
- * idempotent no-op success, attempts 0) and records a non-failure audit event.
+ * FLY-1709 refines the archive-once guard inside the per-thread critical
+ * section: Discord-confirmed archived state is a truthful idempotent success;
+ * any human post-archive message protects the reopened thread; bot-only
+ * reopen activity may be re-archived behind frontier checks and compensation.
  */
 export async function archiveThreadAndRecord(
 	store: StateStore,
@@ -101,17 +286,170 @@ export async function archiveThreadAndRecord(
 	deps: ArchiveThreadDeps = {},
 ): Promise<ArchiveChatThreadResult> {
 	const auditSource = deps.auditSource ?? "bridge.done-thread-archiver";
+	const probeFn = deps.probeFn ?? getChannelName;
+	const classifyFn = deps.classifyFn ?? classifyThreadReopener;
+	const frontierFn = deps.frontierFn ?? getLatestThreadMessageId;
+	const unarchiveFn = deps.unarchiveFn ?? unarchiveChatThread;
+	const displayDeps = { fetchImpl: deps.fetchImpl };
 
-	const run = async (): Promise<ArchiveChatThreadResult> => {
-		// Archive-once guard — fresh read inside the critical section.
-		if (store.isChatThreadArchived(input.threadId)) {
+	const audit = (
+		result: ArchiveChatThreadResult,
+		opts: { skip?: boolean; reArchived?: boolean } = {},
+	): ArchiveChatThreadResult => {
+		const success = result.archived || opts.skip;
+		store.insertEvent({
+			event_id: opts.reArchived
+				? `chat-thread-rearchived-fly1709-${randomUUID()}`
+				: success
+					? `chat-thread-archive-skip-fly1709-${randomUUID()}`
+					: `chat-thread-archive-failed-fly369-${randomUUID()}`,
+			execution_id: input.executionId,
+			issue_id: input.issueId,
+			project_name: input.projectName,
+			event_type: success
+				? "chat_thread_archived"
+				: "chat_thread_archive_failed",
+			source: auditSource,
+			payload: {
+				threadId: input.threadId,
+				attempts: result.attempts,
+				status: result.status ?? null,
+				reason: result.reason,
+				error: result.error ?? null,
+				...(result.activeExecutionId
+					? { activeExecutionId: result.activeExecutionId }
+					: {}),
+				...(opts.reArchived ? { reArchived: true } : {}),
+			},
+		});
+		return result;
+	};
+
+	const reopenFailure = (error?: string): ArchiveChatThreadResult => ({
+		archived: false,
+		attempts: 0,
+		reason: "reopen_check_failed",
+		...(error ? { error } : {}),
+	});
+
+	const resultForCause = (
+		cause: ThreadArchiveCompensationCause,
+	): ArchiveChatThreadResult =>
+		cause === "human"
+			? { archived: false, attempts: 0, reason: "founder_reopened" }
+			: reopenFailure();
+
+	const compensateKnownArchived = async (
+		cause: ThreadArchiveCompensationCause,
+	): Promise<ArchiveChatThreadResult> => {
+		const pending = store.getChatThreadCompensationPending(input.threadId);
+		if (pending?.version === 1 && pending.cause !== cause) {
+			store.setChatThreadCompensationPending(input.threadId, {
+				...pending,
+				cause,
+			});
+		}
+		const unarchiveResult = await unarchiveFn(
+			input.threadId,
+			botToken,
+			displayDeps,
+		);
+		const verification = await probeFn(input.threadId, botToken, displayDeps);
+		if (verification.ok && verification.archived === false) {
+			store.clearChatThreadCompensationPending(input.threadId);
+			return resultForCause(cause);
+		}
+		return reopenFailure(
+			unarchiveResult.error ??
+				(verification.ok
+					? "compensation did not verify open"
+					: verification.error),
+		);
+	};
+
+	const resumeCompensation = async (): Promise<ArchiveChatThreadResult> => {
+		const pending = store.getChatThreadCompensationPending(input.threadId);
+		const cause = pending?.cause ?? "verify_failed";
+		const probe = await probeFn(input.threadId, botToken, displayDeps);
+		if (!probe.ok) {
+			if (probe.status === 404) {
+				store.markChatThreadMissing(input.threadId);
+				store.clearChatThreadCompensationPending(input.threadId);
+				return { archived: false, attempts: 0, status: 404, reason: "missing" };
+			}
+			return reopenFailure(probe.error);
+		}
+		if (probe.archived === false) {
+			store.clearChatThreadCompensationPending(input.threadId);
+			return reopenFailure();
+		}
+		if (probe.archived !== true) {
+			return reopenFailure("Discord archive state is missing");
+		}
+		await compensateKnownArchived(cause);
+		// A recovery invocation never reports success. The next invocation starts
+		// from a clean state and re-evaluates the complete archive policy.
+		return reopenFailure();
+	};
+
+	const reArchiveWithQuietWindow = async (
+		archivedAtRaw: string,
+		afterMs: number,
+		frontier: string,
+	): Promise<ArchiveChatThreadResult> => {
+		const before = await frontierFn(input.threadId, botToken, displayDeps);
+		if (!before.ok || before.messageId !== frontier) {
+			return audit(
+				reopenFailure(before.ok ? "message frontier changed" : before.error),
+			);
+		}
+
+		store.setChatThreadCompensationPending(input.threadId, {
+			version: 1,
+			state: "prepared",
+			archiveEpoch: archivedAtRaw,
+			frontier,
+			cause: "unknown",
+			at: new Date().toISOString(),
+		});
+
+		const archiveFn = deps.archiveFn ?? archiveChatThread;
+		const patchResult = await archiveFn(input.threadId, botToken, {
+			markDiscordMissing: (id) => store.markChatThreadMissing(id),
+			fetchImpl: deps.fetchImpl,
+		});
+		if (!patchResult.archived) {
+			const current = await probeFn(input.threadId, botToken, displayDeps);
+			if (!current.ok && current.status === 404) {
+				store.clearChatThreadCompensationPending(input.threadId);
+				return audit({ ...patchResult, reason: "missing" });
+			}
+			if (current.ok && current.archived === false) {
+				store.clearChatThreadCompensationPending(input.threadId);
+				return audit(patchResult);
+			}
+			if (current.ok && current.archived === true) {
+				return audit(await compensateKnownArchived("verify_failed"));
+			}
+			return audit(reopenFailure(current.ok ? undefined : current.error));
+		}
+
+		const [metadata, after] = await Promise.all([
+			probeFn(input.threadId, botToken, displayDeps),
+			frontierFn(input.threadId, botToken, displayDeps),
+		]);
+		if (
+			metadata.ok &&
+			metadata.archived === true &&
+			after.ok &&
+			after.messageId === frontier
+		) {
 			const result: ArchiveChatThreadResult = {
-				archived: false,
-				attempts: 0,
-				reason: "already_archived",
+				...patchResult,
+				archived: true,
 			};
-			store.insertEvent({
-				event_id: `chat-thread-archive-noop-fly1165-${randomUUID()}`,
+			store.commitReArchive(input.threadId, {
+				event_id: `chat-thread-rearchived-fly1709-${randomUUID()}`,
 				execution_id: input.executionId,
 				issue_id: input.issueId,
 				project_name: input.projectName,
@@ -119,12 +457,120 @@ export async function archiveThreadAndRecord(
 				source: auditSource,
 				payload: {
 					threadId: input.threadId,
-					attempts: 0,
-					status: null,
-					reason: "already_archived",
+					attempts: result.attempts,
+					status: result.status ?? null,
+					reason: result.reason,
+					reArchived: true,
 				},
 			});
 			return result;
+		}
+
+		if (metadata.ok && metadata.archived === false) {
+			store.clearChatThreadCompensationPending(input.threadId);
+			if (after.ok && after.messageId === frontier) {
+				return audit(
+					{ archived: false, attempts: 0, reason: "founder_reopened" },
+					{ skip: true },
+				);
+			}
+			const incremental = await classifyFn(
+				input.threadId,
+				botToken,
+				afterMs,
+				displayDeps,
+			);
+			return incremental.kind === "human"
+				? audit(
+						{ archived: false, attempts: 0, reason: "founder_reopened" },
+						{ skip: true },
+					)
+				: audit(reopenFailure());
+		}
+
+		let cause: ThreadArchiveCompensationCause = "verify_failed";
+		if (after.ok && after.messageId !== frontier) {
+			const incremental = await classifyFn(
+				input.threadId,
+				botToken,
+				afterMs,
+				displayDeps,
+			);
+			if (incremental.kind === "human") cause = "human";
+		}
+		return cause === "human"
+			? audit(await compensateKnownArchived(cause), { skip: true })
+			: audit(await compensateKnownArchived(cause));
+	};
+
+	const run = async (): Promise<ArchiveChatThreadResult> => {
+		if (store.getChatThreadCompensationPending(input.threadId)) {
+			return audit(await resumeCompensation());
+		}
+
+		const archivedAtRaw = store.getChatThreadArchivedAt(input.threadId);
+		if (archivedAtRaw) {
+			const probe = await probeFn(input.threadId, botToken, displayDeps);
+			if (!probe.ok) {
+				if (probe.status === 404) {
+					store.markChatThreadMissing(input.threadId);
+					return audit({
+						archived: false,
+						attempts: 0,
+						status: 404,
+						reason: "missing",
+					});
+				}
+				return audit(reopenFailure(probe.error));
+			}
+			if (probe.archived === true) {
+				return audit(
+					{ archived: true, attempts: 0, reason: "already_archived" },
+					{ skip: true },
+				);
+			}
+			if (probe.archived !== false) {
+				return audit(reopenFailure("Discord archive state is missing"));
+			}
+			const epoch = archiveEpochInterval(archivedAtRaw);
+			if (!epoch) return audit(reopenFailure("invalid archive epoch"));
+			const active = await resolveReopenVeto(
+				store.listReopenVetoCandidates(input.issueId),
+				archivedAtRaw,
+				deps,
+			);
+			if (active) {
+				return audit(
+					{
+						archived: false,
+						attempts: 0,
+						reason: "in_active_use",
+						activeExecutionId: active.executionId,
+					},
+					{ skip: true },
+				);
+			}
+			const afterMs = epoch.startMs - 2_000;
+			const classification = await classifyFn(
+				input.threadId,
+				botToken,
+				afterMs,
+				displayDeps,
+			);
+			if (classification.kind === "human") {
+				return audit(
+					{ archived: false, attempts: 0, reason: "founder_reopened" },
+					{ skip: true },
+				);
+			}
+			if (classification.kind === "unknown") {
+				return audit(reopenFailure(classification.detail));
+			}
+			return reArchiveWithQuietWindow(
+				archivedAtRaw,
+				afterMs,
+				classification.frontierMessageId,
+			);
 		}
 
 		const archiveFn = deps.archiveFn ?? archiveChatThread;
@@ -178,15 +624,8 @@ export async function archiveThreadAndRecord(
 		return result;
 	};
 
-	// Per-thread serialization: queue behind the previous archive of this
-	// thread; a rejected predecessor is absorbed (settled tail) so the chain
-	// never wedges.
-	const prev =
-		threadArchiveLocks.get(input.threadId) ?? Promise.resolve(undefined);
-	const cur = prev.catch(() => undefined).then(run);
-	threadArchiveLocks.set(input.threadId, cur);
 	try {
-		return await cur;
+		return await runUnderThreadArchiveLock(input.threadId, run);
 	} catch (err) {
 		// Preserve the never-throws contract even for a throwing seam/store —
 		// but NEVER silently: log + best-effort failure audit (Codex code R1 #2;
@@ -224,11 +663,6 @@ export async function archiveThreadAndRecord(
 			reason: "error",
 			error: message,
 		};
-	} finally {
-		// Identity-checked cleanup: only the tail owner clears the slot.
-		if (threadArchiveLocks.get(input.threadId) === cur) {
-			threadArchiveLocks.delete(input.threadId);
-		}
 	}
 }
 

@@ -1345,9 +1345,19 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(mockFetch).not.toHaveBeenCalled();
 		});
 
-		it("archive-once: already-archived thread is a no-op (respects a Discord re-open)", async () => {
+		it("archive-once: local archived_at delegates to the sink and reports verified Discord state", async () => {
 			store.upsertChatThread("t-arch", "ch-100", "FLY-77b", "lead-alpha");
 			store.markChatThreadArchived("t-arch");
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				headers: { get: () => null },
+				json: async () => ({
+					name: "FLY-77b",
+					thread_metadata: { archived: true },
+				}),
+				text: async () => "",
+			});
 			createTestServer({
 				chatThreadsEnabled: true,
 				apiTokenConfigured: true,
@@ -1365,8 +1375,8 @@ describe("chat-thread routes (tools.ts)", () => {
 				archived: true,
 				reason: "already_archived",
 			});
-			// no Discord PATCH — we do not re-archive (archive-once)
-			expect(mockFetch).not.toHaveBeenCalled();
+			expect(mockFetch).toHaveBeenCalledOnce();
+			expect(mockFetch.mock.calls[0]?.[1]?.method).toBeUndefined();
 		});
 	});
 

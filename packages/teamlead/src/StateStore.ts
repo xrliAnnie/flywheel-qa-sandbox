@@ -430,6 +430,45 @@ export interface SessionEvent {
 	ts?: string;
 }
 
+export type ThreadArchiveCompensationCause =
+	| "unknown"
+	| "human"
+	| "verify_failed";
+
+export type ThreadArchiveCompensationReceipt =
+	| {
+			version: 1;
+			state: "prepared";
+			archiveEpoch: string;
+			frontier: string;
+			cause: ThreadArchiveCompensationCause;
+			at: string;
+	  }
+	| {
+			/** Fail-closed sentinel for malformed or future-version persisted JSON. */
+			version: 0;
+			state: "invalid";
+			cause: "verify_failed";
+			raw: string;
+			at: string;
+	  };
+
+export interface ReopenVetoCandidates {
+	sessions: Array<{
+		executionId: string;
+		startedAt: string | null;
+		status: string;
+		projectName: string;
+	}>;
+	claims: Array<{
+		executionId: string;
+		createdAt: string;
+		updatedAt: string;
+		state: "starting" | "active";
+		projectName: string;
+	}>;
+}
+
 // ── FLY-1099: founder-reply ingest reliability rows ─────────────────────────
 
 /** FLY-1099 §3.1: a deferred founder ship-decision awaiting hold-clear rebind. */
@@ -3058,6 +3097,7 @@ export class StateStore {
 				created_at TEXT DEFAULT (datetime('now')),
 				discord_missing_at TEXT,
 				archived_at TEXT,
+				reopen_compensation_pending TEXT,
 				attach_pin_message_id TEXT,
 				attach_pin_command TEXT,
 				attach_pin_pinned_at TEXT,
@@ -4009,6 +4049,7 @@ export class StateStore {
 		this.migrateLeadEventsDeliveryColumns();
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
+		this.migrateChatThreadsReopenCompensationColumn();
 		this.migrateChatThreadsAttachPinColumns();
 		this.migrateChatThreadsPhaseStatusLineColumns();
 		this.migrateChatThreadsDisplayFingerprintColumns();
@@ -8620,22 +8661,154 @@ export class StateStore {
 		this.save();
 	}
 
-	/**
-	 * FLY-369: mark a chat thread archived (archive-once record). The on-demand
-	 * archive endpoint treats a thread with `archived_at` set as already
-	 * archived and does not re-archive it, so if Annie re-opens it (Discord
-	 * auto-unarchives on a new message) we do not fight her.
-	 */
+	/** FLY-369 / FLY-1709: record a new archive epoch with millisecond precision. */
 	markChatThreadArchived(threadId: string): void {
+		const archivedAt = new Date().toISOString();
 		this.db.run(
-			"UPDATE chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
+			"UPDATE chat_threads SET archived_at = ? WHERE thread_id = ?",
+			[archivedAt, threadId],
 		);
 		// FLY-793 (Step 11): no-op for a main thread; archives a phase thread.
 		this.db.run(
-			"UPDATE phase_chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
+			"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
+			[archivedAt, threadId],
+		);
+		this.save();
+	}
+
+	/** Raw archive epoch (ISO milliseconds for new rows; SQLite UTC for legacy). */
+	getChatThreadArchivedAt(threadId: string): string | null {
+		const stmt = this.db.prepare(
+			"SELECT archived_at FROM chat_threads WHERE thread_id = ?",
+		);
+		stmt.bind([threadId]);
+		let archivedAt: string | null = null;
+		if (stmt.step()) {
+			const value = stmt.getAsObject().archived_at;
+			archivedAt = typeof value === "string" && value !== "" ? value : null;
+		}
+		stmt.free();
+		return archivedAt;
+	}
+
+	/** Explicit lifecycle reactivation; ordinary registry upserts never clear it. */
+	clearChatThreadArchived(threadId: string): void {
+		this.db.transaction(() => {
+			this.db.run(
+				"UPDATE chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+		});
+		this.save();
+	}
+
+	getChatThreadCompensationPending(
+		threadId: string,
+	): ThreadArchiveCompensationReceipt | null {
+		const stmt = this.db.prepare(
+			"SELECT reopen_compensation_pending FROM chat_threads WHERE thread_id = ?",
+		);
+		stmt.bind([threadId]);
+		let raw: unknown;
+		if (stmt.step()) raw = stmt.getAsObject().reopen_compensation_pending;
+		stmt.free();
+		if (typeof raw !== "string" || raw === "") return null;
+		try {
+			const value = JSON.parse(raw) as Record<string, unknown>;
+			if (
+				value.version === 1 &&
+				value.state === "prepared" &&
+				typeof value.archiveEpoch === "string" &&
+				typeof value.frontier === "string" &&
+				(value.cause === "unknown" ||
+					value.cause === "human" ||
+					value.cause === "verify_failed") &&
+				typeof value.at === "string"
+			) {
+				return value as ThreadArchiveCompensationReceipt;
+			}
+		} catch {
+			// Fall through to the fail-closed sentinel below.
+		}
+		return {
+			version: 0,
+			state: "invalid",
+			cause: "verify_failed",
+			raw,
+			at: new Date().toISOString(),
+		};
+	}
+
+	setChatThreadCompensationPending(
+		threadId: string,
+		receipt: ThreadArchiveCompensationReceipt,
+	): void {
+		this.db.run(
+			"UPDATE chat_threads SET reopen_compensation_pending = ? WHERE thread_id = ?",
+			[JSON.stringify(receipt), threadId],
+		);
+		this.save();
+	}
+
+	clearChatThreadCompensationPending(threadId: string): void {
+		this.db.run(
+			"UPDATE chat_threads SET reopen_compensation_pending = NULL WHERE thread_id = ?",
 			[threadId],
 		);
+		this.save();
+	}
+
+	/** Atomic archive commit: epoch + receipt clear + audit event. */
+	commitReArchive(threadId: string, event: SessionEvent): void {
+		const archivedAt = new Date().toISOString();
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE chat_threads
+				 SET archived_at = ?, reopen_compensation_pending = NULL
+				 WHERE thread_id = ?`,
+				[archivedAt, threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
+				[archivedAt, threadId],
+			);
+			this.db.run(
+				`INSERT INTO session_events
+				 (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					event.event_id,
+					event.execution_id,
+					event.issue_id,
+					event.project_name,
+					event.event_type,
+					event.severity ?? "info",
+					event.payload ? JSON.stringify(event.payload) : null,
+					event.source,
+				],
+			);
+		});
+		this.save();
+	}
+
+	/** Atomic reactivation: compensation ownership is settled before epoch clear. */
+	commitReactivation(threadId: string): void {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE chat_threads
+				 SET archived_at = NULL, reopen_compensation_pending = NULL
+				 WHERE thread_id = ?`,
+				[threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+		});
 		this.save();
 	}
 
@@ -8727,23 +8900,66 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1709: materialized reopen-veto candidates. Every statement is fully
+	 * consumed and freed before callers await process liveness probes.
+	 */
+	listReopenVetoCandidates(issueId: string): ReopenVetoCandidates {
+		const aliases = new Set([issueId]);
+		for (const row of this.getSessionsForIssueAliases([issueId])) {
+			aliases.add(row.issue_id);
+			if (row.issue_identifier) aliases.add(row.issue_identifier);
+		}
+		const aliasKeys = [...aliases];
+		const aliasPlaceholders = aliasKeys.map(() => "?").join(", ");
+		const sessions: ReopenVetoCandidates["sessions"] = [];
+		const sessionStmt = this.db.prepare(
+			`SELECT execution_id, started_at, status, project_name
+			 FROM sessions
+			 WHERE (issue_id IN (${aliasPlaceholders})
+			        OR issue_identifier IN (${aliasPlaceholders}))
+			   AND status IN ('running','awaiting_review','approved_to_ship')`,
+		);
+		sessionStmt.bind([...aliasKeys, ...aliasKeys]);
+		while (sessionStmt.step()) {
+			const row = sessionStmt.getAsObject();
+			sessions.push({
+				executionId: row.execution_id as string,
+				startedAt: (row.started_at as string) ?? null,
+				status: row.status as string,
+				projectName: row.project_name as string,
+			});
+		}
+		sessionStmt.free();
+
+		const claims: ReopenVetoCandidates["claims"] = [];
+		const claimStmt = this.db.prepare(
+			`SELECT execution_id, created_at, updated_at, state, project
+			 FROM lifecycle_launch_claims
+			 WHERE root_uuid IN (${aliasPlaceholders})
+			   AND state IN ('starting','active')`,
+		);
+		claimStmt.bind(aliasKeys);
+		while (claimStmt.step()) {
+			const row = claimStmt.getAsObject();
+			claims.push({
+				executionId: row.execution_id as string,
+				createdAt: row.created_at as string,
+				updatedAt: row.updated_at as string,
+				state: row.state as "starting" | "active",
+				projectName: row.project as string,
+			});
+		}
+		claimStmt.free();
+		return { sessions, claims };
+	}
+
+	/**
 	 * FLY-1165: fresh archive-once read (sink guard). True when the main-table
 	 * thread row has `archived_at` set — an archived thread is NEVER re-PATCHed
 	 * (a founder re-open must not be fought).
 	 */
 	isChatThreadArchived(threadId: string): boolean {
-		const stmt = this.db.prepare(
-			"SELECT archived_at FROM chat_threads WHERE thread_id = ?",
-		);
-		stmt.bind([threadId]);
-		let archived = false;
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			const value = row.archived_at as string | null;
-			archived = value !== null && value !== "";
-		}
-		stmt.free();
-		return archived;
+		return this.getChatThreadArchivedAt(threadId) !== null;
 	}
 
 	/**
@@ -13827,6 +14043,22 @@ export class StateStore {
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/** FLY-1709: durable write-ahead compensation receipt (idempotent). */
+	private migrateChatThreadsReopenCompensationColumn(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("reopen_compensation_pending")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN reopen_compensation_pending TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it.
 		}
 	}
 

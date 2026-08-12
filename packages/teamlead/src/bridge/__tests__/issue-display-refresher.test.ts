@@ -271,6 +271,22 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("FLY-1709: archived thread writes no display face and persists a terminal fingerprint", async () => {
+		seedSession(store, { exec: "e-main", role: "main", status: "terminated" });
+		store.markChatThreadArchived(THREAD);
+		store.setPhaseStatusLine(ISSUE, CH, "legacy-line", "stale");
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([]);
+		expect(log.header).toEqual([]);
+		expect(log.attachPin).toEqual([]);
+		expect(log.deleted).toEqual([]);
+		const fingerprint = JSON.parse(storedFingerprint(store)!);
+		expect(JSON.parse(fingerprint.c)).toEqual({ archived: true });
+	});
+
 	it("design running → title 🎨设计, header 设计▶/实现◾/QA◾ (状态收敛在置顶块一处)", async () => {
 		seedSession(store, { exec: "e-design", role: "design", status: "running" });
 		const { refresher, log } = makeRefresher(store, {
@@ -545,6 +561,98 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 			implement: "✅ 完成",
 			qa: "🔴 受阻",
 		});
+	});
+
+	it("FLY-1709 R1: an earlier completed phase cannot make a terminated phase look concluded", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "completed",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "terminated",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "statusBadge", badge: "🔴受阻" }]);
+		expectHeaderStates(log.header[0]!, {
+			design: "✅ 完成",
+			implement: "🔴 受阻",
+			qa: "◾ 未开始",
+		});
+	});
+
+	it("FLY-1709 R1: completed predecessors cannot make a running QA phase look concluded", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "completed",
+		});
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "completed",
+		});
+		seedSession(store, { exec: "e-qa", role: "qa", status: "running" });
+		const { refresher, log } = makeRefresher(store, {
+			park: { "e-qa": "parked" },
+		});
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "", phaseBadge: "🧪QA" },
+		]);
+		expectHeaderStates(log.header[0]!, {
+			design: "✅ 完成",
+			implement: "✅ 完成",
+			qa: "✅ 完成",
+		});
+	});
+
+	it("FLY-1709 R3: a historical completed main cannot conclude a later terminated main", async () => {
+		seedSession(store, {
+			exec: "e-main-old",
+			role: "main",
+			status: "completed",
+		});
+		seedSession(store, {
+			exec: "e-main-latest",
+			role: "main",
+			status: "terminated",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([{ via: "statusBadge", badge: "🔴受阻" }]);
+	});
+
+	it("FLY-1709 R3: a merge-confirmed terminated main is concluded cleanup", async () => {
+		seedSession(store, {
+			exec: "e-main-cleanup",
+			role: "main",
+			status: "terminated",
+		});
+		store.insertEvent({
+			event_id: "merge-claim-1709",
+			execution_id: "e-main-cleanup",
+			issue_id: ISSUE,
+			project_name: PROJECT,
+			event_type: "post_ship_finalization_claim",
+			source: "test",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.title).toEqual([
+			{ via: "stage", stage: "completed", phaseBadge: undefined },
+		]);
 	});
 
 	it("operator-reset (terminate + re-dispatch new exec) → header shows the NEW exec id + its attach command, state back to ▶", async () => {
@@ -834,11 +942,13 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 	});
 	afterEach(() => store.close());
 
-	it("single-session fingerprints do not query the three-stage ship-claim ledger", () => {
-		const countEventsByIssueAndType = vi.fn(() => 0);
+	it("single-session fingerprints include the durable merge conclusion bit", () => {
+		const hasFinalizationCompletedForIssue = vi.fn(() => false);
+		const hasMergeConfirmedForIssue = vi.fn(() => true);
 		const fingerprint = computeSessionsFingerprint(
 			{
-				countEventsByIssueAndType,
+				hasFinalizationCompletedForIssue,
+				hasMergeConfirmedForIssue,
 				getLatestPhaseSessionsForIssue: () => [],
 				getSessionByIssue: () => undefined,
 			},
@@ -846,7 +956,9 @@ describe("IssueDisplayRefresher — sweep (plan Step 4.5)", () => {
 		);
 
 		expect(JSON.parse(fingerprint).fc).toBe(false);
-		expect(countEventsByIssueAndType).not.toHaveBeenCalled();
+		expect(JSON.parse(fingerprint).cc).toBe(true);
+		expect(hasFinalizationCompletedForIssue).toHaveBeenCalledOnce();
+		expect(hasMergeConfirmedForIssue).toHaveBeenCalledOnce();
 	});
 
 	it("layer 1: a sessions-status change after the stored fingerprint re-enqueues the issue", async () => {

@@ -1,0 +1,18 @@
+flowchart TD
+    S["归档请求(所有入口都走同一个收口)"] --> Q1{"账本说归档过?"}
+    Q1 -->|"否"| FIRST["正常首次归档<br/>(行为不变)"]
+    Q1 -->|"是"| Q2{"问 Discord:<br/>实际关着还是开着?"}
+    Q2 -->|"仍关着"| OK["如实返回:已归档<br/>(验证过的真话)"]
+    Q2 -->|"被打开了"| Q3{"有活跃 run 正在用这个 issue?"}
+    Q3 -->|"有(真活着的)"| USE["不关<br/>返回 in_active_use"]
+    Q3 -->|"没有"| Q4{"归档之后是谁发过言?"}
+    Q4 -->|"有人类发言"| KEEP["不抢<br/>返回 founder_reopened"]
+    Q4 -->|"看不清(翻页超限/权限/异常)"| RETRY["不关<br/>返回可重试"]
+    Q4 -->|"全是 bot"| RE["重新关上<br/>关前关后都做静窗核验"]
+    RE --> V{"核验通过?<br/>(期间没有人插话、确实关上了)"}
+    V -->|"是"| DONE["真正关上<br/>如实返回 + 留审计记录"]
+    V -->|"否"| COMP["撤销刚才的关闭(补偿)<br/>绝不把人的话埋进关着的 thread"]
+    style OK fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style DONE fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style KEEP fill:#e8f1ff,stroke:#007aff,stroke-width:2px
+    style COMP fill:#fff4e0,stroke:#ff9500,stroke-width:2px

@@ -101,6 +101,17 @@ describe("derivePhaseDisplayState (plan 1a mapping table)", () => {
 		}
 	});
 
+	it("terminated cleanup after issue conclusion → done", () => {
+		expect(
+			derivePhaseDisplayState({
+				role: "qa",
+				status: "terminated",
+				park: "unknown",
+				issueConcluded: true,
+			}),
+		).toBe("done");
+	});
+
 	it("other/unknown statuses with a session → active (conservative)", () => {
 		for (const status of ["pending", "shelved-ish", "weird"]) {
 			expect(
@@ -130,6 +141,7 @@ function titleBadge(args: {
 	shipFinalizationClaimed?: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
+	issueConcluded?: boolean;
 }) {
 	return deriveIssueTitleBadge({
 		phaseStates: args.phaseStates,
@@ -137,6 +149,7 @@ function titleBadge(args: {
 		shipFinalizationClaimed: args.shipFinalizationClaimed ?? false,
 		mainSessionStage: args.mainSessionStage,
 		mainSessionStatus: args.mainSessionStatus,
+		issueConcluded: args.issueConcluded ?? false,
 	});
 }
 
@@ -169,6 +182,31 @@ describe("deriveIssueTitleBadge (plan 1b aggregation)", () => {
 				phaseStates: new Map(),
 				mainSessionStage: "ship",
 				mainSessionStatus: "completed",
+			}),
+		).toEqual({ kind: "completed" });
+	});
+
+	it("empty map + terminated cleanup after conclusion → completed kind", () => {
+		expect(
+			titleBadge({
+				phaseStates: new Map(),
+				mainSessionStage: "completed",
+				mainSessionStatus: "terminated",
+				issueConcluded: true,
+			}),
+		).toEqual({ kind: "completed" });
+	});
+
+	it("concluded three-stage cleanup with a terminated phase stays completed", () => {
+		expect(
+			titleBadge({
+				phaseStates: states({ design: "done", implement: "done", qa: "done" }),
+				phaseStatuses: statuses({
+					design: "completed",
+					implement: "merged",
+					qa: "terminated",
+				}),
+				issueConcluded: true,
 			}),
 		).toEqual({ kind: "completed" });
 	});

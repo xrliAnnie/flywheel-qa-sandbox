@@ -220,6 +220,7 @@ export interface DoneThreadReconcileResult {
 	skippedNoToken: number;
 	skippedNoProject: number;
 	skippedAlreadyArchived: number;
+	skippedReopenProtected: number;
 	failed: number;
 	capped: boolean;
 	deadlineHit: boolean;
@@ -279,6 +280,7 @@ export async function reconcileDoneThreads(
 		skippedNoToken: 0,
 		skippedNoProject: 0,
 		skippedAlreadyArchived: 0,
+		skippedReopenProtected: 0,
 		failed: 0,
 		capped: false,
 		deadlineHit: false,
@@ -709,6 +711,11 @@ export async function reconcileDoneThreads(
 					);
 					if (sinkResult.reason === "already_archived") {
 						result.skippedAlreadyArchived++;
+					} else if (
+						sinkResult.reason === "founder_reopened" ||
+						sinkResult.reason === "in_active_use"
+					) {
+						result.skippedReopenProtected++;
 					} else if (sinkResult.archived) {
 						result.archived++;
 					} else {
@@ -901,7 +908,7 @@ export async function reconcileDoneThreads(
 		}
 
 		log(
-			`pass done: scanned=${result.scanned} archived=${result.archived} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
+			`pass done: scanned=${result.scanned} archived=${result.archived} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} skippedReopenProtected=${result.skippedReopenProtected} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
 		);
 	} catch (err) {
 		// Never let the sweep break its caller (boot chain / scheduler tick).

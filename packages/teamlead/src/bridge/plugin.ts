@@ -317,6 +317,7 @@ import {
 	renderPhaseStatusLine,
 } from "./issue-display.js";
 import {
+	hasDurableIssueConclusion,
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
@@ -8085,6 +8086,7 @@ export async function startBridge(
 					if (sessions.length === 0) return;
 					const anySession = store.getSession(sessions[0]!.execution_id);
 					if (!anySession) return;
+					const issueConcluded = hasDurableIssueConclusion(store, issueId);
 					const statusByRole = new Map<string, string>();
 					for (const s of sessions) {
 						const role = s.chat_thread_role;
@@ -8098,6 +8100,7 @@ export async function startBridge(
 							role,
 							status: statusByRole.get(role),
 							park: "unknown",
+							issueConcluded,
 						});
 					}
 					const text = renderPhaseStatusLine(states);

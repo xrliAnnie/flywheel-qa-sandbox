@@ -25,6 +25,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type {
+	ArchiveChatThreadResult,
 	archiveChatThread,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
@@ -35,6 +36,18 @@ import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
+
+/** No-op policy outcomes that deliberately discharge finalization's archive duty. */
+export function isArchiveObligationSettled(
+	result: ArchiveChatThreadResult,
+): boolean {
+	return (
+		result.archived ||
+		result.reason === "already_archived" ||
+		result.reason === "founder_reopened" ||
+		result.reason === "in_active_use"
+	);
+}
 
 /**
  * Shared predicate — aligns with event-route.ts + DirectEventSink
@@ -939,7 +952,15 @@ async function runPostShipFinalizationInner(
 				fetchImpl: deps.fetchImpl,
 			},
 		);
-		threadArchived = archive.archived || archive.reason === "already_archived";
+		threadArchived = isArchiveObligationSettled(archive);
+		if (
+			archive.reason === "founder_reopened" ||
+			archive.reason === "in_active_use"
+		) {
+			console.log(
+				`[post-ship] thread archive waived for ${opts.issueId}: ${archive.reason}`,
+			);
+		}
 	}
 
 	// ── (3.5) FLY-799 auto-Linear-Done — moved LAST (Codex R1#7): the Linear

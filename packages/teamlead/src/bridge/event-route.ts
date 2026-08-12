@@ -1172,6 +1172,11 @@ export function createEventRouter(
 			};
 
 			if (event.event_type === "session_started") {
+				// FLY-1709 R1: activation time is set-once on both ingest surfaces.
+				// Replayed HTTP events must not move an old run past a later archive
+				// epoch and falsely clear the founder's archive protection.
+				const startedAt =
+					store.getSession(event.execution_id)?.started_at ?? now;
 				// GEO-152: store issue labels for multi-lead routing
 				const eventLabels = Array.isArray(payload.labels)
 					? (payload.labels as string[])
@@ -1227,7 +1232,7 @@ export function createEventRouter(
 						"running",
 						ctx,
 						{
-							started_at: now,
+							started_at: startedAt,
 							last_activity_at: now,
 							heartbeat_at: now,
 							issue_identifier: resolveIdentifier(payload, event.issue_id),
@@ -1264,7 +1269,7 @@ export function createEventRouter(
 						issue_id: event.issue_id,
 						project_name: event.project_name,
 						status: "running",
-						started_at: now,
+						started_at: startedAt,
 						last_activity_at: now,
 						heartbeat_at: now,
 						issue_identifier: resolveIdentifier(payload, event.issue_id),

@@ -243,6 +243,27 @@ test("10c. archive endpoint failure (archived:false) → archive_failed recorded
 	assert.ok(calls.records.some((r) => r.category === "archive_failed"));
 });
 
+for (const [reason, category] of [
+	["founder_reopened", "skipped_founder_reopened"],
+	["in_active_use", "skipped_live_session"],
+]) {
+	test(`10c. ${reason} is a truthful waiver, not archive_failed`, async () => {
+		const { io, calls } = makeIo({
+			archiveThread: async (row) => {
+				calls.archiveThread.push(row);
+				return { archived: false, reason };
+			},
+		});
+		const out = await processThread(ROW, io);
+		assert.equal(out.outcome, reason);
+		assert.ok(calls.records.some((r) => r.category === category));
+		assert.equal(
+			calls.records.some((r) => r.category === "archive_failed"),
+			false,
+		);
+	});
+}
+
 test("10d. TOCTOU during closeRunner: live session appears mid-finalize → re-veto blocks the archive (Codex R1 #1)", async () => {
 	let liveNow = false;
 	const { io, calls } = makeIo({
