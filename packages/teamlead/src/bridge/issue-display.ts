@@ -37,6 +37,8 @@ export interface PhaseDisplayInput {
 	/** The phase's latest session status; undefined = no session row yet. */
 	status?: string;
 	park: ParkProbe;
+	/** Durable evidence that a terminated row is post-conclusion cleanup. */
+	issueConcluded?: boolean;
 }
 
 /**
@@ -102,6 +104,7 @@ export function derivePhaseDisplayState(
 ): PhaseDisplayState {
 	if (!p.status) return "pending";
 	if (PHASE_DONE_STATUSES.has(p.status)) return "done";
+	if (p.status === "terminated" && p.issueConcluded) return "done";
 	if (PHASE_BLOCKED_STATUSES.has(p.status)) return "blocked";
 	// An explicit park marker = the runner itself declared "this round's work
 	// is handed off" — regardless of which live status it parks at.
@@ -148,12 +151,17 @@ export function deriveIssueTitleBadge(args: {
 	 * this issue. This covers the short window before stale phase rows are
 	 * converted from awaiting_review to a terminal status. */
 	shipFinalizationClaimed: boolean;
+	/** Completed/merged history or finalization proves cleanup, not abandonment. */
+	issueConcluded?: boolean;
 	mainSessionStage?: string;
 	mainSessionStatus?: string;
 }): IssueTitleBadge {
 	const { phaseStates } = args;
 	if (phaseStates.size === 0) {
 		const status = args.mainSessionStatus;
+		if (status === "terminated" && args.issueConcluded) {
+			return { kind: "completed" };
+		}
 		if (status && MAIN_BLOCKED_STATUSES.has(status)) return { kind: "blocked" };
 		if (status === "completed") return { kind: "completed" };
 		// A runner-reported stage is a label, while status is the durable fact.
@@ -188,7 +196,10 @@ export function deriveIssueTitleBadge(args: {
 		if (statuses.includes("awaiting_review")) {
 			return { kind: "stage", stage: "approve" };
 		}
-		if (statuses.every((status) => PHASE_DONE_STATUSES.has(status))) {
+		if (
+			statuses.every((status) => PHASE_DONE_STATUSES.has(status)) ||
+			args.issueConcluded
+		) {
 			return { kind: "completed" };
 		}
 		// Otherwise fall through to the conservative phase badge below. Parked

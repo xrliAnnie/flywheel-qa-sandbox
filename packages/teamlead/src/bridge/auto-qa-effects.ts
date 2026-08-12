@@ -215,6 +215,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	}): Promise<void> {
 		const t = this.resolveThread(args.session);
 		if (!t) return; // no chat thread configured — nothing to update
+		if (this.deps.store.getChatThreadArchivedAt(t.threadId)) return;
 		const issueId = args.session.issue_id;
 		const existing = this.deps.store.getPhaseStatusLine(issueId, t.channel);
 		if (existing?.text === args.text) return; // no-op, zero churn

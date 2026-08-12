@@ -25,6 +25,11 @@ import type { AutoQaCoordinator } from "./bridge/auto-qa-coordinator.js";
 import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
+import {
+	archiveEpochInterval,
+	reactivateChatThreadForStartedSession,
+	stateTimestampMs,
+} from "./bridge/done-thread-archiver.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { IssueDisplayRefreshHolder } from "./bridge/issue-display-refresher.js";
@@ -204,6 +209,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const now = sqliteDatetime();
+		const existingSession = this.store.getSession(env.executionId);
+		const startedAt = existingSession?.started_at ?? now;
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
@@ -226,7 +233,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			issue_id: env.issueId,
 			project_name: env.projectName,
 			status: "running",
-			started_at: now,
+			// FLY-1709: activation time is set-once. A replay of an old running
+			// execution must not impersonate a post-archive rework admission.
+			started_at: startedAt,
 			last_activity_at: now,
 			heartbeat_at: now,
 			issue_identifier: identifier,
@@ -325,6 +334,36 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				if (ctLead.chatChannel) {
 					const botToken = ctLead.botToken ?? this.config.discordBotToken;
 					if (botToken) {
+						const existingThread = this.store.getChatThreadByIssue(
+							env.issueId,
+							ctLead.chatChannel,
+						);
+						const archivedAt = existingThread?.archived_at;
+						const archiveEpoch = archivedAt
+							? archiveEpochInterval(archivedAt)
+							: null;
+						const activationMs = stateTimestampMs(startedAt);
+						if (
+							existingThread &&
+							archiveEpoch &&
+							activationMs !== null &&
+							activationMs > archiveEpoch.endMs
+						) {
+							await reactivateChatThreadForStartedSession(
+								this.store,
+								{
+									threadId: existingThread.thread_id,
+									issueId: env.issueId,
+									projectName: env.projectName,
+									executionId: env.executionId,
+								},
+								botToken,
+							);
+						} else if (archivedAt) {
+							console.warn(
+								`[DirectEventSink] cannot prove reactivation epoch for ${env.executionId}; archived thread remains protected (activation=${startedAt}, archive=${archivedAt})`,
+							);
+						}
 						const resolvedTitle =
 							env.issueTitle ??
 							this.store.getSessionByIssue(env.issueId)?.issue_title ??

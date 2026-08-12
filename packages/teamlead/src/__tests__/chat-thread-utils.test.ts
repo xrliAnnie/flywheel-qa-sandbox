@@ -7,8 +7,12 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	addThreadMember,
 	archiveChatThread,
+	classifyThreadReopener,
+	getLatestThreadMessageId,
 	pinThreadMessage,
 	removeUserFromChatThread,
+	snowflakeFromMs,
+	unarchiveChatThread,
 } from "../bridge/chat-thread-utils.js";
 
 const noSleep = async () => {};
@@ -175,6 +179,152 @@ describe("archiveChatThread", () => {
 		});
 		expect(res.archived).toBe(false);
 		expect(res.reason).toBe("error");
+	});
+});
+
+describe("FLY-1709 reopener inspection helpers", () => {
+	it("snowflakeFromMs clamps before the Discord epoch and matches a known timestamp", () => {
+		expect(snowflakeFromMs(0)).toBe("0");
+		expect(snowflakeFromMs(1_420_070_400_000)).toBe("0");
+		expect(snowflakeFromMs(1_420_070_401_000)).toBe("4194304000");
+	});
+
+	it("classifies a bounded all-bot page and returns the greatest frontier id", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse(200, [
+				{ id: "4194304002", author: { bot: true } },
+				{ id: "4194304001", author: { bot: true } },
+			]),
+		);
+
+		await expect(
+			classifyThreadReopener("thread-1", "bot-token", 1_420_070_401_000, {
+				fetchImpl,
+			}),
+		).resolves.toEqual({
+			kind: "bot_only",
+			frontierMessageId: "4194304002",
+		});
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+			"https://discord.com/api/v10/channels/thread-1/messages?after=4194304000&limit=100",
+		);
+		expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+			headers: { Authorization: "Bot bot-token" },
+		});
+	});
+
+	it.each([
+		[
+			"a human message",
+			[
+				{ id: "12", author: { bot: true } },
+				{ id: "13", author: { bot: false } },
+			],
+			"human",
+		],
+		["an empty page", [], "unknown"],
+		["a malformed author", [{ id: "12" }], "unknown"],
+	] as const)("classifies %s conservatively", async (_name, messages, kind) => {
+		const fetchImpl = vi.fn(async () => jsonResponse(200, messages));
+		const result = await classifyThreadReopener("thread-1", "token", 0, {
+			fetchImpl,
+		});
+		expect(result.kind).toBe(kind);
+	});
+
+	it("treats a full page as unknown because the archive epoch may be truncated", async () => {
+		const messages = Array.from({ length: 100 }, (_, index) => ({
+			id: String(index + 1),
+			author: { bot: true },
+		}));
+		const result = await classifyThreadReopener("thread-1", "token", 0, {
+			fetchImpl: vi.fn(async () => jsonResponse(200, messages)),
+		});
+		expect(result.kind).toBe("unknown");
+	});
+
+	it("filters messages at or before the local anchor and fails closed when none remain", async () => {
+		const result = await classifyThreadReopener(
+			"thread-1",
+			"token",
+			1_420_070_401_000,
+			{
+				fetchImpl: vi.fn(async () =>
+					jsonResponse(200, [
+						{ id: "4194304000", author: { bot: true } },
+						{ id: "4194303999", author: { bot: true } },
+					]),
+				),
+			},
+		);
+		expect(result.kind).toBe("unknown");
+	});
+
+	it("fails closed on a non-snowflake message id", async () => {
+		const result = await classifyThreadReopener("thread-1", "token", 0, {
+			fetchImpl: vi.fn(async () =>
+				jsonResponse(200, [{ id: "not-a-snowflake", author: { bot: true } }]),
+			),
+		});
+		expect(result.kind).toBe("unknown");
+	});
+
+	it("fails closed on a Discord error", async () => {
+		const result = await classifyThreadReopener("thread-1", "token", 0, {
+			fetchImpl: vi.fn(async () => jsonResponse(403, { message: "forbidden" })),
+		});
+		expect(result).toMatchObject({ kind: "unknown" });
+	});
+
+	it("gets the latest message id using a one-message frontier request", async () => {
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse(200, [{ id: "999", author: { bot: true } }]),
+		);
+		await expect(
+			getLatestThreadMessageId("thread-1", "token", { fetchImpl }),
+		).resolves.toEqual({ ok: true, messageId: "999" });
+		expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+			"https://discord.com/api/v10/channels/thread-1/messages?limit=1",
+		);
+	});
+
+	it("returns an explicit failure when the latest message response is malformed", async () => {
+		await expect(
+			getLatestThreadMessageId("thread-1", "token", {
+				fetchImpl: vi.fn(async () => jsonResponse(200, [{}])),
+			}),
+		).resolves.toMatchObject({ ok: false });
+	});
+
+	it("unarchives with one retry and reports the actual attempt count", async () => {
+		const fetchImpl = vi
+			.fn()
+			.mockResolvedValueOnce(jsonResponse(503, { message: "retry" }))
+			.mockResolvedValueOnce(
+				jsonResponse(200, { thread_metadata: { archived: false } }),
+			);
+		await expect(
+			unarchiveChatThread("thread-1", "token", {
+				fetchImpl,
+				sleepImpl: noSleep,
+			}),
+		).resolves.toMatchObject({ unarchived: true, attempts: 2, status: 200 });
+		expect(JSON.parse(fetchImpl.mock.calls[1]?.[1]?.body as string)).toEqual({
+			archived: false,
+		});
+	});
+
+	it("unarchive never throws after both attempts fail", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("ECONNRESET");
+		});
+		await expect(
+			unarchiveChatThread("thread-1", "token", {
+				fetchImpl,
+				sleepImpl: noSleep,
+			}),
+		).resolves.toMatchObject({ unarchived: false, attempts: 2 });
 	});
 });
 

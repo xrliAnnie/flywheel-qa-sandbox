@@ -2111,7 +2111,8 @@
 			"dormant": false,
 			"timings": ["call_time"],
 			"readFiles": [
-				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts"
+				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts",
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts"
 			],
 			"registryDescription": "FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
 			"registryNote": null,

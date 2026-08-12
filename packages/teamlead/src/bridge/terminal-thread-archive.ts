@@ -33,7 +33,10 @@
 
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import type { archiveChatThread } from "./chat-thread-utils.js";
+import type {
+	ArchiveChatThreadResult,
+	archiveChatThread,
+} from "./chat-thread-utils.js";
 import {
 	archiveThreadAndRecord,
 	resolveBotTokenForThread,
@@ -53,6 +56,7 @@ const DONE_STATE_TYPES = new Set(["completed", "canceled"]);
 export type TargetedArchiveOutcome =
 	| { kind: "archived"; threadId: string }
 	| { kind: "already_archived" }
+	| { kind: "founder_reopened" }
 	| { kind: "thread_missing" }
 	| { kind: "vetoed_active"; executionId: string }
 	| { kind: "vetoed_status"; executionId: string; status: string }
@@ -73,6 +77,31 @@ export function isRetryableOutcome(o: TargetedArchiveOutcome): boolean {
 		o.kind === "dry_run_would_archive" ||
 		o.kind === "transient_error"
 	);
+}
+
+/** Translate the sink's truthful Discord result into scheduler semantics. */
+export function mapArchiveSinkResult(
+	result: ArchiveChatThreadResult,
+	threadId: string,
+): TargetedArchiveOutcome {
+	if (result.reason === "already_archived") return { kind: "already_archived" };
+	if (result.archived) return { kind: "archived", threadId };
+	if (result.reason === "founder_reopened") {
+		return { kind: "founder_reopened" };
+	}
+	if (result.reason === "in_active_use") {
+		return result.activeExecutionId
+			? { kind: "vetoed_active", executionId: result.activeExecutionId }
+			: {
+					kind: "transient_error",
+					error: "archive sink: in_active_use missing activeExecutionId",
+				};
+	}
+	if (result.reason === "missing") return { kind: "thread_missing" };
+	return {
+		kind: "transient_error",
+		error: `archive sink: ${result.reason}${result.error ? ` (${result.error})` : ""}`,
+	};
 }
 
 export interface TargetedArchiveDeps {
@@ -266,17 +295,7 @@ async function runInsideLock(
 			auditSource: "bridge.terminal-thread-archive",
 		},
 	);
-	if (sinkResult.archived) {
-		return { kind: "archived", threadId: thread.thread_id };
-	}
-	if (sinkResult.reason === "already_archived") {
-		return { kind: "already_archived" };
-	}
-	if (sinkResult.reason === "missing") return { kind: "thread_missing" };
-	return {
-		kind: "transient_error",
-		error: `archive sink: ${sinkResult.reason}${sinkResult.error ? ` (${sinkResult.error})` : ""}`,
-	};
+	return mapArchiveSinkResult(sinkResult, thread.thread_id);
 }
 
 function readAliasSnapshot(

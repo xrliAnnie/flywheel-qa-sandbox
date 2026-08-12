@@ -1,0 +1,15 @@
+stateDiagram-v2
+    [*] --> Active: thread 创建(run 开工)
+    Active --> Archived: 收官归档(记录归档时刻)
+    Archived --> Reopened: 有消息进来(Discord 自动打开)
+    Reopened --> Archived: 重开者全是 bot,静窗核验后重新关
+    Reopened --> FounderOpen: founder 发过言,系统不抢
+    Archived --> Active: 新 run 启动(reactivation 清账本)
+    FounderOpen --> Active: 新 run 启动
+    FounderOpen --> Archived: founder 或 Lead 手动关
+    note right of Archived
+        若「重新关」中途出岔子
+        会先留耐久 receipt(欠条)
+        每次归档调用都续推
+        直到 thread 验证恢复打开
+    end note

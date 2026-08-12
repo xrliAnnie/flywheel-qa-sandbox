@@ -22,6 +22,7 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_TIMEOUT_MS = 5_000;
 /** Cap on an honored Retry-After so a hostile/huge value can't hang teardown. */
 const MAX_RETRY_AFTER_MS = 10_000;
+const DISCORD_EPOCH_MS = 1_420_070_400_000;
 
 export function resolveChatThreadId(
 	store: StateStore,
@@ -53,10 +54,15 @@ export type ArchiveReason =
 	| "client_error"
 	| "exhausted"
 	| "error"
+	/** A human reopened the thread; automation deliberately leaves it open. */
+	| "founder_reopened"
+	/** Reopen authorship or the compensation end state could not be verified. */
+	| "reopen_check_failed"
+	/** A current runner owns the reopened thread. */
+	| "in_active_use"
 	/**
-	 * FLY-1165: sink-level archive-once — the thread's `archived_at` is already
-	 * set, so no Discord PATCH was attempted (a founder re-open is never
-	 * fought). Callers treat this as an idempotent no-op success.
+	 * Discord metadata verified that the thread is still archived, so no PATCH
+	 * was needed. This is an idempotent, truthful success.
 	 */
 	| "already_archived";
 
@@ -69,6 +75,15 @@ export interface ArchiveChatThreadResult {
 	status?: number;
 	reason: ArchiveReason;
 	/** Last error message for the network/timeout path. */
+	error?: string;
+	/** Execution that caused an `in_active_use` veto. */
+	activeExecutionId?: string;
+}
+
+export interface UnarchiveChatThreadResult {
+	unarchived: boolean;
+	attempts: number;
+	status?: number;
 	error?: string;
 }
 
@@ -266,6 +281,82 @@ export async function archiveChatThread(
 		attempts: maxAttempts,
 		status: lastStatus,
 		reason: "exhausted",
+		error: lastError,
+	};
+}
+
+/**
+ * FLY-1709: best-effort inverse of archiveChatThread for compensating a
+ * re-archive whose quiet-window verification failed. It gets one retry and
+ * never throws. Callers still verify the final channel metadata themselves.
+ */
+export async function unarchiveChatThread(
+	threadId: string,
+	botToken: string,
+	deps: ArchiveChatThreadDeps = {},
+): Promise<UnarchiveChatThreadResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const sleep = deps.sleepImpl ?? defaultSleep;
+	const maxAttempts = 2;
+	let lastStatus: number | undefined;
+	let lastError: string | undefined;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		try {
+			const res = await fetchImpl(`${DISCORD_API}/channels/${threadId}`, {
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ archived: false }),
+				signal: controller.signal,
+			});
+			lastStatus = res.status;
+			if (res.ok) {
+				const flag = await readArchivedFlag(res);
+				if (flag !== true) {
+					return { unarchived: true, attempts: attempt, status: res.status };
+				}
+			}
+			if (
+				attempt < maxAttempts &&
+				(res.ok || res.status === 429 || res.status >= 500)
+			) {
+				const retryAfter =
+					res.status === 429
+						? parseRetryAfterMs(res.headers.get("retry-after"))
+						: undefined;
+				await sleep(
+					Math.min(retryAfter ?? backoffMs(attempt), MAX_RETRY_AFTER_MS),
+				);
+				continue;
+			}
+			return { unarchived: false, attempts: attempt, status: res.status };
+		} catch (err) {
+			lastError = err instanceof Error ? err.message : String(err);
+			if (attempt < maxAttempts) {
+				await sleep(backoffMs(attempt));
+				continue;
+			}
+			return {
+				unarchived: false,
+				attempts: attempt,
+				status: lastStatus,
+				error: lastError,
+			};
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	return {
+		unarchived: false,
+		attempts: maxAttempts,
+		status: lastStatus,
 		error: lastError,
 	};
 }
@@ -646,6 +737,148 @@ async function readRetryAfterMs(res: Response): Promise<number | undefined> {
 export interface DisplayRestDeps {
 	fetchImpl?: typeof fetch;
 	timeoutMs?: number;
+}
+
+/** Convert a millisecond timestamp to the lower-bound Discord snowflake. */
+export function snowflakeFromMs(ms: number): string {
+	const normalized = Number.isFinite(ms) ? Math.floor(ms) : DISCORD_EPOCH_MS;
+	const sinceEpoch = Math.max(0, normalized - DISCORD_EPOCH_MS);
+	return (BigInt(sinceEpoch) << 22n).toString();
+}
+
+export type ReopenerClass =
+	| { kind: "bot_only"; frontierMessageId: string }
+	| { kind: "human" }
+	| { kind: "unknown"; detail: string };
+
+type DiscordThreadMessage = {
+	id?: unknown;
+	author?: { bot?: unknown };
+};
+
+async function getThreadMessages(
+	url: string,
+	botToken: string,
+	deps: DisplayRestDeps,
+): Promise<
+	| { ok: true; messages: DiscordThreadMessage[] }
+	| { ok: false; status?: number; error: string }
+> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(url, {
+			headers: { Authorization: `Bot ${botToken}` },
+			signal: controller.signal,
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				ok: false,
+				status: res.status,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as unknown;
+		if (!Array.isArray(data)) {
+			return { ok: false, error: "Discord messages response is not an array" };
+		}
+		return { ok: true, messages: data as DiscordThreadMessage[] };
+	} catch (err) {
+		return {
+			ok: false,
+			error:
+				err instanceof Error && err.name === "AbortError"
+					? "timeout"
+					: err instanceof Error
+						? err.message
+						: String(err),
+		};
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * FLY-1709: classify every visible post-archive message. Any human wins;
+ * incomplete or malformed evidence stays unknown so automation never fights
+ * a founder reopen. Discord does not expose the actor for a bare UI unarchive:
+ * if a founder opens the thread without posting and a bot later posts first,
+ * that indistinguishable sequence is classified bot-only. Human-message
+ * evidence remains fail-closed and always wins.
+ */
+export async function classifyThreadReopener(
+	threadId: string,
+	botToken: string,
+	afterMs: number,
+	deps: DisplayRestDeps = {},
+): Promise<ReopenerClass> {
+	const anchor = snowflakeFromMs(afterMs);
+	const result = await getThreadMessages(
+		`${DISCORD_API}/channels/${threadId}/messages?after=${anchor}&limit=100`,
+		botToken,
+		deps,
+	);
+	if (!result.ok) return { kind: "unknown", detail: result.error };
+	if (result.messages.length === 0) {
+		return { kind: "unknown", detail: "no post-archive messages" };
+	}
+	if (result.messages.length >= 100) {
+		return { kind: "unknown", detail: "post-archive message window is full" };
+	}
+	if (
+		result.messages.some(
+			(message) => typeof message.id !== "string" || !/^\d+$/.test(message.id),
+		)
+	) {
+		return { kind: "unknown", detail: "message id is malformed" };
+	}
+
+	const filtered = result.messages.filter(
+		(message): message is DiscordThreadMessage & { id: string } =>
+			typeof message.id === "string" && BigInt(message.id) > BigInt(anchor),
+	);
+	if (filtered.length === 0) {
+		return { kind: "unknown", detail: "no messages beyond the local anchor" };
+	}
+	if (filtered.some((message) => !message.author)) {
+		return { kind: "unknown", detail: "message author is missing" };
+	}
+	if (filtered.some((message) => message.author?.bot !== true)) {
+		return { kind: "human" };
+	}
+	const frontierMessageId = filtered
+		.map((message) => message.id)
+		.reduce((max, id) => (BigInt(id) > BigInt(max) ? id : max), "0");
+	return { kind: "bot_only", frontierMessageId };
+}
+
+export type LatestThreadMessageResult =
+	| { ok: true; messageId: string | null }
+	| { ok: false; status?: number; error: string };
+
+/** Fetch the current message frontier for the quiet-window fence. */
+export async function getLatestThreadMessageId(
+	threadId: string,
+	botToken: string,
+	deps: DisplayRestDeps = {},
+): Promise<LatestThreadMessageResult> {
+	const result = await getThreadMessages(
+		`${DISCORD_API}/channels/${threadId}/messages?limit=1`,
+		botToken,
+		deps,
+	);
+	if (!result.ok) return result;
+	if (result.messages.length === 0) return { ok: true, messageId: null };
+	const id = result.messages[0]?.id;
+	if (typeof id !== "string") {
+		return { ok: false, error: "latest message id is missing" };
+	}
+	return { ok: true, messageId: id };
 }
 
 export type GetChannelNameResult =

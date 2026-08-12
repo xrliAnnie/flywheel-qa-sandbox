@@ -31,7 +31,14 @@ afterEach(() => {
 	}
 });
 
-async function createHarness() {
+async function createHarness(
+	options: {
+		now?: () => Date;
+		activateActorForWake?: () => Promise<
+			{ ok: true } | { ok: false; error: string }
+		>;
+	} = {},
+) {
 	const root = mkdtempSync(join(tmpdir(), "fly1423-rework-e2e-"));
 	roots.push(root);
 	const worktree = join(root, "worktree");
@@ -173,7 +180,7 @@ async function createHarness() {
 	const coordinator = new WorkflowReworkCoordinator({
 		store,
 		ownerId: "e2e-coordinator",
-		now: () => NOW,
+		now: options.now ?? (() => NOW),
 		env: WORKFLOW_ON,
 		resolveAlertIdentity: () => ({
 			leadId: "flywheel-eng-lead",
@@ -229,6 +236,9 @@ async function createHarness() {
 				});
 				return { ok: true };
 			},
+			...(options.activateActorForWake
+				? { activateActorForWake: options.activateActorForWake }
+				: {}),
 		},
 	});
 
@@ -236,6 +246,121 @@ async function createHarness() {
 }
 
 describe("FLY-1423 capability-level rework flow", () => {
+	it("converges an irreversible activation failure on the first claim without an alert loop", async () => {
+		let current = new Date("2026-07-23T00:11:00.000Z");
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+			activateActorForWake: async () => ({
+				ok: false,
+				error: "state_not_revivable:completed",
+			}),
+		});
+		try {
+			const failed = store.commitWorkflowTransitionTx({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: baseHead,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toEqual({ kind: "settled", state: "needs_lead" });
+			current = new Date("2026-07-23T00:12:00.000Z");
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toEqual({ kind: "settled", state: "needs_lead" });
+			expect(
+				store
+					.listWorkflowRunEvents("run-e2e")
+					.filter((event) => event.kind === "rework_delivery_claimed"),
+			).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()[0]?.payload).toMatchObject({
+				eventType: "workflow_engine_escalation",
+				metadata: {
+					workflowEngine: { disposition: "rework_retry_exhausted" },
+				},
+			});
+			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
+				"completed (irreversible)",
+			);
+			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).not.toContain(
+				"five",
+			);
+			expect(
+				comm.getCurrentRunnerWorkflowActivation("implement-exec"),
+			).toBeNull();
+		} finally {
+			store.close();
+			comm.close();
+		}
+	});
+
+	it("spaces dirty-worktree retries at 1/2/4/8 minutes and emits one terminal Lead alert", async () => {
+		let current = new Date("2026-07-23T00:11:00.000Z");
+		const { store, comm, coordinator, worktree, baseHead } =
+			await createHarness({ now: () => current });
+		try {
+			writeFileSync(join(worktree, "qa-report.md"), "untracked QA residue\n");
+			const failed = store.commitWorkflowTransitionTx({
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: baseHead,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+			const retryTimes = [11, 12, 14, 18, 26].map(
+				(minute) => new Date(`2026-07-23T00:${minute}:00.000Z`),
+			);
+			for (const [index, now] of retryTimes.entries()) {
+				current = now;
+				const outcome = await coordinator.reconcile(failed.reworkRequestId);
+				expect(outcome).toMatchObject(
+					index === 4
+						? { kind: "settled", state: "needs_lead" }
+						: {
+								kind: "retryable",
+								reason: "worktree_not_ready:worktree_dirty",
+							},
+				);
+			}
+			current = new Date("2026-07-23T00:27:00.000Z");
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toEqual({ kind: "settled", state: "needs_lead" });
+			expect(
+				store
+					.listWorkflowRunEvents("run-e2e")
+					.filter((event) => event.kind === "rework_delivery_claimed"),
+			).toHaveLength(5);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
+				"failed five retryable deliveries",
+			);
+			expect(
+				store
+					.listWorkflowAlertOutbox()
+					.every(
+						(row) => row.payload.eventType === "workflow_engine_escalation",
+					),
+			).toBe(true);
+		} finally {
+			store.close();
+			comm.close();
+		}
+	});
+
 	it("re-enters the same implement and QA actors from fail through retest", async () => {
 		const { store, comm, coordinator, wakes, worktree, baseHead } =
 			await createHarness();

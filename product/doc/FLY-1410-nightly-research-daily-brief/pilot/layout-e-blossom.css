@@ -1,0 +1,667 @@
+* {
+	box-sizing: border-box;
+}
+body {
+	margin: 0;
+	padding: 0;
+	background: #fff;
+	color: #1d1d1f;
+	font:
+		15.5px / 1.85 -apple-system,
+		BlinkMacSystemFont,
+		"SF Pro Text",
+		"PingFang SC",
+		"Hiragino Sans GB",
+		system-ui,
+		sans-serif;
+	-webkit-font-smoothing: antialiased;
+}
+a {
+	color: #0645c8;
+}
+code {
+	font:
+		0.86em / 1 "SF Mono",
+		ui-monospace,
+		monospace;
+	background: #f2f2f4;
+	padding: 1px 5px;
+	border-radius: 4px;
+}
+.pagehd {
+	max-width: 900px;
+	margin: 0 auto;
+	padding: 52px 24px 0;
+}
+.pagehd h1 {
+	font-size: 30px;
+	letter-spacing: -0.02em;
+	margin: 0 0 4px;
+	font-weight: 700;
+}
+.pagehd .sub {
+	color: #86868b;
+	font-size: 13.5px;
+	margin: 0 0 4px;
+}
+.dirtag {
+	display: inline-block;
+	margin: 14px 0 0;
+	padding: 5px 12px;
+	border-radius: 999px;
+	background: #f5f5f7;
+	color: #6e6e73;
+	font-size: 12.5px;
+}
+.basis {
+	max-width: 900px;
+	margin: 26px auto 0;
+	padding: 0 24px;
+	color: #3a3a3c;
+	font-size: 13.5px;
+	line-height: 1.75;
+}
+.basis b {
+	color: #1d1d1f;
+}
+.basis .row1 {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 22px;
+	margin-bottom: 9px;
+	font-size: 13px;
+	color: #6e6e73;
+}
+.basis .row1 b {
+	display: block;
+	font-size: 16.5px;
+	color: #1d1d1f;
+	letter-spacing: -0.01em;
+	font-weight: 650;
+}
+.xfind {
+	max-width: 900px;
+	margin: 22px auto 0;
+	padding: 16px 20px;
+	border-left: 3px solid #d2d2d7;
+	color: #3a3a3c;
+	font-size: 14px;
+	line-height: 1.8;
+}
+.xfind h3 {
+	margin: 0 0 6px;
+	font-size: 13px;
+	color: #1a365d;
+	letter-spacing: 0.02em;
+	font-weight: 700;
+}
+.tone {
+	color: #8a6d00;
+	font-size: 13.5px;
+	line-height: 1.75;
+	margin: 6px 0 0;
+}
+.secthd {
+	display: flex;
+	align-items: baseline;
+	gap: 9px;
+	margin: 56px 0 22px;
+	padding-bottom: 9px;
+	border-bottom: 1px solid #ebebed;
+}
+.secthd h2 {
+	font-size: 14px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	color: #1d1d1f;
+	margin: 0;
+}
+.secthd .cnt {
+	font-size: 12.5px;
+	color: #a1a1a6;
+}
+.no {
+	font:
+		400 26px / 1 Georgia,
+		"Songti SC",
+		serif;
+	color: #c7c7cc;
+	font-variant-numeric: tabular-nums;
+}
+.meta {
+	font:
+		12px / 1 "SF Mono",
+		ui-monospace,
+		monospace;
+	color: #a1a1a6;
+	letter-spacing: 0.01em;
+}
+.chk {
+	margin-top: 12px;
+	font-size: 12.5px;
+	color: #6e6e73;
+	line-height: 1.7;
+}
+.chk.dim {
+	color: #a1a1a6;
+}
+.lead {
+	font-weight: 650;
+}
+.cue {
+	font-weight: 650;
+	color: #1a365d;
+}
+details {
+	margin-top: 12px;
+}
+summary {
+	cursor: pointer;
+	font-size: 12.5px;
+	color: #86868b;
+	list-style: none;
+}
+summary::-webkit-details-marker {
+	display: none;
+}
+summary::before {
+	content: "▸ ";
+	color: #c7c7cc;
+}
+details[open] summary::before {
+	content: "▾ ";
+}
+.codeblk {
+	margin-top: 12px;
+	font-size: 14px;
+	color: #3a3a3c;
+	line-height: 1.8;
+	padding-left: 14px;
+	border-left: 2px solid #ebebed;
+}
+.nbd summary {
+	margin-top: 10px;
+}
+.nb {
+	margin-top: 8px;
+}
+.note {
+	width: 100%;
+	padding: 9px 11px;
+	border: 1px solid #e3e3e6;
+	border-radius: 8px;
+	font: inherit;
+	font-size: 14px;
+	resize: vertical;
+	background: #fcfcfd;
+	color: #1d1d1f;
+}
+.note:focus {
+	outline: none;
+	border-color: #0645c8;
+	background: #fff;
+}
+.shallow {
+	opacity: 0.62;
+}
+.foot {
+	max-width: 900px;
+	margin: 70px auto 0;
+	padding: 22px 24px 70px;
+	border-top: 1px solid #ebebed;
+	color: #a1a1a6;
+	font-size: 12.5px;
+	line-height: 1.8;
+}
+.copyall {
+	position: fixed;
+	left: 20px;
+	bottom: 20px;
+	padding: 9px 16px;
+	border: 0;
+	border-radius: 9px;
+	background: #1d1d1f;
+	color: #fff;
+	font: 600 13px / 1 inherit;
+	cursor: pointer;
+	z-index: 9;
+}
+.copyall:active {
+	transform: translateY(1px);
+}
+
+/* ── FLY-1704 轮 2:配色变体 ──────────────────────────────────────
+   Annie:「make it more colorful」。边界:Apple 浅色底线不变 ——
+   「白/浅灰底、深色字」,不做暗色模式,也不按系统深浅自动切换。
+   所以「更有颜色」= 强调色 / 分类色 / 层次,不是把底色压深。
+
+   上色的位置(都不是底色):
+     ① 编号 .no  ② 分节标题 .secthd h2  ③ 「跟我们 ——」标签 .cue
+     ④ tab 选中指示 + GitHub / X 各一个分类色  ⑤ 链接 / chip / 横看发现左边线
+   骨架、卡片结构、信息层级、字号字重行高一律不动 —— 套与套之间只有变量不同。
+   「素白」逐值等于改动前,是对照组。                                    */
+body[data-pal="plain"] {
+	--e-bg: #fff;
+	--e-ink: #1d1d1f;
+	--e-link: #0645c8;
+	--e-rule: #f2f2f4;
+	--e-rule2: #ebebed;
+	--e-meta: #a1a1a6;
+	--e-dim: #86868b;
+	--e-s2: #3a3a3c;
+	--e-cue: #1a365d;
+	--e-num: #c7c7cc;
+	--e-chip: #f5f5f7;
+	--e-chiptx: #6e6e73;
+	--e-code: #f2f2f4;
+	--e-notebg: #fcfcfd;
+	--e-noteln: #e3e3e6;
+	--e-btn: #1d1d1f;
+	--e-btntx: #fff;
+	--e-accent: #1d1d1f;
+	--e-gh: #1d1d1f;
+	--e-x: #1d1d1f;
+}
+body[data-pal="indigo"] {
+	--e-bg: #fff;
+	--e-ink: #16181d;
+	--e-link: #1348c8;
+	--e-rule: #edf0f7;
+	--e-rule2: #e3e8f3;
+	--e-meta: #9aa3b5;
+	--e-dim: #7d8798;
+	--e-s2: #3b4152;
+	--e-cue: #1348c8;
+	--e-num: #a9bce8;
+	--e-chip: #eaf0fd;
+	--e-chiptx: #4a5a7d;
+	--e-code: #eff3fc;
+	--e-notebg: #fcfdff;
+	--e-noteln: #dbe3f4;
+	--e-btn: #1348c8;
+	--e-btntx: #fff;
+	--e-accent: #1348c8;
+	--e-gh: #1348c8;
+	--e-x: #6b3fd4;
+}
+body[data-pal="amber"] {
+	--e-bg: #fffdf8;
+	--e-ink: #241f18;
+	--e-link: #b8501a;
+	--e-rule: #f5ece0;
+	--e-rule2: #efe3d2;
+	--e-meta: #a89684;
+	--e-dim: #8f7f6c;
+	--e-s2: #4a4238;
+	--e-cue: #96420f;
+	--e-num: #e0b98d;
+	--e-chip: #fdf0e2;
+	--e-chiptx: #7a604a;
+	--e-code: #fbf2e6;
+	--e-notebg: #fffefb;
+	--e-noteln: #eadcc8;
+	--e-btn: #b8501a;
+	--e-btntx: #fffdf8;
+	--e-accent: #b8501a;
+	--e-gh: #b8501a;
+	--e-x: #8a6212;
+}
+body[data-pal="forest"] {
+	--e-bg: #fbfdfb;
+	--e-ink: #171d19;
+	--e-link: #0f6b45;
+	--e-rule: #e9f2ec;
+	--e-rule2: #dfebe4;
+	--e-meta: #93a69a;
+	--e-dim: #7a8e82;
+	--e-s2: #374039;
+	--e-cue: #0f6b45;
+	--e-num: #a2cfb8;
+	--e-chip: #e8f4ed;
+	--e-chiptx: #4c6357;
+	--e-code: #eef6f1;
+	--e-notebg: #fff;
+	--e-noteln: #d6e6dc;
+	--e-btn: #0f6b45;
+	--e-btntx: #fbfdfb;
+	--e-accent: #0f6b45;
+	--e-gh: #0f6b45;
+	--e-x: #2a5ea8;
+}
+
+body {
+	background: var(--e-bg);
+	color: var(--e-ink);
+}
+a {
+	color: var(--e-link);
+}
+code {
+	background: var(--e-code);
+}
+.pagehd .sub {
+	color: var(--e-dim);
+}
+.dirtag {
+	background: var(--e-chip);
+	color: var(--e-chiptx);
+}
+.basis {
+	color: var(--e-s2);
+}
+.basis b {
+	color: var(--e-ink);
+}
+.basis .row1 {
+	color: var(--e-chiptx);
+}
+.basis .row1 b {
+	color: var(--e-ink);
+}
+.xfind {
+	border-left-color: var(--e-accent);
+	color: var(--e-s2);
+}
+.xfind h3 {
+	color: var(--e-accent);
+}
+.secthd {
+	border-bottom-color: var(--e-rule2);
+}
+.secthd .cnt {
+	color: var(--e-meta);
+}
+.no {
+	color: var(--e-num);
+}
+.meta {
+	color: var(--e-meta);
+}
+.chk {
+	color: var(--e-chiptx);
+}
+.chk.dim {
+	color: var(--e-meta);
+}
+.cue {
+	color: var(--e-cue);
+}
+summary {
+	color: var(--e-dim);
+}
+summary::before {
+	color: var(--e-num);
+}
+.codeblk {
+	color: var(--e-s2);
+	border-left-color: var(--e-rule2);
+}
+.note {
+	background: var(--e-notebg);
+	border-color: var(--e-noteln);
+	color: var(--e-ink);
+}
+.note:focus {
+	border-color: var(--e-link);
+	background: var(--e-bg);
+}
+.foot {
+	border-top-color: var(--e-rule2);
+	color: var(--e-meta);
+}
+.copyall {
+	background: var(--e-btn);
+	color: var(--e-btntx);
+}
+/* 分类色:GitHub 和 X 各一个色,分节标题和 tab 指示都跟着走 */
+.paneE[data-pane="gh"] .secthd h2 {
+	color: var(--e-gh);
+}
+.paneE[data-pane="x"] .secthd h2 {
+	color: var(--e-x);
+}
+.tabsE button[data-pane="gh"][aria-selected="true"] {
+	color: var(--e-gh);
+	border-bottom-color: var(--e-gh);
+}
+.tabsE button[data-pane="x"][aria-selected="true"] {
+	color: var(--e-x);
+	border-bottom-color: var(--e-x);
+}
+
+/* ── 配色切换条 ── */
+.palbar {
+	max-width: 640px;
+	margin: 26px auto 0;
+	padding: 0 20px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.palbar .lb {
+	font-size: 12px;
+	color: var(--e-meta);
+}
+.palbar button {
+	font: 13px / 1 inherit;
+	padding: 7px 13px;
+	border: 1px solid var(--e-rule2);
+	border-radius: 999px;
+	background: transparent;
+	color: var(--e-s2);
+	cursor: pointer;
+}
+.palbar button[aria-pressed="true"] {
+	background: var(--e-btn);
+	border-color: var(--e-btn);
+	color: var(--e-btntx);
+}
+.palnote {
+	max-width: 640px;
+	margin: 8px auto 0;
+	padding: 0 20px;
+	font-size: 12.5px;
+	color: var(--e-meta);
+	line-height: 1.7;
+}
+
+/* ── GitHub / X 两个 tab(文字型 + 下划线指示,跟 v8 同一种做法)── */
+.tabsE {
+	display: flex;
+	gap: 24px;
+	max-width: 640px;
+	margin: 40px auto 0;
+	padding: 0 20px;
+	border-bottom: 1px solid var(--e-rule2);
+}
+.tabsE button {
+	font: 650 14.5px / 1 inherit;
+	padding: 9px 2px 10px;
+	border: 0;
+	background: none;
+	color: var(--e-dim);
+	cursor: pointer;
+	border-bottom: 2px solid transparent;
+	margin-bottom: -1px;
+}
+.tabsE button[aria-selected="true"] {
+	color: var(--e-ink);
+	border-bottom-color: var(--e-ink);
+}
+.tabsE button .cnt {
+	font-weight: 400;
+	font-size: 12px;
+	color: var(--e-meta);
+	margin-left: 6px;
+}
+.paneE[hidden] {
+	display: none;
+}
+.paneE .secthd:first-of-type {
+	margin-top: 34px;
+}
+
+.wrapE {
+	max-width: 640px;
+	margin: 0 auto;
+	padding: 0 20px;
+}
+.pagehd,
+.basis,
+.xfind,
+.foot {
+	max-width: 640px;
+}
+.itemE {
+	padding: 15px 0;
+	border-top: 1px solid #f2f2f4;
+}
+.itemE:first-of-type {
+	border-top: 0;
+}
+.hdE {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	margin-bottom: 4px;
+}
+.hdE .no {
+	font-size: 17px;
+	min-width: 24px;
+	text-align: right;
+}
+.hdE a {
+	font-size: 15.5px;
+	font-weight: 650;
+	text-decoration: underline;
+	text-underline-offset: 3px;
+	letter-spacing: -0.01em;
+	overflow-wrap: anywhere;
+}
+.hdE .qty {
+	margin-left: auto;
+	white-space: nowrap;
+	flex: 0 0 auto;
+}
+.bodyE {
+	margin-left: 34px;
+	font-size: 14.5px;
+	line-height: 1.72;
+}
+.bodyE .s1 {
+	display: block;
+	margin-bottom: 3px;
+}
+.bodyE .s2 {
+	display: block;
+	color: #3a3a3c;
+}
+.itemE details,
+.itemE .nbd {
+	margin-left: 34px;
+}
+.itemE .chk {
+	margin-left: 34px;
+}
+@media (max-width: 640px) {
+	.wrapE {
+		padding: 0 16px;
+	}
+	.hdE {
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.hdE .qty {
+		margin-left: 0;
+		flex-basis: 100%;
+	}
+	.bodyE,
+	.itemE details,
+	.itemE .nbd,
+	.itemE .chk {
+		margin-left: 0;
+	}
+}
+
+/* E 自己那两处硬编码色值必须排在配色变量之后 —— 否则夜间下
+   分隔线仍是浅色亮条、第二行仍是深灰几乎看不见。只改色，不改布局。 */
+.itemE {
+	border-top-color: var(--e-rule);
+}
+.bodyE .s2 {
+	color: var(--e-s2);
+}
+
+/* ═══ 樱白 —— 粉调水彩底 + 白卡片 + 圆点标签。柔和但不甜腻 ═══ */
+body[data-dir="e"] {
+	--e-bg: #fdfafb;
+	--e-ink: #2a2328;
+	--e-link: #8e4a6b;
+	--e-rule: #f3e8ee;
+	--e-s2: #6f6169;
+	--e-accent: #a8446e;
+	background:
+		radial-gradient(
+			1100px 620px at 12% -8%,
+			#fbeef3 0%,
+			rgba(251, 238, 243, 0) 62%
+		),
+		radial-gradient(
+			900px 540px at 92% 4%,
+			#f6eef4 0%,
+			rgba(246, 238, 244, 0) 58%
+		),
+		radial-gradient(
+			760px 460px at 60% 100%,
+			#fdf3ee 0%,
+			rgba(253, 243, 238, 0) 60%
+		), #fdfafb;
+	background-attachment: fixed;
+	color: var(--e-ink);
+	font-family: "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+}
+.pagehd h1 {
+	font-family: "Songti SC", "Noto Serif SC", Georgia, serif;
+	font-weight: 300;
+	letter-spacing: 0.14em;
+	color: #3a2a33;
+}
+/* 卡片:白底,极细描边,不用阴影堆重量 */
+.itemE {
+	background: #fff;
+	border: 1px solid #f0e2e9;
+	border-top-color: #f0e2e9;
+	border-radius: 16px;
+	padding: 20px 22px;
+	margin: 14px 0;
+	box-shadow: 0 1px 2px rgba(150, 110, 130, 0.05);
+}
+.hdE {
+	line-height: 1.5;
+}
+.bodyE .s2 {
+	color: var(--e-s2);
+}
+/* 这里原本有一条「圆点标签」规则 .met .qty::before —— 已删,不要照抄回来。
+   它找的是 .met 后代里的 .qty;而真 markup 是同一个元素的 class 上并排挂着
+   qty 和 meta 两个值,页面上没有任何 .met 祖先
+   ⇒ 选择器命中数 = 0,一个元素都匹配不到。
+   所以 Annie 拍板的那版渲染里,那个粉色小圆点从来没出现过。
+   删它渲染结果零变化(已用浏览器 CSSOM 前后对照证过),纯死代码清理;
+   激活它才是改动 —— 那会让页面长出她没看过的东西。
+
+   ⚠️ 这段刻意【不】写出那个 class 属性的引号原文。上一版写了,结果同一段注释
+   把数这个文件的人骗了三次:grep .met 得 1、生成期守卫拦住它自己、grep qty 得 25
+   ——【三次都发生在已经知道有这个坑的人身上】,所以问题不在人不小心,在文本本身。
+   注释的活儿是解释,不该顺带留一个跟真 markup 逐字相同的诱饵串。
+   上面那个 .met .qty::before 是【被删规则的名字】,不是活规则;数它之前先剥注释。 */
+.no {
+	color: #c9a6b8;
+	font-variant-numeric: tabular-nums;
+}
+.note {
+	background: #fdf6f9;
+	border-left: 2px solid #eccfdd;
+	border-radius: 0 8px 8px 0;
+}

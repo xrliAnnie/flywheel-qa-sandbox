@@ -293,11 +293,11 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 		expect(archivedEvent?.source).toBe("bridge.post-ship-finalization");
 	});
 
-	it("already-archived thread: ZERO Discord PATCH + non-failure audit (idempotent no-op success)", async () => {
+	it("Discord-verified archived thread: ZERO PATCH + truthful already_archived audit", async () => {
 		const { store } = await makeStore();
 		seedShipped(store, "exec-s2", "FLY-11");
 		store.upsertChatThread("t-s2", "ch-eng", "FLY-11", "tadashi");
-		// Archived earlier (e.g. by the close cascade); Annie may have re-opened it.
+		// Local history alone is not proof; Discord still reports the thread archived.
 		store.markChatThreadArchived("t-s2");
 		const archiveFn = vi.fn();
 		const removeUserFn = vi.fn();
@@ -315,7 +315,16 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 				projects: [PROJECT],
 				archiveFn,
 				removeUserFn,
-				fetchImpl: okFetch(),
+				fetchImpl: vi.fn().mockResolvedValue(
+					new Response(
+						JSON.stringify({
+							id: "t-s2",
+							name: "fly-11",
+							thread_metadata: { archived: true },
+						}),
+						{ status: 200 },
+					),
+				) as unknown as typeof fetch,
 			},
 		);
 

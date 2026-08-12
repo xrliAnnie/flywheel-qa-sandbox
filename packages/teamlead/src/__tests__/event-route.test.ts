@@ -285,6 +285,29 @@ describe("Event route", () => {
 		expect(session!.issue_identifier).toBe("GEO-95");
 	});
 
+	it("FLY-1709 R1: session_started preserves a pre-registered started_at", async () => {
+		const originalStartedAt = "2026-08-01 12:00:00.123";
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "pending",
+			started_at: originalStartedAt,
+		});
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")?.started_at).toBe(originalStartedAt);
+	});
+
 	it("derives generalized workflow_node_id before storing the lifecycle event", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const res = await fetch(`${baseUrl}/events`, {

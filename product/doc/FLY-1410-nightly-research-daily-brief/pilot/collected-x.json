@@ -1,0 +1,125 @@
+{
+	"_doc": "FLY-1410 pilot 第二轮 — X『For you』首页流真实抓取(claude-in-chrome 驱动 Annie 已登录的 Chrome,2026-08-11)。窗口=24h。",
+	"run_at": "2026-08-11T17:10:00Z",
+	"mode": "for_you",
+	"sources": {
+		"x-for-you": {
+			"status": "ok",
+			"harvested": 18,
+			"in_window": 15,
+			"recorded": 13,
+			"_recorded_note": "浏览器里实测 24h 内 15 条,但经工具输出分块取回时只完整转录了 13 条 —— 这是【传输损耗,不是抓取损耗】。本报告基于这 13 条,漏斗数字也按 13 算。这正是 RUN-NOTES 里那条『单次输出上限约 1200 字符』的具体代价。",
+			"scrolls": 4,
+			"distinct_authors": 18,
+			"ads": 0,
+			"note": "For you tab 实测 aria-selected=true;DOM 结构与 profile timeline 相同,采集器零改动即可用。18 条来自 18 个不同作者,零重复。"
+		}
+	},
+	"items": [
+		{
+			"src": "x-for-you",
+			"au": "Argona0x",
+			"t": "2026-08-11T14:43",
+			"views": 1349,
+			"url": "https://x.com/Argona0x/status/2087188066205049333",
+			"text": "把一个 1,053 文件的活仓库交给五个并行 Claude agent,除 7 个文件外全部干净落地 —— 这五个都得扛同一套上下文,而那 7 个决定扇出能开多宽。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "EXM7777",
+			"t": "2026-08-11T13:58",
+			"views": 9675,
+			"url": "https://x.com/EXM7777/status/2087176716901023834",
+			"text": "Claude Code 默认很臃肿:烧 token、爱争辩、慢。这是修法……"
+		},
+		{
+			"src": "x-for-you",
+			"au": "AnatoliKopadze",
+			"t": "2026-08-11T13:07",
+			"views": 30736,
+			"url": "https://x.com/AnatoliKopadze/status/2087164089420206263",
+			"text": "AI 教父:「今晚你要是睡得着,可能没听懂这堂课。」47 分钟讲座推荐。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "expemillyweb3",
+			"t": "2026-08-11T12:57",
+			"views": 987,
+			"url": "https://x.com/expemillyweb3/status/2087161528613011935",
+			"text": "Anthropic PM:开发者正从『要一个具体函数』转向『描述一整个功能』。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "kotekjedi_ml",
+			"t": "2026-08-11T12:00",
+			"views": 476874,
+			"url": "https://x.com/kotekjedi_ml/status/2087147042888114428",
+			"text": "我们找到一种利用漏洞提取前沿模型隐藏推理过程的方法。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "cyrilXBT",
+			"t": "2026-08-11T06:04",
+			"views": 28134,
+			"url": "https://x.com/cyrilXBT/status/2087057424373182860",
+			"text": "Andrej Karpathy 五周前加入 Anthropic。两位 Anthropic 资深工程师用 Graph Engineering 把 Karpathy 的 loop 提升了 1000 倍。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "cathrynlavery",
+			"t": "2026-08-11T04:10",
+			"views": 15046,
+			"url": "https://x.com/cathrynlavery/status/2087028739700081033",
+			"text": "我那个 diagram design skill 拿到 5k 星了"
+		},
+		{
+			"src": "x-for-you",
+			"au": "dani_avila7",
+			"t": "2026-08-11T04:02",
+			"views": 54462,
+			"url": "https://x.com/dani_avila7/status/2087026930323247306",
+			"text": "Anthropic 放了一份 Dynamic Workflows cookbook 值得一读。Claude 自己写编排脚本,每次运行最多派 1,000 个 subagent。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "ArchiveExplorer",
+			"t": "2026-08-11T00:31",
+			"views": 8791,
+			"url": "https://x.com/ArchiveExplorer/status/2086973866279100814",
+			"text": "Claude Code 还是 Codex?这问题已经结束了。昨天有人发了个插件,让 Claude 当经理、GPT-5 当劳力,账单还走另一个平台。Sateezg/codex-bridge,MIT,首 24 小时 357 星,342 行 shell,不需要 OpenAI key。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "LunarResearcher",
+			"t": "2026-08-10T22:14",
+			"views": 27071,
+			"url": "https://x.com/LunarResearcher/status/2086939256803479978",
+			"text": "Anthropic 刚放出一门免费 4 小时课程,讲 50 万美元 AI 工程岗位背后的技能。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "unicodef1wn",
+			"t": "2026-08-10T21:13",
+			"views": 38759,
+			"url": "https://x.com/unicodef1wn/status/2086924024156725446",
+			"text": "你的 Obsidian 库为回答一个问题要读全部 2000 条笔记 —— 那不是第二大脑,那是囤积。真正的第二大脑跑在图上:一个路由器。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "shannholmberg",
+			"t": "2026-08-10T20:58",
+			"views": 133956,
+			"url": "https://x.com/shannholmberg/status/2086920236079681607",
+			"text": "我见过最好的一篇:用 hermes agent 搭你的 life OS 和第二大脑。"
+		},
+		{
+			"src": "x-for-you",
+			"au": "noisyb0y1",
+			"t": "2026-08-10T18:50",
+			"views": 23960,
+			"url": "https://x.com/noisyb0y1/status/2086887962504036817",
+			"text": "ANTHROPIC 泄露了 8 个让单个工程师效率 10 倍的循环 —— 一套他们花了 2 年、320 万美元测试才建成的系统。这套已经在 Google、OpenAI、微软跑,一个工程师、八个循环、一年省 100 万以上。task → Haiku 排序 → Sonnet ×6 → Opus 评判 → Fable"
+		}
+	],
+	"shape_note": "For you = 个性化 + 每次刷新都重排。同一时刻不同设备/不同刷新拿到的条目集合不一样,且没有稳定的『第 N 条』。⇒ 本文件是一次快照,不可复现。"
+}

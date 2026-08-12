@@ -161,6 +161,19 @@ export async function processThread(row, io) {
 		io.record("archived", row, { reason: archiveResult.reason });
 		return { outcome: "archived" };
 	}
+	if (
+		archiveResult?.reason === "founder_reopened" ||
+		archiveResult?.reason === "in_active_use"
+	) {
+		io.record(
+			archiveResult.reason === "founder_reopened"
+				? "skipped_founder_reopened"
+				: "skipped_live_session",
+			row,
+			{ response: archiveResult },
+		);
+		return { outcome: archiveResult.reason };
+	}
 	io.record("archive_failed", row, { response: archiveResult });
 	return { outcome: "archive_failed" };
 }

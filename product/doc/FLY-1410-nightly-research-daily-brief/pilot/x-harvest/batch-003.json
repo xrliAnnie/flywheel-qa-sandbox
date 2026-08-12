@@ -1,0 +1,42 @@
+[
+	{
+		"a": "alextalksai",
+		"id": "2087155646793646356",
+		"t": "2026-08-11T12:34",
+		"v": "71043",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2087155608227086336/img/r5nUYAt145rvBt1n.jpg",
+		"x": "claude code burns thousands of tokens grepping the same files over and over, every single session. this open-source..."
+	},
+	{
+		"a": "thesupermanmx",
+		"id": "2087047234093560102",
+		"t": "2026-08-11T05:23",
+		"v": "204440",
+		"img": null,
+		"x": "Anthropic scientists reached inside Claude's neural network and planted a thought. Before Claude could speak, it said..."
+	},
+	{
+		"a": "fin465",
+		"id": "2086939268136755285",
+		"t": "2026-08-10T22:14",
+		"v": "124902",
+		"img": null,
+		"x": "theres a method you learn in YCombinator to compress a month of GTM research into 3 hours. you dont ask Claude to research the market."
+	},
+	{
+		"a": "heynavtoor",
+		"id": "2087168688743219361",
+		"t": "2026-08-11T13:26",
+		"v": null,
+		"img": null,
+		"x": "ElevenLabs charges $22 a month for the Creator plan..."
+	},
+	{
+		"a": "kotekjedi_ml",
+		"id": "2087147042888114428",
+		"t": "2026-08-11T12:00",
+		"v": "476874",
+		"img": null,
+		"x": "We found a way to extract hidden reasoning of frontier models using a vulnerability in the APIs of every frontier AI company. 1) take thinking summary from source model 2) jailbreak a second 3) inject source trace"
+	}
+]

@@ -1116,18 +1116,6 @@ export function createQueryRouter(
 			return;
 		}
 
-		// FLY-369 archive-once: a thread already archived is not re-archived, so a
-		// re-open (Discord auto-unarchive on a new message) is not fought. No-op 200.
-		if (thread.archived_at) {
-			res.json({
-				threadId: thread.thread_id,
-				archived: true,
-				reason: "already_archived",
-				attempts: 0,
-			});
-			return;
-		}
-
 		const session = store.getSessionByIssue(canonicalKey);
 		// Resolve the bot token from the THREAD's recorded lead_id first (Codex R1
 		// #1), matching the automatic sweep; labels are only used for the legacy

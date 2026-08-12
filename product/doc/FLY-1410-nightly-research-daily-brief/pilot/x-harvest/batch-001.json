@@ -1,0 +1,82 @@
+[
+	{
+		"a": "Argona0x",
+		"id": "2086811801652514817",
+		"t": "2026-08-10T13:47",
+		"v": "638096",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2086811479546757121/img/ecl_ZSsGf0tUiBE3.jpg",
+		"x": "whoever leaked this has bigger balls than sense someone gave a fleet of Claude agents shared memory so they would stop contradicting each other, then"
+	},
+	{
+		"a": "Aurimas_Gr",
+		"id": "2086772704707739662",
+		"t": "2026-08-10T11:12",
+		"v": "10760",
+		"img": null,
+		"x": "AI Observability is a must have in your tool belt as an AI Engineer. Tracing sits at the core of it, why is it important?"
+	},
+	{
+		"a": "shannholmberg",
+		"id": "2086920236079681607",
+		"t": "2026-08-10T20:58",
+		"v": "150086",
+		"img": null,
+		"x": "one of the best write-ups I have seen on getting hermes agent to build your life OS and second brain. EP released a single prompt that creates 4 connected"
+	},
+	{
+		"a": "rvaniaaaa",
+		"id": "2086909730811691181",
+		"t": "2026-08-10T20:17",
+		"v": null,
+		"img": null,
+		"x": "someone just published the complete reference architecture for g..."
+	},
+	{
+		"a": "RohOnChain",
+		"id": "2087222241717313787",
+		"t": "2026-08-11T16:58",
+		"v": "3035",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2087219232945889280/img/anVaELNMJ9Y1gNCV.jpg",
+		"x": "Don't waste 2 years learning to build LLMs like Claude & ChatGPT. MIT dropped a 3 hour course on building LLMs from scratch for free."
+	},
+	{
+		"a": "AnatoliKopadze",
+		"id": "2087236395425284481",
+		"t": "2026-08-11T17:55",
+		"v": "4957",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2087230769815040000/img/hWmOpIveW7E2zFXH.jpg",
+		"x": "Anthropic engineer: The fastest way to make an agent better isn't a smarter model, it's the right loop and graph around it. In 60 minutes she breaks..."
+	},
+	{
+		"a": "0xCodez",
+		"id": "2087225499387142559",
+		"t": "2026-08-11T17:11",
+		"v": "1945",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/20872251508360110",
+		"x": "Anthropic engineers: At Anthropic, nobody is prompting agents anymore. We're building graphs and loops - they're building agents. In 3-6 months..."
+	},
+	{
+		"a": "jakubkrehel",
+		"id": "2087200943729164298",
+		"t": "2026-08-11T15:34",
+		"v": "21775",
+		"img": null,
+		"x": "I made a new skill: /interface-review — reviews your work across UI, typography, layout, color, writing and accessibility"
+	},
+	{
+		"a": "spectnfa",
+		"id": "2087194387948208314",
+		"t": "2026-08-11T15:08",
+		"v": "791",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2087194133261639680/img/ZQ2ZrFft6ZKX_MSk.jpg",
+		"x": "YOUR SECOND BRAIN HAS A COST PROBLEM AND IT'S NOT THE MODEL. It's the vault. Flat notes, no map, so Claude reads the whole thing every time"
+	},
+	{
+		"a": "typesfast",
+		"id": "2086837223148962283",
+		"t": "2026-08-10T15:29",
+		"v": "165495",
+		"img": "https://pbs.twimg.com/amplify_video_thumb/2086141474367049728/img/WmaHvQjGXBnX6Ucw.jpg",
+		"x": "We gave our AI agents for logistics an agentic search and memory retrieval graph so now they autonomously learn new skills and capabilities."
+	}
+]

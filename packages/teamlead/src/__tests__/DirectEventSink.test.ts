@@ -85,6 +85,77 @@ describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
 	});
 });
 
+describe("DirectEventSink — FLY-1709 archived-thread reactivation", () => {
+	let store: StateStore;
+	const creator = {
+		ensureChatThread: vi.fn(async () => ({
+			created: false,
+			threadId: "thread-reactivate",
+		})),
+	};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		creator.ensureChatThread.mockClear();
+		store.upsertChatThread(
+			"thread-reactivate",
+			"chat-ch-1",
+			"issue-1",
+			"product-lead",
+		);
+	});
+
+	afterEach(() => store.close());
+
+	it("clears the archive epoch for a newly admitted session_started", async () => {
+		store.markChatThreadArchived("thread-reactivate");
+		await new Promise((resolve) => setTimeout(resolve, 2));
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ chatThreadsEnabled: true }),
+			testProjects,
+			undefined,
+			undefined,
+			creator as never,
+		);
+
+		await sink.emitStarted(makeEnvelope({ labels: ["Product"] }));
+
+		expect(store.getChatThreadArchivedAt("thread-reactivate")).toBeNull();
+		expect(creator.ensureChatThread).toHaveBeenCalledOnce();
+	});
+
+	it("keeps started_at set-once and does not reactivate on an old running replay", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const originalStartedAt = "2026-08-01 12:00:00.123";
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			started_at: originalStartedAt,
+		});
+		store.markChatThreadArchived("thread-reactivate");
+		const archivedAt = store.getChatThreadArchivedAt("thread-reactivate");
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ chatThreadsEnabled: true }),
+			testProjects,
+			undefined,
+			undefined,
+			creator as never,
+		);
+
+		await sink.emitStarted(makeEnvelope({ labels: ["Product"] }));
+
+		expect(store.getSession("exec-1")?.started_at).toBe(originalStartedAt);
+		expect(store.getChatThreadArchivedAt("thread-reactivate")).toBe(archivedAt);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("cannot prove reactivation epoch"),
+		);
+	});
+});
+
 describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 	let store: StateStore;
 

@@ -430,6 +430,45 @@ export interface SessionEvent {
 	ts?: string;
 }
 
+export type ThreadArchiveCompensationCause =
+	| "unknown"
+	| "human"
+	| "verify_failed";
+
+export type ThreadArchiveCompensationReceipt =
+	| {
+			version: 1;
+			state: "prepared";
+			archiveEpoch: string;
+			frontier: string;
+			cause: ThreadArchiveCompensationCause;
+			at: string;
+	  }
+	| {
+			/** Fail-closed sentinel for malformed or future-version persisted JSON. */
+			version: 0;
+			state: "invalid";
+			cause: "verify_failed";
+			raw: string;
+			at: string;
+	  };
+
+export interface ReopenVetoCandidates {
+	sessions: Array<{
+		executionId: string;
+		startedAt: string | null;
+		status: string;
+		projectName: string;
+	}>;
+	claims: Array<{
+		executionId: string;
+		createdAt: string;
+		updatedAt: string;
+		state: "starting" | "active";
+		projectName: string;
+	}>;
+}
+
 // ── FLY-1099: founder-reply ingest reliability rows ─────────────────────────
 
 /** FLY-1099 §3.1: a deferred founder ship-decision awaiting hold-clear rebind. */
@@ -3058,6 +3097,7 @@ export class StateStore {
 				created_at TEXT DEFAULT (datetime('now')),
 				discord_missing_at TEXT,
 				archived_at TEXT,
+				reopen_compensation_pending TEXT,
 				attach_pin_message_id TEXT,
 				attach_pin_command TEXT,
 				attach_pin_pinned_at TEXT,
@@ -4009,6 +4049,7 @@ export class StateStore {
 		this.migrateLeadEventsDeliveryColumns();
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
+		this.migrateChatThreadsReopenCompensationColumn();
 		this.migrateChatThreadsAttachPinColumns();
 		this.migrateChatThreadsPhaseStatusLineColumns();
 		this.migrateChatThreadsDisplayFingerprintColumns();
@@ -8620,22 +8661,154 @@ export class StateStore {
 		this.save();
 	}
 
-	/**
-	 * FLY-369: mark a chat thread archived (archive-once record). The on-demand
-	 * archive endpoint treats a thread with `archived_at` set as already
-	 * archived and does not re-archive it, so if Annie re-opens it (Discord
-	 * auto-unarchives on a new message) we do not fight her.
-	 */
+	/** FLY-369 / FLY-1709: record a new archive epoch with millisecond precision. */
 	markChatThreadArchived(threadId: string): void {
+		const archivedAt = new Date().toISOString();
 		this.db.run(
-			"UPDATE chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
+			"UPDATE chat_threads SET archived_at = ? WHERE thread_id = ?",
+			[archivedAt, threadId],
 		);
 		// FLY-793 (Step 11): no-op for a main thread; archives a phase thread.
 		this.db.run(
-			"UPDATE phase_chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
+			"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
+			[archivedAt, threadId],
+		);
+		this.save();
+	}
+
+	/** Raw archive epoch (ISO milliseconds for new rows; SQLite UTC for legacy). */
+	getChatThreadArchivedAt(threadId: string): string | null {
+		const stmt = this.db.prepare(
+			"SELECT archived_at FROM chat_threads WHERE thread_id = ?",
+		);
+		stmt.bind([threadId]);
+		let archivedAt: string | null = null;
+		if (stmt.step()) {
+			const value = stmt.getAsObject().archived_at;
+			archivedAt = typeof value === "string" && value !== "" ? value : null;
+		}
+		stmt.free();
+		return archivedAt;
+	}
+
+	/** Explicit lifecycle reactivation; ordinary registry upserts never clear it. */
+	clearChatThreadArchived(threadId: string): void {
+		this.db.transaction(() => {
+			this.db.run(
+				"UPDATE chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+		});
+		this.save();
+	}
+
+	getChatThreadCompensationPending(
+		threadId: string,
+	): ThreadArchiveCompensationReceipt | null {
+		const stmt = this.db.prepare(
+			"SELECT reopen_compensation_pending FROM chat_threads WHERE thread_id = ?",
+		);
+		stmt.bind([threadId]);
+		let raw: unknown;
+		if (stmt.step()) raw = stmt.getAsObject().reopen_compensation_pending;
+		stmt.free();
+		if (typeof raw !== "string" || raw === "") return null;
+		try {
+			const value = JSON.parse(raw) as Record<string, unknown>;
+			if (
+				value.version === 1 &&
+				value.state === "prepared" &&
+				typeof value.archiveEpoch === "string" &&
+				typeof value.frontier === "string" &&
+				(value.cause === "unknown" ||
+					value.cause === "human" ||
+					value.cause === "verify_failed") &&
+				typeof value.at === "string"
+			) {
+				return value as ThreadArchiveCompensationReceipt;
+			}
+		} catch {
+			// Fall through to the fail-closed sentinel below.
+		}
+		return {
+			version: 0,
+			state: "invalid",
+			cause: "verify_failed",
+			raw,
+			at: new Date().toISOString(),
+		};
+	}
+
+	setChatThreadCompensationPending(
+		threadId: string,
+		receipt: ThreadArchiveCompensationReceipt,
+	): void {
+		this.db.run(
+			"UPDATE chat_threads SET reopen_compensation_pending = ? WHERE thread_id = ?",
+			[JSON.stringify(receipt), threadId],
+		);
+		this.save();
+	}
+
+	clearChatThreadCompensationPending(threadId: string): void {
+		this.db.run(
+			"UPDATE chat_threads SET reopen_compensation_pending = NULL WHERE thread_id = ?",
 			[threadId],
 		);
+		this.save();
+	}
+
+	/** Atomic archive commit: epoch + receipt clear + audit event. */
+	commitReArchive(threadId: string, event: SessionEvent): void {
+		const archivedAt = new Date().toISOString();
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE chat_threads
+				 SET archived_at = ?, reopen_compensation_pending = NULL
+				 WHERE thread_id = ?`,
+				[archivedAt, threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
+				[archivedAt, threadId],
+			);
+			this.db.run(
+				`INSERT INTO session_events
+				 (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					event.event_id,
+					event.execution_id,
+					event.issue_id,
+					event.project_name,
+					event.event_type,
+					event.severity ?? "info",
+					event.payload ? JSON.stringify(event.payload) : null,
+					event.source,
+				],
+			);
+		});
+		this.save();
+	}
+
+	/** Atomic reactivation: compensation ownership is settled before epoch clear. */
+	commitReactivation(threadId: string): void {
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE chat_threads
+				 SET archived_at = NULL, reopen_compensation_pending = NULL
+				 WHERE thread_id = ?`,
+				[threadId],
+			);
+			this.db.run(
+				"UPDATE phase_chat_threads SET archived_at = NULL WHERE thread_id = ?",
+				[threadId],
+			);
+		});
 		this.save();
 	}
 
@@ -8727,23 +8900,66 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-1709: materialized reopen-veto candidates. Every statement is fully
+	 * consumed and freed before callers await process liveness probes.
+	 */
+	listReopenVetoCandidates(issueId: string): ReopenVetoCandidates {
+		const aliases = new Set([issueId]);
+		for (const row of this.getSessionsForIssueAliases([issueId])) {
+			aliases.add(row.issue_id);
+			if (row.issue_identifier) aliases.add(row.issue_identifier);
+		}
+		const aliasKeys = [...aliases];
+		const aliasPlaceholders = aliasKeys.map(() => "?").join(", ");
+		const sessions: ReopenVetoCandidates["sessions"] = [];
+		const sessionStmt = this.db.prepare(
+			`SELECT execution_id, started_at, status, project_name
+			 FROM sessions
+			 WHERE (issue_id IN (${aliasPlaceholders})
+			        OR issue_identifier IN (${aliasPlaceholders}))
+			   AND status IN ('running','awaiting_review','approved_to_ship')`,
+		);
+		sessionStmt.bind([...aliasKeys, ...aliasKeys]);
+		while (sessionStmt.step()) {
+			const row = sessionStmt.getAsObject();
+			sessions.push({
+				executionId: row.execution_id as string,
+				startedAt: (row.started_at as string) ?? null,
+				status: row.status as string,
+				projectName: row.project_name as string,
+			});
+		}
+		sessionStmt.free();
+
+		const claims: ReopenVetoCandidates["claims"] = [];
+		const claimStmt = this.db.prepare(
+			`SELECT execution_id, created_at, updated_at, state, project
+			 FROM lifecycle_launch_claims
+			 WHERE root_uuid IN (${aliasPlaceholders})
+			   AND state IN ('starting','active')`,
+		);
+		claimStmt.bind(aliasKeys);
+		while (claimStmt.step()) {
+			const row = claimStmt.getAsObject();
+			claims.push({
+				executionId: row.execution_id as string,
+				createdAt: row.created_at as string,
+				updatedAt: row.updated_at as string,
+				state: row.state as "starting" | "active",
+				projectName: row.project as string,
+			});
+		}
+		claimStmt.free();
+		return { sessions, claims };
+	}
+
+	/**
 	 * FLY-1165: fresh archive-once read (sink guard). True when the main-table
 	 * thread row has `archived_at` set — an archived thread is NEVER re-PATCHed
 	 * (a founder re-open must not be fought).
 	 */
 	isChatThreadArchived(threadId: string): boolean {
-		const stmt = this.db.prepare(
-			"SELECT archived_at FROM chat_threads WHERE thread_id = ?",
-		);
-		stmt.bind([threadId]);
-		let archived = false;
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			const value = row.archived_at as string | null;
-			archived = value !== null && value !== "";
-		}
-		stmt.free();
-		return archived;
+		return this.getChatThreadArchivedAt(threadId) !== null;
 	}
 
 	/**
@@ -13830,6 +14046,22 @@ export class StateStore {
 		}
 	}
 
+	/** FLY-1709: durable write-ahead compensation receipt (idempotent). */
+	private migrateChatThreadsReopenCompensationColumn(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("reopen_compensation_pending")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN reopen_compensation_pending TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it.
+		}
+	}
+
 	/**
 	 * FLY-560 Feature C: add the runner-attach pin columns to chat_threads on
 	 * legacy DBs (idempotent). Mirrors migrateChatThreadsArchivedColumn.
@@ -16090,6 +16322,17 @@ export class StateStore {
 	 */
 	private static workflowFiniteTimestamp(value: string): boolean {
 		return Number.isFinite(Date.parse(value));
+	}
+
+	private static workflowAlertIdentityValid(
+		identity: WorkflowEngineAlertIdentity | undefined,
+	): identity is WorkflowEngineAlertIdentity {
+		return Boolean(
+			identity?.leadId.trim() &&
+				identity.projectName.trim() &&
+				(identity.leadResolution === "resolved" ||
+					identity.leadResolution === "fallback"),
+		);
 	}
 
 	listWorkflowTemplates(): WorkflowTemplateRow[] {
@@ -18648,7 +18891,7 @@ export class StateStore {
 				input.action === "alert"
 					? "rework_stalled_alert"
 					: "rework_stalled_hold";
-			const eventUid = `${prefix}:${input.requestId}:${input.generation}:${executionId}`;
+			const eventUid = `${prefix}:${input.requestId}:rev${route.revision}:${executionId}`;
 			const eventKind =
 				input.action === "alert"
 					? "rework_activation_stalled_alerted"
@@ -18714,8 +18957,8 @@ export class StateStore {
 						: `Stalled rework activation detected for ${run.issue_id}`,
 				body:
 					input.action === "hold"
-						? `Rework ${input.requestId} remained stalled for actor ${executionId}. Reason: ${input.reason}. Run ${request.run_id} was held for Lead inspection.`
-						: `Rework ${input.requestId} has not delivered TURN/wake for actor ${executionId}. Reason: ${input.reason}. The engine will keep checking durable activation evidence.`,
+						? `Rework ${input.requestId} remained stalled for actor ${executionId}; first stalled at ${input.sourceAt} (${Math.max(0, Math.floor((Date.parse(input.now) - Date.parse(input.sourceAt)) / 60_000))} minutes ago). Reason: ${input.reason}. Run ${request.run_id} was held for Lead inspection.`
+						: `Rework ${input.requestId} has not delivered TURN/wake for actor ${executionId}; first stalled at ${input.sourceAt} (${Math.max(0, Math.floor((Date.parse(input.now) - Date.parse(input.sourceAt)) / 60_000))} minutes ago). Reason: ${input.reason}. The engine will keep checking durable activation evidence.`,
 				metadata: {
 					workflowEngine: {
 						runId: request.run_id,
@@ -18743,6 +18986,208 @@ export class StateStore {
 		});
 		if (result.ok) this.save();
 		return result;
+	}
+
+	transitionWorkflowReworkPause(input: {
+		requestId: string;
+		generation: number;
+		state: "paused" | "resumed";
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| {
+				ok: true;
+				eventUid: string | null;
+				idempotentReplay: boolean;
+				clockStartedAt: string | null;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowAlertIdentityValid(input.alertIdentity)
+		) {
+			return { ok: false, reason: "invalid_rework_pause_transition" };
+		}
+		let result:
+			| {
+					ok: true;
+					eventUid: string | null;
+					idempotentReplay: boolean;
+					clockStartedAt: string | null;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_pause_not_transitioned",
+		};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.generation !== input.generation ||
+				!(delivery.state === "pending" || delivery.state === "turn_granted")
+			) {
+				result = { ok: false, reason: "rework_pause_context_changed" };
+				return;
+			}
+			const executionId = route.preferred_actor_execution_id;
+			const pausedPrefix = `rework_reentry_paused:${input.requestId}:rev${route.revision}:${executionId}:`;
+			const resumedPrefix = `rework_reentry_resumed:${input.requestId}:rev${route.revision}:${executionId}:`;
+			const latestReceiptForPrefix = (prefix: string) =>
+				this.workflowSelectAll(
+					`SELECT run_id, seq, event_uid, kind, execution_id, payload
+					   FROM workflow_run_event
+					  WHERE event_uid >= ? AND event_uid < ?
+					  ORDER BY seq DESC
+					  LIMIT 1`,
+					[prefix, `${prefix.slice(0, -1)};`],
+				)[0];
+			const prior = [
+				latestReceiptForPrefix(pausedPrefix),
+				latestReceiptForPrefix(resumedPrefix),
+			]
+				.filter((row): row is Record<string, unknown> => row !== undefined)
+				.sort((left, right) => Number(right.seq) - Number(left.seq))[0];
+			let priorState: "paused" | "resumed" | undefined;
+			let priorEpisode = 0;
+			let priorAt: string | undefined;
+			if (prior) {
+				priorState =
+					prior.kind === "rework_activation_paused"
+						? "paused"
+						: prior.kind === "rework_activation_resumed"
+							? "resumed"
+							: undefined;
+				let payload: { episode?: unknown; at?: unknown } | undefined;
+				try {
+					payload = JSON.parse(String(prior.payload ?? "null")) as {
+						episode?: unknown;
+						at?: unknown;
+					};
+				} catch {
+					payload = undefined;
+				}
+				if (
+					!priorState ||
+					prior.run_id !== request.run_id ||
+					prior.execution_id !== executionId ||
+					!Number.isInteger(payload?.episode) ||
+					Number(payload?.episode) < 1 ||
+					typeof payload?.at !== "string" ||
+					!StateStore.workflowFiniteTimestamp(payload.at)
+				) {
+					result = { ok: false, reason: "rework_pause_receipt_conflict" };
+					return;
+				}
+				priorEpisode = Number(payload.episode);
+				priorAt = payload.at;
+			}
+			if (!priorState && input.state === "resumed") {
+				result = {
+					ok: true,
+					eventUid: null,
+					idempotentReplay: true,
+					clockStartedAt: null,
+				};
+				return;
+			}
+			if (priorState === input.state && prior) {
+				result = {
+					ok: true,
+					eventUid: String(prior.event_uid),
+					idempotentReplay: true,
+					clockStartedAt: input.state === "resumed" ? (priorAt ?? null) : null,
+				};
+				return;
+			}
+			const episode =
+				input.state === "paused" ? priorEpisode + 1 : priorEpisode;
+			const eventUid = `${
+				input.state === "paused" ? pausedPrefix : resumedPrefix
+			}episode${episode}`;
+			const eventKind =
+				input.state === "paused"
+					? "rework_activation_paused"
+					: "rework_activation_resumed";
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid,
+				kind: eventKind,
+				nodeId: route.target_node_id,
+				executionId,
+				payload: {
+					requestId: input.requestId,
+					episode,
+					at: input.now,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: request.run_id,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: input.state === "paused" ? "severe" : "warning",
+					sessionKey: `wf:${request.run_id}`,
+					title:
+						input.state === "paused"
+							? `Workflow rework re-entry paused by operator for ${run.issue_id}`
+							: `Workflow rework re-entry resumed for ${run.issue_id}`,
+					body:
+						input.state === "paused"
+							? `Rework ${input.requestId} is paused by operator configuration with its delivery, reservation, activation, credentials, and verification state unchanged. It will resume when re-entry is enabled.`
+							: `Rework ${input.requestId} resumed after the operator re-enabled re-entry. Its stall clock restarts now, so time spent intentionally paused cannot force-hold the run.`,
+					metadata: {
+						workflowEngine: {
+							runId: request.run_id,
+							issueId: run.issue_id,
+							nodeId: route.target_node_id,
+							executionId,
+							disposition:
+								input.state === "paused"
+									? "rework_reentry_paused"
+									: "rework_reentry_resumed",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `alert_enqueued:${eventUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid: eventUid },
+			});
+			result = {
+				ok: true,
+				eventUid,
+				idempotentReplay: false,
+				clockStartedAt: input.state === "resumed" ? input.now : null,
+			};
+		});
+		const settled = result as
+			| {
+					ok: true;
+					eventUid: string | null;
+					idempotentReplay: boolean;
+					clockStartedAt: string | null;
+			  }
+			| { ok: false; reason: string };
+		if (settled.ok && !settled.idempotentReplay) this.save();
+		return settled;
 	}
 
 	/** Marker repair and owner acquisition share one SQLite write critical section. */
@@ -20632,16 +21077,137 @@ export class StateStore {
 		return result;
 	}
 
+	private enqueueReworkRecoveredIfAlertedTx(input: {
+		requestId: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}): void {
+		const lower = `rework_stalled_alert:${input.requestId}:`;
+		const upper = `rework_stalled_alert:${input.requestId};`;
+		const handoffUid = `rework_pane_loss_handoff:${input.requestId}`;
+		const firstStall = this.workflowSelectAll(
+			`SELECT payload
+			   FROM workflow_run_event
+			  WHERE run_id = ?
+			    AND event_uid >= ? AND event_uid < ?
+			  ORDER BY seq
+			  LIMIT 1`,
+			[input.runId, lower, upper],
+		)[0];
+		const handoff = this.workflowSelectAll(
+			`SELECT payload
+			   FROM workflow_run_event
+			  WHERE run_id = ? AND event_uid = ?
+			  LIMIT 1`,
+			[input.runId, handoffUid],
+		)[0];
+		// Only the first stall receipt and the one exact handoff receipt can win
+		// the minimum. Legacy storm rows never need to be materialized or parsed.
+		const prior = [firstStall, handoff].filter(
+			(row): row is Record<string, unknown> => row !== undefined,
+		);
+		if (prior.length === 0) return;
+		const eventUid = `rework_stall_recovered:${input.requestId}`;
+		const existing = this.workflowSelectAll(
+			`SELECT kind, node_id, execution_id
+			   FROM workflow_run_event WHERE event_uid = ?`,
+			[eventUid],
+		)[0];
+		if (existing) {
+			if (
+				existing.kind !== "rework_stall_recovered" ||
+				existing.node_id !== input.nodeId ||
+				existing.execution_id !== input.executionId
+			) {
+				throw new Error("rework_stall_recovered_receipt_conflict");
+			}
+			return;
+		}
+		const priorTimes = prior.flatMap((row) => {
+			try {
+				const payload = JSON.parse(String(row.payload ?? "null")) as {
+					sourceAt?: unknown;
+					at?: unknown;
+				};
+				const value =
+					typeof payload.sourceAt === "string"
+						? payload.sourceAt
+						: typeof payload.at === "string"
+							? payload.at
+							: undefined;
+				return value && StateStore.workflowFiniteTimestamp(value) ? [value] : [];
+			} catch {
+				return [];
+			}
+		});
+		const firstAlertedAt =
+			priorTimes.sort((left, right) => Date.parse(left) - Date.parse(right))[0] ??
+			input.now;
+		const durationMinutes = Math.max(
+			0,
+			Math.floor((Date.parse(input.now) - Date.parse(firstAlertedAt)) / 60_000),
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid,
+			kind: "rework_stall_recovered",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				requestId: input.requestId,
+				firstAlertedAt,
+				recoveredAt: input.now,
+				durationMinutes,
+			},
+		});
+		this.enqueueWorkflowEngineAlertTx({
+			escalationUid: eventUid,
+			runId: input.runId,
+			now: input.now,
+			payload: {
+				leadId: input.alertIdentity.leadId,
+				projectName: input.alertIdentity.projectName,
+				eventId: eventUid,
+				eventType: "workflow_engine_escalation",
+				severity: "warning",
+				sessionKey: `wf:${input.runId}`,
+				title: `Stalled rework for ${input.issueId} recovered`,
+				body: `Run ${input.runId} rework ${input.requestId} resumed delivery after ${durationMinutes} minutes; actor ${input.executionId} reached wake_delivered.`,
+				metadata: {
+					workflowEngine: {
+						runId: input.runId,
+						issueId: input.issueId,
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						disposition: "rework_stall_recovered",
+						leadResolution: input.alertIdentity.leadResolution,
+					},
+				},
+			},
+		});
+	}
+
 	markWorkflowReworkReplacementLaunched(input: {
 		executionId: string;
 		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
 	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
-		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+		if (
+			!input.executionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
 			return { ok: false, reason: "invalid_rework_replacement_launch" };
 		}
 		const binding = this.getWorkflowExecutionBinding(input.executionId);
 		if (binding?.mode !== "replacement" || !binding.rework_request_id) {
 			return { ok: true, updated: false };
+		}
+		if (!StateStore.workflowAlertIdentityValid(input.alertIdentity)) {
+			return { ok: false, reason: "invalid_rework_replacement_launch" };
 		}
 		let result: { ok: true; updated: boolean } | { ok: false; reason: string } =
 			{
@@ -20713,6 +21279,17 @@ export class StateStore {
 					activationId: binding.activation_id,
 					attempt: binding.attempt,
 				},
+			});
+			const run = this.getWorkflowRun(request.run_id);
+			if (!run) throw new Error("workflow_rework_run_missing_after_launch");
+			this.enqueueReworkRecoveredIfAlertedTx({
+				requestId,
+				runId: request.run_id,
+				issueId: run.issue_id,
+				nodeId: route.target_node_id,
+				executionId: input.executionId,
+				alertIdentity: input.alertIdentity,
+				now: input.now,
 			});
 			result = { ok: true, updated: true };
 		});
@@ -21117,21 +21694,32 @@ export class StateStore {
 		reason: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
+		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
+		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
 	}):
 		| {
 				ok: true;
 				holdCount: number;
-				state: "pending" | "turn_granted" | "needs_lead";
+				state: "pending" | "turn_granted" | "held" | "needs_lead";
 				nextRetryAt: string | null;
 		  }
 		| { ok: false; reason: string } {
+		const terminalValid =
+			input.terminal === undefined ||
+			Boolean(input.terminal.status.trim() && input.terminal.cause.trim());
+		const handoffRequested =
+			input.onExhausted === "handoff_held_pane_loss";
 		if (
 			!input.requestId ||
 			!input.ownerId ||
 			!Number.isInteger(input.generation) ||
 			input.generation < 1 ||
 			!input.reason.trim() ||
-			!StateStore.workflowFiniteTimestamp(input.now)
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!terminalValid ||
+			(handoffRequested &&
+				(input.reason !== "persisted_target_missing" ||
+					input.terminal !== undefined))
 		) {
 			return { ok: false, reason: "invalid_rework_failure" };
 		}
@@ -21139,7 +21727,7 @@ export class StateStore {
 			| {
 					ok: true;
 					holdCount: number;
-					state: "pending" | "turn_granted" | "needs_lead";
+					state: "pending" | "turn_granted" | "held" | "needs_lead";
 					nextRetryAt: string | null;
 			  }
 			| { ok: false; reason: string } = {
@@ -21168,13 +21756,19 @@ export class StateStore {
 				return;
 			}
 			const holdCount = delivery.hold_count + 1;
-			const exhausted = holdCount >= 5;
+			const exhausted = input.terminal !== undefined || holdCount >= 5;
+			const paneLossHandoff = exhausted && handoffRequested;
 			const nextRetryAt = exhausted
 				? null
 				: new Date(
 						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
 					).toISOString();
-			const nextState = exhausted ? "needs_lead" : delivery.state;
+			const nextState = paneLossHandoff
+				? "held"
+				: exhausted
+					? "needs_lead"
+					: delivery.state;
+			const storedHoldCount = paneLossHandoff ? 0 : holdCount;
 			this.db.run(
 				`UPDATE workflow_rework_delivery
 				    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
@@ -21182,7 +21776,7 @@ export class StateStore {
 				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
 				[
 					nextState,
-					holdCount,
+					storedHoldCount,
 					nextRetryAt,
 					input.reason,
 					input.now,
@@ -21208,8 +21802,65 @@ export class StateStore {
 					holdCount,
 					reason: input.reason,
 					nextRetryAt,
+					terminal: input.terminal ?? null,
+					onExhausted: input.onExhausted ?? "needs_lead",
 				},
 			});
+			if (paneLossHandoff) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[request.run_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_rework_pane_loss_handoff_run_cas_failed");
+				}
+				const escalationUid = `rework_pane_loss_handoff:${input.requestId}`;
+				this.appendWorkflowRunEventCheckedTx({
+					runId: request.run_id,
+					eventUid: escalationUid,
+					kind: "rework_pane_loss_handoff",
+					nodeId: route.target_node_id,
+					executionId: route.preferred_actor_execution_id,
+					payload: {
+						requestId: input.requestId,
+						attempts: holdCount,
+						reason: input.reason,
+						at: input.now,
+					},
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: request.run_id,
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${request.run_id}`,
+						title: `Rework handed to pane-loss recovery for ${run.issue_id}`,
+						body: `Run ${request.run_id} rework ${input.requestId} could not find actor ${route.preferred_actor_execution_id} after ${holdCount} attempts. It was handed to pane-loss recovery with its activation and verification state preserved.`,
+						metadata: {
+							workflowEngine: {
+								runId: request.run_id,
+								issueId: run.issue_id,
+								nodeId: route.target_node_id,
+								executionId: route.preferred_actor_execution_id,
+								disposition: "rework_pane_loss_handoff",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+				result = {
+					ok: true,
+					holdCount: storedHoldCount,
+					state: "held",
+					nextRetryAt: null,
+				};
+				return;
+			}
 			if (exhausted) {
 				const target = this.getWorkflowRunNode(
 					request.run_id,
@@ -21306,8 +21957,15 @@ export class StateStore {
 						holdCount,
 						reason: input.reason,
 						cleanupDisposition,
+						terminalCause: input.terminal ?? null,
 					},
 				});
+				const terminalTitle = input.terminal
+					? `Rework activation cannot succeed for ${run.issue_id}`
+					: `Rework retry budget exhausted for ${run.issue_id}`;
+				const terminalBody = input.terminal
+					? `Run ${request.run_id} rework ${input.requestId} target actor is ${input.terminal.status} (irreversible); settled needs_lead after ${holdCount} attempt(s): ${input.terminal.cause}.`
+					: `Run ${request.run_id} rework ${input.requestId} failed five retryable deliveries (${input.reason}). It is now needs_lead and no further automatic retry will run.`;
 				this.enqueueWorkflowEngineAlertTx({
 					escalationUid,
 					runId: request.run_id,
@@ -21319,8 +21977,8 @@ export class StateStore {
 						eventType: "workflow_engine_escalation",
 						severity: "severe",
 						sessionKey: `wf:${request.run_id}`,
-						title: `Rework retry budget exhausted for ${run.issue_id}`,
-						body: `Run ${request.run_id} rework ${input.requestId} failed five retryable deliveries (${input.reason}). It is now needs_lead and no further automatic retry will run.`,
+						title: terminalTitle,
+						body: terminalBody,
 						metadata: {
 							workflowEngine: {
 								runId: request.run_id,
@@ -21336,7 +21994,7 @@ export class StateStore {
 			}
 			result = {
 				ok: true,
-				holdCount,
+				holdCount: storedHoldCount,
 				state: nextState,
 				nextRetryAt,
 			};
@@ -21389,6 +22047,7 @@ export class StateStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true } | { ok: false; reason: string } {
 		const allowed =
 			(input.from === "pending" &&
@@ -21407,6 +22066,8 @@ export class StateStore {
 			!Number.isInteger(input.generation) ||
 			input.generation < 1 ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.to === "wake_delivered" &&
+				!StateStore.workflowAlertIdentityValid(input.alertIdentity)) ||
 			!allowed
 		) {
 			return { ok: false, reason: "invalid_delivery_transition" };
@@ -21482,6 +22143,19 @@ export class StateStore {
 					...(input.error ? { error: input.error } : {}),
 				},
 			});
+			if (input.to === "wake_delivered") {
+				const run = this.getWorkflowRun(request.run_id);
+				if (!run) throw new Error("workflow_rework_run_missing_after_advance");
+				this.enqueueReworkRecoveredIfAlertedTx({
+					requestId: input.requestId,
+					runId: request.run_id,
+					issueId: run.issue_id,
+					nodeId: route.target_node_id,
+					executionId: route.preferred_actor_execution_id,
+					alertIdentity: input.alertIdentity!,
+					now: input.now,
+				});
+			}
 		});
 		if (!advanced) return { ok: false, reason: "stale_delivery_owner" };
 		this.save();
@@ -38759,7 +39433,7 @@ export interface WorkflowEngineAlertPayload {
 	eventType: "workflow_engine_escalation" | "workflow_engine_issue_alert";
 	title: string;
 	body: string;
-	severity: "severe";
+	severity: "severe" | "warning";
 	sessionKey: string;
 	metadata: {
 		workflowEngine: {
@@ -38773,6 +39447,10 @@ export interface WorkflowEngineAlertPayload {
 				| "completion_receipt_missing"
 				| "rework_suppressed_idle_spin"
 				| "rework_retry_exhausted"
+				| "rework_pane_loss_handoff"
+				| "rework_stall_recovered"
+				| "rework_reentry_paused"
+				| "rework_reentry_resumed"
 				| "rework_held_recovery_exhausted"
 				| "carrier_delivery_exhausted"
 				| "carrier_delivery_held"

@@ -813,6 +813,25 @@ describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", ()
 		expect(calls).toHaveLength(0);
 	});
 
+	it("FLY-1709: archived thread is a hard zero-write gate", async () => {
+		store.markChatThreadArchived("thread-1");
+		store.setPhaseStatusLine("FLY-887", "chan-1", "old", "stale");
+		const { fetchImpl, calls } = fakeFetch({ patchStatus: 404 });
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨设计✅·🔨实现✅·🧪QA🔴",
+		});
+
+		expect(calls).toHaveLength(0);
+	});
+
 	it("first refresh: no prior record → POSTs fresh and records the message id", async () => {
 		const { fetchImpl, calls } = fakeFetch({ postId: "msg-42" });
 		const effects = new AutoQaEffects({

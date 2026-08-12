@@ -1,0 +1,11 @@
+flowchart TD
+    A["thread 被归档<br/>账本记下「已归档」"] --> B["agent 或自动状态贴<br/>往 thread 里发了一条消息"]
+    B --> C["Discord 平台规则:<br/>往已归档 thread 发消息 = 自动重新打开"]
+    C --> D["thread 又开着了"]
+    D --> E["任何人再调「归档」接口"]
+    E --> F["旧守卫只看自己账本:<br/>「已经归档过」→ 什么都不做"]
+    F --> G["却返回 archived:true<br/>= 假成功"]
+    G --> H["死角:永远关不上<br/>agent 还向 founder 报了不准的话"]
+    style F fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style G fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style H fill:#ff3b30,stroke:#c1271d,color:#ffffff,stroke-width:2px

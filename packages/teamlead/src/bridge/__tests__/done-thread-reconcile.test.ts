@@ -424,6 +424,27 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		expect(r.failed).toBe(0);
 	});
 
+	it.each(["founder_reopened", "in_active_use"] as const)(
+		"15b. sink returns %s → counted skippedReopenProtected, NOT failed",
+		async (reason) => {
+			const store = await freshStore();
+			store.upsertChatThread("t-1", "ch-eng", "FLY-18b", "tadashi");
+			const deps = makeDeps(store, {
+				archiveSinkFn: vi.fn().mockResolvedValue({
+					archived: false,
+					attempts: 0,
+					reason,
+					...(reason === "in_active_use"
+						? { activeExecutionId: "exec-live" }
+						: {}),
+				}),
+			});
+			const r = await reconcileDoneThreads(deps);
+			expect(r.skippedReopenProtected).toBe(1);
+			expect(r.failed).toBe(0);
+		},
+	);
+
 	it("16. maxArchivesPerRun=1 with two Done candidates → archives 1, capped:true", async () => {
 		const store = await freshStore();
 		store.upsertChatThread("t-1", "ch-eng", "FLY-19", "tadashi");

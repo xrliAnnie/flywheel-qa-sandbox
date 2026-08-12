@@ -298,6 +298,39 @@ function advanceHeavy(
 	});
 }
 
+async function createPendingHeavyRework(): Promise<{
+	store: StateStore;
+	requestId: string;
+}> {
+	const store = await createHeavyEngineRun();
+	advanceHeavy(store, {
+		nodeId: "design",
+		attempt: 1,
+		executionId: "design-exec",
+		outcome: "design_done",
+		successorExecutionId: "implement-exec",
+	});
+	advanceHeavy(store, {
+		nodeId: "implement",
+		attempt: 1,
+		executionId: "implement-exec",
+		outcome: "implement_done",
+		successorExecutionId: "qa-exec",
+	});
+	const failed = advanceHeavy(store, {
+		nodeId: "qa",
+		attempt: 1,
+		executionId: "qa-exec",
+		outcome: "qa_fail",
+		subjectDigest: "a".repeat(40),
+	});
+	if (!failed.ok || !failed.reworkRequestId) {
+		store.close();
+		throw new Error("rework request not returned");
+	}
+	return { store, requestId: failed.reworkRequestId };
+}
+
 describe("FLY-1423 stable workflow actor activations", () => {
 	it("admits attempt 2 on the same execution as a distinct exact activation", async () => {
 		const store = await StateStore.create(":memory:");
@@ -911,6 +944,423 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
+	it("deduplicates stall alerts by frozen route revision across claim churn without colliding with legacy keys", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const route = store.getLatestWorkflowReworkRoute(requestId)!;
+			for (const generation of [1, 2]) {
+				const now = `2026-07-23T00:${10 + generation}:00.000Z`;
+				const claim = store.claimWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					now,
+					leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
+				});
+				expect(claim).toMatchObject({ ok: true, generation });
+				if (!claim.ok) throw new Error(claim.reason);
+				expect(
+					store.releaseWorkflowReworkDelivery({
+						requestId,
+						ownerId: "coordinator",
+						generation: claim.generation,
+						error: "still_stalled",
+						now,
+					}),
+				).toEqual({ ok: true });
+			}
+			const third = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:13:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:13:30.000Z",
+			});
+			if (!third.ok) throw new Error(third.reason);
+			expect(third.generation).toBe(3);
+			expect(store.getLatestWorkflowReworkRoute(requestId)?.revision).toBe(
+				route.revision,
+			);
+			store.appendWorkflowRunEventChecked({
+				runId: "run-heavy",
+				eventUid: `rework_stalled_alert:${requestId}:3:${route.preferred_actor_execution_id}`,
+				kind: "rework_activation_stalled_alerted",
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: { legacy: true },
+			});
+			const first = store.escalateWorkflowReworkStall({
+				requestId,
+				generation: third.generation,
+				action: "alert",
+				sourceAt: "2026-07-23T00:10:00.000Z",
+				reason: "holder_activation_failed:transient",
+				now: "2026-07-23T00:13:00.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			});
+			expect(first).toEqual({
+				ok: true,
+				eventUid: `rework_stalled_alert:${requestId}:rev${route.revision}:${route.preferred_actor_execution_id}`,
+				idempotentReplay: false,
+			});
+			expect(
+				store.releaseWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: third.generation,
+					error: "still_stalled",
+					now: "2026-07-23T00:13:01.000Z",
+				}),
+			).toEqual({ ok: true });
+			const fourth = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:14:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:14:30.000Z",
+			});
+			if (!fourth.ok) throw new Error(fourth.reason);
+			const replay = store.escalateWorkflowReworkStall({
+				requestId,
+				generation: fourth.generation,
+				action: "alert",
+				sourceAt: "2026-07-23T00:10:00.000Z",
+				reason: "reason_text_changed_but_same_episode",
+				now: "2026-07-23T00:14:00.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			});
+			expect(replay).toEqual({ ...first, idempotentReplay: true });
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
+				"first stalled at 2026-07-23T00:10:00.000Z (3 minutes ago)",
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("emits one warning when an alerted original actor reaches wake_delivered", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const identity = {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			};
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			store.appendWorkflowRunEventChecked({
+				runId: "run-heavy",
+				eventUid: `rework_pane_loss_handoff:${requestId}`,
+				kind: "rework_pane_loss_handoff",
+				nodeId: "implement",
+				executionId: "implement-exec",
+				payload: { requestId, at: "2026-07-23T00:05:00.000Z" },
+			});
+			expect(
+				store.escalateWorkflowReworkStall({
+					requestId,
+					generation: claim.generation,
+					action: "alert",
+					sourceAt: "2026-07-23T00:10:00.000Z",
+					reason: "worktree_not_ready:worktree_dirty",
+					now: "2026-07-23T00:40:00.000Z",
+					alertIdentity: identity,
+				}),
+			).toMatchObject({ ok: true, idempotentReplay: false });
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-recovered-original",
+					activationMode: "wake",
+					reworkRequestId: requestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:41:00.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					from: "pending",
+					to: "turn_granted",
+					now: "2026-07-23T00:41:01.000Z",
+				}),
+			).toEqual({ ok: true });
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					from: "turn_granted",
+					to: "wake_delivered",
+					now: "2026-07-23T00:42:00.000Z",
+					releaseOwner: true,
+					alertIdentity: identity,
+				}),
+			).toEqual({ ok: true });
+
+			const recovered = store
+				.listWorkflowAlertOutbox()
+				.filter(
+					(row) =>
+						row.payload.metadata.workflowEngine.disposition ===
+						"rework_stall_recovered",
+				);
+			expect(recovered).toHaveLength(1);
+			expect(recovered[0]?.payload).toMatchObject({
+				eventType: "workflow_engine_escalation",
+				severity: "warning",
+				title: "Stalled rework for FLY-1423 recovered",
+			});
+			expect(recovered[0]?.payload.body).toContain("37 minutes");
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					from: "turn_granted",
+					to: "wake_delivered",
+					now: "2026-07-23T00:43:00.000Z",
+					releaseOwner: true,
+					alertIdentity: identity,
+				}),
+			).toEqual({ ok: false, reason: "stale_delivery_owner" });
+			expect(
+				store
+					.listWorkflowAlertOutbox()
+					.filter(
+						(row) =>
+							row.payload.metadata.workflowEngine.disposition ===
+							"rework_stall_recovered",
+					),
+			).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("does not emit a recovery alert when the episode never alerted", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-recovered-silent",
+					activationMode: "wake",
+					reworkRequestId: requestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:11:01.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			for (const [from, to] of [
+				["pending", "turn_granted"],
+				["turn_granted", "wake_delivered"],
+			] as const) {
+				expect(
+					store.advanceWorkflowReworkDelivery({
+						requestId,
+						ownerId: "coordinator",
+						generation: claim.generation,
+						from,
+						to,
+						now: "2026-07-23T00:12:00.000Z",
+						...(to === "wake_delivered"
+							? {
+									alertIdentity: {
+										leadId: "fallback-lead",
+										projectName: "flywheel",
+										leadResolution: "fallback" as const,
+									},
+									releaseOwner: true,
+								}
+							: {}),
+					}),
+				).toEqual({ ok: true });
+			}
+			expect(store.listWorkflowAlertOutbox()).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("fails closed before wake_delivered when alert identity is missing or invalid", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-recovered-identity",
+					activationMode: "wake",
+					reworkRequestId: requestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:11:01.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					from: "pending",
+					to: "turn_granted",
+					now: "2026-07-23T00:11:02.000Z",
+				}),
+			).toEqual({ ok: true });
+			const before = store.getWorkflowReworkDelivery(requestId);
+			const base = {
+				requestId,
+				ownerId: "coordinator",
+				generation: claim.generation,
+				from: "turn_granted" as const,
+				to: "wake_delivered" as const,
+				now: "2026-07-23T00:12:00.000Z",
+				releaseOwner: true,
+			};
+			expect(store.advanceWorkflowReworkDelivery(base)).toEqual({
+				ok: false,
+				reason: "invalid_delivery_transition",
+			});
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					...base,
+					alertIdentity: {
+						leadId: "",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: false, reason: "invalid_delivery_transition" });
+			expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+			expect(store.listWorkflowAlertOutbox()).toEqual([]);
+			expect(
+				store.markWorkflowReworkReplacementLaunched({
+					executionId: "unknown-replacement",
+					now: "2026-07-23T00:12:00.000Z",
+					alertIdentity: undefined,
+				} as never),
+			).toEqual({ ok: true, updated: false });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rolls back wake_delivered when the recovery receipt conflicts", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const identity = {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved" as const,
+			};
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			store.escalateWorkflowReworkStall({
+				requestId,
+				generation: claim.generation,
+				action: "alert",
+				sourceAt: "2026-07-23T00:10:00.000Z",
+				reason: "worktree_not_ready:worktree_dirty",
+				now: "2026-07-23T00:40:00.000Z",
+				alertIdentity: identity,
+			});
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-heavy",
+				nodeId: "implement",
+				executionId: "implement-exec",
+				attempt: 2,
+				activationId: "activation-recovered-conflict",
+				activationMode: "wake",
+				reworkRequestId: requestId,
+				expiresAt: "2026-07-23T02:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+				now: "2026-07-23T00:41:00.000Z",
+				env: enabled,
+			});
+			store.advanceWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				generation: claim.generation,
+				from: "pending",
+				to: "turn_granted",
+				now: "2026-07-23T00:41:01.000Z",
+			});
+			store.appendWorkflowRunEventChecked({
+				runId: "run-heavy",
+				eventUid: `rework_stall_recovered:${requestId}`,
+				kind: "conflicting_kind",
+			});
+
+			expect(() =>
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					from: "turn_granted",
+					to: "wake_delivered",
+					now: "2026-07-23T00:42:00.000Z",
+					releaseOwner: true,
+					alertIdentity: identity,
+				}),
+			).toThrow("rework_stall_recovered_receipt_conflict");
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "turn_granted",
+				owner_id: "coordinator",
+			});
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({ state: "admitted" });
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
 	it("backs off retryable rework failures and stops at five with one Lead alert", async () => {
 		const store = await createHeavyEngineRun();
 		try {
@@ -1017,6 +1467,237 @@ describe("FLY-1423 durable unified rework request", () => {
 			expect(
 				store.listWorkflowReworkDeliveries({ states: ["needs_lead"] }),
 			).toHaveLength(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("terminalizes an irreversible delivery failure on the first strike", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				store.settleWorkflowReworkFailure({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					reason: "holder_activation_failed:state_not_revivable:completed",
+					terminal: {
+						kind: "irreversible_actor",
+						status: "completed",
+						cause: "holder_activation_failed:state_not_revivable:completed",
+					},
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-23T00:11:00.000Z",
+				}),
+			).toEqual({
+				ok: true,
+				holdCount: 1,
+				state: "needs_lead",
+				nextRetryAt: null,
+			});
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("held");
+			const alert = store.listWorkflowAlertOutbox()[0]?.payload;
+			expect(alert?.eventType).toBe("workflow_engine_escalation");
+			expect(alert?.body).not.toContain("five");
+			expect(alert?.title).toBe(
+				"Rework activation cannot succeed for FLY-1423",
+			);
+			expect(alert?.body).toContain("completed (irreversible)");
+		} finally {
+			store.close();
+		}
+	});
+
+	it("rejects invalid terminal and pane-loss handoff combinations without mutation", async () => {
+		const invalidInputs = [
+			{
+				reason: "retryable_failure",
+				onExhausted: "handoff_held_pane_loss" as const,
+			},
+			{
+				reason: "persisted_target_missing",
+				onExhausted: "handoff_held_pane_loss" as const,
+				terminal: {
+					kind: "irreversible_actor" as const,
+					status: "completed",
+					cause: "holder_activation_failed:state_not_revivable:completed",
+				},
+			},
+			{
+				reason: "holder_activation_failed:state_not_revivable:completed",
+				terminal: {
+					kind: "irreversible_actor" as const,
+					status: "",
+					cause: "holder_activation_failed:state_not_revivable:completed",
+				},
+			},
+			{
+				reason: "holder_activation_failed:state_not_revivable:completed",
+				terminal: {
+					kind: "irreversible_actor" as const,
+					status: "completed",
+					cause: "",
+				},
+			},
+		];
+		for (const invalid of invalidInputs) {
+			const { store, requestId } = await createPendingHeavyRework();
+			try {
+				const claim = store.claimWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					now: "2026-07-23T00:11:00.000Z",
+					leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+				});
+				if (!claim.ok) throw new Error(claim.reason);
+				const before = store.getWorkflowReworkDelivery(requestId);
+				expect(
+					store.settleWorkflowReworkFailure({
+						requestId,
+						ownerId: "coordinator",
+						generation: claim.generation,
+						...invalid,
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+						now: "2026-07-23T00:11:00.000Z",
+					}),
+				).toEqual({ ok: false, reason: "invalid_rework_failure" });
+				expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+				expect(store.listWorkflowAlertOutbox()).toEqual([]);
+			} finally {
+				store.close();
+			}
+		}
+	});
+
+	it("hands exhausted missing targets to pane-loss recovery without destroying recovery state", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-pane-loss-handoff",
+					activationMode: "wake",
+					reworkRequestId: requestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:10:30.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					`INSERT INTO workflow_output_credential
+				   (activation_id, credential_hash, run_id, node_id, execution_id,
+				    attempt, issued_at, expires_at, absolute_deadline_at)
+				 VALUES ('activation-pane-loss-handoff', 'credential-pane-loss-handoff',
+				         'run-heavy', 'implement', 'implement-exec', 2,
+				         '2026-07-23T00:10:30.000Z', '2026-07-23T02:00:00.000Z',
+				         '2026-07-24T00:00:00.000Z')`,
+				)
+				.run();
+			const times = [11, 12, 14, 18, 26].map(
+				(minute) => `2026-07-23T00:${minute}:00.000Z`,
+			);
+			for (const [index, now] of times.entries()) {
+				const claim = store.claimWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator",
+					now,
+					leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
+				});
+				if (!claim.ok) throw new Error(claim.reason);
+				if (index === 0) {
+					expect(
+						store.markWorkflowReworkGrantStarted({
+							requestId,
+							ownerId: "coordinator",
+							generation: claim.generation,
+							now,
+						}),
+					).toEqual({ ok: true });
+				}
+				expect(
+					store.settleWorkflowReworkFailure({
+						requestId,
+						ownerId: "coordinator",
+						generation: claim.generation,
+						reason: "persisted_target_missing",
+						onExhausted: "handoff_held_pane_loss",
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+						now,
+					}),
+				).toMatchObject({
+					ok: true,
+					holdCount: index === 4 ? 0 : index + 1,
+					state: index === 4 ? "held" : "pending",
+				});
+			}
+
+			expect(store.getWorkflowRun("run-heavy")?.status).toBe("held");
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "held",
+				hold_count: 0,
+				next_retry_at: null,
+				last_error: "persisted_target_missing",
+				grant_started_at: "2026-07-23T00:11:00.000Z",
+			});
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({ state: "admitted", execution_id: "implement-exec" });
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "pending",
+			});
+			expect(
+				raw
+					.prepare(
+						"SELECT revoked FROM workflow_output_credential WHERE credential_hash = 'credential-pane-loss-handoff'",
+					)
+					.get(),
+			).toEqual({ revoked: 0 });
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+			expect(store.listWorkflowAlertOutbox()[0]?.payload).toMatchObject({
+				eventType: "workflow_engine_escalation",
+				metadata: {
+					workflowEngine: { disposition: "rework_pane_loss_handoff" },
+				},
+			});
+
+			expect(
+				store.settleHeldReworkRecoveryFailure({
+					requestId,
+					reason: "rework_replacement_target_changed",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-23T00:27:00.000Z",
+				}),
+			).toMatchObject({ ok: true, holdCount: 1, state: "held" });
 		} finally {
 			store.close();
 		}
@@ -1218,7 +1899,7 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
-	it("revokes an admitted activation before grant, but retains ambiguous grant-started work", async () => {
+	it("contains indeterminate exhaustion before grant but retains ambiguous grant-started work", async () => {
 		for (const grantStarted of [false, true]) {
 			const store = await createHeavyEngineRun();
 			try {
@@ -1302,7 +1983,7 @@ describe("FLY-1423 durable unified rework request", () => {
 							requestId: failed.reworkRequestId,
 							ownerId: "coordinator",
 							generation: claim.generation,
-							reason: "retryable_failure",
+							reason: "registered_liveness_indeterminate",
 							alertIdentity: {
 								leadId: "flywheel-eng-lead",
 								projectName: "flywheel",
