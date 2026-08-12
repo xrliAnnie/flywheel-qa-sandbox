@@ -496,6 +496,14 @@ jobs:
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/test-restart-services.sh
 
+      # FLY-1715: runner credential tier and managed voice replacement are
+      # deployment boundaries. Explicitly registered because script-tests
+      # does not glob.
+      - name: Test — FLY-1715 runner boundary shell contracts
+        run: |
+          bash scripts/__tests__/runner-tier-token-preflight.test.sh
+          bash scripts/__tests__/restart-services-voice-bridge.test.sh
+
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1649 r4 migration-window hardening

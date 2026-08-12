@@ -21,7 +21,7 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
 - 不改 flywheel-plugins fork(plugin 侧 default-deny 门 = follow-up,见 §8),也不承诺约束 Flywheel 未启动的 ad-hoc 裸 `claude`。
 - **不修改机器级 `~/.claude/settings.json` 的 Discord keys**。QA 已证明`[生产现状]` 14/16 个 Claude 型 Lead 无独立 `--settings` opt-in(另 2 个 Codex/direct Lead 不走 plugin);`[合并后+执行机器翻转]` 共享 key=false 会让这 14 个 Lead 下次重启后 0 adapter/0 gateway socket;TUI Channels 横幅不是连通证据。
 - 不做身份单一权威源本体(FLY-1726);本单只落 spawn 链切片。
-- **不承诺开集 env 安全**:deny-list 之外的未列名 ambient 变量仍会继承(deny-list 的固有边界)。整 env 显式重建(`env -i` + safe base,claude-lead.sh:1614 / FLY-1643 codex daemon 范式)归 FLY-1726 面——runner 是开放式 dev 工作负载,合法 env 依赖不可能在本单窗口内可靠盘尽,FLY-1643 的教训正是洗过头会打断 credential delivery。「plugin 误加载也安全」**不是**本计划的声称;误加载防线是 Fix 1+2 两重 + 部署前置 P0(默认 token 吊销)。
+- **不承诺开集 env 安全**:deny-list 之外的未列名 ambient 变量仍会继承(deny-list 的固有边界)。整 env 显式重建(`env -i` + safe base,claude-lead.sh:1614 / FLY-1643 codex daemon 范式)归 FLY-1726 面——runner 是开放式 dev 工作负载,合法 env 依赖不可能在本单窗口内可靠盘尽,FLY-1643 的教训正是洗过头会打断 credential delivery。「plugin 误加载也安全」**不是**本计划的声称;当前禁载控制只有受控 spawn 的 per-launch deny 一层,部署前置 P0 的默认 token 吊销只降低误加载后的连线风险,不算第二层。plugin 侧补偿门由 FLY-1710 跟踪。
 - 不执行 88723 退役、TEAMLEAD_API_TOKEN 轮换、存量增殖体 sweep——列为 ops checklist(§6)与顺序约束,执行归 team-lead(已有排期)。唯**默认 state dir token 吊销**升级为部署前置(见 Phase 0.5)。
 - 不治 Lead 自身 Bash 子进程对 Lead 其它 env 的继承(属 1726 面)。
 - **本单防的是 ambient/自动泄漏,不是进程能力边界(Codex R3#3,显式接受)**:runner 与 Lead 同 UID 同 HOME,且以 `bypassPermissions` 携 Bash 启动(Blueprint.ts:2705-2712)——一个**主动配合规避的** runner 可以直接 `cat ~/.flywheel/.env`(0600 但同 UID 可读)取得 master,进而调用一切 master-only API。本单的「deliver 仍 master-only」等表述精确含义是 **bearer-tier-only**(按出示的 bearer 分级),不是「runner 无法取得 master」。真·进程隔离(独立 OS identity / sandbox / broker)绑定 FLY-1726/凭据治理面。本单消灭的是:出生即持有、不知情继承、内建工具自动回读——即事故的全部实际形态。
@@ -175,7 +175,7 @@ flowchart TB
 
 ## 8. Follow-up(不阻塞本单)
 
-- plugin fork(flywheel-plugins)server.ts default-deny 门(显式 allow 标记或见 `FLYWHEEL_EXEC_ID` 拒连)——覆盖 Flywheel 未启动的 ad-hoc 裸 Claude,走 fork repo + FLY-1676 sync。
+- FLY-1710:plugin fork(flywheel-plugins)server.ts default-deny 门(显式 allow 标记或见 `FLYWHEEL_EXEC_ID` 拒连)——覆盖 Flywheel 未启动的 ad-hoc 裸 Claude,走 fork repo + FLY-1676 sync。
 - runner 级 report-scoped credential(替代 fleet-shared ingest 复用)+ 整 env 显式重建(env -i safe base)——并入 FLY-1726。
 - 「测试用 discord runner」若出现真实需求:作为 forbidden 合同的显式修订独立设计(本单不预留通道)。
 - FLY-1726 落地后,`FLYWHEEL_LEAD_ID`/`PROJECT_NAME` 注入点改读统一权威源(位置不变,来源替换)。

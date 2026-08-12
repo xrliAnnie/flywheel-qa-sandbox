@@ -1,6 +1,7 @@
 /**
- * FLY-1715: Discord is a Lead-only channel. Every non-Lead Claude launch must
- * disable both marketplace identities after all caller settings are merged.
+ * FLY-1715: Discord is a Lead-only channel. Every Flywheel-controlled
+ * non-Lead Claude launch must disable both marketplace identities after all
+ * caller settings are merged.
  *
  * This is a security contract, not part of the optional runner MCP slimming
  * profile: kill switches, labels, and caller-provided positive entries must
@@ -48,7 +49,7 @@ function deepMerge(left: JsonRecord, right: JsonRecord): JsonRecord {
 	return merged;
 }
 
-/** Parse and merge settings sources, then force the Lead-only plugins off. */
+/** Parse and merge settings sources, then force non-Lead-forbidden plugins off. */
 export function buildNonLeadClaudeSettings(
 	...sources: readonly ClaudeSettingsSource[]
 ): JsonRecord {
