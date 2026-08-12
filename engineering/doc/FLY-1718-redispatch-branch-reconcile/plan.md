@@ -5,6 +5,8 @@ Issue: FLY-1718 (https://linear.app/geoforge3d/issue/FLY-1718/re-dispatch-丢已
 基于: research.md(修订轮:Codex design review R1 全 7 项 + R2 全 5 项 + R3 全 4 项 + R4 全 2 项采纳;R5 **APPROVED**,2 条非阻断备注已折入)
 状态: codex-approved(5 轮,xhigh)
 
+> 实施封装裁定(2026-08-12):设计评审批准后的四个工作包仍按 P1→P2→P3→P4 独立 commit 边界实现,但 Lead 要求以一个 PR 交付。`packaging 由 4-PR 改 1-PR, Lead ship 纪律裁定, 工程内容零变更`。本裁定只改交付封装,不改以下技术设计、顺序或验收合同。
+
 ## 0. 一句话
 
 重生(re-dispatch)必须先对账存量:fresh 派发前探并**取回**(materialize)origin 同名分支(有则以已验证的本地 SHA 续接、探不清则拒发),worktree 注入自包含的 pre-push 护栏拒 force-push,路径绑定指令以 blob SHA 快照过门,DOA 重生走前任-identity 绑定的退避断路器——四个工作包各自独立 PR,P1 是数据丢失杀手,单独最先 ship。
@@ -246,3 +248,18 @@ kill-switch:`FLYWHEEL_DOA_BACKOFF=0`。阈值 `FLYWHEEL_DOA_THRESHOLD_MS`(默认
 - 不做 DOA 死因自动归因/自动修复。
 - 不覆盖非 WorktreeManager 建的工作区(Lead 自己的 clone、人类 worktree)。
 - FLY-1712(信箱在途批对账)独立推进,互不阻塞。
+
+## 9. Code review R1 修订(2026-08-12)
+
+首轮 code review 识别出 2 个 HIGH 与 8 条 advisory;实现已全部收口并补回归:
+
+1. 新增 durable `doa_backoff_participants`,只有实际取得 DOA reservation 的 execution 才参与 commit/activate fence;Auto-QA 与 fail-open 豁免不再被同 lane 外来 reservation 误杀。
+2. `FLYWHEEL_DOA_BACKOFF=0` 贯穿 verify/activate/close,关闭时既有 ledger 不再卡住 lifecycle activation 或 cleanup。
+3. pre-launch abort 只删除 executionId 匹配的 inflight entry,不再误删并发新 launch。
+4. design plan 快照不再调用 runner-controlled worktree 的 `git status`;改为校验 session branch tip == HEAD,并用 `ls-tree`/`ls-files --stage`/`hash-object --no-filters` 三方比较,避免 fsmonitor/filter 命令执行与错误 ref 对账。
+5. push guard 为每个 worktree 生成组合 hooksPath:原有 hooks 动态链回,原有 pre-push 与 guard 共用同一 stdin 快照,不再覆盖项目 hooks。
+6. continuity startPoint 明确排除 design-phase takeover;resume 的 tip/doc discovery/progress blob 固定在同一个 local 或 remote ref 上。
+7. `needs_lead` 只允许带 receipt 的 privileged reset 清除;健康 predecessor 不能静默删 hold。
+8. push-guard prompt contract 与 `FLYWHEEL_PUSH_GUARD=0` 同门关闭。
+
+修订后 targeted 回归 195 项全绿(edge-worker 89 + teamlead 92 + push-guard shell 14);full workspace lint/build 通过。TeamLead 受控全包 9,171 pass/5 skip,唯一 watchdog 负载 timeout 隔离 19/19 通过;edge-worker 1,253/5 skip;core 非 GUI 219/3 skip;voice-bridge 的并发端口冲突用例隔离 17/17;Claude runner 777/2 skip 后仅 Vitest worker RPC timeout。宿主 Terminal.app 不可用的真实 GUI 两例继续按既有环境例外记录,未冒充通过。
