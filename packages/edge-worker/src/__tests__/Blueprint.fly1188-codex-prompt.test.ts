@@ -115,6 +115,7 @@ const CHECKPOINTS = {
 
 const cleanups: string[] = [];
 afterEach(() => {
+	vi.unstubAllEnvs();
 	while (cleanups.length) {
 		rmSync(cleanups.pop() as string, { recursive: true, force: true });
 	}
@@ -172,6 +173,13 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).toContain("Lead confirmation");
 		expect(prompt).toContain("FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>");
 		expect(prompt).toContain("one command");
+	});
+
+	it("FLY-1718: omits the push-guard contract when its kill switch is off", async () => {
+		vi.stubEnv("FLYWHEEL_PUSH_GUARD", "0");
+		const prompt = await buildCodexPrompt();
+		expect(prompt).not.toContain("FORCE-PUSH GUARD");
+		expect(prompt).not.toContain("FLYWHEEL_FORCE_PUSH_ACK");
 	});
 
 	it("FLY-1718: renders inherited branch/PR inventory without claiming a resume or gate skip", async () => {

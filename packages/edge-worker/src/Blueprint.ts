@@ -1295,7 +1295,9 @@ export class Blueprint {
 				ctx.shareParentBranch === true &&
 				(ctx.sessionRole === "implement" ||
 					ctx.sessionRole === "qa" ||
-					(ctx.sessionRole === "design" && ctx.startPoint !== undefined)) &&
+					(ctx.sessionRole === "design" &&
+						ctx.startPoint !== undefined &&
+						ctx.continuityInherit === undefined)) &&
 				process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0" &&
 				(await this.worktreeManager
 					.isRegistered(
@@ -2226,13 +2228,15 @@ export class Blueprint {
 		// FLY-1718 P2: the hook is the structural accident guard; this contract
 		// closes its documented client-side bypasses and makes the one-shot ACK a
 		// Lead-supervised, auditable action rather than a runner convenience.
-		systemPromptLines.push(
-			"",
-			"FORCE-PUSH GUARD (all runner worktrees):",
-			"Do not use `git push --no-verify`, and do not change or unset `core.hooksPath` or `extensions.worktreeConfig`.",
-			"If a non-fast-forward push is genuinely required, ask your Lead through `flywheel-comm ask` and wait for explicit Lead confirmation.",
-			"Only after that confirmation, set `FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>` for that one command. The hook records the acknowledged rewrite; never reuse the ACK for another branch or command.",
-		);
+		if (process.env.FLYWHEEL_PUSH_GUARD !== "0") {
+			systemPromptLines.push(
+				"",
+				"FORCE-PUSH GUARD (all runner worktrees):",
+				"Do not use `git push --no-verify`, and do not change or unset `core.hooksPath` or `extensions.worktreeConfig`.",
+				"If a non-fast-forward push is genuinely required, ask your Lead through `flywheel-comm ask` and wait for explicit Lead confirmation.",
+				"Only after that confirmation, set `FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>` for that one command. The hook records the acknowledged rewrite; never reuse the ACK for another branch or command.",
+			);
+		}
 
 		// FLY-1257 M1-a: every resident-Codex gate surface requests the same
 		// wait law, while this latch renders it exactly once per prompt. Keeping

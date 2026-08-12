@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionUpsert } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 
@@ -47,6 +47,10 @@ describe("StateStore DOA re-dispatch backoff", () => {
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
 	});
 
 	it("counts only failed predecessors with lifetime strictly below 60 seconds", () => {
@@ -235,6 +239,95 @@ describe("StateStore DOA re-dispatch backoff", () => {
 		});
 	});
 
+	it("does not fence an admission-exempt execution behind another lane owner", () => {
+		store.upsertSession(failedSession("failed-1", BASE - 30_000, 30_000));
+		evaluate(store, "reserved-owner", BASE);
+		expect(evaluate(store, "reserved-owner", BASE + 60_000)).toMatchObject({
+			ok: true,
+			status: "reserved",
+			ownerExecutionId: "reserved-owner",
+		});
+
+		store.insertLaunchClaim({
+			executionId: "auto-qa-exempt",
+			rootUuid: "issue-uuid",
+			project: "flywheel",
+			role: "main",
+		});
+		store.bindWorktreeOnce(
+			"auto-qa-exempt",
+			{
+				path: "/tmp/auto-qa",
+				branch: "flywheel-FLY-1718-qa",
+				generation: "auto-qa",
+			},
+			{ issueId: "issue-uuid", projectName: "flywheel" },
+		);
+
+		expect(
+			store.verifyAndRenewDoaReleaseOwner(
+				"auto-qa-exempt",
+				BASE + 61_000,
+				600_000,
+			),
+		).toEqual({ ok: true });
+		expect(store.activateLaunchAndSettleDoa("auto-qa-exempt")).toEqual({
+			ok: true,
+		});
+		expect(store.getLaunchClaim("auto-qa-exempt")).toMatchObject({
+			state: "active",
+		});
+		expect(
+			store.getDoaBackoffLedger("flywheel", "issue-uuid", "main"),
+		).toMatchObject({
+			releaseState: "reserved",
+			releaseOwnerExecutionId: "reserved-owner",
+		});
+	});
+
+	it("kill switch activates and closes claims without enforcing or settling DOA rows", () => {
+		store.upsertSession(failedSession("failed-1", BASE - 30_000, 30_000));
+		evaluate(store, "reserved-owner", BASE);
+		evaluate(store, "reserved-owner", BASE + 60_000);
+		store.insertLaunchClaim({
+			executionId: "kill-switch-exempt",
+			rootUuid: "issue-uuid",
+			project: "flywheel",
+			role: "main",
+		});
+		store.bindWorktreeOnce(
+			"kill-switch-exempt",
+			{
+				path: "/tmp/kill-switch",
+				branch: "flywheel-FLY-1718-qa",
+				generation: "kill-switch",
+			},
+			{ issueId: "issue-uuid", projectName: "flywheel" },
+		);
+		vi.stubEnv("FLYWHEEL_DOA_BACKOFF", "0");
+
+		expect(
+			store.verifyAndRenewDoaReleaseOwner(
+				"kill-switch-exempt",
+				BASE + 61_000,
+				600_000,
+			),
+		).toEqual({ ok: true });
+		expect(store.activateLaunchAndSettleDoa("kill-switch-exempt")).toEqual({
+			ok: true,
+		});
+		store.closeLaunchAndReleaseDoa("kill-switch-exempt", BASE + 62_000);
+		expect(store.getLaunchClaim("kill-switch-exempt")).toMatchObject({
+			state: "closed",
+		});
+		expect(
+			store.getDoaBackoffLedger("flywheel", "issue-uuid", "main"),
+		).toMatchObject({
+			releaseState: "reserved",
+			releaseOwnerExecutionId: "reserved-owner",
+		});
+	});
+
 	it("moves the fifth settled DOA failure to needs_lead with one durable alert", () => {
 		let now = BASE;
 		let predecessor = "failed-1";
@@ -278,6 +371,17 @@ describe("StateStore DOA re-dispatch backoff", () => {
 			predecessorExecutionId: predecessor,
 		});
 		expect(evaluate(store, "successor-5b", now + 1)).toMatchObject({
+			ok: false,
+			status: "needs_lead",
+			count: 5,
+		});
+		store.upsertSession({
+			...failedSession("manual-success", now + 2, 90_000),
+			status: "completed",
+		});
+		expect(
+			evaluate(store, "successor-after-success", now + 90_002),
+		).toMatchObject({
 			ok: false,
 			status: "needs_lead",
 			count: 5,

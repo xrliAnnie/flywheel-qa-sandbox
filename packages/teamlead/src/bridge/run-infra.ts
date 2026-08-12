@@ -80,6 +80,7 @@ import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
 	type ProgressResumeDeps,
+	type ProgressResumeInfo,
 } from "./progress-resume.js";
 import {
 	type ContinuityComputer,
@@ -101,6 +102,54 @@ import type { BridgeConfig } from "./types.js";
 import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
+
+/** FLY-1718: compute one resume snapshot from one Git ref at a time. */
+export function computeProgressResumeAcrossRefs(input: {
+	issueId: string;
+	role: string;
+	docBaseDir: string;
+	issueIdentifier: string;
+	branch: string;
+	refs: string[];
+	prior: {
+		execution_id: string;
+		plan_path?: string;
+		session_stage?: string;
+	};
+	git: (args: string[]) => string | null;
+}): ProgressResumeInfo | null {
+	for (const ref of input.refs) {
+		const tip = input.git(["rev-parse", `${ref}^{commit}`])?.trim();
+		if (!tip) continue;
+		const deps: ProgressResumeDeps = {
+			docBaseDir: input.docBaseDir,
+			issueIdentifier: input.issueIdentifier,
+			branchName: () => input.branch,
+			priorSession: () => input.prior,
+			readBranchFile: (_branch, path) => input.git(["show", `${ref}:${path}`]),
+			branchTip: () => tip,
+			discoverDocDir: () => {
+				const out = input.git(["ls-tree", "-r", "--name-only", ref]);
+				if (!out) return null;
+				const prefix = `${input.docBaseDir}/${input.issueIdentifier}-`;
+				const hit = out
+					.split("\n")
+					.find(
+						(path) => path.startsWith(prefix) && path.endsWith("/progress.md"),
+					);
+				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+			},
+		};
+		const resume = computeProgressResume(
+			input.issueId,
+			input.role,
+			"restart",
+			deps,
+		);
+		if (resume) return resume;
+	}
+	return null;
+}
 
 export function liveCodexHomeExecutionIds(
 	store: Pick<StateStore, "getActiveSessions">,
@@ -1204,47 +1253,24 @@ export async function setupRunInfrastructure(
 			`refs/heads/${branch}`,
 			`refs/remotes/origin/${branch}`,
 		];
-		const firstGit = (argsForRef: (ref: string) => string[]): string | null => {
-			for (const ref of branchRefs(branchB)) {
-				const out = git(argsForRef(ref));
-				if (out !== null) return out;
-			}
-			return null;
-		};
-
-		const deps: ProgressResumeDeps = {
+		// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
+		// bytes may never independently fall through to different histories.
+		return computeProgressResumeAcrossRefs({
+			issueId,
+			role,
 			docBaseDir,
 			issueIdentifier: identifier,
-			branchName: () => branchB,
-			priorSession: () => ({
+			branch: branchB,
+			refs: branchRefs(branchB),
+			prior: {
 				execution_id: prior.execution_id,
 				...(prior.plan_path && { plan_path: prior.plan_path }),
-				...(prior.session_stage && { session_stage: prior.session_stage }),
-			}),
-			readBranchFile: (_branch, path) =>
-				firstGit((ref) => ["show", `${ref}:${path}`]),
-			branchTip: (_branch) =>
-				firstGit((ref) => ["rev-parse", `${ref}^{commit}`])?.trim() ?? null,
-			// MED-4: when no plan_path is persisted, find the doc dir on the branch
-			// that actually holds a committed progress.md, so a co-located slug-named
-			// ledger (runner died before design_review) is still found. `git ls-tree`
-			// lists committed blobs; we take the dir of the first `${issue}-*/
-			// progress.md` under the doc base.
-			discoverDocDir: (_branch) => {
-				const out = firstGit((ref) => ["ls-tree", "-r", "--name-only", ref]);
-				if (!out) return null;
-				const prefix = `${docBaseDir}/${identifier}-`;
-				const hit = out
-					.split("\n")
-					.find((p) => p.startsWith(prefix) && p.endsWith("/progress.md"));
-				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+				...(prior.session_stage && {
+					session_stage: prior.session_stage,
+				}),
 			},
-		};
-
-		// resumeKind = "restart": the generic re-dispatch umbrella. The specific
-		// terminate/reboot/handoff distinction is informational only (surfaced to
-		// the runner) and not knowable from the dispatch signature here.
-		return computeProgressResume(issueId, role, "restart", deps);
+			git,
+		});
 	};
 
 	// FLY-1257 M3: phase retries recover branch B's own tip, using the same

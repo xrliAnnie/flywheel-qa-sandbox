@@ -26,17 +26,22 @@ function safeRelativePath(path: string): boolean {
 	return (
 		typeof path === "string" &&
 		path.length > 0 &&
+		!/[\0\r\n\t]/.test(path) &&
 		!isAbsolute(path) &&
 		!path.split(/[\\/]/).some((segment) => segment === "..")
 	);
 }
 
 function git(worktree: string, args: string[]): string {
-	return execFileSync("git", args, {
-		cwd: worktree,
-		encoding: "utf8",
-		stdio: ["ignore", "pipe", "pipe"],
-	}).trim();
+	return execFileSync(
+		"git",
+		["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args],
+		{
+			cwd: worktree,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	).trim();
 }
 
 /** Resolve the exact committed blob and reject every dirty-plan shape. */
@@ -72,16 +77,6 @@ export function snapshotDesignReviewPlan(
 	}
 
 	try {
-		const status = git(worktree, [
-			"status",
-			"--porcelain=v1",
-			"--untracked-files=all",
-			"--",
-			planPath,
-		]);
-		if (status.length > 0) {
-			return { ok: false, reason: "dirty", message: DIRTY_PLAN_MESSAGE };
-		}
 		if (!existsSync(absolutePlan)) {
 			return {
 				ok: false,
@@ -97,12 +92,37 @@ export function snapshotDesignReviewPlan(
 				message: "plan path must resolve to a regular file in the worktree",
 			};
 		}
-		const ref = session.branch?.trim() || "HEAD";
-		const blobSha = git(worktree, [
+		const branch = session.branch?.trim();
+		const ref = branch
+			? branch.startsWith("refs/heads/")
+				? branch
+				: `refs/heads/${branch}`
+			: "HEAD";
+		const headCommit = git(worktree, [
 			"rev-parse",
 			"--verify",
-			`${ref}:${planPath}`,
+			"HEAD^{commit}",
 		]).toLowerCase();
+		const refCommit = git(worktree, [
+			"rev-parse",
+			"--verify",
+			`${ref}^{commit}`,
+		]).toLowerCase();
+		if (headCommit !== refCommit) {
+			return { ok: false, reason: "dirty", message: DIRTY_PLAN_MESSAGE };
+		}
+
+		let blobSha: string;
+		try {
+			blobSha = git(worktree, [
+				"rev-parse",
+				"--verify",
+				`${ref}:${planPath}`,
+			]).toLowerCase();
+		} catch {
+			// An on-disk file absent from the authoritative tree is untracked.
+			return { ok: false, reason: "dirty", message: DIRTY_PLAN_MESSAGE };
+		}
 		if (!FULL_SHA_RE.test(blobSha)) {
 			return {
 				ok: false,
@@ -110,7 +130,36 @@ export function snapshotDesignReviewPlan(
 				message: `git returned an invalid blob id for ${planPath}`,
 			};
 		}
-		git(worktree, ["cat-file", "-e", `${blobSha}^{blob}`]);
+
+		// Compare the authoritative tree, index, and raw worktree bytes without
+		// porcelain. In particular, --no-filters prevents a runner-controlled
+		// filter.clean command from executing while the Bridge validates the plan.
+		const treeEntry = git(worktree, ["ls-tree", ref, "--", planPath]);
+		const indexEntry = git(worktree, [
+			"ls-files",
+			"--stage",
+			"--error-unmatch",
+			"--",
+			planPath,
+		]);
+		const treeMatch = /^(\d+) blob ([0-9a-f]{40})\t/.exec(treeEntry);
+		const indexMatch = /^(\d+) ([0-9a-f]{40}) 0\t/.exec(indexEntry);
+		const worktreeSha = git(worktree, [
+			"hash-object",
+			"--no-filters",
+			"--",
+			planPath,
+		]).toLowerCase();
+		if (
+			!treeMatch ||
+			!indexMatch ||
+			treeMatch[1] !== indexMatch[1] ||
+			treeMatch[2] !== blobSha ||
+			indexMatch[2] !== blobSha ||
+			worktreeSha !== blobSha
+		) {
+			return { ok: false, reason: "dirty", message: DIRTY_PLAN_MESSAGE };
+		}
 		return { ok: true, blobSha };
 	} catch (error) {
 		return {

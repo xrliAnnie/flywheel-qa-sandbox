@@ -3988,6 +3988,22 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_doa_backoff_alert ON doa_backoff(alert_pending, alert_delivered_at)",
 		);
+		// A launch claim alone cannot identify whether admission actually reserved
+		// the DOA lane: Auto-QA and fail-open paths intentionally skip admission.
+		// Keep that participation decision durable so downstream commit/activation
+		// fences only executions that opted into this lane generation.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS doa_backoff_participants (
+				execution_id TEXT NOT NULL PRIMARY KEY,
+				project TEXT NOT NULL,
+				lifecycle_root_uuid TEXT NOT NULL,
+				role TEXT NOT NULL,
+				created_at INTEGER NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_doa_participants_lane ON doa_backoff_participants(project, lifecycle_root_uuid, role)",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS doa_backoff_reset_receipts (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -15282,6 +15298,64 @@ export class StateStore {
 		).map((row) => this.mapDoaBackoffLedger(row));
 	}
 
+	private getDoaBackoffParticipant(executionId: string):
+		| {
+				projectName: string;
+				lifecycleRootUuid: string;
+				role: string;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT project, lifecycle_root_uuid, role
+			   FROM doa_backoff_participants WHERE execution_id = ?`,
+			[executionId],
+		)[0];
+		return row
+			? {
+					projectName: row.project as string,
+					lifecycleRootUuid: row.lifecycle_root_uuid as string,
+					role: row.role as string,
+				}
+			: undefined;
+	}
+
+	private recordDoaBackoffParticipant(input: {
+		executionId: string;
+		projectName: string;
+		lifecycleRootUuid: string;
+		role: string;
+		nowMs: number;
+	}): void {
+		this.db.run(
+			`INSERT INTO doa_backoff_participants
+			   (execution_id, project, lifecycle_root_uuid, role, created_at)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id) DO UPDATE SET
+			   project = excluded.project,
+			   lifecycle_root_uuid = excluded.lifecycle_root_uuid,
+			   role = excluded.role`,
+			[
+				input.executionId,
+				input.projectName,
+				input.lifecycleRootUuid,
+				input.role,
+				input.nowMs,
+			],
+		);
+	}
+
+	private deleteDoaBackoffParticipants(
+		projectName: string,
+		lifecycleRootUuid: string,
+		role: string,
+	): void {
+		this.db.run(
+			`DELETE FROM doa_backoff_participants
+			  WHERE project = ? AND lifecycle_root_uuid = ? AND role = ?`,
+			[projectName, lifecycleRootUuid, role],
+		);
+	}
+
 	/**
 	 * Evaluate and, when eligible, reserve one successor launch. SQLite writer
 	 * serialization is the lane linearization point. A terminal execution that
@@ -15371,6 +15445,11 @@ export class StateStore {
 						"DELETE FROM doa_backoff WHERE project = ? AND lifecycle_root_uuid = ? AND role = ?",
 						[input.projectName, input.lifecycleRootUuid, input.role],
 					);
+					this.deleteDoaBackoffParticipants(
+						input.projectName,
+						input.lifecycleRootUuid,
+						input.role,
+					);
 				}
 				decision = {
 					ok: true,
@@ -15398,26 +15477,34 @@ export class StateStore {
 				lifetimeMs >= 0 &&
 				lifetimeMs < thresholdMs;
 
+			// needs_lead is an operator hold, not a transient predecessor property.
+			// Only resetDoaBackoff(), which writes an audited receipt, may clear it.
+			if (ledger?.state === "needs_lead") {
+				decision = {
+					ok: false,
+					status: "needs_lead",
+					count: ledger.count,
+					predecessorExecutionId:
+						ledger.lastCountedPredecessorExecutionId,
+					reason: "needs_lead",
+				};
+				return;
+			}
+
 			// A newer terminal row that never crossed the binding+activation commit
 			// point cannot reset or advance the durable generation.
 			if (ledger && !tracked && isDoa) {
-				if (ledger.state === "needs_lead") {
-					decision = {
-						ok: false,
-						status: "needs_lead",
-						count: ledger.count,
-						predecessorExecutionId:
-							ledger.lastCountedPredecessorExecutionId,
-						reason: "needs_lead",
-					};
-					return;
-				}
 				// Continue evaluating the existing generation below.
 			} else if (!isDoa) {
 				if (ledger) {
 					this.db.run(
 						"DELETE FROM doa_backoff WHERE project = ? AND lifecycle_root_uuid = ? AND role = ?",
 						[input.projectName, input.lifecycleRootUuid, input.role],
+					);
+					this.deleteDoaBackoffParticipants(
+						input.projectName,
+						input.lifecycleRootUuid,
+						input.role,
 					);
 				}
 				decision = {
@@ -15528,6 +15615,13 @@ export class StateStore {
 
 			if (ledger.releaseState === "reserved" && ledger.releaseOwnerExecutionId) {
 				if (ledger.releaseOwnerExecutionId === input.successorExecutionId) {
+					this.recordDoaBackoffParticipant({
+						executionId: input.successorExecutionId,
+						projectName: input.projectName,
+						lifecycleRootUuid: input.lifecycleRootUuid,
+						role: input.role,
+						nowMs: input.nowMs,
+					});
 					decision = {
 						ok: true,
 						status: "reserved",
@@ -15601,6 +15695,13 @@ export class StateStore {
 					input.role,
 				],
 			);
+			this.recordDoaBackoffParticipant({
+				executionId: input.successorExecutionId,
+				projectName: input.projectName,
+				lifecycleRootUuid: input.lifecycleRootUuid,
+				role: input.role,
+				nowMs: input.nowMs,
+			});
 			decision = {
 				ok: true,
 				status: "reserved",
@@ -15624,15 +15725,25 @@ export class StateStore {
 		nowMs: number,
 		leaseMs: number,
 	): { ok: true } | { ok: false; reason: string } {
+		if (process.env.FLYWHEEL_DOA_BACKOFF === "0") return { ok: true };
+		const participant = this.getDoaBackoffParticipant(executionId);
+		if (!participant) return { ok: true };
 		const claim = this.getLaunchClaim(executionId);
-		if (!claim) return { ok: true };
+		if (!claim) return { ok: false, reason: "claim_missing" };
 		const role = claim.role?.trim() || "main";
+		if (
+			participant.projectName !== claim.project ||
+			participant.lifecycleRootUuid !== claim.rootUuid ||
+			participant.role !== role
+		) {
+			return { ok: false, reason: "doa_participant_claim_mismatch" };
+		}
 		const ledger = this.getDoaBackoffLedger(
 			claim.project,
 			claim.rootUuid,
 			role,
 		);
-		if (!ledger) return { ok: true };
+		if (!ledger) return { ok: false, reason: "doa_reservation_lost" };
 		if (
 			ledger.releaseState === "settled" &&
 			ledger.lastSettledSuccessorExecutionId === executionId
@@ -15673,13 +15784,19 @@ export class StateStore {
 	): { ok: true } | { ok: false; reason: string } {
 		let result: { ok: true } | { ok: false; reason: string } = { ok: true };
 		this.db.transaction(() => {
-			const owned = this.workflowSelectAll(
-				`SELECT * FROM doa_backoff
-				  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
-				[executionId],
-			)[0];
+			const enforceDoa = process.env.FLYWHEEL_DOA_BACKOFF !== "0";
+			const participant = enforceDoa
+				? this.getDoaBackoffParticipant(executionId)
+				: undefined;
+			const owned = participant
+				? this.workflowSelectAll(
+						`SELECT * FROM doa_backoff
+						  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
+						[executionId],
+					)[0]
+				: undefined;
 			const claim = this.getLaunchClaim(executionId);
-			if (!claim && !owned) return;
+			if (!claim && !participant) return;
 			if (!claim) {
 				result = { ok: false, reason: "claim_missing" };
 				return;
@@ -15688,16 +15805,24 @@ export class StateStore {
 				result = { ok: false, reason: "worktree_binding_missing" };
 				return;
 			}
-			const lane = this.getDoaBackoffLedger(
-				claim.project,
-				claim.rootUuid,
-				claim.role?.trim() || "main",
-			);
+			const role = claim.role?.trim() || "main";
 			if (
-				lane &&
+				participant &&
+				(participant.projectName !== claim.project ||
+					participant.lifecycleRootUuid !== claim.rootUuid ||
+					participant.role !== role)
+			) {
+				result = { ok: false, reason: "doa_participant_claim_mismatch" };
+				return;
+			}
+			const lane = participant
+				? this.getDoaBackoffLedger(claim.project, claim.rootUuid, role)
+				: undefined;
+			if (
+				participant &&
 				!owned &&
 				!(
-					lane.releaseState === "settled" &&
+					lane?.releaseState === "settled" &&
 					lane.lastSettledSuccessorExecutionId === executionId
 				)
 			) {
@@ -15754,14 +15879,20 @@ export class StateStore {
 				  WHERE execution_id = ?`,
 				[executionId],
 			);
-			this.db.run(
-				`UPDATE doa_backoff
-				    SET release_owner_execution_id = NULL,
-				        release_lease_expires_at = NULL, release_state = 'none',
-				        revision = revision + 1, updated_at = ?
-				  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
-				[nowMs, executionId],
-			);
+			if (process.env.FLYWHEEL_DOA_BACKOFF !== "0") {
+				this.db.run(
+					`UPDATE doa_backoff
+					    SET release_owner_execution_id = NULL,
+					        release_lease_expires_at = NULL, release_state = 'none',
+					        revision = revision + 1, updated_at = ?
+					  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
+					[nowMs, executionId],
+				);
+				this.db.run(
+					"DELETE FROM doa_backoff_participants WHERE execution_id = ?",
+					[executionId],
+				);
+			}
 		});
 		this.save();
 	}
@@ -15849,6 +15980,11 @@ export class StateStore {
 					],
 				);
 				reset = this.db.getRowsModified() === 1;
+				this.deleteDoaBackoffParticipants(
+					input.projectName,
+					input.lifecycleRootUuid,
+					input.role,
+				);
 			}
 			this.db.run(
 				`INSERT INTO doa_backoff_reset_receipts

@@ -123,9 +123,37 @@ class CleanupObservingRunDispatcher extends RunDispatcher {
 	protected override cleanupPreRegistration(): void {
 		this.cleanupCalls += 1;
 	}
+
+	simulateForeignInflightAbort(
+		key: string,
+		failedExecutionId: string,
+		liveExecutionId: string,
+	): string | undefined {
+		this.inflight.set(key, {
+			executionId: liveExecutionId,
+			promise: Promise.resolve(),
+		});
+		this.abortPreLaunch(key, failedExecutionId, "TestProject", false);
+		return this.inflight.get(key)?.executionId;
+	}
 }
 
 describe("RunDispatcher", () => {
+	it("does not delete another launch's inflight entry during a pre-launch abort", () => {
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([makeRuntime("TestProject")]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+		expect(
+			dispatcher.simulateForeignInflightAbort(
+				"FLY-1718:main",
+				"failed-before-inflight",
+				"live-launch",
+			),
+		).toBe("live-launch");
+	});
+
 	it("returns a non-rejecting typed precommit outcome for a generalized tmux hold", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		vi.mocked(runtime.blueprint.run).mockResolvedValue({

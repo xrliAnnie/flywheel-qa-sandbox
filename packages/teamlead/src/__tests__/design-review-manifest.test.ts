@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -87,6 +93,40 @@ describe("FLY-1718 design review manifest delivery", () => {
 				"engineering/doc/FLY-1718-test/missing.md",
 			),
 		).toMatchObject({ ok: false, reason: "missing" });
+	});
+
+	it("rejects a clean worktree whose HEAD is not the persisted session branch", () => {
+		git(root, ["branch", "persisted-branch"]);
+		writeFileSync(join(root, "after-branch.txt"), "new head\n");
+		git(root, ["add", "after-branch.txt"]);
+		git(root, ["commit", "-q", "-m", "advance worktree head"]);
+
+		expect(
+			snapshotDesignReviewPlan(
+				{ worktree_path: root, branch: "persisted-branch" },
+				planPath,
+			),
+		).toMatchObject({ ok: false, reason: "dirty" });
+	});
+
+	it("uses plumbing checks that do not execute repo-configured filters or fsmonitor", () => {
+		const marker = join(root, "config-hook-ran");
+		const trap = join(root, "config-trap.sh");
+		writeFileSync(
+			trap,
+			`#!/bin/sh\nprintf ran >> ${JSON.stringify(marker)}\ncat\n`,
+		);
+		chmodSync(trap, 0o700);
+		writeFileSync(join(root, ".gitattributes"), `${planPath} filter=trap\n`);
+		git(root, ["add", ".gitattributes"]);
+		git(root, ["commit", "-q", "-m", "declare plan attribute"]);
+		git(root, ["config", "filter.trap.clean", trap]);
+		git(root, ["config", "core.fsmonitor", trap]);
+
+		expect(
+			snapshotDesignReviewPlan(store.getSession("exec-1")!, planPath),
+		).toMatchObject({ ok: true });
+		expect(existsSync(marker)).toBe(false);
 	});
 
 	it("uses a stable instruction id and reconciles a manifest-to-inbox crash window", () => {

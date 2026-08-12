@@ -1276,7 +1276,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 		notifySpawnFailed = true,
 	): void {
 		try {
-			this.inflight.delete(key);
+			// Several failures happen before this execution installs its own entry.
+			// A concurrent launch may already own the same lane by then; never let the
+			// older abort erase that newer execution's in-memory exclusion record.
+			if (this.inflight.get(key)?.executionId === executionId) {
+				this.inflight.delete(key);
+			}
 		} catch {
 			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
 		}
