@@ -1,13 +1,13 @@
 ---
 issue: FLY-1708
 phase: design
-phaseCursor: 3/4
-updated: 2026-08-12T03:45:16.895Z
-nextStep: founder HTML + publish + report
+phaseCursor: 4/4
+updated: 2026-08-12T03:48:35.960Z
+nextStep: design node complete; successor = implement per plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: design (3/4)
-**next**: founder HTML + publish + report
+**phase**: design (4/4)
+**next**: design node complete; successor = implement per plan.md
