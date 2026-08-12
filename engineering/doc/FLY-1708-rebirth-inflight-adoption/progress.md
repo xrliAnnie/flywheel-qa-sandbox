@@ -1,13 +1,13 @@
 ---
 issue: FLY-1708
 phase: implement
-phaseCursor: 2/6
-updated: 2026-08-12T03:53:16.276Z
-nextStep: write failing adopt, formatter, CLI, and launcher-hook tests
+phaseCursor: 3/6
+updated: 2026-08-12T04:03:46.096Z
+nextStep: run focused regression, lint, full build, package tests, and shell harness
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: implement (2/6)
-**next**: write failing adopt, formatter, CLI, and launcher-hook tests
+**phase**: implement (3/6)
+**next**: run focused regression, lint, full build, package tests, and shell harness
