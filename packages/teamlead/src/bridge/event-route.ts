@@ -934,6 +934,7 @@ export function createEventRouter(
 									? "workflow_output_required"
 									: "workflow_completion_rejected",
 							reason: completion.reason,
+							...("detail" in completion ? { detail: completion.detail } : {}),
 							...("retryable" in completion
 								? { retryable: completion.retryable }
 								: {}),

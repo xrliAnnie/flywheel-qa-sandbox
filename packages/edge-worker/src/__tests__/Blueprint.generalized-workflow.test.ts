@@ -152,6 +152,8 @@ describe("Blueprint generalized workflow capability contract", () => {
 				...generalized.workflowCapabilities,
 				produces_output: false,
 				completion_route: "needs_review",
+				pass_enters_approval_gate: true,
+				gate_entry_authority_kind: "materialization_receipt",
 			},
 			workflowOutputCredential: undefined,
 			workflowSubmissionCredential: "review-ticket",
@@ -167,6 +169,61 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(reviewCall.workflowSubmissionExpected).toBe(true);
 		expect(reviewCall.appendSystemPrompt).toContain("env -u");
 		expect(reviewCall.appendSystemPrompt).toContain("replay_payload_mismatch");
+		expect(reviewCall.appendSystemPrompt).toContain(
+			"server-attested materialized head",
+		);
+		expect(reviewCall.appendSystemPrompt).not.toContain("your worktree HEAD");
+		expect(reviewCall.appendSystemPrompt).toContain(
+			"do not create, amend, or push another commit",
+		);
+	});
+
+	it("adds gate-entry immutability only for structurally direct worktree verdicts", async () => {
+		const direct = harness();
+		await direct.blueprint.run(node, "/tmp/fly1686-direct-qa", {
+			...generalized,
+			generalizedExecutionContext: {
+				...generalized.generalizedExecutionContext!,
+				nodeId: "verifier",
+			},
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				produces_output: false,
+				completion_route: "needs_review",
+				pass_enters_approval_gate: true,
+				gate_entry_authority_kind: "worktree",
+			},
+			workflowOutputCredential: undefined,
+			workflowSubmissionCredential: "qa-ticket",
+			workflowSubmissionExpected: true,
+		});
+		const directPrompt = (direct.adapter.execute as ReturnType<typeof vi.fn>)
+			.mock.calls[0]![0].appendSystemPrompt as string;
+		expect(directPrompt).toContain("binds your worktree HEAD at verdict time");
+
+		const indirect = harness();
+		await indirect.blueprint.run(node, "/tmp/fly1686-indirect-qa", {
+			...generalized,
+			generalizedExecutionContext: {
+				...generalized.generalizedExecutionContext!,
+				nodeId: "intermediate-verifier",
+			},
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				produces_output: false,
+				completion_route: "needs_review",
+			},
+			workflowOutputCredential: undefined,
+			workflowSubmissionCredential: "review-ticket",
+			workflowSubmissionExpected: true,
+		});
+		const indirectPrompt = (
+			indirect.adapter.execute as ReturnType<typeof vi.fn>
+		).mock.calls[0]![0].appendSystemPrompt as string;
+		expect(indirectPrompt).not.toContain("exact version eligible to ship");
+		expect(indirectPrompt).not.toContain(
+			"do not create, amend, or push another commit",
+		);
 	});
 
 	it("binds the HTML gate to design-node completion, independent of workflow topology", async () => {

@@ -324,6 +324,7 @@ import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
+import { resolveLandSourceSession } from "./land-source-session.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
 	createClaimsClaimer,
@@ -5634,16 +5635,13 @@ export async function startBridge(
 					})(),
 				}),
 			finalize: async (operation) => {
-				const session =
-					store
-						.getSessionsByIssue(operation.issue_id)
-						.find(
-							(candidate) =>
-								candidate.project_name === operation.project_name &&
-								candidate.pr_number === operation.pr_number &&
-								candidate.pr_head_sha?.toLowerCase() ===
-									operation.approved_head,
-						) ?? store.getSessionByIssue(operation.issue_id);
+				const session = resolveLandSourceSession(store, {
+					runId: operation.run_id,
+					issueId: operation.issue_id,
+					projectName: operation.project_name,
+					prNumber: operation.pr_number,
+					approvedHead: operation.approved_head,
+				});
 				if (!session) {
 					return {
 						complete: false,

@@ -1458,7 +1458,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T00:10:00.000Z",
 			});
 		}).not.toThrow();
-		expect(completion).toEqual({ ok: false, reason: "transition_refused" });
+		expect(completion).toEqual({
+			ok: false,
+			reason: "transition_refused",
+			detail: { transitionReason: "runner_ship_head_unavailable" },
+		});
 		expect(store.getCurrentWorkflowGateHolder("run-1")).toBeUndefined();
 		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
 		store.close();

@@ -1,0 +1,16 @@
+sequenceDiagram
+    participant Q as QA(qa-result 命令)
+    participant E as Bridge 引擎
+    participant G as GitHub
+    participant L as 账本(binding)
+    Q->>E: ① 提交 PASS 判决(不动任何东西)
+    E->>E: ② 四道只读体检:凭据有效?<br/>T 是 B 的正向延续?<br/>差异只有文档?
+    E->>G: ③ 实测 PR 最新提交
+    G-->>E: PR 还停在 B
+    E-->>Q: ④ 拒收 + 下发指令:<br/>「把 T 这一个提交推到 X 分支」
+    Q->>Q: ⑤ 核对目的仓库是本尊
+    Q->>G: ⑥ 只推被授权的 T(绝不推别的)
+    Q->>E: ⑦ 重新提交判决
+    E->>G: ⑧ 再实测:PR 已在 T ✓
+    E->>L: ⑨ 同一事务里把账本 B→T<br/>+ 写审计事件 + 过闸
+    E-->>Q: ✅ 通过,后续 founder 批的就是 T

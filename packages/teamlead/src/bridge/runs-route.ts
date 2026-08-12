@@ -79,6 +79,7 @@ import {
 import {
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
+	workflowGateEntryPromptCapabilities,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
@@ -2924,7 +2925,13 @@ export function createRunsRouter(
 								snapshotDigest: generalizedSelection.snapshotDigest,
 								gateCarrierEpoch: generalizedSelection.gateCarrierEpoch,
 								dispatch: workflowRuntimeDispatch,
-								capabilities: { ...generalizedSelection.node.capabilities },
+								capabilities: {
+									...generalizedSelection.node.capabilities,
+									...workflowGateEntryPromptCapabilities(
+										selectedSnapshot,
+										generalizedSelection.nodeId,
+									),
+								},
 								agentContent: workflowAgentContent,
 								outputCredential: workflowOutputCredential,
 								submissionCredential: workflowSubmissionCredential,

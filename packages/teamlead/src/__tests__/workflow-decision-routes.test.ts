@@ -7,7 +7,10 @@ import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { ConfirmTokenStore } from "../bridge/fleet-admin.js";
 import type { MaterializedHeadAuthority } from "../bridge/materialized-head-authority.js";
-import { createWorkflowDecisionRouter } from "../bridge/workflow-decision-routes.js";
+import {
+	createWorkflowDecisionRouter,
+	type WorkflowPrProbeResult,
+} from "../bridge/workflow-decision-routes.js";
 import { StateStore } from "../StateStore.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
@@ -53,9 +56,11 @@ function gitWorktree(): { path: string; head: string } {
 
 async function reviewFixture(options: {
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+	prProbe?: () => Promise<WorkflowPrProbeResult>;
 }) {
 	const store = await StateStore.create(":memory:");
 	const worktree = gitWorktree();
+	const materializedHead = "c".repeat(40);
 	const seed = legacyWorkflowSeeds().find(
 		(candidate) => candidate.templateId === "tpl_product_v1",
 	)!;
@@ -118,6 +123,19 @@ async function reviewFixture(options: {
 		1,
 	)?.execution_id;
 	if (!produceExecution) throw new Error("produce successor missing");
+	store.upsertSession({
+		execution_id: produceExecution,
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+		adapter_type: "codex-tmux",
+		pr_number: 1307,
+	});
+	store.bindWorktreeOnce(produceExecution, {
+		path: worktree.path,
+		branch: "fly-1307",
+		generation: "review-fixture",
+	});
 	const produceAdmission = admit("produce", produceExecution);
 	if (!produceAdmission.ok || !produceAdmission.outputCredential) {
 		throw new Error("produce admission failed");
@@ -148,6 +166,28 @@ async function reviewFixture(options: {
 	if (!produceCompletion.ok) {
 		throw new Error(`produce completion failed: ${produceCompletion.reason}`);
 	}
+	const outputRow = store.getWorkflowNodeOutput(output.outputId);
+	if (!outputRow) throw new Error("produce output missing");
+	const materialization = store.allocateWorkflowMaterialization({
+		runId: "run-review",
+		nodeId: "produce",
+		attempt: 1,
+		outputId: output.outputId,
+		outputDigest: outputRow.output_digest,
+		repo: "geoforge3d/flywheel",
+		ref: "refs/heads/fly-1307",
+		baseHead: worktree.head,
+	});
+	store.adoptWorkflowMaterializationCommit({
+		effectId: materialization.effect_id,
+		treeHead: materializedHead,
+		commitHead: materializedHead,
+	});
+	store.confirmWorkflowMaterializationPush({
+		effectId: materialization.effect_id,
+		remoteHead: materializedHead,
+		reviewNodeId: "review",
+	});
 	const reviewExecution = store.getWorkflowRunNode(
 		"run-review",
 		"review",
@@ -181,6 +221,15 @@ async function reviewFixture(options: {
 			store,
 			phaseOrchestrator: { current: { onQaResult } as never },
 			materializedHeadAuthority: options.materializedHeadAuthority,
+			prProbe:
+				options.prProbe ??
+				(async () => ({
+					state: "OPEN",
+					isDraft: false,
+					isCrossRepository: false,
+					headRefName: "fly-1307",
+					headRefOid: materializedHead,
+				})),
 			now: () => T0,
 		}),
 	);
@@ -191,10 +240,17 @@ async function reviewFixture(options: {
 	return {
 		store,
 		worktree,
+		materializedHead,
 		outputId: output.outputId,
 		credential: reviewAdmission.submissionCredential,
 		reviewExecution,
 		produceExecution,
+		materialization: {
+			effectId: materialization.effect_id,
+			producerNodeId: "produce",
+			repo: "geoforge3d/flywheel",
+			ref: "refs/heads/fly-1307",
+		},
 		claimCountBeforeReview: store.countWorkflowClaims("run-review"),
 		onQaResult,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
@@ -668,7 +724,12 @@ describe("engine-owned review decision canonicalization", () => {
 		const authority: MaterializedHeadAuthority = {
 			resolve: vi.fn(async () => {
 				if (!f) throw new Error("fixture_not_ready");
-				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+				return {
+					head: f.materializedHead,
+					outputId: f.outputId,
+					attempt: 1,
+					...f.materialization,
+				};
 			}),
 		};
 		f = await reviewFixture({ materializedHeadAuthority: authority });
@@ -677,7 +738,7 @@ describe("engine-owned review decision canonicalization", () => {
 				credential: f.credential,
 				client_request_id: "review-pass",
 				status: "pass",
-				client_pr_head_sha: f.worktree.head,
+				client_pr_head_sha: f.materializedHead,
 			};
 			const first = await fetch(`${f.baseUrl}/decision`, {
 				method: "POST",
@@ -691,12 +752,40 @@ describe("engine-owned review decision canonicalization", () => {
 				predicate: "design_review_approved",
 				issuer_execution_id: f.reviewExecution,
 				subject_producer_execution_id: f.produceExecution,
-				subject_digest: f.worktree.head,
+				subject_digest: f.materializedHead,
 			});
 			expect(
 				f.store.getWorkflowRunNode("run-review", "founder_gate", 1),
 			).toMatchObject({ state: "review" });
+			expect(
+				f.store.getCurrentWorkflowNodePrBindingForHead(
+					"run-review",
+					f.materializedHead,
+				),
+			).toMatchObject({
+				node_id: "review",
+				worktree_binding_generation: `receipt-v1:${f.materialization.effectId}`,
+			});
 			expect(f.onQaResult).not.toHaveBeenCalled();
+			const holder = f.store
+				.listWorkflowRunEvents("run-review")
+				.find((event) => event.kind === "gate_holder_created");
+			const questionId = (holder?.payload as { questionId?: string })
+				?.questionId;
+			expect(questionId).toBeTruthy();
+			const headAuthority = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: f.reviewExecution,
+					approve_question_id: questionId,
+				}),
+			});
+			expect(headAuthority.status).toBe(200);
+			expect(await headAuthority.json()).toMatchObject({
+				ok: true,
+				prHeadSha: f.materializedHead,
+			});
 
 			const replay = await fetch(`${f.baseUrl}/decision`, {
 				method: "POST",
@@ -711,6 +800,114 @@ describe("engine-owned review decision canonicalization", () => {
 			expect(f.store.countWorkflowClaims("run-review")).toBe(
 				f.claimCountBeforeReview + 1,
 			);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("refuses approval-gate entry when the materialized receipt is not the live PR tip", async () => {
+		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
+		const authority: MaterializedHeadAuthority = {
+			resolve: async () => {
+				if (!f) throw new Error("fixture_not_ready");
+				return {
+					head: f.materializedHead,
+					outputId: f.outputId,
+					attempt: 1,
+					...f.materialization,
+				};
+			},
+		};
+		f = await reviewFixture({
+			materializedHeadAuthority: authority,
+			prProbe: async () => ({
+				state: "OPEN",
+				isDraft: false,
+				isCrossRepository: false,
+				headRefName: "fly-1307",
+				headRefOid: "f".repeat(40),
+			}),
+		});
+		try {
+			const response = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "review-pr-behind-materialization",
+					status: "pass",
+					client_pr_head_sha: f.materializedHead,
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "land_head_materialized_pr_not_at_tip",
+			});
+			expect(f.store.countWorkflowClaims("run-review")).toBe(
+				f.claimCountBeforeReview,
+			);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("fails closed when a receipt-backed ship target drifts after gate entry", async () => {
+		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
+		let remoteHead = "";
+		const authority: MaterializedHeadAuthority = {
+			resolve: async () => {
+				if (!f) throw new Error("fixture_not_ready");
+				return {
+					head: f.materializedHead,
+					outputId: f.outputId,
+					attempt: 1,
+					...f.materialization,
+				};
+			},
+		};
+		f = await reviewFixture({
+			materializedHeadAuthority: authority,
+			prProbe: async () => ({
+				state: "OPEN",
+				isDraft: false,
+				isCrossRepository: false,
+				headRefName: "fly-1307",
+				headRefOid: remoteHead,
+			}),
+		});
+		remoteHead = f.materializedHead;
+		try {
+			const accepted = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "review-pass-before-remote-drift",
+					status: "pass",
+					client_pr_head_sha: f.materializedHead,
+				}),
+			});
+			expect(accepted.status).toBe(200);
+			const holder = f.store
+				.listWorkflowRunEvents("run-review")
+				.find((event) => event.kind === "gate_holder_created");
+			const questionId = (holder?.payload as { questionId?: string })
+				?.questionId;
+			remoteHead = "f".repeat(40);
+			const response = await fetch(`${f.baseUrl}/head-authority`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					execution_id: f.reviewExecution,
+					approve_question_id: questionId,
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "ship_target_authority_drift",
+			});
 		} finally {
 			await f.close();
 		}
@@ -746,7 +943,12 @@ describe("engine-owned review decision canonicalization", () => {
 		const authority: MaterializedHeadAuthority = {
 			resolve: async () => {
 				if (!f) throw new Error("fixture_not_ready");
-				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+				return {
+					head: f.materializedHead,
+					outputId: f.outputId,
+					attempt: 1,
+					...f.materialization,
+				};
 			},
 		};
 		f = await reviewFixture({ materializedHeadAuthority: authority });
@@ -765,7 +967,7 @@ describe("engine-owned review decision canonicalization", () => {
 			expect(await response.json()).toMatchObject({
 				ok: false,
 				reason: "head_authority_mismatch",
-				expectedPrHeadSha: f.worktree.head,
+				expectedPrHeadSha: f.materializedHead,
 			});
 			expect(f.store.countWorkflowClaims("run-review")).toBe(
 				f.claimCountBeforeReview,
@@ -780,7 +982,12 @@ describe("engine-owned review decision canonicalization", () => {
 		const authority: MaterializedHeadAuthority = {
 			resolve: async () => {
 				if (!f) throw new Error("fixture_not_ready");
-				return { head: f.worktree.head, outputId: f.outputId, attempt: 1 };
+				return {
+					head: f.materializedHead,
+					outputId: f.outputId,
+					attempt: 1,
+					...f.materialization,
+				};
 			},
 		};
 		f = await reviewFixture({ materializedHeadAuthority: authority });
@@ -792,7 +999,7 @@ describe("engine-owned review decision canonicalization", () => {
 					credential: f.credential,
 					client_request_id: "review-fail",
 					status: "fail",
-					client_pr_head_sha: f.worktree.head,
+					client_pr_head_sha: f.materializedHead,
 				}),
 			});
 			expect(response.status).toBe(200);

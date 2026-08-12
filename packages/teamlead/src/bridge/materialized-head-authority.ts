@@ -2,6 +2,10 @@ export interface MaterializedHeadAuthorityResult {
 	head: string;
 	outputId: number;
 	attempt: number;
+	effectId: string;
+	producerNodeId: string;
+	repo: string;
+	ref: string;
 }
 
 /**

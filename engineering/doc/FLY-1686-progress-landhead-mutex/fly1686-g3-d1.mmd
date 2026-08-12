@@ -1,0 +1,11 @@
+flowchart TD
+    A["implement 完成 → commit 1<br/>❌ 旧设计在这里就把 commit 1<br/>登记为「上线版本」(冻结)"] --> B["QA 测试 + 记账 + 写报告<br/>→ commit 2(代码与 commit 1 相同,<br/>只多了文档)"]
+    B --> C["QA 提交「通过」"]
+    C --> D{"验收闸:你手里的版本<br/>== 登记的版本?"}
+    D -- "commit 2 ≠ commit 1<br/>必然不等" --> E["确定性拒收 409<br/>每一个 code run 的 QA 都卡死"]
+    E --> F["gen-2 的补法:造一台<br/>commit 1 vs commit 2 对比机器<br/>(白名单/祖先证明/八轮评审/4条QA FAIL)"]
+    F --> G["founder 裁决:这是打补丁,<br/>病根是绑定得太早——推倒重来"]
+    style A fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style E fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style F fill:#fff4e0,stroke:#ff9500
+    style G fill:#e8f0fe,stroke:#007aff,stroke-width:2px

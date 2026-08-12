@@ -1,0 +1,27 @@
+flowchart LR
+    subgraph RULE["通用规则(不认节点名,只认位置)"]
+        R1["DAG 结构:谁的下一步<br/>是 founder 审批关卡,<br/>谁完成时就绑定"]
+    end
+    subgraph EX["三种流水线自动成立"]
+        E1["代码单:…→ QA →审批→上线<br/>= QA 完成时绑定"]
+        E2["通用单:执行 →审批→上线<br/>= 执行完成时绑定(现状不变)"]
+        E3["产品单:…→ 评审 →审批→上线<br/>= 评审完成时绑定"]
+    end
+    subgraph DEL["净删除(gen-2 遗产拆除)"]
+        D1["commit 对比机器整族<br/>(白名单/祖先证明/449行模块)"]
+        D2["中间节点的版本冻结"]
+    end
+    subgraph KEEP["一字不动(红线)"]
+        K1["批准版本 == 合并版本<br/>每一道等值检查"]
+        K2["版本指纹只由服务端读取<br/>(客户端说什么不算)"]
+        K3["出错必须大声报精确原因"]
+    end
+    R1 --> E1
+    R1 --> E2
+    R1 --> E3
+    style R1 fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style D1 fill:#ffe5e3,stroke:#ff3b30
+    style D2 fill:#ffe5e3,stroke:#ff3b30
+    style K1 fill:#e6f9ec,stroke:#34c759
+    style K2 fill:#e6f9ec,stroke:#34c759
+    style K3 fill:#e6f9ec,stroke:#34c759

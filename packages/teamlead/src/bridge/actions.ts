@@ -27,6 +27,7 @@ import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js"
 import {
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
+	workflowGateEntryPromptCapabilities,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
@@ -1198,7 +1199,10 @@ async function handleRetry(
 				snapshotDigest: snapshot.snapshot_digest,
 				gateCarrierEpoch: run.gate_carrier_epoch,
 				dispatch: runtimeDispatch,
-				capabilities: { ...node.capabilities },
+				capabilities: {
+					...node.capabilities,
+					...workflowGateEntryPromptCapabilities(snapshot, node.id),
+				},
 				agentContent,
 				outputCredential,
 				submissionCredential,

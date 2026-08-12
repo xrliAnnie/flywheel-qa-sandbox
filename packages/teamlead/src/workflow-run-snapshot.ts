@@ -25,6 +25,7 @@ import {
 	type WorkflowNodeType,
 	type WorkflowOutputContract,
 	type WorkflowVendor,
+	workflowApprovalGate,
 } from "./workflow-template.js";
 
 interface WorkflowSnapshotWorkKind {
@@ -46,6 +47,28 @@ export interface ResolvedWorkflowNode {
 	};
 	output?: WorkflowOutputContract;
 	agent?: { content: string; digest: string };
+}
+
+/** Prompt-only facts derived from the pinned DAG, never from node names. */
+export function workflowGateEntryPromptCapabilities(
+	snapshot: WorkflowRunSnapshot,
+	nodeId: string,
+): Record<string, boolean | string> {
+	const decision = resolveWorkflowDecisionContract(snapshot, nodeId);
+	if (!decision) return {};
+	const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
+	const entersGate = snapshot.manifest.edges.some(
+		(edge) =>
+			edge.from === nodeId &&
+			edge.condition === decision.passOutcome &&
+			edge.to === gateNodeId,
+	);
+	if (!entersGate) return {};
+	return {
+		pass_enters_approval_gate: true,
+		gate_entry_authority_kind:
+			decision.family === "qa_verdict" ? "worktree" : "materialization_receipt",
+	};
 }
 
 export interface WorkflowRunSnapshotV2 extends WorkflowSnapshotWorkKind {

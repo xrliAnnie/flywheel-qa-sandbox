@@ -77,6 +77,10 @@ describe("receipt-backed materialized head authority", () => {
 					head: "a".repeat(40),
 					outputId: 7,
 					attempt: 2,
+					effectId: `mat:${"b".repeat(64)}`,
+					producerNodeId: "produce",
+					repo: "geoforge3d/flywheel",
+					ref: "refs/heads/fly-1307",
 				}),
 			} as never,
 			{
@@ -87,6 +91,10 @@ describe("receipt-backed materialized head authority", () => {
 			head: "a".repeat(40),
 			outputId: 7,
 			attempt: 2,
+			effectId: `mat:${"b".repeat(64)}`,
+			producerNodeId: "produce",
+			repo: "geoforge3d/flywheel",
+			ref: "refs/heads/fly-1307",
 		});
 
 		const unavailable = receiptBackedMaterializedHeadAuthority(

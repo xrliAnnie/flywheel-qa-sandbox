@@ -305,6 +305,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		if (!produce.ok || !produce.outputCredential) {
 			throw new Error("product produce admission failed");
 		}
+		upsert("running", undefined, "product-produce");
 		const output = store.submitWorkflowNodeOutput({
 			token: produce.outputCredential,
 			clientRequestId: "product-produce-output",
@@ -312,6 +313,8 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			now: "2026-07-16T00:07:00.000Z",
 		});
 		if (!output.ok) throw new Error(output.reason);
+		const outputRow = store.getWorkflowNodeOutput(output.outputId);
+		if (!outputRow) throw new Error("product output missing");
 		const completion = store.commitEnrolledCompletion({
 			executionId: "product-produce",
 			route: "needs_review",
@@ -329,6 +332,26 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			now: "2026-07-16T00:10:00.000Z",
 		});
 		if (!completion.ok) throw new Error(completion.reason);
+		const materialization = store.allocateWorkflowMaterialization({
+			runId: "product-run",
+			nodeId: "produce",
+			attempt: 1,
+			outputId: output.outputId,
+			outputDigest: outputRow.output_digest,
+			repo: "geoforge3d/flywheel",
+			ref: "refs/heads/fly-869",
+			baseHead: HEAD,
+		});
+		store.adoptWorkflowMaterializationCommit({
+			effectId: materialization.effect_id,
+			treeHead: HEAD,
+			commitHead: HEAD,
+		});
+		store.confirmWorkflowMaterializationPush({
+			effectId: materialization.effect_id,
+			remoteHead: HEAD,
+			reviewNodeId: "review",
+		});
 		const reviewExecution = store.getWorkflowRunNode(
 			"product-run",
 			"review",
@@ -358,6 +381,26 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			subjectProducerExecutionId: "product-produce",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "2027-07-16T00:11:00.000Z",
+			...(predicate === "design_review_approved"
+				? {
+						gateEntryBinding: {
+							kind: "materialization_receipt" as const,
+							prNumber: 869,
+							headSha: HEAD,
+							targetRepoIdentity: "__main__",
+							probeRepoSlug: "geoforge3d/flywheel",
+							targetRepoPath: worktreePath,
+							worktreeBindingGeneration: `receipt-v1:${materialization.effect_id}`,
+							expectedProducerMirrorHead: HEAD,
+							effectId: materialization.effect_id,
+							producerNodeId: "produce",
+							outputId: output.outputId,
+							outputAttempt: 1,
+							repo: "geoforge3d/flywheel",
+							ref: "refs/heads/fly-869",
+						},
+					}
+				: {}),
 			now: "2026-07-16T00:12:00.000Z",
 		});
 		if (!submitted.ok) return submitted;
@@ -504,6 +547,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		expect(productWithReviewPredicate("codex_approved")).toEqual({
 			ok: false,
 			reason: "transition_refused",
+			detail: { transitionReason: "predicate_has_no_engine_outcome" },
 		});
 		expect(
 			store.resolveWorkflowDecisionClaim({

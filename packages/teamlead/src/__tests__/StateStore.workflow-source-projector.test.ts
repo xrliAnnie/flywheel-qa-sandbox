@@ -405,14 +405,22 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		if (!produce.ok || !produce.outputCredential) {
 			throw new Error("produce admission failed");
 		}
-		expect(
-			store.submitWorkflowNodeOutput({
-				token: produce.outputCredential,
-				clientRequestId: "produce-output",
-				payload: '{"result":"ready"}',
-				now: "2026-07-16T00:06:00.000Z",
-			}).ok,
-		).toBe(true);
+		store.upsertSession({
+			execution_id: "product-produce",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			adapter_type: "codex-tmux",
+			pr_number: 1307,
+		});
+		const producedOutput = store.submitWorkflowNodeOutput({
+			token: produce.outputCredential,
+			clientRequestId: "produce-output",
+			payload: '{"result":"ready"}',
+			now: "2026-07-16T00:06:00.000Z",
+		});
+		expect(producedOutput.ok).toBe(true);
+		if (!producedOutput.ok) throw new Error(producedOutput.reason);
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "product-produce",
@@ -431,6 +439,28 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 				now: "2026-07-16T00:07:00.000Z",
 			}).ok,
 		).toBe(true);
+		const outputRow = store.getWorkflowNodeOutput(producedOutput.outputId);
+		if (!outputRow) throw new Error("produce output missing");
+		const materialization = store.allocateWorkflowMaterialization({
+			runId: "product-run",
+			nodeId: "produce",
+			attempt: 1,
+			outputId: producedOutput.outputId,
+			outputDigest: outputRow.output_digest,
+			repo: "geoforge3d/flywheel",
+			ref: "refs/heads/fly-1307",
+			baseHead: HEAD,
+		});
+		store.adoptWorkflowMaterializationCommit({
+			effectId: materialization.effect_id,
+			treeHead: HEAD,
+			commitHead: HEAD,
+		});
+		store.confirmWorkflowMaterializationPush({
+			effectId: materialization.effect_id,
+			remoteHead: HEAD,
+			reviewNodeId: "review",
+		});
 		const reviewExecution = store.getWorkflowRunNode(
 			"product-run",
 			"review",
@@ -461,6 +491,22 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 				subjectProducerExecutionId: "product-produce",
 				subjectProducerVendor: "codex",
 				claimExpiresAt: "2027-07-16T00:10:00.000Z",
+				gateEntryBinding: {
+					kind: "materialization_receipt",
+					prNumber: 1307,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: root,
+					worktreeBindingGeneration: `receipt-v1:${materialization.effect_id}`,
+					expectedProducerMirrorHead: HEAD,
+					effectId: materialization.effect_id,
+					producerNodeId: "produce",
+					outputId: producedOutput.outputId,
+					outputAttempt: 1,
+					repo: "geoforge3d/flywheel",
+					ref: "refs/heads/fly-1307",
+				},
 				now: "2026-07-16T00:11:00.000Z",
 			}).ok,
 		).toBe(true);

@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import express from "express";
 import {
 	adapterTypeToFamily,
@@ -7,18 +9,60 @@ import type {
 	StateStore,
 	WorkflowEngineAlertIdentity,
 	WorkflowGateCarrierRebindCanonical,
+	WorkflowGateEntryBinding,
 	WorkflowLoopReentryCanonical,
 } from "../StateStore.js";
 import { resolveWorkflowDecisionContract } from "../workflow-run-snapshot.js";
+import { workflowApprovalGate } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
 import {
 	type MaterializedHeadAuthority,
+	type MaterializedHeadAuthorityResult,
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
+
+const execFileP = promisify(execFile);
+
+export interface WorkflowPrProbeResult {
+	state: string;
+	isDraft: boolean;
+	isCrossRepository: boolean;
+	headRefName: string;
+	headRefOid: string;
+}
+
+class WorkflowDecisionRejection extends Error {
+	constructor(
+		reason: string,
+		readonly detail?: Record<string, unknown>,
+	) {
+		super(reason);
+	}
+}
+
+async function probeWorkflowPr(input: {
+	prNumber: number;
+	probeRepoSlug: string;
+}): Promise<WorkflowPrProbeResult> {
+	const { stdout } = await execFileP(
+		"gh",
+		[
+			"pr",
+			"view",
+			String(input.prNumber),
+			"-R",
+			input.probeRepoSlug,
+			"--json",
+			"state,isDraft,isCrossRepository,headRefName,headRefOid",
+		],
+		{ encoding: "utf8", timeout: 15_000 },
+	);
+	return JSON.parse(stdout) as WorkflowPrProbeResult;
+}
 
 interface WorkflowDecisionBody {
 	credential?: unknown;
@@ -32,6 +76,10 @@ export interface WorkflowDecisionRouterDeps {
 	store: StateStore;
 	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+	prProbe?: (input: {
+		prNumber: number;
+		probeRepoSlug: string;
+	}) => Promise<WorkflowPrProbeResult>;
 	now?: () => string;
 	reQa?: {
 		/** Hot claims-write gate, checked independently at stage and apply time. */
@@ -67,6 +115,9 @@ interface EngineDecisionCanonical {
 	issuerModel: string;
 	producerExecutionId: string;
 	producerVendor: string;
+	family: string;
+	entersApprovalGate: boolean;
+	materializedAuthority?: MaterializedHeadAuthorityResult;
 }
 
 async function resolveEngineDecisionCanonical(
@@ -96,6 +147,7 @@ async function resolveEngineDecisionCanonical(
 
 	let serverHead: string;
 	let producerExecutionId: string;
+	let materializedAuthority: MaterializedHeadAuthorityResult | undefined;
 	if (decision.family === "qa_verdict") {
 		serverHead = (
 			await resolveWorkflowHeadAuthority(deps.store, credential.execution_id)
@@ -115,6 +167,7 @@ async function resolveEngineDecisionCanonical(
 		const authority = await (
 			deps.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority
 		).resolve(credential.run_id, context.node.id);
+		materializedAuthority = authority;
 		serverHead = authority.head.toLowerCase();
 		if (!/^[0-9a-f]{40}$/.test(serverHead)) {
 			throw new Error("materialized_head_invalid");
@@ -146,6 +199,139 @@ async function resolveEngineDecisionCanonical(
 		issuerModel: issuer.model,
 		producerExecutionId,
 		producerVendor: producer.vendor,
+		family: decision.family,
+		entersApprovalGate:
+			status === "pass" &&
+			context.snapshot.manifest.edges.some(
+				(edge) =>
+					edge.from === context.node.id &&
+					edge.condition === decision.passOutcome &&
+					edge.to === workflowApprovalGate(context.snapshot.manifest).node,
+			),
+		...(materializedAuthority ? { materializedAuthority } : {}),
+	};
+}
+
+function workflowPrRefValid(ref: string): boolean {
+	return (
+		ref.length > 0 &&
+		ref.length <= 255 &&
+		!ref.startsWith(".") &&
+		!ref.endsWith(".") &&
+		!ref.endsWith(".lock") &&
+		!ref.includes("..") &&
+		![...ref].some((character) => {
+			const code = character.charCodeAt(0);
+			return code <= 0x20 || code === 0x7f || "~^:?*[\\".includes(character);
+		})
+	);
+}
+
+async function resolveGateEntryBinding(
+	deps: WorkflowDecisionRouterDeps,
+	canonical: EngineDecisionCanonical,
+): Promise<WorkflowGateEntryBinding | undefined> {
+	if (!canonical.entersApprovalGate) return undefined;
+	const isWorktree = canonical.family === "qa_verdict";
+	const materialized = canonical.materializedAuthority;
+	if (!isWorktree && !materialized) {
+		throw new Error("materialized_head_unavailable");
+	}
+	const authorityExecutionId = isWorktree
+		? canonical.reporting.execution_id
+		: canonical.producerExecutionId;
+	const worktreeBinding = deps.store.getWorktreeBinding(authorityExecutionId);
+	if (!worktreeBinding) throw new Error("land_head_pr_identity_unavailable");
+	const authority = await resolveBoundRepositoryAuthority({
+		authorityRoot: worktreeBinding.path,
+	});
+	if (
+		authority.identity !== "__main__" ||
+		(isWorktree
+			? authority.headSha !== canonical.serverHead
+			: authority.probeRepoSlug.toLowerCase() !==
+				materialized!.repo.toLowerCase())
+	) {
+		throw new Error("land_head_authority_drift");
+	}
+	const producer = deps.store.getSession(canonical.producerExecutionId);
+	const prNumber = producer?.pr_number;
+	const expectedProducerMirrorHead = producer?.pr_head_sha?.toLowerCase();
+	if (
+		!Number.isSafeInteger(prNumber) ||
+		(prNumber ?? 0) < 1 ||
+		!/^[0-9a-f]{40}$/.test(expectedProducerMirrorHead ?? "")
+	) {
+		throw new Error("land_head_pr_identity_unavailable");
+	}
+	let probe: WorkflowPrProbeResult;
+	try {
+		probe = await (deps.prProbe ?? probeWorkflowPr)({
+			prNumber: prNumber!,
+			probeRepoSlug: authority.probeRepoSlug,
+		});
+	} catch {
+		throw new Error("land_head_pr_probe_failed");
+	}
+	if (
+		typeof probe.state !== "string" ||
+		typeof probe.isDraft !== "boolean" ||
+		typeof probe.isCrossRepository !== "boolean" ||
+		typeof probe.headRefName !== "string" ||
+		typeof probe.headRefOid !== "string"
+	) {
+		throw new Error("land_head_pr_probe_invalid");
+	}
+	const state = probe.state.trim().toUpperCase();
+	if (state === "MERGED") throw new Error("land_head_pr_merged");
+	if (state !== "OPEN") throw new Error("land_head_pr_closed");
+	if (probe.isDraft) throw new Error("land_head_pr_draft");
+	if (probe.isCrossRepository) throw new Error("land_head_pr_cross_repo");
+	if (!workflowPrRefValid(probe.headRefName)) {
+		throw new Error("land_head_pr_ref_invalid");
+	}
+	if (!isWorktree && materialized!.ref !== `refs/heads/${probe.headRefName}`) {
+		throw new Error("land_head_materialized_ref_mismatch");
+	}
+	if (probe.headRefOid.trim().toLowerCase() !== canonical.serverHead) {
+		if (!isWorktree) {
+			throw new Error("land_head_materialized_pr_not_at_tip");
+		}
+		throw new WorkflowDecisionRejection("land_head_pr_not_at_tip", {
+			expectedHeadOid: canonical.serverHead,
+			expectedHeadRefName: probe.headRefName,
+			prNumber: prNumber!,
+			repoSlug: authority.probeRepoSlug,
+			currentHeadOid: probe.headRefOid.trim().toLowerCase(),
+		});
+	}
+	if (!isWorktree) {
+		return {
+			kind: "materialization_receipt",
+			prNumber: prNumber!,
+			headSha: canonical.serverHead,
+			targetRepoIdentity: authority.identity,
+			probeRepoSlug: authority.probeRepoSlug,
+			targetRepoPath: authority.path,
+			worktreeBindingGeneration: `receipt-v1:${materialized!.effectId}`,
+			expectedProducerMirrorHead: expectedProducerMirrorHead!,
+			effectId: materialized!.effectId,
+			producerNodeId: materialized!.producerNodeId,
+			outputId: materialized!.outputId,
+			outputAttempt: materialized!.attempt,
+			repo: materialized!.repo,
+			ref: materialized!.ref,
+		};
+	}
+	return {
+		kind: "worktree",
+		prNumber: prNumber!,
+		headSha: canonical.serverHead,
+		targetRepoIdentity: authority.identity,
+		probeRepoSlug: authority.probeRepoSlug,
+		targetRepoPath: authority.path,
+		worktreeBindingGeneration: worktreeBinding.generation,
+		expectedProducerMirrorHead: expectedProducerMirrorHead!,
 	};
 }
 
@@ -367,20 +553,67 @@ export function createWorkflowDecisionRouter(
 				const authority = await resolveBoundRepositoryAuthority({
 					authorityRoot: binding.target_repo_path,
 				});
+				const receiptEffectId = binding.worktree_binding_generation.startsWith(
+					"receipt-v1:",
+				)
+					? binding.worktree_binding_generation.slice("receipt-v1:".length)
+					: undefined;
+				const materialized = receiptEffectId
+					? deps.store.getWorkflowMaterializedHeadByEffect(receiptEffectId)
+					: undefined;
 				if (
 					authority.path !== binding.target_repo_path ||
 					authority.identity !== "__main__" ||
 					authority.probeRepoSlug !== binding.probe_repo_slug ||
-					authority.headSha !== binding.frozen_head_sha
+					(receiptEffectId
+						? !materialized ||
+							materialized.effectId !== receiptEffectId ||
+							materialized.repo.toLowerCase() !==
+								binding.probe_repo_slug.toLowerCase() ||
+							materialized.head.toLowerCase() !== binding.frozen_head_sha
+						: authority.headSha !== binding.frozen_head_sha)
 				) {
 					throw new Error("ship_target_authority_drift");
+				}
+				if (materialized) {
+					const nodeBinding = binding.run_id
+						? deps.store.getCurrentWorkflowNodePrBindingForHead(
+								binding.run_id,
+								binding.frozen_head_sha,
+							)
+						: undefined;
+					if (!nodeBinding) throw new Error("ship_target_authority_drift");
+					let probe: WorkflowPrProbeResult;
+					try {
+						probe = await (deps.prProbe ?? probeWorkflowPr)({
+							prNumber: nodeBinding.pr_number,
+							probeRepoSlug: binding.probe_repo_slug,
+						});
+					} catch {
+						throw new Error("ship_target_authority_drift");
+					}
+					if (
+						typeof probe.state !== "string" ||
+						typeof probe.isDraft !== "boolean" ||
+						typeof probe.isCrossRepository !== "boolean" ||
+						typeof probe.headRefName !== "string" ||
+						typeof probe.headRefOid !== "string" ||
+						probe.state.trim().toUpperCase() !== "OPEN" ||
+						probe.isDraft ||
+						probe.isCrossRepository ||
+						!workflowPrRefValid(probe.headRefName) ||
+						materialized.ref !== `refs/heads/${probe.headRefName}` ||
+						probe.headRefOid.trim().toLowerCase() !== binding.frozen_head_sha
+					) {
+						throw new Error("ship_target_authority_drift");
+					}
 				}
 				res.json({
 					ok: true,
 					executionId,
 					approveQuestionId,
 					targetRepoIdentity: binding.target_repo_identity,
-					prHeadSha: authority.headSha,
+					prHeadSha: materialized?.head ?? authority.headSha,
 				});
 				return;
 			}
@@ -454,6 +687,28 @@ export function createWorkflowDecisionRouter(
 				});
 				return;
 			}
+			let gateEntryBinding:
+				| Awaited<ReturnType<typeof resolveGateEntryBinding>>
+				| undefined;
+			try {
+				// An already-consumed credential must reach the store's immutable replay
+				// receipt without depending on a fresh network attestation.
+				gateEntryBinding = credentialRow.consumed_at
+					? undefined
+					: await resolveGateEntryBinding(deps, engineCanonical);
+			} catch (error) {
+				res.status(409).json({
+					ok: false,
+					reason:
+						error instanceof Error
+							? error.message
+							: "land_head_pr_identity_unavailable",
+					...(error instanceof WorkflowDecisionRejection && error.detail
+						? { detail: error.detail }
+						: {}),
+				});
+				return;
+			}
 			const result = deps.store.submitWorkflowDecisionByCredential({
 				credential,
 				clientRequestId,
@@ -465,6 +720,7 @@ export function createWorkflowDecisionRouter(
 				subjectProducerVendor: engineCanonical.producerVendor,
 				claimExpiresAt: credentialRow.expires_at,
 				evidence: summary ? { summary } : undefined,
+				...(gateEntryBinding ? { gateEntryBinding } : {}),
 				alertIdentity: deps.resolveAlertIdentity?.(
 					engineCanonical.reporting.project_name,
 					engineCanonical.reporting.issue_id,

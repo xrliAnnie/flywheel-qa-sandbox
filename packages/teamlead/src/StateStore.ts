@@ -26362,6 +26362,309 @@ export class StateStore {
 		return true;
 	}
 
+	private mirrorSessionPrEvidenceTx(input: {
+		executionId: string;
+		prNumber: number;
+		headSha: string;
+	}): boolean {
+		if (
+			!Number.isInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.headSha)
+		) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE sessions SET pr_number = ?, pr_head_sha = ?
+			  WHERE execution_id = ?`,
+			[input.prNumber, input.headSha.toLowerCase(), input.executionId],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	private workflowOutcomeEntersApprovalGate(input: {
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		nodeId: string;
+		outcome: string;
+	}): boolean {
+		const gateNodeId = workflowApprovalGate(input.snapshot.manifest).node;
+		const matching = input.snapshot.manifest.edges.filter(
+			(edge) =>
+				edge.from === input.nodeId && edge.condition === input.outcome,
+		);
+		return matching.length === 1 && matching[0]!.to === gateNodeId;
+	}
+
+	private workflowMaterializationGateEntryMatchesTx(input: {
+		runId: string;
+		producerExecutionId?: string;
+		candidate: Extract<
+			WorkflowGateEntryBinding,
+			{ kind: "materialization_receipt" }
+		>;
+	}): boolean {
+		if (
+			!input.producerExecutionId ||
+			!/^mat:[0-9a-f]{64}$/.test(input.candidate.effectId) ||
+			input.candidate.worktreeBindingGeneration !==
+				`receipt-v1:${input.candidate.effectId}` ||
+			input.candidate.targetRepoIdentity !== "__main__" ||
+			input.candidate.probeRepoSlug.toLowerCase() !==
+				input.candidate.repo.toLowerCase() ||
+			!input.candidate.ref.startsWith("refs/heads/") ||
+			!Number.isSafeInteger(input.candidate.outputId) ||
+			input.candidate.outputId < 1 ||
+			!Number.isSafeInteger(input.candidate.outputAttempt) ||
+			input.candidate.outputAttempt < 1
+		) {
+			return false;
+		}
+		const row = this.workflowSelectAll(
+			`SELECT intent.run_id, intent.node_id, intent.attempt, intent.output_id,
+			        intent.repo, intent.ref, adopted.commit_head, push.remote_head,
+			        output.execution_id
+			   FROM workflow_materialization_receipt intent
+			   JOIN workflow_materialization_receipt adopted
+			     ON adopted.effect_id = intent.effect_id
+			    AND adopted.stage = 'commit_adopted'
+			   JOIN workflow_materialization_receipt push
+			     ON push.effect_id = intent.effect_id
+			    AND push.stage = 'push_confirmed'
+			   JOIN workflow_side_effect_ledger ledger
+			     ON ledger.execution_id = intent.effect_id
+			    AND ledger.kind = 'materialize' AND ledger.state = 'started'
+			   JOIN workflow_node_output_current current
+			     ON current.run_id = intent.run_id AND current.node_id = intent.node_id
+			    AND current.output_id = intent.output_id AND current.attempt = intent.attempt
+			   JOIN workflow_node_outputs output
+			     ON output.id = intent.output_id AND output.run_id = intent.run_id
+			    AND output.node_id = intent.node_id AND output.attempt = intent.attempt
+			    AND output.execution_id = current.execution_id
+			  WHERE intent.effect_id = ? AND intent.stage = 'intent_pinned'
+			    AND intent.output_digest = output.output_digest`,
+			[input.candidate.effectId],
+		)[0];
+		return Boolean(
+			row &&
+				row.run_id === input.runId &&
+				row.node_id === input.candidate.producerNodeId &&
+				Number(row.attempt) === input.candidate.outputAttempt &&
+				Number(row.output_id) === input.candidate.outputId &&
+				row.repo === input.candidate.repo &&
+				row.ref === input.candidate.ref &&
+				row.commit_head === input.candidate.headSha.toLowerCase() &&
+				row.remote_head === input.candidate.headSha.toLowerCase() &&
+				row.execution_id === input.producerExecutionId,
+		);
+	}
+
+	private recordWorkflowGateEntryBindingTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		subjectDigest: string;
+		producerExecutionId?: string;
+		receiptId: string;
+		candidate: WorkflowGateEntryBinding;
+		now: string;
+	}):
+		| { ok: true }
+		| {
+				ok: false;
+				reason:
+					| "land_gate_entry_binding_mismatch"
+					| "land_gate_entry_sealed_manifest_stale";
+		  } {
+		const candidate = input.candidate;
+		if (
+			candidate.headSha.toLowerCase() !== input.subjectDigest.toLowerCase()
+		) {
+			return { ok: false, reason: "land_gate_entry_binding_mismatch" };
+		}
+		if (
+			candidate.kind === "materialization_receipt" &&
+			!this.workflowMaterializationGateEntryMatchesTx({
+				runId: input.runId,
+				producerExecutionId: input.producerExecutionId,
+				candidate,
+			})
+		) {
+			return { ok: false, reason: "land_gate_entry_binding_mismatch" };
+		}
+		if (candidate.expectedProducerMirrorHead !== undefined) {
+			if (!input.producerExecutionId) {
+				return { ok: false, reason: "land_gate_entry_binding_mismatch" };
+			}
+			const producer = this.getSession(input.producerExecutionId);
+			if (
+				producer?.pr_number !== candidate.prNumber ||
+				producer.pr_head_sha?.toLowerCase() !==
+					candidate.expectedProducerMirrorHead.toLowerCase()
+			) {
+				return { ok: false, reason: "land_gate_entry_binding_mismatch" };
+			}
+		}
+		const sealedManifest = this.getWorkflowPrManifest(input.runId);
+		if (sealedManifest?.sealed_at) {
+			const declared = this.listCurrentWorkflowDeclaredPrs(input.runId);
+			const exact =
+				sealedManifest.expected_count === 1 &&
+				declared.length === 1 &&
+				declared[0]!.repo_identity === candidate.targetRepoIdentity &&
+				declared[0]!.probe_repo_slug === candidate.probeRepoSlug &&
+				declared[0]!.pr_number === candidate.prNumber &&
+				declared[0]!.frozen_head_sha.toLowerCase() ===
+					candidate.headSha.toLowerCase();
+			if (!exact) {
+				return {
+					ok: false,
+					reason: "land_gate_entry_sealed_manifest_stale",
+				};
+			}
+		}
+		for (const current of this.currentWorkflowPrBindingRows(input.runId)) {
+			if (current.node_id === input.nodeId) continue;
+			if (
+				current.pr_number !== candidate.prNumber ||
+				current.target_repo_identity !== candidate.targetRepoIdentity ||
+				current.probe_repo_slug !== candidate.probeRepoSlug
+			) {
+				return { ok: false, reason: "land_gate_entry_binding_mismatch" };
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `pr_binding_retired:${input.runId}:${current.node_id}:${current.attempt}:by:${input.nodeId}:${input.attempt}`,
+				kind: "pr_binding_retired",
+				nodeId: current.node_id,
+				payload: {
+					retired: current,
+					successor: {
+						nodeId: input.nodeId,
+						attempt: input.attempt,
+						prNumber: candidate.prNumber,
+						headSha: candidate.headSha.toLowerCase(),
+						targetRepoIdentity: candidate.targetRepoIdentity,
+						probeRepoSlug: candidate.probeRepoSlug,
+					},
+				},
+			});
+			this.db.run(
+				`DELETE FROM workflow_node_pr_binding
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
+				[current.run_id, current.node_id, current.attempt],
+			);
+		}
+		if (
+			candidate.expectedProducerMirrorHead !== undefined &&
+			input.producerExecutionId
+		) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `gate_entry_mirror_fence:${input.runId}:${input.nodeId}:${input.attempt}`,
+				kind: "gate_entry_mirror_fence",
+				nodeId: input.nodeId,
+				executionId: input.producerExecutionId,
+				payload: {
+					producerExecutionId: input.producerExecutionId,
+					expectedProducerMirrorHead:
+						candidate.expectedProducerMirrorHead.toLowerCase(),
+					gateEntryHead: candidate.headSha.toLowerCase(),
+					prNumber: candidate.prNumber,
+				},
+			});
+		}
+		const written = this.recordWorkflowNodePrBindingTx({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			executionId: input.executionId,
+			prNumber: candidate.prNumber,
+			headSha: candidate.headSha,
+			targetRepoIdentity: candidate.targetRepoIdentity,
+			probeRepoSlug: candidate.probeRepoSlug,
+			targetRepoPath: candidate.targetRepoPath,
+			worktreeBindingGeneration: candidate.worktreeBindingGeneration,
+			receiptId: input.receiptId,
+			boundAt: input.now,
+		});
+		return written
+			? { ok: true }
+			: { ok: false, reason: "land_gate_entry_binding_mismatch" };
+	}
+
+	private workflowGateEntryMirrorFenceTx(input: {
+		runId: string;
+		binding: WorkflowNodePrBindingRow;
+	}):
+		| {
+				producerExecutionId: string;
+				expectedProducerMirrorHead: string;
+				gateEntryHead: string;
+				prNumber: number;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT payload FROM workflow_run_event
+			  WHERE run_id = ? AND event_uid = ? AND kind = 'gate_entry_mirror_fence'`,
+			[
+				input.runId,
+				`gate_entry_mirror_fence:${input.runId}:${input.binding.node_id}:${input.binding.attempt}`,
+			],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const payload = JSON.parse(String(row.payload)) as Record<string, unknown>;
+			const producerExecutionId = String(payload.producerExecutionId ?? "");
+			const expectedProducerMirrorHead = String(
+				payload.expectedProducerMirrorHead ?? "",
+			).toLowerCase();
+			const gateEntryHead = String(payload.gateEntryHead ?? "").toLowerCase();
+			const prNumber = Number(payload.prNumber);
+			if (
+				!producerExecutionId ||
+				!/^[0-9a-f]{40}$/.test(expectedProducerMirrorHead) ||
+				gateEntryHead !== input.binding.head_sha.toLowerCase() ||
+				prNumber !== input.binding.pr_number
+			) {
+				return undefined;
+			}
+			return {
+				producerExecutionId,
+				expectedProducerMirrorHead,
+				gateEntryHead,
+				prNumber,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	getWorkflowGateEntryPrOwnerExecutionId(input: {
+		runId: string;
+		prNumber: number;
+		headSha: string;
+	}): string | undefined {
+		if (
+			!input.runId ||
+			!Number.isSafeInteger(input.prNumber) ||
+			input.prNumber < 1 ||
+			!/^[0-9a-f]{40}$/i.test(input.headSha)
+		) {
+			return undefined;
+		}
+		const binding = this.getCurrentWorkflowNodePrBindingForHead(
+			input.runId,
+			input.headSha,
+		);
+		if (!binding || binding.pr_number !== input.prNumber) return undefined;
+		const fence = this.workflowGateEntryMirrorFenceTx({
+			runId: input.runId,
+			binding,
+		});
+		return fence?.producerExecutionId;
+	}
+
 	commitEnrolledCompletion(input: {
 		executionId: string;
 		route: string;
@@ -26737,26 +27040,68 @@ export class StateStore {
 					throw new Error("engine_completion_terminal_immune");
 				}
 				if (input.prBinding) {
-					const bindingWritten =
-						input.prBinding.headSha.toLowerCase() === completionSubjectDigest &&
-						this.recordWorkflowNodePrBindingTx({
+					const completionEntersApprovalGate =
+						engineOutcome !== undefined &&
+						this.workflowOutcomeEntersApprovalGate({
+							snapshot: context.snapshot,
+							nodeId: context.binding.node_id,
+							outcome: engineOutcome,
+						});
+					if (context.run.engine_owned !== 1) {
+						if (
+							!this.recordWorkflowNodePrBindingTx({
+								runId: context.binding.run_id,
+								nodeId: context.binding.node_id,
+								attempt: context.binding.attempt,
+								executionId: context.binding.execution_id,
+								prNumber: input.prBinding.prNumber,
+								headSha: input.prBinding.headSha,
+								targetRepoIdentity: input.prBinding.targetRepoIdentity,
+								probeRepoSlug: input.prBinding.probeRepoSlug,
+								targetRepoPath: input.prBinding.targetRepoPath,
+								worktreeBindingGeneration:
+									input.prBinding.worktreeBindingGeneration,
+								receiptId: input.sourceEventId,
+								boundAt: now,
+							})
+						) {
+							console.warn(
+								`[workflow-completion] PR binding rejected for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
+							);
+						}
+					} else if (completionEntersApprovalGate) {
+						const gateBinding = this.recordWorkflowGateEntryBindingTx({
 							runId: context.binding.run_id,
 							nodeId: context.binding.node_id,
 							attempt: context.binding.attempt,
 							executionId: context.binding.execution_id,
+							subjectDigest: completionSubjectDigest ?? "",
+							receiptId: input.sourceEventId,
+							candidate: {
+								kind: "worktree",
+								prNumber: input.prBinding.prNumber,
+								headSha: input.prBinding.headSha,
+								targetRepoIdentity: input.prBinding.targetRepoIdentity,
+								probeRepoSlug: input.prBinding.probeRepoSlug,
+								targetRepoPath: input.prBinding.targetRepoPath,
+								worktreeBindingGeneration:
+									input.prBinding.worktreeBindingGeneration,
+							},
+							now,
+						});
+						if (!gateBinding.ok) {
+							transitionRefusal = gateBinding.reason;
+							throw new Error("engine_completion_transition_refused");
+						}
+					} else if (
+						!this.mirrorSessionPrEvidenceTx({
+							executionId: context.binding.execution_id,
 							prNumber: input.prBinding.prNumber,
 							headSha: input.prBinding.headSha,
-							targetRepoIdentity: input.prBinding.targetRepoIdentity,
-							probeRepoSlug: input.prBinding.probeRepoSlug,
-							targetRepoPath: input.prBinding.targetRepoPath,
-							worktreeBindingGeneration:
-								input.prBinding.worktreeBindingGeneration,
-							receiptId: input.sourceEventId,
-							boundAt: now,
-						});
-					if (!bindingWritten) {
+						})
+					) {
 						console.warn(
-							`[workflow-completion] PR binding evidence rejected for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
+							`[workflow-completion] PR evidence mirror rejected for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
 						);
 					}
 				}
@@ -26862,7 +27207,30 @@ export class StateStore {
 				return { ok: false, reason: "terminal_status_immune" };
 			}
 			if (transitionRefusal) {
-				return { ok: false, reason: "transition_refused" };
+				const refusalDigest = canonicalSubmissionDigest({
+					runId: context.binding.run_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+					sourceEventId: input.sourceEventId,
+					transitionReason: transitionRefusal,
+				});
+				this.appendWorkflowRunEventChecked({
+					runId: context.binding.run_id,
+					eventUid: `completion_transition_refused:${refusalDigest}`,
+					kind: "completion_transition_refused",
+					nodeId: context.binding.node_id,
+					executionId: context.binding.execution_id,
+					payload: {
+						attempt: context.binding.attempt,
+						sourceEventId: input.sourceEventId,
+						transitionReason: transitionRefusal,
+					},
+				});
+				return {
+					ok: false,
+					reason: "transition_refused",
+					detail: { transitionReason: transitionRefusal },
+				};
 			}
 			throw error;
 		}
@@ -27014,6 +27382,7 @@ export class StateStore {
 		claimExpiresAt: string;
 		evidence?: unknown;
 		alertIdentity?: WorkflowEngineAlertIdentity;
+		gateEntryBinding?: WorkflowGateEntryBinding;
 		now?: string;
 	}): WorkflowCredentialSubmissionResult {
 		const nowIso = input.now ?? new Date().toISOString();
@@ -27141,13 +27510,54 @@ export class StateStore {
 						return;
 					}
 				}
-				const run = this.workflowSelectAll(
-					"SELECT issue_id FROM workflow_run WHERE run_id = ?",
-					[credential.run_id],
-				)[0];
+				const run = this.getWorkflowRun(credential.run_id as string);
 				if (!run) {
 					result = { ok: false, reason: "run_not_found" };
 					return;
+				}
+				let engineOutcome: string | undefined;
+				let engineSnapshot: ReturnType<typeof parseWorkflowRunSnapshot> | undefined;
+				if (run.engine_owned === 1 && run.snapshot) {
+					engineSnapshot = parseWorkflowRunSnapshot(run.snapshot);
+					const decision = resolveWorkflowDecisionContract(
+						engineSnapshot,
+						credential.node_id as string,
+					);
+					engineOutcome =
+						input.predicate === decision?.passPredicate
+							? decision.passOutcome
+							: input.predicate === decision?.failPredicate
+								? decision.failOutcome
+								: undefined;
+				}
+				const entersApprovalGate =
+					engineOutcome !== undefined &&
+					engineSnapshot !== undefined &&
+					this.workflowOutcomeEntersApprovalGate({
+						snapshot: engineSnapshot,
+						nodeId: credential.node_id as string,
+						outcome: engineOutcome,
+					});
+				if (input.gateEntryBinding) {
+					if (!entersApprovalGate) {
+						transitionRefusal = "land_gate_entry_binding_mismatch";
+						throw new Error("engine_decision_transition_refused");
+					}
+					const gateBinding = this.recordWorkflowGateEntryBindingTx({
+							runId: credential.run_id as string,
+							nodeId: credential.node_id as string,
+							attempt: Number(credential.attempt),
+							executionId: credential.execution_id as string,
+							subjectDigest: input.subjectDigest,
+							producerExecutionId: input.subjectProducerExecutionId,
+							receiptId: `gate-entry:${credential.id}:${input.clientRequestId}`,
+							candidate: input.gateEntryBinding,
+							now: nowIso,
+						});
+					if (!gateBinding.ok) {
+						transitionRefusal = gateBinding.reason;
+						throw new Error("engine_decision_transition_refused");
+					}
 				}
 
 				// The runner never receives this capability token. It exists only to keep
@@ -27245,19 +27655,8 @@ export class StateStore {
 					executionId: credential.execution_id as string,
 					payload: { claimId, serverSeq, predicate: input.predicate },
 				});
-				const engineRun = this.getWorkflowRun(credential.run_id as string);
-				if (engineRun?.engine_owned === 1 && engineRun.snapshot) {
-					const decision = resolveWorkflowDecisionContract(
-						parseWorkflowRunSnapshot(engineRun.snapshot),
-						credential.node_id as string,
-					);
-					const outcome =
-						input.predicate === decision?.passPredicate
-							? decision.passOutcome
-							: input.predicate === decision?.failPredicate
-								? decision.failOutcome
-								: undefined;
-					if (!outcome) {
+				if (run.engine_owned === 1 && run.snapshot) {
+					if (!engineOutcome) {
 						transitionRefusal = "predicate_has_no_engine_outcome";
 						throw new Error("engine_decision_transition_refused");
 					}
@@ -27266,7 +27665,7 @@ export class StateStore {
 						nodeId: credential.node_id as string,
 						attempt: Number(credential.attempt),
 						executionId: credential.execution_id as string,
-						outcome,
+						outcome: engineOutcome,
 						subjectDigest: input.subjectDigest,
 						alertIdentity: input.alertIdentity,
 						now: nowIso,
@@ -27285,7 +27684,36 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (transitionRefusal) {
-				return { ok: false, reason: "transition_refused" };
+				const refusalDigest = canonicalSubmissionDigest({
+					runId: String(
+						this.getWorkflowSubmissionCredentialByToken(input.credential)?.run_id ??
+							"unknown",
+					),
+					clientRequestId: input.clientRequestId,
+					transitionReason: transitionRefusal,
+				});
+				const credential = this.getWorkflowSubmissionCredentialByToken(
+					input.credential,
+				);
+				if (credential) {
+					this.appendWorkflowRunEventChecked({
+						runId: credential.run_id,
+						eventUid: `decision_transition_refused:${refusalDigest}`,
+						kind: "decision_transition_refused",
+						nodeId: credential.node_id,
+						executionId: credential.execution_id,
+						payload: {
+							attempt: credential.attempt,
+							clientRequestId: input.clientRequestId,
+							transitionReason: transitionRefusal,
+						},
+					});
+				}
+				return {
+					ok: false,
+					reason: "transition_refused",
+					detail: { transitionReason: transitionRefusal },
+				};
 			}
 			throw error;
 		}
@@ -30204,13 +30632,30 @@ export class StateStore {
 				input.runId,
 				proof.subjectDigest,
 			);
+			const mirrorFence = prBinding
+				? this.workflowGateEntryMirrorFenceTx({
+						runId: input.runId,
+						binding: prBinding,
+					})
+				: undefined;
+			const carrierMatchesFence =
+				candidate?.execution_id != null &&
+				mirrorFence?.producerExecutionId === candidate.execution_id &&
+				session?.pr_number === prBinding?.pr_number &&
+				(session?.pr_head_sha?.toLowerCase() ===
+					mirrorFence.expectedProducerMirrorHead ||
+					session?.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase());
+			const carrierMatchesDirectBinding =
+				prBinding?.node_id === authority.carrierNodeId &&
+				prBinding?.attempt === candidate?.attempt &&
+				session?.pr_number === prBinding.pr_number &&
+				session.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase();
 			if (
 				candidate?.execution_id &&
 				activation &&
 				(session?.status === "running" || session?.status === "ship_parked") &&
-				prBinding?.node_id === authority.carrierNodeId &&
-				prBinding.attempt === candidate.attempt &&
-				session.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase()
+				prBinding != null &&
+				(carrierMatchesFence || carrierMatchesDirectBinding)
 			) {
 				this.db.run(
 					`UPDATE sessions
@@ -30223,15 +30668,13 @@ export class StateStore {
 					        terminal_at = NULL
 				  WHERE execution_id = ?
 				    AND status IN ('running','ship_parked')
-				    AND review_question_id IS NULL
-					    AND lower(pr_head_sha) = lower(?)`,
+				    AND review_question_id IS NULL`,
 					[
 						questionId,
 						proof.subjectDigest,
 						input.now,
 						input.now,
 						candidate.execution_id,
-						proof.subjectDigest,
 					],
 				);
 				if (this.db.getRowsModified() === 1) {
@@ -31514,9 +31957,20 @@ export class StateStore {
 	getWorkflowMaterializedHead(
 		runId: string,
 		producerNodeId: string,
-	): { head: string; outputId: number; attempt: number } | undefined {
+	):
+		| {
+				head: string;
+				outputId: number;
+				attempt: number;
+				effectId: string;
+				producerNodeId: string;
+				repo: string;
+				ref: string;
+		  }
+		| undefined {
 		const row = this.workflowSelectAll(
-			`SELECT push.remote_head, intent.output_id, intent.attempt
+			`SELECT push.remote_head, intent.output_id, intent.attempt,
+			        intent.effect_id, intent.node_id, intent.repo, intent.ref
 			   FROM workflow_materialization_receipt intent
 			   JOIN workflow_materialization_receipt adopted
 			     ON adopted.effect_id = intent.effect_id AND adopted.stage = 'commit_adopted'
@@ -31527,8 +31981,13 @@ export class StateStore {
 			   JOIN workflow_node_output_current current
 			     ON current.run_id = intent.run_id AND current.node_id = intent.node_id
 			    AND current.output_id = intent.output_id AND current.attempt = intent.attempt
+			   JOIN workflow_node_outputs output
+			     ON output.id = intent.output_id AND output.run_id = intent.run_id
+			    AND output.node_id = intent.node_id AND output.attempt = intent.attempt
+			    AND output.execution_id = current.execution_id
 			  WHERE intent.stage = 'intent_pinned' AND intent.run_id = ? AND intent.node_id = ?
 			    AND ledger.state = 'started'
+			    AND intent.output_digest = output.output_digest
 			    AND push.remote_head = adopted.commit_head
 			  ORDER BY push.id DESC LIMIT 1`,
 			[runId, producerNodeId],
@@ -31538,6 +31997,60 @@ export class StateStore {
 					head: row.remote_head as string,
 					outputId: Number(row.output_id),
 					attempt: Number(row.attempt),
+					effectId: row.effect_id as string,
+					producerNodeId: row.node_id as string,
+					repo: row.repo as string,
+					ref: row.ref as string,
+				}
+			: undefined;
+	}
+
+	getWorkflowMaterializedHeadByEffect(
+		effectId: string,
+	):
+		| {
+				head: string;
+				outputId: number;
+				attempt: number;
+				effectId: string;
+				producerNodeId: string;
+				repo: string;
+				ref: string;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT push.remote_head, intent.output_id, intent.attempt,
+			        intent.effect_id, intent.node_id, intent.repo, intent.ref
+			   FROM workflow_materialization_receipt intent
+			   JOIN workflow_materialization_receipt adopted
+			     ON adopted.effect_id = intent.effect_id AND adopted.stage = 'commit_adopted'
+			   JOIN workflow_materialization_receipt push
+			     ON push.effect_id = intent.effect_id AND push.stage = 'push_confirmed'
+			   JOIN workflow_side_effect_ledger ledger
+			     ON ledger.execution_id = intent.effect_id AND ledger.kind = 'materialize'
+			   JOIN workflow_node_output_current current
+			     ON current.run_id = intent.run_id AND current.node_id = intent.node_id
+			    AND current.output_id = intent.output_id AND current.attempt = intent.attempt
+			   JOIN workflow_node_outputs output
+			     ON output.id = intent.output_id AND output.run_id = intent.run_id
+			    AND output.node_id = intent.node_id AND output.attempt = intent.attempt
+			    AND output.execution_id = current.execution_id
+			  WHERE intent.stage = 'intent_pinned' AND intent.effect_id = ?
+			    AND ledger.state = 'started'
+			    AND intent.output_digest = output.output_digest
+			    AND push.remote_head = adopted.commit_head
+			  ORDER BY push.id DESC LIMIT 1`,
+			[effectId],
+		)[0];
+		return row
+			? {
+					head: row.remote_head as string,
+					outputId: Number(row.output_id),
+					attempt: Number(row.attempt),
+					effectId: row.effect_id as string,
+					producerNodeId: row.node_id as string,
+					repo: row.repo as string,
+					ref: row.ref as string,
 				}
 			: undefined;
 	}
@@ -33790,13 +34303,29 @@ export class StateStore {
 			String(holder.run_id),
 			String(holder.head_sha),
 		);
+		const mirrorFence = prBinding
+			? this.workflowGateEntryMirrorFenceTx({
+					runId: String(holder.run_id),
+					binding: prBinding,
+				})
+			: undefined;
+		const legacyCarrierBinding =
+			prBinding?.node_id === authority.carrierNodeId &&
+			prBinding?.attempt === candidate.attempt &&
+			session?.pr_head_sha?.toLowerCase() ===
+				String(holder.head_sha).toLowerCase();
+		const fencedGateEntryBinding =
+			mirrorFence?.producerExecutionId === candidateExecutionId &&
+			session?.pr_number === prBinding?.pr_number &&
+			(session?.pr_head_sha?.toLowerCase() ===
+				mirrorFence.expectedProducerMirrorHead ||
+				session?.pr_head_sha?.toLowerCase() ===
+					String(holder.head_sha).toLowerCase());
 		if (
 			session?.status !== "ship_parked" ||
 			session.review_question_id != null ||
-			prBinding?.node_id !== authority.carrierNodeId ||
-			prBinding.attempt !== candidate.attempt ||
-			session.pr_head_sha?.toLowerCase() !==
-				String(holder.head_sha).toLowerCase()
+			prBinding == null ||
+			(!legacyCarrierBinding && !fencedGateEntryBinding)
 		) {
 			return undefined;
 		}
@@ -33965,14 +34494,29 @@ export class StateStore {
 				String(holder.run_id),
 				String(holder.head_sha),
 			);
+			const mirrorFence = prBinding
+				? this.workflowGateEntryMirrorFenceTx({
+						runId: String(holder.run_id),
+						binding: prBinding,
+					})
+				: undefined;
+			const legacyCarrierBinding =
+				prBinding?.node_id === authority.carrierNodeId &&
+				prBinding?.attempt === candidate.attempt &&
+				session?.pr_head_sha?.toLowerCase() ===
+					String(holder.head_sha).toLowerCase();
+			const fencedGateEntryBinding =
+				mirrorFence?.producerExecutionId === input.candidateExecutionId &&
+				session?.pr_number === prBinding?.pr_number &&
+				(session?.pr_head_sha?.toLowerCase() ===
+					mirrorFence.expectedProducerMirrorHead ||
+					session?.pr_head_sha?.toLowerCase() ===
+						String(holder.head_sha).toLowerCase());
 			if (
 				session?.status !== "ship_parked" ||
 				session.review_question_id != null ||
 				prBinding == null ||
-				prBinding.node_id !== authority.carrierNodeId ||
-				prBinding.attempt !== candidate.attempt ||
-				session.pr_head_sha?.toLowerCase() !==
-					String(holder.head_sha).toLowerCase()
+				(!legacyCarrierBinding && !fencedGateEntryBinding)
 			) {
 				result = { ok: false, reason: "carrier_session_mismatch" };
 				return;
@@ -33999,15 +34543,13 @@ export class StateStore {
 				        gate_timeout_notified_at = NULL, last_activity_at = ?,
 				        terminal_at = NULL
 				  WHERE execution_id = ? AND status = 'ship_parked'
-				    AND review_question_id IS NULL
-				    AND lower(pr_head_sha) = lower(?)`,
+				    AND review_question_id IS NULL`,
 				[
 					input.questionId,
 					holder.head_sha,
 					input.now,
 					input.now,
 					input.candidateExecutionId,
-					holder.head_sha,
 				],
 			);
 			if (this.db.getRowsModified() !== 1) {
@@ -37402,6 +37944,30 @@ export interface WorkflowNodePrBindingRow {
 	bound_at: string;
 }
 
+interface WorkflowGateEntryBindingBase {
+	prNumber: number;
+	headSha: string;
+	targetRepoIdentity: string;
+	probeRepoSlug: string;
+	targetRepoPath: string;
+	worktreeBindingGeneration: string;
+	expectedProducerMirrorHead?: string;
+}
+
+export type WorkflowGateEntryBinding =
+	| (WorkflowGateEntryBindingBase & {
+			kind: "worktree";
+	  })
+	| (WorkflowGateEntryBindingBase & {
+			kind: "materialization_receipt";
+			effectId: string;
+			producerNodeId: string;
+			outputId: number;
+			outputAttempt: number;
+			repo: string;
+			ref: string;
+	  });
+
 export interface WorkflowShipTargetBindingRow {
 	approve_question_id: string;
 	run_id: string | null;
@@ -38108,6 +38674,7 @@ export type WorkflowCompletionResult =
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "transition_refused";
+			detail?: { transitionReason: string };
 	  };
 
 export interface RunQuiescenceEvidence {
@@ -38328,6 +38895,7 @@ export type WorkflowCredentialSubmissionResult =
 				| "invalid_timestamp"
 				| "run_not_found"
 				| "transition_refused";
+			detail?: { transitionReason: string };
 	  };
 
 export interface WorkflowRunEventRow {

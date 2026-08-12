@@ -1,0 +1,11 @@
+flowchart TB
+    A["implement 节点完成<br/>账本登记代码快照 B"] --> B["QA 节点开工<br/>(流水线两条硬规矩)"]
+    B --> C1["规矩一:必须记进度账<br/>progress.md 提交到分支"]
+    B --> C2["规矩二:测试报告<br/>必须提交到分支"]
+    C1 --> D["QA 的最新快照变成 T<br/>T = B + 纯文档提交"]
+    C2 --> D
+    D --> E{"land 闸(FLY-1655):<br/>快照必须精确等于账本里的 B"}
+    E -->|"T ≠ B 必然成立"| F["❌ 409 拒收<br/>每个代码任务的 QA 都撞墙<br/>只能靠 Lead 手工改账本"]
+    style F fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style E fill:#fff3d6,stroke:#ff9500
+    style A fill:#e8f2ff,stroke:#007aff

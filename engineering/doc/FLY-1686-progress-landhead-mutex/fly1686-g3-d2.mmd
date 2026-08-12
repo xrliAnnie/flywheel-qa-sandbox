@@ -1,0 +1,11 @@
+flowchart TD
+    A["1. implement 完成 → commit 1<br/>(只登记 PR 是哪一个,不冻结版本)"] --> B["2. QA 介入测试<br/>(记账、写报告随便提交,<br/>没有任何闸会为此拒收)"]
+    B --> C["3. 测试通过 → commit 2<br/>+ 报告发给 founder"]
+    C --> D["★ 就在这一刻绑定:<br/>服务端亲自读出 commit 2 指纹<br/>+ 证实 GitHub PR 就停在 commit 2<br/>→ 一次性登记为上线版本"]
+    D --> E["4. founder 看到的、批的<br/>就是 commit 2"]
+    E --> F["5. 上线(land):合并的<br/>还是 commit 2<br/>等值检查一处未松"]
+    G["QA 判「不通过」→ 回工重做<br/>永远不经过绑定,永远畅通"] -.-> B
+    style D fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style E fill:#e6f9ec,stroke:#34c759
+    style F fill:#e6f9ec,stroke:#34c759
+    style G fill:#f3e8fd,stroke:#af52de

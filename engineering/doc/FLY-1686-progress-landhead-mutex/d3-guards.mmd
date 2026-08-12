@@ -1,0 +1,14 @@
+flowchart LR
+    subgraph guards["四道全部通过才允许改账本(任何一道不过 = 原样拒收)"]
+        G1["守卫①<br/>凭据体检<br/>过期/用过/吊销<br/>连体检都不给做"] --> G2["守卫②<br/>血缘证明<br/>T 必须是 B 的<br/>正向延续"]
+        G2 --> G3["守卫③<br/>纯文档白名单<br/>只许本 issue 的<br/>doc 文件夹变化"]
+        G3 --> G4["守卫④<br/>GitHub 终点取证<br/>PR 最新提交<br/>必须已经是 T"]
+    end
+    G4 --> OK["同一笔数据库事务:<br/>账本 B→T + 审计事件 + 过闸"]
+    G3 -.->|"发现代码差异"| ALERT["❌ 拒收 + 告警 Lead<br/>(回工才是正解)"]
+    style OK fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style ALERT fill:#ffe5e2,stroke:#ff3b30
+    style G1 fill:#f2ecff,stroke:#af52de
+    style G2 fill:#f2ecff,stroke:#af52de
+    style G3 fill:#f2ecff,stroke:#af52de
+    style G4 fill:#f2ecff,stroke:#af52de

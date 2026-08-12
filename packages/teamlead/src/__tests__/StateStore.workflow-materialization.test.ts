@@ -278,6 +278,10 @@ describe("workflow materialization ledger and receipts", () => {
 			head: COMMIT_HEAD,
 			outputId: 1,
 			attempt: 1,
+			effectId: intent.effect_id,
+			producerNodeId: PRODUCER,
+			repo: REPO,
+			ref: REF,
 		});
 		expect(
 			store.resolveWorkflowDecisionClaim({

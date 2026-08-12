@@ -75,8 +75,13 @@ function advance(
 
 async function openRunnerShipGate(
 	store: StateStore,
-	options: { forceUnbound?: boolean } = {},
+	options: {
+		forceUnbound?: boolean;
+		delayCarrier?: boolean;
+		gateEntryHead?: string;
+	} = {},
 ) {
+	const gateEntryHead = options.gateEntryHead ?? "a".repeat(40);
 	advance(store, {
 		nodeId: "design",
 		attempt: 1,
@@ -96,6 +101,12 @@ async function openRunnerShipGate(
 			env: engineFlags,
 		}),
 	).toMatchObject({ ok: true });
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+	});
 	expect(
 		store.commitEnrolledCompletion({
 			executionId: "implement-1",
@@ -141,18 +152,41 @@ async function openRunnerShipGate(
 			project_name: "flywheel",
 			status: "running",
 		});
+	} else if (options.delayCarrier) {
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "completed",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+		});
 	}
 	expect(
 		store.submitWorkflowDecisionByCredential({
 			credential: qaAdmission.submissionCredential,
 			clientRequestId: "qa-pass-helper",
 			predicate: "qa_passed",
-			subjectDigest: "a".repeat(40),
+			subjectDigest: gateEntryHead,
 			issuerVendor: "claude",
 			issuerModel: "claude-opus-4-8",
 			subjectProducerExecutionId: "implement-1",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "2026-07-16T02:00:00.000Z",
+			...(options.forceUnbound
+				? {}
+				: {
+						gateEntryBinding: {
+							kind: "worktree" as const,
+							prNumber: 1624,
+							headSha: gateEntryHead,
+							targetRepoIdentity: "__main__",
+							probeRepoSlug: "xrliAnnie/flywheel",
+							targetRepoPath: "/tmp/flywheel",
+							worktreeBindingGeneration: "generation-1",
+							expectedProducerMirrorHead: "a".repeat(40),
+						},
+					}),
 			alertIdentity: {
 				leadId: "flywheel-eng-lead",
 				projectName: "flywheel",
@@ -176,17 +210,19 @@ function bindRunnerShipAuthority(
 		status: "awaiting_review",
 		pr_number: prNumber,
 	});
-	store.setReviewBinding("implement-1", {
-		questionId: holder.question_id,
-		prHeadSha: "a".repeat(40),
-		shipTarget: {
-			runId: "run-1",
-			targetRepoPath: "/tmp/flywheel",
-			targetRepoIdentity: "__main__",
-			probeRepoSlug: "xrliAnnie/flywheel",
-			worktreeBindingGeneration: "generation-1",
-		},
-	});
+	if (!store.getWorkflowShipTargetBinding(holder.question_id)) {
+		store.setReviewBinding("implement-1", {
+			questionId: holder.question_id,
+			prHeadSha: "a".repeat(40),
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+		});
+	}
 	return {
 		repoIdentity: "__main__",
 		probeRepoSlug: "xrliAnnie/flywheel",
@@ -490,6 +526,12 @@ describe("engine-owned snapshot transition transaction", () => {
 				env: engineFlags,
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+		});
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "implement-1",
@@ -510,11 +552,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		).toMatchObject({ ok: true });
 		expect(
 			store.getCurrentWorkflowNodePrBindingForHead("run-1", "a".repeat(40)),
-		).toMatchObject({
-			node_id: "implement",
-			attempt: 1,
-			head_sha: "a".repeat(40),
-		});
+		).toBeUndefined();
 		expect(store.getSession("implement-1")).toMatchObject({
 			status: "ship_parked",
 			pr_head_sha: "a".repeat(40),
@@ -551,9 +589,22 @@ describe("engine-owned snapshot transition transaction", () => {
 				subjectProducerExecutionId: "implement-1",
 				subjectProducerVendor: "codex",
 				claimExpiresAt: "2026-07-16T02:00:00.000Z",
+				gateEntryBinding: {
+					kind: "worktree",
+					prNumber: 1624,
+					headSha: "a".repeat(40),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-1",
+					expectedProducerMirrorHead: "a".repeat(40),
+				},
 				now: "2026-07-16T01:15:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", "a".repeat(40)),
+		).toMatchObject({ node_id: "qa", attempt: 1 });
 
 		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
 		expect(holder).toMatchObject({
@@ -1155,6 +1206,58 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.getSession("implement-1")?.awaiting_review_entered_at).toBe(
 			request.now,
 		);
+		store.close();
+	});
+
+	it("rebinds a delayed runner-ship carrier through the persisted B-to-T mirror fence", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const gateEntryHead = "c".repeat(40);
+		const holder = await openRunnerShipGate(store, {
+			delayCarrier: true,
+			gateEntryHead,
+		});
+		expect(holder).toMatchObject({
+			carrier_binding_state: "unbound",
+			head_sha: gateEntryHead,
+		});
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", gateEntryHead),
+		).toMatchObject({ node_id: "qa" });
+
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "ship_parked",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+		});
+		const canonical = store.resolveWorkflowGateCarrierRebindCanonical(
+			holder.question_id,
+			"implement-1",
+		);
+		expect(canonical).toMatchObject({
+			candidateExecutionId: "implement-1",
+			subjectDigest: gateEntryHead,
+		});
+		if (!canonical) throw new Error("mirror-fenced rebind unavailable");
+		expect(
+			store.rebindWorkflowGateCarrier({
+				requestId: canonical.requestId,
+				questionId: holder.question_id,
+				candidateExecutionId: "implement-1",
+				canonicalDigest: canonicalSubmissionDigest(canonical),
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.getSession("implement-1")).toMatchObject({
+			status: "awaiting_review",
+			pr_head_sha: gateEntryHead,
+			review_question_id: holder.question_id,
+		});
+		expect(
+			store.getWorkflowShipTargetBinding(holder.question_id),
+		).toMatchObject({ frozen_head_sha: gateEntryHead });
 		store.close();
 	});
 

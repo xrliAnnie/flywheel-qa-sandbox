@@ -184,6 +184,10 @@ export {
 	DEFAULT_PROOFSHOT_PATH_ALLOWLIST,
 	DEFAULT_PROOFSHOT_VISION_TOKEN_BUDGET,
 } from "./proofshot-defaults.js";
+export {
+	normalizeGitHubRepoSlug,
+	parseGitHubPushEndpoint,
+} from "./repository-authority.js";
 export type {
 	RepositoryBaselineEntry,
 	RepositoryBaselineSeal,

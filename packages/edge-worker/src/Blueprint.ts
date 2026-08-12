@@ -1720,6 +1720,17 @@ export class Blueprint {
 					`Your terminal action is one structured verdict: run \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"\`. Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
 					"Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL in the qa-result process exactly as injected: never use env -u and never reopen a shell that drops the runner environment. If the server reports replay_payload_mismatch, stop retrying and report both possible verdicts to your Lead; stripping the credential is forbidden.",
 				);
+				if (ctx.workflowCapabilities.pass_enters_approval_gate === true) {
+					const authorityKind = String(
+						ctx.workflowCapabilities.gate_entry_authority_kind ?? "",
+					);
+					systemPromptLines.push(
+						authorityKind === "worktree"
+							? "Your PASS enters the approval gate and binds your worktree HEAD at verdict time as the exact version eligible to ship."
+							: "Your PASS enters the approval gate and binds the server-attested materialized head as the exact version eligible to ship.",
+						"After submitting this verdict, do not create, amend, or push another commit; the accepted gate-entry head is immutable.",
+					);
+				}
 			} else if (ctx.workflowCapabilities.produces_output === true) {
 				if (
 					ctx.workflowCapabilities.creates_pr === true &&
