@@ -1,14 +1,13 @@
 ---
 issue: FLY-1708
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-12T03:50:55.048Z
-nextStep: audit mailbox queue, maintenance DB seam, launcher birth points, and
-  dead-letter sinks
+phaseCursor: 2/6
+updated: 2026-08-12T03:53:16.276Z
+nextStep: write failing adopt, formatter, CLI, and launcher-hook tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: implement (1/6)
-**next**: audit mailbox queue, maintenance DB seam, launcher birth points, and dead-letter sinks
+**phase**: implement (2/6)
+**next**: write failing adopt, formatter, CLI, and launcher-hook tests
