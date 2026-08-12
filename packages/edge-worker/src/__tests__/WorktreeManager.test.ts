@@ -82,9 +82,199 @@ const PORCELAIN_SINGLE = [
 // ─── Tests ───────────────────────────────────────
 
 describe("WorktreeManager", () => {
+	beforeEach(() => {
+		// Existing tests lock the pre-FLY-1718 command contract. P2-specific tests
+		// opt back in explicitly and provide an isolated state directory.
+		vi.stubEnv("FLYWHEEL_PUSH_GUARD", "0");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	// ── create() ──
 
 	describe("create()", () => {
+		function guardConfig(baseDir: string, stateDir: string) {
+			return {
+				baseDir,
+				pushGuardStateDir: stateDir,
+				pushGuardSourcePath: path.join(
+					process.cwd(),
+					"assets",
+					"push-guard",
+					"pre-push",
+				),
+			} as ConstructorParameters<typeof WorktreeManager>[0] & {
+				pushGuardStateDir: string;
+				pushGuardSourcePath: string;
+			};
+		}
+
+		it("FLY-1718 installs and configures the worktree-local push guard", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-"));
+			const baseDir = path.join(root, "worktrees");
+			const stateDir = path.join(root, "state");
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(guardConfig(baseDir, stateDir), fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+
+			const installed = path.join(stateDir, "push-guard", "hooks", "pre-push");
+			const stat = fs.lstatSync(installed);
+			expect(stat.isFile()).toBe(true);
+			expect(stat.isSymbolicLink()).toBe(false);
+			expect(stat.mode & 0o100).toBe(0o100);
+			expect(fs.readFileSync(installed, "utf8")).toBe(
+				fs.readFileSync(
+					path.join(process.cwd(), "assets", "push-guard", "pre-push"),
+					"utf8",
+				),
+			);
+			expect(
+				calls.some((call) => call.args.includes("extensions.worktreeConfig")),
+			).toBe(true);
+			expect(
+				calls.some(
+					(call) =>
+						call.args.includes("--worktree") &&
+						call.args.includes("core.hooksPath") &&
+						call.args.includes(path.dirname(installed)),
+				),
+			).toBe(true);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 keeps a valid install byte-stable and repairs tampering", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(
+				path.join(os.tmpdir(), "wt-push-guard-idem-"),
+			);
+			const config = guardConfig(
+				path.join(root, "worktrees"),
+				path.join(root, "state"),
+			);
+			const installed = path.join(
+				root,
+				"state",
+				"push-guard",
+				"hooks",
+				"pre-push",
+			);
+			const { fn } = makeMockExec();
+			const rename = vi.spyOn(fs, "renameSync");
+			const mgr = new WorktreeManager(config, fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-43",
+			});
+			expect(rename).toHaveBeenCalledTimes(1);
+
+			fs.writeFileSync(installed, "tampered\n", "utf8");
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-44",
+			});
+			expect(rename).toHaveBeenCalledTimes(2);
+			expect(fs.readFileSync(installed, "utf8")).toContain("FLY-1718");
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 rolls back the new worktree and branch when guard config fails", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-rb-"));
+			const baseDir = path.join(root, "worktrees");
+			const worktreePath = path.join(baseDir, "proj", "repo-GEO-42");
+			fs.mkdirSync(worktreePath, { recursive: true });
+			const { fn, calls } = makeMockExec([
+				{ stdout: "" },
+				{ stdout: "" },
+				{ stdout: "" },
+				new Error("worktree config refused"),
+				{ stdout: PORCELAIN_SINGLE },
+				{ stdout: "" },
+				{ stdout: "" },
+			]);
+			const mgr = new WorktreeManager(
+				guardConfig(baseDir, path.join(root, "state")),
+				fn,
+			);
+
+			await expect(
+				mgr.create({
+					mainRepoPath: "/main/repo",
+					projectName: "proj",
+					issueId: "GEO-42",
+				}),
+			).rejects.toThrow("worktree config refused");
+			expect(fs.existsSync(worktreePath)).toBe(false);
+			expect(
+				calls.some(
+					(call) => call.args.includes("branch") && call.args.includes("-D"),
+				),
+			).toBe(true);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 kill switch performs no install or extra git config", async () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-off-"));
+			const stateDir = path.join(root, "state");
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(
+				guardConfig(path.join(root, "worktrees"), stateDir),
+				fn,
+			);
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+			expect(fs.existsSync(path.join(stateDir, "push-guard"))).toBe(false);
+			expect(calls.some((call) => call.args.includes("core.hooksPath"))).toBe(
+				false,
+			);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 protects the Voice Bridge-style default constructor path", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(
+				path.join(os.tmpdir(), "wt-push-guard-voice-"),
+			);
+			vi.stubEnv("FLYWHEEL_STATE_DIR", root);
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(undefined, fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "MEETING-1",
+			});
+
+			expect(
+				fs.existsSync(
+					path.join(root, "state", "push-guard", "hooks", "pre-push"),
+				),
+			).toBe(true);
+			expect(calls.some((call) => call.args.includes("core.hooksPath"))).toBe(
+				true,
+			);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
 		it("calls correct git worktree add command", async () => {
 			const { fn, calls } = makeMockExec([
 				{ stdout: "" }, // git worktree add

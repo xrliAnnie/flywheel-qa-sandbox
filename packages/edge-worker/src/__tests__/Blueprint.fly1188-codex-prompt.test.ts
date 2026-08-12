@@ -165,6 +165,15 @@ async function buildCodexPrompt(
 }
 
 describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references", () => {
+	it("FLY-1718: makes push-guard bypasses forbidden and ACK Lead-supervised", async () => {
+		const prompt = await buildCodexPrompt();
+		expect(prompt).toContain("git push --no-verify");
+		expect(prompt).toContain("core.hooksPath");
+		expect(prompt).toContain("Lead confirmation");
+		expect(prompt).toContain("FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>");
+		expect(prompt).toContain("one command");
+	});
+
 	it("FLY-1718: renders inherited branch/PR inventory without claiming a resume or gate skip", async () => {
 		const prompt = await buildCodexPrompt({
 			startPoint: "a".repeat(40),
