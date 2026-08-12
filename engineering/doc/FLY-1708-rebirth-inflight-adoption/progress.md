@@ -1,13 +1,14 @@
 ---
 issue: FLY-1708
-phase: design
-phaseCursor: 4/4
-updated: 2026-08-12T03:48:35.960Z
-nextStep: design node complete; successor = implement per plan.md
+phase: implement
+phaseCursor: 1/6
+updated: 2026-08-12T03:50:55.048Z
+nextStep: audit mailbox queue, maintenance DB seam, launcher birth points, and
+  dead-letter sinks
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: design (4/4)
-**next**: design node complete; successor = implement per plan.md
+**phase**: implement (1/6)
+**next**: audit mailbox queue, maintenance DB seam, launcher birth points, and dead-letter sinks
