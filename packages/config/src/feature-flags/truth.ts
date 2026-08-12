@@ -283,6 +283,9 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 };
 
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_RECEIPT_FOUNDATION", retiredBy: "FLY-1645" },
+	{ envVar: "FLYWHEEL_MAILBOX_DISCORD", retiredBy: "FLY-1645" },
+	{ envVar: "FLYWHEEL_CHAT_RECEIPTS", retiredBy: "FLY-1645" },
 	{ envVar: "FLYWHEEL_WATCHDOG_LOOP_HEARTBEAT", retiredBy: "FLY-1570" },
 	{ envVar: "FLYWHEEL_RECEIPT_ACTIVATION_DRY_RUN", retiredBy: "FLY-1570" },
 	{ envVar: "FLYWHEEL_LEAD_PENDING_ESCALATION", retiredBy: "FLY-1570" },

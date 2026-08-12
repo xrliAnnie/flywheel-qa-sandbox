@@ -1,0 +1,17 @@
+flowchart TB
+    F["👩‍💼 founder 在 Discord 发一条消息"]
+    F --> T3["✅ discord_chat 投递行<br/>(1574 新流,carrier=inbox)"]
+    F --> T1["🧾 收据 #1: chat:… 行<br/>(plugin 铸造,carrier=external)"]
+    F --> T2["🧾 收据 #2: founder_msg:… 行<br/>(Bridge 铸造,carrier=inbox)"]
+    T3 --> L["1573 租约合批投递 → Lead 看到消息"]
+    T1 --> E1["发射器 E1: reconcilePendingPass<br/>Lead 每次重启逐行重播<br/>(8-10 实弹: 837 条灌爆 context)"]
+    T2 --> E2["发射器 E2: 冻批无限重投<br/>关账命令只写账本不动行<br/>→ 行永远被重新选中"]
+    E1 -.->|"[redelivery] 无限循环"| DEAD1["永久欠账"]
+    E2 -.->|"成批无限循环"| DEAD1
+    style T1 fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style T2 fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style E1 fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style E2 fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style DEAD1 fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style T3 fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style L fill:#e8f5e9,stroke:#34c759,stroke-width:2px

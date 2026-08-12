@@ -140,7 +140,8 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(delivered.modelPayload).toContain(
 			"[mailbox-batch batch-1 | 3 messages",
 		);
-		expect(delivered.modelPayload).toContain("[receipt:A]");
+		expect(delivered.modelPayload).not.toContain("[receipt:");
+		expect(delivered.modelPayload).toContain("A\n\nB\n\nC");
 		expect(queue.getById("A")).toMatchObject({
 			state: "LEASED",
 			batch_id: "batch-1",
@@ -183,8 +184,10 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(inbox[0]?.text).toContain(
 			"You must ack this batch with flywheel_inbox_ack_batch",
 		);
-		expect(inbox[0]?.text).toContain("[receipt:A]");
-		expect(inbox[1]?.text).toContain("[receipt:B]");
+		expect(inbox[0]?.text).not.toContain("[receipt:");
+		expect(inbox[1]?.text).not.toContain("[receipt:");
+		expect(inbox[0]?.text).toContain("A");
+		expect(inbox[1]?.text).toBe("B");
 		expect(queue.getById("A")?.state).toBe("LEASED");
 	});
 	it("records heartbeat and ACKs only after adapter receipt plus audit", async () => {
@@ -253,7 +256,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			["A", "B"],
 			["A", "B"],
 		]);
-		expect(batches[0]?.modelPayload).toBe("[receipt:A]\nA\n\n[receipt:B]\nB");
+		expect(batches[0]?.modelPayload).toBe("A\n\nB");
 		expect(queue.getById("C")?.state).toBe("QUEUED");
 	});
 

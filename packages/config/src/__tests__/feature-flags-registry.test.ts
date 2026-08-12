@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as FeatureFlags from "../feature-flags/index.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
+import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 
 // FLY-709: the registry's hard invariants — these are the safety rails that keep
 // a governance gate from ever being web-toggleable and keep `direct` toggles
@@ -255,56 +256,17 @@ describe("feature-flag registry invariants", () => {
 		});
 	});
 
-	it("FLY-1392 registers the receipt foundation as a default-on kill switch", () => {
-		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.name === "receipt_foundation",
-		);
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			envVar: "FLYWHEEL_RECEIPT_FOUNDATION",
-			polarity: "default_on",
-			default: true,
-			toggleable: "readonly",
-		});
-		expect(flag?.readSites).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					file: "packages/config/src/feature-flags/receipt-foundation.ts",
-					symbol: "receiptFoundationEnabled",
-					timing: "call_time",
-				}),
-			]),
-		);
-		expect(flag?.description).toContain("事故紧急临时回退");
-		expect(flag?.description).toContain("只暂停 deadline、重发与升级");
-		expect(flag?.description).not.toContain("两级收据");
-		expect(flag?.note).toContain("启动时立即告警");
-		expect(flag?.note).toContain("不得作为常态运行方式");
-
-		expect(
-			FEATURE_FLAGS.some(
-				(candidate) => candidate.envVar === "FLYWHEEL_REPLY_TO_CARD",
-			),
-		).toBe(false);
-		expect(
-			FEATURE_FLAGS.some(
-				(candidate) => candidate.envVar === "FLYWHEEL_FOUNDER_APPROVAL_ACK",
-			),
-		).toBe(false);
-	});
-
-	it("FLY-1392 resolves receipt foundation as default-on with an exact =0 rollback", () => {
-		const enabled = (
-			FeatureFlags as unknown as {
-				receiptFoundationEnabled?: (
-					env: Record<string, string | undefined>,
-				) => boolean;
-			}
-		).receiptFoundationEnabled;
-		expect(enabled).toBeTypeOf("function");
-		expect(enabled?.({})).toBe(true);
-		expect(enabled?.({ FLYWHEEL_RECEIPT_FOUNDATION: "1" })).toBe(true);
-		expect(enabled?.({ FLYWHEEL_RECEIPT_FOUNDATION: "0" })).toBe(false);
+	it("FLY-1645 retires receipt rollout switches without active readers", () => {
+		const retired = [
+			"FLYWHEEL_RECEIPT_FOUNDATION",
+			"FLYWHEEL_MAILBOX_DISCORD",
+			"FLYWHEEL_CHAT_RECEIPTS",
+		];
+		for (const envVar of retired) {
+			expect(FEATURE_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
+			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1645" });
+		}
+		expect(FeatureFlags).not.toHaveProperty("receiptFoundationEnabled");
 	});
 
 	it("FLY-1314 registers gate-hygiene rollback controls", () => {

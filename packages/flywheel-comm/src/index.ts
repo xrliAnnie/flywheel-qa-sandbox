@@ -14,13 +14,6 @@ import { ackEvent } from "./commands/ack-event.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
-import {
-	beginChatReceipt,
-	completeChatReceipt,
-	listPendingChatReceipts,
-	quarantineChatReceipt,
-	settleChatReceipt,
-} from "./commands/chat-receipt.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
@@ -39,7 +32,6 @@ import {
 	recordFounderUxSignoff,
 } from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
-import { handleReceipt } from "./commands/handle-receipt.js";
 import { inbox } from "./commands/inbox.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
@@ -54,7 +46,6 @@ import { reportDeployed } from "./commands/report-deployed.js";
 import { requestReview } from "./commands/request-review.js";
 import { respond } from "./commands/respond.js";
 import { reviewRuling } from "./commands/review-ruling.js";
-import { routeFounderReply } from "./commands/route-founder-reply.js";
 import { runRunnerConfig } from "./commands/runner-config.js";
 import {
 	type RunnerStopSource,
@@ -109,10 +100,6 @@ Commands:
             exit 0 only when approved. The wake message itself is NEVER authority.
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
-  route-founder-reply  Handle a founder receipt: relay its original text to an
-            eligible pending question, or explicitly close it as no-route (Lead use)
-  handle-receipt  Category-agnostic Lead action: ack/no-route/relay/respond a receipt
-  chat-receipt  Durable Discord-chat receipt producer (begin|complete|settle|pending|quarantine)
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
@@ -183,6 +170,10 @@ Global options:
   --json            Output as JSON
 
 respond options:
+	<question-id> <answer> --lead <lead> [--db <path> | --project <name>]
+	[--expect-owner <execution-id>]
+	[--expect-checkpoint <checkpoint> | --expect-no-checkpoint]
+	[--source-thread <discord-thread-id>] [--bridge-url <url>]
   --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
                       founder-consent wrapper (FLY-175). Required for the
                       approve_to_ship checkpoint unless BRIDGE_URL env is set;
@@ -225,15 +216,6 @@ async function main(): Promise<void> {
 			break;
 		case "respond":
 			await runRespond(commandArgs);
-			break;
-		case "route-founder-reply":
-			runRouteFounderReply(commandArgs);
-			break;
-		case "handle-receipt":
-			runHandleReceipt(commandArgs);
-			break;
-		case "chat-receipt":
-			runChatReceipt(commandArgs);
 			break;
 		case "chat-ingest":
 			await runChatIngest(commandArgs);
@@ -553,6 +535,10 @@ async function runRespond(args: string[]): Promise<void> {
 			// FLY-175: route approve_to_ship gate responses through the Bridge
 			// founder-consent wrapper. Falls back to BRIDGE_URL env when unset.
 			"bridge-url": { type: "string" },
+			"source-thread": { type: "string" },
+			"expect-owner": { type: "string" },
+			"expect-checkpoint": { type: "string" },
+			"expect-no-checkpoint": { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
 		allowPositionals: true,
@@ -560,6 +546,11 @@ async function runRespond(args: string[]): Promise<void> {
 
 	if (!values.lead) {
 		throw new Error("--lead is required (identifies who is responding)");
+	}
+	if (values["expect-checkpoint"] && values["expect-no-checkpoint"]) {
+		throw new Error(
+			"--expect-checkpoint and --expect-no-checkpoint are mutually exclusive",
+		);
 	}
 
 	const questionId = positionals[0];
@@ -580,6 +571,11 @@ async function runRespond(args: string[]): Promise<void> {
 		dbPath,
 		bridgeUrl: values["bridge-url"],
 		projectName: values.project,
+		sourceThread: values["source-thread"],
+		expectedOwner: values["expect-owner"],
+		expectedCheckpoint: values["expect-no-checkpoint"]
+			? null
+			: values["expect-checkpoint"],
 	});
 
 	if (values.json) {
@@ -587,255 +583,6 @@ async function runRespond(args: string[]): Promise<void> {
 	} else {
 		console.log(`Responded to ${questionId}`);
 	}
-}
-
-function runRouteFounderReply(args: string[]): void {
-	const { values } = parseArgs({
-		args,
-		options: {
-			msg: { type: "string" },
-			lead: { type: "string" },
-			"to-question": { type: "string" },
-			"no-route": { type: "boolean", default: false },
-			reason: { type: "string" },
-			db: { type: "string" },
-			project: { type: "string" },
-			json: { type: "boolean", default: false },
-		},
-		allowPositionals: false,
-	});
-	if (!values.msg) throw new Error("--msg is required");
-	if (!values.lead) throw new Error("--lead is required");
-	if (Boolean(values["to-question"]) === Boolean(values["no-route"])) {
-		throw new Error("exactly one of --to-question or --no-route is required");
-	}
-	if (values["no-route"] && !values.reason) {
-		throw new Error("--reason is required with --no-route");
-	}
-	if (!values["no-route"] && values.reason) {
-		throw new Error("--reason is only valid with --no-route");
-	}
-
-	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = routeFounderReply({
-		msgId: values.msg,
-		leadId: values.lead,
-		dbPath,
-		...(values["to-question"]
-			? { toQuestionId: values["to-question"] }
-			: { noRouteReason: values.reason }),
-	});
-	console.log(
-		values.json ? JSON.stringify(result) : formatRouteFounderResult(result),
-	);
-}
-
-function formatRouteFounderResult(
-	result: ReturnType<typeof routeFounderReply>,
-): string {
-	if (result.kind === "routed") {
-		return `Routed founder reply to ${result.questionId}`;
-	}
-	if (result.kind === "stale_candidate") {
-		return `Question ${result.questionId} is stale; choose another eligible question or use --no-route`;
-	}
-	return "Founder reply closed with an explicit no-route disposition";
-}
-
-function runHandleReceipt(args: string[]): void {
-	const { values } = parseArgs({
-		args,
-		options: {
-			receipt: { type: "string" },
-			lead: { type: "string" },
-			"request-id": { type: "string" },
-			action: { type: "string" },
-			"to-question": { type: "string" },
-			content: { type: "string" },
-			reason: { type: "string" },
-			db: { type: "string" },
-			project: { type: "string" },
-			json: { type: "boolean", default: false },
-		},
-		allowPositionals: false,
-	});
-	if (!values.receipt) throw new Error("--receipt is required");
-	if (!values.lead) throw new Error("--lead is required");
-	if (!values["request-id"]) throw new Error("--request-id is required");
-	if (
-		values.action !== "ack" &&
-		values.action !== "no-route" &&
-		values.action !== "relay" &&
-		values.action !== "respond"
-	) {
-		throw new Error("--action must be ack, no-route, relay, or respond");
-	}
-	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const result = handleReceipt({
-		dbPath,
-		requestId: values["request-id"],
-		receiptId: values.receipt,
-		leadId: values.lead,
-		action: values.action,
-		...(values["to-question"]
-			? { targetQuestionId: values["to-question"] }
-			: {}),
-		...(values.content ? { content: values.content } : {}),
-		...(values.reason ? { reason: values.reason } : {}),
-	});
-	console.log(
-		values.json
-			? JSON.stringify(result)
-			: `Handled ${result.receiptId} with ${result.action}`,
-	);
-}
-
-function runChatReceipt(args: string[]): void {
-	const { values, positionals } = parseArgs({
-		args,
-		options: {
-			lead: { type: "string" },
-			"chat-id": { type: "string" },
-			"origin-channel-id": { type: "string" },
-			"message-id": { type: "string" },
-			"author-id": { type: "string" },
-			"author-name": { type: "string" },
-			priority: { type: "string" },
-			ts: { type: "string" },
-			"msg-kind": { type: "string" },
-			"attachments-json": { type: "string" },
-			"content-stdin": { type: "boolean", default: false },
-			"reply-id": { type: "string" },
-			cursor: { type: "string" },
-			limit: { type: "string" },
-			"created-before": { type: "string" },
-			"exclude-quarantined": { type: "boolean", default: false },
-			db: { type: "string" },
-			project: { type: "string" },
-			json: { type: "boolean", default: false },
-		},
-		allowPositionals: true,
-	});
-	const subcommand = positionals[0];
-	if (
-		subcommand !== "begin" &&
-		subcommand !== "complete" &&
-		subcommand !== "settle" &&
-		subcommand !== "pending" &&
-		subcommand !== "quarantine"
-	) {
-		throw new Error(
-			"chat-receipt requires begin, complete, settle, pending, or quarantine",
-		);
-	}
-	if (positionals.length !== 1) {
-		throw new Error("chat-receipt accepts exactly one subcommand");
-	}
-	if (!values.lead) throw new Error("--lead is required");
-	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const requireValue = (name: keyof typeof values): string => {
-		const value = values[name];
-		if (typeof value !== "string" || !value) {
-			throw new Error(`--${String(name)} is required`);
-		}
-		return value;
-	};
-	const parseInteger = (
-		value: string | undefined,
-		name: string,
-		fallback?: number,
-	): number => {
-		if (value === undefined && fallback !== undefined) return fallback;
-		if (value === undefined || !/^\d+$/.test(value)) {
-			throw new Error(`--${name} must be a non-negative integer`);
-		}
-		return Number.parseInt(value, 10);
-	};
-	const output = (result: unknown, summary: string): void => {
-		console.log(values.json ? JSON.stringify(result) : summary);
-	};
-
-	if (subcommand === "begin") {
-		if (!values["content-stdin"]) {
-			throw new Error("begin requires --content-stdin");
-		}
-		let parsedAttachments: unknown = [];
-		try {
-			parsedAttachments = JSON.parse(values["attachments-json"] ?? "[]");
-		} catch (error) {
-			throw new Error(
-				`--attachments-json must be valid JSON: ${(error as Error).message}`,
-			);
-		}
-		const priority = parseInteger(values.priority, "priority");
-		const result = beginChatReceipt({
-			dbPath,
-			leadId: values.lead,
-			chatId: requireValue("chat-id"),
-			originChannelId: requireValue("origin-channel-id"),
-			messageId: requireValue("message-id"),
-			authorId: requireValue("author-id"),
-			authorName: requireValue("author-name"),
-			priority: priority as 0 | 1,
-			ts: requireValue("ts"),
-			msgKind: requireValue("msg-kind") as "dm" | "guild" | "roundtable",
-			attachments: parsedAttachments as Array<{
-				name: string;
-				type: string;
-				sizeKb: number;
-			}>,
-			text: readFileSync(0, "utf8"),
-		});
-		output(result, result.receiptId);
-		return;
-	}
-
-	if (subcommand === "complete") {
-		const result = completeChatReceipt({
-			dbPath,
-			leadId: values.lead,
-			messageId: requireValue("message-id"),
-			now: new Date().toISOString(),
-			env: process.env,
-		});
-		output(result, result.receiptId);
-		return;
-	}
-
-	if (subcommand === "settle") {
-		const result = settleChatReceipt({
-			dbPath,
-			leadId: values.lead,
-			messageId: requireValue("message-id"),
-			replyId: requireValue("reply-id"),
-			now: new Date().toISOString(),
-		});
-		output(result, result.receiptId);
-		return;
-	}
-
-	if (subcommand === "pending") {
-		const result = listPendingChatReceipts({
-			dbPath,
-			leadId: values.lead,
-			cursorSeq: parseInteger(values.cursor, "cursor", 0),
-			limit: parseInteger(values.limit, "limit", 20),
-			...(values["created-before"]
-				? { createdBefore: values["created-before"] }
-				: {}),
-			excludeQuarantined: values["exclude-quarantined"],
-		});
-		output(result, `${result.rows.length} pending chat receipt(s)`);
-		return;
-	}
-
-	const result = quarantineChatReceipt({
-		dbPath,
-		leadId: values.lead,
-		messageId: requireValue("message-id"),
-		now: new Date().toISOString(),
-	});
-	output(result, result.receiptId);
 }
 
 async function runChatIngest(args: string[]): Promise<void> {

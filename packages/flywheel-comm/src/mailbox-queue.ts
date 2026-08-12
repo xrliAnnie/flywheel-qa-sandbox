@@ -7,7 +7,11 @@ import {
 	assertNoLoneSurrogate,
 	normalizeInboxContent,
 } from "./inbox-write-normalize.js";
-import { MAILBOX_SCHEMA } from "./mailbox-schema.js";
+import {
+	dropReceiptLedgerSchema,
+	installMailboxRelayInvariantTriggers,
+	MAILBOX_SCHEMA,
+} from "./mailbox-schema.js";
 import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
@@ -63,22 +67,6 @@ export const QUARANTINE_DEAD_REASONS = [
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	"delivery_quarantined",
 ] as const;
-
-export type ProcessedActorKind =
-	| "lead"
-	| "bridge-protocol"
-	| "founder-writer"
-	| "runner";
-
-export interface ProcessedEvidenceV1 {
-	v: 1;
-	kind: string;
-	ref: string;
-	actor: string;
-	actor_kind: ProcessedActorKind;
-	fence: Record<string, string | number>;
-	basis?: string[];
-}
 
 export interface MailboxRow {
 	seq: number;
@@ -165,12 +153,6 @@ export type DiscordLaneVerdict =
 	| { lane: "legacy_external"; deliveryId: string }
 	| { lane: "archived" };
 
-export interface MailboxSettlement {
-	event: "processed" | "disposed";
-	at: string;
-	evidence: unknown;
-}
-
 export interface MailboxLoopHeartbeat {
 	lead_id: string;
 	last_started_at: string | null;
@@ -207,49 +189,6 @@ export function assertUtcIsoTimestamp(value: string, field: string): void {
 	}
 }
 
-export function assertProcessedEvidence(evidence: ProcessedEvidenceV1): void {
-	if (!evidence || typeof evidence !== "object" || evidence.v !== 1) {
-		throw new Error("processed evidence must use schema version 1");
-	}
-	requiredText(evidence.kind, "evidence.kind");
-	requiredText(evidence.ref, "evidence.ref");
-	requiredText(evidence.actor, "evidence.actor");
-	if (
-		!["lead", "bridge-protocol", "founder-writer", "runner"].includes(
-			evidence.actor_kind,
-		)
-	) {
-		throw new Error("processed evidence actor_kind is invalid");
-	}
-	if (
-		!evidence.fence ||
-		typeof evidence.fence !== "object" ||
-		Array.isArray(evidence.fence) ||
-		Object.keys(evidence.fence).length === 0
-	) {
-		throw new Error("processed evidence fence must be non-empty");
-	}
-	for (const [key, value] of Object.entries(evidence.fence)) {
-		requiredText(key, "evidence fence key");
-		if (
-			(typeof value === "string" && value.trim().length > 0) ||
-			(typeof value === "number" && Number.isSafeInteger(value))
-		) {
-			continue;
-		}
-		throw new Error(`processed evidence fence ${key} is invalid`);
-	}
-	if (
-		evidence.basis !== undefined &&
-		(!Array.isArray(evidence.basis) ||
-			evidence.basis.some(
-				(value) => typeof value !== "string" || !value.trim(),
-			))
-	) {
-		throw new Error("processed evidence basis must contain non-empty strings");
-	}
-}
-
 function timestamp(value: string | undefined, field: string): string {
 	const result = value ?? new Date().toISOString();
 	if (!result.endsWith("Z") || !Number.isFinite(Date.parse(result))) {
@@ -267,6 +206,10 @@ function addMilliseconds(value: string, milliseconds: number): string {
 
 function placeholders(count: number): string {
 	return Array.from({ length: count }, () => "?").join(",");
+}
+
+function mailboxProjectionHash(projection: unknown): string {
+	return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
 }
 
 function utf8Prefix(value: string, maxBytes: number): string {
@@ -366,10 +309,13 @@ export class MailboxQueue {
 		this.db.pragma("busy_timeout = 5000");
 		this.db.exec(MAILBOX_SCHEMA);
 		ensureMailboxQueueSchema(this.db);
+		dropReceiptLedgerSchema(this.db);
+		installMailboxRelayInvariantTriggers(this.db);
 	}
 
 	enqueue(input: EnqueueMailboxInput): EnqueueMailboxResult {
 		const normalizedContent = normalizeInboxContent(input.content).text;
+		const messageType = requiredText(input.type, "type");
 		const projection = {
 			id: requiredText(input.id, "id"),
 			delivery_id: requiredText(input.deliveryId ?? input.id, "deliveryId"),
@@ -378,7 +324,7 @@ export class MailboxQueue {
 			recipient_kind: input.recipientKind,
 			source_kind: input.sourceKind ?? null,
 			source_ref: input.sourceRef ?? null,
-			type: requiredText(input.type, "type"),
+			type: messageType,
 			msg_class: input.msgClass ?? "model",
 			content: normalizedContent,
 			delivery_content: input.deliveryContent ?? null,
@@ -389,7 +335,9 @@ export class MailboxQueue {
 			checkpoint: input.checkpoint ?? null,
 			deadline_at: input.deadlineAt ?? null,
 			expires_at: input.expiresAt ?? null,
-			relay_state: input.relayState ?? "open",
+			relay_state:
+				input.relayState ??
+				(messageType === "question" ? "open" : "terminal_disposed"),
 			resolved_at: input.resolvedAt ?? null,
 			resolved_via: input.resolvedVia ?? null,
 			superseded_at: input.supersededAt ?? null,
@@ -418,9 +366,11 @@ export class MailboxQueue {
 			throw new Error("priority must be an integer from 0 through 3");
 		}
 		decodeSenderRef(projection.sender_ref);
-		const projectionHash = createHash("sha256")
-			.update(JSON.stringify(projection))
-			.digest("hex");
+		const projectionHash = mailboxProjectionHash(projection);
+		const legacyOpenProjectionHash =
+			input.relayState === undefined && messageType !== "question"
+				? mailboxProjectionHash({ ...projection, relay_state: "open" })
+				: undefined;
 
 		return this.db
 			.transaction((): EnqueueMailboxResult => {
@@ -440,7 +390,8 @@ export class MailboxQueue {
 					if (
 						identity.id !== projection.id ||
 						identity.delivery_id !== projection.delivery_id ||
-						identity.insert_projection_hash !== projectionHash
+						(identity.insert_projection_hash !== projectionHash &&
+							identity.insert_projection_hash !== legacyOpenProjectionHash)
 					) {
 						throw new Error(`mailbox identity conflict: ${projection.id}`);
 					}
@@ -618,38 +569,7 @@ export class MailboxQueue {
 		);
 	}
 
-	/**
-	 * External receipts that are still AWAITING DELIVERY.
-	 *
-	 * FLY-1646: `state <> 'ACKED'` is load-bearing, not decoration. It is the
-	 * mailbox-schema translation of the pre-FLY-1572 guard `delivered_at IS
-	 * NULL` — `markExternalDelivered` is the only writer that moves an external
-	 * row to ACKED, so a delivered receipt leaves this set exactly as it used
-	 * to. Dropping that guard in the merge is what caused the FLY-1646 storm:
-	 * the Discord plugin's ChatReceiptRuntime recovery pass re-emits every
-	 * returned row with a `[redelivery]` prefix and then calls `complete`, so
-	 * once `complete` could no longer retire a row the pass kept seeing work
-	 * (`workRemains`) while `complete` kept reporting success (`progress`) and
-	 * neither break in `workerLoop()` could ever fire.
-	 *
-	 * Do NOT widen this to "delivered but not yet answered". Whether a Lead
-	 * actually replied is tracked by the mailbox_log settlement ledger and must
-	 * never drive redelivery — that is what turned an unanswered-message
-	 * backlog into a fleet-wide Discord storm.
-	 *
-	 * Equally, do NOT narrow this to `state IN ('QUEUED','LEASED')`. DEAD is
-	 * NOT terminal for external receipts: quarantine is visibility only (see
-	 * `CommDB.quarantineChatReceipt`), and `ExternalReceiptSaga` marks rows dead
-	 * for recoverable reasons such as a temporarily unavailable journal. The
-	 * legacy lane kept those rows redeliverable — `quarantineExternalDelivery`
-	 * set only `disposition`, never `delivered_at`/`disposed_at` — and excluding
-	 * them here would trade the storm for silent message loss. Genuine disposal
-	 * is a `disposed` settlement row, which the NOT EXISTS clause already
-	 * excludes.
-	 *
-	 * `excludeQuarantined` is the caller's opt-in to drop quarantined rows,
-	 * mirroring the legacy `disposition <> 'delivery_quarantined'` filter.
-	 */
+	/** External-lane rows still awaiting delivery. ACKED is the sole terminal. */
 	listExternalPending(input: {
 		toAgent: string;
 		idPrefix: string;
@@ -668,11 +588,6 @@ export class MailboxQueue {
 				    AND (? IS NULL OR datetime(created_at) <= datetime(?))
 				    AND (? = 0 OR dead_reason IS NULL
 				         OR dead_reason NOT IN (${placeholders(QUARANTINE_DEAD_REASONS.length)}))
-				    AND NOT EXISTS (
-				      SELECT 1 FROM mailbox_log settlement
-				       WHERE settlement.subject_id = mailbox.id
-				         AND settlement.event IN ('processed','disposed')
-				    )
 				  ORDER BY seq LIMIT ?`,
 			)
 			.all(
@@ -2158,74 +2073,6 @@ export class MailboxQueue {
 				input.ownerEpoch,
 			);
 		return result.changes;
-	}
-
-	settle(input: {
-		messageOrDeliveryId: string;
-		event: "processed" | "disposed";
-		now: string;
-		evidence: unknown;
-	}): "inserted" | "idempotent" {
-		return this.db
-			.transaction(() => {
-				const identity = this.db
-					.prepare(
-						"SELECT id FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
-					)
-					.get(input.messageOrDeliveryId, input.messageOrDeliveryId) as
-					| { id: string }
-					| undefined;
-				if (!identity) {
-					throw new Error(
-						`mailbox identity not found: ${input.messageOrDeliveryId}`,
-					);
-				}
-				const rowJson = canonicalJsonString(input.evidence);
-				const existing = this.db
-					.prepare(
-						"SELECT event, at, row_json FROM mailbox_log WHERE subject_id = ? AND event IN ('processed','disposed')",
-					)
-					.get(identity.id) as
-					| { event: string; at: string; row_json: string }
-					| undefined;
-				if (existing) {
-					if (existing.event === input.event && existing.row_json === rowJson) {
-						return "idempotent";
-					}
-					throw new Error(`mailbox settlement conflict: ${identity.id}`);
-				}
-				this.db
-					.prepare(
-						"INSERT INTO mailbox_log (event_id, message_id, subject_id, event, at, row_json) VALUES (?, ?, ?, ?, ?, ?)",
-					)
-					.run(
-						`settled:${identity.id}`,
-						identity.id,
-						identity.id,
-						input.event,
-						input.now,
-						rowJson,
-					);
-				return "inserted";
-			})
-			.immediate();
-	}
-
-	getSettlement(messageOrDeliveryId: string): MailboxSettlement | undefined {
-		const row = this.db
-			.prepare(
-				`SELECT log.event, log.at, log.row_json
-				   FROM mailbox_identity identity
-				   JOIN mailbox_log log ON log.subject_id = identity.id
-				  WHERE (identity.id = ? OR identity.delivery_id = ?)
-				    AND log.event IN ('processed','disposed')`,
-			)
-			.get(messageOrDeliveryId, messageOrDeliveryId) as
-			| { event: "processed" | "disposed"; at: string; row_json: string }
-			| undefined;
-		return row
-			? { event: row.event, at: row.at, evidence: JSON.parse(row.row_json) }
-			: undefined;
 	}
 
 	archiveDueFamilies(input: {

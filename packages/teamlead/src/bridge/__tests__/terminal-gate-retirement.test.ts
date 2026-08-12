@@ -2,11 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { materializeWorkflowGateHolder } from "../gate-materializer.js";
-import { TerminalReceiptSettlementProjector } from "../terminal-receipt-settlement.js";
+import { TerminalGateRetirement } from "../terminal-gate-retirement.js";
 
 const roots: string[] = [];
 const WORKFLOW_ON = {
@@ -22,7 +22,115 @@ afterEach(() => {
 	}
 });
 
-describe("terminal receipt settlement", () => {
+describe("terminal gate retirement", () => {
+	it("bounds and rotates terminal-session scans while reusing one project database", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-gate-cap-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		const comm = new CommDB(commPath);
+		for (const executionId of ["exec-a", "exec-b"]) {
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: "FLY-1645",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			comm.registerSession(
+				executionId,
+				"session",
+				"flywheel",
+				"FLY-1645",
+				"flywheel-eng-lead",
+				"codex",
+			);
+			comm.insertQuestion(executionId, "flywheel-eng-lead", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+		}
+		comm.close();
+		let opens = 0;
+		const retirement = new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+			maxSessionsPerPass: 1,
+			openDb(path) {
+				opens += 1;
+				return new CommDB(path, false);
+			},
+		});
+
+		await retirement.pass();
+		expect(opens).toBe(1);
+		let readonly = CommDB.openReadonly(commPath);
+		expect(readonly.getPendingQuestions("flywheel-eng-lead")).toHaveLength(1);
+		readonly.close();
+
+		await retirement.pass();
+		expect(opens).toBe(2);
+		readonly = CommDB.openReadonly(commPath);
+		expect(readonly.getPendingQuestions("flywheel-eng-lead")).toHaveLength(0);
+		readonly.close();
+		store.close();
+	});
+
+	it("contains a reopened external-authority verdict to its current session", async () => {
+		const root = mkdtempSync(
+			join(tmpdir(), "flywheel-terminal-gate-authority-"),
+		);
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		const comm = new CommDB(commPath);
+		for (const executionId of ["exec-a", "exec-b"]) {
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: "FLY-1645",
+				project_name: "flywheel",
+				status: "running",
+			});
+			comm.registerSession(
+				executionId,
+				"session",
+				"flywheel",
+				"FLY-1645",
+				"flywheel-eng-lead",
+				"codex",
+			);
+			comm.insertQuestion(executionId, "flywheel-eng-lead", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+		}
+		comm.close();
+		const revalidate = vi
+			.fn<() => Promise<"reopened" | "authorized">>()
+			.mockResolvedValueOnce("reopened")
+			.mockResolvedValueOnce("authorized");
+
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).retireIssueDone({
+			projectName: "flywheel",
+			canonicalIssueId: "FLY-1645",
+			issueAliases: [],
+			authorityCredential: "authority",
+			revalidate,
+		});
+
+		expect(revalidate).toHaveBeenCalledTimes(2);
+		const readonly = CommDB.openReadonly(commPath);
+		expect(
+			readonly
+				.getPendingQuestions("flywheel-eng-lead")
+				.map((question) => question.from_agent),
+		).toEqual(["exec-a"]);
+		readonly.close();
+		store.close();
+	});
+
 	it("keeps the authoritative engine gate answerable after its source session ends", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-gate-"));
 		roots.push(root);
@@ -180,7 +288,7 @@ describe("terminal receipt settlement", () => {
 				questionId: holder.question_id,
 			}),
 		).toEqual({ allow: true, reason: "holder_authoritative" });
-		await new TerminalReceiptSettlementProjector({
+		await new TerminalGateRetirement({
 			store,
 			projectNames: ["flywheel"],
 			commDbPathForProject: () => commPath,

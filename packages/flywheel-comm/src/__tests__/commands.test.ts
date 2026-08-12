@@ -27,7 +27,14 @@ describe("commands round-trip", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("should complete a full ask → pending → respond → check cycle", () => {
+	function bindRunner(execId: string, leadId: string): void {
+		const db = new CommDB(dbPath);
+		db.registerSession(execId, "runner", "test", `issue-${execId}`, leadId);
+		db.close();
+	}
+
+	it("should complete a full ask → pending → respond → check cycle", async () => {
+		bindRunner("exec-123", "product-lead");
 		// Runner asks a question
 		const questionId = ask({
 			lead: "product-lead",
@@ -50,7 +57,7 @@ describe("commands round-trip", () => {
 		expect(pendingQs[0]!.content).toBe("Should I use REST or GraphQL?");
 
 		// Lead responds
-		respond({
+		await respond({
 			questionId,
 			fromAgent: "product-lead",
 			answer: "Use REST for simplicity.",
@@ -66,14 +73,15 @@ describe("commands round-trip", () => {
 		expect(pending({ lead: "product-lead", dbPath })).toHaveLength(0);
 	});
 
-	it("only the explicitly matching runner consumes a gate response", () => {
+	it("only the explicitly matching runner consumes a gate response", async () => {
+		bindRunner("exec-owner", "product-lead");
 		const questionId = ask({
 			lead: "product-lead",
 			execId: "exec-owner",
 			question: "Ship?",
 			dbPath,
 		});
-		respond({
+		await respond({
 			questionId,
 			fromAgent: "product-lead",
 			answer: "yes",
@@ -100,7 +108,8 @@ describe("commands round-trip", () => {
 		db.close();
 	});
 
-	it("should handle multiple runners asking different leads", () => {
+	it("should handle multiple runners asking different leads", async () => {
+		bindRunner("runner", "product-lead");
 		const q1 = ask({
 			lead: "product-lead",
 			question: "Q1 from runner-1",
@@ -120,7 +129,7 @@ describe("commands round-trip", () => {
 		expect(pending({ lead: "product-lead", dbPath })).toHaveLength(2);
 		expect(pending({ lead: "ops-lead", dbPath })).toHaveLength(1);
 
-		respond({
+		await respond({
 			questionId: q1,
 			fromAgent: "product-lead",
 			answer: "A1",

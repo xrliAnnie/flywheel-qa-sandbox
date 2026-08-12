@@ -1,0 +1,158 @@
+{
+	"version": 1,
+	"repositories": {
+		"main": {
+			"includeRoots": ["packages", "scripts"],
+			"extensions": [".ts", ".tsx", ".js", ".mjs", ".sh", ".md", ".json"],
+			"excludeFragments": [
+				"/.git/",
+				"/dist/",
+				"/node_modules/",
+				"/__tests__/",
+				"/doc/",
+				"/scripts/fly1645-receipt-residue-gate.",
+				".test.",
+				".spec."
+			]
+		},
+		"plugin": {
+			"includeRoots": ["external_plugins/discord"],
+			"extensions": [".ts", ".tsx", ".js", ".mjs", ".sh", ".md", ".json"],
+			"excludeFragments": [
+				"/.git/",
+				"/dist/",
+				"/node_modules/",
+				"/__tests__/",
+				"/doc/",
+				".test.",
+				".spec."
+			]
+		}
+	},
+	"deniedSymbols": [
+		{ "id": "settlement-read", "pattern": "getSettlement" },
+		{ "id": "founder-root-settle", "pattern": "settleFounderHubRoot" },
+		{
+			"id": "receipt-root-lineage",
+			"pattern": "receipt_root_lineage",
+			"expectedAllowedMatches": 8,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/flywheel-comm/src/mailbox-schema.ts",
+					"linePattern": "^DROP (?:TRIGGER|TABLE) IF EXISTS (?:mailbox_)?receipt_root_lineage(?:_(?:insert|no_update|no_delete))?;$"
+				},
+				{
+					"repo": "main",
+					"path": "packages/flywheel-comm/src/receipt-teardown-closeout.ts",
+					"linePattern": "^\\\"(?:mailbox_)?receipt_root_lineage(?:_(?:insert|no_update|no_delete))?\\\",$"
+				}
+			]
+		},
+		{
+			"id": "settlement-intent-table",
+			"pattern": "receipt_settlement_intent",
+			"expectedAllowedMatches": 1,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/teamlead/src/StateStore.ts",
+					"linePattern": "^this\\.db\\.run\\(\\\"DROP TABLE IF EXISTS receipt_settlement_intent\\\"\\);$"
+				}
+			]
+		},
+		{ "id": "plugin-redelivery-scan", "pattern": "reconcilePendingPass" },
+		{ "id": "foundation-runtime-flag", "pattern": "receiptFoundationEnabled" },
+		{ "id": "founder-route-cli", "pattern": "route-founder-reply" },
+		{ "id": "receipt-handler-cli", "pattern": "handle-receipt" },
+		{
+			"id": "foundation-env",
+			"pattern": "FLYWHEEL_RECEIPT_FOUNDATION",
+			"expectedAllowedMatches": 1,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/config/src/feature-flags/truth.ts",
+					"linePattern": "^\\{ envVar: \\\"FLYWHEEL_RECEIPT_FOUNDATION\\\", retiredBy: \\\"FLY-1645\\\" \\},$"
+				}
+			]
+		},
+		{
+			"id": "mailbox-discord-env",
+			"pattern": "FLYWHEEL_MAILBOX_DISCORD",
+			"expectedAllowedMatches": 1,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/config/src/feature-flags/truth.ts",
+					"linePattern": "^\\{ envVar: \\\"FLYWHEEL_MAILBOX_DISCORD\\\", retiredBy: \\\"FLY-1645\\\" \\},$"
+				}
+			]
+		},
+		{
+			"id": "chat-receipts-env",
+			"pattern": "FLYWHEEL_CHAT_RECEIPTS",
+			"expectedAllowedMatches": 1,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/config/src/feature-flags/truth.ts",
+					"linePattern": "^\\{ envVar: \\\"FLYWHEEL_CHAT_RECEIPTS\\\", retiredBy: \\\"FLY-1645\\\" \\},$"
+				}
+			]
+		},
+		{
+			"id": "receipt-handle-table",
+			"pattern": "receipt_handle_requests",
+			"expectedAllowedMatches": 2,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/flywheel-comm/src/mailbox-schema.ts",
+					"linePattern": "^DROP TABLE IF EXISTS receipt_handle_requests;$"
+				},
+				{
+					"repo": "main",
+					"path": "packages/flywheel-comm/src/receipt-teardown-closeout.ts",
+					"linePattern": "^\\\"receipt_handle_requests\\\",$"
+				}
+			]
+		},
+		{ "id": "receipt-suffixed-api", "pattern": "AndReceipt" },
+		{
+			"id": "detection-receipt-lineage",
+			"pattern": "source_receipt_id",
+			"expectedAllowedMatches": 1,
+			"allows": [
+				{
+					"repo": "main",
+					"path": "packages/teamlead/src/StateStore.ts",
+					"linePattern": "^\\\"source_receipt_id\\\",$"
+				}
+			]
+		},
+		{ "id": "founder-receipt-symbol", "pattern": "founderReceipt" },
+		{
+			"id": "founder-gate-receipt-context",
+			"pattern": "FounderGateReceiptContext"
+		},
+		{
+			"id": "plugin-receipt-meta",
+			"pattern": "receipt_id",
+			"repos": ["plugin"]
+		},
+		{
+			"id": "plugin-redelivery-marker",
+			"pattern": "[redelivery]",
+			"repos": ["plugin"]
+		}
+	],
+	"relayStateAllowedFiles": [
+		"packages/flywheel-comm/src/db.ts",
+		"packages/flywheel-comm/src/mailbox-migration.ts",
+		"packages/flywheel-comm/src/mailbox-queue.ts",
+		"packages/flywheel-comm/src/mailbox-schema.ts",
+		"packages/flywheel-comm/src/receipt-teardown-closeout.ts",
+		"packages/flywheel-comm/src/types.ts"
+	]
+}

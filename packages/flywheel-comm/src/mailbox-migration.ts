@@ -35,6 +35,8 @@ import {
 	type MailboxState,
 } from "./mailbox-queue.js";
 import {
+	dropReceiptLedgerSchema,
+	installMailboxRelayInvariantTriggers,
 	MAILBOX_CORE_SCHEMA,
 	MAILBOX_POISON_VIEWS,
 	MAILBOX_SCHEMA_GENERATION,
@@ -507,8 +509,10 @@ function mapMessage(
 			deadlineAt: optionalIso(row.deadline_at) ?? null,
 			expiresAt: optionalIso(row.expires_at) ?? null,
 			relayState:
-				(text(row, "relay_state") as EnqueueMailboxInput["relayState"]) ??
-				"open",
+				type === "question"
+					? ((text(row, "relay_state") as EnqueueMailboxInput["relayState"]) ??
+						"open")
+					: "terminal_disposed",
 			resolvedAt: optionalIso(row.resolved_at) ?? null,
 			resolvedVia: text(row, "resolved_via") ?? null,
 			supersededAt: optionalIso(row.superseded_at) ?? null,
@@ -599,6 +603,7 @@ function mapStandaloneLead(row: LegacyRow, now: string): MappedMessage {
 	const source = text(row, "source") ?? "";
 	const family = leadSourceFamily(source);
 	const toAgent = text(row, "to_lead") ?? "";
+	const type = text(row, "type") ?? "message";
 	return {
 		input: {
 			id: row.id,
@@ -618,7 +623,8 @@ function mapStandaloneLead(row: LegacyRow, now: string): MappedMessage {
 				family === "model_quarantine"
 					? source.slice(`${family}:`.length)
 					: (text(row, "ref_message_id") ?? null),
-			type: text(row, "type") ?? "message",
+			type,
+			relayState: type === "question" ? "open" : "terminal_disposed",
 			msgClass: (text(row, "msg_class") as "protocol" | "model") ?? "model",
 			content: text(row, "content") ?? "",
 			refId: text(row, "ref_message_id") ?? null,
@@ -639,13 +645,7 @@ function mapStandaloneLead(row: LegacyRow, now: string): MappedMessage {
 	};
 }
 
-function orphanFromAgent(db: Database.Database, row: LegacyRow): string {
-	const lineage = db
-		.prepare(
-			"SELECT execution_id FROM receipt_root_lineage WHERE receipt_id = ?",
-		)
-		.get(row.id) as { execution_id?: string } | undefined;
-	if (lineage?.execution_id) return lineage.execution_id;
+function orphanFromAgent(row: LegacyRow): string {
 	const alias = text(row, "legacy_alias");
 	const prefix = `${text(row, "to_lead") ?? ""}-`;
 	if (alias?.startsWith(prefix)) {
@@ -658,17 +658,13 @@ function orphanFromAgent(db: Database.Database, row: LegacyRow): string {
 	throw new Error(`orphan question sender cannot be derived: ${row.id}`);
 }
 
-function mapOrphanQuestion(
-	db: Database.Database,
-	row: LegacyRow,
-	now: string,
-): MappedMessage {
+function mapOrphanQuestion(row: LegacyRow, now: string): MappedMessage {
 	const classified = classifyLead(row, now);
 	return {
 		input: {
 			id: text(row, "ref_message_id") ?? "",
 			deliveryId: row.id,
-			fromAgent: orphanFromAgent(db, row),
+			fromAgent: orphanFromAgent(row),
 			toAgent: text(row, "to_lead") ?? "",
 			recipientKind: "lead",
 			sourceKind: "question_orphan",
@@ -772,18 +768,7 @@ function persistHistoricalLeadWithoutProjection(
 		 VALUES (?, ?, 'migrated_history', ?, 'lead_inbox', ?)`,
 	).run(`migrated:lead_inbox:${row.id}`, row.id, now, canonicalJsonString(row));
 	if (classified.settlement) {
-		db.prepare(
-			`INSERT INTO mailbox_log
-			 (event_id, message_id, subject_id, event, at, row_json)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-		).run(
-			`settled:${row.id}`,
-			row.id,
-			row.id,
-			classified.settlement.event,
-			classified.settlement.at,
-			canonicalJsonString(classified.settlement.evidence),
-		);
+		insertOrCompareHistoricalSettlement(db, row.id, classified.settlement);
 	}
 }
 
@@ -819,12 +804,7 @@ function persistMapped(
 		mapped.input.id,
 	);
 	if (mapped.settlement) {
-		queue.settle({
-			messageOrDeliveryId: mapped.input.id,
-			event: mapped.settlement.event,
-			now: mapped.settlement.at,
-			evidence: mapped.settlement.evidence,
-		});
+		insertOrCompareHistoricalSettlement(db, mapped.input.id, mapped.settlement);
 	}
 	insertCoverageLog(db, mapped, keep, now);
 	if (!keep) {
@@ -835,35 +815,40 @@ function persistMapped(
 	}
 }
 
-function insertOrCompareLineage(
+function insertOrCompareHistoricalSettlement(
 	db: Database.Database,
-	input: {
-		receiptId: string;
-		executionId: string;
-		questionId: string;
-		leadId: string;
-	},
+	messageId: string,
+	settled: NonNullable<MappedMessage["settlement"]>,
 ): void {
+	const eventId = `settled:${messageId}`;
+	const rowJson = canonicalJsonString(settled.evidence);
 	db.prepare(
-		`INSERT OR IGNORE INTO receipt_root_lineage
-		 (receipt_id, execution_id, question_id, root_lead_id) VALUES (?, ?, ?, ?)`,
-	).run(input.receiptId, input.executionId, input.questionId, input.leadId);
+		`INSERT OR IGNORE INTO mailbox_log
+		 (event_id, message_id, subject_id, event, at, row_json)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+	).run(eventId, messageId, messageId, settled.event, settled.at, rowJson);
 	const row = db
-		.prepare("SELECT * FROM receipt_root_lineage WHERE receipt_id = ?")
-		.get(input.receiptId) as
+		.prepare(
+			"SELECT message_id, subject_id, event, at, row_json FROM mailbox_log WHERE event_id = ?",
+		)
+		.get(eventId) as
 		| {
-				execution_id: string;
-				question_id: string;
-				root_lead_id: string;
+				message_id: string;
+				subject_id: string | null;
+				event: string;
+				at: string;
+				row_json: string;
 		  }
 		| undefined;
 	if (
 		!row ||
-		row.execution_id !== input.executionId ||
-		row.question_id !== input.questionId ||
-		row.root_lead_id !== input.leadId
+		row.message_id !== messageId ||
+		row.subject_id !== messageId ||
+		row.event !== settled.event ||
+		row.at !== settled.at ||
+		row.row_json !== rowJson
 	) {
-		throw new Error(`receipt lineage conflict: ${input.receiptId}`);
+		throw new Error(`historical settlement conflict: ${messageId}`);
 	}
 }
 
@@ -893,6 +878,10 @@ export function migrateLegacyDatabaseFile(
 					)?.schema_generation
 				: undefined;
 		if (generation === MAILBOX_SCHEMA_GENERATION) {
+			db.transaction(() => {
+				dropReceiptLedgerSchema(db);
+				installMailboxRelayInvariantTriggers(db);
+			}).immediate();
 			return {
 				status: "already_migrated",
 				sourceMessages: 0,
@@ -946,7 +935,7 @@ export function migrateLegacyDatabaseFile(
 				fault(options.faultAt, "after_source_load");
 
 				db.exec(MAILBOX_CORE_SCHEMA);
-				db.exec("DROP TRIGGER IF EXISTS mailbox_receipt_root_lineage_insert");
+				dropReceiptLedgerSchema(db);
 				fault(options.faultAt, "after_schema");
 				const queue = new MailboxQueue(db);
 				const leadByRef = new Map(
@@ -1003,7 +992,7 @@ export function migrateLegacyDatabaseFile(
 					if (folded.has(row.id)) continue;
 					let mapped: MappedMessage;
 					if ((text(row, "source") ?? "").startsWith("question:")) {
-						mapped = mapOrphanQuestion(db, row, now);
+						mapped = mapOrphanQuestion(row, now);
 					} else {
 						try {
 							mapped = mapStandaloneLead(row, now);
@@ -1033,38 +1022,10 @@ export function migrateLegacyDatabaseFile(
 				}
 				fault(options.faultAt, "after_lead_inbox");
 
-				for (const row of db
-					.prepare(
-						"SELECT id, delivery_id, from_agent, to_agent, source_kind FROM mailbox WHERE type='question'",
-					)
-					.all() as Array<{
-					id: string;
-					delivery_id: string;
-					from_agent: string;
-					to_agent: string;
-					source_kind: string | null;
-				}>) {
-					if (row.source_kind === "question_orphan") continue;
-					insertOrCompareLineage(db, {
-						receiptId: row.delivery_id,
-						executionId: row.from_agent,
-						questionId: row.id,
-						leadId: row.to_agent,
-					});
-				}
 				db.exec("DROP TABLE messages; DROP TABLE lead_inbox;");
 				db.exec(MAILBOX_POISON_VIEWS);
 				fault(options.faultAt, "after_legacy_drop");
-				db.exec(`
-					CREATE TRIGGER mailbox_receipt_root_lineage_insert
-					AFTER INSERT ON mailbox
-					WHEN NEW.type = 'question' AND NEW.recipient_kind = 'lead'
-					BEGIN
-					  INSERT INTO receipt_root_lineage
-					    (receipt_id, execution_id, question_id, root_lead_id)
-					  VALUES (NEW.delivery_id, NEW.from_agent, NEW.id, NEW.to_agent);
-					END;
-				`);
+				installMailboxRelayInvariantTriggers(db);
 
 				const expectedUnread = [...trueUnread.map((row) => row.id)].sort();
 				const actualUnread = (

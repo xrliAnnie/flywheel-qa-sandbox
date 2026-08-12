@@ -787,10 +787,6 @@ export function titleFor(kind: AlertEventType): string {
 			return "Lead waiting on permission prompt";
 		case "crash_loop":
 			return "Lead crash-looping";
-		// FLY-1392: emitted by GatePoller with its own explicit title; retained
-		// here so the shared alert-kind face stays exhaustive.
-		case "receipt_foundation_off":
-			return "Receipt foundation emergency rollback active";
 		case "pane_hash_stuck":
 			// Legacy display-only kind; no watchdog emits it after FLY-1570.
 			return "Lead pane has been frozen";
@@ -1077,8 +1073,6 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A runner's recorded tmux body is missing. Follow the issue-thread recovery proposal; Flywheel does not automatically redispatch this session.";
 		case "ship_attempt_failed":
 			return "A founder-approved ship attempt failed or could not be tracked to completion. The approval remains valid; inspect the workflow and explicitly wake the runner before retrying.";
-		case "receipt_foundation_off":
-			return "FLYWHEEL_RECEIPT_FOUNDATION=0 paused receipt deadline advance, resend, and escalation. Founder transport remains Lead-only; restore receipt chasing after the incident is contained.";
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

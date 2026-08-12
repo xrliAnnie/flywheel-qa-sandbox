@@ -91,9 +91,8 @@ done
 # FLY-1426: the Discord plugin and the Lead pane must read the same rollout
 # switch and priority windows. The plugin runs in the Lead process, after the
 # tmux -e barrier, so inherited launcher-shell values are not sufficient.
-log_test "_launch_claude forwards the Discord chat receipt rollout contract"
+log_test "_launch_claude forwards the Discord chat delivery windows"
 for var in \
-  FLYWHEEL_CHAT_RECEIPTS \
   FLYWHEEL_RECEIPT_WINDOW_P0_MIN \
   FLYWHEEL_RECEIPT_WINDOW_P1_MIN \
   FLYWHEEL_RECEIPT_WINDOW_P2_MIN \

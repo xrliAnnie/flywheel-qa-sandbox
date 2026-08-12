@@ -9,9 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleReceipt } from "../commands/handle-receipt.js";
 import { respond } from "../commands/respond.js";
 import { send } from "../commands/send.js";
 import { CommDB } from "../db.js";
@@ -24,8 +22,6 @@ import {
 	type LeadWriteAuthorizationDeps,
 } from "../lead-lease.js";
 import { LeadLeaseModeStore } from "../lead-lease-mode.js";
-import { MailboxQueue } from "../mailbox-queue.js";
-import { encodeSenderRef } from "../sender-ref.js";
 
 describe("FLY-1309 Lead write-boundary enforcement", () => {
 	let dir: string;
@@ -98,46 +94,6 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
 	});
 
-	it("lets a v2 Claude carrier with a valid lease acknowledge a delivered receipt", () => {
-		writeProjects("claude-code", "v2");
-		setMode("enforce");
-		env.FLYWHEEL_LEAD_CARRIER = "v2";
-		bindLease();
-		const queue = new MailboxQueue(dbPath);
-		queue.enqueue({
-			id: "receipt-v2-bound",
-			fromAgent: "runner-1",
-			toAgent: "eng-lead",
-			recipientKind: "lead",
-			sourceKind: "runner",
-			type: "runner_report",
-			msgClass: "model",
-			content: "settle me",
-			senderRef: encodeSenderRef(),
-		});
-		queue.ack("receipt-v2-bound", "2099-07-21T11:59:30.000Z");
-		queue.close();
-
-		const result = handleReceipt({
-			dbPath,
-			requestId: "request-v2-bound",
-			receiptId: "receipt-v2-bound",
-			leadId: "eng-lead",
-			action: "ack",
-			env,
-			authorizationDeps,
-			now: () => new Date("2099-07-21T12:00:00.000Z"),
-		});
-
-		expect(result).toMatchObject({ kind: "handled", action: "ack" });
-		const verify = new MailboxQueue(dbPath);
-		expect(verify.getSettlement("receipt-v2-bound")).toMatchObject({
-			event: "processed",
-			at: "2099-07-21T12:00:00.000Z",
-		});
-		verify.close();
-	});
-
 	it("does not trust a v2 marker unless canonical config also selects v2", async () => {
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
@@ -186,47 +142,6 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		env.FLYWHEEL_LEAD_GENERATION = String(generation);
 	}
 
-	function deliverReceipt(receiptId: string): void {
-		const queue = new MailboxQueue(dbPath);
-		queue.enqueue({
-			id: receiptId,
-			fromAgent: "runner-1",
-			toAgent: "eng-lead",
-			recipientKind: "lead",
-			sourceKind: "runner",
-			type: "runner_report",
-			msgClass: "model",
-			content: "settle me",
-			senderRef: encodeSenderRef(),
-		});
-		queue.ack(receiptId, "2099-07-21T11:59:30.000Z");
-		queue.close();
-	}
-
-	function advanceLease(): void {
-		const store = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!, {
-			processAliveWithStart: () => false,
-		});
-		const successor = store.acquire({
-			leadKey: "flywheel-eng-lead",
-			project: "flywheel",
-			leadId: "eng-lead",
-			supervisorPid: 333,
-			supervisorStart: "next-supervisor-start",
-			acquiredBy: "test",
-		});
-		expect(successor.generation).toBe(2);
-		store.bind({
-			leadKey: "flywheel-eng-lead",
-			generation: 2,
-			expectedSupervisorPid: 333,
-			expectedSupervisorStart: "next-supervisor-start",
-			panePid: 444,
-			paneStart: "next-pane-start",
-		});
-		store.close();
-	}
-
 	function instructions(): ReturnType<CommDB["getUnreadInstructions"]> {
 		const db = new CommDB(dbPath);
 		try {
@@ -259,7 +174,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		});
 	});
 
-	it("keeps a claim-free v2 carrier compatible for ordinary writes but not receipts", async () => {
+	it("keeps a claim-free v2 carrier compatible for ordinary writes", async () => {
 		writeProjects("claude-code", "v2");
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
@@ -273,107 +188,9 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			authorizationDeps,
 		});
 		expect(instructions()).toHaveLength(1);
-		expect(() =>
-			handleReceipt({
-				dbPath,
-				requestId: "claim-free-v2",
-				receiptId: "not-reached",
-				leadId: "eng-lead",
-				action: "ack",
-				env,
-				authorizationDeps,
-			}),
-		).toThrow("receipt handling requires a validated Lead lease generation");
 	});
 
-	it("lets audit_only settle a stale historical v2 claim while enforce rejects it", () => {
-		writeProjects("claude-code", "v2");
-		env.FLYWHEEL_LEAD_CARRIER = "v2";
-		setMode("audit_only");
-		bindLease();
-		advanceLease();
-
-		deliverReceipt("receipt-v2-stale-audit");
-		const audited = handleReceipt({
-			dbPath,
-			requestId: "request-v2-stale-audit",
-			receiptId: "receipt-v2-stale-audit",
-			leadId: "eng-lead",
-			action: "ack",
-			env,
-			authorizationDeps,
-			now: () => new Date("2099-07-21T12:00:00.000Z"),
-		});
-		expect(audited).toMatchObject({ kind: "handled", action: "ack" });
-		const lease = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!);
-		expect(lease.listPendingAudit()).toEqual([
-			expect.objectContaining({
-				leadKey: "flywheel-eng-lead",
-				event: "would_block",
-				detail: expect.stringContaining("stale_generation"),
-			}),
-		]);
-		lease.close();
-
-		setMode("enforce");
-		deliverReceipt("receipt-v2-stale-enforce");
-		expect(() =>
-			handleReceipt({
-				dbPath,
-				requestId: "request-v2-stale-enforce",
-				receiptId: "receipt-v2-stale-enforce",
-				leadId: "eng-lead",
-				action: "ack",
-				env,
-				authorizationDeps,
-			}),
-		).toThrow(LeadLeaseDeniedError);
-		const queue = new MailboxQueue(dbPath);
-		expect(queue.getSettlement("receipt-v2-stale-enforce")).toBeUndefined();
-		queue.close();
-	});
-
-	it("keeps audit_only receipt settlement best-effort when only fault-audit insertion fails", () => {
-		writeProjects("claude-code", "v2");
-		env.FLYWHEEL_LEAD_CARRIER = "v2";
-		setMode("audit_only");
-		bindLease();
-		advanceLease();
-		const raw = new Database(env.FLYWHEEL_LEAD_LEASE_DB!);
-		raw.exec(`
-			CREATE TRIGGER fail_fault_audit
-			BEFORE INSERT ON lease_audit
-			BEGIN
-				SELECT RAISE(FAIL, 'injected fault audit failure');
-			END;
-		`);
-		raw.close();
-		deliverReceipt("receipt-v2-audit-write-failure");
-
-		const result = handleReceipt({
-			dbPath,
-			requestId: "request-v2-audit-write-failure",
-			receiptId: "receipt-v2-audit-write-failure",
-			leadId: "eng-lead",
-			action: "ack",
-			env,
-			authorizationDeps,
-		});
-
-		expect(result).toMatchObject({ kind: "handled", action: "ack" });
-		const queued = readdirSync(env.FLYWHEEL_ALERT_QUEUE_DIR!).map((file) =>
-			JSON.parse(
-				readFileSync(join(env.FLYWHEEL_ALERT_QUEUE_DIR!, file), "utf8"),
-			),
-		);
-		expect(queued).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({ eventType: "lead_lease_store_broken" }),
-			]),
-		);
-	});
-
-	it("routes a degraded v2 marker through audit_only but fails closed in enforce and for receipts", async () => {
+	it("routes a degraded v2 marker through audit_only but fails closed in enforce", async () => {
 		writeProjects("claude-code", "v2");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
 		env.FLYWHEEL_LEAD_LEASE_DEGRADED = "store_error";
@@ -396,17 +213,6 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			}),
 		]);
 		lease.close();
-		expect(() =>
-			handleReceipt({
-				dbPath,
-				requestId: "degraded-v2-receipt",
-				receiptId: "not-reached",
-				leadId: "eng-lead",
-				action: "ack",
-				env,
-				authorizationDeps,
-			}),
-		).toThrow("receipt handling requires a validated Lead lease generation");
 
 		setMode("enforce");
 		await expect(

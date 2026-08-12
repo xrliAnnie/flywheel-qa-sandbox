@@ -29,7 +29,6 @@ export interface CodexDiscordRuntimeOwnershipOptions {
 	authSecret: string;
 	server: InboxServer;
 	gateway: Lifecycle;
-	readFlag: () => { enabled: boolean; readError?: string };
 	acquireLock?: ProcessLockAcquire;
 	probe?: () => Promise<unknown>;
 	autoRefresh?: boolean;
@@ -141,10 +140,6 @@ export class CodexDiscordRuntimeOwnership {
 	}
 
 	private async reconcile(): Promise<void> {
-		const flag = this.opts.readFlag();
-		if (flag.readError) {
-			this.alert("codex_socket_owner_unavailable", flag.readError);
-		}
 		if (!this.socketLock && Date.now() >= this.nextAttemptAt) {
 			const attempt = await this.acquireLock(
 				this.socketLockPath,
@@ -164,19 +159,18 @@ export class CodexDiscordRuntimeOwnership {
 			} else {
 				await this.handleOwnerFailure(
 					attempt.status,
-					flag.enabled,
 					attempt.status === "unavailable" ? attempt.error : undefined,
 				);
 				return;
 			}
 		}
 		if (!this.socketLock) {
-			await this.setGateway(!flag.enabled);
+			await this.setGateway(false);
 			return;
 		}
 		if (!this.socketListening) {
 			if (Date.now() < this.nextAttemptAt) {
-				await this.setGateway(!flag.enabled);
+				await this.setGateway(false);
 				return;
 			}
 			try {
@@ -189,14 +183,9 @@ export class CodexDiscordRuntimeOwnership {
 			} catch (error) {
 				this.alert("codex_socket_owner_unavailable", (error as Error).message);
 				this.scheduleRetry();
-				await this.setGateway(!flag.enabled);
+				await this.setGateway(false);
 				return;
 			}
-		}
-		if (!flag.enabled) {
-			await this.releaseIngress();
-			await this.setGateway(true);
-			return;
 		}
 		if (!this.ingressLock && Date.now() >= this.nextAttemptAt) {
 			const attempt = await this.acquireLock(
@@ -228,7 +217,6 @@ export class CodexDiscordRuntimeOwnership {
 
 	private async handleOwnerFailure(
 		status: "conflict" | "unavailable",
-		flagEnabled: boolean,
 		error?: string,
 	): Promise<void> {
 		try {
@@ -245,7 +233,7 @@ export class CodexDiscordRuntimeOwnership {
 				"codex_socket_owner_unavailable",
 				error ?? (probeError as Error).message,
 			);
-			await this.setGateway(!flagEnabled);
+			await this.setGateway(false);
 		}
 		this.scheduleRetry();
 	}

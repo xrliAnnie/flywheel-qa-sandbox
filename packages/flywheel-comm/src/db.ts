@@ -6,17 +6,18 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import { founderMessageRootId } from "./founder-reply-routing.js";
 import {
-	assertProcessedEvidence,
+	type IngestDiscordChatArgs,
+	ingestDiscordChatOnQueue,
+} from "./discord-chat-ingest.js";
+import {
 	assertUtcIsoTimestamp,
-	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	ensureMailboxQueueSchema,
 	MailboxQueue,
-	type MailboxRow,
-	type ProcessedEvidenceV1,
 } from "./mailbox-queue.js";
 import {
+	dropReceiptLedgerSchema,
+	installMailboxRelayInvariantTriggers,
 	MAILBOX_POISON_VIEWS,
 	MAILBOX_SCHEMA,
 	MAILBOX_SCHEMA_GENERATION,
@@ -507,17 +508,7 @@ export interface RunnerReceiptWakePushClaim {
 	envelope: PhaseWakeInput;
 }
 
-export interface RespondAndReceiptInput {
-	questionId: string;
-	fromAgent: string;
-	content: string;
-	rootId: string;
-	evidence: Omit<ProcessedEvidenceV1, "ref">;
-	now: string;
-	provenance?: MessageProvenance;
-}
-
-export interface RespondAndReceiptResult {
+export interface ResponseInsertResult {
 	responseId: string;
 }
 
@@ -529,49 +520,11 @@ export interface ReviewResponseInput {
 	expectedCheckpoint: "review_design" | "review_code";
 }
 
-export type ReceiptHandleAction = "relay" | "respond" | "no-route" | "ack";
-
-export interface HandleReceiptInput {
-	requestId: string;
-	receiptId: string;
-	authenticatedLead: string;
-	action: ReceiptHandleAction;
-	now: string;
-	provenance: MessageProvenance;
-	targetQuestionId?: string;
-	content?: string;
-	reason?: string;
-	/** Test-only transaction seam injection. */
-	testCrashAfter?: "effect" | "terminal";
-}
-
-export interface HandleReceiptResult {
-	kind: "handled";
-	receiptId: string;
-	action: ReceiptHandleAction;
-	responseId?: string;
-}
-
-export interface TrustedFounderApprovalAndReceiptInput {
-	project: string;
-	sourceEventId: string;
+export interface TrustedFounderGateResponseInput {
 	questionId: string;
 	fromAgent: string;
 	content: string;
 	expectedOwner: string;
-	payload: unknown;
-	rootId: string;
-	evidence: Omit<ProcessedEvidenceV1, "ref">;
-	now: string;
-	provenance?: MessageProvenance;
-}
-
-export interface TrustedFounderGateResponseAndReceiptInput {
-	questionId: string;
-	fromAgent: string;
-	content: string;
-	expectedOwner: string;
-	rootId: string;
 	msgId: string;
 	now: string;
 	approvalSource?: {
@@ -580,38 +533,6 @@ export interface TrustedFounderGateResponseAndReceiptInput {
 		payload: unknown;
 	};
 }
-
-export interface RouteFounderReplyInput {
-	msgId: string;
-	leadId: string;
-	toQuestionId?: string;
-	noRouteReason?: string;
-	now: string;
-	provenance?: MessageProvenance;
-}
-
-export interface EnqueueFounderHubRootInput {
-	id: string;
-	toLead: string;
-	content: string;
-	refMessageId: string;
-	now: string;
-	nextUnprocessedAt?: string | null;
-	routingState?: string | null;
-}
-
-export type RouteFounderReplyResult =
-	| {
-			kind: "routed";
-			questionId: string;
-			responseId: string;
-	  }
-	| {
-			kind: "stale_candidate";
-			questionId: string;
-			winningResponseId: string;
-	  }
-	| { kind: "no_route"; winningResponseId?: string };
 
 export interface RunnerShutdownControl {
 	execution_id: string;
@@ -647,44 +568,6 @@ export interface WorkflowEngineParkProjection {
 	reason: string;
 	source_row_id: number;
 	updated_at: string;
-}
-
-const TERMINAL_RECEIPT_DISPOSAL_KINDS = new Set([
-	"terminal_subject_settlement",
-	"superseded_session_terminal",
-	"superseded_issue_done",
-	"superseded_merged",
-]);
-
-function isEquivalentTerminalReceiptDisposal(
-	raw: string,
-	receiptId: string,
-	sourceQuestionId: string,
-	expectedExecutionId: string,
-): boolean {
-	try {
-		const evidence = JSON.parse(raw) as ProcessedEvidenceV1;
-		assertProcessedEvidence(evidence);
-		if (
-			!TERMINAL_RECEIPT_DISPOSAL_KINDS.has(evidence.kind) ||
-			evidence.actor !== "terminal-receipt-projector" ||
-			evidence.actor_kind !== "bridge-protocol"
-		) {
-			return false;
-		}
-		if (evidence.kind === "terminal_subject_settlement") {
-			return (
-				evidence.ref === receiptId &&
-				evidence.fence.execution_id === expectedExecutionId
-			);
-		}
-		return (
-			evidence.ref === sourceQuestionId &&
-			evidence.fence.question_id === sourceQuestionId
-		);
-	} catch {
-		return false;
-	}
 }
 
 function isMissingTableError(error: unknown, table: string): boolean {
@@ -790,6 +673,15 @@ function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 export class CommDB {
 	private db: Database.Database;
 
+	ingestDiscordChat(
+		input: Omit<IngestDiscordChatArgs, "dbPath">,
+	): ReturnType<typeof ingestDiscordChatOnQueue> {
+		return ingestDiscordChatOnQueue(new MailboxQueue(this.db), {
+			...input,
+			dbPath: "<shared-connection>",
+		});
+	}
+
 	/**
 	 * Open (or create) the comm database.
 	 * @param dbPath - Path to the SQLite file
@@ -838,9 +730,11 @@ export class CommDB {
 						"DROP VIEW IF EXISTS messages; DROP VIEW IF EXISTS lead_inbox;",
 					);
 					this.applyMigrations();
+					dropReceiptLedgerSchema(this.db);
 					this.db.exec(MAILBOX_POISON_VIEWS);
 				})
 				.immediate();
+			installMailboxRelayInvariantTriggers(this.db);
 			phase = "purge";
 			if (archiveOnOpen) this.purgeExpired();
 		} catch (error) {
@@ -1206,61 +1100,59 @@ export class CommDB {
 		return info.changes > 0;
 	}
 
-	/**
-	 * FLY-1448 E1: retire one unanswered ship gate and settle only receipt
-	 * roots whose immutable ref_message_id points at that gate. The question
-	 * CAS and receipt-family evidence commit in one CommDB transaction; a
-	 * response that wins first leaves both objects untouched.
-	 */
-	supersedeShipGateAndReceiptFamily(input: {
+	retireGateForTerminalAuthority(input: {
 		questionId: string;
 		reason:
 			| "superseded_session_terminal"
 			| "superseded_issue_done"
 			| "superseded_merged";
 		now: string;
-	}):
-		| { kind: "settled" | "already_settled"; receiptIds: string[] }
-		| { kind: "response_won" | "missing"; receiptIds: [] } {
+	}): {
+		kind: "retired" | "already_retired" | "response_won" | "missing";
+	} {
 		assertUtcIsoTimestamp(input.now, "now");
-		const settle = this.db.transaction(() => {
-			const question = this.db
-				.prepare(
-					`SELECT id, checkpoint, relay_state, resolved_via
-					   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
-				)
-				.get(input.questionId) as
-				| {
-						id: string;
-						checkpoint: string | null;
-						relay_state: string;
-						resolved_via: string | null;
-				  }
-				| undefined;
-			if (!question || question.checkpoint !== "approve_to_ship") {
-				return { kind: "missing" as const, receiptIds: [] as [] };
-			}
-			const response = this.db
-				.prepare(
-					"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
-				)
-				.get(input.questionId);
-			if (response) {
-				return { kind: "response_won" as const, receiptIds: [] as [] };
-			}
-			const alreadySettled =
-				question.relay_state === "terminal_disposed" &&
-				question.resolved_via === input.reason;
-			if (!alreadySettled) {
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT checkpoint, relay_state, resolved_via
+						   FROM mailbox
+						  WHERE id = ? AND type = 'question'`,
+					)
+					.get(input.questionId) as
+					| {
+							checkpoint: string | null;
+							relay_state: string;
+							resolved_via: string | null;
+					  }
+					| undefined;
+				if (!question || question.checkpoint !== "approve_to_ship") {
+					return { kind: "missing" as const };
+				}
+				if (
+					this.db
+						.prepare(
+							"SELECT 1 FROM mailbox WHERE ref_id = ? AND type = 'response' LIMIT 1",
+						)
+						.get(input.questionId)
+				) {
+					return { kind: "response_won" as const };
+				}
+				if (
+					question.relay_state === "terminal_disposed" &&
+					question.resolved_via === input.reason
+				) {
+					return { kind: "already_retired" as const };
+				}
+				if (question.relay_state === "terminal_disposed") {
+					return { kind: "missing" as const };
+				}
 				const updated = this.db
 					.prepare(
 						`UPDATE mailbox SET
-						   resolved_at = ?,
-						   state = 'ACKED',
-						   acked_at = COALESCE(acked_at, ?),
-						   expires_at = ?,
-						   relay_state = 'terminal_disposed',
-						   resolved_via = ?,
+						   resolved_at = ?, state = 'ACKED',
+						   acked_at = COALESCE(acked_at, ?), expires_at = ?,
+						   relay_state = 'terminal_disposed', resolved_via = ?,
 						   superseded_at = COALESCE(superseded_at, ?)
 						 WHERE id = ? AND type = 'question'
 						   AND checkpoint = 'approve_to_ship'
@@ -1279,195 +1171,16 @@ export class CommDB {
 						input.now,
 						input.questionId,
 					);
-				if (updated.changes !== 1) {
-					const lateResponse = this.db
-						.prepare(
-							"SELECT 1 FROM mailbox_message_projection WHERE parent_id = ? AND type = 'response' LIMIT 1",
-						)
-						.get(input.questionId);
-					return {
-						kind: lateResponse
-							? ("response_won" as const)
-							: ("missing" as const),
-						receiptIds: [] as [],
-					};
-				}
-			}
-
-			const receiptIds = (
-				this.db
+				if (updated.changes === 1) return { kind: "retired" as const };
+				return this.db
 					.prepare(
-						`SELECT receipt_id FROM receipt_root_lineage
-						  WHERE question_id = ? ORDER BY receipt_id`,
+						"SELECT 1 FROM mailbox WHERE ref_id = ? AND type = 'response' LIMIT 1",
 					)
-					.all(input.questionId) as Array<{ receipt_id: string }>
-			).map((row) => row.receipt_id);
-			const queue = new MailboxQueue(this.db);
-			for (const receiptId of receiptIds) {
-				queue.settle({
-					messageOrDeliveryId: receiptId,
-					event: "disposed",
-					now: input.now,
-					evidence: {
-						v: 1,
-						kind: input.reason,
-						ref: input.questionId,
-						actor: "terminal-receipt-projector",
-						actor_kind: "bridge-protocol",
-						fence: { question_id: input.questionId },
-						basis: [`question:${input.questionId}`],
-					},
-				});
-			}
-			return {
-				kind: alreadySettled
-					? ("already_settled" as const)
-					: ("settled" as const),
-				receiptIds,
-			};
-		});
-		return settle.immediate();
-	}
-
-	/** List canonical receipt roots whose referenced message originated from
-	 * the exact runner execution. This is lineage discovery, not a text parse. */
-	listReceiptRootsForExecution(executionId: string): string[] {
-		return (
-			this.db
-				.prepare(
-					`SELECT DISTINCT receipt_id
-					   FROM receipt_root_lineage
-					  WHERE execution_id = ?
-					  ORDER BY receipt_id`,
-				)
-				.all(executionId) as Array<{ receipt_id: string }>
-		).map((row) => row.receipt_id);
-	}
-
-	getReceiptSettlementLineage(receiptId: string):
-		| {
-				receiptId: string;
-				executionId: string;
-				questionId: string;
-				projectName: string;
-				issueId: string | null;
-				rootLeadId: string;
-				sessionLeadId: string | null;
-		  }
-		| undefined {
-		return this.db
-			.prepare(
-				`SELECT lineage.receipt_id AS receiptId,
-				        lineage.execution_id AS executionId,
-				        lineage.question_id AS questionId,
-				        owner.project_name AS projectName,
-				        owner.issue_id AS issueId,
-				        lineage.root_lead_id AS rootLeadId,
-				        owner.lead_id AS sessionLeadId
-				   FROM receipt_root_lineage lineage
-				   JOIN mailbox_identity identity
-				     ON identity.delivery_id = lineage.receipt_id
-				    AND identity.id = lineage.question_id
-				   JOIN session_receipt_lineage owner
-				     ON owner.execution_id = lineage.execution_id
-				  WHERE lineage.receipt_id = ?`,
-			)
-			.get(receiptId) as
-			| {
-					receiptId: string;
-					executionId: string;
-					questionId: string;
-					projectName: string;
-					issueId: string | null;
-					rootLeadId: string;
-					sessionLeadId: string | null;
-			  }
-			| undefined;
-	}
-
-	/**
-	 * FLY-1448 E2: settle any canonical receipt family for an exact terminal
-	 * execution. `delivered_at` is intentionally irrelevant: delivered but
-	 * unprocessed is still an open obligation. Processed evidence wins;
-	 * conflicting disposal evidence fails closed. All terminal authorities for
-	 * the same subject are equivalent: whichever one disposes first satisfies
-	 * the others without rewriting its original forensic evidence.
-	 */
-	settleReceiptFamilyForTerminalSubject(input: {
-		receiptId: string;
-		expectedExecutionId: string;
-		reason: "session_terminal" | "issue_done" | "pr_merged";
-		now: string;
-	}):
-		| {
-				kind: "disposed" | "already_disposed" | "processing_won";
-				receiptId: string;
-		  }
-		| { kind: "missing"; receiptId: string } {
-		assertUtcIsoTimestamp(input.now, "now");
-		const settle = this.db.transaction(() => {
-			const lineage = this.db
-				.prepare(
-					`SELECT lineage.execution_id, lineage.question_id
-					   FROM receipt_root_lineage lineage
-					   JOIN mailbox_identity identity
-					     ON identity.delivery_id = lineage.receipt_id
-					    AND identity.id = lineage.question_id
-					  WHERE lineage.receipt_id = ?`,
-				)
-				.get(input.receiptId) as
-				| { execution_id: string; question_id: string }
-				| undefined;
-			if (!lineage)
-				return { kind: "missing" as const, receiptId: input.receiptId };
-			if (lineage.execution_id !== input.expectedExecutionId) {
-				throw new Error(
-					`receipt lineage mismatch for ${input.receiptId}: expected ${input.expectedExecutionId}`,
-				);
-			}
-			const queue = new MailboxQueue(this.db);
-			const existing = queue.getSettlement(input.receiptId);
-			if (existing?.event === "processed")
-				return { kind: "processing_won" as const, receiptId: input.receiptId };
-			const evidence: ProcessedEvidenceV1 = {
-				v: 1,
-				kind: "terminal_subject_settlement",
-				ref: input.receiptId,
-				actor: "terminal-receipt-projector",
-				actor_kind: "bridge-protocol",
-				fence: {
-					execution_id: input.expectedExecutionId,
-					reason: input.reason,
-				},
-				basis: [`receipt:${input.receiptId}`, `source:${lineage.question_id}`],
-			};
-			if (existing?.event === "disposed") {
-				if (
-					!isEquivalentTerminalReceiptDisposal(
-						JSON.stringify(existing.evidence),
-						input.receiptId,
-						lineage.question_id,
-						input.expectedExecutionId,
-					)
-				) {
-					throw new Error(
-						`receipt ${input.receiptId} has conflicting disposed evidence`,
-					);
-				}
-				return {
-					kind: "already_disposed" as const,
-					receiptId: input.receiptId,
-				};
-			}
-			queue.settle({
-				messageOrDeliveryId: input.receiptId,
-				event: "disposed",
-				now: input.now,
-				evidence,
-			});
-			return { kind: "disposed" as const, receiptId: input.receiptId };
-		});
-		return settle.immediate();
+					.get(input.questionId)
+					? { kind: "response_won" as const }
+					: { kind: "missing" as const };
+			})
+			.immediate();
 	}
 
 	/**
@@ -1849,6 +1562,106 @@ export class CommDB {
 				});
 				this.markQuestionTerminalDisposed(input.questionId);
 				return true;
+			})
+			.immediate();
+	}
+
+	insertGuardedResponse(input: {
+		questionId: string;
+		authenticatedLead: string;
+		content: string;
+		expectedOwner?: string;
+		expectedCheckpoint?: string | null;
+		now: string;
+		provenance?: MessageProvenance;
+	}): ResponseInsertResult {
+		const leadId = input.authenticatedLead.trim();
+		if (!leadId) throw new Error("authenticatedLead is required");
+		if (!input.content.trim()) throw new Error("content is required");
+		assertUtcIsoTimestamp(input.now, "now");
+		return this.db
+			.transaction(() => {
+				const question = this.db
+					.prepare(
+						`SELECT question.id, question.from_agent, question.to_agent,
+						        question.kind, question.checkpoint, question.expires_at,
+						        question.resolved_at, question.superseded_at,
+						        question.relay_state
+						   FROM mailbox question
+						  WHERE question.id = ? AND question.type = 'question'`,
+					)
+					.get(input.questionId) as
+					| {
+							id: string;
+							from_agent: string;
+							to_agent: string;
+							kind: string | null;
+							checkpoint: string | null;
+							expires_at: string | null;
+							resolved_at: string | null;
+							superseded_at: string | null;
+							relay_state: string;
+					  }
+					| undefined;
+				const checkpointMatches =
+					input.expectedCheckpoint === undefined ||
+					question?.checkpoint === input.expectedCheckpoint;
+				if (
+					!question ||
+					question.to_agent !== leadId ||
+					(input.expectedOwner !== undefined &&
+						question.from_agent !== input.expectedOwner) ||
+					!checkpointMatches
+				) {
+					throw new Error(`question ${input.questionId} scope mismatch`);
+				}
+				if (
+					question.checkpoint === "approve_to_ship" ||
+					question.checkpoint === "review_design" ||
+					question.checkpoint === "review_code"
+				) {
+					throw new Error(`question ${input.questionId} is not Lead-routable`);
+				}
+				const existing = this.getResponse(input.questionId);
+				if (existing) {
+					if (
+						existing.from_agent === leadId &&
+						existing.content === input.content
+					) {
+						return { responseId: existing.id };
+					}
+					throw new Error(`question ${input.questionId} is already answered`);
+				}
+				// H2 protection (default on) retains unanswered actionable rows
+				// through expiry — mirror every other answerable predicate and only
+				// enforce the expiry cutoff in explicit legacy mode.
+				if (
+					question.resolved_at !== null ||
+					question.superseded_at !== null ||
+					question.relay_state === "terminal_disposed" ||
+					(!commDbProtectionEnabled() &&
+						question.expires_at !== null &&
+						Date.parse(question.expires_at) <= Date.parse(input.now))
+				) {
+					throw new Error(`question ${input.questionId} is no longer open`);
+				}
+				const responseId = randomUUID();
+				new MailboxQueue(this.db).enqueue({
+					id: responseId,
+					fromAgent: leadId,
+					toAgent: question.from_agent,
+					recipientKind: "runner",
+					type: "response",
+					content: input.content,
+					refId: input.questionId,
+					createdAt: input.now,
+					expiresAt: new Date(
+						Date.parse(input.now) + 72 * 60 * 60 * 1000,
+					).toISOString(),
+					senderRef: encodeSenderRef(input.provenance),
+				});
+				this.markQuestionTerminalDisposed(input.questionId);
+				return { responseId };
 			})
 			.immediate();
 	}
@@ -2327,798 +2140,10 @@ export class CommDB {
 		);
 	}
 
-	enqueueFounderHubRoot(input: EnqueueFounderHubRootInput): MailboxRow {
-		const result = new MailboxQueue(this.db).enqueue({
-			id: input.id,
-			fromAgent: "founder",
-			toAgent: input.toLead,
-			recipientKind: "lead",
-			sourceKind: "founder_reply",
-			sourceRef: input.refMessageId,
-			type: "founder_reply",
-			msgClass: "model",
-			priority: 0,
-			content: input.content,
-			refId: input.refMessageId,
-			createdAt: input.now,
-			senderRef: encodeSenderRef(),
-		});
-		if (result.outcome === "archived") {
-			throw new Error(`founder hub root was already archived: ${input.id}`);
-		}
-		return result.row;
-	}
-
-	/**
-	 * FLY-1448: close a canonical founder hub root after the ship-decision path
-	 * reached a durable disposition. The read/verify/CAS and routing-state
-	 * update share one CommDB transaction so a concurrent Lead action cannot
-	 * be overwritten by a stale deliverer observation.
-	 */
-	settleFounderHubRoot(input: {
-		rootId: string;
-		now: string;
-		evidence: ProcessedEvidenceV1;
-		acceptedProcessedKinds: readonly string[];
-	}):
-		| { kind: "marked" | "verified"; evidenceKind: string }
-		| { kind: "missing" | "conflict"; evidenceKind?: string } {
-		assertUtcIsoTimestamp(input.now, "now");
-		assertProcessedEvidence(input.evidence);
-		const accepted = new Set(input.acceptedProcessedKinds);
-		return this.db
-			.transaction(() => {
-				const queue = new MailboxQueue(this.db);
-				const root = queue.getById(input.rootId);
-				if (!root) return { kind: "missing" as const };
-				const settlement = queue.getSettlement(input.rootId);
-				if (settlement?.event === "disposed") {
-					return { kind: "conflict" as const };
-				}
-				let rootPayload: ReturnType<CommDB["parseFounderRootPayload"]>;
-				try {
-					rootPayload = this.parseFounderRootPayload(root.content);
-				} catch {
-					return { kind: "conflict" as const };
-				}
-				if (
-					root.ref_id !== rootPayload.msgId ||
-					input.evidence.actor_kind !== "founder-writer" ||
-					input.evidence.fence.discord_message_id !== rootPayload.msgId
-				) {
-					return { kind: "conflict" as const };
-				}
-				const inputQuestionBasisEntries =
-					input.evidence.basis?.filter((basis) =>
-						basis.startsWith("question:"),
-					) ?? [];
-				if (inputQuestionBasisEntries.length > 1) {
-					return { kind: "conflict" as const };
-				}
-				const inputQuestionBasis = inputQuestionBasisEntries[0];
-				let result: "marked" | "verified";
-				let evidenceKind: string;
-				if (settlement?.event === "processed") {
-					let existingEvidence: ProcessedEvidenceV1;
-					try {
-						existingEvidence = settlement.evidence as ProcessedEvidenceV1;
-						assertProcessedEvidence(existingEvidence);
-					} catch {
-						return { kind: "conflict" as const };
-					}
-					evidenceKind = existingEvidence.kind;
-					if (typeof evidenceKind !== "string" || !accepted.has(evidenceKind)) {
-						return {
-							kind: "conflict" as const,
-							...(typeof evidenceKind === "string" ? { evidenceKind } : {}),
-						};
-					}
-					const existingQuestionBasisEntries =
-						existingEvidence.basis?.filter((basis) =>
-							basis.startsWith("question:"),
-						) ?? [];
-					if (existingQuestionBasisEntries.length > 1) {
-						return { kind: "conflict" as const, evidenceKind };
-					}
-					const existingQuestionBasis = existingQuestionBasisEntries[0];
-					if (
-						existingEvidence.actor_kind !== "founder-writer" ||
-						existingEvidence.actor !== input.evidence.actor ||
-						(inputQuestionBasis && existingQuestionBasis !== inputQuestionBasis)
-					) {
-						return { kind: "conflict" as const, evidenceKind };
-					}
-					if (evidenceKind === "ship_gate_bound") {
-						if (!existingQuestionBasis) {
-							return { kind: "conflict" as const, evidenceKind };
-						}
-						const questionId = existingQuestionBasis.slice("question:".length);
-						const response = this.db
-							.prepare(
-								`SELECT parent_id, from_agent, type
-								   FROM mailbox_message_projection WHERE id = ?`,
-							)
-							.get(existingEvidence.ref) as
-							| {
-									parent_id: string | null;
-									from_agent: string;
-									type: string;
-							  }
-							| undefined;
-						if (
-							response?.type !== "response" ||
-							response.parent_id !== questionId ||
-							response.from_agent !== existingEvidence.actor
-						) {
-							return { kind: "conflict" as const, evidenceKind };
-						}
-					} else if (inputQuestionBasis) {
-						const questionId = inputQuestionBasis.slice("question:".length);
-						if (existingEvidence.ref !== questionId) {
-							return { kind: "conflict" as const, evidenceKind };
-						}
-					} else if (existingQuestionBasis) {
-						const questionId = existingQuestionBasis.slice("question:".length);
-						if (existingEvidence.ref !== questionId) {
-							return { kind: "conflict" as const, evidenceKind };
-						}
-					} else if (existingEvidence.ref !== input.evidence.ref) {
-						return { kind: "conflict" as const, evidenceKind };
-					}
-					const discordFence =
-						existingEvidence.fence.discord_message_id === rootPayload.msgId;
-					const sourceEventFence =
-						typeof existingEvidence.fence.source_event_id === "string" &&
-						typeof existingQuestionBasis === "string" &&
-						existingEvidence.fence.source_event_id.endsWith(
-							`:${existingQuestionBasis.slice("question:".length)}:${rootPayload.msgId}`,
-						);
-					if (!discordFence && !sourceEventFence) {
-						return { kind: "conflict" as const, evidenceKind };
-					}
-					result = "verified";
-				} else {
-					queue.settle({
-						messageOrDeliveryId: input.rootId,
-						event: "processed",
-						now: input.now,
-						evidence: input.evidence,
-					});
-					evidenceKind = input.evidence.kind;
-					result = "marked";
-				}
-				return { kind: result, evidenceKind };
-			})
-			.immediate();
-	}
-
-	/** SQL-bounded seam used by the Discord chat recovery worker and patrol. */
-	listChatReceiptPending(input: {
-		toLead: string;
-		cursorSeq?: number;
-		limit?: number;
-		createdBefore?: string;
-		excludeQuarantined?: boolean;
-	}): MailboxRow[] {
-		return new MailboxQueue(this.db).listExternalPending({
-			...input,
-			toAgent: input.toLead,
-			idPrefix: `chat:${input.toLead}:`,
-		});
-	}
-
-	/**
-	 * Quarantine is visibility, never disposal: later redelivery may still mark
-	 * the same external row delivered. The fixed reason keeps retries idempotent.
-	 */
-	quarantineChatReceipt(input: { receiptId: string; now: string }): boolean {
-		const queue = new MailboxQueue(this.db);
-		queue.markDead(
-			input.receiptId,
-			input.now,
-			CHAT_DELIVERY_UNCONFIRMED_REASON,
-		);
-		const row = queue.getById(input.receiptId);
-		return Boolean(
-			row?.carrier === "external" &&
-				row.state === "DEAD" &&
-				row.dead_reason === CHAT_DELIVERY_UNCONFIRMED_REASON,
-		);
-	}
-
-	/**
-	 * Handle one founder receipt as Lead: relay the original message to an
-	 * eligible pending runner question, or close it explicitly as no-route.
-	 * New FLY-1392 roots carry no Bridge-generated candidates; legacy promoted
-	 * families retain their frozen-candidate checks. The business write,
-	 * response and processed receipt(s) share this transaction.
-	 */
-	routeFounderReply(input: RouteFounderReplyInput): RouteFounderReplyResult {
-		assertUtcIsoTimestamp(input.now, "now");
-		const msgId = input.msgId.trim();
-		const leadId = input.leadId.trim();
-		if (!msgId) throw new Error("msgId is required");
-		if (!leadId) throw new Error("leadId is required");
-		const toQuestionId = input.toQuestionId?.trim();
-		const noRouteReason = input.noRouteReason?.trim();
-		if (Boolean(toQuestionId) === Boolean(noRouteReason)) {
-			throw new Error(
-				"exactly one of toQuestionId or noRouteReason is required",
-			);
-		}
-		const rootId = founderMessageRootId(leadId, msgId);
-		const fence = this.processedFenceFromProvenance(input.provenance);
-
-		return this.db
-			.transaction((): RouteFounderReplyResult => {
-				const queue = new MailboxQueue(this.db);
-				const root = queue.getById(rootId);
-				if (
-					!root ||
-					root.to_agent !== leadId ||
-					root.source_kind !== "founder_reply" ||
-					root.type !== "founder_reply" ||
-					root.ref_id !== msgId
-				) {
-					throw new Error(
-						`founder receipt root ${leadId}:${msgId} is unavailable`,
-					);
-				}
-				const rootPayload = this.parseFounderRootPayload(root.content);
-				const settlement = queue.getSettlement(rootId);
-				if (settlement) {
-					if (settlement.event !== "processed") {
-						throw new Error("founder route was disposed by another action");
-					}
-					const evidence = settlement.evidence as ProcessedEvidenceV1;
-					if (
-						toQuestionId &&
-						evidence.kind === "lead_routed" &&
-						evidence.actor === leadId &&
-						evidence.basis?.includes(`question:${toQuestionId}`)
-					) {
-						return {
-							kind: "routed",
-							questionId: toQuestionId,
-							responseId: evidence.ref,
-						};
-					}
-					if (
-						noRouteReason &&
-						evidence.kind === "lead_no_route" &&
-						evidence.actor === leadId &&
-						evidence.basis?.includes(noRouteReason)
-					) {
-						return {
-							kind: "no_route",
-							...(noRouteReason === "already_answered"
-								? { winningResponseId: evidence.ref }
-								: {}),
-						};
-					}
-					throw new Error(
-						"founder route family was processed by another action",
-					);
-				}
-
-				if (noRouteReason) {
-					let winningResponseId: string | undefined;
-					if (noRouteReason === "already_answered") {
-						const response = toQuestionId
-							? this.getResponse(toQuestionId)
-							: undefined;
-						winningResponseId = response?.id;
-						if (!winningResponseId) {
-							throw new Error(
-								"already_answered requires a winning frozen-candidate response",
-							);
-						}
-					}
-					const evidence: ProcessedEvidenceV1 = {
-						v: 1,
-						kind: "lead_no_route",
-						ref: winningResponseId ?? rootId,
-						actor: leadId,
-						actor_kind: "lead",
-						fence,
-						basis: [noRouteReason],
-					};
-					queue.settle({
-						messageOrDeliveryId: rootId,
-						event: "processed",
-						now: input.now,
-						evidence,
-					});
-					return {
-						kind: "no_route",
-						...(winningResponseId ? { winningResponseId } : {}),
-					};
-				}
-
-				const questionId = toQuestionId as string;
-				const question = this.getMessageById(questionId);
-				if (!question || question.type !== "question") {
-					throw new Error(`founder route question ${questionId} was not found`);
-				}
-				if (
-					question.kind === "report" ||
-					question.checkpoint === "approve_to_ship" ||
-					question.checkpoint === "review_design" ||
-					question.checkpoint === "review_code"
-				) {
-					throw new Error(`question ${questionId} is not founder-routable`);
-				}
-				const session = this.getSession(question.from_agent);
-				if (
-					!session ||
-					session.lead_id !== leadId ||
-					session.project_name !== rootPayload.projectName ||
-					session.issue_id !== rootPayload.issueId
-				) {
-					throw new Error(
-						`question ${questionId} founder route scope mismatch`,
-					);
-				}
-				const winning = this.getResponse(questionId);
-				if (winning) {
-					return {
-						kind: "stale_candidate",
-						questionId,
-						winningResponseId: winning.id,
-					};
-				}
-				if (
-					question.resolved_at !== null ||
-					question.superseded_at !== null ||
-					question.relay_state === "terminal_disposed"
-				) {
-					throw new Error(`question ${questionId} is no longer pending`);
-				}
-				const responseId = randomUUID();
-				new MailboxQueue(this.db).enqueue({
-					id: responseId,
-					fromAgent: leadId,
-					toAgent: question.from_agent,
-					recipientKind: "runner",
-					type: "response",
-					content: rootPayload.answer,
-					refId: questionId,
-					createdAt: input.now,
-					expiresAt: new Date(
-						Date.parse(input.now) + 72 * 60 * 60 * 1000,
-					).toISOString(),
-					senderRef: encodeSenderRef(input.provenance),
-				});
-				this.markQuestionTerminalDisposed(questionId);
-				const evidence: ProcessedEvidenceV1 = {
-					v: 1,
-					kind: "lead_routed",
-					ref: responseId,
-					actor: leadId,
-					actor_kind: "lead",
-					fence,
-					basis: [`question:${questionId}`],
-				};
-				queue.settle({
-					messageOrDeliveryId: rootId,
-					event: "processed",
-					now: input.now,
-					evidence,
-				});
-				return { kind: "routed", questionId, responseId };
-			})
-			.immediate();
-	}
-
-	private processedFenceFromProvenance(
-		provenance?: MessageProvenance,
-	): Record<string, string | number> {
-		if (
-			provenance?.senderGeneration !== null &&
-			provenance?.senderGeneration !== undefined
-		) {
-			return {
-				...(provenance.senderLeaseKey
-					? { lease_key: provenance.senderLeaseKey }
-					: {}),
-				lease_generation: provenance.senderGeneration,
-			};
-		}
-		if (provenance?.writerPid !== null && provenance?.writerPid !== undefined) {
-			return { writer_pid: provenance.writerPid };
-		}
-		return { authority: "lead_write_unprotected" };
-	}
-
-	private parseFounderRootPayload(encoded: string): {
-		msgId: string;
-		answer: string;
-		projectName: string;
-		issueId: string;
-		threadId: string;
-	} {
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(encoded);
-		} catch {
-			throw new Error("founder root content is invalid JSON");
-		}
-		const value = parsed as Record<string, unknown>;
-		for (const field of [
-			"msgId",
-			"answer",
-			"projectName",
-			"issueId",
-			"threadId",
-		]) {
-			if (typeof value[field] !== "string" || !value[field].trim()) {
-				throw new Error(`founder root content ${field} is invalid`);
-			}
-		}
-		return value as {
-			msgId: string;
-			answer: string;
-			projectName: string;
-			issueId: string;
-			threadId: string;
-		};
-	}
-
-	/**
-	 * Category-agnostic Lead handle action. The optional business effect, receipt
-	 * terminal write, and runner wake share one SQLite transaction; request id +
-	 * canonical payload digest makes retries deterministic.
-	 */
-	handleReceipt(input: HandleReceiptInput): HandleReceiptResult {
-		const requestId = input.requestId.trim();
-		const receiptId = input.receiptId.trim();
-		const authenticatedLead = input.authenticatedLead.trim();
-		if (!requestId) throw new Error("requestId is required");
-		if (!receiptId) throw new Error("receiptId is required");
-		if (!authenticatedLead) throw new Error("authenticatedLead is required");
-		assertUtcIsoTimestamp(input.now, "now");
-		if (
-			!Number.isSafeInteger(input.provenance.senderGeneration) ||
-			(input.provenance.senderGeneration ?? 0) <= 0 ||
-			!input.provenance.senderLeaseKey?.trim()
-		) {
-			throw new Error(
-				"not_authorized: a valid Lead lease generation is required",
-			);
-		}
-		if (
-			(input.action === "relay" || input.action === "respond") &&
-			(!input.targetQuestionId?.trim() || !input.content?.trim())
-		) {
-			throw new Error(`${input.action} requires targetQuestionId and content`);
-		}
-		const payloadDigest = canonicalSubmissionDigest({
-			receiptId,
-			action: input.action,
-			targetQuestionId: input.targetQuestionId?.trim(),
-			content: input.content?.trim(),
-			reason: input.reason?.trim(),
-		});
-
-		return this.db
-			.transaction((): HandleReceiptResult => {
-				const existingRequest = this.db
-					.prepare(
-						`SELECT receipt_id, action, payload_digest, result_json
-						   FROM receipt_handle_requests WHERE request_id = ?`,
-					)
-					.get(requestId) as
-					| {
-							receipt_id: string;
-							action: string;
-							payload_digest: string;
-							result_json: string;
-					  }
-					| undefined;
-				if (existingRequest) {
-					if (
-						existingRequest.receipt_id !== receiptId ||
-						existingRequest.action !== input.action ||
-						existingRequest.payload_digest !== payloadDigest
-					) {
-						throw new Error(`idempotency_conflict: request ${requestId}`);
-					}
-					return JSON.parse(existingRequest.result_json) as HandleReceiptResult;
-				}
-
-				const queue = new MailboxQueue(this.db);
-				const receipt = queue.getById(receiptId);
-				if (!receipt) throw new Error(`receipt_not_found: ${receiptId}`);
-				if (receipt.to_agent !== authenticatedLead) {
-					throw new Error(
-						`not_authorized: receipt belongs to ${receipt.to_agent}`,
-					);
-				}
-				if (receipt.state !== "ACKED") {
-					throw new Error(`receipt_not_delivered: ${receiptId}`);
-				}
-				const settlement = queue.getSettlement(receiptId);
-				if (settlement?.event === "processed") {
-					throw new Error(`already_processed: ${receiptId}`);
-				}
-				if (settlement?.event === "disposed") {
-					throw new Error(`already_disposed: ${receiptId}`);
-				}
-
-				let responseId: string | undefined;
-				if (input.action === "relay" || input.action === "respond") {
-					const questionId = input.targetQuestionId?.trim() as string;
-					const question = this.db
-						.prepare(
-							`SELECT id, from_agent, checkpoint, resolved_at, superseded_at, relay_state
-							   FROM mailbox_message_projection WHERE id = ? AND type = 'question'`,
-						)
-						.get(questionId) as
-						| {
-								id: string;
-								from_agent: string;
-								checkpoint: string | null;
-								resolved_at: string | null;
-								superseded_at: string | null;
-								relay_state: string;
-						  }
-						| undefined;
-					if (question?.checkpoint === "approve_to_ship") {
-						throw new Error(
-							`approve_to_ship_requires_founder_writer: ${questionId}`,
-						);
-					}
-					if (
-						!question ||
-						question.resolved_at !== null ||
-						question.superseded_at !== null ||
-						question.relay_state === "terminal_disposed" ||
-						this.getResponse(questionId)
-					) {
-						throw new Error(`business_object_not_pending: ${questionId}`);
-					}
-					responseId = randomUUID();
-					new MailboxQueue(this.db).enqueue({
-						id: responseId,
-						fromAgent: authenticatedLead,
-						toAgent: question.from_agent,
-						recipientKind: "runner",
-						type: "response",
-						content: input.content?.trim() as string,
-						refId: questionId,
-						createdAt: input.now,
-						expiresAt: new Date(
-							Date.parse(input.now) + 72 * 60 * 60 * 1000,
-						).toISOString(),
-						senderRef: encodeSenderRef(input.provenance),
-					});
-					this.markQuestionTerminalDisposed(questionId);
-				}
-				if (input.testCrashAfter === "effect") {
-					throw new Error("injected receipt handle crash after effect");
-				}
-
-				const evidence: ProcessedEvidenceV1 = {
-					v: 1,
-					kind: `lead_${input.action.replace("-", "_")}`,
-					ref: responseId ?? requestId,
-					actor: authenticatedLead,
-					actor_kind: "lead",
-					fence: this.processedFenceFromProvenance(input.provenance),
-					...(input.reason?.trim() ? { basis: [input.reason.trim()] } : {}),
-				};
-				queue.settle({
-					messageOrDeliveryId: receiptId,
-					event: "processed",
-					now: input.now,
-					evidence,
-				});
-				if (input.testCrashAfter === "terminal") {
-					throw new Error("injected receipt handle crash after terminal");
-				}
-
-				const result: HandleReceiptResult = {
-					kind: "handled",
-					receiptId,
-					action: input.action,
-					...(responseId ? { responseId } : {}),
-				};
-				this.db
-					.prepare(
-						`INSERT INTO receipt_handle_requests (
-						   request_id, receipt_id, action, payload_digest, result_json,
-						   created_at
-						 ) VALUES (?, ?, ?, ?, ?, ?)`,
-					)
-					.run(
-						requestId,
-						receiptId,
-						input.action,
-						payloadDigest,
-						JSON.stringify(result),
-						input.now,
-					);
-				return result;
-			})
-			.immediate();
-	}
-
-	/**
-	 * FLY-1392 composite response UOW: the business response, its processed
-	 * evidence commit or roll back together; Runner delivery reads the response.
-	 */
-	respondAndReceipt(input: RespondAndReceiptInput): RespondAndReceiptResult {
-		for (const [field, value] of [
-			["questionId", input.questionId],
-			["fromAgent", input.fromAgent],
-			["content", input.content],
-			["rootId", input.rootId],
-		] as const) {
-			if (!value.trim()) throw new Error(`${field} is required`);
-		}
-		assertUtcIsoTimestamp(input.now, "now");
-		if (
-			input.evidence.actor_kind === "lead" &&
-			input.evidence.actor !== input.fromAgent
-		) {
-			throw new Error("processed evidence actor must match response author");
-		}
-
-		return this.db.transaction(() => {
-			if (input.evidence.actor_kind === "bridge-protocol") {
-				this.assertCurrentProtocolOwner(input.evidence.fence, input.now);
-			}
-			const question = this.db
-				.prepare(
-					`SELECT id, from_agent, checkpoint, relay_state, resolved_at,
-					        superseded_at FROM mailbox_message_projection
-					 WHERE id = ? AND type = 'question'`,
-				)
-				.get(input.questionId) as
-				| {
-						id: string;
-						from_agent: string;
-						checkpoint: string | null;
-						relay_state: string;
-						resolved_at: string | null;
-						superseded_at: string | null;
-				  }
-				| undefined;
-			if (!question) throw new Error(`Question ${input.questionId} not found`);
-			if (question.checkpoint === "approve_to_ship") {
-				throw new Error("approve_to_ship requires the trusted founder writer");
-			}
-			let response = this.getResponse(input.questionId);
-			if (!response) {
-				const responseId = randomUUID();
-				if (
-					question.resolved_at !== null ||
-					question.superseded_at !== null ||
-					question.relay_state === "terminal_disposed"
-				) {
-					throw new Error(`question ${input.questionId} is no longer open`);
-				}
-				new MailboxQueue(this.db).enqueue({
-					id: responseId,
-					fromAgent: input.fromAgent,
-					toAgent: question.from_agent,
-					recipientKind: "runner",
-					type: "response",
-					content: input.content,
-					refId: input.questionId,
-					createdAt: input.now,
-					expiresAt: new Date(
-						Date.parse(input.now) + 72 * 60 * 60 * 1000,
-					).toISOString(),
-					senderRef: encodeSenderRef(input.provenance),
-				});
-				this.markQuestionTerminalDisposed(input.questionId);
-				response = this.getResponse(input.questionId);
-			}
-			if (
-				!response ||
-				response.from_agent !== input.fromAgent ||
-				response.content !== input.content
-			) {
-				throw new Error(
-					`question ${input.questionId} was answered by another actor`,
-				);
-			}
-
-			const evidence: ProcessedEvidenceV1 = {
-				...input.evidence,
-				ref: response.id,
-			};
-			const queue = new MailboxQueue(this.db);
-			if (!queue.getById(input.rootId)) {
-				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
-			}
-			queue.settle({
-				messageOrDeliveryId: input.rootId,
-				event: "processed",
-				now: input.now,
-				evidence,
-			});
-			return { responseId: response.id };
-		})();
-	}
-
-	trustedFounderApprovalAndReceipt(
-		input: TrustedFounderApprovalAndReceiptInput,
-	): RespondAndReceiptResult {
-		assertUtcIsoTimestamp(input.now, "now");
-		if (input.evidence.actor_kind !== "founder-writer") {
-			throw new Error(
-				"trusted founder evidence must use founder-writer actor_kind",
-			);
-		}
-		if (input.evidence.actor !== input.fromAgent) {
-			throw new Error(
-				"trusted founder evidence actor must match response author",
-			);
-		}
-		return this.db.transaction(() => {
-			let response = this.getResponse(input.questionId);
-			if (!response) {
-				const written = this.insertFounderApprovalResponseWithSource({
-					project: input.project,
-					sourceEventId: input.sourceEventId,
-					questionId: input.questionId,
-					fromAgent: input.fromAgent,
-					content: input.content,
-					expectedOwner: input.expectedOwner,
-					payload: input.payload,
-					provenance: input.provenance,
-				});
-				if (!written) {
-					throw new Error(
-						`founder approval gate ${input.questionId} is not open`,
-					);
-				}
-				response = this.getResponse(input.questionId);
-			}
-			if (
-				!response ||
-				response.from_agent !== input.fromAgent ||
-				response.content !== input.content
-			) {
-				throw new Error(
-					`founder approval gate ${input.questionId} was answered by another actor`,
-				);
-			}
-			const source = this.db
-				.prepare(
-					`SELECT kind FROM workflow_source_event
-					 WHERE project = ? AND source_event_id = ?`,
-				)
-				.get(input.project, input.sourceEventId) as
-				| { kind: string }
-				| undefined;
-			if (source?.kind !== "founder_approval") {
-				throw new Error("trusted founder authority source is missing");
-			}
-			const evidence: ProcessedEvidenceV1 = {
-				...input.evidence,
-				ref: response.id,
-			};
-			const queue = new MailboxQueue(this.db);
-			if (!queue.getById(input.rootId)) {
-				throw new Error(`founder receipt root ${input.rootId} is unavailable`);
-			}
-			queue.settle({
-				messageOrDeliveryId: input.rootId,
-				event: "processed",
-				now: input.now,
-				evidence,
-			});
-			return { responseId: response.id };
-		})();
-	}
-
-	/** Trusted text/card ship decision + founder receipt + wake intent. */
-	trustedFounderGateResponseAndReceipt(
-		input: TrustedFounderGateResponseAndReceiptInput,
-	): RespondAndReceiptResult {
+	/** Trusted text/card ship decision and founder authority source. */
+	trustedFounderGateResponse(
+		input: TrustedFounderGateResponseInput,
+	): ResponseInsertResult {
 		assertUtcIsoTimestamp(input.now, "now");
 		return this.db
 			.transaction(() => {
@@ -3173,33 +2198,6 @@ export class CommDB {
 						`founder ship gate ${input.questionId} was answered by another action`,
 					);
 				}
-				const queue = new MailboxQueue(this.db);
-				const root = queue.getById(input.rootId);
-				if (!root)
-					throw new Error(
-						`founder receipt root ${input.rootId} is unavailable`,
-					);
-				const rootPayload = this.parseFounderRootPayload(root.content);
-				if (rootPayload.msgId !== input.msgId) {
-					throw new Error("founder ship receipt message mismatch");
-				}
-				const evidence: ProcessedEvidenceV1 = {
-					v: 1,
-					kind: "ship_gate_bound",
-					ref: response.id,
-					actor: input.fromAgent,
-					actor_kind: "founder-writer",
-					fence: input.approvalSource
-						? { source_event_id: input.approvalSource.sourceEventId }
-						: { discord_message_id: input.msgId },
-					basis: [`question:${input.questionId}`],
-				};
-				queue.settle({
-					messageOrDeliveryId: input.rootId,
-					event: "processed",
-					now: input.now,
-					evidence,
-				});
 				return { responseId: response.id };
 			})
 			.immediate();
@@ -3211,9 +2209,9 @@ export class CommDB {
 	 */
 	insertReviewResponseIfGateOpen(
 		input: ReviewResponseInput,
-	): RespondAndReceiptResult | null {
+	): ResponseInsertResult | null {
 		return this.db
-			.transaction((): RespondAndReceiptResult | null => {
+			.transaction((): ResponseInsertResult | null => {
 				let response = this.getResponse(input.questionId);
 				if (response) {
 					if (
@@ -3247,24 +2245,6 @@ export class CommDB {
 				return { responseId: response.id };
 			})
 			.immediate();
-	}
-
-	private assertCurrentProtocolOwner(
-		fence: Record<string, string | number>,
-		now: string,
-	): string {
-		const ownerEpoch = fence.owner_epoch;
-		if (typeof ownerEpoch !== "string" || !ownerEpoch.trim()) {
-			throw new Error("bridge-protocol evidence requires owner_epoch");
-		}
-		const owner = this.db
-			.prepare(
-				`SELECT owner_epoch FROM loop_owner
-				 WHERE singleton = 1 AND owner_epoch = ? AND lease_expires_at >= ?`,
-			)
-			.get(ownerEpoch, now) as { owner_epoch: string } | undefined;
-		if (!owner) throw new Error("founder protocol owner epoch is not current");
-		return owner.owner_epoch;
 	}
 
 	/**

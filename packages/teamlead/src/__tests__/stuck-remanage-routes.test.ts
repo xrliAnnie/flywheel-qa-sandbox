@@ -398,7 +398,6 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 		store: StateStore,
 		targetKey = "exec-1",
 		fingerprint = FP,
-		sourceReceiptId?: string,
 	): void {
 		store.upsertDetectionEscalation({
 			targetKey,
@@ -407,7 +406,6 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 			issueId: "FLY-1",
 			ownerLeadId: "product-lead",
 			firstDetectedAtMs: 0,
-			sourceReceiptId,
 		});
 		store.markDetectionEscalationLeadNotified(
 			targetKey,
@@ -472,8 +470,8 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 		);
 	});
 
-	it("closes an oversized legacy fingerprint instead of stranding the episode", async () => {
-		const oversized = `receipt-chain:${"x".repeat(240)}`;
+	it("closes an oversized fingerprint instead of stranding the episode", async () => {
+		const oversized = `detection-chain:${"x".repeat(240)}`;
 		seedEpisode(h.store, "exec-1", oversized);
 		const r = await post(h, "/api/sessions/exec-1/detection-ack", {
 			...valid,
@@ -573,8 +571,8 @@ describe("POST /:executionId/detection-ack (FLY-1048 C3-w)", () => {
 });
 
 describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
-	const KIND = "receipt_unprocessed";
-	const FP = "receipt-root-1";
+	const KIND = "wake_failed";
+	const FP = "wake-root-1";
 	const valid = {
 		projectName: "geo",
 		kind: KIND,
@@ -586,7 +584,6 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 		targetKey = "geo:product-lead",
 		ownerLeadId: string | null = "product-lead",
 		fingerprint = FP,
-		sourceReceiptId?: string,
 	): void {
 		h.store.upsertDetectionEscalation({
 			targetKey,
@@ -595,7 +592,6 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 			issueId: "FLY-1",
 			ownerLeadId,
 			firstDetectedAtMs: 1_000,
-			sourceReceiptId,
 		});
 		h.store.markDetectionEscalationLeadNotified(
 			targetKey,
@@ -617,23 +613,6 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 		});
 		expect(
 			h.store.getDetectionEscalation("geo:product-lead", KIND, FP)?.status,
-		).toBe("ACKED");
-	});
-
-	it("round-trips a bounded parent receipt id to close an oversized fingerprint", async () => {
-		const oversized = `receipt-chain:${"x".repeat(240)}`;
-		const parentId = "receipt-parent-1";
-		seedLeadEpisode("geo:product-lead", "product-lead", oversized, parentId);
-
-		const r = await post(h, "/api/leads/product-lead/detection-ack", {
-			...valid,
-			episode_fingerprint: parentId,
-		});
-
-		expect(r.status).toBe(200);
-		expect(
-			h.store.getDetectionEscalation("geo:product-lead", KIND, oversized)
-				?.status,
 		).toBe("ACKED");
 	});
 
@@ -666,7 +645,7 @@ describe("POST /api/leads/:leadId/detection-ack (FLY-1448)", () => {
 		);
 		expect(missing.status).toBe(403);
 
-		const conflictingFingerprint = "receipt-root-2";
+		const conflictingFingerprint = "wake-root-2";
 		seedLeadEpisode("geo:product-lead", "other-lead", conflictingFingerprint);
 		const conflict = await post(h, "/api/leads/product-lead/detection-ack", {
 			...valid,

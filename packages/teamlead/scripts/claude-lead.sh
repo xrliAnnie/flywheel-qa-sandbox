@@ -2973,10 +2973,7 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
-    # FLY-1426: Discord inbound receipts and their priority windows must cross
-    # tmux's explicit -e barrier. Keeping these values identical in the plugin
-    # and CommDB activation path prevents delivery/expiry SLA drift.
-    -e "FLYWHEEL_CHAT_RECEIPTS=${FLYWHEEL_CHAT_RECEIPTS:-}"
+	# Discord inbound delivery priority windows cross tmux's explicit -e barrier.
     -e "FLYWHEEL_RECEIPT_WINDOW_P0_MIN=${FLYWHEEL_RECEIPT_WINDOW_P0_MIN:-}"
     -e "FLYWHEEL_RECEIPT_WINDOW_P1_MIN=${FLYWHEEL_RECEIPT_WINDOW_P1_MIN:-}"
     -e "FLYWHEEL_RECEIPT_WINDOW_P2_MIN=${FLYWHEEL_RECEIPT_WINDOW_P2_MIN:-}"

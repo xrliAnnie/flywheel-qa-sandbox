@@ -1,23 +1,31 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import {
-	type BeginChatReceiptArgs,
-	type ChatReceiptEnvelopeV1,
-	chatReceiptId,
-	encodeChatReceiptEnvelope,
-	normalizeChatReceiptEnvelope,
-	parseChatReceiptEnvelope,
-} from "./commands/chat-receipt.js";
+	type ChatDeliveryAttachment,
+	type ChatDeliveryEnvelopeV1,
+	type ChatDeliveryMessageKind,
+	chatDeliveryId,
+	encodeChatDeliveryEnvelope,
+	normalizeChatDeliveryEnvelope,
+	parseChatDeliveryEnvelope,
+} from "./chat-delivery-envelope.js";
 import { type DiscordLaneVerdict, MailboxQueue } from "./mailbox-queue.js";
 import { encodeSenderRef } from "./sender-ref.js";
 
-export const MAILBOX_DISCORD_ENV = "FLYWHEEL_MAILBOX_DISCORD";
-
-export interface IngestDiscordChatArgs
-	extends Omit<BeginChatReceiptArgs, "priority"> {
+export interface IngestDiscordChatArgs {
+	dbPath: string;
+	leadId: string;
+	chatId: string;
+	originChannelId: string;
+	messageId: string;
+	authorId: string;
+	authorName: string;
+	ts: string;
+	msgKind: ChatDeliveryMessageKind;
+	attachments: ChatDeliveryAttachment[];
+	text: string;
 	founderId?: string;
 	replyChannelId?: string;
-	replyRoute?: ChatReceiptEnvelopeV1["replyRoute"];
+	replyRoute?: ChatDeliveryEnvelopeV1["replyRoute"];
 }
 
 function escapeXml(value: string): string {
@@ -41,7 +49,7 @@ function escapeXmlText(value: string): string {
 }
 
 export function renderDiscordChatContent(
-	envelope: ChatReceiptEnvelopeV1,
+	envelope: ChatDeliveryEnvelopeV1,
 ): string {
 	const attrs = {
 		source: "plugin:discord:discord",
@@ -50,7 +58,7 @@ export function renderDiscordChatContent(
 		user: envelope.authorName,
 		user_id: envelope.authorId,
 		ts: envelope.ts,
-		receipt_id: envelope.receiptId,
+		delivery_id: envelope.deliveryId,
 	};
 	const attachments = envelope.attachments.map(
 		(attachment) =>
@@ -66,6 +74,18 @@ export function renderDiscordChatContent(
 export function ingestDiscordChat(
 	args: IngestDiscordChatArgs,
 ): DiscordLaneVerdict {
+	const queue = new MailboxQueue(args.dbPath);
+	try {
+		return ingestDiscordChatOnQueue(queue, args);
+	} finally {
+		queue.close();
+	}
+}
+
+export function ingestDiscordChatOnQueue(
+	queue: MailboxQueue,
+	args: IngestDiscordChatArgs,
+): DiscordLaneVerdict {
 	if (
 		args.msgKind === "roundtable" &&
 		!args.replyChannelId &&
@@ -74,9 +94,9 @@ export function ingestDiscordChat(
 		throw new Error("roundtable Discord chat requires a reply route");
 	}
 	const founder = args.founderId === args.authorId;
-	const envelope = normalizeChatReceiptEnvelope({
+	const envelope = normalizeChatDeliveryEnvelope({
 		v: 1,
-		receiptId: chatReceiptId(args.leadId, args.messageId),
+		deliveryId: chatDeliveryId(args.leadId, args.messageId),
 		leadId: args.leadId,
 		chatId: args.chatId,
 		originChannelId: args.originChannelId,
@@ -91,28 +111,23 @@ export function ingestDiscordChat(
 		...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
 		...(args.replyRoute ? { replyRoute: args.replyRoute } : {}),
 	});
-	const queue = new MailboxQueue(args.dbPath);
-	try {
-		return queue.claimDiscordLane({
-			id: envelope.receiptId,
-			fromAgent: founder ? "founder" : `discord:${args.authorId}`,
-			toAgent: envelope.leadId,
-			recipientKind: "lead",
-			sourceKind: "discord_chat",
-			sourceRef: envelope.receiptId,
-			type: "discord_chat",
-			msgClass: "model",
-			priority: 1,
-			content: `${encodeChatReceiptEnvelope(envelope)}\n${envelope.authorName}: ${envelope.text}`,
-			deliveryContent: renderDiscordChatContent(envelope),
-			createdAt: envelope.ts,
-			carrier: "inbox",
-			collapseKey: null,
-			senderRef: encodeSenderRef(),
-		});
-	} finally {
-		queue.close();
-	}
+	return queue.claimDiscordLane({
+		id: envelope.deliveryId,
+		fromAgent: founder ? "founder" : `discord:${args.authorId}`,
+		toAgent: envelope.leadId,
+		recipientKind: "lead",
+		sourceKind: "discord_chat",
+		sourceRef: envelope.deliveryId,
+		type: "discord_chat",
+		msgClass: "model",
+		priority: 1,
+		content: `${encodeChatDeliveryEnvelope(envelope)}\n${envelope.authorName}: ${envelope.text}`,
+		deliveryContent: renderDiscordChatContent(envelope),
+		createdAt: envelope.ts,
+		carrier: "inbox",
+		collapseKey: null,
+		senderRef: encodeSenderRef(),
+	});
 }
 
 export function discordBatchPartitionKey(row: {
@@ -122,7 +137,7 @@ export function discordBatchPartitionKey(row: {
 }): string {
 	if (row.type !== "discord_chat") return "model";
 	try {
-		const envelope = parseChatReceiptEnvelope(row.content);
+		const envelope = parseChatDeliveryEnvelope(row.content);
 		const route = JSON.stringify({
 			chatId: envelope.chatId,
 			replyChannelId: envelope.replyChannelId ?? null,
@@ -136,28 +151,13 @@ export function discordBatchPartitionKey(row: {
 
 export function parseDiscordChatRoute(content: string): {
 	replyChannelId?: string;
-	replyRoute?: NonNullable<ChatReceiptEnvelopeV1["replyRoute"]>;
+	replyRoute?: NonNullable<ChatDeliveryEnvelopeV1["replyRoute"]>;
 } {
-	const envelope = parseChatReceiptEnvelope(content);
+	const envelope = parseChatDeliveryEnvelope(content);
 	return {
 		...(envelope.replyChannelId
 			? { replyChannelId: envelope.replyChannelId }
 			: {}),
 		...(envelope.replyRoute ? { replyRoute: envelope.replyRoute } : {}),
 	};
-}
-
-export function readMailboxDiscordFlag(envPath: string): {
-	enabled: boolean;
-	readError?: string;
-} {
-	try {
-		const prefix = `${MAILBOX_DISCORD_ENV}=`;
-		const line = readFileSync(envPath, "utf8")
-			.split(/\r?\n/)
-			.find((candidate) => candidate.startsWith(prefix));
-		return { enabled: line?.slice(prefix.length) === "1" };
-	} catch (error) {
-		return { enabled: false, readError: (error as Error).message };
-	}
 }

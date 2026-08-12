@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CommDB } from "../db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
@@ -28,7 +29,14 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
+	function bindRunner(execId: string, leadId: string): void {
+		const db = new CommDB(dbPath);
+		db.registerSession(execId, "runner", "test", `issue-${execId}`, leadId);
+		db.close();
+	}
+
 	it("should complete full Q&A workflow via CLI (JSON mode)", () => {
+		bindRunner("exec-w1", "product-lead");
 		// Runner asks a question
 		const askResult = JSON.parse(
 			runCli([
@@ -122,6 +130,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	});
 
 	it("should handle mixed Q&A + instructions on same DB", () => {
+		bindRunner("exec-mixed", "product-lead");
 		// Q&A flow
 		const askResult = JSON.parse(
 			runCli([
@@ -182,6 +191,8 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	});
 
 	it("should handle multi-lead Q&A with independent chains", () => {
+		bindRunner("exec-product", "product-lead");
+		bindRunner("exec-ops", "ops-lead");
 		// Runner asks product-lead
 		const q1 = JSON.parse(
 			runCli([
@@ -189,7 +200,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 				"--lead",
 				"product-lead",
 				"--exec-id",
-				"exec-ml",
+				"exec-product",
 				"--db",
 				dbPath,
 				"--json",
@@ -204,7 +215,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 				"--lead",
 				"ops-lead",
 				"--exec-id",
-				"exec-ml",
+				"exec-ops",
 				"--db",
 				dbPath,
 				"--json",

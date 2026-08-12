@@ -1,17 +1,10 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
-import {
-	ingestDiscordChat,
-	readMailboxDiscordFlag,
-} from "flywheel-comm/discord-chat-ingest";
+import { ingestDiscordChat } from "flywheel-comm/discord-chat-ingest";
 import type { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
 import type { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import type { LeadInputRouter } from "./LeadInputRouter.js";
 import type { LeadJournal } from "./LeadJournal.js";
 import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
-
-const CODEX_MAILBOX_DISCORD_FLAG = "FLYWHEEL_MAILBOX_DISCORD";
 
 export interface CodexDiscordMailboxStrategyOptions {
 	leadId: string;
@@ -21,24 +14,16 @@ export interface CodexDiscordMailboxStrategyOptions {
 	journal: Pick<LeadJournal, "getByIdempotencyKey">;
 	router: Pick<LeadInputRouter, "submit">;
 	externalReceiptSaga: Pick<ExternalReceiptSaga, "complete">;
-	flagPath?: string;
-	readFlag?: (path: string) => { enabled: boolean; readError?: string };
 	mailboxReady?: () => boolean;
 	logger?: { warn: (message: string, context?: unknown) => void };
 }
 
 export class CodexDiscordMailboxStrategy {
-	private readonly flagPath: string;
-	private readonly readFlag: NonNullable<
-		CodexDiscordMailboxStrategyOptions["readFlag"]
-	>;
 	private readonly logger: NonNullable<
 		CodexDiscordMailboxStrategyOptions["logger"]
 	>;
 
 	constructor(private readonly opts: CodexDiscordMailboxStrategyOptions) {
-		this.flagPath = opts.flagPath ?? join(homedir(), ".flywheel", ".env");
-		this.readFlag = opts.readFlag ?? readMailboxDiscordFlag;
 		this.logger = opts.logger ?? {
 			warn: (message, context) => console.warn(message, context ?? ""),
 		};
@@ -83,17 +68,8 @@ export class CodexDiscordMailboxStrategy {
 			) {
 				return "handled";
 			}
-			const flag = this.readFlag(this.flagPath);
-			if (flag.readError) {
-				this.logger.warn("discord_mailbox_flag_read_failed", {
-					flag: CODEX_MAILBOX_DISCORD_FLAG,
-					messageId: message.id,
-					error: flag.readError,
-				});
-			}
-			if (!flag.enabled) return "legacy";
 			if (this.opts.mailboxReady && !this.opts.mailboxReady()) return "retry";
-			const verdict = ingestDiscordChat({
+			ingestDiscordChat({
 				dbPath: this.opts.dbPath,
 				leadId: this.opts.leadId,
 				chatId: message.channelId,
@@ -111,7 +87,7 @@ export class CodexDiscordMailboxStrategy {
 					: {}),
 				...(input.replyRoute ? { replyRoute: input.replyRoute } : {}),
 			});
-			return verdict.lane === "inserted_external" ? "legacy" : "handled";
+			return "handled";
 		} catch (error) {
 			this.logger.warn("discord_mailbox_ingest_failed", {
 				messageId: message.id,

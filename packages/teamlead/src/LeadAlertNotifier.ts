@@ -328,9 +328,6 @@ export const ALERT_EVENT_TYPES = [
 	// could no longer be tracked. The approval stays live; a Lead diagnoses the
 	// workflow before explicitly waking the runner for another attempt.
 	"ship_attempt_failed",
-	// FLY-1392: the default-on receipt chase was explicitly paused. Founder
-	// transport remains Lead-only; this is a fail-loud incident, not steady state.
-	"receipt_foundation_off",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",

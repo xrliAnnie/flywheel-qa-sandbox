@@ -50,6 +50,11 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Enforce FLY-1645 receipt teardown residue gate
+        run: |
+          node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs
+          node scripts/fly1645-receipt-residue-gate.mjs --main-only
+
   unit-tests:
     name: Unit (${{ matrix.name }})
     runs-on: ubuntu-latest

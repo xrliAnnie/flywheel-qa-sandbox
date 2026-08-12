@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1645 拆除收据账本机器 — 设计报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", sans-serif; line-height: 1.7; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin: 8px 0 4px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 22px 24px; margin-bottom: 10px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  .card p { margin-bottom: 10px; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .exp { color: #86868b; font-size: 0.92em; }
+  .diagram { overflow-x: auto; background: #fafafa; border-radius: 8px; padding: 12px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  code { font-family: 'SF Mono', Menlo, monospace; font-size: 0.88em; background: #f5f5f7; padding: 1px 5px; border-radius: 4px; }
+  .big { font-size: 17px; font-weight: 600; }
+  .callout { background: #fff8e6; border-radius: 8px; padding: 12px 14px; margin: 12px 0; font-size: 14px; }
+  ul, ol { margin: 8px 0 10px 22px; }
+  li { margin-bottom: 6px; }
+  .cmt { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .cmt label { font-size: 13px; color: #86868b; display: block; margin-bottom: 6px; }
+  .cmt textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px; font-family: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .cmt textarea:focus { outline: none; border-color: #007aff; }
+  #summary-list .item { background: #f5f5f7; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 14px; white-space: pre-wrap; }
+  #summary-list .item b { color: #1a365d; display: block; margin-bottom: 2px; }
+  #copy-btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 10px 18px; font-size: 15px; cursor: pointer; margin-top: 8px; }
+  #copy-btn:active { opacity: 0.7; }
+  .empty { color: #86868b; font-size: 14px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 2px 8px; margin-right: 6px; }
+  .badge.demo { background: #ffe5e2; color: #c0281c; }
+  .badge.keep { background: #e8f5e9; color: #1e7a34; }
+  .badge.new { background: #e3f2fd; color: #0a58a8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1645 拆除收据账本机器</h1>
+  <div class="sub">设计报告 · 2026-08-11 · flywheel-eng · 依据 founder 裁决 B(2026-08-06)· 已过 Codex design review(4 轮,APPROVED)</div>
+
+  <div class="card" data-sec="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p class="big">按你的裁决,把消息层那本「替 Lead 记办没办、Lead 却既看不见也关不掉」的收据账,连同它的三台重投机器一起整体拆除;「办没办」以后只记在 FLY-1575 的 task 表里(Lead 看得见、一个动作能关掉)。</p>
+    <p>这本账实测<b>从来没能正常关闭过一笔义务</b>:它把「结清」拆成两个互不相干的半账(行标记 vs 事件日志),没有任何代码保证两半一致——行标记那半全库 2,614 条「已结清」<b>全是人手工扫出来的</b>,而重投机器各自只认其中一半,写对哪半都止不住另一台。它唯一真实的产出是 8 月 10 日深夜那场重播风暴——Lead 一重启就被灌 837 条历史收据,context 烧到 96% 当场停机。</p>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-summary" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="出了什么事">
+    <h2>② 出了什么事:一条消息铸两张欠条,谁也关不掉</h2>
+    <p>你在 Discord 发一条消息,系统今天会同时铸出<b>两张「收据」</b><span class="exp">(收据 = 数据库里的一行记录,意思是「Lead 欠这条消息一个处理」)</span>——一张由 Discord 插件铸,一张由 Bridge<span class="exp">(常驻的调度服务)</span>铸。两张收据各配一台<b>重投机器</b><span class="exp">(定期把"没处理"的消息反复塞回 Lead 眼前的循环)</span>,而 Lead 的关账命令要么无效、要么直接报错——所以欠条只进不出,越攒越多。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>五个已实锤的缺陷(Cass、Honey Lemon、Tadashi 三方实测):回复了不销账;销账命令被挡死;假成功还把正解锁死;<b>用对命令、写对账、照样重投</b>(重投机器根本不看那本账,只看行状态);新一代 Lead 载体上销账命令干脆结构性报错——最新的活例子:连系统机器人自动发的交付贴都会铸收据,Lead 唯一能关掉它的办法是<b>被迫往频道里发一条凑数回复</b>。</p>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-pathology" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="拆除后">
+    <h2>③ 拆掉之后:一条消息只走一条路</h2>
+    <p>拆除后,消息只走 1574 的耐久入站<span class="exp">(先落盘再投递,断电不丢)</span> + 1573 的租约合批投递<span class="exp">(队列只负责「送到没送到」:没送到会重投,3 次仍失败进死信转给上级)</span>。Lead 确认收到(ack)的那一刻,1575 在<b>同一个事务</b><span class="exp">(数据库保证两件事要么都发生要么都不发生)</span>里自动记一条 task——这才是义务账:Lead 看得见,办完 <code>done</code>,不用办 <code>no_action</code> + 原因,一个动作关掉。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="callout">⚖️ 这正是重构总纲(FLY-1569)的两条铁律:<b>队列只答「送到没送到」,永不 track「办没办」</b>;<b>永远不替 agent 建一张它看不见、也没法关闭的账</b>。收据账本两条全违反,所以是拆除,不是修理。</div>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-after" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="边界">
+    <h2>④ 边界:拆什么、留什么(本设计最关键的一张图)</h2>
+    <p>代码里有<b>三套系统都叫 "receipt"</b>,只有一套是要拆的。审计还发现:收据行用的那根「状态列」(<code>relay_state</code>)其实是<b>提问/审批门生命周期</b><span class="exp">(runner 提问 → 你或 Lead 回答 → 问题关闭,这套有主人、能正常关闭的机制)</span>的地盘,收据只是"蹭"了这根列——所以<b>列留人走</b>:列保留给提问机制,收据侧的使用者清零。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <p><span class="badge keep">保留</span>你的审批电路(FLY-1448:批准 ship 的门、✅ 回执)完全不动;<span class="badge keep">保留</span>投递层(1573/1574)完全不动;<span class="badge demo">拆除</span>只针对义务账本机器。</p>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-boundary" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="数据模型">
+    <h2>⑤ 数据/结构模型:动什么、不动什么</h2>
+    <table>
+      <tr><th>对象</th><th>是什么</th><th>处置</th></tr>
+      <tr><td><code>mailbox</code> 表(消息主表)</td><td>每条消息一行</td><td><span class="badge keep">保留</span>新增一条出生规则:只有「提问」行出生时是 open,其余行出生即终局——从此「open = 活着的提问」永远成立,再也不会有"欠账"假象</td></tr>
+      <tr><td><code>relay_state</code> 等 3 列</td><td>提问生命周期状态</td><td><span class="badge keep">保留</span>(归提问机制;收据侧使用者清零)</td></tr>
+      <tr><td><code>mailbox_log</code> 里的 settlement 事件</td><td>那本「办没办」的账</td><td><span class="badge demo">停写</span>历史行保留(只读审计),新事件永不再写;唯一索引删除</td></tr>
+      <tr><td>收据专属表 ×3 + 触发器</td><td>欠条族谱、关账幂等记录、终局清算意向</td><td><span class="badge demo">删除</span>(连同每次提问都要触发的隐藏记账触发器)</td></tr>
+      <tr><td>关账命令 ×3(<code>handle-receipt</code> 等)</td><td>Lead 的销账动词(实测全部走不通)</td><td><span class="badge demo">删除</span>;转交提问答案继续用现成的 <code>respond</code></td></tr>
+      <tr><td>重投机器 ×2 + 终局清算器</td><td>boot 重播 / 无限批重投 / 终态扫账</td><td><span class="badge demo">删除</span></td></tr>
+      <tr><td>旧开关 ×3</td><td>收据机器的紧急开关等</td><td><span class="badge demo">删除</span>(其中一个今天就有雷:名叫"关收据",实际会把耐久入站一起关掉、静默丢消息)</td></tr>
+      <tr><td>存量欠条(产线 201 条 open + 12 条未投递 + 3 条死信)</td><td>历史累积</td><td><span class="badge new">一次性清账程式</span>(先人工过目 founder 消息那几条,再统一打上最终标记;以后永远不再需要人工扫账)</td></tr>
+    </table>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-model" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="关键取舍">
+    <h2>⑥ 关键取舍与被拒方案</h2>
+    <table>
+      <tr><th>备选</th><th>为什么拒绝</th></tr>
+      <tr><td>修好三个缺陷(原路线,已过两轮评审)</td><td>你已裁决 B;且 8-10 实弹又炸出第 4、第 5 种缺陷——这器官根本不该存在,修复面只会越挖越大</td></tr>
+      <tr><td>只拆一半(留旧入站通道做后备)</td><td>留半台机器 = 留一台还在铸欠条、没人能关账的机器;新入站(1574)已在产线跑通,旧通道只剩风险</td></tr>
+      <tr><td>把 3 根状态列也删掉/改名</td><td>那是提问机制的重构,不是收据拆除——40 多个使用点、零收益、高风险</td></tr>
+      <tr><td>存量欠条自动转成 task</td><td>只有个位数,人工过目更准;让引擎替 agent 判断义务正是 1575 明令禁止的</td></tr>
+      <tr><td>给拆除加开关(feature flag)</td><td>留开关 = 机器还在。回滚 = git revert。本单实际是<b>删掉 3 个旧开关</b></td></tr>
+      <tr><td>删掉的命令留"假成功"墓碑</td><td>"报成功不落账"正是缺陷③的形状;删干净后调旧命令响亮报错才是对的</td></tr>
+    </table>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-tradeoffs" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="验收">
+    <h2>⑦ 怎么算拆干净了(全部看观测,不看命令说什么)</h2>
+    <ol>
+      <li><b>不铸债</b>:你发一条消息、Lead 回复一轮 → 数据库里零张新欠条、账本零新事件;「open 的非提问行」永远 = 0(一条 SQL 就能断言)。</li>
+      <li><b>不重催</b>:重启任何一个 Lead → 开头零条 <code>[redelivery]</code>、零历史灌入(对照:8-10 实弹是 837 条)。</li>
+      <li><b>代码清零</b>:全仓搜索收据机器的每个部件名 = 零命中(白名单只有历史文档)。</li>
+      <li><b>义务可见可关</b>:1575 上线后,你的消息被 ack → task 表出现一条 OPEN → Lead 用 done/no_action 关闭。</li>
+      <li><b>永别手工扫账</b>:全舰静止 15 分钟窗口零收据活动;清账程式跑完这一次,以后不再需要。</li>
+    </ol>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-accept" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="诚实边界">
+    <h2>⑧ 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><b>不实现 task 表</b>(那是 FLY-1575 的活)。排期照你定的:1575 先行或同批。1575 没上线的间隙里,「ack 了但没办」依旧没人跟踪——<b>和今天完全等价</b>(收据账本从来没跟踪成功过,今天靠的也只是人工和自觉)。</li>
+      <li><b>不修投递层的一个既有边缘</b>(从未投出的批重试不封顶——1573 的地盘,已如实记录);拆除后它不再承运欠条,风暴形态自然消失。</li>
+      <li><b>不改写历史</b>:账本的历史记录按只读审计保留,不删不改。</li>
+      <li><b>牵涉两个仓库</b>(主仓 + Discord 插件仓),必须同一个部署窗口一起上线,设计里写了明确的上线顺序。</li>
+    </ul>
+    <div class="cmt"><label>💬 对这一节的意见(自动保存)</label><textarea data-key="sec-honest" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="意见汇总">
+    <h2>📋 你的意见汇总</h2>
+    <div id="summary-list"><div class="empty">上面每一节的输入框写了内容,会自动汇总到这里。</div></div>
+    <button id="copy-btn">复制全部意见</button>
+    <span id="copy-status" class="exp" style="margin-left:10px;"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1645-teardown:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function secTitle(area) {
+    var card = area.closest ? area.closest(".card") : null;
+    return (card && card.getAttribute("data-sec")) || area.getAttribute("data-key");
+  }
+  function renderSummary() {
+    var list = document.getElementById("summary-list");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (area) {
+      var val = area.value.trim();
+      if (!val) return;
+      any = true;
+      var item = document.createElement("div");
+      item.className = "item";
+      var b = document.createElement("b");
+      b.textContent = secTitle(area);
+      item.appendChild(b);
+      item.appendChild(document.createTextNode(val));
+      list.appendChild(item);
+    });
+    if (!any) {
+      var empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "上面每一节的输入框写了内容,会自动汇总到这里。";
+      list.appendChild(empty);
+    }
+  }
+  areas.forEach(function (area) {
+    area.value = lsGet(area.getAttribute("data-key"));
+    area.addEventListener("input", function () {
+      lsSet(area.getAttribute("data-key"), area.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  function collectAll() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var val = area.value.trim();
+      if (val) parts.push("【" + secTitle(area) + "】\n" + val);
+    });
+    return parts.join("\n\n");
+  }
+  function fallbackCopy(text, status) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      status.textContent = ok ? "已复制 ✓" : "复制失败,请手动选择";
+    } catch (e) {
+      status.textContent = "复制失败,请手动选择";
+    }
+  }
+  document.getElementById("copy-btn").addEventListener("click", function () {
+    var text = collectAll();
+    var status = document.getElementById("copy-status");
+    if (!text) { status.textContent = "还没有写任何意见"; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        status.textContent = "已复制 ✓";
+      }, function () { fallbackCopy(text, status); });
+    } else {
+      fallbackCopy(text, status);
+    }
+  });
+})();
+</script>
+</body>
+</html>

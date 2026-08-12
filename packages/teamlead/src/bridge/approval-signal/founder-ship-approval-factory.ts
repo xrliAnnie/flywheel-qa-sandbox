@@ -84,7 +84,7 @@ export interface FounderShipApprovalCallbackArgs {
 	db: GateResponseDb;
 	/** FLY-1041 Chunk 7: deliverer-verified reply to THIS gate's ship card. */
 	replyToCard?: boolean;
-	founderReceipt?: ShipApprovalHandlerArgs["founderReceipt"];
+	founderMessage?: ShipApprovalHandlerArgs["founderMessage"];
 	recordDecisionClassification?: ShipApprovalHandlerArgs["recordDecisionClassification"];
 }
 
@@ -144,7 +144,7 @@ export function makeFounderShipApprovalCallback(
 					projectRoot: config.projectRootFor?.(args.ctx.projectName),
 				},
 				replyToCard: args.replyToCard,
-				founderReceipt: args.founderReceipt,
+				founderMessage: args.founderMessage,
 				recordDecisionClassification: args.recordDecisionClassification,
 			},
 			{

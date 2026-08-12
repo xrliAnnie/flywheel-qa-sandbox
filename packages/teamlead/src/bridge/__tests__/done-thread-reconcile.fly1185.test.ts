@@ -188,7 +188,7 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 		expect(MAX_ISSUE_CLOSEOUTS_PER_RUN).toBe(5);
 	});
 
-	it("offers fresh Done authority to receipt settlement before an active-runner veto", async () => {
+	it("offers fresh Done authority to gate retirement before an active-runner veto", async () => {
 		const store = await freshStore();
 		store.upsertSession({
 			execution_id: "active-e",
@@ -198,11 +198,11 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 			issue_identifier: "FLY-500",
 		});
 		store.upsertChatThread("thread-1", "chan", UUID, "lead");
-		const settleIssueReceipts = vi.fn(async () => {});
+		const retireIssueGates = vi.fn(async () => {});
 
 		const result = await reconcileDoneThreads(
 			baseDeps(store, {
-				settleIssueReceipts,
+				retireIssueGates,
 				lookupTarget: (() => ({
 					kind: "found",
 					target: { tmuxWindow: "runner" },
@@ -211,7 +211,7 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 			}),
 		);
 
-		expect(settleIssueReceipts).toHaveBeenCalledWith(
+		expect(retireIssueGates).toHaveBeenCalledWith(
 			expect.objectContaining({
 				projectName: "proj",
 				canonicalIssueId: UUID,

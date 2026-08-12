@@ -70,21 +70,10 @@ function resolveDetectionEpisode(
 	kind: string,
 	episodeReference: string,
 ) {
-	return (
-		store.getDetectionEscalation(targetKey, kind, episodeReference) ??
-		store.getDetectionEscalationBySourceReceiptId(
-			targetKey,
-			kind,
-			episodeReference,
-		)
-	);
+	return store.getDetectionEscalation(targetKey, kind, episodeReference);
 }
 
-function boundedEpisodeReference(
-	fingerprint: string,
-	parentId?: string | null,
-): string {
-	if (parentId) return parentId;
+function boundedEpisodeReference(fingerprint: string): string {
 	if (fingerprint.length <= 200) return fingerprint;
 	return `sha256:${createHash("sha256").update(fingerprint).digest("hex")}`;
 }
@@ -375,10 +364,7 @@ export function createStuckRemanageRouter(
 				payload: {
 					leadId,
 					kind,
-					fingerprint: boundedEpisodeReference(
-						row.episode_fingerprint,
-						row.source_receipt_id,
-					),
+					fingerprint: boundedEpisodeReference(row.episode_fingerprint),
 					disposition,
 					status,
 				},

@@ -27,6 +27,7 @@ import {
 	rollbackMailboxMigration,
 	verifyMigratedDatabase,
 } from "../mailbox-migration.js";
+import { MAILBOX_CORE_SCHEMA } from "../mailbox-schema.js";
 import { writeContentRef } from "../utils/content-ref.js";
 
 const NOW = "2026-08-05T12:00:00.000Z";
@@ -260,6 +261,35 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			]);
 			expect(
 				migrated
+					.prepare("SELECT id, relay_state FROM mailbox ORDER BY id")
+					.all(),
+			).toEqual([
+				{
+					id: "founder_msg:flywheel-eng-lead:123",
+					relay_state: "terminal_disposed",
+				},
+				{ id: "instruction-1", relay_state: "terminal_disposed" },
+				{ id: "question-1", relay_state: "open" },
+			]);
+			expect(
+				migrated
+					.prepare(
+						`SELECT name FROM sqlite_master
+						 WHERE name IN (
+						  'receipt_root_lineage', 'receipt_handle_requests',
+						  'mailbox_log_settlement_slot',
+						  'mailbox_non_question_relay_insert_guard',
+						  'mailbox_non_question_relay_update_guard'
+						 ) ORDER BY name`,
+					)
+					.pluck()
+					.all(),
+			).toEqual([
+				"mailbox_non_question_relay_insert_guard",
+				"mailbox_non_question_relay_update_guard",
+			]);
+			expect(
+				migrated
 					.prepare(
 						"SELECT content, delivery_content, source_kind, source_ref FROM mailbox WHERE id='question-1'",
 					)
@@ -297,6 +327,70 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		expect(migrateLegacyDatabaseFile(dbPath, { now: NOW })).toMatchObject({
 			status: "already_migrated",
 		});
+	});
+
+	it("removes receipt-only schema residue from an already-migrated database", () => {
+		const legacy = new Database(dbPath);
+		insertMessage(legacy, {
+			id: "instruction-1",
+			from_agent: "flywheel-eng-lead",
+			to_agent: "exec-1",
+			type: "instruction",
+		});
+		legacy.close();
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+
+		const stale = new Database(dbPath);
+		stale.exec(`
+			DROP TRIGGER IF EXISTS mailbox_non_question_relay_insert_guard;
+			DROP TRIGGER IF EXISTS mailbox_non_question_relay_update_guard;
+			DROP TRIGGER IF EXISTS mailbox_receipt_root_lineage_insert;
+			DROP TRIGGER IF EXISTS receipt_root_lineage_no_update;
+			DROP TRIGGER IF EXISTS receipt_root_lineage_no_delete;
+			DROP TABLE IF EXISTS receipt_root_lineage;
+			DROP TABLE IF EXISTS receipt_handle_requests;
+			DROP INDEX IF EXISTS mailbox_log_settlement_slot;
+			CREATE TABLE receipt_root_lineage (receipt_id TEXT PRIMARY KEY);
+			CREATE TABLE receipt_handle_requests (request_id TEXT PRIMARY KEY);
+			CREATE TABLE receipt_activation_episodes (id TEXT PRIMARY KEY);
+			CREATE TABLE receipt_resend_deliveries (id TEXT PRIMARY KEY);
+			CREATE TABLE receipt_exemption_audit (id TEXT PRIMARY KEY);
+			CREATE UNIQUE INDEX mailbox_log_settlement_slot
+			  ON mailbox_log(message_id, event)
+			  WHERE event IN ('processed', 'disposed');
+		`);
+		stale.close();
+
+		expect(migrateLegacyDatabaseFile(dbPath, { now: NOW })).toMatchObject({
+			status: "already_migrated",
+		});
+		const migrated = new Database(dbPath);
+		try {
+			expect(
+				migrated
+					.prepare(
+						`SELECT name FROM sqlite_master
+						 WHERE name LIKE 'receipt_%'
+						    OR name = 'mailbox_log_settlement_slot'
+						 ORDER BY name`,
+					)
+					.pluck()
+					.all(),
+			).toEqual(["receipt_alert_outbox"]);
+			expect(
+				migrated
+					.prepare(
+						"SELECT name FROM sqlite_master WHERE name LIKE 'mailbox_non_question_relay_%' ORDER BY name",
+					)
+					.pluck()
+					.all(),
+			).toEqual([
+				"mailbox_non_question_relay_insert_guard",
+				"mailbox_non_question_relay_update_guard",
+			]);
+		} finally {
+			migrated.close();
+		}
 	});
 
 	it("rolls the whole cutover transaction back at every injected stage", () => {
@@ -533,10 +627,12 @@ describe("FLY-1572 legacy mailbox migration", () => {
 			type: "founder_reply",
 			consumed_at: "2026-08-05T10:30:00.000Z",
 		});
+		legacy.exec(MAILBOX_CORE_SCHEMA);
 		legacy.exec(`
 			CREATE TRIGGER qa_inject_extra_queued_projection
-			AFTER INSERT ON receipt_root_lineage
-			WHEN NEW.question_id = 'question-anchor'
+			AFTER INSERT ON mailbox_log
+			WHEN NEW.event = 'migration_snapshot'
+			  AND NEW.message_id = 'consumed-not-unread'
 			BEGIN
 			  UPDATE mailbox
 			     SET state = 'QUEUED', acked_at = NULL

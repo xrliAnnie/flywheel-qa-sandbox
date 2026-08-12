@@ -249,6 +249,175 @@ describe("CommDB gate methods", () => {
 		});
 	});
 
+	describe("insertGuardedResponse", () => {
+		beforeEach(() => {
+			db.registerSession(
+				"exec-guarded",
+				"runner",
+				"flywheel",
+				"FLY-1645",
+				"lead-1",
+			);
+		});
+
+		it("answers an ordinary question only for its bound Lead and owner", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "answer me");
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "done",
+					expectedOwner: "exec-guarded",
+					expectedCheckpoint: null,
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+			expect(db.getResponse(id)).toMatchObject({
+				from_agent: "lead-1",
+				content: "done",
+			});
+		});
+
+		it("rejects cross-Lead, checkpoint, and already-answered writes", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "answer me");
+			expect(() =>
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-2",
+					content: "stolen",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toThrow(/scope mismatch/);
+			expect(() =>
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "wrong shape",
+					expectedCheckpoint: "brainstorm",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toThrow(/scope mismatch/);
+			db.insertGuardedResponse({
+				questionId: id,
+				authenticatedLead: "lead-1",
+				content: "winner",
+				now: "2026-08-11T12:00:00.000Z",
+			});
+			expect(() =>
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "loser",
+					now: "2026-08-11T12:00:01.000Z",
+				}),
+			).toThrow(/already answered/);
+		});
+
+		it("keeps ordinary asks answerable after their Runner session completes", () => {
+			const id = db.insertQuestion(
+				"exec-guarded",
+				"lead-1",
+				"DONE: PR is ready",
+			);
+			db.updateSessionStatusIfRunning("exec-guarded", "completed");
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "please address one follow-up",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
+
+		it("routes checkpoint-less asks by their explicit target Lead", () => {
+			const id = db.insertQuestion(
+				"exec-guarded",
+				"lead-2",
+				"need cross-department help",
+			);
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-2",
+					content: "here is the answer",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
+
+		it("allows a Lead to reply to a fire-and-forget report", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "DONE: QA", {
+				kind: "report",
+			});
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "acknowledged",
+					now: "2026-08-11T12:00:00.000Z",
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+		});
+
+		it("expired unanswered ask remains answerable while H2 protection is on", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "slow question");
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
+				)
+				.run(id);
+
+			expect(
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "late but retained",
+					now: new Date().toISOString(),
+				}),
+			).toMatchObject({ responseId: expect.any(String) });
+			expect(db.getResponse(id)?.content).toBe("late but retained");
+		});
+
+		it("rejects an expired ask in explicit legacy mode (protection off)", () => {
+			const id = db.insertQuestion("exec-guarded", "lead-1", "slow question");
+			(
+				db as unknown as {
+					db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+				}
+			).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 hour') WHERE id = ?",
+				)
+				.run(id);
+			const prior = process.env.FLYWHEEL_COMMDB_PROTECTION;
+			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
+			try {
+				expect(() =>
+					db.insertGuardedResponse({
+						questionId: id,
+						authenticatedLead: "lead-1",
+						content: "too late",
+						now: new Date().toISOString(),
+					}),
+				).toThrow(/no longer open/);
+			} finally {
+				if (prior === undefined) {
+					delete process.env.FLYWHEEL_COMMDB_PROTECTION;
+				} else {
+					process.env.FLYWHEEL_COMMDB_PROTECTION = prior;
+				}
+			}
+		});
+	});
+
 	// ── FLY-1188 HIGH-2 (Codex full-PR review): a gate-timeout synthetic response
 	// must SURVIVE the runner's next `check`. The gate deadline ≈ the question's
 	// own expires_at, so when the timeout watcher fires the question is already

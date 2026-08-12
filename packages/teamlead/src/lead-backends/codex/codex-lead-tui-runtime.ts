@@ -25,11 +25,9 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { readMailboxDiscordFlag } from "flywheel-comm/discord-chat-ingest";
 import {
 	getProcessStart,
 	publishCarrierRuntimeAssertion,
@@ -699,8 +697,6 @@ function buildTuiGeneration(
 									}
 								},
 							},
-							readFlag: () =>
-								readMailboxDiscordFlag(join(homedir(), ".flywheel", ".env")),
 							logger,
 						});
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon

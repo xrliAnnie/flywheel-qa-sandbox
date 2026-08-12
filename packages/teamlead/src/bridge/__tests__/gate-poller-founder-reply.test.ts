@@ -99,6 +99,29 @@ type PrivHandoff = {
 };
 
 describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-review #2/#3)", () => {
+	it("rejects a new founder handoff without a source thread", async () => {
+		const appendLeadEvent = vi.fn(() => 42);
+		const store = {
+			isLeadEventDelivered: vi.fn(() => false),
+			appendLeadEvent,
+		} as unknown as GatePollerConfig["store"];
+		const poller = makePoller({ store });
+		const handoff = (poller as unknown as PrivHandoff).makeAmbiguousHandoff(
+			{ agentId: "test-lead" },
+			"flywheel",
+		);
+
+		await expect(
+			handoff("founder-reply-missing-thread", {
+				issueId: "FLY-1645",
+				msgId: "m1",
+				answer: "answer",
+				commDbPath: "/tmp/flywheel-comm.db",
+			}),
+		).rejects.toThrow("founder_reply_source_thread_missing");
+		expect(appendLeadEvent).not.toHaveBeenCalled();
+	});
+
 	it("passes the founder text to Lead unchanged without an attribution hint", async () => {
 		const appendLeadEvent = vi.fn(() => 42);
 		const store = {
@@ -137,7 +160,8 @@ describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-re
 			"FLY-1392",
 		);
 		const encoded = appendLeadEvent.mock.calls[0]?.[3];
-		expect(JSON.parse(encoded ?? "{}")).toMatchObject({
+		const hookPayload = JSON.parse(encoded ?? "{}") as { action: string };
+		expect(hookPayload).toMatchObject({
 			event_type: "founder_reply",
 			status: "founder_reply",
 			summary: founderText,
@@ -145,9 +169,12 @@ describe("FLY-605 ambiguous handoff durability + in-memory cursor (Codex code-re
 			founder_message_id: "m1",
 			comm_db_path: "/tmp/flywheel-comm.db",
 			action: expect.stringContaining(
-				"flywheel-comm route-founder-reply --msg m1",
+				'flywheel-comm respond <qid> "<founder-answer>"',
 			),
 		});
+		expect(hookPayload.action).toContain("--source-thread T1");
+		expect(hookPayload.action).not.toContain("receipt");
+		expect(hookPayload.action).not.toContain("route-founder-reply");
 		expect(deliver).not.toHaveBeenCalled();
 	});
 

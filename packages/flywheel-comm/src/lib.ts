@@ -39,9 +39,7 @@ export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";
 export {
 	discordBatchPartitionKey,
 	ingestDiscordChat,
-	MAILBOX_DISCORD_ENV,
 	parseDiscordChatRoute,
-	readMailboxDiscordFlag,
 	renderDiscordChatContent,
 } from "./discord-chat-ingest.js";
 export type {
@@ -64,12 +62,9 @@ export type {
 	MailboxPriority,
 	MailboxRecipientKind,
 	MailboxRow,
-	MailboxSettlement,
 	MailboxState,
-	ProcessedEvidenceV1,
 } from "./mailbox-queue.js";
 export {
-	assertProcessedEvidence,
 	assertUtcIsoTimestamp,
 	CHAT_DELIVERY_UNCONFIRMED_REASON,
 	MailboxQueue,
