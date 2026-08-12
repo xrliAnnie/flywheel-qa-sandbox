@@ -4430,6 +4430,25 @@ _lead_identity_alert() {
     || true
 }
 
+# FLY-1708: a Lead identity owns its in-flight batches across body generations.
+# This runs only at the three actual child-fork sites below; dry-run, HOLD, and
+# live-body adoption paths never consume a retry generation.
+_adopt_inflight_before_launch() {
+  local output="" rc=0
+  if [ -z "${FLYWHEEL_COMM_CLI:-}" ] || [ ! -f "$FLYWHEEL_COMM_CLI" ]; then
+    log "WARNING: flywheel-comm unavailable; in-flight adoption skipped"
+    return 0
+  fi
+  output="$(node "$FLYWHEEL_COMM_CLI" adopt-inflight \
+    --recipient "$LEAD_ID" --kind lead 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "WARNING: in-flight adoption failed (exit ${rc}): ${output}"
+  elif [ -n "$output" ]; then
+    log "In-flight adoption: ${output}"
+  fi
+  return 0
+}
+
 if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
   # shellcheck source=lib/lead-body-receipt.sh
   source "${SCRIPT_DIR}/lib/lead-body-receipt.sh"
@@ -4523,6 +4542,7 @@ if [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ]; then
     _poll_dev_channels_dialog_v2 "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
     _V2_DIALOG_POLLER_PID=$!
   fi
+  _adopt_inflight_before_launch
   _launch_claude "${_v2_launch_args[@]}" || _v2_launch_rc=$?
   _v2_reap_dialog_poller
   if [ "$_v2_launch_rc" -ne 0 ]; then
@@ -4789,6 +4809,7 @@ while true; do
 
     # Final SIGTERM gate — must be right before fork to close the race window
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
+    _adopt_inflight_before_launch
     if _launch_claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"; then
       :
     else
@@ -4829,6 +4850,7 @@ while true; do
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
     # Launch in tmux window, write session file after — avoids orphan session ID if
     # SIGTERM arrives between gate and launch.
+    _adopt_inflight_before_launch
     if _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"; then
       :
     else

@@ -146,6 +146,7 @@ export interface RunnerMailboxLaneOptions {
 		executionId: string,
 	) => "alive" | "terminal_or_missing" | "unknown";
 	resolveOwningLead?: (executionId: string) => string | undefined;
+	probeFactsByRecipient?: () => ReadonlyMap<string, string>;
 }
 
 export function renderRunnerMailboxBatchEnvelope(
@@ -221,6 +222,7 @@ export class RunnerMailboxLane {
 			dead: 0,
 		};
 		if (queueConfig.enabled) {
+			const probeFactsByRecipient = this.opts.probeFactsByRecipient?.();
 			const recipientStates = new Map<
 				string,
 				"alive" | "terminal_or_missing" | "unknown"
@@ -251,6 +253,7 @@ export class RunnerMailboxLane {
 					maxRecipients: this.maxPerTick,
 					maxDeadRowsPerRecipient: 20,
 					maxSummaryBytes: 4_000,
+					probeFactsByRecipient,
 					resolveOwningLead: (executionId) => {
 						if (leadByRecipient.has(executionId)) {
 							return leadByRecipient.get(executionId);

@@ -1,7 +1,8 @@
 import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { MailboxQueue, type MailboxRow } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -186,6 +187,73 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(inbox[0]?.text).toContain("[receipt:A]");
 		expect(inbox[1]?.text).toContain("[receipt:B]");
 		expect(queue.getById("A")?.state).toBe("LEASED");
+	});
+
+	it("rebirth replays a receipt-gap batch as a new unread retry generation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1708-rebirth-loop-"));
+		const dbPath = join(dir, "comm.db");
+		const queue = new MailboxQueue(dbPath);
+		queues.push(queue);
+		enqueueModel(queue, "A");
+		enqueueModel(queue, "B");
+		const inboxPath = join(dir, "lead-a.json");
+		const adapter = new ClaudeLeadDeliveryAdapter({
+			inboxPath,
+			sidecarPath: `${inboxPath}.flywheel.jsonl`,
+		});
+		const queueConfig = () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG });
+
+		expect(
+			await loop(queue, adapter, {
+				queueConfig,
+				batchIdFactory: () => "batch-before-rebirth",
+			}).tick(),
+		).toMatchObject({ ok: true, modelConsumed: 2 });
+		const oldInbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
+			text: string;
+			read: boolean;
+		}>;
+		await writeFile(
+			inboxPath,
+			JSON.stringify(oldInbox.map((message) => ({ ...message, read: true }))),
+		);
+		// The Claude inbox + sidecar are durable, but Bridge crashes before its
+		// delivery receipt lands. This is the FLY-1708 receipt-gap seam.
+		const db = new Database(dbPath);
+		db.prepare(
+			"UPDATE mailbox SET delivered_at = NULL WHERE batch_id = 'batch-before-rebirth'",
+		).run();
+		db.close();
+
+		expect(
+			queue.adoptInflightForRecipient({
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				now: "2099-07-19T12:00:01.000Z",
+			}),
+		).toEqual({ requeued: 2 });
+		expect(
+			await loop(queue, adapter, {
+				queueConfig,
+				batchIdFactory: () => "batch-after-rebirth",
+			}).tick(),
+		).toMatchObject({ ok: true, modelConsumed: 2 });
+
+		const rebornInbox = JSON.parse(await readFile(inboxPath, "utf8")) as Array<{
+			text: string;
+			read: boolean;
+		}>;
+		expect(rebornInbox).toHaveLength(4);
+		expect(rebornInbox.slice(0, 2).every(({ read }) => read)).toBe(true);
+		expect(rebornInbox.slice(2).every(({ read }) => !read)).toBe(true);
+		expect(rebornInbox[2]?.text).toContain(
+			"[mailbox-batch batch-after-rebirth | 2 messages",
+		);
+		expect(queue.getById("A")).toMatchObject({
+			state: "LEASED",
+			batch_id: "batch-after-rebirth",
+			lease_retry_count: 1,
+		});
 	});
 	it("records heartbeat and ACKs only after adapter receipt plus audit", async () => {
 		const queue = makeQueue();

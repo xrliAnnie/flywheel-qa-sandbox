@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	statSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -784,6 +791,85 @@ function assertMailboxGeneration(db: Database.Database, dbPath: string): void {
 		throw new MailboxGenerationError(
 			`Partial mailbox schema at ${dbPath}: mailbox table missing`,
 		);
+	}
+}
+
+export type MailboxMaintenanceOpenResult =
+	| { status: "opened"; db: Database.Database }
+	| { status: "skipped"; reason: "missing" | "legacy"; warning: string };
+
+const MAILBOX_ADOPTION_COLUMNS = [
+	"recipient_kind",
+	"to_agent",
+	"carrier",
+	"state",
+	"batch_id",
+	"lease_retry_count",
+	"claimed_by",
+	"claim_expires_at",
+	"delivered_at",
+	"next_retry_at",
+	"last_error",
+] as const;
+
+/** FLY-1708: open the live mailbox without creating, migrating, or purging it. */
+export function openMailboxMaintenanceDatabase(
+	dbPath: string,
+): MailboxMaintenanceOpenResult {
+	if (!existsSync(dbPath)) {
+		return {
+			status: "skipped",
+			reason: "missing",
+			warning: `mailbox database is missing: ${dbPath}`,
+		};
+	}
+	const header = Buffer.alloc(20);
+	const fd = openSync(dbPath, "r");
+	let bytesRead: number;
+	try {
+		bytesRead = readSync(fd, header, 0, header.length, 0);
+	} finally {
+		closeSync(fd);
+	}
+	const isWal =
+		bytesRead === header.length &&
+		header.subarray(0, 16).equals(Buffer.from("SQLite format 3\0")) &&
+		header[18] === 2 &&
+		header[19] === 2;
+	if (!isWal) {
+		return {
+			status: "skipped",
+			reason: "legacy",
+			warning: `legacy or non-WAL mailbox database was not opened: ${dbPath}`,
+		};
+	}
+
+	let db: Database.Database | undefined;
+	try {
+		db = new Database(dbPath, { fileMustExist: true });
+		db.pragma("busy_timeout = 5000");
+		db.pragma("query_only = 1");
+		assertMailboxGeneration(db, dbPath);
+		const columns = new Set(
+			(
+				db.prepare("PRAGMA table_info(mailbox)").all() as Array<{
+					name: string;
+				}>
+			).map(({ name }) => name),
+		);
+		const missing = MAILBOX_ADOPTION_COLUMNS.filter(
+			(name) => !columns.has(name),
+		);
+		if (missing.length > 0) {
+			throw new MailboxGenerationError(
+				`Partial mailbox schema at ${dbPath}: missing ${missing.join(", ")}`,
+			);
+		}
+		db.pragma("query_only = 0");
+		return { status: "opened", db };
+	} catch (error) {
+		closeAfterOpenFailure(db);
+		throw error;
 	}
 }
 

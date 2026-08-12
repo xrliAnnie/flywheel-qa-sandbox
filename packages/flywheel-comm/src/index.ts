@@ -11,6 +11,7 @@ import {
 	accountRotationNotify,
 } from "./commands/account-rotation-notify.js";
 import { ackEvent } from "./commands/ack-event.js";
+import { adoptInflight } from "./commands/adopt-inflight.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -117,6 +118,7 @@ Commands:
   send      Send an instruction to a runner (Lead use)
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
+  adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB
   capture   Capture tmux output of a runner session
@@ -246,6 +248,9 @@ async function main(): Promise<void> {
 			break;
 		case "inbox":
 			runInbox(commandArgs);
+			break;
+		case "adopt-inflight":
+			process.exitCode = adoptInflight(commandArgs);
 			break;
 		case "sessions":
 			if (commandArgs[0] === "register") {
