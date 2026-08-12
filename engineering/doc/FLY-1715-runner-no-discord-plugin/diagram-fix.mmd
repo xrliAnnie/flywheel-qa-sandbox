@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph before["修复前：默认全有"]
+        S1["每个 claude 进程<br/>默认加载 Discord 插件"]
+        S2["runner 继承整台 server<br/>的身份和凭据"]
+    end
+    subgraph after["修复后：默认全无，只有 Lead 显式开"]
+        F1["机器默认关插件<br/>+ 只有 Lead 启动器单点打开"]
+        F2["所有非 Lead 启动面<br/>强制关插件（不可被绕过）"]
+        F3["runner 出生时<br/>剥掉 6 个继承来的身份/凭据"]
+        F4["runner 交付报告改用<br/>自己的低权限票据（不再借 Lead 的）"]
+    end
+    S1 -->|"极性翻转"| F1
+    S1 -->|"安全合同兜底"| F2
+    S2 -->|"spawn 边界显式派生"| F3
+    S2 -->|"解开隐性依赖"| F4
+    F1 --> R["非 Lead 进程<br/>不再长 adapter"]
+    F2 --> R
+    F3 --> C["身份不随 server 走<br/>污染 server 降级为无害"]
+    F4 --> C
+    classDef old fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f;
+    classDef neo fill:#e3f5e9,stroke:#34c759,color:#1d1d1f;
+    classDef res fill:#e3eefc,stroke:#007aff,color:#1d1d1f;
+    class S1,S2 old;
+    class F1,F2,F3,F4 neo;
+    class R,C res;
