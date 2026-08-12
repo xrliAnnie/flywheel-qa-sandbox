@@ -1,13 +1,13 @@
 ---
 issue: FLY-1715
 phase: design
-phaseCursor: 4/6
-updated: 2026-08-12T18:33:16.095Z
-nextStep: codex design review round 4 (resume)
+phaseCursor: 5/6
+updated: 2026-08-12T18:52:37.027Z
+nextStep: produce founder design HTML + mmdc diagrams
 chunks: []
 pointers: {}
 ---
 
 # FLY-1715 progress
-**phase**: design (4/6)
-**next**: codex design review round 4 (resume)
+**phase**: design (5/6)
+**next**: produce founder design HTML + mmdc diagrams
