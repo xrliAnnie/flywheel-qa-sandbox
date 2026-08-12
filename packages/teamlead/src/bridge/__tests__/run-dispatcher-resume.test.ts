@@ -43,7 +43,9 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			resumeComputer?: ResumeComputer;
 			continuityComputer?: ContinuityComputer;
 			lifecycleAdmission?: ConstructorParameters<typeof RunDispatcher>[6];
+			lifecycleLaunchGuard?: ConstructorParameters<typeof RunDispatcher>[7];
 			freshStartAudit?: ConstructorParameters<typeof RunDispatcher>[15];
+			doaBackoffAdmission?: ConstructorParameters<typeof RunDispatcher>[16];
 		} = {},
 	): RunDispatcher {
 		return new RunDispatcher(
@@ -54,7 +56,7 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			undefined,
 			options.resumeComputer,
 			options.lifecycleAdmission,
-			undefined,
+			options.lifecycleLaunchGuard,
 			undefined,
 			undefined,
 			undefined,
@@ -63,6 +65,7 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			undefined,
 			options.continuityComputer,
 			options.freshStartAudit,
+			options.doaBackoffAdmission,
 		);
 	}
 
@@ -202,6 +205,91 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		expect(lifecycleAdmission).not.toHaveBeenCalled();
 		expect(runtime.blueprint.run).not.toHaveBeenCalled();
 		expect(dispatcher.getInflightCount()).toBe(0);
+	});
+
+	it("runs DOA reconciliation before resume and continuity and stops on denial", async () => {
+		const order: string[] = [];
+		const resumeComputer = vi.fn(async () => {
+			order.push("resume");
+			return null;
+		});
+		const continuityComputer = vi.fn<ContinuityComputer>(async () => {
+			order.push("continuity");
+			return { kind: "missing" };
+		});
+		const dispatcher = makeDispatcher({
+			resumeComputer,
+			continuityComputer,
+			doaBackoffAdmission: async () => {
+				order.push("doa");
+				return {
+					admitted: false,
+					status: "backoff",
+					reason: "backoff_active",
+					retryAfterSeconds: 60,
+				};
+			},
+		});
+
+		await expect(
+			dispatcher.start({ issueId: "issue-uuid", projectName: "proj" }),
+		).rejects.toMatchObject({
+			name: "DoaBackoffError",
+			reason: "backoff_active",
+			retryAfterSeconds: 60,
+		});
+		expect(order).toEqual(["doa"]);
+		expect(resumeComputer).not.toHaveBeenCalled();
+		expect(continuityComputer).not.toHaveBeenCalled();
+	});
+
+	it("exempts Auto-QA and honors the emergency DOA kill switch", async () => {
+		const doaBackoffAdmission = vi.fn(async () => ({
+			admitted: false,
+			status: "needs_lead" as const,
+		}));
+		const dispatcher = makeDispatcher({ doaBackoffAdmission });
+		await dispatcher.start({
+			issueId: "issue-uuid",
+			projectName: "proj",
+			sessionRole: "qa",
+			qaContext: {
+				parentExecutionId: "parent",
+				prNumber: 1,
+				prUrl: "https://github.test/pull/1",
+				prHeadSha: "b".repeat(40),
+			},
+		});
+		await dispatcher.drain();
+		expect(doaBackoffAdmission).not.toHaveBeenCalled();
+
+		vi.stubEnv("FLYWHEEL_DOA_BACKOFF", "0");
+		const killed = makeDispatcher({ doaBackoffAdmission });
+		await killed.start({ issueId: "other", projectName: "proj" });
+		await killed.drain();
+		expect(doaBackoffAdmission).not.toHaveBeenCalled();
+	});
+
+	it("releases a reserved lane when continuity fails before lifecycle admission", async () => {
+		const onSpawnFailed = vi.fn();
+		const dispatcher = makeDispatcher({
+			doaBackoffAdmission: async () => ({
+				admitted: true,
+				status: "reserved",
+			}),
+			continuityComputer: async () => ({
+				kind: "indeterminate",
+				error: "origin offline",
+			}),
+			lifecycleLaunchGuard: {
+				commitLaunch: async () => ({ ok: true }),
+				onSpawnFailed,
+			},
+		});
+		await expect(
+			dispatcher.start({ issueId: "issue-uuid", projectName: "proj" }),
+		).rejects.toMatchObject({ name: "ContinuityIndeterminateError" });
+		expect(onSpawnFailed).toHaveBeenCalledOnce();
 	});
 
 	it("preserves byte-compatible fresh context when the remote branch is missing", async () => {

@@ -523,6 +523,18 @@ export class ContinuityIndeterminateError extends Error {
 	}
 }
 
+export class DoaBackoffError extends Error {
+	readonly code = "DOA_BACKOFF";
+
+	constructor(
+		public readonly reason: string,
+		public readonly retryAfterSeconds?: number,
+	) {
+		super(`DOA re-dispatch admission denied: ${reason}`);
+		this.name = "DoaBackoffError";
+	}
+}
+
 export class FreshStartAuditError extends Error {
 	readonly code = "FRESH_START_AUDIT_FAILED";
 
@@ -551,6 +563,21 @@ export type LifecycleAdmissionFn = (input: {
 	executionId: string;
 	role?: string;
 }) => Promise<{ admitted: boolean; reason?: string }>;
+
+/** FLY-1718 P4: canonical predecessor reconciliation before branch/network IO. */
+export type DoaBackoffAdmissionFn = (input: {
+	issueKey: string;
+	issueIdentifier?: string;
+	projectName: string;
+	executionId: string;
+	role: string;
+	leadId?: string;
+}) => Promise<{
+	admitted: boolean;
+	reason?: string;
+	status?: "allow" | "reserved" | "backoff" | "needs_lead";
+	retryAfterSeconds?: number;
+}>;
 
 /**
  * FLY-1188: transport vendor for the CommDB pre-registration row. The
@@ -644,6 +671,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		/** FLY-1638: one admission controller shared by fresh and retry lanes. */
 		protected runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 		protected tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
+		protected doaBackoffAdmission?: DoaBackoffAdmissionFn,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -712,6 +740,27 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}
 	}
 
+	/** FLY-1718 P4: run before branch continuity, CommDB, TURN, or worktree IO. */
+	protected async admitDoaBackoff(input: {
+		issueKey: string;
+		issueIdentifier?: string;
+		projectName: string;
+		executionId: string;
+		role: string;
+		leadId?: string;
+	}): Promise<void> {
+		if (!this.doaBackoffAdmission || process.env.FLYWHEEL_DOA_BACKOFF === "0") {
+			return;
+		}
+		const result = await this.doaBackoffAdmission(input);
+		if (!result.admitted) {
+			throw new DoaBackoffError(
+				result.reason ?? "denied",
+				result.retryAfterSeconds,
+			);
+		}
+	}
+
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
 		// FLY-95: Normalize role to match Blueprint worktree naming —
@@ -776,16 +825,30 @@ export class RetryDispatcher implements IRetryDispatcher {
 			throw new Error("generalized retry execution id mismatch");
 		}
 
-		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
-		// grow a retry runner. Fresh tombstone check + durable starting claim
-		// inside the issue mutex; throws LifecycleParkedError on refusal.
-		await this.admitLifecycle({
+		await this.admitDoaBackoff({
 			issueKey: req.issueId,
-			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			issueIdentifier: req.issueIdentifier,
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			role,
+			leadId: req.leadId,
 		});
+
+		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
+		// grow a retry runner. Fresh tombstone check + durable starting claim
+		// inside the issue mutex; throws LifecycleParkedError on refusal.
+		try {
+			await this.admitLifecycle({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId: newExecutionId,
+				role,
+			});
+		} catch (error) {
+			this.abortPreLaunch(key, newExecutionId, req.projectName);
+			throw error;
+		}
 
 		// FLY-245 R1/R2/R5 HIGH-3: durable cross-restart find-or-create. The
 		// in-flight map above only dedups within THIS process; after a Bridge crash
@@ -1304,6 +1367,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		private continuityComputer?: ContinuityComputer,
 		/** FLY-1718 P1: always-on durable receipt for explicit fresh overrides. */
 		private freshStartAudit?: FreshStartAuditRecorder,
+		/** FLY-1718 P4: predecessor reconciliation (base fresh + retry seam). */
+		doaBackoffAdmission?: DoaBackoffAdmissionFn,
 	) {
 		super(
 			blueprintsByProject,
@@ -1317,6 +1382,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			tmuxGenerationRecorder,
 			runnerAdmission,
 			tmuxWindowAuthority,
+			doaBackoffAdmission,
 		);
 	}
 
@@ -1409,20 +1475,40 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.successorExecutionId ??
 			randomUUID();
 
+		// Auto-QA owns a separate bounded retry loop. Every other re-dispatch must
+		// reconcile its canonical predecessor before branch continuity or network IO.
+		if (!req.qaContext) {
+			await this.admitDoaBackoff({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId,
+				role,
+				leadId: req.leadId,
+			});
+		}
+
 		// FLY-1718 P1: reconcile branch state BEFORE lifecycle admission, CommDB
 		// pre-registration, TURN, or worktree mutation. Progress resume remains the
 		// richer first choice; only a true fresh start consults origin continuity.
 		// A caller-pinned startPoint and Auto-QA already carry explicit head
 		// authority and must not be rewritten here.
 		if (req.freshStart && (req.startPoint || req.qaContext)) {
+			this.abortPreLaunch(key, executionId, req.projectName);
 			throw new FreshStartAuditError(
 				"freshStart cannot be combined with a caller-pinned or Auto-QA start",
 			);
 		}
-		const computedResume = req.qaContext
-			? null
-			: ((await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
-				null);
+		let computedResume: ProgressResumeInfo | null;
+		try {
+			computedResume = req.qaContext
+				? null
+				: ((await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
+					null);
+		} catch (error) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw error;
+		}
 		const resume = req.freshStart ? null : computedResume;
 		let continuityInherit: ContinuityInherit | undefined;
 		let continuityBranch: string | undefined;
@@ -1435,13 +1521,20 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			!resume &&
 			this.continuityComputer
 		) {
-			const continuity = await this.continuityComputer({
-				issueId: req.issueId,
-				role,
-				projectName: req.projectName,
-				shareParentBranch: req.shareParentBranch,
-			});
+			let continuity: ContinuityStartPoint;
+			try {
+				continuity = await this.continuityComputer({
+					issueId: req.issueId,
+					role,
+					projectName: req.projectName,
+					shareParentBranch: req.shareParentBranch,
+				});
+			} catch (error) {
+				this.abortPreLaunch(key, executionId, req.projectName);
+				throw error;
+			}
 			if (continuity.kind === "indeterminate") {
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new ContinuityIndeterminateError(continuity.error);
 			}
 			continuityBranch = continuity.branch;
@@ -1461,6 +1554,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		}
 		if (req.freshStart) {
 			if (!this.continuityComputer || !continuityBranch) {
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new FreshStartAuditError(
 					"managed branch authority is unavailable",
 				);
@@ -1477,6 +1571,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					...(skippedOriginTip && { skippedOriginTip }),
 				})
 			) {
+				this.abortPreLaunch(key, executionId, req.projectName);
 				throw new FreshStartAuditError("durable audit write failed");
 			}
 		}
@@ -1494,13 +1589,18 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// through here. Fresh founder-park tombstone check + durable `starting`
 		// launch claim inside the issue mutex; throws LifecycleParkedError on
 		// refusal (routes map to 409, never a silent respawn of a zeroed issue).
-		await this.admitLifecycle({
-			issueKey: req.issueId,
-			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
-			projectName: req.projectName,
-			executionId,
-			role,
-		});
+		try {
+			await this.admitLifecycle({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId,
+				role,
+			});
+		} catch (error) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw error;
+		}
 
 		const launchOutcome = req.generalizedExecution
 			? createLaunchOutcomeDeferred(

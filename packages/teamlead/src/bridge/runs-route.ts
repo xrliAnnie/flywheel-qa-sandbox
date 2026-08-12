@@ -3017,6 +3017,21 @@ export function createRunsRouter(
 							});
 							return;
 						}
+						if (error instanceof Error && error.name === "DoaBackoffError") {
+							const retryAfterSeconds = (
+								error as Error & { retryAfterSeconds?: number }
+							).retryAfterSeconds;
+							if (retryAfterSeconds !== undefined) {
+								res.setHeader("Retry-After", String(retryAfterSeconds));
+							}
+							res.status(retryAfterSeconds === undefined ? 409 : 429).json({
+								success: false,
+								code: "DOA_BACKOFF",
+								message: error.message,
+								retryable: retryAfterSeconds !== undefined,
+							});
+							return;
+						}
 						res.status(500).json({
 							success: false,
 							code: "LAUNCH_PRECOMMIT_FAILED",
@@ -3630,6 +3645,23 @@ export function createRunsRouter(
 					success: false,
 					reason: e.reason,
 					message: e.message,
+				});
+				return;
+			}
+			if (err instanceof Error && err.name === "DoaBackoffError") {
+				const e = err as Error & {
+					reason?: string;
+					retryAfterSeconds?: number;
+				};
+				if (e.retryAfterSeconds !== undefined) {
+					res.setHeader("Retry-After", String(e.retryAfterSeconds));
+				}
+				res.status(e.retryAfterSeconds === undefined ? 409 : 429).json({
+					success: false,
+					code: "DOA_BACKOFF",
+					reason: e.reason,
+					message: e.message,
+					retryable: e.retryAfterSeconds !== undefined,
 				});
 				return;
 			}

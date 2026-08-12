@@ -83,6 +83,7 @@ import {
 } from "./progress-resume.js";
 import {
 	type ContinuityComputer,
+	type DoaBackoffAdmissionFn,
 	type FreshStartAuditRecorder,
 	type LifecycleAdmissionFn,
 	type LifecycleLaunchGuard,
@@ -627,6 +628,8 @@ export interface RunInfraOptions {
 	 * last pre-launch recheck + launch-claim CAS hooks. Absent → byte-compat.
 	 */
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	/** FLY-1718 P4: canonical predecessor admission before branch continuity. */
+	doaBackoffAdmission?: DoaBackoffAdmissionFn;
 	/**
 	 * FLY-1232/1344 module ②: the hot lifecycle-shadow runtime, always constructed
 	 * by plugin.ts and threaded into the RunDispatcher (T1/T2/T7 pre-launch seam
@@ -744,6 +747,7 @@ export function createRunInfraDispatcher(input: {
 	resumeComputer?: ResumeComputer;
 	lifecycleAdmission?: LifecycleAdmissionFn;
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	doaBackoffAdmission?: DoaBackoffAdmissionFn;
 	workflowShadow?: WorkflowShadowRuntime;
 	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
 	continuityComputer?: ContinuityComputer;
@@ -776,6 +780,7 @@ export function createRunInfraDispatcher(input: {
 			),
 		input.continuityComputer,
 		input.freshStartAudit,
+		input.doaBackoffAdmission,
 	);
 }
 
@@ -1296,6 +1301,7 @@ export async function setupRunInfrastructure(
 		resumeComputer, // FLY-795: live restart-resilient resume
 		lifecycleAdmission: runInfraOpts?.lifecycleAdmission,
 		lifecycleLaunchGuard: runInfraOpts?.lifecycleLaunchGuard,
+		doaBackoffAdmission: runInfraOpts?.doaBackoffAdmission,
 		// FLY-1232/1344: hot facade; each start latches once. The helper also
 		// assembles the FLY-1244 admission capability regardless of flag state.
 		workflowShadow: runInfraOpts?.workflowShadow,

@@ -230,6 +230,12 @@ import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
+	createDoaBackoffAdmission,
+	DOA_RELEASE_LEASE_MS,
+	drainDoaBackoffAlerts,
+	repairDoaBackoffReservations,
+} from "./doa-backoff.js";
+import {
 	hasPendingCompleteMarker,
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
@@ -1346,6 +1352,85 @@ export function createBridgeApp(
 			res.status(503).json({
 				ok: false,
 				error: "admission API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
+	// FLY-1718 P4: privileged recovery for a fifth-strike lane. This endpoint
+	// intentionally has no scoped-token or /actions alias; actor authority is
+	// derived from the authenticated master-token mount, never from request JSON.
+	if (config.apiToken) {
+		app.post(
+			"/api/doa-backoff/reset",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				const projectName =
+					typeof req.body?.projectName === "string"
+						? req.body.projectName.trim()
+						: "";
+				const issueId =
+					typeof req.body?.issueId === "string" ? req.body.issueId.trim() : "";
+				const role =
+					typeof req.body?.role === "string" && req.body.role.trim()
+						? req.body.role.trim()
+						: "main";
+				const reason =
+					typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+				if (!projectName || !issueId || !reason || reason.length > 500) {
+					res.status(400).json({
+						ok: false,
+						error:
+							"projectName, issueId, and a reason of at most 500 characters are required",
+					});
+					return;
+				}
+				if (!projects.some((project) => project.projectName === projectName)) {
+					res.status(404).json({ ok: false, error: "project not found" });
+					return;
+				}
+				const resolved = resolveLifecycleRootKey(store, issueId, []);
+				if (!resolved.ok) {
+					res.status(409).json({
+						ok: false,
+						error: "lifecycle root is not unambiguous",
+						reason: resolved.reason,
+					});
+					return;
+				}
+				try {
+					const reset = store.resetDoaBackoff({
+						projectName,
+						lifecycleRootUuid: resolved.rootKey,
+						role,
+						actor: "master-api-token",
+						reason,
+					});
+					res.json({
+						ok: true,
+						lifecycleRootUuid: resolved.rootKey,
+						role,
+						...reset,
+					});
+				} catch (error) {
+					if ((error as Error).message === "doa_backoff_reset_bound_owner") {
+						res.status(409).json({
+							ok: false,
+							error: "a bound successor still owns this DOA lane",
+						});
+						return;
+					}
+					console.warn(
+						`[doa-backoff] authenticated reset failed: ${(error as Error).message}`,
+					);
+					res.status(500).json({ ok: false, error: "DOA backoff reset failed" });
+				}
+			},
+		);
+	} else {
+		app.post("/api/doa-backoff/reset", (_req, res) => {
+			res.status(503).json({
+				ok: false,
+				error: "DOA backoff reset requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}
@@ -5550,6 +5635,11 @@ export async function startBridge(
 							{ store, withIssueMutex: issueMutex },
 							input,
 						),
+					// FLY-1718 P4: predecessor accounting runs before branch continuity.
+					doaBackoffAdmission: createDoaBackoffAdmission({
+						store,
+						withIssueMutex: issueMutex,
+					}),
 					// FLY-1185 (Codex R1#5): dispatcher-side park-vs-start arbitration.
 					lifecycleLaunchGuard: {
 						// R4#1 (plan.md:145): commitLaunch is VERIFY-only — the claim
@@ -5569,6 +5659,12 @@ export async function startBridge(
 								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
 							return issueMutex(keys, async () => {
 								const fresh = store.getLaunchClaim(executionId);
+								const doaOwner = store.verifyAndRenewDoaReleaseOwner(
+									executionId,
+									Date.now(),
+									DOA_RELEASE_LEASE_MS,
+								);
+								if (!doaOwner.ok) return doaOwner;
 								if (
 									!fresh ||
 									fresh.state === "starting" ||
@@ -5590,19 +5686,12 @@ export async function startBridge(
 							const res = resolveLifecycleRootKey(store, claim.rootUuid, []);
 							const keys =
 								res.lockKeys.length > 0 ? res.lockKeys : [claim.rootUuid];
-							return issueMutex(keys, async () => {
-								if (
-									store.casLaunchClaimState(executionId, "starting", "active")
-								) {
-									return { ok: true };
-								}
-								const fresh = store.getLaunchClaim(executionId);
-								if (!fresh || fresh.state === "active") return { ok: true };
-								return { ok: false, reason: `claim_${fresh.state}` };
-							});
+							return issueMutex(keys, async () =>
+								store.activateLaunchAndSettleDoa(executionId),
+							);
 						},
 						onSpawnFailed: (executionId: string) => {
-							store.setLaunchClaimState(executionId, "closed");
+							store.closeLaunchAndReleaseDoa(executionId);
 						},
 					},
 					// FLY-579: the in-process completed path drives auto-QA + holds
@@ -7668,6 +7757,37 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	// FLY-1718 P4: startup + periodic crash convergence. A durable binding can
+	// re-drive activation/settlement; pending fifth-strike alerts retain their
+	// StateStore row until the notifier has durably sent/queued/dead-lettered it.
+	let doaBackoffMaintenanceBusy = false;
+	const runDoaBackoffMaintenance = async (): Promise<void> => {
+		if (doaBackoffMaintenanceBusy || process.env.FLYWHEEL_DOA_BACKOFF === "0") {
+			return;
+		}
+		doaBackoffMaintenanceBusy = true;
+		try {
+			await repairDoaBackoffReservations({
+				store,
+				withIssueMutex: issueMutex,
+			});
+			await drainDoaBackoffAlerts({
+				store,
+				alert: (payload) => leadAlertNotifier.alert(payload),
+			});
+		} catch (error) {
+			console.warn(
+				`[doa-backoff] maintenance pass failed: ${(error as Error).message}`,
+			);
+		} finally {
+			doaBackoffMaintenanceBusy = false;
+		}
+	};
+	void runDoaBackoffMaintenance();
+	const doaBackoffMaintenanceTimer = setInterval(
+		() => void runDoaBackoffMaintenance(),
+		30_000,
+	);
 	modelTransportAlertSink.current = {
 		stall: async (input) => {
 			await leadAlertNotifier.alert({
@@ -10684,6 +10804,7 @@ export async function startBridge(
 		idleWatchdog.stop();
 		leadWatchdog.stop();
 		clearInterval(leadAlertDrainTimer);
+		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
