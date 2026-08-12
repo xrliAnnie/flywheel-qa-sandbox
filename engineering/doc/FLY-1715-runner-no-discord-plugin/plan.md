@@ -75,13 +75,14 @@ flowchart TB
    - **GREEN**:`TmuxAdapter.buildClaudeArgs`(TmuxAdapter.ts:1019-1035)在既有 merge(ponytail true → disabledPlugins false → enabledPluginsExtra true)**之后**最后合入 forbidden false——顺序即优先级,forbidden 永远最后写。行为变更点明:claude-tmux 启动从此**总是**携带 `--settings`(原「双源皆空则无 flag」的字节兼容性质随本单有意作废);`test/TmuxAdapter.test.ts:600-681` 期望串逐条更新。
 2. **覆盖全部生产非 Lead spawn 面(Codex R1#1)**:
    - `packages/teamlead/src/bridge/claude-review-runner.ts`(buildClaudeReviewArgv,~:114-150,441)与 `packages/teamlead/src/bridge/approval-signal/subscription-claude-classifier-runner.ts`(~:93-120):argv 追加 `--settings ${JSON.stringify(buildForbiddenPluginsSettings())}`;各补 argv 断言测试。
-   - **SDK / voice 三个活跃面,确定实现(Codex R2#2 + R3#5)**:
+   - **SDK / voice 三个活跃面 + packaged Buddy,确定实现(Codex R2#2 + R3#5 + code review R2)**:
      统一走一个 **canonical security-last merge helper**(随 `NON_LEAD_FORBIDDEN_PLUGINS` 同模块导出):输入 caller 的 settings(对象或 `--settings` 字符串),解析→深合并→forbidden 最后覆写→输出**恰一份** settings——与 FLY-751/TmuxAdapter 的「所有来源合并成单 flag」既有合同一致(TmuxAdapter.ts:1011-1035),**绝不产生两枚 `--settings` 依赖未验证的 last-wins**;caller settings 无法解析 → fail-closed(拒启该 spawn,不带病放行)。
      (a) `packages/claude-runner/src/ClaudeRunner.ts`(EdgeWorker 的 PR/新 issue/resume 路径实际构造,EdgeWorker.ts:954-971,2909-2935,5592-5614;`config.extraArgs` → SDK,ClaudeRunner.ts:461-494):经 helper 合入,caller 正向 discord 启用被覆盖;
      (b) `packages/voice-core/src/brain/HeadlessClaudeBrain.ts`(:88-112 直接组 argv):解析 caller extraArgs 中既有 `--settings`(兼容 `--settings value` 与选定支持的 `=` 形态)→ helper 合并 → 最终 argv **只发一枚** `--settings`;
      (c) `packages/voice-core/src/brain/ResidentClaudeBrain.ts`(:441-465 已有自建 `--settings` JSON,由 voice daemon ResidentBrainManager 创建):forbidden 经同一 helper 合入其现有 settings JSON。
+     (d) Code review R2 全仓 sweep 补出 `scripts/lib/agent-cli-providers/claude.sh` 的 packaged Buddy 面:`provider_smoke` / `provider_start_buddy` / `provider_resume` 三个 model-bearing `--print` 调用都追加同一枚 inline forbidden settings；它运行在 setup 前后，不能只靠机器级 default-off。
      **依赖清单变更(R3#5)**:`packages/voice-core/package.json` 现无 `flywheel-config` workspace 依赖——加依赖 + lockfile 更新,**不许复制 forbidden 常量**。
-     测试:caller 尝试正向启用 discord 被覆盖 / caller settings 不可解析 fail-closed / Headless resume / Resident respawn,各断言最终**单枚** settings 中 forbidden 为 false。机器级 default-off 只兜**真正未知的 ad-hoc 面**,不替代以上已确认活跃的生产 spawn。
+     测试:caller 尝试正向启用 discord 被覆盖 / caller settings 不可解析 fail-closed / Headless resume / Resident respawn,各断言最终**单枚** settings 中 forbidden 为 false；Buddy contract harness 的 Claude stub 对 smoke/start/resume 三路径强制断言恰一枚 settings 且两 key=false。机器级 default-off 只兜**真正未知的 ad-hoc/dev 面**,不替代以上已确认活跃的生产 spawn。
 3. **Fix 1 脚本化(Codex R1#7 + R2#7)**:机器级翻转不做手工命令。新 `scripts/setup-discord-plugin-default-off.sh`,复用/抽取 `scripts/setup-mcp-on-demand.sh:11-67` 的既有纪律(幂等、原子替换、保 mode、拒 symlink、坏 JSON 拒改、变更才备份),原子设置两 key=false。**回滚是脚本一等接口**:`--restore <backup-path>` 子命令,同一套校验(target/backup 存在性、拒 symlink、backup JSON 可解析、保 mode、原子替换)。bash harness(`scripts/__tests__/`)覆盖 no-op 幂等 / 坏 JSON / symlink 拒绝 / 从 true 翻转 / **经 `--restore` 的真回滚路径**(不许测试里手工 `cp` 代替)。部署 checklist 正反两向都调脚本。
 4. claude-lead.sh 按 spike 分支处理;若分支 b,`scripts/__tests__/` lead-launch harness 补 args 断言。QA slot test lead 走同路径自动继承,无需特判。
 
@@ -136,7 +137,7 @@ flowchart TB
 
 | # | 判据 | 尺 |
 |---|------|-----|
-| V1 | 新 spawn 的 runner / headless reviewer / classifier / SDK(ClaudeRunner)/ voice brains / ad-hoc claude 名下 **0 adapter** | `pgrep -f 'discord/0\.0\.4/server\.ts'` + 进程树归属;对照组=修前基线(16 Lead 各 1 + rogue) |
+| V1 | 新 spawn 的 runner / headless reviewer / classifier / SDK(ClaudeRunner)/ voice brains / packaged Buddy / ad-hoc claude 名下 **0 adapter** | `pgrep -f 'discord/0\.0\.4/server\.ts'` + 进程树归属;对照组=修前基线(16 Lead 各 1 + rogue) |
 | V2 | 每活跃 Lead 恰 1 adapter,gateway 正常(频道真机收发) | 同尺计数 + 真收发 |
 | V3 | 污染 server 复现试验:六名 ambient 值全数不见(PROJECT_NAME 有 ctx 则=ctx 非 wrong)、`FLYWHEEL_LEAD_ID`/`FLYWHEEL_INGEST_TOKEN` 在位、未列名注入 canary 仍在(开集边界取证) | `ps eww` 字段互比(Cass 嵌合尺) |
 | V4 | 剥离后 runner `publish-report --publish-only` 成功;非 publish-only(含无 --channel 默认投递)被前置拒 | 真跑 CLI |
