@@ -87,8 +87,13 @@ describe("FLY-1718 branch continuity materializer", () => {
 		);
 	}, 15_000);
 
-	it("returns missing only for ls-remote exit 2", async () => {
-		const error = Object.assign(new Error("no matching ref"), { status: 2 });
+	it("returns missing for the real execFile error shape with exit code 2", async () => {
+		const error = Object.assign(new Error("no matching ref"), {
+			code: 2,
+			killed: false,
+			signal: null,
+			cmd: "git ls-remote --exit-code --heads origin branch",
+		});
 		const runGit = vi.fn<ContinuityGit>().mockRejectedValue(error);
 		await expect(
 			materializeRemoteBranch(
@@ -97,6 +102,33 @@ describe("FLY-1718 branch continuity materializer", () => {
 			),
 		).resolves.toEqual({ kind: "missing" });
 		expect(runGit).toHaveBeenCalledTimes(1);
+	});
+
+	it("returns missing with the default execFile runner against a real bare origin", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1718-continuity-missing-"));
+		roots.push(root);
+		const origin = join(root, "origin.git");
+		const target = join(root, "target");
+		git(root, "init", "--bare", origin);
+		git(root, "init", target);
+		git(target, "remote", "add", "origin", origin);
+
+		await expect(
+			materializeRemoteBranch({
+				repoPath: target,
+				branch: "flywheel-FLY-9999",
+			}),
+		).resolves.toEqual({ kind: "missing" });
+	}, 15_000);
+
+	it("keeps status-based injected git adapters compatible", async () => {
+		const error = Object.assign(new Error("no matching ref"), { status: 2 });
+		await expect(
+			materializeRemoteBranch(
+				{ repoPath: "/repo", branch: "branch" },
+				{ runGit: vi.fn<ContinuityGit>().mockRejectedValue(error) },
+			),
+		).resolves.toEqual({ kind: "missing" });
 	});
 
 	it("re-probes once when the remote ref moves during fetch", async () => {

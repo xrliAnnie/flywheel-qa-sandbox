@@ -99,7 +99,11 @@ function errorDetail(error: unknown): string {
 }
 
 function exitStatus(error: unknown): unknown {
-	return (error as { status?: unknown } | undefined)?.status;
+	const failure = error as
+		| { code?: unknown; status?: unknown }
+		| null
+		| undefined;
+	return typeof failure?.code === "number" ? failure.code : failure?.status;
 }
 
 function parseLsRemote(stdout: string, branch: string): string | null {
