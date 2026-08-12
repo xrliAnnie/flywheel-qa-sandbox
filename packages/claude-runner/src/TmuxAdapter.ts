@@ -1071,8 +1071,8 @@ export class TmuxAdapter implements IAdapter {
 		// into a single --settings flag: ponytail enables its plugin (true) and
 		// the FLY-751 slim profile disables heavy per-session MCP plugins
 		// (false). Real-machine spike (2026-07-01) confirmed a `false` entry
-		// prevents that plugin's MCP server subprocess from spawning. Neither
-		// FLY-1715 writes the Lead-only Discord deny contract LAST, independent
+		// prevents that plugin's MCP server subprocess from spawning. FLY-1715
+		// writes the non-Lead Discord deny contract LAST, independent
 		// of the optional slim profile, so caller opt-ins cannot turn it back on.
 		const enabledPlugins: Record<string, boolean> = {
 			...(ctx.enablePonytail && { [PONYTAIL_PLUGIN]: true }),

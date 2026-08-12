@@ -31,18 +31,18 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
   ```
   头注(:59-68)记录了 FLY-812 founder 裁定史:discord 曾在 FLY-751 默认禁用列表里,2026-07-03 founder review 以「runners sometimes need discord during testing」为由移除。**本单事故即该裁定的代价面**;issue 文本「违反 Runner 不直接碰 Discord 设计」构成 supersede 依据,plan 中显式呈请翻案。
 - `packages/claude-runner/src/TmuxAdapter.ts:1019-1035` — disabledPlugins/enabledPluginsExtra 合并为单个 `--settings {"enabledPlugins":{…}}` flag;头注记录真机 spike(2026-07-01)结论:**`false` 条目确实阻止该 plugin 的 MCP server 子进程 spawn**。
-- `packages/config/src/runner-mcp-profile.ts:104` — `FLYWHEEL_RUNNER_SLIM_MCP=0` kill-switch → 返回 null profile → 无 `--settings` flag(**已知限制**,FLY-1185 §2.7 同款:kill-switch 下 per-launch 禁用全失效,只剩机器级默认兜底——这正是 A1+A2 要双做的理由)。
-- `resolveRunnerMcpProfile` 的 opt-in 逃生口:`full-mcp` label(:120-126)、`playwright` label(:116)。**注意(r2 修正)**:`full-mcp` 只正向启用 playwright,**不会**正向启用 discord——机器 default-off 下它保持 off;它也不构成「测试用 discord runner」通道。且这些逃生口全部可绕(kill-switch/override)——所以 discord 禁用**不进**该机制,走独立的不可逃逸 forbidden 合同(plan §3 Phase 1);v1 不为 runner 预留任何 discord opt-in。
+- `packages/config/src/runner-mcp-profile.ts:104` — `FLYWHEEL_RUNNER_SLIM_MCP=0` kill-switch 会返回 null profile。因此 Discord 禁用不能寄生于该 profile,必须由独立的 per-launch forbidden helper 无条件合入。
+- `resolveRunnerMcpProfile` 的 opt-in 逃生口:`full-mcp` label(:120-126)、`playwright` label(:116)。这些逃生口全部可绕(kill-switch/override),所以 discord 禁用**不进**该机制,走独立的不可逃逸 forbidden 合同(plan §3 Phase 1);v1 不为 runner 预留任何 discord opt-in。
 
-### 1.3 FLY-1185 极性翻转先例(A1 的可行性证据)
+### 1.3 机器级极性翻转不适用于 Discord(QA 阻塞证据)
 
-`runner-mcp-profile.ts:46-53` 头注:playwright 的机器级 default-off 由 ops step 写进 `~/.claude/settings.json`,per-launch `--settings` 正向 `true` 是「最高非 managed 优先级」(FLY-615/751 实测)——**机器 default-off + 单点 per-launch 正向 enable 的组合已在生产验证过**。A1 对 discord 复刻同款。
+Playwright 的机器级 default-off 先例不能直接外推到 Discord。`[生产现状]` 16 个生产 Lead 中 14 个 Claude 型 Lead 的 `claude-lead.sh` 与 v2 wrapper 均未传 `--settings`;其余 codex-infra-bot-lead 与 mufasa-lead 是 Codex backend、outbound=direct,不走 Claude Discord plugin,是明确反例。QA 将共享 fork key 依次置 true/false,并用 adapter 进程数 + adapter ESTABLISHED 443 socket 数测量:两轮 true 都有 adapter/socket,两轮 false 都为 0/0。结论:该 key 是 14 个 Claude 型 Lead 与非 Lead 共用的机器级开关;`[合并后+执行机器翻转]` 会在这 14 个 Lead 下次重启时切断 Discord,不得作为本单部署动作。
 
-### 1.4 Lead 侧加载路径(A1 的待验证面)
+### 1.4 Lead 侧加载路径与错误尺子
 
 - `packages/teamlead/scripts/claude-lead.sh:2068` — `CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")`。
 - `claude-lead.sh:1196-1345`(FLY-1679)— 该 flag 触发 TUI 确认框,v2 载体内有 dialog 自动确认 poller。
-- **未知点**:机器级 `enabledPlugins:false` 时,`--dangerously-load-development-channels` 显式点名 plugin 是否仍加载(该 flag 语义是「加载开发 channel」,可能绕过 enabledPlugins,也可能不绕)。真机 spike 必验;两分支的处置都已在 exploration §3.1 写明。
+- 原 spike 只观察到 Channels experimental 横幅,据此误判 development-channel flag 能绕过机器 false。QA 证明横幅在真连/未连两态都会出现;有效尺子必须是 adapter 进程 + ESTABLISHED gateway socket。按有效尺子,Lead 依赖共享 key=true。
 - Lead 子进程 env 边界:`claude-lead.sh:1614-1640` — Lead 的 claude 用 `env -i` + 显式 env_args 启动(DISCORD_BOT_TOKEN / DISCORD_STATE_DIR / LEAD_ID / FLYWHEEL_LEAD_ID / TEAMLEAD_API_TOKEN / BRIDGE_URL 全显式)。**Lead 侧已经是「显式注入」范式**——本单是把同款纪律带给 runner spawn。
 - `scripts/flywheel-lead-wrapper-v2.sh:221-222` — v2 载体 SERVER_ENV 缺省补 `DISCORD_STATE_DIR`。
 
@@ -59,7 +59,7 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
 ```
 
 - 有 token 就连,**没有任何「持有者角色」判断**。
-- 默认 state dir `~/.claude/channels/discord/` 实存,`.env`(mode 600,2026-05-01)含 token,`access.json` 最后写于 2026-05-10 —— **3 个月无活动**。含义:(a) 即使 runner env 干净,adapter 也会拿这个默认 token 连 gateway(增殖体≠都是 Lead 身份,还有「默认身份」形态);(b) A1 关掉 Annie 终端会话的 Discord channel 的实际影响≈0(报备即可);(c) 该 .env 本身是一个静置的暴露面,ops 清理项。
+- 默认 state dir `~/.claude/channels/discord/` 实存,`.env`(mode 600,2026-05-01)含 token,`access.json` 最后写于 2026-05-10 —— **3 个月无活动**。即使 runner env 干净,误加载的 adapter 仍可能拿默认 token 连 gateway,所以 token 吊销仍是独立的凭据卫生前置;它不能替代 per-launch 禁用,也不授权修改 Lead 共用的 enabledPlugins key。
 
 ## 3. 条件 C:tmux server env 继承与 spawn 显式注入现状
 
@@ -104,6 +104,7 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
 - `/deliver` 的 channel 解析(reports-route.ts:397-423):显式 channelId → issue thread → **project generalChannel fallback**——即「不带 --channel/--issue」也是投递动作,不是安全形态。
 - runner 已持有的显式凭据:`FLYWHEEL_INGEST_TOKEN`(TmuxAdapter:468 注入)——注意它是 **fleet-shared** 进程级 token(Blueprint 同值发给每个 runner),非 per-runner。
 - token 碰撞面:`loadConfig()`(config.ts:126-134)分别读 `TEAMLEAD_INGEST_TOKEN` / `TEAMLEAD_API_TOKEN`,**无不等式约束**;若两值相等,任何「ingest 不得 deliver」的 403 都会被 master 比较先放行。既有先例:founder-ux routes 碰撞 503(founder-ux/routes.ts:130-150)、gemini scoped token 启动拒等(config.ts:75-100)。
+- `[生产现状]` 2026-08-12 QA 复核 `~/.flywheel/.env` 与活体 Bridge env 均无 `TEAMLEAD_INGEST_TOKEN`。因此 `[合并后+部署]` 若未先配置独立 ingest token,runner 剥离 master 后将失去报告发布与 inbox nudge 能力;本分支交付的布尔 preflight 必须作为 ship 卡硬检查先通过。
 - 语义拆分依据:publish(部署 HTML 到不可猜 URL)无 Discord 出站;deliver(发 Discord 消息)才是 Lead 特权动作。三条既有合同互证:runner 只跑 `--publish-only`(节点合同)、founder 物料 Lead-only 投递(团队纪律)、Runner 不直接碰 Discord(本单)。
 - `PROJECT_NAME` 的 runner 侧读者:flywheel-comm index.ts:685(`--project` 缺席时 fallback `process.env.PROJECT_NAME`)——ambient 剥离需配显式重注,不能裸剥。
 
@@ -117,10 +118,9 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
 
 | 改动 | 生效条件 |
 |------|----------|
-| `~/.claude/settings.json` enabledPlugins 翻转(经幂等脚本,含 `--restore` 回滚接口) | ops 一次性动作,**即时**对新 spawn 的 claude 生效(存量进程不回收) |
 | forbidden 常量 / TmuxAdapter / reviewer / classifier / SDK(ClaudeRunner) | Bridge(edge-worker)重启后生效——走正常 ship 部署车 |
 | voice brains(Headless/Resident) | **voice-bridge 是独立 launchd daemon**(wrapper 独立 exec run-voice-bridge.ts)——需单独受管重启 + `:9878/health` 复验 + 既有 child 回收证明,Bridge 重启不覆盖它 |
-| claude-lead.sh(若 spike 分支 b) | 各 Lead 重启后生效(launchd v2 载体,滚动重启) |
+| Lead Discord | **不修改**机器级 enabledPlugins 与 Lead argv;保持现有连通路径 |
 | Bridge reports+nudge 鉴权 + flywheel-comm CLI | Bridge 重启 + runner 用 main dist(spawn 时现读) |
 | **默认 `~/.claude/channels/discord/.env`(+`.env.bak`)token 吊销** | **部署前置(plan Phase 0.5)**——不吊销它,剥 `DISCORD_STATE_DIR` 会把误加载的 plugin 推向默认 token,纵深防御不成立 |
 | 88723 退役 / TEAMLEAD_API_TOKEN 轮换 / 存量 sweep | ops checklist,顺序约束:**C1b+nudge 收编先落地,再做 token 轮换与干净 server 迁移**(否则先断 publish-report 与 ask/gate) |
@@ -128,7 +128,7 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不�
 ## 8. 验收判据素材(全舰口径)
 
 - 巡检口径(与事故取证同尺):`pgrep -f 'discord/0\.0\.4/server\.ts'` 全舰计数 == 活跃 Lead 数(每 Lead 恰 1);runner / QA 体 / headless `-p` 名下 0。
-- 对照组(修前基线,已有):16 Lead 各 1 + runner d71d5740 名下 1(rogue)+ 普查若干。
+- 对照组(修前基线,已有):14 个 Claude 型 Lead 各 1;2 个 Codex/direct Lead 不走该 plugin;另有 runner d71d5740 名下 1(rogue)+ 普查若干。
 - 嵌合口径(Cass 已标定的尺,只读脚本 `/tmp/cass-adapter-audit.sh` 形态):新 spawn runner 的 pane env 实测无六名 ambient 身份/凭据、`FLYWHEEL_LEAD_ID` 与 team 一致。
 - publish-report 回归:剥离后的 runner 真跑 `publish-report --publish-only` 成功(ingest token 路径);**任何非 publish-only 调用**(含不带 `--channel/--issue` 的默认形态——它经 generalChannel fallback 仍是投递)被前置 fail-fast 拒绝。
 - ask/gate 回归:剥离后 runner `ask`→`check`→gate 全链可用(nudge 走 ingest),`~/.flywheel/.env` 零读取(fs 探针)。

@@ -3,38 +3,36 @@
 Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-进程不应加载-discord-plugin-server-个例-roguefly-1704-runner-名下-bun)
 日期: 2026-08-12
 基于: research.md
-版本: r6(折入 Codex design review R1×7 + R2×7 + R3×6 + R4×4 + R5×3)
+版本: r7(折入 QA 对共享机器 key 的阻塞更正)
 
 ## 0. 一句话
 
-把「谁能加载 Discord plugin、谁持有 Discord/Lead 凭据」从 **ambient 默认全有** 翻转为 **默认全无、仅 Lead 启动器单点显式 opt-in**,并让 runner 的身份/凭据在 tmux spawn 边界显式派生、不再继承 tmux server env——增殖与嵌合两条病根一次断掉,配套解开 publish-report 对泄漏凭据的隐性依赖。
+在 Flywheel 控制的每个**非 Lead Claude spawn**上安全最后写入 Discord plugin=false,不修改 Lead 与非 Lead 共用的机器级 key;同时让 runner 的身份/凭据在 tmux spawn 边界显式派生、不再继承 tmux server env——增殖与嵌合两条病根一次断掉,配套解开 publish-report 对泄漏凭据的隐性依赖。
 
 ## 1. 目标 / 非目标
 
 **目标**
-1. 任何非 Lead 的生产 claude 进程(tmux runner / Bridge headless reviewer / subscription classifier / ad-hoc)不再加载 discord plugin;禁用是**不可被 slim 逃生口翻转的安全合同**,不是内存优化的一部分。
+1. Flywheel 控制的任何非 Lead 生产 claude 进程(tmux runner / Bridge headless reviewer / subscription classifier / SDK / voice brains / packaged Buddy)不再加载 discord plugin;禁用是**不可被 slim 逃生口翻转的 per-launch 安全合同**,不是内存优化的一部分。
 2. runner pane 的**已知事故凭据集**不再依赖它出生在哪台 tmux server:**六名剥离**(`LEAD_ID` / `DISCORD_STATE_DIR` / `DISCORD_BOT_TOKEN` / `TEAMLEAD_API_TOKEN` / `BRIDGE_URL` / `PROJECT_NAME`),其中 `PROJECT_NAME` 无条件剥后按 ctx 有条件显式重设;身份仅经 `FLYWHEEL_LEAD_ID`(ctx=registry 派生)显式注入——与 FLY-1726「单一权威源+派生」合同对齐。
 3. 剥离 `TEAMLEAD_API_TOKEN` 不打断 runner 的两条必经 Bridge 依赖:**(a) DESIGN-HTML 交付**——`/api/reports/publish` 接受 runner 侧 `FLYWHEEL_INGEST_TOKEN`;`/deliver` 仍 master-only,以 **token 不等式启动不变量**保证边界真实存在;**(b) ask/gate 的 lead-inbox nudge**——该端点接受 ingest,且 runner 路径**绝不**触发 nudge helper 的磁盘 master-token 回读(`lead-inbox-nudge.ts:67-79` 现状会在 401/403 时读 `~/.flywheel/.env` 重取 master——不堵这条,`env -u` 会被运行时旁路)。
 4. Lead 的 Discord channel 完全不受影响(含 QA slot 的 test lead)。
 
 **非目标(诚实边界)**
-- 不改 flywheel-plugins fork(plugin 侧 default-deny 门 = follow-up,见 §8)。
+- 不改 flywheel-plugins fork(plugin 侧 default-deny 门 = follow-up,见 §8),也不承诺约束 Flywheel 未启动的 ad-hoc 裸 `claude`。
+- **不修改机器级 `~/.claude/settings.json` 的 Discord keys**。QA 已证明`[生产现状]` 14/16 个 Claude 型 Lead 无独立 `--settings` opt-in(另 2 个 Codex/direct Lead 不走 plugin);`[合并后+执行机器翻转]` 共享 key=false 会让这 14 个 Lead 下次重启后 0 adapter/0 gateway socket;TUI Channels 横幅不是连通证据。
 - 不做身份单一权威源本体(FLY-1726);本单只落 spawn 链切片。
 - **不承诺开集 env 安全**:deny-list 之外的未列名 ambient 变量仍会继承(deny-list 的固有边界)。整 env 显式重建(`env -i` + safe base,claude-lead.sh:1614 / FLY-1643 codex daemon 范式)归 FLY-1726 面——runner 是开放式 dev 工作负载,合法 env 依赖不可能在本单窗口内可靠盘尽,FLY-1643 的教训正是洗过头会打断 credential delivery。「plugin 误加载也安全」**不是**本计划的声称;误加载防线是 Fix 1+2 两重 + 部署前置 P0(默认 token 吊销)。
 - 不执行 88723 退役、TEAMLEAD_API_TOKEN 轮换、存量增殖体 sweep——列为 ops checklist(§6)与顺序约束,执行归 team-lead(已有排期)。唯**默认 state dir token 吊销**升级为部署前置(见 Phase 0.5)。
 - 不治 Lead 自身 Bash 子进程对 Lead 其它 env 的继承(属 1726 面)。
 - **本单防的是 ambient/自动泄漏,不是进程能力边界(Codex R3#3,显式接受)**:runner 与 Lead 同 UID 同 HOME,且以 `bypassPermissions` 携 Bash 启动(Blueprint.ts:2705-2712)——一个**主动配合规避的** runner 可以直接 `cat ~/.flywheel/.env`(0600 但同 UID 可读)取得 master,进而调用一切 master-only API。本单的「deliver 仍 master-only」等表述精确含义是 **bearer-tier-only**(按出示的 bearer 分级),不是「runner 无法取得 master」。真·进程隔离(独立 OS identity / sandbox / broker)绑定 FLY-1726/凭据治理面。本单消灭的是:出生即持有、不知情继承、内建工具自动回读——即事故的全部实际形态。
 - agy / kimi 不加载 claude plugins,Fix 1/2 对其无行为变化;Fix 3 的凭据剥离对其生效(共享 spawn 层)。
-- 不为 runner 预留任何 discord opt-in 通道:`full-mcp` **不会**(也从未)正向启用 discord,机器 default-off 下它保持 off;若未来出现真实「测试用 discord runner」需求,作为独立设计变更走 forbidden 合同的显式修订(§8)。
+- 不为 runner 预留任何 discord opt-in 通道:`full-mcp` **不会**(也从未)正向启用 discord;若未来出现真实「测试用 discord runner」需求,作为独立设计变更走 forbidden 合同的显式修订(§8)。
 
 ## 2. 改动总览
 
 ```mermaid
 flowchart TB
-    subgraph fix1["Fix 1 极性翻转(条件 A 主刀)"]
-        OPS1["脚本化 ops:settings.json<br/>discord 两 key → false<br/>(幂等/原子/防 symlink,setup-mcp-on-demand 纪律)"] --> LEAD["claude-lead.sh: per-launch 正向启用<br/>(spike 决定形态)"]
-    end
-    subgraph fix2["Fix 2 禁用安全合同(条件 A 冗余,不可逃逸)"]
+    subgraph fix2["Fix 1 禁用安全合同(条件 A 主刀,不可逃逸)"]
         PROF["NON_LEAD_FORBIDDEN_PLUGINS 常量<br/>tmux runner + headless reviewer<br/>+ classifier 全 spawn 面最后合入 false<br/>(full-mcp / SLIM_MCP=0 / env override 均不可翻)"]
     end
     subgraph fix3["Fix 3 spawn 显式化(条件 C,已知事故凭据集)"]
@@ -44,32 +42,27 @@ flowchart TB
         RPT["plugin mount 层分路由鉴权:<br/>/publish = master∨ingest;/deliver = master-only<br/>+ config 启动不变量 ingest≠master"] --> CLI["publish-report CLI:凭据先判级<br/>ingest-only 非 publish-only 一律前置拒"]
     end
     P0["部署前置:吊销默认<br/>~/.claude/channels/discord/.env token"] -.-> fix3
-    fix1 -->|"非 Lead 不加载 plugin"| DONE["增殖断根"]
-    fix2 -->|"settings 漂移/逃生口误用仍兜住"| DONE
+    fix2 -->|"只改目标 spawn;Lead key 不动"| DONE["受控非 Lead 增殖断根"]
     fix3 -->|"已知凭据集不随 server 走"| DONE2["嵌合/冒名断根"]
     fix4 -->|"剥离不断交付"| DONE2
 ```
 
 ## 3. 分阶段实施(TDD;实现者可按 Phase 拆 PR,但 Phase 2 与 Phase 3 必须同 PR 或 Phase 3 先行)
 
-### Phase 0 — 真机 spike(先于一切代码,产出决定 Phase 1 形态)
+### Phase 0 — 真机证据与 QA 更正
 
-在隔离环境(QA slot 或临时 HOME overlay)验证:机器级 `enabledPlugins."discord@flywheel-plugins": false` 时——
-
-- S1:`claude --dangerously-load-development-channels "plugin:discord@flywheel-plugins"`(Lead 形态)是否仍加载 plugin 并 spawn adapter?
-  - **是** → Phase 1 Lead 侧零改动(分支 a);
-  - **否** → claude-lead.sh `CLAUDE_ARGS` 追加 `--settings '{"enabledPlugins":{"discord@flywheel-plugins":true}}'`(分支 b,FLY-1185 已证 per-launch 正向覆盖有效;`scripts/setup-mcp-on-demand.sh:2-12` 即该先例)。
-- S2:裸 `claude` / `claude -p 'hi'` 在 default-off 下确认 **0 adapter**(`pgrep -f 'discord/0\.0\.4/server\.ts'` 按进程树归属)。
-- S3:`--settings '{"enabledPlugins":{"discord@flywheel-plugins":false}}'` 在机器级 **true** 时也确认 0 adapter(Fix 2 兜漂移的直接证据;FLY-751 2026-07-01 spike 已证 false 条目阻断 MCP 子进程,此处复证 fork key)。
-- spike 结论(含 pane 截证)写入本文件夹 `spike-notes.md`,随 PR 提交。
+- S1(保留):机器级 key=true 时,目标非 Lead 调用追加 per-launch 两 key=false,以 adapter 进程数确认 0 adapter;阳性对照不用 flag 时 adapter 存在。
+- S2(废弃尺子):`--dangerously-load-development-channels` 后的 TUI Channels 横幅不能证明 Lead 已连通。
+- S3(QA 阻塞尺):Claude 型生产 Lead 在机器 key true/false 的正逆序矩阵中,以 adapter 数 + ESTABLISHED 443 socket 数观察;true 两次均连通,false 两次均 0/0。由此禁止机器级翻转;2 个 Codex/direct Lead 不走该 plugin,不计入受影响面。
+- 更正结论写入 `spike-notes.md`;Lead argv 与机器 key 均不在本单 mutation scope。
 
 ### Phase 0.5 — 部署前置(ops,一次性,可先于代码)
 
 吊销并归档默认 state dir 凭据:`~/.claude/channels/discord/.env` 与 `.env.bak` 中的 bot token 在 Discord 开发者门户吊销,文件移出(归档到安全位置)。依据:plugin server 在 `DISCORD_STATE_DIR` 缺席时回退该默认目录取 token 自连(server.ts:74-90 → client.login 无角色检查)——**不吊销它,Fix 3 的 `env -u DISCORD_STATE_DIR` 会把误加载的 plugin 推向默认 token**,纵深防御不成立。该 token 3 个月无活动(research §2),吊销风险≈0;若 Annie 日后要终端 Discord channel,重新 `/discord:configure` 配新 token。
 
-### Phase 1 — Fix 1 + Fix 2(条件 A)
+### Phase 1 — per-launch forbidden 合同(条件 A)
 
-1. **Fix 2 形态(Codex R1#1)**:两枚 discord key 不进 `DEFAULT_RUNNER_DISABLED_PLUGINS`(那是可逃逸的内存 slim 机制),而是独立安全常量:
+1. **禁用形态(Codex R1#1)**:两枚 discord key 不进 `DEFAULT_RUNNER_DISABLED_PLUGINS`(那是可逃逸的内存 slim 机制),而是独立安全常量:
    - `packages/config/src/non-lead-forbidden-plugins.ts`(新):`NON_LEAD_FORBIDDEN_PLUGINS = ["discord@flywheel-plugins", "discord@claude-plugins-official"] as const` + `buildForbiddenPluginsSettings()` helper(产出 `{enabledPlugins: {…:false}}` 片段);头注记录 FLY-1715 supersede FLY-812 的依据与「不可被任何逃生口翻转」的合同。
    - **RED**(`packages/config/src/__tests__/`):forbidden 集两 key 缺一即败;与 `resolveRunnerMcpProfile` 的合成语义——`full-mcp` / `FLYWHEEL_RUNNER_SLIM_MCP=0` / `FLYWHEEL_RUNNER_DISABLED_PLUGINS=""`(显式空 override)/ `enabledPluginsExtra` 正向项,任何组合下 forbidden 仍为 false。
    - **GREEN**:`TmuxAdapter.buildClaudeArgs`(TmuxAdapter.ts:1019-1035)在既有 merge(ponytail true → disabledPlugins false → enabledPluginsExtra true)**之后**最后合入 forbidden false——顺序即优先级,forbidden 永远最后写。行为变更点明:claude-tmux 启动从此**总是**携带 `--settings`(原「双源皆空则无 flag」的字节兼容性质随本单有意作废);`test/TmuxAdapter.test.ts:600-681` 期望串逐条更新。
@@ -80,11 +73,10 @@ flowchart TB
      (a) `packages/claude-runner/src/ClaudeRunner.ts`(EdgeWorker 的 PR/新 issue/resume 路径实际构造,EdgeWorker.ts:954-971,2909-2935,5592-5614;`config.extraArgs` → SDK,ClaudeRunner.ts:461-494):经 helper 合入,caller 正向 discord 启用被覆盖;
      (b) `packages/voice-core/src/brain/HeadlessClaudeBrain.ts`(:88-112 直接组 argv):解析 caller extraArgs 中既有 `--settings`(兼容 `--settings value` 与选定支持的 `=` 形态)→ helper 合并 → 最终 argv **只发一枚** `--settings`;
      (c) `packages/voice-core/src/brain/ResidentClaudeBrain.ts`(:441-465 已有自建 `--settings` JSON,由 voice daemon ResidentBrainManager 创建):forbidden 经同一 helper 合入其现有 settings JSON。
-     (d) Code review R2/R3 全仓 sweep 补出 `scripts/lib/agent-cli-providers/claude.sh` 的 packaged Buddy 面:`provider_smoke` / `provider_start_buddy` / `provider_resume` 三个 model-bearing `--print` 调用与首启 `/login` 都追加同一枚 inline forbidden settings；它运行在 setup 前后，不能只靠机器级 default-off。shell 无法直接 import TypeScript 常量，故 contract harness 解析 canonical `NON_LEAD_FORBIDDEN_PLUGINS` 并断言 Buddy inline payload 与 default-off 脚本的 key set 精确相等，防复制项漂移。
+     (d) Code review R2/R3 全仓 sweep 补出 `scripts/lib/agent-cli-providers/claude.sh` 的 packaged Buddy 面:`provider_smoke` / `provider_start_buddy` / `provider_resume` 三个 model-bearing `--print` 调用与首启 `/login` 都追加同一枚 inline forbidden settings。shell 无法直接 import TypeScript 常量,故 contract harness 解析 canonical `NON_LEAD_FORBIDDEN_PLUGINS` 并断言 Buddy inline payload 的 key set 精确相等,防复制项漂移。
      **依赖清单变更(R3#5)**:`packages/voice-core/package.json` 现无 `flywheel-config` workspace 依赖——加依赖 + lockfile 更新,**不许复制 forbidden 常量**。
-     测试:caller 尝试正向启用 discord 被覆盖 / caller settings 不可解析 fail-closed / Headless resume / Resident respawn,各断言最终**单枚** settings 中 forbidden 为 false；Buddy contract harness 的 Claude stub 对 smoke/start/resume/login 四路径强制断言恰一枚 settings 且两 key=false，并校验两个 shell 副本与 canonical TS key set 零漂移。机器级 default-off 只兜**真正未知的 ad-hoc/dev 面**,不替代以上已确认活跃的生产 spawn。
-3. **Fix 1 脚本化(Codex R1#7 + R2#7)**:机器级翻转不做手工命令。新 `scripts/setup-discord-plugin-default-off.sh`,复用/抽取 `scripts/setup-mcp-on-demand.sh:11-67` 的既有纪律(幂等、原子替换、保 mode、拒 symlink、坏 JSON 拒改、变更才备份),原子设置两 key=false。**回滚是脚本一等接口**:`--restore <backup-path>` 子命令,同一套校验(target/backup 存在性、拒 symlink、backup JSON 可解析、保 mode、原子替换)。bash harness(`scripts/__tests__/`)覆盖 no-op 幂等 / 坏 JSON / symlink 拒绝 / 从 true 翻转 / **经 `--restore` 的真回滚路径**(不许测试里手工 `cp` 代替)。部署 checklist 正反两向都调脚本。
-4. claude-lead.sh 按 spike 分支处理;若分支 b,`scripts/__tests__/` lead-launch harness 补 args 断言。QA slot test lead 走同路径自动继承,无需特判。
+     测试:caller 尝试正向启用 discord 被覆盖 / caller settings 不可解析 fail-closed / Headless resume / Resident respawn,各断言最终**单枚** settings 中 forbidden 为 false；Buddy contract harness 的 Claude stub 对 smoke/start/resume/login 四路径强制断言恰一枚 settings 且两 key=false,并校验 Buddy shell copy 与 canonical TS key set 零漂移。
+3. **负向边界**:`scripts/setup-discord-plugin-default-off.sh` 及其 harness 不交付;部署 checklist 不包含任何机器 settings mutation;`claude-lead.sh` 保持不变。
 
 ### Phase 2 — Fix 3(条件 C:spawn 显式化,已知事故凭据集)
 
@@ -137,7 +129,7 @@ flowchart TB
 
 | # | 判据 | 尺 |
 |---|------|-----|
-| V1 | 新 spawn 的 runner / headless reviewer / classifier / SDK(ClaudeRunner)/ voice brains / packaged Buddy / ad-hoc claude 名下 **0 adapter** | `pgrep -f 'discord/0\.0\.4/server\.ts'` + 进程树归属;对照组=修前基线(16 Lead 各 1 + rogue) |
+| V1 | 新 spawn 的 runner / headless reviewer / classifier / SDK(ClaudeRunner)/ voice brains / packaged Buddy 名下 **0 adapter** | `pgrep -f 'discord/0\.0\.4/server\.ts'` + 进程树归属;对照组=修前基线(14 个 Claude 型 Lead 各 1 + rogue;2 个 Codex/direct Lead 不走 plugin) |
 | V2 | 每活跃 Lead 恰 1 adapter,gateway 正常(频道真机收发) | 同尺计数 + 真收发 |
 | V3 | 污染 server 复现试验:六名 ambient 值全数不见(PROJECT_NAME 有 ctx 则=ctx 非 wrong)、`FLYWHEEL_LEAD_ID`/`FLYWHEEL_INGEST_TOKEN` 在位、未列名注入 canary 仍在(开集边界取证) | `ps eww` 字段互比(Cass 嵌合尺) |
 | V4 | 剥离后 runner `publish-report --publish-only` 成功;非 publish-only(含无 --channel 默认投递)被前置拒 | 真跑 CLI |
@@ -148,22 +140,21 @@ flowchart TB
 
 ## 5. 部署顺序(自托管 ship 约束)
 
-1. **前置(可先行)**:Phase 0.5 默认 token 吊销;ops preflight 确认 master+ingest present 且互异、gemini(若 present)异于两者、master 无外层空白(任一违反先修配置——preflight 是部署硬前置,不是 config 必填,见 §3 Phase 3.2)。
+1. **前置(可先行)**:Phase 0.5 默认 token 吊销;ops preflight 确认 master+ingest present 且互异、gemini(若 present)异于两者、master 无外层空白(任一违反先修配置——preflight 是部署硬前置,不是 config 必填,见 §3 Phase 3.2)。`[生产现状]` 2026-08-12 QA 已确认磁盘配置与活体 Bridge 均缺 ingest token,所以 ship 卡必须附 preflight PASS receipt 后才能进入任何部署 mutation。
 2. PR 合入 → **一次 `request-restart.sh` 驱动的受管 full-fleet 事务(Codex R5#2,收敛原 3/4/5 步)**:
    - `restart-services.sh` 现状**无条件把每次合法调用收敛为 full-fleet wave**(重启 Bridge + 全部 Lead + cmux watcher;:1087-1093 / Lead wave :2012-2040),**全文件无 voice-bridge label**。故本单要把 voice-bridge **确定性纳入** `deploy_and_verify()` **与** `rollback_and_restart()`(不是「待核实」,不新增手工 kickstart 旁路——FLY-913 硬拦):持 restart lock、紧邻 mutation 时采集 voice daemon + 既有 Headless/Resident child 的 PID+start;受管替换;`:9878/health` 失败**不得推进 deployed-sha**,并用旧 build 重启/复验 voice。
    - 该入口异步入队(request-restart.sh:72-79 → `com.flywheel.updater`);**等 updater 完成证据 + Bridge/voice health 绿 + 旧 voice identity 消失**后才进下一步。一次事务覆盖:TmuxAdapter / reviewer / classifier / SDK(ClaudeRunner)/ reports+nudge mount / config 不变量 / voice brains 全部生效。
    - harness:正常部署、voice health failure(不推进 sha)、rollback 三条各走受管路径。
-3. 若 spike 走分支 b:各 Lead 已在上一步的 full-fleet wave 带 per-launch 正向启用重启——**逐 Lead 真验 channel 收发**,才进下一步。
-4. **ops:跑 `setup-discord-plugin-default-off.sh`**(机器级翻转)。回滚=同脚本 `--restore <backup>` + 经受管重启工具链重启受影响 Lead + channel 复验。
-5. 验收 **V1-V8**。
-6. 之后 ops 处置:88723 退役(既有排期)、TEAMLEAD_API_TOKEN 轮换、存量增殖体一次性 sweep(活父进程名下,FLY-183 reaper 射程外,人工)。**顺序硬约束:Fix 4(reports+nudge)生效前不得做 token 轮换/干净 server 迁移**。
+3. **不得修改机器级 Discord enabledPlugins key**;逐个 Claude 型 Lead 用 adapter + gateway socket + 真收发确认现有通道保持健康;Codex/direct Lead 按其 outbound 路径验活。
+4. 验收 **V1-V8**。
+5. 之后 ops 处置:88723 退役(既有排期)、TEAMLEAD_API_TOKEN 轮换、存量增殖体一次性 sweep(活父进程名下,FLY-183 reaper 射程外,人工)。**顺序硬约束:Fix 4(reports+nudge)生效前不得做 token 轮换/干净 server 迁移**。
 
 ## 6. ops checklist(执行归 team-lead,本单交付清单本身)
 
 - [ ] (前置)吊销 + 归档 `~/.claude/channels/discord/.env`、`.env.bak` 的 token(Phase 0.5)。
-- [ ] (前置)preflight:master/ingest present + pairwise-distinct、gemini(若 present)异于两者、master 无外层空白(`master_padded=false`)——只输出布尔。
+- [ ] **ship 卡硬检查**:preflight PASS receipt——master/ingest present + pairwise-distinct、gemini(若 present)异于两者、master 无外层空白(`master_padded=false`),只输出布尔;当前生产缺 ingest,未配置前不得部署。
 - [ ] 受管 full-fleet 事务(`request-restart.sh`):含 voice-bridge 受管重启 + `:9878/health` + 旧 Headless/Resident child 回收证明(部署第 2 步;非手工 kickstart)。
-- [ ] `setup-discord-plugin-default-off.sh` 翻转两 key(部署第 4 步);回滚 `--restore <backup>`。
+- [ ] 确认机器级 Discord enabledPlugins key 未被本单修改;逐个 Claude 型 Lead 以 adapter + ESTABLISHED gateway socket + 真收发验活;Codex/direct Lead 按其 outbound 路径验活。
 - [ ] 88723 退役(排期已有);退役前确认其上无未收工 runner。
 - [ ] TEAMLEAD_API_TOKEN 轮换(88723 env 明文暴露过;半径=Bridge 配置 + 各 Lead launcher env)。
 - [ ] 存量增殖体 sweep:`pgrep -f 'discord/0\.0\.4/server\.ts'` 中父进程非 Lead 的逐个核实后清除。
@@ -172,7 +163,7 @@ flowchart TB
 
 | 风险 | 处置 |
 |------|------|
-| spike S1=分支 b 且 Lead 重启期间 settings 已翻转 → Lead 掉 channel | §5 强制顺序「full-fleet 事务(含 Lead 带 per-launch 启用)完成 + 逐 Lead 验证 → 才翻转」;翻转脚本秒级 `--restore` 回滚 |
+| 误把共享机器 key 翻 false → 14 个 Claude 型 Lead 下次重启后 Discord 断连 | 本 PR 删除机器 mutation 脚本与 checklist;只允许目标非 Lead spawn 的 per-launch false;QA 用 adapter+socket+真收发复验 Claude 型 Lead |
 | 未列名 ambient 凭据仍继承(deny-list 开集边界) | **设计承认,不假装修复**(§1 非目标 + V3 canary 取证);整 env 重建归 1726 |
 | ingest 权限面扩大(/publish 外部写) | §3.4 廉价校验 + 审计 + 显式风险接受呈报;deliver 边界由 403 + 启动不变量双保 |
 | master==ingest 现状配置使 403 形同虚设 | present 时碰撞拒绝(不因缺席 fail-start;tokenless 合同保留);ops preflight 先行不撞启动失败 |
@@ -184,7 +175,7 @@ flowchart TB
 
 ## 8. Follow-up(不阻塞本单)
 
-- plugin fork(flywheel-plugins)server.ts default-deny 门(显式 allow 标记或见 `FLYWHEEL_EXEC_ID` 拒连)——第三重皮带,走 fork repo + FLY-1676 sync。
+- plugin fork(flywheel-plugins)server.ts default-deny 门(显式 allow 标记或见 `FLYWHEEL_EXEC_ID` 拒连)——覆盖 Flywheel 未启动的 ad-hoc 裸 Claude,走 fork repo + FLY-1676 sync。
 - runner 级 report-scoped credential(替代 fleet-shared ingest 复用)+ 整 env 显式重建(env -i safe base)——并入 FLY-1726。
 - 「测试用 discord runner」若出现真实需求:作为 forbidden 合同的显式修订独立设计(本单不预留通道)。
 - FLY-1726 落地后,`FLYWHEEL_LEAD_ID`/`PROJECT_NAME` 注入点改读统一权威源(位置不变,来源替换)。

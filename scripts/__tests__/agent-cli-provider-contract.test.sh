@@ -105,8 +105,8 @@ assert_contract_fn "H7 stub provider_start_buddy(persona,prompt)" "$STUB" provid
 assert_contract_fn "H8 stub provider_resume(session,prompt)" "$STUB" provider_resume 0 '.ok==true and .session_id=="s1"' "s1" "$PROMPT"
 assert_contract_fn "H9 stub provider_repair" "$STUB" provider_repair 0 '.ok==true'
 
-# FLY-1715: shell consumers cannot import the TypeScript constant at runtime,
-# so pin both unavoidable shell copies to the canonical exported key set.
+# FLY-1715: the packaged Buddy cannot import the TypeScript constant at
+# runtime, so pin its unavoidable per-launch copy to the canonical key set.
 if python3 - "$REPO_ROOT" <<'PY'
 import json
 import pathlib
@@ -124,9 +124,6 @@ assert canonical_block is not None
 canonical = set(re.findall(r'"([^"]+)"', canonical_block.group(1)))
 assert canonical
 
-setup_text = (root / "scripts/setup-discord-plugin-default-off.sh").read_text()
-setup = set(re.findall(r'^(?:FORK|OFFICIAL)_PLUGIN_KEY="([^"]+)"$', setup_text, re.M))
-
 buddy_text = (root / "scripts/lib/agent-cli-providers/claude.sh").read_text()
 buddy_match = re.search(r"readonly ACP_NON_LEAD_SETTINGS='([^']+)'", buddy_text)
 assert buddy_match is not None
@@ -135,13 +132,12 @@ buddy_plugins = buddy_payload.get("enabledPlugins")
 assert isinstance(buddy_plugins, dict)
 assert all(value is False for value in buddy_plugins.values())
 
-assert setup == canonical
 assert set(buddy_plugins) == canonical
 PY
 then
-  pass "C0 shell Discord deny copies match the canonical TypeScript key set"
+  pass "C0 Buddy per-launch Discord deny matches the canonical TypeScript key set"
 else
-  fail "C0 shell Discord deny copies drifted from the canonical TypeScript key set"
+  fail "C0 Buddy per-launch Discord deny drifted from the canonical TypeScript key set"
 fi
 
 # ── M1: the real claude.sh against a stubbed PATH ───────────────────────────

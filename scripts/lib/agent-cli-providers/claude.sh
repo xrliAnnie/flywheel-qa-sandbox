@@ -18,7 +18,7 @@
 ACP_CLAUDE_BIN="${FLYWHEEL_CLAUDE_BIN:-claude}"
 # FLY-1715: Buddy is a packaged non-Lead Claude spawn face. Keep this inline
 # payload security-last and independent of machine settings so setup/smoke and
-# brain calls cannot start either Discord plugin even before default-off runs.
+# brain calls cannot start either Discord plugin while the Lead's shared key stays on.
 readonly ACP_NON_LEAD_SETTINGS='{"enabledPlugins":{"discord@flywheel-plugins":false,"discord@claude-plugins-official":false}}'
 # brain calls are bounded (FLY-494 lesson: an unauthenticated CLI can hang on
 # a device-code prompt forever — fail closed instead).

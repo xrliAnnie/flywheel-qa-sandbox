@@ -6,7 +6,7 @@ Issue: FLY-1715 (https://linear.app/geoforge3d/issue/FLY-1715/runner-%E8%BF%9B%E
 
 ## 结论
 
-Phase 1 采用 plan.md 的分支 A:Lead 侧 `claude-lead.sh` 零改动。`--dangerously-load-development-channels plugin:discord@flywheel-plugins` 会在两枚 Discord plugin key 均为 `false` 时继续显式启动 Discord channel；普通 Claude 调用则会被 `enabledPlugins=false` 阻断。
+Phase 1 只采用 per-launch non-Lead deny:Flywheel 控制的非 Lead spawn 显式携两枚 Discord key=false;机器级 key 与 Lead argv 均不修改。原 spike 以 TUI Channels 横幅推断 Lead 在机器 key=false 下仍连通,该判据被 QA 的进程/socket 实验推翻,结论作废。
 
 ## 真机矩阵
 
@@ -16,7 +16,8 @@ Phase 1 采用 plan.md 的分支 A:Lead 侧 `claude-lead.sh` 零改动。`--dang
 |---|---|---|---|
 | S0 阳性对照 | 当前机器设置(fork key=`true`)下运行 `claude mcp list` | 列出 `plugin:discord:discord …/flywheel-plugins/discord/0.0.4/start-adapter.sh - Connected` | 尺子能看到 fork adapter |
 | S2 / S3 禁用 | 同一 profile，追加 `--settings`，两枚 Discord key=`false` | `claude mcp list` 完全不列 Discord；其它既有 MCP 仍列出 | per-launch false 确实阻断 adapter，且 key 必须覆盖 fork + official 两枚 |
-| S1 Lead 形态 | 同一 false settings，再加 `--dangerously-load-development-channels plugin:discord@flywheel-plugins`，在 TUI 确认开发 channel | TUI 明示 `Channels (experimental) messages from plugin:discord@flywheel-plugins inject directly in this session` | development-channel flag 独立于 `enabledPlugins`，Lead 不需再追加 positive `--settings` |
+| S1 Lead 形态(废弃判据) | 同一 false settings,再加 `--dangerously-load-development-channels plugin:discord@flywheel-plugins` | TUI 仍显示 Channels experimental 横幅 | 横幅不证明 adapter 或 gateway 连通,不能用于部署决策 |
+| QA 正逆序 | Claude 型生产 Lead 共享 key true→false 与 false→true,各含阳性对照 | true:adapter 1 且 ESTABLISHED 443 socket>0;false:adapter 0/socket 0;2/2 复现 | `[生产现状]` 14/16 个 Claude 型 Lead 依赖机器 key,不得翻 false;另 2 个 Codex/direct Lead 不走 plugin |
 
 ## Harness 更正记录
 
@@ -24,9 +25,9 @@ Phase 1 采用 plan.md 的分支 A:Lead 侧 `claude-lead.sh` 零改动。`--dang
 
 ## 实施影响
 
-- `setup-discord-plugin-default-off.sh` 可以安全把机器级 fork + official 两 key 翻为 `false`。
-- Lead 保持既有显式 development-channel opt-in 与确认 poller，不新增第二枚 settings 来源。
-- 非 Lead 的所有已知生产 spawn 面仍需 canonical security-last false 合并；机器级 default-off 只兜 ad-hoc/未知入口。
+- 删除 `setup-discord-plugin-default-off.sh` 及部署步骤;本单不得改机器级 fork/official keys。
+- Lead 保持既有共享 key 与启动参数,并以 adapter + gateway socket + 真收发验活,不再把横幅当证据。
+- 非 Lead 的所有已知生产 spawn 面继续 canonical security-last false 合并;未知 ad-hoc 入口留 plugin 侧 follow-up。
 
 ## 污染 tmux server 治愈复证
 
@@ -47,8 +48,8 @@ Phase 1 采用 plan.md 的分支 A:Lead 侧 `claude-lead.sh` 零改动。`--dang
 
 - `pnpm lint`:exit 0；仅保留仓内既有 13 条 warning，无本单 error。
 - `pnpm -r build`:22 个 workspace package 全部构建成功。
-- 本单触达面定向回归全部通过:config 4、Edge Blueprint 36、voice brain 40、ClaudeRunner/TmuxAdapter 199、teamlead reviewer/classifier/scoped-token 59、reports mount/router 48、flywheel-comm runner-tier CLI 87，共 473 个 Vitest case；另有 default-off 20、token preflight 9、voice managed restart 16、packaged Buddy provider 19，共 64 个 shell harness assertion；Buddy 总流程既有 11 条也复跑通过。
+- 本单触达面定向回归全部通过:config 4、Edge Blueprint 36、voice brain 40、ClaudeRunner/TmuxAdapter 199、teamlead reviewer/classifier/scoped-token 59、reports mount/router 48、flywheel-comm runner-tier CLI 87，共 473 个 Vitest case；另有 token preflight 9、voice managed restart 16、packaged Buddy provider 19，共 44 个 shell harness assertion；Buddy 总流程既有 11 条也复跑通过。
 - Code review R2 的全仓 shell spawn sweep 补出 packaged Buddy 面。TDD RED 先让 Claude stub 对所有 model-bearing `--print` 强制校验唯一 `--settings`，smoke/start/resume 三 case 均按预期失败；GREEN 后三路径统一携 fork + official 两 key=false，contract harness 17/17、Buddy 总流程 11/11。
-- Code review R3 再补首启 `/login` 与 shell deny-list 漂移守卫。TDD RED 中 `_acp_login_cli` 缺席令 login case 以 127 失败；GREEN 后 login 复用同一 inline settings，Python guard 从 canonical TS 导出解析 key set 并对 Buddy/default-off 两份 shell 数据做精确相等校验，contract harness 19/19。隔离 HOME 下真实 Claude CLI 以同一 argv 组合 `--settings <json> /login --help` 返回 0，确认参数组合可解析且未启动交互登录。
+- Code review R3 再补首启 `/login` 与 shell deny-list 漂移守卫。TDD RED 中 `_acp_login_cli` 缺席令 login case 以 127 失败；GREEN 后 login 复用同一 inline settings，Python guard 从 canonical TS 导出解析 key set 并对 Buddy shell copy 做精确相等校验，contract harness 19/19。隔离 HOME 下真实 Claude CLI 以同一 argv 组合 `--settings <json> /login --help` 返回 0，确认参数组合可解析且未启动交互登录。
 - 精确全仓命令 `pnpm test:packages:run` 已执行但未全绿:core 的 macOS Terminal `osascript` 测试被当前 sandbox 拒绝，最小 `tell application "Terminal"` 同样 exit 1；排除唯一 GUI 文件后 core 219/219 通过。并发 package wave 的既有 5 秒/15 秒阈值在宿主负载下超时；本单 ingest case 与两条同波旁证隔离复跑 3/3 通过，未触达的 `flywheel-claude-profile` case 隔离复跑 1/1 通过（13.8 秒）。未为本单放宽阈值或修改无关测试。
 - `git diff --check`:通过。

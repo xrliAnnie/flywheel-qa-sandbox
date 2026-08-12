@@ -10,7 +10,7 @@ FLY-1704 的 runner(d71d5740)名下发现一个 `bun …/discord/0.0.4/server.ts
 
 后续两轮取证把病面扩大、病灶层修正:
 
-1. **增殖普查(8-11 22:2x PT)**:病面不止 runner——QA 体、auto-QA 体、甚至 headless `claude -p` 交叉评审进程,**每个新 spawn 的 claude 进程都长 adapter**。结论:修复必须覆盖**所有 claude 调用的 spawn 配置层**,而非仅 runner 路径。
+1. **增殖普查(8-11 22:2x PT)**:病面不止 runner——QA 体、auto-QA 体、甚至 headless `claude -p` 交叉评审进程都出现 adapter。结论:修复必须覆盖 Flywheel 控制的**全部生产非 Lead Claude spawn 配置层**,而非仅 runner 路径。
 2. **Cass 三连纠错(8-12,定谳)**:嵌合(身份拼错)的载体不是 adapter、不是某个会话,是**整台 tmux server(pid 88723,`recovery-anchor` 启动)**。该 server 自身 env 带 `FLYWHEEL_LEAD_ID=LEAD_ID=DISCORD_STATE_DIR=eng-lead` + 明文 `TEAMLEAD_API_TOKEN`;在这台 server 上出生的任何 `team ≠ eng-lead` 的 runner **出生即嵌合**(实测 9/9 结构性:product-lead 3/3 嵌合、eng-lead 6/6 一致)。杀 adapter 无效,因为 adapter 身份从 runner 继承,runner 身份从 tmux server 继承。
 
 **两个病要分开叫**(Cass 审计方法论,本单沿用):
@@ -63,11 +63,11 @@ BRIDGE_URL=http://localhost:9876     ← ambient 继承
 
 | 选项 | 覆盖面 | 取舍 |
 |------|--------|------|
-| **A1. 极性翻转(推荐)**:机器级 `~/.claude/settings.json` 置 `discord@flywheel-plugins: false`,Lead 启动器 per-launch 正向启用 | **所有** claude 调用(runner / QA 体 / headless `-p` / ad-hoc)默认无 plugin;只有显式 opt-in 的 Lead 有 | 精确复刻 FLY-1185 playwright 已验证模式(per-launch `--settings` 是最高非 managed 优先级,机器级 default-off + 单点正向 enable)。默认 deny,不用逐个拦 spawn 点。代价:Annie 终端会话的 Discord channel 一并关闭(默认 state dir 已 3 个月无写入,5-10 后无痕迹,判定影响≈0,显式向 founder 报备) |
-| A2. 生产 spawn 面 per-launch 禁用(最终形态见 plan §3 Phase 1:**独立于 slim profile 的 `NON_LEAD_FORBIDDEN_PLUGINS` 安全常量** + canonical security-last merge helper,覆盖 TmuxAdapter + headless reviewer + classifier + SDK(ClaudeRunner)+ voice brains(Headless/Resident),任何 slim 逃生口不可翻) | 我们代码控制 argv 的全部非 Lead 生产面 | 修不到 ad-hoc 裸 `claude`(那由 A1 兜)。**单独不够**,作为 A1 的冗余安全合同(防 settings.json 手工漂移)。注:初稿曾想放进 runner slim 禁用列表——Codex R1 指出该机制有 kill-switch/override 逃生口,安全合同不能寄生在可逃逸机制里,故独立成常量 |
+| **A1. 机器级极性翻转(已拒绝)**:`~/.claude/settings.json` 置 Discord keys=false | 同 UID 的所有 Claude,含 14 个 Claude 型 Lead | QA 用 adapter 进程 + ESTABLISHED 443 socket 正反序复现:`[生产现状]` 14/16 个 Claude 型 Lead 无 `--settings`,真实连通依赖这把共享机器 key;另 2 个 Codex/direct Lead 不走该 plugin,是明确反例。`[合并后+执行该动作]` 翻 false 会让 14 个 Claude 型 Lead 下次重启后 0 adapter/0 gateway socket。TUI 的 Channels 横幅在两态都出现,不能作为连通证据。因此机器设置必须保持不动 |
+| **A2. 生产 spawn 面 per-launch 禁用(采用)**:独立于 slim profile 的 `NON_LEAD_FORBIDDEN_PLUGINS` 安全常量 + canonical security-last merge helper,覆盖 TmuxAdapter + headless reviewer + classifier + SDK(ClaudeRunner)+ voice brains(Headless/Resident)+ packaged Buddy | Flywheel 代码控制 argv 的全部生产非 Lead Claude 面 | 只作用于目标子进程,不触碰 Lead 共享设置;kill-switch/override/caller 正向项均不能翻回。未知 ad-hoc 裸 `claude` 不在本单可控 spawn scope,后续由 plugin 侧 role gate 治理 |
 | A3. managed settings 机器级强制 | 全机 | 会连 Lead 一起杀死(managed 优先级最高,per-launch 无法翻回),不可行 |
 
-**A1 的一个待真机验证点**:Lead 今天靠 `--dangerously-load-development-channels "plugin:discord@flywheel-plugins"` 加载 channel(claude-lead.sh:2068)。机器级 default-off 后该 flag 是否仍足以加载 plugin 未知——spike 两分支:足够则 Lead 侧零改动;不够则 claude-lead.sh 补 per-launch `--settings` 正向启用(FLY-1185 已证可行)。
+**QA 更正(2026-08-12)**:`--dangerously-load-development-channels` 后出现的 TUI 横幅只证明 UI 路径被识别,不证明 adapter 已启动或 gateway 已连通。生产尺度必须同时观察 adapter 进程与 ESTABLISHED 443 socket;按此尺度 A1 不成立并从交付中删除。
 
 ### 3.2 条件 C 层:spawn 身份/凭据显式化(scope B,治嵌合的 spawn 形态)
 
@@ -88,7 +88,7 @@ BRIDGE_URL=http://localhost:9876     ← ambient 继承
 
 改我们自己的 fork(flywheel-plugins)让 server.ts 要求显式 `DISCORD_ADAPTER_ALLOWED=1` 或见 `FLYWHEEL_EXEC_ID` 即拒连。**v1 不做,记 follow-up**:
 
-- Fix A1 落地后,非 Lead 进程根本不加载 plugin,B 层门是第三重皮带;
+- A2 落地后,Flywheel 控制的非 Lead 进程不加载 plugin,B 层门是第二重皮带并覆盖未知 ad-hoc 面;
 - 该门单独不自立(Lead 的 Bash 子进程会继承 allow env);
 - fork 改动要走 flywheel-plugins repo + FLY-1676 sync 通道,跨 repo 成本;
 - 简单性纪律(修结构别加报警器):三重结构已经够,先落前两重。
@@ -106,9 +106,9 @@ BRIDGE_URL=http://localhost:9876     ← ambient 继承
 
 ## 5. 结论(带入 research/plan)
 
-推荐组合:**A1(极性翻转)+ A2(独立 forbidden 安全常量,覆盖全部非 Lead 生产 spawn 面)+ C1(spawn 显式化,六名剥离)+ C1b(reports+nudge 鉴权配套)**,B 层与 fork 改动 defer。
+采用组合:**A2(独立 forbidden 安全常量,覆盖全部受控非 Lead 生产 spawn 面)+ C1(spawn 显式化,六名剥离)+ C1b(reports+nudge 鉴权配套)**。机器级 A1 因会切断 Lead Discord 被 QA 否决;B 层与 fork 改动 defer。
 
 三重结构性效果(边界按 plan 定稿口径):
-1. 非 Lead claude 进程不再加载 plugin(增殖断根:A1 兜 ad-hoc,A2 覆盖全部我们控制 argv 的生产面);
-2. 即使有人手工把 settings 翻回来,A2 的 forbidden 合同(不可被 slim 逃生口翻转)仍兜住全部生产 spawn 面;
+1. Flywheel 控制的非 Lead claude 进程不再加载 plugin(A2 在每个受控 spawn 的 argv 上安全最后写 false);
+2. 机器级 settings 保持 Lead 所需的 true,A2 仍以更高优先级只覆盖目标非 Lead 子进程;
 3. 已知事故凭据集(六件套)不再随 tmux server 继承——嵌合的 spawn 形态断根;误加载 plugin 的默认 token 回退由部署前置(默认 `.env` 吊销,plan Phase 0.5)排除。**不声称**「plugin 误加载也安全」与开集 env 安全(见 plan 非目标)。
