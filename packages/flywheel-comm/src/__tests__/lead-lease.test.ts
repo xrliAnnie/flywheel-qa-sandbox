@@ -266,6 +266,51 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		contender.close();
 	});
 
+	it("refuses to downgrade a canonical lease back to a legacy NULL digest", () => {
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.close();
+
+		const contender = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+		});
+		expect(() =>
+			contender.acquire({
+				...supervisor1,
+				identityDigest: null,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toThrow(/identity digest cannot be removed/);
+		expect(contender.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: IDENTITY_DIGEST,
+			generation: 1,
+		});
+		contender.close();
+	});
+
+	it("upgrades an explicit legacy NULL digest after the prior tuple is dead", () => {
+		const legacy = open();
+		legacy.acquire({ ...supervisor1, identityDigest: null });
+		legacy.close();
+
+		const canonical = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+		});
+		expect(
+			canonical.acquire({
+				...supervisor1,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({ status: "acquired", generation: 2 });
+		expect(canonical.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: IDENTITY_DIGEST,
+			generation: 2,
+		});
+		canonical.close();
+	});
+
 	it("denies a different supervisor while the unbound acquiring supervisor is alive", () => {
 		const store = open(new Set([`100:${supervisor1.supervisorStart}`]));
 		expect(store.acquire(supervisor1)).toEqual({

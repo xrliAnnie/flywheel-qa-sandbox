@@ -209,55 +209,70 @@ fi
 
 # The restart guard can run outside every Lead pane. Its explicit `system`
 # attribution must use the fleet-wide alert dispatcher, never impersonate a
-# registry Lead. Load the trusted Flywheel env only for this system route when
-# the unified sender seam was not already projected by the caller.
-if [ "$LEAD_ID" = "system" ] \
-    && { [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
-      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; }; then
+# registry Lead. Read only the three values this route needs from the trusted
+# env in an isolated subshell. Caller-projected queue/DB/path seams keep
+# precedence, and unrelated secrets never enter this process environment.
+system_alert_env_value() {
+  local -r _system_alert_requested_name="$1"
+  (
+    set +a
+    source "$SYSTEM_ALERT_ENV_FILE" >/dev/null 2>&1 || exit 1
+    printf '%s' "${!_system_alert_requested_name:-}"
+  )
+}
+if [ "$LEAD_ID" = "system" ]; then
   SYSTEM_ALERT_ENV_FILE="${FLYWHEEL_SYSTEM_ALERT_ENV_FILE:-${HOME}/.flywheel/.env}"
-  if [ ! -f "$SYSTEM_ALERT_ENV_FILE" ]; then
-    log "ERROR: system alert route has no trusted env file at $SYSTEM_ALERT_ENV_FILE"
+  if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
+      && [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    log "ERROR: system alert sender token selector is not a valid env name"
     emit_result "config_error"
     exit 1
   fi
-  _system_lead_id="$LEAD_ID"
-  _system_project_name="$PROJECT_NAME"
-  _system_kind="$KIND"
-  _system_severity="$SEVERITY"
-  _system_title="$TITLE"
-  _system_body="$BODY"
-  _system_signature="$SIGNATURE"
-  _system_strict_delivery="$STRICT_DELIVERY"
-  _system_mention_user="$MENTION_USER"
-  _system_allexport_was_on=false
-  [[ "$-" == *a* ]] && _system_allexport_was_on=true
-  set -a
-  if ! source "$SYSTEM_ALERT_ENV_FILE"; then
-    [ "$_system_allexport_was_on" = true ] || set +a
-    log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+  if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
+      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
+      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    if [ ! -f "$SYSTEM_ALERT_ENV_FILE" ]; then
+      log "ERROR: system alert route has no trusted env file at $SYSTEM_ALERT_ENV_FILE"
+      emit_result "config_error"
+      exit 1
+    fi
+    if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ]; then
+      FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="$(system_alert_env_value FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID)" || {
+        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        emit_result "config_error"
+        exit 1
+      }
+    fi
+    if [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+      FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$(system_alert_env_value FLYWHEEL_ALERT_SENDER_TOKEN_ENV)" || {
+        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        emit_result "config_error"
+        exit 1
+      }
+    fi
+    if [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      log "ERROR: system alert sender token selector is not a valid env name"
+      emit_result "config_error"
+      exit 1
+    fi
+    if [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+      _system_alert_token="$(system_alert_env_value "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")" || {
+        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        emit_result "config_error"
+        exit 1
+      }
+      printf -v "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" '%s' "$_system_alert_token"
+      export -n "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" 2>/dev/null || true
+      unset _system_alert_token
+    fi
+  fi
+  if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
+      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
+      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    log "ERROR: system alert route requires unified channel + sender token"
     emit_result "config_error"
     exit 1
   fi
-  [ "$_system_allexport_was_on" = true ] || set +a
-  LEAD_ID="$_system_lead_id"
-  PROJECT_NAME="$_system_project_name"
-  KIND="$_system_kind"
-  SEVERITY="$_system_severity"
-  TITLE="$_system_title"
-  BODY="$_system_body"
-  SIGNATURE="$_system_signature"
-  STRICT_DELIVERY="$_system_strict_delivery"
-  MENTION_USER="$_system_mention_user"
-  unset _system_lead_id _system_project_name _system_kind _system_severity
-  unset _system_title _system_body _system_signature _system_strict_delivery
-  unset _system_mention_user _system_allexport_was_on
-fi
-if [ "$LEAD_ID" = "system" ] \
-    && { [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
-      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; }; then
-  log "ERROR: system alert route requires unified channel + sender token selector"
-  emit_result "config_error"
-  exit 1
 fi
 
 # ── Tool preflight ──────────────────────────────────────────

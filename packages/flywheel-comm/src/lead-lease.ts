@@ -143,8 +143,8 @@ export interface AcquireLeaseInput {
 	leadKey: string;
 	project: string;
 	leadId: string;
-	/** Required for production callers; undefined creates a non-authorizable legacy row. */
-	identityDigest?: string;
+	/** Canonical digest, or explicit null only when constructing a legacy row. */
+	identityDigest: string | null;
 	supervisorPid: number;
 	supervisorStart: string;
 	acquiredBy: string;
@@ -525,10 +525,19 @@ export class LeadLeaseStore {
 		  } {
 		const transaction = this.db.transaction((args: AcquireLeaseInput) => {
 			const existing = this.readLease(args.leadKey);
+			const requestedIdentityDigest = args.identityDigest ?? null;
 			if (existing !== undefined) {
+				if (
+					existing.identity_digest !== null &&
+					requestedIdentityDigest === null
+				) {
+					throw new LeaseStoreError(
+						`identity digest cannot be removed from ${args.leadKey}`,
+					);
+				}
 				const rowFormat = leaseRowFormat(existing);
 				const identityDrift =
-					existing.identity_digest !== (args.identityDigest ?? null);
+					existing.identity_digest !== requestedIdentityDigest;
 				if (identityDrift) {
 					if (rowFormat === "malformed") {
 						return {
@@ -741,7 +750,7 @@ export class LeadLeaseStore {
 					args.leadKey,
 					args.project,
 					args.leadId,
-					args.identityDigest ?? null,
+					requestedIdentityDigest,
 					generation,
 					args.supervisorPid,
 					args.supervisorStart,
@@ -756,6 +765,7 @@ export class LeadLeaseStore {
 		try {
 			return transaction.immediate(input);
 		} catch (error) {
+			if (error instanceof LeaseStoreError) throw error;
 			throw new LeaseStoreError(
 				`failed to acquire lead lease ${input.leadKey}`,
 				error,

@@ -550,7 +550,11 @@ def t8_real_lead_alert_integration():
             bindir = os.path.join(tmp, "bin")
             os.makedirs(bindir)
             Path(bindir, "curl").write_text(
-                "#!/bin/bash\nprintf '%s' \"${CURL_HTTP_CODE:-200}\"\nexit 0\n"
+                "#!/bin/bash\n"
+                "[[ -z \"${SYSTEM_ALERT_MUST_NOT_LEAK:-}\" ]] || exit 7\n"
+                "[[ -z \"${SYSTEM_ALERT_TOKEN:-}\" ]] || exit 8\n"
+                "printf '%s' \"${CURL_HTTP_CODE:-200}\"\n"
+                "exit 0\n"
             )
             os.chmod(os.path.join(bindir, "curl"), 0o755)
             Path(bindir, "osascript").write_text("#!/bin/bash\nexit 0\n")
@@ -558,10 +562,13 @@ def t8_real_lead_alert_integration():
             home = Path(tmp, "home")
             state = home / ".flywheel"
             state.mkdir(parents=True)
+            production_claims = Path(tmp, "production-claims.db")
             (state / ".env").write_text(
                 "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=444444444444444444\n"
                 "FLYWHEEL_ALERT_SENDER_TOKEN_ENV=SYSTEM_ALERT_TOKEN\n"
                 "SYSTEM_ALERT_TOKEN=CANARY-TOKEN\n"
+                "SYSTEM_ALERT_MUST_NOT_LEAK=latent-secret\n"
+                f"FLYWHEEL_CLAIMS_DB={production_claims}\n"
             )
             env = {
                 "HOME": str(home),
@@ -594,10 +601,15 @@ def t8_real_lead_alert_integration():
                 capture_output=True, text=True, env=full_env, timeout=60,
             )
             d = decision_of(p.stdout)
-            if p.returncode == 0 and d == expected:
+            caller_claims = Path(env["FLYWHEEL_CLAIMS_DB"])
+            isolated = caller_claims.is_file() and not production_claims.exists()
+            if p.returncode == 0 and d == expected and isolated:
                 ok(f"T8 real lead-alert HTTP {http_code} → {expected}")
             else:
-                bad(f"T8 HTTP {http_code}", f"exit={p.returncode} decision={d} stderr={p.stderr[-200:]}")
+                bad(
+                    f"T8 HTTP {http_code}",
+                    f"exit={p.returncode} decision={d} isolated={isolated} stderr={p.stderr[-200:]}",
+                )
 
 
 def main() -> int:
