@@ -119,7 +119,7 @@ describe("stage command", () => {
 	});
 
 	it("stage set includes Authorization header when FLYWHEEL_INGEST_TOKEN exists", async () => {
-		process.env.FLYWHEEL_INGEST_TOKEN = "secret-token-123";
+		process.env.FLYWHEEL_INGEST_TOKEN = "  secret-token-123  ";
 
 		await stage({ subcommand: "set", stageName: "research" });
 

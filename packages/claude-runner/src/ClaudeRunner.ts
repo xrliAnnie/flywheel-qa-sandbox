@@ -17,6 +17,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import dotenv from "dotenv";
 import {
+	buildNonLeadClaudeSettings,
 	getModelConfigSnapshot,
 	MODEL_IDS,
 	ModelPolicyError,
@@ -442,6 +443,14 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					}),
 				)
 				.join(",");
+			const extraArgs = {
+				...this.config.extraArgs,
+				settings: JSON.stringify(
+					buildNonLeadClaudeSettings(
+						this.config.extraArgs?.settings ?? undefined,
+					),
+				),
+			};
 
 			const queryOptions: Parameters<typeof query>[0] = {
 				prompt: promptForQuery,
@@ -491,7 +500,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 					...(this.config.outputFormat && {
 						outputFormat: this.config.outputFormat,
 					}),
-					...(this.config.extraArgs && { extraArgs: this.config.extraArgs }),
+					extraArgs,
 				},
 			};
 

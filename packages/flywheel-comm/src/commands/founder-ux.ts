@@ -24,6 +24,7 @@
 
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { normalizeOptionalBearer } from "flywheel-config";
 
 /** await-founder-ux-gate default timeout (matches await-codex-gate: 30 min). */
 const DEFAULT_AWAIT_TIMEOUT_MS = 30 * 60 * 1000;
@@ -79,7 +80,9 @@ export async function declareFounderUx(opts: {
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL;
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	if (!execId) {
 		console.error("--exec-id is required (or set FLYWHEEL_EXEC_ID)");
@@ -237,7 +240,9 @@ export async function awaitFounderUxGate(opts: {
 }): Promise<void> {
 	const execId = opts.execId ?? process.env.FLYWHEEL_EXEC_ID;
 	const bridgeUrl = opts.bridgeUrl ?? process.env.FLYWHEEL_BRIDGE_URL;
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	if (!execId) {
 		console.error("--exec-id is required (or set FLYWHEEL_EXEC_ID)");

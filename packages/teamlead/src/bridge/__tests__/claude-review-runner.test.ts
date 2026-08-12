@@ -19,7 +19,7 @@ describe("buildClaudeReviewArgv", () => {
 			sessionId: "uuid-1",
 			resume: false,
 		});
-		expect(fresh).toEqual([
+		expect(fresh.slice(0, -2)).toEqual([
 			"-p",
 			"review this",
 			"--session-id",
@@ -34,6 +34,11 @@ describe("buildClaudeReviewArgv", () => {
 			"--effort",
 			"xhigh",
 		]);
+		expect(fresh.at(-2)).toBe("--settings");
+		expect(JSON.parse(fresh.at(-1) as string).enabledPlugins).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
 		const reround = buildClaudeReviewArgv({
 			prompt: "round 2 delta",
 			sessionId: "uuid-1",
@@ -47,6 +52,7 @@ describe("buildClaudeReviewArgv", () => {
 			"uuid-1",
 		]);
 		expect(reround).toContain("claude-fable-5");
+		expect(reround.filter((arg) => arg === "--settings")).toHaveLength(1);
 	});
 
 	it("rejects an unresolvable reviewer model before spawn", () => {

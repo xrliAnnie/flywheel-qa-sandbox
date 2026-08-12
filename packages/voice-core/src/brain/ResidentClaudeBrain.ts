@@ -21,6 +21,7 @@
  * never argv (argv hygiene).
  */
 import { existsSync } from "node:fs";
+import { buildNonLeadClaudeSettings } from "flywheel-config";
 import {
 	NodeProcessRunner,
 	type ProcessHandle,
@@ -441,6 +442,7 @@ export class ResidentClaudeBrain implements BrainAdapter {
 	private buildArgs(resume?: string): string[] {
 		const settings: Record<string, unknown> = { alwaysThinkingEnabled: false };
 		if (this.opts.effort) settings.effortLevel = this.opts.effort;
+		const safeSettings = buildNonLeadClaudeSettings(settings);
 		// SAFETY FLAGS ARE FROZEN (Codex R1 #7): read-only tool whitelist +
 		// --strict-mcp-config + explicit --settings (global settings drift must
 		// not reach the resident). Callers cannot override any of this.
@@ -456,7 +458,7 @@ export class ResidentClaudeBrain implements BrainAdapter {
 			"Read,Grep,Glob",
 			"--strict-mcp-config",
 			"--settings",
-			JSON.stringify(settings),
+			JSON.stringify(safeSettings),
 			"--append-system-prompt-file",
 			this.opts.identityFile,
 		];

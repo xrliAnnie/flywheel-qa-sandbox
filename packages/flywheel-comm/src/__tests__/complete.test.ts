@@ -976,7 +976,7 @@ describe("complete command", () => {
 	});
 
 	it("includes Authorization header when FLYWHEEL_INGEST_TOKEN present", async () => {
-		process.env.FLYWHEEL_INGEST_TOKEN = "token-xyz";
+		process.env.FLYWHEEL_INGEST_TOKEN = "  token-xyz  ";
 		await complete({ route: "auto_approve", pr: 1, merged: true });
 
 		const opts = mockFetch.mock.calls[0]![1];

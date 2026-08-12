@@ -255,6 +255,90 @@ describe("publishReport", () => {
 		expect(proofShotCalls).toEqual([]);
 	});
 
+	it.each([
+		["default", {}],
+		["channel", { channelId: "chan" }],
+		["issue", { issueIdentifier: "FLY-1715" }],
+	])(
+		"FLY-1715: ingest-only %s delivery fails before file read, screenshot, or fetch",
+		async (_name, deliveryArgs) => {
+			const readHtmlFile = vi.fn(() => HTML);
+			const result = await publishReport(
+				makeArgs({
+					...deliveryArgs,
+					env: {
+						FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
+						FLYWHEEL_INGEST_TOKEN: " ingest-token ",
+					} as NodeJS.ProcessEnv,
+					readHtmlFile,
+				}),
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.envelope.error).toMatch(/runner.*publish-only/i);
+			expect(readHtmlFile).not.toHaveBeenCalled();
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(proofShotCalls).toEqual([]);
+		},
+	);
+
+	it("FLY-1715: ingest-only publish-only succeeds with a normalized bearer", async () => {
+		publishOk();
+		const result = await publishReport(
+			makeArgs({
+				publishOnly: true,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
+					FLYWHEEL_INGEST_TOKEN: "  ingest-token  ",
+				} as NodeJS.ProcessEnv,
+			}),
+		);
+		expect(result.exitCode).toBe(0);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(
+			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
+				.Authorization,
+		).toBe("Bearer ingest-token");
+	});
+
+	it("FLY-1715: master is preferred over ingest and both blank values are treated as absent", async () => {
+		publishOk();
+		deliverOk();
+		await publishReport(
+			makeArgs({
+				noScreenshot: true,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
+					TEAMLEAD_API_TOKEN: " master-token ",
+					FLYWHEEL_INGEST_TOKEN: "ingest-token",
+				} as NodeJS.ProcessEnv,
+			}),
+		);
+		expect(
+			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
+				.Authorization,
+		).toBe("Bearer master-token");
+
+		fetchMock.mockReset().mockResolvedValueOnce(
+			new Response(JSON.stringify({ error: "unauthorized" }), {
+				status: 401,
+			}),
+		);
+		await publishReport(
+			makeArgs({
+				publishOnly: true,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://bridge:9876",
+					TEAMLEAD_API_TOKEN: " ",
+					FLYWHEEL_INGEST_TOKEN: "",
+				} as NodeJS.ProcessEnv,
+			}),
+		);
+		expect(
+			(fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>)
+				.Authorization,
+		).toBeUndefined();
+	});
+
 	// ── FLY-929 B1: receipt fields ride the deliver body ────────────────
 
 	it("kind + expectedDate are forwarded verbatim in the deliver body", async () => {

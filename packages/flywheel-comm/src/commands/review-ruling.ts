@@ -6,6 +6,8 @@
  * decides whether to retry. Free-form gate/request text is never a ruling.
  */
 
+import { normalizeOptionalBearer } from "flywheel-config";
+
 export interface ReviewRulingOptions {
 	project?: string;
 	issue?: string;
@@ -111,8 +113,9 @@ export async function reviewRuling(opts: ReviewRulingOptions): Promise<never> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (env.FLYWHEEL_INGEST_TOKEN) {
-		headers.Authorization = `Bearer ${env.FLYWHEEL_INGEST_TOKEN}`;
+	const ingestToken = normalizeOptionalBearer(env.FLYWHEEL_INGEST_TOKEN);
+	if (ingestToken) {
+		headers.Authorization = `Bearer ${ingestToken}`;
 	}
 	let response: Response;
 	let body: ReviewRulingAck | undefined;

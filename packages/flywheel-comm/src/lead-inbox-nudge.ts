@@ -1,13 +1,17 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { readEnvValueFromContent } from "flywheel-config";
+import {
+	normalizeOptionalBearer,
+	readEnvValueFromContent,
+} from "flywheel-config";
 
 export interface LeadInboxNudgeArgs {
 	bridgeUrl?: string;
 	leadId: string;
 	project?: string;
 	apiToken?: string;
+	ingestToken?: string;
 	apiTokenFile?: string;
 	resolveApiToken?: () => string | undefined;
 	timeoutMs?: number;
@@ -40,6 +44,10 @@ export async function nudgeLeadInboxBestEffort(
 	const warn =
 		args.warn ?? ((message: string) => process.stderr.write(`${message}\n`));
 	const fetchImpl = args.fetchImpl ?? fetch;
+	const masterToken = normalizeOptionalBearer(args.apiToken);
+	const ingestToken = normalizeOptionalBearer(args.ingestToken);
+	const initialTier = masterToken ? "master" : ingestToken ? "ingest" : "none";
+	const initialToken = masterToken ?? ingestToken;
 	const post = async (apiToken: string | undefined): Promise<Response> => {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -65,8 +73,11 @@ export async function nudgeLeadInboxBestEffort(
 	};
 
 	try {
-		let response = await post(args.apiToken);
-		if (response.status === 401 || response.status === 403) {
+		let response = await post(initialToken);
+		if (
+			initialTier === "master" &&
+			(response.status === 401 || response.status === 403)
+		) {
 			const refreshedToken = (
 				args.resolveApiToken ??
 				(() =>

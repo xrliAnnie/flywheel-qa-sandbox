@@ -39,6 +39,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { normalizeOptionalBearer } from "flywheel-config";
 import {
 	DEFAULT_PORT_RANGE_START,
 	findFreePort,
@@ -86,6 +87,7 @@ export interface PublishReportArgs {
 	acquireLock?: () => Promise<AcquiredLock>;
 	makeTempDir?: () => string;
 	warn?: (msg: string) => void;
+	readHtmlFile?: (path: string) => string;
 }
 
 /** The one-line stdout JSON envelope. */
@@ -143,6 +145,19 @@ export async function publishReport(
 		},
 		exitCode: 1,
 	});
+	const masterToken = normalizeOptionalBearer(env.TEAMLEAD_API_TOKEN);
+	const ingestToken = normalizeOptionalBearer(env.FLYWHEEL_INGEST_TOKEN);
+	const credentialTier = masterToken
+		? "master"
+		: ingestToken
+			? "ingest"
+			: "none";
+	const bearerToken = masterToken ?? ingestToken;
+	if (credentialTier === "ingest" && !args.publishOnly) {
+		return fail(
+			"runner has no report delivery authority: use --publish-only to get the URL, then report it to the Lead with flywheel-comm ask",
+		);
+	}
 
 	// ── input validation ──────────────────────────────────────────────
 	const bridgeUrl = (env.FLYWHEEL_BRIDGE_URL ?? env.BRIDGE_URL ?? "").replace(
@@ -169,7 +184,9 @@ export async function publishReport(
 
 	let html: string;
 	try {
-		html = readFileSync(args.htmlPath, "utf-8");
+		html = (args.readHtmlFile ?? ((path) => readFileSync(path, "utf-8")))(
+			args.htmlPath,
+		);
 	} catch (err) {
 		return fail(`failed to read --html file: ${(err as Error).message}`);
 	}
@@ -183,8 +200,8 @@ export async function publishReport(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (env.TEAMLEAD_API_TOKEN) {
-		headers.Authorization = `Bearer ${env.TEAMLEAD_API_TOKEN}`;
+	if (bearerToken) {
+		headers.Authorization = `Bearer ${bearerToken}`;
 	}
 
 	// ── 1. publish ────────────────────────────────────────────────────

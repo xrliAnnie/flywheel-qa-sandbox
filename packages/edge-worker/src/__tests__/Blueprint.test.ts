@@ -245,6 +245,27 @@ describe("Blueprint", () => {
 		expect(execCall.cwd).toBe("/project");
 	});
 
+	it("FLY-1715: normalizes the ingest credential at the runner injection boundary", async () => {
+		const previous = process.env.TEAMLEAD_INGEST_TOKEN;
+		process.env.TEAMLEAD_INGEST_TOKEN = "  fleet-ingest  ";
+		try {
+			const adapter = makeMockAdapter();
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker(),
+				() => adapter,
+				makeMockShell(),
+			);
+			await blueprint.run(makeNode(), "/project", makeContext());
+			const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+				.calls[0]![0] as AdapterExecutionContext;
+			expect(execCall.bridgeIngestToken).toBe("fleet-ingest");
+		} finally {
+			if (previous === undefined) delete process.env.TEAMLEAD_INGEST_TOKEN;
+			else process.env.TEAMLEAD_INGEST_TOKEN = previous;
+		}
+	});
+
 	// FLY-272: the tmux window name / cmux sidebar must show the readable Linear
 	// identifier even when the Lead passed the opaque Linear issue UUID as the
 	// `issueId` body field (sub's Lead does this; joycon's passes the identifier).

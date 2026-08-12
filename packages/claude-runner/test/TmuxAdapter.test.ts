@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -18,6 +18,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
 import {
+	AMBIENT_IDENTITY_DENYLIST,
+	buildAmbientSafeWindowCommand,
 	ensureRunnerSession,
 	LaunchPrecommitError,
 	pruneScaffoldWindow,
@@ -44,6 +46,75 @@ interface ExecCall {
 	cmd: string;
 	args: string[];
 }
+
+describe("FLY-1715 ambient identity boundary", () => {
+	it("executes direct and gated commands with six ambient names stripped and registry project identity restored", () => {
+		const probeKeys = [
+			...AMBIENT_IDENTITY_DENYLIST,
+			"FLYWHEEL_LEAD_ID",
+			"FLYWHEEL_INGEST_TOKEN",
+			"SOME_UNLISTED_SECRET",
+		];
+		const probe = `const keys=${JSON.stringify(probeKeys)}; console.log(JSON.stringify(Object.fromEntries(keys.map((key) => [key, { present: Object.hasOwn(process.env, key), value: process.env[key] ?? null }]))));`;
+		const poisonedEnv = {
+			...process.env,
+			LEAD_ID: "ambient-lead",
+			DISCORD_STATE_DIR: "/ambient/discord",
+			DISCORD_BOT_TOKEN: "ambient-discord-token",
+			TEAMLEAD_API_TOKEN: "ambient-master-token",
+			BRIDGE_URL: "http://ambient.invalid",
+			PROJECT_NAME: "ambient-project",
+			FLYWHEEL_LEAD_ID: "registry-lead",
+			FLYWHEEL_INGEST_TOKEN: "registry-ingest",
+			SOME_UNLISTED_SECRET: "boundary-canary",
+		};
+		const tmp = mkdtempSync(join(tmpdir(), "fly1715-identity-"));
+		try {
+			for (const gated of [false, true]) {
+				for (const projectName of [undefined, "registry project; $(ignored)"]) {
+					const token = "launch-token";
+					const gateFile = join(
+						tmp,
+						`${gated}-${projectName ? "set" : "unset"}`,
+					);
+					if (gated) writeFileSync(gateFile, token);
+					const command = buildAmbientSafeWindowCommand({
+						binaryName: process.execPath,
+						binaryArgs: ["-e", probe],
+						projectName,
+						...(gated
+							? { gateFile, launchToken: token, cleanup: "keep" as const }
+							: {}),
+					});
+					const result = spawnSync(command[0] as string, command.slice(1), {
+						env: poisonedEnv,
+						encoding: "utf8",
+					});
+					expect(result.status, result.stderr).toBe(0);
+					const observed = JSON.parse(result.stdout.trim()) as Record<
+						string,
+						{ present: boolean; value: string | null }
+					>;
+					for (const key of AMBIENT_IDENTITY_DENYLIST) {
+						if (key === "PROJECT_NAME" && projectName !== undefined) {
+							expect(observed[key]).toEqual({
+								present: true,
+								value: projectName,
+							});
+						} else {
+							expect(observed[key]).toEqual({ present: false, value: null });
+						}
+					}
+					expect(observed.FLYWHEEL_LEAD_ID?.value).toBe("registry-lead");
+					expect(observed.FLYWHEEL_INGEST_TOKEN?.value).toBe("registry-ingest");
+					expect(observed.SOME_UNLISTED_SECRET?.value).toBe("boundary-canary");
+				}
+			}
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+});
 
 function makeMockExec(
 	options: {
@@ -279,7 +350,8 @@ describe("TmuxAdapter", () => {
 			// gated shell: `sh -c '<grep -qF $tok>; exec claude "$@"' <commitFile> <token> ...`
 			expect(newWindow?.args).toContain("sh");
 			expect(newWindow?.args.some((a) => a.includes("grep -qF"))).toBe(true);
-			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
+			expect(newWindow?.args.some((a) => a.includes('exec "$@"'))).toBe(true);
+			expect(newWindow?.args).toContain("claude");
 			expect(newWindow?.args).toContain(commitFile);
 			// the file holds THIS launch's token (a uuid) — the per-launch gate.
 			const written = readFileSync(commitFile, "utf8");
@@ -372,7 +444,8 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find(
 				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 			);
-			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
+			expect(newWindow?.args.some((a) => a.includes('exec "$@"'))).toBe(true);
+			expect(newWindow?.args).toContain("claude");
 			expect(existsSync(commitFile)).toBe(false); // no commit → replay re-drives
 			expect(
 				calls.find((c) => c.cmd === "tmux" && c.args[0] === "list-panes"),
@@ -391,9 +464,8 @@ describe("TmuxAdapter", () => {
 			(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 		);
 		expect(newWindow?.args).toContain("sh");
-		expect(newWindow?.args.some((arg) => arg.includes("exec claude"))).toBe(
-			true,
-		);
+		expect(newWindow?.args.some((arg) => arg.includes('exec "$@"'))).toBe(true);
+		expect(newWindow?.args).toContain("claude");
 		expect(newWindow?.args.some((arg) => arg.includes("rm -f"))).toBe(true);
 		expect(opened).toHaveBeenCalledWith({
 			baseSessionName: "flywheel",
@@ -596,8 +668,18 @@ describe("TmuxAdapter", () => {
 	});
 
 	// ─── FLY-615: ponytail --settings flag ───────────
-	const PONYTAIL_SETTINGS_JSON =
-		'{"enabledPlugins":{"ponytail@ponytail":true}}';
+	const expectDiscordDisabledSettings = (
+		settingsJson: string,
+		extraEnabledPlugins: Record<string, boolean> = {},
+	): void => {
+		expect(JSON.parse(settingsJson)).toEqual({
+			enabledPlugins: {
+				...extraEnabledPlugins,
+				"discord@flywheel-plugins": false,
+				"discord@claude-plugins-official": false,
+			},
+		});
+	};
 
 	it("FLY-615: enablePonytail adds --settings <json> (normal path)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
@@ -606,7 +688,9 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const idx = newWindow!.args.indexOf("--settings");
 		expect(idx).toBeGreaterThan(-1);
-		expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
+		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
+			"ponytail@ponytail": true,
+		});
 	});
 
 	it('FLY-615: --settings survives the gateway launch path (sh -c "$@")', async () => {
@@ -623,18 +707,21 @@ describe("TmuxAdapter", () => {
 			);
 			const idx = newWindow!.args.indexOf("--settings");
 			expect(idx).toBeGreaterThan(-1);
-			expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
+			expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
+				"ponytail@ponytail": true,
+			});
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
 	});
 
-	it("FLY-615: no enablePonytail → no --settings (byte-compatible)", async () => {
+	it("FLY-615/1715: no enablePonytail keeps ponytail absent while disabling Discord", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx());
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		expect(newWindow!.args).not.toContain("--settings");
+		const idx = newWindow!.args.indexOf("--settings");
+		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string);
 	});
 
 	// ─── FLY-751: per-runner MCP slimming (disabledPlugins + disableChrome) ───
@@ -653,9 +740,9 @@ describe("TmuxAdapter", () => {
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const idx = newWindow!.args.indexOf("--settings");
 		expect(idx).toBeGreaterThan(-1);
-		expect(newWindow!.args[idx + 1]).toBe(
-			'{"enabledPlugins":{"discord@claude-plugins-official":false,"serena@claude-plugins-official":false}}',
-		);
+		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
+			"serena@claude-plugins-official": false,
+		});
 		// exactly one --settings flag
 		expect(
 			newWindow!.args.filter((a: string) => a === "--settings"),
@@ -677,9 +764,45 @@ describe("TmuxAdapter", () => {
 		);
 		expect(settingsArgs).toHaveLength(1);
 		const idx = newWindow!.args.indexOf("--settings");
-		expect(newWindow!.args[idx + 1]).toBe(
-			'{"enabledPlugins":{"ponytail@ponytail":true,"discord@claude-plugins-official":false}}',
+		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string, {
+			"ponytail@ponytail": true,
+		});
+	});
+
+	it("FLY-1715: every Claude tmux launch disables both Discord plugin identities", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const settingsIndexes = newWindow!.args.flatMap((arg, index) =>
+			arg === "--settings" ? [index] : [],
 		);
+		expect(settingsIndexes).toHaveLength(1);
+		const settings = JSON.parse(
+			newWindow!.args[(settingsIndexes[0] as number) + 1] as string,
+		);
+		expect(settings.enabledPlugins).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
+	});
+
+	it("FLY-1715: forbidden Discord entries override caller positive opt-ins", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({
+				enabledPluginsExtra: [
+					"discord@flywheel-plugins",
+					"discord@claude-plugins-official",
+				],
+			}),
+		);
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const index = newWindow!.args.indexOf("--settings");
+		const settings = JSON.parse(newWindow!.args[index + 1] as string);
+		expect(settings.enabledPlugins).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
 	});
 
 	it("FLY-751: disableChrome → --no-chrome BEFORE the prompt (last positional)", async () => {
@@ -716,12 +839,13 @@ describe("TmuxAdapter", () => {
 		}
 	});
 
-	it("FLY-751: empty disabledPlugins + no chrome flag → byte-compatible argv", async () => {
+	it("FLY-751/1715: empty disabledPlugins still applies Discord deny policy", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx({ disabledPlugins: [] }));
 		const newWindow = calls.find((c) => c.args[0] === "new-window");
-		expect(newWindow!.args).not.toContain("--settings");
+		const idx = newWindow!.args.indexOf("--settings");
+		expectDiscordDisabledSettings(newWindow!.args[idx + 1] as string);
 		expect(newWindow!.args).not.toContain("--no-chrome");
 	});
 

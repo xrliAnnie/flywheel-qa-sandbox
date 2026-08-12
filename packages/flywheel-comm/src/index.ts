@@ -387,6 +387,7 @@ async function runAckEvent(args: string[]): Promise<void> {
 		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
 		project: values.project,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
+		ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
 	});
 	if (values.json)
 		console.log(JSON.stringify({ receipt_id: receiptId, event_seq: eventSeq }));
@@ -457,6 +458,7 @@ async function runAsk(args: string[]): Promise<void> {
 		leadId: values.lead,
 		project: values.project,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
+		ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
 	});
 
 	if (values.json) {
@@ -684,6 +686,7 @@ async function runChatIngest(args: string[]): Promise<void> {
 			leadId: required("lead"),
 			project: values.project ?? process.env.PROJECT_NAME,
 			apiToken: process.env.TEAMLEAD_API_TOKEN,
+			ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
 		});
 	}
 }
@@ -1928,6 +1931,7 @@ async function runGate(args: string[]): Promise<void> {
 				leadId: values.lead as string,
 				project: values.project,
 				apiToken: process.env.TEAMLEAD_API_TOKEN,
+				ingestToken: process.env.FLYWHEEL_INGEST_TOKEN,
 			}),
 		stage: values.stage,
 		noBlock: values["no-block"],

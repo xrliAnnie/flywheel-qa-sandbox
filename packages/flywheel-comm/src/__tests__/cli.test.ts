@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -119,6 +120,115 @@ describe("CLI", () => {
 		it("should fail without --lead", () => {
 			const { exitCode } = runCliSafe(["ask", "--db", dbPath, "question"]);
 			expect(exitCode).toBe(1);
+		});
+
+		it("FLY-1715: runner ask/check/gate/ack use ingest nudges without reading the disk master token", () => {
+			const runnerHome = join(tmpDir, "runner-home");
+			const envDir = join(runnerHome, ".flywheel");
+			mkdirSync(envDir, { recursive: true });
+			writeFileSync(
+				join(envDir, ".env"),
+				"TEAMLEAD_API_TOKEN=must-never-be-read\n",
+			);
+			const readLog = join(tmpDir, "master-read.log");
+			const fetchLog = join(tmpDir, "nudge-fetch.log");
+			const preload = join(tmpDir, "runner-ingest-preload.mjs");
+			writeFileSync(
+				preload,
+				`import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+const originalReadFileSync = fs.readFileSync;
+const originalAppendFileSync = fs.appendFileSync;
+fs.readFileSync = function(path, ...args) {
+  if (typeof path === "string" && path.endsWith("/.flywheel/.env")) {
+    originalAppendFileSync(process.env.FLY1715_READ_LOG, path + "\\n");
+  }
+  return originalReadFileSync.call(this, path, ...args);
+};
+syncBuiltinESMExports();
+globalThis.fetch = async function(url, init = {}) {
+  const headers = init.headers ?? {};
+  const authorization = typeof headers.get === "function"
+    ? headers.get("Authorization")
+    : headers.Authorization;
+  originalAppendFileSync(
+    process.env.FLY1715_FETCH_LOG,
+    JSON.stringify({ url: String(url), authorization }) + "\\n",
+  );
+  return new Response(null, { status: 401 });
+};
+`,
+			);
+
+			const runnerEnv: Record<string, string | undefined> = {
+				HOME: runnerHome,
+				TEAMLEAD_API_TOKEN: undefined,
+				FLYWHEEL_INGEST_TOKEN: "  runner-ingest  ",
+				FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
+				FLY1715_READ_LOG: readLog,
+				FLY1715_FETCH_LOG: fetchLog,
+				NODE_OPTIONS:
+					`${process.env.NODE_OPTIONS ?? ""} --import=${preload}`.trim(),
+			};
+
+			const questionId = runCli(
+				["ask", "--lead", "product-lead", "--db", dbPath, "runner question"],
+				runnerEnv,
+			);
+			expect(runCli(["check", "--db", dbPath, questionId], runnerEnv)).toBe(
+				"not yet",
+			);
+			const gateResult = JSON.parse(
+				runCli(
+					[
+						"gate",
+						"question",
+						"--lead",
+						"product-lead",
+						"--exec-id",
+						"runner-exec",
+						"--db",
+						dbPath,
+						"--no-block",
+						"runner gate",
+					],
+					runnerEnv,
+				),
+			);
+			expect(gateResult.status).toBe("pending");
+			execFileSync(
+				"node",
+				[
+					CLI_PATH,
+					"ack-event",
+					"1",
+					"--lead",
+					"product-lead",
+					"--db",
+					dbPath,
+					"--token-stdin",
+				],
+				{
+					encoding: "utf-8",
+					env: cliEnv(runnerEnv),
+					input: "runner-receipt-token\n",
+				},
+			);
+
+			expect(existsSync(readLog)).toBe(false);
+			const nudges = readFileSync(fetchLog, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(nudges).toHaveLength(3);
+			expect(nudges).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						url: "http://127.0.0.1:9876/api/lead-inbox/nudge",
+						authorization: "Bearer runner-ingest",
+					}),
+				]),
+			);
 		});
 	});
 

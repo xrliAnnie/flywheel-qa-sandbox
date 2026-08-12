@@ -16,6 +16,7 @@
 
 import { execFile } from "node:child_process";
 import {
+	buildNonLeadClaudeSettings,
 	ModelPolicyError,
 	resolveAllowedCanonicalModel,
 } from "flywheel-config";
@@ -110,7 +111,16 @@ export async function runSubscriptionClassifier(
 
 	const execArgs: [string, string[], Record<string, unknown>] = [
 		bin,
-		["-p", prompt, "--model", model, "--output-format", "json"],
+		[
+			"-p",
+			prompt,
+			"--model",
+			model,
+			"--output-format",
+			"json",
+			"--settings",
+			JSON.stringify(buildNonLeadClaudeSettings()),
+		],
 		{
 			timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 			maxBuffer: opts.maxBuffer ?? DEFAULT_MAX_BUFFER,

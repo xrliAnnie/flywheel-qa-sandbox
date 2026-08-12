@@ -14,6 +14,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
+import { normalizeOptionalBearer } from "flywheel-config";
 import { computeUxHash } from "./founder-ux.js";
 
 /** FLY-598: the Bridge stage guard's block code; `stage set implement` fail-closes on it. */
@@ -172,7 +173,9 @@ export async function stage(opts: {
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL;
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	if (!execId) {
 		console.error("FLYWHEEL_EXEC_ID environment variable is required");
