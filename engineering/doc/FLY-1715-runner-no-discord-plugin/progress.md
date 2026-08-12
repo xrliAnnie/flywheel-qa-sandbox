@@ -1,14 +1,14 @@
 ---
 issue: FLY-1715
 phase: implement
-phaseCursor: 2/7
-updated: 2026-08-12T19:18:42.035Z
-nextStep: TDD canonical non-Lead forbidden-plugin settings merge across every
-  Claude spawn surface
+phaseCursor: 3/7
+updated: 2026-08-12T19:30:45.172Z
+nextStep: Harden TmuxAdapter identity and credential environment against ambient
+  tmux-server inheritance
 chunks: []
 pointers: {}
 ---
 
 # FLY-1715 progress
-**phase**: implement (2/7)
-**next**: TDD canonical non-Lead forbidden-plugin settings merge across every Claude spawn surface
+**phase**: implement (3/7)
+**next**: Harden TmuxAdapter identity and credential environment against ambient tmux-server inheritance
