@@ -1376,6 +1376,7 @@ restart_lead() {
     VERIFIED_LEAD_START=""
 
     local lead_id project_dir project_name projects_file canonical_identity bot_token_env
+    local legacy_bot_token_env legacy_backend canonical_backend
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
     project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
     project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
@@ -1387,13 +1388,31 @@ restart_lead() {
     # any other state change so a broken identity cannot turn a healthy Lead
     # into an offline one. The wrapper repeats this at actual process birth.
     if jq -e '
-        has("botTokenEnv") or has("botUserId") or has("discordStateDir")
+        has("botUserId") or has("discordStateDir")
         or has("identityDigest") or has("projectsDigest") or has("leadKey")
         or has("role") or has("backend")
       ' "$manifest" >/dev/null 2>&1; then
         log "ERROR: Lead $lead_id manifest contains forbidden identity fields"
         return 1
     fi
+    legacy_bot_token_env=$(jq -er '
+        if has("botTokenEnv")
+        then .botTokenEnv | select(type == "string" and length > 0)
+        else ""
+        end' "$manifest") || {
+        log "ERROR: Lead $lead_id manifest botTokenEnv witness is invalid"
+        return 1
+    }
+    legacy_backend=$(jq -er '
+        if has("leadBackend")
+        then .leadBackend
+          | select(type == "object" and (keys == ["backendId"]))
+          | .backendId | select(type == "string" and length > 0)
+        else ""
+        end' "$manifest") || {
+        log "ERROR: Lead $lead_id manifest leadBackend witness is invalid"
+        return 1
+    }
     local identity_cli="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
     if [[ ! -f "$identity_cli" ]]; then
         log "ERROR: canonical Lead identity CLI is missing; cannot restart $lead_id"
@@ -1409,6 +1428,16 @@ restart_lead() {
     }
     bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' \
         <<<"$canonical_identity") || return 1
+    canonical_backend=$(jq -er '.backend | select(type == "string" and length > 0)' \
+        <<<"$canonical_identity") || return 1
+    if [[ -n "$legacy_bot_token_env" && "$legacy_bot_token_env" != "$bot_token_env" ]]; then
+        log "ERROR: Lead $lead_id manifest botTokenEnv conflicts with canonical identity"
+        return 1
+    fi
+    if [[ -n "$legacy_backend" && "$legacy_backend" != "$canonical_backend" ]]; then
+        log "ERROR: Lead $lead_id manifest leadBackend conflicts with canonical identity"
+        return 1
+    fi
     # Invalid indirect env names must not reach ${!name}.
     if [[ ! "$bot_token_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ -z "${!bot_token_env:-}" ]]; then
         log "ERROR: $bot_token_env is not set or is not a valid env name; cannot restart $lead_id"

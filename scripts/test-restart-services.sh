@@ -1716,6 +1716,8 @@ mkdir -p \
   "$BO_HOME/.flywheel/manifests" \
   "$BO_HOME/Library/LaunchAgents" \
   "$BO_SHIMS" "$BO_CALLS"
+printf '%s\n' '// hermetic canonical identity CLI target; node shim handles execution' \
+  > "$BO_FLYWHEEL/packages/flywheel-comm/dist/index.js"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
@@ -1958,7 +1960,7 @@ chmod +x \
   "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" \
   "$BO_HOME/.flywheel/bin/update-discord-plugin.sh"
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
-{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","projectsFile":"$BO_HOME/.flywheel/projects.json","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
+{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
 EOF
 cat > "$BO_HOME/.flywheel/projects.json" <<'EOF'
 [{"projectName":"flywheel","leads":[{"agentId":"eng"}]}]

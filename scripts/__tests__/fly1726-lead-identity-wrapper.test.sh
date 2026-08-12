@@ -119,11 +119,50 @@ env -u LEAD_ID -u FLYWHEEL_LEAD_ID -u PROJECT_NAME -u FLYWHEEL_PROJECT_NAME -u D
   bash "$WRAPPER" "$TMP/manifest-top-level.json" >"$TMP/top-level.out" 2>&1
 top_level_rc=$?
 set -e
-if [ "$top_level_rc" -ne 0 ] && grep -qF 'identity_manifest_field_forbidden' "$TMP/top-level.out"; then
-  pass "wrapper rejects manifest identity copies instead of using them"
+if [ "$top_level_rc" -ne 0 ] && grep -qF 'identity_manifest_field_conflict' "$TMP/top-level.out"; then
+  pass "wrapper compare-and-rejects a conflicting legacy token selector"
 else
-  fail "wrapper top-level identity field rejection"
+  fail "wrapper legacy token selector conflict"
   cat "$TMP/top-level.out" 2>/dev/null || true
+fi
+
+jq 'del(.projectsFile) + {botTokenEnv:"ENG_BOT_TOKEN",leadBackend:{backendId:"claude-code"}}' \
+  "$TMP/manifest.json" > "$TMP/manifest-legacy.json"
+set +e
+env -u LEAD_ID -u FLYWHEEL_LEAD_ID -u PROJECT_NAME -u FLYWHEEL_PROJECT_NAME -u DISCORD_STATE_DIR \
+  HOME="$TMP/home" \
+  PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+  FLYWHEEL_DIR="$ROOT" \
+  FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+  bash "$WRAPPER" "$TMP/manifest-legacy.json" >"$TMP/legacy.out" 2>&1
+legacy_rc=$?
+set -e
+if [ "$legacy_rc" -eq 0 ]; then
+  pass "wrapper accepts a matching legacy token/backend witness and default projects path"
+else
+  fail "wrapper legacy manifest migration compatibility"
+  cat "$TMP/legacy.out" 2>/dev/null || true
+fi
+
+jq '. + {leadBackend:{backendId:"codex-app-server"}}' \
+  "$TMP/manifest.json" > "$TMP/manifest-backend-conflict.json"
+set +e
+env -u LEAD_ID -u FLYWHEEL_LEAD_ID -u PROJECT_NAME -u FLYWHEEL_PROJECT_NAME -u DISCORD_STATE_DIR \
+  HOME="$TMP/home" \
+  PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+  FLYWHEEL_DIR="$ROOT" \
+  FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+  bash "$WRAPPER" "$TMP/manifest-backend-conflict.json" >"$TMP/backend-conflict.out" 2>&1
+backend_conflict_rc=$?
+set -e
+if [ "$backend_conflict_rc" -ne 0 ] \
+    && grep -qF 'identity_manifest_field_conflict' "$TMP/backend-conflict.out"; then
+  pass "wrapper compare-and-rejects a conflicting legacy backend witness"
+else
+  fail "wrapper legacy backend witness conflict"
+  cat "$TMP/backend-conflict.out" 2>/dev/null || true
 fi
 
 jq '.launchEnvironment.DISCORD_STATE_DIR="/tmp/foreign-state"' "$TMP/manifest.json" > "$TMP/manifest-conflict.json"

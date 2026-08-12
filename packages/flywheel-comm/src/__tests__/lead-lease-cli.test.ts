@@ -316,6 +316,46 @@ describe("flywheel-comm lead-lease", () => {
 		});
 	});
 
+	it("maps typed identity drift denials to exit 3", async () => {
+		const acquire = [
+			"acquire",
+			"--lead",
+			"eng-lead",
+			"--project",
+			"flywheel",
+			"--lead-key",
+			"flywheel-eng-lead",
+			"--identity-digest",
+			IDENTITY_DIGEST,
+			"--supervisor-pid",
+			"100",
+			"--supervisor-start",
+			"supervisor-old",
+			"--json",
+		];
+		expect(await run(acquire)).toBe(0);
+		stdout.pop();
+
+		const changed = [...acquire];
+		changed[changed.indexOf("--identity-digest") + 1] = "b".repeat(64);
+		changed[changed.indexOf("--supervisor-pid") + 1] = "101";
+		changed[changed.indexOf("--supervisor-start") + 1] = "supervisor-new";
+
+		tupleStates["100:supervisor-old"] = "alive";
+		expect(await run(changed)).toBe(3);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "denied_identity_drift_live",
+			generation: 1,
+		});
+
+		tupleStates["100:supervisor-old"] = "sensor_error";
+		expect(await run(changed)).toBe(3);
+		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({
+			status: "denied_identity_drift_sensor_degraded",
+			generation: 1,
+		});
+	});
+
 	it("sets mode in the independent control file", async () => {
 		expect(
 			await run(["set-mode", "enforce", "--updated-by", "test", "--json"]),

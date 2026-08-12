@@ -207,6 +207,26 @@ else
   bad "sensor-degraded HOLD reason was '$LEAD_LEASE_HOLD_REASON'"
 fi
 
+FAKE_ACQUIRE_STATUS=denied_identity_drift_live
+FAKE_ACQUIRE_RC=3
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "live prior identity did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = denied_identity_drift_live ]; then
+  ok "live prior identity keeps a distinct HOLD reason"
+else
+  bad "live prior identity reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+
+FAKE_ACQUIRE_STATUS=denied_identity_drift_sensor_degraded
+FAKE_ACQUIRE_RC=3
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "unprovable prior identity did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = denied_identity_drift_sensor_degraded ]; then
+  ok "unprovable prior identity keeps a distinct HOLD reason"
+else
+  bad "unprovable prior identity reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+
 FAKE_ACQUIRE_STATUS=holder_orphaned
 FAKE_ACQUIRE_RC=3
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
@@ -387,6 +407,8 @@ fi
 
 [ "$(lead_identity_v2_hold_alert_kind denied_holder_alive 1)" = lead_dual_active ] \
   && [ "$(lead_identity_v2_hold_alert_kind denied_sensor_degraded 1)" = lead_dual_active_sensor_degraded ] \
+  && [ "$(lead_identity_v2_hold_alert_kind denied_identity_drift_live 1)" = lead_dual_active ] \
+  && [ "$(lead_identity_v2_hold_alert_kind denied_identity_drift_sensor_degraded 1)" = lead_dual_active_sensor_degraded ] \
   && [ "$(lead_identity_v2_hold_alert_kind v2_bind_store_error 1)" = lead_lease_store_broken ] \
   && [ "$(lead_identity_v2_hold_alert_kind v2_bind_verify_store_error 1)" = lead_lease_store_broken ] \
   && [ "$(lead_identity_v2_hold_alert_kind identity_source_error 1)" = lead_identity_source_broken ] \

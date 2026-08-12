@@ -111,8 +111,22 @@ SELECTOR_PROJECT_NAME="$(jq -er '.projectName | select(type == "string" and leng
 PROJECTS_FILE="$(jq -er --arg fallback "$PROJECTS_FILE" \
   '.projectsFile // $fallback | select(type == "string" and length > 0)' "$MANIFEST")" \
   || fatal "Manifest has no valid projectsFile selector"
+LEGACY_MANIFEST_BOT_TOKEN_ENV="$(jq -er '
+  if has("botTokenEnv")
+  then .botTokenEnv | select(type == "string" and length > 0)
+  else ""
+  end' "$MANIFEST")" \
+  || fatal "identity_manifest_field_invalid: botTokenEnv"
+LEGACY_MANIFEST_BACKEND="$(jq -er '
+  if has("leadBackend")
+  then .leadBackend
+    | select(type == "object" and (keys == ["backendId"]))
+    | .backendId | select(type == "string" and length > 0)
+  else ""
+  end' "$MANIFEST")" \
+  || fatal "identity_manifest_field_invalid: leadBackend"
 FORBIDDEN_MANIFEST_FIELDS="$(jq -r '
-  ["botTokenEnv", "botUserId", "discordStateDir", "identityDigest",
+  ["botUserId", "discordStateDir", "identityDigest",
    "projectsDigest", "leadKey", "role", "backend"]
   | map(select(. as $key | $ARGS.named.manifest | has($key)))
   | join(",")' --argjson manifest "$(jq -c . "$MANIFEST")" <<< '{}')"
@@ -162,6 +176,14 @@ BOT_USER_ID="$(jq -er '.botUserId | select(type == "string" and length > 0)' <<<
 CANONICAL_DISCORD_STATE_DIR="$(jq -er '.discordStateDir' <<<"$IDENTITY_JSON")"
 IDENTITY_DIGEST="$(jq -er '.identityDigest' <<<"$IDENTITY_JSON")"
 PROJECTS_DIGEST="$(jq -er '.projectsDigest' <<<"$IDENTITY_JSON")"
+[ -z "$LEGACY_MANIFEST_BOT_TOKEN_ENV" ] \
+  || [ "$LEGACY_MANIFEST_BOT_TOKEN_ENV" = "$BOT_TOKEN_ENV" ] \
+  || identity_fatal identity_manifest_field_conflict \
+    "botTokenEnv expected '$BOT_TOKEN_ENV', got '$LEGACY_MANIFEST_BOT_TOKEN_ENV'"
+[ -z "$LEGACY_MANIFEST_BACKEND" ] \
+  || [ "$LEGACY_MANIFEST_BACKEND" = "$BACKEND" ] \
+  || identity_fatal identity_manifest_field_conflict \
+    "leadBackend.backendId expected '$BACKEND', got '$LEGACY_MANIFEST_BACKEND'"
 [ "$BACKEND" = claude-code ] \
   || identity_fatal identity_backend_mismatch "v2 carrier supports claude-code only (got $BACKEND)"
 BOT_TOKEN="${!BOT_TOKEN_ENV:-}"

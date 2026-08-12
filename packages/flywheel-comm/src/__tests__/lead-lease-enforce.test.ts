@@ -15,7 +15,6 @@ import { send } from "../commands/send.js";
 import { CommDB } from "../db.js";
 import { resolveLeadIdentity } from "../lead-identity.js";
 import {
-	authorizeSystemWrite,
 	ensureLeaseEpisodeMaterialized,
 	hashCarrierInstanceId,
 	LeadLeaseDeniedError,
@@ -123,6 +122,18 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				}),
 			).rejects.toMatchObject({ reason: "identity_digest_mismatch" });
 			expect(instructions()).toEqual([]);
+			const lease = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!);
+			expect(lease.listPendingAudit()).toEqual([
+				expect.objectContaining({
+					leadKey: "flywheel-eng-lead",
+					event: "blocked",
+					detail: JSON.stringify({
+						reason: "identity_digest_mismatch",
+						claimedLeadId: "eng-lead",
+					}),
+				}),
+			]);
+			lease.close();
 		},
 	);
 
@@ -554,7 +565,16 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		).rejects.toMatchObject({ reason: "claimed_lead_mismatch" });
 		expect(instructions()).toEqual([]);
 		const lease = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!);
-		expect(lease.listPendingAudit()).toEqual([]);
+		expect(lease.listPendingAudit()).toEqual([
+			expect.objectContaining({
+				leadKey: "flywheel-eng-lead",
+				event: "blocked",
+				detail: JSON.stringify({
+					reason: "claimed_lead_mismatch",
+					claimedLeadId: "eng-lead",
+				}),
+			}),
+		]);
 		lease.close();
 	});
 
@@ -697,10 +717,6 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			}),
 		).rejects.toMatchObject({ reason: "identity_row_missing" });
 		expect(instructions()).toEqual([]);
-	});
-
-	it("keeps system authorization on an explicit in-process API", () => {
-		expect(authorizeSystemWrite()).toEqual({ disposition: "system" });
 	});
 
 	it("allows a matching healthy Codex carrier but denies a same-identity intruder", async () => {

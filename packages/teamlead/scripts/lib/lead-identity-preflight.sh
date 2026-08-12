@@ -77,7 +77,7 @@ lead_identity_prepare_lease() {
   # Route by the typed status before interpreting the shared exit-code classes.
   # This preserves distinct HOLD/bound-body states and rejects impossible pairs.
   case "$status" in
-    denied_holder_alive|denied_sensor_degraded)
+    denied_holder_alive|denied_sensor_degraded|denied_identity_drift_live|denied_identity_drift_sensor_degraded)
       if [ "$acquire_rc" -ne 3 ]; then
         LEAD_LEASE_HOLD_REASON="identity_acquire_invalid_response"
       else
@@ -277,6 +277,8 @@ lead_identity_v2_hold_alert_kind() {
   case "$reason" in
     denied_holder_alive) printf 'lead_dual_active\n' ;;
     denied_sensor_degraded) printf 'lead_dual_active_sensor_degraded\n' ;;
+    denied_identity_drift_live) printf 'lead_dual_active\n' ;;
+    denied_identity_drift_sensor_degraded) printf 'lead_dual_active_sensor_degraded\n' ;;
     v2_bind_store_error|v2_bind_verify_store_error) printf 'lead_lease_store_broken\n' ;;
     v2_bind_unverified)
       [ "$count" -lt 2 ] || printf 'lead_identity_source_broken\n'

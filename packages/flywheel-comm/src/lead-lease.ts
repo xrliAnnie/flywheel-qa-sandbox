@@ -20,7 +20,6 @@ import Database from "better-sqlite3";
 import {
 	effectiveLeadBackend,
 	readCanonicalLeadCatalog,
-	resolveCanonicalLead,
 } from "./canonical-lead.js";
 import {
 	type CanonicalLeadIdentity,
@@ -517,22 +516,56 @@ export class LeadLeaseStore {
 				supervisorStart: string;
 		  }
 		| {
-				status: "denied_holder_alive" | "denied_sensor_degraded";
+				status:
+					| "denied_holder_alive"
+					| "denied_sensor_degraded"
+					| "denied_identity_drift_live"
+					| "denied_identity_drift_sensor_degraded";
 				generation: number;
 		  } {
 		const transaction = this.db.transaction((args: AcquireLeaseInput) => {
 			const existing = this.readLease(args.leadKey);
 			if (existing !== undefined) {
-				if (
-					existing.identity_digest !== null &&
-					existing.identity_digest !== (args.identityDigest ?? null)
-				) {
-					return {
-						status: "denied_sensor_degraded" as const,
-						generation: existing.generation,
-					};
-				}
 				const rowFormat = leaseRowFormat(existing);
+				const identityDrift =
+					existing.identity_digest !== (args.identityDigest ?? null);
+				if (identityDrift) {
+					if (rowFormat === "malformed") {
+						return {
+							status: "denied_identity_drift_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+					const priorTupleStates =
+						rowFormat === "legacy"
+							? [this.tupleState(existing.holder_pid, existing.holder_start)]
+							: existing.bound_at === null
+								? [
+										this.tupleState(
+											existing.supervisor_pid,
+											existing.supervisor_start,
+										),
+									]
+								: [
+										this.tupleState(
+											existing.supervisor_pid,
+											existing.supervisor_start,
+										),
+										this.tupleState(existing.holder_pid, existing.holder_start),
+									];
+					if (priorTupleStates.includes("alive")) {
+						return {
+							status: "denied_identity_drift_live" as const,
+							generation: existing.generation,
+						};
+					}
+					if (priorTupleStates.includes("sensor_error")) {
+						return {
+							status: "denied_identity_drift_sensor_degraded" as const,
+							generation: existing.generation,
+						};
+					}
+				}
 				const requesterIsSupervisor =
 					existing.supervisor_pid === args.supervisorPid &&
 					existing.supervisor_start === args.supervisorStart;
@@ -541,7 +574,7 @@ export class LeadLeaseStore {
 					existing.holder_pid === args.supervisorPid &&
 					existing.holder_start === args.supervisorStart;
 
-				if (rowFormat === "malformed") {
+				if (!identityDrift && rowFormat === "malformed") {
 					return {
 						status: "denied_sensor_degraded" as const,
 						generation: existing.generation,
@@ -549,6 +582,7 @@ export class LeadLeaseStore {
 				}
 
 				if (
+					!identityDrift &&
 					existing.bound_at === null &&
 					requesterIsUnboundHolder &&
 					(rowFormat === "legacy" || requesterIsSupervisor)
@@ -577,7 +611,7 @@ export class LeadLeaseStore {
 					};
 				}
 
-				if (rowFormat === "legacy") {
+				if (!identityDrift && rowFormat === "legacy") {
 					const holderState = this.tupleState(
 						existing.holder_pid,
 						existing.holder_start,
@@ -594,7 +628,7 @@ export class LeadLeaseStore {
 							generation: existing.generation,
 						};
 					}
-				} else if (existing.bound_at === null) {
+				} else if (!identityDrift && existing.bound_at === null) {
 					const supervisorState = this.tupleState(
 						existing.supervisor_pid,
 						existing.supervisor_start,
@@ -611,7 +645,7 @@ export class LeadLeaseStore {
 							generation: existing.generation,
 						};
 					}
-				} else if (requesterIsSupervisor) {
+				} else if (!identityDrift && requesterIsSupervisor) {
 					const holderState = this.tupleState(
 						existing.holder_pid,
 						existing.holder_start,
@@ -634,7 +668,7 @@ export class LeadLeaseStore {
 							generation: existing.generation,
 						};
 					}
-				} else {
+				} else if (!identityDrift) {
 					const supervisorState = this.tupleState(
 						existing.supervisor_pid,
 						existing.supervisor_start,
@@ -1075,7 +1109,6 @@ export class LeadLeaseStore {
 export interface LeadWriteAuthorization {
 	disposition:
 		| "off"
-		| "system"
 		| "unprotected"
 		| "lease_validated"
 		| "carrier_passthrough"
@@ -2515,12 +2548,20 @@ function denyIdentityIntegrity(reason: string): never {
 function assertLeadIdentityIntegrity(
 	claimedLeadId: string,
 	env: NodeJS.ProcessEnv,
-) {
+	onDeny?: (
+		reason: string,
+		identity: CanonicalLeadIdentity | undefined,
+	) => void,
+): CanonicalLeadIdentity {
+	let identity: CanonicalLeadIdentity | undefined;
+	const deny = (reason: string): never => {
+		onDeny?.(reason, identity);
+		return denyIdentityIntegrity(reason);
+	};
 	const projectName = env.FLYWHEEL_PROJECT_NAME;
-	if (!projectName) return denyIdentityIntegrity("identity_project_missing");
+	if (!projectName) return deny("identity_project_missing");
 	const projectsPath =
 		env.FLYWHEEL_PROJECTS_FILE ?? join(homedir(), ".flywheel", "projects.json");
-	let identity: CanonicalLeadIdentity;
 	try {
 		identity = resolveLeadIdentity({
 			projectsPath,
@@ -2528,7 +2569,7 @@ function assertLeadIdentityIntegrity(
 			leadId: claimedLeadId,
 		});
 	} catch (error) {
-		return denyIdentityIntegrity(
+		return deny(
 			error instanceof LeadIdentityError ? error.code : "identity_source_error",
 		);
 	}
@@ -2536,16 +2577,16 @@ function assertLeadIdentityIntegrity(
 		env.FLYWHEEL_LEAD_ID !== undefined &&
 		env.FLYWHEEL_LEAD_ID !== claimedLeadId
 	) {
-		return denyIdentityIntegrity("claimed_lead_mismatch");
+		return deny("claimed_lead_mismatch");
 	}
 	if (env.LEAD_ID !== undefined && env.LEAD_ID !== identity.leadId) {
-		return denyIdentityIntegrity("identity_env_conflict");
+		return deny("identity_env_conflict");
 	}
 	if (
 		env.PROJECT_NAME !== undefined &&
 		env.PROJECT_NAME !== identity.projectName
 	) {
-		return denyIdentityIntegrity("identity_env_conflict");
+		return deny("identity_env_conflict");
 	}
 	if (
 		env.FLYWHEEL_LEAD_KEY !== identity.leadKey ||
@@ -2553,20 +2594,40 @@ function assertLeadIdentityIntegrity(
 		env.DISCORD_STATE_DIR !== identity.discordStateDir ||
 		(env.DISCORD_EXPECTED_BOT_USER_ID ?? "") !== (identity.botUserId ?? "")
 	) {
-		return denyIdentityIntegrity("identity_env_conflict");
+		return deny("identity_env_conflict");
 	}
 	if (!env.FLYWHEEL_LEAD_IDENTITY_DIGEST) {
-		return denyIdentityIntegrity("identity_digest_missing");
+		return deny("identity_digest_missing");
 	}
 	if (env.FLYWHEEL_LEAD_IDENTITY_DIGEST !== identity.identityDigest) {
-		return denyIdentityIntegrity("identity_digest_mismatch");
+		return deny("identity_digest_mismatch");
 	}
 	return identity;
 }
 
-/** Trusted Bridge-only write path. No CLI flag or environment selector maps to it. */
-export function authorizeSystemWrite(): LeadWriteAuthorization {
-	return { disposition: "system" };
+function persistIdentityIntegrityAudit(
+	env: NodeJS.ProcessEnv,
+	claimedLeadId: string,
+	reason: string,
+	identity: CanonicalLeadIdentity | undefined,
+): void {
+	if (!identity) return;
+	const leaseDbPath =
+		env.FLYWHEEL_LEAD_LEASE_DB ?? join(homedir(), ".flywheel", "lead-lease.db");
+	let store: LeadLeaseStore | undefined;
+	try {
+		store = new LeadLeaseStore(leaseDbPath);
+		writeFaultAudit(store, identity.leadKey, "blocked", reason, claimedLeadId);
+	} catch {
+		ensureRecurringLeaseAlert(env, "lead_lease_store_broken", {
+			leadKey: identity.leadKey,
+			leadId: claimedLeadId,
+			reason: "identity_fault_audit_store_error",
+			originalReason: reason,
+		});
+	} finally {
+		store?.close();
+	}
 }
 
 /**
@@ -2634,7 +2695,17 @@ export function authorizeLeadWrite(
 	deps: LeadWriteAuthorizationDeps = {},
 ): LeadWriteAuthorization {
 	const env = input.env ?? process.env;
-	const identity = assertLeadIdentityIntegrity(input.claimedLeadId, env);
+	const identity = assertLeadIdentityIntegrity(
+		input.claimedLeadId,
+		env,
+		(reason, resolvedIdentity) =>
+			persistIdentityIntegrityAudit(
+				env,
+				input.claimedLeadId,
+				reason,
+				resolvedIdentity,
+			),
+	);
 	const modePath =
 		env.FLYWHEEL_LEAD_LEASE_MODE_FILE ??
 		join(homedir(), ".flywheel", "lead-lease-mode.json");
@@ -2661,16 +2732,6 @@ export function authorizeLeadWrite(
 		writerStart,
 	};
 
-	const resolution = resolveCanonicalLead({
-		leadId: input.claimedLeadId,
-		projectsPath:
-			env.FLYWHEEL_PROJECTS_FILE ??
-			join(homedir(), ".flywheel", "projects.json"),
-		projectHint: identity.projectName,
-	});
-	if (resolution.status !== "ok") {
-		return denyIdentityIntegrity("identity_source_error");
-	}
 	recoverRecurringLeaseAlert(env, "lead_identity_source_broken", {});
 	const leadKey = identity.leadKey;
 	const leaseDbPath =
@@ -2788,24 +2849,6 @@ export function authorizeLeadWrite(
 	};
 
 	const backend = identity.backend;
-	if (
-		env.FLYWHEEL_LEAD_ID !== undefined &&
-		env.FLYWHEEL_LEAD_ID !== input.claimedLeadId
-	) {
-		try {
-			if (backend !== "codex-app-server") {
-				store = new LeadLeaseStore(leaseDbPath);
-				recoverRecurringLeaseAlert(env, "lead_lease_store_broken", {});
-				attachClaimedHolder(store);
-			}
-			return denyOrAudit("claimed_lead_mismatch");
-		} catch (error) {
-			if (error instanceof LeadLeaseDeniedError) throw error;
-			return denyOrAudit("lease_store_error", "lead_lease_store_broken");
-		} finally {
-			store?.close();
-		}
-	}
 	if (backend === "codex-app-server") {
 		const carrier = validateLeadCarrierAuthorization(
 			{ claimedLeadId: input.claimedLeadId, env },

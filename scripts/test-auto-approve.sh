@@ -98,6 +98,7 @@ BOT_NAME=$(jq -r ".slots[${SLOT_IDX}].botName // empty" "$SLOTS_FILE")
 API="http://localhost:${PORT}"
 PROJECT_NAME="test-slot-${SLOT}"
 COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
+PROJECTS_FILE="/tmp/flywheel-test-slot-${SLOT}/flywheel-projects.json"
 
 # flywheel-comm CLI lives at packages/flywheel-comm/dist/index.js after
 # `pnpm -r --filter flywheel-comm build` (which test-deploy.sh's pre-flight
@@ -111,6 +112,31 @@ if [[ ! -f "$COMM_CLI" ]]; then
   log "ERROR: flywheel-comm CLI not found at ${COMM_CLI}. Run 'pnpm -r --filter flywheel-comm build' (or rerun scripts/test-deploy.sh which builds it pre-flight)."
   exit 4
 fi
+if [[ ! -f "$PROJECTS_FILE" ]]; then
+  log "ERROR: canonical slot projects file not found at ${PROJECTS_FILE}"
+  exit 4
+fi
+
+# This helper runs outside the Lead pane, so it cannot inherit trusted runtime
+# identity. Resolve the exact QA registry row and project the complete
+# non-secret comparison tuple into the one write process instead.
+if ! IDENTITY_JSON=$(node "$COMM_CLI" lead-identity resolve \
+    --projects-file "$PROJECTS_FILE" \
+    --project "$PROJECT_NAME" \
+    --lead "$BOT_NAME" \
+    --format json); then
+  log "ERROR: canonical Lead identity resolution failed for ${PROJECT_NAME}/${BOT_NAME}"
+  exit 4
+fi
+IDENTITY_LEAD_ID=$(jq -er '.leadId' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_PROJECT_NAME=$(jq -er '.projectName' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_LEAD_KEY=$(jq -er '.leadKey' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_ROLE=$(jq -er '.role' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_BACKEND=$(jq -er '.backend' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_STATE_DIR=$(jq -er '.discordStateDir' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_BOT_USER_ID=$(jq -er '.botUserId // ""' <<<"$IDENTITY_JSON") || exit 4
+IDENTITY_DIGEST=$(jq -er '.identityDigest' <<<"$IDENTITY_JSON") || exit 4
+PROJECTS_DIGEST=$(jq -er '.projectsDigest' <<<"$IDENTITY_JSON") || exit 4
 
 # ── Phase 1: Bridge /health preflight ────────────────────────
 # Sanity-check that the slot is actually deployed. We do not depend on Bridge
@@ -186,8 +212,23 @@ fi
 # rather than a free-text reply.
 RESPONSE_CONTENT='{"approved":true}'
 
-if ! node "$COMM_CLI" respond \
-      --lead "$BOT_NAME" \
+if ! env \
+      FLYWHEEL_PROJECTS_FILE="$PROJECTS_FILE" \
+      FLYWHEEL_PROJECT_NAME="$IDENTITY_PROJECT_NAME" \
+      PROJECT_NAME="$IDENTITY_PROJECT_NAME" \
+      FLYWHEEL_LEAD_ID="$IDENTITY_LEAD_ID" \
+      LEAD_ID="$IDENTITY_LEAD_ID" \
+      FLYWHEEL_LEAD_KEY="$IDENTITY_LEAD_KEY" \
+      FLYWHEEL_LEAD_ROLE="$IDENTITY_ROLE" \
+      FLYWHEEL_LEAD_BACKEND="$IDENTITY_BACKEND" \
+      DISCORD_STATE_DIR="$IDENTITY_STATE_DIR" \
+      DISCORD_EXPECTED_BOT_USER_ID="$IDENTITY_BOT_USER_ID" \
+      DISCORD_IDENTITY_MODE=managed \
+      FLYWHEEL_LEAD_IDENTITY_DIGEST="$IDENTITY_DIGEST" \
+      FLYWHEEL_LEAD_PROJECTS_DIGEST="$PROJECTS_DIGEST" \
+      FLYWHEEL_LEAD_LEASE_MODE=off \
+      node "$COMM_CLI" respond \
+      --lead "$IDENTITY_LEAD_ID" \
       --db "$COMM_DB" \
       "$QUESTION_ID" \
       "$RESPONSE_CONTENT" \

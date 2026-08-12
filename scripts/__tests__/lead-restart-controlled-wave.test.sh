@@ -73,12 +73,13 @@ MANIFEST="$TMP_ROOT/manifest.json"
 PLIST="$TMP_ROOT/lead.plist"
 PROJECTS="$TMP_ROOT/projects.json"
 MARKER_DIR="$TMP_ROOT/replacements"
-printf '%s\n' '{"leadId":"eng-lead","projectDir":"/tmp/project","projectName":"flywheel","projectsFile":"/tmp/projects.json","leadBackend":{"backendId":"claude-code"},"pid":999,"model":"volatile"}' > "$MANIFEST"
+printf '%s\n' '{"leadId":"eng-lead","projectDir":"/tmp/project","projectName":"flywheel","botTokenEnv":"ENG_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"pid":999,"model":"volatile"}' > "$MANIFEST"
 printf '%s\n' '<plist/>' > "$PLIST"
 printf '%s\n' '[]' > "$PROJECTS"
 LEAD_RESTART_MANIFEST_FILE="$MANIFEST"
 LEAD_RESTART_PLIST_FILE="$PLIST"
 LEAD_RESTART_PROJECTS_FILE="$PROJECTS"
+LEAD_RESTART_BACKEND="claude-code"
 LEAD_RESTART_PLIST_DIGEST="$(shasum -a 256 "$PLIST" | awk '{print $1}')"
 LEAD_RESTART_PROJECTS_DIGEST="$(shasum -a 256 "$PROJECTS" | awk '{print $1}')"
 FLYWHEEL_LEAD_REPLACEMENT_DIR="$MARKER_DIR"
@@ -87,11 +88,12 @@ if lead_restart_write_replacement_marker \
   flywheel-eng-lead com.flywheel.lead.flywheel-eng-lead 700 old-start \
   && [ -f "$LEAD_RESTART_MARKER_FILE" ] \
   && [ "$(_lead_restart_file_mode "$LEAD_RESTART_MARKER_FILE")" = 600 ] \
-  && jq -e --arg attempt "$LEAD_RESTART_ATTEMPT_ID" \
+  && jq -e --arg attempt "$LEAD_RESTART_ATTEMPT_ID" --arg projects "$PROJECTS" \
        '.schema_version == 1 and .attempt_id == $attempt and .phase == "bootout"
         and .old_supervisor_tuple.pid == 700
         and (has("lease_baseline") | not)
-        and .authority.manifest.semantic_identity.projectsFile == "/tmp/projects.json"
+        and .authority.manifest.semantic_identity.projectsFile == $projects
+        and .authority.manifest.semantic_identity.leadBackend.backendId == "claude-code"
         and (.authority.manifest.semantic_identity | has("botTokenEnv") | not)
         and (.authority.manifest.semantic_identity | has("pid") | not)
         and (.authority.manifest.semantic_identity | has("model") | not)' \

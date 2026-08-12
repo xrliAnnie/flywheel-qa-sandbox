@@ -555,31 +555,39 @@ def t8_real_lead_alert_integration():
             os.chmod(os.path.join(bindir, "curl"), 0o755)
             Path(bindir, "osascript").write_text("#!/bin/bash\nexit 0\n")
             os.chmod(os.path.join(bindir, "osascript"), 0o755)
-            projects = os.path.join(tmp, "projects.json")
-            Path(projects).write_text(json.dumps([{
-                "projectName": "flywheel",
-                "leads": [{
-                    "agentId": "flywheel-eng-lead",
-                    "alertChannel": "444444444444444444",
-                    "alertBotTokenEnv": "FLY913_ALERT_TOKEN",
-                }],
-            }]))
+            home = Path(tmp, "home")
+            state = home / ".flywheel"
+            state.mkdir(parents=True)
+            (state / ".env").write_text(
+                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=444444444444444444\n"
+                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV=SYSTEM_ALERT_TOKEN\n"
+                "SYSTEM_ALERT_TOKEN=CANARY-TOKEN\n"
+            )
             env = {
+                "HOME": str(home),
                 "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                 "CURL_HTTP_CODE": http_code,
                 "FLYWHEEL_ROOT": str(repo_root),
                 "FLYWHEEL_RESTART_GUARD_ALERT_CMD": "",  # force default path
                 "FLYWHEEL_RESTART_GUARD_LOG": os.path.join(tmp, "guard.log"),
-                "FLYWHEEL_PROJECTS_FILE": projects,
+                "FLYWHEEL_PROJECTS_FILE": os.path.join(tmp, "missing-projects.json"),
                 "FLYWHEEL_CLAIMS_DB": os.path.join(tmp, "claims.db"),
                 "FLYWHEEL_ALERT_QUEUE_DIR": os.path.join(tmp, "queue"),
                 "FLYWHEEL_ALERT_DEADLETTER_DIR": os.path.join(tmp, "deadletter"),
                 "FLYWHEEL_STATE_DIR": os.path.join(tmp, "state"),
-                "FLY913_ALERT_TOKEN": "CANARY-TOKEN",
             }
             # empty ALERT_CMD env must mean "unset" for the hook
             full_env = {k: v for k, v in {**os.environ, **env}.items() if v != ""}
             full_env.pop("FLYWHEEL_RESTART_GUARD_ALERT_CMD", None)
+            for name in (
+                "FLYWHEEL_LEAD_ID",
+                "PROJECT_NAME",
+                "FLYWHEEL_PROJECT_NAME",
+                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
+                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+                "SYSTEM_ALERT_TOKEN",
+            ):
+                full_env.pop(name, None)
             p = subprocess.run(
                 [sys.executable, str(HOOK)],
                 input=json.dumps(bash_event(BYPASS_CMD)),

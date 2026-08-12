@@ -289,13 +289,15 @@ lead_restart_write_replacement_marker() {
   mkdir -p "$marker_dir" || return 1
   chmod 700 "$marker_dir" 2>/dev/null || return 1
 
-  semantic="$(jq -ce '
+  [[ -n "$LEAD_RESTART_PROJECTS_FILE" && -n "$LEAD_RESTART_BACKEND" ]] || return 1
+  semantic="$(jq -ce --arg projects_file "$LEAD_RESTART_PROJECTS_FILE" \
+    --arg canonical_backend "$LEAD_RESTART_BACKEND" '
     {
       leadId: .leadId,
       projectDir: .projectDir,
       projectName: .projectName,
-      projectsFile: .projectsFile,
-      leadBackend: {backendId: (.leadBackend.backendId // "claude-code")}
+      projectsFile: $projects_file,
+      leadBackend: {backendId: $canonical_backend}
     }
     | select(
         (.leadId | type == "string" and length > 0)

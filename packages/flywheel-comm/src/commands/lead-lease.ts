@@ -348,7 +348,9 @@ export async function runLeadLeaseCommand(
 						stdout,
 					);
 					return result.status === "denied_holder_alive" ||
-						result.status === "denied_sensor_degraded"
+						result.status === "denied_sensor_degraded" ||
+						result.status === "denied_identity_drift_live" ||
+						result.status === "denied_identity_drift_sensor_degraded"
 						? 3
 						: 0;
 				} finally {

@@ -25,6 +25,14 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		});
 	}
 
+	function openWithTupleStates(
+		states: Readonly<Record<string, "alive" | "dead" | "sensor_error">>,
+	) {
+		return new LeadLeaseStore(dbPath, {
+			processTupleState: (pid, start) => states[`${pid}:${start}`] ?? "dead",
+		});
+	}
+
 	const supervisor1 = {
 		leadKey: "flywheel-eng-lead",
 		project: "flywheel",
@@ -159,6 +167,103 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		});
 		expect(store.getLease(supervisor1.leadKey)?.generation).toBe(1);
 		store.close();
+	});
+
+	it("re-stamps a changed identity digest only after the previous bound generation is dead", () => {
+		const holderStart = "old-holder";
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.bind({
+			leadKey: supervisor1.leadKey,
+			generation: 1,
+			expectedSupervisorPid: supervisor1.supervisorPid,
+			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
+			panePid: 200,
+			paneStart: holderStart,
+		});
+		initial.close();
+
+		const changedDigest = "b".repeat(64);
+		const restarted = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+			[`200:${holderStart}`]: "dead",
+		});
+		expect(
+			restarted.acquire({
+				...supervisor1,
+				identityDigest: changedDigest,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({ status: "acquired", generation: 2 });
+		expect(restarted.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: changedDigest,
+			generation: 2,
+			supervisorPid: 101,
+		});
+		restarted.close();
+	});
+
+	it.each([
+		["supervisor", `100:${supervisor1.supervisorStart}`],
+		["holder", "200:old-holder"],
+	])(
+		"denies identity re-stamp while the previous %s tuple is alive",
+		(_label, liveTuple) => {
+			const initial = open();
+			initial.acquire(supervisor1);
+			initial.bind({
+				leadKey: supervisor1.leadKey,
+				generation: 1,
+				expectedSupervisorPid: supervisor1.supervisorPid,
+				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
+				panePid: 200,
+				paneStart: "old-holder",
+			});
+			initial.close();
+
+			const contender = openWithTupleStates({ [liveTuple]: "alive" });
+			expect(
+				contender.acquire({
+					...supervisor1,
+					identityDigest: "b".repeat(64),
+					supervisorPid: 101,
+					supervisorStart: "new-supervisor",
+				}),
+			).toEqual({
+				status: "denied_identity_drift_live",
+				generation: 1,
+			});
+			expect(contender.getLease(supervisor1.leadKey)).toMatchObject({
+				identityDigest: IDENTITY_DIGEST,
+				generation: 1,
+			});
+			contender.close();
+		},
+	);
+
+	it("keeps identity re-stamp fail closed when prior tuple liveness is unprovable", () => {
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.close();
+
+		const contender = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "sensor_error",
+		});
+		expect(
+			contender.acquire({
+				...supervisor1,
+				identityDigest: "b".repeat(64),
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({
+			status: "denied_identity_drift_sensor_degraded",
+			generation: 1,
+		});
+		contender.close();
 	});
 
 	it("denies a different supervisor while the unbound acquiring supervisor is alive", () => {

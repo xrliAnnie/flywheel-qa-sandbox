@@ -207,6 +207,59 @@ if [ -n "$MENTION_USER" ] && ! printf '%s' "$MENTION_USER" | grep -Eq '^[0-9]{17
   MENTION_USER=""
 fi
 
+# The restart guard can run outside every Lead pane. Its explicit `system`
+# attribution must use the fleet-wide alert dispatcher, never impersonate a
+# registry Lead. Load the trusted Flywheel env only for this system route when
+# the unified sender seam was not already projected by the caller.
+if [ "$LEAD_ID" = "system" ] \
+    && { [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
+      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; }; then
+  SYSTEM_ALERT_ENV_FILE="${FLYWHEEL_SYSTEM_ALERT_ENV_FILE:-${HOME}/.flywheel/.env}"
+  if [ ! -f "$SYSTEM_ALERT_ENV_FILE" ]; then
+    log "ERROR: system alert route has no trusted env file at $SYSTEM_ALERT_ENV_FILE"
+    emit_result "config_error"
+    exit 1
+  fi
+  _system_lead_id="$LEAD_ID"
+  _system_project_name="$PROJECT_NAME"
+  _system_kind="$KIND"
+  _system_severity="$SEVERITY"
+  _system_title="$TITLE"
+  _system_body="$BODY"
+  _system_signature="$SIGNATURE"
+  _system_strict_delivery="$STRICT_DELIVERY"
+  _system_mention_user="$MENTION_USER"
+  _system_allexport_was_on=false
+  [[ "$-" == *a* ]] && _system_allexport_was_on=true
+  set -a
+  if ! source "$SYSTEM_ALERT_ENV_FILE"; then
+    [ "$_system_allexport_was_on" = true ] || set +a
+    log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+    emit_result "config_error"
+    exit 1
+  fi
+  [ "$_system_allexport_was_on" = true ] || set +a
+  LEAD_ID="$_system_lead_id"
+  PROJECT_NAME="$_system_project_name"
+  KIND="$_system_kind"
+  SEVERITY="$_system_severity"
+  TITLE="$_system_title"
+  BODY="$_system_body"
+  SIGNATURE="$_system_signature"
+  STRICT_DELIVERY="$_system_strict_delivery"
+  MENTION_USER="$_system_mention_user"
+  unset _system_lead_id _system_project_name _system_kind _system_severity
+  unset _system_title _system_body _system_signature _system_strict_delivery
+  unset _system_mention_user _system_allexport_was_on
+fi
+if [ "$LEAD_ID" = "system" ] \
+    && { [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
+      || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; }; then
+  log "ERROR: system alert route requires unified channel + sender token selector"
+  emit_result "config_error"
+  exit 1
+fi
+
 # ── Tool preflight ──────────────────────────────────────────
 for tool in jq sqlite3 curl shasum node; do
   if ! command -v "$tool" >/dev/null 2>&1; then
