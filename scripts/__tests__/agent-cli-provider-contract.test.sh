@@ -91,24 +91,46 @@ assert_contract_fn "H9 stub provider_repair" "$STUB" provider_repair 0 '.ok==tru
 CLAUDE_SH="$PROVIDER_DIR/claude.sh"
 if [ -f "$CLAUDE_SH" ]; then
   # claude CLI stub: --version, --print (echo a reply), plain run = login flow.
+  # FLY-1715: every model-bearing --print call must carry exactly one inline
+  # settings payload with both Discord marketplace identities disabled.
   cat > "$CONTRACT_BIN/claude" <<'EOF'
 #!/bin/bash
 [ -t 0 ] || cat >/dev/null
+is_print=false
+settings_count=0
+settings_value=""
+take_settings=false
 for a in "$@"; do
+  if [ "$take_settings" = true ]; then
+    settings_count=$((settings_count + 1))
+    settings_value="$a"
+    take_settings=false
+    continue
+  fi
   case "$a" in
     --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
-    --print) printf '{"result":"stub reply","session_id":"sess-1234"}\n'; exit 0 ;;
+    --print) is_print=true ;;
+    --settings) take_settings=true ;;
+    --settings=*) settings_count=$((settings_count + 1)); settings_value="${a#--settings=}" ;;
   esac
 done
+if [ "$is_print" = true ]; then
+  [ "$take_settings" = false ] || exit 42
+  [ "$settings_count" -eq 1 ] || exit 43
+  jq -e '.enabledPlugins["discord@flywheel-plugins"] == false and .enabledPlugins["discord@claude-plugins-official"] == false' \
+    >/dev/null 2>&1 <<<"$settings_value" || exit 44
+  printf '{"result":"stub reply","session_id":"sess-1234"}\n'
+  exit 0
+fi
 exit 0
 EOF
   chmod +x "$CONTRACT_BIN/claude"
   mkdir -p "$SANDBOX/home/.claude"
   assert_contract_fn "C1 claude provider_id" "$CLAUDE_SH" provider_id 0 '.ok==true and .provider=="claude"'
   assert_contract_fn "C2 claude provider_detect (stub claude on PATH)" "$CLAUDE_SH" provider_detect 0 '.ok==true and .found==true and (.version|length>0)'
-  assert_contract_fn "C3 claude provider_smoke (stubbed --print)" "$CLAUDE_SH" provider_smoke 0 '.ok==true and .smoke=="ok"'
-  assert_contract_fn "C4 claude provider_start_buddy returns reply+session" "$CLAUDE_SH" provider_start_buddy 0 '.ok==true and (.reply|length>0) and (.session_id|length>0)' "$PERSONA" "$PROMPT"
-  assert_contract_fn "C5 claude provider_resume keeps the session" "$CLAUDE_SH" provider_resume 0 '.ok==true and (.reply|length>0)' "sess-1234" "$PROMPT"
+  assert_contract_fn "C3 claude provider_smoke disables both Discord plugins" "$CLAUDE_SH" provider_smoke 0 '.ok==true and .smoke=="ok"'
+  assert_contract_fn "C4 claude provider_start_buddy disables both Discord plugins" "$CLAUDE_SH" provider_start_buddy 0 '.ok==true and (.reply|length>0) and (.session_id|length>0)' "$PERSONA" "$PROMPT"
+  assert_contract_fn "C5 claude provider_resume disables both Discord plugins" "$CLAUDE_SH" provider_resume 0 '.ok==true and (.reply|length>0)' "sess-1234" "$PROMPT"
   rm -f "$CONTRACT_BIN/claude"
   assert_contract_fn "C6 claude provider_detect (no CLI → exit 1 + not_found)" "$CLAUDE_SH" provider_detect 1 '.ok==false and .error_code=="not_found"'
 else
