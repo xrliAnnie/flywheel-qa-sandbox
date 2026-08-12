@@ -675,15 +675,10 @@ step_run_bots() {
     '{path:$p, guildId:$g, results:[$cos,$eng]}')"
 }
 
-# resume verification: both tokens + the guild id still present in .env.
-step_verify_bots() {
-  local envf="$FLYWHEEL_SETUP_STATE_DIR/.env"
-  [ -f "$envf" ] || return 1
-  grep -Eq "^${FS_COS_ENV}=.+" "$envf" && grep -Eq "^${FS_ENG_ENV}=.+" "$envf" \
-    && grep -Eq "^DISCORD_GUILD_ID=.+" "$envf"
-}
-
-step_hydrate_bots() {
+# Hydrate every non-secret identity fact later steps consume. The verifier also
+# calls this so pre-FLY-1726 journals without botUserId evidence are marked
+# pending and re-run instead of being skipped and then dying during hydration.
+_fs_hydrate_bot_evidence() {
   local ev
   ev="$(setup_step_evidence bots)"
   FS_GUILD_ID="$(jq -r '.guildId // empty' <<<"$ev")"
@@ -692,6 +687,19 @@ step_hydrate_bots() {
   [ -n "$FS_GUILD_ID" ] && [ -n "$FS_COS_BOT_USER_ID" ] \
     && [ -n "$FS_ENG_BOT_USER_ID" ] \
     && [ "$FS_COS_BOT_USER_ID" != "$FS_ENG_BOT_USER_ID" ]
+}
+
+# resume verification: both tokens + every canonical bot identity fact remain.
+step_verify_bots() {
+  local envf="$FLYWHEEL_SETUP_STATE_DIR/.env"
+  [ -f "$envf" ] || return 1
+  grep -Eq "^${FS_COS_ENV}=.+" "$envf" && grep -Eq "^${FS_ENG_ENV}=.+" "$envf" \
+    && grep -Eq "^DISCORD_GUILD_ID=.+" "$envf" \
+    && _fs_hydrate_bot_evidence
+}
+
+step_hydrate_bots() {
+  _fs_hydrate_bot_evidence
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

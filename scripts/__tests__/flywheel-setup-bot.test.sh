@@ -12,6 +12,7 @@
 #   C1  c1 (default): two bots complete → BotProvisionResult shape per lead,
 #       tokens land in .env (0600), guild captured, journal evidence secret-free,
 #       token absent from curl argv
+#   C1c legacy/incomplete journal evidence is not accepted as resume-safe
 #   C2  c2: two pool invite-urls printed + honest semi-managed annotation +
 #       same result shape
 #   C3  path selection: FLYWHEEL_SETUP_BOT_PATH / default c1
@@ -125,6 +126,26 @@ if ! grep -q "fake-cos-token-value" "$ST" \
   pass "C1b token absent from journal + curl argv; .env 0600"
 else
   fail "C1b perms=$PERMS journal-hit=$(grep -c fake-cos-token-value "$ST"); argv-hit=$(grep -c fake-cos-token-value "$ARGV_LOG")"
+fi
+
+# ── C1c: resume verifier must reject old evidence without canonical bot IDs ──
+S1C="$SANDBOX/state1-legacy"; mkdir -p "$S1C"
+cp "$S1/.env" "$S1C/.env"
+jq 'del(.steps.bots.evidence.results[].botUserId)' "$ST" > "$S1C/setup-state.json"
+(
+  export FLYWHEEL_SETUP_SOURCED=1 HOME="$H"
+  source "$SETUP" >/dev/null 2>&1 || exit 97
+  FLYWHEEL_SETUP_STATE_DIR="$S1C"
+  FS_PROJECT="husband-ecom"; FS_DEPT="engineering"
+  FS_COS_PERSONA="Cass"; FS_ENG_PERSONA="Tad"
+  fs_derive_identity || exit 96
+  step_verify_bots
+) >/dev/null 2>&1
+C1C_RC=$?
+if [ "$C1C_RC" -ne 0 ]; then
+  pass "C1c resume verifier rejects journal evidence without canonical bot IDs"
+else
+  fail "C1c legacy bot evidence was incorrectly accepted as resume-safe"
 fi
 
 # ── C2: c2 pool path — invite urls + honest annotation + same shape ──
