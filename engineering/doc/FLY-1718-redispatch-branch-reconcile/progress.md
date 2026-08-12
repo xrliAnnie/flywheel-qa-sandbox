@@ -1,14 +1,14 @@
 ---
 issue: FLY-1718
 phase: implement
-phaseCursor: 3/5
-updated: 2026-08-12T19:04:21.155Z
-nextStep: "P3 RED/GREEN: path-safe design instruction manifest and
-  Bridge-authoritative gate validation"
+phaseCursor: 4/5
+updated: 2026-08-12T19:28:40.758Z
+nextStep: Implement P4 failure-cause reconciliation using FLY-1612
+  strike/backoff primitives
 chunks: []
 pointers: {}
 ---
 
 # FLY-1718 progress
-**phase**: implement (3/5)
-**next**: P3 RED/GREEN: path-safe design instruction manifest and Bridge-authoritative gate validation
+**phase**: implement (4/5)
+**next**: Implement P4 failure-cause reconciliation using FLY-1612 strike/backoff primitives
