@@ -1,13 +1,13 @@
 ---
 issue: FLY-1726
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-12T17:44:48.353Z
-nextStep: await db audit → research.md
+phaseCursor: 4/6
+updated: 2026-08-12T17:49:51.140Z
+nextStep: write plan.md single-authority design
 chunks: []
 pointers: {}
 ---
 
 # FLY-1726 progress
-**phase**: design (3/6)
-**next**: await db audit → research.md
+**phase**: design (4/6)
+**next**: write plan.md single-authority design
