@@ -13,6 +13,7 @@
 #       tokens land in .env (0600), guild captured, journal evidence secret-free,
 #       token absent from curl argv
 #   C1c legacy/incomplete journal evidence is not accepted as resume-safe
+#   C1d pasted token identity must equal the independently entered app id
 #   C2  c2: two pool invite-urls printed + honest semi-managed annotation +
 #       same result shape
 #   C3  path selection: FLYWHEEL_SETUP_BOT_PATH / default c1
@@ -59,8 +60,10 @@ case "$url" in
     # never reflect the token back — the test asserts it stays out of the journal
     if [ "$mode" = "badauth" ]; then printf '{"message":"401: Unauthorized"}\n401'
     elif [ -z "$tok" ]; then printf '{"message":"401: no token"}\n401'
-    elif [[ "$tok" == *cos* ]]; then printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
-    else printf '{"id":"900000000000000002","username":"eng-stub"}\n200'; fi
+    elif [[ "$tok" == *pool-cos* ]]; then printf '{"id":"333333333333333333","username":"pool-cos-stub"}\n200'
+    elif [[ "$tok" == *pool-eng* ]]; then printf '{"id":"444444444444444444","username":"pool-eng-stub"}\n200'
+    elif [[ "$tok" == *cos* ]]; then printf '{"id":"111111111111111111","username":"cos-stub"}\n200'
+    else printf '{"id":"222222222222222222","username":"eng-stub"}\n200'; fi
     ;;
   *) printf '{}\n200' ;;
 esac
@@ -107,7 +110,10 @@ C1_OK=1
 [ "$(jq -r '.results | length' <<<"$EV" 2>/dev/null)" = "2" ] || C1_OK=0
 [ "$(jq -r '.results[0].leadId' <<<"$EV" 2>/dev/null)" = "cos-lead" ] || C1_OK=0
 [ "$(jq -r '.results[0].tokenEnvName' <<<"$EV" 2>/dev/null)" = "CASS_BOT_TOKEN" ] || C1_OK=0
+[ "$(jq -r '.results[0].botUserId' <<<"$EV" 2>/dev/null)" = "111111111111111111" ] || C1_OK=0
+[ "$(jq -r '.results[0].botIdentityProof' <<<"$EV" 2>/dev/null)" = "application-id==users/@me" ] || C1_OK=0
 [ "$(jq -r '.results[1].leadId' <<<"$EV" 2>/dev/null)" = "tad-eng-lead" ] || C1_OK=0
+[ "$(jq -r '.results[1].botUserId' <<<"$EV" 2>/dev/null)" = "222222222222222222" ] || C1_OK=0
 [ "$(jq -r '.guildId' <<<"$EV" 2>/dev/null)" = "G1" ] || C1_OK=0
 grep -q '^CASS_BOT_TOKEN=fake-cos-token-value$' "$S1/.env" 2>/dev/null || C1_OK=0
 grep -q '^TAD_BOT_TOKEN=fake-eng-token-value$' "$S1/.env" 2>/dev/null || C1_OK=0
@@ -132,20 +138,37 @@ fi
 S1C="$SANDBOX/state1-legacy"; mkdir -p "$S1C"
 cp "$S1/.env" "$S1C/.env"
 jq 'del(.steps.bots.evidence.results[].botUserId)' "$ST" > "$S1C/setup-state.json"
-(
+verify_bots_fixture() (
+  local fixture_state="$1"
   export FLYWHEEL_SETUP_SOURCED=1 HOME="$H"
   source "$SETUP" >/dev/null 2>&1 || exit 97
-  FLYWHEEL_SETUP_STATE_DIR="$S1C"
+  FLYWHEEL_SETUP_STATE_DIR="$fixture_state"
   FS_PROJECT="husband-ecom"; FS_DEPT="engineering"
   FS_COS_PERSONA="Cass"; FS_ENG_PERSONA="Tad"
   fs_derive_identity || exit 96
+  setup_engine_init
   step_verify_bots
-) >/dev/null 2>&1
+)
+verify_bots_fixture "$S1" >/dev/null 2>&1
+C1C_POSITIVE_RC=$?
+verify_bots_fixture "$S1C" >/dev/null 2>&1
 C1C_RC=$?
-if [ "$C1C_RC" -ne 0 ]; then
-  pass "C1c resume verifier rejects journal evidence without canonical bot IDs"
+if [ "$C1C_POSITIVE_RC" -eq 0 ] && [ "$C1C_RC" -ne 0 ]; then
+  pass "C1c resume verifier accepts complete evidence and rejects missing canonical bot IDs"
 else
-  fail "C1c legacy bot evidence was incorrectly accepted as resume-safe"
+  fail "C1c controls positive=$C1C_POSITIVE_RC missing-id=$C1C_RC"
+fi
+
+# ── C1d: swapped tokens must not self-certify into transposed registry rows ──
+S1D="$SANDBOX/state1-swapped"; mkdir -p "$S1D"
+OUT1D="$(run_bots "$S1D" "${C1_ANSWERS[@]}" \
+  FLYWHEEL_SETUP_ANSWER_BOT_TOKEN_COS=fake-eng-token-value \
+  FLYWHEEL_SETUP_ANSWER_BOT_TOKEN_ENG=fake-cos-token-value 2>&1)"
+C1D_RC=$?
+if [ "$C1D_RC" -ne 0 ] && grep -qi "application id" <<<"$OUT1D"; then
+  pass "C1d token /users/@me id must equal independently entered application id"
+else
+  fail "C1d swapped tokens were accepted rc=$C1D_RC out=$(tail -4 <<<"$OUT1D")"
 fi
 
 # ── C2: c2 pool path — invite urls + honest annotation + same shape ──

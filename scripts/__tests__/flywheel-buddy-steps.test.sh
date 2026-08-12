@@ -66,10 +66,10 @@ case "$method $url" in
   "GET "*discord.com*/users/@me/guilds) printf '[{"id":"G1","name":"Test"}]\n200' ;;
   "GET "*discord.com*/users/@me)
     if [ -f "${FLY648_SD:?}/bot-id-seen" ]; then
-      printf '{"id":"900000000000000002","username":"eng-stub"}\n200'
+      printf '{"id":"222222222222222222","username":"eng-stub"}\n200'
     else
       touch "$FLY648_SD/bot-id-seen"
-      printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
+      printf '{"id":"111111111111111111","username":"cos-stub"}\n200'
     fi ;;
   "GET "*discord.com*/users/*) printf '{"id":"stub-user"}\n200' ;;
   "POST "*api.linear.app*)
