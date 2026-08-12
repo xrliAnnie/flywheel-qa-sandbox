@@ -259,6 +259,10 @@ rn_run_terminal_case() {
       stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
+      restart_voice_bridge_managed() {
+        VOICE_BRIDGE_RESTART_DETAIL=""
+        return 0
+      }
       trigger_cmux_refresh() { :; }
       do_restart_all_leads() {
         case "$mode" in
@@ -1721,6 +1725,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
@@ -1754,6 +1759,9 @@ if [[ "\${1:-}" == "print" ]]; then
     fi
     echo "state = running"
     echo "pid = \$(cat "$BO_CALLS/lead.pid" 2>/dev/null || echo 424242)"
+  elif [[ "\${2:-}" == *"com.flywheel.voice-bridge" ]]; then
+    echo "Could not find service"
+    exit 3
   else
     echo "state = running"
     echo "pid = 434343"
@@ -2200,7 +2208,7 @@ rm -f "$identity_marker"
 # ── 3) dry-run exposes full scope + reason with no side effects ──
 echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
 out=$(bo_run --dry-run --reason env-change) && rc=0 || rc=$?
-if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + all Leads" \
+if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + voice-bridge (when configured/loaded) + all Leads" \
    && echo "$out" | grep -q "reason=env-change" \
    && [[ -z "$(bo_calls launchctl)" && -z "$(bo_calls pnpm)" ]] \
    && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]]; then
