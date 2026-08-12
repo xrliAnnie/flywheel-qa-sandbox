@@ -5495,6 +5495,7 @@ export async function startBridge(
 				registry,
 				{
 					chatThreadCreator,
+					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
 					// function scope; both wrap the same factory).

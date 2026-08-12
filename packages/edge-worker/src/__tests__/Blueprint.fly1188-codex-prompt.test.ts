@@ -165,6 +165,24 @@ async function buildCodexPrompt(
 }
 
 describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references", () => {
+	it("FLY-1718: renders inherited branch/PR inventory without claiming a resume or gate skip", async () => {
+		const prompt = await buildCodexPrompt({
+			startPoint: "a".repeat(40),
+			continuityInherit: {
+				branch: "flywheel-FLY-1704",
+				sha: "a".repeat(40),
+				prNumber: 813,
+				prUrl: "https://github.test/pull/813",
+			},
+		});
+		expect(prompt).toContain("BRANCH CONTINUITY");
+		expect(prompt).toContain("origin/flywheel-FLY-1704@aaaaaaa");
+		expect(prompt).toContain("open PR #813: https://github.test/pull/813");
+		expect(prompt).toContain("git log --oneline -10");
+		expect(prompt).toContain("No pipeline gate is skipped");
+		expect(prompt).not.toContain("RESUME MODE");
+	});
+
 	it("baseline codex prompt: banned tokens absent, codex equivalents present", async () => {
 		const prompt = await buildCodexPrompt();
 		expect(prompt.length).toBeGreaterThan(0);

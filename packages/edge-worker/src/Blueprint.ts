@@ -601,6 +601,20 @@ export interface BlueprintContext {
 	startPoint?: string;
 
 	/**
+	 * FLY-1718 P1: the dispatcher found the managed origin branch for an
+	 * otherwise-fresh re-dispatch and pinned startPoint to its verified local
+	 * object. This is explanation-only metadata: unlike progressResume it does
+	 * not suppress gates, and unlike shareParentBranch it does not opt the run
+	 * into three-stage worktree/takeover/TURN semantics.
+	 */
+	continuityInherit?: {
+		branch: string;
+		sha: string;
+		prNumber?: number;
+		prUrl?: string;
+	};
+
+	/**
 	 * FLY-795: restart-resilient resume. Set by teamlead when re-dispatching a
 	 * DEAD runner (explicit terminate / reboot) whose branch B carries a committed
 	 * `progress.md`. Blueprint renders a RESUME-MODE prompt from this trusted input
@@ -2192,6 +2206,22 @@ export class Blueprint {
 		// before any pipeline instruction.
 		if (resumeMode) {
 			systemPromptLines.unshift(...resumeMode.lines);
+		}
+		// FLY-1718 P1: the structural startPoint is already the inherited origin
+		// tip. Tell the runner why this is not a blank start and where to inspect
+		// preserved work, without skipping any pipeline gate.
+		if (ctx.continuityInherit) {
+			const inherited = ctx.continuityInherit;
+			const prText = inherited.prNumber
+				? ` (open PR #${inherited.prNumber}${inherited.prUrl ? `: ${inherited.prUrl}` : ""})`
+				: "";
+			systemPromptLines.unshift(
+				"BRANCH CONTINUITY (re-dispatch inventory reconciled):",
+				`This worktree continues origin/${inherited.branch}@${inherited.sha.slice(0, 7)}${prText}.`,
+				"Before changing anything, run `git log --oneline -10` and read the existing PR description when present.",
+				"Continue on top of the preserved work. Do not force-push. No pipeline gate is skipped by this inheritance.",
+				"",
+			);
 		}
 
 		// FLY-1257 M1-a: every resident-Codex gate surface requests the same
