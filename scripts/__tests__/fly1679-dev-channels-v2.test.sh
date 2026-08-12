@@ -415,6 +415,7 @@ else
     _v2_launch_args=(--session-id test)
     _V2_DIALOG_POLLER_PID=""
     _poll_dev_channels_dialog_v2() { sleep 3; }
+    _adopt_inflight_before_launch() { :; }
     _launch_claude() {
       if [ -n "${_V2_DIALOG_POLLER_PID:-}" ] && kill -0 "$_V2_DIALOG_POLLER_PID" 2>/dev/null; then
         printf "poller-live-at-launch\n" >> "$ORDER_LOG"
