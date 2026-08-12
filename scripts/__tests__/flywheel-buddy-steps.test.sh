@@ -64,7 +64,13 @@ case "$method $url" in
   "POST "*discord.com*/channels/*/messages) printf '{"id":"PROBE1"}\n200' ;;
   "DELETE "*discord.com*/channels/*/messages/*) printf '\n204' ;;
   "GET "*discord.com*/users/@me/guilds) printf '[{"id":"G1","name":"Test"}]\n200' ;;
-  "GET "*discord.com*/users/@me) printf '{"id":"stub-bot-id","username":"stub"}\n200' ;;
+  "GET "*discord.com*/users/@me)
+    if [ -f "${FLY648_SD:?}/bot-id-seen" ]; then
+      printf '{"id":"900000000000000002","username":"eng-stub"}\n200'
+    else
+      touch "$FLY648_SD/bot-id-seen"
+      printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
+    fi ;;
   "GET "*discord.com*/users/*) printf '{"id":"stub-user"}\n200' ;;
   "POST "*api.linear.app*)
     case "$body" in
@@ -155,7 +161,7 @@ for id in linear config services finish digest; do
   [ "$(jq -r '.ok' <<<"$O" 2>/dev/null)" = "true" ] || { B2_OK=0; fail "B2 run $id → '$O'"; break; }
 done
 # interactive reference run in a SEPARATE home (same stubs/answers)
-rm -f "$SD/team-exists"
+rm -f "$SD/team-exists" "$SD/bot-id-seen"
 H2="$SANDBOX/home2"; mkdir -p "$H2"
 env -i HOME="$H2" USER="tester" PATH="$STUB_BIN:$PATH" "${COMMON_ENV[@]}" \
   bash "$SETUP" "${IDENTITY_ARGS[@]}" </dev/null >/dev/null 2>&1

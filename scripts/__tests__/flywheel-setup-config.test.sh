@@ -11,7 +11,8 @@
 #   B2b bad override id rejected; cos==dept id rejected
 #   B3  fs_generate_fleet_artifact: rev1 field contracts (cos-lead literal,
 #       lowercase grammar, absolute projectRoot, explicit department,
-#       Triage⇒canSpawnRunners:false, persona→botTokenEnv, exact env key set)
+#       Triage⇒canSpawnRunners:false, persona→botTokenEnv, independently
+#       observed botUserId, exact env key set)
 #   B4  real-loader gate: valid passes; Triage w/o canSpawnRunners rejected
 #   B5  artifact passes scan_for_secrets; env.example secret keys EMPTY
 #   B6  real materializer on the generated projects.json: leadId==cos-lead,
@@ -88,6 +89,7 @@ gen_artifact() {
     FS_SKILLS_REPO="xrliAnnie/flywheel-skills"
     FS_GUILD_ID="100000000000000000"; FS_FOUNDER_ID="100000000000000009"
     FS_CHANNEL_GENERAL="100000000000000001"; FS_CHANNEL_COS="100000000000000002"; FS_CHANNEL_ENG="100000000000000003"
+    FS_COS_BOT_USER_ID="900000000000000001"; FS_ENG_BOT_USER_ID="900000000000000002"
     local kv
     for kv in "$@"; do eval "$kv"; done
     fs_derive_identity || exit 96
@@ -110,6 +112,8 @@ B3_OK=1
 [ "$(jq -r '.[0].projectRoot' "$PJ" 2>/dev/null)" = "$H/Dev/husband-ecom" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[0].botTokenEnv' "$PJ" 2>/dev/null)" = "CASS_BOT_TOKEN" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[1].botTokenEnv' "$PJ" 2>/dev/null)" = "TAD_BOT_TOKEN" ] || B3_OK=0
+[ "$(jq -r '.[0].leads[0].botUserId' "$PJ" 2>/dev/null)" = "900000000000000001" ] || B3_OK=0
+[ "$(jq -r '.[0].leads[1].botUserId' "$PJ" 2>/dev/null)" = "900000000000000002" ] || B3_OK=0
 [ "$(jq -r '.[0].linear.team' "$PJ" 2>/dev/null)" = "HUS" ] || B3_OK=0
 # full binding (Codex R1 MEDIUM): runtime auto-association needs project+label
 [ "$(jq -r '.[0].linear.project' "$PJ" 2>/dev/null)" = "husband-ecom" ] || B3_OK=0

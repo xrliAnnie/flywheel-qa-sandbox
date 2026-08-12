@@ -312,6 +312,8 @@ fs_generate_fleet_artifact() {
   FS_CHANNEL_GENERAL="${FS_CHANNEL_GENERAL:-__FILL_DISCORD_CHANNEL_ID_GENERAL__}"
   FS_CHANNEL_COS="${FS_CHANNEL_COS:-__FILL_DISCORD_CHANNEL_ID_COS__}"
   FS_CHANNEL_ENG="${FS_CHANNEL_ENG:-__FILL_DISCORD_CHANNEL_ID_ENG__}"
+  FS_COS_BOT_USER_ID="${FS_COS_BOT_USER_ID:-__FILL_DISCORD_BOT_USER_ID_COS__}"
+  FS_ENG_BOT_USER_ID="${FS_ENG_BOT_USER_ID:-__FILL_DISCORD_BOT_USER_ID_ENG__}"
   FS_LINEAR_TEAM="${FS_LINEAR_TEAM:-__FILL_LINEAR_TEAM_KEY__}"
 
   # 1. projects.json — every rev1 schema fix preserved: CoS agentId literal
@@ -326,6 +328,8 @@ fs_generate_fleet_artifact() {
     --arg dept "$FS_DEPT" \
     --arg cosEnv "$FS_COS_ENV" \
     --arg engEnv "$FS_ENG_ENV" \
+    --arg cosBotUserId "$FS_COS_BOT_USER_ID" \
+    --arg engBotUserId "$FS_ENG_BOT_USER_ID" \
     --arg engId "$FS_ENG_ID" \
     --arg team "$FS_LINEAR_TEAM" \
     --arg general "$FS_CHANNEL_GENERAL" \
@@ -350,6 +354,7 @@ fs_generate_fleet_artifact() {
             chatChannel: $cosCh,
             match: { labels: ["Triage"] },
             botTokenEnv: $cosEnv,
+            botUserId: $cosBotUserId,
             canSpawnRunners: false
           },
           {
@@ -357,7 +362,8 @@ fs_generate_fleet_artifact() {
             chatChannel: $engCh,
             match: { labels: [$plabel] },
             department: $dept,
-            botTokenEnv: $engEnv
+            botTokenEnv: $engEnv,
+            botUserId: $engBotUserId
           }
         ]
       }
@@ -652,6 +658,16 @@ step_run_bots() {
     fs_err "the two bots resolved DIFFERENT guilds ($g1 vs $g2) — both must be invited into the SAME server"
     return 1
   fi
+  FS_COS_BOT_USER_ID="$(jq -r '.botUserId // empty' <<<"$cos_res")"
+  FS_ENG_BOT_USER_ID="$(jq -r '.botUserId // empty' <<<"$eng_res")"
+  if [ -z "$FS_COS_BOT_USER_ID" ] || [ -z "$FS_ENG_BOT_USER_ID" ]; then
+    fs_err "bot validation returned no independent bot user id"
+    return 1
+  fi
+  if [ "$FS_COS_BOT_USER_ID" = "$FS_ENG_BOT_USER_ID" ]; then
+    fs_err "the two Lead identities resolved the SAME Discord bot user id ($FS_COS_BOT_USER_ID)"
+    return 1
+  fi
   FS_GUILD_ID="$g1"
   fs_env_upsert DISCORD_GUILD_ID "$FS_GUILD_ID"
   setup_mark_done bots "$(jq -nc --arg p "$path" --arg g "$FS_GUILD_ID" \
@@ -668,8 +684,14 @@ step_verify_bots() {
 }
 
 step_hydrate_bots() {
-  FS_GUILD_ID="$(setup_step_evidence bots | jq -r '.guildId // empty')"
-  [ -n "$FS_GUILD_ID" ]
+  local ev
+  ev="$(setup_step_evidence bots)"
+  FS_GUILD_ID="$(jq -r '.guildId // empty' <<<"$ev")"
+  FS_COS_BOT_USER_ID="$(jq -r --arg lead "$FS_COS_ID" '[.results[] | select(.leadId == $lead) | .botUserId][0] // empty' <<<"$ev")"
+  FS_ENG_BOT_USER_ID="$(jq -r --arg lead "$FS_ENG_ID" '[.results[] | select(.leadId == $lead) | .botUserId][0] // empty' <<<"$ev")"
+  [ -n "$FS_GUILD_ID" ] && [ -n "$FS_COS_BOT_USER_ID" ] \
+    && [ -n "$FS_ENG_BOT_USER_ID" ] \
+    && [ "$FS_COS_BOT_USER_ID" != "$FS_ENG_BOT_USER_ID" ]
 }
 
 # ═══════════════════════════════════════════════════════════════════════════

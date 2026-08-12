@@ -58,7 +58,8 @@ case "$url" in
     # never reflect the token back — the test asserts it stays out of the journal
     if [ "$mode" = "badauth" ]; then printf '{"message":"401: Unauthorized"}\n401'
     elif [ -z "$tok" ]; then printf '{"message":"401: no token"}\n401'
-    else printf '{"id":"stub-bot-id","username":"stub"}\n200'; fi
+    elif [[ "$tok" == *cos* ]]; then printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
+    else printf '{"id":"900000000000000002","username":"eng-stub"}\n200'; fi
     ;;
   *) printf '{}\n200' ;;
 esac

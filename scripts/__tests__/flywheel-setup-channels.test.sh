@@ -73,7 +73,13 @@ case "$method $url" in
     printf '\n204'
     ;;
   "GET "*/users/@me/guilds) printf '[{"id":"G1","name":"Test"}]\n200' ;;
-  "GET "*/users/@me)        printf '{"id":"stub-bot-id","username":"stub"}\n200' ;;
+  "GET "*/users/@me)
+    if [ -f "$sd/bot-id-seen" ]; then
+      printf '{"id":"900000000000000002","username":"eng-stub"}\n200'
+    else
+      touch "$sd/bot-id-seen"
+      printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
+    fi ;;
   "GET "*/users/*)          printf '{"id":"stub-user","username":"founder"}\n200' ;;
   *) printf '{}\n200' ;;
 esac
@@ -207,7 +213,13 @@ case "$method $url" in
     ;;
   "DELETE "*/channels/*/messages/*) printf '\n204' ;;
   "GET "*/users/@me/guilds) printf '[{"id":"G1","name":"Test"}]\n200' ;;
-  "GET "*/users/@me)        printf '{"id":"stub-bot-id","username":"stub"}\n200' ;;
+  "GET "*/users/@me)
+    if [ -f "$sd/bot-id-seen" ]; then
+      printf '{"id":"900000000000000002","username":"eng-stub"}\n200'
+    else
+      touch "$sd/bot-id-seen"
+      printf '{"id":"900000000000000001","username":"cos-stub"}\n200'
+    fi ;;
   "GET "*/users/*)          printf '{"id":"stub-user","username":"founder"}\n200' ;;
   *) printf '{}\n200' ;;
 esac
