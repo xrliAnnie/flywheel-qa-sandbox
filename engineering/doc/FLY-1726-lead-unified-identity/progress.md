@@ -1,13 +1,13 @@
 ---
 issue: FLY-1726
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-12T18:31:50.414Z
-nextStep: complete phase_design_complete
+phase: implement
+phaseCursor: 1/8
+updated: 2026-08-12T18:37:47.340Z
+nextStep: "RED: canonical identity resolver/schema/CLI"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1726 progress
-**phase**: design (6/6)
-**next**: complete phase_design_complete
+**phase**: implement (1/8)
+**next**: RED: canonical identity resolver/schema/CLI
