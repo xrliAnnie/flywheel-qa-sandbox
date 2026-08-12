@@ -1,0 +1,15 @@
+stateDiagram-v2
+    direction LR
+    QUEUED: QUEUED 排队中
+    LEASED: LEASED 在途(已投出等签收,最多 3 槽)
+    ACKED: ACKED 已签收
+    DEAD: DEAD 死信(转人工,附探针实况)
+
+    [*] --> QUEUED: 消息写入(只写身份)
+    QUEUED --> LEASED: 投递循环成批投出
+    LEASED --> ACKED: 当前活体签收(只认身份)
+    LEASED --> QUEUED: 既有兜底(30 分钟未签收自动收回,重试 3 次)
+    LEASED --> QUEUED: 本单新增(新身体出生一刻全量收回 recipient_reborn)
+    LEASED --> DEAD: 重试 3 次耗尽(判死权只在既有通道)
+    DEAD --> [*]: 死信通知只说未签收,处置前必须先验活体
+    ACKED --> [*]

@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph before["事故机制(8-11 实测)"]
+        direction TB
+        A1["舰队重启:旧 Lead 身体被杀"] --> A2["3 个在途批仍钉在旧身体的会话里<br/>(消息已被旧身体吸进上下文,签收永远不来)"]
+        A2 --> A3["3 个在途槽位全被占死"]
+        A3 --> A4["新消息只能排队:全舰 77 封冻结<br/>founder 消息最长 15 小时不达"]
+        A4 --> A5["恢复靠人:Lead 手工进数据库逐批对账"]
+    end
+
+    subgraph after["修复后(出生自动接管)"]
+        direction TB
+        B1["舰队重启:旧 Lead 身体被杀"] --> B2["新身体出生第一步:<br/>把自己名下全部在途批收回,标记为『未投递』"]
+        B2 --> B3["槽位立即清零,冻结当场解除"]
+        B3 --> B4["既有投递循环下一拍自动重投给新身体<br/>(零新常驻机制,复用现成回收通道)"]
+        B4 --> B5["新身体正常签收 → founder 全程无感"]
+    end
+
+    before -.->|"本单修复"| after
+
+    style before fill:#fff5f5,stroke:#ff3b30,stroke-width:2px
+    style after fill:#f0fff4,stroke:#34c759,stroke-width:2px
+    style A4 fill:#ffe5e3,stroke:#ff3b30
+    style A5 fill:#ffe5e3,stroke:#ff3b30
+    style B2 fill:#dcf5e3,stroke:#34c759
+    style B5 fill:#dcf5e3,stroke:#34c759
