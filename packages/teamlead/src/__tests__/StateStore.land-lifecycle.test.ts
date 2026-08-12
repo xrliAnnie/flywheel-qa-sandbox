@@ -305,6 +305,11 @@ function activateFounderRework(
 			to: "wake_delivered",
 			now: "2026-07-21T20:02:03.000Z",
 			releaseOwner: true,
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
 		}),
 	).toEqual({ ok: true });
 }
@@ -642,6 +647,11 @@ describe("StateStore land lifecycle ledger", () => {
 				to: "wake_delivered",
 				now: "2026-07-21T20:02:03.000Z",
 				releaseOwner: true,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 			}),
 		).toEqual({ ok: true });
 

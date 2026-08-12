@@ -9,6 +9,7 @@ import type {
 	WorkflowRunNodeRow,
 	WorkflowRunRow,
 } from "../StateStore.js";
+import { isStateStoreIrreversibleTerminalForZombie } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
@@ -121,11 +122,13 @@ export interface WorkflowReworkCoordinatorStore {
 		reason: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
+		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
+		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
 	}):
 		| {
 				ok: true;
 				holdCount: number;
-				state: "pending" | "turn_granted" | "needs_lead";
+				state: "pending" | "turn_granted" | "held" | "needs_lead";
 				nextRetryAt: string | null;
 		  }
 		| { ok: false; reason: string };
@@ -144,6 +147,7 @@ export interface WorkflowReworkCoordinatorStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true } | { ok: false; reason: string };
 	admitGeneralizedWorkflowExecution(input: {
 		runId: string;
@@ -200,7 +204,7 @@ export type WorkflowReworkCoordinatorOutcome =
 			epoch: number;
 	  }
 	| { kind: "replacement_pending"; executionId: string; reason: string }
-	| { kind: "held"; reason: string }
+	| { kind: "disabled"; reason: "rework_reentry_disabled" }
 	| { kind: "retryable"; reason: string }
 	| { kind: "busy" }
 	| { kind: "settled"; state: WorkflowReworkDeliveryRow["state"] }
@@ -234,26 +238,12 @@ export class WorkflowReworkCoordinator {
 		return this.deps.now?.() ?? new Date();
 	}
 
-	private async releaseAndHold(input: {
-		requestId: string;
-		generation: number;
-		session: PhaseSession;
-		reason: string;
-	}): Promise<WorkflowReworkCoordinatorOutcome> {
-		this.deps.store.releaseWorkflowReworkDelivery({
-			requestId: input.requestId,
-			ownerId: this.deps.ownerId,
-			generation: input.generation,
-			error: input.reason,
-			now: this.now().toISOString(),
-		});
-		return { kind: "held", reason: input.reason };
-	}
-
 	private releaseRetryable(input: {
 		requestId: string;
 		generation: number;
 		reason: string;
+		onExhausted?: "needs_lead" | "handoff_held_pane_loss";
+		terminal?: { kind: "irreversible_actor"; status: string; cause: string };
 	}): WorkflowReworkCoordinatorOutcome {
 		const request = this.deps.store.getWorkflowReworkRequest(input.requestId);
 		const run = request
@@ -267,10 +257,12 @@ export class WorkflowReworkCoordinator {
 				reason: input.reason,
 				alertIdentity: this.deps.resolveAlertIdentity(run),
 				now: this.now().toISOString(),
+				...(input.onExhausted ? { onExhausted: input.onExhausted } : {}),
+				...(input.terminal ? { terminal: input.terminal } : {}),
 			});
 			if (settled.ok) {
-				return settled.state === "needs_lead"
-					? { kind: "settled", state: "needs_lead" }
+				return settled.state === "needs_lead" || settled.state === "held"
+					? { kind: "settled", state: settled.state }
 					: { kind: "retryable", reason: input.reason };
 			}
 		}
@@ -287,6 +279,9 @@ export class WorkflowReworkCoordinator {
 	async reconcile(
 		requestId: string,
 	): Promise<WorkflowReworkCoordinatorOutcome> {
+		if (this.deps.env?.FLYWHEEL_WORKFLOW_REWORK_REENTRY === "0") {
+			return { kind: "disabled", reason: "rework_reentry_disabled" };
+		}
 		const now = this.now();
 		const claim = this.deps.store.claimWorkflowReworkDelivery({
 			requestId,
@@ -348,14 +343,6 @@ export class WorkflowReworkCoordinator {
 				reason: "actor_session_missing",
 			});
 		}
-		if (this.deps.env?.FLYWHEEL_WORKFLOW_REWORK_REENTRY === "0") {
-			return this.releaseAndHold({
-				requestId,
-				generation: claim.generation,
-				session: actor,
-				reason: "rework_reentry_disabled",
-			});
-		}
 		const reentry = await classifyPhaseActorReentry({
 			session: actor,
 			probeRegistered: this.deps.effects.probeRegistered,
@@ -363,11 +350,13 @@ export class WorkflowReworkCoordinator {
 			hasHostProcess: this.deps.effects.hasHostProcess,
 		});
 		if (reentry.kind === "hold") {
-			return this.releaseAndHold({
+			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
-				session: actor,
 				reason: reentry.reason,
+				...(reentry.reason === "persisted_target_missing"
+					? { onExhausted: "handoff_held_pane_loss" as const }
+					: {}),
 			});
 		}
 		if (reentry.kind === "replace") {
@@ -396,21 +385,34 @@ export class WorkflowReworkCoordinator {
 			request.base_revision,
 		);
 		if (!ready.ok) {
-			return this.releaseAndHold({
+			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
-				session: actor,
 				reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
 			});
 		}
 		const holderActivation =
 			await this.deps.effects.activateActorForWake?.(actor);
 		if (holderActivation && !holderActivation.ok) {
-			return this.releaseAndHold({
+			const activationError = holderActivation.error ?? "unknown";
+			const statusPrefix = "state_not_revivable:";
+			const terminalStatus = activationError.startsWith(statusPrefix)
+				? activationError.slice(statusPrefix.length).trim()
+				: undefined;
+			const reason = `holder_activation_failed:${activationError}`;
+			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
-				session: actor,
-				reason: `holder_activation_failed:${holderActivation.error ?? "unknown"}`,
+				reason,
+				...(isStateStoreIrreversibleTerminalForZombie(terminalStatus)
+					? {
+							terminal: {
+								kind: "irreversible_actor" as const,
+								status: terminalStatus!,
+								cause: reason,
+							},
+						}
+					: {}),
 			});
 		}
 
@@ -567,6 +569,7 @@ export class WorkflowReworkCoordinator {
 			to: "wake_delivered",
 			now: this.now().toISOString(),
 			releaseOwner: true,
+			alertIdentity: this.deps.resolveAlertIdentity(run),
 		});
 		if (!delivered.ok) {
 			return { kind: "retryable", reason: delivered.reason };

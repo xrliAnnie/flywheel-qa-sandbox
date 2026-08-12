@@ -937,6 +937,24 @@ export class WorkflowEngineDispatcher {
 			) {
 				continue;
 			}
+			if (this.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY !== "0") {
+				const resumed = this.options.store.transitionWorkflowReworkPause({
+					requestId: delivery.request_id,
+					generation: delivery.generation,
+					state: "resumed",
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+						run.run_id,
+					),
+					now: this.now().toISOString(),
+				});
+				if (!resumed.ok) {
+					this.log(
+						`workflow re-entry resume alert held for ${delivery.request_id}: ${resumed.reason}`,
+					);
+				}
+			}
 			let outcome: WorkflowReworkCoordinatorOutcome;
 			try {
 				outcome = await reconcile(delivery.request_id);
@@ -964,11 +982,28 @@ export class WorkflowEngineDispatcher {
 				}
 				continue;
 			}
-			if (
-				outcome.kind === "held" ||
-				outcome.kind === "retryable" ||
-				outcome.kind === "invalid"
-			) {
+			if (outcome.kind === "disabled") {
+				const now = this.now().toISOString();
+				const alerted = this.options.store.transitionWorkflowReworkPause({
+					requestId: delivery.request_id,
+					generation: delivery.generation,
+					state: "paused",
+					now,
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+						run.run_id,
+					),
+				});
+				if (!alerted.ok) {
+					this.log(
+						`workflow re-entry pause alert held for ${delivery.request_id}: ${alerted.reason}`,
+					);
+				}
+				result.held += 1;
+				continue;
+			}
+			if (outcome.kind === "retryable" || outcome.kind === "invalid") {
 				result.held += 1;
 			}
 		}
@@ -1079,6 +1114,7 @@ export class WorkflowEngineDispatcher {
 	}
 
 	private reconcileWorkflowReworkStalls(): void {
+		const reentryPaused = this.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY === "0";
 		const now = this.now();
 		const nowMs = now.getTime();
 		const alertMs = this.reworkThresholdMs(
@@ -1118,6 +1154,31 @@ export class WorkflowEngineDispatcher {
 			) {
 				continue;
 			}
+			let pauseClockStartedAt: string | null = null;
+			if (delivery.state === "pending" || delivery.state === "turn_granted") {
+				// Operator-paused original-actor retries own a distinct durable FSM.
+				// Replacement activation stalls remain safety-governed below even
+				// while the original-actor re-entry kill switch is off.
+				if (reentryPaused) continue;
+				const resumed = this.options.store.transitionWorkflowReworkPause({
+					requestId: delivery.request_id,
+					generation: delivery.generation,
+					state: "resumed",
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+						run.run_id,
+					),
+					now: now.toISOString(),
+				});
+				if (!resumed.ok) {
+					this.log(
+						`workflow re-entry stall clock held for ${delivery.request_id}: ${resumed.reason}`,
+					);
+					continue;
+				}
+				pauseClockStartedAt = resumed.clockStartedAt;
+			}
 			if (delivery.state === "replacement_pending") {
 				const route = this.options.store.getLatestWorkflowReworkRoute(
 					delivery.request_id,
@@ -1134,10 +1195,21 @@ export class WorkflowEngineDispatcher {
 				// race that stronger evidence path.
 				if (node?.state === "admitted") continue;
 			}
-			const sourceAt =
+			const naturalSourceAt =
 				delivery.state === "pending"
 					? request.requested_at
 					: delivery.updated_at;
+			const pauseClockStartedMs = pauseClockStartedAt
+				? parseSqliteUtcMs(pauseClockStartedAt)
+				: null;
+			const naturalSourceMs = parseSqliteUtcMs(naturalSourceAt);
+			const sourceAt =
+				pauseClockStartedAt &&
+				pauseClockStartedMs != null &&
+				naturalSourceMs != null &&
+				pauseClockStartedMs > naturalSourceMs
+					? pauseClockStartedAt
+					: naturalSourceAt;
 			const sourceMs = parseSqliteUtcMs(sourceAt);
 			if (sourceMs == null || nowMs < sourceMs) continue;
 			const ageMs = nowMs - sourceMs;
@@ -1850,6 +1922,11 @@ export class WorkflowEngineDispatcher {
 				this.options.store.markWorkflowReworkReplacementLaunched({
 					executionId: intent.execution_id,
 					now: this.now().toISOString(),
+					alertIdentity: this.resolveRunAlertIdentity(
+						run.project_name,
+						run.issue_id,
+						run.run_id,
+					),
 				});
 			if (!reworkLaunch.ok) {
 				throw new Error(

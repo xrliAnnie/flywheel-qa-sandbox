@@ -1,0 +1,11 @@
+flowchart TD
+    A["QA FAIL 后引擎发起 rework<br/>(让原工人重新进场返工)"] --> B["引擎每 1 秒巡检一次"]
+    B --> C["claim 认领投递<br/>计数器 generation +1"]
+    C --> D{"尝试唤醒目标工人"}
+    D -->|"失败:worktree 脏 / 工人已收工"| E["原样放回队列<br/>不退避 · 不计次数"]
+    E --> B
+    B -.->|"卡满 30 分钟后"| F["停滞告警<br/>去重键里混进了 generation"]
+    F --> G["每秒都被当成『新』告警<br/>alerts 频道 30 分钟刷 1272 条"]
+    B -.->|"卡满 60 分钟后"| H["hold 挂起整个 run<br/>风暴才停"]
+    style G fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style E fill:#fff4e5,stroke:#ff9500

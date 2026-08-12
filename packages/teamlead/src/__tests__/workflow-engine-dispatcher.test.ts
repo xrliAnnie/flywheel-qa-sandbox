@@ -1326,9 +1326,170 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("pauses the stall clock durably and keeps pause alerts distinct from genuine stalls", async () => {
+		const store = await storeWithQaFailKickback();
+		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const before = store.getWorkflowReworkDelivery(requestId);
+		let paused = true;
+		let now = new Date("2026-07-16T00:11:00.000Z");
+		const env = {
+			...WORKFLOW_ON,
+			FLYWHEEL_WORKFLOW_REWORK_REENTRY: "0",
+			FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+			FLYWHEEL_ENGINE_REWORK_HOLD_MS: "5000",
+		};
+		const reconcileWorkflowRework = vi.fn(async () =>
+			paused
+				? {
+						kind: "disabled" as const,
+						reason: "rework_reentry_disabled" as const,
+					}
+				: { kind: "busy" as const },
+		);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env,
+			now: () => now,
+			reconcileWorkflowRework,
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		now = new Date("2026-07-16T02:11:00.000Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_delivery_claimed"),
+		).toEqual([]);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+		expect(store.listWorkflowAlertOutbox()[0]?.payload).toMatchObject({
+			eventType: "workflow_engine_escalation",
+			title: "Workflow rework re-entry paused by operator for FLY-1307",
+		});
+		expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
+			"will resume when re-entry is enabled",
+		);
+
+		paused = false;
+		env.FLYWHEEL_WORKFLOW_REWORK_REENTRY = "1";
+		now = new Date("2026-07-16T02:11:00.100Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(2);
+		expect(store.listWorkflowAlertOutbox()[1]?.payload).toMatchObject({
+			eventType: "workflow_engine_escalation",
+			severity: "warning",
+			title: "Workflow rework re-entry resumed for FLY-1307",
+		});
+
+		now = new Date("2026-07-16T02:11:01.600Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(3);
+		expect(
+			store.listWorkflowAlertOutbox().map((row) => row.escalation_uid),
+		).toEqual([
+			expect.stringContaining("rework_reentry_paused:"),
+			expect.stringContaining("rework_reentry_resumed:"),
+			expect.stringContaining("rework_stalled_alert:"),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
+		).toHaveLength(1);
+
+		paused = true;
+		env.FLYWHEEL_WORKFLOW_REWORK_REENTRY = "0";
+		now = new Date("2026-07-16T02:12:00.000Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		now = new Date("2026-07-16T04:12:00.000Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+
+		paused = false;
+		env.FLYWHEEL_WORKFLOW_REWORK_REENTRY = "1";
+		now = new Date("2026-07-16T04:12:00.100Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_paused")
+				.map((event) => event.event_uid),
+		).toEqual([
+			expect.stringContaining("episode1"),
+			expect.stringContaining("episode2"),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_resumed")
+				.map((event) => event.event_uid),
+		).toEqual([
+			expect.stringContaining("episode1"),
+			expect.stringContaining("episode2"),
+		]);
+
+		now = new Date("2026-07-16T04:12:06.000Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowReworkDelivery(requestId)?.state).toBe("held");
+		expect(fake.start).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("uses the inherited environment for the re-entry kill switch", async () => {
+		vi.stubEnv("FLYWHEEL_WORKFLOW_REWORK_REENTRY", "0");
+		const store = await storeWithQaFailKickback();
+		try {
+			const fake = fakeStartDispatcher(store);
+			const reconcileWorkflowRework = vi.fn(async () => ({
+				kind: "disabled" as const,
+				reason: "rework_reentry_disabled" as const,
+			}));
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				now: () => new Date("2026-07-16T00:11:00.000Z"),
+				reconcileWorkflowRework,
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "rework_activation_paused"),
+			).toHaveLength(1);
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "rework_activation_resumed"),
+			).toEqual([]);
+		} finally {
+			store.close();
+			vi.unstubAllEnvs();
+		}
+	});
+
 	it("mints a fresh launch only after the coordinator proves the actor dead", async () => {
 		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
+		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
+		const routeBefore = store.getLatestWorkflowReworkRoute(requestId)!;
 		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
 			const db = (
 				store as unknown as {
@@ -1364,8 +1525,12 @@ describe("WorkflowEngineDispatcher", () => {
 			state: "running",
 			execution_id: launched,
 		});
-		const requestId = reconcileWorkflowRework.mock.calls[0]?.[0];
-		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
+		expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
+			revision: routeBefore.revision + 1,
+			preferred_actor_execution_id: launched,
+		});
+		expect(reconcileWorkflowRework.mock.calls[0]?.[0]).toBe(requestId);
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 			state: "wake_delivered",
 		});
 		store.close();
@@ -1375,19 +1540,39 @@ describe("WorkflowEngineDispatcher", () => {
 		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
 		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
-		const db = (
-			store as unknown as {
-				db: { run(sql: string, params?: unknown[]): void };
-			}
-		).db;
-		db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = 'run-1'");
-		db.run(
-			`UPDATE workflow_rework_delivery
-			    SET state = 'held', last_error = 'persisted_target_missing',
-			        hold_count = 4, next_retry_at = '2026-07-16T00:29:00.000Z'
-			  WHERE request_id = ?`,
-			[requestId],
+		const failureTimes = [11, 12, 14, 18, 26].map(
+			(minute) => `2026-07-16T00:${minute}:00.000Z`,
 		);
+		for (const now of failureTimes) {
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				now,
+				leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				store.settleWorkflowReworkFailure({
+					requestId,
+					ownerId: "coordinator",
+					generation: claim.generation,
+					reason: "persisted_target_missing",
+					onExhausted: "handoff_held_pane_loss",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now,
+				}),
+			).toMatchObject({ ok: true });
+		}
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "held",
+			last_error: "persisted_target_missing",
+			hold_count: 0,
+		});
 		const reconcileWorkflowRework = vi.fn(async () => ({
 			kind: "busy" as const,
 		}));
@@ -1417,6 +1602,20 @@ describe("WorkflowEngineDispatcher", () => {
 			state: "wake_delivered",
 			hold_count: 0,
 			next_retry_at: null,
+		});
+		expect(
+			store
+				.listWorkflowAlertOutbox()
+				.map((row) => row.payload.metadata.workflowEngine.disposition),
+		).toEqual(["rework_pane_loss_handoff", "rework_stall_recovered"]);
+		expect(store.listWorkflowAlertOutbox()[1]?.payload).toMatchObject({
+			severity: "warning",
+			metadata: {
+				workflowEngine: {
+					disposition: "rework_stall_recovered",
+					leadResolution: "fallback",
+				},
+			},
 		});
 		store.close();
 	});
@@ -1690,6 +1889,57 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
 		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
 		expect(fake.start).not.toHaveBeenCalled();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_held"),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("keeps the genuine stall clock for a stranded replacement_pending delivery", async () => {
+		const store = await storeWithQaFailKickback();
+		const delivery = store.listWorkflowReworkDeliveries()[0];
+		if (!delivery) throw new Error("rework delivery missing");
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'replacement_pending', updated_at = ?
+			  WHERE request_id = ?`,
+			["2026-07-16T00:10:00.000Z", delivery.request_id],
+		);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_WORKFLOW_REWORK_REENTRY: "0",
+				FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
+			},
+			now: () => new Date("2026-07-16T00:20:00.000Z"),
+			reconcileWorkflowRework: vi.fn(async () => ({ kind: "busy" as const })),
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		expect(store.getWorkflowReworkDelivery(delivery.request_id)).toMatchObject({
+			state: "held",
+			last_error: "delivery_replacement_pending",
+		});
 		expect(
 			store
 				.listWorkflowRunEvents("run-1")

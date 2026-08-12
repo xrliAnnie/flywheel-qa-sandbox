@@ -1656,6 +1656,18 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"call_time",
 				"env-param",
 			),
+			envSite(
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				"reconcileWorkflowReworks",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+				"reconcileWorkflowReworkStalls",
+				"call_time",
+				"env-param",
+			),
 		],
 		toggleable: "direct",
 		directToggleProof:

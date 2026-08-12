@@ -199,17 +199,20 @@ function makeHarness(input: {
 			) {
 				return { ok: false as const, reason: "stale_delivery_owner" };
 			}
+			const holdCount = delivery.hold_count + 1;
+			const state = failure.terminal ? "needs_lead" : delivery.state;
 			delivery = {
 				...delivery,
 				owner_id: null,
 				lease_expires_at: null,
-				hold_count: delivery.hold_count + 1,
+				hold_count: holdCount,
+				state,
 				last_error: failure.reason,
 			};
 			return {
 				ok: true as const,
-				holdCount: delivery.hold_count,
-				state: delivery.state as "pending" | "turn_granted",
+				holdCount,
+				state,
 				nextRetryAt: null,
 			};
 		}),
@@ -274,6 +277,14 @@ function makeHarness(input: {
 		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
 		wakeActor: vi.fn(async () => wakeResults.shift() ?? { ok: true }),
 	};
+	const env = {
+		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+		FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+		FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+		FLYWHEEL_WORKFLOW_REWORK_REENTRY:
+			input.reentryEnabled === false ? "0" : "1",
+	};
 	const coordinator = new WorkflowReworkCoordinator({
 		store,
 		ownerId: "coordinator-a",
@@ -290,16 +301,9 @@ function makeHarness(input: {
 				now.getTime() + 24 * 60 * 60_000,
 			).toISOString(),
 		}),
-		env: {
-			FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-			FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-			FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-			FLYWHEEL_WORKFLOW_REWORK_REENTRY:
-				input.reentryEnabled === false ? "0" : "1",
-		},
+		env,
 	});
-	return { coordinator, store, effects, getDelivery: () => delivery };
+	return { coordinator, store, effects, env, getDelivery: () => delivery };
 }
 
 describe("WorkflowReworkCoordinator", () => {
@@ -334,19 +338,28 @@ describe("WorkflowReworkCoordinator", () => {
 		}
 	});
 
-	it("holds without probing, spawning, or an immediate alert when re-entry is disabled", async () => {
+	it("pauses without claiming or mutating and resumes when re-entry is re-enabled", async () => {
 		const h = makeHarness({ reentryEnabled: false });
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
-			kind: "held",
+			kind: "disabled",
 			reason: "rework_reentry_disabled",
 		});
+		expect(h.store.claimWorkflowReworkDelivery).not.toHaveBeenCalled();
 		expect(h.effects.probeRegistered).not.toHaveBeenCalled();
 		expect(h.effects.grantTurn).not.toHaveBeenCalled();
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+		expect(h.store.settleWorkflowReworkFailure).not.toHaveBeenCalled();
 		expect(h.getDelivery()).toMatchObject({
 			state: "pending",
-			last_error: "rework_reentry_disabled",
+			generation: 0,
+			hold_count: 0,
 		});
+
+		h.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY = "1";
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "wake_delivered",
+		});
+		expect(h.store.claimWorkflowReworkDelivery).toHaveBeenCalledOnce();
 	});
 
 	it("admits a same-exec activation, grants a new epoch, and wakes the original actor", async () => {
@@ -383,15 +396,20 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.getDelivery().state).toBe("wake_delivered");
 	});
 
-	it("holds uncertain or dirty actors without granting TURN", async () => {
+	it("backs off uncertain or dirty actors without granting TURN", async () => {
 		const uncertain = makeHarness({ registered: "indeterminate" });
 		await expect(
 			uncertain.coordinator.reconcile("rework-1"),
 		).resolves.toMatchObject({
-			kind: "held",
+			kind: "retryable",
 			reason: "registered_liveness_indeterminate",
 		});
 		expect(uncertain.effects.grantTurn).not.toHaveBeenCalled();
+		expect(uncertain.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "registered_liveness_indeterminate",
+			}),
+		);
 
 		const dirty = makeHarness({
 			registered: "alive",
@@ -400,14 +418,19 @@ describe("WorkflowReworkCoordinator", () => {
 		await expect(
 			dirty.coordinator.reconcile("rework-1"),
 		).resolves.toMatchObject({
-			kind: "held",
+			kind: "retryable",
 			reason: "worktree_not_ready:dirty worktree",
 		});
 		expect(dirty.effects.grantTurn).not.toHaveBeenCalled();
 		expect(dirty.getDelivery().state).toBe("pending");
+		expect(dirty.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "worktree_not_ready:dirty worktree",
+			}),
+		);
 	});
 
-	it("holds a holder activation failure before admission, TURN, or wake", async () => {
+	it("backs off a revivable holder activation failure before admission, TURN, or wake", async () => {
 		const h = makeHarness({ registered: "alive" });
 		h.effects.activateActorForWake.mockResolvedValue({
 			ok: false,
@@ -415,12 +438,59 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
-			kind: "held",
+			kind: "retryable",
 			reason: "holder_activation_failed:state_not_revivable:approved_to_ship",
 		});
 		expect(h.store.admitGeneralizedWorkflowExecution).not.toHaveBeenCalled();
 		expect(h.effects.grantTurn).not.toHaveBeenCalled();
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("terminalizes an irreversible holder activation failure on the first strike", async () => {
+		const h = makeHarness({ registered: "alive" });
+		h.effects.activateActorForWake.mockResolvedValue({
+			ok: false,
+			error: "state_not_revivable:completed",
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "settled",
+			state: "needs_lead",
+		});
+		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "holder_activation_failed:state_not_revivable:completed",
+				terminal: {
+					kind: "irreversible_actor",
+					status: "completed",
+					cause: "holder_activation_failed:state_not_revivable:completed",
+				},
+			}),
+		);
+		expect(h.store.admitGeneralizedWorkflowExecution).not.toHaveBeenCalled();
+	});
+
+	it("backs off a missing persisted target before handing it to pane-loss recovery", async () => {
+		const h = makeHarness({ registered: "absent" });
+		h.effects.getActorSession.mockReturnValue({
+			...session,
+			status: "terminated",
+			tmux_session: undefined,
+		});
+		Object.assign(h.effects, {
+			hasHostProcess: vi.fn(async () => true),
+		});
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "persisted_target_missing",
+		});
+		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason: "persisted_target_missing",
+				onExhausted: "handoff_held_pane_loss",
+			}),
+		);
 	});
 
 	it("marks only proven-dead actors for replacement", async () => {
