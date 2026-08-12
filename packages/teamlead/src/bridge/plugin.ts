@@ -1422,7 +1422,9 @@ export function createBridgeApp(
 					console.warn(
 						`[doa-backoff] authenticated reset failed: ${(error as Error).message}`,
 					);
-					res.status(500).json({ ok: false, error: "DOA backoff reset failed" });
+					res
+						.status(500)
+						.json({ ok: false, error: "DOA backoff reset failed" });
 				}
 			},
 		);

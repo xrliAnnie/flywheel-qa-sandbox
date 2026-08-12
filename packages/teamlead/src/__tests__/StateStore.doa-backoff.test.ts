@@ -209,11 +209,7 @@ describe("StateStore DOA re-dispatch backoff", () => {
 			role: "main",
 		});
 		expect(
-			store.verifyAndRenewDoaReleaseOwner(
-				"old-owner",
-				BASE + 61_000,
-				600_000,
-			),
+			store.verifyAndRenewDoaReleaseOwner("old-owner", BASE + 61_000, 600_000),
 		).toEqual({ ok: true });
 		expect(
 			store.getDoaBackoffLedger("flywheel", "issue-uuid", "main"),
@@ -226,11 +222,7 @@ describe("StateStore DOA re-dispatch backoff", () => {
 			ownerExecutionId: "new-owner",
 		});
 		expect(
-			store.verifyAndRenewDoaReleaseOwner(
-				"old-owner",
-				contenderTime,
-				600_000,
-			),
+			store.verifyAndRenewDoaReleaseOwner("old-owner", contenderTime, 600_000),
 		).toEqual({ ok: false, reason: "doa_reservation_lost" });
 		store.bindWorktreeOnce(
 			"old-owner",
