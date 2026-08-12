@@ -404,13 +404,28 @@ describe("feature-flag registry invariants", () => {
 				default: true,
 				toggleable: "direct",
 			});
-			expect(flag?.readSites).toEqual([
+			const expectedReadSites = [
 				expect.objectContaining({
 					file,
 					symbol,
 					timing: "call_time",
 				}),
-			]);
+				...(envVar === "FLYWHEEL_WORKFLOW_REWORK_REENTRY"
+					? [
+							expect.objectContaining({
+								file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+								symbol: "reconcileWorkflowReworks",
+								timing: "call_time",
+							}),
+							expect.objectContaining({
+								file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+								symbol: "reconcileWorkflowReworkStalls",
+								timing: "call_time",
+							}),
+						]
+					: []),
+			];
+			expect(flag?.readSites).toEqual(expectedReadSites);
 			expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
 		}
 		expect(

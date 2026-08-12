@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> pending: rework 请求创建
+    pending --> pending: 失败一次 → hold_count+1<br/>next_retry_at 指数退避
+    pending --> turn_granted: 唤醒授权 (TURN)
+    turn_granted --> wake_delivered: 原工人被成功唤醒<br/>✅ 曾告警则发恢复收口
+    pending --> needs_lead: 5 击耗尽 / 首击终局<br/>🔔 仅 1 条 severe
+    pending --> held_paneloss: 第 5 击移交<br/>hold_count 归零 🔔 仅 1 条
+    held_paneloss --> replacement_pending: 探测确认工人已死<br/>换新工人 (FLY-1648)
+    replacement_pending --> wake_delivered: 新工人起飞<br/>✅ 曾告警则发恢复收口
+    held_paneloss: held (pane-loss 移交形态)

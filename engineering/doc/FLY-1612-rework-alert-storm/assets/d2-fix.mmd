@@ -1,0 +1,12 @@
+flowchart TD
+    A["唤醒失败"] --> B{"按失败原因分流"}
+    B -->|"永不可能成功:<br/>目标工人已终局 / reentry 被 operator 关闭"| C["首击即终局<br/>needs_lead + 仅 1 条告警"]
+    B -->|"tmux 窗格丢失<br/>(persisted_target_missing)"| D["退避重试<br/>1/2/4/8 分钟,共 5 击"]
+    D -->|"第 5 击仍失败"| E["原子移交 FLY-1648 窗格恢复机器<br/>+ 仅 1 条告警"]
+    B -->|"瞬时堵塞:<br/>worktree 脏 / 探针不确定"| F["退避重试<br/>1/2/4/8 分钟,共 5 击"]
+    F -->|"退避窗内自愈"| G["恢复干活<br/>(曾发过告警则补 1 条恢复收口)"]
+    F -->|"第 5 击仍失败"| H["needs_lead + 仅 1 条告警<br/>(等 Lead/operator 解堵)"]
+    style C fill:#e8f5ec,stroke:#34c759
+    style E fill:#e8f0fe,stroke:#007aff
+    style G fill:#e8f5ec,stroke:#34c759
+    style H fill:#fff4e5,stroke:#ff9500

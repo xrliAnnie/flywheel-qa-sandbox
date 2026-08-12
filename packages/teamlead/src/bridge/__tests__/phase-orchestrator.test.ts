@@ -1024,6 +1024,11 @@ describe("FLY-1307 named hard gate — engine-owned v1 is event-equivalent to th
 				to: "wake_delivered",
 				now: "2026-07-23T00:00:03.000Z",
 				releaseOwner: true,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 			}),
 		).toEqual({ ok: true });
 		return executionId;
