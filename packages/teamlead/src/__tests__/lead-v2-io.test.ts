@@ -48,11 +48,11 @@ describe("private Lead terminal I/O", () => {
 		);
 	});
 
-	it("preserves the shared-server v1 capture contract", async () => {
+	it("preserves generic string-target capture for non-Lead callers", async () => {
 		const execFn = vi.fn().mockResolvedValue({ stdout: "pane\n", stderr: "" });
 		const capture = defaultLeadPaneCapture("flywheel", execFn);
 
-		await capture({ windowId: "@7", windowName: "demo-ops" }, 20);
+		await capture("@7", 20);
 		expect(execFn).toHaveBeenCalledWith(
 			"tmux",
 			["capture-pane", "-t", "@7", "-p", "-S", "-20"],

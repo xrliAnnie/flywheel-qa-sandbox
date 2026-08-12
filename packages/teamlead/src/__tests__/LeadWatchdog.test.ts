@@ -122,7 +122,6 @@ describe("LeadWatchdog", () => {
 				throw new Error("should not be called");
 			},
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 0,
 		});
 		await wd.pollOnce();
@@ -146,7 +145,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => "some pane content\ncursor: typing",
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 0,
 		});
 		await wd.pollOnce();
@@ -172,7 +170,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => stuckContent,
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 		});
 
@@ -209,7 +206,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => "claude code: usage limit exceeded.\n> ",
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 		});
 		await wd.pollOnce();
@@ -218,31 +214,6 @@ describe("LeadWatchdog", () => {
 		const p = notifier.results[0]!;
 		expect(p.eventType).toBe("usage_limit");
 		expect(p.body.toLowerCase()).toContain("billing");
-	});
-
-	it("early-exits to Silent when a blocked marker file is present", async () => {
-		const notifier = makeNotifier();
-		const wd = new LeadWatchdog({
-			pollIntervalMs: 30_000,
-			paneHashStuckCycles: 2,
-			paneHashAlertCycles: 3,
-			cooldownMs: 300_000,
-			projects,
-			store,
-			notifier: notifier.alert,
-			locateWindowFn: async () => ({
-				windowId: "@7",
-				windowName: "geoforge3d-cos-lead",
-			}),
-			captureFn: async () => "anything",
-			claimsReader: async () => new Set(),
-			blockedMarkerReader: async (leadId) =>
-				leadId === "cos-lead" ? ["permission_blocked"] : [],
-			now: () => 0,
-		});
-		await wd.pollOnce();
-		expect(wd.getState("cos-lead")).toBe("Silent");
-		expect(notifier.alert).not.toHaveBeenCalled();
 	});
 
 	it("goes to Silent when shell already claimed the current eventId", async () => {
@@ -262,7 +233,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => stuckContent,
 			claimsReader: async () => new Set(["__any__"]),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 			claimsReaderMatchAll: true,
 		});
@@ -298,7 +268,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => captures[tick++]!,
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 		});
 		for (let i = 0; i < captures.length; i++) {
@@ -332,7 +301,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => stuckContent,
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 		});
 		await wd1.pollOnce();
@@ -358,7 +326,6 @@ describe("LeadWatchdog", () => {
 			}),
 			captureFn: async () => stuckContent,
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			// Different "now" (different 10-min bucket under old formula).
 			now: () => 1_700_000_000_000 + 11 * 60 * 1000,
 		});
@@ -398,7 +365,6 @@ describe("LeadWatchdog", () => {
 					: null,
 			captureFn: async () => "fresh",
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 0,
 		});
 		await wd.pollOnce();
@@ -422,7 +388,6 @@ describe("LeadWatchdog", () => {
 				locateWindowFn,
 				captureFn: async () => "",
 				claimsReader: async () => new Set(),
-				blockedMarkerReader: async () => [],
 				now: () => 0,
 			});
 			wd.start();
@@ -459,7 +424,6 @@ describe("LeadWatchdog", () => {
 				locateWindowFn,
 				captureFn: async () => "",
 				claimsReader: async () => new Set(),
-				blockedMarkerReader: async () => [],
 			});
 
 			expect(() => wd.start()).not.toThrow();
@@ -489,7 +453,6 @@ describe("LeadWatchdog", () => {
 				},
 				captureFn: async () => "",
 				claimsReader: async () => new Set(),
-				blockedMarkerReader: async () => [],
 			});
 			wd.start();
 			await vi.advanceTimersByTimeAsync(150_000);
@@ -656,7 +619,6 @@ describe("LeadWatchdog — FLY-218 transient-529 suppression wired through tickL
 			}),
 			captureFn: async () => loadFixture(fixture),
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 0,
 			suppressIdleHealthy,
 		});
@@ -738,7 +700,6 @@ describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier e
 			}),
 			captureFn: async () => loadFixture(fixture),
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 0,
 			suppressIdleHealthy,
 		});
@@ -803,7 +764,6 @@ describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier e
 				}),
 				captureFn: async () => echo,
 				claimsReader: async () => new Set(),
-				blockedMarkerReader: async () => [],
 				now: () => 0,
 				suppressIdleHealthy: true,
 			});
@@ -888,7 +848,6 @@ describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts o
 			}),
 			captureFn: async () => captureFn(),
 			claimsReader: async () => new Set(),
-			blockedMarkerReader: async () => [],
 			now: () => 1_700_000_000_000,
 			watchdogBlockedEnabled,
 			onPollComplete,

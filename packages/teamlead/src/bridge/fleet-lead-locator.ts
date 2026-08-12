@@ -38,15 +38,11 @@ export async function locateConfiguredLeadWindow(
 			options.homeDir,
 			options.stateDir,
 		);
-		if (carrier === "v1") {
-			return locateLeadWindow(projectName, leadId, { execFn: options.execFn });
-		}
 		if (carrier !== "v2") return null;
 		const manifest = JSON.parse(
 			options.readFile(join(options.stateDir, "manifests", `${key}.json`)),
 		) as Record<string, unknown>;
 		return locateLeadWindow(projectName, leadId, {
-			carrier,
 			stateDir: options.stateDir,
 			manifest,
 			execFn: options.execFn,

@@ -1,9 +1,8 @@
 #!/bin/bash
 # FLY-650: materialize-lead-manifests.sh (WI-4; Codex R1#2 / R2#5).
 #
-# Asserts the materializer produces the SAME manifest shape claude-lead.sh writes
-# (minus runtime-only pid), carries model/leadBackend, is idempotent, and starts
-# no Lead process.
+# Asserts the materializer produces the canonical pre-launch manifest shape,
+# carries model/leadBackend, is idempotent, and starts no Lead process.
 set -uo pipefail
 PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
@@ -41,22 +40,19 @@ else
   fail "M1 manifests: $(ls "$MDIR" 2>/dev/null)"
 fi
 
-# ── M2: base shape matches claude-lead.sh minus pid ──
-# claude-lead writes: leadId,projectDir,projectName,subdir,workspace,botTokenEnv,
-# mcpExclude,chromeEnabled,pid (+optional model,leadBackend). Materializer = same
-# minus pid.
+# ── M2: canonical pre-launch shape excludes wrapper-v2 runtime identity ──
 KEYS="$(jq -r 'keys_unsorted | sort | join(",")' "$MDIR/flywheel-flywheel-cos-lead.json")"
 EXPECT="botTokenEnv,chromeEnabled,leadId,mcpExclude,projectDir,projectName,subdir,workspace"
 if [ "$KEYS" = "$EXPECT" ]; then
-  pass "M2 base key set == claude-lead manifest minus pid"
+  pass "M2 canonical pre-launch key set"
 else
   fail "M2 keys: got [$KEYS] want [$EXPECT]"
 fi
-# explicitly: no runtime-only pid
-if jq -e 'has("pid")' "$MDIR/flywheel-flywheel-cos-lead.json" >/dev/null 2>&1; then
-  fail "M2b materialized manifest must NOT carry runtime-only pid"
+# Explicitly: no runtime-only identity fields.
+if jq -e 'has("pid") or has("socketPath")' "$MDIR/flywheel-flywheel-cos-lead.json" >/dev/null 2>&1; then
+  fail "M2b materialized manifest must not carry runtime-only identity"
 else
-  pass "M2b no runtime-only pid"
+  pass "M2b no runtime-only identity"
 fi
 
 # ── M3: field values + carrier fields ──

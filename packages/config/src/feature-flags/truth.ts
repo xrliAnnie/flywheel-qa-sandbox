@@ -31,7 +31,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
-	FLYWHEEL_BLOCKED_DIR: "plumbing: blocked-sessions dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",
 	FLYWHEEL_HOOK_SOURCE_DIR: "plumbing: hook source dir",

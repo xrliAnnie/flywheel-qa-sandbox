@@ -29,7 +29,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/script-sanity.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
-for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+for f in flywheel-lead-wrapper-v2.sh \
     flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
     lib/bounded-run.sh lib/lead-address.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
@@ -48,7 +48,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -77,12 +77,12 @@ run_converge() {
 # C1: drifted (the incident stub) → repaired + one alert
 : > "$SB/alerts.log"
 seed_steady_state "$ST"
-chmod u+w "$ST/bin/flywheel-lead-wrapper.sh"
-echo '#!/bin/bash' > "$ST/bin/flywheel-lead-wrapper.sh"
+chmod u+w "$ST/bin/flywheel-lead-wrapper-v2.sh"
+echo '#!/bin/bash' > "$ST/bin/flywheel-lead-wrapper-v2.sh"
 run_converge; RC=$?
 if [ "$RC" -eq 0 ] \
-   && cmp -s "$ST/bin/flywheel-lead-wrapper.sh" "$FR/scripts/flywheel-lead-wrapper.sh" \
-   && [ ! -w "$ST/bin/flywheel-lead-wrapper.sh" ] \
+   && cmp -s "$ST/bin/flywheel-lead-wrapper-v2.sh" "$FR/scripts/flywheel-lead-wrapper-v2.sh" \
+   && [ ! -w "$ST/bin/flywheel-lead-wrapper-v2.sh" ] \
    && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 1 ] \
    && grep -q 'bin_integrity_drift' "$SB/alerts.log"; then
   pass "C1: stub drift repaired to repo source (555) + exactly one alert"
@@ -105,9 +105,9 @@ else fail "C3: missing repair (rc=$RC)"; fi
 
 # C5 (Codex R1#1): content matches but mode 644 → converge tightens to 555, silently
 : > "$SB/alerts.log"
-chmod 644 "$ST/bin/flywheel-lead-wrapper.sh"
+chmod 644 "$ST/bin/flywheel-lead-wrapper-v2.sh"
 run_converge; RC=$?
-if [ "$RC" -eq 0 ] && [ ! -w "$ST/bin/flywheel-lead-wrapper.sh" ] && [ ! -s "$SB/alerts.log" ]; then
+if [ "$RC" -eq 0 ] && [ ! -w "$ST/bin/flywheel-lead-wrapper-v2.sh" ] && [ ! -s "$SB/alerts.log" ]; then
   pass "C5: mode-only drift tightened to 555, no alert"
 else fail "C5: mode convergence (rc=$RC)"; ls -l "$ST/bin"; cat "$SB/alerts.log" 2>/dev/null; fi
 
@@ -156,8 +156,8 @@ else fail "C8: absent source was tolerated (rc=$RC)"; cat "$SB/out.log" "$SB/ale
 FH="$SB/fakehome"; mkdir -p "$FH/.flywheel/bin"
 : > "$SB/alerts.log"
 seed_steady_state "$FH/.flywheel"
-chmod u+w "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"
-echo '#!/bin/bash' > "$FH/.flywheel/bin/flywheel-lead-wrapper.sh"   # drift
+chmod u+w "$FH/.flywheel/bin/flywheel-lead-wrapper-v2.sh"
+echo '#!/bin/bash' > "$FH/.flywheel/bin/flywheel-lead-wrapper-v2.sh"   # drift
 ALERT_LOG="$SB/alerts.log" HOME="$FH" FLYWHEEL_STATE_DIR="$FH/.flywheel" \
 FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT=1 \
   bash "$CONVERGE" >"$SB/out7.log" 2>&1

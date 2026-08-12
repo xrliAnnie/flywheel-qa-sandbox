@@ -33,7 +33,7 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
     { echo '#!/bin/bash' > "$fr/scripts/lib/tmux-server-rescue.sh"; }
   cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$fr/scripts/"
   local f i
-  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead-wrapper-v2.sh \
       flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
       flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh \
       lib/lead-address.sh meta-alert.sh; do
@@ -72,7 +72,7 @@ chmod +x "$ALERT"
 seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   mkdir -p "$1/bin/lib"
   local f
-  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead-wrapper-v2.sh \
            flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
            restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
     cp "$2/scripts/$f" "$1/bin/$f"
@@ -123,7 +123,7 @@ GH3="$SB/guardhome3"; mkdir -p "$GH3/.flywheel"
 if env ALERT_LOG="$SB/alerts.log" HOME="$GH3" FLYWHEEL_STATE_DIR="$GH3/.flywheel" \
     FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
     bash "$TRUSTED/scripts/converge-flywheel-bin.sh" >"$SB/out.log" 2>&1 \
-   && cmp -s "$GH3/.flywheel/bin/flywheel-lead-wrapper.sh" "$TRUSTED/scripts/flywheel-lead-wrapper.sh"; then
+   && cmp -s "$GH3/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$TRUSTED/scripts/flywheel-lead-wrapper-v2.sh"; then
   pass "G3: trusted (.git dir) repo converges the effective-global bin normally"
 else
   fail "G3: trusted root wrongly refused" "$(cat "$SB/out.log")"

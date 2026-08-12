@@ -226,12 +226,12 @@ _rules_bundle_write_receipt() {
     bundle_path_json="null"
     sha_json="null"
   fi
-  if [ -n "$LEAD_LEASE_SUPERVISOR_START" ]; then
+  if [ -n "$RULES_BUNDLE_PROCESS_START" ]; then
     if ! jq -n \
       --arg mode "$RULES_BUNDLE_MODE" \
       --argjson bundlePath "$bundle_path_json" \
       --argjson pid "$$" \
-      --arg supervisorStart "$LEAD_LEASE_SUPERVISOR_START" \
+      --arg supervisorStart "$RULES_BUNDLE_PROCESS_START" \
       --argjson sha "$sha_json" \
       --arg role "$RULES_BUNDLE_ROLE" \
       --arg generatedAt "$generated_at" \
@@ -284,7 +284,7 @@ _rules_bundle_cleanup_stale_generations() {
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     case "$suffix" in
       lstart-*)
-        actual_start="$(tmux_supervisor_process_start_identity "$pid" || true)"
+        actual_start="$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null || true)"
         if [ -z "$actual_start" ]; then
           rm -f -- "$candidate" 2>/dev/null || true
           continue

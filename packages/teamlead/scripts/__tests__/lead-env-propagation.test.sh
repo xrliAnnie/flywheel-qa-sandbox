@@ -1,33 +1,23 @@
 #!/bin/bash
 # GEO-151 QA cycle 1 — verify FLYWHEEL_TEAMLEAD_SCRIPT_DIR (and the L3
-# skill's other expected env vars) survive the `tmux new-window -e`
-# allowlist barrier in `_launch_claude`.
+# skill's other expected env vars) survive `_launch_claude`'s env -i boundary.
 #
-# Why a separate test from screencap-skill-gate.test.sh and
-# tmux-integration.test.sh?
+# Why a separate test from screencap-skill-gate.test.sh?
 #
 # - screencap-skill-gate.test.sh verifies the launcher SHELL exports
 #   FLYWHEEL_TEAMLEAD_SCRIPT_DIR after running the C10 block. It runs
 #   the extracted block in a `bash -c` subshell that inherits exports
-#   natively, so it cannot model the tmux -e allowlist filter.
-#
-# - tmux-integration.test.sh verifies tmux primitives generically but
-#   does not exercise the specific `_launch_claude` env_args allowlist.
+#   natively, so it cannot model the explicit child allowlist.
 #
 # - QA cycle 1 (2026-05-22) found that in production the Lead pane sees
-#   `FLYWHEEL_TEAMLEAD_SCRIPT_DIR=` (empty) because `tmux new-window -e`
-#   only forwards what's explicitly in env_args. Adding the var to the
-#   launcher's allowlist is the fix; this test pins that allowlist
+#   `FLYWHEEL_TEAMLEAD_SCRIPT_DIR=` (empty) because the child boundary only
+#   forwards what's explicitly in env_args. This test pins that allowlist
 #   contract so a future refactor cannot silently drop it again.
 #
 # Test approach:
 #   1. Static structural check — parse `_launch_claude` env_args block
 #      and assert FLYWHEEL_TEAMLEAD_SCRIPT_DIR is a literal allowlist
 #      entry. This catches "someone deleted the line" regressions.
-#   2. tmux integration check — when tmux is available, drive the same
-#      `tmux new-window -e` primitive _launch_claude uses, asserting
-#      the var lands non-empty in the child pane. Skipped gracefully
-#      when tmux is unavailable (e.g. minimal CI image).
 
 set -uo pipefail
 
@@ -62,12 +52,12 @@ EXTRACT_ENV_ARGS_BLOCK() {
 }
 
 # ─── Test 1: env_args allowlist includes FLYWHEEL_TEAMLEAD_SCRIPT_DIR ──
-log_test "_launch_claude env_args allowlist forwards FLYWHEEL_TEAMLEAD_SCRIPT_DIR"
+log_test "_launch_claude child-env allowlist forwards FLYWHEEL_TEAMLEAD_SCRIPT_DIR"
 BLOCK="$(EXTRACT_ENV_ARGS_BLOCK)"
 if [ -z "$BLOCK" ]; then
   log_fail "could not extract env_args block from $LAUNCHER (parser broken or function renamed)"
 elif echo "$BLOCK" | grep -qE '^[[:space:]]*-e[[:space:]]+"FLYWHEEL_TEAMLEAD_SCRIPT_DIR='; then
-  log_pass "FLYWHEEL_TEAMLEAD_SCRIPT_DIR is in the tmux -e allowlist"
+  log_pass "FLYWHEEL_TEAMLEAD_SCRIPT_DIR is in the child-env allowlist"
 else
   log_fail "FLYWHEEL_TEAMLEAD_SCRIPT_DIR missing from env_args allowlist."
   log_detail "Lead pane will see empty value → L3 screencap skill falls back to 'find /' recursive scan."
@@ -89,8 +79,8 @@ for var in DISCORD_BOT_TOKEN FLYWHEEL_LEAD_ID FLYWHEEL_COMM_DB PATH HOME; do
 done
 
 # FLY-1426: the Discord plugin and the Lead pane must read the same rollout
-# switch and priority windows. The plugin runs in the Lead process, after the
-# tmux -e barrier, so inherited launcher-shell values are not sufficient.
+# priority windows. The plugin runs after the env -i boundary, so
+# inherited launcher-shell values are not sufficient.
 log_test "_launch_claude forwards the Discord chat delivery windows"
 for var in \
   FLYWHEEL_RECEIPT_WINDOW_P0_MIN \
@@ -100,45 +90,9 @@ for var in \
   if echo "$BLOCK" | grep -qE "^[[:space:]]*-e[[:space:]]+\"$var="; then
     log_pass "$var present in env_args"
   else
-    log_fail "$var missing from env_args — chat receipt rollout would drift inside the Lead pane"
+    log_fail "$var missing from env_args — chat delivery windows would drift inside the Lead pane"
   fi
 done
-
-# ─── Test 3: tmux integration — propagation survives the real barrier ──
-log_test "tmux new-window -e propagates FLYWHEEL_TEAMLEAD_SCRIPT_DIR to child pane"
-if ! command -v tmux >/dev/null 2>&1; then
-  log_pass "SKIPPED (tmux not installed — static check above is sufficient)"
-else
-  TEST_SESSION="geo151-env-prop-$$"
-  trap 'tmux kill-session -t "=${TEST_SESSION}" 2>/dev/null || true' EXIT
-
-  # Mirror the _launch_claude invocation shape: start a detached session,
-  # then a new-window with -e forwarding the var, running a small command
-  # that echoes the value to a capture file.
-  CAPTURE_FILE="$(mktemp -t geo151-env-XXXXXX)"
-  trap 'rm -f "$CAPTURE_FILE"; tmux kill-session -t "=${TEST_SESSION}" 2>/dev/null || true' EXIT
-
-  tmux new-session -Ad -s "$TEST_SESSION" -x 200 -y 50 2>/dev/null || true
-  tmux new-window -d \
-    -t "=${TEST_SESSION}" \
-    -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=/expected/launcher/path" \
-    -n "env-test" \
-    -c "/tmp" \
-    bash -c "echo \"FTSD=\$FLYWHEEL_TEAMLEAD_SCRIPT_DIR\" > \"$CAPTURE_FILE\"; sleep 5"
-
-  # Allow the bash inside the pane time to write the capture file.
-  for _ in 1 2 3 4 5; do
-    if [ -s "$CAPTURE_FILE" ]; then break; fi
-    sleep 0.5
-  done
-
-  if grep -q '^FTSD=/expected/launcher/path$' "$CAPTURE_FILE"; then
-    log_pass "var survives tmux -e barrier with non-empty value"
-  else
-    log_fail "var did NOT propagate through tmux -e"
-    log_detail "capture file contents: $(cat "$CAPTURE_FILE" 2>/dev/null || echo '<empty>')"
-  fi
-fi
 
 # ─── Summary ───────────────────────────────────────────────────────────
 echo ""

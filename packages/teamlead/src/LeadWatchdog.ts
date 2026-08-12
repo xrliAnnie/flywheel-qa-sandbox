@@ -88,7 +88,6 @@ export interface LeadWatchdogConfig {
 	locateWindowFn: LocateWindowFn;
 	captureFn: CaptureFn;
 	claimsReader: () => Promise<Set<string>>;
-	blockedMarkerReader: (leadId: string) => Promise<string[]>;
 	now?: () => number;
 	/**
 	 * Test-only hook: when true, ANY non-empty claimsReader result is treated
@@ -305,20 +304,7 @@ export class LeadWatchdog {
 		// with a same-named lead must never share cooldown/hash state.
 		const state = this.getOrInit(stateKey(projectName, leadId));
 
-		// 1. Blocked marker takes precedence. supervisor already alerted, stay silent.
-		try {
-			const markers = await this.config.blockedMarkerReader(leadId);
-			if (markers.length > 0) {
-				state.state = "Silent";
-				return;
-			}
-		} catch (err) {
-			this.logger(
-				`blockedMarkerReader failed for ${leadId}: ${(err as Error).message}`,
-			);
-		}
-
-		// 2. Find the tmux window.
+		// Find the Lead window.
 		let windowRef: LeadWindowRef | null = null;
 		try {
 			windowRef = await this.config.locateWindowFn(projectName, leadId);
@@ -1035,11 +1021,11 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		case "usage_limit":
 			return "Claude Code usage limit hit. Top up Anthropic billing (https://console.anthropic.com/settings/billing) and re-run.";
 		case "login_expired":
-			return "Claude CLI login expired. Re-run `claude login` on the Lead host, then remove the matching marker under ~/.flywheel/blocked/.";
+			return "Claude CLI login expired. Re-run `claude login` on the Lead host, then restart the Lead.";
 		case "permission_blocked":
 			return "Lead is waiting on a permission prompt that cannot be auto-confirmed. Approve / deny it in the Lead's tmux pane.";
 		case "crash_loop":
-			return "Lead has crashed repeatedly. Check the supervisor log under ~/.flywheel/logs/ — likely Claude CLI / config issue.";
+			return "Lead has crashed repeatedly. Check its launchd and startup logs under ~/.flywheel/logs/ — likely Claude CLI / config issue.";
 		case "pane_hash_stuck":
 			// Legacy display-only kind; no watchdog emits it after FLY-1570.
 			return "Lead pane has been frozen for several poll cycles with no recognizable blocked-prompt pattern. Open the tmux pane to investigate.";

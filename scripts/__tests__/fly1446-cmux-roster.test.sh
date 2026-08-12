@@ -3,7 +3,7 @@ set -uo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 SUT="$ROOT/scripts/flywheel-cmux-sync.sh"
-TMP=$(mktemp -d)
+TMP=$(mktemp -d /tmp/fly1446-roster.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 PASS=0
 FAIL=0
@@ -12,6 +12,7 @@ pass() { echo "[TEST] ✓ $1"; PASS=$((PASS + 1)); }
 fail() { echo "[TEST] ✗ $1"; FAIL=$((FAIL + 1)); }
 
 export HOME="$TMP/home"
+export FLYWHEEL_LEAD_STATE_DIR="$TMP/s"
 export VIEW_WAL_DIR="$TMP/view-wal"
 export VIEW_LEDGER="$TMP/view-ledger"
 export KEEPER_INVENTORY="$TMP/keeper"
@@ -22,7 +23,7 @@ export ROSTER_EPISODE_STATE="$TMP/roster-episodes"
 export FLYWHEEL_ENV_FILE="$TMP/home/.flywheel/.env"
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMP/maintenance"
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
-mkdir -p "$HOME/.flywheel/manifests" "$HOME/Library/LaunchAgents" "$(dirname "$FLYWHEEL_ENV_FILE")"
+mkdir -p "$HOME/.flywheel/manifests" "$HOME/Library/LaunchAgents" "$(dirname "$FLYWHEEL_ENV_FILE")" "$FLYWHEEL_LEAD_STATE_DIR"
 
 # shellcheck source=../flywheel-cmux-sync.sh
 source "$SUT"
@@ -41,10 +42,10 @@ expect_eq() {
 }
 
 echo "Test: FLY-1446 A-Lead carrier matrix is closed"
-expect_eq "$(classify_lead_carrier flywheel-lead-wrapper.sh claude-code)" "claude-tmux" \
-  "standard wrapper + Claude backend is rostered"
-expect_eq "$(classify_lead_carrier flywheel-lead-wrapper.sh codex)" "config-drift" \
-  "standard wrapper + Codex backend is config drift"
+expect_eq "$(classify_lead_carrier flywheel-lead-wrapper-v2.sh claude-code)" "claude-private" \
+  "v2 wrapper + Claude backend is rostered"
+expect_eq "$(classify_lead_carrier flywheel-lead-wrapper-v2.sh codex)" "config-drift" \
+  "v2 wrapper + Codex backend is config drift"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh '')" "codex-tui-cmux" \
   "Mufasa dedicated TUI wrapper is allowlisted"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-codex-infra-bot.sh '')" "codex-tui-cmux" \
@@ -54,21 +55,23 @@ expect_eq "$(classify_lead_carrier future-wrapper.sh claude-code)" "config-drift
 
 touch "$HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng-lead.plist"
 touch "$HOME/Library/LaunchAgents/com.flywheel.lead.growth-mufasa-lead.plist"
-printf '%s\n' '{"projectName":"flywheel","leadId":"eng-lead","leadBackend":{"backendId":"claude-code"}}' \
+jq -n --arg socket "$(derive_lead_socket "flywheel/eng-lead" "$FLYWHEEL_LEAD_STATE_DIR")" \
+  '{projectName:"flywheel",leadId:"eng-lead",socketPath:$socket,leadBackend:{backendId:"claude-code"}}' \
   > "$HOME/.flywheel/manifests/flywheel-eng-lead.json"
-printf '%s\n' '{"projectName":"growth","leadId":"mufasa-lead","leadBackend":{"backendId":"codex"}}' \
+jq -n --arg socket "$(derive_lead_socket "growth/mufasa-lead" "$FLYWHEEL_LEAD_STATE_DIR")" \
+  '{projectName:"growth",leadId:"mufasa-lead",socketPath:$socket,leadBackend:{backendId:"codex"}}' \
   > "$HOME/.flywheel/manifests/growth-mufasa-lead.json"
 lead_job_loaded() { return 0; }
 lead_plist_wrapper_basename() {
   case "$1" in
-    *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper.sh ;;
+    *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
     *) return 1 ;;
   esac
 }
 derive_lead_roster
 expect_eq "$LEAD_ROSTER_STATE" "ok" "valid loaded jobs produce one complete roster snapshot"
-if grep -qx 'claude-tmux|com.flywheel.lead.flywheel-eng-lead|flywheel-eng-lead|' <<< "$LEAD_ROSTER_ROWS" \
+if grep -qE '^claude-private\|com\.flywheel\.lead\.flywheel-eng-lead\|flywheel-eng-lead\|.+\.sock$' <<< "$LEAD_ROSTER_ROWS" \
     && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|' <<< "$LEAD_ROSTER_ROWS"; then
   pass "derived roster uses manifest projectName/leadId and the TUI label identity"
 else
@@ -79,9 +82,9 @@ touch "$HOME/Library/LaunchAgents/com.flywheel.lead.bad-lead.plist"
 printf '%s\n' '{bad-json' > "$HOME/.flywheel/manifests/bad-lead.json"
 lead_plist_wrapper_basename() {
   case "$1" in
-    *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper.sh ;;
+    *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
-    *bad-lead.plist) printf '%s\n' flywheel-lead-wrapper.sh ;;
+    *bad-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *) return 1 ;;
   esac
 }

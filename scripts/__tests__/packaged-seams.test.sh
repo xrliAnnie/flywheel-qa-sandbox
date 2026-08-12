@@ -73,7 +73,7 @@ mk_tree() {
     cp -p "$PACKAGED_ASSEMBLY/.flywheel-prebuilt" "$dir/.flywheel-prebuilt"
     return 0
   fi
-  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper.sh daily-standup.sh \
+  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh daily-standup.sh \
            update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
            restart-storm-gate.py meta-alert.sh lead-alert.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
@@ -261,7 +261,7 @@ echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # dependencies (both ship in a packaged tree — see the S0 closure check above),
 # so steady state now has to include them or this case counts their repairs.
 mkdir -p "$H/.flywheel/bin/lib"
-for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
   flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done

@@ -4,7 +4,7 @@
 # The payload physically places every workspace package at
 # node_modules/<npm-name>/ (the canonical location for bare-specifier
 # resolution). The existing monorepo path contracts, however, address them as
-# $FLYWHEEL_DIR/packages/<dir>/... (claude-lead.sh, flywheel-lead-wrapper.sh,
+# $FLYWHEEL_DIR/packages/<dir>/... (claude-lead.sh, the Lead wrapper,
 # flywheel-comm callers, validate-projects, ...). This script creates the
 # RELATIVE symlink mirror  packages/<dir> → node_modules/<npm-name>  inside an
 # installed PKG_ROOT so those contracts hold verbatim.

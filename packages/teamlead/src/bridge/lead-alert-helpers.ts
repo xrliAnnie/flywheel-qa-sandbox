@@ -11,15 +11,12 @@
  *   sqlite3 transaction against the SAME `claims.db` that
  *   `scripts/lead-alert.sh` writes. Returns true iff the row was inserted
  *   by this caller — race-safe across Bridge and shell processes.
- * - `createBlockedMarkerReader`: lists marker files under
- *   `~/.flywheel/blocked/`. Presence means claude-lead.sh supervisor has
- *   paused this Lead; watchdog goes Silent until Annie clears the marker.
  * - `defaultLeadPaneCapture`: `tmux capture-pane` against a resolved
  *   `@windowId` for LeadWatchdog's external observation loop.
  */
 
 import { execFile, spawn } from "node:child_process";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -32,8 +29,6 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_CLAIMS_DB =
 	process.env.FLYWHEEL_CLAIMS_DB ??
 	join(homedir(), ".flywheel", "alerts", "claims.db");
-const DEFAULT_BLOCKED_DIR =
-	process.env.FLYWHEEL_BLOCKED_DIR ?? join(homedir(), ".flywheel", "blocked");
 const DEFAULT_TMUX_SESSION = process.env.FLYWHEEL_TMUX_SESSION ?? "flywheel";
 
 const CLAIMS_LOOKBACK_SECONDS = 3600;
@@ -224,33 +219,6 @@ function sqlString(value: string): string {
 }
 
 /**
- * Returns a reader that enumerates marker files (e.g.
- * `cos-lead.login_expired.flag`) for the given leadId. The returned strings
- * are the *kind* portion (`login_expired`), matching AlertEventType names
- * written by `claude-lead.sh`.
- */
-export function createBlockedMarkerReader(
-	dirPath: string = DEFAULT_BLOCKED_DIR,
-): (leadId: string) => Promise<string[]> {
-	return async (leadId) => {
-		try {
-			const entries = await readdir(dirPath);
-			const prefix = `${leadId}.`;
-			const suffix = ".flag";
-			const kinds: string[] = [];
-			for (const entry of entries) {
-				if (entry.startsWith(prefix) && entry.endsWith(suffix)) {
-					kinds.push(entry.slice(prefix.length, entry.length - suffix.length));
-				}
-			}
-			return kinds;
-		} catch {
-			return [];
-		}
-	};
-}
-
-/**
  * Default capture function for LeadWatchdog: shell-free `tmux capture-pane`
  * keyed by a resolved `@window_id` (from `LeadWindowLocator`). Window IDs
  * are globally unique in tmux, so the session prefix is omitted; if a user
@@ -262,43 +230,37 @@ export function defaultLeadPaneCapture(
 	execFn: typeof execFileAsync = execFileAsync,
 ): CaptureFn {
 	return async (window, lines) => {
-		const windowRef: LeadWindowRef =
-			typeof window === "string"
-				? { windowId: window, windowName: window }
-				: window;
-		if (windowRef.carrier === "v2") {
-			if (
-				!(await probeV2LeadPane(
-					windowRef,
-					execFn as unknown as import("../LeadWindowLocator.js").ExecFn,
-					"capture",
-				))
-			) {
-				throw new Error("private Lead body pane identity is indeterminate");
-			}
+		if (typeof window === "string") {
+			const target = window.startsWith("@") ? window : `${session}:${window}`;
 			const { stdout } = await execFn(
 				"tmux",
-				[
-					"-S",
-					windowRef.socketPath,
-					"capture-pane",
-					"-t",
-					windowRef.bodyPaneTarget,
-					"-p",
-					"-S",
-					`-${lines}`,
-				],
+				["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
 				{ encoding: "utf-8", timeout: 5000 },
 			);
 			return stdout;
 		}
-		const { windowId } = windowRef;
-		const target = windowId.startsWith("@")
-			? windowId
-			: `${session}:${windowId}`;
+		const windowRef: LeadWindowRef = window;
+		if (
+			!(await probeV2LeadPane(
+				windowRef,
+				execFn as unknown as import("../LeadWindowLocator.js").ExecFn,
+				"capture",
+			))
+		) {
+			throw new Error("private Lead body pane identity is indeterminate");
+		}
 		const { stdout } = await execFn(
 			"tmux",
-			["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
+			[
+				"-S",
+				windowRef.socketPath,
+				"capture-pane",
+				"-t",
+				windowRef.bodyPaneTarget,
+				"-p",
+				"-S",
+				`-${lines}`,
+			],
 			{ encoding: "utf-8", timeout: 5000 },
 		);
 		return stdout;

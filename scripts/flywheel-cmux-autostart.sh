@@ -64,7 +64,7 @@ fi
 # PATH `/usr/bin:/bin:/usr/sbin:/sbin`; the watcher shells out to `cmux`
 # (/opt/homebrew/bin) and `tmux` (/usr/local/bin). Prepend Homebrew/local so the
 # launchd-spawned watcher can find them. Idempotent + harmless on the `.zshrc`
-# path (that shell already has a full PATH). Mirrors flywheel-lead-wrapper.sh.
+# path (that shell already has a full PATH). Mirrors the Lead launch wrapper.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # ── Run watcher or guard the launchd job ──

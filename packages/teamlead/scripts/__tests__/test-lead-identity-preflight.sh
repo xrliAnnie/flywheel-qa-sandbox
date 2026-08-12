@@ -417,26 +417,22 @@ else
 fi
 
 if rg -q 'source .*lead-identity-preflight\.sh' "$LEAD_SH" \
-  && rg -q 'lead_identity_prepare_lease' "$LEAD_SH" \
-  && rg -q 'lead_identity_preflight_first_conflict' "$LEAD_SH" \
+  && rg -q 'lead_identity_v2_acquire_bind' "$LEAD_SH" \
+  && rg -q 'LEAD_LEASE_SUPERVISOR_START' "$LEAD_SH" \
   && rg -q 'FLYWHEEL_LEAD_LEASE_KEY' "$LEAD_SH" \
-  && rg -q 'FLYWHEEL_LEAD_GENERATION' "$LEAD_SH" \
-  && rg -q 'lead_identity_bind_lease' "$LEAD_SH"; then
-  ok "production supervisor wires resolve/acquire/preflight/env/bind"
+  && rg -q 'FLYWHEEL_LEAD_GENERATION' "$LEAD_SH"; then
+  ok "production v2 body wires acquire/bind identity into the child env"
 else
-  bad "production supervisor is missing a lease integration seam"
+  bad "production v2 body is missing a lease integration seam"
 fi
 
-authority_line="$(rg -n 'lead_launch_authority_prepare' "$LEAD_SH" | head -1 | cut -d: -f1)"
-pid_write_line="$(rg -n '^echo \$\$ > "\$PID_FILE"' "$LEAD_SH" | head -1 | cut -d: -f1)"
-if [ -n "$authority_line" ] && [ -n "$pid_write_line" ] \
-  && [ "$authority_line" -lt "$pid_write_line" ] \
-  && rg -q '_lead_clear_orphan_body' "$LEAD_SH" \
-  && rg -q 'lead_body_hard_clear' "$LEAD_SH" \
-  && ! rg -q '_lead_adopt_existing_body|lead_body_adoption_evidence|lead_body_attach_adopted' "$LEAD_SH"; then
-  ok "production supervisor gates before PID state and hard-clears orphan bodies"
+identity_line="$(rg -n '^[[:space:]]+lead_identity_v2_acquire_bind' "$LEAD_SH" | head -1 | cut -d: -f1)"
+session_line="$(rg -n '^[[:space:]]+_v2_is_resume=false' "$LEAD_SH" | head -1 | cut -d: -f1)"
+if [ -n "$identity_line" ] && [ -n "$session_line" ] \
+  && [ "$identity_line" -lt "$session_line" ]; then
+  ok "production v2 body binds identity before choosing a session"
 else
-  bad "production supervisor is missing authority/hard-clear ordering"
+  bad "production v2 identity ordering drifted"
 fi
 
 printf 'Results: %s passed, %s failed\n' "$PASS" "$FAIL"

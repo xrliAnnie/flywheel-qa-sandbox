@@ -204,6 +204,31 @@ for job_id, (job, timeout_floor) in timeout_floors.items():
 
 script_steps = script_tests.get("steps")
 require(isinstance(script_steps, list), "script-tests.steps must be a list")
+repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
+missing_bash_paths = []
+for job_id, job in jobs.items():
+    if not isinstance(job, dict):
+        continue
+    for step in job.get("steps", []):
+        if not isinstance(step, dict):
+            continue
+        for line in str(step.get("run", "")).splitlines():
+            try:
+                tokens = shlex.split(line, comments=True)
+            except ValueError as exc:
+                fail(f"{job_id} has an unparsable run line {line!r}: {exc}")
+            for index, token in enumerate(tokens[:-1]):
+                candidate = tokens[index + 1]
+                if token != "bash" or candidate.startswith("-"):
+                    continue
+                if "$" in candidate or candidate.startswith("/") or not candidate.endswith(".sh"):
+                    continue
+                if not os.path.isfile(os.path.join(repo_root, candidate)):
+                    missing_bash_paths.append(f"{job_id}: {candidate}")
+require(
+    not missing_bash_paths,
+    f"workflow bash paths must exist: {missing_bash_paths}",
+)
 
 # FLY-1364: the cmux authority/cleanup matrix and every shell-side delivery
 # seam must be visible in the required PR gate. Keep this as one named step so
@@ -332,9 +357,9 @@ for required_command in (
     "bash scripts/__tests__/r4-window.test.sh",
     "bash scripts/__tests__/lead-body-hard-clear.test.sh",
     "bash scripts/__tests__/lead-restart-controlled-wave.test.sh",
-    "bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh",
-    "bash scripts/__tests__/supervisor-adoption.test.sh",
-    "bash scripts/__tests__/supervisor-storm-regression.test.sh",
+    "bash scripts/__tests__/fly1680-v1-extinction.test.sh",
+    "bash scripts/__tests__/flywheel-daemon-install-verify.test.sh",
+    "bash scripts/__tests__/materialize-lead-manifests.test.sh",
     "bash scripts/__tests__/restart-self-detach.test.sh",
     "bash scripts/__tests__/lead-body-evidence.test.sh",
     "bash scripts/__tests__/lead-body-provenance.test.sh",

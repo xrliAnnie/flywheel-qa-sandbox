@@ -13,7 +13,9 @@
 #
 # There is no model blocklist (founder decision, 2026-07-27): a model reaches a
 # launch by being named in config, so what is worth machining is that config is
-# reproduced exactly — not that some second list gets consulted.
+# reproduced exactly — not that some second list gets consulted. The v2 body
+# never writes the manifest; materializer/fleet own its static fields and the
+# wrapper owns only runtime identity.
 #
 # Everything runs against the real claude-lead.sh + real dist under an isolated
 # HOME. Nothing touches the production ~/.flywheel.
@@ -194,15 +196,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. A second physical launch in a HOME the first launch already wrote evidence
-#    into follows the CURRENT projects.json — the FLY-1285 carry-over shape.
+# 5. A second physical launch in a HOME with an existing wrapper-shaped manifest
+#    follows CURRENT projects.json without rewriting that control-plane artifact.
 # ---------------------------------------------------------------------------
 H=$(make_home)
 write_projects "$H" "claude-opus-5" "high"
-FIRST=$(run_dry "$H" "$LEAD_SH" | plan_of)
 MANIFEST="$H/.flywheel/manifests/flywheel-eng-lead.json"
+jq -n --arg root "$H/project" '{
+  leadId:"eng-lead", projectName:"flywheel", projectDir:$root,
+  workspace:$root, model:"applied-before-launch", effort:"medium",
+  leadBackend:{backendId:"claude-code"}, pid:4242,
+  socketPath:"/tmp/existing-v2.sock", unrelated:{keep:"byte-identical"}
+}' > "$MANIFEST"
+MANIFEST_BEFORE="$(shasum -a 256 "$MANIFEST" | awk '{print $1}')"
+FIRST=$(run_dry "$H" "$LEAD_SH" | plan_of)
+MANIFEST_AFTER_FIRST="$(shasum -a 256 "$MANIFEST" | awk '{print $1}')"
 write_projects "$H" "fable"
 SECOND=$(run_dry "$H" "$LEAD_SH" | plan_of)
+MANIFEST_AFTER_SECOND="$(shasum -a 256 "$MANIFEST" | awk '{print $1}')"
 [ "$(arg_value "$FIRST" --model)" = "claude-opus-5" ] \
   && [ "$(arg_value "$SECOND" --model)" = "claude-fable-5" ] \
   && ok "a relaunch follows the edited projects.json, not its own manifest" \
@@ -210,10 +221,10 @@ SECOND=$(run_dry "$H" "$LEAD_SH" | plan_of)
 [ -z "$(arg_value "$SECOND" --effort)" ] \
   && ok "a removed effort field does not survive in the manifest carrier" \
   || bad "stale effort survived the relaunch"
-[ "$(jq -r '.model' "$MANIFEST")" = "fable" ] \
-  && [ "$(jq -r '.resolvedModel' "$MANIFEST")" = "claude-fable-5" ] \
-  && ok "manifest evidence is rewritten to the current raw + resolved pair" \
-  || bad "manifest evidence stale after relaunch"
+[ "$MANIFEST_AFTER_FIRST" = "$MANIFEST_BEFORE" ] \
+  && [ "$MANIFEST_AFTER_SECOND" = "$MANIFEST_BEFORE" ] \
+  && ok "both body launches leave the v2-owned manifest byte-identical" \
+  || bad "body launch rewrote the v2-owned manifest"
 
 # ---------------------------------------------------------------------------
 # 6. Dispatch resolves aliases and keeps accepting the legacy identities an old

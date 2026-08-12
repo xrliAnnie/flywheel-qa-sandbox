@@ -3,7 +3,7 @@
 #
 # launchd cannot source .bashrc or .env files, so this wrapper handles
 # environment setup before exec-ing the real Bridge process. Mirrors the
-# pattern established by scripts/flywheel-lead-wrapper.sh (FLY-74).
+# pattern used by the Lead launch wrapper (FLY-74).
 #
 # Usage: flywheel-bridge-wrapper.sh
 #   Invoked by launchd plist ProgramArguments — not intended for manual use.

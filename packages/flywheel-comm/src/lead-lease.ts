@@ -2602,7 +2602,8 @@ export function authorizeLeadWrite(
 	}
 	if (
 		backend === "claude-code" &&
-		resolution.lead.carrier === "v2" &&
+		(resolution.lead.carrier === undefined ||
+			resolution.lead.carrier === "v2") &&
 		env.FLYWHEEL_LEAD_CARRIER === "v2" &&
 		!env.FLYWHEEL_LEAD_LEASE_KEY &&
 		!env.FLYWHEEL_LEAD_GENERATION &&

@@ -32,7 +32,7 @@ command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DAEMON_SH="${REPO_ROOT}/scripts/flywheel-daemon.sh"
 
-SANDBOX="$(mktemp -d -t fly247-staged-XXXXXX)"
+SANDBOX="$(mktemp -d /tmp/fly247-staged.XXXXXX)"
 LIVE_PIDS=()
 cleanup() {
   for p in "${LIVE_PIDS[@]:-}"; do kill "$p" 2>/dev/null || true; done
@@ -77,8 +77,7 @@ case "$1" in
         head -1 "$CTL/next_pid" > "$CTL/pid.last"
         tail -n +2 "$CTL/next_pid" > "$CTL/next_pid.rest" && mv "$CTL/next_pid.rest" "$CTL/next_pid"
       fi
-      # Simulate the booted Lead's manifest self-write (pid binding evidence):
-      # claude-lead.sh rewrites the canonical manifest with its own pid.
+      # Simulate wrapper-v2 stamping the booted Lead's pid into its manifest.
       if [ -f "$CTL/manifest_path" ] && [ -f "$CTL/pid.last" ]; then
         mp="$(cat "$CTL/manifest_path")"
         np="$(cat "$CTL/pid.last")"
@@ -128,6 +127,8 @@ export FLYWHEEL_DAEMON_SOURCED=1
 
 # shellcheck disable=SC1090
 source "$DAEMON_SH"
+# shellcheck source=../lib/lead-address.sh
+source "$REPO_ROOT/scripts/lib/lead-address.sh"
 # Sourcing imports the daemon's `set -e`; the harness needs non-zero returns
 # to be observable, not fatal.
 set +e
@@ -136,7 +137,7 @@ KEY="geo-product-lead"
 LABEL="com.flywheel.lead.${KEY}"
 CANON_MANIFEST="$MANIFEST_DIR/${KEY}.json"
 CANON_PLIST="$(plist_path "$KEY")"
-WRAPPER_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
+WRAPPER_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
 
 TXN="$SANDBOX/txn"
 
@@ -153,11 +154,11 @@ reset_txn() {
   echo "$RESET_OLD_PID" > "$CTL/pid.last"
   touch "$CTL/loaded"
   echo "$RESET_OLD_PID" > "$CTL/kill_on_bootout"
-  printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
-  echo '[{"projectName":"geo"}]' > "$HOME/.flywheel/projects.json"
-  jq -n --argjson pid "$RESET_OLD_PID" \
-    '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",pid:$pid}' > "$CANON_MANIFEST"
-  generate_plist "$KEY" "$CANON_MANIFEST" v1 >/dev/null
+  printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
+  echo '[{"projectName":"geo","leads":[{"agentId":"product-lead"}]}]' > "$HOME/.flywheel/projects.json"
+  jq -n --argjson pid "$RESET_OLD_PID" --arg socket "$(derive_lead_socket "geo/product-lead" "$FLYWHEEL_STATE_DIR")" \
+    '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",pid:$pid,socketPath:$socket}' > "$CANON_MANIFEST"
+  generate_plist "$KEY" "$CANON_MANIFEST" >/dev/null
   local cfg_sha m_sha p_sha
   cfg_sha=$(file_sha "$HOME/.flywheel/projects.json")
   m_sha=$(file_sha "$CANON_MANIFEST")
@@ -183,7 +184,8 @@ bind_staged() {
 
 make_staged() {
   # valid staged manifest + plist (plist embeds the CANONICAL manifest path)
-  jq -n '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",model:"claude-fable-5",leadBackend:{backendId:"claude-code"}}' \
+  jq -n --arg socket "$(derive_lead_socket "geo/product-lead" "$FLYWHEEL_STATE_DIR")" \
+    '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",model:"claude-fable-5",socketPath:$socket,leadBackend:{backendId:"claude-code"}}' \
     > "$TXN/staged/${KEY}.manifest.json"
   generate_plist_to "$KEY" "$TXN/staged/${KEY}.manifest.json" "$CANON_MANIFEST" "$TXN/staged/${KEY}.plist" >/dev/null
   bind_staged
@@ -288,7 +290,7 @@ else
   # Window name matches the exact key but the pane command is the FLY-242
   # Codex observer — the NEW pid runtime must NOT be claude-confirmed (R8#3);
   # the OLD pid boundary evidence is ps-based (claude-lead-test script path).
-  printf '0\t%s\t0\tcodex\n' "$KEY" > "$CTL/tmux_out"
+  printf '0\tmain\tmain\t%s\tcodex\n' "$NEW_PID" > "$CTL/tmux_out"
   install_one_staged "$KEY" "$TXN" >/dev/null 2>&1
   rc=$?
   if [ "$rc" -eq 42 ] && [ "$(result_field outcome)" = "verify_failed_alive_unverified" ] \
@@ -309,11 +311,11 @@ NEW_PID=$!
 LIVE_PIDS+=("$NEW_PID")
 echo "$NEW_PID" > "$CTL/next_pid"
 echo "$CANON_MANIFEST" > "$CTL/manifest_path"
-printf '0\t%s\t0\tclaude\n' "$KEY" > "$CTL/tmux_out"
+printf '0\tmain\tmain\t0\tclaude\n' > "$CTL/tmux_out"
 install_one_staged "$KEY" "$TXN" >/dev/null 2>&1
 rc=$?
 phase=$(jq -r '.leads["geo-product-lead"].phase' "$TXN/transaction.json")
-# canonical manifest = staged content with the booted Lead's pid self-write
+# canonical manifest = staged content with wrapper-v2's booted pid stamp
 SHA_STAGED_M=$(jq -S 'del(.pid)' "$TXN/staged/${KEY}.manifest.json" | shasum -a 256 | awk '{print $1}')
 SHA_CANON_M=$(jq -S 'del(.pid)' "$CANON_MANIFEST" | shasum -a 256 | awk '{print $1}')
 CANON_PID=$(jq -r '.pid' "$CANON_MANIFEST")
@@ -336,6 +338,67 @@ if [ ! -f "$WRAPPER_DST" ]; then
   pass "S9: staged installs never touched the shared wrapper"
 else
   fail "S9: wrapper was installed by a staged install"
+fi
+
+# ── S10: ordinary install never replaces a bespoke Codex carrier ─────────
+CODEX_KEY="growth-mufasa-lead"
+CODEX_MANIFEST="$MANIFEST_DIR/${CODEX_KEY}.json"
+CODEX_PLIST="$(plist_path "$CODEX_KEY")"
+# Production Mufasa shape: the wrapper-owned manifest predates leadBackend;
+# projects.json remains the only backend authority.
+jq -n '{leadId:"mufasa-lead",projectDir:"/tmp/growth",projectName:"growth"}' > "$CODEX_MANIFEST"
+echo '[{"projectName":"growth","leads":[{"agentId":"mufasa-lead","backend":"codex-app-server"}]}]' > "$PROJECTS_JSON"
+printf '<plist><string>/opt/flywheel-codex-lead-wrapper-mufasa.sh</string></plist>\n' > "$CODEX_PLIST"
+CODEX_PLIST_BEFORE="$(file_sha "$CODEX_PLIST")"
+rm -f "$CTL/calls.log"
+touch "$CTL/loaded"
+echo 0 > "$CTL/pid.last"
+CODEX_OUT="$(install_one_manifest "$CODEX_MANIFEST" 2>&1)"
+CODEX_RC=$?
+if [ "$CODEX_RC" -eq 1 ] \
+  && [ "$(file_sha "$CODEX_PLIST")" = "$CODEX_PLIST_BEFORE" ] \
+  && [ ! -s "$CTL/calls.log" ] \
+  && grep -q "skipping bespoke backend codex-app-server" <<<"$CODEX_OUT"; then
+  pass "S10: ordinary install skips bespoke Codex before plist or launchd mutation"
+else
+  fail "S10: rc=$CODEX_RC plist_unchanged=$([ "$(file_sha "$CODEX_PLIST")" = "$CODEX_PLIST_BEFORE" ] && echo yes || echo no) calls=$(tr '\n' ',' < "$CTL/calls.log" 2>/dev/null) out=$CODEX_OUT"
+fi
+
+install_wrapper() { printf 'install-wrapper\n' >> "$CTL/calls.log"; }
+rm -f "$CTL/calls.log"
+CODEX_CMD_OUT="$(cmd_install "$CODEX_KEY" 2>&1)"
+CODEX_CMD_RC=$?
+if [ "$CODEX_CMD_RC" -eq 1 ] \
+  && [ "$(file_sha "$CODEX_PLIST")" = "$CODEX_PLIST_BEFORE" ] \
+  && [ ! -s "$CTL/calls.log" ] \
+  && grep -q "skipping bespoke backend codex-app-server" <<<"$CODEX_CMD_OUT"; then
+  pass "S11: explicit bespoke Codex install is a non-zero refusal"
+else
+  fail "S11: rc=$CODEX_CMD_RC calls=$(tr '\n' ',' < "$CTL/calls.log" 2>/dev/null) out=$CODEX_CMD_OUT"
+fi
+
+# ── S12: shared project backend precedence matches the TS control plane ───
+LEGACY_ROOT="$SANDBOX/legacy-project"
+mkdir -p "$LEGACY_ROOT/.flywheel"
+cat > "$LEGACY_ROOT/.flywheel/config.yaml" <<'EOF'
+roles:
+  lead:
+    backend: codex-tmux
+EOF
+jq -n --arg root "$LEGACY_ROOT" \
+  '[{projectName:"legacy",projectRoot:$root,leads:[{agentId:"lead"}]}]' > "$PROJECTS_JSON"
+LEGACY_CONFIG_BACKEND="$(lead_restart_project_backend "$PROJECTS_JSON" legacy lead)"
+rm "$LEGACY_ROOT/.flywheel/config.yaml"
+LEGACY_ENV_BACKEND="$(FLYWHEEL_LEAD_BACKEND=codex-tmux lead_restart_project_backend "$PROJECTS_JSON" legacy lead)"
+jq '.[0].leads[0].backend = "claude-code"' "$PROJECTS_JSON" > "$PROJECTS_JSON.tmp" \
+  && mv "$PROJECTS_JSON.tmp" "$PROJECTS_JSON"
+EXPLICIT_BACKEND="$(FLYWHEEL_LEAD_BACKEND=codex-tmux lead_restart_project_backend "$PROJECTS_JSON" legacy lead)"
+if [ "$LEGACY_CONFIG_BACKEND" = "codex-app-server" ] \
+  && [ "$LEGACY_ENV_BACKEND" = "codex-app-server" ] \
+  && [ "$EXPLICIT_BACKEND" = "claude-code" ]; then
+  pass "S12: backend precedence is explicit projects row > legacy config/env > Claude default"
+else
+  fail "S12: config=$LEGACY_CONFIG_BACKEND env=$LEGACY_ENV_BACKEND explicit=$EXPLICIT_BACKEND"
 fi
 
 echo ""

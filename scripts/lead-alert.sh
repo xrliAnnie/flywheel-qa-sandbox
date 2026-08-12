@@ -1,7 +1,7 @@
 #!/bin/bash
 # FLY-83: Independent Lead alert emitter.
 #
-# Called by claude-lead.sh supervisor on crash-loop escalation. Lives in
+# Bridge-independent shell alert pipeline. Lives in
 # shell so it works even when the Bridge (Node.js) is down.
 #
 # Responsibilities:

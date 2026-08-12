@@ -884,8 +884,8 @@ teardown_slot() {
   fi
 
   # ── Step 4b (FLY-231): Delete this slot's manifest ────
-  # claude-lead.sh writes ~/.flywheel/manifests/<project>-<lead>.json on start.
-  # test-teardown never removed it, so stale test-slot manifests accumulated.
+  # The QA materializer/wrapper owns ~/.flywheel/manifests/<project>-<lead>.json.
+  # test-teardown must remove it so stale test-slot manifests do not accumulate.
   # A production deploy's restart-services.sh iterates ALL manifests; with the
   # new always-query fail-STOP, a leftover test-slot manifest would otherwise be
   # hit on restart. restart-services.sh now skips flywheel-test-* manifests, but

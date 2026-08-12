@@ -663,7 +663,7 @@ export async function sendEnterToWindow(
 	execFn: typeof execFileAsync = execFileAsync,
 ): Promise<{ sent: boolean; error?: string }> {
 	try {
-		if (typeof tmuxWindow !== "string" && tmuxWindow.carrier === "v2") {
+		if (typeof tmuxWindow !== "string") {
 			const { probeV2LeadPane } = await import("../LeadWindowLocator.js");
 			if (
 				!(await probeV2LeadPane(
@@ -691,9 +691,7 @@ export async function sendEnterToWindow(
 				{ timeout: TMUX_TIMEOUT },
 			);
 		} else {
-			const target =
-				typeof tmuxWindow === "string" ? tmuxWindow : tmuxWindow.windowId;
-			await execFn("tmux", ["send-keys", "-t", target, "Enter"], {
+			await execFn("tmux", ["send-keys", "-t", tmuxWindow, "Enter"], {
 				timeout: TMUX_TIMEOUT,
 			});
 		}

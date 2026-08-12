@@ -1,9 +1,8 @@
 #!/bin/bash
 # FLY-224 Phase 2: codex-lead.sh — the codex-app-server backend launcher.
 #
-# Dispatched to by flywheel-lead-wrapper.sh when the resolved Lead backend is
-# `codex-app-server` (manifest.leadBackend.backendId). Takes the SAME positional
-# args as claude-lead.sh so the wrapper's arg-building stays vendor-neutral:
+# Dormant direct launcher retained for operator QA; production launchd dispatch
+# is Claude wrapper-v2 only. It takes the same positional args as claude-lead.sh:
 #
 #   codex-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>] [--bot-token-env <ENV>]
 #

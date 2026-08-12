@@ -3,8 +3,9 @@
 #
 # The real claude-lead.sh runs in dry-run under an isolated HOME. It proves:
 # projects.json is authoritative on every physical launch; manifest/env are
-# ignored as inputs; aliases canonicalize through hot models.json; forbidden
-# 4.8 substitutes Fable; the manifest is write-only raw+resolved evidence.
+# ignored as model inputs; aliases canonicalize through hot models.json; an
+# unresolvable model falls back to Fable. The v2 wrapper owns the manifest, so
+# the body launcher must not rewrite or synthesize it.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,6 +77,7 @@ arg_value() {
 H=$(make_home)
 P=$(fixture_projects "$H" "opus" "high")
 jq -n '{model:"claude-opus-4-8[1m]",effort:"max"}' > "$H/.flywheel/manifests/flywheel-eng-lead.json"
+MANIFEST_BEFORE=$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")
 OUT=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="claude-opus-4-8" FLYWHEEL_LEAD_EFFORT="low")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
 [ "$(arg_value "$PLAN" --model)" = "claude-opus-5" ] \
@@ -84,11 +86,9 @@ PLAN=$(printf '%s\n' "$OUT" | plan_of)
 [ "$(arg_value "$PLAN" --effort)" = "high" ] \
   && ok "projects effort beats stale manifest/env" \
   || bad "expected projects effort high"
-MANIFEST="$H/.flywheel/manifests/flywheel-eng-lead.json"
-[ "$(jq -r '.model' "$MANIFEST")" = "opus" ] \
-  && [ "$(jq -r '.resolvedModel' "$MANIFEST")" = "claude-opus-5" ] \
-  && ok "manifest records raw + resolved launch evidence" \
-  || bad "manifest raw/resolved evidence mismatch"
+[ "$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "$MANIFEST_BEFORE" ] \
+  && ok "body launcher leaves the v2-owned manifest byte-identical" \
+  || bad "body launcher rewrote the v2-owned manifest"
 printf '%s\n' "$OUT" | grep -q "using manifest" \
   && bad "launcher still reports manifest input authority" \
   || ok "launcher has no using-manifest path"
@@ -98,16 +98,16 @@ rm -rf "$H"
 H=$(make_home)
 P=$(fixture_projects "$H")
 jq -n '{model:"claude-opus-4-8[1m]",effort:"max"}' > "$H/.flywheel/manifests/flywheel-eng-lead.json"
+MANIFEST_BEFORE=$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")
 OUT=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="sonnet" FLYWHEEL_LEAD_EFFORT="high")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
 [ "$(arg_value "$PLAN" --model)" = "claude-fable-5" ] \
   && [ -z "$(arg_value "$PLAN" --effort)" ] \
   && ok "authoritative absence resets to Fable with no stale effort" \
   || bad "absence did not clear stale carriers"
-[ "$(jq -r 'has("model")' "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "false" ] \
-  && [ "$(jq -r '.resolvedModel' "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "claude-fable-5" ] \
-  && ok "absence removes raw carrier while retaining resolved evidence" \
-  || bad "absence manifest projection mismatch"
+[ "$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "$MANIFEST_BEFORE" ] \
+  && ok "authoritative model absence does not mutate the v2 manifest" \
+  || bad "authoritative model absence rewrote the v2 manifest"
 rm -rf "$H"
 
 # 3. An explicit legacy pin is honored verbatim; only unresolvable spellings
@@ -122,10 +122,9 @@ PLAN=$(printf '%s\n' "$OUT" | plan_of)
 printf '%s\n' "$OUT" | grep -q "model_config WARNING" \
   && bad "honoring an explicit pin should not warn" \
   || ok "honoring an explicit pin is silent"
-[ "$(jq -r '.model' "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "claude-opus-4-8[1m]" ] \
-  && [ "$(jq -r '.resolvedModel' "$H/.flywheel/manifests/flywheel-eng-lead.json")" = "claude-opus-4-8[1m]" ] \
-  && ok "manifest evidence shows raw and resolved agreeing"  \
-  || bad "explicit pin evidence mismatch"
+[ ! -e "$H/.flywheel/manifests/flywheel-eng-lead.json" ] \
+  && ok "direct body launch does not synthesize a legacy manifest" \
+  || bad "direct body launch synthesized a legacy manifest"
 rm -rf "$H"
 
 # 3b. An unresolvable spelling still falls back loudly rather than bricking boot.

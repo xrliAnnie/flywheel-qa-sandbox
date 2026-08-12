@@ -94,14 +94,30 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
 	});
 
-	it("does not trust a v2 marker unless canonical config also selects v2", async () => {
+	it("treats absent Claude carrier config as canonical v2", async () => {
+		setMode("enforce");
+		env.FLYWHEEL_LEAD_CARRIER = "v2";
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "canonical default carrier",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+		expect(instructions()).toHaveLength(1);
+		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
+	});
+
+	it("does not revive an explicitly retired v1 config", async () => {
+		writeProjects("claude-code", "v1");
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
 		await expect(
 			send({
 				fromAgent: "eng-lead",
 				toAgent: "runner-intruder",
-				content: "untrusted carrier marker",
+				content: "retired carrier",
 				dbPath,
 				env,
 				authorizationDeps,

@@ -70,13 +70,9 @@ teamlead:scripts/find-window.sh
 teamlead:scripts/post-compact-bootstrap.sh
 teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
-teamlead:scripts/expect-dev-channels.exp
 teamlead:scripts/lib/lead-identity-preflight.sh
-teamlead:scripts/lib/lead-launch-authority.sh
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
-teamlead:scripts/lib/tmux-supervisor-guard.sh
-teamlead:scripts/lib/resume-recovery.sh
 teamlead:scripts/lib/lead-body-receipt.sh"}
 
 # Curated scripts/ whitelist — EXPLICIT file list, not an ignore list. Every
@@ -89,7 +85,6 @@ flywheel-setup.sh
 provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
-flywheel-lead-wrapper.sh
 flywheel-lead-wrapper-v2.sh
 flywheel-lead-attach.sh
 restart-storm-gate.py

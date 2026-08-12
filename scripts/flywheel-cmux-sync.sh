@@ -608,11 +608,6 @@ roster_enabled() {
 classify_lead_carrier() {
   local wrapper="$1" backend="$2"
   case "$wrapper" in
-    flywheel-lead-wrapper.sh)
-      [[ "$backend" == "claude-code" ]] \
-        && printf 'claude-tmux\n' \
-        || printf 'config-drift\n'
-      ;;
     flywheel-lead-wrapper-v2.sh)
       [[ "$backend" == "claude-code" ]] \
         && printf 'claude-private\n' \

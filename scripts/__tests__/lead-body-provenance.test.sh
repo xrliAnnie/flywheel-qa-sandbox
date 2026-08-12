@@ -47,9 +47,8 @@ else
   fail "malformed handoff tuple was trusted (rc=$rc out=$out)"
 fi
 
-# An explicitly empty v2 handoff must stay invalid. The helper may derive its
-# own carrier tuple only for the legacy three-argument call shape; `${4:-$$}`
-# would silently turn malformed v2 input into a plausible but wrong identity.
+# An explicitly empty v2 handoff must stay invalid; it must not become a
+# plausible but incorrect carrier identity.
 HELPER="$TMP/evidence-helper.sh"
 awk '
   /^record_lead_body_evidence_best_effort\(\)/,/^}/ { print; next }
@@ -61,16 +60,13 @@ if grep -q 'record_lead_body_evidence_best_effort()' "$HELPER"; then
   LEAD_ID=ops-lead
   CAPTURE="$TMP/helper.calls"
   lbe_record() { printf '%s\t%s\n' "$6" "$7" >> "$CAPTURE"; return 0; }
-  tmux_supervisor_process_start_identity() { printf 'derived-start\n'; }
   : > "$CAPTURE"
   record_lead_body_evidence_best_effort launched 201 body-start "" ""
   explicit="$(sed -n '1p' "$CAPTURE")"
-  record_lead_body_evidence_best_effort launched 202 body-start
-  legacy="$(sed -n '2p' "$CAPTURE")"
-  if [ "$explicit" = $'\t' ] && [ "$legacy" = "$$"$'\tderived-start' ]; then
-    pass "malformed v2 tuple stays unknown while legacy calls derive carrier identity"
+  if [ "$explicit" = $'\t' ]; then
+    pass "malformed v2 tuple stays unknown"
   else
-    fail "evidence helper confused explicit v2 and legacy tuples (explicit=$explicit legacy=$legacy)"
+    fail "evidence helper invented a carrier tuple (explicit=$explicit)"
   fi
 
   unset -f lbe_record
@@ -87,44 +83,6 @@ if grep -q 'record_lead_body_evidence_best_effort()' "$HELPER"; then
     fail "v2 evidence was not bound exclusively to its passed carrier tuple"
   fi
 
-  # Exercise the real adoption transition and evidence writer together. This
-  # fails if the adopted terminal stops publishing its sidecar, even when the
-  # helper name remains elsewhere in source comments or launch paths.
-  ADOPT_SRC="$(sed -n '/^_lead_try_adopt_body()/,/^}/p' "$LEAD")"
-  if [ -n "$ADOPT_SRC" ]; then
-    eval "$ADOPT_SRC"
-    PROJECT_NAME=demo
-    LEAD_ID=ops-lead
-    TMUX_ARCHIVE_FILE="$TMP/adopt.tmux"
-    LEAD_WINDOW_ID=""
-    TMUX_SERVER_PID=""
-    LEAD_BODY_PROVENANCE=""
-    tmux_supervisor_archive_read() {
-      TMUX_ARCHIVE_SERVER_PID=4100
-      TMUX_ARCHIVE_PANE_PID=4200
-      TMUX_ARCHIVE_PANE_START=body-start
-      TMUX_ARCHIVE_WINDOW_ID=@7
-    }
-    tmux_supervisor_archived_process_state() { return 0; }
-    _tmux_target_matches_archive() { return 0; }
-    _lead_identity_conflict_excluding() { return 1; }
-    tmux_supervisor_process_start_identity() { printf 'adopt-carrier-start\n'; }
-    log() { :; }
-    rm -rf "$LEAD_BODY_EVIDENCE_DIR"
-    adopt_rc=0
-    _lead_try_adopt_body 4200 body-start || adopt_rc=$?
-    evidence_file="$LEAD_BODY_EVIDENCE_DIR/demo-ops-lead.json"
-    if [ "$adopt_rc" -eq 0 ] \
-      && [ "$(lbe_read_matching demo ops-lead "$$" adopt-carrier-start)" = adopted ] \
-      && jq -e '.provenance == "adopted" and .bodyPid == 4200 and .bodyStart == "body-start"' \
-        "$evidence_file" >/dev/null; then
-      pass "store-authorized adoption publishes tuple-bound adopted evidence"
-    else
-      fail "adoption did not publish behavioral evidence (rc=$adopt_rc file=$evidence_file)"
-    fi
-  else
-    fail "adoption function could not be extracted"
-  fi
 else
   fail "body evidence helper could not be extracted"
 fi

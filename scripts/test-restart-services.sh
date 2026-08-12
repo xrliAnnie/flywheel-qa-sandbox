@@ -1719,7 +1719,6 @@ mkdir -p \
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
-   "$REAL_REPO_ROOT/scripts/lib/restart-candidate.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
@@ -1733,9 +1732,6 @@ cp "$REAL_REPO_ROOT/scripts/lib/bounded-run.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/restart-storm-gate.py" \
    "$BO_FLYWHEEL/scripts/"
-cp "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/lead-identity-preflight.sh" \
-   "$REAL_REPO_ROOT/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh" \
-   "$BO_FLYWHEEL/packages/teamlead/scripts/lib/"
 cat > "$BO_FLYWHEEL/scripts/converge-flywheel-bin.sh" <<'EOF'
 #!/bin/bash
 exit 0
@@ -1764,6 +1760,12 @@ if [[ "\${1:-}" == "print" ]]; then
   fi
 elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.cmux-watcher" ]]; then
   :
+elif [[ "\${1:-}" == "kickstart" && "\$*" == *"com.flywheel.lead.flywheel-eng" ]]; then
+  if [[ "\${FAKE_SUPERVISOR_STALE:-0}" == "1" ]]; then
+    echo 424242 > "$BO_CALLS/lead.pid"
+  else
+    echo 424243 > "$BO_CALLS/lead.pid"
+  fi
 elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.lead.flywheel-eng" ]]; then
   echo unloaded > "$BO_LAUNCH_STATE"
 elif [[ "\${1:-}" == "bootstrap" && "\$*" == *"com.flywheel.cmux-watcher.plist" ]]; then
@@ -1965,7 +1967,7 @@ cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
 <key>Label</key><string>com.flywheel.lead.flywheel-eng</string>
 <key>ProgramArguments</key><array>
 <string>/bin/bash</string>
-<string>$BO_HOME/.flywheel/bin/flywheel-lead-wrapper.sh</string>
+<string>$BO_HOME/.flywheel/bin/flywheel-lead-wrapper-v2.sh</string>
 <string>$BO_HOME/.flywheel/manifests/flywheel-eng.json</string>
 </array></dict></plist>
 EOF
@@ -2145,12 +2147,11 @@ bo_restore_restart_script
 echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(bo_run) && rc=0 || rc=$?
 if (( rc == 0 )) && echo "$out" | grep -q "skipping build, continuing full restart" \
-   && echo "$out" | grep -Fq "Lead eng restarted via launchd (supervisor 424243 born Mon Jul 27 09:00:00 2026)" \
+   && echo "$out" | grep -Fq "Lead eng restarted via native launchd carrier v2 (PID 424243)" \
    && [[ -z "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
-   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
-   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" \
-   && ! bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng"; then
+   && bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && ! bo_calls launchctl | grep -Eq "(bootout .*com\.flywheel\.lead\.flywheel-eng|bootstrap .*com\.flywheel\.lead\.flywheel-eng)"; then
     pass "FLY-1434 order: SHA match skips build and restarts Bridge + Leads"
 else
     fail "FLY-1434 order: SHA match — rc=$rc launchctl='$(bo_calls launchctl)' out tail: $(echo "$out" | tail -3)"
@@ -2166,8 +2167,8 @@ if (( rc == 0 )) && echo "$out" | grep -q "Build successful" \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_2" ]] \
    && [[ -n "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
-   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
-   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"; then
+   && bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && ! bo_calls launchctl | grep -Eq "(bootout .*com\.flywheel\.lead\.flywheel-eng|bootstrap .*com\.flywheel\.lead\.flywheel-eng)"; then
     pass "FLY-1655 doc-only checkout rebuilds its identity and restarts the full fleet"
 else
     fail "FLY-1434 order: doc-only mismatch — rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") out tail: $(echo "$out" | tail -3)"
@@ -2231,9 +2232,8 @@ bo_ok=true
 echo "$out" | grep -q "Done." || bo_ok=false
 echo "$out" | grep -q "reason=env-change" || bo_ok=false
 bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.bridge" || bo_ok=false
-bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" || bo_ok=false
-bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" || bo_ok=false
-bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" && bo_ok=false
+bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" || bo_ok=false
+bo_calls launchctl | grep -Eq "(bootout .*com\.flywheel\.lead\.flywheel-eng|bootstrap .*com\.flywheel\.lead\.flywheel-eng)" && bo_ok=false
 [[ -z "$(bo_calls pnpm)" ]] || bo_ok=false
 bo_calls curl | grep -q "/health" || bo_ok=false
 [[ ! -f "$BO_HOME/.flywheel/plugin-restart-pending" ]] || bo_ok=false
@@ -2244,7 +2244,7 @@ else
 fi
 rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
 
-# ── 6) a transient hard-clear sensor error retries instead of latching ──
+# ── 6) Claude v2 restart does not consult the removed tmux hard-clear path ──
 echo "restart outcome" > "$BO_FLYWHEEL/restart-outcome.md"
 git -C "$BO_FLYWHEEL" add restart-outcome.md
 git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: restart outcome"
@@ -2254,19 +2254,18 @@ out=$(FAKE_FAST_SLEEP=1 FAKE_TMUX_INVENTORY_FAIL_ONCE=1 \
   bo_run --reason transient-hard-clear-sensor) && rc=0 || rc=$?
 bo_status="$BO_HOME/.flywheel/leads-restart-status.json"
 if (( rc == 0 )) \
-   && bo_calls launchctl | grep -q "bootout gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
-   && bo_calls launchctl | grep -q "bootstrap gui/$(id -u) $BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" \
-   && bo_calls tmux | grep -q "list-panes -s -t =flywheel" \
+   && bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && [[ -z "$(bo_calls tmux)" ]] \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_3" ]] \
    && jq -e --arg sha "$BO_HEAD_3" \
         '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
         "$bo_status" >/dev/null; then
-    pass "FLY-1634 transient hard-clear sensor failure retries and succeeds"
+    pass "FLY-1680 Claude v2 restart bypasses the removed tmux hard-clear path"
 else
-    fail "FLY-1634 transient hard-clear sensor did not converge — rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -12)"
+    fail "FLY-1680 Claude v2 restart consulted legacy tmux state — rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -12)"
 fi
 
-# ── 7) body diagnostics do not participate in the launchd success verdict ──
+# ── 7) stale shared-session observations do not participate in v2 restart ──
 echo "degraded outcome" > "$BO_FLYWHEEL/restart-degraded.md"
 git -C "$BO_FLYWHEEL" add restart-degraded.md
 git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q -m "docs: restart degraded"
@@ -2278,10 +2277,10 @@ if (( rc == 0 )) \
    && jq -e --arg sha "$BO_HEAD_4" \
         '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
         "$bo_status" >/dev/null \
-   && echo "$out" | grep -q "DEBUG: Lead eng body observation"; then
-    pass "FLY-1634 body state is debug-only after launchd replacement"
+   && [[ -z "$(bo_calls tmux)" ]]; then
+    pass "FLY-1680 Claude v2 restart ignores deleted shared-session observations"
 else
-    fail "FLY-1634 body diagnostic changed the verdict — rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -12)"
+    fail "FLY-1680 deleted shared-session state changed the v2 verdict — rc=$rc status=$(cat "$bo_status" 2>/dev/null || echo missing) out tail: $(echo "$out" | tail -12)"
 fi
 
 # ── 8) the one Lead failure criterion is a stale launchd supervisor tuple ──
@@ -2293,7 +2292,7 @@ echo "$BO_HEAD_4" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(FAKE_FAST_SLEEP=1 FAKE_SUPERVISOR_STALE=1 RESTART_LEAD_VERIFY_ATTEMPTS=2 \
   bo_run --reason stale-supervisor) && rc=0 || rc=$?
 if (( rc == 0 )) \
-   && [[ -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" ]] \
+   && [[ ! -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" ]] \
    && jq -e --arg sha "$BO_HEAD_5" \
         '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1' \
         "$bo_status" >/dev/null; then
@@ -2596,7 +2595,7 @@ jq -n '[
 ]' > "$LR_PROJECTS"
 
 lr_write_manifest "flywheel-alpha-lead" "flywheel" "alpha-lead"
-lr_write_plist "flywheel-alpha-lead" "flywheel-lead-wrapper.sh" \
+lr_write_plist "flywheel-alpha-lead" "flywheel-lead-wrapper-v2.sh" \
   "$LR_MANIFESTS/flywheel-alpha-lead.json"
 
 rc=0
@@ -2650,7 +2649,7 @@ else
 fi
 
 lr_write_manifest "flywheel-bad-codex" "flywheel" "alpha-lead" "codex-app-server"
-lr_write_plist "flywheel-bad-codex" "flywheel-lead-wrapper.sh" \
+lr_write_plist "flywheel-bad-codex" "flywheel-lead-wrapper-v2.sh" \
   "$LR_MANIFESTS/flywheel-bad-codex.json"
 if lead_restart_validate_authority \
   "$LR_MANIFESTS/flywheel-bad-codex.json" \
@@ -2690,8 +2689,7 @@ else
     fail "FLY-1507 launchd tri-state probe collapsed an error into unloaded"
 fi
 
-if lead_restart_recovery_bootstrap_allowed claude-code true false \
-  && ! lead_restart_recovery_bootstrap_allowed claude-code false true \
+if ! lead_restart_recovery_bootstrap_allowed claude-code true true \
   && lead_restart_recovery_bootstrap_allowed codex-app-server true true \
   && ! lead_restart_recovery_bootstrap_allowed codex-app-server true false; then
     pass "FLY-1507 recovery bootstrap policy preserves the Codex unsafe-offline boundary"
@@ -2706,11 +2704,11 @@ lr_write_manifest "test-slot-flywheel-test-2" "test-slot" "flywheel-test-2"
 lr_write_plist "flywheel-codex-infra-bot-lead" \
   "flywheel-codex-lead-wrapper-codex-infra-bot.sh"
 lr_write_plist "flywheel-anna-interviewer-lead" \
-  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-anna-interviewer-lead.json"
+  "flywheel-lead-wrapper-v2.sh" "$LR_MANIFESTS/flywheel-anna-interviewer-lead.json"
 lr_write_plist "flywheel-residual-lead" \
-  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-residual-lead.json"
+  "flywheel-lead-wrapper-v2.sh" "$LR_MANIFESTS/flywheel-residual-lead.json"
 lr_write_plist "test-slot-flywheel-test-1" \
-  "flywheel-lead-wrapper.sh" "$LR_MANIFESTS/flywheel-test-slot.json"
+  "flywheel-lead-wrapper-v2.sh" "$LR_MANIFESTS/flywheel-test-slot.json"
 printf 'malformed plist\n' > "$LR_PLISTS/com.flywheel.lead.test-slot-flywheel-test-2.plist"
 LR_PRINT_MODE=loaded
 lead_restart_launchd_probe() {
@@ -2718,11 +2716,6 @@ lead_restart_launchd_probe() {
       *flywheel-residual-lead) echo "unloaded" ;;
       *) echo $'loaded\t777' ;;
     esac
-}
-lead_restart_process_table() {
-    printf '%s\n' \
-      "700 /bin/bash /repo/packages/teamlead/scripts/claude-lead.sh legacy-lead /repo flywheel" \
-      "701 /bin/bash /repo/packages/teamlead/scripts/claude-lead.sh codex-infra-bot-lead /repo flywheel"
 }
 candidates="$LR_ROOT/candidates.tsv"
 rc=0
@@ -2734,49 +2727,10 @@ if (( rc == 0 )) \
   && ! grep -q '^flywheel-residual-lead	' "$candidates" \
   && grep -q $'^test-slot-flywheel-test-1\t.*\tskip-test\t' "$candidates" \
   && grep -q $'^test-slot-flywheel-test-2\t.*\tskip-test\t' "$candidates" \
-  && grep -q $'^flywheel-legacy-lead\tflywheel\tlegacy-lead\t-\tmanifestless\t' "$candidates"; then
-    pass "FLY-1507 manifest/plist/process sources dedupe exact keys and expose manifestless drift"
+  && ! grep -q $'^flywheel-legacy-lead\t' "$candidates"; then
+    pass "FLY-1507 manifest/plist sources dedupe exact keys and exclude unbound residue"
 else
     fail "FLY-1507 candidate inventory mismatch (rc=$rc): $(tr '\n' '|' < "$candidates" 2>/dev/null)"
-fi
-
-echo "Test: tmux hold observations preserve structured evidence"
-CLAUDE_LEAD_SH="$SCRIPT_DIR/../packages/teamlead/scripts/claude-lead.sh"
-TMUX_HOLD_FUNCTIONS="$(awk '
-  /^_tmux_normalize_hold_kind\(\)/ { capture=1 }
-  capture && /^_tmux_report_hold_resolved\(\)/ { exit }
-  capture { print }
-' "$CLAUDE_LEAD_SH")"
-TMUX_HOLD_PAYLOAD="$TMPDIR_ROOT/tmux-hold-payload.json"
-if (
-    eval "$TMUX_HOLD_FUNCTIONS"
-    LEAD_ID=flywheel-eng-lead
-    PROJECT_NAME=flywheel
-    BRIDGE_URL=http://bridge.invalid
-    TMUX_HOLD_FIRST_LOCAL_TS=
-    TMUX_HOLD_INCIDENT_ID=
-    TMUX_HOLD_FALLBACK_SENT=0
-    TMUX_HOLD_BRIDGE_ACKED=0
-    FLYWHEEL_ROOT=/nonexistent
-    _tmux_socket_path() { printf '%s\n' /tmp/flywheel-test.sock; }
-    curl() {
-        local previous="" arg
-        for arg in "$@"; do
-            [[ "$previous" == "--data-binary" ]] && printf '%s' "$arg" > "$TMUX_HOLD_PAYLOAD"
-            previous="$arg"
-        done
-        printf '%s\n' '{"incidentId":"incident-test"}'
-    }
-    _tmux_report_hold unknown '{"reason":"window_archive_mismatch"}' \
-      && jq -e '
-        (.evidence | type) == "object"
-        and .evidence.reason == "window_archive_mismatch"
-        and (.evidence | has("raw") | not)
-      ' "$TMUX_HOLD_PAYLOAD" >/dev/null
-); then
-    pass "non-empty hold evidence reaches Bridge as an object without raw fallback"
-else
-    fail "non-empty hold evidence was corrupted before Bridge serialization"
 fi
 
 # ════════════════════════════════════════════════════════════════

@@ -26,9 +26,9 @@ if [[ "${FLYWHEEL_LEAD_CARRIER_PID:-}" =~ ^[1-9][0-9]*$ ]] \
 fi
 unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
 
-# Read launcher configuration into this body shell. Helper subprocesses used
-# during assembly retain the v1 launcher's exported configuration, while the
-# eventual Claude child still crosses claude-lead.sh's explicit env -i barrier.
+# Read launcher configuration into this body shell. Assembly helpers retain the
+# exported configuration, while the Claude child still crosses claude-lead.sh's
+# explicit env -i barrier.
 ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/.env}"
 if [ -f "$ENV_FILE" ]; then
   _v2_body_allexport_was_on=false
@@ -59,7 +59,7 @@ CHROME_ENABLED="$(jq -er \
   || { echo "[lead-body] ERROR: invalid botTokenEnv: $BOT_TOKEN_ENV" >&2; exit 1; }
 # Loading .env may overwrite a global DISCORD_BOT_TOKEN inherited from the
 # private server. Reproject the exact manifest-selected credential afterwards,
-# matching the v1 wrapper's boundary and preventing cross-Lead identity drift.
+# preserving the manifest credential boundary and preventing cross-Lead drift.
 export DISCORD_BOT_TOKEN="${!BOT_TOKEN_ENV:-}"
 export FLYWHEEL_LEAD_CARRIER=v2
 export FLYWHEEL_LEAD_MCP_EXCLUDE="$MCP_EXCLUDE"

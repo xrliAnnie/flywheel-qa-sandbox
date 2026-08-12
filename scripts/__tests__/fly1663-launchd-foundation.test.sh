@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # FLY-1663 foundation contracts: deterministic per-Lead sockets and
-# versioned launchd carriers. This suite is hermetic and never calls launchctl.
+# v2-only launchd carrier. This suite is hermetic and never calls launchctl.
 set -uo pipefail
 
 PASSED=0
@@ -106,8 +106,7 @@ else
   fail "S4b symlink socket directory accepted"
 fi
 
-# Plist carrier selection is explicit. Absent remains v1 during the mixed
-# fleet; v2 selects the immutable new wrapper; unknown fails closed.
+# Plist generation defaults to the immutable v2 wrapper; unknown input fails closed.
 export FLYWHEEL_DAEMON_SOURCED=1
 PLUTIL_STUB="$SANDBOX/plutil"
 printf '#!/bin/bash\nexit 0\n' > "$PLUTIL_STUB"
@@ -127,28 +126,24 @@ manifest="$MANIFEST_DIR/flywheel-eng-lead.json"
 mkdir -p "$(dirname "$manifest")"
 jq -n '{leadId:"eng-lead",projectDir:"/tmp/flywheel",projectName:"flywheel"}' > "$manifest"
 
-v1_plist="$SANDBOX/v1.plist"
 v2_plist="$SANDBOX/v2.plist"
-generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$v1_plist" "v1"
-generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$v2_plist" "v2"
-if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper.sh" "$v1_plist" \
-  && grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$v2_plist"; then
-  pass "C1 plist renders the explicit v1/v2 carrier"
+generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$v2_plist"
+if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$v2_plist"; then
+  pass "C1 plist renders the v2 carrier"
 else
-  fail "C1 plist did not select versioned wrappers"
+  fail "C1 plist did not select wrapper-v2"
 fi
 
-# The routine daemon install path must derive the carrier from projects.json.
-# Otherwise `install --all` can silently rewrite every migrated v2 Lead back
-# to the v1 wrapper while projects.json still declares v2.
-jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead",carrier:"v2"}]}' \
+# The routine daemon install path must remain v2 when projects.json omits the
+# retired carrier selector.
+jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead"}]}' \
   | jq -s '.' > "$FLYWHEEL_STATE_DIR/projects.json"
 generate_plist "flywheel-eng-lead" "$manifest" >/dev/null
 installed_plist="$(plist_path "flywheel-eng-lead")"
 if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$installed_plist"; then
-  pass "C1b routine plist generation preserves the projects.json v2 carrier"
+  pass "C1b routine plist generation defaults to v2"
 else
-  fail "C1b routine plist generation silently reverted v2 to the v1 wrapper"
+  fail "C1b routine plist generation did not use v2"
 fi
 
 launchctl_state="$SANDBOX/launchctl-state"
@@ -176,9 +171,9 @@ install_one_manifest "$manifest" >/dev/null
 unset -f sleep
 if grep -qF "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" "$installed_plist" \
   && grep -q '^bootstrap ' "$launchctl_calls"; then
-  pass "C1c daemon install bootstraps the projects.json-declared v2 carrier"
+  pass "C1c daemon install bootstraps the v2 carrier"
 else
-  fail "C1c daemon install did not preserve the declared v2 carrier"
+  fail "C1c daemon install did not preserve v2"
 fi
 
 if ! generate_plist_to "flywheel-eng-lead" "$manifest" "$manifest" "$SANDBOX/bad.plist" "bespoke" >/dev/null 2>&1; then
@@ -187,15 +182,24 @@ else
   fail "C2 unknown carrier was accepted"
 fi
 
+ambiguous_plist="$SANDBOX/ambiguous.plist"
+cp "$installed_plist" "$ambiguous_plist"
+sed -i.bak 's#</dict>#<key>LEGACY_NOTE</key><string>/opt/flywheel-codex-lead-wrapper-mufasa.sh</string></dict>#' "$ambiguous_plist"
+rm -f "$ambiguous_plist.bak"
+if [ "$(classify_plist_lead_carrier "$ambiguous_plist")" = "unknown" ]; then
+  pass "C2b a plist carrying v2 plus a bespoke Codex wrapper reference is ambiguous"
+else
+  fail "C2b ambiguous wrapper evidence normalized to v2"
+fi
+
 FLYWHEEL_DIR="$REPO_ROOT"
 install_wrapper >/dev/null
-if [ -x "$FLYWHEEL_BIN/flywheel-lead-wrapper.sh" ] \
-  && [ -x "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" ] \
+if [ -x "$FLYWHEEL_BIN/flywheel-lead-wrapper-v2.sh" ] \
   && [ -x "$FLYWHEEL_BIN/flywheel-lead-attach.sh" ] \
   && [ -x "$FLYWHEEL_BIN/lib/lead-address.sh" ]; then
-  pass "C3 carrier install publishes the complete v1/v2/display closure"
+  pass "C3 carrier install publishes the v2/display closure"
 else
-  fail "C3 mixed-carrier install closure is incomplete"
+  fail "C3 v2 carrier install closure is incomplete"
 fi
 
 relocated_state="$SANDBOX/relocated-state"
@@ -260,18 +264,18 @@ fi
 # shellcheck source=../lib/lead-restart-lifecycle.sh
 source "$REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh"
 projects="$SANDBOX/projects.json"
-jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead",carrier:"v2"}]}' \
+jq -n '{projectName:"flywheel",leads:[{agentId:"eng-lead"}]}' \
   | jq -s '.' > "$projects"
 if lead_restart_validate_authority \
     "$manifest" "$v2_plist" "$projects" "com.flywheel.lead.flywheel-eng-lead" \
-    && [ "$LEAD_RESTART_CARRIER" = "v2" ]; then
+    && [ "$LEAD_RESTART_BACKEND" = "claude-code" ]; then
   pass "C4 restart authority recognizes the canonical v2 carrier"
 else
   fail "C4 v2 restart authority rejected"
 fi
 
 restart_block="$(sed -n '/^restart_lead()/,/^}/p' "$REPO_ROOT/scripts/restart-services.sh")"
-if grep -q 'LEAD_RESTART_CARRIER.*v2' <<< "$restart_block" \
+if grep -q '\[\[ "\$backend" == "claude-code" \]\]' <<< "$restart_block" \
     && grep -q 'launchctl kickstart -k' <<< "$restart_block" \
     && ! grep -qE 'nohup env|Legacy path: manual nohup' <<< "$restart_block"; then
   pass "C5 Lead restart has a native v2 path and no orphan fallback"

@@ -39,10 +39,6 @@ lead_restart_process_alive() {
   kill -0 "$1" 2>/dev/null
 }
 
-lead_restart_process_table() {
-  LC_ALL=C ps -axo pid=,command= 2>/dev/null
-}
-
 LEAD_RESTART_SCHEDULER_LOCK_FAILURE_REASON=""
 
 _lead_restart_file_mode() {
@@ -445,18 +441,43 @@ _lead_restart_manifest_identity() {
 
 lead_restart_project_backend() {
   local projects_file="$1" project="$2" lead_id="$3"
-  jq -er --arg project "$project" --arg lead "$lead_id" '
+  local row backend project_root legacy=""
+  row="$(jq -cer --arg project "$project" --arg lead "$lead_id" '
     [
-      .[] |
-      select(.projectName == $project) |
-      (.leads // [])[] |
-      select(.agentId == $lead)
+      .[] as $project_row |
+      select($project_row.projectName == $project) |
+      ($project_row.leads // [])[] |
+      select(.agentId == $lead) |
+      {backend: (.backend // ""), projectRoot: ($project_row.projectRoot // "")}
     ] |
     if length == 1
-    then (.[0].backend // "claude-code")
+       and (.[0].backend | type) == "string"
+       and (.[0].projectRoot | type) == "string"
+    then .[0]
     else error("project lead identity is missing or ambiguous")
-    end
-  ' "$projects_file" 2>/dev/null
+    end' "$projects_file" 2>/dev/null)" || return 1
+
+  backend="$(jq -r '.backend' <<<"$row")"
+  if [ -n "$backend" ]; then
+    printf '%s\n' "$backend"
+    return 0
+  fi
+
+  project_root="$(jq -r '.projectRoot' <<<"$row")"
+  case "$project_root" in
+    /*) ;;
+    "") project_root="" ;;
+    *) project_root="${HOME:-}/$project_root" ;;
+  esac
+  if [ -n "$project_root" ] && [ -f "$project_root/.flywheel/config.yaml" ]; then
+    legacy="$(awk '/^roles:/{r=1;next} r&&/^[^ ]/{r=0} r&&/^  lead:/{l=1;next} l&&/^  [^ ]/{l=0} l&&/^    backend:/{print $2; exit}' \
+      "$project_root/.flywheel/config.yaml" 2>/dev/null | tr -d '"' || true)"
+  fi
+  [ -n "$legacy" ] || legacy="${FLYWHEEL_LEAD_BACKEND:-}"
+  case "$legacy" in
+    codex-app-server|codex-tmux|codex) printf 'codex-app-server\n' ;;
+    *) printf 'claude-code\n' ;;
+  esac
 }
 
 lead_restart_project_carrier() {
@@ -469,10 +490,10 @@ lead_restart_project_carrier() {
       select(.agentId == $lead)
     ] |
     if length == 1
-    then (.[0].carrier // "v1")
+    then (.[0].carrier // "v2")
     else error("project lead identity is missing or ambiguous")
     end |
-    select(. == "v1" or . == "v2")
+    select(. == "v2")
   ' "$projects_file" 2>/dev/null
 }
 
@@ -492,7 +513,6 @@ _lead_restart_config_identity_for_key() {
 }
 
 LEAD_RESTART_BACKEND=""
-LEAD_RESTART_CARRIER=""
 LEAD_RESTART_PROJECT=""
 LEAD_RESTART_LEAD_ID=""
 LEAD_RESTART_LABEL=""
@@ -506,7 +526,7 @@ LEAD_RESTART_PROJECTS_DIGEST=""
 _lead_restart_validate_authority_once() {
   local manifest="$1" plist="$2" projects_file="$3" expected_label="$4"
   local identity project lead_id plist_json label argc arg0 wrapper arg2=""
-  local wrapper_base manifest_backend project_backend project_carrier backend carrier
+  local wrapper_base manifest_backend project_backend project_carrier backend
   identity="$(_lead_restart_manifest_identity "$manifest")" || return 1
   project="${identity%%$'\t'*}"
   lead_id="${identity#*$'\t'}"
@@ -521,28 +541,17 @@ _lead_restart_validate_authority_once() {
   wrapper_base="${wrapper##*/}"
   manifest_backend="$(jq -er '.leadBackend.backendId // ""' "$manifest" 2>/dev/null)" || return 1
   project_backend="$(lead_restart_project_backend "$projects_file" "$project" "$lead_id")" || return 1
-  project_carrier="$(lead_restart_project_carrier "$projects_file" "$project" "$lead_id")" || return 1
 
   case "$wrapper_base" in
-    flywheel-lead-wrapper.sh)
-      [ "$argc" -eq 3 ] || return 1
-      arg2="$(printf '%s' "$plist_json" | jq -er '.argv[2]')" || return 1
-      [ "$arg2" = "$manifest" ] || return 1
-      [ "$project_backend" = "claude-code" ] || return 1
-      [ "$project_carrier" = "v1" ] || return 1
-      case "$manifest_backend" in ""|claude-code) ;; *) return 1 ;; esac
-      backend="claude-code"
-      carrier="v1"
-      ;;
     flywheel-lead-wrapper-v2.sh)
       [ "$argc" -eq 3 ] || return 1
       arg2="$(printf '%s' "$plist_json" | jq -er '.argv[2]')" || return 1
       [ "$arg2" = "$manifest" ] || return 1
       [ "$project_backend" = "claude-code" ] || return 1
+      project_carrier="$(lead_restart_project_carrier "$projects_file" "$project" "$lead_id")" || return 1
       [ "$project_carrier" = "v2" ] || return 1
       case "$manifest_backend" in ""|claude-code) ;; *) return 1 ;; esac
       backend="claude-code"
-      carrier="v2"
       ;;
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh)
       [ "$argc" -eq 2 ] || return 1
@@ -550,7 +559,6 @@ _lead_restart_validate_authority_once() {
       [ "$project_backend" = "codex-app-server" ] || return 1
       case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
       backend="codex-app-server"
-      carrier="v1"
       ;;
     flywheel-codex-lead-wrapper-codex-infra-bot.sh)
       [ "$argc" -eq 2 ] || return 1
@@ -558,7 +566,6 @@ _lead_restart_validate_authority_once() {
       [ "$project_backend" = "codex-app-server" ] || return 1
       case "$manifest_backend" in ""|codex-app-server) ;; *) return 1 ;; esac
       backend="codex-app-server"
-      carrier="v1"
       ;;
     *)
       # Includes the retired mufasa-tui.sh carrier and any future carrier not
@@ -568,7 +575,6 @@ _lead_restart_validate_authority_once() {
   esac
 
   LEAD_RESTART_BACKEND="$backend"
-  LEAD_RESTART_CARRIER="$carrier"
   LEAD_RESTART_PROJECT="$project"
   LEAD_RESTART_LEAD_ID="$lead_id"
   LEAD_RESTART_LABEL="$label"
@@ -594,7 +600,7 @@ lead_restart_validate_authority() {
 }
 
 lead_restart_authority_unchanged() {
-  local backend="$LEAD_RESTART_BACKEND" carrier="$LEAD_RESTART_CARRIER" project="$LEAD_RESTART_PROJECT"
+  local backend="$LEAD_RESTART_BACKEND" project="$LEAD_RESTART_PROJECT"
   local lead_id="$LEAD_RESTART_LEAD_ID" label="$LEAD_RESTART_LABEL"
   local manifest_digest plist_digest projects_digest
   [ -n "$LEAD_RESTART_MANIFEST_FILE" ] && [ -n "$LEAD_RESTART_PLIST_FILE" ] \
@@ -609,7 +615,6 @@ lead_restart_authority_unchanged() {
     "$LEAD_RESTART_MANIFEST_FILE" "$LEAD_RESTART_PLIST_FILE" \
     "$LEAD_RESTART_PROJECTS_FILE" "$label" || return 1
   [ "$LEAD_RESTART_BACKEND" = "$backend" ] \
-    && [ "$LEAD_RESTART_CARRIER" = "$carrier" ] \
     && [ "$LEAD_RESTART_PROJECT" = "$project" ] \
     && [ "$LEAD_RESTART_LEAD_ID" = "$lead_id" ] \
     && [ "$LEAD_RESTART_LABEL" = "$label" ]
@@ -621,30 +626,6 @@ lead_restart_old_tuple_dead() {
   lead_restart_process_alive "$pid" || return 0
   actual_start="$(lead_restart_process_start_identity "$pid")" || return 1
   [ "$actual_start" != "$expected_start" ]
-}
-
-_lead_restart_claude_supervisor_present() {
-  local project="$1" lead_id="$2" snapshot line_pid command had_noglob token
-  snapshot="$(lead_restart_process_table)" || return 2
-  while read -r line_pid command; do
-    case "$line_pid" in ""|*[!0-9]*) continue ;; esac
-    had_noglob=0
-    case "$-" in *f*) had_noglob=1 ;; *) set -f ;; esac
-    # shellcheck disable=SC2086
-    set -- $command
-    [ "$had_noglob" -eq 1 ] || set +f
-    while [ "$#" -gt 0 ]; do
-      token="${1##*/}"
-      shift
-      if [ "$token" = "claude-lead.sh" ]; then
-        [ "${1:-}" = "$lead_id" ] && [ "${3:-}" = "$project" ] && return 0
-        break
-      fi
-    done
-  done <<EOF
-$snapshot
-EOF
-  return 1
 }
 
 _lead_restart_codex_assertion_quiet() {
@@ -666,22 +647,16 @@ lead_restart_wait_quiescent() {
   local project="$5" lead_id="$6" assertion_file="$7"
   local attempts="${LEAD_RESTART_QUIESCENCE_ATTEMPTS:-${LEAD_QUIESCENCE_ATTEMPTS:-30}}"
   local interval="${LEAD_RESTART_QUIESCENCE_INTERVAL:-${LEAD_QUIESCENCE_INTERVAL:-1}}"
-  local count=0 probe supervisor_rc assertion_rc
+  local count=0 probe assertion_rc
+  [ "$backend" = "codex-app-server" ] || return 2
   while [ "$count" -lt "$attempts" ]; do
     probe="$(lead_restart_launchd_probe "$target")"
     [ "$probe" = "error" ] && return 2
     if [ "$probe" = "unloaded" ] && lead_restart_old_tuple_dead "$old_pid" "$old_start"; then
-      if [ "$backend" = "claude-code" ]; then
-        supervisor_rc=0
-        _lead_restart_claude_supervisor_present "$project" "$lead_id" || supervisor_rc=$?
-        [ "$supervisor_rc" -eq 2 ] && return 2
-        [ "$supervisor_rc" -eq 1 ] && return 0
-      else
-        assertion_rc=0
-        _lead_restart_codex_assertion_quiet "$assertion_file" "${project}-${lead_id}" || assertion_rc=$?
-        [ "$assertion_rc" -eq 2 ] && return 2
-        [ "$assertion_rc" -eq 0 ] && return 0
-      fi
+      assertion_rc=0
+      _lead_restart_codex_assertion_quiet "$assertion_file" "${project}-${lead_id}" || assertion_rc=$?
+      [ "$assertion_rc" -eq 2 ] && return 2
+      [ "$assertion_rc" -eq 0 ] && return 0
     fi
     lead_restart_sleep "$interval"
     count=$((count + 1))
@@ -691,12 +666,9 @@ lead_restart_wait_quiescent() {
 
 lead_restart_recovery_bootstrap_allowed() {
   local backend="$1" old_tuple_dead="$2" sweep_safe="$3"
-  [ "$old_tuple_dead" = "true" ] || return 1
-  case "$backend" in
-    claude-code) return 0 ;;
-    codex-app-server) [ "$sweep_safe" = "true" ] ;;
-    *) return 1 ;;
-  esac
+  [ "$backend" = "codex-app-server" ] \
+    && [ "$old_tuple_dead" = "true" ] \
+    && [ "$sweep_safe" = "true" ]
 }
 
 _lead_restart_candidate_add() {
@@ -720,23 +692,6 @@ _lead_restart_plist_key_and_manifest() {
   printf '%s\t%s\n' "${label#com.flywheel.lead.}" "$manifest"
 }
 
-_lead_restart_parse_legacy_identity() {
-  local command="$1" token had_noglob=0
-  case "$-" in *f*) had_noglob=1 ;; *) set -f ;; esac
-  # shellcheck disable=SC2086
-  set -- $command
-  [ "$had_noglob" -eq 1 ] || set +f
-  while [ "$#" -gt 0 ]; do
-    token="${1##*/}"
-    shift
-    if [ "$token" = "claude-lead.sh" ]; then
-      [ "$#" -ge 3 ] || return 1
-      printf '%s\t%s\n' "$3" "$1"
-      return 0
-    fi
-  done
-  return 1
-}
 
 _lead_restart_normalize_candidates() {
   local raw="$1" out="$2"
@@ -854,28 +809,6 @@ lead_restart_collect_candidates() {
       "$class" "plist"
   done
 
-  local snapshot="" snapshot_rc=0 line_pid command legacy_identity
-  snapshot="$(lead_restart_process_table)" || snapshot_rc=$?
-  if [ "$snapshot_rc" -ne 0 ]; then
-    rm -f "$raw"
-    return 2
-  fi
-  while read -r line_pid command; do
-    case "$line_pid" in ""|*[!0-9]*) continue ;; esac
-    legacy_identity="$(_lead_restart_parse_legacy_identity "$command" 2>/dev/null || true)"
-    [ -n "$legacy_identity" ] || continue
-    project="${legacy_identity%%$'\t'*}"
-    lead_id="${legacy_identity#*$'\t'}"
-    key="${project}-${lead_id}"
-    case "$lead_id" in
-      flywheel-test-*) class="skip-test" ;;
-      *) lead_restart_project_backend "$projects_file" "$project" "$lead_id" >/dev/null 2>&1 \
-           && class="manifestless" || class="config-drift" ;;
-    esac
-    _lead_restart_candidate_add "$raw" "$key" "$project" "$lead_id" "-" "$class" "process"
-  done <<EOF
-$snapshot
-EOF
 
   _lead_restart_normalize_candidates "$raw" "$out_file"
   rm -f "$raw"

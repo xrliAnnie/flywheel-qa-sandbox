@@ -43,18 +43,15 @@ jq -n '[{
 TXN="$HOME/.flywheel/fleet-backups/txn-badmodel/transaction.json"
 jq -n '{
   transactionId: "txn-badmodel",
-  wrapper: {phase: "w-committed"},
   leads: {
     "geo-product-lead": {
       phase: "applied",
       original: {
         projectModel: "claude-not-a-model",
         projectEffort: "null",
-        projectEffortTouched: false,
-        projectCarrier: "v1",
-        projectCarrierTouched: false
+        projectEffortTouched: false
       },
-      desired: {model: "claude-fable-5", effort: "", carrier: "v1"}
+      desired: {model: "claude-fable-5", effort: ""}
     }
   }
 }' > "$TXN"
@@ -77,7 +74,6 @@ fi
 mkdir -p "$HOME/.flywheel/fleet-backups/txn-legacy"
 jq -n '{
   transactionId: "txn-legacy",
-  wrapper: {phase: "w-committed"},
   leads: {
     "geo-product-lead": {
       phase: "applied",

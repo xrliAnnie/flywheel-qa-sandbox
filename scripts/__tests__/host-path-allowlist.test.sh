@@ -25,7 +25,7 @@ SURFACE=(
   scripts/provision-fleet-host.sh
   scripts/fleet-capture.sh
   scripts/flywheel-bridge-wrapper.sh
-  scripts/flywheel-lead-wrapper.sh
+  scripts/flywheel-lead-wrapper-v2.sh
   scripts/materialize-lead-manifests.sh
   scripts/linux-preflight.sh
 )
@@ -42,7 +42,7 @@ done
 
 # (b) the wired launchers must use the overridable form, never a bare hardcode.
 bare=0
-for f in scripts/flywheel-bridge-wrapper.sh scripts/flywheel-lead-wrapper.sh; do
+for f in scripts/flywheel-bridge-wrapper.sh scripts/flywheel-lead-wrapper-v2.sh; do
   # a bare assignment is FLYWHEEL_DIR="${HOME}/Dev/flywheel" with NO `:-`.
   if grep -E 'FLYWHEEL_DIR="\$\{HOME\}/Dev/flywheel"' "$REPO_ROOT/$f" 2>/dev/null | grep -qv ':-'; then
     echo "    bare un-overridable FLYWHEEL_DIR in $f"; bare=1

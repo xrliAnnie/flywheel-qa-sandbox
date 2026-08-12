@@ -67,7 +67,7 @@ pad() {  # <prefix> — filler that clears FLY-954's 1024B sanity floor with
   while [ "$i" -le 60 ]; do echo "$1 line $i placeholder padding text >/dev/null"; i=$((i+1)); done
 }
 
-COPY_FILES="flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
 
 # ── fake repos ───────────────────────────────────────────────────────────────
 # The canonical flywheel-cmux-sync.sh IS the positive-control recorder. It has
@@ -96,7 +96,7 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
 # measuring the wrong gate.
 reset_repo_sources() {  # <repo>
   local fr="$1" f
-  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead-wrapper-v2.sh \
       flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
       lib/lead-address.sh; do
     { echo '#!/bin/bash'; pad "echo repo-$f"; } > "$fr/scripts/$f"

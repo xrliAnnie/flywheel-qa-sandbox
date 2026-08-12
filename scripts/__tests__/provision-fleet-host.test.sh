@@ -119,7 +119,7 @@ RR="$SANDBOX/repo"
 mkdir -p "$RR/scripts/launchd" "$RR/scripts/lib"
 # FLY-954: fixture wrappers must PASS source sanity (the 12-byte stub shape is
 # now exactly what the provisioner refuses to install — see P10 for that case).
-for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+for f in flywheel-lead-wrapper-v2.sh \
     flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'
     echo "# sane fixture for $f (FLY-954)"
@@ -285,7 +285,7 @@ fi
 H9="$SANDBOX/home9"; mkdir -p "$H9"
 SD9="$SANDBOX/customstate"
 run_prov "$H9" --apply --skip-token-check --state-dir "$SD9"
-if [ "$PROV_RC" -eq 0 ] && [ -f "$SD9/projects.json" ] && [ -f "$SD9/bin/flywheel-lead-wrapper.sh" ]; then
+if [ "$PROV_RC" -eq 0 ] && [ -f "$SD9/projects.json" ] && [ -f "$SD9/bin/flywheel-lead-wrapper-v2.sh" ]; then
   pass "P9: explicit --state-dir redirects state (projects.json + bin installs)"
 else
   fail "P9: --state-dir (rc=$PROV_RC)"; tail -20 "$PROV_LOG"
@@ -294,13 +294,13 @@ fi
 # ── P10 (FLY-954): a degenerate bin source must FAIL the provision loudly ───
 RRBAD="$SANDBOX/repobad"; mkdir -p "$RRBAD/scripts"
 cp -R "$RR/scripts/." "$RRBAD/scripts/"
-echo '#!/bin/bash' > "$RRBAD/scripts/flywheel-lead-wrapper.sh"   # the incident stub
+echo '#!/bin/bash' > "$RRBAD/scripts/flywheel-lead-wrapper-v2.sh"   # degenerate source
 H10="$SANDBOX/home10"; mkdir -p "$H10"
 env -i PATH="$STUB_PATH" HOME="$H10" FLYWHEEL_PLATFORM=darwin \
   bash "$PROVISION" --repo-root "$RRBAD" --fleet-dir "$FLEET" --home "$H10" \
   --apply --skip-token-check >"$SANDBOX/prov10.log" 2>&1
 P10RC=$?
-if [ "$P10RC" -ne 0 ] && [ ! -f "$H10/.flywheel/bin/flywheel-lead-wrapper.sh" ] \
+if [ "$P10RC" -ne 0 ] && [ ! -f "$H10/.flywheel/bin/flywheel-lead-wrapper-v2.sh" ] \
    && ! grep -q '\[provision\] done\.' "$SANDBOX/prov10.log"; then
   pass "P10: 12-byte stub source → provision dies, nothing installed, no done."
 else
@@ -308,9 +308,9 @@ else
 fi
 
 # ── P11 (FLY-954): installed copies are write-protected (555) ───────────────
-W11="$H2/.flywheel/bin/flywheel-lead-wrapper.sh"   # installed by P2a earlier
+W11="$H2/.flywheel/bin/flywheel-lead-wrapper-v2.sh"   # installed by P2a earlier
 if [ -f "$W11" ] && [ ! -w "$W11" ] && [ -x "$W11" ] \
-   && ! cp "$RRBAD/scripts/flywheel-lead-wrapper.sh" "$W11" 2>/dev/null; then
+   && ! cp "$RRBAD/scripts/flywheel-lead-wrapper-v2.sh" "$W11" 2>/dev/null; then
   pass "P11: installed copy is 555 — bare cp over it fails (incident shape blocked)"
 else
   fail "P11: write protection"; ls -l "$W11" 2>/dev/null

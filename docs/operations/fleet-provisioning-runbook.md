@@ -80,12 +80,17 @@ engine and reports `not-installed/no-carrier` on a clean host). Instead:
 3. Bring up each Lead — manifests do NOT exist yet on a clean host, and the
    launchd wrapper **exits if its manifest is missing** (it does NOT
    self-generate). So, per Lead:
-   1. Run `claude-lead.sh` once (foreground/manual) to **generate that Lead's
-      manifest**, then stop that manual process.
+   1. Run `scripts/materialize-lead-manifests.sh` once to create the canonical
+      static manifests from `projects.json`. The Lead body never creates or
+      rewrites them.
    2. `flywheel-daemon.sh install <lead>` — generate the plist + bootstrap from
-      the now-existing manifest. This resolves the Lead's declared `carrier`
-      from `projects.json` and fails closed if the identity is missing or
-      ambiguous; it must never silently rewrite a v2 Lead onto the v1 wrapper.
+      the now-existing manifest. Backend authority comes from the exact
+      project+Lead row in `projects.json`; bespoke Codex Leads are skipped
+      before plist or supervisor mutation.
+   A clean-host CoS should use the literal `cos-lead` agent id. A custom CoS id
+   must not be installed until its reviewed manifest control plane supplies
+   `launchEnvironment.FLYWHEEL_LEAD_ROLE=cos`; `flywheel-fleet.sh apply` cannot
+   seed that value before the first carrier exists.
    (This mirrors the setup-new-project.sh cutover checklist.)
 4. Verify: `flywheel-daemon.sh status` — expect all leads loaded.
 

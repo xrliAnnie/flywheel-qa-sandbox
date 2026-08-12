@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
-export type LeadCarrier = "v1" | "v2";
+export type LeadCarrier = "v2";
 
 export interface LeadConfig {
 	agentId: string;
@@ -126,12 +126,8 @@ export interface LeadConfig {
 	 */
 	backend?: LeadBackendId;
 	/**
-	 * FLY-1663 versioned launchd carrier. During the mixed-fleet migration an
-	 * absent value retains v1 semantics for config-backed Claude Leads. Cutover
-	 * and rollback write an explicit v2/v1 value respectively.
-	 *
-	 * Carrier is desired state in projects.json only; manifests deliberately do
-	 * not carry it because the immutable v1 body rebuilds manifests wholesale.
+	 * FLY-1663 launchd-native carrier marker. Absence and explicit `"v2"` are
+	 * equivalent for Claude Leads; other values are rejected.
 	 */
 	carrier?: LeadCarrier;
 	/**
@@ -656,9 +652,9 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 			if (lead.carrier !== undefined) {
-				if (lead.carrier !== "v1" && lead.carrier !== "v2") {
+				if (lead.carrier !== "v2") {
 					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].carrier: must be "v1" | "v2", got ${JSON.stringify(lead.carrier)}`,
+						`Project "${entry.projectName}" leads[${i}].carrier: must be "v2", got ${JSON.stringify(lead.carrier)}`,
 					);
 				}
 				if (lead.backend === "codex-app-server") {

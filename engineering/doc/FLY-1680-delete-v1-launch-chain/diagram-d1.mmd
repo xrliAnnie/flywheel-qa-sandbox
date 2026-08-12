@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph LIVE["✅ v2 活链(保留,一个字节不动)"]
+        direction LR
+        L0["launchd\n(macOS 系统进程管家)"] --> L1["wrapper-v2\n启动壳脚本"]
+        L1 --> L2["私有 tmux server\n(每个 Lead 独享的终端会话)"]
+        L2 --> L3["lead-body.sh\n一次性启动体"]
+        L3 --> L4["Claude Lead 上线"]
+    end
+    subgraph DEAD["🗑️ v1 死链(本单删除,已无生产入口)"]
+        direction LR
+        D0["wrapper v1\n旧启动壳"] --> D1["共享 tmux session\n里的 supervisor 守护循环"]
+        D1 --> D2["create-kill 建窗验收链\n(建窗→验收→不符即杀,\n8/10 早 3 小时事故病灶)"]
+        D1 --> D3["lease/收养/护栏全家\n(FLY-1285/1309/1659 补丁族)"]
+    end
+    subgraph CODEX["🔒 Codex 专线(保留,含重启编舞)"]
+        direction LR
+        C0["bespoke codex wrapper\n(Mufasa / infra-bot 专属壳)"] --> C1["codex TUI 窗口\n(共享 cmux 会话)"]
+    end
+    L0 -.->|"16 个生产 label:\n14 走 v2,2 走 Codex 专线,\n0 走 v1"| C0

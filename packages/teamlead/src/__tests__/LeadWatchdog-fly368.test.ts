@@ -96,7 +96,6 @@ function makeWatchdog(
 		}),
 		captureFn: overrides.capture,
 		claimsReader: async () => new Set(),
-		blockedMarkerReader: async () => [],
 		now: () => 0,
 		onRecovery: overrides.onRecovery,
 		onPollComplete: overrides.onPollComplete,

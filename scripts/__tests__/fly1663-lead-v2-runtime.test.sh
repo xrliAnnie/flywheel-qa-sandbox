@@ -218,10 +218,8 @@ done
 rm -f "$TMP/home/.local/bin/tmux"
 
 # The Claude child crosses a second env -i boundary inside claude-lead.sh.
-# Its structured dry-run plan is the authoritative projection consumed by both
-# the v1 tmux path and the v2 direct-child path. The v2 path must carry the OS
-# identity through that boundary and must not emit the legacy manifest writer's
-# jq warning when it intentionally delegates manifest ownership to the wrapper.
+# Its structured dry-run plan is the authoritative projection consumed by the
+# direct-child path. It must carry the OS identity and the v2 carrier marker.
 projects_json="$(<"$TMP/home/.flywheel/projects.json")"
 child_plan="$({
   env -i \
@@ -239,36 +237,11 @@ child_plan="$({
 } 2>&1)" || true
 if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$child_plan" \
-    && ! grep -qF 'WARNING: jq not found. Manifest not written' <<<"$child_plan"; then
-  pass "Claude child keeps OS login identity and v2 skips the legacy manifest warning"
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_CARRIER\tset' <<<"$child_plan"; then
+  pass "Claude child keeps OS login identity and the v2 carrier marker"
 else
-  fail "Claude child identity/warning contract"
+  fail "Claude child identity/carrier contract"
   printf '%s\n' "$child_plan"
-fi
-
-v1_plan="$({
-  env -i \
-    HOME="$TMP/home" \
-    PATH="$PATH" \
-    USER=untrusted-user \
-    LOGNAME=untrusted-logname \
-    FLYWHEEL_LEAD_DRY_RUN=1 \
-    FLYWHEEL_PROJECTS="$projects_json" \
-    DISCORD_BOT_TOKEN=fixture-token \
-    bash "$ROOT/packages/teamlead/scripts/claude-lead.sh" \
-      ops-lead "$TMP/project" demo
-} 2>&1)" || true
-v1_env_keys="$(sed -n $'s/^PANE_ENV\\t\\([^\\t]*\\)\\t.*$/\\1/p' <<<"$v1_plan" | LC_ALL=C sort -u)"
-v2_env_keys="$(sed -n $'s/^PANE_ENV\\t\\([^\\t]*\\)\\t.*$/\\1/p' <<<"$child_plan" | LC_ALL=C sort -u)"
-v1_only="$(comm -23 <(printf '%s\n' "$v1_env_keys") <(printf '%s\n' "$v2_env_keys"))"
-v2_only="$(comm -13 <(printf '%s\n' "$v1_env_keys") <(printf '%s\n' "$v2_env_keys"))"
-if [ -z "$v1_only" ] \
-    && [ "$v2_only" = FLYWHEEL_LEAD_CARRIER ] \
-    && grep -qF $'PANE_ENV\tUSER\tset' <<<"$v1_plan" \
-    && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$v1_plan"; then
-  pass "v1/v2 Claude child env keys match except the v2 carrier marker"
-else
-  fail "v1/v2 Claude child env characterization: v1_only=[$v1_only] v2_only=[$v2_only]"
 fi
 
 cat > "$TMP/unsafe-manifest.json" <<JSON

@@ -1,15 +1,15 @@
 #!/bin/bash
 # FLY-247: fleet operations CLI — the clean cutover path for per-Lead
-# model/backend config (plan: doc/engineer/plan/new/v1.40.0-FLY-247-*.md).
+# model/backend config.
 #
 #   flywheel-fleet.sh plan   [--lead <key>] [--project <p>]
 #   flywheel-fleet.sh apply  [--lead <key>] [--project <p>] [--yes] [--dry-run]
-#   flywheel-fleet.sh apply  --lead <key> [--model <id|default>] [--effort <level|default>] [--carrier <v1|v2>] [--backend <id>] --yes
+#   flywheel-fleet.sh apply  --lead <key> [--model <id|default>] [--effort <level|default>] [--backend <id>] --yes
 #   flywheel-fleet.sh apply --rollback [--txn <id>] [--lead <key>] [--yes]
 #   flywheel-fleet.sh recover --txn <id> [--lead <key>] --yes
 #
 # Single source of truth: ~/.flywheel/projects.json leads[].{model,backend}.
-# Derived carriers: manifest (model, leadBackend.backendId) → plist env.
+# Derived runtime artifacts: manifest (model, leadBackend.backendId) → plist env.
 #
 # Safety contract (Codex design review R1–R10, all enforced here):
 #   - plan / --dry-run never mutate anything (non-terminal txns: report+exit 1)
@@ -18,9 +18,7 @@
 #   - auto-apply ONLY model-only changes on confirmed-standard Claude leads;
 #     any backend diff / codex / unknown / not-installed → UNAPPLIED (§2.3)
 #   - immutable config snapshot + pre-bootout TOCTOU re-verification of
-#     config, carrier pre-images AND the full evidence gate (R5#3 + R8#5)
-#   - wrapper = Phase W, exactly once, AFTER eligibility+confirmation (R3#3),
-#     transaction.json created BEFORE it (R6#4); never rolled back per-Lead
+#     config, artifact pre-images AND the full evidence gate (R5#3 + R8#5)
 #   - staged artifacts; canonical writes happen only inside the daemon's
 #     staged install after the old PID exited (R3#2)
 #   - recovery follows the §2.6 phase table via the daemon's JSON result
@@ -57,8 +55,6 @@ PROJECTS_JSON="${FLYWHEEL_STATE_DIR}/projects.json"
 FLEET_BACKUPS="${FLYWHEEL_STATE_DIR}/fleet-backups"
 LOCK_DIR="${FLYWHEEL_STATE_DIR}/restart.lock.d"
 DAEMON_BIN="${FLYWHEEL_FLEET_DAEMON_BIN:-${SCRIPT_DIR}/flywheel-daemon.sh}"
-WRAPPER_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper.sh"
-WRAPPER_V2_DST="${FLYWHEEL_BIN}/flywheel-lead-wrapper-v2.sh"
 MODEL_POLICY_CLI="${FLYWHEEL_MODEL_POLICY_CLI:-${SCRIPT_DIR}/validate-model-policy.mjs}"
 
 flog() { echo "[fleet] $*"; }
@@ -162,7 +158,7 @@ desired_backend() {
     legacy="${FLYWHEEL_LEAD_BACKEND:-}"
   fi
   if [ -n "$legacy" ]; then
-    if [ "$legacy" = "codex-app-server" ]; then
+    if [ "$legacy" = "codex-app-server" ] || [ "$legacy" = "codex-tmux" ] || [ "$legacy" = "codex" ]; then
       echo "codex-app-server legacy"
     else
       echo "claude-code legacy"
@@ -170,18 +166,6 @@ desired_backend() {
     return
   fi
   echo "claude-code default"
-}
-
-# Desired launch carrier. During the mixed-fleet migration, absence means v1
-# only for effective Claude Leads. Cutover and rollback persist explicit values.
-desired_carrier() {
-  local snapshot="$1" project="$2" lead="$3" backend="$4"
-  [ "$backend" = "claude-code" ] || { printf 'none\n'; return; }
-  local value
-  value=$(jq -r --arg p "$project" --arg l "$lead" '
-    .[] | select(.projectName == $p) | .leads[] | select(.agentId == $l)
-    | if has("carrier") then .carrier else "v1" end' "$snapshot" 2>/dev/null)
-  case "$value" in v1|v2) printf '%s\n' "$value" ;; *) printf 'unknown\n' ;; esac
 }
 
 # Observed management axis (§2.4 bound evidence 1-4; structural only, R6#1).
@@ -257,11 +241,9 @@ observed_runtime() {
       2) echo "indeterminate"; return ;;  # R5#5: probe error ≠ no-claude
     esac
   fi
-  # No live standard PID: a claude pane may still exist (manual/nohup Claude,
-  # R5#1). QA F-2/F-3: pane evidence comes from the SHARED daemon helper
-  # (dead panes filtered; pane-pid process tree consulted because healthy
-  # production Claude panes report a bare version number as their command) —
-  # one implementation, so fleet and daemon can never disagree.
+  # No live standard PID: the canonical private pane may still exist. Pane
+  # evidence comes from the shared daemon helper so fleet and daemon cannot
+  # disagree about the v2 manifest/socket binding.
   claude_pane_evidence "$key"
   case $? in
     0) echo "claude-confirmed"; return ;;
@@ -291,9 +273,6 @@ collect_lead_state() {
   local d_backend d_source
   d_backend="${db%% *}"
   d_source="${db##* }"
-  local d_carrier
-  d_carrier="$(desired_carrier "$snapshot" "$project" "$lead" "$d_backend")"
-
   local m_model="" m_backend="" m_effort="" plist_model="" plist_effort="" plist_carrier="unknown" m_exists=false p_exists=false
   if [ -f "$manifest" ]; then
     m_exists=true
@@ -326,13 +305,13 @@ collect_lead_state() {
 
   jq -n \
     --arg project "$project" --arg lead "$lead" --arg key "$key" \
-    --arg dModel "$desired_model" --arg dEffort "$desired_effort" --arg dBackend "$d_backend" --arg dSource "$d_source" --arg dCarrier "$d_carrier" \
+    --arg dModel "$desired_model" --arg dEffort "$desired_effort" --arg dBackend "$d_backend" --arg dSource "$d_source" \
     --arg mModel "$m_model" --arg mBackend "$m_backend" --arg mEffort "$m_effort" \
     --arg pModel "$plist_model" --arg pEffort "$plist_effort" --arg pCarrier "$plist_carrier" \
     --argjson mExists "$m_exists" --argjson pExists "$p_exists" \
     --arg mgmt "$mgmt" --arg runtime "$runtime" \
     '{project: $project, lead: $lead, key: $key,
-      desired: {model: $dModel, effort: $dEffort, backend: $dBackend, carrier: $dCarrier, source: $dSource},
+      desired: {model: $dModel, effort: $dEffort, backend: $dBackend, source: $dSource},
       carrier: {manifestExists: $mExists, plistExists: $pExists,
                 manifestModel: $mModel, manifestBackend: $mBackend, manifestEffort: $mEffort,
                 plistModel: $pModel, plistEffort: $pEffort, plistCarrier: $pCarrier},
@@ -342,11 +321,10 @@ collect_lead_state() {
 # Classification (§2.3): echoes "APPLICABLE" | "IN-SYNC" | "UNAPPLIED <reason>"
 classify_lead() {
   local state_json="$1"
-  local d_model d_effort d_backend d_carrier m_model m_backend m_effort p_model p_effort p_carrier m_exists p_exists mgmt runtime
+  local d_model d_effort d_backend m_model m_backend m_effort p_model p_effort p_carrier m_exists p_exists mgmt runtime
   d_model=$(jq -r '.desired.model' <<< "$state_json")
   d_effort=$(jq -r '.desired.effort // ""' <<< "$state_json")
   d_backend=$(jq -r '.desired.backend' <<< "$state_json")
-  d_carrier=$(jq -r '.desired.carrier // "v1"' <<< "$state_json")
   m_model=$(jq -r '.carrier.manifestModel' <<< "$state_json")
   m_backend=$(jq -r '.carrier.manifestBackend' <<< "$state_json")
   m_effort=$(jq -r '.carrier.manifestEffort // ""' <<< "$state_json")
@@ -380,20 +358,18 @@ classify_lead() {
   if [ "$m_exists" != "true" ] || [ "$p_exists" != "true" ]; then
     echo "UNAPPLIED not-installed(no-carrier)"; return
   fi
-  case "$d_carrier" in v1|v2) ;; *) echo "UNAPPLIED unknown-desired-carrier(${d_carrier})"; return ;; esac
-  case "$p_carrier" in v1|v2) ;; *) echo "UNAPPLIED unknown-observed-carrier(${p_carrier})"; return ;; esac
+  [ "$p_carrier" = "v2" ] || { echo "UNAPPLIED unknown-observed-carrier(${p_carrier})"; return; }
   if [ "$mgmt" != "standard-confirmed" ]; then
     echo "UNAPPLIED management-${mgmt}"; return
   fi
   if [ "$runtime" != "claude-confirmed" ]; then
     echo "UNAPPLIED runtime-${runtime}"; return
   fi
-  # Diff against BOTH carriers (manifest + plist env, R1#2). FLY-671: a change in
+  # Diff against both runtime artifacts (manifest + plist env, R1#2). FLY-671: a change in
   # EITHER model OR effort makes the lead APPLICABLE — an effort-only change must
   # not be skipped as in-sync.
   if [ "$d_model" = "$m_model" ] && [ "$d_model" = "$p_model" ] \
-     && [ "$d_effort" = "$m_effort" ] && [ "$d_effort" = "$p_effort" ] \
-     && [ "$d_carrier" = "$p_carrier" ]; then
+     && [ "$d_effort" = "$m_effort" ] && [ "$d_effort" = "$p_effort" ]; then
     echo "IN-SYNC"; return
   fi
   echo "APPLICABLE"
@@ -461,8 +437,8 @@ restore_file_atomic() {
 }
 
 # H3 (code-review R2): a zero bootstrap exit only means launchd accepted the
-# job — the restored Lead must actually BOOT: launchd pid alive, the Lead's
-# manifest self-write binding (pid == launchd pid), and Claude runtime traits.
+# job — the restored Lead must actually BOOT: launchd pid alive, wrapper-v2's
+# runtime manifest binding (pid == launchd pid), and Claude runtime traits.
 verify_booted() {
   local key="$1"
   local manifest="${MANIFEST_DIR}/${key}.json"
@@ -483,8 +459,8 @@ verify_booted() {
   return 1
 }
 
-# Semantic manifest projection hash (R7#3): EXACT enumerated launch-affecting
-# schema; ONLY pid is volatile-excluded. Canonical JSON (-S -c) then sha.
+# Semantic manifest projection hash (R7#3): exact enumerated launch-affecting
+# schema; runtime-only pid/socketPath are excluded. Canonical JSON then sha.
 manifest_projection_sha() {
   local manifest="$1"
   # R3-M6: an unreadable/missing manifest yields a SENTINEL, not the hash of
@@ -495,8 +471,8 @@ manifest_projection_sha() {
     return
   fi
   # Every launch-affecting manifest field must participate in rollback CAS.
-  # launchEnvironment is the v2 body's explicit process contract; omitting it
-  # would make a v1 self-write that deletes the field invisible to recovery.
+  # launchEnvironment is the body's explicit process contract; omitting it
+  # would make a stale runtime stamp that deletes the field invisible to recovery.
   jq -S -c '{leadId: (.leadId // null), projectName: (.projectName // null),
              projectDir: (.projectDir // null), subdir: (.subdir // null),
              workspace: (.workspace // null), botTokenEnv: (.botTokenEnv // null),
@@ -644,6 +620,11 @@ txn_update() {
   jq "$@" "$prog" "$txn" > "$tmp" && jq empty "$tmp" 2>/dev/null && mv "$tmp" "$txn"
 }
 
+txn_has_retired_carrier_state() {
+  jq -e '[.. | objects | select(has("carrier") or has("projectCarrier") or has("projectCarrierTouched"))]
+         | length > 0' "$1" >/dev/null 2>&1
+}
+
 # FLY-247 inc2a (§2.1): batch model-only apply driver. Validates the canonical
 # request, ensures the launching journal exists (the console API normally
 # creates it before spawn; create-if-absent keeps the CLI self-sufficient), then
@@ -676,8 +657,8 @@ cmd_apply_batch() {
 # backend switch is a manual cutover (FLY-264 not built; FLY-350/398 runbook).
 cmd_apply_lead_flags() {
   local key="$1" model_set="$2" model_val="$3" effort_set="$4" effort_val="$5" \
-        backend_set="$6" backend_val="$7" carrier_set="$8" carrier_val="$9" yes="${10}"
-  [ -n "$key" ] || die "--model/--effort/--carrier/--backend require --lead <exact {project}-{lead} key>"
+        backend_set="$6" backend_val="$7" yes="$8"
+  [ -n "$key" ] || die "--model/--effort/--backend require --lead <exact {project}-{lead} key>"
   guard_env_source
 
   local matches
@@ -695,10 +676,9 @@ cmd_apply_lead_flags() {
     die "backend switch ${cur_backend} → ${backend_val} needs a MANUAL cutover (managed Lead-backend switch = FLY-264, not built; see the FLY-350/398 runbooks). Nothing was changed."
   fi
 
-  local cur_model cur_effort cur_carrier
+  local cur_model cur_effort
   cur_model=$(fleet_batch_current_model "$PROJECTS_JSON" "$key")
   cur_effort=$(fleet_batch_current_effort "$PROJECTS_JSON" "$key")
-  cur_carrier=$(fleet_batch_current_carrier "$PROJECTS_JSON" "$key")
 
   local to_model="$cur_model"
   if [ "$model_set" = "true" ]; then
@@ -708,19 +688,13 @@ cmd_apply_lead_flags() {
   if [ "$effort_set" = "true" ]; then
     if [ "$effort_val" = "default" ]; then to_effort="null"; else to_effort="$effort_val"; fi
   fi
-  local to_carrier="$cur_carrier"
-  if [ "$carrier_set" = "true" ]; then
-    [ "$cur_backend" = "claude-code" ] || die "carrier is only valid for claude-code Leads"
-    case "$carrier_val" in v1|v2) to_carrier="$carrier_val" ;; *) die "--carrier requires v1 or v2" ;; esac
-  fi
-
-  if [ "$model_set" != "true" ] && [ "$effort_set" != "true" ] && [ "$carrier_set" != "true" ]; then
+  if [ "$model_set" != "true" ] && [ "$effort_set" != "true" ]; then
     flog "nothing to apply for ${key} (backend already ${cur_backend}; no --model/--effort given)"
     return 0
   fi
 
   if [ "$yes" != "true" ]; then
-    flog "WOULD-APPLY ${key}: model ${cur_model} -> ${to_model}$( [ "$effort_set" = "true" ] && echo ", effort ${cur_effort} -> ${to_effort}" )$( [ "$carrier_set" = "true" ] && echo ", carrier ${cur_carrier} -> ${to_carrier}" )"
+    flog "WOULD-APPLY ${key}: model ${cur_model} -> ${to_model}$( [ "$effort_set" = "true" ] && echo ", effort ${cur_effort} -> ${to_effort}" )"
     flog "re-run with --yes to apply"
     return 1
   fi
@@ -732,18 +706,14 @@ cmd_apply_lead_flags() {
   jq -n --arg key "$key" --arg batch "$batch_id" --arg sha "$sha" \
      --arg fromModel "$cur_model" --arg toModel "$to_model" \
      --arg touchEffort "$( [ "$effort_set" = "true" ] && echo true || echo false )" \
-     --arg fromEffort "$cur_effort" --arg toEffort "$to_effort" \
-     --arg touchCarrier "$( [ "$carrier_set" = "true" ] && echo true || echo false )" \
-     --arg fromCarrier "$cur_carrier" --arg toCarrier "$to_carrier" '
+     --arg fromEffort "$cur_effort" --arg toEffort "$to_effort" '
     def val($s): if $s == "null" then null else $s end;
     { batchId: $batch, expectedConfigSha: $sha,
       changes: [ { key: $key,
         from: ({ model: val($fromModel) }
-               + (if $touchEffort == "true" then { effort: val($fromEffort) } else {} end)
-               + (if $touchCarrier == "true" then { carrier: $fromCarrier } else {} end)),
+               + (if $touchEffort == "true" then { effort: val($fromEffort) } else {} end)),
         to:   ({ model: val($toModel) }
-               + (if $touchEffort == "true" then { effort: val($toEffort) } else {} end)
-               + (if $touchCarrier == "true" then { carrier: $toCarrier } else {} end)) } ] }
+               + (if $touchEffort == "true" then { effort: val($toEffort) } else {} end)) } ] }
   ' >"$cf" || { rm -f "$cf"; die "could not build the changes-file for ${key}"; }
 
   cmd_apply_batch "$cf"
@@ -754,7 +724,7 @@ cmd_apply_lead_flags() {
 
 cmd_apply() {
   local want_lead="" want_project="" yes=false dry_run=false rollback=false txn_id_arg="" changes_file=""
-  local flag_model_set=false flag_model="" flag_effort_set=false flag_effort="" flag_backend_set=false flag_backend="" flag_carrier_set=false flag_carrier=""
+  local flag_model_set=false flag_model="" flag_effort_set=false flag_effort="" flag_backend_set=false flag_backend=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --lead) [ -n "${2:-}" ] || die "--lead requires a value"; want_lead="$2"; shift 2 ;;
@@ -763,7 +733,6 @@ cmd_apply() {
       --model) [ -n "${2:-}" ] || die "--model requires a value (model id or 'default')"; flag_model_set=true; flag_model="$2"; shift 2 ;;
       --effort) [ -n "${2:-}" ] || die "--effort requires a value (level or 'default')"; flag_effort_set=true; flag_effort="$2"; shift 2 ;;
       --backend) [ -n "${2:-}" ] || die "--backend requires a value"; flag_backend_set=true; flag_backend="$2"; shift 2 ;;
-      --carrier) [ -n "${2:-}" ] || die "--carrier requires v1 or v2"; flag_carrier_set=true; flag_carrier="$2"; shift 2 ;;
       --yes) yes=true; shift ;;
       --dry-run) dry_run=true; shift ;;
       --rollback) rollback=true; shift ;;
@@ -773,14 +742,13 @@ cmd_apply() {
   done
 
   # FLY-709 P4.2: single-Lead value-flags sugar (see cmd_apply_lead_flags).
-  if [ "$flag_model_set" = "true" ] || [ "$flag_effort_set" = "true" ] || [ "$flag_backend_set" = "true" ] || [ "$flag_carrier_set" = "true" ]; then
+  if [ "$flag_model_set" = "true" ] || [ "$flag_effort_set" = "true" ] || [ "$flag_backend_set" = "true" ]; then
     [ -z "$changes_file" ] || die "value flags cannot be combined with --changes-file"
     [ "$rollback" = "false" ] || die "value flags cannot be combined with --rollback"
     cmd_apply_lead_flags "$want_lead" \
       "$flag_model_set" "$flag_model" \
       "$flag_effort_set" "$flag_effort" \
       "$flag_backend_set" "$flag_backend" \
-      "$flag_carrier_set" "$flag_carrier" \
       "$yes"
     return $?
   fi
@@ -879,14 +847,14 @@ cmd_apply() {
     [ "$has_unapplied" = "true" ] && exit 1 || exit 0
   fi
 
-  # ── Step 2: zero applicable+confirmed → stop; wrapper untouched (R3#3) ─
+  # ── Step 2: zero applicable+confirmed → stop ────────────────────────
   if [ "${#applicable[@]}" -eq 0 ]; then
     rm -f "$snapshot_tmp"
-    flog "No APPLICABLE+confirmed leads — exiting without touching anything (incl. wrapper)."
+    flog "No APPLICABLE+confirmed leads — exiting without touching anything."
     [ "$has_unapplied" = "true" ] && exit 1 || exit 0
   fi
 
-  # ── Step 3: create transaction.json BEFORE Phase W (R6#4) ─────────────
+  # ── Step 3: create transaction.json ─────────────────────────────────
   local txn_id
   txn_id="$(date +%Y%m%d-%H%M%S)-$$"
   local txn_dir="${FLEET_BACKUPS}/${txn_id}"
@@ -896,19 +864,8 @@ cmd_apply() {
   local snapshot="${txn_dir}/config-snapshot.json"
   local txn="${txn_dir}/transaction.json"
 
-  local wrapper_existed=false wrapper_sha="" wrapper_mode=""
-  if [ -f "$WRAPPER_DST" ]; then
-    wrapper_existed=true
-    wrapper_sha=$(file_sha "$WRAPPER_DST")
-    # GNU -c first (BSD -f %Lp is a filesystem query on GNU — same portability
-    # class as the lock-age bug above)
-    wrapper_mode=$(stat -c %a "$WRAPPER_DST" 2>/dev/null || stat -f %Lp "$WRAPPER_DST" 2>/dev/null)
-  fi
   jq -n --arg txnId "$txn_id" --arg configSha "$config_sha" \
-    --argjson wExisted "$wrapper_existed" --arg wSha "$wrapper_sha" --arg wMode "$wrapper_mode" \
-    '{transactionId: $txnId, configSha: $configSha,
-      wrapper: {phase: "w-prepared", existed: $wExisted, sha: $wSha, mode: $wMode},
-      leads: {}}' > "$txn"
+    '{transactionId: $txnId, configSha: $configSha, leads: {}}' > "$txn"
 
   local entry
   for entry in "${applicable[@]}"; do
@@ -918,35 +875,26 @@ cmd_apply() {
     cp_=$(plist_path "$key")
     local m_sha p_sha proj_sha
     m_sha=$(file_sha "$cm"); p_sha=$(file_sha "$cp_"); proj_sha=$(manifest_projection_sha "$cm")
-    local journal_backend journal_carrier
-    journal_backend="$(desired_backend "$snapshot" "$p" "$l" "$r")"
-    journal_backend="${journal_backend%% *}"
-    journal_carrier="$(desired_carrier "$snapshot" "$p" "$l" "$journal_backend")"
     local pre_project_model pre_project_effort pre_project_touch_effort
-    local pre_project_carrier pre_project_touch_carrier
     local project_preimage_source
     if [ "${FLEET_PROJECT_PREIMAGE_MODEL+x}" = "x" ]; then
       # The batch/value-flags path writes projects.json itself, so it can pass
       # the exact reviewed SSOT value from before that write.
       [ "${FLEET_PROJECT_PREIMAGE_EFFORT+x}" = "x" ] \
         && [ "${FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT+x}" = "x" ] \
-        && [ "${FLEET_PROJECT_PREIMAGE_CARRIER+x}" = "x" ] \
-        && [ "${FLEET_PROJECT_PREIMAGE_TOUCH_CARRIER+x}" = "x" ] \
         || die "incomplete fleet project pre-image evidence for ${key}"
       pre_project_model="$FLEET_PROJECT_PREIMAGE_MODEL"
       pre_project_effort="$FLEET_PROJECT_PREIMAGE_EFFORT"
       pre_project_touch_effort="$FLEET_PROJECT_PREIMAGE_TOUCH_EFFORT"
-      pre_project_carrier="$FLEET_PROJECT_PREIMAGE_CARRIER"
-      pre_project_touch_carrier="$FLEET_PROJECT_PREIMAGE_TOUCH_CARRIER"
       project_preimage_source="batch-journal"
     else
       # Plain `apply` reconciles an already-edited projects.json snapshot to
-      # the currently running carriers. The snapshot is therefore the
+      # the currently running artifacts. The snapshot is therefore the
       # post-image, not a rollback pre-image. The raw manifest fields are the
-      # only prior launch evidence available on this path; FLY-1496 keeps them
-      # byte-aligned with the projects.json spelling on every physical launch.
-      # This is rollback evidence only — it must never re-enter model
-      # resolution. Missing fields in a valid, identity-bound manifest are
+      # materializer/fleet-owned applied-state witness; a physical body launch
+      # reads projects.json and never rewrites them. This is rollback evidence
+      # only — it must never re-enter model resolution. Missing fields in a
+      # valid, identity-bound manifest are
       # preserved as the literal "null" deletion marker; an absent, malformed,
       # or copied witness fails closed instead of guessing.
       jq -e --arg key "$key" \
@@ -967,13 +915,6 @@ cmd_apply() {
         else error("manifest effort is not a string")
         end' "$cm") || die "${key}: cannot capture manifest effort pre-image"
       pre_project_touch_effort=true
-      local observed_carrier
-      observed_carrier="$(classify_plist_lead_carrier "$cp_")"
-      [ "$observed_carrier" != unknown ] || die "${key}: cannot capture carrier pre-image from unknown wrapper"
-      [ "$observed_carrier" = "$journal_carrier" ] \
-        || die "${key}: carrier cutover requires the transactional --carrier v1|v2 path"
-      pre_project_carrier="$(fleet_batch_current_carrier "$PROJECTS_JSON" "$key")"
-      pre_project_touch_carrier=false
       project_preimage_source="manifest"
     fi
     txn_update "$txn" \
@@ -983,50 +924,19 @@ cmd_apply() {
                    projectModel: $preProjectModel,
                    projectEffort: $preProjectEffort,
                    projectEffortTouched: ($preProjectTouchEffort == "1" or $preProjectTouchEffort == "true"),
-                   projectCarrier: $preProjectCarrier,
-                   projectCarrierTouched: ($preProjectTouchCarrier == "1" or $preProjectTouchCarrier == "true"),
                    projectPreimageSource: $projectPreimageSource},
-        desired: {model: $dModel, effort: $dEffort, carrier: $dCarrier}}' \
+        desired: {model: $dModel, effort: $dEffort}}' \
       --arg key "$key" --arg mSha "$m_sha" --arg pSha "$p_sha" \
       --arg projSha "$proj_sha" \
       --arg preProjectModel "$pre_project_model" \
       --arg preProjectEffort "$pre_project_effort" \
       --arg preProjectTouchEffort "$pre_project_touch_effort" \
-      --arg preProjectCarrier "$pre_project_carrier" \
-      --arg preProjectTouchCarrier "$pre_project_touch_carrier" \
       --arg projectPreimageSource "$project_preimage_source" \
       --arg dModel "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .model // ""' "$snapshot")" \
-      --arg dEffort "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .effort // ""' "$snapshot")" \
-      --arg dCarrier "$journal_carrier"
+      --arg dEffort "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .effort // ""' "$snapshot")"
   done
 
-  # ── Step 4: Phase W — wrapper, exactly once (R2#5/R6#4/R7#2) ─────────
-  # Backup FIRST, journal SECOND (code-review H6: a crash between the journal
-  # write and the cp would otherwise make recovery trust a backup that does
-  # not exist and delete the live wrapper).
-  if [ "$wrapper_existed" = "true" ]; then
-    if ! cp "$WRAPPER_DST" "${txn_dir}/backup/wrapper.sh" \
-      || [ "$(file_sha "${txn_dir}/backup/wrapper.sh")" != "$wrapper_sha" ]; then
-      die "wrapper backup failed — aborting before any mutation (R5#3)"
-    fi
-  fi
-  txn_update "$txn" '.wrapper.phase = "w-backed-up"' || die "journal write failed (R5#3)"
-  txn_update "$txn" '.wrapper.phase = "w-installing"' || die "journal write failed (R5#3)"
-  if ! "$DAEMON_BIN" install-wrapper >/dev/null 2>&1; then
-    ferr "Phase W wrapper install failed — restoring and aborting (zero leads touched)."
-    if [ "$wrapper_existed" = "true" ]; then
-      cp "${txn_dir}/backup/wrapper.sh" "$WRAPPER_DST"
-      chmod "$wrapper_mode" "$WRAPPER_DST" 2>/dev/null || true
-    else
-      rm -f "$WRAPPER_DST"
-    fi
-    txn_update "$txn" '.wrapper.phase = "w-rolled-back" | .leads = (.leads | map_values(.phase = "unapplied"))'
-    exit 1
-  fi
-  [ -x "$WRAPPER_DST" ] || { ferr "Installed wrapper is not executable — aborting."; exit 1; }
-  txn_update "$txn" '.wrapper.phase = "w-committed"'
-
-  # ── Step 5-8: per-lead staged transactions ───────────────────────────
+  # ── Step 4-7: per-lead staged transactions ───────────────────────────
   local overall_rc=0
   local stop_remaining=false
   for entry in "${applicable[@]}"; do
@@ -1039,7 +949,7 @@ cmd_apply() {
       continue
     fi
 
-    # TOCTOU re-verification (R5#3 + R8#5): config bytes, carrier
+    # TOCTOU re-verification (R5#3 + R8#5): config bytes, artifact
     # pre-images, full evidence gate — all immediately before bootout.
     if [ "$(file_sha "$PROJECTS_JSON")" != "$config_sha" ]; then
       ferr "${key}: projects.json changed since confirmation — stopping (partial)."
@@ -1052,7 +962,7 @@ cmd_apply() {
     pre_m=$(jq -r '.leads[$key].original.manifestSha' --arg key "$key" "$txn")
     pre_p=$(jq -r '.leads[$key].original.plistSha' --arg key "$key" "$txn")
     if [ "$(file_sha "$cm")" != "$pre_m" ] || [ "$(file_sha "$cpl")" != "$pre_p" ]; then
-      ferr "${key}: carrier changed since classification — stopping (partial)."
+      ferr "${key}: launch artifacts changed since classification — stopping (partial)."
       txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
       stop_remaining=true; overall_rc=1; continue
     fi
@@ -1068,12 +978,11 @@ cmd_apply() {
     # Staging (§2.6 step 1): desired manifest = current canonical with
     # model/backendId updated; desired plist via the daemon helper with the
     # CANONICAL runtime path (R5#4). Canonical untouched here.
-    local d_model d_effort d_carrier
+    local d_model d_effort
     d_model=$(jq -r '.leads[$key].desired.model' --arg key "$key" "$txn")
-    # FLY-671: stage the effort carrier too, so generate_plist_to emits
+    # FLY-671: stage effort too, so generate_plist_to emits
     # FLYWHEEL_LEAD_EFFORT into the regenerated plist (empty = delete the field).
     d_effort=$(jq -r '.leads[$key].desired.effort // ""' --arg key "$key" "$txn")
-    d_carrier=$(jq -r '.leads[$key].desired.carrier // "v1"' --arg key "$key" "$txn")
     local staged_m="${txn_dir}/staged/${key}.manifest.json"
     local staged_p="${txn_dir}/staged/${key}.plist"
     local launch_environment
@@ -1102,7 +1011,7 @@ cmd_apply() {
       txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
       stop_remaining=true; overall_rc=1; continue
     fi
-    if ! generate_plist_to "$key" "$staged_m" "$cm" "$staged_p" "$d_carrier" >/dev/null 2>&1; then
+    if ! generate_plist_to "$key" "$staged_m" "$cm" "$staged_p" >/dev/null 2>&1; then
       ferr "${key}: staging plist failed (lint?) — lead untouched, stopping."
       txn_update "$txn" '.leads[$key].phase = "unapplied"' --arg key "$key"
       stop_remaining=true; overall_rc=1; continue
@@ -1304,6 +1213,9 @@ cmd_rollback() {
   local txn_dir="${FLEET_BACKUPS}/${txn_id}"
   local txn="${txn_dir}/transaction.json"
   [ -f "$txn" ] || die "Transaction not found: ${txn}"
+  if txn_has_retired_carrier_state "$txn" || jq -e 'has("wrapper")' "$txn" >/dev/null 2>&1; then
+    die "rollback preflight rejected with zero changes: legacy carrier transaction is no longer executable"
+  fi
 
   local keys
   if [ -n "$want_lead" ]; then
@@ -1314,7 +1226,7 @@ cmd_rollback() {
   [ -n "$keys" ] || die "No applied leads in transaction ${txn_id}."
 
   # FLY-1496: WHOLE-ROLLBACK policy/SSOT preflight. Do this before the first
-  # confirmation, journal transition, bootout, or carrier write so a legacy
+  # confirmation, journal transition, bootout, or artifact write so a legacy
   # transaction or an unresolvable pre-image cannot produce a partial rollback.
   #
   # projectModel/projectEffort are literal string markers ("null" means field
@@ -1352,9 +1264,7 @@ cmd_rollback() {
        | type == "object"
          and has("projectModel")
          and has("projectEffort")
-         and has("projectEffortTouched")
-         and has("projectCarrier")
-         and has("projectCarrierTouched")' "$txn" >/dev/null 2>&1; then
+         and has("projectEffortTouched")' "$txn" >/dev/null 2>&1; then
       preflight_error="${preflight_key}: transaction lacks projects.json pre-image fields; refusing unsafe legacy rollback"
       break
     fi
@@ -1394,19 +1304,6 @@ cmd_rollback() {
       preflight_current_effort=$(fleet_batch_current_effort "$PROJECTS_JSON" "$preflight_key")
       if [ "$preflight_current_effort" != "$preflight_desired_effort" ]; then
         preflight_error="${preflight_key}: projects.json effort changed since apply (current='${preflight_current_effort}', transaction='${preflight_desired_effort}')"
-        break
-      fi
-    fi
-    local preflight_touch_carrier
-    preflight_touch_carrier=$(jq -r --arg key "$preflight_key" \
-      '.leads[$key].original.projectCarrierTouched' "$txn")
-    if [ "$preflight_touch_carrier" = "true" ]; then
-      local preflight_desired_carrier preflight_current_carrier
-      preflight_desired_carrier=$(jq -r --arg key "$preflight_key" \
-        '.leads[$key].desired.carrier' "$txn")
-      preflight_current_carrier=$(fleet_batch_current_carrier "$PROJECTS_JSON" "$preflight_key")
-      if [ "$preflight_current_carrier" != "$preflight_desired_carrier" ]; then
-        preflight_error="${preflight_key}: projects.json carrier changed since apply (current='${preflight_current_carrier}', transaction='${preflight_desired_carrier}')"
         break
       fi
     fi
@@ -1511,23 +1408,17 @@ cmd_rollback() {
     # Restore the authoritative projects.json pre-image under the same
     # config-write lock used by forward fleet writes. This happens only after
     # the current Lead is stopped, and before restoring/bootstrapping derived
-    # carriers, so the next physical launch derives from the restored SSOT.
+    # artifacts, so the next physical launch derives from the restored SSOT.
     local original_project_model original_project_effort original_project_touch_effort
-    local original_project_carrier original_project_touch_carrier
     original_project_model=$(jq -r --arg key "$key" \
       '.leads[$key].original.projectModel' "$txn")
     original_project_effort=$(jq -r --arg key "$key" \
       '.leads[$key].original.projectEffort' "$txn")
     original_project_touch_effort=$(jq -r --arg key "$key" \
       'if .leads[$key].original.projectEffortTouched then "1" else "0" end' "$txn")
-    original_project_carrier=$(jq -r --arg key "$key" \
-      '.leads[$key].original.projectCarrier' "$txn")
-    original_project_touch_carrier=$(jq -r --arg key "$key" \
-      'if .leads[$key].original.projectCarrierTouched then "1" else "0" end' "$txn")
     if ! config_write_locked "${FLEET_CONFIG_LOCK_FILE:-${PROJECTS_JSON}.cfglock}" 30 \
       bash "$_FLEET_BATCH_LIB" write-key-fields "$PROJECTS_JSON" "$key" \
-        "$original_project_model" "$original_project_touch_effort" "$original_project_effort" \
-        "$original_project_touch_carrier" "$original_project_carrier"; then
+        "$original_project_model" "$original_project_touch_effort" "$original_project_effort"; then
       ferr "${key}: projects.json pre-image restore failed — Lead remains down; manual intervention."
       txn_update "$txn" '.leads[$key].phase = "manual-intervention"' --arg key "$key"
       overall_rc=1; continue
@@ -1586,36 +1477,14 @@ cmd_recover() {
   validate_txn_id "$txn_id" || die "unsafe --txn value (R4-H4)"
   [ "$yes" = "true" ] || die "recover is mutating — requires explicit --yes"
   guard_env_source
-  acquire_lock
 
   local txn_dir="${FLEET_BACKUPS}/${txn_id}"
   local txn="${txn_dir}/transaction.json"
   [ -f "$txn" ] || die "Transaction not found: ${txn}"
-
-  # Wrapper recovery FIRST (R7#2): zero leads touched at wrapper phases →
-  # conservative recovery = restore prior wrapper (or absence), terminate txn.
-  local w_phase
-  w_phase=$(jq -r '.wrapper.phase // "w-committed"' "$txn")
-  case "$w_phase" in
-    w-prepared|w-backed-up|w-installing)
-      flog "Wrapper phase '${w_phase}' — restoring prior wrapper and terminating transaction."
-      if [ "$(jq -r '.wrapper.existed' "$txn")" = "true" ]; then
-        if [ ! -f "${txn_dir}/backup/wrapper.sh" ]; then
-          # code-review H6: existed=true but no backup on disk (crash before
-          # the cp). The live wrapper is still the ORIGINAL — touching it,
-          # let alone deleting it, would take down every Lead's dispatch.
-          die "wrapper backup missing for existing wrapper (crash pre-backup) — wrapper left untouched; manual intervention"
-        fi
-        cp "${txn_dir}/backup/wrapper.sh" "$WRAPPER_DST"
-        chmod "$(jq -r '.wrapper.mode' "$txn")" "$WRAPPER_DST" 2>/dev/null || true
-      else
-        rm -f "$WRAPPER_DST"
-      fi
-      txn_update "$txn" '.wrapper.phase = "w-rolled-back" | .leads = (.leads | map_values(if .phase == "pending" then .phase = "unapplied" else . end))'
-      flog "Transaction ${txn_id} terminated at wrapper phase."
-      exit 0
-      ;;
-  esac
+  if txn_has_retired_carrier_state "$txn" || jq -e 'has("wrapper")' "$txn" >/dev/null 2>&1; then
+    die "recovery rejected with zero changes: legacy carrier transaction is no longer executable"
+  fi
+  acquire_lock
 
   local keys
   if [ -n "$want_lead" ]; then

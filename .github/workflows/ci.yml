@@ -238,6 +238,9 @@ jobs:
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
           bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
+          bash scripts/__tests__/fly1680-v1-extinction.test.sh
+          bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
+          bash scripts/__tests__/materialize-lead-manifests.test.sh
 
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
@@ -356,7 +359,6 @@ jobs:
           bash scripts/__tests__/check-global-path-hygiene.test.sh
           bash scripts/__tests__/install-hooks-fly1389.test.sh
           bash scripts/__tests__/register-local-marketplace.test.sh
-          bash packages/teamlead/scripts/__tests__/claude-lead-resume-recovery.test.sh
           bash scripts/__tests__/v2-retirement-cleanup.test.sh
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
@@ -386,8 +388,6 @@ jobs:
       - name: Test — FLY-1501 restart brake + heartbeat guard contracts
         run: |
           bash scripts/__tests__/restart-storm-gate.test.sh
-          bash scripts/__tests__/restart-storm-wrapper-wiring.test.sh
-          bash packages/teamlead/scripts/__tests__/lead-backend-dispatch.test.sh
           bash scripts/__tests__/qa-fly1501-brake-missing-alert.test.sh
           bash scripts/__tests__/qa-fly1501-bounded-run.test.sh
 
@@ -400,15 +400,6 @@ jobs:
           bash scripts/__tests__/lead-restart-controlled-wave.test.sh
           bash packages/teamlead/scripts/__tests__/test-lead-identity-preflight.sh
           bash scripts/__tests__/restart-self-detach.test.sh
-
-      # FLY-1659: cold-supervisor adoption and lock-storm regression contracts.
-      # These are separate from the rescue mechanism tests: they prove the Lead
-      # launcher stays lock-free in steady state and that crash evidence fences
-      # every create before acceptance.
-      - name: Test — FLY-1659 supervisor convergence contracts
-        run: |
-          bash scripts/__tests__/supervisor-adoption.test.sh
-          bash scripts/__tests__/supervisor-storm-regression.test.sh
 
       # FLY-1671: manual restarts enter through the standalone updater, and
       # restart reporting distinguishes a newly launched Lead body from an

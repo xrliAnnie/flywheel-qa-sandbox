@@ -66,21 +66,24 @@ describe("deriveLeadSocketPath", () => {
 });
 
 describe("Lead carrier schema", () => {
-	it.each(["v1", "v2"] as const)("accepts carrier %s", (carrier) => {
-		const projects = parseAndValidateProjects(projectWith({ carrier }));
-		expect(projects[0]?.leads[0]?.carrier).toBe(carrier);
+	it("accepts the v2 carrier", () => {
+		const projects = parseAndValidateProjects(projectWith({ carrier: "v2" }));
+		expect(projects[0]?.leads[0]?.carrier).toBe("v2");
 	});
 
-	it("preserves an absent carrier during the mixed-fleet phase", () => {
+	it("preserves an absent carrier as canonical v2", () => {
 		const projects = parseAndValidateProjects(projectWith());
 		expect(projects[0]?.leads[0]).not.toHaveProperty("carrier");
 	});
 
-	it("rejects unknown carriers", () => {
-		expect(() =>
-			parseAndValidateProjects(projectWith({ carrier: "bespoke" })),
-		).toThrow(/carrier.*v1.*v2/i);
-	});
+	it.each(["v1", "bespoke"])(
+		"rejects retired or unknown carrier %s",
+		(carrier) => {
+			expect(() => parseAndValidateProjects(projectWith({ carrier }))).toThrow(
+				/carrier.*v2/i,
+			);
+		},
+	);
 
 	it("rejects a carrier on a codex Lead", () => {
 		expect(() =>

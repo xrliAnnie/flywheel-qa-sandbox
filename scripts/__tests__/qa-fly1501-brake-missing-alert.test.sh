@@ -90,7 +90,6 @@ run_guard() {
 WRAPPERS=(
   scripts/flywheel-bridge-wrapper.sh
   scripts/flywheel-voice-bridge-wrapper.sh
-  scripts/flywheel-lead-wrapper.sh
   scripts/flywheel-quota-monitor-wrapper.sh
   scripts/flywheel-cmux-autostart.sh
 )

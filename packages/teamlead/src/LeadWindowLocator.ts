@@ -1,13 +1,4 @@
-/**
- * FLY-83: locate a Lead's tmux window inside the `flywheel` session.
- *
- * Windows are named `${projectName}-${leadId}` by `claude-lead.sh` at creation
- * (claude-lead.sh:604). We query tmux for `window_id window_name` pairs via
- * `execFile` (shell-free; same pattern as `bridge/tmux-lookup.ts`) and return
- * the first exact match. Callers use this for `capture-pane` reads in
- * `LeadWatchdog`; stable `@window_id` is preferred over window name so renames
- * mid-flight don't invalidate a previously resolved reference.
- */
+/** Locate and validate the canonical body pane on a Lead's private v2 socket. */
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -33,19 +24,11 @@ export type ExecFn = (
 export interface LocateOptions {
 	execFn?: ExecFn;
 	timeoutMs?: number;
-	sessionName?: string;
-	carrier?: "v1" | "v2";
 	stateDir?: string;
 	manifest?: LeadRuntimeManifest;
 }
 
-export interface V1LeadWindowRef {
-	windowId: string;
-	windowName: string;
-	carrier?: "v1";
-}
-
-export interface V2LeadWindowRef {
+export interface LeadWindowRef {
 	windowId: "%0";
 	windowName: "main";
 	carrier: "v2";
@@ -53,8 +36,6 @@ export interface V2LeadWindowRef {
 	sessionTarget: "=main";
 	bodyPaneTarget: "%0";
 }
-
-export type LeadWindowRef = V1LeadWindowRef | V2LeadWindowRef;
 
 export type V2LeadPaneProbeStrength = "capture" | "send";
 
@@ -65,7 +46,7 @@ export type V2LeadPaneProbeStrength = "capture" | "send";
  * foreground command to be Claude, never an assembly shell or arbitrary TUI.
  */
 export async function probeV2LeadPane(
-	window: V2LeadWindowRef,
+	window: LeadWindowRef,
 	runner: ExecFn = defaultExec as unknown as ExecFn,
 	strength: V2LeadPaneProbeStrength = "capture",
 	timeoutMs: number = DEFAULT_TIMEOUT_MS,
@@ -134,63 +115,29 @@ export async function locateLeadWindow(
 	options: LocateOptions = {},
 ): Promise<LeadWindowRef | null> {
 	const runner = options.execFn ?? (defaultExec as unknown as ExecFn);
-	if (options.carrier === "v2") {
-		const stateDir = options.stateDir;
-		if (!stateDir || !options.manifest) return null;
-		const address = leadAddressFromManifest(
-			projectName,
-			leadId,
-			stateDir,
-			options.manifest,
-		);
-		if (!address) return null;
-		try {
-			const candidate: V2LeadWindowRef = {
-				windowId: address.bodyPaneTarget,
-				windowName: "main",
-				carrier: "v2",
-				...address,
-			};
-			if (
-				!(await probeV2LeadPane(
-					candidate,
-					runner,
-					"capture",
-					options.timeoutMs,
-				))
-			) {
-				return null;
-			}
-			return candidate;
-		} catch {
+	const stateDir = options.stateDir;
+	if (!stateDir || !options.manifest) return null;
+	const address = leadAddressFromManifest(
+		projectName,
+		leadId,
+		stateDir,
+		options.manifest,
+	);
+	if (!address) return null;
+	try {
+		const candidate: LeadWindowRef = {
+			windowId: address.bodyPaneTarget,
+			windowName: "main",
+			carrier: "v2",
+			...address,
+		};
+		if (
+			!(await probeV2LeadPane(candidate, runner, "capture", options.timeoutMs))
+		) {
 			return null;
 		}
-	}
-	const session = options.sessionName ?? "flywheel";
-	const target = `${projectName}-${leadId}`;
-
-	let stdout: string;
-	try {
-		const result = await runner(
-			"tmux",
-			["list-windows", "-t", session, "-F", "#{window_id} #{window_name}"],
-			{ timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS },
-		);
-		stdout = result.stdout;
+		return candidate;
 	} catch {
 		return null;
 	}
-
-	for (const rawLine of stdout.split("\n")) {
-		const line = rawLine.trim();
-		if (!line) continue;
-		const spaceAt = line.indexOf(" ");
-		if (spaceAt <= 0) continue;
-		const windowId = line.slice(0, spaceAt);
-		const windowName = line.slice(spaceAt + 1).trim();
-		if (windowName === target) {
-			return { windowId, windowName };
-		}
-	}
-	return null;
 }

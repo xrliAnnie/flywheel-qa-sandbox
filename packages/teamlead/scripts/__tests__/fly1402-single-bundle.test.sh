@@ -207,16 +207,13 @@ printf '%s\n' "$OUT" | grep -qF 'invalid FLYWHEEL_LEAD_RULES_BUNDLE=typo-mode; d
   && ok "invalid mode emits a warning" || bad "invalid mode emits a warning"
 rm -rf "$H"
 
-# Production wiring sentinel: ownership commit must remain after the exact
-# process preflight and before either resume/fresh _launch_claude call.
-PREFLIGHT_LINE=$(grep -n 'lead_identity_preflight_first_conflict "$LEAD_ID"' "$LEAD_SH" | tail -1 | cut -d: -f1)
+# Production wiring sentinel: commit must remain before the one-shot child launch.
 COMMIT_LINE=$(grep -n 'if ! _rules_bundle_commit_once' "$LEAD_SH" | tail -1 | cut -d: -f1)
-LAUNCH_LINE=$(awk -v start="$COMMIT_LINE" 'NR > start && /if _launch_claude/ { print NR; exit }' "$LEAD_SH")
-if [ -n "$PREFLIGHT_LINE" ] && [ -n "$COMMIT_LINE" ] && [ -n "$LAUNCH_LINE" ] \
-  && [ "$PREFLIGHT_LINE" -lt "$COMMIT_LINE" ] && [ "$COMMIT_LINE" -lt "$LAUNCH_LINE" ]; then
-  ok "real launcher commits receipt after ownership preflight and before child launch"
+LAUNCH_LINE=$(awk -v start="$COMMIT_LINE" 'NR > start && /_launch_claude/ { print NR; exit }' "$LEAD_SH")
+if [ -n "$COMMIT_LINE" ] && [ -n "$LAUNCH_LINE" ] && [ "$COMMIT_LINE" -lt "$LAUNCH_LINE" ]; then
+  ok "real launcher commits receipt before child launch"
 else
-  bad "real launcher commit wiring order is preflight=${PREFLIGHT_LINE:-?} commit=${COMMIT_LINE:-?} launch=${LAUNCH_LINE:-?}"
+  bad "real launcher commit wiring order is commit=${COMMIT_LINE:-?} launch=${LAUNCH_LINE:-?}"
 fi
 
 # Legacy lifecycle: one active receipt + one alert across repeated child launch
@@ -234,7 +231,6 @@ if (
   chmod +x "$ALERT_SH"
   export FLY1402_ALERT_LOG="$ALERT_LOG"
   log() { :; }
-  tmux_supervisor_process_start_identity() { printf 'LIVE START\n'; }
   CLAUDE_ARGS=()
   RULES_BUNDLE_MODE=legacy
   RULES_BUNDLE_ROLE=external
@@ -243,7 +239,7 @@ if (
   RULES_BUNDLE_GENERATION_NONCE=""
   RULES_BUNDLE_STATE_DIR="$T/state"
   RULES_BUNDLE_RECEIPT_PATH="$T/state/fixture-external-lead.active.json"
-  LEAD_LEASE_SUPERVISOR_START='LIVE START'
+  RULES_BUNDLE_PROCESS_START='LIVE START'
   LEAD_ID=external-lead
   PROJECT_NAME=fixture
   LEAD_ALERT_SH="$ALERT_SH"
@@ -282,8 +278,8 @@ if (
   mkdir -p "$T/sources" "$T/state"
   printf 'DEPT\n' > "$T/sources/department-lead-rules.md"
   log() { :; }
-  tmux_supervisor_process_start_identity() {
-    case "$1" in
+  ps() {
+    case "$2" in
       777) printf 'OTHER LIVE START\n' ;;
       778) return 1 ;;
       *) printf 'SELF START\n' ;;
@@ -296,7 +292,7 @@ if (
   RULES_BUNDLE_GENERATION_NONCE=""
   RULES_BUNDLE_STATE_DIR="$T/state"
   RULES_BUNDLE_RECEIPT_PATH="$T/state/fixture-department-lead.active.json"
-  LEAD_LEASE_SUPERVISOR_START='SELF START'
+  RULES_BUNDLE_PROCESS_START='SELF START'
   LEAD_ID=department-lead
   PROJECT_NAME=fixture
   LEAD_ALERT_SH=""
@@ -340,7 +336,6 @@ if (
   chmod +x "$T/bin/mv"
   export FLY1402_MV_MARKER="$T/mv-invoked"
   log() { :; }
-  tmux_supervisor_process_start_identity() { printf 'SELF START\n'; }
   CLAUDE_ARGS=()
   RULES_BUNDLE_MODE=bundle
   RULES_BUNDLE_ROLE=dept
@@ -348,7 +343,7 @@ if (
   RULES_BUNDLE_GENERATION_NONCE=""
   RULES_BUNDLE_STATE_DIR="$T/state"
   RULES_BUNDLE_RECEIPT_PATH="$T/state/fixture-department-lead.active.json"
-  LEAD_LEASE_SUPERVISOR_START='SELF START'
+  RULES_BUNDLE_PROCESS_START='SELF START'
   LEAD_ID=department-lead
   PROJECT_NAME=fixture
   LEAD_ALERT_SH=""

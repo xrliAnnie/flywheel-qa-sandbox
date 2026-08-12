@@ -60,19 +60,17 @@ describe("locateConfiguredLeadWindow", () => {
 		expect(execFn).not.toHaveBeenCalled();
 	});
 
-	it("keeps a currently classified v1 Lead on the shared-server locator", async () => {
-		const execFn = vi.fn(async () => ({
-			stdout: "@7 geo-product-lead\n",
-			stderr: "",
-		}));
+	it("fails closed for a historical shared-server plist", async () => {
+		const execFn = vi.fn();
 		await expect(
 			locateConfiguredLeadWindow("geo", "product-lead", {
 				homeDir: HOME,
 				stateDir: STATE,
 				readFile: () =>
-					`<plist><string>${STATE}/bin/flywheel-lead-wrapper.sh</string></plist>`,
+					`<plist><string>${STATE}/bin/retired-wrapper.sh</string></plist>`,
 				execFn,
 			}),
-		).resolves.toEqual({ windowId: "@7", windowName: KEY });
+		).resolves.toBeNull();
+		expect(execFn).not.toHaveBeenCalled();
 	});
 });

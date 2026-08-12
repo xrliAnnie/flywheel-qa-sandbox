@@ -1,0 +1,9 @@
+flowchart LR
+    QA["独立 QA 复验<br/>head 98e0e4b6 → FAIL<br/>(判决账本 claim 140)"] --> F1["Fix-1 · fly1496 测试第5节<br/>manifest 启动证据工件正式退役<br/>断言反转:launch 对 manifest 零写入"]
+    QA --> F2["Fix-2 · ci.yml 第355行残留调用<br/>+ 路径存在性结构守卫(灭类)<br/>+ 灭绝清单补测试文件名"]
+    AUDIT["design 节点独立复审<br/>(QA 与 4 轮 code review 之外)"] --> F3["Fix-3 · 恢复 _log_startup 3 行<br/>+ 定义存在性断言<br/>(FLY-1679 冷启动证据链复明)"]
+    F1 --> V["修复后的代码版本<br/>全套门禁重跑"]
+    F2 --> V
+    F3 --> V
+    V --> WAKE["唤醒等候中的 QA 会话<br/>复验 + 补跑 529 房冷启动彩排"]
+    WAKE --> SHIP["founder 批准后合入<br/>(批E1 批尾统一重启验收)"]

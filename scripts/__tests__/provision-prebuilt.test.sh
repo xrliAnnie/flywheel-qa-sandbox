@@ -58,12 +58,12 @@ STUB_PATH="$STUB_BIN:/usr/bin:/bin"
 mk_root() {
   local rr="$1" prebuilt="${2:-}"
   mkdir -p "$rr/scripts/lib" "$rr/scripts/packaged"
-  for f in flywheel-lead-wrapper.sh flywheel-lead-wrapper-v2.sh \
+  for f in flywheel-lead-wrapper-v2.sh \
            flywheel-lead-attach.sh flywheel-bridge-wrapper.sh daily-standup.sh \
            materialize-lead-manifests.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
-  for f in lib/host-config.sh lib/lead-address.sh lib/script-sanity.sh lib/supervisor.sh; do
+  for f in lib/host-config.sh lib/lead-address.sh lib/lead-restart-lifecycle.sh lib/script-sanity.sh lib/supervisor.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done
   cp -p "$REPO_ROOT/scripts/packaged/bootstrap-services.sh" "$rr/scripts/packaged/"
@@ -157,7 +157,6 @@ EOF
 out="$(_prov "$H" "$RR" "$FD" flywheel-home)"; rc=$?
 if [ "$rc" -eq 0 ] \
    && [ -f "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" ] \
-   && [ -f "$H/.flywheel/bin/flywheel-lead-wrapper.sh" ] \
    && [ -f "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" ] \
    && [ -f "$H/.flywheel/bin/flywheel-lead-attach.sh" ] \
    && [ -f "$H/.flywheel/bin/lib/host-config.sh" ] \
@@ -183,18 +182,34 @@ FD="$SANDBOX/p4-fleet"; mk_fleet "$FD"
 # provision copies host.json in flywheel-home; --only launchd runs alone, so
 # pre-seed the bootstrap-path host.json the way a full run would have.
 cp "$FD/host.json" "$H/.flywheel/host.json"
+cat > "$H/.flywheel/projects.json" <<'EOF'
+[ { "projectName": "custproj", "projectRoot": "Dev/custproj",
+    "leads": [
+      { "agentId": "cos-lead", "backend": "claude-code", "botTokenEnv": "COS_BOT_TOKEN" },
+      { "agentId": "codex-lead", "backend": "codex-app-server", "botTokenEnv": "CODEX_BOT_TOKEN" }
+    ] } ]
+EOF
+mkdir -p "$H/.flywheel/manifests"
+cat > "$H/.flywheel/manifests/custproj-codex-lead.json" <<'EOF'
+{"projectName":"custproj","leadId":"codex-lead","projectDir":"/tmp/custproj"}
+EOF
 : > "$CALLS"
 out="$(_prov "$H" "$RR" "$FD" launchd)"; rc=$?
 BR_PLIST="$H/launchd/com.flywheel.bridge.plist"
 SU_PLIST="$H/launchd/com.flywheel.daily-standup.plist"
+CLAUDE_PLIST="$H/launchd/com.flywheel.lead-custproj-cos-lead.plist"
+CODEX_PLIST="$H/launchd/com.flywheel.lead-custproj-codex-lead.plist"
 if [ "$rc" -eq 0 ] \
-   && [ -f "$BR_PLIST" ] && [ -f "$SU_PLIST" ] \
+   && [ -f "$BR_PLIST" ] && [ -f "$SU_PLIST" ] && [ -f "$CLAUDE_PLIST" ] \
+   && [ ! -e "$CODEX_PLIST" ] \
    && grep -q "$H/.flywheel/bin/flywheel-bridge-wrapper.sh" "$BR_PLIST" \
+   && grep -q "$H/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$CLAUDE_PLIST" \
    && grep -q "$H/.flywheel/runtime/current/scripts/daily-standup.sh" "$SU_PLIST" \
+   && grep -q "skipping bespoke backend codex-app-server" <<<"$out" \
    && grep -q "launchctl bootstrap" "$CALLS" \
    && ! grep -qE "restart-services|flywheel-daemon" <<<"$out" \
    && ! grep -qE "restart-services|flywheel-daemon" "$CALLS"; then
-  pass "P4 launchd prebuilt: bootstrap installs bridge+standup jobs pointing at bin/current, zero restart-services/flywheel-daemon"
+  pass "P4 launchd prebuilt: bootstrap installs Claude v2 jobs, skips bespoke Codex, zero restart-services/flywheel-daemon"
 else
   fail "P4 rc=$rc plists=[$(ls "$H/launchd" 2>/dev/null)] calls=[$(cat "$CALLS")] out=[$(tail -8 <<<"$out")]"
 fi

@@ -106,10 +106,10 @@ CANARY_AFTER="$(md5 -q "$CANARY")"
 assert_eq "$CANARY_AFTER" "$CANARY_BEFORE" "writes nothing outside --target (canary untouched)"
 assert_in "$T5_OUT" "gh repo create" "checklist prints gh repo create (gated, not executed)"
 assert_in "$T5_OUT" "FLYWHEEL_LEAD_ROLE=cos" "checklist prints CoS launchd env requirement"
-assert_in "$T5_OUT" "flywheel-fleet.sh apply" "v2 checklist names fleet apply as the launch-environment authority"
+assert_in "$T5_OUT" "flywheel-daemon.sh install" "v2 checklist names the canonical install path"
 assert_in "$T5_OUT" "projects.json" "checklist prints live projects.json edit (gated)"
 assert_in "$T5_OUT" "Digest onboarding" "checklist prints FLY-727 digest-onboarding step (wire report-deployment hook)"
-assert_in "$T5_OUT" "claude-lead.sh" "checklist prints claude-lead.sh manifest step"
+assert_in "$T5_OUT" "materialize-lead-manifests.sh" "checklist prints canonical manifest materialization step"
 # the script itself must not execute live writes — static guard
 if grep -Eq '^[[:space:]]*(launchctl|gh repo create)' "$SETUP"; then
   FAIL=$((FAIL+1)); echo "  FAIL: script body executes a live command (launchctl/gh repo create)"

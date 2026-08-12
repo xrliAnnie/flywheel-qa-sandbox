@@ -70,8 +70,8 @@ export interface FleetLeadState {
 		/** FLY-671: desired effort, or null = default (no override). */
 		effort: string | null;
 		backend: LeadBackendId;
-		/** FLY-1663: absent normalizes to v1 only for Claude Leads. */
-		carrier: "v1" | "v2" | "none" | "unknown";
+		/** FLY-1680: absent and explicit v2 are equivalent for Claude Leads. */
+		carrier: "v2" | "none";
 		source: "explicit" | "legacy" | "default";
 	};
 	carrier: {
@@ -83,7 +83,7 @@ export interface FleetLeadState {
 		/** FLY-671: effort carriers (manifest field + plist FLYWHEEL_LEAD_EFFORT). */
 		manifestEffort: string | null;
 		plistEffort: string | null;
-		plistCarrier: "v1" | "v2" | "unknown";
+		plistCarrier: "v2" | "unknown";
 	};
 	observed: {
 		management: FleetManagement;
@@ -216,9 +216,6 @@ function manifestPathFor(stateDir: string, key: string): string {
 function plistPathFor(home: string, key: string): string {
 	return join(home, "Library", "LaunchAgents", `${PLIST_PREFIX}.${key}.plist`);
 }
-function wrapperPathFor(stateDir: string): string {
-	return join(stateDir, "bin", "flywheel-lead-wrapper.sh");
-}
 function wrapperV2PathFor(stateDir: string): string {
 	return join(stateDir, "bin", "flywheel-lead-wrapper-v2.sh");
 }
@@ -227,11 +224,11 @@ export function classifyLeadPlistCarrier(
 	plist: string,
 	home: string,
 	stateDir = join(home, ".flywheel"),
-): "v1" | "v2" | "unknown" {
-	const v1 = plist.includes(`<string>${wrapperPathFor(stateDir)}</string>`);
-	const v2 = plist.includes(`<string>${wrapperV2PathFor(stateDir)}</string>`);
-	if (v1 === v2) return "unknown";
-	return v2 ? "v2" : "v1";
+): "v2" | "unknown" {
+	return plist.includes(`<string>${wrapperV2PathFor(stateDir)}</string>`) &&
+		!plist.includes("flywheel-codex-lead-wrapper-")
+		? "v2"
+		: "unknown";
 }
 
 // ── Evidence collection (§2.4) ──────────────────────────────────────────
@@ -247,7 +244,7 @@ interface CarrierRead {
 	/** FLY-671: effort carriers. */
 	manifestEffort: string | null;
 	plistEffort: string | null;
-	plistCarrier: "v1" | "v2" | "unknown";
+	plistCarrier: "v2" | "unknown";
 	plistOk: boolean; // structural binding: wrapper + canonical manifest + label
 	identityOk: boolean; // manifest projectName/leadId bind to this exact key
 	probeFailed: boolean;
@@ -533,7 +530,7 @@ export async function collectFleetSnapshot(
 			if (eff.backend === "claude-code" && carrier.manifestExists) {
 				const configuredModel = lead.model ?? null;
 				const configuredEffort = lead.effort ?? null;
-				const configuredCarrier = lead.carrier ?? "v1";
+				const configuredCarrier = lead.carrier ?? "v2";
 				drift = {
 					model:
 						configuredModel !== carrier.manifestModel ||
@@ -557,8 +554,7 @@ export async function collectFleetSnapshot(
 					model: lead.model ?? null,
 					effort: lead.effort ?? null,
 					backend: eff.backend,
-					carrier:
-						eff.backend === "claude-code" ? (lead.carrier ?? "v1") : "none",
+					carrier: eff.backend === "claude-code" ? "v2" : "none",
 					source: eff.source,
 				},
 				carrier: {
@@ -612,8 +608,8 @@ function structuralProjection(projects: ProjectEntry[]): string {
 					model: _m,
 					backend: _b,
 					effort: _e,
-					carrier: _c,
 					botToken: _t,
+					carrier: _c,
 					...rest
 				} = l;
 				return rest;
@@ -654,8 +650,7 @@ export class ConfigSnapshotProvider {
 				(l) =>
 					l.model !== undefined ||
 					l.backend !== undefined ||
-					l.effort !== undefined ||
-					l.carrier !== undefined,
+					l.effort !== undefined,
 			),
 		);
 	}
@@ -700,8 +695,6 @@ export class ConfigSnapshotProvider {
 				else delete next.backend;
 				if (f.effort !== undefined) next.effort = f.effort;
 				else delete next.effort;
-				if (f.carrier !== undefined) next.carrier = f.carrier;
-				else delete next.carrier;
 				return next;
 			}),
 		}));

@@ -2,8 +2,7 @@
 # FLY-247 WI-2: plist generation — reproducible model env + safe XML generation.
 #
 # Covers (plan §WI-2 + Codex R1#8 / R5#4):
-#   A) manifest without model → NO EnvironmentVariables, byte-identical to the
-#      pre-FLY-247 plist format (reverse-compat sentinel)
+#   A) manifest without model → NO EnvironmentVariables, stable v2 plist format
 #   B) manifest with model → FLYWHEEL_LEAD_MODEL env dict present
 #   C) XML special characters in model → five-entity escaped
 #   D) control characters in model → generation refused, old plist untouched
@@ -63,16 +62,16 @@ write_manifest() {
      | (if $model != null then . + {model: $model} else . end)' > "$MANIFEST"
 }
 
-# ── A) no model → no env dict + byte-identical to pre-FLY-247 format ──────
+# ── A) no model → no env dict + stable v2 format ─────────────────────────
 write_manifest null
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 if [ -f "$PLIST" ] && ! grep -q "EnvironmentVariables" "$PLIST"; then
   pass "A1: no model → no EnvironmentVariables block"
 else
   fail "A1: no model → no EnvironmentVariables block"
 fi
 
-# Golden pre-FLY-247 byte format (same heredoc the legacy script produced).
+# Golden v2 byte format.
 EXPECTED="$SANDBOX/expected.plist"
 cat > "$EXPECTED" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -84,7 +83,7 @@ cat > "$EXPECTED" <<EOF
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${HOME}/.flywheel/bin/flywheel-lead-wrapper.sh</string>
+        <string>${HOME}/.flywheel/bin/flywheel-lead-wrapper-v2.sh</string>
         <string>${MANIFEST}</string>
     </array>
     <key>KeepAlive</key><true/>
@@ -96,15 +95,15 @@ cat > "$EXPECTED" <<EOF
 </plist>
 EOF
 if diff -q "$EXPECTED" "$PLIST" >/dev/null 2>&1; then
-  pass "A2: no-model plist is byte-identical to the pre-FLY-247 format"
+  pass "A2: no-model plist is byte-identical to the v2 format"
 else
-  fail "A2: no-model plist is byte-identical to the pre-FLY-247 format"
+  fail "A2: no-model plist is byte-identical to the v2 format"
   diff "$EXPECTED" "$PLIST" | head -5
 fi
 
 # ── B) model present → env dict with the value ────────────────────────────
 write_manifest '"claude-fable-5"'
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 if grep -q "<key>FLYWHEEL_LEAD_MODEL</key><string>claude-fable-5</string>" "$PLIST" \
   && grep -q "EnvironmentVariables" "$PLIST"; then
   pass "B1: model → FLYWHEEL_LEAD_MODEL env dict injected"
@@ -115,7 +114,7 @@ fi
 # ── B2) FLY-360: bracketed 1M selector survives plist generation verbatim ──
 # `[` / `]` are not XML-special, so xml_escape must pass them through unchanged.
 write_manifest '"claude-opus-4-8[1m]"'
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 if grep -qF "<key>FLYWHEEL_LEAD_MODEL</key><string>claude-opus-4-8[1m]</string>" "$PLIST"; then
   pass "B2: bracketed 1M model id emitted verbatim in plist"
 else
@@ -124,7 +123,7 @@ fi
 
 # ── C) XML special characters escaped (R1#8) ─────────────────────────────
 write_manifest "\"a&b<c>d'e\\\"f\""
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 if grep -q "a&amp;b&lt;c&gt;d&apos;e&quot;f" "$PLIST"; then
   pass "C1: XML five-entity escaping applied to model"
 else
@@ -133,10 +132,10 @@ fi
 
 # ── D) control characters refused, previous plist untouched ──────────────
 write_manifest '"good-model"'
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 BEFORE_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
 jq -n '{leadId:"product-lead",projectDir:"/tmp/geo",projectName:"geo",model:"bad\u0007model"}' > "$MANIFEST"
-if ! generate_plist "$KEY" "$MANIFEST" v1 >/dev/null 2>&1; then
+if ! generate_plist "$KEY" "$MANIFEST" v2 >/dev/null 2>&1; then
   AFTER_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
   if [ "$BEFORE_SHA" = "$AFTER_SHA" ]; then
     pass "D1: control-char model refused; existing plist byte-untouched"
@@ -149,13 +148,13 @@ fi
 
 # ── E) lint failure → old plist untouched + no temp residue + non-zero ───
 write_manifest '"ok-model"'
-generate_plist "$KEY" "$MANIFEST" v1 >/dev/null
+generate_plist "$KEY" "$MANIFEST" v2 >/dev/null
 BEFORE_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
 RC_FILE="$SANDBOX/plutil_rc"
 echo 1 > "$RC_FILE"
 export PLUTIL_STUB_RC_FILE="$RC_FILE"
 write_manifest '"new-model-that-wont-land"'
-if ! generate_plist "$KEY" "$MANIFEST" v1 >/dev/null 2>&1; then
+if ! generate_plist "$KEY" "$MANIFEST" v2 >/dev/null 2>&1; then
   AFTER_SHA=$(shasum -a 256 "$PLIST" | awk '{print $1}')
   RESIDUE=$(find "$(dirname "$PLIST")" -name "*.tmp.*" | wc -l | tr -d ' ')
   if [ "$BEFORE_SHA" = "$AFTER_SHA" ] && [ "$RESIDUE" = "0" ]; then

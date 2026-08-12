@@ -441,13 +441,13 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     fill the bot id / channel ids into the .lead/*/identity.md TODOs.
  5. Edit live ~/.flywheel/projects.json — add the ${PROJECT} entry, including
     memoryAllowedUsers (memory validation is fail-closed).
- 6. Run claude-lead.sh once per Lead to generate + validate the manifest,
-    then stop that manual process.
- 7. Install/reload the launchd plist per Lead. For carrier v2, use
-    flywheel-fleet.sh apply --lead <project-lead> --carrier v2 --yes so the
-    manifest launchEnvironment and plist are updated together; never hand-edit
-    the plist. The CoS launch environment MUST set FLYWHEEL_LEAD_ROLE=cos.
-    Verify both the manifest launchEnvironment and launchctl print output.
+ 6. Run materialize-lead-manifests.sh to generate the canonical Lead manifests.
+ 7. Install/reload each Lead with flywheel-daemon.sh install <lead>; this is
+    the v2-only path. Never hand-edit the plist. For a clean first install use
+    the literal CoS agent id cos-lead (--cos-id cos-lead). A custom CoS id MUST
+    already have FLYWHEEL_LEAD_ROLE=cos in the reviewed manifest control plane;
+    flywheel-fleet.sh apply cannot seed it before the first carrier exists.
+    Verify the manifest launchEnvironment when used, plus launchctl print output.
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
  9. Verify: bots online + reply in their channels + a real founder chat.
 10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into

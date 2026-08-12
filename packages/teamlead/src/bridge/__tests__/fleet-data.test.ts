@@ -8,6 +8,7 @@ import type { ProjectEntry } from "../../ProjectConfig.js";
 import { buildDashboardPayload } from "../dashboard-data.js";
 import {
 	ConfigSnapshotProvider,
+	classifyLeadPlistCarrier,
 	collectFleetSnapshot,
 	deriveDecision,
 	type FleetManagement,
@@ -110,15 +111,17 @@ const HOME = "/home/test";
 const KEY = "geo-product-lead";
 const M_PATH = `${HOME}/.flywheel/manifests/${KEY}.json`;
 const P_PATH = `${HOME}/Library/LaunchAgents/com.flywheel.lead.${KEY}.plist`;
-const WRAPPER = `${HOME}/.flywheel/bin/flywheel-lead-wrapper.sh`;
 const WRAPPER_V2 = `${HOME}/.flywheel/bin/flywheel-lead-wrapper-v2.sh`;
+const SOCKET_PATH = deriveLeadSocketPath(
+	"geo/product-lead",
+	`${HOME}/.flywheel`,
+);
 
-function goodPlist(model?: string, carrier: "v1" | "v2" = "v1"): string {
+function goodPlist(model?: string): string {
 	const env = model
 		? `<key>EnvironmentVariables</key><dict><key>FLYWHEEL_LEAD_MODEL</key><string>${model}</string></dict>`
 		: "";
-	const wrapper = carrier === "v2" ? WRAPPER_V2 : WRAPPER;
-	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${wrapper}</string><string>${M_PATH}</string>${env}</dict></plist>`;
+	return `<plist><dict><string>com.flywheel.lead.${KEY}</string><string>${WRAPPER_V2}</string><string>${M_PATH}</string>${env}</dict></plist>`;
 }
 
 function project(lead: Partial<ProjectEntry["leads"][0]> = {}): ProjectEntry {
@@ -205,11 +208,15 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					leadBackend: { backendId: "claude-code" },
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: deriveLeadSocketPath(
+						"geo/product-lead",
+						`${HOME}/.flywheel`,
+					),
 				}),
 				[P_PATH]: goodPlist("fab"),
 			},
 			launchd: { loaded: true, pid: 42 },
-			panes: [{ windowName: KEY, command: "claude" }],
+			privatePanes: [{ windowName: "main", command: "claude" }],
 		});
 		const snap = await collectFleetSnapshot(
 			[project({ model: "fab" })],
@@ -242,7 +249,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					leadId: "product-lead",
 					socketPath,
 				}),
-				[P_PATH]: goodPlist(undefined, "v2"),
+				[P_PATH]: goodPlist(),
 			},
 			panes: [],
 			privatePanes: [{ windowName: "main", command: "claude" }],
@@ -260,6 +267,14 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 		expect(privateTmuxCalls.sockets).toEqual([socketPath]);
 	});
 
+	it("a plist mentioning both v2 and a bespoke Codex wrapper is unknown", () => {
+		const ambiguous = goodPlist().replace(
+			"</dict>",
+			"<key>LEGACY_NOTE</key><string>/opt/flywheel-codex-lead-wrapper-mufasa.sh</string></dict>",
+		);
+		expect(classifyLeadPlistCarrier(ambiguous, HOME)).toBe("unknown");
+	});
+
 	it("honors an injected state directory for v2 manifest and socket authority", async () => {
 		const stateDir = "/custom/flywheel-state";
 		const manifestPath = `${stateDir}/manifests/${KEY}.json`;
@@ -273,7 +288,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					leadId: "product-lead",
 					socketPath,
 				}),
-				[P_PATH]: goodPlist(undefined, "v2")
+				[P_PATH]: goodPlist()
 					.replace(M_PATH, manifestPath)
 					.replace(WRAPPER_V2, `${stateDir}/bin/flywheel-lead-wrapper-v2.sh`),
 			},
@@ -298,7 +313,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					leadId: "product-lead",
 					socketPath: "/tmp/attacker.sock",
 				}),
-				[P_PATH]: goodPlist(undefined, "v2"),
+				[P_PATH]: goodPlist(),
 			},
 			privatePanes: [{ windowName: "main", command: "claude" }],
 			privateTmuxCalls,
@@ -319,6 +334,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: `<plist><string>/bespoke/wrapper</string><string>${M_PATH}</string><string>com.flywheel.lead.${KEY}</string></plist>`,
 			},
@@ -337,6 +353,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
@@ -374,6 +391,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
@@ -394,10 +412,11 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: SOCKET_PATH,
 				}),
 				[P_PATH]: goodPlist(),
 			},
-			panes: null,
+			privatePanes: null,
 		});
 		const snap = await collectFleetSnapshot([project()], () => undefined, deps);
 		expect(snap.leads[0]!.observed.runtime).toBe("indeterminate");
@@ -514,7 +533,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
         <key>FLYWHEEL_LEAD_MODEL</key>
         <string>claude-fable-5</string>
     </dict>
-    <string>${WRAPPER}</string>
+		<string>${WRAPPER_V2}</string>
     <string>${M_PATH}</string>
 </dict></plist>`;
 		const deps = makeDeps({
@@ -523,6 +542,10 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 					pid: 42,
 					projectName: "geo",
 					leadId: "product-lead",
+					socketPath: deriveLeadSocketPath(
+						"geo/product-lead",
+						`${HOME}/.flywheel`,
+					),
 				}),
 				[P_PATH]: multiline,
 			},
@@ -538,8 +561,8 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 describe("ConfigSnapshotProvider", () => {
 	const boot = [project()];
 
-	it("fleet-field overlay: model/backend/carrier hot-update onto boot topology", () => {
-		let fresh = [project({ model: "fab-2", carrier: "v2" })];
+	it("fleet-field overlay: model/backend hot-update onto boot topology", () => {
+		let fresh = [project({ model: "fab-2" })];
 		const prov = new ConfigSnapshotProvider(boot, {
 			loadProjects: () => fresh,
 			envPinned: false,
@@ -548,12 +571,21 @@ describe("ConfigSnapshotProvider", () => {
 		prov.refresh();
 		expect(prov.snapshot().state).toBe("live");
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBe("fab-2");
-		expect(prov.snapshot().projects[0]!.leads[0]!.carrier).toBe("v2");
 		expect(prov.hasExplicitFleetConfig()).toBe(true);
 		// removal also flows (absent → deleted, not stale)
 		fresh = [project()];
 		prov.refresh();
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBeUndefined();
+		expect(prov.hasExplicitFleetConfig()).toBe(false);
+	});
+
+	it('adding the equivalent carrier:"v2" key is a structural no-op', () => {
+		const prov = new ConfigSnapshotProvider(boot, {
+			loadProjects: () => [project({ carrier: "v2" })],
+			envPinned: false,
+		});
+		prov.refresh();
+		expect(prov.snapshot().state).toBe("live");
 		expect(prov.snapshot().projects[0]!.leads[0]!.carrier).toBeUndefined();
 		expect(prov.hasExplicitFleetConfig()).toBe(false);
 	});

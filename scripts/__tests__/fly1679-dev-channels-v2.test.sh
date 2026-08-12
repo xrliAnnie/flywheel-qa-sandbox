@@ -10,7 +10,6 @@
 #   T*  poller branches, against a PATH-shimmed fake tmux
 #   W*  source-order wiring (start before the blocking launch; reap first)
 #   R*  reaper behavior, including the PID-reuse guard
-#   B*  v1 byte-compatibility digest sentinels
 #   E*  real tmux end-to-end (keystrokes actually reach the pane)
 set -euo pipefail
 
@@ -40,6 +39,11 @@ pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 
 [ -f "$LEAD_SH" ] || { printf 'FAIL: launcher not found: %s\n' "$LEAD_SH"; exit 1; }
+if grep -Eq '^_log_startup\(\)[[:space:]]*\{' "$LEAD_SH"; then
+  pass "S1 production launcher defines the startup logger used by the v2 poller"
+else
+  fail "S1 production launcher is missing the v2 poller's startup logger"
+fi
 
 # ── Extract the units under test straight out of production source ──────────
 GATE_SRC="$(sed -n '/^_dev_channels_flag_active()/,/^}/p' "$LEAD_SH")"
@@ -362,7 +366,7 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════
 # W — wiring order in the v2 one-shot body
 # ═══════════════════════════════════════════════════════════════════════════
-V2_BODY_SRC="$(sed -n '/^# FLY-1663: launchd-native carrier\./,/^fi$/p' "$LEAD_SH")"
+V2_BODY_SRC="$(sed -n '/^# FLY-1663: launchd-native carrier\./,$p' "$LEAD_SH")"
 # Comment-free view: the surrounding comments deliberately name the guards the
 # code omits, so identifier assertions must run against code alone.
 V2_BODY_CODE="$(printf '%s\n' "$V2_BODY_SRC" | sed -e 's/[[:space:]]*#.*$//')"
@@ -380,7 +384,7 @@ else
   fail "W1 start=$start_line launch=$launch_line reap=$reap_line"
 fi
 
-CLEANUP_V2_SRC="$(sed -n '/^cleanup() {$/,/^    exit 143$/p' "$LEAD_SH")"
+CLEANUP_V2_SRC="$(sed -n '/^cleanup() {$/,/^}$/p' "$LEAD_SH")"
 c_reap="$(line_of '_v2_reap_dialog_poller' "$CLEANUP_V2_SRC")"
 c_term="$(line_of 'kill -TERM "\$CLAUDE_CHILD_PID"' "$CLEANUP_V2_SRC")"
 if [ -n "$c_reap" ] && [ -n "$c_term" ] && [ "$c_reap" -lt "$c_term" ]; then
@@ -438,18 +442,16 @@ fi
 # force that variable false, so any second contributor of a development channel
 # (FLY-1676 makes `plugin:discord@flywheel-plugins` unconditional) leaves the
 # dialog rendering with the proxy reading false: a companion Lead parks with no
-# poller, launchd still green. Both call sites must read the real argv.
-# `|| true` on both: a missing match must surface as a readable FAIL naming the
+# poller, launchd still green. The call site must read the real argv.
+# `|| true`: a missing match must surface as a readable FAIL naming the
 # broken contract, not as a set -e / pipefail abort mid-suite.
 v2_gate="$(printf '%s\n' "$V2_BODY_CODE" | grep -B1 '_poll_dev_channels_dialog_v2 ' | head -1 || true)"
-v1_gate_line="$(grep -n 'if _dev_channels_flag_active && \[ -n "\${LEAD_WINDOW_ID:-}" \]; then' "$LEAD_SH" | head -1 || true)"
 if [ -n "$GATE_SRC" ] \
   && grep -q '_dev_channels_flag_active' <<<"$v2_gate" \
-  && [ -n "$v1_gate_line" ] \
   && ! grep -q 'INBOX_MCP_ENABLED' <<<"$v2_gate"; then
-  pass "W4 both poller call sites gate on the real argv, not the INBOX_MCP_ENABLED proxy"
+  pass "W4 the poller call site gates on the real argv, not the INBOX_MCP_ENABLED proxy"
 else
-  fail "W4 gate drift: helper=[${GATE_SRC:+present}] v2=[$v2_gate] v1=[$v1_gate_line]"
+  fail "W4 gate drift: helper=[${GATE_SRC:+present}] v2=[$v2_gate]"
 fi
 
 # W5 — the helper must key on the flag itself, in either argv position.
@@ -566,13 +568,10 @@ else
   fail "R1c $r1c_out"
 fi
 
-# R2 — observed call order inside the real cleanup() v2 branch, not source order
+# R2 — observed call order inside the real cleanup(), not source order
 r2_log="$TMP/cleanup-order.log"
 : > "$r2_log"
-CLEANUP_V2_FN="cleanup() {
-$(printf '%s\n' "$CLEANUP_V2_SRC" | sed -n '2,$p')
-  fi
-}"
+CLEANUP_V2_FN="$CLEANUP_V2_SRC"
 /bin/bash -c '
   set -euo pipefail
   ORDER_LOG="'"$r2_log"'"
@@ -600,29 +599,6 @@ if [ "$(tr '\n' ' ' < "$r2_log")" = "reap-kill child-term exit-143 " ]; then
   pass "R2 cleanup's observed order is poller reap, then child TERM"
 else
   fail "R2 observed order: [$(tr '\n' ' ' < "$r2_log")]"
-fi
-
-# ═══════════════════════════════════════════════════════════════════════════
-# B — v1 byte compatibility (anchor-extracted, so inserting v2 code cannot move them)
-# ═══════════════════════════════════════════════════════════════════════════
-V1_FN_SHA="$(sed -n '/^_poll_dev_channels_dialog()/,/^}/p' "$LEAD_SH" | shasum -a 256 | awk '{print $1}')"
-V1_WIRING="$(sed -n '/# FLY-109: Start background dev-channels dialog poller/,/^    _DIALOG_POLLER_PID=""$/p' "$LEAD_SH")"
-V1_WIRING_SHA="$(printf '%s\n' "$V1_WIRING" | shasum -a 256 | awk '{print $1}')"
-
-if [ "$V1_FN_SHA" = "3b1f6d3aa61bdcc8fd906ebcdb42ead415bed5718dfedfb5af350837af676d36" ]; then
-  pass "B1 v1 _poll_dev_channels_dialog is byte-identical"
-else
-  fail "B1 v1 poller digest drifted: $V1_FN_SHA"
-fi
-# B2 digest intentionally re-pinned by FLY-1679's second round. The v1 call
-# site's CONDITION changed (proxy -> argv-derived) so the two poller call sites
-# share one gate; everything else in the block, and the v1 function itself
-# (B1), is untouched. Re-pinning here keeps the block frozen going forward.
-if [ "$V1_WIRING_SHA" = "5b73c510e3956e02f7b9297462ae4f71d7dd9474538f7fedd4cf31d935e66a47" ] \
-  && [ "$(printf '%s\n' "$V1_WIRING" | wc -l | tr -d ' ')" -eq 21 ]; then
-  pass "B2 v1 poller call site and reap block match the re-pinned digest"
-else
-  fail "B2 v1 wiring digest drifted: $V1_WIRING_SHA lines=$(printf '%s\n' "$V1_WIRING" | wc -l | tr -d ' ')"
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -105,6 +105,7 @@ MOCK_CMUX_MUTATE_SURFACES="0" # FLY-1605: opt-in mutation-faithful tab-title mod
 MOCK_PS_MODE=""             # FLY-1605: hermetic timezone-sensitive lstart seam
 MOCK_TMUX_SERVER_PID="4242"
 MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
+MOCK_PRIVATE_TMUX_SOCKET=""
 
 # FLY-1272 P0: opt-in, file-backed tmux topology model. The linked-view
 # state machine performs tmux reads inside command substitutions, so ordinary
@@ -420,6 +421,17 @@ topo_tmux() {
 }
 
 tmux() {
+  if [[ "${1:-}" == "-S" && -n "${MOCK_PRIVATE_TMUX_SOCKET:-}" ]]; then
+    local private_socket="$2"
+    shift 2
+    [[ "$private_socket" == "$MOCK_PRIVATE_TMUX_SOCKET" ]] || return 1
+    case "${1:-}" in
+      list-panes) printf '%%0|main|0|4242\n' ;;
+      list-clients) printf '4243\n' ;;
+      *) return 1 ;;
+    esac
+    return 0
+  fi
   if [[ "${MOCK_TOPOLOGY_MODE:-0}" == "1" ]]; then
     topo_tmux "$@"
     return $?
@@ -1002,6 +1014,7 @@ reset_mocks() {
   MOCK_PS_MODE=""
   MOCK_TMUX_SERVER_PID="4242"
   MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
+  MOCK_PRIVATE_TMUX_SOCKET=""
   rm -f "$TMPDIR_ROOT/ps.calls"
   # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
   MOCK_TMUX_LIST_FAIL="0"        # 1 = tmux list-sessions fails (server down)
@@ -6969,19 +6982,22 @@ test_fly1596_verify_sidebar_target_local_authority_matrix() {
   local text_rc=0 json_rc=0 absent_rc=0 own_rc=0 global_rc=0 drift_rc=0
   local text_output json_output absent_output own_output global_output drift_output json_ok=0
   local target_manifest="$FLYWHEEL_MANIFEST_DIR/${title}.json"
+  local target_socket
   local drift_counter="$TMPDIR_ROOT/fly1596-target-authority-drift.n" n
   saved_loaded=$(declare -f lead_job_loaded)
   saved_wrapper=$(declare -f lead_plist_wrapper_basename)
   saved_tmux_generation=$(declare -f tmux_server_generation)
   lead_job_loaded() { return 0; }
-  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper.sh; }
+  lead_plist_wrapper_basename() { printf '%s\n' flywheel-lead-wrapper-v2.sh; }
+  target_socket=$(derive_lead_socket "growth/rafiki-lead" "${FLYWHEEL_LEAD_STATE_DIR:-$HOME/.flywheel}")
 
   _fly1596_setup_healthy_sidebar_fixture "$title" flywheel
+  MOCK_PRIVATE_TMUX_SOCKET="$target_socket"
   command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
-  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' "$target_socket" > "$target_manifest"
   text_output=$(run_verify_sidebar --target "$title" 2>&1) || text_rc=$?
   json_output=$(run_verify_sidebar --target "$title" --json 2>/dev/null) || json_rc=$?
   if printf '%s' "$json_output" | python3 -c '
@@ -6999,7 +7015,7 @@ assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel
   mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
-  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' "$target_socket" > "$target_manifest"
   MOCK_SOCK_IDENT="cmux-generation-1"
   absent_output=$(run_verify_sidebar --target "$title" 2>&1) || absent_rc=$?
 
@@ -7015,20 +7031,20 @@ assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel
   mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${unrelated}.plist"
-  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' "$target_socket" > "$target_manifest"
   global_output=$(run_verify_sidebar 2>&1) || global_rc=$?
 
   _fly1596_setup_healthy_sidebar_fixture "$title" flywheel
   command rm -rf "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   mkdir -p "$FLYWHEEL_LEAD_PLIST_DIR" "$FLYWHEEL_MANIFEST_DIR"
   : > "$FLYWHEEL_LEAD_PLIST_DIR/com.flywheel.lead.${title}.plist"
-  printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"}}' > "$target_manifest"
+  printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s"}\n' "$target_socket" > "$target_manifest"
   : > "$drift_counter"
   tmux_server_generation() {
     n=$(wc -l < "$drift_counter" | tr -d ' ')
     printf 'x\n' >> "$drift_counter"
     if [[ "$n" -eq 1 ]]; then
-      printf '%s\n' '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"revision":2}' > "$target_manifest"
+      printf '{"projectName":"growth","leadId":"rafiki-lead","leadBackend":{"backendId":"claude-code"},"socketPath":"%s","revision":2}\n' "$target_socket" > "$target_manifest"
     fi
     printf '%s\n' tmux-test-generation
   }
@@ -7043,7 +7059,7 @@ assert d["caveats"] == ["roster-authority-unavailable: missing manifest flywheel
   if [[ "$text_rc" -eq 0 && "$json_rc" -eq 0 && "$json_ok" -eq 1 \
       && "$text_output" == *"PASS $title"* \
       && "$text_output" == *"CAVEAT roster-authority-unavailable: missing manifest $unrelated"* \
-      && "$absent_rc" -eq 1 && "$absent_output" == *'rule=roster-lead-absent'* \
+      && "$absent_rc" -eq 1 && "$absent_output" == *'rule=v2-row expected=one-named observed=named:0,mapped:0'* \
       && "$own_rc" -eq 2 && "$own_output" == *"target-authority-unavailable: missing manifest $title"* \
       && "$global_rc" -eq 2 && "$global_output" == *"roster-authority-unavailable: missing manifest $unrelated"* \
       && "$drift_rc" -eq 2 && "$drift_output" == *'snapshot-drift'* ]]; then

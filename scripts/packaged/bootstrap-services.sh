@@ -31,6 +31,7 @@ DRY_RUN=0
 INSTALL_LEADS=1
 
 log() { echo "[packaged-bootstrap] $*"; }
+warn() { echo "[packaged-bootstrap][warn] $*" >&2; }
 err() { echo "[packaged-bootstrap][error] $*" >&2; }
 die() { err "$*"; exit 1; }
 
@@ -56,6 +57,8 @@ SCRIPTS="$PKG_ROOT/scripts"
 source "$SCRIPTS/lib/script-sanity.sh"
 # shellcheck source=../lib/host-config.sh
 source "$SCRIPTS/lib/host-config.sh"
+# shellcheck source=../lib/lead-restart-lifecycle.sh
+source "$SCRIPTS/lib/lead-restart-lifecycle.sh"
 # shellcheck source=../lib/supervisor.sh
 source "$SCRIPTS/lib/supervisor.sh"
 
@@ -91,8 +94,7 @@ ensure_host_json() {
 install_bin() {
   local f
   mkdir -p "$STATE_DIR/bin/lib" "$STATE_DIR/pids" "$STATE_DIR/state" "$STATE_DIR/logs" "$STATE_DIR/manifests"
-  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper.sh \
-    flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh; do
+  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh; do
     [ -f "$SCRIPTS/$f" ] || die "wrapper missing from package: scripts/$f"
     if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] would install $f -> $STATE_DIR/bin/$f"; continue; fi
     install_script_atomic "$SCRIPTS/$f" "$STATE_DIR/bin/$f" \
@@ -114,25 +116,19 @@ emit_specs() {
   jq -nc --arg cur "$CURRENT" \
     '{name:"daily-standup",kind:"timer",exec:("/bin/bash "+$cur+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
   if [ "$INSTALL_LEADS" -eq 1 ]; then
-    local m carrier wrapper project_name lead_id
+    local m project_name lead_id backend
     for m in "$STATE_DIR/manifests"/*.json; do
       [ -e "$m" ] || continue
       project_name=$(jq -er '.projectName' "$m") || die "invalid manifest projectName: $m"
       lead_id=$(jq -er '.leadId' "$m") || die "invalid manifest leadId: $m"
-      carrier=v1
-      if [ -f "$STATE_DIR/projects.json" ]; then
-        carrier=$(jq -er --arg p "$project_name" --arg l "$lead_id" \
-          '[.[] | select(.projectName == $p) | .leads[] | select(.agentId == $l)]
-           | if length == 1 then (.[0].carrier // "v1") else error("Lead row not unique") end' \
-          "$STATE_DIR/projects.json") || die "cannot resolve carrier for $project_name/$lead_id"
+      backend=$(lead_restart_project_backend "$STATE_DIR/projects.json" "$project_name" "$lead_id") \
+        || die "projects.json has no unique backend authority for ${project_name}/${lead_id}"
+      if [ "$backend" != "claude-code" ]; then
+        warn "lead ${project_name}/${lead_id}: skipping bespoke backend ${backend}; generic provision only installs Claude v2"
+        continue
       fi
-      case "$carrier" in
-        v1) wrapper=flywheel-lead-wrapper.sh ;;
-        v2) wrapper=flywheel-lead-wrapper-v2.sh ;;
-        *) die "unsupported Lead carrier: $carrier" ;;
-      esac
-      jq -c --arg bin "$STATE_DIR/bin" --arg m "$m" --arg wrapper "$wrapper" \
-        '{name:("lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$bin+"/"+$wrapper+" "+$m),keepAlive:true}' "$m"
+      jq -c --arg bin "$STATE_DIR/bin" --arg m "$m" \
+        '{name:("lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$bin+"/flywheel-lead-wrapper-v2.sh "+$m),keepAlive:true}' "$m"
     done
   fi
 }

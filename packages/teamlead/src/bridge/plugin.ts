@@ -326,7 +326,6 @@ import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
-	createBlockedMarkerReader,
 	createClaimsClaimer,
 	createClaimsReader,
 	defaultLeadPaneCapture,
@@ -7579,7 +7578,6 @@ export async function startBridge(
 	// the same row instead of writing to two unrelated dedup stores.
 	const claimsReader = createClaimsReader();
 	const claimsClaimer = createClaimsClaimer();
-	const blockedMarkerReader = createBlockedMarkerReader();
 	const leadPaneCaptureFn = defaultLeadPaneCapture();
 	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink
 	// (`metaAlertNotifier`). Now constructed earlier (just before GatePoller) so
@@ -10426,7 +10424,6 @@ export async function startBridge(
 		locateWindowFn: locateFleetLeadWindow,
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
-		blockedMarkerReader,
 		watchdogBlockedEnabled: watchdogFlags.blocked,
 		watchdogTracker: watchdogTrackers.blockedLead,
 		// FLY-368: real-time recovery → resolve the matching alert thread (an

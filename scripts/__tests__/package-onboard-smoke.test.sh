@@ -74,9 +74,8 @@ fi
 ok=1
 [ "$(readlink "$PKG_ROOT/packages/teamlead")" = "../node_modules/flywheel-teamlead" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/claude-lead.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-identity-preflight.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-launch-authority.sh" ] || ok=0
-[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh" ] || ok=0
+[ -f "$PKG_ROOT/packages/teamlead/scripts/lead-body.sh" ] || ok=0
+[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-body-receipt.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-restart-lifecycle.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-body-sweep.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-body-evidence.sh" ] || ok=0

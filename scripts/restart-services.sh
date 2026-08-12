@@ -1276,14 +1276,7 @@ start_bridge() {
 # Lead restart
 # ════════════════════════════════════════════════════════════════
 
-# FLY-1507: keep all destructive identity logic in sourceable production
-# libraries. restart-services.sh owns orchestration only.
-# shellcheck source=../packages/teamlead/scripts/lib/lead-identity-preflight.sh
-# shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/lead-identity-preflight.sh"
-# shellcheck source=../packages/teamlead/scripts/lib/tmux-supervisor-guard.sh
-# shellcheck disable=SC1091
-source "${FLYWHEEL_DIR}/packages/teamlead/scripts/lib/tmux-supervisor-guard.sh"
+# FLY-1507: keep destructive identity logic in sourceable production libraries.
 # shellcheck source=lib/lead-body-sweep.sh
 # shellcheck disable=SC1091
 source "${FLYWHEEL_DIR}/scripts/lib/lead-body-sweep.sh"
@@ -1382,17 +1375,11 @@ restart_lead() {
     VERIFIED_LEAD_PID=""
     VERIFIED_LEAD_START=""
 
-    local lead_id project_dir project_name subdir bot_token_env workspace mcp_exclude chrome_enabled
+    local lead_id project_dir project_name bot_token_env
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
     project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
     project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
-    subdir=$(jq -r '.subdir // ""' "$manifest") || return 1
     bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' "$manifest") || return 1
-    workspace=$(jq -r '.workspace // ""' "$manifest") || return 1
-    # FLY-143: per-Lead MCP scope fields. Default empty/false for older
-    # manifests so legacy nohup path matches launchd wrapper behavior.
-    mcp_exclude=$(jq -r '.mcpExclude // ""' "$manifest") || return 1
-    chrome_enabled=$(jq -r '.chromeEnabled // false' "$manifest") || return 1
 
     # All preflight checks happen before bootout, TERM, or any other state
     # change. Invalid indirect env names must not reach ${!name}.
@@ -1441,14 +1428,8 @@ restart_lead() {
     local daemon_target
     daemon_target="gui/$(id -u)/${daemon_label}"
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
-    local archive_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.claude.tmux"
     local plist="${HOME}/Library/LaunchAgents/${daemon_label}.plist"
     local projects_file="${HOME}/.flywheel/projects.json"
-    local subdir_args=""
-    [[ -n "$subdir" && "$subdir" != "null" ]] && subdir_args="--subdir $subdir"
-
-    # Per-lead Discord state directory for channel/token isolation
-    local discord_state_dir="${HOME}/.claude/channels/discord-${lead_id}"
 
     # A plist on disk defines launchd lifecycle ownership even when the job is
     # currently unloaded. This avoids misclassifying an offline daemon as legacy.
@@ -1461,14 +1442,14 @@ restart_lead() {
         fi
         local backend="$LEAD_RESTART_BACKEND"
 
-        # FLY-1663 v2: launchd already owns the one body. A regular rebirth is
+        # launchd owns every Claude body. A regular rebirth is
         # one native kickstart; no bootout choreography, body sweep, global
         # tmux lock, replacement marker, or adoption/recovery loop participates.
-        if [[ "$LEAD_RESTART_CARRIER" == "v2" ]]; then
+        if [[ "$backend" == "claude-code" ]]; then
             local v2_probe v2_old_pid="" v2_old_start="" v2_attempt
             v2_probe="$(lead_restart_launchd_probe "$daemon_target")"
             if [[ "$v2_probe" != loaded$'\t'* ]]; then
-                log "ERROR: v2 Lead $lead_id is not loaded; refusing any unmanaged fallback"
+                log "ERROR: Claude Lead $lead_id is not loaded; refusing any unmanaged fallback"
                 return 1
             fi
             v2_old_pid="${v2_probe#*$'\t'}"
@@ -1476,7 +1457,7 @@ restart_lead() {
             v2_old_start="$(lead_restart_process_start_identity "$v2_old_pid")" || return 1
             [[ -n "$v2_old_start" ]] || return 1
             if ! launchctl kickstart -k "$daemon_target" >/dev/null 2>&1; then
-                log "ERROR: native launchd kickstart failed for v2 Lead $lead_id"
+                log "ERROR: native launchd kickstart failed for Claude Lead $lead_id"
                 return 1
             fi
             for (( v2_attempt=1; v2_attempt<=LEAD_VERIFY_ATTEMPTS; v2_attempt++ )); do
@@ -1486,7 +1467,7 @@ restart_lead() {
                 fi
                 (( v2_attempt < LEAD_VERIFY_ATTEMPTS )) && sleep "$LEAD_VERIFY_INTERVAL"
             done
-            log "ERROR: v2 Lead $lead_id did not produce a fresh launchd PID (${LEAD_RESTART_OUTCOME_REASON:-unknown})"
+            log "ERROR: Claude Lead $lead_id did not produce a fresh launchd PID (${LEAD_RESTART_OUTCOME_REASON:-unknown})"
             return 1
         fi
 
@@ -1651,12 +1632,6 @@ trigger_cmux_refresh() {
 
 # Restart all Leads. Outputs "skipped:N failed:M total:K" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
-# FLY-231: production-candidate resolver (_prod_membership / _classify_restart_manifest)
-# lives in a sourceable lib so its deploy-gating logic is unit-testable. FLYWHEEL_DIR
-# is set above; node + jq are required (already preconditions of this script).
-# shellcheck source=lib/restart-candidate.sh
-source "${FLYWHEEL_DIR}/scripts/lib/restart-candidate.sh"
-
 do_restart_all_leads() {
     local skipped=0
     local failed=0
@@ -1698,8 +1673,8 @@ do_restart_all_leads() {
         fi
     fi
 
-    # FLY-1507: one authoritative three-source inventory (manifest + positively
-    # loaded plist + legacy supervisor process), deduplicated by exact
+    # FLY-1507: one authoritative inventory (manifest + positively loaded plist),
+    # deduplicated by exact
     # (projectName, leadId) daemon key. QA candidates never affect counts.
     local candidates_file=""
     candidates_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-restart-candidates.XXXXXX")" || {
