@@ -47,7 +47,8 @@ Phase 1 采用 plan.md 的分支 A:Lead 侧 `claude-lead.sh` 零改动。`--dang
 
 - `pnpm lint`:exit 0；仅保留仓内既有 13 条 warning，无本单 error。
 - `pnpm -r build`:22 个 workspace package 全部构建成功。
-- 本单触达面定向回归全部通过:config 4、Edge Blueprint 36、voice brain 40、ClaudeRunner/TmuxAdapter 199、teamlead reviewer/classifier/scoped-token 59、reports mount/router 48、flywheel-comm runner-tier CLI 87，共 473 个 Vitest case；另有 default-off 20、token preflight 9、voice managed restart 16、packaged Buddy provider 17，共 62 个 shell harness assertion；Buddy 总流程既有 11 条也复跑通过。
+- 本单触达面定向回归全部通过:config 4、Edge Blueprint 36、voice brain 40、ClaudeRunner/TmuxAdapter 199、teamlead reviewer/classifier/scoped-token 59、reports mount/router 48、flywheel-comm runner-tier CLI 87，共 473 个 Vitest case；另有 default-off 20、token preflight 9、voice managed restart 16、packaged Buddy provider 19，共 64 个 shell harness assertion；Buddy 总流程既有 11 条也复跑通过。
 - Code review R2 的全仓 shell spawn sweep 补出 packaged Buddy 面。TDD RED 先让 Claude stub 对所有 model-bearing `--print` 强制校验唯一 `--settings`，smoke/start/resume 三 case 均按预期失败；GREEN 后三路径统一携 fork + official 两 key=false，contract harness 17/17、Buddy 总流程 11/11。
-- 精确全仓命令 `pnpm test:packages:run` 已执行但未全绿:core 的 macOS Terminal `osascript` 测试被当前 sandbox 拒绝；其余并发 package wave 出现既有紧阈值 timeout，teamlead 另有 1 个测试因 sandbox 外 `~/.npm` 权限 `EPERM` 失败。core 排除 GUI 后 219/219 通过；本单所有触达文件均在隔离复跑中通过。claude-runner 全套另有未触达的 `flywheel-claude-profile` 15 秒阈值 timeout，单独复跑仍为约 15.67 秒，未为本单放宽断言。
+- Code review R3 再补首启 `/login` 与 shell deny-list 漂移守卫。TDD RED 中 `_acp_login_cli` 缺席令 login case 以 127 失败；GREEN 后 login 复用同一 inline settings，Python guard 从 canonical TS 导出解析 key set 并对 Buddy/default-off 两份 shell 数据做精确相等校验，contract harness 19/19。隔离 HOME 下真实 Claude CLI 以同一 argv 组合 `--settings <json> /login --help` 返回 0，确认参数组合可解析且未启动交互登录。
+- 精确全仓命令 `pnpm test:packages:run` 已执行但未全绿:core 的 macOS Terminal `osascript` 测试被当前 sandbox 拒绝，最小 `tell application "Terminal"` 同样 exit 1；排除唯一 GUI 文件后 core 219/219 通过。并发 package wave 的既有 5 秒/15 秒阈值在宿主负载下超时；本单 ingest case 与两条同波旁证隔离复跑 3/3 通过，未触达的 `flywheel-claude-profile` case 隔离复跑 1/1 通过（13.8 秒）。未为本单放宽阈值或修改无关测试。
 - `git diff --check`:通过。
