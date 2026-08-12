@@ -263,3 +263,12 @@ kill-switch:`FLYWHEEL_DOA_BACKOFF=0`。阈值 `FLYWHEEL_DOA_THRESHOLD_MS`(默认
 8. push-guard prompt contract 与 `FLYWHEEL_PUSH_GUARD=0` 同门关闭。
 
 修订后 targeted 回归 195 项全绿(edge-worker 89 + teamlead 92 + push-guard shell 14);full workspace lint/build 通过。TeamLead 受控全包 9,171 pass/5 skip,唯一 watchdog 负载 timeout 隔离 19/19 通过;edge-worker 1,253/5 skip;core 非 GUI 219/3 skip;voice-bridge 的并发端口冲突用例隔离 17/17;Claude runner 777/2 skip 后仅 Vitest worker RPC timeout。宿主 Terminal.app 不可用的真实 GUI 两例继续按既有环境例外记录,未冒充通过。
+
+## 10. PR 后 main 同步验收(2026-08-12)
+
+PR #824 创建后 main 合入 FLY-1612,GitHub 检出 `CLAUDE.md` 单文件冲突。为遵守本单新增的 open-PR force-push 护栏,未 rebase/force-push,改用普通 merge commit 保留完整 branch ancestry;冲突只合并两条并列 milestone。自动合并同时穿过 `StateStore.ts` 与 feature-flag registry,因此对新 head 重新验证:
+
+- `pnpm lint` 通过(13 条既有 warning),`pnpm -r build` 22 workspace 通过;
+- FLY-1718 影响面:edge-worker 89 + flywheel-comm 17 + TeamLead 205 = 311 tests 全绿,push-guard shell 14/14 + package export harness 通过;
+- main 新并入且与本单共享文件的 FLY-1612 影响面:config 31 + TeamLead 210 = 241 tests 全绿;
+- merge 解决后 `git diff --check` 通过,下一步对合并后的精确 head 重新发起 code review。
