@@ -1,13 +1,13 @@
 ---
 issue: FLY-1718
 phase: implement
-phaseCursor: 5/5
-updated: 2026-08-12T20:45:06.694Z
-nextStep: push exact head and request Codex code review
+phaseCursor: 6/7
+updated: 2026-08-12T21:24:11.158Z
+nextStep: run affected suites and full repository gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1718 progress
-**phase**: implement (5/5)
-**next**: push exact head and request Codex code review
+**phase**: implement (6/7)
+**next**: run affected suites and full repository gates
