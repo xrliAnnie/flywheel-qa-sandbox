@@ -47,14 +47,13 @@ if [ ! -f "${TUI_HOME_SH}" ]; then
 	exit 1
 fi
 
-# ── Mufasa identity (from ~/.flywheel/projects.json: growth / mufasa-lead) ──
-export FLYWHEEL_LEAD_ID="mufasa-lead"
-export FLYWHEEL_PROJECT_NAME="growth"
+# ── Mufasa identity: selectors in launcher, coordinates from registry ──
+. "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
+canonical_lead_identity_resolve "growth" "mufasa-lead"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
 # Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
 export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
-export FLYWHEEL_LEAD_BOT_USER_ID="1499895683287748679"     # Mufasa's Discord bot
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" # #mufasa
 # #leads-roundtable — discord_send "roundtable" alias + FLY-267 cross-dept inbound.
 export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-1512578695468941333}"
@@ -113,10 +112,7 @@ if ! assemble_full_access_governance "${FLYWHEEL_LEAD_ID}" "${TEAMLEAD_ROOT}/lea
 fi
 
 # ── secrets / prerequisites ──
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" = "1" ]; then
-	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
-else
-	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:?MUFASA_BOT_TOKEN must be set}"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
 	if [ ! -x "${FLYWHEEL_CODEX_BIN}" ]; then
 		echo "standalone codex not executable at ${FLYWHEEL_CODEX_BIN} — the remote-control daemon requires it (npm codex has no daemon backend)." >&2
 		exit 1

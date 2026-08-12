@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runLeadLeaseCommand } from "../commands/lead-lease.js";
+import { resolveLeadIdentity } from "../lead-identity.js";
 import {
 	evaluateCarrierReceipt,
 	hashCarrierInstanceId,
@@ -32,6 +33,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 	let stdout: string[];
 	let stderr: string[];
 	let fetchImpl: ReturnType<typeof vi.fn>;
+	let identityDigest: string;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-self-check-"));
@@ -50,10 +52,22 @@ describe("FLY-1309 carrier-local self-check", () => {
 			JSON.stringify([
 				{
 					projectName: "flywheel",
-					leads: [{ agentId: LEAD_ID, backend: "codex-app-server" }],
+					leads: [
+						{
+							agentId: LEAD_ID,
+							backend: "codex-app-server",
+							discordStateDir: join(dir, "discord-eng"),
+						},
+					],
 				},
 			]),
 		);
+		identityDigest = resolveLeadIdentity({
+			projectsPath: env.FLYWHEEL_PROJECTS_FILE,
+			projectName: "flywheel",
+			leadId: LEAD_ID,
+		}).identityDigest;
+		env.FLYWHEEL_LEAD_IDENTITY_DIGEST = identityDigest;
 		writeFileSync(
 			env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE,
 			JSON.stringify({
@@ -63,6 +77,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 					[LEAD_KEY]: {
 						leadKey: LEAD_KEY,
 						backend: "codex-app-server",
+						identityDigest,
 						pid: 777,
 						lstart: "carrier-start",
 						instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
@@ -80,6 +95,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 						disposition: "carrier_passthrough",
 						leadKey: LEAD_KEY,
 						carrier: {
+							identityDigest,
 							pid: 777,
 							lstart: "carrier-start",
 							instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
@@ -119,6 +135,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 			schemaVersion: 1,
 			contractVersion: 1,
 			leadKey: LEAD_KEY,
+			identityDigest,
 			instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
 			pid: 777,
 			lstart: "carrier-start",
@@ -137,8 +154,64 @@ describe("FLY-1309 carrier-local self-check", () => {
 		expect(JSON.parse(String(init?.body))).toMatchObject({
 			leadId: LEAD_ID,
 			projectName: "flywheel",
+			identityDigest,
 			carrierClaim: RAW_CLAIM,
 		});
+	});
+
+	it("rejects a live carrier after its canonical registry row changes", async () => {
+		writeFileSync(
+			env.FLYWHEEL_PROJECTS_FILE,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					leads: [
+						{
+							agentId: LEAD_ID,
+							backend: "codex-app-server",
+							discordStateDir: join(dir, "discord-eng-reassigned"),
+						},
+					],
+				},
+			]),
+		);
+
+		expect(await run()).not.toBe(0);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(stderr.join("\n")).toContain("identity_digest_mismatch");
+	});
+
+	it("does not fence a carrier when only another Lead row changes", async () => {
+		writeFileSync(
+			env.FLYWHEEL_PROJECTS_FILE,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					leads: [
+						{
+							agentId: LEAD_ID,
+							backend: "codex-app-server",
+							discordStateDir: join(dir, "discord-eng"),
+						},
+						{
+							agentId: "product-lead",
+							backend: "claude-code",
+							discordStateDir: join(dir, "discord-product"),
+						},
+					],
+				},
+			]),
+		);
+		expect(
+			resolveLeadIdentity({
+				projectsPath: env.FLYWHEEL_PROJECTS_FILE,
+				projectName: "flywheel",
+				leadId: LEAD_ID,
+			}).identityDigest,
+		).toBe(identityDigest);
+
+		expect(await run()).toBe(0);
+		expect(fetchImpl).toHaveBeenCalledOnce();
 	});
 
 	it.each([
@@ -168,6 +241,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 					disposition: "carrier_passthrough",
 					leadKey: LEAD_KEY,
 					carrier: {
+						identityDigest,
 						pid: 888,
 						lstart: "replacement-start",
 						instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
@@ -207,6 +281,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 			schemaVersion: 1 as const,
 			contractVersion: 1 as const,
 			leadKey: LEAD_KEY,
+			identityDigest,
 			instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
 			pid: 777,
 			lstart: "carrier-start",
@@ -217,6 +292,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 		const evidence = {
 			leadKey: LEAD_KEY,
 			backend: "codex-app-server" as const,
+			identityDigest,
 			pid: 777,
 			lstart: "carrier-start",
 			instanceDigest: receipt.instanceDigest,
@@ -253,6 +329,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 			schemaVersion: 1 as const,
 			contractVersion: 1 as const,
 			leadKey: LEAD_KEY,
+			identityDigest,
 			instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
 			pid: 777,
 			lstart: "carrier-start",
@@ -263,6 +340,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 		const evidence = {
 			leadKey: LEAD_KEY,
 			backend: "codex-app-server" as const,
+			identityDigest,
 			pid: 777,
 			lstart: "carrier-start",
 			instanceDigest: receipt.instanceDigest,
@@ -292,6 +370,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 		const result = publishCarrierRuntimeAssertion({
 			env,
 			leadKey: LEAD_KEY,
+			identityDigest,
 			rawCarrierInstanceId: RAW_CLAIM,
 			pid: 777,
 			lstart: "carrier-start",
@@ -308,6 +387,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 		expect(readCarrierRuntimeAssertion(env, LEAD_KEY)).toMatchObject({
 			schemaVersion: 1,
 			leadKey: LEAD_KEY,
+			identityDigest,
 			pid: 777,
 			lstart: "carrier-start",
 			publishedAt: CHECKED_AT,

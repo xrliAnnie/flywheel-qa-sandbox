@@ -5,14 +5,24 @@ import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
+import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
+let leadEnvs: Record<string, NodeJS.ProcessEnv> = {};
 
 function runCli(args: string[], env?: Record<string, string>): string {
+	const identityFlag =
+		args[0] === "respond"
+			? "--lead"
+			: args[0] === "send"
+				? "--from"
+				: undefined;
+	const identityIndex = identityFlag ? args.indexOf(identityFlag) : -1;
+	const leadId = identityIndex >= 0 ? args[identityIndex + 1] : undefined;
 	return execFileSync("node", [CLI_PATH, ...args], {
 		encoding: "utf-8",
-		env: { ...process.env, ...env },
+		env: { ...process.env, ...(leadId ? leadEnvs[leadId] : {}), ...env },
 	}).trim();
 }
 
@@ -23,6 +33,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-e2e-"));
 		dbPath = join(tmpDir, "comm.db");
+		leadEnvs = createTestLeadIdentityEnvs(tmpDir, ["product-lead", "ops-lead"]);
 	});
 
 	afterEach(() => {

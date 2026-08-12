@@ -36,6 +36,89 @@ describe("LeadConfig type", () => {
 		};
 		expect(entry.leads[0]!.agentId).toBe("eng-lead");
 	});
+
+	it("LeadConfig exposes registry-owned Discord identity fields", () => {
+		const lead: LeadConfig = {
+			agentId: "eng-lead",
+			chatChannel: "012",
+			match: { labels: ["Engineering"] },
+			botTokenEnv: "ENG_BOT_TOKEN",
+			botUserId: "12345678901234567",
+			discordStateDir: "/tmp/discord-eng-lead",
+		};
+		expect(lead.botUserId).toBe("12345678901234567");
+		expect(lead.discordStateDir).toBe("/tmp/discord-eng-lead");
+	});
+});
+
+describe("FLY-1726 identity schema boundary", () => {
+	const lead = (agentId: string, overrides: Record<string, unknown> = {}) => ({
+		agentId,
+		chatChannel: `${agentId}-channel`,
+		match: { labels: ["Engineering"] },
+		...overrides,
+	});
+
+	it("rejects the same bare agentId across different projects", () => {
+		expect(() =>
+			parseAndValidateProjects([
+				{
+					projectName: "flywheel",
+					projectRoot: "/tmp/flywheel",
+					leads: [lead("eng-lead")],
+				},
+				{
+					projectName: "sub",
+					projectRoot: "/tmp/sub",
+					leads: [lead("eng-lead")],
+				},
+			]),
+		).toThrow(/identity_bare_id_collision/);
+	});
+
+	it("requires an independent botUserId for every token-managed Lead", () => {
+		expect(() =>
+			parseAndValidateProjects([
+				{
+					projectName: "flywheel",
+					projectRoot: "/tmp/flywheel",
+					leads: [lead("eng-lead", { botTokenEnv: "ENG_BOT_TOKEN" })],
+				},
+			]),
+		).toThrow(/identity_bot_user_id_missing/);
+	});
+
+	it("rejects duplicate Discord botUserId values", () => {
+		expect(() =>
+			parseAndValidateProjects([
+				{
+					projectName: "flywheel",
+					projectRoot: "/tmp/flywheel",
+					leads: [
+						lead("eng-lead", { botUserId: "12345678901234567" }),
+						lead("product-lead", { botUserId: "12345678901234567" }),
+					],
+				},
+			]),
+		).toThrow(/identity_bot_user_id_collision/);
+	});
+
+	it("accepts a non-existent absolute discordStateDir for later provisioning", () => {
+		const projects = parseAndValidateProjects([
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/flywheel",
+				leads: [
+					lead("eng-lead", {
+						discordStateDir: "/tmp/fly1726-not-yet-provisioned/eng",
+					}),
+				],
+			},
+		]);
+		expect(projects[0]!.leads[0]!.discordStateDir).toBe(
+			"/tmp/fly1726-not-yet-provisioned/eng",
+		);
+	});
 });
 
 describe("loadProjects validation", () => {
@@ -829,6 +912,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		agentId: "product-lead",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
+		botUserId: "12345678901234567",
 	};
 
 	it("resolves botToken from env var when botTokenEnv is set", () => {
@@ -846,7 +930,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		expect(projects[0]!.leads[0]!.botTokenEnv).toBe("TEST_PETER_TOKEN");
 	});
 
-	it("warns but does not throw when botTokenEnv is set but env var missing", () => {
+	it("fails loud when botTokenEnv is set but the named secret is missing", () => {
 		savedTokenEnv = process.env.TEST_PETER_TOKEN;
 		delete process.env.TEST_PETER_TOKEN;
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
@@ -856,8 +940,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
 			},
 		]);
-		const projects = loadProjects();
-		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+		expect(() => loadProjects()).toThrow(/TEST_PETER_TOKEN.*not found/);
 	});
 
 	it("botToken is undefined when botTokenEnv is not configured (backward-compat)", () => {
@@ -1526,6 +1609,7 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 						agentId: "product-lead",
 						chatChannel: "222",
 						match: { labels: ["Product"] },
+						botUserId: "12345678901234567",
 						...leadOverrides,
 					},
 				],

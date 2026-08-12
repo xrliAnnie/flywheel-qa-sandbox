@@ -20,11 +20,11 @@ cat > "$H/.flywheel/projects.json" <<'EOF'
 [
   { "projectName": "flywheel", "projectRoot": "Dev/flywheel", "projectRepo": "xrliAnnie/flywheel",
     "leads": [
-      { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "canSpawnRunners": false },
-      { "agentId": "flywheel-eng-lead", "chatChannel": "2", "match": { "labels": ["eng"] }, "botTokenEnv": "TADASHI_BOT_TOKEN", "model": "fable", "backend": "claude-code" }
+      { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "botUserId": "12345678901234567", "canSpawnRunners": false },
+      { "agentId": "flywheel-eng-lead", "chatChannel": "2", "match": { "labels": ["eng"] }, "botTokenEnv": "TADASHI_BOT_TOKEN", "botUserId": "22345678901234567", "model": "fable", "backend": "claude-code" }
     ] },
   { "projectName": "geoforge3d", "projectRoot": "/abs/geoforge3d", "projectRepo": "xrliAnnie/GeoForge3D",
-    "leads": [ { "agentId": "geoforge3d-product-lead", "chatChannel": "3", "match": { "labels": ["product"] }, "botTokenEnv": "PETER_BOT_TOKEN" } ] }
+    "leads": [ { "agentId": "geoforge3d-product-lead", "chatChannel": "3", "match": { "labels": ["product"] }, "botTokenEnv": "PETER_BOT_TOKEN", "botUserId": "32345678901234567" } ] }
 ]
 EOF
 
@@ -42,7 +42,7 @@ fi
 
 # ── M2: canonical pre-launch shape excludes wrapper-v2 runtime identity ──
 KEYS="$(jq -r 'keys_unsorted | sort | join(",")' "$MDIR/flywheel-flywheel-cos-lead.json")"
-EXPECT="botTokenEnv,chromeEnabled,leadId,mcpExclude,projectDir,projectName,subdir,workspace"
+EXPECT="chromeEnabled,leadId,mcpExclude,projectDir,projectName,projectsFile,subdir,workspace"
 if [ "$KEYS" = "$EXPECT" ]; then
   pass "M2 canonical pre-launch key set"
 else
@@ -60,7 +60,8 @@ F="$MDIR/flywheel-flywheel-eng-lead.json"
 if [ "$(jq -r '.leadId' "$F")" = "flywheel-eng-lead" ] \
    && [ "$(jq -r '.projectDir' "$F")" = "$H/Dev/flywheel" ] \
    && [ "$(jq -r '.workspace' "$F")" = "$H/Dev/flywheel" ] \
-   && [ "$(jq -r '.botTokenEnv' "$F")" = "TADASHI_BOT_TOKEN" ] \
+   && [ "$(jq -r '.projectsFile' "$F")" = "$H/.flywheel/projects.json" ] \
+   && ! jq -e 'has("botTokenEnv") or has("botUserId") or has("discordStateDir")' "$F" >/dev/null 2>&1 \
    && [ "$(jq -r '.model' "$F")" = "fable" ] \
    && [ "$(jq -r '.leadBackend.backendId' "$F")" = "claude-code" ] \
    && [ "$(jq -r '.subdir' "$F")" = "" ] \

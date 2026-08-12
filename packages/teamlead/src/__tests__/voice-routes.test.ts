@@ -158,7 +158,10 @@ function makeApp(over: Partial<VoiceRouterDeps> = {}) {
 					{
 						agentId: "flywheel-eng-lead",
 						chatChannel: "chan-1",
-						botToken: fakeToken("111111111111111111"),
+						botUserId: "111111111111111111",
+						// Deliberately different: expected identity comes from registry,
+						// never by decoding the credential at runtime.
+						botToken: fakeToken("999999999999999999"),
 					},
 					{ agentId: "flywheel-cos-lead", chatChannel: "chan-2" },
 				],

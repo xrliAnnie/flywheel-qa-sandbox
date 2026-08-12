@@ -183,6 +183,20 @@ for c in "${checks[@]}"; do
 done
 [[ "$B1_OK" == "1" ]] && pass "B1: --extra-lead → exactly 2 leads, all fields correct"
 
+# ── FLY-1726: the QA registry, not the manifest, owns Discord identity ──
+IDENTITY_EXTRAS='[{"slotId":3,"agentId":"flywheel-test-3","botAppId":"33333333333333333","tokenEnvVar":"TEST_BOT_TOKEN_3","chatChannel":"chan-3","role":"lead","identitySource":"ops-lead","deptLabel":"Ops-Test","labels":["Ops-Test"],"discordStateDir":"/tmp/qa/extra-leads/slot-3/discord-state"}]'
+identity_out="$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 lead '["Product-Test"]' "$IDENTITY_EXTRAS" "22222222222222222" "/tmp/qa/discord-state")"
+if jq -e '
+  .[0].leads[0].botUserId == "22222222222222222"
+  and .[0].leads[0].discordStateDir == "/tmp/qa/discord-state"
+  and .[0].leads[1].botUserId == "33333333333333333"
+  and .[0].leads[1].discordStateDir == "/tmp/qa/extra-leads/slot-3/discord-state"
+' >/dev/null 2>&1 <<<"$identity_out"; then
+  pass "FLY-1726 B1: main and extra QA Leads carry canonical bot/state identity in registry"
+else
+  fail "FLY-1726 B1: QA registry omitted canonical botUserId/discordStateDir"
+fi
+
 # ── B2: --lead-label narrows main labels only ──
 out="$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 lead '["Product-Test"]' '[]')"
 if jq -e '.[0].leads[0].match.labels == ["Product-Test"] and (.[0].leads | length == 1)' >/dev/null 2>&1 <<<"$out"; then
@@ -481,6 +495,12 @@ grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag no
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
+if grep -q -- '--arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv' "$DEPLOY"; then
+  S1_OK=0; fail "FLY-1726 S1: QA v2 manifest still declares botTokenEnv"
+fi
+if grep -q '"FLYWHEEL_PROJECTS=$(jq -c' "$DEPLOY"; then
+  S1_OK=0; fail "FLY-1726 S1: QA Lead launch environment still projects raw registry JSON"
+fi
 # The old inline builder must be GONE (single source) — its distinctive line:
 if grep -q 'match: { labels: \["\*"\] }' "$DEPLOY"; then
   S1_OK=0; fail "S1: old inline FLYWHEEL_PROJECTS builder still present (double source)"

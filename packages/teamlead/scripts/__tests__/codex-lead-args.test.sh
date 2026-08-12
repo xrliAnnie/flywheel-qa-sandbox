@@ -53,6 +53,12 @@ if [ "$code" -ne 0 ] && printf '%s' "$r" | grep -qi "Unexpected argument"; then
   pass "rejects an extra positional argument"
 else fail "extra positional should be rejected (got: $r)"; fi
 
+# Token selector is registry-owned; an argv override would recreate a second identity source.
+r=$(run good-lead "$TMP/project" proj --bot-token-env PRODUCT_TOKEN); code=${r%%|*}
+if [ "$code" -ne 0 ] && printf '%s' "$r" | grep -qi "registry-owned"; then
+  pass "rejects legacy --bot-token-env identity override"
+else fail "--bot-token-env should be rejected as a second identity source (got: $r)"; fi
+
 echo ""
 echo "[codex-lead-args] passed=$PASSED failed=$FAILED"
 [ "$FAILED" -eq 0 ]

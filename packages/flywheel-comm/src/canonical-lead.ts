@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import {
+	compileLeadIdentityRows,
+	type IdentityLeadRow,
+} from "./lead-identity.js";
 
 export type LeadBackendId = "claude-code" | "codex-app-server";
 
@@ -24,6 +28,7 @@ export type CanonicalLeadResolution =
 			projectsDigest: string;
 	  }
 	| {
+			/** Retained only for wire compatibility; strict FLY-1726 validation rejects it as source_error. */
 			status: "ambiguous";
 			leadId: string;
 			projects: string[];
@@ -36,65 +41,6 @@ export interface CanonicalProject {
 	leads: CanonicalLeadConfig[];
 }
 
-function errorMessage(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
-
-function parseProjects(raw: string): CanonicalProject[] {
-	const parsed = JSON.parse(raw) as unknown;
-	const candidates =
-		parsed !== null &&
-		typeof parsed === "object" &&
-		!Array.isArray(parsed) &&
-		"projects" in parsed
-			? (parsed as { projects: unknown }).projects
-			: parsed;
-	if (!Array.isArray(candidates)) {
-		throw new Error("projects.json must be an array or {projects: array}");
-	}
-	return candidates.map((candidate, projectIndex) => {
-		if (candidate === null || typeof candidate !== "object") {
-			throw new Error(`projects[${projectIndex}] must be an object`);
-		}
-		const project = candidate as Record<string, unknown>;
-		if (
-			typeof project.projectName !== "string" ||
-			project.projectName.length === 0
-		) {
-			throw new Error(
-				`projects[${projectIndex}].projectName must be non-empty`,
-			);
-		}
-		if (!Array.isArray(project.leads)) {
-			throw new Error(`projects[${projectIndex}].leads must be an array`);
-		}
-		const leads = project.leads.map((candidateLead, leadIndex) => {
-			if (candidateLead === null || typeof candidateLead !== "object") {
-				throw new Error(
-					`projects[${projectIndex}].leads[${leadIndex}] must be an object`,
-				);
-			}
-			const lead = candidateLead as Record<string, unknown>;
-			if (typeof lead.agentId !== "string" || lead.agentId.length === 0) {
-				throw new Error(
-					`projects[${projectIndex}].leads[${leadIndex}].agentId must be non-empty`,
-				);
-			}
-			if (
-				lead.backend !== undefined &&
-				lead.backend !== "claude-code" &&
-				lead.backend !== "codex-app-server"
-			) {
-				throw new Error(
-					`projects[${projectIndex}].leads[${leadIndex}].backend is invalid`,
-				);
-			}
-			return lead as CanonicalLeadConfig;
-		});
-		return { projectName: project.projectName, leads };
-	});
-}
-
 export type CanonicalLeadCatalog =
 	| {
 			status: "ok";
@@ -104,31 +50,45 @@ export type CanonicalLeadCatalog =
 	  }
 	| { status: "source_error"; error: string };
 
-/** Parse the canonical projects source once for fleet-wide diagnostics. */
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function digest(raw: string): string {
+	return createHash("sha256").update(raw).digest("hex");
+}
+
+/**
+ * Compatibility facade for FLY-1309 callers. Parsing and identity validation
+ * are delegated to the strict FLY-1726 compiler so there is no second, looser
+ * registry authority.
+ */
 export function readCanonicalLeadCatalog(
 	projectsPath: string,
 	deps: { readFile?: (path: string) => string } = {},
 ): CanonicalLeadCatalog {
-	let raw: string;
 	try {
-		raw = (deps.readFile ?? ((path) => readFileSync(path, "utf8")))(
+		const rawText = (deps.readFile ?? ((path) => readFileSync(path, "utf8")))(
 			projectsPath,
 		);
-		const projects = parseProjects(raw);
-		const counts = new Map<string, number>();
-		for (const project of projects) {
-			for (const lead of project.leads) {
-				counts.set(lead.agentId, (counts.get(lead.agentId) ?? 0) + 1);
+		const projectsDigest = digest(rawText);
+		const rows = compileLeadIdentityRows(JSON.parse(rawText), {
+			projectsDigest,
+		});
+		const projectsByName = new Map<string, CanonicalProject>();
+		for (const row of rows) {
+			let project = projectsByName.get(row.identity.projectName);
+			if (project === undefined) {
+				project = { projectName: row.identity.projectName, leads: [] };
+				projectsByName.set(row.identity.projectName, project);
 			}
+			project.leads.push(row.lead as IdentityLeadRow as CanonicalLeadConfig);
 		}
 		return {
 			status: "ok",
-			projects,
-			projectsDigest: createHash("sha256").update(raw).digest("hex"),
-			ambiguousLeadIds: [...counts.entries()]
-				.filter(([, count]) => count > 1)
-				.map(([leadId]) => leadId)
-				.sort(),
+			projects: [...projectsByName.values()],
+			projectsDigest,
+			ambiguousLeadIds: [],
 		};
 	} catch (error) {
 		return { status: "source_error", error: errorMessage(error) };
@@ -141,8 +101,7 @@ export function resolveCanonicalLead(
 ): CanonicalLeadResolution {
 	const catalog = readCanonicalLeadCatalog(input.projectsPath, deps);
 	if (catalog.status === "source_error") return catalog;
-	const { projects, projectsDigest } = catalog;
-	const matches = projects.flatMap((project) =>
+	const matches = catalog.projects.flatMap((project) =>
 		project.leads
 			.filter((lead) => lead.agentId === input.leadId)
 			.map((lead) => ({ projectName: project.projectName, lead })),
@@ -152,15 +111,7 @@ export function resolveCanonicalLead(
 			status: "valid_but_lead_absent",
 			leadId: input.leadId,
 			...(input.projectHint ? { projectHint: input.projectHint } : {}),
-			projectsDigest,
-		};
-	}
-	if (matches.length > 1) {
-		return {
-			status: "ambiguous",
-			leadId: input.leadId,
-			projects: matches.map((match) => match.projectName).sort(),
-			projectsDigest,
+			projectsDigest: catalog.projectsDigest,
 		};
 	}
 	const match = matches[0]!;
@@ -169,7 +120,7 @@ export function resolveCanonicalLead(
 		canonicalProject: match.projectName,
 		leadKey: `${match.projectName}-${input.leadId}`,
 		lead: match.lead,
-		projectsDigest,
+		projectsDigest: catalog.projectsDigest,
 	};
 }
 

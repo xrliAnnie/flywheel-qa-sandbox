@@ -21,6 +21,7 @@ import {
 
 const NOW = Date.parse("2026-07-16T12:00:00.000Z");
 const RAW_CLAIM = "runtime-only-carrier-capability";
+const IDENTITY_DIGEST = "a".repeat(64);
 
 describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 	let dir: string;
@@ -87,6 +88,7 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 		publishCarrierRuntimeAssertion({
 			env,
 			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			rawCarrierInstanceId: RAW_CLAIM,
 			pid: 777,
 			lstart: "carrier-start",
@@ -107,6 +109,7 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 		publishCarrierRuntimeAssertion({
 			env,
 			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			rawCarrierInstanceId: RAW_CLAIM,
 			pid: 777,
 			lstart: "carrier-start",
@@ -123,6 +126,7 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 			collectedAt: new Date(NOW).toISOString(),
 			leads: {
 				"flywheel-codex-lead": {
+					identityDigest: IDENTITY_DIGEST,
 					pid: 777,
 					lstart: "carrier-start",
 					instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
@@ -135,6 +139,7 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 		publishCarrierRuntimeAssertion({
 			env,
 			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			rawCarrierInstanceId: RAW_CLAIM,
 			pid: 777,
 			lstart: "carrier-start",
@@ -156,6 +161,7 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 		publishCarrierRuntimeAssertion({
 			env,
 			leadKey: "other-project-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			rawCarrierInstanceId: RAW_CLAIM,
 			pid: 777,
 			lstart: "carrier-start",

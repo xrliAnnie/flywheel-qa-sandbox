@@ -39,14 +39,13 @@ if [ ! -f "${RUNTIME}" ]; then
 	exit 1
 fi
 
-# ── Mufasa identity (from ~/.flywheel/projects.json: growth / mufasa-lead) ──
-export FLYWHEEL_LEAD_ID="mufasa-lead"
-export FLYWHEEL_PROJECT_NAME="growth"
+# ── Mufasa identity: selectors in launcher, coordinates from registry ──
+. "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
+canonical_lead_identity_resolve "growth" "mufasa-lead"
 # FLY-1597 audit finding: the codex lead runtime now hard-requires FLYWHEEL_COMM_DB
 # (same derivation claude-lead.sh:481 uses). These launchers predate that change —
 # Mufasa + codex-infra-bot crash-looped 205 times each on "missing required env".
 export FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-${HOME}/.flywheel/comm/${FLYWHEEL_PROJECT_NAME}/comm.db}"
-export FLYWHEEL_LEAD_BOT_USER_ID="1499895683287748679"     # Mufasa's Discord bot
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" # #mufasa
 # #leads-roundtable — discord_send "roundtable" alias + FLY-267 cross-dept inbound.
 export FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-1512578695468941333}"
@@ -81,18 +80,15 @@ if ! assemble_full_access_governance "${FLYWHEEL_LEAD_ID}" "${TEAMLEAD_ROOT}/lea
 	exit 1
 fi
 
-# ── secrets / Discord (Claude-equal). The runtime posts to Discord directly (direct
-#     outbound, no Bridge), so DISCORD_BOT_TOKEN is the only secret this launcher
-#     sets. The model shell's flywheel-comm uses TEAMLEAD_API_TOKEN — sourced from
+# ── secrets / Discord (Claude-equal). The canonical resolver has already selected
+#     and projected DISCORD_BOT_TOKEN. The model shell's flywheel-comm uses
+#     TEAMLEAD_API_TOKEN — sourced from
 #     ~/.flywheel/.env by the wrapper, the SAME name a Claude pane uses (NOT the
 #     FLYWHEEL_API_TOKEN alias). buildFullAccessEnv (H-1) bounds the app-server child
 #     to {Claude-pane env ∪ gh-auth} — a full-access Lead never gets MORE secrets in
 #     its env than a Claude pane. gh authenticates via the on-disk ~/.config/gh
 #     keyring (HOME), the SAME path Claude uses — NO GH_TOKEN required in the env. ──
-if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" = "1" ]; then
-	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
-else
-	export DISCORD_BOT_TOKEN="${MUFASA_BOT_TOKEN:?MUFASA_BOT_TOKEN must be set}"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-}" != "1" ]; then
 	if [ -z "${FLYWHEEL_CODEX_BIN}" ]; then echo "codex CLI not found on PATH" >&2; exit 1; fi
 	if [ ! -d "${CODEX_HOME}" ]; then echo "CODEX_HOME ${CODEX_HOME} missing" >&2; exit 1; fi
 	if [ ! -d "${FLYWHEEL_CODEX_LEAD_PROJECT_DIR}" ]; then echo "project dir ${FLYWHEEL_CODEX_LEAD_PROJECT_DIR} missing" >&2; exit 1; fi

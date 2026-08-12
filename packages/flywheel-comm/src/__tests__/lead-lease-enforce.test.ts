@@ -13,7 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { respond } from "../commands/respond.js";
 import { send } from "../commands/send.js";
 import { CommDB } from "../db.js";
+import { resolveLeadIdentity } from "../lead-identity.js";
 import {
+	authorizeSystemWrite,
 	ensureLeaseEpisodeMaterialized,
 	hashCarrierInstanceId,
 	LeadLeaseDeniedError,
@@ -74,39 +76,88 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				},
 			]),
 		);
+		const identity = resolveLeadIdentity({
+			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
+			projectName: "flywheel",
+			leadId: "eng-lead",
+		});
+		env.FLYWHEEL_PROJECT_NAME = identity.projectName;
+		env.FLYWHEEL_LEAD_KEY = identity.leadKey;
+		env.FLYWHEEL_LEAD_ROLE = identity.role;
+		env.FLYWHEEL_LEAD_BACKEND = identity.backend;
+		env.FLYWHEEL_LEAD_IDENTITY_DIGEST = identity.identityDigest;
+		env.FLYWHEEL_LEAD_PROJECTS_DIGEST = identity.projectsDigest;
+		env.DISCORD_STATE_DIR = identity.discordStateDir;
+		env.DISCORD_EXPECTED_BOT_USER_ID = identity.botUserId ?? "";
 	}
 
-	it("lets a canonically configured v2 Claude carrier write without a legacy lease", async () => {
+	it.each([
+		["off", false],
+		["audit_only", false],
+		["enforce", false],
+		["enforce", true],
+	] as const)(
+		"hard-rejects registry identity drift in %s mode (bypass=%s)",
+		async (mode, bypass) => {
+			setMode(mode);
+			if (mode !== "off") bindLease();
+			if (bypass) env.FLYWHEEL_LEAD_LEASE_BYPASS = "1";
+			writeFileSync(
+				env.FLYWHEEL_PROJECTS_FILE!,
+				JSON.stringify([
+					{
+						projectName: "flywheel",
+						leads: [{ agentId: "eng-lead", companion: true }],
+					},
+				]),
+			);
+
+			await expect(
+				send({
+					fromAgent: "eng-lead",
+					toAgent: "runner-1",
+					content: "stale identity",
+					dbPath,
+					env,
+					authorizationDeps,
+				}),
+			).rejects.toMatchObject({ reason: "identity_digest_mismatch" });
+			expect(instructions()).toEqual([]);
+		},
+	);
+
+	it("requires a bound lease even for a canonically configured v2 Claude carrier", async () => {
 		writeProjects("claude-code", "v2");
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
 
-		await send({
-			fromAgent: "eng-lead",
-			toAgent: "runner-1",
-			content: "launchd-owned carrier",
-			dbPath,
-			env,
-			authorizationDeps,
-		});
-
-		expect(instructions()).toHaveLength(1);
-		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-1",
+				content: "launchd-owned carrier",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toMatchObject({ reason: "missing_or_mismatched_claim" });
+		expect(instructions()).toEqual([]);
 	});
 
-	it("treats absent Claude carrier config as canonical v2", async () => {
+	it("does not infer lease authority from an absent Claude carrier config", async () => {
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
-		await send({
-			fromAgent: "eng-lead",
-			toAgent: "runner-1",
-			content: "canonical default carrier",
-			dbPath,
-			env,
-			authorizationDeps,
-		});
-		expect(instructions()).toHaveLength(1);
-		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-1",
+				content: "canonical default carrier",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toMatchObject({ reason: "missing_or_mismatched_claim" });
+		expect(instructions()).toEqual([]);
 	});
 
 	it("does not revive an explicitly retired v1 config", async () => {
@@ -140,6 +191,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			leadKey: "flywheel-eng-lead",
 			project: "flywheel",
 			leadId: "eng-lead",
+			identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			supervisorPid: 111,
 			supervisorStart: "supervisor-start",
 			acquiredBy: "test",
@@ -150,6 +202,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			generation,
 			expectedSupervisorPid: 111,
 			expectedSupervisorStart: "supervisor-start",
+			identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			panePid: 222,
 			paneStart: "pane-start",
 		});
@@ -190,20 +243,59 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		});
 	});
 
-	it("keeps a claim-free v2 carrier compatible for ordinary writes", async () => {
+	it("rejects a legacy NULL identity digest row until the Lead restarts and reacquires", async () => {
+		setMode("enforce");
+		const store = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!, {
+			processAliveWithStart: () => false,
+		});
+		store.acquire({
+			leadKey: "flywheel-eng-lead",
+			project: "flywheel",
+			leadId: "eng-lead",
+			supervisorPid: 111,
+			supervisorStart: "legacy-supervisor",
+			acquiredBy: "legacy",
+		});
+		store.bind({
+			leadKey: "flywheel-eng-lead",
+			generation: 1,
+			expectedSupervisorPid: 111,
+			expectedSupervisorStart: "legacy-supervisor",
+			panePid: 222,
+			paneStart: "legacy-pane",
+		});
+		store.close();
+		env.FLYWHEEL_LEAD_LEASE_KEY = "flywheel-eng-lead";
+		env.FLYWHEEL_LEAD_GENERATION = "1";
+
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-1",
+				content: "legacy row",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toMatchObject({ reason: "missing_identity_digest" });
+	});
+
+	it("rejects a claim-free v2 carrier for ordinary writes", async () => {
 		writeProjects("claude-code", "v2");
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_CARRIER = "v2";
 
-		await send({
-			fromAgent: "eng-lead",
-			toAgent: "runner-1",
-			content: "old v2 body",
-			dbPath,
-			env,
-			authorizationDeps,
-		});
-		expect(instructions()).toHaveLength(1);
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-1",
+				content: "old v2 body",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toMatchObject({ reason: "missing_or_mismatched_claim" });
+		expect(instructions()).toEqual([]);
 	});
 
 	it("routes a degraded v2 marker through audit_only but fails closed in enforce", async () => {
@@ -314,6 +406,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			leadKey: "flywheel-eng-lead",
 			project: "flywheel",
 			leadId: "eng-lead",
+			identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			supervisorPid: 333,
 			supervisorStart: "next-supervisor-start",
 			acquiredBy: "test",
@@ -324,6 +417,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			generation: 2,
 			expectedSupervisorPid: 333,
 			expectedSupervisorStart: "next-supervisor-start",
+			identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			panePid: 444,
 			paneStart: "next-pane-start",
 		});
@@ -364,7 +458,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(existsSync(env.FLYWHEEL_ALERT_QUEUE_DIR!)).toBe(false);
 	});
 
-	it("off mode keeps the legacy Bridge request envelope byte-compatible", async () => {
+	it("off mode still forwards the canonical identity digest to the Bridge", async () => {
 		setMode("off");
 		env.TEAMLEAD_API_TOKEN = "token";
 		const db = new CommDB(dbPath);
@@ -396,6 +490,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				leadId: "eng-lead",
 				answer: '{"approved":false}',
 				executionId: "runner-1",
+				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
 			}),
 		);
 		expect(existsSync(env.FLYWHEEL_LEAD_LEASE_DB!)).toBe(false);
@@ -459,13 +554,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		).rejects.toMatchObject({ reason: "claimed_lead_mismatch" });
 		expect(instructions()).toEqual([]);
 		const lease = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!);
-		expect(lease.listPendingAudit()).toEqual([
-			expect.objectContaining({
-				leadKey: "flywheel-eng-lead",
-				event: "blocked",
-				detail: expect.stringContaining("claimed_lead_mismatch"),
-			}),
-		]);
+		expect(lease.listPendingAudit()).toEqual([]);
 		lease.close();
 	});
 
@@ -593,18 +682,25 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(readdirSync(env.FLYWHEEL_ALERT_QUEUE_DIR!)).toHaveLength(2);
 	});
 
-	it("does not protect a valid but unconfigured non-Lead caller", async () => {
+	it("does not downgrade an unconfigured caller to an unprotected Lead write", async () => {
 		setMode("enforce");
 		delete env.FLYWHEEL_LEAD_ID;
-		await send({
-			fromAgent: "bridge",
-			toAgent: "runner-1",
-			content: "internal",
-			dbPath,
-			env,
-			authorizationDeps,
-		});
-		expect(instructions()).toHaveLength(1);
+		delete env.FLYWHEEL_LEAD_IDENTITY_DIGEST;
+		await expect(
+			send({
+				fromAgent: "bridge",
+				toAgent: "runner-1",
+				content: "internal",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toMatchObject({ reason: "identity_row_missing" });
+		expect(instructions()).toEqual([]);
+	});
+
+	it("keeps system authorization on an explicit in-process API", () => {
+		expect(authorizeSystemWrite()).toEqual({ disposition: "system" });
 	});
 
 	it("allows a matching healthy Codex carrier but denies a same-identity intruder", async () => {
@@ -621,6 +717,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 					"flywheel-eng-lead": {
 						leadKey: "flywheel-eng-lead",
 						backend: "codex-app-server",
+						identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
 						pid: process.pid,
 						lstart: writerStart,
 						instanceDigest: hashCarrierInstanceId(rawClaim),
@@ -635,6 +732,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				schemaVersion: 1,
 				contractVersion: 1,
 				leadKey: "flywheel-eng-lead",
+				identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
 				instanceDigest: hashCarrierInstanceId(rawClaim),
 				pid: process.pid,
 				lstart: writerStart,
@@ -693,6 +791,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 							"flywheel-eng-lead": {
 								leadKey: "flywheel-eng-lead",
 								backend: "codex-app-server",
+								identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
 								pid: process.pid,
 								lstart: writerStart,
 								instanceDigest: hashCarrierInstanceId(
@@ -760,6 +859,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 					"flywheel-eng-lead": {
 						leadKey: "flywheel-eng-lead",
 						backend: "codex-app-server",
+						identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
 						pid: process.pid,
 						lstart: writerStart,
 						instanceDigest: hashCarrierInstanceId(rawClaim),
@@ -883,6 +983,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 					"flywheel-eng-lead": {
 						leadKey: "flywheel-eng-lead",
 						backend: "codex-app-server",
+						identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
 						pid: process.pid,
 						lstart: writerStart,
 						instanceDigest: hashCarrierInstanceId(rawClaim),

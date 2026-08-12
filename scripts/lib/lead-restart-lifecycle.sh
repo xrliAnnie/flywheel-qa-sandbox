@@ -294,14 +294,14 @@ lead_restart_write_replacement_marker() {
       leadId: .leadId,
       projectDir: .projectDir,
       projectName: .projectName,
-      botTokenEnv: .botTokenEnv,
+      projectsFile: .projectsFile,
       leadBackend: {backendId: (.leadBackend.backendId // "claude-code")}
     }
     | select(
         (.leadId | type == "string" and length > 0)
         and (.projectDir | type == "string" and length > 0)
         and (.projectName | type == "string" and length > 0)
-        and (.botTokenEnv | type == "string" and length > 0)
+        and (.projectsFile | type == "string" and length > 0)
         and (.leadBackend.backendId | type == "string" and length > 0)
       )' "$LEAD_RESTART_MANIFEST_FILE" 2>/dev/null)" || return 1
   [[ "$LEAD_RESTART_PLIST_DIGEST" =~ ^[0-9a-f]{64}$ ]] || return 1

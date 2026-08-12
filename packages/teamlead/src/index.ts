@@ -24,6 +24,14 @@ async function main() {
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
+	const defaultLeadMatches = projects.flatMap((project) =>
+		project.leads.filter((lead) => lead.agentId === config.defaultLeadAgentId),
+	);
+	if (defaultLeadMatches.length !== 1) {
+		throw new Error(
+			`TEAMLEAD_DEFAULT_LEAD_AGENT must resolve to exactly one canonical Lead (got ${defaultLeadMatches.length} matches for ${config.defaultLeadAgentId})`,
+		);
+	}
 
 	// CIPHER: create writer + inject notification callback (advisory — bridge starts without it)
 	let cipherWriter: CipherWriter | undefined;

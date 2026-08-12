@@ -43,6 +43,12 @@ export function createLeadLeaseSelfCheckRouter(
 		if (typeof body?.projectName === "string" && body.projectName.length > 0) {
 			env.FLYWHEEL_PROJECT_NAME = body.projectName;
 		}
+		if (
+			typeof body?.identityDigest === "string" &&
+			body.identityDigest.length > 0
+		) {
+			env.FLYWHEEL_LEAD_IDENTITY_DIGEST = body.identityDigest;
+		}
 
 		try {
 			const validation = validateLeadCarrierAuthorization(

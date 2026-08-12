@@ -1088,10 +1088,15 @@ MAIN_LABELS_JSON='["*"]'
 if [[ -n "$LEAD_LABEL" ]]; then
   MAIN_LABELS_JSON=$(jq -cn --arg l "$LEAD_LABEL" '[$l]')
 fi
+EXTRA_LEADS_JSON=$(jq -c --arg root "${SLOT_DIR}/extra-leads" '
+  map(. + {
+    discordStateDir: ($root + "/slot-" + (.slotId | tostring) + "/discord-state")
+  })' <<<"$EXTRA_LEADS_JSON")
 FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
   "$TEST_PROJECT_NAME" "$HOST_REPO" "$SANDBOX_SLUG" "$AGENT_ID" \
   "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" "$SLOT_ROLE" \
-  "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON")
+  "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON" "$BOT_ID" \
+  "${SLOT_DIR}/discord-state")
 
 # FLY-529: when --alerts is on, inject the test alert channel + token env into
 # the test lead's projects entry so the SHELL-side lead-alert.sh (which resolves
@@ -1166,11 +1171,8 @@ qa_slot_start_lead() {
   launch_env=$(qa_slot_launch_env_json \
     "DISCORD_GUILD_ID=${GUILD_ID}" \
     "BRIDGE_URL=http://localhost:${SLOT_PORT}" \
-    "DISCORD_STATE_DIR=${discord_state}" \
     "AGENT_SOURCE=${identity}" \
-    "FLYWHEEL_LEAD_ROLE=${role}" \
     "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}" \
-    "FLYWHEEL_PROJECTS=$(jq -c . <<<"$FLYWHEEL_PROJECTS")" \
     "FLYWHEEL_PROJECTS_FILE=${projects}" \
     "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}" \
     "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
@@ -1178,11 +1180,11 @@ qa_slot_start_lead() {
     "$@") || return 1
   jq -n \
     --arg leadId "$agent" --arg projectDir "$HOST_REPO" \
-    --arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv "$token_env" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg projectsFile "$projects" \
     --arg workspace "$workspace" --arg mcpExclude "$mcp_exclude" \
     --argjson chromeEnabled "$chrome_enabled" --argjson launchEnvironment "$launch_env" \
     '{leadId:$leadId,projectDir:$projectDir,projectName:$projectName,
-      botTokenEnv:$botTokenEnv,workspace:$workspace,mcpExclude:$mcpExclude,
+      projectsFile:$projectsFile,workspace:$workspace,mcpExclude:$mcpExclude,
       chromeEnabled:$chromeEnabled,launchEnvironment:$launchEnvironment}' \
     > "$manifest" || return 1
   chmod 600 "$manifest"

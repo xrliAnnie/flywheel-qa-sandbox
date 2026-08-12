@@ -197,7 +197,7 @@ value = {
                 "leadId": "eng-lead",
                 "projectDir": "/tmp/project",
                 "projectName": "flywheel",
-                "botTokenEnv": "DISCORD_BOT_TOKEN",
+                "projectsFile": "/tmp/projects.json",
                 "leadBackend": {"backendId": "claude-code"},
             },
         },

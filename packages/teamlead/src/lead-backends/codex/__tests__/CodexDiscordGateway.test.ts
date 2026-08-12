@@ -9,8 +9,14 @@ const silent = { warn: vi.fn() };
 
 class FakeSource implements DiscordInboundSource {
 	handler?: (m: DiscordInboundMessage) => boolean;
+	authenticatedBotUserIds: string[] = [];
+	authError?: Error;
 	started = false;
 	stopped = false;
+	async assertAuthenticatedBotUser(expectedBotUserId: string) {
+		this.authenticatedBotUserIds.push(expectedBotUserId);
+		if (this.authError) throw this.authError;
+	}
 	onMessage(h: (m: DiscordInboundMessage) => boolean) {
 		this.handler = h;
 	}
@@ -190,14 +196,14 @@ describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
 		expect(complete).not.toHaveBeenCalled();
 	});
 
-	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", () => {
+	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", async () => {
 		const { source, gw, router } = make({
 			// route replies for the cross-dept channel back to it; chat → undefined
 			resolveReplyChannelId: (m: DiscordInboundMessage) =>
 				m.channelId === "round-1" ? m.channelId : undefined,
 			channelIds: ["chat-1", "round-1"],
 		});
-		void gw.start();
+		await gw.start();
 		source.emit(msg({ id: "x1", channelId: "round-1", content: "yo" }));
 		source.emit(msg({ id: "x2", channelId: "chat-1", content: "hi" }));
 		expect(router.submits[0]).toMatchObject({
@@ -207,9 +213,9 @@ describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
 		expect(router.submits[1].replyChannelId).toBeUndefined(); // chat → default
 	});
 
-	it("no resolveReplyChannelId → replyChannelId always undefined (byte-compat)", () => {
+	it("no resolveReplyChannelId → replyChannelId always undefined (byte-compat)", async () => {
 		const { source, gw, router } = make();
-		void gw.start();
+		await gw.start();
 		source.emit(msg({ id: "y1", content: "hi" }));
 		expect(router.submits[0].replyChannelId).toBeUndefined();
 	});
@@ -393,14 +399,25 @@ describe("CodexDiscordGateway — robustness", () => {
 });
 
 describe("CodexDiscordGateway — lifecycle", () => {
-	it("start wires the handler + starts the source; emitted messages route", async () => {
+	it("asserts the authenticated bot before wiring the handler or starting the source", async () => {
 		const { gw, source, router } = make();
 		await gw.start();
+		expect(source.authenticatedBotUserIds).toEqual(["self-bot"]);
 		expect(source.started).toBe(true);
 		source.emit(msg({ id: "live", content: "via emit" }));
 		expect(router.submits).toEqual([
 			{ idempotencyKey: "live", source: "discord", payload: "via emit" },
 		]);
+	});
+
+	it("fails closed before handler registration and polling on bot identity mismatch", async () => {
+		const { gw, source } = make();
+		source.authError = new Error("identity_bot_login_mismatch");
+
+		await expect(gw.start()).rejects.toThrow("identity_bot_login_mismatch");
+		expect(source.authenticatedBotUserIds).toEqual(["self-bot"]);
+		expect(source.handler).toBeUndefined();
+		expect(source.started).toBe(false);
 	});
 
 	it("start is idempotent; stop stops the source", async () => {

@@ -1375,14 +1375,41 @@ restart_lead() {
     VERIFIED_LEAD_PID=""
     VERIFIED_LEAD_START=""
 
-    local lead_id project_dir project_name bot_token_env
+    local lead_id project_dir project_name projects_file canonical_identity bot_token_env
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
     project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
     project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
-    bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' "$manifest") || return 1
+    projects_file=$(jq -er --arg fallback "${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/projects.json" \
+        '.projectsFile // $fallback | select(type == "string" and length > 0)' "$manifest") || return 1
 
-    # All preflight checks happen before bootout, TERM, or any other state
-    # change. Invalid indirect env names must not reach ${!name}.
+    # FLY-1726: the manifest is a selector, never a second identity source.
+    # Resolve the canonical row and its token selector before bootout, TERM, or
+    # any other state change so a broken identity cannot turn a healthy Lead
+    # into an offline one. The wrapper repeats this at actual process birth.
+    if jq -e '
+        has("botTokenEnv") or has("botUserId") or has("discordStateDir")
+        or has("identityDigest") or has("projectsDigest") or has("leadKey")
+        or has("role") or has("backend")
+      ' "$manifest" >/dev/null 2>&1; then
+        log "ERROR: Lead $lead_id manifest contains forbidden identity fields"
+        return 1
+    fi
+    local identity_cli="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
+    if [[ ! -f "$identity_cli" ]]; then
+        log "ERROR: canonical Lead identity CLI is missing; cannot restart $lead_id"
+        return 1
+    fi
+    canonical_identity=$(node "$identity_cli" lead-identity resolve \
+        --projects-file "$projects_file" \
+        --project "$project_name" \
+        --lead "$lead_id" \
+        --format json) || {
+        log "ERROR: canonical Lead identity resolution failed; cannot restart $lead_id"
+        return 1
+    }
+    bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' \
+        <<<"$canonical_identity") || return 1
+    # Invalid indirect env names must not reach ${!name}.
     if [[ ! "$bot_token_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ -z "${!bot_token_env:-}" ]]; then
         log "ERROR: $bot_token_env is not set or is not a valid env name; cannot restart $lead_id"
         alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
@@ -1429,8 +1456,6 @@ restart_lead() {
     daemon_target="gui/$(id -u)/${daemon_label}"
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
     local plist="${HOME}/Library/LaunchAgents/${daemon_label}.plist"
-    local projects_file="${HOME}/.flywheel/projects.json"
-
     # A plist on disk defines launchd lifecycle ownership even when the job is
     # currently unloaded. This avoids misclassifying an offline daemon as legacy.
     if [[ -f "$plist" || -L "$plist" ]]; then

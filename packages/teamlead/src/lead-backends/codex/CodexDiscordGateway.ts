@@ -65,6 +65,12 @@ export interface DiscordInboundMessage {
  * journal write threw) so the source does NOT advance and re-delivers it (HIGH-4
  * at-least-once: never advance past a message that wasn't durably accepted). */
 export interface DiscordInboundSource {
+	/**
+	 * A2 identity assertion. Implementations must authenticate the configured
+	 * credential and prove that it belongs to this exact Discord bot before any
+	 * message handler is registered or polling begins.
+	 */
+	assertAuthenticatedBotUser(expectedBotUserId: string): Promise<void>;
 	onMessage(handler: (msg: DiscordInboundMessage) => boolean): void;
 	start(): Promise<void>;
 	stop(): Promise<void>;
@@ -169,6 +175,7 @@ export class CodexDiscordGateway {
 
 	async start(): Promise<void> {
 		if (this.started) return;
+		await this.source.assertAuthenticatedBotUser(this.botUserId);
 		this.started = true;
 		this.source.onMessage((msg) => this.handle(msg));
 		await this.source.start();

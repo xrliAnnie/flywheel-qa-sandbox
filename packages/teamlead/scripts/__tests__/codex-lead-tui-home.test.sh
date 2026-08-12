@@ -306,7 +306,8 @@ if [ -f "$GATE_JS" ]; then
       // EXACTLY; the shell now writes the same normalized/base-filtered value.
       const parsed = parseCodexLeadRuntimeConfig({
         FLYWHEEL_LEAD_ID: "mufasa-lead", FLYWHEEL_PROJECT_NAME: "growth",
-        FLYWHEEL_LEAD_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
+        FLYWHEEL_LEAD_KEY: "growth-mufasa-lead", FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+        FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64), DISCORD_EXPECTED_BOT_USER_ID: "999", DISCORD_BOT_TOKEN: "x",
         FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
         FLYWHEEL_CODEX_LEAD_STATE_DIR: "/Users/x/.flywheel/state/codex-lead/mufasa",
         FLYWHEEL_COMM_DB: "/Users/x/.flywheel/comm/growth/comm.db",

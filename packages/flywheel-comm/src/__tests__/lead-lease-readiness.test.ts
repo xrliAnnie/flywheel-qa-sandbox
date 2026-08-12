@@ -17,6 +17,7 @@ import { LeadLeaseModeStore } from "../lead-lease-mode.js";
 
 const NOW = Date.parse("2026-07-16T12:00:00.000Z");
 const CLAIM = "carrier-generation";
+const IDENTITY_DIGEST = "c".repeat(64);
 
 describe("FLY-1309 executable lease readiness", () => {
 	let dir: string;
@@ -88,6 +89,7 @@ describe("FLY-1309 executable lease readiness", () => {
 				"flywheel-codex-lead": {
 					leadKey: "flywheel-codex-lead",
 					backend: "codex-app-server",
+					identityDigest: IDENTITY_DIGEST,
 					pid: 300,
 					lstart: "codex-carrier",
 					instanceDigest: hashCarrierInstanceId(CLAIM),
@@ -98,6 +100,7 @@ describe("FLY-1309 executable lease readiness", () => {
 			schemaVersion: 1,
 			contractVersion: 1,
 			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			instanceDigest: hashCarrierInstanceId(CLAIM),
 			pid: 300,
 			lstart: "codex-carrier",
@@ -197,6 +200,7 @@ describe("FLY-1309 executable lease readiness", () => {
 			schemaVersion: 1,
 			contractVersion: 1,
 			leadKey: "flywheel-codex-lead",
+			identityDigest: IDENTITY_DIGEST,
 			instanceDigest: hashCarrierInstanceId(CLAIM),
 			pid: 300,
 			lstart: "codex-carrier",
@@ -225,6 +229,7 @@ describe("FLY-1309 executable lease readiness", () => {
 					schemaVersion: 1,
 					contractVersion: 1,
 					leadKey: "flywheel-codex-lead",
+					identityDigest: IDENTITY_DIGEST,
 					instanceDigest: hashCarrierInstanceId("old-generation"),
 					pid: 300,
 					lstart: "codex-carrier",
@@ -240,6 +245,7 @@ describe("FLY-1309 executable lease readiness", () => {
 						schemaVersion: 1,
 						contractVersion: 1,
 						leadKey: "flywheel-codex-lead",
+						identityDigest: IDENTITY_DIGEST,
 						instanceDigest: hashCarrierInstanceId(CLAIM),
 						pid: 300,
 						lstart: "codex-carrier",

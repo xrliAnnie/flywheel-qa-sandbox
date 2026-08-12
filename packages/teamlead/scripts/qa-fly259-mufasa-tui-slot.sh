@@ -79,8 +79,9 @@ if [ -n "${MUFASA_BOT_TOKEN:-}" ] && [ "${QA_BOT_TOKEN}" = "${MUFASA_BOT_TOKEN}"
 	echo "[qa-fly259] REFUSING: QA bot token equals production MUFASA_BOT_TOKEN. Use the slot-3 test bot." >&2
 	exit 1
 fi
-export DISCORD_BOT_TOKEN="${QA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
-export FLYWHEEL_LEAD_BOT_USER_ID="${FLYWHEEL_LEAD_BOT_USER_ID:-1493075160025272452}"   # flywheel-test-3 (ops-lead-test)
+# The QA projects registry row owns botUserId and selects TEST_BOT_TOKEN_3;
+# codex-lead.sh resolves it and projects only generic DISCORD_BOT_TOKEN.
+export TEST_BOT_TOKEN_3="${QA_BOT_TOKEN:-DRYRUN_PLACEHOLDER}"
 export FLYWHEEL_LEAD_CHAT_CHANNEL_ID="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-1493080995862413439}" # #ops-lead-test
 
 # ── TUI runtime wiring (mirrors the production launcher, isolated values) ──

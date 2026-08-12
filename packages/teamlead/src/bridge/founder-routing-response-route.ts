@@ -2,6 +2,7 @@ import { type Request, type Response, Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import {
 	authorizeLeadWrite,
+	forwardedLeadAuthorizationEnv,
 	type LeadWriteAuthorizationDeps,
 	type MessageProvenance,
 } from "flywheel-comm/lead-lease";
@@ -20,6 +21,7 @@ interface SessionScope {
 interface LeadRequest {
 	leadId: string;
 	projectName: string;
+	identityDigest: string;
 	leaseClaim?: { leaseKey: string; generation: number };
 	carrierClaim?: string;
 	provenance?: MessageProvenance;
@@ -40,20 +42,16 @@ function requestEnv(
 	input: LeadRequest,
 	base: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-	const env = { ...base };
-	delete env.FLYWHEEL_LEAD_ID;
-	delete env.FLYWHEEL_LEAD_LEASE_KEY;
-	delete env.FLYWHEEL_LEAD_GENERATION;
-	delete env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
-	env.FLYWHEEL_PROJECT_NAME = input.projectName;
-	if (input.leaseClaim) {
-		env.FLYWHEEL_LEAD_LEASE_KEY = input.leaseClaim.leaseKey;
-		env.FLYWHEEL_LEAD_GENERATION = String(input.leaseClaim.generation);
-	}
-	if (input.carrierClaim) {
-		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID = input.carrierClaim;
-	}
-	return env;
+	return forwardedLeadAuthorizationEnv(
+		{
+			claimedLeadId: input.leadId,
+			projectName: input.projectName,
+			identityDigest: input.identityDigest,
+			...(input.leaseClaim ? { leaseClaim: input.leaseClaim } : {}),
+			...(input.carrierClaim ? { carrierClaim: input.carrierClaim } : {}),
+		},
+		base,
+	);
 }
 
 function authorizeRequest(
@@ -101,6 +99,7 @@ export function createFounderRoutingResponseRouter(
 			expectedCheckpoint?: unknown;
 			leaseClaim?: { leaseKey?: unknown; generation?: unknown };
 			carrierClaim?: unknown;
+			identityDigest?: unknown;
 			provenance?: MessageProvenance;
 		};
 		if (
@@ -156,6 +155,8 @@ export function createFounderRoutingResponseRouter(
 			provenance = authorizeRequest(deps, {
 				leadId,
 				projectName,
+				identityDigest:
+					typeof body.identityDigest === "string" ? body.identityDigest : "",
 				...(typeof body.leaseClaim?.leaseKey === "string" &&
 				Number.isSafeInteger(body.leaseClaim.generation) &&
 				(body.leaseClaim.generation as number) > 0

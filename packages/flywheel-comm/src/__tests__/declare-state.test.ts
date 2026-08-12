@@ -10,6 +10,7 @@ import {
 } from "../commands/declare-state.js";
 import { send } from "../commands/send.js";
 import { CommDB } from "../db.js";
+import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 describe("parseDuration (FLY-626)", () => {
 	it("parses s/m/h/d suffixes", () => {
@@ -97,6 +98,7 @@ describe("declareState (FLY-626)", () => {
 			toAgent: "runner-e1",
 			content: "please continue iterating on the report",
 			dbPath: join(tmpDir, "comm.db"),
+			env: createTestLeadIdentityEnvs(tmpDir, ["product-lead"])["product-lead"],
 		});
 		expect(db.getEffectiveDeclaredState("runner-e1", T0)).toBeNull();
 	});

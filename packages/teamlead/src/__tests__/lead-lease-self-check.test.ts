@@ -3,6 +3,7 @@ import { createServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
+import { resolveLeadIdentity } from "flywheel-comm/lead-identity";
 import { hashCarrierInstanceId } from "flywheel-comm/lead-lease";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createLeadLeaseSelfCheckRouter } from "../bridge/lead-lease-self-check.js";
@@ -17,6 +18,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 	let dir: string;
 	let env: NodeJS.ProcessEnv;
 	let server: Server;
+	let identityDigest: string;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-self-check-route-"));
@@ -34,6 +36,11 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 				},
 			]),
 		);
+		identityDigest = resolveLeadIdentity({
+			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
+			projectName: "flywheel",
+			leadId: LEAD_ID,
+		}).identityDigest;
 		writeEvidence("matching");
 		const app = express();
 		app.use(express.json());
@@ -70,6 +77,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 					[LEAD_KEY]: {
 						leadKey: LEAD_KEY,
 						backend: "codex-app-server",
+						identityDigest,
 						pid: 777,
 						lstart: "carrier-start",
 						instanceDigest: hashCarrierInstanceId(
@@ -92,6 +100,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 			const body = JSON.stringify({
 				leadId: LEAD_ID,
 				projectName: "flywheel",
+				identityDigest,
 				carrierClaim: "carrierClaim" in input ? input.carrierClaim : RAW_CLAIM,
 			});
 			return await new Promise<{
@@ -143,6 +152,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 				body: JSON.stringify({
 					leadId: LEAD_ID,
 					projectName: "flywheel",
+					identityDigest,
 					carrierClaim:
 						input && "carrierClaim" in input ? input.carrierClaim : RAW_CLAIM,
 				}),
@@ -173,6 +183,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 			disposition: "carrier_passthrough",
 			leadKey: LEAD_KEY,
 			carrier: {
+				identityDigest,
 				pid: 777,
 				lstart: "carrier-start",
 				instanceDigest: hashCarrierInstanceId(RAW_CLAIM),

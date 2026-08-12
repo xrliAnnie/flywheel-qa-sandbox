@@ -86,7 +86,12 @@ export interface VoiceStoreLike {
 export interface VoiceProjectLike {
 	projectName: string;
 	generalChannel?: string;
-	leads: Array<{ agentId: string; chatChannel: string; botToken?: string }>;
+	leads: Array<{
+		agentId: string;
+		chatChannel: string;
+		botUserId?: string;
+		botToken?: string;
+	}>;
 }
 
 export interface VoiceRouterDeps {
@@ -241,8 +246,7 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 			if (project.generalChannel) scopeChannelIds.add(project.generalChannel);
 			for (const lead of project.leads) {
 				scopeChannelIds.add(lead.chatChannel);
-				const id = botUserIdFromToken(lead.botToken);
-				if (id) leadBotIds.add(id);
+				if (lead.botUserId) leadBotIds.add(lead.botUserId);
 			}
 		}
 		for (const threadId of deps.store.getAllChatThreadIds()) {

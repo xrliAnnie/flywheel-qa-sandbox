@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
+import { resolveLeadIdentity } from "flywheel-comm/lead-identity";
 import {
 	hashCarrierInstanceId,
 	LeadLeaseModeStore,
@@ -52,6 +53,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 	let env: NodeJS.ProcessEnv;
 	let server: Server;
 	let currentQuestionId: string | undefined;
+	let currentIdentityDigest: string;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-bridge-"));
@@ -92,6 +94,11 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 				},
 			]),
 		);
+		currentIdentityDigest = resolveLeadIdentity({
+			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
+			projectName: PROJECT,
+			leadId: LEAD_ID,
+		}).identityDigest;
 	}
 
 	function bindLease(): void {
@@ -102,6 +109,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			leadKey: LEAD_KEY,
 			project: PROJECT,
 			leadId: LEAD_ID,
+			identityDigest: currentIdentityDigest,
 			supervisorPid: 111,
 			supervisorStart: "supervisor-start",
 			acquiredBy: "test",
@@ -109,6 +117,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		lease.bind({
 			leadKey: LEAD_KEY,
 			generation: acquired.generation,
+			identityDigest: currentIdentityDigest,
 			expectedSupervisorPid: 111,
 			expectedSupervisorStart: "supervisor-start",
 			panePid: 222,
@@ -189,6 +198,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			answer: JSON.stringify({ approved: false, feedback: "lease test" }),
 			executionId: "exec-1",
 			leaseClaim: { leaseKey: LEAD_KEY, generation: 1 },
+			identityDigest: currentIdentityDigest,
 			provenance: {
 				writerPid: 999,
 				writerStart: "cli-writer-start",
@@ -248,6 +258,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 					[LEAD_KEY]: {
 						leadKey: LEAD_KEY,
 						backend: "codex-app-server",
+						identityDigest: currentIdentityDigest,
 						pid: 777,
 						lstart: "carrier-start",
 						instanceDigest: hashCarrierInstanceId(rawClaim),
@@ -300,6 +311,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 						[LEAD_KEY]: {
 							leadKey: LEAD_KEY,
 							backend: "codex-app-server",
+							identityDigest: currentIdentityDigest,
 							pid: 777,
 							lstart: "carrier-start",
 							instanceDigest: hashCarrierInstanceId(

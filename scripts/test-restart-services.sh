@@ -1869,6 +1869,9 @@ EOF
 cat > "$BO_SHIMS/node" <<EOF
 #!/bin/bash
 case "\$*" in
+  *"lead-identity resolve"*)
+    printf '%s\n' '{"schemaVersion":1,"leadId":"eng","projectName":"flywheel","leadKey":"flywheel-eng","agentTeamName":"eng","botUserId":"12345678901234567","botTokenEnv":"TEST_BOT_TOKEN","discordStateDir":"$BO_HOME/.claude/channels/discord-eng","backend":"claude-code","role":"dept","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    ;;
   *) echo -n ok ;;
 esac
 EOF
@@ -1955,7 +1958,7 @@ chmod +x \
   "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" \
   "$BO_HOME/.flywheel/bin/update-discord-plugin.sh"
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
-{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
+{"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","projectsFile":"$BO_HOME/.flywheel/projects.json","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
 EOF
 cat > "$BO_HOME/.flywheel/projects.json" <<'EOF'
 [{"projectName":"flywheel","leads":[{"agentId":"eng"}]}]
@@ -2560,7 +2563,8 @@ mkdir -p "$LR_MANIFESTS" "$LR_PLISTS"
 lr_write_manifest() {
     local key="$1" project="$2" lead="$3" backend="${4:-}"
     jq -n --arg project "$project" --arg lead "$lead" --arg backend "$backend" \
-      '{projectName:$project,leadId:$lead,botTokenEnv:"TEST_TOKEN"}
+      --arg projectsFile "$LR_PROJECTS" \
+      '{projectName:$project,leadId:$lead,projectsFile:$projectsFile}
        + (if $backend == "" then {} else {leadBackend:{backendId:$backend}} end)' \
       > "$LR_MANIFESTS/$key.json"
 }

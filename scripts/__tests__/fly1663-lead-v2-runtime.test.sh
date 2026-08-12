@@ -13,6 +13,10 @@ failed=0
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 
+# The wrapper intentionally rejects inherited identity. Keep this harness
+# independent from the resident Runner's own Lead environment.
+unset LEAD_ID FLYWHEEL_LEAD_ID PROJECT_NAME FLYWHEEL_PROJECT_NAME DISCORD_STATE_DIR
+
 # shellcheck source=../lib/lead-address.sh
 source "$ADDRESS_LIB"
 
@@ -32,7 +36,7 @@ export FLYWHEEL_LEAD_V2_PS_BIN="$TMP/bin/ps"
 printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
   > "$TMP/project/.lead/ops-lead/identity.md"
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
-[{"projectName":"demo","projectRoot":"$TMP/project","leads":[{"agentId":"ops-lead","chatChannel":"123456789012345678","match":{"labels":["Operations"]}}]}]
+[{"projectName":"demo","projectRoot":"$TMP/project","generalChannel":"123456789012345678","leads":[{"agentId":"ops-lead","chatChannel":"123456789012345678","match":{"labels":["Operations"]},"botTokenEnv":"OPS_TOKEN","botUserId":"22345678901234567","discordStateDir":"$TMP/discord-state"}]}]
 JSON
 cat > "$TMP/home/.flywheel/.env" <<'ENV'
 OPS_TOKEN=discord-secret
@@ -40,7 +44,7 @@ TEAMLEAD_API_TOKEN=bridge-secret
 FLYWHEEL_COMM_BACKEND=mailbox
 ENV
 cat > "$TMP/manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"launchEnvironment":{"DISCORD_STATE_DIR":"$TMP/discord-state","FLYWHEEL_WRAPPER_ENV_FILE":"$TMP/body.env","FLYWHEEL_LEAD_ROLE":"cos","FLYWHEEL_LEAD_RULES_BUNDLE":"legacy","FLYWHEEL_LEAD_MODEL":"claude-fable-5","FLYWHEEL_LEAD_EFFORT":"max","FLYWHEEL_TEST_PLIST_ONLY":"preserved","USER":"manifest-user","LOGNAME":"manifest-logname"},"unknown":{"keep":true}}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","projectsFile":"$TMP/home/.flywheel/projects.json","workspace":"$TMP/custom-workspace","mcpExclude":"dangerous-mcp,chrome","chromeEnabled":true,"launchEnvironment":{"FLYWHEEL_WRAPPER_ENV_FILE":"$TMP/body.env","FLYWHEEL_LEAD_RULES_BUNDLE":"legacy","FLYWHEEL_LEAD_MODEL":"claude-fable-5","FLYWHEEL_LEAD_EFFORT":"max","FLYWHEEL_TEST_PLIST_ONLY":"preserved","USER":"manifest-user","LOGNAME":"manifest-logname"},"unknown":{"keep":true}}
 JSON
 mkdir -p "$TMP/custom-workspace"
 
@@ -150,6 +154,7 @@ env | sort > "$TMP/server.env"
 TMUX_STUB
 chmod +x "$TMP/home/.local/bin/tmux"
 cat >> "$TMP/body.env" <<'ENV'
+OPS_TOKEN=discord-secret
 FLYWHEEL_LEAD_ROLE=lead
 FLYWHEEL_LEAD_RULES_BUNDLE=bundle
 ENV
@@ -220,7 +225,10 @@ rm -f "$TMP/home/.local/bin/tmux"
 # The Claude child crosses a second env -i boundary inside claude-lead.sh.
 # Its structured dry-run plan is the authoritative projection consumed by the
 # direct-child path. It must carry the OS identity and the v2 carrier marker.
-projects_json="$(<"$TMP/home/.flywheel/projects.json")"
+identity_json="$(node "$ROOT/packages/flywheel-comm/dist/index.js" lead-identity resolve \
+  --projects-file "$TMP/home/.flywheel/projects.json" --project demo --lead ops-lead --format json)"
+identity_digest="$(jq -r '.identityDigest' <<<"$identity_json")"
+projects_digest="$(jq -r '.projectsDigest' <<<"$identity_json")"
 child_plan="$({
   env -i \
     HOME="$TMP/home" \
@@ -230,22 +238,55 @@ child_plan="$({
     FLYWHEEL_LEAD_DRY_RUN=1 \
     FLYWHEEL_LEAD_BODY_V2=1 \
     FLYWHEEL_LEAD_CARRIER=v2 \
-    FLYWHEEL_PROJECTS="$projects_json" \
+    FLYWHEEL_PROJECTS_FILE="$TMP/home/.flywheel/projects.json" \
+    FLYWHEEL_LEAD_ID=ops-lead \
+    LEAD_ID=ops-lead \
+    FLYWHEEL_PROJECT_NAME=demo \
+    PROJECT_NAME=demo \
+    FLYWHEEL_LEAD_KEY=demo-ops-lead \
+    FLYWHEEL_LEAD_ROLE=cos \
+    FLYWHEEL_LEAD_BACKEND=claude-code \
+    DISCORD_STATE_DIR="$TMP/discord-state" \
+    DISCORD_EXPECTED_BOT_USER_ID=22345678901234567 \
+    DISCORD_IDENTITY_MODE=managed \
+    FLYWHEEL_LEAD_IDENTITY_DIGEST="$identity_digest" \
+    FLYWHEEL_LEAD_PROJECTS_DIGEST="$projects_digest" \
+    OPS_TOKEN=fixture-token \
     DISCORD_BOT_TOKEN=fixture-token \
     bash "$ROOT/packages/teamlead/scripts/claude-lead.sh" \
       ops-lead "$TMP/project" demo
 } 2>&1)" || true
 if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$child_plan" \
-    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_CARRIER\tset' <<<"$child_plan"; then
-  pass "Claude child keeps OS login identity and the v2 carrier marker"
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_CARRIER\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_IDENTITY_DIGEST\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tDISCORD_EXPECTED_BOT_USER_ID\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tDISCORD_IDENTITY_MODE\tset' <<<"$child_plan"; then
+  pass "Claude child keeps the complete canonical identity and carrier marker"
 else
   fail "Claude child identity/carrier contract"
   printf '%s\n' "$child_plan"
 fi
 
+set +e
+env -i \
+  HOME="$TMP/home" PATH="$PATH" \
+  FLYWHEEL_LEAD_BODY_V2=1 \
+  FLYWHEEL_LEAD_ID=foreign-lead \
+  FLYWHEEL_PROJECT_NAME=demo \
+  bash "$ROOT/packages/teamlead/scripts/claude-lead.sh" \
+    ops-lead "$TMP/project" demo >"$TMP/a1-conflict.out" 2>&1
+a1_rc=$?
+set -e
+if [ "$a1_rc" -ne 0 ] && grep -qF 'identity_env_conflict' "$TMP/a1-conflict.out"; then
+  pass "Claude A1 rejects a selector/environment chimera before startup"
+else
+  fail "Claude A1 identity conflict guard"
+  cat "$TMP/a1-conflict.out" 2>/dev/null || true
+fi
+
 cat > "$TMP/unsafe-manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"../demo","botTokenEnv":"OPS_TOKEN"}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"../demo","projectsFile":"$TMP/home/.flywheel/projects.json"}
 JSON
 if HOME="$TMP/home" \
   FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
@@ -279,6 +320,7 @@ FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=alert-channel-123
 ENV
 FLY1663_BODY_OUT="$TMP/body.out" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
+  DISCORD_BOT_TOKEN=right-lead-token \
   bash "$TMP/body-fixture/lead-body.sh" "$TMP/manifest.json"
 if jq -e \
     --arg workspace "$TMP/custom-workspace" \
@@ -348,7 +390,7 @@ exec sleep 30
 BODY
   chmod +x "$TMP/live/lead-body.sh"
   cat > "$TMP/live-manifest.json" <<JSON
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN"}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","projectsFile":"$TMP/home/.flywheel/projects.json"}
 JSON
   HOME="$TMP/home" \
     FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \

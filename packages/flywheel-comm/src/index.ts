@@ -34,6 +34,7 @@ import {
 } from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
+import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
@@ -103,6 +104,7 @@ Commands:
   respond   Respond to a runner's question
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
+  lead-identity  Resolve one immutable Lead identity from an explicit registry selector
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
@@ -224,6 +226,9 @@ async function main(): Promise<void> {
 			break;
 		case "send":
 			await runSend(commandArgs);
+			break;
+		case "lead-identity":
+			process.exitCode = await runLeadIdentityCommand(commandArgs);
 			break;
 		case "lead-lease":
 			process.exitCode = await runLeadLeaseCommand(commandArgs);
@@ -375,16 +380,22 @@ async function runAckEvent(args: string[]): Promise<void> {
 			"--token-stdin is required; tokens are never accepted in argv",
 		);
 	}
+	const leadId = values.lead ?? process.env.FLYWHEEL_LEAD_ID?.trim();
+	if (!leadId) {
+		throw new Error(
+			"ACK identity is required: pass --lead or set FLYWHEEL_LEAD_ID",
+		);
+	}
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
 	const receiptId = ackEvent({
 		dbPath,
 		eventSeq,
 		ackToken: readFileSync(0, "utf8").trim(),
-		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+		leadId,
 	});
 	await nudgeLeadInboxBestEffort({
 		bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,
-		leadId: values.lead ?? process.env.FLYWHEEL_LEAD_ID ?? "lead",
+		leadId,
 		project: values.project,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
 	});

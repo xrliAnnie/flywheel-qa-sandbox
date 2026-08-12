@@ -30,7 +30,10 @@ trap 'rm -rf "$T"' EXIT
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
 	FLYWHEEL_CODEX_LEAD_PROJECT_DIR \
-	FLYWHEEL_CODEX_LEAD_SANDBOX FLYWHEEL_COMM_CLI
+	FLYWHEEL_CODEX_LEAD_SANDBOX FLYWHEEL_COMM_CLI FLYWHEEL_LEAD_ID LEAD_ID \
+	FLYWHEEL_PROJECT_NAME PROJECT_NAME FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND \
+	FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
+	DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID FLYWHEEL_LEAD_BOT_USER_ID
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
 # (symlinked) so assemble_full_access_governance resolves founder-only-authority for real.
@@ -43,11 +46,17 @@ printf '// stub\n' > "$T/flywheel-comm/dist/index.js"
 printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
+mkdir -p "$RT/scripts/lib"
+ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$RT/scripts/lib/canonical-lead-identity.sh"
 
 # Mock `node`: dump the env it was exec'd with, then exit 0.
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
 #!/bin/bash
+if [[ " $* " == *" lead-identity resolve "* ]]; then
+  printf '%s\n' "$CANONICAL_JSON"
+  exit 0
+fi
 env > "$ENVDUMP"
 exit 0
 EOF
@@ -58,6 +67,7 @@ run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
 	PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
+		CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_TUI_CWD="$T/proj" FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		MUFASA_BOT_TOKEN=DRY \
 		"$@" /bin/bash "$SUT" >/dev/null 2>&1

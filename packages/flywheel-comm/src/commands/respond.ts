@@ -41,10 +41,6 @@ export async function respond(args: RespondArgs): Promise<void> {
 	try {
 		const question = db.getMessageById(args.questionId);
 		if (!question) throw new Error(`Question not found: ${args.questionId}`);
-		const authorization = authorizeLeadWrite(
-			{ claimedLeadId: args.fromAgent, env },
-			args.authorizationDeps,
-		);
 		if (question.checkpoint && GATED_CHECKPOINTS.has(question.checkpoint)) {
 			if (isReservedApprovalAttribution(args.fromAgent)) {
 				throw new Error(
@@ -53,6 +49,12 @@ export async function respond(args: RespondArgs): Promise<void> {
 						"a Lead cannot respond to an approve_to_ship gate under that name.",
 				);
 			}
+		}
+		const authorization = authorizeLeadWrite(
+			{ claimedLeadId: args.fromAgent, env },
+			args.authorizationDeps,
+		);
+		if (question.checkpoint && GATED_CHECKPOINTS.has(question.checkpoint)) {
 			if (hasApprovalIntent(args.answer)) {
 				throw new Error(
 					"flywheel-comm: lead_ack_rejected — Lead approval cannot resolve a founder-bound gate; only the trusted founder writer may approve.",
@@ -178,6 +180,7 @@ async function routeFounderResponseThroughBridge(opts: {
 		expectedOwner: opts.expectedOwner,
 		expectedCheckpoint: opts.expectedCheckpoint,
 		leaseClaim: opts.authorization.leaseClaim,
+		identityDigest: opts.authorization.identityDigest,
 		provenance: opts.authorization.provenance,
 	};
 	const headers = {
@@ -256,6 +259,7 @@ async function routeThroughBridge(opts: {
 		executionId: opts.executionId,
 		projectName: opts.projectName,
 		leaseClaim: opts.authorization.leaseClaim,
+		identityDigest: opts.authorization.identityDigest,
 		provenance: opts.authorization.provenance,
 	};
 	const headers = {

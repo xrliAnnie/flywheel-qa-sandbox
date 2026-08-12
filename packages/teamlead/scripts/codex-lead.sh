@@ -4,7 +4,7 @@
 # Dormant direct launcher retained for operator QA; production launchd dispatch
 # is Claude wrapper-v2 only. It takes the same positional args as claude-lead.sh:
 #
-#   codex-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>] [--bot-token-env <ENV>]
+#   codex-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]
 #
 # Responsibilities (vendor-neutral bootstrap, plan §3 / §6.7a):
 #   - resolve identity + per-(project,lead) state dir,
@@ -22,22 +22,21 @@ set -euo pipefail
 
 log() { echo "[codex-lead $(date '+%H:%M:%S')] $*" >&2; }
 
-LEAD_ID="${1:?Usage: codex-lead.sh <lead-id> <project-dir> [project-name] [flags]}"
+SELECTED_LEAD_ID="${1:?Usage: codex-lead.sh <lead-id> <project-dir> [project-name] [flags]}"
 PROJECT_DIR="${2:?project-dir required}"
 
 # CR Phase 2a #2: LEAD_ID validation MUST match claude-lead.sh's contract
 # (^[a-z0-9][a-z0-9-]*$ — first char alnum, rejects pure '-' / leading hyphen).
-if [[ ! "$LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-  log "ERROR: Invalid lead-id '${LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
+if [[ ! "$SELECTED_LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  log "ERROR: Invalid lead-id '${SELECTED_LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
   exit 1
 fi
 
 # Parse $3+ exactly like claude-lead.sh: first non-flag = project-name; flags
 # require values; unknown flag / extra positional → ERROR exit (no silent ignore).
 shift 2
-PROJECT_NAME=""
+SELECTED_PROJECT_NAME=""
 SUBDIR=""
-BOT_TOKEN_ENV="DISCORD_BOT_TOKEN"
 while [ $# -gt 0 ]; do
   case "$1" in
     --subdir)
@@ -47,24 +46,26 @@ while [ $# -gt 0 ]; do
       fi
       SUBDIR="$2"; shift 2 ;;
     --bot-token-env)
-      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
-        log "ERROR: --bot-token-env requires an environment variable name."
-        exit 1
-      fi
-      BOT_TOKEN_ENV="$2"; shift 2 ;;
+      log "ERROR: --bot-token-env is registry-owned and may not be overridden by a launcher."
+      exit 1 ;;
     --*)
-      log "ERROR: Unknown flag '$1'. Did you mean --subdir or --bot-token-env?"
+      log "ERROR: Unknown flag '$1'. Did you mean --subdir?"
       exit 1 ;;
     *)
-      if [ -z "$PROJECT_NAME" ]; then
-        PROJECT_NAME="$1"; shift
+      if [ -z "$SELECTED_PROJECT_NAME" ]; then
+        SELECTED_PROJECT_NAME="$1"; shift
       else
         log "ERROR: Unexpected argument '$1'. Use --subdir for workspace subdirectory."
         exit 1
       fi ;;
   esac
 done
-PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+SELECTED_PROJECT_NAME="${SELECTED_PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/canonical-lead-identity.sh
+. "${SCRIPT_DIR}/lib/canonical-lead-identity.sh"
+canonical_lead_identity_resolve "$SELECTED_PROJECT_NAME" "$SELECTED_LEAD_ID"
 
 # ── vendor-neutral bootstrap: per-(project,lead) state dir ──────
 # CR Phase 2a #1 (R2): the directory key must be TRULY injective — a truncated
@@ -74,21 +75,16 @@ PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
 # different identities always produce different dir names — by construction, not
 # by hash luck. A short lossy `SAFE_*` prefix is kept only for human readability;
 # the hex suffix is what guarantees uniqueness.
-SAFE_PROJECT=$(printf '%s' "$PROJECT_NAME" | tr -c 'a-zA-Z0-9_-' '_')
-SAFE_LEAD=$(printf '%s' "$LEAD_ID" | tr -c 'a-zA-Z0-9_-' '_')
-IDENTITY_HEX=$(printf '%s\037%s' "$PROJECT_NAME" "$LEAD_ID" | od -An -v -tx1 | tr -d ' \n')
+SAFE_PROJECT=$(printf '%s' "$FLYWHEEL_PROJECT_NAME" | tr -c 'a-zA-Z0-9_-' '_')
+SAFE_LEAD=$(printf '%s' "$FLYWHEEL_LEAD_ID" | tr -c 'a-zA-Z0-9_-' '_')
+IDENTITY_HEX=$(printf '%s\037%s' "$FLYWHEEL_PROJECT_NAME" "$FLYWHEEL_LEAD_ID" | od -An -v -tx1 | tr -d ' \n')
 STATE_DIR="${HOME}/.flywheel/state/codex-lead/${SAFE_PROJECT}__${SAFE_LEAD}-${IDENTITY_HEX}"
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 
-export FLYWHEEL_CODEX_LEAD_ID="$LEAD_ID"
-export FLYWHEEL_CODEX_LEAD_PROJECT="$PROJECT_NAME"
 export FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$PROJECT_DIR"
 export FLYWHEEL_CODEX_LEAD_SUBDIR="$SUBDIR"
-export FLYWHEEL_CODEX_LEAD_BOT_TOKEN_ENV="$BOT_TOKEN_ENV"
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── FLY-898: fleet-wide core-room mention gate signal (non-CoS Codex lead) ────
 # A Codex lead that subscribes to a core room (FLYWHEEL_LEAD_CORE_CHANNEL_ID set)
@@ -101,11 +97,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${FLYWHEEL_LEAD_CORE_MENTION_GATED:-}" ] && [ -n "${FLYWHEEL_LEAD_CORE_CHANNEL_ID:-}" ]; then
   _cg_cli="${SCRIPT_DIR}/../dist/core-room-gate-cli.js"
   if [ -f "$_cg_cli" ] && command -v jq >/dev/null 2>&1; then
-    _cg_gate="$(node "$_cg_cli" --lead-id "$LEAD_ID" --project "$PROJECT_NAME" 2>/dev/null \
+    _cg_gate="$(node "$_cg_cli" --lead-id "$FLYWHEEL_LEAD_ID" --project "$FLYWHEEL_PROJECT_NAME" 2>/dev/null \
       | jq -r '.gateNonCoS // false' 2>/dev/null || echo false)"
     if [ "$_cg_gate" = "true" ]; then
       export FLYWHEEL_LEAD_CORE_MENTION_GATED=1
-      log "FLY-898: core-room mention gate ON for ${LEAD_ID} (non-CoS in a core-with-CoS project)"
+      log "FLY-898: core-room mention gate ON for ${FLYWHEEL_LEAD_ID} (non-CoS in a core-with-CoS project)"
     fi
   fi
 fi
@@ -124,7 +120,7 @@ fi
 if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
   # shellcheck source=lead-rules-bundle.sh
   . "${SCRIPT_DIR}/lead-rules-bundle.sh"
-  if ! assemble_full_access_governance "$LEAD_ID" "${SCRIPT_DIR}/../lead-rules-base"; then
+  if ! assemble_full_access_governance "$FLYWHEEL_LEAD_ID" "${SCRIPT_DIR}/../lead-rules-base"; then
     log "ERROR: full-access governance bundle incomplete — a required rule file is missing (founder-only-authority)."
     log "Refusing to start a full-access Codex Lead without its founder-gate contract (fail-closed, FLY-350 H-2)."
     exit 1
@@ -139,11 +135,6 @@ fi
 # fail-loud BEFORE the runtime starts (codex-lead-tui-home.sh contracts:
 # pins, standalone, auth — all validated there).
 if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
-  # argv is the single source for identity here (the headless path gets these
-  # from the launchd plist; exporting from argv removes the argv/env-mismatch
-  # footgun for the TUI runtime).
-  export FLYWHEEL_LEAD_ID="$LEAD_ID"
-  export FLYWHEEL_PROJECT_NAME="$PROJECT_NAME"
   TUI_HOME_SH="${SCRIPT_DIR}/codex-lead-tui-home.sh"
   # Honor the dry-run contract (review MED): in dry-run we must NOT touch the
   # home or start the daemon — the runtime prints its report and exits. Only run
@@ -154,7 +145,7 @@ if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
   fi
   TUI_RUNTIME_DIST="${SCRIPT_DIR}/../dist/lead-backends/codex/codex-lead-tui-runtime.js"
   TUI_RUNTIME_SRC="${SCRIPT_DIR}/../src/lead-backends/codex/codex-lead-tui-runtime.ts"
-  log "Starting codex TUI Lead '${LEAD_ID}' (project: ${PROJECT_NAME}, state: ${STATE_DIR}, ③ real terminal)"
+  log "Starting codex TUI Lead '${FLYWHEEL_LEAD_ID}' (project: ${FLYWHEEL_PROJECT_NAME}, state: ${STATE_DIR}, ③ real terminal)"
   if [ -f "$TUI_RUNTIME_DIST" ]; then
     exec node "$TUI_RUNTIME_DIST"
   elif [ -f "$TUI_RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
@@ -169,7 +160,7 @@ fi
 RUNTIME_DIST="${SCRIPT_DIR}/../dist/lead-backends/codex/codex-lead-runtime.js"
 RUNTIME_SRC="${SCRIPT_DIR}/../src/lead-backends/codex/codex-lead-runtime.ts"
 
-log "Starting codex Lead '${LEAD_ID}' (project: ${PROJECT_NAME}, state: ${STATE_DIR})"
+log "Starting codex Lead '${FLYWHEEL_LEAD_ID}' (project: ${FLYWHEEL_PROJECT_NAME}, state: ${STATE_DIR})"
 
 if [ -f "$RUNTIME_DIST" ]; then
   exec node "$RUNTIME_DIST"

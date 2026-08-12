@@ -1567,6 +1567,29 @@ describe("TmuxAdapter", () => {
 			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=test-exec-1");
 		});
 
+		it("scrubs inherited Lead identity coordinates at the Runner tmux boundary", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ projectName: "canonical-project", leadId: "owner-lead" }),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envValues = (newWindow?.args ?? [])
+				.map((arg, index, args) => (args[index - 1] === "-e" ? arg : undefined))
+				.filter((value): value is string => value !== undefined);
+			expect(envValues).toEqual(
+				expect.arrayContaining([
+					"FLYWHEEL_PROJECT_NAME=canonical-project",
+					"PROJECT_NAME=canonical-project",
+					"FLYWHEEL_LEAD_ID=owner-lead",
+					"LEAD_ID=",
+					"DISCORD_STATE_DIR=",
+					"DISCORD_IDENTITY_MODE=",
+					"DISCORD_BOT_TOKEN=",
+				]),
+			);
+		});
+
 		// FLY-102 / FLY-159: BASH_MAX_TIMEOUT_MS env injection (49h to accommodate 48h gate timeout + 1h buffer)
 		it("execute() always injects BASH_MAX_TIMEOUT_MS=176400000", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });

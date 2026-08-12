@@ -502,6 +502,32 @@ def t7_unit():
     else:
         bad("T7", f"identical signatures: {s1}")
 
+    captured = []
+
+    class Result:
+        stdout = "sent\n"
+
+    original_run = mod.subprocess.run
+    original_environ = dict(mod.os.environ)
+    try:
+        mod.os.environ.pop("FLYWHEEL_LEAD_ID", None)
+        mod.os.environ["FLYWHEEL_RESTART_GUARD_ALERT_CMD"] = "/tmp/fake-alert"
+        mod.subprocess.run = lambda argv, **_kwargs: (captured.append(argv) or Result())
+        if mod.fire_bypass_alert("test", "restart-services"):
+            argv = captured[0]
+            body = argv[argv.index("--body") + 1]
+            lead = argv[argv.index("--lead") + 1]
+            if lead == "system" and "lead_unknown=true" in body:
+                ok("T7 missing Lead identity stays system-attributed")
+            else:
+                bad("T7 missing Lead identity", f"lead={lead} body={body}")
+        else:
+            bad("T7 missing Lead identity", "alert unexpectedly failed")
+    finally:
+        mod.subprocess.run = original_run
+        mod.os.environ.clear()
+        mod.os.environ.update(original_environ)
+
 
 # ── T8: integration — hook default path drives the REAL lead-alert.sh ────────
 def t8_real_lead_alert_integration():

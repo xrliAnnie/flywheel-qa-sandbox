@@ -320,7 +320,10 @@ describe("parseCodexLeadTuiRuntimeConfig", () => {
 	const BASE = {
 		FLYWHEEL_LEAD_ID: "mufasa-lead",
 		FLYWHEEL_PROJECT_NAME: "growth",
-		FLYWHEEL_LEAD_BOT_USER_ID: "1",
+		FLYWHEEL_LEAD_KEY: "growth-mufasa-lead",
+		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+		DISCORD_EXPECTED_BOT_USER_ID: "1",
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan",
 		FLYWHEEL_CODEX_LEAD_STATE_DIR: "/state",

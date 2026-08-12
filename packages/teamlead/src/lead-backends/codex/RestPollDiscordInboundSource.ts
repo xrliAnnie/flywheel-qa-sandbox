@@ -111,6 +111,30 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 		this.handler = handler;
 	}
 
+	async assertAuthenticatedBotUser(expectedBotUserId: string): Promise<void> {
+		if (!expectedBotUserId) {
+			throw new Error(
+				"[identity_expected_bot_id_missing] expected Discord bot user id is required",
+			);
+		}
+		const response = await this.fetchImpl(`${DISCORD_API}/users/@me`, {
+			headers: { Authorization: `Bot ${this.botToken}` },
+		});
+		if (!response.ok) {
+			throw new Error(
+				`[identity_bot_login_failed] Discord /users/@me returned ${response.status}`,
+			);
+		}
+		const authenticated = (await response.json()) as { id?: unknown };
+		const actualBotUserId =
+			typeof authenticated.id === "string" ? authenticated.id : "";
+		if (actualBotUserId !== expectedBotUserId) {
+			throw new Error(
+				`[identity_bot_login_mismatch] expected ${expectedBotUserId}, authenticated ${actualBotUserId || "<missing>"}`,
+			);
+		}
+	}
+
 	async start(): Promise<void> {
 		if (this.running) return;
 		this.running = true;

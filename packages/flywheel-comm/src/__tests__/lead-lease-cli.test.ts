@@ -6,6 +6,7 @@ import { runLeadLeaseCommand } from "../commands/lead-lease.js";
 import { LeadLeaseStore, type ProcessTupleState } from "../lead-lease.js";
 
 describe("flywheel-comm lead-lease", () => {
+	const IDENTITY_DIGEST = "a".repeat(64);
 	let dir: string;
 	let env: Record<string, string>;
 	let stdout: string[];
@@ -64,6 +65,10 @@ describe("flywheel-comm lead-lease", () => {
 				"eng-lead",
 				"--project",
 				"flywheel",
+				"--lead-key",
+				"flywheel-eng-lead",
+				"--identity-digest",
+				IDENTITY_DIGEST,
 				"--supervisor-pid",
 				String(process.pid),
 				"--supervisor-start",
@@ -104,6 +109,8 @@ describe("flywheel-comm lead-lease", () => {
 				String(process.pid + 1),
 				"--pane-start",
 				"pane-start",
+				"--identity-digest",
+				IDENTITY_DIGEST,
 				"--json",
 			]),
 		).toBe(0);
@@ -133,6 +140,7 @@ describe("flywheel-comm lead-lease", () => {
 			leadKey: "flywheel-eng-lead",
 			project: "flywheel",
 			leadId: "eng-lead",
+			identityDigest: IDENTITY_DIGEST,
 			supervisorPid: 100,
 			supervisorStart: "supervisor-old",
 			acquiredBy: "seed",
@@ -143,6 +151,7 @@ describe("flywheel-comm lead-lease", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: "supervisor-old",
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: "holder-old",
 			now: "2026-08-03T01:00:01.000Z",
@@ -180,6 +189,8 @@ describe("flywheel-comm lead-lease", () => {
 				"200",
 				"--holder-start",
 				"holder-old",
+				"--identity-digest",
+				IDENTITY_DIGEST,
 				"--json",
 			]),
 		).toBe(3);
@@ -201,6 +212,8 @@ describe("flywheel-comm lead-lease", () => {
 				"200",
 				"--holder-start",
 				"holder-old",
+				"--identity-digest",
+				IDENTITY_DIGEST,
 				"--json",
 			]),
 		).toBe(0);
@@ -220,6 +233,7 @@ describe("flywheel-comm lead-lease", () => {
 			leadKey: "flywheel-eng-lead",
 			project: "flywheel",
 			leadId: "eng-lead",
+			identityDigest: IDENTITY_DIGEST,
 			supervisorPid: oldSupervisorPid,
 			supervisorStart: "supervisor-old",
 			acquiredBy: "seed",
@@ -229,6 +243,7 @@ describe("flywheel-comm lead-lease", () => {
 			generation: 1,
 			expectedSupervisorPid: oldSupervisorPid,
 			expectedSupervisorStart: "supervisor-old",
+			identityDigest: IDENTITY_DIGEST,
 			panePid: process.pid,
 			paneStart: holderStart,
 		});
@@ -244,6 +259,10 @@ describe("flywheel-comm lead-lease", () => {
 				"eng-lead",
 				"--project",
 				"flywheel",
+				"--lead-key",
+				"flywheel-eng-lead",
+				"--identity-digest",
+				IDENTITY_DIGEST,
 				"--supervisor-pid",
 				String(process.pid),
 				"--supervisor-start",
@@ -266,6 +285,10 @@ describe("flywheel-comm lead-lease", () => {
 			"eng-lead",
 			"--project",
 			"flywheel",
+			"--lead-key",
+			"flywheel-eng-lead",
+			"--identity-digest",
+			IDENTITY_DIGEST,
 			"--supervisor-pid",
 			"100",
 			"--supervisor-start",
@@ -275,13 +298,9 @@ describe("flywheel-comm lead-lease", () => {
 		expect(await run(first)).toBe(0);
 		stdout.pop();
 
-		const contender = [
-			...first.slice(0, 6),
-			"101",
-			"--supervisor-start",
-			"supervisor-new",
-			"--json",
-		];
+		const contender = [...first];
+		contender[contender.indexOf("--supervisor-pid") + 1] = "101";
+		contender[contender.indexOf("--supervisor-start") + 1] = "supervisor-new";
 		tupleStates["100:supervisor-old"] = "alive";
 		expect(await run(contender)).toBe(3);
 		expect(JSON.parse(stdout.pop() ?? "")).toMatchObject({

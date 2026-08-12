@@ -2,12 +2,21 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { respond } from "../commands/respond.js";
+import {
+	type RespondArgs,
+	respond as rawRespond,
+} from "../commands/respond.js";
 import { CommDB } from "../db.js";
+import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 let dir: string;
 let dbPath: string;
 let auditPath: string;
+let leadEnv: NodeJS.ProcessEnv;
+
+function respond(args: RespondArgs): Promise<void> {
+	return rawRespond({ ...args, env: { ...leadEnv, ...args.env } });
+}
 
 function seed(checkpoint?: string): string {
 	const db = new CommDB(dbPath, true);
@@ -28,6 +37,7 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "respond-"));
 	dbPath = join(dir, "comm.db");
 	auditPath = join(dir, "audit.db");
+	leadEnv = createTestLeadIdentityEnvs(dir, ["lead-x"], "Proj")["lead-x"]!;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 

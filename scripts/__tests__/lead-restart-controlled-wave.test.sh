@@ -73,7 +73,7 @@ MANIFEST="$TMP_ROOT/manifest.json"
 PLIST="$TMP_ROOT/lead.plist"
 PROJECTS="$TMP_ROOT/projects.json"
 MARKER_DIR="$TMP_ROOT/replacements"
-printf '%s\n' '{"leadId":"eng-lead","projectDir":"/tmp/project","projectName":"flywheel","botTokenEnv":"TEST_TOKEN","leadBackend":{"backendId":"claude-code"},"pid":999,"model":"volatile"}' > "$MANIFEST"
+printf '%s\n' '{"leadId":"eng-lead","projectDir":"/tmp/project","projectName":"flywheel","projectsFile":"/tmp/projects.json","leadBackend":{"backendId":"claude-code"},"pid":999,"model":"volatile"}' > "$MANIFEST"
 printf '%s\n' '<plist/>' > "$PLIST"
 printf '%s\n' '[]' > "$PROJECTS"
 LEAD_RESTART_MANIFEST_FILE="$MANIFEST"
@@ -91,6 +91,8 @@ if lead_restart_write_replacement_marker \
        '.schema_version == 1 and .attempt_id == $attempt and .phase == "bootout"
         and .old_supervisor_tuple.pid == 700
         and (has("lease_baseline") | not)
+        and .authority.manifest.semantic_identity.projectsFile == "/tmp/projects.json"
+        and (.authority.manifest.semantic_identity | has("botTokenEnv") | not)
         and (.authority.manifest.semantic_identity | has("pid") | not)
         and (.authority.manifest.semantic_identity | has("model") | not)' \
        "$LEAD_RESTART_MARKER_FILE" >/dev/null; then

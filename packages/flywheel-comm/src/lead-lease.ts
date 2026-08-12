@@ -22,6 +22,11 @@ import {
 	readCanonicalLeadCatalog,
 	resolveCanonicalLead,
 } from "./canonical-lead.js";
+import {
+	type CanonicalLeadIdentity,
+	LeadIdentityError,
+	resolveLeadIdentity,
+} from "./lead-identity.js";
 import { LeadLeaseModeStore } from "./lead-lease-mode.js";
 import type { MessageProvenance } from "./types.js";
 
@@ -37,6 +42,7 @@ CREATE TABLE IF NOT EXISTS lead_lease (
   lead_key TEXT PRIMARY KEY,
   project TEXT NOT NULL,
   lead_id TEXT NOT NULL,
+  identity_digest TEXT,
   generation INTEGER NOT NULL,
   supervisor_pid INTEGER,
   supervisor_start TEXT,
@@ -93,6 +99,7 @@ export interface LeadLeaseRow {
 	leadKey: string;
 	project: string;
 	leadId: string;
+	identityDigest: string | null;
 	generation: number;
 	supervisorPid: number | null;
 	supervisorStart: string | null;
@@ -137,6 +144,8 @@ export interface AcquireLeaseInput {
 	leadKey: string;
 	project: string;
 	leadId: string;
+	/** Required for production callers; undefined creates a non-authorizable legacy row. */
+	identityDigest?: string;
 	supervisorPid: number;
 	supervisorStart: string;
 	acquiredBy: string;
@@ -150,6 +159,8 @@ export interface BindLeaseInput {
 	expectedSupervisorStart: string;
 	panePid: number;
 	paneStart: string;
+	/** Required for canonical rows; omitted only matches a legacy NULL row. */
+	identityDigest?: string;
 	now?: string;
 }
 
@@ -159,12 +170,15 @@ export interface VerifyBoundLeaseInput {
 	expectedSupervisorStart: string;
 	expectedHolderPid: number;
 	expectedHolderStart: string;
+	/** Required by the CLI; omitted only verifies legacy lifecycle shape. */
+	identityDigest?: string;
 }
 
 interface RawLeaseRow {
 	lead_key: string;
 	project: string;
 	lead_id: string;
+	identity_digest: string | null;
 	generation: number;
 	supervisor_pid: number | null;
 	supervisor_start: string | null;
@@ -198,6 +212,7 @@ function mapLease(row: RawLeaseRow): LeadLeaseRow {
 		leadKey: row.lead_key,
 		project: row.project,
 		leadId: row.lead_id,
+		identityDigest: row.identity_digest,
 		generation: row.generation,
 		supervisorPid: row.supervisor_pid,
 		supervisorStart: row.supervisor_start,
@@ -469,6 +484,7 @@ export class LeadLeaseStore {
 			["supervisor_pid", "INTEGER"],
 			["supervisor_start", "TEXT"],
 			["supervisor_generation", "INTEGER"],
+			["identity_digest", "TEXT"],
 		] as const;
 		for (const [column, type] of migrations) {
 			try {
@@ -507,6 +523,15 @@ export class LeadLeaseStore {
 		const transaction = this.db.transaction((args: AcquireLeaseInput) => {
 			const existing = this.readLease(args.leadKey);
 			if (existing !== undefined) {
+				if (
+					existing.identity_digest !== null &&
+					existing.identity_digest !== (args.identityDigest ?? null)
+				) {
+					return {
+						status: "denied_sensor_degraded" as const,
+						generation: existing.generation,
+					};
+				}
 				const rowFormat = leaseRowFormat(existing);
 				const requesterIsSupervisor =
 					existing.supervisor_pid === args.supervisorPid &&
@@ -660,13 +685,14 @@ export class LeadLeaseStore {
 			this.db
 				.prepare(
 					`INSERT INTO lead_lease (
-						lead_key, project, lead_id, generation,
+						lead_key, project, lead_id, identity_digest, generation,
 						supervisor_pid, supervisor_start, supervisor_generation,
 						holder_pid, holder_start, bound_at, acquired_at, acquired_by
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
 					ON CONFLICT(lead_key) DO UPDATE SET
 						project = excluded.project,
 						lead_id = excluded.lead_id,
+						identity_digest = excluded.identity_digest,
 						generation = excluded.generation,
 						supervisor_pid = excluded.supervisor_pid,
 						supervisor_start = excluded.supervisor_start,
@@ -681,6 +707,7 @@ export class LeadLeaseStore {
 					args.leadKey,
 					args.project,
 					args.leadId,
+					args.identityDigest ?? null,
 					generation,
 					args.supervisorPid,
 					args.supervisorStart,
@@ -713,6 +740,7 @@ export class LeadLeaseStore {
 					`UPDATE lead_lease
 					 SET holder_pid = ?, holder_start = ?, bound_at = ?
 					 WHERE lead_key = ? AND generation = ?
+					   AND identity_digest IS ?
 					   AND supervisor_pid = ? AND supervisor_start = ?
 					   AND supervisor_generation = generation
 					   AND holder_pid = ? AND holder_start = ? AND bound_at IS NULL`,
@@ -723,6 +751,7 @@ export class LeadLeaseStore {
 					boundAt,
 					args.leadKey,
 					args.generation,
+					args.identityDigest ?? null,
 					args.expectedSupervisorPid,
 					args.expectedSupervisorStart,
 					args.expectedSupervisorPid,
@@ -766,6 +795,8 @@ export class LeadLeaseStore {
 				reason:
 					| "missing_lease"
 					| "unbound"
+					| "missing_identity_digest"
+					| "identity_digest_mismatch"
 					| "supervisor_mismatch"
 					| "holder_mismatch"
 					| "supervisor_generation_mismatch"
@@ -780,6 +811,20 @@ export class LeadLeaseStore {
 				};
 			if (lease.bound_at === null) {
 				return { status: "mismatch" as const, reason: "unbound" as const };
+			}
+			if (args.identityDigest !== undefined) {
+				if (lease.identity_digest === null) {
+					return {
+						status: "mismatch" as const,
+						reason: "missing_identity_digest" as const,
+					};
+				}
+				if (lease.identity_digest !== args.identityDigest) {
+					return {
+						status: "mismatch" as const,
+						reason: "identity_digest_mismatch" as const,
+					};
+				}
 			}
 			if (
 				lease.supervisor_pid !== args.expectedSupervisorPid ||
@@ -841,6 +886,7 @@ export class LeadLeaseStore {
 				holderStart: string | null;
 				boundAt: string | null;
 				acquiredAt: string;
+				identityDigest: string | null;
 		  } {
 		const transaction = this.db.transaction((key: string) => {
 			const row = this.readLease(key);
@@ -856,6 +902,7 @@ export class LeadLeaseStore {
 				holderStart: row.holder_start,
 				boundAt: row.bound_at,
 				acquiredAt: row.acquired_at,
+				identityDigest: row.identity_digest,
 			};
 		});
 		try {
@@ -868,7 +915,11 @@ export class LeadLeaseStore {
 		}
 	}
 
-	validate(input: { leaseKey: string; generation: number }):
+	validate(input: {
+		leaseKey: string;
+		generation: number;
+		identityDigest: string;
+	}):
 		| { valid: true; reason: "current_bound" }
 		| {
 				valid: false;
@@ -876,10 +927,16 @@ export class LeadLeaseStore {
 					| "missing_lease"
 					| "stale_generation"
 					| "unbound"
+					| "missing_identity_digest"
+					| "identity_digest_mismatch"
 					| "missing_history";
 		  } {
 		const transaction = this.db.transaction(
-			(args: { leaseKey: string; generation: number }) => {
+			(args: {
+				leaseKey: string;
+				generation: number;
+				identityDigest: string;
+			}) => {
 				const lease = this.readLease(args.leaseKey);
 				if (!lease)
 					return { valid: false as const, reason: "missing_lease" as const };
@@ -887,6 +944,18 @@ export class LeadLeaseStore {
 					return {
 						valid: false as const,
 						reason: "stale_generation" as const,
+					};
+				}
+				if (lease.identity_digest === null) {
+					return {
+						valid: false as const,
+						reason: "missing_identity_digest" as const,
+					};
+				}
+				if (lease.identity_digest !== args.identityDigest) {
+					return {
+						valid: false as const,
+						reason: "identity_digest_mismatch" as const,
 					};
 				}
 				if (lease.bound_at === null) {
@@ -1006,13 +1075,19 @@ export class LeadLeaseStore {
 export interface LeadWriteAuthorization {
 	disposition:
 		| "off"
+		| "system"
 		| "unprotected"
 		| "lease_validated"
 		| "carrier_passthrough"
 		| "audit_allowed"
 		| "bypass";
 	provenance?: MessageProvenance;
-	leaseClaim?: { leaseKey: string; generation: number };
+	leaseClaim?: {
+		leaseKey: string;
+		generation: number;
+		identityDigest: string;
+	};
+	identityDigest?: string;
 	/** Raw capability: memory/loopback transport only. Never persist or log. */
 	carrierClaim?: string;
 }
@@ -1020,6 +1095,7 @@ export interface LeadWriteAuthorization {
 export interface CarrierEvidenceEntry {
 	leadKey: string;
 	backend: "codex-app-server";
+	identityDigest: string;
 	pid: number;
 	lstart: string;
 	instanceDigest: string;
@@ -1034,6 +1110,7 @@ export interface CarrierEvidenceDocument {
 export interface CarrierRuntimeAssertion {
 	schemaVersion: 1;
 	leadKey: string;
+	identityDigest: string;
 	pid: number;
 	lstart: string;
 	instanceDigest: string;
@@ -1093,6 +1170,7 @@ function isCarrierRuntimeAssertion(
 	return (
 		row.schemaVersion === 1 &&
 		typeof row.leadKey === "string" &&
+		/^[a-f0-9]{64}$/.test(row.identityDigest ?? "") &&
 		Number.isSafeInteger(row.pid) &&
 		(row.pid ?? 0) > 0 &&
 		typeof row.lstart === "string" &&
@@ -1111,6 +1189,7 @@ function isCarrierRuntimeAssertion(
 export function publishCarrierRuntimeAssertion(input: {
 	env?: NodeJS.ProcessEnv;
 	leadKey: string;
+	identityDigest: string;
 	rawCarrierInstanceId: string;
 	pid: number;
 	lstart: string;
@@ -1123,6 +1202,7 @@ export function publishCarrierRuntimeAssertion(input: {
 	const assertion: CarrierRuntimeAssertion = {
 		schemaVersion: 1,
 		leadKey: input.leadKey,
+		identityDigest: input.identityDigest,
 		pid: input.pid,
 		lstart: input.lstart,
 		instanceDigest: hashCarrierInstanceId(input.rawCarrierInstanceId),
@@ -1190,6 +1270,7 @@ function safeDigestMatch(actualHex: string, expectedHex: string): boolean {
 function readCarrierEvidence(
 	path: string,
 	leadKey: string,
+	identityDigest: string,
 	rawClaim: string | undefined,
 	nowMs: number,
 	isAlive: (pid: number, start: string) => boolean,
@@ -1217,9 +1298,13 @@ function readCarrierEvidence(
 	if (
 		!evidence ||
 		evidence.leadKey !== leadKey ||
-		evidence.backend !== "codex-app-server"
+		evidence.backend !== "codex-app-server" ||
+		!/^[a-f0-9]{64}$/.test(evidence.identityDigest ?? "")
 	) {
 		return { valid: false, reason: "carrier_evidence_mismatch" };
+	}
+	if (!safeDigestMatch(evidence.identityDigest, identityDigest)) {
+		return { valid: false, reason: "identity_digest_mismatch" };
 	}
 	if (!isAlive(evidence.pid, evidence.lstart)) {
 		return { valid: false, reason: "carrier_process_stale" };
@@ -1247,29 +1332,44 @@ export function validateLeadCarrierAuthorization(
 	deps: LeadWriteAuthorizationDeps = {},
 ): LeadCarrierValidation {
 	const env = input.env ?? process.env;
-	const resolution = resolveCanonicalLead({
-		leadId: input.claimedLeadId,
-		projectsPath:
-			env.FLYWHEEL_PROJECTS_FILE ??
-			join(homedir(), ".flywheel", "projects.json"),
-		...(env.FLYWHEEL_PROJECT_NAME
-			? { projectHint: env.FLYWHEEL_PROJECT_NAME }
-			: {}),
-	});
-	if (resolution.status !== "ok") {
-		return { valid: false, reason: `identity_${resolution.status}` };
+	const projectName = env.FLYWHEEL_PROJECT_NAME;
+	if (!projectName) {
+		return { valid: false, reason: "identity_project_missing" };
 	}
-	const backend = effectiveLeadBackend(
-		resolution.lead.backend,
-		env.FLYWHEEL_LEAD_BACKEND,
-	).backend;
-	if (backend !== "codex-app-server") {
+	let identity: CanonicalLeadIdentity;
+	try {
+		identity = resolveLeadIdentity({
+			leadId: input.claimedLeadId,
+			projectName,
+			projectsPath:
+				env.FLYWHEEL_PROJECTS_FILE ??
+				join(homedir(), ".flywheel", "projects.json"),
+		});
+	} catch (error) {
+		return {
+			valid: false,
+			reason:
+				error instanceof LeadIdentityError
+					? error.code
+					: "identity_source_error",
+		};
+	}
+	if (!env.FLYWHEEL_LEAD_IDENTITY_DIGEST) {
+		return { valid: false, reason: "identity_digest_missing" };
+	}
+	if (
+		!safeDigestMatch(env.FLYWHEEL_LEAD_IDENTITY_DIGEST, identity.identityDigest)
+	) {
+		return { valid: false, reason: "identity_digest_mismatch" };
+	}
+	if (identity.backend !== "codex-app-server") {
 		return { valid: false, reason: "desired_backend_not_codex" };
 	}
 	const carrier = readCarrierEvidence(
 		env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE ??
 			join(homedir(), ".flywheel", "lead-carrier-evidence.json"),
-		resolution.leadKey,
+		identity.leadKey,
+		identity.identityDigest,
 		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
 		deps.now?.() ?? Date.now(),
 		deps.processAliveWithStart ?? processAliveWithStart,
@@ -1278,7 +1378,7 @@ export function validateLeadCarrierAuthorization(
 	return {
 		valid: true,
 		disposition: "carrier_passthrough",
-		leadKey: resolution.leadKey,
+		leadKey: identity.leadKey,
 		carrier: carrier.evidence,
 	};
 }
@@ -1289,6 +1389,7 @@ export interface CarrierSelfCheckReceipt {
 	schemaVersion: 1;
 	contractVersion: 1;
 	leadKey: string;
+	identityDigest: string;
 	instanceDigest: string;
 	pid: number;
 	lstart: string;
@@ -1311,6 +1412,7 @@ function isReceipt(value: unknown): value is CarrierSelfCheckReceipt {
 		row.schemaVersion === 1 &&
 		row.contractVersion === 1 &&
 		typeof row.leadKey === "string" &&
+		/^[a-f0-9]{64}$/.test(row.identityDigest ?? "") &&
 		/^[a-f0-9]{64}$/i.test(row.instanceDigest ?? "") &&
 		Number.isSafeInteger(row.pid) &&
 		(row.pid ?? 0) > 0 &&
@@ -1423,6 +1525,7 @@ export function evaluateCarrierReceipt(
 	}
 	if (
 		receipt.leadKey !== evidence.leadKey ||
+		receipt.identityDigest !== evidence.identityDigest ||
 		receipt.pid !== evidence.pid ||
 		receipt.lstart !== evidence.lstart ||
 		receipt.instanceDigest !== evidence.instanceDigest
@@ -2397,6 +2500,130 @@ function writeFaultAudit(
 	});
 }
 
+function denyIdentityIntegrity(reason: string): never {
+	throw new LeadLeaseDeniedError(
+		`lead identity integrity denied: ${reason}`,
+		reason,
+	);
+}
+
+/**
+ * Identity integrity is not a lease rollout control. It is evaluated before
+ * mode, audit, or bypass and therefore can never be converted into an allowed
+ * Lead write.
+ */
+function assertLeadIdentityIntegrity(
+	claimedLeadId: string,
+	env: NodeJS.ProcessEnv,
+) {
+	const projectName = env.FLYWHEEL_PROJECT_NAME;
+	if (!projectName) return denyIdentityIntegrity("identity_project_missing");
+	const projectsPath =
+		env.FLYWHEEL_PROJECTS_FILE ?? join(homedir(), ".flywheel", "projects.json");
+	let identity: CanonicalLeadIdentity;
+	try {
+		identity = resolveLeadIdentity({
+			projectsPath,
+			projectName,
+			leadId: claimedLeadId,
+		});
+	} catch (error) {
+		return denyIdentityIntegrity(
+			error instanceof LeadIdentityError ? error.code : "identity_source_error",
+		);
+	}
+	if (
+		env.FLYWHEEL_LEAD_ID !== undefined &&
+		env.FLYWHEEL_LEAD_ID !== claimedLeadId
+	) {
+		return denyIdentityIntegrity("claimed_lead_mismatch");
+	}
+	if (env.LEAD_ID !== undefined && env.LEAD_ID !== identity.leadId) {
+		return denyIdentityIntegrity("identity_env_conflict");
+	}
+	if (
+		env.PROJECT_NAME !== undefined &&
+		env.PROJECT_NAME !== identity.projectName
+	) {
+		return denyIdentityIntegrity("identity_env_conflict");
+	}
+	if (
+		env.FLYWHEEL_LEAD_KEY !== identity.leadKey ||
+		env.FLYWHEEL_LEAD_BACKEND !== identity.backend ||
+		env.DISCORD_STATE_DIR !== identity.discordStateDir ||
+		(env.DISCORD_EXPECTED_BOT_USER_ID ?? "") !== (identity.botUserId ?? "")
+	) {
+		return denyIdentityIntegrity("identity_env_conflict");
+	}
+	if (!env.FLYWHEEL_LEAD_IDENTITY_DIGEST) {
+		return denyIdentityIntegrity("identity_digest_missing");
+	}
+	if (env.FLYWHEEL_LEAD_IDENTITY_DIGEST !== identity.identityDigest) {
+		return denyIdentityIntegrity("identity_digest_mismatch");
+	}
+	return identity;
+}
+
+/** Trusted Bridge-only write path. No CLI flag or environment selector maps to it. */
+export function authorizeSystemWrite(): LeadWriteAuthorization {
+	return { disposition: "system" };
+}
+
+/**
+ * Reconstruct the canonical comparison tuple for a Lead request received by
+ * the Bridge. The caller-provided digest remains the freshness proof; every
+ * other identity field is projected from the current registry row.
+ */
+export function forwardedLeadAuthorizationEnv(
+	input: {
+		claimedLeadId: string;
+		projectName: string;
+		identityDigest: string;
+		leaseClaim?: { leaseKey: string; generation: number };
+		carrierClaim?: string;
+	},
+	base: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+	const env = { ...base };
+	const projectsPath =
+		env.FLYWHEEL_PROJECTS_FILE ?? join(homedir(), ".flywheel", "projects.json");
+	const identity = resolveLeadIdentity({
+		projectsPath,
+		projectName: input.projectName,
+		leadId: input.claimedLeadId,
+	});
+	for (const name of [
+		"FLYWHEEL_LEAD_LEASE_KEY",
+		"FLYWHEEL_LEAD_GENERATION",
+		"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID",
+		"FLYWHEEL_PROJECTS",
+	]) {
+		delete env[name];
+	}
+	Object.assign(env, {
+		FLYWHEEL_PROJECTS_FILE: projectsPath,
+		FLYWHEEL_LEAD_ID: identity.leadId,
+		LEAD_ID: identity.leadId,
+		FLYWHEEL_PROJECT_NAME: identity.projectName,
+		PROJECT_NAME: identity.projectName,
+		FLYWHEEL_LEAD_KEY: identity.leadKey,
+		FLYWHEEL_LEAD_ROLE: identity.role,
+		FLYWHEEL_LEAD_BACKEND: identity.backend,
+		DISCORD_STATE_DIR: identity.discordStateDir,
+		DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: input.identityDigest,
+		FLYWHEEL_LEAD_PROJECTS_DIGEST: identity.projectsDigest,
+	});
+	if (input.leaseClaim) {
+		env.FLYWHEEL_LEAD_LEASE_KEY = input.leaseClaim.leaseKey;
+		env.FLYWHEEL_LEAD_GENERATION = String(input.leaseClaim.generation);
+	}
+	if (input.carrierClaim) {
+		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID = input.carrierClaim;
+	}
+	return env;
+}
+
 /**
  * Authorize one Lead-originated write. This is the shared CLI/Bridge seam:
  * commands must call it before mutating CommDB. Audit mode records the denial
@@ -2407,11 +2634,14 @@ export function authorizeLeadWrite(
 	deps: LeadWriteAuthorizationDeps = {},
 ): LeadWriteAuthorization {
 	const env = input.env ?? process.env;
+	const identity = assertLeadIdentityIntegrity(input.claimedLeadId, env);
 	const modePath =
 		env.FLYWHEEL_LEAD_LEASE_MODE_FILE ??
 		join(homedir(), ".flywheel", "lead-lease-mode.json");
 	const modeState = new LeadLeaseModeStore(modePath, env).read();
-	if (modeState.mode === "off") return { disposition: "off" };
+	if (modeState.mode === "off") {
+		return { disposition: "off", identityDigest: identity.identityDigest };
+	}
 	if (modeState.source === "corrupt_file") {
 		ensureRecurringLeaseAlert(env, "lead_lease_control_broken", {
 			reason: modeState.error,
@@ -2431,38 +2661,18 @@ export function authorizeLeadWrite(
 		writerStart,
 	};
 
-	const projectsPath =
-		env.FLYWHEEL_PROJECTS_FILE ?? join(homedir(), ".flywheel", "projects.json");
 	const resolution = resolveCanonicalLead({
 		leadId: input.claimedLeadId,
-		projectsPath,
-		...(env.FLYWHEEL_PROJECT_NAME
-			? { projectHint: env.FLYWHEEL_PROJECT_NAME }
-			: {}),
+		projectsPath:
+			env.FLYWHEEL_PROJECTS_FILE ??
+			join(homedir(), ".flywheel", "projects.json"),
+		projectHint: identity.projectName,
 	});
-	const hasLeadMarker = Boolean(
-		env.FLYWHEEL_LEAD_ID ||
-			env.FLYWHEEL_LEAD_LEASE_KEY ||
-			env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID ||
-			env.FLYWHEEL_LEAD_CARRIER,
-	);
-	if (
-		resolution.status !== "source_error" &&
-		resolution.status !== "ambiguous"
-	) {
-		recoverRecurringLeaseAlert(env, "lead_identity_source_broken", {});
+	if (resolution.status !== "ok") {
+		return denyIdentityIntegrity("identity_source_error");
 	}
-	if (resolution.status === "valid_but_lead_absent") {
-		return { disposition: "unprotected", provenance: writerProvenance };
-	}
-	if (resolution.status === "source_error" && !hasLeadMarker) {
-		return { disposition: "unprotected", provenance: writerProvenance };
-	}
-
-	const leadKey =
-		resolution.status === "ok"
-			? resolution.leadKey
-			: (env.FLYWHEEL_LEAD_LEASE_KEY ?? `unresolved-${input.claimedLeadId}`);
+	recoverRecurringLeaseAlert(env, "lead_identity_source_broken", {});
+	const leadKey = identity.leadKey;
 	const leaseDbPath =
 		env.FLYWHEEL_LEAD_LEASE_DB ?? join(homedir(), ".flywheel", "lead-lease.db");
 	let store: LeadLeaseStore | undefined;
@@ -2536,7 +2746,11 @@ export function authorizeLeadWrite(
 			process.stderr.write(
 				`[flywheel-comm] WARNING: FLYWHEEL_LEAD_LEASE_BYPASS=1 for ${leadKey} (${reason})\n`,
 			);
-			return { disposition: "bypass", provenance: decisionProvenance };
+			return {
+				disposition: "bypass",
+				provenance: decisionProvenance,
+				identityDigest: identity.identityDigest,
+			};
 		}
 		if (alertType) {
 			if (
@@ -2560,7 +2774,11 @@ export function authorizeLeadWrite(
 			process.stderr.write(
 				`[flywheel-comm] lead lease audit_only would block ${leadKey}: ${reason}\n`,
 			);
-			return { disposition: "audit_allowed", provenance: decisionProvenance };
+			return {
+				disposition: "audit_allowed",
+				provenance: decisionProvenance,
+				identityDigest: identity.identityDigest,
+			};
 		}
 		persistFault("blocked", reason);
 		throw new LeadLeaseDeniedError(
@@ -2569,19 +2787,7 @@ export function authorizeLeadWrite(
 		);
 	};
 
-	if (resolution.status === "source_error") {
-		return denyOrAudit("identity_source_error", "lead_identity_source_broken");
-	}
-	if (resolution.status === "ambiguous") {
-		return denyOrAudit(
-			"ambiguous_lead_identity",
-			"lead_identity_source_broken",
-		);
-	}
-	const backend = effectiveLeadBackend(
-		resolution.lead.backend,
-		env.FLYWHEEL_LEAD_BACKEND,
-	).backend;
+	const backend = identity.backend;
 	if (
 		env.FLYWHEEL_LEAD_ID !== undefined &&
 		env.FLYWHEEL_LEAD_ID !== input.claimedLeadId
@@ -2600,20 +2806,6 @@ export function authorizeLeadWrite(
 			store?.close();
 		}
 	}
-	if (
-		backend === "claude-code" &&
-		(resolution.lead.carrier === undefined ||
-			resolution.lead.carrier === "v2") &&
-		env.FLYWHEEL_LEAD_CARRIER === "v2" &&
-		!env.FLYWHEEL_LEAD_LEASE_KEY &&
-		!env.FLYWHEEL_LEAD_GENERATION &&
-		!env.FLYWHEEL_LEAD_LEASE_DEGRADED
-	) {
-		return {
-			disposition: "carrier_passthrough",
-			provenance: writerProvenance,
-		};
-	}
 	if (backend === "codex-app-server") {
 		const carrier = validateLeadCarrierAuthorization(
 			{ claimedLeadId: input.claimedLeadId, env },
@@ -2630,6 +2822,7 @@ export function authorizeLeadWrite(
 			disposition: "carrier_passthrough",
 			provenance: writerProvenance,
 			carrierClaim: env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
+			identityDigest: identity.identityDigest,
 		};
 	}
 
@@ -2645,13 +2838,22 @@ export function authorizeLeadWrite(
 		) {
 			return denyOrAudit("missing_or_mismatched_claim");
 		}
-		const validation = store.validate({ leaseKey: leadKey, generation });
+		const validation = store.validate({
+			leaseKey: leadKey,
+			generation,
+			identityDigest: identity.identityDigest,
+		});
 		if (!validation.valid) return denyOrAudit(validation.reason);
 		const history = store.getGenerationHistory(leadKey, generation);
 		if (!history) return denyOrAudit("missing_history");
 		return {
 			disposition: "lease_validated",
-			leaseClaim: { leaseKey: leadKey, generation },
+			leaseClaim: {
+				leaseKey: leadKey,
+				generation,
+				identityDigest: identity.identityDigest,
+			},
+			identityDigest: identity.identityDigest,
 			provenance: {
 				senderLeaseKey: leadKey,
 				senderGeneration: generation,

@@ -15,6 +15,9 @@ const THREAD = "t1";
 /** Combined Discord mock: guild active-threads (discovery) + channel messages (RestPoll). */
 function makeFetch() {
 	return vi.fn(async (url: string) => {
+		if (url.endsWith("/users/@me")) {
+			return json({ id: BOT });
+		}
 		// discovery: GET /guilds/{g}/threads/active
 		if (/\/guilds\/[^/]+\/threads\/active$/.test(url)) {
 			return json({

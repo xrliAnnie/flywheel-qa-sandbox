@@ -30,7 +30,10 @@ trap 'rm -rf "$T"' EXIT
 # session) flips bridge cases to the cross-dept-conflict path (Codex R2/R3 finding).
 unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
 	FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES FLYWHEEL_CODEX_LEAD_OUTBOUND \
-	FLYWHEEL_COMM_CLI
+	FLYWHEEL_COMM_CLI FLYWHEEL_LEAD_ID LEAD_ID FLYWHEEL_PROJECT_NAME PROJECT_NAME \
+	FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE \
+	FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
+	DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID FLYWHEEL_LEAD_BOT_USER_ID
 
 # Fake worktree with the built runtime + the tui-home script (a no-op stub; ensures
 # are skipped in dry-run, but the launcher checks the file exists).
@@ -42,17 +45,24 @@ ln -s "$REAL_ROOT/lead-rules-base" "$WT/packages/teamlead/lead-rules-base"
 printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '#!/bin/bash\nexit 0\n' > "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 printf '// stub\n' > "$WT/packages/flywheel-comm/dist/index.js"
+mkdir -p "$WT/packages/teamlead/scripts/lib"
+ln -s "$REAL_ROOT/scripts/lib/canonical-lead-identity.sh" "$WT/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
 chmod +x "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 
 # Mock `node`: dump the env it was exec'd with to $ENVDUMP, then exit 0.
 mkdir -p "$T/bin"
 cat > "$T/bin/node" <<'EOF'
 #!/bin/bash
+if [[ " $* " == *" lead-identity resolve "* ]]; then
+  printf '%s\n' "$CANONICAL_JSON"
+  exit 0
+fi
 env > "$ENVDUMP"
 echo "MOCK_NODE_RAN $*"
 exit 0
 EOF
 chmod +x "$T/bin/node"
+export CANONICAL_JSON='{"schemaVersion":1,"leadId":"mufasa-lead","projectName":"growth","leadKey":"growth-mufasa-lead","agentTeamName":"mufasa-lead","botUserId":"1499895683287748679","botTokenEnv":"MUFASA_BOT_TOKEN","discordStateDir":"/tmp/discord-mufasa","backend":"codex-app-server","role":"dept","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
 
 # run the launcher in dry-run with the mock node first on PATH; capture env dump.
 run_dry() {

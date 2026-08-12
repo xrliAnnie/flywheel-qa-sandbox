@@ -26,6 +26,7 @@ import {
 import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { ApplyTransitionOpts } from "../../../applyTransition.js";
 import type { ProjectEntry } from "../../../ProjectConfig.js";
 import { StateStore } from "../../../StateStore.js";
@@ -40,10 +41,13 @@ let dir: string;
 let commDbPath: string;
 let server: Server;
 let store: StateStore;
+let identityDigest: string;
 
 const origCfg = process.env.CLAUDE_CONFIG_DIR;
 const origBackend = process.env.FLYWHEEL_COMM_BACKEND;
 const origAgent = process.env.FLYWHEEL_AGENT_BACKEND;
+const origProjectsFile = process.env.FLYWHEEL_PROJECTS_FILE;
+const origLeaseMode = process.env.FLYWHEEL_LEAD_LEASE_MODE;
 
 const inboxPath = () => {
 	const { agentName, teamName } = deriveRunnerMailboxIdentity(EXEC, LEAD);
@@ -60,7 +64,14 @@ async function post(body: unknown) {
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(body),
+			body: JSON.stringify(
+				body !== null &&
+					typeof body === "object" &&
+					"leadId" in body &&
+					!("identityDigest" in body)
+					? { ...body, identityDigest }
+					: body,
+			),
 		},
 	);
 	return { status: res.status, body: await res.json().catch(() => undefined) };
@@ -81,6 +92,14 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		dir = mkdtempSync(join(tmpdir(), "fly191-wiring-"));
 		mkdirSync(join(dir, "comm", PROJECT), { recursive: true });
 		commDbPath = join(dir, "comm", PROJECT, "comm.db");
+		const identity = createLeadIdentityFixture({
+			root: dir,
+			projectName: PROJECT,
+			leadId: LEAD,
+		});
+		identityDigest = identity.identityDigest;
+		process.env.FLYWHEEL_PROJECTS_FILE = identity.env.FLYWHEEL_PROJECTS_FILE;
+		process.env.FLYWHEEL_LEAD_LEASE_MODE = "off";
 		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude-config");
 		delete process.env.FLYWHEEL_COMM_BACKEND;
 		delete process.env.FLYWHEEL_AGENT_BACKEND;
@@ -148,6 +167,12 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		else process.env.FLYWHEEL_COMM_BACKEND = origBackend;
 		if (origAgent === undefined) delete process.env.FLYWHEEL_AGENT_BACKEND;
 		else process.env.FLYWHEEL_AGENT_BACKEND = origAgent;
+		if (origProjectsFile === undefined)
+			delete process.env.FLYWHEEL_PROJECTS_FILE;
+		else process.env.FLYWHEEL_PROJECTS_FILE = origProjectsFile;
+		if (origLeaseMode === undefined)
+			delete process.env.FLYWHEEL_LEAD_LEASE_MODE;
+		else process.env.FLYWHEEL_LEAD_LEASE_MODE = origLeaseMode;
 		vi.restoreAllMocks();
 	});
 

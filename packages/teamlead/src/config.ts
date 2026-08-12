@@ -134,11 +134,10 @@ export function loadConfig(): BridgeConfig {
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		defaultLeadAgentId: (() => {
-			const val =
-				process.env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim() ?? "product-lead";
-			if (val.length === 0) {
+			const val = process.env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim();
+			if (!val) {
 				throw new Error(
-					"TEAMLEAD_DEFAULT_LEAD_AGENT must be a non-empty string",
+					"TEAMLEAD_DEFAULT_LEAD_AGENT is required and must identify one canonical Lead",
 				);
 			}
 			return val;

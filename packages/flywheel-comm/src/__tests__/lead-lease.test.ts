@@ -6,6 +6,7 @@ import { LeadLeaseStore, LeaseStoreError } from "../lead-lease.js";
 import { LeadLeaseModeStore } from "../lead-lease-mode.js";
 
 describe("FLY-1309 LeadLeaseStore", () => {
+	const IDENTITY_DIGEST = "a".repeat(64);
 	let dir: string;
 	let dbPath: string;
 
@@ -28,6 +29,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		leadKey: "flywheel-eng-lead",
 		project: "flywheel",
 		leadId: "eng-lead",
+		identityDigest: IDENTITY_DIGEST,
 		supervisorPid: 100,
 		supervisorStart: "Thu Jul 16 01:00:00 2026",
 		acquiredBy: "test",
@@ -54,6 +56,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 				generation: 1,
 				expectedSupervisorPid: 100,
 				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
 				panePid: 200,
 				paneStart: "Thu Jul 16 01:00:01 2026",
 				now: "2026-07-16T08:00:01.000Z",
@@ -69,7 +72,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			holderStart: "Thu Jul 16 01:00:01 2026",
 		});
 		expect(
-			store.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			store.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: true, reason: "current_bound" });
 		store.close();
 	});
@@ -91,6 +98,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 				generation: 1,
 				expectedSupervisorPid: 100,
 				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
 				panePid: 200,
 				paneStart: "Thu Jul 16 01:00:01 2026",
 				now: "2026-07-16T08:01:01.000Z",
@@ -114,6 +122,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: "old-pane",
 			now: "2026-07-16T08:00:01.000Z",
@@ -129,7 +138,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			}),
 		).toEqual({ status: "acquired", generation: 2 });
 		expect(
-			takeover.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			takeover.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: false, reason: "stale_generation" });
 		takeover.close();
 	});
@@ -178,6 +191,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: holder,
 			now: "2026-07-16T08:00:01.000Z",
@@ -210,6 +224,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: "old-start",
 			now: "2026-07-16T08:00:01.000Z",
@@ -231,7 +246,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		const store = open();
 		store.acquire(supervisor1);
 		expect(
-			store.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			store.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: false, reason: "unbound" });
 		store.close();
 	});
@@ -295,7 +314,11 @@ describe("FLY-1309 independent lease mode control plane", () => {
 
 		expect(modes.read()).toEqual({ mode: "enforce", source: "file" });
 		expect(
-			rebuilt.validate({ leaseKey: "flywheel-eng-lead", generation: 1 }),
+			rebuilt.validate({
+				leaseKey: "flywheel-eng-lead",
+				generation: 1,
+				identityDigest: "a".repeat(64),
+			}),
 		).toEqual({
 			valid: false,
 			reason: "missing_lease",

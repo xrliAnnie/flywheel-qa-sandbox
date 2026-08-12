@@ -23,6 +23,8 @@
 		"./founder-attribution": "./dist/founder-attribution.js",
 		"./lead-lease": "./dist/lead-lease.js",
 		"./canonical-lead": "./dist/canonical-lead.js",
+		"./lead-identity": "./dist/lead-identity.js",
+		"./lead-identity-migration": "./dist/lead-identity-migration.js",
 		"./text-truncate": "./dist/text-truncate.js",
 		"./inbox-write-normalize": "./dist/inbox-write-normalize.js",
 		"./mailbox-queue": "./dist/mailbox-queue.js",
