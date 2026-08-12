@@ -2799,6 +2799,25 @@ _lead_identity_alert() {
     || true
 }
 
+# FLY-1708: a Lead identity owns its in-flight batches across body generations.
+# Run only immediately before the v2 child fork; dry-run and HOLD paths never
+# consume a retry generation.
+_adopt_inflight_before_launch() {
+  local output="" rc=0
+  if [ -z "${FLYWHEEL_COMM_CLI:-}" ] || [ ! -f "$FLYWHEEL_COMM_CLI" ]; then
+    log "WARNING: flywheel-comm unavailable; in-flight adoption skipped"
+    return 0
+  fi
+  output="$(node "$FLYWHEEL_COMM_CLI" adopt-inflight \
+    --recipient "$LEAD_ID" --kind lead 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    log "WARNING: in-flight adoption failed (exit ${rc}): ${output}"
+  elif [ -n "$output" ]; then
+    log "In-flight adoption: ${output}"
+  fi
+  return 0
+}
+
 # shellcheck source=lib/lead-body-receipt.sh
 source "${SCRIPT_DIR}/lib/lead-body-receipt.sh"
 
@@ -2888,6 +2907,7 @@ fi
     _poll_dev_channels_dialog_v2 "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
     _V2_DIALOG_POLLER_PID=$!
   fi
+  _adopt_inflight_before_launch
   _launch_claude "${_v2_launch_args[@]}" || _v2_launch_rc=$?
   _v2_reap_dialog_poller
   if [ "$_v2_launch_rc" -ne 0 ]; then

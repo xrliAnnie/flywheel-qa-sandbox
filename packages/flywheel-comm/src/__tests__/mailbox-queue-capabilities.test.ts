@@ -93,6 +93,12 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 				limit: 10,
 				maxRowsPerRecipient: 5,
 				maxSummaryBytes: 512,
+				probeFactsByRecipient: new Map([
+					[
+						"exec-orphan",
+						"StateStore 视图=terminal / 最近心跳=45m（注意：此为登记视图非 pane 直读，处置前仍须人工验活）",
+					],
+				]),
 				resolveOwningLead: (recipient) =>
 					recipient === "exec-owned" ? "lead-owner" : undefined,
 			});
@@ -110,6 +116,24 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 					deadCount: 1,
 				},
 			]);
+			expect(candidates[0]?.summary).toContain("探针实况：不可得");
+			expect(candidates[1]?.summary).toContain(
+				"探针实况：StateStore 视图=terminal",
+			);
+			const bounded = queue.listUncoveredLeadDeadLetters({
+				sinceCursor: [],
+				limit: 10,
+				maxRowsPerRecipient: 5,
+				maxSummaryBytes: 256,
+				probeFactsByRecipient: new Map([["exec-orphan", "x".repeat(1_000)]]),
+				resolveOwningLead: (recipient) =>
+					recipient === "exec-owned" ? "lead-owner" : undefined,
+			});
+			expect(
+				bounded.every(
+					({ summary }) => Buffer.byteLength(summary, "utf8") <= 256,
+				),
+			).toBe(true);
 			expect(
 				queue
 					.listUncoveredLeadDeadLetters({
@@ -572,6 +596,12 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 				maxRecipients: 10,
 				maxDeadRowsPerRecipient: 5,
 				maxSummaryBytes: 2_000,
+				probeFactsByRecipient: new Map([
+					[
+						"exec-dead",
+						"StateStore 视图=alive / 最近心跳=2m（注意：此为登记视图非 pane 直读，处置前仍须人工验活）",
+					],
+				]),
 				resolveOwningLead: (recipient) =>
 					recipient === "exec-dead" ? "lead-a" : undefined,
 			});
@@ -584,6 +614,9 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 				source_ref: "exec-dead",
 			});
 			expect(notice1?.content).toContain("5 封信");
+			expect(notice1?.content).toContain("未签收 ≠ 已下线");
+			expect(notice1?.content).toContain("探针实况：StateStore 视图=alive");
+			expect(notice1?.content).toContain("活着则不要动它");
 
 			enqueue(queue, "dead-5", {
 				toAgent: "exec-dead",

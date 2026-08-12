@@ -7745,7 +7745,7 @@ export async function startBridge(
 					input.sourceKind === "lead_unacked"
 						? `${input.recipient} mailbox messages were not acknowledged`
 						: `Mailbox dead letters have no owning Lead: ${input.recipient}`,
-				body: `${input.summary}\n\nDecide whether to replay, discard, or reassign these ${input.deadCount} messages.`,
+				body: input.summary,
 				severity: "warning",
 			},
 			{

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { canonicalJsonString } from "flywheel-config";
+import { formatDeadLetterNotice } from "./dead-letter-format.js";
 import {
 	assertNoLoneSurrogate,
 	normalizeInboxContent,
@@ -280,6 +281,36 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 		ON mailbox(claim_expires_at)
 		WHERE state = 'LEASED' AND carrier = 'inbox'`);
 	upgradedMailboxConnections.add(db);
+}
+
+export function adoptInflightForRecipientOnConnection(
+	db: Database.Database,
+	input: {
+		recipientKind: "lead" | "runner";
+		toAgent: string;
+		now: string;
+	},
+): { requeued: number } {
+	if (input.recipientKind !== "lead" && input.recipientKind !== "runner") {
+		throw new Error("recipientKind must be lead or runner");
+	}
+	const toAgent = requiredText(input.toAgent, "toAgent");
+	assertUtcIsoTimestamp(input.now, "now");
+	return db
+		.transaction(() => ({
+			requeued: db
+				.prepare(
+					`UPDATE mailbox SET state = 'QUEUED',
+					   lease_retry_count = lease_retry_count + 1,
+					   claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL,
+					   delivered_at = NULL, next_retry_at = NULL,
+					   last_error = 'recipient_reborn'
+					 WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
+					   AND state = 'LEASED' AND batch_id IS NOT NULL`,
+				)
+				.run(input.recipientKind, toAgent).changes,
+		}))
+		.immediate();
 }
 
 export class MailboxQueue {
@@ -1198,6 +1229,14 @@ export class MailboxQueue {
 			.immediate();
 	}
 
+	adoptInflightForRecipient(input: {
+		recipientKind: "lead" | "runner";
+		toAgent: string;
+		now: string;
+	}): { requeued: number } {
+		return adoptInflightForRecipientOnConnection(this.db, input);
+	}
+
 	reconcileExpiredLeases(input: {
 		ownerEpoch: string;
 		now: string;
@@ -1459,6 +1498,7 @@ export class MailboxQueue {
 		maxDeadRowsPerRecipient: number;
 		maxSummaryBytes: number;
 		resolveOwningLead: (recipient: string) => string | undefined;
+		probeFactsByRecipient?: ReadonlyMap<string, string>;
 	}): DeadLetterNoticeScanResult {
 		for (const [name, value, allowZero] of [
 			["windowMs", input.windowMs, true],
@@ -1567,20 +1607,29 @@ export class MailboxQueue {
 						from_agent: string;
 						content: string;
 					}>;
-					const header = `${recipient} 有 ${aggregate.count} 封信始终没 ack，可能已下线。`;
-					const footer = "请决定：重新派 / 丢弃 / 转给别人。";
-					let content = `${header}\n摘要：`;
+					const renderedSummaries: string[] = [];
 					for (const summary of summaries) {
-						const line = `\n- ${summary.type} from ${summary.from_agent}: ${summary.content.slice(0, 120)}`;
-						if (
-							Buffer.byteLength(`${content}${line}\n${footer}`, "utf8") >
-							input.maxSummaryBytes
-						) {
+						const line = `${summary.type} from ${summary.from_agent}: ${summary.content.slice(0, 120)}`;
+						const candidate = formatDeadLetterNotice({
+							recipient,
+							count: aggregate.count,
+							probeFacts: input.probeFactsByRecipient?.get(recipient),
+							summaries: [...renderedSummaries, line],
+						});
+						if (Buffer.byteLength(candidate, "utf8") > input.maxSummaryBytes) {
 							break;
 						}
-						content += line;
+						renderedSummaries.push(line);
 					}
-					content = utf8Prefix(`${content}\n${footer}`, input.maxSummaryBytes);
+					const content = utf8Prefix(
+						formatDeadLetterNotice({
+							recipient,
+							count: aggregate.count,
+							probeFacts: input.probeFactsByRecipient?.get(recipient),
+							summaries: renderedSummaries,
+						}),
+						input.maxSummaryBytes,
+					);
 					const id = `dead_letter:${encodeURIComponent(recipient)}:${aggregate.through_seq}`;
 					const inserted = this.enqueue({
 						id,
@@ -1613,6 +1662,7 @@ export class MailboxQueue {
 		maxRowsPerRecipient: number;
 		maxSummaryBytes: number;
 		resolveOwningLead: (recipient: string) => string | undefined;
+		probeFactsByRecipient?: ReadonlyMap<string, string>;
 	}): DeadLetterAlertCandidate[] {
 		for (const [name, value] of [
 			["limit", input.limit],
@@ -1727,16 +1777,32 @@ export class MailboxQueue {
 					cursor,
 					input.maxRowsPerRecipient,
 				) as Array<{ type: string; from_agent: string; content: string }>;
-			let summary = `${row.to_agent} has ${aggregate.count} mailbox messages that were never acknowledged.`;
+			const renderedSummaries: string[] = [];
 			for (const item of summaries) {
-				const line = `\n- ${item.type} from ${item.from_agent}: ${item.content.slice(0, 120)}`;
-				if (
-					Buffer.byteLength(`${summary}${line}`, "utf8") > input.maxSummaryBytes
-				) {
+				const line = `${item.type} from ${item.from_agent}: ${item.content.slice(0, 120)}`;
+				const candidate = formatDeadLetterNotice({
+					recipient: row.to_agent,
+					count: aggregate.count,
+					probeFacts:
+						row.recipient_kind === "runner"
+							? input.probeFactsByRecipient?.get(row.to_agent)
+							: undefined,
+					summaries: [...renderedSummaries, line],
+				});
+				if (Buffer.byteLength(candidate, "utf8") > input.maxSummaryBytes) {
 					break;
 				}
-				summary += line;
+				renderedSummaries.push(line);
 			}
+			const summary = formatDeadLetterNotice({
+				recipient: row.to_agent,
+				count: aggregate.count,
+				probeFacts:
+					row.recipient_kind === "runner"
+						? input.probeFactsByRecipient?.get(row.to_agent)
+						: undefined,
+				summaries: renderedSummaries,
+			});
 			result.push({
 				sourceKind,
 				recipient: row.to_agent,

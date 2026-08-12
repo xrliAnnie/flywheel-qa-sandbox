@@ -196,6 +196,7 @@ export class LeadInboxRuntime {
 				recipientState: (executionId) =>
 					opts.store.resolveRunnerRecipientState(executionId).state,
 				resolveOwningLead,
+				probeFactsByRecipient: () => this.runnerProbeFacts(project.projectName),
 			});
 			for (const [leadIndex, lead] of project.leads.entries()) {
 				if (this.projectByLead.has(lead.agentId)) {
@@ -402,6 +403,36 @@ export class LeadInboxRuntime {
 		return `${projectName}\u001f${leadId}`;
 	}
 
+	private runnerProbeFacts(projectName: string): ReadonlyMap<string, string> {
+		const now = Date.now();
+		return new Map(
+			this.opts.store
+				.getActiveSessions()
+				.filter((session) => session.project_name === projectName)
+				.map((session) => {
+					const state = this.opts.store.resolveRunnerRecipientState(
+						session.execution_id,
+					).state;
+					const heartbeat = session.heartbeat_at
+						? Date.parse(
+								session.heartbeat_at.endsWith("Z")
+									? session.heartbeat_at
+									: `${session.heartbeat_at.replace(" ", "T")}Z`,
+							)
+						: Number.NaN;
+					const age = Number.isFinite(heartbeat)
+						? `${Math.max(0, Math.floor((now - heartbeat) / 60_000))}m`
+						: "未知";
+					const stateLabel =
+						state === "terminal_or_missing" ? "terminal" : state;
+					return [
+						session.execution_id,
+						`StateStore 视图=${stateLabel} / 最近心跳=${age}（注意：此为登记视图非 pane 直读，处置前仍须人工验活）`,
+					] as const;
+				}),
+		);
+	}
+
 	/**
 	 * Best-effort. A failure here leaves the marker `pending_alert` for the next
 	 * pass — the row stays skipped either way, because the marker (not the alert)
@@ -432,6 +463,7 @@ export class LeadInboxRuntime {
 			maxRowsPerRecipient: 20,
 			maxSummaryBytes: 4_096,
 			resolveOwningLead: input.resolveOwningLead,
+			probeFactsByRecipient: this.runnerProbeFacts(input.project.projectName),
 		})) {
 			const destinationLead =
 				candidate.sourceKind === "lead_unacked"
