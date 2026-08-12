@@ -1,13 +1,13 @@
 ---
 issue: FLY-1708
 phase: implement
-phaseCursor: 3/6
-updated: 2026-08-12T04:03:46.096Z
-nextStep: run focused regression, lint, full build, package tests, and shell harness
+phaseCursor: 4/6
+updated: 2026-08-12T04:17:42.362Z
+nextStep: Self-review diff, commit, and request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: implement (3/6)
-**next**: run focused regression, lint, full build, package tests, and shell harness
+**phase**: implement (4/6)
+**next**: Self-review diff, commit, and request code review
