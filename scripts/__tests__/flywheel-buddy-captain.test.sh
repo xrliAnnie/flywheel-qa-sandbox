@@ -52,7 +52,7 @@ done
 case "$url" in
   *brokenbridge*) exit 22 ;;
   *api/runs/active*) exit 0 ;;
-  *discord.com*/users/@me) printf '{"id":"bot1","username":"stub"}\n200' ;;
+  *discord.com*/users/@me) printf '{"id":"22222222222222222","username":"stub"}\n200' ;;
   *discord.com*/channels/*/messages/*) printf '\n204' ;;
   *discord.com*/channels/*/messages*)
     case "$method" in
@@ -82,16 +82,19 @@ make_fixture() {
       linear:{team:"QAC", project:"qa-captain", label:"Qa-captain"},
       leads:[
         {agentId:"cos-lead", chatChannel:"C-cos", match:{labels:["Triage"]},
-         botTokenEnv:"CASS_BOT_TOKEN", canSpawnRunners:false},
+         botTokenEnv:"CASS_BOT_TOKEN", botUserId:"11111111111111111", canSpawnRunners:false},
         {agentId:"tad-eng-lead", chatChannel:"C-eng", match:{labels:["Qa-captain"]},
-         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN"}
+         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN", botUserId:"22222222222222222"}
       ] }]' > "$h/.flywheel/projects.json"
   printf 'CASS_BOT_TOKEN=fixture-cos-value\nTAD_BOT_TOKEN=fixture-eng-value\nDISCORD_GUILD_ID=G1\nDISCORD_OWNER_USER_ID=100000000000000009\n' > "$h/.flywheel/.env"
   chmod 600 "$h/.flywheel/.env"
   cat > "$h/.flywheel/setup-state.json" <<EOF
 {"version":2,
  "steps":{
-   "bots":{"status":"done","evidence":{"path":"c1","guildId":"G1","results":[]}},
+   "bots":{"status":"done","evidence":{"path":"c1","guildId":"G1","results":[
+     {"leadId":"cos-lead","botUserId":"11111111111111111","tokenEnvName":"CASS_BOT_TOKEN"},
+     {"leadId":"tad-eng-lead","botUserId":"22222222222222222","tokenEnvName":"TAD_BOT_TOKEN"}
+   ]}},
    "channels":{"status":"done","evidence":{"channels":{"cos":"C-cos","eng":"C-eng","general":"C-gen"},"founderId":"100000000000000009"}}
  },
  "buddy":{"identity":{"project":"qa-captain","department":"engineering","cosPersona":"Cass","engPersona":"Tad","linearTeam":"QAC","projectSlug":"","skillsRepo":"xrliAnnie/flywheel-skills"}}}
