@@ -87,6 +87,13 @@ provider_install() {
   provider_detect
 }
 
+# _acp_login_cli — first-run interactive Claude boot with the same non-Lead
+# plugin boundary as model-bearing calls. Redirection belongs to the caller so
+# the argv remains executable in the contract harness.
+_acp_login_cli() {
+  "$ACP_CLAUDE_BIN" --settings "$ACP_NON_LEAD_SETTINGS" /login
+}
+
 # provider_login_guide — drive the CLI's OWN login flow in the foreground.
 # The caller (Buddy shell / bootstrap) owns the TTY; the CLI opens the
 # browser itself and prints a copyable URL when it cannot (its own fallback,
@@ -104,7 +111,7 @@ provider_login_guide() {
   fi
   echo "[claude-provider] launching the Claude login flow (finish in the browser, then exit the CLI)…" >&2
   # foreground, attached to the caller's TTY: first run enters login.
-  "$ACP_CLAUDE_BIN" /login </dev/tty >/dev/tty 2>&1 || true
+  _acp_login_cli </dev/tty >/dev/tty 2>&1 || true
   if _acp_logged_in; then
     _acp_emit '{ok:true, provider:"claude", login:"ok"}'
   else

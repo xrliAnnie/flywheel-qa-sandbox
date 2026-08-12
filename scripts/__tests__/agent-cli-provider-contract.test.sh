@@ -13,6 +13,7 @@ PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; }
 command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 required"; exit 1; }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROVIDER_DIR="$REPO_ROOT/scripts/lib/agent-cli-providers"
@@ -40,6 +41,23 @@ assert_contract_fn() {
     pass "$label"
   else
     fail "$label rc=$rc(want $want_rc) lines=$lines out='$out'"
+  fi
+}
+
+# assert_silent_fn <label> <provider-file> <fn> <want-rc> [args...]
+# Internal provider launch seams do not emit the public one-line envelope, but
+# their stubbed CLI argv is still executable behavior worth pinning.
+assert_silent_fn() {
+  local label="$1" file="$2" fn="$3" want_rc="$4"; shift 4
+  local rc
+  env -i HOME="$SANDBOX/home" USER=tester PATH="${CONTRACT_PATH:-$PATH}" \
+    bash -c "source '$file' || exit 97; $fn \"\$@\"" _ "$@" \
+    >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq "$want_rc" ]; then
+    pass "$label"
+  else
+    fail "$label rc=$rc(want $want_rc)"
   fi
 }
 
@@ -87,6 +105,45 @@ assert_contract_fn "H7 stub provider_start_buddy(persona,prompt)" "$STUB" provid
 assert_contract_fn "H8 stub provider_resume(session,prompt)" "$STUB" provider_resume 0 '.ok==true and .session_id=="s1"' "s1" "$PROMPT"
 assert_contract_fn "H9 stub provider_repair" "$STUB" provider_repair 0 '.ok==true'
 
+# FLY-1715: shell consumers cannot import the TypeScript constant at runtime,
+# so pin both unavoidable shell copies to the canonical exported key set.
+if python3 - "$REPO_ROOT" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+canonical_text = (root / "packages/config/src/non-lead-forbidden-plugins.ts").read_text()
+canonical_block = re.search(
+    r"NON_LEAD_FORBIDDEN_PLUGINS\s*=\s*\[(.*?)\]\s*as const",
+    canonical_text,
+    re.S,
+)
+assert canonical_block is not None
+canonical = set(re.findall(r'"([^"]+)"', canonical_block.group(1)))
+assert canonical
+
+setup_text = (root / "scripts/setup-discord-plugin-default-off.sh").read_text()
+setup = set(re.findall(r'^(?:FORK|OFFICIAL)_PLUGIN_KEY="([^"]+)"$', setup_text, re.M))
+
+buddy_text = (root / "scripts/lib/agent-cli-providers/claude.sh").read_text()
+buddy_match = re.search(r"readonly ACP_NON_LEAD_SETTINGS='([^']+)'", buddy_text)
+assert buddy_match is not None
+buddy_payload = json.loads(buddy_match.group(1))
+buddy_plugins = buddy_payload.get("enabledPlugins")
+assert isinstance(buddy_plugins, dict)
+assert all(value is False for value in buddy_plugins.values())
+
+assert setup == canonical
+assert set(buddy_plugins) == canonical
+PY
+then
+  pass "C0 shell Discord deny copies match the canonical TypeScript key set"
+else
+  fail "C0 shell Discord deny copies drifted from the canonical TypeScript key set"
+fi
+
 # ── M1: the real claude.sh against a stubbed PATH ───────────────────────────
 CLAUDE_SH="$PROVIDER_DIR/claude.sh"
 if [ -f "$CLAUDE_SH" ]; then
@@ -97,6 +154,7 @@ if [ -f "$CLAUDE_SH" ]; then
 #!/bin/bash
 [ -t 0 ] || cat >/dev/null
 is_print=false
+is_login=false
 settings_count=0
 settings_value=""
 take_settings=false
@@ -110,16 +168,19 @@ for a in "$@"; do
   case "$a" in
     --version) echo "9.9.9 (Claude Code)"; exit 0 ;;
     --print) is_print=true ;;
+    /login) is_login=true ;;
     --settings) take_settings=true ;;
     --settings=*) settings_count=$((settings_count + 1)); settings_value="${a#--settings=}" ;;
   esac
 done
-if [ "$is_print" = true ]; then
+if [ "$is_print" = true ] || [ "$is_login" = true ]; then
   [ "$take_settings" = false ] || exit 42
   [ "$settings_count" -eq 1 ] || exit 43
   jq -e '.enabledPlugins["discord@flywheel-plugins"] == false and .enabledPlugins["discord@claude-plugins-official"] == false' \
     >/dev/null 2>&1 <<<"$settings_value" || exit 44
-  printf '{"result":"stub reply","session_id":"sess-1234"}\n'
+  if [ "$is_print" = true ]; then
+    printf '{"result":"stub reply","session_id":"sess-1234"}\n'
+  fi
   exit 0
 fi
 exit 0
@@ -131,8 +192,9 @@ EOF
   assert_contract_fn "C3 claude provider_smoke disables both Discord plugins" "$CLAUDE_SH" provider_smoke 0 '.ok==true and .smoke=="ok"'
   assert_contract_fn "C4 claude provider_start_buddy disables both Discord plugins" "$CLAUDE_SH" provider_start_buddy 0 '.ok==true and (.reply|length>0) and (.session_id|length>0)' "$PERSONA" "$PROMPT"
   assert_contract_fn "C5 claude provider_resume disables both Discord plugins" "$CLAUDE_SH" provider_resume 0 '.ok==true and (.reply|length>0)' "sess-1234" "$PROMPT"
+  assert_silent_fn "C6 claude login boot disables both Discord plugins" "$CLAUDE_SH" _acp_login_cli 0
   rm -f "$CONTRACT_BIN/claude"
-  assert_contract_fn "C6 claude provider_detect (no CLI → exit 1 + not_found)" "$CLAUDE_SH" provider_detect 1 '.ok==false and .error_code=="not_found"'
+  assert_contract_fn "C7 claude provider_detect (no CLI → exit 1 + not_found)" "$CLAUDE_SH" provider_detect 1 '.ok==false and .error_code=="not_found"'
 else
   echo "[TEST] (claude.sh not present yet — M1 section skipped)"
 fi
