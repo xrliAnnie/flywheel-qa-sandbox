@@ -1,0 +1,23 @@
+flowchart TB
+    R["registry 行(唯一权威源)<br/>projects.json:每个 Lead 一行<br/>名字 + 项目 + bot 编号 + token 指针 + 状态目录"]
+    R --> C["resolver 单实现<br/>每次启动只解析一次<br/>产出带指纹(digest)的不可变身份证"]
+    C --> ID["CanonicalLeadIdentity 身份证<br/>全链持同一份,不可改"]
+    ID --> F1["环境变量投影"]
+    ID --> F2["bot token 选取"]
+    ID --> F3["Discord 状态目录"]
+    ID --> F4["期望 bot 编号"]
+    ID --> F5["lease 键 + 指纹落库"]
+    ID --> F6["Agent Team 邮箱名"]
+    F1 --> A1{"A1 环境一致性断言<br/>新旧变量必须同一个 Lead"}
+    F4 --> A2{"A2 登录断言<br/>实际登录的 bot == 登记的 bot"}
+    F5 --> A3{"A3 lease 绑定断言<br/>同代际 + 同指纹"}
+    A1 -->|全过| OK["才允许上岗:<br/>注册消息处理、开始收发"]
+    A2 -->|全过| OK
+    A3 -->|全过| OK
+    A1 -.->|任一失败| DIE["fail-loud:立即退出<br/>零副作用(不发言、不记账)"]
+    A2 -.->|任一失败| DIE
+    A3 -.->|任一失败| DIE
+    style R fill:#e8f2ff,stroke:#007aff,stroke-width:2px
+    style ID fill:#e9f9ee,stroke:#34c759,stroke-width:2px
+    style DIE fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style OK fill:#e9f9ee,stroke:#34c759
