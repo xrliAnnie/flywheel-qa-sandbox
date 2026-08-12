@@ -14,7 +14,14 @@
  * non-self-authorizing.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import type http from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,9 +70,11 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 	let tmpWorktree: string;
 	let commDbDir: string;
 	let originalHome: string | undefined;
+	let originalPathCheck: string | undefined;
 
 	const execId = "exec-codex-trigger-1";
 	const issueId = "issue-fly-137";
+	const committedPlanPath = "doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md";
 
 	beforeEach(async () => {
 		// Redirect HOME so commDbPathForProject() resolves to a temp dir.
@@ -77,7 +86,24 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		mkdirSync(tmpWorktree, { recursive: true });
 		mkdirSync(commDbDir, { recursive: true });
 		originalHome = process.env.HOME;
+		originalPathCheck = process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK;
+		delete process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK;
 		process.env.HOME = commDbDir;
+		execFileSync("git", ["init", "-q"], { cwd: tmpWorktree });
+		execFileSync("git", ["config", "user.email", "test@example.com"], {
+			cwd: tmpWorktree,
+		});
+		execFileSync("git", ["config", "user.name", "Test"], {
+			cwd: tmpWorktree,
+		});
+		mkdirSync(join(tmpWorktree, "doc/engineer/plan/draft"), {
+			recursive: true,
+		});
+		writeFileSync(join(tmpWorktree, committedPlanPath), "# plan\n");
+		execFileSync("git", ["add", committedPlanPath], { cwd: tmpWorktree });
+		execFileSync("git", ["commit", "-q", "-m", "plan"], {
+			cwd: tmpWorktree,
+		});
 
 		store = await StateStore.create(":memory:");
 		const config = makeConfig();
@@ -97,6 +123,10 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			status: "running",
 			started_at: new Date().toISOString(),
 			worktree_path: tmpWorktree,
+			branch: execFileSync("git", ["branch", "--show-current"], {
+				cwd: tmpWorktree,
+				encoding: "utf8",
+			}).trim(),
 		});
 	});
 
@@ -109,6 +139,11 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			process.env.HOME = originalHome;
 		} else {
 			delete process.env.HOME;
+		}
+		if (originalPathCheck === undefined) {
+			delete process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK;
+		} else {
+			process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK = originalPathCheck;
 		}
 		rmSync(tmpWorktree, { recursive: true, force: true });
 		vi.restoreAllMocks();
@@ -155,16 +190,14 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			event_type: "stage_changed",
 			payload: {
 				stage: "design_review",
-				plan_path: "doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
+				plan_path: committedPlanPath,
 			},
 		});
 		expect(res.status).toBe(200);
 
 		// Session row has plan_path persisted
 		const updated = store.getSession(execId);
-		expect(updated?.plan_path).toBe(
-			"doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
-		);
+		expect(updated?.plan_path).toBe(committedPlanPath);
 
 		// Runner inbox has the instruction
 		const instructions = readCommDbInstructions();
@@ -172,10 +205,14 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		expect(instructions[0]!.from_agent).toBe("bridge");
 		expect(instructions[0]!.to_agent).toBe(execId);
 		expect(instructions[0]!.content).toContain("/codex-design-review");
-		expect(instructions[0]!.content).toContain(
-			"doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
-		);
+		expect(instructions[0]!.content).toContain(committedPlanPath);
 		expect(instructions[0]!.content).toContain("await-codex-gate design");
+		const manifest = store.getCurrentDesignReviewManifest(execId);
+		expect(manifest?.expected_plan_path).toBe(committedPlanPath);
+		expect(manifest?.expected_blob_sha).toMatch(/^[a-f0-9]{40}$/);
+		expect(manifest?.delivered_at).toBeTruthy();
+		expect(instructions[0]!.content).toContain(manifest!.request_id);
+		expect(instructions[0]!.content).toContain(manifest!.expected_blob_sha);
 
 		// Bridge does NOT pre-write the result file (gate must come from Runner/Codex).
 		const resultPath = join(
@@ -187,6 +224,131 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			"design-review.json",
 		);
 		expect(existsSync(resultPath)).toBe(false);
+	});
+
+	it("validates only the current clean committed design result projection", async () => {
+		await postEvent({
+			event_id: "evt-design-validation",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		});
+		const manifest = store.getCurrentDesignReviewManifest(execId)!;
+		const projection = {
+			executionId: execId,
+			reviewType: "design",
+			status: "APPROVED",
+			reviewedTarget: committedPlanPath,
+			requestId: manifest.request_id,
+			reviewedPlanBlobSha: manifest.expected_blob_sha,
+		};
+		const approved = await fetch(`${baseUrl}/design-review-validation`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(projection),
+		});
+		expect(approved.status).toBe(200);
+		expect(await approved.json()).toEqual({ allowed: true });
+
+		writeFileSync(
+			join(tmpWorktree, committedPlanPath),
+			"# changed after review\n",
+		);
+		const denied = await fetch(`${baseUrl}/design-review-validation`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(projection),
+		});
+		expect(denied.status).toBe(409);
+		const denial = (await denied.json()) as Record<string, unknown>;
+		expect(denial).toEqual({
+			allowed: false,
+			reason: expect.stringContaining("commit plan current contents"),
+		});
+		expect(JSON.stringify(denial)).not.toContain(manifest.request_id);
+		expect(JSON.stringify(denial)).not.toContain(manifest.expected_blob_sha);
+	});
+
+	it("rejects dirty plan staging without minting a manifest", async () => {
+		writeFileSync(
+			join(tmpWorktree, committedPlanPath),
+			"# dirty before stage\n",
+		);
+		const res = await postEvent({
+			event_id: "evt-design-dirty",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: committedPlanPath },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getCurrentDesignReviewManifest(execId)).toBeNull();
+		expect(readCommDbInstructions()).toHaveLength(1);
+		expect(readCommDbInstructions()[0]!.content).toContain(
+			"commit plan current contents",
+		);
+	});
+
+	it("kill switch restores the pre-manifest design instruction", async () => {
+		process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK = "0";
+		const legacyPath = "doc/engineer/plan/draft/not-on-this-branch.md";
+		const res = await postEvent({
+			event_id: "evt-design-kill-switch",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d-codex-test",
+			event_type: "stage_changed",
+			payload: { stage: "design_review", plan_path: legacyPath },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getCurrentDesignReviewManifest(execId)).toBeNull();
+		const instructions = readCommDbInstructions();
+		expect(instructions).toHaveLength(1);
+		expect(instructions[0]!.content).toContain(legacyPath);
+		expect(instructions[0]!.content).not.toContain("reviewedPlanBlobSha");
+	});
+
+	it("fails closed with 503 when the Bridge has no ingest token", async () => {
+		const noTokenConfig = makeConfig();
+		delete noTokenConfig.ingestToken;
+		const noTokenServer = createBridgeApp(
+			store,
+			testProjects,
+			noTokenConfig,
+		).listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) =>
+			noTokenServer.once("listening", resolve),
+		);
+		try {
+			const address = noTokenServer.address();
+			const port = typeof address === "object" && address ? address.port : 0;
+			const response = await fetch(
+				`http://127.0.0.1:${port}/design-review-validation`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: "{}",
+				},
+			);
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({
+				allowed: false,
+				reason: "bridge ingest token not configured",
+			});
+		} finally {
+			await new Promise<void>((resolve, reject) =>
+				noTokenServer.close((error) => (error ? reject(error) : resolve())),
+			);
+		}
 	});
 
 	it("FLY-1188 §7.1: codex-tmux AUTHOR skips the legacy trigger — no instruction, no skip.json (request-driven lane)", async () => {

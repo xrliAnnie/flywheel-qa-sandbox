@@ -1127,6 +1127,25 @@ export interface CodexReviewRecord {
 }
 
 /**
+ * FLY-1718 P3: Bridge-authoritative binding between one design-review stage
+ * event and the exact committed plan blob the runner is allowed to submit.
+ * A re-stage creates a new revision and atomically retires the old current row;
+ * replaying the same source event returns the original revision.
+ */
+export interface DesignReviewManifest {
+	execution_id: string;
+	revision: number;
+	request_id: string;
+	project_name: string;
+	source_event_id: string;
+	expected_plan_path: string;
+	expected_blob_sha: string;
+	is_current: boolean;
+	created_at: string;
+	delivered_at?: string;
+}
+
+/**
  * FLY-1188 §7.1: one runner-issued review request in the codex-author lane.
  * `request_id` is the idempotency key; `question_id` is the ONE gate this job
  * may answer. Server-derived trust: `author_family` comes from the session's
@@ -3370,6 +3389,30 @@ export class StateStore {
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
+		);
+
+		// FLY-1718 P3: immutable revisions bind auto design-review instructions
+		// to a committed plan blob. Only one row per execution may be current;
+		// delivered_at is the durable receipt for the CommDB outbox write.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS design_review_manifest (
+				execution_id TEXT NOT NULL,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				request_id TEXT NOT NULL UNIQUE,
+				project_name TEXT NOT NULL,
+				source_event_id TEXT NOT NULL,
+				expected_plan_path TEXT NOT NULL,
+				expected_blob_sha TEXT NOT NULL,
+				is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0,1)),
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				delivered_at TEXT,
+				PRIMARY KEY (execution_id, revision),
+				UNIQUE (execution_id, source_event_id)
+			)
+		`);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_design_review_manifest_current
+			   ON design_review_manifest(execution_id) WHERE is_current = 1`,
 		);
 
 		// FLY-1251: exact-head, server-owned docs-only/code classification. A
@@ -7038,6 +7081,170 @@ export class StateStore {
 		const deleted = this.db.getRowsModified();
 		if (deleted > 0) this.save();
 		return deleted;
+	}
+
+	// ───────────────────── FLY-1718 design-review manifest ────────────────────
+
+	private rowToDesignReviewManifest(
+		row: Record<string, unknown>,
+	): DesignReviewManifest {
+		return {
+			execution_id: row.execution_id as string,
+			revision: Number(row.revision),
+			request_id: row.request_id as string,
+			project_name: row.project_name as string,
+			source_event_id: row.source_event_id as string,
+			expected_plan_path: row.expected_plan_path as string,
+			expected_blob_sha: row.expected_blob_sha as string,
+			is_current: Number(row.is_current) === 1,
+			created_at: row.created_at as string,
+			delivered_at: (row.delivered_at as string) ?? undefined,
+		};
+	}
+
+	private findDesignReviewManifest(
+		executionId: string,
+		whereColumn: "revision" | "source_event_id",
+		value: number | string,
+	): DesignReviewManifest | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM design_review_manifest WHERE execution_id = ? AND ${whereColumn} = ?`,
+		);
+		stmt.bind([executionId, value]);
+		const manifest = stmt.step()
+			? this.rowToDesignReviewManifest(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return manifest;
+	}
+
+	advanceDesignReviewManifest(input: {
+		executionId: string;
+		projectName: string;
+		sourceEventId: string;
+		expectedPlanPath: string;
+		expectedBlobSha: string;
+	}): DesignReviewManifest {
+		for (const [name, value] of Object.entries(input)) {
+			if (typeof value !== "string" || value.trim().length === 0) {
+				throw new Error(`design review manifest ${name} is required`);
+			}
+		}
+		const blobSha = input.expectedBlobSha.toLowerCase();
+		if (!/^[a-f0-9]{40}$/.test(blobSha)) {
+			throw new Error("design review manifest expectedBlobSha must be 40 hex");
+		}
+
+		let result: DesignReviewManifest | null = null;
+		let inserted = false;
+		this.db.transaction(() => {
+			const existing = this.findDesignReviewManifest(
+				input.executionId,
+				"source_event_id",
+				input.sourceEventId,
+			);
+			if (existing) {
+				if (
+					existing.project_name !== input.projectName ||
+					existing.expected_plan_path !== input.expectedPlanPath ||
+					existing.expected_blob_sha !== blobSha
+				) {
+					throw new Error(
+						`design review source event replay conflict: ${input.sourceEventId}`,
+					);
+				}
+				result = existing;
+				return;
+			}
+
+			const stmt = this.db.prepare(
+				"SELECT COALESCE(MAX(revision), 0) AS revision FROM design_review_manifest WHERE execution_id = ?",
+			);
+			stmt.bind([input.executionId]);
+			if (!stmt.step()) throw new Error("failed to allocate manifest revision");
+			const revision = Number(stmt.getAsObject().revision) + 1;
+			stmt.free();
+
+			this.db.run(
+				"UPDATE design_review_manifest SET is_current = 0 WHERE execution_id = ? AND is_current = 1",
+				[input.executionId],
+			);
+			this.db.run(
+				`INSERT INTO design_review_manifest
+				   (execution_id, revision, request_id, project_name, source_event_id,
+				    expected_plan_path, expected_blob_sha, is_current)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+				[
+					input.executionId,
+					revision,
+					randomUUID(),
+					input.projectName,
+					input.sourceEventId,
+					input.expectedPlanPath,
+					blobSha,
+				],
+			);
+			result = this.findDesignReviewManifest(
+				input.executionId,
+				"revision",
+				revision,
+			);
+			inserted = true;
+		});
+		if (inserted) this.save();
+		if (!result) throw new Error("design review manifest insert vanished");
+		return result;
+	}
+
+	getCurrentDesignReviewManifest(
+		executionId: string,
+	): DesignReviewManifest | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM design_review_manifest WHERE execution_id = ? AND is_current = 1",
+		);
+		stmt.bind([executionId]);
+		const manifest = stmt.step()
+			? this.rowToDesignReviewManifest(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return manifest;
+	}
+
+	listUndeliveredDesignReviewManifests(): DesignReviewManifest[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM design_review_manifest
+			  WHERE is_current = 1 AND delivered_at IS NULL
+			  ORDER BY created_at, execution_id`,
+		);
+		const manifests: DesignReviewManifest[] = [];
+		while (stmt.step()) {
+			manifests.push(
+				this.rowToDesignReviewManifest(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return manifests;
+	}
+
+	markDesignReviewManifestDelivered(
+		executionId: string,
+		revision: number,
+	): boolean {
+		this.db.run(
+			`UPDATE design_review_manifest SET delivered_at = datetime('now')
+			  WHERE execution_id = ? AND revision = ? AND is_current = 1
+			    AND delivered_at IS NULL`,
+			[executionId, revision],
+		);
+		const marked = this.db.getRowsModified() === 1;
+		if (marked) this.save();
+		return marked;
 	}
 
 	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────

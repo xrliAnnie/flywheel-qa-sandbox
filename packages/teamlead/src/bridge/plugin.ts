@@ -224,6 +224,8 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
+import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
+import { validateDesignReviewProjection } from "./design-review-validation.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
@@ -1663,6 +1665,38 @@ export function createBridgeApp(
 			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
 		),
 	);
+
+	// FLY-1718 P3: a design result is not self-authorizing. The runner submits
+	// only its result projection; StateStore + the persisted worktree remain the
+	// authority. Missing server token is an explicit 503 rather than inheriting
+	// tokenAuthMiddleware's legacy tokenless no-op behavior.
+	if (!config.ingestToken) {
+		app.post("/design-review-validation", (_req, res) => {
+			res.status(503).json({
+				allowed: false,
+				reason: "bridge ingest token not configured",
+			});
+		});
+	} else {
+		app.post(
+			"/design-review-validation",
+			tokenAuthMiddleware(config.ingestToken),
+			(req, res) => {
+				const result = validateDesignReviewProjection(
+					store,
+					(req.body ?? {}) as Record<string, unknown>,
+				);
+				if (result.allowed) {
+					res.json(result);
+					return;
+				}
+				res.status(result.httpStatus).json({
+					allowed: false,
+					reason: result.reason,
+				});
+			},
+		);
+	}
 
 	// FLY-1188 §7.1: codex-author review-request registration. Runner-facing
 	// like /events → same ingest-token auth. A 200 is the DURABLE-ACCEPTED ack
@@ -6119,6 +6153,11 @@ export async function startBridge(
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
 	);
+	const reconcileDesignReviewManifestOutbox = (): void => {
+		if (process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK === "0") return;
+		reconcileDesignReviewInstructions(store);
+	};
+	reconcileDesignReviewManifestOutbox();
 
 	// FLY-725 (Codex R2 #1): capture the milestone-report baseline cutoff BEFORE
 	// the Bridge starts accepting events. On the first patrol after this project
@@ -6138,6 +6177,11 @@ export async function startBridge(
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
+	const designReviewManifestTimer = setInterval(
+		reconcileDesignReviewManifestOutbox,
+		30_000,
+	);
+	designReviewManifestTimer.unref?.();
 
 	// GEO-195: Use RegistryHeartbeatNotifier when registry has entries, else no-op
 	const notifier: HeartbeatNotifier =
@@ -10640,6 +10684,7 @@ export async function startBridge(
 		idleWatchdog.stop();
 		leadWatchdog.stop();
 		clearInterval(leadAlertDrainTimer);
+		clearInterval(designReviewManifestTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
