@@ -1,13 +1,13 @@
 ---
 issue: FLY-1708
 phase: design
-phaseCursor: 2/4
-updated: 2026-08-12T02:50:25.042Z
-nextStep: codex design review (plan.md written per 节约令, skip exploration/research)
+phaseCursor: 3/4
+updated: 2026-08-12T03:45:16.895Z
+nextStep: founder HTML + publish + report
 chunks: []
 pointers: {}
 ---
 
 # FLY-1708 progress
-**phase**: design (2/4)
-**next**: codex design review (plan.md written per 节约令, skip exploration/research)
+**phase**: design (3/4)
+**next**: founder HTML + publish + report
