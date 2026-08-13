@@ -115,7 +115,22 @@ done < <(jq -r '.launchEnvironment | to_entries[] | [.key,.value] | @tsv' "$MANI
 source "$FLYWHEEL_WRAPPER_ENV_FILE"
 AGENT=$(jq -r '.leadId' "$MANIFEST")
 PROJ=$(jq -r '.projectName' "$MANIFEST")
-TOKEN_ENV=$(jq -r '.botTokenEnv' "$MANIFEST")
+PROJECTS_FILE=$(jq -r '.projectsFile' "$MANIFEST")
+LEAD_ROW=$(jq -cer --arg project "$PROJ" --arg agent "$AGENT" '
+  [.[] | select(.projectName == $project) | .leads[]? | select(.agentId == $agent)]
+  | if length == 1 then .[0] else error("expected exactly one canonical Lead row") end
+' "$PROJECTS_FILE")
+TOKEN_ENV=$(jq -r '.botTokenEnv' <<<"$LEAD_ROW")
+export FLYWHEEL_LEAD_ID="$AGENT"
+export LEAD_ID="$AGENT"
+export FLYWHEEL_PROJECT_NAME="$PROJ"
+export PROJECT_NAME="$PROJ"
+export FLYWHEEL_LEAD_KEY="${PROJ}-${AGENT}"
+export FLYWHEEL_LEAD_ROLE="$(jq -r '.role // "lead"' <<<"$LEAD_ROW")"
+export FLYWHEEL_LEAD_BACKEND="$(jq -r '.backend // "claude-code"' <<<"$LEAD_ROW")"
+export DISCORD_STATE_DIR="$(jq -r '.discordStateDir' <<<"$LEAD_ROW")"
+export DISCORD_EXPECTED_BOT_USER_ID="$(jq -r '.botUserId' <<<"$LEAD_ROW")"
+export DISCORD_IDENTITY_MODE=managed
 export DISCORD_BOT_TOKEN="${!TOKEN_ENV:-}"
 SOCKET="/tmp/fly1389-${AGENT}.sock"
 TMP_MANIFEST="${MANIFEST}.tmp.$$"
