@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execTmux } from "../tmux-exec.js";
@@ -41,7 +42,7 @@ function tmuxUsable(): boolean {
 			}).status === 0
 		);
 	} finally {
-		spawnSync("tmux", ["kill-server"], {
+		spawnSync("tmux", ["kill-session", "-t", `=${session}`], {
 			env,
 			stdio: "ignore",
 			timeout: 5000,
@@ -51,6 +52,25 @@ function tmuxUsable(): boolean {
 }
 
 const describeReal = tmuxUsable() ? describe : describe.skip;
+
+async function captureUntil(
+	target: string,
+	env: NodeJS.ProcessEnv,
+	marker: string,
+): Promise<string> {
+	const deadline = Date.now() + 2000;
+	let last = "";
+	do {
+		const capture = await execTmux(["capture-pane", "-t", target, "-p"], {
+			env,
+			timeout: 5000,
+		});
+		last = capture.stdout;
+		if (last.includes(marker)) return last;
+		await delay(25);
+	} while (Date.now() < deadline);
+	throw new Error(`tmux marker did not appear before timeout; capture=${last}`);
+}
 
 describeReal("execTmux default-server routing (real tmux)", () => {
 	let root = "";
@@ -112,17 +132,21 @@ describeReal("execTmux default-server routing (real tmux)", () => {
 
 	afterAll(() => {
 		if (baseEnv) {
-			spawnSync("tmux", ["kill-server"], {
+			spawnSync("tmux", ["kill-session", "-t", `=${session}`], {
 				env: baseEnv,
 				stdio: "ignore",
 				timeout: 5000,
 			});
 			if (privateSocket) {
-				spawnSync("tmux", ["-S", privateSocket, "kill-server"], {
-					env: baseEnv,
-					stdio: "ignore",
-					timeout: 5000,
-				});
+				spawnSync(
+					"tmux",
+					["-S", privateSocket, "kill-session", "-t", "=lead-seat"],
+					{
+						env: baseEnv,
+						stdio: "ignore",
+						timeout: 5000,
+					},
+				);
 			}
 		}
 		if (root) rmSync(root, { recursive: true, force: true });
@@ -147,11 +171,9 @@ describeReal("execTmux default-server routing (real tmux)", () => {
 			}),
 		).resolves.toMatchObject({ stdout: expect.any(String) });
 
-		const capture = await execTmux(["capture-pane", "-t", target, "-p"], {
-			env: seatEnv,
-			timeout: 5000,
-		});
-		expect(capture.stdout).toContain("FLY1681_DEFAULT_SERVER");
+		await expect(
+			captureUntil(target, seatEnv, "FLY1681_DEFAULT_SERVER"),
+		).resolves.toContain("FLY1681_DEFAULT_SERVER");
 
 		const killed = spawnSync("tmux", ["kill-session", "-t", `=${session}`], {
 			env: baseEnv,

@@ -1,5 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { execTmux, sanitizeTmuxEnv } from "../tmux-exec.js";
+import { execTmux, requireTmuxTarget, sanitizeTmuxEnv } from "../tmux-exec.js";
+
+describe("requireTmuxTarget", () => {
+	it("rejects an empty or whitespace-only target", () => {
+		expect(() => requireTmuxTarget("")).toThrow("tmux target is empty");
+		expect(() => requireTmuxTarget(" \t\n")).toThrow("tmux target is empty");
+	});
+
+	it("preserves the exact non-empty target", () => {
+		expect(requireTmuxTarget("runner-flywheel:@12")).toBe(
+			"runner-flywheel:@12",
+		);
+	});
+});
 
 describe("sanitizeTmuxEnv", () => {
 	it("removes seat-scoped tmux variables while preserving the default-server environment", () => {

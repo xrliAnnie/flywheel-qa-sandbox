@@ -15,7 +15,7 @@ import {
 	validateAbandonReason,
 } from "./lifecycle.js";
 import { detectTerminalStatus } from "./status.js";
-import { execTmux } from "./tmux-exec.js";
+import { execTmux, requireTmuxTarget } from "./tmux-exec.js";
 
 // FLY-229: cap on terminal rows fetched per `runner_terminal_list` call, to
 // bound concurrent tmux liveness probes. Parked-alive sessions are inherently
@@ -81,6 +81,7 @@ function getSessionScoped(
 }
 
 async function tmuxCapture(target: string, lines: number): Promise<string> {
+	requireTmuxTarget(target);
 	const { stdout } = await execTmux(
 		["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
 		{ timeout: 5000 },
@@ -90,6 +91,7 @@ async function tmuxCapture(target: string, lines: number): Promise<string> {
 
 async function tmuxAlive(tmuxTarget: string): Promise<boolean> {
 	try {
+		requireTmuxTarget(tmuxTarget);
 		// Use list-panes with the full target (session:window) to check
 		// if the specific window exists, not just the parent session.
 		await execTmux(["list-panes", "-t", tmuxTarget], {
