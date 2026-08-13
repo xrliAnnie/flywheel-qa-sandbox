@@ -158,7 +158,7 @@ else
 fi
 
 # ── D3: parse_first_task — 4 samples + vague fallback (sourced harness) ──
-H3="$SANDBOX/home3"; mkdir -p "$H3"
+H3="$SANDBOX/home3"; mkdir -p "$H3/.flywheel"
 d3_parse() { # <piped-input> <first-arg-text> → prints FB_PROPOSAL
   printf '%s' "$1" | env -i HOME="$H3" USER=tester PATH="$PATH" \
     FLYWHEEL_BUDDY_STEPS_BIN="$STUB_STEPS" \
@@ -166,7 +166,9 @@ d3_parse() { # <piped-input> <first-arg-text> → prints FB_PROPOSAL
     FLYWHEEL_BUDDY_NONINTERACTIVE=1 FLYWHEEL_BUDDY_SOURCED=1 \
     bash -c '
       arg="$1"
-      set --   # sourced scripts inherit caller args; the buddy arg parser must see none
+      # Keep one explicit Buddy arg so Bash 3.2 does not nounset-fail while
+      # expanding an empty FB_ARGS array inside fb_steps().
+      set -- --state-dir "$HOME/.flywheel"
       source "'"$BUDDY"'" || exit 97
       fb_parse_first_task "$arg" >/dev/null 2>&1
       printf "%s\n" "$FB_PROPOSAL"
