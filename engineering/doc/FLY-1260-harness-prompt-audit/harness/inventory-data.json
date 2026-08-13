@@ -1,0 +1,2005 @@
+{
+	"scenarios": [
+		{
+			"scenario": "S01-minimal-no-lead-no-gates",
+			"note": "基线：无 Lead、无 checkpoint、无 doc-flow（6-step base flow + preamble + ledger + completion）",
+			"totalUtf8Bytes": 3214,
+			"totalUnicodeChars": 3198,
+			"blocks": [
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "a76994ccecc7ccea"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 608,
+					"unicodeChars": 606,
+					"sha256": "77169a0b8728ad8f"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S02-prod-generic-claude",
+			"note": "生产形态（本 issue 同款）：Lead + 全 checkpoint + doc-flow full + shipped generic 角色文件，claude 腿",
+			"totalUtf8Bytes": 30785,
+			"totalUnicodeChars": 30466,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "cfb344999eeb5360"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1446,
+					"unicodeChars": 1368,
+					"sha256": "b9f968a6088c86e1"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 553,
+					"unicodeChars": 553,
+					"sha256": "37f99ab59a0da0c9"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "8edc178c2f5c7afc"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "a6be2afc7de12d16"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "0181b4a73b69dbfd"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "a1f7e30cbd9426c5"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "59413b1354448722"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "3a3c59677be4c9b4"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "a808247e2e0ba7a0"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "83ef7dd6f3c45830"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S03-prod-generic-codex",
+			"note": "同 S02 但 codex 腿（runnerBackend=codex-tmux 的 vendor 变体文本）",
+			"totalUtf8Bytes": 35433,
+			"totalUnicodeChars": 35062,
+			"blocks": [
+				{
+					"block": "codex-env-translation",
+					"utf8Bytes": 833,
+					"unicodeChars": 829,
+					"sha256": "1358973126dd63ad"
+				},
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1115,
+					"unicodeChars": 1107,
+					"sha256": "364dd66f0c060f30"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "e34eafb256986a52"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 2204,
+					"unicodeChars": 2118,
+					"sha256": "087919198aa47e69"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 553,
+					"unicodeChars": 553,
+					"sha256": "c66e28030ce179b2"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 1053,
+					"unicodeChars": 1049,
+					"sha256": "a610fcfc773799b8"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 406,
+					"unicodeChars": 406,
+					"sha256": "4844af57f9a6b293"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2931,
+					"unicodeChars": 2915,
+					"sha256": "935adea1f1e72351"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 1110,
+					"unicodeChars": 1104,
+					"sha256": "3f0d959727467478"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 729,
+					"unicodeChars": 725,
+					"sha256": "705c0a2002b0f022"
+				},
+				{
+					"block": "code-review-gate",
+					"utf8Bytes": 1805,
+					"unicodeChars": 1787,
+					"sha256": "b8a564e0eab92e46"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4708,
+					"unicodeChars": 4678,
+					"sha256": "4e404e7d3038f390"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 680,
+					"unicodeChars": 676,
+					"sha256": "5069e72896389474"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 673,
+					"unicodeChars": 669,
+					"sha256": "8d13da9d934e7e07"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S04-doc-tier-plan-only",
+			"note": "doc-flow plan_only 档",
+			"totalUtf8Bytes": 30572,
+			"totalUnicodeChars": 30241,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "c490a48d008a57ae"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1233,
+					"unicodeChars": 1143,
+					"sha256": "1c36e25312f736f1"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 553,
+					"unicodeChars": 553,
+					"sha256": "25a1943570143838"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "58365d5882dbb151"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "3f169d10061d50a4"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "b79a269630a48389"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "69a1b9c98ddabf9d"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "23f14f7bc998d868"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "d13efbd77e62af69"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "b3c97ec1158b3d33"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "5670c442918acc33"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S05-doc-tier-none",
+			"note": "doc-flow none 档",
+			"totalUtf8Bytes": 30149,
+			"totalUnicodeChars": 29898,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "f2cd6e6f9ab810f5"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 810,
+					"unicodeChars": 800,
+					"sha256": "3df661c1cd63a5f9"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 553,
+					"unicodeChars": 553,
+					"sha256": "1462f2549cfe5fa0"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "3e2727957fb3a52d"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "20eedbda158b24b0"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "7cde2a420a5127f8"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "d9833dd72be7e672"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "0df8690e41258a23"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "2400b8298f9426df"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "ff798f32d7d7261a"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "0baf58b482fc821a"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S06-auto-qa-mode",
+			"note": "Auto-QA runner（qaContext + sessionRole=qa + agentName=qa → shipped qa-executor 兜底角色 6,149 B；flywheel 声明的项目 qa 为 3,330 B）：独立验证契约链",
+			"totalUtf8Bytes": 16869,
+			"totalUnicodeChars": 16751,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 6165,
+					"unicodeChars": 6097,
+					"sha256": "14a21deeab754f7d"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 2128,
+					"unicodeChars": 2116,
+					"sha256": "c1112b48cf59e19b"
+				},
+				{
+					"block": "qa-verdict",
+					"utf8Bytes": 1830,
+					"unicodeChars": 1814,
+					"sha256": "ba5a3da077fa5050"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "00eff3fdd7090a9d"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "341d869557ada0e8"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "85ba0e8a5dffbfd2"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "f0b0e9337a715d18"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "f2d609423f88cbf5"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "c041c94e6bd0387e"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S07-three-stage-design",
+			"note": "三段式 design phase（sessionRole=design + shareParentBranch）",
+			"totalUtf8Bytes": 31505,
+			"totalUnicodeChars": 31158,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "42a23e7e66b9e7e7"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "ae41f2e60c2c6399"
+				},
+				{
+					"block": "three-stage-design",
+					"utf8Bytes": 543,
+					"unicodeChars": 531,
+					"sha256": "67d9ce85ed24df5f"
+				},
+				{
+					"block": "keepalive",
+					"utf8Bytes": 746,
+					"unicodeChars": 742,
+					"sha256": "4ca05f2582ea7b4f"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "00604abc3e761258"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "474bea77abd0e807"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "5f07dff8ee14d551"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "f4c88b0250c3b69b"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "9b7b16d0df271397"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "5c97ebdb48961439"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "043ca8930e308abd"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "33c493aa3b9e420e"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S08-three-stage-implement",
+			"note": "三段式 implement phase",
+			"totalUtf8Bytes": 31914,
+			"totalUnicodeChars": 31577,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "c6fc1fca8b77fddc"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "f7d756f672806aa3"
+				},
+				{
+					"block": "three-stage-implement",
+					"utf8Bytes": 647,
+					"unicodeChars": 647,
+					"sha256": "e06197106ccfe846"
+				},
+				{
+					"block": "keepalive",
+					"utf8Bytes": 1051,
+					"unicodeChars": 1045,
+					"sha256": "cc17bbcc407286d0"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "86c5584714627e1a"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "0bc9817047c01ccd"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "40b02662cf445022"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "f9fd7e921a758ac1"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "9f1e35fafd5e7789"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "ce9542351ae894d5"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "475a1061bcb1c21e"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "19184707ab2d9d67"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S09-three-stage-implement-fixround",
+			"note": "三段式 implement QA-fix round（phaseFixContext）",
+			"totalUtf8Bytes": 32354,
+			"totalUnicodeChars": 32013,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 811,
+					"unicodeChars": 807,
+					"sha256": "ddad78270d1ae84c"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "30be68da5cdda2a2"
+				},
+				{
+					"block": "three-stage-implement",
+					"utf8Bytes": 368,
+					"unicodeChars": 368,
+					"sha256": "ff5cb1fecdb57874"
+				},
+				{
+					"block": "qa-fix-round",
+					"utf8Bytes": 719,
+					"unicodeChars": 715,
+					"sha256": "ab0c8a4ba788f8df"
+				},
+				{
+					"block": "keepalive",
+					"utf8Bytes": 1051,
+					"unicodeChars": 1045,
+					"sha256": "bac9d7b7b6c28c7e"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 956,
+					"unicodeChars": 952,
+					"sha256": "66df07399350352a"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 508,
+					"unicodeChars": 508,
+					"sha256": "5757b952ed7d6022"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2993,
+					"unicodeChars": 2979,
+					"sha256": "cfac030bd75b64e2"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 804,
+					"unicodeChars": 802,
+					"sha256": "1096f68a552527c8"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 531,
+					"unicodeChars": 531,
+					"sha256": "357ffdfc03710ed0"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4392,
+					"unicodeChars": 4364,
+					"sha256": "3c0aaaf01b05d430"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 482,
+					"unicodeChars": 482,
+					"sha256": "20f22b0aef8d834d"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 475,
+					"unicodeChars": 475,
+					"sha256": "e1ddc4c41d177c51"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S10-three-stage-qa-phase",
+			"note": "三段式 QA phase（sessionRole=qa + shareParentBranch、无 qaContext——qaContext 会切到 auto-QA 路径）",
+			"totalUtf8Bytes": 33492,
+			"totalUnicodeChars": 33139,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "f03a2251b5b7f994"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "c44148f355718c99"
+				},
+				{
+					"block": "three-stage-qa",
+					"utf8Bytes": 3236,
+					"unicodeChars": 3214,
+					"sha256": "c36c15ae4b1c4993"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "3324c805adc89ea8"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "7b72efb3c9348c23"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "86ea33eed6550738"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "2401eefb448963eb"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "388a3bce84d27058"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4418,
+					"unicodeChars": 4390,
+					"sha256": "428c3806b06d6014"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "c3c648746abbf810"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "ba47d7fd80d0ff0f"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S11-retry",
+			"note": "重试派发（retryContext 注入的上下文块）",
+			"totalUtf8Bytes": 30997,
+			"totalUnicodeChars": 30666,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "e1d3268b686aa9a7"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "a0e6c4480d89d766"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 556,
+					"unicodeChars": 556,
+					"sha256": "f75f3aa53b25d861"
+				},
+				{
+					"block": "retry-context",
+					"utf8Bytes": 209,
+					"unicodeChars": 209,
+					"sha256": "7d29a58d0411852c"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "a329390b77afb792"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "c74c00af08d064e6"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "c2f9708f42101b19"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "501cf345a7bbc855"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "0fb617124e7e21c9"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4394,
+					"unicodeChars": 4366,
+					"sha256": "968ef9a954802d4e"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "2cb581f007610f43"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "4c54e79edead91dc"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S12-resume",
+			"note": "FLY-795 restart-resume（RESUME 指令置顶；仅抑制 onboard preamble，gate 块仍在）",
+			"totalUtf8Bytes": 30561,
+			"totalUnicodeChars": 30232,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "resume-directive",
+					"utf8Bytes": 786,
+					"unicodeChars": 782,
+					"sha256": "a34f177841b6cedd"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "0f883c88a6dc422c"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "2b28996d620f2618"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 555,
+					"unicodeChars": 555,
+					"sha256": "72be99db0286ff54"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "321a2e5bc18560b1"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "2e93af0950f51fca"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "ffd0e737984fd939"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "4fc8f958e406f2be"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "ed45321d4a901c1a"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4394,
+					"unicodeChars": 4366,
+					"sha256": "68e737ad2c8fa04a"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "729f10cc7f92a4d3"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "a7ed3a2c4f80be27"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S13-pr-handoff-no-transport",
+			"note": "FLY-493 no-transport 后端（runnerTransportMode=none → pr_handoff 终态流程）",
+			"totalUtf8Bytes": 27846,
+			"totalUnicodeChars": 27537,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "e7e04e2687c96ac6"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "f8d0aa4d980634b2"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 555,
+					"unicodeChars": 555,
+					"sha256": "552b88198d5c7f62"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "38641bdece2001fc"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "5597eb6b9c8c721e"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "c6e0280225731e7c"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "004efc2b96d7614b"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "9e1a1354d3250c41"
+				},
+				{
+					"block": "finish-no-transport",
+					"utf8Bytes": 1453,
+					"unicodeChars": 1447,
+					"sha256": "e3ecf42ac3541a95"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "c99d0decec9a253d"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "3959fc305c186fa4"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S14-founder-ux-gate",
+			"note": "FLY-598 founder-UX gate（config mode=on + env flag）",
+			"totalUtf8Bytes": 32333,
+			"totalUnicodeChars": 31998,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "founder-ux-gate",
+					"utf8Bytes": 1546,
+					"unicodeChars": 1542,
+					"sha256": "459b6be0fc171923"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "3d5c28c097321033"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "4dffdb47a5aa8f8b"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 555,
+					"unicodeChars": 555,
+					"sha256": "5eb83be7959f84b0"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "3c187a4a45e1eae2"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "6c92046c370148e4"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "1e7242c6eafa1b63"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "8cbdc18e484f7030"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "349f093e37589153"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4394,
+					"unicodeChars": 4366,
+					"sha256": "68f9c7baa16f0610"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "64ebc866a38c4ba3"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "ff4b6bcc9f751d5e"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S15-three-stage-design-keepalive-off",
+			"note": "三段式 design phase，keepalive kill-switch OFF（FLYWHEEL_THREE_STAGE_KEEPALIVE=0 → 无 keepalive park 块）",
+			"totalUtf8Bytes": 30774,
+			"totalUnicodeChars": 30431,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "8a21db6fc9a11aca"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1430,
+					"unicodeChars": 1340,
+					"sha256": "4385b95f93fe473b"
+				},
+				{
+					"block": "three-stage-design",
+					"utf8Bytes": 542,
+					"unicodeChars": 530,
+					"sha256": "fb9b9d872598bc47"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "417f4670369f46cc"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "e83871300383649c"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 3000,
+					"unicodeChars": 2986,
+					"sha256": "c4f6667421466165"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "12e509f902da27ea"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "ff8fe26c25f85aa0"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4394,
+					"unicodeChars": 4366,
+					"sha256": "b38b6fe9e840ea7c"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "8b27de5b7ba68f5c"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "0fdfd2ab764792a2"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		},
+		{
+			"scenario": "S16-no-land-fallback",
+			"note": "无 SkillInjector 成功 + 无 worktree → canLand=false → 4 步 no-land base-flow（生产 fallback 分支）",
+			"totalUtf8Bytes": 30591,
+			"totalUnicodeChars": 30272,
+			"blocks": [
+				{
+					"block": "agent-role",
+					"utf8Bytes": 15021,
+					"unicodeChars": 14842,
+					"sha256": "80fcfc4f2054183a"
+				},
+				{
+					"block": "baseline-rules",
+					"utf8Bytes": 18,
+					"unicodeChars": 18,
+					"sha256": "76e402142a27cb90"
+				},
+				{
+					"block": "pipeline-preamble",
+					"utf8Bytes": 1012,
+					"unicodeChars": 1006,
+					"sha256": "cc25886ee16fe58f"
+				},
+				{
+					"block": "progress-ledger",
+					"utf8Bytes": 812,
+					"unicodeChars": 808,
+					"sha256": "42a9191962d6873b"
+				},
+				{
+					"block": "doc-flow",
+					"utf8Bytes": 1446,
+					"unicodeChars": 1368,
+					"sha256": "ef5f2934e389d10a"
+				},
+				{
+					"block": "base-flow",
+					"utf8Bytes": 373,
+					"unicodeChars": 373,
+					"sha256": "804bb0c92b920018"
+				},
+				{
+					"block": "ask-nonblocking",
+					"utf8Bytes": 957,
+					"unicodeChars": 953,
+					"sha256": "412cce63fbce6b4a"
+				},
+				{
+					"block": "lead-inbox",
+					"utf8Bytes": 509,
+					"unicodeChars": 509,
+					"sha256": "143d3a7c49a63166"
+				},
+				{
+					"block": "lead-report-back",
+					"utf8Bytes": 2970,
+					"unicodeChars": 2956,
+					"sha256": "d0f7425783528afc"
+				},
+				{
+					"block": "brainstorm-gate",
+					"utf8Bytes": 805,
+					"unicodeChars": 803,
+					"sha256": "1a144ad936b81b5d"
+				},
+				{
+					"block": "question-gate",
+					"utf8Bytes": 532,
+					"unicodeChars": 532,
+					"sha256": "d9babd782d3935db"
+				},
+				{
+					"block": "approve-gate",
+					"utf8Bytes": 4394,
+					"unicodeChars": 4366,
+					"sha256": "d796031e609bceef"
+				},
+				{
+					"block": "review-design-gate",
+					"utf8Bytes": 483,
+					"unicodeChars": 483,
+					"sha256": "4bceb3eda36bb1cf"
+				},
+				{
+					"block": "review-code-gate",
+					"utf8Bytes": 476,
+					"unicodeChars": 476,
+					"sha256": "9030216d47b42e44"
+				},
+				{
+					"block": "stage-reporting",
+					"utf8Bytes": 454,
+					"unicodeChars": 452,
+					"sha256": "8db0f31502d7d7a2"
+				},
+				{
+					"block": "completion-reporting",
+					"utf8Bytes": 329,
+					"unicodeChars": 327,
+					"sha256": "25662d5ad5233774"
+				}
+			]
+		}
+	],
+	"agentFiles": [
+		{
+			"file": "agents/generic-executor.md",
+			"utf8Bytes": 15005,
+			"unicodeChars": 14826,
+			"sha256": "5f91da0422f34144"
+		},
+		{
+			"file": "agents/qa-executor.md",
+			"utf8Bytes": 6149,
+			"unicodeChars": 6081,
+			"sha256": "b10cab74a0422d9f"
+		},
+		{
+			"file": ".flywheel/agents/general-executor.md",
+			"utf8Bytes": 1395,
+			"unicodeChars": 1383,
+			"sha256": "b510f960e72f5771"
+		},
+		{
+			"file": ".flywheel/agents/engineering/designer-executor.md",
+			"utf8Bytes": 9875,
+			"unicodeChars": 9767,
+			"sha256": "dab47e3094c900e6"
+		},
+		{
+			"file": ".flywheel/agents/engineering/engineer-executor.md",
+			"utf8Bytes": 4526,
+			"unicodeChars": 4476,
+			"sha256": "733ad0781a80479c"
+		},
+		{
+			"file": ".flywheel/agents/engineering/pm-executor.md",
+			"utf8Bytes": 21190,
+			"unicodeChars": 19730,
+			"sha256": "559deaf120941526"
+		},
+		{
+			"file": ".flywheel/agents/engineering/product-designer-executor.md",
+			"utf8Bytes": 6642,
+			"unicodeChars": 6449,
+			"sha256": "3ce3e3c7f29bc7a4"
+		},
+		{
+			"file": ".flywheel/agents/engineering/prototype-executor.md",
+			"utf8Bytes": 19555,
+			"unicodeChars": 17684,
+			"sha256": "9cbd943e2a87e6d9"
+		},
+		{
+			"file": ".flywheel/agents/engineering/qa-executor.md",
+			"utf8Bytes": 3330,
+			"unicodeChars": 3304,
+			"sha256": "6159e86e08c119dc"
+		}
+	],
+	"leadRuleFiles": [
+		{
+			"file": "README.md",
+			"utf8Bytes": 7340,
+			"unicodeChars": 7282,
+			"sha256": "54573c7b827a643f"
+		},
+		{
+			"file": "auto-qa-pipeline.md",
+			"utf8Bytes": 4101,
+			"unicodeChars": 4050,
+			"sha256": "c26a09b26ec3f30f"
+		},
+		{
+			"file": "companion-safety-contract.md",
+			"utf8Bytes": 3307,
+			"unicodeChars": 3287,
+			"sha256": "6545f963b5bce67a"
+		},
+		{
+			"file": "cos-lead-rules.md",
+			"utf8Bytes": 23011,
+			"unicodeChars": 22563,
+			"sha256": "06b7e305bd0d9858"
+		},
+		{
+			"file": "cross-dept-channel-rules.md",
+			"utf8Bytes": 10012,
+			"unicodeChars": 9906,
+			"sha256": "bd3a04d2126d251d"
+		},
+		{
+			"file": "default-enable-policy.md",
+			"utf8Bytes": 3553,
+			"unicodeChars": 3523,
+			"sha256": "9fc58a14f91f606d"
+		},
+		{
+			"file": "department-lead-rules.md",
+			"utf8Bytes": 32889,
+			"unicodeChars": 32021,
+			"sha256": "c0d23a0ee4d1a877"
+		},
+		{
+			"file": "discord-reply-contract.md",
+			"utf8Bytes": 1088,
+			"unicodeChars": 1080,
+			"sha256": "e82fe7bfb5d71d4a"
+		},
+		{
+			"file": "doc-flow-rules.md",
+			"utf8Bytes": 3690,
+			"unicodeChars": 1986,
+			"sha256": "5b414c377a56f849"
+		},
+		{
+			"file": "executor-routing.md",
+			"utf8Bytes": 7445,
+			"unicodeChars": 7381,
+			"sha256": "1db3d5a2e9dac958"
+		},
+		{
+			"file": "external-agent-contract.md",
+			"utf8Bytes": 4049,
+			"unicodeChars": 4007,
+			"sha256": "6008886a2ec1c579"
+		},
+		{
+			"file": "founder-html-delivery.md",
+			"utf8Bytes": 1078,
+			"unicodeChars": 1072,
+			"sha256": "c3347b2f94d6de67"
+		},
+		{
+			"file": "founder-only-authority.md",
+			"utf8Bytes": 24225,
+			"unicodeChars": 23991,
+			"sha256": "99c0f56f7ed93d15"
+		},
+		{
+			"file": "founder-ux-rules.md",
+			"utf8Bytes": 2891,
+			"unicodeChars": 2863,
+			"sha256": "c9652bf9df4080e5"
+		},
+		{
+			"file": "model-routing.md",
+			"utf8Bytes": 4934,
+			"unicodeChars": 4890,
+			"sha256": "f532cbe3e92d1df4"
+		},
+		{
+			"file": "runner-messaging-rules.md",
+			"utf8Bytes": 5424,
+			"unicodeChars": 5380,
+			"sha256": "7d93130cfdec9485"
+		},
+		{
+			"file": "runner-patrol-rules.md",
+			"utf8Bytes": 6141,
+			"unicodeChars": 6072,
+			"sha256": "8f0e8acb633bb7a8"
+		},
+		{
+			"file": "runner-reengage-rules.md",
+			"utf8Bytes": 2132,
+			"unicodeChars": 2112,
+			"sha256": "4eabff6918f4600f"
+		},
+		{
+			"file": "stuck-runner-remanage.md",
+			"utf8Bytes": 6923,
+			"unicodeChars": 6857,
+			"sha256": "7cb634b3e7fef24a"
+		},
+		{
+			"file": "xiaohongshu-memory-rules.md",
+			"utf8Bytes": 5006,
+			"unicodeChars": 4988,
+			"sha256": "d42bcff55c8cd56e"
+		}
+	],
+	"leadBundles": [
+		{
+			"role": "companion",
+			"files": ["companion-safety-contract.md", "cross-dept-channel-rules.md"],
+			"rawSumUtf8Bytes": 13319,
+			"rawSumUnicodeChars": 13193,
+			"assembledUtf8Bytes": 13319,
+			"assembledUnicodeChars": 13193
+		},
+		{
+			"role": "cos",
+			"files": [
+				"cos-lead-rules.md",
+				"founder-only-authority.md",
+				"founder-html-delivery.md",
+				"cross-dept-channel-rules.md"
+			],
+			"rawSumUtf8Bytes": 58326,
+			"rawSumUnicodeChars": 57532,
+			"assembledUtf8Bytes": 58328,
+			"assembledUnicodeChars": 57534
+		},
+		{
+			"role": "dept",
+			"files": [
+				"department-lead-rules.md",
+				"runner-messaging-rules.md",
+				"executor-routing.md",
+				"model-routing.md",
+				"stuck-runner-remanage.md",
+				"runner-reengage-rules.md",
+				"runner-patrol-rules.md",
+				"doc-flow-rules.md",
+				"auto-qa-pipeline.md",
+				"xiaohongshu-memory-rules.md",
+				"founder-only-authority.md",
+				"founder-html-delivery.md",
+				"cross-dept-channel-rules.md"
+			],
+			"rawSumUtf8Bytes": 114000,
+			"rawSumUnicodeChars": 110706,
+			"assembledUtf8Bytes": 114011,
+			"assembledUnicodeChars": 110717
+		}
+	],
+	"skills": [
+		{
+			"skill": "xiaohongshu-learning",
+			"skillFolderHash": "5f5c834ed248919dfbccd9b132fe2fea4f3c0ede2fd7465992f29d80989a0355",
+			"descriptionUtf8Bytes": 334,
+			"bodyUtf8Bytes": 31452,
+			"bodyUnicodeChars": 31194
+		},
+		{
+			"skill": "deep-research",
+			"skillFolderHash": "79b82cb5a31ebc1ca5b60bf9e37ce97e605a2cdd5a3f5dcd2e74b4f631f81687",
+			"descriptionUtf8Bytes": 309,
+			"bodyUtf8Bytes": 18396,
+			"bodyUnicodeChars": 18208
+		},
+		{
+			"skill": "synthesize-research",
+			"skillFolderHash": "cbc01a65b99a86a646842a029f5e7deab4a555660d1889b5ebbf3268705ebafa",
+			"descriptionUtf8Bytes": 314,
+			"bodyUtf8Bytes": 16478,
+			"bodyUnicodeChars": 16458
+		},
+		{
+			"skill": "product-brainstorming",
+			"skillFolderHash": "8f963920fd69b3ac0606cbb30fa74394da34fc7b0a2b10a8d7370d75e9b52e25",
+			"descriptionUtf8Bytes": 304,
+			"bodyUtf8Bytes": 16289,
+			"bodyUnicodeChars": 16137
+		},
+		{
+			"skill": "chrome-repair",
+			"skillFolderHash": "f3c75b2f0042f76064309d96c5ec81945de90ef4aa900fea4541db1c777934e8",
+			"descriptionUtf8Bytes": 358,
+			"bodyUtf8Bytes": 15962,
+			"bodyUnicodeChars": 9457
+		},
+		{
+			"skill": "xiaohongshu-deep-learning",
+			"skillFolderHash": "fb6c23d2ef7452111d2885bec4a8abf54c22c854f49953db1e432f83cbf696f2",
+			"descriptionUtf8Bytes": 315,
+			"bodyUtf8Bytes": 6628,
+			"bodyUnicodeChars": 4146
+		},
+		{
+			"skill": "writing-north-star-metrics",
+			"skillFolderHash": "0b2a611a972edb1cda8d123d4844e812b4fb02d63e1b5bf5bb6393070201d259",
+			"descriptionUtf8Bytes": 228,
+			"bodyUtf8Bytes": 5469,
+			"bodyUnicodeChars": 5465
+		},
+		{
+			"skill": "notion",
+			"skillFolderHash": "cac9d7503d970f7ae13bb2b58ad109dee26f35f6c7f723e67a539b022198a5ba",
+			"descriptionUtf8Bytes": 301,
+			"bodyUtf8Bytes": 5326,
+			"bodyUnicodeChars": 5222
+		},
+		{
+			"skill": "problem-definition",
+			"skillFolderHash": "1a4fe6656f1614a2a9c742a41bcee2fd2cde9241297592d4ae4c0ceb49dd7611",
+			"descriptionUtf8Bytes": 242,
+			"bodyUtf8Bytes": 5296,
+			"bodyUnicodeChars": 5292
+		},
+		{
+			"skill": "prioritizing-roadmap",
+			"skillFolderHash": "e1963754cd41d59c55fa84447fb14d87f2dab89fe1e3cb72d868a6beb68cb75c",
+			"descriptionUtf8Bytes": 241,
+			"bodyUtf8Bytes": 5158,
+			"bodyUnicodeChars": 5154
+		},
+		{
+			"skill": "defining-product-vision",
+			"skillFolderHash": "fedaa61271d267828a8e7ad0388e0939f9f8a125d0762130d54e1fed654b1707",
+			"descriptionUtf8Bytes": 209,
+			"bodyUtf8Bytes": 5017,
+			"bodyUnicodeChars": 5013
+		},
+		{
+			"skill": "writing-engine",
+			"skillFolderHash": "473bd537de68313dd7deb18e464a5d67f8721f80a6ddc2b890706b26a5e22c75",
+			"descriptionUtf8Bytes": 350,
+			"bodyUtf8Bytes": 5001,
+			"bodyUnicodeChars": 2887
+		},
+		{
+			"skill": "working-backwards",
+			"skillFolderHash": "6f18f774260fd47fac0e8f74accdecf346c6a5629202bd2cd16c754d28206aec",
+			"descriptionUtf8Bytes": 211,
+			"bodyUtf8Bytes": 4957,
+			"bodyUnicodeChars": 4953
+		},
+		{
+			"skill": "scoping-cutting",
+			"skillFolderHash": "a8c257312aaa7a26ef31297f5f89f14e1de60fc90b88fa657dadc48ba9a0ce87",
+			"descriptionUtf8Bytes": 189,
+			"bodyUtf8Bytes": 4835,
+			"bodyUnicodeChars": 4831
+		},
+		{
+			"skill": "writing-prds",
+			"skillFolderHash": "efe630ee777ce6e5de3a89f033677ea1314e137884c8b5d26f91a10a4c3d77c7",
+			"descriptionUtf8Bytes": 185,
+			"bodyUtf8Bytes": 4756,
+			"bodyUnicodeChars": 4752
+		},
+		{
+			"skill": "competitive-analysis",
+			"skillFolderHash": "26f1491b9855eea2417f07b3606016c2bffbbee86d7f4c0c92becd1944c66fc4",
+			"descriptionUtf8Bytes": 223,
+			"bodyUtf8Bytes": 4748,
+			"bodyUnicodeChars": 4744
+		},
+		{
+			"skill": "analyzing-user-feedback",
+			"skillFolderHash": "4d46db2bcc872ca1b1d6fa9b4f108cfaca5f761ea04aba27f7eaa7a9e975a283",
+			"descriptionUtf8Bytes": 245,
+			"bodyUtf8Bytes": 4473,
+			"bodyUnicodeChars": 4461
+		},
+		{
+			"skill": "founder-html-delivery",
+			"skillFolderHash": "f24e1d27aece106b8c6c2b17a0dad28add6f52d21ef79f940a764db01e9bc9ea",
+			"descriptionUtf8Bytes": 292,
+			"bodyUtf8Bytes": 4206,
+			"bodyUnicodeChars": 4142
+		},
+		{
+			"skill": "product-taste-intuition",
+			"skillFolderHash": "74d2278daac03ac21f25c34dab404686f5010d6a0abf421a2c78fc33f4d8295b",
+			"descriptionUtf8Bytes": 234,
+			"bodyUtf8Bytes": 4076,
+			"bodyUnicodeChars": 4072
+		},
+		{
+			"skill": "flywheel-land",
+			"skillFolderHash": "f859a60d396a434673c53760b82e87d370ed785d202f2067307d5a402f654f06",
+			"descriptionUtf8Bytes": 59,
+			"bodyUtf8Bytes": 3206,
+			"bodyUnicodeChars": 3188
+		},
+		{
+			"skill": "video-watch",
+			"skillFolderHash": "c8a65f081f5aea1b53dfd53f86daba8a56bcf3f1757b9c766c5f4462a863da3b",
+			"descriptionUtf8Bytes": 269,
+			"bodyUtf8Bytes": 3200,
+			"bodyUnicodeChars": 3160
+		},
+		{
+			"skill": "dogfooding",
+			"skillFolderHash": "a66d8b7774c2efe96863cdd9042301bc997977b28ef8087e659dca32d5554d8e",
+			"descriptionUtf8Bytes": 213,
+			"bodyUtf8Bytes": 3035,
+			"bodyUnicodeChars": 3031
+		}
+	]
+}

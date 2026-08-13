@@ -1,0 +1,1007 @@
+{
+	"generatedAt": "2026-07-15T08:18:29.019Z",
+	"units": {
+		"utf8Bytes": "Buffer.byteLength(text,'utf8')",
+		"unicodeChars": "[...text].length (code points)",
+		"note": "互斥 context 不加总（见 inventory.md）。lead-rules 报 rawSum（文件字节和，不含拼接分隔）与 assembled（trim+『\\n\\n』拼接的真实常驻）两列。"
+	},
+	"repoHeadSha": "796b147656a488970c27cc30c6d893d114ec3663",
+	"blueprintFileSha": "d8951aea20ab7b0e889a33794a790533190d3408",
+	"harnessSha256": "693df1760a9be9c28d4d9e53e776ad454fd2f3dd53c924348d6b92ba03eb6639",
+	"repoRoot": "/Users/xiaorongli/Dev/flywheel-FLY-1260",
+	"toolchain": {
+		"node": "v25.6.1",
+		"tsx": "4.20.6",
+		"platform": "darwin-arm64"
+	},
+	"assetHashes": {
+		"agentFiles": [
+			{
+				"file": "agents/generic-executor.md",
+				"sha256": "5f91da0422f34144"
+			},
+			{
+				"file": "agents/qa-executor.md",
+				"sha256": "b10cab74a0422d9f"
+			},
+			{
+				"file": ".flywheel/agents/general-executor.md",
+				"sha256": "b510f960e72f5771"
+			},
+			{
+				"file": ".flywheel/agents/engineering/designer-executor.md",
+				"sha256": "dab47e3094c900e6"
+			},
+			{
+				"file": ".flywheel/agents/engineering/engineer-executor.md",
+				"sha256": "733ad0781a80479c"
+			},
+			{
+				"file": ".flywheel/agents/engineering/pm-executor.md",
+				"sha256": "559deaf120941526"
+			},
+			{
+				"file": ".flywheel/agents/engineering/product-designer-executor.md",
+				"sha256": "3ce3e3c7f29bc7a4"
+			},
+			{
+				"file": ".flywheel/agents/engineering/prototype-executor.md",
+				"sha256": "9cbd943e2a87e6d9"
+			},
+			{
+				"file": ".flywheel/agents/engineering/qa-executor.md",
+				"sha256": "6159e86e08c119dc"
+			}
+		],
+		"leadRuleFiles": [
+			{
+				"file": "README.md",
+				"sha256": "54573c7b827a643f"
+			},
+			{
+				"file": "auto-qa-pipeline.md",
+				"sha256": "c26a09b26ec3f30f"
+			},
+			{
+				"file": "companion-safety-contract.md",
+				"sha256": "6545f963b5bce67a"
+			},
+			{
+				"file": "cos-lead-rules.md",
+				"sha256": "06b7e305bd0d9858"
+			},
+			{
+				"file": "cross-dept-channel-rules.md",
+				"sha256": "bd3a04d2126d251d"
+			},
+			{
+				"file": "default-enable-policy.md",
+				"sha256": "9fc58a14f91f606d"
+			},
+			{
+				"file": "department-lead-rules.md",
+				"sha256": "c0d23a0ee4d1a877"
+			},
+			{
+				"file": "discord-reply-contract.md",
+				"sha256": "e82fe7bfb5d71d4a"
+			},
+			{
+				"file": "doc-flow-rules.md",
+				"sha256": "5b414c377a56f849"
+			},
+			{
+				"file": "executor-routing.md",
+				"sha256": "1db3d5a2e9dac958"
+			},
+			{
+				"file": "external-agent-contract.md",
+				"sha256": "6008886a2ec1c579"
+			},
+			{
+				"file": "founder-html-delivery.md",
+				"sha256": "c3347b2f94d6de67"
+			},
+			{
+				"file": "founder-only-authority.md",
+				"sha256": "99c0f56f7ed93d15"
+			},
+			{
+				"file": "founder-ux-rules.md",
+				"sha256": "c9652bf9df4080e5"
+			},
+			{
+				"file": "model-routing.md",
+				"sha256": "f532cbe3e92d1df4"
+			},
+			{
+				"file": "runner-messaging-rules.md",
+				"sha256": "7d93130cfdec9485"
+			},
+			{
+				"file": "runner-patrol-rules.md",
+				"sha256": "8f0e8acb633bb7a8"
+			},
+			{
+				"file": "runner-reengage-rules.md",
+				"sha256": "4eabff6918f4600f"
+			},
+			{
+				"file": "stuck-runner-remanage.md",
+				"sha256": "7cb634b3e7fef24a"
+			},
+			{
+				"file": "xiaohongshu-memory-rules.md",
+				"sha256": "d42bcff55c8cd56e"
+			}
+		],
+		"skills": [
+			{
+				"skill": "xiaohongshu-learning",
+				"skillFolderHash": "5f5c834ed248919dfbccd9b132fe2fea4f3c0ede2fd7465992f29d80989a0355"
+			},
+			{
+				"skill": "deep-research",
+				"skillFolderHash": "79b82cb5a31ebc1ca5b60bf9e37ce97e605a2cdd5a3f5dcd2e74b4f631f81687"
+			},
+			{
+				"skill": "synthesize-research",
+				"skillFolderHash": "cbc01a65b99a86a646842a029f5e7deab4a555660d1889b5ebbf3268705ebafa"
+			},
+			{
+				"skill": "product-brainstorming",
+				"skillFolderHash": "8f963920fd69b3ac0606cbb30fa74394da34fc7b0a2b10a8d7370d75e9b52e25"
+			},
+			{
+				"skill": "chrome-repair",
+				"skillFolderHash": "f3c75b2f0042f76064309d96c5ec81945de90ef4aa900fea4541db1c777934e8"
+			},
+			{
+				"skill": "xiaohongshu-deep-learning",
+				"skillFolderHash": "fb6c23d2ef7452111d2885bec4a8abf54c22c854f49953db1e432f83cbf696f2"
+			},
+			{
+				"skill": "writing-north-star-metrics",
+				"skillFolderHash": "0b2a611a972edb1cda8d123d4844e812b4fb02d63e1b5bf5bb6393070201d259"
+			},
+			{
+				"skill": "notion",
+				"skillFolderHash": "cac9d7503d970f7ae13bb2b58ad109dee26f35f6c7f723e67a539b022198a5ba"
+			},
+			{
+				"skill": "problem-definition",
+				"skillFolderHash": "1a4fe6656f1614a2a9c742a41bcee2fd2cde9241297592d4ae4c0ceb49dd7611"
+			},
+			{
+				"skill": "prioritizing-roadmap",
+				"skillFolderHash": "e1963754cd41d59c55fa84447fb14d87f2dab89fe1e3cb72d868a6beb68cb75c"
+			},
+			{
+				"skill": "defining-product-vision",
+				"skillFolderHash": "fedaa61271d267828a8e7ad0388e0939f9f8a125d0762130d54e1fed654b1707"
+			},
+			{
+				"skill": "writing-engine",
+				"skillFolderHash": "473bd537de68313dd7deb18e464a5d67f8721f80a6ddc2b890706b26a5e22c75"
+			},
+			{
+				"skill": "working-backwards",
+				"skillFolderHash": "6f18f774260fd47fac0e8f74accdecf346c6a5629202bd2cd16c754d28206aec"
+			},
+			{
+				"skill": "scoping-cutting",
+				"skillFolderHash": "a8c257312aaa7a26ef31297f5f89f14e1de60fc90b88fa657dadc48ba9a0ce87"
+			},
+			{
+				"skill": "writing-prds",
+				"skillFolderHash": "efe630ee777ce6e5de3a89f033677ea1314e137884c8b5d26f91a10a4c3d77c7"
+			},
+			{
+				"skill": "competitive-analysis",
+				"skillFolderHash": "26f1491b9855eea2417f07b3606016c2bffbbee86d7f4c0c92becd1944c66fc4"
+			},
+			{
+				"skill": "analyzing-user-feedback",
+				"skillFolderHash": "4d46db2bcc872ca1b1d6fa9b4f108cfaca5f761ea04aba27f7eaa7a9e975a283"
+			},
+			{
+				"skill": "founder-html-delivery",
+				"skillFolderHash": "f24e1d27aece106b8c6c2b17a0dad28add6f52d21ef79f940a764db01e9bc9ea"
+			},
+			{
+				"skill": "product-taste-intuition",
+				"skillFolderHash": "74d2278daac03ac21f25c34dab404686f5010d6a0abf421a2c78fc33f4d8295b"
+			},
+			{
+				"skill": "flywheel-land",
+				"skillFolderHash": "f859a60d396a434673c53760b82e87d370ed785d202f2067307d5a402f654f06"
+			},
+			{
+				"skill": "video-watch",
+				"skillFolderHash": "c8a65f081f5aea1b53dfd53f86daba8a56bcf3f1757b9c766c5f4462a863da3b"
+			},
+			{
+				"skill": "dogfooding",
+				"skillFolderHash": "a66d8b7774c2efe96863cdd9042301bc997977b28ef8087e659dca32d5554d8e"
+			}
+		]
+	},
+	"anchors": [
+		{
+			"id": "qa-verdict",
+			"text": "QA VERDICT (MANDATORY — this is how the pipeline gates the founder):"
+		},
+		{
+			"id": "doc-flow",
+			"text": "DOC-FLOW (project doc conventions — this project has doc_flow enabled):"
+		},
+		{
+			"id": "progress-ledger",
+			"text": "PROGRESS LEDGER (restart-resilient — keep this current as you work):"
+		},
+		{
+			"id": "founder-ux-gate",
+			"text": "FOUNDER-UX GATE (this project enables founder_ux_gate):"
+		},
+		{
+			"id": "pipeline-preamble",
+			"text": "PIPELINE PREAMBLE — run BEFORE any other work:"
+		},
+		{
+			"id": "lead-report-back",
+			"text": "LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):"
+		},
+		{
+			"id": "brainstorm-gate",
+			"text": "BRAINSTORM GATE (MANDATORY — do NOT skip):"
+		},
+		{
+			"id": "code-review-gate",
+			"text": "CODE REVIEW GATE (codex author — MANDATORY, run BEFORE the APPROVE GATE below):"
+		},
+		{
+			"id": "approve-gate",
+			"text": "APPROVE GATE (MANDATORY — do NOT skip; non-blocking review flow):"
+		},
+		{
+			"id": "question-gate",
+			"text": "QUESTION GATE (use when needed):"
+		},
+		{
+			"id": "completion-reporting",
+			"text": "COMPLETION REPORTING (MANDATORY — run when finished):"
+		},
+		{
+			"id": "review-design-gate",
+			"text": "REVIEW_DESIGN GATE:"
+		},
+		{
+			"id": "review-code-gate",
+			"text": "REVIEW_CODE GATE:"
+		},
+		{
+			"id": "agent-role",
+			"text": "## Agent Role"
+		},
+		{
+			"id": "baseline-rules",
+			"text": "## Baseline Rules"
+		},
+		{
+			"id": "codex-env-translation",
+			"text": "## Environment Translation (codex runner)"
+		},
+		{
+			"id": "qa-fix-round",
+			"text": "## QA Fix Round "
+		},
+		{
+			"id": "keepalive",
+			"text": "## Three-stage keep-alive"
+		},
+		{
+			"id": "retry-context",
+			"text": "## Retry Context (Attempt #"
+		},
+		{
+			"id": "finish-no-transport",
+			"text": "FINISH (no-transport backend — build+PR handoff, NOT a ship gate):"
+		},
+		{
+			"id": "base-flow",
+			"text": "You are working on a Linear issue. Follow these steps:"
+		},
+		{
+			"id": "ask-nonblocking",
+			"text": "Prefer independent implementation."
+		},
+		{
+			"id": "lead-inbox",
+			"text": "Your Lead may send you instructions during your session."
+		},
+		{
+			"id": "stage-reporting",
+			"text": "Report your pipeline stage at each major transition"
+		},
+		{
+			"id": "resume-directive",
+			"text": "## RESUME — this issue was interrupted"
+		},
+		{
+			"id": "three-stage-design",
+			"text": "You are the DESIGN phase of a three-stage pipeline"
+		},
+		{
+			"id": "three-stage-implement",
+			"text": "You are the IMPLEMENT phase of a three-stage pipeline"
+		},
+		{
+			"id": "three-stage-qa",
+			"text": "You are the QA phase of a three-stage pipeline"
+		}
+	],
+	"scenarios": [
+		{
+			"name": "S01-minimal-no-lead-no-gates",
+			"note": "基线：无 Lead、无 checkpoint、无 doc-flow（6-step base flow + preamble + ledger + completion）",
+			"ctx": {},
+			"ctor": {},
+			"env": {}
+		},
+		{
+			"name": "S02-prod-generic-claude",
+			"note": "生产形态（本 issue 同款）：Lead + 全 checkpoint + doc-flow full + shipped generic 角色文件，claude 腿",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"docTier": "full",
+				"issueUrl": "https://linear.app/geoforge3d/issue/FLY-1260/x",
+				"issueLabels": ["flywheel"]
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S03-prod-generic-codex",
+			"note": "同 S02 但 codex 腿（runnerBackend=codex-tmux 的 vendor 变体文本）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"docTier": "full",
+				"issueUrl": "https://linear.app/geoforge3d/issue/FLY-1260/x",
+				"issueLabels": ["flywheel"],
+				"runnerBackend": "codex-tmux"
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S04-doc-tier-plan-only",
+			"note": "doc-flow plan_only 档",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"docTier": "plan_only",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S05-doc-tier-none",
+			"note": "doc-flow none 档",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"docTier": "none",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S06-auto-qa-mode",
+			"note": "Auto-QA runner（qaContext + sessionRole=qa + agentName=qa → shipped qa-executor 兜底角色 6,149 B；flywheel 声明的项目 qa 为 3,330 B）：独立验证契约链",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "qa",
+				"agentName": "qa",
+				"qaContext": {
+					"parentExecutionId": "parent-exec-0000",
+					"prHeadSha": "ed9823622f55a382910c2002df3f325b0e017f80",
+					"prNumber": 584,
+					"branch": "flywheel-FLY-1240",
+					"parentIssueIdentifier": "FLY-1240",
+					"parentIssueUrl": "https://linear.app/geoforge3d/issue/FLY-1240/x"
+				},
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S07-three-stage-design",
+			"note": "三段式 design phase（sessionRole=design + shareParentBranch）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "design",
+				"shareParentBranch": true,
+				"docTier": "full",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S08-three-stage-implement",
+			"note": "三段式 implement phase",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "implement",
+				"shareParentBranch": true,
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S09-three-stage-implement-fixround",
+			"note": "三段式 implement QA-fix round（phaseFixContext）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "implement",
+				"shareParentBranch": true,
+				"phaseFixContext": {
+					"round": 1,
+					"qaSummary": "QA found X"
+				},
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S10-three-stage-qa-phase",
+			"note": "三段式 QA phase（sessionRole=qa + shareParentBranch、无 qaContext——qaContext 会切到 auto-QA 路径）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "qa",
+				"shareParentBranch": true,
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S11-retry",
+			"note": "重试派发（retryContext 注入的上下文块）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"retryContext": {
+					"predecessorExecutionId": "prior-exec-0000",
+					"previousError": "previous run failed",
+					"attempt": 2,
+					"reason": "retry after failure"
+				},
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S12-resume",
+			"note": "FLY-795 restart-resume（RESUME 指令置顶；仅抑制 onboard preamble，gate 块仍在）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"progressResume": {
+					"progressPath": "engineering/doc/FLY-1260-x/progress.md",
+					"priorExecutionId": "prior-exec-0000",
+					"resumeKind": "restart",
+					"effectiveStage": "implement"
+				},
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S13-pr-handoff-no-transport",
+			"note": "FLY-493 no-transport 后端（runnerTransportMode=none → pr_handoff 终态流程）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"runnerTransportMode": "none",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {}
+		},
+		{
+			"name": "S14-founder-ux-gate",
+			"note": "FLY-598 founder-UX gate（config mode=on + env flag）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true,
+				"founderUx": {
+					"mode": "designer"
+				}
+			},
+			"env": {
+				"FLYWHEEL_FOUNDER_UX_GATE_ENABLED": "1"
+			}
+		},
+		{
+			"name": "S15-three-stage-design-keepalive-off",
+			"note": "三段式 design phase，keepalive kill-switch OFF（FLYWHEEL_THREE_STAGE_KEEPALIVE=0 → 无 keepalive park 块）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"sessionRole": "design",
+				"shareParentBranch": true,
+				"docTier": "full",
+				"issueLabels": []
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true
+			},
+			"env": {
+				"FLYWHEEL_THREE_STAGE_KEEPALIVE": "0"
+			}
+		},
+		{
+			"name": "S16-no-land-fallback",
+			"note": "无 SkillInjector 成功 + 无 worktree → canLand=false → 4 步 no-land base-flow（生产 fallback 分支）",
+			"ctx": {
+				"leadId": "flywheel-eng-lead",
+				"docTier": "full",
+				"issueUrl": "https://linear.app/geoforge3d/issue/FLY-1260/x",
+				"issueLabels": ["flywheel"]
+			},
+			"ctor": {
+				"checkpoints": {
+					"brainstorm": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"question": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-open"
+					},
+					"approve_to_ship": {
+						"enabled": true,
+						"timeout_ms": 86400000,
+						"timeout_behavior": "fail-close"
+					},
+					"review_design": {
+						"enabled": true
+					},
+					"review_code": {
+						"enabled": true
+					}
+				},
+				"docFlow": {
+					"enabled": true,
+					"default_department": "engineering"
+				},
+				"dispatcher": true,
+				"noSkillInject": true,
+				"noWorktree": true
+			},
+			"env": {}
+		}
+	],
+	"inheritedPromptEnv": {
+		"FLYWHEEL_FOUNDER_UX_GATE_ENABLED": null,
+		"FLYWHEEL_THREE_STAGE_KEEPALIVE": null,
+		"FLYWHEEL_PROGRESS_RESUME": null,
+		"TEAMLEAD_URL": null,
+		"TEAMLEAD_HOST": null,
+		"TEAMLEAD_PORT": null,
+		"TEAMLEAD_INGEST_TOKEN": null,
+		"FLYWHEEL_COMM_BACKEND": null,
+		"FLYWHEEL_DISABLE_CHROME": null
+	},
+	"skillLockSource": "xrliAnnie/flywheel-skills",
+	"skillCount": 22
+}

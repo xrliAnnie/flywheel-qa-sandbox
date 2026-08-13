@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1260 评测任务集 · 三方向候选（圈选版）</title>
+<style>
+  :root{ --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.65;-webkit-text-size-adjust:100%}
+  .wrap{max-width:920px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:24px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 18px}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .note{background:#fff5f4;border:1px solid #ffcfcb;border-radius:10px;padding:12px 14px;font-size:13.5px;margin:0 0 14px}
+  .note.blue{background:#eef5ff;border-color:#cfe0ff}
+  .section-title{font-size:14px;font-weight:700;margin:20px 0 10px;display:flex;align-items:center;gap:8px}
+  .cand{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:15px;margin:0 0 12px;border-left:4px solid var(--line)}
+  .cand.d1{border-left-color:var(--amber)} .cand.d2{border-left-color:var(--blue)} .cand.d3{border-left-color:var(--purple)}
+  .chead{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 6px}
+  .cid{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;color:var(--navy);background:#eef2f7;border-radius:5px;padding:2px 7px;font-weight:700}
+  .ctitle{font-size:15px;font-weight:600}
+  .blk{font-size:13.5px;margin:0 0 6px} .blk .lbl{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--dim);text-transform:uppercase;margin-right:6px}
+  .choices{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 8px}
+  .choice{border:1.5px solid var(--line);background:#fff;border-radius:8px;padding:6px 14px;font-size:14px;font-weight:600;cursor:pointer;color:var(--dim);font-family:inherit;-webkit-appearance:none}
+  .choice[aria-pressed="true"].yes{border-color:var(--green);color:#1d7a35;background:#e6f7ea}
+  .choice[aria-pressed="true"].no{border-color:var(--red);color:#c92a20;background:#ffe9e7}
+  textarea.cmt{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px;font-family:inherit;font-size:14px;resize:vertical;min-height:48px;background:#fff;color:var(--ink)}
+  .summary{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);padding:10px 16px;backdrop-filter:blur(10px);z-index:9}
+  .summary-in{max-width:920px;margin:0 auto;display:flex;gap:8px 14px;align-items:center;flex-wrap:wrap}
+  .stat{font-size:13px;color:var(--dim)} .stat b{color:var(--ink);font-size:15px}
+  .btn{margin-left:auto;background:var(--navy);color:#fff;border:0;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;-webkit-appearance:none}
+  .btn.ghost{background:#eef2f7;color:var(--navy);margin-left:0}
+  #copyStatus{font-size:12px;font-weight:600}
+  #exportBox{width:100%;min-height:120px;margin:10px 0 0;display:none;font-size:11px;font-family:"SF Mono",ui-monospace,Menlo,monospace;border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff;color:var(--ink)}
+  @media (max-width:600px){ h1{font-size:20px} .wrap{padding:16px 12px 130px} .btn{margin-left:0} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>评测任务集 · 三方向候选</h1>
+  <p class="sub">FLY-1260 · 实验室 #1 · 2026-07-15 · 版本 <b class="mono">R2</b> · 按你圈选反馈调整：<b>QA 方向已砍</b>（A/B 只做两方向）、<b>方向二换成中等偏设计</b>（不再是特别大的）。<b>每方向圈 1 个</b>。</p>
+
+  <div class="note"><b>🔒 红线：此刻及圈选阶段仍零生产变更。</b>实际跑 A/B + 一切动生产提示词，推迟到本轮全收完 + 批量重启之后。现在只是选「拿哪些真实 issue 做副本」。</div>
+  <div class="note blue">圈定后我对每个候选做<b>跑前适配复核</b>：改动规模合适 / 起点不含答案文档 / 能造干净副本；不合适就从同方向替补。</div>
+
+  <div id="d1wrap"></div>
+  <div id="d2wrap"></div>
+</div>
+
+<div class="summary">
+  <div class="summary-in">
+    <span class="stat">选了 <b id="sYes">0</b></span>
+    <span class="stat">排除 <b id="sNo">0</b></span>
+    <span id="copyStatus"></span>
+    <button class="btn ghost" id="resetBtn" type="button">清空</button>
+    <button class="btn" id="copyBtn" type="button">复制导出</button>
+  </div>
+  <textarea id="exportBox" readonly aria-label="导出内容"></textarea>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+  var LS_KEY = "FLY-1260:taskset:v2";
+  var DIRS = [
+    { key:"d1", title:"方向 1 · 小修复", dot:"var(--amber)", hint:"⚠️ 本仓真·小修复稀缺，按改动最集中排序", items:[
+      { id:"FLY-272", t:"cmux Runner 窗名用 Linear identifier", what:"窗名从 raw UUID 改成 FLY-XX", why:"单点可读性修，改动面最小、无契约层", chk:"确认 diff 小、无重测试行李" },
+      { id:"FLY-239", t:"停 Bridge 精准杀（按 port+进程树）", what:"不再裸 pattern sweep 误杀 QA-slot bridge", why:"边界清晰的行为修", chk:"起点不含『怎么修』的方案" },
+      { id:"FLY-218", t:"529 临时限流误判 usage_limit 修复", what:"LeadWatchdog classify 短路", why:"纯识别逻辑小修（但有多轮 review 行李，次选）", chk:"偏中等，diff 不算小" }
+    ]},
+    { key:"d2", title:"方向 2 · 中等偏设计", dot:"var(--blue)", hint:"你要的中等规模：有设计文档 + 多文件改动，但一个 runner 一天能完（不是 FLY-510/493/529 那种量级）", items:[
+      { id:"FLY-560", t:"Discord issue 状态可视化", what:"按 issue 阶段自动给 thread 标题加状态前缀（设计 / QA / 完成…）", why:"有设计（状态怎么映射到标题）+ Bridge 多文件改，一天能完", chk:"确认起点是需求、不是方案定稿" },
+      { id:"FLY-863", t:"StateStore stuck-hold 列 + 自动对账", what:"加卡死态列 + reconcile 卡死的 codex hold", why:"有设计（schema + 对账策略）+ 多文件（StateStore / plugin / 测试），day-sized", chk:"确认起点不含 schema 定稿" },
+      { id:"FLY-267", t:"Codex Lead 跨部门频道参与", what:"共享频道里被 @ 才回、回复路由回正确频道", why:"有设计（mention-gating + 回复路由）+ 多文件，day-sized", chk:"确认起点是问题、不是设计方案" }
+    ]}
+  ];
+
+  var state = {};
+  try { var raw = window.localStorage.getItem(LS_KEY); if(raw){ var p=JSON.parse(raw); if(p&&typeof p==="object") state=p; } } catch(e){}
+  function get(id){ if(!state[id]) state[id]={choice:null,comment:""}; return state[id]; }
+  function save(){ try{ window.localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){} }
+  function el(t,c,x){ var n=document.createElement(t); if(c)n.className=c; if(x!=null)n.textContent=String(x); return n; }
+  function lblblk(lbl,txt){ var d=el("div","blk"); d.appendChild(el("span","lbl",lbl)); d.appendChild(document.createTextNode(txt)); return d; }
+
+  DIRS.forEach(function(dir){
+    var host = document.getElementById(dir.key+"wrap");
+    var st = el("div","section-title"); var dot=el("span",null,"●"); dot.style.color=dir.dot; st.appendChild(dot); st.appendChild(document.createTextNode(" "+dir.title)); host.appendChild(st);
+    var h = el("p","sub"); h.style.margin="-4px 0 10px"; h.textContent=dir.hint; host.appendChild(h);
+    dir.items.forEach(function(it){
+      var card = el("div","cand "+dir.key);
+      var ch = el("div","chead"); ch.appendChild(el("span","cid",it.id)); ch.appendChild(el("span","ctitle",it.t)); card.appendChild(ch);
+      card.appendChild(lblblk("是什么",it.what));
+      card.appendChild(lblblk("为什么适合",it.why));
+      card.appendChild(lblblk("复核要点",it.chk));
+      var row=el("div","choices"); var bY=el("button","choice yes","选这个"); var bN=el("button","choice no","不选"); bY.type="button"; bN.type="button";
+      function paint(){ var s=get(it.id); bY.setAttribute("aria-pressed", s.choice==="yes"?"true":"false"); bN.setAttribute("aria-pressed", s.choice==="no"?"true":"false"); }
+      function pick(v){ var s=get(it.id); s.choice=(s.choice===v)?null:v; paint(); save(); refresh(); }
+      bY.addEventListener("click",function(){pick("yes");}); bN.addEventListener("click",function(){pick("no");});
+      row.appendChild(bY); row.appendChild(bN); card.appendChild(row);
+      var ta=el("textarea","cmt"); ta.placeholder="留言（可空）"; ta.value=get(it.id).comment||""; ta.setAttribute("aria-label","对 "+it.id+" 的留言");
+      ta.addEventListener("input",function(){ get(it.id).comment=ta.value; save(); refresh(); }); card.appendChild(ta);
+      paint(); host.appendChild(card);
+    });
+  });
+
+  var ALL=[]; DIRS.forEach(function(d){ d.items.forEach(function(i){ ALL.push(i.id); }); });
+  var sYes=document.getElementById("sYes"), sNo=document.getElementById("sNo");
+  function tally(){ var y=0,n=0; ALL.forEach(function(id){ var s=get(id); if(s.choice==="yes")y++; else if(s.choice==="no")n++; }); return {y:y,n:n}; }
+  function refresh(){ var t=tally(); sYes.textContent=String(t.y); sNo.textContent=String(t.n); }
+  function buildExport(){
+    return JSON.stringify({ issue:"FLY-1260", artifact:"eval-taskset", version:"R2", exportedAt:new Date().toISOString(),
+      picks: DIRS.map(function(d){ return { direction:d.title, chosen: d.items.filter(function(i){ return get(i.id).choice==="yes"; }).map(function(i){ return i.id; }),
+        excluded: d.items.filter(function(i){ return get(i.id).choice==="no"; }).map(function(i){ return i.id; }),
+        comments: d.items.filter(function(i){ var c=get(i.id).comment; return c&&c.trim(); }).map(function(i){ return {id:i.id, comment:get(i.id).comment}; }) }; })
+    }, null, 2);
+  }
+  var box=document.getElementById("exportBox"), status=document.getElementById("copyStatus");
+  document.getElementById("copyBtn").addEventListener("click",function(){
+    var text=buildExport(); box.value=text; box.style.display="block"; box.focus(); box.setSelectionRange(0,text.length);
+    var done=false; try{ done=document.execCommand("copy"); }catch(e){ done=false; }
+    if(done){ status.textContent="✓ 已复制"; status.style.color="#1d7a35"; return; }
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text).then(function(){ status.textContent="✓ 已复制"; status.style.color="#1d7a35"; },
+      function(){ status.textContent="复制失败——内容已展开，请手动全选复制"; status.style.color="#c92a20"; }); }
+    else { status.textContent="复制失败——内容已展开，请手动全选复制"; status.style.color="#c92a20"; }
+  });
+  document.getElementById("resetBtn").addEventListener("click",function(){
+    ALL.forEach(function(id){ state[id]={choice:null,comment:""}; }); save();
+    var tas=document.querySelectorAll("textarea.cmt"); for(var i=0;i<tas.length;i++) tas[i].value="";
+    var bs=document.querySelectorAll(".choice"); for(var j=0;j<bs.length;j++) bs[j].setAttribute("aria-pressed","false");
+    box.style.display="none"; status.textContent=""; refresh();
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1260 Harness 瘦身审计 · 互动版</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.6;-webkit-text-size-adjust:100%}
+  .wrap{max-width:960px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  h2{font-size:19px;margin:0 0 12px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 20px}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:16px;margin:0 0 14px;border-left:4px solid var(--line)}
+  .card.red{border-left-color:var(--red)} .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.purple{border-left-color:var(--purple)}
+  .section{margin:0 0 28px}
+  .section-title{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--dim);margin:0 0 12px;display:flex;align-items:center;gap:8px}
+  .count{background:var(--line);border-radius:10px;padding:1px 8px;font-size:12px;color:var(--ink)}
+  .badge{display:inline-block;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:600;
+    letter-spacing:.02em;white-space:nowrap}
+  .b-cut{background:#ffe9e7;color:#c92a20} .b-partial{background:#fff2e0;color:#9a5800}
+  .b-keep{background:#e6f7ea;color:#1d7a35} .b-hyp{background:#f0e9fb;color:#7326b3}
+  .b-depth{background:#eef1f5;color:#42546b}
+  .card-head{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 8px}
+  .card-id{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11px;color:var(--navy);
+    background:#eef2f7;border-radius:5px;padding:2px 6px;word-break:break-all}
+  .card-title{font-size:16px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em}
+  .facts{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--dim);margin:0 0 10px}
+  .facts b{color:var(--ink);font-weight:600}
+  .blk{font-size:14px;margin:0 0 10px}
+  .blk .lbl{font-size:11px;font-weight:700;letter-spacing:.05em;color:var(--dim);
+    text-transform:uppercase;display:block;margin:0 0 2px}
+  pre.snippet{background:#f7f7f9;border:1px solid var(--line);border-radius:8px;padding:10px;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;overflow-x:auto;
+    white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
+  .choices{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 8px}
+  .choice{border:1.5px solid var(--line);background:#fff;border-radius:8px;padding:7px 14px;
+    font-size:14px;font-weight:600;cursor:pointer;color:var(--dim);
+    font-family:inherit;-webkit-appearance:none}
+  .choice[aria-pressed="true"].yes{border-color:var(--green);color:#1d7a35;background:#e6f7ea}
+  .choice[aria-pressed="true"].no{border-color:var(--red);color:#c92a20;background:#ffe9e7}
+  .unreviewed{font-size:12px;color:var(--amber);font-weight:600}
+  textarea.cmt{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;
+    font-family:inherit;font-size:14px;resize:vertical;min-height:60px;background:#fff;color:var(--ink)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim)}
+  td.num,th.num{text-align:right;font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .bar{height:26px;border-radius:5px;display:flex;overflow:hidden;margin:6px 0 4px;background:var(--line)}
+  .bar span{display:block;height:100%}
+  .legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12px;color:var(--dim);margin:0 0 14px}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}
+  .note{background:#fffdf3;border:1px solid #ffe6a8;border-radius:10px;padding:12px 14px;
+    font-size:13.5px;margin:0 0 16px}
+  .note.red{background:#fff5f4;border-color:#ffcfcb}
+  .summary{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;backdrop-filter:blur(10px);z-index:9}
+  .summary-in{max-width:960px;margin:0 auto;display:flex;gap:8px 14px;align-items:center;flex-wrap:wrap}
+  .stat{font-size:13px;color:var(--dim)} .stat b{color:var(--ink);font-size:15px}
+  .btn{margin-left:auto;background:var(--navy);color:#fff;border:0;border-radius:8px;
+    padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;-webkit-appearance:none}
+  .btn.ghost{background:#eef2f7;color:var(--navy);margin-left:0}
+  #copyStatus{font-size:12px;font-weight:600}
+  #exportBox{width:100%;min-height:150px;margin:10px 0 0;display:none;font-size:11px;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;border:1px solid var(--line);
+    border-radius:8px;padding:10px;background:#fff;color:var(--ink)}
+  ul{padding-left:20px;margin:6px 0} li{margin:3px 0;font-size:14px}
+  .topbar{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 18px}
+  .topstat{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:12px 16px;flex:1 1 150px;min-width:140px;border-left:4px solid var(--line)}
+  .topstat.p{border-left-color:var(--purple)} .topstat.a{border-left-color:var(--amber)}
+  .topstat.g{border-left-color:var(--green)} .topstat.b{border-left-color:var(--blue)}
+  .topstat .k{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--dim)}
+  .topstat .v{font-size:22px;font-weight:700;letter-spacing:-.02em;margin:2px 0 0;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .topstat .u{font-size:11.5px;color:var(--dim);margin-top:1px}
+  .annie{background:#eef5ff;border:1px solid #cfe0ff;border-radius:8px;padding:9px 12px;margin:10px 0;font-size:13.5px}
+  .annie .lbl{color:#0055cc}
+  .ba{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}
+  .ba > div{border-radius:8px;padding:8px 10px;font-size:12.5px;line-height:1.5}
+  .ba .bf{background:#f7f7f9;border:1px solid var(--line)}
+  .ba .af{background:#e6f7ea;border:1px solid #bfe6c9}
+  .ba .lbl{display:block;margin-bottom:3px}
+  .risk{background:#fff7ed;border:1px solid #ffddb0;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13.5px}
+  .risk .lbl{color:#9a5800}
+  .verdict{background:#faf6ff;border:1px solid #e5d5fb;border-radius:8px;padding:9px 12px;margin:8px 0;font-size:13.5px}
+  .verdict .lbl{color:#7326b3}
+  @media (max-width:600px){ h1{font-size:22px} .wrap{padding:16px 12px 130px} .btn{margin-left:0}
+    .topstat{flex:1 1 46%;min-width:0} .ba{grid-template-columns:1fr} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Harness 瘦身审计 · 互动版</h1>
+  <p class="sub">FLY-1260 · 实验室 #1 · 2026-07-15 · 版本 <b id="verLabel" class="mono">R1</b></p>
+
+  <div class="note red">
+    <b>🔒 铁律：本轮无评测数据，一行生产提示词都没动，也不该动。</b><br>
+    这份报告里每一条「砍」都是 <b>审计假设（待评测）</b>，不是结论。我能论证某块「看起来像模型本来就会的方法论」，但
+    <b>我证明不了删掉它 Fable / gpt-5.6 的表现不会变差</b> —— 重复 ≠ 无效，重复也可能起强化作用。
+    这个「我不知道」正是要先建评测框架的原因。<br>
+    交付 = 盘点 + 标注 + 评测框架 + 建议。<b>A/B 实测不在本轮</b>。
+  </div>
+
+  <!-- ============ 顶部汇总条 ============ -->
+  <div class="topbar" id="topbar">
+    <div class="topstat p"><div class="k">生产注入 · S02</div><div class="v" id="tTotal">—</div><div class="u">每 runner · 一个 session（字节）</div></div>
+    <div class="topstat a"><div class="k">候选可动上限</div><div class="v" id="tMovable">—</div><div class="u"><b>非节省预估</b> · 无 A/B 数据（字节）</div></div>
+    <div class="topstat"><div class="k">瘦身候选</div><div class="v" id="tCand">—</div><div class="u">审计假设（待评测）</div></div>
+    <div class="topstat g"><div class="k">必须留 · 契约层</div><div class="v" id="tKeep">—</div><div class="u">安全 / 权限 / 生命周期</div></div>
+  </div>
+
+  <div class="note">
+    <b>怎么用这一页（R2）</b>：你上一轮 10 条批注我都读了，共同诉求是「不看源文件也能做决定」。所以每张卡都加了 4 样东西 ——
+    <b>💬 你上一轮的话</b>（原样贴回）、<b>现状 · 人话</b>（这节到底写了什么，不用行话）、<b>改前 → 改后</b>（原文摘几句 vs 我建议的新写法 / 删）、<b>⚠️ 一句风险</b>（砍了最坏会怎样）；
+    还有 <b>我对你每个具体问题的答复</b>（superpowers 要不要整体删、base-flow 删了会不会滑、pipeline-preamble 靠 Markdown 够不够……都在各卡「我的评估 / 答复」里）。
+    看完请选「建议改」或「不动」，可继续留言。<b>初始仍全部「未审」</b>（不替你预选）。审完点底部「复制导出」贴回 thread，我出下一版。
+  </div>
+
+  <!-- ============ 1. 摘要 ============ -->
+  <div class="section">
+    <div class="section-title"><span style="color:var(--purple);">●</span> 审计摘要（待验证假设）</div>
+
+    <div class="card purple">
+      <div class="card-title">三句话</div>
+      <ul>
+        <li><b>Blueprint 层几乎没有瘦身空间（可动 &lt;4%）。</b> 去掉角色文件后的 15,764 字节里，<b>75.6% 是 Lead/契约层</b>（gate 协议、merge 授权、report-back）—— 按你的公式本就该留。想在这砍，就是在砍安全边界。这条<b>几乎不需要评测</b>：是结构性事实。</li>
+        <li><b>真正的体量在角色文件（占注入 48.8%）和 lead-rules（dept 常驻 114KB）。</b> 角色文件里约 <b>23% 是删候选（其中 ~18% 是重复上下文，复述 Blueprint 块 / skill 列表 / CLAUDE.md），加部分压缩可动约 1/3</b>。这是最值得优先 A/B 的一块。</li>
+        <li><b>「skills 太大」是错觉。</b> 22 个 skill 的 SKILL.md 合计 178KB 听着吓人，但 <b>常驻的只有 description 共 5,625 字节</b>（body 按需加载，31.6 倍差）。砍 body 省不到常驻 token —— 真问题是 body 的 SOP 形状会不会压制判断力，那是另一类实验。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-title">生产 runner 注入构成（S02 形态，实测 30,785 字节）</div>
+      <div class="bar" id="barTop"></div>
+      <div class="legend">
+        <span><i style="background:#af52de"></i>角色文件 15,021 B（48.8%）</span>
+        <span><i style="background:#ff3b30"></i>Lead/契约层 11,924 B（38.7%）</span>
+        <span><i style="background:#007aff"></i>其余 3,840 B（12.5%）</span>
+      </div>
+      <p class="blk" style="color:var(--dim);font-size:13px;margin:0">
+        「Lead/契约层」= approve-gate 4,392 + review 两门(design 482 + code 475) + lead-report-back 2,993 + brainstorm/question gate 1,335 + ask/inbox 1,464 + stage/completion 783。
+        <b>它占非角色部分的 75.6%。</b>
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-title">总上下文全貌（<b>互斥 context 不加总</b>）</div>
+      <div class="scroll"><table>
+        <thead><tr><th>层</th><th>形态</th><th class="num">字节</th><th>成本口径</th><th>本单</th></tr></thead>
+        <tbody>
+          <tr><td>A Blueprint 注入</td><td>S02 生产形态</td><td class="num">30,785</td><td>每 runner，一个 session</td><td>已审计</td></tr>
+          <tr><td>└ 其中角色文件</td><td>generic-executor.md</td><td class="num">15,021</td><td>同上</td><td>已审计（逐节）</td></tr>
+          <tr><td>C lead-rules</td><td><b>dept 装配常驻</b></td><td class="num">114,000</td><td><b>每 Lead，全生命周期</b></td><td>部分（结构深度）</td></tr>
+          <tr><td>C lead-rules</td><td>cos 装配常驻</td><td class="num">58,326</td><td>同上</td><td>部分</td></tr>
+          <tr><td>C lead-rules</td><td>companion 装配常驻</td><td class="num">13,319</td><td>同上</td><td>部分</td></tr>
+          <tr><td>D skills</td><td>description（<b>常驻</b>）</td><td class="num">5,625</td><td>每 session 固定</td><td>口径</td></tr>
+          <tr><td>D skills</td><td>body（<b>按需</b>）</td><td class="num">177,964</td><td>仅调用时</td><td>口径</td></tr>
+          <tr><td>— scope 外</td><td>CLAUDE.md 链 / ~/.claude/rules / superpowers / MEMORY.md</td><td class="num">—</td><td>叠加在上述之上</td><td><b>只记录，未审计</b></td></tr>
+        </tbody>
+      </table></div>
+      <p class="blk" style="color:var(--dim);font-size:13px;margin:8px 0 0">
+        <b>不要把这些数字加起来。</b> lead-rules 三行是互斥的（一个 Lead 只装一种 role）；A 与 C 是不同的进程；D 的 body 只在被调用时进上下文。
+        <br>原始资产池 lead-rules 共 159,239 字节 / 20 文件，但<b>没有任何 Lead 背全部 20 个</b> —— 上表给的是<b>装配后的常驻真相</b>（由 shipped <span class="mono">lead-rules-bundle.sh</span> 现算）。
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ 2. 卡片区 ============ -->
+  <div class="section">
+    <div class="section-title">
+      <span style="color:var(--amber);">●</span> 瘦身候选 <span class="count" id="cardCount">0</span>
+      <span class="unreviewed" id="unrevInline"></span>
+    </div>
+    <p class="sub" style="margin:-4px 0 14px">
+      排序 = <b>审计优先级启发式</b>（可动字节 × 常驻权重）。<b>这是启发式，不是「预估收益/节省」</b> —— 没有 A/B 数据，我不知道砍了会省多少、也不知道会不会变差。
+    </p>
+    <div id="cards"></div>
+  </div>
+
+  <!-- ============ 3. 必须留 ============ -->
+  <div class="section">
+    <div class="section-title"><span style="color:var(--green);">●</span> 必须留 · 契约层 <span class="count" id="keepCount">0</span></div>
+    <div class="card green">
+      <div class="card-title">这些块一条都不进砍候选</div>
+      <p class="blk" style="margin:0 0 10px">三层框架点名：<b>契约层（安全 / 权限 / 生命周期）一律留</b>。它们是「模型推断不出的经验」和「权限风险边界」—— 恰好是公式里最该留的两类。</p>
+      <div class="scroll"><table>
+        <thead><tr><th>块</th><th class="num">字节</th><th>一句话理由</th></tr></thead>
+        <tbody id="keepRows"></tbody>
+      </table></div>
+    </div>
+  </div>
+
+  <!-- ============ 4. 评测框架 ============ -->
+  <div class="section">
+    <div class="section-title"><span style="color:var(--blue);">●</span> 评测框架提案</div>
+    <div class="card blue">
+      <div class="card-title">3 任务 × 2 变体 × 2 模型 = 12 runs（本轮不跑）</div>
+      <ul>
+        <li><b>任务</b>：T1 有界代码变更（FLY-1242 删 dead flag）· T2 设计（FLY-1245 kill-switch）· T3 QA（FLY-1246 PR #584，重放历史 head）。三个起点都<b>不含答案文档</b>，且晚于两模型 knowledge cutoff。</li>
+        <li><b>指标</b>：双盲评 rubric（两位各评全部 12 份）+ 客观评估器；轮数/token <b>仅模型内比较</b>；插手拆成 gate_compliance / discretionary_asks / simulated_human_decisions <b>三个独立字段，不相加</b>；findings 带 severity + ground-truth 证实。</li>
+        <li><b>预注册</b>（跑前冻结，看到数据前定死）：非劣界 B−A &gt; −1.0；触发重复的阈值 |B−A| ≥ 2.0；<b>n=1 结论上限 = 方向性</b>，「强证据」只来自客观不变量。</li>
+        <li><b>隔离</b>：per-run 独立 clone（不用 linked worktree，会污染主仓 .git/config）· claude 腿<b>零生产 hook 执行</b>（带哨兵）· codex 腿<b>不用 codex-with-fallback</b>（它会改写宿主 auth.json）· 对抗性冒烟实证隔离，而不是声明隔离。</li>
+      </ul>
+      <div class="note" style="margin:12px 0 0">
+        <b>⚠️ 一个必须你/Lead 拍板的范围问题（执行单开跑前）</b><br>
+        提案的 pilot <b>只变换 Blueprint 注入块</b>，角色文件 / lead-rules / skills 两臂字节一致。
+        但本次审计的<b>主结论恰恰是「角色文件约 1/3 可动」</b> —— 也就是说按当前范围跑，
+        <b>验证的是框架本身，验不到主结论</b>（层 A 可动 &lt;600 B，效应大概率淹没在噪声里）。<br>
+        <b>(a)</b> 保范围：12 runs 只验框架（也会顺带证明「Blueprint 层没什么可砍」）。<br>
+        <b>(b) 建议</b>：把角色文件纳入处理面 —— 但这是 scope 变更，<b>要你或 Lead 点头，我不自决</b>。
+      </div>
+      <p class="blk" style="margin:12px 0 0;font-size:13px;color:var(--dim)">
+        完整提案（含隔离阶梯、parity 断言、预注册全部数值、评审效度条款）见仓内 <span class="mono">eval-framework-proposal.md</span>。
+      </p>
+    </div>
+  </div>
+
+  <!-- ============ 5. 局限 ============ -->
+  <div class="section">
+    <div class="section-title"><span style="color:var(--red);">●</span> 局限与已知缺口</div>
+    <div class="card red">
+      <ul>
+        <li><b>全部建议无 A/B 数据背书</b>，一律「审计假设」。这是本单的设计，不是疏漏。</li>
+        <li><b>审计深度不齐</b>：层 A/B 是<b>逐字</b>（本 runner 自己收到的注入原文）；层 C 只到<b>结构</b>（章节 + 实测字节，没逐字读完 32KB/24KB）；层 D 只到<b>口径</b>（description/body 分列测量，没逐条评 22 份 body）。<b>结构/口径的行，置信度明显更低</b> —— 每张卡都标了深度。</li>
+        <li><b>层 C 有 9 个文件（~46KB）没审</b> → 不给归类，不猜。留实验室 #2。</li>
+        <li><b>评测集缺「真·小 bug fix」格</b>：本仓近期 fix 类 commit 普遍带重测试行李（FLY-1239 code 部分 1167+、FLY-1236 802+），30min 包络内找不到真·小修复。已如实记录。</li>
+        <li><b>lead-rules 的证据不能借用 Runner 的 A/B</b>：Lead 不在重放范围。要动 lead-rules 必须另立评测单。</li>
+        <li><b>重放保真度残差</b>：真实 runner 有 Lead 互动，重放用 stub 应答。</li>
+        <li><b>发布链接是版本化的</b>：每轮批注我发一个<b>新链接</b>（publish-report 每次生成新 token URL，不存在同链接更新）。thread 里最新一条 = 准；旧链接留作历史（7 天自然过期）。你的已选/已评会自动带到新版本（同 origin，按卡片 ID 迁移）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div style="text-align:center;color:var(--dim);font-size:12px;margin:24px 0 0">
+    数据来源：<span class="mono">harness/inventory-data.json</span> + <span class="mono">harness/inventory-manifest.json</span><br>
+    Blueprint SHA <span class="mono" id="bpSha">d8951aea20ab7b0e889a33794a790533190d3408</span> · 16 场景 / 28 锚点全覆盖（脚本双向断言）
+  </div>
+</div>
+
+<div class="summary">
+  <div class="summary-in">
+    <span class="stat">建议改 <b id="sYes">0</b></span>
+    <span class="stat">不动 <b id="sNo">0</b></span>
+    <span class="stat" style="color:var(--amber)">未审 <b id="sUnrev">0</b></span>
+    <span class="stat">已留言 <b id="sCmt">0</b></span>
+    <span id="copyStatus"></span>
+    <button class="btn ghost" id="resetBtn" type="button">清空</button>
+    <button class="btn" id="copyBtn" type="button">复制导出</button>
+  </div>
+  <textarea id="exportBox" readonly aria-label="导出内容"></textarea>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+
+  var REPORT_VERSION = "R2";
+  var MANIFEST = {
+    blueprintFileSha: "d8951aea20ab7b0e889a33794a790533190d3408",
+    repoHeadSha: "796b147656a488970c27cc30c6d893d114ec3663",
+    scenarios: 16, anchors: 28, skillLockCount: 22
+  };
+  // localStorage key is issue+schema scoped so other reports on the same
+  // Vercel origin cannot collide with it.
+  var LS_KEY = "FLY-1260:audit:v1";
+
+  // --- Card data. Every string here is rendered via textContent / value only —
+  //     never innerHTML, so quotes / tags / & / Unicode in source text render as
+  //     literal text, not markup. If any future card text must contain a literal
+  //     closing script tag, it MUST be written escaped (as <\/script>) or it will
+  //     terminate this inline block. Escaping is proved by harness/escaping-fixture.html.
+  var CARDS = [
+    {
+      id: "C:packages/teamlead/lead-rules-base/department-lead-rules.md:reply-discipline-trio",
+      layer: "C · lead-rules", title: "Reply Discipline 三节（回复纪律 / issue-bound / 共享频道）",
+      bytes: 20909, movable: "待定（需逐字审计）", cls: "部分砍", depth: "结构",
+      inject: "dept Lead 常驻（全生命周期）· 占 department-lead-rules.md 的 64%",
+      annie: "你能跟我讲一下什么叫用 29 点、20.9KB 写，讲怎么样回消息吗？他这里面都说了什么呢？",
+      plain: "这 20.9KB 讲的不是「回复内容」，是「回到哪里」——Lead 收到一条消息后，该回在顶层聊天、还是回到某个 issue 专属的 thread。核心是一条机械算法：数消息里有几个 issue 号（像 FLY-159），0 个→回顶层、1 个→回那条 issue 的 thread、≥2 个→拆成 N 条分别回各自 thread。它明令「禁止按消息意思判断该回哪」，只准数号码。为什么这么死板？因为真出过事故：有次 Lead 把『FLY-159 和 FLY-161 哪个先做』当成一个笼统的比较问题回在顶层，结果两个 issue 的 thread 都空着，你按 issue 追上下文的模型就断了。",
+      before: "算法本身约 1 屏，讲得清楚。但后面接了：6 条『不要这样做』负面清单 + 一组 RIGHT/WRONG/WRONG-alt 代码示例 + 三段带日期的案例（『Anti-pattern caught in QA 2026-05-21 cycle 1』『2026-05-22 cycle 1』『2026-05-22 cycle 2』）。这三段讲的是同一个教训（别按语义路由、数号码就行），只是换了日期和措辞。",
+      after: "保留：机械算法 + 一段 canonical 正反例 + fallback 规则 + 那句『禁止按语义判断』（这些是跨 Agent 协作协议 + 真实事故，按你的公式必须留）。压缩：三段带日期的案例合并成一段、6 条负面清单压到 2-3 条——这是『案例穷举』的膨胀所在。",
+      risk: "若把『禁止按语义判断』那句一起砍了，Lead 可能又开始凭感觉路由 → 重演 thread 空档事故。所以压缩案例可以，核心算法+那句禁令不能碰。",
+      verdict: "建议『部分砍（压缩重复案例）』，不是大砍。⚠️ 但这张卡审计深度=结构（我逐字读了算法节，§2 共享频道/§3 issue-bound 只读了结构），动它前应先补一遍逐字审计——本页置信度最低的一张。"
+    },
+    {
+      id: "B:agents/generic-executor.md:pipeline-stages",
+      layer: "B · 角色文件", title: "Pipeline stages 节",
+      bytes: 1281, movable: 1281, cls: "砍候选", depth: "逐字",
+      inject: "无 label 匹配的 runner 全都拿（本 session 即是）· session 全程",
+      annie: "我没看懂这条什么意思。",
+      plain: "这一节在角色文件里列了一串『流水线阶段名』（started→onboard→brainstorm→…→completed），让 runner 用 `stage set <阶段>` 上报自己走到哪。问题是：同一份 runner 提示词里，Blueprint 那层已经有一个 stage-reporting 块在讲同一件事，而且那块是权威版（带真实命令）。这一节等于把已经说过的又说一遍。",
+      before: "「Use `stage set <stage>` to report progress. Valid stages (in order): started → onboard → … → completed. Not every task uses every stage…」+ 一整段 auto-QA 说明。",
+      after: "删掉阶段清单（Blueprint 的 stage-reporting 块已权威给出），换一句『阶段上报见 Blueprint 的 stage-reporting 块』。附带的 auto-QA 段落与 qa-verdict 契约重复，也可指过去。",
+      risk: "几乎无。runner 仍从 Blueprint 权威块拿到 stage 列表，只是少一份副本。",
+      verdict: "建议删（纯重复上下文）。这也回答你的困惑：它本身没讲清任何新东西，就是把 Blueprint 已说的阶段名再抄一遍——所以你看不懂是正常的，因为它不含新信息。"
+    },
+    {
+      id: "B:agents/generic-executor.md:critical-rules",
+      layer: "B · 角色文件", title: "Critical rules（NEVER / ALWAYS 清单）",
+      bytes: 2062, movable: "约 1,000", cls: "部分砍", depth: "逐字",
+      inject: "同上",
+      annie: "这个确实感觉需要改一下，但是你要再细致化一点，让我们去理解要怎么样去改。",
+      plain: "这是角色文件里的『NEVER / ALWAYS』清单。一半是权限/安全边界（不擅自做产品决定、不 silently fallback 到某角色），一半是流程重复（不 skip onboard/brainstorm、要 TDD、要 stage 上报——这三条 Blueprint 的 pipeline-preamble/brainstorm-gate/stage-reporting 已经讲过）。",
+      before: "NEVER 里：『Skip onboarding…the Blueprint pipeline preamble already tells you this』『Skip brainstorm』；ALWAYS 里：『Report your pipeline stage』『For code changes: TDD』——都与 Blueprint 块字面重复。同时 NEVER 里也有：『Make non-trivial product/scope/architecture decisions unilaterally』『Silently fall back to a specific role』。",
+      after: "删掉与 Blueprint 重复的 4 条（onboard / brainstorm / stage / TDD）。保留权限边界 2 条（不擅自做产品/架构决定、不 silently fallback 到某角色——模型推断不出、错了=越权）。清单从 ~9 条压到 ~4-5 条，只剩安全边界。",
+      risk: "低。删的都是别处已强制的；留的是安全边界。最坏=某 runner 没读 Blueprint 就少一层『别 skip brainstorm』提醒，但 brainstorm-gate 本身就是硬门（代码闸），不靠这句提醒。",
+      verdict: "建议部分砍（删重复条、留边界条）。给你更细的『怎么改』：逐条筛——凡是 Blueprint 里已有权威块讲过的（onboard/brainstorm/stage/TDD）就删，凡是『模型推断不出+错了不可逆』的（越权、冒充角色）就留。"
+    },
+    {
+      id: "B:agents/generic-executor.md:skills-you-can-assume",
+      layer: "B · 角色文件", title: "Skills you can assume exist 节",
+      bytes: 946, movable: 946, cls: "砍候选", depth: "逐字",
+      inject: "同上",
+      annie: "这个倒是，因为我们最早的时候应该是把很多东西都写得比较死。但现在一个是模型它自己会调用 skill，一个是模型它自己甚至可能不需要这些 skill，它很多东西就会去做了，这个其实确实是我在想需不需要大改的地方。",
+      plain: "这一节枚举了 6 个 skill（onboard / brainstorm / research / write-plan / implement / codex-review）并逐个解释用途。但模型本来就有一份带 description 的 skill 列表（系统自动注入），它会自己发现、自己调——这一节是在教模型它本来就知道的东西。",
+      before: "「- `onboard` — read project docs… - `brainstorm` — structured problem definition… - `research`… - `write-plan`… - `implement`… - `codex-code-review`…」逐条解释各自用途。",
+      after: "压成一句：『项目通常提供 onboard/brainstorm/research/write-plan/implement/codex-review 等 skill；用 Skill 工具发现并调用，缺失就手动照同样 shape 做。』从 946 B 压到 ~150 B。",
+      risk: "低。模型的 skill 列表自带 description，枚举不加信息。最坏=某冷门 skill 模型没主动想到调，但那靠 skill 自己的 description 触发，不靠这份枚举。",
+      verdict: "✅ 确认你的判断——可以大改。你说的『模型自己会调 skill、甚至不需要这些』完全对：skill 触发靠系统注入的 description，不靠这份手写枚举。这正是弱模型时代『写得比较死』的典型残留。"
+    },
+    {
+      id: "B:agents/generic-executor.md:override-c",
+      layer: "B · 角色文件", title: "override C（简单档：留过程、跳文件）",
+      bytes: 549, movable: "约 350", cls: "部分砍", depth: "逐字",
+      inject: "同上",
+      annie: "OK，这里我大概理解你说的是什么意思，但是需要你再跟我详细地说一下到底是什么东西。",
+      plain: "这一节讲『简单档任务（doc tier=none）时，还是要走 brainstorm 思考过程，但不用单独写一个设计文件』。核心其实就一句话：docTier 只控制要不要产出文档文件，不控制你要不要思考。其余约 350 B 是把这句话换着说法重复（哪档写什么、任何档 gate 都不跳——后者 DOC-FLOW 块已经讲过）。",
+      before: "「**C. Simple tasks (`none` tier): keep the process, skip the file.** …still run the brainstorming PROCESS…but do NOT write a separate design/spec FILE. Where a BRAINSTORM GATE block is present, put the short design in its gate message; where it is absent… Doc tier controls document FILES, not whether you think before you act.」",
+      after: "压成 2-3 句：『简单档（none）仍要走 brainstorm 思考，只是不单独写设计文件——短设计放进 gate 消息（有 gate 时）或简述后继续（无 gate 时）。docTier 只控文档产出，不控你是否思考。』",
+      risk: "低。核心一句保留，删的是同义反复。",
+      verdict: "建议部分砍（压成 2-3 句）。到底是什么东西：doc tier 是任务难度档（full/plan_only/none）；这一节是在澄清一个容易被误解的点——『简单档 = 不写设计文件』不等于『简单档 = 不用动脑』。它想防的是 runner 看到 none 档就跳过思考直接乱写。"
+    },
+    {
+      id: "B:agents/generic-executor.md:when-youre-being-used",
+      layer: "B · 角色文件", title: "When you're being used 节",
+      bytes: 716, movable: 716, cls: "砍候选", depth: "逐字",
+      inject: "同上",
+      annie: "Again，就是你需要跟我详细地讲一下，他说现在是怎么写的，以及你为什么觉得现在这个写的这个不对，你要改成什么样子？",
+      plain: "这一节穷举了『dispatcher 为什么会 fallback 到 generic 角色』的三种情形——新项目 / Lead 指定 / 跨域任务。读完这三条，runner 的行为一点不变（它该干嘛还干嘛）。",
+      before: "「One of these happened: 1. New / minimally-configured project — the project has no `.flywheel/agents/` files… 2. Lead override to \"generic\"… 3. Cross-domain task — the issue genuinely doesn't fit any single dept…」",
+      after: "删掉三情形枚举，保留一句身份说明：『你是没有专属角色时的兜底 runner；灵活、诚实、遇到超出能力范围就升级。』",
+      risk: "低。删的是『为什么派你来』的背景解释，runner 行为不依赖它。最坏=runner 少知道一点自己被派来的缘由，但这不影响它执行任何一步。",
+      verdict: "为什么现在这样写不对：这三条是『为什么派你来』的背景，不是『你该怎么干』的指令——读完不改变任何行为，属于流程仪式 + 假想边缘穷举。改成什么样：删枚举、留一句身份说明即可。"
+    },
+    {
+      id: "B:agents/generic-executor.md:superpowers-intro",
+      layer: "B · 角色文件", title: "Default Workflow 节引言（4-skill RPC 列表 + 不可用 fallback）",
+      bytes: 1272, movable: "约 600", cls: "部分砍", depth: "逐字",
+      inject: "同上",
+      annie: "也是吧，这个 Again 就是因为我现在在网上看到很多人在讨论说现在有新的 5.6 和 Fable，我们还有没有必要用 Superpower 的质疑。所以就是我在想，那这一部分是应该直接整体地去移除掉吗？",
+      plain: "这一节告诉 runner『本机装了 Superpowers 插件，按 brainstorm→写计划→TDD→code-review 四步走』，外加一大段『如果插件不可用怎么手动照做』的 fallback。",
+      before: "四步 skill 列表 + 「If the Skill tool or the Superpowers plugin is unavailable…Carry out the same brainstorm → plan → TDD → review shape manually…」（fallback 写了一大段）。",
+      after: "保留四步 skill 指针，fallback 压成一句：『插件不可用就手动照 brainstorm→plan→TDD→review 同样 shape 做。』从 1272 B 压到 ~500 B。",
+      risk: "若整体移除：no-role runner 会失去默认工作流程指针 → 每个 runner 自创流程，brainstorm/gate 纪律可能滑。所以瘦身可以，整体移除有真实风险。",
+      verdict: "❗答你的问题：不建议整体移除，建议瘦身。要分清两件事——(1) 这一节只是个『指针』（指向那几个流程 skill），本身很短、不含 SOP 正文；移除它 ≠ 去掉 superpowers，只会让 runner 不知道该用哪套流程 → 退回自己瞎走。(2) 网上质疑的其实是 superpowers 那些『很长的 step-by-step SOP skill 正文』（担心压制强模型判断力）——那是另一类实验（评测框架里的 body-SOP 假设），不在这张卡。所以：这一节瘦身（留指针、压 fallback）；『superpowers 值不值』这个大问题，正是要先跑评测框架去量的（不能拍脑袋删）。"
+    },
+    {
+      id: "B:agents/generic-executor.md:interaction-principles",
+      layer: "B · 角色文件", title: "Interaction principles 节",
+      bytes: 515, movable: 515, cls: "砍候选", depth: "逐字",
+      inject: "同上",
+      annie: "OK，这个可能是可以删除掉，以及甚至我不知道说现在大模型还需不需要这样细节的指导。",
+      plain: "这一节列了『一次问一个问题 / 先听再说 / push back 不做应声虫 / surface assumptions』四条通用交互方法论。项目的 CLAUDE.md『Core Behaviors』已经逐条覆盖了同样内容。",
+      before: "「- One question at a time… - Listen before speaking… - Push back — point out problems directly… - Surface assumptions… - Physical / out-of-band work is the user's…」",
+      after: "删整节。唯一略有信息量的『physical work 是用户的』可并入别处一句。",
+      risk: "极低。CLAUDE.md Core Behaviors 已覆盖同样内容，是重复上下文。",
+      verdict: "✅ 确认你的判断——可以删。你的直觉对：强模型（5.6/Fable）本来就会『先听再说、push back、surface assumptions』，不需要这种细节指导；而且项目 CLAUDE.md 已经逐条写了同样的话，这里是纯重复。"
+    },
+    {
+      id: "A:packages/edge-worker/src/Blueprint.ts:base-flow",
+      layer: "A · Blueprint", title: "6-step base flow（读码→TDD→分支→提交→PR→land→exit）",
+      bytes: 553, movable: "约 400", cls: "砍候选", depth: "逐字",
+      inject: "基线，land 分支（生产 runner 有 SkillInjector → 6 步含 landing signal）",
+      annie: "这个也确实是这个样子。那我在想的是，这个模型应该本来这就是很正常的 Flow，应该本来就会用，也许不需要我们一步一步去指导。",
+      plain: "这是 Blueprint 注入的『6 步基线流程』：读码→按 TDD 改→建分支+commit→push+建 PR→用 flywheel-land 盯 CI 写落地信号→退出。你的直觉对了一半：前 4 步（读码/TDD/建分支/PR）确实是模型本来就会的通用操作。",
+      before: "「1. Read the codebase… 2. Implement the requested changes following TDD. 3. Create a feature branch, commit your changes. 4. Push the branch and create a GitHub PR. 5. …follow the flywheel-land skill…write the landing signal… 6. …exit the session. Landing signal path: <绝对路径>」",
+      after: "前 4 步压成一句边界声明；死保第 5-6 步的两样模型推断不出的东西：landing signal 的确切文件路径 + 『不许自己 merge、只写 ready_to_merge 信号然后退出』的纪律。",
+      risk: "删前 4 步安全；但删第 5-6 步 = runner 不知道把『我做完了』的信号写到哪、甚至可能自己去 merge（越权、不可逆）。所以是『压缩前 4 步、死保第 5-6 步』。",
+      verdict: "❗答你的问题（删掉真实风险）：前 4 步删掉基本无风险——TDD/PR 纪律另外由 flywheel-tdd / flywheel-git-workflow skill + Critical rules 强制，是三重保险，删一份副本不会让纪律滑。但第 5-6 步不能删：landing-signal 路径和『不自 merge』是这台机器特有的机制，模型绝对推断不出。所以结论是压缩前半、保留后半，不是整段删。"
+    },
+    {
+      id: "A:packages/edge-worker/src/Blueprint.ts:pipeline-preamble",
+      layer: "A · Blueprint", title: "PIPELINE PREAMBLE 第 (2) 步",
+      bytes: 1012, movable: "约 200", cls: "部分砍", depth: "逐字",
+      inject: "projectName 存在且非 resume-suppress",
+      annie: "啊，这个是不是感觉还是需要的？但我只是不知道这个东西你直接拿 Markdown file 去规范它够不够。",
+      plain: "这一节是 runner 开工前的 5 步前导：(1) 上报 onboard 阶段 (2) 尝试跑 onboard skill (3) 成功就转 brainstorm (4) 没 onboard skill 就直接转 brainstorm (5) onboard 报错就 complete --route blocked 停下。其中 (1)(3)(4)(5) 是『阶段上报 + 出错终态通道』= 协议，模型推断不出、必须留；只有 (2)『尝试 onboard skill』是模型本来就会的。",
+      before: "「PIPELINE PREAMBLE — run BEFORE any other work: (1) stage set onboard (2) Attempt the onboard skill (3) On success: stage set brainstorm (4) If the onboard skill absent: stage set brainstorm directly (5) If the skill threw a hard error: complete --route blocked」",
+      after: "压缩 (2)（把『尝试 onboard skill』并成半句），其余 (1)(3)(4)(5) 原样保留。从 1012 B 压到 ~800 B。",
+      risk: "低。只压模型本来就会的 (2)；机制信号 (1)(3)(4)(5) 全留。",
+      verdict: "❗答你的问题（Markdown 规范够不够 = prompt 约束 vs 代码闸）：分层看。软纪律（该调哪个 skill、该不该先 onboard）靠 prompt 提一句就够，做错代价小。但硬边界不能只靠 Markdown——阶段上报、blocked 终态、merge 授权这类是机制信号，靠 prompt 是『软约束（模型可能忘）』。真正的墙已经在代码里：Blueprint 这段本身就是代码生成的注入（不是静态 md），而 stage/gate 的强制在 Bridge 服务端（FLY-827 Codex 门、approve gate 的 verify-approval 都是代码闸，不靠 prompt 自觉）。所以：这份 preamble 是『提醒层』，真正的规范墙在 Bridge 代码里——Markdown 够用来提醒，不够用来当边界。"
+    }
+  ];
+
+  var KEEP = [
+    ["approve-gate", 4392, "merge/ship 授权边界。verify-approval 是唯一授权源、消息文本无授权力、head 漂移作废批准 —— 模型绝对推断不出，错了 = 未授权 ship（不可逆）"],
+    ["review-design-gate + review-code-gate（generic loop）", 957, "design/code review checkpoint 的通用门（S02 逐块实测 482+475）。初稿被误折进 approve-gate，现拆出——都是 gate 协议，留"],
+    ["lead-report-back", 2993, "FLY-208 真实事故：Runner 用 SendMessage 报告进了黑洞（积压 184 条），它真心以为报到了。「模型推断不出的经验」的教科书例"],
+    ["override A（exit 0 ≠ 批准）", 2002, "Codex review 抓出的真洞：gate 对更正和 fail-open 超时也返回 0。把 exit code 当批准 = 未授权推进"],
+    ["qa-verdict", 1830, "auto-QA 的 verdict 是 pipeline gating founder 的机制信号，格式即契约"],
+    ["code-review-gate（codex 腿）", 1805, "Codex review 记录是 ship 的硬前置（FLY-827）"],
+    ["founder-ux-gate", 1546, "founder 物料纪律 = 契约层，三层框架点名不砍"],
+    ["Escalation triggers", 1459, "「何时该找 Lead」= 协作协议 + 判断框架。错了要么烦 Annie，要么擅自决定"],
+    ["doc-flow", 1446, "项目落盘约定（文件夹/抬头/三档）—— 纯约定，推断不出"],
+    ["headless-Runner rule", 1282, "「没有真人在这个终端」—— 模型绝对推断不出，推断错就在终端等真人 → 永久挂死。整份角色文件里价值密度最高的一段"],
+    ["ask 非阻塞语义", 956, "ask 不阻塞、必须轮询 check、没有 mailbox 唤醒 = 机制事实。推断错 = 永久挂起"],
+    ["brainstorm-gate", 804, "gate 协议 + fail-close：非零退出即停"],
+    ["progress-ledger", 811, "restart-resilient 机制 + 只 commit progress.md 的路径限定"],
+    ["override B（doc-flow 落点）", 655, "项目约定 + 条件化（有 DOC-FLOW block 才走）"],
+    ["question-gate", 531, "gate 协议"],
+    ["lead-inbox", 508, "PostToolUse hook 注入 + 手动兜底 = 机制事实"],
+    ["stage-reporting", 454, "阶段上报是 Bridge 可观测性的唯一来源"],
+    ["Output convention", 384, "用户长期偏好：代码/commit/PR 英文，设计文档中文 —— 公式点名的「留」"],
+    ["Failure path", 370, "complete --route blocked 终态通道。不知道就会挂死或硬扛"],
+    ["completion-reporting", 329, "stage set completed 是终态信号；不报 = session 悬挂"],
+    ["skills description（22 条）", 5625, "skill 能被正确触发的唯一依据。砍它省不到什么、却直接伤触发准确率 —— 收益/风险比最差"],
+    ["founder-only-authority R1", 13631, "权限风险边界，红线。cos / dept Lead 装（companion 不装此文件）"],
+    ["founder-only-authority · Future autonomy roadmap", 3089, "初稿曾误列为砍候选（撤回）：本节含现行时态守卫『下列放宽今天都未生效…不得当作今日行动的授权』+『v1.29.x 严格（现在）』现行规则，是权限边界不是纯未来叙事。cos / dept 装（companion 不装）"]
+  ];
+
+  // ---------- state ----------
+  var state = { cards: {}, prevIds: [] };
+  function load(){
+    // FLY-1260 R2 (Codex code review MEDIUM): parseable-but-malformed storage must
+    // not corrupt the honesty contract. Normalize EVERY card to a valid shape
+    // (choice ∈ {"yes","no",null}, comment a string, id a string); discard the rest.
+    try {
+      var raw = window.localStorage.getItem(LS_KEY);
+      if (!raw) return;
+      var p = JSON.parse(raw);
+      if (!p || typeof p !== "object") return;
+      var cleanCards = {};
+      if (p.cards && typeof p.cards === "object") {
+        for (var id in p.cards) {
+          if (!Object.prototype.hasOwnProperty.call(p.cards, id)) continue;
+          if (typeof id !== "string") continue;
+          var v = p.cards[id];
+          if (!v || typeof v !== "object") continue;
+          cleanCards[id] = {
+            choice: (v.choice === "yes" || v.choice === "no") ? v.choice : null,
+            comment: typeof v.comment === "string" ? v.comment : ""
+          };
+        }
+      }
+      state.cards = cleanCards;
+      // FLY-1260 R2 (Codex code review MEDIUM): preserve the ORIGINATING previous-
+      // version card set across same-version reloads. On a version bump the stored
+      // `ids` (the prior version's set) become prevIds; on a same-version reload we
+      // keep the persisted prevIds so the migration diff survives edit+reload.
+      var storedVersion = typeof p.version === "string" ? p.version : null;
+      if (storedVersion && storedVersion !== REPORT_VERSION) {
+        state.prevIds = Array.isArray(p.ids) ? p.ids.filter(function(x){ return typeof x === "string"; }) : [];
+      } else {
+        state.prevIds = Array.isArray(p.prevIds) ? p.prevIds.filter(function(x){ return typeof x === "string"; }) : [];
+      }
+    } catch (e) { /* corrupt or unavailable storage → start clean */ }
+  }
+  function save(){
+    try {
+      window.localStorage.setItem(LS_KEY, JSON.stringify({
+        version: REPORT_VERSION,
+        ids: CARDS.map(function(c){ return c.id; }),
+        prevIds: state.prevIds,        // persist so the migration diff survives reload
+        cards: state.cards
+      }));
+    } catch (e) { /* private mode / quota → in-memory only */ }
+  }
+  function get(id){
+    var e = state.cards[id];
+    if (!e) { e = { choice: null, comment: "" }; state.cards[id] = e; }
+    return e;
+  }
+
+  // ---------- render helpers (textContent only — never innerHTML) ----------
+  function el(tag, cls, text){
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  function fmt(n){ return typeof n === "number" ? n.toLocaleString("en-US") : String(n); }
+
+  // ---------- summary bar chart ----------
+  (function(){
+    var bar = document.getElementById("barTop");
+    var segs = [["#af52de", 15021], ["#ff3b30", 11924], ["#007aff", 3840]];
+    var total = 30785;
+    segs.forEach(function(s){
+      var span = document.createElement("span");
+      span.style.background = s[0];
+      span.style.width = (s[1] / total * 100) + "%";
+      bar.appendChild(span);
+    });
+  })();
+
+  // ---------- top summary strip (data-driven; ceiling, NOT a savings estimate) ----------
+  (function(){
+    function movableNum(m){
+      if (typeof m === "number") return m;
+      var mm = String(m).replace(/[，,]/g, "").match(/(\d+)/); // "约 1000" → 1000; "待定…" → none
+      return mm ? Number(mm[1]) : 0;
+    }
+    var ceil = CARDS.reduce(function(a, c){ return a + movableNum(c.movable); }, 0);
+    document.getElementById("tTotal").textContent = fmt(30785);
+    document.getElementById("tMovable").textContent = "≤ " + fmt(ceil); // ≤ upper bound
+    document.getElementById("tCand").textContent = String(CARDS.length);
+    document.getElementById("tKeep").textContent = String(KEEP.length);
+  })();
+
+  // ---------- cards ----------
+  // FLY-1260 R2 (Codex code review HIGH): load + normalize state BEFORE rendering,
+  // and have handlers re-fetch by ID (never close over a pre-load object). The old
+  // code rendered first, then load() replaced state.cards, so every handler mutated
+  // an orphaned object while save()/tally() read the imported one — imported
+  // annotations could not be edited or persisted.
+  load();
+  var host = document.getElementById("cards");
+  var clsColor = { "砍候选": "red", "部分砍": "amber" };
+  var clsBadge = { "砍候选": "b-cut", "部分砍": "b-partial" };
+
+  CARDS.forEach(function(c){
+    var card = el("div", "card " + (clsColor[c.cls] || ""));
+
+    var head = el("div", "card-head");
+    head.appendChild(el("span", "badge " + (clsBadge[c.cls] || ""), c.cls));
+    head.appendChild(el("span", "badge b-hyp", "审计假设（待评测）"));
+    head.appendChild(el("span", "badge b-depth", "深度：" + c.depth));
+    head.appendChild(el("span", "card-id", c.id));
+    card.appendChild(head);
+
+    card.appendChild(el("div", "card-title", c.title));
+
+    var facts = el("div", "facts");
+    var f1 = el("span"); f1.appendChild(el("b", null, "层 ")); f1.appendChild(document.createTextNode(c.layer)); facts.appendChild(f1);
+    var f2 = el("span"); f2.appendChild(el("b", null, "实测 ")); f2.appendChild(document.createTextNode(fmt(c.bytes) + " 字节")); facts.appendChild(f2);
+    var f3 = el("span"); f3.appendChild(el("b", null, "可动 ")); f3.appendChild(document.createTextNode(fmt(c.movable) + (typeof c.movable === "number" ? " 字节" : ""))); facts.appendChild(f3);
+    card.appendChild(facts);
+
+    // Annie's R1 comment, migrated by card id (FLY-1260 R2)
+    if (c.annie) {
+      var an = el("div", "annie");
+      an.appendChild(el("span", "lbl", "💬 你上一轮说"));
+      an.appendChild(document.createTextNode(c.annie));
+      card.appendChild(an);
+    }
+
+    var pl = el("div", "blk");
+    pl.appendChild(el("span", "lbl", "现状 · 人话（不用看源文件）"));
+    pl.appendChild(document.createTextNode(c.plain));
+    card.appendChild(pl);
+
+    var ba = el("div", "ba");
+    var bf = el("div", "bf");
+    bf.appendChild(el("span", "lbl", "改前 · 现在这么写"));
+    bf.appendChild(document.createTextNode(c.before));
+    var af = el("div", "af");
+    af.appendChild(el("span", "lbl", "改后 · 建议"));
+    af.appendChild(document.createTextNode(c.after));
+    ba.appendChild(bf); ba.appendChild(af);
+    card.appendChild(ba);
+
+    var rk = el("div", "risk");
+    rk.appendChild(el("span", "lbl", "⚠️ 一句风险 · 砍了最坏会怎样"));
+    rk.appendChild(document.createTextNode(c.risk));
+    card.appendChild(rk);
+
+    var vd = el("div", "verdict");
+    vd.appendChild(el("span", "lbl", "我的评估 / 答复"));
+    vd.appendChild(document.createTextNode(c.verdict));
+    card.appendChild(vd);
+
+    var inj = el("div", "blk");
+    inj.appendChild(el("span", "lbl", "注入条件"));
+    inj.appendChild(document.createTextNode(c.inject));
+    card.appendChild(inj);
+
+    // choices — handlers re-fetch get(c.id) so they always read/write live state.
+    var row = el("div", "choices");
+    var bYes = el("button", "choice yes", "建议改");
+    var bNo  = el("button", "choice no", "不动");
+    bYes.type = "button"; bNo.type = "button";
+    var unrev = el("span", "unreviewed", "");
+
+    function paint(){
+      var st = get(c.id);
+      bYes.setAttribute("aria-pressed", st.choice === "yes" ? "true" : "false");
+      bNo.setAttribute("aria-pressed", st.choice === "no" ? "true" : "false");
+      unrev.textContent = st.choice === null ? "● 未审" : "";
+    }
+    function pick(v){
+      var st = get(c.id);
+      st.choice = (st.choice === v) ? null : v;  // click again to un-review
+      paint(); save(); refresh();
+    }
+    bYes.addEventListener("click", function(){ pick("yes"); });
+    bNo.addEventListener("click", function(){ pick("no"); });
+    row.appendChild(bYes); row.appendChild(bNo); row.appendChild(unrev);
+    card.appendChild(row);
+
+    var ta = el("textarea", "cmt");
+    ta.placeholder = "留言（可空）——你的批注我下一版逐条处理";
+    ta.value = get(c.id).comment || "";
+    ta.setAttribute("aria-label", "对「" + c.title + "」的留言");
+    ta.addEventListener("input", function(){ get(c.id).comment = ta.value; save(); refresh(); });
+    card.appendChild(ta);
+
+    paint();
+    host.appendChild(card);
+  });
+  document.getElementById("cardCount").textContent = String(CARDS.length);
+
+  // ---------- keep list ----------
+  var keepRows = document.getElementById("keepRows");
+  KEEP.forEach(function(k){
+    var tr = document.createElement("tr");
+    var td0 = el("td", null, k[0]);
+    var td1 = el("td", "num", fmt(k[1]));
+    var td2 = el("td", null, k[2]);
+    tr.appendChild(td0); tr.appendChild(td1); tr.appendChild(td2);
+    keepRows.appendChild(tr);
+  });
+  document.getElementById("keepCount").textContent = String(KEEP.length);
+  document.getElementById("verLabel").textContent = REPORT_VERSION;
+
+  // ---------- summary ----------
+  var sYes = document.getElementById("sYes"), sNo = document.getElementById("sNo"),
+      sUnrev = document.getElementById("sUnrev"), sCmt = document.getElementById("sCmt"),
+      unrevInline = document.getElementById("unrevInline");
+
+  function tally(){
+    var y = 0, n = 0, u = 0, c = 0;
+    CARDS.forEach(function(card){
+      var st = get(card.id);
+      if (st.choice === "yes") y++;
+      else if (st.choice === "no") n++;
+      else u++;
+      if (st.comment && st.comment.trim()) c++;
+    });
+    return { yes: y, no: n, unrev: u, cmt: c };
+  }
+  function refresh(){
+    var t = tally();
+    sYes.textContent = String(t.yes);
+    sNo.textContent = String(t.no);
+    sUnrev.textContent = String(t.unrev);
+    sCmt.textContent = String(t.cmt);
+    unrevInline.textContent = t.unrev > 0 ? ("· " + t.unrev + " 张未审") : "· 全部已审";
+  }
+
+  // ---------- export ----------
+  function buildExport(){
+    var t = tally();
+    var ids = CARDS.map(function(c){ return c.id; });
+    var added = state.prevIds.length
+      ? ids.filter(function(i){ return state.prevIds.indexOf(i) === -1; }) : [];
+    var removed = state.prevIds.filter(function(i){ return ids.indexOf(i) === -1; });
+    return JSON.stringify({
+      issue: "FLY-1260",
+      reportVersion: REPORT_VERSION,
+      exportedAt: new Date().toISOString(),
+      evidenceLevel: "审计假设（无 A/B 数据）",
+      inventoryManifest: MANIFEST,
+      summary: { 建议改: t.yes, 不动: t.no, 未审: t.unrev, 已留言: t.cmt },
+      diffVsPrevVersion: { added: added, removed: removed },
+      decisions: CARDS.map(function(c){
+        var st = get(c.id);
+        return {
+          id: c.id, title: c.title, layer: c.layer,
+          measuredBytes: c.bytes, classification: c.cls, auditDepth: c.depth,
+          choice: st.choice,                                   // null = 未审（显式）
+          comment: (st.comment && st.comment.trim()) ? st.comment : null
+        };
+      })
+    }, null, 2);
+  }
+
+  var box = document.getElementById("exportBox");
+  var status = document.getElementById("copyStatus");
+
+  document.getElementById("copyBtn").addEventListener("click", function(){
+    var text = buildExport();
+    box.value = text;
+    box.style.display = "block";     // visible read-only textarea (mobile-safe)
+    box.focus();
+    box.setSelectionRange(0, text.length);
+
+    var done = false;
+    try { done = document.execCommand("copy"); } catch (e) { done = false; }
+
+    if (done) {
+      status.textContent = "✓ 已复制";
+      status.style.color = "#1d7a35";
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function(){
+        status.textContent = "✓ 已复制";
+        status.style.color = "#1d7a35";
+      }, function(){
+        status.textContent = "复制失败 —— 内容已展开，请手动全选复制";
+        status.style.color = "#c92a20";
+      });
+    } else {
+      status.textContent = "复制失败 —— 内容已展开，请手动全选复制";
+      status.style.color = "#c92a20";
+    }
+  });
+
+  document.getElementById("resetBtn").addEventListener("click", function(){
+    CARDS.forEach(function(c){ state.cards[c.id] = { choice: null, comment: "" }; });
+    save();
+    // repaint inputs in place (no innerHTML, no reload)
+    var tas = document.querySelectorAll("textarea.cmt");
+    for (var i = 0; i < tas.length; i++) tas[i].value = "";
+    var btns = document.querySelectorAll(".choice");
+    for (var j = 0; j < btns.length; j++) btns[j].setAttribute("aria-pressed", "false");
+    var us = document.querySelectorAll(".unreviewed");
+    for (var k = 0; k < us.length; k++) if (us[k].id !== "unrevInline") us[k].textContent = "● 未审";
+    box.style.display = "none";
+    status.textContent = "";
+    refresh();
+  });
+
+  // State was loaded + normalized before rendering (see load() call above the
+  // CARDS.forEach), so cards already reflect stored state — no post-render reapply.
+  refresh();
+})();
+</script>
+</body>
+</html>
