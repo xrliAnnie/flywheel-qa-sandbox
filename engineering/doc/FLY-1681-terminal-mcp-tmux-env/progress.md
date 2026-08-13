@@ -1,13 +1,13 @@
 ---
 issue: FLY-1681
 phase: implement
-phaseCursor: 4/5
-updated: 2026-08-13T07:24:41.303Z
-nextStep: push exact head and pass code review
+phaseCursor: 5/5
+updated: 2026-08-13T07:45:45.468Z
+nextStep: final exact-head review, then needs_review handoff for PR 826
 chunks: []
 pointers: {}
 ---
 
 # FLY-1681 progress
-**phase**: implement (4/5)
-**next**: push exact head and pass code review
+**phase**: implement (5/5)
+**next**: final exact-head review, then needs_review handoff for PR 826
