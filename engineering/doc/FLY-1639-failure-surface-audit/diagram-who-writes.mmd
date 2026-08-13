@@ -1,0 +1,46 @@
+---
+title: "runner 死了，谁来填死因？—— 填的人一直活着"
+---
+flowchart TD
+    START["runner 停了"]
+
+    subgraph C1["情况① 活着，只是停下了"]
+        A1["它自己还能说话<br/>例：额度满了 / 卡住了 / 等审批超时"]
+        W1["✍️ <b>它自己报</b><br/>（进程还在，只是任务停了）"]
+    end
+
+    subgraph C2["情况② 进程没了，但有痕迹"]
+        A2["进程退出 / 窗口没了"]
+        P2["👀 <b>看着它的那个程序</b><br/>（是它启动 runner 的，runner 死了它还活着）"]
+        E2["证据：退出码<br/><i>今天就已经拿到手了，只是随手扔了</i>"]
+        W2["✍️ <b>由它填</b>"]
+    end
+
+    subgraph C3["情况③ 一点痕迹都没有"]
+        A3["查不出为什么"]
+        W3["✍️ <b>必须写「不知道」</b><br/>❌ 不许留空"]
+        NOTE3["「不知道」也是有用的信号：<br/>它告诉人「这条得有人看一眼」"]
+    end
+
+    OUT["📒 写进这次任务的账本<br/>→ 带着死因报给 Lead"]
+
+    START --> A1 --> W1 --> OUT
+    START --> A2 --> P2 --> E2 --> W2 --> OUT
+    START --> A3 --> W3 --> OUT
+    W3 -.-> NOTE3
+
+    KEY["🔑 关键：<b>填死因的从来不是 runner 自己</b><br/>是「看着它的那个程序」——<br/><b>这套东西不依赖死人开口</b>"]
+    OUT --> KEY
+
+    classDef alive fill:#eaf7ee,stroke:#34c759,color:#1a6b34
+    classDef dead fill:#ffeff0,stroke:#ff3b30,color:#8a2a25
+    classDef watcher fill:#eef4ff,stroke:#007aff,color:#1a365d
+    classDef unk fill:#fff8ec,stroke:#ff9500,color:#7a5b00
+    classDef key fill:#fdf0ff,stroke:#af52de,stroke-width:3px,color:#5b2a6b
+
+    class A1,W1 alive
+    class A2,E2 dead
+    class P2,W2 watcher
+    class A3,W3,NOTE3 unk
+    class KEY key
+    class OUT watcher

@@ -1,0 +1,73 @@
+---
+title: "四种 runner，同样四个可以看见死因的时机 —— 红色是没人看"
+---
+flowchart LR
+    subgraph LEG["图例"]
+        direction LR
+        G["🟢 看得见，也传出去了"]
+        Y["🟡 看得见，但当场丢掉"]
+        R["🔴 空白：根本没人看"]
+    end
+
+    subgraph T["四个本可以看见死因的时机"]
+        direction TB
+        T1["① 开工前<br/>体检"]
+        T2["② 跑的时候<br/>屏幕上的报错"]
+        T3["③ 断气那一刻<br/>它自己报的状态 / 退出码"]
+        T4["④ 交回来的<br/>返回值里带死因吗"]
+    end
+
+    subgraph CX["Codex"]
+        direction TB
+        C1["🟡 查了版本<br/>失败只抛一句话"]
+        C2["🔴 没人看"]
+        C3["🟢 说得出<br/>『额度满了』这种"]
+        C4["🟡 只有『目标僵局』<br/>能带走，其余全丢"]
+    end
+
+    subgraph CL["Claude"]
+        direction TB
+        L1["🟡 查了版本<br/>失败只抛一句话"]
+        L2["🔴 没人看"]
+        L3["🟡 退出码读到手<br/>打完日志就扔"]
+        L4["🔴 一个都带不走"]
+    end
+
+    subgraph AG["Antigravity"]
+        direction TB
+        G1["🟡 真探了登录<br/>但分不清没登录/过期"]
+        G2["🔴 没人看"]
+        G3["🟡 同 Claude"]
+        G4["🔴 一个都带不走"]
+    end
+
+    subgraph KM["Kimi"]
+        direction TB
+        K1["🟡 只查凭据在不在<br/>过期看不出来"]
+        K2["🔴 没人看"]
+        K3["🟡 同 Claude"]
+        K4["🔴 一个都带不走"]
+    end
+
+    T1 --- C1 --- L1 --- G1 --- K1
+    T2 --- C2 --- L2 --- G2 --- K2
+    T3 --- C3 --- L3 --- G3 --- K3
+    T4 --- C4 --- L4 --- G4 --- K4
+
+    NOTE["🔴 第②列整排空白的原因：<br/>屏幕报错的识别器**写好了但没接线**，<br/>今天没有任何生产代码在调用它"]
+    C2 -.-> NOTE
+
+    classDef ok fill:#eaf7ee,stroke:#34c759,color:#1a6b34
+    classDef mid fill:#fff8ec,stroke:#ff9500,color:#7a5b00
+    classDef gap fill:#ffeff0,stroke:#ff3b30,stroke-width:2px,color:#8a2a25
+    classDef hdr fill:#eef4ff,stroke:#007aff,color:#1a365d
+    classDef note fill:#fdf0ff,stroke:#af52de,color:#5b2a6b
+
+    class C3 ok
+    class C1,C4,L1,L3,G1,G3,K1,K3 mid
+    class C2,L2,G2,K2,L4,G4,K4 gap
+    class T1,T2,T3,T4 hdr
+    class NOTE note
+    class G ok
+    class Y mid
+    class R gap

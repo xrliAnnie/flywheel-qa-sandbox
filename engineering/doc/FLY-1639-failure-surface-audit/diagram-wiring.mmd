@@ -1,0 +1,48 @@
+---
+title: "同一件事，两种接线 —— 信息丢在哪一格"
+---
+flowchart TB
+    subgraph CX["Codex 这边的接线"]
+        direction TB
+        CX1["runner 停了"]
+        CX2["拿到的是<br/><b>「额度满了」这种带原因的状态</b><br/><i>（任务级语义，信息量高）</i>"]
+        CX3["🔴 我们的适配层<br/><b>只有一种原因带得走</b><br/>其余原因就地丢"]
+        CX4["结果：失败，但说不清哪一种"]
+        CX1 --> CX2 --> CX3 --> CX4
+    end
+
+    subgraph CL["Claude 这边的接线"]
+        direction TB
+        CL1["runner 停了"]
+        CL2["拿到的是<br/><b>「退出码 N」</b><br/><i>（进程级语义：知道非正常退出，<br/>不知道为什么）</i>"]
+        CL3["🔴🔴 我们的适配层<br/><b>拿不到原因 → 直接写成「成功」</b><br/><i>这一步才是真 bug</i>"]
+        CL4["结果：<b>失败被记成成功</b>"]
+        CL1 --> CL2 --> CL3 --> CL4
+    end
+
+    VERDICT["⚖️ 两边拿到的信息量确实不一样（CLI 本来就不同）<br/><b>但把「不知道原因」写成「成功」，是我们自己接线接错的</b>"]
+    CX4 --> VERDICT
+    CL4 --> VERDICT
+
+    FIX["✅ 修法：两边填<b>同一套死因词汇表</b><br/>Claude 拿不到原因时填 <b>「不知道」</b>，<b>不是「成功」</b><br/>判定逻辑<b>只认词汇表，不认是哪家 runner</b>"]
+    VERDICT --> FIX
+
+    KEY["🔑 <b>不是 Claude 的缺陷，是我们接线的方式</b>"]
+    FIX --> KEY
+
+    classDef stop fill:#f4f4f6,stroke:#86868b,color:#1d1d1f
+    classDef info fill:#eef4ff,stroke:#007aff,color:#1a365d
+    classDef lost fill:#ffeff0,stroke:#ff3b30,stroke-width:2px,color:#8a2a25
+    classDef worst fill:#ffe3e5,stroke:#ff3b30,stroke-width:3px,color:#8a2a25
+    classDef judge fill:#fff8ec,stroke:#ff9500,color:#7a5b00
+    classDef fix fill:#eaf7ee,stroke:#34c759,stroke-width:2px,color:#1a6b34
+    classDef key fill:#fdf0ff,stroke:#af52de,stroke-width:3px,color:#5b2a6b
+
+    class CX1,CL1 stop
+    class CX2,CL2 info
+    class CX3 lost
+    class CL3,CL4 worst
+    class CX4 lost
+    class VERDICT judge
+    class FIX fix
+    class KEY key

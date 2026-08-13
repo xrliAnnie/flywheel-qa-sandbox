@@ -1,0 +1,65 @@
+---
+title: "一次失败的信号，从死亡现场走到你眼前"
+---
+flowchart TD
+    subgraph L0["① 现场：runner 停了"]
+        D1["额度用完"]
+        D2["登录不能用"]
+        D3["进程崩了"]
+        D4["超时"]
+        D5["收尾没确认"]
+        D6["目标僵局"]
+    end
+
+    subgraph L1["② 适配器：这里就开始丢了"]
+        A1["Codex 适配器<br/>算得出原因"]
+        A2["Claude / agy / kimi 适配器<br/>不算原因"]
+        BOX{"能装进<br/>「死因」这个盒子吗？"}
+        KEEP["✅ 装得进<br/>（盒子只认 2 种：<br/>目标僵局 / 工作区接管失败）"]
+        DROP["❌ 装不进<br/>→ 原因只打进日志<br/>→ 返回值里什么都没有"]
+    end
+
+    subgraph L2["③ 判定层：这里发生极性反转"]
+        SHORT["目标僵局：抄近路直接返回<br/>（唯一带着死因走完全程的）"]
+        DEC["其余全部进判定层<br/>它总会给出一个『判定』"]
+        SW{"发信号时怎么选？<br/>『成功 或 有判定』"}
+    end
+
+    subgraph L3["④ 出口：发出去的是什么"]
+        OK["📤 发『完成』"]
+        BAD["📤 发『失败』"]
+    end
+
+    subgraph L4["⑤ 账本与你"]
+        LED["账本记：完成<br/>🔴 成果数字被空消息覆盖<br/>35 个提交 → 5 个"]
+        YOU["👤 你收到：<br/>『PR 可以看了』"]
+        LEDF["账本记：失败<br/>但只写『失败』<br/>不写『为什么』"]
+    end
+
+    D1 & D2 & D3 & D4 & D5 --> A1
+    D1 & D2 & D3 & D4 --> A2
+    D6 --> A1
+    A1 --> BOX
+    A2 -.->|"连算都没算"| DROP
+    BOX -->|"目标僵局"| KEEP
+    BOX -->|"额度/登录/崩溃/超时/收尾"| DROP
+    KEEP --> SHORT
+    DROP --> DEC
+    DEC --> SW
+    SW -->|"有判定 → 恒成立"| OK
+    SW -.->|"几乎走不到"| BAD
+    SHORT --> BAD
+    OK --> LED --> YOU
+    BAD --> LEDF
+
+    classDef dead fill:#ffeff0,stroke:#ff3b30,color:#8a2a25
+    classDef lost fill:#fff0f0,stroke:#ff3b30,stroke-width:3px,color:#8a2a25
+    classDef good fill:#eaf7ee,stroke:#34c759,color:#1a6b34
+    classDef warn fill:#fff8ec,stroke:#ff9500,color:#7a5b00
+    classDef you fill:#eef4ff,stroke:#007aff,color:#1a365d
+
+    class D1,D2,D3,D4,D5,D6 dead
+    class DROP,LED lost
+    class KEEP,SHORT good
+    class A2,SW warn
+    class YOU you
