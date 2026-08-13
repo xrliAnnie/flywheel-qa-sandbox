@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex 全舰队趴窝 — 怎么修的 · 怎么测的(独立 QA 报告)</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, sans-serif; background:#f5f5f7; color:#1d1d1f; padding:28px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:24px; margin-bottom:8px; }
+  .sub { margin-bottom:22px; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; border-radius:6px; padding:3px 9px; margin-right:6px; margin-bottom:4px; }
+  .b-blue { background:#e8f1ff; color:#007aff; }
+  .b-green { background:#e6f7ec; color:#1d804b; }
+  .b-red { background:#ffecea; color:#c0281c; }
+  .b-amber { background:#fff4e5; color:#9a5700; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:22px 24px; margin-bottom:18px; border-left:4px solid #007aff; }
+  .card h2 { font-size:17px; margin-bottom:12px; color:#1a365d; }
+  .card h3 { font-size:14.5px; margin:14px 0 7px; color:#1a365d; }
+  .card p { font-size:14.5px; line-height:1.75; margin-bottom:10px; }
+  .card ul, .card ol { padding-left:20px; margin-bottom:10px; }
+  .card li { font-size:14.5px; line-height:1.75; margin-bottom:6px; }
+  .accent-green { border-left-color:#34c759; }
+  .accent-amber { border-left-color:#ff9500; }
+  .accent-red { border-left-color:#ff3b30; }
+  .accent-purple { border-left-color:#af52de; }
+  .accent-navy { border-left-color:#1a365d; }
+  code { font-family:'SF Mono', monospace; font-size:12.5px; background:#f5f5f7; border-radius:4px; padding:1px 5px; }
+  pre { font-family:'SF Mono', monospace; font-size:12.5px; background:#f5f5f7; border-radius:8px; padding:12px 14px; overflow-x:auto; line-height:1.6; margin:10px 0; }
+  .dim { color:#86868b; font-size:13px; }
+  .figure { margin:14px 0; padding:14px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:10px; overflow-x:auto; text-align:center; }
+  .figure svg { max-width:100%; height:auto; }
+  .figcap { font-size:12.5px; color:#86868b; margin-top:8px; line-height:1.6; }
+  .figpair { display:flex; flex-wrap:wrap; gap:12px; margin:14px 0 0; }
+  .fighalf { flex:1 1 320px; margin:0; }
+  .figtitle { font-size:13.5px; font-weight:700; margin-bottom:8px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13.5px; }
+  th, td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#fbfbfd; color:#1a365d; }
+  .tbl-scroll { overflow-x:auto; }
+  .ok { color:#1d804b; font-weight:600; }
+  .bad { color:#c0281c; font-weight:600; }
+  .callout { border:1.5px solid #ff9500; background:#fff8ee; border-radius:10px; padding:14px 16px; margin:12px 0; }
+  .callout strong { color:#9a5700; }
+  .callout-blue { border-color:#007aff; background:#f0f6ff; }
+  .callout-blue strong { color:#0058c4; }
+  /* interactive comments */
+  .cmt { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:12px; }
+  .cmt-label { font-size:12.5px; color:#86868b; font-weight:600; margin-bottom:6px; }
+  .cmt-ta { width:100%; min-height:64px; border:1.5px solid #d9dce1; border-radius:8px; padding:9px 11px; font-size:14px; font-family:inherit; resize:vertical; background:#fbfbfd; }
+  .cmt-ta:focus { outline:none; border-color:#007aff; background:#fff; }
+  #cmt-panel { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #1a365d; padding:22px 24px; margin-bottom:18px; }
+  #cmt-panel h2 { font-size:17px; margin-bottom:8px; color:#1a365d; }
+  #cmt-preview { white-space:pre-wrap; background:#f5f5f7; border-radius:8px; padding:12px 14px; font-size:13.5px; color:#1d1d1f; min-height:40px; margin:10px 0; }
+  #cmt-copy { background:#007aff; color:#fff; border:none; border-radius:9px; padding:11px 22px; font-size:15px; font-weight:600; cursor:pointer; }
+  #cmt-copy:active { opacity:.7; }
+  #cmt-status { font-size:13px; color:#1d804b; margin-left:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Codex 全舰队趴窝 — 怎么修的 · 怎么测的</h1>
+<div class="sub">
+  <span class="badge b-blue">独立 QA 报告</span>
+  <span class="badge b-green">结论:PASS</span>
+  <span class="badge b-amber">合并仍需你拍板</span>
+  <span class="badge b-blue">2026-08-02</span>
+</div>
+
+<div class="card accent-navy">
+  <h2>一句话总结</h2>
+  <p>8 月 1 日 Codex 桌面端自己往它的全局配置文件里写了一张表,而我们注入 GitHub 令牌也正好要写<b>同一张表</b>。配置文件的格式规定同名表不能出现两次,于是我们的代码宁可停下也不写坏配置 —— 结果<b>所有 Codex 干活的机器人都开不了工</b>(1602/1603/1604/1605 四个单子同时趴)。</p>
+  <p>修法是:不再"另起一张表",而是<b>认出已有的那张表,把令牌折进去</b>,Codex 自己写的东西原样不动。</p>
+  <p>我是独立验证方(不是写这段代码的人)。我把所有验证<b>自己重跑了一遍</b>,不采信实现方的自测记录。<b>结论:通过。</b></p>
+</div>
+
+<div class="card accent-red">
+  <h2>出了什么事</h2>
+  <p>每个 Codex 机器人开工前,系统要给它准备一份专属配置,把 GitHub 令牌安全地传进去(不走命令行,避免被别的进程看见)。做法是:读一份全局配置当底子,再把令牌加进去。</p>
+  <p>令牌要写进的位置,叫 <code>[shell_environment_policy.set]</code>。<b>8 月 1 日之前</b>,全局配置里没有这张表,所以我们直接追加一张新的,没问题。</p>
+  <p><b>8 月 1 日,Codex 桌面端自己往全局配置里写了这张表</b>(它用来存浏览器后端、Node 相关的几个设置)。于是我们再追加一张,文件里就会出现两张同名表 —— 配置格式明令禁止,Codex 读到会直接拒绝加载。</p>
+  <p>写这段代码的人当初留了一道守卫:<b>发现这张表已存在就停下来报错,绝不写出坏配置</b>。所以真实结果不是"配置坏了",而是<b>机器人根本起不来</b> —— 四个单子实证全趴。</p>
+  <div class="callout"><strong>为什么这是好事(虽然它让舰队停了)</strong>如果当初没这道守卫,我们会安静地写出一份坏配置,Codex 起不来的原因会藏得很深,排查要多花几小时。守卫让故障<b>立刻、明确地</b>暴露出来。</div>
+</div>
+
+<div class="card">
+  <h2>怎么改的</h2>
+  <div class="figpair">
+    <div class="figure fighalf">
+      <div class="figtitle bad">修之前(main)</div>
+      <!--SVG:diagram-before.svg-->
+    </div>
+    <div class="figure fighalf">
+      <div class="figtitle ok">修之后(PR #760)</div>
+      <!--SVG:diagram-after.svg-->
+    </div>
+  </div>
+  <div class="figcap">图 1:同一段流程,左边是出事的版本,右边是修好的版本。唯一的差别在最后一步 —— 遇到"表已经在了"时,旧版停下,新版把令牌折进去。</div>
+  <h3>三个关键问题</h3>
+  <p><b>① 那道守卫当初是对的吗?</b> 是对的。在它写下的时候,全局配置<b>确实</b>没有这张表,而且当时没有能力做"表内合并"。守卫的判断是:遇到没见过的形状,宁可停也不写坏。这在当时是正确的保守选择。</p>
+  <p><b>② 前提是怎么过期的?</b> 守卫依赖一个前提 —— "全局配置不会声明这张表"。这个前提<b>不由我们掌握</b>:那份文件是 Codex 桌面端的地盘,它随时可能改。8 月 1 日它就改了。<span class="dim">(我做 QA 期间它又改写了一次,见"还剩什么风险")</span></p>
+  <p><b>③ 现在怎么合并?</b> 新做法是先<b>真正读懂</b>整份配置(用标准解析器,而不是靠文本匹配猜),据此判断能不能安全合并:</p>
+  <ul>
+    <li>已有那张表 → 把令牌那一行<b>插进这张表里</b>,Codex 自己的键一个不动;</li>
+    <li>没有那张表 → 和以前完全一样,追加一张新表;</li>
+    <li>形状怪异、或它自己已经设了同名令牌 → <b>照旧停下来报错</b>,绝不覆盖别人的东西。</li>
+  </ul>
+  <p>写出来之前还会<b>再解析一遍成品</b>自检:令牌确实在、Codex 原有的键一个没变、数量对得上 —— 任何一条不满足就拒绝写。</p>
+</div>
+
+<div class="card">
+  <h2>代码改动要点</h2>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>改动</th><th>说明</th></tr>
+    <tr><td>引入标准 TOML 解析器</td><td>新增一个小依赖(<code>smol-toml</code>),用"真读懂"代替原来的正则文本匹配。原来的匹配会误判(把别的表下的同名键当成冲突),也会漏判(带引号的表头认不出来)。</td></tr>
+    <tr><td>外科式插入</td><td>只在那一行表头之后插入令牌行,文件其余部分<b>一个字节不动</b>。</td></tr>
+    <tr><td>令牌永不进解析器</td><td>自检时用一个假占位符跑解析,真令牌最后才落进去 —— 因为解析器报错会把出错那一行原文抄进错误信息里,那一行可能正是令牌。</td></tr>
+    <tr><td>错误信息脱敏</td><td>所有失败信息都不带令牌、不带配置原文、不带行号。</td></tr>
+    <tr><td>可反复执行</td><td>重复准备同一个机器人,结果逐字一致;不带令牌再跑一次,能把文件<b>逐字还原</b>成原样(轮换令牌时不留旧的)。</td></tr>
+  </table>
+  </div>
+  <p class="dim">改动集中在一个文件(<code>codex-home.ts</code>),外加测试文件与依赖声明。</p>
+</div>
+
+<div class="card accent-green">
+  <h2>怎么测的 — 六层证据</h2>
+  <p>每一层单独说明<b>它到底证明了什么</b>。最后一列标明是我亲手重跑的,还是实现方的记录。</p>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>层</th><th>做了什么</th><th>结果</th><th>它证明了什么</th><th>来源</th></tr>
+    <tr>
+      <td>1</td><td>先写测试再写代码(TDD):15 个红 → 实现后全绿</td>
+      <td class="ok">65/65 绿</td>
+      <td>需求被翻译成了可执行的检查;代码满足全部检查。</td>
+      <td>65 绿是<b>我重跑的</b>;"先 15 红"是实现方记录,我未独立重演</td>
+    </tr>
+    <tr>
+      <td>2</td><td>变异测试:我亲手把修复退回旧行为,看测试会不会抓住</td>
+      <td class="bad">13 个变红</td>
+      <td>测试不是"空过绿" —— 代码一退化,立刻有 13 个检查报警。这是测试有效性的判据。</td>
+      <td><b>我亲手做的</b></td>
+    </tr>
+    <tr>
+      <td>3</td><td>真机验证:拿<b>你真实的</b>全局配置(只读)+ 假令牌跑一遍</td>
+      <td class="ok">7/7 通过</td>
+      <td>在真实数据上,Codex 自己的 3 个键逐字保留、令牌折进同一张表、可反复执行、能还原、错误信息不泄漏令牌。</td>
+      <td><b>我亲手做的</b></td>
+    </tr>
+    <tr>
+      <td>4</td><td>生产函数对照:用真实配置内容跑<b>真正的准备函数</b>,分别装 main 和修复版</td>
+      <td class="ok">main 抛事故原话<br>修复版通过</td>
+      <td>在我自己机器上<b>复现了这次事故</b>,并证明这个改动把它修好了。比"测试全绿"强 —— 它证的是产品行为。</td>
+      <td><b>我亲手做的</b></td>
+    </tr>
+    <tr>
+      <td>5</td><td>持续集成流水线(线上自动检查)</td>
+      <td class="ok">9/9 全绿</td>
+      <td>在干净的线上机器(不受我本机环境影响)全套检查通过。我是按提交号去查的,不是只看页面上那个绿勾。</td>
+      <td><b>我亲手核的</b></td>
+    </tr>
+    <tr>
+      <td>6</td><td>沙箱端到端(本轮新增,见下一节)</td>
+      <td class="ok">PASS + 阳性对照</td>
+      <td>真 Codex 程序真的能加载合并后的配置。</td>
+      <td><b>我亲手做的</b></td>
+    </tr>
+  </table>
+  </div>
+  <div class="callout-blue callout"><strong>关于本机的 15 个"红"</strong>我这台机器上,即使不动任何代码,也有 15 个检查是红的(机器环境问题,比如权限、终端工具)。我在 <b>main 和修复版上各跑一遍</b>,把耗时去掉后名单<b>逐字相同</b> —— 说明这 15 个红<b>不是这次改动带来的</b>。而且这次改动自己的那份测试,在两边的红名单里<b>都不出现</b>。</div>
+</div>
+
+<div class="card accent-purple">
+  <h2>沙箱端到端:一个对照实验</h2>
+  <p>你问有没有做端到端测试。之前做到"生产函数"这一层,这轮我又往前推了一层:<b>让真正的 Codex 程序去加载我们合并出来的配置</b>。</p>
+  <div class="figure">
+    <!--SVG:diagram-e2e.svg-->
+    <div class="figcap">图 2:同一个沙箱,只换一样东西(装哪版代码),结果截然相反</div>
+  </div>
+  <h3>先验尺子,再量东西</h3>
+  <p>我用的判据是 Codex 自带的体检命令。为了确认它<b>真的会挑出坏配置</b>(而不是随便都说好),我先喂了它一份故意写坏的配置:</p>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>喂给它的配置</th><th>Codex 的反应</th></tr>
+    <tr><td>正常配置</td><td class="ok">✓ 配置已加载 · 解析 ok(通过)</td></tr>
+    <tr><td>两张同名表(正是这次要避免的坏形状)</td><td class="bad">✗ 配置无法加载(失败)</td></tr>
+  </table>
+  </div>
+  <p>尺子是准的。<b>顺带也坐实了这次修复的前提</b> —— Codex 确实会拒绝同名表出现两次,这不是我们代码的猜测。</p>
+  <h3>对照结果</h3>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th></th><th>装 main 的代码</th><th>装 PR #760 的代码</th></tr>
+    <tr><td>准备配置</td><td class="bad">❌ 抛出事故原话,停在这里</td><td class="ok">✅ 成功写出</td></tr>
+    <tr><td>Codex 原有的 3 个键</td><td>—(根本没走到)</td><td class="ok">逐字保留</td></tr>
+    <tr><td>真 Codex 加载它</td><td>—</td><td class="ok">✓ 已加载 · 解析 ok · 正常退出</td></tr>
+    <tr><td>真终端窗口里跑</td><td>—</td><td class="ok">通过,窗口用完自己干净关闭</td></tr>
+    <tr><td>结论</td><td class="bad">机器人起不来(事故复现)</td><td class="ok">机器人这一关过了</td></tr>
+  </table>
+  </div>
+  <h3>诚实说边界:测到哪一层,哪一层还没测</h3>
+  <ul>
+    <li><span class="ok">✅ 已测</span> 修复确实进了编译产物;新依赖在 Bridge 进程里能正常加载(<b>这是本次改动唯一新增的进程级风险</b>,已排除);开工前的环境检查通过;出事故的那一步通过;真终端里真 Codex 加载合并后的配置通过。</li>
+    <li><span class="ok">✅ 已测(你追加授权后补做)</span> 见下一节 —— <b>真的派一个任务给真 Codex 机器人,它真的开工了</b>。</li>
+  </ul>
+</div>
+
+<div class="card accent-green">
+  <h2>最后一层:真的派活给真机器人(你授权真额度后补做)</h2>
+  <p>你说「试一下第六层,可以用真额度」。做了。用的是我们的隔离测试房(529 房)的 2 号位,装上修好的代码,像平时一样派一个任务下去。</p>
+  <h3>结果:机器人真的开工了</h3>
+  <div class="tbl-scroll">
+  <table>
+    <tr><th>看什么</th><th>实际情况</th></tr>
+    <tr><td>那句事故报错还出现吗</td><td class="ok">日志里 <b>一次都没有</b></td></tr>
+    <tr><td>起来的是不是 Codex 机器人</td><td class="ok">是 —— 记录里明确是 <code>codex-tmux</code>,不是 Claude</td></tr>
+    <tr><td>机器人真的在干活吗</td><td class="ok">终端里能看到 <b>gpt-5.6-sol</b> 在沙箱代码库里真读文件、真跑 git 命令</td></tr>
+    <tr><td>它的专属配置对不对</td><td class="ok">表头只有一个、令牌一行、Codex 自己的 3 个键都在;真 Codex 体检 <b>通过</b></td></tr>
+    <tr><td>走了多远</td><td class="ok">onboard → 头脑风暴 → 调研 → 计划 → 设计评审 → <b>开始写代码</b></td></tr>
+  </table>
+  </div>
+  <div class="callout"><strong>为什么没让它干到底</strong>它停在「设计评审」之后继续往下走,如果让它一路干完并提交代码,还要烧不少额度和时间 —— 而<b>那段路属于我们的三段式流程本身,这次改动根本没碰</b>。所以在证明「机器人起得来、真在干活」之后就收手了。这是工程负责人的判断,不是没做完。</div>
+  <h3>反面对照:用今天生产上的真实故障</h3>
+  <p>本来要在测试房里再造一次"用旧代码派活应该失败"。后来改用更真的证据:<b>今天生产上就有 4 次机器人启动失败</b>,原因正是"旧代码 → 卡在准备配置那一步"。同一台机器、同一套机制,比在测试房里演一遍更有说服力。</p>
+  <h3>安全:我动了什么、没动什么</h3>
+  <ul>
+    <li>用的是测试专用的机器人身份,<b>没碰生产的 Discord</b>;生产的调度服务全程没停过(进程号前后一致)。</li>
+    <li>有一颗历史上炸过两次的雷(隔离环境会误删生产的一个密钥),我全程带着隔离参数绕开,<b>前后对照确认那个密钥完好</b>。</li>
+    <li>你的 <code>~/.codex/config.toml</code> 全程只读。</li>
+    <li>跑完全部清理:测试进程、终端窗口、端口、锁、机器人的临时凭据<b>全部清干净</b>,和开始前逐项对得上。</li>
+  </ul>
+  <div class="callout-blue callout"><strong>顺带发现三个跟这次改动无关的老问题</strong>测试房的部署脚本有个启动目录的毛病(7 月底就坏了,生产不受影响)、隔离环境会误扫生产的一个待办目录、还有一个环境变量没隔离干净。都已如实交给工程负责人立单,不影响这次合并。</div>
+</div>
+
+<div class="card accent-amber">
+  <h2>关于 529 测试房 — 我一开始建议不用,你说用,后来用了</h2>
+  <p>过程如实记一下,因为这影响你怎么看上面那节的证据强度:</p>
+  <ul>
+    <li><b>我最初建议不用</b>。理由:起一个完整的测试环境需要机器人身份,用生产身份会让生产频道多一个监听者(重复发言);而安全做法这条路上有一颗历史上炸过两次的雷 —— 隔离环境会误删生产的一个密钥,当场不报错、下次重启才炸。当时我判断"它能多证明的只有派活那段接线,而这次改动没碰那段",不划算。</li>
+    <li><b>你说「试一下第六层,可以用真额度」,推翻了这个判断 —— 于是照做。</b></li>
+    <li><b>结果证明你的坚持是对的</b>:真跑一遍才拿到"真机器人真开工"的直接证据,而且顺带把三个我原本不会发现的老问题挖了出来(见上一节末尾)。那颗雷我全程带隔离参数绕开了,前后对照确认没炸。</li>
+  </ul>
+  <p class="dim">我把这段留着,是因为"我建议 A、你选了 B、B 更好"这件事本身值得记 —— 下次遇到同类取舍我会更倾向于真跑一遍。</p>
+</div>
+
+<div class="card accent-amber">
+  <h2>还剩什么风险</h2>
+  <p>这三条<b>都不阻挡合并</b>,但值得记下来。</p>
+  <h3>a) 这个修法是"认形状"的,不是万能的</h3>
+  <p>现在认的是 Codex 当前写法的那个形状。如果<b>将来它换一种写法</b>,我们的代码会<b>再次停下来报错</b> —— 好消息是它仍然不会写坏配置、报错也清楚,但机器人还是会趴,需要再修一次。彻底的做法是"整份配置重新生成",工程量更大。<b>这是有意识的保守取舍。</b></p>
+  <div class="callout"><strong>这条风险在我做 QA 期间当场应验了一次</strong>就在我验证的这几个小时里,Codex 桌面端<b>又把那份全局配置重写了一遍</b>(文件被整体替换,内容指纹变了)。这次它没改我们关心的那张表,所以无害。但它<b>实锤了这份文件是"活的"</b> —— 有个我们管不着的程序随时会改它。我已把当前版本存档,以后再变可以直接比对。<br><span class="dim">(顺带澄清:那次改写不是我造成的 —— 我的代码对这个文件只读不写;你的文件里没有出现任何令牌。)</span></div>
+  <h3>b) 新依赖进了关键路径</h3>
+  <p>现在每次准备机器人,都要靠这个新的解析器成功读懂你的全局配置。万一它和 Codex 自己的解析器对某种写法理解不一致,又会全舰队趴。<b>今天这份 911 行的真实配置,实测能正常读懂。</b></p>
+  <h3>c) 一个边角行为变了</h3>
+  <p>令牌传空字符串时,以前是"安静地不注入",现在是"直接报错"。我查过:实际调用它的地方本来就先拒绝空字符串,所以<b>生产行为没有变化</b>。</p>
+</div>
+
+<div class="card accent-navy">
+  <h2>合并部署之后,建议这样验</h2>
+  <ol>
+    <li><b>重派 1602 和 1603</b>(就是这次趴掉的两个单子)。这是最直接的行为验收 —— 机器人真的开工了,就说明修复在真实链路上生效。</li>
+    <li><b>看第一个机器人的准备日志</b>:不该再出现 "already declares the shell_environment_policy namespace" 这句话。</li>
+    <li><b>抽查一个机器人的专属配置</b>:那张表里应该同时有我们的令牌和 Codex 自己的 3 个键,而且表头只有一个。</li>
+    <li><b>留意 a) 那条风险</b>:如果哪天 Codex 又改了写法,症状会是"机器人集体起不来 + 报错说形状没法合并"。看到这个症状就知道是同一类问题,直接找我们。</li>
+  </ol>
+  <p class="dim">前三条都是看现象,不需要动手做实验。</p>
+</div>
+
+<div class="card accent-green">
+  <h2>结论</h2>
+  <p><b>这个改动我验过了,可以合并 —— 但合并这一步按规矩仍然是你拍板。</b></p>
+  <ul>
+    <li>问题的根因清楚,修法对症,而且保留了"宁可停也不写坏"的安全性格。</li>
+    <li>我在自己机器上<b>复现了这次事故,并证明它被修好了</b>。</li>
+    <li>本机那 15 个红是环境噪音,不是这次改动带来的(有对照)。</li>
+    <li>端到端一直测到<b>真的派活给真 Codex 机器人、它真的开工并干到"开始写代码"</b>这一层;只有"干到底提交代码"没做,因为那段路这次改动没碰。</li>
+    <li>最终确认仍建议合并后重派 1602/1603 看一眼 —— 那是最直接的现场验收。</li>
+  </ul>
+  <p class="dim">报告里每一节下面都有输入框,你可以直接写意见,写完点最下面的按钮一键复制,粘给 Tadashi 就行。</p>
+</div>
+
+<div id="cmt-panel">
+  <h2>💬 我的所有 comments(汇总)</h2>
+  <p class="dim">每一节下面都有 comment 框,写了的会自动汇总到这里(自动保存在本机浏览器)。</p>
+  <div id="cmt-preview">(还没有 comment)</div>
+  <button id="cmt-copy">📋 一键复制所有 comments</button><span id="cmt-status"></span>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1606-qa-cmt-'+location.pathname+'-';
+  var cards=document.querySelectorAll('.card');
+  cards.forEach(function(card,i){
+    var h2=card.querySelector('h2');
+    var title=h2?h2.textContent.trim():('段落 '+(i+1));
+    var box=document.createElement('div');
+    box.className='cmt';
+    var label=document.createElement('div');
+    label.className='cmt-label'; label.textContent='💬 你的 comment — '+title;
+    var ta=document.createElement('textarea');
+    ta.className='cmt-ta'; ta.placeholder='对这一节的意见 / 疑问 / 要求…';
+    ta.setAttribute('data-sec',title); ta.setAttribute('data-key',KEY+i);
+    try{ ta.value=localStorage.getItem(KEY+i)||''; }catch(e){}
+    ta.addEventListener('input',function(){ try{localStorage.setItem(KEY+i,ta.value);}catch(e){} refresh(); });
+    box.appendChild(label); box.appendChild(ta); card.appendChild(box);
+  });
+  function collect(){
+    var lines=[];
+    document.querySelectorAll('.cmt-ta').forEach(function(ta){
+      if(ta.value.trim()) lines.push('【'+ta.getAttribute('data-sec')+'】\n'+ta.value.trim());
+    });
+    return lines.join('\n\n');
+  }
+  function refresh(){
+    var t=collect();
+    document.getElementById('cmt-preview').textContent = t || '(还没有 comment)';
+  }
+  document.getElementById('cmt-copy').addEventListener('click',function(){
+    var t=collect();
+    if(!t){ document.getElementById('cmt-status').textContent='还没有可复制的 comment'; return; }
+    function ok(){ document.getElementById('cmt-status').textContent='✅ 已复制,直接粘给 Tadashi'; }
+    function fb(){
+      var tmp=document.createElement('textarea'); tmp.value=t; document.body.appendChild(tmp);
+      tmp.select(); try{ document.execCommand('copy'); ok(); }catch(e){ document.getElementById('cmt-status').textContent='复制失败,请手动全选上方汇总'; }
+      document.body.removeChild(tmp);
+    }
+    if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(t).then(ok,fb); } else { fb(); }
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

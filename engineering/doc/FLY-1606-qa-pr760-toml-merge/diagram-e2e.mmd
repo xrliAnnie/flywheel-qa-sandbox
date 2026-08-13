@@ -1,0 +1,9 @@
+flowchart TB
+  S["同一个隔离沙箱<br/>同一份配置快照(逐字钉死)<br/>假 token · dummy auth"]
+  S --> M["装 main 的 dist"]
+  S --> P["装 PR #760 的 dist"]
+  M --> M2["❌ 抛出事故原话<br/>already declares the<br/>shell_environment_policy namespace"]
+  M2 --> M3["runner 起不来<br/>= 事故在沙箱里复现"]
+  P --> P2["✅ 配置成功写出<br/>Codex 3 个键逐字保留<br/>表头恰好 1 个"]
+  P2 --> P3["真 tmux 会话里<br/>跑真 codex 二进制"]
+  P3 --> P4["✓ config loaded<br/>config.toml parse ok<br/>exit 0"]

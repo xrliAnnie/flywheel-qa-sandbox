@@ -1,0 +1,6 @@
+flowchart TB
+  A1["读 Annie 的全局配置"] --> A2{"里面已经有<br/>那张表了吗?"}
+  A2 -->|"8/1 之前:没有"| A3["追加一整张新表<br/>✅ runner 起得来"]
+  A2 -->|"8/1 起:有了<br/>Codex 自己写的"| A4["守卫拒绝<br/>同名表不能出现两次<br/>❌ 全舰队趴"]
+  style A4 fill:#ffecea,stroke:#c0281c
+  style A3 fill:#e6f7ec,stroke:#1d804b

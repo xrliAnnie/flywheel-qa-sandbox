@@ -1,0 +1,6 @@
+flowchart TB
+  B1["读同一份全局配置"] --> B2{"里面已经有<br/>那张表了吗?"}
+  B2 -->|"没有"| B3["追加一整张新表<br/>和以前一模一样<br/>✅ runner 起得来"]
+  B2 -->|"有"| B4["折进同一张表<br/>Codex 自己的键原样不动<br/>✅ runner 起得来"]
+  style B3 fill:#e6f7ec,stroke:#1d804b
+  style B4 fill:#e6f7ec,stroke:#1d804b
