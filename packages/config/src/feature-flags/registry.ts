@@ -3210,4 +3210,117 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
+	// ─── FLY-1718: re-dispatch inventory reconciliation ───
+	{
+		name: "continuity_preflight",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CONTINUITY_PREFLIGHT",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1718 P1: re-dispatch 前对账 origin 同名分支与 open PR，避免从 main 另起分叉",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/run-dispatcher.ts",
+				"RetryDispatcher.dispatch continuity preflight",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "安全回滚开关；显式 freshStart 仍保留审计与存量对账语义。",
+	},
+	{
+		name: "push_guard",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PUSH_GUARD",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1718 P2: runner worktree 注入 pre-push hook，阻止 open PR 分支非快进推送与删除",
+		readSites: [
+			envSite(
+				"packages/edge-worker/src/WorktreeManager.ts",
+				"WorktreeManager.create",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "worktree 创建时读取；切换只影响随后创建或重建的 runner worktree。",
+	},
+	{
+		name: "instruction_path_check",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_INSTRUCTION_PATH_CHECK",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1718 P3: design-review 自动指令绑定已提交 plan path/blob，并由 Bridge 校验结果投影",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"reconcileDesignReviewManifestOutbox",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/event-route.ts",
+				"handleStageChanged design review manifest",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/design-review-validation.ts",
+				"validateDesignReviewProjection",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/commands/await-codex-gate.ts",
+				"validateResult",
+				"cli_invocation",
+				"env-param",
+			),
+			envSite(
+				"packages/flywheel-comm/src/commands/await-codex-gate.ts",
+				"validateDesignProjectionWithBridge",
+				"cli_invocation",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "Bridge 与独立 flywheel-comm CLI 均读取；跨进程授权安全面不提供 web toggle。",
+	},
+	{
+		name: "doa_backoff",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_DOA_BACKOFF",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1718 P4: re-dispatch 前对账前任 DOA 死因并执行 1/2/4/8 分钟退避与第五击 Lead 闸",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/run-dispatcher.ts",
+				"RetryDispatcher.admitDoaBackoff",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"runDoaBackoffMaintenance",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "运行时安全回滚开关；readonly，待独立 direct-toggle proof 后再开放控制面。",
+	},
 ];

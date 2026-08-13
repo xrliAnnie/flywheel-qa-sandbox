@@ -982,6 +982,48 @@ export function createRunsRouter(
 				: "tokenless";
 		const rawProjectName = req.body.projectName;
 		let leadId = req.body.leadId as string | undefined;
+		const rawFreshStart = req.body.freshStart;
+		let freshStart:
+			| {
+					authority: "authenticated_runs_route";
+					actor: string;
+					reason: string;
+			  }
+			| undefined;
+		if (rawFreshStart !== undefined && rawFreshStart !== false) {
+			if (rawFreshStart !== true) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_FRESH_START",
+					reason: "freshStart_must_be_true",
+				});
+				return;
+			}
+			if (requestAuthKind === "tokenless") {
+				res.status(403).json({
+					success: false,
+					code: "FRESH_START_AUTH_REQUIRED",
+				});
+				return;
+			}
+			const reason =
+				typeof req.body.freshStartReason === "string"
+					? req.body.freshStartReason.trim()
+					: "";
+			if (!reason || reason.length > 500) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_FRESH_START",
+					reason: reason ? "reason_too_long" : "reason_required",
+				});
+				return;
+			}
+			freshStart = {
+				authority: "authenticated_runs_route",
+				actor: requestAuthKind,
+				reason,
+			};
+		}
 
 		// Input validation
 		if (!issueId || typeof issueId !== "string") {
@@ -2915,6 +2957,7 @@ export function createRunsRouter(
 								ponytailInput: buildPonytailInput(),
 							}),
 							issueUrl,
+							...(freshStart && { freshStart }),
 							generalizedExecution: {
 								engineOwned: true,
 								executionId: generalizedSelection.executionId,
@@ -2957,6 +3000,37 @@ export function createRunsRouter(
 								reason: "dispatcher_start_failed",
 								physicalEvidence: "absent",
 							});
+						}
+						if (
+							error instanceof Error &&
+							(error.name === "ContinuityIndeterminateError" ||
+								error.name === "FreshStartAuditError")
+						) {
+							res.status(503).json({
+								success: false,
+								code:
+									error.name === "ContinuityIndeterminateError"
+										? "CONTINUITY_INDETERMINATE"
+										: "FRESH_START_AUDIT_FAILED",
+								message: error.message,
+								retryable: error.name === "ContinuityIndeterminateError",
+							});
+							return;
+						}
+						if (error instanceof Error && error.name === "DoaBackoffError") {
+							const retryAfterSeconds = (
+								error as Error & { retryAfterSeconds?: number }
+							).retryAfterSeconds;
+							if (retryAfterSeconds !== undefined) {
+								res.setHeader("Retry-After", String(retryAfterSeconds));
+							}
+							res.status(retryAfterSeconds === undefined ? 409 : 429).json({
+								success: false,
+								code: "DOA_BACKOFF",
+								message: error.message,
+								retryable: retryAfterSeconds !== undefined,
+							});
+							return;
 						}
 						res.status(500).json({
 							success: false,
@@ -3377,6 +3451,7 @@ export function createRunsRouter(
 				// FLY-205: doc-flow tier + issue URL (header continuity)
 				docTier,
 				issueUrl,
+				...(freshStart && { freshStart }),
 				// FLY-728 Part C: difficulty-sorter's dispatch model (normalized)
 				dispatchModel,
 				// FLY-1224: phase table vendor + effort (three-stage entry only;
@@ -3570,6 +3645,39 @@ export function createRunsRouter(
 					success: false,
 					reason: e.reason,
 					message: e.message,
+				});
+				return;
+			}
+			if (err instanceof Error && err.name === "DoaBackoffError") {
+				const e = err as Error & {
+					reason?: string;
+					retryAfterSeconds?: number;
+				};
+				if (e.retryAfterSeconds !== undefined) {
+					res.setHeader("Retry-After", String(e.retryAfterSeconds));
+				}
+				res.status(e.retryAfterSeconds === undefined ? 409 : 429).json({
+					success: false,
+					code: "DOA_BACKOFF",
+					reason: e.reason,
+					message: e.message,
+					retryable: e.retryAfterSeconds !== undefined,
+				});
+				return;
+			}
+			if (
+				err instanceof Error &&
+				(err.name === "ContinuityIndeterminateError" ||
+					err.name === "FreshStartAuditError")
+			) {
+				res.status(503).json({
+					success: false,
+					code:
+						err.name === "ContinuityIndeterminateError"
+							? "CONTINUITY_INDETERMINATE"
+							: "FRESH_START_AUDIT_FAILED",
+					message: err.message,
+					retryable: err.name === "ContinuityIndeterminateError",
 				});
 				return;
 			}

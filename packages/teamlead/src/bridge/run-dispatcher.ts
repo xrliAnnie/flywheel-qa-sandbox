@@ -193,7 +193,28 @@ export type ResumeComputer = (
 	issueId: string,
 	role: string,
 	projectName: string,
-) => ProgressResumeInfo | null;
+) => ProgressResumeInfo | null | Promise<ProgressResumeInfo | null>;
+
+/** FLY-1718 P1: explanatory metadata for a structurally inherited branch. */
+export interface ContinuityInherit {
+	branch: string;
+	sha: string;
+	prNumber?: number;
+	prUrl?: string;
+}
+
+/** FLY-1718 P1: origin-backed decision for an otherwise-fresh dispatch. */
+export type ContinuityStartPoint =
+	| ({ kind: "found" } & ContinuityInherit)
+	| { kind: "missing"; branch?: string }
+	| { kind: "indeterminate"; error: string };
+
+export type ContinuityComputer = (input: {
+	issueId: string;
+	role: string;
+	projectName: string;
+	shareParentBranch?: boolean;
+}) => Promise<ContinuityStartPoint>;
 
 /** FLY-1257 M3: machine-readable branch-tip probe result for phase retries. */
 export type PhaseRetryStartPoint =
@@ -492,6 +513,48 @@ export class LifecycleParkedError extends Error {
 	}
 }
 
+export class ContinuityIndeterminateError extends Error {
+	readonly code = "CONTINUITY_INDETERMINATE";
+	readonly retryable = true;
+
+	constructor(public readonly detail: string) {
+		super(`branch continuity is indeterminate: ${detail}`);
+		this.name = "ContinuityIndeterminateError";
+	}
+}
+
+export class DoaBackoffError extends Error {
+	readonly code = "DOA_BACKOFF";
+
+	constructor(
+		public readonly reason: string,
+		public readonly retryAfterSeconds?: number,
+	) {
+		super(`DOA re-dispatch admission denied: ${reason}`);
+		this.name = "DoaBackoffError";
+	}
+}
+
+export class FreshStartAuditError extends Error {
+	readonly code = "FRESH_START_AUDIT_FAILED";
+
+	constructor(detail: string) {
+		super(`fresh-start override refused: ${detail}`);
+		this.name = "FreshStartAuditError";
+	}
+}
+
+export type FreshStartAuditRecorder = (record: {
+	executionId: string;
+	projectName: string;
+	issueId: string;
+	role: string;
+	actor: string;
+	reason: string;
+	branch: string;
+	skippedOriginTip?: string;
+}) => boolean;
+
 /** FLY-1185: the admission decorator seam (single dispatcher chokepoint). */
 export type LifecycleAdmissionFn = (input: {
 	issueKey: string;
@@ -500,6 +563,21 @@ export type LifecycleAdmissionFn = (input: {
 	executionId: string;
 	role?: string;
 }) => Promise<{ admitted: boolean; reason?: string }>;
+
+/** FLY-1718 P4: canonical predecessor reconciliation before branch/network IO. */
+export type DoaBackoffAdmissionFn = (input: {
+	issueKey: string;
+	issueIdentifier?: string;
+	projectName: string;
+	executionId: string;
+	role: string;
+	leadId?: string;
+}) => Promise<{
+	admitted: boolean;
+	reason?: string;
+	status?: "allow" | "reserved" | "backoff" | "needs_lead";
+	retryAfterSeconds?: number;
+}>;
 
 /**
  * FLY-1188: transport vendor for the CommDB pre-registration row. The
@@ -593,6 +671,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		/** FLY-1638: one admission controller shared by fresh and retry lanes. */
 		protected runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 		protected tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
+		protected doaBackoffAdmission?: DoaBackoffAdmissionFn,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -661,6 +740,27 @@ export class RetryDispatcher implements IRetryDispatcher {
 		}
 	}
 
+	/** FLY-1718 P4: run before branch continuity, CommDB, TURN, or worktree IO. */
+	protected async admitDoaBackoff(input: {
+		issueKey: string;
+		issueIdentifier?: string;
+		projectName: string;
+		executionId: string;
+		role: string;
+		leadId?: string;
+	}): Promise<void> {
+		if (!this.doaBackoffAdmission || process.env.FLYWHEEL_DOA_BACKOFF === "0") {
+			return;
+		}
+		const result = await this.doaBackoffAdmission(input);
+		if (!result.admitted) {
+			throw new DoaBackoffError(
+				result.reason ?? "denied",
+				result.retryAfterSeconds,
+			);
+		}
+	}
+
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
 		// FLY-95: Normalize role to match Blueprint worktree naming —
@@ -725,16 +825,30 @@ export class RetryDispatcher implements IRetryDispatcher {
 			throw new Error("generalized retry execution id mismatch");
 		}
 
-		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
-		// grow a retry runner. Fresh tombstone check + durable starting claim
-		// inside the issue mutex; throws LifecycleParkedError on refusal.
-		await this.admitLifecycle({
+		await this.admitDoaBackoff({
 			issueKey: req.issueId,
-			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
+			issueIdentifier: req.issueIdentifier,
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			role,
+			leadId: req.leadId,
 		});
+
+		// FLY-1185 (R11#1): lifecycle admission — a founder-parked issue must not
+		// grow a retry runner. Fresh tombstone check + durable starting claim
+		// inside the issue mutex; throws LifecycleParkedError on refusal.
+		try {
+			await this.admitLifecycle({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId: newExecutionId,
+				role,
+			});
+		} catch (error) {
+			this.abortPreLaunch(key, newExecutionId, req.projectName);
+			throw error;
+		}
 
 		// FLY-245 R1/R2/R5 HIGH-3: durable cross-restart find-or-create. The
 		// in-flight map above only dedups within THIS process; after a Bridge crash
@@ -1162,7 +1276,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 		notifySpawnFailed = true,
 	): void {
 		try {
-			this.inflight.delete(key);
+			// Several failures happen before this execution installs its own entry.
+			// A concurrent launch may already own the same lane by then; never let the
+			// older abort erase that newer execution's in-memory exclusion record.
+			if (this.inflight.get(key)?.executionId === executionId) {
+				this.inflight.delete(key);
+			}
 		} catch {
 			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
 		}
@@ -1249,6 +1368,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		) => SkillFrameworkMode | undefined,
 		tmuxGenerationRecorder?: TmuxGenerationRecorder,
 		tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
+		/** FLY-1718 P1: origin continuity check for true fresh starts. */
+		private continuityComputer?: ContinuityComputer,
+		/** FLY-1718 P1: always-on durable receipt for explicit fresh overrides. */
+		private freshStartAudit?: FreshStartAuditRecorder,
+		/** FLY-1718 P4: predecessor reconciliation (base fresh + retry seam). */
+		doaBackoffAdmission?: DoaBackoffAdmissionFn,
 	) {
 		super(
 			blueprintsByProject,
@@ -1262,6 +1387,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			tmuxGenerationRecorder,
 			runnerAdmission,
 			tmuxWindowAuthority,
+			doaBackoffAdmission,
 		);
 	}
 
@@ -1353,6 +1479,107 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.generalizedExecution?.executionId ??
 			req.successorExecutionId ??
 			randomUUID();
+
+		// Auto-QA owns a separate bounded retry loop. Every other re-dispatch must
+		// reconcile its canonical predecessor before branch continuity or network IO.
+		if (!req.qaContext) {
+			await this.admitDoaBackoff({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId,
+				role,
+				leadId: req.leadId,
+			});
+		}
+
+		// FLY-1718 P1: reconcile branch state BEFORE lifecycle admission, CommDB
+		// pre-registration, TURN, or worktree mutation. Progress resume remains the
+		// richer first choice; only a true fresh start consults origin continuity.
+		// A caller-pinned startPoint and Auto-QA already carry explicit head
+		// authority and must not be rewritten here.
+		if (req.freshStart && (req.startPoint || req.qaContext)) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw new FreshStartAuditError(
+				"freshStart cannot be combined with a caller-pinned or Auto-QA start",
+			);
+		}
+		let computedResume: ProgressResumeInfo | null;
+		try {
+			computedResume = req.qaContext
+				? null
+				: ((await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
+					null);
+		} catch (error) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw error;
+		}
+		const resume = req.freshStart ? null : computedResume;
+		let continuityInherit: ContinuityInherit | undefined;
+		let continuityBranch: string | undefined;
+		let skippedOriginTip: string | undefined;
+		if (
+			(process.env.FLYWHEEL_CONTINUITY_PREFLIGHT !== "0" ||
+				req.freshStart !== undefined) &&
+			!req.startPoint &&
+			!req.qaContext &&
+			!resume &&
+			this.continuityComputer
+		) {
+			let continuity: ContinuityStartPoint;
+			try {
+				continuity = await this.continuityComputer({
+					issueId: req.issueId,
+					role,
+					projectName: req.projectName,
+					shareParentBranch: req.shareParentBranch,
+				});
+			} catch (error) {
+				this.abortPreLaunch(key, executionId, req.projectName);
+				throw error;
+			}
+			if (continuity.kind === "indeterminate") {
+				this.abortPreLaunch(key, executionId, req.projectName);
+				throw new ContinuityIndeterminateError(continuity.error);
+			}
+			continuityBranch = continuity.branch;
+			if (continuity.kind === "found") {
+				skippedOriginTip = continuity.sha;
+				if (!req.freshStart) {
+					continuityInherit = {
+						branch: continuity.branch,
+						sha: continuity.sha,
+						...(continuity.prNumber !== undefined && {
+							prNumber: continuity.prNumber,
+						}),
+						...(continuity.prUrl && { prUrl: continuity.prUrl }),
+					};
+				}
+			}
+		}
+		if (req.freshStart) {
+			if (!this.continuityComputer || !continuityBranch) {
+				this.abortPreLaunch(key, executionId, req.projectName);
+				throw new FreshStartAuditError(
+					"managed branch authority is unavailable",
+				);
+			}
+			if (
+				!this.freshStartAudit?.({
+					executionId,
+					projectName: req.projectName,
+					issueId: req.issueId,
+					role,
+					actor: req.freshStart.actor,
+					reason: req.freshStart.reason,
+					branch: continuityBranch,
+					...(skippedOriginTip && { skippedOriginTip }),
+				})
+			) {
+				this.abortPreLaunch(key, executionId, req.projectName);
+				throw new FreshStartAuditError("durable audit write failed");
+			}
+		}
 		// FLY-1344: the claims-write linearization point. Capture BEFORE the
 		// lifecycle await and reuse this immutable seam throughout the async start
 		// (a mid-flight OFF flip never tears a start that latched ON, and vice versa).
@@ -1367,13 +1594,18 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// through here. Fresh founder-park tombstone check + durable `starting`
 		// launch claim inside the issue mutex; throws LifecycleParkedError on
 		// refusal (routes map to 409, never a silent respawn of a zeroed issue).
-		await this.admitLifecycle({
-			issueKey: req.issueId,
-			issueIdentifier: (req as { issueIdentifier?: string }).issueIdentifier,
-			projectName: req.projectName,
-			executionId,
-			role,
-		});
+		try {
+			await this.admitLifecycle({
+				issueKey: req.issueId,
+				issueIdentifier: req.issueIdentifier,
+				projectName: req.projectName,
+				executionId,
+				role,
+			});
+		} catch (error) {
+			this.abortPreLaunch(key, executionId, req.projectName);
+			throw error;
+		}
 
 		const launchOutcome = req.generalizedExecution
 			? createLaunchOutcomeDeferred(
@@ -1534,21 +1766,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				}
 			}
 
-			// FLY-795: restart-resilient resume. If a prior execution + a committed
-			// progress.md on branch B exist, continue from the real cursor instead of
-			// fresh — reusing FLY-793's shareParentBranch/startPoint worktree mechanism
-			// (startPoint = branch B tip, so `git worktree add -B <branch> <tip>`
-			// rebuilds WITH progress.md). Undefined computer / no prior progress ⇒ fresh
-			// (byte-compatible). Never overrides a caller-supplied startPoint (793 phase
-			// handoff already pins its own).
-			// Auto-QA recovery is intentionally a clean-worktree launch pinned to the
-			// reviewed head. Phase resume metadata would flip it into shared-branch
-			// takeover and can reproduce the worktree_takeover_failed death it is meant
-			// to recover from.
-			const resume = req.qaContext
-				? null
-				: (this.resumeComputer?.(req.issueId, role, req.projectName) ?? null);
-
 			const ctx: BlueprintContext = {
 				teamName: "eng",
 				// FLY-1255: fresh starts use the same phase/model composition as retries.
@@ -1596,7 +1813,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context.
 				// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
 				// rebuilds WITH the committed progress.md (never override a caller's own).
-				startPoint: req.startPoint ?? resume?.startPoint,
+				startPoint:
+					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
+				...(continuityInherit && { continuityInherit }),
 				qaContext: req.qaContext,
 				workflowSubmissionCredential,
 				...(req.generalizedExecution && {

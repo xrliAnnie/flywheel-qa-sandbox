@@ -4,6 +4,7 @@ import {
 	type ProgressResumeDeps,
 	stageToPhase,
 } from "../progress-resume.js";
+import { computeProgressResumeAcrossRefs } from "../run-infra.js";
 
 /**
  * FLY-795 c3: teamlead computes the typed `progressResume` for a re-dispatch of a
@@ -163,5 +164,53 @@ describe("computeProgressResume (FLY-795)", () => {
 		expect(stageToPhase("test")).toBe("implement");
 		expect(stageToPhase("approve")).toBe("qa");
 		expect(stageToPhase("ship")).toBe("qa");
+	});
+});
+
+describe("FLY-1718 pinned resume refs", () => {
+	it("never combines a remote ledger with a stale local startPoint", () => {
+		const localRef = "refs/heads/flywheel-FLY-795";
+		const remoteRef = "refs/remotes/origin/flywheel-FLY-795";
+		const localSha = "a".repeat(40);
+		const remoteSha = "b".repeat(40);
+		const calls: string[][] = [];
+		const git = (args: string[]): string | null => {
+			calls.push(args);
+			const rendered = args.join(" ");
+			if (rendered === `rev-parse ${localRef}^{commit}`) return localSha;
+			if (rendered === `rev-parse ${remoteRef}^{commit}`) return remoteSha;
+			if (rendered === `show ${localRef}:engineering/doc/FLY-795-x/progress.md`)
+				return null;
+			if (
+				rendered === `show ${remoteRef}:engineering/doc/FLY-795-x/progress.md`
+			)
+				return ledger;
+			return null;
+		};
+
+		const result = computeProgressResumeAcrossRefs({
+			issueId: "issue-uuid",
+			role: "implement",
+			docBaseDir: "engineering/doc",
+			issueIdentifier: "FLY-795",
+			branch: "flywheel-FLY-795",
+			refs: [localRef, remoteRef],
+			prior: {
+				execution_id: "old-exec",
+				plan_path: "engineering/doc/FLY-795-x/plan.md",
+				session_stage: "implement",
+			},
+			git,
+		});
+
+		expect(result?.startPoint).toBe(remoteSha);
+		expect(calls).toContainEqual([
+			"show",
+			`${localRef}:engineering/doc/FLY-795-x/progress.md`,
+		]);
+		expect(calls).toContainEqual([
+			"show",
+			`${remoteRef}:engineering/doc/FLY-795-x/progress.md`,
+		]);
 	});
 });

@@ -337,6 +337,56 @@ async function post(
 }
 
 describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
+	it("FLY-1718: authenticated freshStart is minted by runs-route and reaches generalized dispatch", async () => {
+		const h = await startHarness({});
+		const { status } = await post(h.url, {
+			freshStart: true,
+			freshStartReason: "founder requested a clean redesign",
+		});
+		expect(status).toBe(200);
+		expect(h.calls[0]?.freshStart).toEqual({
+			authority: "authenticated_runs_route",
+			actor: "master",
+			reason: "founder requested a clean redesign",
+		});
+	});
+
+	it("FLY-1718: scoped Lead auth may request freshStart but tokenless callers may not", async () => {
+		const scoped = await startHarness({});
+		const scopedResult = await post(
+			scoped.url,
+			{ freshStart: true, freshStartReason: "approved redo" },
+			SCOPED,
+		);
+		expect(scopedResult.status).toBe(200);
+		expect(scoped.calls[0]?.freshStart?.actor).toBe("scoped");
+
+		if (server) {
+			await new Promise((resolve) => server?.close(resolve));
+			server = undefined;
+		}
+		const tokenless = await startHarness({});
+		const denied = await post(
+			tokenless.url,
+			{ freshStart: true, freshStartReason: "untrusted redo" },
+			"not-a-valid-token",
+		);
+		expect(denied.status).toBe(403);
+		expect(denied.json.code).toBe("FRESH_START_AUTH_REQUIRED");
+		expect(tokenless.calls).toHaveLength(0);
+	});
+
+	it("FLY-1718: freshStart requires an explicit bounded reason", async () => {
+		const h = await startHarness({});
+		const missing = await post(h.url, { freshStart: true });
+		expect(missing.status).toBe(400);
+		expect(missing.json).toMatchObject({
+			code: "INVALID_FRESH_START",
+			reason: "reason_required",
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("#1 flags ON + pipeline.dag + main + master → generalized engine-owned start, not legacy", async () => {
 		const h = await startHarness({});
 		const { status, json } = await post(h.url, {});

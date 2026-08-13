@@ -115,6 +115,7 @@ const CHECKPOINTS = {
 
 const cleanups: string[] = [];
 afterEach(() => {
+	vi.unstubAllEnvs();
 	while (cleanups.length) {
 		rmSync(cleanups.pop() as string, { recursive: true, force: true });
 	}
@@ -165,6 +166,40 @@ async function buildCodexPrompt(
 }
 
 describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references", () => {
+	it("FLY-1718: makes push-guard bypasses forbidden and ACK Lead-supervised", async () => {
+		const prompt = await buildCodexPrompt();
+		expect(prompt).toContain("git push --no-verify");
+		expect(prompt).toContain("core.hooksPath");
+		expect(prompt).toContain("Lead confirmation");
+		expect(prompt).toContain("FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>");
+		expect(prompt).toContain("one command");
+	});
+
+	it("FLY-1718: omits the push-guard contract when its kill switch is off", async () => {
+		vi.stubEnv("FLYWHEEL_PUSH_GUARD", "0");
+		const prompt = await buildCodexPrompt();
+		expect(prompt).not.toContain("FORCE-PUSH GUARD");
+		expect(prompt).not.toContain("FLYWHEEL_FORCE_PUSH_ACK");
+	});
+
+	it("FLY-1718: renders inherited branch/PR inventory without claiming a resume or gate skip", async () => {
+		const prompt = await buildCodexPrompt({
+			startPoint: "a".repeat(40),
+			continuityInherit: {
+				branch: "flywheel-FLY-1704",
+				sha: "a".repeat(40),
+				prNumber: 813,
+				prUrl: "https://github.test/pull/813",
+			},
+		});
+		expect(prompt).toContain("BRANCH CONTINUITY");
+		expect(prompt).toContain("origin/flywheel-FLY-1704@aaaaaaa");
+		expect(prompt).toContain("open PR #813: https://github.test/pull/813");
+		expect(prompt).toContain("git log --oneline -10");
+		expect(prompt).toContain("No pipeline gate is skipped");
+		expect(prompt).not.toContain("RESUME MODE");
+	});
+
 	it("baseline codex prompt: banned tokens absent, codex equivalents present", async () => {
 		const prompt = await buildCodexPrompt();
 		expect(prompt.length).toBeGreaterThan(0);

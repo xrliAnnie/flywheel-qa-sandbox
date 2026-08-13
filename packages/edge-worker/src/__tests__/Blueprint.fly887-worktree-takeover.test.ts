@@ -285,6 +285,30 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(wt.create).toHaveBeenCalled();
 	});
 
+	it("FLY-1718 continuity startPoint does not turn a design dispatch into a phase takeover", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const { result } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "design",
+				shareParentBranch: true,
+				startPoint: HEAD,
+				continuityInherit: {
+					branch: "flywheel-FLY-1718",
+					sha: HEAD,
+				},
+			},
+		);
+		expect(result.success).toBe(true);
+		expect(wt.removeIfExists).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: HEAD }),
+		);
+	});
+
 	it("byte-compat: kill-switch=0 → legacy create path (no takeover)", async () => {
 		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
 		const path = makeRealWorktree();
