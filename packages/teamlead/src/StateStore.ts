@@ -90,6 +90,14 @@ import {
 	OPERATIONAL_TERMINAL_STATUSES,
 } from "./operational-terminal-status.js";
 
+export class WorkflowAdmissionClassificationError extends Error {
+	override name = "WorkflowAdmissionClassificationError";
+}
+
+export class WorkflowEventUidConflictError extends Error {
+	override name = "WorkflowEventUidConflictError";
+}
+
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 
@@ -23575,7 +23583,7 @@ export class StateStore {
 		// A binding row alone is not typed engine enrollment.
 		if (!run?.snapshot) {
 			if (run?.selection_source) {
-				throw new Error(
+				throw new WorkflowAdmissionClassificationError(
 					"generalized workflow execution has no pinned snapshot",
 				);
 			}
@@ -23585,7 +23593,9 @@ export class StateStore {
 		try {
 			raw = JSON.parse(run.snapshot);
 		} catch {
-			throw new Error("bound workflow snapshot is corrupt");
+			throw new WorkflowAdmissionClassificationError(
+				"bound workflow snapshot is corrupt",
+			);
 		}
 		const schemaVersion =
 			typeof raw === "object" && raw !== null
@@ -23597,11 +23607,22 @@ export class StateStore {
 		) {
 			return undefined;
 		}
-		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		try {
+			snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		} catch {
+			throw new WorkflowAdmissionClassificationError(
+				"bound workflow snapshot is invalid",
+			);
+		}
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === binding.node_id,
 		);
-		if (!node) throw new Error("bound workflow node is absent from snapshot");
+		if (!node) {
+			throw new WorkflowAdmissionClassificationError(
+				"bound workflow node is absent from snapshot",
+			);
+		}
 		return { binding, run, snapshot, node };
 	}
 
@@ -24166,6 +24187,7 @@ export class StateStore {
 			| "before_gate"
 			| "holder_missing"
 			| "holder_mismatch"
+			| "holder_carrier_unbound"
 			| "holder_authoritative";
 	} {
 		if (input.checkpoint !== "approve_to_ship") {
@@ -24181,7 +24203,14 @@ export class StateStore {
 		if (activation.run.gate_carrier_epoch !== 1) {
 			return { allow: true, reason: "legacy_epoch" };
 		}
-		const gate = workflowApprovalGate(activation.snapshot.manifest);
+		let gate: ReturnType<typeof workflowApprovalGate>;
+		try {
+			gate = workflowApprovalGate(activation.snapshot.manifest);
+		} catch {
+			throw new WorkflowAdmissionClassificationError(
+				"bound workflow gate classification failed",
+			);
+		}
 		if (activation.run.current_node_id !== gate.node) {
 			return { allow: false, reason: "before_gate" };
 		}
@@ -24198,6 +24227,12 @@ export class StateStore {
 			holder.question_id !== input.questionId
 		) {
 			return { allow: false, reason: "holder_mismatch" };
+		}
+		if (
+			holder.authority_mode === "runner_ship" &&
+			holder.carrier_binding_state !== "bound"
+		) {
+			return { allow: false, reason: "holder_carrier_unbound" };
 		}
 		return { allow: true, reason: "holder_authoritative" };
 	}
@@ -28465,6 +28500,117 @@ export class StateStore {
 		return fence?.producerExecutionId;
 	}
 
+	private workflowCompletionDispositionEventUid(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	}): string {
+		return `completion_disposition:${input.runId}:${input.nodeId}:${input.attempt}`;
+	}
+
+	private workflowCompletionDispositionForContext(
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
+		>,
+		gateOpened: boolean,
+	): WorkflowCompletionDisposition {
+		if (!gateOpened) return "terminal_no_gate";
+		if (
+			context.run.engine_owned !== 1 ||
+			context.run.gate_carrier_epoch !== 1
+		) {
+			return "terminal_no_gate";
+		}
+		const authority = resolveWorkflowGateAuthority(context.snapshot);
+		return authority.mode === "runner_ship" &&
+			authority.carrierNodeId === context.binding.node_id
+			? "runner_ship_park"
+			: "engine_gate_handoff";
+	}
+
+	private readWorkflowCompletionDispositionTx(
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
+		>,
+	):
+		| { state: "missing" }
+		| { state: "invalid" }
+		| { state: "valid"; disposition: WorkflowCompletionDisposition } {
+		const row = this.workflowSelectAll(
+			`SELECT run_id, kind, node_id, execution_id, payload
+			   FROM workflow_run_event WHERE event_uid = ?`,
+			[
+				this.workflowCompletionDispositionEventUid({
+					runId: context.binding.run_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+				}),
+			],
+		)[0];
+		if (!row) return { state: "missing" };
+		if (
+			row.run_id !== context.binding.run_id ||
+			row.kind !== "completion_disposition" ||
+			row.node_id !== context.binding.node_id ||
+			row.execution_id !== context.binding.execution_id
+		) {
+			return { state: "invalid" };
+		}
+		try {
+			const payload = JSON.parse(String(row.payload)) as {
+				disposition?: unknown;
+			};
+			if (
+				payload.disposition === "engine_gate_handoff" ||
+				payload.disposition === "runner_ship_park" ||
+				payload.disposition === "terminal_no_gate"
+			) {
+				return { state: "valid", disposition: payload.disposition };
+			}
+		} catch {
+			// Fail closed for corrupt immutable receipts.
+		}
+		return { state: "invalid" };
+	}
+
+	private reconstructWorkflowCompletionDispositionTx(
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
+		>,
+		route: string,
+	): WorkflowCompletionDisposition | undefined {
+		if (
+			route === "no_code" ||
+			context.run.engine_owned !== 1 ||
+			context.run.gate_carrier_epoch !== 1
+		) {
+			return "terminal_no_gate";
+		}
+		for (const row of this.workflowSelectAll(
+			`SELECT payload FROM workflow_run_event
+			  WHERE run_id = ? AND node_id = ? AND execution_id = ?
+			    AND kind = 'edge_traversed' ORDER BY seq`,
+			[
+				context.binding.run_id,
+				context.binding.node_id,
+				context.binding.execution_id,
+			],
+		)) {
+			let payload: Record<string, unknown>;
+			try {
+				payload = JSON.parse(String(row.payload)) as Record<string, unknown>;
+			} catch {
+				return undefined;
+			}
+			if (payload.sourceAttempt !== context.binding.attempt) continue;
+			return this.workflowCompletionDispositionForContext(
+				context,
+				payload.gateOpened === true,
+			);
+		}
+		return undefined;
+	}
+
 	commitEnrolledCompletion(input: {
 		executionId: string;
 		route: string;
@@ -28768,18 +28914,51 @@ export class StateStore {
 					idempotentReplay: false,
 				};
 			}
-			this.db.transaction(() =>
+			let completionDisposition: WorkflowCompletionDisposition | undefined;
+			this.db.transaction(() => {
 				this.projectGeneralizedCompletionTx({
 					context,
 					route: input.route,
 					completedAt: existing.completed_at as string,
-				}),
-			);
+				});
+				const receipt = this.readWorkflowCompletionDispositionTx(context);
+				if (receipt.state === "valid") {
+					completionDisposition = receipt.disposition;
+				} else if (receipt.state === "missing") {
+					const reconstructed = this.reconstructWorkflowCompletionDispositionTx(
+						context,
+						input.route,
+					);
+					if (reconstructed) {
+						try {
+							this.appendWorkflowRunEventCheckedTx({
+								runId: context.binding.run_id,
+								eventUid: this.workflowCompletionDispositionEventUid({
+									runId: context.binding.run_id,
+									nodeId: context.binding.node_id,
+									attempt: context.binding.attempt,
+								}),
+								kind: "completion_disposition",
+								nodeId: context.binding.node_id,
+								executionId: context.binding.execution_id,
+								payload: { disposition: reconstructed },
+							});
+							completionDisposition = reconstructed;
+						} catch (error) {
+							if (!(error instanceof WorkflowEventUidConflictError)) throw error;
+							console.warn(
+								`[workflow-completion] disposition receipt conflict for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
+							);
+						}
+					}
+				}
+			});
 			this.save();
 			return {
 				ok: true,
 				eventUid: existing.event_uid as string,
 				idempotentReplay: true,
+				...(completionDisposition ? { completionDisposition } : {}),
 			};
 		}
 		const currentNode = this.getWorkflowRunNode(
@@ -28829,6 +29008,8 @@ export class StateStore {
 					: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
+		let completionDisposition: WorkflowCompletionDisposition | undefined;
+		let transitionGateOpened = false;
 		try {
 			this.db.transaction(() => {
 				const sessionStatus = this.getSession(input.executionId)?.status;
@@ -28981,6 +29162,7 @@ export class StateStore {
 							transitionRefusal = transition.reason;
 							throw new Error("engine_completion_transition_refused");
 						}
+						transitionGateOpened = transition.gateOpened === true;
 					}
 				}
 				this.projectGeneralizedCompletionTx({
@@ -29000,6 +29182,30 @@ export class StateStore {
 						executionId: context.binding.execution_id,
 						payload: { attempt: context.binding.attempt, route: input.route },
 					});
+				}
+				const disposition = this.workflowCompletionDispositionForContext(
+					context,
+					transitionGateOpened,
+				);
+				try {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: context.binding.run_id,
+						eventUid: this.workflowCompletionDispositionEventUid({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+						}),
+						kind: "completion_disposition",
+						nodeId: context.binding.node_id,
+						executionId: context.binding.execution_id,
+						payload: { disposition },
+					});
+					completionDisposition = disposition;
+				} catch (error) {
+					if (!(error instanceof WorkflowEventUidConflictError)) throw error;
+					console.warn(
+						`[workflow-completion] disposition receipt conflict for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
+					);
 				}
 			});
 		} catch (error) {
@@ -29035,7 +29241,12 @@ export class StateStore {
 			throw error;
 		}
 		this.save();
-		return { ok: true, eventUid, idempotentReplay: false };
+		return {
+			ok: true,
+			eventUid,
+			idempotentReplay: false,
+			...(completionDisposition ? { completionDisposition } : {}),
+		};
 	}
 
 	observeEnrolledTeardown(input: { executionId: string }): {
@@ -30879,7 +31090,9 @@ export class StateStore {
 				? JSON.parse(existing.payload as string)
 				: null;
 		} catch {
-			throw new Error(`workflow_event_uid_conflict:${input.eventUid}`);
+			throw new WorkflowEventUidConflictError(
+				`workflow_event_uid_conflict:${input.eventUid}`,
+			);
 		}
 		const matches =
 			existing.run_id === input.runId &&
@@ -30890,7 +31103,9 @@ export class StateStore {
 			canonicalSubmissionDigest(existingPayload) ===
 				canonicalSubmissionDigest(input.payload ?? null);
 		if (!matches) {
-			throw new Error(`workflow_event_uid_conflict:${input.eventUid}`);
+			throw new WorkflowEventUidConflictError(
+				`workflow_event_uid_conflict:${input.eventUid}`,
+			);
 		}
 		return { seq: Number(existing.seq), deduped: true };
 	}
@@ -40445,8 +40660,18 @@ export type WorkflowOutputSubmissionResult =
 				| "stale_output_attempt";
 	  };
 
+export type WorkflowCompletionDisposition =
+	| "engine_gate_handoff"
+	| "runner_ship_park"
+	| "terminal_no_gate";
+
 export type WorkflowCompletionResult =
-	| { ok: true; eventUid: string; idempotentReplay: boolean }
+	| {
+			ok: true;
+			eventUid: string;
+			idempotentReplay: boolean;
+			completionDisposition?: WorkflowCompletionDisposition;
+	  }
 	| { ok: false; reason: "missing_output"; retryable: true }
 	| { ok: false; reason: "stale_execution_superseded" }
 	| {

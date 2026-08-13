@@ -992,6 +992,11 @@ export function createEventRouter(
 						ok: true,
 						generalized: true,
 						duplicate: completion.idempotentReplay,
+						...(completion.completionDisposition
+							? {
+									completionDisposition: completion.completionDisposition,
+								}
+							: {}),
 					});
 					return;
 				}
