@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph host["同一台机器上的多个 tmux server(彼此完全隔离,像不同的房间)"]
+    subgraph priv["私有 server ×13(每个 Lead 一间)"]
+      P1["Lead 本体窗格<br/>地址 = fw-某lead.sock"]
+    end
+    subgraph def["默认 server(公共大房间)<br/>/tmp/tmux-501/default"]
+      R1["runner-flywheel session<br/>所有 runner 的窗都在这里<br/>@418 @638 @649 ..."]
+    end
+  end
+  DB[("CommDB sessions 表<br/>(runner 名册数据库)<br/>tmux_window 列 = runner-flywheel:@649<br/>只有窗号、没有房间号")]
+  DB -->|"名册结构上只可能描述<br/>默认 server 这一间房"| def
+  P1 -.->|"修复前:工具站在这间房里找 runner<br/>当然一个都找不到"| R1
+  style P1 fill:#fff8e6,stroke:#ff9500
+  style R1 fill:#e8f2ff,stroke:#007aff

@@ -1,9 +1,7 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { buildSafeRegex, CommDB, validateProjectName } from "flywheel-comm/db";
@@ -17,6 +15,7 @@ import {
 	validateAbandonReason,
 } from "./lifecycle.js";
 import { detectTerminalStatus } from "./status.js";
+import { execTmux, requireTmuxTarget } from "./tmux-exec.js";
 
 // FLY-229: cap on terminal rows fetched per `runner_terminal_list` call, to
 // bound concurrent tmux liveness probes. Parked-alive sessions are inherently
@@ -24,8 +23,6 @@ import { detectTerminalStatus } from "./status.js";
 // visible truncation summary covers the rest.
 const TERMINAL_PROBE_CAP = 150;
 const PROBE_CONCURRENCY = 8;
-
-const execFileAsync = promisify(execFile);
 
 // ── Required env vars (injected by claude-lead.sh) ──
 const projectName = process.env.FLYWHEEL_PROJECT_NAME;
@@ -84,19 +81,20 @@ function getSessionScoped(
 }
 
 async function tmuxCapture(target: string, lines: number): Promise<string> {
-	const { stdout } = await execFileAsync(
-		"tmux",
+	requireTmuxTarget(target);
+	const { stdout } = await execTmux(
 		["capture-pane", "-t", target, "-p", "-S", `-${lines}`],
-		{ encoding: "utf-8", timeout: 5000 },
+		{ timeout: 5000 },
 	);
 	return stdout;
 }
 
 async function tmuxAlive(tmuxTarget: string): Promise<boolean> {
 	try {
+		requireTmuxTarget(tmuxTarget);
 		// Use list-panes with the full target (session:window) to check
 		// if the specific window exists, not just the parent session.
-		await execFileAsync("tmux", ["list-panes", "-t", tmuxTarget], {
+		await execTmux(["list-panes", "-t", tmuxTarget], {
 			timeout: 3000,
 		});
 		return true;
@@ -412,11 +410,11 @@ server.tool(
 
 			// Use -l (literal) to prevent key-name interpretation.
 			// Send text and Enter separately — -l makes "Enter" literal too.
-			await execFileAsync("tmux", ["send-keys", "-t", tmuxTarget, "-l", text], {
+			await execTmux(["send-keys", "-t", tmuxTarget, "-l", text], {
 				timeout: 5000,
 			});
 			if (enter) {
-				await execFileAsync("tmux", ["send-keys", "-t", tmuxTarget, "Enter"], {
+				await execTmux(["send-keys", "-t", tmuxTarget, "Enter"], {
 					timeout: 5000,
 				});
 			}

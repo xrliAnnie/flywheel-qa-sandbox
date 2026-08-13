@@ -1,0 +1,10 @@
+sequenceDiagram
+  participant M as ① merge 进 main
+  participant D as ② 部署车<br/>(git pull + 重新构建)
+  participant L as ③ Lead session 重启<br/>(全舰重启车即覆盖)
+  participant V as ④ 验收<br/>(真 v2 Lead 座位上)
+  M->>D: 新代码落到生产机器
+  Note over D: 工具进程和 Lead 会话同生共死:<br/>已在跑的旧进程不会自己变好
+  D->>L: 重启后才换上新工具进程
+  L->>V: 调 runner_terminal_list<br/>对照 TMUX= tmux 直查结果
+  Note over V: 阳性对照:真活的 runner 报 alive=true<br/>阴性对照:杀掉的测试窗 status=dead<br/>再验 capture 能取回真屏幕
