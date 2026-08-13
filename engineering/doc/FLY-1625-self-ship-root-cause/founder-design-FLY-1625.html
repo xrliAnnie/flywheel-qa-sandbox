@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1625 — 自动合并为什么修了又坏</title>
+<style>
+  body { background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; margin:0; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0 6px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:18px; margin:0 0 10px; color:#1a365d; }
+  .card p, .card li { font-size:15px; line-height:1.65; }
+  .num { font-family:'SF Mono',monospace; font-weight:600; }
+  .bad { color:#ff3b30; } .good { color:#34c759; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th, td { border-bottom:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { color:#86868b; font-weight:600; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  .comment-box { margin:0 0 14px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:56px; border:1px solid #d2d2d7; border-radius:8px; padding:10px; font-family:inherit; font-size:14px; background:#fafafa; resize:vertical; }
+  .comment-box label { font-size:12px; color:#86868b; display:block; margin:6px 0 4px; }
+  #summary-card { border-left-color:#1a365d; }
+  #summary-list { font-size:14px; white-space:pre-wrap; background:#fafafa; border-radius:8px; padding:12px; min-height:40px; }
+  #copy-all { background:#007aff; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:14px; cursor:pointer; margin-top:10px; }
+  #copy-all:active { opacity:.7; }
+  .pill { display:inline-block; background:#f2f2f7; color:#1a365d; border-radius:999px; padding:2px 10px; font-size:12px; font-family:'SF Mono',monospace; margin-right:6px; }
+  .scope { background:#fff8e6; border:1px solid #ffd699; border-radius:10px; padding:14px 18px; margin:14px 0 6px; font-size:15px; line-height:1.65; }
+  .quiet { color:#86868b; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>自动合并为什么修了又坏 — FLY-1625</h1>
+  <div class="sub">2026-08-04 · 机理深究（只查原因、只出方案，没动一行实现代码）· Codex 设计评审 8 轮通过 · 每个卡片下方可留评论，页面底部一键汇总复制</div>
+
+  <div class="scope">
+    <strong>先说清楚范围，免得被读岔：</strong>坏的是<strong>最后一步</strong>——「你批准之后，机器自己把代码合进去」。<br>
+    流水线本身一直在跑：设计、写代码、测试、出批准卡片都跑了，代码也合进 main 了。<br>
+    <strong>只是每一次都得人手动点那下 merge。</strong>这份报告说的全是那一步，不是说「流水线没跑」。
+  </div>
+
+  <div class="card" data-title="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>自 7 月 24 日新的流水线上线以来，<strong>16 次机会，机器自己合并成功 <span class="bad num">0 次</span></strong>。</p>
+    <p>而且这不是运气不好——是<strong>结构上就不可能成功</strong>。有两处独立的毛病，<strong>任何一处单独存在，都足以让这一步永远失败</strong>。所以过去每次「修好了」，都只修了其中一条路，另一条还堵着，于是看起来就是「修了又坏」。</p>
+  </div>
+  <div class="comment-box"><label>对「① 一句话总结」的评论（自动保存）</label><textarea data-sec="① 一句话总结" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card red" data-title="断在哪两处">
+    <h2>② 断在哪两处</h2>
+    <div class="diagram">
+      <svg viewBox="0 0 900 300" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="流水线五步，其中第四步和第五步是断点">
+        <rect x="0" y="0" width="900" height="300" fill="#ffffff"/>
+        <g font-family="-apple-system,system-ui,sans-serif" font-size="14">
+          <rect x="10" y="30" width="140" height="54" rx="10" fill="#eaf7ee" stroke="#34c759"/>
+          <text x="80" y="55" text-anchor="middle" fill="#1d1d1f">设计</text>
+          <text x="80" y="73" text-anchor="middle" fill="#34c759" font-size="12">一直是好的</text>
+          <rect x="190" y="30" width="140" height="54" rx="10" fill="#eaf7ee" stroke="#34c759"/>
+          <text x="260" y="55" text-anchor="middle" fill="#1d1d1f">写代码</text>
+          <text x="260" y="73" text-anchor="middle" fill="#34c759" font-size="12">一直是好的</text>
+          <rect x="370" y="30" width="140" height="54" rx="10" fill="#eaf7ee" stroke="#34c759"/>
+          <text x="440" y="55" text-anchor="middle" fill="#1d1d1f">测试</text>
+          <text x="440" y="73" text-anchor="middle" fill="#34c759" font-size="12">一直是好的</text>
+          <rect x="550" y="30" width="140" height="54" rx="10" fill="#ffeceb" stroke="#ff3b30" stroke-width="2"/>
+          <text x="620" y="55" text-anchor="middle" fill="#1d1d1f">出批准卡片</text>
+          <text x="620" y="73" text-anchor="middle" fill="#ff3b30" font-size="12" font-weight="600">断点 ① · 6 次</text>
+          <rect x="730" y="30" width="160" height="54" rx="10" fill="#ffeceb" stroke="#ff3b30" stroke-width="2"/>
+          <text x="810" y="55" text-anchor="middle" fill="#1d1d1f">机器自己合并</text>
+          <text x="810" y="73" text-anchor="middle" fill="#ff3b30" font-size="12" font-weight="600">断点 ② · 全部</text>
+          <g stroke="#c7c7cc" stroke-width="2" fill="none" marker-end="url(#ar)">
+            <path d="M152 57 L186 57"/><path d="M332 57 L366 57"/><path d="M512 57 L546 57"/><path d="M692 57 L726 57"/>
+          </g>
+          <rect x="10" y="130" width="425" height="140" rx="12" fill="#fff" stroke="#ff3b30" stroke-width="1"/>
+          <text x="30" y="158" fill="#ff3b30" font-size="15" font-weight="700">断点 ① — 卡片根本没发出来</text>
+          <text x="30" y="184" fill="#1d1d1f">机器要「拍一张代码快照」当作批准对象。</text>
+          <text x="30" y="206" fill="#1d1d1f">但它拍的是<tspan font-weight="700">干活现场的当前状态</tspan>，而这个现场</text>
+          <text x="30" y="228" fill="#1d1d1f">被系统<tspan font-weight="700">自己要求记的进度笔记</tspan>推着一直在动。</text>
+          <text x="30" y="252" fill="#86868b" font-size="13">对不上就永久失败，而且只试一次、再也不重试。</text>
+          <rect x="465" y="130" width="425" height="140" rx="12" fill="#fff" stroke="#ff3b30" stroke-width="1"/>
+          <text x="485" y="158" fill="#ff3b30" font-size="15" font-weight="700">断点 ② — 批了也放不了行</text>
+          <text x="485" y="184" fill="#1d1d1f">放行那一关在查一张<tspan font-weight="700">旧版流水线才会写</tspan>的登记表。</text>
+          <text x="485" y="206" fill="#1d1d1f">新版流水线按设计<tspan font-weight="700">根本不写那张表</tspan>。</text>
+          <text x="485" y="228" fill="#1d1d1f">于是查一次、拒一次。</text>
+          <text x="485" y="252" fill="#86868b" font-size="13">就算卡片发了、你批了、快照分毫不差，照样拒。</text>
+        </g>
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#c7c7cc"/></marker></defs>
+      </svg>
+    </div>
+    <p><strong>最干净的一个证据是 8 月 3 日晚上那单</strong>（PR #766）：卡片发了、你也批了、代码快照<strong>一个字符都没变过</strong>——机器还是没合成。因为它卡的是断点 ②，跟快照没关系。</p>
+  </div>
+  <div class="comment-box"><label>对「② 断在哪两处」的评论（自动保存）</label><textarea data-sec="② 断在哪两处" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card amber" data-title="为什么修了又坏">
+    <h2>③ 为什么「修了又坏 × N 次」</h2>
+    <p>7 月 6 日那次修复（FLY-945）是真的把当时那条路修通了。<strong>问题是 7 月 22–23 日，旁边新建了一条路。</strong></p>
+    <p>老的修复没有坏掉，它是<strong>被绕过去了</strong>——现在所有活都走新路，而没有人把老的那套端到端保证重新对着新路跑一遍。</p>
+    <p><strong>最要命的是：这种失效不亮红灯。</strong>老测试还在、还是绿的，因为它测的那条路确实还在，只是没人走了。所以 <strong>16 次机会 0 成功，11 天没人发现</strong>。</p>
+    <p class="quiet">这就是「修了又坏」的真正机理——我们每次修的是「当时那条路」，而不是「自动合并这件事」。</p>
+  </div>
+  <div class="comment-box"><label>对「③ 为什么修了又坏」的评论（自动保存）</label><textarea data-sec="③ 为什么修了又坏" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card red" data-title="同一个毛病的第三个受害者">
+    <h2>④ 顺带查出来的：同一个毛病还咬了「返工」</h2>
+    <p>「拿干活现场的当前状态当权威」这一个毛病，其实咬了<strong>三处</strong>。前两处就是上面的断点 ①②。第三处是查这单时才发现的，<strong>而且它咬的是「修复」本身</strong>：</p>
+    <p>测试没过 → 系统要求回去改 → 但「回去改」这一步<strong>要求现场必须干干净净、且分毫不差地停在测试当时那个版本上</strong>。而改代码的机器正在按设计干活，已经往前走了两笔真正的修复提交、外加系统自己要求的进度笔记。</p>
+    <p><strong>于是它永远回不去了。</strong>系统空转了 <span class="bad num">748 次</span>重试，最后放弃。</p>
+    <p><strong>而且它一点都不安静——期间报了 <span class="num">423 条</span>告警，还是没人能把它解开。</strong></p>
+    <p class="quiet">所以缺的不是「看不见」，是<strong>缺一根能把它掰回正轨的、有记录的手柄</strong>。这跟另一个发现互相印证：官方文档指定的那个修复手柄，从上线到今天<strong>成功次数是 0</strong>——因为它要求的前提条件，跟导致失败的原因是同一个。</p>
+  </div>
+  <div class="comment-box"><label>对「④ 返工也被咬」的评论（自动保存）</label><textarea data-sec="④ 返工也被咬" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card purple" data-title="一个安全洞">
+    <h2>⑤ 查的过程中发现一个安全洞（必须先补）</h2>
+    <p>最后那下「合并」，今天是靠机器发一条 <span class="pill">:cool:</span> 评论触发的。我去看了那个触发器的规则，它<strong>完全不检查这次合并有没有你的批准</strong>：</p>
+    <ul>
+      <li>触发条件只有一条：有人发了一条正文<strong>正好等于</strong> <span class="pill">:cool:</span> 的评论；</li>
+      <li>身份检查只看「这人有没有仓库写权限」——<strong>不看是不是你批的、批的是哪个版本</strong>；</li>
+      <li>它合的那个版本，是<strong>评论发出之后</strong>才去读的——所以你批的是 A、真合的可能是 B。</li>
+    </ul>
+    <p>今天挡住这件事的<strong>只有提示词</strong>，而提示词不是安全边界。这个洞仓库里早有编号（FLY-367）。</p>
+    <p><strong>本方案把它列为「小范围试跑之前必须先补」的硬前提</strong>——因为我们这次恰恰是要让机器真的拥有并使用这个能力。</p>
+  </div>
+  <div class="comment-box"><label>对「⑤ 安全洞」的评论（自动保存）</label><textarea data-sec="⑤ 安全洞" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card green" data-title="怎么修">
+    <h2>⑥ 怎么修（分层，按顺序）</h2>
+    <div class="diagram">
+      <svg viewBox="0 0 900 290" width="100%" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="修复分层：试跑前五件事，试跑后三件事">
+        <rect x="0" y="0" width="900" height="290" fill="#ffffff"/>
+        <g font-family="-apple-system,system-ui,sans-serif" font-size="14">
+          <rect x="10" y="20" width="520" height="250" rx="12" fill="#f7fbf8" stroke="#34c759"/>
+          <text x="30" y="46" fill="#1a365d" font-size="15" font-weight="700">小范围试跑之前 — 必须全部做完</text>
+          <rect x="30" y="60" width="480" height="34" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="44" y="82" fill="#1d1d1f">1 · 先把失败看清楚（告警说清到底哪一项没对上）</text>
+          <rect x="30" y="102" width="480" height="34" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="44" y="124" fill="#1d1d1f">2 · 快照改成拍「真正提交上去的那个版本」<tspan fill="#86868b" font-size="12"> 救回 4/6</tspan></text>
+          <rect x="30" y="144" width="480" height="34" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="44" y="166" fill="#1d1d1f">3 · 测试在干净现场跑，证据钉死在那个版本上<tspan fill="#86868b" font-size="12"> 再救 1/6</tspan></text>
+          <rect x="30" y="186" width="480" height="34" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="44" y="208" fill="#1d1d1f">4 · 放行那一关补上「新版流水线」的分支</text>
+          <rect x="30" y="228" width="480" height="34" rx="8" fill="#fff2f0" stroke="#ff3b30"/>
+          <text x="44" y="250" fill="#1d1d1f">5 · 补上「合并前必须验你的批准」这道闸<tspan fill="#ff3b30" font-size="12" font-weight="600"> 硬前提</tspan></text>
+          <rect x="548" y="110" width="70" height="70" rx="35" fill="#fff8e6" stroke="#ff9500" stroke-width="2"/>
+          <text x="583" y="140" text-anchor="middle" fill="#1d1d1f" font-size="13">小范围</text>
+          <text x="583" y="158" text-anchor="middle" fill="#1d1d1f" font-size="13">试一次</text>
+          <text x="583" y="196" text-anchor="middle" fill="#ff9500" font-size="12" font-weight="600">要你点头</text>
+          <rect x="640" y="20" width="250" height="250" rx="12" fill="#f7f9fc" stroke="#007aff"/>
+          <text x="660" y="46" fill="#1a365d" font-size="15" font-weight="700">试通之后</text>
+          <rect x="660" y="60" width="210" height="46" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="674" y="80" fill="#1d1d1f" font-size="13">6 · 对不上时会</text>
+          <text x="674" y="98" fill="#1d1d1f" font-size="13">自己重试，不再一次定死</text>
+          <rect x="660" y="116" width="210" height="46" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="674" y="136" fill="#1d1d1f" font-size="13">7 · 卡死时有一根</text>
+          <text x="674" y="154" fill="#1d1d1f" font-size="13">有记录的手柄能掰回来</text>
+          <rect x="660" y="172" width="210" height="46" rx="8" fill="#fff" stroke="#d2d2d7"/>
+          <text x="674" y="192" fill="#1d1d1f" font-size="13">8 · 加一条端到端体检</text>
+          <text x="674" y="210" fill="#1d1d1f" font-size="13">进 CI，防第 N+1 次复发</text>
+          <text x="660" y="248" fill="#86868b" font-size="12">最后这条，才是真正防「修了又坏」的</text>
+          <g stroke="#c7c7cc" stroke-width="2" fill="none" marker-end="url(#ar2)">
+            <path d="M532 145 L544 145"/><path d="M622 145 L636 145"/>
+          </g>
+        </g>
+        <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0 0 L10 5 L0 10 z" fill="#c7c7cc"/></marker></defs>
+      </svg>
+    </div>
+    <p><strong>为什么第 8 条最重要：</strong>前 7 条修的是今天这两个毛病。第 8 条修的是「为什么同一个功能能坏 N 次都没人发现」——一条真的走完全程的体检，任何人改坏了任何一段，CI 立刻红。<strong>没有它，第 N+1 次一定会重演。</strong></p>
+  </div>
+  <div class="comment-box"><label>对「⑥ 怎么修」的评论（自动保存）</label><textarea data-sec="⑥ 怎么修" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card" data-title="什么证据能推翻我">
+    <h2>⑦ 什么证据能推翻我（你要求的）</h2>
+    <p>每条结论我都写了「找到什么就说明我错了」，而且每条都能用只读查询几分钟验掉。举几个最关键的：</p>
+    <table>
+      <tr><th>如果找到这个…</th><th>那么…</th><th>我实际查到的</th></tr>
+      <tr><td>任何一次「卡住」的记录，后来自己恢复了</td><td>「只试一次、永不重试」就是错的</td><td class="good">没找到（6/6 的创建和最后修改时间精确到毫秒完全相同 = 之后没人碰过）</td></tr>
+      <tr><td>官方那个修复手柄成功过哪怕一次</td><td>「这条路堵死」就是错的</td><td class="good">成功记录 0 条</td></tr>
+      <tr><td>新版流水线里有任何一次写了那张登记表</td><td>断点 ② 就是错的</td><td class="good">07-25 之后 17 个全部没有</td></tr>
+      <tr><td>那 4 个「快照」其实是真提交上去的版本</td><td>「进度笔记污染」就是错的</td><td class="good">全部不在提交上，只存在于本地</td></tr>
+    </table>
+    <p class="quiet">另外也写清了<strong>什么不足以推翻</strong>。比如「后来有一次成功了」——如果那次是人手动把现场重置了，它证明的是「手动能救」，不是「机器会自愈」。</p>
+  </div>
+  <div class="comment-box"><label>对「⑦ 什么能推翻我」的评论（自动保存）</label><textarea data-sec="⑦ 什么能推翻我" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card amber" data-title="我自己错了两次">
+    <h2>⑧ 老实说：这份报告我自己错过两次</h2>
+    <p>两次都是<strong>查得太浅就下结论</strong>，都被评审揪出来了，我都留在文档里没删：</p>
+    <ul>
+      <li><strong>第一次</strong>：把「事故发生在哪张单子上」当成了「哪张单子在修它」，据此提出一条根本不存在的依赖。</li>
+      <li><strong>第二次</strong>：只查了「有没有第二次测试记录」，就断言返工「根本没触发」。<strong>再往下查一层，它触发了</strong>——是卡在更早的地方（就是上面第 ④ 条那个 748 次空转）。</li>
+    </ul>
+    <p>留着不删，是因为<strong>这跟这单要防的毛病是同一个</strong>：用一个太浅的探针去证明「某个能力不存在」。第 ⑦ 条那张「什么能推翻我」的表，就是逼我自己说清楚「我到底查了什么、没查什么」。</p>
+  </div>
+  <div class="comment-box"><label>对「⑧ 我自己错了两次」的评论（自动保存）</label><textarea data-sec="⑧ 我自己错了两次" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card red" data-title="需要你拍板的">
+    <h2>⑨ 需要你拍板的（就一件）</h2>
+    <p>方案里第 4 条（放行那一关补新分支）一旦上线，<strong>机器就会真的开始自己往 main 合代码了</strong>。这是行为变化，不是纯修 bug。</p>
+    <p><strong>所以上线前要你明确点一次头。</strong>安全上已经安排好了：默认关着、先小范围试一次、而且第 5 条那道「必须验你的批准」的闸<strong>不补上就不许试</strong>。</p>
+    <p class="quiet">这单本身<strong>没有动任何实现代码</strong>——按你说的，先把原因查清楚。真正动手拆成下游的单子来做。</p>
+  </div>
+  <div class="comment-box"><label>对「⑨ 需要你拍板的」的评论（自动保存）</label><textarea data-sec="⑨ 需要你拍板的" placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card" id="summary-card" data-title="评论汇总">
+    <h2>你的评论汇总</h2>
+    <div id="summary-list">(还没有评论)</div>
+    <button id="copy-all">一键复制全部评论</button>
+    <p class="quiet">评论只存在你自己浏览器里（自动保存），复制后贴回 Discord 给我就行。</p>
+  </div>
+</div>
+
+<script>
+(function () {
+  var PREFIX = "fly1625-design:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-sec]"));
+  var summary = document.getElementById("summary-list");
+  function renderSummary() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push("【" + a.getAttribute("data-sec") + "】\n" + v);
+    });
+    summary.textContent = parts.length ? parts.join("\n\n") : "(还没有评论)";
+  }
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute("data-sec"));
+    a.addEventListener("input", function () {
+      lsSet(a.getAttribute("data-sec"), a.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = summary.textContent;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(function () { fallbackCopy(text); });
+    } else {
+      fallbackCopy(text);
+    }
+  });
+})();
+</script>
+
+</body>
+</html>
