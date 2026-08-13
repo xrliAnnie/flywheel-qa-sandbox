@@ -1281,6 +1281,15 @@ fi
 
 preflight_pull_latest_main || exit 1
 
+# The release below makes managed-Lead botUserId mandatory at every Bridge,
+# launcher, and write boundary. Prove the independent-roster migration landed
+# before changing host config, building strict binaries, or stopping services.
+if ! lead_identity_registry_preflight \
+  "${HOME}/.flywheel/projects.json" "${FLYWHEEL_PROJECTS:-}"; then
+    log "ERROR: canonical Lead identity registry is not migration-ready; existing Bridge and Leads remain untouched"
+    exit 1
+fi
+
 # FLY-1726: config.ts no longer invents a default Lead. Under the restart lock,
 # validate an existing explicit choice or atomically materialize the historical
 # product-lead choice for legacy hosts. This runs before plugin/build/service

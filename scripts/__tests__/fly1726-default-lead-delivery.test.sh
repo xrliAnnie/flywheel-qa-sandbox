@@ -21,6 +21,61 @@ fi
 # shellcheck source=../lib/default-lead-agent-env.sh
 source "$LIB"
 
+IDENTITY_READY="$TMP/identity-ready.json"
+cat > "$IDENTITY_READY" <<'JSON'
+[
+  {"projectName":"legacy","projectRoot":"/tmp/legacy","leads":[
+    {"agentId":"product-lead","botTokenEnv":"PRODUCT_BOT_TOKEN","botUserId":"12345678901234567"},
+    {"agentId":"cos-lead","botTokenEnv":"COS_BOT_TOKEN","botUserId":"22345678901234567"}
+  ]}
+]
+JSON
+
+IDENTITY_MISSING="$TMP/identity-missing.json"
+cat > "$IDENTITY_MISSING" <<'JSON'
+[
+  {"projectName":"legacy","projectRoot":"/tmp/legacy","leads":[
+    {"agentId":"product-lead","botTokenEnv":"PRODUCT_BOT_TOKEN"},
+    {"agentId":"cos-lead","botTokenEnv":"COS_BOT_TOKEN","botUserId":"22345678901234567"}
+  ]}
+]
+JSON
+
+IDENTITY_WRAPPED="$TMP/identity-wrapped.json"
+printf '{"projects":%s}\n' "$(cat "$IDENTITY_READY")" > "$IDENTITY_WRAPPED"
+
+IDENTITY_DUPLICATE="$TMP/identity-duplicate.json"
+sed 's/22345678901234567/12345678901234567/' "$IDENTITY_READY" > "$IDENTITY_DUPLICATE"
+
+if lead_identity_registry_preflight "$IDENTITY_READY" "" >/dev/null 2>&1; then
+  ok "identity registry preflight accepts complete independently registered bot ids"
+else
+  bad "identity registry preflight rejected a complete registry"
+fi
+
+before="$(shasum -a 256 "$IDENTITY_MISSING")"
+out="$(lead_identity_registry_preflight "$IDENTITY_MISSING" "" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && [ "$before" = "$(shasum -a 256 "$IDENTITY_MISSING")" ] \
+  && grep -q 'legacy/product-lead' <<<"$out" \
+  && grep -q 'migrate-bot-user-ids' <<<"$out"; then
+  ok "identity registry preflight blocks an unmigrated fleet before mutation with remediation"
+else
+  bad "identity registry preflight did not block the unmigrated row (rc=$rc out=$out)"
+fi
+
+if lead_identity_registry_preflight "$IDENTITY_WRAPPED" "" >/dev/null 2>&1; then
+  ok "identity registry preflight accepts the compiler's projects wrapper shape"
+else
+  bad "identity registry preflight rejected the compiler's projects wrapper shape"
+fi
+
+out="$(lead_identity_registry_preflight "$IDENTITY_DUPLICATE" "" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'duplicate botUserId' <<<"$out"; then
+  ok "identity registry preflight rejects duplicate bot ownership before build"
+else
+  bad "identity registry preflight accepted duplicate bot ownership (rc=$rc out=$out)"
+fi
+
 PROJECTS="$TMP/projects.json"
 cat > "$PROJECTS" <<'JSON'
 [
@@ -113,13 +168,19 @@ fi
 
 source_line="$(grep -n 'source .*default-lead-agent-env.sh' "$RESTART" | head -1 | cut -d: -f1)"
 call_line="$(grep -n 'default_lead_agent_env_converge' "$RESTART" | tail -1 | cut -d: -f1)"
+identity_call_line="$(grep -n '^if ! lead_identity_registry_preflight' "$RESTART" | tail -1 | cut -d: -f1)"
+pull_line="$(grep -n '^preflight_pull_latest_main || exit 1$' "$RESTART" | tail -1 | cut -d: -f1)"
 lock_line="$(grep -n '^acquire_lock$' "$RESTART" | tail -1 | cut -d: -f1)"
 plugin_line="$(grep -n '^# Discord plugin detection' "$RESTART" | head -1 | cut -d: -f1)"
-if [ -n "$source_line" ] && [ -n "$call_line" ] && [ -n "$lock_line" ] && [ -n "$plugin_line" ] \
-  && [ "$call_line" -gt "$lock_line" ] && [ "$call_line" -lt "$plugin_line" ]; then
-  ok "restart converges config under its lock before deploy/service work"
+if [ -n "$source_line" ] && [ -n "$call_line" ] && [ -n "$identity_call_line" ] \
+  && [ -n "$pull_line" ] && [ -n "$lock_line" ] && [ -n "$plugin_line" ] \
+  && [ "$pull_line" -gt "$lock_line" ] \
+  && [ "$identity_call_line" -gt "$pull_line" ] \
+  && [ "$identity_call_line" -lt "$call_line" ] \
+  && [ "$call_line" -lt "$plugin_line" ]; then
+  ok "restart proves registry readiness before config/build/service mutation"
 else
-  bad "restart wiring/order missing (source=$source_line lock=$lock_line call=$call_line plugin=$plugin_line)"
+  bad "restart wiring/order missing (source=$source_line lock=$lock_line pull=$pull_line identity=$identity_call_line default=$call_line plugin=$plugin_line)"
 fi
 
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"

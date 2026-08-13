@@ -16,6 +16,98 @@ default_lead_agent_env_log() {
   fi
 }
 
+# lead_identity_registry_preflight <projects-file> <inline-projects-json>
+#
+# The strict compiler is shipped by this release, so restart must prove its
+# one-time data prerequisite with the currently running (pre-build) shell. This
+# check never derives bot ids from tokens: it only verifies that every managed
+# Lead already carries an independently registered, globally unique snowflake.
+# The separate migrate-bot-user-ids command owns roster/token verification and
+# the atomic backup + registry write.
+lead_identity_registry_preflight() {
+  local projects_file="$1" inline_projects="${2:-}"
+  local report="" invalid_tokens="" missing_ids="" duplicate_ids="" managed_count=""
+  local jq_filter='def projects_array:
+      if type == "array" then .
+      elif type == "object" and ((.projects | type) == "array") then .projects
+      else error("registry must be an array or {projects: array}")
+      end;
+    projects_array as $projects
+    | if all($projects[]; ((.projectName | type) == "string") and ((.leads | type) == "array"))
+      then $projects
+      else error("registry projects must have projectName and leads")
+      end
+    | [
+        .[] as $project
+        | $project.leads[]
+        | select(has("botTokenEnv") and .botTokenEnv != null)
+        | {
+            selector: "\($project.projectName)/\(.agentId // "<invalid-agentId>")",
+            botTokenEnv,
+            botUserId
+          }
+      ] as $managed
+    | {
+        managedCount: ($managed | length),
+        invalidTokenSelectors: [
+          $managed[]
+          | select((.botTokenEnv | type) != "string" or (.botTokenEnv | test("^[A-Za-z_][A-Za-z0-9_]*$") | not))
+          | .selector
+        ],
+        missingBotSelectors: [
+          $managed[]
+          | select((.botUserId | type) != "string" or (.botUserId | test("^[0-9]{17,20}$") | not))
+          | .selector
+        ],
+        duplicateBotIds: [
+          $managed
+          | map(select((.botUserId | type) == "string" and (.botUserId | test("^[0-9]{17,20}$"))))
+          | sort_by(.botUserId)
+          | group_by(.botUserId)[]
+          | select(length > 1)
+          | "\(.[0].botUserId) => \(map(.selector) | join(", "))"
+        ]
+      }'
+
+  command -v jq >/dev/null 2>&1 || {
+    default_lead_agent_env_log "ERROR: jq is required to preflight canonical Lead identity"
+    return 1
+  }
+  if [ -n "$inline_projects" ]; then
+    report="$(jq -cer "$jq_filter" <<<"$inline_projects" 2>/dev/null)" || {
+      default_lead_agent_env_log "ERROR: FLYWHEEL_PROJECTS is invalid; canonical Lead identity cannot be compiled"
+      return 1
+    }
+  else
+    [ -r "$projects_file" ] || {
+      default_lead_agent_env_log "ERROR: canonical registry is unreadable at $projects_file"
+      return 1
+    }
+    report="$(jq -cer "$jq_filter" "$projects_file" 2>/dev/null)" || {
+      default_lead_agent_env_log "ERROR: canonical registry is invalid at $projects_file"
+      return 1
+    }
+  fi
+
+  invalid_tokens="$(jq -r '.invalidTokenSelectors | join(", ")' <<<"$report")"
+  missing_ids="$(jq -r '.missingBotSelectors | join(", ")' <<<"$report")"
+  duplicate_ids="$(jq -r '.duplicateBotIds | join("; ")' <<<"$report")"
+  managed_count="$(jq -r '.managedCount' <<<"$report")"
+  if [ -n "$invalid_tokens" ] || [ -n "$missing_ids" ] || [ -n "$duplicate_ids" ]; then
+    [ -z "$invalid_tokens" ] || default_lead_agent_env_log \
+      "ERROR: canonical registry has invalid botTokenEnv selectors: $invalid_tokens"
+    [ -z "$missing_ids" ] || default_lead_agent_env_log \
+      "ERROR: canonical registry has missing/invalid botUserId rows: $missing_ids"
+    [ -z "$duplicate_ids" ] || default_lead_agent_env_log \
+      "ERROR: canonical registry has duplicate botUserId ownership: $duplicate_ids"
+    default_lead_agent_env_log \
+      "Run 'flywheel-comm lead-identity migrate-bot-user-ids --projects-file $projects_file --roster-file <independent-roster.json> --backup-file <snapshot.json>' under env -i, then retry the restart"
+    return 1
+  fi
+  default_lead_agent_env_log \
+    "verified canonical Lead identity registry: $managed_count managed Lead row(s) with unique botUserId"
+}
+
 # default_lead_agent_env_converge <env-file> <projects-file> <inline-projects-json> <dry-run>
 #
 # Registry precedence mirrors Bridge loadProjects(): a non-empty
@@ -73,9 +165,10 @@ default_lead_agent_env_converge() {
       return 1
     fi
     count="$(jq -er --arg id "$selected" '
-      if type != "array" then error("registry must be an array") else
-        [.[]?.leads[]? | select(.agentId == $id)] | length
-      end
+      (if type == "array" then .
+       elif type == "object" and ((.projects | type) == "array") then .projects
+       else error("registry must be an array or {projects: array}") end)
+      | [.[]?.leads[]? | select(.agentId == $id)] | length
     ' <<<"$inline_projects" 2>/dev/null)" || {
       default_lead_agent_env_log "ERROR: FLYWHEEL_PROJECTS is invalid; cannot validate TEAMLEAD_DEFAULT_LEAD_AGENT"
       return 1
@@ -86,9 +179,10 @@ default_lead_agent_env_converge() {
       return 1
     }
     count="$(jq -er --arg id "$selected" '
-      if type != "array" then error("registry must be an array") else
-        [.[]?.leads[]? | select(.agentId == $id)] | length
-      end
+      (if type == "array" then .
+       elif type == "object" and ((.projects | type) == "array") then .projects
+       else error("registry must be an array or {projects: array}") end)
+      | [.[]?.leads[]? | select(.agentId == $id)] | length
     ' "$projects_file" 2>/dev/null)" || {
       default_lead_agent_env_log "ERROR: canonical registry is invalid at $projects_file"
       return 1
