@@ -1,13 +1,13 @@
 ---
 issue: FLY-1726
 phase: implement
-phaseCursor: 3/3
-updated: 2026-08-13T09:07:19.992Z
-nextStep: Push exact head and request code review
+phaseCursor: 4/4
+updated: 2026-08-13T11:08:26.251Z
+nextStep: Push review-fix head and request a fresh exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1726 progress
-**phase**: implement (3/3)
-**next**: Push exact head and request code review
+**phase**: implement (4/4)
+**next**: Push review-fix head and request a fresh exact-head code review
