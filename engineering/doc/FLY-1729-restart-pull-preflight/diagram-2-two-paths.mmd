@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph BEFORE["修之前(8-12 事故成因)"]
+        direction TB
+        U1["自动更新器路径<br>(launchd 定时/排队触发)"] -->|"✅ 先拉最新 main<br>再调重启脚本"| R1["restart-services.sh<br>部署『当前目录里的代码』"]
+        D1["直接调用路径<br>(Lead / 操作员手动统一重启)"] -->|"❌ 没有任何拉取"| R1
+        R1 --> X1["目录落后 main 6 个提交时<br>= 在旧码上起舰"]
+    end
+
+    subgraph AFTER["修之后(本设计)"]
+        direction TB
+        U2["自动更新器路径<br>(先拉后调,保持不变)"] --> R2["restart-services.sh<br>起步先跑 preflight:<br>核验状态 → 拉到最新 main"]
+        D2["直接调用路径"] --> R2
+        R2 --> X2["两条路径共享同一条不变量:<br>重启起步时 代码目录 == 最新 main<br>(更新器路径下 preflight 是幂等复核)"]
+    end
+
+    BEFORE ~~~ AFTER
+
+    style X1 fill:#ffecea,stroke:#ff3b30
+    style X2 fill:#e8f8ee,stroke:#34c759
+    style R1 fill:#f5f5f7,stroke:#86868b
+    style R2 fill:#eaf3ff,stroke:#007aff

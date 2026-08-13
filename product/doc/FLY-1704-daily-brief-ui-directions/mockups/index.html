@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>早报 feed — 四个版式方向</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:#fff;color:#1d1d1f;
+ font:15.5px/1.85 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+ -webkit-font-smoothing:antialiased}
+a{color:#0645c8}
+code{font:.86em/1 "SF Mono",ui-monospace,monospace;background:#f2f2f4;padding:1px 5px;border-radius:4px}
+.pagehd{max-width:900px;margin:0 auto;padding:52px 24px 0}
+.pagehd h1{font-size:30px;letter-spacing:-.02em;margin:0 0 4px;font-weight:700}
+.pagehd .sub{color:#86868b;font-size:13.5px;margin:0 0 4px}
+.dirtag{display:inline-block;margin:14px 0 0;padding:5px 12px;border-radius:999px;
+ background:#f5f5f7;color:#6e6e73;font-size:12.5px}
+.basis{max-width:900px;margin:26px auto 0;padding:0 24px;color:#3a3a3c;font-size:13.5px;line-height:1.75}
+.basis b{color:#1d1d1f}
+.basis .row1{display:flex;flex-wrap:wrap;gap:22px;margin-bottom:9px;font-size:13px;color:#6e6e73}
+.basis .row1 b{display:block;font-size:16.5px;color:#1d1d1f;letter-spacing:-.01em;font-weight:650}
+.xfind{max-width:900px;margin:22px auto 0;padding:16px 20px;border-left:3px solid #d2d2d7;
+ color:#3a3a3c;font-size:14px;line-height:1.8}
+.xfind h3{margin:0 0 6px;font-size:13px;color:#1a365d;letter-spacing:.02em;font-weight:700}
+.tone{color:#8a6d00;font-size:13.5px;line-height:1.75;margin:6px 0 0}
+.secthd{display:flex;align-items:baseline;gap:9px;margin:56px 0 22px;
+ padding-bottom:9px;border-bottom:1px solid #ebebed}
+.secthd h2{font-size:14px;font-weight:700;letter-spacing:.04em;color:#1d1d1f;margin:0}
+.secthd .cnt{font-size:12.5px;color:#a1a1a6}
+.no{font:400 26px/1 Georgia,"Songti SC",serif;color:#c7c7cc;font-variant-numeric:tabular-nums}
+.meta{font:12px/1 "SF Mono",ui-monospace,monospace;color:#a1a1a6;letter-spacing:.01em}
+.chk{margin-top:12px;font-size:12.5px;color:#6e6e73;line-height:1.7}
+.chk.dim{color:#a1a1a6}
+.lead{font-weight:650}
+.cue{font-weight:650;color:#1a365d}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:12.5px;color:#86868b;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";color:#c7c7cc}
+details[open] summary::before{content:"▾ "}
+.codeblk{margin-top:12px;font-size:14px;color:#3a3a3c;line-height:1.8;
+ padding-left:14px;border-left:2px solid #ebebed}
+.nbd summary{margin-top:10px}
+.nb{margin-top:8px}
+.note{width:100%;padding:9px 11px;border:1px solid #e3e3e6;border-radius:8px;
+ font:inherit;font-size:14px;resize:vertical;background:#fcfcfd;color:#1d1d1f}
+.note:focus{outline:none;border-color:#0645c8;background:#fff}
+.shallow{opacity:.62}
+.foot{max-width:900px;margin:70px auto 0;padding:22px 24px 70px;border-top:1px solid #ebebed;
+ color:#a1a1a6;font-size:12.5px;line-height:1.8}
+.copyall{position:fixed;left:20px;bottom:20px;padding:9px 16px;border:0;border-radius:9px;
+ background:#1d1d1f;color:#fff;font:600 13px/1 inherit;cursor:pointer;z-index:9}
+.copyall:active{transform:translateY(1px)}
+
+body{background:#f5f5f7;font-size:15px}
+.ix{max-width:1180px;margin:0 auto;padding:56px 24px 90px}
+.ix h1{font-size:31px;letter-spacing:-.022em;margin:0 0 10px;font-weight:700}
+.ix .intro{color:#3a3a3c;font-size:15px;line-height:1.85;max-width:660px;margin:0 0 8px}
+.ix .intro b{color:#1d1d1f}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:26px;margin:34px 0 0}
+.cardI{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.shot{height:330px;overflow:hidden;position:relative;background:#fff;border-bottom:1px solid #ebebed}
+.shot iframe{width:1280px;height:1320px;border:0;transform:scale(.4);transform-origin:0 0;
+ position:absolute;top:0;left:0;pointer-events:none}
+.cardI .in{padding:20px 22px 22px}
+.cardI h2{font-size:19px;margin:0 0 3px;letter-spacing:-.01em;font-weight:650}
+.cardI .bet{font-size:13px;color:#b8860b;font-weight:650;margin:0 0 10px}
+.cardI .desc{font-size:13.5px;line-height:1.8;color:#3a3a3c;margin:0 0 12px}
+.cardI .cost{font-size:13px;line-height:1.75;color:#86868b;margin:0 0 16px}
+.cardI .cost b{color:#6e6e73}
+.nums{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid #f0f0f2;padding-top:13px;margin-bottom:16px}
+.nums div{flex:1;min-width:74px}
+.nums .k{font-size:10.5px;color:#a1a1a6;letter-spacing:.02em;margin-bottom:3px}
+.nums .v{font-size:17px;font-weight:650;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.nums .v.good{color:#248a3d}
+.nums .v.warn{color:#b8860b}
+.open{display:inline-block;padding:9px 17px;border-radius:9px;background:#1d1d1f;color:#fff;
+ text-decoration:none;font-size:13.5px;font-weight:600}
+.base{background:#fff;border-radius:14px;padding:22px 24px;margin:30px 0 0;
+ box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid #ff9500}
+.base h2{font-size:17px;margin:0 0 4px;font-weight:650}
+.base p{font-size:13.5px;color:#6e6e73;line-height:1.8;margin:0 0 14px}
+.tbl2{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl2 th{text-align:left;font-size:11px;letter-spacing:.05em;color:#a1a1a6;font-weight:700;
+ padding:0 10px 8px;border-bottom:1px solid #ebebed}
+.tbl2 td{padding:9px 10px;border-bottom:1px solid #f5f5f7;font-variant-numeric:tabular-nums}
+.tbl2 td:first-child{font-weight:600}
+.tbl2 tr.v8row td{color:#6e6e73;background:#fffbf2}
+.note2{background:#fff;border-radius:14px;padding:22px 24px;margin:26px 0 0;
+ box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid #34c759}
+.note2 h2{font-size:17px;margin:0 0 8px;font-weight:650}
+.note2 p{font-size:14px;color:#3a3a3c;line-height:1.85;margin:0 0 10px}
+.foot2{color:#a1a1a6;font-size:12.5px;line-height:1.85;margin:34px 0 0}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+</style></head>
+<body data-dir="index">
+<div class="ix">
+<h1>早报 feed — 四个版式方向</h1>
+<p class="intro">同一天的内容（<b>一个字都没改</b>），四种摆法。你挑的其实不是「哪个好看」，
+是<b>哪一种读法</b> —— 四个方向赌的东西不一样，下面每张卡都写了它赌什么、代价是什么。</p>
+<p class="intro">缩略图是<b>真实页面本身</b>缩放来的，不是示意图；点「打开整页」看到的就是它放大后的样子。</p>
+
+<div class="grid"><div class="cardI">
+  <div class="shot"><iframe src="direction-a.html" loading="lazy" scrolling="no" title="A · 电报 预览"></iframe></div>
+  <div class="in">
+    <h2>A · 电报</h2>
+    <p class="bet">赌的是「扫得快」</p>
+    <p class="desc">一栏到底，每条只留「这是什么」，把「跟我们的关系 / 能借的 / 我读到的代码」收进一个折叠。学的是 TLDR 当日刊。</p>
+    <p class="cost"><b>代价：</b>深读的内容要多点一下才看得到。</p>
+    <div class="nums">
+      <div><div class="k">字段名</div><div class="v good">0</div></div>
+      <div><div class="k">每行汉字</div><div class="v good">34</div></div>
+      <div><div class="k">单条容器</div><div class="v good">3</div></div>
+      <div><div class="k">打开时屏数</div><div class="v">9.3</div></div>
+    </div>
+    <a class="open" href="direction-a.html" target="_blank" rel="noopener">打开整页 ↗</a>
+  </div>
+</div>
+<div class="cardI">
+  <div class="shot"><iframe src="direction-b.html" loading="lazy" scrolling="no" title="B · 简报 预览"></iframe></div>
+  <div class="in">
+    <h2>B · 简报</h2>
+    <p class="bet">赌的是「读的时候不被打断」</p>
+    <p class="desc">左边一条窄栏放编号、星数、语言、核验状态、备注入口；右边一条窄栏从头到尾只有文章。信息一条不少，但读的时候眼睛只走一条直线。学的是 Linear changelog + Import AI。</p>
+    <p class="cost"><b>代价：</b>要宽屏；窄屏会塌成单栏。四段全展开，所以最长。</p>
+    <div class="nums">
+      <div><div class="k">字段名</div><div class="v good">0</div></div>
+      <div><div class="k">每行汉字</div><div class="v good">36</div></div>
+      <div><div class="k">单条容器</div><div class="v good">3</div></div>
+      <div><div class="k">打开时屏数</div><div class="v warn">13.7</div></div>
+    </div>
+    <a class="open" href="direction-b.html" target="_blank" rel="noopener">打开整页 ↗</a>
+  </div>
+</div>
+<div class="cardI">
+  <div class="shot"><iframe src="direction-c.html" loading="lazy" scrolling="no" title="C · 杂志 预览"></iframe></div>
+  <div class="in">
+    <h2>C · 杂志</h2>
+    <p class="bet">赌的是「替你做减法」</p>
+    <p class="desc">今晚 18 条不是平的：头条 1 条大版面，要闻 3 条中等，其余 20 条收成紧凑清单点开即展开。学的是 NextDraft。</p>
+    <p class="cost"><b>代价：</b>需要「谁是头条」的排序判断 —— 这一版用的是程序化规则，对不对由你定。</p>
+    <div class="nums">
+      <div><div class="k">字段名</div><div class="v good">0</div></div>
+      <div><div class="k">每行汉字</div><div class="v good">39</div></div>
+      <div><div class="k">单条容器</div><div class="v good">3</div></div>
+      <div><div class="k">打开时屏数</div><div class="v good">6.8</div></div>
+    </div>
+    <a class="open" href="direction-c.html" target="_blank" rel="noopener">打开整页 ↗</a>
+  </div>
+</div>
+<div class="cardI">
+  <div class="shot"><iframe src="direction-d.html" loading="lazy" scrolling="no" title="D · 工作台 预览"></iframe></div>
+  <div class="in">
+    <h2>D · 工作台</h2>
+    <p class="bet">赌的是「先给全局，再钻细节」</p>
+    <p class="desc">一行一条的密集表，24 条基本一屏看完，点任一行就地展开全文。这是刻意做的<strong>对照组</strong> —— 它不假装自己是读物，它承认这是一份每天要过一遍的清单。</p>
+    <p class="cost"><b>代价：</b>那一句话结论必须真的够好；如果你其实想坐下来「读」，这版会显得冷。</p>
+    <div class="nums">
+      <div><div class="k">字段名</div><div class="v good">0</div></div>
+      <div><div class="k">每行汉字</div><div class="v good">37</div></div>
+      <div><div class="k">单条容器</div><div class="v good">3</div></div>
+      <div><div class="k">打开时屏数</div><div class="v good">2.1</div></div>
+    </div>
+    <a class="open" href="direction-d.html" target="_blank" rel="noopener">打开整页 ↗</a>
+  </div>
+</div></div>
+
+<div class="base">
+  <h2>跟现在这一版（v8）比</h2>
+  <p>下面这些数字是<b>实测</b>的 —— 五个页面各跑一遍同一个测量脚本（<code>assets/measure.js</code>），不是我写的目标值。</p>
+  <table class="tbl2">
+    <thead><tr><th>版本</th><th>字段名个数</th><th>每行汉字</th><th>单条容器数</th><th>被围成卡片</th><th>打开时屏数</th><th>全展开屏数</th></tr></thead>
+    <tbody>
+      <tr class="v8row"><td>现在这版 v8</td><td>74</td><td>46</td><td>10</td><td>24</td><td>10.9</td><td>10.9</td></tr>
+      <tr class=""><td>A · 电报</td><td>0</td><td>34</td><td>3</td><td>0</td><td>9.3</td><td>17.6</td></tr>
+<tr class=""><td>B · 简报</td><td>0</td><td>36</td><td>3</td><td>0</td><td>13.7</td><td>14.6</td></tr>
+<tr class=""><td>C · 杂志</td><td>0</td><td>39</td><td>3</td><td>0</td><td>6.8</td><td>16.1</td></tr>
+<tr class=""><td>D · 工作台</td><td>0</td><td>37</td><td>3</td><td>0</td><td>2.1</td><td>16.6</td></tr>
+    </tbody>
+  </table>
+  <p style="margin:16px 0 0">
+    「字段名」= 页面上「这是什么 / 为什么值得你看 / 跟我们什么关系 / 哪里能借鉴」这种<b>表单标签</b>出现的次数。
+    v8 有 74 个；我看的四个真实参考物（Import AI / TLDR / NextDraft / Linear）<b>全都是 0</b>。
+    这是 v8 和它们之间最大的一处差别，也是「像表格」的主要来源。<br>
+    「全展开屏数」= 如果你把每一条的折叠区都点开。<b>A 打开时短、全展开长</b>，那正是它的取舍。
+  </p>
+</div>
+
+<div class="note2">
+  <h2>「都不对，因为 X」也是有效答案</h2>
+  <p>这一单的目的是<b>先把壳定下来</b>，不是逼你从四个里挑一个。
+  如果四个都不对，请直接说<b>因为什么</b> —— 那个「因为」就是下一轮的输入，比勉强挑一个有用得多。</p>
+  <p>另外两件想请你顺手拍的：<br>
+  ① <b>备注框怎么摆</b> —— 四个方向处理得不一样（A 点开才出现 / B 在左栏 / C 头条常驻 / D 行尾小圆点）。
+  这是你 v7 明确要的功能，我没动它，只是给了四种摆法。<br>
+  ② <b>要不要排序</b> —— 只有 C 假设「18 条不是平的、有头条」。如果你觉得都一样重、你自己挑，C 就出局。</p>
+</div>
+
+<p class="foot2">
+FLY-1704 · 2026-08-11 · 内容来自 FLY-1410 v8 的真实数据，逐字未改（构建期有断言，24 条 × 241 个字段全部核对过）。<br>
+这些是<b>方向图，不是上线版本</b>。备注存在你这台机器的浏览器里。
+</p>
+</div>
+
+
+</body></html>

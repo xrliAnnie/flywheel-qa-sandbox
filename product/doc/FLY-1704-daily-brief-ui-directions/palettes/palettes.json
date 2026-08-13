@@ -1,0 +1,108 @@
+{
+	"_doc": "FLY-1704 轮 3 — 给 Annie 挑的色系。这份是权威色值；概念图只负责『看关系』，Codex 常会把 hex 画歪（skill 自述:『often picks pretty defaults over the prompt's exact hex』）。她挑中哪套之后，实现按这里的值走，或按她指的那张图现场取色。 ｜ 轮 3 修正:分类色原本 6/6 等于主色(Lead 抓出)—— 分类色等于主色就等于没有分类色,页面上会塌回两三个颜色。已全部拉开,validate.py 强制彩色角色两两 ΔE≥20。",
+	"constraint": "底色一律浅色(Apple 浅色底线)。每套必须是真正的多色关系 —— 上一轮四套她的评价是「只有两个颜色，特别特别单调」。",
+	"palettes": [
+		{
+			"id": "nordic",
+			"name_en": "Nordic Daylight",
+			"name_cn": "北欧日光",
+			"feel": "清冷、有秩序 —— 像一间采光很好的白墙办公室。",
+			"colors": {
+				"BASE": "#F7F9FB",
+				"SURFACE": "#FFFFFF",
+				"INK": "#16202B",
+				"PRIMARY": "#2563C9",
+				"SECONDARY": "#0E8C8C",
+				"ACCENT": "#E8734A",
+				"CAT-GITHUB": "#7B3FE4",
+				"CAT-X": "#C2185B",
+				"MUTED": "#8A97A6"
+			}
+		},
+		{
+			"id": "press",
+			"name_en": "Morning Press",
+			"name_cn": "晨间纸报",
+			"feel": "暖，有人气 —— 像刚印出来还带油墨味的晨报。",
+			"colors": {
+				"BASE": "#FDF8F0",
+				"SURFACE": "#FFFFFF",
+				"INK": "#1E1A15",
+				"PRIMARY": "#1B3A6B",
+				"SECONDARY": "#B4531F",
+				"ACCENT": "#D9A227",
+				"CAT-GITHUB": "#2F6E4B",
+				"CAT-X": "#8E3A8E",
+				"MUTED": "#9B8B78"
+			}
+		},
+		{
+			"id": "botanical",
+			"name_en": "Botanical",
+			"name_cn": "植物园",
+			"feel": "自然、放松 —— 读起来不紧绷，像坐在窗边。",
+			"colors": {
+				"BASE": "#F8FBF6",
+				"SURFACE": "#FFFFFF",
+				"INK": "#1A231C",
+				"PRIMARY": "#2E6B4F",
+				"SECONDARY": "#6E8C2A",
+				"ACCENT": "#C4703F",
+				"CAT-GITHUB": "#1F6F8B",
+				"CAT-X": "#7A4BA8",
+				"MUTED": "#8C9A8C"
+			}
+		},
+		{
+			"id": "studio",
+			"name_en": "Studio Pop",
+			"name_cn": "工作室",
+			"feel": "有活力、年轻 —— 最『不像后台系统』的一套，颜色最跳。",
+			"colors": {
+				"BASE": "#FFFFFF",
+				"SURFACE": "#FAFAFF",
+				"INK": "#14141F",
+				"PRIMARY": "#4F35E8",
+				"SECONDARY": "#E63980",
+				"ACCENT": "#FFB020",
+				"CAT-GITHUB": "#00A88F",
+				"CAT-X": "#FF5A36",
+				"MUTED": "#8E8EA8"
+			}
+		},
+		{
+			"id": "editorial",
+			"name_en": "Muted Editorial",
+			"name_cn": "杂志灰调",
+			"feel": "克制、有品味 —— 颜色多但都压着，像一本纸质杂志。",
+			"colors": {
+				"BASE": "#FAF8F7",
+				"SURFACE": "#FFFFFF",
+				"INK": "#221E20",
+				"PRIMARY": "#5A6B8C",
+				"SECONDARY": "#A8737B",
+				"ACCENT": "#7D7A44",
+				"CAT-GITHUB": "#3F7F73",
+				"CAT-X": "#8A5F9E",
+				"MUTED": "#9A9095"
+			}
+		},
+		{
+			"id": "signal",
+			"name_en": "Signal",
+			"name_cn": "信号灯",
+			"feel": "清晰、直给 —— 大片留白 + 几个高饱和的信号色，一眼看出轻重。",
+			"colors": {
+				"BASE": "#FFFFFF",
+				"SURFACE": "#F4F6F8",
+				"INK": "#0D1117",
+				"PRIMARY": "#0B62F0",
+				"SECONDARY": "#D93A1E",
+				"ACCENT": "#12A150",
+				"CAT-GITHUB": "#6B21D9",
+				"CAT-X": "#C2157A",
+				"MUTED": "#6B7684"
+			}
+		}
+	]
+}

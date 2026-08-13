@@ -8,8 +8,13 @@ import type { Message } from "flywheel-comm/db";
 import { CommDB } from "flywheel-comm/db";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import { readContentRef } from "flywheel-comm/utils";
+import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	type Session,
+	type StateStore,
+	WorkflowAdmissionClassificationError,
+} from "../StateStore.js";
 import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { HookPayload } from "./hook-payload.js";
@@ -22,6 +27,7 @@ const ACTIVE_GATE_SESSION_STATUSES = new Set([
 	"awaiting_review",
 	"approved_to_ship",
 ]);
+const RETRY_HORIZON_MS = 24 * 60 * 60_000;
 
 export interface QuestionAdmissionOptions {
 	queue: MailboxQueue;
@@ -31,6 +37,7 @@ export interface QuestionAdmissionOptions {
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
 	chatThreadsEnabled?: boolean;
+	now?: () => Date;
 }
 
 export class QuestionAdmission {
@@ -73,31 +80,63 @@ export class QuestionAdmission {
 		) {
 			return { deliver: true };
 		}
+		const expiresAt =
+			row.expires_at === null ? Number.NaN : Date.parse(row.expires_at);
+		if (!Number.isFinite(expiresAt)) {
+			return {
+				deliver: false,
+				disposition: "expiry_integrity",
+				retry: false,
+			};
+		}
+		const retryable = (permanent = false) =>
+			row.source_ref === null &&
+			!permanent &&
+			expiresAt - (this.opts.now?.().getTime() ?? Date.now()) >
+				RETRY_HORIZON_MS;
 		const db = this.commDb();
 		const question = db.getMessageById(row.id);
 		if (!question) {
 			return {
 				deliver: false,
 				disposition: "revoked_missing",
-				retry: row.source_kind !== "question_orphan" && row.source_ref === null,
+				retry: false,
 			};
 		}
 		if (question.superseded_at) {
-			return { deliver: false, disposition: "revoked_superseded" };
+			return {
+				deliver: false,
+				disposition: "revoked_superseded",
+				retry: false,
+			};
 		}
 		if (
 			!db
 				.getPendingQuestions(this.opts.lead.agentId)
 				.some(({ id }) => id === question.id)
 		) {
-			return { deliver: false, disposition: "revoked_answered" };
+			return {
+				deliver: false,
+				disposition: "revoked_answered",
+				retry: false,
+			};
 		}
-		const eligible = this.eligibility(question);
+		let eligible: ReturnType<QuestionAdmission["eligibility"]>;
+		try {
+			eligible = this.eligibility(question);
+		} catch (error) {
+			if (!(error instanceof WorkflowAdmissionClassificationError)) throw error;
+			return {
+				deliver: false,
+				disposition: "admission_error",
+				retry: retryable(),
+			};
+		}
 		if (!eligible.ok) {
 			return {
 				deliver: false,
 				disposition: eligible.disposition,
-				retry: row.source_ref === null,
+				retry: retryable(eligible.permanent),
 			};
 		}
 		if (row.source_ref !== null) return { deliver: true };
@@ -170,12 +209,20 @@ export class QuestionAdmission {
 
 	private eligibility(
 		question: Message,
-	): { ok: true; session: Session } | { ok: false; disposition: string } {
+	):
+		| { ok: true; session: Session }
+		| { ok: false; disposition: string; permanent?: boolean } {
 		if (question.superseded_at) {
-			return { ok: false, disposition: "revoked_superseded" };
+			return {
+				ok: false,
+				disposition: "revoked_superseded",
+				permanent: true,
+			};
 		}
 		const session = this.opts.store.getSession(question.from_agent);
-		if (!session) return { ok: false, disposition: "revoked_orphan" };
+		if (!session) {
+			return { ok: false, disposition: "revoked_orphan", permanent: true };
+		}
 		const ownership =
 			typeof this.opts.store.workflowGatePresentationDisposition === "function"
 				? this.opts.store.workflowGatePresentationDisposition({
@@ -188,20 +235,40 @@ export class QuestionAdmission {
 			return {
 				ok: false,
 				disposition: `revoked_workflow_gate_${ownership.reason}`,
+				permanent: ownership.reason === "holder_mismatch",
 			};
 		}
+		const holderAuthoritative = ownership.reason === "holder_authoritative";
 		if (question.checkpoint != null) {
-			if (!ACTIVE_GATE_SESSION_STATUSES.has(session.status)) {
-				return { ok: false, disposition: "revoked_terminal_session" };
+			if (
+				!holderAuthoritative &&
+				!ACTIVE_GATE_SESSION_STATUSES.has(session.status)
+			) {
+				return {
+					ok: false,
+					disposition: "revoked_terminal_session",
+					// Permanence follows FSM reachability; operational timeout/cancel
+					// projections remain bounded by the 24-hour retry horizon above.
+					permanent: isNoOutEdgeTerminalStatus(session.status),
+				};
 			}
 			try {
 				if (!matchesLead(session, this.opts.lead.agentId, this.opts.projects)) {
-					return { ok: false, disposition: "revoked_lead_scope" };
+					return {
+						ok: false,
+						disposition: "revoked_lead_scope",
+						permanent: true,
+					};
 				}
 			} catch {
-				return { ok: false, disposition: "revoked_lead_scope" };
+				return {
+					ok: false,
+					disposition: "revoked_lead_scope",
+					permanent: true,
+				};
 			}
 			if (
+				!holderAuthoritative &&
 				question.checkpoint === "approve_to_ship" &&
 				reviewHoldReason(this.opts.store, session) !== null
 			) {

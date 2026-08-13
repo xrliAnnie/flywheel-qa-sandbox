@@ -1,0 +1,9 @@
+flowchart LR
+  A["运维/updater 发起<br/>全量重启"] --> B["restart-services.sh<br/>只读 origin/main 做比较"]
+  B -.->|"从不 fetch<br/>从不 merge"| C(("断点"))
+  B --> D["用本地这份旧代码<br/>pnpm build"]
+  D --> E["全舰起在旧码上"]
+  E --> F["刚合入的卡<br/>根本没上线"]
+  style C fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  style E fill:#ffe5e5,stroke:#ff3b30,color:#1d1d1f
+  style F fill:#ffe5e5,stroke:#ff3b30,color:#1d1d1f

@@ -28,10 +28,15 @@ for target in "$CACHE_DIR" "$MARKETPLACE_DIR"; do
   [ -d "$target" ] || { echo "MISSING: legacy overlay target $target" >&2; exit 1; }
   [ "$(cat "$target/.fork-sha" 2>/dev/null)" = "$EXPECTED_SHA" ] \
     || { echo "STALE: legacy overlay SHA mismatch in $target" >&2; exit 1; }
-  for marker in 'allowBots' '[reply-guard]' 'ChatReceiptRuntime'; do
+  for marker in 'allowBots' '[reply-guard]'; do
     grep -Fq "$marker" "$target/server.ts" \
       || { echo "VANILLA: legacy target $target misses $marker" >&2; exit 1; }
   done
+  if ! grep -Fq 'ChatReceiptRuntime' "$target/server.ts" \
+      && ! grep -Fq 'ChatIngestRuntime' "$target/server.ts"; then
+    echo "VANILLA: legacy target $target misses a fork runtime marker" >&2
+    exit 1
+  fi
 done
 
 echo "OK: recovery overlay matches dedicated fork clone (${EXPECTED_SHA})"

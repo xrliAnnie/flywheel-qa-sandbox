@@ -8,7 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
@@ -946,7 +946,10 @@ describe("generalized execution admission and terminal contracts", () => {
 				physicalEvidence: "cleaned",
 				launchFingerprint: identity.launchFingerprint,
 			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
 		store.close();
 	});
 
@@ -1350,7 +1353,11 @@ describe("generalized execution admission and terminal contracts", () => {
 			},
 			now: "2026-07-15T00:10:00.000Z",
 		});
-		expect(completion).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(completion).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "terminal_no_gate",
+		});
 		expect(
 			store.getWorkflowNodeCompletion("run-1", "execute", 1),
 		).toMatchObject({ route: "no_code", execution_id: "exec-1" });
@@ -1468,6 +1475,85 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("commits completion but omits a conflicting disposition receipt", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: "completion_disposition:run-1:execute:1",
+			kind: "wrong_kind",
+			payload: { disposition: "runner_ship_park" },
+		});
+		const complete = () =>
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "completion-with-conflicting-receipt",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-07-15T00:10:00.000Z",
+			});
+
+		const first = complete();
+		expect(first).toMatchObject({ ok: true, idempotentReplay: false });
+		expect("completionDisposition" in first).toBe(false);
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 1),
+		).toBeDefined();
+		const replay = complete();
+		expect(replay).toMatchObject({ ok: true, idempotentReplay: true });
+		expect("completionDisposition" in replay).toBe(false);
+		store.close();
+	});
+
+	it("rolls back completion when disposition receipt persistence has an infrastructure error", async () => {
+		const store = await StateStore.create(":memory:");
+		createAdmittedEngineRun(store);
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+		});
+		const internals = store as unknown as {
+			appendWorkflowRunEventCheckedTx(input: { kind: string }): {
+				seq: number;
+				deduped: boolean;
+			};
+		};
+		const append = internals.appendWorkflowRunEventCheckedTx.bind(store);
+		vi.spyOn(internals, "appendWorkflowRunEventCheckedTx").mockImplementation(
+			(input) => {
+				if (input.kind === "completion_disposition") {
+					throw new Error("SQLITE_BUSY");
+				}
+				return append(input);
+			},
+		);
+
+		expect(() =>
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "completion-with-busy-receipt",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-07-15T00:10:00.000Z",
+			}),
+		).toThrow("SQLITE_BUSY");
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 1),
+		).toBeUndefined();
+		expect(store.getWorkflowRunNode("run-1", "execute", 1)?.state).toBe(
+			"admitted",
+		);
+		store.close();
+	});
+
 	it("FLY-1434: atomically binds current generalized PR evidence and projects session display fields", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
@@ -1508,7 +1594,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				},
 				now: "2026-07-15T00:02:00.000Z",
 			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "terminal_no_gate",
+		});
 		expect(
 			store.getCurrentWorkflowNodePrBindingForHead("run-1", headSha),
 		).toEqual({
@@ -1584,7 +1674,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				},
 				now: "2026-07-15T00:02:00.000Z",
 			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "runner_ship_park",
+		});
 		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
 		expect(holder).toMatchObject({
 			authority_mode: "runner_ship",
@@ -1624,6 +1718,25 @@ describe("generalized execution admission and terminal contracts", () => {
 			run_id: "run-1",
 			frozen_head_sha: headSha,
 			worktree_binding_generation: "generation-late",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "generic-complete-replay-after-rebind",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: headSha,
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+			completionDisposition: "runner_ship_park",
 		});
 		store.close();
 	});
@@ -1672,7 +1785,11 @@ describe("generalized execution admission and terminal contracts", () => {
 				},
 				now: "2026-07-15T00:02:00.000Z",
 			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "runner_ship_park",
+		});
 		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate");
 		expect(holder).toMatchObject({
 			authority_mode: "runner_ship",

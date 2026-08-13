@@ -85,6 +85,24 @@ const baseEnv: EventEnvelope = {
 };
 
 describe("FLY-1372 DirectEventSink behavior-field seam", () => {
+	it("FLY-1718 settles launch authority only after the Bridge-local binding", async () => {
+		const { sink } = await harness();
+		const activate = vi.fn(async () => ({ ok: true }));
+		sink.lifecycleActivate = activate;
+		await sink.emitStarted({ ...baseEnv, executionId: "doa-owner" });
+		expect(activate).not.toHaveBeenCalled();
+		await sink.emitWorktreeReady(
+			{ ...baseEnv, executionId: "doa-owner" },
+			"/tmp/doa-owner",
+			{
+				branch: "flywheel-FLY-1718",
+				generation: "doa-generation-1",
+			},
+		);
+		expect(activate).toHaveBeenCalledOnce();
+		expect(activate).toHaveBeenCalledWith("doa-owner");
+	});
+
 	it("persists the repository baseline in the immutable worktree binding", async () => {
 		const { sink, store } = await harness();
 		await sink.emitStarted(baseEnv);

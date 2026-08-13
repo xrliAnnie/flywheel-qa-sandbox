@@ -469,6 +469,11 @@ describe("Event route", () => {
 			),
 		});
 		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			completionDisposition: "terminal_no_gate",
+		});
 		expect(store.getSession("exec-1")).toMatchObject({
 			status: "completed",
 			workflow_node_id: "execute",

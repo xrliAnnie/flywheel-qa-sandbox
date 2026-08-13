@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph H["先上锁(HOLD)"]
+        H1["冻结 FLY-1676 管线切换<br/>+ FLY-1645 环境变量清理"]
+    end
+    subgraph PA["Phase A — 检查器先行"]
+        A1["主仓 PR:完整性检查器<br/>同时认新旧两个标志"] --> A2["部署 + 显式收敛到<br/>生产脚本目录"]
+    end
+    subgraph PB["Phase B — 插件部署"]
+        B1["记录部署前进程清单<br/>(含寄生进程)"] --> B2["fork PR 合入<br/>(版本号现算 +1)"]
+        B2 --> B3["统一重启波:<br/>受管更新器换插件 + 重启全部 Lead"]
+        B3 --> B4["终态回执硬门:<br/>时间戳必须晚于本次波次起点"]
+        B4 --> B5["波后进程清点:<br/>零旧版本进程才放行"]
+        B5 --> B6["归档遗留待重试文件"]
+    end
+    subgraph PC["Phase C — 验收后解锁"]
+        C1["真机验收:founder 频道两条消息<br/>15 分钟零告警"] --> C2["释放两条 HOLD"]
+    end
+    H --> PA --> PB --> PC
+    style H fill:#f3e8fd,stroke:#af52de
+    style B4 fill:#fff3e0,stroke:#ff9500
+    style C1 fill:#e8f5e9,stroke:#34c759

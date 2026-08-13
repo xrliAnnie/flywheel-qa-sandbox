@@ -1,0 +1,75 @@
+
+nordic     北欧日光  (palette-nordic.jpeg, 1376x768)
+    BASE        意图 #F7F9FB   实际 #F4F8FB   Δ  3.2
+    SURFACE     意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    INK         意图 #16202B   实际 #18222C   Δ  3.0
+    PRIMARY     意图 #2563C9   实际 #2564C3   Δ  6.1
+    SECONDARY   意图 #0E8C8C   实际 #128685   Δ 10.0
+    ACCENT      意图 #E8734A   实际 #E27147   Δ  7.0
+    CAT-GITHUB  意图 #2563C9   实际 #2564C3   Δ  6.1
+    CAT-X       意图 #6D5BD0   实际 #685AC9   Δ  8.7
+    MUTED       意图 #8A97A6   实际 #8795A2   Δ  5.4
+  最大偏差 Δ10.0  → 一致
+
+press      晨间纸报  (palette-press.jpeg, 1376x768)
+    BASE        意图 #FDF8F0   实际 #F9F6EF   Δ  4.6
+    SURFACE     意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    INK         意图 #1E1A15   实际 #1E1B14   Δ  1.4
+    PRIMARY     意图 #1B3A6B   实际 #1C3D6A   Δ  3.3
+    SECONDARY   意图 #B4531F   实际 #B45620   Δ  3.2
+    ACCENT      意图 #D9A227   实际 #D7A329   Δ  3.0
+    CAT-GITHUB  意图 #B4531F   实际 #B5541F   Δ  1.4
+    CAT-X       意图 #1B3A6B   实际 #1C3B6A   Δ  1.7
+    MUTED       意图 #9B8B78   实际 #978875   Δ  5.8
+  最大偏差 Δ5.8  → 一致
+
+botanical  植物园  (palette-botanical.jpeg, 1376x768)
+    BASE        意图 #F8FBF6   实际 #F7F9F4   Δ  3.0
+    SURFACE     意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    INK         意图 #1A231C   实际 #1B251D   Δ  2.4
+    PRIMARY     意图 #2E6B4F   实际 #30684D   Δ  4.1
+    SECONDARY   意图 #8FA97A   实际 #8FA67A   Δ  3.0
+    ACCENT      意图 #C4703F   实际 #C06E3C   Δ  5.4
+    CAT-GITHUB  意图 #2E6B4F   实际 #30684F   Δ  3.6
+    CAT-X       意图 #7A6BA8   实际 #7469A1   Δ  9.4
+    MUTED       意图 #8C9A8C   实际 #8B978B   Δ  3.3
+  最大偏差 Δ9.4  → 一致
+
+studio     工作室  (palette-studio.jpeg, 1376x768)
+    BASE        意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    SURFACE     意图 #FAFAFF   实际 #F7F8FD   Δ  4.1
+    INK         意图 #14141F   实际 #171723   Δ  5.8
+    PRIMARY     意图 #4F35E8   实际 #4C38E9   Δ  4.4
+    SECONDARY   意图 #E63980   实际 #E33A7F   Δ  3.3
+    ACCENT      意图 #FFB020   实际 #FDAD20   Δ  3.6
+    CAT-GITHUB  意图 #4F35E8   实际 #4C38E9   Δ  4.4
+    CAT-X       意图 #00A88F   实际 #01A48F   Δ  4.1
+    MUTED       意图 #8E8EA8   实际 #898BA4   Δ  7.1
+  最大偏差 Δ7.1  → 一致
+
+editorial  杂志灰调  (palette-editorial.jpeg, 1376x768)
+    BASE        意图 #FAF8F7   实际 #F8F7F5   Δ  3.0
+    SURFACE     意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    INK         意图 #221E20   实际 #211F20   Δ  1.4
+    PRIMARY     意图 #5A6B8C   实际 #596887   Δ  5.9
+    SECONDARY   意图 #A8737B   实际 #A47176   Δ  6.7
+    ACCENT      意图 #7D7A44   实际 #7C7642   Δ  4.6
+    CAT-GITHUB  意图 #5A6B8C   实际 #596887   Δ  5.9
+    CAT-X       意图 #7B5F86   实际 #745C7E   Δ 11.0
+    MUTED       意图 #9A9095   实际 #968B8F   Δ  8.8
+  最大偏差 Δ11.0  → 一致
+
+signal     信号灯  (palette-signal.jpeg, 1376x768)
+    BASE        意图 #FFFFFF   实际 #FFFFFF   Δ  0.0
+    SURFACE     意图 #F4F6F8   实际 #F0F5F8   Δ  4.1
+    INK         意图 #0D1117   实际 #10151B   Δ  6.4
+    PRIMARY     意图 #0B62F0   实际 #0F6AEE   Δ  9.2
+    SECONDARY   意图 #D93A1E   实际 #D53F1E   Δ  6.4
+    ACCENT      意图 #12A150   实际 #159F54   Δ  5.4
+    CAT-GITHUB  意图 #0B62F0   实际 #056FF7   Δ 15.9
+    CAT-X       意图 #7A3BD6   实际 #773DCF   Δ  7.9
+    MUTED       意图 #6B7684   实际 #697686   Δ  2.8
+  最大偏差 Δ15.9  → 一致
+
+============================================================
+6/6 套的图与意图色一致（Δ<60）

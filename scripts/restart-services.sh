@@ -51,6 +51,9 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/mailbox-queue-deploy-barrier.sh
 source "${FLYWHEEL_DIR}/scripts/lib/mailbox-queue-deploy-barrier.sh"
+# shellcheck source=lib/discord-pointer-guard.sh
+# shellcheck disable=SC1091
+source "${FLYWHEEL_DIR}/scripts/lib/discord-pointer-guard.sh"
 # shellcheck source=lib/supervisor.sh
 source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/restart-voice-bridge.sh
@@ -468,6 +471,325 @@ restart_on_exit() {
 DISCORD_PLUGIN_UPDATE="${HOME}/.flywheel/bin/update-discord-plugin.sh"
 DISCORD_PLUGIN_CHECK="${HOME}/.flywheel/bin/check-discord-plugin.sh"
 DISCORD_PLUGIN_CONTRACT="discord@flywheel-plugins/v1"
+
+# FLY-1729: update the single-writer production main checkout before any build
+# or service-restart decision. The caller owns restart.lock.d, so fetch/merge
+# cannot race another restart's build. Dry-run fetches remote truth but never
+# moves HEAD, the index, or the working tree.
+preflight_pull_latest_main() {
+    local branch="" branch_rc=0 status_output="" status_rc=0
+    local status_preview="" status_alert_preview=""
+    local bounded="${FLYWHEEL_RESTART_BOUNDED_RUN_BIN:-${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh}"
+    local old_head="" target_sha="" behind_count="" git_rc=0 reverse_rc=0
+    local accepted_state="" cutover_rc=0 post_head="" merge_output=""
+    local merge_preview="" merge_alert_preview=""
+
+    branch="$(git -C "$FLYWHEEL_DIR" symbolic-ref --short -q HEAD 2>/dev/null)" || branch_rc=$?
+    if (( branch_rc > 1 )); then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: Git branch state is unreadable"
+        else
+            log "ERROR: restart preflight could not read the checkout branch"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not read Git state" \
+                "restart-services could not determine the branch of ${FLYWHEEL_DIR}. The fleet restart was not started. Inspect the checkout and retry."
+        fi
+        return 1
+    fi
+    if (( branch_rc == 1 )); then
+        branch="detached HEAD"
+    fi
+    if [[ "$branch" != "main" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: checkout not on main (${branch:-unknown})"
+        else
+            log "ERROR: restart preflight requires main; checkout is ${branch:-unknown}"
+            alert_severe "restart-preflight-not-on-main" \
+                "Flywheel restart refused a non-main checkout" \
+                "restart-services found ${FLYWHEEL_DIR} on ${branch:-unknown}, not main. No pull, build, or restart was attempted. Check out main cleanly and retry."
+        fi
+        return 1
+    fi
+
+    status_output="$(GIT_OPTIONAL_LOCKS=0 git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no 2>/dev/null)" || status_rc=$?
+    if (( status_rc != 0 )); then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: Git checkout state is unreadable"
+        else
+            log "ERROR: restart preflight could not inspect checkout cleanliness"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not read Git state" \
+                "restart-services could not inspect ${FLYWHEEL_DIR} for local changes. The fleet restart was not started. Inspect the checkout and retry."
+        fi
+        return 1
+    fi
+    if [[ -n "$status_output" ]]; then
+        status_preview="$(printf '%s\n' "$status_output" | sed -n '1,10p')"
+        status_alert_preview="${status_preview//$'\n'/; }"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: dirty checkout"
+            printf '%s\n' "$status_preview"
+        else
+            log "ERROR: restart preflight found a dirty checkout; refusing to overwrite local state"
+            printf '%s\n' "$status_preview"
+            alert_severe "restart-preflight-dirty" \
+                "Flywheel restart refused a dirty checkout" \
+                "${FLYWHEEL_DIR} has tracked changes (${status_alert_preview}). No pull, build, or restart was attempted, and restart-services will not reset or stash local state. Clean the checkout deliberately and retry."
+        fi
+        return 1
+    fi
+
+    if [[ ! -x "$bounded" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: bounded fetch runner is missing or not executable (${bounded})"
+        else
+            log "ERROR: restart preflight bounded runner is missing or not executable: $bounded"
+            alert_severe "restart-preflight-bounded-run-missing" \
+                "Flywheel restart preflight tooling is missing" \
+                "restart-services could not execute ${bounded}, so it refused to fetch or restart. Restore the deployed scripts and retry."
+        fi
+        return 1
+    fi
+    if ! GIT_TERMINAL_PROMPT=0 "$bounded" 120 git -C "$FLYWHEEL_DIR" fetch origin \
+      '+refs/heads/main:refs/remotes/origin/main' --quiet; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: fetch origin main failed"
+        else
+            log "ERROR: restart preflight could not fetch origin/main; refusing a potentially stale restart"
+            alert_warning "restart-preflight-fetch-failed" \
+                "Flywheel restart could not fetch latest main" \
+                "restart-services could not fetch origin/main within 120 seconds. No build or restart was attempted. Check network/remote availability and retry."
+        fi
+        return 1
+    fi
+
+    # Fetch may take long enough for an operator or another process to change
+    # the checkout. The restart lock serializes restart callers, not arbitrary
+    # Git commands, so re-check both branch and cleanliness before topology.
+    branch=""
+    branch_rc=0
+    branch="$(git -C "$FLYWHEEL_DIR" symbolic-ref --short -q HEAD 2>/dev/null)" || branch_rc=$?
+    if (( branch_rc > 1 )); then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: Git branch state became unreadable during fetch"
+        else
+            log "ERROR: restart preflight could not re-read the checkout branch after fetch"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not read Git state" \
+                "The checkout branch became unreadable during fetch. No merge, build, or restart was attempted. Inspect ${FLYWHEEL_DIR} and retry."
+        fi
+        return 1
+    fi
+    if (( branch_rc == 1 )); then
+        branch="detached HEAD"
+    fi
+    if [[ "$branch" != "main" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: checkout not on main after fetch (${branch:-unknown})"
+        else
+            log "ERROR: checkout left main during restart preflight (${branch:-unknown})"
+            alert_severe "restart-preflight-not-on-main" \
+                "Flywheel restart checkout changed branch during fetch" \
+                "${FLYWHEEL_DIR} moved to ${branch:-unknown} during fetch. No merge, build, or restart was attempted. Return it to a clean main branch and retry."
+        fi
+        return 1
+    fi
+    status_output=""
+    status_rc=0
+    status_output="$(GIT_OPTIONAL_LOCKS=0 git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no 2>/dev/null)" || status_rc=$?
+    if (( status_rc != 0 )); then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: Git checkout state became unreadable during fetch"
+        else
+            log "ERROR: restart preflight could not re-check checkout cleanliness after fetch"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not read Git state" \
+                "The checkout state became unreadable during fetch. No merge, build, or restart was attempted. Inspect ${FLYWHEEL_DIR} and retry."
+        fi
+        return 1
+    fi
+    if [[ -n "$status_output" ]]; then
+        status_preview="$(printf '%s\n' "$status_output" | sed -n '1,10p')"
+        status_alert_preview="${status_preview//$'\n'/; }"
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: dirty checkout (appeared during fetch)"
+            printf '%s\n' "$status_preview"
+        else
+            log "ERROR: checkout became dirty during fetch; refusing to merge"
+            printf '%s\n' "$status_preview"
+            alert_severe "restart-preflight-dirty" \
+                "Flywheel restart checkout changed during fetch" \
+                "${FLYWHEEL_DIR} gained tracked changes during fetch (${status_alert_preview}). No merge, build, or restart was attempted, and restart-services did not reset or stash them. Inspect the checkout and retry."
+        fi
+        return 1
+    fi
+
+    git_rc=0
+    old_head="$(git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null)" || git_rc=$?
+    if (( git_rc == 0 )); then
+        target_sha="$(git -C "$FLYWHEEL_DIR" rev-parse --verify origin/main 2>/dev/null)" || git_rc=$?
+    fi
+    if (( git_rc != 0 )) || [[ ! "$old_head" =~ ^[0-9a-f]{40}$ ]] || [[ ! "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: fetched Git target is unreadable"
+        else
+            log "ERROR: restart preflight could not resolve HEAD and origin/main"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not resolve Git commits" \
+                "restart-services fetched origin/main but could not resolve immutable 40-character HEAD and target SHAs. No merge, build, or restart was attempted."
+        fi
+        return 1
+    fi
+    PREFLIGHT_TARGET_SHA="$target_sha"
+
+    git_rc=0
+    behind_count="$(git -C "$FLYWHEEL_DIR" rev-list --count "${old_head}..${target_sha}" 2>/dev/null)" || git_rc=$?
+    if (( git_rc != 0 )) || [[ ! "$behind_count" =~ ^[0-9]+$ ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            log "PREFLIGHT WOULD FAIL: commit distance is unreadable"
+        else
+            log "ERROR: restart preflight could not count commits to origin/main"
+            alert_severe "restart-preflight-git-state-unreadable" \
+                "Flywheel restart preflight could not read Git topology" \
+                "restart-services could not determine the distance from HEAD to the fetched target. No merge, build, or restart was attempted."
+        fi
+        return 1
+    fi
+    log "restart preflight: current HEAD=${old_head} target origin/main=${target_sha} behind=${behind_count}"
+
+    if [[ "$old_head" == "$target_sha" ]]; then
+        accepted_state="already-at"
+    else
+        git_rc=0
+        git -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$old_head" "$target_sha" 2>/dev/null || git_rc=$?
+        if (( git_rc == 0 )); then
+            accepted_state="behind"
+        elif (( git_rc > 1 )); then
+            accepted_state="unreadable"
+        else
+            reverse_rc=0
+            git -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$target_sha" "$old_head" 2>/dev/null || reverse_rc=$?
+            if (( reverse_rc == 0 )); then
+                accepted_state="local-ahead"
+            elif (( reverse_rc == 1 )); then
+                accepted_state="diverged"
+            else
+                accepted_state="unreadable"
+            fi
+        fi
+    fi
+
+    case "$accepted_state" in
+        local-ahead)
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "PREFLIGHT WOULD FAIL: local-ahead main contains commits absent from origin/main"
+            else
+                log "ERROR: local main is ahead of origin/main; refusing to deploy local-only commits"
+                alert_severe "restart-preflight-local-ahead" \
+                    "Flywheel restart refused local-only main commits" \
+                    "${FLYWHEEL_DIR} main contains commits that are not on origin/main. No reset, merge, build, or restart was attempted. Reconcile the checkout deliberately and retry."
+            fi
+            return 1
+            ;;
+        diverged)
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "PREFLIGHT WOULD FAIL: local main has diverged from origin/main"
+            else
+                log "ERROR: local main diverged from origin/main; refusing a non-fast-forward deployment"
+                alert_severe "restart-preflight-diverged" \
+                    "Flywheel restart refused a diverged main checkout" \
+                    "${FLYWHEEL_DIR} main and origin/main have diverged. No reset, merge, build, or restart was attempted. Reconcile the history deliberately and retry."
+            fi
+            return 1
+            ;;
+        unreadable)
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "PREFLIGHT WOULD FAIL: Git topology is unreadable"
+            else
+                log "ERROR: restart preflight could not classify Git topology"
+                alert_severe "restart-preflight-git-state-unreadable" \
+                    "Flywheel restart preflight could not read Git topology" \
+                    "restart-services could not prove a safe fast-forward relationship to origin/main. No merge, build, or restart was attempted."
+            fi
+            return 1
+            ;;
+    esac
+
+    cutover_rc=0
+    discord_pointer_cutover_required "$target_sha" || cutover_rc=$?
+    case "$cutover_rc" in
+        0)
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "PREFLIGHT WOULD FAIL: Discord pointer cutover required for ${target_sha}"
+            else
+                log "ERROR: fetched target requires the guarded FLY-1676 Discord pointer cutover"
+                alert_severe "restart-preflight-cutover-required" \
+                    "Flywheel restart requires the guarded Discord cutover" \
+                    "Fetched target ${target_sha} selects discord@flywheel-plugins while the live checker is legacy. No merge, build, or restart was attempted. Run the guarded FLY-1676 cutover first."
+            fi
+            return 1
+            ;;
+        1) ;;
+        *)
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "PREFLIGHT WOULD FAIL: target launcher is unreadable"
+            else
+                log "ERROR: restart preflight could not inspect the target launcher"
+                alert_severe "restart-preflight-git-state-unreadable" \
+                    "Flywheel restart preflight could not inspect the target" \
+                    "restart-services could not read claude-lead.sh from ${target_sha}. No merge, build, or restart was attempted."
+            fi
+            return 1
+            ;;
+    esac
+
+    if [[ "$accepted_state" == "already-at" ]]; then
+        log "restart preflight: already at origin/main (${target_sha})"
+        return 0
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: would pull ${old_head} -> ${target_sha}"
+        return 0
+    fi
+
+    if ! merge_output="$(git -C "$FLYWHEEL_DIR" merge --ff-only --quiet "$target_sha" 2>&1)"; then
+        merge_preview="$(printf '%s\n' "$merge_output" | sed -n '1,10p')"
+        merge_alert_preview="${merge_preview//$'\n'/; }"
+        log "ERROR: restart preflight fast-forward merge failed; refusing to reset local state"
+        [[ -z "$merge_preview" ]] || printf '%s\n' "$merge_preview" >&2
+        alert_severe "restart-preflight-nonff" \
+            "Flywheel restart could not fast-forward main" \
+            "restart-services fetched ${target_sha} but git merge --ff-only failed (${merge_alert_preview:-no Git diagnostic}). No build or restart was attempted, and local state was not reset. Inspect ${FLYWHEEL_DIR} and retry."
+        return 1
+    fi
+    post_head="$(git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+    if [[ "$post_head" != "$target_sha" ]]; then
+        log "ERROR: restart preflight merge did not land on the captured target"
+        alert_severe "restart-preflight-postmerge-mismatch" \
+            "Flywheel restart fast-forward verification failed" \
+            "After git merge --ff-only, HEAD was ${post_head:-unreadable} instead of captured target ${target_sha}. No build or restart was attempted. Inspect the checkout before retrying."
+        return 1
+    fi
+    status_output=""
+    status_rc=0
+    status_output="$(GIT_OPTIONAL_LOCKS=0 git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no 2>/dev/null)" || status_rc=$?
+    if (( status_rc != 0 )); then
+        log "ERROR: restart preflight could not verify checkout cleanliness after merge"
+        alert_severe "restart-preflight-git-state-unreadable" \
+            "Flywheel restart post-merge state is unreadable" \
+            "main reached ${target_sha}, but restart-services could not verify checkout cleanliness. No build or restart was attempted. Inspect the checkout before retrying."
+        return 1
+    fi
+    if [[ -n "$status_output" ]]; then
+        log "ERROR: checkout became dirty during the fast-forward merge; refusing to continue"
+        alert_severe "restart-preflight-postmerge-dirty" \
+            "Flywheel restart checkout became dirty during fast-forward" \
+            "main reached ${target_sha}, but a hook or concurrent writer left local changes. No build or restart was attempted. Inspect and clean the checkout deliberately before retrying."
+        return 1
+    fi
+    log "restart preflight: pulled ${old_head:0:7} -> ${target_sha:0:7}"
+    return 0
+}
 
 # Returns: 0=updated, 1=no update needed, 2=hard failure
 check_discord_plugin_fork() {
@@ -957,6 +1279,8 @@ else
     LEAD_BODY_OBSERVATIONS_FILE=""
 fi
 
+preflight_pull_latest_main || exit 1
+
 # ════════════════════════════════════════════════════════════════
 # Discord plugin detection — marker + fork check
 # ════════════════════════════════════════════════════════════════
@@ -990,6 +1314,9 @@ check_project_lead_changes
 
 DEPLOYED_SHA=$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo "")
 CURRENT_HEAD=$(git -C "$FLYWHEEL_DIR" rev-parse HEAD)
+if [[ "$DRY_RUN" == "true" ]]; then
+    CURRENT_HEAD="$PREFLIGHT_TARGET_SHA"
+fi
 
 if [[ "$DEPLOYED_SHA" == "$CURRENT_HEAD" ]]; then
     log "Already built at ${CURRENT_HEAD:0:7}; skipping build, continuing full restart."
@@ -1813,8 +2140,9 @@ rollback_and_restart() {
 
     log "Rolling back to ${rollback_sha:0:7}"
 
-    # Fail-closed: refuse rollback on dirty checkout
-    if [[ -n "$(git -C "$FLYWHEEL_DIR" status --porcelain)" ]]; then
+    # Fail-closed for tracked dirt. Untracked paths were already admitted by
+    # the pull preflight and reset --hard does not remove them.
+    if [[ -n "$(git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no)" ]]; then
         log "ERROR: Working directory not clean, refusing rollback"
         alert_severe "rollback-blocked-dirty" "Flywheel rollback blocked" \
             "Flywheel rollback 被阻止: 工作区不干净。需要手动介入。"

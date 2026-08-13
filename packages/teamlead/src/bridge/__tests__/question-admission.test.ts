@@ -1,13 +1,22 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LeadConfig, ProjectEntry } from "../../ProjectConfig.js";
+import {
+	StateStore,
+	WorkflowAdmissionClassificationError,
+} from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import type { LeadRuntime } from "../lead-runtime.js";
 import { QuestionAdmission } from "../question-admission.js";
 import { RuntimeRegistry } from "../runtime-registry.js";
+
+const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
+const HEAD = "a".repeat(40);
 
 const resources: Array<{ close(): void }> = [];
 afterEach(() => {
@@ -34,7 +43,15 @@ const projects: ProjectEntry[] = [
 	},
 ];
 
-function harness(labels = ["Engineering"]) {
+function harness(
+	labels = ["Engineering"],
+	status = "running",
+	gatePresentation: { allow: boolean; reason: string } = {
+		allow: true,
+		reason: "legacy",
+	},
+	now?: () => Date,
+) {
 	const dbPath = join(
 		mkdtempSync(join(tmpdir(), "fly1572-admission-")),
 		"comm.db",
@@ -52,13 +69,14 @@ function harness(labels = ["Engineering"]) {
 		issue_id: "issue-1",
 		issue_identifier: "FLY-1",
 		project_name: "project-a",
-		status: "running",
+		status,
 		session_role: "main",
 		issue_labels: JSON.stringify(labels),
 	};
 	const store = {
 		getSession: vi.fn(() => session),
 		appendLeadEvent: vi.fn(() => 41),
+		workflowGatePresentationDisposition: vi.fn(() => gatePresentation),
 	};
 	const registry = new RuntimeRegistry();
 	registry.register(lead, {
@@ -76,6 +94,7 @@ function harness(labels = ["Engineering"]) {
 		projects,
 		store: store as never,
 		runtimeRegistry: registry,
+		now,
 	});
 	resources.push(admission);
 	return { admission, db, queue, store };
@@ -116,7 +135,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
 	});
 
-	it("returns a retry verdict for a transient pre-materialization hold", async () => {
+	it("permanently rejects a Lead-scope mismatch", async () => {
 		const h = harness(["Operations"]);
 		h.db.insertQuestion("exec-1", "lead-a", "misrouted", {
 			checkpoint: "question",
@@ -124,9 +143,294 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
 			deliver: false,
 			disposition: "revoked_lead_scope",
-			retry: true,
+			retry: false,
 		});
 		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it.each(["completed", "ship_parked", "blocked"])(
+		"materializes the current workflow gate for a %s source session",
+		async (status) => {
+			const h = harness(["Engineering"], status, {
+				allow: true,
+				reason: "holder_authoritative",
+			});
+			h.db.insertQuestion("exec-1", "lead-a", "ready to ship", {
+				checkpoint: "approve_to_ship",
+			});
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: true,
+			});
+			expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("keeps legacy gates fenced by terminal session status", async () => {
+		const h = harness(["Engineering"], "completed");
+		h.db.insertQuestion("exec-1", "lead-a", "legacy ship gate", {
+			checkpoint: "approve_to_ship",
+		});
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: false,
+			disposition: "revoked_terminal_session",
+			retry: false,
+		});
+		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it("keeps Lead scope fencing for a holder-authoritative gate", async () => {
+		const h = harness(["Operations"], "completed", {
+			allow: true,
+			reason: "holder_authoritative",
+		});
+		h.db.insertQuestion("exec-1", "lead-a", "misrouted workflow gate", {
+			checkpoint: "approve_to_ship",
+		});
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: false,
+			disposition: "revoked_lead_scope",
+			retry: false,
+		});
+		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["pending", true],
+		["ship_parked", true],
+		["design_done", true],
+		["failed", true],
+		["rejected", true],
+		["deferred", true],
+		["approved", false],
+		["completed", false],
+		["shelved", false],
+		["terminated", false],
+	] as const)(
+		"classifies a %s terminal-session fence from FSM reachability",
+		async (status, retry) => {
+			const h = harness(["Engineering"], status);
+			h.db.insertQuestion("exec-1", "lead-a", `gate:${status}`, {
+				checkpoint: "approve_to_ship",
+			});
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: false,
+				disposition: "revoked_terminal_session",
+				retry,
+			});
+		},
+	);
+
+	it("stops a retryable verdict at the inclusive 24-hour horizon", async () => {
+		const nowMs = Date.parse("2026-08-12T12:00:00.000Z");
+		const h = harness(
+			["Engineering"],
+			"failed",
+			{ allow: true, reason: "legacy" },
+			() => new Date(nowMs),
+		);
+		h.db.insertQuestion("exec-1", "lead-a", "horizon", {
+			checkpoint: "approve_to_ship",
+		});
+		const row = claim(h.queue);
+		row.expires_at = new Date(nowMs + 24 * 60 * 60_000).toISOString();
+		expect(await h.admission.revalidate(row)).toEqual({
+			deliver: false,
+			disposition: "revoked_terminal_session",
+			retry: false,
+		});
+	});
+
+	it.each([null, "not-a-timestamp"])(
+		"rejects an invalid expiry before reading session state (%s)",
+		async (expiresAt) => {
+			const h = harness();
+			h.db.insertQuestion("exec-1", "lead-a", "bad expiry");
+			const row = claim(h.queue);
+			row.expires_at = expiresAt;
+			expect(await h.admission.revalidate(row)).toEqual({
+				deliver: false,
+				disposition: "expiry_integrity",
+				retry: false,
+			});
+			expect(h.store.getSession).not.toHaveBeenCalled();
+		},
+	);
+
+	it("converts only typed snapshot classification failures into verdicts", async () => {
+		const h = harness();
+		h.db.insertQuestion("exec-1", "lead-a", "corrupt snapshot", {
+			checkpoint: "approve_to_ship",
+		});
+		h.store.workflowGatePresentationDisposition.mockImplementation(() => {
+			throw new WorkflowAdmissionClassificationError("corrupt snapshot");
+		});
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: false,
+			disposition: "admission_error",
+			retry: true,
+		});
+	});
+
+	it("rethrows infrastructure errors without consuming the row", async () => {
+		const h = harness();
+		h.db.insertQuestion("exec-1", "lead-a", "busy", {
+			checkpoint: "approve_to_ship",
+		});
+		const row = claim(h.queue);
+		h.store.workflowGatePresentationDisposition.mockImplementation(() => {
+			throw new Error("SQLITE_BUSY");
+		});
+		await expect(h.admission.revalidate(row)).rejects.toThrow("SQLITE_BUSY");
+		expect(h.queue.getById(row.id)?.state).toBe("LEASED");
+	});
+
+	it("delivers a land gate after needs_review terminalizes its source session", async () => {
+		const dbPath = join(
+			mkdtempSync(join(tmpdir(), "fly1731-land-admission-")),
+			"comm.db",
+		);
+		const db = new CommDB(dbPath);
+		const queue = new MailboxQueue(dbPath);
+		const store = await StateStore.create(":memory:");
+		resources.push(db, queue, store);
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "owner-1",
+			now: "2026-08-12T14:33:40.000Z",
+			leaseTtlMs: 60_000,
+		});
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_fly1731_land", revision: 1 },
+			canonicalRoot: REPO_ROOT,
+			manifest: {
+				schema_version: 2,
+				nodes: [
+					{
+						id: "produce",
+						type: "generic",
+						vendor: "codex",
+						model: "gpt-5.6-sol",
+						effort: "low",
+						agent_file: "agents/generic-executor.md",
+					},
+					{ id: "founder_gate", type: "gate" },
+					{ id: "land", type: "land", execution: "engine" },
+				],
+				edges: [
+					{
+						id: "produced",
+						from: "produce",
+						to: "founder_gate",
+						condition: "node_done",
+					},
+					{
+						id: "approved",
+						from: "founder_gate",
+						to: "land",
+						condition: "founder_approved",
+					},
+				],
+				loops: [],
+				approval_gate: {
+					node: "founder_gate",
+					predicate: "founder_approved",
+				},
+				terminal_node: { node: "land" },
+				ship_claims: ["founder_approved"],
+			},
+		});
+		store.createWorkflowRun({
+			runId: "run-fly1731",
+			issueId: "FLY-1704",
+			projectName: "project-a",
+			snapshotJson: JSON.stringify(snapshot),
+			claimsReadEnrolled: true,
+		});
+		const stateDb = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		stateDb.run(
+			"UPDATE workflow_run SET engine_owned = 1, gate_carrier_epoch = 1 WHERE run_id = 'run-fly1731'",
+		);
+		stateDb.run(
+			`INSERT INTO workflow_side_effect_ledger
+			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state, created_at, updated_at)
+			 VALUES ('run-fly1731', 'produce', 1, 'dispatch', 1, 'exec-1', 'intent_recorded',
+			         '2026-08-12T14:30:00.000Z', '2026-08-12T14:30:00.000Z')`,
+		);
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-fly1731",
+				nodeId: "produce",
+				executionId: "exec-1",
+				attempt: 1,
+				expiresAt: "2026-08-13T14:30:00.000Z",
+				absoluteDeadlineAt: "2026-08-15T14:30:00.000Z",
+				now: "2026-08-12T14:30:00.000Z",
+				env: {
+					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+				},
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1704",
+			issue_identifier: "FLY-1704",
+			project_name: "project-a",
+			status: "running",
+			issue_labels: JSON.stringify(["Engineering"]),
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "complete-fly1731",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: HEAD,
+				prBinding: {
+					prNumber: 813,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: REPO_ROOT,
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-08-12T14:33:29.000Z",
+			}),
+		).toMatchObject({
+			ok: true,
+			completionDisposition: "engine_gate_handoff",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+		const holder = store.getCurrentWorkflowGateHolder(
+			"run-fly1731",
+			"founder_gate",
+		)!;
+		db.insertQuestion("exec-1", "lead-a", "ready to ship", {
+			id: holder.question_id,
+			checkpoint: "approve_to_ship",
+		});
+		const admission = new QuestionAdmission({
+			queue,
+			dbPath,
+			lead,
+			projects,
+			store,
+			runtimeRegistry: new RuntimeRegistry(),
+		});
+		resources.push(admission);
+		expect(await admission.revalidate(claim(queue))).toEqual({ deliver: true });
+		const delivered = queue.getById(holder.question_id)!;
+		expect(delivered.source_ref).not.toBeNull();
+		expect(JSON.parse(delivered.delivery_content!)).toMatchObject({
+			event_type: "gate_question",
+			checkpoint: "approve_to_ship",
+			execution_id: "exec-1",
+		});
 	});
 
 	it("terminally revokes an answered question", async () => {
@@ -138,6 +442,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
 			deliver: false,
 			disposition: "revoked_answered",
+			retry: false,
 		});
 	});
 

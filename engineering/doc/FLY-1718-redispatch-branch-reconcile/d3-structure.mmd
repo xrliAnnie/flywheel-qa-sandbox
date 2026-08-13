@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph P1["P1 延续性预检(最先上线)"]
+        A1["探云端分支<br/>ls-remote 三态:<br/>在 / 不在 / 探不清"] --> A2["在 → 取回成果到本地<br/>并核实完整(fetch+验证)"]
+        A2 --> A3["startPoint =<br/>已核实的云端成果顶端"]
+    end
+    subgraph P2["P2 push 护栏"]
+        B1["worktree 建好时<br/>自动装 pre-push hook"] --> B2["非快进推送一律拦<br/>(含 force-with-lease)"]
+        B2 --> B3["每次拦/放都记审计账<br/>确需强推:先问 Lead<br/>拿确认再设单次放行码"]
+    end
+    subgraph P3["P3 指令路径快照"]
+        C1["Bridge 侧存一份<br/>『审的是哪个文件哪个版本』<br/>的对账单(manifest)"] --> C2["过门时三方核对:<br/>对账单 = 审查结果 = 当前文件"]
+        C2 --> C3["对不上 → 不放行<br/>提示重新走审查"]
+    end
+    subgraph P4["P4 秒死断路器"]
+        D1["上一轮活了多久?<br/>< 60 秒 = 秒死"] --> D2["秒死 → 递增冷却<br/>1/2/4/8 分钟"]
+        D2 --> D3["连续 5 代秒死<br/>→ 停派 + 叫 Lead"]
+    end
+    style P1 fill:#e8f5e9,stroke:#34c759
+    style P2 fill:#f3e5f5,stroke:#af52de
+    style P3 fill:#e3f2fd,stroke:#007aff
+    style P4 fill:#fff3e0,stroke:#ff9500

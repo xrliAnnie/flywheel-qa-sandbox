@@ -368,7 +368,11 @@ describe("engine-owned snapshot transition transaction", () => {
 			completionSubmission: { decision: { route: "phase_design_complete" } },
 			now: "2026-07-16T01:05:00.000Z",
 		});
-		expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(completed).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+			completionDisposition: "terminal_no_gate",
+		});
 		const intents = store.listWorkflowSideEffects("run-1");
 		expect(intents).toHaveLength(1);
 		expect(intents[0]).toMatchObject({
@@ -382,6 +386,18 @@ describe("engine-owned snapshot transition transaction", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "edge_traversed"),
 		).toHaveLength(1);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(`
+			DROP TRIGGER workflow_run_event_no_delete;
+			DELETE FROM workflow_run_event
+			 WHERE run_id = 'run-1' AND kind = 'completion_disposition';
+			CREATE TRIGGER workflow_run_event_no_delete
+			BEFORE DELETE ON workflow_run_event
+			BEGIN SELECT RAISE(ABORT, 'workflow_run_event is append-only'); END
+		`);
 
 		expect(
 			store.commitEnrolledCompletion({
@@ -393,7 +409,16 @@ describe("engine-owned snapshot transition transaction", () => {
 				},
 				now: "2026-07-16T01:06:00.000Z",
 			}),
-		).toMatchObject({ ok: true, idempotentReplay: true });
+		).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+			completionDisposition: "terminal_no_gate",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "completion_disposition"),
+		).toHaveLength(1);
 		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(1);
 		store.close();
 	});
@@ -480,7 +505,10 @@ describe("engine-owned snapshot transition transaction", () => {
 				},
 				now: "2026-07-16T01:10:00.000Z",
 			}),
-		).toMatchObject({ ok: true });
+		).toMatchObject({
+			ok: true,
+			completionDisposition: "terminal_no_gate",
+		});
 
 		expect(store.getSession("implement-1")?.status).toBe("ship_parked");
 		expect(store.getSession("implement-1")?.review_question_id).toBeUndefined();
@@ -1078,6 +1106,60 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
+	it.each([
+		[
+			"activation SELECT",
+			(store: StateStore) =>
+				vi
+					.spyOn(
+						store as unknown as {
+							workflowSelectAll: (
+								...args: unknown[]
+							) => Array<Record<string, unknown>>;
+						},
+						"workflowSelectAll",
+					)
+					.mockImplementation(() => {
+						throw new Error("SQLITE_BUSY: activation SELECT");
+					}),
+		],
+		[
+			"workflow run SELECT",
+			(store: StateStore) =>
+				vi.spyOn(store, "getWorkflowRun").mockImplementation(() => {
+					throw new Error("SQLITE_IOERR: workflow run SELECT");
+				}),
+		],
+		[
+			"holder SELECT",
+			(store: StateStore) =>
+				vi
+					.spyOn(store, "getCurrentWorkflowGateHolder")
+					.mockImplementation(() => {
+						throw new Error("SQLITE_CORRUPT: holder SELECT");
+					}),
+		],
+	] as const)(
+		"does not rewrite an infrastructure error from the %s seam",
+		async (_name, inject) => {
+			const store = await engineRun({ gateCarrier: true });
+			const holder = await openRunnerShipGate(store);
+			inject(store);
+			try {
+				expect(() =>
+					store.workflowGatePresentationDisposition({
+						executionId: holder.source_execution_id,
+						checkpoint: "approve_to_ship",
+						questionId: holder.question_id,
+					}),
+				).toThrow(/SQLITE_(?:BUSY|IOERR|CORRUPT)/);
+			} finally {
+				vi.restoreAllMocks();
+				store.close();
+			}
+		},
+	);
+
 	it("atomically rebinds an unbound Gate carrier and replays without resetting its review window", async () => {
 		const store = await engineRun({ gateCarrier: true });
 		const holder = await openRunnerShipGate(store, { forceUnbound: true });
@@ -1086,6 +1168,13 @@ describe("engine-owned snapshot transition transaction", () => {
 			carrier_binding_state: "unbound",
 			materialization_stage: "question_intent",
 		});
+		expect(
+			store.workflowGatePresentationDisposition({
+				executionId: holder.source_execution_id,
+				checkpoint: "approve_to_ship",
+				questionId: holder.question_id,
+			}),
+		).toEqual({ allow: false, reason: "holder_carrier_unbound" });
 		expect(store.listWorkflowAlertOutbox()).toEqual([
 			expect.objectContaining({
 				escalation_uid: `gate_carrier_unbound:${holder.question_id}`,

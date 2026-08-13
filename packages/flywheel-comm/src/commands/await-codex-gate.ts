@@ -22,6 +22,8 @@
  *     "reviewType": "design" | "code",
  *     "status": "APPROVED",
  *     "reviewedTarget": "<plan-path-or-pr-url>",
+ *     "requestId": "<Bridge design manifest request id>",
+ *     "reviewedPlanBlobSha": "<committed plan blob sha>",
  *     "timestamp": "<ISO-8601>",
  *     "rounds": <integer>,
  *     "codexThreadId": "<string>"
@@ -58,6 +60,10 @@ export interface AwaitCodexGateOpts {
 	worktreePath?: string;
 	timeoutMs?: number;
 	pollIntervalMs?: number;
+	/** Test seam; production uses the runner process environment. */
+	env?: NodeJS.ProcessEnv;
+	/** Test seam; production uses global fetch. */
+	fetchImpl?: typeof fetch;
 }
 
 interface ResultPayload {
@@ -67,6 +73,9 @@ interface ResultPayload {
 	reviewedTarget?: unknown;
 	/** FLY-827: the commit Codex actually reviewed (code review only). */
 	reviewedHeadSha?: unknown;
+	/** FLY-1718: Bridge-authoritative design manifest binding. */
+	requestId?: unknown;
+	reviewedPlanBlobSha?: unknown;
 	timestamp?: unknown;
 	rounds?: unknown;
 	codexThreadId?: unknown;
@@ -172,6 +181,21 @@ function validateResult(
 	if (ageMs > MAX_RESULT_AGE_MS) {
 		return `timestamp older than 24h: ${payload.timestamp}`;
 	}
+	if (
+		opts.reviewType === "design" &&
+		(opts.env ?? process.env).FLYWHEEL_INSTRUCTION_PATH_CHECK !== "0"
+	) {
+		if (typeof payload.requestId !== "string" || !payload.requestId.trim()) {
+			return `design review result missing/invalid requestId`;
+		}
+		const planBlob =
+			typeof payload.reviewedPlanBlobSha === "string"
+				? payload.reviewedPlanBlobSha.toLowerCase()
+				: undefined;
+		if (!planBlob || !FULL_SHA_RE.test(planBlob)) {
+			return `design review result missing/invalid reviewedPlanBlobSha`;
+		}
+	}
 	// FLY-827 (Codex R1 HIGH-2): for CODE review, the result must be bound to the
 	// commit Codex reviewed, and that commit must equal the CURRENT git HEAD.
 	// Otherwise a stale `code-review.json` (still within the 24h window) would let
@@ -206,7 +230,7 @@ function validateResult(
 function readResult(
 	opts: AwaitCodexGateOpts,
 ):
-	| { ok: true }
+	| { ok: true; payload: ResultPayload }
 	| { ok: false; fatal: true; error: string }
 	| { ok: false; fatal: false } {
 	const path = resultPathFor(opts);
@@ -237,7 +261,74 @@ function readResult(
 	if (error) {
 		return { ok: false, fatal: true, error };
 	}
-	return { ok: true };
+	return { ok: true, payload: parsed };
+}
+
+/**
+ * FLY-1718 P3: Bridge is the sole authority for design path/blob freshness.
+ * The client sends only its already-local-validated result projection and
+ * fails closed on missing credentials, transport errors, old servers, or a
+ * denial. Response data can explain a denial but can never supply authority.
+ */
+async function validateDesignProjectionWithBridge(
+	opts: AwaitCodexGateOpts,
+	payload: ResultPayload,
+): Promise<string | null> {
+	if (
+		opts.reviewType !== "design" ||
+		(opts.env ?? process.env).FLYWHEEL_INSTRUCTION_PATH_CHECK === "0"
+	) {
+		return null;
+	}
+	const env = opts.env ?? process.env;
+	const bridgeUrl = env.FLYWHEEL_BRIDGE_URL?.trim().replace(/\/+$/, "");
+	const ingestToken = env.FLYWHEEL_INGEST_TOKEN?.trim();
+	if (!bridgeUrl || !ingestToken) {
+		return `FLYWHEEL_BRIDGE_URL and FLYWHEEL_INGEST_TOKEN are required for design review validation`;
+	}
+
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 20_000);
+	timeout.unref?.();
+	let response: Response;
+	try {
+		response = await (opts.fetchImpl ?? globalThis.fetch)(
+			`${bridgeUrl}/design-review-validation`,
+			{
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${ingestToken}`,
+				},
+				body: JSON.stringify({
+					executionId: payload.executionId,
+					reviewType: payload.reviewType,
+					status: payload.status,
+					reviewedTarget: payload.reviewedTarget,
+					requestId: payload.requestId,
+					reviewedPlanBlobSha: payload.reviewedPlanBlobSha,
+				}),
+				signal: controller.signal,
+			},
+		);
+	} catch (error) {
+		return `Bridge design review validation failed: ${error instanceof Error ? error.message : String(error)}`;
+	} finally {
+		clearTimeout(timeout);
+	}
+
+	let body: Record<string, unknown> | undefined;
+	try {
+		body = (await response.json()) as Record<string, unknown>;
+	} catch {
+		return `Bridge design review validation returned HTTP ${response.status} with an invalid response`;
+	}
+	if (response.ok && body.allowed === true) return null;
+	const reason =
+		typeof body.reason === "string" && body.reason.trim()
+			? body.reason.trim()
+			: `HTTP ${response.status}`;
+	return `Bridge denied design review: ${reason}`;
 }
 
 /**
@@ -326,6 +417,14 @@ export async function awaitCodexGate(opts: AwaitCodexGateOpts): Promise<void> {
 
 		const result = readResult(opts);
 		if (result.ok) {
+			const bridgeError = await validateDesignProjectionWithBridge(
+				opts,
+				result.payload,
+			);
+			if (bridgeError) {
+				console.error(`[await-codex-gate] ${bridgeError}`);
+				process.exit(1);
+			}
 			console.log(
 				`[await-codex-gate] ${opts.reviewType} review APPROVED for exec=${opts.execId}`,
 			);

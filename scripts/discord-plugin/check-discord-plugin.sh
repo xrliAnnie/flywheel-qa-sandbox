@@ -74,12 +74,17 @@ if [ ! -f "$SERVER_TS" ]; then
   echo "INVALID: Discord server.ts missing at ${SERVER_TS}" >&2
   exit 1
 fi
-for marker in 'allowBots' '[reply-guard]' 'ChatReceiptRuntime'; do
+for marker in 'allowBots' '[reply-guard]'; do
   if ! grep -Fq "$marker" "$SERVER_TS"; then
     echo "VANILLA: required fork marker missing from server.ts: ${marker}" >&2
     exit 1
   fi
 done
+if ! grep -Fq 'ChatReceiptRuntime' "$SERVER_TS" \
+    && ! grep -Fq 'ChatIngestRuntime' "$SERVER_TS"; then
+  echo "VANILLA: required fork runtime marker missing from server.ts" >&2
+  exit 1
+fi
 
 if ! REMOTE_SHA="$(python3 - "$FORK_URL" "$FORK_REF" <<'PY'
 import subprocess

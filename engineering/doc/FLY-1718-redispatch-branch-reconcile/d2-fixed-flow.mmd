@@ -1,0 +1,16 @@
+flowchart TD
+    A["issue 重新派工"] --> B{"P4 断路器:<br/>上一轮是不是『秒死』?"}
+    B -->|"秒死且还在冷却期"| B1["拒绝派发<br/>按 1/2/4/8 分钟递增等待<br/>连续 5 代秒死 → 停下叫 Lead"]
+    B -->|正常| C{"本地还有带进度账本的<br/>可续跑记录?"}
+    C -->|有| C1["按进度账本续跑<br/>(既有 FLY-795 机制)"]
+    C -->|没有| D{"延续性预检:<br/>问云端(origin)<br/>同名分支还在吗?"}
+    D -->|"在(拿到并核实成果)"| E["✅ 续接:新工作目录<br/>直接从云端成果顶端开始<br/>runner 提示词写明『有 PR #N,先读它』"]
+    D -->|确认不在| F["✅ 真·全新开始<br/>(和现在行为完全一样)"]
+    D -->|"探不清<br/>(断网/超时)"| G["🛑 拒绝派发<br/>宁可不派,不许瞎分叉<br/>(可重试,不留残留)"]
+    E --> H["worktree 建好时自动装上<br/>push 护栏(pre-push hook):<br/>强推一律拦下 + 记审计账"]
+    F --> H
+    style E fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style F fill:#e3f2fd,stroke:#007aff,stroke-width:2px
+    style G fill:#fff3e0,stroke:#ff9500,stroke-width:2px
+    style B1 fill:#fff3e0,stroke:#ff9500,stroke-width:2px
+    style H fill:#f3e5f5,stroke:#af52de,stroke-width:2px

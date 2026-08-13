@@ -1,0 +1,8 @@
+flowchart LR
+    A["Annie 发消息"] --> B["Discord 插件(新版)"]
+    B --> C["chat-ingest 入队<br/>(邮箱队列,健在的通路)"]
+    C --> D["Lead 收到并回复"]
+    D --> E["回复直接送达频道<br/>零结算调用,无事可败"]
+    B -.->|"仅当 ingest 故障"| F["写进程日志(log)<br/>频道零 ⚠️"]
+    style E fill:#e8f5e9,stroke:#34c759
+    style F fill:#f5f5f7,stroke:#86868b
