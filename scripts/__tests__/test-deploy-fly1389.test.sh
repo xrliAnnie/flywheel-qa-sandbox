@@ -426,6 +426,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
       || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
     grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$BE" \
       || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks canonical default Lead"; }
+    grep -q "^FLYWHEEL_PROJECTS_FILE=${E_SLOT_DIR}/flywheel-projects.json$" "$BE" \
+      || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks slot-local canonical registry"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
@@ -468,6 +470,8 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I: fixture did not exercise reply-by-issue Bridge branch"; }
   grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks canonical default Lead"; }
+  grep -q "^FLYWHEEL_PROJECTS_FILE=${I_SLOT_DIR}/flywheel-projects.json$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks slot-local canonical registry"; }
   [[ "$(cat "$I_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
     || { I_OK=0; fail "I: package-cwd invocation did not keep production-aligned Lead cwd"; }
   [[ "$I_OK" == "1" ]] \
