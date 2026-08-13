@@ -22,6 +22,7 @@
 
 import { spawn } from "node:child_process";
 import {
+	buildNonLeadClaudeSettings,
 	getModelConfigSnapshot,
 	type RoleEffort,
 	resolveAllowedCanonicalModel,
@@ -147,6 +148,8 @@ export function buildClaudeReviewArgv(
 		"--model",
 		canonicalModel,
 		...(effort ? (["--effort", effort] as const) : []),
+		"--settings",
+		JSON.stringify(buildNonLeadClaudeSettings()),
 	];
 }
 

@@ -230,6 +230,39 @@ require(
     f"workflow bash paths must exist: {missing_bash_paths}",
 )
 
+# FLY-1715: the credential preflight and managed voice replacement are ship
+# boundaries, so their hermetic harnesses must remain in the required PR gate.
+# script-tests intentionally does not glob; pin the exact commands here.
+fly1715_steps = [
+    step
+    for step in script_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-1715 runner boundary shell contracts"
+]
+require(
+    len(fly1715_steps) == 1,
+    "script-tests must contain exactly one FLY-1715 runner boundary shell contracts step",
+)
+fly1715_step = fly1715_steps[0]
+require("if" not in fly1715_step, "FLY-1715 shell contracts must not be conditional")
+require(
+    "continue-on-error" not in fly1715_step,
+    "FLY-1715 shell contracts must fail the PR gate",
+)
+fly1715_commands = [
+    line.strip()
+    for line in str(fly1715_step.get("run", "")).splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+]
+expected_fly1715_commands = [
+    "bash scripts/__tests__/runner-tier-token-preflight.test.sh",
+    "bash scripts/__tests__/restart-services-voice-bridge.test.sh",
+]
+require(
+    fly1715_commands == expected_fly1715_commands,
+    f"FLY-1715 CI command set/order drifted: {fly1715_commands}",
+)
+
 # FLY-1364: the cmux authority/cleanup matrix and every shell-side delivery
 # seam must be visible in the required PR gate. Keep this as one named step so
 # a future workflow edit cannot silently strand one of the constituent suites.

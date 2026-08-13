@@ -99,6 +99,14 @@ describe("HeadlessClaudeBrain", () => {
 		expect(argv).toContain("--include-partial-messages");
 		expect(argv).toContain("--append-system-prompt-file");
 		expect(argv).toContain(idFile);
+		const settingsIndex = argv.indexOf("--settings");
+		expect(argv.filter((arg) => arg === "--settings")).toHaveLength(1);
+		expect(
+			JSON.parse(argv[settingsIndex + 1] as string).enabledPlugins,
+		).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
 		// prompt via stdin (end), never argv
 		expect(handle?.ended).toBe(true);
 		expect(handle?.written.join("")).toContain("hi");
@@ -138,6 +146,55 @@ describe("HeadlessClaudeBrain", () => {
 		expect(second).toContain("sess-42");
 		expect(second).toContain("--strict-mcp-config"); // re-sent (not session-persistent)
 		expect(second).not.toContain("--append-system-prompt-file"); // persona retained by session
+	});
+
+	it("FLY-1715: caller settings cannot re-enable Discord and malformed settings fail before spawn", async () => {
+		const safeRunner = new FakeProcessRunner(undefined, (h) =>
+			setTimeout(() => h.emitExit(0), 0),
+		);
+		const safeBrain = new HeadlessClaudeBrain({
+			claudeBin: "claude",
+			identityFile: identityFile(),
+			runner: safeRunner,
+			extraArgs: [
+				"--settings",
+				JSON.stringify({
+					enabledPlugins: { "discord@flywheel-plugins": true },
+				}),
+			],
+		});
+		await drain(
+			safeBrain.respond(
+				{ text: "safe", history: [] },
+				{ signal: new AbortController().signal },
+			),
+		);
+		const safeArgs = safeRunner.spawnCalls[0].args;
+		const settingsIndex = safeArgs.indexOf("--settings");
+		expect(safeArgs.filter((arg) => arg === "--settings")).toHaveLength(1);
+		expect(
+			JSON.parse(safeArgs[settingsIndex + 1] as string).enabledPlugins,
+		).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
+
+		const malformedRunner = new FakeProcessRunner();
+		const malformedBrain = new HeadlessClaudeBrain({
+			claudeBin: "claude",
+			identityFile: identityFile(),
+			runner: malformedRunner,
+			extraArgs: ["--settings={"],
+		});
+		await expect(
+			drain(
+				malformedBrain.respond(
+					{ text: "blocked", history: [] },
+					{ signal: new AbortController().signal },
+				),
+			),
+		).rejects.toThrow(/settings/i);
+		expect(malformedRunner.spawnCalls).toHaveLength(0);
 	});
 
 	it("falls back to a single flush for plain output", async () => {

@@ -16,6 +16,10 @@
 # QA stage re-verifies them against a real authenticated CLI.
 
 ACP_CLAUDE_BIN="${FLYWHEEL_CLAUDE_BIN:-claude}"
+# FLY-1715: Buddy is a packaged non-Lead Claude spawn face. Keep this inline
+# payload security-last and independent of machine settings so setup/smoke and
+# brain calls cannot start either Discord plugin while the Lead's shared key stays on.
+readonly ACP_NON_LEAD_SETTINGS='{"enabledPlugins":{"discord@flywheel-plugins":false,"discord@claude-plugins-official":false}}'
 # brain calls are bounded (FLY-494 lesson: an unauthenticated CLI can hang on
 # a device-code prompt forever — fail closed instead).
 ACP_TIMEOUT_SECS="${FLYWHEEL_AGENT_CLI_TIMEOUT_SECS:-120}"
@@ -83,6 +87,13 @@ provider_install() {
   provider_detect
 }
 
+# _acp_login_cli — first-run interactive Claude boot with the same non-Lead
+# plugin boundary as model-bearing calls. Redirection belongs to the caller so
+# the argv remains executable in the contract harness.
+_acp_login_cli() {
+  "$ACP_CLAUDE_BIN" --settings "$ACP_NON_LEAD_SETTINGS" /login
+}
+
 # provider_login_guide — drive the CLI's OWN login flow in the foreground.
 # The caller (Buddy shell / bootstrap) owns the TTY; the CLI opens the
 # browser itself and prints a copyable URL when it cannot (its own fallback,
@@ -100,7 +111,7 @@ provider_login_guide() {
   fi
   echo "[claude-provider] launching the Claude login flow (finish in the browser, then exit the CLI)…" >&2
   # foreground, attached to the caller's TTY: first run enters login.
-  "$ACP_CLAUDE_BIN" /login </dev/tty >/dev/tty 2>&1 || true
+  _acp_login_cli </dev/tty >/dev/tty 2>&1 || true
   if _acp_logged_in; then
     _acp_emit '{ok:true, provider:"claude", login:"ok"}'
   else
@@ -119,7 +130,7 @@ provider_smoke() {
   command -v "$ACP_CLAUDE_BIN" >/dev/null 2>&1 \
     || { _acp_emit '{ok:false, provider:"claude", error_code:"not_found"}'; return 1; }
   local out rc
-  out="$(_acp_bounded "$ACP_TIMEOUT_SECS" "$ACP_CLAUDE_BIN" --print 'reply with exactly: ok' </dev/null 2>/dev/null)"
+  out="$(_acp_bounded "$ACP_TIMEOUT_SECS" "$ACP_CLAUDE_BIN" --print --settings "$ACP_NON_LEAD_SETTINGS" 'reply with exactly: ok' </dev/null 2>/dev/null)"
   rc=$?
   if [ "$rc" -eq 0 ] && [ -n "$out" ]; then
     _acp_emit '{ok:true, provider:"claude", smoke:"ok"}'
@@ -136,7 +147,7 @@ provider_smoke() {
 # invocation. Prompt travels via STDIN, persona via --append-system-prompt-file
 # (TmuxAdapter precedent: file transport keeps long text out of argv).
 _acp_brain_call() {
-  local -a args=(--print --output-format json)
+  local -a args=(--print --output-format json --settings "$ACP_NON_LEAD_SETTINGS")
   if [ "$1" = "--resume" ]; then
     args+=(--resume "$2"); shift 2
   fi

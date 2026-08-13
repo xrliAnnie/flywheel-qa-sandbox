@@ -32,7 +32,10 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { parseGitHubPushEndpoint } from "flywheel-config";
+import {
+	normalizeOptionalBearer,
+	parseGitHubPushEndpoint,
+} from "flywheel-config";
 import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 const VALID_STATUSES = new Set(["pass", "fail"]);
@@ -639,7 +642,9 @@ export async function qaResult(
 	const issueId = process.env.FLYWHEEL_ISSUE_ID?.trim() ?? "";
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME?.trim() ?? "";
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL?.trim() ?? "";
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 	const requestId = randomUUID();
 	const suppliedPrHeadSha = opts.prHeadSha?.trim() || undefined;
 	const recoverableVerdict: RecoverableQaVerdict = {

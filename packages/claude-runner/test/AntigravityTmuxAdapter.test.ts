@@ -66,6 +66,15 @@ function launchCommand(calls: ExecCall[]): string[] {
 	return nw.args.slice(cIdx + 2);
 }
 
+/** Resolve the binary after the FLY-1715 ambient-identity env boundary. */
+function launchedBinary(calls: ExecCall[]): string | undefined {
+	const command = launchCommand(calls);
+	let index = command[0] === "env" ? 1 : 0;
+	while (command[index] === "-u") index += 2;
+	if (command[index]?.startsWith("PROJECT_NAME=")) index += 1;
+	return command[index];
+}
+
 describe("AntigravityTmuxAdapter", () => {
 	it("has type 'antigravity-tmux'", () => {
 		const { fn } = makeMockExec();
@@ -78,7 +87,7 @@ describe("AntigravityTmuxAdapter", () => {
 		const { fn, calls } = makeMockExec();
 		const adapter = new AntigravityTmuxAdapter("flywheel", fn, 10);
 		await adapter.execute(makeCtx());
-		expect(launchCommand(calls)[0]).toBe("agy");
+		expect(launchedBinary(calls)).toBe("agy");
 		// never launches claude
 		expect(calls.some((c) => c.cmd === "claude")).toBe(false);
 	});

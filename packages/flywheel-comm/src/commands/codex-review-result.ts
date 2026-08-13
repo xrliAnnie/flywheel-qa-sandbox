@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { normalizeOptionalBearer } from "flywheel-config";
 
 const ATTEMPT_COUNT = 4;
 const ATTEMPT_TIMEOUT_MS = 5000;
@@ -134,7 +135,9 @@ export async function emitCodexReviewResult(
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
 
 	let lastError: string | undefined;

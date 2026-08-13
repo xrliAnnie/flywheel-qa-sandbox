@@ -1007,6 +1007,84 @@ export function tokenAuthMiddleware(
 	};
 }
 
+export type ReportCredentialTier = "master" | "ingest";
+
+/** FLY-1715: report auth owns route-specific master/ingest reachability. */
+export function reportsAuthMiddleware(
+	masterToken?: string,
+	ingestToken?: string,
+): express.RequestHandler {
+	return (req, res, next) => {
+		if (!masterToken) {
+			res.status(503).json({
+				error: "reports API requires TEAMLEAD_API_TOKEN",
+			});
+			return;
+		}
+		const header = req.headers.authorization ?? "";
+		if (safeCompare(header, `Bearer ${masterToken}`)) {
+			res.locals.reportCredentialTier = "master" satisfies ReportCredentialTier;
+			next();
+			return;
+		}
+		if (ingestToken && safeCompare(header, `Bearer ${ingestToken}`)) {
+			if (req.method === "POST" && req.path === "/publish") {
+				res.locals.reportCredentialTier =
+					"ingest" satisfies ReportCredentialTier;
+				next();
+				return;
+			}
+			res.status(403).json({ error: "forbidden for ingest token" });
+			return;
+		}
+		res.status(401).json({ error: "unauthorized" });
+	};
+}
+
+/** FLY-1715: auth for non-authoritative latency hints only. */
+export function masterOrIngestAuthMiddleware(
+	masterToken?: string,
+	ingestToken?: string,
+): express.RequestHandler {
+	return (req, res, next) => {
+		// Preserve the Bridge's pre-existing tokenless posture. Production
+		// preflight requires both credentials, but loadConfig keeps tokenless
+		// startup legal for local tests and disabled sensitive surfaces.
+		if (!masterToken) return next();
+		const header = req.headers.authorization ?? "";
+		if (
+			safeCompare(header, `Bearer ${masterToken}`) ||
+			(ingestToken && safeCompare(header, `Bearer ${ingestToken}`))
+		) {
+			next();
+			return;
+		}
+		res.status(401).json({ error: "unauthorized" });
+	};
+}
+
+/**
+ * The broad /api guard delegates the two runner-tier surfaces to their exact
+ * mount-level guards. No other /api path bypasses master/scoped auth.
+ */
+export function apiAuthWithRunnerTierDelegation(
+	masterToken?: string,
+	geminiScopedToken?: string,
+): express.RequestHandler {
+	const defaultAuth = tokenAuthMiddleware(masterToken, geminiScopedToken);
+	return (req, res, next) => {
+		if (
+			req.path === "/lead-inbox/nudge" ||
+			req.path === "/reports" ||
+			req.path.startsWith("/reports/")
+		) {
+			next();
+			return;
+		}
+		defaultAuth(req, res, next);
+	};
+}
+
 export class SseBroadcaster {
 	private clients = new Set<express.Response>();
 	private poller: ReturnType<typeof setInterval> | null = null;
@@ -2315,7 +2393,7 @@ export function createBridgeApp(
 	// /api/* — api auth
 	app.use(
 		"/api",
-		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		apiAuthWithRunnerTierDelegation(config.apiToken, config.geminiAgentToken),
 		createQueryRouter(store, projects, {
 			retryDispatcher,
 			captureSessionFn,
@@ -2453,7 +2531,7 @@ export function createBridgeApp(
 	// authority, so a lost/duplicate nudge cannot lose or duplicate delivery.
 	app.post(
 		"/api/lead-inbox/nudge",
-		tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+		masterOrIngestAuthMiddleware(config.apiToken, config.ingestToken),
 		(req, res) => {
 			const { leadId, project } = (req.body ?? {}) as {
 				leadId?: unknown;
@@ -3941,19 +4019,11 @@ export function createBridgeApp(
 			),
 		}),
 	});
-	if (config.apiToken) {
-		app.use(
-			"/api/reports",
-			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			reportsRouter,
-		);
-	} else {
-		app.use("/api/reports", (_req, res) => {
-			res.status(503).json({
-				error: "reports API requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
+	app.use(
+		"/api/reports",
+		reportsAuthMiddleware(config.apiToken, config.ingestToken),
+		reportsRouter,
+	);
 
 	// FLY-727: /api/digest — daily completion digest render endpoint.
 	// EXPLICIT default-off (R3 #1): mounted ONLY when FLYWHEEL_DIGEST_CHANNEL is

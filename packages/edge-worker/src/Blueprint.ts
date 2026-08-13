@@ -25,6 +25,7 @@ import {
 	isFounderUxGateEnabled,
 	isUiDesignFlavored,
 	MATT_SKILLS_PLUGIN_KEY,
+	normalizeOptionalBearer,
 	PONYTAIL_CONFLICT,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
@@ -2817,7 +2818,9 @@ export class Blueprint {
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
 				bridgeUrl: resolveBridgeUrl(),
-				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
+				bridgeIngestToken: normalizeOptionalBearer(
+					process.env.TEAMLEAD_INGEST_TOKEN,
+				),
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
 				workflowSubmissionExpected: ctx.workflowSubmissionExpected,
 				workflowOutputCredential: ctx.workflowOutputCredential,

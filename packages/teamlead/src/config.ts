@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isAllowedLoopbackHostname } from "flywheel-comm/lead-lease";
+import { normalizeOptionalBearer } from "flywheel-config";
 import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
 import { RunnerAdmissionController } from "./bridge/runner-admission.js";
 import type { BridgeConfig } from "./bridge/types.js";
@@ -53,7 +54,21 @@ export function loadConfig(): BridgeConfig {
 	// is enabled but TEAMLEAD_API_TOKEN is missing/empty, the routes would be
 	// exposed unauthenticated — fail-startup rather than emit a warning. See
 	// plan §4.3 + Codex Round 2 issue #2.
-	const apiToken = process.env.TEAMLEAD_API_TOKEN;
+	const apiTokenRaw = process.env.TEAMLEAD_API_TOKEN;
+	if (apiTokenRaw !== undefined && apiTokenRaw !== apiTokenRaw.trim()) {
+		throw new Error(
+			"TEAMLEAD_API_TOKEN must not contain outer whitespace (trim the configured value; refusing to start)",
+		);
+	}
+	const apiToken = normalizeOptionalBearer(apiTokenRaw);
+	const ingestToken = normalizeOptionalBearer(
+		process.env.TEAMLEAD_INGEST_TOKEN,
+	);
+	if (apiToken && ingestToken && apiToken === ingestToken) {
+		throw new Error(
+			"TEAMLEAD_INGEST_TOKEN must differ from TEAMLEAD_API_TOKEN (refusing to start)",
+		);
+	}
 	const replyByIssueEnabled =
 		process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED === "true";
 	if (replyByIssueEnabled && (!apiToken || apiToken.length === 0)) {
@@ -83,18 +98,23 @@ export function loadConfig(): BridgeConfig {
 	//     bare-token posture.
 	const geminiAgentTokenRaw = process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
 	let geminiAgentToken: string | undefined;
-	if (geminiAgentTokenRaw !== undefined && geminiAgentTokenRaw.trim() !== "") {
-		const scoped = geminiAgentTokenRaw.trim();
-		if (apiToken && scoped === apiToken.trim()) {
+	const scoped = normalizeOptionalBearer(geminiAgentTokenRaw);
+	if (scoped) {
+		if (apiToken && scoped === apiToken) {
 			throw new Error(
 				"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_API_TOKEN — a scoped token equal to the master token is a full-privilege credential in disguise (refusing to start)",
 			);
 		}
-		if (!apiToken || apiToken.length === 0) {
+		if (!apiToken) {
 			console.error(
 				"[config] ERROR: TEAMLEAD_GEMINI_AGENT_TOKEN is set but TEAMLEAD_API_TOKEN is not — scoped token IGNORED (without a master token the /api surface is unauthenticated; configure TEAMLEAD_API_TOKEN first)",
 			);
 		} else {
+			if (ingestToken && scoped === ingestToken) {
+				throw new Error(
+					"TEAMLEAD_GEMINI_AGENT_TOKEN must differ from TEAMLEAD_INGEST_TOKEN (refusing to start)",
+				);
+			}
 			geminiAgentToken = scoped;
 		}
 	}
@@ -129,7 +149,7 @@ export function loadConfig(): BridgeConfig {
 		dbPath:
 			process.env.TEAMLEAD_DB_PATH ??
 			join(homedir(), ".flywheel", "teamlead.db"),
-		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
+		ingestToken,
 		apiToken,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",

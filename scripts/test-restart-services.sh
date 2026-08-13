@@ -262,8 +262,14 @@ rn_run_terminal_case() {
       stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
+      restart_voice_bridge_managed() {
+        VOICE_BRIDGE_RESTART_DETAIL="simulated voice rollback failure"
+        [[ "$mode" != "rollback-voice-failed" ]]
+      }
       trigger_cmux_refresh() { :; }
       do_restart_all_leads() {
+        mkdir -p "$case_root"
+        : > "$case_root/lead-restart-called"
         case "$mode" in
           rollback-result-unreadable) printf "garbage\n" ;;
           rollback-leads-failed) printf "skipped:0 failed:1 total:1\n" ;;
@@ -294,7 +300,7 @@ rn_run_terminal_case() {
         rollback-no-sha)
           rollback_and_restart "" || true
           ;;
-        rollback-result-unreadable|rollback-leads-failed|rollback-recovered)
+        rollback-result-unreadable|rollback-leads-failed|rollback-recovered|rollback-voice-failed)
           restart_all_leads=true
           rollback_and_restart 1111111 || true
           ;;
@@ -308,7 +314,12 @@ rn_run_terminal_case() {
       "$mode" "$alerts_file" "$TMPDIR_ROOT/terminal-${mode}"
     rc=$?
     set -e
+    local recovery_ok=true
+    if [[ "$mode" == "rollback-voice-failed" && ! -f "$TMPDIR_ROOT/terminal-${mode}/lead-restart-called" ]]; then
+        recovery_ok=false
+    fi
     if (( rc == 29 )) \
+      && [[ "$recovery_ok" == "true" ]] \
       && [[ "$(grep -c ":${expected_signature}$" "$alerts_file" || true)" == "1" ]] \
       && ! grep -q ':restart-aborted-unexpectedly$' "$alerts_file"; then
         pass "FLY-1603 parent terminal registration: $mode"
@@ -326,6 +337,7 @@ rn_run_terminal_case rollback-port-stuck rollback-port-stuck
 rn_run_terminal_case rollback-result-unreadable rollback-lead-result-unreadable
 rn_run_terminal_case rollback-leads-failed rollback-leads-failed
 rn_run_terminal_case rollback-recovered update-rolled-back
+rn_run_terminal_case rollback-voice-failed rollback-voice-bridge-failed
 
 echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
 rn_restart_all_func="$TMPDIR_ROOT/restart-all-leads.sh"
@@ -1727,6 +1739,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
    "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
@@ -1765,6 +1778,9 @@ if [[ "\${1:-}" == "print" ]]; then
     fi
     echo "state = running"
     echo "pid = \$(cat "$BO_CALLS/lead.pid" 2>/dev/null || echo 424242)"
+  elif [[ "\${2:-}" == *"com.flywheel.voice-bridge" ]]; then
+    echo "Could not find service"
+    exit 3
   else
     echo "state = running"
     echo "pid = 434343"
@@ -2231,7 +2247,7 @@ rm -f "$identity_marker"
 # ── 3) dry-run exposes full scope + reason with no side effects ──
 echo "failed=1" > "$BO_HOME/.flywheel/plugin-restart-pending"
 out=$(bo_run --dry-run --reason env-change) && rc=0 || rc=$?
-if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + all Leads" \
+if (( rc == 0 )) && echo "$out" | grep -q "Would restart Bridge + voice-bridge (when configured/loaded) + all Leads" \
    && echo "$out" | grep -q "reason=env-change" \
    && [[ -z "$(bo_calls launchctl)" && -z "$(bo_calls pnpm)" ]] \
    && [[ -f "$BO_HOME/.flywheel/plugin-restart-pending" ]]; then

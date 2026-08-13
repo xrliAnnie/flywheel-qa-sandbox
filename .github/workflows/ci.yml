@@ -496,6 +496,14 @@ jobs:
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/test-restart-services.sh
 
+      # FLY-1715: runner credential tier and managed voice replacement are
+      # deployment boundaries. Explicitly registered because script-tests
+      # does not glob.
+      - name: Test — FLY-1715 runner boundary shell contracts
+        run: |
+          bash scripts/__tests__/runner-tier-token-preflight.test.sh
+          bash scripts/__tests__/restart-services-voice-bridge.test.sh
+
       # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
       # while Bridge default selection is explicit on both legacy upgrades and
       # fresh setup. Hermetic registries/HOMEs; no production config mutation.

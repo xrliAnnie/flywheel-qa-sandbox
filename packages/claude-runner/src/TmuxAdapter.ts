@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import {
+	buildNonLeadClaudeSettings,
 	PONYTAIL_PLUGIN,
 	resolveAllowedCanonicalModel,
 	resolveAllowedEffort,
@@ -57,6 +58,70 @@ export type AsyncExecFileFn = (
 	args: string[],
 	opts?: ExecFileOpts,
 ) => Promise<{ stdout: string; stderr: string }>;
+
+/**
+ * FLY-1715: values a runner must never inherit from the long-lived tmux server.
+ * The allow-by-default boundary is intentionally narrow: these are the six
+ * identity/credential names implicated in the incident. Registry-derived
+ * runner identity continues under the explicit FLYWHEEL_* names.
+ */
+export const AMBIENT_IDENTITY_DENYLIST = [
+	"LEAD_ID", // legacy Lead identity reader
+	"DISCORD_STATE_DIR", // Discord plugin credential-directory selector
+	"DISCORD_BOT_TOKEN", // Discord gateway credential
+	"TEAMLEAD_API_TOKEN", // Bridge master credential
+	"BRIDGE_URL", // legacy Bridge endpoint
+	"PROJECT_NAME", // legacy project identity; conditionally restored from ctx
+] as const;
+
+export interface AmbientSafeWindowCommandOptions {
+	binaryName: string;
+	binaryArgs: string[];
+	projectName?: string;
+	gateFile?: string;
+	launchToken?: string;
+	cleanup?: "keep" | "unlink";
+}
+
+/**
+ * Build the final pane command. Both direct adapters and the generation-gated
+ * Claude path cross the same `env -u` boundary. PROJECT_NAME is first removed,
+ * then restored only when the registry-derived context supplied it.
+ */
+export function buildAmbientSafeWindowCommand(
+	opts: AmbientSafeWindowCommandOptions,
+): string[] {
+	const safeRunnerCommand = [
+		"env",
+		...AMBIENT_IDENTITY_DENYLIST.flatMap((name) => ["-u", name]),
+		...(opts.projectName !== undefined
+			? [`PROJECT_NAME=${opts.projectName}`]
+			: []),
+		opts.binaryName,
+		...opts.binaryArgs,
+	];
+
+	const hasGate = opts.gateFile !== undefined || opts.launchToken !== undefined;
+	if (!hasGate) return safeRunnerCommand;
+	if (!opts.gateFile || !opts.launchToken) {
+		throw new Error(
+			"ambient-safe gated launch requires gateFile and launchToken",
+		);
+	}
+
+	return [
+		"sh",
+		"-c",
+		// $0 = commit file; $1 = this launch token; $2 = cleanup policy;
+		// after shift, "$@" is the complete ambient-safe argv. Neither project
+		// identity nor the binary name is interpolated into shell source.
+		'cf="$0"; tok="$1"; cleanup="$2"; shift 2; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; exec "$@"',
+		opts.gateFile,
+		opts.launchToken,
+		opts.cleanup ?? "keep",
+		...safeRunnerCommand,
+	];
+}
 
 export interface EnsureRunnerSessionOptions {
 	asyncExecFileFn?: AsyncExecFileFn;
@@ -596,26 +661,18 @@ export class TmuxAdapter implements IAdapter {
 				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
 				: undefined;
 		const gateFile = commitFile ?? directGateFile;
-		const windowCommand =
-			gateFile && launchToken
-				? [
-						"sh",
-						"-c",
-						// $0 = commit file; $1 = THIS launch's token; "$@" (after shift) =
-						// the claude args. Wait (bounded ~30s) until the commit file
-						// CONTAINS our exact token (a replay's different token won't match),
-						// then exec Claude so the pane process IS claude (remain-on-exit /
-						// pane-death detection unaffected). Timeout → exit (dead pane).
-						// `-qF` = quiet fixed-string (the token is a uuid — no regex chars).
-						// FLY-493: `exec ${binaryName}` (default "claude") — byte-identical
-						// claude launch; agy launches the same gated way.
-						`cf="$0"; tok="$1"; cleanup="$2"; shift 2; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; exec ${this.binaryName} "$@"`,
+		const windowCommand = buildAmbientSafeWindowCommand({
+			binaryName: this.binaryName,
+			binaryArgs: claudeArgs,
+			projectName: ctx.projectName,
+			...(gateFile && launchToken
+				? {
 						gateFile,
 						launchToken,
-						directGateFile ? "unlink" : "keep",
-						...claudeArgs,
-					]
-				: [this.binaryName, ...claudeArgs];
+						cleanup: directGateFile ? ("unlink" as const) : ("keep" as const),
+					}
+				: {}),
+		});
 
 		// Launch the tmux window WITH cwd (Claude directly on the fleet path; the
 		// gated waiting shell on the gateway-retry path).
@@ -1017,14 +1074,15 @@ export class TmuxAdapter implements IAdapter {
 		if (effort) args.push("--effort", effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
-		// FLY-615 + FLY-751: per-launch inline settings (highest non-managed
+		// FLY-615 + FLY-751 + FLY-1715: per-launch inline settings (highest non-managed
 		// precedence; per-plugin merge — does not disturb other enabled plugins).
 		// BOTH sources write the same `enabledPlugins` map, so they MUST merge
 		// into a single --settings flag: ponytail enables its plugin (true) and
 		// the FLY-751 slim profile disables heavy per-session MCP plugins
 		// (false). Real-machine spike (2026-07-01) confirmed a `false` entry
-		// prevents that plugin's MCP server subprocess from spawning. Neither
-		// source present → no flag → byte-compatible.
+		// prevents that plugin's MCP server subprocess from spawning. FLY-1715
+		// writes the non-Lead Discord deny contract LAST, independent
+		// of the optional slim profile, so caller opt-ins cannot turn it back on.
 		const enabledPlugins: Record<string, boolean> = {
 			...(ctx.enablePonytail && { [PONYTAIL_PLUGIN]: true }),
 		};
@@ -1039,9 +1097,10 @@ export class TmuxAdapter implements IAdapter {
 		for (const plugin of ctx.enabledPluginsExtra ?? []) {
 			enabledPlugins[plugin] = true;
 		}
-		if (Object.keys(enabledPlugins).length > 0) {
-			args.push("--settings", JSON.stringify({ enabledPlugins }));
-		}
+		args.push(
+			"--settings",
+			JSON.stringify(buildNonLeadClaudeSettings({ enabledPlugins })),
+		);
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
 		if (ctx.disableChrome) {
 			args.push("--no-chrome");

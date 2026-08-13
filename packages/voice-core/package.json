@@ -20,7 +20,8 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@google/genai": "^1.16.0"
+		"@google/genai": "^1.16.0",
+		"flywheel-config": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",

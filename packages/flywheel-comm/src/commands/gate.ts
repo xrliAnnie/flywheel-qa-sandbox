@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { normalizeOptionalBearer } from "flywheel-config";
 import { CommDB } from "../db.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 import { truncateWithEllipsis } from "../text-truncate.js";
@@ -302,7 +303,9 @@ async function reportStageBestEffort(stageName: string): Promise<void> {
 	const execId = process.env.FLYWHEEL_EXEC_ID;
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	if (!bridgeUrl || !execId || !issueId || !projectName) return;
 
@@ -337,7 +340,9 @@ async function reportGateTimedOutBestEffort(
 	const execId = process.env.FLYWHEEL_EXEC_ID;
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	if (!bridgeUrl || !execId || !issueId || !projectName) return;
 

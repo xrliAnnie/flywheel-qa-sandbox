@@ -176,6 +176,85 @@ describe("/api/reports mount (plugin layer)", () => {
 		expect(JSON.parse(res.body).error).toContain("VERCEL_TOKEN");
 	});
 
+	it("FLY-1715: master reaches publish and deliver; ingest reaches publish but gets 403 on deliver", async () => {
+		const app = makeApp({ apiToken: "master", ingestToken: "ingest" });
+		const masterPublish = await makeRequest(
+			app,
+			"/api/reports/publish",
+			{ projectName: "TestProject", html: "<html><head></head></html>" },
+			{ Authorization: "Bearer master" },
+		);
+		const masterDeliver = await makeRequest(
+			app,
+			"/api/reports/deliver",
+			{ url: "https://example.test", projectName: "TestProject" },
+			{ Authorization: "Bearer master" },
+		);
+		const ingestPublish = await makeRequest(
+			app,
+			"/api/reports/publish",
+			{ projectName: "TestProject", html: "<html><head></head></html>" },
+			{ Authorization: "Bearer ingest" },
+		);
+		const ingestDeliver = await makeRequest(
+			app,
+			"/api/reports/deliver",
+			{ url: "https://example.test", projectName: "TestProject" },
+			{ Authorization: "Bearer ingest" },
+		);
+
+		expect(masterPublish.status).toBe(501);
+		expect(masterDeliver.status).toBe(501);
+		expect(ingestPublish.status).toBe(501);
+		expect(ingestDeliver.status).toBe(403);
+	});
+
+	it.each([undefined, "Bearer unknown"])(
+		"FLY-1715: missing or unknown bearer stays 401 on both report routes (%s)",
+		async (authorization) => {
+			const app = makeApp({ apiToken: "master", ingestToken: "ingest" });
+			const headers = authorization ? { Authorization: authorization } : {};
+			for (const path of ["/api/reports/publish", "/api/reports/deliver"]) {
+				const res = await makeRequest(
+					app,
+					path,
+					{ projectName: "TestProject", html: "<html><head></head></html>" },
+					headers,
+				);
+				expect(res.status).toBe(401);
+			}
+		},
+	);
+
+	it("FLY-1715: gemini bearer cannot publish and request data cannot forge the server-owned tier", async () => {
+		const app = makeApp({
+			apiToken: "master",
+			ingestToken: "ingest",
+			geminiAgentToken: "gemini",
+		});
+		const gemini = await makeRequest(
+			app,
+			"/api/reports/publish",
+			{ projectName: "TestProject", html: "<html><head></head></html>" },
+			{ Authorization: "Bearer gemini" },
+		);
+		const forged = await makeRequest(
+			app,
+			"/api/reports/publish",
+			{
+				projectName: "UnknownProject",
+				html: "<html><head></head></html>",
+				reportCredentialTier: "master",
+			},
+			{
+				Authorization: "Bearer ingest",
+				"X-Report-Credential-Tier": "master",
+			},
+		);
+		expect(gemini.status).toBe(401);
+		expect(forged.status).toBe(403);
+	});
+
 	it("FLYWHEEL_REMOTE_REPORTS=0 → 503 even with good token", async () => {
 		process.env.FLYWHEEL_REMOTE_REPORTS = "0";
 		const app = makeApp({ apiToken: "secret" });
@@ -187,5 +266,39 @@ describe("/api/reports mount (plugin layer)", () => {
 		);
 		expect(res.status).toBe(503);
 		expect(JSON.parse(res.body).error).toContain("disabled");
+	});
+
+	it("FLY-1715: lead-inbox nudge accepts master or ingest while other APIs remain master-only", async () => {
+		const app = makeApp({
+			apiToken: "master",
+			ingestToken: "ingest",
+			geminiAgentToken: "gemini",
+		});
+		for (const token of ["master", "ingest"]) {
+			const nudge = await makeRequest(
+				app,
+				"/api/lead-inbox/nudge",
+				{ leadId: "product-lead", project: "TestProject" },
+				{ Authorization: `Bearer ${token}` },
+			);
+			// No registry is wired in this mount fixture; 404 proves auth passed.
+			expect(nudge.status).toBe(404);
+		}
+		for (const token of ["gemini", "unknown"]) {
+			const nudge = await makeRequest(
+				app,
+				"/api/lead-inbox/nudge",
+				{ leadId: "product-lead" },
+				{ Authorization: `Bearer ${token}` },
+			);
+			expect(nudge.status).toBe(401);
+		}
+		const privileged = await makeRequest(
+			app,
+			"/api/runs/start",
+			{},
+			{ Authorization: "Bearer ingest" },
+		);
+		expect(privileged.status).toBe(401);
 	});
 });

@@ -17,6 +17,7 @@
  *     blocks" (the spike saw zero-tool models pretend to run commands).
  */
 import { existsSync } from "node:fs";
+import { mergeNonLeadClaudeSettingsArgv } from "flywheel-config";
 import {
 	NodeProcessRunner,
 	type ProcessHandle,
@@ -99,6 +100,7 @@ export class HeadlessClaudeBrain implements BrainAdapter {
 			"--verbose",
 		);
 		args.push(...(this.opts.extraArgs ?? []));
+		const safeArgs = mergeNonLeadClaudeSettingsArgv(args);
 
 		// resume keeps history in-session → send only the new turn; else re-inject.
 		const prompt = useResume
@@ -107,7 +109,7 @@ export class HeadlessClaudeBrain implements BrainAdapter {
 
 		const child = this.runner.spawn(
 			this.opts.claudeBin,
-			args,
+			safeArgs,
 			this.opts.cwd ? { cwd: this.opts.cwd } : {},
 		);
 		const stream = new BrainStream(child, opts.signal, this.opts.timeoutMs);

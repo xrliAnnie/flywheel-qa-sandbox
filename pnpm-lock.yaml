@@ -601,6 +601,9 @@ importers:
       '@google/genai':
         specifier: ^1.16.0
         version: 1.44.0(@modelcontextprotocol/sdk@1.25.2(@cfworker/json-schema@4.1.1)(hono@4.11.3)(zod@4.3.6))
+      flywheel-config:
+        specifier: workspace:*
+        version: link:../config
     devDependencies:
       '@types/node':
         specifier: ^20.0.0

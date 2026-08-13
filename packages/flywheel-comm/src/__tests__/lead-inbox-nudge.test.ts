@@ -147,4 +147,54 @@ describe("FLY-1373 lead inbox doorbell", () => {
 		expect(warn).toHaveBeenCalledOnce();
 		expect(warn).toHaveBeenCalledWith(expect.stringContaining("returned 500"));
 	});
+
+	it("FLY-1715: ingest is normalized, used when master is absent, and never triggers master reload", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 401 }));
+		const resolveApiToken = vi.fn(() => "must-not-be-read");
+		const warn = vi.fn();
+
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: "http://127.0.0.1:9876",
+			leadId: "flywheel-eng-lead",
+			ingestToken: "  ingest-token  ",
+			resolveApiToken,
+			fetchImpl,
+			warn,
+		});
+
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({
+			Authorization: "Bearer ingest-token",
+		});
+		expect(resolveApiToken).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1715: master is preferred over ingest and blank credentials never trigger disk reload", async () => {
+		const masterFetch = vi.fn(async () => new Response(null, { status: 202 }));
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: "http://127.0.0.1:9876",
+			leadId: "flywheel-eng-lead",
+			apiToken: " master-token ",
+			ingestToken: "ingest-token",
+			fetchImpl: masterFetch,
+		});
+		expect(masterFetch.mock.calls[0]?.[1]?.headers).toMatchObject({
+			Authorization: "Bearer master-token",
+		});
+
+		const noCredentialFetch = vi.fn(
+			async () => new Response(null, { status: 401 }),
+		);
+		const resolveApiToken = vi.fn(() => "must-not-be-read");
+		await nudgeLeadInboxBestEffort({
+			bridgeUrl: "http://127.0.0.1:9876",
+			leadId: "flywheel-eng-lead",
+			apiToken: "  ",
+			ingestToken: "",
+			resolveApiToken,
+			fetchImpl: noCredentialFetch,
+			warn: () => {},
+		});
+		expect(resolveApiToken).not.toHaveBeenCalled();
+	});
 });

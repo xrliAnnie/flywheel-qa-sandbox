@@ -22,6 +22,7 @@ import { ReportRegistry } from "../bridge/report-registry.js";
 import {
 	buildReportMessage,
 	createReportsRouter,
+	MAX_OUTSTANDING_REPORT_PUBLISHES,
 	type ReportsRouterOptions,
 	readPreviewFile,
 } from "../bridge/reports-route.js";
@@ -76,9 +77,16 @@ describe("reports-route", () => {
 
 	async function startApp(
 		overrides: Partial<ReportsRouterOptions> = {},
+		credentialTier: "master" | "ingest" | null = "master",
 	): Promise<void> {
 		const app = express();
 		app.use(express.json({ limit: "1mb" }));
+		if (credentialTier) {
+			app.use("/api/reports", (_req, res, next) => {
+				res.locals.reportCredentialTier = credentialTier;
+				next();
+			});
+		}
 		app.use(
 			"/api/reports",
 			createReportsRouter({
@@ -143,6 +151,63 @@ describe("reports-route", () => {
 			html: HTML,
 		});
 		expect(r.status).toBe(501);
+	});
+
+	it("FLY-1715: publish fails closed without a server-owned credential tier", async () => {
+		await startApp({}, null);
+		const r = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+			reportCredentialTier: "master",
+		});
+		expect(r.status).toBe(401);
+		expect(deployMock).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1715: ingest publish accepts configured projects and rejects unknown projects", async () => {
+		await startApp({}, "ingest");
+		const denied = await post("/api/reports/publish", {
+			projectName: "unknown",
+			html: HTML,
+		});
+		expect(denied.status).toBe(403);
+		expect(deployMock).not.toHaveBeenCalled();
+		const allowed = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+		});
+		expect(allowed.status).toBe(200);
+	});
+
+	it("FLY-1715: outstanding publish cap returns 429 and releases capacity after drain", async () => {
+		let releaseFirst: (() => void) | undefined;
+		const firstDeploy = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		deployMock.mockImplementation(async () => {
+			await firstDeploy;
+			return { deploymentId: "dpl_x" };
+		});
+		await startApp();
+		const queued = Array.from(
+			{ length: MAX_OUTSTANDING_REPORT_PUBLISHES + 1 },
+			(_, index) =>
+				post("/api/reports/publish", {
+					projectName: "withGeneral",
+					html: HTML,
+					title: `queued-${index}`,
+				}),
+		);
+		const overflow = await queued.at(-1);
+		expect(overflow?.status).toBe(429);
+		releaseFirst?.();
+		const accepted = await Promise.all(queued.slice(0, -1));
+		expect(accepted.every((result) => result.status === 200)).toBe(true);
+		const recovered = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: HTML,
+		});
+		expect(recovered.status).toBe(200);
 	});
 
 	it("publish: validation matrix → 400", async () => {

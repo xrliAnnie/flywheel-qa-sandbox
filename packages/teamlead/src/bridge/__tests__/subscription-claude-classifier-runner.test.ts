@@ -60,6 +60,15 @@ describe("runSubscriptionClassifier — success", () => {
 		expect(args).toContain("claude-haiku-4-5-20251001");
 		expect(args).toContain("--output-format");
 		expect(args).toContain("json");
+		const settingsIndex = args.indexOf("--settings");
+		expect(settingsIndex).toBeGreaterThan(-1);
+		expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
+		expect(
+			JSON.parse(args[settingsIndex + 1] as string).enabledPlugins,
+		).toMatchObject({
+			"discord@flywheel-plugins": false,
+			"discord@claude-plugins-official": false,
+		});
 	});
 });
 

@@ -24,6 +24,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { normalizeOptionalBearer } from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	type DesignHtmlEvidence,
@@ -216,7 +217,9 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	const issueId = requireEnv("FLYWHEEL_ISSUE_ID");
 	const projectName = requireEnv("FLYWHEEL_PROJECT_NAME");
 	const bridgeUrl = requireEnv("FLYWHEEL_BRIDGE_URL");
-	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+	const ingestToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_INGEST_TOKEN,
+	);
 
 	// FLY-1257 M1-c: marker presence is an explicit Codex capability signal.
 	// Claude runners do not receive this env var and retain their prior behavior.

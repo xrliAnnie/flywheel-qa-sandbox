@@ -1,0 +1,14 @@
+flowchart TB
+    subgraph server["污染 tmux server（如 pid 88723，一台运维恢复动作起的服务）"]
+        ENV["server 自带的环境变量<br/>LEAD_ID / DISCORD_STATE_DIR / bot token / 特权 API token"]
+    end
+    ENV -->|"新窗口继承整台 server 的环境"| R1["runner A（eng-lead 名下）"]
+    ENV -->|"同一台 server 出生"| R2["runner B（product-lead 名下）"]
+    R1 -->|"每个 claude 进程都加载<br/>Discord 插件"| A1["adapter：bun server.ts<br/>拿 token 连 Discord"]
+    R2 -->|"身份三件套打架（嵌合）"| A2["adapter：用 product 名义<br/>拿 eng 的 token 铸件"]
+    A1 -.->|"杀掉 → 父进程 15 分钟内复活"| A1
+    A2 -.->|"打地鼠无效：清错了层"| A2
+    classDef bad fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f;
+    classDef warn fill:#fff2d9,stroke:#ff9500,color:#1d1d1f;
+    class ENV,A1,A2 bad;
+    class R1,R2 warn;

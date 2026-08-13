@@ -12,6 +12,7 @@ export {
 	GATE_TIMEOUT_BUFFER_MS,
 	MIN_GATE_TIMEOUT_MS,
 } from "./constants.js";
+export { normalizeOptionalBearer } from "./credentials.js";
 export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
 export { resolveDecisionMode } from "./decision-mode.js";
 export { isUiDesignFlavored, UI_DESIGN_LABELS } from "./designer-labels.js";
@@ -137,6 +138,12 @@ export {
 	NODE_TYPE_REGISTRY,
 	nodeTypeWritesCode,
 } from "./node-type-registry.js";
+export type { ClaudeSettingsSource } from "./non-lead-forbidden-plugins.js";
+export {
+	buildNonLeadClaudeSettings,
+	mergeNonLeadClaudeSettingsArgv,
+	NON_LEAD_FORBIDDEN_PLUGINS,
+} from "./non-lead-forbidden-plugins.js";
 export type {
 	PatrolConfig,
 	PatrolConfigSnapshot,
