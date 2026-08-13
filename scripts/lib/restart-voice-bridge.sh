@@ -76,8 +76,13 @@ voice_bridge_sleep() {
 
 voice_bridge_capture_tuple_tree() {
   local pid="$1" start children child
-  start="$(voice_bridge_process_start "$pid")" || return 1
-  [[ -n "$start" ]] || return 1
+  if ! start="$(voice_bridge_process_start "$pid")" || [[ -z "$start" ]]; then
+    # A descendant may exit between pgrep and ps. It is already reclaimed,
+    # which satisfies the old-tree proof; only a still-live unverifiable PID
+    # is unsafe and must fail the deployment transaction closed.
+    voice_bridge_process_alive "$pid" || return 0
+    return 1
+  fi
   printf '%s\t%s\n' "$pid" "$start"
   children="$(voice_bridge_child_pids "$pid")"
   for child in $children; do

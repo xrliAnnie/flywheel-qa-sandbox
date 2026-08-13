@@ -112,6 +112,27 @@ run_buddy() { # <home> <answers-string> [extra env pairs...]
     bash "$BUDDY" --project qa-buddy --cos-persona Cass --eng-persona Tad
 }
 
+run_buddy_no_args() { # <home> <answers-string>
+  local home="$1" answers="$2"
+  printf '%s' "$answers" | env -i HOME="$home" USER=tester PATH="$PATH" \
+    FLYWHEEL_BUDDY_STEPS_BIN="$STUB_STEPS" \
+    FLYWHEEL_AGENT_CLI=stub FLYWHEEL_AGENT_CLI_PROVIDER_DIR="$PROV_DIR" \
+    FLYWHEEL_BUDDY_PREVIEW_LIB=/nonexistent FLYWHEEL_BUDDY_CONNECT_LIB=/nonexistent \
+    FLYWHEEL_BUDDY_NONINTERACTIVE=1 \
+    /bin/bash "$BUDDY"
+}
+
+# ── D0: stock macOS Bash 3.2 accepts the production no-args path ──
+H0="$SANDBOX/home0"; mkdir -p "$H0"
+T0="$(run_buddy_no_args "$H0" $'\n帮我盯下 dropship 订单,哪单卡了、为什么卡\n成\n' 2>&1)"
+RC0=$?
+CURSOR0="$(jq -r '.buddy.cursor' "$H0/.flywheel/setup-state.json" 2>/dev/null)"
+if [ "$RC0" -eq 0 ] && [ "$CURSOR0" = "9" ] && grep -q "搞定 🎉" <<<"$T0"; then
+  pass "D0 stock Bash 3.2: no CLI args completes without empty-array nounset"
+else
+  fail "D0 no-args rc=$RC0 cursor=$CURSOR0 out: $(tail -3 <<<"$T0")"
+fi
+
 # ── D1: full dry run b0→b8 ──
 H1="$SANDBOX/home1"; mkdir -p "$H1"
 T1="$(run_buddy "$H1" $'\n帮我盯下 dropship 订单,哪单卡了、为什么卡\n成\n' 2>&1)"
@@ -166,9 +187,9 @@ d3_parse() { # <piped-input> <first-arg-text> → prints FB_PROPOSAL
     FLYWHEEL_BUDDY_NONINTERACTIVE=1 FLYWHEEL_BUDDY_SOURCED=1 \
     bash -c '
       arg="$1"
-      # Keep one explicit Buddy arg so Bash 3.2 does not nounset-fail while
-      # expanding an empty FB_ARGS array inside fb_steps().
-      set -- --state-dir "$HOME/.flywheel"
+      # Sourced scripts inherit caller args; the Buddy arg parser must also
+      # support the production no-args path under stock macOS Bash 3.2.
+      set --
       source "'"$BUDDY"'" || exit 97
       fb_parse_first_task "$arg" >/dev/null 2>&1
       printf "%s\n" "$FB_PROPOSAL"

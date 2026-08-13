@@ -102,7 +102,11 @@ fb_copy() {
 }
 
 # ── step CLI plumbing ────────────────────────────────────────────────────────
-fb_steps() { bash "$FB_STEPS_CLI" "${FB_ARGS[@]}" "$@"; }
+fb_steps() {
+  # Bash 3.2 treats an empty array expansion as unbound under `set -u`.
+  # `${array[@]+...}` preserves zero arguments on that stock macOS shell.
+  bash "$FB_STEPS_CLI" "${FB_ARGS[@]+"${FB_ARGS[@]}"}" "$@"
+}
 
 FB_KNOWN_STEPS=""
 fb_step_known() {
@@ -130,7 +134,7 @@ fb_run_guarded() {
   local fails=0 out rc
   while :; do
     if [ "$#" -gt 0 ]; then
-      out="$(env "$@" bash "$FB_STEPS_CLI" "${FB_ARGS[@]}" run "$id" 2>>"$FB_STATE_DIR/buddy-steps.log")"
+      out="$(env "$@" bash "$FB_STEPS_CLI" "${FB_ARGS[@]+"${FB_ARGS[@]}"}" run "$id" 2>>"$FB_STATE_DIR/buddy-steps.log")"
     else
       out="$(fb_run_step "$id")"
     fi
@@ -343,7 +347,7 @@ fb_b5() {
   if [ -f "$FB_PREVIEW_LIB" ]; then
     # shellcheck disable=SC1090
     source "$FB_PREVIEW_LIB"
-    if buddy_captain_preview_start "$FB_STATE_DIR" "${FB_ARGS[@]}" 2>>"$FB_STATE_DIR/buddy-steps.log"; then
+    if buddy_captain_preview_start "$FB_STATE_DIR" "${FB_ARGS[@]+"${FB_ARGS[@]}"}" 2>>"$FB_STATE_DIR/buddy-steps.log"; then
       fb_gap; fb_copy step5-early-chat
       fb_ask "(回车继续)"
       return 0

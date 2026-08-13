@@ -23,6 +23,8 @@ KEEPALIVE=true
 PHASE=old
 HEALTH_OK=true
 OLD_SURVIVES=false
+VANISHED_PID=""
+UNVERIFIABLE_PID=""
 RESTART_CALLS=0
 SLEEP_CALLS=0
 
@@ -34,6 +36,7 @@ voice_bridge_read_pid() {
   if [[ "$PHASE" == old ]]; then printf '101\n'; else printf '201\n'; fi
 }
 voice_bridge_process_start() {
+  [[ "$1" != "$VANISHED_PID" && "$1" != "$UNVERIFIABLE_PID" ]] || return 1
   case "$1" in
     101) printf 'old-root\n' ;;
     102) printf 'old-headless\n' ;;
@@ -50,6 +53,7 @@ voice_bridge_child_pids() {
   esac
 }
 voice_bridge_process_alive() {
+  [[ "$1" != "$VANISHED_PID" ]] || return 1
   case "$1" in
     201) [[ "$PHASE" == new ]] ;;
     101|102|103|104) [[ "$PHASE" == old || "$OLD_SURVIVES" == true ]] ;;
@@ -66,6 +70,8 @@ reset_case() {
   PHASE=old
   HEALTH_OK=true
   OLD_SURVIVES=false
+  VANISHED_PID=""
+  UNVERIFIABLE_PID=""
   RESTART_CALLS=0
   SLEEP_CALLS=0
   VOICE_BRIDGE_RESTART_STATE=""
@@ -87,6 +93,28 @@ fi
   && "$VOICE_BRIDGE_OLD_TUPLES" == *$'104\told-nested'* ]] \
   && pass "capture records daemon and recursive child PID+start tuples" \
   || fail "captured tuples: $VOICE_BRIDGE_OLD_TUPLES"
+
+reset_case
+VANISHED_PID=104
+if restart_voice_bridge_managed; then
+  pass "capture treats a descendant that exits after pgrep as already reclaimed"
+else
+  fail "transient descendant exit should not fail deploy: $VOICE_BRIDGE_RESTART_DETAIL"
+fi
+[[ "$RESTART_CALLS" == 1 && "$VOICE_BRIDGE_OLD_TUPLES" != *$'104\t'* ]] \
+  && pass "vanished descendant is omitted while managed replacement proceeds" \
+  || fail "vanished descendant capture/calls: $VOICE_BRIDGE_OLD_TUPLES / $RESTART_CALLS"
+
+reset_case
+UNVERIFIABLE_PID=104
+if restart_voice_bridge_managed; then
+  fail "a still-live descendant with no start tuple must fail closed"
+else
+  pass "a still-live descendant with no start tuple fails capture closed"
+fi
+[[ "$RESTART_CALLS" == 0 && "$VOICE_BRIDGE_RESTART_DETAIL" == old_tree_capture_failed:* ]] \
+  && pass "unverifiable live descendant blocks mutation with capture evidence" \
+  || fail "unverifiable descendant detail/calls: $VOICE_BRIDGE_RESTART_DETAIL / $RESTART_CALLS"
 
 reset_case
 CONFIGURED=false
