@@ -1,6 +1,8 @@
 import { FEATURE_FLAGS } from "./registry.js";
 
 export const NON_FLAG_ALLOWLIST: Record<string, string> = {
+	FLYWHEEL_PATROL_CONFIG:
+		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
 	// context / ids
 	FLYWHEEL_EXEC_ID: "context: runner execution id",
 	FLYWHEEL_ISSUE_ID: "context: linear issue id",

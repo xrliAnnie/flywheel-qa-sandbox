@@ -51,6 +51,43 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("exposes the owning queue's typed settlement view for patrol recovery", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1687-runtime-settlement-"));
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "test",
+			deliver: vi.fn(),
+			renderEnvelope: () => "[patrol_tick] body",
+			sendBootstrap: vi.fn(),
+			health: vi.fn(),
+			shutdown: vi.fn(),
+		} as unknown as LeadRuntime);
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry,
+			commDbPathForProject: (name) => join(root, `${name}.db`),
+		});
+		runtimes.push(runtime);
+		const receipt = runtime.enqueueLeadEvent(
+			{
+				seq: 1,
+				eventId: "patrol_tick:project-a:lead-a:after-genesis",
+				event: {
+					event_type: "patrol_tick",
+					execution_id: "patrol:project-a:lead-a",
+					issue_id: "",
+				},
+				sessionKey: "patrol:project-a:lead-a",
+				leadId: "lead-a",
+				timestamp: "2026-08-13T12:00:00.000Z",
+			},
+			"[patrol_tick] body",
+		);
+		expect(
+			runtime.getLeadEventSettlement("project-a", receipt.deliveryId),
+		).toMatchObject({ kind: "live", state: "QUEUED" });
+	});
 	it("names the project and CommDB when project initialization fails", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1649-runtime-open-"));
 		const dbPath = join(root, "project-a.db");

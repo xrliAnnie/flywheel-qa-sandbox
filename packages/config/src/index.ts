@@ -138,6 +138,19 @@ export {
 	nodeTypeWritesCode,
 } from "./node-type-registry.js";
 export type {
+	PatrolConfig,
+	PatrolConfigSnapshot,
+} from "./patrol-config.js";
+export {
+	DEFAULT_PATROL_INTERVAL_MINUTES,
+	effectivePatrolIntervalMs,
+	getGlobalPatrolConfigSnapshot,
+	getProjectPatrolConfigSnapshot,
+	MAX_PATROL_INTERVAL_MINUTES,
+	MIN_PATROL_INTERVAL_MINUTES,
+	resetPatrolConfigCachesForTests,
+} from "./patrol-config.js";
+export type {
 	PonytailCondition,
 	PonytailEffective,
 	PonytailInput,

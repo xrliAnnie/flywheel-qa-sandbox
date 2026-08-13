@@ -30,6 +30,7 @@ import {
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
+	formatPatrolTick,
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
@@ -217,6 +218,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
+		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 
 		// FLY-161: runner_question — non-blocking ask from Runner. The Runner
 		// continues working regardless of when the Lead responds, so the prompt

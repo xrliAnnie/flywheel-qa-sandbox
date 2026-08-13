@@ -3010,6 +3010,9 @@ export class StateStore {
 			"CREATE INDEX IF NOT EXISTS idx_lead_events_recent ON lead_events(lead_id, delivered_at)",
 		);
 		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_lead_events_patrol ON lead_events(lead_id, event_type, session_key, seq)",
+		);
+		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
 
@@ -5630,6 +5633,25 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE status IN ('running', 'ship_parked', 'awaiting_review', 'approved_to_ship')",
 		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-1687: Bridge-declared patrol roster, scoped in SQL before Lead routing. */
+	getPatrolRosterSessions(projectName: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE project_name = ?
+			   AND status IN ('running', 'ship_parked', 'awaiting_review',
+			                  'approved_to_ship', 'pending', 'design_done')`,
+		);
+		stmt.bind([projectName]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(
@@ -10907,6 +10929,21 @@ export class StateStore {
 		const row = this.db.raw
 			.prepare("SELECT * FROM lead_events WHERE seq = ?")
 			.get(seq) as Record<string, unknown> | undefined;
+		return row ? mapLeadEventRow(row) : null;
+	}
+
+	/** FLY-1687: exact per-(project, Lead) patrol chain head; no SQL LIKE. */
+	getLatestPatrolTickEvent(
+		leadId: string,
+		sessionKey: string,
+	): LeadEventRow | null {
+		const row = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				 WHERE lead_id = ? AND event_type = 'patrol_tick' AND session_key = ?
+				 ORDER BY seq DESC LIMIT 1`,
+			)
+			.get(leadId, sessionKey) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
 	}
 

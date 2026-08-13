@@ -114,6 +114,28 @@ export class ConfigLoader {
 			);
 		}
 
+		// FLY-1687: optional per-project patrol tuning (not an enable/disable flag).
+		const patrol = c.patrol as Record<string, unknown> | undefined;
+		if (Object.hasOwn(c, "patrol")) {
+			if (
+				patrol == null ||
+				typeof patrol !== "object" ||
+				Array.isArray(patrol)
+			) {
+				throw new Error("patrol must be a YAML mapping (object)");
+			}
+			if (
+				Object.hasOwn(patrol, "interval_minutes") &&
+				(typeof patrol.interval_minutes !== "number" ||
+					!Number.isFinite(patrol.interval_minutes) ||
+					patrol.interval_minutes <= 0)
+			) {
+				throw new Error(
+					"patrol.interval_minutes must be a positive finite number",
+				);
+			}
+		}
+
 		// skills.proofshot (optional — GEO-151)
 		const skills = c.skills as Record<string, unknown> | undefined;
 		if (skills != null) {

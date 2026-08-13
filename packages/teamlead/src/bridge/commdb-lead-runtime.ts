@@ -17,6 +17,7 @@ import {
 	formatDurationMs,
 	formatGateQuestion,
 	formatMisroutedReport,
+	formatPatrolTick,
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
@@ -92,6 +93,7 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
+		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 
 		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
 		// shape from gate_question: no checkpoint tag, framing emphasises

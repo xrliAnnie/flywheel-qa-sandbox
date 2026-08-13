@@ -6,7 +6,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
-import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import {
+	MailboxQueue,
+	type MailboxSettlement,
+} from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import {
@@ -368,6 +371,15 @@ export class LeadInboxRuntime {
 		const result = enqueueEvent({ queue, envelope, content });
 		this.nudge(envelope.leadId, project.projectName);
 		return result;
+	}
+
+	getLeadEventSettlement(
+		projectName: string,
+		deliveryId: string,
+	): MailboxSettlement {
+		const queue = this.queues.get(projectName);
+		if (!queue) throw new Error(`queue closed for project: ${projectName}`);
+		return queue.inspectDeliveryState(deliveryId);
 	}
 
 	nudge(leadId: string, projectName?: string): boolean {

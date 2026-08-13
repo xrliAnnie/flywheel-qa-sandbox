@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant B as Bridge 闹钟
+    participant L as 台账(lead_events)
+    participant M as 信箱(mailbox)
+    participant Lead as Lead
+    B->>L: 记一笔「第 N 次 tick」<br/>(同一笔只能记一次,天然防重复)
+    B->>M: 投进信箱,排队等送
+    M->>Lead: 随批次送达
+    Lead->>M: 确认收到(ACK)
+    Note over B,M: 下一条 tick 必须同时满足:<br/>① 上一条已确认(或已死信收场)<br/>② 距上次确认已满一个间隔
+    Note over B,M: Lead 卡住时:信箱里最多躺一条 tick,绝不堆积。<br/>Bridge 重启不丢节奏(台账在磁盘上)

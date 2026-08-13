@@ -7472,6 +7472,49 @@ export async function startBridge(
 				console.warn(`[founder-decision-convergence] ${message}`),
 		});
 
+	// Keep this rider out of lightweight plugin consumers such as
+	// createLeadRuntime(); only a full Bridge boot needs its config/queue graph.
+	const { createLeadPatrolTickPass, patrolSessionKey } = await import(
+		"./patrol-tick.js"
+	);
+	const leadPatrolTickPass = createLeadPatrolTickPass({
+		projects,
+		store,
+		inspectDeliveryState: (projectName, deliveryId) =>
+			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		alertFailure: async (failure) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) {
+				console.warn(
+					`[patrol_tick] alert sink unavailable: ${failure.episodeId} ${failure.detail}`,
+				);
+				return;
+			}
+			const fleetScoped = failure.leadId === null;
+			const alertLeadId =
+				failure.leadId ?? `patrol-roster:${failure.projectName}`;
+			await sink.alert({
+				leadId: alertLeadId,
+				projectName: fleetScoped ? FLEET_ALERT_PROJECT : failure.projectName,
+				eventId: `patrol_tick_stalled:${failure.episodeId}`,
+				eventType: "inbox_loop_stalled",
+				title:
+					failure.kind === "unowned_roster"
+						? "Lead patrol roster has no patrol-capable owner"
+						: "Lead patrol tick delivery is stalled",
+				body: `project=${failure.projectName}: ${failure.detail}`,
+				severity: "severe",
+				...(failure.leadId
+					? {
+							sessionKey: patrolSessionKey(failure.projectName, failure.leadId),
+						}
+					: {}),
+			});
+		},
+		log: (message) => console.warn(message),
+	});
+
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
@@ -7482,6 +7525,7 @@ export async function startBridge(
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
+		onLeadPatrolTick: leadPatrolTickPass,
 		onReconcilePatrolTick: async () => {
 			await drainTurnWakeOutbox({
 				projectNames: projects.map((project) => project.projectName),

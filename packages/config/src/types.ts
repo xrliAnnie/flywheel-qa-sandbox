@@ -693,6 +693,13 @@ export interface FlywheelConfig {
 	 * (per-issue label / per-run flag can still turn it on). Byte-compatible.
 	 */
 	ponytail?: PonytailConfig;
+	/** FLY-1687: per-project Lead patrol cadence; absent uses fleet/global policy. */
+	patrol?: PatrolConfig;
+}
+
+/** Bridge patrol timing only. The Lead-side checklist is intentionally not config. */
+export interface PatrolConfig {
+	interval_minutes?: number;
 }
 
 /**

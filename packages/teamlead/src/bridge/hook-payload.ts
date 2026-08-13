@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	truncateCodePoints,
 	truncateCodePointsFromEnd,
@@ -20,6 +21,9 @@ export interface HookPayload {
 	last_error?: string;
 	chat_channel?: string;
 	issue_labels?: string[];
+	/** FLY-1687: Bridge ledger declaration only; Lead independently verifies it. */
+	roster?: PatrolRosterEntry[];
+	generated_at?: string;
 	// stuck-specific
 	minutes_since_activity?: number;
 	/** FLY-1234: session_stuck confirm-layer annotation — the bounded reason
@@ -166,6 +170,13 @@ export interface HookPayload {
 	requester_context?: string;
 }
 
+export interface PatrolRosterEntry {
+	identifier: string;
+	sessionRole: string;
+	status: string;
+	executionId8: string;
+}
+
 export function buildSessionKey(session: {
 	issue_identifier?: string;
 	issue_id: string;
@@ -211,6 +222,46 @@ export interface StuckEscalationEnvelopeLike {
 	event: HookPayload;
 	sessionKey: string;
 	timestamp: string;
+}
+
+const PATROL_TOKEN_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;
+const PATROL_DIRECTIVE_WORDS = /check|verify|suggest|inspect|建议|怀疑|该查/iu;
+const PATROL_STATUSES = new Set([
+	"running",
+	"ship_parked",
+	"awaiting_review",
+	"approved_to_ship",
+	"pending",
+	"design_done",
+]);
+
+function canonicalPatrolToken(value: unknown): string {
+	const text = typeof value === "string" ? value : String(value ?? "");
+	if (PATROL_TOKEN_GRAMMAR.test(text) && !PATROL_DIRECTIVE_WORDS.test(text)) {
+		return text;
+	}
+	return `unsafe-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
+}
+
+/** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
+export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
+	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
+	const roster = rawRoster.map((item) => ({
+		identifier: canonicalPatrolToken(item?.identifier),
+		sessionRole: canonicalPatrolToken(item?.sessionRole),
+		status: PATROL_STATUSES.has(item?.status)
+			? item.status
+			: canonicalPatrolToken(item?.status),
+		executionId8: canonicalPatrolToken(item?.executionId8),
+	}));
+	return [
+		"[patrol_tick] 巡检时间到。",
+		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
+		...roster.map(
+			(item) =>
+				`- ${item.identifier} [${item.executionId8}] (${item.sessionRole}, ${item.status})`,
+		),
+	].join("\n");
 }
 
 const STUCK_TAIL_MAX_LINES = 8;

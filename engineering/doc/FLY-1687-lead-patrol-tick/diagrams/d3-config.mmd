@@ -1,0 +1,5 @@
+flowchart LR
+    P["项目级配置<br/>.flywheel/config.yaml<br/>patrol.interval_minutes"] -->|"最优先"| E["本轮生效间隔"]
+    G["全舰一处配置<br/>~/.flywheel/patrol.json"] -->|"其次"| E
+    D["出厂默认<br/>60 分钟"] -->|"兜底"| E
+    E --> N["每次判断都现读文件<br/>(只看文件改没改,改了才重新解析)<br/>改完 ≤1 分钟生效,全程零重启"]

@@ -17,6 +17,18 @@ import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
 export type MailboxState = "QUEUED" | "LEASED" | "ACKED" | "DEAD";
+export type MailboxSettlement =
+	| { kind: "absent_identity" }
+	| {
+			kind: "live";
+			state: MailboxState;
+			settledAt: string | null;
+	  }
+	| {
+			kind: "archived_terminal";
+			state: "ACKED" | "DEAD";
+			settledAt: string;
+	  };
 export type MailboxRecipientKind = "lead" | "runner" | "bridge";
 export type MailboxMessageClass = "protocol" | "model";
 export type MailboxPriority = 0 | 1 | 2 | 3;
@@ -516,6 +528,71 @@ export class MailboxQueue {
 		return this.db
 			.prepare("SELECT * FROM mailbox WHERE id = ? OR delivery_id = ?")
 			.get(idOrDeliveryId, idOrDeliveryId) as MailboxRow | undefined;
+	}
+
+	/**
+	 * Read-only settlement view that survives live-row retention. Identity is
+	 * permanent, so a truly absent producer projection stays distinguishable
+	 * from an ACKED/DEAD row archived after 72h.
+	 */
+	inspectDeliveryState(idOrDeliveryId: string): MailboxSettlement {
+		const live = this.getById(idOrDeliveryId);
+		if (live) {
+			return {
+				kind: "live",
+				state: live.state,
+				settledAt:
+					live.state === "ACKED"
+						? live.acked_at
+						: live.state === "DEAD"
+							? live.dead_at
+							: null,
+			};
+		}
+		const identity = this.db
+			.prepare(
+				"SELECT id, archived_at FROM mailbox_identity WHERE id = ? OR delivery_id = ?",
+			)
+			.get(idOrDeliveryId, idOrDeliveryId) as
+			| { id: string; archived_at: string | null }
+			| undefined;
+		if (!identity) return { kind: "absent_identity" };
+		if (!identity.archived_at) {
+			throw new Error(`active mailbox identity has no row: ${identity.id}`);
+		}
+		const archived = this.db
+			.prepare(
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+			)
+			.get(identity.id) as { row_json: string } | undefined;
+		if (!archived) {
+			throw new Error(
+				`archived mailbox identity has no snapshot: ${identity.id}`,
+			);
+		}
+		let snapshot: Partial<MailboxRow>;
+		try {
+			snapshot = JSON.parse(archived.row_json) as Partial<MailboxRow>;
+		} catch {
+			throw new Error(`archived mailbox snapshot is malformed: ${identity.id}`);
+		}
+		if (snapshot.state === "ACKED" && snapshot.acked_at) {
+			return {
+				kind: "archived_terminal",
+				state: "ACKED",
+				settledAt: snapshot.acked_at,
+			};
+		}
+		if (snapshot.state === "DEAD" && snapshot.dead_at) {
+			return {
+				kind: "archived_terminal",
+				state: "DEAD",
+				settledAt: snapshot.dead_at,
+			};
+		}
+		throw new Error(
+			`archived mailbox snapshot is not terminal: ${identity.id}`,
+		);
 	}
 
 	getIdentityCarrier(

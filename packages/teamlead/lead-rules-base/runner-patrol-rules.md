@@ -10,6 +10,36 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
 
 ---
 
+## 0. `patrol_tick` — scheduled independent patrol (FLY-1687)
+
+`[patrol_tick]` is a **纯闹钟**. Bridge knows only that the time arrived and
+which Runners its own ledger currently names. The roster is a **待核声明**, not
+fact and not a verdict. This patrol exists to backstop Bridge, so every judgment
+must come from an **独立信源** rather than trusting Bridge's retelling.
+
+1. **Roster cross-check (ground truth)**: compare the tick roster with
+   `TMUX= tmux list-windows -a`. Window prefixes are Linear identifiers. 多了少了都是 finding.
+   Ignore normal non-Runner windows (`zsh` scaffolds, `cmux-*`
+   mirrors, and Codex Lead TUI windows); Claude Lead itself uses a private socket.
+2. **Pane reality**: use `capture-pane` for every Runner. Alive is not progress:
+   distinguish TURN waiting, an interactive menu, and an error loop.
+3. **Handoff ledgers**: cross-check the engine node table against the `TURN belt`.
+4. **Delivery ledgers**: cross-check Runner reports/PRs against verdict claims and
+   durable ledger receipts.
+5. **External truth**: ask GitHub directly with `gh pr view` for PR head/draft/
+   state, and inspect Discord itself for thread/archive state. Do not accept an
+   internal ledger's paraphrase of either external system.
+6. **Disposition**: apply the established emergency procedure for bounded fixes
+   and leave evidence; create a follow-up issue for systemic faults. Report the
+   patrol result (including “all healthy”) under the current reporting rules.
+
+`runner_terminal_list` remains a useful internal starting point, but it is one
+system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick
+is the scheduled trigger; the existing inbox-batch and task-boundary cadence
+remains an event-driven supplement. The Lead must not create another timer.
+
+---
+
 ## 1. Proactive patrol — sweep your Runners, don't wait to be paged (RC-3)
 
 Reactive detection already exists (Bridge pushes `runner_idle_detected`,

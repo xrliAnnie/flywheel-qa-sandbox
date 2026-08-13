@@ -38,6 +38,24 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/discipline,\s+not\s+a\s+guarantee/i);
 	});
 
+	it("FLY-1687: patrol_tick delegates every judgment to independent Lead-side sources", () => {
+		for (const anchor of [
+			"patrol_tick",
+			"待核声明",
+			"TMUX= tmux",
+			"capture-pane",
+			"TURN belt",
+			"gh pr view",
+			"Discord",
+			"独立信源",
+		]) {
+			expect(patrol).toContain(anchor);
+		}
+		expect(patrol).toMatch(/多了少了.*finding/i);
+		expect(patrol).toMatch(/纯闹钟/);
+		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
+	});
+
 	it("RC-1: every lifecycle event MUST relay to the [FLY-XX] thread via /api/chat-threads/send", () => {
 		expect(patrol).toContain("/api/chat-threads/send");
 		for (const ev of [
