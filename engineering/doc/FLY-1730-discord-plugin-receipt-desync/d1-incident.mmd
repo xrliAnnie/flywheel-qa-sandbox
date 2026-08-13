@@ -1,0 +1,13 @@
+flowchart LR
+    A["Annie 在 founder 频道发消息"] --> B["Lead 带引用回复"]
+    B --> C["Discord 插件(旧版)<br/>调用 chat-receipt settle 结算"]
+    C --> D["flywheel-comm 命令行工具<br/>该命令 8-12 上午已被拆除"]
+    D -->|"Unknown command<br/>失败退出"| E["插件把失败记成<br/>待重试文件(intent)"]
+    E --> F["恢复循环<br/>每 3-4 分钟重试一次"]
+    F -->|"永远失败"| F
+    F -->|"失败超过 5 次"| G["⚠️ 告警直接发进<br/>founder 频道"]
+    G -.->|"6 个寄生插件进程<br/>各发一条(FLY-1715)"| H["Annie 看到 6 条同文告警"]
+    style C fill:#fff3e0,stroke:#ff9500
+    style D fill:#ffebee,stroke:#ff3b30
+    style G fill:#ffebee,stroke:#ff3b30
+    style H fill:#ffebee,stroke:#ff3b30

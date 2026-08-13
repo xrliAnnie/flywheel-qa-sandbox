@@ -104,10 +104,10 @@ EOF
 chmod +x "$BIN/git" "$BIN/ps" "$BIN/mkdir" "$BIN/claude"
 
 write_fixture() {
-  local sha="$1" version="${2:-0.0.4}"
+  local sha="$1" version="${2:-0.0.4}" runtime_marker="${3-ChatReceiptRuntime}"
   local install_path="$CFG/plugins/cache/flywheel-plugins/discord/$version"
   mkdir -p "$install_path"
-  printf 'allowBots\n[reply-guard]\nChatReceiptRuntime\n' > "$install_path/server.ts"
+  printf 'allowBots\n[reply-guard]\n%s\n' "$runtime_marker" > "$install_path/server.ts"
   jq -n \
     --arg sha "$sha" \
     --arg version "$version" \
@@ -164,6 +164,21 @@ if [[ -x "$CHECKER" ]]; then
     fail "checker accepts one exact user entry and prints its verified installPath"
   fi
 
+  write_fixture "$REMOTE_SHA" "0.0.4" "ChatIngestRuntime"
+  if run_check >/dev/null 2>&1; then
+    pass "checker accepts the receipt-free ingest runtime marker"
+  else
+    fail "checker accepts the receipt-free ingest runtime marker"
+  fi
+
+  write_fixture "$REMOTE_SHA" "0.0.4" ""
+  if run_check >/dev/null 2>&1; then
+    fail "checker rejects fork bytes missing both runtime markers"
+  else
+    pass "checker rejects fork bytes missing both runtime markers"
+  fi
+
+  write_fixture "$REMOTE_SHA"
   if output="$(env HOME="$H" CLAUDE_CONFIG_DIR="$CFG" PATH="$BIN:/usr/bin:/bin" \
       GIT_REMOTE_FAIL=1 bash "$CHECKER" --print-install-path 2>"$SB/network.err")" \
       && [[ "$output" == "$CFG/plugins/cache/flywheel-plugins/discord/0.0.4" ]] \
@@ -187,6 +202,55 @@ if [[ -x "$CHECKER" ]]; then
     fail "checker rejects a partial fork missing reply-guard/receipt markers"
   else
     pass "checker rejects a partial fork missing reply-guard/receipt markers"
+  fi
+fi
+
+if [[ -x "$LEGACY_CHECKER" ]]; then
+  LEGACY_CFG="$SB/legacy-config"
+  LEGACY_DEPLOY="$SB/legacy-deploy"
+  LEGACY_CACHE="$LEGACY_CFG/plugins/cache/claude-plugins-official/discord/0.0.4"
+  LEGACY_MARKETPLACE="$LEGACY_CFG/plugins/marketplaces/claude-plugins-official/external_plugins/discord"
+  mkdir -p "$LEGACY_CACHE" "$LEGACY_MARKETPLACE" "$LEGACY_DEPLOY"
+  git -C "$LEGACY_DEPLOY" init -q
+  git -C "$LEGACY_DEPLOY" -c user.name=test -c user.email=test@example.invalid \
+    commit -q --allow-empty -m fixture
+  LEGACY_SHA="$(git -C "$LEGACY_DEPLOY" rev-parse HEAD)"
+  jq -n --arg path "$LEGACY_CACHE" \
+    '{plugins:{"discord@claude-plugins-official":[{scope:"user",installPath:$path}]}}' \
+    > "$LEGACY_CFG/plugins/installed_plugins.json"
+
+  write_legacy_fixture() {
+    local runtime_marker="$1" target
+    for target in "$LEGACY_CACHE" "$LEGACY_MARKETPLACE"; do
+      printf '%s\n' "$LEGACY_SHA" > "$target/.fork-sha"
+      printf 'allowBots\n[reply-guard]\n%s\n' "$runtime_marker" > "$target/server.ts"
+    done
+  }
+
+  run_legacy_check() {
+    env HOME="$H" CLAUDE_CONFIG_DIR="$LEGACY_CFG" \
+      FLYWHEEL_DISCORD_LEGACY_REPO_DIR="$LEGACY_DEPLOY" bash "$LEGACY_CHECKER"
+  }
+
+  write_legacy_fixture "ChatReceiptRuntime"
+  if run_legacy_check >/dev/null 2>&1; then
+    pass "legacy checker accepts the receipt runtime marker"
+  else
+    fail "legacy checker accepts the receipt runtime marker"
+  fi
+
+  write_legacy_fixture "ChatIngestRuntime"
+  if run_legacy_check >/dev/null 2>&1; then
+    pass "legacy checker accepts the receipt-free ingest runtime marker"
+  else
+    fail "legacy checker accepts the receipt-free ingest runtime marker"
+  fi
+
+  write_legacy_fixture ""
+  if run_legacy_check >/dev/null 2>&1; then
+    fail "legacy checker rejects fork bytes missing both runtime markers"
+  else
+    pass "legacy checker rejects fork bytes missing both runtime markers"
   fi
 fi
 
