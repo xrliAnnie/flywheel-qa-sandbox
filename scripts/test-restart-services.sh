@@ -251,6 +251,9 @@ rn_run_terminal_case() {
       git() {
         if [[ "$*" == *"status --porcelain"* ]]; then
           [[ "$mode" == "rollback-dirty" ]] && printf "dirty\n"
+          if [[ "$mode" == "rollback-untracked" && "$*" != *"--untracked-files=no"* ]]; then
+            printf "?? operator-note.md\n"
+          fi
           return 0
         fi
         return 0
@@ -317,6 +320,7 @@ rn_run_terminal_case() {
 rn_run_terminal_case deploy-port-stuck deploy-port-stuck
 rn_run_terminal_case rollback-no-sha deploy-failed-no-rollback
 rn_run_terminal_case rollback-dirty rollback-blocked-dirty
+rn_run_terminal_case rollback-untracked update-rolled-back
 rn_run_terminal_case rollback-build-failed update-and-rollback-failed
 rn_run_terminal_case rollback-port-stuck rollback-port-stuck
 rn_run_terminal_case rollback-result-unreadable rollback-lead-result-unreadable
@@ -1722,6 +1726,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
    "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
@@ -1732,16 +1737,19 @@ cp "$REAL_REPO_ROOT/scripts/lib/bounded-run.sh" \
    "$BO_FLYWHEEL/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/restart-storm-gate.py" \
    "$BO_FLYWHEEL/scripts/"
+cp "$REAL_REPO_ROOT/packages/teamlead/scripts/claude-lead.sh" \
+   "$BO_FLYWHEEL/packages/teamlead/scripts/"
 cat > "$BO_FLYWHEEL/scripts/converge-flywheel-bin.sh" <<'EOF'
 #!/bin/bash
 exit 0
 EOF
 chmod +x "$BO_FLYWHEEL/scripts/converge-flywheel-bin.sh"
 git -C "$BO_FLYWHEEL" init -q
-git -C "$BO_FLYWHEEL" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-BO_HEAD_1=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
-printf '{"artifactBuildSha":"%s"}\n' "$BO_HEAD_1" \
-  > "$BO_FLYWHEEL/packages/teamlead/dist/build-identity.json"
+git -C "$BO_FLYWHEEL" symbolic-ref HEAD refs/heads/main
+git -C "$BO_FLYWHEEL" config user.email t@t
+git -C "$BO_FLYWHEEL" config user.name t
+printf 'packages/teamlead/dist/\npackages/flywheel-comm/dist/\n' \
+  > "$BO_FLYWHEEL/.gitignore"
 
 cat > "$BO_SHIMS/launchctl" <<EOF
 #!/bin/bash
@@ -1937,6 +1945,22 @@ printf '%s\n' "\$*" >> "$BO_CALLS/lead-alert.calls"
 exit 0
 EOF
 chmod +x "$BO_FLYWHEEL/scripts/lead-alert.sh"
+
+# FLY-1729: the real top-level restart now requires a clean main checkout and
+# a readable origin/main. This fixture uses itself as an offline origin, so
+# every later fixture commit is immediately fetchable without a network or a
+# second writer. The finalizer tests intentionally rewrite restart-services.sh;
+# hide only that injected test seam from status while keeping all other dirty
+# state visible to the production preflight.
+git -C "$BO_FLYWHEEL" add -A
+git -C "$BO_FLYWHEEL" commit -qm init
+git -C "$BO_FLYWHEEL" remote add origin "$BO_FLYWHEEL"
+git -C "$BO_FLYWHEEL" fetch -q origin main
+git -C "$BO_FLYWHEEL" update-index --assume-unchanged scripts/restart-services.sh
+BO_HEAD_1=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+printf '{"artifactBuildSha":"%s"}\n' "$BO_HEAD_1" \
+  > "$BO_FLYWHEEL/packages/teamlead/dist/build-identity.json"
+
 cat > "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" <<'EOF'
 #!/bin/bash
 # Hermetic default: the managed pointer is already current. Individual tests
@@ -2511,6 +2535,79 @@ if [[ "$bo_ok" == "true" ]]; then
     pass "FLY-1224 FULL restart --wait-idle: idle gate waits (~35s, rc=$rc)"
 else
     fail "FLY-1224 FULL restart --wait-idle: rc=$rc health.n=$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0) out tail: $(echo "$out" | tail -4)"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-1729: top-level pull preflight acceptance. Unlike the function suite,
+# these cases execute the complete production script and prove the preflight
+# precedes every build/service mutation while its target reaches build identity.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-1729 top-level pull-latest-main preflight (hermetic)"
+BO_REMOTE="$TMPDIR_ROOT/fly1729-top-origin.git"
+BO_WRITER="$TMPDIR_ROOT/fly1729-top-writer"
+git clone -q --bare "$BO_FLYWHEEL" "$BO_REMOTE"
+git -C "$BO_FLYWHEEL" remote set-url origin "$BO_REMOTE"
+git clone -q "$BO_REMOTE" "$BO_WRITER"
+git -C "$BO_WRITER" config user.email fly1729@example.test
+git -C "$BO_WRITER" config user.name fly1729
+
+bo_before_pull=$(git -C "$BO_FLYWHEEL" rev-parse HEAD)
+printf 'remote deploy target\n' > "$BO_WRITER/fly1729-deploy.txt"
+git -C "$BO_WRITER" add fly1729-deploy.txt
+git -C "$BO_WRITER" commit -qm 'test: FLY-1729 behind target'
+git -C "$BO_WRITER" push -q origin main
+bo_pull_target=$(git -C "$BO_WRITER" rev-parse HEAD)
+printf '%s\n' "$bo_before_pull" > "$BO_HOME/.flywheel/deployed-sha"
+printf 'operator-local note\n' > "$BO_FLYWHEEL/fly1729-untracked-note.md"
+bo_untracked_bytes=$(cat "$BO_FLYWHEEL/fly1729-untracked-note.md")
+out=$(bo_run --reason fly1729-behind) && rc=0 || rc=$?
+if (( rc == 0 )) \
+  && [[ "$(git -C "$BO_FLYWHEEL" rev-parse HEAD)" == "$bo_pull_target" ]] \
+  && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$bo_pull_target" ]] \
+  && [[ "$(cat "$BO_FLYWHEEL/fly1729-untracked-note.md")" == "$bo_untracked_bytes" ]] \
+  && [[ "$(git -C "$BO_FLYWHEEL" status --porcelain -- fly1729-untracked-note.md)" == '?? fly1729-untracked-note.md' ]] \
+  && jq -e --arg sha "$bo_pull_target" '.artifactBuildSha == $sha' \
+    "$BO_FLYWHEEL/packages/teamlead/dist/build-identity.json" >/dev/null \
+  && [[ -n "$(bo_calls pnpm)" ]] \
+  && [[ -n "$(bo_calls launchctl)" ]] \
+  && echo "$out" | grep -Fq "target origin/main=${bo_pull_target}"; then
+    pass "FLY-1729 behind checkout pulls, builds, and restarts at origin/main buildSha"
+else
+    fail "FLY-1729 behind top-level path mismatch: rc=$rc head=$(git -C "$BO_FLYWHEEL" rev-parse HEAD) deployed=$(cat "$BO_HOME/.flywheel/deployed-sha") out=$(echo "$out" | tail -5)"
+fi
+
+printf 'operator dirty state\n' >> "$BO_FLYWHEEL/fly1729-deploy.txt"
+dirty_before=$(git -C "$BO_FLYWHEEL" diff -- fly1729-deploy.txt)
+out=$(bo_run --reason fly1729-dirty) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 1 )) \
+  && [[ "$(git -C "$BO_FLYWHEEL" rev-parse HEAD)" == "$bo_pull_target" ]] \
+  && [[ "$(git -C "$BO_FLYWHEEL" diff -- fly1729-deploy.txt)" == "$dirty_before" ]] \
+  && echo "$alerts" | grep -q -- '--signature restart-preflight-dirty-' \
+  && echo "$alerts" | grep -Fq 'fly1729-deploy.txt' \
+  && echo "$out" | grep -Fq 'fly1729-deploy.txt' \
+  && [[ -z "$(bo_calls pnpm)" && -z "$(bo_calls launchctl)" ]]; then
+    pass "FLY-1729 dirty top-level checkout fails loudly before build/service mutation"
+else
+    fail "FLY-1729 dirty top-level path was not fail-loud and mutation-free: rc=$rc alerts=$alerts"
+fi
+git -C "$BO_FLYWHEEL" restore fly1729-deploy.txt
+
+printf 'remote dry-run target\n' > "$BO_WRITER/fly1729-dry-run.txt"
+git -C "$BO_WRITER" add fly1729-dry-run.txt
+git -C "$BO_WRITER" commit -qm 'test: FLY-1729 dry-run target'
+git -C "$BO_WRITER" push -q origin main
+bo_dry_target=$(git -C "$BO_WRITER" rev-parse HEAD)
+out=$(bo_run --dry-run --reason fly1729-dry-run) && rc=0 || rc=$?
+if (( rc == 0 )) \
+  && [[ "$(git -C "$BO_FLYWHEEL" rev-parse HEAD)" == "$bo_pull_target" ]] \
+  && [[ "$(git -C "$BO_FLYWHEEL" rev-parse origin/main)" == "$bo_dry_target" ]] \
+  && echo "$out" | grep -Fq "$bo_dry_target" \
+  && echo "$out" | grep -Fq 'DRY RUN: would pull' \
+  && [[ -z "$(bo_calls pnpm)" && -z "$(bo_calls launchctl)" ]]; then
+    pass "FLY-1729 dry-run prints fetched target SHA without merging or restarting"
+else
+    fail "FLY-1729 dry-run top-level contract mismatch: rc=$rc head=$(git -C "$BO_FLYWHEEL" rev-parse HEAD) out=$(echo "$out" | tail -6)"
 fi
 
 # ════════════════════════════════════════════════════════════════

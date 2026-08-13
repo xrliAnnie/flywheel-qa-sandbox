@@ -1,0 +1,9 @@
+flowchart LR
+  S1["GitHub origin/main<br/>(沙箱内的真 bare 仓库)"] --> S2["假 HOME 里的真 checkout"]
+  S2 --> S3["真 restart-services.sh"]
+  S3 --> S4["pnpm 被调用的那一刻<br/>记录 HEAD"]
+  S4 --> S5{"built@ 是否 == origin/main"}
+  S5 -->|"改动后 = 相等"| OK["构建发生在拉取之后<br/>= 修好了"]
+  S5 -->|"对照组(旧脚本) = 不等"| BAD["复现 8-12 事故形态"]
+  style OK fill:#e8f8ec,stroke:#34c759,color:#1d1d1f
+  style BAD fill:#ffe5e5,stroke:#ff3b30,color:#1d1d1f

@@ -1,0 +1,26 @@
+flowchart TD
+    START(["操作员 / Lead / 自动更新器<br>触发全舰重启"]) --> LOCK["抢到重启互斥锁<br>(同一时刻只允许一场重启)"]
+    LOCK --> P1{"① 代码目录<br>在 main 分支上?"}
+    P1 -- "否" --> FAIL1["🔴 响亮报警 + 停止<br>(绝不代为处置未知状态)"]
+    P1 -- "是" --> P2{"② 工作区干净?<br>(没有未提交的改动)"}
+    P2 -- "否" --> FAIL2["🔴 响亮报警 + 停止<br>(绝不 reset 吞掉本地改动)"]
+    P2 -- "是" --> P3["③ 限时 120 秒<br>去 GitHub 取最新 main"]
+    P3 -- "取不到 / 超时" --> FAIL3["🟡 报警 + 停止<br>(网络恢复后重跑即可)"]
+    P3 -- "成功" --> P4{"④ 复核:仍在 main<br>且仍然干净?"}
+    P4 -- "否" --> FAIL1
+    P4 -- "是" --> P5{"⑤ 本地与最新 main<br>是什么关系?"}
+    P5 -- "本地有 main 上没有的提交<br>(领先 / 分叉)" --> FAIL4["🔴 响亮报警 + 停止<br>(需要人来裁决)"]
+    P5 -- "已是最新 / 单纯落后" --> P6{"⑥ 安全闸:这版代码<br>需要特殊切换流程吗?"}
+    P6 -- "需要" --> FAIL5["🔴 响亮报警 + 停止<br>(指路专用切换流程)"]
+    P6 -- "不需要" --> P7["⑦ 快进合并到最新 main<br>+ 合并后再核验一次"]
+    P7 --> REST["以下全部沿用既有机器,一行不改:<br>比对已部署版本 → 需要就重新 build<br>→ 停旧 → 起新 → 健康验收 → 播报"]
+    REST --> DONE(["✅ 新码起舰<br>部署版本 == 最新 main"])
+
+    style START fill:#f5f5f7,stroke:#86868b
+    style DONE fill:#e8f8ee,stroke:#34c759
+    style FAIL1 fill:#ffecea,stroke:#ff3b30
+    style FAIL2 fill:#ffecea,stroke:#ff3b30
+    style FAIL3 fill:#fff4e5,stroke:#ff9500
+    style FAIL4 fill:#ffecea,stroke:#ff3b30
+    style FAIL5 fill:#ffecea,stroke:#ff3b30
+    style REST fill:#eaf3ff,stroke:#007aff

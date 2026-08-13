@@ -44,6 +44,9 @@ DEPLOYED_SHA_FILE="${DEPLOYED_SHA_FILE:-${HOME}/.flywheel/deployed-sha}"
 export SELF_SHIP_QUEUE_SOURCED=1
 # shellcheck source=lib/self-ship-queue.sh
 source "${SCRIPT_DIR}/lib/self-ship-queue.sh"
+# shellcheck source=lib/discord-pointer-guard.sh
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/discord-pointer-guard.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 
@@ -67,20 +70,6 @@ severe_alert() { # $1 = signature slug, $2 = body
     --title "Flywheel deploy failed" --body "$2" \
     --signature "$1-$(date -u +%Y%m%d%H%M)" \
     ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
-}
-
-discord_pointer_cutover_required() {
-  local incoming_launcher="" checker="${HOME}/.flywheel/bin/check-discord-plugin.sh"
-  local live_contract=""
-  incoming_launcher="$(git -C "$FLYWHEEL_DIR" show \
-    origin/main:packages/teamlead/scripts/claude-lead.sh 2>/dev/null)" || return 1
-  printf '%s\n' "$incoming_launcher" \
-    | grep -Fq 'CLAUDE_ARGS+=(--dangerously-load-development-channels "plugin:discord@flywheel-plugins")' \
-    || return 1
-  if [[ -x "$checker" ]]; then
-    live_contract="$($checker --print-contract 2>/dev/null || true)"
-  fi
-  [[ "$live_contract" != "discord@flywheel-plugins/v1" ]]
 }
 
 # ── Deploy step (injectable) ────────────────────────────────────────────────
