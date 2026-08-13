@@ -42,7 +42,7 @@ export function buildDaemonSandboxWritableRoots(input: {
  * FLY-1236: fold the persistent system layer + the per-execution prompt into the
  * FIRST turn's kick text (`turn/start` input) — NOT the `/goal` objective. The
  * daemon's `thread/goal/set` rejects an objective longer than
- * {@link GOAL_OBJECTIVE_MAX_CHARS}; a real three-stage `implement` prompt (issue
+ * {@link GOAL_OBJECTIVE_MAX_CHARS}; a real DAG workflow `implement` prompt (issue
  * body + design handoff, Blueprint cap 40000 chars) blows past that, so the full
  * working instructions ride the kick turn instead — which is NOT subject to the
  * goal objective's char cap and is where codex actually reads its work. This is
@@ -64,7 +64,7 @@ export function buildGoalKickText(input: {
 
 /**
  * FLY-1236: build the durable `/goal` objective — a bounded, PHASE-NEUTRAL
- * north-star pointer, never the working copy. Codex runs three-stage phase
+ * north-star pointer, never the working copy. Codex runs DAG workflow
  * prompts (Design = do not implement; QA = the implementation + PR already
  * exist), so the objective must NOT hardcode "implement / open a PR" or it would
  * contradict the authoritative phase instructions. It only names the task and

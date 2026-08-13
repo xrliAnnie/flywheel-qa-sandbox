@@ -12,7 +12,7 @@ describe("resolveWorktreeKey (FLY-793 shared branch)", () => {
 		expect(resolveWorktreeKey("FLY-793")).toBe("FLY-793");
 	});
 
-	it("shareParentBranch → all phases derive the SAME parent branch key (identifier)", () => {
+	it("shareParentBranch → all workflow roles derive the SAME parent branch key (identifier)", () => {
 		const design = resolveWorktreeKey("FLY-793", {
 			sessionRole: "design",
 			shareParentBranch: true,

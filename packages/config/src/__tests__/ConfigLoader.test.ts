@@ -1638,29 +1638,13 @@ founder_milestone_report:
 	});
 });
 
-describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
+describe("ConfigLoader — pipeline DAG routing", () => {
 	let readFile: ReturnType<typeof vi.fn>;
 	let loader: ConfigLoader;
 
 	beforeEach(() => {
 		readFile = vi.fn();
 		loader = new ConfigLoader(readFile);
-	});
-
-	it("parses pipeline.three_stage: true", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
-		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.three_stage).toBe(true);
-	});
-
-	it("parses pipeline.three_stage: false", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: false\n`,
-		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.three_stage).toBe(false);
 	});
 
 	it("leaves pipeline undefined when absent (byte-compat)", async () => {
@@ -1673,15 +1657,6 @@ describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
 		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\npipeline: nope\n`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
 			/pipeline must be a YAML mapping/,
-		);
-	});
-
-	it("throws when pipeline.three_stage is not a boolean", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: "yes"\n`,
-		);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/pipeline\.three_stage must be a boolean/,
 		);
 	});
 
@@ -1704,7 +1679,7 @@ describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
 
 	it("leaves pipeline.dag undefined when absent (byte-compat, DAG entry off)", async () => {
 		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  work_kind: false\n`,
 		);
 		const config = await loader.load("/p/config.yaml");
 		expect(config.pipeline?.dag).toBeUndefined();
@@ -1731,72 +1706,18 @@ describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
 		expect(config.pipeline?.dag).toBe(true);
 	});
 
-	it("drops only malformed pipeline.work_kind and preserves handoff config", async () => {
+	it("drops only malformed pipeline.work_kind and preserves DAG config", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  dag: true\n  work_kind: "yes"\n`,
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n  work_kind: "yes"\n`,
 		);
 
 		const config = await loader.load("/p/config.yaml");
 
-		expect(config.pipeline).toEqual({ three_stage: true, dag: true });
+		expect(config.pipeline).toEqual({ dag: true });
 		expect(warn).toHaveBeenCalledWith(
 			expect.stringContaining("pipeline.work_kind must be a boolean"),
 		);
 		warn.mockRestore();
-	});
-
-	// FLY-887 R2 Step 3: three_stage_channels validation matrix.
-	it("parses a valid three_stage_channels list of quoted channel-id strings", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  three_stage_channels: ["1516209714097291335"]\n`,
-		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.three_stage_channels).toEqual([
-			"1516209714097291335",
-		]);
-	});
-
-	it("parses an EMPTY three_stage_channels array (explicit universal OFF)", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n  three_stage_channels: []\n`,
-		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.three_stage_channels).toEqual([]);
-	});
-
-	it("leaves three_stage_channels undefined when absent (byte-compat, no restriction)", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
-		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.three_stage_channels).toBeUndefined();
-	});
-
-	it("throws when three_stage_channels is not an array", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: "1516209714097291335"\n`,
-		);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/three_stage_channels must be an array/,
-		);
-	});
-
-	it("throws with a quoting hint when an item is a bare YAML number (precision-loss footgun)", async () => {
-		// A bare 19-digit Discord snowflake exceeds Number.MAX_SAFE_INTEGER —
-		// YAML would silently mangle it and the gate would never match.
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: [1516209714097291335]\n`,
-		);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(/quote/i);
-	});
-
-	it("throws when an item is an empty string", async () => {
-		readFile.mockResolvedValue(
-			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage_channels: ["1516209714097291335", ""]\n`,
-		);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/non-empty string/,
-		);
 	});
 });

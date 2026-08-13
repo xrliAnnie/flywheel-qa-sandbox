@@ -118,10 +118,7 @@ function resolveWorkflowTemplateCandidate(
 	};
 }
 
-/**
- * Read-only entry preflight. The route uses this to keep schema-v1 behind the
- * three-stage policy without changing the independent schema-v2 entry path.
- */
+/** Read-only entry preflight for fresh schema-v2 workflow dispatch. */
 export function resolveWorkflowTemplateCandidateSchema(
 	store: StateStore,
 	input: {
@@ -154,8 +151,6 @@ export async function resolveWorkflowTemplateSelection(
 		authKind: WorkflowRequestAuthKind;
 		canonicalRoot: string;
 		idempotencyKey?: string;
-		/** True only after the trusted three-stage entry policy admits schema v1. */
-		allowSchemaV1Dispatch?: boolean;
 		/** Candidate schema observed before the route's entry-policy await. */
 		candidateSchemaAtEntry?: 1 | 2 | null;
 		/**
@@ -186,23 +181,16 @@ export async function resolveWorkflowTemplateSelection(
 	if (!candidate) return null;
 	const { category, binding, templateId, revision, schemaVersion } = candidate;
 	const env = input.env ?? process.env;
-	// The primary dispatch flag is the rollback lever for BOTH schemas. When it
-	// is off, this function must not materialize an engine run; the route resumes
-	// the incumbent legacy policy (including three-stage entry) byte-for-byte.
+	// The primary dispatch flag remains the fleet-wide rollback lever. When it is
+	// off, this function must not materialize an engine run.
 	if (!isWorkflowTemplateDispatchEnabled(env)) {
 		return null;
 	}
 	const blocked = workflowTemplateDispatchBlockReason(schemaVersion, env);
 	if (blocked) throw new Error(workflowTemplateDispatchBlockMessage(blocked));
-	// Engineering v1 is an engine implementation of the incumbent three-stage
-	// workflow, not a parallel entry policy. A policy opt-out or a normal Lead
-	// request without a stable start key must stay on today's legacy path. Keep
-	// this after the flag block so an explicitly enabled but incomplete flag set
-	// still fails closed per the published truth table.
-	if (schemaVersion === 1) {
-		if (input.allowSchemaV1Dispatch !== true) return null;
-		if (!input.idempotencyKey?.trim()) return null;
-	}
+	// Schema-v1 snapshots remain readable for recovery, but new dispatches have
+	// exactly one materialization path: the current schema-v2 DAG.
+	if (schemaVersion === 1) return null;
 	if (input.authKind !== "master") {
 		throw new Error("workflow template selection requires master auth");
 	}

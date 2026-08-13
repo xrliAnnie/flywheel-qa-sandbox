@@ -68,7 +68,7 @@ async function engineRunWithImplement(
 			env: WORKFLOW_ON,
 		}),
 	).toMatchObject({ ok: true });
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1335",
 		runId: "run-1",
@@ -128,7 +128,7 @@ async function engineRunWithDeadQa(): Promise<{
 	if (!admission.ok || !admission.submissionCredential) {
 		throw new Error("QA admission failed");
 	}
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1335",
 		runId: "run-1",
@@ -227,7 +227,7 @@ async function engineRunWithOutputFromDeadExecution(
 	if (!admission.ok || !admission.outputCredential) {
 		throw new Error("output admission failed");
 	}
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1335",
 		runId: "output-run",
@@ -289,7 +289,7 @@ function startAndFailReservedImplement(
 			env: WORKFLOW_ON,
 		}),
 	).toMatchObject({ ok: true });
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1335",
 		runId: "run-1",
@@ -336,7 +336,7 @@ function startAndFailReservedOutput(
 			env: WORKFLOW_ON,
 		}),
 	).toMatchObject({ ok: true });
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1335",
 		runId: "output-run",
@@ -723,7 +723,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		if (!retryAdmission.ok || !retryAdmission.outputCredential) {
 			throw new Error("replacement output admission failed");
 		}
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: "flywheel",
 			issueId: "FLY-1335",
 			runId: "output-run",

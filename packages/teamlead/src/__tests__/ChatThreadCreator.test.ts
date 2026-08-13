@@ -3,7 +3,7 @@ import { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
 
-// FLY-892: phaseThreadBadge moved to packages/config (three-stage-phases.ts) and
+// FLY-892: phaseThreadBadge moved to packages/config (phase-roles.ts) and
 // is unit-tested there (fly892-phase-tag.test.ts).
 
 const mockFetch = vi.fn();
@@ -1299,7 +1299,7 @@ describe("FLY-560 UX iteration: ChatThreadCreator.stampStageEmoji emoji+word mod
 	});
 });
 
-describe("FLY-892 Step 6: three-stage phase badge as stage-level title prefix", () => {
+describe("FLY-892 Step 6: DAG workflow badge as stage-level title prefix", () => {
 	let store: StateStore;
 	let creator: ChatThreadCreator;
 

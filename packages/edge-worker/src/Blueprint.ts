@@ -438,7 +438,7 @@ export interface BlueprintContext {
 	founderFacingUx?: boolean;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
-	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	/** FLY-1259: effective design vendor locked at DAG workflow admission. */
 	designBackend?: DesignBackend;
 	// FLY-1356 — skill_framework_mode inputs (all optional; absent = resolve
 	// from env/hash alone, byte-compatible). Threaded on the designBackend rails:
@@ -453,15 +453,15 @@ export interface BlueprintContext {
 	skillFrameworkModeStampReadFailed?: boolean;
 	/** Parent session's recorded mode for an auto-QA spawn (R1#3). split-only. */
 	skillFrameworkModeParent?: SkillFrameworkMode;
-	// FLY-793 — Bridge-INTERNAL three-stage flag (PhaseOrchestrator only; never
+	// FLY-793 — Bridge-INTERNAL DAG workflow flag (workflow engine only; never
 	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
 	// phase-sessions share ONE branch B (worktree key = parent main key,
 	// regardless of sessionRole) so they hand off on one branch. Absent →
 	// role-aware worktree key (byte-compatible).
 	shareParentBranch?: boolean;
-	// FLY-859 — Bridge-INTERNAL fix-round context (PhaseOrchestrator only; never
+	// FLY-859 — Bridge-INTERNAL fix-round context (workflow engine only; never
 	// from /api/runs/start or runner payload). Set on an Implement-fix dispatch
-	// after a three-stage QA FAIL: the implement prompt gains a "QA Fix Round"
+	// after a DAG workflow QA FAIL: the implement prompt gains a "QA Fix Round"
 	// section (findings are already committed on branch B; the PR exists).
 	// Absent → the plain implement-phase prompt (byte-compatible).
 	phaseFixContext?: { round: number; qaSummary: string };
@@ -606,7 +606,7 @@ export interface BlueprintContext {
 	 * otherwise-fresh re-dispatch and pinned startPoint to its verified local
 	 * object. This is explanation-only metadata: unlike progressResume it does
 	 * not suppress gates, and unlike shareParentBranch it does not opt the run
-	 * into three-stage worktree/takeover/TURN semantics.
+	 * into DAG workflow worktree/takeover/TURN semantics.
 	 */
 	continuityInherit?: {
 		branch: string;
@@ -996,7 +996,7 @@ export class Blueprint {
 			// the same value even when this runner itself is implement or QA.
 			...(ctx.designBackend && { designBackend: ctx.designBackend }),
 			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
-			// place shareParentBranch is known) — a three-stage phase carries its
+			// place shareParentBranch is known) — a DAG workflow carries its
 			// phase role; everything else (incl. auto-QA's own sessionRole==='qa' on
 			// a separate issue) is 'main'. Persisted by both started sinks.
 			chatThreadRole:
@@ -1276,22 +1276,21 @@ export class Blueprint {
 			// FLY-95: Role-aware worktree naming to prevent main/QA collision.
 			// FLY-603: extracted into the shared deriveWorktreeKey() helper so the
 			// post-ship / reconciler cleanup derives the exact same key (no drift).
-			// FLY-793: three-stage phases share one branch B (shareParentBranch);
+			// FLY-793: DAG workflows share one branch B (shareParentBranch);
 			// otherwise role-aware key (byte-compat). resolveWorktreeKey computes the
 			// shared key from node.id itself — no external key value is trusted.
 			const worktreeIssueId = resolveWorktreeKey(node.id, {
 				sessionRole: ctx.sessionRole,
 				shareParentBranch: ctx.shareParentBranch,
 			});
-			// FLY-887: three-stage keep-alive in-place takeover. When a later phase
+			// FLY-887: DAG workflow keep-alive in-place takeover. When a later phase
 			// (implement/qa, or a design retry carrying startPoint) dispatches on the
 			// SHARED branch-B worktree and the prior
 			// phase parked (not closed) with the worktree still registered, REUSE it
 			// in place — never removeIfExists+create, which would tear the parked
 			// phase's cwd out from under it. FAIL-CLOSED: only take over a worktree
 			// that is clean AND at the exact captured head (`ctx.startPoint`); any
-			// drift → error (never silently discard the parked phase's work). Gated
-			// on the keep-alive kill-switch (=0 → legacy create path, byte-compat).
+			// drift → error (never silently discard the parked phase's work).
 			const takeover =
 				ctx.shareParentBranch === true &&
 				(ctx.sessionRole === "implement" ||
@@ -1299,7 +1298,6 @@ export class Blueprint {
 					(ctx.sessionRole === "design" &&
 						ctx.startPoint !== undefined &&
 						ctx.continuityInherit === undefined)) &&
-				process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0" &&
 				(await this.worktreeManager
 					.isRegistered(
 						projectRoot,
@@ -1588,10 +1586,10 @@ export class Blueprint {
 		// land / doc-flow / brainstorm / approve-gate blocks below.
 		const isQaRunner = !!ctx.qaContext;
 
-		// FLY-793: three-stage internal phases (Design / Implement). A three-stage
+		// FLY-793: DAG workflow internal phases (Design / Implement). A DAG workflow
 		// run is ONE issue with Design → Implement → QA phase-sessions sharing one
 		// branch B (shareParentBranch is the signal). The QA phase runs through the
-		// isQaRunner (qaContext) path. Absent shareParentBranch → not three-stage →
+		// isQaRunner (qaContext) path. Absent shareParentBranch → not DAG workflow →
 		// the default single-session prompt below is byte-identical to before.
 		const isDesignPhase =
 			!isQaRunner &&
@@ -1601,25 +1599,19 @@ export class Blueprint {
 			!isQaRunner &&
 			ctx.shareParentBranch === true &&
 			ctx.sessionRole === "implement";
-		// FLY-793 Step 8: the three-stage QA phase is a WRITER on the shared branch
+		// FLY-793 Step 8: the DAG workflow QA phase is a WRITER on the shared branch
 		// B (Annie 2026-07-02: "give it more permissions") — it runs the tests,
 		// commits its test/report to B, and reports a verdict. It is DISTINCT from
 		// the auto-QA `isQaRunner` path (read-only verification of a SEPARATE
-		// QA·FLY-XX issue): three-stage QA is a writer on the parent issue's branch,
+		// QA·FLY-XX issue): DAG workflow QA is a writer on the parent issue's branch,
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			!isQaRunner && ctx.shareParentBranch === true && ctx.sessionRole === "qa";
-		// FLY-887: three-stage phase-session keep-alive. When ON (default), a phase
-		// parks (stays alive) after its handoff instead of exiting, so the
-		// QA↔implement fix loop keeps full context; `=0` reverts to the legacy
-		// close-and-respawn prompts (byte-compat). Only affects the three-stage
-		// phase prompts (shareParentBranch); never the single-session / auto-QA
-		// prompt. Read at prompt-gen time so a flip is live for the next dispatch.
-		const threeStageKeepAlive =
-			ctx.shareParentBranch === true &&
-			process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0";
+		// Shared DAG workflow sessions always remain parked for same-context
+		// handoffs. The retired kill switch no longer creates a second lifecycle.
+		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
 		const phaseKeepAlive: AdapterExecutionContext["phaseKeepAlive"] =
-			isCodexRunner && threeStageKeepAlive
+			isCodexRunner && sharedPhaseKeepAlive
 				? isDesignPhase
 					? { role: "design" }
 					: isImplementPhase
@@ -1776,7 +1768,7 @@ export class Blueprint {
 			// Design phase. Self-contained (the loaded agent role may be engineer /
 			// product-designer, not designer-executor — see designer-labels.ts).
 			systemPromptLines = [
-				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. This is a UI/design-flavored issue, so run the mockup-first Designer workflow — the founder reacts to what it LOOKS like before any code.",
+				"You are the DESIGN phase of a DAG workflow (Design → Implement → QA), all on ONE shared branch. This is a UI/design-flavored issue, so run the mockup-first Designer workflow — the founder reacts to what it LOOKS like before any code.",
 				"0. FIRST confirm the mockup TYPE with the founder — a throwaway static direction image vs a UI increment that must live on the real app — using the QUESTION GATE instructions injected in this prompt (do NOT hard-code a gate command; the injected flow gives the right blocking / non-blocking shape for this runtime). Do NOT proceed until it is answered.",
 				"1. Brief: read CLAUDE.md, the product-experience spec, and the surface you are redesigning; clarify what to design.",
 				`2. Explore 2–3 visual directions A/B/C as concept images using codex-image AND gemini-image IN PARALLEL (dual-model, so the founder compares two takes). Assemble them into ONE founder card and publish it with \`node ${commCliPath} publish-report --html <concept-card-path> --project ${ctx.projectName ?? "flywheel"} --publish-only\`; report the URL to your Lead. A Runner never posts founder material to Discord directly.`,
@@ -1788,7 +1780,7 @@ export class Blueprint {
 			];
 		} else if (isDesignPhase) {
 			systemPromptLines = [
-				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch.",
+				"You are the DESIGN phase of a DAG workflow (Design → Implement → QA), all on ONE shared branch.",
 				"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
 				"2. Do the design: brainstorm → research → plan → design review.",
 				"3. Commit the design docs (exploration/research/plan + progress.md) to this branch and push.",
@@ -1796,7 +1788,7 @@ export class Blueprint {
 			];
 		} else if (isImplementPhase) {
 			systemPromptLines = [
-				"You are the IMPLEMENT phase of a three-stage pipeline. The DESIGN phase already ran on this SAME branch.",
+				"You are the IMPLEMENT phase of a DAG workflow. The DESIGN phase already ran on this SAME branch.",
 				"1. Read the committed design first (exploration/research/plan + progress.md on this branch) and the codebase. Do NOT re-brainstorm the design.",
 				"2. Implement the plan following TDD.",
 				"3. Commit your changes to this branch.",
@@ -1819,16 +1811,16 @@ export class Blueprint {
 			// pipeline's ship-gate holder AND ship executor on PASS (Model A: the
 			// Design/Implement runners were closed at their handoffs — only the QA
 			// runner is alive at approval time). On FAIL it stops and lets the
-			// PhaseOrchestrator close it + start an Implement-fix phase (never the
+			// workflow engine close it + start an Implement-fix phase (never the
 			// auto-QA park/retest protocol — that belongs to the separate
 			// QA·FLY-XX flow).
 			systemPromptLines = [
-				"You are the QA phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. The IMPLEMENT phase already committed the code and opened a PR on THIS branch.",
+				"You are the QA phase of a DAG workflow (Design → Implement → QA), all on ONE shared branch. The IMPLEMENT phase already committed the code and opened a PR on THIS branch.",
 				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
 				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
 				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
-				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (three-stage verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
-				threeStageKeepAlive
+				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (DAG workflow verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
+				sharedPhaseKeepAlive
 					? // FLY-887: keep-alive fix loop. On FAIL the implementer is ALIVE
 						// (parked, full context); the pipeline wakes it to fix on this same
 						// branch, then wakes YOU to re-verify — no session is closed, no
@@ -1836,8 +1828,8 @@ export class Blueprint {
 						// FLY-1188: codex phrasing drops the Claude-only resource-release
 						// tooling; Claude text is byte-identical to pre-FLY-1188.
 						isCodexRunner
-						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
 					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 			// FLY-939 (G-B): the founder-feedback KICKBACK contract. When you (the QA
@@ -1846,14 +1838,14 @@ export class Blueprint {
 			// NOT edit code yourself. Kick the feedback back so the alive, parked
 			// implement phase (full context on this branch) does the fixing. Only under
 			// keep-alive (the implement is parked-alive to receive the wake).
-			if (threeStageKeepAlive) {
+			if (sharedPhaseKeepAlive) {
 				systemPromptLines.push(
 					// FLY-1188 transitional contract (Codex M2 review R4 HIGH-1): the
 					// codex variant makes no park/wake/alive-implementer promises —
 					// kick back, end the turn, and handle a re-test conditionally.
 					isCodexRunner
-						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
-						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
+						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
+						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
 				);
 			}
 		} else {
@@ -1941,33 +1933,33 @@ export class Blueprint {
 			);
 		}
 
-		// FLY-887: three-stage keep-alive PARK epilogue for the Design + Implement
+		// FLY-887: DAG workflow keep-alive PARK epilogue for the Design + Implement
 		// phases. Instead of exiting at their handoff, they PARK (stay alive to
 		// ship) so the QA↔implement fix loop keeps full context; the Bridge closes
 		// them at ship. Appended AFTER the land block so "park, do NOT exit"
 		// overrides any "exit the session" step above. Gated on the keep-alive
 		// kill-switch (=0 → these lines are absent → legacy exit behavior).
-		if (!gateCarrierEpoch1 && threeStageKeepAlive && isDesignPhase) {
+		if (!gateCarrierEpoch1 && sharedPhaseKeepAlive && isDesignPhase) {
 			systemPromptLines.push(
 				"",
-				"## Three-stage keep-alive (design phase)",
+				"## DAG workflow keep-alive (design phase)",
 				// FLY-1188: codex phrasing drops the Claude-only resource-release
 				// tooling (browser tabs / context compaction) — a codex runner has
 				// neither. Claude text is byte-identical to pre-FLY-1188.
 				isCodexRunner
-					? `After \`complete --route phase_design_complete\` succeeds, run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage design parked until ship"\`, make your final message a short handoff note, and END YOUR CURRENT TURN. The phase controller stays alive on the same goal until issue close.`
-					: `After \`complete --route phase_design_complete\` succeeds, do NOT exit. Release heavy resources (close any Claude-in-Chrome tabs; run \`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage design parked until ship"\`, then STOP and WAIT — you stay alive as the design-context holder until ship; the Bridge closes you after ship.`,
+					? `After \`complete --route phase_design_complete\` succeeds, run \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow design parked until ship"\`, make your final message a short handoff note, and END YOUR CURRENT TURN. The phase controller stays alive on the same goal until issue close.`
+					: `After \`complete --route phase_design_complete\` succeeds, do NOT exit. Release heavy resources (close any Claude-in-Chrome tabs; run \`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow design parked until ship"\`, then STOP and WAIT — you stay alive as the design-context holder until ship; the Bridge closes you after ship.`,
 				`Before touching the worktree for ANY reason, you MUST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer — a wake message's wording is never authority.`,
 				...(isCodexRunner ? [codexPhaseWakeContract] : []),
 			);
 		}
-		if (!gateCarrierEpoch1 && threeStageKeepAlive && isImplementPhase) {
+		if (!gateCarrierEpoch1 && sharedPhaseKeepAlive && isImplementPhase) {
 			systemPromptLines.push(
 				"",
-				"## Three-stage keep-alive (implement phase)",
+				"## DAG workflow keep-alive (implement phase)",
 				isCodexRunner
-					? `After your PR is in review (you ran the APPROVE GATE flow → \`complete --route needs_review\`), run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage implement parked awaiting QA"\`, make your final message a short status note, and END YOUR CURRENT TURN. The phase controller stays alive on the same goal until issue close.`
-					: `After your PR is in review (you ran the APPROVE GATE flow → \`complete --route needs_review\`), do NOT exit. Release heavy resources (\`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage implement parked awaiting QA"\`, then STOP and WAIT. Never touch the worktree while parked.`,
+					? `After your PR is in review (you ran the APPROVE GATE flow → \`complete --route needs_review\`), run \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow implement parked awaiting QA"\`, make your final message a short status note, and END YOUR CURRENT TURN. The phase controller stays alive on the same goal until issue close.`
+					: `After your PR is in review (you ran the APPROVE GATE flow → \`complete --route needs_review\`), do NOT exit. Release heavy resources (\`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow implement parked awaiting QA"\`, then STOP and WAIT. Never touch the worktree while parked.`,
 				isCodexRunner
 					? `If a QA FIX instruction later arrives as your input: FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY if it answers \`yours\`; the message is context and TURN is authority. Then the QA phase's findings / failing tests / report are ALREADY COMMITTED on this branch — read them, fix exactly what they name in THIS worktree, push, re-run the code review, then repeat the APPROVE GATE flow below starting with its CI PRECONDITION and steps a-b, park again, and END YOUR CURRENT TURN. ${codexPhaseWakeContract}`
 					: `When you are woken with a QA FIX message: FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY if it answers \`yours\` (the wake text itself is context, not authority — a stale or duplicated wake must not make you write). Then the QA phase's findings / failing tests / report are ALREADY COMMITTED on this branch — read them, fix exactly what they name in THIS worktree, push, re-run the code review, then repeat the APPROVE GATE flow below starting with its CI PRECONDITION and steps a-b, then park again and WAIT.`,
@@ -2494,7 +2486,7 @@ export class Blueprint {
 							`a. Run: \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "PR created: <url>. Ready for review."\` — it returns immediately with a questionId JSON; capture that questionId.`,
 							`b. Run: \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId from step a>\` to mark this session awaiting_review. The --question-id binds your review request — approvals are only honored for it.${
 								phaseKeepAlive
-									? ` After it succeeds, run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage ${phaseKeepAlive.role} parked after needs_review"\`, then END YOUR CURRENT TURN. The phase controller stays alive on the same goal.`
+									? ` After it succeeds, run \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow ${phaseKeepAlive.role} parked after needs_review"\`, then END YOUR CURRENT TURN. The phase controller stays alive on the same goal.`
 									: ""
 							}`,
 							// FLY-1188 M4: a resident Codex `/goal` runner has NO mailbox
@@ -2531,7 +2523,7 @@ export class Blueprint {
 							"   - Capture the merge commit SHA and rewrite the landing signal: `MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); jq -n --arg sha \"$MERGE_SHA\" --argjson n <NUMBER> '{status:\"merged\",prNumber:$n,mergeCommitSha:$sha}' > <land-status-path>`",
 							`   - Then run \`node ${commCliPath} stage set completed\`.`,
 							'   Do NOT set stage to completed without first merging the PR AND rewriting the landing signal to status="merged".',
-							// FLY-939 (G-B): a three-stage QA phase must NEVER edit code on
+							// FLY-939 (G-B): a DAG workflow QA phase must NEVER edit code on
 							// feedback (role separation — the implement phase fixes). Under
 							// keep-alive its step f is the KICKBACK override, NOT the generic
 							// "push your fixes" (which would have QA fix the code itself and
@@ -2541,10 +2533,10 @@ export class Blueprint {
 							// FLY-1188 transitional contract (Codex M2 review R4 HIGH-1): the
 							// codex QA-phase variant makes no park/wake promise — follow the
 							// codex 5-fb (kick back + END YOUR TURN).
-							isQaPhase && threeStageKeepAlive
+							isQaPhase && sharedPhaseKeepAlive
 								? isCodexRunner
-									? 'f. If you receive FEEDBACK (changes requested — not an approval): for THIS role (three-stage QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, park, then END YOUR CURRENT TURN. The phase controller stays alive; after a TURN-authorized RE-TEST wake, re-verify.'
-									: 'f. If the wake is FEEDBACK (changes requested — not an approval): for THIS role (three-stage QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, then park and WAIT for the RE-TEST wake. The implement phase does the fixing; you re-verify.'
+									? 'f. If you receive FEEDBACK (changes requested — not an approval): for THIS role (DAG workflow QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, park, then END YOUR CURRENT TURN. The phase controller stays alive; after a TURN-authorized RE-TEST wake, re-verify.'
+									: 'f. If the wake is FEEDBACK (changes requested — not an approval): for THIS role (DAG workflow QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, then park and WAIT for the RE-TEST wake. The implement phase does the fixing; you re-verify.'
 								: "f. If the wake is FEEDBACK (changes requested — not an approval): address it, push your fixes, then RE-REQUEST review — repeat the CI PRECONDITION and APPROVE GATE steps a-b (not steps a-b alone), using a NEW gate --no-block + a fresh `complete --route needs_review`; the review window resets. verify-approval will refuse to ship the old head anyway (pr_head_sha mismatch).",
 							"g. Ordinary messages (questions, instructions — not approval/feedback): handle them, reply if needed, then keep waiting at this checkpoint.",
 							"h. HEAD DISCIPLINE after the gate opens (FLY-945): once you ran steps a+b, do NOT push new commits in principle — your review request is bound to the exact head you completed with. If you MUST push (e.g. QA-evidence docs): immediately re-run Codex code review for the NEW head (resume-based, incremental) AND make sure a fresh QA PASS verdict is reported for the new head sha (the `qa_result` event) — the Bridge then auto-rebinds the ship gate to it. NEVER let the head drift silently without a re-review: the founder's approval would bind a head that no longer exists and verify-approval would refuse forever (FLY-921).",

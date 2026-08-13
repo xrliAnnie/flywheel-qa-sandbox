@@ -169,7 +169,7 @@ async function setup(opts?: {
 	trusted?: boolean;
 	env?: Record<string, string | undefined>;
 	maxCandidates?: number;
-	finalizeThreeStagePhases?: (
+	finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -211,7 +211,7 @@ async function setup(opts?: {
 		maxCandidatesPerProject: opts?.maxCandidates,
 		checkPrMerge: checkPr as never,
 		hasTrustedApprovalImpl: () => opts?.trusted ?? true,
-		finalizeThreeStagePhases: opts?.finalizeThreeStagePhases,
+		finalizeWorkflowPhaseRoles: opts?.finalizeWorkflowPhaseRoles,
 		retireMergedGates: opts?.retireMergedGates,
 		alertLead: (_s, title) => {
 			alerts.push({ title });
@@ -349,20 +349,20 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 	});
 
 	// FLY-1204 (Change A2): the external-merge path is a real ship path, so it
-	// must also reclaim the three-stage parked phases (design/implement/qa) — else
+	// must also reclaim the DAG workflow parked phases (design/implement/qa) — else
 	// an external merge writes the post_ship_finalization_claim but leaves the
 	// parked phase sessions leaked alive until the periodic patrol catches them.
 	// Prove the seam is threaded into runPostShipFinalization's deps.
-	it("path 1: passes finalizeThreeStagePhases through to runPostShipFinalization (FLY-1204)", async () => {
-		const finalizeThreeStagePhases = vi.fn(async () => {});
-		const s = await setup({ finalizeThreeStagePhases });
+	it("path 1: passes finalizeWorkflowPhaseRoles through to runPostShipFinalization (FLY-1204)", async () => {
+		const finalizeWorkflowPhaseRoles = vi.fn(async () => {});
+		const s = await setup({ finalizeWorkflowPhaseRoles });
 		seedSession(s.store);
 		await s.pass();
 		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 		const deps = runPostShipSpy.mock.calls[0]?.[1] as {
-			finalizeThreeStagePhases?: unknown;
+			finalizeWorkflowPhaseRoles?: unknown;
 		};
-		expect(deps.finalizeThreeStagePhases).toBe(finalizeThreeStagePhases);
+		expect(deps.finalizeWorkflowPhaseRoles).toBe(finalizeWorkflowPhaseRoles);
 	});
 
 	it("path 1: NOT ship-eligible (approval gate armed, no approval) → merge_block park + ONE alert, no finalize", async () => {

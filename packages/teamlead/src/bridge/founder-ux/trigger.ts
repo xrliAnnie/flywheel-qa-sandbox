@@ -39,7 +39,7 @@ export const BRAINSTORM_EXEMPT_LABEL = "brainstorm-exempt";
  * convention) — is AUTO-exempt from the brainstorm gate, no manual label needed.
  * A QA issue verifies an ALREADY-approved change; it has no founder-facing UX to
  * align on, and gating it would wedge the auto-QA loop. Mirrors the `QA ·` title
- * convention used by `isQaIssueSession` (auto-qa-coordinator). (The three-stage
+ * convention used by `isQaIssueSession` (auto-qa-coordinator). (The DAG workflow
  * phase-split of QA issues is a SEPARATE concern — FLY-874, not this gate.)
  */
 export function isQaIssueTitle(title: string | undefined): boolean {

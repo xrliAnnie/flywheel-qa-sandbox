@@ -278,51 +278,21 @@ export interface QaConfig {
 	agent?: string;
 }
 
-/**
- * FLY-793: three-stage pipeline (Design / Implement / QA internal phases) toggle.
- *
- * A NEW opt-in feature. Absent, an absent `three_stage` key, or `three_stage:
- * false` all mean OFF — a task runs as a single session exactly as before
- * (byte-compatible). A MALFORMED `pipeline` block fails loudly at config load
- * (mirrors `doc_flow`); the enablement policy (`resolveThreeStagePolicy`) is
- * default-OFF, so a failed/absent load is trivially fail-closed.
- */
+/** Project-level DAG routing controls. */
 export interface PipelineConfig {
-	/**
-	 * Enable the three-stage internal-phase pipeline (Design=Fable /
-	 * Implement=Fable / QA=Opus — FLY-887 R2, Annie's 2026-07-05 table).
-	 * Optional; absent → OFF.
-	 */
-	three_stage?: boolean;
-	/**
-	 * FLY-887 R2: Discord channel allowlist for three-stage ENTRY. A fresh
-	 * `main` dispatch enters three-stage only when the dispatching Lead's
-	 * `chatChannel` is in this list (resolved server-side from `leadId` →
-	 * `project.leads[].chatChannel`, NEVER from the request body).
-	 *
-	 * Absent → no restriction (byte-compatible with pre-gating behavior).
-	 * Empty array → three-stage OFF everywhere (explicit universal opt-out).
-	 * Items MUST be quoted strings — a bare YAML number would silently lose
-	 * precision on 19-digit Discord snowflakes (> Number.MAX_SAFE_INTEGER)
-	 * and the gate would never match; ConfigLoader rejects numeric items with
-	 * a quoting hint.
-	 */
-	three_stage_channels?: string[];
 	/**
 	 * FLY-1372: project-level DAG dispatch enrollment. When true AND the DAG
 	 * feature flags pass `workflowTemplateDispatchBlockReason`, a fresh `main`
 	 * master-auth dispatch is routed into the workflow-template (DAG) engine
-	 * instead of the three-stage/single-session legacy paths. Absent or false
-	 * → OFF (byte-compatible; legacy routing untouched). Read from the
-	 * project's CANONICAL root only, like `three_stage`.
+	 * instead of a single-session dispatch. Absent or false → OFF. Read from
+	 * the project's CANONICAL root only.
 	 */
 	dag?: boolean;
 	/**
 	 * FLY-1407: opt a project into dispatch-time work-kind enforcement.
 	 * Absent or false keeps the legacy route byte-compatible. The shared config
-	 * loader leniently drops malformed values so unrelated pipeline consumers
-	 * (notably three-stage handoff) retain their configuration; the fresh-start
-	 * route uses its own strict reader to fail loudly when the main flag is on.
+	 * loader leniently drops malformed values; the fresh-start route uses its
+	 * own strict reader to fail loudly when the main flag is on.
 	 */
 	work_kind?: boolean;
 }
@@ -665,7 +635,7 @@ export interface FlywheelConfig {
 	skill_framework?: SkillFrameworkConfig;
 	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
 	qa?: QaConfig;
-	/** FLY-793: three-stage pipeline toggle. Absent or three_stage:false = off (byte-compatible). */
+	/** Project-level DAG routing controls. */
 	pipeline?: PipelineConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;

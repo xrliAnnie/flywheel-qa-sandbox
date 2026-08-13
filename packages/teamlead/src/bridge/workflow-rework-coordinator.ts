@@ -16,7 +16,7 @@ import {
 	classifyPhaseActorReentry,
 	type PhaseLiveness,
 } from "./phase-actor-reentry.js";
-import type { PhaseSession } from "./phase-orchestrator.js";
+import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
 export interface WorkflowReworkTurnInput {
 	issueId: string;
@@ -173,22 +173,22 @@ export interface WorkflowReworkCoordinatorStore {
 }
 
 export interface WorkflowReworkCoordinatorEffects {
-	getActorSession(executionId: string): PhaseSession | undefined;
-	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
-	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
+	getActorSession(executionId: string): WorkflowActorSession | undefined;
+	probeRegistered(session: WorkflowActorSession): Promise<PhaseLiveness>;
+	probePersisted(session: WorkflowActorSession): Promise<PhaseLiveness>;
 	hasHostProcess?(executionId: string): Promise<boolean>;
 	assertWorktreeReady(
-		session: PhaseSession,
+		session: WorkflowActorSession,
 		expectedHeadSha: string,
 	): Promise<{ ok: boolean; reason?: string }>;
 	activateActorForWake?(
-		session: PhaseSession,
+		session: WorkflowActorSession,
 	): Promise<{ ok: boolean; error?: string }>;
 	grantTurn(
 		input: WorkflowReworkTurnInput,
 	): Promise<{ epoch: number; grantedAt: string }>;
 	wakeActor(input: {
-		session: PhaseSession;
+		session: WorkflowActorSession;
 		wakeId: string;
 		activationId: string;
 		epoch: number;

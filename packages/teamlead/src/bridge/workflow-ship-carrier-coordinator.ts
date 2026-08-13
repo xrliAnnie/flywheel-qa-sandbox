@@ -7,7 +7,7 @@ import type {
 	WorkflowRunRow,
 	WorkflowWakeSendClaimResult,
 } from "../StateStore.js";
-import type { PhaseSession } from "./phase-orchestrator.js";
+import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
 export interface WorkflowShipCarrierTurnInput {
 	issueId: string;
@@ -158,19 +158,19 @@ export interface WorkflowShipCarrierDeliveryStore {
 }
 
 export interface WorkflowShipCarrierDeliveryEffects {
-	getActorSession(executionId: string): PhaseSession | undefined;
+	getActorSession(executionId: string): WorkflowActorSession | undefined;
 	assertWorktreeReady(
-		session: PhaseSession,
+		session: WorkflowActorSession,
 		expectedHeadSha: string,
 	): Promise<{ ok: boolean; reason?: string }>;
 	activateActorForWake?(
-		session: PhaseSession,
+		session: WorkflowActorSession,
 	): Promise<{ ok: boolean; error?: string }>;
 	grantTurn(
 		input: WorkflowShipCarrierTurnInput,
 	): Promise<{ epoch: number; grantedAt: string }>;
 	wakeActor(input: {
-		session: PhaseSession;
+		session: WorkflowActorSession;
 		wakeId: string;
 		activationId: string;
 		epoch: number;

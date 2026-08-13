@@ -129,15 +129,15 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 		"blocked",
 		"failed",
 		"terminated",
-		// FLY-793: a three-stage Design phase-session completes into design_done
-		// (non-terminal); the PhaseOrchestrator hands off to the Implement phase.
+		// FLY-793: a DAG workflow Design phase-session completes into design_done
+		// (non-terminal); the workflow engine hands off to the Implement phase.
 		"design_done",
 	],
 	// FLY-1441: a ship-capable DAG actor has completed its node but the graph
 	// has not reached the terminal Gate yet. This is live/parked, not review.
 	ship_parked: ["running", "awaiting_review", "completed", "terminated"],
 	// FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
-	// PhaseOrchestrator captures the head + starts Implement, then this session is
+	// workflow engine captures the head + starts Implement, then this session is
 	// finalized (completed) or fails out (blocked/failed/terminated).
 	// FLY-1374: a durable rework wake reuses the parked Design holder. The
 	// activation write path is the only caller of this return edge.

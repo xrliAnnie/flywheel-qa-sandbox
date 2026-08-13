@@ -122,7 +122,7 @@ export interface RunGoalInput {
 	waitingTimeoutMs?: number;
 	/** FLY-1188 MED-7: is this run currently blocked on an OPEN gate? */
 	isWaiting?: () => boolean;
-	/** FLY-1269 explicit resident three-stage phase controller. */
+	/** FLY-1269 explicit resident DAG workflow controller. */
 	phaseLifecycle?: GoalPhaseLifecycle;
 	phaseControlPollIntervalMs?: number;
 	phaseControlRpcTimeoutMs?: number;

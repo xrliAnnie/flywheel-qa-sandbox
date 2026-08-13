@@ -8,7 +8,6 @@ import {
 	resolveCurrentModel,
 } from "../model-registry.js";
 import { MODEL_TIERS } from "../model-tiers.js";
-import { DEFAULT_PHASE_DISPATCH } from "../three-stage-phases.js";
 
 describe("model registry invariants", () => {
 	it("has unique model ids and case-insensitive aliases", () => {
@@ -54,19 +53,9 @@ describe("model registry invariants", () => {
 		expect(codex?.effortsBySurface.runner).toEqual(["xhigh"]);
 	});
 
-	it("covers every built-in tier and three-stage dispatch row", () => {
+	it("covers every built-in tier", () => {
 		for (const tier of Object.values(MODEL_TIERS)) {
 			expect(getModelRegistryEntry(tier.id)).not.toBeNull();
-		}
-		for (const dispatch of Object.values(DEFAULT_PHASE_DISPATCH)) {
-			expect(
-				isModelSelectionSupported({
-					surface: "workflow",
-					model: dispatch.model,
-					effort: dispatch.effort,
-					runtimeVendor: dispatch.vendor,
-				}),
-			).toBe(true);
 		}
 	});
 });

@@ -4,7 +4,6 @@ import {
 	runPostShipFinalization,
 	runResumablePostShipFinalization,
 	settleShipAttemptFailed,
-	setWorkflowShadowFinalizationHook,
 } from "../bridge/post-ship-finalization.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -437,35 +436,6 @@ describe("runPostShipFinalization", () => {
 		expect(callOrder).toContain("discord:post-message");
 		expect(callOrder).not.toContain("discord:archive");
 		expect(callOrder).not.toContain("discord:remove-user");
-	});
-
-	it("FLY-1232 T9: the central late-bound hook fires for a claim winner whose deps did NOT thread workflowShadow (Codex R1 #5)", async () => {
-		// event-route.ts / merge-ship-gate.ts are in-process claim contenders that
-		// build PostShipDeps without the workflowShadow field — if one of them wins
-		// the atomic claim, T9 must still run.
-		const onShipFinalized = vi.fn();
-		setWorkflowShadowFinalizationHook({ onShipFinalized });
-		try {
-			await runPostShipFinalization(
-				{
-					executionId: "exec-1",
-					issueId: "FLY-102",
-					issueIdentifier: "FLY-102",
-					projectName: "flywheel",
-					sessionStatus: "completed",
-					discordOwnerUserId: "user-annie",
-					fallbackBotToken: undefined,
-				},
-				{ store, projects: PROJECTS }, // no workflowShadow dep
-			);
-		} finally {
-			setWorkflowShadowFinalizationHook(undefined);
-		}
-		expect(onShipFinalized).toHaveBeenCalledTimes(1);
-		expect(onShipFinalized).toHaveBeenCalledWith({
-			projectName: "flywheel",
-			issueId: "FLY-102",
-		});
 	});
 
 	it("dual-path Promise.all: Discord post-message hit exactly once", async () => {

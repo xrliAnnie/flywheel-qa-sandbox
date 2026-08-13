@@ -21,7 +21,7 @@ export interface EventEnvelope {
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
-	/** FLY-1259: effective design vendor locked at three-stage admission. */
+	/** FLY-1259: effective design vendor locked at DAG workflow admission. */
 	designBackend?: DesignBackend;
 	/**
 	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as

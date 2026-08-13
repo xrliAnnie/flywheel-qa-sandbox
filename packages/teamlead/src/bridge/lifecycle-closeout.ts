@@ -129,7 +129,7 @@ export interface ClosureReport {
 
 /**
  * The authoritative issue-level node collector: sessions across the full
- * alias set (includes three-stage phase sessions — they share the issue) ∪
+ * alias set (includes DAG workflow sessions — they share the issue) ∪
  * auto-QA children by parent issue keys ∪ open launch claims on the root.
  * Deduped by executionId.
  */

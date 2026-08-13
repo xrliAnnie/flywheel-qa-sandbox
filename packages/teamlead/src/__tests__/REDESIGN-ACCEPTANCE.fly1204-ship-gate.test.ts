@@ -19,7 +19,7 @@
  *   a self-declaration standing in for verifiable evidence
  *
  * Seven tests in this repo were, at one point, GREEN while certifying a ship-gate bypass:
- * they asserted that a three-stage `qa` phase may ship with no QA evidence at all, and
+ * they asserted that a DAG workflow `qa` phase may ship with no QA evidence at all, and
  * seeded none. One of them predated the work that was supposed to fix the bug. A green test
  * that certifies a bypass is worse than no test.
  *
@@ -87,13 +87,13 @@ describe("FLY-1204 REDESIGN ACCEPTANCE — the ship gate must refuse a head whos
 		store.setQaRequiredSnapshot({
 			executionId: "qa-phase",
 			required: 0,
-			reason: "three_stage_phase:qa",
+			reason: "workflow_node:qa",
 		});
 
 		// ② Founder feedback → the QA FAILS → Implement fixes → the head ADVANCES to H2.
 		//    The PASS evidence is dutifully cleared…
 		store.setSessionParams("qa-phase", {
-			three_stage_verdict: {
+			workflow_verdict: {
 				status: "fail",
 				event_id: "f1",
 				at: "2026-07-13T00:00:00Z",

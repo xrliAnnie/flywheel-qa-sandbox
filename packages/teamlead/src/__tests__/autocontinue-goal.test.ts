@@ -25,7 +25,7 @@ describe("buildGoalContract (FLY-818) — goal contract text", () => {
 		expect(c).toContain("阶段:monolithic");
 	});
 
-	it("each phase-agent has its own outcome + stop boundary (FLY-793 three-stage)", () => {
+	it("each phase-agent has its own outcome + stop boundary (FLY-793 DAG workflow)", () => {
 		const design = buildGoalContract({
 			phase: "design",
 			issueIdentifier: "FLY-1",
@@ -128,7 +128,7 @@ describe("resolveAutocontinueTarget (FLY-818 M0) — backend eligibility + phase
 		);
 	});
 
-	it("FLY-793 three-stage roles map to their phase (reserved until 793 lands)", () => {
+	it("FLY-793 DAG workflow roles map to their phase (reserved until 793 lands)", () => {
 		expect(
 			resolveAutocontinueTarget({
 				adapterType: "claude-tmux",

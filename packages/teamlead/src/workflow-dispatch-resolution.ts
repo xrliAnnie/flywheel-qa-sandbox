@@ -1,8 +1,4 @@
-import {
-	getModelRegistryEntry,
-	resolveAllowedEffort,
-	resolvePhaseDispatch,
-} from "flywheel-config";
+import { resolveAllowedEffort } from "flywheel-config";
 import type { StateStore } from "./StateStore.js";
 import { parseWorkflowRunSnapshot } from "./workflow-run-snapshot.js";
 import {
@@ -17,7 +13,7 @@ export interface WorkflowDispatchResolution {
 		model: string;
 		effort?: WorkflowEffort;
 	};
-	source: "current_config" | "live_template" | "snapshot_fallback";
+	source: "live_template" | "snapshot_fallback";
 	audit: boolean;
 }
 
@@ -35,13 +31,6 @@ export interface WorkflowDispatchResolution {
  * node byte-identical (its workflow surface carries the full effort ladder,
  * unlike its runner surface) and narrows only models with a declared gap.
  */
-/** Warn-free registry probe — the remap below is a preference, not a rejection. */
-function workflowSurfaceHasXhigh(model: string): boolean {
-	const allowed =
-		getModelRegistryEntry(model)?.effortsBySurface.workflow ?? undefined;
-	return allowed === undefined || allowed.includes("xhigh");
-}
-
 function narrowEffort(dispatch: {
 	vendor: WorkflowVendor;
 	model: string;
@@ -90,33 +79,6 @@ export function resolveNodeDispatchAtLaunch(
 		return {
 			dispatch: narrowEffort(pinned),
 			source: "snapshot_fallback",
-			audit: true,
-		};
-	}
-
-	if (
-		snapshot.schema_version === 1 &&
-		(node.type === "design" || node.type === "implement" || node.type === "qa")
-	) {
-		const configured = resolvePhaseDispatch(node.type, env);
-		// FLY-1650 (Codex R3): this remap is a POLICY preference, not a type
-		// coercion — `WorkflowEffort` has `max`. Applying it blindly to a model
-		// without `xhigh` converts a perfectly valid `max` into an unsupported
-		// tier that narrowEffort then drops, silently downgrading a run the
-		// config asked to be maximal. Only prefer `xhigh` where it exists.
-		// Narrowing-only: an unknown model, or one declaring no workflow list,
-		// keeps the original remap.
-		const effort =
-			configured.effort === "max" && workflowSurfaceHasXhigh(configured.model)
-				? "xhigh"
-				: configured.effort;
-		return {
-			dispatch: narrowEffort({
-				vendor: configured.vendor,
-				model: configured.model,
-				...(effort ? { effort } : {}),
-			}),
-			source: "current_config",
 			audit: true,
 		};
 	}

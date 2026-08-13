@@ -78,8 +78,8 @@ export const FINALIZE_DONE_SOURCE_STATES: ReadonlySet<string> = new Set([
 	"ship_parked",
 	"awaiting_review",
 	"approved_to_ship",
-	// FLY-793: a three-stage Design phase-session lands here (route
-	// `phase_design_complete`). At handoff the PhaseOrchestrator closes it with
+	// FLY-793: a DAG workflow Design phase-session lands here (route
+	// `phase_design_complete`). At handoff the workflow engine closes it with
 	// `finalizeDone` → completed (FSM edge `design_done → completed` is legal) so
 	// the runner/worktree free for the Implement phase. NOT surfaced to the
 	// founder + no thread archive (the phases share the parent issue's thread).
@@ -693,7 +693,7 @@ async function closeRunnerInner(
 		// already-resolved `cmuxSession` ("cmux-<window_name>"). Absent → the window
 		// was already gone → nothing to target (FLY-293 reaper still backstops).
 		// FLY-1255: the reaper recognizes fixed `runner-<family>-<model>` names
-		// alongside legacy `claude` and three-stage phase prefixes.
+		// alongside legacy `claude` and DAG workflow prefixes.
 		// Best-effort: never throws, never blocks the close; the watcher still
 		// re-validates the window + linked session are gone before closing the pin.
 		const cmuxWindowName = cmuxRes?.cmuxSession?.startsWith("cmux-")

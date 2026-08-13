@@ -175,7 +175,7 @@ export interface CodexDaemonAdapterDeps {
 	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
 	 * in tests to drive the retry chain deterministically. */
 	scheduleReopen?: (fn: () => void, ms: number) => () => void;
-	/** Build the adapter-owned three-stage phase lifecycle controller. */
+	/** Build the adapter-owned DAG workflow lifecycle controller. */
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
 	) => CodexPhaseLifecycle;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadWorkKindConfigStrict } from "../bridge/three-stage-config-source.js";
+import { loadWorkKindConfigStrict } from "../bridge/pipeline-config-source.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 
 const PROJECT = {
@@ -34,7 +34,7 @@ describe("loadWorkKindConfigStrict", () => {
 	it("enrolls only an explicit boolean work_kind with dag enabled", () => {
 		expect(
 			loadWorkKindConfigStrict(PROJECT, () =>
-				yaml("work_kind: true\ndag: true\nthree_stage: true"),
+				yaml("work_kind: true\ndag: true"),
 			),
 		).toEqual({ ok: true, workKind: true, dag: true });
 	});
@@ -47,21 +47,18 @@ describe("loadWorkKindConfigStrict", () => {
 		).toEqual({ ok: false, cause: "work_kind_not_boolean" });
 	});
 
-	it.each(["dag: false", "three_stage: true"])(
-		"requires dag:true when work_kind is enabled (%s)",
-		(dependency) => {
-			expect(
-				loadWorkKindConfigStrict(PROJECT, () =>
-					yaml(`work_kind: true\n${dependency}`),
-				),
-			).toEqual({ ok: false, cause: "work_kind_requires_dag" });
-		},
-	);
+	it("requires dag:true when work_kind is enabled", () => {
+		expect(
+			loadWorkKindConfigStrict(PROJECT, () =>
+				yaml("work_kind: true\ndag: false"),
+			),
+		).toEqual({ ok: false, cause: "work_kind_requires_dag" });
+	});
 
 	it("keeps unrelated malformed pipeline fields on the legacy route", () => {
 		expect(
 			loadWorkKindConfigStrict(PROJECT, () =>
-				yaml('work_kind: false\ndag: "yes"\nthree_stage: "yes"'),
+				yaml('work_kind: false\ndag: "yes"\nunrelated: "yes"'),
 			),
 		).toEqual({ ok: true, workKind: false, dag: false });
 	});

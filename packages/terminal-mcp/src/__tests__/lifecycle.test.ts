@@ -168,7 +168,7 @@ describe("abandon status set", () => {
 });
 
 // FLY-638 + FLY-1204: done-mode lookup status set (running + the two parked
-// states + the three-stage Design phase-session state design_done).
+// states + the DAG workflow Design phase-session state design_done).
 describe("done status set", () => {
 	it("mirrors FINALIZE_DONE_SOURCE_STATES incl. design_done (FLY-1204)", () => {
 		expect([...DONE_STATUS_SET]).toEqual([

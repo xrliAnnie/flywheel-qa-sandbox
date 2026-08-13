@@ -11,7 +11,7 @@
  * `flywheel-comm ask` is NOT a stop — the runner keeps working toward the goal and
  * periodically checks for the reply (this matches Blueprint's existing contract).
  *
- * Phase-aware (FLY-793 three-stage integration): each phase-agent has its own
+ * Phase-aware (FLY-793 DAG workflow integration): each phase-agent has its own
  * outcome + stop boundary. `monolithic` is the byte-compat default when FLY-793 is
  * off (single runner drives the whole pipeline to PR).
  */
@@ -33,7 +33,7 @@ export type AutocontinuePhase = "design" | "implement" | "qa" | "monolithic";
  *
  * Phase (from session_role): byte-compat default is `monolithic` (FLY-793 off,
  * single runner drives the whole pipeline). `design`/`implement` are reserved for
- * the FLY-793 three-stage roles (PR #430) — an unknown role defaults to
+ * the FLY-793 DAG workflow roles (PR #430) — an unknown role defaults to
  * `monolithic` so this stays correct before FLY-793 lands.
  */
 export interface AutocontinueTarget {

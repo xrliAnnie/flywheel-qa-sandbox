@@ -64,11 +64,6 @@ describe("FLY-1496 model configuration snapshots", () => {
 			light: { id: "claude-opus-5", code: "O" },
 			trivial: { id: "claude-opus-5", code: "O" },
 		});
-		expect(snapshot.phases).toEqual({
-			design: { vendor: "claude", model: "claude-fable-5" },
-			implement: { vendor: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
-			qa: { vendor: "claude", model: "claude-opus-5" },
-		});
 		// One warning per cached generation, not one per call.
 		getModelConfigSnapshot();
 		expect(warn).toHaveBeenCalledTimes(1);
@@ -163,7 +158,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 		expect(modelDisplayName("claude-nova-6", "heavy")).toBeUndefined();
 	});
 
-	it("falls back only the tier/phase keys the registry cannot honor", () => {
+	it("falls back only the tier keys the registry cannot honor", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		writeFileSync(
 			configPath,
@@ -174,13 +169,6 @@ describe("FLY-1496 model configuration snapshots", () => {
 					medium: "claude-opus-4-8",
 					light: "sonnet",
 				},
-				phases: {
-					design: {
-						vendor: "claude",
-						model: "claude-opus-4-8",
-					},
-					qa: { vendor: "claude", model: "gpt-5.6-sol" },
-				},
 			}),
 		);
 
@@ -188,19 +176,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 		expect(snapshot.tiers.heavy.id).toBe("claude-fable-5");
 		expect(snapshot.tiers.medium.id).toBe("claude-opus-5");
 		expect(snapshot.tiers.light.id).toBe("claude-sonnet-5");
-		// A legacy identity is not dispatch-capable, so a difficulty tier cannot
-		// select it — but it IS a runner-surface Claude model, so a phase row
-		// that names it explicitly is honored. Configuration is the authority;
-		// there is no separate blocklist second-guessing it.
-		expect(snapshot.phases.design).toEqual({
-			vendor: "claude",
-			model: "claude-opus-4-8",
-		});
-		expect(snapshot.phases.qa).toEqual({
-			vendor: "claude",
-			model: "claude-opus-5",
-		});
-		expect(warn.mock.calls.flat().join(" ")).toMatch(/tier.*phase/i);
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/tier/i);
 	});
 
 	it("recovers across missing → valid → malformed → repaired generations", () => {

@@ -1273,7 +1273,7 @@ describe("WorktreeManager", () => {
 			// TRUE for BOTH the symlinked caller path and the canonical one —
 			// same underlying worktree, one consistent answer (previously the
 			// raw string compare returned false for the symlinked path, the bug
-			// that broke the three-stage worktree-removal-proof gate).
+			// that broke the DAG workflow worktree-removal-proof gate).
 			expect(
 				await mgr.isRegistered(mainRepoViaSymlink, first.worktreePath),
 			).toBe(true);

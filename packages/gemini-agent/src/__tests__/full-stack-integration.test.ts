@@ -1,5 +1,5 @@
 /**
- * FLY-1018 QA (three-stage) — full-stack integration.
+ * FLY-1018 QA (DAG workflow) — full-stack integration.
  *
  * Every OTHER test in this package mocks one side of the wire: loop.test.ts
  * drives a REAL runLoop over a STUB registry (execute returns canned
@@ -7,7 +7,7 @@
  * FAKE fetch. No single test wires the WHOLE agent stack together over real
  * HTTP. This one does — the mock-tests-need-an-integration-complement gap:
  *
- *   scripted ModelSurface → REAL runLoop → REAL dispatch three-stage gate
+ *   scripted ModelSurface → REAL runLoop → REAL dispatch DAG workflow gate
  *     → REAL createToolRegistry (binding-attach) → REAL BridgeClient
  *     (endpoint whitelist + Bearer + real fetch) → REAL in-process HTTP
  *     Bridge speaking the 6-tool contract.

@@ -63,17 +63,14 @@ function names(lines: string[]): string[] {
 }
 
 describe("lead-rules-bundle.sh — behavioral", () => {
-	it("ships the per-dispatch three-stage design backend contract", () => {
+	it("does not advertise the retired per-dispatch design backend", () => {
 		const modelRules = readFileSync(
 			join(BASE_RULES_DIR, "model-routing.md"),
 			"utf8",
 		);
-		expect(modelRules).toContain('"designBackend": "codex"');
-		expect(modelRules).toContain('"designBackend": "claude"');
-		expect(modelRules).toContain("only the design phase");
-		expect(modelRules).toContain("DESIGN_BACKEND_NOT_APPLICABLE");
-		expect(modelRules).toContain("new admission");
-		expect(modelRules).toContain("start a new run");
+		expect(modelRules).not.toContain("designBackend");
+		expect(modelRules).not.toContain("INVALID_DESIGN_BACKEND");
+		expect(modelRules).not.toContain("DESIGN_BACKEND_NOT_APPLICABLE");
 	});
 
 	it("gives every present and future department Lead the parameterized menu contract, but excludes CoS", () => {

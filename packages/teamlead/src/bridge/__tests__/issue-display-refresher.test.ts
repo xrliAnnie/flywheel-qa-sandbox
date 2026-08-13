@@ -9,11 +9,12 @@
  *   qa PASS / kill QA / operator-reset / finalize / attach cross-wire.
  */
 
-import type { DesignBackend, ThreeStagePhase } from "flywheel-config";
+import type { DesignBackend, WorkflowPhaseRole } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyTransition } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import type { ChatThreadCreator } from "../ChatThreadCreator.js";
 import type { DisplayWriteResult, ParkProbe } from "../issue-display.js";
 import {
@@ -221,7 +222,7 @@ function seedSession(
 	store: StateStore,
 	args: {
 		exec: string;
-		role?: ThreeStagePhase | "main";
+		role?: WorkflowPhaseRole | "main";
 		status: string;
 		stage?: string;
 		model?: string;
@@ -309,52 +310,125 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		});
 	});
 
-	it("FLY-1259: locked codex design label beats a global Fable default", async () => {
-		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
-		try {
-			seedSession(store, {
-				exec: "e-design",
-				role: "design",
-				status: "running",
-				designBackend: "codex",
-			});
-			const { refresher, log } = makeRefresher(store);
+	it("renders pending workflow actor models from the immutable run snapshot", async () => {
+		const snapshot = buildWorkflowRunSnapshotV1({
+			template: { id: "tpl-display", revision: 1 },
+			manifest: {
+				schema_version: 1,
+				nodes: [
+					{
+						id: "design",
+						type: "design",
+						vendor: "claude",
+						model: "claude-fable-5",
+						effort: "high",
+					},
+					{
+						id: "implement",
+						type: "implement",
+						vendor: "codex",
+						model: "gpt-5.6-sol",
+						effort: "high",
+					},
+					{
+						id: "qa",
+						type: "qa",
+						vendor: "claude",
+						model: "claude-opus-4-6[1m]",
+						effort: "high",
+					},
+					{ id: "founder_gate", type: "gate" },
+				],
+				edges: [
+					{
+						id: "design_done",
+						from: "design",
+						to: "implement",
+						condition: "design_done",
+					},
+					{
+						id: "implement_done",
+						from: "implement",
+						to: "qa",
+						condition: "implement_done",
+					},
+					{
+						id: "qa_pass",
+						from: "qa",
+						to: "founder_gate",
+						condition: "qa_pass",
+					},
+				],
+				loops: [
+					{
+						id: "qa_retry",
+						from: "qa",
+						to: "implement",
+						loop_when: "qa_fail",
+						exit_when: "qa_pass",
+						max_iterations: 3,
+						on_limit: "escalate",
+					},
+				],
+				terminal_gate: {
+					node: "founder_gate",
+					predicate: "founder_approved",
+				},
+				ship_claims: ["qa_passed", "founder_approved"],
+			},
+		});
+		store.createWorkflowRun({
+			runId: "run-display",
+			issueId: ISSUE,
+			projectName: PROJECT,
+			snapshotJson: JSON.stringify(snapshot),
+			claimsReadEnrolled: false,
+		});
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "running",
+			model: "claude-fable-5",
+		});
+		const { refresher, log } = makeRefresher(store, {
+			tmux: { "e-design": "runner-proj:@1" },
+			windowNames: { "runner-proj:@1": `${IDENT}-runner-design` },
+		});
 
-			await refresher.refresh(ISSUE);
+		await refresher.refresh(ISSUE);
 
-			expect(log.header[0]).toContain("[设计·GPT-5.6]");
-		} finally {
-			if (previous === undefined) {
-				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-			} else {
-				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
-			}
-		}
+		expect(log.header[0]).toContain(
+			"**[实现·GPT-5.6]** ◾ 未开始（计划模型 GPT-5.6）",
+		);
+		expect(log.header[0]).toContain("**[QA·Opus]** ◾ 未开始（计划模型 Opus）");
 	});
 
-	it("FLY-1259: locked Fable design label beats a global Codex default", async () => {
-		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
-		try {
-			seedSession(store, {
-				exec: "e-design",
-				role: "design",
-				status: "running",
-				designBackend: "claude",
-			});
-			const { refresher, log } = makeRefresher(store);
+	it("does not guess a model from persisted codex design backend metadata", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "running",
+			designBackend: "codex",
+		});
+		const { refresher, log } = makeRefresher(store);
 
-			await refresher.refresh(ISSUE);
+		await refresher.refresh(ISSUE);
 
-			expect(log.header[0]).toContain("[设计·Fable]");
-		} finally {
-			if (previous === undefined) {
-				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-			} else {
-				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
-			}
-		}
+		expect(log.header[0]).not.toMatch(/\[设计·/);
+	});
+
+	it("does not guess a model from persisted claude design backend metadata", async () => {
+		seedSession(store, {
+			exec: "e-design",
+			role: "design",
+			status: "running",
+			designBackend: "claude",
+		});
+		const { refresher, log } = makeRefresher(store);
+
+		await refresher.refresh(ISSUE);
+
+		expect(log.header[0]).not.toMatch(/\[设计·/);
 	});
 
 	it("design park+handoff (design_done+parked, implement running) → 设计✅ 实现▶, title 🔨实现", async () => {
@@ -725,7 +799,7 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		).toBe(true);
 	});
 
-	it("single-runner (non-three-stage) cross-wire → the pin is actively degraded, never left showing the wrong link", async () => {
+	it("single-runner (non-DAG workflow) cross-wire → the pin is actively degraded, never left showing the wrong link", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		seedSession(store, {
 			exec: "e-main",
@@ -783,26 +857,16 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		expect(log.titleMarkers[0]).toBe("G");
 	});
 
-	it("pending implement marker follows the kill-switch-aware phase plan", async () => {
-		const original = process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
-		try {
-			process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = "0";
-			seedSession(store, {
-				exec: "e-impl",
-				role: "implement",
-				status: "running",
-			});
-			const { refresher, log } = makeRefresher(store);
-			await refresher.refresh(ISSUE);
+	it("pending implement without a recorded model gets no guessed marker", async () => {
+		seedSession(store, {
+			exec: "e-impl",
+			role: "implement",
+			status: "running",
+		});
+		const { refresher, log } = makeRefresher(store);
+		await refresher.refresh(ISSUE);
 
-			expect(log.titleMarkers[0]).toBe("F");
-		} finally {
-			if (original === undefined) {
-				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
-			} else {
-				process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = original;
-			}
-		}
+		expect(log.titleMarkers[0]).toBeNull();
 	});
 
 	it("single-session terminal states: completed → ✅完成; failed → 🔴受阻 (kill/reset now refresh — the old code never did)", async () => {

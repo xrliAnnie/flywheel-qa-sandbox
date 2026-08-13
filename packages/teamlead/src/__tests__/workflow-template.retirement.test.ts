@@ -25,6 +25,7 @@ describe("FLY-1693 legacy workflow template retirement", () => {
 			readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8"),
 		) as { scripts: { build: string } };
 
+		expect(packageJson.scripts.build).not.toMatch(/^rm -rf dist/);
 		expect(packageJson.scripts.build).toContain(
 			"rm -rf dist/static dist/workflow-seeds",
 		);

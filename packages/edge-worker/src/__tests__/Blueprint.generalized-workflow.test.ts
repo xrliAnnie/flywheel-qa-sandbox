@@ -324,7 +324,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).toContain("QUESTION GATE");
 	});
 
-	it("does not leak the legacy three-stage landing or approve epilogue into an epoch-1 generalized implement node", async () => {
+	it("does not leak the legacy DAG workflow landing or approve epilogue into an epoch-1 generalized implement node", async () => {
 		const checkpoints = {
 			brainstorm: { enabled: true },
 			approve_to_ship: { enabled: true },
@@ -360,7 +360,7 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).not.toContain("APPROVE GATE");
 		expect(prompt).not.toContain("flywheel-land");
 		expect(prompt).not.toContain("Landing signal path");
-		expect(prompt).not.toContain("Three-stage keep-alive (implement phase)");
+		expect(prompt).not.toContain("DAG workflow keep-alive (implement phase)");
 		expect(prompt).toContain("TURN WAIT LAW (all runner vendors)");
 		expect(prompt).toContain("not-yours` is a normal wait state");
 	});

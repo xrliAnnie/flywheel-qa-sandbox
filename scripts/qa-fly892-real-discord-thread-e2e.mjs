@@ -346,7 +346,7 @@ async function main() {
 	);
 	check("S6: qa badge = 🧪QA", badgeQa === "🧪QA", badgeQa);
 	check(
-		"S6: main/non-three-stage badge empty (FLY-560 byte-compat)",
+		"S6: main/non-DAG workflow badge empty (FLY-560 byte-compat)",
 		badgeMain === "",
 	);
 

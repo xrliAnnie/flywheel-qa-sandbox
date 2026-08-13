@@ -135,7 +135,7 @@ describe("reconcileLegacyPhaseThreads (FLY-892 Step 5)", () => {
 	});
 
 	it("FAIL-CLOSED: no main + ACTIVE session → skipped_no_main, NOT archived", async () => {
-		// A three-stage phase session sets BOTH session_role (dispatch) and
+		// A DAG workflow session sets BOTH session_role (dispatch) and
 		// chat_thread_role; getActivePhaseSessionForIssue keys on session_role.
 		seedSession(store, {
 			issue_id: "FLY-887",

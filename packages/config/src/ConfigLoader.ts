@@ -423,8 +423,7 @@ export class ConfigLoader {
 			}
 		}
 
-		// pipeline (optional — FLY-793). Absent / three_stage:false → off
-		// (byte-compatible; single-session task as before). Shape validated
+		// pipeline (optional). Shape validated
 		// whenever PRESENT so a malformed block fails loudly at load (mirrors
 		// doc_flow), instead of silently no-op-ing the toggle later.
 		const pipeline = c.pipeline as Record<string, unknown> | undefined;
@@ -434,21 +433,14 @@ export class ConfigLoader {
 					"pipeline must be a YAML mapping (object), not an array or scalar",
 				);
 			}
-			if (
-				pipeline.three_stage != null &&
-				typeof pipeline.three_stage !== "boolean"
-			) {
-				throw new Error("pipeline.three_stage must be a boolean");
-			}
-			// FLY-1372: dag — project-level DAG dispatch enrollment (mirrors
-			// three_stage: boolean-only, absent → off, malformed fails loudly).
+			// FLY-1372: dag — project-level DAG dispatch enrollment.
 			if (pipeline.dag != null && typeof pipeline.dag !== "boolean") {
 				throw new Error("pipeline.dag must be a boolean");
 			}
 			// FLY-1407: shared consumers must not lose the whole pipeline block when
 			// only the new work-kind key is malformed. Fresh /api/runs/start requests
 			// have a narrow strict reader that reports INVALID_WORK_KIND_CONFIG; this
-			// loader deliberately drops only this key and preserves three_stage/dag.
+			// loader deliberately drops only this key and preserves dag.
 			if (
 				Object.hasOwn(pipeline, "work_kind") &&
 				typeof pipeline.work_kind !== "boolean"
@@ -457,32 +449,6 @@ export class ConfigLoader {
 					"[ConfigLoader] pipeline.work_kind must be a boolean — dropping only work_kind; other pipeline settings remain active",
 				);
 				delete pipeline.work_kind;
-			}
-			// FLY-887 R2: three_stage_channels — channel allowlist for three-stage
-			// entry. Items must be QUOTED strings: a bare YAML number would
-			// silently lose precision on 19-digit Discord snowflakes and the gate
-			// would never match, so numeric items fail loudly with a quoting hint.
-			const channels = pipeline.three_stage_channels;
-			if (channels != null) {
-				if (!Array.isArray(channels)) {
-					throw new Error(
-						"pipeline.three_stage_channels must be an array of channel-id strings",
-					);
-				}
-				for (const item of channels) {
-					if (typeof item === "number") {
-						throw new Error(
-							`pipeline.three_stage_channels item ${item} is a bare YAML number — ` +
-								"quote Discord channel ids (they exceed safe integer precision), " +
-								'e.g. three_stage_channels: ["1516209714097291335"]',
-						);
-					}
-					if (typeof item !== "string" || item.length === 0) {
-						throw new Error(
-							"pipeline.three_stage_channels items must be non-empty strings",
-						);
-					}
-				}
 			}
 		}
 

@@ -14,7 +14,7 @@ import {
 import { CommDB } from "../db.js";
 
 /**
- * FLY-887: the three-stage TURN table — the single source of truth for which
+ * FLY-887: the shared-worktree TURN table — the single source of truth for which
  * phase (design/implement/qa) currently holds the exclusive right to touch the
  * shared worktree. Bridge is the ONLY writer (grantTurn); runners read it via
  * the `turn` subcommand (turnStatus) before touching the worktree.
@@ -419,7 +419,7 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 });
 
 /**
- * FLY-887: the runner-side `turn` self-check contract. A three-stage runner must
+ * FLY-887: the runner-side `turn` self-check contract. A DAG workflow runner must
  * resolve its issue via its own session row, then compare the TURN holder to its
  * own execId. `yours` is the ONLY answer that authorizes touching the worktree.
  */

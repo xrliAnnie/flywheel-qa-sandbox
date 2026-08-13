@@ -146,7 +146,7 @@ describe("Action tools", () => {
 			questionId,
 			prHeadSha: head,
 		});
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: "geoforge3d",
 			issueId: "i-claims",
 			newRunId: "run-claims",

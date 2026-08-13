@@ -29,10 +29,6 @@ import {
 	type LeadRuntime,
 } from "./bridge/lead-runtime.js";
 import type { MaterializedHeadAuthority } from "./bridge/materialized-head-authority.js";
-import {
-	GHOST_PROBE_MAX_ROWS,
-	TURN_GRANT_GRACE_MS,
-} from "./bridge/phase-orchestrator.js";
 import type { QuietSignals } from "./bridge/quiet-classifier.js";
 import { sessionModelDisplay } from "./bridge/runner-model-display.js";
 import {
@@ -47,6 +43,10 @@ import {
 	probeRunnerProcessLiveness,
 	probeTmuxServer,
 } from "./bridge/tmux-lookup.js";
+import {
+	GHOST_PROBE_MAX_ROWS,
+	TURN_GRANT_GRACE_MS,
+} from "./bridge/turn-belt-reconcile.js";
 import {
 	inspectWorktreeForUnpushedWork,
 	type WorktreeInspection,
@@ -122,7 +122,7 @@ interface ReadoptPassCtx {
 
 /**
  * FLY-1204: injected chokepoint for the periodic parked-phase reclaim patrol —
- * the safety net that reclaims three-stage keep-alive phase sessions (design/
+ * the safety net that reclaims DAG workflow keep-alive phase sessions (design/
  * implement/qa) that leaked alive past ship or pipeline termination. Wired in
  * production; absent (tests / not wired) → `checkStaleParkedPhases` is inert
  * (byte-compat). The patrol NEVER kills a healthy parked context-holder — see
@@ -470,7 +470,7 @@ export class HeartbeatService implements ReconnectController {
 		/**
 		 * FLY-1204: injected parked-phase reclaim chokepoint (see
 		 * StaleParkedCloseConfig). Wired (production) → `checkStaleParkedPhases`
-		 * reclaims leaked three-stage phase sessions behind the same
+		 * reclaims leaked DAG workflow sessions behind the same
 		 * FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch (via `staleCloseEnabled`) plus
 		 * its own `FLYWHEEL_PARKED_PHASE_STALE_HOURS` threshold. Absent → inert.
 		 */
@@ -536,7 +536,7 @@ export class HeartbeatService implements ReconnectController {
 		// FLY-1282 (R4 #4 / R6 #1): one per-tick gate decision for the zombie
 		// machinery. When ON, the liveness-dependent chain (reconcileMonitorLoss →
 		// reapOrphans) is single-flighted as ONE unit — a slow/hung
-		// pass makes later ticks SKIP those three stages (observable) while
+		// pass makes later ticks skip those checks (observable) while
 		// maintenance, retry, server-loss, crash reaper, stale/parked/review
 		// stages keep running. OFF → no guard, current overlap semantics.
 		const zombieOn = this.zombieMachineryEnabled();
@@ -632,7 +632,7 @@ export class HeartbeatService implements ReconnectController {
 				if (livenessOwner) this.livenessChainInFlight = false;
 			}
 			await this.checkStaleCompleted();
-			// FLY-1204: reclaim leaked three-stage keep-alive phase sessions
+			// FLY-1204: reclaim leaked DAG workflow keep-alive phase sessions
 			// (independent throttle; inert unless wired). Its own try/guards keep a
 			// failure best-effort — the outer catch is the belt-and-suspenders.
 			await this.checkStaleParkedPhases();
@@ -1678,7 +1678,7 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-1204: periodic safety net that reclaims three-stage keep-alive phase
+	 * FLY-1204: periodic safety net that reclaims DAG workflow keep-alive phase
 	 * sessions (design/implement/qa) that leaked alive past ship or pipeline
 	 * termination — the root of the OOM incident (design_done holders never
 	 * closed after handoff; completed QA processes never torn down). Runs behind
@@ -1906,7 +1906,7 @@ export class HeartbeatService implements ReconnectController {
 		projectName: string,
 	): "none" | "in_flight" | "stale" | "defer" {
 		if (!this.staleParkedClose || !projectName) return "none";
-		// Structural subset of ThreeStageTurn (not re-exported from flywheel-comm/db).
+		// Structural subset of WorktreeTurn (not re-exported from flywheel-comm/db).
 		let turn: { holder_exec_id: string; granted_at: number } | null;
 		try {
 			const db = CommDB.openReadonly(

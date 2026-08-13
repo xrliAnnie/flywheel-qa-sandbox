@@ -169,9 +169,9 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			return { ok: false };
 		}
 		// FLY-892 (Step 3): this is the CENTRAL auto-QA issue-thread post seam (the
-		// three-stage orchestrator posts through it too). Tag which phase is
+		// DAG workflow orchestrator posts through it too). Tag which phase is
 		// speaking in the single converged thread. A standalone auto-QA session (on
-		// its own QA issue, not a three-stage phase) has chat_thread_role='main' →
+		// its own QA issue, not a DAG workflow) has chat_thread_role='main' →
 		// "" → byte-unchanged.
 		const prefix = phaseMessageTag(
 			args.session.chat_thread_role,

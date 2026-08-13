@@ -7,7 +7,7 @@
  *
  * Every fuse (abort / maxSteps / token budget / context overflow) exits
  * through a structured Terminal — the loop NEVER throws on tool failure
- * or API failure (design principles 2/3). Dispatch runs the three-stage
+ * or API failure (design principles 2/3). Dispatch runs the DAG workflow
  * gate inherited from the spike, order fixed: audit-first → whitelist →
  * schema validation.
  */
@@ -165,7 +165,7 @@ export async function runLoop(opts: RunLoopOptions): Promise<Terminal> {
 			return terminal("completed", turn.text ?? "");
 		}
 
-		// ---- dispatch three-stage gate, serial execution (§2.3 step 4) ----
+		// ---- dispatch DAG workflow gate, serial execution (§2.3 step 4) ----
 		const results: PendingResult[] = [];
 		let abortedMidDispatch = false;
 		for (const fc of turn.functionCalls) {

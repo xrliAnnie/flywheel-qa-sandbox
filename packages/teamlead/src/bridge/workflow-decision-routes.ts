@@ -22,7 +22,6 @@ import {
 	type MaterializedHeadAuthorityResult,
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
-import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 
 const execFileP = promisify(execFile);
@@ -74,7 +73,6 @@ interface WorkflowDecisionBody {
 
 export interface WorkflowDecisionRouterDeps {
 	store: StateStore;
-	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	prProbe?: (input: {
 		prNumber: number;
@@ -862,18 +860,6 @@ export function createWorkflowDecisionRouter(
 				...(summary ? { summary } : {}),
 			},
 		});
-		// The audit row is idempotent, but it must not gate the orchestration side
-		// effect. If the first drive throws after the claim/event commit, an exact
-		// credential replay must attempt the idempotent drive again.
-		if (deps.phaseOrchestrator?.current) {
-			await deps.phaseOrchestrator.current.onQaResult(reporting, {
-				eventId,
-				status,
-				prHeadSha: serverHead,
-				targetExecutionId: producer.execution_id,
-				...(summary ? { summary } : {}),
-			});
-		}
 		res.json({
 			ok: true,
 			claimId: result.claimId,

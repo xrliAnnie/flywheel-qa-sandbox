@@ -366,18 +366,9 @@ describe("workflow materialization ledger and receipts", () => {
 		expect(store.getWorkflowMaterializedHead(RUN, PRODUCER)).toBeUndefined();
 	});
 
-	it("keeps materialize effects out of all dispatch attribution queries", async () => {
+	it("keeps materialize effects out of dispatch and ship attribution", async () => {
 		const store = await seededStore();
 		const intent = allocate(store);
-		store.insertEvent({
-			event_id: "mat-fix",
-			execution_id: intent.effect_id,
-			issue_id: ISSUE,
-			project_name: "flywheel",
-			event_type: "three_stage_fix_round",
-			payload: { round: 9 },
-			source: "test",
-		});
 		store.insertEvent({
 			event_id: "mat-ship",
 			execution_id: intent.effect_id,
@@ -390,7 +381,6 @@ describe("workflow materialization ledger and receipts", () => {
 		expect(
 			store.isExecutionAttributedToWorkflowRun(RUN, intent.effect_id),
 		).toBe(false);
-		expect(store.listWorkflowRunAttributedFixRounds(RUN, ISSUE)).toEqual([]);
 		expect(store.hasWorkflowRunAttributedShipClaim(RUN, ISSUE)).toBe(false);
 	});
 

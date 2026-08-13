@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isThreeStagePhaseRole } from "flywheel-config";
+import { isWorkflowPhaseRole } from "flywheel-config";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
@@ -1895,7 +1895,7 @@ export class WorkflowEngineDispatcher {
 			intent.attempt,
 		);
 		if (currentNode?.execution_id !== intent.execution_id) return false;
-		this.options.store.applyWorkflowShadowBatch({
+		this.options.store.applyWorkflowLedgerBatch({
 			projectName: run.project_name,
 			issueId: run.issue_id,
 			runId: run.run_id,
@@ -2195,7 +2195,7 @@ export class WorkflowEngineDispatcher {
 			? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
 			: agentContent;
 		let startPoint: string | undefined;
-		if (isThreeStagePhaseRole(node.type)) {
+		if (isWorkflowPhaseRole(node.type)) {
 			if (
 				!isRootDesignFirstAttempt &&
 				(!predecessorExecutionId || !predecessor)
@@ -2451,7 +2451,7 @@ export class WorkflowEngineDispatcher {
 				submissionCredential = rotated.submissionCredential;
 			}
 		}
-		const role = isThreeStagePhaseRole(node.type) ? node.type : "main";
+		const role = isWorkflowPhaseRole(node.type) ? node.type : "main";
 		let startResult: StartResult;
 		try {
 			startResult = await this.options.startDispatcher.start({
@@ -2461,7 +2461,7 @@ export class WorkflowEngineDispatcher {
 				successorExecutionId: intent.execution_id,
 				...(leadId && { leadId }),
 				sessionRole: role,
-				shareParentBranch: isThreeStagePhaseRole(node.type) ? true : undefined,
+				shareParentBranch: isWorkflowPhaseRole(node.type) ? true : undefined,
 				...(startPoint && { startPoint }),
 				ignoreRunnerLabelSelection: true,
 				...(predecessor?.issue_identifier && {

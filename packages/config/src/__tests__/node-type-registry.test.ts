@@ -6,17 +6,17 @@ import {
 	nodeTypeWritesCode,
 } from "../node-type-registry.js";
 import {
-	isThreeStagePhaseRole,
+	isWorkflowPhaseRole,
+	PHASE_ROLE_SEQUENCE,
 	PHASE_THREAD_BADGE,
 	phaseThreadBadge,
 	resolveCompletionSessionRole,
-	THREE_STAGE_PHASE_SEQUENCE,
-} from "../three-stage-phases.js";
+} from "../phase-roles.js";
 
 describe("generalized workflow node-type registry", () => {
-	it("keeps the legacy phase identity surface byte-compatible", () => {
+	it("derives DAG workflow identity from the registry", () => {
 		expect(
-			THREE_STAGE_PHASE_SEQUENCE.map((id) => ({
+			PHASE_ROLE_SEQUENCE.map((id) => ({
 				id,
 				isPhaseRole: getNodeTypeRegistryEntry(id).isPhaseRole,
 				preserveCompletionRole:
@@ -24,7 +24,7 @@ describe("generalized workflow node-type registry", () => {
 				badge: getNodeTypeRegistryEntry(id).badge,
 			})),
 		).toEqual(
-			THREE_STAGE_PHASE_SEQUENCE.map((id) => ({
+			PHASE_ROLE_SEQUENCE.map((id) => ({
 				id,
 				isPhaseRole: true,
 				preserveCompletionRole: true,
@@ -92,18 +92,16 @@ describe("generalized workflow node-type registry", () => {
 		);
 	});
 
-	it("is the only source for phase identity, completion-role preservation, and badges", () => {
+	it("is the only source for role identity, completion preservation, and badges", () => {
 		const registrySource = readFileSync(
 			new URL("../node-type-registry.ts", import.meta.url),
 			"utf8",
 		);
 		const phaseSource = readFileSync(
-			new URL("../three-stage-phases.ts", import.meta.url),
+			new URL("../phase-roles.ts", import.meta.url),
 			"utf8",
 		);
-		expect(registrySource).not.toMatch(
-			/from ["'].\/three-stage-phases\.js["']/,
-		);
+		expect(registrySource).not.toMatch(/from ["'].\/phase-roles\.js["']/);
 		expect(phaseSource).toMatch(/from ["'].\/node-type-registry\.js["']/);
 
 		const design = NODE_TYPE_REGISTRY.design as {
@@ -114,7 +112,7 @@ describe("generalized workflow node-type registry", () => {
 		const original = { ...design };
 		try {
 			design.isPhaseRole = false;
-			expect(isThreeStagePhaseRole("design")).toBe(false);
+			expect(isWorkflowPhaseRole("design")).toBe(false);
 
 			design.isPhaseRole = true;
 			design.preserveCompletionRole = false;

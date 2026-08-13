@@ -1,4 +1,4 @@
-// QA·FLY-545 (Opus, three-stage QA phase) — independent offline codec+resample
+// QA·FLY-545 (Opus, DAG workflow QA phase) — independent offline codec+resample
 // chain verification for acceptance A3's core technical claim ("完整 mp3→opus
 // 依赖链"), WITHOUT a live Discord VC or a Gemini key. This is the part unit
 // tests (synthetic-waveform mocks) structurally cannot cover.

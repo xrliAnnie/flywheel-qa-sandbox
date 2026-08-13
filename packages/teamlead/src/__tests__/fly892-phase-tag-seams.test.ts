@@ -1,6 +1,6 @@
 /**
  * FLY-892 Step 3: the message-level phase tag is injected at the founder-facing
- * Discord-post seams. A three-stage phase session's messages carry `[设计·Fable] `
+ * Discord-post seams. A DAG workflow session's messages carry `[设计·Fable] `
  * etc.; the shared automation marker remains the outermost prefix.
  */
 
@@ -181,7 +181,7 @@ describe("FLY-892 Step 3: AutoQaEffects.postThread phase prefix", () => {
 		} as Session;
 	}
 
-	it("a three-stage QA phase session prepends the tag", async () => {
+	it("a DAG workflow QA phase session prepends the tag", async () => {
 		await makeEffects().postThread({
 			session: session({
 				chat_thread_role: "qa",

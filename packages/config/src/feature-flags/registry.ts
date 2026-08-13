@@ -174,35 +174,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
-		// FLY-1329 (A1): the FLY-1319 incident. `handoff()` read liveness `absent`
-		// as proof of death and closed a park-alive implement (StateStore→completed,
-		// CommDB row deleted, shared branch B torn down) while its process was still
-		// running. `absent` only means no window answered to the name we looked up —
-		// a stale CommDB tmux_window mapping produces it on a healthy runner. Default
-		// ON: only `dead_pin` (every pane a remain-on-exit corpse) authorizes a close;
-		// `absent` parks + audits + still hands off. `=0` restores the legacy
-		// absent→close path byte-for-byte.
-		name: "park_biased_handoff",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PARK_BIASED_HANDOFF",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"handoff 在 liveness=absent 时 park 而非 close(=0 回退 FLY-1319 事故前的 absent→close 旧行为)。absent 不是死亡证据,只是「按这个名字找不到窗」——CommDB 窗名过时时健康 runner 也返回它;只有 dead_pin 才是正证据 (FLY-1329 A1)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/phase-orchestrator.ts",
-				"handoff",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "改后需重启 Bridge。dead_pin close 与 indeterminate fail-close 两条路径不受本 env 影响。",
-	},
-	{
 		// FLY-1329 (A4/A5): an unexpired `runner_declared_states` park declaration —
 		// the runner asserting "I am alive and waiting" — vetoes both destructive
 		// reconcile sweeps. Shared by the FLY-324 done-but-running boot sweep and the
@@ -853,154 +824,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "CLI 每次调用即时读取；Bridge 进程在每次 completion admission 读取 process.env，但修改共享 .env 后仍需重启 Bridge。",
 	},
 	{
-		// FLY-793: global hard kill-switch for the three-stage pipeline
-		// (Design→Implement→QA). The PRIMARY toggle is the per-project
-		// `pipeline.three_stage` config key; this env is a fleet-wide emergency OFF
-		// override (unset → the feature may run per project; `=0` → force-off
-		// everywhere). Read at call_time when a phase-session completes, so it can
-		// gate a live handoff. readonly (not a founder dashboard toggle): the config
-		// key is the intended per-project control, this env is an ops safety lever.
-		name: "three_stage_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_THREE_STAGE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉三段式 pipeline（Design→Implement→QA）；主开关是 per-project pipeline.three_stage config，本 env 是 fleet-wide 紧急 OFF（FLY-793）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/three-stage-policy.ts",
-				"resolveThreeStagePolicy",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "三段式主开关是 per-project pipeline.three_stage config；本 env=0 是全局紧急关，改后需重启 Bridge。",
-	},
-	{
-		// FLY-887: keep-alive kill-switch for the three-stage pipeline. Default ON:
-		// phase-sessions park across handoffs (design/implement/qa stay alive to
-		// ship) and are WOKEN (not respawned) so the QA↔implement fix loop keeps
-		// full context. `=0` forces the legacy close-and-respawn behavior
-		// everywhere (byte-compatible with the pre-FLY-887 pipeline) for emergency
-		// rollback WITHOUT disabling three-stage itself. Read at call_time by both
-		// the PhaseOrchestrator (handoff/fail decisions) and the Blueprint worktree
-		// in-place-takeover gate. Orthogonal to FLYWHEEL_THREE_STAGE.
-		name: "three_stage_keepalive_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_THREE_STAGE_KEEPALIVE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉三段式 phase-session 保活（=0 回退 close-and-respawn 旧行为，不关三段式本身；默认 ON=三段 park 保活 + wake，QA↔implement 修复循环留全 context）(FLY-887)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/three-stage-policy.ts",
-				"threeStageKeepAliveEnabled",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/edge-worker/src/Blueprint.ts",
-				"runInner (worktree in-place takeover gate)",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "与 FLYWHEEL_THREE_STAGE 正交（那个关整条三段式）；本 env=0 只回退保活到 close+respawn，改后需重启 Bridge。",
-	},
-	{
-		// FLY-1050: kill-switch for the dead-QA respawn. Default ON: a dead
-		// three-stage QA phase row (terminated/failed/completed, no ship claim)
-		// no longer blocks the implement→QA handoff re-drive — the stranded
-		// implement gets a fresh QA respawned (boot reconcile + the scoped
-		// QA-death event sites). `=0` reverts the respawn paths to the pre-fix
-		// row-exists criteria (scoped sites inert; the G-A2 zero-row boot
-		// re-drive is preserved). The terminated stranded-pass alert hardening
-		// is deliberately NOT gated by this switch (rolling back the respawn
-		// must not re-introduce the FLY-967 silent strand).
-		name: "three_stage_qa_respawn_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_THREE_STAGE_QA_RESPAWN",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"三段式死 QA 重生开关（=0 回退修复前行为:死 qa row 继续挡 implement→QA 重驱,scoped 事件位点不重生;terminated stranded-pass 告警硬化不受此开关控制）(FLY-1050)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/phase-orchestrator.ts",
-				"qaRespawnEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "与 FLYWHEEL_THREE_STAGE / FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只关死-QA 重生路径，改后需重启 Bridge。",
-	},
-	{
-		// FLY-1224: per-phase vendor — the implement phase defaults to codex
-		// (gpt-5.6-sol, xhigh). `=0` falls the implement dispatch back to the
-		// legacy (claude, heavy) row — the operational escape hatch when the
-		// codex account quota is exhausted. Display fallbacks (phaseMessageTag /
-		// issue-display pending rows) read the same table, so they follow.
-		name: "three_stage_codex_implement_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"三段式 implement 段 codex 派发开关（=0 → implement 回落 legacy (claude, heavy)；design/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --reason env-change）(FLY-1224/FLY-1434)",
-		readSites: [
-			envSite(
-				"packages/config/src/three-stage-phases.ts",
-				"resolvePhaseDispatch",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "与 FLYWHEEL_THREE_STAGE(整体开关)/ FLYWHEEL_THREE_STAGE_KEEPALIVE 正交；本 env=0 只翻 implement 段的 vendor/model，phase 表其余行不动。",
-	},
-	{
-		// FLY-1245 / FLY-1259: new-run admission fallback for the design phase
-		// when admission did not provide a per-dispatch designBackend. `=1` flips
-		// the fallback from claude/Fable to codex (gpt-5.6-sol, xhigh).
-		// MIRROR of the implement kill-switch but INVERTED activating value: design
-		// defaults to claude (=1 opts INTO codex) whereas implement defaults to
-		// codex (=0 falls back to claude). New-run display fallbacks prefer the
-		// locked backend; legacy/null rows still read this table.
-		name: "three_stage_codex_design_toggle",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_THREE_STAGE_CODEX_DESIGN",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"三段式 design 段新 run admission fallback（仅在 admission 时且本次 run 未指定 designBackend：=1 → codex gpt-5.6-sol xhigh；不设/≠1 → claude/Fable；一旦写入 sessions.design_backend，retry/rescue 不再读本开关；implement/qa 不受影响；改 ~/.flywheel/.env 后需 restart-services.sh --reason env-change）(FLY-1245/FLY-1259/FLY-1434)",
-		readSites: [
-			envSite(
-				"packages/config/src/three-stage-phases.ts",
-				"resolvePhaseDispatch",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "per-dispatch designBackend 与已锁定 sessions.design_backend 优先于本全局 fallback；已锁定 run 如需换 vendor，结束旧 run 后以显式 designBackend 新开 run；display fallback 对新 run 先读 locked backend，legacy/null 才读本开关。",
-	},
-	{
 		// FLY-939 (G-D): Bridge boot logs its running HEAD and best-effort compares
 		// it to origin/main; a STALE checkout (HEAD strictly behind origin/main)
 		// WARNs + records a durable event + alerts the Lead. `=0` skips the whole
@@ -1155,28 +978,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "direct",
 		directToggleProof:
 			"gate-poller-fly1041-report-exclusion.test:FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE=0 restores review candidates",
-	},
-	{
-		name: "retest_head_delta_guard",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_RETEST_HEAD_DELTA_GUARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1314: 用不可变 QA verdict head 与 exact range diff 抑制无代码变化的重复 retest（=0 恢复每次重驱）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/phase-orchestrator.ts",
-				"shouldSuppressQaRetest",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"phase-orchestrator.fly887-keepalive.test:FLYWHEEL_RETEST_HEAD_DELTA_GUARD=0 preserves retest",
 	},
 	{
 		name: "ship_ci_guard",
@@ -2695,7 +2496,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		// → the sign-off write fail-closes 503, permanently blocking every
 		// founder-facing issue's implement). Stacks OVER the per-project
 		// `founder_ux_gate.mode` (governance gate) as a fleet-wide override, like
-		// `three_stage_killswitch` — but OPPOSITE polarity: default OFF (gate
+		// the retired route kill switch — but OPPOSITE polarity: default OFF (gate
 		// disabled), only `=1` re-enables the original enforce. Governance gate →
 		// ALWAYS readonly (never a founder dashboard toggle). Requires a Bridge
 		// restart to take effect. The single flag semantic lives in the helper
@@ -3047,23 +2848,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"call_time",
 				"env-param",
 			),
-			envSite(
-				"packages/teamlead/src/bridge/workflow-shadow-writer.ts",
-				"WorkflowShadowRuntime.enabled / beginStartScope",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp reQa.enabled use-time gate",
-				"call_time",
-				"env-param",
-			),
 		],
 		toggleable: "direct",
 		directToggleProof:
-			"workflow-claims parser feeds StateStore/dispatch predicates at call time; workflow-shadow-wiring + workflow-decision-routes prove the next start/hook/reQA call observes apply",
-		note: "FLY-1344 founder-controlled DAG claims-write lever (FLY-1307/1232 lineage). Start entry latches ON/OFF; non-start hooks and reQA read at use-time.",
+			"workflow-claims tests prove the parser and template-dispatch predicate observe the next call",
+		note: "Founder-controlled DAG claims-write admission lever.",
 	},
 	{
 		name: "workflow_claims_read",
@@ -3075,7 +2864,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: false,
 		description:
-			"FLY-1244: switch explicitly enrolled durable three-stage runs to claims-backed ship eligibility and authoritative head reads.",
+			"FLY-1244: switch explicitly enrolled durable workflow runs to claims-backed ship eligibility and authoritative head reads.",
 		readSites: [
 			envSite(
 				"packages/teamlead/src/workflow-claims.ts",

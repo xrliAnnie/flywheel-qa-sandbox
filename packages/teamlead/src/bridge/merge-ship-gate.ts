@@ -476,14 +476,14 @@ export async function finalizeRecoveredMerge(
 	 */
 	refreshIssueDisplay?: (issueId: string) => Promise<void>,
 	/**
-	 * FLY-907 Codex R1 MED-2: a recovered merge on a THREE-STAGE issue must
+	 * FLY-907 Codex R1 MED-2: a recovered merge on a shared-workflow issue must
 	 * also close the still-alive parked design/implement phases + drop the TURN
 	 * row (exactly like the live completion sinks) — and only THEN run the
 	 * terminal display refresh. Built by the callers via
-	 * makeFinalizeThreeStagePhases (they hold transitionOpts; this module does
+	 * makeFinalizeWorkflowPhaseRoles (they hold transitionOpts; this module does
 	 * not). Absent → no phase finalization (byte-compat with pre-FLY-907).
 	 */
-	finalizeThreeStagePhases?: (
+	finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>,
@@ -560,7 +560,7 @@ export async function finalizeRecoveredMerge(
 				markIssueDone: makeLinearDoneFinalizer(config),
 				// FLY-907 Codex R1 MED-2: close parked phases + drop TURN before the
 				// terminal display refresh (runPostShipFinalization orders them).
-				finalizeThreeStagePhases,
+				finalizeWorkflowPhaseRoles,
 				refreshIssueDisplay,
 			},
 		);

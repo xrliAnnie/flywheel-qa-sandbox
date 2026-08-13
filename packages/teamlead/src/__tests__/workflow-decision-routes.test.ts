@@ -212,14 +212,12 @@ async function reviewFixture(options: {
 		status: "running",
 		adapter_type: "claude-tmux",
 	});
-	const onQaResult = vi.fn();
 	const app = express();
 	app.use(express.json());
 	app.use(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
-			phaseOrchestrator: { current: { onQaResult } as never },
 			materializedHeadAuthority: options.materializedHeadAuthority,
 			prProbe:
 				options.prProbe ??
@@ -252,7 +250,6 @@ async function reviewFixture(options: {
 			ref: "refs/heads/fly-1307",
 		},
 		claimCountBeforeReview: store.countWorkflowClaims("run-review"),
-		onQaResult,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
 		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
 	};
@@ -306,7 +303,6 @@ async function fixture() {
 		absoluteDeadlineAt: T2,
 	});
 	if (!admission.ok) throw new Error(admission.reason);
-	const onQaResult = vi.fn().mockResolvedValue(undefined);
 	let serverNow = T0;
 	const app = express();
 	app.use(express.json());
@@ -314,7 +310,6 @@ async function fixture() {
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
-			phaseOrchestrator: { current: { onQaResult } as never },
 			now: () => serverNow,
 		}),
 	);
@@ -326,7 +321,6 @@ async function fixture() {
 		store,
 		worktree,
 		credential: admission.credential,
-		onQaResult,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
 		setServerNow: (value: string) => {
 			serverNow = value;
@@ -335,8 +329,8 @@ async function fixture() {
 	};
 }
 
-describe("workflow decision routes", () => {
-	it("derives identity + server head, commits one claim, then safely re-drives the phase orchestrator on replay", async () => {
+describe("schema-v1 workflow recovery decision routes", () => {
+	it("derives identity + server head, commits one claim, and replays idempotently", async () => {
 		const f = await fixture();
 		try {
 			const body = {
@@ -362,14 +356,6 @@ describe("workflow decision routes", () => {
 				issuer_execution_id: "qa-exec",
 				subject_producer_execution_id: "impl-exec",
 			});
-			expect(f.onQaResult).toHaveBeenCalledWith(
-				expect.objectContaining({ execution_id: "qa-exec" }),
-				expect.objectContaining({
-					status: "pass",
-					prHeadSha: f.worktree.head,
-					targetExecutionId: "impl-exec",
-				}),
-			);
 			// Simulate a lost HTTP response followed by a later retry. Server-owned
 			// clock fields must not poison the request digest.
 			f.setServerNow("2026-07-14T00:05:00.000Z");
@@ -385,7 +371,6 @@ describe("workflow decision routes", () => {
 				claimId: accepted.claimId,
 			});
 			expect(f.store.countWorkflowClaims("run-1")).toBe(1);
-			expect(f.onQaResult).toHaveBeenCalledTimes(2);
 		} finally {
 			await f.close();
 		}
@@ -440,38 +425,6 @@ describe("workflow decision routes", () => {
 				subject_producer_execution_id: "impl-exec",
 				attempt: 2,
 			});
-		} finally {
-			await f.close();
-		}
-	});
-
-	it("retries the orchestrator drive after a response-loss failure even when the audit event already exists", async () => {
-		const f = await fixture();
-		try {
-			f.onQaResult.mockRejectedValueOnce(new Error("transient drive failure"));
-			const body = {
-				credential: f.credential,
-				client_request_id: "retry-drive",
-				status: "pass",
-			};
-			const first = await fetch(`${f.baseUrl}/decision`, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(body),
-			});
-			expect(first.status).toBe(500);
-
-			const replay = await fetch(`${f.baseUrl}/decision`, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(body),
-			});
-			expect(replay.status).toBe(200);
-			expect(await replay.json()).toMatchObject({
-				ok: true,
-				idempotentReplay: true,
-			});
-			expect(f.onQaResult).toHaveBeenCalledTimes(2);
 		} finally {
 			await f.close();
 		}
@@ -719,7 +672,7 @@ describe("workflow decision routes", () => {
 });
 
 describe("engine-owned review decision canonicalization", () => {
-	it("derives review authority from the pinned node and advances without the legacy QA belt", async () => {
+	it("derives review authority from the pinned node and advances the DAG", async () => {
 		let f: Awaited<ReturnType<typeof reviewFixture>> | undefined;
 		const authority: MaterializedHeadAuthority = {
 			resolve: vi.fn(async () => {
@@ -766,7 +719,6 @@ describe("engine-owned review decision canonicalization", () => {
 				node_id: "review",
 				worktree_binding_generation: `receipt-v1:${f.materialization.effectId}`,
 			});
-			expect(f.onQaResult).not.toHaveBeenCalled();
 			const holder = f.store
 				.listWorkflowRunEvents("run-review")
 				.find((event) => event.kind === "gate_holder_created");

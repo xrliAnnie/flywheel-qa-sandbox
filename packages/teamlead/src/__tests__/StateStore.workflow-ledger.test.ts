@@ -6,14 +6,13 @@ import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
 /**
- * FLY-1232 module ② — the workflow shadow composite transaction
- * (`applyWorkflowShadowBatch`, the ONLY sanctioned transaction surface,
+ * FLY-1232 module ② — the workflow ledger composite transaction
+ * (`applyWorkflowLedgerBatch`, the ONLY sanctioned transaction surface,
  * design R3#5) and the `workflow_side_effect_ledger` dispatch-outbox state
  * machine (§2.4b / research §F.3).
  *
- * Everything here is DEFAULT-OFF substrate: production only reaches these
- * APIs through the WorkflowShadowWriter, which plugin.ts constructs solely
- * when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1.
+ * Production reaches these APIs through the workflow engine when claims
+ * writes are enabled.
  */
 
 async function freshStore(): Promise<StateStore> {
@@ -33,7 +32,7 @@ function dispatchBatch(
 		newRunId?: string;
 	} = {},
 ) {
-	const ops: Parameters<StateStore["applyWorkflowShadowBatch"]>[0]["ops"] = [];
+	const ops: Parameters<StateStore["applyWorkflowLedgerBatch"]>[0]["ops"] = [];
 	if (opts.edge) {
 		ops.push({
 			op: "edge",
@@ -49,7 +48,7 @@ function dispatchBatch(
 		attempt: opts.attempt ?? 1,
 		executionId,
 	});
-	return store.applyWorkflowShadowBatch({
+	return store.applyWorkflowLedgerBatch({
 		projectName: PROJECT,
 		issueId: ISSUE,
 		newRunId: opts.newRunId ?? "run-shadow-1",
@@ -57,14 +56,14 @@ function dispatchBatch(
 	});
 }
 
-describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness", () => {
-	it("creates the active shadow run on first batch and reuses it afterwards", async () => {
+describe("applyWorkflowLedgerBatch — run getOrCreate + active-run uniqueness", () => {
+	it("creates the active workflow run on first batch and reuses it afterwards", async () => {
 		const store = await freshStore();
 		const first = dispatchBatch(store, "exec-1");
 		expect(first.created).toBe(true);
 		expect(first.runId).toBe("run-shadow-1");
 
-		const second = store.applyWorkflowShadowBatch({
+		const second = store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			newRunId: "run-shadow-IGNORED",
@@ -98,7 +97,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 	it("a finalized run releases the (project, issue) slot — the next batch creates a NEW run (B10)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1");
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "finalize" }],
@@ -113,13 +112,13 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 	it("explicit-runId batches accept ONLY side_effect ops — a finalized run's history cannot be mutated (R2#5)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1", { node: "qa", attempt: 1 });
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "finalize" }],
 		});
 		// evidence advancement on the completed run — allowed
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			runId: "run-shadow-1",
@@ -144,7 +143,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 			{ op: "finalize" },
 		] as const) {
 			expect(() =>
-				store.applyWorkflowShadowBatch({
+				store.applyWorkflowLedgerBatch({
 					projectName: PROJECT,
 					issueId: ISSUE,
 					runId: "run-shadow-1",
@@ -165,7 +164,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 			to: "launch_committed",
 		} as const;
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: "some-other-project",
 				issueId: ISSUE,
 				runId: "run-shadow-1",
@@ -173,7 +172,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 			}),
 		).toThrow(/identity/i);
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: "FLY-9999",
 				runId: "run-shadow-1",
@@ -188,7 +187,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 	it("refuses to create a run without a caller-supplied newRunId (fail-closed)", async () => {
 		const store = await freshStore();
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				ops: [{ op: "kickback", round: 1 }],
@@ -197,7 +196,7 @@ describe("applyWorkflowShadowBatch — run getOrCreate + active-run uniqueness",
 	});
 });
 
-describe("applyWorkflowShadowBatch — dispatch op (T1/T2/T7) + writer-allocated ordinal", () => {
+describe("applyWorkflowLedgerBatch — dispatch op (T1/T2/T7) + writer-allocated ordinal", () => {
 	it("writes node_dispatched + running node projection + intent_recorded ledger row, ordinal allocated by the writer", async () => {
 		const store = await freshStore();
 		const res = dispatchBatch(store, "exec-1", { node: "design", attempt: 1 });
@@ -271,11 +270,11 @@ describe("applyWorkflowShadowBatch — dispatch op (T1/T2/T7) + writer-allocated
 	});
 });
 
-describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / finalize ops", () => {
+describe("applyWorkflowLedgerBatch — wake / edge / complete / kickback / finalize ops", () => {
 	it("wake (T3) writes node_dispatched with the wake uid and NO side-effect row (wake is not a spawn)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1", { node: "implement", attempt: 1 });
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -295,7 +294,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	it("wake handoff (T3b) writes edge_traversed + wake node_dispatched in ONE batch", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-qa", { node: "qa", attempt: 1 });
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -319,7 +318,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	it("complete (T4) writes node_completed keyed by execution id and ends the node projection", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1", { node: "design", attempt: 1 });
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -338,7 +337,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	it("uid namespace: the SAME execution completing across two keep-alive rounds is NOT deduped (R2#2)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1", { node: "implement", attempt: 1 });
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -365,12 +364,12 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	it("kickback (T6) writes ONLY loop_iteration, keyed by round; replay is idempotent", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1");
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "kickback", round: 1 }],
 		});
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "kickback", round: 1 }],
@@ -385,14 +384,14 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	it("kickbacks are namespaced by RUN id — a second workflow on the same issue does not collide (R2#2)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1");
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "kickback", round: 1 }, { op: "finalize" }],
 		});
 		const second = dispatchBatch(store, "exec-2", { newRunId: "run-shadow-2" });
 		expect(second.runId).toBe("run-shadow-2");
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "kickback", round: 1 }],
@@ -407,7 +406,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1");
 		const before = store.listWorkflowRunEvents("run-shadow-1").length;
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [{ op: "finalize" }],
@@ -416,7 +415,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 		expect(store.listWorkflowRunEvents("run-shadow-1")).toHaveLength(before);
 		// replay: run no longer active → batch must NOT create a new run implicitly
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				ops: [{ op: "finalize" }],
@@ -431,7 +430,7 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 			attempt: 1,
 			edge: { from: "design", to: "implement" },
 		});
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -458,11 +457,11 @@ describe("applyWorkflowShadowBatch — wake / edge / complete / kickback / final
 	});
 });
 
-describe("applyWorkflowShadowBatch — fail-closed input validation", () => {
+describe("applyWorkflowLedgerBatch — fail-closed input validation", () => {
 	it("rejects non-finite / non-positive attempt and round (never writes a NaN into a uid)", async () => {
 		const store = await freshStore();
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				newRunId: "r",
@@ -477,7 +476,7 @@ describe("applyWorkflowShadowBatch — fail-closed input validation", () => {
 			}),
 		).toThrow(/attempt/);
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				newRunId: "r",
@@ -491,7 +490,7 @@ describe("applyWorkflowShadowBatch — fail-closed input validation", () => {
 	it("rejects node / edge labels containing the uid separator", async () => {
 		const store = await freshStore();
 		expect(() =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				newRunId: "r",
@@ -513,7 +512,7 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 		to: "launch_committed" | "started" | "abandoned",
 		opts: { executionId?: string; reason?: string } = {},
 	) {
-		return store.applyWorkflowShadowBatch({
+		return store.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -591,7 +590,7 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 		// marker already durable ⇒ the row sits at launch_committed and can never abandon
 		const store2 = await freshStore();
 		seedDispatch(store2, "exec-2");
-		store2.applyWorkflowShadowBatch({
+		store2.applyWorkflowLedgerBatch({
 			projectName: PROJECT,
 			issueId: ISSUE,
 			ops: [
@@ -605,7 +604,7 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 			],
 		});
 		expect(() =>
-			store2.applyWorkflowShadowBatch({
+			store2.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				ops: [
@@ -657,7 +656,7 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 	});
 });
 
-describe("applyWorkflowShadowBatch — per-statement fault injection (B6: no torn writes)", () => {
+describe("applyWorkflowLedgerBatch — per-statement fault injection (B6: no torn writes)", () => {
 	it("a failure at ANY statement rolls back the WHOLE batch (no orphan run/event/node/ledger rows), and the replay then succeeds", async () => {
 		// Count the statements a full T2-shaped batch executes, then re-run the
 		// batch on a fresh store failing at each statement index in turn.
@@ -674,7 +673,7 @@ describe("applyWorkflowShadowBatch — per-statement fault injection (B6: no tor
 			return originalRun(sql, params);
 		};
 		const fullBatch = (store: StateStore) =>
-			store.applyWorkflowShadowBatch({
+			store.applyWorkflowLedgerBatch({
 				projectName: PROJECT,
 				issueId: ISSUE,
 				newRunId: "run-shadow-1",

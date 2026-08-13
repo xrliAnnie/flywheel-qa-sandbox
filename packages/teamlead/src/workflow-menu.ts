@@ -162,12 +162,9 @@ function parseMenuModel(value: unknown, path: string): WorkflowMenuModel {
 	const registryEfforts = [
 		...(registry.effortsBySurface.workflow ?? []),
 	] as WorkflowEffort[];
-	if (
-		allowedEfforts.length !== registryEfforts.length ||
-		allowedEfforts.some((effort, index) => effort !== registryEfforts[index])
-	) {
+	if (allowedEfforts.some((effort) => !registryEfforts.includes(effort))) {
 		throw new Error(
-			`${path}.allowedEfforts must equal the ${model} workflow CLI set: ${registryEfforts.join(", ")}`,
+			`${path}.allowedEfforts must be a subset of the ${model} workflow CLI set: ${registryEfforts.join(", ")}`,
 		);
 	}
 	const defaultEffort = oneOf(

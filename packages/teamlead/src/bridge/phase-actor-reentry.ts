@@ -1,7 +1,7 @@
 import { isStateStoreIrreversibleTerminalForZombie } from "../StateStore.js";
-import type { PhaseSession } from "./phase-orchestrator.js";
+import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
-/** Four-state process evidence shared by three-stage and generalized re-entry. */
+/** Four-state process evidence shared by DAG workflow and generalized re-entry. */
 export type PhaseLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
 
 export type PhaseActorReentryDecision =
@@ -28,9 +28,9 @@ export type PhaseActorReentryDecision =
  * persisted tmux target may authorize replacement.
  */
 export async function classifyPhaseActorReentry(input: {
-	session: PhaseSession;
-	probeRegistered(session: PhaseSession): Promise<PhaseLiveness>;
-	probePersisted(session: PhaseSession): Promise<PhaseLiveness>;
+	session: WorkflowActorSession;
+	probeRegistered(session: WorkflowActorSession): Promise<PhaseLiveness>;
+	probePersisted(session: WorkflowActorSession): Promise<PhaseLiveness>;
 	hasHostProcess?(executionId: string): Promise<boolean>;
 }): Promise<PhaseActorReentryDecision> {
 	const registered = await input.probeRegistered(input.session);

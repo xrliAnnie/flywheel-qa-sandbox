@@ -1,0 +1,12 @@
+flowchart TB
+    A["founder 拍板:QA 节点用 Opus 4.6"] --> B["配置被写进 phases 表<br/>(models.json phases.qa)"]
+    B -.->|"只有三段式旧路径会读"| C["三段式管线 (FLY-793)<br/>已被 DAG 取代,实际不再派发"]
+    A -.->|"应该写的位置"| D["bindings.opus<br/>(models.json bindings 段)"]
+    D --> E["DAG 工作流引擎<br/>(实际派发路径)"]
+    E --> F["真实 run 的 QA 节点<br/>固化 claude-opus-5[1m] ❌"]
+    C --> G["配置写了 ≠ 生效<br/>直到 founder 追问才发现"]
+    style C fill:#ffe5e2,stroke:#ff3b30
+    style G fill:#ffe5e2,stroke:#ff3b30
+    style F fill:#fff3e0,stroke:#ff9500
+    style D fill:#e8f5e9,stroke:#34c759
+    style E fill:#e8f5e9,stroke:#34c759

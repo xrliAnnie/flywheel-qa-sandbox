@@ -10,6 +10,7 @@ import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	launchCommitPath,
 	type ProjectRuntime,
 	preRegistrationVendor,
 	RetryDispatcher,
@@ -298,92 +299,11 @@ describe("RunDispatcher", () => {
 			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
 		).run;
 		expect(run.mock.calls[0]?.[2]).toMatchObject({
+			launchCommitPath: launchCommitPath("qa-engine-exec"),
 			workflowSubmissionCredential: "decision-ticket",
 			workflowSubmissionExpected: true,
 		});
 	});
-	it("FLY-1244 admits durable QA before spawn and passes its scoped credential", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const shadow = {
-			onSpawnDispatch: vi.fn(),
-			onDispatchFailed: vi.fn(),
-		};
-		const admission = {
-			admit: vi.fn().mockReturnValue({ credential: "qa-credential" }),
-		};
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			shadow,
-			admission,
-		);
-
-		const result = await dispatcher.start({
-			issueId: "FLY-1244",
-			projectName: "TestProject",
-			sessionRole: "qa",
-			shareParentBranch: true,
-			shadowContext: { node: "qa", attempt: 2 },
-		});
-
-		expect(admission.admit).toHaveBeenCalledWith({
-			projectName: "TestProject",
-			issueId: "FLY-1244",
-			executionId: result.executionId,
-			node: "qa",
-			attempt: 2,
-		});
-		const run = (
-			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
-		).run;
-		expect(run.mock.calls[0]?.[2]).toMatchObject({
-			workflowSubmissionCredential: "qa-credential",
-		});
-		expect(run.mock.calls[0]?.[2].workflowSubmissionExpected).toBeUndefined();
-	});
-
-	it("FLY-1244 fails closed before Blueprint when durable QA admission fails", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const onSpawnFailed = vi.fn();
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
-			{ onSpawnDispatch: vi.fn(), onDispatchFailed: vi.fn() },
-			{
-				admit: vi.fn(() => {
-					throw new Error("binding conflict");
-				}),
-			},
-		);
-
-		await expect(
-			dispatcher.start({
-				issueId: "FLY-1244",
-				projectName: "TestProject",
-				sessionRole: "qa",
-				shareParentBranch: true,
-				shadowContext: { node: "qa", attempt: 1 },
-			}),
-		).rejects.toThrow("workflow claims admission failed");
-		expect(
-			(runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }).run,
-		).not.toHaveBeenCalled();
-		expect(dispatcher.getInflightCount()).toBe(0);
-		expect(onSpawnFailed).toHaveBeenCalledOnce();
-	});
-
 	it("start() returns executionId and issueId", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -707,7 +627,7 @@ describe("RetryDispatcher", () => {
 	});
 	it("keeps the resolved Codex model in a retried implement-phase window", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
-		// FLY-1257 defect ③: a three-stage PHASE retry (shareParentBranch +
+		// FLY-1257 defect ③: a DAG workflow retry (shareParentBranch +
 		// design/implement/qa role) now resolves branch B's tip through the
 		// startPoint computer, and fails closed when it cannot — an indeterminate
 		// probe must never silently reset branch B to origin/main. This FLY-1255
@@ -1295,8 +1215,8 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 		expect(runnerDisplayName("main", false, undefined)).toBe("claude");
 	});
 
-	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
-	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
+	// A DAG workflow runner is (shareParentBranch === true) AND a phase role.
+	it("maps a DAG workflow role (shareParentBranch=true) to its phase name", () => {
 		expect(runnerDisplayName("design", true)).toBe("design");
 		expect(runnerDisplayName("implement", true)).toBe("implement");
 		expect(runnerDisplayName("qa", true)).toBe("qa");
@@ -1310,10 +1230,10 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 
 	it("byte-compat: FLY-579 Auto-QA (role='qa' but NO shareParentBranch) stays 'claude'", () => {
 		// The Codex R2 regression: Auto-QA shares sessionRole "qa" but is not a
-		// three-stage phase (no shareParentBranch), so it must NOT flip to "-qa-".
+		// DAG workflow (no shareParentBranch), so it must NOT flip to "-qa-".
 		expect(runnerDisplayName("qa", false)).toBe("claude");
 		expect(runnerDisplayName("qa", undefined)).toBe("claude");
-		// A phase role without the three-stage marker is likewise unchanged.
+		// A phase role without the DAG workflow marker is likewise unchanged.
 		expect(runnerDisplayName("design", false)).toBe("claude");
 		expect(runnerDisplayName("implement", undefined)).toBe("claude");
 	});
@@ -1321,24 +1241,24 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 	it("cmux visibility: the window label carries the phase per-phase, not 'claude'", () => {
 		// buildWindowLabel = `{issueId}-{runner}-{cleanTitle}`. Feeding it the
 		// phase-aware runner name is what makes cmux show the live phase.
-		const title = "three-stage pipeline";
+		const title = "DAG workflow";
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("design", true), title),
-		).toBe("FLY-793-design-three-stage pipeline");
+		).toBe("FLY-793-design-DAG workflow");
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("implement", true), title),
-		).toBe("FLY-793-implement-three-stage pipeline");
+		).toBe("FLY-793-implement-DAG workflow");
 		expect(
 			buildWindowLabel("FLY-793", runnerDisplayName("qa", true), title),
-		).toBe("FLY-793-qa-three-stage pipeline");
+		).toBe("FLY-793-qa-DAG workflow");
 		// A non-phase (main) run is unchanged — still shows 'claude'.
 		expect(
 			buildWindowLabel("FLY-800", runnerDisplayName("main", true), title),
-		).toBe("FLY-800-claude-three-stage pipeline");
+		).toBe("FLY-800-claude-DAG workflow");
 		// Auto-QA (qa role, no shareParentBranch) is unchanged — still 'claude'.
 		expect(
 			buildWindowLabel("FLY-801", runnerDisplayName("qa", false), title),
-		).toBe("FLY-801-claude-three-stage pipeline");
+		).toBe("FLY-801-claude-DAG workflow");
 	});
 });
 
@@ -1444,8 +1364,6 @@ describe("FLY-1356 — sticky-stamp lookup failure surfaces readFailed", () => {
 			new Map([[name, runtime]]),
 			[],
 			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
 			undefined,
 			undefined,
 			undefined,

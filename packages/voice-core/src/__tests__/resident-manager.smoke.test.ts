@@ -1,7 +1,7 @@
 /**
  * FLY-1160 §3.2 — REAL claude CLI manager smoke (gated: RESIDENT_SPIKE=1).
  *
- * QA addition (FLY-1160 three-stage QA): the resident-brain.smoke suite drives
+ * QA addition (FLY-1160 DAG workflow QA): the resident-brain.smoke suite drives
  * ResidentClaudeBrain DIRECTLY, but the plan's §3.2 reaping iron rule ("who
  * spawns, reaps" — the FLY-1148 orphan-claude-process load incident) is only
  * ever exercised over FAKE processes. This closes that gap: real `claude`

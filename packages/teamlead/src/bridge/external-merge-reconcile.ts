@@ -176,14 +176,14 @@ export interface ExternalMergeReconcileDeps {
 	/** PR-7.5 supplies the durable materialized-head reader for product runs. */
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**
-	 * FLY-1204: the three-stage keep-alive phase finalizer (same one the
+	 * FLY-1204: the DAG workflow keep-alive phase finalizer (same one the
 	 * DirectEventSink / event-route paths use). External merge is a real ship
 	 * path, so it must reclaim the parked design/implement/qa phase sessions too;
 	 * without it the external-merge finalize writes the post-ship claim but leaves
 	 * the phase sessions leaked alive until the periodic patrol catches them.
 	 * Optional → absent leaves the phases to the patrol (byte-compat).
 	 */
-	finalizeThreeStagePhases?: (
+	finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -487,8 +487,8 @@ export function createExternalMergeReconciler(
 				store: deps.store,
 				projects: deps.projects,
 				removeCleanWorktree: deps.removeCleanWorktree,
-				// FLY-1204: reclaim the parked three-stage phases on this ship path too.
-				finalizeThreeStagePhases: deps.finalizeThreeStagePhases,
+				// FLY-1204: reclaim the parked DAG workflows on this ship path too.
+				finalizeWorkflowPhaseRoles: deps.finalizeWorkflowPhaseRoles,
 				markIssueDone: makeLinearDoneFinalizer(deps.config),
 				withIssueLifecycleMutex: deps.withIssueLifecycleMutex,
 			},

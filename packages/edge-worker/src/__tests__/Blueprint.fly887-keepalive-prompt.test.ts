@@ -1,11 +1,10 @@
 /**
- * FLY-887 — Blueprint three-stage keep-alive PROMPT changes.
+ * FLY-887 — Blueprint shared-workflow keep-alive prompt changes.
  *
  * Default ON: the Design + Implement phases PARK (stay alive to ship) instead of
  * exiting at their handoff, and every phase self-checks the shared-worktree TURN
- * (`flywheel-comm turn`) before writing. `FLYWHEEL_THREE_STAGE_KEEPALIVE=0`
- * reverts to the legacy close-and-respawn prompt (byte-compat). The single-session
- * prompt is never affected (no shareParentBranch).
+ * (`flywheel-comm turn`) before writing. The single-session prompt is never
+ * affected (no shareParentBranch).
  */
 
 import { execFileSync } from "node:child_process";
@@ -146,10 +145,6 @@ async function buildExecutionContext(
 }
 
 describe("FLY-1269 adapter phase keep-alive identity", () => {
-	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
-	});
-
 	it.each(["design", "implement", "qa"] as const)(
 		"codex %s phase receives its exact keep-alive role",
 		async (role) => {
@@ -162,7 +157,7 @@ describe("FLY-1269 adapter phase keep-alive identity", () => {
 		},
 	);
 
-	it("Auto-QA remains outside the three-stage phase lifetime", async () => {
+	it("Auto-QA remains outside the shared-DAG workflow lifetime", async () => {
 		const call = await buildExecutionContext({
 			runnerBackend: "codex-tmux",
 			sessionRole: "qa",
@@ -180,17 +175,7 @@ describe("FLY-1269 adapter phase keep-alive identity", () => {
 		expect(call.phaseKeepAlive).toBeUndefined();
 	});
 
-	it("kill-switch OFF removes the Codex phase lifetime", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const call = await buildExecutionContext({
-			runnerBackend: "codex-tmux",
-			sessionRole: "design",
-			shareParentBranch: true,
-		});
-		expect(call.phaseKeepAlive).toBeUndefined();
-	});
-
-	it("Claude three-stage phases keep their existing adapter context", async () => {
+	it("Claude shared-DAG workflows keep their existing adapter context", async () => {
 		const call = await buildExecutionContext({
 			runnerBackend: "claude-tmux",
 			sessionRole: "implement",
@@ -201,16 +186,12 @@ describe("FLY-1269 adapter phase keep-alive identity", () => {
 });
 
 describe("FLY-887 keep-alive prompts — default ON", () => {
-	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
-	});
-
 	it("design phase parks + carries the TURN self-check contract", async () => {
 		const p = await buildPrompt({
 			sessionRole: "design",
 			shareParentBranch: true,
 		});
-		expect(p).toContain("Three-stage keep-alive (design phase)");
+		expect(p).toContain("DAG workflow keep-alive (design phase)");
 		expect(p).toContain("park --exec-id");
 		expect(p).toContain("parked until ship");
 		expect(p).toContain("turn --exec-id");
@@ -228,7 +209,7 @@ describe("FLY-887 keep-alive prompts — default ON", () => {
 			sessionRole: "implement",
 			shareParentBranch: true,
 		});
-		expect(p).toContain("Three-stage keep-alive (implement phase)");
+		expect(p).toContain("DAG workflow keep-alive (implement phase)");
 		expect(p).toContain("park --exec-id");
 		expect(p).toContain("parked awaiting QA");
 		expect(p).toContain("turn --exec-id");
@@ -243,47 +224,11 @@ describe("FLY-887 keep-alive prompts — default ON", () => {
 	});
 });
 
-describe("FLY-887 keep-alive prompts — kill-switch OFF reverts to legacy", () => {
-	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
-	});
-
-	it("design phase has NO park epilogue when keep-alive=0", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const p = await buildPrompt({
-			sessionRole: "design",
-			shareParentBranch: true,
-		});
-		expect(p).toContain("DESIGN phase");
-		expect(p).not.toContain("Three-stage keep-alive");
-		expect(p).not.toContain("park --exec-id");
-	});
-
-	it("implement phase has NO park epilogue when keep-alive=0", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const p = await buildPrompt({
-			sessionRole: "implement",
-			shareParentBranch: true,
-		});
-		expect(p).toContain("IMPLEMENT phase");
-		expect(p).not.toContain("Three-stage keep-alive");
-		expect(p).toContain("TURN WAIT LAW (all runner vendors)");
-	});
-
-	it("QA FAIL reverts to the legacy close-and-respawn wording when keep-alive=0", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const p = await buildPrompt({ sessionRole: "qa", shareParentBranch: true });
-		expect(p).toContain("Do NOT park for retest");
-		expect(p).toContain("the pipeline closes this session");
-		expect(p).not.toContain("RE-TEST wake");
-	});
-});
-
 describe("FLY-887 byte-compat: single-session prompt is never affected", () => {
 	it("no shareParentBranch → no keep-alive/park lines regardless of env", async () => {
 		const p = await buildPrompt({});
 		expect(p).toContain("Create a feature branch");
-		expect(p).not.toContain("Three-stage keep-alive");
+		expect(p).not.toContain("DAG workflow keep-alive");
 		expect(p).not.toContain("turn --exec-id");
 	});
 });

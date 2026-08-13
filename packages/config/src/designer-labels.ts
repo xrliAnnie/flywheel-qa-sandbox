@@ -1,10 +1,10 @@
 /**
  * FLY-1059: the "UI / design-flavored" label set — the single source of truth
- * for whether a three-stage Design phase should run the mockup-first Designer
+ * for whether a DAG workflow Design phase should run the mockup-first Designer
  * workflow (concept images A/B/C → founder design gate → high-fidelity) instead
  * of the generic brainstorm→plan text-design prompt.
  *
- * WHY a label heuristic (not a new agent-per-phase): the three-stage pipeline
+ * WHY a label heuristic (not a new agent-per-phase): the DAG workflow
  * (FLY-793) runs the SAME label-matched agent role for all three phases; per-phase
  * behavior comes only from the phase prompt Blueprint injects. FLY-1020 locked the
  * node set as fixed (Design/Implement/QA, no new nodes), so the Designer is the

@@ -159,8 +159,8 @@ const ALL_STATUS_EMOJI: ReadonlySet<string> = new Set([
 	...Object.values(STAGE_EMOJI),
 	BLOCKED_EMOJI,
 	RECONNECTING_EMOJI,
-	// FLY-892 (Step 6): the three-stage phase badges (🎨设计/🔨实现/🧪QA) are
-	// stamped in place of the fine-grained stage badge on a three-stage issue, so
+	// FLY-892 (Step 6): the DAG workflow badges (🎨设计/🔨实现/🧪QA) are
+	// stamped in place of the fine-grained stage badge on a DAG workflow issue, so
 	// strip/restamp must recognize their emoji (🎨 is new; 🔨/🧪 are shared).
 	...Object.values(PHASE_THREAD_BADGE_PARTS).map((p) => p.emoji),
 ]);

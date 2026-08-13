@@ -1,10 +1,19 @@
-import { readFileSync } from "node:fs";
+import {
+	cpSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	resetModelConfigCacheForTests,
 	WORKFLOW_MENU_BINDINGS,
 	workflowMenuTemplateId,
 } from "flywheel-config";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FLY1436_TARGET_BINDINGS } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
 import {
@@ -24,6 +33,7 @@ import { resolveWorkflowTemplateSelection } from "../workflow-template-selection
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const OPUS_EFFORTS = ["low", "medium", "high", "max"];
 
 describe("founder-approved workflow menu source", () => {
 	it("loads exactly five shapes and removes research", () => {
@@ -104,13 +114,17 @@ describe("founder-approved workflow menu source", () => {
 			expect(node.defaultModel).toBe(defaultModel);
 			expect(node.models?.map((model) => model.model)).toEqual(models);
 			for (const model of node.models ?? []) {
-				expect(model.allowedEfforts).toEqual(ALL_EFFORTS);
-				expect(model.defaultEffort).toBe("xhigh");
+				expect(model.allowedEfforts).toEqual(
+					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
+				);
+				expect(model.defaultEffort).toBe(
+					model.model === "opus" ? "high" : "xhigh",
+				);
 			}
 		}
 	});
 
-	it("keeps every single-session menu to one executable node plus founder gate, defaulting to Opus xhigh", () => {
+	it("keeps every single-session menu to one executable node plus founder gate, defaulting to Opus high", () => {
 		const menus = loadWorkflowMenuLibrary().filter(
 			(menu) => menu.shape !== "code",
 		);
@@ -181,8 +195,8 @@ describe("founder-approved workflow menu source", () => {
 			expect(executable.models).toEqual([
 				{
 					model: "opus",
-					allowedEfforts: ALL_EFFORTS,
-					defaultEffort: "xhigh",
+					allowedEfforts: OPUS_EFFORTS,
+					defaultEffort: "high",
 				},
 			]);
 			expect(menu.loops).toEqual([]);
@@ -470,7 +484,7 @@ describe("workflow menu override validation", () => {
 			},
 			qa: {
 				model: "opus (= claude-opus-5)",
-				effort: "xhigh",
+				effort: "high",
 				overridden: false,
 			},
 		});
@@ -492,6 +506,11 @@ describe("workflow menu override validation", () => {
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			ALL_EFFORTS,
 		],
+		[
+			{ qa: { model: "opus", effort: "xhigh" } },
+			"EFFORT_NOT_ALLOWED_FOR_MODEL",
+			OPUS_EFFORTS,
+		],
 	] as const)(
 		"fails loud for invalid override %# with a legal set",
 		(overrides, codeName, legal) => {
@@ -504,4 +523,83 @@ describe("workflow menu override validation", () => {
 			}
 		},
 	);
+});
+
+describe("Opus 4.6 menu compatibility", () => {
+	let root: string;
+	let previousPath: string | undefined;
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "fly1674-opus46-menu-"));
+		previousPath = process.env.FLYWHEEL_MODELS_CONFIG;
+		process.env.FLYWHEEL_MODELS_CONFIG = join(root, "models.json");
+		writeFileSync(
+			process.env.FLYWHEEL_MODELS_CONFIG,
+			JSON.stringify({
+				version: 1,
+				bindings: { opus: "claude-opus-4-6[1m]" },
+			}),
+		);
+		resetModelConfigCacheForTests();
+	});
+
+	afterEach(() => {
+		if (previousPath === undefined) {
+			delete process.env.FLYWHEEL_MODELS_CONFIG;
+		} else {
+			process.env.FLYWHEEL_MODELS_CONFIG = previousPath;
+		}
+		resetModelConfigCacheForTests();
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	it("compiles all five Opus nodes at high without xhigh", () => {
+		const opusNodes = loadWorkflowMenuLibrary().flatMap((menu) =>
+			menu.nodes
+				.filter((node) => node.defaultModel === "opus")
+				.map((node) => ({ menu, node })),
+		);
+
+		expect(opusNodes).toHaveLength(5);
+		for (const { menu, node } of opusNodes) {
+			const policy = node.models?.find((model) => model.model === "opus");
+			expect(policy?.allowedEfforts, menu.shape).toEqual([
+				"low",
+				"medium",
+				"high",
+				"max",
+			]);
+			expect(policy?.defaultEffort, menu.shape).toBe("high");
+			const compiled = compileWorkflowMenuSeed(menu);
+			expect(
+				compiled.manifest.nodes.find((candidate) => candidate.id === node.id),
+				menu.shape,
+			).toMatchObject({
+				vendor: "claude",
+				model: "claude-opus-4-6[1m]",
+				effort: "high",
+			});
+		}
+	});
+
+	it("still rejects an effort the bound model cannot run", () => {
+		for (const shape of ["code", "prd", "design", "prototype", "generic"]) {
+			cpSync(
+				join(REPO_ROOT, "menus", "shapes", `${shape}.yaml`),
+				join(root, `${shape}.yaml`),
+			);
+		}
+		const codePath = join(root, "code.yaml");
+		writeFileSync(
+			codePath,
+			readFileSync(codePath, "utf8").replace(
+				"allowedEfforts: [low, medium, high, max]",
+				"allowedEfforts: [low, medium, high, xhigh, max]",
+			),
+		);
+
+		expect(() => loadWorkflowMenuLibrary({ shapesDirectory: root })).toThrow(
+			/allowedEfforts must be a subset.*low, medium, high, max/,
+		);
+	});
 });

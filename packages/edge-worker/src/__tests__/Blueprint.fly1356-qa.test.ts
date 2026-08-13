@@ -1,5 +1,5 @@
 /**
- * FLY-1356 — QA-authored coverage (three-stage QA phase, independent of the
+ * FLY-1356 — QA-authored coverage (DAG workflow QA phase, independent of the
  * implement phase's own tests).
  *
  * Two gaps the implement-phase suite left open, both named by plan §验收标准 4:

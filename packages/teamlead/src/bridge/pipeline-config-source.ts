@@ -3,14 +3,9 @@
  *
  * SECURITY: reads `<projectRoot>/.flywheel/config.yaml` — the mainline checkout,
  * NEVER an implementation PR's worktree (mirrors auto-qa-config-source.ts), so a
- * runner cannot flip its own three-stage enablement mid-pipeline.
- *
- * Unlike auto-QA (opt-out tri-state), three-stage is opt-IN / default-OFF, so a
- * missing file / missing `pipeline` block / malformed config all collapse to
- * `undefined` → `resolveThreeStagePolicy` returns disabled (fail-closed). A
- * malformed `pipeline` block already throws at `ConfigLoader.load` (same as
- * `doc_flow` / `qa`); we log + treat it as `undefined` here so one project's
- * broken config can never block Bridge boot or accidentally ENABLE the feature.
+ * runner cannot flip its own DAG enrollment mid-run. A malformed `pipeline`
+ * block already throws at `ConfigLoader.load`; this reader logs and treats it
+ * as absent so one project's broken config cannot block Bridge boot.
  */
 
 import { readFileSync } from "node:fs";
@@ -31,8 +26,7 @@ export type WorkKindConfigResult =
  * FLY-1407 narrow strict reader for fresh master /api/runs/start dispatches.
  *
  * Only the new work_kind key and its dag:true dependency are fail-loud. Every
- * unrelated parse/config problem keeps today's behavior: work-kind is disabled
- * and the existing lenient pipeline loader decides the legacy/three-stage path.
+ * unrelated parse/config problem keeps today's behavior: work-kind is disabled.
  */
 export function loadWorkKindConfigStrict(
 	project: ProjectEntry,
@@ -103,9 +97,7 @@ export async function loadPipelineConfigByProject(
 			if (code !== "ENOENT") {
 				// Parse / validation error → treat as undefined (OFF, fail-closed).
 				console.warn(
-					`[three-stage] pipeline config load failed for ${project.projectName}: ${
-						(err as Error).message
-					} — three-stage OFF for it`,
+					`[pipeline] config load failed for ${project.projectName}: ${(err as Error).message} — DAG dispatch OFF for it`,
 				);
 			}
 			map.set(project.projectName, undefined);

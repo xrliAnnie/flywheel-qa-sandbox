@@ -65,7 +65,6 @@ export interface StateStoreGhostDeps {
 		resolveLockKeys: (issueId: string) => string[];
 	};
 	archiveThread?: (session: Session) => Promise<void>;
-	onQaPhaseTerminated?: (executionId: string, issueId: string) => void;
 	log?: (message: string) => void;
 }
 
@@ -277,18 +276,6 @@ async function reapStateStoreGhostUnlocked(
 		return "transition_failed";
 	}
 
-	if (
-		(session.chat_thread_role ?? "main") === "qa" &&
-		deps.onQaPhaseTerminated
-	) {
-		try {
-			deps.onQaPhaseTerminated(executionId, session.issue_id);
-		} catch (err) {
-			log(
-				`[statestore-ghost-reconcile] ${executionId}: onQaPhaseTerminated threw (${(err as Error).message})`,
-			);
-		}
-	}
 	if (deps.archiveThread) {
 		const reaped = deps.store.getSession(executionId) ?? {
 			...session,

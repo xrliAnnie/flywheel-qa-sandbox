@@ -5,15 +5,14 @@
 // StartRequest. Defining it in teamlead would invert the dependency.
 import type {
 	DesignBackend,
-	PhaseDispatchVendor,
 	PonytailInput,
 	PonytailRetryInput,
 	RoleEffort,
 	SkillFrameworkMode,
+	WorkflowDispatchVendor,
 } from "flywheel-config";
 import type { LaunchPrecommitOutcome } from "flywheel-core";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
-import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 
 export type { QaContext };
 
@@ -116,10 +115,10 @@ export interface RetryRequest {
 	 * never enter phase dispatch. actions.ts re-derives it from the phase table
 	 * for PHASE rows; undefined for every non-phase retry (byte-compatible).
 	 */
-	dispatchVendor?: PhaseDispatchVendor;
+	dispatchVendor?: WorkflowDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
-	/** FLY-1259: effective design backend locked at three-stage admission. */
+	/** FLY-1259: effective design backend locked at DAG workflow admission. */
 	designBackend?: DesignBackend;
 	/**
 	 * FLY-1356: per-dispatch skill-framework arm continuation. Set ONLY when the
@@ -139,7 +138,7 @@ export interface RetryRequest {
 	 */
 	successorExecutionId?: string;
 	/**
-	 * FLY-793: three-stage phase shares the parent issue's single branch B.
+	 * FLY-793: DAG workflow shares the parent issue's single branch B.
 	 * Bridge-INTERNAL; carried on the retry path so a retried phase keeps the
 	 * shared-branch behavior. Absent → role-aware worktree key (byte-compatible).
 	 */
@@ -239,14 +238,14 @@ export interface StartRequest {
 	dispatchModel?: string;
 	/**
 	 * FLY-1224: per-phase vendor (phase table output; Bridge-INTERNAL — set only
-	 * by the PhaseOrchestrator / the server-side three-stage entry, never from
+	 * by the workflow engine / the server-side DAG workflow entry, never from
 	 * the public `/api/runs/start` body). Only transported vendors. Absent →
 	 * the resolver's FLY-728 claude-tmux behavior (byte-compatible).
 	 */
-	dispatchVendor?: PhaseDispatchVendor;
+	dispatchVendor?: WorkflowDispatchVendor;
 	/** FLY-1224: per-phase reasoning effort (phase table output). */
 	dispatchEffort?: RoleEffort;
-	/** FLY-1259: effective design backend locked at three-stage admission. */
+	/** FLY-1259: effective design backend locked at DAG workflow admission. */
 	designBackend?: DesignBackend;
 	/**
 	 * FLY-1356: explicit per-dispatch skill-framework arm (529 eval forced-arm).
@@ -316,8 +315,8 @@ export interface StartRequest {
 	 */
 	ponytailInput?: PonytailInput;
 	/**
-	 * FLY-793: three-stage phase shares the parent issue's single branch B.
-	 * Bridge-INTERNAL — set ONLY by the PhaseOrchestrator when dispatching a
+	 * FLY-793: DAG workflow shares the parent issue's single branch B.
+	 * Bridge-INTERNAL — set ONLY by the workflow engine when dispatching a
 	 * Design/Implement/QA phase-session; MUST NEVER be populated from the public
 	 * `/api/runs/start` body or a runner payload (runs-route does not read it).
 	 * Threaded to `BlueprintContext.shareParentBranch`. Absent → role-aware
@@ -326,7 +325,7 @@ export interface StartRequest {
 	shareParentBranch?: boolean;
 	/**
 	 * FLY-859: fix-round context for an Implement-fix dispatch after a
-	 * three-stage QA FAIL. Bridge-INTERNAL — set ONLY by the PhaseOrchestrator;
+	 * DAG workflow QA FAIL. Bridge-INTERNAL — set ONLY by the workflow engine;
 	 * MUST NEVER be populated from the public `/api/runs/start` body or a
 	 * runner payload (runs-route does not read it). Threaded to
 	 * `BlueprintContext.phaseFixContext`. Absent → plain implement prompt
@@ -337,11 +336,10 @@ export interface StartRequest {
 	 * FLY-1232 module ②: SEMANTIC shadow context for the T2/T7 spawn moments
 	 * (node / attempt / preceding edge — NEVER an ordinal, which only the
 	 * writer allocates in-transaction). Bridge-INTERNAL — set ONLY by the
-	 * PhaseOrchestrator; runs-route does not read it. Absent → the pre-launch
+	 * workflow engine; runs-route does not read it. Absent → the pre-launch
 	 * seam synthesizes the T1 default ({node: role, attempt: 1}) when a shadow
 	 * writer is present, and is entirely inert when it is not.
 	 */
-	shadowContext?: WorkflowShadowContext;
 	/** FLY-1281: Bridge-internal, pre-bound generalized node execution. */
 	generalizedExecution?: GeneralizedExecutionDispatch;
 }

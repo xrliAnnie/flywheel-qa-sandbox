@@ -46,9 +46,9 @@ change or service restart. One decision keeps one immutable config snapshot.
 - `models` may add aliases and dispatch metadata without a code change. A new
   model still needs a separate entry in `packages/token-usage/src/pricing.ts`
   (or its pricing config) for non-zero cost estimates.
-- `tiers` controls generic single-session difficulty routing; `phases` controls
-  the complete vendor/model/effort row for design, implement, and QA. Both are
-  validated against the same registry snapshot.
+- `tiers` controls generic single-session difficulty routing. For DAG nodes,
+  menu declarations plus `bindings` determine the vendor/model/effort row for
+  design, implement, and QA; both use the same registry snapshot.
 - There is no model blocklist. A model reaches a launch only by being named in
   the authoritative config, so removing it from `projects.json` (or repointing
   a binding) is what takes it out of service.

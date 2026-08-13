@@ -3,7 +3,7 @@ import { wakeText } from "../runner-wake.js";
 
 /**
  * FLY-939 (G-B): the feedback wake text must carry a role-neutral deferral — a
- * runner whose role prompt defines a different feedback protocol (the three-stage
+ * runner whose role prompt defines a different feedback protocol (the DAG workflow
  * QA kickback) follows its role prompt, not the generic re-request steps. A
  * single-session runner (no such protocol) keeps the generic steps byte-for-byte.
  */
@@ -16,7 +16,7 @@ describe("wakeText feedback deferral (FLY-939 G-B)", () => {
 		expect(t).toContain(
 			"If your role's prompt defines a different feedback protocol",
 		);
-		expect(t).toContain("three-stage QA kickback");
+		expect(t).toContain("DAG workflow QA kickback");
 		// The generic re-request instruction is still present for role-less runners.
 		expect(t).toContain("address the feedback, push your fixes");
 	});
@@ -26,6 +26,6 @@ describe("wakeText feedback deferral (FLY-939 G-B)", () => {
 			questionId: "q-1",
 		});
 		expect(t).toContain("verify-approval");
-		expect(t).not.toContain("three-stage QA kickback");
+		expect(t).not.toContain("DAG workflow QA kickback");
 	});
 });

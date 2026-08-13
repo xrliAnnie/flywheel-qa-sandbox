@@ -53,7 +53,7 @@ cheap prototype is a SUCCESS**, not a failure — see below.
 
 The **entire** flow below runs in **ONE Runner session**, end to end. The **founder
 decision gate is an in-session pause** — you block on a gate and wait, you do NOT
-split into multiple sessions. (Contrast: the engineering three-stage pipeline =
+split into multiple sessions. (Contrast: the engineering DAG workflow =
 Design→Implement→QA = 3 sessions, one executor.md per stage. That "one markdown per
 step" shape is NOT this role — this whole playbook is one file, one session.)
 
@@ -288,7 +288,7 @@ the missing skill to your Lead.
   what would disprove feasibility.
 - **Direction is founder-facing** — the doable/not-doable framing and any non-trivial
   scope call go to Annie via the gate, never decided unilaterally.
-- **No production code**; **no new phase** bolted onto the three-stage engine; **no
+- **No production code**; **no new phase** bolted onto the DAG workflow engine; **no
   new founder channel** (reuse the injected gate + relay).
 
 ## The work-kind precondition (dispatch discipline)

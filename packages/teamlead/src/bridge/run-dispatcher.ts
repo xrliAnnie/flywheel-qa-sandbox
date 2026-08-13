@@ -13,15 +13,15 @@ import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type {
-	PhaseDispatchVendor,
 	RoleBackendMap,
 	RoleEffort,
 	RunnerModelDisplay,
 	SkillFrameworkMode,
+	WorkflowDispatchVendor,
 } from "flywheel-config";
 import {
 	adapterTypeToFamily,
-	isThreeStagePhaseRole,
+	isWorkflowPhaseRole,
 	renderRunnerModelDisplay,
 	resolveRunnerMcpProfile,
 	SKILL_FRAMEWORK_MODE_ENV,
@@ -53,54 +53,7 @@ import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
-import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
-import type { WorkflowShadowContext } from "./workflow-shadow-writer.js";
 import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
-
-/**
- * FLY-1232 module ②: the narrow seam RunDispatcher.start() drives — the
- * T1/T2/T7 pre-launch composite shadow write and the evidence-checked
- * dispatch-failure callback. Structurally satisfied by WorkflowShadowWriter;
- * `undefined` (flag OFF / external injection) ⇒ the seam is inert and the
- * fresh path keeps `launchCommitPath` undefined (the byte-compat sentinel).
- */
-export interface WorkflowShadowSeam {
-	onSpawnDispatch(args: {
-		projectName: string;
-		issueId: string;
-		executionId: string;
-		context: WorkflowShadowContext;
-	}): void;
-	onDispatchFailed(args: {
-		projectName: string;
-		issueId: string;
-		executionId: string;
-		node: string;
-		attempt: number;
-		error: string;
-	}): void;
-}
-
-/**
- * FLY-1344: the hot claims-write runtime. RunDispatcher.start() calls
- * beginStartScope() at its linearization point (before the lifecycle await) and
- * reuses the returned seam — or undefined when claims-write is latched OFF —
- * throughout the async start, so a mid-flight flag flip never tears one dispatch.
- */
-export interface WorkflowShadowRuntimeSeam {
-	beginStartScope(): WorkflowShadowSeam | undefined;
-}
-
-/** FLY-1244: fail-closed admission seam for durable three-stage QA spawns. */
-export interface WorkflowClaimsAdmissionSeam {
-	admit(args: {
-		projectName: string;
-		issueId: string;
-		executionId: string;
-		node: string;
-		attempt: number;
-	}): { credential: string };
-}
 
 export type TmuxGenerationRecorder = (
 	executionId: string,
@@ -248,24 +201,24 @@ export function launchCommitPath(executionId: string): string {
 
 /**
  * FLY-793 follow-up (cmux phase visibility): the display name that goes into the
- * cmux/tmux window label (`{issueId}-{runner}-{title}`). A three-stage PHASE
+ * cmux/tmux window label (`{issueId}-{runner}-{title}`). A DAG workflow
  * runner shows its phase (`design` / `implement` / `qa`) so the founder can see
  * which phase is live in cmux at a glance — instead of every phase showing the
  * generic `claude`. FLY-1255 adds the resolved executor family/model while
  * keeping that phase prefix authoritative for shared-branch runs.
  *
- * Gated on `shareParentBranch` (the three-stage marker), NOT `sessionRole` alone:
+ * Gated on `shareParentBranch` (the DAG workflow marker), NOT `sessionRole` alone:
  * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
  * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
  * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
- * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). When
- * no model is resolved, every non-three-stage run (main + Auto-QA) stays
+ * DAG workflow discriminator (`ctx.shareParentBranch && ctx.sessionRole`). When
+ * no model is resolved, every non-DAG workflow run (main + Auto-QA) stays
  * `claude` → byte-compatible. With a resolved model, non-phase runs use the
  * narrow `runner-<family>-<model>` namespace consumed by cmux cleanup.
  *
  * SCOPE (FLY-840 → resolved by FLY-1224): the RETRY path (actions.ts
  * `handleRetry`) now propagates `shareParentBranch` for PHASE rows
- * (chat_thread_role ∈ design/implement/qa), so a retried three-stage phase
+ * (chat_thread_role ∈ design/implement/qa), so a retried DAG workflow
  * shows its phase name here too — the FLY-840 label debt is settled as a
  * deliberate side effect of the phase-row retry keeping its shared-branch
  * identity (a codex implement retry MUST stay on branch B). Non-phase retries
@@ -277,7 +230,7 @@ export function runnerDisplayName(
 	modelDisplay?: RunnerModelDisplay,
 ): string {
 	const phase =
-		shareParentBranch && isThreeStagePhaseRole(sessionRole)
+		shareParentBranch && isWorkflowPhaseRole(sessionRole)
 			? sessionRole
 			: undefined;
 	if (modelDisplay) {
@@ -368,10 +321,10 @@ export function buildRunnerSpawnFields(
 	/**
 	 * FLY-1224: the phase table's explicit vendor for this dispatch — resolves
 	 * the executor backend on the 1b dispatch layer via the ONE existing
-	 * VENDOR_TO_EXECUTOR map. Only ever set for three-stage phase dispatches
+	 * VENDOR_TO_EXECUTOR map. Only ever set for DAG workflow dispatches
 	 * (Bridge-internal); absent → FLY-728 claude-tmux status quo.
 	 */
-	dispatchVendor?: PhaseDispatchVendor,
+	dispatchVendor?: WorkflowDispatchVendor,
 	/** FLY-1224: the phase table's reasoning effort (outranks project roles). */
 	dispatchEffort?: RoleEffort,
 ): Pick<
@@ -947,7 +900,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// Only a confirmed missing branch may use WorktreeManager's fresh fallback;
 			// an indeterminate git/IO failure must never reset branch B to origin/main.
 			const isPhaseRetry =
-				req.shareParentBranch === true && isThreeStagePhaseRole(role);
+				req.shareParentBranch === true && isWorkflowPhaseRole(role);
 			let retryStartPoint: string | undefined;
 			const computeRetryStartPoint = (): string | undefined => {
 				const computed = this.phaseRetryStartPointComputer?.(
@@ -981,11 +934,11 @@ export class RetryDispatcher implements IRetryDispatcher {
 				}
 			}
 
-			// FLY-1257 M2: retry is a real three-stage launch, so it must receive
+			// FLY-1257 M2: retry is a real DAG workflow launch, so it must receive
 			// the shared-worktree TURN before Blueprint can start the runner's first
 			// self-check. grantTurn's upsert increments the epoch atomically, moving
 			// ownership from the predecessor to this successor.
-			if (isPhaseRetry && threeStageKeepAliveEnabled()) {
+			if (isPhaseRetry) {
 				try {
 					const db = new CommDB(defaultGetCommDbPath(req.projectName));
 					try {
@@ -1039,7 +992,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					skillFrameworkModeOverride: req.skillFrameworkMode,
 				}),
 				...this.skillFrameworkPriorCtx(req.issueId),
-				// FLY-793: three-stage phases share one branch B (Bridge-internal).
+				// FLY-793: DAG workflows share one branch B (Bridge-internal).
 				shareParentBranch: req.shareParentBranch,
 				// FLY-1257 M3: found branch B tip; absent only when branch absence was
 				// confirmed (or no computer was injected on a legacy external dispatcher).
@@ -1352,14 +1305,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		lifecycleAdmission?: LifecycleAdmissionFn,
 		/** FLY-1185 (Codex R1#5): launch guard seam (see base class). */
 		lifecycleLaunchGuard?: LifecycleLaunchGuard,
-		/**
-		 * FLY-1232 module ②: optional shadow seam (constructed by plugin.ts ONLY
-		 * when FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1, threaded through run-infra).
-		 * Undefined ⇒ zero shadow writes AND the fresh path keeps
-		 * launchCommitPath undefined (byte-compatible).
-		 */
-		private workflowShadow?: WorkflowShadowRuntimeSeam | WorkflowShadowSeam,
-		private workflowClaimsAdmission?: WorkflowClaimsAdmissionSeam,
 		/** FLY-1257 M3: retry branch-tip recovery seam (production: run-infra). */
 		phaseRetryStartPointComputer?: PhaseRetryStartPointComputer,
 		/** FLY-1356 (R1#4): sticky-stamp lookup (see the base-class field docs). */
@@ -1580,15 +1525,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				throw new FreshStartAuditError("durable audit write failed");
 			}
 		}
-		// FLY-1344: the claims-write linearization point. Capture BEFORE the
-		// lifecycle await and reuse this immutable seam throughout the async start
-		// (a mid-flight OFF flip never tears a start that latched ON, and vice versa).
-		const workflowShadowScope = this.workflowShadow
-			? "beginStartScope" in this.workflowShadow
-				? this.workflowShadow.beginStartScope()
-				: this.workflowShadow
-			: undefined;
-
 		// FLY-1185 (R11#1): lifecycle admission at the single spawn chokepoint —
 		// every surface (HTTP start / phase handoff / auto-QA / rescue) flows
 		// through here. Fresh founder-park tombstone check + durable `starting`
@@ -1645,62 +1581,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				model: runnerSpawn.runnerModel,
 			});
 
-			// FLY-1232 T1/T2/T7 pre-launch seam: ONE composite shadow transaction
-			// after execId allocation, BEFORE the CommDB pre-registration and
-			// Blueprint.run(). The orchestrator supplies shadowContext for handoff
-			// spawns (T2) and replacement starts (T7); a fresh entry synthesizes the
-			// T1 default. The writer never throws into this flow (loud warn inside).
-			const shadowContext: WorkflowShadowContext | undefined =
-				workflowShadowScope && !req.generalizedExecution
-					? (req.shadowContext ?? {
-							node: role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main",
-							attempt: 1,
-						})
-					: undefined;
-			if (workflowShadowScope && shadowContext) {
-				workflowShadowScope.onSpawnDispatch({
-					projectName: req.projectName,
-					issueId: req.issueId,
-					executionId,
-					context: shadowContext,
-				});
-			}
-			let workflowSubmissionCredential: string | undefined;
-			if (
-				this.workflowClaimsAdmission &&
-				req.shareParentBranch === true &&
-				role === "qa" &&
-				shadowContext
-			) {
-				try {
-					workflowSubmissionCredential = this.workflowClaimsAdmission.admit({
-						projectName: req.projectName,
-						issueId: req.issueId,
-						executionId,
-						node: shadowContext.node,
-						attempt: shadowContext.attempt,
-					}).credential;
-				} catch (err) {
-					throw new Error(
-						`workflow claims admission failed for ${executionId}: ${(err as Error).message}`,
-					);
-				}
-			}
-			// Flag ON: the fresh path also passes the durable commit-marker path so
-			// the ②b evidence chain gets its launch_committed fact (BlueprintContext
-			// field + adapter write already exist — the retry path has used them
-			// since FLY-245). Flag OFF keeps undefined = the existing "normal path
-			// sets no marker" sentinel. NOTE: this makes a flag-ON fresh launch go
-			// through the commit-gate wrapper (same shape as retry) — declared in
-			// the plan's risk section; B11 real-machine QA covers it.
-			const shadowCommitDir = req.generalizedExecution
+			// Generalized runs require a durable launch marker for their commit gate.
+			const workflowLaunchCommitPath = req.generalizedExecution
 				? launchCommitPath(executionId)
-				: workflowShadowScope
-					? launchCommitPath(executionId)
-					: undefined;
-			if (shadowCommitDir) {
+				: undefined;
+			if (workflowLaunchCommitPath) {
 				try {
-					mkdirSync(join(shadowCommitDir, ".."), { recursive: true });
+					mkdirSync(join(workflowLaunchCommitPath, ".."), { recursive: true });
 				} catch {
 					// best-effort; the adapter also mkdir's defensively
 				}
@@ -1727,7 +1614,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				preRegistrationVendor(runnerSpawn),
 			);
 
-			// FLY-887: pre-launch TURN grant seam. A three-stage phase SPAWN must have
+			// FLY-887: pre-launch TURN grant seam. A DAG workflow SPAWN must have
 			// its shared-worktree TURN recorded in CommDB BEFORE the runner's first
 			// `turn` self-check — a caller-side grant (after start() returns) would race
 			// the launch and leave the runner seeing `no-turn`. This ONE seam covers
@@ -1737,11 +1624,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// wake instead (orchestrator). Fail-closed: a grant failure fails the
 			// dispatch (never launch a phase that cannot establish single-writer
 			// ownership). Gated on keep-alive (=0 → the legacy path needs no TURN).
-			if (
-				req.shareParentBranch === true &&
-				isThreeStagePhaseRole(role) &&
-				threeStageKeepAliveEnabled()
-			) {
+			if (req.shareParentBranch === true && isWorkflowPhaseRole(role)) {
 				try {
 					const dbPath = defaultGetCommDbPath(req.projectName);
 					const db = new CommDB(dbPath);
@@ -1788,7 +1671,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					skillFrameworkModeParent: req.skillFrameworkModeParent,
 				}),
 				...this.skillFrameworkPriorCtx(req.issueId),
-				// FLY-793: three-stage phases share one branch B (Bridge-internal).
+				// FLY-793: DAG workflows share one branch B (Bridge-internal).
 				// FLY-795: a resume also shares branch B (reuse the same mechanism).
 				shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),
 				// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
@@ -1817,7 +1700,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
 				...(continuityInherit && { continuityInherit }),
 				qaContext: req.qaContext,
-				workflowSubmissionCredential,
 				...(req.generalizedExecution && {
 					generalizedExecutionContext: {
 						runId: req.generalizedExecution.runId,
@@ -1833,9 +1715,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 						req.generalizedExecution.submissionCredential,
 					workflowSubmissionExpected: true,
 				}),
-				// FLY-1232: durable commit marker on the fresh path — flag ON only
-				// (undefined otherwise, byte-compatible with the normal-path sentinel).
-				launchCommitPath: shadowCommitDir,
+				launchCommitPath: workflowLaunchCommitPath,
 				launchGateToken: req.generalizedExecution?.launchGateToken,
 				launchGeneration: req.generalizedExecution?.launchGeneration,
 				launchFingerprint,
@@ -1927,19 +1807,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 						// FLY-95: Clean up orphan pre-registration when Runner never self-registered
 						if (!result.sessionId) {
 							this.cleanupPreRegistration(executionId, req.projectName);
-							// FLY-1232: evidence-checked ledger outcome — abandons ONLY on
-							// positive pre-commit failure (no marker, no non-pending row);
-							// a durable marker stops the row at launch_committed instead.
-							if (shadowContext) {
-								workflowShadowScope?.onDispatchFailed({
-									projectName: req.projectName,
-									issueId: req.issueId,
-									executionId,
-									node: shadowContext.node,
-									attempt: shadowContext.attempt,
-									error: result.error ?? "blueprint resolved with failure",
-								});
-							}
 						}
 					}
 				})
@@ -1957,17 +1824,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					}
 					// FLY-80: Clean up orphan pre-registration on failed start
 					this.cleanupPreRegistration(executionId, req.projectName);
-					// FLY-1232: same evidence-checked outcome on the rejection path.
-					if (shadowContext) {
-						workflowShadowScope?.onDispatchFailed({
-							projectName: req.projectName,
-							issueId: req.issueId,
-							executionId,
-							node: shadowContext.node,
-							attempt: shadowContext.attempt,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
 				})
 				.finally(() => {
 					this.inflight.delete(key);

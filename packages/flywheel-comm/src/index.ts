@@ -113,7 +113,7 @@ Commands:
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
-  turn      FLY-887: three-stage phase runner's shared-worktree TURN self-check.
+  turn      FLY-887: DAG workflow runner's shared-worktree TURN self-check.
             Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
@@ -874,7 +874,7 @@ function runDeclareState(
 }
 
 /**
- * FLY-887: `turn --exec-id <id>` — a three-stage phase runner's shared-worktree
+ * FLY-887: `turn --exec-id <id>` — a DAG workflow runner's shared-worktree
  * TURN self-check. Prints exactly one of `yours` / `not-yours` / `no-turn` and
  * exits 0; a query/DB failure exits 1. The runner proceeds to touch the worktree
  * ONLY on `yours`. exec-id defaults to FLYWHEEL_EXEC_ID (a runner checks only for

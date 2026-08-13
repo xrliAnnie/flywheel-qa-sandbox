@@ -1,7 +1,7 @@
 /**
  * FLY-892 (converge): one issue = one thread.
  *
- * FLY-793 (Step 11) split a three-stage issue into three threads via a
+ * FLY-793 (Step 11) split a DAG workflow issue into three threads via a
  * `phase_chat_threads` side-table keyed on `(issue, channel, session_role)`.
  * FLY-892 converges thread resolution back to a single `(issue, channel)` row in
  * `chat_threads`: every caller — a Lead `/send`, and a design/implement/qa phase
@@ -10,7 +10,7 @@
  *   - existing rows are still reverse-lookup-able + archivable (boot sweep);
  *   - `getUnarchivedPhaseChatThreads()` exposes them to the sweep.
  *
- * The `sessions.chat_thread_role` phase MARKER is untouched (three-stage identity
+ * The `sessions.chat_thread_role` phase MARKER is untouched (DAG workflow identity
  * now rides on the message / pipeline-header, not on a separate thread).
  */
 
@@ -202,7 +202,7 @@ describe("FLY-892 one issue = one thread (converge)", () => {
 				lead_id: "lead-x",
 			});
 		});
-		it("is empty when there were never any phase rows (non-three-stage byte-compat)", () => {
+		it("is empty when there were never any phase rows (non-DAG workflow byte-compat)", () => {
 			store.upsertChatThread("t-main", "chan-1", "FLY-500");
 			expect(store.getUnarchivedPhaseChatThreads()).toHaveLength(0);
 		});

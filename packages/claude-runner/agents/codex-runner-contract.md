@@ -16,7 +16,7 @@ role, gate commands with exact ids); this contract carries the invariants.
   lifetime — the runtime keeps your daemon alive and, if it ever dies, restarts
   it and RESUMES your same thread. The founder can watch you run live in a cmux
   terminal, so keep your visible progress legible.
-- When the adapter marks you as a three-stage **phase keep-alive** runner
+- When the adapter marks you as a DAG workflow **phase keep-alive** runner
   (Design, Implement, or QA), a phase boundary is not an issue-terminal goal
   boundary. Run the phase's exact completion/report command, then `park`, end
   only the current turn, and let the controller hold the same goal alive. A
@@ -47,11 +47,11 @@ role, gate commands with exact ids); this contract carries the invariants.
   `flywheel-comm stage set <stage>` — valid stages: brainstorm, research,
   plan, design_review, implement, test, code_review, pr_created, approve,
   ship, completed. Skip stages that don't apply; never fake one.
-- Three-stage discipline where dispatched as a phase (design / implement /
+- DAG workflow discipline where dispatched as a phase (design / implement /
   qa): stay inside YOUR phase's mandate; the other phases run in their own
   sessions on the same branch. Never touch the shared worktree without the
   TURN (`flywheel-comm turn`) when your dynamic prompt says the issue is
-  three-stage.
+  DAG workflow.
 - Doc-flow: when your dynamic prompt carries a DOC-FLOW block, its folder,
   filenames, and tier are authoritative for process documents.
 - TDD for code changes: failing test → minimal code → refactor.

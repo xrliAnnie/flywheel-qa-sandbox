@@ -27,7 +27,7 @@ import { makeGateAuthorityView } from "../approval-signal/gate-authority-view.js
 import { reviewHoldReason } from "../auto-qa-held.js";
 import type { MaterializedHeadAuthority } from "../materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
-import { makeFinalizeThreeStagePhases } from "../post-ship-finalization.js";
+import { makeFinalizeWorkflowPhaseRoles } from "../post-ship-finalization.js";
 import { sendRunnerWake } from "../runner-wake.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
@@ -209,9 +209,9 @@ export function buildGateResponsePostWriteHook(deps: {
 					// FLY-907: terminal-state display refresh on the recovered path.
 					refreshIssueDisplay,
 					// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
-					// three-stage issue's parked phases like every other completion sink.
+					// DAG workflow issue's parked phases like every other completion sink.
 					transitionOpts
-						? makeFinalizeThreeStagePhases(
+						? makeFinalizeWorkflowPhaseRoles(
 								store,
 								transitionOpts,
 								refreshIssueDisplay,
@@ -298,7 +298,7 @@ export function buildFounderConsentWiring(
 				// FLY-793 (Codex full-PR R1 #5) — DOCUMENTED EXCEPTION: this
 				// founder-consent audit path operates on a NARROW session projection
 				// with no chat_thread_role, and it fires only for reserved actions
-				// (merge/ship/runner-lifecycle) that a three-stage PHASE runner never
+				// (merge/ship/runner-lifecycle) that a DAG workflow runner never
 				// self-invokes. So it intentionally stays on the main thread mapping.
 				const t = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
 				if (t) {

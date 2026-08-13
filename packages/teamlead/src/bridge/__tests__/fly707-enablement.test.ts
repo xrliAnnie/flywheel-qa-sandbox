@@ -143,7 +143,7 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 	});
 
 	// FLY-1496: unclassified work follows the founder's Fable/Codex preference.
-	// Three-stage QA retains its explicit Opus 5 row; this project-wide fallback
+	// DAG workflow QA retains its explicit Opus 5 row; this project-wide fallback
 	// must not silently reintroduce Opus for ordinary runner starts.
 	it("roles.runner defaults to canonical Fable 5", () => {
 		expect(cfg.roles?.runner?.backend).toBe("claude-tmux");

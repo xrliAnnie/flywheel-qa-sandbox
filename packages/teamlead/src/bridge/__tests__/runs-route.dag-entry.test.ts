@@ -23,13 +23,30 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
+
+// Keep the launch-delivery negative path bounded. runs-route captures this
+// deadline when its module loads, so the test value must be installed first.
+const ghostGuardEnv = vi.hoisted(() => {
+	const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
+	return { previous };
+});
+
 import { createRunsRouter } from "../runs-route.js";
 
 // ── Linear pre-flight mock (route does a dynamic import) ──
@@ -124,12 +141,7 @@ function v2Seed() {
 }
 
 beforeEach(() => {
-	for (const key of [
-		...Object.keys(DAG_ENV),
-		"HOME",
-		"LINEAR_API_KEY",
-		"FLYWHEEL_THREE_STAGE",
-	]) {
+	for (const key of [...Object.keys(DAG_ENV), "HOME", "LINEAR_API_KEY"]) {
 		savedEnv[key] = process.env[key];
 	}
 	process.env.LINEAR_API_KEY = "test-linear-key";
@@ -148,6 +160,14 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
+afterAll(() => {
+	if (ghostGuardEnv.previous === undefined) {
+		delete process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+	} else {
+		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = ghostGuardEnv.previous;
+	}
+});
+
 interface Harness {
 	url: string;
 	store: StateStore;
@@ -163,6 +183,7 @@ async function startHarness(options: {
 	templateSchema?: 1 | 2;
 	menuMode?: boolean;
 	bindingTemplateId?: string;
+	launchBehavior?: { commit: boolean };
 	afterSessionPersisted?: (input: {
 		executionId: string;
 		store: StateStore;
@@ -259,7 +280,10 @@ async function startHarness(options: {
 				session_role: req.sessionRole ?? "main",
 			});
 			options.afterSessionPersisted?.({ executionId, store });
-			if (req.generalizedExecution) {
+			if (
+				req.generalizedExecution &&
+				options.launchBehavior?.commit !== false
+			) {
 				const commit = req.generalizedExecution.commitWorkflowLaunch?.();
 				if (commit && !commit.ok) {
 					throw new Error(`launch commit failed: ${commit.reason}`);
@@ -336,7 +360,7 @@ async function post(
 	};
 }
 
-describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
+describe("Authenticated fresh-start controls", () => {
 	it("FLY-1718: authenticated freshStart is minted by runs-route and reaches generalized dispatch", async () => {
 		const h = await startHarness({});
 		const { status } = await post(h.url, {
@@ -386,195 +410,6 @@ describe("FLY-1372 DAG dispatch entry — fresh domain", () => {
 		});
 		expect(h.calls).toHaveLength(0);
 	});
-
-	it("#1 flags ON + pipeline.dag + main + master → generalized engine-owned start, not legacy", async () => {
-		const h = await startHarness({});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBe(true);
-		expect(json.workflowRunId).toBeTruthy();
-		const run = h.store.getWorkflowRun(json.workflowRunId as string)!;
-		expect(run.engine_owned).toBe(1);
-		expect(run.claims_read_enrolled).toBe(1);
-		expect(run.entry_kind).toBe("pipeline_dag_v1");
-		expect(
-			h.store.getWorkflowStartReservationForRun(json.workflowRunId as string),
-		).toBeTruthy();
-		expect(h.calls).toHaveLength(1);
-		expect(h.calls[0]!.generalizedExecution).toMatchObject({
-			engineOwned: true,
-			activationId: expect.any(String),
-		});
-		expect(h.calls[0]!.generalizedExecution?.projectTurn).toEqual(
-			expect.any(Function),
-		);
-	});
-
-	it("#2 workflow_template_dispatch OFF → legacy single-session path (canonical rollback lever)", async () => {
-		const h = await startHarness({
-			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: undefined },
-		});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(h.calls).toHaveLength(1);
-		expect(h.calls[0]!.generalizedExecution).toBeUndefined();
-		expect(h.calls[0]!.sessionRole).toBe("main");
-		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
-	});
-
-	it.each([
-		"FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
-		"FLYWHEEL_WORKFLOW_CLAIMS_READ",
-	] as const)(
-		"#2 %s OFF (dispatch still ON) → today's shipped fail-closed 409, unchanged",
-		async (flag) => {
-			// FLY-1307 truth table: an explicitly enabled but incomplete flag set
-			// fails closed at selection — the DAG branch must not change that.
-			const h = await startHarness({ env: { [flag]: undefined } });
-			const { status, json } = await post(h.url, {});
-			expect(status).toBe(409);
-			expect(json.code).toBe("GENERALIZED_WORKFLOW_REJECTED");
-			expect(h.calls).toHaveLength(0);
-		},
-	);
-
-	it("deduplicates the rejected receipt and reminder for repeated bad input", async () => {
-		const h = await startHarness({
-			templateSchema: 2,
-			bindingCategory: "generic",
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
-		});
-		for (let attempt = 0; attempt < 2; attempt += 1) {
-			const { status, json } = await post(h.url, {
-				taskCategory: "coding",
-			});
-			expect(status).toBe(400);
-			expect(json.code).toBe("INVALID_TASK_CATEGORY");
-		}
-		expect(h.store.listWorkflowRouteDecisions()).toHaveLength(1);
-	});
-
-	it("#2b workflow_generalized_templates OFF does NOT block v1 DAG entry (not a v1 rollback lever)", async () => {
-		const h = await startHarness({
-			env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: undefined },
-		});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBe(true);
-	});
-
-	it("#3 no pipeline.dag key → legacy (byte-compat)", async () => {
-		const h = await startHarness({
-			configYaml:
-				"project: flywheel\nlinear:\n  team_id: FLY\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\n",
-		});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(h.calls[0]!.generalizedExecution).toBeUndefined();
-	});
-
-	it("#4 no-three-stage label exempts the issue from DAG entry → legacy single-session", async () => {
-		const h = await startHarness({});
-		linearMock.labels = ["no-three-stage"];
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(h.calls[0]!.sessionRole).toBe("main");
-	});
-
-	it("#5 scoped auth → legacy (no master-auth throw)", async () => {
-		const h = await startHarness({
-			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
-		});
-		const { status, json } = await post(h.url, { taskCategory: 42 }, SCOPED);
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(json.workKind).toBeUndefined();
-	});
-
-	it("#6 sessionRole qa → legacy (auto-QA unaffected)", async () => {
-		const h = await startHarness({
-			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
-		});
-		const { status, json } = await post(h.url, {
-			sessionRole: "qa",
-			taskCategory: 42,
-		});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(h.calls[0]!.sessionRole).toBe("qa");
-		expect(json.workKind).toBeUndefined();
-	});
-
-	it("tokenless start remains legacy even when work-kind is enabled", async () => {
-		const h = await startHarness({
-			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
-		});
-		const { status, json } = await post(
-			h.url,
-			{ taskCategory: 42 },
-			"not-a-configured-token",
-		);
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(json.workKind).toBeUndefined();
-	});
-
-	it("#7 explicit designBackend + DAG entry → 400 dag_dispatch (never silently ignored)", async () => {
-		const h = await startHarness({});
-		const { status, json } = await post(h.url, { designBackend: "codex" });
-		expect(status).toBe(400);
-		expect(json.code).toBe("DESIGN_BACKEND_NOT_APPLICABLE");
-		expect(json.reason).toBe("dag_dispatch");
-		expect(h.calls).toHaveLength(0);
-	});
-
-	it("#9b flags ON + enrolled + binding missing → 409 DAG_TEMPLATE_CANDIDATE_MISSING (never silent legacy)", async () => {
-		const h = await startHarness({ seedBinding: false });
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(409);
-		expect(json.code).toBe("DAG_TEMPLATE_CANDIDATE_MISSING");
-		expect(h.calls).toHaveLength(0);
-	});
-
-	it("#9c flags OFF + enrolled + binding missing → legacy (candidate-missing 409 never outranks the flag rollback lever)", async () => {
-		const h = await startHarness({
-			seedBinding: false,
-			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: undefined },
-		});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-	});
-
-	it("#10 explicit model/agentName accepted, template-overridden, echoed; audit metadata persisted", async () => {
-		const h = await startHarness({});
-		const { status, json } = await post(h.url, {
-			model: "opus",
-			agentName: "engineer",
-			ponytail: "on",
-		});
-		expect(status).toBe(200);
-		expect(json.generalized).toBe(true);
-		expect(json.templateAuthority).toEqual({
-			overrode: ["model", "agentName"],
-		});
-		const executionId = json.executionId as string;
-		const session = h.store.getSession(executionId)!;
-		expect(session.dispatch_model).toBe("claude-opus-5");
-		expect(session.agent_name).toBe("engineer");
-		// ponytail rides the legacy-identical ponytailInput ladder, NOT the
-		// template-authority override list.
-		expect(h.calls[0]!.ponytailInput).toMatchObject({
-			kind: "start_signal",
-			signal: { runOverride: "on" },
-		});
-	});
 });
 
 describe("FLY-1436 staging cutover fixture", () => {
@@ -609,6 +444,49 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("holds an in-lease keyless tpl_code re-drive and converges after lease expiry", async () => {
+		const launchBehavior = { commit: false };
+		const h = await startHarness({ menuMode: true, launchBehavior });
+		const request = {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		};
+
+		const first = await post(h.url, request);
+		expect(first.status).toBe(202);
+		expect(first.json).toMatchObject({
+			code: "LAUNCH_PENDING",
+			workflowNodeId: "design",
+		});
+		const run = h.store.getWorkflowRun(first.json.workflowRunId as string)!;
+		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
+
+		const held = await post(h.url, request);
+		expect(held.status).toBe(409);
+		expect(held.json.code).toBe("GENERALIZED_LAUNCH_HELD");
+		expect(h.calls).toHaveLength(1);
+
+		const internal = h.store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internal.db.run("UPDATE workflow_launch_owner SET lease_expires_at = ?", [
+			"2000-01-01T00:00:00.000Z",
+		]);
+		launchBehavior.commit = true;
+
+		const converged = await post(h.url, request);
+		expect(converged.status).toBe(200);
+		expect(converged.json).toMatchObject({
+			generalized: true,
+			executionId: first.json.executionId,
+			workflowRunId: first.json.workflowRunId,
+		});
+		expect(h.calls).toHaveLength(2);
+		expect(
+			h.calls.map((call) => call.generalizedExecution?.launchGeneration),
+		).toEqual([1, 2]);
+	});
+
 	it("starts a keyless master v2 request with a synthetic durable entry key", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
@@ -622,22 +500,6 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		const reservation = h.store.getWorkflowStartReservationForRun(run.run_id)!;
 		expect(reservation.idempotency_key).toMatch(/^wf2-auto-/);
 		expect(json.templateAuthority).toBeUndefined();
-	});
-
-	it("routes a v2 binding through incumbent three-stage when dispatch is off", async () => {
-		const h = await startHarness({
-			templateSchema: 2,
-			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: undefined },
-			configYaml: `${CONFIG_BASE}pipeline:\n  three_stage: true\n`,
-		});
-		const { status, json } = await post(h.url, {});
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(h.calls[0]).toMatchObject({
-			sessionRole: "design",
-			shareParentBranch: true,
-		});
-		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
 	});
 
 	it("treats a fresh no-three-stage request as candidate-free", async () => {
@@ -753,6 +615,59 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(held.status).toBe(409);
 		expect(held.json.code).toBe("ACTIVE_WORKFLOW_RUN_RECOVERY_HELD");
 		expect(h.calls).toHaveLength(1);
+	});
+});
+
+describe("FLY-1372 retired schema-v1 recovery fail-closed invariants", () => {
+	it("#12c marked active run WITHOUT a start reservation → 409 DAG_RUN_STATE_CORRUPT", async () => {
+		const h = await startHarness({});
+		h.store.materializeWorkflowRun({
+			runId: "run-corrupt",
+			issueId: "FLY-802",
+			projectName: "flywheel",
+			taskCategory: "*",
+			claimsReadEnrolled: true,
+			actor: "master",
+			entryKind: "pipeline_dag_v1",
+			env: { ...DAG_ENV },
+		});
+		const retry = await post(h.url, {});
+		expect(retry.status).toBe(409);
+		expect(retry.json.code).toBe("DAG_RUN_STATE_CORRUPT");
+	});
+
+	it("#14 an unmarked schema-v1 engine run fails closed and cannot leak into legacy", async () => {
+		const h = await startHarness({});
+		// Same shape existing v2/explicit-v1 runs have: start reservation set
+		// (engine_owned=1) but NO entry_kind marker.
+		h.store.materializeWorkflowRun({
+			runId: "run-unmarked",
+			issueId: "FLY-802",
+			projectName: "flywheel",
+			taskCategory: "*",
+			claimsReadEnrolled: true,
+			actor: "master",
+			env: { ...DAG_ENV },
+			startReservation: {
+				idempotencyKey: "explicit-legacy-key",
+				selectionDigest: "digest-x",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "exec-unmarked",
+				createdAt: "2026-07-18T00:00:00.000Z",
+			},
+		});
+		// The compatibility classifier intentionally recognizes only unmarked
+		// schema-v2 reservations. Unmarked v1 is ambiguous, so every policy state
+		// fails closed rather than opening a legacy runner beside it.
+		const withFlags = await post(h.url, {});
+		expect(withFlags.status).toBe(409);
+		expect(withFlags.json.code).toBe("ACTIVE_ENGINE_RUN_UNCLASSIFIED");
+		delete process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
+		const rolledBack = await post(h.url, {});
+		expect(rolledBack.status).toBe(409);
+		expect(rolledBack.json.code).toBe("ACTIVE_ENGINE_RUN_UNCLASSIFIED");
+		expect(h.calls).toHaveLength(0);
 	});
 });
 
@@ -956,30 +871,6 @@ describe("FLY-1407 work-kind entry gate", () => {
 			taskCategory: "generic",
 			idempotencyKey: "stale-node-replay",
 		});
-
-		expect(replay.status).toBe(409);
-		expect(replay.json).toMatchObject({
-			success: false,
-			code: "STALE_START_RESPONSE",
-			runId: first.json.workflowRunId,
-			executionId: first.json.executionId,
-		});
-		expect(h.calls).toHaveLength(1);
-	});
-
-	it("rejects the active engine start-session exemption after a v1 DAG run advances", async () => {
-		const h = await startHarness({});
-		const first = await post(h.url, {});
-		expect(first.status).toBe(200);
-		const internal = h.store as unknown as {
-			db: { run(sql: string, params?: unknown[]): void };
-		};
-		internal.db.run(
-			"UPDATE workflow_run SET current_node_id = 'implement' WHERE run_id = ?",
-			[first.json.workflowRunId],
-		);
-
-		const replay = await post(h.url, {});
 
 		expect(replay.status).toBe(409);
 		expect(replay.json).toMatchObject({
@@ -1223,7 +1114,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		const h = await startHarness({
 			templateSchema: 2,
 			bindingCategory: "generic",
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  three_stage: true\n  work_kind: true\n`,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		linearMock.labels = ["no-three-stage"];
 		const { status, json } = await post(h.url, {
@@ -1309,7 +1200,7 @@ describe("FLY-1436 menu start contract", () => {
 					},
 					qa: {
 						model: "opus (= claude-opus-5)",
-						effort: "xhigh",
+						effort: "high",
 						overridden: false,
 					},
 				},

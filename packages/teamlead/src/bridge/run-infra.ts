@@ -57,8 +57,6 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	type StateStore,
 } from "../StateStore.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { ContinuityAudit } from "./continuity-audit.js";
@@ -75,7 +73,6 @@ import {
 	parsePaneLossGenerationParams,
 	persistPaneLossGenerationCredential,
 } from "./pane-loss-reconcile.js";
-import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
@@ -93,13 +90,12 @@ import {
 	type ProjectRuntime,
 	type ResumeComputer,
 	RunDispatcher,
-	type WorkflowClaimsAdmissionSeam,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { makeSkillFrameworkParticipationReader } from "./skill-framework-participation.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
+import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import type { BridgeConfig } from "./types.js";
-import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
@@ -627,18 +623,13 @@ export interface RunInfraOptions {
 	 * gate (Codex R1 HIGH-1). Absent → byte-compatible.
 	 */
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 	/**
-	 * FLY-793: late-bound three-stage PhaseOrchestrator holder, set on the
-	 * DirectEventSink so the in-process completion path drives Design→Implement→QA
-	 * phase handoffs. Absent / `.current` undefined → byte-compatible (no-op).
-	 */
-	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
-	/**
-	 * FLY-887: ship-time three-stage phase finalizer (closes parked design +
+	 * FLY-887: ship-time DAG workflow finalizer (closes parked design +
 	 * implement sessions before the shared worktree is removed). Built at the
 	 * composition root with store + transitionOpts; wired onto the DirectEventSink.
 	 */
-	finalizeThreeStagePhases?: (
+	finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -679,51 +670,6 @@ export interface RunInfraOptions {
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
 	/** FLY-1718 P4: canonical predecessor admission before branch continuity. */
 	doaBackoffAdmission?: DoaBackoffAdmissionFn;
-	/**
-	 * FLY-1232/1344 module ②: the hot lifecycle-shadow runtime, always constructed
-	 * by plugin.ts and threaded into the RunDispatcher (T1/T2/T7 pre-launch seam
-	 * + flag-ON fresh launchCommitPath). It latches OFF to undefined per start;
-	 * an absent injected seam remains byte-compatible for tests. NOTE (plan §0 red line): an
-	 * EXTERNALLY injected startDispatcher (startBridge option) bypasses this
-	 * assembly entirely and is deliberately NOT shadow-wrapped.
-	 */
-	workflowShadow?: WorkflowShadowRuntime;
-}
-
-/** Production claims-admission capability assembled regardless of flag state. */
-export function createRunInfraWorkflowClaimsAdmission(
-	store: StateStore,
-): WorkflowClaimsAdmissionSeam {
-	return {
-		admit: (input) => {
-			const run = store.getActiveWorkflowRun(input.projectName, input.issueId);
-			if (!run) throw new Error("active workflow run not found");
-			const now = new Date();
-			const credentialWindow = run.snapshot
-				? credentialWindowForNode(
-						parseWorkflowRunSnapshot(run.snapshot),
-						input.node,
-						now,
-					)
-				: {
-						expiresAt: new Date(now.getTime() + 30 * 60_000).toISOString(),
-						absoluteDeadlineAt: new Date(
-							now.getTime() + 2 * 60 * 60_000,
-						).toISOString(),
-					};
-			const admitted = store.admitWorkflowExecution({
-				runId: run.run_id,
-				nodeId: input.node,
-				executionId: input.executionId,
-				attempt: input.attempt,
-				family: "qa_verdict",
-				now: now.toISOString(),
-				...credentialWindow,
-			});
-			if (!admitted.ok) throw new Error(admitted.reason);
-			return { credential: admitted.credential };
-		},
-	};
 }
 
 export function resolveWorkflowTmuxWindowAuthority(
@@ -797,7 +743,6 @@ export function createRunInfraDispatcher(input: {
 	lifecycleAdmission?: LifecycleAdmissionFn;
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
 	doaBackoffAdmission?: DoaBackoffAdmissionFn;
-	workflowShadow?: WorkflowShadowRuntime;
 	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
 	continuityComputer?: ContinuityComputer;
 	freshStartAudit?: FreshStartAuditRecorder;
@@ -814,8 +759,6 @@ export function createRunInfraDispatcher(input: {
 		input.resumeComputer,
 		input.lifecycleAdmission,
 		input.lifecycleLaunchGuard,
-		input.workflowShadow,
-		createRunInfraWorkflowClaimsAdmission(input.store),
 		input.phaseRetryStartPointComputer,
 		// FLY-1356 (R1#4): sticky-stamp lookup — same issue keeps its arm.
 		(issueId) => input.store.getSkillFrameworkStamp(issueId),
@@ -1080,12 +1023,10 @@ export async function setupRunInfrastructure(
 			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
 			// auto-QA coordinator holder so it spawns QA + holds the founder.
 			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
-			// FLY-793: give the in-process completion path the three-stage
-			// PhaseOrchestrator holder so it drives Design→Implement→QA handoffs.
-			directSink.phaseOrchestrator = runInfraOpts?.phaseOrchestrator;
+			directSink.turnBeltReconciler = runInfraOpts?.turnBeltReconciler;
 			// FLY-887: ship-time finalizer for keep-alive parked design/implement phases.
-			directSink.finalizeThreeStagePhases =
-				runInfraOpts?.finalizeThreeStagePhases;
+			directSink.finalizeWorkflowPhaseRoles =
+				runInfraOpts?.finalizeWorkflowPhaseRoles;
 			// FLY-907: display-refresh holder for the in-process status writes.
 			directSink.issueDisplayRefresh = runInfraOpts?.issueDisplayRefresh;
 			// FLY-1066: DirectEventSink writes terminal StateStore rows directly.
@@ -1095,9 +1036,6 @@ export async function setupRunInfrastructure(
 			// row is durable (plan.md:145).
 			directSink.lifecycleActivate =
 				runInfraOpts?.lifecycleLaunchGuard?.activateLaunch;
-			// FLY-1232 T9: the in-process post-ship finalization hook (external
-			// merge paths are covered by the claim-based startup repair instead).
-			directSink.workflowShadow = runInfraOpts?.workflowShadow;
 			directSink.materializedHeadAuthority =
 				runInfraOpts?.materializedHeadAuthority;
 			// FLY-1282 Part C: targeted terminal-archive enqueue for the
@@ -1275,7 +1213,7 @@ export async function setupRunInfrastructure(
 
 	// FLY-1257 M3: phase retries recover branch B's own tip, using the same
 	// WorktreeManager path/branch authority as Blueprint. This runs for every
-	// phase retry even when three-stage keep-alive is disabled: the recreate path
+	// phase retry even when DAG workflow keep-alive is disabled: the recreate path
 	// still needs to rebuild from branch B rather than silently reset to main.
 	const phaseRetryStartPointComputer: PhaseRetryStartPointComputer = (
 		issueId,
@@ -1328,9 +1266,6 @@ export async function setupRunInfrastructure(
 		lifecycleAdmission: runInfraOpts?.lifecycleAdmission,
 		lifecycleLaunchGuard: runInfraOpts?.lifecycleLaunchGuard,
 		doaBackoffAdmission: runInfraOpts?.doaBackoffAdmission,
-		// FLY-1232/1344: hot facade; each start latches once. The helper also
-		// assembles the FLY-1244 admission capability regardless of flag state.
-		workflowShadow: runInfraOpts?.workflowShadow,
 		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
 		continuityComputer,
 		freshStartAudit: (record) => continuityAudit.recordFreshStart(record),

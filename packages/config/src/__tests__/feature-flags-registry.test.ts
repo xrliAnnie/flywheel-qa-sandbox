@@ -308,24 +308,6 @@ describe("feature-flag registry invariants", () => {
 			}),
 		]);
 
-		const retestHeadDeltaGuard = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_RETEST_HEAD_DELTA_GUARD",
-		);
-		expect(retestHeadDeltaGuard).toMatchObject({
-			name: "retest_head_delta_guard",
-			category: "kill_switch",
-			polarity: "default_on",
-			default: true,
-			toggleable: "direct",
-		});
-		expect(retestHeadDeltaGuard?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/phase-orchestrator.ts",
-				symbol: "shouldSuppressQaRetest",
-				timing: "call_time",
-			}),
-		]);
-
 		const shipCiGuard = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_SHIP_CI_GUARD",
 		);
@@ -575,8 +557,6 @@ describe("feature-flag registry invariants", () => {
 			],
 			workflow_claims_write: [
 				["packages/teamlead/src/workflow-claims.ts", "call_time"],
-				["packages/teamlead/src/bridge/workflow-shadow-writer.ts", "call_time"],
-				["packages/teamlead/src/bridge/plugin.ts", "call_time"],
 			],
 			workflow_claims_read: [
 				["packages/teamlead/src/workflow-claims.ts", "call_time"],

@@ -22,7 +22,7 @@ const HARD_GATE_ENV = "FLYWHEEL_CODEX_HARD_GATE";
 /**
  * FLY-827 + FLY-793: the session roles that OWN a PR and reach `awaiting_review`
  * for founder review — the ones the Codex founder-hold + verdict-recording apply
- * to. `main` is the normal runner; `implement` is the FLY-793 three-stage phase
+ * to. `main` is the normal runner; `implement` is the FLY-793 DAG workflow
  * that creates the PR and hands off at `awaiting_review`. The `qa` role (auto-QA
  * runner AND the FLY-793 `qa` phase) is the VERIFIER — never held. `design` never
  * reaches `awaiting_review`.

@@ -1432,7 +1432,7 @@ for title, group in by_title.items():
 # `runnerDisplayName(sessionRole, shareParentBranch, modelDisplay)`
 # (packages/teamlead/src/bridge/run-dispatcher.ts): model-present non-phase runs
 # emit `runner-<family>-<model>`; model-absent legacy runs emit `claude`; and
-# FLY-793 three-stage PHASE runners keep their phase prefix (`design`/`implement`/
+# FLY-793 DAG workflow runners keep their phase prefix (`design`/`implement`/
 # `qa`) before any model label. The fixed `runner` namespace proves a model-bearing
 # title is managed without trusting arbitrary direct vendor labels.
 # COUPLING: if runnerName ever gains another producible value, extend the

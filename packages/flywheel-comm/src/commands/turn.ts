@@ -1,8 +1,8 @@
 /**
- * FLY-887: `flywheel-comm turn --exec-id <id>` — a three-stage phase runner's
+ * FLY-887: `flywheel-comm turn --exec-id <id>` — a DAG workflow runner's
  * self-check for the shared-worktree TURN (single-writer activation).
  *
- * A three-stage runner shares ONE physical worktree with the other two phase
+ * A DAG workflow runner shares ONE physical worktree with the other two phase
  * sessions (design/implement/qa). At any instant only the TURN holder may touch
  * that worktree (git write / run tests / edit files); the others are parked and
  * must not touch it. The Bridge grants the TURN at its handoff/wake points and

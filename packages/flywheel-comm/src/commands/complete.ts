@@ -53,7 +53,7 @@ const VALID_ROUTES = new Set([
 	"ship_attempt_failed",
 	"no_code",
 	"pr_handoff",
-	// FLY-793: three-stage Design phase completion (docs committed, no PR/merge).
+	// FLY-793: DAG workflow Design phase completion (docs committed, no PR/merge).
 	"phase_design_complete",
 ]);
 

@@ -705,11 +705,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	});
 
 	// ── FLY-907 (Codex R1 MED-2): the recovered-merge path is the FOURTH
-	// completion sink — it must close a three-stage issue's parked phases and
+	// completion sink — it must close a DAG workflow issue's parked phases and
 	// only THEN run the terminal display refresh (order enforced by
 	// runPostShipFinalization: phase finalization step 1.25 before the
 	// display-refresh step 1.3, both before archive). ──
-	it("recovered merge runs finalizeThreeStagePhases BEFORE the terminal display refresh", async () => {
+	it("recovered merge runs finalizeWorkflowPhaseRoles BEFORE the terminal display refresh", async () => {
 		upsert("awaiting_review");
 		withQaAndCodexGreen();
 		const session = store.getSession(EXEC);

@@ -12,7 +12,11 @@ export const ENG_TIERS = ["trivial", "light", "heavy"] as const;
 export type EngTier = (typeof ENG_TIERS)[number];
 export const DEFAULT_ENG_TIER: EngTier = "heavy";
 
-export const ROUTING_OVERRIDES_ALLOWLIST = ["no-three-stage"] as const;
+/** Historical label retained as the explicit single-session routing override. */
+export const LEGACY_ROUTING_OVERRIDE_LABEL = "no-three-stage";
+export const ROUTING_OVERRIDES_ALLOWLIST = [
+	LEGACY_ROUTING_OVERRIDE_LABEL,
+] as const;
 export type RoutingOverride = (typeof ROUTING_OVERRIDES_ALLOWLIST)[number];
 
 export type CanonicalRoutingOverrides =

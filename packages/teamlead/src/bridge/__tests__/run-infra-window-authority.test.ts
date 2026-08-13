@@ -1,16 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import { describe, expect, it } from "vitest";
 import type { StateStore } from "../../StateStore.js";
-import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
-import { credentialWindowForNode } from "../../workflow-submission-expiry.js";
-import {
-	createRunInfraWorkflowClaimsAdmission,
-	resolveWorkflowTmuxWindowAuthority,
-} from "../run-infra.js";
-
-afterEach(() => {
-	vi.useRealTimers();
-});
+import { resolveWorkflowTmuxWindowAuthority } from "../run-infra.js";
 
 function releasedLaunchStore(): StateStore {
 	return {
@@ -61,58 +51,5 @@ describe("resolveWorkflowTmuxWindowAuthority", () => {
 				...override,
 			}),
 		).toBe("keep");
-	});
-});
-
-describe("createRunInfraWorkflowClaimsAdmission", () => {
-	it.each([
-		["manifest override", false],
-		["registry default", true],
-	])("uses credentialWindowForNode for the %s", (_label, removeOverride) => {
-		const manifest = structuredClone(
-			legacyWorkflowSeeds().find(
-				(candidate) => candidate.templateId === "tpl_eng_heavy",
-			)!.manifest,
-		);
-		const qa = manifest.nodes.find((node) => node.id === "qa");
-		if (!qa) throw new Error("QA node missing");
-		if (removeOverride) delete qa.submissionWindowMinutes;
-		const snapshot = buildWorkflowRunSnapshotV1({
-			template: { id: "legacy-admission-window", revision: 1 },
-			manifest,
-		});
-		const now = new Date("2026-08-05T00:00:00.000Z");
-		vi.useFakeTimers({ now });
-		const admitWorkflowExecution = vi.fn(() => ({
-			ok: true as const,
-			credentialId: 1,
-			credential: "qa-credential",
-		}));
-		const store = {
-			getActiveWorkflowRun: () => ({
-				run_id: "run-1",
-				snapshot: JSON.stringify(snapshot),
-			}),
-			admitWorkflowExecution,
-		} as unknown as StateStore;
-
-		expect(
-			createRunInfraWorkflowClaimsAdmission(store).admit({
-				projectName: "flywheel",
-				issueId: "FLY-1655",
-				node: "qa",
-				executionId: "qa-exec",
-				attempt: 1,
-			}),
-		).toEqual({ credential: "qa-credential" });
-		expect(admitWorkflowExecution).toHaveBeenCalledWith({
-			runId: "run-1",
-			nodeId: "qa",
-			executionId: "qa-exec",
-			attempt: 1,
-			family: "qa_verdict",
-			now: now.toISOString(),
-			...credentialWindowForNode(snapshot, "qa", now),
-		});
 	});
 });

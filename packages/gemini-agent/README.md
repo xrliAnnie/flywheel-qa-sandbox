@@ -21,7 +21,7 @@ voice (delegate `LiveToolSpec`) entries are thin shells over one `runAgentSessio
    `request_ship_approval`, a REQUEST that files a `ship_approval_request` lead
    event via `POST /api/ship-approval-request`. Nothing is merged by this call;
    founder approval + the owning runner's verified ship flow stay authoritative.
-2. **Dispatch three-stage gate** — audit line written to disk BEFORE dispatch;
+2. **Dispatch DAG workflow gate** — audit line written to disk BEFORE dispatch;
    unknown tool names are never executed (whitelist); schema validation rejects
    missing/unknown/blank args. All failures feed back to the model as error
    results — the loop never throws on tool failure.

@@ -213,13 +213,13 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).toContain("NO teammate-messaging tool");
 	});
 
-	it("codex three-stage implement phase (keep-alive): park wording carries no banned tokens", async () => {
+	it("codex DAG workflow implement phase (keep-alive): park wording carries no banned tokens", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "implement",
 			shareParentBranch: true,
 			startPoint: "abc123", // matches the mock gitChecker baseline (takeover guard)
 		});
-		expect(prompt).toContain("Three-stage keep-alive (implement phase)");
+		expect(prompt).toContain("DAG workflow keep-alive (implement phase)");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}
@@ -233,7 +233,7 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		);
 	});
 
-	it("codex three-stage design phase parks after its exact completion route", async () => {
+	it("codex DAG workflow design phase parks after its exact completion route", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "design",
 			shareParentBranch: true,
@@ -250,13 +250,13 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		);
 	});
 
-	it("codex three-stage QA phase parks after verdict and supports same-session re-test", async () => {
+	it("codex DAG workflow QA phase parks after verdict and supports same-session re-test", async () => {
 		const prompt = await buildCodexPrompt({
 			sessionRole: "qa",
 			shareParentBranch: true,
 			startPoint: "abc123",
 		});
-		expect(prompt).toContain("QA phase of a three-stage pipeline");
+		expect(prompt).toContain("QA phase of a DAG workflow");
 		for (const banned of BANNED_IN_CODEX_PROMPT) {
 			expect(prompt).not.toContain(banned);
 		}

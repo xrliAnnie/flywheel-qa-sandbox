@@ -201,7 +201,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 			issue_url: "https://linear.app/flywheel/FLY-1307",
 			worktree_path: "/unused/implement",
 		});
-		store.applyWorkflowShadowBatch({
+		store.applyWorkflowLedgerBatch({
 			projectName: "flywheel",
 			issueId: "FLY-1307",
 			runId: "run-1",
@@ -327,7 +327,7 @@ function failRunningDesign(store: StateStore, lastError?: string): void {
 			env: WORKFLOW_ON,
 		}),
 	).toMatchObject({ ok: true });
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1307",
 		runId: "run-1",
@@ -573,7 +573,7 @@ async function storeWithQaFailKickback() {
 		status: "completed",
 		session_role: "implement",
 	});
-	store.applyWorkflowShadowBatch({
+	store.applyWorkflowLedgerBatch({
 		projectName: "flywheel",
 		issueId: "FLY-1307",
 		runId: "run-1",

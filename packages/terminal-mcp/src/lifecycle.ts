@@ -100,7 +100,7 @@ export const ABANDON_STATUSES_PARAM = ABANDON_STATUS_SET.join(",");
  *
  * FLY-1204: `design_done` was missing here while the Bridge-side
  * FINALIZE_DONE_SOURCE_STATES (close-runner.ts) already listed it (FLY-793), so a
- * three-stage Design phase-session parked at `design_done` (kept alive as the
+ * DAG workflow Design phase-session parked at `design_done` (kept alive as the
  * design-context holder until ship) could not be reclaimed with `close_runner
  * --done` — the only recourse was a manual `kill -9`. Added to close the drift so
  * ops can reclaim a leaked design phase-session normally.

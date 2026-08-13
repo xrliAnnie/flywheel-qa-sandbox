@@ -25,8 +25,8 @@ nodes:
     defaultModel: opus
     models:
       - model: opus
-        allowedEfforts: [low, medium, high, xhigh, max]
-        defaultEffort: xhigh
+        allowedEfforts: [low, medium, high, max]
+        defaultEffort: high
   - id: founder_gate
     type: gate
 edges:

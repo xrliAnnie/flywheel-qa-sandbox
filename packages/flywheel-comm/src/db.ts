@@ -258,14 +258,14 @@ export interface PendingRunnerQuestion {
 }
 
 /**
- * FLY-887: the three-stage TURN — which phase-session (identified by its
+ * FLY-887: the DAG workflow TURN — which phase-session (identified by its
  * `holder_exec_id`) currently holds the exclusive right to touch the shared
  * worktree for `issue_id`. `epoch` monotonically increases on every re-grant so
  * a late/duplicated wake carrying a stale epoch can be recognized as such. Only
  * the Bridge writes this table (`grantTurn`); runners read it (`getTurn` via the
  * `turn` subcommand) before writing. Timestamps are epoch milliseconds.
  */
-export interface ThreeStageTurn {
+export interface WorktreeTurn {
 	issue_id: string;
 	holder_exec_id: string;
 	phase: string;
@@ -3548,7 +3548,7 @@ export class CommDB {
 		return row;
 	}
 
-	// ── FLY-887: three-stage TURN (single-writer exclusive worktree activation) ──
+	// ── FLY-887: DAG workflow TURN (single-writer exclusive worktree activation) ──
 
 	/**
 	 * FLY-887: grant the shared-worktree TURN for `issueId` to `holderExecId`
@@ -3798,8 +3798,8 @@ export class CommDB {
 	 * never created this table (openReadonly skips schema) yields "no such table"
 	 * — that must read as "no TURN", never throw. Any other error propagates.
 	 */
-	getTurn(issueId: string): ThreeStageTurn | null {
-		let row: ThreeStageTurn | undefined;
+	getTurn(issueId: string): WorktreeTurn | null {
+		let row: WorktreeTurn | undefined;
 		try {
 			row = this.db
 				.prepare(
@@ -3807,7 +3807,7 @@ export class CommDB {
 					        target_run_id, target_node_id, target_attempt, activation_id
            FROM three_stage_turn WHERE issue_id = ?`,
 				)
-				.get(issueId) as ThreeStageTurn | undefined;
+				.get(issueId) as WorktreeTurn | undefined;
 		} catch (err) {
 			if (/no such table: three_stage_turn/i.test((err as Error).message)) {
 				return null;
@@ -3820,7 +3820,7 @@ export class CommDB {
 					)
 					.get(issueId) as
 					| Omit<
-							ThreeStageTurn,
+							WorktreeTurn,
 							| "target_run_id"
 							| "target_node_id"
 							| "target_attempt"
@@ -4542,7 +4542,7 @@ export class CommDB {
 	 * project name; the caller (plugin.ts) owns the per-project attribution.
 	 * Readonly-tolerant: "no such table" reads as an empty table (mirrors getTurn).
 	 */
-	listTurns(): ThreeStageTurn[] {
+	listTurns(): WorktreeTurn[] {
 		try {
 			return this.db
 				.prepare(
@@ -4550,7 +4550,7 @@ export class CommDB {
 					        target_run_id, target_node_id, target_attempt, activation_id
            FROM three_stage_turn`,
 				)
-				.all() as ThreeStageTurn[];
+				.all() as WorktreeTurn[];
 		} catch (err) {
 			if (/no such table: three_stage_turn/i.test((err as Error).message)) {
 				return [];
@@ -4980,7 +4980,7 @@ export class CommDB {
 
 	/**
 	 * FLY-1374: maintenance deletion may not retire the identity of the current
-	 * three-stage TURN holder. The guard and finalization share one IMMEDIATE
+	 * DAG workflow TURN holder. The guard and finalization share one IMMEDIATE
 	 * transaction, so a TURN granted after an async liveness probe cannot race
 	 * between a second read and the destructive session write.
 	 *

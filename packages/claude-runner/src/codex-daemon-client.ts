@@ -628,7 +628,7 @@ export async function runGoalToTerminal(
 			deadlineMs: number;
 			hardDeadlineMs: number;
 		}) => void;
-		/** FLY-1269: explicit resident three-stage phase lifecycle. */
+		/** FLY-1269: explicit resident DAG workflow lifecycle. */
 		phaseLifecycle?: GoalPhaseLifecycle;
 		/** Slow, zero-token phase control poll (default 15s). */
 		phaseControlPollIntervalMs?: number;

@@ -178,9 +178,9 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 
 	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin is NOT
 	// a system broadcast — even when the project configures an announcer bot, the
-	// non-three-stage fallback must post/edit/pin as the LEAD bot (byte-compat),
-	// not the announcer. Only the three-stage pipeline header rides the announcer.
-	it("announcer configured + non-three-stage → single-runner pin stays on the LEAD bot", async () => {
+	// non-DAG workflow fallback must post/edit/pin as the LEAD bot (byte-compat),
+	// not the announcer. Only the DAG workflow header rides the announcer.
+	it("announcer configured + non-DAG workflow → single-runner pin stays on the LEAD bot", async () => {
 		const announcerProjects: ProjectEntry[] = [
 			{
 				...projects[0]!,
@@ -211,46 +211,33 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 		expect(ctx.botToken).toBe("bot-token"); // LEAD bot, NOT announcer
 	});
 
-	it.each([
-		{ global: "0", designBackend: "codex", expected: "[设计·GPT-5.6]" },
-		{ global: "1", designBackend: "claude", expected: "[设计·Fable]" },
-	] as const)(
-		"FLY-1259: legacy pipeline header uses locked $designBackend backend when global=$global",
-		async ({ global, designBackend, expected }) => {
-			const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = global;
-			try {
-				store.upsertSession({
-					execution_id: `exec-design-${designBackend}`,
-					issue_id: ISSUE_ID,
-					issue_identifier: ISSUE_ID,
-					issue_title: "Discord issue status",
-					project_name: PROJECT,
-					status: "running",
-					started_at: new Date().toISOString(),
-					issue_labels: JSON.stringify(["Flywheel"]),
-					session_role: "design",
-					chat_thread_role: "design",
-					design_backend: designBackend,
-				});
+	it.each(["codex", "claude"] as const)(
+		"pipeline header does not guess a model from persisted %s design backend metadata",
+		async (designBackend) => {
+			store.upsertSession({
+				execution_id: `exec-design-${designBackend}`,
+				issue_id: ISSUE_ID,
+				issue_identifier: ISSUE_ID,
+				issue_title: "Discord issue status",
+				project_name: PROJECT,
+				status: "running",
+				started_at: new Date().toISOString(),
+				issue_labels: JSON.stringify(["Flywheel"]),
+				session_role: "design",
+				chat_thread_role: "design",
+				design_backend: designBackend,
+			});
 
-				await postStage(
-					buildApp({
-						issueStatusEmojiEnabled: false,
-						issueAttachPinEnabled: true,
-					}),
-					`evt-backend-${designBackend}`,
-				);
+			await postStage(
+				buildApp({
+					issueStatusEmojiEnabled: false,
+					issueAttachPinEnabled: true,
+				}),
+				`evt-backend-${designBackend}`,
+			);
 
-				expect(headerSpy).toHaveBeenCalledTimes(1);
-				expect(headerSpy.mock.calls[0]?.[2]).toContain(expected);
-			} finally {
-				if (previous === undefined) {
-					delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-				} else {
-					process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
-				}
-			}
+			expect(headerSpy).toHaveBeenCalledTimes(1);
+			expect(headerSpy.mock.calls[0]?.[2]).not.toMatch(/\[设计·/);
 		},
 	);
 

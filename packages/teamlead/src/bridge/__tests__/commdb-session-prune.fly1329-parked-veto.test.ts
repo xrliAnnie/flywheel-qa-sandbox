@@ -50,7 +50,7 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 				db.upsertDeclaredState(
 					execId,
 					"parked",
-					"three-stage implement parked awaiting QA",
+					"DAG workflow implement parked awaiting QA",
 					Date.now(),
 					null, // no expiry — an indefinite park
 				);

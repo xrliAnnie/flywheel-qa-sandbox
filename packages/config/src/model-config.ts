@@ -4,15 +4,12 @@ import { join } from "node:path";
 import {
 	assertValidModelRegistry,
 	BUILTIN_MODEL_TIERS,
-	BUILTIN_PHASE_DISPATCH,
 	buildModelLookup,
 	buildModelRegistry,
 	DEFAULT_OPUS_BINDINGS,
 	type DefaultOpusBindings,
 	MODEL_IDS,
 	MODEL_PROVIDERS,
-	type ModelPhaseDispatchSpec,
-	type ModelPhaseName,
 	type ModelProviderId,
 	type ModelRegistryEntry,
 	type ModelRuntimeVendor,
@@ -42,7 +39,6 @@ const TIER_NAMES: readonly ModelTier[] = [
 	"light",
 	"trivial",
 ];
-const PHASE_NAMES: readonly ModelPhaseName[] = ["design", "implement", "qa"];
 
 export type ModelPolicyErrorCode = "INVALID_MODEL";
 
@@ -80,7 +76,6 @@ export interface ModelConfigSnapshot {
 	readonly registry: readonly ModelRegistryEntry[];
 	readonly bindings: DefaultOpusBindings;
 	readonly tiers: Readonly<Record<ModelTier, ModelTierSpec>>;
-	readonly phases: Readonly<Record<ModelPhaseName, ModelPhaseDispatchSpec>>;
 	readonly acceptedDispatchModels: readonly string[];
 	getModelRegistryEntry(raw: string): ModelRegistryEntry | null;
 	getDispatchCanonical(raw: string): string | null;
@@ -114,7 +109,6 @@ interface ModelConfigFile {
 	bindings?: unknown;
 	models?: unknown;
 	tiers?: unknown;
-	phases?: unknown;
 }
 
 interface SnapshotCache {
@@ -417,56 +411,6 @@ function createSnapshot(
 		});
 	}
 	const frozenTiers = Object.freeze(tiers);
-	const phases = {} as Record<ModelPhaseName, ModelPhaseDispatchSpec>;
-	const configuredPhases = isObject(config.phases) ? config.phases : {};
-	if (config.phases !== undefined && !isObject(config.phases)) {
-		warnings.push("phases segment ignored: expected an object");
-	}
-	for (const phase of PHASE_NAMES) {
-		const fallback = BUILTIN_PHASE_DISPATCH[phase];
-		const raw = configuredPhases[phase];
-		if (raw === undefined) {
-			phases[phase] = fallback;
-			continue;
-		}
-		if (!isObject(raw)) {
-			warnings.push(`phase ${phase} ignored: expected an object`);
-			phases[phase] = fallback;
-			continue;
-		}
-		const vendor = raw.vendor;
-		const model = raw.model;
-		const effort = raw.effort;
-		const entry =
-			typeof model === "string"
-				? registryLookup.get(model.trim().toLowerCase())
-				: undefined;
-		const validEffort =
-			effort === undefined ||
-			(typeof effort === "string" &&
-				(entry?.effortsBySurface.runner ?? []).includes(effort as RoleEffort));
-		if (
-			typeof vendor !== "string" ||
-			!RUNTIME_VENDORS.has(vendor as ModelRuntimeVendor) ||
-			!entry ||
-			entry.runtimeVendor !== vendor ||
-			!entry.surfaces.includes("runner") ||
-			!validEffort
-		) {
-			warnings.push(`phase ${phase} ignored: unavailable dispatch selection`);
-			phases[phase] = fallback;
-			continue;
-		}
-		phases[phase] = Object.freeze({
-			vendor: vendor as ModelRuntimeVendor,
-			model: entry.id,
-			...(typeof effort === "string" && {
-				effort: effort as RoleEffort,
-			}),
-		});
-	}
-	const frozenPhases = Object.freeze(phases);
-
 	const getModelRegistryEntry = (raw: string): ModelRegistryEntry | null =>
 		registryLookup.get(raw.trim().toLowerCase()) ?? null;
 	const getDispatchCanonical = (raw: string): string | null => {
@@ -563,7 +507,6 @@ function createSnapshot(
 		registry,
 		bindings: bindingResult.bindings,
 		tiers: frozenTiers,
-		phases: frozenPhases,
 		acceptedDispatchModels,
 		getModelRegistryEntry,
 		getDispatchCanonical,

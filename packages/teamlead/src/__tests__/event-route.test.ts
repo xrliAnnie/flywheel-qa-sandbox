@@ -14,6 +14,7 @@ import {
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
+import type { TurnBeltReconciler } from "../bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -231,11 +232,31 @@ describe("Event route", () => {
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
+	let turnBeltReconciler: { current: TurnBeltReconciler | undefined };
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		const config = makeConfig();
-		const app = createBridgeApp(store, testProjects, config);
+		turnBeltReconciler = { current: undefined };
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ turnBeltReconciler },
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -947,6 +968,46 @@ describe("Event route", () => {
 				.listWorkflowRunEvents("run-exec-1")
 				.filter((event) => event.kind === "generalized_teardown_recorded"),
 		).toHaveLength(1);
+	});
+
+	it("alerts a typed generalized worktree takeover refusal before settling the HTTP signal", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const alertWorktreeTakeoverFailure = vi.fn(async () => {});
+		turnBeltReconciler.current = {
+			alertWorktreeTakeoverFailure,
+		} as unknown as TurnBeltReconciler;
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "takeover-failed-1",
+					event_type: "session_failed",
+					payload: {
+						error: "worktree takeover refused",
+						failure: {
+							failureKind: "worktree_takeover_failed",
+							failureReason: "worktree_takeover_failed: dirty",
+						},
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(await res.json()).toMatchObject({
+			ok: true,
+			generalized: true,
+			teardown: "held_recorded",
+		});
+		expect(alertWorktreeTakeoverFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+			"worktree_takeover_failed: dirty",
+		);
 	});
 
 	// FLY-728: the loopback /events session_started handler persists the resolved
@@ -1990,7 +2051,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 		declaredDb.upsertDeclaredState(
 			"exec-1",
 			"parked",
-			"three-stage implement parked awaiting QA",
+			"DAG workflow implement parked awaiting QA",
 			Date.now(),
 			null, // no expiry
 		);

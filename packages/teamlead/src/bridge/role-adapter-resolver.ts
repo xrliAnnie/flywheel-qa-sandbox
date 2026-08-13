@@ -18,11 +18,11 @@
 
 import type {
 	ExecutorBackend,
-	PhaseDispatchVendor,
 	RoleBackendMap,
 	RoleEffort,
 	RoleName,
 	RunnerVendorType,
+	WorkflowDispatchVendor,
 } from "flywheel-config";
 import {
 	getModelConfigSnapshot,
@@ -107,7 +107,7 @@ export interface ResolveRoleAdapterArgs {
 	 * maps through the ONE existing VENDOR_TO_EXECUTOR table — never a second
 	 * mapping (drift risk). Absent → FLY-728 status quo (claude-tmux).
 	 */
-	dispatchVendor?: PhaseDispatchVendor;
+	dispatchVendor?: WorkflowDispatchVendor;
 	/**
 	 * FLY-1224: the phase table's reasoning effort. Takes precedence over the
 	 * project roles effort (dispatch layer > project config); absent → the

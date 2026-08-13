@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
 /**
- * FLY-887: StateStore queries backing the three-stage keep-alive orchestrator —
+ * FLY-887: StateStore queries backing the DAG workflow keep-alive orchestrator —
  * (1) `getPhaseSessionsForIssue` returns ALL phase sessions (design/implement/qa
  * by `chat_thread_role`) for an issue so the ship-time finalizer can close the
  * parked design + implement sessions; (2) `countEventsByIssueAndType` is the
@@ -190,75 +190,5 @@ describe("getParkedPhaseCandidates (FLY-1204)", () => {
 			status: "terminated",
 		});
 		expect(store.getParkedPhaseCandidates()).toEqual([]);
-	});
-});
-
-describe("countEventsByIssueAndType (FLY-887 fix-round ledger)", () => {
-	it("counts only events of the requested type for the issue", async () => {
-		const store = await freshStore();
-		store.insertEvent({
-			event_id: "fr-1",
-			execution_id: "q",
-			issue_id: "FLY-1",
-			project_name: "flywheel",
-			event_type: "three_stage_fix_round",
-			source: "test",
-		});
-		store.insertEvent({
-			event_id: "fr-2",
-			execution_id: "q",
-			issue_id: "FLY-1",
-			project_name: "flywheel",
-			event_type: "three_stage_fix_round",
-			source: "test",
-		});
-		// a different event type must not be counted
-		store.insertEvent({
-			event_id: "qa-1",
-			execution_id: "q",
-			issue_id: "FLY-1",
-			project_name: "flywheel",
-			event_type: "qa_result",
-			source: "test",
-		});
-		expect(
-			store.countEventsByIssueAndType("FLY-1", "three_stage_fix_round"),
-		).toBe(2);
-		expect(store.countEventsByIssueAndType("FLY-1", "qa_result")).toBe(1);
-	});
-
-	it("is replay-idempotent — a duplicate event_id is not double-counted", async () => {
-		const store = await freshStore();
-		expect(
-			store.insertEvent({
-				event_id: "fr-1",
-				execution_id: "q",
-				issue_id: "FLY-1",
-				project_name: "flywheel",
-				event_type: "three_stage_fix_round",
-				source: "test",
-			}),
-		).toBe(true);
-		// same event_id replayed → UNIQUE constraint → false, no new row
-		expect(
-			store.insertEvent({
-				event_id: "fr-1",
-				execution_id: "q",
-				issue_id: "FLY-1",
-				project_name: "flywheel",
-				event_type: "three_stage_fix_round",
-				source: "test",
-			}),
-		).toBe(false);
-		expect(
-			store.countEventsByIssueAndType("FLY-1", "three_stage_fix_round"),
-		).toBe(1);
-	});
-
-	it("returns 0 for an issue with no such events", async () => {
-		const store = await freshStore();
-		expect(
-			store.countEventsByIssueAndType("FLY-404", "three_stage_fix_round"),
-		).toBe(0);
 	});
 });

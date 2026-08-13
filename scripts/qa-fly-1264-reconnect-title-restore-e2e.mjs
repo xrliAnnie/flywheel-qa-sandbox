@@ -172,7 +172,7 @@ async function main() {
 		"单 runner main 会话 implement 阶段(Face A badge.stage 分支)",
 	);
 
-	// Scenario B — three-stage issue currently in QA phase. Face A takes the
+	// Scenario B — DAG workflow issue currently in QA phase. Face A takes the
 	// `badge.phase` branch: stampStageEmojiResult(ctx, threadId, "", true, PHASE_THREAD_BADGE.qa).
 	await scenario(
 		"B-qa-phase",
@@ -188,7 +188,7 @@ async function main() {
 		"三段式 issue QA 阶段(Face A badge.phase 分支)",
 	);
 
-	// Scenario C — three-stage design phase, proving the design prefix too.
+	// Scenario C — DAG workflow design phase, proving the design prefix too.
 	await scenario(
 		"C-design-phase",
 		(ctx, threadId) =>

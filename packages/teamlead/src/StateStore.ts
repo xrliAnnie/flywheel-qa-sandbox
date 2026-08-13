@@ -659,7 +659,7 @@ export type StuckDisposition = (typeof STUCK_DISPOSITIONS)[number];
 /**
  * FLY-793 (Step 11): chat-thread role. 'main' is the byte-compatible default (one
  * thread per issue+channel via `chat_threads`); the three phase roles route to the
- * `phase_chat_threads` side-table so a three-stage issue gets one thread per phase.
+ * `phase_chat_threads` side-table so a DAG workflow issue gets one thread per phase.
  */
 export type ChatThreadRole = "main" | "design" | "implement" | "qa";
 
@@ -672,7 +672,7 @@ const PHASE_CHAT_THREAD_ROLES: ReadonlySet<string> = new Set([
 /**
  * FLY-793 (Step 11): fold any non-phase / absent role to 'main'. Every existing
  * caller passes no role → 'main' → the existing `chat_threads` 1:1 path unchanged.
- * Only an explicit three-stage phase role reaches the side-table.
+ * Only an explicit DAG workflow role reaches the side-table.
  */
 export function normalizeChatThreadRole(role?: string | null): ChatThreadRole {
 	return role && PHASE_CHAT_THREAD_ROLES.has(role)
@@ -886,7 +886,7 @@ export interface SessionUpsert {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
-	/** FLY-793 (Step 11): chat-thread role — 'main' (default, non-three-stage) or a
+	/** FLY-793 (Step 11): chat-thread role — 'main' (default, non-DAG workflow) or a
 	 * phase role (design/implement/qa). Routes Session-based thread resolution to
 	 * the main `chat_threads` table vs the `phase_chat_threads` side-table. */
 	chat_thread_role?: string;
@@ -2857,8 +2857,8 @@ export class StateStore {
 		}
 
 		// FLY-793 (Step 11): the session's chat-thread role — 'main' for every
-		// non-three-stage session (byte-compat), or the phase role (design /
-		// implement / qa) for a three-stage phase-session. Persisted at start so
+		// non-DAG workflow session (byte-compat), or the phase role (design /
+		// implement / qa) for a DAG workflow-session. Persisted at start so
 		// Session-based thread resolution (which lacks the dispatch-time
 		// shareParentBranch signal) routes to the right table. Legacy rows default
 		// 'main' = existing 1:1 behavior.
@@ -3205,8 +3205,8 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_issue_channel ON chat_threads(issue_id, channel_id)",
 		);
 
-		// FLY-793 (Step 11, Hybrid): per-phase chat threads for a three-stage run.
-		// DELIBERATELY a SIDE-TABLE separate from `chat_threads`: a three-stage issue
+		// FLY-793 (Step 11, Hybrid): per-phase chat threads for a DAG workflow run.
+		// DELIBERATELY a SIDE-TABLE separate from `chat_threads`: a DAG workflow issue
 		// has ONE Design/Implement/QA thread per role, but `chat_threads`'
 		// `UNIQUE(issue_id, channel_id)` allows only one row per issue. Keeping the
 		// main table + its index BYTE-UNCHANGED (zero migration risk to the 1:1
@@ -4222,12 +4222,11 @@ export class StateStore {
 		// FLY-1135 PR-1: workflow claims ledger substrate (default-off, no
 		// production path reads or writes these tables yet).
 		this.migrateWorkflowClaimsLedger();
-		// FLY-1232 module ②: shadow-run composite transaction substrate
+		// FLY-1232 module ②: workflow-run composite transaction substrate
 		// (side-effect ledger + active-run uniqueness). Runs AFTER the claims
-		// ledger migration — it indexes workflow_run. Default-off like the rest:
-		// production reaches it only via the WorkflowShadowWriter behind
-		// FLYWHEEL_WORKFLOW_CLAIMS_WRITE.
-		this.migrateWorkflowShadowLedger();
+		// ledger migration — it indexes workflow_run. Production reaches it only
+		// through the workflow engine when claims writes are enabled.
+		this.migrateWorkflowLedger();
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -5662,169 +5661,6 @@ export class StateStore {
 		return rows;
 	}
 
-	/**
-	 * FLY-793 (Codex R1+R2): a same-issue session that OCCUPIES the shared branch-B
-	 * worktree — so a fresh three-stage re-dispatch here must be rejected, or it
-	 * would start a second phase and (via Blueprint.removeIfExists on the same
-	 * shared-branch key) tear away the running phase's worktree instead of failing
-	 * closed. Two disjuncts:
-	 *
-	 *   (a) a started PHASE session — `design`/`implement`/`qa` role in a
-	 *       branch-B-holding status (`running`/`awaiting_review`/`approved_to_ship`/
-	 *       `design_done`; `design_done` = the possibly-restart-spanning handoff
-	 *       window where the design worktree still exists for capturePhaseHeadSha).
-	 *   (b) a `pending` row that ALREADY holds a worktree (Codex R2): `worktree_ready`
-	 *       is reliable while `session_started` is fire-and-forget, so a durable
-	 *       `pending` + `worktree_path` row can exist BEFORE the phase role is
-	 *       persisted (role is written at `session_started`). This window survives a
-	 *       Bridge restart and is exactly when the inflight-map dedup is also gone —
-	 *       so match it by the created worktree, NOT by role. `listWorktreeProtection
-	 *       Sessions` already treats `pending` as protected; this closes the same
-	 *       hole for re-dispatch deletion. The entry guard only runs when the project
-	 *       has three_stage ON (a fresh `main` that just entered), so a same-issue
-	 *       pending worktree is a phase (or a stale pre-flip row) — rejecting is safe.
-	 *
-	 * Returns the first match (single-writer invariant).
-	 */
-	/**
-	 * FLY-793 (Codex full-PR R2 #1): all Design phase-sessions stuck at design_done.
-	 * The boot complete-marker drain replays a `phase_design_complete` marker BEFORE
-	 * the PhaseOrchestrator is wired, so the session lands at design_done without the
-	 * Design→Implement handoff firing. The orchestrator's startup reconcile re-drives
-	 * these (idempotent: onPhaseComplete re-gates on status===design_done).
-	 */
-	getStrandedDesignPhaseSessions(): Session[] {
-		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE session_role = 'design' AND status = 'design_done'",
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
-	/**
-	 * FLY-939 (G-A2): implement phase-sessions stranded at awaiting_review —
-	 * candidates for the startup reconcile of a lost implement→QA handoff (a crash
-	 * / wake-fail between the implement completing needs_review and QA being
-	 * spawned). `chat_thread_role='implement'` excludes single-session ('main')
-	 * awaiting_review rows; the orchestrator further guards on "no qa row + no ship
-	 * claim" before re-driving. Mirrors getStrandedDesignPhaseSessions' shape.
-	 */
-	getStrandedImplementPhaseSessions(): Session[] {
-		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE session_role = 'implement' AND status IN ('ship_parked','awaiting_review') AND chat_thread_role = 'implement'",
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
-	/**
-	 * FLY-859: implement-phase count for an issue (three-stage fix-loop round
-	 * cap). `chat_thread_role` is the durable three-stage marker (Blueprint
-	 * writes the phase role ONLY for shareParentBranch phase sessions), so this
-	 * counts the initial Implement phase plus every Implement-fix round —
-	 * auto-QA and single-session runs never carry a non-main value.
-	 */
-	countSessionsByIssueAndChatThreadRole(issueId: string, role: string): number {
-		const stmt = this.db.prepare(
-			"SELECT COUNT(*) AS n FROM sessions WHERE issue_id = ? AND chat_thread_role = ?",
-		);
-		stmt.bind([issueId, role]);
-		const n = stmt.step()
-			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
-			: 0;
-		stmt.free();
-		return n;
-	}
-
-	/**
-	 * FLY-859 reconcile sweep (a): three-stage QA phase sessions that have at
-	 * least one stored `qa_result` event. The PhaseOrchestrator compares each
-	 * session's latest stored verdict event against its durable
-	 * `three_stage_verdict` intent and replays the ones a crash left
-	 * inserted-but-unprocessed (the `/events` insert→coordinator window).
-	 */
-	getThreeStageQaSessionsWithVerdictEvents(): Session[] {
-		const stmt = this.db.prepare(
-			`SELECT s.* FROM sessions s
-			 WHERE s.chat_thread_role = 'qa'
-			   AND EXISTS (SELECT 1 FROM session_events e
-			               WHERE e.execution_id = s.execution_id
-			                 AND e.event_type = 'qa_result')`,
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
-	/**
-	 * FLY-859 reconcile sweep (c): terminal three-stage QA phase sessions
-	 * carrying a verdict intent — candidates for the stranded-pass alert
-	 * (reported PASS but never opened the ship gate; the FLY-849 §3.8 silent
-	 * break). Coarse SQL filter; the orchestrator does the precise
-	 * intent/binding checks after parsing session_params. FLY-1050:
-	 * `terminated` joins the terminal set (root cause ③ — a terminated
-	 * stranded-pass QA, the FLY-967 shape, was invisible to the boot sweep).
-	 */
-	getStrandedThreeStageQaPassSessions(): Session[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM sessions
-			 WHERE chat_thread_role = 'qa'
-			   AND status IN ('completed', 'failed', 'terminated')
-			   AND session_params LIKE '%three_stage_verdict%'`,
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
-	/**
-	 * FLY-859: latest stored `qa_result` event for an execution (reconcile
-	 * sweep (a) — replay source for inserted-but-unprocessed verdicts).
-	 */
-	getLatestQaResultEventForExecution(
-		executionId: string,
-	): { eventId: string; payload?: Record<string, unknown> } | undefined {
-		const stmt = this.db.prepare(
-			`SELECT event_id, payload FROM session_events
-			 WHERE execution_id = ? AND event_type = 'qa_result'
-			 ORDER BY id DESC LIMIT 1`,
-		);
-		stmt.bind([executionId]);
-		const row = stmt.step()
-			? (stmt.getAsObject() as Record<string, unknown>)
-			: undefined;
-		stmt.free();
-		if (!row) return undefined;
-		return {
-			eventId: row.event_id as string,
-			payload: row.payload
-				? (JSON.parse(row.payload as string) as Record<string, unknown>)
-				: undefined,
-		};
-	}
-
 	getActivePhaseSessionForIssue(issueId: string): Session | undefined {
 		const stmt = this.db.prepare(
 			`SELECT * FROM sessions
@@ -5845,12 +5681,12 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-887: ALL three-stage phase sessions for an issue (design/implement/qa by
+	 * FLY-887: ALL DAG workflow sessions for an issue (design/implement/qa by
 	 * the durable `chat_thread_role` marker), any status, newest first. The
 	 * ship-time finalizer filters these to the parked design + implement sessions
 	 * it must close; the keep-alive orchestrator filters by role + alive status to
 	 * find a wake target. Single-session / auto-QA rows (`chat_thread_role='main'`)
-	 * are never returned, so a non-three-stage issue yields `[]` (no-op downstream).
+	 * are never returned, so a non-DAG workflow issue yields `[]` (no-op downstream).
 	 */
 	getPhaseSessionsForIssue(issueId: string): Session[] {
 		const stmt = this.db.prepare(
@@ -5878,7 +5714,7 @@ export class StateStore {
 	/**
 	 * FLY-1204: candidate PRE-SCREEN for the periodic parked-phase reclaim patrol
 	 * (a status/role coarse filter only, NOT the reclaim decision). It returns
-	 * three-stage phase rows (chat_thread_role IN design/implement/qa) whose status
+	 * DAG workflow rows (chat_thread_role IN design/implement/qa) whose status
 	 * is in the keep-alive-reclaimable set:
 	 *   - `design_done` — a parked Design phase (kept as the design-context holder);
 	 *   - `awaiting_review` / `approved_to_ship` — a parked Implement/QA phase;
@@ -5910,25 +5746,6 @@ export class StateStore {
 		return rows;
 	}
 
-	/**
-	 * FLY-887: durable, replay-idempotent event count for an issue + type — the
-	 * fix-round ledger source. A three-stage QA FAIL no longer spawns a NEW
-	 * implement session (the parked one is woken to fix), so the FLY-859
-	 * session-count round accounting no longer grows; the round is instead an
-	 * idempotent `three_stage_fix_round` event per QA verdict. `insertEvent`'s
-	 * UNIQUE(event_id) dedup means a replayed verdict never double-counts.
-	 */
-	countEventsByIssueAndType(issueId: string, eventType: string): number {
-		const stmt = this.db.prepare(
-			"SELECT COUNT(*) AS n FROM session_events WHERE issue_id = ? AND event_type = ?",
-		);
-		stmt.bind([issueId, eventType]);
-		const n = stmt.step()
-			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
-			: 0;
-		stmt.free();
-		return n;
-	}
 
 	/**
 	 * FLY-887: the parsed JSON payload of a single event by its event_id, or
@@ -5953,89 +5770,11 @@ export class StateStore {
 		}
 	}
 
-	/**
-	 * FLY-1314: immutable predecessor ledger for a three-stage QA FAIL round.
-	 * The event id is derived from the verdict event, so crash replay is
-	 * idempotent and can never overwrite the original round/head causality.
-	 */
-	recordThreeStageVerdictHead(args: {
-		qaExecutionId: string;
-		issueId: string;
-		projectName: string;
-		verdictEventId: string;
-		round: number;
-		verdictHead: string;
-	}): boolean {
-		return this.insertEvent({
-			event_id: `three-stage-verdict-head-${args.verdictEventId}`,
-			execution_id: args.qaExecutionId,
-			issue_id: args.issueId,
-			project_name: args.projectName,
-			event_type: "three_stage_verdict_head",
-			source: "bridge.phase-orchestrator",
-			payload: {
-				issueId: args.issueId,
-				qaExecId: args.qaExecutionId,
-				verdictEventId: args.verdictEventId,
-				round: args.round,
-				verdictHead: args.verdictHead.toLowerCase(),
-			},
-		});
-	}
-
-	/**
-	 * Minimal-safe predecessor selection: exactly one immutable mapping for this
-	 * QA execution + issue is unambiguous. Multiple rounds, malformed payloads,
-	 * or cross-issue rows fail open (null) so the caller runs QA again.
-	 */
-	getUnambiguousThreeStageVerdictHead(
-		qaExecutionId: string,
-		issueId: string,
-	): {
-		verdictEventId: string;
-		round: number;
-		verdictHead: string;
-	} | null {
-		const stmt = this.db.prepare(
-			`SELECT payload FROM session_events
-			 WHERE execution_id = ? AND issue_id = ?
-			   AND event_type = 'three_stage_verdict_head'
-			 ORDER BY id LIMIT 2`,
-		);
-		stmt.bind([qaExecutionId, issueId]);
-		const payloads: unknown[] = [];
-		while (stmt.step()) {
-			payloads.push((stmt.getAsObject() as Record<string, unknown>).payload);
-		}
-		stmt.free();
-		if (payloads.length !== 1 || typeof payloads[0] !== "string") return null;
-		try {
-			const payload = JSON.parse(payloads[0]) as Record<string, unknown>;
-			if (
-				payload.issueId !== issueId ||
-				payload.qaExecId !== qaExecutionId ||
-				typeof payload.verdictEventId !== "string" ||
-				!Number.isInteger(payload.round) ||
-				(payload.round as number) <= 0 ||
-				typeof payload.verdictHead !== "string" ||
-				!/^[0-9a-f]{40}$/.test(payload.verdictHead)
-			) {
-				return null;
-			}
-			return {
-				verdictEventId: payload.verdictEventId,
-				round: payload.round as number,
-				verdictHead: payload.verdictHead,
-			};
-		} catch {
-			return null;
-		}
-	}
 
 	/**
 	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
-	 * each three-stage phase role (design/implement/qa) on `issueId`. Keyed on
-	 * `chat_thread_role` (the persistent three-stage phase marker), NOT
+	 * each DAG workflow role (design/implement/qa) on `issueId`. Keyed on
+	 * `chat_thread_role` (the persistent DAG workflow marker), NOT
 	 * `session_role`, so it also captures phase sessions after terminal status.
 	 *
 	 * "Latest" = `last_activity_at DESC` with a stable `rowid DESC` tiebreak
@@ -6091,6 +5830,18 @@ export class StateStore {
 		}
 		stmt.free();
 		return rows;
+	}
+
+	countEventsByIssueAndType(issueId: string, eventType: string): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM session_events WHERE issue_id = ? AND event_type = ?",
+		);
+		stmt.bind([issueId, eventType]);
+		const count = stmt.step()
+			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
+			: 0;
+		stmt.free();
+		return count;
 	}
 
 	/**
@@ -33140,7 +32891,7 @@ export class StateStore {
 	// FLYWHEEL_WORKFLOW_CLAIMS_WRITE); it is NOT authoritative — gates keep
 	// reading their legacy sources until sub-issue B flips the read path.
 
-	private migrateWorkflowShadowLedger(): void {
+	private migrateWorkflowLedger(): void {
 		// §2.4b dispatch outbox: the durable history of each PHYSICAL launch of a
 		// (run, node, attempt). Row identity = (run, node, attempt, kind, ordinal);
 		// every distinct execution_id gets its own row (writer-allocated ordinal,
@@ -33228,7 +32979,7 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_workflow_materialization_receipt_run ON workflow_materialization_receipt(run_id, node_id, attempt, stage)",
 		);
-		// Exactly ONE active shadow run per (project, issue) — DB-level guarantee
+		// Exactly ONE active workflow run per (project, issue) — DB-level guarantee
 		// so "the ship left but a new workflow still appends to the old run" is
 		// structurally impossible (finalization releases the slot).
 		this.db.run(`
@@ -33694,7 +33445,7 @@ export class StateStore {
 		return Date.parse(StateStore.workflowShipReadyTimestampIso(value));
 	}
 
-	/** Newest ACTIVE shadow run for an issue (an issue lives in one project;
+	/** Newest ACTIVE workflow run for an issue (an issue lives in one project;
 	 * rowid tiebreak keeps the theoretical cross-project case deterministic). */
 	getActiveWorkflowRunForIssue(issueId: string): WorkflowRunRow | undefined {
 		const rows = this.workflowSelectAll(
@@ -34288,46 +34039,9 @@ export class StateStore {
 		}));
 	}
 
-	/**
-	 * three_stage_fix_round events ATTRIBUTED to one shadow run: only rounds
-	 * reported by an execution this run itself dispatched (present in its
-	 * side-effect ledger or run events). The run-scoped T8 kickback source —
-	 * execution identity, never timestamps or issue-global counts, decides
-	 * which run a durable fact belongs to (Codex code R2 #1); each backfill
-	 * uses the event's ACTUAL production round number (R1 #2).
-	 */
-	listWorkflowRunAttributedFixRounds(runId: string, issueId: string): number[] {
-		const stmt = this.db.prepare(
-			`SELECT payload FROM session_events
-			  WHERE issue_id = ? AND event_type = 'three_stage_fix_round'
-			    AND execution_id IN (
-			      SELECT execution_id FROM workflow_side_effect_ledger
-			       WHERE run_id = ? AND kind = 'dispatch'
-			      UNION
-			      SELECT execution_id FROM workflow_run_event
-			       WHERE run_id = ? AND execution_id IS NOT NULL)
-			  ORDER BY id`,
-		);
-		stmt.bind([issueId, runId, runId]);
-		const rounds: number[] = [];
-		while (stmt.step()) {
-			const raw = (stmt.getAsObject() as Record<string, unknown>).payload;
-			if (raw == null) continue;
-			try {
-				const payload = JSON.parse(raw as string) as { round?: unknown };
-				if (Number.isInteger(payload.round) && (payload.round as number) > 0) {
-					rounds.push(payload.round as number);
-				}
-			} catch {
-				// malformed payload — skip (never invent a round)
-			}
-		}
-		stmt.free();
-		return rounds;
-	}
 
 	/** True when `executionId` was dispatched by (or produced an event in)
-	 * this shadow run — THE cross-run attribution predicate (R2 #1/#2/#3). */
+	 * this workflow run — THE cross-run attribution predicate (R2 #1/#2/#3). */
 	isExecutionAttributedToWorkflowRun(
 		runId: string,
 		executionId: string,
@@ -34345,7 +34059,7 @@ export class StateStore {
 	}
 
 	/** True when durable finalization completion belongs to this run. A claim
-	 * only means cleanup started and can never terminalize a shadow run. */
+	 * only means cleanup started and can never terminalize a workflow run. */
 	hasWorkflowRunAttributedFinalizationCompleted(
 		runId: string,
 		issueId: string,
@@ -34426,16 +34140,16 @@ export class StateStore {
 	 * discipline that keeps side-effect transitions out of run_event applies —
 	 * no invented kinds.
 	 */
-	applyWorkflowShadowBatch(
-		input: WorkflowShadowBatchInput,
-	): WorkflowShadowBatchResult {
+	applyWorkflowLedgerBatch(
+		input: WorkflowLedgerBatchInput,
+	): WorkflowLedgerBatchResult {
 		if (!input.projectName || !input.issueId) {
-			throw new Error("workflow shadow batch requires projectName + issueId");
+			throw new Error("workflow ledger batch requires projectName + issueId");
 		}
 		for (const op of input.ops) {
-			StateStore.validateWorkflowShadowOp(op);
+			StateStore.validateWorkflowLedgerOp(op);
 		}
-		let result: WorkflowShadowBatchResult | undefined;
+		let result: WorkflowLedgerBatchResult | undefined;
 		this.db.transaction(() => {
 			let runId: string;
 			let created = false;
@@ -34447,7 +34161,7 @@ export class StateStore {
 				const nonSideEffect = input.ops.find((op) => op.op !== "side_effect");
 				if (nonSideEffect) {
 					throw new Error(
-						`explicit-runId workflow shadow batch accepts only side_effect ops (got ${nonSideEffect.op})`,
+						`explicit-runId workflow ledger batch accepts only side_effect ops (got ${nonSideEffect.op})`,
 					);
 				}
 				const row = this.workflowSelectAll(
@@ -34455,7 +34169,7 @@ export class StateStore {
 					[input.runId],
 				)[0];
 				if (!row) {
-					throw new Error(`workflow shadow run not found: ${input.runId}`);
+					throw new Error(`workflow ledger run not found: ${input.runId}`);
 				}
 				// R3 #1: the caller's project/issue must MATCH the targeted run —
 				// a wrong-identity batch must never reach another run's rows.
@@ -34464,7 +34178,7 @@ export class StateStore {
 					row.issue_id !== input.issueId
 				) {
 					throw new Error(
-						`workflow shadow batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
+						`workflow ledger batch identity mismatch: run ${input.runId} belongs to ${row.project_name}/${row.issue_id}, not ${input.projectName}/${input.issueId}`,
 					);
 				}
 				if (
@@ -34472,7 +34186,7 @@ export class StateStore {
 					Number(row.engine_owned) !== input.expectedEngineOwned
 				) {
 					throw new Error(
-						`workflow shadow ownership mismatch: run ${input.runId} engine_owned=${Number(row.engine_owned)} expected=${input.expectedEngineOwned}`,
+						`workflow ledger ownership mismatch: run ${input.runId} engine_owned=${Number(row.engine_owned)} expected=${input.expectedEngineOwned}`,
 					);
 				}
 				runId = input.runId;
@@ -34495,7 +34209,7 @@ export class StateStore {
 					}
 					if (!input.newRunId) {
 						throw new Error(
-							`no active shadow run for ${input.projectName}/${input.issueId} and no newRunId supplied (fail-closed)`,
+							`no active workflow run for ${input.projectName}/${input.issueId} and no newRunId supplied (fail-closed)`,
 						);
 					}
 					runId = input.newRunId;
@@ -34507,7 +34221,7 @@ export class StateStore {
 					created = true;
 				}
 			}
-			const events: WorkflowShadowBatchResult["events"] = [];
+			const events: WorkflowLedgerBatchResult["events"] = [];
 			const dispatchOrdinals: number[] = [];
 			const appendEvent = (e: {
 				eventUid: string;
@@ -34627,19 +34341,19 @@ export class StateStore {
 			result = { runId, created, dispatchOrdinals, events };
 		});
 		this.save();
-		if (!result) throw new Error("workflow shadow batch produced no result");
+		if (!result) throw new Error("workflow ledger batch produced no result");
 		return result;
 	}
 
-	private static validateWorkflowShadowOp(op: WorkflowShadowOp): void {
+	private static validateWorkflowLedgerOp(op: WorkflowLedgerOp): void {
 		const label = (name: string, v: string) => {
 			if (!v || v.includes(":")) {
-				throw new Error(`workflow shadow ${name} label invalid: "${v}"`);
+				throw new Error(`workflow ledger ${name} label invalid: "${v}"`);
 			}
 		};
 		const positiveInt = (name: string, v: number) => {
 			if (!Number.isInteger(v) || v < 1) {
-				throw new Error(`workflow shadow ${name} must be a positive integer`);
+				throw new Error(`workflow ledger ${name} must be a positive integer`);
 			}
 		};
 		switch (op.op) {
@@ -34654,7 +34368,7 @@ export class StateStore {
 				label("node", op.node);
 				positiveInt("attempt", op.attempt);
 				if (!op.executionId) {
-					throw new Error("workflow shadow op requires executionId");
+					throw new Error("workflow ledger op requires executionId");
 				}
 				break;
 			case "kickback":
@@ -34666,7 +34380,7 @@ export class StateStore {
 				label("node", op.node);
 				positiveInt("attempt", op.attempt);
 				if (!op.executionId) {
-					throw new Error("workflow shadow op requires executionId");
+					throw new Error("workflow ledger op requires executionId");
 				}
 				break;
 		}
@@ -39520,7 +39234,7 @@ export class StateStore {
 	 */
 	private transitionWorkflowSideEffectTx(
 		runId: string,
-		op: Extract<WorkflowShadowOp, { op: "side_effect" }>,
+		op: Extract<WorkflowLedgerOp, { op: "side_effect" }>,
 	): void {
 		const row = this.workflowSelectAll(
 			`SELECT * FROM workflow_side_effect_ledger
@@ -41125,7 +40839,7 @@ export type WorkflowSourceApplyResult =
 			status: "applied" | "replayed";
 	  };
 
-// ── FLY-1232 module ②: shadow batch + side-effect ledger types ─────────────
+// ── FLY-1232 module ②: workflow ledger batch + side-effect ledger types ─────────────
 
 export type WorkflowSideEffectState =
 	| "intent_recorded"
@@ -41178,8 +40892,8 @@ export interface WorkflowMaterializationRow extends WorkflowSideEffectRow {
 	intent: WorkflowMaterializationReceiptRow;
 }
 
-/** One operation inside a shadow batch — see applyWorkflowShadowBatch. */
-export type WorkflowShadowOp =
+/** One operation inside a workflow ledger batch — see applyWorkflowLedgerBatch. */
+export type WorkflowLedgerOp =
 	| {
 			op: "edge";
 			from: string;
@@ -41201,21 +40915,21 @@ export type WorkflowShadowOp =
 			reason?: string;
 	  };
 
-export interface WorkflowShadowBatchInput {
+export interface WorkflowLedgerBatchInput {
 	projectName: string;
 	issueId: string;
-	/** Used ONLY when no active shadow run exists for (project, issue). */
+	/** Used ONLY when no active workflow run exists for (project, issue). */
 	newRunId?: string;
 	/** Explicit run targeting (ANY status; never creates) — the evidence
 	 * reconcile's path onto rows whose run already completed (R1 #3). */
 	runId?: string;
 	/** Ownership fence for an explicit run. Engine dispatcher passes 1; the
-	 * observation-only shadow reconciler passes 0. */
+	 * compatibility ledger writer passes 0. */
 	expectedEngineOwned?: 0 | 1;
-	ops: WorkflowShadowOp[];
+	ops: WorkflowLedgerOp[];
 }
 
-export interface WorkflowShadowBatchResult {
+export interface WorkflowLedgerBatchResult {
 	runId: string;
 	created: boolean;
 	/** Writer-allocated ordinal per "dispatch" op, in ops order. */

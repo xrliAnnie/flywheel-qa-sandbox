@@ -4526,11 +4526,11 @@ test_fly293_managed_title_gate() {
   echo "Test: is_managed_runner_title — source-accurate (legacy, model, and phase labels)"
   reset_mocks
   local ok=1
-  # Legacy claude + vendor-neutral runner model labels + FLY-793 three-stage
+  # Legacy claude + vendor-neutral runner model labels + FLY-793 DAG workflow
   # phase labels (design/implement/qa), including bare-phase-at-end.
   for t in "FLY-637-claude-x" "LEARN-143-claude-LEARN-141" "TIDE-22-claude-round-2" "FLY-1-claude" \
            "FLY-1255-runner-codex-G-title" "FLY-9-runner-kimi-K-title" \
-           "FLY-793-design-three-stage" "FLY-800-implement-LEARN-1" "TIDE-5-qa-round-2" "FLY-2-qa" \
+           "FLY-793-design-DAG workflow" "FLY-800-implement-LEARN-1" "TIDE-5-qa-round-2" "FLY-2-qa" \
            "FLY-1255-runner-codex-GPT-5-6-title" "FLY-9-runner-kimi-kimi-for-coding-title" \
            "FLY-793-implement-codex-G-title" \
            "FLY-1550-runner-claude-Fable-runner-lead-config" "FLY-1502-runner-claude-test-model-engineer" \

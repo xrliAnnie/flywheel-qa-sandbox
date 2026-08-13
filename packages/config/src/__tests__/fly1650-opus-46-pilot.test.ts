@@ -227,7 +227,7 @@ describe("FLY-1650 收口层:resolveAllowedEffort(最终 seam)", () => {
 	});
 });
 
-describe("FLY-1650 配置层:QA 段切到 Opus 4.6", () => {
+describe("FLY-1650 配置层:Opus 4.6 overlay 档位收窄", () => {
 	let root: string;
 	let configPath: string;
 	let previousPath: string | undefined;
@@ -255,72 +255,6 @@ describe("FLY-1650 配置层:QA 段切到 Opus 4.6", () => {
 		writeFileSync(configPath, JSON.stringify(config));
 		resetModelConfigCacheForTests();
 	}
-
-	it("phases.qa = 4.6[1m] + high 被原样采纳,design/implement 不动", () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		writeConfig({
-			version: 1,
-			phases: {
-				qa: { vendor: "claude", model: OPUS_46_1M, effort: "high" },
-			},
-		});
-
-		const snapshot = getModelConfigSnapshot();
-		expect(snapshot.phases.qa).toEqual({
-			vendor: "claude",
-			model: OPUS_46_1M,
-			effort: "high",
-		});
-		expect(snapshot.phases.design).toEqual({
-			vendor: "claude",
-			model: MODEL_IDS.FABLE,
-		});
-		expect(snapshot.phases.implement).toEqual({
-			vendor: "codex",
-			model: MODEL_IDS.CODEX_STANDARD,
-			effort: "xhigh",
-		});
-	});
-
-	it("phases.qa = 4.6[1m] + xhigh 被拒绝并回落内建,而非把 xhigh 透传出去", () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		writeConfig({
-			version: 1,
-			phases: {
-				qa: { vendor: "claude", model: OPUS_46_1M, effort: "xhigh" },
-			},
-		});
-
-		const snapshot = getModelConfigSnapshot();
-		expect(snapshot.phases.qa).toEqual({
-			vendor: "claude",
-			model: MODEL_IDS.OPUS_5,
-		});
-		expect(warn.mock.calls.flat().join(" ")).toMatch(/phase qa/i);
-	});
-
-	it("回滚:qa 改回 opus-5[1m] 后下一代快照即恢复", () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		writeConfig({
-			version: 1,
-			phases: {
-				qa: { vendor: "claude", model: OPUS_46_1M, effort: "high" },
-			},
-		});
-		expect(getModelConfigSnapshot().phases.qa.model).toBe(OPUS_46_1M);
-
-		writeConfig({
-			version: 1,
-			phases: {
-				qa: { vendor: "claude", model: MODEL_IDS.OPUS_5_1M, effort: "high" },
-			},
-		});
-		expect(getModelConfigSnapshot().phases.qa).toEqual({
-			vendor: "claude",
-			model: MODEL_IDS.OPUS_5_1M,
-			effort: "high",
-		});
-	});
 
 	it("overlay 声明成 codex vendor 也拿不回 xhigh(Codex R1 MEDIUM)", () => {
 		// codex-runner 那条特例分支原来直接写死 ["xhigh"],绕过了按 id 的收窄。
@@ -375,8 +309,8 @@ describe("FLY-1650 配置层:QA 段切到 Opus 4.6", () => {
 		);
 	});
 
-	it("models.json overlay 重新声明 4.6 也拿不回 xhigh(三条路径同一张表)", () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	it("models.json overlay 重新声明 4.6 也拿不回 xhigh", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
 		writeConfig({
 			version: 1,
 			models: [
@@ -388,16 +322,11 @@ describe("FLY-1650 配置层:QA 段切到 Opus 4.6", () => {
 					aliases: [],
 				},
 			],
-			phases: {
-				qa: { vendor: "claude", model: OPUS_46_1M, effort: "xhigh" },
-			},
 		});
 
 		const snapshot = getModelConfigSnapshot();
 		expect(
 			snapshot.getModelRegistryEntry(OPUS_46_1M)?.effortsBySurface.runner,
 		).toEqual(EFFORTS_WITHOUT_XHIGH);
-		expect(snapshot.phases.qa.model).toBe(MODEL_IDS.OPUS_5);
-		expect(warn.mock.calls.flat().join(" ")).toMatch(/phase qa/i);
 	});
 });

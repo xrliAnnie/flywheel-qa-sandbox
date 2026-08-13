@@ -87,12 +87,12 @@ export function wakeText(
 		`Your Lead answered your approve_to_ship review request${qidNote} with feedback (changes requested — NOT an approval).` +
 		(excerpt ? `\n\nFEEDBACK:\n${excerpt}\n\n` : " ") +
 		`Full durable copy: \`node <flywheel-comm> check ${detail?.questionId ?? "<questionId>"} --project ${projectName}\`. ` +
-		// FLY-939 (G-B): role-neutral deferral. A three-stage QA phase must NOT edit
+		// FLY-939 (G-B): role-neutral deferral. A DAG workflow QA phase must NOT edit
 		// code on feedback — its role prompt defines a kickback protocol (re-emit
 		// qa-result FAIL so the parked IMPLEMENT phase fixes). A single-session
 		// runner has no such protocol, so the generic re-request steps still apply to
 		// it byte-compatibly.
-		`If your role's prompt defines a different feedback protocol (e.g. a three-stage QA kickback), follow YOUR ROLE PROMPT instead of the generic steps that follow. ` +
+		`If your role's prompt defines a different feedback protocol (e.g. a DAG workflow QA kickback), follow YOUR ROLE PROMPT instead of the generic steps that follow. ` +
 		`Otherwise: address the feedback, push your fixes, then re-request review with a new ` +
 		`\`gate approve_to_ship --no-block\` + \`complete --route needs_review --question-id <new id>\`. ` +
 		`Do NOT ship: \`verify-approval\` will refuse without a real approval.`

@@ -94,11 +94,11 @@ export function deriveWorktreeKey(
 }
 
 /**
- * FLY-793: worktree/branch key for a runner, three-stage-aware.
+ * FLY-793: worktree/branch key for a runner, DAG workflow-aware.
  *
- * A three-stage run is ONE issue with internal Design → Implement → QA
+ * A DAG workflow run is ONE issue with internal Design → Implement → QA
  * phase-sessions that must share ONE branch B. When `shareParentBranch` is set
- * (a Bridge-INTERNAL flag the PhaseOrchestrator sets on the phase dispatch —
+ * (a Bridge-INTERNAL flag the workflow engine sets on the phase dispatch —
  * NEVER accepted from `/api/runs/start` or runner payloads), the key is the
  * parent's `main`-role key (= `identifier`) regardless of `sessionRole`, so all
  * three phases derive the SAME branch B. Absent → current role-aware behavior
@@ -994,7 +994,7 @@ export class WorktreeManager {
  * reports fully symlink-resolved (e.g. macOS `/tmp` → `/private/tmp`, or any
  * user-configured symlink component on Linux). A plain string `===` against an
  * unresolved caller path silently fails to match — that is the FLY-99 class of
- * bug, and it broke the three-stage worktree-removal-proof gate (cleanup skipped
+ * bug, and it broke the DAG workflow worktree-removal-proof gate (cleanup skipped
  * as "not_registered" → the removed-proof check threw → handoff fail-closed).
  *
  * `fs.realpathSync` resolves symlinks but throws when the path (or a component)

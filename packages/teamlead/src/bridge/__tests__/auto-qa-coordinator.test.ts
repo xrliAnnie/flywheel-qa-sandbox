@@ -1017,7 +1017,7 @@ describe("AutoQaCoordinator.onQaSessionFailed", () => {
 		});
 	});
 
-	it("returns owned=false for three-stage/non-auto QA", async () => {
+	it("returns owned=false for DAG workflow/non-auto QA", async () => {
 		const s = await setup();
 		expect(await s.coord.onQaSessionFailed("phase-qa")).toEqual({
 			owned: false,

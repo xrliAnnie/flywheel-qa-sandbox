@@ -1,5 +1,5 @@
 /**
- * FLY-1344 独立 QA (three-stage QA phase) — founder 「开/关 DAG」点击闭环的端到端集成。
+ * FLY-1344 独立 QA (DAG workflow QA phase) — founder 「开/关 DAG」点击闭环的端到端集成。
  *
  * 三个 FLY-1344 组件之间的缝在既有测试里各测各的:
  *   - flag-toggle.test.ts        → applyFlagToggle 事务 + resolveFlag 分歧愈合(停在 resolver)

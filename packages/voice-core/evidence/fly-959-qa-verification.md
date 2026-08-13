@@ -1,6 +1,6 @@
 # FLY-959 QA verification — 独立三段式 QA 阶段
 
-Issue: FLY-959 · phase: QA (three-stage, independent session ≠ implement) · date: 2026-07-07
+Issue: FLY-959 · phase: QA (DAG workflow, independent session ≠ implement) · date: 2026-07-07
 基于: `engineering/doc/FLY-959-voice-core-bugfixes/plan.md` + implement 的
 `evidence/fly-959-regression.md`（分支 `flywheel-FLY-959` @ `ac031d5e`）
 

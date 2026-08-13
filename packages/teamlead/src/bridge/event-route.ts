@@ -10,7 +10,7 @@ import {
 	isFounderUxGateEnabled,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
-	isThreeStagePhaseRole,
+	isWorkflowPhaseRole,
 	resolveCompletionSessionRole,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
@@ -77,11 +77,10 @@ import {
 	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./merge-ship-gate.js";
-import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	type LifecycleShipInfra,
-	makeFinalizeThreeStagePhases,
+	makeFinalizeWorkflowPhaseRoles,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
 	settleShipAttemptFailed,
@@ -90,6 +89,7 @@ import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
+import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
@@ -544,9 +544,7 @@ export function createEventRouter(
 	// qa_result events drive the verdict. Holder absent / .current undefined →
 	// existing behaviour byte-for-byte (no held records exist, isQaHeld is false).
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined },
-	// FLY-793: three-stage PhaseOrchestrator. Absent / .current undefined → no-op
-	// (byte-compat); onPhaseComplete gates on three-stage phase role + status.
-	phaseOrchestrator?: { current: PhaseOrchestrator | undefined },
+	turnBeltReconciler?: { current: TurnBeltReconciler | undefined },
 	// FLY-696 M1/④: late-bound Alerts-post for `account_rotation` events. Built in
 	// startBridge (needs the unified-channel DiscordOps, constructed after this
 	// router). `.current` undefined ⇒ the event is acked but not posted (byte-compat:
@@ -579,11 +577,11 @@ export function createEventRouter(
 	const issueStatusEmojiEnabled =
 		featureFlags?.issueStatusEmojiEnabled !== false;
 	const issueAttachPinEnabled = featureFlags?.issueAttachPinEnabled === true;
-	// FLY-887: ship-time three-stage phase finalizer (built once; needs
+	// FLY-887: ship-time DAG workflow finalizer (built once; needs
 	// transitionOpts to close parked phases through the FSM). Undefined without
 	// transitionOpts → runPostShipFinalization skips it (byte-compat).
-	const finalizeThreeStagePhases = transitionOpts
-		? makeFinalizeThreeStagePhases(
+	const finalizeWorkflowPhaseRoles = transitionOpts
+		? makeFinalizeWorkflowPhaseRoles(
 				store,
 				transitionOpts,
 				(issueId) =>
@@ -1054,6 +1052,15 @@ export function createEventRouter(
 					});
 					return;
 				}
+				if (failure?.failureKind === "worktree_takeover_failed") {
+					const failedSession = store.getSession(event.execution_id);
+					if (failedSession) {
+						await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
+							failedSession,
+							failure.failureReason,
+						);
+					}
+				}
 				res.json({
 					ok: true,
 					generalized: true,
@@ -1103,50 +1110,8 @@ export function createEventRouter(
 		// branch and return. Idempotency is enforced by insertEvent dedup (above)
 		// AND the coordinator's record-status check (defence in depth).
 		//
-		// FLY-859: a THREE-STAGE QA phase's verdict is routed to the
-		// PhaseOrchestrator instead — the auto-QA guards (awaiting_review parent
-		// + AutoQaRecord) are structurally unsatisfiable for it (the implement
-		// phase was finalized at handoff; no record was ever spawned), which is
-		// exactly the FLY-849 §3.8 silent break. Discriminator: the REPORTING
-		// session's durable `chat_thread_role === 'qa'` (Blueprint writes a
-		// phase role only for shareParentBranch phase sessions; an auto-QA
-		// runner is always 'main'). Everything else falls through to the
-		// auto-QA path byte-for-byte. Each holder is isolated in its own
-		// try/catch — a failure on one path never disables the other.
 		if (event.event_type === "qa_result") {
-			const reporting = store.getSession(event.execution_id);
-			const isThreeStageQaPhase =
-				!!reporting &&
-				(reporting.session_role ?? "main") === "qa" &&
-				(reporting.chat_thread_role ?? "main") === "qa";
-			if (isThreeStageQaPhase) {
-				if (phaseOrchestrator?.current) {
-					try {
-						const p = (event.payload ?? {}) as Record<string, unknown>;
-						await phaseOrchestrator.current.onQaResult(reporting, {
-							eventId: event.event_id,
-							status: typeof p.status === "string" ? p.status : "",
-							summary: typeof p.summary === "string" ? p.summary : undefined,
-							prHeadSha:
-								typeof p.prHeadSha === "string" ? p.prHeadSha : undefined,
-							targetExecutionId:
-								typeof p.targetExecutionId === "string"
-									? p.targetExecutionId
-									: undefined,
-						});
-					} catch (err) {
-						console.error(
-							`[event-route] three-stage onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
-						);
-					}
-				} else {
-					// Event is stored — the orchestrator's startup verdict sweep
-					// replays it once the holder is wired (never silently lost).
-					console.warn(
-						`[event-route] three-stage qa_result for ${event.execution_id} arrived with no PhaseOrchestrator — deferred to the startup verdict sweep`,
-					);
-				}
-			} else if (autoQaCoordinator?.current) {
+			if (autoQaCoordinator?.current) {
 				try {
 					await autoQaCoordinator.current.onQaResult(event);
 				} catch (err) {
@@ -1489,7 +1454,7 @@ export function createEventRouter(
 					// FLY-493: pr_handoff — no-transport antigravity build+PR terminal
 					// (running→completed; never awaiting_review/approved_to_ship).
 					"pr_handoff",
-					// FLY-793: three-stage Design phase completion → design_done.
+					// FLY-793: DAG workflow Design phase completion → design_done.
 					"phase_design_complete",
 				]);
 				if (!isPostApproveShip && (!route || !VALID_ROUTES.has(route))) {
@@ -1734,9 +1699,9 @@ export function createEventRouter(
 					}
 					status = "blocked";
 				} else if (route === "phase_design_complete") {
-					// FLY-793: three-stage Design phase done (docs on the shared
+					// FLY-793: DAG workflow Design phase done (docs on the shared
 					// branch, no PR) → non-terminal design_done (running → design_done).
-					// The PhaseOrchestrator hands off to Implement. Sister branch:
+					// The workflow engine hands off to Implement. Sister branch:
 					// DirectEventSink.ts.
 					status = "design_done";
 				} else if (route === "no_code" || route === "pr_handoff") {
@@ -1781,7 +1746,7 @@ export function createEventRouter(
 				// dispatched phase role. The `flywheel-comm complete` CLI defaults its
 				// payload role to "main" (phase runners don't pass --session-role), so
 				// writing it back would overwrite the design/implement/qa role and the
-				// three-stage handoff would silently never fire. Preserve the existing
+				// DAG workflow handoff would silently never fire. Preserve the existing
 				// phase role server-side (existingSession = pre-transition snapshot,
 				// line 850). Byte-compat: a non-phase existing role ("main"/none) falls
 				// through to the payload role, identical to the prior behavior.
@@ -2200,7 +2165,7 @@ export function createEventRouter(
 							projects,
 							removeCleanWorktree,
 							// FLY-887: close parked design + implement phases before worktree removal.
-							finalizeThreeStagePhases,
+							finalizeWorkflowPhaseRoles,
 							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 							// by runPostShipFinalization's merge-evidence predicate).
 							markIssueDone: makeLinearDoneFinalizer(config),
@@ -2671,7 +2636,7 @@ export function createEventRouter(
 										projects,
 										removeCleanWorktree,
 										// FLY-887: close parked design + implement phases before worktree removal.
-										finalizeThreeStagePhases,
+										finalizeWorkflowPhaseRoles,
 										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 										// by runPostShipFinalization's merge-evidence predicate).
 										markIssueDone: makeLinearDoneFinalizer(config),
@@ -2799,15 +2764,15 @@ export function createEventRouter(
 			if (
 				(event.event_type === "session_completed" ||
 					event.event_type === "session_failed") &&
-				phaseOrchestrator?.current
+				turnBeltReconciler?.current
 			) {
 				const rejectedSession = store.getSession(event.execution_id);
 				if (
 					rejectedSession?.project_name &&
-					isThreeStagePhaseRole(rejectedSession.session_role)
+					isWorkflowPhaseRole(rejectedSession.session_role)
 				) {
 					try {
-						await phaseOrchestrator.current.reconcileTurnBelt({
+						await turnBeltReconciler.current.reconcileTurnBelt({
 							issueId: rejectedSession.issue_id,
 							projectName: rejectedSession.project_name,
 							terminalExecId: event.execution_id,
@@ -2911,20 +2876,16 @@ export function createEventRouter(
 				: undefined;
 		if (
 			terminalFailure?.failureKind === "worktree_takeover_failed" &&
-			phaseOrchestrator?.current &&
 			session
 		) {
-			await phaseOrchestrator.current.alertWorktreeTakeoverFailure(
+			await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
 				session,
 				terminalFailure.failureReason,
 			);
 		}
-		let autoQaFailureOwned = false;
 		if (event.event_type === "session_failed" && autoQaCoordinator?.current) {
 			try {
-				autoQaFailureOwned = (
-					await autoQaCoordinator.current.onQaSessionFailed(event.execution_id)
-				).owned;
+				await autoQaCoordinator.current.onQaSessionFailed(event.execution_id);
 			} catch (err) {
 				console.error(
 					`[event-route] auto-QA failure hook threw for ${event.execution_id}: ${(err as Error).message}`,
@@ -2961,54 +2922,7 @@ export function createEventRouter(
 			}
 		}
 
-		// FLY-793: three-stage phase handoff (design_done → Implement; implement
-		// awaiting_review → QA). onPhaseComplete no-ops unless a three-stage phase
-		// session at its handoff status. Sister call: DirectEventSink.ts.
-		if (
-			event.event_type === "session_completed" &&
-			phaseOrchestrator?.current &&
-			session
-		) {
-			try {
-				await phaseOrchestrator.current.onPhaseComplete(session, {
-					eventId: event.event_id,
-					source: "http",
-				});
-			} catch (err) {
-				console.error(
-					`[event-route] onPhaseComplete threw for ${event.execution_id}: ${(err as Error).message}`,
-				);
-			}
-		}
-
-		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
-		// implement at awaiting_review — re-drive the implement→QA handoff
-		// (respawn a fresh QA) BEFORE the belt reconcile below: a successful
-		// respawn's pre-launch grant overwrites the TURN (guard 1 then no-ops);
-		// a refused respawn leaves the belt reconcile to recover it. The
-		// FSM-rejected path deliberately has NO such call — its row never
-		// reached a terminal status, and reconcileQaLoss re-checks that anyway.
-		// Sister call: DirectEventSink.emitFailed.
-		if (
-			event.event_type === "session_failed" &&
-			!autoQaFailureOwned &&
-			phaseOrchestrator?.current &&
-			session?.project_name &&
-			(session.chat_thread_role ?? "main") === "qa"
-		) {
-			try {
-				await phaseOrchestrator.current.reconcileQaLoss({
-					issueId: session.issue_id,
-					terminalExecId: event.execution_id,
-				});
-			} catch (err) {
-				console.error(
-					`[event-route] reconcileQaLoss threw for ${event.execution_id}: ${(err as Error).message}`,
-				);
-			}
-		}
-
-		// FLY-921 Fix C: a three-stage phase session reaching a terminal signal
+		// FLY-921 Fix C: a DAG workflow session reaching a terminal signal
 		// (completed OR failed — the failed path never goes through
 		// onPhaseComplete) may be the current TURN holder. Scoped reconcile with
 		// guard 1: only acts when this exec IS the holder, so a handoff that just
@@ -3017,12 +2931,12 @@ export function createEventRouter(
 		if (
 			(event.event_type === "session_completed" ||
 				event.event_type === "session_failed") &&
-			phaseOrchestrator?.current &&
+			turnBeltReconciler?.current &&
 			session?.project_name &&
-			isThreeStagePhaseRole(session.session_role)
+			isWorkflowPhaseRole(session.session_role)
 		) {
 			try {
-				await phaseOrchestrator.current.reconcileTurnBelt({
+				await turnBeltReconciler.current.reconcileTurnBelt({
 					issueId: session.issue_id,
 					projectName: session.project_name,
 					terminalExecId: event.execution_id,
@@ -3035,7 +2949,7 @@ export function createEventRouter(
 		}
 
 		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
-		// phase orchestration/handoff above so a three-stage successor row is
+		// phase orchestration/handoff above so a DAG workflow successor row is
 		// durable before the targeted check reads alias state. Fresh getSession
 		// confirms the row actually landed completed (FSM-rejected / duplicate
 		// terminal → zero enqueue). Post-ship completions and FLY-208

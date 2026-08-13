@@ -825,7 +825,7 @@ export class AutoQaCoordinator {
 		}
 		const session = this.deps.store.getSession(targetExec);
 		// FLY-827 + FLY-793: accept the PR-owning reviewable roles (main + the
-		// three-stage `implement` phase). A `qa` verdict is not gated here.
+		// DAG workflow `implement` phase). A `qa` verdict is not gated here.
 		if (!session || !isReviewableRole(session.session_role)) {
 			this.warn(
 				`codex_review_result ignored — ${targetExec} is unknown or not a reviewable (main/implement) session`,
@@ -1405,7 +1405,7 @@ export class AutoQaCoordinator {
 	/**
 	 * FLY-1279 B2 event quick path. Ownership is intentionally checked before
 	 * the state CAS: a duplicate/historical auto-QA failure is still consumed and
-	 * must never fall through into the three-stage QA-loss reconciler. Dispatch is
+	 * must never fall through into the DAG workflow QA-loss reconciler. Dispatch is
 	 * deferred to the sweep because the dying RunDispatcher entry is still inflight
 	 * while session_failed is emitted.
 	 */

@@ -43,7 +43,6 @@ let baseUrl: string;
 let dispatched: RetryRequest[];
 let dispatchImpl: (req: RetryRequest) => Promise<{ newExecutionId: string }>;
 let generalizedRoot: string | undefined;
-const originalDesignFlag = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
 let savedHome: string | undefined;
 
 const WORKFLOW_ON = {
@@ -198,11 +197,6 @@ afterEach(async () => {
 	}
 	if (savedHome === undefined) delete process.env.HOME;
 	else process.env.HOME = savedHome;
-	if (originalDesignFlag === undefined) {
-		delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-	} else {
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = originalDesignFlag;
-	}
 	for (const name of Object.keys(WORKFLOW_ON) as Array<
 		keyof typeof WORKFLOW_ON
 	>) {
@@ -440,18 +434,10 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 });
 
 /**
- * FLY-887 R2 (Codex design R1 #2) — the retry matrix: PHASE-row retries stay
- * under the phase table.
- *
- * Discriminator = the durable `chat_thread_role` three-stage marker. Phase
- * rows: `dispatchModel` = resolvePhaseModel(role) UNCONDITIONALLY (never the
- * persisted `dispatch_model` — a pre-fix phase row may have persisted a sorter
- * pin or NULL, and replaying it would put the phase back on Sonnet) +
- * `ignoreRunnerLabelSelection: true` (a refreshed `sonnet`/vendor label cannot
- * bypass the table either — run-dispatcher previously hardcoded undefined).
- * Non-phase rows (`chat_thread_role='main'`, incl. auto-QA): byte-compatible.
+ * Shared-worktree rows preserve their branch/role identity, while dispatch
+ * models come only from the persisted request or the canonical DAG snapshot.
  */
-describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => {
+describe("POST /api/actions/retry — shared-worktree row continuity", () => {
 	it("rejects a design retry without a Lead before closing its preserved runner", async () => {
 		store.upsertSession({
 			execution_id: "phase-design-no-lead",
@@ -493,8 +479,7 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		}
 	});
 
-	it("FLY-1259: locked codex beats a disabled global design switch", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
+	it("preserves a locked codex design backend without synthesizing a model triple", async () => {
 		store.upsertSession({
 			execution_id: "phase-design-codex",
 			issue_id: "issue-1259-codex",
@@ -507,16 +492,13 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-design-codex" });
 
 		expect(r.status).toBe(200);
-		expect(dispatched[0]).toMatchObject({
-			designBackend: "codex",
-			dispatchVendor: "codex",
-			dispatchModel: "gpt-5.6-sol",
-			dispatchEffort: "xhigh",
-		});
+		expect(dispatched[0]?.designBackend).toBe("codex");
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
+		expect(dispatched[0]?.dispatchModel).toBeUndefined();
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
 	});
 
-	it("FLY-1259: locked claude beats an enabled global design switch", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+	it("preserves a locked claude design backend without synthesizing a model triple", async () => {
 		store.upsertSession({
 			execution_id: "phase-design-claude",
 			issue_id: "issue-1259-claude",
@@ -529,16 +511,13 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-design-claude" });
 
 		expect(r.status).toBe(200);
-		expect(dispatched[0]).toMatchObject({
-			designBackend: "claude",
-			dispatchVendor: "claude",
-			dispatchModel: "claude-fable-5",
-		});
+		expect(dispatched[0]?.designBackend).toBe("claude");
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
+		expect(dispatched[0]?.dispatchModel).toBeUndefined();
 		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
 	});
 
-	it("FLY-1259: legacy design rows still follow the global switch", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
+	it("a design row without a persisted backend does not consult hidden config", async () => {
 		store.upsertSession({
 			execution_id: "phase-design-legacy",
 			issue_id: "issue-1259-legacy",
@@ -550,15 +529,13 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-design-legacy" });
 
 		expect(r.status).toBe(200);
-		expect(dispatched[0]).toMatchObject({
-			dispatchVendor: "codex",
-			dispatchModel: "gpt-5.6-sol",
-			dispatchEffort: "xhigh",
-		});
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
+		expect(dispatched[0]?.dispatchModel).toBeUndefined();
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
 		expect(dispatched[0]?.designBackend).toBeUndefined();
 	});
 
-	it("a failed phase row (persisted phase model + sonnet label) retries on the phase table", async () => {
+	it("a shared phase row retries with its persisted dispatch model", async () => {
 		store.upsertSession({
 			execution_id: "phase-impl-1",
 			issue_id: "issue-887",
@@ -571,12 +548,10 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-impl-1" });
 		expect(r.status).toBe(200);
 		expect(dispatched).toHaveLength(1);
-		// FLY-1224 (T4): the implement phase retries on the FULL codex triple —
-		// never the persisted claude pin, never the sonnet label.
-		expect(dispatched[0]?.dispatchModel).toBe("gpt-5.6-sol");
-		expect(dispatched[0]?.dispatchVendor).toBe("codex");
-		expect(dispatched[0]?.dispatchEffort).toBe("xhigh");
-		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+		expect(dispatched[0]?.dispatchModel).toBe("claude-fable-5");
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
+		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBeUndefined();
 		// FLY-1224 (R1 #1, settles FLY-840): a phase-row retry keeps its
 		// shared-branch identity + phase sessionRole.
 		expect(dispatched[0]?.shareParentBranch).toBe(true);
@@ -599,14 +574,11 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		const r = await postRetry({ execution_id: "phase-impl-drift" });
 		expect(r.status).toBe(200);
 		expect(dispatched[0]?.sessionRole).toBe("implement");
-		expect(dispatched[0]?.dispatchVendor).toBe("codex");
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
 		expect(dispatched[0]?.shareParentBranch).toBe(true);
 	});
 
-	it("a LEGACY phase row (persisted sorter pin = sonnet) retries on the phase table, NOT the pin", async () => {
-		// The pre-fix bug shape: a phase dispatched before FLY-887 R2 persisted
-		// the sorter's pin. Replaying session.dispatch_model would re-land the
-		// phase on Sonnet — the table must win.
+	it("a historical phase row retains its persisted model without a hidden override", async () => {
 		store.upsertSession({
 			execution_id: "phase-qa-1",
 			issue_id: "issue-887",
@@ -618,13 +590,13 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		});
 		const r = await postRetry({ execution_id: "phase-qa-1" });
 		expect(r.status).toBe(200);
-		expect(dispatched[0]?.dispatchModel).toBe("claude-opus-5"); // qa → Opus (FLY-1467: Opus 5)
-		expect(dispatched[0]?.dispatchVendor).toBe("claude"); // FLY-1224: qa stays claude
+		expect(dispatched[0]?.dispatchModel).toBe("claude-sonnet-5");
+		expect(dispatched[0]?.dispatchVendor).toBeUndefined();
 		expect(dispatched[0]?.dispatchEffort).toBeUndefined();
-		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBeUndefined();
 	});
 
-	it("a legacy phase row with NO persisted dispatch model still retries on the phase table", async () => {
+	it("a historical phase row with no persisted model does not invent one", async () => {
 		store.upsertSession({
 			execution_id: "phase-design-1",
 			issue_id: "issue-887",
@@ -634,8 +606,8 @@ describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => 
 		});
 		const r = await postRetry({ execution_id: "phase-design-1" });
 		expect(r.status).toBe(200);
-		expect(dispatched[0]?.dispatchModel).toBe("claude-fable-5"); // design → Fable
-		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+		expect(dispatched[0]?.dispatchModel).toBeUndefined();
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBeUndefined();
 	});
 
 	it("BYTE-COMPAT sentinel: a main-row retry (auto-QA / single-session shape) is untouched", async () => {

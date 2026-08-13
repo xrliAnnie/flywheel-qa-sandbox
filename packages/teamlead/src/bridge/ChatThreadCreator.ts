@@ -168,7 +168,7 @@ function buildIssueThreadName(
 ): string {
 	const issueKey = effectiveIssueKey(ctx);
 	// FLY-892 (converge): the base title is `[FLY-XX] <title>` for every role. The
-	// three-stage phase is no longer a separate thread with a base-title badge —
+	// DAG workflow is no longer a separate thread with a base-title badge —
 	// the current phase is shown as a STAGE-level title prefix (Step 6, stamped by
 	// stampStageEmoji) and as a message tag, not baked into the base title.
 	const title = ctx.issueTitle ?? ctx.issueId;
@@ -207,7 +207,7 @@ function isPlaceholderThreadName(
 }
 
 /**
- * FLY-892 (Step 4): one row of the pinned three-stage pipeline header. The caller
+ * FLY-892 (Step 4): one row of the pinned DAG workflow header. The caller
  * (event-route) pre-builds `label` (`[设计·Fable]`) and `plannedModel` so this
  * renderer stays config-free.
  */
@@ -255,7 +255,7 @@ export function buildPipelineHeaderContent(
 	const label = key ? `[${key}]` : ctx.issueId;
 	const lines: string[] = [
 		...(ctx.routeSummary ? [ctx.routeSummary] : []),
-		`📌 **${label} 三段流水线**`,
+		`📌 **${label} DAG 工作流**`,
 	];
 	for (const p of phases) {
 		const head = `**${p.label}** ${PHASE_DISPLAY_GLYPHS[p.status]}`;
@@ -271,7 +271,7 @@ export function buildPipelineHeaderContent(
 		else if (p.sessionEnded) lines.push("_（session 已结束）_");
 	}
 	lines.push(
-		"_自动更新：三段各用什么模型、跑到哪、去哪看终端，一条置顶看全。_",
+		"_自动更新：各节点用什么模型、跑到哪、去哪看终端，一条置顶看全。_",
 	);
 	return lines.join("\n");
 }
@@ -465,11 +465,11 @@ export class ChatThreadCreator {
 		withWord = false,
 		phaseBadge?: string | null,
 	): Promise<void> {
-		// FLY-892 (Step 6): on a three-stage issue the title carries the STAGE-LEVEL
+		// FLY-892 (Step 6): on a DAG workflow issue the title carries the STAGE-LEVEL
 		// phase badge (🎨设计/🔨实现/🧪QA) — Annie's locked glyphs — INSTEAD of the
 		// FLY-560 fine-grained per-stage word, so the whole pipeline renames ~twice.
 		// A non-empty `phaseBadge` overrides; else fall back to the FLY-560 stage
-		// badge (non-three-stage byte-compat). Same coalescing writer either way.
+		// badge (non-DAG workflow byte-compat). Same coalescing writer either way.
 		const badge = phaseBadge ? phaseBadge : stageBadge(stage, withWord);
 		if (!badge) return; // unknown stage + no phase badge → no-op (no fetch)
 		return this.enqueueTitleWrite(threadId, ctx, badge);
@@ -793,7 +793,7 @@ export class ChatThreadCreator {
 			now?: () => string;
 		} = {},
 	): Promise<DisplayWriteResult> {
-		// Single-runner (non-three-stage) path: fingerprint = the raw command
+		// Single-runner (non-DAG workflow) path: fingerprint = the raw command
 		// (byte-compat), rendered message = the "📌 Runner terminal" template.
 		return this.enqueueAttachPin(
 			ctx,
@@ -835,7 +835,7 @@ export class ChatThreadCreator {
 	}
 
 	/**
-	 * FLY-892 (Step 4): ensure the issue thread's pinned message is the three-stage
+	 * FLY-892 (Step 4): ensure the issue thread's pinned message is the DAG workflow
 	 * PIPELINE HEADER (`content` pre-rendered by `buildPipelineHeaderContent`). Uses
 	 * the SAME per-thread serialized pin state-machine as the single-runner attach
 	 * pin — it just absorbs the existing "Runner terminal" pin into a richer body.

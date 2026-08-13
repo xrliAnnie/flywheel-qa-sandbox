@@ -813,12 +813,12 @@ export function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "auto_qa_stuck":
 			return "Auto-QA pipeline stuck";
-		// FLY-793: never emitted by LeadWatchdog (the PhaseOrchestrator builds its
+		// FLY-793: never emitted by LeadWatchdog (the workflow engine builds its
 		// own title); case exists for switch exhaustiveness.
 		case "three_stage_stuck":
-			return "Three-stage pipeline stuck";
+			return "DAG workflow stuck";
 		case "three_stage_takeover_failed":
-			return "Three-stage worktree takeover failed";
+			return "DAG workflow worktree takeover failed";
 		case "workflow_engine_escalation":
 			return "Workflow engine recovery escalated";
 		case "workflow_engine_issue_alert":
@@ -1065,9 +1065,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-579: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
 		case "auto_qa_stuck":
 			return "The auto-QA pipeline could not proceed (spawn failed, no verdict, or a fail-closed pr_head_sha). The founder was NOT surfaced; investigate the QA Runner.";
-		// FLY-793: never emitted by LeadWatchdog (the PhaseOrchestrator builds its own body).
+		// FLY-793: never emitted by LeadWatchdog (the workflow engine builds its own body).
 		case "three_stage_stuck":
-			return "A three-stage pipeline phase handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
+			return "A DAG workflow handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
 		case "three_stage_takeover_failed":
 			return "A shared branch-B worktree was dirty or at an unexpected HEAD, so Flywheel refused the in-place phase takeover. Inspect and preserve the parked phase's work before retrying.";
 		case "workflow_engine_escalation":

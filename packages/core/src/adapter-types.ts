@@ -201,7 +201,7 @@ export interface AdapterExecutionContext {
 	/** Process-level timeout in milliseconds */
 	timeoutMs?: number;
 	/**
-	 * FLY-1269: explicit three-stage Codex phase lifetime. Present only for a
+	 * FLY-1269: explicit DAG workflow Codex phase lifetime. Present only for a
 	 * share-parent Design/Implement/QA execution while the keep-alive flag is on.
 	 * Adapters must not infer this identity from environment variables or labels.
 	 */

@@ -558,12 +558,17 @@ jobs:
           bash scripts/__tests__/restart-services-notify.test.sh
           bash scripts/__tests__/update-flywheel-queue.test.sh
           bash scripts/__tests__/simba-grep-zero.test.sh
-          # QA (three-stage): drives the REAL lead-alert.sh in the production
+          # QA alert: drives the REAL lead-alert.sh in the production
           # --lead deploy call form — infra identity used, no Simba fallback.
           bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
 
       - name: Test — FLY-1338 CI structure guard
         run: bash scripts/__tests__/ci-structure.test.sh
+
+      # FLY-1674: retired dispatcher/config/flag names cannot return outside
+      # exact persisted-compatibility seams.
+      - name: Test — FLY-1674 legacy-path residue guard
+        run: bash scripts/__tests__/fly1674-residue.test.sh
 
       # FLY-1338 QA: the structure guard above reasons about the matrix filter
       # STRINGS; this one asks pnpm what they actually resolve to on the real

@@ -69,15 +69,15 @@ describe("progress-schema (FLY-795)", () => {
 		expect(back.handoff).toContain("impl→qa");
 	});
 
-	it("uses ThreeStagePhase values (design/implement/qa) for phase", () => {
+	it("uses WorkflowPhaseRole values (design/implement/qa) for phase", () => {
 		for (const phase of ["design", "implement", "qa"] as const) {
 			const md = renderProgress({ ...sample, phase });
 			expect(parseProgress(md).phase).toBe(phase);
 		}
 	});
 
-	it("exposes the 793-consumer cursor fields (phase + chunk statuses)", () => {
-		// 793's phase-handoff reads these at each boundary — the shared schema
+	it("exposes the workflow cursor fields (phase + chunk statuses)", () => {
+		// Each workflow node reads these at its boundary — the shared schema
 		// must expose them structurally, not as free prose.
 		const back = parseProgress(renderProgress(sample));
 		const statuses = back.chunks.map((c) => c.status);

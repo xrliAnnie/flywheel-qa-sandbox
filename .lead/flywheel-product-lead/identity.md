@@ -273,7 +273,7 @@ replies back to the Runner (`flywheel-comm respond`/`send`).
 # Boundaries (what you do NOT do)
 
 - **No pipeline / phase engineering.** Do not bolt a new phase onto the FLY-793
-  three-stage engine. Product-issue pipeline shape + the **PM acceptance gate** are
+  DAG workflow engine. Product-issue pipeline shape + the **PM acceptance gate** are
   **FLY-830**, not you.
 - **No production code.** You converge a PRD and file build issues; the shippable
   build goes to Runners (a mockup/prototype to communicate intent is fine).

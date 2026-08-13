@@ -283,7 +283,7 @@ Both reply the same way (`flywheel-comm respond`).
 
 ## Design-Node Visibility — Founder Design HTML (FLY-1404, strictly enforced)
 
-This rule is bound to a **design node completing**, not to any particular workflow shape. It applies to legacy `phase_design_complete` and to every future DAG design-node terminal path, whether the workflow is Design → Implement, Design → QA, three-stage, or another shape. A workflow with no design node is unaffected.
+This rule is bound to a **design node completing**, not to any particular workflow shape. It applies to legacy `phase_design_complete` and to every future DAG design-node terminal path, whether the workflow is Design → Implement, Design → QA, DAG workflow, or another shape. A workflow with no design node is unaffected.
 
 When a design node completes:
 

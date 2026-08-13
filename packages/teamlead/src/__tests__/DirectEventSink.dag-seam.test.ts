@@ -17,6 +17,7 @@ import BetterSqlite3 from "better-sqlite3";
 import type { EventEnvelope } from "flywheel-edge-worker/dist/ExecutionEventEmitter.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BridgeConfig } from "../bridge/plugin.js";
+import type { TurnBeltReconciler } from "../bridge/turn-belt-reconcile.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -177,7 +178,7 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 });
 
 describe("FLY-1385 enrolled teardown seam", () => {
-	it("persists a failed signal and returns before legacy terminal hooks", async () => {
+	it("persists a failed takeover signal and alerts before returning from the generalized path", async () => {
 		const { store, sink } = await harness();
 		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
@@ -234,7 +235,13 @@ describe("FLY-1385 enrolled teardown seam", () => {
 		});
 		const enqueue = vi.fn();
 		const displayEnqueue = vi.fn();
+		const alertWorktreeTakeoverFailure = vi.fn(async () => {});
 		sink.terminalCommDbSync = { enqueue };
+		sink.turnBeltReconciler = {
+			current: {
+				alertWorktreeTakeoverFailure,
+			} as unknown as TurnBeltReconciler,
+		};
 		sink.issueDisplayRefresh = {
 			current: {
 				enqueue: displayEnqueue,
@@ -249,12 +256,17 @@ describe("FLY-1385 enrolled teardown seam", () => {
 				projectName: "flywheel",
 				sessionRole: "design",
 			},
-			"runner process disappeared",
+			"worktree takeover refused",
+			undefined,
+			{
+				failureKind: "worktree_takeover_failed",
+				failureReason: "worktree_takeover_failed: dirty",
+			},
 		);
 
 		expect(store.getSession("teardown-exec")).toMatchObject({
 			status: "failed",
-			last_error: "runner process disappeared",
+			last_error: "worktree takeover refused",
 			workflow_node_id: "design",
 		});
 		expect(
@@ -268,6 +280,10 @@ describe("FLY-1385 enrolled teardown seam", () => {
 				.filter((event) => event.kind === "generalized_teardown_recorded"),
 		).toHaveLength(1);
 		expect(enqueue).toHaveBeenCalledWith("teardown-exec", "failed", "flywheel");
+		expect(alertWorktreeTakeoverFailure).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "teardown-exec" }),
+			"worktree_takeover_failed: dirty",
+		);
 		expect(displayEnqueue).not.toHaveBeenCalled();
 	});
 

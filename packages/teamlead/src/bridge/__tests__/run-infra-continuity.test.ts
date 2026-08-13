@@ -66,7 +66,7 @@ describe("FLY-1718 production branch continuity wiring", () => {
 		);
 	});
 
-	it("uses the shared main key only when the caller already owns three-stage semantics", async () => {
+	it("uses the shared main key only when the caller already owns DAG workflow semantics", async () => {
 		const { computer, expectedWorktree } = fixture();
 		await computer({
 			issueId: "linear-uuid",

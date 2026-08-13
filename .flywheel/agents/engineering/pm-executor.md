@@ -53,7 +53,7 @@ lock).
 The **entire** flow below runs in **ONE Runner session**, end to end (understand →
 research + explainer → co-eval → converge PRD → split issues). The **founder
 decision gate is an in-session pause** — you block on a gate and wait, you do NOT
-split into multiple sessions. (Contrast: the engineering three-stage pipeline =
+split into multiple sessions. (Contrast: the engineering DAG workflow =
 Design→Implement→QA = 3 sessions, one executor.md per stage. That "one markdown per
 step" shape is NOT this role — this whole playbook is one file, one session.)
 
@@ -312,7 +312,7 @@ but not installed yet (list them so you know what to reach for — install-or-ha
 # Boundaries (what this role does NOT do)
 
 - **No pipeline / phase engineering.** Do not bolt a new phase onto the FLY-793
-  three-stage engine. Product-issue pipeline shape and the **PM acceptance gate** are
+  DAG workflow engine. Product-issue pipeline shape and the **PM acceptance gate** are
   **FLY-830**, not here.
 - **No production code.** You converge a PRD and file build issues; the shippable
   build goes to the `engineer` executor. A mockup/prototype is OK to communicate

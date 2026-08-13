@@ -1,0 +1,10 @@
+flowchart LR
+    A["models.json<br/>bindings.opus"] --> B["模型注册表<br/>buildModelRegistry<br/>(FLY-1650 已收窄 4.6 档位面)"]
+    B --> C["菜单解析<br/>parseMenuModel<br/>⚠️ 逐字相等校验 = boot 炸弹位置"]
+    C --> D["菜单编译成模板<br/>compileWorkflowMenuSeed"]
+    D --> E["run 快照<br/>QA 节点固化 vendor/model/effort"]
+    E --> F["派发 spawn<br/>--model claude-opus-4-6[1m]"]
+    G["menus/shapes/code.yaml<br/>qa 声明 xhigh(要对齐)"] --> C
+    style C fill:#fff3e0,stroke:#ff9500
+    style G fill:#fff3e0,stroke:#ff9500
+    style F fill:#e8f5e9,stroke:#34c759

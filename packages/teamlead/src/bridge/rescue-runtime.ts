@@ -10,14 +10,7 @@
  * QA gate.
  */
 
-import {
-	type DesignBackend,
-	isThreeStagePhaseRole,
-	type PhaseDispatchVendor,
-	type RoleEffort,
-	resolvePhaseDispatch,
-	type SkillFrameworkMode,
-} from "flywheel-config";
+import type { SkillFrameworkMode } from "flywheel-config";
 import type { AlertThreadRow, Session } from "../StateStore.js";
 import {
 	type PendingAlert,
@@ -215,37 +208,19 @@ export interface CloseAndDispatchDeps {
 	log?: (msg: string) => void;
 }
 
-/**
- * FLY-1224 (R1 #1 — the 6th dispatch lane): the phase-aware dispatch fields
- * for a rescue SUCCESSOR. A PHASE row (durable `chat_thread_role` marker, same
- * discriminator as actions.ts) re-derives {model, vendor, effort} from the
- * phase table and keeps its shared-branch identity + phase sessionRole —
- * orchestrator-spawned phase rows usually persist NO dispatch_model, so
- * forwarding only `s.dispatch_model` would rescue a codex implement back onto
- * claude-tmux on an independent branch. sessionRole follows the durable marker
- * too (R2 #3): a polluted row can carry chat_thread_role=implement while
- * session_role drifted to main. Non-phase rows: byte-compatible passthrough.
- * Pure + exported so the REAL production derivation is unit-testable (T4b).
- */
+/** Preserve only fields recorded by the predecessor when rescuing a successor. */
 export function buildRescueSuccessorDispatchFields(
 	s: Pick<
 		Session,
-		| "chat_thread_role"
 		| "session_role"
 		| "dispatch_model"
-		| "design_backend"
 		| "skill_framework_mode"
 		| "skill_framework_mode_via"
 	>,
 ): {
 	sessionRole?: string;
-	designBackend?: DesignBackend;
 	skillFrameworkMode?: SkillFrameworkMode;
 	dispatchModel?: string;
-	dispatchVendor?: PhaseDispatchVendor;
-	dispatchEffort?: RoleEffort;
-	ignoreRunnerLabelSelection?: true;
-	shareParentBranch?: true;
 } {
 	// FLY-1356: a 529 forced arm (via==="override") stays forced across the
 	// rescue successor; sticky/hash paths ride the dispatcher's stamp lookup.
@@ -253,30 +228,10 @@ export function buildRescueSuccessorDispatchFields(
 		s.skill_framework_mode_via === "override" && s.skill_framework_mode
 			? { skillFrameworkMode: s.skill_framework_mode }
 			: {};
-	const phaseRole = isThreeStagePhaseRole(s.chat_thread_role)
-		? s.chat_thread_role
-		: undefined;
-	if (!phaseRole) {
-		return {
-			sessionRole: s.session_role ?? undefined,
-			dispatchModel: s.dispatch_model ?? undefined,
-			...skillOverride,
-		};
-	}
-	const designOverride =
-		phaseRole === "design" && s.design_backend
-			? { vendor: s.design_backend }
-			: undefined;
-	const dispatch = resolvePhaseDispatch(phaseRole, process.env, designOverride);
 	return {
-		sessionRole: phaseRole,
-		...(s.design_backend && { designBackend: s.design_backend }),
+		sessionRole: s.session_role ?? undefined,
 		...skillOverride,
-		dispatchModel: dispatch.model,
-		dispatchVendor: dispatch.vendor,
-		dispatchEffort: dispatch.effort,
-		ignoreRunnerLabelSelection: true,
-		shareParentBranch: true,
+		dispatchModel: s.dispatch_model ?? undefined,
 	};
 }
 

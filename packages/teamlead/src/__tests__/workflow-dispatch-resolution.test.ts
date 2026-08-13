@@ -1,7 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resetModelConfigCacheForTests } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
@@ -129,73 +128,6 @@ async function v2Run() {
 }
 
 describe("workflow dispatch resolution at launch", () => {
-	it("uses the current phase dispatch config for schema v1", async () => {
-		const store = await v1Run();
-		expect(
-			resolveNodeDispatchAtLaunch(store, {
-				runId: "run-v1",
-				nodeId: "design",
-				env: {
-					...WORKFLOW_ON,
-					FLYWHEEL_THREE_STAGE_CODEX_DESIGN: "1",
-				},
-			}),
-		).toEqual({
-			dispatch: {
-				vendor: "codex",
-				model: "gpt-5.6-sol",
-				effort: "xhigh",
-			},
-			source: "current_config",
-			audit: true,
-		});
-	});
-
-	// FLY-1650 (Codex R3): `max` → `xhigh` is a POLICY preference, not a type
-	// coercion — WorkflowEffort has `max`. Opus 4.6 supports `max` but not
-	// `xhigh`, so a blind remap would convert a valid config into an
-	// unsupported tier and then drop it: a silent downgrade of a run the
-	// config asked to be maximal.
-	it("keeps a configured `max` for a model that has max but not xhigh", async () => {
-		const store = await v1Run();
-		const root = mkdtempSync(join(tmpdir(), "fly1650-phase-"));
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-		const configPath = join(root, "models.json");
-		writeFileSync(
-			configPath,
-			JSON.stringify({
-				version: 1,
-				phases: {
-					qa: {
-						vendor: "claude",
-						model: "claude-opus-4-6[1m]",
-						effort: "max",
-					},
-				},
-			}),
-		);
-		const previous = process.env.FLYWHEEL_MODELS_CONFIG;
-		process.env.FLYWHEEL_MODELS_CONFIG = configPath;
-		resetModelConfigCacheForTests();
-		cleanups.push(() => {
-			if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
-			else process.env.FLYWHEEL_MODELS_CONFIG = previous;
-			resetModelConfigCacheForTests();
-		});
-
-		expect(
-			resolveNodeDispatchAtLaunch(store, {
-				runId: "run-v1",
-				nodeId: "qa",
-				env: WORKFLOW_ON,
-			}).dispatch,
-		).toEqual({
-			vendor: "claude",
-			model: "claude-opus-4-6[1m]",
-			effort: "max",
-		});
-	});
-
 	// FLY-1650 (Codex R2 HIGH): admission writes the IMMUTABLE row the audit
 	// trail reports. Narrowing an unsupported effort only at the launch seam
 	// would leave that row claiming an effort the run never used. Opus 4.6 has

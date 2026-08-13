@@ -61,8 +61,7 @@ export function resolveEffectiveFounderUxConfig(
  *
  * This is the SINGLE source of the flag's semantics. It stacks OVER the
  * per-project `founder_ux_gate.mode` config (governance gate) as a fleet-wide
- * override, exactly like `three_stage_killswitch` (`FLYWHEEL_THREE_STAGE`) — but
- * with the OPPOSITE polarity: default OFF (gate disabled), only `"1"` re-enables
+ * override, with the OPPOSITE polarity: default OFF (gate disabled), only `"1"` re-enables
  * the original enforce behavior (opt_in idiom, `resolve.ts:107`). We deliberately
  * accept only `"1"` (not `"true"`) so the registry's displayed effective value is
  * byte-identical to the real read — restart writes `=1` in `.env`.

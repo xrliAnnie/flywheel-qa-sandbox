@@ -48,7 +48,7 @@ describe("FLY-1329 A4: reconcileCommDbRunningAgainstFsm respects a park declarat
 				db.upsertDeclaredState(
 					execId,
 					"parked",
-					"three-stage implement parked awaiting QA",
+					"DAG workflow implement parked awaiting QA",
 					Date.now(),
 					null, // no expiry
 				);

@@ -69,13 +69,12 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 				deletedSessionCount: 0,
 			})),
 			archiveThread: vi.fn(async () => {}),
-			onQaPhaseTerminated: vi.fn(),
 			log: () => {},
 			...overrides,
 		};
 	}
 
-	it("reaps an aged QA ghost in fail-closed order: finalize → transition → QA hook → archive → event", async () => {
+	it("reaps an aged workflow ghost in fail-closed order: finalize → transition → archive → event", async () => {
 		seed("qa-ghost", { chatThreadRole: "qa" });
 		const order: string[] = [];
 		transitionOpts.onTransition = () => order.push("transition");
@@ -89,7 +88,6 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 					deletedSessionCount: 0,
 				};
 			}),
-			onQaPhaseTerminated: vi.fn(() => order.push("qa-hook")),
 			archiveThread: vi.fn(async () => {
 				order.push("archive");
 			}),
@@ -101,12 +99,8 @@ describe("StateStore ghost reconcile (FLY-1066)", () => {
 		);
 
 		expect(outcome).toBe("reaped");
-		expect(order).toEqual(["finalize", "transition", "qa-hook", "archive"]);
+		expect(order).toEqual(["finalize", "transition", "archive"]);
 		expect(store.getSession("qa-ghost")?.status).toBe("terminated");
-		expect(deps.onQaPhaseTerminated).toHaveBeenCalledWith(
-			"qa-ghost",
-			"issue-qa-ghost",
-		);
 		expect(store.getEventsByExecution("qa-ghost")).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({

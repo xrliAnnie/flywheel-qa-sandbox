@@ -1,15 +1,15 @@
 /**
- * FLY-939 (G-B) — Blueprint three-stage QA kickback prompt contract.
+ * FLY-939 (G-B) — Blueprint DAG workflow QA kickback prompt contract.
  *
  * When the QA phase is woken with FEEDBACK on its OWN approve_to_ship gate (a
  * founder "changes requested" after a PASS), it must NOT edit code — it kicks the
  * feedback back so the alive, parked implement phase does the fixing. Two prompt
  * changes enforce this under keep-alive:
- *   1. a "5-fb" kickback step in the three-stage QA role prompt;
+ *   1. a "5-fb" kickback step in the DAG workflow QA role prompt;
  *   2. the generic APPROVE GATE step f is OVERRIDDEN for the QA phase (the generic
  *      "push your fixes" would have QA fix the code itself, and its turn self-check
  *      cannot stop it since a passed QA is the TURN holder — Codex design R1 #1).
- * Keep-alive OFF and single-session prompts keep the generic step f byte-for-byte.
+ * Single-session prompts keep the generic step f byte-for-byte.
  */
 
 import type {
@@ -18,7 +18,7 @@ import type {
 	IAdapter,
 } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
@@ -98,10 +98,6 @@ async function buildPrompt(
 }
 
 describe("FLY-939 QA kickback prompt — keep-alive ON", () => {
-	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
-	});
-
 	it("QA phase carries the kickback contract (do NOT edit code; kickback verdict)", async () => {
 		const p = await buildPrompt({ sessionRole: "qa", shareParentBranch: true });
 		expect(p).toContain("woken with FEEDBACK");
@@ -114,7 +110,7 @@ describe("FLY-939 QA kickback prompt — keep-alive ON", () => {
 		const p = await buildPrompt({ sessionRole: "qa", shareParentBranch: true });
 		// The QA phase's effective step f routes feedback to the kickback, and does
 		// NOT tell it to push its own fixes.
-		expect(p).toContain("for THIS role (three-stage QA) FEEDBACK = KICKBACK");
+		expect(p).toContain("for THIS role (DAG workflow QA) FEEDBACK = KICKBACK");
 		expect(p).not.toContain(
 			"address it, push your fixes, then RE-REQUEST review",
 		);
@@ -122,19 +118,6 @@ describe("FLY-939 QA kickback prompt — keep-alive ON", () => {
 });
 
 describe("FLY-939 byte-compat sentinels", () => {
-	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
-	});
-
-	it("keep-alive OFF QA phase: no kickback step, generic step f preserved", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const p = await buildPrompt({ sessionRole: "qa", shareParentBranch: true });
-		expect(p).not.toContain("founder feedback kickback:");
-		expect(p).not.toContain("FEEDBACK = KICKBACK");
-		// The generic step f is intact.
-		expect(p).toContain("address it, push your fixes, then RE-REQUEST review");
-	});
-
 	it("single-session runner: generic step f preserved, no kickback contract", async () => {
 		const p = await buildPrompt({});
 		expect(p).not.toContain("founder feedback kickback:");

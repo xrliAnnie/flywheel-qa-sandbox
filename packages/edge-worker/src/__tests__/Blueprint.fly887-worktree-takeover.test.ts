@@ -1,5 +1,5 @@
 /**
- * FLY-887 — Blueprint three-stage keep-alive worktree IN-PLACE TAKEOVER.
+ * FLY-887 — Blueprint DAG workflow keep-alive worktree IN-PLACE TAKEOVER.
  *
  * When a later phase (implement/qa) dispatches on the SHARED branch-B worktree
  * and the prior phase parked (worktree still registered), the worktree is REUSED
@@ -147,7 +147,6 @@ async function run(
 describe("FLY-887 worktree in-place takeover", () => {
 	const created: string[] = [];
 	afterEach(() => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
 		for (const p of created) rmSync(p, { recursive: true, force: true });
 		created.length = 0;
 	});
@@ -309,23 +308,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 	});
 
-	it("byte-compat: kill-switch=0 → legacy create path (no takeover)", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const path = makeRealWorktree();
-		created.push(path);
-		const wt = makeWtManager({ registered: true, path });
-		const { result } = await run(
-			wt,
-			makeGitChecker({ clean: true, head: HEAD }),
-			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
-		);
-		expect(result.success).toBe(true);
-		expect(wt.create).toHaveBeenCalledWith(
-			expect.objectContaining({ startPoint: HEAD }),
-		);
-	});
-
-	it("byte-compat: non-three-stage (no shareParentBranch) → legacy create path", async () => {
+	it("standalone run without shareParentBranch uses the create path", async () => {
 		const path = makeRealWorktree();
 		created.push(path);
 		const wt = makeWtManager({ registered: true, path });

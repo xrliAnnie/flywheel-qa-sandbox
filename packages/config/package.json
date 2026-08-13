@@ -9,7 +9,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsc",
+		"build": "tsc && rm -f dist/three-stage-phases.* dist/__tests__/three-stage-phases.test.*",
 		"dev": "tsc --watch",
 		"test": "vitest run",
 		"test:watch": "vitest --watch",

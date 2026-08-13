@@ -10,7 +10,7 @@ import {
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
-} from "../three-stage-phases.js";
+} from "../phase-roles.js";
 
 describe("modelDisplayName (FLY-892)", () => {
 	it("maps canonical ids to family display names", () => {
@@ -42,27 +42,6 @@ describe("modelDisplayName (FLY-892)", () => {
 });
 
 describe("phaseMessageTag (FLY-892)", () => {
-	it("FLY-1259: locked design backend beats the opposite global switch", () => {
-		const previous = process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-		try {
-			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "0";
-			expect(phaseMessageTag("design", null, "codex")).toBe("[设计·GPT-5.6] ");
-			process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = "1";
-			expect(phaseMessageTag("design", undefined, "claude")).toBe(
-				"[设计·Fable] ",
-			);
-			expect(phaseMessageTag("design", undefined, undefined)).toBe(
-				"[设计·GPT-5.6] ",
-			);
-		} finally {
-			if (previous === undefined) {
-				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN;
-			} else {
-				process.env.FLYWHEEL_THREE_STAGE_CODEX_DESIGN = previous;
-			}
-		}
-	});
-
 	it("tags each phase with its own runner model", () => {
 		expect(phaseMessageTag("design", "claude-fable-5", undefined)).toBe(
 			"[设计·Fable] ",
@@ -79,34 +58,10 @@ describe("phaseMessageTag (FLY-892)", () => {
 			"[实现·GPT-5.6] ",
 		);
 	});
-	it("falls back to the phase's PLANNED DISPATCH model when runner_model is absent", () => {
-		// FLY-1224 (Annie's 2026-07-13 table): design → Fable, implement → Codex
-		// GPT-5.6, qa → Opus. A pending/no-runner_model implement row must show the
-		// model it WILL run on, not the legacy tier (the display lie R1 #3 fixed).
-		expect(phaseMessageTag("design", undefined, undefined)).toBe(
-			"[设计·Fable] ",
-		);
-		expect(phaseMessageTag("implement", null, undefined)).toBe(
-			"[实现·GPT-5.6] ",
-		);
-		expect(phaseMessageTag("qa", undefined, undefined)).toBe("[QA·Opus] ");
-	});
-	it("kill-switch: implement fallback shows Fable when codex-implement is off (FLY-1224 T9)", () => {
-		// phaseMessageTag reads the dispatch table (kill-switch aware) — flip the
-		// env for the duration of this test only.
-		const prev = process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
-		process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = "0";
-		try {
-			expect(phaseMessageTag("implement", undefined, undefined)).toBe(
-				"[实现·Fable] ",
-			);
-		} finally {
-			if (prev === undefined) {
-				delete process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT;
-			} else {
-				process.env.FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT = prev;
-			}
-		}
+	it("omits a model for a pending row without runtime evidence", () => {
+		expect(phaseMessageTag("design", undefined, undefined)).toBe("[设计] ");
+		expect(phaseMessageTag("implement", null, undefined)).toBe("[实现] ");
+		expect(phaseMessageTag("qa", undefined, undefined)).toBe("[QA] ");
 	});
 	it("is EMPTY for a main / non-phase role (byte-compat)", () => {
 		expect(phaseMessageTag("main", undefined, undefined)).toBe("");

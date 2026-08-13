@@ -812,8 +812,8 @@ describe("provisionCodexHome (WS-A)", () => {
 			// resident /goal model anchors (FLY-1188 M4d Contract-Version 2)
 			expect(agents).toContain("resident");
 			expect(agents).toContain("terminal goal status");
-			// three-stage discipline + environment translation present
-			expect(agents).toContain("Three-stage discipline");
+			// DAG workflow discipline + environment translation present
+			expect(agents).toContain("DAG workflow discipline");
 			expect(agents).toContain("Environment Translation");
 		});
 

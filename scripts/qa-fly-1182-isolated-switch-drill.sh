@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FLY-1182 QA — isolated verify / commit / rollback drill.
 #
-# Drives the REAL `flywheel-claude-profile use` binary through the three stages
+# Drives the REAL `flywheel-claude-profile use` binary through the three steps
 # the §8 scope names, against a FAKE security(1) + scratch pool + isolated
 # config. Nothing here touches the production Keychain, the real account pool,
 # ~/.claude.json, or ~/.flywheel/quota-monitor.json.

@@ -44,8 +44,8 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			continuityComputer?: ContinuityComputer;
 			lifecycleAdmission?: ConstructorParameters<typeof RunDispatcher>[6];
 			lifecycleLaunchGuard?: ConstructorParameters<typeof RunDispatcher>[7];
-			freshStartAudit?: ConstructorParameters<typeof RunDispatcher>[15];
-			doaBackoffAdmission?: ConstructorParameters<typeof RunDispatcher>[16];
+			freshStartAudit?: ConstructorParameters<typeof RunDispatcher>[13];
+			doaBackoffAdmission?: ConstructorParameters<typeof RunDispatcher>[14];
 		} = {},
 	): RunDispatcher {
 		return new RunDispatcher(
@@ -57,8 +57,6 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			options.resumeComputer,
 			options.lifecycleAdmission,
 			options.lifecycleLaunchGuard,
-			undefined,
-			undefined,
 			undefined,
 			undefined,
 			undefined,
@@ -136,7 +134,7 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		expect(captured?.startPoint).toBe("caller-pinned-sha");
 	});
 
-	it("inherits a verified origin tip without enabling three-stage semantics", async () => {
+	it("inherits a verified origin tip without enabling DAG workflow semantics", async () => {
 		const continuityComputer = vi.fn<ContinuityComputer>(async () => ({
 			kind: "found",
 			branch: "flywheel-FLY-1718",
@@ -185,8 +183,6 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 			undefined,
 			undefined,
 			lifecycleAdmission,
-			undefined,
-			undefined,
 			undefined,
 			undefined,
 			undefined,

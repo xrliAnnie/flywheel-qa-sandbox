@@ -132,7 +132,7 @@ describe("WorkflowFSM", () => {
 			"blocked",
 			"failed",
 			"terminated",
-			// FLY-793: three-stage Design phase handoff.
+			// FLY-793: DAG workflow Design phase handoff.
 			"design_done",
 		]);
 		// FLY-1185 (R10#5): a canceled issue must be able to close a

@@ -3,7 +3,7 @@
  *
  * ONE derive-from-real-state render path for the three founder-facing display
  * faces of a `[FLY-XX]` thread — A title badge, B pinned pipeline header,
- * C three-stage status line — triggered from EVERY lifecycle change source
+ * C DAG workflow status line — triggered from EVERY lifecycle change source
  * (applyTransition hook, DirectEventSink, park/wake, stage_changed,
  * qa_result/finalize, recovered-merge finalization, GatePoller sweep) instead
  * of only `stage_changed` (the FLY-902 Finding #4 root cause: FLY-887's
@@ -22,14 +22,13 @@
 import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
 import {
-	DEFAULT_PHASE_TIER,
+	isWorkflowPhaseRole,
 	modelDisplayName,
+	PHASE_ROLE_SEQUENCE,
 	PHASE_THREAD_BADGE,
 	phaseMessageTag,
 	phaseThreadBadge,
-	resolvePhaseDispatch,
-	THREE_STAGE_PHASE_SEQUENCE,
-	type ThreeStagePhase,
+	type WorkflowPhaseRole,
 } from "flywheel-config";
 import {
 	type ProjectEntry,
@@ -37,6 +36,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { isQaHeld } from "./auto-qa-held.js";
 import {
 	buildPipelineHeaderContent,
@@ -115,6 +115,31 @@ export function parseWorkflowRouteSummary(
 	}
 }
 
+function plannedPhaseModels(
+	store: StateStore,
+	issueId: string,
+): Map<WorkflowPhaseRole, { model: string; display: string }> {
+	const run = store.getActiveWorkflowRunForIssue(issueId);
+	if (!run?.snapshot) return new Map();
+	try {
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		const planned = new Map<
+			WorkflowPhaseRole,
+			{ model: string; display: string }
+		>();
+		for (const node of snapshot.resolved.nodes) {
+			if (!isWorkflowPhaseRole(node.type) || !node.dispatch?.model) continue;
+			const display = modelDisplayName(node.dispatch.model);
+			if (display) {
+				planned.set(node.type, { model: node.dispatch.model, display });
+			}
+		}
+		return planned;
+	} catch {
+		return new Map();
+	}
+}
+
 /**
  * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
  * (Annie's feedback — emoji alone is hard to memorise); set
@@ -160,7 +185,7 @@ interface StampDeps {
 /**
  * FLY-560 Feature A (moved verbatim from event-route.ts for FLY-907): the
  * legacy stage_changed title stamp — badge = the REPORTED stage (or the
- * reporting session's phase badge on a three-stage issue). Still the active
+ * reporting session's phase badge on a DAG workflow issue). Still the active
  * path when `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` (escape hatch). Fire-and-forget.
  */
 export function stampStageEmojiForSession(
@@ -189,7 +214,7 @@ export function stampStageEmojiForSession(
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
 	if (thread.archived_at) return; // archived issue threads stay silent
 
-	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
+	// FLY-892 (Step 6): on a DAG workflow issue the title prefix is the STAGE-level
 	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
 	// REPLACES the FLY-560 fine-grained stage word. `""` for a non-phase (main)
 	// session → falls back to the FLY-560 stage badge (byte-compat).
@@ -307,26 +332,16 @@ export function pinRunnerAttachForSession(
 			}
 
 			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
+			const plannedByRole = plannedPhaseModels(deps.store, session.issue_id);
 			const rows: PhaseHeaderRow[] = [];
-			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+			for (const role of PHASE_ROLE_SEQUENCE) {
 				const ps = byRole.get(role);
-				const override =
-					role === "design" && ps?.design_backend
-						? { vendor: ps.design_backend }
-						: undefined;
-				// FLY-1224 (R1 #3): a pending row's planned model comes from the
-				// DISPATCH table (kill-switch aware) — implement shows GPT-5.6, not
-				// the legacy tier's Fable. FLY-1259: a persisted design lock wins over
-				// the current process-wide switch. The tier stays the last-resort fallback.
-				const plannedModel = modelDisplayName(
-					resolvePhaseDispatch(role, process.env, override).model,
-					DEFAULT_PHASE_TIER[role],
-				);
 				if (!ps) {
+					const planned = plannedByRole.get(role);
 					rows.push({
-						label: phaseMessageTag(role, undefined, undefined).trim(),
+						label: phaseMessageTag(role, planned?.model, undefined).trim(),
 						status: "pending",
-						plannedModel,
+						...(planned ? { plannedModel: planned.display } : {}),
 					});
 					continue;
 				}
@@ -419,7 +434,7 @@ export function hasDurableIssueConclusion(
 /**
  * FLY-907 sweep layer-1 fast hash input: the sessions-table component of the
  * display fingerprint — per-role latest {role, status, exec} + the issue's
- * latest session {status, session_stage, exec} + the three-stage issue's
+ * latest session {status, session_stage, exec} + the DAG workflow issue's
  * post-ship finalization-claim bit. Cheap (StateStore only, zero CommDB), and
  * computed IDENTICALLY by the refresher's fingerprint writer so layer-1
  * comparison is exact.
@@ -444,7 +459,7 @@ export function computeSessionsFingerprint(
 	return JSON.stringify({
 		p: phases,
 		// `getLatestPhaseSessionsForIssue` only returns design/implement/qa rows,
-		// so a non-empty result is the same three-stage guard used by derivation.
+		// so a non-empty result is the same DAG workflow guard used by derivation.
 		// Single-session issues retain the pre-FLY-1225 zero-query path.
 		fc: phases.length > 0 && store.hasFinalizationCompletedForIssue(issueId),
 		cc: issueConcluded,
@@ -694,7 +709,7 @@ export class IssueDisplayRefresher {
 		}
 
 		const latestPhase = store.getLatestPhaseSessionsForIssue(issueId);
-		const isThreeStage = latestPhase.length > 0;
+		const isWorkflowPhase = latestPhase.length > 0;
 		const issueConcluded = hasDurableIssueConclusion(store, issueId);
 
 		// Park probes — once per involved exec (the map dedupes).
@@ -708,11 +723,11 @@ export class IssueDisplayRefresher {
 		};
 
 		// Unified per-phase states (face A aggregation + face B rows).
-		const phaseStates = new Map<ThreeStagePhase, PhaseDisplayState>();
-		const phaseStatuses = new Map<ThreeStagePhase, string>();
-		const phaseSessionByRole = new Map<ThreeStagePhase, Session>();
+		const phaseStates = new Map<WorkflowPhaseRole, PhaseDisplayState>();
+		const phaseStatuses = new Map<WorkflowPhaseRole, string>();
+		const phaseSessionByRole = new Map<WorkflowPhaseRole, Session>();
 		for (const s of latestPhase) {
-			const role = s.chat_thread_role as ThreeStagePhase;
+			const role = s.chat_thread_role as WorkflowPhaseRole;
 			phaseSessionByRole.set(role, s);
 			phaseStatuses.set(role, s.status);
 			phaseStates.set(
@@ -726,7 +741,7 @@ export class IssueDisplayRefresher {
 			);
 		}
 		const shipFinalizationClaimed =
-			isThreeStage && store.hasFinalizationCompletedForIssue(issueId);
+			isWorkflowPhase && store.hasFinalizationCompletedForIssue(issueId);
 
 		// ── Face A: title badge ──
 		let badge = deriveIssueTitleBadge({
@@ -743,7 +758,7 @@ export class IssueDisplayRefresher {
 		// from this issue's session rows.
 		if (
 			badge.kind === "stage" &&
-			!isThreeStage &&
+			!isWorkflowPhase &&
 			isQaHeld(store, anySession)
 		) {
 			badge = { kind: "stage", stage: "test" };
@@ -808,31 +823,22 @@ export class IssueDisplayRefresher {
 		if (flags.issueAttachPinEnabled) {
 			const headerBotToken =
 				resolveAnnouncerBotToken(projects, anySession.project_name) ?? botToken;
-			if (isThreeStage) {
+			if (isWorkflowPhase) {
+				const plannedByRole = plannedPhaseModels(store, issueId);
 				const rows: PhaseHeaderRow[] = [];
-				for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				for (const role of PHASE_ROLE_SEQUENCE) {
 					const ps = phaseSessionByRole.get(role);
-					const override =
-						role === "design" && ps?.design_backend
-							? { vendor: ps.design_backend }
-							: undefined;
-					// FLY-1224 (R1 #3): planned model from the dispatch table (see the
-					// legacy header path above — same honesty fix, second injection point).
-					// A persisted design lock wins over the current global switch.
-					const plannedModel = modelDisplayName(
-						resolvePhaseDispatch(role, process.env, override).model,
-						DEFAULT_PHASE_TIER[role],
-					);
 					const state = phaseStates.get(role) ?? "pending";
 					if (!ps || state === "pending") {
+						const planned = plannedByRole.get(role);
 						rows.push({
 							label: phaseMessageTag(
 								role,
-								ps?.runner_model,
+								ps?.runner_model ?? planned?.model,
 								ps?.design_backend,
 							).trim(),
 							status: "pending",
-							plannedModel,
+							...(planned ? { plannedModel: planned.display } : {}),
 						});
 						continue;
 					}
@@ -889,7 +895,7 @@ export class IssueDisplayRefresher {
 					content,
 				);
 			} else {
-				// Non-three-stage: the byte-compat single-runner "Runner terminal"
+				// Non-DAG workflow: the byte-compat single-runner "Runner terminal"
 				// pin (Lead bot, NEVER the announcer — FLY-892 Codex R1 Med).
 				const target = (this.deps.getTmuxTarget ?? getTmuxTargetFromCommDb)(
 					anySession.execution_id,

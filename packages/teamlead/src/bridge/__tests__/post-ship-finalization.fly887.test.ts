@@ -9,7 +9,7 @@ import { DirectiveExecutor } from "../../DirectiveExecutor.js";
 import { StateStore } from "../../StateStore.js";
 import { commDbPathForProject } from "../commdb-path.js";
 import {
-	makeFinalizeThreeStagePhases,
+	makeFinalizeWorkflowPhaseRoles,
 	runPostShipFinalization,
 } from "../post-ship-finalization.js";
 
@@ -64,7 +64,7 @@ function seed(
 	});
 }
 
-describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
+describe("makeFinalizeWorkflowPhaseRoles (FLY-887)", () => {
 	it("closes parked design + implement + qa (→ completed), deletes TURN", async () => {
 		const { store, transitionOpts } = await makeStore();
 		seed(store, {
@@ -93,7 +93,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 		db.grantTurn("FLY-1", "q", "qa", 1_700_000_000_000);
 		db.close();
 
-		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		expect(store.getSession("d")?.status).toBe("completed");
@@ -117,7 +117,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 			chat_thread_role: "qa",
 			session_role: "qa",
 		});
-		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
 		await finalize("FLY-1", "flywheel");
 
 		// completed is terminal (no FSM transition) — the observable proof that
@@ -141,7 +141,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 			status: "awaiting_review",
 			chat_thread_role: "main",
 		});
-		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
 		await expect(finalize("FLY-2", "flywheel")).resolves.toBeUndefined();
 		// the main session is untouched
 		expect(store.getSession("main-1")?.status).toBe("awaiting_review");
@@ -172,7 +172,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 			statusesAtRefreshTime.push(store.getSession("i")?.status);
 			expect(issueId).toBe("FLY-1");
 		});
-		const finalize = makeFinalizeThreeStagePhases(
+		const finalize = makeFinalizeWorkflowPhaseRoles(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -194,7 +194,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 		const refreshPhaseStatusLine = vi.fn(async () => {
 			throw new Error("discord boom");
 		});
-		const finalize = makeFinalizeThreeStagePhases(
+		const finalize = makeFinalizeWorkflowPhaseRoles(
 			store,
 			transitionOpts,
 			refreshPhaseStatusLine,
@@ -211,7 +211,7 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 			chat_thread_role: "design",
 			session_role: "design",
 		});
-		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		const finalize = makeFinalizeWorkflowPhaseRoles(store, transitionOpts);
 		await expect(finalize("FLY-1", "flywheel")).resolves.toBeUndefined();
 		expect(store.getSession("d")?.status).toBe("completed");
 	});
@@ -345,7 +345,7 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 });
 
 describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
-	it("calls finalizeThreeStagePhases BEFORE removeCleanWorktree", async () => {
+	it("calls finalizeWorkflowPhaseRoles BEFORE removeCleanWorktree", async () => {
 		const { store } = await makeStore();
 		// A shipped QA session so the atomic claim + resolveLead path have a row.
 		seed(store, {
@@ -355,7 +355,7 @@ describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
 			session_role: "qa",
 		});
 		const order: string[] = [];
-		const finalizeThreeStagePhases = vi.fn(async () => {
+		const finalizeWorkflowPhaseRoles = vi.fn(async () => {
 			order.push("finalizePhases");
 		});
 		const removeCleanWorktree = vi.fn(async () => {
@@ -371,11 +371,14 @@ describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {
 			{
 				store,
 				projects: [],
-				finalizeThreeStagePhases,
+				finalizeWorkflowPhaseRoles,
 				removeCleanWorktree,
 			},
 		);
-		expect(finalizeThreeStagePhases).toHaveBeenCalledWith("FLY-1", "flywheel");
+		expect(finalizeWorkflowPhaseRoles).toHaveBeenCalledWith(
+			"FLY-1",
+			"flywheel",
+		);
 		expect(order).toEqual(["finalizePhases", "removeWorktree"]);
 	});
 });

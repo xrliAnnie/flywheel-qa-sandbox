@@ -242,7 +242,7 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: FLY-818 autocontinue arm-observe window (ms), lifecycle-bound",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
-		"tuning knob: parked three-stage phase reclaim time backstop hours (FLY-1204)",
+		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",
 	FLYWHEEL_BRIDGE_SHUTDOWN_TIMEOUT_MS: "tuning knob: bridge shutdown timeout",
 	FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS:
 		"tuning knob: milestone patrol cadence (FLY-725)",
@@ -252,8 +252,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: milestone notify grace window (FLY-725)",
 	FLYWHEEL_CRON_STALE_TTL_MIN:
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
-	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
-		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
 	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
 		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	FLYWHEEL_POOL_REBUILD_TIMEOUT_MS:
@@ -286,6 +284,13 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 };
 
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_THREE_STAGE", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_THREE_STAGE_KEEPALIVE", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_THREE_STAGE_QA_RESPAWN", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_THREE_STAGE_CODEX_DESIGN", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_PARK_BIASED_HANDOFF", retiredBy: "FLY-1674" },
+	{ envVar: "FLYWHEEL_RETEST_HEAD_DELTA_GUARD", retiredBy: "FLY-1674" },
 	{ envVar: "FLYWHEEL_RECEIPT_FOUNDATION", retiredBy: "FLY-1645" },
 	{ envVar: "FLYWHEEL_MAILBOX_DISCORD", retiredBy: "FLY-1645" },
 	{ envVar: "FLYWHEEL_CHAT_RECEIPTS", retiredBy: "FLY-1645" },

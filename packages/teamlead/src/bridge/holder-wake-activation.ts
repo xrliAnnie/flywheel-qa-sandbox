@@ -2,16 +2,16 @@ import type { CommDB } from "flywheel-comm/db";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { applyTransition } from "../applyTransition.js";
 import type { PhaseLiveness } from "./phase-actor-reentry.js";
-import type { PhaseSession } from "./phase-orchestrator.js";
 import type { RunnerTmuxTargetDiscovery } from "./tmux-lookup.js";
+import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
 export type HolderWakeCause = "qa_fail" | "phase_retest" | "workflow_rework";
 
 export interface HolderWakeActivationDeps {
 	transitionOpts: ApplyTransitionOpts;
 	openCommDb: (projectName: string) => CommDB;
-	resolveLeadId: (session: PhaseSession) => string | undefined;
-	resolveVendor: (session: PhaseSession) => string | undefined;
+	resolveLeadId: (session: WorkflowActorSession) => string | undefined;
+	resolveVendor: (session: WorkflowActorSession) => string | undefined;
 	discoverTmuxTarget: (
 		executionId: string,
 	) => Promise<RunnerTmuxTargetDiscovery>;
@@ -25,7 +25,7 @@ export interface HolderWakeActivationDeps {
  */
 export async function activateHolderForWake(
 	deps: HolderWakeActivationDeps,
-	input: { session: PhaseSession; cause: HolderWakeCause },
+	input: { session: WorkflowActorSession; cause: HolderWakeCause },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
 	const fresh = deps.transitionOpts.store.getSession(
 		input.session.execution_id,

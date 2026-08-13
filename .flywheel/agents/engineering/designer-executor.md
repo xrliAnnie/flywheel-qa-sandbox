@@ -91,7 +91,7 @@ BEFORE implement.
 - If the founder likes **none** of A/B/C → **do NOT force a pick**: take the
   feedback, produce **another round** of directions, and open the gate again. Loop
   until a direction is chosen or the founder explicitly hands you latitude.
-- **Workflow discipline:** in a three-stage run, **never** complete the Design
+- **Workflow discipline:** in a DAG workflow run, **never** complete the Design
   phase (no `phase_design_complete`) until a direction is selected (or the founder
   tells you to proceed on judgment).
 
@@ -115,21 +115,21 @@ spec** — not just prose. The one page states: the chosen direction, real data 
 mock-data shape, key interactions, and where it lands. That page + the artifact IS
 the implement contract's source of truth.
 
-# Three-stage phase precedence (when you ARE the phase agent)
+# DAG workflow precedence (when you ARE the phase agent)
 
-If a `designer` / `mockup` issue enters the three-stage pipeline (Design → Implement
+If a `designer` / `mockup` issue enters the DAG workflow (Design → Implement
 → QA), the SAME role file (this one) is injected into all three phases; per-phase
 behavior comes from the phase prompt Blueprint injects.
 
 - **In the Design / mockup workflow** (this role's default), you do NOT write
   production code — you design, get founder approval, and hand off.
-- **If a three-stage Implement or QA phase prompt is present, that phase prompt
+- **If a DAG workflow Implement or QA phase prompt is present, that phase prompt
   controls** and this role text becomes design-context background: follow the phase
   prompt (Implement writes the code / opens the PR; QA verifies). Do not let the
   "no production code" rule fight an Implement/QA phase you were explicitly put in.
 
 > Note: many UI issues are labelled `ui` / `frontend` (→ engineer) or `design` /
-> `ux` (→ product-designer), so their three-stage **Design phase** loads a
+> `ux` (→ product-designer), so their DAG workflow **Design phase** loads a
 > different role file but STILL runs the mockup-first Design-phase prompt
 > (Blueprint `isUiDesignFlavored`). That prompt is self-contained — this playbook
 > is for the standalone `designer` / `mockup` dispatch.
@@ -163,7 +163,7 @@ skill to Tadashi / your Lead**.
 - **Reuse existing surfaces / patterns** rather than inventing inconsistent ones.
 - **Direction is founder-facing** — non-trivial UX / scope decisions go to the
   founder via the gate, never decided unilaterally.
-- **No production code**; **no new phase** bolted onto the three-stage engine; **no
+- **No production code**; **no new phase** bolted onto the DAG workflow engine; **no
   new founder channel** (reuse the injected gate + relay).
 
 ## Docs & branch

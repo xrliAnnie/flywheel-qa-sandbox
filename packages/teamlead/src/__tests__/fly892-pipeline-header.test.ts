@@ -1,5 +1,5 @@
 /**
- * FLY-892 Step 4: the pinned three-stage pipeline header — render states +
+ * FLY-892 Step 4: the pinned DAG workflow header — render states +
  * content-keyed idempotency (absorbs the FLY-560 single-runner attach pin).
  */
 
@@ -40,7 +40,7 @@ describe("buildPipelineHeaderContent (FLY-892 Step 4)", () => {
 		expect(out.startsWith("🧭 **Route**: `code` → `pipeline_dag_v1`")).toBe(
 			true,
 		);
-		expect(out).toContain("📌 **[FLY-892] 三段流水线**");
+		expect(out).toContain("📌 **[FLY-892] DAG 工作流**");
 		expect(out).toContain("**[设计·Fable]** ✅ 完成 · exec `1a2b3c4d`");
 		expect(out).toContain("`tmux attach -t runner-design`");
 		expect(out).toContain("**[实现·Opus]** ▶ 进行中 · exec `8e5b4127`");

@@ -3,13 +3,6 @@ import { ROLE_EFFORT_LEVELS, type RoleEffort } from "./types.js";
 export type ModelProviderId = "anthropic" | "openai";
 export type ModelRuntimeVendor = "claude" | "codex";
 export type ModelSurface = "dispatch" | "lead" | "runner" | "workflow" | "cron";
-export type ModelPhaseName = "design" | "implement" | "qa";
-
-export interface ModelPhaseDispatchSpec {
-	vendor: ModelRuntimeVendor;
-	model: string;
-	effort?: RoleEffort;
-}
 
 export interface ModelRegistryEntry {
 	id: string;
@@ -333,22 +326,6 @@ export const BUILTIN_MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> =
 		light: { id: MODEL_IDS.OPUS_5, aliases: ["opus"], code: "O" },
 		trivial: { id: MODEL_IDS.OPUS_5, aliases: ["opus"], code: "O" },
 	});
-
-/**
- * Stable fail-safe for three-stage dispatch. Runtime decisions read the
- * `phases` segment from the same hot snapshot as the difficulty tiers.
- */
-export const BUILTIN_PHASE_DISPATCH: Readonly<
-	Record<ModelPhaseName, ModelPhaseDispatchSpec>
-> = Object.freeze({
-	design: Object.freeze({ vendor: "claude", model: MODEL_IDS.FABLE }),
-	implement: Object.freeze({
-		vendor: "codex",
-		model: MODEL_IDS.CODEX_STANDARD,
-		effort: "xhigh",
-	}),
-	qa: Object.freeze({ vendor: "claude", model: MODEL_IDS.OPUS_5 }),
-});
 
 export const MODEL_PROVIDERS: Readonly<
 	Record<ModelProviderId, { id: ModelProviderId; label: string }>

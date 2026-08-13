@@ -17,7 +17,7 @@ import {
 import { isWorkflowTemplateDispatchEnabled } from "../workflow-template-dispatch.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
-import { loadWorkKindConfigStrict } from "./three-stage-config-source.js";
+import { loadWorkKindConfigStrict } from "./pipeline-config-source.js";
 
 const ACTIVATION_ID = "FLY-1436";
 const PROJECT = "flywheel";

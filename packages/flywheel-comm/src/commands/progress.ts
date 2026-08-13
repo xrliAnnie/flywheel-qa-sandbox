@@ -36,7 +36,7 @@ import {
 	parseProgress,
 	renderProgress,
 	stageToPhase,
-	type ThreeStagePhase,
+	type WorkflowPhaseRole,
 } from "flywheel-config";
 import { resolveStateDbPath } from "./verify-approval.js";
 
@@ -227,14 +227,14 @@ export function runProgress(
 function newLedger(issue: string, phase?: string): ProgressLedger {
 	return {
 		issue,
-		phase: (phase as ThreeStagePhase) ?? "design",
+		phase: (phase as WorkflowPhaseRole) ?? "design",
 		chunks: [],
 		pointers: {},
 	};
 }
 
 function applyArgs(ledger: ProgressLedger, args: ProgressArgs): void {
-	if (args.phase) ledger.phase = args.phase as ThreeStagePhase;
+	if (args.phase) ledger.phase = args.phase as WorkflowPhaseRole;
 	if (args.cursor) ledger.phaseCursor = args.cursor;
 	if (args.next) ledger.nextStep = args.next;
 	if (args.handoff) ledger.handoff = args.handoff;

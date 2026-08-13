@@ -53,8 +53,6 @@ import {
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	resolveFounderTimezone,
-	THREE_STAGE_PHASE_SEQUENCE,
-	type ThreeStagePhase,
 } from "flywheel-config";
 import {
 	closeRunnerTerminalView,
@@ -129,12 +127,10 @@ import {
 	RunnerIdleWatchdog,
 } from "../RunnerIdleWatchdog.js";
 import {
-	REVIEW_BINDING_UNBOUND,
 	type Session,
 	StateStore,
 	type WorkflowEngineAlertIdentity,
 } from "../StateStore.js";
-import { isWorkflowClaimsWriteEnabled } from "../workflow-claims.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
@@ -191,7 +187,6 @@ import {
 import { resolveBridgeBuildIdentity } from "./build-identity.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
-import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
@@ -320,12 +315,6 @@ import {
 	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
 import {
-	derivePhaseDisplayState,
-	type PhaseDisplayState,
-	renderPhaseStatusLine,
-} from "./issue-display.js";
-import {
-	hasDurableIssueConclusion,
 	IssueDisplayRefresher,
 	type IssueDisplayRefreshHolder,
 } from "./issue-display-refresher.js";
@@ -379,10 +368,6 @@ import {
 	resolveLinearScope,
 	resolveProjectNameParam,
 } from "./linear-scope.js";
-import {
-	activityWindowMs,
-	describeActivityEvidence,
-} from "./liveness-evidence.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { releaseMailboxQueueDeployBarrier } from "./mailbox-queue-deploy-barrier.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
@@ -418,24 +403,16 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
-import {
-	PhaseOrchestrator,
-	type PhaseSession,
-	type ThreeStageVerdictIntent,
-	type TurnBeltRow,
-} from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
-	makeFinalizeThreeStagePhases,
+	makeFinalizeWorkflowPhaseRoles,
 	runResumablePostShipFinalization,
-	setWorkflowShadowFinalizationHook,
 } from "./post-ship-finalization.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
-import { patchSessionParams } from "./proofshot-session.js";
 import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
@@ -463,7 +440,6 @@ import {
 	residueMaintenanceEveryNTicks,
 	runResidueAwareBootSweep,
 } from "./residue-harvest.js";
-import { classifyRetestHeadDelta } from "./retest-head-delta.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import {
 	createReviewAlertEmitter,
@@ -476,7 +452,6 @@ import { makeChannelArchiveDefaultProvider } from "./roundtable/channel-archive-
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
-import { launchCommitPath } from "./run-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
 import { noteTicketEscalated } from "./runbook-gap.js";
 import {
@@ -537,12 +512,6 @@ import {
 	runTargetedArchiveCheck,
 } from "./terminal-thread-archive.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
-import {
-	resolveHandoffDispatchChannelId,
-	resolveThreeStagePolicy,
-	threeStageKeepAliveEnabled,
-} from "./three-stage-policy.js";
 import {
 	canonicalDefaultTmuxSocketPath,
 	createTmuxHoldObservationRouter,
@@ -567,6 +536,10 @@ import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
+import {
+	TurnBeltReconciler,
+	type WorktreeTurnRow,
+} from "./turn-belt-reconcile.js";
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
@@ -580,6 +553,7 @@ import {
 	watchdogBlockedEnabled,
 	watchdogLivenessEnabled,
 } from "./watchdog-minimum-set.js";
+import type { WorkflowActorSession } from "./workflow-actor-session.js";
 import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
 import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
@@ -591,7 +565,6 @@ import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
-import { createWorkflowShadowRuntimeFromEnv } from "./workflow-shadow-writer.js";
 import {
 	grantWorkflowShipCarrierTurn,
 	WorkflowShipCarrierDeliveryHandler,
@@ -1260,14 +1233,7 @@ export interface BridgeAppOptions {
 	 * request-review CLI retries and, on exhaustion, exits non-zero).
 	 */
 	reviewCoordinator?: { current: ReviewRequestCoordinator | undefined };
-	/**
-	 * FLY-793: late-bound holder for the three-stage PhaseOrchestrator. The
-	 * /events route mounts inside createBridgeApp (pre-listen), but the
-	 * orchestrator is built later in startBridge (it needs startDispatcher +
-	 * LeadAlertNotifier), so the event router reads `.current` at request time.
-	 * Absent / `.current` undefined ⇒ three-stage dormant (byte-compatible).
-	 */
-	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 	/**
 	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
@@ -1537,7 +1503,6 @@ export function createBridgeApp(
 		createWorkflowDecisionRouter({
 			store,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
-			phaseOrchestrator: opts?.phaseOrchestrator,
 			gateCarrierRebind: {
 				tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			},
@@ -1553,27 +1518,6 @@ export function createBridgeApp(
 				}),
 			...(opts?.fleetConsole
 				? { loopReentry: { tokens: opts.fleetConsole.tokens } }
-				: {}),
-			...(opts?.fleetConsole && opts.phaseOrchestrator
-				? {
-						reQa: {
-							enabled: () => isWorkflowClaimsWriteEnabled(process.env),
-							tokens: opts.fleetConsole.tokens,
-							respawn: async (canonical, prHeadSha) => {
-								const orchestrator = opts.phaseOrchestrator?.current;
-								if (!orchestrator) {
-									throw new Error("phase_orchestrator_not_ready");
-								}
-								const source = store.getSession(canonical.sourceExecutionId);
-								if (!source) throw new Error("source_session_not_found");
-								return orchestrator.respawnUnenrolledQa(
-									source,
-									prHeadSha,
-									canonical.targetAttempt,
-								);
-							},
-						},
-					}
 				: {}),
 		}),
 	);
@@ -1770,7 +1714,7 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
-			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
+			opts?.turnBeltReconciler,
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
@@ -1823,7 +1767,7 @@ export function createBridgeApp(
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 			opts?.reconnectHolder,
 			opts?.autoQaCoordinator,
-			opts?.phaseOrchestrator,
+			opts?.turnBeltReconciler,
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
 			lifecycleInfra, // FLY-1185 entry A bundle
@@ -2434,7 +2378,7 @@ export function createBridgeApp(
 			registry,
 			onApproved,
 			opts?.issueDisplayRefresh, // FLY-907
-			opts?.phaseOrchestrator, // FLY-1050: terminate → QA-loss re-drive
+			opts?.turnBeltReconciler,
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
@@ -5153,13 +5097,8 @@ export async function startBridge(
 		current: ReviewRequestCoordinator | undefined;
 	} = { current: undefined };
 
-	// FLY-793: late-bound three-stage PhaseOrchestrator holder — read by BOTH the
-	// /events router (createBridgeApp) and the in-process DirectEventSink (via
-	// setupRunInfrastructure). Built post-listen (it needs startDispatcher +
-	// LeadAlertNotifier), so `.current` stays undefined until then = three-stage
-	// dormant (byte-compatible).
-	const phaseOrchestratorHolder: {
-		current: PhaseOrchestrator | undefined;
+	const turnBeltReconcilerHolder: {
+		current: TurnBeltReconciler | undefined;
 	} = { current: undefined };
 	const workflowReworkCoordinatorHolder: {
 		current: WorkflowReworkCoordinator | undefined;
@@ -5168,27 +5107,14 @@ export async function startBridge(
 		current: WorkflowShipCarrierDeliveryHandler | undefined;
 	} = { current: undefined };
 
-	// FLY-887 (founder-visibility status line, Finding B): the refresh function
-	// is only ready once phaseQaEffects is built (post-listen), but
-	// finalizeThreeStagePhases is wired here at construction time — mirrors the
-	// same forward-reference pattern as the two holders above. Populated where
-	// the PhaseOrchestratorDeps.refreshPhaseStatusLine dep is built, so ship-time
-	// finalization refreshes the line to its final done/done/done state instead
-	// of going stale at whatever it last showed pre-merge.
-	const phaseStatusLineRefreshHolder: {
-		current: ((issueId: string) => Promise<void>) | undefined;
-	} = { current: undefined };
-
-	// FLY-887 + FLY-1204: single shared ship-time finalizer for the three-stage
-	// keep-alive parked phases (design/implement/qa). Constructed once so BOTH
-	// the in-process run-infra path AND the external-merge reconciler drive the
-	// same reclaim logic — an external merge is a real ship path and must not
-	// leak the parked phase sessions.
-	const finalizeThreeStagePhases = makeFinalizeThreeStagePhases(
+	// FLY-887 + FLY-1204: single shared ship-time finalizer for parked workflow
+	// actors. Both the in-process run-infra path and external-merge reconciler
+	// drive the same reclaim logic so a shipped workflow cannot leak actors.
+	const finalizeWorkflowPhaseRoles = makeFinalizeWorkflowPhaseRoles(
 		store,
 		transitionOpts,
 		(issueId) =>
-			phaseStatusLineRefreshHolder.current?.(issueId) ?? Promise.resolve(),
+			issueDisplayRefreshHolder.current?.refresh(issueId) ?? Promise.resolve(),
 	);
 
 	// ── FLY-1185: unified lifecycle-closeout infrastructure, built ONCE ──
@@ -5448,15 +5374,6 @@ export async function startBridge(
 				},
 				{ allowStatuses: ["terminated"] },
 			),
-		onQaPhaseTerminated: (executionId, issueId) => {
-			void phaseOrchestratorHolder.current
-				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
-				.catch((err) =>
-					console.warn(
-						`[residue-harvest] qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
-					),
-				);
-		},
 		log: (message) => console.warn(message),
 	};
 	const recordResidueFinalizeOutcome = (
@@ -5618,55 +5535,6 @@ export async function startBridge(
 				log: (message) => console.warn(message),
 			})
 		: undefined;
-	// FLY-1232/1344 module ②: always construct the hot lifecycle-shadow facade.
-	// Starts latch claims-write once before their first await; non-start hooks
-	// resolve it at use time. OFF remains a zero-write no-op. Evidence probes are
-	// the DURABLE facts of the ②b truth table: the adapter's commit-marker file
-	// + a non-:pending CommDB row.
-	// NOTE (plan §0 red line): an externally injected opts.startDispatcher
-	// below bypasses setupRunInfrastructure and is deliberately NOT wrapped.
-	const workflowShadowRuntime = createWorkflowShadowRuntimeFromEnv(
-		process.env,
-		store,
-		{
-			hasCommitMarker: (executionId) =>
-				ffExistsSync(launchCommitPath(executionId)),
-			hasNonPendingCommDbRow: (projectName, executionId) => {
-				// Tri-state (research §F.3 lookup_error, Codex code R1 #1): a
-				// missing CommDB file PROVES absence (no session was ever
-				// registered for the project) → false; a failed lookup proves
-				// nothing → "unknown" (never authorizes an abandon, never
-				// completes the started dual evidence).
-				try {
-					const dbPath = defaultGetCommDbPath(projectName);
-					if (!ffExistsSync(dbPath)) return false;
-					const db = new CommDB(dbPath);
-					try {
-						const s = db.getSession(executionId) as
-							| { tmux_window?: string }
-							| undefined;
-						return !!s && !String(s.tmux_window ?? "").endsWith(":pending");
-					} finally {
-						db.close();
-					}
-				} catch {
-					return "unknown";
-				}
-			},
-		},
-	);
-	if (workflowShadowRuntime.enabled()) {
-		console.log(
-			"[Bridge] FLY-1232: workflow shadow writer ENABLED (FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1) — observation-only dual write",
-		);
-		// Codex code R1 #5: the T9 hook is resolved centrally inside
-		// runPostShipFinalization so EVERY in-process claim contender
-		// (DirectEventSink / event-route / merge-ship-gate) fires it.
-	}
-	// Always install the hot facade. The hook itself checks claims-write at use
-	// time, so an OFF boot can become ON without reconstructing the Bridge.
-	setWorkflowShadowFinalizationHook(workflowShadowRuntime);
-
 	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. Single
 	// boot-time switch capture — OFF (=0) means neither sink receives an
 	// enqueue function at all (byte-compat: zero enqueue, scheduler
@@ -5774,19 +5642,16 @@ export async function startBridge(
 					// FLY-579: the in-process completed path drives auto-QA + holds
 					// the founder via this same holder.
 					autoQaCoordinator: autoQaCoordinatorHolder,
-					// FLY-793: the in-process completion path drives three-stage
+					// FLY-793: the in-process completion path drives DAG workflow
 					// Design→Implement→QA phase handoffs via this same holder.
-					phaseOrchestrator: phaseOrchestratorHolder,
+					turnBeltReconciler: turnBeltReconcilerHolder,
 					// FLY-887: ship-time finalizer for keep-alive parked phases
 					// (FLY-1204: shared with the external-merge reconciler below).
-					finalizeThreeStagePhases,
+					finalizeWorkflowPhaseRoles,
 					// FLY-907: the in-process sink's display-refresh holder (its
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
 					terminalCommDbSync,
-					// FLY-1232/1344: hot dispatcher pre-launch facade + DirectEventSink
-					// T9 hook. The runtime itself no-ops while claims-write is OFF.
-					workflowShadow: workflowShadowRuntime,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -5876,7 +5741,7 @@ export async function startBridge(
 								done: false,
 								reason: "linear_finalizer_unavailable",
 							})),
-						finalizeThreeStagePhases,
+						finalizeWorkflowPhaseRoles,
 						refreshIssueDisplay: (issueId) =>
 							issueDisplayRefreshHolder.current?.refresh(issueId) ??
 							Promise.resolve(),
@@ -6310,8 +6175,8 @@ export async function startBridge(
 			autoQaCoordinator: autoQaCoordinatorHolder,
 			// FLY-1188 §7.1: /review-requests route reads this holder.
 			reviewCoordinator: reviewCoordinatorHolder,
-			// FLY-793: event router reads this to drive three-stage phase handoffs.
-			phaseOrchestrator: phaseOrchestratorHolder,
+			// FLY-793: event router reads this to drive DAG workflow handoffs.
+			turnBeltReconciler: turnBeltReconcilerHolder,
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
 			accountRotationPost: accountRotationPostHolder,
 			rescueRoute: rescueRouteHolder,
@@ -6497,19 +6362,6 @@ export async function startBridge(
 				},
 				{ allowStatuses: ["terminated"] },
 			),
-		// FLY-1050: a reaped three-stage QA row may have stranded its implement
-		// at awaiting_review — fire the scoped QA-loss re-drive (fire-and-forget;
-		// the holder is late-bound, undefined pre-wiring = no-op; boot reconcile
-		// is the backstop either way).
-		onQaPhaseTerminated: (executionId, issueId) => {
-			void phaseOrchestratorHolder.current
-				?.reconcileQaLoss({ issueId, terminalExecId: executionId })
-				.catch((err) =>
-					console.warn(
-						`[crash-reaper] FLY-1050 qa-loss reconcile failed for ${executionId}: ${(err as Error).message}`,
-					),
-				);
-		},
 	};
 
 	// FLY-1374: complete-marker fail-close can persist via forceStatus when the
@@ -6595,7 +6447,7 @@ export async function startBridge(
 				}
 			: undefined,
 		// FLY-1204: parked-phase reclaim chokepoint — the safety net that reclaims
-		// leaked three-stage keep-alive phase sessions (design_done holders never
+		// leaked DAG workflow keep-alive phase sessions (design_done holders never
 		// closed after handoff; completed QA processes never torn down → OOM).
 		// closeParked goes through the SAME closeRunner teardown (finalizeDone, NO
 		// thread archive — the shared parent thread is owned by post-ship
@@ -7300,8 +7152,8 @@ export async function startBridge(
 			return probeRunnerProcessLiveness(session.tmux_session);
 		},
 		// FLY-1204: external merge is a real ship path — reclaim the parked
-		// three-stage phase sessions here too (shared finalizer, same as run-infra).
-		finalizeThreeStagePhases,
+		// DAG workflow sessions here too (shared finalizer, same as run-infra).
+		finalizeWorkflowPhaseRoles,
 		retireMergedGates: (input) =>
 			terminalGateRetirementHolder.current?.retirePrMerged({
 				projectName: input.projectName,
@@ -8061,7 +7913,7 @@ export async function startBridge(
 					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0",
 				issueAttachPinEnabled: process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0",
 			},
-			keepAliveEnabled: () => threeStageKeepAliveEnabled(),
+			keepAliveEnabled: () => true,
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
 			// face A defers instead of overwriting it with a derived badge.
 			isReconnectTitleActive: (execId) =>
@@ -8269,919 +8121,351 @@ export async function startBridge(
 		}
 	}
 
-	// FLY-793: build the three-stage PhaseOrchestrator now that startDispatcher +
-	// LeadAlertNotifier exist. Per-project `pipeline` config is loaded from the
-	// CANONICAL roots (never a PR worktree), so a runner cannot flip its own
-	// three-stage enablement. The holder is read lazily by both sinks, so filling
-	// it here (post-listen) is correct. Its OWN try/catch — a three-stage config
-	// problem must never disable auto-QA and vice versa. No startDispatcher ⇒
-	// never built (three-stage dormant; can't dispatch phase-sessions anyway).
-	if (startDispatcher) {
-		const phaseStartDispatcher = startDispatcher;
-		try {
-			const pipelineConfigByProject =
-				await loadPipelineConfigByProject(projects);
-			const enabledProjects = projects.filter(
-				(p) => pipelineConfigByProject.get(p.projectName)?.three_stage === true,
-			).length;
-			// FLY-793 (Codex full-PR R1 #1): dirty-safe worktree cleanup the handoff
-			// OWNS — so the branch-B worktree is torn down in the AWAITED
-			// closePhaseRunner (fail-closed on dirty), not left to the next phase's
-			// async, non-dirty-checked Blueprint.removeIfExists.
-			const phaseWorktreeCleanup = makeBridgeWorktreeCleanup(store, projects);
-			// FLY-859: issue-thread notes for the QA fix-loop reuse the auto-QA
-			// effects' postThread machinery (stateless; a second instance is safe).
-			const phaseQaEffects = new AutoQaEffects({
-				store,
-				projects,
-				config,
-				leadAlertNotifier,
-				chatThreadCreator,
-				transitionOpts,
-				globalBotToken: config.discordBotToken,
-				mergedGateGuard,
-			});
-			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
-			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;
-			const maxFixRounds =
-				maxFixRoundsEnv !== undefined
-					? Number.parseInt(maxFixRoundsEnv, 10)
-					: undefined;
-			const activateWakeHolder = (
-				session: PhaseSession,
-				cause: HolderWakeCause,
-			) =>
-				activateHolderForWake(
-					{
-						transitionOpts,
-						openCommDb: (projectName) =>
-							new CommDB(commDbPathForProject(projectName)),
-						resolveLeadId: (target) => {
-							const fresh = store.getSession(target.execution_id);
-							if (!fresh) return undefined;
-							try {
-								return resolveLeadForIssue(
-									projects,
-									fresh.project_name,
-									parseJsonStringArray(fresh.issue_labels),
-								).lead.agentId;
-							} catch {
-								return undefined;
-							}
-						},
-						resolveVendor: (target) => {
-							const adapter = store.getSession(
-								target.execution_id,
-							)?.adapter_type;
-							const transport =
-								adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-									? EXECUTOR_TO_TRANSPORT[
-											adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-										]
-									: "claude-code";
-							return transport === "none" ? undefined : transport;
-						},
-						discoverTmuxTarget: discoverTmuxTargetByExecutionId,
-						probeDiscoveredTarget: probeRunnerProcessLiveness,
-					},
-					{ session, cause },
-				);
-			// FLY-887 (founder-visibility status line): shared by the orchestrator's
-			// per-transition refresh AND ship-time finalization's final refresh (via
-			// phaseStatusLineRefreshHolder, declared near the other forward-reference
-			// holders — finalizeThreeStagePhases is wired before phaseQaEffects exists).
-			const refreshPhaseStatusLineEffect = async (
-				issueId: string,
-			): Promise<void> => {
-				try {
-					// FLY-907: when the unified refresher is wired, every orchestrator
-					// refresh drives ALL THREE display faces (title + header + line)
-					// from real state — a qa_result / finalize is no longer a
-					// face-C-only update.
-					const unified = issueDisplayRefreshHolder.current;
-					if (unified) {
-						await unified.refresh(issueId);
-						return;
-					}
-					// Escape-hatch path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0): face C
-					// only, derived through the unified state machine with an
-					// "unknown" park probe (status-table-only — the pre-907 shape,
-					// rendered in the new FLY-907 vocabulary).
-					const sessions = store.getPhaseSessionsForIssue(issueId);
-					if (sessions.length === 0) return;
-					const anySession = store.getSession(sessions[0]!.execution_id);
-					if (!anySession) return;
-					const issueConcluded = hasDurableIssueConclusion(store, issueId);
-					const statusByRole = new Map<string, string>();
-					for (const s of sessions) {
-						const role = s.chat_thread_role;
-						if (role && !statusByRole.has(role)) {
-							statusByRole.set(role, s.status);
-						}
-					}
-					const states = {} as Record<ThreeStagePhase, PhaseDisplayState>;
-					for (const role of THREE_STAGE_PHASE_SEQUENCE) {
-						states[role] = derivePhaseDisplayState({
-							role,
-							status: statusByRole.get(role),
-							park: "unknown",
-							issueConcluded,
-						});
-					}
-					const text = renderPhaseStatusLine(states);
-					await phaseQaEffects.refreshPhaseStatusLine({
-						session: anySession,
-						text,
-					});
-				} catch (err) {
-					console.warn(
-						`[phase-status-line] refresh failed for ${issueId}: ${(err as Error).message}`,
-					);
-				}
-			};
-			phaseStatusLineRefreshHolder.current = refreshPhaseStatusLineEffect;
-			phaseOrchestratorHolder.current = new PhaseOrchestrator({
-				startDispatcher: phaseStartDispatcher,
-				isEngineOwnedExecution: (executionId) =>
-					store.isWorkflowEngineOwnedExecution(executionId),
-				// FLY-1232/1344: hot lifecycle shadow hooks (T3/T3b/T4/T5/T6);
-				// each hook no-ops while claims-write is OFF.
-				workflowShadow: workflowShadowRuntime,
-				// FLY-859: the three-stage QA verdict machinery — thin store closures;
-				// the durable intent lives in session_params.three_stage_verdict via
-				// merge-style patchSessionParams (unrelated params survive).
-				qaVerdicts: {
-					getSession: (executionId) => store.getSession(executionId),
-					readIntent: (executionId) =>
-						store.getSessionParams(executionId)?.three_stage_verdict as
-							| ThreeStageVerdictIntent
-							| undefined,
-					patchIntent: (executionId, patch) => {
-						patchSessionParams(store, executionId, (cur) => ({
-							...cur,
-							three_stage_verdict: {
-								...((cur.three_stage_verdict as
-									| Record<string, unknown>
-									| undefined) ?? {}),
-								...patch,
-							},
-						}));
-					},
-					countImplementPhases: (issueId) =>
-						store.countSessionsByIssueAndChatThreadRole(issueId, "implement"),
-					// FLY-887: durable, crash-safe fix-round ledger (insert-or-read on the
-					// QA verdict's event id). A fix round no longer spawns a new session,
-					// so the count model can't grow — this idempotent event does.
-					recordFixRound: (session, verdictEventId) => {
-						const eventId = `three-stage-fix-round-${verdictEventId}`;
-						const prior = store.getEventPayloadById(eventId);
-						if (prior && typeof prior.round === "number") {
-							return prior.round;
-						}
-						const round =
-							store.countEventsByIssueAndType(
-								session.issue_id,
-								"three_stage_fix_round",
-							) + 1;
-						const inserted = store.insertEvent({
-							event_id: eventId,
-							execution_id: session.execution_id,
-							issue_id: session.issue_id,
-							project_name: session.project_name ?? "",
-							event_type: "three_stage_fix_round",
-							source: "bridge.phase-orchestrator",
-							payload: { round, verdictEventId },
-						});
-						if (!inserted) {
-							// Lost the UNIQUE(event_id) race → read back the winner's round.
-							const won = store.getEventPayloadById(eventId);
-							if (won && typeof won.round === "number") return won.round;
-						}
-						return round;
-					},
-					recordVerdictHead: ({
-						session,
-						verdictEventId,
-						round,
-						verdictHead,
-					}) => {
-						store.recordThreeStageVerdictHead({
-							qaExecutionId: session.execution_id,
-							issueId: session.issue_id,
-							projectName: session.project_name ?? "",
-							verdictEventId,
-							round,
-							verdictHead,
-						});
-					},
-					getUnambiguousVerdictHead: (qaExecutionId, issueId) =>
-						store.getUnambiguousThreeStageVerdictHead(qaExecutionId, issueId),
-					recordRetestSuppressed: ({
-						completionEventId,
-						implementSession,
-						qaSession,
-						verdictEventId,
-						verdictHead,
-						currentHead,
-						reason,
-						paths,
-					}) => {
-						store.insertEvent({
-							event_id: `qa-retest-suppressed-${completionEventId}`,
-							execution_id: implementSession.execution_id,
-							issue_id: implementSession.issue_id,
-							project_name: implementSession.project_name ?? "",
-							event_type: "qa_retest_suppressed",
-							source: "bridge.phase-orchestrator",
-							payload: {
-								completionEventId,
-								qaExecutionId: qaSession.execution_id,
-								verdictEventId,
-								verdictHead,
-								currentHead,
-								reason,
-								...(paths && { paths }),
-							},
-						});
-					},
-					getActiveImplementSession: (issueId) => {
-						const s = store.getActivePhaseSessionForIssue(issueId);
-						return s && s.session_role === "implement" ? s : undefined;
-					},
-					listVerdictEventCandidates: () =>
-						store.getThreeStageQaSessionsWithVerdictEvents(),
-					getLatestQaResultEvent: (executionId) =>
-						store.getLatestQaResultEventForExecution(executionId),
-					listStrandedPassCandidates: () =>
-						store.getStrandedThreeStageQaPassSessions(),
-					postIssueThread: async (session, text) => {
-						await phaseQaEffects.postThread({
-							session: session as Session,
-							text,
-						});
-					},
-					// FLY-939 (G-B): does the QA session's bound review question already
-					// have a response in the project CommDB? A "changes requested" answer
-					// on the approve_to_ship gate IS that response — the signal that a QA
-					// FAIL now is a founder-feedback kickback, not a stray FAIL. Fail-
-					// closed: unbound sentinel / missing binding / any lookup error →
-					// false (refuse the kickback rather than yank a genuinely-pending gate).
-					hasGateResponse: (session) => {
-						const qid = session.review_question_id;
-						if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
-						const dbPath = commDbPathForProject(session.project_name ?? "");
-						if (!ffExistsSync(dbPath)) return false;
-						const db = new CommDB(dbPath);
+	try {
+		const activateWakeHolder = (
+			session: WorkflowActorSession,
+			cause: HolderWakeCause,
+		) =>
+			activateHolderForWake(
+				{
+					transitionOpts,
+					openCommDb: (projectName) =>
+						new CommDB(commDbPathForProject(projectName)),
+					resolveLeadId: (target) => {
+						const fresh = store.getSession(target.execution_id);
+						if (!fresh) return undefined;
 						try {
-							return db.getResponse(qid) !== undefined;
-						} catch (err) {
-							console.warn(
-								`[three-stage] hasGateResponse lookup failed for ${session.execution_id}: ${(err as Error).message}`,
-							);
-							return false;
-						} finally {
-							db.close();
-						}
-					},
-					maxFixRounds,
-				},
-				resolveThreeStage: (session) => {
-					const issueLabels = parseJsonStringArray(
-						store.getSession(session.execution_id)?.issue_labels,
-					);
-					return resolveThreeStagePolicy({
-						pipelineConfig: pipelineConfigByProject.get(
-							session.project_name ?? "",
-						),
-						issueLabels,
-						// FLY-902: the handoff-side check must see the dispatching
-						// Lead's chatChannel too — omitting it made a configured
-						// three_stage_channels allowlist fail closed on EVERY handoff
-						// (same trust chain as the entry gate in runs-route: server-side
-						// project config, never the request body).
-						dispatchChannelId: resolveHandoffDispatchChannelId(
-							projects,
-							session.project_name,
-							issueLabels,
-						),
-						env: process.env,
-					});
-				},
-				// FLY-793 (combined-QA FLY-855): resolve the REAL leadId at handoff.
-				// The sessions table has NO lead_id column, so the orchestrator's old
-				// `prev.lead_id` read was always undefined → Blueprint's commDbPath
-				// had no leadId → TmuxAdapter's CommDB registration silently skipped
-				// → postMergeTmuxCleanup found no tmux target → the Implement/QA
-				// phase windows never auto-closed after ship (and the leaked QA
-				// runner un-archived the issue thread). Mirror the finalization
-				// paths: project config + the issue's labels.
-				resolveLeadId: (session) => {
-					if (!session.project_name) return undefined;
-					try {
-						const labels = store.getSessionLabels(session.execution_id);
-						const { lead } = resolveLeadForIssue(
-							projects,
-							session.project_name,
-							labels,
-						);
-						return lead.agentId;
-					} catch (err) {
-						console.warn(
-							`[three-stage] resolveLeadId failed for ${session.execution_id}: ${(err as Error).message}`,
-						);
-						return undefined;
-					}
-				},
-				effects: {
-					// Capture the phase's exact head SHA (git rev-parse HEAD in its
-					// worktree) BEFORE any cleanup — the durable handoff point on the
-					// shared branch B. Null on any failure → orchestrator fail-closes.
-					capturePhaseHeadSha: async (session) => {
-						const worktree = store.getSession(
-							session.execution_id,
-						)?.worktree_path;
-						if (!worktree) return null;
-						try {
-							const { stdout } = await execFileP("git", [
-								"-C",
-								worktree,
-								"rev-parse",
-								"HEAD",
-							]);
-							const sha = stdout.trim();
-							return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
-						} catch {
-							return null;
-						}
-					},
-					classifyRetestHeadDelta,
-					// Dirty-safe close of the completed phase runner. `finalizeDone`
-					// FSM-transitions the design_done / awaiting_review phase-session to
-					// completed first (edges are legal), then frees its tmux + worktree
-					// for the next phase. NO `archive` — the phases share the parent
-					// issue's thread, which must NOT be archived mid-pipeline.
-					closePhaseRunner: async (session) => {
-						// FLY-793 (Codex full-PR R1 #1): capture the worktree path BEFORE
-						// close (closeRunner may clear tmux/CommDB but leaves the worktree).
-						const worktree = store.getSession(
-							session.execution_id,
-						)?.worktree_path;
-						const result = await closeRunner(
-							{
-								executionId: session.execution_id,
-								issueId: session.issue_id,
-								projectName: session.project_name ?? "",
-								reason: `three-stage ${session.session_role ?? "phase"} handoff`,
-								executorType: "phase",
-								finalizeDone: true,
-								transitionOpts,
-							},
-							store,
-						);
-						if (!result.closed) {
-							throw new Error(result.error ?? "closeRunner did not close");
-						}
-						// FLY-793 (Codex full-PR R1 #1): the handoff OWNS the branch-B
-						// worktree teardown here (awaited, before the next phase). If the
-						// phase left uncommitted work (dirty) — or the clean-probe can't
-						// confirm — FAIL-CLOSED: throw so the PhaseOrchestrator aborts the
-						// handoff + alerts the Lead, and never lets the next phase's async
-						// Blueprint.removeIfExists silently discard those files. The head
-						// SHA was already captured from the COMMITTED tree upstream, so the
-						// next phase always starts from committed state.
-						// FLY-859 (Codex code R1 HIGH-2): the QA FAIL fix-loop closes
-						// TERMINAL sessions through this path too. An absent worktree path
-						// means branch B is already free (removal already proven) — skip
-						// the probes instead of failing "unverifiable" forever.
-						if (worktree && ffExistsSync(worktree)) {
-							const clean = await gitWorktreeClean(worktree);
-							if (clean !== true) {
-								throw new Error(
-									`${session.session_role ?? "phase"} worktree ${worktree} is ${
-										clean === false
-											? "DIRTY (uncommitted changes)"
-											: "unverifiable"
-									} — refusing handoff to avoid discarding work`,
-								);
-							}
-							// Clean → dirty-safe removal (git worktree remove, no --force) so
-							// branch B is free for the next phase's create.
-							await phaseWorktreeCleanup({
-								executionId: session.execution_id,
-								issueId: session.issue_id,
-								issueIdentifier: session.issue_identifier,
-								projectName: session.project_name ?? "",
-								tmuxClosed: result.closed,
-							});
-							// FLY-793 (Codex full-PR R2 #2): PROVE removal in the awaited
-							// path. makeBridgeWorktreeCleanup is never-throw (silently skips
-							// on FLYWHEEL_WORKTREE_AUTOCLEAN=0 / not-registered / path- or
-							// branch-mismatch, and only audits a removal failure), so a
-							// return does NOT guarantee the worktree is gone. If the path
-							// still exists, FAIL-CLOSED — for a phase handoff the autoclean
-							// escape hatch is FATAL, not skip-and-continue: the next phase
-							// must never run its async, non-dirty-safe removeIfExists on a
-							// worktree the orchestrator could not free. (remove() renames the
-							// path away synchronously, so a successful removal leaves it gone.)
-							if (ffExistsSync(worktree)) {
-								throw new Error(
-									`${session.session_role ?? "phase"} worktree ${worktree} still present after cleanup (autoclean off or removal failed) — refusing handoff`,
-								);
-							}
-						}
-					},
-					// Fail-closed Lead-only alert (never the founder). Resolve the
-					// owning Lead + page it via the SAME notifier auto-QA uses.
-					alertLeadPipelineError: async ({ session, reason }) => {
-						const projectName = session.project_name ?? "";
-						let leadId: string | undefined;
-						try {
-							const { lead } = resolveLeadForIssue(
+							return resolveLeadForIssue(
 								projects,
-								projectName,
-								parseJsonStringArray(
-									store.getSession(session.execution_id)?.issue_labels,
-								),
-							);
-							leadId = lead.agentId;
-						} catch {
-							/* leadId stays undefined */
-						}
-						if (!leadId) {
-							console.error(
-								`[three-stage] pipeline error (no lead): ${reason}`,
-							);
-							return;
-						}
-						// FLY-927 (Task 3.3, FLY-912 wording collapse): the body leads with
-						// the TRUTHFUL park line derived from the session's REPORTED stage
-						// (never guessed); underivable → an explicit stage未上报 prefix.
-						const fullSession = store.getSession(session.execution_id);
-						const parkTuple = fullSession
-							? deriveParkTuple({
-									session: fullSession,
-									pendingGates: [],
-									autoQaActive: false,
-									notifiedEvidence: false,
-									ownerLeadId: leadId,
-									nowMs: Date.now(),
-								})
-							: null;
-						const truthfulBody = parkTuple
-							? `${formatParkAlert(parkTuple, Date.now())}\n${reason}`
-							: `[stage未上报] ${reason}`;
-						// FLY-927 (W1): through the ROUTED sink — an issue-progress kind
-						// with a bound [FLY-XX] thread lands there (D1); unset routing env
-						// / boot window = the raw notifier exactly as before. sessionKey
-						// carries the execution id the Router's thread resolution keys on.
-						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-							leadId,
-							projectName,
-							eventId: `three-stage-stuck:${session.execution_id}:${Date.now()}`,
-							eventType: "three_stage_stuck",
-							title: `Three-stage pipeline stuck — ${
-								session.issue_identifier ?? session.issue_id
-							}`,
-							body: truthfulBody,
-							severity: "warning",
-							sessionKey: session.execution_id,
-						});
-					},
-					// FLY-1279 B2: dedicated, head-stable takeover alert. This path is
-					// selected instead of (never in addition to) three_stage_stuck.
-					alertWorktreeTakeoverFailure: async ({ session, reason }) => {
-						const projectName = session.project_name ?? "";
-						let leadId: string | undefined;
-						try {
-							leadId = resolveLeadForIssue(
-								projects,
-								projectName,
-								parseJsonStringArray(
-									store.getSession(session.execution_id)?.issue_labels,
-								),
+								fresh.project_name,
+								parseJsonStringArray(fresh.issue_labels),
 							).lead.agentId;
 						} catch {
-							console.error(
-								`[three-stage] takeover failure (no lead): ${reason}`,
-							);
-							return;
+							return undefined;
 						}
-						await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
-							leadId,
-							projectName,
-							eventId: `three-stage-takeover:${session.execution_id}`,
-							eventType: "three_stage_takeover_failed",
-							title: `Three-stage worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
-							body: reason,
-							severity: "warning",
-							sessionKey: session.execution_id,
-						});
 					},
-					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
-					// target = the process is gone → absent.
-					probePhaseAlive: async (session) => {
-						const target = getTmuxTargetFromCommDb(
-							session.execution_id,
-							session.project_name ?? "",
-						);
-						if (!target) return "absent";
-						return probeRunnerProcessLiveness(target.tmuxWindow);
-					},
-					// FLY-939 (G-C): probe a phase row's PERSISTED tmux target DIRECTLY,
-					// bypassing the CommDB registration lookup (which returns absent for a
-					// terminal-status row and would mask a still-live window — the exact
-					// pollution the ghost guard must catch, Codex design R1 #2). No
-					// persisted tmux_session → nothing to probe → absent.
-					probeGhostTmux: async (row) => {
-						if (!row.tmux_session) return "absent";
-						return probeRunnerProcessLiveness(row.tmux_session);
-					},
-					// FLY-887: park a completed-but-alive phase (CommDB declared-state;
-					// NOT closeRunner, NOT worktree removal). The shared worktree stays.
-					parkPhaseRunner: async (session) => {
-						const db = new CommDB(
-							commDbPathForProject(session.project_name ?? ""),
-						);
-						try {
-							db.upsertDeclaredState(
-								session.execution_id,
-								"parked",
-								`three-stage ${session.session_role ?? "phase"} parked awaiting pipeline`,
-								Date.now(),
-								null,
-							);
-						} finally {
-							db.close();
-						}
-						// FLY-907 (Step 4.2): a park changes the derived display state
-						// (boundary status + parked → ✅) with NO stage_changed — the
-						// FLY-902 Finding #4 stale-display root cause. Refresh.
-						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-					},
-					// FLY-1329 (A1/A2): an `absent` park is a downgrade taken under
-					// uncertainty — audit it so it is never silent. The activity evidence is
-					// gathered HERE, for the alert body only: it tells the operator whether
-					// this is the FLY-1319 shape (live runner, stale window mapping) or a
-					// genuine corpse with no dead-pin. It is deliberately NOT passed to the
-					// verdict — see liveness-evidence.ts.
-					recordParkLivenessDowngrade: async ({
-						session,
-						liveness,
-						reason,
-					}) => {
-						let detail = "activity evidence unavailable";
-						try {
-							const row = store.getSession(session.execution_id);
-							const hb = row?.heartbeat_at
-								? Date.parse(`${row.heartbeat_at}Z`)
-								: Number.NaN;
-							// FLY-1329 (A2, LOW-5): recent CommDB traffic is a second liveness
-							// signal — a live parked runner still sending `ask`s while its
-							// heartbeat went stale IS the FLY-1319 shape, and heartbeat-alone
-							// would mislabel it likely-dead. Best-effort.
-							let hasRecentMessageInWindow = false;
-							try {
-								const proj = session.project_name ?? "";
-								const dbPath = commDbPathForProject(proj);
-								if (proj && ffExistsSync(dbPath)) {
-									const cdb = CommDB.openReadonly(dbPath);
-									try {
-										hasRecentMessageInWindow = cdb.hasRecentMessagesFrom(
-											session.execution_id,
-											Math.ceil(activityWindowMs() / 1000),
-										);
-									} finally {
-										cdb.close();
-									}
-								}
-							} catch {
-								/* evidence only — a comm.db read miss never breaks the audit */
-							}
-							detail = describeActivityEvidence(
-								{
-									heartbeatAtMs: Number.isFinite(hb) ? hb : null,
-									lastMessageAtMs: null,
-									hasRecentMessageInWindow,
-								},
-								Date.now(),
-							).detail;
-						} catch {
-							/* evidence is decoration — never break the audit for it */
-						}
-						try {
-							store.insertEvent({
-								// Stable per (exec, liveness): a re-driven handoff re-parking the
-								// same session dedupes instead of stacking duplicate audit rows.
-								event_id: `park-liveness-downgrade-${session.execution_id}-${liveness}`,
-								execution_id: session.execution_id,
-								issue_id: session.issue_id,
-								project_name: session.project_name ?? "",
-								event_type: "park_liveness_downgrade",
-								source: "bridge.phase-orchestrator",
-								payload: {
-									liveness,
-									reason,
-									activity: detail,
-									sessionRole: session.session_role ?? "main",
-								},
-							});
-						} catch (err) {
-							console.warn(
-								`[Bridge] park_liveness_downgrade audit failed for ${session.execution_id}: ${(err as Error).message}`,
-							);
-						}
-						console.warn(
-							`[Bridge] FLY-1329: parked ${session.execution_id} on liveness=${liveness} instead of closing it — ${detail}`,
-						);
-					},
-					// FLY-887: fail-closed pre-wake worktree check (mirrors the close
-					// path's dirty guard, on the wake path).
-					assertPhaseWorktreeReady: async (session, expectedHeadSha) => {
-						const worktree = store.getSession(
-							session.execution_id,
-						)?.worktree_path;
-						if (!worktree) {
-							return { ok: false, reason: "no persisted worktree_path" };
-						}
-						if (!ffExistsSync(worktree)) {
-							return { ok: false, reason: `worktree path ${worktree} missing` };
-						}
-						const clean = await gitWorktreeClean(worktree);
-						if (clean !== true) {
-							return {
-								ok: false,
-								reason: clean === false ? "dirty" : "clean-unverifiable",
-							};
-						}
-						try {
-							const { stdout } = await execFileP("git", [
-								"-C",
-								worktree,
-								"rev-parse",
-								"HEAD",
-							]);
-							const head = stdout.trim();
-							if (head !== expectedHeadSha) {
-								return {
-									ok: false,
-									reason: `HEAD ${head} != expected ${expectedHeadSha}`,
-								};
-							}
-						} catch (err) {
-							return {
-								ok: false,
-								reason: `rev-parse failed: ${(err as Error).message}`,
-							};
-						}
-						return { ok: true };
-					},
-					activatePhaseRunner: ({ session, cause }) =>
-						activateWakeHolder(session, cause),
-					// FLY-887: clear the park marker, then mailbox-wake the parked phase
-					// with the role-specific instruction + new head (mirrors auto-QA
-					// retestWakeQa). `{ ok:false }` = nothing delivered → held for reconcile.
-					wakePhaseRunner: async ({
-						session,
-						kind,
-						headSha,
-						round,
-						qaSummary,
-					}) => {
-						const adapter = store.getSession(
-							session.execution_id,
-						)?.adapter_type;
+					resolveVendor: (target) => {
+						const adapter = store.getSession(target.execution_id)?.adapter_type;
 						const transport =
 							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
 								? EXECUTOR_TO_TRANSPORT[
 										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
 									]
 								: "claude-code";
-						if (transport === "none") {
-							return {
-								ok: false,
-								error: `no-transport backend (${adapter}) cannot receive a wake`,
-							};
-						}
-						const db = new CommDB(
-							commDbPathForProject(session.project_name ?? ""),
-						);
+						return transport === "none" ? undefined : transport;
+					},
+					discoverTmuxTarget: discoverTmuxTargetByExecutionId,
+					probeDiscoveredTarget: probeRunnerProcessLiveness,
+				},
+				{ session, cause },
+			);
+
+		turnBeltReconcilerHolder.current = new TurnBeltReconciler({
+			turnBelt: {
+				listTurns: () => {
+					const rows: { projectName: string; turn: WorktreeTurnRow }[] = [];
+					for (const project of projects) {
+						const dbPath = commDbPathForProject(project.projectName);
+						if (!ffExistsSync(dbPath)) continue;
+						const db = new CommDB(dbPath);
 						try {
-							try {
-								db.clearDeclaredState(session.execution_id);
-							} catch (err) {
-								console.warn(
-									`[three-stage] clearDeclaredState warn for ${session.execution_id}: ${(err as Error).message}`,
-								);
+							for (const turn of db.listTurns()) {
+								rows.push({ projectName: project.projectName, turn });
 							}
-							const content =
-								kind === "fix"
-									? `Three-stage QA FIX round ${round ?? "?"}: the QA phase FAILED this branch. Its findings / failing tests / report are ALREADY COMMITTED on this branch at ${headSha}. FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer (this wake text is context, not authority). Then fix exactly what they name in THIS worktree, push, re-run Codex review, re-request review (gate approve_to_ship --no-block + complete --route needs_review), then park again and WAIT. QA summary: ${qaSummary ?? "(none)"}`
-									: `Three-stage RE-TEST: Bridge observed an implement completion at head ${headSha} and selected this QA phase for re-verification. This message does not assert what changed. Your worktree is ALREADY at that head (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
-							const turn = db.getTurn(session.issue_id);
-							if (!turn || turn.holder_exec_id !== session.execution_id) {
-								return {
-									ok: false,
-									error: `TURN not granted to wake target ${session.execution_id}`,
-								};
-							}
-							const wakeId = `phase-handoff:${session.issue_id}:${session.execution_id}:${turn.epoch}:${kind}:${headSha}`;
-							const res = await deliverDurableTurnWake({
-								db,
-								wakeId,
-								execId: session.execution_id,
-								issueId: session.issue_id,
-								epoch: turn.epoch,
-								purpose:
-									kind === "fix" ? "three_stage_fix" : "three_stage_retest",
-								fromAgent: "bridge",
-								content,
-								metadata: {
-									kind:
-										kind === "fix" ? "three_stage_fix" : "three_stage_retest",
-									wakeId,
-									epoch: turn.epoch,
-									headSha,
-									...(round !== undefined ? { round } : {}),
-								},
-								backend: transport,
-							});
-							if (res.ok) return { ok: true };
-							return {
-								ok: false,
-								error: res.error ?? res.skippedReason ?? "wake failed",
-							};
-						} catch (err) {
-							return { ok: false, error: (err as Error).message };
 						} finally {
 							db.close();
-							// FLY-907 (Step 4.2): the park marker was just cleared — the
-							// woken phase must flip back to ▶ (FLY-543 rework display).
-							// This is also the normal TURN re-grant path. Fire-and-forget.
-							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
 						}
-					},
-					wakeRecoveredTurn: async ({
-						session,
-						epoch,
-						previousHolderExecId,
-						reason,
-					}) => {
-						const adapter = store.getSession(
-							session.execution_id,
-						)?.adapter_type;
-						const transport =
-							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-								? EXECUTOR_TO_TRANSPORT[
-										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-									]
-								: "claude-code";
-						if (transport === "none") {
-							return {
-								ok: false,
-								error: `no-transport backend (${adapter}) cannot receive a wake`,
-							};
-						}
-						const wakeId = `turn-recovery:${session.issue_id}:${previousHolderExecId}:${epoch - 1}:${session.execution_id}`;
-						const db = new CommDB(
-							commDbPathForProject(session.project_name ?? ""),
-						);
-						try {
-							db.clearDeclaredState(session.execution_id);
-							return await deliverDurableTurnWake({
-								db,
-								wakeId,
-								execId: session.execution_id,
-								issueId: session.issue_id,
-								epoch,
-								purpose: "turn_recovery",
-								fromAgent: "bridge",
-								content: `[phase-wake ${wakeId}] TURN recovery granted epoch ${epoch} after ${previousHolderExecId} became stale. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Recovery reason: ${reason}`,
-								metadata: {
-									kind: "turn_recovery",
-									wakeId,
-									epoch,
-									previousHolderExecId,
-								},
-								backend: transport,
-							});
-						} catch (error) {
-							return { ok: false, error: (error as Error).message };
-						} finally {
-							db.close();
-							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-						}
-					},
+					}
+					return rows;
 				},
-				// FLY-887: keep-alive kill-switch + wake-target lookup + TURN grant.
-				keepAliveEnabled: () => threeStageKeepAliveEnabled(),
-				getAlivePhaseSession: (issueId, phase) => {
-					const ALIVE = new Set([
-						"running",
-						"awaiting_review",
-						"approved_to_ship",
-						"design_done",
-					]);
-					return store
-						.getPhaseSessionsForIssue(issueId)
-						.find((s) => s.chat_thread_role === phase && ALIVE.has(s.status)) as
-						| PhaseSession
-						| undefined;
-				},
-				// FLY-1375: merge-confirmed is the spawn/reclaim barrier; a cleanup
-				// claim no longer doubles as completion evidence.
-				hasShipFinalizationClaim: (issueId) =>
-					store.hasMergeConfirmedForIssue(issueId),
-				// FLY-887 (founder-visibility status line): re-render + post-or-edit
-				// the single "🎨design(...)·🔨implement(...)·🧪qa(...)" line. Best-effort
-				// — never lets a Discord hiccup break a real handoff/verdict. Also
-				// populates phaseStatusLineRefreshHolder (declared near the other
-				// forward-reference holders) so ship-time finalization can reach the
-				// SAME function to refresh the line to its final done/done/done state
-				// (Finding B from the founder-visibility real-machine QA round — the
-				// line otherwise goes stale at whatever it showed pre-merge).
-				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
-				grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
-					const db = new CommDB(commDbPathForProject(projectName));
+				getTurn: (issueId, projectName) => {
+					const dbPath = commDbPathForProject(projectName);
+					if (!ffExistsSync(dbPath)) return null;
+					const db = new CommDB(dbPath);
 					try {
-						db.grantTurn(issueId, execId, phase, Date.now(), {
-							project: projectName,
-							sourceEventId,
-						});
+						return db.getTurn(issueId);
 					} finally {
 						db.close();
 					}
 				},
-				// FLY-921 Fix C: turn-belt reconcile reads/writes. Rows live in
-				// per-project CommDBs (no project column) — this seam owns the
-				// attribution so the orchestrator never sees an unattributed row.
-				turnBelt: {
-					listTurns: () => {
-						const rows: { projectName: string; turn: TurnBeltRow }[] = [];
-						for (const p of projects) {
-							const dbPath = commDbPathForProject(p.projectName);
-							if (!ffExistsSync(dbPath)) continue;
-							const db = new CommDB(dbPath);
-							try {
-								for (const turn of db.listTurns()) {
-									rows.push({ projectName: p.projectName, turn });
-								}
-							} catch (err) {
-								console.warn(
-									`[three-stage] turnBelt.listTurns failed for ${p.projectName}: ${(err as Error).message}`,
-								);
-							} finally {
-								db.close();
-							}
-						}
-						return rows;
-					},
-					getTurn: (issueId, projectName) => {
-						const dbPath = commDbPathForProject(projectName);
-						if (!ffExistsSync(dbPath)) return null;
-						const db = new CommDB(dbPath);
-						try {
-							return db.getTurn(issueId);
-						} finally {
-							db.close();
-						}
-					},
-					deleteTurn: (issueId, projectName) => {
-						const dbPath = commDbPathForProject(projectName);
-						if (!ffExistsSync(dbPath)) return;
-						const db = new CommDB(dbPath);
-						try {
-							db.deleteTurn(issueId);
-						} finally {
-							db.close();
-						}
-					},
-					getSessionForTurnHolder: (execId) => store.getSession(execId),
-					getPhaseSessionsForIssue: (issueId) =>
-						store.getPhaseSessionsForIssue(issueId) as PhaseSession[],
+				deleteTurn: (issueId, projectName) => {
+					const dbPath = commDbPathForProject(projectName);
+					if (!ffExistsSync(dbPath)) return;
+					const db = new CommDB(dbPath);
+					try {
+						db.deleteTurn(issueId);
+					} finally {
+						db.close();
+					}
 				},
-				// FLY-793 (Codex full-PR R2 #1): source stranded design_done sessions
-				// for the startup reconcile (boot marker drain lands them before this
-				// orchestrator is wired).
-				listStrandedDesignPhases: () => store.getStrandedDesignPhaseSessions(),
-				// FLY-939 (G-A2): implement rows stranded at awaiting_review — the
-				// startup reconcile re-drives their lost implement→QA handoff.
-				listStrandedImplementPhases: () =>
-					store.getStrandedImplementPhaseSessions() as PhaseSession[],
-				// FLY-939 (G-C): all rows for an issue+phase (any status, newest first
-				// with rowid tiebreak) — the ghost guard's probe pool.
-				listPhaseSessionRows: (issueId, phase) =>
-					store
-						.getPhaseSessionsForIssue(issueId)
-						.filter((s) => s.chat_thread_role === phase) as PhaseSession[],
-				logger: {
-					log: (m) => console.log(m),
-					warn: (m) => console.warn(m),
+				getSessionForTurnHolder: (executionId) =>
+					store.getSession(executionId) as WorkflowActorSession | undefined,
+				getActorSessionsForIssue: (issueId) =>
+					store.getPhaseSessionsForIssue(issueId) as WorkflowActorSession[],
+			},
+			isEngineOwnedExecution: (executionId) =>
+				store.isWorkflowEngineOwnedExecution(executionId),
+			alertWorktreeTakeoverFailure: async ({ session, reason }) => {
+				const projectName = session.project_name ?? "";
+				let leadId: string | undefined;
+				try {
+					leadId = resolveLeadForIssue(
+						projects,
+						projectName,
+						parseJsonStringArray(
+							store.getSession(session.execution_id)?.issue_labels,
+						),
+					).lead.agentId;
+				} catch {
+					console.error(
+						`[workflow] worktree takeover failure has no Lead: ${reason}`,
+					);
+					return;
+				}
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+					leadId,
+					projectName,
+					eventId: `workflow-worktree-takeover:${session.execution_id}`,
+					eventType: "three_stage_takeover_failed",
+					title: `Workflow worktree takeover failed — ${session.issue_identifier ?? session.issue_id}`,
+					body: reason,
+					severity: "warning",
+					sessionKey: session.execution_id,
+				});
+			},
+			probeActorAlive: async (session) => {
+				const target = getTmuxTargetFromCommDb(
+					session.execution_id,
+					session.project_name ?? "",
+				);
+				if (target) return probeRunnerProcessLiveness(target.tmuxWindow);
+				if (session.tmux_session) {
+					return probeRunnerProcessLiveness(session.tmux_session);
+				}
+				return "absent";
+			},
+			grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
+				const db = new CommDB(commDbPathForProject(projectName));
+				try {
+					db.grantTurn(issueId, execId, phase, Date.now(), {
+						project: projectName,
+						sourceEventId,
+					});
+				} finally {
+					db.close();
+				}
+			},
+			wakeRecoveredTurn: async ({
+				session,
+				epoch,
+				previousHolderExecId,
+				reason,
+			}) => {
+				const adapter = store.getSession(session.execution_id)?.adapter_type;
+				const transport =
+					adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+						? EXECUTOR_TO_TRANSPORT[
+								adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+							]
+						: "claude-code";
+				if (transport === "none") {
+					return { ok: false, error: `wake_transport_missing:${adapter}` };
+				}
+				const wakeId = `turn-recovery:${session.issue_id}:${previousHolderExecId}:${epoch - 1}:${session.execution_id}`;
+				const db = new CommDB(commDbPathForProject(session.project_name ?? ""));
+				try {
+					db.clearDeclaredState(session.execution_id);
+					return await deliverDurableTurnWake({
+						db,
+						wakeId,
+						execId: session.execution_id,
+						issueId: session.issue_id,
+						epoch,
+						purpose: "turn_recovery",
+						fromAgent: "bridge",
+						content: `[phase-wake ${wakeId}] TURN recovery granted epoch ${epoch} after ${previousHolderExecId} became stale. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Recovery reason: ${reason}`,
+						metadata: {
+							kind: "turn_recovery",
+							wakeId,
+							epoch,
+							previousHolderExecId,
+						},
+						backend: transport,
+					});
+				} catch (error) {
+					return { ok: false, error: (error as Error).message };
+				} finally {
+					db.close();
+					issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+				}
+			},
+			alertLead: async ({ session, reason }) => {
+				const projectName = session.project_name ?? "";
+				let leadId: string | undefined;
+				try {
+					leadId = resolveLeadForIssue(
+						projects,
+						projectName,
+						parseJsonStringArray(
+							store.getSession(session.execution_id)?.issue_labels,
+						),
+					).lead.agentId;
+				} catch {
+					console.error(`[turn-belt] recovery alert has no Lead: ${reason}`);
+					return;
+				}
+				await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+					leadId,
+					projectName,
+					eventId: `turn-belt-stuck:${session.execution_id}:${Date.now()}`,
+					eventType: "three_stage_stuck",
+					title: `Workflow TURN recovery — ${session.issue_identifier ?? session.issue_id}`,
+					body: reason,
+					severity: "warning",
+					sessionKey: session.execution_id,
+				});
+			},
+			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
+		});
+
+		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
+			store,
+			ownerId: `bridge:${process.pid}`,
+			env: process.env,
+			resolveAlertIdentity: (run) =>
+				resolveWorkflowRunAlertIdentity({
+					store,
+					projects,
+					defaultLeadAgentId: config.defaultLeadAgentId,
+					projectName: run.project_name,
+					issueId: run.issue_id,
+					runId: run.run_id,
+					log: (message) => console.warn(`[workflow-rework] ${message}`),
+				}),
+			effects: {
+				getActorSession: (executionId) =>
+					store.getSession(executionId) as WorkflowActorSession | undefined,
+				probeRegistered: async (session) => {
+					const target = getTmuxTargetFromCommDb(
+						session.execution_id,
+						session.project_name ?? "",
+					);
+					if (!target) return "absent";
+					return probeRunnerProcessLiveness(target.tmuxWindow);
 				},
-			});
-			workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
+				probePersisted: async (session) => {
+					if (!session.tmux_session) return "absent";
+					return probeRunnerProcessLiveness(session.tmux_session);
+				},
+				hasHostProcess: hasHostProcessByExecutionId,
+				assertWorktreeReady: async (session, expectedHeadSha) => {
+					const worktree = store.getSession(
+						session.execution_id,
+					)?.worktree_path;
+					if (!worktree) return { ok: false, reason: "worktree_path_missing" };
+					if (!ffExistsSync(worktree)) {
+						return { ok: false, reason: `worktree_missing:${worktree}` };
+					}
+					const clean = await gitWorktreeClean(worktree);
+					if (clean !== true) {
+						return {
+							ok: false,
+							reason:
+								clean === false ? "worktree_dirty" : "worktree_unverifiable",
+						};
+					}
+					try {
+						const { stdout } = await execFileP("git", [
+							"-C",
+							worktree,
+							"rev-parse",
+							"HEAD",
+						]);
+						const actual = stdout.trim().toLowerCase();
+						if (actual !== expectedHeadSha.trim().toLowerCase()) {
+							return {
+								ok: false,
+								reason: `head_mismatch:${actual}:${expectedHeadSha}`,
+							};
+						}
+					} catch (error) {
+						return {
+							ok: false,
+							reason: `head_probe_failed:${(error as Error).message}`,
+						};
+					}
+					return { ok: true };
+				},
+				activateActorForWake: (session) =>
+					activateWakeHolder(session, "workflow_rework"),
+				grantTurn: async (input) => {
+					const grantedAtMs = Date.now();
+					const db = new CommDB(commDbPathForProject(input.projectName));
+					try {
+						return grantWorkflowReworkTurn(db, input, grantedAtMs);
+					} finally {
+						db.close();
+					}
+				},
+				wakeActor: async ({
+					session,
+					wakeId,
+					activationId,
+					epoch,
+					context,
+				}) => {
+					const adapter = store.getSession(session.execution_id)?.adapter_type;
+					const transport =
+						adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+							? EXECUTOR_TO_TRANSPORT[
+									adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+								]
+							: "claude-code";
+					if (transport === "none") {
+						return { ok: false, error: `wake_transport_missing:${adapter}` };
+					}
+					const db = new CommDB(
+						commDbPathForProject(session.project_name ?? ""),
+					);
+					try {
+						db.clearDeclaredState(session.execution_id);
+						const res = await deliverDurableTurnWake({
+							db,
+							wakeId,
+							execId: session.execution_id,
+							issueId: session.issue_id,
+							epoch,
+							activationId,
+							purpose: "workflow_rework",
+							fromAgent: "bridge",
+							content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
+							metadata: {
+								kind: "workflow_rework",
+								wakeId,
+								activationId,
+								epoch,
+							},
+							backend: transport,
+						});
+						return res.ok
+							? { ok: true }
+							: {
+									ok: false,
+									error: res.error ?? res.skippedReason ?? "wake_failed",
+								};
+					} catch (error) {
+						return { ok: false, error: (error as Error).message };
+					} finally {
+						db.close();
+						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+					}
+				},
+			},
+		});
+		workflowShipCarrierDeliveryHolder.current =
+			new WorkflowShipCarrierDeliveryHandler({
 				store,
-				ownerId: `bridge:${process.pid}`,
-				env: process.env,
+				ownerId: `bridge:${process.pid}:ship-carrier`,
 				resolveAlertIdentity: (run) =>
 					resolveWorkflowRunAlertIdentity({
 						store,
@@ -9190,32 +8474,24 @@ export async function startBridge(
 						projectName: run.project_name,
 						issueId: run.issue_id,
 						runId: run.run_id,
-						log: (message) => console.warn(`[workflow-rework] ${message}`),
+						log: (message) =>
+							console.warn(`[workflow-ship-carrier] ${message}`),
 					}),
 				effects: {
 					getActorSession: (executionId) =>
-						store.getSession(executionId) as PhaseSession | undefined,
-					probeRegistered: async (session) => {
-						const target = getTmuxTargetFromCommDb(
-							session.execution_id,
-							session.project_name ?? "",
-						);
-						if (!target) return "absent";
-						return probeRunnerProcessLiveness(target.tmuxWindow);
-					},
-					probePersisted: async (session) => {
-						if (!session.tmux_session) return "absent";
-						return probeRunnerProcessLiveness(session.tmux_session);
-					},
-					hasHostProcess: hasHostProcessByExecutionId,
+						store.getSession(executionId) as WorkflowActorSession | undefined,
 					assertWorktreeReady: async (session, expectedHeadSha) => {
 						const worktree = store.getSession(
 							session.execution_id,
 						)?.worktree_path;
-						if (!worktree)
+						if (!worktree) {
 							return { ok: false, reason: "worktree_path_missing" };
+						}
 						if (!ffExistsSync(worktree)) {
-							return { ok: false, reason: `worktree_missing:${worktree}` };
+							return {
+								ok: false,
+								reason: `worktree_missing:${worktree}`,
+							};
 						}
 						const clean = await gitWorktreeClean(worktree);
 						if (clean !== true) {
@@ -9250,10 +8526,9 @@ export async function startBridge(
 					activateActorForWake: (session) =>
 						activateWakeHolder(session, "workflow_rework"),
 					grantTurn: async (input) => {
-						const grantedAtMs = Date.now();
 						const db = new CommDB(commDbPathForProject(input.projectName));
 						try {
-							return grantWorkflowReworkTurn(db, input, grantedAtMs);
+							return grantWorkflowShipCarrierTurn(db, input, Date.now());
 						} finally {
 							db.close();
 						}
@@ -9275,7 +8550,10 @@ export async function startBridge(
 									]
 								: "claude-code";
 						if (transport === "none") {
-							return { ok: false, error: `wake_transport_missing:${adapter}` };
+							return {
+								ok: false,
+								error: `wake_transport_missing:${adapter}`,
+							};
 						}
 						const db = new CommDB(
 							commDbPathForProject(session.project_name ?? ""),
@@ -9289,11 +8567,11 @@ export async function startBridge(
 								issueId: session.issue_id,
 								epoch,
 								activationId,
-								purpose: "workflow_rework",
+								purpose: "workflow_ship_carrier",
 								fromAgent: "bridge",
-								content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
+								content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
 								metadata: {
-									kind: "workflow_rework",
+									kind: "workflow_ship_carrier",
 									wakeId,
 									activationId,
 									epoch,
@@ -9315,173 +8593,20 @@ export async function startBridge(
 					},
 				},
 			});
-			workflowShipCarrierDeliveryHolder.current =
-				new WorkflowShipCarrierDeliveryHandler({
-					store,
-					ownerId: `bridge:${process.pid}:ship-carrier`,
-					resolveAlertIdentity: (run) =>
-						resolveWorkflowRunAlertIdentity({
-							store,
-							projects,
-							defaultLeadAgentId: config.defaultLeadAgentId,
-							projectName: run.project_name,
-							issueId: run.issue_id,
-							runId: run.run_id,
-							log: (message) =>
-								console.warn(`[workflow-ship-carrier] ${message}`),
-						}),
-					effects: {
-						getActorSession: (executionId) =>
-							store.getSession(executionId) as PhaseSession | undefined,
-						assertWorktreeReady: async (session, expectedHeadSha) => {
-							const worktree = store.getSession(
-								session.execution_id,
-							)?.worktree_path;
-							if (!worktree) {
-								return { ok: false, reason: "worktree_path_missing" };
-							}
-							if (!ffExistsSync(worktree)) {
-								return {
-									ok: false,
-									reason: `worktree_missing:${worktree}`,
-								};
-							}
-							const clean = await gitWorktreeClean(worktree);
-							if (clean !== true) {
-								return {
-									ok: false,
-									reason:
-										clean === false
-											? "worktree_dirty"
-											: "worktree_unverifiable",
-								};
-							}
-							try {
-								const { stdout } = await execFileP("git", [
-									"-C",
-									worktree,
-									"rev-parse",
-									"HEAD",
-								]);
-								const actual = stdout.trim().toLowerCase();
-								if (actual !== expectedHeadSha.trim().toLowerCase()) {
-									return {
-										ok: false,
-										reason: `head_mismatch:${actual}:${expectedHeadSha}`,
-									};
-								}
-							} catch (error) {
-								return {
-									ok: false,
-									reason: `head_probe_failed:${(error as Error).message}`,
-								};
-							}
-							return { ok: true };
-						},
-						activateActorForWake: (session) =>
-							activateWakeHolder(session, "workflow_rework"),
-						grantTurn: async (input) => {
-							const db = new CommDB(commDbPathForProject(input.projectName));
-							try {
-								return grantWorkflowShipCarrierTurn(db, input, Date.now());
-							} finally {
-								db.close();
-							}
-						},
-						wakeActor: async ({
-							session,
-							wakeId,
-							activationId,
-							epoch,
-							context,
-						}) => {
-							const adapter = store.getSession(
-								session.execution_id,
-							)?.adapter_type;
-							const transport =
-								adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-									? EXECUTOR_TO_TRANSPORT[
-											adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-										]
-									: "claude-code";
-							if (transport === "none") {
-								return {
-									ok: false,
-									error: `wake_transport_missing:${adapter}`,
-								};
-							}
-							const db = new CommDB(
-								commDbPathForProject(session.project_name ?? ""),
-							);
-							try {
-								db.clearDeclaredState(session.execution_id);
-								const res = await deliverDurableTurnWake({
-									db,
-									wakeId,
-									execId: session.execution_id,
-									issueId: session.issue_id,
-									epoch,
-									activationId,
-									purpose: "workflow_ship_carrier",
-									fromAgent: "bridge",
-									content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
-									metadata: {
-										kind: "workflow_ship_carrier",
-										wakeId,
-										activationId,
-										epoch,
-									},
-									backend: transport,
-								});
-								return res.ok
-									? { ok: true }
-									: {
-											ok: false,
-											error: res.error ?? res.skippedReason ?? "wake_failed",
-										};
-							} catch (error) {
-								return { ok: false, error: (error as Error).message };
-							} finally {
-								db.close();
-								issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-							}
-						},
-					},
-				});
-			// FLY-793 (Codex full-PR R2 #1): re-drive any Design phase stranded at
-			// design_done by the boot marker drain (which ran before this orchestrator
-			// existed). Mirrors autoQaCoordinator.reconcileOnStartup — best-effort,
-			// never blocks boot.
-			void phaseOrchestratorHolder.current
-				.reconcileOnStartup()
-				.then(() =>
-					// FLY-921 Fix C startup position: full-table turn-belt scan AFTER
-					// the stranded-handoff replay (so it sees the replayed final state).
-					// Guard 2 (grant grace) protects any TURN a replayed handoff just
-					// granted to a still-in-flight spawn.
-					phaseOrchestratorHolder.current?.reconcileTurnBelt(),
-				)
-				.then(() => {
-					// FLY-1232 T8: the DEDICATED shadow replay — runs AFTER the
-					// orchestrator reconcile so the durable sources it reads (fix
-					// rounds, verdict intents, finalization claims) reflect the
-					// replayed state. Never piggybacks the orchestrator's skip-heavy
-					// logic, never triggers production actions. no-op when flag OFF.
-					workflowShadowRuntime.reconcileOnStartup();
-				})
-				.catch((err) =>
-					console.warn(
-						`[three-stage] reconcileOnStartup failed: ${(err as Error).message}`,
-					),
-				);
-			console.log(
-				`[three-stage] PhaseOrchestrator wired (opt-in default OFF: ${enabledProjects}/${projects.length} projects three_stage ON)`,
+		void turnBeltReconcilerHolder.current
+			.reconcileTurnBelt()
+			.catch((error) =>
+				console.warn(
+					`[turn-belt] startup reconcile failed: ${(error as Error).message}`,
+				),
 			);
-		} catch (err) {
-			console.warn(
-				`[three-stage] PhaseOrchestrator wiring failed: ${(err as Error).message} — three-stage disabled this boot`,
-			);
-		}
+		console.log(
+			"[workflow-coordinators] rework, ship carrier, and TURN recovery wired",
+		);
+	} catch (error) {
+		console.warn(
+			`[workflow-coordinators] wiring failed: ${(error as Error).message}`,
+		);
 	}
 
 	// FLY-939 (G-D): boot-time checkout-SHA visibility. Fire-and-forget (never on
@@ -9748,9 +8873,8 @@ export async function startBridge(
 			// dispatch a resumed successor (start() runs the FLY-795 resume-computer).
 			closeAndDispatchSuccessor: makeCloseAndDispatchSuccessor({
 				getSession: (id) => store.getSession(id),
-				// FLY-1372 (Codex code R1 #4): same ownership source as the
-				// PhaseOrchestrator guard — an engine-owned generalized execution
-				// is never a legacy rescue target.
+				// FLY-1372 (Codex code R1 #4): engine-owned workflow executions are
+				// never legacy rescue targets.
 				isEngineOwnedExecution: (id) =>
 					store.isWorkflowEngineOwnedExecution(id),
 				terminateForRescue: (s) => {

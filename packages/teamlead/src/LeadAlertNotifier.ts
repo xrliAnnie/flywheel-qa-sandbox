@@ -101,7 +101,7 @@ export const ALERT_EVENT_TYPES = [
 	"review_ruling_recorded",
 	"review_ruling_disputed",
 	"review_ruling_notify_failed",
-	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
+	// FLY-793: a DAG workflow handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
 	// started and this Lead-only alert fires so a completed phase is never

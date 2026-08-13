@@ -119,7 +119,7 @@ describe("workflow node id lifecycle", () => {
 	});
 
 	it.each([
-		["shadow run without a snapshot", undefined],
+		["workflow run without a snapshot", undefined],
 		[
 			"schema-v1 run",
 			JSON.stringify({

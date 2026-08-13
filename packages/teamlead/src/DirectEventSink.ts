@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import {
 	adapterTypeToFamily,
 	DEFAULT_PROOFSHOT_CONFIG,
-	isThreeStagePhaseRole,
+	isWorkflowPhaseRole,
 	renderRunnerModelDisplay,
 	resolveCompletionSessionRole,
 	type SkillsConfig,
@@ -42,7 +42,6 @@ import {
 	mergedPrCiProbe,
 	parkMergeBlock,
 } from "./bridge/merge-ship-gate.js";
-import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
@@ -59,6 +58,7 @@ import {
 } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
+import type { TurnBeltReconciler } from "./bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
@@ -90,10 +90,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * is always false with no held record).
 	 */
 	public autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
-	// FLY-793: three-stage PhaseOrchestrator (design_done → Implement; implement
-	// awaiting_review → QA). Undefined until the plugin constructs it → no-op
-	// (byte-compat); onPhaseComplete itself gates on three-stage phase + status.
-	public phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	/** Late-bound TURN recovery shared by generalized workflow actors. */
+	public turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 
 	/**
 	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
@@ -104,12 +102,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public terminalArchiveEnqueue?: (issueId: string) => void;
 
 	/**
-	 * FLY-887: ship-time three-stage phase finalizer (closes the parked design +
+	 * FLY-887: ship-time DAG workflow finalizer (closes the parked design +
 	 * implement sessions before the shared worktree is removed). Set by the
 	 * composition root after construction. Absent → no phase finalization
 	 * (byte-compat; a single-session issue leaves nothing to finalize anyway).
 	 */
-	public finalizeThreeStagePhases?: (
+	public finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 	) => Promise<void>;
@@ -145,17 +143,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		executionId: string,
 	) => Promise<{ ok: boolean; reason?: string }>;
 
-	/**
-	 * FLY-1232 module ② (T9): optional lifecycle shadow hook. Run-infra wires the
-	 * hot WorkflowShadowRuntime unconditionally; the runtime reads
-	 * FLYWHEEL_WORKFLOW_CLAIMS_WRITE at use time and no-ops while OFF. Threaded
-	 * into this sink's runPostShipFinalization deps (the in-process ship path);
-	 * external-merge finalization paths rely on claim-based startup repair.
-	 * Absent → byte-compatible. Never throws (writer contract).
-	 */
-	public workflowShadow?: {
-		onShipFinalized(args: { projectName: string; issueId: string }): void;
-	};
 	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
 	public materializedHeadAuthority?: MaterializedHeadAuthority;
 
@@ -652,7 +639,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// FLY-793 (Codex full-PR R1 #3): phase_design_complete has the SAME
 		// running-only constraint — a duplicate/late Design completion for a session
 		// already moved to design_done/completed must NOT re-write design_done and
-		// re-invoke the PhaseOrchestrator (→ duplicate Implement dispatch / status
+		// re-invoke the workflow engine (→ duplicate Implement dispatch / status
 		// regression). Parity with event-route.ts's phase_design_complete guard.
 		if (
 			(route === "no_code" ||
@@ -764,8 +751,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// reconciler, both of which carry the questionId.
 		let evidenceGap = false;
 		if (route === "phase_design_complete") {
-			// FLY-793: a three-stage Design phase-session completed (docs on the
-			// shared branch, no PR). Non-terminal design_done; the PhaseOrchestrator
+			// FLY-793: a DAG workflow Design phase-session completed (docs on the
+			// shared branch, no PR). Non-terminal design_done; the workflow engine
 			// hands off to Implement. Sister mapping: event-route.ts session_completed.
 			status = "design_done";
 		} else if (route === "needs_review") {
@@ -1121,25 +1108,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// FLY-793: three-stage phase handoff. onPhaseComplete no-ops unless this is
-		// a three-stage phase session (per-project ON) at its handoff status, so it
-		// is safe to call on every completion. Sister call: event-route.ts.
-		if (this.phaseOrchestrator?.current) {
-			const phaseSession = this.store.getSession(env.executionId);
-			if (phaseSession) {
-				try {
-					await this.phaseOrchestrator.current.onPhaseComplete(phaseSession, {
-						eventId: completionEventId,
-						source: "direct",
-					});
-				} catch (err) {
-					console.error(
-						`[DirectEventSink] onPhaseComplete threw for ${env.executionId}: ${(err as Error).message}`,
-					);
-				}
-			}
-		}
-
 		// FLY-921 Fix C: this completion may have terminated the current TURN
 		// holder — scoped reconcile (guard 1: only acts when this exec IS the
 		// holder). Runs AFTER the handoff so a just-granted TURN is never raced.
@@ -1221,9 +1189,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						removeCleanWorktree: this.removeCleanWorktree,
 						// FLY-887: close the parked design + implement phases before the
 						// shared worktree is removed.
-						finalizeThreeStagePhases: this.finalizeThreeStagePhases,
-						// FLY-1232 T9: shadow-run finalization (flag ON only).
-						workflowShadow: this.workflowShadow,
+						finalizeWorkflowPhaseRoles: this.finalizeWorkflowPhaseRoles,
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
 						markIssueDone: makeLinearDoneFinalizer(this.config),
@@ -1240,7 +1206,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		}
 
 		// FLY-1282 Part C: targeted terminal-archive enqueue. Runs AFTER the
-		// phase handoff above so a three-stage successor row is durable before
+		// phase handoff above so a DAG workflow successor row is durable before
 		// the targeted check reads alias state. Fresh getSession confirms the
 		// row actually landed completed (a skipped / non-terminal write → zero
 		// enqueue). Post-ship (merged) completions and FLY-208 evidence-gap
@@ -1290,6 +1256,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				);
 				return;
 			}
+			await this.alertWorktreeTakeoverFailure(env.executionId, failure);
 			if (recorded.statusPreserved) {
 				console.warn(
 					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized failure overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,
@@ -1337,6 +1304,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			terminalStatus,
 			env.projectName,
 		);
+		try {
+			await this.autoQaCoordinator?.current?.onQaSessionFailed(env.executionId);
+		} catch (err) {
+			console.error(
+				`[DirectEventSink] auto-QA failure hook threw for ${env.executionId}: ${(err as Error).message}`,
+			);
+		}
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
 		{
@@ -1347,27 +1321,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				});
 			}
 		}
-
-		if (
-			failure?.failureKind === "worktree_takeover_failed" &&
-			this.phaseOrchestrator?.current
-		) {
-			const phaseSession = this.store.getSession(env.executionId);
-			if (phaseSession) {
-				await this.phaseOrchestrator.current.alertWorktreeTakeoverFailure(
-					phaseSession,
-					failure.failureReason,
-				);
-			}
-		}
-
-		// FLY-1050: a three-stage QA row that just FAILED may have stranded its
-		// implement at awaiting_review — re-drive the implement→QA handoff
-		// (respawn a fresh QA) BEFORE the belt reconcile: a successful respawn's
-		// pre-launch grant overwrites the TURN (guard 1 then no-ops, no
-		// stale-holder alert noise); a refused respawn leaves the belt reconcile
-		// to recover it. Sister call: event-route.ts session_failed path.
-		await this.maybeReconcileQaLoss(env.executionId);
+		await this.alertWorktreeTakeoverFailure(env.executionId, failure);
 
 		// FLY-921 Fix C: session_failed never reaches onPhaseComplete — a killed
 		// TURN holder (FLY-543 shape) must still release the belt. Sister call:
@@ -1381,56 +1335,34 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pushNotification(env, "session_failed");
 	}
 
-	/**
-	 * FLY-1050: scoped QA-loss reconcile — a dead three-stage QA row may have
-	 * stranded its implement at awaiting_review; the orchestrator re-drives the
-	 * implement→QA handoff (respawn) when the pipeline lost itself. All the
-	 * precise guards (terminal status, respawn cap, alive-QA idempotency) live
-	 * inside reconcileQaLoss; this seam only pre-filters to three-stage qa rows.
-	 * Never throws.
-	 */
-	private async maybeReconcileQaLoss(executionId: string): Promise<void> {
-		try {
-			const autoQa =
-				await this.autoQaCoordinator?.current?.onQaSessionFailed(executionId);
-			if (autoQa?.owned) return;
-		} catch (err) {
-			console.error(
-				`[DirectEventSink] auto-QA failure hook threw for ${executionId}: ${(err as Error).message}`,
-			);
-		}
-		const orchestrator = this.phaseOrchestrator?.current;
-		if (!orchestrator) return;
+	private async alertWorktreeTakeoverFailure(
+		executionId: string,
+		failure?: TerminalFailureInfo,
+	): Promise<void> {
+		if (failure?.failureKind !== "worktree_takeover_failed") return;
 		const session = this.store.getSession(executionId);
-		if (!session?.project_name) return;
-		if ((session.chat_thread_role ?? "main") !== "qa") return;
-		try {
-			await orchestrator.reconcileQaLoss({
-				issueId: session.issue_id,
-				terminalExecId: executionId,
-			});
-		} catch (err) {
-			console.error(
-				`[DirectEventSink] reconcileQaLoss threw for ${executionId}: ${(err as Error).message}`,
-			);
-		}
+		if (!session) return;
+		await this.turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
+			session,
+			failure.failureReason,
+		);
 	}
 
 	/**
-	 * FLY-921 Fix C: scoped turn-belt reconcile after a three-stage phase
+	 * FLY-921 Fix C: scoped turn-belt reconcile after a DAG workflow
 	 * session hit a terminal signal (completed/failed). Guard 1 lives inside
 	 * reconcileTurnBelt (terminalExecId must BE the holder). Never throws.
 	 */
 	private async reconcileTurnBeltAfterTerminal(
 		executionId: string,
 	): Promise<void> {
-		const orchestrator = this.phaseOrchestrator?.current;
-		if (!orchestrator) return;
+		const reconciler = this.turnBeltReconciler?.current;
+		if (!reconciler) return;
 		const session = this.store.getSession(executionId);
 		if (!session?.project_name) return;
-		if (!isThreeStagePhaseRole(session.session_role)) return;
+		if (!isWorkflowPhaseRole(session.session_role)) return;
 		try {
-			await orchestrator.reconcileTurnBelt({
+			await reconciler.reconcileTurnBelt({
 				issueId: session.issue_id,
 				projectName: session.project_name,
 				terminalExecId: executionId,

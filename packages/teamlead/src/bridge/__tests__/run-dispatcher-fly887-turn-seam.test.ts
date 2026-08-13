@@ -1,5 +1,5 @@
 /**
- * FLY-887 Step 4b: the RunDispatcher pre-launch TURN grant seam. A three-stage
+ * FLY-887 Step 4b: the RunDispatcher pre-launch TURN grant seam. A DAG workflow
  * phase SPAWN must have its shared-worktree TURN recorded in CommDB BEFORE the
  * runner launches (its first `turn` self-check must see `yours`, not `no-turn`).
  * The seam records it between preRegisterCommDb and blueprint.run; a
@@ -66,8 +66,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
-			undefined,
 			phaseRetryStartPointComputer ?? (() => ({ kind: "missing" as const })),
 		);
 	}
@@ -91,7 +89,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "fly887-seam-"));
 		commDir = mkdtempSync(join(tmpdir(), "fly887-seam-comm-"));
 		process.env.FLYWHEEL_COMM_DIR = commDir;
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
 		turnAtLaunch = null;
 		startPointAtLaunch = undefined;
 		vi.spyOn(console, "log").mockImplementation(() => {});
@@ -101,7 +98,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 		rmSync(commDir, { recursive: true, force: true });
 		process.env.FLYWHEEL_COMM_DIR = undefined;
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = undefined;
 		vi.restoreAllMocks();
 	});
 
@@ -272,8 +268,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			async () => ({ admitted: true }),
 			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
-			undefined,
-			undefined,
 			() => ({ kind: "indeterminate", error: "git exit 128" }),
 		);
 		await expect(
@@ -310,8 +304,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			async () => ({ admitted: true }),
 			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
-			undefined,
-			undefined,
 			compute,
 		);
 
@@ -345,8 +337,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			undefined,
 			async () => ({ admitted: true }),
 			{ commitLaunch, onSpawnFailed },
-			undefined,
-			undefined,
 			() => ({ kind: "missing" }),
 		);
 		const successorExecutionId = "retry-exec-1257";
@@ -378,8 +368,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 				commitLaunch: vi.fn(async () => ({ ok: false, reason: "parked" })),
 				onSpawnFailed,
 			},
-			undefined,
-			undefined,
 			() => ({ kind: "missing" }),
 		);
 
@@ -432,19 +420,6 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		expect(turnAtLaunch).toBeNull();
 	});
 
-	it("byte-compat: keep-alive OFF grants NO turn even for a phase dispatch", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const dispatcher = makeDispatcher();
-		await dispatcher.start({
-			issueId: "issue-1",
-			projectName: "proj",
-			sessionRole: "implement",
-			shareParentBranch: true,
-		});
-		await dispatcher.drain();
-		expect(turnAtLaunch).toBeNull();
-	});
-
 	it("FLY-1257 byte-compat: non-phase retry calls no TURN grant", async () => {
 		const grantSpy = vi.spyOn(CommDB.prototype, "grantTurn");
 		const dispatcher = makeDispatcher();
@@ -453,20 +428,5 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		);
 		await dispatcher.drain();
 		expect(grantSpy).not.toHaveBeenCalled();
-	});
-
-	it("FLY-1257 byte-compat: keep-alive OFF phase retry calls no TURN grant", async () => {
-		process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE = "0";
-		const grantSpy = vi.spyOn(CommDB.prototype, "grantTurn");
-		const compute = vi.fn(() => ({
-			kind: "found" as const,
-			sha: "b".repeat(40),
-		}));
-		const dispatcher = makeDispatcher(compute);
-		await dispatcher.dispatch(retryRequest());
-		await dispatcher.drain();
-		expect(grantSpy).not.toHaveBeenCalled();
-		expect(compute).toHaveBeenCalledTimes(2);
-		expect(startPointAtLaunch).toBe("b".repeat(40));
 	});
 });

@@ -1,7 +1,7 @@
 /**
- * FLY-793 — Blueprint three-stage phase-prompt contract.
+ * FLY-793 — Blueprint DAG workflow-prompt contract.
  *
- * A three-stage run is ONE issue with Design → Implement → QA phase-sessions on
+ * A DAG workflow run is ONE issue with Design → Implement → QA phase-sessions on
  * one shared branch (shareParentBranch). The Design phase prompt must do the
  * design and complete via `phase_design_complete` WITHOUT implementing / PR /
  * land; the Implement phase reads the committed design and does the PR. The
@@ -98,7 +98,7 @@ async function buildPrompt(
 	return call.appendSystemPrompt ?? "";
 }
 
-describe("Blueprint three-stage phase prompt (FLY-793)", () => {
+describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 	it("Design phase: designs + completes via phase_design_complete, no implement/land steps", async () => {
 		const p = await buildPrompt({
 			sessionRole: "design",
@@ -145,8 +145,8 @@ describe("Blueprint three-stage phase prompt (FLY-793)", () => {
 		// NOTE: the shared LEAD-REPORT-BACK / approve-gate contract still appears
 		// here (it lives inside the leadId block). Gating that per-phase is coupled
 		// to the orchestration flow (approve fires after QA, not at Design) →
-		// completed in Step 7 (PhaseOrchestrator). Design's explicit "do NOT PR/ship"
-		// step overrides in the meantime, and three_stage is off by default.
+		// completed in Step 7 (workflow engine). Design's explicit "do NOT PR/ship"
+		// step overrides in the meantime, and shared_workflow is off by default.
 	});
 
 	it("Design phase: uses the human issue identifier when the canonical issue id is a UUID", async () => {

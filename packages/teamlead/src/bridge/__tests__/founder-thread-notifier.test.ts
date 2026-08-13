@@ -411,7 +411,7 @@ function infraOpts(over: Record<string, unknown> = {}) {
 		issueIdentifier: "FLY-9",
 		projectName: "flywheel",
 		kind: "three_stage_stuck",
-		content: "🔧 [FLY-9] three-stage pipeline stuck — reason",
+		content: "🔧 [FLY-9] DAG workflow stuck — reason",
 		thread: {
 			thread_id: "T9",
 			channel_id: "C9",

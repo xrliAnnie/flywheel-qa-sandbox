@@ -19,21 +19,16 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
 import type {
-	DesignBackend,
-	PhaseDispatchVendor,
 	PipelineConfig,
 	PonytailInput,
-	RoleEffort,
 	SkillFrameworkMode,
 } from "flywheel-config";
 import {
 	ConfigLoader,
 	canonicalSubmissionDigest,
-	DESIGN_BACKENDS,
 	getModelConfigSnapshot,
-	isDesignBackend,
 	isSkillFrameworkMode,
-	isThreeStagePhaseRole,
+	isWorkflowPhaseRole,
 	resolveEffectiveFounderUxConfig,
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
@@ -65,6 +60,7 @@ import {
 	ENG_TIERS,
 	type EngTier,
 	formatWorkflowRouteVisibility,
+	LEGACY_ROUTING_OVERRIDE_LABEL,
 	WORK_KIND_CATEGORIES,
 	type WorkKindCategory,
 } from "../work-kind.js";
@@ -107,19 +103,14 @@ import {
 } from "./generalized-launch-recovery.js";
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
+import {
+	loadPipelineConfigByProject,
+	loadWorkKindConfigStrict,
+} from "./pipeline-config-source.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
-import {
-	loadPipelineConfigByProject,
-	loadWorkKindConfigStrict,
-} from "./three-stage-config-source.js";
-import {
-	NO_THREE_STAGE_LABEL,
-	resolveGlobalThreeStageKillSwitch,
-	resolveThreeStageEntry,
-} from "./three-stage-policy.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
@@ -1111,34 +1102,6 @@ export function createRunsRouter(
 			docTier = parsedTier;
 		}
 
-		// FLY-1259: optional per-dispatch design author. Validate the exact public
-		// enum before any admission, policy, or runner side effect.
-		const rawDesignBackend = req.body.designBackend;
-		let requestedDesignBackend: DesignBackend | undefined;
-		if (rawDesignBackend === undefined || rawDesignBackend === null) {
-			requestedDesignBackend = undefined;
-		} else if (typeof rawDesignBackend !== "string") {
-			res.status(400).json({
-				success: false,
-				code: "INVALID_DESIGN_BACKEND",
-				reason: "wrong_type",
-				allowed: [...DESIGN_BACKENDS],
-				silent: false,
-			});
-			return;
-		} else if (!isDesignBackend(rawDesignBackend)) {
-			res.status(400).json({
-				success: false,
-				code: "INVALID_DESIGN_BACKEND",
-				reason: "unknown_backend",
-				allowed: [...DESIGN_BACKENDS],
-				silent: false,
-			});
-			return;
-		} else {
-			requestedDesignBackend = rawDesignBackend;
-		}
-
 		// FLY-1356: optional per-dispatch skill-framework arm (529 eval forced
 		// arm). Validated synchronously at the boundary like designBackend —
 		// never let a bad enum reach Blueprint. Accepted ONLY while the Bridge
@@ -1216,56 +1179,13 @@ export function createRunsRouter(
 		}
 
 		// FLY-59: Per-role dedup — same issue can have main + qa concurrently.
-		// FLY-793: `let` because a three-stage entry may reroute a fresh `main`
+		// FLY-793: `let` because a DAG workflow entry may reroute a fresh `main`
 		// dispatch to the Design phase below (after labels are resolved). The dedup
-		// here keys on the request role; a fresh three-stage issue has no active
+		// here keys on the request role; a fresh DAG workflow issue has no active
 		// session, and a concurrent re-dispatch of an in-flight phase is backstopped
 		// by the worktree single-writer (git cannot check out shared branch B twice).
-		let role =
+		const role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
-		if (requestedDesignBackend && role !== "main") {
-			res.status(400).json({
-				success: false,
-				code: "DESIGN_BACKEND_NOT_APPLICABLE",
-				reason: "non_main_role",
-				requested: requestedDesignBackend,
-				silent: false,
-			});
-			return;
-		}
-		// FLY-1259 (Codex code R1/R2): settle the Bridge-global kill-switch HERE —
-		// ahead of dedup, the stale-blocker guard and admission — so an override sent
-		// to a Bridge with three-stage off entirely gets its bounded 400 instead of a
-		// 409/429, and never makes the guard finalize/alert a previous session on
-		// behalf of a doomed request.
-		//
-		// Global-only is a precedence constraint (see the helper): the remaining
-		// checks — `no-three-stage` label, channel allowlist, pipeline opt-in — all
-		// rank BELOW the label check, which needs the Linear pre-flight that runs
-		// after dedup by design. Deciding them here would report a reason code the
-		// authoritative path disagrees with. They stay below and stay authoritative;
-		// for them a conflicting/deferred request still answers 409/429 first, which
-		// is honest — nothing can start for that issue yet regardless of backend, and
-		// a retry surfaces the 400.
-		//
-		// Entered ONLY for an explicit override, so the default path — including its
-		// 409/429 ordering — is byte-identical.
-		if (requestedDesignBackend) {
-			const globalBlock = resolveGlobalThreeStageKillSwitch(process.env);
-			if (globalBlock) {
-				console.warn(
-					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${globalBlock.reason}`,
-				);
-				res.status(400).json({
-					success: false,
-					code: "DESIGN_BACKEND_NOT_APPLICABLE",
-					reason: globalBlock.reasonCode,
-					requested: requestedDesignBackend,
-					silent: false,
-				});
-				return;
-			}
-		}
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
 			(s) =>
@@ -1658,16 +1578,6 @@ export function createRunsRouter(
 		// param the template overrides hard must 400, never be silently
 		// swallowed by a cached replay. Responds and returns false on reject.
 		const validateDagRequestParameters = (): boolean => {
-			if (requestedDesignBackend) {
-				res.status(400).json({
-					success: false,
-					code: "DESIGN_BACKEND_NOT_APPLICABLE",
-					reason: "dag_dispatch",
-					requested: requestedDesignBackend,
-					silent: false,
-				});
-				return false;
-			}
 			if (agentName !== undefined) {
 				const validation = startDispatcher.validateAgentName(
 					projectName,
@@ -1693,7 +1603,6 @@ export function createRunsRouter(
 			}
 			return true;
 		};
-		let dagEntry = false;
 		let engineRecovery: WorkflowTemplateSelectionResult | undefined;
 		let engineRecoveryKind: "pipeline_dag_v1" | "workflow_v2" | undefined;
 		{
@@ -1880,7 +1789,7 @@ export function createRunsRouter(
 		let workKindActiveAtEntry = false;
 		let canonicalTaskCategory: WorkKindCategory | undefined;
 		let canonicalTier: EngTier | undefined;
-		let noThreeStageOverride = false;
+		let noWorkflowPhaseOverride = false;
 		let genericFallback = false;
 		let menuActiveAtEntry = false;
 		let menuResolution: ReturnType<typeof resolveMenuOverrides> | undefined;
@@ -1966,7 +1875,7 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			noThreeStageOverride = overrides.overrides.includes("no-three-stage");
+			noWorkflowPhaseOverride = overrides.overrides.includes("no-three-stage");
 			const parsed = canonicalizeWorkKind(req.body.taskCategory);
 			if (parsed.status === "invalid") {
 				rejectWorkKindRequest({
@@ -2009,7 +1918,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
-				if (noThreeStageOverride) {
+				if (noWorkflowPhaseOverride) {
 					res.status(400).json({
 						success: false,
 						code: "MENU_ROUTING_OVERRIDE_NOT_SUPPORTED",
@@ -2117,7 +2026,7 @@ export function createRunsRouter(
 					typeof req.body.templateId === "string" &&
 					req.body.templateId.trim().length > 0;
 				if (
-					noThreeStageOverride &&
+					noWorkflowPhaseOverride &&
 					(hasTemplateOverride || canonicalTaskCategory !== undefined)
 				) {
 					res.status(400).json({
@@ -2130,7 +2039,7 @@ export function createRunsRouter(
 				// Founder correction: an omitted work kind is a soft, observable
 				// generic fallback. It must never inherit the engineering-heavy default.
 				genericFallback =
-					!noThreeStageOverride &&
+					!noWorkflowPhaseOverride &&
 					!hasTemplateOverride &&
 					canonicalTaskCategory === undefined;
 			}
@@ -2149,18 +2058,18 @@ export function createRunsRouter(
 					: undefined,
 			workKindEnforced: workKindActiveAtEntry,
 		};
-		const freshNoThreeStageLegacy =
+		const freshNoWorkflowPhaseLegacy =
 			!engineRecovery &&
 			!replayReservation &&
 			role === "main" &&
 			(workKindActiveAtEntry
-				? noThreeStageOverride || genericFallback
-				: normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL));
+				? noWorkflowPhaseOverride || genericFallback
+				: normalizedIssueLabels.includes(LEGACY_ROUTING_OVERRIDE_LABEL));
 		let candidateSchemaAtEntry: 1 | 2 | null;
 		if (
 			engineRecovery ||
 			freshLegacyEntry ||
-			freshNoThreeStageLegacy ||
+			freshNoWorkflowPhaseLegacy ||
 			(!workflowDispatchEnabled && !replayReservation)
 		) {
 			// Recovery, the dispatch rollback lever, and a fresh explicit opt-out are
@@ -2169,7 +2078,7 @@ export function createRunsRouter(
 			// The current resolver can throw on a corrupted/nonexistent current
 			// template — that must never strand a run with a good pinned snapshot,
 			// so it is not even consulted on the recovery path (the value is unused
-			// there: three-stage and selection are both bypassed).
+			// there: DAG workflow and selection are both bypassed).
 			candidateSchemaAtEntry = null;
 		} else {
 			try {
@@ -2200,135 +2109,6 @@ export function createRunsRouter(
 					reason: (err as Error).message,
 				});
 				return;
-			}
-		}
-
-		// ── FLY-1372 问题⓪ (part 2): DAG fresh domain. Only when NO marked run
-		// exists; consumes the candidate resolved just above. Flags outrank the
-		// candidate-missing 409 (flags OFF = the sanctioned rollback lever →
-		// byte-identical legacy), and only a schema-1 candidate enters — the
-		// pilot is v1-only, schema-2 keeps today's explicit path untouched.
-		if (
-			!engineRecovery &&
-			!freshNoThreeStageLegacy &&
-			role === "main" &&
-			requestAuthKind === "master"
-		) {
-			const pipelineConfig = await loadMainPipelineConfig();
-			if (
-				pipelineConfig?.dag === true &&
-				(workKindActiveAtEntry ||
-					!normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL))
-			) {
-				const dagBlock = workflowTemplateDispatchBlockReason(
-					candidateSchemaAtEntry ?? 1,
-					process.env,
-				);
-				if (dagBlock === undefined) {
-					if (candidateSchemaAtEntry === null) {
-						// Enrolled + flags ON + no candidate = broken configuration.
-						// Fail loud — a silent legacy fallback here is exactly the
-						// incident class this entry exists to kill (FLY-802).
-						res.status(409).json({
-							success: false,
-							code: "DAG_TEMPLATE_CANDIDATE_MISSING",
-							reason: `project ${projectName} is DAG-enrolled with dispatch flags ON but no workflow template candidate resolves (binding/template missing)`,
-						});
-						return;
-					}
-					if (candidateSchemaAtEntry === 1) {
-						if (!validateDagRequestParameters()) return;
-						const activePhase = store.getActivePhaseSessionForIssue(issueId);
-						if (activePhase) {
-							// No marked run exists, so this is a parked LEGACY phase
-							// session — a new DAG run must not collide with it (A7).
-							res.status(409).json({
-								success: false,
-								message: `Issue ${issueId} already has an active legacy phase session (${activePhase.session_role}, ${activePhase.execution_id}, status: ${activePhase.status}). Let it hand off or terminate it before dispatching into the DAG.`,
-							});
-							return;
-						}
-						dagEntry = true;
-					}
-				}
-			}
-		}
-
-		// FLY-793 (Step 4 ENTRY): resolve the trusted three-stage policy before
-		// schema-v1 template selection. The v1 engine is an implementation of this
-		// entry, so it may not bypass an opt-out or the shared-worktree phase guard.
-		// Schema v2 remains independently selectable and skips this legacy policy.
-		let shareParentBranch: boolean | undefined;
-		let ignoreRunnerLabelSelection: boolean | undefined;
-		let dispatchVendor: PhaseDispatchVendor | undefined;
-		let dispatchEffort: RoleEffort | undefined;
-		let effectiveDesignBackend: DesignBackend | undefined;
-		// FLY-1372: a DAG entry / recovery短路s the whole three-stage block — the
-		// DAG run carries design→implement→qa itself; no role rewrite here.
-		if (
-			!dagEntry &&
-			!engineRecovery &&
-			role === "main" &&
-			(!workflowDispatchEnabled || candidateSchemaAtEntry !== 2)
-		) {
-			const proj = projects.find((p) => p.projectName === projectName);
-			const pipelineConfig = await loadMainPipelineConfig();
-			const dispatchChannelId = leadId
-				? proj?.leads.find((l) => l.agentId === leadId)?.chatChannel
-				: undefined;
-			const entry = resolveThreeStageEntry({
-				requestRole: role,
-				pipelineConfig,
-				issueLabels: normalizedIssueLabels,
-				noThreeStageSignal: workKindActiveAtEntry
-					? genericFallback
-						? "generic_fallback"
-						: noThreeStageOverride
-							? "dispatch_override"
-							: "suppressed"
-					: undefined,
-				env: process.env,
-				dispatchChannelId,
-				designBackend: requestedDesignBackend,
-			});
-			if (requestedDesignBackend && !entry.enteredThreeStage) {
-				console.warn(
-					`[runs/start] designBackend=${requestedDesignBackend} not applicable: ${entry.notEnteredDetail ?? entry.notEnteredReasonCode ?? "policy_disabled"}`,
-				);
-				res.status(400).json({
-					success: false,
-					code: "DESIGN_BACKEND_NOT_APPLICABLE",
-					reason: entry.notEnteredReasonCode ?? "policy_disabled",
-					requested: requestedDesignBackend,
-					silent: false,
-				});
-				return;
-			}
-			if (entry.enteredThreeStage) {
-				const activePhase = store.getActivePhaseSessionForIssue(issueId);
-				const exactSchemaV1Replay =
-					requestAuthKind === "master" &&
-					replayReservation?.execution_id === activePhase?.execution_id &&
-					isSchemaSnapshot(
-						replayReservation
-							? store.getWorkflowRun(replayReservation.run_id)?.snapshot
-							: undefined,
-						1,
-					);
-				if (activePhase && !exactSchemaV1Replay) {
-					res.status(409).json({
-						success: false,
-						message: `Issue ${issueId} already has an active three-stage ${activePhase.session_role} phase (${activePhase.execution_id}, status: ${activePhase.status}). The pipeline advances Design→Implement→QA on one shared branch — do not start a second run; let the active phase hand off, or terminate it first.`,
-					});
-					return;
-				}
-				role = entry.role;
-				shareParentBranch = true;
-				dispatchModel = entry.dispatchModel;
-				dispatchVendor = entry.dispatchVendor;
-				dispatchEffort = entry.dispatchEffort;
-				effectiveDesignBackend = entry.designBackend;
-				ignoreRunnerLabelSelection = true;
 			}
 		}
 
@@ -2375,12 +2155,12 @@ export function createRunsRouter(
 		};
 		// FLY-1372 §2.5: request-scoped advisory echo — the durable authority is
 		// the pinned run snapshot itself. `model`/`agentName` are accepted (Lead
-		// shared rules require them on every dispatch; three-stage entry already
+		// shared rules require them on every dispatch; DAG workflow entry already
 		// overrides the sorter model unconditionally — same sovereignty, made
 		// explicit) but the template pins per-node vendor/model/agent. ponytail
 		// rides the legacy-identical ladder and is NOT in this list.
 		const dagAuthority =
-			dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+			engineRecoveryKind === "pipeline_dag_v1"
 				? {
 						templateAuthority: {
 							overrode: [
@@ -2423,16 +2203,11 @@ export function createRunsRouter(
 		const v2Entry =
 			!engineRecovery &&
 			!freshLegacyEntry &&
-			!freshNoThreeStageLegacy &&
+			!freshNoWorkflowPhaseLegacy &&
 			workflowDispatchEnabled &&
 			candidateSchemaAtEntry === 2;
 		const effectiveStartKey =
-			requestedStartKey ??
-			(dagEntry
-				? `dag-auto-${randomUUID()}`
-				: v2Entry
-					? `wf2-auto-${randomUUID()}`
-					: undefined);
+			requestedStartKey ?? (v2Entry ? `wf2-auto-${randomUUID()}` : undefined);
 		let generalizedSelection:
 			| WorkflowTemplateSelectionResult
 			| null
@@ -2441,7 +2216,7 @@ export function createRunsRouter(
 			generalizedSelection = engineRecovery;
 		} else if (
 			freshLegacyEntry ||
-			freshNoThreeStageLegacy ||
+			freshNoWorkflowPhaseLegacy ||
 			!workflowDispatchEnabled
 		) {
 			generalizedSelection = null;
@@ -2461,8 +2236,6 @@ export function createRunsRouter(
 					authKind: requestAuthKind,
 					canonicalRoot: generalizedProject?.projectRoot ?? "",
 					idempotencyKey: effectiveStartKey,
-					allowSchemaV1Dispatch:
-						dagEntry || (role === "design" && shareParentBranch === true),
 					candidateSchemaAtEntry,
 					workKindEnforced: workKindActiveAtEntry,
 					categorySource: workKindActiveAtEntry
@@ -2472,11 +2245,7 @@ export function createRunsRouter(
 						: undefined,
 					tier: workKindActiveAtEntry ? canonicalTier : undefined,
 					override: menuTemplateOverride,
-					...(dagEntry
-						? { entryKind: "pipeline_dag_v1" as const }
-						: v2Entry
-							? { entryKind: "workflow_v2" as const }
-							: {}),
+					...(v2Entry ? { entryKind: "workflow_v2" as const } : {}),
 					env: process.env,
 				});
 			} catch (err) {
@@ -2504,19 +2273,6 @@ export function createRunsRouter(
 				return;
 			}
 		}
-		// FLY-1372 fail-closed: the DAG entry decided to dispatch but selection
-		// yielded nothing (a flag flipped mid-request via the direct-toggle flag
-		// console, or the binding vanished between reads). NEVER fall through to
-		// legacy silently — that is the FLY-802 incident class.
-		if (dagEntry && !generalizedSelection) {
-			res.status(409).json({
-				success: false,
-				code: "DAG_ENTRY_NOT_MATERIALIZED",
-				reason:
-					"dag entry selected no workflow candidate (flag flipped mid-request or binding removed) — refusing silent legacy fallback",
-			});
-			return;
-		}
 		if (workKindActiveAtEntry && v2Entry && !generalizedSelection) {
 			res.status(409).json({
 				success: false,
@@ -2531,7 +2287,7 @@ export function createRunsRouter(
 				generalizedSelection.idempotencyKey,
 			);
 			const route =
-				dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+				engineRecoveryKind === "pipeline_dag_v1"
 					? "pipeline_dag_v1"
 					: "workflow_v2";
 			const routeDigest = canonicalSubmissionDigest({
@@ -2568,8 +2324,9 @@ export function createRunsRouter(
 				DEPT_SUGGESTED_CATEGORY[owningDept]
 					? { suggestedCategory: DEPT_SUGGESTED_CATEGORY[owningDept] }
 					: {}),
-				labelDocumentationIntent:
-					normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL),
+				labelDocumentationIntent: normalizedIssueLabels.includes(
+					LEGACY_ROUTING_OVERRIDE_LABEL,
+				),
 			});
 			if (claimed.status === "conflict") {
 				res.status(409).json({
@@ -2909,7 +2666,7 @@ export function createRunsRouter(
 						});
 				}
 				if (shouldDispatch) {
-					const workflowRole = isThreeStagePhaseRole(
+					const workflowRole = isWorkflowPhaseRole(
 						generalizedSelection.node.type,
 					)
 						? generalizedSelection.node.type
@@ -2919,13 +2676,13 @@ export function createRunsRouter(
 					// so the durable emitStarted seam persists them with the session
 					// row. Non-DAG generalized starts keep today's exact shape.
 					const dagBehavior =
-						dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+						engineRecoveryKind === "pipeline_dag_v1"
 							? await computeStartBehaviorSnapshot()
 							: undefined;
 					const routeSummary = generalizedSelection.categorySource
 						? formatWorkflowRouteVisibility({
 								route:
-									dagEntry || engineRecoveryKind === "pipeline_dag_v1"
+									engineRecoveryKind === "pipeline_dag_v1"
 										? "pipeline_dag_v1"
 										: "workflow_v2",
 								category: generalizedSelection.taskCategory ?? null,
@@ -3143,22 +2900,6 @@ export function createRunsRouter(
 						});
 						return;
 					}
-					// FLY-1372 §2.5: audit-only fields (best-effort, fresh path only —
-					// a replay must never overwrite the original request's audit trail).
-					if (dagEntry && !generalizedSelection.replayed) {
-						const audit: {
-							dispatch_model?: string;
-							agent_name?: string;
-						} = {};
-						if (dispatchModel) audit.dispatch_model = dispatchModel;
-						if (agentName) audit.agent_name = agentName;
-						if (Object.keys(audit).length > 0) {
-							store.patchSessionMetadata(
-								generalizedSelection.executionId,
-								audit,
-							);
-						}
-					}
 				}
 			}
 			let committedOwner = await waitForGeneralizedLaunchDelivery(
@@ -3217,7 +2958,7 @@ export function createRunsRouter(
 							effect.execution_id === generalizedSelection.executionId,
 					)
 			) {
-				store.applyWorkflowShadowBatch({
+				store.applyWorkflowLedgerBatch({
 					projectName,
 					issueId,
 					runId: generalizedSelection.runId,
@@ -3368,7 +3109,7 @@ export function createRunsRouter(
 		if (workKindActiveAtEntry) {
 			const routeDigest = canonicalSubmissionDigest({
 				route: legacyWorkKindRoute,
-				...(noThreeStageOverride ? { override: "no-three-stage" } : {}),
+				...(noWorkflowPhaseOverride ? { override: "no-three-stage" } : {}),
 				...(genericFallback ? { source: "default_fallback" } : {}),
 				project: projectName,
 				issueId,
@@ -3380,7 +3121,7 @@ export function createRunsRouter(
 				executionId: legacyEntryExecutionId,
 				route: legacyWorkKindRoute,
 				routeDigest,
-				...(noThreeStageOverride
+				...(noWorkflowPhaseOverride
 					? { override: "no-three-stage" as const }
 					: {}),
 				...(genericFallback
@@ -3395,8 +3136,9 @@ export function createRunsRouter(
 				DEPT_SUGGESTED_CATEGORY[owningDept]
 					? { suggestedCategory: DEPT_SUGGESTED_CATEGORY[owningDept] }
 					: {}),
-				labelDocumentationIntent:
-					normalizedIssueLabels.includes(NO_THREE_STAGE_LABEL),
+				labelDocumentationIntent: normalizedIssueLabels.includes(
+					LEGACY_ROUTING_OVERRIDE_LABEL,
+				),
 			});
 			if (claimed.status === "conflict") {
 				store.casLaunchClaimState(
@@ -3432,14 +3174,6 @@ export function createRunsRouter(
 				issueIdentifier,
 				routeSummary: legacyRouteSummary,
 				sessionRole: role,
-				// FLY-793 (Step 4 ENTRY): Bridge-INTERNAL, set ONLY by the server-side
-				// three-stage entry above (never from the request body). Undefined for
-				// every non-three-stage dispatch → byte-compatible.
-				shareParentBranch,
-				// FLY-887 R2: phase dispatch bypasses the runner-label backend/model
-				// layer (set with shareParentBranch above; undefined otherwise →
-				// byte-compatible).
-				ignoreRunnerLabelSelection,
 				// FLY-137 v1.27.2: dept-aware dispatch context
 				agentName,
 				issueLabels: normalizedIssueLabels,
@@ -3454,13 +3188,6 @@ export function createRunsRouter(
 				...(freshStart && { freshStart }),
 				// FLY-728 Part C: difficulty-sorter's dispatch model (normalized)
 				dispatchModel,
-				// FLY-1224: phase table vendor + effort (three-stage entry only;
-				// undefined on every non-three-stage dispatch → byte-compatible)
-				dispatchVendor,
-				dispatchEffort,
-				...(effectiveDesignBackend && {
-					designBackend: effectiveDesignBackend,
-				}),
 				// FLY-1356: explicit per-dispatch arm (validated above; split-only)
 				...(requestedSkillFrameworkMode && {
 					skillFrameworkMode: requestedSkillFrameworkMode,
@@ -3585,9 +3312,6 @@ export function createRunsRouter(
 				issueId: result.issueId,
 				chatThreadId,
 				message: `Runner started for ${issueId}`,
-				...(requestedDesignBackend && effectiveDesignBackend
-					? { designBackend: effectiveDesignBackend }
-					: {}),
 				...(workKindActiveAtEntry
 					? {
 							workKind: {
@@ -3598,7 +3322,9 @@ export function createRunsRouter(
 										? "task_category"
 										: null,
 								...(genericFallback ? { fallback: "generic" } : {}),
-								...(noThreeStageOverride ? { override: "no-three-stage" } : {}),
+								...(noWorkflowPhaseOverride
+									? { override: "no-three-stage" }
+									: {}),
 							},
 						}
 					: {}),

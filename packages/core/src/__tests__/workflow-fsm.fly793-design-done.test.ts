@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { WORKFLOW_TRANSITIONS } from "../workflow-fsm.js";
 
 describe("WORKFLOW_TRANSITIONS — FLY-793 design_done", () => {
-	it("running can transition to design_done (three-stage Design phase handoff)", () => {
+	it("running can transition to design_done (DAG workflow Design phase handoff)", () => {
 		expect(WORKFLOW_TRANSITIONS.running).toContain("design_done");
 	});
 

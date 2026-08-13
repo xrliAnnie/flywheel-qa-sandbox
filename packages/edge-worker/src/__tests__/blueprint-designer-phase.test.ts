@@ -1,7 +1,7 @@
 /**
- * FLY-1059 — Blueprint three-stage Design phase mockup-first upgrade.
+ * FLY-1059 — Blueprint DAG workflow Design phase mockup-first upgrade.
  *
- * A UI/design-flavored three-stage Design phase runs the mockup-first Designer
+ * A UI/design-flavored DAG workflow Design phase runs the mockup-first Designer
  * workflow (concept images A/B/C → founder design gate → high-fidelity) instead
  * of the generic brainstorm→plan text design. Every other case — non-UI Design,
  * Implement, QA, single-session — stays byte-identical to before (the byte-compat

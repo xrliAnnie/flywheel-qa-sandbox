@@ -5,8 +5,7 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import {
 	decodePonytailConditionForRetry,
-	isThreeStagePhaseRole,
-	resolvePhaseDispatch,
+	isWorkflowPhaseRole,
 } from "flywheel-config";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
@@ -51,8 +50,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
-import type { PhaseOrchestrator } from "./phase-orchestrator.js";
-import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
+import { makeFinalizeWorkflowPhaseRoles } from "./post-ship-finalization.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type {
 	GeneralizedExecutionDispatch,
@@ -72,6 +70,7 @@ import {
 	killTmuxWindow,
 	lookupTmuxTarget,
 } from "./tmux-lookup.js";
+import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -443,9 +442,9 @@ export async function approveExecution(
 			undefined,
 			refreshIssueDisplay,
 			// FLY-907 Codex R1 MED-2: the recovered-merge path must finalize a
-			// three-stage issue's parked phases like every other completion sink.
+			// DAG workflow issue's parked phases like every other completion sink.
 			transitionOpts
-				? makeFinalizeThreeStagePhases(
+				? makeFinalizeWorkflowPhaseRoles(
 						store,
 						transitionOpts,
 						refreshIssueDisplay,
@@ -783,7 +782,7 @@ async function handleRetry(
 	// to a particular workflow topology. Resolve it BEFORE closeRunner: a
 	// missing Lead must not destroy the preserved design context and only then
 	// discover that nobody can consume the founder HTML report.
-	const phaseRole = isThreeStagePhaseRole(session.chat_thread_role)
+	const phaseRole = isWorkflowPhaseRole(session.chat_thread_role)
 		? session.chat_thread_role
 		: undefined;
 	const preflightGeneralizedBinding =
@@ -930,25 +929,6 @@ async function handleRetry(
 				}
 			: { labelStatus: "unreadable" as const },
 	};
-
-	// FLY-887 R2 (Codex R1 #2): PHASE-row retries stay under the phase table.
-	// Discriminator = the durable `chat_thread_role` three-stage marker
-	// (auto-QA / single-session rows are 'main' → untouched, which is exactly
-	// the "don't touch auto-QA" boundary). For a phase row:
-	//   - the dispatch {model, vendor, effort} is resolvePhaseDispatch(role)
-	//     UNCONDITIONALLY — never the persisted `dispatch_model` (a pre-fix
-	//     phase row may have persisted a sorter pin or NULL; replaying it would
-	//     put the phase back on Sonnet, or a codex phase back on claude);
-	//   - `ignoreRunnerLabelSelection: true` is threaded through the retry
-	//     dispatcher (previously hardcoded undefined there) so a refreshed
-	//     `sonnet`/vendor label cannot bypass the table either.
-	const designOverride =
-		phaseRole === "design" && session.design_backend
-			? { vendor: session.design_backend }
-			: undefined;
-	const phaseDispatch = phaseRole
-		? resolvePhaseDispatch(phaseRole, process.env, designOverride)
-		: undefined;
 
 	let generalizedExecution: GeneralizedExecutionDispatch | undefined;
 	let adoptedGeneralizedExecutionId: string | undefined;
@@ -1300,17 +1280,7 @@ async function handleRetry(
 				// removed label or a changed project default is NOT reintroduced; only a
 				// genuine sorter/dispatch choice survives. NULL (no dispatch param) →
 				// undefined → the retry re-resolves from current labels/project/account.
-				// FLY-887 R2: EXCEPT phase rows — their {model, vendor, effort} comes
-				// from the phase table unconditionally (see phaseDispatch above).
-				dispatchModel: phaseDispatch
-					? phaseDispatch.model
-					: (session.dispatch_model ?? undefined),
-				// FLY-1224: phase rows re-derive vendor + effort from the table (never
-				// persisted — the table is the single source); non-phase → undefined.
-				dispatchVendor: phaseDispatch?.vendor,
-				dispatchEffort: phaseDispatch?.effort,
-				// FLY-887 R2: phase rows bypass the label layer on retry too.
-				ignoreRunnerLabelSelection: phaseRole ? true : undefined,
+				dispatchModel: session.dispatch_model ?? undefined,
 				// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the
 				// dispatcher uses it instead of a fresh randomUUID so recovery can
 				// reconcile by the durably-bound key. Absent for legacy retries.
@@ -1721,13 +1691,7 @@ export function createActionRouter(
 	issueDisplayRefresh?: {
 		current?: { refresh(issueId: string): Promise<void> };
 	},
-	// FLY-1050: late-bound three-stage PhaseOrchestrator holder (same pattern
-	// as issueDisplayRefresh). A terminate of a three-stage QA row re-drives
-	// the implement→QA handoff (respawn) + the scoped belt reconcile —
-	// terminate previously notified the orchestrator of NOTHING (the FLY-967
-	// strand). plugin.ts must pass it at BOTH createActionRouter call sites
-	// (/actions dashboard alias + /api/actions — the FLY-175 dual-mount).
-	phaseOrchestrator?: { current?: PhaseOrchestrator },
+	turnBeltReconciler?: { current?: TurnBeltReconciler },
 	cardAuthority?: FounderApprovalCardAuthority,
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
@@ -1835,33 +1799,22 @@ export function createActionRouter(
 					// FLY-228: optional audit reason (e.g. close_runner --abandon).
 					typeof terminateReason === "string" ? terminateReason : undefined,
 				);
-				// FLY-1050: a terminated three-stage QA row may have stranded its
-				// implement at awaiting_review — fire the scoped QA-loss re-drive,
-				// then the scoped belt reconcile (terminate previously did NEITHER).
-				// The guard MUST include cleanupPending (Codex R1 #2): that shape is
-				// success:false + cleanupPending:true, but the FSM row is already
-				// terminal either way — a residual live tmux is caught downstream by
-				// the ghostGuard (spawn) and the liveness probe (belt). Never-throw,
-				// fire-and-forget (mirrors plugin.ts holder conventions).
 				if (
 					(terminateResult.success || terminateResult.cleanupPending) &&
 					sess?.project_name &&
-					(sess.chat_thread_role ?? "main") === "qa"
+					isWorkflowPhaseRole(sess.session_role)
 				) {
 					const issueId = sess.issue_id;
 					const projectName = sess.project_name;
-					void phaseOrchestrator?.current
-						?.reconcileQaLoss({ issueId, terminalExecId: eid })
-						.then(() =>
-							phaseOrchestrator?.current?.reconcileTurnBelt({
-								issueId,
-								projectName,
-								terminalExecId: eid,
-							}),
-						)
+					void turnBeltReconciler?.current
+						?.reconcileTurnBelt({
+							issueId,
+							projectName,
+							terminalExecId: eid,
+						})
 						.catch((err) =>
 							console.warn(
-								`[terminate] FLY-1050 qa-loss reconcile failed for ${eid}: ${(err as Error).message}`,
+								`[terminate] TURN reconcile failed for ${eid}: ${(err as Error).message}`,
 							),
 						);
 				}

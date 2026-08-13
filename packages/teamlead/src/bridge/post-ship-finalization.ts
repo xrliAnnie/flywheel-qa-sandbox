@@ -260,30 +260,6 @@ export function settleShipAttemptFailed(
 	return result ?? { outcome: "unknown_head_skipped" };
 }
 
-/**
- * FLY-1232 T9 (Codex code R1 #5): the CENTRAL late-bound shadow finalization
- * hook. runPostShipFinalization has several in-process claim contenders
- * (DirectEventSink, event-route, merge-ship-gate) that race the atomic claim
- * with independently-built deps — if a contender that did not thread
- * `deps.workflowShadow` wins, T9 must still run. plugin.ts sets this once at
- * the hot runtime holder once; the hook itself checks claims-write at use
- * time. `deps.workflowShadow` takes precedence when present (test seam).
- * Claim-based startup repair remains the durable backstop either way.
- */
-const workflowShadowFinalizationHolder: {
-	current?: {
-		onShipFinalized(args: { projectName: string; issueId: string }): void;
-	};
-} = {};
-
-export function setWorkflowShadowFinalizationHook(
-	hook:
-		| { onShipFinalized(args: { projectName: string; issueId: string }): void }
-		| undefined,
-): void {
-	workflowShadowFinalizationHolder.current = hook;
-}
-
 export interface PostShipOpts {
 	executionId: string;
 	/** Workflow authority when the session belongs to an engine-owned run. */
@@ -402,12 +378,12 @@ export interface PostShipDeps {
 	) => Promise<T>;
 	/**
 	 * FLY-887: close the issue's still-alive parked design + implement phase
-	 * sessions (three-stage keep-alive) BEFORE the shared worktree is removed — the
+	 * sessions (DAG workflow keep-alive) BEFORE the shared worktree is removed — the
 	 * parked phases' cwd is inside it, so they must be torn down first. No-op for a
 	 * single-session issue and for keep-alive OFF (both leave no parked phases).
 	 * Never throws. Absent → no phase finalization (byte-compat).
 	 */
-	finalizeThreeStagePhases?: (
+	finalizeWorkflowPhaseRoles?: (
 		issueId: string,
 		projectName: string,
 		/** R5#3: the post-ship DAG already holds the canonical issue mutex — the
@@ -417,7 +393,7 @@ export interface PostShipDeps {
 	) => Promise<void>;
 	/**
 	 * FLY-907 (Step 4.1c / plan §2.5 form (a)): the unified issue-display
-	 * refresh (AWAITED variant). Called AFTER `finalizeThreeStagePhases` (so it
+	 * refresh (AWAITED variant). Called AFTER `finalizeWorkflowPhaseRoles` (so it
 	 * reads the phases already at their terminal `completed` status) and BEFORE
 	 * the notifier/archive steps (a rename/edit must land while the thread is
 	 * still un-archived) — the ship-terminal contract: title ✅完成, header all
@@ -433,22 +409,10 @@ export interface PostShipDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
-	/**
-	 * FLY-1232 module ② (T9): best-effort shadow-run finalization hook on THE
-	 * single serialized finalization path. Wired by the in-process sink when
-	 * FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1; call sites that don't wire it (external
-	 * merge reconcile, event-route) are covered by the claim-based startup
-	 * repair (reconcileOnStartup derives T9 from post_ship_finalization_claim).
-	 * The hook never throws (writer contract) — a shadow failure never blocks
-	 * teardown. Absent → byte-compatible.
-	 */
-	workflowShadow?: {
-		onShipFinalized(args: { projectName: string; issueId: string }): void;
-	};
 }
 
 /**
- * FLY-887: build the ship-time finalizer for a three-stage issue's still-alive
+ * FLY-887: build the ship-time finalizer for a DAG workflow issue's still-alive
  * parked phases. Closes the parked design + implement sessions DIRECTLY via
  * `closeRunner({ finalizeDone })` (NOT `closePhaseRunner`, which owns the
  * handoff-era worktree removal — the shared worktree is removed once by
@@ -478,7 +442,7 @@ const RECLAIMABLE_PHASE_STATUSES = new Set<string>([
 	"completed",
 ]);
 
-export function makeFinalizeThreeStagePhases(
+export function makeFinalizeWorkflowPhaseRoles(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
 	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
@@ -504,7 +468,7 @@ export function makeFinalizeThreeStagePhases(
 						executionId: p.execution_id,
 						issueId: p.issue_id,
 						projectName: p.project_name ?? projectName,
-						reason: "three-stage ship finalization",
+						reason: "DAG workflow ship finalization",
 						executorType: "phase",
 						finalizeDone: true,
 						transitionOpts,
@@ -754,20 +718,20 @@ async function runPostShipFinalizationInner(
 		};
 	});
 
-	// ── (1.25) FLY-887 three-stage keep-alive: close the still-alive parked
+	// ── (1.25) FLY-887 DAG workflow keep-alive: close the still-alive parked
 	// design + implement phases for this issue BEFORE the shared worktree is
 	// removed below (their cwd is inside it). No-op for single-session / keep-alive
 	// OFF (no parked phases exist). Never throws. ──
-	if (deps.finalizeThreeStagePhases) {
+	if (deps.finalizeWorkflowPhaseRoles) {
 		// R6#7: only pass the 3rd (alreadyLocked) arg when the DAG actually holds
 		// the mutex — non-locked callers keep the original 2-arg call (byte-compat
 		// with the existing fly887 test seam contract).
 		const finalizeCall = dagLocked
-			? deps.finalizeThreeStagePhases(opts.issueId, opts.projectName, true)
-			: deps.finalizeThreeStagePhases(opts.issueId, opts.projectName);
+			? deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName, true)
+			: deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName);
 		await finalizeCall.catch((err) => {
 			console.error(
-				`[post-ship] finalizeThreeStagePhases failed:`,
+				`[post-ship] finalizeWorkflowPhaseRoles failed:`,
 				(err as Error).message,
 			);
 		});
@@ -1070,21 +1034,6 @@ async function runPostShipFinalizationInner(
 			runId: opts.runId,
 			completed: true,
 		});
-	}
-	// T9 moves with the completion fact: a started/partial cleanup may never
-	// terminalize a workflow run or paint the founder-facing final badge.
-	try {
-		const shadowHook =
-			deps.workflowShadow ?? workflowShadowFinalizationHolder.current;
-		shadowHook?.onShipFinalized({
-			projectName: opts.projectName,
-			issueId: opts.issueId,
-		});
-	} catch (err) {
-		console.warn(
-			`[post-ship] workflow shadow finalization failed (non-blocking):`,
-			(err as Error).message,
-		);
 	}
 	return {
 		complete: true,

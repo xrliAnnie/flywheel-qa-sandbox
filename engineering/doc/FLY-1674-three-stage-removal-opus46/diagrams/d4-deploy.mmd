@@ -1,0 +1,9 @@
+flowchart LR
+    A["PR 合入 main<br/>(founder :cool: 批准)"] --> B["部署硬门 a0<br/>旧 run 清零 / seed 归属<br/>任一不过就中止"]
+    B --> C["同一部署窗:<br/>拉代码 + 改 models.json<br/>(删 phases + 切 4.6)<br/>+ 清 .env 两行"]
+    C --> D["重启 Bridge 一次<br/>= 验收③ 不炸"]
+    D --> E["菜单用新绑定重编译<br/>模板出新版本"]
+    E --> F["派一条真实 run"]
+    F --> G["三重证据:<br/>① run 快照 qa=4.6<br/>② 派发审计行=4.6<br/>③ 进程 argv --model 4.6"]
+    style D fill:#fff8ec,stroke:#ff9500
+    style G fill:#f0faf2,stroke:#34c759

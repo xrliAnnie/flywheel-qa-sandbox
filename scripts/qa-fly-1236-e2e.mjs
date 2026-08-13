@@ -110,7 +110,7 @@ const systemLayer = [
 const filler = Array.from(
 	{ length: 60 },
 	(_, i) =>
-		`Design note ${i + 1}: this line stands in for real issue-description and design-handoff prose that a genuine three-stage implement objective carries, which is exactly what pushed the folded objective past the 4000-char thread/goal/set ceiling in the FLY-1225 incident.`,
+		`Design note ${i + 1}: this line stands in for real issue-description and design-handoff prose that a genuine DAG workflow implement objective carries, which is exactly what pushed the folded objective past the 4000-char thread/goal/set ceiling in the FLY-1225 incident.`,
 ).join("\n");
 const prompt = `You are working inside the git worktree at ${sandboxCwd}.
 

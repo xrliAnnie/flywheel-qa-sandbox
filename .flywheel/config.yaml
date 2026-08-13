@@ -36,7 +36,7 @@ runners:
 # NOT limited to the FLY-579 auto-QA pipeline (which creates a fresh
 # `QA·FLY-XX` issue and dispatches it without a label or dispatchModel, so it
 # lands exactly here). Unclassified work now follows the founder's Fable/Codex
-# preference; the explicit three-stage QA row remains the only Opus 5 default.
+# preference; the explicit DAG workflow QA row remains the only Opus 5 default.
 roles:
   runner:
     backend: claude-tmux
@@ -189,7 +189,7 @@ agents:
     # issues. One agent.md, one session (founder gate = in-session pause). Was
     # "Mode A" inside product-designer (FLY-880); split out per Annie's one-role-
     # per-agent.md lock. Dispatch with `no-three-stage` (or from the product channel)
-    # so the co-creation loop is not chopped by three-stage phase stops.
+    # so the co-creation loop is not chopped by DAG workflow stops.
     agent_file: .flywheel/agents/engineering/pm-executor.md
     department: engineering        # home (physical file location)
     # FLY-901 dual-register: serves BOTH the engineering Lead and the product Lead's
@@ -215,7 +215,7 @@ agents:
   designer:
     # FLY-1059: the visual mockup-first Designer role. Dispatched by label to do
     # concept-image direction exploration (codex-image ∥ gemini-image) → founder
-    # design gate → high-fidelity mockup, BEFORE implement. The three-stage Design
+    # design gate → high-fidelity mockup, BEFORE implement. The DAG workflow Design
     # PHASE mockup-first behavior lives in Blueprint (isUiDesignFlavored) and is a
     # SEPARATE mechanism from this whole-issue label route.
     agent_file: .flywheel/agents/engineering/designer-executor.md
@@ -243,23 +243,10 @@ agents:
 # agents/generic-executor.md). ConfigLoader validates the name exists.
 default_agent: general
 
-# FLY-793 / Annie 2026-07-04: enable the three-stage pipeline (Design→Implement→QA)
-# for the flywheel project ONLY — "我们现在开始用三段式真正干活，这个只需要开在 flywheel".
-# Per-project opt-in knob (ConfigLoader validates boolean; default absent=off).
-# E2E-verified: FLY-824 FINAL PASS + FLY-849 combined-batch PASS (5 rounds, PR #440).
-#
-# FLY-887 R2: three_stage_channels narrows three-stage ENTRY to fresh main
-# dispatches from Leads whose chatChannel is listed (#flywheel-engineer only —
-# cos/product/codex-infra/anna dispatches run single-session). Channel ids MUST
-# be quoted strings (a bare YAML number silently loses snowflake precision;
-# ConfigLoader rejects it). Absent key = no restriction. To E2E three-stage in
-# the 529 Room, add the slot channel here or delete the key.
 pipeline:
-  three_stage: true
-  three_stage_channels: ["1516209714097291335"] # #flywheel-engineer
   # FLY-1372 / Annie 2026-07-18: DAG dispatch enrollment — a fresh main
   # master-auth dispatch on this project routes into the workflow-template
-  # (DAG) engine instead of three-stage/single-session, provided the DAG
+  # (DAG) engine instead of a single-session dispatch, provided the DAG
   # feature flags pass (workflow_template_dispatch + claims write/read).
   # Grayscale: flywheel ONLY for the pilot. Rollback: delete this key (next
   # request) or `flywheel-comm feature-flags apply --name

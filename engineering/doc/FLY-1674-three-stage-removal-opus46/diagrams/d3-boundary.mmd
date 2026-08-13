@@ -1,0 +1,24 @@
+flowchart TB
+    subgraph DEL["🗑 整删(纯三段式)"]
+        A1["phase-orchestrator.ts<br/>三段式编排器 2376 行"]
+        A2["three-stage-policy.ts<br/>三段式准入策略 339 行"]
+        A3["WorkflowShadowWriter<br/>旧→新引擎的影子桥"]
+        A4["models.json phases 段<br/>+ 解析/回落代码"]
+        A5["6 个 feature flag<br/>+ 2 个 config 键"]
+        A6["schema-1 派发分支<br/>(v1 旧引擎入口)"]
+    end
+    subgraph MIG["📦 先迁再删(共用符号搬家)"]
+        B1["TURN 回收 reconcileTurnBelt<br/>→ 独立模块"]
+        B2["PhaseSession 类型等 4 符号<br/>→ 中性命名模块"]
+        B3["phase 角色/徽章函数族<br/>→ phase-roles.ts 改名"]
+    end
+    subgraph KEEP["✅ 保留(DAG 活机制)"]
+        C1["DAG 工作流引擎全部"]
+        C2["three_stage_turn 表<br/>(名字旧,机制是 DAG 的)"]
+        C3["no-three-stage 标签<br/>(语义=单 session 直跑)"]
+        C4["2 个告警 kind 字符串<br/>(孤儿看护巡逻在用)"]
+    end
+    DEL ~~~ MIG ~~~ KEEP
+    style DEL fill:#fff5f5,stroke:#ff3b30
+    style MIG fill:#fff8ec,stroke:#ff9500
+    style KEEP fill:#f0faf2,stroke:#34c759

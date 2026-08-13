@@ -1,5 +1,5 @@
 /**
- * FLY-545 QA (Opus, three-stage QA phase) — KICKBACK evidence.
+ * FLY-545 QA (Opus, DAG workflow QA phase) — KICKBACK evidence.
  *
  * Finding: the confirmation heuristic mis-reads an AFFIRM-LEADING correction /
  * partial-agreement as a full "yes". Both confirmation surfaces share the same

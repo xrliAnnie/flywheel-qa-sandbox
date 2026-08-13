@@ -1,11 +1,11 @@
 /**
  * FLY-859 — Blueprint QA-phase PASS/FAIL sequencing + Implement fix-round.
  *
- * The three-stage QA phase is the pipeline's ship-gate holder AND ship
+ * The DAG workflow QA phase is the pipeline's ship-gate holder AND ship
  * executor on PASS: its prompt must chain qa-result → the standard APPROVE
  * GATE flow (FLY-849 §3.8 showed the old prompt let the runner stop right
  * after the verdict, stranding the pipeline). On FAIL it stops for the
- * PhaseOrchestrator's Implement-fix loop (never the auto-QA park protocol).
+ * workflow engine's Implement-fix loop (never the auto-QA park protocol).
  * An Implement-fix dispatch renders the QA findings context; a plain
  * implement dispatch is byte-compatible.
  */
