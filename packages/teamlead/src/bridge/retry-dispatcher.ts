@@ -269,6 +269,16 @@ export interface StartRequest {
 	 */
 	startPoint?: string;
 	/**
+	 * FLY-1718 P1: authenticated human override that deliberately starts from
+	 * main even when the managed origin branch exists. Only runs-route may mint
+	 * this object; engine/reconcile/retry callers leave it absent.
+	 */
+	freshStart?: {
+		authority: "authenticated_runs_route";
+		actor: string;
+		reason: string;
+	};
+	/**
 	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
 	 * Auto-QA spawns. Blueprint renders it into a QA-mode prompt (independent
 	 * verification of `parentExecutionId`'s PR at `prHeadSha`) and the QA runner

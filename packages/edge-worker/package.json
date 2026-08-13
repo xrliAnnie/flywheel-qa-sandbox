@@ -10,7 +10,8 @@
 		"prompt-template-v2.md",
 		"prompt-template.md",
 		"label-prompt-template.md",
-		"prompts"
+		"prompts",
+		"assets"
 	],
 	"scripts": {
 		"build": "tsc && npm run copy-prompts",

@@ -1,0 +1,12 @@
+flowchart TD
+    A["第一轮 runner 干完活<br/>成果推到云端分支 + 开了 PR #813<br/>(含 Annie 已拍板的方案)"] --> B["Runner 被关闭<br/>(close done=true)"]
+    B --> C["清理:本地工作目录 + 本地分支<br/>全部删掉"]
+    C --> D["同一个 issue 再次派工"]
+    D --> E{"系统找『可续跑的上一轮』"}
+    E -->|"只查本地<br/>本地已被清空"| F["查不到 → 判定『全新开始』"]
+    F --> G["从 main 主干新建<br/>一条同名分支"]
+    G --> H["⚠️ 与云端已有成果分叉<br/>22 分钟 / 70k token<br/>重建已拍板的东西"]
+    H --> I["☠️ 若 runner 强推(force-push)<br/>会直接覆盖拍板成果<br/>目前只有口头禁令"]
+    style A fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style H fill:#fff3e0,stroke:#ff9500,stroke-width:2px
+    style I fill:#ffebee,stroke:#ff3b30,stroke-width:2px

@@ -1,7 +1,9 @@
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createLogger } from "flywheel-core";
 
 const logger = createLogger({ component: "WorktreeManager" });
@@ -29,6 +31,10 @@ export interface WorktreeConfig {
 	 * it can call these without deadlock. Absent → today's unlocked behavior.
 	 */
 	withRepoLock?: <T>(mainRepoPath: string, fn: () => Promise<T>) => Promise<T>;
+	/** @internal — isolated state root for push-guard tests. */
+	pushGuardStateDir?: string;
+	/** @internal — package-layout override for push-guard tests. */
+	pushGuardSourcePath?: string;
 }
 
 export interface WorktreeInfo {
@@ -135,6 +141,21 @@ function defaultBgDelete(cmd: string, args: string[]): void {
 	});
 }
 
+/** Published-package-safe path (`src/` and `dist/` are both package children). */
+function defaultPushGuardSourcePath(): string {
+	return fileURLToPath(
+		new URL("../assets/push-guard/pre-push", import.meta.url),
+	);
+}
+
+function contentDigest(content: Buffer): string {
+	return createHash("sha256").update(content).digest("hex");
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 // ─── WorktreeManager ────────────────────────────
 
 export class WorktreeManager {
@@ -145,12 +166,23 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		fn: () => Promise<T>,
 	) => Promise<T>;
+	private readonly pushGuardStateDir: string;
+	private readonly pushGuardSourcePath: string;
 
 	constructor(config?: WorktreeConfig, execFn?: WorktreeExecFn) {
 		this.baseDir = config?.baseDir;
 		this.exec = execFn ?? defaultExec;
 		this.bgDelete = config?.bgDeleteFn ?? defaultBgDelete;
 		this.repoLock = config?.withRepoLock;
+		const flywheelRoot =
+			process.env.FLYWHEEL_STATE_DIR?.trim() ||
+			path.join(os.homedir(), ".flywheel");
+		this.pushGuardStateDir = path.resolve(
+			config?.pushGuardStateDir ?? path.join(flywheelRoot, "state"),
+		);
+		this.pushGuardSourcePath = path.resolve(
+			config?.pushGuardSourcePath ?? defaultPushGuardSourcePath(),
+		);
 	}
 
 	/** FLY-1185 §2.11: run inside the injected repo lock (no-op when absent). */
@@ -194,6 +226,203 @@ export class WorktreeManager {
 			return path.join(this.baseDir, projectName) + path.sep;
 		}
 		return `${path.dirname(mainRepoPath)}${path.sep}${this.repoSlug(mainRepoPath)}-`;
+	}
+
+	/**
+	 * FLY-1718 P2: install the packaged hook into a stable user-owned location.
+	 * A valid install is left byte-stable. Invalid/tampered installs are replaced
+	 * by a same-directory atomic rename, then re-validated before use.
+	 */
+	private ensurePushGuardInstalled(): string {
+		const sourceStat = fs.lstatSync(this.pushGuardSourcePath);
+		if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+			throw new Error(
+				`push-guard source is not a regular file: ${this.pushGuardSourcePath}`,
+			);
+		}
+		const source = fs.readFileSync(this.pushGuardSourcePath);
+		const expectedDigest = contentDigest(source);
+		const hooksDir = path.join(this.pushGuardStateDir, "push-guard", "hooks");
+		const installedPath = path.join(hooksDir, "pre-push");
+		const owner =
+			typeof process.getuid === "function" ? process.getuid() : null;
+		const validInstall = (): boolean => {
+			try {
+				const stat = fs.lstatSync(installedPath);
+				return (
+					stat.isFile() &&
+					!stat.isSymbolicLink() &&
+					(owner === null || stat.uid === owner) &&
+					(stat.mode & 0o100) === 0o100 &&
+					contentDigest(fs.readFileSync(installedPath)) === expectedDigest
+				);
+			} catch {
+				return false;
+			}
+		};
+
+		fs.mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
+		if (validInstall()) return installedPath;
+
+		try {
+			const current = fs.lstatSync(installedPath);
+			if (!current.isFile() || current.isSymbolicLink()) {
+				fs.rmSync(installedPath, { recursive: true, force: true });
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+
+		const tempPath = path.join(
+			hooksDir,
+			`.pre-push.${process.pid}.${randomUUID()}.tmp`,
+		);
+		try {
+			fs.writeFileSync(tempPath, source, { flag: "wx", mode: 0o700 });
+			fs.chmodSync(tempPath, 0o700);
+			fs.renameSync(tempPath, installedPath);
+		} finally {
+			try {
+				fs.unlinkSync(tempPath);
+			} catch {
+				// Best-effort cleanup only; never mask the installation failure.
+			}
+		}
+		if (!validInstall()) {
+			throw new Error(`push-guard install validation failed: ${installedPath}`);
+		}
+		return installedPath;
+	}
+
+	private async resolveExistingHooksDir(
+		worktreePath: string,
+	): Promise<string | undefined> {
+		try {
+			const configured = (
+				await this.exec(
+					"git",
+					["-C", worktreePath, "config", "--path", "--get", "core.hooksPath"],
+					worktreePath,
+				)
+			).stdout.trim();
+			if (configured) {
+				return path.resolve(worktreePath, configured);
+			}
+		} catch {
+			// No configured hooksPath is normal; resolve Git's default below.
+		}
+		try {
+			const resolved = (
+				await this.exec(
+					"git",
+					[
+						"-C",
+						worktreePath,
+						"rev-parse",
+						"--path-format=absolute",
+						"--git-path",
+						"hooks",
+					],
+					worktreePath,
+				)
+			).stdout.trim();
+			return resolved ? path.resolve(worktreePath, resolved) : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** Build a worktree-scoped hooksPath that preserves every existing hook. */
+	private composePushGuardHooks(
+		worktreePath: string,
+		guardPath: string,
+		existingHooksDir: string | undefined,
+	): string {
+		const composeRoot = path.join(
+			this.pushGuardStateDir,
+			"push-guard",
+			"worktrees",
+		);
+		const key = createHash("sha256")
+			.update(path.resolve(worktreePath))
+			.digest("hex");
+		const finalDir = path.join(composeRoot, key);
+		const tempDir = path.join(
+			composeRoot,
+			`.${key}.${process.pid}.${randomUUID()}.tmp`,
+		);
+		const hooksDir = path.join(tempDir, "hooks");
+		fs.mkdirSync(hooksDir, { recursive: true, mode: 0o700 });
+
+		let previousHooksDir = existingHooksDir;
+		if (
+			previousHooksDir &&
+			path
+				.resolve(previousHooksDir)
+				.startsWith(`${path.resolve(composeRoot)}${path.sep}`)
+		) {
+			try {
+				const original = fs
+					.readFileSync(
+						path.join(path.dirname(previousHooksDir), "previous-hooks-path"),
+						"utf8",
+					)
+					.trim();
+				previousHooksDir = original || undefined;
+			} catch {
+				previousHooksDir = undefined;
+			}
+		}
+
+		const executableHook = (hookPath: string): boolean => {
+			try {
+				const stat = fs.statSync(hookPath);
+				return stat.isFile() && (stat.mode & 0o111) !== 0;
+			} catch {
+				return false;
+			}
+		};
+		try {
+			if (previousHooksDir && fs.statSync(previousHooksDir).isDirectory()) {
+				for (const name of fs.readdirSync(previousHooksDir)) {
+					if (name === "pre-push") continue;
+					const previousHook = path.join(previousHooksDir, name);
+					if (!executableHook(previousHook)) continue;
+					fs.writeFileSync(
+						path.join(hooksDir, name),
+						`#!/bin/sh\nexec ${shellQuote(previousHook)} "$@"\n`,
+						{ mode: 0o700 },
+					);
+				}
+			}
+		} catch {
+			// A disappearing prior hooks directory is equivalent to no prior hooks.
+		}
+
+		const previousPrePush = previousHooksDir
+			? path.join(previousHooksDir, "pre-push")
+			: undefined;
+		const chainPrevious =
+			previousPrePush &&
+			path.resolve(previousPrePush) !== path.resolve(guardPath) &&
+			executableHook(previousPrePush)
+				? `${shellQuote(previousPrePush)} "$@" < "$input" || exit $?\n`
+				: "";
+		fs.writeFileSync(
+			path.join(hooksDir, "pre-push"),
+			`#!/bin/sh\ninput=$(mktemp "\${TMPDIR:-/tmp}/flywheel-pre-push.XXXXXX") || exit 1\ntrap 'rm -f -- "$input"' EXIT HUP INT TERM\ncat > "$input" || exit 1\n${chainPrevious}exec ${shellQuote(guardPath)} "$@" < "$input"\n`,
+			{ mode: 0o700 },
+		);
+		fs.writeFileSync(
+			path.join(tempDir, "previous-hooks-path"),
+			previousHooksDir ? `${previousHooksDir}\n` : "",
+			{ mode: 0o600 },
+		);
+
+		fs.mkdirSync(composeRoot, { recursive: true, mode: 0o700 });
+		fs.rmSync(finalDir, { recursive: true, force: true });
+		fs.renameSync(tempDir, finalDir);
+		return path.join(finalDir, "hooks");
 	}
 
 	async create(opts: {
@@ -240,37 +469,88 @@ export class WorktreeManager {
 				opts.mainRepoPath,
 			);
 
-			// git config push.autoSetupRemote
-			await this.exec(
-				"git",
-				[
-					"-C",
+			try {
+				// git config push.autoSetupRemote
+				await this.exec(
+					"git",
+					[
+						"-C",
+						worktreePath,
+						"config",
+						"--local",
+						"push.autoSetupRemote",
+						"true",
+					],
 					worktreePath,
-					"config",
-					"--local",
-					"push.autoSetupRemote",
-					"true",
-				],
-				worktreePath,
-			);
+				);
 
-			// FLY-1185 §2.1: creation-generation nonce into the git ADMIN area
-			// (resolved via --git-path, never guessed from `.git/worktrees/<id>`).
-			// Creator-written, porcelain-invisible; a rebuild gets a fresh nonce.
-			// A marker-write failure fails the create (fail-closed: a worktree
-			// without a generation could never be classified as session-owned).
-			const generation = randomUUID();
-			const markerPath = await this.resolveGenerationMarkerPath(worktreePath);
-			fs.writeFileSync(markerPath, `${generation}\n`, "utf8");
+				if (process.env.FLYWHEEL_PUSH_GUARD !== "0") {
+					const guardPath = this.ensurePushGuardInstalled();
+					const existingHooksDir =
+						await this.resolveExistingHooksDir(worktreePath);
+					const hooksDir = this.composePushGuardHooks(
+						worktreePath,
+						guardPath,
+						existingHooksDir,
+					);
+					await this.exec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"config",
+							"--local",
+							"extensions.worktreeConfig",
+							"true",
+						],
+						worktreePath,
+					);
+					await this.exec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"config",
+							"--worktree",
+							"core.hooksPath",
+							hooksDir,
+						],
+						worktreePath,
+					);
+				}
 
-			return {
-				projectName: opts.projectName,
-				issueId: opts.issueId,
-				worktreePath,
-				branch,
-				mainRepoPath: opts.mainRepoPath,
-				generation,
-			};
+				// FLY-1185 §2.1: creation-generation nonce into the git ADMIN area
+				// (resolved via --git-path, never guessed from `.git/worktrees/<id>`).
+				// Creator-written, porcelain-invisible; a rebuild gets a fresh nonce.
+				// A marker-write failure fails the create (fail-closed: a worktree
+				// without a generation could never be classified as session-owned).
+				const generation = randomUUID();
+				const markerPath = await this.resolveGenerationMarkerPath(worktreePath);
+				fs.writeFileSync(markerPath, `${generation}\n`, "utf8");
+
+				return {
+					projectName: opts.projectName,
+					issueId: opts.issueId,
+					worktreePath,
+					branch,
+					mainRepoPath: opts.mainRepoPath,
+					generation,
+				};
+			} catch (error) {
+				try {
+					await this.removeIfExistsUnlocked(
+						opts.mainRepoPath,
+						opts.projectName,
+						opts.issueId,
+					);
+				} catch (rollbackError) {
+					throw new AggregateError(
+						[error, rollbackError],
+						`worktree create failed and rollback also failed: ${worktreePath}`,
+					);
+				}
+				throw error;
+			}
 		});
 	}
 

@@ -61,6 +61,12 @@ import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+import { ContinuityAudit } from "./continuity-audit.js";
+import {
+	lookupOpenPullRequests,
+	materializeRemoteBranch,
+	type OpenPullRequest,
+} from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
@@ -74,8 +80,12 @@ import type { LifecycleShipInfra } from "./post-ship-finalization.js";
 import {
 	computeProgressResume,
 	type ProgressResumeDeps,
+	type ProgressResumeInfo,
 } from "./progress-resume.js";
 import {
+	type ContinuityComputer,
+	type DoaBackoffAdmissionFn,
+	type FreshStartAuditRecorder,
 	type LifecycleAdmissionFn,
 	type LifecycleLaunchGuard,
 	type PhaseRetryStartPoint,
@@ -92,6 +102,54 @@ import type { BridgeConfig } from "./types.js";
 import type { WorkflowShadowRuntime } from "./workflow-shadow-writer.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
+
+/** FLY-1718: compute one resume snapshot from one Git ref at a time. */
+export function computeProgressResumeAcrossRefs(input: {
+	issueId: string;
+	role: string;
+	docBaseDir: string;
+	issueIdentifier: string;
+	branch: string;
+	refs: string[];
+	prior: {
+		execution_id: string;
+		plan_path?: string;
+		session_stage?: string;
+	};
+	git: (args: string[]) => string | null;
+}): ProgressResumeInfo | null {
+	for (const ref of input.refs) {
+		const tip = input.git(["rev-parse", `${ref}^{commit}`])?.trim();
+		if (!tip) continue;
+		const deps: ProgressResumeDeps = {
+			docBaseDir: input.docBaseDir,
+			issueIdentifier: input.issueIdentifier,
+			branchName: () => input.branch,
+			priorSession: () => input.prior,
+			readBranchFile: (_branch, path) => input.git(["show", `${ref}:${path}`]),
+			branchTip: () => tip,
+			discoverDocDir: () => {
+				const out = input.git(["ls-tree", "-r", "--name-only", ref]);
+				if (!out) return null;
+				const prefix = `${input.docBaseDir}/${input.issueIdentifier}-`;
+				const hit = out
+					.split("\n")
+					.find(
+						(path) => path.startsWith(prefix) && path.endsWith("/progress.md"),
+					);
+				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+			},
+		};
+		const resume = computeProgressResume(
+			input.issueId,
+			input.role,
+			"restart",
+			deps,
+		);
+		if (resume) return resume;
+	}
+	return null;
+}
 
 export function liveCodexHomeExecutionIds(
 	store: Pick<StateStore, "getActiveSessions">,
@@ -550,6 +608,8 @@ async function createRunBlueprint(
 export interface RunInfraOptions {
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
+	/** FLY-1718: shared structural repo lock used by fetch + worktree mutation. */
+	withRepoLock?: <T>(repoPath: string, fn: () => Promise<T>) => Promise<T>;
 	/**
 	 * FLY-137 v1.27.2: optional explicit Flywheel repo root. If unset, falls back to
 	 * `FLYWHEEL_REPO_ROOT` env var, then to a module-location-derived path. Used by
@@ -617,6 +677,8 @@ export interface RunInfraOptions {
 	 * last pre-launch recheck + launch-claim CAS hooks. Absent → byte-compat.
 	 */
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	/** FLY-1718 P4: canonical predecessor admission before branch continuity. */
+	doaBackoffAdmission?: DoaBackoffAdmissionFn;
 	/**
 	 * FLY-1232/1344 module ②: the hot lifecycle-shadow runtime, always constructed
 	 * by plugin.ts and threaded into the RunDispatcher (T1/T2/T7 pre-launch seam
@@ -734,8 +796,11 @@ export function createRunInfraDispatcher(input: {
 	resumeComputer?: ResumeComputer;
 	lifecycleAdmission?: LifecycleAdmissionFn;
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
+	doaBackoffAdmission?: DoaBackoffAdmissionFn;
 	workflowShadow?: WorkflowShadowRuntime;
 	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
+	continuityComputer?: ContinuityComputer;
+	freshStartAudit?: FreshStartAuditRecorder;
 	/** Test-only subclass seam for suppressing external CommDB registration. */
 	dispatcherClass?: typeof RunDispatcher;
 }): RunDispatcher {
@@ -762,7 +827,79 @@ export function createRunInfraDispatcher(input: {
 				launchExecutionId,
 				candidate,
 			),
+		input.continuityComputer,
+		input.freshStartAudit,
+		input.doaBackoffAdmission,
 	);
+}
+
+/** FLY-1718 P1: production branch-key authority + remote materializer wiring. */
+export function createBranchContinuityComputer(input: {
+	projectRuntimes: Map<string, ProjectRuntime>;
+	worktreeManager: WorktreeManager;
+	materialize: (args: {
+		repoPath: string;
+		branch: string;
+	}) => Promise<
+		| { kind: "exists"; sha: string }
+		| { kind: "missing" }
+		| { kind: "indeterminate"; error: string }
+	>;
+	lookupOpenPrs: (args: {
+		repoPath: string;
+		branch: string;
+	}) => Promise<OpenPullRequest[]>;
+	log?: (message: string) => void;
+}): ContinuityComputer {
+	return async ({ issueId, role, projectName, shareParentBranch }) => {
+		const runtime = input.projectRuntimes.get(projectName);
+		if (!runtime) {
+			return {
+				kind: "indeterminate",
+				error: `project runtime ${projectName} is unavailable`,
+			};
+		}
+		try {
+			// Blueprint receives node.id=req.issueId and runs this exact key chain.
+			// issueIdentifier is display metadata and deliberately cannot enter it.
+			const worktreeKey = resolveWorktreeKey(issueId, {
+				sessionRole: role,
+				shareParentBranch,
+			});
+			const { branch } = input.worktreeManager.expectedWorktree(
+				runtime.projectRoot,
+				projectName,
+				worktreeKey,
+			);
+			const decision = await input.materialize({
+				repoPath: runtime.projectRoot,
+				branch,
+			});
+			if (decision.kind === "missing") return { ...decision, branch };
+			if (decision.kind === "indeterminate") return decision;
+			const prs = await input.lookupOpenPrs({
+				repoPath: runtime.projectRoot,
+				branch,
+			});
+			if (prs.length > 0) {
+				(input.log ?? console.log)(
+					`[continuity] ${branch} open PR inventory: ${prs.map((pr) => `#${pr.number}`).join(", ")}`,
+				);
+			}
+			const current = prs[0];
+			return {
+				kind: "found",
+				branch,
+				sha: decision.sha,
+				...(current && { prNumber: current.number, prUrl: current.url }),
+			};
+		} catch (error) {
+			return {
+				kind: "indeterminate",
+				error: error instanceof Error ? error.message : String(error),
+			};
+		}
+	};
 }
 
 export async function setupRunInfrastructure(
@@ -784,7 +921,15 @@ export async function setupRunInfrastructure(
 	const fetchIssue = createFetchIssue(store);
 
 	// FLY-95: Shared WorktreeManager for per-Runner worktree isolation
-	const worktreeManager = new WorktreeManager();
+	const worktreeManager = new WorktreeManager(
+		runInfraOpts?.withRepoLock
+			? { withRepoLock: runInfraOpts.withRepoLock }
+			: undefined,
+	);
+	const continuityAudit = new ContinuityAudit(
+		join(homedir(), ".flywheel", "state", "continuity-audit.db"),
+	);
+	cleanupHandles.push(async () => continuityAudit.close());
 
 	// FLY-137 v1.27.2: resolve Flywheel repo root once at startup (canonical source of truth).
 	const flywheelRepoRoot = resolveFlywheelRepoRoot(
@@ -1043,7 +1188,7 @@ export async function setupRunInfrastructure(
 	//     never recomputed from a trusted-key string.
 	//   - reads the BRANCH BLOB via `git show` (never the worktree fs — it may be
 	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
-	const resumeComputer: ResumeComputer = (issueId, role, projectName) => {
+	const resumeComputer: ResumeComputer = async (issueId, role, projectName) => {
 		if (process.env.FLYWHEEL_PROGRESS_RESUME === "0") return null;
 		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
 		// and writes NO progress ledger — it must never be resumed from a prior
@@ -1082,6 +1227,16 @@ export async function setupRunInfrastructure(
 		const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
 		if (branchB !== mainKeyBranch) return null;
 
+		// FLY-1718 P1: refresh the remote-tracking ref before reading the branch
+		// blob. An indeterminate origin must fall through to continuity's hard
+		// preflight (which will reject the launch); a confirmed missing origin can
+		// still resume a surviving local branch with unpushed progress.
+		const remoteDecision = await materializeRemoteBranch(
+			{ repoPath: projectRoot, branch: branchB },
+			{ withRepoLock: runInfraOpts?.withRepoLock },
+		);
+		if (remoteDecision.kind === "indeterminate") return null;
+
 		const git = (args: string[]): string | null => {
 			try {
 				return execFileSync("git", args, {
@@ -1094,37 +1249,28 @@ export async function setupRunInfrastructure(
 			}
 		};
 
-		const deps: ProgressResumeDeps = {
+		const branchRefs = (branch: string) => [
+			`refs/heads/${branch}`,
+			`refs/remotes/origin/${branch}`,
+		];
+		// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
+		// bytes may never independently fall through to different histories.
+		return computeProgressResumeAcrossRefs({
+			issueId,
+			role,
 			docBaseDir,
 			issueIdentifier: identifier,
-			branchName: () => branchB,
-			priorSession: () => ({
+			branch: branchB,
+			refs: branchRefs(branchB),
+			prior: {
 				execution_id: prior.execution_id,
 				...(prior.plan_path && { plan_path: prior.plan_path }),
-				...(prior.session_stage && { session_stage: prior.session_stage }),
-			}),
-			readBranchFile: (branch, path) => git(["show", `${branch}:${path}`]),
-			branchTip: (branch) => git(["rev-parse", branch])?.trim() ?? null,
-			// MED-4: when no plan_path is persisted, find the doc dir on the branch
-			// that actually holds a committed progress.md, so a co-located slug-named
-			// ledger (runner died before design_review) is still found. `git ls-tree`
-			// lists committed blobs; we take the dir of the first `${issue}-*/
-			// progress.md` under the doc base.
-			discoverDocDir: (branch) => {
-				const out = git(["ls-tree", "-r", "--name-only", branch]);
-				if (!out) return null;
-				const prefix = `${docBaseDir}/${identifier}-`;
-				const hit = out
-					.split("\n")
-					.find((p) => p.startsWith(prefix) && p.endsWith("/progress.md"));
-				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+				...(prior.session_stage && {
+					session_stage: prior.session_stage,
+				}),
 			},
-		};
-
-		// resumeKind = "restart": the generic re-dispatch umbrella. The specific
-		// terminate/reboot/handoff distinction is informational only (surfaced to
-		// the runner) and not knowable from the dispatch signature here.
-		return computeProgressResume(issueId, role, "restart", deps);
+			git,
+		});
 	};
 
 	// FLY-1257 M3: phase retries recover branch B's own tip, using the same
@@ -1162,6 +1308,16 @@ export async function setupRunInfrastructure(
 		}
 	};
 
+	const continuityComputer = createBranchContinuityComputer({
+		projectRuntimes,
+		worktreeManager,
+		materialize: (args) =>
+			materializeRemoteBranch(args, {
+				withRepoLock: runInfraOpts?.withRepoLock,
+			}),
+		lookupOpenPrs: (args) => lookupOpenPullRequests(args),
+	});
+
 	return createRunInfraDispatcher({
 		store,
 		projectRuntimes,
@@ -1171,10 +1327,13 @@ export async function setupRunInfrastructure(
 		resumeComputer, // FLY-795: live restart-resilient resume
 		lifecycleAdmission: runInfraOpts?.lifecycleAdmission,
 		lifecycleLaunchGuard: runInfraOpts?.lifecycleLaunchGuard,
+		doaBackoffAdmission: runInfraOpts?.doaBackoffAdmission,
 		// FLY-1232/1344: hot facade; each start latches once. The helper also
 		// assembles the FLY-1244 admission capability regardless of flag state.
 		workflowShadow: runInfraOpts?.workflowShadow,
 		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
+		continuityComputer,
+		freshStartAudit: (record) => continuityAudit.recordFreshStart(record),
 	});
 }
 

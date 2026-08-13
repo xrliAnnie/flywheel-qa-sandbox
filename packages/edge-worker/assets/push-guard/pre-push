@@ -1,0 +1,61 @@
+#!/bin/sh
+
+# FLY-1718: accident guard for Flywheel-managed runner worktrees.
+# This is deliberately not a security boundary: `git push --no-verify` can skip
+# client hooks. The runner contract separately forbids bypassing this guard.
+
+zero_sha=0000000000000000000000000000000000000000
+flywheel_root=${FLYWHEEL_STATE_DIR:-${HOME:?HOME is required}/.flywheel}
+audit_dir=$flywheel_root/state/push-guard
+audit_file=$audit_dir/audit.log
+refused=0
+
+audit_attempt() {
+	outcome=$1
+	branch=$2
+	local_sha=$3
+	remote_sha=$4
+	mkdir -p "$audit_dir" 2>/dev/null &&
+		printf '%s\t%s\t%s\t%s\t%s\n' \
+			"$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+			"$branch" "$local_sha" "$remote_sha" "$outcome" \
+			>>"$audit_file" 2>/dev/null
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+	branch=${remote_ref#refs/heads/}
+
+	# A new remote branch has no history to overwrite.
+	if [ "$remote_sha" = "$zero_sha" ] && [ "$local_sha" != "$zero_sha" ]; then
+		continue
+	fi
+
+	# Deletion is destructive and never authorized by the rewrite ACK.
+	if [ "$local_sha" = "$zero_sha" ]; then
+		audit_attempt rejected "$branch" "$local_sha" "$remote_sha" || true
+		printf 'push-guard: refusing deletion of remote branch %s\n' "$branch" >&2
+		refused=1
+		continue
+	fi
+
+	# Fast-forward updates preserve all remote history.
+	if git merge-base --is-ancestor "$remote_sha" "$local_sha" >/dev/null 2>&1; then
+		continue
+	fi
+
+	if [ "${FLYWHEEL_FORCE_PUSH_ACK:-}" = "$branch" ]; then
+		if audit_attempt acked "$branch" "$local_sha" "$remote_sha"; then
+			printf 'push-guard: acknowledged non-fast-forward update for %s\n' "$branch" >&2
+		else
+			printf 'push-guard: refusing %s; ACK audit evidence could not be written\n' "$branch" >&2
+			refused=1
+		fi
+	else
+		audit_attempt rejected "$branch" "$local_sha" "$remote_sha" || true
+		printf 'push-guard: refusing non-fast-forward update for %s\n' "$branch" >&2
+		printf 'push-guard: obtain Lead confirmation, then set FLYWHEEL_FORCE_PUSH_ACK=%s for that one command\n' "$branch" >&2
+		refused=1
+	fi
+done
+
+exit "$refused"

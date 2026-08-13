@@ -36,6 +36,13 @@ function makeMockExec(responses: Array<{ stdout: string } | Error> = []): {
 		if (cmd === "git" && args.includes("flywheel.generation")) {
 			return { stdout: path.join(markerDir, `marker-${markerN++}`) };
 		}
+		if (
+			cmd === "git" &&
+			((args.includes("core.hooksPath") && args.includes("--get")) ||
+				(args.includes("--git-path") && args.includes("hooks")))
+		) {
+			return { stdout: "" };
+		}
 		const resp = responses[idx++];
 		if (resp instanceof Error) throw resp;
 		return resp ?? { stdout: "" };
@@ -82,9 +89,295 @@ const PORCELAIN_SINGLE = [
 // ─── Tests ───────────────────────────────────────
 
 describe("WorktreeManager", () => {
+	beforeEach(() => {
+		// Existing tests lock the pre-FLY-1718 command contract. P2-specific tests
+		// opt back in explicitly and provide an isolated state directory.
+		vi.stubEnv("FLYWHEEL_PUSH_GUARD", "0");
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	// ── create() ──
 
 	describe("create()", () => {
+		function guardConfig(baseDir: string, stateDir: string) {
+			return {
+				baseDir,
+				pushGuardStateDir: stateDir,
+				pushGuardSourcePath: path.join(
+					process.cwd(),
+					"assets",
+					"push-guard",
+					"pre-push",
+				),
+			} as ConstructorParameters<typeof WorktreeManager>[0] & {
+				pushGuardStateDir: string;
+				pushGuardSourcePath: string;
+			};
+		}
+
+		it("FLY-1718 installs and configures the worktree-local push guard", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-"));
+			const baseDir = path.join(root, "worktrees");
+			const stateDir = path.join(root, "state");
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(guardConfig(baseDir, stateDir), fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+
+			const installed = path.join(stateDir, "push-guard", "hooks", "pre-push");
+			const stat = fs.lstatSync(installed);
+			expect(stat.isFile()).toBe(true);
+			expect(stat.isSymbolicLink()).toBe(false);
+			expect(stat.mode & 0o100).toBe(0o100);
+			expect(fs.readFileSync(installed, "utf8")).toBe(
+				fs.readFileSync(
+					path.join(process.cwd(), "assets", "push-guard", "pre-push"),
+					"utf8",
+				),
+			);
+			expect(
+				calls.some((call) => call.args.includes("extensions.worktreeConfig")),
+			).toBe(true);
+			const hooksConfig = calls.find(
+				(call) =>
+					call.args.includes("--worktree") &&
+					call.args.includes("core.hooksPath"),
+			);
+			const configuredHooks = hooksConfig?.args.at(-1);
+			expect(configuredHooks).toContain(
+				path.join(stateDir, "push-guard", "worktrees"),
+			);
+			expect(
+				fs.readFileSync(path.join(configuredHooks!, "pre-push"), "utf8"),
+			).toContain(installed);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 keeps a valid install byte-stable and repairs tampering", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(
+				path.join(os.tmpdir(), "wt-push-guard-idem-"),
+			);
+			const config = guardConfig(
+				path.join(root, "worktrees"),
+				path.join(root, "state"),
+			);
+			const installed = path.join(
+				root,
+				"state",
+				"push-guard",
+				"hooks",
+				"pre-push",
+			);
+			const { fn } = makeMockExec();
+			const rename = vi.spyOn(fs, "renameSync");
+			const mgr = new WorktreeManager(config, fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-43",
+			});
+			const guardInstallRenames = () =>
+				rename.mock.calls.filter((call) => call[1] === installed).length;
+			expect(guardInstallRenames()).toBe(1);
+
+			fs.writeFileSync(installed, "tampered\n", "utf8");
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-44",
+			});
+			expect(guardInstallRenames()).toBe(2);
+			expect(fs.readFileSync(installed, "utf8")).toContain("FLY-1718");
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 composes the guard with existing repository hooks", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-compose-"));
+			const origin = path.join(root, "origin.git");
+			const repo = path.join(root, "repo");
+			const hooks = path.join(root, "project-hooks");
+			const hookLog = path.join(root, "hook.log");
+			await execFileAsync("git", ["init", "--bare", "-q", origin]);
+			await execFileAsync("git", ["clone", "-q", origin, repo]);
+			await execFileAsync("git", [
+				"-C",
+				repo,
+				"config",
+				"user.email",
+				"test@example.com",
+			]);
+			await execFileAsync("git", ["-C", repo, "config", "user.name", "Test"]);
+			await execFileAsync("git", ["-C", repo, "checkout", "-q", "-b", "main"]);
+			fs.writeFileSync(path.join(repo, "base.txt"), "base\n");
+			await execFileAsync("git", ["-C", repo, "add", "base.txt"]);
+			await execFileAsync("git", ["-C", repo, "commit", "-qm", "base"]);
+			await execFileAsync("git", [
+				"-C",
+				repo,
+				"push",
+				"-q",
+				"-u",
+				"origin",
+				"main",
+			]);
+			fs.mkdirSync(hooks, { recursive: true });
+			for (const hook of ["pre-commit", "pre-push"]) {
+				const hookPath = path.join(hooks, hook);
+				fs.writeFileSync(
+					hookPath,
+					`#!/bin/sh\nprintf '%s\\n' ${hook} >> ${JSON.stringify(hookLog)}\n${hook === "pre-push" ? "cat >/dev/null\n" : ""}`,
+				);
+				fs.chmodSync(hookPath, 0o700);
+			}
+			await execFileAsync("git", [
+				"-C",
+				repo,
+				"config",
+				"core.hooksPath",
+				hooks,
+			]);
+
+			const baseDir = path.join(root, "worktrees");
+			const mgr = new WorktreeManager(
+				guardConfig(baseDir, path.join(root, "state")),
+			);
+			const created = await mgr.create({
+				mainRepoPath: repo,
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+			const configuredHooks = await gitCmd(
+				created.worktreePath,
+				"config",
+				"--worktree",
+				"--get",
+				"core.hooksPath",
+			);
+			expect(configuredHooks).not.toBe(hooks);
+			expect(fs.existsSync(path.join(configuredHooks, "pre-commit"))).toBe(
+				true,
+			);
+			expect(fs.existsSync(path.join(configuredHooks, "pre-push"))).toBe(true);
+
+			await execFileAsync("git", [
+				"-C",
+				created.worktreePath,
+				"commit",
+				"--allow-empty",
+				"-qm",
+				"hook composition",
+			]);
+			await execFileAsync("git", [
+				"-C",
+				created.worktreePath,
+				"push",
+				"-q",
+				"-u",
+				"origin",
+				created.branch,
+			]);
+			expect(fs.readFileSync(hookLog, "utf8")).toBe("pre-commit\npre-push\n");
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 rolls back the new worktree and branch when guard config fails", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-rb-"));
+			const baseDir = path.join(root, "worktrees");
+			const worktreePath = path.join(baseDir, "proj", "repo-GEO-42");
+			fs.mkdirSync(worktreePath, { recursive: true });
+			const { fn, calls } = makeMockExec([
+				{ stdout: "" },
+				{ stdout: "" },
+				{ stdout: "" },
+				new Error("worktree config refused"),
+				{ stdout: PORCELAIN_SINGLE },
+				{ stdout: "" },
+				{ stdout: "" },
+			]);
+			const mgr = new WorktreeManager(
+				guardConfig(baseDir, path.join(root, "state")),
+				fn,
+			);
+
+			await expect(
+				mgr.create({
+					mainRepoPath: "/main/repo",
+					projectName: "proj",
+					issueId: "GEO-42",
+				}),
+			).rejects.toThrow("worktree config refused");
+			expect(fs.existsSync(worktreePath)).toBe(false);
+			expect(
+				calls.some(
+					(call) => call.args.includes("branch") && call.args.includes("-D"),
+				),
+			).toBe(true);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 kill switch performs no install or extra git config", async () => {
+			const root = fs.mkdtempSync(path.join(os.tmpdir(), "wt-push-guard-off-"));
+			const stateDir = path.join(root, "state");
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(
+				guardConfig(path.join(root, "worktrees"), stateDir),
+				fn,
+			);
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+			expect(fs.existsSync(path.join(stateDir, "push-guard"))).toBe(false);
+			expect(calls.some((call) => call.args.includes("core.hooksPath"))).toBe(
+				false,
+			);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
+		it("FLY-1718 protects the Voice Bridge-style default constructor path", async () => {
+			vi.stubEnv("FLYWHEEL_PUSH_GUARD", "1");
+			const root = fs.mkdtempSync(
+				path.join(os.tmpdir(), "wt-push-guard-voice-"),
+			);
+			vi.stubEnv("FLYWHEEL_STATE_DIR", root);
+			const { fn, calls } = makeMockExec();
+			const mgr = new WorktreeManager(undefined, fn);
+
+			await mgr.create({
+				mainRepoPath: "/main/repo",
+				projectName: "proj",
+				issueId: "MEETING-1",
+			});
+
+			expect(
+				fs.existsSync(
+					path.join(root, "state", "push-guard", "hooks", "pre-push"),
+				),
+			).toBe(true);
+			expect(calls.some((call) => call.args.includes("core.hooksPath"))).toBe(
+				true,
+			);
+			fs.rmSync(root, { recursive: true, force: true });
+		});
+
 		it("calls correct git worktree add command", async () => {
 			const { fn, calls } = makeMockExec([
 				{ stdout: "" }, // git worktree add
