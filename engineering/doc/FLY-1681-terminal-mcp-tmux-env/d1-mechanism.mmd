@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph before["修复前 — 仪器全面撒谎"]
+    A1["v2 Lead 座位<br/>(Lead 跑在自己的私有 tmux server 窗格里)"] --> B1["flywheel-terminal 工具进程<br/>出生时继承了环境变量<br/>TMUX = 私有 server 地址"]
+    B1 --> C1["裸 tmux 命令<br/>按 TMUX 指的地址<br/>连向了【私有 server】"]
+    C1 --> D1["私有 server 上根本没有 runner<br/>→ 8/8 全报死(假阴性)<br/>→ capture 报 can't find session"]
+  end
+  subgraph after["修复后 — execTmux 统一收口"]
+    A2["同一个 v2 Lead 座位<br/>(座位不用动)"] --> B2["execTmux():发任何 tmux 命令前<br/>先删掉 TMUX / TMUX_PANE 两个变量"]
+    B2 --> C2["tmux 自动回落到【默认 server】<br/>(/tmp/tmux-501/default)"]
+    C2 --> D2["找到 runner-flywheel<br/>→ 活的报活、死的报死<br/>与地面真相一致"]
+  end
+  before ~~~ after
+  style D1 fill:#ffebe9,stroke:#ff3b30
+  style D2 fill:#e8f8ee,stroke:#34c759
