@@ -9,10 +9,30 @@ import { check } from "../commands/check.js";
 import { cleanupMessages } from "../commands/cleanup-messages.js";
 import { inbox } from "../commands/inbox.js";
 import { pending } from "../commands/pending.js";
-import { respond } from "../commands/respond.js";
-import { send } from "../commands/send.js";
+import {
+	type RespondArgs,
+	respond as rawRespond,
+} from "../commands/respond.js";
+import { send as rawSend, type SendArgs } from "../commands/send.js";
 import { sessions } from "../commands/sessions.js";
 import { CommDB } from "../db.js";
+import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
+
+let identityEnvs: Record<string, NodeJS.ProcessEnv> = {};
+
+function respond(args: RespondArgs): Promise<void> {
+	return rawRespond({
+		...args,
+		env: { ...identityEnvs[args.fromAgent], ...args.env },
+	});
+}
+
+function send(args: SendArgs): Promise<string> {
+	return rawSend({
+		...args,
+		env: { ...identityEnvs[args.fromAgent], ...args.env },
+	});
+}
 
 describe("commands round-trip", () => {
 	let tmpDir: string;
@@ -21,6 +41,10 @@ describe("commands round-trip", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cmd-"));
 		dbPath = join(tmpDir, "comm.db");
+		identityEnvs = createTestLeadIdentityEnvs(tmpDir, [
+			"product-lead",
+			"ops-lead",
+		]);
 	});
 
 	afterEach(() => {
@@ -186,6 +210,10 @@ describe("send/inbox round-trip", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-sendinbox-"));
 		dbPath = join(tmpDir, "comm.db");
+		identityEnvs = createTestLeadIdentityEnvs(tmpDir, [
+			"product-lead",
+			"ops-lead",
+		]);
 	});
 
 	afterEach(() => {

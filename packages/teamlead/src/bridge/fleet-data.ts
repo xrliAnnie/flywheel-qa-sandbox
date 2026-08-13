@@ -786,6 +786,7 @@ export function materializeCarrierAuthorizationEvidence(input: {
 			leads[leadKey] = {
 				leadKey,
 				backend: "codex-app-server",
+				identityDigest: assertion.identityDigest,
 				pid: assertion.pid,
 				lstart: assertion.lstart,
 				instanceDigest: assertion.instanceDigest,

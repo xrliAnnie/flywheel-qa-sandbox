@@ -11,6 +11,20 @@ SELF_PATH="${SELF_DIR}/$(basename "${BASH_SOURCE[0]}")"
 log() { printf '[wrapper-v2] %s %s\n' "$(date '+%H:%M:%S')" "$*"; }
 fatal() { log "ERROR: $*" >&2; exit 1; }
 
+# Capture inherited identity before either .env or the manifest can shadow it.
+# These values are comparison inputs only; the canonical registry resolution
+# below is the only identity projected into the tmux server.
+AMBIENT_LEAD_ID_SET="${LEAD_ID+x}"
+AMBIENT_LEAD_ID="${LEAD_ID-}"
+AMBIENT_FLYWHEEL_LEAD_ID_SET="${FLYWHEEL_LEAD_ID+x}"
+AMBIENT_FLYWHEEL_LEAD_ID="${FLYWHEEL_LEAD_ID-}"
+AMBIENT_PROJECT_NAME_SET="${PROJECT_NAME+x}"
+AMBIENT_PROJECT_NAME="${PROJECT_NAME-}"
+AMBIENT_FLYWHEEL_PROJECT_NAME_SET="${FLYWHEEL_PROJECT_NAME+x}"
+AMBIENT_FLYWHEEL_PROJECT_NAME="${FLYWHEEL_PROJECT_NAME-}"
+AMBIENT_DISCORD_STATE_DIR_SET="${DISCORD_STATE_DIR+x}"
+AMBIENT_DISCORD_STATE_DIR="${DISCORD_STATE_DIR-}"
+
 # Publish runtime identity from inside the tmux server, after exec succeeded.
 # Keeping this helper in the immutable wrapper avoids a second installed tool.
 publish_runtime_fields() {
@@ -65,7 +79,6 @@ source "$ADDRESS_LIB"
 
 command -v jq >/dev/null 2>&1 || fatal "jq is required"
 [ -f "$MANIFEST" ] || fatal "Manifest not found: $MANIFEST"
-[ -f "$PROJECTS_FILE" ] || fatal "projects.json not found: $PROJECTS_FILE"
 [ -f "$ENV_FILE" ] || fatal "Environment file not found: $ENV_FILE"
 
 # Load values for projection without exporting the file wholesale. The server
@@ -78,27 +91,122 @@ source "$ENV_FILE"
 [ "$_v2_allexport_was_on" = false ] || set -a
 unset _v2_allexport_was_on
 
-LEAD_ID="$(jq -er '.leadId | select(type == "string" and length > 0)' "$MANIFEST")" \
+LOADED_LEAD_ID_SET="${LEAD_ID+x}"
+LOADED_LEAD_ID="${LEAD_ID-}"
+LOADED_FLYWHEEL_LEAD_ID_SET="${FLYWHEEL_LEAD_ID+x}"
+LOADED_FLYWHEEL_LEAD_ID="${FLYWHEEL_LEAD_ID-}"
+LOADED_PROJECT_NAME_SET="${PROJECT_NAME+x}"
+LOADED_PROJECT_NAME="${PROJECT_NAME-}"
+LOADED_FLYWHEEL_PROJECT_NAME_SET="${FLYWHEEL_PROJECT_NAME+x}"
+LOADED_FLYWHEEL_PROJECT_NAME="${FLYWHEEL_PROJECT_NAME-}"
+LOADED_DISCORD_STATE_DIR_SET="${DISCORD_STATE_DIR+x}"
+LOADED_DISCORD_STATE_DIR="${DISCORD_STATE_DIR-}"
+
+SELECTOR_LEAD_ID="$(jq -er '.leadId | select(type == "string" and length > 0)' "$MANIFEST")" \
   || fatal "Manifest has no valid leadId"
 PROJECT_DIR="$(jq -er '.projectDir | select(type == "string" and length > 0)' "$MANIFEST")" \
   || fatal "Manifest has no valid projectDir"
-PROJECT_NAME="$(jq -er '.projectName | select(type == "string" and length > 0)' "$MANIFEST")" \
+SELECTOR_PROJECT_NAME="$(jq -er '.projectName | select(type == "string" and length > 0)' "$MANIFEST")" \
   || fatal "Manifest has no valid projectName"
-BOT_TOKEN_ENV="$(jq -r '.botTokenEnv // "DISCORD_BOT_TOKEN"' "$MANIFEST")"
+PROJECTS_FILE="$(jq -er --arg fallback "$PROJECTS_FILE" \
+  '.projectsFile // $fallback | select(type == "string" and length > 0)' "$MANIFEST")" \
+  || fatal "Manifest has no valid projectsFile selector"
+LEGACY_MANIFEST_BOT_TOKEN_ENV="$(jq -er '
+  if has("botTokenEnv")
+  then .botTokenEnv | select(type == "string" and length > 0)
+  else ""
+  end' "$MANIFEST")" \
+  || fatal "identity_manifest_field_invalid: botTokenEnv"
+LEGACY_MANIFEST_BACKEND="$(jq -er '
+  if has("leadBackend")
+  then .leadBackend
+    | select(type == "object" and (keys == ["backendId"]))
+    | .backendId | select(type == "string" and length > 0)
+  else ""
+  end' "$MANIFEST")" \
+  || fatal "identity_manifest_field_invalid: leadBackend"
+FORBIDDEN_MANIFEST_FIELDS="$(jq -r '
+  ["botUserId", "discordStateDir", "identityDigest",
+   "projectsDigest", "leadKey", "role", "backend"]
+  | map(select(. as $key | $ARGS.named.manifest | has($key)))
+  | join(",")' --argjson manifest "$(jq -c . "$MANIFEST")" <<< '{}')"
+[ -z "$FORBIDDEN_MANIFEST_FIELDS" ] \
+  || fatal "identity_manifest_field_forbidden: $FORBIDDEN_MANIFEST_FIELDS"
+[ -f "$PROJECTS_FILE" ] || fatal "projects.json not found: $PROJECTS_FILE"
 [ -d "$PROJECT_DIR" ] || fatal "Project directory does not exist: $PROJECT_DIR"
-[[ "$PROJECT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-  || fatal "Invalid projectName: $PROJECT_NAME"
-[[ "$LEAD_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-  || fatal "Invalid leadId: $LEAD_ID"
+[[ "$SELECTOR_PROJECT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || fatal "Invalid projectName: $SELECTOR_PROJECT_NAME"
+[[ "$SELECTOR_LEAD_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || fatal "Invalid leadId: $SELECTOR_LEAD_ID"
 
-LEAD_ROW="$(jq -cer \
-  --arg project "$PROJECT_NAME" --arg lead "$LEAD_ID" \
-  '[.[] | select(.projectName == $project) | .leads[]? | select(.agentId == $lead)]
-   | if length == 1 then .[0] else error("expected exactly one Lead row") end' \
-  "$PROJECTS_FILE")" || fatal "Role lookup failed for ${PROJECT_NAME}/${LEAD_ID}"
-BACKEND="$(jq -r '.backend // "claude-code"' <<<"$LEAD_ROW")"
+IDENTITY_CLI="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
+[ -f "$IDENTITY_CLI" ] || fatal "Canonical Lead identity CLI not found: $IDENTITY_CLI"
+
+identity_fatal() {
+  local code="$1"
+  shift
+  local message="$*"
+  node "$IDENTITY_CLI" lead-identity record-failure \
+    --projects-file "$PROJECTS_FILE" \
+    --project "$SELECTOR_PROJECT_NAME" \
+    --lead "$SELECTOR_LEAD_ID" \
+    --code "$code" \
+    --message "$message" >/dev/null 2>&1 || true
+  fatal "${code}: ${message}"
+}
+
+IDENTITY_JSON="$(node "$IDENTITY_CLI" lead-identity resolve \
+  --projects-file "$PROJECTS_FILE" \
+  --project "$SELECTOR_PROJECT_NAME" \
+  --lead "$SELECTOR_LEAD_ID" \
+  --format json)" \
+  || fatal "identity_source_error: canonical Lead identity resolution failed"
+jq -e 'type == "object" and .schemaVersion == 1' <<<"$IDENTITY_JSON" >/dev/null \
+  || fatal "identity_source_error: canonical Lead identity result is invalid"
+
+LEAD_ID="$(jq -er '.leadId' <<<"$IDENTITY_JSON")"
+PROJECT_NAME="$(jq -er '.projectName' <<<"$IDENTITY_JSON")"
+LEAD_KEY="$(jq -er '.leadKey' <<<"$IDENTITY_JSON")"
+LEAD_ROLE="$(jq -er '.role' <<<"$IDENTITY_JSON")"
+BACKEND="$(jq -er '.backend' <<<"$IDENTITY_JSON")"
+BOT_TOKEN_ENV="$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_bot_token_env_missing: ${PROJECT_NAME}/${LEAD_ID} has no token selector"
+BOT_USER_ID="$(jq -er '.botUserId | select(type == "string" and length > 0)' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_bot_user_id_missing: ${PROJECT_NAME}/${LEAD_ID} has no bot user id"
+CANONICAL_DISCORD_STATE_DIR="$(jq -er '.discordStateDir' <<<"$IDENTITY_JSON")"
+IDENTITY_DIGEST="$(jq -er '.identityDigest' <<<"$IDENTITY_JSON")"
+PROJECTS_DIGEST="$(jq -er '.projectsDigest' <<<"$IDENTITY_JSON")"
+[ -z "$LEGACY_MANIFEST_BOT_TOKEN_ENV" ] \
+  || [ "$LEGACY_MANIFEST_BOT_TOKEN_ENV" = "$BOT_TOKEN_ENV" ] \
+  || identity_fatal identity_manifest_field_conflict \
+    "botTokenEnv expected '$BOT_TOKEN_ENV', got '$LEGACY_MANIFEST_BOT_TOKEN_ENV'"
+[ -z "$LEGACY_MANIFEST_BACKEND" ] \
+  || [ "$LEGACY_MANIFEST_BACKEND" = "$BACKEND" ] \
+  || identity_fatal identity_manifest_field_conflict \
+    "leadBackend.backendId expected '$BACKEND', got '$LEGACY_MANIFEST_BACKEND'"
 [ "$BACKEND" = claude-code ] \
-  || fatal "v2 carrier supports claude-code only (got $BACKEND)"
+  || identity_fatal identity_backend_mismatch "v2 carrier supports claude-code only (got $BACKEND)"
+BOT_TOKEN="${!BOT_TOKEN_ENV:-}"
+[ -n "$BOT_TOKEN" ] \
+  || identity_fatal identity_bot_token_missing "$BOT_TOKEN_ENV is unset or empty"
+
+assert_identity_input() {
+  local name="$1" was_set="$2" actual="$3" expected="$4"
+  if [ "$was_set" = x ] && [ "$actual" != "$expected" ]; then
+    identity_fatal identity_env_conflict "$name expected '$expected', got '$actual'"
+  fi
+}
+assert_identity_input LEAD_ID "$AMBIENT_LEAD_ID_SET" "$AMBIENT_LEAD_ID" "$LEAD_ID"
+assert_identity_input FLYWHEEL_LEAD_ID "$AMBIENT_FLYWHEEL_LEAD_ID_SET" "$AMBIENT_FLYWHEEL_LEAD_ID" "$LEAD_ID"
+assert_identity_input PROJECT_NAME "$AMBIENT_PROJECT_NAME_SET" "$AMBIENT_PROJECT_NAME" "$PROJECT_NAME"
+assert_identity_input FLYWHEEL_PROJECT_NAME "$AMBIENT_FLYWHEEL_PROJECT_NAME_SET" "$AMBIENT_FLYWHEEL_PROJECT_NAME" "$PROJECT_NAME"
+assert_identity_input DISCORD_STATE_DIR "$AMBIENT_DISCORD_STATE_DIR_SET" "$AMBIENT_DISCORD_STATE_DIR" "$CANONICAL_DISCORD_STATE_DIR"
+assert_identity_input LEAD_ID "$LOADED_LEAD_ID_SET" "$LOADED_LEAD_ID" "$LEAD_ID"
+assert_identity_input FLYWHEEL_LEAD_ID "$LOADED_FLYWHEEL_LEAD_ID_SET" "$LOADED_FLYWHEEL_LEAD_ID" "$LEAD_ID"
+assert_identity_input PROJECT_NAME "$LOADED_PROJECT_NAME_SET" "$LOADED_PROJECT_NAME" "$PROJECT_NAME"
+assert_identity_input FLYWHEEL_PROJECT_NAME "$LOADED_FLYWHEEL_PROJECT_NAME_SET" "$LOADED_FLYWHEEL_PROJECT_NAME" "$PROJECT_NAME"
+assert_identity_input DISCORD_STATE_DIR "$LOADED_DISCORD_STATE_DIR_SET" "$LOADED_DISCORD_STATE_DIR" "$CANONICAL_DISCORD_STATE_DIR"
+
 LAUNCH_ENVIRONMENT="$(jq -cer '
   (.launchEnvironment // {})
   | if type != "object" then error("launchEnvironment must be an object")
@@ -111,7 +219,6 @@ LAUNCH_ENVIRONMENT="$(jq -cer '
     end' "$MANIFEST")" || fatal "Manifest launchEnvironment is invalid"
 
 ensure_lead_socket_dir "$FLYWHEEL_STATE_DIR" || fatal "Unsafe Lead socket directory"
-LEAD_KEY="${PROJECT_NAME}-${LEAD_ID}"
 SOCKET_KEY="${PROJECT_NAME}/${LEAD_ID}"
 SOCKET_PATH="$(derive_lead_socket "$SOCKET_KEY" "$FLYWHEEL_STATE_DIR")" \
   || fatal "Unable to derive a safe socket path"
@@ -171,7 +278,34 @@ fi
 
 SERVER_ENV=()
 while IFS= read -r name; do
-  SERVER_ENV+=("$name=$(jq -r --arg name "$name" '.[$name]' <<<"$LAUNCH_ENVIRONMENT")")
+  value="$(jq -r --arg name "$name" '.[$name]' <<<"$LAUNCH_ENVIRONMENT")"
+  expected=""
+  is_identity=true
+  case "$name" in
+    FLYWHEEL_LEAD_ID|LEAD_ID) expected="$LEAD_ID" ;;
+    FLYWHEEL_PROJECT_NAME|PROJECT_NAME) expected="$PROJECT_NAME" ;;
+    FLYWHEEL_LEAD_KEY) expected="$LEAD_KEY" ;;
+    FLYWHEEL_LEAD_ROLE) expected="$LEAD_ROLE" ;;
+    FLYWHEEL_LEAD_BACKEND) expected="$BACKEND" ;;
+    DISCORD_STATE_DIR) expected="$CANONICAL_DISCORD_STATE_DIR" ;;
+    DISCORD_EXPECTED_BOT_USER_ID) expected="$BOT_USER_ID" ;;
+    FLYWHEEL_LEAD_IDENTITY_DIGEST) expected="$IDENTITY_DIGEST" ;;
+    FLYWHEEL_LEAD_PROJECTS_DIGEST) expected="$PROJECTS_DIGEST" ;;
+    FLYWHEEL_PROJECTS_FILE) expected="$PROJECTS_FILE" ;;
+    FLYWHEEL_PROJECTS|DISCORD_BOT_TOKEN)
+      identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
+      ;;
+    *) is_identity=false ;;
+  esac
+  if [ "$name" = "$BOT_TOKEN_ENV" ]; then
+    identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
+  fi
+  if [ "$is_identity" = true ]; then
+    [ "$value" = "$expected" ] \
+      || identity_fatal identity_launch_env_conflict "$name expected '$expected', got '$value'"
+    continue
+  fi
+  SERVER_ENV+=("$name=$value")
 done < <(jq -r 'keys[]' <<<"$LAUNCH_ENVIRONMENT")
 OS_USER="$(/usr/bin/id -un 2>/dev/null)" \
   || fatal "Unable to resolve the launchd job's OS user"
@@ -203,6 +337,17 @@ SERVER_ENV+=(
   "FLYWHEEL_STATE_DIR=$FLYWHEEL_STATE_DIR"
   "FLYWHEEL_PROJECTS_FILE=$PROJECTS_FILE"
   "FLYWHEEL_LEAD_ID=$LEAD_ID"
+  "LEAD_ID=$LEAD_ID"
+  "FLYWHEEL_PROJECT_NAME=$PROJECT_NAME"
+  "PROJECT_NAME=$PROJECT_NAME"
+  "FLYWHEEL_LEAD_KEY=$LEAD_KEY"
+  "FLYWHEEL_LEAD_ROLE=$LEAD_ROLE"
+  "FLYWHEEL_LEAD_BACKEND=$BACKEND"
+  "DISCORD_STATE_DIR=$CANONICAL_DISCORD_STATE_DIR"
+  "DISCORD_EXPECTED_BOT_USER_ID=$BOT_USER_ID"
+  "DISCORD_IDENTITY_MODE=managed"
+  "FLYWHEEL_LEAD_IDENTITY_DIGEST=$IDENTITY_DIGEST"
+  "FLYWHEEL_LEAD_PROJECTS_DIGEST=$PROJECTS_DIGEST"
   "FLYWHEEL_LEAD_CARRIER=v2"
 )
 if [ -n "$CARRIER_START" ]; then
@@ -217,10 +362,7 @@ done
 
 # The server gets the Lead's own Discord credential, but no Bridge/OpenAI/MCP
 # secrets. lead-body.sh reads .env locally and projects its second allowlist.
-SERVER_ENV+=("DISCORD_BOT_TOKEN=${!BOT_TOKEN_ENV:-}")
-if ! jq -e 'has("DISCORD_STATE_DIR")' <<<"$LAUNCH_ENVIRONMENT" >/dev/null; then
-  SERVER_ENV+=("DISCORD_STATE_DIR=${HOME}/.claude/channels/discord-${LEAD_ID}")
-fi
+SERVER_ENV+=("DISCORD_BOT_TOKEN=$BOT_TOKEN")
 
 if [ "$DRY_RUN" = 1 ]; then
   publish_runtime_fields "$MANIFEST" "$SOCKET_PATH" "$$" \

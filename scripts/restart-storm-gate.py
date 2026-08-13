@@ -279,10 +279,10 @@ def _read_controlled_marker(
         raise DataFailure("controlled-wave marker manifest authority is invalid")
     _nonempty_string(manifest.get("path"), "manifest path")
     semantic = manifest.get("semantic_identity")
-    semantic_keys = {"leadId", "projectDir", "projectName", "botTokenEnv", "leadBackend"}
+    semantic_keys = {"leadId", "projectDir", "projectName", "projectsFile", "leadBackend"}
     if not isinstance(semantic, dict) or set(semantic) != semantic_keys:
         raise DataFailure("controlled-wave marker semantic identity is invalid")
-    for name in ("leadId", "projectDir", "projectName", "botTokenEnv"):
+    for name in ("leadId", "projectDir", "projectName", "projectsFile"):
         _nonempty_string(semantic.get(name), f"semantic {name}")
     backend = semantic.get("leadBackend")
     if not isinstance(backend, dict) or set(backend) != {"backendId"}:

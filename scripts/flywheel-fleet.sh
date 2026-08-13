@@ -475,7 +475,7 @@ manifest_projection_sha() {
   # would make a stale runtime stamp that deletes the field invisible to recovery.
   jq -S -c '{leadId: (.leadId // null), projectName: (.projectName // null),
              projectDir: (.projectDir // null), subdir: (.subdir // null),
-             workspace: (.workspace // null), botTokenEnv: (.botTokenEnv // null),
+             workspace: (.workspace // null), projectsFile: (.projectsFile // null),
              mcpExclude: (.mcpExclude // null), chromeEnabled: (.chromeEnabled // null),
              model: (.model // null), effort: (.effort // null),
              leadBackend: (.leadBackend // null),

@@ -277,10 +277,13 @@ fi
 restart_block="$(sed -n '/^restart_lead()/,/^}/p' "$REPO_ROOT/scripts/restart-services.sh")"
 if grep -q '\[\[ "\$backend" == "claude-code" \]\]' <<< "$restart_block" \
     && grep -q 'launchctl kickstart -k' <<< "$restart_block" \
+    && grep -q 'lead-identity resolve' <<< "$restart_block" \
+    && grep -q 'projectsFile' <<< "$restart_block" \
+    && ! grep -q 'bot_token_env=$(jq -er.*"$manifest")' <<< "$restart_block" \
     && ! grep -qE 'nohup env|Legacy path: manual nohup' <<< "$restart_block"; then
-  pass "C5 Lead restart has a native v2 path and no orphan fallback"
+  pass "C5 Lead restart preflights selector-only identity before its native v2 path"
 else
-  fail "C5 Lead restart still carries a manual body creation path"
+  fail "C5 Lead restart has a legacy identity source or manual body creation path"
 fi
 
 ci="$REPO_ROOT/.github/workflows/ci.yml"

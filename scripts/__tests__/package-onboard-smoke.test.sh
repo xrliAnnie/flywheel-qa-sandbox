@@ -144,8 +144,9 @@ mkdir -p "$SMOKE_HOME/proj"
 env -i HOME="$SMOKE_HOME" PATH="$PATH" \
   FLYWHEEL_STATE_DIR="$SMOKE_HOME/.flywheel" \
   TEAMLEAD_PORT="$PORT" TEAMLEAD_API_TOKEN="stub-token-for-smoke" \
+  TEAMLEAD_DEFAULT_LEAD_AGENT="smoke-lead" SMOKE_BOT_TOKEN="stub-bot-token" \
   LINEAR_API_KEY="stub" \
-  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"canSpawnRunners\":false}]}]" \
+  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":false}]}]" \
   node "$PKG_ROOT/dist/run-bridge.js" > "$SANDBOX/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 listen=0
@@ -165,7 +166,7 @@ kill "$BRIDGE_PID" 2>/dev/null; wait "$BRIDGE_PID" 2>/dev/null; BRIDGE_PID=""
 LEAD_HOME="$SANDBOX/lead-home"
 mkdir -p "$LEAD_HOME/proj/.lead/smoke-lead"
 printf -- '---\nname: smoke-lead\n---\nSmoke\n' > "$LEAD_HOME/proj/.lead/smoke-lead/identity.md"
-LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"canSpawnRunners\":true}]}]"
+LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
 out="$(env -i HOME="$LEAD_HOME" PATH="$PATH" \
   FLYWHEEL_LEAD_DRY_RUN=1 FLYWHEEL_PROJECTS="$LEAD_PROJECTS" \
   SMOKE_BOT_TOKEN="stub" TEAMLEAD_API_TOKEN="stub" \

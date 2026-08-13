@@ -66,7 +66,7 @@ describe("FLY-1309 canonical Lead resolver", () => {
 		});
 	});
 
-	it("refuses to guess when the same leadId appears in multiple projects", () => {
+	it("treats a cross-project bare leadId collision as a broken source", () => {
 		write([
 			{ projectName: "flywheel", leads: [{ agentId: "eng-lead" }] },
 			{ projectName: "sub", leads: [{ agentId: "eng-lead" }] },
@@ -78,8 +78,8 @@ describe("FLY-1309 canonical Lead resolver", () => {
 				projectsPath,
 			}),
 		).toMatchObject({
-			status: "ambiguous",
-			projects: ["flywheel", "sub"],
+			status: "source_error",
+			error: expect.stringContaining("identity_bare_id_collision"),
 		});
 	});
 

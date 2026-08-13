@@ -12,14 +12,16 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
+import { resolveLeadIdentity } from "../lead-identity.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
+let defaultCliEnv: Record<string, string | undefined> = {};
 
 function cliEnv(
 	overrides?: Record<string, string | undefined>,
 ): NodeJS.ProcessEnv {
-	const env = { ...process.env };
+	const env = { ...process.env, ...defaultCliEnv };
 	for (const [key, value] of Object.entries(overrides ?? {})) {
 		if (value === undefined) {
 			delete env[key];
@@ -68,9 +70,52 @@ describe("CLI", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cli-"));
 		dbPath = join(tmpDir, "comm.db");
+		const projectsPath = join(tmpDir, "projects.json");
+		const discordStateDir = join(tmpDir, "discord-product-lead");
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: tmpDir,
+					leads: [
+						{
+							agentId: "product-lead",
+							chatChannel: "11111111111111111",
+							match: { labels: ["Product"] },
+							botTokenEnv: "TEST_PRODUCT_BOT_TOKEN",
+							botUserId: "12345678901234567",
+							discordStateDir,
+						},
+					],
+				},
+			]),
+		);
+		const identity = resolveLeadIdentity({
+			projectsPath,
+			projectName: "test",
+			leadId: "product-lead",
+		});
+		defaultCliEnv = {
+			FLYWHEEL_PROJECTS_FILE: projectsPath,
+			FLYWHEEL_PROJECT_NAME: identity.projectName,
+			PROJECT_NAME: identity.projectName,
+			FLYWHEEL_LEAD_ID: identity.leadId,
+			LEAD_ID: identity.leadId,
+			FLYWHEEL_LEAD_KEY: identity.leadKey,
+			FLYWHEEL_LEAD_BACKEND: identity.backend,
+			DISCORD_STATE_DIR: identity.discordStateDir,
+			DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
+			FLYWHEEL_LEAD_IDENTITY_DIGEST: identity.identityDigest,
+			FLYWHEEL_LEAD_LEASE_MODE_FILE: join(tmpDir, "lease-mode.json"),
+			FLYWHEEL_LEAD_LEASE_DB: join(tmpDir, "lead-lease.db"),
+			FLYWHEEL_ALERT_QUEUE_DIR: join(tmpDir, "alerts"),
+			FLYWHEEL_LEAD_LEASE_AUDIT_LOG: join(tmpDir, "lead-lease-audit.log"),
+		};
 	});
 
 	afterEach(() => {
+		defaultCliEnv = {};
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
@@ -119,6 +164,59 @@ describe("CLI", () => {
 		it("should fail without --lead", () => {
 			const { exitCode } = runCliSafe(["ask", "--db", dbPath, "question"]);
 			expect(exitCode).toBe(1);
+		});
+	});
+
+	describe("lead-identity", () => {
+		it("resolves an exact registry selector through the public CLI", () => {
+			const projectsPath = join(tmpDir, "projects.json");
+			writeFileSync(
+				projectsPath,
+				JSON.stringify([
+					{
+						projectName: "flywheel",
+						projectRoot: tmpDir,
+						leads: [
+							{
+								agentId: "eng-lead",
+								chatChannel: "11111111111111111",
+								match: { labels: ["Engineering"] },
+								botTokenEnv: "ENG_BOT_TOKEN",
+								botUserId: "12345678901234567",
+							},
+						],
+					},
+				]),
+			);
+
+			const result = JSON.parse(
+				runCli([
+					"lead-identity",
+					"resolve",
+					"--projects-file",
+					projectsPath,
+					"--project",
+					"flywheel",
+					"--lead",
+					"eng-lead",
+				]),
+			);
+			expect(result).toMatchObject({
+				leadId: "eng-lead",
+				projectName: "flywheel",
+				botUserId: "12345678901234567",
+			});
+		});
+	});
+
+	describe("ack-event identity", () => {
+		it("fails loud when neither --lead nor FLYWHEEL_LEAD_ID identifies the acknowledger", () => {
+			const result = runCliSafe(
+				["ack-event", "1", "--db", dbPath, "--token-stdin"],
+				{ FLYWHEEL_LEAD_ID: undefined },
+			);
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toMatch(/--lead.*FLYWHEEL_LEAD_ID/i);
 		});
 	});
 

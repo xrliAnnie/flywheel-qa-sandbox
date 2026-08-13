@@ -43,7 +43,10 @@ function fullEnv(
 	return {
 		FLYWHEEL_LEAD_ID: "mufasa",
 		FLYWHEEL_PROJECT_NAME: "mufasa-project",
-		FLYWHEEL_LEAD_BOT_USER_ID: "1499895683287748679",
+		FLYWHEEL_LEAD_KEY: "mufasa-project-mufasa",
+		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+		DISCORD_EXPECTED_BOT_USER_ID: "1499895683287748679",
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan-chat",
 		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",
@@ -60,6 +63,8 @@ describe("parseCodexLeadRuntimeConfig", () => {
 	it("parses a full env and derives the state paths", () => {
 		const c = parseCodexLeadRuntimeConfig(fullEnv());
 		expect(c.leadId).toBe("mufasa");
+		expect(c.leadKey).toBe("mufasa-project-mufasa");
+		expect(c.identityDigest).toBe("a".repeat(64));
 		expect(c.botUserId).toBe("1499895683287748679");
 		expect(c.codexHome).toBe("/Users/x/.codex-mufasa");
 		expect(c.journalDbPath).toBe("/var/state/mufasa/journal.db");
@@ -229,7 +234,7 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		const env = fullEnv({
 			DISCORD_BOT_TOKEN: undefined,
 			CODEX_HOME: undefined,
-			FLYWHEEL_LEAD_BOT_USER_ID: "  ", // whitespace = missing
+			DISCORD_EXPECTED_BOT_USER_ID: "  ", // whitespace = missing
 		});
 		expect(() => parseCodexLeadRuntimeConfig(env)).toThrow(/DISCORD_BOT_TOKEN/);
 		try {
@@ -237,9 +242,30 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		} catch (e) {
 			const msg = (e as Error).message;
 			expect(msg).toContain("CODEX_HOME");
-			expect(msg).toContain("FLYWHEEL_LEAD_BOT_USER_ID");
+			expect(msg).toContain("DISCORD_EXPECTED_BOT_USER_ID");
 		}
 	});
+
+	it.each([
+		["lead key", { FLYWHEEL_LEAD_KEY: "wrong-key" }, "FLYWHEEL_LEAD_KEY"],
+		[
+			"backend",
+			{ FLYWHEEL_LEAD_BACKEND: "claude-code" },
+			"FLYWHEEL_LEAD_BACKEND",
+		],
+		[
+			"identity digest",
+			{ FLYWHEEL_LEAD_IDENTITY_DIGEST: "short" },
+			"FLYWHEEL_LEAD_IDENTITY_DIGEST",
+		],
+	] as const)(
+		"rejects a non-canonical %s projection",
+		(_label, over, expected) => {
+			expect(() => parseCodexLeadRuntimeConfig(fullEnv(over))).toThrow(
+				expected,
+			);
+		},
+	);
 
 	it("DEFAULT direct mode needs NO Bridge env (low-risk first test)", () => {
 		const env = fullEnv({

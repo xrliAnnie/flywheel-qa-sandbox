@@ -76,6 +76,71 @@ log() {
   echo "[lead] $(date '+%H:%M:%S') $*"
 }
 
+# FLY-1726 A1: the v2 wrapper resolves identity exactly once. This body may
+# compare selectors and inherited aliases with that immutable projection, but
+# it must never derive replacement values or silently repair a mismatch.
+assert_v2_canonical_identity() {
+  [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = 1 ] || return 0
+
+  local selector_lead="${1:-}" selector_project="${3:-}"
+  case "$selector_project" in --*|'') selector_project="" ;; esac
+  local required_name required_value
+  for required_name in FLYWHEEL_LEAD_ID FLYWHEEL_PROJECT_NAME; do
+    required_value="${!required_name:-}"
+    if [ -z "$required_value" ]; then
+      log "ERROR: identity_env_missing: $required_name is required for a v2 Lead"
+      return 1
+    fi
+  done
+  if [ "$selector_lead" != "$FLYWHEEL_LEAD_ID" ]; then
+    log "ERROR: identity_env_conflict: selector lead '$selector_lead' != '$FLYWHEEL_LEAD_ID'"
+    return 1
+  fi
+  if [ -z "$selector_project" ] || [ "$selector_project" != "$FLYWHEEL_PROJECT_NAME" ]; then
+    log "ERROR: identity_env_conflict: selector project '$selector_project' != '$FLYWHEEL_PROJECT_NAME'"
+    return 1
+  fi
+  for required_name in \
+    FLYWHEEL_LEAD_KEY \
+    FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND FLYWHEEL_PROJECTS_FILE \
+    DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN \
+    FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST; do
+    required_value="${!required_name:-}"
+    if [ -z "$required_value" ]; then
+      log "ERROR: identity_env_missing: $required_name is required for a v2 Lead"
+      return 1
+    fi
+  done
+  if [ -n "${LEAD_ID+x}" ] && [ "$LEAD_ID" != "$FLYWHEEL_LEAD_ID" ]; then
+    log "ERROR: identity_env_conflict: LEAD_ID '$LEAD_ID' != '$FLYWHEEL_LEAD_ID'"
+    return 1
+  fi
+  if [ -n "${PROJECT_NAME+x}" ] && [ "$PROJECT_NAME" != "$FLYWHEEL_PROJECT_NAME" ]; then
+    log "ERROR: identity_env_conflict: PROJECT_NAME '$PROJECT_NAME' != '$FLYWHEEL_PROJECT_NAME'"
+    return 1
+  fi
+  if [ "$FLYWHEEL_LEAD_KEY" != "${FLYWHEEL_PROJECT_NAME}-${FLYWHEEL_LEAD_ID}" ]; then
+    log "ERROR: identity_env_conflict: FLYWHEEL_LEAD_KEY does not match canonical selectors"
+    return 1
+  fi
+  if [ "$FLYWHEEL_LEAD_BACKEND" != claude-code ]; then
+    log "ERROR: identity_env_conflict: Claude body received backend '$FLYWHEEL_LEAD_BACKEND'"
+    return 1
+  fi
+  if [[ ! "$DISCORD_EXPECTED_BOT_USER_ID" =~ ^[0-9]{17,20}$ ]] \
+      || [[ ! "$FLYWHEEL_LEAD_IDENTITY_DIGEST" =~ ^[a-f0-9]{64}$ ]] \
+      || [[ ! "$FLYWHEEL_LEAD_PROJECTS_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
+    log "ERROR: identity_env_conflict: malformed bot user id or identity digest"
+    return 1
+  fi
+  if [ "$DISCORD_IDENTITY_MODE" != "managed" ]; then
+    log "ERROR: identity_env_conflict: DISCORD_IDENTITY_MODE must be managed for a v2 Lead"
+    return 1
+  fi
+}
+
+assert_v2_canonical_identity "$@"
+
 # Normalize `FLYWHEEL_COMM_BACKEND` for comparisons. Mirrors the lenient
 # parse used by Bridge `plugin.ts:resolveCommBackend`:
 #   - Default to `mailbox` when unset / empty.
@@ -1614,8 +1679,16 @@ _launch_claude() {
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
     -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
+    -e "DISCORD_EXPECTED_BOT_USER_ID=${DISCORD_EXPECTED_BOT_USER_ID:-}"
+    -e "DISCORD_IDENTITY_MODE=${DISCORD_IDENTITY_MODE:-}"
     -e "LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
+    -e "FLYWHEEL_LEAD_KEY=${FLYWHEEL_LEAD_KEY:-}"
+    -e "FLYWHEEL_LEAD_ROLE=${FLYWHEEL_LEAD_ROLE:-}"
+    -e "FLYWHEEL_LEAD_BACKEND=${FLYWHEEL_LEAD_BACKEND:-}"
+    -e "FLYWHEEL_LEAD_IDENTITY_DIGEST=${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}"
+    -e "FLYWHEEL_LEAD_PROJECTS_DIGEST=${FLYWHEEL_LEAD_PROJECTS_DIGEST:-}"
+    -e "FLYWHEEL_PROJECTS_FILE=${FLYWHEEL_PROJECTS_FILE:-}"
     -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
     -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
     # Discord inbound delivery priority windows cross the explicit env -i barrier.

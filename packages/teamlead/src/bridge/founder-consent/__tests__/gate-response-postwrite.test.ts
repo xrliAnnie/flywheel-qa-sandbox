@@ -15,6 +15,7 @@ import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { EvaluateResult, FounderConsentEvaluator } from "../evaluator.js";
 import {
 	createGateResponseRouter,
@@ -26,6 +27,8 @@ const FEEDBACK = JSON.stringify({ approved: false, feedback: "fix tests" });
 let dir: string;
 let commDbPath: string;
 let server: Server;
+let identityDigest: string;
+let leadLeaseEnv: NodeJS.ProcessEnv;
 
 async function request(path: string, body: unknown) {
 	const addr = server.address();
@@ -33,7 +36,14 @@ async function request(path: string, body: unknown) {
 	const res = await fetch(`http://127.0.0.1:${addr.port}${path}`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
+		body: JSON.stringify(
+			body !== null &&
+				typeof body === "object" &&
+				"leadId" in body &&
+				!("identityDigest" in body)
+				? { ...body, identityDigest }
+				: body,
+		),
 	});
 	let json: unknown;
 	try {
@@ -83,6 +93,7 @@ function mkServer(
 			getCurrentReviewQuestionId: deps.getCurrentReviewQuestionId,
 			configuredProjects: new Set([PROJECT]),
 			commRoot: join(dir, "comm"),
+			leadLeaseEnv,
 			onResponseWritten: deps.onResponseWritten,
 			logger: { info: () => {}, warn: () => {} },
 		}),
@@ -106,6 +117,11 @@ beforeEach(() => {
 	const projDir = join(dir, "comm", PROJECT);
 	mkdirSync(projDir, { recursive: true });
 	commDbPath = join(projDir, "comm.db");
+	({ identityDigest, env: leadLeaseEnv } = createLeadIdentityFixture({
+		root: dir,
+		projectName: PROJECT,
+		leadId: "lead-x",
+	}));
 });
 afterEach(() => {
 	server?.close();

@@ -8,7 +8,10 @@ function env(over: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
 	return {
 		FLYWHEEL_LEAD_ID: "mufasa",
 		FLYWHEEL_PROJECT_NAME: "mufasa-project",
-		FLYWHEEL_LEAD_BOT_USER_ID: "bot-1",
+		FLYWHEEL_LEAD_KEY: "mufasa-project-mufasa",
+		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "a".repeat(64),
+		DISCORD_EXPECTED_BOT_USER_ID: "bot-1",
 		DISCORD_BOT_TOKEN: "tok",
 		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chan-chat",
 		FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9876",

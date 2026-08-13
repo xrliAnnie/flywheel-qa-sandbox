@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
@@ -14,6 +15,10 @@ export interface LeadConfig {
 	};
 	/** Env var name for this lead's Discord bot token (e.g., "PETER_BOT_TOKEN"). */
 	botTokenEnv?: string;
+	/** Registry-owned expected Discord bot user ID. Never derived from the token at runtime. */
+	botUserId?: string;
+	/** Registry-owned Discord plugin state directory. Defaults from agentId when absent. */
+	discordStateDir?: string;
 	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
 	botToken?: string;
 	/**
@@ -291,8 +296,11 @@ export function loadProjects(): ProjectEntry[] {
 	if (envProjects) {
 		raw = JSON.parse(envProjects);
 	} else {
-		// Source 2: ~/.flywheel/projects.json
-		const filePath = join(homedir(), ".flywheel", "projects.json");
+		// Source 2: the wrapper-selected registry file. Source 3 is the resident
+		// default for processes that were not launched through a scoped wrapper.
+		const filePath =
+			process.env.FLYWHEEL_PROJECTS_FILE ??
+			join(homedir(), ".flywheel", "projects.json");
 		try {
 			const data = readFileSync(filePath, "utf-8");
 			raw = JSON.parse(data);
@@ -940,6 +948,12 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 			}
 		}
 	}
+
+	// FLY-1726: one shared identity validator owns the cross-project invariants
+	// that the richer TeamLead schema cannot safely enforce one row at a time:
+	// bare Lead IDs, expected bot IDs, and effective state directories must all
+	// be globally unique; token-managed Leads require an independent botUserId.
+	compileLeadIdentityRegistry(raw);
 
 	return raw as ProjectEntry[];
 }

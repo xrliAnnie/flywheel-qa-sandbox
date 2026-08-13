@@ -5,6 +5,7 @@ import { join } from "node:path";
 import express from "express";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { WriteGateResponseArgs } from "../../approval-signal/write-gate-response.js";
 import type { EvaluateResult, FounderConsentEvaluator } from "../evaluator.js";
 import { createGateResponseRouter } from "../gate-response-router.js";
@@ -13,6 +14,8 @@ const PROJECT = "TestProj";
 let dir: string;
 let commDbPath: string;
 let server: Server;
+let identityDigest: string;
+let leadLeaseEnv: NodeJS.ProcessEnv;
 
 async function request(method: string, path: string, body?: unknown) {
 	const addr = server.address();
@@ -20,7 +23,16 @@ async function request(method: string, path: string, body?: unknown) {
 	const res = await fetch(`http://127.0.0.1:${addr.port}${path}`, {
 		method,
 		headers: body ? { "Content-Type": "application/json" } : {},
-		body: body ? JSON.stringify(body) : undefined,
+		body: body
+			? JSON.stringify(
+					body !== null &&
+						typeof body === "object" &&
+						"leadId" in body &&
+						!("identityDigest" in body)
+						? { ...body, identityDigest }
+						: body,
+				)
+			: undefined,
 	});
 	let json: unknown;
 	try {
@@ -69,6 +81,7 @@ function mkServer(
 				execId === "exec-1" ? { project_name: PROJECT } : undefined,
 			configuredProjects: new Set([PROJECT]),
 			commRoot: join(dir, "comm"),
+			leadLeaseEnv,
 			...overrides,
 		}),
 	);
@@ -89,6 +102,11 @@ beforeEach(() => {
 	const projDir = join(dir, "comm", PROJECT);
 	mkdirSync(projDir, { recursive: true });
 	commDbPath = join(projDir, "comm.db");
+	({ identityDigest, env: leadLeaseEnv } = createLeadIdentityFixture({
+		root: dir,
+		projectName: PROJECT,
+		leadId: "lead-x",
+	}));
 });
 afterEach(() => {
 	server?.close();
@@ -368,6 +386,7 @@ describe("gate-response-router (Surface B)", () => {
 				getSessionProject: () => ({ project_name: PROJECT }),
 				configuredProjects: new Set([PROJECT]),
 				commRoot: join(dir, "comm"),
+				leadLeaseEnv,
 				writeGateResponseImpl: write,
 			}),
 		);
@@ -411,6 +430,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 				getSessionProject: () => ({ project_name: PROJECT }),
 				configuredProjects: new Set([PROJECT]),
 				commRoot: join(dir, "comm"),
+				leadLeaseEnv,
 			}),
 		);
 		server = createServer(app);

@@ -632,6 +632,9 @@ BRIDGE_EXTRA_ENV=()
 COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
 LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
+# FLY-1726: a failed canonical-identity assertion must stay inside the QA
+# slot, never write a diagnostic into the resident fleet's state directory.
+LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
 # FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
@@ -1088,10 +1091,15 @@ MAIN_LABELS_JSON='["*"]'
 if [[ -n "$LEAD_LABEL" ]]; then
   MAIN_LABELS_JSON=$(jq -cn --arg l "$LEAD_LABEL" '[$l]')
 fi
+EXTRA_LEADS_JSON=$(jq -c --arg root "${SLOT_DIR}/extra-leads" '
+  map(. + {
+    discordStateDir: ($root + "/slot-" + (.slotId | tostring) + "/discord-state")
+  })' <<<"$EXTRA_LEADS_JSON")
 FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
   "$TEST_PROJECT_NAME" "$HOST_REPO" "$SANDBOX_SLUG" "$AGENT_ID" \
   "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" "$SLOT_ROLE" \
-  "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON")
+  "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON" "$BOT_ID" \
+  "${SLOT_DIR}/discord-state")
 
 # FLY-529: when --alerts is on, inject the test alert channel + token env into
 # the test lead's projects entry so the SHELL-side lead-alert.sh (which resolves
@@ -1166,11 +1174,8 @@ qa_slot_start_lead() {
   launch_env=$(qa_slot_launch_env_json \
     "DISCORD_GUILD_ID=${GUILD_ID}" \
     "BRIDGE_URL=http://localhost:${SLOT_PORT}" \
-    "DISCORD_STATE_DIR=${discord_state}" \
     "AGENT_SOURCE=${identity}" \
-    "FLYWHEEL_LEAD_ROLE=${role}" \
     "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}" \
-    "FLYWHEEL_PROJECTS=$(jq -c . <<<"$FLYWHEEL_PROJECTS")" \
     "FLYWHEEL_PROJECTS_FILE=${projects}" \
     "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}" \
     "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
@@ -1178,11 +1183,11 @@ qa_slot_start_lead() {
     "$@") || return 1
   jq -n \
     --arg leadId "$agent" --arg projectDir "$HOST_REPO" \
-    --arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv "$token_env" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg projectsFile "$projects" \
     --arg workspace "$workspace" --arg mcpExclude "$mcp_exclude" \
     --argjson chromeEnabled "$chrome_enabled" --argjson launchEnvironment "$launch_env" \
     '{leadId:$leadId,projectDir:$projectDir,projectName:$projectName,
-      botTokenEnv:$botTokenEnv,workspace:$workspace,mcpExclude:$mcpExclude,
+      projectsFile:$projectsFile,workspace:$workspace,mcpExclude:$mcpExclude,
       chromeEnabled:$chromeEnabled,launchEnvironment:$launchEnvironment}' \
     > "$manifest" || return 1
   chmod 600 "$manifest"
@@ -1430,7 +1435,10 @@ EOF
     cat "$XPROD_IDENTITY" >> "${XDIR}/test-identity.md"
 
     XLEAD_LOG="${XDIR}/lead.log"
-    XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} "${XTOKEN_ENV_NAME}=${XTOKEN}")
+    # qa_slot_start_lead writes this Lead's canonical token to its wrapper env
+    # file. Do not also put it in launchEnvironment: wrapper-v2 rejects that
+    # competing secret source before projecting any identity.
+    XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"})
     log "Starting extra test Lead: ${XAGENT} (slot ${XSID} bot, label ${XLABEL}, channel ${XCHANNEL})"
     # FLY-1389 P0-d: extra Leads are fresh too — drop any stale session-id.
     rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${XAGENT}.session-id"
@@ -1490,6 +1498,8 @@ fi
 # templates authenticate; TEAMLEAD_ISSUE_PREFIXES defaults to FLY,GEO via
 # claude-lead.sh.
 log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
+[[ -n "${AGENT_ID:-}" ]] \
+  || campaign_abort "TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID"
 # FLY-115 v1.24.2 Gap 1 (Codex R1 LOW fix): also pass the per-lead token
 # under the name the ProjectConfig references in `botTokenEnv` (e.g.
 # TEST_BOT_TOKEN_1). Without this, process.env[botTokenEnv] is empty and
@@ -1504,12 +1514,14 @@ if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
     TEAMLEAD_PORT="${SLOT_PORT}" \
+    TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
     TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1536,11 +1548,13 @@ else
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
+    TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
     TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \

@@ -74,6 +74,8 @@ import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 export interface CodexLeadRuntimeConfig {
 	projectName: string;
 	leadId: string;
+	leadKey: string;
+	identityDigest: string;
 	botUserId: string;
 	botToken: string;
 	chatChannelId: string;
@@ -515,7 +517,10 @@ export function parseCodexLeadRuntimeConfig(
 
 	const leadId = req("FLYWHEEL_LEAD_ID");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
-	const botUserId = req("FLYWHEEL_LEAD_BOT_USER_ID");
+	const leadKey = req("FLYWHEEL_LEAD_KEY");
+	const backend = req("FLYWHEEL_LEAD_BACKEND");
+	const identityDigest = req("FLYWHEEL_LEAD_IDENTITY_DIGEST");
+	const botUserId = req("DISCORD_EXPECTED_BOT_USER_ID");
 	const botToken = req("DISCORD_BOT_TOKEN");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_CODEX_LEAD_STATE_DIR");
@@ -534,6 +539,40 @@ export function parseCodexLeadRuntimeConfig(
 	if (missing.length > 0) {
 		throw new Error(
 			`codex-lead-runtime: missing required env: ${missing.join(", ")}`,
+		);
+	}
+	const expectedLeadKey = `${projectName}-${leadId}`;
+	if (leadKey !== expectedLeadKey) {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_LEAD_KEY must be ${expectedLeadKey}, got ${leadKey}`,
+		);
+	}
+	if (backend !== "codex-app-server") {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_LEAD_BACKEND must be codex-app-server, got ${backend}`,
+		);
+	}
+	if (!/^[a-f0-9]{64}$/.test(identityDigest)) {
+		throw new Error(
+			"codex-lead-runtime: FLYWHEEL_LEAD_IDENTITY_DIGEST must be a 64-character lowercase hex digest",
+		);
+	}
+	if (env.LEAD_ID !== undefined && env.LEAD_ID.trim() !== leadId) {
+		throw new Error(
+			"codex-lead-runtime: LEAD_ID conflicts with FLYWHEEL_LEAD_ID",
+		);
+	}
+	if (
+		env.PROJECT_NAME !== undefined &&
+		env.PROJECT_NAME.trim() !== projectName
+	) {
+		throw new Error(
+			"codex-lead-runtime: PROJECT_NAME conflicts with FLYWHEEL_PROJECT_NAME",
+		);
+	}
+	if (env.FLYWHEEL_LEAD_BOT_USER_ID !== undefined) {
+		throw new Error(
+			"codex-lead-runtime: legacy FLYWHEEL_LEAD_BOT_USER_ID is forbidden; use canonical DISCORD_EXPECTED_BOT_USER_ID",
 		);
 	}
 
@@ -777,6 +816,8 @@ export function parseCodexLeadRuntimeConfig(
 	return {
 		projectName,
 		leadId,
+		leadKey,
+		identityDigest,
 		botUserId,
 		botToken,
 		chatChannelId,
@@ -1409,7 +1450,8 @@ export function buildCodexLeadRuntime(
 		spawnChild: () => {
 			const carrierInstanceId = randomBytes(32).toString("base64url");
 			publishCarrierRuntimeAssertion({
-				leadKey: `${config.projectName}-${config.leadId}`,
+				leadKey: config.leadKey,
+				identityDigest: config.identityDigest,
 				rawCarrierInstanceId: carrierInstanceId,
 				pid: process.pid,
 				lstart: getProcessStart(process.pid),

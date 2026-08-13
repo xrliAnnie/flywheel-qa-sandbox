@@ -10,9 +10,10 @@
 #      DISCORD-BOT-TOKEN literals — whole-file ban, so no fallback chain of
 #      any spelling can creep back into those two notify paths.
 #   3. restart-services.sh carries ZERO occurrences because FLY-1663 removed
-#      its unmanaged Lead launcher. The canonical v2 launchd wrapper retains
-#      the byte-exact per-Lead injection form, so lifecycle restarts cannot
-#      grow a second token path while the launchd-owned body still gets one.
+#      its unmanaged Lead launcher. The canonical v2 launchd wrapper resolves
+#      the registry-selected token exactly once, then injects that validated
+#      value, so lifecycle restarts cannot grow a second token path while the
+#      launchd-owned body still gets one.
 set -uo pipefail
 
 PASSED=0; FAILED=0
@@ -51,10 +52,11 @@ if [[ "$n" == "0" ]]; then
 else
 	fail "restart-services.sh references ${DBT_PATTERN} ${n}x (unmanaged launcher creep?): $(grep -n "$DBT_PATTERN" scripts/restart-services.sh | tr '\n' ' ')"
 fi
-if grep -qF "\"${DBT_PATTERN}=\${!BOT_TOKEN_ENV:-}\"" scripts/flywheel-lead-wrapper-v2.sh; then
-	pass "the canonical v2 wrapper retains the byte-exact per-Lead injection form"
+if grep -qF 'BOT_TOKEN="${!BOT_TOKEN_ENV:-}"' scripts/flywheel-lead-wrapper-v2.sh \
+		&& grep -qF 'SERVER_ENV+=("DISCORD_BOT_TOKEN=$BOT_TOKEN")' scripts/flywheel-lead-wrapper-v2.sh; then
+	pass "the canonical v2 wrapper resolves the registry-selected token once and injects it"
 else
-	fail "flywheel-lead-wrapper-v2.sh lost the legitimate per-Lead injection form"
+	fail "flywheel-lead-wrapper-v2.sh lost the canonical per-Lead token resolution/injection form"
 fi
 
 echo ""

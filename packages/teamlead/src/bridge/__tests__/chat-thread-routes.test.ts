@@ -55,7 +55,7 @@ const TEST_PROJECT: ProjectEntry = {
 			agentId: "lead-beta",
 			chatChannel: "ch-200",
 			match: { labels: ["beta"] },
-			// no botToken — should fall back to global
+			// no botToken — Lead-attributed routes must fail loud
 		},
 		{
 			// FLY-369: a second lead used to verify the archive endpoint resolves
@@ -491,7 +491,7 @@ describe("chat-thread routes (tools.ts)", () => {
 			);
 		});
 
-		it("per-lead token fallback to global", async () => {
+		it("does not let a Lead-attributed route borrow the global bot token", async () => {
 			const capturedCtx: ChatThreadContext[] = [];
 			const creator = createFakeCreator(async (ctx) => {
 				capturedCtx.push(ctx);
@@ -510,8 +510,9 @@ describe("chat-thread routes (tools.ts)", () => {
 				leadId: "lead-beta",
 				projectName: "TestProject",
 			});
-			expect(res.status).toBe(200);
-			expect(capturedCtx[0].botToken).toBe("global-fallback-token");
+			expect(res.status).toBe(503);
+			expect((res.body as { error: string }).error).toMatch(/bot token/i);
+			expect(capturedCtx).toHaveLength(0);
 		});
 	});
 

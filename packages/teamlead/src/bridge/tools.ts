@@ -481,7 +481,7 @@ export function createQueryRouter(
 		// Resolve botToken for Discord validation
 		const proj = projects.find((p) => p.projectName === projectName);
 		const leadCfg = proj?.leads.find((l) => l.agentId === leadId);
-		const regBotToken = leadCfg?.botToken ?? opts?.globalBotToken;
+		const regBotToken = leadCfg?.botToken;
 
 		const result = await validateAndRegisterChatThread(
 			{
@@ -615,8 +615,8 @@ export function createQueryRouter(
 			resolvedIdentifier ??
 			resolvedIssueId;
 
-		// Resolve bot token (per-lead or global fallback)
-		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
+		// Lead-attributed writes may use only that canonical Lead's credential.
+		const botToken = validation.leadConfig.botToken;
 		if (!botToken) {
 			res.status(503).json({ error: "No Discord bot token available" });
 			return;
@@ -828,8 +828,8 @@ export function createQueryRouter(
 			resolvedIdentifier ??
 			resolvedIssueId;
 
-		// Resolve bot token (per-lead or global fallback)
-		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
+		// Lead-attributed writes may use only that canonical Lead's credential.
+		const botToken = validation.leadConfig.botToken;
 		if (!botToken) {
 			res.status(503).json({ error: "No Discord bot token available" });
 			return;

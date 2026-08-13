@@ -63,6 +63,28 @@ describe("RestPollDiscordInboundSource — construction", () => {
 				new RestPollDiscordInboundSource({ botToken: "", channelIds: ["c"] }),
 		).toThrow(/botToken/);
 	});
+
+	it("asserts /users/@me exactly once and rejects a mismatched bot before polling", async () => {
+		const calls: string[] = [];
+		const fetchImpl = (async (url: string) => {
+			calls.push(url);
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({ id: "actual-bot" }),
+			} as unknown as Response;
+		}) as unknown as typeof fetch;
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+		});
+
+		await expect(
+			src.assertAuthenticatedBotUser("expected-bot"),
+		).rejects.toThrow("identity_bot_login_mismatch");
+		expect(calls).toEqual(["https://discord.com/api/v10/users/@me"]);
+	});
 });
 
 describe("RestPollDiscordInboundSource — baseline + poll", () => {

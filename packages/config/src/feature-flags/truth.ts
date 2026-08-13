@@ -30,6 +30,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
+	FLYWHEEL_PROJECTS_FILE:
+		"plumbing: canonical Lead identity registry path selector (FLY-1726), not a rollout gate",
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",

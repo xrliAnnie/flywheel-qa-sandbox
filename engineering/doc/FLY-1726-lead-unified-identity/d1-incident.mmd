@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph SOURCES["三个互不校验的身份来源"]
+        S1["派工链注入<br/>FLYWHEEL_LEAD_ID = product"]
+        S2["tmux 祖先环境残留<br/>LEAD_ID = eng"]
+        S3["tmux 祖先环境残留<br/>DISCORD_STATE_DIR = eng 的目录<br/>+ eng 的 bot token"]
+    end
+    P["同一个进程(pid 59595)<br/>三重嵌合体"]
+    S1 --> P
+    S2 --> P
+    S3 --> P
+    P --> R1["以 product 名义记账(铸章)"]
+    P --> R2["拿 eng 的 bot 身份收发消息"]
+    P --> R3["按 eng 的频道清单放行"]
+    R1 --> BAD["33 条错账<br/>没有任何一道闸让它死掉"]
+    R2 --> BAD
+    R3 --> BAD
+    style BAD fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style P fill:#fff8e6,stroke:#ff9500,stroke-width:2px
+    style SOURCES fill:#f5f5f7,stroke:#86868b

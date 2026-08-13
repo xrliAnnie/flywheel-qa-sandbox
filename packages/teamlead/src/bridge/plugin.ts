@@ -4978,15 +4978,19 @@ export async function startBridge(
 		process.env.STANDUP_LEAD_ID ??
 		(() => {
 			const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
-			// FLY-71: Standup is CoS (Simba) responsibility per product spec §2.1
-			const cos = leads.find((l) => l.agentId.includes("cos"));
-			return cos?.agentId ?? leads[0]?.agentId ?? "unknown";
+			// FLY-71: Standup is CoS responsibility. Ambiguity is not identity.
+			const cos = leads.filter((l) => l.agentId.includes("cos"));
+			if (cos.length === 1) return cos[0]!.agentId;
+			console.error(
+				`[Bridge] identity_standup_lead_ambiguous: expected exactly one CoS Lead, found ${cos.length}; standup disabled`,
+			);
+			return undefined;
 		})();
 	const standupLead = (standupProject?.leads ?? []).find(
 		(l) => l.agentId === standupLeadId,
 	);
-	if (standupProjectName && !standupLead) {
-		console.warn(
+	if (standupProjectName && standupLeadId && !standupLead) {
+		console.error(
 			`[Bridge] STANDUP_LEAD_ID="${standupLeadId}" not found in project "${standupProjectName}" leads. Standup will fail closed on delivery.`,
 		);
 	}
@@ -5022,7 +5026,7 @@ export async function startBridge(
 		: undefined;
 
 	let standupService: StandupService | undefined;
-	if (standupProjectName) {
+	if (standupProjectName && standupLead) {
 		standupService = new StandupService(
 			store,
 			projects,

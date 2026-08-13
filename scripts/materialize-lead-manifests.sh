@@ -67,7 +67,6 @@ while IFS= read -r proj; do
     [ -z "$lead" ] && continue
     lid="$(jq -r '.agentId' <<<"$lead")"
     [ -z "$lid" ] || [ "$lid" = "null" ] && continue
-    bte="$(jq -r '.botTokenEnv // "DISCORD_BOT_TOKEN"' <<<"$lead")"
     model="$(jq -r '.model // ""' <<<"$lead")"
     backend="$(jq -r '.backend // ""' <<<"$lead")"
     out="$MANIFEST_DIR/${pname}-${lid}.json"
@@ -81,13 +80,13 @@ while IFS= read -r proj; do
       --arg leadId "$lid" \
       --arg projectDir "$pdir" \
       --arg projectName "$pname" \
+	  --arg projectsFile "$PROJECTS" \
       --arg workspace "$pdir" \
-      --arg botTokenEnv "$bte" \
       --arg model "$model" \
       --arg backendId "$backend" \
       '{
          leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
-         subdir: "", workspace: $workspace, botTokenEnv: $botTokenEnv,
+		 projectsFile: $projectsFile, subdir: "", workspace: $workspace,
          mcpExclude: "", chromeEnabled: false
        }
        | (if $model != "" then . + {model: $model} else . end)

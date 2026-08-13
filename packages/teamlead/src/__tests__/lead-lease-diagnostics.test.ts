@@ -16,6 +16,7 @@ import { tokenAuthMiddleware } from "../bridge/plugin.js";
 const NOW = Date.parse("2026-07-16T12:00:00.000Z");
 const LEAD_KEY = "flywheel-codex-lead";
 const RAW_CLAIM = "must-never-appear-in-diagnostics";
+const IDENTITY_DIGEST = "d".repeat(64);
 
 describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 	let dir: string;
@@ -55,6 +56,7 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 				[LEAD_KEY]: {
 					leadKey: LEAD_KEY,
 					backend: "codex-app-server",
+					identityDigest: IDENTITY_DIGEST,
 					pid: 777,
 					lstart: "carrier-start",
 					instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
@@ -65,6 +67,7 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 			schemaVersion: 1,
 			contractVersion: 1,
 			leadKey: LEAD_KEY,
+			identityDigest: IDENTITY_DIGEST,
 			instanceDigest: hashCarrierInstanceId(RAW_CLAIM),
 			pid: 777,
 			lstart: "carrier-start",

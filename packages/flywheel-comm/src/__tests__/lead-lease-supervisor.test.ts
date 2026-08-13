@@ -227,6 +227,7 @@ describe("FLY-1602 supervisor-aware Lead leases", () => {
 			holderStart: "holder-old",
 			boundAt: "2026-08-03T01:00:01.000Z",
 			acquiredAt: "2026-08-03T01:00:00.000Z",
+			identityDigest: null,
 		});
 		expect(
 			store.verifyBound({

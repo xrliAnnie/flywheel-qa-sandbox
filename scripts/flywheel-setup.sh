@@ -312,6 +312,8 @@ fs_generate_fleet_artifact() {
   FS_CHANNEL_GENERAL="${FS_CHANNEL_GENERAL:-__FILL_DISCORD_CHANNEL_ID_GENERAL__}"
   FS_CHANNEL_COS="${FS_CHANNEL_COS:-__FILL_DISCORD_CHANNEL_ID_COS__}"
   FS_CHANNEL_ENG="${FS_CHANNEL_ENG:-__FILL_DISCORD_CHANNEL_ID_ENG__}"
+  FS_COS_BOT_USER_ID="${FS_COS_BOT_USER_ID:-__FILL_DISCORD_BOT_USER_ID_COS__}"
+  FS_ENG_BOT_USER_ID="${FS_ENG_BOT_USER_ID:-__FILL_DISCORD_BOT_USER_ID_ENG__}"
   FS_LINEAR_TEAM="${FS_LINEAR_TEAM:-__FILL_LINEAR_TEAM_KEY__}"
 
   # 1. projects.json — every rev1 schema fix preserved: CoS agentId literal
@@ -326,6 +328,8 @@ fs_generate_fleet_artifact() {
     --arg dept "$FS_DEPT" \
     --arg cosEnv "$FS_COS_ENV" \
     --arg engEnv "$FS_ENG_ENV" \
+    --arg cosBotUserId "$FS_COS_BOT_USER_ID" \
+    --arg engBotUserId "$FS_ENG_BOT_USER_ID" \
     --arg engId "$FS_ENG_ID" \
     --arg team "$FS_LINEAR_TEAM" \
     --arg general "$FS_CHANNEL_GENERAL" \
@@ -350,6 +354,7 @@ fs_generate_fleet_artifact() {
             chatChannel: $cosCh,
             match: { labels: ["Triage"] },
             botTokenEnv: $cosEnv,
+            botUserId: $cosBotUserId,
             canSpawnRunners: false
           },
           {
@@ -357,7 +362,8 @@ fs_generate_fleet_artifact() {
             chatChannel: $engCh,
             match: { labels: [$plabel] },
             department: $dept,
-            botTokenEnv: $engEnv
+            botTokenEnv: $engEnv,
+            botUserId: $engBotUserId
           }
         ]
       }
@@ -381,6 +387,7 @@ LINEAR_API_KEY=
 DISCORD_GUILD_ID=${FS_GUILD_ID}
 DISCORD_OWNER_USER_ID=${FS_FOUNDER_ID}
 LINEAR_WORKSPACE_SLUG=${FS_LINEAR_WORKSPACE_SLUG:-__FILL_LINEAR_WORKSPACE_SLUG__}
+TEAMLEAD_DEFAULT_LEAD_AGENT=${FS_COS_ID}
 EOF
 
   # 3. manifest.json — deps[] mirrors fleet-capture.sh's DEPS_JSON verbatim
@@ -543,16 +550,21 @@ fs_discord_api() {
   esac
 }
 
-# _fs_bot_validate <leadId> <token> <envName> — shared C1/C2 validation:
-# identity (/users/@me) + guild membership (/users/@me/guilds). On success
-# persists the token to .env and emits a BotProvisionResult JSON line
-# {leadId, botUserId, tokenEnvName, guildId, guildMembershipProof}.
+# _fs_bot_validate <leadId> <expectedBotUserId> <token> <envName> — shared
+# C1/C2 validation: the independently entered Discord Application ID must equal
+# the token-authenticated /users/@me id, then guild membership is proven via
+# /users/@me/guilds. On success persists the token to .env and emits a
+# BotProvisionResult JSON line with both proof labels.
 _fs_bot_validate() {
-  local lead_id="$1" token="$2" env_name="$3"
+  local lead_id="$1" expected_bot_user_id="$2" token="$3" env_name="$4"
   local me bot_user_id guilds n guild_id
   me="$(fs_discord_api GET /users/@me "$token")" || { fs_err "bot token for $lead_id failed identity check"; return 1; }
   bot_user_id="$(jq -r '.id // empty' <<<"$me")"
   [ -n "$bot_user_id" ] || { fs_err "no bot id in /users/@me response for $lead_id"; return 1; }
+  if [ "$bot_user_id" != "$expected_bot_user_id" ]; then
+    fs_err "$lead_id token belongs to Discord bot $bot_user_id, not independently entered application id $expected_bot_user_id"
+    return 1
+  fi
   guilds="$(fs_discord_api GET /users/@me/guilds "$token")" || { fs_err "cannot list guilds for $lead_id"; return 1; }
   n="$(jq 'length' <<<"$guilds" 2>/dev/null || echo 0)"
   if [ "${n:-0}" -eq 0 ]; then
@@ -569,7 +581,7 @@ _fs_bot_validate() {
   fi
   fs_env_upsert "$env_name" "$token"
   jq -nc --arg l "$lead_id" --arg b "$bot_user_id" --arg e "$env_name" --arg g "$guild_id" \
-    '{leadId:$l, botUserId:$b, tokenEnvName:$e, guildId:$g, guildMembershipProof:"users/@me/guilds"}'
+    '{leadId:$l, botUserId:$b, tokenEnvName:$e, guildId:$g, botIdentityProof:"application-id==users/@me", guildMembershipProof:"users/@me/guilds"}'
 }
 
 # bot_provision_c1 <leadKey:COS|ENG> <leadId> <persona> <envName> — DEFAULT
@@ -595,7 +607,7 @@ GUIDE
   fs_ask_value "BOT_INVITED_${lead_key}" "Press Enter once the bot is in your server (y)" >/dev/null || return 1
   for attempt in 1 2 3; do
     token="$(fs_ask_secret "BOT_TOKEN_${lead_key}" "Paste the $persona bot token")" || return 1
-    if result="$(_fs_bot_validate "$lead_id" "$token" "$env_name")"; then
+    if result="$(_fs_bot_validate "$lead_id" "$app_id" "$token" "$env_name")"; then
       printf '%s\n' "$result"
       return 0
     fi
@@ -627,7 +639,7 @@ bot_provision_c2() {
   pool_var="FLYWHEEL_SETUP_POOL_TOKEN_${lead_key}"
   token="${!pool_var:-}"
   [ -n "$token" ] || token="$(fs_ask_secret "POOL_TOKEN_${lead_key}" "Pool bot token for $persona (operator-provided)")" || return 1
-  _fs_bot_validate "$lead_id" "$token" "$env_name"
+  _fs_bot_validate "$lead_id" "$app_id" "$token" "$env_name"
 }
 
 # step: bots — run the selected strategy for BOTH leads (v1 topology = two
@@ -652,6 +664,16 @@ step_run_bots() {
     fs_err "the two bots resolved DIFFERENT guilds ($g1 vs $g2) — both must be invited into the SAME server"
     return 1
   fi
+  FS_COS_BOT_USER_ID="$(jq -r '.botUserId // empty' <<<"$cos_res")"
+  FS_ENG_BOT_USER_ID="$(jq -r '.botUserId // empty' <<<"$eng_res")"
+  if [ -z "$FS_COS_BOT_USER_ID" ] || [ -z "$FS_ENG_BOT_USER_ID" ]; then
+    fs_err "bot validation returned no independent bot user id"
+    return 1
+  fi
+  if [ "$FS_COS_BOT_USER_ID" = "$FS_ENG_BOT_USER_ID" ]; then
+    fs_err "the two Lead identities resolved the SAME Discord bot user id ($FS_COS_BOT_USER_ID)"
+    return 1
+  fi
   FS_GUILD_ID="$g1"
   fs_env_upsert DISCORD_GUILD_ID "$FS_GUILD_ID"
   setup_mark_done bots "$(jq -nc --arg p "$path" --arg g "$FS_GUILD_ID" \
@@ -659,17 +681,31 @@ step_run_bots() {
     '{path:$p, guildId:$g, results:[$cos,$eng]}')"
 }
 
-# resume verification: both tokens + the guild id still present in .env.
+# Hydrate every non-secret identity fact later steps consume. The verifier also
+# calls this so pre-FLY-1726 journals without botUserId evidence are marked
+# pending and re-run instead of being skipped and then dying during hydration.
+_fs_hydrate_bot_evidence() {
+  local ev
+  ev="$(setup_step_evidence bots)"
+  FS_GUILD_ID="$(jq -r '.guildId // empty' <<<"$ev")"
+  FS_COS_BOT_USER_ID="$(jq -r --arg lead "$FS_COS_ID" '[.results[] | select(.leadId == $lead) | .botUserId][0] // empty' <<<"$ev")"
+  FS_ENG_BOT_USER_ID="$(jq -r --arg lead "$FS_ENG_ID" '[.results[] | select(.leadId == $lead) | .botUserId][0] // empty' <<<"$ev")"
+  [ -n "$FS_GUILD_ID" ] && [ -n "$FS_COS_BOT_USER_ID" ] \
+    && [ -n "$FS_ENG_BOT_USER_ID" ] \
+    && [ "$FS_COS_BOT_USER_ID" != "$FS_ENG_BOT_USER_ID" ]
+}
+
+# resume verification: both tokens + every canonical bot identity fact remain.
 step_verify_bots() {
   local envf="$FLYWHEEL_SETUP_STATE_DIR/.env"
   [ -f "$envf" ] || return 1
   grep -Eq "^${FS_COS_ENV}=.+" "$envf" && grep -Eq "^${FS_ENG_ENV}=.+" "$envf" \
-    && grep -Eq "^DISCORD_GUILD_ID=.+" "$envf"
+    && grep -Eq "^DISCORD_GUILD_ID=.+" "$envf" \
+    && _fs_hydrate_bot_evidence
 }
 
 step_hydrate_bots() {
-  FS_GUILD_ID="$(setup_step_evidence bots | jq -r '.guildId // empty')"
-  [ -n "$FS_GUILD_ID" ]
+  _fs_hydrate_bot_evidence
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1126,6 +1162,10 @@ step_run_model_key() {
 # flywheel-home (projects.json/host.json/bin) + tokens (the ORIGINAL token
 # gate — .env written by earlier steps must satisfy env.example, no skip).
 step_run_config() {
+  # FLY-1726: the Bridge has no implicit default Lead. Persist the generated
+  # canonical CoS selector before producing/validating the env contract so both
+  # fresh runs and old resumed journals converge to explicit host config.
+  fs_env_upsert TEAMLEAD_DEFAULT_LEAD_AGENT "$FS_COS_ID"
   fs_generate_fleet_artifact "$FS_FLEET_DIR" 1 || return 1
   # the wizard owns this state root (guard at engine start); --force lets a
   # RE-run refresh our own previously-landed projects.json with new values.
@@ -1140,6 +1180,7 @@ step_run_config() {
 
 step_verify_config() {
   [ -f "$FLYWHEEL_SETUP_STATE_DIR/projects.json" ] \
+    && grep -qx "TEAMLEAD_DEFAULT_LEAD_AGENT=$FS_COS_ID" "$FLYWHEEL_SETUP_STATE_DIR/.env" \
     && fs_validate_projects "$FLYWHEEL_SETUP_STATE_DIR/projects.json" >/dev/null 2>&1
 }
 

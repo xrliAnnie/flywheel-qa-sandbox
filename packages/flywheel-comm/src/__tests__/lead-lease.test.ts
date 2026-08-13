@@ -6,6 +6,7 @@ import { LeadLeaseStore, LeaseStoreError } from "../lead-lease.js";
 import { LeadLeaseModeStore } from "../lead-lease-mode.js";
 
 describe("FLY-1309 LeadLeaseStore", () => {
+	const IDENTITY_DIGEST = "a".repeat(64);
 	let dir: string;
 	let dbPath: string;
 
@@ -24,10 +25,19 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		});
 	}
 
+	function openWithTupleStates(
+		states: Readonly<Record<string, "alive" | "dead" | "sensor_error">>,
+	) {
+		return new LeadLeaseStore(dbPath, {
+			processTupleState: (pid, start) => states[`${pid}:${start}`] ?? "dead",
+		});
+	}
+
 	const supervisor1 = {
 		leadKey: "flywheel-eng-lead",
 		project: "flywheel",
 		leadId: "eng-lead",
+		identityDigest: IDENTITY_DIGEST,
 		supervisorPid: 100,
 		supervisorStart: "Thu Jul 16 01:00:00 2026",
 		acquiredBy: "test",
@@ -54,6 +64,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 				generation: 1,
 				expectedSupervisorPid: 100,
 				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
 				panePid: 200,
 				paneStart: "Thu Jul 16 01:00:01 2026",
 				now: "2026-07-16T08:00:01.000Z",
@@ -69,7 +80,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			holderStart: "Thu Jul 16 01:00:01 2026",
 		});
 		expect(
-			store.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			store.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: true, reason: "current_bound" });
 		store.close();
 	});
@@ -91,6 +106,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 				generation: 1,
 				expectedSupervisorPid: 100,
 				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
 				panePid: 200,
 				paneStart: "Thu Jul 16 01:00:01 2026",
 				now: "2026-07-16T08:01:01.000Z",
@@ -114,6 +130,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: "old-pane",
 			now: "2026-07-16T08:00:01.000Z",
@@ -129,7 +146,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			}),
 		).toEqual({ status: "acquired", generation: 2 });
 		expect(
-			takeover.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			takeover.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: false, reason: "stale_generation" });
 		takeover.close();
 	});
@@ -146,6 +167,148 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		});
 		expect(store.getLease(supervisor1.leadKey)?.generation).toBe(1);
 		store.close();
+	});
+
+	it("re-stamps a changed identity digest only after the previous bound generation is dead", () => {
+		const holderStart = "old-holder";
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.bind({
+			leadKey: supervisor1.leadKey,
+			generation: 1,
+			expectedSupervisorPid: supervisor1.supervisorPid,
+			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
+			panePid: 200,
+			paneStart: holderStart,
+		});
+		initial.close();
+
+		const changedDigest = "b".repeat(64);
+		const restarted = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+			[`200:${holderStart}`]: "dead",
+		});
+		expect(
+			restarted.acquire({
+				...supervisor1,
+				identityDigest: changedDigest,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({ status: "acquired", generation: 2 });
+		expect(restarted.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: changedDigest,
+			generation: 2,
+			supervisorPid: 101,
+		});
+		restarted.close();
+	});
+
+	it.each([
+		["supervisor", `100:${supervisor1.supervisorStart}`],
+		["holder", "200:old-holder"],
+	])(
+		"denies identity re-stamp while the previous %s tuple is alive",
+		(_label, liveTuple) => {
+			const initial = open();
+			initial.acquire(supervisor1);
+			initial.bind({
+				leadKey: supervisor1.leadKey,
+				generation: 1,
+				expectedSupervisorPid: supervisor1.supervisorPid,
+				expectedSupervisorStart: supervisor1.supervisorStart,
+				identityDigest: IDENTITY_DIGEST,
+				panePid: 200,
+				paneStart: "old-holder",
+			});
+			initial.close();
+
+			const contender = openWithTupleStates({ [liveTuple]: "alive" });
+			expect(
+				contender.acquire({
+					...supervisor1,
+					identityDigest: "b".repeat(64),
+					supervisorPid: 101,
+					supervisorStart: "new-supervisor",
+				}),
+			).toEqual({
+				status: "denied_identity_drift_live",
+				generation: 1,
+			});
+			expect(contender.getLease(supervisor1.leadKey)).toMatchObject({
+				identityDigest: IDENTITY_DIGEST,
+				generation: 1,
+			});
+			contender.close();
+		},
+	);
+
+	it("keeps identity re-stamp fail closed when prior tuple liveness is unprovable", () => {
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.close();
+
+		const contender = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "sensor_error",
+		});
+		expect(
+			contender.acquire({
+				...supervisor1,
+				identityDigest: "b".repeat(64),
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({
+			status: "denied_identity_drift_sensor_degraded",
+			generation: 1,
+		});
+		contender.close();
+	});
+
+	it("refuses to downgrade a canonical lease back to a legacy NULL digest", () => {
+		const initial = open();
+		initial.acquire(supervisor1);
+		initial.close();
+
+		const contender = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+		});
+		expect(() =>
+			contender.acquire({
+				...supervisor1,
+				identityDigest: null,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toThrow(/identity digest cannot be removed/);
+		expect(contender.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: IDENTITY_DIGEST,
+			generation: 1,
+		});
+		contender.close();
+	});
+
+	it("upgrades an explicit legacy NULL digest after the prior tuple is dead", () => {
+		const legacy = open();
+		legacy.acquire({ ...supervisor1, identityDigest: null });
+		legacy.close();
+
+		const canonical = openWithTupleStates({
+			[`100:${supervisor1.supervisorStart}`]: "dead",
+		});
+		expect(
+			canonical.acquire({
+				...supervisor1,
+				supervisorPid: 101,
+				supervisorStart: "new-supervisor",
+			}),
+		).toEqual({ status: "acquired", generation: 2 });
+		expect(canonical.getLease(supervisor1.leadKey)).toMatchObject({
+			identityDigest: IDENTITY_DIGEST,
+			generation: 2,
+		});
+		canonical.close();
 	});
 
 	it("denies a different supervisor while the unbound acquiring supervisor is alive", () => {
@@ -178,6 +341,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: holder,
 			now: "2026-07-16T08:00:01.000Z",
@@ -210,6 +374,7 @@ describe("FLY-1309 LeadLeaseStore", () => {
 			generation: 1,
 			expectedSupervisorPid: 100,
 			expectedSupervisorStart: supervisor1.supervisorStart,
+			identityDigest: IDENTITY_DIGEST,
 			panePid: 200,
 			paneStart: "old-start",
 			now: "2026-07-16T08:00:01.000Z",
@@ -231,7 +396,11 @@ describe("FLY-1309 LeadLeaseStore", () => {
 		const store = open();
 		store.acquire(supervisor1);
 		expect(
-			store.validate({ leaseKey: supervisor1.leadKey, generation: 1 }),
+			store.validate({
+				leaseKey: supervisor1.leadKey,
+				generation: 1,
+				identityDigest: IDENTITY_DIGEST,
+			}),
 		).toEqual({ valid: false, reason: "unbound" });
 		store.close();
 	});
@@ -295,7 +464,11 @@ describe("FLY-1309 independent lease mode control plane", () => {
 
 		expect(modes.read()).toEqual({ mode: "enforce", source: "file" });
 		expect(
-			rebuilt.validate({ leaseKey: "flywheel-eng-lead", generation: 1 }),
+			rebuilt.validate({
+				leaseKey: "flywheel-eng-lead",
+				generation: 1,
+				identityDigest: "a".repeat(64),
+			}),
 		).toEqual({
 			valid: false,
 			reason: "missing_lease",

@@ -334,7 +334,10 @@ def fire_bypass_alert(reason: str, cmd: str) -> bool:
         or os.environ.get("FLYWHEEL_PROJECT_NAME")
         or "flywheel"
     )
-    lead = os.environ.get("FLYWHEEL_LEAD_ID") or "flywheel-eng-lead"
+    # Missing attribution must stay explicit; never impersonate an engineering
+    # Lead merely because the hook inherited no canonical Lead projection.
+    lead = os.environ.get("FLYWHEEL_LEAD_ID") or "system"
+    lead_unknown = lead == "system"
     argv = argv0 + [
         "--lead", lead,
         "--project", project,
@@ -343,7 +346,7 @@ def fire_bypass_alert(reason: str, cmd: str) -> bool:
         "--signature", make_signature(cmd),
         "--strict-delivery",
         "--title", "Restart-guard BYPASS used",
-        "--body", f"reason: {reason}\ncommand: {cmd[:800]}",
+        "--body", f"lead_unknown={str(lead_unknown).lower()}\nreason: {reason}\ncommand: {cmd[:800]}",
     ]
     try:
         r = subprocess.run(

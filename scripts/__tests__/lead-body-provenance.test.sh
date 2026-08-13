@@ -20,26 +20,56 @@ mkdir -p "$TMP/body" "$TMP/project" "$TMP/home"
 cp "$BODY" "$TMP/body/lead-body.sh"
 cat > "$TMP/body/claude-lead.sh" <<'EOF'
 printf 'CAPTURED=%s|%s\n' "${_FLYWHEEL_LEAD_CARRIER_PID_CAPTURED:-}" "${_FLYWHEEL_LEAD_CARRIER_START_CAPTURED:-}"
+printf 'IDENTITY=%s|%s|%s|%s|%s|%s\n' \
+  "${FLYWHEEL_LEAD_ID:-}" "${LEAD_ID:-}" \
+  "${FLYWHEEL_PROJECT_NAME:-}" "${PROJECT_NAME:-}" \
+  "${DISCORD_STATE_DIR:-}" "${DISCORD_BOT_TOKEN:-}"
 EOF
 cat > "$TMP/manifest.json" <<EOF
-{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo","botTokenEnv":"OPS_TOKEN"}
+{"leadId":"ops-lead","projectDir":"$TMP/project","projectName":"demo"}
 EOF
 cat > "$TMP/home/.env" <<'EOF'
 FLYWHEEL_LEAD_CARRIER_PID=999
 FLYWHEEL_LEAD_CARRIER_START=poisoned-by-env
-OPS_TOKEN=stub
+FLYWHEEL_LEAD_ID=foreign-lead
+LEAD_ID=foreign-lead
+FLYWHEEL_PROJECT_NAME=foreign-project
+PROJECT_NAME=foreign-project
+DISCORD_STATE_DIR=/tmp/foreign-state
+DISCORD_BOT_TOKEN=wrong-global-token
 EOF
 out="$(HOME="$TMP/home" FLYWHEEL_STATE_DIR="$TMP/home" FLYWHEEL_WRAPPER_ENV_FILE="$TMP/home/.env" \
   FLYWHEEL_LEAD_CARRIER_PID=123 FLYWHEEL_LEAD_CARRIER_START=trusted-start \
+  FLYWHEEL_LEAD_ID=ops-lead LEAD_ID=ops-lead \
+  FLYWHEEL_PROJECT_NAME=demo PROJECT_NAME=demo \
+  DISCORD_STATE_DIR="$TMP/discord-state" DISCORD_BOT_TOKEN=canonical-token \
   bash "$TMP/body/lead-body.sh" "$TMP/manifest.json" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && grep -q '^CAPTURED=123|trusted-start$' <<<"$out"; then
-  pass "lead-body captures carrier tuple before .env can overwrite public handoff vars"
+if [ "$rc" -eq 0 ] \
+    && grep -q '^CAPTURED=123|trusted-start$' <<<"$out" \
+    && grep -qF "IDENTITY=ops-lead|ops-lead|demo|demo|$TMP/discord-state|canonical-token" <<<"$out"; then
+  pass "lead-body restores carrier and canonical identity after loading .env"
 else
-  fail "lead-body carrier capture drifted (rc=$rc out=$out)"
+  fail "lead-body identity capture drifted (rc=$rc out=$out)"
+fi
+
+printf '%s\n' 'FLYWHEEL_PROJECTS=[{"projectName":"foreign"}]' >> "$TMP/home/.env"
+out="$(HOME="$TMP/home" FLYWHEEL_STATE_DIR="$TMP/home" FLYWHEEL_WRAPPER_ENV_FILE="$TMP/home/.env" \
+  FLYWHEEL_LEAD_ID=ops-lead LEAD_ID=ops-lead \
+  FLYWHEEL_PROJECT_NAME=demo PROJECT_NAME=demo \
+  FLYWHEEL_PROJECTS_FILE="$TMP/projects.json" \
+  DISCORD_STATE_DIR="$TMP/discord-state" DISCORD_BOT_TOKEN=canonical-token \
+  bash "$TMP/body/lead-body.sh" "$TMP/manifest.json" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] \
+    && grep -q 'identity_env_source_forbidden.*FLYWHEEL_PROJECTS' <<<"$out" \
+    && ! grep -q '^IDENTITY=' <<<"$out"; then
+  pass "lead-body rejects an inline registry injected by .env before child projection"
+else
+  fail "lead-body accepted an inline registry from .env (rc=$rc out=$out)"
 fi
 
 out="$(HOME="$TMP/home" FLYWHEEL_STATE_DIR="$TMP/home" FLYWHEEL_WRAPPER_ENV_FILE=/dev/null \
   FLYWHEEL_LEAD_CARRIER_PID=bad FLYWHEEL_LEAD_CARRIER_START=bad \
+  DISCORD_BOT_TOKEN=canonical-token \
   bash "$TMP/body/lead-body.sh" "$TMP/manifest.json" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q '^CAPTURED=|$' <<<"$out"; then
   pass "malformed handoff tuple degrades to unknown"

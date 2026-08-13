@@ -337,10 +337,65 @@ describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 			const shim = join(shimDir, "node");
 			writeFileSync(
 				shim,
-				`#!/bin/sh\nprintf '%s' "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" > "${dumpFile}"\nexit 0\n`,
+				`#!/bin/sh
+case " $* " in *" lead-identity resolve "*)
+  printf '%s\\n' "$CANONICAL_JSON"
+  exit 0
+esac
+printf '%s' "$FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" > "${dumpFile}"
+exit 0
+`,
 			);
 			execFileSync("chmod", ["+x", shim]);
 		});
+
+		function launcherEnv(overrides: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+			const env = { ...process.env };
+			for (const name of [
+				"FLYWHEEL_LEAD_ID",
+				"LEAD_ID",
+				"FLYWHEEL_PROJECT_NAME",
+				"PROJECT_NAME",
+				"FLYWHEEL_LEAD_KEY",
+				"FLYWHEEL_LEAD_BACKEND",
+				"FLYWHEEL_LEAD_ROLE",
+				"DISCORD_STATE_DIR",
+				"DISCORD_EXPECTED_BOT_USER_ID",
+				"FLYWHEEL_LEAD_IDENTITY_DIGEST",
+				"FLYWHEEL_CANONICAL_IDENTITY_RESOLVED",
+			]) {
+				delete env[name];
+			}
+			return {
+				...env,
+				HOME: home,
+				PATH: `${shimDir}:${process.env.PATH}`,
+				FLYWHEEL_COMM_CLI: join(
+					SCRIPTS,
+					"..",
+					"..",
+					"flywheel-comm",
+					"dist",
+					"index.js",
+				),
+				GROWTH_BOT_TOKEN: "x",
+				CANONICAL_JSON: JSON.stringify({
+					schemaVersion: 1,
+					leadId: "growth-lead",
+					projectName: "growth",
+					leadKey: "growth-growth-lead",
+					agentTeamName: "growth-lead",
+					botUserId: "1499895683287748679",
+					botTokenEnv: "GROWTH_BOT_TOKEN",
+					discordStateDir: join(home, "discord-growth"),
+					backend: "codex-app-server",
+					role: "dept",
+					projectsDigest: "b".repeat(64),
+					identityDigest: "a".repeat(64),
+				}),
+				...overrides,
+			};
+		}
 		afterEach(() => {
 			rmSync(home, { recursive: true, force: true });
 			rmSync(shimDir, { recursive: true, force: true });
@@ -352,14 +407,11 @@ describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 				[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
 				{
 					encoding: "utf8",
-					env: {
-						...process.env,
-						HOME: home,
-						PATH: `${shimDir}:${process.env.PATH}`,
+					env: launcherEnv({
 						FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
 						// a pre-existing persona file must be PRESERVED, governance appended after
 						FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES: "/persona/identity.md",
-					},
+					}),
 				},
 			);
 			const dumped = execFileSync("cat", [dumpFile], { encoding: "utf8" });
@@ -376,13 +428,10 @@ describe("codex-lead.sh — full-access governance wiring (H-2)", () => {
 				[join(SCRIPTS, "codex-lead.sh"), "growth-lead", home, "growth"],
 				{
 					encoding: "utf8",
-					env: {
-						...process.env,
-						HOME: home,
-						PATH: `${shimDir}:${process.env.PATH}`,
+					env: launcherEnv({
 						FLYWHEEL_CODEX_LEAD_PROFILE: "companion",
 						FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES: "/persona/identity.md",
-					},
+					}),
 				},
 			);
 			const dumped = execFileSync("cat", [dumpFile], { encoding: "utf8" });

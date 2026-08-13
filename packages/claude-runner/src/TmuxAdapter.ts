@@ -502,6 +502,15 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.projectName) {
 			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
 		}
+		// FLY-1726: tmux inherits its server-global environment unless each key is
+		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is
+		// not the Lead Discord identity itself, so clear the bare Lead/Discord
+		// coordinates and project only the canonical runner project name.
+		envArgs.push("-e", `PROJECT_NAME=${ctx.projectName ?? ""}`);
+		envArgs.push("-e", "LEAD_ID=");
+		envArgs.push("-e", "DISCORD_STATE_DIR=");
+		envArgs.push("-e", "DISCORD_IDENTITY_MODE=");
+		envArgs.push("-e", "DISCORD_BOT_TOKEN=");
 
 		// FLY-80: Inject Lead ID + comm CLI path so Runner's /spin approve gate works.
 		// Without these, the gate's `if [ -n "$FLYWHEEL_COMM_CLI" ]` check fails

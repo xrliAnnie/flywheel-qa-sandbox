@@ -700,6 +700,34 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe("output-ticket");
 	});
 
+	it("drops hostile inherited Lead and Discord identity coordinates", async () => {
+		const names = [
+			"LEAD_ID",
+			"PROJECT_NAME",
+			"DISCORD_STATE_DIR",
+			"DISCORD_BOT_TOKEN",
+			"DISCORD_EXPECTED_BOT_USER_ID",
+			"DISCORD_IDENTITY_MODE",
+		] as const;
+		const previous = names.map((name) => process.env[name]);
+		try {
+			for (const name of names) process.env[name] = `hostile-${name}`;
+			await makeAdapter().execute(
+				ctx({ leadId: "owner-lead", projectName: "canonical-project" }),
+			);
+			const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
+			for (const name of names) expect(env[name]).toBeUndefined();
+			expect(env.FLYWHEEL_LEAD_ID).toBe("owner-lead");
+			expect(env.FLYWHEEL_PROJECT_NAME).toBe("canonical-project");
+		} finally {
+			for (const [index, name] of names.entries()) {
+				const value = previous[index];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	});
+
 	it("FLY-1643: authors only the reviewed runner FLYWHEEL_ environment", async () => {
 		const transport = {
 			buildRunnerSpawnConfig: vi.fn(() => ({

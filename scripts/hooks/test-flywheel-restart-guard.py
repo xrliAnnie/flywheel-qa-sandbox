@@ -502,6 +502,32 @@ def t7_unit():
     else:
         bad("T7", f"identical signatures: {s1}")
 
+    captured = []
+
+    class Result:
+        stdout = "sent\n"
+
+    original_run = mod.subprocess.run
+    original_environ = dict(mod.os.environ)
+    try:
+        mod.os.environ.pop("FLYWHEEL_LEAD_ID", None)
+        mod.os.environ["FLYWHEEL_RESTART_GUARD_ALERT_CMD"] = "/tmp/fake-alert"
+        mod.subprocess.run = lambda argv, **_kwargs: (captured.append(argv) or Result())
+        if mod.fire_bypass_alert("test", "restart-services"):
+            argv = captured[0]
+            body = argv[argv.index("--body") + 1]
+            lead = argv[argv.index("--lead") + 1]
+            if lead == "system" and "lead_unknown=true" in body:
+                ok("T7 missing Lead identity stays system-attributed")
+            else:
+                bad("T7 missing Lead identity", f"lead={lead} body={body}")
+        else:
+            bad("T7 missing Lead identity", "alert unexpectedly failed")
+    finally:
+        mod.subprocess.run = original_run
+        mod.os.environ.clear()
+        mod.os.environ.update(original_environ)
+
 
 # ── T8: integration — hook default path drives the REAL lead-alert.sh ────────
 def t8_real_lead_alert_integration():
@@ -524,46 +550,66 @@ def t8_real_lead_alert_integration():
             bindir = os.path.join(tmp, "bin")
             os.makedirs(bindir)
             Path(bindir, "curl").write_text(
-                "#!/bin/bash\nprintf '%s' \"${CURL_HTTP_CODE:-200}\"\nexit 0\n"
+                "#!/bin/bash\n"
+                "[[ -z \"${SYSTEM_ALERT_MUST_NOT_LEAK:-}\" ]] || exit 7\n"
+                "[[ -z \"${SYSTEM_ALERT_TOKEN:-}\" ]] || exit 8\n"
+                "printf '%s' \"${CURL_HTTP_CODE:-200}\"\n"
+                "exit 0\n"
             )
             os.chmod(os.path.join(bindir, "curl"), 0o755)
             Path(bindir, "osascript").write_text("#!/bin/bash\nexit 0\n")
             os.chmod(os.path.join(bindir, "osascript"), 0o755)
-            projects = os.path.join(tmp, "projects.json")
-            Path(projects).write_text(json.dumps([{
-                "projectName": "flywheel",
-                "leads": [{
-                    "agentId": "flywheel-eng-lead",
-                    "alertChannel": "444444444444444444",
-                    "alertBotTokenEnv": "FLY913_ALERT_TOKEN",
-                }],
-            }]))
+            home = Path(tmp, "home")
+            state = home / ".flywheel"
+            state.mkdir(parents=True)
+            production_claims = Path(tmp, "production-claims.db")
+            (state / ".env").write_text(
+                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=444444444444444444\n"
+                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV=SYSTEM_ALERT_TOKEN\n"
+                "SYSTEM_ALERT_TOKEN=CANARY-TOKEN\n"
+                "SYSTEM_ALERT_MUST_NOT_LEAK=latent-secret\n"
+                f"FLYWHEEL_CLAIMS_DB={production_claims}\n"
+            )
             env = {
+                "HOME": str(home),
                 "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
                 "CURL_HTTP_CODE": http_code,
                 "FLYWHEEL_ROOT": str(repo_root),
                 "FLYWHEEL_RESTART_GUARD_ALERT_CMD": "",  # force default path
                 "FLYWHEEL_RESTART_GUARD_LOG": os.path.join(tmp, "guard.log"),
-                "FLYWHEEL_PROJECTS_FILE": projects,
+                "FLYWHEEL_PROJECTS_FILE": os.path.join(tmp, "missing-projects.json"),
                 "FLYWHEEL_CLAIMS_DB": os.path.join(tmp, "claims.db"),
                 "FLYWHEEL_ALERT_QUEUE_DIR": os.path.join(tmp, "queue"),
                 "FLYWHEEL_ALERT_DEADLETTER_DIR": os.path.join(tmp, "deadletter"),
                 "FLYWHEEL_STATE_DIR": os.path.join(tmp, "state"),
-                "FLY913_ALERT_TOKEN": "CANARY-TOKEN",
             }
             # empty ALERT_CMD env must mean "unset" for the hook
             full_env = {k: v for k, v in {**os.environ, **env}.items() if v != ""}
             full_env.pop("FLYWHEEL_RESTART_GUARD_ALERT_CMD", None)
+            for name in (
+                "FLYWHEEL_LEAD_ID",
+                "PROJECT_NAME",
+                "FLYWHEEL_PROJECT_NAME",
+                "FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
+                "FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+                "SYSTEM_ALERT_TOKEN",
+            ):
+                full_env.pop(name, None)
             p = subprocess.run(
                 [sys.executable, str(HOOK)],
                 input=json.dumps(bash_event(BYPASS_CMD)),
                 capture_output=True, text=True, env=full_env, timeout=60,
             )
             d = decision_of(p.stdout)
-            if p.returncode == 0 and d == expected:
+            caller_claims = Path(env["FLYWHEEL_CLAIMS_DB"])
+            isolated = caller_claims.is_file() and not production_claims.exists()
+            if p.returncode == 0 and d == expected and isolated:
                 ok(f"T8 real lead-alert HTTP {http_code} → {expected}")
             else:
-                bad(f"T8 HTTP {http_code}", f"exit={p.returncode} decision={d} stderr={p.stderr[-200:]}")
+                bad(
+                    f"T8 HTTP {http_code}",
+                    f"exit={p.returncode} decision={d} isolated={isolated} stderr={p.stderr[-200:]}",
+                )
 
 
 def main() -> int:

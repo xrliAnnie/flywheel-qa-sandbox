@@ -26,6 +26,24 @@ if [[ "${FLYWHEEL_LEAD_CARRIER_PID:-}" =~ ^[1-9][0-9]*$ ]] \
 fi
 unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
 
+# The wrapper has already resolved and projected one canonical identity tuple.
+# .env is a host configuration/secret source, never an identity source. Preserve
+# the tuple (and the generic per-Lead token) byte-for-byte across the source.
+_V2_IDENTITY_ENV_NAMES=(
+  FLYWHEEL_LEAD_ID LEAD_ID
+  FLYWHEEL_PROJECT_NAME PROJECT_NAME
+  FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND
+  DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN
+  FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST
+  FLYWHEEL_PROJECTS_FILE
+)
+_V2_IDENTITY_ENV_DECLARATIONS=()
+for _v2_identity_name in "${_V2_IDENTITY_ENV_NAMES[@]}"; do
+  _v2_identity_declaration="$(declare -p "$_v2_identity_name" 2>/dev/null || true)"
+  _V2_IDENTITY_ENV_DECLARATIONS+=("$_v2_identity_declaration")
+done
+unset _v2_identity_name _v2_identity_declaration
+
 # Read launcher configuration into this body shell. Assembly helpers retain the
 # exported configuration, while the Claude child still crosses claude-lead.sh's
 # explicit env -i barrier.
@@ -39,13 +57,28 @@ if [ -f "$ENV_FILE" ]; then
   [ "$_v2_body_allexport_was_on" = true ] || set +a
   unset _v2_body_allexport_was_on
 fi
+if [ "${FLYWHEEL_PROJECTS+x}" = x ]; then
+  echo "[lead-body] ERROR: identity_env_source_forbidden: FLYWHEEL_PROJECTS may not be supplied by ${ENV_FILE}; use canonical FLYWHEEL_PROJECTS_FILE" >&2
+  exit 1
+fi
 unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
+
+for ((_v2_identity_index = 0; _v2_identity_index < ${#_V2_IDENTITY_ENV_NAMES[@]}; _v2_identity_index++)); do
+  _v2_identity_name="${_V2_IDENTITY_ENV_NAMES[$_v2_identity_index]}"
+  unset "$_v2_identity_name"
+  _v2_identity_declaration="${_V2_IDENTITY_ENV_DECLARATIONS[$_v2_identity_index]}"
+  if [ -n "$_v2_identity_declaration" ]; then
+    eval "$_v2_identity_declaration"
+    export "$_v2_identity_name"
+  fi
+done
+unset _v2_identity_index _v2_identity_name _v2_identity_declaration
+unset _V2_IDENTITY_ENV_NAMES _V2_IDENTITY_ENV_DECLARATIONS
 
 LEAD_ID="$(jq -er '.leadId' "$MANIFEST")"
 PROJECT_DIR="$(jq -er '.projectDir' "$MANIFEST")"
 PROJECT_NAME="$(jq -er '.projectName' "$MANIFEST")"
 SUBDIR="$(jq -r '.subdir // ""' "$MANIFEST")"
-BOT_TOKEN_ENV="$(jq -r '.botTokenEnv // "DISCORD_BOT_TOKEN"' "$MANIFEST")"
 WORKSPACE="$(jq -er '(.workspace // "") | select(type == "string")' "$MANIFEST")" \
   || { echo '[lead-body] ERROR: invalid workspace' >&2; exit 1; }
 MCP_EXCLUDE="$(jq -er '(.mcpExclude // "") | select(type == "string")' "$MANIFEST")" \
@@ -55,12 +88,8 @@ CHROME_ENABLED="$(jq -er \
    elif (.chromeEnabled | type) == "boolean" then (.chromeEnabled | tostring)
    else error("chromeEnabled must be boolean") end' "$MANIFEST")" \
   || { echo '[lead-body] ERROR: invalid chromeEnabled' >&2; exit 1; }
-[[ "$BOT_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
-  || { echo "[lead-body] ERROR: invalid botTokenEnv: $BOT_TOKEN_ENV" >&2; exit 1; }
-# Loading .env may overwrite a global DISCORD_BOT_TOKEN inherited from the
-# private server. Reproject the exact manifest-selected credential afterwards,
-# preserving the manifest credential boundary and preventing cross-Lead drift.
-export DISCORD_BOT_TOKEN="${!BOT_TOKEN_ENV:-}"
+[ -n "${DISCORD_BOT_TOKEN:-}" ] \
+  || { echo '[lead-body] ERROR: canonical DISCORD_BOT_TOKEN is missing' >&2; exit 1; }
 export FLYWHEEL_LEAD_CARRIER=v2
 export FLYWHEEL_LEAD_MCP_EXCLUDE="$MCP_EXCLUDE"
 export FLYWHEEL_LEAD_CHROME_ENABLED="$CHROME_ENABLED"
@@ -70,7 +99,6 @@ fi
 
 ARGS=("$LEAD_ID" "$PROJECT_DIR" "$PROJECT_NAME")
 [ -z "$SUBDIR" ] || ARGS+=(--subdir "$SUBDIR")
-ARGS+=(--bot-token-env "$BOT_TOKEN_ENV")
 
 export FLYWHEEL_LEAD_BODY_V2=1
 # shellcheck source=claude-lead.sh

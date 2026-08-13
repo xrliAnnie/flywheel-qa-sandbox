@@ -12,7 +12,7 @@
 
 # ── FLYWHEEL_PROJECTS builder ──────────────────────────────────────────────
 # Args: projectName projectRoot projectRepo agentId chatChannel botTokenEnv
-#       slotRole mainLabelsJson extraLeadsJson
+#       slotRole mainLabelsJson extraLeadsJson [botUserId discordStateDir]
 # mainLabelsJson defaults to ["*"] (legacy); extraLeadsJson is an array of
 # {agentId, chatChannel|chatChannel-bearing fields, botTokenEnv/tokenEnvVar,
 #  labels:[...]} entries produced by qa_multilead_validate_campaign_args.
@@ -20,6 +20,7 @@ qa_multilead_build_projects() {
 	local project_name="$1" project_root="$2" project_repo="$3" agent_id="$4"
 	local chat_channel="$5" bot_token_env="$6" slot_role="$7"
 	local main_labels_json="${8:-[\"*\"]}" extra_leads_json="${9:-[]}"
+	local bot_user_id="${10:-}" discord_state_dir="${11:-}"
 	jq -n \
 		--arg projectName "$project_name" \
 		--arg projectRoot "$project_root" \
@@ -28,6 +29,8 @@ qa_multilead_build_projects() {
 		--arg chatChannel "$chat_channel" \
 		--arg botTokenEnv "$bot_token_env" \
 		--arg slotRole "$slot_role" \
+		--arg botUserId "$bot_user_id" \
+		--arg discordStateDir "$discord_state_dir" \
 		--argjson mainLabels "$main_labels_json" \
 		--argjson extraLeads "$extra_leads_json" \
 		'
@@ -37,18 +40,26 @@ qa_multilead_build_projects() {
       projectRoot: $projectRoot,
       projectRepo: $projectRepo,
       leads: ([
-        {
+        ({
           agentId: $agentId,
           chatChannel: $chatChannel,
           botTokenEnv: $botTokenEnv,
           match: { labels: $mainLabels }
-        }
-      ] + ($extraLeads | map({
-        agentId: .agentId,
-        chatChannel: .chatChannel,
-        botTokenEnv: .tokenEnvVar,
-        match: { labels: .labels }
-      })))
+        } | if $botUserId != "" then . + {
+          botUserId: $botUserId,
+          discordStateDir: $discordStateDir
+        } else . end)
+      ] + ($extraLeads | map(. as $lead |
+        ({
+          agentId: $lead.agentId,
+          chatChannel: $lead.chatChannel,
+          botTokenEnv: $lead.tokenEnvVar,
+          match: { labels: $lead.labels }
+        } | if $botUserId != "" then . + {
+          botUserId: $lead.botAppId,
+          discordStateDir: $lead.discordStateDir
+        } else . end)
+      )))
     })
     | if $slotRole == "cos" then . + { generalChannel: $chatChannel } else . end
   ]

@@ -173,6 +173,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			dbPath?: string;
 			leaseClaim?: { leaseKey?: unknown; generation?: unknown };
 			carrierClaim?: unknown;
+			identityDigest?: unknown;
 			provenance?: MessageProvenance;
 		};
 		const { questionId, leadId, answer, executionId, projectName } = body;
@@ -314,6 +315,10 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					leadRequest: {
 						requestingLeadId: leadId,
 						projectName: resolvedProjectName,
+						identityDigest:
+							typeof body.identityDigest === "string"
+								? body.identityDigest
+								: "",
 						...(typeof body.leaseClaim?.leaseKey === "string" &&
 						Number.isSafeInteger(body.leaseClaim.generation) &&
 						(body.leaseClaim.generation as number) > 0

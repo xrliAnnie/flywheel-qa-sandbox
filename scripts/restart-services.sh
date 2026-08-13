@@ -51,6 +51,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/mailbox-queue-deploy-barrier.sh
 source "${FLYWHEEL_DIR}/scripts/lib/mailbox-queue-deploy-barrier.sh"
+# shellcheck source=lib/default-lead-agent-env.sh
+source "${FLYWHEEL_DIR}/scripts/lib/default-lead-agent-env.sh"
 # shellcheck source=lib/discord-pointer-guard.sh
 # shellcheck disable=SC1091
 source "${FLYWHEEL_DIR}/scripts/lib/discord-pointer-guard.sh"
@@ -1279,6 +1281,25 @@ fi
 
 preflight_pull_latest_main || exit 1
 
+# The release below makes managed-Lead botUserId mandatory at every Bridge,
+# launcher, and write boundary. Prove the independent-roster migration landed
+# before changing host config, building strict binaries, or stopping services.
+if ! lead_identity_registry_preflight \
+  "${HOME}/.flywheel/projects.json" "${FLYWHEEL_PROJECTS:-}"; then
+    log "ERROR: canonical Lead identity registry is not migration-ready; existing Bridge and Leads remain untouched"
+    exit 1
+fi
+
+# FLY-1726: config.ts no longer invents a default Lead. Under the restart lock,
+# validate an existing explicit choice or atomically materialize the historical
+# product-lead choice for legacy hosts. This runs before plugin/build/service
+# work, so an ambiguous custom host fails with the old Bridge still running.
+if ! default_lead_agent_env_converge \
+  "$ENV_FILE" "${HOME}/.flywheel/projects.json" "${FLYWHEEL_PROJECTS:-}" "$DRY_RUN"; then
+    log "ERROR: default Lead identity delivery failed before deploy mutation"
+    exit 1
+fi
+
 # ════════════════════════════════════════════════════════════════
 # Discord plugin detection — marker + fork check
 # ════════════════════════════════════════════════════════════════
@@ -1702,14 +1723,70 @@ restart_lead() {
     VERIFIED_LEAD_PID=""
     VERIFIED_LEAD_START=""
 
-    local lead_id project_dir project_name bot_token_env
+    local lead_id project_dir project_name projects_file canonical_identity bot_token_env
+    local legacy_bot_token_env legacy_backend canonical_backend
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
     project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
     project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
-    bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' "$manifest") || return 1
+    projects_file=$(jq -er --arg fallback "${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/projects.json" \
+        '.projectsFile // $fallback | select(type == "string" and length > 0)' "$manifest") || return 1
 
-    # All preflight checks happen before bootout, TERM, or any other state
-    # change. Invalid indirect env names must not reach ${!name}.
+    # FLY-1726: the manifest is a selector, never a second identity source.
+    # Resolve the canonical row and its token selector before bootout, TERM, or
+    # any other state change so a broken identity cannot turn a healthy Lead
+    # into an offline one. The wrapper repeats this at actual process birth.
+    if jq -e '
+        has("botUserId") or has("discordStateDir")
+        or has("identityDigest") or has("projectsDigest") or has("leadKey")
+        or has("role") or has("backend")
+      ' "$manifest" >/dev/null 2>&1; then
+        log "ERROR: Lead $lead_id manifest contains forbidden identity fields"
+        return 1
+    fi
+    legacy_bot_token_env=$(jq -er '
+        if has("botTokenEnv")
+        then .botTokenEnv | select(type == "string" and length > 0)
+        else ""
+        end' "$manifest") || {
+        log "ERROR: Lead $lead_id manifest botTokenEnv witness is invalid"
+        return 1
+    }
+    legacy_backend=$(jq -er '
+        if has("leadBackend")
+        then .leadBackend
+          | select(type == "object" and (keys == ["backendId"]))
+          | .backendId | select(type == "string" and length > 0)
+        else ""
+        end' "$manifest") || {
+        log "ERROR: Lead $lead_id manifest leadBackend witness is invalid"
+        return 1
+    }
+    local identity_cli="${FLYWHEEL_LEAD_IDENTITY_CLI:-${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js}"
+    if [[ ! -f "$identity_cli" ]]; then
+        log "ERROR: canonical Lead identity CLI is missing; cannot restart $lead_id"
+        return 1
+    fi
+    canonical_identity=$(node "$identity_cli" lead-identity resolve \
+        --projects-file "$projects_file" \
+        --project "$project_name" \
+        --lead "$lead_id" \
+        --format json) || {
+        log "ERROR: canonical Lead identity resolution failed; cannot restart $lead_id"
+        return 1
+    }
+    bot_token_env=$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' \
+        <<<"$canonical_identity") || return 1
+    canonical_backend=$(jq -er '.backend | select(type == "string" and length > 0)' \
+        <<<"$canonical_identity") || return 1
+    if [[ -n "$legacy_bot_token_env" && "$legacy_bot_token_env" != "$bot_token_env" ]]; then
+        log "ERROR: Lead $lead_id manifest botTokenEnv conflicts with canonical identity"
+        return 1
+    fi
+    if [[ -n "$legacy_backend" && "$legacy_backend" != "$canonical_backend" ]]; then
+        log "ERROR: Lead $lead_id manifest leadBackend conflicts with canonical identity"
+        return 1
+    fi
+    # Invalid indirect env names must not reach ${!name}.
     if [[ ! "$bot_token_env" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || [[ -z "${!bot_token_env:-}" ]]; then
         log "ERROR: $bot_token_env is not set or is not a valid env name; cannot restart $lead_id"
         alert_warning "lead-restart-failed-${lead_id}" "Lead restart failed" \
@@ -1756,8 +1833,6 @@ restart_lead() {
     daemon_target="gui/$(id -u)/${daemon_label}"
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"
     local plist="${HOME}/Library/LaunchAgents/${daemon_label}.plist"
-    local projects_file="${HOME}/.flywheel/projects.json"
-
     # A plist on disk defines launchd lifecycle ownership even when the job is
     # currently unloaded. This avoids misclassifying an offline daemon as legacy.
     if [[ -f "$plist" || -L "$plist" ]]; then

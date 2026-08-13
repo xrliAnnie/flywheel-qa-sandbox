@@ -21,6 +21,7 @@
 import { isTrustedApprovalAttribution } from "flywheel-comm/founder-attribution";
 import {
 	authorizeLeadWrite,
+	forwardedLeadAuthorizationEnv,
 	LeadLeaseDeniedError,
 	type LeadWriteAuthorization,
 	type LeadWriteAuthorizationDeps,
@@ -96,6 +97,7 @@ export interface FounderGateMessageContext {
 export interface LeadRequestContext {
 	requestingLeadId: string;
 	projectName: string;
+	identityDigest: string;
 	leaseClaim?: { leaseKey: string; generation: number };
 	/** Raw capability: request memory only; never include in persistence/logging. */
 	carrierClaim?: string;
@@ -195,22 +197,16 @@ function leadRequestEnv(
 	context: LeadRequestContext,
 	base: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-	const env = { ...base };
-	// The Bridge process is not the requesting Lead. Never let inherited pane
-	// identity or claims satisfy a request that omitted its own capability.
-	delete env.FLYWHEEL_LEAD_ID;
-	delete env.FLYWHEEL_LEAD_LEASE_KEY;
-	delete env.FLYWHEEL_LEAD_GENERATION;
-	delete env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID;
-	env.FLYWHEEL_PROJECT_NAME = context.projectName;
-	if (context.leaseClaim) {
-		env.FLYWHEEL_LEAD_LEASE_KEY = context.leaseClaim.leaseKey;
-		env.FLYWHEEL_LEAD_GENERATION = String(context.leaseClaim.generation);
-	}
-	if (context.carrierClaim) {
-		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID = context.carrierClaim;
-	}
-	return env;
+	return forwardedLeadAuthorizationEnv(
+		{
+			claimedLeadId: context.requestingLeadId,
+			projectName: context.projectName,
+			identityDigest: context.identityDigest,
+			...(context.leaseClaim ? { leaseClaim: context.leaseClaim } : {}),
+			...(context.carrierClaim ? { carrierClaim: context.carrierClaim } : {}),
+		},
+		base,
+	);
 }
 
 function requestWriterProvenance(

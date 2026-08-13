@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -22,6 +22,10 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 
 describe("Bridge scaffold", () => {
 	let closeFn: (() => Promise<void>) | undefined;
+
+	beforeEach(() => {
+		process.env.TEAMLEAD_DEFAULT_LEAD_AGENT = "product-lead";
+	});
 
 	afterEach(async () => {
 		if (closeFn) {
@@ -316,6 +320,13 @@ describe("Bridge scaffold", () => {
 		} finally {
 			if (prev !== undefined) process.env.TEAMLEAD_HOST = prev;
 		}
+	});
+
+	it("loadConfig() rejects a missing default Lead identity", () => {
+		delete process.env.TEAMLEAD_DEFAULT_LEAD_AGENT;
+		expect(() => loadConfig()).toThrow(
+			/TEAMLEAD_DEFAULT_LEAD_AGENT.*required/i,
+		);
 	});
 
 	it("loadConfig() rejects non-numeric TEAMLEAD_STUCK_THRESHOLD", () => {

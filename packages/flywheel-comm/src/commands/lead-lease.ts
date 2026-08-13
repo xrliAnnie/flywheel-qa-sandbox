@@ -36,6 +36,16 @@ function required(value: string | undefined, name: string): string {
 	return value;
 }
 
+function identityDigest(value: string | undefined): string {
+	const digest = required(value, "--identity-digest");
+	if (!/^[a-f0-9]{64}$/.test(digest)) {
+		throw new Error(
+			"--identity-digest must be a 64-character lowercase hex digest",
+		);
+	}
+	return digest;
+}
+
 function emit(
 	value: unknown,
 	json: boolean,
@@ -100,6 +110,9 @@ export async function runLeadLeaseCommand(
 					env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID,
 					"FLYWHEEL_LEAD_CARRIER_INSTANCE_ID",
 				);
+				const projectedIdentityDigest = identityDigest(
+					env.FLYWHEEL_LEAD_IDENTITY_DIGEST,
+				);
 				const projectName =
 					values.project ?? env.FLYWHEEL_PROJECT_NAME ?? undefined;
 				const checkEnv = {
@@ -122,7 +135,11 @@ export async function runLeadLeaseCommand(
 				const response = await postCarrierClaim({
 					url: `${bridgeUrl.replace(/\/+$/, "")}/api/lead-lease/self-check`,
 					carrierClaim: rawClaim,
-					body: { leadId, projectName },
+					body: {
+						leadId,
+						projectName,
+						identityDigest: projectedIdentityDigest,
+					},
 					headers: { Authorization: `Bearer ${token}` },
 					fetchImpl: deps.fetchImpl,
 				});
@@ -137,6 +154,7 @@ export async function runLeadLeaseCommand(
 					disposition?: unknown;
 					leadKey?: unknown;
 					carrier?: {
+						identityDigest?: unknown;
 						pid?: unknown;
 						lstart?: unknown;
 						instanceDigest?: unknown;
@@ -147,6 +165,7 @@ export async function runLeadLeaseCommand(
 					bridge.disposition !== "carrier_passthrough" ||
 					bridge.leadKey !== local.leadKey ||
 					bridge.carrier?.pid !== local.carrier.pid ||
+					bridge.carrier.identityDigest !== local.carrier.identityDigest ||
 					bridge.carrier.lstart !== local.carrier.lstart ||
 					bridge.carrier.instanceDigest !== local.carrier.instanceDigest
 				) {
@@ -158,6 +177,7 @@ export async function runLeadLeaseCommand(
 					schemaVersion: 1 as const,
 					contractVersion: 1 as const,
 					leadKey: local.leadKey,
+					identityDigest: local.carrier.identityDigest,
 					instanceDigest: local.carrier.instanceDigest,
 					pid: local.carrier.pid,
 					lstart: local.carrier.lstart,
@@ -279,6 +299,8 @@ export async function runLeadLeaseCommand(
 					options: {
 						lead: { type: "string" },
 						project: { type: "string" },
+						"lead-key": { type: "string" },
+						"identity-digest": { type: "string" },
 						"supervisor-pid": { type: "string" },
 						"supervisor-start": { type: "string" },
 						"acquired-by": { type: "string" },
@@ -288,42 +310,20 @@ export async function runLeadLeaseCommand(
 				});
 				const leadId = required(values.lead, "--lead");
 				const project = required(values.project, "--project");
-				const resolution = resolveCanonicalLead({
-					leadId,
-					projectHint: project,
-					projectsPath,
-				});
-				if (
-					resolution.status === "source_error" ||
-					resolution.status === "ambiguous"
-				) {
-					stderr(`lead-lease acquire: resolver ${resolution.status}`);
-					return 1;
-				}
-				if (
-					resolution.status === "ok" &&
-					resolution.canonicalProject !== project
-				) {
-					stderr(
-						`lead-lease acquire: project mismatch (${project} != ${resolution.canonicalProject})`,
-					);
-					return 1;
-				}
-				if (resolution.status === "valid_but_lead_absent") {
-					stderr(
-						`lead-lease acquire: ${leadId} is not configured; using bootstrap key`,
+				const leadKey = required(values["lead-key"], "--lead-key");
+				if (leadKey !== `${project}-${leadId}`) {
+					throw new Error(
+						"--lead-key does not match --project/--lead selectors",
 					);
 				}
-				const leadKey =
-					resolution.status === "ok"
-						? resolution.leadKey
-						: `${project}-${leadId}`;
+				const digest = identityDigest(values["identity-digest"]);
 				const store = new LeadLeaseStore(dbPath, deps.leaseStoreDeps);
 				try {
 					const result = store.acquire({
 						leadKey,
 						project,
 						leadId,
+						identityDigest: digest,
 						supervisorPid: positiveInteger(
 							values["supervisor-pid"],
 							"--supervisor-pid",
@@ -348,7 +348,9 @@ export async function runLeadLeaseCommand(
 						stdout,
 					);
 					return result.status === "denied_holder_alive" ||
-						result.status === "denied_sensor_degraded"
+						result.status === "denied_sensor_degraded" ||
+						result.status === "denied_identity_drift_live" ||
+						result.status === "denied_identity_drift_sensor_degraded"
 						? 3
 						: 0;
 				} finally {
@@ -364,6 +366,7 @@ export async function runLeadLeaseCommand(
 						"supervisor-start": { type: "string" },
 						"holder-pid": { type: "string" },
 						"holder-start": { type: "string" },
+						"identity-digest": { type: "string" },
 						json: { type: "boolean", default: false },
 					},
 					allowPositionals: false,
@@ -388,6 +391,7 @@ export async function runLeadLeaseCommand(
 							values["holder-start"],
 							"--holder-start",
 						),
+						identityDigest: identityDigest(values["identity-digest"]),
 					});
 					emit(result, values.json, stdout);
 					return result.status === "verified" ? 0 : 3;
@@ -450,6 +454,7 @@ export async function runLeadLeaseCommand(
 						"supervisor-start": { type: "string" },
 						"pane-pid": { type: "string" },
 						"pane-start": { type: "string" },
+						"identity-digest": { type: "string" },
 						json: { type: "boolean", default: false },
 					},
 					allowPositionals: false,
@@ -469,6 +474,7 @@ export async function runLeadLeaseCommand(
 						),
 						panePid: positiveInteger(values["pane-pid"], "--pane-pid"),
 						paneStart: required(values["pane-start"], "--pane-start"),
+						identityDigest: identityDigest(values["identity-digest"]),
 					});
 					emit(result, values.json, stdout);
 					return result.status === "bound" ? 0 : 3;

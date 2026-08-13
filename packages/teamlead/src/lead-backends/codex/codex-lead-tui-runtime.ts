@@ -881,7 +881,8 @@ export async function main(
 	};
 	publishCarrierRuntimeAssertion({
 		env,
-		leadKey: `${config.projectName}-${config.leadId}`,
+		leadKey: config.leadKey,
+		identityDigest: config.identityDigest,
 		rawCarrierInstanceId: carrierInstanceId,
 		pid: process.pid,
 		lstart: getProcessStart(process.pid),

@@ -105,10 +105,12 @@ S5="$SANDBOX/state5"; mkdir -p "$S5"
   setup_main_loop
 ) >/dev/null 2>&1
 F5_RC=$?
-if [ "$F5_RC" -ne 0 ] && [ "$(jq -r '.steps.config.status // "pending"' "$S5/setup-state.json" 2>/dev/null)" != "done" ]; then
-  pass "F5 missing LINEAR_API_KEY → config step fails at the ORIGINAL token gate"
+if [ "$F5_RC" -ne 0 ] \
+  && [ "$(jq -r '.steps.config.status // "pending"' "$S5/setup-state.json" 2>/dev/null)" != "done" ] \
+  && grep -qx 'TEAMLEAD_DEFAULT_LEAD_AGENT=cos-lead' "$S5/.env"; then
+  pass "F5 config persists canonical default before the original token gate fails"
 else
-  fail "F5 rc=$F5_RC status=$(jq -r '.steps.config.status' "$S5/setup-state.json" 2>/dev/null)"
+  fail "F5 rc=$F5_RC status=$(jq -r '.steps.config.status' "$S5/setup-state.json" 2>/dev/null) env=$(grep TEAMLEAD_DEFAULT "$S5/.env" 2>/dev/null)"
 fi
 
 # ── F6: deps install BEFORE the --check gate (Codex R1 HIGH regression pin) ──

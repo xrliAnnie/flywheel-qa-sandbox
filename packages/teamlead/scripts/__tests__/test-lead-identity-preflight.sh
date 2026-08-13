@@ -57,9 +57,11 @@ MATCH="$(printf '%s\n' "$SNAPSHOT" | lead_identity_first_conflict eng-lead)"
   || bad "scanner returned '$MATCH'"
 
 # Override the source-only library seam: production calls the real Comm CLI;
-# this fixture drives every resolver/acquire/bind state without filesystem or ps
-# side effects.
-FAKE_RESOLVE_STATUS=ok
+# this fixture drives every acquire/bind state without filesystem or ps side
+# effects. The canonical resolver already ran in the wrapper; preflight must
+# consume its immutable projection without resolving a second time.
+export FLYWHEEL_LEAD_KEY=flywheel-eng-lead
+export FLYWHEEL_LEAD_IDENTITY_DIGEST="$(printf 'a%.0s' {1..64})"
 FAKE_ACQUIRE_STATUS=acquired
 FAKE_GENERATION=1
 FAKE_BIND_STATUS=bound
@@ -73,14 +75,6 @@ FAKE_OLD_SUPERVISOR_PID=600
 FAKE_OLD_SUPERVISOR_START="old-supervisor-start"
 lead_identity_cli() {
   case "$1" in
-    resolve)
-      case "$FAKE_RESOLVE_STATUS" in
-        ok) printf '{"status":"ok","canonicalProject":"flywheel","leadKey":"flywheel-eng-lead"}\n' ;;
-        valid_but_lead_absent) printf '{"status":"valid_but_lead_absent","leadId":"eng-lead"}\n' ;;
-        ambiguous) printf '{"status":"ambiguous","leadId":"eng-lead","projects":["a","b"]}\n' ;;
-        source_error) printf '{"status":"source_error","error":"broken"}\n'; return 1 ;;
-      esac
-      ;;
     acquire)
       printf '{"status":"%s","generation":%s,"leadKey":"flywheel-eng-lead","holderPid":%s,"holderStart":"%s","supervisorPid":%s,"supervisorStart":"%s"}\n' \
         "$FAKE_ACQUIRE_STATUS" "$FAKE_GENERATION" \
@@ -117,26 +111,32 @@ lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null
   && ok "HOLD/retry acquire is a fresh generation-idempotent claim" \
   || bad "idempotent acquire changed generation freshness"
 
-FAKE_RESOLVE_STATUS=valid_but_lead_absent
 FAKE_ACQUIRE_STATUS=acquired
 FAKE_GENERATION=4
 lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null
 [ "$LEAD_LEASE_KEY" = flywheel-eng-lead ] && [ "$LEAD_LEASE_GENERATION" = 4 ] \
-  && ok "valid-but-absent bootstrap derives the scoped key" \
-  || bad "valid-but-absent bootstrap failed"
+  && ok "preflight consumes the projected key without a resolver call" \
+  || bad "projected key consumption failed"
 
-for status in ambiguous source_error; do
-  FAKE_RESOLVE_STATUS="$status"
-  if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
-    bad "$status resolver result did not HOLD"
-  elif [ "$LEAD_LEASE_HOLD_REASON" = "identity_${status}" ]; then
-    ok "$status resolver result HOLDs fail-stop"
-  else
-    bad "$status resolver HOLD reason was '$LEAD_LEASE_HOLD_REASON'"
-  fi
-done
+FLYWHEEL_LEAD_KEY=foreign-key
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "mismatched projected key did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = identity_project_mismatch ]; then
+  ok "mismatched projected key HOLDs without re-resolving"
+else
+  bad "mismatched projected key reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+FLYWHEEL_LEAD_KEY=flywheel-eng-lead
+FLYWHEEL_LEAD_IDENTITY_DIGEST=broken
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "malformed projected digest did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = identity_digest_invalid ]; then
+  ok "malformed projected digest HOLDs before lease acquisition"
+else
+  bad "malformed projected digest reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+FLYWHEEL_LEAD_IDENTITY_DIGEST="$(printf 'a%.0s' {1..64})"
 
-FAKE_RESOLVE_STATUS=ok
 FAKE_ACQUIRE_STATUS=error
 FAKE_ACQUIRE_RC=2
 if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1 \
@@ -205,6 +205,26 @@ elif [ "$LEAD_LEASE_HOLD_REASON" = denied_sensor_degraded ]; then
   fi
 else
   bad "sensor-degraded HOLD reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+
+FAKE_ACQUIRE_STATUS=denied_identity_drift_live
+FAKE_ACQUIRE_RC=3
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "live prior identity did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = denied_identity_drift_live ]; then
+  ok "live prior identity keeps a distinct HOLD reason"
+else
+  bad "live prior identity reason was '$LEAD_LEASE_HOLD_REASON'"
+fi
+
+FAKE_ACQUIRE_STATUS=denied_identity_drift_sensor_degraded
+FAKE_ACQUIRE_RC=3
+if lead_identity_prepare_lease eng-lead flywheel 700 "supervisor-start" >/dev/null 2>&1; then
+  bad "unprovable prior identity did not HOLD"
+elif [ "$LEAD_LEASE_HOLD_REASON" = denied_identity_drift_sensor_degraded ]; then
+  ok "unprovable prior identity keeps a distinct HOLD reason"
+else
+  bad "unprovable prior identity reason was '$LEAD_LEASE_HOLD_REASON'"
 fi
 
 FAKE_ACQUIRE_STATUS=holder_orphaned
@@ -387,6 +407,8 @@ fi
 
 [ "$(lead_identity_v2_hold_alert_kind denied_holder_alive 1)" = lead_dual_active ] \
   && [ "$(lead_identity_v2_hold_alert_kind denied_sensor_degraded 1)" = lead_dual_active_sensor_degraded ] \
+  && [ "$(lead_identity_v2_hold_alert_kind denied_identity_drift_live 1)" = lead_dual_active ] \
+  && [ "$(lead_identity_v2_hold_alert_kind denied_identity_drift_sensor_degraded 1)" = lead_dual_active_sensor_degraded ] \
   && [ "$(lead_identity_v2_hold_alert_kind v2_bind_store_error 1)" = lead_lease_store_broken ] \
   && [ "$(lead_identity_v2_hold_alert_kind v2_bind_verify_store_error 1)" = lead_lease_store_broken ] \
   && [ "$(lead_identity_v2_hold_alert_kind identity_source_error 1)" = lead_identity_source_broken ] \

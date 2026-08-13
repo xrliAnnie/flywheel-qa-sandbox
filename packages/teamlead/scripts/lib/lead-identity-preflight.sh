@@ -28,7 +28,8 @@ lead_identity_cli() {
 
 lead_identity_prepare_lease() {
   local lead_id="$1" project="$2" supervisor_pid="$3" supervisor_start="$4"
-  local resolution="" resolve_rc=0 status="" canonical_project="" expected_key=""
+  local status="" expected_key="${FLYWHEEL_LEAD_KEY:-}"
+  local identity_digest="${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}"
   local acquisition="" acquire_rc=0 generation="" acquired_key=""
   local holder_pid="" holder_start="" old_supervisor_pid="" old_supervisor_start=""
 
@@ -47,42 +48,26 @@ lead_identity_prepare_lease() {
     return 3
   fi
 
-  resolution="$(lead_identity_cli resolve --lead "$lead_id" --project "$project" --json)" \
-    || resolve_rc=$?
-  status="$(printf '%s' "$resolution" | lead_identity_json_field status 2>/dev/null || true)"
-  case "$status" in
-    ok)
-      [ "$resolve_rc" -eq 0 ] || {
-        LEAD_LEASE_HOLD_REASON="identity_source_error"
-        return 3
-      }
-      canonical_project="$(printf '%s' "$resolution" | lead_identity_json_field canonicalProject 2>/dev/null || true)"
-      expected_key="$(printf '%s' "$resolution" | lead_identity_json_field leadKey 2>/dev/null || true)"
-      if [ "$canonical_project" != "$project" ] || [ -z "$expected_key" ]; then
-        LEAD_LEASE_HOLD_REASON="identity_project_mismatch"
-        return 3
-      fi
-      ;;
-    valid_but_lead_absent)
-      [ "$resolve_rc" -eq 0 ] || {
-        LEAD_LEASE_HOLD_REASON="identity_source_error"
-        return 3
-      }
-      expected_key="${project}-${lead_id}"
-      ;;
-    ambiguous|source_error)
-      LEAD_LEASE_HOLD_REASON="identity_${status}"
-      return 3
-      ;;
-    *)
-      LEAD_LEASE_HOLD_REASON="identity_invalid_response"
+  if [ "$expected_key" != "${project}-${lead_id}" ]; then
+    LEAD_LEASE_HOLD_REASON="identity_project_mismatch"
+    return 3
+  fi
+  case "$identity_digest" in
+    ''|*[!a-f0-9]*)
+      LEAD_LEASE_HOLD_REASON="identity_digest_invalid"
       return 3
       ;;
   esac
+  [ "${#identity_digest}" -eq 64 ] || {
+    LEAD_LEASE_HOLD_REASON="identity_digest_invalid"
+    return 3
+  }
 
   acquisition="$(lead_identity_cli acquire \
     --lead "$lead_id" \
     --project "$project" \
+    --lead-key "$expected_key" \
+    --identity-digest "$identity_digest" \
     --supervisor-pid "$supervisor_pid" \
     --supervisor-start "$supervisor_start" \
     --acquired-by "claude-lead.sh:${supervisor_pid}" \
@@ -92,7 +77,7 @@ lead_identity_prepare_lease() {
   # Route by the typed status before interpreting the shared exit-code classes.
   # This preserves distinct HOLD/bound-body states and rejects impossible pairs.
   case "$status" in
-    denied_holder_alive|denied_sensor_degraded)
+    denied_holder_alive|denied_sensor_degraded|denied_identity_drift_live|denied_identity_drift_sensor_degraded)
       if [ "$acquire_rc" -ne 3 ]; then
         LEAD_LEASE_HOLD_REASON="identity_acquire_invalid_response"
       else
@@ -185,6 +170,7 @@ lead_identity_bind_lease() {
     --supervisor-start "$supervisor_start" \
     --pane-pid "$pane_pid" \
     --pane-start "$pane_start" \
+    --identity-digest "${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}" \
     --json)" || rc=$?
   [ "$rc" -eq 0 ] || return "$rc"
   status="$(printf '%s' "$output" | lead_identity_json_field status 2>/dev/null || true)"
@@ -274,6 +260,7 @@ lead_identity_v2_verify_bound() {
     --supervisor-start "$body_start" \
     --holder-pid "$body_pid" \
     --holder-start "$body_start" \
+    --identity-digest "${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}" \
     --json)" || rc=$?
   [ "$rc" -ne 2 ] || return 2
   status="$(printf '%s' "$output" | lead_identity_json_field status 2>/dev/null || true)"
@@ -290,6 +277,8 @@ lead_identity_v2_hold_alert_kind() {
   case "$reason" in
     denied_holder_alive) printf 'lead_dual_active\n' ;;
     denied_sensor_degraded) printf 'lead_dual_active_sensor_degraded\n' ;;
+    denied_identity_drift_live) printf 'lead_dual_active\n' ;;
+    denied_identity_drift_sensor_degraded) printf 'lead_dual_active_sensor_degraded\n' ;;
     v2_bind_store_error|v2_bind_verify_store_error) printf 'lead_lease_store_broken\n' ;;
     v2_bind_unverified)
       [ "$count" -lt 2 ] || printf 'lead_identity_source_broken\n'

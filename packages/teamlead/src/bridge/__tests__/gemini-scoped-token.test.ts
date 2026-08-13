@@ -162,6 +162,7 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 	const SAVED = { ...process.env };
 
 	beforeEach(() => {
+		process.env.TEAMLEAD_DEFAULT_LEAD_AGENT = "product-lead";
 		delete process.env.TEAMLEAD_API_TOKEN;
 		delete process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
 		delete process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED;

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { respond } from "../commands/respond.js";
 import { CommDB } from "../db.js";
 import { readAskMarker, writeAskMarker } from "../gate-marker.js";
+import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 describe("respond canonical mailbox write", () => {
 	const roots: string[] = [];
@@ -27,12 +28,13 @@ describe("respond canonical mailbox write", () => {
 			executionId: "exec-1",
 			vendor: "codex",
 		});
+		const env = createTestLeadIdentityEnvs(root, ["lead-a"])["lead-a"];
 		await respond({
 			questionId,
 			fromAgent: "lead-a",
 			answer: "answer",
 			dbPath,
-			env: { FLYWHEEL_GATE_MARKER_DIR: markerDir },
+			env: { ...env, FLYWHEEL_GATE_MARKER_DIR: markerDir },
 		});
 		const verify = new CommDB(dbPath);
 		try {

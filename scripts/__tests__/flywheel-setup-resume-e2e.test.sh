@@ -66,7 +66,13 @@ case "$method $url" in
   "POST "*discord.com*/channels/*/messages) printf '{"id":"PROBE1"}\n200' ;;
   "DELETE "*discord.com*/channels/*/messages/*) printf '\n204' ;;
   "GET "*discord.com*/users/@me/guilds) printf '[{"id":"G1","name":"Test"}]\n200' ;;
-  "GET "*discord.com*/users/@me) printf '{"id":"stub-bot-id","username":"stub"}\n200' ;;
+  "GET "*discord.com*/users/@me)
+    if [ -f "${FLY648_SD:?}/bot-id-seen" ]; then
+      printf '{"id":"222222222222222222","username":"eng-stub"}\n200'
+    else
+      touch "$FLY648_SD/bot-id-seen"
+      printf '{"id":"111111111111111111","username":"cos-stub"}\n200'
+    fi ;;
   "GET "*discord.com*/users/*) printf '{"id":"stub-user"}\n200' ;;
   "POST "*api.linear.app*)
     case "$body" in
@@ -146,10 +152,12 @@ fi
 
 PJ="$FW/projects.json"
 if [ -f "$PJ" ] && [ "$(jq -r '.[0].generalChannel' "$PJ" 2>/dev/null)" = "C-gen" ] \
+   && [ "$(jq -r '.[0].leads[0].botUserId' "$PJ" 2>/dev/null)" = "111111111111111111" ] \
+   && [ "$(jq -r '.[0].leads[1].botUserId' "$PJ" 2>/dev/null)" = "222222222222222222" ] \
    && node "$VALIDATOR" "$PJ" >/dev/null 2>&1; then
-  pass "R3 hydrated Discord values from run 1 land in projects.json + pass the REAL validator"
+  pass "R3 hydrated Discord channels + independent bot IDs from run 1 land in projects.json + pass the REAL validator"
 else
-  fail "R3 pj=$(jq -c '.[0] | {generalChannel}' "$PJ" 2>/dev/null)"
+  fail "R3 pj=$(jq -c '.[0] | {generalChannel, botUserIds:[.leads[].botUserId]}' "$PJ" 2>/dev/null)"
 fi
 
 # ── R4: idempotency — a THIRD run with ZERO answer env vars is a clean no-op ──

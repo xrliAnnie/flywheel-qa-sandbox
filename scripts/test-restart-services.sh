@@ -1720,6 +1720,8 @@ mkdir -p \
   "$BO_HOME/.flywheel/manifests" \
   "$BO_HOME/Library/LaunchAgents" \
   "$BO_SHIMS" "$BO_CALLS"
+printf '%s\n' '// hermetic canonical identity CLI target; node shim handles execution' \
+  > "$BO_FLYWHEEL/packages/flywheel-comm/dist/index.js"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
@@ -1728,6 +1730,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
    "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/default-lead-agent-env.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
@@ -1877,6 +1880,9 @@ EOF
 cat > "$BO_SHIMS/node" <<EOF
 #!/bin/bash
 case "\$*" in
+  *"lead-identity resolve"*)
+    printf '%s\n' '{"schemaVersion":1,"leadId":"eng","projectName":"flywheel","leadKey":"flywheel-eng","agentTeamName":"eng","botUserId":"12345678901234567","botTokenEnv":"TEST_BOT_TOKEN","discordStateDir":"$BO_HOME/.claude/channels/discord-eng","backend":"claude-code","role":"dept","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    ;;
   *) echo -n ok ;;
 esac
 EOF
@@ -1984,6 +1990,7 @@ EOF
 cat > "$BO_HOME/.flywheel/projects.json" <<'EOF'
 [{"projectName":"flywheel","leads":[{"agentId":"eng"}]}]
 EOF
+printf 'TEAMLEAD_DEFAULT_LEAD_AGENT=eng\n' > "$BO_HOME/.flywheel/.env"
 cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2389,16 +2396,12 @@ fi
 #          completion, and receives the same one-summary alerts discipline. ──
 bo_manifest="$BO_HOME/.flywheel/manifests/flywheel-eng.json"
 bo_plist="$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"
-bo_projects="$BO_HOME/.flywheel/projects.json"
 mv "$bo_manifest" "${bo_manifest}.bak"
 mv "$bo_plist" "${bo_plist}.bak"
-cp "$bo_projects" "${bo_projects}.bak"
-printf '[]\n' > "$bo_projects"
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
     FAKE_NO_LEAD_PROCESS=1 bo_run --reason notify-no-candidates) && rc=0 || rc=$?
 mv "${bo_manifest}.bak" "$bo_manifest"
 mv "${bo_plist}.bak" "$bo_plist"
-mv "${bo_projects}.bak" "$bo_projects"
 discord_calls=$(bo_calls discord)
 tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature leads-no-candidates-' || true)
 if (( rc == 0 && tail_alerts == 1 )) \
@@ -2657,7 +2660,8 @@ mkdir -p "$LR_MANIFESTS" "$LR_PLISTS"
 lr_write_manifest() {
     local key="$1" project="$2" lead="$3" backend="${4:-}"
     jq -n --arg project "$project" --arg lead "$lead" --arg backend "$backend" \
-      '{projectName:$project,leadId:$lead,botTokenEnv:"TEST_TOKEN"}
+      --arg projectsFile "$LR_PROJECTS" \
+      '{projectName:$project,leadId:$lead,projectsFile:$projectsFile}
        + (if $backend == "" then {} else {leadBackend:{backendId:$backend}} end)' \
       > "$LR_MANIFESTS/$key.json"
 }

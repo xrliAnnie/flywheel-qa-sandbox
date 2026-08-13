@@ -496,6 +496,16 @@ jobs:
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/test-restart-services.sh
 
+      # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
+      # while Bridge default selection is explicit on both legacy upgrades and
+      # fresh setup. Hermetic registries/HOMEs; no production config mutation.
+      - name: Test — FLY-1726 canonical Lead identity delivery
+        run: |
+          bash scripts/__tests__/fly1726-default-lead-delivery.test.sh
+          bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh
+          bash scripts/__tests__/fly1697-v2-lease-body.test.sh
+          bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
+
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1649 r4 migration-window hardening
