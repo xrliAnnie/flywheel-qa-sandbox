@@ -1,14 +1,14 @@
 ---
 issue: FLY-1715
-phase: implement
-phaseCursor: 7/7
-updated: 2026-08-12T22:07:10.277Z
-nextStep: R3 Buddy drift/login findings fixed and verified; commit docs, push,
-  request exact-head R4
+phase: design
+phaseCursor: 1/3
+updated: 2026-08-13T06:27:08.485Z
+nextStep: re-dispatch audit done (docs r7 current, gate history verified); fix
+  d2 to real mmdc render, then publish+report
 chunks: []
 pointers: {}
 ---
 
 # FLY-1715 progress
-**phase**: implement (7/7)
-**next**: R3 Buddy drift/login findings fixed and verified; commit docs, push, request exact-head R4
+**phase**: design (1/3)
+**next**: re-dispatch audit done (docs r7 current, gate history verified); fix d2 to real mmdc render, then publish+report
