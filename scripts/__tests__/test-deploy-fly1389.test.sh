@@ -399,6 +399,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     grep -q "^DISCORD_BOT_TOKEN=tok-31$" "$LE" || { E_OK=0; fail "E: slot token not delivered"; }
     grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$LE" \
       || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Lead env"; }
+    grep -q "^FLYWHEEL_IDENTITY_FAILURE_DIR=${E_SLOT_DIR}/state/lead-identity-failures$" "$LE" \
+      || { E_OK=0; fail "E/FLY-1726: identity failure marker dir not slot-local in Lead env"; }
     grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$LE" \
       || { E_OK=0; fail "E/FLY-1663: Lead delivery secret path not slot-local"; }
   else
@@ -422,6 +424,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
       || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$BE" \
       || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
+    grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$BE" \
+      || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks canonical default Lead"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
@@ -462,6 +466,8 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I: reply-by-issue Bridge lost complete-marker isolation"; }
   grep -q "^TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true$" "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I: fixture did not exercise reply-by-issue Bridge branch"; }
+  grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks canonical default Lead"; }
   [[ "$(cat "$I_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
     || { I_OK=0; fail "I: package-cwd invocation did not keep production-aligned Lead cwd"; }
   [[ "$I_OK" == "1" ]] \

@@ -632,6 +632,9 @@ BRIDGE_EXTRA_ENV=()
 COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
 LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
+# FLY-1726: a failed canonical-identity assertion must stay inside the QA
+# slot, never write a diagnostic into the resident fleet's state directory.
+LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
 # FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
@@ -1495,6 +1498,8 @@ fi
 # templates authenticate; TEAMLEAD_ISSUE_PREFIXES defaults to FLY,GEO via
 # claude-lead.sh.
 log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
+[[ -n "${AGENT_ID:-}" ]] \
+  || campaign_abort "TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID"
 # FLY-115 v1.24.2 Gap 1 (Codex R1 LOW fix): also pass the per-lead token
 # under the name the ProjectConfig references in `botTokenEnv` (e.g.
 # TEST_BOT_TOKEN_1). Without this, process.env[botTokenEnv] is empty and
@@ -1509,6 +1514,7 @@ if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
     TEAMLEAD_PORT="${SLOT_PORT}" \
+    TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
@@ -1541,6 +1547,7 @@ else
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
+    TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
     TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \

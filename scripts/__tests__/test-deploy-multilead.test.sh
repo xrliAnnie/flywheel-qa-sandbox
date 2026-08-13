@@ -501,6 +501,11 @@ fi
 if grep -q '"FLYWHEEL_PROJECTS=$(jq -c' "$DEPLOY"; then
   S1_OK=0; fail "FLY-1726 S1: QA Lead launch environment still projects raw registry JSON"
 fi
+DEFAULT_LEAD_ENV_COUNT=$(grep -c 'TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}"' "$DEPLOY" || true)
+[[ "$DEFAULT_LEAD_ENV_COUNT" -eq 2 ]] \
+  || { S1_OK=0; fail "FLY-1726 S1: both QA Bridge launch branches must carry TEAMLEAD_DEFAULT_LEAD_AGENT" "count=${DEFAULT_LEAD_ENV_COUNT}"; }
+grep -q 'TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-1726 S1: QA Bridge launch must fail loudly when AGENT_ID is empty"; }
 # The old inline builder must be GONE (single source) — its distinctive line:
 if grep -q 'match: { labels: \["\*"\] }' "$DEPLOY"; then
   S1_OK=0; fail "S1: old inline FLYWHEEL_PROJECTS builder still present (double source)"

@@ -85,6 +85,7 @@ export function runLeadIdentityCommand(
 				code,
 				message: values.message ?? code,
 				failureDir: deps.failureDir,
+				env: deps.env,
 				now: deps.now,
 			});
 			stdout(JSON.stringify(marker));
@@ -120,6 +121,7 @@ export function runLeadIdentityCommand(
 					code,
 					message,
 					failureDir: deps.failureDir,
+					env: deps.env,
 					now: deps.now,
 				});
 			} catch (markerError) {

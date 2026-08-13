@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -153,6 +154,82 @@ describe("flywheel-comm lead-identity resolve", () => {
 			code: "identity_row_missing",
 			failedAt: "2026-08-12T12:00:00.000Z",
 		});
+	});
+
+	it("records failures in FLYWHEEL_IDENTITY_FAILURE_DIR when configured", () => {
+		const overrideDir = join(dir, "slot-state", "lead-identity-failures");
+		const fallbackHome = join(dir, "fallback-home");
+		const previousHome = process.env.HOME;
+		process.env.HOME = fallbackHome;
+		try {
+			const rc = runLeadIdentityCommand(
+				[
+					"record-failure",
+					"--projects-file",
+					projectsPath,
+					"--project",
+					"flywheel",
+					"--lead",
+					"eng-lead",
+					"--code",
+					"identity_env_mismatch",
+				],
+				{
+					env: { FLYWHEEL_IDENTITY_FAILURE_DIR: overrideDir },
+					stdout: () => undefined,
+					now: () => "2026-08-13T12:00:00.000Z",
+				},
+			);
+
+			expect(rc).toBe(0);
+			expect(existsSync(overrideDir)).toBe(true);
+			const files = existsSync(overrideDir) ? readdirSync(overrideDir) : [];
+			expect(files).toHaveLength(1);
+			expect(
+				existsSync(
+					join(fallbackHome, ".flywheel", "state", "lead-identity-failures"),
+				),
+			).toBe(false);
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+		}
+	});
+
+	it("keeps the home-directory failure marker default when the override is unset", () => {
+		const fallbackHome = join(dir, "fallback-home");
+		const previousHome = process.env.HOME;
+		process.env.HOME = fallbackHome;
+		try {
+			const rc = runLeadIdentityCommand(
+				[
+					"record-failure",
+					"--projects-file",
+					projectsPath,
+					"--project",
+					"flywheel",
+					"--lead",
+					"eng-lead",
+					"--code",
+					"identity_env_mismatch",
+				],
+				{
+					env: {},
+					stdout: () => undefined,
+					now: () => "2026-08-13T12:00:00.000Z",
+				},
+			);
+
+			expect(rc).toBe(0);
+			expect(
+				readdirSync(
+					join(fallbackHome, ".flywheel", "state", "lead-identity-failures"),
+				),
+			).toHaveLength(1);
+		} finally {
+			if (previousHome === undefined) delete process.env.HOME;
+			else process.env.HOME = previousHome;
+		}
 	});
 
 	it("preserves the original failure when marker persistence also fails", () => {

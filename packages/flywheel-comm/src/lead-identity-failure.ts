@@ -53,12 +53,17 @@ export function writeLeadIdentityFailureMarker(input: {
 	code: string;
 	message: string;
 	failureDir?: string;
+	env?: NodeJS.ProcessEnv;
 	now?: () => string;
 }): LeadIdentityFailureMarker {
 	const selectorDigest = leadIdentitySelectorDigest(input);
+	const envFailureDir = (
+		input.env ?? process.env
+	).FLYWHEEL_IDENTITY_FAILURE_DIR?.trim();
 	const failureDir =
 		input.failureDir ??
-		join(homedir(), ".flywheel", "state", "lead-identity-failures");
+		(envFailureDir ||
+			join(homedir(), ".flywheel", "state", "lead-identity-failures"));
 	mkdirSync(failureDir, { recursive: true, mode: 0o700 });
 	const target = join(failureDir, `${selectorDigest}.json`);
 	try {
