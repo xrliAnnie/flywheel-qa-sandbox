@@ -135,6 +135,7 @@ grep -Eq '^LINEAR_API_KEY=$' "$EX" || B3B_OK=0
 grep -Eq '^DISCORD_GUILD_ID=100000000000000000$' "$EX" || B3B_OK=0
 grep -Eq '^DISCORD_OWNER_USER_ID=100000000000000009$' "$EX" || B3B_OK=0
 grep -Eq '^LINEAR_WORKSPACE_SLUG=' "$EX" || B3B_OK=0
+grep -Eq '^TEAMLEAD_DEFAULT_LEAD_AGENT=cos-lead$' "$EX" || B3B_OK=0
 # no optional model keys may appear as ACTIVE keys (would trip validate_tokens)
 grep -Eq '^(ANTHROPIC_API_KEY|OPENAI_API_KEY|NOTION_TOKEN)=' "$EX" && B3B_OK=0
 if [ "$B3B_OK" -eq 1 ]; then

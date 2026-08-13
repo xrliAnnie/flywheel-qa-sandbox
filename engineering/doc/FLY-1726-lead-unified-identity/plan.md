@@ -131,7 +131,7 @@ export interface LeadConfig {
 | `bridge/tools.ts:484,619,832`、`lead-inbox-runtime.ts:607` `?? globalBotToken` | 以 Lead 身份发言的路径删 fallback;system sender 保留自己显式的 system token,不混用 |
 | flywheel-comm `ack` 默认 `"lead"`(`index.ts:383`) | 必填化:`--lead`/env 双缺=报错退出 |
 | `plugin.ts:4861` `cos ?? leads[0] ?? "unknown"` | 路由不出唯一 Lead=显式错误事件进告警,不铸 `"unknown"` 行 |
-| `config.ts:126-145` `TEAMLEAD_DEFAULT_LEAD_AGENT` 默认 `"product-lead"` | **不删机制、删默认值**:该配置改必填,Bridge 启动时解析并校验为唯一 canonical Lead,后续 system 路由继续消费该对象(身份选择不散回各调用点,R1-7) |
+| `config.ts:126-145` `TEAMLEAD_DEFAULT_LEAD_AGENT` 默认 `"product-lead"` | **不删机制、删默认值**:该配置改必填,Bridge 启动时解析并校验为唯一 canonical Lead,后续 system 路由继续消费该对象(身份选择不散回各调用点,R1-7)。交付面同步闭环:fresh/resume setup 把生成的 `cos-lead` 写入 live `.env` + `env.example`;存量 self-host restart 在全局锁内、任何 build/service mutation 前,仅当 registry 恰有一枚历史 `product-lead` 时把旧隐式选择一次性物化为显式 `.env`,否则保持旧 Bridge 在跑并 fail-close 要求 operator 明选。迁移值不是运行时 fallback。 |
 | `flywheel-restart-guard.py:337` 兜底 `"flywheel-eng-lead"` | `--lead` 缺失=告警落 system 名义并标注 `lead_unknown`,不冒名 |
 | `runs-route.ts:1583` `"unassigned"` | 保留(诚实的「未选定」语义+已有读侧守卫),纳入 sentinel 清单文档,禁止新增同类 |
 
@@ -182,7 +182,7 @@ export interface LeadConfig {
 
 **Rollout runbook(plugin cache 是 fleet 共享,顺序即安全)**:
 1. B0 数据落 registry(离线校验绿);
-2. B1 主仓 release 部署 + 全舰重启;验证 16/16 manifest/plist/lease 等值哨兵 + 投影在场(`DISCORD_EXPECTED_BOT_USER_ID` 非空);
+2. B1 主仓 release 部署 + 全舰重启;restart lock 内先验证/物化显式 `TEAMLEAD_DEFAULT_LEAD_AGENT`,失败发生在停 Bridge 之前;随后验证 16/16 manifest/plist/lease 等值哨兵 + 投影在场(`DISCORD_EXPECTED_BOT_USER_ID` 非空);
 3. B2 plugin exact head 先进 529 QA 房验证(污染夹具 + 正常登录);
 4. 单 Lead canary(建议 claude-infra-bot-lead)restart + 观察窗;
 5. fleet restart 全量生效;

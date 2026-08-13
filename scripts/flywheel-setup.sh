@@ -387,6 +387,7 @@ LINEAR_API_KEY=
 DISCORD_GUILD_ID=${FS_GUILD_ID}
 DISCORD_OWNER_USER_ID=${FS_FOUNDER_ID}
 LINEAR_WORKSPACE_SLUG=${FS_LINEAR_WORKSPACE_SLUG:-__FILL_LINEAR_WORKSPACE_SLUG__}
+TEAMLEAD_DEFAULT_LEAD_AGENT=${FS_COS_ID}
 EOF
 
   # 3. manifest.json — deps[] mirrors fleet-capture.sh's DEPS_JSON verbatim
@@ -1161,6 +1162,10 @@ step_run_model_key() {
 # flywheel-home (projects.json/host.json/bin) + tokens (the ORIGINAL token
 # gate — .env written by earlier steps must satisfy env.example, no skip).
 step_run_config() {
+  # FLY-1726: the Bridge has no implicit default Lead. Persist the generated
+  # canonical CoS selector before producing/validating the env contract so both
+  # fresh runs and old resumed journals converge to explicit host config.
+  fs_env_upsert TEAMLEAD_DEFAULT_LEAD_AGENT "$FS_COS_ID"
   fs_generate_fleet_artifact "$FS_FLEET_DIR" 1 || return 1
   # the wizard owns this state root (guard at engine start); --force lets a
   # RE-run refresh our own previously-landed projects.json with new values.
@@ -1175,6 +1180,7 @@ step_run_config() {
 
 step_verify_config() {
   [ -f "$FLYWHEEL_SETUP_STATE_DIR/projects.json" ] \
+    && grep -qx "TEAMLEAD_DEFAULT_LEAD_AGENT=$FS_COS_ID" "$FLYWHEEL_SETUP_STATE_DIR/.env" \
     && fs_validate_projects "$FLYWHEEL_SETUP_STATE_DIR/projects.json" >/dev/null 2>&1
 }
 

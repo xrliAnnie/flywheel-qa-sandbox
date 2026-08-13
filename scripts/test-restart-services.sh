@@ -1725,6 +1725,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/default-lead-agent-env.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-body-sweep.sh" \
    "$REAL_REPO_ROOT/scripts/lib/lead-restart-lifecycle.sh" \
@@ -1965,6 +1966,7 @@ EOF
 cat > "$BO_HOME/.flywheel/projects.json" <<'EOF'
 [{"projectName":"flywheel","leads":[{"agentId":"eng"}]}]
 EOF
+printf 'TEAMLEAD_DEFAULT_LEAD_AGENT=eng\n' > "$BO_HOME/.flywheel/.env"
 cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2370,16 +2372,12 @@ fi
 #          completion, and receives the same one-summary alerts discipline. ──
 bo_manifest="$BO_HOME/.flywheel/manifests/flywheel-eng.json"
 bo_plist="$BO_HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng.plist"
-bo_projects="$BO_HOME/.flywheel/projects.json"
 mv "$bo_manifest" "${bo_manifest}.bak"
 mv "$bo_plist" "${bo_plist}.bak"
-cp "$bo_projects" "${bo_projects}.bak"
-printf '[]\n' > "$bo_projects"
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
     FAKE_NO_LEAD_PROCESS=1 bo_run --reason notify-no-candidates) && rc=0 || rc=$?
 mv "${bo_manifest}.bak" "$bo_manifest"
 mv "${bo_plist}.bak" "$bo_plist"
-mv "${bo_projects}.bak" "$bo_projects"
 discord_calls=$(bo_calls discord)
 tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature leads-no-candidates-' || true)
 if (( rc == 0 && tail_alerts == 1 )) \

@@ -46,7 +46,7 @@ printf '%s\n' 'session-fly1697' \
   > "$HOME_DIR/.flywheel/claude-sessions/demo-eng-lead.session-id"
 
 cat > "$PROJECTS_FILE" <<JSON
-[{"projectName":"demo","projectRoot":"$PROJECT_DIR","leads":[{"agentId":"eng-lead","backend":"claude-code","carrier":"v2","botTokenEnv":"ENG_TOKEN","chatChannel":"123456789012345678","match":{"labels":["Engineering"]}}]}]
+[{"projectName":"demo","projectRoot":"$PROJECT_DIR","leads":[{"agentId":"eng-lead","backend":"claude-code","carrier":"v2","botTokenEnv":"ENG_TOKEN","botUserId":"22345678901234567","chatChannel":"123456789012345678","match":{"labels":["Engineering"]}}]}]
 JSON
 cat > "$HOME_DIR/.flywheel/test.env" <<'ENV'
 ENG_TOKEN=fixture-discord-token
@@ -95,6 +95,15 @@ esac
 SH
 chmod +x "$BIN_DIR/agent-team-transport" "$BIN_DIR/claude" "$BIN_DIR/tmux" "$BIN_DIR/ps"
 
+IDENTITY_JSON="$(HOME="$HOME_DIR" node "$COMM_CLI" lead-identity resolve \
+  --projects-file "$PROJECTS_FILE" --project demo --lead eng-lead)" || {
+  printf 'FAIL: could not compile the fixture identity\n' >&2
+  exit 1
+}
+IDENTITY_DIGEST="$(jq -r '.identityDigest' <<<"$IDENTITY_JSON")"
+PROJECTS_DIGEST="$(jq -r '.projectsDigest' <<<"$IDENTITY_JSON")"
+DISCORD_STATE="$(jq -r '.discordStateDir' <<<"$IDENTITY_JSON")"
+
 BODY_ENV=(
   env -i
   "HOME=$HOME_DIR"
@@ -104,6 +113,19 @@ BODY_ENV=(
   "FLYWHEEL_STATE_DIR=$HOME_DIR/.flywheel"
   "FLYWHEEL_WRAPPER_ENV_FILE=$HOME_DIR/.flywheel/test.env"
   "FLYWHEEL_PROJECTS_FILE=$PROJECTS_FILE"
+  "FLYWHEEL_LEAD_ID=eng-lead"
+  "LEAD_ID=eng-lead"
+  "FLYWHEEL_PROJECT_NAME=demo"
+  "PROJECT_NAME=demo"
+  "FLYWHEEL_LEAD_KEY=demo-eng-lead"
+  "FLYWHEEL_LEAD_ROLE=dept"
+  "FLYWHEEL_LEAD_BACKEND=claude-code"
+  "DISCORD_STATE_DIR=$DISCORD_STATE"
+  "DISCORD_EXPECTED_BOT_USER_ID=22345678901234567"
+  "DISCORD_IDENTITY_MODE=managed"
+  "DISCORD_BOT_TOKEN=fixture-discord-token"
+  "FLYWHEEL_LEAD_IDENTITY_DIGEST=$IDENTITY_DIGEST"
+  "FLYWHEEL_LEAD_PROJECTS_DIGEST=$PROJECTS_DIGEST"
   "FLYWHEEL_LEAD_LEASE_DB=$LEASE_DB"
   "FLYWHEEL_LEAD_LEASE_MODE_FILE=$MODE_FILE"
   "FLYWHEEL_LEAD_EPISODE_DB=$EPISODE_DB"
@@ -140,6 +162,7 @@ stop_body() {
 # supervisor tuple is conclusively dead. The v2 body must advance and bind it.
 if body_env node "$COMM_CLI" lead-lease acquire \
   --lead eng-lead --project demo \
+  --lead-key demo-eng-lead --identity-digest "$IDENTITY_DIGEST" \
   --supervisor-pid 999999 --supervisor-start dead-start \
   --acquired-by fly1697-fixture --json > "$TMP/stale.json" 2> "$TMP/stale.err" \
   && [ "$(jq -r '.generation' "$TMP/stale.json")" = 1 ]; then

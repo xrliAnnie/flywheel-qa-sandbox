@@ -51,6 +51,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/mailbox-queue-deploy-barrier.sh
 source "${FLYWHEEL_DIR}/scripts/lib/mailbox-queue-deploy-barrier.sh"
+# shellcheck source=lib/default-lead-agent-env.sh
+source "${FLYWHEEL_DIR}/scripts/lib/default-lead-agent-env.sh"
 # shellcheck source=lib/supervisor.sh
 source "${FLYWHEEL_DIR}/scripts/lib/supervisor.sh"
 # shellcheck source=lib/tmux-server-rescue.sh
@@ -953,6 +955,16 @@ if LEAD_BODY_OBSERVATIONS_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-bodies-XX
 else
     log "ERROR: cannot allocate Lead body observation sidecar; body provenance will be unknown"
     LEAD_BODY_OBSERVATIONS_FILE=""
+fi
+
+# FLY-1726: config.ts no longer invents a default Lead. Under the restart lock,
+# validate an existing explicit choice or atomically materialize the historical
+# product-lead choice for legacy hosts. This runs before plugin/build/service
+# work, so an ambiguous custom host fails with the old Bridge still running.
+if ! default_lead_agent_env_converge \
+  "$ENV_FILE" "${HOME}/.flywheel/projects.json" "${FLYWHEEL_PROJECTS:-}" "$DRY_RUN"; then
+    log "ERROR: default Lead identity delivery failed before deploy mutation"
+    exit 1
 fi
 
 # ════════════════════════════════════════════════════════════════
