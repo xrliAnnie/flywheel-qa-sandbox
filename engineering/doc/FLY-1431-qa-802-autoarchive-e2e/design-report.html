@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1431 · QA 设计 — 验收 802 帖子自动归档</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 32px 20px 60px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+  .sub code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+  }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.gray { border-left: 4px solid #86868b; }
+  .section-title { font-size: 17px; font-weight: 600; color: #1a365d; margin-bottom: 12px; }
+  .lede { font-size: 17px; }
+  /* flow diagram */
+  .flow { display: flex; flex-direction: column; gap: 0; margin: 8px 0; }
+  .step {
+    display: flex; align-items: flex-start; gap: 14px; padding: 12px 0;
+  }
+  .stepnum {
+    flex: 0 0 34px; height: 34px; border-radius: 50%;
+    background: #007aff; color: #fff; font-weight: 700; font-size: 15px;
+    display: flex; align-items: center; justify-content: center; margin-top: 2px;
+  }
+  .step.wait .stepnum { background: #ff9500; }
+  .step.win .stepnum { background: #34c759; }
+  .steptext b { display: block; font-size: 15px; }
+  .steptext span { color: #6e6e73; font-size: 14px; }
+  .arrow { margin-left: 16px; color: #c7c7cc; font-size: 14px; height: 10px; line-height: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; color: #86868b; font-weight: 600; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; white-space: nowrap; }
+  td { padding: 9px 10px; border-bottom: 1px solid #f2f2f7; vertical-align: top; }
+  td.k { font-family: 'SF Mono', monospace; font-size: 12px; color: #1a365d; white-space: nowrap; }
+  .badge {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 12px; font-weight: 600;
+  }
+  .badge.core { background: #e8f2ff; color: #007aff; }
+  .badge.done { background: #e6f8ec; color: #248a3d; }
+  .badge.risk { background: #fff3e0; color: #c96a00; }
+  ul { padding-left: 20px; }
+  li { margin-bottom: 8px; }
+  .no { color: #86868b; }
+  .footer { color: #86868b; font-size: 13px; margin-top: 28px; text-align: center; }
+</style>
+</head>
+<body>
+
+<h1>怎么验收「聊天帖子自动收纳」？</h1>
+<div class="sub">FLY-1431 · 独立 QA 设计 · 被验对象：FLY-802（PR #677，代码版本 <code>9a566975</code>）· 2026-07-22</div>
+
+<div class="card blue">
+  <div class="section-title">一句话</div>
+  <div class="lede">在一间与生产完全隔离的测试房里，真实跑一遍：<b>开新帖子 → 按频道设置生效 → 放着不动一小时 → Discord 自己把帖子收纳起来</b>——并且证明收纳这件事完全是 Discord 干的，我们代码里已经没有任何「巡检员」在偷偷打补丁。</div>
+</div>
+
+<div class="card green">
+  <div class="section-title">核心验收流程（真机、隔离房）</div>
+  <div class="flow">
+    <div class="step"><div class="stepnum">1</div><div class="steptext"><b>用被验版本搭好测试房</b><span>拿 PR #677 的代码原样构建，部署到 #test-leads-roundtable 测试频道（FLY-529 建的 QA 房），不碰生产。</span></div></div>
+    <div class="arrow">▼</div>
+    <div class="step"><div class="stepnum">2</div><div class="steptext"><b>先测「频道没设置」的兜底</b><span>测试频道现在就是没设置状态（已实测确认）——发一个话题，帖子应拿到 Discord 的默认收纳时长（3 天），名字来自话题内容、不是占位名。</span></div></div>
+    <div class="arrow">▼</div>
+    <div class="step"><div class="stepnum">3</div><div class="steptext"><b>把频道设成「1 小时收纳」再开帖</b><span>改频道设置为 1 小时，再发一个新话题——新帖子应该照着频道设置拿到 1 小时。这就是「按频道设置生效」。</span></div></div>
+    <div class="arrow">▼</div>
+    <div class="step wait"><div class="stepnum">⏱</div><div class="steptext"><b>放着不动 ≥1 小时</b><span>期间谁也不碰这个帖子，同时全程录 Bridge 日志。</span></div></div>
+    <div class="arrow">▼</div>
+    <div class="step win"><div class="stepnum">✓</div><div class="steptext"><b>看到 Discord 自己收纳了它</b><span>帖子变成已归档状态，而我们的日志里全程零干预——收纳是 Discord 原生完成的，不是我们代码扫出来的。</span></div></div>
+  </div>
+</div>
+
+<div class="card purple">
+  <div class="section-title">要验的 5 件事</div>
+  <table>
+    <tr><th>#</th><th>验什么</th><th>怎么判</th></tr>
+    <tr><td class="k">A1</td><td>开帖按频道设置拿收纳时长 <span class="badge core">核心</span></td><td>频道设 1 小时 → 新帖子就是 1 小时（问 Discord 官方接口，不看我们自己的日志）</td></tr>
+    <tr><td class="k">A2</td><td>收纳真的发生、且是 Discord 干的 <span class="badge core">核心</span></td><td>静置 1 小时后帖子归档 + 我们日志里零改动记录</td></tr>
+    <tr><td class="k">A3</td><td>频道没设置时的兜底不变</td><td>没设置 → 话题帖 3 天、警报帖 1 天，与约定一致</td></tr>
+    <tr><td class="k">B</td><td>帖子名字仍然是描述性的</td><td>名字来自话题内容，不是「Roundtable topic」占位</td></tr>
+    <tr><td class="k">C</td><td>「巡检员」已彻底拆干净</td><td>全仓库搜索三个旧机关的名字 = 零命中 + 运行 1 小时里零周期性扫描行为</td></tr>
+  </table>
+</div>
+
+<div class="card gray">
+  <div class="section-title">关键取舍（以及放弃了什么）</div>
+  <ul>
+    <li><b>真等 1 小时，不做模拟。</b>任务要求验的是「原生归档生效」，只有真看到 Discord 把帖子收起来才算数。放弃「只查参数写对了就算过」的快路——那证明不了归档真会发生。</li>
+    <li><b>频道设 1 小时来观察，不用 24 小时。</b>Discord 只允许 1 小时 / 1 天 / 3 天 / 7 天四档；选 1 小时让「等到归档」在一个 QA 会话内可完成。</li>
+    <li><b>警报帖只验参数、不再陪等一小时。</b>归档机制是 Discord 平台行为，话题帖那次观察已是代表性证明；警报帖验它按约定拿对时长即可，省一轮静置。</li>
+    <li><b>Discord 官方接口是唯一裁判。</b>不依赖界面截图或我们自己的记录（此前 QA 已确立 API 证据为权威）。</li>
+  </ul>
+</div>
+
+<div class="card amber">
+  <div class="section-title">一个待确认的前置 <span class="badge risk">唯一风险</span></div>
+  <div>把测试频道设成「1 小时收纳」需要频道管理权限，测试机器人可能没有。执行时第一步就探这个权限：不行就请 Annie 在 Discord 界面点一下（频道设置 → 闲置后隐藏 → 1 小时，一次性操作），期间其它验证照跑不误、不阻塞。QA 结束会把频道设置恢复原样。</div>
+</div>
+
+<div class="card gray">
+  <div class="section-title">诚实边界：这次 QA 不做什么</div>
+  <ul>
+    <li class="no">不改 802 的实现一个字节——独立 QA，发现问题只记录上报，不顺手修。</li>
+    <li class="no">不验历史旧帖子的清理——设计更正明确说了不要求代码自动处理存量。</li>
+    <li class="no">不碰生产频道、生产 Bridge——全程在隔离测试房。</li>
+    <li class="no">代码合并前的 Codex 审查是另一道独立的门，不由本 QA 重跑。</li>
+  </ul>
+</div>
+
+<div class="footer">FLY-1431 · 设计阶段产物 · 详细执行手册见同目录 design.md</div>
+
+</body>
+</html>
