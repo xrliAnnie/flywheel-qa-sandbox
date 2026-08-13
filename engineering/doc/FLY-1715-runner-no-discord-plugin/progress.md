@@ -1,14 +1,13 @@
 ---
 issue: FLY-1715
 phase: implement
-phaseCursor: 2/4
-updated: 2026-08-13T06:46:10.685Z
-nextStep: resolve protected main-sync approval, merge origin/main, then rerun
-  focused and full-repo gates
+phaseCursor: 4/4
+updated: 2026-08-13T07:22:29.443Z
+nextStep: "push PR #821 and obtain exact-head code review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1715 progress
-**phase**: implement (2/4)
-**next**: resolve protected main-sync approval, merge origin/main, then rerun focused and full-repo gates
+**phase**: implement (4/4)
+**next**: push PR #821 and obtain exact-head code review
