@@ -54,6 +54,13 @@ describe("awaitCodexGate", () => {
 	});
 
 	it("exits 0 on a valid APPROVED design-review.json", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ allowed: true }), {
+					status: 200,
+					headers: { "Content-Type": "application/json" },
+				}),
+		);
 		writeFileSync(
 			join(codexDir, "design-review.json"),
 			JSON.stringify({
@@ -64,6 +71,8 @@ describe("awaitCodexGate", () => {
 				timestamp: new Date().toISOString(),
 				rounds: 2,
 				codexThreadId: "thread-abc",
+				requestId: "request-abc",
+				reviewedPlanBlobSha: "a".repeat(40),
 			}),
 		);
 
@@ -74,12 +83,166 @@ describe("awaitCodexGate", () => {
 				worktreePath: tmpRoot,
 				timeoutMs: 5_000,
 				pollIntervalMs: 50,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://127.0.0.1:9999/",
+					FLYWHEEL_INGEST_TOKEN: "ingest-token",
+				},
+				fetchImpl,
 			}),
 		).rejects.toThrow("process.exit(0)");
 
 		expect(logSpy).toHaveBeenCalledWith(
 			expect.stringContaining("design review APPROVED"),
 		);
+		expect(fetchImpl).toHaveBeenCalledOnce();
+		const [url, init] = fetchImpl.mock.calls[0]!;
+		expect(url).toBe("http://127.0.0.1:9999/design-review-validation");
+		expect(JSON.parse(String(init?.body))).toEqual({
+			executionId: execId,
+			reviewType: "design",
+			status: "APPROVED",
+			reviewedTarget: "doc/engineer/plan/draft/foo.md",
+			requestId: "request-abc",
+			reviewedPlanBlobSha: "a".repeat(40),
+		});
+	});
+
+	it("fails closed on the legacy design result schema while binding is enabled", async () => {
+		writeFileSync(
+			join(codexDir, "design-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "design",
+				status: "APPROVED",
+				reviewedTarget: "doc/plan.md",
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "design",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				pollIntervalMs: 50,
+				env: {},
+				fetchImpl: vi.fn(),
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("requestId"));
+	});
+
+	it("fails closed when Bridge credentials are missing or Bridge is unreachable", async () => {
+		writeFileSync(
+			join(codexDir, "design-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "design",
+				status: "APPROVED",
+				reviewedTarget: "doc/plan.md",
+				requestId: "request-1",
+				reviewedPlanBlobSha: "b".repeat(40),
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "design",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				env: {},
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("FLYWHEEL_BRIDGE_URL"),
+		);
+
+		errorSpy.mockClear();
+		await expect(
+			awaitCodexGate({
+				reviewType: "design",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
+					FLYWHEEL_INGEST_TOKEN: "token",
+				},
+				fetchImpl: vi.fn(async () => {
+					throw new Error("connection refused");
+				}),
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("connection refused"),
+		);
+	});
+
+	it("fails closed on a Bridge denial without accepting returned authority", async () => {
+		writeFileSync(
+			join(codexDir, "design-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "design",
+				status: "APPROVED",
+				reviewedTarget: "doc/plan.md",
+				requestId: "request-1",
+				reviewedPlanBlobSha: "c".repeat(40),
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "design",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				env: {
+					FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
+					FLYWHEEL_INGEST_TOKEN: "token",
+				},
+				fetchImpl: vi.fn(
+					async () =>
+						new Response(
+							JSON.stringify({
+								allowed: false,
+								reason: "current request changed",
+								expectedPlanBlobSha: "do-not-trust",
+							}),
+							{ status: 409, headers: { "Content-Type": "application/json" } },
+						),
+				),
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("current request changed"),
+		);
+	});
+
+	it("kill switch restores the legacy local design gate without a Bridge call", async () => {
+		const fetchImpl = vi.fn();
+		writeFileSync(
+			join(codexDir, "design-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "design",
+				status: "APPROVED",
+				reviewedTarget: "doc/legacy-plan.md",
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "design",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				env: { FLYWHEEL_INSTRUCTION_PATH_CHECK: "0" },
+				fetchImpl,
+			}),
+		).rejects.toThrow("process.exit(0)");
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
 	it("exits 0 on a valid skip.json marker without needing a result file", async () => {

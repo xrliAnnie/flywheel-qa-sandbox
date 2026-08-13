@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>早报 · 方向 E 十条一屏</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:#fff;color:#1d1d1f;
+ font:15.5px/1.85 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+ -webkit-font-smoothing:antialiased}
+a{color:#0645c8}
+code{font:.86em/1 "SF Mono",ui-monospace,monospace;background:#f2f2f4;padding:1px 5px;border-radius:4px}
+.pagehd{max-width:900px;margin:0 auto;padding:52px 24px 0}
+.pagehd h1{font-size:30px;letter-spacing:-.02em;margin:0 0 4px;font-weight:700}
+.pagehd .sub{color:#86868b;font-size:13.5px;margin:0 0 4px}
+.dirtag{display:inline-block;margin:14px 0 0;padding:5px 12px;border-radius:999px;
+ background:#f5f5f7;color:#6e6e73;font-size:12.5px}
+.basis{max-width:900px;margin:26px auto 0;padding:0 24px;color:#3a3a3c;font-size:13.5px;line-height:1.75}
+.basis b{color:#1d1d1f}
+.basis .row1{display:flex;flex-wrap:wrap;gap:22px;margin-bottom:9px;font-size:13px;color:#6e6e73}
+.basis .row1 b{display:block;font-size:16.5px;color:#1d1d1f;letter-spacing:-.01em;font-weight:650}
+.xfind{max-width:900px;margin:22px auto 0;padding:16px 20px;border-left:3px solid #d2d2d7;
+ color:#3a3a3c;font-size:14px;line-height:1.8}
+.xfind h3{margin:0 0 6px;font-size:13px;color:#1a365d;letter-spacing:.02em;font-weight:700}
+.tone{color:#8a6d00;font-size:13.5px;line-height:1.75;margin:6px 0 0}
+.secthd{display:flex;align-items:baseline;gap:9px;margin:56px 0 22px;
+ padding-bottom:9px;border-bottom:1px solid #ebebed}
+.secthd h2{font-size:14px;font-weight:700;letter-spacing:.04em;color:#1d1d1f;margin:0}
+.secthd .cnt{font-size:12.5px;color:#a1a1a6}
+.no{font:400 26px/1 Georgia,"Songti SC",serif;color:#c7c7cc;font-variant-numeric:tabular-nums}
+.meta{font:12px/1 "SF Mono",ui-monospace,monospace;color:#a1a1a6;letter-spacing:.01em}
+.chk{margin-top:12px;font-size:12.5px;color:#6e6e73;line-height:1.7}
+.chk.dim{color:#a1a1a6}
+.lead{font-weight:650}
+.cue{font-weight:650;color:#1a365d}
+details{margin-top:12px}
+summary{cursor:pointer;font-size:12.5px;color:#86868b;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸ ";color:#c7c7cc}
+details[open] summary::before{content:"▾ "}
+.codeblk{margin-top:12px;font-size:14px;color:#3a3a3c;line-height:1.8;
+ padding-left:14px;border-left:2px solid #ebebed}
+.nbd summary{margin-top:10px}
+.nb{margin-top:8px}
+.note{width:100%;padding:9px 11px;border:1px solid #e3e3e6;border-radius:8px;
+ font:inherit;font-size:14px;resize:vertical;background:#fcfcfd;color:#1d1d1f}
+.note:focus{outline:none;border-color:#0645c8;background:#fff}
+.shallow{opacity:.62}
+.foot{max-width:900px;margin:70px auto 0;padding:22px 24px 70px;border-top:1px solid #ebebed;
+ color:#a1a1a6;font-size:12.5px;line-height:1.8}
+.copyall{position:fixed;left:20px;bottom:20px;padding:9px 16px;border:0;border-radius:9px;
+ background:#1d1d1f;color:#fff;font:600 13px/1 inherit;cursor:pointer;z-index:9}
+.copyall:active{transform:translateY(1px)}
+
+/* ── FLY-1704 轮 2:配色变体 ──────────────────────────────────────
+   Annie:「make it more colorful」。边界:Apple 浅色底线不变 ——
+   「白/浅灰底、深色字」,不做暗色模式,也不按系统深浅自动切换。
+   所以「更有颜色」= 强调色 / 分类色 / 层次,不是把底色压深。
+
+   上色的位置(都不是底色):
+     ① 编号 .no  ② 分节标题 .secthd h2  ③ 「跟我们 ——」标签 .cue
+     ④ tab 选中指示 + GitHub / X 各一个分类色  ⑤ 链接 / chip / 横看发现左边线
+   骨架、卡片结构、信息层级、字号字重行高一律不动 —— 套与套之间只有变量不同。
+   「素白」逐值等于改动前,是对照组。                                    */
+body[data-pal="plain"]{--e-bg:#fff;--e-ink:#1d1d1f;--e-link:#0645c8;--e-rule:#f2f2f4;
+ --e-rule2:#ebebed;--e-meta:#a1a1a6;--e-dim:#86868b;--e-s2:#3a3a3c;--e-cue:#1a365d;
+ --e-num:#c7c7cc;--e-chip:#f5f5f7;--e-chiptx:#6e6e73;--e-code:#f2f2f4;--e-notebg:#fcfcfd;
+ --e-noteln:#e3e3e6;--e-btn:#1d1d1f;--e-btntx:#fff;
+ --e-accent:#1d1d1f;--e-gh:#1d1d1f;--e-x:#1d1d1f}
+body[data-pal="indigo"]{--e-bg:#fff;--e-ink:#16181d;--e-link:#1348c8;--e-rule:#edf0f7;
+ --e-rule2:#e3e8f3;--e-meta:#9aa3b5;--e-dim:#7d8798;--e-s2:#3b4152;--e-cue:#1348c8;
+ --e-num:#a9bce8;--e-chip:#eaf0fd;--e-chiptx:#4a5a7d;--e-code:#eff3fc;--e-notebg:#fcfdff;
+ --e-noteln:#dbe3f4;--e-btn:#1348c8;--e-btntx:#fff;
+ --e-accent:#1348c8;--e-gh:#1348c8;--e-x:#6b3fd4}
+body[data-pal="amber"]{--e-bg:#fffdf8;--e-ink:#241f18;--e-link:#b8501a;--e-rule:#f5ece0;
+ --e-rule2:#efe3d2;--e-meta:#a89684;--e-dim:#8f7f6c;--e-s2:#4a4238;--e-cue:#96420f;
+ --e-num:#e0b98d;--e-chip:#fdf0e2;--e-chiptx:#7a604a;--e-code:#fbf2e6;--e-notebg:#fffefb;
+ --e-noteln:#eadcc8;--e-btn:#b8501a;--e-btntx:#fffdf8;
+ --e-accent:#b8501a;--e-gh:#b8501a;--e-x:#8a6212}
+body[data-pal="forest"]{--e-bg:#fbfdfb;--e-ink:#171d19;--e-link:#0f6b45;--e-rule:#e9f2ec;
+ --e-rule2:#dfebe4;--e-meta:#93a69a;--e-dim:#7a8e82;--e-s2:#374039;--e-cue:#0f6b45;
+ --e-num:#a2cfb8;--e-chip:#e8f4ed;--e-chiptx:#4c6357;--e-code:#eef6f1;--e-notebg:#fff;
+ --e-noteln:#d6e6dc;--e-btn:#0f6b45;--e-btntx:#fbfdfb;
+ --e-accent:#0f6b45;--e-gh:#0f6b45;--e-x:#2a5ea8}
+
+body{background:var(--e-bg);color:var(--e-ink)}
+a{color:var(--e-link)}
+code{background:var(--e-code)}
+.pagehd .sub{color:var(--e-dim)}
+.dirtag{background:var(--e-chip);color:var(--e-chiptx)}
+.basis{color:var(--e-s2)} .basis b{color:var(--e-ink)} .basis .row1{color:var(--e-chiptx)}
+.basis .row1 b{color:var(--e-ink)}
+.xfind{border-left-color:var(--e-accent);color:var(--e-s2)} .xfind h3{color:var(--e-accent)}
+.secthd{border-bottom-color:var(--e-rule2)} .secthd .cnt{color:var(--e-meta)}
+.no{color:var(--e-num)} .meta{color:var(--e-meta)}
+.chk{color:var(--e-chiptx)} .chk.dim{color:var(--e-meta)} .cue{color:var(--e-cue)}
+summary{color:var(--e-dim)} summary::before{color:var(--e-num)}
+.codeblk{color:var(--e-s2);border-left-color:var(--e-rule2)}
+.note{background:var(--e-notebg);border-color:var(--e-noteln);color:var(--e-ink)}
+.note:focus{border-color:var(--e-link);background:var(--e-bg)}
+.foot{border-top-color:var(--e-rule2);color:var(--e-meta)}
+.copyall{background:var(--e-btn);color:var(--e-btntx)}
+/* 分类色:GitHub 和 X 各一个色,分节标题和 tab 指示都跟着走 */
+.paneE[data-pane="gh"] .secthd h2{color:var(--e-gh)}
+.paneE[data-pane="x"]  .secthd h2{color:var(--e-x)}
+.tabsE button[data-pane="gh"][aria-selected="true"]{color:var(--e-gh);border-bottom-color:var(--e-gh)}
+.tabsE button[data-pane="x"][aria-selected="true"]{color:var(--e-x);border-bottom-color:var(--e-x)}
+
+/* ── 配色切换条 ── */
+.palbar{max-width:640px;margin:26px auto 0;padding:0 20px;display:flex;align-items:center;
+ gap:8px;flex-wrap:wrap}
+.palbar .lb{font-size:12px;color:var(--e-meta)}
+.palbar button{font:13px/1 inherit;padding:7px 13px;border:1px solid var(--e-rule2);
+ border-radius:999px;background:transparent;color:var(--e-s2);cursor:pointer}
+.palbar button[aria-pressed="true"]{background:var(--e-btn);border-color:var(--e-btn);color:var(--e-btntx)}
+.palnote{max-width:640px;margin:8px auto 0;padding:0 20px;font-size:12.5px;
+ color:var(--e-meta);line-height:1.7}
+
+/* ── GitHub / X 两个 tab(文字型 + 下划线指示,跟 v8 同一种做法)── */
+.tabsE{display:flex;gap:24px;max-width:640px;margin:40px auto 0;padding:0 20px;
+ border-bottom:1px solid var(--e-rule2)}
+.tabsE button{font:650 14.5px/1 inherit;padding:9px 2px 10px;border:0;background:none;
+ color:var(--e-dim);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabsE button[aria-selected="true"]{color:var(--e-ink);border-bottom-color:var(--e-ink)}
+.tabsE button .cnt{font-weight:400;font-size:12px;color:var(--e-meta);margin-left:6px}
+.paneE[hidden]{display:none}
+.paneE .secthd:first-of-type{margin-top:34px}
+
+.wrapE{max-width:640px;margin:0 auto;padding:0 20px}
+.pagehd,.basis,.xfind,.foot{max-width:640px}
+.itemE{padding:15px 0;border-top:1px solid #f2f2f4}
+.itemE:first-of-type{border-top:0}
+.hdE{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+.hdE .no{font-size:17px;min-width:24px;text-align:right}
+.hdE a{font-size:15.5px;font-weight:650;text-decoration:underline;text-underline-offset:3px;
+ letter-spacing:-.01em;overflow-wrap:anywhere}
+.hdE .qty{margin-left:auto;white-space:nowrap;flex:0 0 auto}
+.bodyE{margin-left:34px;font-size:14.5px;line-height:1.72}
+.bodyE .s1{display:block;margin-bottom:3px}
+.bodyE .s2{display:block;color:#3a3a3c}
+.itemE details,.itemE .nbd{margin-left:34px}
+.itemE .chk{margin-left:34px}
+@media(max-width:640px){
+ .wrapE{padding:0 16px}
+ .hdE{flex-wrap:wrap;gap:6px}
+ .hdE .qty{margin-left:0;flex-basis:100%}
+ .bodyE,.itemE details,.itemE .nbd,.itemE .chk{margin-left:0}
+}
+
+/* E 自己那两处硬编码色值必须排在配色变量之后 —— 否则夜间下
+   分隔线仍是浅色亮条、第二行仍是深灰几乎看不见。只改色，不改布局。 */
+.itemE{border-top-color:var(--e-rule)}
+.bodyE .s2{color:var(--e-s2)}
+
+/* ═══ 海盐 —— 磨砂玻璃浮动面板,最通透。开阔、微凉、轻 ═══ */
+body[data-dir="e"]{
+  --e-bg:#f7fafc; --e-ink:#1b2733; --e-link:#1d4e79; --e-rule:#e6eef4;
+  --e-s2:#5c6b78; --e-accent:#17456e;
+  background:
+    radial-gradient(1200px 680px at 8% -6%,  #e8f2f8 0%, rgba(232,242,248,0) 60%),
+    radial-gradient(1000px 600px at 96% 8%,  #f5efe6 0%, rgba(245,239,230,0) 58%),
+    radial-gradient(820px  520px at 50% 104%,#eaf3f6 0%, rgba(234,243,246,0) 62%),
+    #f8fbfc;
+  background-attachment:fixed;
+  color:var(--e-ink);
+  font-family:"PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+}
+.pagehd h1{
+  font-family:"Songti SC","Noto Serif SC",Georgia,serif;
+  font-weight:200; letter-spacing:.18em; color:#20323f;
+}
+/* 面板:半透明 + 模糊,没有硬边 —— 这是"磨砂玻璃"的来源 */
+.itemE{
+  background:rgba(255,255,255,.62);
+  -webkit-backdrop-filter:blur(14px) saturate(1.15);
+  backdrop-filter:blur(14px) saturate(1.15);
+  border:1px solid rgba(255,255,255,.85); border-top-color:rgba(255,255,255,.85);
+  border-radius:18px; padding:22px 26px; margin:16px 0;
+  box-shadow:0 2px 20px rgba(31,72,102,.055);
+}
+.hdE{ line-height:1.55 }
+.bodyE .s2{ color:var(--e-s2) }
+.no{ color:#9db3c2; font-variant-numeric:tabular-nums }
+.met .qty{ color:var(--e-accent) }
+.note{
+  background:rgba(255,255,255,.5); border-left:2px solid #cfe0ea; border-radius:0 10px 10px 0;
+}
+/* 更窄的行宽 + 更松的呼吸 —— 通透主要来自留白,不是颜色 */
+.wrpE{ max-width:860px }
+.pneE{ padding-top:6px }
+
+.palbar{display:none !important}
+</style></head>
+<body data-dir="e">
+
+<div class="pagehd">
+  <h1>早报</h1>
+  <p class="sub">2026-08-11 · GitHub 那 13 个我真去读了代码，不是读 README</p>
+  <span class="dirtag">方向 E · 十条一屏 · 赌的是「不点进去也看得懂」 · 代价：每条只给两句 —— 剩下的要展开</span>
+</div>
+<div class="basis">
+  <div class="row1">
+    <div><b>扫 18 · 读码 13 · 浅过 5</b>GitHub Trending</div>
+    <div><b>扫 19 · 选 6</b>X For you</div>
+  </div>
+  <p style="margin:0 0 6px">github.com/trending?since=daily 全语言榜首页 —— GitHub 自己按「今天涨多少星」排的一页,固定 18-25 条,不是全站搜索。</p>
+  <p style="margin:0">你的 X「For you」首页流(登录恢复后重抓)。目标 100 条,实际采到 23 / 取回 19。</p>
+</div>
+<div class="xfind">
+  <h3>读完 13 个仓库后,一条只有横着看才看得见的事</h3>
+  <div><strong>paperclip、OpenMontage、addyosmani/agent-skills 三个互不相关的项目,都在用同一个目录结构放技能:<code>.agents/skills/&lt;名字&gt;/SKILL.md</code> + 一个 <code>references/</code> 子目录放参考资料。</strong> 而 Anthropic 官方的 skills 仓库现在把规范挪到了独立站点 agentskills.io/specification。⇒ <strong>技能的打包格式正在从「各家自己的约定」收敛成一个事实标准。</strong> 我们的 flywheel-skills 库是自己长的,值得拿这个格式对一遍,免得将来分叉。</div>
+</div>
+
+<div class="palbar">
+  <span class="lb">配色</span>
+  <button type="button" data-pal="plain"  aria-pressed="true"  data-feel="安静，不来打扰你读。这是你上次看的那版，一个色值都没改，放这儿当对照。">素白 · 现状</button>
+  <button type="button" data-pal="indigo" aria-pressed="false" data-feel="像一份正经的晨间简报 —— 冷静、有条理、可以直接拿去开会。">墨蓝</button>
+  <button type="button" data-pal="amber"  aria-pressed="false" data-feel="像刚印出来的纸质报 —— 暖，有人气，配一杯咖啡刚好。">暖橘</button>
+  <button type="button" data-pal="forest" aria-pressed="false" data-feel="清爽、专注 —— 一天里第一件正事的那种感觉。">森绿</button>
+</div>
+<p class="palnote"><b id="palfeel"></b><br>
+四套<b>只换颜色</b>：编号、分节标题、「跟我们 ——」这个标签、tab 指示，还有 GitHub 和 X 各自一个分类色。
+骨架、卡片结构、信息层级、字号字重全都没动 —— 所以你看到的差别百分之百来自配色。
+四套<b>都是浅底深字</b>，没有暗色模式。</p>
+<div class="tabsE" role="tablist">
+  <button type="button" role="tab" data-pane="gh" aria-selected="true">GitHub Trending<span class="cnt">18</span></button>
+  <button type="button" role="tab" data-pane="x"  aria-selected="false">X · For you<span class="cnt">6</span></button>
+</div>
+<section class="paneE" data-pane="gh">
+<div class="wrapE">
+  <div class="secthd"><h2>⌘ GitHub · 读了代码</h2><span class="cnt">13 条</span></div>
+  <article class="itemE" data-fw-item="gh:PrimeIntellect-ai/prime-agent">
+  <div class="hdE"><span class="no">1</span>
+    <a href="https://github.com/PrimeIntellect-ai/prime-agent" target="_blank" rel="noopener">PrimeIntellect-ai/prime-agent</a>
+    <span class="qty meta">今日 +1,148 星  ·  TypeScript  ·  ✅ 核过原物</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">一个会自我改进的编码 agent。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>我们正好在对立面:</strong> 我们的 DAG 是在 manifest 里声明死的,模型只能在节点里干活,不能决定要几个节点。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 今日榜涨幅第一。而且它给出了「编排」的另一种答案 —— 编排是模型写出来的代码,不是我们声明的图。</p><p>它把「怎么干活」这件事本身变成模型现写的程序,而不是我们预先定义的流程。</p><p>它是模型自己决定要 spawn 几个孩子。</p><p><span class="cue">能借的 ——</span> 两条具体的:① <strong>那条安全分界很干净</strong> —— 生命周期/调度/策略在宿主,只把「编程面」给模型。我们现在是把整个 tmux 会话交给模型,边界糊得多。② <strong>rlm-max-depth 那条优先级链(default→env→global→inherited→chat)跟我们模型/effort 的解析级联是同一个形状</strong> —— 他们把它单独抽成了一个带类型的模块,我们的散在几处。</p><div class="codeblk">1,138 个文件。核心在 packages/coding-agent —— 我读了它的 docs/rlm.md 和 src/core/rlm-max-depth.ts。<strong>它的架构跟我们是根本不同的一种:</strong> 模型不是被一张预先画好的流程图驱动,而是<strong>活在一个常驻的 IPython 内核里写 Python 代码</strong>,由它写的那段代码去调技能、读文件、并 spawn 子 agent(源码里就叫 rlm(...) child agents)。<strong>而生命周期、调度、provider 调用、安全策略全部留在 TypeScript 宿主里,不暴露给模型</strong> —— IPython 只是「给模型编程的那个面」。递归深度有专门的守卫 rlm-max-depth.ts,而且它的取值是一条优先级链:default → env → global → inherited → chat。</div></div></details>
+  <div class="chk">✅ 13,838 星,当天仍有推送。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:PrimeIntellect-ai/prime-agent" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:PrimeIntellect-ai/prime-agent--></article>
+<article class="itemE" data-fw-item="gh:stablyai/orca">
+  <div class="hdE"><span class="no">2</span>
+    <a href="https://github.com/stablyai/orca" target="_blank" rel="noopener">stablyai/orca</a>
+    <span class="qty meta">今日 +881 星  ·  TypeScript  ·  ✅ 核过原物</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">把「同时开一队编码 agent,每个跑在自己的 git worktree 里」做成了带手机端的桌面产品,Claude Code / Codex / OpenCode 都能挂上去。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>那正是我们今天一整天在打的同一批问题:</strong> session 归属谁、runner 死了残留进程谁清、worktree 查找、状态怎么投影到另一个界面(他们投到手机,我们投到 Discord)。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> <strong>那批脚本的名字就是今晚最值钱的信息</strong> —— 会给「会话归属权」和「进程清理」写专门复现脚本的团队,一定是被这两件事反复咬过。</p><p><strong>我们是一个个救火,他们把每一类做成了可重复的复现用例。</strong></p><p><span class="cue">能借的 ——</span> 不是抄代码,是抄那个做法:<strong>把反复出问题的那几类各写一个具名复现脚本</strong>。我们现在每次都是现场诊断,没有沉淀成可重跑的用例。</p><div class="codeblk">13,182 个文件,TypeScript + Swift(有独立 mobile/ 目录,是真的原生 App 不是套壳)。<strong>我在它的仓库里翻到的东西比 README 有意思得多:</strong> config/scripts 底下躺着一批具名的复现脚本 —— remote-agent-session-<strong>authority</strong>-repro.mjs、remote-agent-session-<strong>process-cleanup</strong>.mjs、hydrate-<strong>worktree</strong>-lookup-benchmark.mjs、mobile-agent-<strong>status-projection</strong>-benchmark.mjs。</div></div></details>
+  <div class="chk">✅ 42,415 星、MIT、2026-03 建库、已有 iOS/Android 发行版 —— 榜上只显示今日 +881,像新项目,其实早就很大了。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:stablyai/orca" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:stablyai/orca--></article>
+<article class="itemE" data-fw-item="gh:harveyai/harvey-labs">
+  <div class="hdE"><span class="no">3</span>
+    <a href="https://github.com/harveyai/harvey-labs" target="_blank" rel="noopener">harveyai/harvey-labs</a>
+    <span class="qty meta">今日 +24 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">一套评测基准,衡量 agent 在法律工作上到底行不行。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 我们判断一个 runner 干得好不好,现在靠 QA 节点 + 你的人工判断,<strong>没有基准,也没法比较『这周的 runner 比上周好还是差』</strong>。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 它把「怎么给 agent 打分」拆得非常朴素:<strong>评分标准是一段可读的 prompt,裁判是模型,结果能跨版本比较</strong>。没有玄学。</p><p><span class="cue">能借的 ——</span> rubric_criterion.txt 那种写法可以直接照搬 —— <strong>把我们对『一个合格 PR』的要求写成一段 rubric,让模型当裁判</strong>,先从最窄的一类活开始。compare.py 那一步(跨版本比)才是它真正的价值,不是单次打分。</p><div class="codeblk">29,626 个文件(绝大部分是测试语料)。真正的机制在 evaluation/ 底下,而且很小很清楚:<strong>judge.py(拿模型当裁判)+ prompts/rubric_criterion.txt(评分标准写成 prompt)+ compare.py(比不同版本)+ charts.py(出图)</strong>,另有 harness/ 和 sandbox/ 负责把待测 agent 跑起来。</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:harveyai/harvey-labs" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:harveyai/harvey-labs--></article>
+<article class="itemE" data-fw-item="gh:vitali87/code-graph-rag">
+  <div class="hdE"><span class="no">4</span>
+    <a href="https://github.com/vitali87/code-graph-rag" target="_blank" rel="noopener">vitali87/code-graph-rag</a>
+    <span class="qty meta">今日 +339 星  ·  Python  ·  ✅ 核过原物</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">把一整个多语言 monorepo 变成知识图谱,然后你能用大白话问它,答案锚定在真实代码结构上而不是文本相似度。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 它正好是那个缺口的一种现成实现,至少覆盖「代码结构」那一半。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> <strong>这条的价值来自我们自己的调研文档</strong> —— 我们写过:这个早报最难的一块是「跟我们什么关系」,而它卡在一个具体缺口上:我们没有一个能被程序查询的「我们已知事实」库。</p><p><span class="cue">能借的 ——</span> <strong>那个 YAML-加语言的扩展点比图本身更值得学</strong> —— 它把「支持一门新语言」的成本从「写一个解析器」降到「写一个模式文件」。我们的多源采集器也该有这样一个扩展点,而不是每加一个源就写一段新代码。</p><div class="codeblk">1,178 个文件。核心是 codebase_rag/,里面 analyzers/ast_grep_analyzer.py 配一堆 ast_grep_rules/patterns/*.yaml(c.yaml 等)。<strong>关键设计:加一门新语言不用写解析器,写一个 YAML 模式文件就行</strong> —— 这跟 README 的说法对得上,是真的。整体链路是 Tree-sitter 解析 → 建图存进图数据库 → 自然语言问题翻成图查询。</div></div></details>
+  <div class="chk">✅ 3,746 星、MIT、当天仍有推送。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:vitali87/code-graph-rag" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:vitali87/code-graph-rag--></article>
+<article class="itemE" data-fw-item="gh:semantica-agi/semantica">
+  <div class="hdE"><span class="no">5</span>
+    <a href="https://github.com/semantica-agi/semantica" target="_blank" rel="noopener">semantica-agi/semantica</a>
+    <span class="qty meta">今日 +884 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">面向 AI 系统的「图原生」基础设施,专管上下文和可追责性。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 我们的「谁批准了什么、基于哪个 commit」现在散在 SQLite 几张表里靠代码拼。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 今晚第三个独立指向「用图管 AI 上下文」的东西(另两个是 code-graph-rag 和 X 上那条第二大脑)。三个独立出现,不太像巧合。</p><p>摄取端覆盖文件/网页/数据库/云盘等一堆源。</p><p><strong>它把变更管理当成一个模块来建,我们是当成若干张表来存。</strong></p><p><span class="cue">能借的 ——</span> 看 change_management 怎么给「一次变更」建模 —— <strong>我们的 founder 批准链路今天还在反复出问题,很可能就是缺一个统一的表示。</strong></p><div class="codeblk">1,014 个文件,Python 占 1,000 万字节以上。我读了它的 ARCHITECTURE.md(是一整张 mermaid 数据流水线图,从各类源头到各类最终产物)+ 目录结构。<strong>最值得说的是 semantica/change_management/ 这个模块 —— change_log.py 和 managers.py 把「什么时候基于什么改了什么」做成了一等公民的代码模块,不是散落的日志。</strong></div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:semantica-agi/semantica" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:semantica-agi/semantica--></article>
+<article class="itemE" data-fw-item="gh:paperclipai/paperclip">
+  <div class="hdE"><span class="no">6</span>
+    <a href="https://github.com/paperclipai/paperclip" target="_blank" rel="noopener">paperclipai/paperclip</a>
+    <span class="qty meta">今日 +743 星  ·  TypeScript  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">开源的「在公司里管一群 agent」的应用 —— 定位是团队/组织用,不是个人用。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> Flywheel 本质上就是「一个人管一个公司的 agent」。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 跟 orca 的差别很关键:<strong>orca 是给开发者管自己的一队 agent,它是给一个组织管一群 agent。后者才是我们。</strong></p><p>这是同一定位上的公开实现。而且它有个技能直接叫 company-creator。</p><p><span class="cue">能借的 ——</span> <strong>技能带 references/ 这个做法值得抄</strong> —— 我们的 skill 现在是一个大 SKILL.md,把参考资料和指令混在一起;它把「怎么做」和「查什么」分开了。</p><div class="codeblk">4,479 个文件。<strong>它的 .agents/skills/ 底下是一个个技能包:check-pr/SKILL.md、company-creator/SKILL.md,每个技能还带一个 references/ 子目录放参考资料</strong>(比如 check-pr 带 gitlab-api.md 和 graphql-queries.md)。另有 cli/ docker/ design/ 等。</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:paperclipai/paperclip" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:paperclipai/paperclip--></article>
+<article class="itemE" data-fw-item="gh:addyosmani/agent-skills">
+  <div class="hdE"><span class="no">7</span>
+    <a href="https://github.com/addyosmani/agent-skills" target="_blank" rel="noopener">addyosmani/agent-skills</a>
+    <span class="qty meta">今日 +571 星  ·  JavaScript  ·  ✅ 核过原物</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">一套给 AI 编码 agent 用的生产级工程技能集合。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 我们有 flywheel-skills 库,而且我们<strong>正好是多 backend</strong>(Claude / Codex / Antigravity / Kimi)。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 它和 anthropics/skills 同一天上榜,而且<strong>它的多厂商适配目录说明:技能正在被当成跨厂商可移植的东西,不是绑定某一家的。</strong></p><p>它已经在解决我们迟早要碰的问题:同一个技能怎么同时供给几家。</p><p><span class="cue">能借的 ——</span> 直接看它那五个适配目录的差异 —— <strong>那就是「一个技能要跨厂商」需要付的成本清单。</strong></p><div class="codeblk">184 个文件,但目录很说明问题:<strong>同时带 .claude-plugin / .codex-plugin / .gemini / .opencode / .agents 五套适配</strong> —— 也就是同一批技能要同时喂给五个不同厂商的 agent。</div></div></details>
+  <div class="chk">✅ 86,108 星 —— 榜上只显示今日 +571,实际是本次 18 个里星数最高的,根本不是新项目。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:addyosmani/agent-skills" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:addyosmani/agent-skills--></article>
+<article class="itemE" data-fw-item="gh:anthropics/skills">
+  <div class="hdE"><span class="no">8</span>
+    <a href="https://github.com/anthropics/skills" target="_blank" rel="noopener">anthropics/skills</a>
+    <span class="qty meta">今日 +468 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">Anthropic 官方的 Agent Skills 仓库。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 我们的 skill 库是自己长出来的,没有对过任何标准。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> <strong>那一句话本身就是信息:技能格式已经从「一个仓库里的约定」升格成「一个有独立站点的规范」。</strong></p><p><span class="cue">能借的 ——</span> <strong>拿我们的 skill 目录结构去对一遍那个规范</strong> —— 现在对成本最低,以后越长越难改。</p><div class="codeblk">411 个文件。结构是 skills/ + template/ + spec/。<strong>我打开 spec/agent-skills-spec.md,里面只有一句话:规范已经搬到 agentskills.io/specification。</strong></div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:anthropics/skills" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:anthropics/skills--></article>
+<article class="itemE" data-fw-item="gh:msitarzewski/agency-agents">
+  <div class="hdE"><span class="no">9</span>
+    <a href="https://github.com/msitarzewski/agency-agents" target="_blank" rel="noopener">msitarzewski/agency-agents</a>
+    <span class="qty meta">今日 +971 星  ·  Shell  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">一整套「AI 代理公司」的角色包,从工程师到社区运营,打包成可直接用的一组角色。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 结构同构:部门分目录 + 每个角色一个 markdown + frontmatter。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> <strong>它证明了角色是可以像技能一样被分发的</strong> —— 而我们的角色(Honey Lemon、Tadashi、各部门 Lead)是一个一个手写出来的。</p><p>我们是 .flywheel/agents/&lt;部门&gt;/*.md,它是 &lt;部门&gt;/&lt;部门&gt;-&lt;角色&gt;.md。</p><p><span class="cue">能借的 ——</span> <strong>如果角色能像它那样打包分发,我们以后加一个新部门就不用从零写 agent.md。</strong> 它那个 frontmatter 里有个字段叫 vibe —— 一句话定调,这个小设计挺聪明。</p><div class="codeblk">343 个文件,按部门分目录:engineering / design / finance / academic / game-development…。<strong>我打开了 engineering/engineering-backend-architect.md —— 它就是一个 YAML frontmatter(name / description / color / emoji / vibe)加一段人格正文。跟我们的 agent.md 结构几乎一模一样。</strong></div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:msitarzewski/agency-agents" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:msitarzewski/agency-agents--></article>
+<article class="itemE" data-fw-item="gh:ZhuLinsen/daily_stock_analysis">
+  <div class="hdE"><span class="no">10</span>
+    <a href="https://github.com/ZhuLinsen/daily_stock_analysis" target="_blank" rel="noopener">ZhuLinsen/daily_stock_analysis</a>
+    <span class="qty meta">今日 +317 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">LLM 驱动的股票分析系统:多源行情 + 实时新闻 → 决策看板 → 自动推送,主打「零成本定时运行」。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>这是今晚唯一一个跟『早报系统本身』同构的项目。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> ⚠️ <strong>它的形状跟你正在读的这份早报几乎一模一样</strong> —— 多源抓取 → LLM 加工 → 每日定时 → 推送给一个人看 → 那个人用命令跟它对话。只是领域换成股票。</p><p>而且它已经做完了我们这个原型还没做的两块:定时和推送(现在是我手动跑的)。</p><p><span class="cue">能借的 ——</span> 重点看 bot/commands/ 那个命令式交互 —— <strong>它让人能对着推送来的结果继续追问,而不是只能读。</strong> 这可能比我们现在设计的『在页面上圈一下』更接近你实际想要的。</p><div class="codeblk">1,109 个文件。结构是 data_provider/(多源行情)+ bot/(带 commands/analyze.py、commands/ask.py 的命令式机器人)+ api/ + apps/dsa-web/(前端,含 NotificationTestPanel 这样的通知测试面板)+ docker/。</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:ZhuLinsen/daily_stock_analysis" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:ZhuLinsen/daily_stock_analysis--></article>
+<article class="itemE" data-fw-item="gh:cathrynlavery/diagram-design">
+  <div class="hdE"><span class="no">11</span>
+    <a href="https://github.com/cathrynlavery/diagram-design" target="_blank" rel="noopener">cathrynlavery/diagram-design</a>
+    <span class="qty meta">今日 +1,612 星  ·  HTML  ·  ✅ 核过原物</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">给 Claude Code 用的 29 种「编辑级」图表类型,纯 HTML + SVG,自带风格约束(不要阴影、不要一眼假的 AI 味)。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 我们的 skill 库全是内部用的;而且我们每天在给你出 HTML 报告 —— 它解决的正是「怎么让生成的图不难看」。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> <strong>一个人写的单个技能,涨到六千多星。</strong> 而且它的做法很朴素:一个 SKILL.md + 一堆现成范例 HTML。</p><p><span class="cue">能借的 ——</span> <strong>这是今晚 18 个里唯一一个可以马上装上试的。</strong> 它的「用范例 HTML 当规范」比写一堆风格文字有效得多 —— 这个做法我们出报告时可以直接用。</p><div class="codeblk">260 个文件。<strong>核心其实只有一个:skills/diagram-design/SKILL.md,外加一大堆 assets/example-*.html 当范例</strong>(architecture / bar 等,每种还分 dark 和 full 版本)。同时打包成 .claude-plugin 和 .codex-plugin 两种插件。</div></div></details>
+  <div class="chk">✅ 6,128 星。作者自己在 X 上说「5k 星」—— 这次是低报,不是吹。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:cathrynlavery/diagram-design" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:cathrynlavery/diagram-design--></article>
+<article class="itemE" data-fw-item="gh:calesthio/OpenMontage">
+  <div class="hdE"><span class="no">12</span>
+    <a href="https://github.com/calesthio/OpenMontage" target="_blank" rel="noopener">calesthio/OpenMontage</a>
+    <span class="qty meta">今日 +436 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">自称第一个开源的「agent 化视频生产系统」,号称 12 条生产流水线。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 跟我们的内容线(sub / tidal-echo)是同类问题:一个创作流程怎么拆给多个 agent。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 它是「把一个完整创作流程拆成多条流水线交给 agent 跑」的具体样本,而且在一个我们没碰过的领域。</p><p><strong>而且它用的技能结构跟 paperclip 一样</strong> —— 见顶部那条横向发现。</p><p><span class="cue">能借的 ——</span> 看 backlot/ 里那 12 条流水线怎么切的 —— <strong>切法比它做视频这件事本身值钱。</strong></p><div class="codeblk">2,038 个文件。<strong>它也用 .agents/skills/&lt;名字&gt;/SKILL.md + references/ 这套结构</strong>(acestep、agents 等),另有 backlot/ 放生产流水线。同时带 .claude / .codex / .cursor 三套适配。</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:calesthio/OpenMontage" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:calesthio/OpenMontage--></article>
+<article class="itemE" data-fw-item="gh:HKUDS/DeepTutor">
+  <div class="hdE"><span class="no">13</span>
+    <a href="https://github.com/HKUDS/DeepTutor" target="_blank" rel="noopener">HKUDS/DeepTutor</a>
+    <span class="qty meta">今日 +829 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">「终身个性化辅导」系统 —— 记住学习者长期的状态,而不是每次对话从零开始。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>我们有 per-project memory,但每个 runner 起来还是要重读一遍文档才知道发生过什么</strong> —— 今天这个 issue 本身就栽在这上面:新 runner 看不到前一个的工作,差点从零重做。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p><span class="cue">为什么值得你看 ——</span> 它解决的是「跨会话记住这个人」,跟我们的记忆系统是同一类问题的不同应用。</p><p><span class="cue">能借的 ——</span> 看它怎么决定「什么该记、什么该忘」。我们现在是全记下来然后靠人去翻,那不是记忆,是堆积。</p><div class="codeblk">6,257 个文件。分成 deeptutor/(核心,底下有 agents/ 和 agents/_shared/)+ deeptutor_cli/ + deeptutor_web/ 三层 —— <strong>核心库、命令行、网页各自独立,共享同一套 agents。</strong></div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:HKUDS/DeepTutor" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:HKUDS/DeepTutor--></article>
+  <div class="secthd"><h2>⌘ GitHub · 只扫了没深入</h2><span class="cnt">5 条</span></div>
+  <article class="itemE shallow" data-fw-item="gh:nvm-sh/nvm">
+  <div class="hdE"><span class="no">14</span>
+    <a href="https://github.com/nvm-sh/nvm" target="_blank" rel="noopener">nvm-sh/nvm</a>
+    <span class="qty meta">今日 +18 星  ·  Shell  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">Node 版本管理器。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>没读代码 —— 跟我们没关系,读了也不会改变结论。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>我们天天在用。</p><p>它是榜尾常驻项目(今日只涨 18 星)。</p></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:nvm-sh/nvm" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:nvm-sh/nvm--></article>
+<article class="itemE shallow" data-fw-item="gh:3b1b/manim">
+  <div class="hdE"><span class="no">15</span>
+    <a href="https://github.com/3b1b/manim" target="_blank" rel="noopener">3b1b/manim</a>
+    <span class="qty meta">今日 +246 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">3Blue1Brown 的数学动画引擎。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>没读代码 —— 跟我们没关系,读了也不会改变结论。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>经典项目,常年在榜上浮动。</p></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:3b1b/manim" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:3b1b/manim--></article>
+<article class="itemE shallow" data-fw-item="gh:huggingface/transformers">
+  <div class="hdE"><span class="no">16</span>
+    <a href="https://github.com/huggingface/transformers" target="_blank" rel="noopener">huggingface/transformers</a>
+    <span class="qty meta">今日 +69 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">机器学习模型定义的事实标准框架。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>没读代码 —— 跟我们没关系,读了也不会改变结论。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>我们不训模型,只调 API。</p></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:huggingface/transformers" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:huggingface/transformers--></article>
+<article class="itemE shallow" data-fw-item="gh:jaywcjlove/awesome-mac">
+  <div class="hdE"><span class="no">17</span>
+    <a href="https://github.com/jaywcjlove/awesome-mac" target="_blank" rel="noopener">jaywcjlove/awesome-mac</a>
+    <span class="qty meta">今日 +334 星  ·  Swift  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">macOS 优质软件清单。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>没读代码 —— 跟我们没关系,读了也不会改变结论。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>长青清单类项目。</p></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:jaywcjlove/awesome-mac" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:jaywcjlove/awesome-mac--></article>
+<article class="itemE shallow" data-fw-item="gh:practical-tutorials/project-based-learning">
+  <div class="hdE"><span class="no">18</span>
+    <a href="https://github.com/practical-tutorials/project-based-learning" target="_blank" rel="noopener">practical-tutorials/project-based-learning</a>
+    <span class="qty meta">今日 +394 星  ·  Python  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">按项目学编程的教程清单合集。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>没读代码 —— 跟我们没关系,读了也不会改变结论。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>长青清单,今天上榜大概率是被别处提到了。</p></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="gh:practical-tutorials/project-based-learning" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:gh:practical-tutorials/project-based-learning--></article>
+</div>
+</section>
+<section class="paneE" data-pane="x" hidden>
+
+<div class="basis" style="margin-top:18px">
+  <p style="margin:0 0 8px">✅ <strong>X 登录恢复后重抓了一轮。</strong> 但要如实说:你要的是「起码 100 条」,<strong>我实际采到 23 条、完整取回 19 条</strong>,没做到。原因不是抓不到,是<strong>取回</strong>是硬瓶颈(单次只能安全取回 4 条,100 条要约 25 次往返),加上第三轮滚动已经不再带来新条目。底数、逐块数量、以及一次我自己写错又改回来的数,全部记在 x-harvest/MANIFEST.md 里。</p>
+  <p style="margin:0 0 8px">登录恢复后重抓:采到 23 条,完整取回 19 条,其中 8 条带推文自带图(7 张成功内嵌 —— 有 1 张的图片 URL 在取回时被截断,抓不到,这正是传输瓶颈的实际代价)。从 19 条里选 6 条给你。</p>
+  <p class="tone">⚠️ 这个流里营销号密度很高。下面 6 条我<strong>都只扫了、没核原物</strong> —— 标记如实写成「只扫了」,不是「可信」。</p>
+</div>
+<div class="wrapE">
+  <div class="secthd"><h2>𝕏 For you</h2><span class="cnt">6 条</span></div>
+  <article class="itemE" data-fw-item="x:2086548276053180892">
+  <div class="hdE"><span class="no">19</span>
+    <a href="https://x.com/alex_prompter/status/2086548276053180892" target="_blank" rel="noopener">@alex_prompter</a>
+    <span class="qty meta">@alex_prompter  ·  15.9k 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">大多数权限系统问「这个动作有多危险」,他主张该问「做错了能不能撤回」。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>这条直接打我们的 founder 批准闸。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>他说大多数 agent 权限系统问错了问题:它们问「这个动作有多危险」,而应该问「做错了能不能撤回」。按危险程度分档会同时挡住一堆无害操作、又放过一些不可逆的;按可逆性分,门槛自然落在真正撤不回来的那几件事上。</p><p><span class="cue">为什么值得你看 ——</span> 用【可逆性】而不是【风险等级】给 agent 的动作把关</p><p>我们现在是按动作类型分档(merge / terminate / ship 各一档),而不是按可不可逆。</p><p><span class="cue">能借的 ——</span> 按可逆性重排一遍我们的保留动作清单 —— 有些现在要你批的其实可撤回,有些不用批的反而撤不回来。</p><div class="codeblk">Risk level is the wrong way to gate your AI agent&#39;s actions. Reversibility is the right one. Most permission systems ask how dangerous an action is.</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2086548276053180892" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2086548276053180892--></article>
+<article class="itemE" data-fw-item="x:2087236395425284481">
+  <div class="hdE"><span class="no">20</span>
+    <a href="https://x.com/AnatoliKopadze/status/2087236395425284481" target="_blank" rel="noopener">@AnatoliKopadze</a>
+    <span class="qty meta">@AnatoliKopadze  ·  4,957 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">原话是「不是更聪明的模型,是它外面那个对的 loop 和 graph」,配一段 60 分钟的讲解。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 今晚第二次听到 Anthropic 的人这么说(另一条是 @0xCodez)。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>一位 Anthropic 工程师的说法:让 agent 变好最快的办法不是换更聪明的模型,而是它外面那个 loop 和 graph 设计得对不对。配了一段 60 分钟的讲解,拆的是编排层而不是模型层。</p><p><span class="cue">为什么值得你看 ——</span> Anthropic 工程师:让 agent 变好的最快办法不是换更聪明的模型</p><p><strong>而我们正在做的恰好是那个 loop 和 graph。</strong></p><p><span class="cue">能借的 ——</span> 值得看那 60 分钟 —— 如果连模型厂自己都说瓶颈在编排层,那我们的 DAG 是不是切对了就更值得复盘。</p><div class="codeblk">Anthropic engineer: The fastest way to make an agent better isn&#39;t a smarter model, it&#39;s the right loop and graph around it. In 60 minutes she breaks...</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2087236395425284481" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2087236395425284481--></article>
+<article class="itemE" data-fw-item="x:2087194387948208314">
+  <div class="hdE"><span class="no">21</span>
+    <a href="https://x.com/spectnfa/status/2087194387948208314" target="_blank" rel="noopener">@spectnfa</a>
+    <span class="qty meta">@spectnfa  ·  791 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">论点:笔记是扁平的、没有图,所以每问一次 Claude 就得读一遍全部。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>跟今晚 GitHub 榜上的 code-graph-rag、semantica 是同一个思路的第三、第四次独立出现。</strong></span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>他的论点是:第二大脑贵在笔记库本身,不在模型。因为笔记是扁平的、彼此没有连接,所以每问一个问题 Claude 都得把整个库读一遍。他说算过账,同一个问题在原始库和结构化库上的开销差很多。</p><p><span class="cue">为什么值得你看 ——</span> 第二大脑的成本问题不在模型,在你的笔记库</p><p>作者说算过账,同样的问题原始库 vs 结构化库差很多。</p><p>我们的 memory 正是「全记下来靠人翻」。</p><p><span class="cue">能借的 ——</span> 先路由再读,可能比继续往 memory 里加内容更值得做。</p><div class="codeblk">YOUR SECOND BRAIN HAS A COST PROBLEM AND IT&#39;S NOT THE MODEL. It&#39;s the vault. Flat notes, no map, so Claude reads the whole thing every time</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2087194387948208314" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2087194387948208314--></article>
+<article class="itemE" data-fw-item="x:2087155646793646356">
+  <div class="hdE"><span class="no">22</span>
+    <a href="https://x.com/alextalksai/status/2087155646793646356" target="_blank" rel="noopener">@alextalksai</a>
+    <span class="qty meta">@alextalksai  ·  71.0k 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">指出 claude code 每开一个新会话都要把同一批文件重新 grep 一遍,推荐了一个开源方案。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>我们每个 runner 起来都要重读一遍文档 —— 今天这个 issue 本身就栽在这上面</strong>(新 runner 看不到前一个的工作,差点从零重做)。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>指出 claude code 每开一个新会话都要把同一批文件重新 grep 一遍,同样的检索反复烧 token,并推荐了一个开源方案来缓存这部分。</p><p><span class="cue">为什么值得你看 ——</span> claude code 每个会话重复 grep 同样的文件在烧 token</p><p><span class="cue">能借的 ——</span> 这条跟上面那条「先路由再读」是同一个问题的两个面:一个是记不住,一个是每次重读。</p><div class="codeblk">claude code burns thousands of tokens grepping the same files over and over, every single session. this open-source...</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2087155646793646356" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2087155646793646356--></article>
+<article class="itemE" data-fw-item="x:2086811801652514817">
+  <div class="hdE"><span class="no">23</span>
+    <a href="https://x.com/Argona0x/status/2086811801652514817" target="_blank" rel="noopener">@Argona0x</a>
+    <span class="qty meta">@Argona0x  ·  638.1k 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">描述给一个 Claude agent 舰队接上共享记忆,解决多个 agent 各说各话的问题。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> <strong>我们正好是一队 agent</strong>(多个 Lead + 多个 runner),而它们之间现在靠 mailbox 传话,没有共享记忆。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>讲一队 Claude agent 被接上共享记忆之后的变化 —— 在此之前它们各说各话、彼此矛盾,因为每个 agent 只看得到自己那份上下文。63 万次浏览,是这批里传播最广的之一。</p><p><span class="cue">为什么值得你看 ——</span> 给一队 Claude agent 加共享记忆,让它们不再自相矛盾</p><p>63 万次浏览。</p><p>今天就发生过一次:新 runner 不知道前一个做了什么。</p><p><span class="cue">能借的 ——</span> 「共享记忆」这个方向对我们成立,但要小心 —— 我没核实这条帖子的具体做法,它的口气很像营销号。</p><div class="codeblk">whoever leaked this has bigger balls than sense someone gave a fleet of Claude agents shared memory so they would stop contradicting each other, then</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2086811801652514817" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2086811801652514817--></article>
+<article class="itemE" data-fw-item="x:2087098248997617799">
+  <div class="hdE"><span class="no">24</span>
+    <a href="https://x.com/MengTo/status/2087098248997617799" target="_blank" rel="noopener">@MengTo</a>
+    <span class="qty meta">@MengTo  ·  27.5k 浏览  ·  ⚪ 只扫了，没核</span></div>
+  <div class="bodyE" data-fw-prose>
+    <span class="s1">开源了一个 three.js 3D 站点,连同他用来生成好材质模型的技能一起放出来。</span>
+    <span class="s2"><span class="cue">跟我们 ——</span> 跟我们没有直接接口。</span>
+  </div>
+  <details><summary>展开全文</summary><div class="deepA"><p>作者把自己做的一个 three.js 3D 网站开源了,而且<strong>连同他用来生成好材质模型的那套技能一起放出来</strong>;整站压缩后 1.38MB。</p><p><span class="cue">为什么值得你看 ——</span> 有人把 3D 网站和用到的技能一起开源了,整站 1.38MB</p><p>放进来是因为它示范了「<strong>把做法连同产物一起开源</strong>」—— 而技能可分发正是今晚 GitHub 那边的主线之一。</p><p><span class="cue">能借的 ——</span> 弱相关,可以跳过。</p><div class="codeblk">I open-sourced my 3d towers building site and the skills I used to create well-textured three.js models. Entire site is 1.38mb gzipped.</div></div></details>
+  <div class="chk dim">⚪ 只扫了，没核 —— 我没去核原物，这不是「可信」，是「未知」。</div>
+  <details class="nbd"><summary>+ 备注</summary><div class="nb"><textarea class="note" data-note="x:2087098248997617799" rows="2" placeholder="写几句，刷新不会丢"></textarea></div></details>
+<!--/fw-item:x:2087098248997617799--></article>
+</div>
+</section>
+
+<div class="foot">
+  这是 <b>FLY-1704 的版式方向图</b>，不是上线版本 —— 内容与 v8 逐字相同，只换了摆法。<br>
+  备注存在你这台机器的浏览器里（localStorage），换机器看不到。
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+ var PK='fly1704-e-pal';
+ var FEEL=document.getElementById('palfeel');
+ function setPal(v){
+   document.body.dataset.pal=v;
+   document.querySelectorAll('.palbar button').forEach(function(b){
+     var on = b.dataset.pal===v;
+     b.setAttribute('aria-pressed', String(on));
+     if(on && FEEL) FEEL.textContent = b.textContent + ' —— ' + b.dataset.feel; });
+   try{localStorage.setItem(PK,v)}catch(e){}
+ }
+ var saved=null; try{saved=localStorage.getItem(PK)}catch(e){}
+ setPal(saved||'plain');
+ document.querySelectorAll('.palbar button').forEach(function(b){
+   b.addEventListener('click',function(){ setPal(b.dataset.pal); }); });
+
+ function setPane(v){
+   document.querySelectorAll('.paneE').forEach(function(p){ p.hidden = (p.dataset.pane!==v); });
+   document.querySelectorAll('.tabsE button').forEach(function(b){
+     b.setAttribute('aria-selected', String(b.dataset.pane===v)); });
+ }
+ document.querySelectorAll('.tabsE button').forEach(function(b){
+   b.addEventListener('click',function(){ setPane(b.dataset.pane); }); });
+})();
+</script>
+<button class="copyall">复制我写的全部备注</button>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+ var K='fly1704-notes-'+document.body.dataset.dir;
+ var S={}; try{S=JSON.parse(localStorage.getItem(K)||'{}')}catch(e){}
+ function bind(t){ if(S[t.dataset.note]) t.value=S[t.dataset.note];
+   t.addEventListener('input',function(){S[t.dataset.note]=t.value;
+     try{localStorage.setItem(K,JSON.stringify(S))}catch(e){}}); }
+ document.querySelectorAll('textarea.note').forEach(bind);
+ var b=document.querySelector('.copyall');
+ if(b) b.addEventListener('click',function(){
+   var out=[]; document.querySelectorAll('textarea.note').forEach(function(t){
+     if(t.value.trim()) out.push('['+t.dataset.note+'] '+t.value.trim()); });
+   var s=out.join('\n\n')||'（还没有写备注）';
+   navigator.clipboard.writeText(s).then(function(){b.textContent='已复制 '+out.length+' 条';
+     setTimeout(function(){b.textContent='复制我写的全部备注'},1800)});
+ });
+ document.querySelectorAll('[data-acc]').forEach(function(r){
+   r.addEventListener('click',function(e){
+     if(e.target.closest('a,textarea,summary')) return;
+     // 面板在同一个条目里显式标了 data-acc-panel —— 不能用 nextElementSibling:
+     // 方向 C 的清单条目下一个兄弟是那行摘要 .one,不是展开区,点了会把摘要藏掉而正文永远打不开。
+     var root=r.closest('[data-fw-item]')||r.parentNode;
+     var p=root.querySelector('[data-acc-panel]');
+     if(!p) return;
+     var open=p.hasAttribute('hidden');
+     if(open){p.removeAttribute('hidden');r.setAttribute('aria-expanded','true');}
+     else{p.setAttribute('hidden','');r.setAttribute('aria-expanded','false');}
+   });
+ });
+ // 备注圆点:有内容就点亮(方向 D 的行尾状态)
+ function dot(t){
+   var it=t.closest('[data-fw-item]'); if(!it) return;
+   var d=it.querySelector('.c-nb'); if(!d) return;
+   d.textContent=t.value.trim()?'●':'○'; d.style.color=t.value.trim()?'#248a3d':'';
+ }
+ document.querySelectorAll('textarea.note').forEach(function(t){
+   dot(t); t.addEventListener('input',function(){dot(t)});
+ });
+ // 方向 D 的统计行:点一下按类型筛选(再点一下取消)
+ var active=null;
+ document.querySelectorAll('[data-filter]').forEach(function(f){
+   f.addEventListener('click',function(){
+     var k=f.dataset.filter; active=(active===k)?null:k;
+     document.querySelectorAll('[data-filter]').forEach(function(x){
+       x.classList.toggle('on', x.dataset.filter===active); });
+     document.querySelectorAll('[data-fw-item][data-kind]').forEach(function(it){
+       var show=!active||active==='all'||it.dataset.kind===active
+         ||(active==='verified'&&it.dataset.check==='verified');
+       it.style.display=show?'':'none';
+     });
+   });
+ });
+})();
+</script>
+</body></html>

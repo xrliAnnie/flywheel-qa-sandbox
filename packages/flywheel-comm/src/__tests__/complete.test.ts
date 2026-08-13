@@ -201,6 +201,82 @@ describe("complete command", () => {
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
 	});
 
+	it.each([
+		[
+			"engine_gate_handoff",
+			"run 已进入 engine-owned gate;本节点已终结,不会有 approve/ship 环节找你;不要等待、不要跑 verify-approval,立即收尾退出。",
+		],
+		["runner_ship_park", "已 park 等待 ship gate;等 wake,勿自行轮询。"],
+	] as const)(
+		"prints %s completion guidance",
+		async (disposition, guidance) => {
+			mockFetch.mockResolvedValue({
+				ok: true,
+				status: 200,
+				text: async () =>
+					JSON.stringify({ completionDisposition: disposition }),
+			});
+
+			await complete({ route: "needs_review", merged: false });
+
+			expect(_logSpy).toHaveBeenCalledWith(guidance);
+		},
+	);
+
+	it("keeps successful legacy and terminal responses output-compatible", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: async () =>
+				JSON.stringify({ completionDisposition: "terminal_no_gate" }),
+		});
+
+		await complete({ route: "no_code", merged: false });
+
+		expect(_logSpy).toHaveBeenCalledTimes(1);
+		expect(_logSpy).toHaveBeenCalledWith(
+			"[complete] session_completed delivered (attempt 1/4)",
+		);
+	});
+
+	it("does not retry a 2xx when reading its completion receipt fails", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			status: 200,
+			text: async () => {
+				throw new Error("body unavailable");
+			},
+		});
+
+		await expect(
+			complete({ route: "needs_review", merged: false }),
+		).resolves.toBeUndefined();
+		expect(mockFetch).toHaveBeenCalledOnce();
+	});
+
+	it("bounds a stalled 2xx completion receipt body", async () => {
+		vi.useFakeTimers();
+		try {
+			mockFetch.mockImplementation(async (_url, init) => ({
+				ok: true,
+				status: 200,
+				text: () =>
+					new Promise<string>((_resolve, reject) =>
+						init.signal.addEventListener("abort", () =>
+							reject(new Error("body read aborted")),
+						),
+					),
+			}));
+
+			const completion = complete({ route: "needs_review", merged: false });
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(completion).resolves.toBeUndefined();
+			expect(mockFetch).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("writes an atomic runner-stop breadcrumb before delivering completion", async () => {
 		const stateDir = join(tmpHome, "runner-state", "exec-108");
 		process.env.FLYWHEEL_RUNNER_STATE_DIR = stateDir;

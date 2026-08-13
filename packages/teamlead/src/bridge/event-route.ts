@@ -41,6 +41,7 @@ import { isReviewHeld } from "./auto-qa-held.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
+	buildMissingDesignPlanInstruction,
 	codexReviewTypeFor,
 } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
@@ -48,6 +49,10 @@ import {
 	DESIGN_HTML_EVIDENCE_ERROR,
 	validateDesignHtmlCompletion,
 } from "./design-html-admission.js";
+import {
+	deliverDesignReviewManifest,
+	snapshotDesignReviewPlan,
+} from "./design-review-manifest.js";
 import {
 	hasPendingCompleteMarker,
 	isDoneButRunning,
@@ -342,6 +347,29 @@ function handleCodexAutoTrigger(
 	const refreshedSession = store.getSession(event.execution_id);
 	const codexSkip = !!refreshedSession?.codex_skip;
 	const persistedPlanPath = refreshedSession?.plan_path;
+	const queueDesignPlanCorrection = (detail?: string): void => {
+		try {
+			const dbPath = commDbPathForProject(event.project_name);
+			mkdirSync(dirname(dbPath), { recursive: true });
+			const commDb = new CommDB(dbPath);
+			try {
+				commDb.insertInstruction(
+					"bridge",
+					event.execution_id,
+					buildMissingDesignPlanInstruction(event.execution_id, detail),
+				);
+				console.log(
+					`[codex-trigger] unbindable plan — correction instruction sent for ${event.execution_id}`,
+				);
+			} finally {
+				commDb.close();
+			}
+		} catch (err) {
+			console.warn(
+				`[codex-trigger] failed to write plan correction instruction for ${event.execution_id}: ${(err as Error).message}`,
+			);
+		}
+	};
 
 	// FLY-827: for CODE review, register the durable gate record (audit-friendly;
 	// the gate truth is an approved/skipped record for the CURRENT head or
@@ -412,31 +440,41 @@ function handleCodexAutoTrigger(
 	// Runner re-issues stage with --plan; await-codex-gate will time
 	// out (no skip.json, no result) → Runner reports to Lead.
 	if (reviewType === "design" && !persistedPlanPath) {
+		queueDesignPlanCorrection("stage_changed requires --plan <relative-path>");
+		return;
+	}
+
+	// FLY-1718 P3: default-on exact plan binding. The manifest write precedes
+	// CommDB delivery; a stable instruction id plus boot/periodic reconciliation
+	// closes the crash window between those two durable stores.
+	if (
+		reviewType === "design" &&
+		process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK !== "0"
+	) {
+		if (!refreshedSession || !persistedPlanPath) return;
+		const snapshot = snapshotDesignReviewPlan(
+			refreshedSession,
+			persistedPlanPath,
+		);
+		if (!snapshot.ok) {
+			queueDesignPlanCorrection(snapshot.message);
+			return;
+		}
 		try {
-			const dbPath = commDbPathForProject(event.project_name);
-			mkdirSync(dirname(dbPath), { recursive: true });
-			const commDb = new CommDB(dbPath);
-			try {
-				commDb.insertInstruction(
-					"bridge",
-					event.execution_id,
-					[
-						`[FLY-137] ERROR: stage_changed to design_review requires --plan <relative-path>.`,
-						`Re-run: \`flywheel-comm stage set design_review --plan <path>\`.`,
-						`Codex design review was NOT triggered. Do not proceed to implement`,
-						`until --plan is provided. The await-codex-gate will time out`,
-						`without a skip marker or result file (fail-closed).`,
-					].join(" "),
-				);
-				console.log(
-					`[codex-trigger] missing plan_path — instruction sent to re-trigger for ${event.execution_id}`,
-				);
-			} finally {
-				commDb.close();
-			}
+			const manifest = store.advanceDesignReviewManifest({
+				executionId: event.execution_id,
+				projectName: event.project_name,
+				sourceEventId: event.event_id,
+				expectedPlanPath: persistedPlanPath,
+				expectedBlobSha: snapshot.blobSha,
+			});
+			const delivered = deliverDesignReviewManifest(store, manifest);
+			console.log(
+				`[codex-trigger] ${delivered.deduped ? "reconciled" : "queued"} design review manifest ${event.execution_id}/${manifest.revision}`,
+			);
 		} catch (err) {
 			console.warn(
-				`[codex-trigger] failed to write missing-plan instruction for ${event.execution_id}: ${(err as Error).message}`,
+				`[codex-trigger] failed to bind/deliver design instruction for ${event.execution_id}: ${(err as Error).message}`,
 			);
 		}
 		return;
@@ -954,6 +992,11 @@ export function createEventRouter(
 						ok: true,
 						generalized: true,
 						duplicate: completion.idempotentReplay,
+						...(completion.completionDisposition
+							? {
+									completionDisposition: completion.completionDisposition,
+								}
+							: {}),
 					});
 					return;
 				}

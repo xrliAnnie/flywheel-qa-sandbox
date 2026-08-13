@@ -1,0 +1,10 @@
+flowchart LR
+  L["拿到重启锁"] --> F1["fetch origin main<br/>(120s 上限)"]
+  F1 --> G{"三道校验"}
+  G -->|"在 main + 只有未跟踪文件<br/>+ 能快进"| M["merge --ff-only<br/>到冻结的目标 SHA"]
+  G -->|"脏 / 分叉 / 本地超前 / 拉不到"| S["停下并报警<br/>绝不 reset、绝不 stash"]
+  M --> B2["pnpm build<br/>(此刻 HEAD 已是最新 main)"]
+  B2 --> R["全舰起在最新 main 上"]
+  style M fill:#e8f8ec,stroke:#34c759,color:#1d1d1f
+  style R fill:#e8f8ec,stroke:#34c759,color:#1d1d1f
+  style S fill:#fff4e5,stroke:#ff9500,color:#1d1d1f

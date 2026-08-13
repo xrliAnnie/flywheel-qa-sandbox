@@ -1,0 +1,28 @@
+flowchart TB
+    runner["Runner 完成开发<br/>complete --route needs_review --pr 813<br/>(exit=0,一切照规矩)"]
+    proj["系统按 land 模式设计<br/>把 session 记为 completed<br/>(这一步是对的:runner 不负责合并)"]
+    gate["审批门(gate holder)铸出 ✓<br/>head 绑定 PR #813 ✓"]
+    card["Discord 审批卡片已发出 ✓<br/>(card_message_id 存在)"]
+    admission["mailbox 投递审查<br/>question-admission"]
+    reject["❌ 卡死点(全案唯一断点)<br/>『session 已终态 → 拒绝投递』<br/>每 30 秒重试,永远不可能成功<br/>3 天后静默消失,无人知晓"]
+    lead["PM Lead 的 AI 会话<br/>从未收到『可以 ship 了』"]
+    annie["Annie 从未被通知"]
+    msgs["Lead 发给 runner 的 3 条消息<br/>(含正式回答)"]
+    dead["❌ 全部丢弃 recipient_terminal<br/>发信方却收到『发送成功』"]
+    alive["runner 还活着,在原地等回答<br/>(tmux 窗口健在,4 小时+)"]
+
+    runner --> proj
+    proj --> gate
+    gate --> card
+    gate --> admission
+    admission --> reject
+    reject -.->|"永远到不了"| lead
+    lead -.-> annie
+    msgs --> dead
+    dead -.->|"永远到不了"| alive
+
+    style reject fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style dead fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px
+    style card fill:#e8f6ec,stroke:#34c759
+    style gate fill:#e8f6ec,stroke:#34c759
+    style proj fill:#e8f0fb,stroke:#007aff

@@ -1,0 +1,24 @@
+flowchart TB
+    subgraph PR1["PR-1(第一交付,硬期限 08-15)"]
+        fixA["Fix A:投递审查改认『门』不认『人』<br/>engine 工作流的审批门以 gate holder 为准<br/>session 是否终态不再是门票"]
+        unstick["现场自动解堵:部署后 30 秒内<br/>卡住的门自然通过 → Lead 收到通知<br/>零手工手术"]
+    end
+
+    subgraph PR2["PR-2(紧随其后)"]
+        fixB["Fix B:永久送不出去的消息<br/>有限次内终结 + 可见告警<br/>(不再空转到静默消失)"]
+        fixC["Fix C:complete 命令的回执<br/>明确告诉 runner『你收工了,别等』<br/>或『留守等唤醒』(按真实流转记录判断)"]
+        fixD["Fix D:发给已终态 runner 的消息被丢弃时<br/>它的 Lead 必然收到死信通知(点名发信人)"]
+    end
+
+    followup["follow-up(另单):send 入口直接拒绝<br/>跨 Lead 直发 runner(堵路径 > 建护栏)"]
+
+    fixA --> unstick
+    PR1 --> PR2
+    PR2 -.-> followup
+
+    style fixA fill:#e8f6ec,stroke:#34c759,stroke-width:2px
+    style unstick fill:#fff8e1,stroke:#ff9500
+    style fixB fill:#e8f0fb,stroke:#007aff
+    style fixC fill:#e8f0fb,stroke:#007aff
+    style fixD fill:#e8f0fb,stroke:#007aff
+    style followup fill:#f3e8fb,stroke:#af52de

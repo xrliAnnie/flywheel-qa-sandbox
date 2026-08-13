@@ -356,24 +356,33 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	let attemptsMade = 0;
 	for (let attempt = 1; attempt <= ATTEMPT_COUNT; attempt += 1) {
 		attemptsMade = attempt;
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
 		try {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
-			let response: Response;
-			try {
-				response = await fetch(`${bridgeUrl}/events`, {
-					method: "POST",
-					headers,
-					body: JSON.stringify(body),
-					signal: controller.signal,
-				});
-			} finally {
-				clearTimeout(timer);
-			}
+			const response = await fetch(`${bridgeUrl}/events`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
 			if (response.ok) {
 				console.log(
 					`[complete] session_completed delivered (attempt ${attempt}/${ATTEMPT_COUNT})`,
 				);
+				try {
+					const parsed = JSON.parse(await response.text()) as {
+						completionDisposition?: unknown;
+					};
+					if (parsed.completionDisposition === "engine_gate_handoff") {
+						console.log(
+							"run 已进入 engine-owned gate;本节点已终结,不会有 approve/ship 环节找你;不要等待、不要跑 verify-approval,立即收尾退出。",
+						);
+					} else if (parsed.completionDisposition === "runner_ship_park") {
+						console.log("已 park 等待 ship gate;等 wake,勿自行轮询。");
+					}
+				} catch {
+					// A 2xx is authoritative; receipt guidance is best-effort compatibility.
+				}
 				return;
 			}
 			let responseText = "";
@@ -410,6 +419,8 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 			console.error(
 				`[complete] attempt ${attempt}/${ATTEMPT_COUNT} failed: ${lastError}`,
 			);
+		} finally {
+			clearTimeout(timer);
 		}
 		if (attempt < ATTEMPT_COUNT) {
 			const delay = BACKOFF_MS[attempt - 1] ?? 0;

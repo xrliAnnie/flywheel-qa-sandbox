@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1729 重启先拉最新 main — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 24px 16px 64px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 26px; color: #1a365d; margin: 8px 0 4px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+    border-left: 4px solid #007aff;
+  }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 18px; font-weight: 700; color: #1a365d; margin-bottom: 10px; }
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; padding: 2px 8px;
+    border-radius: 10px; vertical-align: 2px; margin-left: 8px;
+  }
+  .badge.done { background: #e8f8ee; color: #1d7a3e; }
+  .badge.warn { background: #fff4e5; color: #b36b00; }
+  .badge.attn { background: #ffecea; color: #c62d23; }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 22px; }
+  li { margin: 4px 0; }
+  code {
+    font-family: "SF Mono", Menlo, monospace; font-size: 12.5px;
+    background: #f0f0f2; border-radius: 4px; padding: 1px 5px; color: #1a365d;
+  }
+  .term { color: #86868b; font-size: 13px; }
+  .diagram-wrap { overflow-x: auto; margin: 14px 0; text-align: center; }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #fafafa; color: #1a365d; font-weight: 600; }
+  .verdict { font-weight: 700; color: #1d7a3e; }
+  .comment-box { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-box textarea {
+    width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 14px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-box textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #comment-summary-list { margin-top: 8px; }
+  .summary-item { margin: 8px 0; padding: 8px 10px; background: #fbfbfd; border-radius: 8px; border: 1px solid #e5e5ea; }
+  .summary-item .sec { font-weight: 600; color: #1a365d; font-size: 13px; display: block; margin-bottom: 2px; }
+  .summary-item .txt { white-space: pre-wrap; font-size: 14px; }
+  #copy-all-btn {
+    margin-top: 12px; background: #007aff; color: #fff; border: none;
+    border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  #copy-all-btn:active { opacity: .8; }
+  #copy-status { font-size: 13px; color: #34c759; margin-left: 10px; }
+  .muted { color: #86868b; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<h1>重启脚本:起步先拉最新 main</h1>
+<div class="subtitle">FLY-1729 · 设计方案 · 2026-08-12 · Codex 设计评审 6 轮通过</div>
+
+<!-- ═══════ S1 ═══════ -->
+<div class="card green" data-section="一句话总结">
+  <div class="section-title">一句话总结</div>
+  <p>给全舰重启脚本加一段「起飞前检查」(preflight<span class="term">,即正式动手前的一串安全核验</span>):先确认代码目录状态正常,再把它拉到 GitHub 上最新的 main<span class="term">(主干分支,所有已合入代码的唯一权威版本)</span>,任何一步不对就<b>响亮报警并停下</b>,绝不带着旧代码或可疑状态起舰。零新开关、零新机制——就是把你 8-12 那天看到 Lead 手动干的「拉代码 → 重编译 → 重启」机械化进脚本本身。</p>
+  <div class="comment-box"><label>对这一节的评论(自动保存在你本机)</label><textarea data-key="s1" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S2 ═══════ -->
+<div class="card red" data-section="事故回放">
+  <div class="section-title">事故回放:8-12 差点发生什么</div>
+  <p>重启脚本一直有个盲区:它部署的永远是「本机代码目录里当下是什么就是什么」,<b>从来不去 GitHub 拉最新代码</b>。自动更新器那条路(系统定时任务)会先拉再调它,所以没事;但 Lead 或人手动直接跑重启脚本时,没有任何人拉代码。</p>
+  <p>8-12 当天,生产代码目录落后 main <b>6 个提交</b>。如果直接重启,当晚要上线的两张卡(#807 / #814)根本不会生效——舰队会在旧代码上原地起舰,而且<b>不会有任何报错</b>。是重启前的一次演练模式(dry-run<span class="term">,只打印计划、不真执行的试跑</span>)露了馅,Lead 手动补拉了代码才救回来。</p>
+  <div class="comment-box"><label>对这一节的评论</label><textarea data-key="s2" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S3 ═══════ -->
+<div class="card" data-section="修法核心流程">
+  <div class="section-title">修法核心:七步起飞前检查</div>
+  <p>重启脚本抢到互斥锁之后、做任何真动作之前,插入这段检查。图里红色 = 直接停下并报警(需要人来处理),黄色 = 报警停下但等网络恢复重跑即可,蓝色 = 现有机器,一行不改:</p>
+  <div class="diagram-wrap"><!--SVG1--></div>
+  <p class="muted">「快进合并」(fast-forward merge):本地没有任何多余提交时,直接把本地指针推到最新 main,不产生新的合并痕迹——这是唯一允许的合并方式,保证部署的每个字节都来自 main 本身。演练模式跑同样的检查并打印「将要拉到哪个版本号」,但不真的动代码。</p>
+  <div class="comment-box"><label>对这一节的评论</label><textarea data-key="s3" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S4 ═══════ -->
+<div class="card" data-section="两条路径一条不变量">
+  <div class="section-title">修完后的格局:两条路径,一条不变量</div>
+  <div class="diagram-wrap"><!--SVG2--></div>
+  <p>自动更新器那条路完全不用改(它已经先拉后调);新检查对它只是几秒钟的幂等复核<span class="term">(重复执行也不改变结果的操作)</span>。从此不管谁、从哪条路触发重启,都共享同一条铁律:<b>重启起步那一刻,代码目录必然等于最新 main</b>。</p>
+  <div class="comment-box"><label>对这一节的评论</label><textarea data-key="s4" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S5 ═══════ -->
+<div class="card amber" data-section="关键取舍">
+  <div class="section-title">关键取舍与被拒方案 <span class="badge attn">第 1 条请你过目</span></div>
+  <table>
+    <tr><th style="width:28%">决策</th><th>取舍理由 / 被拒的方案</th></tr>
+    <tr>
+      <td><b>① build 失败后的行为:沿用既有「回滚重启旧版」,偏离 issue 字面「不重启」</b></td>
+      <td>你的原话是「build<span class="term">(把源码编译成可运行产物)</span>失败同样 fail-loud 不重启」。但现有机器的真实顺序是:先停掉 Bridge、再 build——build 失败时 Bridge 已经停了,字面上的「不重启」= 舰队保持死机。既有机制会自动回滚到旧版本、重启旧版恢复服务、响亮报警、且绝不把失败版本记成「已部署」。<b>本设计保留这个既有行为</b>(精神上满足:不在坏状态上完成部署、必须响亮;字面上偏离:它会用旧版重启)。要改成字面语义得把 build 挪到停机之前,那是对部署链的真实重排、另有风险,建议不塞进这张卡。<b>你若不同意,评论区说一声,我们另立 issue 做重排。</b></td>
+    </tr>
+    <tr>
+      <td>② 断网时,重启会被拒绝</td>
+      <td>拉不到 GitHub = 不知道 main 最新是什么,继续跑就是「可能又在旧码上起舰」——正是本次事故。所以拉取失败一律报警停下(等网络恢复重跑即可)。真正的崩溃恢复不靠这个脚本:Bridge 挂了由 macOS 的系统服务管家 launchd 自动拉起,不受影响。被拒方案:加个「跳过拉取」的开关——违背你「零新 flag」红线,且开关一定会被误用。</td>
+    </tr>
+    <tr>
+      <td>③ 拉代码放在锁内,接受「重启逻辑本身晚一代」</td>
+      <td>手动直调时,本次运行使用的是启动那一刻的旧版重启脚本去部署新代码(下次重启自愈)。被拒方案:拉完代码后让脚本「重新执行自己的新版本」——会撞上自己持有的锁造成自锁死,属于真实新机制 + 真实死锁风险。另一个被拒方案:在抢锁之前拉代码——会和正在进行中的另一场重启的 build 抢代码目录,可能编译出损坏产物。</td>
+    </tr>
+    <tr>
+      <td>④ 本地有多余提交/分叉时,只报警不清理</td>
+      <td>绝不 <code>reset --hard</code><span class="term">(git 的强制还原,会永久丢弃本地未上传的东西)</span>——它会吞掉未知的本地状态。留给人裁决。</td>
+    </tr>
+    <tr>
+      <td>⑤ 顺手修掉一个既有隐患</td>
+      <td>评审中发现:现有「特殊切换流程安全闸」里,git 读取失败会被误当成「不需要切换」放行(fail-open)。本设计把它改成读取失败 = 报警停下(fail-closed),自动更新器那边的可观察行为保持逐字不变。</td>
+    </tr>
+  </table>
+  <div class="comment-box"><label>对这一节的评论(尤其第 ① 条)</label><textarea data-key="s5" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S6 ═══════ -->
+<div class="card gray" data-section="诚实边界">
+  <div class="section-title">诚实边界:这个设计不做什么</div>
+  <ul>
+    <li><b>不改自动更新器的拉取流程</b>——它本来就是对的;更新器在重启锁之外拉代码的既有小窗口也不在本单修(单列观察)。</li>
+    <li><b>不消除直调路径「重启逻辑晚一代」</b>(见取舍③,下次重启自愈)。</li>
+    <li><b>不加任何跳过开关、不加可调参数</b>——拉取限时 120 秒是写死的常量。</li>
+    <li><b>不代替人清理</b>本地脏改动或分叉,也不动其它项目仓的检测逻辑。</li>
+    <li><b>不重排 build/停机顺序</b>(见取舍①,你若要,另立 issue)。</li>
+  </ul>
+  <div class="comment-box"><label>对这一节的评论</label><textarea data-key="s6" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ S7 ═══════ -->
+<div class="card purple" data-section="质量与验收">
+  <div class="section-title">质量与验收</div>
+  <p><b>Codex 设计评审:6 轮,最终 APPROVED。</b>每轮都在抓真问题并收敛(5 → 3 → 2 → 4 → 2 → 0):包括「本地领先时假装拉成功」的部署漏洞、拉取窗口内切分支/变脏的竞态、安全闸 fail-open、演练模式的告警刷屏风险等,全部折进方案。</p>
+  <p><b>测试计划</b>(实现节点执行,先写测试再写代码):函数级 20+ 个隔离场景(落后/领先/分叉/脏/断网/超时/安全闸/演练模式,全部用真 git 仓库离线复现,不用假 git);顶层全脚本级用例(证明检查真的插在锁后、任何动作之前,失败时零服务变动);既有重启测试家族全量回归。</p>
+  <p><b>你的三条验收标准逐条映射:</b></p>
+  <ol>
+    <li>制造「落后 N 个提交」→ 重启 → 起舰后运行版本 == 最新 main ✅(函数级 + 顶层 + 真机各一层)</li>
+    <li>本地脏改动 → 响亮拒绝,信息指明原因 ✅</li>
+    <li>演练模式输出「将要拉到哪个版本号」✅</li>
+  </ol>
+  <p class="muted">真机验收由独立 QA 节点在实现合入后执行;部署本身照旧走你批准的 ship 流程。</p>
+  <div class="comment-box"><label>对这一节的评论</label><textarea data-key="s7" placeholder="留空 = 没意见"></textarea></div>
+</div>
+
+<!-- ═══════ 汇总 ═══════ -->
+<div class="card green" data-section="评论汇总">
+  <div class="section-title">你的评论汇总</div>
+  <p class="muted">下面自动汇集你在各节留下的非空评论(存在你浏览器本机,刷新不丢)。</p>
+  <div id="comment-summary-list"><p class="muted" id="no-comments-hint">(还没有评论)</p></div>
+  <button id="copy-all-btn" type="button">复制全部评论</button><span id="copy-status"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX;
+  try { PREFIX = "fly1729-comments:" + location.pathname + ":"; }
+  catch (e) { PREFIX = "fly1729-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(ta) {
+    var card = ta.closest("[data-section]");
+    return card ? card.getAttribute("data-section") : ta.getAttribute("data-key");
+  }
+
+  function collect() {
+    var items = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) items.push({ sec: sectionTitleFor(ta), txt: v });
+    });
+    return items;
+  }
+
+  function renderSummary() {
+    var list = document.getElementById("comment-summary-list");
+    var items = collect();
+    while (list.firstChild) list.removeChild(list.firstChild);
+    if (!items.length) {
+      var hint = document.createElement("p");
+      hint.className = "muted";
+      hint.textContent = "(还没有评论)";
+      list.appendChild(hint);
+      return;
+    }
+    items.forEach(function (it) {
+      var wrap = document.createElement("div");
+      wrap.className = "summary-item";
+      var sec = document.createElement("span");
+      sec.className = "sec";
+      sec.textContent = "【" + it.sec + "】";
+      var txt = document.createElement("span");
+      txt.className = "txt";
+      txt.textContent = it.txt;
+      wrap.appendChild(sec);
+      wrap.appendChild(txt);
+      list.appendChild(wrap);
+    });
+  }
+
+  boxes.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = lsGet(key);
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function fallbackCopy(text) {
+    var tmp = document.createElement("textarea");
+    tmp.value = text;
+    tmp.setAttribute("readonly", "");
+    tmp.style.position = "fixed";
+    tmp.style.left = "-9999px";
+    document.body.appendChild(tmp);
+    tmp.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(tmp);
+    return ok;
+  }
+
+  function setStatus(msg) {
+    var el = document.getElementById("copy-status");
+    el.textContent = msg;
+    setTimeout(function () { el.textContent = ""; }, 2500);
+  }
+
+  document.getElementById("copy-all-btn").addEventListener("click", function () {
+    var items = collect();
+    if (!items.length) { setStatus("没有可复制的评论"); return; }
+    var text = items.map(function (it) { return "【" + it.sec + "】\n" + it.txt; }).join("\n\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus("已复制 ✓"); },
+        function () { setStatus(fallbackCopy(text) ? "已复制 ✓" : "复制失败,请手动选取"); }
+      );
+    } else {
+      setStatus(fallbackCopy(text) ? "已复制 ✓" : "复制失败,请手动选取");
+    }
+  });
+})();
+</script>
+</body>
+</html>
