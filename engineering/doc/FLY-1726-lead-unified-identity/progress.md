@@ -1,14 +1,14 @@
 ---
 issue: FLY-1726
 phase: implement
-phaseCursor: 5/7
-updated: 2026-08-13T06:29:37.103Z
-nextStep: Audit current QA-gap fix with focused tests, then run fresh full-repo
-  gates and exact-head code review
+phaseCursor: 7/7
+updated: 2026-08-13T06:49:27.653Z
+nextStep: "Push immutable head, obtain exact-head code-review approval, and hand
+  PR #825 to independent QA/review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1726 progress
-**phase**: implement (5/7)
-**next**: Audit current QA-gap fix with focused tests, then run fresh full-repo gates and exact-head code review
+**phase**: implement (7/7)
+**next**: Push immutable head, obtain exact-head code-review approval, and hand PR #825 to independent QA/review
