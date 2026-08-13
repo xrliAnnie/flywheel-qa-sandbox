@@ -214,3 +214,15 @@ export interface LeadConfig {
 | plugin fork 全舰同时生效 | §9 runbook:QA 房→canary→fleet;回滚先 plugin 后主仓 |
 | `FLYWHEEL_PROJECTS` env 整库覆盖口 | resolver 不读它;不投影进 Lead;Bridge 自身入口保留现状并记录为已知边界,收口时机随 1715 census 观察再议 |
 | bespoke launcher selector 硬编码残留(project+lead) | 允许:selector 不是身份事实,只是「我要启动谁」;身份事实全部经 resolver |
+
+## 13. QA 实测修正(2026-08-13,详见 design-correction.md)
+
+方案本体不变;QA 独立实测判 FAIL 的两个口按 Lead 指令折入实施面:
+
+- **FAIL-1(HIGH)**:`test-deploy.sh` 两个 Bridge 启动 env 块补 `TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}"` + shell 断言防静默退化(§5 的必填化设计不回退,这是 QA 房 plumbing 缺口);
+- **FAIL-2(LOW)**:`lead-identity-failure.ts` failureDir 解析链加 `FLYWHEEL_IDENTITY_FAILURE_DIR` env 覆盖口(`input.failureDir ?? env ?? homedir 默认`),QA 房注入 slot 本地目录;生产 unset 路径逐字不变。
+
+**Ship 卡三条硬前置(出卡时印卡面,任一未完成不得 :cool:)**:
+1. `migrate-bot-user-ids` 先跑并逐验 **16/16**(§7.1);
+2. **build 与全舰换代必须同一次原子动作**——生产 14 条 `lead_lease` 行 `identity_digest` 全 NULL,新 `authorizeLeadWrite` 先查身份 ⇒ 只 build 不换体 = 全 Lead send/respond 被拒(§2.1 NULL 不放行的运维推论);
+3. 插件配套 PR(claude-plugins-official #22,exact-head APPROVED)按双仓顺序:QA 房 → canary → fleet;回滚先 plugin 后主仓(§9)。

@@ -52,7 +52,7 @@
 <body>
 <div class="wrap">
   <h1>Lead 统一身份 — 设计方案</h1>
-  <div class="meta">FLY-1726 · 设计议题(基础层 E1.75)· 2026-08-12 · 状态:Codex 设计评审 5 轮通过 · 本页可逐节留言,页底一键复制</div>
+  <div class="meta">FLY-1726 · 设计议题(基础层 E1.75)· 2026-08-12 · 状态:Codex 设计评审 5 轮通过 · 2026-08-13 QA 实测修正折入(第 9 节)· 本页可逐节留言,页底一键复制</div>
 
   <div class="card green" data-section="一句话总结">
     <h2>1. 一句话总结</h2>
@@ -162,13 +162,30 @@
     <div class="comment-block"><label>对这一节的评论(自动保存)</label><textarea data-key="s8" placeholder="写下你的想法…"></textarea></div>
   </div>
 
+  <div class="card purple" data-section="QA 实测修正">
+    <h2>9. QA 实测后的增量修正(2026-08-13)</h2>
+    <p>独立 QA 在隔离测试房实测了这套设计的实现。<strong>核心能力全部通过</strong>:嵌合体在第一道核验就被拦下、写账闸对错身份 fail-closed、部署闸按设计拒绝带病上线。抓到两个洞,<strong>方案本体不变</strong>,只补两个口:</p>
+    <table>
+      <tr><th>洞</th><th>是什么</th><th>怎么补</th></tr>
+      <tr><td>测试房起不来(高)</td><td>设计把「默认 Lead」从静默默认值改成必填——这正是要的 fail-loud;但 QA 测试房自己的启动脚本没跟着填这个值,于是测试房一启动就退出</td><td>启动脚本补填该值,再加一条断言防止将来又被静默漏掉。<strong>必填化不回退</strong></td></tr>
+      <tr><td>失败留痕落错抽屉(低)</td><td>核验失败的本地留痕文件,目录写死在生产的家目录——测试房里的失败也会写进生产的抽屉</td><td>给目录加一个可覆盖的环境变量口;测试房写自己的抽屉,生产不设时行为一个字节不变</td></tr>
+    </table>
+    <h3>上线前三道硬前置(出卡时印在审批卡面)</h3>
+    <ol>
+      <li><strong>先迁数据再上代码</strong>:16 个 Lead 的 bot 编号先迁入登记簿并逐一核验(16/16)——数据不齐就上代码,全舰会按设计拒绝启动;</li>
+      <li><strong>构建与全舰换体必须是同一次原子动作</strong>:生产 14 张在位凭证还没带身份指纹,新的写账闸先查身份——只上代码不换身体,全部 Lead 的发言和记账会被自己的新闸拒绝;</li>
+      <li><strong>插件配套改动按双仓顺序上</strong>(另一个仓的 PR #22,评审已过):测试房 → 单个 Lead 灰度 → 全舰;回滚顺序相反,先退插件再退主仓。</li>
+    </ol>
+    <div class="comment-block"><label>对这一节的评论(自动保存)</label><textarea data-key="s9" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
   <div class="card" id="summary-card" data-section="评论汇总">
     <h2>你的评论汇总</h2>
     <div id="comment-summary"><p class="empty">还没有评论——在上面任意小节的输入框里写,这里会实时汇总。</p></div>
     <button id="copy-all" type="button">复制全部评论</button><span id="copy-status"></span>
   </div>
 
-  <p class="footnote">文档:engineering/doc/FLY-1726-lead-unified-identity/(exploration / research / plan / 本页)· 参考料:FLY-1710 redo-design(已下线并入本单)· #815 代码冻结只取器官思想</p>
+  <p class="footnote">文档:engineering/doc/FLY-1726-lead-unified-identity/(exploration / research / plan / design-correction / 本页)· 参考料:FLY-1710 redo-design(已下线并入本单)· #815 代码冻结只取器官思想</p>
 </div>
 
 <script nonce="__CSP_NONCE__">
