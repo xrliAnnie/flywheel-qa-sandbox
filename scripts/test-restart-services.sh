@@ -260,11 +260,13 @@ rn_run_terminal_case() {
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
       restart_voice_bridge_managed() {
-        VOICE_BRIDGE_RESTART_DETAIL=""
-        return 0
+        VOICE_BRIDGE_RESTART_DETAIL="simulated voice rollback failure"
+        [[ "$mode" != "rollback-voice-failed" ]]
       }
       trigger_cmux_refresh() { :; }
       do_restart_all_leads() {
+        mkdir -p "$case_root"
+        : > "$case_root/lead-restart-called"
         case "$mode" in
           rollback-result-unreadable) printf "garbage\n" ;;
           rollback-leads-failed) printf "skipped:0 failed:1 total:1\n" ;;
@@ -295,7 +297,7 @@ rn_run_terminal_case() {
         rollback-no-sha)
           rollback_and_restart "" || true
           ;;
-        rollback-result-unreadable|rollback-leads-failed|rollback-recovered)
+        rollback-result-unreadable|rollback-leads-failed|rollback-recovered|rollback-voice-failed)
           restart_all_leads=true
           rollback_and_restart 1111111 || true
           ;;
@@ -309,7 +311,12 @@ rn_run_terminal_case() {
       "$mode" "$alerts_file" "$TMPDIR_ROOT/terminal-${mode}"
     rc=$?
     set -e
+    local recovery_ok=true
+    if [[ "$mode" == "rollback-voice-failed" && ! -f "$TMPDIR_ROOT/terminal-${mode}/lead-restart-called" ]]; then
+        recovery_ok=false
+    fi
     if (( rc == 29 )) \
+      && [[ "$recovery_ok" == "true" ]] \
       && [[ "$(grep -c ":${expected_signature}$" "$alerts_file" || true)" == "1" ]] \
       && ! grep -q ':restart-aborted-unexpectedly$' "$alerts_file"; then
         pass "FLY-1603 parent terminal registration: $mode"
@@ -326,6 +333,7 @@ rn_run_terminal_case rollback-port-stuck rollback-port-stuck
 rn_run_terminal_case rollback-result-unreadable rollback-lead-result-unreadable
 rn_run_terminal_case rollback-leads-failed rollback-leads-failed
 rn_run_terminal_case rollback-recovered update-rolled-back
+rn_run_terminal_case rollback-voice-failed rollback-voice-bridge-failed
 
 echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
 rn_restart_all_func="$TMPDIR_ROOT/restart-all-leads.sh"

@@ -474,7 +474,7 @@ check_discord_plugin_fork() {
     # The canonical checker owns registry/installPath/remote-SHA authority.
     # restart-services must not maintain a second clone-based freshness model.
     if [[ ! -x "$DISCORD_PLUGIN_CHECK" || ! -x "$DISCORD_PLUGIN_UPDATE" ]]; then
-if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
             log "DRY RUN: managed Discord plugin operations are missing; the real restart would fail before mutation"
             return 1
         fi
@@ -498,7 +498,7 @@ if [[ "$DRY_RUN" == "true" ]]; then
 
     # Dry-run mode: checker is read-only (bounded remote SHA lookup), updater is
     # never invoked.
-    if [[ "$DRY_RUN" == "true" ]]; then
+if [[ "$DRY_RUN" == "true" ]]; then
         if bash "$DISCORD_PLUGIN_CHECK" >/dev/null 2>&1; then
             log "DRY RUN: Discord plugin pointer is current"
             return 1
@@ -1843,12 +1843,6 @@ rollback_and_restart() {
             start_bridge
             resume_admission_best_effort
         fi
-        if ! restart_voice_bridge_managed; then
-            alert_severe "rollback-voice-bridge-failed" "Flywheel deploy failed" \
-                "Flywheel 已回滚并重建到 \`${rollback_sha:0:7}\`，但 voice-bridge 旧版本受管重启/健康复验失败 (${VOICE_BRIDGE_RESTART_DETAIL})。deployed-sha 未推进，需要手动介入。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
         local rb_leads_failed=0
         if [[ "$restart_all_leads" == "true" ]]; then
             # FLY-270 (R1#4): parse the Lead-restart result instead of discarding
@@ -1865,6 +1859,12 @@ rollback_and_restart() {
             fi
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
+        fi
+        if ! restart_voice_bridge_managed; then
+            alert_severe "rollback-voice-bridge-failed" "Flywheel deploy failed" \
+                "Flywheel 已回滚并重建到 \`${rollback_sha:0:7}\`，但 voice-bridge 旧版本受管重启/健康复验失败 (${VOICE_BRIDGE_RESTART_DETAIL})。Lead 恢复波次已先执行，deployed-sha 未推进，需要手动介入。"
+            RESTART_TERMINAL_REPORTED=true
+            return 1
         fi
         if (( rb_leads_failed > 0 )); then
             alert_severe "rollback-leads-failed" "Flywheel deploy failed" \
