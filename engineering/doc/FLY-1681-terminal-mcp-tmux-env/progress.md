@@ -1,13 +1,13 @@
 ---
 issue: FLY-1681
-phase: design
-phaseCursor: 4/4
-updated: 2026-08-13T06:58:08.573Z
-nextStep: complete --route phase_design_complete
+phase: implement
+phaseCursor: 1/5
+updated: 2026-08-13T07:01:30.480Z
+nextStep: audit code/test baseline and write RED regression tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1681 progress
-**phase**: design (4/4)
-**next**: complete --route phase_design_complete
+**phase**: implement (1/5)
+**next**: audit code/test baseline and write RED regression tests
