@@ -1432,7 +1432,10 @@ EOF
     cat "$XPROD_IDENTITY" >> "${XDIR}/test-identity.md"
 
     XLEAD_LOG="${XDIR}/lead.log"
-    XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} "${XTOKEN_ENV_NAME}=${XTOKEN}")
+    # qa_slot_start_lead writes this Lead's canonical token to its wrapper env
+    # file. Do not also put it in launchEnvironment: wrapper-v2 rejects that
+    # competing secret source before projecting any identity.
+    XLEAD_ENV=(${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"})
     log "Starting extra test Lead: ${XAGENT} (slot ${XSID} bot, label ${XLABEL}, channel ${XCHANNEL})"
     # FLY-1389 P0-d: extra Leads are fresh too — drop any stale session-id.
     rm -f "${HOME}/.flywheel/claude-sessions/${TEST_PROJECT_NAME}-${XAGENT}.session-id"

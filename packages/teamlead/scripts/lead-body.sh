@@ -57,6 +57,10 @@ if [ -f "$ENV_FILE" ]; then
   [ "$_v2_body_allexport_was_on" = true ] || set +a
   unset _v2_body_allexport_was_on
 fi
+if [ "${FLYWHEEL_PROJECTS+x}" = x ]; then
+  echo "[lead-body] ERROR: identity_env_source_forbidden: FLYWHEEL_PROJECTS may not be supplied by ${ENV_FILE}; use canonical FLYWHEEL_PROJECTS_FILE" >&2
+  exit 1
+fi
 unset FLYWHEEL_LEAD_CARRIER_PID FLYWHEEL_LEAD_CARRIER_START
 
 for ((_v2_identity_index = 0; _v2_identity_index < ${#_V2_IDENTITY_ENV_NAMES[@]}; _v2_identity_index++)); do

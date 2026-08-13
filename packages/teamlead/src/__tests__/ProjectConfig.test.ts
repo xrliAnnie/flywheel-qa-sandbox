@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type LeadConfig,
@@ -118,6 +121,53 @@ describe("FLY-1726 identity schema boundary", () => {
 		expect(projects[0]!.leads[0]!.discordStateDir).toBe(
 			"/tmp/fly1726-not-yet-provisioned/eng",
 		);
+	});
+});
+
+describe("FLY-1726 loadProjects registry source", () => {
+	const originalInline = process.env.FLYWHEEL_PROJECTS;
+	const originalFile = process.env.FLYWHEEL_PROJECTS_FILE;
+	const originalHome = process.env.HOME;
+	const tempDirs: string[] = [];
+
+	afterEach(() => {
+		if (originalInline === undefined) delete process.env.FLYWHEEL_PROJECTS;
+		else process.env.FLYWHEEL_PROJECTS = originalInline;
+		if (originalFile === undefined) delete process.env.FLYWHEEL_PROJECTS_FILE;
+		else process.env.FLYWHEEL_PROJECTS_FILE = originalFile;
+		if (originalHome === undefined) delete process.env.HOME;
+		else process.env.HOME = originalHome;
+		for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true });
+	});
+
+	it("loads the exact registry named by FLYWHEEL_PROJECTS_FILE", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1726-projects-file-"));
+		tempDirs.push(dir);
+		const projectsFile = join(dir, "projects.json");
+		writeFileSync(
+			projectsFile,
+			JSON.stringify([
+				{
+					projectName: "qa-slot",
+					projectRoot: "/tmp/qa-slot",
+					leads: [
+						{
+							agentId: "qa-lead",
+							chatChannel: "qa-channel",
+							match: { labels: ["QA"] },
+						},
+					],
+				},
+			]),
+		);
+
+		delete process.env.FLYWHEEL_PROJECTS;
+		process.env.FLYWHEEL_PROJECTS_FILE = projectsFile;
+		process.env.HOME = join(dir, "empty-home");
+
+		const projects = loadProjects();
+		expect(projects).toHaveLength(1);
+		expect(projects[0]!.projectName).toBe("qa-slot");
 	});
 });
 
@@ -895,6 +945,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 	let savedTokenEnv: string | undefined;
 
 	afterEach(() => {
+		vi.restoreAllMocks();
 		if (originalEnv === undefined) {
 			delete process.env.FLYWHEEL_PROJECTS;
 		} else {
@@ -930,17 +981,34 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		expect(projects[0]!.leads[0]!.botTokenEnv).toBe("TEST_PETER_TOKEN");
 	});
 
-	it("fails loud when botTokenEnv is set but the named secret is missing", () => {
+	it("loads a multi-Lead registry when only the current Lead token is available", () => {
 		savedTokenEnv = process.env.TEST_PETER_TOKEN;
-		delete process.env.TEST_PETER_TOKEN;
+		process.env.TEST_PETER_TOKEN = "current-lead-token";
+		delete process.env.FLY1726_FOREIGN_LEAD_TOKEN;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
 				projectName: "test",
 				projectRoot: "/tmp",
-				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
+				leads: [
+					{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" },
+					{
+						agentId: "eng-lead",
+						chatChannel: "789",
+						match: { labels: ["Engineering"] },
+						botTokenEnv: "FLY1726_FOREIGN_LEAD_TOKEN",
+						botUserId: "22345678901234567",
+					},
+				],
 			},
 		]);
-		expect(() => loadProjects()).toThrow(/TEST_PETER_TOKEN.*not found/);
+
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.botToken).toBe("current-lead-token");
+		expect(projects[0]!.leads[1]!.botToken).toBeUndefined();
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/FLY1726_FOREIGN_LEAD_TOKEN.*not found/),
+		);
 	});
 
 	it("botToken is undefined when botTokenEnv is not configured (backward-compat)", () => {

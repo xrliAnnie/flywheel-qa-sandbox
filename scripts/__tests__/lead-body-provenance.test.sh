@@ -52,6 +52,21 @@ else
   fail "lead-body identity capture drifted (rc=$rc out=$out)"
 fi
 
+printf '%s\n' 'FLYWHEEL_PROJECTS=[{"projectName":"foreign"}]' >> "$TMP/home/.env"
+out="$(HOME="$TMP/home" FLYWHEEL_STATE_DIR="$TMP/home" FLYWHEEL_WRAPPER_ENV_FILE="$TMP/home/.env" \
+  FLYWHEEL_LEAD_ID=ops-lead LEAD_ID=ops-lead \
+  FLYWHEEL_PROJECT_NAME=demo PROJECT_NAME=demo \
+  FLYWHEEL_PROJECTS_FILE="$TMP/projects.json" \
+  DISCORD_STATE_DIR="$TMP/discord-state" DISCORD_BOT_TOKEN=canonical-token \
+  bash "$TMP/body/lead-body.sh" "$TMP/manifest.json" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] \
+    && grep -q 'identity_env_source_forbidden.*FLYWHEEL_PROJECTS' <<<"$out" \
+    && ! grep -q '^IDENTITY=' <<<"$out"; then
+  pass "lead-body rejects an inline registry injected by .env before child projection"
+else
+  fail "lead-body accepted an inline registry from .env (rc=$rc out=$out)"
+fi
+
 out="$(HOME="$TMP/home" FLYWHEEL_STATE_DIR="$TMP/home" FLYWHEEL_WRAPPER_ENV_FILE=/dev/null \
   FLYWHEEL_LEAD_CARRIER_PID=bad FLYWHEEL_LEAD_CARRIER_START=bad \
   DISCORD_BOT_TOKEN=canonical-token \

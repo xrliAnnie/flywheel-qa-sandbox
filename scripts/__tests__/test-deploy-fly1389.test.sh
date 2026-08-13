@@ -108,11 +108,6 @@ cat > "$FR/scripts/flywheel-lead-wrapper-v2.sh" <<'STUBCARRIER'
 # fly1389-stub-lead-marker
 set -euo pipefail
 MANIFEST="$1"
-while IFS=$'\t' read -r name value; do
-  printf -v "$name" '%s' "$value"
-  export "$name"
-done < <(jq -r '.launchEnvironment | to_entries[] | [.key,.value] | @tsv' "$MANIFEST")
-source "$FLYWHEEL_WRAPPER_ENV_FILE"
 AGENT=$(jq -r '.leadId' "$MANIFEST")
 PROJ=$(jq -r '.projectName' "$MANIFEST")
 PROJECTS_FILE=$(jq -r '.projectsFile' "$MANIFEST")
@@ -121,6 +116,16 @@ LEAD_ROW=$(jq -cer --arg project "$PROJ" --arg agent "$AGENT" '
   | if length == 1 then .[0] else error("expected exactly one canonical Lead row") end
 ' "$PROJECTS_FILE")
 TOKEN_ENV=$(jq -r '.botTokenEnv' <<<"$LEAD_ROW")
+if jq -e --arg name "$TOKEN_ENV" '.launchEnvironment | has($name)' \
+    "$MANIFEST" >/dev/null; then
+  echo "identity_launch_env_conflict $TOKEN_ENV may not be supplied by the manifest" >&2
+  exit 86
+fi
+while IFS=$'\t' read -r name value; do
+  printf -v "$name" '%s' "$value"
+  export "$name"
+done < <(jq -r '.launchEnvironment | to_entries[] | [.key,.value] | @tsv' "$MANIFEST")
+source "$FLYWHEEL_WRAPPER_ENV_FILE"
 export FLYWHEEL_LEAD_ID="$AGENT"
 export LEAD_ID="$AGENT"
 export FLYWHEEL_PROJECT_NAME="$PROJ"

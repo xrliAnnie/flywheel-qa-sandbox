@@ -296,8 +296,11 @@ export function loadProjects(): ProjectEntry[] {
 	if (envProjects) {
 		raw = JSON.parse(envProjects);
 	} else {
-		// Source 2: ~/.flywheel/projects.json
-		const filePath = join(homedir(), ".flywheel", "projects.json");
+		// Source 2: the wrapper-selected registry file. Source 3 is the resident
+		// default for processes that were not launched through a scoped wrapper.
+		const filePath =
+			process.env.FLYWHEEL_PROJECTS_FILE ??
+			join(homedir(), ".flywheel", "projects.json");
 		try {
 			const data = readFileSync(filePath, "utf-8");
 			raw = JSON.parse(data);
@@ -330,9 +333,9 @@ export function loadProjects(): ProjectEntry[] {
 				if (resolved) {
 					lead.botToken = resolved;
 				} else {
-					throw new Error(
+					console.warn(
 						`[loadProjects] "${entry.projectName}" lead "${lead.agentId}": ` +
-							`botTokenEnv="${botTokenEnv}" not found in env`,
+							`botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,
 					);
 				}
 			}
