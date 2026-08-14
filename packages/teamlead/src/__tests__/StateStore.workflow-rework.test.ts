@@ -944,6 +944,134 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
+	it("fences rework supersession by the durable delivery tuple, not wall-clock lease expiry", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const route = store.getLatestWorkflowReworkRoute(requestId)!;
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-a",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:01.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			const authority = {
+				requestId,
+				ownerId: "coordinator-a",
+				generation: claim.generation,
+				routeRevision: route.revision,
+				executionId: route.preferred_actor_execution_id,
+			};
+
+			// The durable generation remains authoritative even after its wall-clock
+			// lease would have expired; only an actual takeover revokes the fence.
+			expect(store.checkWorkflowReworkSupersessionAuthority(authority)).toEqual(
+				{
+					ok: true,
+				},
+			);
+			expect(
+				store.releaseWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator-a",
+					generation: claim.generation,
+					error: "supersession retry",
+					now: "2026-07-23T00:11:02.000Z",
+				}),
+			).toEqual({ ok: true });
+			const takeover = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-b",
+				now: "2026-07-23T00:12:02.000Z",
+				leaseExpiresAt: "2026-07-23T00:12:32.000Z",
+			});
+			expect(takeover).toMatchObject({ ok: true, generation: 2 });
+			expect(store.checkWorkflowReworkSupersessionAuthority(authority)).toEqual(
+				{
+					ok: false,
+					reason: "rework_supersession_delivery_changed",
+				},
+			);
+		} finally {
+			store.close();
+		}
+	});
+
+	it.each([
+		{
+			name: "route actor changes",
+			reason: "rework_supersession_route_changed",
+			mutate: (store: StateStore, requestId: string) => {
+				const raw = store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				};
+				raw.db.run(
+					`INSERT INTO workflow_rework_route_revision
+					   (request_id, revision, target_node_id, target_attempt,
+					    preferred_actor_execution_id, invalidation_scope_json,
+					    verification_policy_json, interpreted_by,
+					    interpretation_reason, created_at)
+					 SELECT request_id, 2, target_node_id, target_attempt,
+					        preferred_actor_execution_id, invalidation_scope_json,
+					        verification_policy_json, 'test:reroute',
+					        'authority changed', '2026-07-23T00:11:01.000Z'
+					   FROM workflow_rework_route_revision
+					  WHERE request_id = ? AND revision = 1`,
+					[requestId],
+				);
+			},
+		},
+		{
+			name: "target actor changes",
+			reason: "rework_supersession_target_changed",
+			mutate: (store: StateStore) => {
+				store.upsertWorkflowRunNode({
+					runId: "run-heavy",
+					nodeId: "implement",
+					attempt: 2,
+					state: "pending",
+					executionId: "replacement-exec",
+				});
+			},
+		},
+		{
+			name: "run becomes terminal",
+			reason: "rework_supersession_run_not_active",
+			mutate: (store: StateStore) => {
+				const raw = store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				};
+				raw.db.run(
+					"UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-heavy'",
+				);
+			},
+		},
+	])("revokes rework supersession authority when the $name", async (entry) => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const route = store.getLatestWorkflowReworkRoute(requestId)!;
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-a",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			entry.mutate(store, requestId);
+			expect(
+				store.checkWorkflowReworkSupersessionAuthority({
+					requestId,
+					ownerId: "coordinator-a",
+					generation: claim.generation,
+					routeRevision: route.revision,
+					executionId: route.preferred_actor_execution_id,
+				}),
+			).toEqual({ ok: false, reason: entry.reason });
+		} finally {
+			store.close();
+		}
+	});
+
 	it("deduplicates stall alerts by frozen route revision across claim churn without colliding with legacy keys", async () => {
 		const { store, requestId } = await createPendingHeavyRework();
 		try {

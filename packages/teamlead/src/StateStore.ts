@@ -12184,6 +12184,142 @@ export class StateStore {
 		return row ? this.workflowEngineParkOutboxFromRow(row) : undefined;
 	}
 
+	private appendWorkflowEngineParkSettlementClearTx(input: {
+		open: WorkflowEngineParkOutboxRow;
+		createdAt: string;
+	}): void {
+		const eventId = `engine-park-settle:${input.open.execution_id}:${input.open.generation}`;
+		const prior = this.workflowSelectAll(
+			"SELECT * FROM workflow_engine_park_outbox WHERE event_id = ?",
+			[eventId],
+		)[0];
+		if (prior) {
+			const clear = this.workflowEngineParkOutboxFromRow(prior);
+			if (
+				clear.project_name !== input.open.project_name ||
+				clear.execution_id !== input.open.execution_id ||
+				clear.run_id !== input.open.run_id ||
+				clear.node_id !== input.open.node_id ||
+				clear.attempt !== input.open.attempt ||
+				clear.activation_id !== input.open.activation_id ||
+				clear.generation <= input.open.generation ||
+				clear.event !== "park_cleared" ||
+				clear.reason !== "rework_reachable_wait"
+			) {
+				throw new Error("workflow_engine_park_settlement_conflict");
+			}
+			return;
+		}
+		this.appendWorkflowEngineParkEventTx({
+			eventId,
+			projectName: input.open.project_name,
+			executionId: input.open.execution_id,
+			runId: input.open.run_id,
+			nodeId: input.open.node_id,
+			attempt: input.open.attempt,
+			activationId: input.open.activation_id,
+			event: "park_cleared",
+			reason: "rework_reachable_wait",
+			createdAt: input.createdAt,
+		});
+	}
+
+	/**
+	 * Settle only exact-current parks opened by generalized land completions.
+	 * Existing post-ship finalization may have already made the session terminal;
+	 * that legitimate ordering still needs a ledger-only clear.
+	 */
+	private settleReworkParksForRunTx(runId: string, settledAt: string): void {
+		const opens = this.workflowSelectAll(
+			`SELECT park.*
+			   FROM workflow_engine_park_outbox park
+			  WHERE park.run_id = ?
+			    AND park.event = 'park_opened'
+			    AND park.reason = 'rework_reachable_wait'
+			    AND (
+			      park.generation = (
+			        SELECT MAX(latest.generation)
+			          FROM workflow_engine_park_outbox latest
+			         WHERE latest.execution_id = park.execution_id
+			      )
+			      OR EXISTS (
+			        SELECT 1 FROM workflow_engine_park_outbox settlement
+			         WHERE settlement.event_id =
+			               'engine-park-settle:' || park.execution_id || ':' || park.generation
+			      )
+			    )
+			  ORDER BY park.row_id`,
+			[runId],
+		).map((row) => this.workflowEngineParkOutboxFromRow(row));
+		for (const open of opens) {
+			const activation = this.generalizedExecutionContextForActivation(
+				open.activation_id,
+			);
+			const target = this.getWorkflowRunNode(
+				open.run_id,
+				open.node_id,
+				open.attempt,
+			);
+			const latestAttempt = Number(
+				this.workflowSelectAll(
+					`SELECT COALESCE(MAX(attempt), 0) AS attempt
+					   FROM workflow_run_node WHERE run_id = ? AND node_id = ?`,
+					[open.run_id, open.node_id],
+				)[0]?.attempt ?? 0,
+			);
+			const latestTarget = this.getWorkflowRunNode(
+				open.run_id,
+				open.node_id,
+				latestAttempt,
+			);
+			const actorStillOwnsLatestAttempt =
+				latestAttempt === open.attempt ||
+				(latestAttempt > open.attempt &&
+					latestTarget?.execution_id === open.execution_id &&
+					(latestTarget.state === "pending" ||
+						latestTarget.state === "admitted"));
+			if (
+				!activation ||
+				activation.run.run_id !== open.run_id ||
+				activation.run.project_name !== open.project_name ||
+				activation.binding.node_id !== open.node_id ||
+				activation.binding.attempt !== open.attempt ||
+				activation.binding.activation_id !== open.activation_id ||
+				activation.binding.execution_id !== open.execution_id ||
+				!actorStillOwnsLatestAttempt ||
+				target?.execution_id !== open.execution_id
+			) {
+				continue;
+			}
+			const session = this.getSession(open.execution_id);
+			if (session?.status === "ship_parked") {
+				this.db.run(
+					`UPDATE sessions
+					    SET status = 'completed', last_activity_at = ?
+					  WHERE execution_id = ? AND status = 'ship_parked'`,
+					[settledAt, open.execution_id],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_engine_park_session_settlement_raced");
+				}
+				this.applyTerminalTimestamp(
+					open.execution_id,
+					"ship_parked",
+					"completed",
+				);
+				this.bumpLifecycleRevision(open.execution_id);
+			} else if (
+				!isStateStoreIrreversibleTerminalForZombie(session?.status)
+			) {
+				continue;
+			}
+			this.appendWorkflowEngineParkSettlementClearTx({
+				open,
+				createdAt: settledAt,
+			});
+		}
+	}
+
 	appendWorkflowEngineParkEvent(input: {
 		eventId: string;
 		projectName: string;
@@ -21665,6 +21801,58 @@ export class StateStore {
 		};
 	}
 
+	/**
+	 * Fresh mutation-time fence for controlled rework supersession. The durable
+	 * owner generation, rather than lease wall time, is authoritative: a slow
+	 * close may outlive its lease, while an actual takeover necessarily changes
+	 * owner/generation and revokes subsequent destructive steps.
+	 */
+	checkWorkflowReworkSupersessionAuthority(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		routeRevision: number;
+		executionId: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		const request = this.getWorkflowReworkRequest(input.requestId);
+		const delivery = this.getWorkflowReworkDelivery(input.requestId);
+		if (
+			!request ||
+			!delivery ||
+			delivery.owner_id !== input.ownerId ||
+			delivery.generation !== input.generation ||
+			delivery.route_revision !== input.routeRevision ||
+			!(delivery.state === "pending" || delivery.state === "turn_granted")
+		) {
+			return { ok: false, reason: "rework_supersession_delivery_changed" };
+		}
+		const route = this.getLatestWorkflowReworkRoute(input.requestId);
+		if (
+			!route ||
+			route.revision !== input.routeRevision ||
+			route.preferred_actor_execution_id !== input.executionId
+		) {
+			return { ok: false, reason: "rework_supersession_route_changed" };
+		}
+		const run = this.getWorkflowRun(request.run_id);
+		if (!run || run.status !== "active") {
+			return { ok: false, reason: "rework_supersession_run_not_active" };
+		}
+		const target = this.getWorkflowRunNode(
+			request.run_id,
+			route.target_node_id,
+			route.target_attempt,
+		);
+		if (
+			!target ||
+			target.execution_id !== input.executionId ||
+			!(target.state === "pending" || target.state === "admitted")
+		) {
+			return { ok: false, reason: "rework_supersession_target_changed" };
+		}
+		return { ok: true };
+	}
+
 	listWorkflowReworkDeliveries(input?: {
 		states?: WorkflowReworkDeliveryRow["state"][];
 		now?: string;
@@ -21801,6 +21989,10 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
 				return;
 			}
+			// Superseding the old exact actor also settles any rework-reachable
+			// completion park in this transaction. A crash cannot commit the new
+			// route while leaving stale wake/park evidence for the replaced actor.
+			this.settleReworkParksForRunTx(request.run_id, input.observedAt);
 			if (heldPaneLossRecovery) {
 				this.db.run(
 					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
@@ -24666,6 +24858,7 @@ export class StateStore {
 				return;
 			}
 			if (input.target === "terminated") {
+				this.settleReworkParksForRunTx(input.runId, input.now);
 				this.cancelOpenWorkflowCarrierDeliveriesTx({
 					runId: input.runId,
 					now: input.now,
@@ -26564,12 +26757,23 @@ export class StateStore {
 			run.gate_carrier_epoch === 1
 				? resolveWorkflowGateAuthority(input.context.snapshot)
 				: undefined;
+		const node = input.context.snapshot.resolved.nodes.find(
+			(candidate) => candidate.id === binding.node_id,
+		);
+		const reworkReachableLandCompletion =
+			input.route === "needs_review" &&
+			run.engine_owned === 1 &&
+			run.gate_carrier_epoch === 1 &&
+			gateAuthority?.mode === "land" &&
+			node?.capabilities.creates_pr === true;
 		const previousStatus = this.getSession(binding.execution_id)?.status;
 		const projectedStatus =
 			input.route === "no_code"
 				? "completed"
+				: reworkReachableLandCompletion
+					? "ship_parked"
 				: gateAuthority?.mode === "runner_ship" &&
-			gateAuthority.carrierNodeId === binding.node_id
+						gateAuthority.carrierNodeId === binding.node_id
 				? previousStatus === "awaiting_review"
 					? "awaiting_review"
 					: "ship_parked"
@@ -26621,7 +26825,9 @@ export class StateStore {
 				attempt: binding.attempt,
 				activationId: binding.activation_id,
 				event: "park_opened",
-				reason: "runner_ship_gate_wait",
+				reason: reworkReachableLandCompletion
+					? "rework_reachable_wait"
+					: "runner_ship_gate_wait",
 				createdAt: input.completedAt,
 			});
 		}
@@ -28911,6 +29117,7 @@ export class StateStore {
 							transitionRefusal = "no_code_run_state_conflict";
 							throw new Error("engine_completion_transition_refused");
 						}
+						this.settleReworkParksForRunTx(context.binding.run_id, now);
 						this.db.run(
 							`UPDATE workflow_output_credential
 							    SET revoked = 1, revoked_reason = 'completed_no_artifact'
@@ -31990,6 +32197,7 @@ export class StateStore {
 								`founder approval source terminal claims invalid: ${ship.reason}`,
 							);
 						}
+						const terminalAt = new Date().toISOString();
 						this.db.run(
 							`UPDATE workflow_run SET status = 'completed'
 							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
@@ -32000,6 +32208,7 @@ export class StateStore {
 								"founder approval source terminal completion raced",
 							);
 						}
+						this.settleReworkParksForRunTx(runId, terminalAt);
 						this.appendWorkflowRunEventTx({
 							runId,
 							eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
@@ -32103,12 +32312,14 @@ export class StateStore {
 						subjectDigest: approvedHead,
 					});
 					if (ship.valid) {
+						const terminalAt = new Date().toISOString();
 						this.db.run(
 							`UPDATE workflow_run SET status = 'completed'
 							  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
 							[runId, workflowApprovalGate(snapshot.manifest).node],
 						);
 						if (this.db.getRowsModified() === 1) {
+							this.settleReworkParksForRunTx(runId, terminalAt);
 							this.appendWorkflowRunEventTx({
 								runId,
 								eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
@@ -34329,6 +34540,10 @@ export class StateStore {
 						this.db.run(
 							"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
 							[runId],
+						);
+						this.settleReworkParksForRunTx(
+							runId,
+							new Date().toISOString(),
 						);
 						break;
 					}
@@ -39138,6 +39353,7 @@ export class StateStore {
 				[input.operationId],
 			)[0];
 			if (run?.status === "completed" && node?.state === "done") {
+				this.settleReworkParksForRunTx(input.runId, input.now);
 				result = { ok: true, idempotentReplay: true };
 				return;
 			}
@@ -39167,6 +39383,7 @@ export class StateStore {
 				"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
 				[input.runId],
 			);
+			this.settleReworkParksForRunTx(input.runId, input.now);
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
 				eventUid: `land_completed:${input.operationId}`,

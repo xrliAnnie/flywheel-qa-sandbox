@@ -200,7 +200,8 @@ function makeHarness(input: {
 				return { ok: false as const, reason: "stale_delivery_owner" };
 			}
 			const holdCount = delivery.hold_count + 1;
-			const state = failure.terminal ? "needs_lead" : delivery.state;
+			const state =
+				failure.terminal || holdCount >= 5 ? "needs_lead" : delivery.state;
 			delivery = {
 				...delivery,
 				owner_id: null,
@@ -274,6 +275,7 @@ function makeHarness(input: {
 		probePersisted: vi.fn(async () => input.persisted ?? "absent"),
 		assertWorktreeReady: vi.fn(async () => input.ready ?? { ok: true }),
 		activateActorForWake: vi.fn(async () => ({ ok: true })),
+		closeActorForReworkSupersession: vi.fn(async () => ({ ok: true })),
 		grantTurn: vi.fn(async () => ({ epoch: 4, grantedAt: NOW })),
 		wakeActor: vi.fn(async () => wakeResults.shift() ?? { ok: true }),
 	};
@@ -446,7 +448,7 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
-	it("terminalizes an irreversible holder activation failure on the first strike", async () => {
+	it("closes an irreversible holder under the claimed delivery fence, then retries without terminalizing", async () => {
 		const h = makeHarness({ registered: "alive" });
 		h.effects.activateActorForWake.mockResolvedValue({
 			ok: false,
@@ -454,20 +456,103 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
-			kind: "settled",
-			state: "needs_lead",
+			kind: "retryable",
+			reason: "holder_activation_failed:state_not_revivable:completed",
+		});
+		expect(h.effects.closeActorForReworkSupersession).toHaveBeenCalledWith({
+			session,
+			requestId: "rework-1",
+			ownerId: "coordinator-a",
+			generation: 1,
+			routeRevision: 1,
+			executionId: "implement-exec",
 		});
 		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
 			expect.objectContaining({
 				reason: "holder_activation_failed:state_not_revivable:completed",
-				terminal: {
-					kind: "irreversible_actor",
-					status: "completed",
-					cause: "holder_activation_failed:state_not_revivable:completed",
-				},
 			}),
 		);
+		expect(
+			h.store.settleWorkflowReworkFailure.mock.calls[0]?.[0],
+		).not.toHaveProperty("terminal");
 		expect(h.store.admitGeneralizedWorkflowExecution).not.toHaveBeenCalled();
+		expect(h.getDelivery()).toMatchObject({
+			state: "pending",
+			hold_count: 1,
+			owner_id: null,
+		});
+	});
+
+	it("escalates only after five failed controlled closes", async () => {
+		const h = makeHarness({ registered: "alive" });
+		h.effects.activateActorForWake.mockResolvedValue({
+			ok: false,
+			error: "state_not_revivable:completed",
+		});
+		h.effects.closeActorForReworkSupersession.mockResolvedValue({
+			ok: false,
+			error: "phase shutdown timed out",
+		});
+
+		for (let strike = 1; strike <= 5; strike += 1) {
+			await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject(
+				strike === 5
+					? { kind: "settled", state: "needs_lead" }
+					: {
+							kind: "retryable",
+							reason: "holder_activation_failed:state_not_revivable:completed",
+						},
+			);
+		}
+		expect(h.effects.closeActorForReworkSupersession).toHaveBeenCalledTimes(5);
+		expect(h.getDelivery()).toMatchObject({
+			state: "needs_lead",
+			hold_count: 5,
+		});
+		for (const [failure] of h.store.settleWorkflowReworkFailure.mock.calls) {
+			expect(failure).not.toHaveProperty("terminal");
+		}
+	});
+
+	it("leaves retry accounting to a new owner after supersession loses its fence", async () => {
+		const h = makeHarness({ registered: "alive" });
+		h.effects.activateActorForWake.mockResolvedValue({
+			ok: false,
+			error: "state_not_revivable:completed",
+		});
+		h.effects.closeActorForReworkSupersession.mockImplementation(
+			async ({ requestId, ownerId, generation }) => {
+				expect(
+					h.store.releaseWorkflowReworkDelivery({
+						requestId,
+						ownerId,
+						generation,
+						error: "test takeover",
+						now: NOW,
+					}),
+				).toEqual({ ok: true });
+				expect(
+					h.store.claimWorkflowReworkDelivery({
+						requestId,
+						ownerId: "coordinator-b",
+						now: NOW,
+						leaseExpiresAt: "2026-07-23T00:01:00.000Z",
+					}),
+				).toMatchObject({ ok: true, generation: 2 });
+				return { ok: false, error: "authority_lost" };
+			},
+		);
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason: "holder_activation_failed:state_not_revivable:completed",
+		});
+		expect(h.getDelivery()).toMatchObject({
+			owner_id: "coordinator-b",
+			generation: 2,
+			hold_count: 0,
+			state: "pending",
+		});
 	});
 
 	it("backs off a missing persisted target before handing it to pane-loss recovery", async () => {

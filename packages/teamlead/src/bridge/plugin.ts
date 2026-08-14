@@ -8398,6 +8398,38 @@ export async function startBridge(
 				},
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
+				closeActorForReworkSupersession: async ({
+					session,
+					requestId,
+					ownerId,
+					generation,
+					routeRevision,
+					executionId,
+				}) => {
+					const authorityCheck = async () =>
+						store.checkWorkflowReworkSupersessionAuthority({
+							requestId,
+							ownerId,
+							generation,
+							routeRevision,
+							executionId,
+						});
+					const result = await closeRunner(
+						{
+							executionId,
+							issueId: session.issue_id,
+							projectName: session.project_name ?? "",
+							executorType: "phase",
+							reason: `rework_supersession:${requestId}`,
+							authorityCheck,
+						},
+						store,
+					);
+					return {
+						ok: result.closed || result.alreadyGone === true,
+						...(result.error ? { error: result.error } : {}),
+					};
+				},
 				grantTurn: async (input) => {
 					const grantedAtMs = Date.now();
 					const db = new CommDB(commDbPathForProject(input.projectName));
