@@ -1,8 +1,8 @@
 # FLY-1758 产品线互动回合:founder_review checkpoint — 实施计划
 
 Issue: FLY-1758 (https://linear.app/geoforge3d/issue/FLY-1758/产品线互动回合-阶段性产出必须先经-founder-review-才准继续-新-founder-review-checkpoint复用)
-日期: 2026-08-14(R1+R2 修订:权威覆盖含 external-merge finalization 的全部服务端边界、run 级+版本绑定、启用公式全面收紧、binding 崩溃窗与 marker 收敛锚点、包边界接口化)
-基于: research.md + Codex design review R1(5B+2H+1M 全采纳)+ R2(2B+3H+1M 全采纳)
+日期: 2026-08-14(R1+R2+R3 修订:finalization 真实入口逐点接线、marker 锚点改 response 派生、末轮语义措辞统一)
+基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M),全部采纳
 
 ## 0. 一句话
 
@@ -54,7 +54,12 @@ sequenceDiagram
 **授权模型(R1 B1 + R2 B1 修订)**:runner env / CLI 门都是可被剥离的,**不作为授权**。授权 = **一个共享的 run 级判定谓词**,在覆盖全部通向「Done/合入」的服务端边界被调用:
 - ①generalized completion admission(`event-route.ts` 的 `commitEnrolledCompletion` 之前);
 - ②managed land 合入边界(`land-executor` 权威检查处,merge 前复核);
-- ③**engine finalization precondition**(`computeEngineWorkflowShipPrecondition`,`merge-ship-gate.ts:198-264`)—— 这是 external-merge reconcile 两条路(`external-merge-reconcile.ts:581-605` declared-PR 全 merged 直接 finalize;`:660-693` completed-but-unfinalized)与 status-independent recovery 的共同咽喉:把谓词接进这里,Bridge 外 merge 的产品 run 也不能在无 review 时被归档标 Done;无通过 = hold + alert,绝不 finalize。
+- ③**external/engine finalization 各真实入口逐点接线(R3 B1 修正:`computeEngineWorkflowShipPrecondition` 不是共同咽喉,生产只有 completed-but-unfinalized 一处调它)**:
+  - (a) declared-PR convergence:`reconcileDeclaredPrRuns`(`external-merge-reconcile.ts:581-605`)在 `:601` 调本地 `finalize()`(→`:461` 直入 `runPostShipFinalization`)**之前**显式调用同一谓词;digest 从 sealed producer node 解析 exact `workflow_node_pr_binding` 的 repo/path/head 重算 —— **不得**拿排序后 `current.at(-1)` 当 founder artifact authority。
+  - (b) completed-but-unfinalized:保留在 `computeEngineWorkflowShipPrecondition`(`merge-ship-gate.ts:198-264`;现有调用点 `external-merge-reconcile.ts:682-687`)。
+  - (c) parked/recovered(status-independent)路径:在 `computeAuthoritativeShipDecision` 的 engine 分支(或各 mutation boundary)显式接入(`external-merge-reconcile.ts:616` / `merge-ship-gate.ts:504` 两个调用方自然继承)。
+  - 拒绝时写 durable once-per-(run, head, reason) 的 hold + alert,且**不得**产生 manifest finalization claim / `post_ship_finalization_claim` / `external_merge_finalized` / Linear Done。
+  - 六条破坏性测试中的 external 三条必须**驱动这些真实入口**并断言共享谓词确实被执行(不许只单测 helper)。
 三处读同一份 sealed snapshot(是否 required)+ 同一份 CommDB/StateStore 数据(是否通过),不存在第二套判定(FLY-900 双层脱节教训)。**digest 的 Git 输入按调用点取权威值**:admission 用 `event-route` 已解析的 server-authoritative completionHead;land/finalization 用 `approved_head`/`frozen_head_sha` 对应的 Git object 重算 —— 绝不用进程当前 HEAD。
 
 **代码事实更正(R2 B1)**:`computeAuthoritativeShipDecision` 的 legacy 分支在 `merge-ship-gate.ts:353-359` 会调 `computeShipDecision`(内含 verifyApproval);真正跳过 verifyApproval 的是 engine land 与 status-independent recovery。`verify-approval` 3.6 仍加,只诚实覆盖 legacy/runner_ship CLI 路径。
@@ -72,7 +77,7 @@ sequenceDiagram
 ### 3.2 round 与产物版本的不可变绑定
 - **开 round 时**把 `{round: N, runId, artifactDigest, hostedUrl, paths}` 写进 question content(mailbox 行 insert 后不可变,零 schema 迁移)。
 - `artifactDigest` = founder-facing HTML 的 **git blob digest**(多文件时取排序后 (path, blobSha) 列表的 sha256)。绑 blob 不绑 HEAD:progress.md 等无关 commit 漂 HEAD 不影响;**HTML 内容一变 digest 必变**。
-- **通过只对版本有效**:两个权威门与 complete 门都比较「latest passed round 的 digest」==「当前 committed HTML blob digest」;不等 = 她通过的不是这一版 → 必须重开 round。
+- **通过只对版本有效(与 §3.1 末轮语义严格同构,R3 M3)**:各权威门与 complete 门的判定统一为「本 run **最新有效(未 supersede)question 本身**必须 passed,**且该 question/response 封存的 digest == 当前 committed HTML blob digest**」—— 绝不回退取历史某个 passed round 的 digest(pass(H) 后出现新 pending/rejected(H) 时,旧 pass 不得复用;两条 pass→pending / pass→rejected 破坏性测试作为非空哨兵)。不等 = 她通过的不是这一版 → 必须重开 round。
 - 对照测试:pass 版本 H → 改 HTML 再 commit → complete/land 必败;只加无关 progress commit(HTML blob 不变)→ 通过(显式政策)。
 
 ### 3.3 review-card binding(R1 B4 + R2 H4)
@@ -85,7 +90,7 @@ sequenceDiagram
 ### 3.4 裁定语义
 - ✅ reaction = passed;reply 文本过精确 allowlist(「都可以了/可以了/通过/LGTM/approved」归一化匹配)= passed;其余 reply = passed:false + feedback=全文。v1 无 Haiku 分类器 —— 错判只许偏「多一轮」。
 - 写入原语 `trustedFounderReviewResponse`:包 `insertResponseIfGateOpen`(expectedCheckpoint+TOCTOU)+ `isTrustedApprovalAttribution` 断言;content=`{passed, feedback, artifactDigest}`。**不复用** `write-gate-response.ts`(硬拒非 ship + 强绑 ship FSM)。
-- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重试要有持久锚点(R2 H5)**:现有先例(`review-request-coordinator.ts:1479-1489`)对 mark 失败只是 best-effort log,而 response 落库后该 question 退出 pending 扫描、reply/reaction 也不会再命中 —— reconcile 不会凭空发生。故 response 成功写入时**同步记录一个 durable「待收敛 intent」**(复用 GatePoller/session-event 既有 durable marker 机制),marker 写成才结清;Bridge 启动与常规 poll 都重放;绝不回滚 response。测试:首次 mark 失败 + 进程重启 → `answeredAt` 最终补齐;foreign execution marker 不被碰;deadline watcher 不对已答 gate 迟到超时。
+- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重放锚点 = response 行本身,不建第二份 intent(R2 H5 + R3 H2)**:若把 intent 写进 StateStore,CommDB response commit 之后、StateStore intent 写入之前的崩溃会留下永久孤儿(question 已退出 pending 扫描,intent 又不存在)。改为**从 durable 数据直接派生收敛工作**:写入路径先尽力 mark;Bridge 启动与每轮 poll 各跑一个有界 reconcile —— 扫描近期已答的 `founder_review` question(CommDB,时间窗有界),对其 execution 幂等补 `markGateMarkerAnsweredForExecution`。response 行即锚点,零新表、无跨库写序问题;绝不回滚 response。**精确 crash 测试(R3 H2)**:CommDB response commit 成功后、任何 marker 写入前 kill 进程 → 重启后 `answeredAt` 最终补齐、无迟到 timeout;foreign execution marker 不被碰。
 
 ## 4. 能力位全链(R1 B5:每一跳都点名)
 
