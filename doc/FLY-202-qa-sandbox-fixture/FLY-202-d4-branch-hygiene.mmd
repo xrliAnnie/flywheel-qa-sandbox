@@ -1,0 +1,9 @@
+flowchart TD
+    A["节点入场<br/>slot 预建分支 project-slot-2-FLY-202"] --> B{"Task 0 基线核对<br/>git rev-list --count<br/>origin/main..HEAD / HEAD..origin/main"}
+    B -->|"与 main 齐平<br/>(ahead 只含本 issue commit)"| OK["直接开工<br/>叠加本 issue 文档产物"]
+    B -->|"基线漂移<br/>(本轮实测: 领先 2088 个无关 commit)"| C{"远端同名分支存在?<br/>git ls-remote origin"}
+    C -->|"不存在"| D["本地重锚<br/>git switch -C 分支 origin/main<br/>(非 force-push, 不碰已发布历史)"]
+    D --> E["非阻塞 ask 报备 Lead<br/>(可否决窗口)"]
+    E --> OK
+    C -->|"已存在"| STOP(["停下 — 绝不重写已发布分支<br/>走 ask 等 Lead 裁决<br/>(FORCE-PUSH GUARD)"])
+    OK --> F["最终 PR diff 恒为 docs-only<br/>杜绝 task#55 4863-file PR 事故复发"]

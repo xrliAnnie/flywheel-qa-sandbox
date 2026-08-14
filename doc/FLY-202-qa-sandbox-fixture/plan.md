@@ -10,6 +10,32 @@
 
 ---
 
+### Task 0: Verify branch-base parity (hard precondition — added 2026-08-14)
+
+**Files:** none (read-only Git checks; remediation only rewrites the never-pushed local branch)
+
+- [ ] **Step 1: Measure divergence against origin/main**
+
+Run:
+
+```bash
+git fetch origin main --quiet
+git rev-list --count origin/main..HEAD   # ahead
+git rev-list --count HEAD..origin/main   # behind
+```
+
+Expected: ahead contains only this issue's docs/progress commits; behind is 0 (or fast-forwardable). Anything else = drifted baseline (the task#55 incident shape: harness cut the branch from a stale campaign HEAD, e.g. 2088 unrelated commits observed on 2026-08-14).
+
+- [ ] **Step 2: If drifted, re-anchor ONLY when the remote branch does not exist**
+
+Run:
+
+```bash
+git ls-remote origin refs/heads/project-slot-2-FLY-202
+```
+
+Empty output → safe to re-anchor: `git switch -C project-slot-2-FLY-202 origin/main` (note: `git reset --hard` is permission-denied in this harness; `switch -C` is the working equivalent), then report the re-anchor via non-blocking `flywheel-comm ask`. Non-empty output → STOP; never rewrite a published branch (FORCE-PUSH GUARD) — escalate to the Lead and wait for an explicit ruling.
+
 ### Task 1: Capture the current repository snapshot
 
 **Files:**
