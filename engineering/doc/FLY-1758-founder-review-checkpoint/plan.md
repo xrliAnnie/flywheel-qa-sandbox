@@ -1,8 +1,8 @@
 # FLY-1758 产品线互动回合:founder_review checkpoint — 实施计划
 
 Issue: FLY-1758 (https://linear.app/geoforge3d/issue/FLY-1758/产品线互动回合-阶段性产出必须先经-founder-review-才准继续-新-founder-review-checkpoint复用)
-日期: 2026-08-14(R1 修订:权威搬到 Bridge/engine 侧、run 级绑定、产物版本绑定、reaction/binding 重设计、能力位全链落点)
-基于: research.md + Codex design review R1(5 BLOCKER + 2 HIGH + 1 MEDIUM 全采纳)
+日期: 2026-08-14(R1+R2 修订:权威覆盖含 external-merge finalization 的全部服务端边界、run 级+版本绑定、启用公式全面收紧、binding 崩溃窗与 marker 收敛锚点、包边界接口化)
+基于: research.md + Codex design review R1(5B+2H+1M 全采纳)+ R2(2B+3H+1M 全采纳)
 
 ## 0. 一句话
 
@@ -51,16 +51,23 @@ sequenceDiagram
     Note over B: 权威门② land 合入边界:同一判定函数复核后才 merge
 ```
 
-**授权模型(R1 B1 修订)**:runner env / CLI 门都是可被剥离的,**不作为授权**。授权 = Bridge 进程内一个共享判定函数,在两个既有权威边界被调用:①generalized completion admission(`event-route.ts` 的 `commitEnrolledCompletion` 之前);②engine land 合入边界(`land-executor` 权威检查处)。两处读同一份 sealed snapshot(是否 required)+ 同一份 CommDB/StateStore 数据(是否通过),不存在第二套判定(FLY-900 双层脱节教训)。
+**授权模型(R1 B1 + R2 B1 修订)**:runner env / CLI 门都是可被剥离的,**不作为授权**。授权 = **一个共享的 run 级判定谓词**,在覆盖全部通向「Done/合入」的服务端边界被调用:
+- ①generalized completion admission(`event-route.ts` 的 `commitEnrolledCompletion` 之前);
+- ②managed land 合入边界(`land-executor` 权威检查处,merge 前复核);
+- ③**engine finalization precondition**(`computeEngineWorkflowShipPrecondition`,`merge-ship-gate.ts:198-264`)—— 这是 external-merge reconcile 两条路(`external-merge-reconcile.ts:581-605` declared-PR 全 merged 直接 finalize;`:660-693` completed-but-unfinalized)与 status-independent recovery 的共同咽喉:把谓词接进这里,Bridge 外 merge 的产品 run 也不能在无 review 时被归档标 Done;无通过 = hold + alert,绝不 finalize。
+三处读同一份 sealed snapshot(是否 required)+ 同一份 CommDB/StateStore 数据(是否通过),不存在第二套判定(FLY-900 双层脱节教训)。**digest 的 Git 输入按调用点取权威值**:admission 用 `event-route` 已解析的 server-authoritative completionHead;land/finalization 用 `approved_head`/`frozen_head_sha` 对应的 Git object 重算 —— 绝不用进程当前 HEAD。
 
-**为什么不是 verifyApproval 兜底**(R1 B1):engine-owned 路径在 `computeAuthoritativeShipDecision`(`merge-ship-gate.ts:271-315`)走 workflow claims,land 授权(`land-executor.ts:133-176`)只查 gate holder/PR binding/claims,**根本不调 `verifyApproval`** —— 产品 menu 正是 engine run。`verify-approval` 3.6 仍加,但只诚实覆盖它真覆盖的 legacy/runner_ship CLI 路径。
+**代码事实更正(R2 B1)**:`computeAuthoritativeShipDecision` 的 legacy 分支在 `merge-ship-gate.ts:353-359` 会调 `computeShipDecision`(内含 verifyApproval);真正跳过 verifyApproval 的是 engine land 与 status-independent recovery。`verify-approval` 3.6 仍加,只诚实覆盖 legacy/runner_ship CLI 路径。
+
+**包边界(R2 M6)**:`flywheel-comm` 不依赖 teamlead —— 谓词做成 comm 包里的**纯判定函数 + 窄接口**(`FounderReviewStateReader` / artifact reader);Bridge 侧用 StateStore adapter、CLI 侧用 readonly SQLite adapter 实现同一接口,**两个 adapter 跑同一组 contract tests**(snapshot 缺失/跨 run/digest 漂移必须给出一致结果),杜绝各调用点各自重写查询造成第二套判定。
 
 ## 3. 核心数据设计(R1 B2/B3 修订)
 
 ### 3.1 round 的身份:run 级,不是 issue 级
 - 历史 run 与 active run 同 issue 并存(StateStore 只限「同 issue 同时一个 active run」),按 issue_id 取末轮会让**新 run 复用旧 run 的批准**。
-- 判定 helper 签名:`resolveFounderReviewVerdict({commDb, stateStore, runId})` —— 只接受 **question owner 的 execution 属于该 run**(经 `workflow_execution_binding` / run node execution 归属)的回合;跨 execId 同 run 可过,跨 run 同 issue 必不串线。
-- 取 run 的方式:complete 侧从 `currentWorkflowCompletionActivationFromEnv`(现有 activation env)取;Bridge 两个权威门从 exact workflow binding 取。**产品 run 的 snapshot/binding 解析失败 = fail-closed**(不是静默跳过)。
+- 判定 helper 签名:`resolveFounderReviewVerdict({reader, runId, authoritativeHead})` —— 只接受 **question owner 的 execution 属于该 run**(经 `workflow_execution_binding` / run node execution 归属)的回合;跨 execId 同 run 可过,跨 run 同 issue 必不串线。
+- 取 run 的方式:complete 侧从 `currentWorkflowCompletionActivationFromEnv`(现有 activation env)取;Bridge 各权威门从 exact workflow binding 取。**产品 run 的 snapshot/binding 解析失败 = fail-closed**(不是静默跳过)。
+- **「末轮」的精确语义(R2 H3)**:先由**服务端插入顺序**选出本 run 最新的、未被 supersede 的有效 question,**再要求该 question 本身的 response 为 passed** —— 绝不是「存在任一 passed」:round 1 passed 后 round 2 pending/rejected(哪怕同 digest)= 未通过。测试:pass(H)→新 pending(H) 拦;pass(H)→新 rejected(H) 拦。
 
 ### 3.2 round 与产物版本的不可变绑定
 - **开 round 时**把 `{round: N, runId, artifactDigest, hostedUrl, paths}` 写进 question content(mailbox 行 insert 后不可变,零 schema 迁移)。
@@ -68,16 +75,17 @@ sequenceDiagram
 - **通过只对版本有效**:两个权威门与 complete 门都比较「latest passed round 的 digest」==「当前 committed HTML blob digest」;不等 = 她通过的不是这一版 → 必须重开 round。
 - 对照测试:pass 版本 H → 改 HTML 再 commit → complete/land 必败;只加无关 progress commit(HTML blob 不变)→ 通过(显式政策)。
 
-### 3.3 review-card binding(R1 B4)
+### 3.3 review-card binding(R1 B4 + R2 H4)
 - 现有 ship 卡 binding 强制 `prHeadSha` 且只在 `awaiting_review + review_question_id` 时写 —— `founder_review` 发生在 PR 之前,**不能复用**。
-- 新增 StateStore **additive 小表** `founder_review_card_binding(question_id PK, message_id, run_id, artifact_digest, created_at)`,卡片发出即写,不依赖 session review binding。
+- 新增 StateStore **additive 小表** `founder_review_card_binding(question_id PK, message_id NOT NULL UNIQUE, run_id NOT NULL, artifact_digest NOT NULL, created_at)`;**不可 UPDATE/DELETE**(insert-or-verify 语义);写入时重新核对 question 的 runId/digest/当前轮次。`UNIQUE(message_id)` 保证同一条 Discord 消息永远绑不了两个 round。
+- **崩溃窗次序(R2 H4)**:Discord POST 成功后,**只有 binding insert-or-verify 成功才写 terminal notify marker**;binding 写失败保持 transient + 告警,由 GatePoller 既有重试/恢复机制重放 —— 消灭「founder 看得到但永远不能作答的孤儿卡」。测试:POST 后崩溃、binding 写失败、2xx 缺 message id、重启重放、同 message 绑两题 —— 终态必须恰一张 authoritative 卡,其余全 stale 且不能授权。
 - reply(type-19)与 ✅ reaction 都**只能命中 exact current round**(经 binding 表回查 questionId);旧卡迟到 reaction、round N 的 reply 到达时 N+1 已开、同 issue 多卡、binding 缺失/重复 → 全部 fail-closed 不串 round。
 - ✅ 摄入:**扩展 GatePoller 既有 reaction rider**(现只筛 `approve_to_ship`)加 founder_review 分支;文字 reply 走 founder-reply-deliverer 新分支。两路汇入同一个写入原语。
 
 ### 3.4 裁定语义
 - ✅ reaction = passed;reply 文本过精确 allowlist(「都可以了/可以了/通过/LGTM/approved」归一化匹配)= passed;其余 reply = passed:false + feedback=全文。v1 无 Haiku 分类器 —— 错判只许偏「多一轮」。
 - 写入原语 `trustedFounderReviewResponse`:包 `insertResponseIfGateOpen`(expectedCheckpoint+TOCTOU)+ `isTrustedApprovalAttribution` 断言;content=`{passed, feedback, artifactDigest}`。**不复用** `write-gate-response.ts`(硬拒非 ship + 强绑 ship FSM)。
-- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`**(照 `review-request-coordinator.ts:1479-1489` 先例)—— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。mark 失败只告警 + reconcile 重试,绝不回滚已写入的回答。
+- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重试要有持久锚点(R2 H5)**:现有先例(`review-request-coordinator.ts:1479-1489`)对 mark 失败只是 best-effort log,而 response 落库后该 question 退出 pending 扫描、reply/reaction 也不会再命中 —— reconcile 不会凭空发生。故 response 成功写入时**同步记录一个 durable「待收敛 intent」**(复用 GatePoller/session-event 既有 durable marker 机制),marker 写成才结清;Bridge 启动与常规 poll 都重放;绝不回滚 response。测试:首次 mark 失败 + 进程重启 → `answeredAt` 最终补齐;foreign execution marker 不被碰;deadline watcher 不对已答 gate 迟到超时。
 
 ## 4. 能力位全链(R1 B5:每一跳都点名)
 
@@ -88,7 +96,13 @@ sequenceDiagram
 4. **run snapshot**:`workflow-run-snapshot.ts:385-416,478-536` 构建/严格解析/digest 加该字段(缺席=false);暴露 `nodeRequiresFounderReview(nodeId)`。旧 snapshot(无字段)解析不变 —— 向后兼容;新 snapshot 落到旧代码由部署 quiesce(§7)保证不发生。
 5. **dispatch/Blueprint**:generalized selection / RunDispatcher 把该位带进 `BlueprintContext.workflowCapabilities`;`AdapterExecutionContext`(`packages/core/src/adapter-types.ts`)加可选字段。
 6. **两个 adapter**:Claude tmux `-e FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1`;Codex `buildDaemonEnv` 显式写入(FLY-1643 delete-then-layer 模式)+ `assertWorkflowCapabilities` 同步。
-7. **权威读法**:Bridge 两个权威门只读 sealed snapshot;env 只喂 CLI 的 UX 门与 prompt 注入。
+7. **权威读法**:Bridge 各权威门只读 sealed snapshot;env 只喂 CLI 的 UX 门与 prompt 注入。
+
+**启用公式(R2 B2,写死,所有暴露面一致)**:`config enabled && exact owner activation/run binding && sealed producer node founder_review === true`。逐面落实:
+- **Blueprint**:对**所有** runner(不只 generalized;legacy 工程 runner 同样)在能力位缺席时无条件 skip founder_review 注入 —— 项目级 checkpoint config 单独存在**不产生任何 prompt**;`:2571-2600` 的兜底 else 分支绝不能吃到它。
+- **gate 开门 / Bridge question admission**:server-side 校验 owner activation 的 sealed snapshot 确实带能力位,不带 = 拒开/拒收;卡片层不得只信 question content 自述。
+- **land/finalization**:required 判定读**产生 carrier 的 produce 节点**的能力位,不读 land 节点自身。
+- 正反测试:config 已启用时,legacy 工程 / code generalized(design·implement·qa)/ QA runner 均无 prompt、无卡;仅三条产品 produce 有。
 
 ## 5. 改动清单(按依赖顺序)
 
@@ -96,7 +110,7 @@ sequenceDiagram
 - **1a** 新建 `founder-review.ts`:checkpoint 常量 + `isFounderReviewCheckpoint` + digest 计算 + `resolveFounderReviewVerdict`(§3.1/3.2 语义;供 CLI 与 Bridge 共用)。
 - **1b** `respond.ts` **无条件拒**(先于批准意图判定;通过和打回都拒 —— approve_to_ship 那套只拦批准、放行反馈走 Bridge,对 founder_review 不够)。
 - **1c** `db.ts:1704-1709` not-Lead-routable 加名;裸 SQL 清单逐处裁定(**决定写死在本计划**,R1 M8):
-  - `db.ts:1381/1401/1426`(supersede 巡逻):**加** —— 新 round 开启时 supersede **同 run** 旧 pending round;不跨 run。
+  - `db.ts:1381/1401/1426`(supersede 巡逻):**加,且不止 SQL IN 加名(R2 H3)** —— 现有 `issue-gate-supersede.ts:135-171` 分组键是 `issueId + checkpoint`、`canSupersedeGate` 只验 checkpoint/时间,直接加名会跨 run 误杀。founder_review 的分组与 mutation-time recheck 都必须纳入经 `workflow_execution_binding` 解析出的 runId:新 round 只 supersede **同 run** 旧 pending;跨 run question 永不互相 supersede(测试覆盖)。
   - `db.ts:4889-4929`(finalizeSession):**不加豁免** —— owner finalize 时未答 round 随之 terminal-disposed(回合是 run 内之物)。
   - `zombie-gate-hygiene.ts:342`:**不加集合**,但补测试:live running/parked session 的 pending round 不被 sweep。
   - `question-admission.ts:242-277`:**加** checkpoint 专属 admission —— content 缺 runId/digest 绑定即拒。
@@ -107,8 +121,9 @@ sequenceDiagram
 - **1g** `verify-approval.ts` 3.6:新增 reason `founder_review_missing/not_passed/stale_artifact`;经 session→workflow binding 解析 run,产品 run 解析失败 fail-closed;无 binding 的 legacy session 跳过。诚实边界:此步只覆盖 legacy/runner_ship CLI 路径(engine land 由层 2 权威门覆盖)。
 
 ### 层 2 — Bridge 权威 + 可见性
-- **2a 权威门①**:generalized completion admission(`event-route.ts:733-938`,`commitEnrolledCompletion` 之前):sealed snapshot 有能力位的节点 completion,必须过 1a 判定,否则拒入账(结构化 reason,进 issue thread 提示)。
-- **2b 权威门②**:`land-executor` 合入前复核同一判定(防「admission 后又改 HTML / 直接驱动 carrier」)。
+- **2a 权威门①**:generalized completion admission(`event-route.ts:733-938`,`commitEnrolledCompletion` 之前):sealed snapshot 有能力位的节点 completion,必须过 1a 判定,否则拒入账(结构化 reason,进 issue thread 提示);digest 用 server-authoritative completionHead。
+- **2b 权威门②**:`land-executor` 合入前复核同一判定(防「admission 后又改 HTML / 直接驱动 carrier」);digest 从 `approved_head` Git object 重算。
+- **2b′ 权威门③(R2 B1)**:`computeEngineWorkflowShipPrecondition`(`merge-ship-gate.ts:198-264`)接入同一判定 —— 覆盖 external-merge reconcile 的 declared-PR finalize 与 completed-but-unfinalized 两条路及 status-independent recovery;无通过 = hold + alert,绝不 finalize/Done;digest 从 `frozen_head_sha`/`approved_head` 重算。三条外部合并破坏性测试:parked recovery / completed-unfinalized / sealed declared-PR convergence。
 - **2c** `gate-poller.ts:1556` 卡片白名单加名;grace 走 ship 式短档;dedup/退避复用。
 - **2d** `founder-thread-notifier.ts`:union + `buildBody` founder_review 分支(第 N 轮 + hosted URL + 「回复=打回 / ✅=通过 / 页内留言用汇总复制贴回」)。
 - **2e** `founder-reply-deliverer.ts` reply 分支 + GatePoller reaction rider 分支(§3.3);歧义散文维持 `deliverAmbiguousToLead`。
@@ -131,10 +146,10 @@ sequenceDiagram
 
 | # | 验收 | 测试 |
 |---|---|---|
-| 1 | 无通过**无法**进 ship,主动去破 | **三条破坏性测试(R1 B1)**:①伪造 `/events session_completed`(剥 env 直发)→ admission 拒;②直接驱动 carrier → land 边界拒;③直接执行 engine land → 拒。加:complete 门四态(零回合/末轮 rejected/末轮 pending/末轮 passed);**run 级串线矩阵(R1 B2)**:旧 run passed + 新 run 无 round 必拦;同 run 跨 execId passed 必过;同 issue 不同 run 的 pending/rejected 不串;**版本绑定(R1 B3)**:pass 后改 HTML 必败、无关 progress commit 不受影响;byte-compat 哨兵:无能力位工程 run 全链逐字现状 |
+| 1 | 无通过**无法**进 ship,主动去破 | **六条破坏性测试(R1 B1 + R2 B1)**:①伪造 `/events session_completed`(剥 env 直发)→ admission 拒;②直接驱动 carrier → land 边界拒;③直接执行 engine land → 拒;④external-merge parked recovery、⑤completed-unfinalized、⑥sealed declared-PR convergence → 无通过均 hold+alert 不 finalize/Done。加:complete 门四态(零回合/末轮 rejected/末轮 pending/末轮 passed);**run 级串线矩阵(R1 B2)**:旧 run passed + 新 run 无 round 必拦;同 run 跨 execId passed 必过;同 issue 不同 run 的 pending/rejected 不串;**末轮语义(R2 H3)**:pass→新 pending / pass→新 rejected 均拦;**版本绑定(R1 B3)**:pass 后改 HTML 必败、无关 progress commit 不受影响;**双 adapter contract tests(R2 M6)**:StateStore adapter 与 readonly SQLite adapter 对 snapshot 缺失/跨 run/digest 漂移结果一致;byte-compat 哨兵:无能力位工程 run 全链逐字现状 + **config 已启用时 legacy 工程/code generalized/QA 无 prompt 无卡(R2 B2)** |
 | 2 | Lead respond 被拒 | respond 三形态(批准文本/反馈文本/JSON)全拒;`--lead bridge`/snowflake 伪造拒;db 层 not-Lead-routable 断言 |
 | 3 | 产出未产出/未送达 → 回合无效 | 无 committed HTML → gate 拒开;伪造 leadId response → verdict 视同未答;question 缺 runId/digest → admission 拒 |
-| 4 | E2E 她收到→留言→打回→再送达 | 真机(QA 节点,real Discord):卡片短 grace 送达、reply 原文回 runner、✅=passed、**旧卡迟到 ✅ / N+1 已开时 round N reply / 同 issue 多卡 / binding 缺失重复全 fail-closed(R1 B4)**;Codex runner no-block marker 收敛(R1 H6);founder id 未配置 fail-loud(FLY-900 回归) |
+| 4 | E2E 她收到→留言→打回→再送达 | 真机(QA 节点,real Discord):卡片短 grace 送达、reply 原文回 runner、✅=passed、**旧卡迟到 ✅ / N+1 已开时 round N reply / 同 issue 多卡 / binding 缺失重复全 fail-closed(R1 B4)**;**binding 崩溃窗矩阵(R2 H4)**:POST 后崩溃 / binding 写失败 / 2xx 缺 message id / 重启重放 / 同 message 绑两题 → 终态恰一张 authoritative 卡;**marker 收敛(R1 H6 + R2 H5)**:首次 mark 失败+重启后 answeredAt 补齐、foreign marker 不碰、已答 gate 不迟到超时;founder id 未配置 fail-loud(FLY-900 回归) |
 | — | 生命周期矩阵(R1 M8) | live running/parked 的 pending round 经 purge/zombie sweep 存活;新 round 只 supersede 同 run 旧 pending;answered 历史不可改写;finalize 后未答 round terminal-disposed 且迟到写入被拒;一题第二个 response 被唯一索引拒 |
 | — | 能力位兼容(R1 B5) | 旧 snapshot/digest 解析不变;字段缺席=false;新字段非布尔 throw;两 adapter env 注入各一条;权威门读 snapshot 非 env |
 
