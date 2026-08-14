@@ -1,13 +1,13 @@
 ---
 issue: FLY-1770
 phase: design
-phaseCursor: 1/4
-updated: 2026-08-14T23:09:13.824Z
-nextStep: "research.md: schema/queue/alert 触点细化"
+phaseCursor: 2/4
+updated: 2026-08-14T23:12:38.085Z
+nextStep: plan.md + codex-design-review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1770 progress
-**phase**: design (1/4)
-**next**: research.md: schema/queue/alert 触点细化
+**phase**: design (2/4)
+**next**: plan.md + codex-design-review
