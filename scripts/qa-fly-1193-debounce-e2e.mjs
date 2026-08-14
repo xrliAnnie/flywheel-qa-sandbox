@@ -5,11 +5,10 @@
 // memory pressure, so a full `pnpm -r build` here would be self-defeating)
 // through the REAL vm_stat parse seam (FLYWHEEL_SWAP_SENSOR_CMD → a temp file we
 // rewrite per tick). Evidence: a REAL temp-file StateStore's fleet_pressure_hold
-// timeline (placed → exists → cleared) + a dedup-aware load-shed broadcast
-// recorder (simulating CommDB INSERT OR IGNORE) + the page (alert) count.
+// timeline (placed → exists → cleared) + the owner-routed page (alert) count.
 //
-// Deliberately Discord-free: the page timeline + hold timeline + broadcast dedup
-// are the issue's acceptance surface and are all observable without the Hub.
+// Deliberately Discord-free: the page and hold timelines are observable without
+// the Hub; unit/integration tests pin the removed mailbox fan-out boundary.
 // Coverage boundary (honest): the actual cross-restart claims-dedup MECHANISM
 // (claims.db / lead_events) is PRE-EXISTING FLY-1082/1142 alert-pipeline
 // infrastructure with its own tests + the real-Discord FLY-1082 E2E
@@ -60,7 +59,6 @@ function setReading(freePct, swapouts) {
 	);
 }
 
-const LEADS = ["tadashi", "honey-lemon", "peter"];
 let failures = 0;
 function check(name, cond) {
 	console.log(`${cond ? "✓" : "✗"} ${name}`);
@@ -73,8 +71,6 @@ async function scenario(title, envExtra, body) {
 		join(workDir, `${Date.now()}-${Math.round(performance.now())}.db`),
 	);
 	const alerts = [];
-	const broadcasts = new Set(); // dedupeId set — CommDB INSERT OR IGNORE
-	const broadcastLog = [];
 	const holdTimeline = [];
 	let now = 1_720_000_000_000;
 	const env = {
@@ -88,13 +84,6 @@ async function scenario(title, envExtra, body) {
 			return { sent: true };
 		},
 		resolveTicket: async () => {},
-		notifyLead: async (_leadId, _content, dedupeId) => {
-			if (dedupeId && broadcasts.has(dedupeId)) return true; // idempotent
-			if (dedupeId) broadcasts.add(dedupeId);
-			broadcastLog.push(dedupeId);
-			return true;
-		},
-		listLeadIds: () => LEADS,
 		env,
 		now: () => now,
 		logger: () => {},
@@ -102,8 +91,6 @@ async function scenario(title, envExtra, body) {
 	let sensors = new FleetSensors(deps);
 	const api = {
 		alerts,
-		broadcasts,
-		broadcastLog,
 		holdTimeline,
 		store,
 		setNow: (v) => {
@@ -123,9 +110,9 @@ async function scenario(title, envExtra, body) {
 	await body(api);
 }
 
-// ① spike < N: hold placed silently, ZERO page / broadcast, hold timeline shows place→clear.
+// ① spike < N: hold placed silently, zero page, hold timeline shows place→clear.
 await scenario(
-	"① spike (self-heals in < N): zero page, zero broadcast, hold placed then cleared",
+	"① spike (self-heals in < N): zero page, hold placed then cleared",
 	{},
 	async (t) => {
 		setReading(5, 1000);
@@ -136,7 +123,6 @@ await scenario(
 		await t.tick(); // clear (< N elapsed)
 		check("hold was placed at trigger (silent)", placed);
 		check("zero page on the spike", t.alerts.length === 0);
-		check("zero load-shed broadcast on the spike", t.broadcastLog.length === 0);
 		check(
 			"hold timeline shows placed then cleared",
 			t.holdTimeline.includes("swap-sensor") &&
@@ -145,9 +131,9 @@ await scenario(
 	},
 );
 
-// ② sustained ≥ N: exactly one page + one broadcast round; resolve after recovery.
+// ② sustained ≥ N: exactly one owner-routed page; resolve after recovery.
 await scenario(
-	"② sustained (≥ N): exactly one page + one broadcast round, resolve on recovery",
+	"② sustained (≥ N): exactly one owner-routed page, resolve on recovery",
 	{},
 	async (t) => {
 		setReading(5, 1000);
@@ -155,16 +141,12 @@ await scenario(
 		await t.tick(); // trigger at t0
 		const holdSetAt = t.store.getFleetPressureHold()?.set_at;
 		t.advance(121_000); // past N=120
-		await t.tick(); // due → page + broadcast
+		await t.tick(); // due → page
 		await t.tick(); // still danger → no repeat
 		check("exactly one page after N", t.alerts.length === 1);
 		check(
 			"page eventId anchored to holdSetAt",
 			t.alerts[0]?.eventId === `swap-pressure:${holdSetAt}`,
-		);
-		check(
-			"exactly one broadcast per Lead",
-			t.broadcastLog.length === LEADS.length,
 		);
 		setReading(45, 1000);
 		await t.tick(); // clear

@@ -1,0 +1,68 @@
+# Root shell suites intentionally excluded from the Linux script-tests job.
+# Each entry needs an environment-specific or operator-facing reason before it
+# moves here. This inventory is checked against both the filesystem and ci.yml;
+# deleting, adding, or registering a suite without updating its classification
+# fails CI.
+
+# Live Discord / founder-path / environment audit suites.
+scripts/__tests__/audit-discord-mailbox-ingest.test.sh
+scripts/__tests__/discord-plugin-cutover.test.sh
+scripts/__tests__/discord-plugin-ops.test.sh
+scripts/__tests__/fly1364-discord-e2e.test.sh
+scripts/__tests__/fly1364-live-e2e.test.sh
+scripts/__tests__/fly1686-gate-entry-audit.test.sh
+scripts/__tests__/qa-room-env.test.sh
+scripts/__tests__/setup-roundtable-config.test.sh
+scripts/__tests__/token-usage-daily-channel.test.sh
+scripts/__tests__/token-usage-daily-failloud.test.sh
+
+# macOS / launchd / Keychain / host-network integration suites.
+scripts/__tests__/bridge-liveness-probe.test.sh
+scripts/__tests__/bridge-port.test.sh
+scripts/__tests__/bridge-wrapper-preflight.test.sh
+scripts/__tests__/flywheel-config-lock.test.sh
+scripts/__tests__/flywheel-daemon-plist-env.test.sh
+scripts/__tests__/flywheel-daemon-restart-refusal.test.sh
+scripts/__tests__/host-config.test.sh
+scripts/__tests__/host-path-allowlist.test.sh
+scripts/__tests__/lead-alert-dirs.test.sh
+scripts/__tests__/lead-alert-founder-timezone.test.sh
+scripts/__tests__/lead-alert-notify-digest-kind.test.sh
+scripts/__tests__/platform-deps.test.sh
+scripts/__tests__/quota-monitor-wrapper.test.sh
+scripts/__tests__/restart-discord-plugin.test.sh
+scripts/__tests__/restart-services-admission-pause.test.sh
+scripts/__tests__/restart-stabilization.test.sh
+scripts/__tests__/restart-stop-bridge-portfree.test.sh
+scripts/__tests__/supervisor.test.sh
+scripts/__tests__/test-auto-approve-identity.test.sh
+scripts/__tests__/test-deploy-discord-pointer.test.sh
+scripts/__tests__/test-deploy-qa-room.test.sh
+scripts/__tests__/voice-bridge-wrapper.test.sh
+
+# Fleet/deploy suites that mutate a managed host or require an operator fixture.
+scripts/__tests__/daily-digest-env-override.test.sh
+scripts/__tests__/deploy-build-identity.test.sh
+scripts/__tests__/fly-1648-hot-loop-closeout.test.sh
+scripts/__tests__/fly1446-cmux-roster.test.sh
+scripts/__tests__/flywheel-fleet-apply-batch.test.sh
+scripts/__tests__/flywheel-fleet-batch.test.sh
+scripts/__tests__/flywheel-fleet-changes-file.test.sh
+scripts/__tests__/flywheel-fleet-journal.test.sh
+scripts/__tests__/flywheel-fleet-lead-flags.test.sh
+scripts/__tests__/flywheel-fleet-recover.test.sh
+scripts/__tests__/flywheel-fleet-report.test.sh
+scripts/__tests__/flywheel-fleet.test.sh
+scripts/__tests__/mailbox-queue-deploy-barrier.test.sh
+scripts/__tests__/self-ship-queue.test.sh
+scripts/__tests__/self-ship-restart.test.sh
+
+# Static/local contract suites retained outside the required Linux lane.
+scripts/__tests__/fly1272-doc-contract.test.sh
+scripts/__tests__/linux-preflight.test.sh
+scripts/__tests__/provision-linux.test.sh
+scripts/__tests__/provision-statedir.test.sh
+scripts/__tests__/script-sanity.test.sh
+scripts/__tests__/setup-mcp-on-demand.test.sh
+scripts/__tests__/test-push-guard-package.test.sh
+scripts/__tests__/test-push-guard.test.sh

@@ -236,8 +236,6 @@ fleetHolder.current = new FleetSensors({
 	store,
 	alert: (p) => routedAlertSink.alert({ ...p, title: `${p.title} ${MARK}` }),
 	resolveTicket: (ck) => hub.resolve(ck),
-	notifyLead,
-	listLeadIds: () => projects[0].leads.map((l) => l.agentId),
 	probeBots: async () => seams.botProbes,
 	scanZombies: async () => seams.zombies,
 	kickstart: async (jobLabel) => {
@@ -342,11 +340,11 @@ console.log(`temp: ${tmp}`);
 			(row.ticket_status === "REPAIRING" || row.repair_status === "attempted"),
 		`status=${row?.ticket_status} repair=${row?.repair_status}`,
 	);
-	// each configured Lead got a real load-shed instruction
+	// Pressure alerts are owner-routed only; the mailbox sink remains unused by
+	// this scenario (server-loss below still exercises its targeted use).
 	ok(
-		"① every Lead notified to shed load (ARC side-effect)",
-		seams.notifiedLeads.filter((n) => n.content.includes("pressure-hold"))
-			.length >= 2,
+		"① pressure alert emitted zero per-Lead mailbox instructions",
+		seams.notifiedLeads.length === 0,
 		`notified=${seams.notifiedLeads.length}`,
 	);
 	// recovery: free% back to healthy (≥ HIGH 15%) with Swapouts STATIC →
@@ -380,8 +378,6 @@ console.log(`temp: ${tmp}`);
 		store,
 		alert: (p) => routedAlertSink.alert({ ...p, title: `${p.title} ${MARK}` }),
 		resolveTicket: (ck) => hub.resolve(ck),
-		notifyLead,
-		listLeadIds: () => projects[0].leads.map((l) => l.agentId),
 		env: process.env,
 		logger: () => {},
 	});
@@ -404,7 +400,7 @@ console.log(`temp: ${tmp}`);
 			activeRow("swap", "swap_pressure_high")?.resolved_at != null,
 	);
 	ok(
-		"①′ no load-shed broadcast during the scar scenario",
+		"①′ no per-Lead mailbox instruction during the scar scenario",
 		seams.notifiedLeads.length === preScarAlerts,
 	);
 	ok(
@@ -426,8 +422,6 @@ console.log(`temp: ${tmp}`);
 		store,
 		alert: (p) => routedAlertSink.alert({ ...p, title: `${p.title} ${MARK}` }),
 		resolveTicket: (ck) => hub.resolve(ck),
-		notifyLead,
-		listLeadIds: () => projects[0].leads.map((l) => l.agentId),
 		env: process.env,
 		logger: () => {},
 	});

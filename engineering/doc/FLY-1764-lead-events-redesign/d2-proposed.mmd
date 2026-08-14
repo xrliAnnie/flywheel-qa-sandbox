@@ -1,0 +1,21 @@
+flowchart TB
+  S["FleetSensors 内存传感器"] --> C{"压力确认"}
+
+  C -->|"要系统做的"| H["pressure-hold 自动置位<br/>(已存在,不改)"]
+  C -->|"要人修的"| A["LeadAlertNotifier → Discord 告警频道<br/>恰 1 条工单,owner 认领<br/>(已存在,不改)"]
+
+  B["大喇叭 broadcastLoadShed<br/>16 份全员副本"]:::retired
+  B -.->|"退役 ✂"| GONE(("消失")):::retired
+
+  subgraph MB["  邮局 mailbox(不变)  "]
+    direction TB
+    M1["runner 提问 → 归属 Lead"]
+    M2["founder 回复 → 归属 Lead"]
+    M3["server-loss 恢复通知 → 归属 Lead<br/>(定向 action,保留)"]
+    M4["死信通知 → 归属 Lead"]
+  end
+
+  style H fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+  style A fill:#e9f2ff,stroke:#007aff,stroke-width:2px
+  style MB fill:#f7f7fa,stroke:#86868b
+  classDef retired fill:#f2f2f5,stroke:#86868b,stroke-dasharray:6 4,color:#86868b

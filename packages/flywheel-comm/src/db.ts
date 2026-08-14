@@ -44,6 +44,26 @@ import type {
 	Session,
 } from "./types.js";
 
+export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
+  FROM mailbox AS m
+  JOIN mailbox_message_projection AS p ON p.id = m.id
+ WHERE m.to_agent = ? AND m.type = 'instruction'
+   AND m.state IN ('QUEUED','LEASED')
+   AND p.read_at IS NULL
+   AND datetime(p.expires_at) > datetime('now')
+ ORDER BY p.created_at ASC`;
+
+export const PENDING_PUSH_INSTRUCTIONS_SQL = `SELECT p.*
+  FROM mailbox AS m
+  JOIN mailbox_message_projection AS p ON p.id = m.id
+ WHERE m.to_agent = ? AND m.type = 'instruction'
+   AND m.state IN ('QUEUED','LEASED')
+   AND p.read_at IS NULL
+   AND (p.delivered_at IS NULL
+        OR datetime(p.delivered_at) < datetime('now', '-' || ? || ' seconds'))
+   AND datetime(p.expires_at) > datetime('now')
+ ORDER BY p.created_at ASC`;
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
@@ -2598,14 +2618,7 @@ export class CommDB {
 	}
 
 	getUnreadInstructions(agentId: string): Message[] {
-		return this.db
-			.prepare(
-				`SELECT * FROM mailbox_message_projection
-         WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
-		 AND datetime(expires_at) > datetime('now')
-         ORDER BY created_at ASC`,
-			)
-			.all(agentId) as Message[];
+		return this.db.prepare(UNREAD_INSTRUCTIONS_SQL).all(agentId) as Message[];
 	}
 
 	markInstructionRead(id: string): void {
@@ -3544,7 +3557,9 @@ export class CommDB {
 	//
 	// These are push-only helpers used by inbox-mcp's poll → channel notification loop.
 	// The CLI pull path (packages/flywheel-comm/src/commands/inbox.ts) continues to use
-	// getUnreadInstructions()/markInstructionRead() — its semantics are NOT changed.
+	// getUnreadInstructions()/markInstructionRead(). Its delivered_at behavior remains
+	// independent from push retries. Since FLY-1748, both read paths explicitly exclude
+	// terminal mailbox states.
 	//
 	// State machine:
 	//   inserted         → delivered_at=NULL, read_at=NULL  → returned by getPendingPushInstructions
@@ -3559,14 +3574,7 @@ export class CommDB {
 		retryWindowSec: number,
 	): Message[] {
 		return this.db
-			.prepare(
-				`SELECT * FROM mailbox_message_projection
-         WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
-         AND (delivered_at IS NULL
-              OR datetime(delivered_at) < datetime('now', '-' || ? || ' seconds'))
-		 AND datetime(expires_at) > datetime('now')
-         ORDER BY created_at ASC`,
-			)
+			.prepare(PENDING_PUSH_INSTRUCTIONS_SQL)
 			.all(agentId, retryWindowSec) as Message[];
 	}
 

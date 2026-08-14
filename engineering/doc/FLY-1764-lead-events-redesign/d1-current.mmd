@@ -1,0 +1,26 @@
+flowchart TB
+  S["FleetSensors 内存传感器<br/>(Bridge 里持续监测 swap 压力)"] --> C{"压力确认<br/>(持续越阈 N 秒)"}
+
+  C -->|"① 机制腿(自动动作)"| H["pressure-hold 置位<br/>新 runner 派发自动暂停<br/>压力回落自动解除"]
+  C -->|"② 告警腿(要人修)"| A["LeadAlertNotifier<br/>两层去重 → 恰 1 条工单"]
+  A --> D["Discord 统一告警频道<br/>owner = claw(infra bot)认领"]
+  C -->|"③ 广播腿 = 大喇叭"| B["broadcastLoadShed<br/>遍历所有项目 × 所有 Lead"]
+
+  B --> M["16 份副本写进 6 个项目的邮箱<br/>flywheel×5 · geoforge3d×3 · growth×3<br/>tidal-echo×3 · joycon×1 · personal-assistant×1"]
+
+  M --> F1["缺陷① 查询不排终态行<br/>已判死的行每 30 秒重推<br/>(FLY-1748)"]
+  M --> F2["缺陷② 签收后投递时间戳冻结<br/>退化为逐秒重推,计数器不动<br/>(至今无单)"]
+  M --> F3["缺陷③ Codex 腿签收不通<br/>重投计数飙到 60<br/>(FLY-1750 已修)"]
+
+  F1 --> X["多个 Lead 屏幕被同一条告警刷满一夜<br/>上下文窗口被灌爆 —— 一条说『资源不够』的消息<br/>自己消耗掉最多资源"]
+  F2 --> X
+  F3 --> X
+
+  style H fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+  style D fill:#e9f2ff,stroke:#007aff,stroke-width:2px
+  style B fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+  style M fill:#fff4e5,stroke:#ff9500
+  style X fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+  style F1 fill:#ffe9e7,stroke:#ff3b30
+  style F2 fill:#ffe9e7,stroke:#ff3b30
+  style F3 fill:#ffe9e7,stroke:#ff3b30

@@ -11,6 +11,7 @@ import {
 	type MailboxSettlement,
 } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
+import type { AlertPayload } from "../LeadAlertNotifier.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import {
 	type LeadConfig,
@@ -18,6 +19,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { formatInfraAlertMailboxContent } from "./infra-alert-mailbox.js";
 import {
 	ClaudeLeadDeliveryAdapter,
 	CodexLeadDeliveryAdapter,
@@ -40,6 +42,12 @@ import type {
 	DurableQueueReceipt,
 	RuntimeRegistry,
 } from "./runtime-registry.js";
+
+export interface InfraAlertQueueReceipt {
+	queued: true;
+	deliveryId: string;
+	seq?: number;
+}
 
 export interface LeadInboxRuntimeOptions {
 	projects: ProjectEntry[];
@@ -388,6 +396,58 @@ export class LeadInboxRuntime {
 		const result = enqueueEvent({ queue, envelope, content });
 		this.nudge(envelope.leadId, project.projectName);
 		return result;
+	}
+
+	/** FLY-1764 Flow 2: one durable alert letter to the actionable owner. */
+	enqueueInfraAlert(
+		ownerLeadId: string,
+		payload: AlertPayload,
+	): InfraAlertQueueReceipt {
+		const project = this.projectByLead.get(ownerLeadId);
+		if (!project) throw new Error(`unknown infra alert owner: ${ownerLeadId}`);
+		const queue = this.queues.get(project.projectName);
+		if (!queue)
+			throw new Error(`queue closed for project: ${project.projectName}`);
+		const deliveryId = [
+			"infra_alert",
+			ownerLeadId,
+			payload.eventType,
+			payload.eventId,
+		].join(":");
+		const settlement = queue.inspectDeliveryState(deliveryId);
+		if (settlement.kind === "archived_terminal") {
+			return { queued: true, deliveryId };
+		}
+		// Mailbox identity compares the whole producer projection. Reuse the first
+		// row's timestamp on an in-process retry so the same alert is idempotent.
+		const existing = queue.getById(deliveryId);
+		const result = queue.enqueue({
+			id: deliveryId,
+			deliveryId,
+			fromAgent: "bridge",
+			toAgent: ownerLeadId,
+			recipientKind: "lead",
+			sourceKind: "infra_alert",
+			sourceRef: payload.eventId,
+			type: payload.eventType,
+			msgClass: "model",
+			priority:
+				payload.severity === "severe"
+					? 3
+					: payload.severity === "warning"
+						? 2
+						: 1,
+			content: formatInfraAlertMailboxContent(payload),
+			createdAt: existing?.created_at,
+			senderRef: encodeSenderRef(),
+			collapseKey: `infra_alert:${payload.eventType}:${payload.episodeId ?? payload.eventId}`,
+		});
+		this.nudge(ownerLeadId, project.projectName);
+		return {
+			queued: true,
+			deliveryId,
+			...(result.outcome === "archived" ? {} : { seq: result.row.seq }),
+		};
 	}
 
 	getLeadEventSettlement(

@@ -111,6 +111,14 @@ export function decideTicketEscalation(
 		return status === "REPAIRING" ? "retry" : "none";
 	}
 
+	// A no_action outcome means the state is already protected or the episode is
+	// no longer actionable. It never consumes/retries ARC and must not fall into
+	// NEW's owner-unclaimed fallback. The kind-specific timeout remains the
+	// fail-loud boundary if recovery still has not been observed.
+	if (status === "MONITORING") {
+		return age > policy.timeoutMs ? "escalate" : "none";
+	}
+
 	// NEW: nobody claimed it. The fallback only arms when the owner bot is
 	// actually deployed/configured — otherwise this is the pre-FLY-928 world
 	// and the ticket just sits (Cass status quo, zero regression).

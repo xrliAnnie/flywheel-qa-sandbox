@@ -17,6 +17,14 @@ export interface DeliveredAlertHub {
 	): Promise<void>;
 }
 
+/** Stale suppression is expected product behavior, never a delivery failure. */
+export function shouldReportDeadLetteredDrain(result: {
+	deadLettered: number;
+	staleSuppressed: number;
+}): boolean {
+	return result.deadLettered > 0;
+}
+
 /**
  * Feed actionable drained roots into the Hub. Informational roots are already
  * fully delivered and intentionally stop here: no thread, active row, or ARC.

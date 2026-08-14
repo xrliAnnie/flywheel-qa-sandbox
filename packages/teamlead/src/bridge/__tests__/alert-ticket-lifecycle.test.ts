@@ -68,9 +68,11 @@ const SENT: AlertResult = Object.freeze({
 	messageId: "root-1",
 });
 
-function stubBot(outcome: "attempted" | "needs_human"): AutoRepairBot {
+function stubBot(
+	outcome: "attempted" | "needs_human" | "no_action",
+): AutoRepairBot {
 	return {
-		canAttempt: () => outcome === "attempted",
+		canAttempt: () => outcome !== "needs_human",
 		attempt: vi.fn(async () => ({
 			outcome,
 			action: outcome === "attempted" ? "safe_repair" : "none",
@@ -142,6 +144,30 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 		await hub.handle(payload());
 		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("ESCALATED");
 		expect(discord.edits[0]![2]).toContain("· 状态 ESCALATED");
+	});
+
+	it("no_action → MONITORING without founder mention or attempt consumption", async () => {
+		const discord = makeDiscord();
+		const posts: Array<{ content: string; mention?: string }> = [];
+		discord.postToThread = async (_threadId, content, opts) => {
+			posts.push({ content, mention: opts?.mentionUserId });
+		};
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+			autoRepairBot: stubBot("no_action"),
+		});
+
+		await hub.handle(payload());
+
+		const row = store.getActiveAlertThread(CK);
+		expect(row?.repair_status).toBe("no_action");
+		expect(row?.ticket_status).toBe("MONITORING");
+		expect(row?.attempt_count).toBe(0);
+		expect(posts.every((post) => post.mention === undefined)).toBe(true);
+		expect(posts.some((post) => post.content.includes("修不了"))).toBe(false);
+		expect(discord.edits[0]![2]).toContain("· 状态 MONITORING");
 	});
 
 	it("resolve flips a ticket row to RESOLVED (quiet) + edits the root", async () => {
@@ -296,6 +322,39 @@ describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
 		expect(row?.attempt_count).toBe(2);
 		expect(row?.ticket_status).toBe("REPAIRING");
 		expect(bot.attempt).toHaveBeenCalledTimes(1);
+	});
+
+	it("retry no_action → MONITORING without consuming the remaining attempt", async () => {
+		const discord = makeDiscord();
+		const posts: Array<{ content: string; mention?: string }> = [];
+		discord.postToThread = async (_threadId, content, opts) => {
+			posts.push({ content, mention: opts?.mentionUserId });
+		};
+		const bot = stubBot("no_action");
+		const recent = new Date(Date.now() - 30_000)
+			.toISOString()
+			.replace("T", " ")
+			.slice(0, 19);
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+			autoRepairBot: bot,
+		});
+		openAgedTicket({ firstSeenAt: recent });
+		store.bumpTicketAttempt(CK); // first attempt already consumed
+
+		await hub.reconcile();
+
+		const row = store.getActiveAlertThread(CK);
+		expect(row?.repair_status).toBe("no_action");
+		expect(row?.ticket_status).toBe("MONITORING");
+		expect(row?.attempt_count).toBe(1);
+		expect(posts.every((post) => post.mention === undefined)).toBe(true);
+		expect(posts.some((post) => post.content.includes("安全闸拒绝"))).toBe(
+			false,
+		);
+		expect(discord.edits[0]![2]).toContain("· 状态 MONITORING");
 	});
 
 	it("legacy rows (NULL ticket_status) are untouched by the T2 pass", async () => {

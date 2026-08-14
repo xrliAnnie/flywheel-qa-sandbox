@@ -221,7 +221,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "auto",
 		remediationRef:
-			"pressure-hold（可逆暂停派新 runner）+ 各 Lead 降载通知 (FLY-1082)",
+			"pressure-hold（可逆暂停派新 runner）+ owner-routed alert ticket",
 	},
 	tmux_server_lost: {
 		owner: "claude",

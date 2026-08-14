@@ -73,6 +73,29 @@ describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 		).toBe("none");
 	});
 
+	it("MONITORING ignores unclaimed fallback and waits for the kind timeout", () => {
+		const policy = {
+			...DEFAULT_TICKET_ESCALATION_POLICY,
+			timeoutMs: 30 * 60_000,
+		};
+		expect(
+			decideTicketEscalation(
+				row({ ticket_status: "MONITORING", first_seen_at: AGE(10 * 60_000) }),
+				NOW,
+				true,
+				policy,
+			),
+		).toBe("none");
+		expect(
+			decideTicketEscalation(
+				row({ ticket_status: "MONITORING", first_seen_at: AGE(31 * 60_000) }),
+				NOW,
+				true,
+				policy,
+			),
+		).toBe("escalate");
+	});
+
 	it("NEW unclaimed > 5 min WITH a configured owner → escalate", () => {
 		expect(
 			decideTicketEscalation(

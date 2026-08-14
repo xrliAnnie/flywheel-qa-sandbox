@@ -65,6 +65,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-voice-bridge.sh"
 if [[ -f "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh" ]]; then
     source "${FLYWHEEL_DIR}/scripts/lib/tmux-server-rescue.sh"
 fi
+# shellcheck source=lib/legacy-swap-broadcast-retirement.sh
+source "${FLYWHEEL_DIR}/scripts/lib/legacy-swap-broadcast-retirement.sh"
 
 # FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
 # Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
@@ -2437,6 +2439,29 @@ deploy_and_verify() {
         fi
     else
         log "Build skipped (no build-relevant code delta)"
+    fi
+
+    # FLY-1764: the old Bridge is stopped and the freshly built bytes no longer
+    # produce per-Lead swap-broadcast rows. Retire every live legacy row across
+    # the on-disk CommDB universe and prove the postcondition before the new
+    # Bridge starts. Any DB/schema/lock failure is fail-closed.
+    if [[ "$restart_bridge" == "true" ]]; then
+        if legacy_swap_retirement_required "$DEPLOYED_SHA" "$FLYWHEEL_DIR"; then
+            if ! retire_legacy_swap_broadcasts; then
+                if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
+                    log "ERROR: legacy swap broadcast retirement failed; code-only rollback is disabled for this restart"
+                    alert_severe "legacy-swap-retirement-failed-code-rollback-disabled" \
+                        "Fleet alert cleanup failed; code-only rollback disabled" \
+                        "FLY-1764 旧 swap 广播清障未满足事务后置条件；迁移安全窗口禁止只回滚代码，新 Bridge 未启动。请按窗口回滚流程恢复。"
+                    RESTART_TERMINAL_REPORTED=true
+                else
+                    log "Legacy swap broadcast retirement failed, attempting rollback"
+                    rollback_and_restart "$DEPLOYED_SHA"
+                fi
+                # rollback_and_restart already handles rebuild + Bridge/Lead recovery.
+                return 1
+            fi
+        fi
     fi
 
     # FLY-1573: first queue-capability rollout only. Persist OFF before the new

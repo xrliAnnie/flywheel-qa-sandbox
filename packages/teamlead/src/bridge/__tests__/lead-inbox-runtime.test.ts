@@ -6,7 +6,10 @@ import { CommDB } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LeadAlertNotifier } from "../../LeadAlertNotifier.js";
+import {
+	type AlertPayload,
+	LeadAlertNotifier,
+} from "../../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { LeadDeliveryUnavailableError } from "../lead-delivery-adapter.js";
@@ -52,6 +55,69 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("writes one infra alert to the owner mailbox and nudges it immediately", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1764-owner-alert-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+		});
+		runtimes.push(runtime);
+		const nudge = vi.spyOn(runtime, "nudge");
+		const alert: AlertPayload = {
+			leadId: "swap",
+			projectName: "machine",
+			eventId: "swap-pressure:episode-1764",
+			eventType: "swap_pressure_high",
+			title: "Memory pressure",
+			body: "pressure-hold is active",
+			severity: "severe",
+			episodeId: "episode-1764",
+		};
+
+		const first = runtime.enqueueInfraAlert("lead-a", alert);
+		const replay = runtime.enqueueInfraAlert("lead-a", alert);
+
+		expect(first).toMatchObject({
+			queued: true,
+			deliveryId:
+				"infra_alert:lead-a:swap_pressure_high:swap-pressure:episode-1764",
+		});
+		expect(replay).toEqual(first);
+		expect(nudge).toHaveBeenCalledTimes(2);
+		expect(nudge).toHaveBeenLastCalledWith("lead-a", "project-a");
+		const queue = new MailboxQueue(dbPath);
+		try {
+			const row = queue.getById(first.deliveryId);
+			expect(row).toMatchObject({
+				from_agent: "bridge",
+				to_agent: "lead-a",
+				recipient_kind: "lead",
+				source_kind: "infra_alert",
+				source_ref: "swap-pressure:episode-1764",
+				type: "swap_pressure_high",
+				msg_class: "model",
+				priority: 3,
+				collapse_key: "infra_alert:swap_pressure_high:episode-1764",
+				state: "QUEUED",
+			});
+			expect(row?.content).toContain("Memory pressure");
+			expect(row?.content).toContain("pressure-hold is active");
+			const snapshot = new Database(dbPath, { readonly: true });
+			try {
+				expect(
+					snapshot.prepare("SELECT COUNT(*) AS count FROM mailbox").get(),
+				).toEqual({ count: 1 });
+			} finally {
+				snapshot.close();
+			}
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("exposes the owning queue's typed settlement view for patrol recovery", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1687-runtime-settlement-"));
 		const registry = new RuntimeRegistry();

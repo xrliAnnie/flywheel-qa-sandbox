@@ -229,7 +229,7 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 		}
 	});
 
-	it("swap: 30-min default window, env-overridable, no reconcile retry", () => {
+	it("swap: unset/invalid → 30 min; legal override (including 1 min) drives MONITORING timeout", () => {
 		const p = policyForKind("swap_pressure_high", {} as NodeJS.ProcessEnv);
 		expect(p.timeoutMs).toBe(30 * 60_000);
 		expect(p.retryOnReconcile).toBe(false);
@@ -237,6 +237,30 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 			FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN: "45",
 		} as unknown as NodeJS.ProcessEnv);
 		expect(overridden.timeoutMs).toBe(45 * 60_000);
+		for (const invalid of ["0", "-1", "NaN", "Infinity", ""] as const) {
+			expect(
+				policyForKind("swap_pressure_high", {
+					FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN: invalid,
+				} as unknown as NodeJS.ProcessEnv).timeoutMs,
+			).toBe(30 * 60_000);
+		}
+		const oneMinute = policyForKind("swap_pressure_high", {
+			FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN: "1",
+		} as unknown as NodeJS.ProcessEnv);
+		expect(oneMinute.timeoutMs).toBe(60_000);
+		expect(
+			decideTicketEscalation(
+				{
+					ticket_status: "MONITORING",
+					attempt_count: 0,
+					first_seen_at: "2026-07-09 21:00:00",
+					acked_at: null,
+				},
+				Date.parse("2026-07-09T21:01:01Z"),
+				true,
+				oneMinute,
+			),
+		).toBe("escalate");
 	});
 
 	it("tmux_server_lost / bridge_abnormal_exit: single-shot remediation — no reconcile retry", () => {

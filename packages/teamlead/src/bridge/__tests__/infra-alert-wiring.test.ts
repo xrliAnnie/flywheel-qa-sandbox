@@ -15,7 +15,10 @@ import {
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
-import { ISSUE_PROGRESS_KINDS } from "../infra-event-router.js";
+import {
+	classifyInfraEvent,
+	ISSUE_PROGRESS_KINDS,
+} from "../infra-event-router.js";
 
 const projects = [
 	{
@@ -50,6 +53,7 @@ function payload(eventType: AlertEventType): AlertPayload {
 describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 	let store: StateStore;
 	let rawSink: { alert: ReturnType<typeof vi.fn> };
+	let ticketSink: { alert: ReturnType<typeof vi.fn> };
 	let fetchImpl: ReturnType<typeof vi.fn>;
 
 	beforeEach(async () => {
@@ -67,6 +71,9 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		rawSink = {
 			alert: vi.fn(async (): Promise<AlertResult> => ({ sent: true })),
 		};
+		ticketSink = {
+			alert: vi.fn(async (): Promise<AlertResult> => ({ queued: true })),
+		};
 		fetchImpl = vi.fn(async () => ({
 			ok: true,
 			status: 200,
@@ -76,23 +83,27 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		}));
 	});
 
-	function makeSink(routing = true) {
+	function makeSink(routing = true, copyTicketToChannel = false) {
 		return buildInfraAlertRouting({
 			store,
 			projects,
 			globalBotToken: "global-token",
 			rawSink,
+			ticketSink,
 			routingEnabled: () => routing,
+			ticketsEnabled: () => false,
+			copyTicketToChannel: () => copyTicketToChannel,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			sleepFn: async () => {},
 			logger: () => {},
 		});
 	}
 
-	it("FULL-UNION SWEEP (routing ON): progress kinds with a bound thread go to the thread; every other kind hits the raw sink", async () => {
+	it("FULL-UNION SWEEP (routing ON): progress goes to its thread, tickets to the owner mailbox, notify-only to raw", async () => {
 		const sink = makeSink(true);
 		for (const kind of ALERT_EVENT_TYPES) {
 			rawSink.alert.mockClear();
+			ticketSink.alert.mockClear();
 			fetchImpl.mockClear();
 			const result = await sink.alert(payload(kind));
 			if (ISSUE_PROGRESS_KINDS.has(kind)) {
@@ -104,32 +115,61 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 					"/channels/thread-927/messages",
 				);
 				expect(rawSink.alert).not.toHaveBeenCalled();
+				expect(ticketSink.alert).not.toHaveBeenCalled();
 				expect(result).toEqual({ sent: true });
+			} else if (
+				classifyInfraEvent({ eventType: kind, boundIssueThread: null }) ===
+				"ticket"
+			) {
+				expect(
+					ticketSink.alert,
+					`${kind} should hit the owner mailbox sink`,
+				).toHaveBeenCalledTimes(1);
+				expect(rawSink.alert).not.toHaveBeenCalled();
+				expect(fetchImpl).not.toHaveBeenCalled();
+				expect(result).toEqual({ queued: true });
 			} else {
 				expect(
 					rawSink.alert,
-					`${kind} should hit the raw sink`,
+					`${kind} should hit the raw notify sink`,
 				).toHaveBeenCalledTimes(1);
+				expect(ticketSink.alert).not.toHaveBeenCalled();
 				expect(fetchImpl).not.toHaveBeenCalled();
 			}
 		}
+	});
+
+	it("does not emit a Discord copy for owner-mailbox tickets unless the switch is enabled", async () => {
+		const alert = payload("swap_pressure_high");
+		await makeSink(true).alert(alert);
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+
+		rawSink.alert.mockClear();
+		ticketSink.alert.mockClear();
+		await makeSink(true, true).alert(alert);
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
+		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
 	});
 
 	it("SENTINEL (routing OFF): every kind passes straight through to the raw sink", async () => {
 		const sink = makeSink(false);
 		for (const kind of ALERT_EVENT_TYPES) {
 			rawSink.alert.mockClear();
+			ticketSink.alert.mockClear();
 			await sink.alert(payload(kind));
 			expect(rawSink.alert).toHaveBeenCalledTimes(1);
+			expect(ticketSink.alert).not.toHaveBeenCalled();
 			expect(fetchImpl).not.toHaveBeenCalled();
 		}
 	});
 
-	it("progress kind WITHOUT a bound thread fail-safes to the raw sink", async () => {
+	it("progress kind WITHOUT a bound thread fail-safes to the owner mailbox", async () => {
 		const sink = makeSink(true);
 		const p = { ...payload("three_stage_stuck"), sessionKey: "no-such-exec" };
 		await sink.alert(p);
-		expect(rawSink.alert).toHaveBeenCalledTimes(1);
+		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
+		expect(rawSink.alert).not.toHaveBeenCalled();
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
@@ -152,6 +192,7 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		await sink.alert(p);
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).not.toHaveBeenCalled();
 	});
 
 	it("still resolves the issue thread when the dead execution has no session row", async () => {
@@ -176,9 +217,10 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		await sink.alert(p);
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).not.toHaveBeenCalled();
 	});
 
-	it("issue-thread delivery failure routes the ORIGINAL alert to the raw sink (never silent)", async () => {
+	it("issue-thread delivery failure routes the ORIGINAL alert to the owner mailbox", async () => {
 		fetchImpl.mockImplementation(async () => ({
 			ok: false,
 			status: 403,
@@ -188,8 +230,9 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		const sink = makeSink(true);
 		const p = payload("three_stage_stuck");
 		const result = await sink.alert(p);
-		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith(p);
-		expect(result).toEqual({ sent: true }); // the raw sink's result surfaces
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(result).toEqual({ queued: true });
 	});
 
 	it("thread post uses the owning lead's bot token", async () => {

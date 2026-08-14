@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CommDB } from "../db.js";
+import {
+	CommDB,
+	PENDING_PUSH_INSTRUCTIONS_SQL,
+	UNREAD_INSTRUCTIONS_SQL,
+} from "../db.js";
 
 describe("CommDB", () => {
 	let db: CommDB;
@@ -1016,6 +1020,49 @@ describe("CommDB", () => {
 			expect(pending).toHaveLength(0);
 		});
 
+		it("getPendingPushInstructions hides DEAD messages", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "dead");
+			(db as any).db
+				.prepare(
+					`UPDATE mailbox
+					 SET state = 'DEAD', dead_at = datetime('now'),
+					     dead_reason = 'lease_expired_unacked'
+					 WHERE id = ?`,
+				)
+				.run(id);
+
+			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+		});
+
+		it("filters DEAD messages by state regardless of dead_reason", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "terminal");
+			(db as any).db
+				.prepare(
+					`UPDATE mailbox
+					 SET state = 'DEAD', dead_at = datetime('now'),
+					     dead_reason = 'recipient_terminal'
+					 WHERE id = ?`,
+				)
+				.run(id);
+
+			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+		});
+
+		it("does not re-deliver a leased message after it becomes DEAD", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "treadmill");
+			db.markInstructionDelivered(id);
+			(db as any).db
+				.prepare(
+					`UPDATE mailbox
+					 SET state = 'DEAD', dead_at = datetime('now'),
+					     dead_reason = 'lease_expired_unacked'
+					 WHERE id = ?`,
+				)
+				.run(id);
+
+			expect(db.getPendingPushInstructions("lead-1", 0)).toHaveLength(0);
+		});
+
 		it("markInstructionDelivered sets delivered_at to now", () => {
 			const id = db.insertInstruction("bridge", "lead-1", "msg");
 			db.markInstructionDelivered(id);
@@ -1085,7 +1132,7 @@ describe("CommDB", () => {
 			expect(() => db.ackInstructionRead("nonexistent-id")).not.toThrow();
 		});
 
-		it("does NOT change getUnreadInstructions semantics — CLI pull path unaffected by delivered_at", () => {
+		it("keeps CLI pull visibility independent of delivered_at for live messages", () => {
 			// Instruction marked delivered but NOT acked — CLI pull should still see it
 			const id = db.insertInstruction(
 				"bridge",
@@ -1097,6 +1144,20 @@ describe("CommDB", () => {
 			const unread = db.getUnreadInstructions("lead-1");
 			expect(unread).toHaveLength(1);
 			expect(unread[0]!.id).toBe(id);
+		});
+
+		it("getUnreadInstructions hides DEAD messages", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "dead pull");
+			(db as any).db
+				.prepare(
+					`UPDATE mailbox
+					 SET state = 'DEAD', dead_at = datetime('now'),
+					     dead_reason = 'lease_expired_unacked'
+					 WHERE id = ?`,
+				)
+				.run(id);
+
+			expect(db.getUnreadInstructions("lead-1")).toHaveLength(0);
 		});
 
 		it("markInstructionRead (CLI pull path) still hides from getUnreadInstructions", () => {
@@ -1124,6 +1185,26 @@ describe("CommDB", () => {
 			const pending = db.getPendingPushInstructions("lead-1", 30);
 			expect(pending[0]!.id).toBe(id1);
 			expect(pending[1]!.id).toBe(id2);
+		});
+
+		it("uses mailbox_live for the production push query", () => {
+			const plan = (db as any).db
+				.prepare(`EXPLAIN QUERY PLAN ${PENDING_PUSH_INSTRUCTIONS_SQL}`)
+				.all("lead-1", 30) as Array<{ detail: string }>;
+
+			expect(plan[0]?.detail).toContain(
+				"SEARCH m USING INDEX mailbox_live (to_agent=?)",
+			);
+		});
+
+		it("uses mailbox_live for the production pull query", () => {
+			const plan = (db as any).db
+				.prepare(`EXPLAIN QUERY PLAN ${UNREAD_INSTRUCTIONS_SQL}`)
+				.all("lead-1") as Array<{ detail: string }>;
+
+			expect(plan[0]?.detail).toContain(
+				"SEARCH m USING INDEX mailbox_live (to_agent=?)",
+			);
 		});
 	});
 

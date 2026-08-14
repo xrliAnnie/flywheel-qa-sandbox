@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../../LeadAlertNotifier.js";
-import { attachDeliveredAlertLifecycles } from "../drained-alert-routing.js";
+import {
+	attachDeliveredAlertLifecycles,
+	shouldReportDeadLetteredDrain,
+} from "../drained-alert-routing.js";
 
 function payload(eventType: AlertPayload["eventType"]): AlertPayload {
 	return {
@@ -15,6 +18,20 @@ function payload(eventType: AlertPayload["eventType"]): AlertPayload {
 }
 
 describe("FLY-1256 drained alert routing", () => {
+	it("reports only actual dead letters, never expected stale suppression", () => {
+		expect(
+			shouldReportDeadLetteredDrain({
+				deadLettered: 0,
+				staleSuppressed: 3,
+			}),
+		).toBe(false);
+		expect(
+			shouldReportDeadLetteredDrain({
+				deadLettered: 1,
+				staleSuppressed: 0,
+			}),
+		).toBe(true);
+	});
 	it.each([
 		"account_switched",
 		"model_cap_switched",

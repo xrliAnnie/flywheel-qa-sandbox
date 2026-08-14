@@ -7,7 +7,8 @@
  *
  * Sensors:
  *  - SWAP  (Task 2.2): watermark + hysteresis → `swap_pressure_high` ticket;
- *    ARC = reversible dispatch pressure-hold + per-Lead load-shed notify;
+ *    ARC = reversible dispatch pressure-hold; the owner-routed alert ticket is
+ *    the sole human notification path.
  *    watermark falls below LOW → hold lifted + quiet resolve.
  *  - BOT   (Task 2.5): infra-bot liveness (pane/launchctl probes, injected)
  *    → `infra_bot_down` ticket cross-owned by the OTHER side; ARC =
@@ -42,24 +43,20 @@ export interface InfraBotProbe {
 	probeSource: string;
 }
 
+/** Narrow, synchronous input used while draining a delayed alert queue entry. */
+export interface ReplayFreshnessInput {
+	eventType: AlertPayload["eventType"];
+	leadId: string;
+	eventId: string;
+	episodeId?: string;
+}
+
 export interface FleetSensorsDeps {
 	store: StateStore;
 	/** The routed alert sink (ticket enrichment + Hub threading included). */
 	alert: (p: AlertPayload) => Promise<AlertResult>;
 	/** Quiet-resolve an active ticket (hub.resolve); absent = reconcile-only. */
 	resolveTicket?: (correlationKey: string) => Promise<void>;
-	/**
-	 * Bridge → Lead instruction (CommDB inbox). Returns delivered. FLY-1193: the
-	 * optional dedupeId lets the load-shed broadcast be idempotent across
-	 * retries / restarts (CommDB INSERT OR IGNORE); plugin.ts already threads it.
-	 */
-	notifyLead?: (
-		leadId: string,
-		content: string,
-		dedupeId?: string,
-	) => Promise<boolean>;
-	/** All configured Lead agent ids (the load-shed broadcast audience). */
-	listLeadIds?: () => string[];
 	/** Injection seams (defaults are the real probes). */
 	readPressure?: () => Promise<MemoryPressure | null>;
 	probeBots?: () => Promise<InfraBotProbe[]>;
@@ -89,8 +86,8 @@ export function fleetCorrelationKey(leadId: string, eventType: string): string {
 /**
  * FLY-1193: page debounce seconds. An explicit finite non-negative number is
  * taken verbatim (explicit "0" = disable the page DELAY only — the trigger tick
- * pages immediately; the hold-at-trigger / new copy / broadcast latch semantics
- * are NOT rolled back, per plan §0's N=0 contract). Unset / empty / whitespace /
+ * pages immediately; the hold-at-trigger and per-episode page latch semantics
+ * are NOT rolled back). Unset / empty / whitespace /
  * negative / NaN / Infinity / non-numeric → default 120. A dedicated validator:
  * the `Number("") === 0` trap must be explicitly excluded.
  */
@@ -172,20 +169,19 @@ export class FleetSensors {
 	private lastPressure: MemoryPressure | null = null;
 
 	/**
-	 * FLY-1193: single-process page / broadcast / fail-loud optimization latches
+	 * Single-process page / fail-loud optimization latches
 	 * — they stop the SAME process from re-firing every tick. They are NOT the
 	 * cross-restart correctness source (§1 contract): the deterministic
-	 * eventId / dedupeId make "a repeat call while a caller exists" idempotent;
+	 * eventId makes "a repeat call while a caller exists" idempotent;
 	 * cross-restart root-page dedup rides the existing alert dedup layer (claims /
-	 * lead_events) inside its window (worst case one re-open); the broadcast's
-	 * cross-restart re-send is best-effort. On restart the latches reset to null;
+	 * lead_events) inside its window (worst case one re-open). On restart the
+	 * latches reset to null;
 	 * no durable re-hydration. Stored as episodeId (not bool) so "a new episode
 	 * after a clear" is handled for free — a new id ≠ the old value → re-pageable.
 	 * R3-1: a latch is set ONLY after its side-effect landed durable (see
-	 * maybePage / broadcastLoadShed); a throw before that → next-tick retry.
+	 * maybePage); a throw before that → next-tick retry.
 	 */
 	private episodePagedFor: string | null = null;
-	private episodeBroadcastFor: string | null = null;
 	private holdFailurePagedFor: string | null = null;
 
 	/** Latest watermark summary (server-loss notifications ride it). */
@@ -209,7 +205,7 @@ export class FleetSensors {
 		// from the page (human-facing alert). On the very tick the episode is
 		// confirmed — and every in-pressure tick after — place/confirm the hold
 		// SILENTLY (earlier than the old alert→AutoRepairBot round-trip). The page
-		// + Lead load-shed broadcast are debounced separately (see maybePage).
+		// is debounced separately (see maybePage).
 		let hold: HoldSnapshot | null = null;
 		if (ev.event === "trigger" || this.memMonitor.inPressure) {
 			hold = this.ensureSensorHold();
@@ -298,9 +294,9 @@ export class FleetSensors {
 
 	/**
 	 * FLY-1193: the debounce gate. The episode has been confirmed (hold placed);
-	 * page + broadcast the Lead load-shed only once it has PERSISTED ≥ N seconds
+	 * page the owner-routed alert only once it has PERSISTED ≥ N seconds
 	 * (N=0 → the trigger tick qualifies). A spike that self-heals in < N never
-	 * reaches here with a due elapsed → zero page, zero broadcast (the whole
+	 * reaches here with a due elapsed → zero page (the whole
 	 * point of this issue). Episode identity is owner-tiered (R3-2): a
 	 * sensor-owned hold anchors the DURABLE `set_at` (identity stable across
 	 * restarts, dedup complete inside the alert layer's window); a manual /
@@ -348,53 +344,16 @@ export class FleetSensors {
 			);
 			if (isDurablyHandled(r)) this.episodePagedFor = episodeId;
 		}
-		// ── Lead load-shed broadcast: SAME due point, independent best-effort.
-		//    Called directly here (R3-1) — never waiting on the Hub→AutoRepairBot
-		//    callback, which a restart-time `skipped:"duplicate"` alert would skip. ──
-		await this.broadcastLoadShed(episodeId, hold);
-	}
-
-	/**
-	 * FLY-1193: per-Lead load-shed broadcast with a deterministic dedupeId
-	 * (`swap-broadcast:<episodeId>:<leadId>`) so a repeat call is idempotent
-	 * (CommDB INSERT OR IGNORE). The in-memory latch is set ONLY once EVERY Lead
-	 * landed in CommDB (notifyLead returned true, IGNORE hits included); any
-	 * failure → no latch, and the SAME process retries the missing ones on the
-	 * next due tick. Whether a cross-restart re-send happens depends on a due
-	 * caller still existing — best-effort (§1), no durable outbox.
-	 */
-	private async broadcastLoadShed(
-		episodeId: string,
-		hold: HoldSnapshot,
-	): Promise<void> {
-		if (this.episodeBroadcastFor === episodeId) return; // already broadcast
-		const leadIds = this.deps.listLeadIds?.() ?? [];
-		let allOk = true;
-		for (const leadId of leadIds) {
-			try {
-				const ok = await this.deps.notifyLead?.(
-					leadId,
-					this.loadShedText(hold),
-					`swap-broadcast:${episodeId}:${leadId}`,
-				);
-				if (!ok) allOk = false;
-			} catch {
-				allOk = false;
-			}
-		}
-		if (allOk && leadIds.length > 0) this.episodeBroadcastFor = episodeId;
 	}
 
 	/**
 	 * The AutoRepairBot's swap_pressure_high attempt (wired via
-	 * deps.fleetRepair.swapPressure). FLY-1193: the sensor already places the hold
-	 * at trigger and broadcasts at the debounce due point — this callback is the
-	 * belt-and-suspenders "repair action" narrative (dedupeId keeps it from
-	 * double-sending). It consumes the payload's ORIGINAL episode identity and is
+	 * deps.fleetRepair.swapPressure). The sensor already places the hold at trigger;
+	 * this callback is the belt-and-suspenders "repair action" narrative. It
+	 * consumes the payload's ORIGINAL episode identity and is
 	 * prefix-aware (R5-4) + episode-precise (R4-2): it NEVER rebuilds identity or
 	 * unconditionally re-places the hold — a queued alert drained after the sensor
-	 * cleared would otherwise re-pause dispatch on a healthy machine and send a
-	 * stale broadcast.
+	 * cleared would otherwise re-pause dispatch on a healthy machine.
 	 */
 	async swapPressureRepair(payload: AlertPayload): Promise<RepairResult> {
 		const eventId = payload.eventId ?? "";
@@ -431,10 +390,10 @@ export class FleetSensors {
 							};
 				}
 				return {
-					outcome: "attempted",
+					outcome: "no_action",
 					action: "none",
 					detail:
-						"该 hold-failure episode 已过去（压力已解除或已切换）— 不再重试置位。",
+						"该 hold-failure episode 已过去（压力已解除或已切换）— 无需再动作，继续监测。",
 				};
 			}
 
@@ -469,33 +428,34 @@ export class FleetSensors {
 				String(this.memMonitor.episodeStart) === payloadEpisodeId;
 
 			if (sensorHoldMatches) {
-				const snap = this.ensureSensorHold(); // idempotent re-confirm
-				await this.broadcastLoadShed(payloadEpisodeId, snap);
+				this.ensureSensorHold(); // idempotent re-confirm
 				return {
 					outcome: "attempted",
 					action: "pressure_hold",
-					detail: `🔧 pressure-hold 已在生效（sensor 于压力确认时置位，${this.lastWatermark ?? "unknown"}）+ 已按需向各 Lead 补发降载广播（同 episode 幂等，不重发）。`,
+					detail: `🔧 pressure-hold 已在生效（sensor 于压力确认时置位，${this.lastWatermark ?? "unknown"}）。新 runner 派发已暂停，继续监测真实压力。`,
 				};
 			}
 			if (monitorMatches) {
-				// manual / unconfirmed hold owns this live episode — do NOT touch the
-				// hold (sensor-only), just ensure the Leads got the load-shed note.
-				await this.broadcastLoadShed(payloadEpisodeId, {
-					state: currentHold ? "existing_manual" : "unconfirmed",
-					setAt: currentHold?.set_at ?? null,
-				});
+				if (!currentHold) {
+					return {
+						outcome: "needs_human",
+						action: "none",
+						detail:
+							"该内存压力 episode 仍在持续，但当前没有 pressure-hold，派发尚未暂停，需要人工立即核对。",
+					};
+				}
 				return {
-					outcome: "attempted",
+					outcome: "no_action",
 					action: "none",
 					detail:
-						"该 episode 的 pressure-hold 非本传感器所置 — 未改动 hold，仅按需补发 Lead 降载广播。",
+						"该内存压力 episode 仍在持续，但已有 pressure-hold 生效；不重复动作，继续监测。",
 				};
 			}
 			return {
-				outcome: "attempted",
+				outcome: "no_action",
 				action: "none",
 				detail:
-					"该 pressure episode 已恢复或已切换到新 episode — 不重新暂停派发、不广播。",
+					"该 pressure episode 已恢复或已切换到新 episode — 无需动作，不重新暂停派发。",
 			};
 		} catch (err) {
 			return {
@@ -507,9 +467,8 @@ export class FleetSensors {
 	}
 
 	/**
-	 * FLY-1193: the shared hold clause — buildAlert and loadShedText render the
-	 * SAME wording per hold owner so the ticket and the Lead broadcast never
-	 * disagree. A manual hold must NOT claim "sensor 已置、恢复后自动解除"
+	 * The alert copy's shared hold clause. A manual hold must NOT claim
+	 * "sensor 已置、恢复后自动解除"
 	 * (liftSensorHold does not clear a manual hold).
 	 */
 	private holdClause(hold: HoldSnapshot): string {
@@ -523,23 +482,6 @@ export class FleetSensors {
 			default:
 				return "⚠️ 保护动作置位失败，派发未被暂停 —— 需要人工关注（注：若 StateStore 整体故障，本告警可能也无法送达，best-effort）。";
 		}
-	}
-
-	/**
-	 * FLY-1193: the per-Lead load-shed broadcast body. Debounce-aware so it never
-	 * claims "已持续" when the page delay is off (N=0 fires on the trigger tick,
-	 * elapsed ≈ 0) — the copy must not overstate duration.
-	 */
-	private loadShedText(hold: HoldSnapshot): string {
-		const freePct = this.lastPressure
-			? `${this.lastPressure.freePct.toFixed(1)}%`
-			: "?";
-		const debounceSec = pageDebounceSecFromEnv(this.env);
-		const lead =
-			debounceSec === 0
-				? `内存压力已确认（page 延迟已关闭，当前 free ${freePct}）`
-				: `内存压力已持续 ≥ ${debounceSec} 秒（OOM 预警，当前 free ${freePct}）`;
-		return `[fleet-alert] ${lead}。请降载：暂缓新任务、考虑收掉可暂停的 runner。${this.holdClause(hold)}`;
 	}
 
 	/**
@@ -578,6 +520,7 @@ export class FleetSensors {
 				leadId: "swap",
 				projectName: FLEET_ALERT_PROJECT,
 				eventId: `swap-holdfail:${episodeId}`,
+				episodeId,
 				eventType: "swap_pressure_high",
 				title: "⚠️ 内存保护未能启用（pressure-hold 置位失败）",
 				body: `检测到内存压力（${cause}，当前 free ${freePct}%），但 pressure-hold 置位失败 —— 新 runner 派发未被暂停。${this.holdClause(hold)}`,
@@ -598,6 +541,7 @@ export class FleetSensors {
 			leadId: "swap",
 			projectName: FLEET_ALERT_PROJECT,
 			eventId: `swap-pressure:${episodeId}`,
+			episodeId,
 			eventType: "swap_pressure_high",
 			title,
 			body: `真实内存压力：${cause}，当前 free ${freePct}%。${persisted}${this.holdClause(hold)}`,
@@ -753,6 +697,45 @@ export class FleetSensors {
 	}
 
 	// ── Hub reconcile recovery probe (all fleet kinds) ───────────────────────
+
+	/**
+	 * Synchronous delayed-replay verdict. true means this exact queued episode is
+	 * proven over, false means it is proven live, and null means deliver because
+	 * evidence is insufficient. It performs no probes or mutations.
+	 */
+	replayFreshness(input: ReplayFreshnessInput): boolean | null {
+		switch (input.eventType) {
+			case "swap_pressure_high": {
+				if (!input.episodeId) return null;
+				// A failed hold write is durable protection-path evidence, not an
+				// episodic pressure reading. Recovery (or a later hold) must never
+				// erase the only signal that dispatch was left unprotected.
+				if (input.eventId.startsWith("swap-holdfail:")) return null;
+				if (this.memMonitor.lastEvaluation?.healthy === true) return true;
+				let hold: ReturnType<StateStore["getFleetPressureHold"]>;
+				try {
+					hold = this.deps.store.getFleetPressureHold();
+				} catch {
+					return null;
+				}
+				if (hold?.set_by !== "swap-sensor") return null;
+				return hold.set_at !== input.episodeId;
+			}
+			case "infra_bot_down": {
+				const provider = input.leadId.replace(/^infra-bot:/, "");
+				if (provider !== "claude" && provider !== "codex") return null;
+				const alive = this.botLastAlive.get(provider);
+				return alive === undefined ? null : alive;
+			}
+			case "bridge_abnormal_exit":
+				// A crash is a point-in-time fact. The replacement Bridge completing
+				// boot reconcile is a recovery condition for the ticket, but it does
+				// not make the crash evidence stale for delayed delivery.
+				return null;
+			default:
+				return null;
+		}
+	}
 
 	/**
 	 * The AlertChannelHub `fleetRecovery` dep: true = the fleet condition

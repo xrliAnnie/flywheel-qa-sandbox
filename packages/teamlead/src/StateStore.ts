@@ -9453,7 +9453,7 @@ export class StateStore {
 		return out;
 	}
 
-	/** FLY-368: update repair_status on the active row (pending|fixed|needs_human|n/a). */
+	/** Update repair_status on the active row (pending|attempted|no_action|fixed|needs_human|n/a). */
 	setAlertRepairStatus(correlationKey: string, status: string): void {
 		this.db.run(
 			"UPDATE alert_threads SET repair_status = ? WHERE correlation_key = ? AND resolved_at IS NULL",
@@ -9464,6 +9464,7 @@ export class StateStore {
 
 	/**
 	 * FLY-927 (Task 2.2): set the ticket lifecycle status on the ACTIVE row.
+	 * Statuses: NEW|ACK|REPAIRING|MONITORING|ESCALATED|RESOLVED.
 	 * ACK additionally stamps acked_at ONCE (first claim wins — the T2 unclaimed
 	 * fallback keys on its absence).
 	 */

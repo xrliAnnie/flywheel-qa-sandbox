@@ -222,7 +222,10 @@ import {
 	resolveDoneThreadReconcileConfig,
 	startDoneThreadReconcileScheduler,
 } from "./done-thread-reconcile.js";
-import { attachDeliveredAlertLifecycles } from "./drained-alert-routing.js";
+import {
+	attachDeliveredAlertLifecycles,
+	shouldReportDeadLetteredDrain,
+} from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import {
@@ -285,6 +288,10 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
+import {
+	INFRA_ALERT_LAST_MILE_ROUTE,
+	shouldCopyInfraAlertToChannel,
+} from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatRotationDigest,
@@ -7704,6 +7711,8 @@ export async function startBridge(
 		...(alertRatePerMin
 			? { rateLimiter: createAlertRateLimiter(alertRatePerMin) }
 			: {}),
+		replayFreshnessProbe: (input) =>
+			fleetSensorsHolder.current?.replayFreshness(input) ?? null,
 		// FLY-529: QA Testing Room alert isolation. Unset env → both fields
 		// undefined → notifier keeps its shared production defaults (byte-compat).
 		// The test Bridge sets FLYWHEEL_ALERT_QUEUE_DIR / _DEADLETTER_DIR to slot-
@@ -9208,6 +9217,16 @@ export async function startBridge(
 		projects,
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
+		ticketSink: {
+			alert: async (payload) => {
+				leadInboxRuntime.enqueueInfraAlert(
+					INFRA_ALERT_LAST_MILE_ROUTE.ownerLeadId,
+					payload,
+				);
+				return { queued: true };
+			},
+		},
+		copyTicketToChannel: shouldCopyInfraAlertToChannel,
 	});
 	const routedAlertSink: {
 		alert: (p: AlertPayload) => Promise<AlertResult>;
@@ -9334,8 +9353,8 @@ export async function startBridge(
 
 	// ── FLY-1082: fleet sensors + server-loss coordinator wiring ─────────────
 	// Bridge → Lead instruction over the per-project CommDB inbox (the same
-	// transport CommDBLeadRuntime uses) — the fleet notifications (load-shed /
-	// casualty lists) ride it. Leads are unique per agentId across projects.
+	// transport CommDBLeadRuntime uses) — targeted server-loss casualty lists
+	// ride it. Fleet pressure alerts use the unified alert owner path instead.
 	const leadProjectByAgentId = new Map<string, string>();
 	for (const p of projects) {
 		for (const l of p.leads) leadProjectByAgentId.set(l.agentId, p.projectName);
@@ -9422,8 +9441,6 @@ export async function startBridge(
 		store,
 		alert: (p) => routedAlertSink.alert(p),
 		resolveTicket: alertHub ? (ck) => alertHub.resolve(ck) : undefined,
-		notifyLead: notifyLeadInstruction,
-		listLeadIds: () => [...leadProjectByAgentId.keys()],
 		probeBots: probeInfraBots,
 		scanZombies: scanZombiesWired,
 		// Codex R2 HIGH: a server-loss episode with unmigrated casualties must
@@ -9797,10 +9814,17 @@ export async function startBridge(
 		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
-			.then(async ({ sent, remaining, deadLettered, delivered }) => {
-				if (sent > 0 || remaining > 0 || deadLettered > 0) {
+			.then(async (drainResult) => {
+				const { sent, remaining, deadLettered, staleSuppressed, delivered } =
+					drainResult;
+				if (
+					sent > 0 ||
+					remaining > 0 ||
+					deadLettered > 0 ||
+					staleSuppressed > 0
+				) {
 					console.log(
-						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
+						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered} staleSuppressed=${staleSuppressed}`,
 					);
 				}
 				// FLY-927 (Codex R1 HIGH): a drained root must still get its per-error
@@ -9812,7 +9836,12 @@ export async function startBridge(
 					);
 				}
 				// Dead-letters happened → surface (Discord-independent).
-				if (deadLettered > 0) {
+				if (
+					shouldReportDeadLetteredDrain({
+						deadLettered,
+						staleSuppressed,
+					})
+				) {
 					await metaAlertNotifier.notify({
 						reason: "alert_dead_lettered",
 						title: "LeadAlert dead-lettered alerts",

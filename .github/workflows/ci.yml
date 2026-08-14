@@ -28,6 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # FLY-1764: this job intentionally enumerates shell suites instead of
+      # globbing platform/operator tests. Keep every root suite explicitly
+      # classified as CI-run or reviewed manual-only so a new test cannot ship
+      # without executing anywhere in the required lane.
+      - name: Verify shell suite CI enumeration is complete
+        run: bash scripts/__tests__/ci-shell-suite-enumeration.test.sh
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -169,6 +176,12 @@ jobs:
 
       - name: Test — FLY-1572 mailbox migration CLI
         run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh
+
+      # FLY-1764: producer retirement is a deployment fence over real SQLite
+      # shards, including legacy schemas and the rollback-on-cleanup-failure
+      # path. It must run in the required CI lane, not only on an author host.
+      - name: Test — FLY-1764 legacy swap broadcast retirement
+        run: bash scripts/__tests__/legacy-swap-broadcast-retirement.test.sh
 
       # FLY-1327: deterministic cycle-time analytics use real WAL backup +
       # immutable-snapshot reads against fixture DBs. Keep the sqlite preflight

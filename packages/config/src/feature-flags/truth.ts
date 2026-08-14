@@ -235,6 +235,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES: "tuning knob: alert drain cycles",
 	FLYWHEEL_ALERT_QUEUE_MAX: "tuning knob: alert queue max",
 	FLYWHEEL_ALERT_RATE_PER_MIN: "tuning knob: alert delivery rate per minute",
+	FLYWHEEL_ALERT_REPLAY_FRESHNESS:
+		"tuning knob: delayed alert replay policy, accept_delayed or drop_stale (FLY-1764)",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
 		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
@@ -295,6 +297,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"internal ops lever: D1 responder-based alert routing + /send gating, default-off (FLY-927)",
 	FLYWHEEL_ALERT_TICKETS:
 		"internal ops lever: 🎫 ticket schema header + owner @-target + lifecycle/T2, default-off (FLY-927)",
+	FLYWHEEL_ALERT_COPY_TO_CHANNEL:
+		"internal ops lever: optional Discord observation copy for owner-mailbox infra alerts, default-off (FLY-1764)",
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV:
 		"config value: single alert-sender token env NAME (D2), default-unset = own-bot chain (FLY-927)",
 };

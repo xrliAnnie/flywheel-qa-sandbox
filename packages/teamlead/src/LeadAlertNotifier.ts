@@ -43,6 +43,7 @@ import {
 	formatOverflowSummary,
 } from "./bridge/alert-rate-limiter.js";
 import { markAutomatedDiscordText } from "./bridge/automated-message.js";
+import type { ReplayFreshnessInput } from "./bridge/fleet-sensors.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -501,7 +502,7 @@ export interface AlertTicketContext {
 	ownerUserId: string | null;
 	/** Human-readable owner label when no mention is possible (e.g. "claude bot"). */
 	ownerLabel: string;
-	/** Ticket lifecycle status (NEW/ACK/REPAIRING/RESOLVED/ESCALATED). */
+	/** Ticket lifecycle status (NEW/ACK/REPAIRING/MONITORING/RESOLVED/ESCALATED). */
 	status: string;
 	/** First-seen instant (ms epoch) — claims/episode first time. */
 	firstSeenMs: number;
@@ -530,7 +531,10 @@ export interface AlertPayload {
 	 * a malformed id degrades to plain text).
 	 */
 	mentionUserId?: string;
-	/** FLY-1309 durable recurring-fault delivery identity. */
+	/**
+	 * Durable recurring-fault identity (FLY-1309) and, for swap alerts, the
+	 * episode key used by delayed replay freshness checks.
+	 */
 	episodeId?: string;
 	sourceFingerprint?: string;
 }
@@ -649,6 +653,11 @@ export interface LeadAlertNotifierConfig {
 	rateLimiter?: AlertRateLimiter;
 	/** FLY-1309 durable episode DB (test seam; defaults to shared state). */
 	episodeDbPath?: string;
+	/**
+	 * Synchronous delayed-replay evidence. true = this exact episode is proven
+	 * over; false = proven live; null = unknown, so delivery must fail open.
+	 */
+	replayFreshnessProbe?: (input: ReplayFreshnessInput) => boolean | null;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -706,6 +715,10 @@ export class LeadAlertNotifier {
 	private ticketsEnabled: () => boolean;
 	private rateLimiter?: AlertRateLimiter;
 	private episodeDbPath: string;
+	private replayFreshnessMode: "accept_delayed" | "drop_stale";
+	private replayFreshnessProbe?: (
+		input: ReplayFreshnessInput,
+	) => boolean | null;
 
 	private withDeliveryReceipt(
 		payload: AlertPayload,
@@ -752,6 +765,19 @@ export class LeadAlertNotifier {
 			config.ticketsEnabled ??
 			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
 		this.rateLimiter = config.rateLimiter;
+		this.replayFreshnessProbe = config.replayFreshnessProbe;
+		const replayFreshnessRaw =
+			process.env.FLYWHEEL_ALERT_REPLAY_FRESHNESS?.trim();
+		if (replayFreshnessRaw === "drop_stale") {
+			this.replayFreshnessMode = "drop_stale";
+		} else {
+			this.replayFreshnessMode = "accept_delayed";
+			if (replayFreshnessRaw && replayFreshnessRaw !== "accept_delayed") {
+				this.logger(
+					`invalid FLYWHEEL_ALERT_REPLAY_FRESHNESS=${replayFreshnessRaw}; using accept_delayed`,
+				);
+			}
+		}
 		this.episodeDbPath =
 			config.episodeDbPath ??
 			process.env.FLYWHEEL_LEAD_EPISODE_DB ??
@@ -1097,12 +1123,16 @@ export class LeadAlertNotifier {
 	 *
 	 * Does NOT fire meta-alerts per file (would be 1667× on a backlog drain);
 	 * returns `deadLettered` so the caller (Bridge drain loop) can fire ONE
-	 * debounced meta-alert when dead-lettering occurs.
+	 * debounced meta-alert when delivery failures dead-letter. Proven-stale
+	 * episodes are audited in the same directory but counted separately as
+	 * `staleSuppressed`, never as a delivery failure.
 	 */
 	async drainQueue(): Promise<{
 		sent: number;
 		remaining: number;
 		deadLettered: number;
+		/** Expected product suppression, intentionally not a delivery failure. */
+		staleSuppressed: number;
 		/**
 		 * FLY-927 (Codex R1 HIGH): unified-mode drains that actually POSTed, with
 		 * the root channel+message id — the Bridge drain loop feeds these through
@@ -1129,6 +1159,7 @@ export class LeadAlertNotifier {
 			});
 		let sent = 0;
 		let deadLettered = 0;
+		let staleSuppressed = 0;
 		const delivered: Array<{
 			payload: AlertPayload;
 			channelId: string;
@@ -1184,6 +1215,32 @@ export class LeadAlertNotifier {
 				this.moveQueueFileToDeadLetter(file, "aged-out");
 				deadLettered++;
 				continue;
+			}
+
+			// β mode: suppress only when the synchronous truth source proves this
+			// exact episode ended. Unknown/false/throw all fail open to delivery.
+			if (
+				this.replayFreshnessMode === "drop_stale" &&
+				this.replayFreshnessProbe
+			) {
+				let stale: boolean | null = null;
+				try {
+					stale = this.replayFreshnessProbe({
+						eventType: parsed.eventType,
+						leadId: parsed.leadId,
+						eventId: parsed.eventId,
+						episodeId: parsed.episodeId,
+					});
+				} catch (err) {
+					this.logger(
+						`replay freshness probe failed for ${parsed.eventId}: ${(err as Error).message}; delivering`,
+					);
+				}
+				if (stale === true) {
+					this.moveQueueFileToDeadLetter(file, "stale-episode");
+					staleSuppressed++;
+					continue;
+				}
 			}
 
 			// Recorded permanent reason → dead-letter REGARDLESS of whether
@@ -1284,7 +1341,7 @@ export class LeadAlertNotifier {
 		const remaining = readdirSync(this.queueDir).filter((f) =>
 			f.endsWith(".json"),
 		).length;
-		return { sent, remaining, deadLettered, delivered };
+		return { sent, remaining, deadLettered, staleSuppressed, delivered };
 	}
 
 	/**

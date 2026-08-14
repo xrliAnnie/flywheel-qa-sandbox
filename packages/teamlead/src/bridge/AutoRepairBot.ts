@@ -22,9 +22,11 @@ import type { AlertPayload } from "../LeadAlertNotifier.js";
  * code R1 MEDIUM-2: a delivered keystroke is not proof the runner/Lead advanced).
  * The authoritative "✅ 已恢复" comes later from the Hub's resolve path (driven by
  * the reconcile pass / onRecovery), NOT from the bot. "needs_human" = no safe
- * action was taken.
+ * action was taken. "no_action" = the observed state is already safe or the
+ * episode has ended; it is monitored without consuming an attempt or paging a
+ * human.
  */
-export type RepairOutcome = "attempted" | "needs_human";
+export type RepairOutcome = "attempted" | "needs_human" | "no_action";
 
 export interface RepairResult {
 	outcome: RepairOutcome;
@@ -36,6 +38,7 @@ export interface RepairResult {
 	 *  - `needs_human`: the REASON only (FLY-368 v1.58.0) — the Hub prepends the
 	 *    "🙋 @Annie …" framing + the real founder @-ping, so the escalation mention
 	 *    lives in exactly one place and never duplicates.
+	 *  - `no_action`: a neutral monitoring line, posted without any mention.
 	 */
 	detail: string;
 }
@@ -56,12 +59,9 @@ export interface AutoRepairBotDeps {
 	 */
 	fleetRepair?: {
 		/**
-		 * swap_pressure_high (FLY-1193): the sensor already places the hold at
-		 * trigger and broadcasts the Lead load-shed at the debounce due point —
-		 * this is the belt-and-suspenders "repair action" narrative that ensures
-		 * the hold (idempotent) + re-broadcasts to any Lead that was missed
-		 * (dedup per episode+lead). It NEVER re-pauses dispatch on a recovered
-		 * episode.
+		 * swap_pressure_high: the sensor already places the hold at trigger and
+		 * routes the human signal through the alert ticket. This idempotent repair
+		 * reconfirms only the hold and never re-pauses a recovered episode.
 		 */
 		swapPressure?: (payload: AlertPayload) => Promise<RepairResult>;
 		/** infra_bot_down: `launchctl kickstart -k` the dead bot's job. */

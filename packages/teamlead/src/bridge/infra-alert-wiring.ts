@@ -44,6 +44,10 @@ export interface InfraAlertRoutingDeps {
 	globalBotToken?: string;
 	/** The raw sink (Hub or notifier) — today's behavior + the fail-safe target. */
 	rawSink: AlertSinkLike;
+	/** FLY-1764 Flow 2: primary owner-mailbox last mile for ticket routes. */
+	ticketSink?: AlertSinkLike;
+	/** Optional Discord observation copy; default off. */
+	copyTicketToChannel?: () => boolean;
 	/** Test seams. */
 	routingEnabled?: () => boolean;
 	/** FLY-927 (Task 2.3): 🎫 owner enrichment gate; default FLYWHEEL_ALERT_TICKETS. */
@@ -120,7 +124,7 @@ export function buildInfraAlertRouting(
 					parseLabels(session.issue_labels),
 				).lead
 			: configuredLead(payload);
-		if (!lead) return deps.rawSink.alert(payload);
+		if (!lead) return (deps.ticketSink ?? deps.rawSink).alert(payload);
 		const sev =
 			payload.severity === "severe"
 				? "🚨"
@@ -146,7 +150,7 @@ export function buildInfraAlertRouting(
 				},
 				botToken: lead.botToken ?? deps.globalBotToken,
 				onUndeliverable: async () => {
-					fallback = await deps.rawSink.alert(payload);
+					fallback = await (deps.ticketSink ?? deps.rawSink).alert(payload);
 				},
 			},
 			{
@@ -161,6 +165,8 @@ export function buildInfraAlertRouting(
 
 	const routedSink = createInfraAlertSink({
 		rawSink: deps.rawSink,
+		ticketSink: deps.ticketSink,
+		copyTicketToChannel: deps.copyTicketToChannel,
 		routingEnabled: deps.routingEnabled,
 		resolveBoundIssueThread,
 		deliverToIssueThread,

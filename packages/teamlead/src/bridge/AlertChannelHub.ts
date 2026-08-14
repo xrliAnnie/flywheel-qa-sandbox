@@ -53,6 +53,10 @@ function isPermFallthrough(status: number): boolean {
 	return status === 401 || status === 403 || status === 404;
 }
 
+function assertNever(value: never): never {
+	throw new Error(`unhandled repair outcome: ${String(value)}`);
+}
+
 /**
  * FLY-368 rework: production DiscordOps over the Discord REST API using the
  * REPAIR chain (Cass → alphabetical fleet). `getTokens()` returns the ordered,
@@ -486,94 +490,94 @@ export class AlertChannelHub {
 
 		if (bot) {
 			const repair = await bot.attempt(payload, ck);
-			if (repair.outcome === "needs_human") {
-				// FLY-929 A5: a CLAUDE account-cap needs_human (usage_limit with
-				// claude accountLimit metadata — the not-attemptable pool/bin shape)
-				// is ASSIGNED to the owner bot instead of immediately paging the
-				// founder, but ONLY when self-heal + P-identity + the infra bot id
-				// are all present (`resolveAccountCapOwnerId`). The bot's playbook
-				// (FLY-871: retries exhausted → @Annie and stop) carries the final
-				// founder escalation until the FLY-927 ticket state machine lands.
-				// Any env missing / any other needs_human kind → the founder
-				// escalation below, byte-for-byte.
-				const capOwnerId =
-					payload.eventType === "usage_limit" &&
-					payload.metadata?.accountLimit?.provider === "claude"
-						? resolveAccountCapOwnerId()
-						: undefined;
-				if (capOwnerId) {
+			switch (repair.outcome) {
+				case "attempted": {
+					// An account_switch enqueue is the Codex Infra Bot's assignment;
+					// mention only that bot. Every other attempted action is mention-free.
+					const infraBotId =
+						repair.action === "account_switch" ? this.infraBotId() : undefined;
 					await this.safePostToThread(
 						threadId,
-						formatAccountCapOwnerAssignment(capOwnerId, repair.detail),
-						{ mentionUserId: capOwnerId },
+						repair.detail,
+						infraBotId ? { mentionUserId: infraBotId } : undefined,
 					);
-				} else {
-					// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
-					// FLY-1082 (Task 3.1, Codex R4 MED): fleet kinds render the
-					// four-element template with the bot's specific reason as the
-					// "为什么失败" element; legacy kinds keep the line byte-for-byte.
-					const fid = this.founderId();
-					const mention = fid ? `<@${fid}>` : "Annie";
-					const line =
-						this.fleetEscalationLine(
-							payload.eventType,
-							mention,
-							repair.detail,
-						) ?? `🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`;
-					await this.safePostToThread(
-						threadId,
-						line,
-						fid ? { mentionUserId: fid } : undefined,
-					);
+					this.deps.store.setAlertRepairStatus(ck, "attempted");
+					if (payload.ticket) {
+						this.deps.store.setTicketStatus(ck, "REPAIRING");
+						this.deps.store.bumpTicketAttempt(ck);
+						await this.updateRootTicketStatus(
+							channelId,
+							messageId,
+							"REPAIRING",
+						);
+					}
+					break;
 				}
-			} else {
-				// "attempted": a safe action was sent — posted verbatim. FLY-871 R2/W6:
-				// an `account_switch` enqueue IS the Codex Infra Bot's ASSIGNMENT —
-				// @-mention the bot so the FLY-267 mention-gate wakes it to claim the
-				// pending switch (default `parse:[]` would suppress it). Env unset ⇒ no
-				// mention = byte-compat (the account-switch deadline still fires
-				// the switch even if the bot is never woken).
-				const infraBotId =
-					repair.action === "account_switch" ? this.infraBotId() : undefined;
-				await this.safePostToThread(
-					threadId,
-					repair.detail,
-					infraBotId ? { mentionUserId: infraBotId } : undefined,
-				);
-			}
-			// "attempted" (a safe action was sent, recovery not yet confirmed) vs
-			// "needs_human". The thread flips to resolved (✅ 已恢复) only when the
-			// reconcile/onRecovery path confirms recovery — never on send alone.
-			this.deps.store.setAlertRepairStatus(
-				ck,
-				repair.outcome === "attempted" ? "attempted" : "needs_human",
-			);
-			// FLY-927 (Task 2.3): ticket lifecycle — Cass's immediate ARC counts an
-			// attempt toward the T2 budget; needs_human is a direct escalation. The
-			// root 🎫 line is re-rendered in place (best-effort).
-			if (payload.ticket) {
-				if (repair.outcome === "attempted") {
-					this.deps.store.setTicketStatus(ck, "REPAIRING");
-					this.deps.store.bumpTicketAttempt(ck);
-					await this.updateRootTicketStatus(channelId, messageId, "REPAIRING");
-				} else {
-					this.deps.store.setTicketStatus(ck, "ESCALATED");
-					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
-					// FLY-1082 (Task 3.2, Codex R3 MED): a needs_human escalation IS
-					// an ESCALATED landing — it must feed the runbook-gap window like
-					// the T2 and by-design paths (repeated "can't auto-fix" is
-					// exactly the signal the auto-filed eng issue exists for).
-					const row = this.deps.store.getActiveAlertThread(ck);
-					if (row) {
-						try {
-							await this.deps.onTicketEscalated?.(row);
-						} catch (err) {
-							this.logger(
-								`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
-							);
+				case "needs_human": {
+					// Account-cap ownership can route to the owner bot. Otherwise this is
+					// the one outcome that genuinely pages the founder.
+					const capOwnerId =
+						payload.eventType === "usage_limit" &&
+						payload.metadata?.accountLimit?.provider === "claude"
+							? resolveAccountCapOwnerId()
+							: undefined;
+					if (capOwnerId) {
+						await this.safePostToThread(
+							threadId,
+							formatAccountCapOwnerAssignment(capOwnerId, repair.detail),
+							{ mentionUserId: capOwnerId },
+						);
+					} else {
+						const fid = this.founderId();
+						const mention = fid ? `<@${fid}>` : "Annie";
+						const line =
+							this.fleetEscalationLine(
+								payload.eventType,
+								mention,
+								repair.detail,
+							) ?? `🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`;
+						await this.safePostToThread(
+							threadId,
+							line,
+							fid ? { mentionUserId: fid } : undefined,
+						);
+					}
+					this.deps.store.setAlertRepairStatus(ck, "needs_human");
+					if (payload.ticket) {
+						this.deps.store.setTicketStatus(ck, "ESCALATED");
+						await this.updateRootTicketStatus(
+							channelId,
+							messageId,
+							"ESCALATED",
+						);
+						// A needs_human escalation feeds the runbook-gap window too.
+						const row = this.deps.store.getActiveAlertThread(ck);
+						if (row) {
+							try {
+								await this.deps.onTicketEscalated?.(row);
+							} catch (err) {
+								this.logger(
+									`onTicketEscalated hook failed for ${ck}: ${(err as Error).message}`,
+								);
+							}
 						}
 					}
+					break;
 				}
+				case "no_action":
+					await this.safePostToThread(threadId, repair.detail);
+					this.deps.store.setAlertRepairStatus(ck, "no_action");
+					if (payload.ticket) {
+						this.deps.store.setTicketStatus(ck, "MONITORING");
+						await this.updateRootTicketStatus(
+							channelId,
+							messageId,
+							"MONITORING",
+						);
+					}
+					break;
+				default:
+					assertNever(repair.outcome);
 			}
 		}
 	}
@@ -848,14 +852,46 @@ export class AlertChannelHub {
 						}
 					: {}),
 			};
-			this.deps.store.bumpTicketAttempt(row.correlation_key);
 			const repair = await bot.attempt(payload, row.correlation_key);
-			await this.safePostToThread(
-				row.thread_id,
-				repair.outcome === "attempted"
-					? `🔁 第 ${row.attempt_count + 1} 次自动修复:${repair.detail}`
-					: `🔁 第 ${row.attempt_count + 1} 次尝试被安全闸拒绝:${repair.detail}`,
-			);
+			switch (repair.outcome) {
+				case "attempted":
+					this.deps.store.bumpTicketAttempt(row.correlation_key);
+					this.deps.store.setAlertRepairStatus(
+						row.correlation_key,
+						"attempted",
+					);
+					await this.safePostToThread(
+						row.thread_id,
+						`🔁 第 ${row.attempt_count + 1} 次自动修复:${repair.detail}`,
+					);
+					break;
+				case "needs_human":
+					this.deps.store.setAlertRepairStatus(
+						row.correlation_key,
+						"needs_human",
+					);
+					await this.safePostToThread(
+						row.thread_id,
+						`🔁 自动修复安全闸拒绝:${repair.detail}`,
+					);
+					await this.escalateTicket(row);
+					break;
+				case "no_action":
+					await this.safePostToThread(row.thread_id, repair.detail);
+					this.deps.store.setAlertRepairStatus(
+						row.correlation_key,
+						"no_action",
+					);
+					this.deps.store.setTicketStatus(row.correlation_key, "MONITORING");
+					await this.updateRootTicketStatus(
+						row.channel_id,
+						row.root_message_id,
+						"MONITORING",
+					);
+					break;
+				default:
+					assertNever(repair.outcome);
+			}
 			return;
 		}
 		await this.escalateTicket(row);

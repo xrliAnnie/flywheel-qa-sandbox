@@ -135,6 +135,10 @@ export interface AlertSinkLike {
 export interface InfraAlertSinkDeps {
 	/** Today's behavior: the raw notifier, or the Hub in unified+threading mode. */
 	rawSink: AlertSinkLike;
+	/** FLY-1764 Flow 2 primary: one owner mailbox row. Defaults to raw for compatibility. */
+	ticketSink?: AlertSinkLike;
+	/** Optional observation copy. Default-off; the primary mailbox result wins. */
+	copyTicketToChannel?: () => boolean;
 	/** Read at CALL time (env may change). Default: FLYWHEEL_ALERT_ROUTING === "1". */
 	routingEnabled?: () => boolean;
 	/**
@@ -162,12 +166,33 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 		deps.routingEnabled ?? (() => process.env.FLYWHEEL_ALERT_ROUTING === "1");
 	const logger =
 		deps.logger ?? ((m) => console.log(`[infra-alert-router] ${m}`));
+	const ticketSink = deps.ticketSink ?? deps.rawSink;
+	const copyTicketToChannel = deps.copyTicketToChannel ?? (() => false);
+	const deliverTicket = async (payload: AlertPayload): Promise<AlertResult> => {
+		const primary = await ticketSink.alert(payload);
+		if (copyTicketToChannel() && ticketSink !== deps.rawSink) {
+			try {
+				await deps.rawSink.alert(payload);
+			} catch (err) {
+				logger(
+					`optional channel copy failed for ${payload.eventType}/${payload.eventId}: ${(err as Error).message}`,
+				);
+			}
+		}
+		return primary;
+	};
 	return {
 		async alert(payload: AlertPayload): Promise<AlertResult> {
 			if (!routingEnabled()) return deps.rawSink.alert(payload);
-			// Ticket kinds short-circuit without a thread lookup.
+			// Ticket/notify kinds short-circuit without a thread lookup.
 			if (!ISSUE_PROGRESS_KINDS.has(payload.eventType)) {
-				return deps.rawSink.alert(payload);
+				const route = classifyInfraEvent({
+					eventType: payload.eventType,
+					boundIssueThread: null,
+				});
+				return route === "ticket"
+					? deliverTicket(payload)
+					: deps.rawSink.alert(payload);
 			}
 			let thread: BoundIssueThread | null = null;
 			try {
@@ -188,10 +213,10 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 					logger(
 						`issue-thread delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to ticket queue`,
 					);
-					return deps.rawSink.alert(payload);
+					return deliverTicket(payload);
 				}
 			}
-			return deps.rawSink.alert(payload);
+			return deliverTicket(payload);
 		},
 	};
 }
