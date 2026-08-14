@@ -50,7 +50,7 @@ rework_retry_exhausted   holdCount=1  →  run 挂死(needs_lead / held,无出�
 机制链:
 
 1. 1655 之前:tpl_code 的 implement 节点是 runner-ship carrier(`can_ship=true`)。`resolveWorkflowGateAuthority` 返回 `runner_ship`,carrier 完工投影为 **`ship_parked`/`awaiting_review`**(`StateStore.ts:26568-26576` `projectGeneralizedCompletionTx`)—— 恰好都在 wake 可复活集合内。implement 体从节点完工到 run 收尾一直是账面停驻,QA-FAIL wake 一路绿灯。
-2. #795 给模板加了 `land` 节点 + `approval_gate: node: land`,implement 的 `can_ship` 变 false(run a65fd4fe 的 pinned snapshot 实证:implement `ship=False, gate_holder=False`;land `ship=True`)。gate authority 变成 `engine_terminal` → 同一个投影函数走 else 分支:**implement 完工 → session 立即 `completed` + `terminal_at`**。
+2. #795 给模板加了 `land` 节点 + `approval_gate: node: land`,implement 的 `can_ship` 变 false(run a65fd4fe 的 pinned snapshot 实证:implement `ship=False, gate_holder=False`;land `ship=True`)。gate authority 因 `isWorkflowManifestLand` 早退变成 `mode:"land"`(非 runner_ship)→ 同一个投影函数的 carrier 分支不再命中,走 else 分支:**implement 完工 → session 立即 `completed` + `terminal_at`**。
 3. wake 闸 `activateHolderForWake`(`holder-wake-activation.ts:44-51`,7-24 起未改)只认 `{running, ship_parked, design_done, awaiting_review}`;`completed` → `state_not_revivable:completed`。
 4. rework coordinator(`workflow-rework-coordinator.ts:394-417`)把 `state_not_revivable:<不可逆终态>` 打成 `terminal: irreversible_actor` → `settleWorkflowReworkFailure` 中 `exhausted = terminal !== undefined || holdCount >= 5` → **第一跳直接 needs_lead**(holdCount=1),不重试、不重生 → run 挂死。
 5. 没人同步改 wake 闸或投影 —— **FLY-1655 与 FLY-939 的接缝没人拥有**。这是接缝缺陷,不是任何一方单独的错。
@@ -78,4 +78,4 @@ rework_retry_exhausted   holdCount=1  →  run 挂死(needs_lead / held,无出�
 
 - 身体活着 + 账面终态 → 今天唯一的死路。身体死了反而有自动重生:`classifyPhaseActorReentry`(`phase-actor-reentry.ts`)判 `replace` → dispatcher `materializeWorkflowReworkReplacement`(`workflow-engine-dispatcher.ts:968-983`)自动铸新 exec。**讽刺:体可用的情形死,体不可用的情形反而活。**
 - codex 体具备 mailbox wake 通道(`plugin.ts:8410` wakeActor → `EXECUTOR_TO_TRANSPORT` → `deliverDurableTurnWake`, backend=codex,FLY-1643);8-03~8-09 的成功 wake 都发生在 codex 体上。
-- **未证实项(设计已列为活体演练必验)**:post-1655 的 codex 体在 daemon 提交完工**之后**是否仍在轮询 mailbox(wake 可达性)。若不可达,需补 codex 驻留腿或依赖 replace 路径兜底。
+- **codex 完工后驻留(后续 design review 中已证实有实现)**:探索阶段曾列为未证实项;design review 核出 FLY-1269 resident controller 已实现完工后 durable phase hold + mailbox 驻留(`Blueprint.ts:1595-1621` phaseKeepAlive、`CodexTmuxAdapter.ts:515-540`、`codex-daemon-client.ts:790-846`)。活体演练做定向回归验证;alive-but-nonconsuming = FAIL 停发(详见 plan §6)。

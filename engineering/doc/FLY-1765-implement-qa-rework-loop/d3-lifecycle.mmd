@@ -1,0 +1,11 @@
+stateDiagram-v2
+  [*] --> running: 派工开跑
+  running --> ship_parked: 节点完工(Fix 1 改为停驻)
+  ship_parked --> running: QA FAIL / founder 返工唤醒
+  ship_parked --> completed: run 收尾(ship finalization)结清
+  completed --> [*]: 座位回收
+  note right of ship_parked
+    停驻 = 账面与身体一致:
+    工人进程活着、邮箱在听,
+    park 台账留有停驻凭证
+  end note

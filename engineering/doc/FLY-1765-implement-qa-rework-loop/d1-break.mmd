@@ -1,0 +1,16 @@
+flowchart TB
+  subgraph BEFORE["8-10 之前 — 环是通的"]
+    A1["implement 工人完工<br/>交出 PR"] --> B1["账本记「停驻等待」<br/>(ship_parked)"]
+    B1 --> C1["QA 检查:不合格 FAIL"]
+    C1 --> D1{"唤醒闸门:<br/>账本允许叫醒吗?"}
+    D1 -- "停驻 → 允许" --> E1["原工人返工<br/>再交 QA ✅"]
+  end
+  subgraph AFTER["8-10 之后 — 环断了(本 bug)"]
+    A2["implement 工人完工<br/>交出 PR"] --> B2["账本直接记「完结」<br/>(completed 终态)"]
+    B2 --> C2["QA 检查:不合格 FAIL"]
+    C2 --> D2{"唤醒闸门:<br/>账本允许叫醒吗?"}
+    D2 -- "完结 → 拒绝" --> E2["返工投递失败<br/>run 挂死等人工救援 ❌"]
+  end
+  style E1 fill:#d7f5dd,stroke:#34c759
+  style E2 fill:#ffe0de,stroke:#ff3b30
+  style B2 fill:#fff3d6,stroke:#ff9500

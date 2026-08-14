@@ -1,0 +1,15 @@
+flowchart TB
+  A["implement 完工(交出 PR)"] --> B["Fix 1:账本记「停驻」ship_parked<br/>工人留在座位上待命"]
+  B --> C{"QA 检查"}
+  C -- "PASS" --> G["founder 批准 → land 自动合并"]
+  G --> H["收尾:停驻凭证结清<br/>工人座位回收"]
+  C -- "FAIL" --> D["引擎唤醒原工人(闸门放行)"]
+  D --> E["原工人带着全部上下文返工"]
+  E --> C
+  B -.残局:工人已被记「完结」.-> Y["Fix 2:先按既有安全流程收走旧座位"]
+  Y --> Z["确认真的不在了<br/>自动派新工人接着原分支/PR 继续"]
+  Z --> C
+  style B fill:#d6e9ff,stroke:#007aff
+  style H fill:#d7f5dd,stroke:#34c759
+  style Y fill:#fff3d6,stroke:#ff9500
+  style Z fill:#fff3d6,stroke:#ff9500
