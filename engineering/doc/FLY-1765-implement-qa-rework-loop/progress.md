@@ -1,13 +1,13 @@
 ---
 issue: FLY-1765
 phase: design
-phaseCursor: 5/6
-updated: 2026-08-14T07:39:42.024Z
-nextStep: founder HTML + publish + report to Tadashi + complete
+phaseCursor: 6/6
+updated: 2026-08-14T07:44:13.260Z
+nextStep: design node complete; successor implement node builds plan v4
 chunks: []
 pointers: {}
 ---
 
 # FLY-1765 progress
-**phase**: design (5/6)
-**next**: founder HTML + publish + report to Tadashi + complete
+**phase**: design (6/6)
+**next**: design node complete; successor implement node builds plan v4
