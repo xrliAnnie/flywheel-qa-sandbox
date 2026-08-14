@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/5
-updated: 2026-08-14T16:16:35.145Z
-nextStep: run full-repository lint, build, and package tests
+phaseCursor: 4/5
+updated: 2026-08-14T16:30:34.116Z
+nextStep: commit verified documentation and open a fresh pull request
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/5)
-**next**: run full-repository lint, build, and package tests
+**phase**: implement (4/5)
+**next**: commit verified documentation and open a fresh pull request
