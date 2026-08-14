@@ -1,13 +1,13 @@
 ---
 issue: FLY-1751
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-14T06:51:54.157Z
-nextStep: codex design review 循环
+phaseCursor: 5/6
+updated: 2026-08-14T07:36:57.714Z
+nextStep: 报 Lead + complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1751 progress
-**phase**: design (3/6)
-**next**: codex design review 循环
+**phase**: design (5/6)
+**next**: 报 Lead + complete phase_design_complete
