@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant R as Runner(产品线 produce)
+    participant C as flywheel-comm(CLI)
+    participant B as Bridge
+    participant T as Issue Thread
+    participant A as Annie
+
+    R->>R: 做出阶段性产出:可互动 HTML(逐节留言框)
+    R->>C: 开 founder_review 回合(带托管链接)
+    Note over C: 开门前置:产出已提交才许开门<br/>founder 身份未配置就大声报错
+    C->>B: 回合问题入库(checkpoint=founder_review)
+    B->>T: 立即发 review 卡片:链接 +「回复=打回 / ✅=通过」
+    T->>A: @Annie
+    A->>T: 页内逐节留言 → 一键汇总复制 → 回复卡片
+    B->>B: 核验:这条回复真是 founder 本人写的
+    B-->>R: 意见全文原样交回 runner(本轮=打回)
+    R->>R: 按意见改版 → 再开新一轮(可任意多轮)
+    A->>T: 末轮点 ✅(或回「都可以了」)
+    B-->>R: 本轮=通过(founder 归属,机器可验)
+    R->>C: complete(收工)
+    Note over C: 硬门:末轮 founder_review 必须是「通过」<br/>否则收工直接失败 —— ship 卡根本不会出现

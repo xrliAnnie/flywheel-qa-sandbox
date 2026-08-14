@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph WHO["谁的答复算数(复用 ship 门身份判定)"]
+        direction TB
+        F["✅ Annie 的 Discord 身份"] --> OK["算数"]
+        BR["✅ Bridge 面板批准"] --> OK
+        LD["❌ Lead 用 respond 代答"] --> NO["被机器拒绝<br/>(通过和打回都拒)"]
+        FG["❌ 伪造身份(冒名参数)"] --> NO
+    end
+
+    subgraph GATES["两道机器门(共享同一数据)"]
+        direction TB
+        G1["门 1:runner 收工(complete)<br/>末轮 review 不是「通过」→ 收工失败"]
+        G2["门 2:合入授权(verify-approval)<br/>兜底:绕过门 1 也会在 merge 前被拦"]
+        G1 --> G2
+    end
+
+    WHO ~~~ GATES
