@@ -1279,13 +1279,13 @@ install_session_start_adopt_inflight_hook() {
   # Publish the executable first. Therefore settings can never point at a
   # missing or partially-written hook. A settings rename failure deliberately
   # leaves new-script/old-settings; the next idempotent launch converges it.
-  if ! mv "$hook_tmp" "$hook_script"; then
+  if ! mv -f "$hook_tmp" "$hook_script"; then
     rm -f "$hook_tmp" "$settings_tmp" 2>/dev/null || true
     log "WARNING: Failed to publish SessionStart adoption hook script; settings remain unchanged"
     rmdir "$lock_dir" 2>/dev/null || true
     return 0
   fi
-  if ! mv "$settings_tmp" "$settings_file"; then
+  if ! mv -f "$settings_tmp" "$settings_file"; then
     rm -f "$settings_tmp" 2>/dev/null || true
     log "WARNING: SessionStart adoption hook script published but settings publish failed; next Lead birth will converge"
     rmdir "$lock_dir" 2>/dev/null || true

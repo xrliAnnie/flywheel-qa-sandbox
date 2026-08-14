@@ -210,6 +210,83 @@ if grep -q '^install_session_start_adopt_inflight_hook()' "$INSTALLER_HELPER"; t
     bad "repeated installer convergence drifted bytes or duplicated the hook"
   fi
 
+  pty_workspace="$TMP/pty-workspace"
+  if FLY1751_PTY_WORKSPACE="$pty_workspace" \
+    FLY1751_INSTALLER_HELPER="$INSTALLER_HELPER" \
+    FLY1751_SCRIPT_DIR="$ROOT/packages/teamlead/scripts" \
+    python3 <<'PY'
+import os
+import pty
+import select
+import signal
+import subprocess
+import sys
+import time
+
+command = [
+    "bash",
+    "-c",
+    'log() { printf "%s\\n" "$*"; }; source "$1"; install_session_start_adopt_inflight_hook',
+    "bash",
+    os.environ["FLY1751_INSTALLER_HELPER"],
+]
+environment = os.environ.copy()
+environment.update(
+    {
+        "LEAD_WORKSPACE": os.environ["FLY1751_PTY_WORKSPACE"],
+        "SCRIPT_DIR": os.environ["FLY1751_SCRIPT_DIR"],
+        "FLYWHEEL_LEAD_DRY_RUN": "0",
+    }
+)
+
+for attempt in range(2):
+    master_fd, slave_fd = pty.openpty()
+    process = subprocess.Popen(
+        command,
+        env=environment,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        start_new_session=True,
+    )
+    os.close(slave_fd)
+    output = bytearray()
+    deadline = time.monotonic() + 4
+
+    while process.poll() is None and time.monotonic() < deadline:
+        readable, _, _ = select.select([master_fd], [], [], 0.1)
+        if not readable:
+            continue
+        try:
+            output.extend(os.read(master_fd, 4096))
+        except OSError:
+            break
+
+    if process.poll() is None:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        os.close(master_fd)
+        sys.stderr.write(
+            f"installer pty attempt {attempt + 1} timed out: "
+            + output.decode(errors="replace")
+        )
+        sys.exit(1)
+
+    return_code = process.wait()
+    os.close(master_fd)
+    if return_code != 0:
+        sys.stderr.write(
+            f"installer pty attempt {attempt + 1} exited {return_code}: "
+            + output.decode(errors="replace")
+        )
+        sys.exit(1)
+PY
+  then
+    ok "installer converges twice under a production-shaped tty without prompting"
+  else
+    bad "repeated installer convergence blocked or failed under a tty"
+  fi
+
   preserve_workspace="$TMP/preserve-workspace"
   preserve_settings="$preserve_workspace/.claude/settings.local.json"
   mkdir -p "$(dirname "$preserve_settings")"
