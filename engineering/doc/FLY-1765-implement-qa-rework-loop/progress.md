@@ -1,13 +1,14 @@
 ---
 issue: FLY-1765
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-14T07:44:13.260Z
-nextStep: design node complete; successor implement node builds plan v4
+phase: implement
+phaseCursor: 1/6
+updated: 2026-08-14T07:47:10.258Z
+nextStep: audit approved plan against current StateStore and rework coordinator
+  seams; build first red regression
 chunks: []
 pointers: {}
 ---
 
 # FLY-1765 progress
-**phase**: design (6/6)
-**next**: design node complete; successor implement node builds plan v4
+**phase**: implement (1/6)
+**next**: audit approved plan against current StateStore and rework coordinator seams; build first red regression
