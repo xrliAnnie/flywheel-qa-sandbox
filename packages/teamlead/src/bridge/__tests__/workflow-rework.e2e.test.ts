@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
+import type { PhaseLiveness } from "../phase-actor-reentry.js";
 import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
 
 const WORKFLOW_ON = {
@@ -34,7 +35,12 @@ afterEach(() => {
 async function createHarness(
 	options: {
 		now?: () => Date;
+		probeRegistered?: () => Promise<PhaseLiveness>;
+		probePersisted?: () => Promise<PhaseLiveness>;
 		activateActorForWake?: () => Promise<
+			{ ok: true } | { ok: false; error: string }
+		>;
+		closeActorForReworkSupersession?: () => Promise<
 			{ ok: true } | { ok: false; error: string }
 		>;
 	} = {},
@@ -177,6 +183,7 @@ async function createHarness(
 		epoch: number;
 		context: unknown;
 	}> = [];
+	const supersessions: unknown[] = [];
 	const coordinator = new WorkflowReworkCoordinator({
 		store,
 		ownerId: "e2e-coordinator",
@@ -189,8 +196,8 @@ async function createHarness(
 		}),
 		effects: {
 			getActorSession: (executionId) => store.getSession(executionId),
-			probeRegistered: async () => "alive",
-			probePersisted: async () => "alive",
+			probeRegistered: options.probeRegistered ?? (async () => "alive"),
+			probePersisted: options.probePersisted ?? (async () => "alive"),
 			assertWorktreeReady: async (session, expectedHeadSha) => {
 				if (!session.worktree_path) {
 					return { ok: false, reason: "worktree_path_missing" };
@@ -236,25 +243,47 @@ async function createHarness(
 				});
 				return { ok: true };
 			},
+			closeActorForReworkSupersession: async (input) => {
+				supersessions.push(input);
+				return (
+					(await options.closeActorForReworkSupersession?.()) ?? { ok: true }
+				);
+			},
 			...(options.activateActorForWake
 				? { activateActorForWake: options.activateActorForWake }
 				: {}),
 		},
 	});
 
-	return { store, comm, coordinator, wakes, worktree, baseHead };
+	return {
+		store,
+		comm,
+		coordinator,
+		wakes,
+		supersessions,
+		worktree,
+		baseHead,
+	};
 }
 
 describe("FLY-1423 capability-level rework flow", () => {
-	it("converges an irreversible activation failure on the first claim without an alert loop", async () => {
+	it("closes a legacy terminal implement, then converges through proven-dead replacement", async () => {
 		let current = new Date("2026-07-23T00:11:00.000Z");
-		const { store, comm, coordinator, baseHead } = await createHarness({
-			now: () => current,
-			activateActorForWake: async () => ({
-				ok: false,
-				error: "state_not_revivable:completed",
-			}),
-		});
+		let liveness: PhaseLiveness = "alive";
+		const { store, comm, coordinator, supersessions, baseHead } =
+			await createHarness({
+				now: () => current,
+				probeRegistered: async () => liveness,
+				probePersisted: async () => liveness,
+				activateActorForWake: async () => ({
+					ok: false,
+					error: "state_not_revivable:completed",
+				}),
+				closeActorForReworkSupersession: async () => {
+					liveness = "absent";
+					return { ok: true };
+				},
+			});
 		try {
 			const failed = store.commitWorkflowTransitionTx({
 				runId: "run-e2e",
@@ -270,32 +299,38 @@ describe("FLY-1423 capability-level rework flow", () => {
 			}
 			await expect(
 				coordinator.reconcile(failed.reworkRequestId),
-			).resolves.toEqual({ kind: "settled", state: "needs_lead" });
+			).resolves.toEqual({
+				kind: "retryable",
+				reason: "holder_activation_failed:state_not_revivable:completed",
+			});
+			expect(supersessions).toEqual([
+				expect.objectContaining({
+					requestId: failed.reworkRequestId,
+					ownerId: "e2e-coordinator",
+					generation: 1,
+					routeRevision: 1,
+					executionId: "implement-exec",
+				}),
+			]);
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "pending", hold_count: 1 });
 			current = new Date("2026-07-23T00:12:00.000Z");
 			await expect(
 				coordinator.reconcile(failed.reworkRequestId),
-			).resolves.toEqual({ kind: "settled", state: "needs_lead" });
+			).resolves.toMatchObject({
+				kind: "replacement_pending",
+				executionId: "implement-exec",
+			});
 			expect(
 				store
 					.listWorkflowRunEvents("run-e2e")
 					.filter((event) => event.kind === "rework_delivery_claimed"),
-			).toHaveLength(1);
-			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
-			expect(store.listWorkflowAlertOutbox()[0]?.payload).toMatchObject({
-				eventType: "workflow_engine_escalation",
-				metadata: {
-					workflowEngine: { disposition: "rework_retry_exhausted" },
-				},
-			});
-			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
-				"completed (irreversible)",
-			);
-			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).not.toContain(
-				"five",
-			);
+			).toHaveLength(2);
+			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 			expect(
-				comm.getCurrentRunnerWorkflowActivation("implement-exec"),
-			).toBeNull();
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "replacement_pending", hold_count: 1 });
 		} finally {
 			store.close();
 			comm.close();

@@ -184,6 +184,14 @@ export interface WorkflowReworkCoordinatorEffects {
 	activateActorForWake?(
 		session: WorkflowActorSession,
 	): Promise<{ ok: boolean; error?: string }>;
+	closeActorForReworkSupersession(input: {
+		session: WorkflowActorSession;
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		routeRevision: number;
+		executionId: string;
+	}): Promise<{ ok: boolean; error?: string }>;
 	grantTurn(
 		input: WorkflowReworkTurnInput,
 	): Promise<{ epoch: number; grantedAt: string }>;
@@ -399,20 +407,32 @@ export class WorkflowReworkCoordinator {
 			const terminalStatus = activationError.startsWith(statusPrefix)
 				? activationError.slice(statusPrefix.length).trim()
 				: undefined;
-			const reason = `holder_activation_failed:${activationError}`;
+			let reason = `holder_activation_failed:${activationError}`;
+			if (isStateStoreIrreversibleTerminalForZombie(terminalStatus)) {
+				try {
+					const close = await this.deps.effects.closeActorForReworkSupersession(
+						{
+							session: actor,
+							requestId,
+							ownerId: this.deps.ownerId,
+							generation: claim.generation,
+							routeRevision: route.revision,
+							executionId: actor.execution_id,
+						},
+					);
+					if (!close.ok) {
+						reason += `:supersession_close_failed:${close.error ?? "unknown"}`;
+					}
+				} catch (error) {
+					reason += `:supersession_close_failed:${
+						error instanceof Error ? error.message : String(error)
+					}`;
+				}
+			}
 			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
 				reason,
-				...(isStateStoreIrreversibleTerminalForZombie(terminalStatus)
-					? {
-							terminal: {
-								kind: "irreversible_actor" as const,
-								status: terminalStatus!,
-								cause: reason,
-							},
-						}
-					: {}),
 			});
 		}
 

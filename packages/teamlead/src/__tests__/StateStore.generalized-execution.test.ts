@@ -74,7 +74,7 @@ function createRun(
 function createAdmittedEngineRun(
 	store: StateStore,
 	options: { output?: boolean; templateId?: string } = {},
-): { markerPath: string; outputCredential?: string } {
+): { markerPath: string; outputCredential?: string; activationId: string } {
 	createRun(store, options);
 	const db = (
 		store as unknown as {
@@ -106,6 +106,7 @@ function createAdmittedEngineRun(
 	return {
 		markerPath: join(markerRoot, "exec-1"),
 		outputCredential: admitted.outputCredential,
+		activationId: admitted.activationId,
 	};
 }
 
@@ -1315,6 +1316,24 @@ describe("generalized execution admission and terminal contracts", () => {
 			project_name: "flywheel",
 			status: "running",
 		});
+		store.appendWorkflowEngineParkEvent({
+			eventId: "test-no-code-rework-park",
+			projectName: "flywheel",
+			executionId: "exec-1",
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			activationId: admitted.activationId,
+			event: "park_opened",
+			reason: "rework_reachable_wait",
+			createdAt: "2026-07-15T00:00:30.000Z",
+		});
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "ship_parked",
+		});
 		const baselineJson = '{"repositories":[],"version":1}';
 		const baselineDigest = canonicalSubmissionDigest(JSON.parse(baselineJson));
 		store.bindWorktreeOnce("exec-1", {
@@ -1366,6 +1385,14 @@ describe("generalized execution admission and terminal contracts", () => {
 			pr_head_sha: undefined,
 		});
 		expect(store.getWorkflowRun("run-1")?.status).toBe("completed");
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("exec-1"),
+		).toBeUndefined();
+		expect(
+			store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.filter((event) => event.event_id.startsWith("engine-park-settle:")),
+		).toHaveLength(1);
 		expect(store.getCurrentWorkflowGateHolder("run-1")).toBeUndefined();
 		expect(store.listWorkflowRunNodes("run-1", "founder_gate")).toHaveLength(0);
 		expect(
