@@ -97,3 +97,5 @@ doc/engineer/deep-research:
 001-decision-layer-gemini.md
 002-decision-layer-chatgpt.md
 ```
+
+FLY-1768 drill marker attempt2
