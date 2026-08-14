@@ -1,13 +1,13 @@
 ---
 issue: FLY-1765
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-14T06:54:45.468Z
-nextStep: write exploration/research/plan docs then codex design review
+phaseCursor: 5/6
+updated: 2026-08-14T07:39:42.024Z
+nextStep: founder HTML + publish + report to Tadashi + complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1765 progress
-**phase**: design (3/6)
-**next**: write exploration/research/plan docs then codex design review
+**phase**: design (5/6)
+**next**: founder HTML + publish + report to Tadashi + complete
