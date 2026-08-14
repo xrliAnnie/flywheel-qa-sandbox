@@ -1,8 +1,8 @@
 # FLY-1758 产品线互动回合:founder_review checkpoint — 实施计划
 
 Issue: FLY-1758 (https://linear.app/geoforge3d/issue/FLY-1758/产品线互动回合-阶段性产出必须先经-founder-review-才准继续-新-founder-review-checkpoint复用)
-日期: 2026-08-14(R1+R2+R3 修订:finalization 真实入口逐点接线、marker 锚点改 response 派生、末轮语义措辞统一)
-基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M),全部采纳
+日期: 2026-08-14(R1..R4 修订:§5 改动清单与 §2 三入口逐字对齐、marker reconcile 改为未答 marker 有限工作集)
+基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M)+ R4(1B+1H),全部采纳
 
 ## 0. 一句话
 
@@ -90,7 +90,11 @@ sequenceDiagram
 ### 3.4 裁定语义
 - ✅ reaction = passed;reply 文本过精确 allowlist(「都可以了/可以了/通过/LGTM/approved」归一化匹配)= passed;其余 reply = passed:false + feedback=全文。v1 无 Haiku 分类器 —— 错判只许偏「多一轮」。
 - 写入原语 `trustedFounderReviewResponse`:包 `insertResponseIfGateOpen`(expectedCheckpoint+TOCTOU)+ `isTrustedApprovalAttribution` 断言;content=`{passed, feedback, artifactDigest}`。**不复用** `write-gate-response.ts`(硬拒非 ship + 强绑 ship FSM)。
-- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重放锚点 = response 行本身,不建第二份 intent(R2 H5 + R3 H2)**:若把 intent 写进 StateStore,CommDB response commit 之后、StateStore intent 写入之前的崩溃会留下永久孤儿(question 已退出 pending 扫描,intent 又不存在)。改为**从 durable 数据直接派生收敛工作**:写入路径先尽力 mark;Bridge 启动与每轮 poll 各跑一个有界 reconcile —— 扫描近期已答的 `founder_review` question(CommDB,时间窗有界),对其 execution 幂等补 `markGateMarkerAnsweredForExecution`。response 行即锚点,零新表、无跨库写序问题;绝不回滚 response。**精确 crash 测试(R3 H2)**:CommDB response commit 成功后、任何 marker 写入前 kill 进程 → 重启后 `answeredAt` 最终补齐、无迟到 timeout;foreign execution marker 不被碰。
+- **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重放锚点 = durable 数据本身,不建第二份 intent(R2 H5 + R3 H2);工作集 = 未答 marker,不是 response 扫描(R4 H2)**:
+  - 写入路径先尽力 mark(失败不回滚 response)。
+  - reconcile 的**有限工作集 = 现存未答 marker 文件**:按 marker 自带的 `questionId + executionId + checkpoint` 解析出 project/CommDB → **点查**该 question 的 durable response → 命中且归属通过 → execution-guarded 幂等 mark。marker 集合天然有限、自然消耗,**没有 lookback 窗口/分页饿死问题**(时间窗扫描无法证明「停机任意久后仍补齐」:response 保留 72h、marker 按自身 timeout 持续 isWaiting,任意短窗都可能漏)。
+  - **boot reconcile 在常规 poll 启动前先跑一遍**;之后每轮 poll 重复(幂等)。
+  - **测试(R4 H2 加码)**:①CommDB response commit 成功后、任何 marker 写入前 kill → 重启 → `answeredAt` 最终补齐、无迟到 timeout;②目标 response 早于一整页新 response(证明与新流量无关);③长停机(超过任何时间窗直觉)后重启仍补齐;④foreign execution marker 不被碰。
 
 ## 4. 能力位全链(R1 B5:每一跳都点名)
 
@@ -128,7 +132,11 @@ sequenceDiagram
 ### 层 2 — Bridge 权威 + 可见性
 - **2a 权威门①**:generalized completion admission(`event-route.ts:733-938`,`commitEnrolledCompletion` 之前):sealed snapshot 有能力位的节点 completion,必须过 1a 判定,否则拒入账(结构化 reason,进 issue thread 提示);digest 用 server-authoritative completionHead。
 - **2b 权威门②**:`land-executor` 合入前复核同一判定(防「admission 后又改 HTML / 直接驱动 carrier」);digest 从 `approved_head` Git object 重算。
-- **2b′ 权威门③(R2 B1)**:`computeEngineWorkflowShipPrecondition`(`merge-ship-gate.ts:198-264`)接入同一判定 —— 覆盖 external-merge reconcile 的 declared-PR finalize 与 completed-but-unfinalized 两条路及 status-independent recovery;无通过 = hold + alert,绝不 finalize/Done;digest 从 `frozen_head_sha`/`approved_head` 重算。三条外部合并破坏性测试:parked recovery / completed-unfinalized / sealed declared-PR convergence。
+- **2b′ 权威门③:external/finalization 三个明确改动点(R3 B1 + R4 B1,与 §2-③ 逐字一致,不存在「单函数覆盖三路」)**:
+  - **2b′-a** `reconcileDeclaredPrRuns`(`external-merge-reconcile.ts:581-605`):在 `:601` 本地 `finalize()`(→`:461` `runPostShipFinalization`)之前调共享谓词;head/repo authority = sealed producer node 的 exact `workflow_node_pr_binding`(repo/path/head),禁 `current.at(-1)`;拒绝 = durable once-per-(run,head,reason) hold+alert,零 finalization claim/event/Done 副作用。
+  - **2b′-b** `computeEngineWorkflowShipPrecondition`(`merge-ship-gate.ts:198-264`;唯一生产调用 `external-merge-reconcile.ts:682-687` completed-but-unfinalized):接入共享谓词;digest 从 `frozen_head_sha` 重算;同款 hold+alert+零副作用断言。
+  - **2b′-c** `computeAuthoritativeShipDecision` engine 分支(调用方 `external-merge-reconcile.ts:616` / `merge-ship-gate.ts:504`,parked/recovered status-independent 路径):接入共享谓词;digest 从 `approved_head` 重算;同款断言。
+  - §6 的 external 三条破坏性测试逐一驱动上述三个生产入口(a→sealed declared-PR convergence;b→completed-unfinalized;c→parked recovery),各自断言共享谓词被执行。
 - **2c** `gate-poller.ts:1556` 卡片白名单加名;grace 走 ship 式短档;dedup/退避复用。
 - **2d** `founder-thread-notifier.ts`:union + `buildBody` founder_review 分支(第 N 轮 + hosted URL + 「回复=打回 / ✅=通过 / 页内留言用汇总复制贴回」)。
 - **2e** `founder-reply-deliverer.ts` reply 分支 + GatePoller reaction rider 分支(§3.3);歧义散文维持 `deliverAmbiguousToLead`。
