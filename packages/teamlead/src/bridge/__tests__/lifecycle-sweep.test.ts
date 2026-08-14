@@ -136,6 +136,60 @@ describe("sweepProjectLifecycle (real git)", () => {
 	);
 
 	it(
+		"FLY-1759 Layer B records reap evidence and an incomplete audit event",
+		{ timeout: 60_000 },
+		async () => {
+			const wt = await f.wm.create({
+				mainRepoPath: f.repo,
+				projectName: "proj",
+				issueId: "FLY-1759",
+				startPoint: "main",
+			});
+			f.store.upsertSession({
+				execution_id: "e1759",
+				issue_id: "FLY-1759",
+				project_name: "proj",
+				status: "completed",
+			});
+			f.store.bindWorktreeOnce("e1759", {
+				path: wt.worktreePath,
+				branch: wt.branch,
+				generation: wt.generation,
+			});
+			const summary = {
+				matched: 2,
+				reaped: [101],
+				survivors: [102],
+				verified: false,
+				identityMismatchSkipped: 0,
+				verifyError: "fixture survivor",
+			};
+			const incompleteManager = new WorktreeManager({
+				withRepoLock: f.lock.withRepoLock,
+				reaperFn: async () => summary,
+			});
+
+			await sweepProjectLifecycle(
+				sweepDeps(f, { worktreeManager: incompleteManager }) as never,
+			);
+
+			const removed = f.store
+				.getEventsByType("lifecycle_sweep_worktree_removed")
+				.at(-1);
+			expect(removed?.payload).toMatchObject({
+				path: wt.worktreePath,
+				reaps: [{ path: wt.worktreePath, summary }],
+			});
+			expect(f.store.getEventsByType("worktree_reap_incomplete")).toHaveLength(
+				1,
+			);
+			expect(
+				f.store.getEventsByType("worktree_reap_incomplete")[0]?.payload,
+			).toMatchObject({ path: wt.worktreePath, summary });
+		},
+	);
+
+	it(
 		"clean+merged UNOWNED worktree is manual-only: periodic skips, dry-run lists it WITH its sha",
 		{ timeout: 60_000 },
 		async () => {

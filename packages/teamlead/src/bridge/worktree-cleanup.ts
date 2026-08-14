@@ -27,10 +27,13 @@
  */
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
 	canonicalizeWorktreePath,
 	deriveWorktreeKey,
+	isReapIncomplete,
 	WorktreeManager,
+	type WorktreeReapRecord,
 } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -91,6 +94,8 @@ export interface WorktreeCleanupAttestation {
 	bindingBranch?: string;
 	bindingGeneration?: string;
 	skippedReason?: string;
+	/** FLY-1759: pre-delete process census/reap evidence. */
+	reaps?: WorktreeReapRecord[];
 }
 
 export interface WorktreeCleanupDeps {
@@ -136,9 +141,10 @@ export function makeWorktreeCleanup(
 		input: WorktreeCleanupInput,
 		eventType: string,
 		payload: Record<string, unknown>,
+		eventKey = eventType,
 	) => {
 		deps.store.insertEvent({
-			event_id: `worktree-cleanup-${input.executionId}-${eventType}`,
+			event_id: `worktree-cleanup-${input.executionId}-${eventKey}`,
 			execution_id: input.executionId,
 			issue_id: input.issueId,
 			project_name: input.projectName,
@@ -312,6 +318,23 @@ export function makeWorktreeCleanup(
 					registeredPath,
 					null,
 				);
+				for (const reap of res.reaps ?? []) {
+					if (!isReapIncomplete(reap.summary)) continue;
+					const pathHash = createHash("sha256")
+						.update(reap.path)
+						.digest("hex")
+						.slice(0, 16);
+					audit(
+						input,
+						"worktree_reap_incomplete",
+						{
+							worktreePath: registeredPath,
+							path: reap.path,
+							summary: reap.summary,
+						},
+						`worktree_reap_incomplete-${pathHash}`,
+					);
+				}
 
 				// (5b) local branch CAS delete against the ATTESTED head — inside
 				// the same repo lock. Missing head → leave the ref to the sweep.
@@ -342,6 +365,7 @@ export function makeWorktreeCleanup(
 						bindingVerified,
 						headSha: headSha ?? null,
 						error: res.error,
+						reaps: res.reaps ?? [],
 					},
 				);
 				return {
@@ -353,6 +377,7 @@ export function makeWorktreeCleanup(
 					bindingBranch: binding?.branch,
 					bindingGeneration: binding?.generation,
 					skippedReason: res.removed ? undefined : `remove_failed:${res.error}`,
+					reaps: res.reaps,
 				};
 			};
 

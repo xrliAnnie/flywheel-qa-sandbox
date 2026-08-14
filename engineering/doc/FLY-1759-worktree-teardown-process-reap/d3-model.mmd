@@ -1,0 +1,38 @@
+classDiagram
+    class ReapTarget {
+        lexicalPath 词法路径·验 symlink 用
+        canonicalPath 规范路径·匹配用
+        expectedParentDir 期望父目录
+        repoSlugPrefix 目录名前缀
+        rootProof live-dir 或 gone
+    }
+    class CwdRow {
+        pid 进程号
+        rawCwd 原始输出·只审计
+        logicalCwd 逻辑路径·唯一匹配依据
+        deletedMarker Linux 删除标记
+    }
+    class ReapSummary {
+        matched 命中数
+        reaped 确认清掉的
+        survivors 幸存者·如实报
+        verified 终验通过?
+        identityMismatchSkipped 身份不符跳过数
+        scanError 信号前失败·零信号
+        verifyError 信号后不确定·停止升级
+        refusedReason 守卫拒绝·零信号
+    }
+    class WorktreeManager {
+        removeUnlocked() 改名删除路径
+        removeCleanWorktreeByPath() git worktree remove
+        removeWorktreeForce() 强制删除
+        removeIfExists() 开工前清残留
+        pruneOrphans() +收敛清扫
+    }
+    class reapWorktreeProcesses {
+        六步算法·全依赖可注入
+    }
+    WorktreeManager --> reapWorktreeProcesses : 删除前调用
+    reapWorktreeProcesses --> ReapTarget : 输入·manager 派生
+    reapWorktreeProcesses --> CwdRow : 共享 cwd 解析
+    reapWorktreeProcesses --> ReapSummary : 输出·进审计账

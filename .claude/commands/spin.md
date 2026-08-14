@@ -388,6 +388,18 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
        fi
        # (b) Worktree cleanup is the LAST git operation, BEFORE handoff (it mutates
        #     .git/worktrees; doing it after handoff would race the updater's pull).
+       # FLY-1759 reap-first: kill every non-protected process rooted in the live
+       # worktree before git erases cwd attribution. The current Runner ancestry is
+       # protected and converges through close-runner + the next lifecycle sweep.
+       REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
+       if [[ -r "$REAP_LIB" ]]; then
+           source "$REAP_LIB"
+           reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
+             || echo "[spin] WARNING: worktree reap incomplete; continuing removal with audit debt." >&2
+       else
+           echo "[spin] WARNING: worktree reaper missing at $REAP_LIB; continuing removal with audit debt." >&2
+       fi
+       # FLY-1759 reap-first: the attempt above completed before this mutation.
        cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
        # (c) Clean-checkout preflight (single-writer; updater pull + rollback need it).
        if [[ -n "$(git -C "$MAIN_REPO" status --porcelain)" ]]; then
@@ -407,7 +419,22 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    > **Bootstrap exception (first rollout of this contract):** the Runner shipping
    > FLY-270 itself is running the OLD spin.md and must NOT execute this path — see
    > the plan's Bootstrap Phase 0 (halt before old Step 3; Annie deploys by hand).
-5. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}` — **(flywheel self-ship: already removed in step 4(b), before the handoff; skip here)**
+5. Clean up worktree — **(flywheel self-ship: already removed in step 4(b), before the handoff; skip here)**:
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   # FLY-1759 reap-first: best-effort for non-self process trees; the current
+   # Runner ancestry is intentionally protected and is reaped on session close.
+   REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
+   if [[ -r "$REAP_LIB" ]]; then
+     source "$REAP_LIB"
+     reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
+       || echo "[spin] WARNING: worktree reap incomplete; continuing removal with audit debt." >&2
+   else
+     echo "[spin] WARNING: worktree reaper missing; continuing removal with audit debt." >&2
+   fi
+   # FLY-1759 reap-first: the attempt above completed before this mutation.
+   cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH"
+   ```
 6. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 7. **Emit `session_completed` — terminal event for Bridge** (FLY-108):
    ```bash

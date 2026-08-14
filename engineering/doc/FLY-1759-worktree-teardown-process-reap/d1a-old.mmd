@@ -1,0 +1,6 @@
+flowchart TB
+    O1["拆 worktree 指令"] --> O2["直接删目录 /<br/>git worktree remove"]
+    O2 --> O3["🔴 目录没了<br/>进程还活着"]
+    O3 --> O4["孤儿进程持续吃内存<br/>累积 5 天 → OOM"]
+    style O3 fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style O4 fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px

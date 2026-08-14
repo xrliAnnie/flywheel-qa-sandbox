@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1759 设计:拆 worktree 时把里面的进程也一起收走</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", sans-serif; line-height: 1.7; padding: 24px 16px 64px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 28px; }
+  .sub code { font-family: "SF Mono", monospace; font-size: 13px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 22px 24px; margin-bottom: 10px; }
+  .card.red { border-left: 4px solid #ff3b30; }
+  .card.blue { border-left: 4px solid #007aff; }
+  .card.green { border-left: 4px solid #34c759; }
+  .card.amber { border-left: 4px solid #ff9500; }
+  .card.purple { border-left: 4px solid #af52de; }
+  .card.gray { border-left: 4px solid #86868b; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; font-size: 15px; }
+  .big { font-size: 17px; font-weight: 600; }
+  .jargon { color: #86868b; font-size: 13.5px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  .num { font-family: "SF Mono", monospace; }
+  .diagram { overflow-x: auto; background: #fff; padding: 8px 0; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-pair { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  .pair-col { flex: 1 1 300px; min-width: 260px; }
+  .pair-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; text-align: center; }
+  .pair-title.bad { color: #c22a1f; }
+  .pair-title.good { color: #1d7a3e; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 10px; margin-right: 6px; }
+  .badge.ok { background: #e3f7e9; color: #1d7a3e; }
+  .badge.no { background: #ffe5e3; color: #c22a1f; }
+  .badge.warn { background: #fff4e0; color: #b36b00; }
+  ul, ol { padding-left: 22px; margin-bottom: 10px; }
+  li { margin-bottom: 6px; font-size: 15px; }
+  .comment-box { margin: 0 0 26px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 14px; color: #1d1d1f; background: #fbfbfd; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  .comment-label { font-size: 12.5px; color: #86868b; margin: 6px 0 4px; }
+  #summary-list { font-size: 14px; }
+  #summary-list .item { border-left: 3px solid #007aff; padding: 6px 12px; margin-bottom: 10px; background: #f5f5f7; border-radius: 6px; white-space: pre-wrap; }
+  #summary-list .sect { font-weight: 600; color: #1a365d; display: block; margin-bottom: 2px; }
+  #copy-all { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 10px 18px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+  #copy-all:active { opacity: 0.7; }
+  #copy-status { font-size: 13px; color: #34c759; margin-left: 10px; }
+  .empty-hint { color: #86868b; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>拆 worktree 时,把里面的进程也一起收走</h1>
+  <div class="sub">FLY-1759 · 设计方案(已过 Codex 设计评审 5 轮 APPROVED) · 2026-08-13 · 8-13 OOM 事故根因修复</div>
+
+  <div class="card blue" id="sec-summary">
+    <h2>① 一句话总结</h2>
+    <p class="big">以前拆 worktree(每个任务的独立工作副本目录)只删文件夹,不管里面还在跑的程序;这些程序变成没爹没家的"孤儿进程",继续吃内存,攒了 5 天把 64G 的机器吃到只剩 71MB。这次修法:删文件夹之前,先把"工作目录在这个文件夹里"的所有进程找出来、确认身份、请退或强制回收,并且复查到确实一个不剩,才动文件夹。</p>
+    <p class="jargon">名词:worktree = git 给每个任务开的独立代码副本目录,任务完成后拆掉;进程 = 机器上正在跑的一个程序;孤儿进程 = 启动它的"父亲"没了、但它自己还活着的进程。</p>
+  </div>
+  <div class="comment-box" data-section="① 一句话总结"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card red" id="sec-incident">
+    <h2>② 事故回顾:为什么"什么都没在跑"还会 OOM</h2>
+    <p>8-13 你问"我们根本没在跑什么东西,为什么会 OOM(内存耗尽,系统开始杀进程)"。你是对的 —— 任务账本上一个在跑的都没有,但机器上躺着一堆账本外的孤儿:</p>
+    <table>
+      <tr><th>泄漏</th><th>数量</th><th>怎么来的</th></tr>
+      <tr><td>vitest 测试工人进程</td><td class="num">10 个</td><td>worktree 被"改名后删除",测试进程没人管,继续跑了 51 分钟,把负载顶到 106</td></tr>
+      <tr><td>codex app-server</td><td class="num">18 个</td><td>worktree 被 git worktree remove 拆掉,这些评审服务进程留下,最老的活了 5 天</td></tr>
+      <tr><td>tmux 服务 / shell</td><td class="num">3 个</td><td>第一轮"按进程名清理"漏掉的 —— 因为清理名单里没有它们这个类型</td></tr>
+    </table>
+    <p>最硬的证据:清理后 swap(内存不够时借用的硬盘空间)从 35.5GB 自动缩回 14.3GB —— macOS 只在真不需要时才回收 swap。</p>
+    <p><span class="badge no">关键教训</span>漏掉的 3 个证明:<strong>不能按进程类型列名单</strong>,名单永远列不全。要按"它在不在这个文件夹里干活"来找 —— 不管它是什么。</p>
+  </div>
+  <div class="comment-box" data-section="② 事故回顾"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card green" id="sec-flow">
+    <h2>③ 核心流程:修前 vs 修后</h2>
+    <p>修后的六步,核心有三个保险:<strong>不看进程名</strong>(用"工作目录在哪"判定,任何类型都逃不掉);<strong>确认身份才动手</strong>(进程号+启动时刻+命令行三样全对,防止杀错刚好复用了同一编号的无辜进程);<strong>复查到真没了才算数</strong>(不是"发过退出信号"就交差)。</p>
+    <div class="diagram diagram-pair">
+      <div class="pair-col"><div class="pair-title bad">修前(事故根因)</div>%%SVG1A%%</div>
+      <div class="pair-col"><div class="pair-title good">修后(本设计)</div>%%SVG1B%%</div>
+    </div>
+    <p class="jargon">名词:lsof = 系统自带的"谁在用什么文件/目录"查询工具;cwd = 进程的当前工作目录;SIGTERM = "请你退出"的温柔信号,程序可以做完手头事再走;SIGKILL = 系统强制回收,不可抗拒。</p>
+  </div>
+  <div class="comment-box" data-section="③ 核心流程"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card blue" id="sec-coverage">
+    <h2>④ 覆盖面:哪些拆除路径被管住了</h2>
+    <p>全仓审计发现拆 worktree 的路不止一条。好消息:<strong>系统自动化的拆除全部收口在同一个类(WorktreeManager)的四个删除函数里</strong> —— 在这一个点加保险,所有自动路径一次管住,这正是事故里 28+ 个泄漏的来源层。另有两类特殊情况按各自物理条件处理:</p>
+    <div class="diagram">%%SVG2%%</div>
+    <p><span class="badge ok">Tier-i 硬保证</span>Bridge(调度中枢)拆别人的 worktree —— 删除前必先回收,做不到就大声记账。</p>
+    <p><span class="badge warn">Tier-ii 尽力而为</span>runner(干活的 AI 工人)自己拆自己的 worktree —— 它清得掉"别人的"泄漏进程(恰好是泄漏主力),但物理上不能自己杀自己;它自己那一支由既有的会话收尾机制 + 下面的兜底清扫接手。这一条是诚实声明,不装作全能。</p>
+    <p><span class="badge warn">兜底清扫</span>挂在 Bridge 启动和每次派工的既有节拍上(不加新定时器),专抓漏网之鱼:残留的改名目录、以及工作目录指向"已经不存在"路径的进程。</p>
+  </div>
+  <div class="comment-box" data-section="④ 覆盖面"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card purple" id="sec-model">
+    <h2>⑤ 数据与结构模型</h2>
+    <p>新增一个独立回收模块,被四个删除函数在动文件系统之前调用。三个数据结构:回收目标(带双路径防"符号链接调包")、统一的目录扫描行(兼容 Linux 删除标记)、回收结果(如实报幸存者,绝不假报干净)。所有外部依赖(扫描/杀进程/时钟)都可注入,单测不用真杀进程。</p>
+    <div class="diagram">%%SVG3%%</div>
+    <p class="jargon">名词:symlink(符号链接)= 一个指向别处的"快捷方式",如果不检查,坏路径可能把回收半径带到无关目录 —— 设计里用"词法路径"专门验它。</p>
+  </div>
+  <div class="comment-box" data-section="⑤ 数据与结构模型"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card amber" id="sec-tradeoffs">
+    <h2>⑥ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>决定</th><th>为什么</th></tr>
+      <tr><td><strong>按"工作目录"找进程,否掉"按进程名列名单"</strong></td><td>事故实证:名单式清理漏了 tmux 和 shell。名单永远列不全,目录归属才是地面真相</td></tr>
+      <tr><td><strong>否掉"spawn 时登记进程组,拆时按账本杀"</strong></td><td>程序可以"分家出走"(双重 fork / 换会话)脱离登记的组 —— 事故里的 tmux 和 app-server 正是这种逃逸形态,账本追不上</td></tr>
+      <tr><td><strong>单一收口点,否掉"每个调用方各改一遍"</strong></td><td>N 处修改必然漂移 —— 和"按名单清理会漏"是同构错误</td></tr>
+      <tr><td><strong>否掉"再加一个巡逻报警器"作为主修法</strong></td><td>你定过的规矩:修结构,别加报警器。删除时机是唯一干净窗口(实测:目录改名后进程的归属还能追,删掉后就脏了)</td></tr>
+      <tr><td><strong>不加新开关(env flag)</strong></td><td>刚打完 62 个 flag 的收敛战役;一个能被关掉的保险 = 留了一条静默回到 OOM 的门。这是正确性修复,不是实验</td></tr>
+      <tr><td><strong>杀不干净时:照常删目录 + 大声记账,否掉"删除卡住"</strong></td><td>卡住会把"内存泄漏"换成"流水线停摆"(新任务起不来),更糟。底线从"静默泄漏"提升为"要么清掉、要么留案"</td></tr>
+      <tr><td><strong>否掉"把 runner 自拆迁移给外部管家"(本单内)</strong></td><td>要动自部署重启的失败保护链,风险和本单不成比例;已列为 follow-up 建议单独立项</td></tr>
+    </table>
+  </div>
+  <div class="comment-box" data-section="⑥ 关键取舍"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card green" id="sec-accept">
+    <h2>⑦ 验收:怎么证明真修好了</h2>
+    <p>全部是<strong>会失败的检查</strong>,不是文档承诺,且能在 CI(自动测试流水线)里跑:</p>
+    <ul>
+      <li><strong>真进程、真拆除、真复查</strong>:测试里真起一窝混型进程(shell 组长 + 孙进程 + 独立逃逸进程,故意不用 node,防"按名单"的假实现蒙混过关),走两条真实拆除路径,然后三重复查:每个记录的进程号确认消失、每个进程组整组清零、全量重扫零命中。</li>
+      <li><strong>时序有因果锚</strong>:有一个测试进程收到"请退"信号时才当场生一个新孩子 —— 用信号本身钉死"孩子出生在第一次扫描之后",证明补杀轮真的能收掉扫描后新冒出来的进程,不靠运气。</li>
+      <li><strong>不误杀</strong>:工作目录在外面的进程、和目标同组但无关的进程、符号链接调包的目录 —— 三个"必须活下来/必须拒绝"的反向测试。</li>
+      <li><strong>防未来的旁路</strong>:一个"源码合同"测试,盯住全仓 —— 谁在收口点之外新加一条裸的拆除命令,CI 直接红。</li>
+    </ul>
+  </div>
+  <div class="comment-box" data-section="⑦ 验收"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card gray" id="sec-boundary">
+    <h2>⑧ 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><strong>不解决常驻 Lead 的内存占用</strong> —— 事故当天 free=69MB 的另一半真因是 15 个常驻 Lead(约 15GB),那是容量问题(FLY-517/779 族),和本单的泄漏问题分开治,issue 里已明确切开。</li>
+      <li><strong>runner 自己拆自己时,清不掉它自己那支进程</strong> —— 物理限制(不能自己杀自己),靠既有会话收尾 + 兜底清扫接手;兜底是"尽力而为"不是合同保证(目录删掉后的进程归属不是系统承诺的行为)。</li>
+      <li><strong>不覆盖"工作目录在外面、只是打开了 worktree 里文件"的进程</strong> —— 事故中未出现该形态,全文件扫描的代价不成比例。</li>
+      <li><strong>QA 测试房的 shell 拆房脚本不在本单</strong> —— 那是 FLY-1482 的属地,已在源码合同里按域注记。</li>
+      <li><strong>生效需要随下一班统一重启部署</strong> —— 纯代码改动,无迁移、无配置变更。</li>
+    </ul>
+  </div>
+  <div class="comment-box" data-section="⑧ 诚实边界"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card blue" id="sec-review">
+    <h2>⑨ 评审历程(Codex 设计评审 5 轮)</h2>
+    <p>发现数逐轮收敛:R1 七项(抓出全仓还有命令文件在直接拆 worktree、仓里已有可复用的身份复核先例)→ R2 六项(自拆悖论、身份栅栏要用启动时刻)→ R3 五项(符号链接证明要用词法路径、Linux 删除标记要贯穿到底)→ R4 四项(shell 测试要接进 CI 显式名单)→ <strong>R5 APPROVED</strong>。每一轮的采纳/拒绝都留档在 plan.md 的处置纪要里;唯一被拒绝的评审建议(外部管家重架构)已转为 follow-up 提案。</p>
+  </div>
+  <div class="comment-box" data-section="⑨ 评审历程"><div class="comment-label">对这一节的评论(自动保存)</div><textarea placeholder="写下你的想法…"></textarea></div>
+
+  <div class="card purple" id="sec-comments-summary">
+    <h2>💬 你的全部评论</h2>
+    <div id="summary-list"><span class="empty-hint">还没有评论 —— 在上面任何一节下面写字,这里会实时汇总。</span></div>
+    <button id="copy-all">复制全部评论</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1759-comment:" + location.pathname + ":";
+
+  function lsGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function lsSet(key, val) {
+    try { window.localStorage.setItem(key, val); } catch (e) { /* storage unavailable */ }
+  }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box"));
+
+  function renderSummary() {
+    var list = document.getElementById("summary-list");
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    boxes.forEach(function (box) {
+      var section = box.getAttribute("data-section") || "";
+      var ta = box.querySelector("textarea");
+      if (!ta || !ta.value.trim()) return;
+      any = true;
+      var item = document.createElement("div");
+      item.className = "item";
+      var sect = document.createElement("span");
+      sect.className = "sect";
+      sect.textContent = section;               // textContent only — no innerHTML
+      var body = document.createElement("span");
+      body.textContent = ta.value.trim();
+      item.appendChild(sect);
+      item.appendChild(body);
+      list.appendChild(item);
+    });
+    if (!any) {
+      var hint = document.createElement("span");
+      hint.className = "empty-hint";
+      hint.textContent = "还没有评论 —— 在上面任何一节下面写字,这里会实时汇总。";
+      list.appendChild(hint);
+    }
+  }
+
+  boxes.forEach(function (box) {
+    var section = box.getAttribute("data-section") || "";
+    var ta = box.querySelector("textarea");
+    if (!ta) return;
+    var key = PREFIX + section;
+    var saved = lsGet(key);
+    if (saved) ta.value = saved;
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      renderSummary();
+    });
+  });
+
+  function collectAll() {
+    var parts = [];
+    boxes.forEach(function (box) {
+      var section = box.getAttribute("data-section") || "";
+      var ta = box.querySelector("textarea");
+      if (!ta || !ta.value.trim()) return;
+      parts.push("【" + section + "】\n" + ta.value.trim());
+    });
+    return parts.join("\n\n");
+  }
+
+  function legacyCopy(text) {
+    var area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "absolute";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(area);
+    return ok;
+  }
+
+  function showStatus(ok) {
+    var st = document.getElementById("copy-status");
+    st.textContent = ok ? "已复制 ✓" : "复制失败,请手动选择文本";
+    setTimeout(function () { st.textContent = ""; }, 2500);
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = collectAll();
+    if (!text) { showStatus(false); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus(true); },
+        function () { showStatus(legacyCopy(text)); }   // promise rejected → fallback
+      );
+    } else {
+      showStatus(legacyCopy(text));
+    }
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

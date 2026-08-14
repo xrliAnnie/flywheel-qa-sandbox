@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/config.sh"
 source "$SCRIPT_DIR/state.sh"
+source "$SCRIPT_DIR/lib/reap-worktree.sh"
 
 AGENT_ID="${1:?Usage: cleanup-agent.sh <agent_id> [terminal_status]}"
 TERMINAL_STATUS="${2:-completed}"
@@ -19,6 +20,10 @@ agent_worktree=$(echo "$agent_info" | cut -d'|' -f2)
 # 3. Remove worktree (macOS-safe: rename → prune → background rm)
 if [ -n "$agent_worktree" ]; then
     if [ -d "$agent_worktree" ]; then
+        # FLY-1759 reap-first: the live path is the last reliable cwd identity.
+        if ! reap_worktree_processes "$PROJECT_ROOT" "$agent_worktree"; then
+            echo "WARNING: Worktree process reap incomplete for $agent_worktree; continuing filesystem cleanup" >&2
+        fi
         tmp_path="${agent_worktree}.removing.$$"
         if mv "$agent_worktree" "$tmp_path" 2>/dev/null; then
             git -C "$PROJECT_ROOT" worktree prune 2>/dev/null || true

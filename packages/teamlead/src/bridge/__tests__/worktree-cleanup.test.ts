@@ -72,6 +72,48 @@ const input = {
 };
 
 describe("FLY-603 Layer A worktree cleanup", () => {
+	it("FLY-1759 carries reap evidence and emits an incomplete audit event", async () => {
+		const { d, events, remove } = deps();
+		const reaps = [
+			{
+				path: "/Users/x/Dev/flywheel-FLY-603",
+				summary: {
+					matched: 2,
+					reaped: [101],
+					survivors: [102],
+					verified: false,
+					identityMismatchSkipped: 0,
+					verifyError: "survivor",
+				},
+			},
+		];
+		remove.mockResolvedValue({
+			removed: true,
+			branchDeleted: false,
+			reaps,
+		});
+		const attestation = await makeWorktreeCleanup({
+			...d,
+			casDeleteLocalBranchFn: vi.fn(async () => ({ deleted: true }) as never),
+		})(input);
+
+		expect(attestation.reaps).toEqual(reaps);
+		expect(
+			events.find((event) => event.type === "worktree_cleanup_done")?.payload
+				.reaps,
+		).toEqual(reaps);
+		expect(events.map((event) => event.type)).toContain(
+			"worktree_reap_incomplete",
+		);
+		expect(
+			events.find((event) => event.type === "worktree_reap_incomplete")
+				?.payload,
+		).toMatchObject({
+			path: reaps[0]!.path,
+			summary: reaps[0]!.summary,
+		});
+	});
+
 	it("positive tmux close + clean → removes by persisted worktree_path", async () => {
 		const { d, events, remove } = deps();
 		// Codex R1#9: the local ref now goes through the CAS primitive with the

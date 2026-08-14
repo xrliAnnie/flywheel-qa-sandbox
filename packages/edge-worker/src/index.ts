@@ -151,6 +151,7 @@ export type {
 	WorktreeConfig,
 	WorktreeExecFn,
 	WorktreeInfo,
+	WorktreeReapRecord,
 } from "./WorktreeManager.js";
 export {
 	canonicalizeWorktreePath,
@@ -158,3 +159,17 @@ export {
 	resolveWorktreeKey,
 	WorktreeManager,
 } from "./WorktreeManager.js";
+export type {
+	CwdRow,
+	ProcessRow,
+	ReapDeps,
+	ReapSummary,
+	ReapTarget,
+} from "./worktree-process-reaper.js";
+export {
+	isReapIncomplete,
+	listSystemCwds,
+	parseLsofCwdOutput,
+	REAP_TOTAL_DEADLINE_MS,
+	reapWorktreeProcesses,
+} from "./worktree-process-reaper.js";

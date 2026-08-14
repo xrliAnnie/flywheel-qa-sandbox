@@ -91,6 +91,13 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # FLY-1759: edge-worker teardown E2E uses the real cwd census, and the
+      # real-tmux reap case spawns an actual tmux server bound to the worktree
+      # cwd. Missing lsof/tmux is a hard test failure, never a silent
+      # skip/fallback — the suite fails closed on CI when either is absent.
+      - name: Install lsof/tmux for worktree process-reap tests
+        run: sudo apt-get update && sudo apt-get install -y lsof tmux
+
       - name: Install better-sqlite3 prebuilt binary
         run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
 
@@ -151,6 +158,14 @@ jobs:
       # repeating `apt-get update` for the same effect.
       - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
         run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
+
+      # FLY-1759: script-tests are explicitly enumerated (no glob discovery).
+      # The first suite runs real child/sun process cleanup on Ubuntu; the
+      # second blocks any new unanchored worktree-removal command.
+      - name: Test — FLY-1759 reap-first worktree teardown
+        run: |
+          bash scripts/__tests__/test-reap-worktree-lib.test.sh
+          bash scripts/__tests__/test-worktree-removal-contract.test.sh
 
       - name: Test — FLY-1572 mailbox migration CLI
         run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh

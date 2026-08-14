@@ -3,8 +3,20 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "flywheel-core";
+import { canonicalizeWorktreePath } from "./worktree-paths.js";
+import {
+	type CwdRow,
+	isReapIncomplete,
+	listSystemCwds,
+	type ReapSummary,
+	type ReapTarget,
+	reapWorktreeProcesses,
+} from "./worktree-process-reaper.js";
+
+export { canonicalizeWorktreePath } from "./worktree-paths.js";
 
 const logger = createLogger({ component: "WorktreeManager" });
 
@@ -18,10 +30,19 @@ export type WorktreeExecFn = (
 
 export type BgDeleteFn = (cmd: string, args: string[]) => void;
 
+export interface WorktreeReapRecord {
+	path: string;
+	summary: ReapSummary;
+}
+
 export interface WorktreeConfig {
 	baseDir?: string;
 	/** @internal — override background delete for testing */
 	bgDeleteFn?: BgDeleteFn;
+	/** @internal — override process reaping for deterministic tests. */
+	reaperFn?: typeof reapWorktreeProcesses;
+	/** @internal — override the convergence cwd census for deterministic tests. */
+	cwdScannerFn?: () => Promise<CwdRow[]>;
 	/**
 	 * FLY-1185 §2.11: injected repo mutation coordinator (teamlead's
 	 * repo-mutation-lock — DI so edge-worker never imports teamlead). When
@@ -162,6 +183,8 @@ export class WorktreeManager {
 	private readonly baseDir: string | undefined;
 	private readonly exec: WorktreeExecFn;
 	private readonly bgDelete: BgDeleteFn;
+	private readonly reaper: typeof reapWorktreeProcesses;
+	private readonly cwdScanner: () => Promise<CwdRow[]>;
 	private readonly repoLock?: <T>(
 		mainRepoPath: string,
 		fn: () => Promise<T>,
@@ -173,6 +196,8 @@ export class WorktreeManager {
 		this.baseDir = config?.baseDir;
 		this.exec = execFn ?? defaultExec;
 		this.bgDelete = config?.bgDeleteFn ?? defaultBgDelete;
+		this.reaper = config?.reaperFn ?? reapWorktreeProcesses;
+		this.cwdScanner = config?.cwdScannerFn ?? listSystemCwds;
 		this.repoLock = config?.withRepoLock;
 		const flywheelRoot =
 			process.env.FLYWHEEL_STATE_DIR?.trim() ||
@@ -226,6 +251,88 @@ export class WorktreeManager {
 			return path.join(this.baseDir, projectName) + path.sep;
 		}
 		return `${path.dirname(mainRepoPath)}${path.sep}${this.repoSlug(mainRepoPath)}-`;
+	}
+
+	/** FLY-1759: derive the kill target from WorktreeManager's path authority. */
+	private reapTarget(
+		mainRepoPath: string,
+		worktreePath: string,
+		rootProof?: ReapTarget["rootProof"],
+	): ReapTarget {
+		const lexicalPath = path.resolve(worktreePath);
+		const canonicalPath = canonicalizeWorktreePath(lexicalPath);
+		let expectedParentDir = canonicalizeWorktreePath(
+			path.dirname(path.resolve(mainRepoPath)),
+		);
+		if (this.baseDir) {
+			const base = canonicalizeWorktreePath(path.resolve(this.baseDir));
+			const candidateParent = canonicalizeWorktreePath(
+				path.dirname(lexicalPath),
+			);
+			const relative = path.relative(base, candidateParent);
+			// Valid configured layouts are either the legacy direct child or one
+			// project directory below baseDir. Anything deeper is made to fail the
+			// reaper's direct-child guard while filesystem cleanup keeps fail-open.
+			expectedParentDir =
+				relative === "" ||
+				(!relative.startsWith("..") && !relative.includes(path.sep))
+					? candidateParent
+					: base;
+		}
+		return {
+			lexicalPath,
+			canonicalPath,
+			expectedParentDir,
+			repoSlugPrefix: `${this.repoSlug(mainRepoPath)}-`,
+			rootProof:
+				rootProof ?? (fs.existsSync(lexicalPath) ? "live-dir" : "gone"),
+		};
+	}
+
+	private async reapPath(
+		mainRepoPath: string,
+		worktreePath: string,
+		rootProof?: ReapTarget["rootProof"],
+	): Promise<WorktreeReapRecord> {
+		const target = this.reapTarget(mainRepoPath, worktreePath, rootProof);
+		let summary: ReapSummary;
+		try {
+			summary = await this.reaper(target);
+		} catch (error) {
+			summary = {
+				matched: 0,
+				reaped: [],
+				survivors: [],
+				verified: false,
+				identityMismatchSkipped: 0,
+				scanError: `reaper threw: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		if (isReapIncomplete(summary)) {
+			logger.warn("worktree_reap_incomplete", {
+				path: target.lexicalPath,
+				summary,
+			});
+		}
+		return { path: target.lexicalPath, summary };
+	}
+
+	private removingResidues(worktreePath: string): string[] {
+		const lexicalPath = path.resolve(worktreePath);
+		const parent = path.dirname(lexicalPath);
+		const base = path.basename(lexicalPath);
+		try {
+			return fs
+				.readdirSync(parent)
+				.filter(
+					(name) =>
+						name.startsWith(`${base}.removing-`) ||
+						name.startsWith(`${base}.removing.`),
+				)
+				.map((name) => path.join(parent, name));
+		} catch {
+			return [];
+		}
 	}
 
 	/**
@@ -590,7 +697,10 @@ export class WorktreeManager {
 		}
 	}
 
-	async remove(mainRepoPath: string, worktreePath: string): Promise<void> {
+	async remove(
+		mainRepoPath: string,
+		worktreePath: string,
+	): Promise<{ reaps?: WorktreeReapRecord[] }> {
 		return this.locked(mainRepoPath, () =>
 			this.removeUnlocked(mainRepoPath, worktreePath),
 		);
@@ -599,7 +709,21 @@ export class WorktreeManager {
 	private async removeUnlocked(
 		mainRepoPath: string,
 		worktreePath: string,
-	): Promise<void> {
+	): Promise<{ reaps?: WorktreeReapRecord[] }> {
+		// FLY-1759 reap-first: preserve the live cwd path until census + exit
+		// verification finishes. Deletion remains fail-open on reap uncertainty.
+		const reaps: WorktreeReapRecord[] = [];
+		for (const residue of this.removingResidues(worktreePath)) {
+			if (await this.isRegistered(mainRepoPath, residue)) {
+				logger.warn("worktree_reap_residue_still_registered", {
+					path: residue,
+				});
+				continue;
+			}
+			reaps.push(await this.reapPath(mainRepoPath, residue, "live-dir"));
+			await fs.promises.rm(residue, { recursive: true, force: true });
+		}
+		reaps.push(await this.reapPath(mainRepoPath, worktreePath));
 		// Phase 1: rename to temp dir (same filesystem — avoids EXDEV)
 		const tmpPath = `${worktreePath}.removing-${Date.now()}`;
 		try {
@@ -618,7 +742,7 @@ export class WorktreeManager {
 					["-C", mainRepoPath, "worktree", "prune"],
 					mainRepoPath,
 				);
-				return;
+				return { reaps };
 			}
 			throw err;
 		}
@@ -633,6 +757,7 @@ export class WorktreeManager {
 
 		// Phase 3: background delete (macOS-safe, detached — non-blocking)
 		this.bgDelete("/bin/rm", ["-rf", tmpPath]);
+		return { reaps };
 	}
 
 	async isRegistered(
@@ -696,6 +821,8 @@ export class WorktreeManager {
 			// immediately follows up with create() — any non-awaited rm would
 			// race the next `git worktree add`, causing "path already exists"
 			// or a partially-deleted tree to be re-registered.
+			// FLY-1759 reap-first: orphan directories bypass removeUnlocked().
+			await this.reapPath(mainRepoPath, worktreePath, "live-dir");
 			await fs.promises.rm(worktreePath, { recursive: true, force: true });
 			cleaned = true;
 		}
@@ -748,12 +875,18 @@ export class WorktreeManager {
 		projectName: string,
 	): Promise<string[]> {
 		return this.locked(mainRepoPath, async () => {
+			const sweepStarted = performance.now();
+			const sweepDeadline = sweepStarted + 30_000;
+			const familyLimit = 8;
 			const worktrees = await this.list(mainRepoPath);
 			const pruned: string[] = [];
 
 			const projectPrefix = this.worktreePrefix(mainRepoPath, projectName);
 
 			const branchPrefix = `${this.repoSlug(mainRepoPath)}-`;
+			const registered = new Set(
+				worktrees.map((wt) => canonicalizeWorktreePath(wt.path)),
+			);
 
 			for (const wt of worktrees) {
 				// Only prune project-scoped branches under this project's directory
@@ -765,6 +898,88 @@ export class WorktreeManager {
 				logger.info("Pruning orphan worktree", { path: wt.path });
 				await this.removeUnlocked(mainRepoPath, wt.path);
 				pruned.push(wt.path);
+			}
+
+			// FLY-1759 convergence family 1: a crash between rename and detached
+			// rm leaves .removing-* directories outside git's registry forever.
+			const projectDir = this.baseDir
+				? path.join(this.baseDir, projectName)
+				: path.dirname(mainRepoPath);
+			let residueCandidates: string[] = [];
+			try {
+				const residuePattern = /\.removing(?:-|\.)\d+$/;
+				residueCandidates = fs
+					.readdirSync(projectDir)
+					.filter(
+						(name) =>
+							name.startsWith(branchPrefix) &&
+							residuePattern.test(name) &&
+							!registered.has(
+								canonicalizeWorktreePath(path.join(projectDir, name)),
+							),
+					)
+					.map((name) => path.join(projectDir, name));
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+					logger.warn("worktree_reap_residue_scan_failed", {
+						projectDir,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
+			for (const residue of residueCandidates.slice(0, familyLimit)) {
+				if (performance.now() >= sweepDeadline) break;
+				await this.reapPath(mainRepoPath, residue, "live-dir");
+				await fs.promises.rm(residue, { recursive: true, force: true });
+				pruned.push(residue);
+			}
+			if (residueCandidates.length > familyLimit) {
+				logger.warn("worktree_reap_residue_cap_reached", {
+					remaining: residueCandidates.length - familyLimit,
+				});
+			}
+
+			// FLY-1759 convergence family 2: deleted cwd roots have no filesystem
+			// entry. Require BOTH absence from git registry and absence on disk.
+			if (performance.now() < sweepDeadline) {
+				let cwdRows: CwdRow[] = [];
+				try {
+					cwdRows = await this.cwdScanner();
+				} catch (error) {
+					logger.warn("worktree_reap_dead_cwd_scan_failed", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+				const canonicalProjectDir = canonicalizeWorktreePath(projectDir);
+				const goneCandidates = new Set<string>();
+				for (const row of cwdRows) {
+					if (row.logicalCwd === null) continue;
+					const cwd = canonicalizeWorktreePath(row.logicalCwd);
+					const relative = path.relative(canonicalProjectDir, cwd);
+					if (
+						!relative ||
+						relative.startsWith("..") ||
+						path.isAbsolute(relative)
+					) {
+						continue;
+					}
+					const rootName = relative.split(path.sep)[0]!;
+					if (!rootName.startsWith(branchPrefix)) continue;
+					const candidate = path.join(canonicalProjectDir, rootName);
+					if (fs.existsSync(candidate) || registered.has(candidate)) continue;
+					goneCandidates.add(candidate);
+				}
+				const candidates = [...goneCandidates];
+				for (const candidate of candidates.slice(0, familyLimit)) {
+					if (performance.now() >= sweepDeadline) break;
+					await this.reapPath(mainRepoPath, candidate, "gone");
+					pruned.push(candidate);
+				}
+				if (candidates.length > familyLimit) {
+					logger.warn("worktree_reap_dead_cwd_cap_reached", {
+						remaining: candidates.length - familyLimit,
+					});
+				}
 			}
 
 			return pruned;
@@ -857,7 +1072,12 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		worktreePath: string,
 		branch?: string | null,
-	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+	): Promise<{
+		removed: boolean;
+		branchDeleted: boolean;
+		error?: string;
+		reaps?: WorktreeReapRecord[];
+	}> {
 		return this.locked(mainRepoPath, () =>
 			this.removeCleanWorktreeByPathUnlocked(
 				mainRepoPath,
@@ -871,7 +1091,14 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		worktreePath: string,
 		branch?: string | null,
-	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+	): Promise<{
+		removed: boolean;
+		branchDeleted: boolean;
+		error?: string;
+		reaps?: WorktreeReapRecord[];
+	}> {
+		// FLY-1759 reap-first: git remove must not erase cwd attribution first.
+		const reaps = [await this.reapPath(mainRepoPath, worktreePath)];
 		try {
 			await this.exec(
 				"git",
@@ -883,6 +1110,7 @@ export class WorktreeManager {
 				removed: false,
 				branchDeleted: false,
 				error: err instanceof Error ? err.message : String(err),
+				reaps,
 			};
 		}
 		let branchDeleted = false;
@@ -897,11 +1125,16 @@ export class WorktreeManager {
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				if (!msg.includes("not found")) {
-					return { removed: true, branchDeleted: false, error: msg };
+					return {
+						removed: true,
+						branchDeleted: false,
+						error: msg,
+						reaps,
+					};
 				}
 			}
 		}
-		return { removed: true, branchDeleted };
+		return { removed: true, branchDeleted, reaps };
 	}
 
 	/**
@@ -912,7 +1145,12 @@ export class WorktreeManager {
 		mainRepoPath: string,
 		wt: ExternalWorktree,
 		opts?: { deleteBranch?: boolean },
-	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+	): Promise<{
+		removed: boolean;
+		branchDeleted: boolean;
+		error?: string;
+		reaps?: WorktreeReapRecord[];
+	}> {
 		return this.removeCleanWorktreeByPath(
 			mainRepoPath,
 			wt.path,
@@ -969,62 +1207,29 @@ export class WorktreeManager {
 	async removeWorktreeForce(
 		mainRepoPath: string,
 		worktreePath: string,
-	): Promise<{ removed: boolean; error?: string }> {
+	): Promise<{
+		removed: boolean;
+		error?: string;
+		reaps?: WorktreeReapRecord[];
+	}> {
 		return this.locked(mainRepoPath, async () => {
+			// FLY-1759 reap-first: quarantine authorization does not waive process cleanup.
+			const reaps = [await this.reapPath(mainRepoPath, worktreePath)];
 			try {
 				await this.exec(
 					"git",
 					["-C", mainRepoPath, "worktree", "remove", "--force", worktreePath],
 					mainRepoPath,
 				);
-				return { removed: true };
+				return { removed: true, reaps };
 			} catch (err) {
 				return {
 					removed: false,
 					error: err instanceof Error ? err.message : String(err),
+					reaps,
 				};
 			}
 		});
-	}
-}
-
-/**
- * FLY-793 (824 R2 E2E): canonicalize a filesystem path so it can be compared
- * against git's worktree paths, which `git worktree list --porcelain` always
- * reports fully symlink-resolved (e.g. macOS `/tmp` → `/private/tmp`, or any
- * user-configured symlink component on Linux). A plain string `===` against an
- * unresolved caller path silently fails to match — that is the FLY-99 class of
- * bug, and it broke the DAG workflow worktree-removal-proof gate (cleanup skipped
- * as "not_registered" → the removed-proof check threw → handoff fail-closed).
- *
- * `fs.realpathSync` resolves symlinks but throws when the path (or a component)
- * doesn't exist, so fall back to resolving the deepest existing ancestor and
- * re-appending the missing tail. This keeps `/tmp/x` matching `/private/tmp/x`
- * whether or not `x` is still on disk.
- */
-export function canonicalizeWorktreePath(p: string): string {
-	const abs = path.resolve(p);
-	try {
-		return fs.realpathSync(abs);
-	} catch {
-		// Deepest-existing-ancestor fallback for a not-yet / no-longer existing
-		// path: walk up until an ancestor resolves, then re-attach the tail.
-		const tail: string[] = [];
-		let dir = abs;
-		for (
-			let parent = path.dirname(dir);
-			parent !== dir;
-			parent = path.dirname(dir)
-		) {
-			tail.unshift(path.basename(dir));
-			dir = parent;
-			try {
-				return path.join(fs.realpathSync(dir), ...tail);
-			} catch {
-				// ancestor still missing — keep walking up
-			}
-		}
-		return abs; // no existing ancestor (root always exists, so unreachable)
 	}
 }
 

@@ -34,7 +34,12 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { ExternalWorktree, WorktreeManager } from "flywheel-edge-worker";
+import {
+	type ExternalWorktree,
+	isReapIncomplete,
+	type WorktreeManager,
+	type WorktreeReapRecord,
+} from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
@@ -216,10 +221,16 @@ export async function sweepProjectLifecycle(
 	const quarantine = deps.quarantineFn ?? quarantineWorktreeDefault(deps);
 	const policy: CleanupPolicy = policyFor(deps.policies, projectName);
 
-	const audit = (event: string, detail: Record<string, unknown>) => {
+	const audit = (
+		event: string,
+		detail: Record<string, unknown>,
+		stableKey?: string,
+	) => {
 		try {
 			store.insertEvent({
-				event_id: `lifecycle-sweep-${event}-${projectName}-${nowMs()}-${Math.floor(Math.random() * 1e9)}`,
+				event_id: stableKey
+					? `lifecycle-sweep-${event}-${projectName}-${stableKey}`
+					: `lifecycle-sweep-${event}-${projectName}-${nowMs()}-${Math.floor(Math.random() * 1e9)}`,
 				execution_id: `sweep-${projectName}`,
 				issue_id: projectName,
 				project_name: projectName,
@@ -229,6 +240,19 @@ export async function sweepProjectLifecycle(
 			});
 		} catch {
 			// audit must never break the sweep
+		}
+	};
+	const auditReaps = (
+		reaps: WorktreeReapRecord[] | undefined,
+		context: Record<string, unknown>,
+	) => {
+		for (const reap of reaps ?? []) {
+			if (!isReapIncomplete(reap.summary)) continue;
+			audit(
+				"worktree_reap_incomplete",
+				{ ...context, path: reap.path, summary: reap.summary },
+				sha256Text(reap.path).slice(0, 16),
+			);
 		}
 	};
 
@@ -337,6 +361,7 @@ export async function sweepProjectLifecycle(
 					isClean,
 					quarantine,
 					audit,
+					auditReaps,
 					nowMs,
 					all,
 					removedPaths,
@@ -415,6 +440,10 @@ interface WorktreeSweepCtx {
 	isClean: (wtPath: string) => Promise<boolean | "unknown">;
 	quarantine: ReturnType<typeof quarantineWorktreeDefault>;
 	audit: (event: string, detail: Record<string, unknown>) => void;
+	auditReaps: (
+		reaps: WorktreeReapRecord[] | undefined,
+		context: Record<string, unknown>,
+	) => void;
 	nowMs: () => number;
 	all: ExternalWorktree[];
 	removedPaths: Set<string>;
@@ -434,6 +463,7 @@ async function sweepOneWorktree(
 		protectedKeys,
 		bindings,
 		audit,
+		auditReaps,
 	} = ctx;
 	const { store, worktreeManager } = deps;
 	const skip = (reason: string): SweepManifestEntry => {
@@ -590,6 +620,10 @@ async function sweepOneWorktree(
 			wt,
 			{ deleteBranch: true },
 		);
+		auditReaps(res.reaps, {
+			branch: wt.branch,
+			family: "clean_merged",
+		});
 		if (res.removed) {
 			ctx.removedPaths.add(wt.path);
 			store.deleteCleanupRefObservation(projectName, "worktree", wt.path);
@@ -599,6 +633,7 @@ async function sweepOneWorktree(
 				family: "clean_merged",
 				headSha: head,
 				branchDeleted: res.branchDeleted,
+				reaps: res.reaps ?? [],
 			});
 			return {
 				kind: "worktree",
@@ -735,6 +770,7 @@ async function sweepOneWorktree(
 					deleteBranch: false,
 				})
 			: await worktreeManager.removeWorktreeForce(mainRepoPath, wt.path);
+	auditReaps(removed.reaps, { branch: wt.branch, family });
 	if (!removed.removed) {
 		return skip(`remove_failed:${removed.error ?? "?"}`);
 	}
@@ -767,6 +803,7 @@ async function sweepOneWorktree(
 		headSha: head,
 		quarantinePath: quarantinePath ?? null,
 		branchDeleted,
+		reaps: removed.reaps ?? [],
 	});
 	return {
 		kind: "worktree",

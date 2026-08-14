@@ -1457,7 +1457,8 @@ describe("WorktreeManager", () => {
 				"/main/repo-GEO-42",
 				"repo-GEO-42",
 			);
-			expect(res).toEqual({ removed: true, branchDeleted: true });
+			expect(res).toMatchObject({ removed: true, branchDeleted: true });
+			expect(res.reaps).toHaveLength(1);
 			expect(calls[0].args).toEqual([
 				"-C",
 				"/main/repo",
@@ -1499,7 +1500,8 @@ describe("WorktreeManager", () => {
 				"/main/repo-GEO-42",
 				"repo-GEO-42",
 			);
-			expect(res).toEqual({ removed: true, branchDeleted: false });
+			expect(res).toMatchObject({ removed: true, branchDeleted: false });
+			expect(res.reaps).toHaveLength(1);
 		});
 	});
 

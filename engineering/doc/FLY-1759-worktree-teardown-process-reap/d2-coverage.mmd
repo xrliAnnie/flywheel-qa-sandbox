@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph T1["Tier-i:系统自动拆除（事故 28+ 泄漏全在这层,硬保证）"]
+        direction TB
+        A1["合并后清理<br/>(Layer A)"] --> P
+        A2["定期清扫<br/>(Layer B sweep)"] --> P
+        A3["账实对账<br/>(reconciler)"] --> P
+        A4["开工前清残留<br/>(Blueprint pre-create)"] --> P
+        P["WorktreeManager<br/>四个删除原语<br/>= 单一收口点"]
+        P --> R["🛡️ 删除前必先回收进程<br/>(reap-before-delete)"]
+    end
+    subgraph T2["Tier-ii:runner 自己动手的命令路径（物理受限,尽力而为）"]
+        direction TB
+        B1["spin.md 自 ship /<br/>通用清理"] --> B3["先回收『别人的』进程<br/>(自己的清不掉:<br/>不能自己杀自己)"]
+        B2["cleanup-agent.sh"] --> B3
+    end
+    subgraph SW["兜底:收敛清扫（挂在既有节拍,零新定时器）"]
+        direction TB
+        S1["Bridge 启动时 +<br/>每次派工前后"] --> S2["找两类漏网:<br/>① .removing-* 残留目录<br/>② 工作目录指向『已经不存在<br/>又不在册』的死路径的进程"]
+        S2 --> S3["尽力回收<br/>(best-effort,大声记账)"]
+    end
+    T1 -.->|"万一漏了"| SW
+    T2 -.->|"自身残留"| SW
+    style R fill:#e3f7e9,stroke:#34c759,stroke-width:2px
+    style P fill:#eaf3ff,stroke:#007aff,stroke-width:2px
+    style S3 fill:#fff4e0,stroke:#ff9500,stroke-width:2px

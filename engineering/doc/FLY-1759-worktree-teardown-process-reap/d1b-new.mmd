@@ -1,0 +1,10 @@
+flowchart TB
+    N1["拆 worktree 指令"] --> N2["① 扫描:谁的工作目录<br/>在这个 worktree 里?<br/>(lsof cwd 扫描,不看进程名)"]
+    N2 --> N3["② 身份复核<br/>pid + 启动时刻 + 命令行<br/>三样全对才动手"]
+    N3 --> N4["③ 温柔请退 SIGTERM<br/>等 5 秒复查"]
+    N4 --> N5["④ 顽固的强制回收 SIGKILL"]
+    N5 --> N6["⑤ 终验:全量重扫<br/>确认零存活<br/>(不是『发过信号』就算数)"]
+    N6 --> N7["⑥ 这时才删目录"]
+    N6 -.->|"杀不干净"| N8["照常删目录<br/>但大声记审计账"]
+    style N6 fill:#e3f7e9,stroke:#34c759,stroke-width:2px
+    style N7 fill:#e3f7e9,stroke:#34c759,stroke-width:2px

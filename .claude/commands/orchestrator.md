@@ -211,6 +211,7 @@ QA agent spawn checklist:
    ```
    **Team-lead 不写测试细节。** QA agent 自己读协议、自己决定怎么测。Team-lead 只提供参数。
 4. QA reports PASS/FAIL to team-lead
+<!-- FLY-1759 domain allowlist: QA scratch teardown belongs to FLY-1482. -->
 5. QA 完成后清理 worktree: `git worktree remove ../flywheel-qa-{XX}`
 
 **QA 资源隔离 + 调度规则**:
@@ -247,6 +248,7 @@ curl -X POST http://localhost:9877/api/runs/start -H "Content-Type: application/
 # 7. 清理
 kill $BRIDGE_PID
 cd -
+# FLY-1759 domain allowlist: QA scratch teardown belongs to FLY-1482.
 git worktree remove ../flywheel-qa-{XX}
 ```
 
@@ -395,6 +397,7 @@ For each PR the user approves to ship:
        echo "[orchestrator] B2 self-ship is Flywheel-only; orchestrated repo is '${MAIN_REPO:-unknown}' — skipping (use the generic restart path)." ; exit 0
    fi
    ```
+   <!-- FLY-1759 reap-first: every removal described below calls the sibling reaper. -->
    - **Do NOT run `restart-services.sh` inline** (it would deadlock on this still-active
      session's idle-wait and tear down the coordinating Eng Lead). Instead, hand the
      merged ship to the detached launchd updater via the durable queue. **Worktree
@@ -408,6 +411,16 @@ For each PR the user approves to ship:
      MERGE_SHA="$(gh pr view {PR_NUMBER} --json mergeCommit -q '.mergeCommit.oid')"
      [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "[orchestrator] FATAL: no canonical merge SHA" >&2; exit 1; }
      # (2) worktree cleanup — LAST git op before handoff
+     # FLY-1759 reap-first: reap non-protected cwd-rooted process trees while
+     # the live worktree path still provides reliable attribution.
+     REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
+     if [[ -r "$REAP_LIB" ]]; then
+       source "$REAP_LIB"
+       reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
+         || echo "[orchestrator] WARNING: worktree reap incomplete; continuing removal with audit debt" >&2
+     else
+       echo "[orchestrator] WARNING: worktree reaper missing; continuing removal with audit debt" >&2
+     fi
      cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
      git branch -D "$BRANCH" 2>/dev/null || true
      # (3) clean-checkout preflight (single-writer; updater pull + rollback need it)
@@ -426,9 +439,21 @@ For each PR the user approves to ship:
 
    **C. Clean up worktree** — **for the Flywheel self-ship path this already happened in
    B2 step (2), before the handoff** (do NOT remove it again here). For non-Flywheel repos:
-   - `cd` out of worktree
-   - `git worktree remove {worktree_path}`
-   - `git branch -D {branch}` (if not already deleted by --delete-branch)
+   ```bash
+   cd "$MAIN_REPO"
+   # FLY-1759 reap-first: cleanup-agent's sibling library applies the same
+   # path guard, identity fence, descendant closure, and TERM→KILL verification.
+   REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
+   if [[ -r "$REAP_LIB" ]]; then
+     source "$REAP_LIB"
+     reap_worktree_processes "$MAIN_REPO" "$WORKTREE_PATH" \
+       || echo "[orchestrator] WARNING: worktree reap incomplete; continuing removal with audit debt" >&2
+   else
+     echo "[orchestrator] WARNING: worktree reaper missing; continuing removal with audit debt" >&2
+   fi
+   git worktree remove "$WORKTREE_PATH"
+   git branch -D "$BRANCH" # if not already deleted by --delete-branch
+   ```
 
    **D. Verify archive docs landed** (done on feature branch in Step A0 — this is just a check)
    - The `docs: archive ${ISSUE_ID} docs` commit was pushed as the final commit on the feature
@@ -488,6 +513,7 @@ spawn → /spin pipeline → PR created → WAIT (idle, alive) → user approves
 | 结束场景 | 谁清理 | 怎么清理 |
 |---------|--------|---------|
 | Ship 成功 | Teammate 自己 | ship 步骤里的 Step C |
+<!-- FLY-1759 reap-first: this summary table inherits cleanup-agent/B2/C reap. -->
 | PR closed/abandoned | Team-lead | `git worktree remove` + `git branch -D` |
 | Issue 合并到其他 issue | Team-lead | 关闭 agent + 清理 worktree |
 | Agent shutdown/crash | Team-lead | `cleanup-agent.sh` + `git worktree remove` |
