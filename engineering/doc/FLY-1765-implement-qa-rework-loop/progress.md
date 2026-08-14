@@ -1,13 +1,13 @@
 ---
 issue: FLY-1765
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-14T06:39:41.921Z
-nextStep: audit completion divergence + prod evidence
+phaseCursor: 3/6
+updated: 2026-08-14T06:54:45.468Z
+nextStep: write exploration/research/plan docs then codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1765 progress
-**phase**: design (1/6)
-**next**: audit completion divergence + prod evidence
+**phase**: design (3/6)
+**next**: write exploration/research/plan docs then codex design review
