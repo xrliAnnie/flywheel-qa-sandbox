@@ -23,6 +23,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
@@ -94,6 +95,7 @@ export interface AuthoritativeShipDecision extends ShipEligibilityDecision {
 
 type EngineShipContext = {
 	runId: string;
+	projectName: string;
 	snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
 };
 
@@ -158,6 +160,7 @@ function engineShipContext(
 		return {
 			engineOwned: true,
 			runId: run.run_id,
+			projectName: run.project_name,
 			snapshot: parseWorkflowRunSnapshot(run.snapshot),
 		};
 	} catch {
@@ -251,6 +254,21 @@ export async function computeEngineWorkflowShipPrecondition(
 			eligible: false,
 			authoritativeHead,
 			reason: "head_authority_invalid",
+		};
+	}
+	const founderReview = await evaluateWorkflowFounderReviewPrecondition({
+		store,
+		runId: context.runId,
+		projectName: context.projectName,
+		snapshot: context.snapshot,
+		head: authoritativeHead,
+	});
+	if (!founderReview.eligible) {
+		return {
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead,
+			reason: founderReview.reason,
 		};
 	}
 	const result = evaluateEngineShipClaims(store, context, authoritativeHead);
@@ -349,6 +367,28 @@ export async function computeAuthoritativeShipDecision(
 			qaReason: "head_authority_mismatch_failclosed",
 			authoritativeHead,
 		};
+	}
+	if (typedEngine) {
+		const founderReview = await evaluateWorkflowFounderReviewPrecondition({
+			store,
+			runId: typedEngine.runId,
+			projectName: typedEngine.projectName,
+			snapshot: typedEngine.snapshot,
+			head: authoritativeHead,
+			processEnv: env,
+		});
+		if (!founderReview.eligible) {
+			return {
+				eligible: false,
+				mergeApprovalOk: false,
+				qaOk: false,
+				mergeReason: founderReview.reason,
+				qaReason: "qa_claim_gate_unenrolled_failclosed",
+				authoritativeHead,
+				workflowClaimsOk: false,
+				workflowClaimsReason: founderReview.reason,
+			};
+		}
 	}
 	const base = computeShipDecision(
 		store,

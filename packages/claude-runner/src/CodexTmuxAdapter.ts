@@ -1424,6 +1424,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		delete env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL;
 		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL;
 		delete env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED;
+		delete env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED;
 		env.FLYWHEEL_GATE_MARKER_DIR = gateMarkerDir;
 		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
 		if (completeMarkerDir) {
@@ -1446,6 +1447,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED = "1";
 		if (ctx.workflowOutputCredential)
 			env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = ctx.workflowOutputCredential;
+		if (ctx.founderReviewRequired) env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED = "1";
 		if (ctx.stateDbPath) env.FLYWHEEL_STATE_DB_PATH = ctx.stateDbPath;
 		if (ctx.progressPath) env.FLYWHEEL_PROGRESS_PATH = ctx.progressPath; // FLY-795
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
@@ -1492,6 +1494,10 @@ export class CodexTmuxAdapter implements IAdapter {
 			[
 				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
 				ctx.workflowSubmissionExpected ? "1" : undefined,
+			],
+			[
+				"FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
+				ctx.founderReviewRequired ? "1" : undefined,
 			],
 		] as const;
 		const mismatched = expected

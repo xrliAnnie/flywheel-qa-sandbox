@@ -77,14 +77,17 @@ feedback you were given. For data-dense surfaces (charts / dashboards / trees) u
 
 Assemble the A/B/C directions into ONE founder-facing card with
 `founder-html-delivery` / `publish-report` (Apple-style light theme,
-`~/.claude/rules/html-report-style.md`). **Publish WITHOUT `--channel`**, take the
-URL, and **hand it to your Lead** — a Runner **never** posts founder material to
-Discord directly (the Lead delivers the one official card; direct posts collide).
+`~/.claude/rules/html-report-style.md`). **Publish WITHOUT `--channel`**, then open
+the injected founder-only `founder_review` round with the hosted URL and committed
+HTML path. Bridge delivers the official card; a Runner never posts founder material
+to Discord directly, and a Lead answer cannot satisfy this checkpoint. The page's
+comments do not auto-sync: Annie uses 「一键汇总复制」and pastes them back to the issue
+thread.
 
 ## Step 3 — Founder picks a direction (the DESIGN GATE — loopable)
 
-Ask the founder to pick ONE direction, via the injected QUESTION GATE flow. This is
-a **design gate**, separate from implement's review gate — the direction is decided
+Ask the founder to pick ONE direction via the injected `founder_review` flow. This is
+a **design review round**, separate from implement's review gate — the direction is decided
 BEFORE implement.
 
 - If the founder picks a direction → lock it.
@@ -92,8 +95,9 @@ BEFORE implement.
   feedback, produce **another round** of directions, and open the gate again. Loop
   until a direction is chosen or the founder explicitly hands you latitude.
 - **Workflow discipline:** in a DAG workflow run, **never** complete the Design
-  phase (no `phase_design_complete`) until a direction is selected (or the founder
-  tells you to proceed on judgment).
+  phase (no `phase_design_complete`) until the latest direction card has a founder
+  pass. Feedback means revise, republish, and open a NEW round; never reuse an old
+  card or old pass.
 
 ## Step 4 — High-fidelity
 
@@ -102,11 +106,15 @@ Turn the chosen direction into a **production-grade mockup** with `frontend-desi
 mock data.
 
 - **Type (a) static** → high-fidelity HTML, hosted via publish-report / Artifact
-  (URL to Lead, per Step 2).
+  (URL bound into the new founder_review round, per Step 2).
 - **Type (b) real UI increment** → high-fidelity mockup + a note on where it lands
   in the real app; the **production wiring / real data / tests / PR are engineer's**,
   not yours. If a running surface exists, use `proofshot` to capture the real
   before/after and send async screenshots/GIF to the founder (via the Lead).
+
+The high-fidelity version is a second staged output. Publish it as interactive HTML
+and open a fresh `founder_review`; do not hand off or complete until that exact
+committed version passes.
 
 ## Step 5 — Handoff (the implement contract)
 
@@ -177,6 +185,6 @@ push to `main`. Never self-merge / self-ship** — ship is always the founder's 
 
 Report to Tadashi / your Lead via `flywheel-comm ask`. **Never** stock
 `SendMessage to:"team-lead"` (black-hole inbox — FLY-208). Acknowledge Lead
-instructions and report DONE via `flywheel-comm ask`. **Founder material (mockup
-cards) is delivered by the Lead — you hand over the URL, you never post it to
-Discord yourself.**
+instructions and report DONE via `flywheel-comm ask`. **Founder mockup cards are
+delivered by Bridge from `founder_review`; you bind the hosted URL there and never
+post it to Discord yourself.**

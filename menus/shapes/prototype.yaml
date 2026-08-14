@@ -1,4 +1,5 @@
 shape: prototype
+founderReview: true
 nodes:
   - id: produce
     role: proto

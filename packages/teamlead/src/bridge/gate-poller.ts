@@ -22,6 +22,7 @@
 
 import { createHash } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
+import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import { readContentRef } from "flywheel-comm/utils";
 // FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
@@ -50,6 +51,7 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import {
 	type DeferredRebindDeps,
 	type RebindCommDb,
@@ -76,6 +78,8 @@ import {
 	FounderReplyWatchdog,
 	founderReplyWatchdogEnabled,
 } from "./founder-reply-watchdog.js";
+import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
+import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
 import {
 	emitFounderMilestoneNotification,
 	emitFounderThreadNotification,
@@ -1553,7 +1557,12 @@ export class GatePoller {
 		if (!this.founderThreadNotifyEnabled()) return;
 		if (!this.config.chatThreadsEnabled) return;
 		const cp = question.checkpoint;
-		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // v1 scope
+		if (
+			cp !== "brainstorm" &&
+			cp !== "approve_to_ship" &&
+			cp !== "founder_review"
+		)
+			return;
 		const gateOwnership =
 			typeof this.config.store.workflowGatePresentationDisposition ===
 			"function"
@@ -1586,7 +1595,8 @@ export class GatePoller {
 		if (createdMs === null) return;
 		const now = Date.now();
 		const graceMs =
-			cp === "approve_to_ship" && this.shipGateCardEnabled()
+			cp === "founder_review" ||
+			(cp === "approve_to_ship" && this.shipGateCardEnabled())
 				? this.shipGateCardGraceMs()
 				: this.founderThreadGraceMs();
 		if (now - createdMs < graceMs) return;
@@ -1619,6 +1629,53 @@ export class GatePoller {
 		let summary = question.content;
 		if (question.content_type === "ref" && question.content_ref) {
 			summary = readContentRef(question.content_ref) ?? question.content;
+		}
+
+		// FLY-1758: this card is review authority, not a best-effort ping. The
+		// payload must belong to the exact sealed capable run. An existing binding
+		// means a prior tick crashed after the POST; converge the marker without
+		// creating a second authority card.
+		const founderReviewContent =
+			cp === "founder_review"
+				? parseFounderReviewQuestionContent(summary)
+				: undefined;
+		if (cp === "founder_review") {
+			const project = this.config.projects.find(
+				(candidate) => candidate.projectName === session.project_name,
+			);
+			if (!project?.projectRoot) return;
+			try {
+				if (!(await founderReviewCheckpointEnabled(project.projectRoot)))
+					return;
+			} catch (error) {
+				console.warn(
+					`[gate-poller] founder_review config unavailable for ${session.project_name}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return;
+			}
+			const context = this.config.store.getGeneralizedWorkflowNodeForExecution(
+				session.execution_id,
+			);
+			if (
+				!founderReviewContent ||
+				!context ||
+				founderReviewContent.runId !== context.run.run_id ||
+				!nodeRequiresFounderReview(context.snapshot, context.node.id)
+			) {
+				return;
+			}
+			const existing = this.config.store.getFounderReviewCardBindingByQuestion(
+				question.id,
+			);
+			if (existing) {
+				if (
+					existing.run_id === founderReviewContent.runId &&
+					existing.artifact_digest === founderReviewContent.artifactDigest
+				) {
+					this.writeFounderThreadMarker(question, session, "binding_recovered");
+				}
+				return;
+			}
 		}
 
 		// FLY-1238: the ship card is a recovery/reapproval side effect. Re-check
@@ -1758,6 +1815,35 @@ export class GatePoller {
 				console.warn(
 					`[gate-poller] FLY-799 gate-message binding write failed for ${question.id} (non-fatal): ${(err as Error).message}`,
 				);
+			}
+		}
+
+		// A 2xx without a Discord message id is not a delivered founder-review
+		// round. Bind the exact card before writing the durable notify marker; any
+		// failure stays retryable and therefore cannot authorize a later response.
+		if (cp === "founder_review" && result.kind === "posted") {
+			if (!result.gateMessageId || !founderReviewContent) {
+				this.founderNotifyRetry.set(question.id, {
+					firstFailedAtMs: retry?.firstFailedAtMs ?? now,
+					nextAttemptAtMs: now + 30_000,
+					attempts: (retry?.attempts ?? 0) + 1,
+				});
+				return;
+			}
+			try {
+				const binding = this.config.store.bindFounderReviewCard({
+					questionId: question.id,
+					messageId: result.gateMessageId,
+					runId: founderReviewContent.runId,
+					artifactDigest: founderReviewContent.artifactDigest,
+					createdAt: new Date(now).toISOString(),
+				});
+				if (binding.status === "conflict") return;
+			} catch (error) {
+				console.warn(
+					`[gate-poller] founder-review card binding failed for ${question.id}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return;
 			}
 		}
 
@@ -2782,7 +2868,6 @@ export class GatePoller {
 	 */
 	private async founderReactionApprovalPass(): Promise<void> {
 		const tryReaction = this.config.tryFounderReactionApproval;
-		if (!tryReaction) return;
 		if (!this.config.chatThreadsEnabled) return;
 		const ownerUserId = this.config.discordOwnerUserId;
 		if (!isDiscordSnowflake(ownerUserId)) return;
@@ -2800,21 +2885,25 @@ export class GatePoller {
 				if (!botToken) continue;
 				const dbPath = defaultGetCommDbPath(project.projectName);
 
-				// Collect pending approve_to_ship questions for this lead (read-only).
-				let shipGates: PendingQuestion[];
+				// Collect founder-authority gates for this lead (read-only).
+				let reactionGates: PendingQuestion[];
 				try {
 					const rdb = CommDB.openReadonly(dbPath);
 					try {
-						shipGates = (
+						reactionGates = (
 							rdb.getPendingQuestions(lead.agentId) as PendingQuestion[]
-						).filter((q) => q.checkpoint === "approve_to_ship");
+						).filter(
+							(q) =>
+								q.checkpoint === "approve_to_ship" ||
+								q.checkpoint === "founder_review",
+						);
 					} finally {
 						rdb.close();
 					}
 				} catch {
 					continue; // CommDB not present yet
 				}
-				if (shipGates.length === 0) continue;
+				if (reactionGates.length === 0) continue;
 
 				// Per-lead Discord reactions fetcher (paginating GET; the shared
 				// checkReactionConfirmation is fail-closed on any non-200/429/malformed).
@@ -2843,9 +2932,14 @@ export class GatePoller {
 					continue;
 				}
 				try {
-					for (const q of shipGates) {
+					for (const q of reactionGates) {
 						const createdMs = parseSqliteUtcMs(q.created_at);
-						if (createdMs === null || now - createdMs < graceMs) continue;
+						const checkpointGraceMs =
+							q.checkpoint === "founder_review"
+								? this.shipGateCardGraceMs()
+								: graceMs;
+						if (createdMs === null || now - createdMs < checkpointGraceMs)
+							continue;
 						// Throttle: at most one reactions GET per qid per interval.
 						const nextAt = this.founderReactionNextCheck.get(q.id) ?? 0;
 						if (now < nextAt) continue;
@@ -2875,21 +2969,33 @@ export class GatePoller {
 						if (!thread?.thread_id) continue;
 
 						try {
-							await tryReaction({
-								gate: {
+							if (q.checkpoint === "founder_review") {
+								await tryFounderReviewReactionResponse({
+									store: this.config.store,
+									db,
 									questionId: q.id,
 									executionId: q.from_agent,
-									checkpoint: q.checkpoint,
-									createdAtMs: createdMs,
-								},
-								ctx: {
-									issueId: session.issue_id,
 									threadId: thread.thread_id,
-									projectName: project.projectName,
-								},
-								db,
-								reactionFetcherImpl,
-							});
+									founderId: ownerUserId,
+									reactionFetcher: reactionFetcherImpl,
+								});
+							} else if (tryReaction) {
+								await tryReaction({
+									gate: {
+										questionId: q.id,
+										executionId: q.from_agent,
+										checkpoint: q.checkpoint,
+										createdAtMs: createdMs,
+									},
+									ctx: {
+										issueId: session.issue_id,
+										threadId: thread.thread_id,
+										projectName: project.projectName,
+									},
+									db,
+									reactionFetcherImpl,
+								});
+							}
 						} catch (err) {
 							console.warn(
 								`[GatePoller] founder-reaction approval error (qid=${q.id}):`,

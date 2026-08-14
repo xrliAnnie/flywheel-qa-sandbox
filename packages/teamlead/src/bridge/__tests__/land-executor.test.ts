@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
@@ -24,6 +27,107 @@ async function fixture() {
 }
 
 describe("land executor", () => {
+	it("holds a direct engine land attempt when founder_review has not passed even if the artifact checkout disables it", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1758-land-"));
+		try {
+			mkdirSync(join(root, ".flywheel"), { recursive: true });
+			writeFileSync(
+				join(root, ".flywheel", "config.yaml"),
+				"project: flywheel\nlinear:\n  team_id: FLY\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: false\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+			);
+			const store = await StateStore.create(":memory:");
+			const seed = legacyWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+			)!;
+			const manifest = {
+				...seed.manifest,
+				nodes: seed.manifest.nodes.map((node) =>
+					node.id === "implement"
+						? { ...node, founder_review: true as const }
+						: node,
+				),
+			};
+			store.createWorkflowRun({
+				runId: "run-review",
+				issueId: "issue-review",
+				projectName: "flywheel",
+				snapshotJson: JSON.stringify(
+					buildWorkflowRunSnapshotV1({
+						template: { id: seed.templateId, revision: 1 },
+						manifest,
+					}),
+				),
+				claimsReadEnrolled: true,
+			});
+			const sql = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			sql.run(
+				"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-review'",
+			);
+			store.upsertWorkflowRunNode({
+				runId: "run-review",
+				nodeId: "implement",
+				attempt: 1,
+				state: "done",
+				executionId: "implement-review",
+			});
+			sql.run(
+				`INSERT INTO workflow_node_pr_binding
+				   (run_id, node_id, attempt, pr_number, head_sha,
+				    target_repo_identity, probe_repo_slug, target_repo_path,
+				    worktree_binding_generation, receipt_id, bound_at)
+				 VALUES ('run-review', 'implement', 1, 1758, ?,
+				         '__main__', 'geoforge3d/flywheel', ?,
+				         'generation-1', 'review-binding',
+				         '2026-08-14T00:00:00.000Z')`,
+				[HEAD, root],
+			);
+			store.ensureWorkflowGateHolder({
+				runId: "run-review",
+				gateNodeId: "founder_gate",
+				attempt: 1,
+				headSha: HEAD,
+				sourceExecutionId: "implement-review",
+				questionId: "ship-question",
+				now: "2026-08-14T00:00:00.000Z",
+			});
+			sql.run(
+				"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = 'ship-question'",
+			);
+			const operation = store.ensureLandOperation({
+				runId: "run-review",
+				issueId: "issue-review",
+				projectName: "flywheel",
+				prNumber: 1758,
+				approvedHead: HEAD,
+				now: "2026-08-14T00:00:00.000Z",
+			});
+			const inspectPr = vi.fn();
+			const result = await executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver: {
+					inspectPr,
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize: vi.fn(),
+				ownerId: "worker",
+				now: () => new Date("2026-08-14T00:01:00.000Z"),
+			});
+			expect(result).toMatchObject({
+				status: "partial",
+				reason: "founder_review_missing",
+			});
+			expect(inspectPr).not.toHaveBeenCalled();
+			store.close();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects a nested repository before calling the merge driver", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = legacyWorkflowSeeds().find(

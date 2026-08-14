@@ -18,6 +18,7 @@ import {
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
+	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
 	workflowGateEntryPromptCapabilities,
@@ -2501,6 +2502,10 @@ export class WorkflowEngineDispatcher {
 					dispatch: runtimeDispatch,
 					capabilities: {
 						...node.capabilities,
+						founder_review_required: nodeRequiresFounderReview(
+							snapshot,
+							node.id,
+						),
 						...workflowGateEntryPromptCapabilities(snapshot, node.id),
 					},
 					agentContent: contextualAgentContent,

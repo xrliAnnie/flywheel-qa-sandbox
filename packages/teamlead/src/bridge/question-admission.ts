@@ -6,6 +6,7 @@
 
 import type { Message } from "flywheel-comm/db";
 import { CommDB } from "flywheel-comm/db";
+import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import { readContentRef } from "flywheel-comm/utils";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
@@ -15,6 +16,7 @@ import {
 	type StateStore,
 	WorkflowAdmissionClassificationError,
 } from "../StateStore.js";
+import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { HookPayload } from "./hook-payload.js";
@@ -240,6 +242,24 @@ export class QuestionAdmission {
 		}
 		const holderAuthoritative = ownership.reason === "holder_authoritative";
 		if (question.checkpoint != null) {
+			if (question.checkpoint === "founder_review") {
+				const content = parseFounderReviewQuestionContent(question.content);
+				const context = this.opts.store.getGeneralizedWorkflowNodeForExecution(
+					question.from_agent,
+				);
+				if (
+					!content ||
+					!context ||
+					content.runId !== context.run.run_id ||
+					!nodeRequiresFounderReview(context.snapshot, context.node.id)
+				) {
+					return {
+						ok: false,
+						disposition: "revoked_founder_review_authority",
+						permanent: true,
+					};
+				}
+			}
 			if (
 				!holderAuthoritative &&
 				!ACTIVE_GATE_SESSION_STATUSES.has(session.status)

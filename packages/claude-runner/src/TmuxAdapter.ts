@@ -547,6 +547,9 @@ export class TmuxAdapter implements IAdapter {
 				`FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL=${ctx.workflowOutputCredential}`,
 			);
 		}
+		if (ctx.founderReviewRequired) {
+			envArgs.push("-e", "FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1");
+		}
 		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
 		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
 		// the Runner on the default-path DB → fail-closed forever).

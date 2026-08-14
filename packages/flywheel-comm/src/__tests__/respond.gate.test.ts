@@ -68,6 +68,32 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
+	it.each([
+		["approval text", "approved"],
+		["revision feedback", "Please revise the second section."],
+		["structured verdict", '{"passed":true}'],
+	])(
+		"founder_review + %s → Lead respond is always rejected",
+		async (_shape, answer) => {
+			const qid = seed("founder_review");
+			const fetchImpl = vi.fn();
+			await expect(
+				respond({
+					questionId: qid,
+					fromAgent: "lead-x",
+					answer,
+					dbPath,
+					bridgeUrl: "http://localhost:9999",
+					sourceThread: "thread-1",
+					env: { TEAMLEAD_API_TOKEN: "tok" },
+					fetchImpl: fetchImpl as typeof fetch,
+				}),
+			).rejects.toThrow(/founder_review.*only the trusted founder writer/i);
+			expect(fetchImpl).not.toHaveBeenCalled();
+			expect(hasResponse(qid)).toBe(false);
+		},
+	);
+
 	it("approve_to_ship + bridgeUrl but missing TEAMLEAD_API_TOKEN → throws", async () => {
 		const qid = seed("approve_to_ship");
 		await expect(

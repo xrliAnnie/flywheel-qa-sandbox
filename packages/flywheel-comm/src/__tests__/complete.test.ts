@@ -26,7 +26,11 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { execFileSync } from "node:child_process";
-import { complete, gitObjectExists } from "../commands/complete.js";
+import {
+	complete,
+	founderReviewCompletionBlockReason,
+	gitObjectExists,
+} from "../commands/complete.js";
 import { CommDB } from "../db.js";
 import { removeGateMarker, writeGateMarker } from "../gate-marker.js";
 
@@ -199,6 +203,55 @@ describe("complete command", () => {
 		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
 		// the Bridge persists it as pr_head_sha for verify-approval.
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("blocks product completion for missing/pending/rejected review and allows only pass", () => {
+		const required = (
+			verdict: Parameters<
+				typeof founderReviewCompletionBlockReason
+			>[0]["verdict"],
+		) =>
+			founderReviewCompletionBlockReason({
+				required: true,
+				route: "needs_review",
+				verdict,
+			});
+		expect(
+			required({ status: "missing", reason: "no_round_for_run" }),
+		).toContain("founder_review missing");
+		expect(
+			required({
+				status: "not_passed",
+				questionId: "pending",
+				reason: "response_missing",
+			}),
+		).toContain("response_missing");
+		expect(
+			required({
+				status: "not_passed",
+				questionId: "rejected",
+				reason: "revisions_requested",
+			}),
+		).toContain("revisions_requested");
+		expect(
+			required({
+				status: "passed",
+				questionId: "passed",
+				artifactDigest: "a".repeat(64),
+			}),
+		).toBeUndefined();
+	});
+
+	it("keeps blocked and ship_attempt_failed available while review is pending", () => {
+		for (const route of ["blocked", "ship_attempt_failed"]) {
+			expect(
+				founderReviewCompletionBlockReason({
+					required: true,
+					route,
+					verdict: { status: "missing", reason: "no_round_for_run" },
+				}),
+			).toBeUndefined();
+		}
 	});
 
 	it.each([

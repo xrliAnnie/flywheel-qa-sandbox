@@ -1,8 +1,14 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import {
+	computeFounderArtifactDigest,
+	createFounderReviewQuestionContent,
+	inspectFounderReviewArtifactsAtCommit,
+} from "flywheel-comm/founder-review";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -504,6 +510,190 @@ describe("Event route", () => {
 			.filter((event) => event.event_type === "session_completed");
 		expect(lifecycle).toHaveLength(1);
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
+	});
+
+	it("rejects a forged generalized completion until the current artifact has founder_review pass", async () => {
+		const repo = mkdtempSync(join(tmpdir(), "fly1758-event-authority-"));
+		const commRoot = mkdtempSync(join(tmpdir(), "fly1758-event-comm-"));
+		const originalProjectRoot = testProjects[0]!.projectRoot;
+		const originalCommDir = process.env.FLYWHEEL_COMM_DIR;
+		const git = (...args: string[]) =>
+			execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+		try {
+			git("init", "-q");
+			git("remote", "add", "origin", "https://github.com/example/fly1758.git");
+			mkdirSync(join(repo, "agents"));
+			mkdirSync(join(repo, ".flywheel"));
+			mkdirSync(join(repo, "product", "doc", "FLY-1758"), { recursive: true });
+			writeFileSync(join(repo, "agents", "generic.md"), "Execute.\n");
+			writeFileSync(
+				join(repo, ".flywheel", "config.yaml"),
+				"project: geoforge3d\nlinear:\n  team_id: GEO\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: true\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+			);
+			writeFileSync(
+				join(repo, "product", "doc", "FLY-1758", "prd.html"),
+				"<main data-comments>PRD v1</main>\n",
+			);
+			git("add", ".");
+			git(
+				"-c",
+				"user.name=Test",
+				"-c",
+				"user.email=test@example.com",
+				"commit",
+				"-qm",
+				"fixture",
+			);
+			const head = git("rev-parse", "HEAD");
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: "prd", revision: 1 },
+				canonicalRoot: repo,
+				manifest: {
+					schema_version: 2,
+					nodes: [
+						{
+							id: "produce",
+							type: "generic",
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "low",
+							agent_file: "agents/generic.md",
+							founder_review: true,
+						},
+						{ id: "founder_gate", type: "gate" },
+					],
+					edges: [
+						{
+							id: "done",
+							from: "produce",
+							to: "founder_gate",
+							condition: "node_done",
+						},
+					],
+					loops: [],
+					terminal_gate: {
+						node: "founder_gate",
+						predicate: "founder_approved",
+					},
+					ship_claims: ["founder_approved"],
+				},
+			});
+			store.createWorkflowRun({
+				runId: "run-exec-1",
+				issueId: "issue-1",
+				projectName: "geoforge3d",
+				snapshotJson: JSON.stringify(snapshot),
+				claimsReadEnrolled: false,
+			});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-exec-1",
+					nodeId: "produce",
+					executionId: "exec-1",
+					attempt: 1,
+					now: "2026-08-14T00:00:00.000Z",
+					expiresAt: "2026-08-14T00:05:00.000Z",
+					absoluteDeadlineAt: "2026-08-14T01:00:00.000Z",
+					env: {
+						FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+						FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+						FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+						FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					},
+				}),
+			).toMatchObject({ ok: true });
+			store.bindWorktreeOnce(
+				"exec-1",
+				{ path: repo, branch: "feature", generation: "founder-review-test" },
+				{ issueId: "issue-1", projectName: "geoforge3d" },
+			);
+			testProjects[0]!.projectRoot = repo;
+			process.env.FLYWHEEL_COMM_DIR = commRoot;
+
+			const complete = (eventId: string) =>
+				fetch(`${baseUrl}/events`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer ingest-secret",
+					},
+					body: JSON.stringify(
+						makeEvent({
+							event_id: eventId,
+							event_type: "session_completed",
+							source: "flywheel-comm",
+							payload: { decision: { route: "needs_review" } },
+						}),
+					),
+				});
+			const forged = await complete("founder-review-bypass");
+			expect(forged.status).toBe(409);
+			expect(await forged.json()).toMatchObject({
+				error: "founder_review_required",
+				reason: "missing",
+			});
+			expect(
+				store.getWorkflowNodeCompletion("run-exec-1", "produce", 1),
+			).toBeUndefined();
+
+			const paths = ["product/doc/FLY-1758/prd.html"];
+			const artifactDigest = computeFounderArtifactDigest(
+				inspectFounderReviewArtifactsAtCommit({ repoRoot: repo, head, paths }),
+			);
+			const commDbPath = commDbPathForProject("geoforge3d");
+			const commDb = new CommDB(commDbPath);
+			try {
+				const questionId = commDb.insertQuestion(
+					"exec-1",
+					"product-lead",
+					createFounderReviewQuestionContent({
+						round: 1,
+						evidence: {
+							runId: "run-exec-1",
+							founderId: "123456789012345678",
+							hostedUrl: "https://reports.example/FLY-1758/prd",
+							artifacts: inspectFounderReviewArtifactsAtCommit({
+								repoRoot: repo,
+								head,
+								paths,
+							}),
+						},
+					}),
+					{ checkpoint: "founder_review" },
+				);
+				store.bindFounderReviewCard({
+					questionId,
+					messageId: "founder-card-1",
+					runId: "run-exec-1",
+					artifactDigest,
+					createdAt: "2026-08-14T00:10:00.000Z",
+				});
+				expect(
+					commDb.insertFounderReviewResponseIfGateOpen({
+						questionId,
+						fromAgent: "bridge",
+						founderId: undefined,
+						expectedOwner: "exec-1",
+						passed: true,
+					}),
+				).toBe(true);
+			} finally {
+				commDb.close();
+			}
+
+			const accepted = await complete("founder-review-pass");
+			expect(accepted.status).toBe(200);
+			expect(await accepted.json()).toMatchObject({
+				ok: true,
+				generalized: true,
+			});
+		} finally {
+			testProjects[0]!.projectRoot = originalProjectRoot;
+			if (originalCommDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
+			else process.env.FLYWHEEL_COMM_DIR = originalCommDir;
+			rmSync(repo, { recursive: true, force: true });
+			rmSync(commRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("books re-entry completion against the explicit activation and TURN epoch", async () => {

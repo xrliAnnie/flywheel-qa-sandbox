@@ -144,7 +144,7 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		expect(r2.kind).toBe("transient_failed");
 	});
 
-	it("body differs by checkpoint (brainstorm vs approve_to_ship)", async () => {
+	it("body differs by checkpoint and founder_review is honest about manual comment return", async () => {
 		const captured: string[] = [];
 		const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => {
 			captured.push(JSON.parse(init.body as string).content);
@@ -162,8 +162,27 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 			baseOpts({ checkpoint: "approve_to_ship" }),
 			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
 		);
+		await emitFounderThreadNotification(
+			baseOpts({
+				checkpoint: "founder_review",
+				summary: JSON.stringify({
+					version: 1,
+					round: 2,
+					runId: "run-1",
+					artifactDigest: "a".repeat(64),
+					hostedUrl: "https://reports.example/prd-v2",
+					paths: ["prd-v2.html"],
+				}),
+			}),
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
 		expect(captured[0]).toContain("Brainstorm gate");
 		expect(captured[1]).toContain("Ship gate");
+		expect(captured[2]).toContain("阶段产出 review · 第 2 轮");
+		expect(captured[2]).toContain("https://reports.example/prd-v2");
+		expect(captured[2]).toContain("一键汇总复制");
+		expect(captured[2]).toContain("贴回本 thread");
+		expect(captured[2]).toContain("不会自动同步给 runner");
 	});
 });
 

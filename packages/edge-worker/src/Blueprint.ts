@@ -828,6 +828,7 @@ function founderDesignHtmlDeliveryLines(input: {
 	executionId: string;
 	leadId: string;
 	commCliPath: string;
+	founderReviewRequired?: boolean;
 }): string[] {
 	const docFolder = `doc/${input.issueIdentifier}-<slug>/`;
 	return [
@@ -854,7 +855,32 @@ function founderDesignHtmlDeliveryLines(input: {
 		`Publish it without sending a channel message: \`node ${input.commCliPath} publish-report --html <repo-relative-html-path> --project ${input.projectName} --publish-only\`.`,
 		`Report the hosted URL to the actual Lead: \`node ${input.commCliPath} ask --lead ${input.leadId} --exec-id ${input.executionId} --report "DESIGN-HTML ready: <hosted-url> | repo: <repo-relative-html-path> | issue: ${input.issueIdentifier}"\`. If publishing fails, report \`DESIGN-HTML publish-failed: <error> | repo: <repo-relative-html-path> | issue: ${input.issueIdentifier}\` instead; do not hide the failure.`,
 		`Only after the committed HTML has been published and reported, run \`node ${input.commCliPath} complete --route phase_design_complete\`.`,
-		"This delivery does NOT wait for founder review and does not block successor implementation. If founder feedback arrives later, the current TURN holder records a design-correction.md appendix and applies the correction incrementally; never roll the branch back or let a parked runner write without TURN.",
+		input.founderReviewRequired
+			? "This node has the blocking founder_review capability. Do not complete yet; follow the founder review round protocol below."
+			: "This delivery does NOT wait for founder review and does not block successor implementation. If founder feedback arrives later, the current TURN holder records a design-correction.md appendix and applies the correction incrementally; never roll the branch back or let a parked runner write without TURN.",
+	];
+}
+
+function founderProductReviewLines(input: {
+	issueIdentifier: string;
+	projectName: string;
+	executionId: string;
+	leadId: string;
+	commCliPath: string;
+}): string[] {
+	return [
+		"## FOUNDER REVIEW ROUND (BLOCKING, REPEATABLE)",
+		"This node is a product-stage producer. Every staged deliverable must be reviewed by the founder before you continue to the next version or complete this node. Ordinary technical/execution questions still go to your Lead and are unchanged.",
+		"For this flow, staged deliverables mean: PRD — the one-page research explainer, the first PRD, and every revised PRD; Design — the direction-options mockup and the high-fidelity chosen direction; Prototype — the first runnable version and every revision.",
+		"For EACH round:",
+		"1. Produce one founder-friendly HTML artifact for the current stage. It must be committed at the exact Git head you are asking her to review.",
+		"2. Make it interactive: every section/card has a localStorage-backed comment textarea; the bottom has a live summary plus one-click copy of all non-empty comments with section titles. Keep all JS inline under the publish-report nonce contract and escape all derived text.",
+		`3. Publish without a channel post: \`node ${input.commCliPath} publish-report --html <repo-relative-html-path> --project ${input.projectName} --publish-only\`.`,
+		`4. Open the founder-only round: \`node ${input.commCliPath} gate founder_review --lead ${input.leadId} --exec-id ${input.executionId} --no-block --hosted-url <hosted-url> --artifact <repo-relative-html-path> "Founder review requested for ${input.issueIdentifier}"\`. Capture its questionId.`,
+		`5. Poll \`node ${input.commCliPath} check <questionId>\` unhurriedly across turns. A pending founder_review is never a blocker and must not be replaced by a Lead answer.`,
+		"6. Any reply other than an exact pass phrase (都可以了 / 可以了 / 通过 / LGTM / approved) is revision feedback. Apply it, commit the new HTML/version, republish, and open a NEW founder_review round. Never reuse an old card or old artifact digest.",
+		"Only the latest delivered round may pass. Do not run complete, request approve_to_ship, or claim the stage is done until the latest round passes.",
+		"HONEST COMMENT RETURN: comments typed on the page do not automatically reach the runner. The founder uses 一键汇总复制 and pastes the result back into the issue thread; the Bridge then delivers that text. Never tell her the page auto-syncs comments.",
 	];
 }
 
@@ -1569,6 +1595,9 @@ export class Blueprint {
 		const landingEnabled = !!this.worktreeManager;
 		const hasLandCommand = !!this.skillsConfig?.land_command;
 		const isGeneralizedExecution = !!ctx.generalizedExecutionContext;
+		const founderReviewRequired =
+			isGeneralizedExecution &&
+			ctx.workflowCapabilities?.founder_review_required === true;
 		const gateCarrierEpoch1 =
 			ctx.generalizedExecutionContext?.gateCarrierEpoch === 1;
 		const canLand = isGeneralizedExecution
@@ -1650,6 +1679,11 @@ export class Blueprint {
 		if (isDesignNodeCompletion && !designHtmlLeadId) {
 			throw new Error(
 				"design-node completion requires a resolved Lead for founder HTML delivery",
+			);
+		}
+		if (founderReviewRequired && !ctx.leadId?.trim()) {
+			throw new Error(
+				"founder-review workflow node requires a resolved Lead delivery route",
 			);
 		}
 		const approveGateCiPrecondition =
@@ -1887,6 +1921,23 @@ export class Blueprint {
 					projectName: ctx.projectName ?? "flywheel",
 					executionId,
 					leadId: designHtmlLeadId!,
+					commCliPath,
+					founderReviewRequired,
+				}),
+			);
+		}
+		if (founderReviewRequired) {
+			const reviewIssueIdentifier =
+				ctx.issueIdentifier?.trim() ||
+				hydrated.issueIdentifier?.trim() ||
+				hydrated.issueId;
+			systemPromptLines.push(
+				"",
+				...founderProductReviewLines({
+					issueIdentifier: reviewIssueIdentifier,
+					projectName: ctx.projectName ?? "flywheel",
+					executionId,
+					leadId: ctx.leadId!.trim(),
 					commCliPath,
 				}),
 			);
@@ -2816,6 +2867,9 @@ export class Blueprint {
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
 				workflowSubmissionExpected: ctx.workflowSubmissionExpected,
 				workflowOutputCredential: ctx.workflowOutputCredential,
+				...(ctx.workflowCapabilities?.founder_review_required === true
+					? { founderReviewRequired: true }
+					: {}),
 				// FLY-191 Phase 2: pin the Runner's verify-approval to THIS
 				// Bridge's StateStore (mirrors the FLY-137 bridgeUrl pattern).
 				// Unset/:memory: → no injection; both sides fall back to the

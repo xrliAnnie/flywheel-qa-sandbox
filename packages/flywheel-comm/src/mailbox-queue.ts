@@ -2410,11 +2410,12 @@ export class MailboxQueue {
 				for (const snapshot of snapshots) {
 					this.db
 						.prepare(
-							"INSERT INTO mailbox_log (event_id, message_id, event, at, row_json) VALUES (?, ?, 'archived', ?, ?)",
+							"INSERT INTO mailbox_log (event_id, message_id, subject_id, event, at, row_json) VALUES (?, ?, ?, 'archived', ?, ?)",
 						)
 						.run(
 							`archived:${snapshot.row.id}`,
 							snapshot.row.id,
+							rootId,
 							input.now,
 							snapshot.rowJson,
 						);

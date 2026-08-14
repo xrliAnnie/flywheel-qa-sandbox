@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	closeSync,
 	existsSync,
 	mkdirSync,
 	openSync,
+	readFileSync,
 	readSync,
 	statSync,
 } from "node:fs";
@@ -17,10 +18,16 @@ import {
 	type IngestDiscordChatArgs,
 	ingestDiscordChatOnQueue,
 } from "./discord-chat-ingest.js";
+import { isTrustedApprovalAttribution } from "./founder-attribution.js";
+import {
+	FOUNDER_REVIEW_CHECKPOINT,
+	parseFounderReviewQuestionContent,
+} from "./founder-review.js";
 import {
 	assertUtcIsoTimestamp,
 	ensureMailboxQueueSchema,
 	MailboxQueue,
+	type MailboxRow,
 } from "./mailbox-queue.js";
 import {
 	dropReceiptLedgerSchema,
@@ -392,6 +399,22 @@ export interface WorkflowSourceEvent {
 	payload_digest: string;
 	schema_version: number;
 	at: string;
+}
+
+export interface FounderReviewFamilyRecord {
+	source: "live" | "archived";
+	question: {
+		id: string;
+		ownerExecutionId: string;
+		checkpoint: string | null;
+		content: string;
+		serverOrder: number;
+		supersededAt: string | null;
+	};
+	response?: {
+		fromAgent: string;
+		content: string;
+	};
 }
 
 export interface TurnSourceHistory {
@@ -1652,6 +1675,44 @@ export class CommDB {
 			.immediate();
 	}
 
+	insertFounderReviewResponseIfGateOpen(input: {
+		questionId: string;
+		fromAgent: string;
+		founderId: string | undefined;
+		expectedOwner: string;
+		passed: boolean;
+		feedback?: string;
+	}): boolean {
+		if (!isTrustedApprovalAttribution(input.fromAgent, input.founderId)) {
+			throw new Error(
+				"founder_review response requires trusted founder attribution",
+			);
+		}
+		const question = this.getMessageById(input.questionId);
+		if (
+			!question ||
+			question.from_agent !== input.expectedOwner ||
+			question.checkpoint !== FOUNDER_REVIEW_CHECKPOINT
+		) {
+			return false;
+		}
+		const round = parseFounderReviewQuestionContent(question.content);
+		if (!round) return false;
+		const content = canonicalJsonString({
+			version: 1,
+			passed: input.passed,
+			...(input.feedback?.trim() ? { feedback: input.feedback } : {}),
+			artifactDigest: round.artifactDigest,
+		});
+		return this.insertResponseIfGateOpen({
+			questionId: input.questionId,
+			fromAgent: input.fromAgent,
+			content,
+			expectedOwner: input.expectedOwner,
+			expectedCheckpoint: FOUNDER_REVIEW_CHECKPOINT,
+		});
+	}
+
 	insertGuardedResponse(input: {
 		questionId: string;
 		authenticatedLead: string;
@@ -1704,6 +1765,7 @@ export class CommDB {
 				if (
 					question.checkpoint === "approve_to_ship" ||
 					question.checkpoint === "review_design" ||
+					question.checkpoint === "founder_review" ||
 					question.checkpoint === "review_code"
 				) {
 					throw new Error(`question ${input.questionId} is not Lead-routable`);
@@ -2064,6 +2126,166 @@ export class CommDB {
 		return this.db
 			.prepare("SELECT * FROM mailbox_message_projection WHERE id = ?")
 			.get(id) as Message | undefined;
+	}
+
+	getQuestionsByCheckpoint(checkpoint: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM mailbox_message_projection
+				 WHERE type = 'question' AND checkpoint = ?
+				 ORDER BY created_at ASC, id ASC`,
+			)
+			.all(checkpoint) as Message[];
+	}
+
+	/** Exact live-or-archived family read; archived lookup is index-bound by subject_id. */
+	getFounderReviewFamily(
+		questionId: string,
+	): FounderReviewFamilyRecord | undefined {
+		const liveQuestion = this.db
+			.prepare(
+				`SELECT rowid AS server_order, * FROM mailbox_message_projection
+				 WHERE id = ? AND type = 'question'`,
+			)
+			.get(questionId) as (Message & { server_order: number }) | undefined;
+		if (liveQuestion) {
+			const liveResponse = this.db
+				.prepare(
+					`SELECT * FROM mailbox_message_projection
+					 WHERE parent_id = ? AND type = 'response'`,
+				)
+				.get(questionId) as Message | undefined;
+			return {
+				source: "live",
+				question: {
+					id: liveQuestion.id,
+					ownerExecutionId: liveQuestion.from_agent,
+					checkpoint: liveQuestion.checkpoint,
+					content: this.readLiveFounderReviewContent(liveQuestion),
+					serverOrder: liveQuestion.server_order,
+					supersededAt: liveQuestion.superseded_at,
+				},
+				...(liveResponse
+					? {
+							response: {
+								fromAgent: liveResponse.from_agent,
+								content: this.readLiveFounderReviewContent(liveResponse),
+							},
+						}
+					: {}),
+			};
+		}
+
+		const archived = this.db
+			.prepare(
+				`SELECT row_json FROM mailbox_log
+				 WHERE subject_id = ? AND event = 'archived'
+				 ORDER BY at, message_id`,
+			)
+			.all(questionId) as Array<{ row_json: string }>;
+		if (archived.length === 0) return undefined;
+		const snapshots = archived.map(({ row_json }) => {
+			let value: unknown;
+			try {
+				value = JSON.parse(row_json);
+			} catch {
+				throw new Error(
+					`founder_review archived family is malformed: ${questionId}`,
+				);
+			}
+			if (!value || typeof value !== "object" || Array.isArray(value)) {
+				throw new Error(
+					`founder_review archived family is malformed: ${questionId}`,
+				);
+			}
+			return value as MailboxRow & {
+				content_ref_archive?: {
+					sha256?: unknown;
+					content_base64?: unknown;
+				};
+			};
+		});
+		const questions = snapshots.filter(
+			(row) => row.id === questionId && row.type === "question",
+		);
+		const responses = snapshots.filter(
+			(row) => row.type === "response" && row.ref_id === questionId,
+		);
+		if (questions.length !== 1 || responses.length > 1) {
+			throw new Error(
+				`founder_review archived family is ambiguous: ${questionId}`,
+			);
+		}
+		const question = questions[0] as MailboxRow & {
+			content_ref_archive?: { sha256?: unknown; content_base64?: unknown };
+		};
+		const response = responses[0] as
+			| (MailboxRow & {
+					content_ref_archive?: {
+						sha256?: unknown;
+						content_base64?: unknown;
+					};
+			  })
+			| undefined;
+		return {
+			source: "archived",
+			question: {
+				id: question.id,
+				ownerExecutionId: question.from_agent,
+				checkpoint: question.checkpoint,
+				content: this.readArchivedFounderReviewContent(question, questionId),
+				serverOrder: question.seq,
+				supersededAt: question.superseded_at,
+			},
+			...(response
+				? {
+						response: {
+							fromAgent: response.from_agent,
+							content: this.readArchivedFounderReviewContent(
+								response,
+								questionId,
+							),
+						},
+					}
+				: {}),
+		};
+	}
+
+	private readLiveFounderReviewContent(message: Message): string {
+		if (!message.content_ref) return message.content;
+		try {
+			return readFileSync(message.content_ref, "utf8");
+		} catch {
+			throw new Error(
+				`founder_review live content ref is unavailable: ${message.id}`,
+			);
+		}
+	}
+
+	private readArchivedFounderReviewContent(
+		row: MailboxRow & {
+			content_ref_archive?: { sha256?: unknown; content_base64?: unknown };
+		},
+		questionId: string,
+	): string {
+		if (!row.content_ref) return row.content;
+		const archived = row.content_ref_archive;
+		if (
+			!archived ||
+			typeof archived.sha256 !== "string" ||
+			typeof archived.content_base64 !== "string"
+		) {
+			throw new Error(
+				`founder_review archived content ref is missing: ${questionId}`,
+			);
+		}
+		const bytes = Buffer.from(archived.content_base64, "base64");
+		if (createHash("sha256").update(bytes).digest("hex") !== archived.sha256) {
+			throw new Error(
+				`founder_review archived content ref digest mismatch: ${questionId}`,
+			);
+		}
+		return bytes.toString("utf8");
 	}
 
 	getPendingQuestions(leadId: string): Message[] {

@@ -25,6 +25,11 @@ interface RawMsg {
 	content?: string;
 	author?: { id?: string; bot?: boolean };
 	type?: number;
+	message_reference?: {
+		type?: number;
+		message_id?: string;
+		channel_id?: string;
+	};
 }
 
 function discordGet(messages: RawMsg[], ok = true) {
@@ -64,6 +69,73 @@ function store(): FounderReplyDeliverDeps["store"] {
 	return {
 		insertEvent: vi.fn(() => true),
 	} as unknown as FounderReplyDeliverDeps["store"];
+}
+
+function founderReviewStore(
+	bindings: Array<{
+		questionId: string;
+		messageId: string;
+		runId?: string;
+		digest?: string;
+	}>,
+): FounderReplyDeliverDeps["store"] {
+	return {
+		insertEvent: vi.fn(() => true),
+		getWorkflowExecutionBinding: vi.fn((executionId: string) => ({
+			execution_id: executionId,
+			run_id:
+				bindings.find((item) => item.questionId === executionId.slice(5))
+					?.runId ?? "run-1",
+		})),
+		getFounderReviewCardBindingByQuestion: vi.fn((questionId: string) => {
+			const item = bindings.find(
+				(candidate) => candidate.questionId === questionId,
+			);
+			return item
+				? {
+						question_id: item.questionId,
+						message_id: item.messageId,
+						run_id: item.runId ?? "run-1",
+						artifact_digest: item.digest ?? "a".repeat(64),
+						created_at: "2026-08-14T00:00:00.000Z",
+					}
+				: undefined;
+		}),
+		getFounderReviewCardBindingByMessage: vi.fn((messageId: string) => {
+			const item = bindings.find(
+				(candidate) => candidate.messageId === messageId,
+			);
+			return item
+				? {
+						question_id: item.questionId,
+						message_id: item.messageId,
+						run_id: item.runId ?? "run-1",
+						artifact_digest: item.digest ?? "a".repeat(64),
+						created_at: "2026-08-14T00:00:00.000Z",
+					}
+				: undefined;
+		}),
+	} as unknown as FounderReplyDeliverDeps["store"];
+}
+
+function insertFounderReviewQuestion(
+	db: CommDB,
+	id: string,
+	round: number,
+): string {
+	return db.insertQuestion(
+		`exec-${id}`,
+		"test-lead",
+		JSON.stringify({
+			version: 1,
+			round,
+			runId: "run-1",
+			artifactDigest: "a".repeat(64),
+			hostedUrl: `https://reports.example/review-${round}`,
+			paths: ["review.html"],
+		}),
+		{ id, checkpoint: "founder_review" },
+	);
 }
 
 describe("FLY-1392 v2 founder ingress", () => {
@@ -155,6 +227,105 @@ describe("FLY-1392 v2 founder ingress", () => {
 		});
 		expect(row?.delivery_content).toContain(msg.content);
 		queue.close();
+	});
+
+	it.each([
+		["通过", true, undefined],
+		["这里的定位还不对，请按页面批注修改", false, "这里的定位还不对"],
+	] as const)(
+		"writes a trusted founder_review decision for the sole current round: %s",
+		async (content, passed, feedbackExcerpt) => {
+			const db = new CommDB(dbPath);
+			const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+			db.close();
+			const msg: RawMsg = {
+				id: snowflakeAt(Date.now() - 10_000),
+				content,
+				author: { id: OWNER },
+			};
+			const handoff = vi.fn(async () => true);
+			const outcome = await emitFounderReplyDeliveryForThread(
+				ctx(dbPath),
+				[
+					{
+						questionId,
+						checkpoint: "founder_review",
+						executionId: "exec-review-1",
+						createdAtMs: Date.now() - 60 * 60_000,
+					},
+				],
+				{
+					store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+					fetchImpl: discordGet([msg]),
+					cursorStore: cursor,
+					deliverAmbiguousToLead: handoff,
+				},
+			);
+			expect(outcome.result).toBe("advanced");
+			expect(handoff).not.toHaveBeenCalled();
+			const verify = new CommDB(dbPath);
+			const family = verify.getFounderReviewFamily(questionId)!;
+			expect(family.response).toBeDefined();
+			expect(JSON.parse(family.response!.content)).toMatchObject({
+				passed,
+				...(feedbackExcerpt
+					? { feedback: expect.stringContaining(feedbackExcerpt) }
+					: {}),
+			});
+			verify.close();
+		},
+	);
+
+	it("does not let a reply to an older founder_review card decide the newer round", async () => {
+		const db = new CommDB(dbPath);
+		const oldId = insertFounderReviewQuestion(db, "review-1", 1);
+		const newId = insertFounderReviewQuestion(db, "review-2", 2);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: oldId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+				{
+					questionId: newId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-2",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([
+					{ questionId: oldId, messageId: "card-old" },
+					{ questionId: newId, messageId: "card-new" },
+				]),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "通过",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "card-old",
+							channel_id: THREAD,
+						},
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+			},
+		);
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledOnce();
+		const verify = new CommDB(dbPath);
+		expect(verify.getFounderReviewFamily(oldId)?.response).toBeUndefined();
+		expect(verify.getFounderReviewFamily(newId)?.response).toBeUndefined();
+		verify.close();
 	});
 
 	it("is category agnostic: a founder message with zero questions still enters the same path", async () => {

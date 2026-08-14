@@ -75,6 +75,7 @@ function harness(
 	};
 	const store = {
 		getSession: vi.fn(() => session),
+		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
 		appendLeadEvent: vi.fn(() => 41),
 		workflowGatePresentationDisposition: vi.fn(() => gatePresentation),
 	};
@@ -147,6 +148,68 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(h.store.appendLeadEvent).not.toHaveBeenCalled();
 	});
+
+	it("admits founder_review only from the exact sealed capable run", async () => {
+		const h = harness();
+		h.store.getGeneralizedWorkflowNodeForExecution.mockReturnValue({
+			run: { run_id: "run-1" },
+			node: { id: "produce" },
+			snapshot: {
+				manifest: { nodes: [{ id: "produce", founder_review: true }] },
+			},
+		} as never);
+		h.db.insertQuestion(
+			"exec-1",
+			"lead-a",
+			JSON.stringify({
+				version: 1,
+				round: 1,
+				runId: "run-1",
+				artifactDigest: "a".repeat(64),
+				hostedUrl: "https://reports.example/prd",
+				paths: ["review.html"],
+			}),
+			{ checkpoint: "founder_review" },
+		);
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: true,
+		});
+	});
+
+	it.each([
+		["missing sealed capability", false, "run-1"],
+		["self-asserted foreign run", true, "run-forged"],
+	] as const)(
+		"rejects founder_review with %s",
+		async (_label, capable, runId) => {
+			const h = harness();
+			h.store.getGeneralizedWorkflowNodeForExecution.mockReturnValue({
+				run: { run_id: "run-1" },
+				node: { id: "produce" },
+				snapshot: {
+					manifest: { nodes: [{ id: "produce", founder_review: capable }] },
+				},
+			} as never);
+			h.db.insertQuestion(
+				"exec-1",
+				"lead-a",
+				JSON.stringify({
+					version: 1,
+					round: 1,
+					runId,
+					artifactDigest: "a".repeat(64),
+					hostedUrl: "https://reports.example/prd",
+					paths: ["review.html"],
+				}),
+				{ checkpoint: "founder_review" },
+			);
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: false,
+				disposition: "revoked_founder_review_authority",
+				retry: false,
+			});
+		},
+	);
 
 	it.each(["completed", "ship_parked", "blocked"])(
 		"materializes the current workflow gate for a %s source session",

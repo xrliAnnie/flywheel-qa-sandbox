@@ -116,4 +116,110 @@ describe("gate --no-block (FLY-191 Phase 2)", () => {
 		expect(result.status).toBe("timeout");
 		expect(result.exitCode).toBe(0);
 	});
+
+	it("opens founder_review only with founder, run, hosted URL, and committed blob evidence", async () => {
+		const result = await gate(
+			args({
+				checkpoint: "founder_review",
+				message: "PRD-HTML ready",
+				founderReviewEvidence: {
+					runId: "run-1758",
+					founderId: "123456789012345678",
+					hostedUrl: "https://reports.example/FLY-1758/prd-v1",
+					artifacts: [
+						{
+							path: "product/doc/FLY-1758/prd-v1.html",
+							blobSha: "a".repeat(40),
+						},
+					],
+				},
+			}),
+		);
+		const db = new CommDB(dbPath);
+		try {
+			const question = db.getMessageById(result.questionId as string);
+			expect(JSON.parse(question?.content ?? "{}")).toEqual({
+				version: 1,
+				round: 1,
+				runId: "run-1758",
+				artifactDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+				hostedUrl: "https://reports.example/FLY-1758/prd-v1",
+				paths: ["product/doc/FLY-1758/prd-v1.html"],
+			});
+		} finally {
+			db.close();
+		}
+	});
+
+	it.each([
+		["missing all evidence", undefined],
+		[
+			"missing founder",
+			{
+				runId: "run-1758",
+				founderId: undefined,
+				hostedUrl: "https://reports.example/review",
+				artifacts: [{ path: "review.html", blobSha: "a".repeat(40) }],
+			},
+		],
+		[
+			"non-HTTPS delivery",
+			{
+				runId: "run-1758",
+				founderId: "123456789012345678",
+				hostedUrl: "http://localhost/review",
+				artifacts: [{ path: "review.html", blobSha: "a".repeat(40) }],
+			},
+		],
+	] as const)(
+		"rejects founder_review with %s before writing",
+		async (_name, evidence) => {
+			await expect(
+				gate(
+					args({
+						checkpoint: "founder_review",
+						founderReviewEvidence: evidence,
+					}),
+				),
+			).rejects.toThrow(/founder_review/i);
+			const db = new CommDB(dbPath);
+			try {
+				expect(db.getPendingQuestions("product-lead")).toHaveLength(0);
+			} finally {
+				db.close();
+			}
+		},
+	);
+
+	it("numbers repeated founder_review rounds for the same run", async () => {
+		const evidence = {
+			runId: "run-1758",
+			founderId: "123456789012345678",
+			hostedUrl: "https://reports.example/review",
+			artifacts: [{ path: "review.html", blobSha: "a".repeat(40) }],
+		};
+		await gate(
+			args({ checkpoint: "founder_review", founderReviewEvidence: evidence }),
+		);
+		await gate(
+			args({ checkpoint: "founder_review", founderReviewEvidence: evidence }),
+		);
+		const db = new CommDB(dbPath);
+		try {
+			const questions = db.getQuestionsByCheckpoint("founder_review");
+			expect(
+				questions.map((question) => JSON.parse(question.content).round),
+			).toEqual([1, 2]);
+			expect(questions[0]?.superseded_at).toBeTruthy();
+			expect(questions[0]?.superseded_by).toBe(questions[1]?.id);
+			expect(
+				db
+					.getPendingQuestions("product-lead")
+					.filter((question) => question.checkpoint === "founder_review")
+					.map((question) => question.id),
+			).toEqual([questions[1]?.id]);
+		} finally {
+			db.close();
+		}
+	});
 });

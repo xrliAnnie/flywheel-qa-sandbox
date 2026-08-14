@@ -1,4 +1,5 @@
 shape: prd
+founderReview: true
 nodes:
   - id: produce
     role: pm

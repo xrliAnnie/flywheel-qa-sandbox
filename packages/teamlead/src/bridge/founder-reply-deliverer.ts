@@ -21,6 +21,10 @@ import {
 	snowflakeToMs,
 	truncate,
 } from "./founder-notify-utils.js";
+import {
+	classifyFounderReviewReply,
+	writeTrustedFounderReviewResponse,
+} from "./founder-review-response.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const GET_TIMEOUT_MS = 5_000;
@@ -544,6 +548,44 @@ async function processFounderMessage(
 	const shipGates = matching.filter(
 		(question) => question.checkpoint === "approve_to_ship",
 	);
+	const founderReviewGates = matching.filter(
+		(question) => question.checkpoint === "founder_review",
+	);
+	const isCardReply =
+		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
+		(msg.message_reference?.type === undefined ||
+			msg.message_reference.type === 0) &&
+		msg.message_reference?.channel_id === ctx.threadId &&
+		Boolean(msg.message_reference.message_id);
+	let founderReviewGate: PendingQuestionForThread | undefined;
+	if (isCardReply) {
+		const binding = deps.store.getFounderReviewCardBindingByMessage(
+			msg.message_reference!.message_id!,
+		);
+		founderReviewGate = founderReviewGates.find(
+			(gate) => gate.questionId === binding?.question_id,
+		);
+	} else if (founderReviewGates.length === 1) {
+		// The review page's one-click summary is pasted as a plain thread message.
+		// It may target the sole current review round, but ambiguity stays with Lead.
+		founderReviewGate = founderReviewGates[0];
+	}
+	if (founderReviewGate) {
+		const decision = classifyFounderReviewReply(rawAnswer);
+		const written = writeTrustedFounderReviewResponse({
+			store: deps.store,
+			db,
+			questionId: founderReviewGate.questionId,
+			executionId: founderReviewGate.executionId,
+			fromAgent: "bridge",
+			founderId: ctx.ownerUserId,
+			passed: decision.passed,
+			...(decision.feedback !== undefined
+				? { feedback: decision.feedback }
+				: {}),
+		});
+		if (written.written) return { ok: true };
+	}
 	for (const gate of shipGates) {
 		deps.ensureDecisionConvergence?.({
 			threadId: ctx.threadId,
@@ -560,11 +602,8 @@ async function processFounderMessage(
 	if (
 		deps.readCurrentBinding &&
 		shipGates.length > 0 &&
-		msg.type === DISCORD_MESSAGE_TYPE_REPLY &&
-		(msg.message_reference?.type === undefined ||
-			msg.message_reference.type === 0) &&
-		msg.message_reference?.channel_id === ctx.threadId &&
-		msg.message_reference.message_id
+		isCardReply &&
+		msg.message_reference?.message_id
 	) {
 		for (const gate of shipGates) {
 			const head = deps.store.getSession(gate.executionId)?.pr_head_sha;

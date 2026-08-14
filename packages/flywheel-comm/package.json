@@ -21,6 +21,8 @@
 		"./xiaohongshu-review-delivery": "./dist/xiaohongshu-review-delivery.js",
 		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js",
 		"./founder-attribution": "./dist/founder-attribution.js",
+		"./founder-review": "./dist/founder-review.js",
+		"./founder-review-sqlite": "./dist/founder-review-sqlite.js",
 		"./lead-lease": "./dist/lead-lease.js",
 		"./canonical-lead": "./dist/canonical-lead.js",
 		"./lead-identity": "./dist/lead-identity.js",

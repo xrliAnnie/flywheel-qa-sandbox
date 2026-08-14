@@ -16130,6 +16130,28 @@ export class StateStore {
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_review_card_binding (
+				question_id TEXT PRIMARY KEY,
+				message_id TEXT NOT NULL UNIQUE,
+				run_id TEXT NOT NULL,
+				artifact_digest TEXT NOT NULL CHECK (length(artifact_digest) = 64),
+				created_at TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_founder_review_card_binding_run ON founder_review_card_binding(run_id, created_at, question_id)",
+		);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS founder_review_card_binding_no_update
+			BEFORE UPDATE ON founder_review_card_binding
+			BEGIN SELECT RAISE(ABORT, 'founder_review_card_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS founder_review_card_binding_no_delete
+			BEFORE DELETE ON founder_review_card_binding
+			BEGIN SELECT RAISE(ABORT, 'founder_review_card_binding is immutable'); END
+		`);
 		// Existing FLY-1232 databases predate the explicit current-QA authority.
 		// Scope the migration to the column itself; legacy null rows stay valid.
 		try {
@@ -21421,6 +21443,96 @@ export class StateStore {
 		// Callers that can observe re-entry must use an exact activation API.
 		if (rows.length !== 1) return undefined;
 		return StateStore.workflowActivationFromRow(rows[0]!);
+	}
+
+	bindFounderReviewCard(input: {
+		questionId: string;
+		messageId: string;
+		runId: string;
+		artifactDigest: string;
+		createdAt: string;
+	}): { status: "inserted" | "verified" | "conflict" } {
+		const questionId = input.questionId.trim();
+		const messageId = input.messageId.trim();
+		const runId = input.runId.trim();
+		if (!questionId || !messageId || !runId) {
+			throw new Error("founder review card binding identities are required");
+		}
+		if (!/^[0-9a-f]{64}$/.test(input.artifactDigest)) {
+			throw new Error("founder review card binding artifact digest is invalid");
+		}
+		if (
+			!input.createdAt.endsWith("Z") ||
+			!Number.isFinite(Date.parse(input.createdAt))
+		) {
+			throw new Error("founder review card binding createdAt is invalid");
+		}
+		const outcome: {
+			status: "inserted" | "verified" | "conflict";
+		} = { status: "conflict" };
+		this.db.transaction(() => {
+			const rows = this.workflowSelectAll(
+				`SELECT * FROM founder_review_card_binding
+				  WHERE question_id = ? OR message_id = ?`,
+				[questionId, messageId],
+			);
+			if (rows.length > 0) {
+				outcome.status =
+					rows.length === 1 &&
+					rows[0]?.question_id === questionId &&
+					rows[0]?.message_id === messageId &&
+					rows[0]?.run_id === runId &&
+					rows[0]?.artifact_digest === input.artifactDigest
+						? "verified"
+						: "conflict";
+				return;
+			}
+			this.db.run(
+				`INSERT INTO founder_review_card_binding
+				   (question_id, message_id, run_id, artifact_digest, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					questionId,
+					messageId,
+					runId,
+					input.artifactDigest,
+					input.createdAt,
+				],
+			);
+			outcome.status = "inserted";
+		});
+		if (outcome.status === "inserted") this.save();
+		return outcome;
+	}
+
+	getFounderReviewCardBindingByQuestion(
+		questionId: string,
+	): FounderReviewCardBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM founder_review_card_binding WHERE question_id = ?",
+			[questionId],
+		)[0];
+		return row as unknown as FounderReviewCardBindingRow | undefined;
+	}
+
+	getFounderReviewCardBindingByMessage(
+		messageId: string,
+	): FounderReviewCardBindingRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM founder_review_card_binding WHERE message_id = ?",
+			[messageId],
+		)[0];
+		return row as unknown as FounderReviewCardBindingRow | undefined;
+	}
+
+	listFounderReviewCardBindingsForRun(
+		runId: string,
+	): FounderReviewCardBindingRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM founder_review_card_binding
+			  WHERE run_id = ? ORDER BY created_at, question_id`,
+			[runId],
+		) as unknown as FounderReviewCardBindingRow[];
 	}
 
 	private static workflowActivationFromRow(
@@ -40019,6 +40131,14 @@ export interface WorkflowExecutionBindingRow {
 	mode: "spawn" | "wake" | "replacement";
 	rework_request_id: string | null;
 	bound_at: string;
+}
+
+export interface FounderReviewCardBindingRow {
+	question_id: string;
+	message_id: string;
+	run_id: string;
+	artifact_digest: string;
+	created_at: string;
 }
 
 export interface WorkflowActorRow {

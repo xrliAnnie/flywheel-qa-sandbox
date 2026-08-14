@@ -249,6 +249,60 @@ describe("CommDB gate methods", () => {
 		});
 	});
 
+	describe("insertFounderReviewResponseIfGateOpen", () => {
+		const founderId = "123456789012345678";
+		const artifactDigest = "a".repeat(64);
+
+		function openFounderReview(): string {
+			return db.insertQuestion(
+				"exec-1",
+				"lead-1",
+				JSON.stringify({
+					version: 1,
+					round: 1,
+					runId: "run-1",
+					artifactDigest,
+					hostedUrl: "https://reports.example/founder-review",
+					paths: ["product/doc/FLY-1/review.html"],
+				}),
+				{ checkpoint: "founder_review" },
+			);
+		}
+
+		it("writes a founder-attributed pass bound to the question artifact", () => {
+			const id = openFounderReview();
+			expect(
+				db.insertFounderReviewResponseIfGateOpen({
+					questionId: id,
+					fromAgent: founderId,
+					founderId,
+					expectedOwner: "exec-1",
+					passed: true,
+				}),
+			).toBe(true);
+			expect(JSON.parse(db.getResponse(id)?.content ?? "null")).toEqual({
+				version: 1,
+				passed: true,
+				artifactDigest,
+			});
+		});
+
+		it("rejects a Lead-attributed response without writing", () => {
+			const id = openFounderReview();
+			expect(() =>
+				db.insertFounderReviewResponseIfGateOpen({
+					questionId: id,
+					fromAgent: "flywheel-product-lead",
+					founderId,
+					expectedOwner: "exec-1",
+					passed: false,
+					feedback: "revise section two",
+				}),
+			).toThrow(/trusted founder attribution/);
+			expect(db.getResponse(id)).toBeUndefined();
+		});
+	});
+
 	describe("insertGuardedResponse", () => {
 		beforeEach(() => {
 			db.registerSession(
@@ -276,6 +330,26 @@ describe("CommDB gate methods", () => {
 				from_agent: "lead-1",
 				content: "done",
 			});
+		});
+
+		it("rejects founder_review at the guarded DB write boundary", () => {
+			const id = db.insertQuestion(
+				"exec-guarded",
+				"lead-1",
+				"review the staged artifact",
+				{ checkpoint: "founder_review" },
+			);
+			expect(() =>
+				db.insertGuardedResponse({
+					questionId: id,
+					authenticatedLead: "lead-1",
+					content: "looks good",
+					expectedOwner: "exec-guarded",
+					expectedCheckpoint: "founder_review",
+					now: "2026-08-14T12:00:00.000Z",
+				}),
+			).toThrow(/not Lead-routable/);
+			expect(db.getResponse(id)).toBeUndefined();
 		});
 
 		it("rejects cross-Lead, checkpoint, and already-answered writes", () => {

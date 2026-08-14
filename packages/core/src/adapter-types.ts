@@ -300,6 +300,8 @@ export interface AdapterExecutionContext {
 	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: one-shot credential for a generalized generic node output. */
 	workflowOutputCredential?: string;
+	/** Sealed product-node capability; enables the founder_review CLI/prompt contract. */
+	founderReviewRequired?: boolean;
 	/**
 	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
 	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
