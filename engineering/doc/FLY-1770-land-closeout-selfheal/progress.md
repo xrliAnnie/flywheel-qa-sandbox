@@ -1,13 +1,13 @@
 ---
 issue: FLY-1770
-phase: design
-phaseCursor: 4/4
-updated: 2026-08-14T23:51:57.640Z
-nextStep: "complete: phase_design_complete"
+phase: implement
+phaseCursor: 0/7
+updated: 2026-08-14T23:55:33.902Z
+nextStep: audit current land lifecycle code and establish RED fixtures
 chunks: []
 pointers: {}
 ---
 
 # FLY-1770 progress
-**phase**: design (4/4)
-**next**: complete: phase_design_complete
+**phase**: implement (0/7)
+**next**: audit current land lifecycle code and establish RED fixtures
