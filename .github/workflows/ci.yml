@@ -539,11 +539,15 @@ jobs:
       - name: Test — FLY-957 record_deployed_range best-effort
         run: bash scripts/__tests__/restart-deployed-range.test.sh
 
-      # FLY-1729: restart preflight fetches latest origin/main under the restart
-      # lock, rejects dirty/non-main/non-ff checkouts, and keeps dry-run honest.
-      # Hermetic local bare remotes only; no network or host service mutation.
-      - name: Test — FLY-1729 pull-latest-main restart preflight
-        run: bash scripts/__tests__/restart-pull-preflight.test.sh
+      # FLY-1729/1743: restart preflight fetches latest origin/main under the
+      # restart lock; terminal consistency then fail-louds if a later abort
+      # leaves source HEAD split from deployed-sha. Rollback refuses destructive
+      # reset when status/reset itself fails. Hermetic local repositories and
+      # command-boundary shims only; no network or host service mutation.
+      - name: Test — FLY-1729/1743 restart update + consistency guards
+        run: |
+          bash scripts/__tests__/restart-pull-preflight.test.sh
+          bash scripts/__tests__/restart-deploy-consistency.test.sh
 
       # FLY-1081: restart/update/wrapper notify-path migration off Simba —
       # ⚠️/🚨 route via lead-alert.sh (sender seam, no legacy fallback), the

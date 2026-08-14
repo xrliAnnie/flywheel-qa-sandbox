@@ -174,7 +174,10 @@ fi
 
 echo "Test: FLY-1603 unexpected-exit finalizer is fail-loud and rc-preserving"
 rn_finalizer_func="$TMPDIR_ROOT/restart-finalizer.sh"
-awk '/^restart_on_exit\(\)/ { capture=1 } capture { print } capture && /^}/ { exit }' \
+awk '/^verify_deploy_consistency_on_exit\(\)/ { capture=1 }
+     /^restart_on_exit\(\)/ { if (!capture) capture=1; in_finalizer=1 }
+     capture { print }
+     in_finalizer && /^}/ { exit }' \
   "$SCRIPT_DIR/restart-services.sh" > "$rn_finalizer_func"
 rn_finalizer_root="$TMPDIR_ROOT/rn-finalizer"
 mkdir -p "$rn_finalizer_root/lock"
@@ -199,6 +202,7 @@ bash -c '
   RESTART_NOTICE_STARTED=true
   RESTART_TERMINAL_REPORTED=false
   RESTART_EXIT_SIGNAL=""
+  DEPLOY_CONSISTENCY_ARMED=false
   SCRIPT_START_EPOCH=1
   DEPLOYED_SHA=1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
   CURRENT_HEAD=2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -279,6 +283,7 @@ rn_run_terminal_case() {
       RESTART_NOTICE_STARTED=true
       RESTART_TERMINAL_REPORTED=false
       RESTART_EXIT_SIGNAL=""
+      DEPLOY_CONSISTENCY_ARMED=false
       SCRIPT_START_EPOCH=1
       DEPLOYED_SHA=1111111
       CURRENT_HEAD=2222222
@@ -2037,6 +2042,7 @@ bo_run() {
     echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
     rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/completion-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
+        BRIDGE_URL="http://127.0.0.1:19876" \
         CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
         TEST_BOT_TOKEN="test-token" \
         FAKE_FAST_SLEEP="${FAKE_FAST_SLEEP:-0}" \
@@ -2237,10 +2243,13 @@ else
     fail "FLY-1655 stale identity mismatch: rc=$rc sha=$(cat "$BO_HOME/.flywheel/deployed-sha") alerts='$alerts' out tail: $(echo "$out" | tail -4)"
 fi
 out=$(FAKE_BUILD_SHA="$BO_HEAD_1" bo_run) && rc=0 || rc=$?
-if (( rc == 1 )) && [[ -z "$(bo_calls lead-alert)" ]]; then
-    pass "FLY-1655 repeated stale identity is deduplicated"
+alerts=$(bo_calls lead-alert)
+if (( rc == 1 )) \
+   && ! echo "$alerts" | grep -q "deploy-build-identity-${BO_HEAD_2}" \
+   && [[ "$(echo "$alerts" | grep -c -- '--signature restart-source-deployed-mismatch-' || true)" == "1" ]]; then
+    pass "FLY-1655 repeated identity alert is deduplicated while terminal mismatch stays loud"
 else
-    fail "FLY-1655 stale identity dedupe mismatch: rc=$rc alerts='$(bo_calls lead-alert)'"
+    fail "FLY-1655 stale identity dedupe mismatch: rc=$rc alerts='$alerts'"
 fi
 rm -f "$identity_marker"
 
@@ -2628,6 +2637,25 @@ if (( rc == 0 )) \
 else
     fail "FLY-1729 dry-run top-level contract mismatch: rc=$rc head=$(git -C "$BO_FLYWHEEL" rev-parse HEAD) out=$(echo "$out" | tail -6)"
 fi
+
+# FLY-1743 acceptance: let the same fetched target merge for real, then abort
+# at the first deterministic post-merge seam (canonical Lead identity missing).
+# HEAD must stay advanced, deployed-sha must stay old, and that RESULT STATE
+# must have its own typed severe alert in addition to the step failure.
+projects_backup="$TMPDIR_ROOT/fly1743-projects.json"
+mv "$BO_HOME/.flywheel/projects.json" "$projects_backup"
+out=$(bo_run --reason fly1743-post-merge-abort) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+if (( rc == 1 )) \
+  && [[ "$(git -C "$BO_FLYWHEEL" rev-parse HEAD)" == "$bo_dry_target" ]] \
+  && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$bo_pull_target" ]] \
+  && echo "$alerts" | grep -q -- '--signature restart-source-deployed-mismatch-' \
+  && [[ -z "$(bo_calls pnpm)" && -z "$(bo_calls launchctl)" ]]; then
+    pass "FLY-1743 post-merge abort reports source/deployed mismatch before service mutation"
+else
+    fail "FLY-1743 post-merge abort stayed silent or mutated services: rc=$rc head=$(git -C "$BO_FLYWHEEL" rev-parse HEAD) deployed=$(cat "$BO_HOME/.flywheel/deployed-sha") alerts=$alerts"
+fi
+mv "$projects_backup" "$BO_HOME/.flywheel/projects.json"
 
 # ════════════════════════════════════════════════════════════════
 # FLY-1507: launchd/carrier lifecycle and exact-key candidate inventory.

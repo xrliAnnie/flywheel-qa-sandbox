@@ -22,6 +22,7 @@ SCRIPT_START_EPOCH=$(date +%s)
 RESTART_NOTICE_STARTED=false
 RESTART_TERMINAL_REPORTED=false
 RESTART_EXIT_SIGNAL=""
+DEPLOY_CONSISTENCY_ARMED=false
 
 # FLY-299: when launched by the launchd updater (com.flywheel.updater), the
 # environment may carry only a minimal default PATH that lacks /usr/local/bin,
@@ -426,6 +427,50 @@ CURLCFG
     return 0
 }
 
+# FLY-1743: once a run owns the deploy transaction, every terminal path must
+# converge source HEAD and the deployed artifact ledger. This deliberately
+# checks the result state rather than enumerating failure steps: later steps
+# can change without reopening a silent source/deployed split.
+verify_deploy_consistency_on_exit() {
+    [[ "$DEPLOY_CONSISTENCY_ARMED" == "true" ]] || return 0
+    [[ "$DRY_RUN" == "true" ]] && return 0
+
+    local final_head="" head_rc=0 final_deployed="" deployed_rc=0
+    local deployed_display=""
+
+    final_head="$(git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null)" || head_rc=$?
+    if (( head_rc != 0 )) || [[ -z "$final_head" ]]; then
+        log "ERROR: deploy consistency check could not read source HEAD at exit (rc=${head_rc})" >&2
+        alert_severe "restart-deploy-consistency-unverifiable" \
+            "Flywheel deploy end-state unverifiable" \
+            "重启结束时无法读取 ${FLYWHEEL_DIR} 的 HEAD (git rev-parse rc=${head_rc}),无法证明源码与 deployed-sha 账本一致。请人工核对后 deliberate 重跑。"
+        return 1
+    fi
+
+    if [[ -f "$DEPLOYED_SHA_FILE" ]]; then
+        final_deployed="$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null)" || deployed_rc=$?
+        if (( deployed_rc != 0 )); then
+            log "ERROR: deploy consistency check could not read ${DEPLOYED_SHA_FILE} (rc=${deployed_rc})" >&2
+            alert_severe "restart-deploy-consistency-unverifiable" \
+                "Flywheel deploy end-state unverifiable" \
+                "重启结束时 deployed-sha 账本存在但读取失败 (rc=${deployed_rc}),无法证明源码与已部署产物一致。源码 HEAD=\`${final_head:0:7}\`。请人工核对后 deliberate 重跑。"
+            return 1
+        fi
+    fi
+
+    if [[ -n "$final_deployed" && "$final_head" == "$final_deployed" ]]; then
+        return 0
+    fi
+
+    deployed_display="${final_deployed:-missing}"
+    [[ "$deployed_display" == "missing" ]] || deployed_display="${deployed_display:0:7}"
+    log "ERROR: deploy did not converge — source HEAD ${final_head:0:7} vs deployed-sha ${deployed_display}" >&2
+    alert_severe "restart-source-deployed-mismatch" \
+        "Flywheel source and deployed ledger differ" \
+        "重启退出时源码 HEAD=\`${final_head:0:7}\` 与 deployed-sha=\`${deployed_display}\` 不一致——部署事务未收敛。系统可能仍在运行,但下一次构建/部署决策会基于不一致状态。请 deliberate 重跑 restart 完成部署,或按 runbook 回滚;不要手工 reset。退出码已置非零。"
+    return 1
+}
+
 # FLY-1603: once a human-visible progress notice has been emitted, every exit
 # must have exactly one terminal outcome. Known terminal branches set
 # RESTART_TERMINAL_REPORTED themselves; this finalizer covers only unexpected
@@ -453,6 +498,12 @@ restart_on_exit() {
                 "操作员取消了全量重启，当前状态未知。版本 \`${old_display}\` → \`${new_display}\`，reason=${RESTART_REASON:-unknown}，总耗时 ${duration}。请查部署日志。"
         else
             alert_severe "restart-aborted-unexpectedly" "Flywheel restart aborted" "$body"
+        fi
+    fi
+
+    if ! verify_deploy_consistency_on_exit; then
+        if [[ "$original_rc" == "0" ]]; then
+            original_rc=1
         fi
     fi
 
@@ -754,6 +805,10 @@ preflight_pull_latest_main() {
         return 0
     fi
 
+    # Arm before the mutation. Bash may deliver a pending signal after the
+    # merge process returns but before the next statement runs; arming after
+    # merge would leave that source-advanced boundary silent.
+    DEPLOY_CONSISTENCY_ARMED=true
     if ! merge_output="$(git -C "$FLYWHEEL_DIR" merge --ff-only --quiet "$target_sha" 2>&1)"; then
         merge_preview="$(printf '%s\n' "$merge_output" | sed -n '1,10p')"
         merge_alert_preview="${merge_preview//$'\n'/; }"
@@ -1282,6 +1337,10 @@ else
 fi
 
 preflight_pull_latest_main || exit 1
+if [[ "$DRY_RUN" != "true" ]]; then
+    # Also covers the already-current success path, which performs no merge.
+    DEPLOY_CONSISTENCY_ARMED=true
+fi
 
 # The release below makes managed-Lead botUserId mandatory at every Bridge,
 # launcher, and write boundary. Prove the independent-roster migration landed
@@ -2203,6 +2262,7 @@ build_project() {
 
 rollback_and_restart() {
     local rollback_sha="$1"
+    local rb_status_output="" rb_status_rc=0
 
     # Guard: first run has no known-good SHA
     if [[ -z "$rollback_sha" ]]; then
@@ -2217,7 +2277,15 @@ rollback_and_restart() {
 
     # Fail-closed for tracked dirt. Untracked paths were already admitted by
     # the pull preflight and reset --hard does not remove them.
-    if [[ -n "$(git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no)" ]]; then
+    rb_status_output="$(GIT_OPTIONAL_LOCKS=0 git -C "$FLYWHEEL_DIR" status --porcelain --untracked-files=no 2>/dev/null)" || rb_status_rc=$?
+    if (( rb_status_rc != 0 )); then
+        log "ERROR: cannot read working-tree state (git status rc=${rb_status_rc}); refusing reset --hard"
+        alert_severe "rollback-blocked-state-unreadable" "Flywheel rollback blocked" \
+            "Flywheel rollback 被阻止: 无法读取工作区状态 (git status 失败, rc=${rb_status_rc})。状态未知时绝不执行 reset --hard。需要手动介入。"
+        RESTART_TERMINAL_REPORTED=true
+        return 1
+    fi
+    if [[ -n "$rb_status_output" ]]; then
         log "ERROR: Working directory not clean, refusing rollback"
         alert_severe "rollback-blocked-dirty" "Flywheel rollback blocked" \
             "Flywheel rollback 被阻止: 工作区不干净。需要手动介入。"
@@ -2225,7 +2293,13 @@ rollback_and_restart() {
         return 1
     fi
 
-    git -C "$FLYWHEEL_DIR" reset --hard "$rollback_sha"
+    if ! git -C "$FLYWHEEL_DIR" reset --hard "$rollback_sha"; then
+        log "ERROR: git reset --hard ${rollback_sha:0:7} failed during rollback; working tree state unknown, stopping"
+        alert_severe "rollback-reset-failed" "Flywheel rollback failed" \
+            "Flywheel rollback 执行 reset --hard 到 \`${rollback_sha:0:7}\` 失败,工作区状态未知。已停止(不重建、不重启旧版本)。需要手动介入。"
+        RESTART_TERMINAL_REPORTED=true
+        return 1
+    fi
 
     # Best-effort: rebuild old version and restart
     if pnpm -C "$FLYWHEEL_DIR" install --frozen-lockfile && \

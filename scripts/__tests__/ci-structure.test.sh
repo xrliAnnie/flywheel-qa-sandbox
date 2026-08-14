@@ -395,6 +395,7 @@ for required_command in (
     "bash scripts/__tests__/materialize-lead-manifests.test.sh",
     "bash scripts/__tests__/restart-self-detach.test.sh",
     "bash scripts/__tests__/restart-pull-preflight.test.sh",
+    "bash scripts/__tests__/restart-deploy-consistency.test.sh",
     "bash scripts/__tests__/lead-body-evidence.test.sh",
     "bash scripts/__tests__/lead-body-provenance.test.sh",
     "bash scripts/__tests__/request-restart.test.sh",
