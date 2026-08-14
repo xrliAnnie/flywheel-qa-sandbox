@@ -500,7 +500,8 @@ describe("WorkflowReworkCoordinator", () => {
 					? { kind: "settled", state: "needs_lead" }
 					: {
 							kind: "retryable",
-							reason: "holder_activation_failed:state_not_revivable:completed",
+							reason:
+								"holder_activation_failed:state_not_revivable:completed:supersession_close_failed:phase shutdown timed out",
 						},
 			);
 		}
@@ -511,7 +512,34 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 		for (const [failure] of h.store.settleWorkflowReworkFailure.mock.calls) {
 			expect(failure).not.toHaveProperty("terminal");
+			expect(failure).toMatchObject({
+				reason:
+					"holder_activation_failed:state_not_revivable:completed:supersession_close_failed:phase shutdown timed out",
+			});
 		}
+	});
+
+	it("records a thrown controlled-close failure in durable retry accounting", async () => {
+		const h = makeHarness({ registered: "alive" });
+		h.effects.activateActorForWake.mockResolvedValue({
+			ok: false,
+			error: "state_not_revivable:completed",
+		});
+		h.effects.closeActorForReworkSupersession.mockRejectedValue(
+			new Error("close transport lost"),
+		);
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "retryable",
+			reason:
+				"holder_activation_failed:state_not_revivable:completed:supersession_close_failed:close transport lost",
+		});
+		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
+			expect.objectContaining({
+				reason:
+					"holder_activation_failed:state_not_revivable:completed:supersession_close_failed:close transport lost",
+			}),
+		);
 	});
 
 	it("leaves retry accounting to a new owner after supersession loses its fence", async () => {
@@ -545,7 +573,8 @@ describe("WorkflowReworkCoordinator", () => {
 
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
 			kind: "retryable",
-			reason: "holder_activation_failed:state_not_revivable:completed",
+			reason:
+				"holder_activation_failed:state_not_revivable:completed:supersession_close_failed:authority_lost",
 		});
 		expect(h.getDelivery()).toMatchObject({
 			owner_id: "coordinator-b",

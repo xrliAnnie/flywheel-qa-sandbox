@@ -407,19 +407,26 @@ export class WorkflowReworkCoordinator {
 			const terminalStatus = activationError.startsWith(statusPrefix)
 				? activationError.slice(statusPrefix.length).trim()
 				: undefined;
-			const reason = `holder_activation_failed:${activationError}`;
+			let reason = `holder_activation_failed:${activationError}`;
 			if (isStateStoreIrreversibleTerminalForZombie(terminalStatus)) {
 				try {
-					await this.deps.effects.closeActorForReworkSupersession({
-						session: actor,
-						requestId,
-						ownerId: this.deps.ownerId,
-						generation: claim.generation,
-						routeRevision: route.revision,
-						executionId: actor.execution_id,
-					});
-				} catch {
-					// Failure accounting below remains the single durable retry path.
+					const close = await this.deps.effects.closeActorForReworkSupersession(
+						{
+							session: actor,
+							requestId,
+							ownerId: this.deps.ownerId,
+							generation: claim.generation,
+							routeRevision: route.revision,
+							executionId: actor.execution_id,
+						},
+					);
+					if (!close.ok) {
+						reason += `:supersession_close_failed:${close.error ?? "unknown"}`;
+					}
+				} catch (error) {
+					reason += `:supersession_close_failed:${
+						error instanceof Error ? error.message : String(error)
+					}`;
 				}
 			}
 			return this.releaseRetryable({
