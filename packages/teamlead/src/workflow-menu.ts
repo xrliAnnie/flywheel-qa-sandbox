@@ -59,6 +59,7 @@ export interface WorkflowMenuLoop {
 
 export interface WorkflowMenuShape {
 	shape: WorkflowMenuShapeId;
+	founderReview?: boolean;
 	nodes: WorkflowMenuNode[];
 	edges: WorkflowMenuEdge[];
 	loops: WorkflowMenuLoop[];
@@ -202,8 +203,14 @@ function parseMenuNode(value: unknown, path: string): WorkflowMenuNode {
 
 function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 	const raw = asRecord(value, source);
-	exactKeys(raw, ["shape", "nodes", "edges", "loops"], source);
+	exactKeys(raw, ["shape", "founderReview", "nodes", "edges", "loops"], source);
 	const shape = oneOf(raw.shape, WORKFLOW_MENU_SHAPES, `${source}.shape`);
+	if (
+		raw.founderReview !== undefined &&
+		typeof raw.founderReview !== "boolean"
+	) {
+		throw new Error(`${source}.founderReview must be a boolean`);
+	}
 	if (!Array.isArray(raw.nodes) || raw.nodes.length < 2) {
 		throw new Error(`${source}.nodes must contain executable and gate nodes`);
 	}
@@ -287,7 +294,15 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 			`${source} single-session shape must have one executable node and no loops`,
 		);
 	}
-	return { shape, nodes, edges, loops };
+	return {
+		shape,
+		...(raw.founderReview !== undefined
+			? { founderReview: raw.founderReview }
+			: {}),
+		nodes,
+		edges,
+		loops,
+	};
 }
 
 export function loadWorkflowMenuLibrary(
@@ -354,6 +369,7 @@ export function compileWorkflowMenuSeed(
 				return {
 					id: node.id,
 					type,
+					...(menu.founderReview === true ? { founder_review: true } : {}),
 					role: node.role,
 					vendor: resolved.vendor,
 					model: resolved.model,

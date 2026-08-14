@@ -56,6 +56,8 @@ import {
 	resolveFounderAttributionGateOn,
 	resolveFounderId,
 } from "../founder-attribution.js";
+import { resolveFounderReviewVerdictAtCommit } from "../founder-review.js";
+import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 
 export interface VerifyApprovalArgs {
@@ -97,6 +99,9 @@ export type VerifyApprovalReason =
 	| "response_not_structured_approval"
 	| "response_not_approved"
 	| "response_not_founder_attributed"
+	| "founder_review_missing"
+	| "founder_review_not_passed"
+	| "founder_review_stale_artifact"
 	| "status_not_approved_to_ship"
 	| "pr_head_sha_missing"
 	| "pr_head_sha_mismatch"
@@ -368,6 +373,10 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 	// FLY-827: does an approved/skipped Codex code-review record exist for the
 	// runner's current head? Read in the same StateStore connection.
 	let codexApprovedForHead = false;
+	let founderReviewRun:
+		| { required: false }
+		| { required: true; runId: string }
+		| { required: true; invalid: true } = { required: false };
 	try {
 		const stateDb = new Database(statePath, {
 			readonly: true,
@@ -379,6 +388,46 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 					"SELECT status, pr_head_sha, review_question_id, codex_skip, adapter_type, pr_number, worktree_path, project_name, issue_id FROM sessions WHERE execution_id = ?",
 				)
 				.get(args.execId) as typeof row;
+			try {
+				const bindings = stateDb
+					.prepare(
+						`SELECT run_id, node_id FROM workflow_execution_binding
+						  WHERE execution_id = ? ORDER BY bound_at, activation_id`,
+					)
+					.all(args.execId) as Array<{ run_id: string; node_id: string }>;
+				if (bindings.length === 1) {
+					const binding = bindings[0]!;
+					const workflow = stateDb
+						.prepare("SELECT snapshot FROM workflow_run WHERE run_id = ?")
+						.get(binding.run_id) as { snapshot?: string | null } | undefined;
+					if (!workflow?.snapshot) {
+						founderReviewRun = { required: true, invalid: true };
+					} else {
+						const snapshot = JSON.parse(workflow.snapshot) as {
+							manifest?: {
+								nodes?: Array<{ id?: string; founder_review?: unknown }>;
+							};
+						};
+						const node = snapshot.manifest?.nodes?.find(
+							(candidate) => candidate.id === binding.node_id,
+						);
+						founderReviewRun =
+							node?.founder_review === true
+								? { required: true, runId: binding.run_id }
+								: { required: false };
+					}
+				} else if (bindings.length > 1) {
+					founderReviewRun = { required: true, invalid: true };
+				}
+			} catch (error) {
+				// A pre-workflow schema is legacy. Once the binding table exists, any
+				// malformed/missing run snapshot is ambiguous and fails closed.
+				founderReviewRun = String(error).includes(
+					"no such table: workflow_execution_binding",
+				)
+					? { required: false }
+					: { required: true, invalid: true };
+			}
 			// Separate try: an un-upgraded DB may lack codex_review_record (or,
 			// on a version skew, the FLY-1188 family columns). A missing table/
 			// column → codexApprovedForHead stays false (fail-closed under the
@@ -580,6 +629,65 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 			status: row.status,
 			expectedPrHeadSha: expected,
 		});
+	}
+
+	// 3.6 FLY-1758: legacy runner-ship defense in depth. Engine-owned land has
+	// its own Bridge authority seam; a workflow producer that sealed the
+	// founder_review capability must also prove a delivered latest-round pass for
+	// the exact HTML blobs at this head. Sessions without a workflow binding are
+	// byte-compatible legacy and skip this check.
+	if (founderReviewRun.required) {
+		if ("invalid" in founderReviewRun || !row.worktree_path) {
+			return notApproved("founder_review_missing", {
+				questionId,
+				responseFrom,
+				status: row.status,
+				expectedPrHeadSha: expected,
+			});
+		}
+		try {
+			const sqlite = createReadonlySqliteFounderReviewStateReader({
+				stateDbPath: statePath,
+				commDbPath: args.dbPath,
+			});
+			try {
+				const verdict = resolveFounderReviewVerdictAtCommit({
+					reader: sqlite.reader,
+					runId: founderReviewRun.runId,
+					repoRoot: row.worktree_path,
+					head: prHead,
+					founderId: resolveFounderId({
+						argsEnv: args.env,
+						processEnv: env,
+						dotenvPath: args.codexDotenvPath,
+					}),
+				});
+				if (verdict.status !== "passed") {
+					return notApproved(
+						verdict.status === "stale_artifact"
+							? "founder_review_stale_artifact"
+							: verdict.status === "missing"
+								? "founder_review_missing"
+								: "founder_review_not_passed",
+						{
+							questionId,
+							responseFrom,
+							status: row.status,
+							expectedPrHeadSha: expected,
+						},
+					);
+				}
+			} finally {
+				sqlite.close();
+			}
+		} catch {
+			return notApproved("founder_review_missing", {
+				questionId,
+				responseFrom,
+				status: row.status,
+				expectedPrHeadSha: expected,
+			});
+		}
 	}
 
 	// 5. FLY-827 Codex code-review HARD GATE (defense-in-depth: even a verified

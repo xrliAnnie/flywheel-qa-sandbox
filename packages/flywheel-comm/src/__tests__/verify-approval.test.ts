@@ -201,6 +201,38 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.exitCode).toBe(0);
 	});
 
+	it("FLY-1758 refuses runner ship when a capable workflow has no founder_review round", () => {
+		const qid = setupFullyApproved();
+		const state = new Database(stateDbPath);
+		state.exec(`
+			CREATE TABLE workflow_execution_binding (
+				activation_id TEXT PRIMARY KEY, execution_id TEXT, run_id TEXT,
+				node_id TEXT, bound_at TEXT
+			);
+			CREATE TABLE workflow_run (run_id TEXT PRIMARY KEY, snapshot TEXT);
+		`);
+		state
+			.prepare(
+				"INSERT INTO workflow_execution_binding VALUES ('activation-1', ?, 'run-1', 'produce', '2026-08-14T00:00:00.000Z')",
+			)
+			.run(EXEC);
+		state.prepare("INSERT INTO workflow_run VALUES ('run-1', ?)").run(
+			JSON.stringify({
+				manifest: {
+					nodes: [{ id: "produce", founder_review: true }],
+				},
+			}),
+		);
+		state.close();
+
+		expect(run()).toMatchObject({
+			approved: false,
+			reason: "founder_review_missing",
+			questionId: qid,
+			exitCode: 1,
+		});
+	});
+
 	it("FLY-1314: rejects an otherwise valid approval when CI is not green", () => {
 		const qid = setupFullyApproved();
 		const result = verifyApproval({

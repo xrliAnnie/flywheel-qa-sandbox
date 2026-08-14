@@ -706,6 +706,48 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
+	it("indexes every archived RPC member by its root question id", () => {
+		const db = new Database(":memory:");
+		db.exec(MAILBOX_SCHEMA);
+		const queue = new MailboxQueue(db);
+		try {
+			enqueueLead(queue, "question-indexed");
+			queue.enqueue({
+				id: "response-indexed",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "response",
+				content: "answer",
+				refId: "question-indexed",
+				createdAt: NOW,
+				senderRef: SENDER_REF,
+			});
+			queue.ack("question-indexed", "2026-08-05T12:00:00.000Z");
+			queue.ack("response-indexed", "2026-08-05T13:00:00.000Z");
+
+			expect(
+				queue.archiveFamily({
+					id: "question-indexed",
+					now: "2026-08-08T13:00:00.000Z",
+				}),
+			).toBe("archived");
+			expect(
+				db
+					.prepare(
+						"SELECT message_id, subject_id FROM mailbox_log WHERE event = 'archived' ORDER BY message_id",
+					)
+					.all(),
+			).toEqual([
+				{ message_id: "question-indexed", subject_id: "question-indexed" },
+				{ message_id: "response-indexed", subject_id: "question-indexed" },
+			]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
 	it("never archives an unanswered non-terminal question", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {

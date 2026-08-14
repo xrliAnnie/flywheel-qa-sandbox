@@ -683,6 +683,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				workflowSubmissionCredential: "decision-ticket",
 				workflowSubmissionExpected: true,
 				workflowOutputCredential: "output-ticket",
+				founderReviewRequired: true,
 			}),
 		);
 		const env = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
@@ -698,6 +699,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL).toBe("decision-ticket");
 		expect(env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
 		expect(env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL).toBe("output-ticket");
+		expect(env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toBe("1");
 	});
 
 	it("drops hostile inherited Lead and Discord identity coordinates", async () => {
@@ -791,12 +793,14 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+			"FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
 		] as const;
 		const previous = names.map((name) => process.env[name]);
 		try {
 			process.env.FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL = "stale-output";
 			process.env.FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL = "stale-submission";
 			process.env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED = "1";
+			process.env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED = "1";
 
 			await makeAdapter().execute(ctx());
 			let daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
@@ -807,6 +811,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 					workflowOutputCredential: "current-output",
 					workflowSubmissionCredential: "current-submission",
 					workflowSubmissionExpected: true,
+					founderReviewRequired: true,
 				}),
 			);
 			daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
@@ -817,6 +822,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				"current-submission",
 			);
 			expect(daemonEnv.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toBe("1");
+			expect(daemonEnv.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toBe("1");
 		} finally {
 			for (const [index, name] of names.entries()) {
 				const value = previous[index];

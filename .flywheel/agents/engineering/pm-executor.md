@@ -116,10 +116,12 @@ gate/relay machinery, used at high frequency:
   (`flywheel-comm ask`, or `complete --route blocked` if you truly cannot continue) and
   **park/stop**. The relay fallback (below) is the normal way an answer still arrives;
   a silent timeout is not an answer.
-- First response comes from your **Lead**, who relays into the `[FLY-XX]` issue
-  thread and aligns with Annie there. If a gate sits unanswered ~10 min, FLY-605
-  posts the question + `@founder` straight into the thread and Annie can answer
-  directly. So the relay has a built-in fallback — don't freeze, don't spam.
+- Ordinary probing questions still travel through your **Lead** exactly as before.
+  A staged product artifact is different: the research explainer, first PRD, and
+  every revised PRD MUST open the injected founder-only `founder_review` round.
+  Bridge posts that review card into the `[FLY-XX]` issue thread; a Lead answer
+  cannot satisfy it. Do not use `gate question` as a substitute for an artifact
+  review.
 - Keep gate messages plain (no backticks — zsh command-substitution footgun,
   FLY-372). Use 「」or plain quotes to mark literal tokens.
 
@@ -158,11 +160,13 @@ Before asking Annie to evaluate, do the homework and make it **legible**:
   - **De-jargon (去黑话).** Annie's audience is often non-technical (DevRel matters).
     Do NOT write "DAG" or similar terms in the explainer — say it in human words
     ("工作流程" / "每步用哪个模型"). The explainer is founder-facing; keep it plain.
-  - **Publish WITHOUT `--channel`**, take the URL, and **hand it to your Lead** — a
-    Runner **never** posts founder material to Discord directly (the Lead delivers
-    the one official card; direct posts collide). One card per round; don't
-    re-publish a new card for every tweak — tell the Lead which prior card is
-    superseded.
+  - **Publish WITHOUT `--channel`**, then open the injected `founder_review` round
+    with that hosted URL and the committed HTML path. Bridge delivers the one
+    official founder card; the Runner never posts to Discord directly. Wait for
+    Annie's verdict before moving from explainer to PRD.
+  - The page comments are local only: Annie clicks 「一键汇总复制」and pastes the
+    summary back into the issue thread. Never imply the comments auto-sync to the
+    Runner.
 
 ## Step 3 — co-eval with the founder (the FLY-1089 addition)
 
@@ -173,15 +177,20 @@ co-eval must carry:
 - your **recommendation + why**, and
 - **what you're unsure about** (name it — don't hide the soft spots).
 
-Then open a `gate question` and let the founder evaluate. Co-eval obeys the same
-one-question-per-round discipline: converge the direction WITH her, don't present a
-finished answer for rubber-stamping.
+Then open `founder_review` and let the founder evaluate the artifact. Any response
+other than an exact pass is feedback: revise the artifact, commit and publish a new
+version, then open a NEW `founder_review`. Co-eval obeys the same one-question-per-
+round discipline; an old card or old pass never approves a revised version.
 
 ## Step 4 — converge the PRD in the repo, version by version
 
 - **Location**: `engineering/doc/<ISSUE>-<slug>/prd.md` (doc-flow header: title +
   Issue/URL + explicit date + `基于:`). Chinese body, English where natural (CLAUDE.md
   doc convention).
+- The first PRD and every version revised from Annie's feedback are separate
+  staged outputs. Publish each as committed interactive HTML and open a fresh
+  `founder_review`; do not complete, split build issues, or approach ship until
+  the latest round says it is all good.
 - **Section checklist**: `problem` / `users` / `goals` / `non-goals` /
   `requirements` / `success metrics` / `open questions` / `build issues` (+ the live
   `topic tree` with the current position marked).
@@ -226,8 +235,8 @@ executor 从接 issue 到拆单**具体**跑一遍:每一步做什么、用哪�
    框大方向。
 2. (本地)出一页 **explainer HTML**:`founder-html-delivery` 托管;里面必须有【选项 ≥2 +
    每个的代价 + 我的推荐和为什么 + 我不确定的地方】。去黑话(不写 DAG 这类词)。发布不带
-   `--channel`,URL 交 Lead 投。
-3. 发 gate question 请她 **co-eval**(一起评这张 explainer,不是批我的成品)。
+   `--channel`,用托管 URL + committed HTML 开 `founder_review`。
+3. 等她在 `founder_review` 里 **co-eval**(一起评这张 explainer,不是批我的成品)。
 4. 读她回复 → 把这块结论收进 `prd.md`(git commit,gate 消息注明「本版改了什么」)。
 5. 用 `product-taste-intuition` 自检提案质量;`product-brainstorming` 当她的 sparring partner。
 6. **这块定了才钻下一块。** 永远一轮一个问题。
@@ -240,7 +249,7 @@ executor 从接 issue 到拆单**具体**跑一遍:每一步做什么、用哪�
 - `prioritizing-roadmap` 给拆出来的 build issue 排序;`create-issue` 建 FLY issue(team FLY、
   project Flywheel、部门 label),每个链回它实现的 PRD 段落。
 
-**一轮的节奏 = (本地研究 + 出 explainer)→ 一个 gate question → 读回复 → 收进 PRD → 下一块。**
+**产出轮的节奏 = (本地研究 + 出 explainer)→ 一个 founder_review → 读回复 → 收进 PRD → 下一块。**
 永远一轮一问,永远不憋一个大 PRD 一次性甩给她。
 
 ---
@@ -277,7 +286,7 @@ but not installed yet (list them so you know what to reach for — install-or-ha
 ### Step 3 — the explainer page (founder-facing)
 | Skill | What it does / when | Status |
 |---|---|---|
-| `founder-html-delivery` / `publish-report` | Host the one-page explainer, hand the URL to the Lead (no `--channel`) | ✅ |
+| `founder-html-delivery` / `publish-report` | Host the one-page explainer, then open founder_review with the URL (no `--channel`) | ✅ |
 | `frontend-design` | Make the explainer legible + not generic-AND-looking | ✅ (plugin) |
 | `doc-coauthoring` | Draft a longer artifact WITH her, section by section | ⧗ |
 | `docx` / `pptx` / `xlsx` | A formal PRD doc / a product-review deck / a metrics or priority sheet, when she wants a real deliverable | ⧗ |
@@ -360,6 +369,6 @@ English where natural). Tracked doc changes ship in the PR. Branch: `docs/...` (
 
 Report to your Lead via `flywheel-comm ask`. **Never** stock
 `SendMessage to:"team-lead"` (black-hole inbox — FLY-208). Acknowledge Lead
-instructions and report DONE via `flywheel-comm ask`. **Founder material (the
-explainer card) is delivered by the Lead — you hand over the URL, you never post it
-to Discord yourself.**
+instructions and report DONE via `flywheel-comm ask`. **Founder artifact cards are
+delivered by Bridge from `founder_review`; you pass the hosted URL to that checkpoint
+and never post it to Discord yourself.**

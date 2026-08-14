@@ -4,6 +4,7 @@ import { hasApprovalIntent } from "../approval-intent.js";
 import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
+import { isFounderReviewCheckpoint } from "../founder-review.js";
 import {
 	defaultGateMarkerDir,
 	markGateMarkerAnswered,
@@ -41,6 +42,11 @@ export async function respond(args: RespondArgs): Promise<void> {
 	try {
 		const question = db.getMessageById(args.questionId);
 		if (!question) throw new Error(`Question not found: ${args.questionId}`);
+		if (isFounderReviewCheckpoint(question.checkpoint)) {
+			throw new Error(
+				"flywheel-comm: founder_review is founder-bound; only the trusted founder writer may answer or request revisions.",
+			);
+		}
 		if (question.checkpoint && GATED_CHECKPOINTS.has(question.checkpoint)) {
 			if (isReservedApprovalAttribution(args.fromAgent)) {
 				throw new Error(

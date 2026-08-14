@@ -53,7 +53,9 @@ import {
 } from "flywheel-comm/ship-eligibility";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
@@ -597,6 +599,88 @@ export function createExternalMergeReconciler(
 					`[external-merge] declared PR run ${runId} is fully merged but has no source session; retrying on a later pass`,
 				);
 				continue;
+			}
+			const run = deps.store.getWorkflowRun(runId);
+			if (run?.snapshot) {
+				let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+				try {
+					snapshot = parseWorkflowRunSnapshot(run.snapshot);
+				} catch {
+					const claimed = deps.store.insertEvent({
+						event_id: `founder-review-finalization-hold-${runId}-snapshot-invalid`,
+						execution_id: source.execution_id,
+						issue_id: source.issue_id,
+						project_name: projectName,
+						event_type: "founder_review_finalization_hold",
+						source: "bridge.external-merge-reconcile",
+						payload: {
+							runId,
+							reason: "founder_review_snapshot_invalid",
+						},
+					});
+					if (claimed) {
+						await deps.alertLead?.(
+							source,
+							`Founder review blocks finalization — ${source.issue_identifier ?? source.issue_id}`,
+							"⛔ 无法验证该 run 的阶段产出 founder review(snapshot invalid);不归档、不标 Done。",
+						);
+					}
+					continue;
+				}
+				const producerIds = snapshot.manifest.nodes
+					.filter((node) => node.founder_review === true)
+					.map((node) => node.id);
+				if (producerIds.length > 0) {
+					const producerBindings = current
+						.map((row) =>
+							deps.store.getCurrentWorkflowNodePrBindingForHead(
+								runId,
+								row.frozen_head_sha,
+							),
+						)
+						.filter(
+							(binding) =>
+								binding !== undefined && producerIds.includes(binding.node_id),
+						);
+					const producerBinding =
+						producerBindings.length === 1 ? producerBindings[0] : undefined;
+					const review = producerBinding
+						? await evaluateWorkflowFounderReviewPrecondition({
+								store: deps.store,
+								runId,
+								projectName,
+								snapshot,
+								head: producerBinding.head_sha,
+								processEnv: deps.env ?? process.env,
+							})
+						: {
+								eligible: false as const,
+								reason: "founder_review_artifact_binding_missing",
+							};
+					if (!review.eligible) {
+						const holdHead =
+							producerBinding?.head_sha ??
+							current[0]?.frozen_head_sha ??
+							"unknown";
+						const claimed = deps.store.insertEvent({
+							event_id: `founder-review-finalization-hold-${runId}-${holdHead}-${review.reason}`,
+							execution_id: source.execution_id,
+							issue_id: source.issue_id,
+							project_name: projectName,
+							event_type: "founder_review_finalization_hold",
+							source: "bridge.external-merge-reconcile",
+							payload: { runId, head: holdHead, reason: review.reason },
+						});
+						if (claimed) {
+							await deps.alertLead?.(
+								source,
+								`Founder review blocks finalization — ${source.issue_identifier ?? source.issue_id}`,
+								`⛔ 阶段产出尚未获得 founder 对当前版本的通过(${review.reason});不归档、不标 Done。`,
+							);
+						}
+						continue;
+					}
+				}
 			}
 			await finalize(
 				source,

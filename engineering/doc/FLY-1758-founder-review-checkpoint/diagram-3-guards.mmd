@@ -1,0 +1,26 @@
+flowchart LR
+    subgraph WHO["谁的答复算数"]
+        direction TB
+        F["✅ Annie 的 Discord 身份"] --> OK["算数"]
+        BR["✅ Bridge 面板批准"] --> OK
+        LD["❌ Lead 用 respond 代答"] --> NO["被机器拒绝<br/>(通过和打回都拒)"]
+        FG["❌ 伪造身份(冒名参数)"] --> NO
+    end
+
+    subgraph GATES["服务端权威双门"]
+        direction TB
+        G1["门 1:完成入账<br/>没有本 run 末轮通过 → 拒绝入账"]
+        G2["门 2:合入(land)边界<br/>合并前再验一次同一判定"]
+        G0["就近提示:runner 收工命令<br/>先在本地快速失败(非授权)"]
+        G0 --> G1 --> G2
+    end
+
+    subgraph BIND["通过绑定版本"]
+        direction TB
+        V1["她通过的是哪一版<br/>(产物内容指纹封存在回合里)"]
+        V2["通过后偷偷改产物<br/>→ 指纹不符 → 必须重开回合"]
+        V1 --> V2
+    end
+
+    WHO ~~~ GATES
+    GATES ~~~ BIND

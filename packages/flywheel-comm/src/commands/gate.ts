@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalBearer } from "flywheel-config";
 import { CommDB } from "../db.js";
+import {
+	createFounderReviewQuestionContent,
+	FOUNDER_REVIEW_CHECKPOINT,
+	type FounderReviewGateEvidence,
+	parseFounderReviewQuestionContent,
+} from "../founder-review.js";
 import { probeShipCiGreen, type ShipCiGuardResult } from "../ship-ci-guard.js";
 import { truncateWithEllipsis } from "../text-truncate.js";
 import {
@@ -49,6 +55,8 @@ export interface GateArgs {
 	deadlineAt?: string;
 	/** Engine-owned workflow gates use a deterministic insert-or-verify id. */
 	questionId?: string;
+	/** Verified current-run artifact evidence required by founder_review. */
+	founderReviewEvidence?: FounderReviewGateEvidence;
 }
 
 export interface GateResult {
@@ -86,6 +94,20 @@ export async function gate(args: GateArgs): Promise<GateResult> {
 			throw new Error(`CI not green: ${ci.detail}`);
 		}
 	}
+	if (args.checkpoint === FOUNDER_REVIEW_CHECKPOINT) {
+		if (args.timeoutBehavior !== "fail-close") {
+			throw new Error("founder_review must use fail-close timeout behavior");
+		}
+		if (!args.founderReviewEvidence) {
+			throw new Error("founder_review requires committed artifact evidence");
+		}
+		// Validate every field before opening CommDB so malformed evidence cannot
+		// leave a pending-but-never-valid review round behind.
+		createFounderReviewQuestionContent({
+			round: 1,
+			evidence: args.founderReviewEvidence,
+		});
+	}
 	let questionId: string | undefined;
 	try {
 		return await gateInner(args, (id) => {
@@ -118,15 +140,51 @@ async function gateInner(
 	const db = new CommDB(args.dbPath);
 	let questionId: string;
 	try {
+		let questionContent = args.message;
+		let priorFounderReviewQuestions: Array<{
+			id: string;
+			fromAgent: string;
+		}> = [];
+		if (
+			args.checkpoint === FOUNDER_REVIEW_CHECKPOINT &&
+			args.founderReviewEvidence
+		) {
+			const priorRounds = db
+				.getQuestionsByCheckpoint(FOUNDER_REVIEW_CHECKPOINT)
+				.map((question) => ({
+					question,
+					content: parseFounderReviewQuestionContent(
+						db.getFounderReviewFamily(question.id)?.question.content ??
+							question.content,
+					),
+				}))
+				.filter(
+					(candidate) =>
+						candidate.content?.runId === args.founderReviewEvidence?.runId,
+				);
+			priorFounderReviewQuestions = priorRounds.map((candidate) => ({
+				id: candidate.question.id,
+				fromAgent: candidate.question.from_agent,
+			}));
+			const round =
+				Math.max(
+					0,
+					...priorRounds.map((candidate) => candidate.content?.round ?? 0),
+				) + 1;
+			questionContent = createFounderReviewQuestionContent({
+				round,
+				evidence: args.founderReviewEvidence,
+			});
+		}
 		const useRef =
-			Buffer.byteLength(args.message, "utf-8") > CONTENT_REF_THRESHOLD;
+			Buffer.byteLength(questionContent, "utf-8") > CONTENT_REF_THRESHOLD;
 		let contentRef: string | undefined;
-		let dbContent = args.message;
+		let dbContent = questionContent;
 
 		if (useRef) {
 			// Two-phase write: create ref file first, then DB row
 			const tempId = crypto.randomUUID();
-			contentRef = writeContentRef(args.dbPath, tempId, args.message);
+			contentRef = writeContentRef(args.dbPath, tempId, questionContent);
 			dbContent = `[content_ref: ${contentRef}]`;
 		}
 
@@ -137,6 +195,13 @@ async function gateInner(
 			contentType: useRef ? "ref" : "text",
 			...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
 		});
+		for (const previous of priorFounderReviewQuestions) {
+			db.retireQuestionGuarded(previous.id, {
+				expectedFromAgent: previous.fromAgent,
+				requireUnanswered: true,
+				supersededBy: questionId,
+			});
+		}
 	} finally {
 		db.close();
 	}

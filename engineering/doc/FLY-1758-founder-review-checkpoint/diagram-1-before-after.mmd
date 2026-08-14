@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph BEFORE["❌ 现状:回合收件人 = Lead"]
+        direction TB
+        R1["Runner<br/>(闷头做 18 分钟)"] -->|"问题/回合<br/>(question checkpoint)"| L1["Lead<br/>(答得越快越称职)"]
+        L1 -->|"78 问 78 答<br/>全部 Lead 自己接掉"| R1
+        R1 -->|"做完了 = 可以 ship 了"| S1["🚀 ship 卡"]
+        S1 -.->|"founder 第一次看见<br/>已经是 ship 卡"| A1(("Annie"))
+        L1 -.->|"八月实测:founder 收到 0 条回合"| A1
+    end
+
+    subgraph AFTER["✅ 本设计:回合直达 founder"]
+        direction TB
+        R2["Runner<br/>(每个阶段性产出)"] -->|"① 可互动 HTML<br/>+ founder_review 回合"| C2["review 卡片<br/>(issue thread,直达)"]
+        C2 --> A2(("Annie"))
+        A2 -->|"② 留言打回<br/>(意见原文回到 runner)"| R2
+        A2 -->|"③ 末轮 ✅ 通过<br/>(只有她的答复算数)"| G2["complete 硬门放行"]
+        G2 --> S2["🚀 这时才可能出 ship 卡"]
+        R2 -->|"技术问题照旧问 Lead<br/>(question,不变)"| L2["Lead"]
+    end
+
+    BEFORE ~~~ AFTER

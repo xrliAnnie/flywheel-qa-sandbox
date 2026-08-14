@@ -88,7 +88,14 @@ const generalized: BlueprintContext = {
 describe("Blueprint generalized workflow capability contract", () => {
 	it("uses pinned agent/capabilities, injects the output ticket, and suppresses write/ship", async () => {
 		const { blueprint, adapter } = harness();
-		await blueprint.run(node, "/tmp/fly1281-generalized", generalized);
+		await blueprint.run(node, "/tmp/fly1281-generalized", {
+			...generalized,
+			leadId: "flywheel-product-lead",
+			workflowCapabilities: {
+				...generalized.workflowCapabilities,
+				founder_review_required: true,
+			},
+		});
 		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const prompt = call.appendSystemPrompt ?? "";
@@ -99,8 +106,14 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).toContain("complete --route no_code");
 		expect(prompt).toContain("do not modify the shared branch");
 		expect(prompt).toContain("Do not request ship approval");
+		expect(prompt).toContain("FOUNDER REVIEW ROUND (BLOCKING, REPEATABLE)");
+		expect(prompt).toContain("gate founder_review");
+		expect(prompt).toContain("--publish-only");
+		expect(prompt).toContain("do not automatically reach the runner");
+		expect(prompt).toContain("Do not run complete");
 		expect(prompt).not.toContain("BRAINSTORM GATE");
 		expect(call.workflowOutputCredential).toBe("output-ticket");
+		expect(call.founderReviewRequired).toBe(true);
 	});
 
 	it("renders the pinned completion route and a decision-only verdict contract", async () => {

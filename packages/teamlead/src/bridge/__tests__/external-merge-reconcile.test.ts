@@ -7,7 +7,7 @@
  * converges such sessions on the patrol cadence with strict, fail-closed
  * validation; PR open/unknown/closed-unmerged rows are never touched.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { type Session, StateStore } from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import type { BridgeConfig } from "../types.js";
 
 // Spy the finalization orchestrator — the sweeper's job ends at invoking it
@@ -599,6 +600,95 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			runId: "declared-run",
 		});
 		expect(runPostShipSpy.mock.calls[0]?.[0]).not.toHaveProperty("mergedPr");
+	});
+
+	it("holds declared-PR convergence when the capable producer has no founder_review pass", async () => {
+		const s = await setup({ maxCandidates: 1 });
+		const repoRoot = join(tmpRoot, "founder-review-repo");
+		mkdirSync(join(repoRoot, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(repoRoot, ".flywheel", "config.yaml"),
+			"project: proj\nlinear:\n  team_id: FLY\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: true\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+		);
+		const seed = legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+		)!;
+		const producerId = "implement";
+		const manifest = {
+			...seed.manifest,
+			nodes: seed.manifest.nodes.map((node) =>
+				node.id === producerId
+					? { ...node, founder_review: true as const }
+					: node,
+			),
+		};
+		s.store.createWorkflowRun({
+			runId: "declared-review-run",
+			issueId: "FLY-1758",
+			projectName: "proj",
+			snapshotJson: JSON.stringify(
+				buildWorkflowRunSnapshotV1({
+					template: { id: seed.templateId, revision: 1 },
+					manifest,
+				}),
+			),
+			claimsReadEnrolled: true,
+		});
+		s.store.openWorkflowPrManifest({
+			runId: "declared-review-run",
+			expectedCount: 1,
+		});
+		s.store.upsertWorkflowRunNode({
+			runId: "declared-review-run",
+			nodeId: producerId,
+			attempt: 1,
+			state: "done",
+			executionId: "declared-review-producer",
+		});
+		s.store.upsertSession({
+			execution_id: "declared-review-producer",
+			issue_id: "FLY-1758",
+			issue_identifier: "FLY-1758",
+			project_name: "proj",
+			status: "running",
+		});
+		const db = (
+			s.store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('declared-review-run', ?, 1, 1758, ?,
+			         '__main__', 'geoforge3d/flywheel', ?,
+			         'generation-1', 'review-receipt',
+			         '2026-08-14T00:00:00.000Z')`,
+			[producerId, HEAD, repoRoot],
+		);
+		expect(
+			s.store.sealWorkflowPrManifestFromBindings({
+				runId: "declared-review-run",
+			}).ok,
+		).toBe(true);
+
+		await s.pass();
+
+		expect(runPostShipSpy).not.toHaveBeenCalled();
+		expect(s.alerts).toHaveLength(1);
+		expect(
+			s.store
+				.getEventsByExecution("declared-review-producer")
+				.find(
+					(event) => event.event_type === "founder_review_finalization_hold",
+				)?.payload,
+		).toMatchObject({
+			runId: "declared-review-run",
+			head: HEAD,
+			reason: "founder_review_missing",
+		});
 	});
 
 	it("gh budget: at most N candidates per project per pass, rotating across passes", async () => {

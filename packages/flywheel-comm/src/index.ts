@@ -73,12 +73,15 @@ import {
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
+import { currentWorkflowCompletionActivationFromEnv } from "./commands/workflow-activation.js";
 import { workflowOutput } from "./commands/workflow-output.js";
 import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
 import { ingestDiscordChat } from "./discord-chat-ingest.js";
+import { resolveFounderId } from "./founder-attribution.js";
+import { inspectCommittedFounderReviewArtifacts } from "./founder-review.js";
 import { nudgeLeadInboxBestEffort } from "./lead-inbox-nudge.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
@@ -1867,6 +1870,8 @@ async function runGate(args: string[]): Promise<void> {
 			// structured JSON in this mode so the runner can log the questionId.
 			"no-block": { type: "boolean", default: false },
 			deadline: { type: "string" },
+			"hosted-url": { type: "string" },
+			artifact: { type: "string", multiple: true },
 		},
 		allowPositionals: true,
 	});
@@ -1924,6 +1929,28 @@ async function runGate(args: string[]): Promise<void> {
 	const cleanupTtlHours = values["cleanup-ttl"]
 		? Number.parseInt(values["cleanup-ttl"], 10)
 		: 24;
+	const founderReviewEvidence =
+		checkpoint === "founder_review"
+			? (() => {
+					const activation = currentWorkflowCompletionActivationFromEnv(
+						values["exec-id"] as string,
+					);
+					if (!activation) {
+						throw new Error(
+							"founder_review requires a current workflow activation",
+						);
+					}
+					return {
+						runId: activation.run_id,
+						founderId: resolveFounderId({ processEnv: process.env }),
+						hostedUrl: values["hosted-url"] ?? "",
+						artifacts: inspectCommittedFounderReviewArtifacts({
+							cwd: process.cwd(),
+							paths: values.artifact ?? [],
+						}),
+					};
+				})()
+			: undefined;
 
 	const result = await gate({
 		checkpoint,
@@ -1936,6 +1963,7 @@ async function runGate(args: string[]): Promise<void> {
 		timeoutBehaviorSource,
 		cleanupTtlHours,
 		deadlineAt: values.deadline,
+		founderReviewEvidence,
 		nudge: () =>
 			nudgeLeadInboxBestEffort({
 				bridgeUrl: process.env.FLYWHEEL_BRIDGE_URL ?? process.env.BRIDGE_URL,

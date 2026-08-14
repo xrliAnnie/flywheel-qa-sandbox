@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
+import { resolveFounderId } from "flywheel-comm/founder-attribution";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
 	adapterTypeToFamily,
@@ -35,6 +36,7 @@ import {
 	type StateStore,
 	type WorkflowCompletionActivationContext,
 } from "../StateStore.js";
+import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { isReviewHeld } from "./auto-qa-held.js";
@@ -58,6 +60,11 @@ import {
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
 import type { EventFilter } from "./EventFilter.js";
+import {
+	evaluateFounderReviewAuthority,
+	type FounderReviewAuthorityResult,
+	founderReviewCheckpointEnabled,
+} from "./founder-review-authority.js";
 import { evaluateFounderUxStageGuard } from "./founder-ux/stage-guard.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
@@ -769,6 +776,7 @@ export function createEventRouter(
 					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
 				const completionRoute = asString(decision?.route) ?? "";
 				let completionHead = callerCompletionHead;
+				let completionRepoPath: string | undefined;
 				let noCodeAttestation:
 					| {
 							worktreeBindingGeneration: string;
@@ -835,6 +843,7 @@ export function createEventRouter(
 						}
 					}
 					if (worktreeBinding) {
+						completionRepoPath = worktreeBinding.path;
 						try {
 							const authority = await resolveBoundRepositoryAuthority({
 								authorityRoot: worktreeBinding.path,
@@ -843,6 +852,7 @@ export function createEventRouter(
 									: {}),
 							});
 							completionHead = authority.headSha;
+							completionRepoPath = authority.path;
 							if (
 								callerCompletionHead &&
 								callerCompletionHead !== authority.headSha
@@ -923,6 +933,78 @@ export function createEventRouter(
 							projectName,
 							leadResolution: "fallback",
 						};
+					}
+				}
+				if (
+					generalizedContext &&
+					nodeRequiresFounderReview(
+						generalizedContext.snapshot,
+						generalizedContext.node.id,
+					)
+				) {
+					const project = projects.find(
+						(candidate) =>
+							candidate.projectName === generalizedContext.run.project_name,
+					);
+					if (!project) {
+						res.status(409).json({
+							error: "founder_review_required",
+							reason: "project_authority_missing",
+						});
+						return;
+					}
+					let enabled: boolean;
+					try {
+						enabled = await founderReviewCheckpointEnabled(project.projectRoot);
+					} catch (error) {
+						res.status(409).json({
+							error: "founder_review_required",
+							reason: "checkpoint_config_invalid",
+							detail: error instanceof Error ? error.message : String(error),
+						});
+						return;
+					}
+					if (enabled && (!completionHead || !completionRepoPath)) {
+						res.status(409).json({
+							error: "founder_review_required",
+							reason: "repository_authority_missing",
+						});
+						return;
+					}
+					if (completionHead && completionRepoPath) {
+						let authority: FounderReviewAuthorityResult;
+						try {
+							authority = evaluateFounderReviewAuthority({
+								enabled,
+								store,
+								commDbPath: commDbPathForProject(
+									generalizedContext.run.project_name,
+								),
+								runId: generalizedContext.run.run_id,
+								nodeId: generalizedContext.node.id,
+								snapshot: generalizedContext.snapshot,
+								repoRoot: completionRepoPath,
+								head: completionHead,
+								founderId: resolveFounderId({ processEnv: process.env }),
+							});
+						} catch (error) {
+							res.status(409).json({
+								error: "founder_review_required",
+								reason: "authority_unavailable",
+								detail: error instanceof Error ? error.message : String(error),
+							});
+							return;
+						}
+						if (authority.required && authority.verdict.status !== "passed") {
+							res.status(409).json({
+								error: "founder_review_required",
+								reason: authority.verdict.status,
+								...("reason" in authority.verdict
+									? { detail: authority.verdict.reason }
+									: {}),
+							});
+							return;
+						}
 					}
 				}
 				const completion = store.commitEnrolledCompletion({

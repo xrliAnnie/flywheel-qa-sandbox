@@ -27,6 +27,7 @@ import {
 } from "../workflow-menu.js";
 import {
 	buildWorkflowRunSnapshotV2,
+	nodeRequiresFounderReview,
 	resolveWorkflowGateAuthority,
 } from "../workflow-run-snapshot.js";
 import { resolveWorkflowTemplateSelection } from "../workflow-template-selection.js";
@@ -252,6 +253,33 @@ describe("founder-approved workflow menu source", () => {
 			)) {
 				expect(node.role).toBeTruthy();
 				expect(node.agent_file).toBeUndefined();
+			}
+		}
+	});
+
+	it("pins founder review only on prd/design/prototype produce nodes", () => {
+		for (const menu of loadWorkflowMenuLibrary()) {
+			const expected = ["prd", "design", "prototype"].includes(menu.shape);
+			expect(menu.founderReview ?? false, menu.shape).toBe(expected);
+			const seed = compileWorkflowMenuSeed(menu);
+			const executable = seed.manifest.nodes.find(
+				(node) => node.type !== "gate" && node.type !== "land",
+			)!;
+			expect(executable.founder_review ?? false, menu.shape).toBe(expected);
+
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: seed.templateId, revision: 1 },
+				manifest: seed.manifest,
+				canonicalRoot: REPO_ROOT,
+			});
+			expect(
+				nodeRequiresFounderReview(snapshot, executable.id),
+				menu.shape,
+			).toBe(expected);
+			for (const other of snapshot.manifest.nodes.filter(
+				(node) => node.id !== executable.id,
+			)) {
+				expect(nodeRequiresFounderReview(snapshot, other.id)).toBe(false);
 			}
 		}
 	});

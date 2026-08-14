@@ -69,6 +69,10 @@ checkpoints:
     enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
+  founder_review:
+    enabled: true
+    timeout_ms: 172800000      # 48h, non-terminal multi-round product review
+    timeout_behavior: fail-close
   approve_to_ship:
     enabled: true
     timeout_ms: 86400000

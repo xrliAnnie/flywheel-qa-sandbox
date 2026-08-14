@@ -1,4 +1,5 @@
 shape: design
+founderReview: true
 nodes:
   - id: produce
     role: designer

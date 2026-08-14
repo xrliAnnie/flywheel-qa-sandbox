@@ -8,6 +8,20 @@ import {
 } from "../feature-flags/truth.js";
 
 describe("FLY-1393 flag truth", () => {
+	it("classifies the founder-review runner capability as context, not a feature flag", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toMatch(
+			/sealed workflow node capability/,
+		);
+		expect(
+			FEATURE_FLAGS.some(
+				(flag) => flag.envVar === "FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
+			),
+		).toBe(false);
+		expect(
+			validateFlagTruthEnvironment(["FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1"]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	it("FLY-1570 tombstones removed chase controls", () => {
 		const retired = RETIRED_FLAGS.filter(
 			(flag) => flag.retiredBy === "FLY-1570",

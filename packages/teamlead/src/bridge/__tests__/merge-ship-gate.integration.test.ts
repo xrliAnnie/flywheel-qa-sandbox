@@ -28,6 +28,7 @@ import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
+import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import {
 	computeAuthoritativeShipDecision,
 	computeEngineWorkflowShipPrecondition,
@@ -540,6 +541,103 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			eligible: false,
 			authoritativeHead: HEAD,
 			reason: "head_authority_mismatch",
+		});
+	});
+
+	it("parked and completed recovery both reject a capable run with no founder_review pass", async () => {
+		mkdirSync(join(worktreePath, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(worktreePath, ".flywheel", "config.yaml"),
+			"project: proj\nlinear:\n  team_id: FLY\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: true\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+		);
+		const seed = legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
+		)!;
+		const manifest = {
+			...seed.manifest,
+			nodes: seed.manifest.nodes.map((node) =>
+				node.id === "implement"
+					? { ...node, founder_review: true as const }
+					: node,
+			),
+		};
+		store.createWorkflowRun({
+			runId: "founder-review-run",
+			issueId: ISSUE,
+			projectName: PROJECT,
+			snapshotJson: JSON.stringify(
+				buildWorkflowRunSnapshotV1({
+					template: { id: seed.templateId, revision: 1 },
+					manifest,
+				}),
+			),
+			claimsReadEnrolled: true,
+		});
+		upsert("completed");
+		store.upsertWorkflowRunNode({
+			runId: "founder-review-run",
+			nodeId: "implement",
+			attempt: 1,
+			state: "done",
+			executionId: EXEC,
+		});
+		const sql = (
+			store as unknown as {
+				db: { run(statement: string, params?: unknown[]): void };
+			}
+		).db;
+		sql.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'founder-review-run'",
+		);
+		sql.run(
+			`INSERT INTO workflow_actor
+			   (execution_id, project_name, issue_id, role, created_at)
+			 VALUES (?, ?, ?, 'implement', '2026-08-14T00:00:00.000Z')`,
+			[EXEC, PROJECT, ISSUE],
+		);
+		sql.run(
+			`INSERT INTO workflow_execution_binding
+			   (activation_id, execution_id, run_id, node_id, attempt, mode, bound_at)
+			 VALUES ('founder-review-activation', ?, 'founder-review-run',
+			         'implement', 1, 'spawn', '2026-08-14T00:00:00.000Z')`,
+			[EXEC],
+		);
+		sql.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id, node_id, attempt, pr_number, head_sha,
+			    target_repo_identity, probe_repo_slug, target_repo_path,
+			    worktree_binding_generation, receipt_id, bound_at)
+			 VALUES ('founder-review-run', 'implement', 1, 1758, ?,
+			         '__main__', 'geoforge3d/flywheel', ?,
+			         'generation-1', 'founder-review-receipt',
+			         '2026-08-14T00:00:00.000Z')`,
+			[HEAD, worktreePath],
+		);
+
+		expect(
+			await computeEngineWorkflowShipPrecondition(store, EXEC, HEAD),
+		).toMatchObject({
+			engineOwned: true,
+			eligible: false,
+			authoritativeHead: HEAD,
+			reason: "founder_review_missing",
+		});
+		expect(
+			await computeAuthoritativeShipDecision(
+				store,
+				store.getSession(EXEC)!,
+				HEAD,
+				{
+					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+					FLYWHEEL_QA_DONE_GATE: "0",
+					FLYWHEEL_CODEX_HARD_GATE: "0",
+				} as NodeJS.ProcessEnv,
+			),
+		).toMatchObject({
+			eligible: false,
+			mergeReason: "founder_review_missing",
+			workflowClaimsReason: "founder_review_missing",
 		});
 	});
 

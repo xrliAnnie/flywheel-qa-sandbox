@@ -10,6 +10,7 @@ import {
 	isWorkflowManifestLand,
 	workflowApprovalGate,
 } from "../workflow-template.js";
+import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
 import { computeAuthoritativeShipDecision } from "./merge-ship-gate.js";
 
 const execFileAsync = promisify(execFile);
@@ -166,6 +167,20 @@ async function authorizeLandOperation(
 	}
 	if (prBinding.target_repo_identity !== "__main__") {
 		return { ok: false, reason: "nested_land_unsupported" };
+	}
+	const founderReview = await evaluateWorkflowFounderReviewPrecondition({
+		store,
+		runId: operation.run_id,
+		projectName: operation.project_name,
+		snapshot,
+		head: operation.approved_head,
+	});
+	if (!founderReview.eligible) {
+		return {
+			ok: false,
+			reason: founderReview.reason,
+			retryable: true,
+		};
 	}
 	const claims = store.resolveEngineWorkflowShipClaims({
 		runId: operation.run_id,

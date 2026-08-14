@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import type { MilestoneKind } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
 import { extractGateMessageId } from "./approval-signal/gate-message-binding.js";
@@ -32,6 +33,7 @@ export type ChatThreadRef = NonNullable<
 
 export type FounderGateCheckpoint =
 	| "brainstorm"
+	| "founder_review"
 	| "approve_to_ship"
 	| "ship_ready";
 
@@ -128,6 +130,20 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			summary,
 			"",
 			"Lead 已同步收到。要 ship 请在本 thread 表态，由 Lead 执行合并；此卡为通知，回复/✅ 不会自动记为批准。",
+		].join("\n");
+	}
+	if (opts.checkpoint === "founder_review") {
+		const review = parseFounderReviewQuestionContent(opts.summary);
+		const round = review?.round ?? "?";
+		const url = review?.hostedUrl ?? "审阅链接无效；请让 Lead 重新送达";
+		return [
+			`${prefix}📝 **阶段产出 review · 第 ${round} 轮** — ${identifier}`,
+			owner,
+			"",
+			url,
+			"",
+			"请在互动页面逐处留言。页面留言完成后，点「一键汇总复制」，把汇总贴回本 thread（页面留言目前不会自动同步给 runner）。",
+			"直接回复这条卡片 = 打回并把原文交给 runner；只有明确回复「都可以了 / 可以了 / 通过 / LGTM / approved」或点 ✅ 才算本轮通过。",
 		].join("\n");
 	}
 	return [

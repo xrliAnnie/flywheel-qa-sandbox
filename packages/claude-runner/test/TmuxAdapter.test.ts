@@ -1565,6 +1565,7 @@ describe("TmuxAdapter", () => {
 				makeCtx({
 					workflowSubmissionCredential: "decision-ticket",
 					workflowSubmissionExpected: true,
+					founderReviewRequired: true,
 				}),
 			);
 
@@ -1574,12 +1575,16 @@ describe("TmuxAdapter", () => {
 				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=decision-ticket",
 			);
 			expect(envArgStr).toContain("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED=1");
+			expect(envArgStr).toContain("FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1");
 
 			const absent = makeMockExec({ paneDead: true });
 			await new TmuxAdapter("flywheel", absent.fn, 10).execute(makeCtx());
 			const absentWindow = absent.calls.find((c) => c.args[0] === "new-window");
 			expect(absentWindow!.args.join(" ")).not.toContain(
 				"FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED",
+			);
+			expect(absentWindow!.args.join(" ")).not.toContain(
+				"FLYWHEEL_FOUNDER_REVIEW_REQUIRED",
 			);
 		});
 

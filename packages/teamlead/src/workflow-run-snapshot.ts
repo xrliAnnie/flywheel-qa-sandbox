@@ -91,6 +91,17 @@ export interface WorkflowRunSnapshotV1 extends WorkflowSnapshotWorkKind {
 
 export type WorkflowRunSnapshot = WorkflowRunSnapshotV1 | WorkflowRunSnapshotV2;
 
+/** Read only the sealed manifest; a missing field is byte-compatible false. */
+export function nodeRequiresFounderReview(
+	snapshot: WorkflowRunSnapshot,
+	nodeId: string,
+): boolean {
+	return (
+		snapshot.manifest.nodes.find((node) => node.id === nodeId)
+			?.founder_review === true
+	);
+}
+
 export type WorkflowGateAuthorityMode =
 	| "land"
 	| "runner_ship"

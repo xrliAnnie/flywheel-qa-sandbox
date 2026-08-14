@@ -63,6 +63,8 @@ export interface WorkflowManifestNode {
 	output?: WorkflowOutputContract;
 	execution?: "engine";
 	submissionWindowMinutes?: number;
+	/** A staged product artifact must pass a founder review round before completion. */
+	founder_review?: boolean;
 }
 
 export interface WorkflowManifestEdge {
@@ -402,6 +404,7 @@ function validateWorkflowManifestV1(
 						"handoff_pointer",
 						"execution",
 						"submissionWindowMinutes",
+						"founder_review",
 					]
 				: [
 						"id",
@@ -411,6 +414,7 @@ function validateWorkflowManifestV1(
 						"effort",
 						"handoff_pointer",
 						"submissionWindowMinutes",
+						"founder_review",
 					],
 			`manifest.nodes[${index}]`,
 		);
@@ -428,11 +432,26 @@ function validateWorkflowManifestV1(
 			node.submissionWindowMinutes,
 			`manifest.nodes[${index}].submissionWindowMinutes`,
 		);
+		if (
+			node.founder_review !== undefined &&
+			typeof node.founder_review !== "boolean"
+		) {
+			throw new Error(
+				`manifest.nodes[${index}].founder_review must be boolean`,
+			);
+		}
+		const founderReview = node.founder_review as boolean | undefined;
 		if (type === "land") {
 			if (node.execution !== "engine") {
 				throw new Error(`land node ${id} must define execution: engine`);
 			}
-			for (const key of ["vendor", "model", "effort", "handoff_pointer"]) {
+			for (const key of [
+				"vendor",
+				"model",
+				"effort",
+				"handoff_pointer",
+				"founder_review",
+			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`land node ${id} cannot define ${key}`);
 				}
@@ -451,6 +470,7 @@ function validateWorkflowManifestV1(
 				"effort",
 				"handoff_pointer",
 				"execution",
+				"founder_review",
 			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`gate node ${id} cannot define ${key}`);
@@ -523,6 +543,7 @@ function validateWorkflowManifestV1(
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 			...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
+			...(founderReview !== undefined ? { founder_review: founderReview } : {}),
 		};
 	});
 	if (nodes.filter((node) => node.type === "qa").length !== 1) {
@@ -903,6 +924,7 @@ function validateWorkflowManifestV2(
 				"produces_output",
 				"output",
 				"submissionWindowMinutes",
+				"founder_review",
 				...(isLandVariant ? ["execution"] : []),
 			],
 			nodePath,
@@ -928,6 +950,13 @@ function validateWorkflowManifestV2(
 			node.submissionWindowMinutes,
 			`${nodePath}.submissionWindowMinutes`,
 		);
+		if (
+			node.founder_review !== undefined &&
+			typeof node.founder_review !== "boolean"
+		) {
+			throw new Error(`${nodePath}.founder_review must be boolean`);
+		}
+		const founderReview = node.founder_review as boolean | undefined;
 		if (type === "land") {
 			if (node.execution !== "engine") {
 				throw new Error(`land node ${id} must define execution: engine`);
@@ -942,6 +971,7 @@ function validateWorkflowManifestV2(
 				"produces_output",
 				"output",
 				"submissionWindowMinutes",
+				"founder_review",
 			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`land node ${id} cannot define ${key}`);
@@ -960,6 +990,7 @@ function validateWorkflowManifestV2(
 				"produces_output",
 				"output",
 				"execution",
+				"founder_review",
 			]) {
 				if (node[key] !== undefined) {
 					throw new Error(`gate node ${id} cannot define ${key}`);
@@ -1045,6 +1076,9 @@ function validateWorkflowManifestV2(
 				...(effort ? { effort } : {}),
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 				...(role ? { role } : {}),
+				...(founderReview !== undefined
+					? { founder_review: founderReview }
+					: {}),
 				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 			};
 		}
@@ -1094,6 +1128,7 @@ function validateWorkflowManifestV2(
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 			...(role ? { role } : {}),
+			...(founderReview !== undefined ? { founder_review: founderReview } : {}),
 			...(agentFile ? { agent_file: agentFile } : {}),
 			...(producesOutput ? { produces_output: true, output } : {}),
 			...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),

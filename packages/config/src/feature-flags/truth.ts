@@ -15,6 +15,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_ID: "context: owning Lead id",
 	FLYWHEEL_RUNNER_START_POINT: "context: runner start point",
 	FLYWHEEL_RUNNER_BACKEND: "config value: executor backend selector",
+	FLYWHEEL_FOUNDER_REVIEW_REQUIRED:
+		"context: sealed workflow node capability projected into the runner environment (FLY-1758), not an operator toggle",
 	FLYWHEEL_FOUNDER_USER_ID: "context: founder discord id",
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
 	// plumbing / paths

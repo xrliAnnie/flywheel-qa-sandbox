@@ -30,8 +30,15 @@ import {
 	type DesignHtmlEvidence,
 	findDesignHtmlPaths,
 } from "../design-html-evidence.js";
+import { resolveFounderId } from "../founder-attribution.js";
+import {
+	type FounderReviewVerdict,
+	resolveFounderReviewVerdictAtCommit,
+} from "../founder-review.js";
+import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
 import { resolveRunnerStateDir } from "../runner-state.js";
 import { truncateCodePoints } from "../text-truncate.js";
+import { resolveStateDbPath } from "./verify-approval.js";
 import { currentWorkflowCompletionActivationFromEnv } from "./workflow-activation.js";
 
 // FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
@@ -127,6 +134,24 @@ export interface CompleteOpts {
 	targetRepo?: string;
 	/** FLY-191 Phase 2: questionId from `gate --no-block` (route=needs_review). */
 	questionId?: string;
+}
+
+export function founderReviewCompletionBlockReason(input: {
+	required: boolean;
+	route: string;
+	verdict: FounderReviewVerdict | undefined;
+}): string | undefined {
+	if (
+		!input.required ||
+		(input.route !== "needs_review" && input.route !== "no_code")
+	) {
+		return undefined;
+	}
+	if (!input.verdict) return "founder_review authority is unavailable";
+	if (input.verdict.status === "passed") return undefined;
+	return `founder_review ${input.verdict.status}${
+		"reason" in input.verdict ? ` (${input.verdict.reason})` : ""
+	}; publish the current interactive HTML, open a new founder_review round, and wait for founder pass`;
 }
 
 export async function complete(opts: CompleteOpts): Promise<void> {
@@ -292,6 +317,52 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
 	const workflowActivation = currentWorkflowCompletionActivationFromEnv(execId);
+	const founderReviewRequired =
+		process.env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED === "1";
+	if (
+		founderReviewRequired &&
+		(opts.route === "needs_review" || opts.route === "no_code")
+	) {
+		let verdict: FounderReviewVerdict | undefined;
+		try {
+			if (!workflowActivation) {
+				throw new Error("current workflow activation is missing");
+			}
+			const commDbPath = process.env.FLYWHEEL_COMM_DB?.trim();
+			if (!commDbPath) throw new Error("FLYWHEEL_COMM_DB is missing");
+			if (!evidence.headSha) throw new Error("current Git HEAD is unavailable");
+			const stateDbPath = resolveStateDbPath(undefined, process.env);
+			const sqlite = createReadonlySqliteFounderReviewStateReader({
+				stateDbPath,
+				commDbPath,
+			});
+			try {
+				verdict = resolveFounderReviewVerdictAtCommit({
+					reader: sqlite.reader,
+					runId: workflowActivation.run_id,
+					repoRoot: resolve(process.cwd(), opts.targetRepo ?? "."),
+					head: evidence.headSha,
+					founderId: resolveFounderId({ processEnv: process.env }),
+				});
+			} finally {
+				sqlite.close();
+			}
+		} catch (error) {
+			console.error(
+				`[complete] founder_review authority is unavailable; refusing route=${opts.route}. ${error instanceof Error ? error.message : String(error)}`,
+			);
+			process.exit(1);
+		}
+		const blocked = founderReviewCompletionBlockReason({
+			required: true,
+			route: opts.route,
+			verdict,
+		});
+		if (blocked) {
+			console.error(`[complete] ${blocked}`);
+			process.exit(1);
+		}
+	}
 
 	const payload: Payload = {
 		decision: { route: opts.route },

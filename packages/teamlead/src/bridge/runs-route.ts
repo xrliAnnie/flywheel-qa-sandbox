@@ -73,6 +73,7 @@ import {
 	WorkflowMenuValidationError,
 } from "../workflow-menu.js";
 import {
+	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
 	workflowGateEntryPromptCapabilities,
@@ -2727,6 +2728,10 @@ export function createRunsRouter(
 								dispatch: workflowRuntimeDispatch,
 								capabilities: {
 									...generalizedSelection.node.capabilities,
+									founder_review_required: nodeRequiresFounderReview(
+										selectedSnapshot,
+										generalizedSelection.nodeId,
+									),
 									...workflowGateEntryPromptCapabilities(
 										selectedSnapshot,
 										generalizedSelection.nodeId,

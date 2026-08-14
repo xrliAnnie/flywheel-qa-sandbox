@@ -1,8 +1,10 @@
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
 const GRACE = 10 * 60_000;
+const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 
 function sqliteAgo(ms: number): string {
 	return new Date(Date.now() - ms)
@@ -19,6 +21,15 @@ interface FakeEvent {
 
 function makeStore(existingEvents: FakeEvent[] = []) {
 	const events: FakeEvent[] = [...existingEvents];
+	let founderReviewBinding:
+		| {
+				question_id: string;
+				message_id: string;
+				run_id: string;
+				artifact_digest: string;
+				created_at: string;
+		  }
+		| undefined;
 	const store = {
 		getChatThreadByIssue: vi.fn(() => ({
 			thread_id: "T1",
@@ -35,6 +46,24 @@ function makeStore(existingEvents: FakeEvent[] = []) {
 			});
 			return true;
 		}),
+		getGeneralizedWorkflowNodeForExecution: vi.fn(() => ({
+			run: { run_id: "run-1" },
+			node: { id: "produce" },
+			snapshot: {
+				manifest: { nodes: [{ id: "produce", founder_review: true }] },
+			},
+		})),
+		getFounderReviewCardBindingByQuestion: vi.fn(() => founderReviewBinding),
+		bindFounderReviewCard: vi.fn((input) => {
+			founderReviewBinding = {
+				question_id: input.questionId,
+				message_id: input.messageId,
+				run_id: input.runId,
+				artifact_digest: input.artifactDigest,
+				created_at: input.createdAt,
+			};
+			return { status: "inserted" as const };
+		}),
 	} as unknown as GatePollerConfig["store"];
 	return { store, events };
 }
@@ -47,7 +76,7 @@ const LEAD = {
 };
 
 const PROJECTS = [
-	{ projectName: "flywheel", leads: [LEAD] },
+	{ projectName: "flywheel", projectRoot: REPO_ROOT, leads: [LEAD] },
 ] as unknown as GatePollerConfig["projects"];
 
 function makeSession(over: Record<string, unknown> = {}) {
@@ -74,6 +103,21 @@ function makeQuestion(over: Record<string, unknown> = {}) {
 		content_ref: null,
 		...over,
 	};
+}
+
+function founderReviewQuestion(over: Record<string, unknown> = {}) {
+	return makeQuestion({
+		checkpoint: "founder_review",
+		content: JSON.stringify({
+			version: 1,
+			round: 1,
+			runId: "run-1",
+			artifactDigest: "a".repeat(64),
+			hostedUrl: "https://reports.example/prd",
+			paths: ["review.html"],
+		}),
+		...over,
+	});
 }
 
 function makePoller(
@@ -151,6 +195,68 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 			makeQuestion({ checkpoint: "approve_to_ship" }),
 		);
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
+	it("founder_review becomes delivered only after the Discord card is immutably bound", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ id: "card-1" }), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+		const poller = makePoller(
+			{ fetchImpl: fetchImpl as unknown as typeof fetch },
+			store,
+		);
+		await fallback(poller, makeSession(), founderReviewQuestion());
+		expect(store.bindFounderReviewCard).toHaveBeenCalledWith(
+			expect.objectContaining({
+				questionId: "q1",
+				messageId: "card-1",
+				runId: "run-1",
+				artifactDigest: "a".repeat(64),
+			}),
+		);
+		expect(
+			events.some((event) => event.event_id === "founder-thread-notify-q1"),
+		).toBe(true);
+	});
+
+	it("founder_review 2xx without a message id is not delivered or counted", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller(
+			{ fetchImpl: fetchImpl as unknown as typeof fetch },
+			store,
+		);
+		await fallback(poller, makeSession(), founderReviewQuestion());
+		expect(store.bindFounderReviewCard).not.toHaveBeenCalled();
+		expect(
+			events.some((event) => event.event_id === "founder-thread-notify-q1"),
+		).toBe(false);
+	});
+
+	it("recovers the founder_review marker from an existing binding without reposting", async () => {
+		const { store, events } = makeStore();
+		store.getFounderReviewCardBindingByQuestion = vi.fn(() => ({
+			question_id: "q1",
+			message_id: "card-1",
+			run_id: "run-1",
+			artifact_digest: "a".repeat(64),
+			created_at: "2026-08-14T00:00:00.000Z",
+		})) as never;
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller(
+			{ fetchImpl: fetchImpl as unknown as typeof fetch },
+			store,
+		);
+		await fallback(poller, makeSession(), founderReviewQuestion());
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(
+			events.some((event) => event.event_id === "founder-thread-notify-q1"),
+		).toBe(true);
 	});
 
 	it("FLY-1238: MERGED approve gate is silent and gets no durable done marker", async () => {
