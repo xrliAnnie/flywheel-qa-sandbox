@@ -62,6 +62,8 @@ FLY-202-d2-five-steps.mmd
 FLY-202-d2-five-steps.svg
 FLY-202-d3-doc-model.mmd
 FLY-202-d3-doc-model.svg
+FLY-202-d4-branch-hygiene.mmd
+FLY-202-d4-branch-hygiene.svg
 FLY-202-design.html
 design.md
 plan.md
@@ -94,6 +96,4 @@ research
 doc/engineer/deep-research:
 001-decision-layer-gemini.md
 002-decision-layer-chatgpt.md
-003-stripe-minions-part1.md
-004-stripe-minions-part2.md
 ```
