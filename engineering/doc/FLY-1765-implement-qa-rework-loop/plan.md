@@ -3,11 +3,11 @@
 Issue: FLY-1765 (https://linear.app/geoforge3d/issue/FLY-1765/implementqa-返工环断裂qa-fail-后原-implement-体已-completed-不可复活state-not)
 日期: 2026-08-14
 基于: research.md
-版本: v4(折入 Codex design review R1 全 5 项 + R2 全 3 项 + R3 全 2 项)
+版本: v5(折入 Codex design review R1-R3 + QA FAIL claim 191 的 implement-only park 边界)
 
 ## 0. 一句话
 
-FLY-1655 之后 implement 节点体完工即被投影成 `completed` 终态,QA-FAIL 返工的 wake 闸(FLY-939 只唤停驻体)从此 100% 拒绝 —— 本计划两层修:**Fix 1 恢复账面停驻**(land-authority run 的 creates_pr 节点体完工投 `ship_parked` 直到 ship finalization,wake 闸零改动),**Fix 2 终态残局受控收体**(先按既有安全链把活体收干净,让死亡证据自然成立后走既有 proven-dead replacement;绝不伪造死亡账,绝不首跳 needs_lead)。不加新 flag,不开终态复活边。
+FLY-1655 之后 implement 节点体完工即被投影成 `completed` 终态,QA-FAIL 返工的 wake 闸(FLY-939 只唤停驻体)从此 100% 拒绝 —— 本计划两层修:**Fix 1 恢复账面停驻**(land-authority run 的 `type=implement` 节点体完工投 `ship_parked` 直到 ship finalization,wake 闸零改动),**Fix 2 终态残局受控收体**(先按既有安全链把活体收干净,让死亡证据自然成立后走既有 proven-dead replacement;绝不伪造死亡账,绝不首跳 needs_lead)。不加新 flag,不开终态复活边。
 
 ## 1. 目标 / 非目标
 
@@ -22,7 +22,7 @@ FLY-1655 之后 implement 节点体完工即被投影成 `completed` 终态,QA-F
 - 不改 FLY-1731 completion_disposition 语义(受影响完工的 receipt 维持现状 `terminal_no_gate`)。
 - 不批量复活存量挂死 run;不动 FLY-1612 告警 episode 形态;runner_ship legacy 路径字节不变。
 
-## 2. Fix 1 — 账面停驻:land-authority run 的 creates_pr 节点体完工投 `ship_parked`
+## 2. Fix 1 — 账面停驻:land-authority run 的 implement 节点体完工投 `ship_parked`
 
 ### 2.1 投影改动(唯一状态写点)
 
@@ -34,6 +34,7 @@ projectedStatus =
   runner_ship carrier                          → awaiting_review | ship_parked   (不变,legacy 字节兼容)
   【新】run.engine_owned===1 && run.gate_carrier_epoch===1
       && gateAuthority?.mode === "land"
+      && node.type === "implement"
       && node.capabilities.creates_pr === true
       && route === "needs_review"              → "ship_parked"
                                                  + park_opened(reason: "rework_reachable_wait")
@@ -44,7 +45,8 @@ projectedStatus =
 
 - park 台账沿用 `appendWorkflowEngineParkEventTx`,事件词汇表仅 `park_opened | park_cleared`(`StateStore.ts:4160-4172`)—— 全文不使用不存在的 "park_closed"。新 reason 值 `rework_reachable_wait`,activation 级绑定与 `runner_ship_gate_wait` 同形。
 - 不写 `applyTerminalTimestamp`、不 bump lifecycle(非终态)。
-- 范围收窄:`creates_pr` 节点(= implement / 产 PR 类,QA-FAIL 与 founder rework 的目标人群)。design(`phase_design_complete`)/qa(`no_code`)不动。
+- 范围收窄:`type=implement && creates_pr` 节点(QA-FAIL 的原体返工目标)。`generic` 虽同样带 `creates_pr`,但单阶段 land completion 会立即打开 founder gate、runner 同时收到退出指令,不存在 QA 循环,所以必须维持 `completed`;design(`phase_design_complete`)/qa(`no_code`)同样不动。
+- **有意取舍(generic founder rework):** generic 单阶段 run 若在 founder gate 后触发返工,原 generic 体已终态,不承诺 FLY-939 原体 wake;它明确走 Fix 2 的受控收体 → proven-dead replacement/reconcile 降级路径。该路径保 run 不挂死并续接分支/PR,代价是换体而非原体返工。测试分别钉死 ①generic land completion=`completed` 且无 `rework_reachable_wait` park;②真实 `tpl_code` implement=`ship_parked`,QA PASS 后 founder gate 仍由 authoritative QA holder 真投递。
 - **FLY-1731 gate-authority sentinel(R1-1 新增)**:land-mode 下 `ship_parked` 的 implement 体在 founder gate 前后都**不得**被选为 gate holder、不得 present/consume approval、不得取得 carrier authority —— authority 恒由 pinned land/gate 决定。专项测试断言 ship-gate admission(FLY-1731 immutable holder authority)对 `rework_reachable_wait` park 零匹配。
 
 ### 2.2 park 结算(账面与物理分两层,各自可重放 — R1-3/R1-4)
@@ -117,8 +119,8 @@ Fix 2 同时是**部署窗迁移方案**:上线时已在飞的 run(implement 体
 ## 5. 测试(TDD,先红后绿)
 
 **StateStore 单测**
-1. **真实 compiled `tpl_code` snapshot**(非 synthetic fixture,R1-1)implement 完工 → `ship_parked` + park_opened(`rework_reachable_wait`)+ 无 terminal_at + disposition 仍 `terminal_no_gate`。
-2. qa(no_code)/design(phase_design_complete)/engine_terminal(零 ship-capable)完工 → `completed` 不变(阴性)。
+1. **真实 compiled `tpl_code` snapshot**(非 synthetic fixture,R1-1)implement 完工 → `ship_parked` + park_opened(`rework_reachable_wait`)+ 无 terminal_at + disposition 仍 `terminal_no_gate`;QA PASS 后经真实 `QuestionAdmission.revalidate` 断言 founder gate 真投递,且 implement 仍 parked。
+2. **generic 单阶段阴性**:land-authority generic 节点 `needs_review` → source session=`completed`、无 `rework_reachable_wait` park、founder gate 仍真投递;qa(no_code)/design(phase_design_complete)/engine_terminal(零 ship-capable)同样维持 `completed`。generic founder rework 明确走 Fix 2 replacement 降级。
 3. runner_ship carrier 路径逐字节回归(legacy sentinel)。
 4. `settleReworkParksForRunTx` 双腿:①仍 `ship_parked` → completed + terminal_at + lifecycle bump + `park_cleared`;②**finalizer 已先投 completed → ledger-only `park_cleared`(不重写状态/时间戳/revision)**;重复调用零副作用;activation/identity 已变或 session 处 active 非停驻态时 fail-closed/no-op;`runner_ship_gate_wait` 零触碰(阴性);§2.2 matrix 各 writer 逐一覆盖(land/operator-terminate/founder-terminal/no-code/legacy-finalize + shadow-terminate 阴性)。
    **4b. 幂等键序列测试(R3-1)**:从真实序列出发 —— 先有 admission `engine-park-clear:<activationId>`,再 completion open,再 settlement → 断言新增一条 generation 高于 open 的 clear、CommDB projection=cleared、`getCurrentWorkflowEngineParkEvidence` 为空、重放不新增 event;attempt N+1 再 open/再 clear,证明每个 open generation 各自唯一;既存同 ID 但 tuple 不符 → fail-closed。

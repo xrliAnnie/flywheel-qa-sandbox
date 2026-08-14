@@ -26765,6 +26765,7 @@ export class StateStore {
 			run.engine_owned === 1 &&
 			run.gate_carrier_epoch === 1 &&
 			gateAuthority?.mode === "land" &&
+			node?.type === "implement" &&
 			node?.capabilities.creates_pr === true;
 		const previousStatus = this.getSession(binding.execution_id)?.status;
 		const projectedStatus =

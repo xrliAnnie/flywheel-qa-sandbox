@@ -10,6 +10,7 @@ import {
 	StateStore,
 	WorkflowAdmissionClassificationError,
 } from "../../StateStore.js";
+import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import type { LeadRuntime } from "../lead-runtime.js";
 import { QuestionAdmission } from "../question-admission.js";
@@ -17,6 +18,13 @@ import { RuntimeRegistry } from "../runtime-registry.js";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 const HEAD = "a".repeat(40);
+const menuEngineFlags = {
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GATE_CARRIER: "1",
+};
 
 const resources: Array<{ close(): void }> = [];
 afterEach(() => {
@@ -284,7 +292,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(h.queue.getById(row.id)?.state).toBe("LEASED");
 	});
 
-	it("delivers a land gate after needs_review terminalizes its source session", async () => {
+	it("delivers a generic land gate after needs_review keeps its source completed", async () => {
 		const dbPath = join(
 			mkdtempSync(join(tmpdir(), "fly1731-land-admission-")),
 			"comm.db",
@@ -406,6 +414,9 @@ describe("QuestionAdmission mailbox claim service", () => {
 			completionDisposition: "engine_gate_handoff",
 		});
 		expect(store.getSession("exec-1")?.status).toBe("completed");
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("exec-1"),
+		).toBeUndefined();
 		const holder = store.getCurrentWorkflowGateHolder(
 			"run-fly1731",
 			"founder_gate",
@@ -431,6 +442,192 @@ describe("QuestionAdmission mailbox claim service", () => {
 			checkpoint: "approve_to_ship",
 			execution_id: "exec-1",
 		});
+	});
+
+	it("delivers the tpl_code founder gate while its implement remains parked for QA rework", async () => {
+		const dbPath = join(
+			mkdtempSync(join(tmpdir(), "fly1765-code-land-admission-")),
+			"comm.db",
+		);
+		const db = new CommDB(dbPath);
+		const queue = new MailboxQueue(dbPath);
+		const store = await StateStore.create(":memory:");
+		resources.push(db, queue, store);
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "owner-1",
+			now: "2026-08-14T10:00:00.000Z",
+			leaseTtlMs: 60_000,
+		});
+
+		importWorkflowMenuSeeds(store, menuEngineFlags);
+		store.bindWorkflowCategory({
+			project: "project-a",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "lead-a",
+		});
+		store.materializeWorkflowRun({
+			runId: "run-fly1765",
+			issueId: "FLY-1765",
+			projectName: "project-a",
+			taskCategory: "code",
+			claimsReadEnrolled: true,
+			actor: "lead-a",
+			canonicalRoot: REPO_ROOT,
+			env: menuEngineFlags,
+			startReservation: {
+				idempotencyKey: "start-fly1765",
+				selectionDigest: "selection-fly1765",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-fly1765",
+				createdAt: "2026-08-14T09:30:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-fly1765",
+			nodeId: "design",
+			attempt: 1,
+			state: "running",
+			executionId: "design-fly1765",
+		});
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "run-fly1765",
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-fly1765",
+				outcome: "design_done",
+				successorExecutionId: "implement-fly1765",
+				now: "2026-08-14T09:35:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-fly1765",
+				nodeId: "implement",
+				executionId: "implement-fly1765",
+				attempt: 1,
+				expiresAt: "2026-08-14T12:00:00.000Z",
+				absoluteDeadlineAt: "2026-08-15T10:00:00.000Z",
+				now: "2026-08-14T09:36:00.000Z",
+				env: menuEngineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "implement-fly1765",
+			issue_id: "FLY-1765",
+			issue_identifier: "FLY-1765",
+			project_name: "project-a",
+			status: "running",
+			session_role: "implement",
+			issue_labels: JSON.stringify(["Engineering"]),
+			workflow_node_id: "implement",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "implement-fly1765",
+				route: "needs_review",
+				sourceEventId: "complete-implement-fly1765",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: HEAD,
+				prBinding: {
+					prNumber: 837,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: REPO_ROOT,
+					worktreeBindingGeneration: "generation-fly1765",
+				},
+				now: "2026-08-14T09:40:00.000Z",
+			}),
+		).toMatchObject({ ok: true, completionDisposition: "terminal_no_gate" });
+		expect(store.getSession("implement-fly1765")?.status).toBe("ship_parked");
+
+		const qaExecutionId = store
+			.listWorkflowSideEffects("run-fly1765")
+			.find((effect) => effect.node_id === "qa")!.execution_id;
+		const qaAdmission = store.admitGeneralizedWorkflowExecution({
+			runId: "run-fly1765",
+			nodeId: "qa",
+			executionId: qaExecutionId,
+			attempt: 1,
+			expiresAt: "2026-08-14T12:00:00.000Z",
+			absoluteDeadlineAt: "2026-08-15T10:00:00.000Z",
+			now: "2026-08-14T09:41:00.000Z",
+			env: menuEngineFlags,
+		});
+		if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
+			throw new Error("QA admission failed");
+		}
+		store.upsertSession({
+			execution_id: qaExecutionId,
+			issue_id: "FLY-1765",
+			issue_identifier: "FLY-1765",
+			project_name: "project-a",
+			status: "running",
+			session_role: "qa",
+			issue_labels: JSON.stringify(["Engineering"]),
+			workflow_node_id: "qa",
+		});
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				credential: qaAdmission.submissionCredential,
+				clientRequestId: "qa-pass-fly1765",
+				predicate: "qa_passed",
+				subjectDigest: HEAD,
+				issuerVendor: "claude",
+				issuerModel: "claude-opus-4-8",
+				subjectProducerExecutionId: "implement-fly1765",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: "2026-08-14T12:00:00.000Z",
+				gateEntryBinding: {
+					kind: "worktree",
+					prNumber: 837,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: REPO_ROOT,
+					worktreeBindingGeneration: "generation-fly1765",
+					expectedProducerMirrorHead: HEAD,
+				},
+				alertIdentity: {
+					leadId: "lead-a",
+					projectName: "project-a",
+					leadResolution: "resolved",
+				},
+				now: "2026-08-14T09:45:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const holder = store.getCurrentWorkflowGateHolder(
+			"run-fly1765",
+			"founder_gate",
+		)!;
+		expect(holder).toMatchObject({
+			authority_mode: "land",
+			source_execution_id: qaExecutionId,
+		});
+		db.insertQuestion(qaExecutionId, "lead-a", "ready to ship", {
+			id: holder.question_id,
+			checkpoint: "approve_to_ship",
+		});
+		const admission = new QuestionAdmission({
+			queue,
+			dbPath,
+			lead,
+			projects,
+			store,
+			runtimeRegistry: new RuntimeRegistry(),
+		});
+		resources.push(admission);
+		expect(await admission.revalidate(claim(queue))).toEqual({ deliver: true });
+		const delivered = queue.getById(holder.question_id)!;
+		expect(JSON.parse(delivered.delivery_content!)).toMatchObject({
+			event_type: "gate_question",
+			checkpoint: "approve_to_ship",
+			execution_id: qaExecutionId,
+		});
+		expect(store.getSession("implement-fly1765")?.status).toBe("ship_parked");
 	});
 
 	it("terminally revokes an answered question", async () => {
