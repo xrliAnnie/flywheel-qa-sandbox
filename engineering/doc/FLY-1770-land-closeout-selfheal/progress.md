@@ -1,13 +1,14 @@
 ---
 issue: FLY-1770
 phase: implement
-phaseCursor: 0/7
-updated: 2026-08-14T23:55:33.902Z
-nextStep: audit current land lifecycle code and establish RED fixtures
+phaseCursor: 1/7
+updated: 2026-08-14T23:59:07.970Z
+nextStep: add StateStore schema, atomic retry accounting, and due claim gates
+  via RED tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-1770 progress
-**phase**: implement (0/7)
-**next**: audit current land lifecycle code and establish RED fixtures
+**phase**: implement (1/7)
+**next**: add StateStore schema, atomic retry accounting, and due claim gates via RED tests
