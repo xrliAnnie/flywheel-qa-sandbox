@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1765 返工环 — 529 活体演练结果</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --green:#34c759; --amber:#ff9500; --red:#ff3b30; --blue:#007aff; --purple:#af52de;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,system-ui,"PingFang SC",sans-serif;
+       line-height:1.6;padding:24px 16px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:28px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 24px}
+  .card{background:var(--card);border-radius:12px;padding:20px 22px;margin:0 0 16px;
+        box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--dim)}
+  .card.green{border-left-color:var(--green)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)}
+  .card.purple{border-left-color:var(--purple)}
+  h2{font-size:19px;margin:0 0 12px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:18px 0 8px;color:var(--navy)}
+  p{margin:0 0 10px}
+  .lead{font-size:17px}
+  code,.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+  code{background:#f0f0f3;padding:1px 5px;border-radius:4px}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;width:100%;font-size:14px;min-width:560px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #e8e8ed;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;
+         font-weight:600;color:#fff;white-space:nowrap}
+  .b-ok{background:var(--green)} .b-block{background:var(--amber)} .b-na{background:var(--dim)}
+  .step{font-variant-numeric:tabular-nums;color:var(--dim);font-weight:600}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:14px}
+  .kv dt{color:var(--dim)} .kv dd{margin:0}
+  .tl{border-left:2px solid #e8e8ed;padding-left:16px;margin:10px 0}
+  .tl div{margin-bottom:8px;font-size:14px}
+  .tl b{color:var(--navy);font-variant-numeric:tabular-nums}
+  .note{background:#fff8ec;border-radius:8px;padding:12px 14px;font-size:13.5px;margin:12px 0 0}
+  .quiet{color:var(--dim);font-size:13px}
+  footer{color:var(--dim);font-size:12.5px;text-align:center;margin:28px 0 8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>FLY-1765 返工环 — 529 隔离房活体演练</h1>
+  <p class="sub">2026-08-14 · 被测 PR #837 @ <span class="mono">fbff3c157</span> · 隔离 slot 2 · 生产零触碰</p>
+
+  <div class="card green">
+    <h2>一句话</h2>
+    <p class="lead"><strong>要证的那件事 —— QA 判不过之后能不能自动交回原来那个干活的体 —— 真机跑通了,证据精确到秒。</strong></p>
+    <p>九步里六步通过。剩下三步没验成,卡在一个<strong>与本次改动无关的上游条件</strong>上:沙箱里的 founder 审批门打不开。
+       这三步验的是演练本身的完整性,不是这次修复有没有效。</p>
+  </div>
+
+  <div class="card blue">
+    <h2>开跑前的硬门(先证仪器没错)</h2>
+    <p>隔离房的服务端自报版本号 <span class="mono">buildSha</span> 与 <span class="mono">artifactBuildSha</span>
+       两个字段<strong>都</strong>等于 <span class="mono">fbff3c157…</span>,与待批 PR 的 head 逐字相同。</p>
+    <p class="quiet">这一步不做,就可能拿着 main 的代码当被测版本,给一份没验过的东西发通过。</p>
+  </div>
+
+  <div class="card">
+    <h2>九步逐项</h2>
+    <div class="scroll">
+    <table>
+      <thead><tr><th style="width:42px">#</th><th>验什么</th><th style="width:78px">结果</th><th>依据</th></tr></thead>
+      <tbody>
+        <tr><td class="step">1</td><td>真单派发,判据链在真实工单上确实可命中</td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>真实编译出的流程图:审批门 = <span class="mono">founder_gate</span>、终点 = <span class="mono">land</span>;实现节点带「会开 PR」能力;「QA 不过 → 退回实现」的回边真实存在</td></tr>
+        <tr><td class="step">2</td><td>设计阶段完工后正常终结(<em>阴性对照</em>)</td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>落 <span class="mono">completed</span> 并打终态时间戳 —— 证明这把尺子在真值是「终结」时确实会报「终结」</td></tr>
+        <tr><td class="step">3</td><td>实现节点按菜单派给 codex</td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>实际派发 <span class="mono">gpt-5.6-sol / xhigh</span>,与菜单里写的逐字一致</td></tr>
+        <tr><td class="step">4</td><td><strong>命门:实现体完工后「停驻」而不是「终结」</strong></td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>四条子断言全中,见下方</td></tr>
+        <tr><td class="step">5</td><td>停驻期间审批卡仍能正常投递,且停驻体不得抢审批权</td>
+            <td><span class="badge b-block">未验证</span></td>
+            <td>审批门没打开,这条完全没测到 —— 不是「测了没问题」</td></tr>
+        <tr><td class="step">6</td><td><strong>核心:QA 故意判不过 → 自动唤醒原体</strong></td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>1 秒完成,零人工介入,四个失败关键词全库零命中</td></tr>
+        <tr><td class="step">7</td><td>回来的是原体不是换体,且真产出修复代码</td>
+            <td><span class="badge b-ok">通过</span></td>
+            <td>同一个体 ID 续跑,token 与耗时都在涨;分支上真多一个修复 commit</td></tr>
+        <tr><td class="step">8</td><td>QA 复测通过 → 审批门 → 落地</td>
+            <td><span class="badge b-block">受阻</span></td>
+            <td>服务端两次拒绝,原因 <span class="mono">land_head_unavailable</span></td></tr>
+        <tr><td class="step">9</td><td>落地后停驻结算、体回收</td>
+            <td><span class="badge b-na">未验证</span></td>
+            <td>依赖第 8 步</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </div>
+
+  <div class="card green">
+    <h2>命门这一步,四条子断言</h2>
+    <p>实现体真跑了 22 分钟(38 万 token),开出真 PR。完工那一刻:</p>
+    <dl class="kv">
+      <dt>①</dt><dd>体的状态是<strong>「停驻」</strong>,不是「终结」—— 这正是事故原形的反面</dd>
+      <dt>②</dt><dd>台账上落了一条「因可返工而等待」的停驻记录</dd>
+      <dt>③</dt><dd>它<strong>没有</strong>终态时间戳(同一张表里设计体有)—— 这就是唤醒闸能放行的物理原因</dd>
+      <dt>④</dt><dd>体是真的活着并挂起:进程在、目标转成 <span class="mono">paused</span>、终端最后一行写着「已暂停」</dd>
+    </dl>
+  </div>
+
+  <div class="card green">
+    <h2>核心一击 — 秒级时间线</h2>
+    <div class="tl">
+      <div><b>16:37:51</b> &nbsp; QA 落下「不通过」→ 返工请求同秒入账</div>
+      <div><b>16:37:52</b> &nbsp; <strong>+1 秒</strong> → 唤醒已送达(重试 0 次,错误栏空白)</div>
+      <div><b>16:42:15</b> &nbsp; 原体修完再次停驻;分支上多出真实修复 commit</div>
+    </div>
+    <p>四个失败关键词(不可复活 / 唤醒失败 / 需人工 / 挂起)在全库事件表里<strong>一条都没有</strong>。</p>
+    <p class="quiet">修之前,这里必然是「终结」态,唤醒闸必拒 —— 那就是这单要修的事故。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>卡住的那三步 — 以及它为什么不该拦住批准</h2>
+    <p>QA 复测判通过时,服务端拒绝了,理由是<strong>找不到这个 PR 的落地绑定记录</strong>。</p>
+
+    <h3>不是这次改动引入的(两条硬证据)</h3>
+    <p>① 本次 PR 的全部代码改动里,与这条链相关的五个关键符号<strong>增删行数全是 0</strong>。<br>
+       ② 当前主干上,同一道守卫、同一份能力表<strong>逐字存在</strong>。</p>
+
+    <h3>过程中我两次推翻了自己的判断</h3>
+    <p>先怀疑是实现节点缺少某种凭据 —— 拿生产数据一对照就推翻了(生产同样没有那种凭据,却有 98 条绑定记录)。<br>
+       再怀疑是 QA 少传了一个参数 —— 补上参数重发,<strong>仍然被拒</strong>,所以也不是它。</p>
+
+    <h3>目前最有价值的线索(标注为假设,未查实)</h3>
+    <p>生产环境里能走到审批门的同类工单,它的 <strong>QA 体身上带着 PR 号和 head</strong>;
+       而隔离房里的 QA 体这两项<strong>都是空的</strong>。没有这个身份,落地绑定就铸不出来,门自然打不开。
+       <em>为什么隔离房的 QA 体没拿到,我没有查实</em> —— 属产品侧机制,已交工程线跟进。</p>
+
+    <div class="note">
+      <strong>为什么建议不拿它卡批准:</strong>这三步验的是「隔离房里的审批/落地管道完不完整」,
+      而这次要修的「返工环」已经在真机上完整证毕。两者是不同的东西。
+    </div>
+  </div>
+
+  <div class="card purple">
+    <h2>顺带捞到两条问题(已交工程线)</h2>
+    <p><strong>一</strong> · QA 提交判决时若不显式带上代码版本号,客户端会<strong>静默</strong>不带,
+       而服务端的落地门硬性要求它 —— 要么给个默认值,要么当场报错,不该沉默。</p>
+    <p><strong>二</strong> · 隔离房的 QA 体拿不到 PR 身份,导致审批门在沙箱里打不开(即上面那条,可复现)。</p>
+  </div>
+
+  <div class="card">
+    <h2>纪律与边界</h2>
+    <dl class="kv">
+      <dt>生产</dt><dd>零触碰。未运行任何全舰重启脚本;拆房时生产的会话全部按「他人所有」跳过</dd>
+      <dt>待批分支</dt><dd>零 commit。只有只读操作,外加把<em>已存在的</em> head 推到 QA 沙箱远端一次</dd>
+      <dt>真 Discord</dt><dd>隔离频道里为该工单建了<strong>恰 1 个</strong>话题串</dd>
+      <dt>「故意判不过」</dt><dd>判决走 QA 体自己的真凭据、真命令、真服务端;只有「判不过还是判过」这个决定是演练脚本给的</dd>
+      <dt>一条作废</dt><dd>我早先报过「codex 观察窗没建成」—— 那是瞬时状态,之后自愈,窗口真实存在。该说法作废</dd>
+    </dl>
+  </div>
+
+  <footer>FLY-1768 · QA 执行节点 · 判决不进引擎,结论交 Lead 与 founder 定夺</footer>
+</div>
+</body>
+</html>
