@@ -1,13 +1,13 @@
 ---
 issue: FLY-1751
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-14T06:48:37.880Z
-nextStep: research.md 代码审计成文
+phaseCursor: 2/6
+updated: 2026-08-14T06:50:25.207Z
+nextStep: plan.md 撰写
 chunks: []
 pointers: {}
 ---
 
 # FLY-1751 progress
-**phase**: design (1/6)
-**next**: research.md 代码审计成文
+**phase**: design (2/6)
+**next**: plan.md 撰写
