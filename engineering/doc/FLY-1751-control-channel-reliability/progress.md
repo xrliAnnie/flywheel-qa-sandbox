@@ -1,13 +1,13 @@
 ---
 issue: FLY-1751
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-14T07:42:01.543Z
-nextStep: design 节点完结,交棒 implement
+phase: implement
+phaseCursor: 1/5
+updated: 2026-08-14T07:47:26.057Z
+nextStep: TDD SessionStart adopt-inflight hook 与 per-Lead installer
 chunks: []
 pointers: {}
 ---
 
 # FLY-1751 progress
-**phase**: design (6/6)
-**next**: design 节点完结,交棒 implement
+**phase**: implement (1/5)
+**next**: TDD SessionStart adopt-inflight hook 与 per-Lead installer
