@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 1/5
-updated: 2026-08-14T16:14:56.302Z
-nextStep: capture current repository directories, QA README, and doc listing
+phaseCursor: 2/5
+updated: 2026-08-14T16:15:48.458Z
+nextStep: verify all sandbox-notes requirements against current checkout
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (1/5)
-**next**: capture current repository directories, QA README, and doc listing
+**phase**: implement (2/5)
+**next**: verify all sandbox-notes requirements against current checkout
