@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR #830 独立复验 — 拆 worktree 时把进程也收干净</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.65}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 20px 80px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 28px}
+  .mono{font-family:"SF Mono",ui-monospace,monospace;font-size:13px}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+        padding:20px 22px;margin:0 0 16px;border-left:4px solid var(--blue)}
+  .card.green{border-left-color:var(--green)}
+  .card.red{border-left-color:var(--red)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.purple{border-left-color:var(--purple)}
+  .card h2{font-size:18px;margin:0 0 10px;letter-spacing:-.01em}
+  .card h3{font-size:15px;margin:18px 0 6px;color:var(--navy)}
+  .verdict{background:linear-gradient(180deg,#fff,#f7fbf8);border-left-color:var(--green)}
+  .verdict .big{font-size:34px;font-weight:700;color:var(--green);letter-spacing:-.02em}
+  .badge{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.04em;
+         padding:3px 9px;border-radius:20px;background:#e8e8ed;color:#444;vertical-align:middle}
+  .badge.ok{background:#e3f7e9;color:#1a7f3c}
+  .badge.no{background:#ffe8e6;color:#b3261e}
+  .section-title{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+                 color:var(--dim);margin:34px 0 12px}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #ececed;vertical-align:top}
+  th{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+  td.n{white-space:nowrap;font-family:"SF Mono",ui-monospace,monospace}
+  pre{background:#1d1d1f;color:#e8e8ed;border-radius:10px;padding:14px 16px;overflow-x:auto;
+      font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.55;margin:10px 0}
+  .kill{color:#ff6b60}.live{color:#5ee08a}
+  ul{margin:8px 0 0;padding-left:20px}
+  li{margin:5px 0}
+  .foot{color:var(--dim);font-size:13px;margin-top:30px}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media (max-width:680px){.split{grid-template-columns:1fr}h1{font-size:24px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>拆 worktree 时把进程也收干净 —— 独立复验通过</h1>
+  <p class="sub">PR #830（FLY-1759，8-13 内存爆掉那件事的根因修复）· 复验单 FLY-1767 · 2026-08-14</p>
+
+  <div class="card verdict">
+    <div class="big">PASS</div>
+    <p style="margin:6px 0 0">
+      被测版本 <span class="mono">0aa43410</span>（开跑前、收工后各核一次，没漂）。
+      我用一套跟上一轮完全无关的自建测试跑了 <strong>129 项断言，0 失败</strong>；
+      再加上仓库自带的测试、两个 shell 套件、lint、build、GitHub CI 九项，全绿。
+    </p>
+  </div>
+
+  <div class="section-title">为什么要再验一次</div>
+  <div class="card amber">
+    <h2>最后那一版，从来没人验过</h2>
+    <p style="margin:0">
+      这单的历史是断的：代码审查和第一轮独立 QA 都是在 <span class="mono">1671a3f2</span> 这一版上做的，
+      那轮 QA 判了 <strong>FAIL</strong>。返工的时候撞上系统 bug（原来那个执行体已经结束、收不回来），
+      只好手工恢复、换了个执行体收尾，产出了最终的 <span class="mono">0aa43410</span>。
+      <strong>结果就是：最终这一版上没有任何独立 QA 结论。</strong>
+      这跟 FLY-1560 是同一类缺口，所以按你今早定的规矩补验。
+    </p>
+  </div>
+
+  <div class="section-title">先证明「病」是真的</div>
+  <div class="card red">
+    <h2>对照组：用修复前的老做法拆一次</h2>
+    <p style="margin:0 0 4px">
+      一个绿色的测试如果没有对照，什么也证明不了。所以我先故意用老做法（只删目录、不管进程）拆一遍：
+    </p>
+<pre>目录删掉了            ✓
+进程 chain  <span class="kill">还活着</span>
+进程 plain  <span class="kill">还活着</span>
+进程 orphan <span class="kill">还活着</span>   父进程=1，工作目录还指着那个已经删掉的路径</pre>
+    <p style="margin:6px 0 0">
+      最后那一行，就是 8-13 那天在机器上抓到的原样签名。<strong>病是真的。</strong>
+    </p>
+  </div>
+
+  <div class="section-title">再证明「药」是有效的</div>
+  <div class="card green">
+    <h2>一次拆除，把 8-13 那天四类漏网进程一起收掉</h2>
+    <p style="margin:0 0 4px">
+      我在一个 worktree 里同时种下当天真实泄漏的四个家族，然后走一次正常拆除：
+    </p>
+    <div class="scroll">
+    <table>
+      <tr><th>种下的东西</th><th>对应 8-13 现场</th><th>结果</th></tr>
+      <tr><td>3 个常驻 node 进程</td><td>10 个孤儿 vitest worker</td><td class="n"><span class="badge ok">已回收</span></td></tr>
+      <tr><td>2 个脱离父进程的守护进程</td><td>18 个残留 codex app-server</td><td class="n"><span class="badge ok">已回收</span></td></tr>
+      <tr><td>1 个真的 tmux server</td><td>活了 5 天的那个逃逸者</td><td class="n"><span class="badge ok">已回收</span></td></tr>
+      <tr><td>1 条 zsh→sh→sleep 三代进程链</td><td>shell-snapshot zsh</td><td class="n"><span class="badge ok">已回收</span></td></tr>
+      <tr><td>1 个在主仓库里的无关进程</td><td>—（对照）</td><td class="n"><span class="badge">安然无恙</span></td></tr>
+    </table>
+    </div>
+    <p style="margin:10px 0 0">
+      耗时 <strong>2.4 秒</strong>。判定不是看程序自己怎么报，而是我逐个进程号去问操作系统「你还在吗」——
+      全部答「不在了」。
+    </p>
+  </div>
+
+  <div class="card green">
+    <h2>四个拆除入口都验了（上一轮只验了三个）</h2>
+    <p style="margin:0 0 4px">代码里有四个会拆 worktree 的入口。上一轮漏了第四个，这次补上：</p>
+    <div class="scroll">
+    <table>
+      <tr><th>入口</th><th>什么时候会走到</th><th>结果</th></tr>
+      <tr><td class="n">remove()</td><td>常规拆除（改名 + 后台删）</td><td class="n"><span class="badge ok">PASS</span></td></tr>
+      <tr><td class="n">removeCleanWorktreeByPath()</td><td>PR 合并后清理</td><td class="n"><span class="badge ok">PASS</span></td></tr>
+      <tr><td class="n">removeWorktreeForce()</td><td>隔离之后强拆</td><td class="n"><span class="badge ok">PASS</span></td></tr>
+      <tr><td class="n">removeIfExists()</td><td>起 Runner 之前清残留目录</td><td class="n"><span class="badge ok">PASS<br><span style="font-weight:400">上轮未覆盖</span></span></td></tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="section-title">最该担心的事：会不会误杀</div>
+  <div class="card purple">
+    <h2>这段代码有「整组杀进程」的能力，所以我重点打了它的边界</h2>
+    <div class="split">
+      <div>
+        <h3>该活的都活着</h3>
+        <ul>
+          <li>兄弟 worktree 里的进程 —— <strong>活</strong></li>
+          <li>名字相近的路径（拆 <span class="mono">…-FLY-1</span> 时 <span class="mono">…-FLY-12</span> 里的进程）—— <strong>活</strong></li>
+          <li>主仓库里的进程 —— <strong>活</strong></li>
+          <li>跟目标共用一个进程组、但自己在目标外的进程 —— <strong>活</strong>（不做整组杀）</li>
+          <li>回收器自己和它的祖先 —— <strong>活</strong>（不会自杀）</li>
+        </ul>
+      </div>
+      <div>
+        <h3>该拒绝的都拒绝了</h3>
+        <ul>
+          <li>路径是软链接 → 拒绝，一个信号都不发</li>
+          <li>路径不是预期父目录的直接子目录 → 拒绝</li>
+          <li>名字不带本仓库前缀 → 拒绝</li>
+          <li>路径太浅（&lt;3 层）→ 拒绝</li>
+          <li>进程号被系统回收给了别的程序 → 跳过，不杀</li>
+        </ul>
+      </div>
+    </div>
+    <p style="margin:12px 0 0">
+      七种拒绝路径我都单独测了，并且在最后补了一个「同一个进程换成合法目标就确实会被收掉」的反向对照 ——
+      否则这一整组可能只是因为什么都没发生才显绿。
+    </p>
+  </div>
+
+  <div class="section-title">上一轮判 FAIL 的那一条，修好了吗</div>
+  <div class="card green">
+    <h2>修好了，而且比当初建议的更彻底</h2>
+    <p style="margin:0 0 8px">
+      上一轮 FAIL 的唯一理由是：那个「真 tmux 测试」用了一条 tmux 根本不接受的命令，
+      导致它<strong>永远不可能通过</strong>，而 CI 又被写成永远跳过它 ——
+      于是这个测试<strong>看起来存在，实际上一行都没测</strong>。
+    </p>
+    <div class="scroll">
+    <table>
+      <tr><th>当初的问题</th><th>现在</th></tr>
+      <tr><td>命令带了个互斥的 <span class="mono">-D</span>，tmux 直接报用法并退出</td><td><span class="badge ok">已改</span> 我拿旧命令原样重放：退出码 1、打用法、socket 永不出现（复现了当初的判据）；新命令正常</td></tr>
+      <tr><td>本机上跑全套测试恒定红一例（1281 过 / 1 红）</td><td><span class="badge ok">已消</span> 现在 <strong>1282 过 / 0 红</strong></td></tr>
+      <tr><td>CI 上永远跳过，红了也看不见</td><td><span class="badge ok">已改</span> 改成 CI 上缺工具就<strong>直接报错</strong>，不许静默跳过；CI 也装上 tmux 了</td></tr>
+      <tr><td>名义上覆盖 tmux，实际零覆盖</td><td><span class="badge ok">已改</span> 现在真跑真过；而且我把回收器换成「什么都不做但假装成功」的假货之后，<strong>它会变红</strong> —— 这才叫真覆盖</td></tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>我还检查了「这些测试是不是在空过」</h2>
+    <p style="margin:0">
+      把回收器整个换成「不扫描、不杀任何东西、但报告一切正常」的假实现（= 精确还原修复前的行为），
+      再跑一遍仓库自带的验收测试：<strong>10 例里 8 例立刻变红</strong>，剩下 2 例正好是本来就断言
+      「不许杀」的反向用例。同时用同一套装置跑一个跟回收器无关的测试文件，它 <strong>58 项全绿</strong> ——
+      说明变红是真发现了问题，不是我把环境搞坏了。
+    </p>
+  </div>
+
+  <div class="section-title">硬门</div>
+  <div class="card">
+    <div class="scroll">
+    <table>
+      <tr><th>检查</th><th>结果</th></tr>
+      <tr><td>我自建的 5 组独立测试</td><td class="n">129 项 / <span class="badge ok">0 失败</span></td></tr>
+      <tr><td>仓库自带测试（改动所在的包，全量）</td><td class="n">1282 过 / 5 跳过 / <span class="badge ok">0 失败</span></td></tr>
+      <tr><td>Bridge 侧清理逻辑测试</td><td class="n">26 / 26 <span class="badge ok">✓</span></td></tr>
+      <tr><td>两个 shell 套件</td><td class="n">4/4 与 7/7 <span class="badge ok">✓</span></td></tr>
+      <tr><td>全仓 lint</td><td class="n">0 错误 <span class="badge ok">✓</span></td></tr>
+      <tr><td>构建</td><td class="n">通过 <span class="badge ok">✓</span></td></tr>
+      <tr><td>GitHub CI（就是这一版）</td><td class="n">9 / 9 <span class="badge ok">✓</span></td></tr>
+      <tr><td>PR 状态</td><td class="n">非草稿 · 可合并 · 无冲突 <span class="badge ok">✓</span></td></tr>
+    </table>
+    </div>
+    <p style="margin:12px 0 0;font-size:14px">
+      <strong>关于代码审查：</strong>Codex 是在 <span class="mono">1671a3f2</span> 上批的。
+      我核过从那一版到最终版的全部改动 —— <strong>生产代码一个字节都没变</strong>，
+      只动了一个测试文件、CI 配置和进度台账。要不要为这段测试改动再补一轮审查，是 Tadashi 的判断，
+      我没有替他决定，也没有替他豁免。
+    </p>
+  </div>
+
+  <div class="section-title">诚实的边界</div>
+  <div class="card amber">
+    <h2>三件我没能验的事，和一个不阻塞的观察</h2>
+    <ul>
+      <li><strong>只在这台 Mac 上验过。</strong>我没有 Linux 机器可以复跑，Linux 那边以 CI 为准（9/9 绿，而且这个 PR 已经把 tmux 装进 CI，那条真 tmux 测试在 Linux 上现在会真跑）。</li>
+      <li><strong>没做 24 小时浸泡观察</strong> —— 这属于上线后自然观察。</li>
+      <li>两个提示词文件的改动只做了静态检查，<strong>没在真实调度里跑过</strong>。</li>
+      <li><strong>一个不阻塞的小毛病</strong>：如果被杀掉的进程有个「还活着但不给孩子收尸」的父进程在目标外，那个进程会变成僵尸；回收器会多花约 8 秒、并且报一句「没收干净」。但僵尸不占内存（实测 0KB），本单要治的内存泄漏已经治住，目录照样删掉，也不会发告警。<strong>建议记个 follow-up</strong>：将来如果这条审计接了告警，先把「僵尸算已死」补进判定，否则会有假告警。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>我做这件事的时候没碰任何生产东西</h2>
+    <ul>
+      <li>被测分支 <strong>零写入、零提交</strong>，跑前跑后都核过是干净的。</li>
+      <li>所有测试用的临时仓库都在 <span class="mono">/tmp</span> 里，没碰 Bridge、没碰任何服务。</li>
+      <li>收工时确认：<strong>这个 QA 自己没有泄漏它正在测的那种进程</strong>。</li>
+      <li>过程中我的测试装置自己出过 4 处毛病（比如一个用例差点把「父进程自然退出」误读成「被误杀」），都在下结论之前查清修掉了，一处也没有变成产品结论。</li>
+    </ul>
+  </div>
+
+  <p class="foot">
+    完整证据（逐条进程号、突变对照、旧命令重放记录）在
+    <span class="mono">engineering/doc/FLY-1767-pr830-reap-verify/qa-report.md</span>。
+    本轮结论不进引擎账本，交 Tadashi 作为你批 #830 的输入。
+  </p>
+
+</div>
+</body>
+</html>
