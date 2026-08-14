@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 3/5
-updated: 2026-08-14T16:11:05.934Z
-nextStep: commit+push design artifacts, then publish-report
+phaseCursor: 5/5
+updated: 2026-08-14T16:12:17.646Z
+nextStep: design node complete; publish blocked by known slot 401 (task#52);
+  implement node next
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (3/5)
-**next**: commit+push design artifacts, then publish-report
+**phase**: design (5/5)
+**next**: design node complete; publish blocked by known slot 401 (task#52); implement node next
