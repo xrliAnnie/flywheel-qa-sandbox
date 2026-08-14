@@ -1,13 +1,14 @@
 ---
 issue: FLY-1758
 phase: implement
-phaseCursor: 0/8
-updated: 2026-08-14T09:52:11.120Z
-nextStep: "Layer 1 founder_review comm model: red tests at public CLI/DB seams"
+phaseCursor: 1/8
+updated: 2026-08-14T10:20:11.141Z
+nextStep: "Layer 2: archive-aware FounderReviewStateReader and
+  completion/admission guards"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1758 progress
-**phase**: implement (0/8)
-**next**: Layer 1 founder_review comm model: red tests at public CLI/DB seams
+**phase**: implement (1/8)
+**next**: Layer 2: archive-aware FounderReviewStateReader and completion/admission guards
