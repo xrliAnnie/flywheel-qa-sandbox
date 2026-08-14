@@ -1,0 +1,14 @@
+flowchart LR
+  A["同一封信 · 同一个死 socket"] --> B["记一次失败<br/>上限 = 55 次 ≈ 8.01 小时"]
+  B --> C{"到上限了吗"}
+  C -- "没到" --> D["LEASED · 退避后再投"]
+  D --> A
+  C -- "到了" --> E["先发 severe 告警<br/>进 Discord 告警频道"]
+  E --> F{"告警真的送到了吗"}
+  F -- "没送到" --> G["信保持 LEASED<br/>绝不静默判死"]
+  G --> E
+  F -- "送到了" --> H["整批转 DEAD<br/>transport_unavailable_exhausted"]
+  H --> I["永久停投 · 计数定格"]
+  classDef good fill:#e3f7e8,stroke:#34c759,color:#1d1d1f;
+  classDef warn fill:#fff4e0,stroke:#ff9500,color:#1d1d1f;
+  class E,H,I good; class G warn;

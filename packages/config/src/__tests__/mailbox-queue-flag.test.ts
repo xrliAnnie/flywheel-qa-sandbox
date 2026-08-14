@@ -23,7 +23,7 @@ describe("FLY-1573 mailbox queue flag", () => {
 		});
 	});
 
-	it("classifies all six queue parameters as numeric tuning, not flags", () => {
+	it("classifies all seven queue parameters as numeric tuning, not flags", () => {
 		for (const name of [
 			"FLYWHEEL_MAILBOX_ACK_LEASE_MS",
 			"FLYWHEEL_MAILBOX_BATCH_WINDOW_MS",
@@ -31,6 +31,7 @@ describe("FLY-1573 mailbox queue flag", () => {
 			"FLYWHEEL_MAILBOX_INFLIGHT_BATCHES",
 			"FLYWHEEL_MAILBOX_LEASE_RETRY_MAX",
 			"FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS",
+			"FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX",
 		]) {
 			expect(NON_FLAG_ALLOWLIST[name]).toMatch(/numeric tuning/i);
 		}

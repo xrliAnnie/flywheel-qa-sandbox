@@ -78,6 +78,13 @@ export interface LeadInboxLoopOptions {
 		leadId: string;
 		at: string;
 	}) => Promise<void> | void;
+	onModelTransportExhausted?: (context: {
+		leadId: string;
+		deliveryIds: string[];
+		error: string;
+		attempt: number;
+		at: string;
+	}) => Promise<void> | void;
 	onDiscordUndeliverable?: (context: {
 		leadId: string;
 		deliveryIds: string[];
@@ -212,6 +219,7 @@ export class LeadInboxLoop {
 				inflightMaxBatches: 3,
 				leaseRetryMax: 3,
 				deadLetterWindowMs: 1_800_000,
+				unavailableRetryMax: 55,
 			};
 			// FLY-1599: recordTickStarted is synchronous SQL. It used to run BEFORE
 			// this try block, so a SQLITE_BUSY during a lead-restart herd escaped
@@ -523,29 +531,85 @@ export class LeadInboxLoop {
 		} catch (error) {
 			const unavailable = error instanceof LeadDeliveryUnavailableError;
 			const leadUnavailable = unavailable && error.scope === "lead";
-			const nonExhausting = unavailable;
 			const attempt = (rows[0]?.retry_count ?? 0) + 1;
-			if (discord && !nonExhausting && attempt >= this.maxModelAttempts) {
+			const unavailableExhausted =
+				unavailable && attempt >= queueConfig.unavailableRetryMax;
+			let terminalLeadAlerted = false;
+			if (discord && unavailableExhausted) {
+				await this.quarantineDiscord(
+					rows,
+					`transport_unavailable_exhausted:${describeError(error)}`,
+					{
+						error: describeError(error),
+						maxAttempts: queueConfig.unavailableRetryMax,
+						deadReason: "transport_unavailable_exhausted",
+					},
+				);
+			} else if (discord && !unavailable && attempt >= this.maxModelAttempts) {
 				await this.quarantineDiscord(
 					rows,
 					`delivery_attempts_exhausted:${describeError(error)}`,
 				);
 			} else {
+				if (
+					leadUnavailable &&
+					unavailableExhausted &&
+					this.opts.onModelTransportExhausted
+				) {
+					try {
+						await this.opts.onModelTransportExhausted({
+							leadId: this.opts.leadId,
+							deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+							error: describeError(error),
+							attempt,
+							at: this.isoNow(),
+						});
+						terminalLeadAlerted = true;
+					} catch (alertError) {
+						this.opts.logger?.warn(
+							"codex_model_transport_exhausted_alert_failed",
+							{
+								leadId: this.opts.leadId,
+								deliveryIds: rows.map(({ delivery_id }) => delivery_id),
+								error: describeError(alertError),
+							},
+						);
+						const changed = this.opts.queue.recordLeadDeliveryFailure({
+							ownerEpoch: this.opts.ownerEpoch,
+							batchId,
+							error: `transport_exhausted_alert_failed:${describeError(alertError)}`,
+							now: this.isoNow(),
+							nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+							maxAttempts: Number.MAX_SAFE_INTEGER,
+						});
+						if (changed !== rows.length) {
+							throw new Error(
+								"owner fence lost while backing off terminal transport alert",
+							);
+						}
+						throw alertError;
+					}
+				}
 				this.opts.queue.recordLeadDeliveryFailure({
 					ownerEpoch: this.opts.ownerEpoch,
 					batchId,
 					error: describeError(error),
 					now: this.isoNow(),
 					nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
-					maxAttempts: nonExhausting
-						? Number.MAX_SAFE_INTEGER
+					maxAttempts: unavailable
+						? queueConfig.unavailableRetryMax
 						: this.maxModelAttempts,
+					...(unavailable
+						? { deadReason: "transport_unavailable_exhausted" }
+						: {}),
 				});
 			}
-			if (leadUnavailable) await this.noteTransportStall(describeError(error));
+			if (leadUnavailable && !terminalLeadAlerted)
+				await this.noteTransportStall(describeError(error));
 			if (
 				discord &&
-				nonExhausting &&
+				unavailable &&
+				!unavailableExhausted &&
 				attempt >= 5 &&
 				(this.lastDiscordStallAlertMs === 0 ||
 					this.now().getTime() - this.lastDiscordStallAlertMs >= 30 * 60_000)
@@ -573,6 +637,11 @@ export class LeadInboxLoop {
 	private async quarantineDiscord(
 		rows: MailboxRow[],
 		reason: string,
+		terminalFailure?: {
+			error: string;
+			maxAttempts: number;
+			deadReason: string;
+		},
 	): Promise<void> {
 		const at = this.isoNow();
 		const deliveryIds = rows.map(({ delivery_id }) => delivery_id);
@@ -613,9 +682,23 @@ export class LeadInboxLoop {
 			deliveryIds,
 			reason,
 		});
-		const changed = rows.filter((row) =>
-			this.opts.queue.markDead(row.id, at, `discord_undeliverable:${reason}`),
-		).length;
+		const changed = terminalFailure
+			? this.opts.queue.recordLeadDeliveryFailure({
+					ownerEpoch: this.opts.ownerEpoch,
+					batchId,
+					error: terminalFailure.error,
+					now: at,
+					nextRetryAt: this.nextRetryAt(rows[0]?.retry_count ?? 0),
+					maxAttempts: terminalFailure.maxAttempts,
+					deadReason: terminalFailure.deadReason,
+				})
+			: rows.filter((row) =>
+					this.opts.queue.markDead(
+						row.id,
+						at,
+						`discord_undeliverable:${reason}`,
+					),
+				).length;
 		if (changed !== rows.length) {
 			throw new Error("owner fence lost while quarantining Discord batch");
 		}

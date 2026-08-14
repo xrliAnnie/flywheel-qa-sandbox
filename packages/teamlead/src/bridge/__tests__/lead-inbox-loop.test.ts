@@ -594,25 +594,281 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		});
 	});
 
-	it("does not exhaust ordinary model rows during a Codex transport outage", async () => {
+	it("stops retrying an unavailable Lead batch after the configured cap", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "question-transport");
+		enqueueModel(queue, "question-transport-2");
 		const stalled = vi.fn();
-		const result = await loop(
-			queue,
-			{
-				async deliverBatch() {
-					throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
-				},
-			},
-			{ maxModelAttempts: 1, onModelTransportStall: stalled },
-		).tick();
-		expect(result.ok).toBe(false);
-		expect(queue.getById("question-transport")).toMatchObject({
+		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+			}),
+		};
+		const consumer = loop(queue, adapter, {
+			now: () => new Date(nowMs),
+			retryBackoffBaseMs: 1,
+			retryBackoffCapMs: 1,
+			onModelTransportStall: stalled,
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: false,
+				unavailableRetryMax: 2,
+			}),
+		});
+
+		expect((await consumer.tick()).ok).toBe(false);
+		for (const id of ["question-transport", "question-transport-2"]) {
+			expect(queue.getById(id)).toMatchObject({
+				state: "LEASED",
+				retry_count: 1,
+			});
+		}
+		nowMs += 1;
+		expect((await consumer.tick()).ok).toBe(false);
+		for (const id of ["question-transport", "question-transport-2"]) {
+			expect(queue.getById(id)).toMatchObject({
+				state: "DEAD",
+				retry_count: 2,
+				next_retry_at: null,
+				dead_reason: "transport_unavailable_exhausted",
+			});
+		}
+		const terminalSnapshot = [
+			queue.getById("question-transport"),
+			queue.getById("question-transport-2"),
+		];
+		for (let tick = 0; tick < 3; tick++) {
+			nowMs += 1;
+			expect((await consumer.tick()).ok).toBe(true);
+		}
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
+		expect([
+			queue.getById("question-transport"),
+			queue.getById("question-transport-2"),
+		]).toEqual(terminalSnapshot);
+		expect(stalled).toHaveBeenCalledOnce();
+	});
+
+	it("keeps queue-OFF unavailable rows live until the terminal alert is accepted", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "question-terminal-alert");
+		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
+		let alertAttempts = 0;
+		const exhausted = vi.fn(async () => {
+			alertAttempts += 1;
+			if (alertAttempts === 1) throw new Error("terminal alert unavailable");
+		});
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+			}),
+		};
+		const consumer = loop(queue, adapter, {
+			now: () => new Date(nowMs),
+			retryBackoffBaseMs: 1,
+			retryBackoffCapMs: 1,
+			onModelTransportExhausted: exhausted,
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: false,
+				unavailableRetryMax: 1,
+			}),
+		});
+
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("question-terminal-alert")).toMatchObject({
+			state: "LEASED",
+			retry_count: 1,
+			dead_reason: null,
+		});
+		nowMs += 1;
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("question-terminal-alert")).toMatchObject({
+			state: "DEAD",
+			retry_count: 2,
+			dead_reason: "transport_unavailable_exhausted",
+		});
+		expect(exhausted).toHaveBeenCalledTimes(2);
+		expect(exhausted).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				leadId: "lead-a",
+				deliveryIds: ["question-terminal-alert"],
+				attempt: 2,
+				error: "socket unavailable",
+			}),
+		);
+		for (let tick = 0; tick < 3; tick++) {
+			nowMs += 1;
+			expect((await consumer.tick()).ok).toBe(true);
+		}
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
+	});
+
+	it("caps unavailable retries on the queue-ON claim path", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "question-queue-on-cap");
+		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+			}),
+		};
+		const consumer = loop(queue, adapter, {
+			now: () => new Date(nowMs),
+			retryBackoffBaseMs: 1,
+			retryBackoffCapMs: 1,
+			onModelTransportExhausted: vi.fn(async () => undefined),
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: true,
+				unavailableRetryMax: 2,
+			}),
+		});
+
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("question-queue-on-cap")).toMatchObject({
 			state: "LEASED",
 			retry_count: 1,
 		});
-		expect(stalled).toHaveBeenCalledOnce();
+		nowMs += 1;
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("question-queue-on-cap")).toMatchObject({
+			state: "DEAD",
+			retry_count: 2,
+			dead_reason: "transport_unavailable_exhausted",
+		});
+		for (let tick = 0; tick < 3; tick++) {
+			nowMs += 1;
+			expect((await consumer.tick()).ok).toBe(true);
+		}
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
+	});
+
+	it("maps the default unavailable cap to the real eight-hour backoff schedule", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "question-default-transport-cap");
+		const startedAt = Date.parse("2099-07-19T12:00:00.000Z");
+		let nowMs = startedAt;
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+			}),
+		};
+		const consumer = loop(queue, adapter, {
+			now: () => new Date(nowMs),
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: false,
+			}),
+		});
+
+		for (let attempt = 1; attempt <= 55; attempt++) {
+			expect((await consumer.tick()).ok).toBe(false);
+			const row = queue.getById("question-default-transport-cap");
+			expect(row?.retry_count).toBe(attempt);
+			if (attempt < 55) {
+				expect(row?.state).toBe("LEASED");
+				nowMs = Date.parse(row!.next_retry_at!);
+			} else {
+				expect(row).toMatchObject({
+					state: "DEAD",
+					dead_reason: "transport_unavailable_exhausted",
+					next_retry_at: null,
+				});
+			}
+		}
+
+		expect(nowMs - startedAt).toBe(28_835_000);
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(55);
+	});
+
+	it("uses one retry budget across unavailable and ordinary failures", async () => {
+		const queue = makeQueue();
+		enqueueModel(queue, "question-shared-budget");
+		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
+		let unavailable = true;
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				if (unavailable) {
+					throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+				}
+				throw new Error("authentication rejected");
+			}),
+		};
+		const consumer = loop(queue, adapter, {
+			now: () => new Date(nowMs),
+			retryBackoffBaseMs: 1,
+			retryBackoffCapMs: 1,
+			maxModelAttempts: 3,
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: false,
+				unavailableRetryMax: 10,
+			}),
+		});
+
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			expect((await consumer.tick()).ok).toBe(false);
+			expect(queue.getById("question-shared-budget")).toMatchObject({
+				state: "LEASED",
+				retry_count: attempt,
+			});
+			nowMs += 1;
+		}
+		unavailable = false;
+		expect((await consumer.tick()).ok).toBe(false);
+		expect(queue.getById("question-shared-budget")).toMatchObject({
+			state: "DEAD",
+			retry_count: 3,
+			dead_reason: "delivery_attempts_exhausted",
+		});
+		expect(adapter.deliverBatch).toHaveBeenCalledTimes(3);
+	});
+
+	it("applies the unavailable cap to Discord route transport failures", async () => {
+		const queue = makeQueue();
+		enqueueDiscord(
+			queue,
+			"chat:lead-a:323456789012345681",
+			"423456789012345681",
+		);
+		const adapter = {
+			deliverBatch: vi.fn(async () => {
+				throw new LeadDeliveryUnavailableError(
+					"discord",
+					"route_protocol_unavailable",
+				);
+			}),
+		};
+		const undeliverable = vi.fn(async () => {
+			expect(queue.getById("chat:lead-a:323456789012345681")?.state).toBe(
+				"LEASED",
+			);
+		});
+		const result = await loop(queue, adapter, {
+			onDiscordUndeliverable: undeliverable,
+			queueConfig: () => ({
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
+				enabled: false,
+				unavailableRetryMax: 1,
+			}),
+		}).tick();
+
+		expect(result.ok).toBe(false);
+		expect(queue.getById("chat:lead-a:323456789012345681")).toMatchObject({
+			state: "DEAD",
+			retry_count: 1,
+			dead_reason: "transport_unavailable_exhausted",
+		});
+		expect(adapter.deliverBatch).toHaveBeenCalledOnce();
+		expect(undeliverable).toHaveBeenCalledOnce();
+		expect(undeliverable).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attempt: 1,
+				reason: expect.stringContaining("transport_unavailable_exhausted"),
+			}),
+		);
 	});
 
 	it("quarantines and alerts after a bounded permanent Discord failure", async () => {

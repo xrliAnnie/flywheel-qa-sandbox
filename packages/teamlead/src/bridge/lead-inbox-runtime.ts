@@ -92,6 +92,14 @@ export interface LeadInboxRuntimeOptions {
 		leadId: string;
 		at: string;
 	}) => Promise<void>;
+	onModelTransportExhausted?: (input: {
+		projectName: string;
+		leadId: string;
+		deliveryIds: string[];
+		error: string;
+		attempt: number;
+		at: string;
+	}) => Promise<void>;
 	onDiscordUndeliverable?: (input: {
 		projectName: string;
 		leadId: string;
@@ -307,6 +315,15 @@ export class LeadInboxRuntime {
 						? {
 								onModelTransportRecovered: (input) =>
 									opts.onModelTransportRecovered?.({
+										...input,
+										projectName: project.projectName,
+									}),
+							}
+						: {}),
+					...(opts.onModelTransportExhausted
+						? {
+								onModelTransportExhausted: (input) =>
+									opts.onModelTransportExhausted?.({
 										...input,
 										projectName: project.projectName,
 									}),

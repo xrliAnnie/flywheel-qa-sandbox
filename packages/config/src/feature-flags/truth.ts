@@ -234,6 +234,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: mailbox unacked lease retry limit (FLY-1573)",
 	FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS:
 		"numeric tuning: mailbox dead-letter notification window (FLY-1573)",
+	FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX:
+		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:

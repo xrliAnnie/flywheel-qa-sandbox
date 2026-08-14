@@ -8,6 +8,7 @@ export interface MailboxQueueConfig {
 	inflightMaxBatches: number;
 	leaseRetryMax: number;
 	deadLetterWindowMs: number;
+	unavailableRetryMax: number;
 }
 
 export const DEFAULT_MAILBOX_QUEUE_CONFIG: Readonly<MailboxQueueConfig> = {
@@ -18,6 +19,7 @@ export const DEFAULT_MAILBOX_QUEUE_CONFIG: Readonly<MailboxQueueConfig> = {
 	inflightMaxBatches: 3,
 	leaseRetryMax: 3,
 	deadLetterWindowMs: 1_800_000,
+	unavailableRetryMax: 55,
 };
 
 type Warn = (message: string) => void;
@@ -98,6 +100,14 @@ export function resolveMailboxQueueConfig(
 			DEFAULT_MAILBOX_QUEUE_CONFIG.deadLetterWindowMs,
 			10_000,
 			86_400_000,
+			warn,
+		),
+		unavailableRetryMax: boundedInteger(
+			env,
+			"FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX",
+			DEFAULT_MAILBOX_QUEUE_CONFIG.unavailableRetryMax,
+			1,
+			100_000,
 			warn,
 		),
 	};

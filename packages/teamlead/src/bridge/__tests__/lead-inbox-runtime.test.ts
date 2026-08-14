@@ -20,6 +20,7 @@ import { RuntimeRegistry } from "../runtime-registry.js";
 const runtimes: LeadInboxRuntime[] = [];
 afterEach(() => {
 	for (const runtime of runtimes.splice(0)) runtime.close();
+	vi.unstubAllEnvs();
 });
 
 function runtimeStoreStub(
@@ -201,6 +202,71 @@ describe("LeadInboxRuntime", () => {
 				}),
 			),
 		);
+	});
+
+	it("forwards terminal transport exhaustion before a queue-OFF row dies", async () => {
+		vi.stubEnv("FLYWHEEL_MAILBOX_QUEUE", "0");
+		vi.stubEnv("FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX", "1");
+		const root = mkdtempSync(join(tmpdir(), "fly1750-runtime-exhausted-"));
+		const dbPath = join(root, "project-a.db");
+		const exhausted = vi.fn(async () => {
+			const snapshot = new MailboxQueue(dbPath);
+			try {
+				expect(snapshot.getById("lead_event:lead-a:event-11")?.state).toBe(
+					"LEASED",
+				);
+			} finally {
+				snapshot.close();
+			}
+		});
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: {
+				...runtimeStoreStub(),
+				markLeadEventDelivered: vi.fn(),
+			} as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-1",
+			adapterForLead: () => ({
+				async deliverBatch() {
+					throw new LeadDeliveryUnavailableError("lead", "socket unavailable");
+				},
+			}),
+			onModelTransportExhausted: exhausted,
+		});
+		runtimes.push(runtime);
+		runtime.enqueueLeadEvent(
+			{
+				seq: 11,
+				eventId: "event-11",
+				event: { event_type: "session_completed" },
+				sessionKey: "exec-11",
+				leadId: "lead-a",
+				timestamp: "2026-08-13T21:00:00.000Z",
+			},
+			"payload",
+		);
+		runtime.start();
+		await vi.waitFor(() => expect(exhausted).toHaveBeenCalledOnce());
+		expect(exhausted).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectName: "project-a",
+				leadId: "lead-a",
+				deliveryIds: ["lead_event:lead-a:event-11"],
+				attempt: 1,
+				error: "socket unavailable",
+			}),
+		);
+		const result = new MailboxQueue(dbPath);
+		try {
+			expect(result.getById("lead_event:lead-a:event-11")).toMatchObject({
+				state: "DEAD",
+				dead_reason: "transport_unavailable_exhausted",
+			});
+		} finally {
+			result.close();
+		}
 	});
 
 	it("forwards Discord quarantine evidence before marking the row DEAD", async () => {

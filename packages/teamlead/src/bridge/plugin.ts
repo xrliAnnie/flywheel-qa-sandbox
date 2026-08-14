@@ -4783,11 +4783,16 @@ export async function startBridge(
 		at: string;
 	};
 	type ModelTransportRecovery = Omit<ModelTransportStall, "error">;
+	type ModelTransportExhausted = ModelTransportStall & {
+		deliveryIds: string[];
+		attempt: number;
+	};
 	const pendingModelTransportStalls = new Map<string, ModelTransportStall>();
 	const modelTransportAlertSink: {
 		current?: {
 			stall: (input: ModelTransportStall) => Promise<void>;
 			recovered: (input: ModelTransportRecovery) => Promise<void>;
+			exhausted: (input: ModelTransportExhausted) => Promise<void>;
 		};
 	} = {};
 	type DiscordMailboxAlert = {
@@ -4843,6 +4848,12 @@ export async function startBridge(
 				`${input.projectName}\u001f${input.leadId}`,
 			);
 			await modelTransportAlertSink.current?.recovered(input);
+		},
+		onModelTransportExhausted: async (input) => {
+			const send = modelTransportAlertSink.current?.exhausted;
+			if (!send)
+				throw new Error("terminal model transport alert sink not ready");
+			await send(input);
 		},
 		onDiscordUndeliverable: async (input) => {
 			const send = discordMailboxAlertSink.current?.undeliverable;
@@ -7773,12 +7784,37 @@ export async function startBridge(
 				title: "Codex Lead mailbox transport unavailable",
 				body:
 					`Mailbox delivery to ${input.leadId} cannot reach the Codex inbox ` +
-					`transport and is retrying without exhausting rows. Error: ${input.error}`,
+					`transport and is retrying until the configured terminal cap. Error: ${input.error}`,
 				severity: "severe",
 			});
 		},
 		recovered: async (input) => {
 			console.info("codex_model_transport_recovered", input);
+		},
+		exhausted: async (input) => {
+			const result = await leadAlertNotifier.alert({
+				leadId: input.leadId,
+				projectName: input.projectName,
+				eventId:
+					`codex_model_transport_exhausted:${input.leadId}:` +
+					createHash("sha256")
+						.update(input.deliveryIds.join("\n"))
+						.digest("hex")
+						.slice(0, 16),
+				eventType: "delivery_dead_letter",
+				title: "Codex Lead mailbox transport retries exhausted",
+				body:
+					`Mailbox delivery to ${input.leadId} exhausted its transport retry ` +
+					`budget on attempt ${input.attempt} and will move to DEAD. Delivery IDs: ` +
+					`${input.deliveryIds.join(", ")}. Error: ${input.error}`,
+				severity: "severe",
+			});
+			if (result.skipped === "duplicate") return;
+			if (result.deadLettered || result.skipped) {
+				throw new Error(
+					`Terminal model transport alert not delivered: ${result.skipped ?? "dead_lettered"}`,
+				);
+			}
 		},
 	};
 	for (const input of pendingModelTransportStalls.values()) {
@@ -7828,7 +7864,7 @@ export async function startBridge(
 				title: "Discord mailbox delivery stalled",
 				body:
 					`Mailbox delivery to ${input.leadId} cannot reach the Discord route ` +
-					`and is retrying without exhausting rows. Error: ${input.error}`,
+					`and is retrying until the configured terminal cap. Error: ${input.error}`,
 				severity: "severe",
 			});
 		},

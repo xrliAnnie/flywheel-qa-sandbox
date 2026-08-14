@@ -1,0 +1,20 @@
+flowchart TD
+    subgraph BEFORE["修复前:无限循环(病灶)"]
+        A1["Bridge 每秒巡一次<br/>从站内信队列取一批要投的信"] --> B1["往 Codex Lead 的<br/>socket(进程间电话插口)投递"]
+        B1 --> C1{"接通了吗?"}
+        C1 -- "没接通<br/>(对面根本没有进程在听)" --> D1["记一次『线路不可用』失败<br/>retry_count + 1"]
+        D1 --> E1{"到重试上限了吗?"}
+        E1 -- "上限 = MAX_SAFE_INTEGER<br/>= 实际上没有上限" --> F1["等退避时间(最长10分钟)<br/>再投一次"]
+        F1 --> B1
+    end
+    subgraph AFTER["修复后:有界收敛(Fix A)"]
+        A2["同样的投递失败"] --> D2["retry_count + 1"]
+        D2 --> E2{"到 55 次了吗?<br/>(约 8 小时)"}
+        E2 -- "没到" --> F2["退避后再试"] --> A2
+        E2 -- "到了" --> G2["这封信进 DEAD(死信留档)<br/>标注:线路不可用耗尽"]
+        G2 --> H2["死信闸自动给 founder<br/>发一条 severe 告警"]
+    end
+    style BEFORE fill:#fff5f5,stroke:#ff3b30
+    style AFTER fill:#f0fff4,stroke:#34c759
+    style E1 fill:#ffe5e3,stroke:#ff3b30
+    style G2 fill:#e8f8ed,stroke:#34c759

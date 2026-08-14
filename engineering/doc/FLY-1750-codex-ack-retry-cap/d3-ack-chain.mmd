@@ -1,0 +1,11 @@
+flowchart TD
+    A["Bridge 攒好一批信<br/>带上批号 batch_id"] --> B["经 socket 投给<br/>Codex Lead 载体进程"]
+    B --> C["Codex Lead(模型)读完这批信"]
+    C --> D["调用 ack_batch 工具<br/>(lead_actions MCP,= 签收章)"]
+    D --> E["在共享数据库 comm.db 里<br/>写一行『我签收了批 X』"]
+    E --> F["Bridge 的协议巡检读到这行"]
+    F --> G["把这批信全部标成 ACKED ✅<br/>不再重投"]
+    EV1["📊 Claude 腿对照组:<br/>这条链已跑通 5997 次"] -.-> E
+    EV2["📊 mufasa(Codex 腿):<br/>历史 0 次 —— 不是不会签收,<br/>是第 2 步从来没投进去过"] -.-> B
+    style EV1 fill:#e8f4ff,stroke:#007aff
+    style EV2 fill:#fff8e6,stroke:#ff9500

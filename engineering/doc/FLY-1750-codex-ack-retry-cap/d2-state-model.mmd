@@ -1,0 +1,12 @@
+flowchart LR
+    Q["QUEUED<br/>排队待投"] -->|"Bridge 领走这一批"| L["LEASED<br/>已领出/在投"]
+    L -->|"投递成功<br/>盖 delivered_at 章"| DEL["已送达<br/>等对方签收(ack)"]
+    DEL -->|"Lead 签收(ack_batch)"| ACK["ACKED ✅<br/>完结"]
+    DEL -->|"30 分钟没签收<br/>lease_retry_count+1"| Q
+    DEL -->|"签收重投满 3 次"| DEAD1["DEAD(死信)<br/>原因:一直没签收<br/>✅ 这条上限一直都在"]
+    L -->|"真实投递失败<br/>retry_count+1,满 5 次"| DEAD2["DEAD(死信)<br/>原因:投递失败耗尽<br/>✅ 这条上限也一直都在"]
+    L -->|"『线路不可用』失败<br/>retry_count+1"| HOLE["🕳 修复前:无上限<br/>永远转圈,观测到 131 次<br/><b>Fix A:满 55 次(约8h)进 DEAD</b>"]
+    HOLE -.->|"Fix A 之后"| DEAD3["DEAD(死信)<br/>原因:线路不可用耗尽<br/>→ 自动告警 founder"]
+    style HOLE fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style DEAD3 fill:#e8f8ed,stroke:#34c759
+    style ACK fill:#e8f8ed,stroke:#34c759

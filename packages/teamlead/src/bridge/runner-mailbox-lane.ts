@@ -215,6 +215,7 @@ export class RunnerMailboxLane {
 			inflightMaxBatches: 3,
 			leaseRetryMax: 3,
 			deadLetterWindowMs: 1_800_000,
+			unavailableRetryMax: 55,
 		};
 		const result: RunnerMailboxTickResult = {
 			delivered: 0,

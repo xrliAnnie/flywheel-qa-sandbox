@@ -4,7 +4,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
-import { MailboxQueue } from "../mailbox-queue.js";
+import { MailboxQueue, QUARANTINE_DEAD_REASONS } from "../mailbox-queue.js";
 import { MAILBOX_SCHEMA } from "../mailbox-schema.js";
 import { encodeSenderRef } from "../sender-ref.js";
 import { writeContentRef } from "../utils/content-ref.js";
@@ -376,6 +376,121 @@ describe("FLY-1572 MailboxQueue", () => {
 					claimTtlMs: 30_000,
 				}),
 			).toHaveLength(1);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("records a caller-selected DEAD reason without making it quarantine-recoverable", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			queue.enqueue({
+				id: "unavailable-1",
+				fromAgent: "runner-a",
+				toAgent: "lead-a",
+				recipientKind: "lead",
+				type: "regular",
+				content: "unavailable-1",
+				createdAt: NOW,
+				senderRef: SENDER_REF,
+			});
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-1",
+				now: NOW,
+				leaseTtlMs: 10_000,
+			});
+			queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "epoch-1",
+				batchId: "batch-unavailable",
+				now: NOW,
+				claimTtlMs: 30_000,
+			});
+
+			expect(
+				queue.recordLeadDeliveryFailure({
+					batchId: "batch-unavailable",
+					ownerEpoch: "epoch-1",
+					now: "2026-08-05T12:00:01.000Z",
+					nextRetryAt: "2026-08-05T12:00:05.000Z",
+					error: "socket unavailable",
+					maxAttempts: 1,
+					deadReason: "transport_unavailable_exhausted",
+				}),
+			).toBe(1);
+			expect(queue.getById("unavailable-1")).toMatchObject({
+				state: "DEAD",
+				retry_count: 1,
+				next_retry_at: null,
+				batch_id: null,
+				dead_reason: "transport_unavailable_exhausted",
+			});
+			expect(QUARANTINE_DEAD_REASONS).not.toContain(
+				"transport_unavailable_exhausted",
+			);
+			expect(
+				queue.listUncoveredLeadDeadLetters({
+					sinceCursor: [],
+					limit: 10,
+					maxRowsPerRecipient: 10,
+					maxSummaryBytes: 4_096,
+					resolveOwningLead: () => undefined,
+				}),
+			).toEqual([
+				expect.objectContaining({
+					sourceKind: "lead_unacked",
+					recipient: "lead-a",
+					deadCount: 1,
+				}),
+			]);
+			expect(
+				queue.archiveDueFamilies({
+					now: "2026-08-08T12:00:01.000Z",
+				}),
+			).toMatchObject({ archivedFamilies: 1, archivedMessages: 1 });
+			expect(
+				queue.listUncoveredLeadDeadLetters({
+					sinceCursor: [],
+					limit: 10,
+					maxRowsPerRecipient: 10,
+					maxSummaryBytes: 4_096,
+					resolveOwningLead: () => undefined,
+				}),
+			).toEqual([]);
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("keeps the existing Lead DEAD reason when no override is supplied", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			enqueueLead(queue, "ordinary-1");
+			queue.acquireOrRenewOwner({
+				ownerEpoch: "epoch-1",
+				now: NOW,
+				leaseTtlMs: 10_000,
+			});
+			queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: "epoch-1",
+				batchId: "batch-ordinary",
+				now: NOW,
+				claimTtlMs: 30_000,
+			});
+			queue.recordLeadDeliveryFailure({
+				batchId: "batch-ordinary",
+				ownerEpoch: "epoch-1",
+				now: "2026-08-05T12:00:01.000Z",
+				nextRetryAt: "2026-08-05T12:00:05.000Z",
+				error: "permanent rejection",
+				maxAttempts: 1,
+			});
+			expect(queue.getById("ordinary-1")?.dead_reason).toBe(
+				"delivery_attempts_exhausted",
+			);
 		} finally {
 			queue.close();
 		}

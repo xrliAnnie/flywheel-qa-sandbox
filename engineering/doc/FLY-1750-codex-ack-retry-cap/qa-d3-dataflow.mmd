@@ -1,0 +1,21 @@
+flowchart LR
+  subgraph S["证据从哪来"]
+    A1["真 sqlite comm.db<br/>真 mailbox 行"]
+    A2["真不存在的 unix socket<br/>真 connect ENOENT"]
+  end
+  subgraph P["经过什么"]
+    B1["真编译产物<br/>LeadInboxLoop 032ed84a"]
+    B2["真 LeadAlertNotifier"]
+  end
+  subgraph D["到哪儿落地"]
+    C1["行状态 DEAD<br/>+ 投递次数定格"]
+    C2["隔离 test-flywheel-alerts<br/>真 Discord 消息 1537685852598177873"]
+  end
+  A1 --> B1
+  A2 --> B1
+  B1 --> B2
+  B1 --> C1
+  B2 --> C2
+  C2 -. "REST 回读频道核对" .-> C2
+  classDef good fill:#e3f7e8,stroke:#34c759,color:#1d1d1f;
+  class C1,C2 good;

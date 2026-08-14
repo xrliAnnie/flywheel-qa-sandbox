@@ -1,0 +1,12 @@
+flowchart LR
+  A["一封发给 Codex Lead 的信"] --> B["Bridge 投递"]
+  B --> C{"Codex 收信口<br/>socket 还在吗"}
+  C -- "在" --> D["签收 · 结束"]
+  C -- "不在<br/>connect ENOENT" --> E["记一次失败<br/>上限 = 无穷大"]
+  E --> F["信留在 LEASED<br/>等下次重投"]
+  F --> B
+  E -.->|"永不发生"| G["进死信 · 通知 founder"]
+  classDef bad fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f;
+  classDef good fill:#e3f7e8,stroke:#34c759,color:#1d1d1f;
+  classDef ghost fill:#f2f2f7,stroke:#c7c7cc,color:#86868b,stroke-dasharray:5 4;
+  class E,F bad; class D good; class G ghost;

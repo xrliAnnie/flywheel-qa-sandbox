@@ -2188,6 +2188,7 @@ export class MailboxQueue {
 		nextRetryAt: string;
 		error: string;
 		maxAttempts: number;
+		deadReason?: string;
 	}): number {
 		const result = this.db
 			.prepare(
@@ -2197,7 +2198,7 @@ export class MailboxQueue {
 				   next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ? END,
 				   state = CASE WHEN retry_count + 1 >= ? THEN 'DEAD' ELSE 'LEASED' END,
 				   dead_at = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_at END,
-				   dead_reason = CASE WHEN retry_count + 1 >= ? THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
+				   dead_reason = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_reason END,
 				   batch_id = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE batch_id END,
 				   claimed_by = NULL,
 				   claim_expires_at = NULL
@@ -2211,6 +2212,7 @@ export class MailboxQueue {
 				input.maxAttempts,
 				input.now,
 				input.maxAttempts,
+				input.deadReason ?? "delivery_attempts_exhausted",
 				input.maxAttempts,
 				input.batchId,
 				input.ownerEpoch,
