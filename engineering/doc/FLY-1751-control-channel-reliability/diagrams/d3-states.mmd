@@ -1,0 +1,8 @@
+stateDiagram-v2
+    [*] --> QUEUED : 消息写入信箱
+    QUEUED --> LEASED : 装箱投递(占用 1 个在途位)
+    LEASED --> ACKED : Lead 签收,在途位释放
+    LEASED --> QUEUED : 租约 30 分钟到期,自动重投(重试+1)
+    LEASED --> QUEUED : 换代接管 adopt-inflight(重试+1)<br/>★ 本单给 /clear 补上这条触发
+    QUEUED --> DEAD : 重试超过 3 次,判死(进死信)
+    ACKED --> [*]

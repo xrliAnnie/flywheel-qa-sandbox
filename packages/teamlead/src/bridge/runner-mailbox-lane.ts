@@ -2,7 +2,10 @@ import { CommDB } from "flywheel-comm/db";
 import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
 import { messageProvenanceFromSenderRef } from "flywheel-comm/sender-ref";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import type { MailboxQueueConfig } from "./mailbox-queue-config.js";
+import {
+	DEFAULT_MAILBOX_QUEUE_CONFIG,
+	type MailboxQueueConfig,
+} from "./mailbox-queue-config.js";
 
 export interface RunnerMailboxEnvelope {
 	mailboxId: string;
@@ -208,14 +211,8 @@ export class RunnerMailboxLane {
 
 	async tick(): Promise<RunnerMailboxTickResult> {
 		const queueConfig = this.opts.queueConfig?.() ?? {
+			...DEFAULT_MAILBOX_QUEUE_CONFIG,
 			enabled: false,
-			ackLeaseMs: 1_800_000,
-			batchWindowMs: 60_000,
-			batchMaxSize: 5,
-			inflightMaxBatches: 3,
-			leaseRetryMax: 3,
-			deadLetterWindowMs: 1_800_000,
-			unavailableRetryMax: 55,
 		};
 		const result: RunnerMailboxTickResult = {
 			delivered: 0,

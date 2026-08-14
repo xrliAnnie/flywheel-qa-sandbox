@@ -514,6 +514,16 @@ jobs:
           bash scripts/__tests__/fly1697-v2-lease-body.test.sh
           bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh
 
+      # FLY-1708/FLY-1751: both process-birth and SessionStart(source=clear)
+      # adoption legs protect mailbox capacity. Keep their hermetic contracts
+      # in CI because script-tests enumerates shell suites instead of globbing.
+      - name: Test — Lead in-flight mailbox adoption contracts
+        run: |
+          command -v python3
+          command -v rg
+          bash scripts/__tests__/test-claude-lead-adopt-inflight.test.sh
+          bash scripts/__tests__/test-claude-lead-session-start-adopt.test.sh
+
       # FLY-1649: hermetic r4 whole-state rollback and forward-window lifecycle
       # contracts. Explicitly registered because script-tests does not glob.
       - name: Test — FLY-1649 r4 migration-window hardening

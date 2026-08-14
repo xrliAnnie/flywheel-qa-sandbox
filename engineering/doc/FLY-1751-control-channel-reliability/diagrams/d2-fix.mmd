@@ -1,0 +1,12 @@
+flowchart TD
+    A["/clear 换代"] --> B["SessionStart hook 自动触发<br/>(会话诞生时运行的小脚本 — 本单新增)"]
+    B --> C{"三层身份核验<br/>① 只装在该 Lead 自己的工作目录<br/>② 会话身份 agent_type = 该 Lead<br/>③ 环境变量佐证一致"}
+    C -->|任一层不过| D["静默退出<br/>不碰任何数据"]
+    C -->|三层全过| E["adopt-inflight<br/>(FLY-1708 已有的接管命令)<br/>把旧现场的在途批翻回队列"]
+    E --> F["Bridge 重新投递到新现场<br/>Lead 正常签收,队列恢复流动"]
+    classDef good fill:#e8f8ee,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+    classDef norm fill:#ffffff,stroke:#86868b,color:#1d1d1f
+    classDef gate fill:#eef4ff,stroke:#007aff,color:#1d1d1f
+    class A,B,D norm
+    class C gate
+    class E,F good
