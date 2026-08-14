@@ -1,8 +1,8 @@
 # FLY-1758 产品线互动回合:founder_review checkpoint — 实施计划
 
 Issue: FLY-1758 (https://linear.app/geoforge3d/issue/FLY-1758/产品线互动回合-阶段性产出必须先经-founder-review-才准继续-新-founder-review-checkpoint复用)
-日期: 2026-08-14(R1..R4 修订:§5 改动清单与 §2 三入口逐字对齐、marker reconcile 改为未答 marker 有限工作集)
-基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M)+ R4(1B+1H),全部采纳
+日期: 2026-08-14(R1..R5 修订:读取面 archive-aware(72h 归档不灭 pass)、marker per-project 点查定位契约)
+基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M)+ R4(1B+1H)+ R5(1B+1H),全部采纳
 
 ## 0. 一句话
 
@@ -66,6 +66,8 @@ sequenceDiagram
 
 **包边界(R2 M6)**:`flywheel-comm` 不依赖 teamlead —— 谓词做成 comm 包里的**纯判定函数 + 窄接口**(`FounderReviewStateReader` / artifact reader);Bridge 侧用 StateStore adapter、CLI 侧用 readonly SQLite adapter 实现同一接口,**两个 adapter 跑同一组 contract tests**(snapshot 缺失/跨 run/digest 漂移必须给出一致结果),杜绝各调用点各自重写查询造成第二套判定。
 
+**读取面必须 archive-aware(R5 B1 —— pass 是 run 生命周期内的授权事实,不是 72h 内的)**:现有 `getResponse()` 只查 live `mailbox_message_projection`;response TTL 72h、terminal family 默认 72h 归档后 live 行被删、只在 append-only `mailbox_log.row_json` 留 snapshot —— 若只读 live 面,pass 超过归档期后 complete/land/finalization/marker reconcile 全部误判 missing。`FounderReviewStateReader` 的契约明确为 **live + archived 合并的精确读取面**(复用现有 `mailbox_identity`/`mailbox_log`,零新送达设施):合并 live/archived question family、按统一 server insert order 选本 run 最新有效 round、**对 archived response 重新执行 owner/checkpoint/founder attribution/digest 全套校验**;archive snapshot 缺失/损坏 = fail-closed。**强制归档测试**:pass → ACK family → 推进 >72h + 跑 archive sweep → completion / managed land / 2b′-a/b/c / marker reconcile 仍读到同一 verdict;archived pass + 更新的 live pending/rejected 仍被新 round 阻断。
+
 ## 3. 核心数据设计(R1 B2/B3 修订)
 
 ### 3.1 round 的身份:run 级,不是 issue 级
@@ -92,7 +94,7 @@ sequenceDiagram
 - 写入原语 `trustedFounderReviewResponse`:包 `insertResponseIfGateOpen`(expectedCheckpoint+TOCTOU)+ `isTrustedApprovalAttribution` 断言;content=`{passed, feedback, artifactDigest}`。**不复用** `write-gate-response.ts`(硬拒非 ship + 强绑 ship FSM)。
 - **durable response 落库后,幂等调用 `markGateMarkerAnsweredForExecution`** —— 否则 Codex runner 的 `--no-block` marker 永不收敛(R1 H6)。**重放锚点 = durable 数据本身,不建第二份 intent(R2 H5 + R3 H2);工作集 = 未答 marker,不是 response 扫描(R4 H2)**:
   - 写入路径先尽力 mark(失败不回滚 response)。
-  - reconcile 的**有限工作集 = 现存未答 marker 文件**:按 marker 自带的 `questionId + executionId + checkpoint` 解析出 project/CommDB → **点查**该 question 的 durable response → 命中且归属通过 → execution-guarded 幂等 mark。marker 集合天然有限、自然消耗,**没有 lookback 窗口/分页饿死问题**(时间窗扫描无法证明「停机任意久后仍补齐」:response 保留 72h、marker 按自身 timeout 持续 isWaiting,任意短窗都可能漏)。
+  - reconcile 的**有限工作集 = 现存未答 marker 文件**;**DB 定位契约写死(R5 H2:marker 现无 projectName/CommDB 字段,questionId 只能定位某库内的行,不能自选库)**:reconcile 跑在 **GatePoller 既有的 per-project CommDB 循环内** —— 对每个 project 的 CommDB **点查 exact question**,仅当 question owner + executionId + checkpoint + durable response **全部匹配**时才 execution-guarded 幂等 mark;**绝不**用「第一个命中 questionId 的库」或可能已被清理的松散 session 推断。response 读取经 archive-aware 读取面(§2,live 与 archived 两态都收敛)。marker 集合天然有限、自然消耗,无 lookback 窗口/分页饿死问题。
   - **boot reconcile 在常规 poll 启动前先跑一遍**;之后每轮 poll 重复(幂等)。
   - **测试(R4 H2 加码)**:①CommDB response commit 成功后、任何 marker 写入前 kill → 重启 → `answeredAt` 最终补齐、无迟到 timeout;②目标 response 早于一整页新 response(证明与新流量无关);③长停机(超过任何时间窗直觉)后重启仍补齐;④foreign execution marker 不被碰。
 
