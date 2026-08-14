@@ -1,13 +1,13 @@
 ---
 issue: FLY-1758
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-14T06:56:20.940Z
-nextStep: write plan.md → codex design review
+phaseCursor: 4/6
+updated: 2026-08-14T07:01:48.466Z
+nextStep: codex design review R1 running; prep founder HTML diagrams
 chunks: []
 pointers: {}
 ---
 
 # FLY-1758 progress
-**phase**: design (3/6)
-**next**: write plan.md → codex design review
+**phase**: design (4/6)
+**next**: codex design review R1 running; prep founder HTML diagrams
