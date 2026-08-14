@@ -1,0 +1,19 @@
+flowchart TD
+  subgraph SG1["Linear 读失败时的降级判定 (收尾开头那次读)"]
+    L["去 Linear 读 issue 状态失败<br/>(拒绝或超过 10 秒没响应都算)"] --> O{"本地留底账本怎么说?"}
+    O -->|"账本显示 Done 早已翻好"| P1["放行:<br/>本地清理照走"]
+    O -->|"账本干净:<br/>无取消 / 无 founder 搁置记录"| P2["降级放行: 本地清理照走<br/>+ 留一条审计记录"]
+    O -->|"账本有确证的取消或搁置"| RF["拒绝: 停下等人<br/>(这不是网络问题)"]
+  end
+  P1 --> M
+  P2 --> M
+  subgraph SG2["Linear Done 翻转义务: 三态落账, 不再扣住 run"]
+    M["本地清理做完,<br/>尝试把 Linear 翻成 Done"] -->|"成功 / 早已是 Done"| DN["done 落账"]
+    M -->|"founder 已取消该 issue"| CR["canceled_refused 落账<br/>(绝不覆写取消)"]
+    M -->|"Linear 够不着"| DF["deferred 落账 = 进重试队列<br/>每 15 分钟再试, 每次重查权限"]
+    DF -->|"Linear 恢复"| DN
+    DF -->|"重试前发现已被取消"| CR
+  end
+  style DN fill:#e7f8ec,stroke:#34c759
+  style CR fill:#eef2ff,stroke:#007aff
+  style DF fill:#fff3e0,stroke:#ff9500

@@ -1,0 +1,13 @@
+flowchart TD
+  A["PR 合并成功<br/>(正规 :cool: 链路, 15:41)"] --> B["land 收尾开始<br/>(收 runner / 归档 thread / 记账)"]
+  B --> C{"第一遍收尾 (16:03)"}
+  C -->|"还有 runner 体没关完<br/>reason: issue_closeout_incomplete"| D["标记 partial<br/>(= 稍后重试, 正常)"]
+  D --> E{"重试那一遍:<br/>先去 Linear 读一次 issue 状态"}
+  E -->|"这一次读失败<br/>(瞬时抖动, 只是一次读)"| F["被标成 held<br/>reason 字面却写着 retryable"]
+  F --> G["held = 死路:<br/>全系统没有任何东西会重试 held"]
+  G --> H["清理级联全断:<br/>runner 没关 / thread 没归档 / run 没完成"]
+  H --> I["founder 一小时后自己发现<br/>手工收尾"]
+  J["讽刺: Linear 其实 16:02 就已<br/>被 GitHub 集成翻好 Done"] -.-> E
+  style F fill:#ffe5e2,stroke:#ff3b30
+  style G fill:#ffe5e2,stroke:#ff3b30
+  style H fill:#ffe5e2,stroke:#ff3b30
