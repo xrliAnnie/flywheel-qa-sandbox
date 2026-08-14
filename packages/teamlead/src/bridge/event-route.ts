@@ -794,13 +794,7 @@ export function createEventRouter(
 							worktreeBindingGeneration: string;
 					  }
 					| undefined;
-				if (
-					generalizedContext &&
-					nodeRequiresFounderReview(
-						generalizedContext.snapshot,
-						generalizedContext.node.id,
-					)
-				) {
+				if (generalizedContext) {
 					const landing =
 						rawCompletionEvidence?.landingStatus &&
 						typeof rawCompletionEvidence.landingStatus === "object" &&
@@ -941,7 +935,13 @@ export function createEventRouter(
 						};
 					}
 				}
-				if (generalizedContext) {
+				if (
+					generalizedContext &&
+					nodeRequiresFounderReview(
+						generalizedContext.snapshot,
+						generalizedContext.node.id,
+					)
+				) {
 					const project = projects.find(
 						(candidate) =>
 							candidate.projectName === generalizedContext.run.project_name,

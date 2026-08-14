@@ -512,6 +512,42 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("rejects invalid PR evidence for generalized nodes without founder review", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "generalized-invalid-pr-evidence",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: {
+							landingStatus: {
+								status: "ready_to_merge",
+								prNumber: "not-a-pr-number",
+							},
+						},
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(422);
+		expect(await res.json()).toMatchObject({
+			error: "workflow_pr_binding_rejected",
+			reason: "invalid_pr_number",
+		});
+		expect(
+			store.getWorkflowNodeCompletion("run-exec-1", "execute", 1),
+		).toBeUndefined();
+	});
+
 	it("rejects a forged generalized completion until the current artifact has founder_review pass", async () => {
 		const repo = mkdtempSync(join(tmpdir(), "fly1758-event-authority-"));
 		const commRoot = mkdtempSync(join(tmpdir(), "fly1758-event-comm-"));
