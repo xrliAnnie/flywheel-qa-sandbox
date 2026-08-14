@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 5/5
-updated: 2026-08-14T16:32:18.755Z
-nextStep: submit PR 106 handoff to the DAG orchestrator
+phaseCursor: 1/3
+updated: 2026-08-14T16:39:48.651Z
+nextStep: verify the attempt-2 marker and original sandbox fixture requirements
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/5)
-**next**: submit PR 106 handoff to the DAG orchestrator
+**phase**: implement (1/3)
+**next**: verify the attempt-2 marker and original sandbox fixture requirements
