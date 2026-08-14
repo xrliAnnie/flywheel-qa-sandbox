@@ -17,7 +17,10 @@ import type {
 	LeadDeliveryBatch,
 } from "./lead-delivery-adapter.js";
 import { LeadDeliveryUnavailableError } from "./lead-delivery-adapter.js";
-import type { MailboxQueueConfig } from "./mailbox-queue-config.js";
+import {
+	DEFAULT_MAILBOX_QUEUE_CONFIG,
+	type MailboxQueueConfig,
+} from "./mailbox-queue-config.js";
 
 export const ACTIVE_LEAD_INBOX_INTERVAL_MS = 1_000;
 export const IDLE_LEAD_INBOX_INTERVAL_MS = 30_000;
@@ -205,13 +208,8 @@ export class LeadInboxLoop {
 		let modelConsumed = 0;
 		try {
 			const queueConfig = this.opts.queueConfig?.() ?? {
+				...DEFAULT_MAILBOX_QUEUE_CONFIG,
 				enabled: false,
-				ackLeaseMs: 1_800_000,
-				batchWindowMs: 60_000,
-				batchMaxSize: 5,
-				inflightMaxBatches: 3,
-				leaseRetryMax: 3,
-				deadLetterWindowMs: 1_800_000,
 			};
 			// FLY-1599: recordTickStarted is synchronous SQL. It used to run BEFORE
 			// this try block, so a SQLITE_BUSY during a lead-restart herd escaped

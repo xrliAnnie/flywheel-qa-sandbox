@@ -13,8 +13,8 @@ export interface MailboxQueueConfig {
 export const DEFAULT_MAILBOX_QUEUE_CONFIG: Readonly<MailboxQueueConfig> = {
 	enabled: true,
 	ackLeaseMs: 1_800_000,
-	batchWindowMs: 60_000,
-	batchMaxSize: 5,
+	batchWindowMs: 30_000,
+	batchMaxSize: 10,
 	inflightMaxBatches: 3,
 	leaseRetryMax: 3,
 	deadLetterWindowMs: 1_800_000,

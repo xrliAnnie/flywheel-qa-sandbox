@@ -1158,6 +1158,145 @@ install_restart_guard_hook() {
   fi
 }
 
+# ── FLY-1751: Install clear-only SessionStart in-flight adoption hook ──────
+# This hook is deliberately workspace-local. Different Lead workspaces do not
+# load it, and the hook itself still requires matching agent_type + env identity
+# before it can touch CommDB. All installer failures are non-fatal to Lead birth.
+install_session_start_adopt_inflight_hook() {
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: skipping SessionStart in-flight adoption hook install"
+    return 0
+  fi
+
+  local src_script="${SCRIPT_DIR}/session-start-adopt-inflight.sh"
+  if [ ! -f "$src_script" ]; then
+    log "WARNING: SessionStart adoption hook source not found: $src_script"
+    return 0
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    log "WARNING: jq not found. Skipping SessionStart adoption hook install."
+    return 0
+  fi
+
+  local settings_file="${LEAD_WORKSPACE}/.claude/settings.local.json"
+  local hook_script="${LEAD_WORKSPACE}/.claude/hooks/session-start-adopt-inflight.sh"
+  local lock_dir="${settings_file}.flywheel-lock"
+  mkdir -p "$(dirname "$settings_file")" "$(dirname "$hook_script")" 2>/dev/null || {
+    log "WARNING: Could not create workspace hook directories; skipping SessionStart adoption hook install"
+    return 0
+  }
+
+  local lock_acquired=false
+  local lock_attempt=0
+  while [ "$lock_attempt" -lt 50 ]; do
+    lock_attempt=$((lock_attempt + 1))
+    if mkdir "$lock_dir" 2>/dev/null; then
+      lock_acquired=true
+      break
+    fi
+    if find "$lock_dir" -maxdepth 0 -mmin +1 -print 2>/dev/null | grep -q .; then
+      rmdir "$lock_dir" 2>/dev/null || true
+      log "SessionStart adoption hook: removed stale settings lock dir"
+    fi
+    sleep 0.2
+  done
+  if [ "$lock_acquired" != true ]; then
+    log "WARNING: Could not acquire lock on ${settings_file} after 10s, skipping SessionStart adoption hook install"
+    return 0
+  fi
+
+  local existing="{}"
+  local parsed_existing=""
+  if [ -f "$settings_file" ]; then
+    existing="$(cat "$settings_file")"
+    parsed_existing="$(printf '%s' "$existing" | jq -ce 'select(type == "object")' 2>/dev/null || true)"
+    if [ -z "$parsed_existing" ]; then
+      log "WARNING: ${settings_file} is not a non-empty JSON object. Skipping SessionStart adoption hook install (file untouched)."
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 0
+    fi
+    existing="$parsed_existing"
+  fi
+
+  local hook_tmp=""
+  hook_tmp="$(mktemp "${hook_script}.tmp.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$hook_tmp" ] \
+    || ! cp "$src_script" "$hook_tmp" 2>/dev/null \
+    || ! chmod 555 "$hook_tmp" 2>/dev/null \
+    || [ ! -s "$hook_tmp" ] \
+    || ! bash -n "$hook_tmp" 2>/dev/null; then
+    [ -z "$hook_tmp" ] || rm -f "$hook_tmp" 2>/dev/null || true
+    log "WARNING: Failed to stage a valid SessionStart adoption hook; existing files untouched"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  local quoted_hook=""
+  printf -v quoted_hook '%q' "$hook_script"
+  local command_value="bash ${quoted_hook}"
+  local merged=""
+  merged="$(printf '%s' "$existing" | jq \
+    --arg cmd "$command_value" \
+    --arg basename "session-start-adopt-inflight.sh" '
+      .hooks = (if ((.hooks // {}) | type) == "object" then (.hooks // {}) else {} end) |
+      .hooks.SessionStart = (if ((.hooks.SessionStart // []) | type) == "array" then (.hooks.SessionStart // []) else [] end) |
+      .hooks.SessionStart = ([ .hooks.SessionStart[]
+        | .hooks = (if ((.hooks // []) | type) == "array"
+            then [ (.hooks // [])[]
+              | select((((.command // "") | contains($basename))) | not) ]
+            else []
+          end)
+      ] | map(select((.hooks | length) > 0))) |
+      .hooks.SessionStart += [{
+        "matcher": "clear",
+        "hooks": [{"type": "command", "command": $cmd, "timeout": 10}]
+      }]
+    ' 2>/dev/null || true)"
+  local validated_merged=""
+  if [ -n "$merged" ]; then
+    validated_merged="$(printf '%s' "$merged" | jq -ce 'select(type == "object")' 2>/dev/null || true)"
+  fi
+  if [ -z "$validated_merged" ]; then
+    rm -f "$hook_tmp" 2>/dev/null || true
+    log "WARNING: SessionStart adoption settings merge produced empty/invalid JSON. Existing files untouched."
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  local settings_tmp=""
+  settings_tmp="$(mktemp "${settings_file}.tmp.XXXXXX" 2>/dev/null || true)"
+  if [ -z "$settings_tmp" ] \
+    || ! printf '%s\n' "$validated_merged" > "$settings_tmp" \
+    || [ ! -s "$settings_tmp" ] \
+    || [ -z "$(jq -ce 'select(type == "object")' "$settings_tmp" 2>/dev/null || true)" ]; then
+    rm -f "$hook_tmp" 2>/dev/null || true
+    [ -z "$settings_tmp" ] || rm -f "$settings_tmp" 2>/dev/null || true
+    log "WARNING: Failed to stage valid SessionStart adoption settings. Existing files untouched."
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  # Publish the executable first. Therefore settings can never point at a
+  # missing or partially-written hook. A settings rename failure deliberately
+  # leaves new-script/old-settings; the next idempotent launch converges it.
+  if ! mv "$hook_tmp" "$hook_script"; then
+    rm -f "$hook_tmp" "$settings_tmp" 2>/dev/null || true
+    log "WARNING: Failed to publish SessionStart adoption hook script; settings remain unchanged"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+  if ! mv "$settings_tmp" "$settings_file"; then
+    rm -f "$settings_tmp" 2>/dev/null || true
+    log "WARNING: SessionStart adoption hook script published but settings publish failed; next Lead birth will converge"
+    rmdir "$lock_dir" 2>/dev/null || true
+    return 0
+  fi
+
+  rmdir "$lock_dir" 2>/dev/null || true
+  log "SessionStart clear adoption hook installed: $hook_script"
+  return 0
+}
+
 # ── FLY-954: converge <state>/bin runtime scripts (anti-drift) ──────────────
 # Incident 2026-07-06: 12-byte stubs sat in ~/.flywheel/bin for 8h, then a
 # deploy kickstart took all 13 Leads down. Every Lead start now verifies
@@ -2104,6 +2243,18 @@ if command -v jq >/dev/null 2>&1; then
   else
     log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
   fi
+fi
+
+# FLY-1751: /clear creates a new conversation without rerunning the launcher.
+# Install the clear-only adoption hook after the settings.local.json pre-seed so
+# both writers serialize through the same per-workspace lock. Locked roles have
+# no CommDB/CLI credentials by design and are explicitly outside this hook leg.
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
+  install_session_start_adopt_inflight_hook
+elif [ "$IS_COMPANION_ROLE" = true ]; then
+  log "Companion: skipping SessionStart in-flight adoption hook install (CommDB credentials intentionally absent)"
+else
+  log "External: skipping SessionStart in-flight adoption hook install (CommDB credentials intentionally absent)"
 fi
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
