@@ -23,5 +23,5 @@ export {
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
 	validateFlagTruthEnvironment,
-	validateWatchdogManifest,
+	validateLivenessManifest,
 } from "./truth.js";

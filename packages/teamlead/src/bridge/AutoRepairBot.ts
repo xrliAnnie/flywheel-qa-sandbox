@@ -201,7 +201,7 @@ export class AutoRepairBot {
 				};
 			case "usage_limit": {
 				// FLY-696: a real Claude quota cap → ENQUEUE a durable pending switch
-				// (a cross-provider Infra Bot claims it, else the Bridge watchdog fires
+				// (a cross-provider Infra Bot claims it, else the Bridge deadline sweep fires
 				// it after the deadline — C8c). Gated by the same canAttempt predicate
 				// (flag on + usable metadata + available account) so the ack never
 				// claims a repair that won't happen. Absent/not-attemptable → the

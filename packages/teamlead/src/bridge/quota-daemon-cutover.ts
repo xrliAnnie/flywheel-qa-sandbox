@@ -1,7 +1,6 @@
 export interface QuotaDaemonBridgeMode {
 	cutover: boolean;
 	attachAccountSwitch: boolean;
-	runAccountSwitchWatchdog: boolean;
 	retireAccountSwitchRoute: boolean;
 	quarantinePending: boolean;
 	runRunnerQuotaScan: boolean;
@@ -16,7 +15,6 @@ export function resolveQuotaDaemonBridgeMode(): QuotaDaemonBridgeMode {
 	return {
 		cutover: true,
 		attachAccountSwitch: false,
-		runAccountSwitchWatchdog: false,
 		retireAccountSwitchRoute: true,
 		quarantinePending: true,
 		runRunnerQuotaScan: true,

@@ -284,7 +284,7 @@ cannot be API-automated; account sign-ups are yours; the machine should stay on
 | CoS + Eng Lead chat, Runner dispatch, PR flow | ON | — |
 | Founder gates (brainstorm/approve, FLY-175 — founder = the instance owner) | ON | — |
 | Cross-dept roundtable | OFF | create the channel + set `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS` |
-| Operator alerts (LeadWatchdog) | **skipped** (no `alertChannel`/`alertFallbackToCore`) | set `"alertFallbackToCore": true` on a lead, or a dedicated `alertChannel` |
+| Operator alerts (lead-alert.sh) | **skipped** (no `alertChannel`/`alertFallbackToCore`) | set `"alertFallbackToCore": true` on a lead, or a dedicated `alertChannel` |
 | Skills sync (flywheel-skills) | OFF until repo access (provision skills phase degrades safely) | grant access + wire skills-sync |
 | Notion / Xiaohongshu / extra model keys | OFF | add the env keys later |
 | cmux viewer | N/A on Linux/WSL2 — tmux-only (§E.1) | — |

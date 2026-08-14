@@ -517,7 +517,7 @@ async function closeRunnerInner(
 	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
 	// SUCCESS paths below (already-gone / killed) — a refused close or a failed
 	// tmux kill leaves a possibly-still-alive runner, and muting its detection
-	// for the clearing TTL would blind the very watchdog this flow exists for.
+	// for the clearing TTL would blind the very detector this flow exists for.
 	const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 
 	if (!target) {

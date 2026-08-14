@@ -10,15 +10,6 @@ export interface CommSignals {
 	hasRecentOutbound: boolean;
 }
 
-function parsePositiveIntEnv(
-	raw: string | undefined,
-	fallback: number,
-): number {
-	if (!raw) return fallback;
-	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
 export function parseNonNegativeIntEnv(
 	raw: string | undefined,
 	fallback: number,
@@ -26,14 +17,6 @@ export function parseNonNegativeIntEnv(
 	if (raw === undefined || raw === "") return fallback;
 	const n = Number.parseInt(raw, 10);
 	return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-
-export const DEFAULT_IDLE_POLL_MS = 3_000;
-
-export function idleWatchdogPollMs(
-	env: NodeJS.ProcessEnv = process.env,
-): number {
-	return parsePositiveIntEnv(env.FLYWHEEL_IDLE_POLL_MS, DEFAULT_IDLE_POLL_MS);
 }
 
 export const STUCK_COMM_ACTIVITY_MS = 1_800_000;

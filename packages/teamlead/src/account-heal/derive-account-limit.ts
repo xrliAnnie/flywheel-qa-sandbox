@@ -1,12 +1,12 @@
 /**
  * FLY-696 M1/C3 — compose a capped pane + the pool state into the
- * AlertMetadata.accountLimit object at the alert producer (LeadWatchdog /
+ * AlertMetadata.accountLimit object at the alert producer (the runner quota scan /
  * RunnerQuotaDetector).
  *
  * observedAccount/observedGeneration come from the pool's active-account
  * snapshot (the CAS key that stops a duplicate trigger from double-switching).
  * The timezone is read from the pane's own "reset at … (Zone)" message so reset
- * instants are absolute. Pure/isolated so the LeadWatchdog wiring is a tiny
+ * instants are absolute. Pure/isolated so the producer wiring is a tiny
  * flag-gated call.
  */
 

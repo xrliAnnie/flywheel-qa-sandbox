@@ -4,11 +4,11 @@
  * File-backed (atomic 0600, like the account state), so a pending switch survives
  * a Bridge restart (Codex R4#3). Callers that read→mutate→write MUST hold the
  * shared account flock (withMkdirLock) — the same lock the switch executor takes —
- * so a manual profile use, a QA-slot Bridge, or the watchdog can't interleave.
+ * so a manual profile use, a QA-slot Bridge, or the deadline sweep can't interleave.
  *
  * The record is keyed by sourceAlertId+observedAccount+generation so a duplicate
  * trigger for the same cap upserts one record (no double-switch), and a
- * cross-provider Infra Bot can `claim` it before the Bridge watchdog fires.
+ * cross-provider Infra Bot can `claim` it before the Bridge deadline sweep fires.
  */
 
 import {
@@ -33,10 +33,10 @@ export interface PendingSwitch {
 	observedGeneration: number;
 	scope: "5h" | "weekly" | "both";
 	resetAt: string;
-	/** ISO — the watchdog fires the switch after this if still unclaimed. */
+	/** ISO — the deadline sweep fires the switch after this if still unclaimed. */
 	deadlineAt: string;
 	createdAt: string;
-	/** The Infra Bot (M2) that took ownership; unset → the watchdog may fire it. */
+	/** The Infra Bot (M2) that took ownership; unset → the deadline sweep may fire it. */
 	claimedBy?: string;
 }
 
@@ -136,7 +136,7 @@ export interface QuarantinePendingSwitchesOpts {
 /**
  * Atomically retire the entire legacy queue under its shared lock. Renaming,
  * rather than deleting, keeps an audit trail while making every old key
- * unclaimable by both the HTTP route and watchdog.
+ * unclaimable by both the HTTP route and the deadline sweep.
  */
 export async function quarantinePendingSwitches(
 	opts: QuarantinePendingSwitchesOpts = {},
@@ -157,7 +157,7 @@ export async function quarantinePendingSwitches(
 	});
 }
 
-/** Records past their deadline that no bot has claimed — the watchdog fires these. */
+/** Records past their deadline that no bot has claimed — the deadline sweep fires these. */
 export function duePending(
 	records: PendingSwitch[],
 	nowMs: number,

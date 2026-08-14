@@ -1,12 +1,12 @@
 /**
- * FLY-307 C: Bridge event-loop self-watchdog.
+ * FLY-307 C: Bridge event-loop self-termination guard.
  *
  * The 2026-06-17 outage wedged the Bridge: a sql.js/WASM trap spun the main
  * event loop and pegged CPU. launchd `KeepAlive` only restarts a *crashed*
  * process, not a *hung* one, so it took a manual `kickstart` and a ~10-min
  * Discord blackout to recover.
  *
- * This watchdog converts a hang into a launchd-restartable crash. A same-loop
+ * This loop guard converts a hang into a launchd-restartable crash. A same-loop
  * timer cannot do that — if the main loop is dead, its own callbacks never
  * fire. So detection runs in a separate `worker_threads` Worker that observes
  * a heartbeat the main thread writes into a `SharedArrayBuffer`:
@@ -21,7 +21,7 @@
  * handler is useless: the loop that would run it is dead; `process.exit()` in a
  * worker stops only the worker).
  *
- * Default ON. `FLYWHEEL_BRIDGE_WATCHDOG=0` is the ops kill-switch. The
+ * Default ON. `FLYWHEEL_BRIDGE_LOOP_GUARD=0` is the ops kill-switch. The
  * VITEST/test auto-disable lives at the `startBridge()` wiring boundary (so the
  * dedicated tests in this package can still exercise the real worker
  * directly), NOT in this class.
@@ -44,8 +44,8 @@ export function isLoopStalled(
 	return nowMs - lastBeatMs > thresholdMs;
 }
 
-/** Data handed to the watchdog worker. `sab` carries the shared heartbeat. */
-export interface WatchdogWorkerData {
+/** Data handed to the loop-guard worker. `sab` carries the shared heartbeat. */
+export interface LoopGuardWorkerData {
 	sab: SharedArrayBuffer;
 	stallThresholdMs: number;
 	checkIntervalMs: number;
@@ -66,7 +66,7 @@ export interface WatchdogWorkerData {
  * `node:worker_threads`, `node:fs`, `BigInt64Array`, `Atomics`, `Date`,
  * `process`, `console`, `setInterval`/`clearInterval`.
  */
-export const WATCHDOG_WORKER_SOURCE = `
+export const LOOP_GUARD_WORKER_SOURCE = `
 const { workerData, parentPort } = require("node:worker_threads");
 const fs = require("node:fs");
 	const { sab, stallThresholdMs, checkIntervalMs, logPath, testMode, pid, bootTs, syncOpMarkerPath } = workerData;
@@ -121,7 +121,7 @@ const fs = require("node:fs");
 	}
 	try {
 		console.error(
-			"[BridgeWatchdog] event loop stalled for " + age +
+			"[BridgeLoopGuard] event loop stalled for " + age +
 			"ms (threshold " + stallThresholdMs + "ms) — killing process for KeepAlive restart",
 		);
 	} catch (e) { /* best-effort */ }
@@ -146,7 +146,7 @@ export interface WorkerLike {
 	on(event: string, listener: (...args: unknown[]) => void): unknown;
 }
 
-export interface BridgeEventLoopWatchdogOptions {
+export interface BridgeEventLoopGuardOptions {
 	heartbeatIntervalMs?: number;
 	stallThresholdMs?: number;
 	checkIntervalMs?: number;
@@ -159,7 +159,7 @@ export interface BridgeEventLoopWatchdogOptions {
 	/** Injectable Worker factory; defaults to a real eval Worker. */
 	createWorker?: (
 		source: string,
-		options: { eval: true; workerData: WatchdogWorkerData },
+		options: { eval: true; workerData: LoopGuardWorkerData },
 	) => WorkerLike;
 	/** Injectable parent-dir ensure (testing); defaults to fs.mkdirSync. */
 	ensureDir?: (path: string) => void;
@@ -169,7 +169,7 @@ export interface BridgeEventLoopWatchdogOptions {
 	testMode?: boolean;
 }
 
-export class BridgeEventLoopWatchdog {
+export class BridgeEventLoopGuard {
 	private readonly heartbeatIntervalMs: number;
 	private readonly stallThresholdMs: number;
 	private readonly checkIntervalMs: number;
@@ -177,7 +177,7 @@ export class BridgeEventLoopWatchdog {
 	private readonly enabledOption: boolean;
 	private readonly now: () => number;
 	private readonly createWorker: NonNullable<
-		BridgeEventLoopWatchdogOptions["createWorker"]
+		BridgeEventLoopGuardOptions["createWorker"]
 	>;
 	private readonly ensureDir: (path: string) => void;
 	private readonly bootTs: number;
@@ -189,23 +189,23 @@ export class BridgeEventLoopWatchdog {
 	private worker: WorkerLike | null = null;
 	private view: BigInt64Array | null = null;
 
-	constructor(options: BridgeEventLoopWatchdogOptions = {}) {
+	constructor(options: BridgeEventLoopGuardOptions = {}) {
 		this.heartbeatIntervalMs = numEnv(
-			"FLYWHEEL_BRIDGE_WATCHDOG_HEARTBEAT_MS",
+			"FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS",
 			options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS,
 		);
 		this.stallThresholdMs = numEnv(
-			"FLYWHEEL_BRIDGE_WATCHDOG_STALL_MS",
+			"FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS",
 			options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS,
 		);
 		this.checkIntervalMs = numEnv(
-			"FLYWHEEL_BRIDGE_WATCHDOG_CHECK_MS",
+			"FLYWHEEL_BRIDGE_LOOP_GUARD_CHECK_MS",
 			options.checkIntervalMs ?? DEFAULT_CHECK_MS,
 		);
 		this.logPath = expandHome(
-			process.env.FLYWHEEL_BRIDGE_WATCHDOG_LOG ??
+			process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_LOG ??
 				options.logPath ??
-				"~/.flywheel/bridge-watchdog.log",
+				"~/.flywheel/bridge-loop-guard.log",
 		);
 		this.enabledOption = options.enabled ?? true;
 		this.now = options.now ?? (() => Date.now());
@@ -225,7 +225,7 @@ export class BridgeEventLoopWatchdog {
 
 	/** True unless the `=0` ops kill-switch or `enabled: false` disables it. */
 	isEnabled(): boolean {
-		if (process.env.FLYWHEEL_BRIDGE_WATCHDOG === "0") return false;
+		if (process.env.FLYWHEEL_BRIDGE_LOOP_GUARD === "0") return false;
 		return this.enabledOption;
 	}
 
@@ -251,10 +251,10 @@ export class BridgeEventLoopWatchdog {
 				Atomics.store(this.view, 0, BigInt(Math.trunc(this.now())));
 			}
 		}, this.heartbeatIntervalMs);
-		// Don't let the watchdog keep the process alive on its own.
+		// Don't let the loop guard keep the process alive on its own.
 		this.heartbeatTimer.unref?.();
 
-		this.worker = this.createWorker(WATCHDOG_WORKER_SOURCE, {
+		this.worker = this.createWorker(LOOP_GUARD_WORKER_SOURCE, {
 			eval: true,
 			workerData: {
 				sab,
@@ -269,7 +269,7 @@ export class BridgeEventLoopWatchdog {
 		});
 		this.worker.unref();
 		this.worker.on("error", (err: unknown) => {
-			console.error("[BridgeWatchdog] worker error:", err);
+			console.error("[BridgeLoopGuard] worker error:", err);
 		});
 	}
 

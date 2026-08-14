@@ -7,8 +7,8 @@
  * the owner bot is actually configured (env id present). Owner env unset ⇒ no
  * unclaimed fallback ⇒ today's Cass behavior (FLY-928 pure-config flip).
  *
- * The reconcile pass (AlertChannelHub, piggybacked on the existing watchdog
- * onPollComplete — no new timer, FLY-169) runs this per active ticket row.
+ * The reconcile pass (AlertChannelHub, piggybacked on the existing GatePoller
+ * lead-reconcile rider — no new timer, FLY-169) runs this per active ticket row.
  * Recovery is checked BEFORE this decision in the same pass, so a recovered
  * ticket resolves quietly and never reaches escalation.
  */

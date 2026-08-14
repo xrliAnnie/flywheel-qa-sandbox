@@ -225,7 +225,7 @@ export class TmuxAdapter implements IAdapter {
 		// probes through the same injectable (test-mockable) seam.
 		protected execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
+		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
 		private hookServer?: IHookCallbackServer,
 		/**
 		 * FLY-142 PR 1.2: optional vendor-neutral transport adapter. When

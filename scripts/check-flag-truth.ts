@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
 	validateFlagTruthEnvironment,
-	validateWatchdogManifest,
+	validateLivenessManifest,
 } from "../packages/config/src/feature-flags/truth.js";
 
 interface Args {
@@ -73,10 +73,18 @@ async function main(): Promise<void> {
 		if (!response.ok)
 			errors.push(`Bridge /health returned HTTP ${response.status}`);
 		else {
-			const body = (await response.json()) as { watchdogs?: unknown };
-			if (!body.watchdogs)
-				errors.push("Bridge /health missing watchdogs manifest");
-			else errors.push(...validateWatchdogManifest(body.watchdogs).errors);
+			// FLY-1560 刀 6: /health renamed `watchdogs` → `liveness` (schema
+			// v1 → v2). Read both keys so a Bridge that predates the rename
+			// reports the honest reason ("schema_version must be 2" ⇒ the
+			// deployed Bridge is older than this checkout) instead of the
+			// misleading "manifest missing".
+			const body = (await response.json()) as {
+				liveness?: unknown;
+				watchdogs?: unknown;
+			};
+			const manifest = body.liveness ?? body.watchdogs;
+			if (!manifest) errors.push("Bridge /health missing liveness manifest");
+			else errors.push(...validateLivenessManifest(manifest).errors);
 		}
 	}
 	if (errors.length > 0) {
@@ -85,7 +93,7 @@ async function main(): Promise<void> {
 		return;
 	}
 	console.log(
-		`flag truth OK: ${new Set(names).size} env keys${args.live ? " + live watchdog manifest" : ""}`,
+		`flag truth OK: ${new Set(names).size} env keys${args.live ? " + live liveness manifest" : ""}`,
 	);
 }
 

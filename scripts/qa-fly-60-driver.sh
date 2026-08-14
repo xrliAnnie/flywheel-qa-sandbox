@@ -805,7 +805,7 @@ run_v3() {
   # Trigger A: pattern-first
   log "[V3] Pattern injection — typing 'rate_limit reached' into Lead pane $lwid (no Enter on followups)"
   tmux send-keys -t "$lwid" 'rate_limit reached — claude is paused' Enter
-  log "[V3] Waiting 90s for watchdog detection (≥2 cycles)"
+  log "[V3] Waiting 90s for alert detection (≥2 cycles)"
   sleep 90
 
   # Verify

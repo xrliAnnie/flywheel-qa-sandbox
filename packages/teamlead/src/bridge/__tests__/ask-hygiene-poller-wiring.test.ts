@@ -11,10 +11,10 @@
  *   1. Reverting the candidate filter to the pre-FLY-1328 `q.checkpoint != null`
  *      — which makes the ask sweep DEAD IN PRODUCTION (it never sees an ask).
  *   2. Deleting the `sweepBookkeeping` guard — which makes an ASK-only
- *      configuration clear the watchdog's unreachable episodes, the exact
+ *      configuration clear the reconcile's unreachable episodes, the exact
  *      behavior plan §4.1 (Codex R2 #4) forbids.
  *
- * Both are silent failures: the feature simply stops working, or the watchdog
+ * Both are silent failures: the feature simply stops working, or the reconcile
  * silently loses state. Neither shows up as a red test. These cases pin that
  * seam. Each negative assertion is paired with a positive control in the same
  * test — asserting a thing did NOT happen passes just as happily when the
@@ -80,7 +80,7 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 			process.env.FLYWHEEL_COMM_DIR = originalCommDir;
 		else delete process.env.FLYWHEEL_COMM_DIR;
 		delete process.env.FLYWHEEL_ASK_HYGIENE;
-		delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
+		delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 		rmSync(tmpHome, { recursive: true, force: true });
 		warnSpy.mockRestore();
 	});
@@ -176,19 +176,19 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		expect(row.resolved_via).toBeNull();
 	});
 
-	it("ASK-only does NOT touch disabled watchdog bookkeeping", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+	it("ASK-only does NOT touch disabled reconcile bookkeeping", async () => {
+		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
 		const qid = seedOwnerlessAsk();
 		const poller = makePoller();
-		const watchdog = (
-			poller as unknown as { founderReplyWatchdog: Record<string, unknown> }
-		).founderReplyWatchdog;
+		const reconcile = (
+			poller as unknown as { founderReplyUnreachable: Record<string, unknown> }
+		).founderReplyUnreachable;
 		const begin = vi.spyOn(
-			watchdog as unknown as { beginUnreachableSweep: () => void },
+			reconcile as unknown as { beginUnreachableSweep: () => void },
 			"beginUnreachableSweep",
 		);
 		const end = vi.spyOn(
-			watchdog as unknown as { endUnreachableSweep: () => void },
+			reconcile as unknown as { endUnreachableSweep: () => void },
 			"endUnreachableSweep",
 		);
 
@@ -203,19 +203,19 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		expect(end).not.toHaveBeenCalled();
 	});
 
-	it("with the watchdog ON, the same pass DOES run the bookkeeping (control for the case above)", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "1";
+	it("with the reconcile ON, the same pass DOES run the bookkeeping (control for the case above)", async () => {
+		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "1";
 		seedOwnerlessAsk();
 		const poller = makePoller();
-		const watchdog = (
-			poller as unknown as { founderReplyWatchdog: Record<string, unknown> }
-		).founderReplyWatchdog;
+		const reconcile = (
+			poller as unknown as { founderReplyUnreachable: Record<string, unknown> }
+		).founderReplyUnreachable;
 		const begin = vi.spyOn(
-			watchdog as unknown as { beginUnreachableSweep: () => void },
+			reconcile as unknown as { beginUnreachableSweep: () => void },
 			"beginUnreachableSweep",
 		);
 		const end = vi.spyOn(
-			watchdog as unknown as { endUnreachableSweep: () => void },
+			reconcile as unknown as { endUnreachableSweep: () => void },
 			"endUnreachableSweep",
 		);
 

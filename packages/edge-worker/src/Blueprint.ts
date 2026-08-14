@@ -2361,7 +2361,7 @@ export class Blueprint {
 				"LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):",
 				`1. Whenever you receive a Lead instruction (a mailbox message from your Lead, or \`flywheel-comm inbox\` output) and finish acting on it, you MUST report back by running: ` +
 					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} --report "DONE: [lead-instruction <id>] <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
-					`The DONE report MUST quote the FULL \`[lead-instruction <id>]\` id of the instruction it answers — the watchdog uses that exact id as the consumption receipt ` +
+					`The DONE report MUST quote the FULL \`[lead-instruction <id>]\` id of the instruction it answers — the Bridge patrol uses that exact id as the consumption receipt ` +
 					`(FLY-1282: an unquoted id leaves the instruction reading as unconsumed and can page your Lead about work you already did). ` +
 					(isGeneralizedExecution
 						? `After completion, any follow-up work MUST be reported this way; `
@@ -2750,7 +2750,7 @@ export class Blueprint {
 			: baseSystemPrompt;
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
-		const timeoutMs = ctx.sessionTimeoutMs ?? 86_400_000; // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
+		const timeoutMs = ctx.sessionTimeoutMs ?? 86_400_000; // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
 
 		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
 		// ctx.projectName is resolved from projects config canonical name in

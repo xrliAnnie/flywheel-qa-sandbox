@@ -4,9 +4,9 @@
  * An account cap does NOT switch immediately (Codex R5#4 / plan C8c): it writes a
  * durable pending record keyed by sourceAlertId+observedAccount+generation with a
  * deadline. A cross-provider Infra Bot (M2) can claim it; otherwise the Bridge
- * watchdog fires the switch after the deadline. Restart-safe (survives a Bridge
+ * deadline sweep fires the switch after the deadline. Restart-safe (survives a Bridge
  * restart) — the record is on disk, guarded by the same flock as the account
- * state. M1-only = short deadline → watchdog fires promptly.
+ * state. M1-only = short deadline → the deadline sweep fires promptly.
  */
 import {
 	existsSync,

@@ -2748,7 +2748,7 @@ export function createEventRouter(
 							// `session_completed` FSM transition) is never called. The
 							// session is then stuck at `running`: close_runner rejects it,
 							// its tmux + worktree linger until the next Bridge restart, and
-							// the idle watchdog false-positives session_stuck. `running →
+							// idle detection false-positived session_stuck. `running →
 							// completed` is a legal FSM edge; apply it so the auto-close /
 							// reaper / notifier chain unblocks. isDoneButRunning guards on
 							// status===running + stage===completed + no decision_route + no

@@ -200,7 +200,7 @@ export interface LeadCapabilities {
 /**
  * Compute the full capability bundle for a Lead. `legacyBackend` is the
  * FLY-224 legacy resolution (config.yaml roles.lead.backend / env) used only
- * when `lead.backend` is unset, so the effective backend matches the watchdog
+ * when `lead.backend` is unset, so the effective backend matches the alert
  * partition and the fleet CLI.
  */
 export function computeLeadCapabilities(

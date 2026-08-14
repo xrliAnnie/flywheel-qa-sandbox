@@ -131,13 +131,3 @@ describe("CodexLeadRuntime — start failure tears down what came up", () => {
 		expect(order).toEqual(["startProcess", "shutdownProcess"]); // never wired
 	});
 });
-
-describe("CodexLeadRuntime — health", () => {
-	it("exposes the injected health verdict", async () => {
-		const { steps } = harness({
-			healthProbe: () => ({ status: "healthy", reasons: [] }),
-		});
-		const runtime = new CodexLeadRuntime(steps);
-		expect(runtime.healthProbe()?.status).toBe("healthy");
-	});
-});

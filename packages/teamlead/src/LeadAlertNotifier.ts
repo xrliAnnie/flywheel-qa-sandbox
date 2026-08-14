@@ -13,7 +13,7 @@
  * - Never throw from alert(): Discord is unreliable; failures get queued to
  *   $HOME/.flywheel/alert-queue/ for a later drainQueue() pass.
  *
- * Not responsible for deciding *when* to alert — LeadWatchdog drives that.
+ * Not responsible for deciding *when* to alert — each producer drives that.
  */
 
 import {
@@ -62,7 +62,7 @@ export interface MetaAlertSink {
 
 /**
  * FLY-927: the SINGLE source of truth for the alert-kind face. `AlertEventType`
- * is derived from this array, and the LeadWatchdog echo-immunity regex
+ * is derived from this array, and the pane echo-immunity regex
  * (`ALERT_ECHO_START`) derives its kind alternation from it too — so a new kind
  * can never silently miss echo stripping (the FLY-220 storm family).
  */
@@ -138,14 +138,14 @@ export const ALERT_EVENT_TYPES = [
 	"runner_login_expired",
 	// FLY-871 §12 W2: a windowed (cmux TUI) Codex Lead's founder-facing pane could
 	// not be (re)created after K consecutive liveness checks — "silent no-pane". NOT
-	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
+	// emitted by the TS notifier: it is fired ONLY by the runtime's
 	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
 	"tui_window_lost",
 	// FLY-913: the flywheel-restart-guard PreToolUse hook's mandatory bypass
 	// alert — fired ONLY via scripts/lead-alert.sh --strict-delivery (Discord-
 	// independent path; the hook fail-closes unless the strict result is
-	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
+	// sent/queued_transient). NOT emitted by the TS notifier;
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
 	"restart_guard_bypass",
@@ -255,7 +255,7 @@ export const ALERT_EVENT_TYPES = [
 	// Swap watermark crossed the high threshold (OOM EARLY WARNING — a true OOM
 	// already manifests as bridge_abnormal_exit / tmux_server_lost, so there is
 	// deliberately no "OOM happened" kind). Emitted by the machine-watermark
-	// sensor (watchdog tick piggyback) with hysteresis + 2-tick confirmation.
+	// sensor (reconcile tick piggyback) with hysteresis + 2-tick confirmation.
 	// ARC: reversible dispatch pressure-hold + per-Lead load-shed notify; the
 	// ticket resolves quietly when the watermark falls below the low threshold.
 	"swap_pressure_high",
@@ -292,24 +292,12 @@ export const ALERT_EVENT_TYPES = [
 	// lands directly ESCALATED with the sample list; never enters the ARC
 	// retry loop.
 	"zombie_session_backlog",
-	// FLY-1048 (PR-C): ≥K same-kind detection episodes overdue at once — a
-	// fleet-scale incident, not K individual ones. The unified escalation flow
-	// routes the whole group here (PRD §4.3 boundary) INSTEAD of paging the
-	// founder K times or spamming each owner Lead. Emitted only by the
-	// detection reconcile (FLYWHEEL_DETECTION_ESCALATION=1); the aggregate body
-	// carries kind + count + a target summary and never any pane text.
+	// Legacy display-only kinds retained so persisted alerts can still drain.
 	"detection_fleet_aggregate",
-	// FLY-1048 (PR-C): a detection founder page that could not be ADDRESSED or
-	// POSTED (no session / no thread binding / POST failed). The episode row
-	// stays LEAD_NOTIFIED and the reconcile keeps retrying — this ticket is
-	// plan C3's "never silent" seam telling an infra responder WHY the page is
-	// not landing. eventId is per-episode deterministic → claims-deduped
-	// across reconcile retries (no per-tick spam).
 	"detection_page_undeliverable",
 	// FLY-1279: an ACK-required Lead event exhausted its bounded delivery budget.
 	"delivery_dead_letter",
-	// FLY-1373: the sole retained delivery watchdog — a per-Lead consume-loop
-	// stall and any queue-native deadline breach are reported in one incident.
+	// FLY-1373: a per-Lead consume-loop stall or queue-native deadline breach.
 	"inbox_loop_stalled",
 	// FLY-1402: a Claude Lead was explicitly launched through the emergency
 	// last-one-wins compatibility path instead of the single-file rules bundle.
@@ -424,7 +412,7 @@ export interface AlertMetadata {
 	};
 	/**
 	 * FLY-696: a real quota cap (5h / weekly), NOT a transient 529. Produced at
-	 * detection (LeadWatchdog / RunnerQuotaDetector) after parsing the CLI usage
+	 * detection (the runner quota scan / RunnerQuotaDetector) after parsing the CLI usage
 	 * gauge. `provider` drives server-side cross-provider gating on the dedicated
 	 * account-switch route; `observedAccount`/`observedGeneration` are the CAS
 	 * snapshot so a duplicate trigger from another Lead cannot double-switch.
@@ -904,7 +892,7 @@ export class LeadAlertNotifier {
 		}
 
 		// Step 3: Bridge-only dedup via lead_events UNIQUE. Catches duplicate
-		// in-process Watchdog re-fires plus same-Bridge-process retries that
+		// in-process re-fires plus same-Bridge-process retries that
 		// might bypass the cross-process claim (e.g., when claimsClaimer
 		// returned null).
 		const firstClaim = this.store.tryClaimLeadEvent(
@@ -1783,7 +1771,7 @@ function ticketHHMM(ms: number): string {
 
 /**
  * FLY-927 (Task 1.2): the 🎫 ticket header — appended AFTER the existing first
- * line so the LeadWatchdog `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
+ * line so the `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
  * keeps matching (append-only = minimum echo-regression radius, FLY-220).
  * Rendered ONLY when the caller enables it (unified mode + FLYWHEEL_ALERT_TICKETS=1);
  * legacy output stays byte-identical.

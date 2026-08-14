@@ -75,9 +75,9 @@ import {
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
 import {
-	FounderReplyWatchdog,
-	founderReplyWatchdogEnabled,
-} from "./founder-reply-watchdog.js";
+	FounderReplyUnreachableReconcile,
+	founderReplyUnreachableEnabled,
+} from "./founder-reply-unreachable.js";
 import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
 import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
 import {
@@ -126,8 +126,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
-	/** FLY-1393: independent W-1 human-alert lane. */
-	watchdogLivenessEnabled?: boolean;
+	/** Human alert lane for stale approved-to-ship runners. */
+	livenessAlertsEnabled?: boolean;
 	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
 	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
@@ -247,6 +247,26 @@ export interface GatePollerConfig {
 	onReconcilePatrolTick?: () => void | Promise<void>;
 	/** Reconcile patrol cadence (default 20, about 60s in production). */
 	reconcilePatrolEveryNTicks?: number;
+	/** Retained Lead/fleet reconciliation riders on the existing poll timer. */
+	onLeadReconcileTick?: () => void | Promise<void>;
+	/** Lead reconcile cadence (default 200, about 10min in production). */
+	leadReconcileEveryNTicks?: number;
+	/**
+	 * FLY-1560: both riders below are assembled far AFTER `start()` in the Bridge
+	 * composition root, so on a slow boot the first 3s tick can land while the
+	 * pass holder is still null. The cadence anchor would otherwise be burned by
+	 * that unarmed tick — pushing the boot pass out by a full cadence (~10min for
+	 * lead reconcile) while looking like it ran. When supplied and false, the tick
+	 * is skipped WITHOUT anchoring; the anchor is set by the first tick that
+	 * actually runs. Omitted ⇒ anchored on tick 1, byte-compatible with before.
+	 */
+	onLeadReconcileReady?: () => boolean;
+	/** Runner quota/auth scan on the existing poll timer. */
+	onRunnerQuotaScanTick?: () => void | Promise<void>;
+	/** Runner scan cadence (default 20, about 1min in production). */
+	runnerQuotaScanEveryNTicks?: number;
+	/** See `onLeadReconcileReady` — same late-arming contract. */
+	onRunnerQuotaScanReady?: () => boolean;
 
 	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
@@ -320,6 +340,8 @@ export interface GatePollerConfig {
 }
 
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
+export const DEFAULT_LEAD_RECONCILE_EVERY_N_TICKS = 200;
+export const DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS = 20;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
@@ -421,11 +443,18 @@ export class GatePoller {
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
 	private polling = false;
 	private reconcilePatrolPass: Promise<void> | null = null;
-	// FLY-1099 §7.2: retained unreachable-runner consistency watchdog.
-	private readonly founderReplyWatchdog: FounderReplyWatchdog;
+	private leadReconcilePass: Promise<void> | null = null;
+	private runnerQuotaScanPass: Promise<void> | null = null;
+	// FLY-1560: cadence anchors for the two late-armed riders. `null` means the
+	// rider has never run, so the next ready tick anchors it (see the
+	// `onLeadReconcileReady` contract in GatePollerConfig).
+	private leadReconcileAnchorTick: number | null = null;
+	private runnerQuotaScanAnchorTick: number | null = null;
+	// FLY-1099 §7.2: retained unreachable-runner consistency reconcile.
+	private readonly founderReplyUnreachable: FounderReplyUnreachableReconcile;
 
 	constructor(private config: GatePollerConfig) {
-		this.founderReplyWatchdog = new FounderReplyWatchdog({
+		this.founderReplyUnreachable = new FounderReplyUnreachableReconcile({
 			alertSink: config.leadAlertSink,
 			infraRoute: () => this.infraAlertRoute(),
 		});
@@ -550,6 +579,42 @@ export class GatePoller {
 				void this.runReconcilePatrolPass().catch((err) =>
 					console.warn(
 						`[GatePoller] reconcile patrol error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
+
+			if (
+				this.config.onLeadReconcileTick &&
+				this.riderDueThisTick(
+					this.leadReconcileAnchorTick,
+					this.leadReconcileEveryNTicks(),
+					this.config.onLeadReconcileReady,
+					(anchor) => {
+						this.leadReconcileAnchorTick = anchor;
+					},
+				)
+			) {
+				void this.runLeadReconcilePass().catch((err) =>
+					console.warn(
+						`[GatePoller] lead reconcile error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
+
+			if (
+				this.config.onRunnerQuotaScanTick &&
+				this.riderDueThisTick(
+					this.runnerQuotaScanAnchorTick,
+					this.runnerQuotaScanEveryNTicks(),
+					this.config.onRunnerQuotaScanReady,
+					(anchor) => {
+						this.runnerQuotaScanAnchorTick = anchor;
+					},
+				)
+			) {
+				void this.runRunnerQuotaScanPass().catch((err) =>
+					console.warn(
+						`[GatePoller] runner quota scan error (non-fatal): ${(err as Error).message}`,
 					),
 				);
 			}
@@ -922,12 +987,12 @@ export class GatePoller {
 					this.maybeRecoverStore(err);
 				}
 				// FLY-1099 §7.2: retained unreachable-runner detector tick.
-				if (founderReplyWatchdogEnabled()) {
+				if (founderReplyUnreachableEnabled()) {
 					try {
-						await this.founderReplyWatchdog.tick();
+						await this.founderReplyUnreachable.tick();
 					} catch (err) {
 						console.warn(
-							"[GatePoller] founder-reply watchdog tick error:",
+							"[GatePoller] founder-reply reconcile tick error:",
 							err instanceof Error ? err.message : String(err),
 						);
 						this.maybeRecoverStore(err);
@@ -1051,6 +1116,71 @@ export class GatePoller {
 			}
 		});
 		this.reconcilePatrolPass = guarded;
+		return guarded;
+	}
+
+	/**
+	 * FLY-1560: is a late-armed rider due on this tick? An unarmed tick is skipped
+	 * without anchoring, so the boot pass runs on the first tick where the holder
+	 * exists rather than being deferred a whole cadence. With no readiness probe
+	 * the anchor lands on tick 1, which reproduces the previous
+	 * `(tickCount - 1) % N === 0` schedule exactly.
+	 */
+	private riderDueThisTick(
+		anchor: number | null,
+		everyNTicks: number,
+		ready: (() => boolean) | undefined,
+		setAnchor: (tick: number) => void,
+	): boolean {
+		if (ready && !ready()) return false;
+		if (anchor === null) {
+			setAnchor(this.tickCount);
+			return true;
+		}
+		return (this.tickCount - anchor) % everyNTicks === 0;
+	}
+
+	private leadReconcileEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.leadReconcileEveryNTicks ??
+				DEFAULT_LEAD_RECONCILE_EVERY_N_TICKS,
+		);
+	}
+
+	private runLeadReconcilePass(): Promise<void> {
+		if (this.leadReconcilePass) return this.leadReconcilePass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onLeadReconcileTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.leadReconcilePass === guarded) {
+				this.leadReconcilePass = null;
+			}
+		});
+		this.leadReconcilePass = guarded;
+		return guarded;
+	}
+
+	private runnerQuotaScanEveryNTicks(): number {
+		return Math.max(
+			1,
+			this.config.runnerQuotaScanEveryNTicks ??
+				DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS,
+		);
+	}
+
+	private runRunnerQuotaScanPass(): Promise<void> {
+		if (this.runnerQuotaScanPass) return this.runnerQuotaScanPass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onRunnerQuotaScanTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.runnerQuotaScanPass === guarded) {
+				this.runnerQuotaScanPass = null;
+			}
+		});
+		this.runnerQuotaScanPass = guarded;
 		return guarded;
 	}
 
@@ -2640,7 +2770,7 @@ export class GatePoller {
 			},
 			// Codex code R3 HIGH: no bounded lap — an answered gate can never
 			// re-match, so the terminal must land NOW (or the cursor pins and the
-			// watchdog is the last resort).
+			// reconcile is the last resort).
 			deadLetterNow: ({
 				ctx,
 				msgId,
@@ -2786,10 +2916,10 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
-		const watchdogOn = founderReplyWatchdogEnabled();
+		const reconcileOn = founderReplyUnreachableEnabled();
 		const askOn = askHygieneEnabled();
-		if (!watchdogOn && !askOn) return;
-		if (watchdogOn) this.founderReplyWatchdog.beginUnreachableSweep();
+		if (!reconcileOn && !askOn) return;
+		if (reconcileOn) this.founderReplyUnreachable.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
 				let db: CommDB;
@@ -2834,8 +2964,8 @@ export class GatePoller {
 						db: db as unknown as ZombieCommDb,
 						env: process.env,
 						resolveDeadGates: false,
-						noteUnreachableRunner: watchdogOn
-							? (a) => this.founderReplyWatchdog.noteUnreachableRunner(a)
+						noteUnreachableRunner: reconcileOn
+							? (a) => this.founderReplyUnreachable.noteUnreachableRunner(a)
 							: undefined,
 					});
 				} catch (err) {
@@ -2849,7 +2979,7 @@ export class GatePoller {
 				}
 			}
 		}
-		if (watchdogOn) this.founderReplyWatchdog.endUnreachableSweep();
+		if (reconcileOn) this.founderReplyUnreachable.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */
@@ -3023,7 +3153,7 @@ export class GatePoller {
 	 * to FLY-795. Re-wake-only — never self-ships, never reads 795's progress.md.
 	 */
 	private async staleApprovedShipReconcilePass(): Promise<void> {
-		if (this.config.watchdogLivenessEnabled === false) return;
+		if (this.config.livenessAlertsEnabled === false) return;
 		const sessions = this.config.store
 			.getActiveSessions()
 			.filter((s) => s.status === "approved_to_ship")
@@ -3143,7 +3273,7 @@ export class GatePoller {
 					title: `Approved ship runner dead — ${s.issue_id}`,
 					body:
 						`Execution ${s.execution_id} was stranded in approved_to_ship and its exact tmux target is proven dead. ` +
-						"The watchdog did not self-ship; use the durable recovery path.",
+						"The reconcile did not self-ship; use the durable recovery path.",
 					severity: "severe",
 					sessionKey: s.execution_id,
 				});

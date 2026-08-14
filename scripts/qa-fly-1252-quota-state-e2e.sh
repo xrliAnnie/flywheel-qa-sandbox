@@ -347,7 +347,6 @@ const bridgeMode = resolveQuotaDaemonBridgeMode();
 assert.deepEqual(bridgeMode, {
   cutover: true,
   attachAccountSwitch: false,
-  runAccountSwitchWatchdog: false,
   retireAccountSwitchRoute: true,
   quarantinePending: true,
   runRunnerQuotaScan: true,

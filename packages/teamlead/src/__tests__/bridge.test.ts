@@ -203,7 +203,7 @@ describe("Bridge scaffold", () => {
 		store.close();
 	});
 
-	it("GET /health reads the watchdog manifest from a late-bound provider", async () => {
+	it("GET /health reads the liveness manifest from a late-bound provider", async () => {
 		const store = await StateStore.create(":memory:");
 		const holder: { current?: () => unknown } = {};
 		const app = createBridgeApp(
@@ -223,20 +223,18 @@ describe("Bridge scaffold", () => {
 			undefined,
 			undefined,
 			undefined,
-			{ watchdogHealthProvider: holder },
+			{ livenessHealthProvider: holder },
 		);
 		const url = await startAndGetUrl(app, "/health");
-		expect((await (await fetch(url)).json()).watchdogs).toBeUndefined();
+		expect((await (await fetch(url)).json()).liveness).toBeUndefined();
 
 		holder.current = () => ({
-			schema_version: 1,
+			schema_version: 2,
 			components: {},
-			retiring: [],
 		});
-		expect((await (await fetch(url)).json()).watchdogs).toEqual({
-			schema_version: 1,
+		expect((await (await fetch(url)).json()).liveness).toEqual({
+			schema_version: 2,
 			components: {},
-			retiring: [],
 		});
 
 		holder.current = () => {
@@ -246,7 +244,7 @@ describe("Bridge scaffold", () => {
 		expect(degradedRes.status).toBe(200);
 		expect(await degradedRes.json()).toMatchObject({
 			ok: true,
-			watchdogs: {
+			liveness: {
 				degraded: true,
 				reason: "manifest_provider_error",
 			},

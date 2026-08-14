@@ -14,7 +14,7 @@
  *                   page-size trap (vm_stat header vs `sysctl hw.pagesize`)
  *                   never enters the formula;
  *  - swapout-delta = the `Swapouts` cumulative counter's increment between
- *                   two watchdog ticks — "is the machine thrashing NOW",
+ *                   two sensor ticks — "is the machine thrashing NOW",
  *                   which (unlike the watermark) returns to zero.
  *
  * Deliberately a STANDALONE module: pure detection + hysteresis; the
@@ -161,7 +161,7 @@ export interface MemoryEvaluation {
 
 /**
  * The three-state hysteresis machine. `tick()` is fed one reading per
- * watchdog poll (~30s):
+ * sensor poll (~30s):
  *  - normal → danger (free% < LOW OR delta > MIN) for 2 consecutive ticks →
  *    "trigger" (enter pressure);
  *  - pressure → healthy === true → "clear" (exit); healthy false/null →

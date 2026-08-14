@@ -1,19 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+	livenessAlertsEnabled,
 	qaStallInboxLoopLead,
-	watchdogBlockedEnabled,
-	watchdogLivenessEnabled,
-} from "../watchdog-minimum-set.js";
+} from "../liveness-manifest.js";
 
 describe("FLY-1393 minimum-set policy", () => {
-	it("kept watchdog lanes are independent default-on kill switches", () => {
-		expect(watchdogLivenessEnabled({})).toBe(true);
-		expect(watchdogBlockedEnabled({})).toBe(true);
+	it("keeps only the stale-approved-ship alert lane switchable", () => {
+		expect(livenessAlertsEnabled({})).toBe(true);
 
-		expect(watchdogLivenessEnabled({ FLYWHEEL_WATCHDOG_LIVENESS: "0" })).toBe(
-			false,
-		);
-		expect(watchdogBlockedEnabled({ FLYWHEEL_WATCHDOG_BLOCKED: "0" })).toBe(
+		expect(livenessAlertsEnabled({ FLYWHEEL_LIVENESS_ALERTS: "0" })).toBe(
 			false,
 		);
 	});

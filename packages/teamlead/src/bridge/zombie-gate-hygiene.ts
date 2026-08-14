@@ -16,7 +16,7 @@
  *     purged / transient).
  *   Z2 (active-but-unreachable — tonight's FLY-1049 shape): session LIVE
  *     (e.g. awaiting_review) but the CommDB row is missing → the gate is real,
- *     wake routing is broken. NEVER resolved here; reported to the watchdog
+ *     wake routing is broken. NEVER resolved here; reported to the reconcile
  *     (dedicated unreachable-runner alert) while the founder messages flow
  *     through the bounded retry → dead-letter path.
  *
@@ -99,7 +99,7 @@ export interface ZombieGateHygieneDeps {
 	pendingGateQuestions: ZombieCandidateQuestion[];
 	/** One writable CommDB for this project (caller owns lifecycle). */
 	db: ZombieCommDb;
-	/** Z2 sink — the watchdog's unreachable-runner detector. */
+	/** Z2 sink — the founder-reply unreachable-runner reconcile. */
 	noteUnreachableRunner?: (args: {
 		executionId: string;
 		issueId: string;

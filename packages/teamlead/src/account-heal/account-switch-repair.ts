@@ -5,7 +5,7 @@
  * C8c) an account cap does NOT switch inline: AutoRepairBot `enqueue`s a durable
  * pending record and returns a "queued" disposition; the actual switch is done
  * later by `executeSwitch` — fired by a cross-provider Infra Bot that claims the
- * record (M2) or, failing that, by the Bridge watchdog once the deadline passes
+ * record (M2) or, failing that, by the Bridge deadline sweep once it passes
  * (M1-only = short deadline → prompt). This keeps the Hub ack honest ("排队中")
  * and never claims an inline repair that hasn't happened.
  *
@@ -61,7 +61,7 @@ export interface AccountSwitchRepairDeps {
 	storePath?: string;
 	pendingPath?: string;
 	pendingLockPath?: string;
-	/** How long a pending record waits for a bot before the watchdog fires it. */
+	/** How long a pending record waits for a bot before the deadline sweep fires it. */
 	deadlineMs?: number;
 	/** Test seam; defaults to always-on (FLY-1243: env flag retired). */
 	isEnabled?: () => boolean;

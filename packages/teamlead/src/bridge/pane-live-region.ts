@@ -1,11 +1,11 @@
 /**
  * FLY-1048 (Task A2): shared pane live-region pure helpers.
  *
- * Extracted VERBATIM from LeadWatchdog (FLY-193/FLY-220 logic — behavior must
+ * Extracted VERBATIM from the retired Lead-pane alert loop (FLY-193/FLY-220 logic — behavior must
  * stay byte-identical; the committed lead-pane fixtures are the guard) so the
  * multi-frame observation window (`pane-frames.ts`) and the runner-side
  * detectors can reuse the exact same region/echo semantics instead of
- * duplicating security-sensitive parsing. LeadWatchdog imports from here and
+ * duplicating security-sensitive parsing. The pane classifier imports from here and
  * re-exports `ALERT_ECHO_START` for its existing consumers.
  */
 
@@ -38,7 +38,7 @@ const INPUT_BOX_TOP = /─{6,}[^\n]*@[\w-]+\s+─/u;
  * bar at the bottom, plus a few lines above to catch a spinner that is actively
  * rendering (or frozen) immediately above the box.
  *
- * Why: `LeadWatchdog` captures 200 lines of scrollback (`capture-pane -S -200`).
+ * Why: pane observers capture 200 lines of scrollback (`capture-pane -S -200`).
  * Scanning the whole capture for working/idle markers gets poisoned by STALE
  * lines — a Lead that printed "…thinking…" or "…working…" 50 lines ago and is
  * now idle would never be recognized as idle (false positive persists). The live

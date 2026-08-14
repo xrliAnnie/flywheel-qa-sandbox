@@ -50,9 +50,6 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		const remote = FLAGS.find((f) => f.name === "remote_reports");
 		if (!remote) throw new Error("missing");
 		expect(effectLabel(remote)).toBe("命令级");
-		const watchdogBlocked = FLAGS.find((f) => f.name === "watchdog_blocked");
-		if (!watchdogBlocked) throw new Error("missing");
-		expect(effectLabel(watchdogBlocked)).toBe("需重启");
 		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
 		if (!qaAuto) throw new Error("missing");
 		expect(effectLabel(qaAuto)).toBe("新 run 生效");

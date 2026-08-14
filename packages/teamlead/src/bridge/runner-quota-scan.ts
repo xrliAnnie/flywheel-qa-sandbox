@@ -2,10 +2,8 @@
  * FLY-696 M1/③ — runner-side quota scan (the wiring around
  * `detectRunnerQuotaCap`).
  *
- * Under the shared single Claude account the LeadWatchdog already covers the
- * core cap; this catches the edge where a Runner is the first process to hit the
- * shared cap while every Lead pane sits idle (plan §11 ③). Driven from the
- * RunnerIdleWatchdog's existing per-session capture (FLY-169: no new timer).
+ * This catches the edge where a Runner is the first process to hit the shared
+ * cap while every Lead pane sits idle (plan §11 ③).
  *
  * For a real cap it emits a `usage_limit` alert carrying the SAME
  * `accountLimit` metadata the Lead path produces + the runner's identity, routed
@@ -22,8 +20,12 @@ import { detectRunnerQuotaCap } from "../account-heal/runner-quota-detector.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
-import type { Session } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 import { parseSessionLabels } from "./lead-scope.js";
+import { isCaptureError } from "./session-capture.js";
+import type { CaptureSessionFn } from "./tools.js";
+
+export const DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS = 60 * 60_000;
 
 export interface RunnerQuotaScanDeps {
 	projects: ProjectEntry[];
@@ -38,7 +40,7 @@ export interface RunnerQuotaScanDeps {
 }
 
 /**
- * Build the per-session scan the RunnerIdleWatchdog calls. Returns a no-op-safe
+ * Build the per-session quota classifier. Returns a no-op-safe
  * async function: null cap (transient / no gauge / unprovisioned pool) → return;
  * unresolvable owning Lead → skip (cannot route); otherwise emit the alert.
  */
@@ -64,7 +66,7 @@ export function makeRunnerQuotaScan(
 			leadId = lead.agentId;
 		} catch (err) {
 			// No owning Lead → nowhere to route the alert thread. Skip (the shared
-			// account means the LeadWatchdog still covers the core cap).
+			// account means lead-alert.sh still covers the core cap).
 			deps.log?.(
 				`[RunnerQuotaScan] cannot resolve owning Lead for ${session.execution_id}: ${
 					err instanceof Error ? err.message : String(err)
@@ -99,6 +101,52 @@ export function makeRunnerQuotaScan(
 					err instanceof Error ? err.message : String(err)
 				}`,
 			);
+		}
+	};
+}
+
+export function makeRunnerQuotaScanPass(deps: {
+	store: Pick<StateStore, "getActiveSessions">;
+	captureSession: CaptureSessionFn;
+	scan: (session: Session, pane: string) => void | Promise<void>;
+	intervalMs?: number;
+	now?: () => number;
+	log?: (message: string) => void;
+}): () => Promise<void> {
+	const lastScannedAt = new Map<string, number>();
+	return async () => {
+		const sessions = deps.store
+			.getActiveSessions()
+			.filter((session) => session.status === "running");
+		const active = new Set(sessions.map((session) => session.execution_id));
+		for (const executionId of lastScannedAt.keys()) {
+			if (!active.has(executionId)) lastScannedAt.delete(executionId);
+		}
+		for (const session of sessions) {
+			const now = (deps.now ?? Date.now)();
+			const last = lastScannedAt.get(session.execution_id);
+			if (
+				last !== undefined &&
+				now - last < (deps.intervalMs ?? DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS)
+			) {
+				continue;
+			}
+			try {
+				const capture = await deps.captureSession(
+					session.execution_id,
+					session.project_name,
+					100,
+				);
+				if (isCaptureError(capture)) continue;
+				lastScannedAt.set(session.execution_id, now);
+				await deps.scan(session, capture.output);
+			} catch (error) {
+				deps.log?.(
+					`[RunnerQuotaScan] scan failed for ${session.execution_id}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
 		}
 	};
 }

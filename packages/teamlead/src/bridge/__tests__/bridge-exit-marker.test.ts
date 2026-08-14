@@ -11,7 +11,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -19,9 +19,9 @@ import {
 	abnormalExitTicketEventId,
 	bridgeMarkerPath,
 	buildAbnormalExitAlertContent,
-	findWatchdogStallForExit,
+	findLoopStallForExit,
 	latchPreviousMarker,
-	watchdogLogPath,
+	loopGuardLogPaths,
 	writeCleanMarker,
 	writeRunningMarker,
 } from "../bridge-exit-marker.js";
@@ -105,7 +105,7 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 	});
 
 	it("attributes a dirty exit only to an exact pid + boot generation inside its lifetime", () => {
-		const log = join(dir, "watchdog.log");
+		const log = join(dir, "loop-guard.log");
 		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
 		writeFileSync(
 			log,
@@ -136,7 +136,7 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 			].join("\n")}\n`,
 		);
 
-		const stall = findWatchdogStallForExit(log, prev, 2000);
+		const stall = findLoopStallForExit(log, prev, 2000);
 		expect(stall).toMatchObject({
 			pid: 111,
 			bootTs: 1000,
@@ -154,8 +154,8 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 		["generation mismatch", { pid: 111, bootTs: 999, at: 1500 }],
 		["before prior boot", { pid: 111, bootTs: 1000, at: 999 }],
 		["at current boot", { pid: 111, bootTs: 1000, at: 2000 }],
-	])("rejects watchdog attribution on %s", (_name, sample) => {
-		const log = join(dir, "watchdog.log");
+	])("rejects loop guard attribution on %s", (_name, sample) => {
+		const log = join(dir, "loop-guard.log");
 		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
 		writeFileSync(
 			log,
@@ -167,38 +167,48 @@ describe("bridge-exit-marker (Task 2.4)", () => {
 				at: new Date(sample.at).toISOString(),
 			})}\n`,
 		);
-		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(findLoopStallForExit(log, prev, 2000)).toBeNull();
 		expect(buildAbnormalExitAlertContent(prev, null).title).toBe(
 			"Bridge 非正常退出 — 复活对账中",
 		);
 	});
 
-	it("defensively rejects malformed, symlinked, FIFO, and oversized watchdog logs", () => {
+	it("defensively rejects malformed, symlinked, FIFO, and oversized loop guard logs", () => {
 		const prev = { pid: 111, bootTs: 1000, state: "running" as const };
-		const log = join(dir, "watchdog.log");
+		const log = join(dir, "loop-guard.log");
 		writeFileSync(log, "not json\n");
-		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(findLoopStallForExit(log, prev, 2000)).toBeNull();
 
 		const target = join(dir, "target.log");
 		writeFileSync(target, "{}\n");
 		rmSync(log, { force: true });
 		symlinkSync(target, log);
-		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(findLoopStallForExit(log, prev, 2000)).toBeNull();
 
 		rmSync(log, { force: true });
 		execFileSync("mkfifo", [log]);
-		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(findLoopStallForExit(log, prev, 2000)).toBeNull();
 
 		rmSync(log, { force: true });
 		writeFileSync(log, "x".repeat(256 * 1024 + 1));
-		expect(findWatchdogStallForExit(log, prev, 2000)).toBeNull();
+		expect(findLoopStallForExit(log, prev, 2000)).toBeNull();
 	});
 
-	it("watchdog log path honors QA isolation", () => {
+	it("loop-guard log path honors QA isolation", () => {
 		expect(
-			watchdogLogPath({
-				FLYWHEEL_BRIDGE_WATCHDOG_LOG: "/tmp/qa/watchdog.log",
+			loopGuardLogPaths({
+				FLYWHEEL_BRIDGE_LOOP_GUARD_LOG: "/tmp/qa/loop-guard.log",
 			} as unknown as NodeJS.ProcessEnv),
-		).toBe("/tmp/qa/watchdog.log");
+		).toEqual(["/tmp/qa/loop-guard.log"]);
+	});
+
+	it("reads the pre-rename default path only as a fallback", () => {
+		const paths = loopGuardLogPaths({} as NodeJS.ProcessEnv);
+		expect(paths[0]).toBe(
+			join(homedir(), ".flywheel", "bridge-loop-guard.log"),
+		);
+		expect(paths[1]).toBe(
+			join(homedir(), ".flywheel", ["bridge", "watch", "dog.log"].join("-")),
+		);
 	});
 });

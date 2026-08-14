@@ -105,7 +105,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 	query_status: {
 		name: "query_status",
 		description:
-			'Query a dispatched Runner session by its executionId (returned from dispatch_runner). Returns two independent signals: `status` — a live terminal-activity heuristic, one of executing (actively working) / waiting (blocked on a prompt) / idle (process went quiet — the run likely finished its turn) / unknown; and `session_status` — the run lifecycle from the store (e.g. "running", "awaiting_review" = PR opened and waiting for founder review, "completed", "failed"), plus `pr_number` once a PR is recorded (null before that; no PR URL is returned — report the pr_number). Runs take minutes to hours: after 2-3 polls, stop polling and report the current state to the user instead of waiting for a terminal state.',
+			'Query a dispatched Runner session by its executionId (returned from dispatch_runner). Returns two independent signals: `status` — a latest-capture terminal heuristic, one of executing (active-looking output) / waiting (a visible input prompt) / idle (a shell prompt or empty pane) / unknown; and `session_status` — the run lifecycle from the store (e.g. "running", "awaiting_review" = PR opened and waiting for founder review, "completed", "failed"), plus `pr_number` once a PR is recorded (null before that; no PR URL is returned — report the pr_number). Runs take minutes to hours: after 2-3 polls, stop polling and report the current state to the user instead of waiting for a terminal state.',
 		readonly: true,
 		parameters: {
 			type: "object",

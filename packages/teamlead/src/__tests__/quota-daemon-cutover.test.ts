@@ -6,7 +6,6 @@ describe("FLY-1256 Bridge quota-daemon cutover", () => {
 		expect(resolveQuotaDaemonBridgeMode()).toEqual({
 			cutover: true,
 			attachAccountSwitch: false,
-			runAccountSwitchWatchdog: false,
 			retireAccountSwitchRoute: true,
 			quarantinePending: true,
 			runRunnerQuotaScan: true,

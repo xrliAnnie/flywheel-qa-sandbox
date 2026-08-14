@@ -133,7 +133,7 @@ irreversible dangerous operations; everything else via prompt rules + memory/lea
 | 3 | No max retry cap in code | Infra Exists | actions.ts handleRetry() | No hard cap — by design |
 | 4 | Auto-retry ≤3 without notifying | Prompt Rules Exist | Lead identity.md | |
 | 5 | Escalate after 3 failures | Prompt Rules Exist | Lead identity.md | |
-| 6 | Runner stuck detection | Deployed & Wired | `runner-status.ts` | 4-state + 45s stall watchdog |
+| 6 | Runner status query | Deployed & Wired | `runner-status.ts` | Latest capture + 4-state heuristic |
 | 7 | Orphan session detection | Deployed & Wired | `HeartbeatService` | Stale heartbeat check |
 | 8 | Stale completed detection | Deployed & Wired | `HeartbeatService` | tmux alive after terminal state |
 | 9 | Guardrail event retry | Deployed & Wired | `HeartbeatService` | Max 3 attempts |

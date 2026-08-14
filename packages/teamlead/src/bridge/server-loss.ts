@@ -5,7 +5,7 @@
  *
  * WHY a HeartbeatService PRE-REAPER PHASE and not an onPollComplete sensor:
  * crash-reaper and reapOrphans both run inside `HeartbeatService.check()` —
- * a sensor on the LeadWatchdog poll cannot guarantee running BEFORE orphan
+ * a sensor on the lead-reconcile tick cannot guarantee running BEFORE orphan
  * migration in the same cycle (Codex R2 #2). This coordinator is called from
  * `check()` between `reconcileMonitorLoss()` and `reapCrashedRunners()`;
  * every exec id it claims is fed into the orphan suppression set so no

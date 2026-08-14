@@ -11,7 +11,7 @@
 # The Bridge writer path is triggered deterministically by a small Node harness
 # (scripts/lib/qa-fly-529-fire-bridge-alert.mjs) that runs the exact plugin.ts
 # composition (resolveAlertDirsFromEnv + createClaims* + LeadAlertNotifier.alert)
-# against the real Discord API — no frozen-pane needed (the full LeadWatchdog
+# against the real Discord API — no frozen-pane needed (the full Lead-pane alert
 # trigger + Cass auto-repair is FLY-368 downstream). The shell path is invoked
 # directly as the second writer-path proof.
 #

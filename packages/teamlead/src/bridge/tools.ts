@@ -302,7 +302,7 @@ export function createQueryRouter(
 		});
 	});
 
-	// FLY-10: Runner status detection (four-state model + 45s stall watchdog)
+	// FLY-10: Runner status detection (four-state model; the 45s stall downgrade was removed in FLY-1560)
 	router.get("/sessions/:id/status", async (req, res) => {
 		if (!statusQueryFn) {
 			res.status(501).json({ error: "Status detection not configured" });

@@ -16,7 +16,7 @@
  * The marker makes arming idempotent across a Bridge restart (a re-driven observe
  * never sends a second `/loop`).
  *
- * NOTE: this is a SEPARATE poller from RunnerIdleWatchdog — it never touches the
+ * NOTE: this is a standalone poller (it outlived the FLY-1560 idle scan teardown) — it never touches the
  * stuck-detector / idle-notification path (M4: those keep running; only the Lead-
  * facing idle noise may be quieted elsewhere).
  */

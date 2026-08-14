@@ -19,7 +19,6 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"session_stuck", // Legacy persisted event; no longer emitted.
 	"session_orphaned",
 	"session_stale_completed",
-	"runner_idle_detected", // FLY-92: idle watchdog events must be reliably delivered
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 	"session_monitoring_lost", // FLY-172: Lead must reliably learn it lost monitoring of a live Runner (fall back to tmux)
 	"runner_stuck_escalation", // Legacy persisted event; no longer emitted.

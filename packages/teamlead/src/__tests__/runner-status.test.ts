@@ -1,17 +1,9 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-	applyStallWatchdog,
-	clearStallCache,
 	createStatusQuery,
 	detectTerminalStatus,
-	evictStaleEntries,
-	stallCacheSize,
 } from "../bridge/runner-status.js";
 import type { CaptureError, CaptureResult } from "../bridge/session-capture.js";
-
-afterEach(() => {
-	clearStallCache();
-});
 
 // ── detectTerminalStatus ──
 
@@ -90,165 +82,9 @@ describe("detectTerminalStatus", () => {
 	});
 });
 
-// ── applyStallWatchdog ──
-
-describe("applyStallWatchdog", () => {
-	const BASE_TIME = 1_000_000_000;
-
-	it("passes through non-executing status unchanged", () => {
-		const raw = { status: "waiting" as const, reason: "matched: [Y/n]" };
-		const result = applyStallWatchdog("exec-1", "output", raw, BASE_TIME);
-		expect(result.status).toBe("waiting");
-		expect(result.stale_seconds).toBeUndefined();
-	});
-
-	it("passes through idle status unchanged", () => {
-		const raw = { status: "idle" as const, reason: "shell prompt" };
-		const result = applyStallWatchdog("exec-1", "output", raw, BASE_TIME);
-		expect(result.status).toBe("idle");
-	});
-
-	it("returns executing on first call (no cache entry)", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		const result = applyStallWatchdog("exec-1", "output", raw, BASE_TIME);
-		expect(result.status).toBe("executing");
-		expect(stallCacheSize()).toBe(1);
-	});
-
-	it("returns executing when output changes", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "output-v1", raw, BASE_TIME);
-		const result = applyStallWatchdog(
-			"exec-1",
-			"output-v2",
-			raw,
-			BASE_TIME + 60_000,
-		);
-		expect(result.status).toBe("executing");
-	});
-
-	it("returns executing when output unchanged but under 45s", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "same-output", raw, BASE_TIME);
-		const result = applyStallWatchdog(
-			"exec-1",
-			"same-output",
-			raw,
-			BASE_TIME + 30_000,
-		);
-		expect(result.status).toBe("executing");
-		expect(result.stale_seconds).toBeUndefined();
-	});
-
-	it("downgrades to waiting when output unchanged for 45s", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "same-output", raw, BASE_TIME);
-		const result = applyStallWatchdog(
-			"exec-1",
-			"same-output",
-			raw,
-			BASE_TIME + 45_000,
-		);
-		expect(result.status).toBe("waiting");
-		expect(result.reason).toContain("stall watchdog");
-		expect(result.stale_seconds).toBe(45);
-	});
-
-	it("downgrades to waiting when output unchanged for 90s", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "same-output", raw, BASE_TIME);
-		const result = applyStallWatchdog(
-			"exec-1",
-			"same-output",
-			raw,
-			BASE_TIME + 90_000,
-		);
-		expect(result.status).toBe("waiting");
-		expect(result.stale_seconds).toBe(90);
-	});
-
-	it("resets timer when output changes after stall", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "same-output", raw, BASE_TIME);
-		// 50s later (stalled)
-		const stalled = applyStallWatchdog(
-			"exec-1",
-			"same-output",
-			raw,
-			BASE_TIME + 50_000,
-		);
-		expect(stalled.status).toBe("waiting");
-
-		// Output changes → back to executing
-		const recovered = applyStallWatchdog(
-			"exec-1",
-			"new-output",
-			raw,
-			BASE_TIME + 51_000,
-		);
-		expect(recovered.status).toBe("executing");
-	});
-
-	it("tracks separate sessions independently", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "output-A", raw, BASE_TIME);
-		applyStallWatchdog("exec-2", "output-B", raw, BASE_TIME);
-
-		// exec-1 stalls, exec-2 changes
-		const r1 = applyStallWatchdog(
-			"exec-1",
-			"output-A",
-			raw,
-			BASE_TIME + 50_000,
-		);
-		const r2 = applyStallWatchdog(
-			"exec-2",
-			"output-B-v2",
-			raw,
-			BASE_TIME + 50_000,
-		);
-
-		expect(r1.status).toBe("waiting");
-		expect(r2.status).toBe("executing");
-	});
-});
-
-// ── evictStaleEntries ──
-
-describe("evictStaleEntries", () => {
-	const BASE_TIME = 1_000_000_000;
-
-	it("evicts entries older than 1 hour", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "output", raw, BASE_TIME);
-		applyStallWatchdog("exec-2", "output", raw, BASE_TIME);
-		expect(stallCacheSize()).toBe(2);
-
-		const evicted = evictStaleEntries(BASE_TIME + 3_600_001);
-		expect(evicted).toBe(2);
-		expect(stallCacheSize()).toBe(0);
-	});
-
-	it("keeps recent entries", () => {
-		const raw = { status: "executing" as const, reason: "active" };
-		applyStallWatchdog("exec-1", "output", raw, BASE_TIME);
-		applyStallWatchdog("exec-2", "output", raw, BASE_TIME + 3_600_000);
-
-		const evicted = evictStaleEntries(BASE_TIME + 3_600_001);
-		expect(evicted).toBe(1);
-		expect(stallCacheSize()).toBe(1);
-	});
-});
-
 // ── createStatusQuery ──
 
 describe("createStatusQuery", () => {
-	let stopEviction: () => void;
-
-	afterEach(() => {
-		stopEviction?.();
-	});
-
 	function makeQuery(
 		captureFn: (
 			executionId: string,
@@ -257,9 +93,18 @@ describe("createStatusQuery", () => {
 		) => Promise<CaptureResult | CaptureError>,
 	) {
 		const sq = createStatusQuery(captureFn);
-		stopEviction = sq.stopEviction;
 		return sq.query;
 	}
+
+	it("creates no background timer", () => {
+		vi.useFakeTimers();
+		try {
+			createStatusQuery(async () => ({ error: "unused", status: 404 }));
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 
 	it("returns unknown when tmux capture fails (502 tmux)", async () => {
 		const captureFn = async (): Promise<CaptureError> => ({
@@ -354,7 +199,7 @@ describe("createStatusQuery", () => {
 		expect(result.status).toBe("idle");
 	});
 
-	it("applies stall watchdog across calls", async () => {
+	it("keeps unchanged active output executing across calls", async () => {
 		const output = "Building project continuously...";
 		const captureFn = async (): Promise<CaptureResult> => ({
 			output,
@@ -369,8 +214,7 @@ describe("createStatusQuery", () => {
 		const r1 = await query("exec-stall", "test-project");
 		expect(r1.result.status).toBe("executing");
 
-		// Same output on subsequent call (stall watchdog uses real clock,
-		// so within <45s it should still be executing)
+		// Time-independent status remains a pure function of the latest capture.
 		const r2 = await query("exec-stall", "test-project");
 		expect(r2.result.status).toBe("executing");
 	});

@@ -26,11 +26,6 @@ import {
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
-import {
-	ackPolicyForLeadEvent,
-	type LeadEventAckPolicy,
-	routingSnapshotForLeadEvent,
-} from "./bridge/lead-event-ack-policy.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	buildWorkflowSelectionDigestBody,
@@ -89,6 +84,25 @@ import {
 	isOperationalTerminalStatus,
 	OPERATIONAL_TERMINAL_STATUSES,
 } from "./operational-terminal-status.js";
+
+type LeadEventAckPolicy =
+	| "question_response"
+	| "explicit_receipt"
+	| "founder_surface_confirmed";
+
+function routingSnapshotForLeadEvent(
+	leadId: string,
+	payload: HookPayload,
+): string {
+	return JSON.stringify({
+		projectName: payload.project_name,
+		commDbPath: payload.comm_db_path,
+		questionId: payload.question_id,
+		issueId: payload.issue_id,
+		threadId: payload.chat_thread_id,
+		ownerLeadId: leadId,
+	});
+}
 
 export class WorkflowAdmissionClassificationError extends Error {
 	override name = "WorkflowAdmissionClassificationError";
@@ -3795,9 +3809,9 @@ export class StateStore {
 		// woke the Lead about THIS frozen frame", so a Bridge restart cannot
 		// re-wake (the in-memory dedup sets are wiped on restart). Keyed by
 		// (execution_id, source, episode_fingerprint):
-		//   - source = 'idle'  (RunnerIdleWatchdog) → fp = quietFingerprint(pane)
+		//   - source = 'idle'  (retired in FLY-1560) → fp = quietFingerprint(pane)
 		//   - source = 'stuck' (HeartbeatService)   → fp = sentinel 'stuck' (no pane)
-		// Rows are pruned when the session leaves the watchdog's running/stuck set.
+		// Rows are pruned when the session leaves the producer's running/stuck set.
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS quiet_wake_notified (
 				execution_id        TEXT NOT NULL,
@@ -3900,7 +3914,7 @@ export class StateStore {
 		`);
 
 		// FLY-1099 §3.1: bounded founder-reply retry ledger — the durable source
-		// for the cursor-pin watchdog AND the dead-letter decision. first_seen_ms
+		// for the cursor-pin reconcile AND the dead-letter decision. first_seen_ms
 		// is the episode salt (Codex R3 #4: datetime('now') is second-resolution).
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS founder_reply_retry (
@@ -10463,11 +10477,8 @@ export class StateStore {
 		} catch {
 			// Non-HookPayload journal rows remain ACK-exempt for byte compatibility.
 		}
-		const ackPolicy = hookPayload
-			? ackPolicyForLeadEvent(eventType, hookPayload)
-			: null;
 		const routingSnapshot = hookPayload
-			? JSON.stringify(routingSnapshotForLeadEvent(leadId, hookPayload))
+			? routingSnapshotForLeadEvent(leadId, hookPayload)
 			: null;
 		try {
 			this.db.run(
@@ -10482,9 +10493,9 @@ export class StateStore {
 					eventType,
 					payload,
 					sessionKey ?? null,
-					ackPolicy ? 1 : 0,
-					ackPolicy,
-					ackPolicy ? 1 : null,
+					0,
+					null,
+					null,
 					routingSnapshot,
 					leadId,
 				],
@@ -11774,7 +11785,7 @@ export class StateStore {
 
 	/**
 	 * True when the Lead was already woken about this exact frozen frame
-	 * (execution + source + episode fingerprint). Used by both stall watchdogs to
+	 * (execution + source + episode fingerprint). Used by the stall detectors to
 	 * suppress a repeat wake across cosmetic pane jitter AND across a Bridge
 	 * restart (the in-memory dedup sets are wiped on restart; this row is not).
 	 */
@@ -11813,7 +11824,7 @@ export class StateStore {
 
 	/**
 	 * Clear the quiet-wake dedup rows for one execution — all sources, or just
-	 * the given source. Called when a session recovers / leaves the watchdog
+	 * the given source. Called when a session recovers / leaves the detector
 	 * surface so a genuinely-new later episode starts clean.
 	 */
 	clearQuietWakeNotified(executionId: string, source?: string): void {
@@ -11832,7 +11843,7 @@ export class StateStore {
 
 	/**
 	 * Prune quiet-wake dedup rows for a source: delete every row whose
-	 * `execution_id` is NOT in `keepExecIds`. Each watchdog calls this with its
+	 * `execution_id` is NOT in `keepExecIds`. Each producer calls this with its
 	 * OWN surface set (idle → the running sessions it polls; stuck → the current
 	 * `getStuckSessions` set) so a session that left the surface drops its rows.
 	 *
@@ -12566,11 +12577,8 @@ export class StateStore {
 		} catch {
 			// Non-hook detection rows remain ACK-exempt.
 		}
-		const ackPolicy = hookPayload
-			? ackPolicyForLeadEvent(opts.eventType, hookPayload)
-			: null;
 		const routingSnapshot = hookPayload
-			? JSON.stringify(routingSnapshotForLeadEvent(opts.leadId, hookPayload))
+			? routingSnapshotForLeadEvent(opts.leadId, hookPayload)
 			: null;
 		this.db.transaction(() => {
 			try {
@@ -12586,9 +12594,9 @@ export class StateStore {
 						opts.eventType,
 						opts.payload,
 						opts.sessionKey ?? null,
-						ackPolicy ? 1 : 0,
-						ackPolicy,
-						ackPolicy ? 1 : null,
+						0,
+						null,
+						null,
 						routingSnapshot,
 						opts.leadId,
 					],
@@ -14119,7 +14127,7 @@ export class StateStore {
 	/**
 	 * FLY-1099 §7.2 (Codex R2 #6): waterline cleanup — delete every retry row
 	 * the processed-through cursor has safely crossed (message answered by
-	 * another path / proven irrelevant), so the pin watchdog never false-alarms
+	 * another path / proven irrelevant), so the pin reconcile never false-alarms
 	 * on a message that no longer blocks anything. Snowflakes fit SQLite's
 	 * signed 64-bit INTEGER, so CAST comparison is exact.
 	 */

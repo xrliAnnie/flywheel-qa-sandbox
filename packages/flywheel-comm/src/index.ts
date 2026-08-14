@@ -788,7 +788,7 @@ function runInbox(args: string[]): void {
 
 /**
  * FLY-626: `park` / `busy` / `unpark` — a runner self-declares its liveness
- * intent so the stall watchdogs do not waste a Lead wake on it. Writes the
+ * intent so the stall detectors do not waste a Lead wake on it. Writes the
  * marker to CommDB. exec-id defaults to FLYWHEEL_EXEC_ID; an explicit
  * `--exec-id` is a LOUD debug override (Codex R1 #5 — a runner declares only
  * for itself).

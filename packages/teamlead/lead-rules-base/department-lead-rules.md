@@ -382,11 +382,11 @@ The event payload includes:
 
 ### Boundary: don't confuse this with `session_stuck`
 
-`session_stuck` means the Runner process is alive but not making progress (idle watchdog). `gate_timed_out` means the Runner deliberately exited because a human gate didn't get a human answer. Different events, different prompts to Annie.
+`session_stuck` means the Runner process is alive but not making progress. `gate_timed_out` means the Runner deliberately exited because a human gate didn't get a human answer. Different events, different prompts to Annie.
 
 ### Reliability note
 
-The `gate_timed_out` event is on the GUARDRAIL retry path (Bridge → Lead delivery is retried for ~5 min). However, if the Bridge was completely offline when the Runner timed out, the event POST itself may have been lost — in that case you will never receive the event, and the indirect detection paths (FLY-92 idle watchdog, Runner session timeout) will eventually surface the dead Runner. If a Runner has been silent for >49h on a gated issue and you have not seen any related event, treat that as the same situation and follow the same retry/cancel prompt.
+The `gate_timed_out` event is on the GUARDRAIL retry path (Bridge → Lead delivery is retried for ~5 min). However, if the Bridge was completely offline when the Runner timed out, the event POST itself may have been lost — in that case you will never receive the event, and the Runner session timeout will eventually surface the dead Runner (FLY-1560 removed the FLY-92 idle detector). If a Runner has been silent for >49h on a gated issue and you have not seen any related event, treat that as the same situation and follow the same retry/cancel prompt.
 
 ---
 

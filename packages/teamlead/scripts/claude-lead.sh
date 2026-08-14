@@ -1409,8 +1409,8 @@ _V2_DIALOG_POLLER_PID=""
 # returns the rendered screen content without ANSI codes, making grep reliable.
 #
 # FLY-83 note: blocked-prompt classification (rate_limit / usage_limit /
-# login_expired / permission_blocked) is owned by the Bridge-side LeadWatchdog
-# (packages/teamlead/src/LeadWatchdog.ts), which uses the SAME capture-pane
+# login_expired / permission_blocked) is owned by scripts/lead-alert.sh and the
+# Bridge-side runner quota/auth scan, which use the SAME capture-pane
 # approach against the rendered screen and avoids the ANSI byte-stream
 # mismatches that doomed the earlier expect-script sentinel-exit-code path.
 #

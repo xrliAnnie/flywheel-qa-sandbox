@@ -2220,7 +2220,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 	// FLY-324: a no-PR / no-code / QA Runner that finishes via
 	// `flywheel-comm stage set completed` only emits a stage_changed event.
 	// Before FLY-324 that left the FSM stuck at `running` (close_runner rejects
-	// it, tmux + worktree linger, idle watchdog false-positives session_stuck).
+	// it, tmux + worktree linger, idle detection false-positives session_stuck).
 	// The stage_changed=completed handler now transitions running→completed.
 	it("FLY-324: stage_changed=completed transitions a still-running session to completed", async () => {
 		await postEvent(); // session_started → running

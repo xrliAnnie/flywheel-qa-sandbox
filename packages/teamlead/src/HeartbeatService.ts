@@ -284,9 +284,9 @@ export interface HeartbeatNotifier {
 }
 
 /**
- * FLY-623: the narrow read/clear surface the event path + idle watchdog use on
+ * FLY-623: the narrow read/clear surface the event path uses on
  * HeartbeatService's reconnecting set, threaded via a late-bound holder (the
- * service is constructed after the router/watchdog are wired). `HeartbeatService`
+ * service is constructed after the router is wired). `HeartbeatService`
  * implements it.
  */
 export interface ReconnectController {
@@ -347,6 +347,11 @@ function isSettledMarkerOutcome(outcome: ReconcileOutcome): boolean {
 		outcome.kind === "settled_merge_block" ||
 		outcome.kind === "settled_ship_attempt_failed"
 	);
+}
+
+interface LivenessPassTracker {
+	started(): number;
+	completed(generation: number): void;
 }
 
 /**
@@ -486,6 +491,8 @@ export class HeartbeatService implements ReconnectController {
 		 * reapOrphans. Absent → byte-compat no-op.
 		 */
 		private onMaintenanceTick?: (tick: number) => Promise<void>,
+		/** Operational health spans only the liveness owner, never skipped ticks. */
+		private livenessPassTracker?: LivenessPassTracker,
 	) {}
 
 	private maintenanceInFlight = false;
@@ -573,6 +580,9 @@ export class HeartbeatService implements ReconnectController {
 				}
 			}
 			const runLivenessChain = livenessOwner || !zombieOn;
+			const livenessGeneration = runLivenessChain
+				? this.livenessPassTracker?.started()
+				: undefined;
 			try {
 				// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
 				// monitor-lost / marker-retry skip sets are current. This pass is the
@@ -627,6 +637,9 @@ export class HeartbeatService implements ReconnectController {
 					);
 				}
 			} finally {
+				if (livenessGeneration !== undefined) {
+					this.livenessPassTracker?.completed(livenessGeneration);
+				}
 				// FLY-1282 (code R1 #1): release IMMEDIATELY after the liveness span
 				// — the stages below must not extend the guard's hold.
 				if (livenessOwner) this.livenessChainInFlight = false;
@@ -1358,8 +1371,7 @@ export class HeartbeatService implements ReconnectController {
 
 	/**
 	 * FLY-623 boot-seed: at Bridge boot, AFTER the FLY-324 done-but-running sweep,
-	 * before the late-bound FLY-172 alert-aware drain, and BEFORE `start()` /
-	 * RunnerIdleWatchdog,
+	 * before the late-bound FLY-172 alert-aware drain, and BEFORE `start()`,
 	 * seed reconnecting state for pre-existing `running` sessions (their in-process
 	 * poll loop died with the previous Bridge process). This makes the in-memory
 	 * set restart-safe (re-seeded every boot → survives repeated restarts) and
@@ -1481,9 +1493,10 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-623: read-only predicate for RunnerIdleWatchdog. It suppresses idle
-	 * notification while a Runner is reconnecting, so a restart-orphaned-but-alive
-	 * Runner does not trigger a false idle alert.
+	 * FLY-623: read-only predicate for idle notification suppression while a
+	 * Runner is reconnecting, so a restart-orphaned-but-alive Runner does not
+	 * trigger a false idle alert. FLY-1560 removed the in-process runner idle
+	 * scan that consumed it; the predicate stays as the reconnecting-set reader.
 	 */
 	isReconnecting(executionId: string): boolean {
 		return this.reconnecting.has(executionId);

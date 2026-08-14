@@ -56,7 +56,6 @@ import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { parseOwnerRepo } from "./gateway/GitPushRunner.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
-import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
@@ -1496,16 +1495,6 @@ export function buildCodexLeadRuntime(
 		);
 	}
 
-	// Liveness + activity signals for the health probe.
-	let alive = true;
-	let lastActivityAt: number | undefined;
-	proc.on("exit", () => {
-		alive = false;
-	});
-	proc.on("notification", () => {
-		lastActivityAt = Date.now();
-	});
-
 	// Outbound: "direct" (default) posts to Discord with the Lead's own token — no
 	// Bridge route / restart (low-risk first bring-up). "bridge" uses the durable
 	// /api/lead-outbound/send exactly-once path (prod; needs the route deployed).
@@ -1548,12 +1537,6 @@ export function buildCodexLeadRuntime(
 	// network/socket actions, the gateway (④) is its only action channel, and
 	// every reserved action there passes founder preflight/consent (C2/D).
 	const threadParams = buildThreadParams(config, baseInstructions);
-
-	const health = new LeadHealthProbe({
-		processAlive: () => alive,
-		lastActivityAt: () => lastActivityAt,
-		journal: { listUnfinished: () => journal.listUnfinished() },
-	});
 
 	const steps = {
 		startProcess: async () => {
@@ -1786,7 +1769,6 @@ export function buildCodexLeadRuntime(
 			await proc.stop();
 			await broker?.close();
 		},
-		healthProbe: () => health.probe(),
 		logger,
 	};
 

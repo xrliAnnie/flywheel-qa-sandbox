@@ -46,7 +46,7 @@ export {
 	resolveAllFlags,
 	resolveFlag,
 	validateFlagTruthEnvironment,
-	validateWatchdogManifest,
+	validateLivenessManifest,
 } from "./feature-flags/index.js";
 export type {
 	FounderTimezoneResolver,

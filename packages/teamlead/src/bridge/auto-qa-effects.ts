@@ -676,7 +676,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	 * `adapter_type`; a no-transport QA (should be impossible — spawn forces a
 	 * mailbox-capable lane) returns `{ ok:false }` so the coordinator holds the
 	 * founder + keeps the durable retest marker. Clear the QA's `declare-state park`
-	 * marker so the idle-watchdog resumes, then mailbox-wake it with the new head.
+	 * marker so idle accounting resumes, then mailbox-wake it with the new head.
 	 */
 	async retestWakeQa(args: {
 		qaSession: Session;
@@ -699,7 +699,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		// and the wake must still proceed — never throw just because comm.db is absent.
 		const db = new CommDB(commDbPathForProject(args.qaSession.project_name));
 		try {
-			// Clear the QA's self-declared `park` marker so the idle-watchdog resumes
+			// Clear the QA's self-declared `park` marker so idle accounting resumes
 			// and treats the QA as active again once it re-tests.
 			try {
 				db.clearDeclaredState(args.qaSession.execution_id);

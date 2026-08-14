@@ -136,6 +136,7 @@ function makeNotifier(): MockNotifier {
 function makeService(
 	store: MockStore,
 	notifier: MockNotifier,
+	livenessTracker?: { started(): number; completed(token: number): void },
 ): HeartbeatService {
 	return new HeartbeatService(
 		store as never,
@@ -147,6 +148,14 @@ function makeService(
 		24,
 		6 * 3_600_000,
 		{ bridgeBaseUrl: "http://127.0.0.1:9876", ingestToken: "tok" },
+		48,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		livenessTracker,
 	);
 }
 
@@ -473,6 +482,11 @@ describe("M2 quarantine wiring", () => {
 
 describe("M3 liveness-chain single-flight", () => {
 	it("slow liveness pass spanning ticks: next check() skips the trio but still runs other stages; resumes after", async () => {
+		const livenessTracker = {
+			started: vi.fn(() => 1),
+			completed: vi.fn(),
+		};
+		service = makeService(store, notifier, livenessTracker);
 		let release: () => void = () => {};
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -492,6 +506,8 @@ describe("M3 liveness-chain single-flight", () => {
 		const staleReadsBefore = store.getStaleCompletedSessions.mock.calls.length;
 		const p2 = service.check(); // trio skipped, other stages run
 		await new Promise((r) => setTimeout(r, 0));
+		expect(livenessTracker.started).toHaveBeenCalledTimes(1);
+		expect(livenessTracker.completed).not.toHaveBeenCalled();
 		expect(store.getOrphanSessions.mock.calls.length).toBe(
 			reconcileReadsBefore,
 		);
@@ -500,6 +516,7 @@ describe("M3 liveness-chain single-flight", () => {
 		);
 		release();
 		await Promise.all([p1, p2]);
+		expect(livenessTracker.completed).toHaveBeenCalledWith(1);
 		// next tick re-enters normally
 		await service.check();
 		expect(store.getOrphanSessions.mock.calls.length).toBeGreaterThan(

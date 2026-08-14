@@ -121,7 +121,7 @@ export interface ShipApprovalOutcome {
 
 /**
  * FLY-1099 §3.4 (Codex R1 #5): structured per-thread scan outcome — the
- * watchdog's health input. A Discord GET failure is an OUTCOME, not just an
+ * reconcile's health input. A Discord GET failure is an OUTCOME, not just an
  * audit row (consecutive read_failed must be able to alert).
  */
 export interface ThreadScanOutcome {
@@ -488,7 +488,7 @@ export async function emitFounderReplyDeliveryForThread(
 			cursorStore?.save(ctx.threadId, advanceableUpTo);
 			// FLY-1099 §7.2 (Codex R2 #6): the waterline safely crossed everything
 			// up to the cursor — clear their retry rows (answered by another path /
-			// proven irrelevant) so the pin watchdog never false-alarms.
+			// proven irrelevant) so the pin reconcile never false-alarms.
 			deps.retryLedger?.clearUpTo(ctx.threadId, advanceableUpTo);
 		}
 

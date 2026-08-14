@@ -1,5 +1,5 @@
 /**
- * FLY-307 C: BridgeEventLoopWatchdog tests.
+ * FLY-307 C: BridgeEventLoopGuard tests.
  *
  * Coverage:
  *  - pure `isLoopStalled` boundaries
@@ -17,12 +17,12 @@ import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	BridgeEventLoopWatchdog,
+	BridgeEventLoopGuard,
 	isLoopStalled,
-	WATCHDOG_WORKER_SOURCE,
-	type WatchdogWorkerData,
+	LOOP_GUARD_WORKER_SOURCE,
+	type LoopGuardWorkerData,
 	type WorkerLike,
-} from "../bridge/BridgeEventLoopWatchdog.js";
+} from "../bridge/BridgeEventLoopGuard.js";
 
 describe("isLoopStalled", () => {
 	it("fresh heartbeat is not stalled", () => {
@@ -39,27 +39,27 @@ describe("isLoopStalled", () => {
 	});
 });
 
-describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () => {
+describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 	let envSnapshot: Record<string, string | undefined>;
 
 	beforeEach(() => {
 		envSnapshot = {
-			off: process.env.FLYWHEEL_BRIDGE_WATCHDOG,
-			stall: process.env.FLYWHEEL_BRIDGE_WATCHDOG_STALL_MS,
-			hb: process.env.FLYWHEEL_BRIDGE_WATCHDOG_HEARTBEAT_MS,
+			off: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD,
+			stall: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS,
+			hb: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS,
 		};
-		delete process.env.FLYWHEEL_BRIDGE_WATCHDOG;
-		delete process.env.FLYWHEEL_BRIDGE_WATCHDOG_STALL_MS;
-		delete process.env.FLYWHEEL_BRIDGE_WATCHDOG_HEARTBEAT_MS;
+		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD;
+		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS;
+		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS;
 		vi.useFakeTimers();
 	});
 
 	afterEach(() => {
 		vi.useRealTimers();
 		for (const [k, key] of [
-			["off", "FLYWHEEL_BRIDGE_WATCHDOG"],
-			["stall", "FLYWHEEL_BRIDGE_WATCHDOG_STALL_MS"],
-			["hb", "FLYWHEEL_BRIDGE_WATCHDOG_HEARTBEAT_MS"],
+			["off", "FLYWHEEL_BRIDGE_LOOP_GUARD"],
+			["stall", "FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS"],
+			["hb", "FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS"],
 		] as const) {
 			const v = envSnapshot[k];
 			if (v === undefined) delete process.env[key];
@@ -85,8 +85,8 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 
 	it("heartbeat advances the shared view on each interval tick", () => {
 		let mockNow = 10_000;
-		let captured: { eval: true; workerData: WatchdogWorkerData } | null = null;
-		const wd = new BridgeEventLoopWatchdog({
+		let captured: { eval: true; workerData: LoopGuardWorkerData } | null = null;
+		const wd = new BridgeEventLoopGuard({
 			enabled: true,
 			bootTs: 9_000,
 			pid: 321,
@@ -126,7 +126,7 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 
 	it("enabled:false → no worker spawned, no heartbeat", () => {
 		const create = vi.fn(() => stubWorker());
-		const wd = new BridgeEventLoopWatchdog({
+		const wd = new BridgeEventLoopGuard({
 			enabled: false,
 			ensureDir: () => {},
 			createWorker: create,
@@ -137,10 +137,10 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 		expect(wd.isEnabled()).toBe(false);
 	});
 
-	it("FLYWHEEL_BRIDGE_WATCHDOG=0 overrides enabled:true", () => {
-		process.env.FLYWHEEL_BRIDGE_WATCHDOG = "0";
+	it("FLYWHEEL_BRIDGE_LOOP_GUARD=0 overrides enabled:true", () => {
+		process.env.FLYWHEEL_BRIDGE_LOOP_GUARD = "0";
 		const create = vi.fn(() => stubWorker());
-		const wd = new BridgeEventLoopWatchdog({
+		const wd = new BridgeEventLoopGuard({
 			enabled: true,
 			ensureDir: () => {},
 			createWorker: create,
@@ -152,7 +152,7 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 
 	it("stop() terminates the worker", () => {
 		const w = stubWorker();
-		const wd = new BridgeEventLoopWatchdog({
+		const wd = new BridgeEventLoopGuard({
 			enabled: true,
 			now: () => 1,
 			ensureDir: () => {},
@@ -165,7 +165,7 @@ describe("BridgeEventLoopWatchdog (main-side mechanics, injected worker)", () =>
 	});
 });
 
-describe("BridgeEventLoopWatchdog (real worker)", () => {
+describe("BridgeEventLoopGuard (real worker)", () => {
 	it("forensic line carries generation and the bounded per-pid sync-op breadcrumb", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1365-wd-"));
 		try {
@@ -173,7 +173,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 			const bootTs = Date.now() - 700_000;
 			const lastBeat = Date.now() - 600_000;
 			const markerPath = join(dir, `bridge-syncop.${pid}.json`);
-			const logPath = join(dir, "watchdog.log");
+			const logPath = join(dir, "loop-guard.log");
 			writeFileSync(
 				markerPath,
 				JSON.stringify({
@@ -185,7 +185,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 			);
 			const sab = new SharedArrayBuffer(8);
 			Atomics.store(new BigInt64Array(sab), 0, BigInt(lastBeat));
-			const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
+			const worker = new Worker(LOOP_GUARD_WORKER_SOURCE, {
 				eval: true,
 				workerData: {
 					sab,
@@ -196,7 +196,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 					pid,
 					bootTs,
 					syncOpMarkerPath: markerPath,
-				} satisfies WatchdogWorkerData,
+				} satisfies LoopGuardWorkerData,
 			});
 			await new Promise<void>((resolve, reject) => {
 				worker.on("error", reject);
@@ -220,7 +220,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 		// Stale by 10 minutes.
 		Atomics.store(view, 0, BigInt(Date.now() - 600_000));
 
-		const worker = new Worker(WATCHDOG_WORKER_SOURCE, {
+		const worker = new Worker(LOOP_GUARD_WORKER_SOURCE, {
 			eval: true,
 			workerData: {
 				sab,
@@ -231,7 +231,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 				pid: process.pid,
 				bootTs: Date.now() - 700_000,
 				syncOpMarkerPath: "",
-			} satisfies WatchdogWorkerData,
+			} satisfies LoopGuardWorkerData,
 		});
 
 		const events = await new Promise<{ msg: unknown; exitCode: number }>(
@@ -255,7 +255,7 @@ describe("BridgeEventLoopWatchdog (real worker)", () => {
 			const dir = mkdtempSync(join(tmpdir(), "fly307-wd-"));
 			try {
 				const srcPath = join(dir, "worker-source.js");
-				writeFileSync(srcPath, WATCHDOG_WORKER_SOURCE);
+				writeFileSync(srcPath, LOOP_GUARD_WORKER_SOURCE);
 
 				const harnessPath = join(dir, "harness.mjs");
 				writeFileSync(

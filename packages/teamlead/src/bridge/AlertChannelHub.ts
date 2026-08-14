@@ -10,8 +10,8 @@
  *     correlation key, so the thread can be RESOLVED later and so a Bridge
  *     restart can reconcile (the durable row outlives the in-memory state).
  *  3. Recovery → resolve: a real-time hook (`onLeadRecovery`, fed by the
- *     LeadWatchdog) AND a restart-safe reconcile pass (`reconcile`, run from the
- *     watchdog's onPollComplete) post "recovered" + archive the thread.
+ *     the Lead alert producers) AND a restart-safe reconcile pass (`reconcile`, run from the
+ *     GatePoller lead-reconcile rider) post "recovered" + archive the thread.
  *
  * Degradation (Codex R1 MEDIUM-5): a `queued` (Discord transient failure) or a
  * `duplicate` with no active thread degrades to ROOT-ONLY — no thread/ack/bot.
@@ -23,7 +23,6 @@ import {
 	type AlertResult,
 	isInformationalKind,
 } from "../LeadAlertNotifier.js";
-import { classifyLeadAlertPane } from "../LeadWatchdog.js";
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import { type AutoRepairBot, HUMAN_ONLY_REASON } from "./AutoRepairBot.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
@@ -36,6 +35,7 @@ import {
 	FLEET_ESCALATION_COPY,
 	KIND_CONTRACTS,
 } from "./kind-contract.js";
+import { classifyLeadAlertPane } from "./pane-blocked-classifier.js";
 import { fingerprintOutput } from "./pane-fingerprint.js";
 import { resolveAutoArchiveMinutes } from "./roundtable/channel-archive-default.js";
 import {
@@ -338,7 +338,7 @@ export class AlertChannelHub {
 		this.logger = deps.logger ?? ((m) => console.log(`[AlertChannelHub] ${m}`));
 	}
 
-	/** The watchdog notifier points here in unified+threading mode. */
+	/** The alert notifier points here in unified+threading mode. */
 	async handle(payload: AlertPayload): Promise<AlertResult> {
 		const result = await this.deps.notifier.alert(payload);
 		if (isInformationalKind(payload.eventType)) return result;
@@ -531,7 +531,7 @@ export class AlertChannelHub {
 				// an `account_switch` enqueue IS the Codex Infra Bot's ASSIGNMENT —
 				// @-mention the bot so the FLY-267 mention-gate wakes it to claim the
 				// pending switch (default `parse:[]` would suppress it). Env unset ⇒ no
-				// mention = byte-compat (the account-switch watchdog deadline still fires
+				// mention = byte-compat (the account-switch deadline still fires
 				// the switch even if the bot is never woken).
 				const infraBotId =
 					repair.action === "account_switch" ? this.infraBotId() : undefined;
@@ -696,17 +696,6 @@ export class AlertChannelHub {
 		}
 	}
 
-	/** Real-time recovery hook fed by LeadWatchdog.onRecovery (an optimization). */
-	async onLeadRecovery(
-		projectName: string,
-		leadId: string,
-		recoveredKind: AlertEventType,
-	): Promise<void> {
-		await this.resolve(
-			correlationKeyFor({ projectName, leadId, eventType: recoveredKind }),
-		);
-	}
-
 	/** Post "recovered" + archive + mark resolved for an active incident. */
 	async resolve(correlationKey: string): Promise<void> {
 		const active = this.deps.store.getActiveAlertThread(correlationKey);
@@ -752,7 +741,7 @@ export class AlertChannelHub {
 	}
 
 	/**
-	 * Restart-safe reconcile (run from LeadWatchdog.onPollComplete). For each
+	 * Restart-safe reconcile (run from the GatePoller lead-reconcile rider). For each
 	 * active alert thread, decide whether the underlying condition has cleared and
 	 * resolve if so. This — not the in-memory onRecovery hook — is the source of
 	 * truth after a Bridge restart (Codex R1 HIGH-1).

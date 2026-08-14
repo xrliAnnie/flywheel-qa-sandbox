@@ -1,10 +1,10 @@
 /**
  * FLY-626: runner self-declared liveness state — `park` / `busy` / `unpark`.
  *
- * A runner declares its intent so the Bridge stall watchdogs do not waste a
+ * A runner declares its intent so the Bridge stall detectors do not waste a
  * (token-expensive) Lead wake on it:
  *   - `park`  → done-but-alive (idle by design, kept for iteration). May be
- *               indefinite; the watchdog fully suppresses wakes. Orphan / tmux
+ *               indefinite; wakes are fully suppressed. Orphan / tmux
  *               liveness reaping stays active (a dead parked runner is still
  *               reaped — see HeartbeatService).
  *   - `busy`  → actively working on something that legitimately produces no pane
@@ -15,12 +15,12 @@
  * A declaration is cleared by: explicit `unpark`; the marker's own expiry
  * (`busy` is always bounded; `park --until`); or a Lead/founder RE-ENGAGEMENT —
  * a `flywheel-comm send` instruction to the runner clears its marker so the
- * watchdogs resume (Codex code-review #1, protects FLY-369). An indefinite
+ * stall detection resumes (Codex code-review #1, protects FLY-369). An indefinite
  * `park` with no re-engagement persists until `unpark` — orphan/tmux liveness
  * reaping stays active throughout, so a dead parked runner is still reaped.
  *
  * The marker is written to CommDB (`runner_declared_states`) so it survives a
- * Bridge restart and is read cheaply by the watchdog classifier.
+ * Bridge restart and is read cheaply by the stall classifier.
  */
 
 import type { CommDB } from "../db.js";

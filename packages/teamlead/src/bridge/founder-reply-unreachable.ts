@@ -1,25 +1,25 @@
 /**
- * FLY-1099 §7.2 — founder-reply watchdog: the "founder 批准静默消失零告警"
- * incident can never repeat silently.
+ * FLY-1099 §7.2 — founder-reply unreachable reconciliation. The
+ * "founder 批准静默消失零告警" incident can never repeat silently.
  *
  * Retained detector:
  *   - unreachable-runner (Z2): a LIVE session whose CommDB registration row is
  *     gone (FLY-1049) — wake routing broken, needs a human re-register/close.
  *   (dead-letter alerts are emitted at the SOURCE — the same transaction that
  *    dead-letters writes a durable emit_alert intent; the drain delivers it —
- *    so this watchdog does not re-detect them. emit_alert-kind failed rows are
+ *    so this reconcile does not re-detect them. emit_alert-kind failed rows are
  *    excluded from every detector input — Codex R4 #3 anti-recursion.)
  */
 
 import type { DrainAlertSink } from "./founder-action-drain.js";
 
-export function founderReplyWatchdogEnabled(
+export function founderReplyUnreachableEnabled(
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
-	return env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG !== "0";
+	return env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE !== "0";
 }
 
-export interface FounderReplyWatchdogDeps {
+export interface FounderReplyUnreachableDeps {
 	alertSink?: DrainAlertSink;
 	/** The unified infra alert owner (§7.2). */
 	infraRoute(): { leadId: string; projectName: string } | undefined;
@@ -36,10 +36,10 @@ interface UnreachableEntry {
 	seenThisSweep: boolean;
 }
 
-export class FounderReplyWatchdog {
+export class FounderReplyUnreachableReconcile {
 	private readonly unreachable = new Map<string, UnreachableEntry>();
 
-	constructor(private readonly deps: FounderReplyWatchdogDeps) {}
+	constructor(private readonly deps: FounderReplyUnreachableDeps) {}
 
 	private env(): Record<string, string | undefined> {
 		return this.deps.env ?? process.env;
@@ -93,7 +93,7 @@ export class FounderReplyWatchdog {
 		const resolved = route ?? this.deps.infraRoute();
 		if (!sink || !resolved) {
 			console.error(
-				`[founder-reply-watchdog] ${alert.eventType} (${alert.eventId}) — no alert sink/route: ${alert.title}`,
+				`[founder-reply-unreachable] ${alert.eventType} (${alert.eventId}) — no alert sink/route: ${alert.title}`,
 			);
 			return;
 		}
@@ -109,14 +109,14 @@ export class FounderReplyWatchdog {
 			});
 		} catch (err) {
 			console.warn(
-				`[founder-reply-watchdog] alert emit failed (${alert.eventId}): ${(err as Error).message}`,
+				`[founder-reply-unreachable] alert emit failed (${alert.eventId}): ${(err as Error).message}`,
 			);
 		}
 	}
 
-	/** Detector tick — piggybacked on the founder-reply sub-cadence. */
+	/** Reconcile tick — piggybacked on the founder-reply sub-cadence. */
 	async tick(): Promise<void> {
-		if (!founderReplyWatchdogEnabled(this.env())) return;
+		if (!founderReplyUnreachableEnabled(this.env())) return;
 		for (const [execId, entry] of this.unreachable) {
 			if (entry.alerted) continue;
 			entry.alerted = true;

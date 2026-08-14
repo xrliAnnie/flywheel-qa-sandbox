@@ -1,6 +1,6 @@
 /**
  * FLY-1082 (Tasks 2.2/2.5/2.6): the fleet sensor pack — piggybacked on the
- * LeadWatchdog `onPollComplete` tick (zero new timers, FLY-169 norm). Each
+ * GatePoller lead-reconcile tick (zero new timers, FLY-169 norm). Each
  * sensor is independently kill-switched (`FLYWHEEL_FLEET_SENSOR_<NAME>=0`) and
  * DEFAULT ON: a default-off fleet sensor would recreate the "enable window
  * that never comes" — the exact disease this issue treats.
@@ -148,7 +148,7 @@ export class FleetSensors {
 		);
 	}
 
-	/** One watchdog tick. Every sensor independently try/caught. */
+	/** One reconcile tick. Every sensor independently try/caught. */
 	async tick(): Promise<void> {
 		try {
 			await this.swapTick();

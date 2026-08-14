@@ -172,7 +172,7 @@ describe("feature-flag registry invariants", () => {
 		expect(flag).toBeUndefined();
 	});
 
-	it("FLY-1570 removes chase patrols but keeps founder-reply consistency detection", () => {
+	it("FLY-1560 keeps founder-reply consistency detection under an honest name", () => {
 		for (const name of ["misroute_patrol", "zombie_gate_resolve"]) {
 			expect(
 				FEATURE_FLAGS.find((flag) => flag.name === name),
@@ -180,22 +180,46 @@ describe("feature-flag registry invariants", () => {
 			).toBeUndefined();
 		}
 		const founderReply = FEATURE_FLAGS.find(
-			(flag) => flag.name === "founder_reply_watchdog",
+			(flag) => flag.name === "founder_reply_unreachable",
 		);
 		expect(founderReply).toMatchObject({
-			envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+			envVar: "FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
 		});
 		expect(founderReply?.retiring).toBeUndefined();
+		expect(RETIRED_FLAGS).toContainEqual({
+			envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+			retiredBy: "FLY-1560",
+		});
 	});
 
-	it("FLY-1570 leaves only the Lead W-4 boot-time control", () => {
-		const flag = FEATURE_FLAGS.find((f) => f.name === "watchdog_blocked");
-		expect(flag).toMatchObject({
+	it("FLY-1560 retires the removed Lead W-4 control", () => {
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "watchdog_blocked"),
+		).toBeUndefined();
+		expect(RETIRED_FLAGS).toContainEqual({
 			envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
-			default: true,
-			toggleable: "readonly",
+			retiredBy: "FLY-1560",
 		});
-		expect(flag?.readSites.map((site) => site.timing)).toEqual(["bridge_boot"]);
+	});
+
+	it("FLY-1560 retires idle polling and narrows W-1 to alert delivery", () => {
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "watchdog_liveness"),
+		).toBeUndefined();
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "liveness_alerts"),
+		).toMatchObject({
+			envVar: "FLYWHEEL_LIVENESS_ALERTS",
+			description: expect.stringMatching(/approved_to_ship/),
+		});
+		expect(RETIRED_FLAGS).toEqual(
+			expect.arrayContaining([
+				{ envVar: "FLYWHEEL_WATCHDOG_LIVENESS", retiredBy: "FLY-1560" },
+				{ envVar: "FLYWHEEL_IDLE_POLL_MS", retiredBy: "FLY-1560" },
+				{ envVar: "FLYWHEEL_QUIET_PERSIST_DEDUP", retiredBy: "FLY-1560" },
+				{ envVar: "FLYWHEEL_QUIET_CLASSIFIER", retiredBy: "FLY-1560" },
+			]),
+		);
 	});
 
 	it("FLY-1404 registers the topology-neutral design HTML governance gate", () => {

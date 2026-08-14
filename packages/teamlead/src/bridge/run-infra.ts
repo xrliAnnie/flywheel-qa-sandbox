@@ -309,7 +309,7 @@ async function createRunBlueprint(
 	tmuxSessionName: string,
 	fetchIssue: ReturnType<typeof createFetchIssue>,
 	eventEmitter: DirectEventSink,
-	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
+	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
 	checkpointConfig?: CheckpointsConfig, // FLY-47
 	worktreeManager?: WorktreeManager, // FLY-95
 	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2

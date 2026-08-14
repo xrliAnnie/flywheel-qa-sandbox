@@ -156,7 +156,7 @@ export interface AutoQaSideEffects {
 	 * implementer's NEW head (fix-loop reuse; never a fresh QA2). Unlike the
 	 * void/best-effort `sendRunnerWake`, this is a FAIL-LOUD primitive: it resolves
 	 * the transport from the QA session's `adapter_type`, clears the QA's
-	 * `declare-state park` marker so the idle-watchdog resumes, and RETURNS whether
+	 * `declare-state park` marker so idle accounting resumes, and RETURNS whether
 	 * the wake landed. A no-transport QA (should be impossible — spawn forces a
 	 * mailbox-capable lane) returns `{ ok: false }` so the coordinator holds the
 	 * founder + keeps the durable retest marker for reconcile, never silently

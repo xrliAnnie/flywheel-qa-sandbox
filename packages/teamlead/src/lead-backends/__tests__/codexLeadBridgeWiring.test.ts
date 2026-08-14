@@ -1,8 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { RoleBackendMap } from "flywheel-config";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
 	CodexLeadOutboundHandler,
@@ -12,10 +8,7 @@ import {
 	buildAuthorizeLeadChannel,
 	buildLeadOutboundExpressHandler,
 	buildResolveBotToken,
-	loadProjectLeadRoles,
 	type OutboundRes,
-	paneWatchdogProjects,
-	resolveLeadBackendFromRoles,
 } from "../codexLeadBridgeWiring.js";
 
 function project(
@@ -35,79 +28,6 @@ function lead(
 		...over,
 	} as ProjectEntry["leads"][number];
 }
-
-const CODEX_ROLES: RoleBackendMap = { lead: { backend: "codex-tmux" } };
-const CLAUDE_ROLES: RoleBackendMap = { lead: { backend: "claude-tmux" } };
-
-describe("resolveLeadBackendFromRoles (real source: roles.lead.backend)", () => {
-	it("roles.lead vendor=codex → codex-app-server", () => {
-		expect(resolveLeadBackendFromRoles(CODEX_ROLES, {})).toBe(
-			"codex-app-server",
-		);
-	});
-	it("roles.lead claude / absent roles / no env → claude-code (byte-compat default)", () => {
-		expect(resolveLeadBackendFromRoles(CLAUDE_ROLES, {})).toBe("claude-code");
-		expect(resolveLeadBackendFromRoles(undefined, {})).toBe("claude-code");
-	});
-	it("FLYWHEEL_LEAD_BACKEND env path also resolves (codex → codex-app-server)", () => {
-		expect(
-			resolveLeadBackendFromRoles(undefined, {
-				FLYWHEEL_LEAD_BACKEND: "codex",
-			}),
-		).toBe("codex-app-server");
-	});
-});
-
-describe("paneWatchdogProjects — byte-compat (real source)", () => {
-	const projects = [project("a"), project("mufasa-project"), project("c")];
-
-	it("all default (getRoles → undefined) → identical list (no-op)", () => {
-		const out = paneWatchdogProjects(projects, () => undefined, {});
-		expect(out).toEqual(projects);
-		expect(out).toHaveLength(3);
-	});
-
-	it("excludes a project whose roles.lead is codex, keeps the rest in order", () => {
-		const getRoles = (p: { projectName: string }) =>
-			p.projectName === "mufasa-project" ? CODEX_ROLES : undefined;
-		const out = paneWatchdogProjects(projects, getRoles, {});
-		expect(out.map((p) => p.projectName)).toEqual(["a", "c"]);
-	});
-});
-
-describe("loadProjectLeadRoles (sync .flywheel/config.yaml read)", () => {
-	let dir: string;
-	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "fly224-roles-"));
-	});
-	afterEach(() => rmSync(dir, { recursive: true, force: true }));
-
-	function writeConfig(yaml: string) {
-		mkdirSync(join(dir, ".flywheel"), { recursive: true });
-		writeFileSync(join(dir, ".flywheel", "config.yaml"), yaml, "utf8");
-	}
-
-	it("reads roles.lead.backend from config.yaml", () => {
-		writeConfig("project: mufasa\nroles:\n  lead:\n    backend: codex-tmux\n");
-		const roles = loadProjectLeadRoles(dir);
-		expect(roles?.lead?.backend).toBe("codex-tmux");
-		expect(resolveLeadBackendFromRoles(roles, {})).toBe("codex-app-server");
-	});
-
-	it("missing file / no roles → undefined (byte-compat default claude-code)", () => {
-		expect(loadProjectLeadRoles(dir)).toBeUndefined(); // no config.yaml
-		writeConfig("project: x\n");
-		expect(loadProjectLeadRoles(dir)).toBeUndefined(); // no roles block
-		expect(resolveLeadBackendFromRoles(loadProjectLeadRoles(dir), {})).toBe(
-			"claude-code",
-		);
-	});
-
-	it("malformed YAML → undefined (no throw)", () => {
-		writeConfig("project: : : bad\n  - nope\n");
-		expect(loadProjectLeadRoles(dir)).toBeUndefined();
-	});
-});
 
 describe("buildResolveBotToken (mirrors LeadAlertNotifier)", () => {
 	const projects = [

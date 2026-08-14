@@ -2,12 +2,12 @@
  * FLY-927 (Task 1.4, T1): fixed-window token bucket + overflow summary.
  */
 import { describe, expect, it } from "vitest";
-import { ALERT_ECHO_START } from "../../LeadWatchdog.js";
 import {
 	createAlertRateLimiter,
 	formatOverflowSummary,
 	rateLimitPerMinuteFromEnv,
 } from "../alert-rate-limiter.js";
+import { ALERT_ECHO_START } from "../pane-live-region.js";
 
 describe("createAlertRateLimiter", () => {
 	it("allows exactly perMinute acquisitions within one window", () => {

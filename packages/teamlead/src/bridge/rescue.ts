@@ -23,6 +23,42 @@
  *   5. Every step audits (same sink as the account-switch route).
  */
 
+import { ownStateRegion } from "./pane-live-region.js";
+
+/** Exact resume-menu markers retained by the safe Enter repair path. */
+const RESUME_MENU_MARKERS: RegExp[] = [
+	/resume from summary/i,
+	/resume full session/i,
+	/enter to confirm/i,
+];
+
+/**
+ * FLY-368 — shapes that look superficially similar but whose Enter does something
+ * NOT equivalent to acknowledging the resume menu (e.g. proactively STARTING a
+ * compaction). Their presence vetoes the safe-resume-Enter recognizer (Codex R1
+ * MEDIUM-7: compact prompt / in-flight compaction is a separate product decision).
+ */
+const NOT_RESUME_MENU_MARKERS: RegExp[] = [
+	/compact the conversation/i,
+	/compacting conversation/i,
+];
+
+/**
+ * FLY-368 — recognize the EXACT resume-menu shape that is safe for the
+ * auto-repair bot to clear with a single Enter. NARROW + fail-closed: returns
+ * true ONLY when all resume-menu markers are present AND no compact-prompt /
+ * compacting marker is. Validated against the real `freeze-resume-menu.txt`
+ * fixture (must-pass) and `freeze-compact-prompt.txt` / `freeze-compacting.txt`
+ * (must-fail). The Lead `permission_blocked` prompt never matches (no resume
+ * markers) and is intentionally NEVER auto-confirmed.
+ */
+export function isSafeResumeMenuForEnter(pane: string): boolean {
+	if (!pane) return false;
+	const region = ownStateRegion(pane);
+	if (NOT_RESUME_MENU_MARKERS.some((t) => t.test(region))) return false;
+	return RESUME_MENU_MARKERS.every((t) => t.test(region));
+}
+
 export type RescueRoute = "lead" | "runner";
 
 export interface RescueOutcome {
@@ -123,7 +159,7 @@ export interface RescueLeadDeps {
 	capturePane: (projectName: string, leadId: string) => Promise<string | null>;
 	/** Send a single Enter to the Lead window (only ever for the resume menu). */
 	sendEnter: (projectName: string, leadId: string) => Promise<void>;
-	/** = LeadWatchdog.isSafeResumeMenuForEnter — the fixture-validated recogniser. */
+	/** The fixture-validated resume-menu recogniser (moved here in FLY-1560). */
 	isResumeMenu: (pane: string) => boolean;
 	/** Post evidence into the incident's Alerts thread (before + after). */
 	postEvidence: PostEvidenceFn;

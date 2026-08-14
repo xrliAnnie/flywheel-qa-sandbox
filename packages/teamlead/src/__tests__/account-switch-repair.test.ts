@@ -3,7 +3,7 @@
  *
  * canAttempt decides attemptability; enqueue writes the durable pending record
  * (AutoRepairBot's action on a cap); executeSwitch does the actual switch (fired
- * by a bot claim or the watchdog) and resolves the record. Switch deps are
+ * by a bot claim or the deadline sweep) and resolves the record. Switch deps are
  * mocked so no real Keychain is touched.
  */
 import { mkdtempSync, rmSync } from "node:fs";

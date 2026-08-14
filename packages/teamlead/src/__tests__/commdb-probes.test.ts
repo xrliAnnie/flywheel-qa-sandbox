@@ -4,8 +4,6 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-	DEFAULT_IDLE_POLL_MS,
-	idleWatchdogPollMs,
 	parseNonNegativeIntEnv,
 	probeCommSignalsFromCommDb,
 	probeQuietSignals,
@@ -13,23 +11,6 @@ import {
 } from "../bridge/commdb-probes.js";
 
 describe("comm probe cadence", () => {
-	it("keeps the liveness poll at 3s and rejects non-positive overrides", () => {
-		expect(DEFAULT_IDLE_POLL_MS).toBe(3_000);
-		expect(idleWatchdogPollMs({} as NodeJS.ProcessEnv)).toBe(3_000);
-		expect(
-			idleWatchdogPollMs({
-				FLYWHEEL_IDLE_POLL_MS: "120000",
-			} as NodeJS.ProcessEnv),
-		).toBe(120_000);
-		for (const bad of ["abc", "-5", "0", ""]) {
-			expect(
-				idleWatchdogPollMs({
-					FLYWHEEL_IDLE_POLL_MS: bad,
-				} as NodeJS.ProcessEnv),
-			).toBe(3_000);
-		}
-	});
-
 	it("accepts zero for the optional CommDB activity window", () => {
 		expect(parseNonNegativeIntEnv("0", 99)).toBe(0);
 		expect(parseNonNegativeIntEnv("5", 99)).toBe(5);

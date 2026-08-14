@@ -22,7 +22,7 @@ export interface LeadConfig {
 	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
 	botToken?: string;
 	/**
-	 * FLY-83: Discord channel ID where LeadWatchdog / lead-alert.sh post
+	 * FLY-83: Discord channel ID where lead-alert.sh posts
 	 * operator-facing alerts (login expired, permission blocked, silent pane).
 	 * If omitted and alertFallbackToCore is false, alerts are skipped.
 	 */
@@ -64,7 +64,7 @@ export interface LeadConfig {
 	/**
 	 * FLY-231: companion (non-engineering) Lead marker — a warm persona agent
 	 * (e.g. Mufasa, Belle) wrapped in Flywheel Lead infra for launchd residency +
-	 * Discord adapter + LeadWatchdog coverage, but with NO Runner spawning, NO
+	 * Discord adapter + Lead alert coverage, but with NO Runner spawning, NO
 	 * code, and NO engineering-governance rules. `claude-lead.sh` reads this
 	 * (single source of truth) to skip the eng-governance base rules and trim the
 	 * companion's capability surface.
@@ -81,7 +81,7 @@ export interface LeadConfig {
 	/**
 	 * FLY-879: external (customer-facing) Lead marker — an outward-facing agent
 	 * (e.g. Anna the interviewer) wrapped in Flywheel Lead infra for launchd
-	 * residency + Discord adapter + LeadWatchdog coverage, but with a HARD-LOCKED
+	 * residency + Discord adapter + Lead alert coverage, but with a HARD-LOCKED
 	 * capability surface: NO Runner spawning, NO Bridge/CommDB/internal MCP, and —
 	 * unlike a companion — NONE of the internal engineering rules AND not even the
 	 * cross-dept roundtable. Its ENTIRE rule surface is one `external-agent-contract.md`

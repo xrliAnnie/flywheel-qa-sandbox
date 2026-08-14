@@ -39,7 +39,7 @@ export function syncOpMarkerPath(
 	return join(dir, `bridge-syncop.${pid}.json`);
 }
 
-/** Secure bounded read shared by clear, watchdog attribution and tests. */
+/** Secure bounded read shared by clear, sync-op attribution and tests. */
 export function readSyncOpMarker(path: string): SyncOpMarker | null {
 	let fd: number | undefined;
 	try {

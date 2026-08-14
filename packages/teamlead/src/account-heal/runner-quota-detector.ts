@@ -6,10 +6,10 @@
  * a scan (piggybacking the runner idle poll) applies per runner pane:
  *   1. §3.3 hard boundary — a transient 529 / rate-limit short-circuits to null
  *      (retry in place, NEVER switch); the recognizer is injected (the same
- *      isTransientThrottlePane the Lead watchdog uses).
+ *      isTransientThrottlePane the Lead pane classifier uses).
  *   2. otherwise defer to the shared metadata builder, so a runner cap produces
  *      the identical accountLimit metadata the Lead path does and flows through
- *      the same enqueue → watchdog → switch loop.
+ *      the same enqueue → deadline sweep → switch loop.
  *
  * Returns null when the pane is transient, has no gauge, or shows no real cap.
  */

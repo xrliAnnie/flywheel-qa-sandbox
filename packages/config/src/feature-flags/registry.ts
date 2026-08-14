@@ -104,48 +104,27 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
-	// ─── FLY-1393: independent watchdog minimum-set controls ───
+	// ─── FLY-1393: liveness controls ───
 	{
-		name: "watchdog_liveness",
+		name: "liveness_alerts",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
-		envVar: "FLYWHEEL_WATCHDOG_LIVENESS",
+		envVar: "FLYWHEEL_LIVENESS_ALERTS",
 		polarity: "default_on",
 		valueKind: "bool",
 		default: true,
-		description: "W-1 进程存活探测(Bridge 启动时读取;=0 关闭人工告警)",
+		description: "approved_to_ship Runner 死亡人工告警(Bridge 启动时读取)",
 		readSites: [
 			envSite(
-				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
-				"watchdogLivenessEnabled",
+				"packages/teamlead/src/bridge/liveness-manifest.ts",
+				"livenessAlertsEnabled",
 				"bridge_boot",
 				"env-param",
 			),
 		],
 		toggleable: "readonly",
 		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
-	},
-	{
-		name: "watchdog_blocked",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WATCHDOG_BLOCKED",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "W-4 Lead block 关键字检测(启动时读取)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/watchdog-minimum-set.ts",
-				"watchdogBlockedEnabled (LeadWatchdog boot capture)",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "Lead blocked-marker 修改后需重启 Bridge。",
 	},
 	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
 	{
@@ -1275,19 +1254,19 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
-		name: "founder_reply_watchdog",
+		name: "founder_reply_unreachable",
 		category: "kill_switch",
 		source: "env",
 		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
+		envVar: "FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
 		polarity: "default_on",
 		valueKind: "bool",
 		default: true,
 		description: "founder-reply unreachable runner 数据一致性告警",
 		readSites: [
 			envSite(
-				"packages/teamlead/src/bridge/founder-reply-watchdog.ts",
-				"founderReplyWatchdogEnabled",
+				"packages/teamlead/src/bridge/founder-reply-unreachable.ts",
+				"founderReplyUnreachableEnabled",
 				"call_time",
 			),
 		],
@@ -1390,32 +1369,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "direct",
 		directToggleProof:
 			"resolve.direct-toggle.test:liveness_pane_dead live-observe",
-	},
-	{
-		name: "quiet_persist_dedup",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QUIET_PERSIST_DEDUP",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "quiet-persist 信号去重",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/HeartbeatService.ts",
-				"HeartbeatService (method)",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/RunnerIdleWatchdog.ts",
-				"RunnerIdleWatchdog (method)",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"resolve.direct-toggle.test:quiet_persist_dedup live-observe",
 	},
 	{
 		name: "engine_dead_exec_sweep",
@@ -1562,19 +1515,19 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "bridge_watchdog",
+		name: "bridge_loop_guard",
 		category: "feature",
 		source: "env",
 		scope: "bridge_global",
-		envVar: "FLYWHEEL_BRIDGE_WATCHDOG",
+		envVar: "FLYWHEEL_BRIDGE_LOOP_GUARD",
 		polarity: "default_on",
 		valueKind: "bool",
 		default: true,
 		description:
-			"Bridge event-loop watchdog（start() 只在启动看，事后置 0 停不了已跑的）",
+			"Bridge event-loop self-termination guard（start() 只在启动看，事后置 0 停不了已跑的）",
 		readSites: [
 			envSite(
-				"packages/teamlead/src/bridge/BridgeEventLoopWatchdog.ts",
+				"packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
 				"isEnabled/start",
 				"mixed",
 			),
@@ -1674,25 +1627,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/plugin.ts",
 				"startBridge",
 				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "quiet_classifier",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QUIET_CLASSIFIER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "抑制安静 runner 的 token-贵 Lead wake（FLY-626）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp",
-				"mixed",
 			),
 		],
 		toggleable: "conversational",

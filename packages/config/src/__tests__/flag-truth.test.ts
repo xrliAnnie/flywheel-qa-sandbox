@@ -1,11 +1,27 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import {
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
 	validateFlagTruthEnvironment,
-	validateWatchdogManifest,
+	validateLivenessManifest,
 } from "../feature-flags/truth.js";
+
+/**
+ * FLY-1560 刀 6: the W-1 row is produced by LivenessCheckTracker.snapshot(), so
+ * schema v2 requires the tracker fields on every manifest. Health judgment on
+ * `freshness` lives in the out-of-process probe; the validator only enforces
+ * that the fields the probe consumes are present and well-typed.
+ */
+const W1_TRACKED_FIELDS = {
+	class: "W-1",
+	switch: "required",
+	last_check_started_at: "2026-08-14T09:00:00.000Z",
+	last_check_completed_at: "2026-08-14T09:00:01.000Z",
+	in_flight_age_ms: null,
+	freshness: "fresh",
+};
 
 describe("FLY-1393 flag truth", () => {
 	it("classifies the founder-review runner capability as context, not a feature flag", () => {
@@ -233,12 +249,12 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
-	it("runtime validation catches a missing minimum-set row and a revived retired lane", () => {
+	it("runtime validation catches missing or unwired liveness rows", () => {
 		const active = () => ({ wired: true, effective_enabled: true });
 		const valid = {
-			schema_version: 1,
+			schema_version: 2,
 			components: {
-				w1_process_liveness: active(),
+				w1_process_liveness: { ...active(), ...W1_TRACKED_FIELDS },
 				w2_delivery_loop: {
 					...active(),
 					leads: [
@@ -250,38 +266,33 @@ describe("FLY-1393 flag truth", () => {
 					...active(),
 					observation: "static_contract",
 				},
-				w4_lead_blocked: { wired: true, effective_enabled: false },
 			},
-			retiring: FEATURE_FLAGS.filter((flag) => flag.retiring).map((flag) => ({
-				name: flag.name,
-				effective_enabled: false,
-			})),
 		};
-		expect(validateWatchdogManifest(valid)).toEqual({ ok: true, errors: [] });
+		expect(validateLivenessManifest(valid)).toEqual({ ok: true, errors: [] });
 
 		const wrong = structuredClone(valid);
 		delete (wrong.components as Record<string, unknown>).w1_process_liveness;
 		wrong.components.w2_delivery_loop.wired = false;
 		delete (wrong.components.w3_external_drift as Record<string, unknown>)
 			.observation;
-		wrong.components.w4_lead_blocked.effective_enabled = "0";
-		wrong.retiring = [{ name: "retired-patrol", effective_enabled: true }];
-		const result = validateWatchdogManifest(wrong);
+		const result = validateLivenessManifest(wrong);
 		expect(result.ok).toBe(false);
 		expect(result.errors.join("\n")).toMatch(/w1_process_liveness/);
 		expect(result.errors.join("\n")).toMatch(/w2_delivery_loop.*wired=true/);
 		expect(result.errors.join("\n")).toMatch(
 			/w3_external_drift.*observation=static_contract/,
 		);
-		expect(result.errors.join("\n")).toMatch(/w4_lead_blocked.*boolean/);
-		expect(result.errors.join("\n")).toMatch(/effective_enabled=true/);
 	});
 
 	it("rejects a W-2 Lead row whose identity or freshness is missing or invalid", () => {
 		const manifest = (leads: unknown[]) => ({
-			schema_version: 1,
+			schema_version: 2,
 			components: {
-				w1_process_liveness: { wired: true, effective_enabled: true },
+				w1_process_liveness: {
+					wired: true,
+					effective_enabled: true,
+					...W1_TRACKED_FIELDS,
+				},
 				w2_delivery_loop: {
 					wired: true,
 					effective_enabled: true,
@@ -292,9 +303,7 @@ describe("FLY-1393 flag truth", () => {
 					effective_enabled: true,
 					observation: "static_contract",
 				},
-				w4_lead_blocked: { wired: true, effective_enabled: true },
 			},
-			retiring: [],
 		});
 
 		for (const leads of [
@@ -302,9 +311,126 @@ describe("FLY-1393 flag truth", () => {
 			[{ lead_id: "", freshness: "stale" }],
 			[{ lead_id: "lead-a", freshness: "unknown" }],
 		]) {
-			const result = validateWatchdogManifest(manifest(leads));
+			const result = validateLivenessManifest(manifest(leads));
 			expect(result.ok).toBe(false);
 			expect(result.errors.join("\n")).toMatch(/w2_delivery_loop\.leads/);
+		}
+	});
+
+	it("FLY-1560 requires the W-1 tracker fields the probe judges health on", () => {
+		const manifest = (w1: Record<string, unknown>) => ({
+			schema_version: 2,
+			components: {
+				w1_process_liveness: w1,
+				w2_delivery_loop: {
+					wired: true,
+					effective_enabled: true,
+					leads: [{ lead_id: "lead-a", freshness: "fresh" }],
+				},
+				w3_external_drift: {
+					wired: true,
+					effective_enabled: true,
+					observation: "static_contract",
+				},
+			},
+		});
+		const w1 = () => ({
+			wired: true,
+			effective_enabled: true,
+			...W1_TRACKED_FIELDS,
+		});
+
+		// Every freshness the tracker can emit is structurally valid — the probe,
+		// not the validator, decides which of them is healthy.
+		for (const freshness of ["not_started", "fresh", "stale", "in_flight"]) {
+			expect(
+				validateLivenessManifest(manifest({ ...w1(), freshness })),
+			).toEqual({ ok: true, errors: [] });
+		}
+		// A hung pass reports its age; null is only valid when nothing is in flight.
+		expect(
+			validateLivenessManifest(
+				manifest({
+					...w1(),
+					freshness: "in_flight",
+					in_flight_age_ms: 900_000,
+				}),
+			),
+		).toEqual({ ok: true, errors: [] });
+
+		for (const [field, badValue] of [
+			["freshness", "unknown"],
+			["freshness", undefined],
+			["last_check_started_at", 12345],
+			["last_check_completed_at", 12345],
+			["in_flight_age_ms", "900000"],
+			["switch", "optional"],
+		] as const) {
+			const row = { ...w1(), [field]: badValue };
+			if (badValue === undefined)
+				delete (row as Record<string, unknown>)[field];
+			const result = validateLivenessManifest(manifest(row));
+			expect(result.ok, `${field}=${String(badValue)}`).toBe(false);
+			expect(result.errors.join("\n")).toMatch(
+				new RegExp(`w1_process_liveness.*${field}`),
+			);
+		}
+
+		// W-1 has no kill switch — an effective_enabled=false row is a contract break.
+		const disabled = validateLivenessManifest(
+			manifest({ ...w1(), effective_enabled: false }),
+		);
+		expect(disabled.ok).toBe(false);
+		expect(disabled.errors.join("\n")).toMatch(
+			/w1_process_liveness.*effective_enabled/,
+		);
+	});
+});
+
+/**
+ * FLY-1560 (Codex R1 MEDIUM-2). The out-of-process liveness probe's numeric
+ * knobs were renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* along with the
+ * /health key. Deriving the expected set from the shipped script — instead of
+ * hand-copying names here — is the whole point: a future rename that touches
+ * only one side fails this test rather than shipping a knob `check-flag-truth`
+ * calls "unknown" (false alarm) or a dead name it still calls valid.
+ */
+describe("FLY-1560 liveness probe env contract", () => {
+	const probe = readFileSync(
+		new URL("../../../../scripts/bridge-liveness-probe.sh", import.meta.url),
+		"utf8",
+	);
+	const probeEnvNames = [
+		...new Set(probe.match(/FLYWHEEL_LIVENESS_[A-Z_]+/g) ?? []),
+	].sort();
+
+	it("registers every FLYWHEEL_LIVENESS_* knob the shipped probe reads", () => {
+		expect(probeEnvNames.length).toBeGreaterThanOrEqual(4);
+		for (const envVar of probeEnvNames) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeDefined();
+			expect(validateFlagTruthEnvironment([`${envVar}=5`]).ok, envVar).toBe(
+				true,
+			);
+		}
+	});
+
+	it("tombstones the pre-rename names and the dead Lead-pane poll interval", () => {
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		for (const envVar of [
+			"FLYWHEEL_WATCHDOG_DISABLED_REMINDER_MIN",
+			"FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN",
+			"FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN",
+			"FLYWHEEL_WATCHDOG_STALLED_ESCALATE_MIN",
+			// Its only reader, the Lead-pane poll loop, was deleted by this issue.
+			"FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+			expect(tombstones.get(envVar), envVar).toBe("FLY-1560");
+			const result = validateFlagTruthEnvironment([`${envVar}=5`]);
+			expect(result.ok, envVar).toBe(false);
+			expect(result.errors.join("\n"), envVar).toMatch(/删这行/);
 		}
 	});
 });

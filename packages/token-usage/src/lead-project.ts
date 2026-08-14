@@ -40,7 +40,7 @@ export const LEAD_FALLBACK_PROJECT = "(其它)";
  * Display-only projects: names the founder recognizes but that are NOT yet
  * registered in `projects.json`. They are listed in the report (with 0 usage
  * and a "(未立项)" tag) so they're visible, WITHOUT registering them as managed
- * projects (registration = the Bridge/watchdog expects a Lead + config). When a
+ * projects (registration = the Bridge expects a Lead + config). When a
  * project is truly stood up, add it to `projects.json` and remove it here.
  */
 export const DISPLAY_ONLY_PROJECTS: readonly string[] = ["polaris"];

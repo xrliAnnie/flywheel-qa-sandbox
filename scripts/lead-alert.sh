@@ -10,7 +10,7 @@
 #      - signature defaults to today's date (YYYYMMDD) so a crash-looping
 #        Lead alerts at most once per day per (project, lead, kind).
 #      - --signature lets callers override (e.g., a pane content hash for
-#        future kinds that mirror the Bridge-side LeadWatchdog formula).
+#        future kinds that mirror the Bridge-side alert-kind-copy formula).
 #   3. Claim dedup via ~/.flywheel/alerts/claims.db (single sqlite3 tx,
 #      BEGIN IMMEDIATE + INSERT OR IGNORE + SELECT changes()) — the SAME
 #      table the Bridge `LeadAlertNotifier.claimsClaimer` writes to.
@@ -415,7 +415,7 @@ fi
 
 # ── Event ID (Fix 3: signature-based) ──────────────────────
 # Formula: sha1(projectName|leadId|kind|signature).
-# MUST match Bridge-side `computeEventId` in LeadWatchdog.ts (pipe
+# MUST match Bridge-side `computeEventId` in bridge/alert-kind-copy.ts (pipe
 # separators, same field order, lowercase hex output) so cross-process
 # dedup actually works.
 #

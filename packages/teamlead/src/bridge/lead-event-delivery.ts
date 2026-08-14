@@ -4,7 +4,6 @@ import type {
 	LeadEventRow,
 	StateStore,
 } from "../StateStore.js";
-import { deliveryAckEnabled } from "./lead-event-ack-policy.js";
 import type {
 	DeliveryResult,
 	LeadEventEnvelope,
@@ -63,7 +62,7 @@ export class LeadEventDeliveryCoordinator {
 	private readonly enabled: boolean;
 
 	constructor(private readonly options: LeadEventDeliveryCoordinatorOptions) {
-		this.enabled = options.enabled ?? deliveryAckEnabled();
+		this.enabled = options.enabled ?? false;
 		this.now = options.now ?? Date.now;
 		this.ackTimeoutMs = positiveInt(options.ackTimeoutMs, 5 * 60_000);
 		this.leaseMs = positiveInt(options.leaseMs, this.ackTimeoutMs * 2);

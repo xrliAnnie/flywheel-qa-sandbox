@@ -320,7 +320,7 @@ export class StructuredInboxRouter {
 	}
 
 	/**
-	 * Health probe — used by Bridge LeadWatchdog to surface watcher state.
+	 * Health probe — surfaces watcher state to Bridge callers.
 	 */
 	async health(): Promise<{
 		ok: boolean;

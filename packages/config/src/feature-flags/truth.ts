@@ -98,7 +98,13 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"context: Codex Infra Bot discord user id, for @-mention on account-switch assignment posts (FLY-871)",
 	FLYWHEEL_DETECTION_AI_CLASSIFY:
 		"internal ops lever: kill-switch for the Layer-2 AI-assisted pane classify step, default-on (FLY-871)",
-	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
+	FLYWHEEL_BRIDGE_LOOP_GUARD_LOG: "plumbing: event-loop guard log path",
+	FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS:
+		"tuning knob: event-loop guard heartbeat cadence",
+	FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS:
+		"tuning knob: event-loop guard stall threshold",
+	FLYWHEEL_BRIDGE_LOOP_GUARD_CHECK_MS:
+		"tuning knob: event-loop guard worker check cadence",
 	FLYWHEEL_LEAD_ALERT_BIN:
 		"plumbing: lead-alert executable override for hermetic quota-monitor QA (FLY-1256)",
 	FLYWHEEL_RESTART_STORM_GATE_BIN:
@@ -213,16 +219,22 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED:
 		"internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)",
 	// tuning knobs (numeric)
-	FLYWHEEL_WATCHDOG_DISABLED_REMINDER_MIN:
-		"tuning knob: disabled minimum-set lane reminder cadence minutes (FLY-1393)",
+	// FLY-1560: the out-of-process liveness probe's four numeric knobs. They were
+	// renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* with the /health key; the
+	// three MANIFEST/STALLED names were never registered at all, so setting the
+	// knob the shipped probe actually reads used to fail as "unknown".
+	FLYWHEEL_LIVENESS_DISABLED_REMINDER_MIN:
+		"tuning knob: disabled liveness lane reminder cadence minutes (FLY-1393, renamed FLY-1560)",
+	FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN:
+		"tuning knob: liveness manifest degraded-observation grace minutes (FLY-1393, renamed FLY-1560)",
+	FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN:
+		"tuning knob: consecutive degraded observations before paging (FLY-1393, renamed FLY-1560)",
+	FLYWHEEL_LIVENESS_STALLED_ESCALATE_MIN:
+		"tuning knob: consecutive W-2 stalled observations before paging (FLY-1393, renamed FLY-1560)",
 	FLYWHEEL_REPORT_SHOT_WIDTH: "tuning knob: screenshot width",
 	FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES: "tuning knob: alert drain cycles",
 	FLYWHEEL_ALERT_QUEUE_MAX: "tuning knob: alert queue max",
 	FLYWHEEL_ALERT_RATE_PER_MIN: "tuning knob: alert delivery rate per minute",
-	FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS:
-		"tuning knob: per-Lead W-4 pane scan cadence ms, default 10min (FLY-1393)",
-	FLYWHEEL_IDLE_POLL_MS:
-		"tuning knob: RunnerIdleWatchdog W-1 pane scan cadence ms, default 3s (FLY-1393)",
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
 		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
@@ -288,6 +300,27 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 };
 
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG_LOG", retiredBy: "FLY-1560" },
+	{
+		envVar: "FLYWHEEL_BRIDGE_WATCHDOG_HEARTBEAT_MS",
+		retiredBy: "FLY-1560",
+	},
+	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG_STALL_MS", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG_CHECK_MS", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_WATCHDOG_BLOCKED", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_WATCHDOG_LIVENESS", retiredBy: "FLY-1560" },
+	// The Lead-pane poll interval died with its poller; it has no read site left.
+	{ envVar: "FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS", retiredBy: "FLY-1560" },
+	// Probe knobs renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* (see allowlist).
+	{ envVar: "FLYWHEEL_WATCHDOG_DISABLED_REMINDER_MIN", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_WATCHDOG_STALLED_ESCALATE_MIN", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_IDLE_POLL_MS", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_QUIET_PERSIST_DEDUP", retiredBy: "FLY-1560" },
+	{ envVar: "FLYWHEEL_QUIET_CLASSIFIER", retiredBy: "FLY-1560" },
 	{ envVar: "FLYWHEEL_THREE_STAGE", retiredBy: "FLY-1674" },
 	{ envVar: "FLYWHEEL_THREE_STAGE_KEEPALIVE", retiredBy: "FLY-1674" },
 	{ envVar: "FLYWHEEL_THREE_STAGE_QA_RESPAWN", retiredBy: "FLY-1674" },
@@ -415,30 +448,28 @@ export function validateFlagTruthEnvironment(
 	return { ok: errors.length === 0, errors };
 }
 
-const REQUIRED_WATCHDOG_ROWS = [
+const REQUIRED_LIVENESS_ROWS = [
 	"w1_process_liveness",
 	"w2_delivery_loop",
 	"w3_external_drift",
-	"w4_lead_blocked",
 ] as const;
 
-export function validateWatchdogManifest(value: unknown): FlagTruthValidation {
+export function validateLivenessManifest(value: unknown): FlagTruthValidation {
 	const errors: string[] = [];
 	if (!value || typeof value !== "object") {
-		return { ok: false, errors: ["watchdog manifest must be an object"] };
+		return { ok: false, errors: ["liveness manifest must be an object"] };
 	}
 	const manifest = value as {
 		schema_version?: unknown;
 		components?: Record<string, unknown>;
-		retiring?: Array<{ name?: unknown; effective_enabled?: unknown }>;
 	};
-	if (manifest.schema_version !== 1) {
-		errors.push("watchdog manifest schema_version must be 1");
+	if (manifest.schema_version !== 2) {
+		errors.push("liveness manifest schema_version must be 2");
 	}
-	for (const row of REQUIRED_WATCHDOG_ROWS) {
+	for (const row of REQUIRED_LIVENESS_ROWS) {
 		const component = manifest.components?.[row];
 		if (!component || typeof component !== "object") {
-			errors.push(`watchdog manifest missing ${row}`);
+			errors.push(`liveness manifest missing ${row}`);
 			continue;
 		}
 		const state = component as {
@@ -446,57 +477,95 @@ export function validateWatchdogManifest(value: unknown): FlagTruthValidation {
 			effective_enabled?: unknown;
 			observation?: unknown;
 			leads?: unknown;
+			switch?: unknown;
+			freshness?: unknown;
+			last_check_started_at?: unknown;
+			last_check_completed_at?: unknown;
+			in_flight_age_ms?: unknown;
 		};
 		if (state.wired !== true) {
-			errors.push(`watchdog manifest ${row} must have wired=true`);
+			errors.push(`liveness manifest ${row} must have wired=true`);
 		}
 		if (typeof state.effective_enabled !== "boolean") {
-			errors.push(`watchdog manifest ${row} effective_enabled must be boolean`);
+			errors.push(`liveness manifest ${row} effective_enabled must be boolean`);
+		}
+		if (row === "w1_process_liveness") {
+			// FLY-1560 刀 6: W-1 is now driven by the HeartbeatService
+			// reconcileMonitorLoss → reapOrphans span through LivenessCheckTracker.
+			// The out-of-process probe judges health on `freshness` and
+			// `in_flight_age_ms`; the validator guarantees those fields exist and
+			// are well-typed so a missing field can never read as "healthy".
+			if (state.switch !== "required") {
+				errors.push(
+					'liveness manifest w1_process_liveness switch must be "required" (no kill switch)',
+				);
+			}
+			if (state.effective_enabled !== true) {
+				errors.push(
+					"liveness manifest w1_process_liveness effective_enabled must be true (no kill switch)",
+				);
+			}
+			if (
+				state.freshness !== "not_started" &&
+				state.freshness !== "fresh" &&
+				state.freshness !== "stale" &&
+				state.freshness !== "in_flight"
+			) {
+				errors.push(
+					"liveness manifest w1_process_liveness freshness must be not_started, fresh, stale or in_flight",
+				);
+			}
+			for (const field of [
+				"last_check_started_at",
+				"last_check_completed_at",
+			] as const) {
+				const at = state[field];
+				if (at !== null && typeof at !== "string") {
+					errors.push(
+						`liveness manifest w1_process_liveness ${field} must be an ISO string or null`,
+					);
+				}
+			}
+			const age = state.in_flight_age_ms;
+			if (age !== null && typeof age !== "number") {
+				errors.push(
+					"liveness manifest w1_process_liveness in_flight_age_ms must be a number or null",
+				);
+			}
 		}
 		if (
 			row === "w3_external_drift" &&
 			state.observation !== "static_contract"
 		) {
 			errors.push(
-				"watchdog manifest w3_external_drift must have observation=static_contract",
+				"liveness manifest w3_external_drift must have observation=static_contract",
 			);
 		}
 		if (row === "w2_delivery_loop") {
 			if (!Array.isArray(state.leads)) {
 				errors.push(
-					"watchdog manifest w2_delivery_loop.leads must be an array",
+					"liveness manifest w2_delivery_loop.leads must be an array",
 				);
 			} else {
 				for (const [index, lead] of state.leads.entries()) {
 					if (!lead || typeof lead !== "object") {
 						errors.push(
-							`watchdog manifest w2_delivery_loop.leads[${index}] must be an object`,
+							`liveness manifest w2_delivery_loop.leads[${index}] must be an object`,
 						);
 						continue;
 					}
 					const row = lead as { lead_id?: unknown; freshness?: unknown };
 					if (typeof row.lead_id !== "string" || row.lead_id.trim() === "") {
 						errors.push(
-							`watchdog manifest w2_delivery_loop.leads[${index}].lead_id must be a non-empty string`,
+							`liveness manifest w2_delivery_loop.leads[${index}].lead_id must be a non-empty string`,
 						);
 					}
 					if (row.freshness !== "fresh" && row.freshness !== "stale") {
 						errors.push(
-							`watchdog manifest w2_delivery_loop.leads[${index}].freshness must be fresh or stale`,
+							`liveness manifest w2_delivery_loop.leads[${index}].freshness must be fresh or stale`,
 						);
 					}
 				}
-			}
-		}
-	}
-	if (!Array.isArray(manifest.retiring)) {
-		errors.push("watchdog manifest retiring must be an array");
-	} else {
-		for (const lane of manifest.retiring) {
-			if (lane.effective_enabled === true) {
-				errors.push(
-					`retiring watchdog ${String(lane.name ?? "unknown")} has effective_enabled=true`,
-				);
 			}
 		}
 	}

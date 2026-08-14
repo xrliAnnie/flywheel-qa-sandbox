@@ -39,10 +39,10 @@ scripts/qa-fly-529-alert-smoke.sh [slot]   # default slot 1
 | AC5 (Bridge wiring) | deploy put the alert env on the Bridge | `bridge.log` contains `FLY-368 AlertChannelHub ON (unified channel=<test-channel>)` — `--alerts` sets `FLYWHEEL_ALERT_THREADS=1` so the Bridge logs this on startup (auto-repair stays OFF). NOTE: `ps eww` can't be used — macOS SIP blocks reading another process's environment. |
 | AC5 (both writers) | Bridge **and** shell writers isolate files | both claim into `${SLOT_DIR}/alerts/claims.db`; **production `~/.flywheel/alert-queue|alert-deadletter` get ZERO new files (portable file-set snapshot, not GNU `find -newermt`) and `alerts/claims.db` mtime is unchanged**. |
 
-## Manual extension (full LeadWatchdog trigger + Cass auto-repair — FLY-368 downstream)
+## Manual extension (full Lead-pane alert trigger + Cass auto-repair — FLY-368 downstream)
 
 The smoke triggers the Bridge writer *path* deterministically via the harness +
-the shell writer directly. The full **LeadWatchdog → notifier** trigger (frozen
+the shell writer directly. The full **lead-alert.sh → notifier** trigger (frozen
 Lead pane) plus **Cass auto-repair / per-error threading** (`FLYWHEEL_ALERT_THREADS=1`
 + `FLYWHEEL_AUTO_REPAIR=1`) belongs to FLY-368's downstream QA: reuse FLY-60 V3's
 frozen-pane pattern-injection against the test Lead pane, then assert the thread +

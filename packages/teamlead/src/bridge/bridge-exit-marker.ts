@@ -41,7 +41,7 @@ export interface BridgeExitMarker {
 	state: "running" | "clean";
 }
 
-export interface BridgeWatchdogStallRecord {
+export interface BridgeLoopStallRecord {
 	event: "bridge_event_loop_stall";
 	pid: number;
 	bootTs: number;
@@ -50,7 +50,7 @@ export interface BridgeWatchdogStallRecord {
 	last_sync_op?: string;
 }
 
-const MAX_WATCHDOG_LOG_BYTES = 256 * 1024;
+const MAX_LOOP_GUARD_LOG_BYTES = 256 * 1024;
 
 /** Marker file path — env-overridable for QA Room isolation. */
 export function bridgeMarkerPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -61,14 +61,22 @@ export function bridgeMarkerPath(env: NodeJS.ProcessEnv = process.env): string {
 	return join(stateRoot, "state", "bridge-running-marker.json");
 }
 
-/** Watchdog forensic path — uses the same QA override as the worker. */
-export function watchdogLogPath(env: NodeJS.ProcessEnv = process.env): string {
-	const configured =
-		env.FLYWHEEL_BRIDGE_WATCHDOG_LOG?.trim() ||
-		"~/.flywheel/bridge-watchdog.log";
+function expandHomePath(configured: string): string {
 	if (configured === "~") return homedir();
 	if (configured.startsWith("~/")) return join(homedir(), configured.slice(2));
 	return configured;
+}
+
+/** Current forensic path plus the read-only pre-FLY-1560 fallback. */
+export function loopGuardLogPaths(
+	env: NodeJS.ProcessEnv = process.env,
+): readonly string[] {
+	const configured = env.FLYWHEEL_BRIDGE_LOOP_GUARD_LOG?.trim();
+	if (configured) return [expandHomePath(configured)];
+	return [
+		join(homedir(), ".flywheel", "bridge-loop-guard.log"),
+		join(homedir(), ".flywheel", ["bridge", "watch", "dog.log"].join("-")),
+	];
 }
 
 /** Read (NEVER delete/overwrite) the previous marker. null = absent/garbage. */
@@ -139,15 +147,15 @@ export function abnormalExitTicketEventId(prev: BridgeExitMarker): string {
 }
 
 /**
- * Find the newest watchdog record that can be attributed to exactly the dirty
+ * Find the newest loop-guard record that can be attributed to exactly the dirty
  * Bridge generation. The read is bounded and refuses links/non-regular files;
  * a shared or QA-polluted log cannot attribute a different pid/generation.
  */
-export function findWatchdogStallForExit(
+export function findLoopStallForExit(
 	path: string,
 	prev: BridgeExitMarker,
 	currentBootTs: number,
-): BridgeWatchdogStallRecord | null {
+): BridgeLoopStallRecord | null {
 	let fd: number | undefined;
 	try {
 		fd = openSync(
@@ -158,7 +166,7 @@ export function findWatchdogStallForExit(
 		if (
 			!stat.isFile() ||
 			stat.size <= 0 ||
-			stat.size > MAX_WATCHDOG_LOG_BYTES
+			stat.size > MAX_LOOP_GUARD_LOG_BYTES
 		) {
 			return null;
 		}
@@ -168,7 +176,7 @@ export function findWatchdogStallForExit(
 		for (let index = lines.length - 1; index >= 0; index -= 1) {
 			const line = lines[index]?.trim();
 			if (!line) continue;
-			const record = parseWatchdogStallRecord(line);
+			const record = parseLoopStallRecord(line);
 			if (!record) continue;
 			const atMs = Date.parse(record.at);
 			if (
@@ -197,13 +205,13 @@ export function findWatchdogStallForExit(
 /** One alert payload builder keeps the boot emission site single-shot. */
 export function buildAbnormalExitAlertContent(
 	prev: BridgeExitMarker,
-	stall: BridgeWatchdogStallRecord | null,
+	stall: BridgeLoopStallRecord | null,
 ): { title: string; body: string } {
 	const episode = abnormalExitEpisodeSignature(prev);
 	if (stall) {
 		return {
 			title: "Bridge event loop 卡死自杀 — 复活对账中",
-			body: `上一代 Bridge (PID ${prev.pid}, boot ${prev.bootTs}) 的 watchdog 记录到 event loop 卡死 ${stall.stall_age_ms}ms，最后同步操作：${stall.last_sync_op ?? "无标记"}（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
+			body: `上一代 Bridge (PID ${prev.pid}, boot ${prev.bootTs}) 的 loop guard 记录到 event loop 卡死 ${stall.stall_age_ms}ms，最后同步操作：${stall.last_sync_op ?? "无标记"}（episode ${episode}；wrapper 直发 page 同一 episode）。launchd 已复活本进程；boot 对账完成后本工单安静 resolve。`,
 		};
 	}
 	return {
@@ -212,9 +220,7 @@ export function buildAbnormalExitAlertContent(
 	};
 }
 
-function parseWatchdogStallRecord(
-	line: string,
-): BridgeWatchdogStallRecord | null {
+function parseLoopStallRecord(line: string): BridgeLoopStallRecord | null {
 	try {
 		const parsed = JSON.parse(line);
 		if (

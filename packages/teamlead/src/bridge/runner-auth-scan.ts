@@ -84,7 +84,7 @@ export function defaultResolveLeadId(
 }
 
 /**
- * Build the per-session auth scan the RunnerIdleWatchdog calls (composed with the
+ * Build the per-session auth scan the GatePoller quota/auth rider calls (composed with the
  * quota scan). No-op-safe: healthy / quota-only / non-auth-anomaly panes return
  * without emitting.
  */

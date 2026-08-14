@@ -597,7 +597,7 @@ export function makeTmuxFleetReviveDeps(opts: TmuxFleetReviveOptions): {
 						...(await deps.listPanes()).map((pane) => ({ ...pane, socket })),
 					);
 				} catch {
-					// LeadWatchdog owns private-server absence alerts. The quota
+					// lead-alert.sh owns private-server absence alerts. The quota
 					// observer must not couple unrelated servers during restart.
 				}
 			}

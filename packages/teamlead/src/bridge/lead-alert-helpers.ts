@@ -1,5 +1,5 @@
 /**
- * FLY-83: helpers that glue the Bridge-side watchdog/notifier to the
+ * FLY-83: helpers that glue the Bridge-side notifier to the
  * shell-owned alert infrastructure.
  *
  * - `createClaimsReader`: reads `~/.flywheel/alerts/claims.db` (written by
@@ -12,7 +12,7 @@
  *   `scripts/lead-alert.sh` writes. Returns true iff the row was inserted
  *   by this caller — race-safe across Bridge and shell processes.
  * - `defaultLeadPaneCapture`: `tmux capture-pane` against a resolved
- *   `@windowId` for LeadWatchdog's external observation loop.
+ *   `@windowId` for the external pane observation loop.
  */
 
 import { execFile, spawn } from "node:child_process";
@@ -21,8 +21,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ClaimsClaimer, ClaimsReader } from "../LeadAlertNotifier.js";
-import type { CaptureFn } from "../LeadWatchdog.js";
 import { type LeadWindowRef, probeV2LeadPane } from "../LeadWindowLocator.js";
+
+export type CaptureFn = (
+	window: LeadWindowRef | string,
+	lines: number,
+) => Promise<string>;
 
 const execFileAsync = promisify(execFile);
 
@@ -219,7 +223,7 @@ function sqlString(value: string): string {
 }
 
 /**
- * Default capture function for LeadWatchdog: shell-free `tmux capture-pane`
+ * Default pane capture function: shell-free `tmux capture-pane`
  * keyed by a resolved `@window_id` (from `LeadWindowLocator`). Window IDs
  * are globally unique in tmux, so the session prefix is omitted; if a user
  * overrides the session via env, it's preserved for callers that want

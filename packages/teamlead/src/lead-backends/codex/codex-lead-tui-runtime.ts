@@ -66,7 +66,6 @@ import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { connectDaemonWs } from "./daemon-ws.js";
 import { ExternalReceiptSaga } from "./ExternalReceiptSaga.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
-import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
@@ -477,11 +476,6 @@ function buildTuiGeneration(
 				// turn with no persistent ready status, so that gate false-timed-out and
 				// tore Mufasa down. codex can only spawn what the (gated) config declares.
 
-				let alive = true;
-				let lastActivityAt: number | undefined;
-				proc.on("exit", () => {
-					alive = false;
-				});
 				const { facade, awaitTurnCompletion } = wireDemuxedProcess({
 					proc,
 					onFounderTurnCompleted: (turnId) => {
@@ -489,9 +483,6 @@ function buildTuiGeneration(
 							idempotencyKey: `founder:${turnId}`,
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
-					},
-					onActivity: () => {
-						lastActivityAt = Date.now();
 					},
 					log: (m) => logger.warn(m),
 				});
@@ -512,12 +503,6 @@ function buildTuiGeneration(
 				sender = builtSender; // closure-tracked so stop() can close its DB handle
 
 				const threadParams = buildThreadParams(config, baseInstructions);
-				const health = new LeadHealthProbe({
-					processAlive: () => alive,
-					lastActivityAt: () => lastActivityAt,
-					journal: { listUnfinished: () => journal.listUnfinished() },
-				});
-
 				const p = proc;
 				runtime = new CodexLeadRuntime({
 					startProcess: () => p.start(), // initialize/initialized over WS
@@ -807,7 +792,6 @@ function buildTuiGeneration(
 						};
 					},
 					shutdownProcess: () => p.stop(),
-					healthProbe: () => health.probe(),
 					logger,
 				});
 				await runtime.start();

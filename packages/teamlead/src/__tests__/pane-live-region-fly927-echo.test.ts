@@ -16,8 +16,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { classifyLeadAlertPane } from "../bridge/pane-blocked-classifier.js";
+import { ALERT_ECHO_START } from "../bridge/pane-live-region.js";
 import { ALERT_EVENT_TYPES } from "../LeadAlertNotifier.js";
-import { ALERT_ECHO_START, classifyLeadAlertPane } from "../LeadWatchdog.js";
 
 const FIXTURES_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # FLY-1082 (Task 3.3): the OUT-OF-PROCESS Bridge liveness probe.
 #
-# The 2026-07-09 incident's silent hole: every detection surface (LeadWatchdog /
+# The 2026-07-09 incident's silent hole: every detection surface (the Lead-pane alert loop /
 # AlertChannelHub / AutoRepairBot) lives INSIDE the Bridge process — when the
 # Bridge itself died, the whole detect→enqueue→repair plane died with it. The
 # wrapper dirty-marker leg catches "died then respawned"; THIS probe catches
@@ -113,24 +113,87 @@ write_state() {
   fi
 }
 
-watchdog_manifest_valid() {
-  jq -e '
-    .watchdogs.schema_version == 1 and
-    (.watchdogs.components.w1_process_liveness | type == "object" and .wired == true and (.effective_enabled | type == "boolean")) and
-    (.watchdogs.components.w2_delivery_loop | type == "object" and .wired == true and (.effective_enabled | type == "boolean")) and
-    (.watchdogs.components.w2_delivery_loop.leads |
-      type == "array" and
+# FLY-1560 刀 6: /health renamed its manifest key `watchdogs` → `liveness` and
+# bumped schema_version 1 → 2. Read BOTH keys everywhere: probe and Bridge cross
+# a deploy boundary in either order, and a key-only miss would otherwise read as
+# "manifest missing" and page the founder for a healthy Bridge.
+_manifest_filter='((.liveness // .watchdogs) // {})'
+
+liveness_manifest_valid() {
+  jq -e --arg _ "" "
+    ${_manifest_filter} as \$m |
+    (\$m.schema_version == 1 or \$m.schema_version == 2) and
+    (\$m.components.w1_process_liveness | type == \"object\" and .wired == true and (.effective_enabled | type == \"boolean\")) and
+    (\$m.components.w2_delivery_loop | type == \"object\" and .wired == true and (.effective_enabled | type == \"boolean\")) and
+    (\$m.components.w2_delivery_loop.leads |
+      type == \"array\" and
       all(.[];
-        type == "object" and
-        (.lead_id | type == "string") and
+        type == \"object\" and
+        (.lead_id | type == \"string\") and
         (.lead_id | length > 0) and
-        (.freshness == "fresh" or .freshness == "stale")
+        (.freshness == \"fresh\" or .freshness == \"stale\")
       )
     ) and
-    (.watchdogs.components.w3_external_drift | type == "object" and .wired == true and (.effective_enabled | type == "boolean") and .observation == "static_contract") and
-    (.watchdogs.components.w4_lead_blocked | type == "object" and .wired == true and (.effective_enabled | type == "boolean")) and
-    ((.watchdogs.retiring // []) | all(.effective_enabled != true))
-  ' >/dev/null 2>&1
+    (\$m.components.w3_external_drift | type == \"object\" and .wired == true and (.effective_enabled | type == \"boolean\") and .observation == \"static_contract\") and
+    ((\$m.retiring // []) | all(.effective_enabled != true)) and
+    (if \$m.schema_version >= 2 then
+      (\$m.components.w1_process_liveness |
+        (.switch == \"required\") and
+        (.freshness == \"not_started\" or .freshness == \"fresh\" or .freshness == \"stale\" or .freshness == \"in_flight\") and
+        ((.in_flight_age_ms | type == \"number\") or .in_flight_age_ms == null)
+      )
+     else true end)
+  " >/dev/null 2>&1
+}
+
+# FLY-1560 §2.7 receiving end. schema v2 publishes the W-1 tracker state from
+# the HeartbeatService reconcileMonitorLoss → reapOrphans span. `fresh` is the
+# only healthy state:
+#   - `not_started` is legitimate only while the Bridge is still inside boot
+#     grace (the first pass fires one W-1 cadence after boot);
+#   - `stale` means the last pass completed too long ago;
+#   - `in_flight` past the grace window means the owner is HUNG — the manifest
+#     deliberately refuses to claim `fresh` there, so a probe that ignored it
+#     would turn a hung liveness owner back into the silent green this teardown
+#     exists to remove.
+# Unhealthy W-1 feeds the EXISTING degraded episode (no new route), so the
+# probe's own grace/consecutive-count hysteresis applies on top of the window
+# below before anything pages.
+w1_liveness_unhealthy_reason() {
+  local grace_sec="$1" body="$2"
+  local schema freshness age uptime
+  schema="$(jq -r "${_manifest_filter} | (.schema_version // 1)" <<<"$body" 2>/dev/null || echo 1)"
+  [[ "$schema" =~ ^[0-9]+$ ]] || schema=1
+  (( schema < 2 )) && return 0
+
+  freshness="$(jq -r "${_manifest_filter} | (.components.w1_process_liveness.freshness // \"\")" <<<"$body" 2>/dev/null || echo "")"
+  age="$(jq -r "${_manifest_filter} | (.components.w1_process_liveness.in_flight_age_ms // 0)" <<<"$body" 2>/dev/null || echo 0)"
+  age="${age%%.*}"; [[ "$age" =~ ^[0-9]+$ ]] || age=0
+  # Bridge uptime as the manifest itself reports it — self-consistent even if
+  # the probe host clock disagrees with the Bridge host clock.
+  uptime="$(jq -r "
+    ${_manifest_filter} as \$m |
+    ((\$m.generated_at // \"\") | sub(\"[.][0-9]+\"; \"\")) as \$g |
+    ((\$m.bridge_started_at // \"\") | sub(\"[.][0-9]+\"; \"\")) as \$b |
+    if (\$g | length) == 0 or (\$b | length) == 0 then -1
+    else ((\$g | fromdateiso8601) - (\$b | fromdateiso8601)) end" <<<"$body" 2>/dev/null || echo -1)"
+  uptime="${uptime%%.*}"; [[ "$uptime" =~ ^-?[0-9]+$ ]] || uptime=-1
+
+  case "$freshness" in
+    fresh) ;;
+    not_started)
+      if (( uptime < 0 || uptime > grace_sec )); then
+        printf 'W-1 liveness 从未完成过一轮(Bridge 已启动 %ss)' "$uptime"
+      fi ;;
+    stale)
+      printf 'W-1 liveness 上一轮完成过久(freshness=stale)' ;;
+    in_flight)
+      if (( age > grace_sec * 1000 )); then
+        printf 'W-1 liveness pass 挂起 %sms 未完成' "$age"
+      fi ;;
+    *)
+      printf 'W-1 liveness freshness 缺失或非法(%s)' "${freshness:-<empty>}" ;;
+  esac
 }
 
 probe_once() {
@@ -163,17 +226,26 @@ probe_once() {
   fi
   DOWN_COUNT=0; DOWN_SINCE=0; DOWN_ESCALATED=false; LAST_OK_TS="$now"
 
-  local grace_min="${FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN:-5}"
-  local degraded_min="${FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN:-3}"
+  local grace_min="${FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN:-5}"
+  local degraded_min="${FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN:-3}"
   [[ "$grace_min" =~ ^[0-9]+$ ]] || grace_min=5
   [[ "$degraded_min" =~ ^[0-9]+$ ]] || degraded_min=3
 
-  if ! watchdog_manifest_valid <<<"$body"; then
+  local degraded_reason=""
+  if ! liveness_manifest_valid <<<"$body"; then
+    degraded_reason="liveness manifest 缺失或不完整"
+  else
+    local w1_reason
+    w1_reason="$(w1_liveness_unhealthy_reason "$(( grace_min * 60 ))" "$body")"
+    [[ -n "$w1_reason" ]] && degraded_reason="$w1_reason"
+  fi
+
+  if [[ -n "$degraded_reason" ]]; then
     (( DEGRADED_COUNT == 0 || DEGRADED_SINCE == 0 )) && DEGRADED_SINCE="$now"
     DEGRADED_COUNT=$(( DEGRADED_COUNT + 1 ))
     if (( now - DEGRADED_SINCE >= grace_min * 60 && DEGRADED_COUNT >= degraded_min )) \
       && [[ "$DEGRADED_ESCALATED" != "true" ]]; then
-      if _probe_post "🚨 Bridge 可达,但 watchdog manifest 缺失或不完整 — 安静不能证明没事(FLY-1393)。"; then
+      if _probe_post "🚨 Bridge 可达,但 ${degraded_reason} — 安静不能证明没事(FLY-1393)。"; then
         DEGRADED_ESCALATED=true
       fi
     fi
@@ -183,33 +255,33 @@ probe_once() {
   fi
 
   if [[ "$DEGRADED_ESCALATED" == "true" ]]; then
-    _probe_post "✅ watchdog manifest 恢复 — 最小集重新可观测(FLY-1393)。" || true
+    _probe_post "✅ liveness manifest 恢复 — 最小集重新可观测(FLY-1393)。" || true
   fi
   DEGRADED_COUNT=0; DEGRADED_SINCE=0; DEGRADED_ESCALATED=false
 
-  local disabled_reminder_min="${FLYWHEEL_WATCHDOG_DISABLED_REMINDER_MIN:-1440}"
+  local disabled_reminder_min="${FLYWHEEL_LIVENESS_DISABLED_REMINDER_MIN:-1440}"
   [[ "$disabled_reminder_min" =~ ^[0-9]+$ ]] || disabled_reminder_min=1440
   local disabled_members disabled_csv
-  disabled_members="$(jq -c '[.watchdogs.components | to_entries[] | select(.value.effective_enabled == false) | .key] | unique | sort' <<<"$body" 2>/dev/null || echo '[]')"
+  disabled_members="$(jq -c "[${_manifest_filter}.components | to_entries[] | select(.value.effective_enabled == false) | .key] | unique | sort" <<<"$body" 2>/dev/null || echo '[]')"
   disabled_csv="$(jq -r 'join(",")' <<<"$disabled_members" 2>/dev/null || true)"
   if [[ "$disabled_members" == "[]" ]]; then
     if [[ "$DISABLED_MEMBERS" != "[]" ]]; then
       local previous_disabled
       previous_disabled="$(jq -r 'join(",")' <<<"$DISABLED_MEMBERS" 2>/dev/null || true)"
-      if _probe_post "✅ watchdog minimum-set lanes re-enabled: ${previous_disabled} (FLY-1393)."; then
+      if _probe_post "✅ liveness lanes re-enabled: ${previous_disabled} (FLY-1393)."; then
         DISABLED_MEMBERS='[]'; DISABLED_LAST_NOTIFIED_AT=0
       fi
     fi
   elif [[ "$disabled_members" != "$DISABLED_MEMBERS" ]] \
     || (( DISABLED_LAST_NOTIFIED_AT == 0 || now - DISABLED_LAST_NOTIFIED_AT >= disabled_reminder_min * 60 )); then
-    if _probe_post "⚠️ watchdog minimum-set lanes disabled: ${disabled_csv} (supported kill switch; quiet does not prove these lanes healthy; reminder every ${disabled_reminder_min}m, FLY-1393)."; then
+    if _probe_post "⚠️ liveness lanes disabled: ${disabled_csv} (supported kill switch; quiet does not prove these lanes healthy; reminder every ${disabled_reminder_min}m, FLY-1393)."; then
       DISABLED_MEMBERS="$disabled_members"; DISABLED_LAST_NOTIFIED_AT="$now"
     fi
   fi
 
-  local stalled_min="${FLYWHEEL_WATCHDOG_STALLED_ESCALATE_MIN:-2}"
+  local stalled_min="${FLYWHEEL_LIVENESS_STALLED_ESCALATE_MIN:-2}"
   local observed
-  observed="$(jq -c '[.watchdogs.components.w2_delivery_loop.leads[]? | select(.freshness == "stale") | .lead_id] | unique | sort' <<<"$body" 2>/dev/null || echo '[]')"
+  observed="$(jq -c "[${_manifest_filter}.components.w2_delivery_loop.leads[]? | select(.freshness == \"stale\") | .lead_id] | unique | sort" <<<"$body" 2>/dev/null || echo '[]')"
   if [[ "$observed" == "[]" ]]; then
     if [[ "$STALLED_ESCALATED" == "true" ]]; then
       if _probe_post "✅ Lead inbox stalled 集合全部恢复(FLY-1393 W-2)。"; then

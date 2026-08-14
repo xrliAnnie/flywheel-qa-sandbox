@@ -10,7 +10,7 @@
  * status=running forever:
  *   - `close_runner` rejects it (`status_not_eligible:running`),
  *   - its tmux session + git worktree linger until the next Bridge restart,
- *   - the idle watchdog false-positives `session_stuck` (it only polls
+ *   - idle detection false-positived `session_stuck` (it only polled
  *     status=running sessions), spamming the Lead about a Runner that is done.
  *
  * Two surfaces share the predicate below:

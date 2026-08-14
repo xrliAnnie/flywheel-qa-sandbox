@@ -164,7 +164,7 @@ function modelLabelFor(
 /**
  * Build one Lead's console view. `legacyBackend` is the FLY-224 legacy backend
  * resolution used only when `lead.backend` is unset (keeps the effective backend
- * aligned with the watchdog partition and the fleet CLI).
+ * aligned with the fleet CLI).
  */
 export function buildConsoleLeadView(
 	projectName: string,

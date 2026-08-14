@@ -456,7 +456,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 			autoRepairBot: repairBot("attempted", true),
 		});
 		await hub.handle(payload({ eventType: "pane_hash_stuck" }));
-		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
+		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
 		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
 		expect(resolved).toBeDefined();
 		expect(resolved![1]).toContain("报警");
@@ -469,18 +469,18 @@ describe("AlertChannelHub (FLY-368)", () => {
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
-		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
+		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
 		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
 		expect(resolved).toBeDefined();
 		expect(resolved![1]).not.toContain("Cass 自动修复");
 	});
 
-	it("onLeadRecovery posts recovered + archives + marks resolved", async () => {
+	it("resolve posts recovered + archives + marks resolved", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
-		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
+		await hub.resolve("flywheel|tadashi|pane_hash_stuck|");
 		expect(discord.posts.some(([, c]) => c.includes("已恢复"))).toBe(true);
 		expect(discord.archived).toContain("thread-1");
 		expect(

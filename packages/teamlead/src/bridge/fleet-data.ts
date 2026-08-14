@@ -15,7 +15,7 @@
  *    confirmed verdict (R4#1).
  *  - `deriveDecision()` — the ONE function mapping (desired, management,
  *    runtime) → {presentation, paneWatch}, consumed by both Dashboard and
- *    the pane watchdog so the two can never disagree (R8#4).
+ *    the pane alert path so the two can never disagree (R8#4).
  *  - `FleetPoller` — 30s cadence with overlap guard; SSE's 2s payload
  *    reuses the latest snapshot (F9).
  */
@@ -93,7 +93,7 @@ export interface FleetLeadState {
 	};
 	/** Derived via deriveDecision() — never interpreted ad hoc (R8#4). */
 	presentation: FleetPresentation;
-	/** Same single decision function feeds the pane watchdog. */
+	/** Same single decision function feeds the pane alert path. */
 	paneWatch: boolean;
 	/**
 	 * Drift is only computed for alignable standard-managed leads; codex
@@ -122,14 +122,14 @@ export type ConfigSnapshotState =
 // ── Single decision function (R8#4) ─────────────────────────────────────
 
 /**
- * The total presentation/watchdog table from plan §WI-4. Both the Dashboard
- * and the pane watchdog derive from THIS function — never from raw axes.
+ * The total presentation/alert table from plan §WI-4. Both the Dashboard
+ * and the pane alert path derive from THIS function — never from raw axes.
  *
  * 漏报>误报: only `external-confirmed × no-claude-confirmed` under a codex
- * desire is excluded from the pane watchdog; every indeterminate keeps
+ * desire is excluded from the pane alert path; every indeterminate keeps
  * watching. `codex + standard×no-claude` shows a loud CONFLICT-CARRIER but
  * is excluded — the evidence positively says no Claude pane exists, and a
- * pane-text watchdog aimed at a backend it cannot observe only makes noise.
+ * pane-text alert aimed at a backend it cannot observe only makes noise.
  */
 export function deriveDecision(
 	desiredBackend: LeadBackendId,
@@ -429,7 +429,7 @@ async function observeRuntime(
 
 /**
  * Collect the full fleet evidence map. The SINGLE probe owner for Bridge
- * consumers (Dashboard + watchdog); the fleet CLI takes its own fresh
+ * consumers (Dashboard + fleet sensors); the fleet CLI takes its own fresh
  * probes under the restart lock (R7#4 — separate process, never this map).
  */
 export async function collectFleetSnapshot(
@@ -866,7 +866,7 @@ export class FleetPoller {
 	/**
 	 * Latest snapshot, or null when never collected / stale. Stale evidence
 	 * resolves to "no snapshot" so consumers degrade to indeterminate
-	 * (watchdog inclusion), never to a stale confirmed verdict (R6#5).
+	 * (alert inclusion), never to a stale confirmed verdict (R6#5).
 	 */
 	snapshot(): FleetSnapshot | null {
 		if (!this.last) return null;
@@ -876,54 +876,6 @@ export class FleetPoller {
 		if (age > this.stalenessMs) return null;
 		return this.last;
 	}
-}
-
-// ── Watchdog membership (per-lead, consuming the evidence map) ──────────
-
-/**
- * Per-lead pane-watchdog membership (plan §2.4): exclusion requires a FRESH
- * evidence verdict with paneWatch=false from the single decision function.
- * No/stale evidence → include (indeterminate keeps watching; 漏报>误报).
- *
- * BYTE-COMPAT: when nothing is excluded, the ORIGINAL array reference is
- * returned (all-claude deployments are a no-op, same elements same order).
- */
-export function filterPaneWatchedLeads(
-	projects: ProjectEntry[],
-	legacyBackendOf: (project: ProjectEntry) => string | undefined,
-	evidence: FleetSnapshot | null,
-): ProjectEntry[] {
-	const byKey = new Map<string, FleetLeadState>();
-	if (evidence) {
-		for (const l of evidence.leads) byKey.set(l.key, l);
-	}
-	let changed = false;
-	const out: ProjectEntry[] = [];
-	for (const p of projects) {
-		const legacy = legacyBackendOf(p);
-		const watched = p.leads.filter((lead) => {
-			const eff = effectiveLeadBackend(lead.backend, legacy);
-			if (eff.backend !== "codex-app-server") return true;
-			const ev = byKey.get(`${p.projectName}-${lead.agentId}`);
-			if (!ev) {
-				// No FRESH evidence for a codex-desired lead → indeterminate →
-				// keep watching (code-review H8). Exclusion requires a fresh
-				// paneWatch=false verdict from the shared decision function —
-				// desired config alone must never silence the watchdog (漏报>误报).
-				// Cold-start window is seconds (poller collects at start()) and
-				// pane alerts need multiple cycles, so brief inclusion is noise-free.
-				return true;
-			}
-			return ev.paneWatch;
-		});
-		if (watched.length === p.leads.length) {
-			out.push(p);
-		} else {
-			changed = true;
-			if (watched.length > 0) out.push({ ...p, leads: watched });
-		}
-	}
-	return changed ? out : projects;
 }
 
 // ── Production probe deps ───────────────────────────────────────────────

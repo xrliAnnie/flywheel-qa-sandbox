@@ -93,10 +93,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	crash_loop: { owner: "claude", arc: "human_by_design" },
 	pane_hash_stuck: { owner: "claude", arc: "human_by_design" },
 	pane_error_stalled: { owner: "claude", arc: "human_by_design" },
-	// FLY-1048 PR-C: unified detection escalation kinds. Bridge-side, provider-
-	// neutral default owner (claude); no executable auto-fix — a human decides
-	// (fleet aggregate → investigate common cause; page-undeliverable → ensure
-	// the founder is reached), mirroring the pane_error_stalled sibling contract.
+	// Legacy display-only kinds retained for persisted alert rows.
 	detection_fleet_aggregate: { owner: "claude", arc: "human_by_design" },
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
 	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },

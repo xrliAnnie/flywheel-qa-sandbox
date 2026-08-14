@@ -71,7 +71,7 @@ ${body}
 
 | 字段 | 来源 | 约束 |
 |---|---|---|
-| 首行 `(leadId / kind)` | 现状锚,**一字节不动**(LeadWatchdog `ALERT_ECHO_START` 依赖它剥回声,FLY-220) | append-only:🎫 行只追加不改首行 |
+| 首行 `(leadId / kind)` | 现状锚,**一字节不动**(`pane-live-region.ts` 的 `ALERT_ECHO_START` 依赖它剥回声,FLY-220) | append-only:🎫 行只追加不改首行 |
 | `projectName` | payload(修现状缺 project 的问题) | — |
 | 首见 | `ticket.firstSeenMs`(PR-2 起取 `alert_threads.first_seen_at`;缺省 = 发射时刻) | 本地 HH:MM |
 | owner | owner map(§3);snowflake 校验通过才渲染 `<@id>` + `allowed_mentions.users=[id]` | malformed → 降级 label/—,`parse:[]` |

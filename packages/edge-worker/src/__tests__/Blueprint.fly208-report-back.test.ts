@@ -201,7 +201,7 @@ describe("FLY-1041 Chunk 9: DONE reports carry --report", () => {
 	it("the LEAD REPORT-BACK ask command is flagged --report (excluded from founder binding)", async () => {
 		const prompt = await buildPrompt({ leadId: "sub-lead" });
 		// FLY-1282 Part B: DONE reports now quote the FULL [lead-instruction <id>]
-		// — the watchdog's consumption receipt (producer-side protocol).
+		// — the Bridge patrol's consumption receipt (producer-side protocol).
 		expect(prompt).toContain(
 			'--report "DONE: [lead-instruction <id>] <what you did>',
 		);

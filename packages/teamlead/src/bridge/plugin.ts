@@ -64,11 +64,7 @@ import { WorktreeManager } from "flywheel-edge-worker";
 import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import type { AccountRotationNotice } from "../account-heal/account-rotation-notice.js";
 import { accountPoolConfigured } from "../account-heal/account-store.js";
-import {
-	makeAccountSwitchRepair,
-	type RepairDisposition,
-} from "../account-heal/account-switch-repair.js";
-import { accountSwitchWatchdogTick } from "../account-heal/account-switch-watchdog.js";
+import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
@@ -96,12 +92,6 @@ import {
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
-import {
-	isSafeResumeMenuForEnter,
-	isTransientThrottlePane,
-	LeadWatchdog,
-	leadWatchdogIntervalMs,
-} from "../LeadWatchdog.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
@@ -110,8 +100,6 @@ import {
 	buildAuthorizeLeadChannel,
 	buildLeadOutboundExpressHandler,
 	buildResolveBotToken,
-	loadProjectLeadRoles,
-	paneWatchdogProjects,
 } from "../lead-backends/codexLeadBridgeWiring.js";
 import { effectiveLeadBackend } from "../lead-backends/lead-backend.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
@@ -122,10 +110,6 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import {
-	DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
-	RunnerIdleWatchdog,
-} from "../RunnerIdleWatchdog.js";
 import {
 	type Session,
 	StateStore,
@@ -170,7 +154,7 @@ import { AutoQaEffects } from "./auto-qa-effects.js";
 import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { AutoContinueArmer } from "./autocontinue-armer.js";
-import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
+import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
@@ -178,9 +162,9 @@ import {
 	abnormalExitTicketEventId,
 	bridgeMarkerPath,
 	buildAbnormalExitAlertContent,
-	findWatchdogStallForExit,
+	findLoopStallForExit,
 	latchPreviousMarker,
-	watchdogLogPath,
+	loopGuardLogPaths,
 	writeCleanMarker,
 	writeRunningMarker,
 } from "./bridge-exit-marker.js";
@@ -199,10 +183,7 @@ import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
 	hasPendingBlockingGateFromCommDb,
-	idleWatchdogPollMs,
 	probeDeclaredStateFromCommDb,
-	probeQuietSignals,
-	stuckCommActivityMs,
 } from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
@@ -269,7 +250,6 @@ import {
 	defaultLegacyBackendOf,
 	FleetPoller,
 	type FleetSnapshot,
-	filterPaneWatchedLeads,
 } from "./fleet-data.js";
 import { locateConfiguredLeadWindow } from "./fleet-lead-locator.js";
 import {
@@ -307,12 +287,9 @@ import {
 import { buildSessionKey } from "./hook-payload.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
-	formatAccountCapOwnerAssignment,
 	formatRotationDigest,
-	formatSwitchSuccessDigest,
 	infraSenderTokenOr,
 	postInfraNotifyDigest,
-	resolveAccountCapOwnerId,
 } from "./infra-notify.js";
 import {
 	IssueDisplayRefresher,
@@ -339,6 +316,7 @@ import {
 import { LeadEventDeliveryCoordinator } from "./lead-event-delivery.js";
 import { createLeadLeaseDiagnosticsRouter } from "./lead-lease-diagnostics.js";
 import { createLeadLeaseSelfCheckRouter } from "./lead-lease-self-check.js";
+import { runLeadReconcilePass } from "./lead-reconcile-pass.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
@@ -368,6 +346,13 @@ import {
 	resolveLinearScope,
 	resolveProjectNameParam,
 } from "./linear-scope.js";
+import {
+	buildLivenessManifest,
+	inboxLoopStallMs,
+	LivenessCheckTracker,
+	livenessAlertsEnabled,
+	qaStallInboxLoopLead,
+} from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { releaseMailboxQueueDeployBarrier } from "./mailbox-queue-deploy-barrier.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
@@ -397,6 +382,7 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
+import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
 import {
 	isAutoMigratableClaudeTmux,
 	type PaneLossNotificationClass,
@@ -425,6 +411,7 @@ import {
 	ReportRegistry,
 } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
+import { isSafeResumeMenuForEnter } from "./rescue.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
 import {
 	buildRescueRuntime,
@@ -458,7 +445,11 @@ import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
 } from "./runner-auth-scan.js";
-import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
+import {
+	DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
+	makeRunnerQuotaScan,
+	makeRunnerQuotaScanPass,
+} from "./runner-quota-scan.js";
 import {
 	handleRunnerApply,
 	handleRunnerStage,
@@ -543,16 +534,6 @@ import {
 import { drainTurnWakeOutbox } from "./turn-wake-patrol.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { createVoiceRouter } from "./voice-routes.js";
-import {
-	buildWatchdogManifest,
-	inboxLoopStallMs,
-	WatchdogCheckTracker,
-} from "./watchdog-health.js";
-import {
-	qaStallInboxLoopLead,
-	watchdogBlockedEnabled,
-	watchdogLivenessEnabled,
-} from "./watchdog-minimum-set.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 import { createWorkflowCarrierRedriveRouter } from "./workflow-carrier-redrive-routes.js";
 import { createWorkflowDecisionRouter } from "./workflow-decision-routes.js";
@@ -1210,7 +1191,7 @@ export interface BridgeAppOptions {
 	globalBotToken?: string;
 	/**
 	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
-	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
+	 * idle accounting to the live HeartbeatService reconnecting set. Both are wired
 	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
 	 * post-listen in startBridge — so they read this holder at call time. `current`
 	 * stays null on the kill-switch / standalone path (no reconnecting suppression
@@ -1242,8 +1223,8 @@ export interface BridgeAppOptions {
 	 * shuttingDown:false (byte-compat).
 	 */
 	shutdownStateHolder?: { shuttingDown: boolean };
-	/** FLY-1393: late-bound minimum-set watchdog health manifest. */
-	watchdogHealthProvider?: { current?: () => unknown };
+	/** FLY-1393: late-bound minimum-set liveness manifest. */
+	livenessHealthProvider?: { current?: () => unknown };
 	/**
 	 * FLY-247 inc2a: the Fleet console (founder-admin surface). When present,
 	 * `GET /` renders the console and the `/api/fleet/*` routes are mounted
@@ -1606,16 +1587,16 @@ export function createBridgeApp(
 		// double-start. Read at request time via the late-bound holder; absent
 		// (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
-		let watchdogs: unknown;
-		if (opts?.watchdogHealthProvider?.current) {
+		let liveness: unknown;
+		if (opts?.livenessHealthProvider?.current) {
 			try {
-				watchdogs = opts.watchdogHealthProvider.current();
+				liveness = opts.livenessHealthProvider.current();
 			} catch (error) {
 				console.warn(
-					"[health] watchdog manifest unavailable:",
+					"[health] liveness manifest unavailable:",
 					error instanceof Error ? error.message : String(error),
 				);
-				watchdogs = {
+				liveness = {
 					degraded: true,
 					reason: "manifest_provider_error",
 				};
@@ -1638,7 +1619,7 @@ export function createBridgeApp(
 				active: admissionPause?.active === true,
 				remainingSeconds: admissionPause?.remainingSeconds ?? 0,
 			},
-			...(watchdogs === undefined ? {} : { watchdogs }),
+			...(liveness === undefined ? {} : { liveness }),
 		});
 	});
 
@@ -4104,23 +4085,19 @@ export async function startBridge(
 		);
 	}
 	const bridgeBootTs = Date.now();
-	const watchdogFlags = {
-		liveness: watchdogLivenessEnabled(process.env),
-		blocked: watchdogBlockedEnabled(process.env),
+	const livenessFlags = {
+		livenessAlerts: livenessAlertsEnabled(process.env),
 	};
-	const leadWatchdogPollIntervalMs = leadWatchdogIntervalMs(process.env);
-	const watchdogTrackers = {
-		liveness: new WatchdogCheckTracker({ cadenceMs: idleWatchdogPollMs() }),
-		blockedLead: new WatchdogCheckTracker({
-			cadenceMs: leadWatchdogPollIntervalMs,
+	const livenessTrackers = {
+		liveness: new LivenessCheckTracker({
+			cadenceMs: config.stuckCheckIntervalMs,
 		}),
 	};
 	// Live registration truth for /health. These bits flip only after the
 	// corresponding tracker has actually been handed to its runtime component.
-	const watchdogWiring = {
+	const livenessWiring = {
 		liveness: false,
 		externalDrift: true,
-		blockedLead: false,
 	};
 
 	// FLY-1082 (Task 1.1): fail-loud kind-contract validation — every alert
@@ -4171,6 +4148,12 @@ export async function startBridge(
 	const fleetSensorsHolder: { current: FleetSensors | null } = {
 		current: null,
 	};
+	const leadReconcilePassHolder: {
+		current: (() => Promise<void>) | null;
+	} = { current: null };
+	const runnerQuotaScanPassHolder: {
+		current: (() => Promise<void>) | null;
+	} = { current: null };
 	const serverLossHolder: { current: ServerLossCoordinator | null } = {
 		current: null,
 	};
@@ -4393,7 +4376,7 @@ export async function startBridge(
 	};
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
-	// 30s evidence poller (single probe owner for Dashboard + watchdog, R6#5).
+	// 30s evidence poller (single probe owner for Dashboard + fleet sensors, R6#5).
 	const fleetConfigProvider = new ConfigSnapshotProvider(projects, {
 		loadProjects: () => loadProjects(),
 		envPinned: Boolean(process.env.FLYWHEEL_PROJECTS),
@@ -4900,13 +4883,12 @@ export async function startBridge(
 	);
 	leadInboxRuntime.start();
 	const deliveryLoopWired = true;
-	const watchdogHealthProvider: { current?: () => unknown } = {
+	const livenessHealthProvider: { current?: () => unknown } = {
 		current: () =>
-			buildWatchdogManifest({
+			buildLivenessManifest({
 				bridgeStartedAtMs: bridgeBootTs,
-				flags: watchdogFlags,
-				wiring: watchdogWiring,
-				trackers: watchdogTrackers,
+				wiring: livenessWiring,
+				trackers: livenessTrackers,
 				deliveryLoopWired,
 				loopStallMs: inboxLoopStallMs(process.env),
 				loopTargets: leadInboxRuntime.healthTargets(),
@@ -5916,7 +5898,7 @@ export async function startBridge(
 		shuttingDown: false,
 	};
 
-	// FLY-623: shared reconnecting-set holder — the event router + idle watchdog
+	// FLY-623: shared reconnecting-set holder — the event router
 	// (wired in createBridgeApp) read it, HeartbeatService (created post-listen)
 	// fills it. Null until then / on the kill-switch path = no reconnect handling.
 	const reconnectHolder: { current: ReconnectController | null } = {
@@ -6179,7 +6161,7 @@ export async function startBridge(
 			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
-			watchdogHealthProvider,
+			livenessHealthProvider,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
 			reconnectHolder,
 			// FLY-579: event router reads this to drive the auto-QA pipeline.
@@ -6284,28 +6266,6 @@ export async function startBridge(
 	// listener (config.host may be 127.0.0.1 / localhost / ::1), so derive it
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
-
-	// FLY-626: shared cheap quiet-signal probe for RunnerIdleWatchdog.
-	// Suppresses the (token-expensive) Lead wake for a legitimately-quiet runner
-	// (self-declared park/busy, parked at a gate, recently active).
-	// `FLYWHEEL_QUIET_CLASSIFIER=0` disables it → pre-FLY-626 all-wake behavior.
-	const quietClassifierEnabled = process.env.FLYWHEEL_QUIET_CLASSIFIER !== "0";
-	const quietSignalsProbe = quietClassifierEnabled
-		? (session: {
-				execution_id: string;
-				project_name: string;
-				status: string;
-				// FLY-637 #1: the watchdogs pass the full Session row, so these reach
-				// probeQuietSignals for the explicit FLY-324 done-but-running skip.
-				session_stage?: string | null;
-				decision_route?: string | null;
-				pr_number?: number | null;
-			}) =>
-				probeQuietSignals(session, {
-					activityWindowMs: stuckCommActivityMs(),
-					nowMs: Date.now(),
-				})
-		: undefined;
 
 	// FLY-720: crash-reaper injected deps. Default ON; `FLYWHEEL_CRASH_REAPER=0`
 	// disables the whole reaper (falls back to reapOrphans→failed). Grace defaults
@@ -6593,10 +6553,12 @@ export async function startBridge(
 				}
 			}
 		},
+		livenessTrackers.liveness,
 	);
+	livenessWiring.liveness = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
-	// router + idle watchdog via the late-bound holder, now that HeartbeatService
+	// router via the late-bound holder, now that HeartbeatService
 	// exists. Stays null on the kill-switch / no-registry path (byte-compat).
 	reconnectHolder.current = heartbeatService;
 
@@ -6621,8 +6583,8 @@ export async function startBridge(
 	// / QA Runner that finished via `flywheel-comm stage set completed` only ever
 	// emitted a stage_changed event, which never transitioned the FSM off
 	// `running` (that flows through `session_completed`). Those sessions are
-	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
-	// produced false stuck notices. The event-route handler fixes this going
+	// stuck: close_runner rejects them while tmux + worktree linger. The event-route
+	// handler fixes this going
 	// forward; this one-shot sweep unsticks the EXISTING backlog whose
 	// stage_changed already fired before the fix shipped. This sweep runs before
 	// the late-bound FLY-172 durable-alert drain; its pending-marker guard leaves
@@ -6918,7 +6880,7 @@ export async function startBridge(
 	// stage=completed zombie is terminalized first and never briefly enters
 	// reconnecting / gets a ⚠️重连中 title), before the late-bound FLY-172
 	// alert-aware boot drain, and BEFORE
-	// heartbeatService.start() / RunnerIdleWatchdog.start() — closing the on-boot
+	// heartbeatService.start() — closing the on-boot
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
@@ -6959,7 +6921,7 @@ export async function startBridge(
 
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
-	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
+	// BridgeEventLoopGuard below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
 	// Late-bound shared alert sink for convergence lanes.
@@ -7453,7 +7415,7 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
-		watchdogLivenessEnabled: watchdogFlags.liveness,
+		livenessAlertsEnabled: livenessFlags.livenessAlerts,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
@@ -7514,6 +7476,14 @@ export async function startBridge(
 			});
 			await terminalGateRetirement.pass();
 		},
+		// FLY-1560: both holders are populated ~1.5k lines below, well after
+		// gatePoller.start(). The readiness probes stop an unarmed boot tick from
+		// burning the cadence anchor (which would defer the boot reconcile by a
+		// full ~10min cadence while looking like it had already run).
+		onLeadReconcileTick: () => leadReconcilePassHolder.current?.(),
+		onLeadReconcileReady: () => leadReconcilePassHolder.current !== null,
+		onRunnerQuotaScanTick: () => runnerQuotaScanPassHolder.current?.(),
+		onRunnerQuotaScanReady: () => runnerQuotaScanPassHolder.current !== null,
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();
 		},
@@ -7666,26 +7636,26 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-307 C: Bridge event-loop self-watchdog — converts a main-loop hang
+	// FLY-307 C: Bridge event-loop self-guard — converts a main-loop hang
 	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
-	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_WATCHDOG=0`
+	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_LOOP_GUARD=0`
 	// is the ops kill-switch. Auto-disabled under VITEST at this wiring boundary
 	// so general Bridge integration suites are never SIGKILLed by the worker
-	// (the dedicated watchdog tests exercise the real worker directly).
-	const bridgeWatchdog = new BridgeEventLoopWatchdog({
+	// (the dedicated loop-guard tests exercise the real worker directly).
+	const bridgeLoopGuard = new BridgeEventLoopGuard({
 		enabled: !process.env.VITEST,
 		bootTs: bridgeBootTs,
 		pid: process.pid,
 		syncOpMarkerPath: syncOpMarkerPath(process.pid, process.env),
 	});
-	bridgeWatchdog.start();
-	if (bridgeWatchdog.isEnabled()) {
+	bridgeLoopGuard.start();
+	if (bridgeLoopGuard.isEnabled()) {
 		console.log(
-			"[Bridge] EventLoopWatchdog started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
+			"[Bridge] EventLoopGuard started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
 		);
 	}
 
-	// FLY-83: Lead liveness watchdog — external pane-hash observation for
+	// FLY-83 (retired in FLY-1560): external pane-hash observation for
 	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
 	// path) via cross-process claims.db dedup.
 	//
@@ -8834,53 +8804,13 @@ export async function startBridge(
 		: undefined;
 
 	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
-	// account_rotation Alerts-post the event router reads. Reuses the SAME
-	// post-to-thread path the legacy account-switch watchdog uses. Manual/profile
-	// rotation notices and login rescue remain wired after permanent cutover;
+	// account_rotation Alerts-post the event router reads. Manual/profile rotation
+	// notices and login rescue remain wired after permanent cutover;
 	// only the three automatic account-switch execution faces are retired.
 	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
-	// self-heal gate below). Declared here so the account-switch watchdog tick
-	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
+	// self-heal gate below).
 	let rescueRuntime: RescueRuntime | undefined;
-	// FLY-929 A4+A5: shared result formatting remains for the dormant watchdog
-	// boundary. The /api/account-switch executor was removed by FLY-1456.
-	let postSwitchResult:
-		| ((detail: string, disposition?: RepairDisposition) => Promise<void>)
-		| undefined;
 	if (claudeAccountPoolConfigured && unifiedAlertChannelId) {
-		// The Alerts post is authoritative and unchanged in the dormant states;
-		// on top of it:
-		//  - needs_human (no_account / failed / not-attemptable) +
-		//    resolveAccountCapOwnerId ⇒ the post becomes the owner-bot ASSIGNMENT
-		//    (mention) instead of a plain line — the FLY-871 bot playbook carries
-		//    the eventual founder escalation until FLY-927's ticket state machine
-		//    lands. Any env missing ⇒ plain detail post byte-for-byte.
-		//  - notifySuccess (a REAL switched outcome only) + P-identity ⇒ ONE
-		//    best-effort digest to #flywheel-notify (never blocks the Alerts
-		//    record; postInfraNotifyDigest logs and swallows failures).
-		postSwitchResult = async (
-			detail: string,
-			disposition?: RepairDisposition,
-		): Promise<void> => {
-			const capOwnerId =
-				disposition?.outcome === "needs_human"
-					? resolveAccountCapOwnerId()
-					: undefined;
-			if (capOwnerId) {
-				await alertDiscordOps.postToThread(
-					unifiedAlertChannelId,
-					formatAccountCapOwnerAssignment(capOwnerId, detail),
-					{ mentionUserId: capOwnerId },
-				);
-			} else {
-				await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
-			}
-			if (disposition?.notifySuccess) {
-				await postInfraNotifyDigest(
-					formatSwitchSuccessDigest(disposition.notifySuccess),
-				);
-			}
-		};
 		accountRotationPostHolder.current = async (detail, rotation) => {
 			await alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
 			// FLY-929 A4: rotation digest from the STRUCTURED payload (never
@@ -9135,7 +9065,7 @@ export async function startBridge(
 	};
 
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
-	// chain; else watchdogs route straight to the notifier (legacy / root-only).
+	// chain; else producers route straight to the notifier (legacy / root-only).
 	const alertHub =
 		unifiedAlert && repairChainResolves
 			? new AlertChannelHub({
@@ -9149,7 +9079,7 @@ export async function startBridge(
 					// retained safe auto-repair actions.
 					autoRepairBot: new AutoRepairBot({
 						// FLY-696: usage_limit → Claude account switch (enqueues a
-						// pending record; the watchdog below fires it). Hoisted +
+						// pending record; the deadline sweep below fires it). Hoisted +
 						// gated on the account-pool presence (FLY-1243; absent →
 						// undefined = byte-compat, usage_limit stays needs_human).
 						accountSwitch: accountSwitchRepair,
@@ -9263,7 +9193,7 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-368: a single alert sink used by BOTH watchdogs. When the Hub is on it
+	// FLY-368: a single alert sink shared by every Lead alert producer. When the Hub is on it
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
@@ -9585,7 +9515,7 @@ export async function startBridge(
 		currentWatermark: () => fleetSensorsHolder.current?.lastWatermark ?? null,
 	});
 	console.log(
-		"[Bridge] FLY-1082 fleet sensors wired (swap/bot/zombie on watchdog tick; tmux server-loss as heartbeat pre-reaper phase)",
+		"[Bridge] FLY-1082 fleet sensors wired (swap/bot/zombie on lead-reconcile tick; tmux server-loss as heartbeat pre-reaper phase)",
 	);
 
 	// FLY-1082 (Task 2.4): boot self-check leg — a latched `running` marker
@@ -9593,14 +9523,13 @@ export async function startBridge(
 	// wrapper page already fired Bridge-independently with its OWN dedup id;
 	// both legs share the episode signature for correlation).
 	if (prevExitMarker?.state === "running") {
-		const watchdogStall = findWatchdogStallForExit(
-			watchdogLogPath(process.env),
-			prevExitMarker,
-			bridgeBootTs,
-		);
+		const loopStall =
+			loopGuardLogPaths(process.env)
+				.map((path) => findLoopStallForExit(path, prevExitMarker, bridgeBootTs))
+				.find((record) => record !== null) ?? null;
 		const alertContent = buildAbnormalExitAlertContent(
 			prevExitMarker,
-			watchdogStall,
+			loopStall,
 		);
 		void routedAlertSink
 			.alert({
@@ -9654,78 +9583,41 @@ export async function startBridge(
 		});
 	}
 
-	// FLY-92 / FLY-1393 W-1: Runner process-liveness via tmux capture-pane.
-	// FLY-1393: only the idle/dead W-1 lane remains active when the legacy delivery
-	// cohort is hard-off, so the old FLY-628 one-hour false-positive band-aid no
-	// longer applies. Restore a 3s default for process-liveness; waiting/unknown
-	// and frozen-pane signals remain silent. Env-tunable for fault injection.
-	const idlePollMs = idleWatchdogPollMs();
-	const idleWatchdog = new RunnerIdleWatchdog({
-		pollIntervalMs: idlePollMs,
-		projects,
-		store,
-		runtimeRegistry: registry,
-		captureSessionFn: defaultCaptureSession,
-		chatThreadsEnabled: config.chatThreadsEnabled,
-		watchdogLivenessEnabled: watchdogFlags.liveness,
-		watchdogTracker: watchdogTrackers.liveness,
-		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
-		quietSignalsProbe,
-		// FLY-623 (Codex R2 HIGH-3): suppress idle signals for a Runner that
-		// was re-adopted after a Bridge restart (alive-but-detached) — its idle
-		// appearance is an artifact of monitoring loss, not a real stall. Reads the
-		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
-		isReconnecting: (execId) =>
-			reconnectHolder.current?.isReconnecting(execId) ?? false,
-		// FLY-696 M1/③: runner-side quota scan reuses this poll's capture, but its
-		// classifier remains on the pre-FLY-1393 one-hour cadence. Permanent
-		// cutover keeps this detector alive while omitting accountSwitchRepair,
-		// so a cap still alerts but cannot enqueue a Bridge-side switch.
-		runnerQuotaScan: quotaBridgeMode.runRunnerQuotaScan
-			? (() => {
-					const quotaScan = makeRunnerQuotaScan({
-						projects,
-						alert: (p) => routedAlertSink.alert(p),
-						isTransient: isTransientThrottlePane,
-						now: () => Date.now(),
-					});
-					// FLY-871 R2/C8: compose the runner AUTH scan into the SAME seam
-					// (same per-session capture, no new timer). Layer-2 AI fallback is
-					// default-ON with kill-switch FLYWHEEL_DETECTION_AI_CLASSIFY=0; it
-					// only fires for unrecognized-anomalous panes (healthy/pattern panes
-					// never spend a model call).
-					const authScan = makeRunnerAuthScan({
-						alert: (p) => routedAlertSink.alert(p),
-						resolveLeadId: defaultResolveLeadId(projects),
-						// FLY-871 R2/C7: populate the account-state ledger — a confirmed
-						// runner logout marks the active account's live auth as stale.
-						recordAuthHealth: (name) =>
-							ledgerRecordAuthHealth(name, {
-								lastFreshness: "stale",
-								lastVerifiedAt: new Date().toISOString(),
-								reason: "runner login_expired",
-							}),
-						aiClassify:
-							process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
-								? undefined
-								: makeSubscriptionDetectionClassifier({}),
-					});
-					return async (session: Session, pane: string) => {
-						await quotaScan(session, pane);
-						await authScan(session, pane);
-					};
-				})()
-			: undefined,
-		runnerQuotaScanIntervalMs: DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
-	});
-	watchdogWiring.liveness = true;
-	idleWatchdog.start();
-	console.log(
-		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll)`,
-	);
+	if (quotaBridgeMode.runRunnerQuotaScan) {
+		const quotaScan = makeRunnerQuotaScan({
+			projects,
+			alert: (payload) => routedAlertSink.alert(payload),
+			isTransient: isTransientThrottlePane,
+			now: () => Date.now(),
+		});
+		const authScan = makeRunnerAuthScan({
+			alert: (payload) => routedAlertSink.alert(payload),
+			resolveLeadId: defaultResolveLeadId(projects),
+			recordAuthHealth: (name) =>
+				ledgerRecordAuthHealth(name, {
+					lastFreshness: "stale",
+					lastVerifiedAt: new Date().toISOString(),
+					reason: "runner login_expired",
+				}),
+			aiClassify:
+				process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
+					? undefined
+					: makeSubscriptionDetectionClassifier({}),
+		});
+		runnerQuotaScanPassHolder.current = makeRunnerQuotaScanPass({
+			store,
+			captureSession: defaultCaptureSession,
+			intervalMs: DEFAULT_RUNNER_QUOTA_SCAN_INTERVAL_MS,
+			scan: async (session, pane) => {
+				await quotaScan(session, pane);
+				await authScan(session, pane);
+			},
+			log: (message) => console.warn(message),
+		});
+	}
 
 	// FLY-818: opt-in auto-continue arming worker (default OFF —
-	// FLYWHEEL_RUNNER_AUTOCONTINUE=1). A SEPARATE poller from RunnerIdleWatchdog: it
+	// FLYWHEEL_RUNNER_AUTOCONTINUE=1). This separate poller
 	// only observes a spawned claude-tmux runner until its idle input box appears,
 	// then sends `/loop <goal>` ONCE so the runner self-continues toward its phase
 	// goal instead of idling after a turn (the FLY-818 root cause). It never touches
@@ -9866,143 +9758,14 @@ export async function startBridge(
 			}),
 		);
 	};
-
-	const leadWatchdog = new LeadWatchdog({
-		pollIntervalMs: leadWatchdogPollIntervalMs,
-		paneHashStuckCycles: 2,
-		// FLY-224 Phase 6b legacy baseline: exclude Codex-backed projects (no
-		// tmux pane) from the pane-text watchdog. BYTE-COMPAT: a project with
-		// no roles.lead config → claude-code → identical list (no-op).
-		projects: paneWatchdogProjects(
-			projects,
-			(p) => loadProjectLeadRoles(p.projectRoot),
-			process.env,
-		),
-		// FLY-247: per-lead dynamic membership, re-resolved EVERY tick from the
-		// current config snapshot + the poller's evidence map (one decision
-		// function shared with the Dashboard, R8#4). No/stale evidence for a
-		// codex-desired lead → desired-config exclusion (FLY-224 semantics);
-		// claude leads always watched; CONFLICT (live Claude under codex
-		// desire) keeps watching (漏报>误报). Legacy config.yaml stays as the
-		// fallback desired source for the dual-source window.
-		// NOTE (code-review H9): no project-level pre-filter here — the legacy
-		// config.yaml/env desired source feeds the PER-LEAD effectiveBackend
-		// inside filterPaneWatchedLeads. A project-level filter would remove an
-		// explicit-Claude lead living in a legacy-codex project before the
-		// shared decision function ever saw it.
-		projectsProvider: () =>
-			filterPaneWatchedLeads(
-				fleetConfigProvider.snapshot().projects,
-				fleetLegacyBackendOf,
-				fleetPoller.snapshot(),
-			),
-		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
-		// when enabled; otherwise this is the raw notifier — byte-compat).
-		notifier: (payload) => routedAlertSink.alert(payload),
-		locateWindowFn: locateFleetLeadWindow,
-		captureFn: leadPaneCaptureFn,
-		claimsReader,
-		watchdogBlockedEnabled: watchdogFlags.blocked,
-		watchdogTracker: watchdogTrackers.blockedLead,
-		// FLY-368: real-time recovery → resolve the matching alert thread (an
-		// optimization; the reconcile pass below is the restart-safe truth source).
-		onRecovery: alertHub
-			? (projectName, leadId, recoveredKind) => {
-					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
-				}
-			: undefined,
-		// FLY-368: piggyback the completed per-Lead cycle to run the alert-thread
-		// reconcile pass (now default 10min; no new timer). FLY-863: the SAME tick
-		// also re-scans for codex-holds that
-		// crossed the stuck-duration threshold since the last pass. FLY-696: the
-		// SAME tick also drives the account-switch watchdog (due pending switches
-		// M1-only / bot fallback M2), posting results to the unified Alerts
-		// channel. Every sub-task is independently try/caught so one failing piece
-		// never wedges the others or the poll loop — no new timer for any of them.
-		onPollComplete: async () => {
-			try {
-				reconcileLeaseEpisodeQueue();
-			} catch (err) {
-				console.warn(
-					`[Bridge] lease episode reconcile failed: ${(err as Error).message}`,
-				);
-			}
-			try {
-				await leadIdentityMonitor.tick(leadIdentityTargets());
-			} catch (err) {
-				console.warn(
-					`[Bridge] lead identity scan failed: ${(err as Error).message}`,
-				);
-			}
-			try {
-				leaseAuditOutbox.materialize();
-			} catch (err) {
-				console.warn(
-					`[Bridge] lease audit outbox failed: ${(err as Error).message}`,
-				);
-			}
-			// FLY-1082: fleet sensors ride the SAME piggybacked tick (zero new
-			// timers) — memory pressure, infra-bot probes, throttled zombie scan.
-			// Runs BEFORE the Hub reconcile so a fresh sensor verdict (e.g. the
-			// watermark clearing) is visible to the same tick's recovery pass.
-			try {
-				await fleetSensorsHolder.current?.tick();
-			} catch (err) {
-				console.warn(
-					`[Bridge] fleet-sensors tick failed: ${(err as Error).message}`,
-				);
-			}
-			if (alertHub) {
-				try {
-					await alertHub.reconcile();
-				} catch (err) {
-					console.warn(
-						`[Bridge] alertHub.reconcile failed: ${(err as Error).message}`,
-					);
-				}
-			}
-			if (
-				quotaBridgeMode.runAccountSwitchWatchdog &&
-				accountSwitchRepair &&
-				unifiedAlertChannelId
-			) {
-				try {
-					await accountSwitchWatchdogTick({
-						now: () => Date.now(),
-						executeSwitch: (pending) =>
-							accountSwitchRepair.executeSwitch(pending),
-						// FLY-929 A4+A5: shared switch-result routing (owner-bot
-						// assignment on needs_human + notify digest on real success);
-						// falls back to the legacy plain post if the shared helper was
-						// somehow not built (defensive — same gate builds both).
-						post:
-							postSwitchResult ??
-							((detail) =>
-								alertDiscordOps.postToThread(unifiedAlertChannelId, detail)),
-						// FLY-871 R3/W5: a deadline-fired switch → sweep incident-window
-						// login-stuck sessions (same sweep the /api/account-switch route
-						// triggers). Undefined rescueRuntime ⇒ no sweep (byte-compat).
-						onSwitchSuccess: rescueRuntime
-							? async () => {
-									await rescueRuntime?.postSwitchRescueSweep();
-								}
-							: undefined,
-					});
-				} catch (err) {
-					console.error(
-						`[Bridge] FLY-696 account-switch watchdog tick failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-					);
-				}
-			}
-		},
-	});
-	watchdogWiring.blockedLead = true;
-	leadWatchdog.start();
-	console.log(
-		`[Bridge] LeadWatchdog started (${leadWatchdogPollIntervalMs}ms per-Lead staggered poll, recognized blocked conditions only)`,
-	);
+	leadReconcilePassHolder.current = () =>
+		runLeadReconcilePass({
+			reconcileLeaseEpisodes: () => reconcileLeaseEpisodeQueue(),
+			scanLeadIdentities: () => leadIdentityMonitor.tick(leadIdentityTargets()),
+			materializeLeaseAudit: () => leaseAuditOutbox.materialize(),
+			tickFleetSensors: () => fleetSensorsHolder.current?.tick(),
+			reconcileAlerts: () => alertHub?.reconcile(),
+		});
 
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
 	// or prior Bridge runs do not rot. Queue files only appear when Discord POST
@@ -10013,7 +9776,7 @@ export async function startBridge(
 	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
 	// would re-POST the same still-present queue file → duplicate alert, which
 	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
-	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The watchdog must
+	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The loop guard must
 	// not go silent — meta-alerts ride the EXISTING 60s drain timer (no new
 	// periodic load, FLY-129). MetaAlertNotifier debounces per reason (10min),
 	// so repeated cycles collapse to one alert.
@@ -10115,9 +9878,7 @@ export async function startBridge(
 			);
 		}
 		await roundtableThreadManager?.stop();
-		bridgeWatchdog.stop();
-		idleWatchdog.stop();
-		leadWatchdog.stop();
+		bridgeLoopGuard.stop();
 		clearInterval(leadAlertDrainTimer);
 		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);

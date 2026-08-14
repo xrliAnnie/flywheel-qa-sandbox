@@ -5,7 +5,7 @@
 // new LeadAlertNotifier({ unifiedAlert, ...dirs }).alert(payload) — against the
 // real Discord API + the slot-local queue/claims/dead-letter dirs. This proves
 // the Bridge writer path's channel delivery + filesystem isolation without
-// needing a frozen Lead pane (the full LeadWatchdog → notifier trigger is
+// needing a frozen Lead pane (the full Lead-pane alert → notifier trigger is
 // FLY-368 downstream). Used by qa-fly-529-alert-smoke.sh.
 //
 // Required env (set by the smoke):

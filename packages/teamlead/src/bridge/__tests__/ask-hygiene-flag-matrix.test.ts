@@ -1,6 +1,6 @@
 /**
  * FLY-1328 Chunk 4 — the reverse-compat sentinel across ASK × ZOMBIE ×
- * WATCHDOG.
+ * LEAD-RECONCILE.
  *
  * FLY-1328 puts a third capability inside a pass that already hosted two, so
  * "does the new flag change the old flags' behavior, or vice versa" is not a

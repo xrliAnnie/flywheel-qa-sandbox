@@ -14,10 +14,10 @@ fail() { echo "[TEST] ✗ $1"; FAILED=$((FAILED+1)); }
 
 export FLYWHEEL_PROBE_STATE_FILE="$TMP/probe-state.json"
 export FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN=3
-export FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN=0
-export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=999
-export FLYWHEEL_WATCHDOG_STALLED_ESCALATE_MIN=1
-export FLYWHEEL_WATCHDOG_DISABLED_REMINDER_MIN=1440
+export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=0
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=999
+export FLYWHEEL_LIVENESS_STALLED_ESCALATE_MIN=1
+export FLYWHEEL_LIVENESS_DISABLED_REMINDER_MIN=1440
 export FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="chan-1"
 export FLYWHEEL_FOUNDER_DISCORD_USER_ID="123456789012345678"
 export INFRA_BOT_TOKEN="fake-token"
@@ -93,9 +93,9 @@ fi
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
 HEALTH=up; POST_OK=0; NOW=3000
-export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=2
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=2
 
-# T8: a reachable /health whose watchdog manifest is missing does not stay
+# T8: a reachable /health whose liveness manifest is missing does not stay
 # silently green forever: it opens its own degraded episode, then all-clears.
 HEALTH_JSON='{"ok":true,"uptime":9999}'
 probe_once >/dev/null
@@ -108,14 +108,14 @@ fi
 
 healthy_manifest() {
 	local leads_json="$1"
-	jq -cn --argjson leads "$leads_json" '{ok:true,uptime:9999,watchdogs:{schema_version:1,components:{w1_process_liveness:{wired:true,effective_enabled:true},w2_delivery_loop:{wired:true,effective_enabled:true,leads:$leads},w3_external_drift:{wired:true,effective_enabled:true,observation:"static_contract"},w4_lead_blocked:{wired:true,effective_enabled:true}},retiring:[]}}'
+	jq -cn --argjson leads "$leads_json" '{ok:true,uptime:9999,watchdogs:{schema_version:1,components:{w1_process_liveness:{wired:true,effective_enabled:true},w2_delivery_loop:{wired:true,effective_enabled:true,leads:$leads},w3_external_drift:{wired:true,effective_enabled:true,observation:"static_contract"}},retiring:[]}}'
 }
 
-if watchdog_manifest_valid <<<"$(healthy_manifest '[]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false')" \
-  && ! watchdog_manifest_valid <<<"$(healthy_manifest '[]' | jq '.watchdogs.components.w2_delivery_loop.wired = false')" \
-  && ! watchdog_manifest_valid <<<"$(healthy_manifest '[]' | jq 'del(.watchdogs.components.w3_external_drift.observation)')" \
-  && ! watchdog_manifest_valid <<<"$(healthy_manifest '[{"lead_id":"A"}]')" \
-  && ! watchdog_manifest_valid <<<"$(healthy_manifest '[{"lead_id":"A","freshness":"unknown"}]')"; then
+if liveness_manifest_valid <<<"$(healthy_manifest '[]' | jq '.watchdogs.components.w1_process_liveness.effective_enabled = false')" \
+  && ! liveness_manifest_valid <<<"$(healthy_manifest '[]' | jq '.watchdogs.components.w2_delivery_loop.wired = false')" \
+  && ! liveness_manifest_valid <<<"$(healthy_manifest '[]' | jq 'del(.watchdogs.components.w3_external_drift.observation)')" \
+  && ! liveness_manifest_valid <<<"$(healthy_manifest '[{"lead_id":"A"}]')" \
+  && ! liveness_manifest_valid <<<"$(healthy_manifest '[{"lead_id":"A","freshness":"unknown"}]')"; then
   pass "T8 manifest truth accepts a kill switch but rejects unwired or ambiguous W-3 evidence"
 else
   fail "T8 manifest truth conflated an explicit kill-switch state with structural degradation"
@@ -135,9 +135,9 @@ fi
 # W-2 episode.
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
-export FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN=0
-export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=1
-export FLYWHEEL_WATCHDOG_STALLED_ESCALATE_MIN=1
+export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=0
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=1
+export FLYWHEEL_LIVENESS_STALLED_ESCALATE_MIN=1
 HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]')"
 NOW=3180; probe_once >/dev/null
 HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A"}]')"
@@ -155,8 +155,8 @@ fi
 # Grace is measured from the probe's first invalid observation, not Bridge uptime.
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
-export FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN=5
-export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=3
+export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=5
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=3
 HEALTH_JSON='{"ok":true,"uptime":999999}'
 NOW=4000; probe_once >/dev/null
 NOW=4060; probe_once >/dev/null
@@ -174,21 +174,21 @@ if [[ "$(posts)" == "1" ]] && jq -e '.degraded.escalated == true' "$FLYWHEEL_PRO
 else
   fail "T8 persistent invalid manifest did not page: posts=$(cat "$POSTS")"
 fi
-export FLYWHEEL_WATCHDOG_MANIFEST_GRACE_MIN=0
-export FLYWHEEL_WATCHDOG_MANIFEST_DEGRADED_MIN=999
+export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=0
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=999
 
 # T9: supported kill switches have their own durable, low-frequency warning
 # and all-clear. They never suppress the independent W-2 stalled alert.
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
 NOW=3200
-HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false')"
+HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]' | jq '.watchdogs.components.w1_process_liveness.effective_enabled = false')"
 probe_output="$(probe_once)"
-if [[ "$probe_output" == *"disabled=w4_lead_blocked"* ]] \
+if [[ "$probe_output" == *"disabled=w1_process_liveness"* ]] \
   && [[ "$(posts)" == "2" ]] \
-  && grep -q 'watchdog minimum-set lanes disabled: w4_lead_blocked' "$POSTS" \
+  && grep -q 'liveness lanes disabled: w1_process_liveness' "$POSTS" \
   && grep -q 'Lead inbox loop stalled: A' "$POSTS" \
-  && jq -e '.schemaVersion == 3 and .disabled.members == ["w4_lead_blocked"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+  && jq -e '.schemaVersion == 3 and .disabled.members == ["w1_process_liveness"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
   pass "T9 disabled lanes warn durably without masking W-2 stalled"
 else
   fail "T9 disabled-state reporting masked stalled: output=$probe_output posts=$(cat "$POSTS")"
@@ -197,7 +197,7 @@ NOW=3260
 probe_once >/dev/null
 NOW=89601
 probe_once >/dev/null
-if [[ "$(posts)" == "3" ]] && [[ "$(grep -c 'watchdog minimum-set lanes disabled' "$POSTS")" == "2" ]]; then
+if [[ "$(posts)" == "3" ]] && [[ "$(grep -c 'liveness lanes disabled' "$POSTS")" == "2" ]]; then
   pass "T9 unchanged disabled lanes remind daily, not every minute"
 else
   fail "T9 reminder cadence posts=$(posts) content=$(cat "$POSTS")"
@@ -205,7 +205,7 @@ fi
 NOW=89661
 HEALTH_JSON="$(healthy_manifest '[{"lead_id":"A","freshness":"stale"}]')"
 probe_once >/dev/null
-if [[ "$(posts)" == "4" ]] && tail -1 "$POSTS" | grep -q 'watchdog minimum-set lanes re-enabled' \
+if [[ "$(posts)" == "4" ]] && tail -1 "$POSTS" | grep -q 'liveness lanes re-enabled' \
   && jq -e '.disabled.members == [] and .disabled.lastNotifiedAt == 0 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
   pass "T9 re-enabled lanes all-clear without falsely clearing W-2"
 else
@@ -216,12 +216,12 @@ fi
 rm -f "$FLYWHEEL_PROBE_STATE_FILE"
 : > "$POSTS"
 NOW=90000; POST_OK=1
-HEALTH_JSON="$(healthy_manifest '[]' | jq '.watchdogs.components.w4_lead_blocked.effective_enabled = false')"
+HEALTH_JSON="$(healthy_manifest '[]' | jq '.watchdogs.components.w1_process_liveness.effective_enabled = false')"
 probe_once >/dev/null
 NOW=90060; POST_OK=0
 probe_once >/dev/null
 if [[ "$(posts)" == "2" ]] \
-  && jq -e '.disabled.members == ["w4_lead_blocked"] and .disabled.lastNotifiedAt == 90060' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+  && jq -e '.disabled.members == ["w1_process_liveness"] and .disabled.lastNotifiedAt == 90060' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
   pass "T9 failed disabled-lane delivery retries before latching"
 else
   fail "T9 failed-delivery retry posts=$(posts) state=$(cat "$FLYWHEEL_PROBE_STATE_FILE")"
@@ -265,6 +265,194 @@ if [[ "$(posts)" == "1" ]] && jq -e '.stalled.escalated == true and .degraded.co
   pass "T11 down period freezes stalled/degraded state"
 else
   fail "T11 posts=$(posts) state=$(cat "$FLYWHEEL_PROBE_STATE_FILE")"
+fi
+
+# ── FLY-1560 刀 6: schema v2 under the `liveness` key + the W-1 operational
+# contract. The teardown renamed /health's `watchdogs` key to `liveness` and
+# bumped schema_version to 2, so the probe must read BOTH (a probe and a Bridge
+# can cross a deploy boundary in either order) and must judge W-1 health on the
+# tracker freshness the HeartbeatService span now publishes. Without that leg a
+# hung liveness owner reports `in_flight` forever and the probe stays GREEN —
+# exactly the silent-hang the deleted watchdogs used to paper over.
+v2_manifest() {
+	# $1 = W-1 overrides (JSON object), $2 = uptime seconds used for boot grace
+	local w1_json="$1" uptime_sec="${2:-99999}"
+	jq -cn --argjson w1 "$w1_json" --argjson up "$uptime_sec" '
+		{ok:true,uptime:9999,liveness:{
+			schema_version:2,
+			generated_at:"2026-08-14T09:00:00.000Z",
+			bridge_started_at:((("2026-08-14T09:00:00Z" | fromdateiso8601) - $up) | todate),
+			components:{
+				w1_process_liveness:({class:"W-1",switch:"required",wired:true,effective_enabled:true,
+					last_check_started_at:"2026-08-14T08:59:00.000Z",
+					last_check_completed_at:"2026-08-14T08:59:01.000Z",
+					in_flight_age_ms:null,freshness:"fresh"} + $w1),
+				w2_delivery_loop:{class:"W-2",wired:true,effective_enabled:true,switch:"required",leads:[]},
+				w3_external_drift:{class:"W-3",wired:true,effective_enabled:true,observation:"static_contract",switch:"required/no_switch"}
+			},
+			retiring:[]}}'
+}
+
+# The fixtures above are hand-written, so they can drift from what the Bridge
+# actually serves. Feed the probe the REAL buildLivenessManifest output (built
+# dist, same code path /health calls) so a producer change that breaks the probe
+# fails here instead of in production. Skipped only when dist is absent.
+REAL_MANIFEST_JS="$SCRIPT_DIR/../../packages/teamlead/dist/bridge/liveness-manifest.js"
+if [[ -f "$REAL_MANIFEST_JS" ]] && command -v node >/dev/null 2>&1; then
+	real_body="$(node -e '
+		const { buildLivenessManifest, LivenessCheckTracker } = require(process.argv[1]);
+		const nowMs = Date.parse("2026-08-14T09:00:00.000Z");
+		const cadenceMs = 300000;
+		const build = (t) => buildLivenessManifest({
+			nowMs, bridgeStartedAtMs: nowMs - 3600000,
+			wiring: { liveness: true, externalDrift: true },
+			trackers: { liveness: t },
+			deliveryLoopWired: true, loopStallMs: 600000,
+			loopTargets: [{ projectName: "flywheel", leadId: "lead-a", queue: { getHeartbeat: () => ({
+				lead_id: "lead-a", last_started_at: "2026-08-14T08:59:59.000Z",
+				last_success_at: "2026-08-14T08:59:59.500Z" }) } }],
+		});
+		let clock = nowMs - cadenceMs;
+		const fresh = new LivenessCheckTracker({ cadenceMs, now: () => clock });
+		fresh.completed(fresh.started());
+		clock = nowMs;
+		let hungClock = nowMs - cadenceMs * 20;
+		const hung = new LivenessCheckTracker({ cadenceMs, now: () => hungClock });
+		hung.started();
+		hungClock = nowMs;
+		process.stdout.write(JSON.stringify({
+			fresh: { ok: true, liveness: build(fresh) },
+			hung: { ok: true, liveness: build(hung) },
+		}));
+	' "$REAL_MANIFEST_JS" 2>/dev/null)"
+	if [[ -n "$real_body" ]]; then
+		real_fresh="$(jq -c '.fresh' <<<"$real_body")"
+		real_hung="$(jq -c '.hung' <<<"$real_body")"
+		if liveness_manifest_valid <<<"$real_fresh" \
+			&& liveness_manifest_valid <<<"$real_hung" \
+			&& [[ -z "$(w1_liveness_unhealthy_reason 300 "$real_fresh")" ]] \
+			&& [[ -n "$(w1_liveness_unhealthy_reason 300 "$real_hung")" ]]; then
+			pass "T12 real buildLivenessManifest output: fresh healthy, hung owner flagged"
+		else
+			fail "T12 probe disagrees with the REAL manifest producer: fresh_reason=$(w1_liveness_unhealthy_reason 300 "$real_fresh") hung_reason=$(w1_liveness_unhealthy_reason 300 "$real_hung")"
+		fi
+	else
+		fail "T12 could not build a real manifest sample from $REAL_MANIFEST_JS"
+	fi
+else
+	echo "[TEST] — T12 real-producer cross-check skipped (teamlead dist not built)"
+fi
+
+# Structural validity: v2 under `liveness` and legacy v1 under `watchdogs` are
+# both accepted; a v2 row missing the tracker fields the health leg reads is not.
+if liveness_manifest_valid <<<"$(v2_manifest '{}')" \
+	&& liveness_manifest_valid <<<"$(healthy_manifest '[]')" \
+	&& ! liveness_manifest_valid <<<"$(v2_manifest '{}' | jq 'del(.liveness.components.w1_process_liveness.freshness)')" \
+	&& ! liveness_manifest_valid <<<"$(v2_manifest '{"freshness":"unknown"}')" \
+	&& ! liveness_manifest_valid <<<"$(v2_manifest '{"in_flight_age_ms":"900000"}')"; then
+	pass "T12 dual-read accepts v1 watchdogs + v2 liveness, rejects an incomplete v2 W-1 row"
+else
+	fail "T12 dual-read/schema-v2 structural validation wrong"
+fi
+
+# A legacy v1 manifest carries no tracker fields at all — it must NOT be judged
+# on freshness, or every pre-deploy Bridge would page during the rollout window.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=5
+export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=2
+HEALTH=up; HEALTH_JSON="$(healthy_manifest '[]')"
+NOW=200000; probe_once >/dev/null
+NOW=200600; probe_once >/dev/null
+NOW=201200; probe_once >/dev/null
+if [[ "$(posts)" == "0" ]] && jq -e '.degraded.count == 0' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+	pass "T12 legacy v1 manifest is not judged on absent W-1 freshness"
+else
+	fail "T12 v1 manifest false-paged: posts=$(cat "$POSTS") state=$(cat "$FLYWHEEL_PROBE_STATE_FILE")"
+fi
+
+# W-1 fresh — the only healthy state — stays quiet.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{}')"
+NOW=210000; probe_once >/dev/null
+NOW=210600; probe_once >/dev/null
+NOW=211200; probe_once >/dev/null
+if [[ "$(posts)" == "0" ]] && jq -e '.degraded.count == 0' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+	pass "T12 W-1 fresh → quiet"
+else
+	fail "T12 W-1 fresh paged: posts=$(cat "$POSTS")"
+fi
+
+# not_started is tolerated only while the Bridge is inside boot grace.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{"freshness":"not_started","last_check_started_at":null,"last_check_completed_at":null}' 60)"
+NOW=220000; probe_once >/dev/null
+NOW=220600; probe_once >/dev/null
+NOW=221200; probe_once >/dev/null
+if [[ "$(posts)" == "0" ]] && jq -e '.degraded.count == 0' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+	pass "T12 W-1 not_started inside Bridge boot grace → quiet"
+else
+	fail "T12 boot-grace not_started paged: posts=$(cat "$POSTS")"
+fi
+
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{"freshness":"not_started","last_check_started_at":null,"last_check_completed_at":null}' 3600)"
+NOW=230000; probe_once >/dev/null
+NOW=230600; probe_once >/dev/null
+NOW=231200; probe_once >/dev/null
+if [[ "$(posts)" == "1" ]] && grep -q "W-1" "$POSTS" && grep -q "🚨" "$POSTS"; then
+	pass "T12 W-1 never started past boot grace → degraded page"
+else
+	fail "T12 long-uptime not_started stayed green: posts=$(cat "$POSTS")"
+fi
+
+# stale: a pass completed too long ago.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{"freshness":"stale"}')"
+NOW=240000; probe_once >/dev/null
+NOW=240600; probe_once >/dev/null
+NOW=241200; probe_once >/dev/null
+if [[ "$(posts)" == "1" ]] && grep -q "W-1" "$POSTS"; then
+	pass "T12 W-1 stale → degraded page"
+else
+	fail "T12 W-1 stale stayed green: posts=$(cat "$POSTS")"
+fi
+
+# A hung owner: in_flight is fine briefly, unhealthy once it outlives the grace
+# window. This is the FLY-1560 §2.7 假-fresh negative test at the receiving end
+# — the manifest never claims `fresh`, and the probe must not read the absence
+# of a completion as health.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{"freshness":"in_flight","in_flight_age_ms":30000,"last_check_completed_at":null}')"
+NOW=250000; probe_once >/dev/null
+NOW=250600; probe_once >/dev/null
+NOW=251200; probe_once >/dev/null
+if [[ "$(posts)" == "0" ]]; then
+	pass "T12 W-1 briefly in flight → quiet"
+else
+	fail "T12 short in-flight pass paged: posts=$(cat "$POSTS")"
+fi
+
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH_JSON="$(v2_manifest '{"freshness":"in_flight","in_flight_age_ms":1800000,"last_check_completed_at":null}')"
+NOW=260000; probe_once >/dev/null
+NOW=260600; probe_once >/dev/null
+NOW=261200; probe_once >/dev/null
+if [[ "$(posts)" == "1" ]] && grep -q "W-1" "$POSTS" && grep -q "🚨" "$POSTS"; then
+	pass "T12 hung W-1 owner → degraded page (no false fresh)"
+else
+	fail "T12 hung W-1 owner stayed green: posts=$(cat "$POSTS")"
+fi
+
+# …and a new generation completing resolves the episode exactly once.
+NOW=261800
+HEALTH_JSON="$(v2_manifest '{}')"
+probe_once >/dev/null
+NOW=262400; probe_once >/dev/null
+if [[ "$(posts)" == "2" ]] && tail -1 "$POSTS" | grep -q "恢复" \
+	&& jq -e '.degraded.escalated == false and .degraded.count == 0' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+	pass "T12 new W-1 generation completing → one all-clear"
+else
+	fail "T12 W-1 recovery posts=$(posts) content=$(cat "$POSTS")"
 fi
 
 echo ""

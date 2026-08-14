@@ -229,7 +229,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Evidence 5 — why the watchdog fired and nobody heard it. Counts are derived,
+# Evidence 5 — why the alert fired and nobody heard it. Counts are derived,
 # never asserted: the incident text says "16 times", and confirming that number
 # is part of the evidence, not an input to it.
 # ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ fi
 		fi
 	done
 } > "$OUT_DIR/06-alert-path.txt" 2>&1
-note "evidence 5 -> 06-alert-path.txt  (partial: /health.watchdogs needs a live Bridge — see NOTE below)"
+note "evidence 5 -> 06-alert-path.txt  (partial: /health liveness manifest needs a live Bridge — see NOTE below)"
 
 # ---------------------------------------------------------------------------
 # Evidence 6 — the frozen question cohort. Without this, the "7 recoverable /
@@ -287,7 +287,7 @@ note "evidence 6 -> 07-question-cohort.txt"
 
 note ""
 note "NOTE — what this capture does NOT contain:"
-note "  * /health.watchdogs requires a LIVE Bridge; capture it separately before the stop."
+note "  * the /health liveness manifest ((.liveness // .watchdogs) — FLY-1560 renamed the key) requires a LIVE Bridge; capture it separately before the stop."
 note "  * Discord-side receipts are not reachable from this host and are not faked here."
 note "Both gaps are written down rather than silently omitted, so a reader can tell"
 note "'not captured' from 'captured and empty'."

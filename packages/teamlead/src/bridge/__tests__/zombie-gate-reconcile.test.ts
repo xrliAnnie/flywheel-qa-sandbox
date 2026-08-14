@@ -1,6 +1,6 @@
 /**
  * FLY-1099 §5 + §7.2 — zombie gate hygiene (Z1 three-phase guarded retire /
- * Z2 active-but-unreachable) and the founder-reply watchdog (episode-salted
+ * Z2 active-but-unreachable) and the founder-reply reconcile (episode-salted
  * eventIds under a PERMANENT claims.db-style dedup, same-episode latching,
  * hang detection while `polling` is stuck).
  */
@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
-import { FounderReplyWatchdog } from "../founder-reply-watchdog.js";
+import { FounderReplyUnreachableReconcile } from "../founder-reply-unreachable.js";
 import { GatePoller } from "../gate-poller.js";
 import { defaultGetCommDbPath } from "../session-capture.js";
 import {
@@ -21,7 +21,7 @@ import {
 } from "../zombie-gate-hygiene.js";
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG;
+	delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
 	vi.restoreAllMocks();
 });
@@ -352,7 +352,7 @@ describe("zombie gate hygiene — FLY-1257 defect ④ (R5): review gates never r
 			noteUnreachableRunner: note,
 		});
 		// Z2 (alert) runs before the exemption: a genuinely stuck review gate is
-		// reported to the watchdog, not silently swallowed.
+		// reported to the reconcile, not silently swallowed.
 		expect(res.unreachable).toEqual(["Q-review"]);
 		expect(note).toHaveBeenCalled();
 		expect(retireQuestionGuarded).not.toHaveBeenCalled();
@@ -468,7 +468,7 @@ describe("zombie gate hygiene — R2 #4 outcome re-read (false ≠ answered)", (
 	});
 });
 
-describe("FounderReplyWatchdog — unreachable-runner detector", () => {
+describe("FounderReplyUnreachableReconcile — unreachable-runner detector", () => {
 	function wd(now = 0) {
 		// Permanent claims.db-style dedup: the sink remembers every eventId forever.
 		const seenEventIds = new Set<string>();
@@ -482,13 +482,13 @@ describe("FounderReplyWatchdog — unreachable-runner detector", () => {
 			}),
 		};
 		const clock = { now };
-		const watchdog = new FounderReplyWatchdog({
+		const reconcile = new FounderReplyUnreachableReconcile({
 			alertSink: alertSink as never,
 			infraRoute: () => ({ leadId: "infra-lead", projectName: "flywheel" }),
 			nowMs: () => clock.now,
 		});
 		return {
-			watchdog,
+			reconcile,
 			posted,
 			alertSink,
 			clock,
@@ -496,48 +496,48 @@ describe("FounderReplyWatchdog — unreachable-runner detector", () => {
 	}
 
 	it("unreachable-runner (Z2): one alert per episode; sweep-clear ends the episode; re-detection re-alerts with a NEW salt", async () => {
-		const { watchdog, posted, clock } = wd();
+		const { reconcile, posted, clock } = wd();
 		const detect = () => {
-			watchdog.beginUnreachableSweep();
-			watchdog.noteUnreachableRunner({
+			reconcile.beginUnreachableSweep();
+			reconcile.noteUnreachableRunner({
 				executionId: "E-9",
 				issueId: "FLY-1049",
 				projectName: "proj",
 				questionId: "Q-9",
 			});
-			watchdog.endUnreachableSweep();
+			reconcile.endUnreachableSweep();
 		};
 		clock.now = 0;
 		detect();
-		await watchdog.tick();
+		await reconcile.tick();
 		detect(); // still unreachable — same episode, already alerted
-		await watchdog.tick();
+		await reconcile.tick();
 		expect(
 			posted.filter((e) => e.startsWith("founder-reply-unreachable-E-9")),
 		).toHaveLength(1);
 		// condition clears → episode ends → later re-detection = NEW episode salt
-		watchdog.beginUnreachableSweep();
-		watchdog.endUnreachableSweep();
+		reconcile.beginUnreachableSweep();
+		reconcile.endUnreachableSweep();
 		clock.now = 5000;
 		detect();
-		await watchdog.tick();
+		await reconcile.tick();
 		expect(
 			posted.filter((e) => e.startsWith("founder-reply-unreachable-E-9")),
 		).toHaveLength(2);
 	});
 
-	it("kill-switch FLYWHEEL_FOUNDER_REPLY_WATCHDOG=0 keeps the detector inert", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
-		const { watchdog, posted } = wd();
-		watchdog.beginUnreachableSweep();
-		watchdog.noteUnreachableRunner({
+	it("kill-switch FLYWHEEL_FOUNDER_REPLY_UNREACHABLE=0 keeps the detector inert", async () => {
+		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
+		const { reconcile, posted } = wd();
+		reconcile.beginUnreachableSweep();
+		reconcile.noteUnreachableRunner({
 			executionId: "E-9",
 			issueId: "FLY-1049",
 			projectName: "proj",
 			questionId: "Q-9",
 		});
-		watchdog.endUnreachableSweep();
-		await watchdog.tick();
+		reconcile.endUnreachableSweep();
+		await reconcile.tick();
 		expect(posted).toHaveLength(0);
 	});
 });
@@ -587,7 +587,7 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 
 describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate set still reconciles dangling intents", () => {
 	it("formal retirement leaves dangling legacy intent untouched and never touches the tracked gate", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_WATCHDOG = "0";
+		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
 		const originalHome = process.env.HOME;
 		const tmpHome = join(
 			tmpdir(),

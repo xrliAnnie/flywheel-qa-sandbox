@@ -32,7 +32,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { selectNextAccount } from "../account-heal/account-store.js";
 import { parseModelCap } from "../account-heal/model-cap.js";
 import { detectRunnerQuotaCap } from "../account-heal/runner-quota-detector.js";
-import { isTransientThrottlePane } from "../LeadWatchdog.js";
+import { isTransientThrottlePane } from "../bridge/pane-blocked-classifier.js";
 
 const FIXTURES = join(__dirname, "fixtures", "lead-panes");
 const loadPane = (name: string) => readFileSync(join(FIXTURES, name), "utf8");

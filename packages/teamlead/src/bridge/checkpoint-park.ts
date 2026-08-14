@@ -1,5 +1,5 @@
 /**
- * FLY-927 (Task 3.1, Watchdog v2): the checkpoint-park TUPLE — the truthful
+ * FLY-927 (Task 3.1): the checkpoint-park TUPLE — the truthful
  * answer to "where is this session stopped, and whose ball is it?".
  *
  * FLY-912 root cause: the old alert GUESSED the stage from heuristics and

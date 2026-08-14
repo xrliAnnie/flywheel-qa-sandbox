@@ -115,7 +115,7 @@ All 6 scenarios PASS (S4 deferred to unit test due to :memory: DB). See `doc/qa/
 - Real Runner populated `pr_number`, `status=awaiting_review`, `session_stage=completed` correctly in the `sessions` table.
 - Bridge `DirectEventSink.pushNotification` + `EventFilter` correctly classified `session_completed` with `priority=high`, `updateForum=true`.
 - `land-status.json` at `.flywheel/runs/<exec_id>/land-status.json` is the Runner's ready-to-merge signal.
-- `IdleWatchdog` emits `runner_idle_detected` after 90s stall — expected cadence, not a bug.
+- `runner_idle_detected` is retired (FLY-1560 removed the idle detector) — a new row means something re-introduced it.
 
 ### Round 2 verdict
 **API-level PASS** — GEO-362 (empty payload) + GEO-363 (event never fires) both confirmed fixed end-to-end with real Runner. **Product-level deferred to Round 3** after v1.24.2 unlocks Discord + auto-merge gaps. Report: `doc/qa/reports/v1.24.0-FLY-108-round2-qa-report.md`.

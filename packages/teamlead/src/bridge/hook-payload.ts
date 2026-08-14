@@ -118,7 +118,7 @@ export interface HookPayload {
 	chat_thread_id?: string;
 
 	// FLY-1048 (A5): detection_suspicious fields — the fail-suspicious
-	// contract. The mechanical watchdog layer could not conclude a/b/c; the
+	// contract. The mechanical detection layer could not conclude a/b/c; the
 	// owner Lead gets a QUIET report instead of silence.
 	/** "runner" | "lead" — what kind of target the report is about. */
 	detection_target_kind?: string;
@@ -505,7 +505,7 @@ export function formatDetectionEscalation(
 		...(e.waited_ms == null
 			? []
 			: [`Waited: ${formatDurationMs(e.waited_ms)}`]),
-		`[ESCALATION] Watchdog detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
+		`[ESCALATION] Detected: ${e.escalation_kind ?? "?"} — you are the first responder (PRD §4.5):`,
 		"---",
 		e.escalation_reason ?? "(no reason captured)",
 		"---",
@@ -523,7 +523,7 @@ export function formatDetectionSuspicious(
 	const lines = [
 		`[Event #${env.seq}] detection_suspicious`,
 		`Target: ${e.detection_target_kind ?? "?"} ${e.detection_target_key ?? "—"} | Project: ${e.project_name ?? "—"}`,
-		"[SUSPICIOUS] Watchdog quiet FYI — mechanical detection could not conclude working/parked/stuck:",
+		"[SUSPICIOUS] Quiet FYI — mechanical detection could not conclude working/parked/stuck:",
 		"---",
 		e.suspicious_reason ?? "(no reason captured)",
 		"---",

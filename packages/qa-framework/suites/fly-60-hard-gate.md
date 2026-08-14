@@ -226,7 +226,7 @@ git -C "$HOST_REPO" branch | grep -q "$BRANCH_NAME" || { echo "stale branch plan
 
 ## Scenario V3 — FLY-83 Lead Daemon Stuck → Claims/Events Written
 
-**G coverage**: regression for FLY-83 (LeadWatchdog detects stuck Lead and writes claims + events)
+**G coverage**: regression for FLY-83 (the Lead-pane alert path writes claims + events; FLY-1560 moved the in-Bridge pane loop out, lead-alert.sh remains)
 
 **Scope narrowed**: `scripts/test-deploy.sh` builds `FLYWHEEL_PROJECTS` with `chatChannel`, `botTokenEnv`, optional `forumChannel` — **but NOT** `alertChannel` or `alertFallbackToCore`. So `LeadAlertNotifier.resolveChannel()` (`packages/teamlead/src/LeadAlertNotifier.ts:103-112,346-355`) skips the Discord channel push and falls back to writing `~/.flywheel/alert-queue/*.json` files. Discord channel verification is deferred to a follow-up issue (see Known Limitations).
 
@@ -238,7 +238,7 @@ PROJECT_NAME=$(jq -r .projectName "$SLOT_JSON")
 LEAD_WINDOW_NAME="${PROJECT_NAME}-${LEAD_ID}"
 LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' | awk -v want="$LEAD_WINDOW_NAME" '$2==want {print $1}')
 tmux send-keys -t "$LEAD_WINDOW_ID" 'rate_limit reached — claude is paused' Enter
-# Then DO NOT send any further keys for ≥60s (≥2 watchdog cycles, each 30s)
+# Then DO NOT send any further keys for ≥60s (≥2 alert cycles, each 30s)
 ```
 
 **Trigger backup** (idle-detection — only Claude child, NEVER supervisor):
@@ -256,7 +256,7 @@ CLAUDE_PID=$(pgrep -P "$PANE_PID" claude || ps -o pid,command -A | awk '/claude 
    WHERE lead_id='$LEAD_ID'
    ORDER BY claimed_at DESC LIMIT 1;
    ```
-2. New `lead_events` row in StateStore (watchdog event)
+2. New `lead_events` row in StateStore (Lead alert event)
 3. (Optional) New JSON file under `~/.flywheel/alert-queue/`:
    ```bash
    ls -lt ~/.flywheel/alert-queue/*.json | head -3

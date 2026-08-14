@@ -1,18 +1,17 @@
 /**
- * FLY-10: Runner terminal status detection — four-state model + 45s stall watchdog.
+ * FLY-10: Runner terminal status detection — capture plus a four-state heuristic.
  *
  * Heuristic logic copied from packages/terminal-mcp/src/status.ts (not imported
  * to avoid Bridge depending on an MCP server package — layer violation).
  * Both copies evolve independently until the heuristic stabilises.
  *
  * Four states:
- *   executing — tmux alive, Claude Code process active, output changing
- *   waiting   — tmux alive, Claude Code present but waiting for input / stalled 45s
+ *   executing — tmux alive, Claude Code process active
+ *   waiting   — tmux alive, Claude Code present but waiting for input
  *   idle      — tmux alive but no Claude Code process (bare shell prompt)
  *   unknown   — tmux session unreachable or doesn't exist
  */
 
-import { createHash } from "node:crypto";
 import type { CaptureError, CaptureResult } from "./session-capture.js";
 import { isCaptureError } from "./session-capture.js";
 
@@ -23,8 +22,6 @@ export type RunnerStatus = "executing" | "waiting" | "idle" | "unknown";
 export interface StatusResult {
 	status: RunnerStatus;
 	reason: string;
-	/** Seconds since terminal output last changed (only when stall watchdog active) */
-	stale_seconds?: number;
 }
 
 // ── Heuristic patterns (from terminal-mcp/src/status.ts) ──
@@ -98,97 +95,7 @@ export function detectTerminalStatus(output: string): {
 	return { status: "executing", reason: "no prompt or wait signal detected" };
 }
 
-// ── Stall watchdog (45s) ──
-
-const STALL_THRESHOLD_MS = 45_000;
-
-interface StallEntry {
-	fingerprint: string;
-	lastChangedAt: number; // Date.now()
-}
-
-/** In-memory cache keyed by executionId. Evicted after 1h of no updates. */
-const stallCache = new Map<string, StallEntry>();
-const EVICTION_MS = 3_600_000;
-
-function fingerprint(output: string): string {
-	return createHash("sha256").update(output).digest("hex").slice(0, 16);
-}
-
-/**
- * Apply 45s stall watchdog: if terminal output hasn't changed for 45s,
- * downgrade "executing" → "waiting" (likely stuck on interactive input).
- *
- * @param executionId - unique session key for the cache
- * @param output - raw terminal output
- * @param raw - result from detectTerminalStatus()
- * @param now - injectable clock for testing
- */
-export function applyStallWatchdog(
-	executionId: string,
-	output: string,
-	raw: { status: Exclude<RunnerStatus, "unknown">; reason: string },
-	now: number = Date.now(),
-): StatusResult {
-	// Only apply stall logic to "executing" state
-	if (raw.status !== "executing") {
-		// Update cache anyway so next "executing" gets a fresh baseline
-		stallCache.set(executionId, {
-			fingerprint: fingerprint(output),
-			lastChangedAt: now,
-		});
-		return raw;
-	}
-
-	const fp = fingerprint(output);
-	const entry = stallCache.get(executionId);
-
-	if (!entry || entry.fingerprint !== fp) {
-		// Output changed — reset timer
-		stallCache.set(executionId, { fingerprint: fp, lastChangedAt: now });
-		return raw;
-	}
-
-	// Output unchanged — check how long
-	const staleSec = Math.round((now - entry.lastChangedAt) / 1000);
-
-	if (now - entry.lastChangedAt >= STALL_THRESHOLD_MS) {
-		return {
-			status: "waiting",
-			reason: `stall watchdog: output unchanged for ${staleSec}s`,
-			stale_seconds: staleSec,
-		};
-	}
-
-	return raw;
-}
-
-/**
- * Evict stale entries from the stall cache.
- * Call periodically (e.g. from a setInterval) to prevent unbounded growth.
- */
-export function evictStaleEntries(now: number = Date.now()): number {
-	let evicted = 0;
-	for (const [key, entry] of stallCache) {
-		if (now - entry.lastChangedAt > EVICTION_MS) {
-			stallCache.delete(key);
-			evicted++;
-		}
-	}
-	return evicted;
-}
-
-/** Clear entire stall cache (for tests). */
-export function clearStallCache(): void {
-	stallCache.clear();
-}
-
-/** Get stall cache size (for tests/diagnostics). */
-export function stallCacheSize(): number {
-	return stallCache.size;
-}
-
-// ── Composed status query (capture → heuristic → stall watchdog) ──
+// ── Composed status query (capture → heuristic) ──
 
 type CaptureFn = (
 	executionId: string,
@@ -202,8 +109,9 @@ export interface StatusQueryResult {
 	captureErrorStatus?: number;
 	/**
 	 * FLY-195: raw captured terminal output when the capture succeeded.
-	 * Lets the stuck-runner detector reuse the SAME capture as the idle
-	 * watchdog (one tmux capture-pane per session per poll, not two).
+	 * Both original consumers (the stuck-runner detector and the runner idle
+	 * scan) were removed in FLY-1570/FLY-1560; the field stays so a caller can
+	 * reuse one capture instead of taking a second capture-pane of its own.
 	 */
 	output?: string;
 }
@@ -212,25 +120,18 @@ export interface StatusQueryResult {
  * Create a status query function that composes:
  *   1. tmux capture (via captureSessionFn)
  *   2. heuristic detection (detectTerminalStatus)
- *   3. stall watchdog (applyStallWatchdog)
  *
  * Returns "unknown" only for tmux-unreachable (502).
  * For other CaptureErrors (400 bad project, 404 missing DB/session), propagates the error
  * via captureErrorStatus so the endpoint can return the correct HTTP status.
  *
- * Starts a periodic eviction timer (every 10 min) to prevent unbounded cache growth.
  */
 export function createStatusQuery(captureSessionFn: CaptureFn): {
 	query: (
 		executionId: string,
 		projectName: string,
 	) => Promise<StatusQueryResult>;
-	/** Call to stop the eviction timer (for graceful shutdown / tests). */
-	stopEviction: () => void;
 } {
-	const evictionTimer = setInterval(() => evictStaleEntries(), 600_000);
-	evictionTimer.unref(); // don't keep process alive
-
 	const query = async (
 		executionId: string,
 		projectName: string,
@@ -257,10 +158,10 @@ export function createStatusQuery(captureSessionFn: CaptureFn): {
 
 		const raw = detectTerminalStatus(capture.output);
 		return {
-			result: applyStallWatchdog(executionId, capture.output, raw),
+			result: raw,
 			output: capture.output,
 		};
 	};
 
-	return { query, stopEviction: () => clearInterval(evictionTimer) };
+	return { query };
 }

@@ -6,7 +6,7 @@
  * runner rescue detection (C8) survive CLI message-format changes:
  *
  *   Layer 1 — fixed pattern (primary, cheap): regex token table. Mirrors +
- *     extends the LeadWatchdog `BLOCKED_KEYWORDS` shapes (that table stays the
+ *     extends the `BLOCKED_KEYWORDS` shapes in pane-blocked-classifier (that table stays the
  *     authority for LEAD pane classification; this one adds the runner
  *     "kicked-out" auth variants — Invalid API key / please run /login — the lead
  *     path never needs). The exact runner tokens are finalised from a real
