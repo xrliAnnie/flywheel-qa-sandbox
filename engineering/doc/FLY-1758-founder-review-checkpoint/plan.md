@@ -1,8 +1,8 @@
 # FLY-1758 产品线互动回合:founder_review checkpoint — 实施计划
 
 Issue: FLY-1758 (https://linear.app/geoforge3d/issue/FLY-1758/产品线互动回合-阶段性产出必须先经-founder-review-才准继续-新-founder-review-checkpoint复用)
-日期: 2026-08-14(R1..R5 修订:读取面 archive-aware(72h 归档不灭 pass)、marker per-project 点查定位契约)
-基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M)+ R4(1B+1H)+ R5(1B+1H),全部采纳
+日期: 2026-08-14(R1..R6 修订:archive 读取加两段索引 locator(binding.run_id + mailbox_log.subject_id),拒绝 row_json 全扫)
+基于: research.md + Codex design review R1(5B+2H+1M)+ R2(2B+3H+1M)+ R3(1B+1H+1M)+ R4(1B+1H)+ R5(1B+1H)+ R6(1H),全部采纳
 
 ## 0. 一句话
 
@@ -67,6 +67,12 @@ sequenceDiagram
 **包边界(R2 M6)**:`flywheel-comm` 不依赖 teamlead —— 谓词做成 comm 包里的**纯判定函数 + 窄接口**(`FounderReviewStateReader` / artifact reader);Bridge 侧用 StateStore adapter、CLI 侧用 readonly SQLite adapter 实现同一接口,**两个 adapter 跑同一组 contract tests**(snapshot 缺失/跨 run/digest 漂移必须给出一致结果),杜绝各调用点各自重写查询造成第二套判定。
 
 **读取面必须 archive-aware(R5 B1 —— pass 是 run 生命周期内的授权事实,不是 72h 内的)**:现有 `getResponse()` 只查 live `mailbox_message_projection`;response TTL 72h、terminal family 默认 72h 归档后 live 行被删、只在 append-only `mailbox_log.row_json` 留 snapshot —— 若只读 live 面,pass 超过归档期后 complete/land/finalization/marker reconcile 全部误判 missing。`FounderReviewStateReader` 的契约明确为 **live + archived 合并的精确读取面**(复用现有 `mailbox_identity`/`mailbox_log`,零新送达设施):合并 live/archived question family、按统一 server insert order 选本 run 最新有效 round、**对 archived response 重新执行 owner/checkpoint/founder attribution/digest 全套校验**;archive snapshot 缺失/损坏 = fail-closed。**强制归档测试**:pass → ACK family → 推进 >72h + 跑 archive sweep → completion / managed land / 2b′-a/b/c / marker reconcile 仍读到同一 verdict;archived pass + 更新的 live pending/rejected 仍被新 round 阻断。
+
+**archive 读取的索引定位路径(R6 H1 —— 绝不接受 `row_json` 无界扫描;reader 被 3 秒 GatePoller rider 反复调用)**:两段 locator,零新表:
+- ① `founder_review_card_binding`(§3.3 新表)加 `run_id` 索引 —— 用其永久的 `(run_id, question_id)` 关系**枚举**本 run 已送达/可回答的 archived rounds;live CommDB 合并尚未绑定的 pending round。
+- ② **归档 family 时把现有 `mailbox_log.subject_id` 填为 root questionId**(现 `archiveFamily()` 只填 message_id/at/row_json,该列空置)—— 复用已有 `mailbox_log_subject` 索引按 questionId **精确取** question+response snapshots。
+- FLY-1758 上线前不存在历史 founder_review archive → 无需 backfill;缺失 subject/binding、重复 family = fail-closed。
+- schema/contract 测试:archive 后 family 全员 `subject_id == questionId`;run locator 命中 archived+live 混合 rounds;灌入大量无关 archive 行后查询仍走指定索引(不退化全扫)。
 
 ## 3. 核心数据设计(R1 B2/B3 修订)
 
