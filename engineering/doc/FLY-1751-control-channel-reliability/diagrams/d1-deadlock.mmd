@@ -1,0 +1,10 @@
+flowchart TD
+    A["Lead 正常干活中<br/>3 个批已投进当前对话现场"] --> B["/clear 换代<br/>(清空对话,换一个全新现场)"]
+    B --> C["旧现场消失<br/>3 个批永远等不到签收"]
+    C --> D["在途位(同时允许的未签收批数,上限恰 3)<br/>被死批全部占满"]
+    D --> E["Bridge 按协议停止投递新批<br/>队列整体冻结"]
+    E --> F["founder 之后发的消息全堵在队列里<br/>她看到的现象:Lead 聋了"]
+    classDef bad fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    classDef norm fill:#ffffff,stroke:#86868b,color:#1d1d1f
+    class A,B norm
+    class C,D,E,F bad
