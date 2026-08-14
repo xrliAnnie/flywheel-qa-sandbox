@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 5/5
-updated: 2026-08-10T07:57:26.297Z
-nextStep: commit HIGH-finding plan corrections and request a new design review
+phaseCursor: 1/5
+updated: 2026-08-14T16:07:32.573Z
+nextStep: refresh design.md/plan.md with branch-hygiene precondition
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (5/5)
-**next**: commit HIGH-finding plan corrections and request a new design review
+**phase**: design (1/5)
+**next**: refresh design.md/plan.md with branch-hygiene precondition
