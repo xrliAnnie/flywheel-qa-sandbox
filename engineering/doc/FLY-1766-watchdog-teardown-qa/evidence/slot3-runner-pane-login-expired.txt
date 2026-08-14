@@ -1,0 +1,34 @@
+     1766/engineering/doc/FLY-1766-qa-pr838-regression/progress.md
+     Stage: implement
+
+⏺ Bash(node $FLYWHEEL_COMM_CLI progress --exec-id f846257a-c429-4591-8911-0c817dbd315e --file
+      engineering/doc/FLY-1766-qa-pr838-regression/progress.md --phase qa --cur…)
+  ⎿  [progress] --phase qa contradicts the authoritative stage implement (phase implement); re
+     fusing
+
+⏺ Bash(node $FLYWHEEL_COMM_CLI progress --exec-id f846257a-c429-4591-8911-0c817dbd315e --file
+      engineering/doc/FLY-1766-qa-pr838-regression/progress.md --phase implemen…)
+  ⎿  [progress] updated engineering/doc/FLY-1766-qa-pr838-regression/progress.md
+
+⏺ Ledger 落地。开始 S1(守卫真实性)。先读前一轮遗留的 4 个探针测试(小文件,判断可否复用于 S3)。
+
+  Reading 1 file… (ctrl+o to expand)
+  ⎿  /private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1766/55c8e26c-0df5-4b4b-87e3-2e869a
+     ba3b6f/scratchpad/frozen-838/packages/teamlead/src/bridge/__tests__/qa1766-rider-replay.test.t
+     s
+
+✳ 验证残留守卫真实性… (6m 33s · ↓ 22.8k tokens · thinking with xhigh effort)
+  ⎿  ◼ S1 残留守卫真实性:守卫自跑 + 阳性对照 + grep 豁免清单逐条核对
+     ◻ S2 探针双读:真 producer v2 + legacy v1 + degraded 路径 + 30/30 套件
+     ◻ S3 rider 锚点:50-tick 重放验首个装配 tick 定锚 + rider 五组测试
+     ◻ S4 回归面:对照 design.md 逐删除项验「去处或判死」
+     ◻ S5 套件与门:fly1674 53/53 + 定向回归 + CI@最终 head 绑定确认
+      … +2 pending
+
+─────────────────────────────────────────────────────────────────────────────── @runner-f846257a ──
+❯ API Error 401: Your session has expired. Please run /login to sign in again.
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  Fable 5/xhigh | 👤xrliannie@gmail.com | /private/tmp/flywheel-test-slot-3/project-slot-3-FLY-1…
+  5h ���������� 15% reset today 14:19  |  7d ���������� 31% reset Thu 22:59  |  Fable ����������…
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+
