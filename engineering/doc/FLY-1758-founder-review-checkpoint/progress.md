@@ -1,13 +1,13 @@
 ---
 issue: FLY-1758
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-14T06:32:58.663Z
-nextStep: codebase audit (3 explore agents in flight) → exploration.md
+phaseCursor: 2/6
+updated: 2026-08-14T06:34:57.256Z
+nextStep: await 3 explore agents → research.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-1758 progress
-**phase**: design (1/6)
-**next**: codebase audit (3 explore agents in flight) → exploration.md
+**phase**: design (2/6)
+**next**: await 3 explore agents → research.md
