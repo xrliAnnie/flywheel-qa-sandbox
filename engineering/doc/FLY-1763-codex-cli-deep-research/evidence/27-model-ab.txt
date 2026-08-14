@@ -1,0 +1,13 @@
+=== 3-arm A/B, same auth, same minute ===
+--- model=gpt-5.6-sol ---
+"type":"agent_message","text":"OK"
+"text":"OK"
+--- model=o3-deep-research ---
+"type":"error","message":"Model metadata for `o3-deep-research` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'o3-deep-research' model is not supported when using Codex with a ChatGPT account.\"
+--- model=totally-not-a-real-model-xyz ---
+"type":"error","message":"Model metadata for `totally-not-a-real-model-xyz` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+"type":"error","message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'totally-not-a-real-model-xyz' model is not supported when using Codex with a ChatGPT account.\"
+--- model=gpt-5.6-sol ---
+"type":"agent_message","text":"OK"
+"text":"OK"

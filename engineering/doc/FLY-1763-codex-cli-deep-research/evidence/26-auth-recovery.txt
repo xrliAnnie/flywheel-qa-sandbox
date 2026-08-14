@@ -1,0 +1,9 @@
+=== restore to freshest known-good (business, saved 01:53) ===
+Switched to profile 'business'
+=== verify ===
+{"type":"thread.started","thread_id":"019ffdf9-fd4e-7140-9368-64abb55274e7"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"RESTORED"}}
+{"type":"turn.completed","usage":{"input_tokens":19229,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":7,"reasoning_output_tokens":0}}
+=== active ===
+* business

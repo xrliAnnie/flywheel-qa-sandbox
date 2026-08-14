@@ -1,0 +1,47 @@
+=== ~/.codex/skills ===
+total 0
+drwxr-xr-x@ 43 xiaorongli  staff  1376 Aug 12 23:40 .
+drwxr-xr-x@ 55 xiaorongli  staff  1760 Aug 13 18:43 ..
+drwx------   9 xiaorongli  staff   288 Aug 12 23:40 .system
+lrwxr-xr-x   1 xiaorongli  staff    56 Jul 29 00:44 analyzing-user-feedback -> /Users/xiaorongli/.agents/skills/analyzing-user-feedback
+lrwxr-xr-x   1 xiaorongli  staff    46 Jul 29 00:44 chrome-repair -> /Users/xiaorongli/.agents/skills/chrome-repair
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:16 cloudflare-deploy
+lrwxr-xr-x   1 xiaorongli  staff    53 Jul 29 00:44 competitive-analysis -> /Users/xiaorongli/.agents/skills/competitive-analysis
+lrwxr-xr-x   1 xiaorongli  staff    46 Jul 29 00:44 deep-research -> /Users/xiaorongli/.agents/skills/deep-research
+lrwxr-xr-x   1 xiaorongli  staff    56 Jul 29 00:44 defining-product-vision -> /Users/xiaorongli/.agents/skills/defining-product-vision
+lrwxr-xr-x   1 xiaorongli  staff    43 Jul 29 00:44 dogfooding -> /Users/xiaorongli/.agents/skills/dogfooding
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:16 figma
+drwxr-xr-x@  6 xiaorongli  staff   192 Mar 10 19:16 figma-implement-design
+lrwxr-xr-x   1 xiaorongli  staff    46 Jul 29 00:44 flywheel-land -> /Users/xiaorongli/.agents/skills/flywheel-land
+lrwxr-xr-x   1 xiaorongli  staff    54 Jul 29 00:44 founder-html-delivery -> /Users/xiaorongli/.agents/skills/founder-html-delivery
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:16 gh-address-comments
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:16 gh-fix-ci
+drwxr-xr-x@  8 xiaorongli  staff   256 Mar 10 19:16 jupyter-notebook
+drwxr-xr-x@  6 xiaorongli  staff   192 Mar 10 19:16 linear
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:20 netlify-deploy
+lrwxr-xr-x   1 xiaorongli  staff    39 Jul 29 00:44 notion -> /Users/xiaorongli/.agents/skills/notion
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:16 openai-docs
+drwxr-xr-x@  6 xiaorongli  staff   192 Mar 10 19:16 pdf
+drwxr-xr-x@  9 xiaorongli  staff   288 Mar 10 19:16 playwright
+lrwxr-xr-x   1 xiaorongli  staff    53 Jul 29 00:44 prioritizing-roadmap -> /Users/xiaorongli/.agents/skills/prioritizing-roadmap
+lrwxr-xr-x   1 xiaorongli  staff    51 Jul 29 00:44 problem-definition -> /Users/xiaorongli/.agents/skills/problem-definition
+lrwxr-xr-x   1 xiaorongli  staff    54 Jul 29 00:44 product-brainstorming -> /Users/xiaorongli/.agents/skills/product-brainstorming
+lrwxr-xr-x   1 xiaorongli  staff    56 Jul 29 00:44 product-taste-intuition -> /Users/xiaorongli/.agents/skills/product-taste-intuition
+drwxr-xr-x@  7 xiaorongli  staff   224 Mar 10 19:20 render-deploy
+lrwxr-xr-x   1 xiaorongli  staff    48 Jul 29 00:44 scoping-cutting -> /Users/xiaorongli/.agents/skills/scoping-cutting
+
+=== find deep-research skill dirs on machine ===
+/Users/xiaorongli/.claude/skills/deep-research
+/Users/xiaorongli/.codex/skills/deep-research
+
+=== marketplace/bundled skills ===
+/Users/xiaorongli/.codex/skills
+/Users/xiaorongli/.codex/vendor_imports/skills
+/Users/xiaorongli/.codex/superpowers/skills
+/Users/xiaorongli/.codex/memories/skills
+/Users/xiaorongli/.codex/profiles/business/skills
+/Users/xiaorongli/.codex/profiles/personal1/skills
+/Users/xiaorongli/.codex/profiles/school/skills
+/Users/xiaorongli/.codex/profiles/personal/skills
+/Users/xiaorongli/.codex/vendor_imports/skills/skills
+/Users/xiaorongli/.codex/.tmp/plugins/.agents/skills

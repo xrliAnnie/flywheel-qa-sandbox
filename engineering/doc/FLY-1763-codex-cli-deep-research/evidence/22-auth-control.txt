@@ -1,0 +1,14 @@
+=== current profile ===
+  business
+  personal
+  personal1
+  personal2
+* school
+
+=== CONTROL: known-good model, same flags ===
+[codex-with-fallback] Retrying with next profile...
+Reading additional input from stdin...
+{"type":"thread.started","thread_id":"019ffdf7-7af1-7670-9565-d477643e2e30"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}
+{"type":"turn.completed","usage":{"input_tokens":19237,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

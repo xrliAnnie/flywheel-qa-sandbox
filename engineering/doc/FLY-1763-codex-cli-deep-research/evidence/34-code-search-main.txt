@@ -1,0 +1,15 @@
+=== GitHub code search on openai/codex (default branch = 最新 main) ===
+--- deep_research ---
+--- deep-research ---
+openai/codex:codex-rs/external-agent-migration/src/service_tests/general/detection.rs: format!("---\nname: researcher\ndescription: Research role\npermissionMode: acceptEdits\nskills: [deep-research]\ntools: Bash, Read\ndisallowedTools: WebFetch\neffort: high\n---\nResearch with {SOURCE_EXTERNAL_AGENT_PRODUCT_NAME} carefully.\n"),
+--- 阳性对照: web_search_mode (必须有命中) ---
+openai/codex:codex-rs/core/src/session/review.rs: let review_web_search_mode = WebSearchMode::Disabled;
+openai/codex:codex-rs/core/src/session/review.rs: if let Err(err) = per_turn_config.web_search_mode.set(review_web_search_mode) {
+openai/codex:codex-rs/core/src/session/review.rs: let fallback_value = per_turn_config.web_search_mode.value();
+openai/codex:codex-rs/core/src/tools/hosted_spec.rs: pub web_search_mode: Option<WebSearchMode>,
+openai/codex:codex-rs/core/src/tools/hosted_spec.rs: let (external_web_access, indexed_web_access) = match options.web_search_mode {
+openai/codex:codex-rs/ext/web-search/src/extension.rs: let web_search_mode = config.web_search_mode.value();
+openai/codex:codex-rs/tui/src/debug_config.rs: requirements.web_search_mode.source.as_ref(),
+openai/codex:codex-rs/tui/src/debug_config.rs: web_search_mode: ConstrainedWithSource::new(
+openai/codex:codex-rs/core/src/session/turn_context.rs: let resolved_web_search_mode = resolve_web_search_mode_for_turn(
+openai/codex:codex-rs/core/src/session/turn_context.rs: &per_turn_config.web_search_mode,

@@ -1,0 +1,43 @@
+=== codex login --help ===
+Manage login
+
+Usage: codex login [OPTIONS] [COMMAND]
+
+Commands:
+  status  Show login status
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+      --with-api-key
+          Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)
+
+  -c, --config <key=value>
+          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`.
+          Use a dotted path (`foo.bar.baz`) to override nested values. The `value` portion is parsed
+          as TOML. If it fails to parse as TOML, the raw string is used as a literal.
+          
+          Examples: - `-c model="o3"` - `-c 'sandbox_permissions=["disk-full-read-access"]'` - `-c
+          shell_environment_policy.inherit=all`
+
+      --with-access-token
+          Read the access token from stdin (e.g. `printenv CODEX_ACCESS_TOKEN | codex login
+          --with-access-token`)
+
+      --enable <FEATURE>
+          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
+
+      --device-auth
+          
+
+
+=== model_provider / api key strings ===
+   1 ForcedLoginMethodapi
+   2 ForcedLoginMethodchatgptapi
+   1 ForcedLoginMethodchatgptapicountryregion
+   1 ForcedLoginMethodchatgptapicountryregiontimezoneguardian
+   1 ForcedLoginMethodchatgptapiregion
+  22 OPENAI_API_KEY
+  39 model_provider
+   1 model_provider_idpermission_profileactive_permission_profilereasoning_summarycollaboration_modedenied_domainstransparent_background
+   1 model_provider_idreasoning_summary
+   1 model_provider_idruntime_workspace_rootsinstruction_source_pathsmessage_historynetwork_proxy

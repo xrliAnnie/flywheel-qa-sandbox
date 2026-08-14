@@ -1,0 +1,14 @@
+=== before: live vs saved business ===
+ad7f0b0644dd2a37c8a83950af3f84e8
+1bf139bf5e1c8707b0933c8c20f8c820
+06b40fb13d302f67fb66e86c80d2ac8f
+
+=== save business (persist refreshed token) ===
+Saved current auth as profile 'business'
+=== restore school (pre-session state) ===
+Switched to profile 'school'
+
+=== after ===
+* school
+06b40fb13d302f67fb66e86c80d2ac8f
+06b40fb13d302f67fb66e86c80d2ac8f

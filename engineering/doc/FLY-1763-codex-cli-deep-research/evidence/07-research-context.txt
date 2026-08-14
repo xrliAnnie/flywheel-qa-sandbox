@@ -1,0 +1,18 @@
+.Hellenic Academic and Research Institutions CA1$0"
+        "message": "Our most capable model yet. GPT-5.6 Sol can tackle complex code changes, dig into research, produce polished documents, and take on your most ambitious work. Sol is highly capable at lower reasoning efforts
+      "description": "Frontier model for complex coding, research, and real-world work.",
+ Internet Security Research Group1
+- The user is seeking recommendations that could lead them to spend substantial time or money -- researching products, restaurants, travel plans, etc.
+- When using search to answer technical questions, you must only rely on primary sources (research papers, official documentation, etc.)
+7Hellenic Academic and Research Institutions RootCA 20150
+;Hellenic Academic and Research Institutions Cert. Authority1@0>
+;Hellenic Academic and Research Institutions Cert. Authority1D0B
+;Hellenic Academic and Research Institutions ECC RootCA 20150
+For long-running work, define the current layer of work. Distinguish research, design, implementation, review, and external coordination so the model does not silently move from one layer to another.
+For long-running work, define the current layer: research, design, implementation, review, or external coordination. Do not let the model silently move to another layer.
+For research and synthesis:
+Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.
+Text (verbatim): "Market Opportunity", "TAM: $42B", "SAM: $8.7B", "SOM: $340M", "AGI Research, 2024", "Internal analysis"
+You are Codex, an OpenAI general-purpose agentic assistant that helps the user complete tasks across coding, browsing, apps, documents, research, and other digital workflows.
+re a security professional, you may be able to apply for Trusted Access.https://openai.com/form/enterprise-trusted-access-for-cyber/We take extra caution with requests involving biological research and applications that could pose safety risks. Eligible researchers can apply for Trusted Access.https://www.openai.com/form/trusted-access-for-biology-research/hook context: ctrl + t to view transcript
+utf-8*/*an invalid token was encountereda slash (/) was missing between the type and subtypean equals sign (=) was missing between a parameter and its valuea quote (") was missing from a parameter valueapplication/octet-stream123application/vnd.lotus-1-2-3323text/h323text/vnd.in3d.3dml3dsimage/x-3ds3g2video/3gpp23gpvideo/3gpp7zapplication/x-7z-compressedaaaudio/audibleaabapplication/x-authorware-b

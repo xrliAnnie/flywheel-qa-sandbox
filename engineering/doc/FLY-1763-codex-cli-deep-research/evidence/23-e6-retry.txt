@@ -1,0 +1,18 @@
+=== E6-retry (auth just proven healthy): -m o3-deep-research ===
+2026-08-14T01:52:34.128279Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses
+2026-08-14T01:52:34.133330Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+{"type":"error","message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}
+{"type":"turn.failed","error":{"message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}}
+
+[codex-with-fallback] AUTH_EXPIRED: All 5 profiles have expired tokens.
+[codex-with-fallback] Run /codex-relogin to re-authenticate all profiles.
+Switched to profile 'business'
+
+=== E6-retry-b: -m gpt-5.6-sol re-control immediately after ===
+{"type":"thread.started","thread_id":"019ffdf8-98ec-7a20-b313-c6a7a2690bb6"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK2"}}
+{"type":"turn.completed","usage":{"input_tokens":19238,"cached_input_tokens":2816,"cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":0}}
+
+=== profile after ===
+* business

@@ -1,0 +1,23 @@
+=== E6: try to select a deep-research model ===
+2026-08-14T01:49:56.695898Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses
+2026-08-14T01:49:56.711079Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+2026-08-14T01:49:56.711669Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+2026-08-14T01:49:56.712255Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+2026-08-14T01:49:57.381539Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses
+{"type":"error","message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}
+{"type":"turn.failed","error":{"message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}}
+2026-08-14T01:49:57.383904Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+
+[codex-with-fallback] AUTH_EXPIRED: All 5 profiles have expired tokens.
+[codex-with-fallback] Run /codex-relogin to re-authenticate all profiles.
+Switched to profile 'school'
+
+=== E6b: o4-mini-deep-research ===
+2026-08-14T01:50:53.058368Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses
+2026-08-14T01:50:53.061285Z ERROR codex_login::auth::manager: Failed to refresh token: Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again.
+{"type":"error","message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}
+{"type":"turn.failed","error":{"message":"Your access token could not be refreshed because your refresh token was already used. Please log out and sign in again."}}
+
+[codex-with-fallback] AUTH_EXPIRED: All 5 profiles have expired tokens.
+[codex-with-fallback] Run /codex-relogin to re-authenticate all profiles.
+Switched to profile 'school'

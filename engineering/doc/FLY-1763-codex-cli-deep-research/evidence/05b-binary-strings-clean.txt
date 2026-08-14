@@ -1,0 +1,20 @@
+=== A. literal 'deep research' (case-insens, any separator) ===
+(none above = zero hits)
+
+=== B. deep-research model ids ===
+(none above = zero hits)
+
+=== C. exact web_search token variants ===
+   8 web_search_tool_type
+   6 web_search
+   5 web_search_mode
+   2 web_search_cached
+   1 web_searchthe
+   1 web_searchexperimental_request_user_inputupdate_planmax_concurrent_threads_per_sessionmax_depthdefault_subagent_modeldefault_subagent_reasoning_effortjob_max_runtime_secondsinterrupt_message
+   1 web_search_requestfeatures
+   1 web_search_request
+   1 web_search_modehttps
+   1 web_search_callresponse
+
+=== D. sanity control: token that MUST exist ===
+12

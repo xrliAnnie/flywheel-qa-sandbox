@@ -1,0 +1,29 @@
+=== target of the codex-visible deep-research skill ===
+/Users/xiaorongli/.agents/skills/deep-research
+
+=== its SKILL.md head (proves it is OUR claude-in-chrome skill) ===
+---
+name: deep-research
+description: Run ChatGPT Deep Research (multi-step cited web research) and get the verbatim report back as clean markdown + resolved source URLs. Use when asked to 深度研究 / deep research / an in-depth cited web investigation. Drives ChatGPT via claude-in-chrome + native export (rides the subscription, no API cost).
+allowed-tools:
+  - Bash
+  - mcp__claude-in-chrome__list_connected_browsers
+  - mcp__claude-in-chrome__tabs_context_mcp
+  - mcp__claude-in-chrome__navigate
+  - mcp__claude-in-chrome__computer
+  - mcp__claude-in-chrome__read_page
+  - mcp__claude-in-chrome__get_page_text
+  - mcp__claude-in-chrome__javascript_tool
+metadata:
+    skill-author: flywheel
+    skill-version: 1.0.0
+---
+
+# deep-research — ChatGPT Deep Research → verbatim cited report
+
+Run ChatGPT's **Deep Research** (multi-step, cited, 5-15 min web research) and bring back
+the **verbatim report as clean markdown + resolved source URLs**. It rides the ChatGPT
+**Plus/Pro subscription** (no per-token API cost).
+
+You drive everything through **claude-in-chrome** (real pointer/keyboard gestures) and pull
+the result with ChatGPT's **own native export** — then a small Python helper folds the

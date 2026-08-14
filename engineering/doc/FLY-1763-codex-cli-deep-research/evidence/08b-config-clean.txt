@@ -1,0 +1,75 @@
+=== config.toml non-project lines ===
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+personality = "pragmatic"
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+notify = ["/Users/xiaorongli/.codex/computer-use/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", "turn-ended"]
+[notice.model_migrations]
+"gpt-5.2-codex" = "gpt-5.3-codex"
+"gpt-5.3-codex" = "gpt-5.4"
+[mcp_servers.chrome-devtools]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--auto-connect", "--channel=stable"]
+[mcp_servers.pencil]
+command = "/Applications/Pencil.app/Contents/Resources/app.asar.unpacked/out/mcp-server-darwin-arm64"
+args = ["--app", "desktop"]
+[mcp_servers.linear]
+url = "https://mcp.linear.app/mcp"
+[mcp_servers.myco]
+command = "/Users/xiaorongli/.codex/bin/myco-mcp"
+[mcp_servers.xiaohongshu]
+url = "http://localhost:18060/mcp"
+[mcp_servers.node_repl]
+args = []
+command = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+startup_timeout_sec = 120
+[mcp_servers.node_repl.env]
+NODE_REPL_NATIVE_PIPE_CONNECT_TIMEOUT_MS = "1000"
+NODE_REPL_NODE_MODULE_DIRS = "/Applications/ChatGPT.app/Contents/Resources/cua_node/lib/node_modules"
+NODE_REPL_NODE_PATH = "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"
+NODE_REPL_TRUSTED_CODE_PATHS = "/Users/xiaorongli/.codex"
+CODEX_HOME = "/Users/xiaorongli/.codex"
+NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "41e1151f1e50f096c7561da32bb01123e74b6ecdd38f081e34da30091fc4f193,6d25aa7656feac858f3a3bdaea5bcbab0dbfd426c9de8e6931ce90c399ee8e4f"
+BROWSER_USE_AVAILABLE_BACKENDS = "chrome,iab"
+NODE_REPL_INSTRUCTIONS_USE_CASE_BROWSER = "Control the in-app browser in conjunction with the Browser Plugin."
+NODE_REPL_INSTRUCTIONS_USE_CASE_CHROME = "Control the Chrome browser in conjunction with the Chrome Plugin. Prefer this method of controlling Chrome over alternatives (such as Computer Use) unless the user explicitly mentions an alternative."
+NODE_REPL_INSTRUCTIONS_USE_CASE_COMPUTER_USE = "Control desktop apps on macOS through Computer Use."
+BROWSER_USE_CODEX_APP_BUILD_FLAVOR = "prod"
+BROWSER_USE_CODEX_APP_VERSION = "26.721.30844"
+CODEX_CLI_PATH = "/Applications/ChatGPT.app/Contents/Resources/codex"
+[mcp_servers.computer-use]
+command = "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient"
+args = ["mcp"]
+cwd = "."
+enabled = false
+[tui.model_availability_nux]
+"gpt-5.3-codex-spark" = 4
+"gpt-5.5" = 4
+"gpt-5.6-sol" = 4
+[features]
+image_generation = false
+memories = true
+js_repl = false
+[desktop]
+followUpQueueMode = "queue"
+dock-icon-preference = "codex-system"
+realtimeVoiceScreenContextEnabled = true
+[marketplaces.openai-bundled]
+last_updated = "2026-08-01T17:45:20Z"
+source_type = "local"
+source = "/Users/xiaorongli/.codex/.tmp/bundled-marketplaces/openai-bundled"
+
+=== any web_search/tools in config ===
+808:[mcp_servers.chrome-devtools]
+810:args = ["-y", "chrome-devtools-mcp@latest", "--auto-connect", "--channel=stable"]
+900:[apps.connector_76869538009648d5b282a4bb21c3d157.tools."github.create_blob"]
+903:[apps.connector_76869538009648d5b282a4bb21c3d157.tools."github.create_branch"]
+906:[apps.connector_76869538009648d5b282a4bb21c3d157.tools."github.create_pull_request"]
+
+=== codex-profile list ===
+  business
+  personal
+  personal1
+  personal2
+* school
