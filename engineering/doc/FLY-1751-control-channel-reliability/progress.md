@@ -1,13 +1,13 @@
 ---
 issue: FLY-1751
 phase: implement
-phaseCursor: 1/5
-updated: 2026-08-14T07:47:26.057Z
-nextStep: TDD SessionStart adopt-inflight hook 与 per-Lead installer
+phaseCursor: 2/5
+updated: 2026-08-14T07:53:45.988Z
+nextStep: 跑受影响 lane tests、shell harness 与静态检查
 chunks: []
 pointers: {}
 ---
 
 # FLY-1751 progress
-**phase**: implement (1/5)
-**next**: TDD SessionStart adopt-inflight hook 与 per-Lead installer
+**phase**: implement (2/5)
+**next**: 跑受影响 lane tests、shell harness 与静态检查
