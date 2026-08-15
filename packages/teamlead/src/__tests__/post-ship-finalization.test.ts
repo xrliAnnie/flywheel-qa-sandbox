@@ -918,4 +918,89 @@ describe("runPostShipFinalization", () => {
 			reason: "linear offline",
 		});
 	});
+
+	it("reconciles Linear disposition before replaying an already-completed finalization", async () => {
+		store.insertEvent({
+			event_id: "post-ship-finalization-exec-1",
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			event_type: "post_ship_finalization_claim",
+			source: "test",
+		});
+		store.insertEvent({
+			event_id: "post-ship-finalization-completed-exec-1",
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			event_type: "post_ship_finalization_completed",
+			source: "test",
+		});
+		const markIssueDone = vi.fn().mockResolvedValue({
+			done: true,
+			reason: "already_completed",
+		});
+		const recordLinearDoneDisposition = vi.fn().mockReturnValue({
+			ok: true,
+			idempotentReplay: false,
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				markIssueDone,
+				recordLinearDoneDisposition,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(markIssueDone).toHaveBeenCalledOnce();
+		expect(recordLinearDoneDisposition).toHaveBeenCalledWith({
+			disposition: "done",
+			reason: "already_completed",
+		});
+	});
+
+	it("settles Linear as operator-refused when the optional finalizer is unavailable", async () => {
+		const recordLinearDoneDisposition = vi.fn().mockReturnValue({
+			ok: true,
+			idempotentReplay: false,
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				recordLinearDoneDisposition,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: true,
+			outcome: "completed",
+			details: { linearDoneDisposition: "canceled_refused" },
+		});
+		expect(recordLinearDoneDisposition).toHaveBeenCalledWith({
+			disposition: "canceled_refused",
+			reason: "linear_finalizer_unavailable",
+		});
+	});
 });

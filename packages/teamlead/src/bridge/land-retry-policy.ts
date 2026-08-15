@@ -32,13 +32,18 @@ const TERMINAL_REASONS = new Set([
 	"land_step_receipt_conflict",
 ]);
 
-const RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 480_000] as const;
+const RETRY_DELAYS_MS = [
+	60_000, 120_000, 240_000, 480_000, 900_000, 1_800_000, 3_600_000, 7_200_000,
+] as const;
 const RETRY_EXHAUSTED_PREFIX = "retry_exhausted:";
 const MAX_LAND_ERROR_LENGTH = 500;
 
 export function classifyLandRetryReason(
 	reason: string,
 ): LandRetryClassification {
+	const unwrapped = reason.startsWith("land_execution_error:")
+		? reason.slice("land_execution_error:".length)
+		: reason;
 	if (
 		WAITING_REASONS.has(reason) ||
 		reason.startsWith("workflow_pr_manifest_partial:")
@@ -46,7 +51,7 @@ export function classifyLandRetryReason(
 		return "waiting";
 	}
 	if (
-		TERMINAL_REASONS.has(reason) ||
+		TERMINAL_REASONS.has(unwrapped) ||
 		reason.startsWith("ship_workflow_failed:")
 	) {
 		return "terminal";

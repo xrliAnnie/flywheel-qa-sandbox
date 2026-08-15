@@ -19,7 +19,7 @@ Issue: FLY-1770 (https://linear.app/geoforge3d/issue/FLY-1770/机制-land-收尾
 | T5 | `StateStore.ts:39221` `setLandOperationDisposition` | `state/last_error/owner/lease` 单 UPDATE | 承载 T4 的记账列写入 + 耗尽判定 |
 | T6 | `StateStore.ts:38996` `listRunnableLandOperations` | `state IN ('intent','partial')`,不看时间 | 加 `AND (next_attempt_at IS NULL OR next_attempt_at <= ?)` |
 | T7 | `StateStore.ts:39044` `claimLandOperation` | partial 随时可 claim | 尊重 `next_attempt_at`(dispatcher 直呼 `landExecutor` 会绕过 T6,**闸必须设在 claim 层**) |
-| T8 | `StateStore.ts:16679` `land_operation` 表 | 无退避列 | 幂等 ADD COLUMN:`retry_count`、`next_attempt_at`、`retry_reason_class`、`linear_done_deferred_at`、`linear_done_settled_at`(FLY-267 同款迁移形态) |
+| T8 | `StateStore.ts:16679` `land_operation` 表 | 无退避列 | 幂等 ADD COLUMN:`retry_count`、`next_attempt_at`、`retry_epoch_key`、`linear_done_deferred_at`、`linear_done_settled_at`;deferred sweep 另有 `linear_done_retry_count` / `linear_done_next_attempt_at` / `linear_done_last_attempt_at`(FLY-267 同款迁移形态) |
 | T9 | `bridge/plugin.ts:7267` `landOperationTick`(GatePoller rider,30s) | 只扫 runnable | 追加慢周期段:扫 `completed AND linear_done_deferred_at NOT NULL AND settled IS NULL` → 重跑 `markLinearIssueDone`(零新 timer) |
 | T10 | `StateStore.ts:39335` `holdWorkflowLandNode` / alert 管道 | held 已 enqueue alert(routedAlertSink,FLY-1764) | 耗尽转 held 的 alert payload 附 attempt 历史;沿用现有投递 |
 | T11 | 测试:`__tests__/post-ship-finalization.test.ts`(30 tests)、`StateStore.land-lifecycle.test.ts`(18)、`workflow-engine-dispatcher.test.ts`(land 段) | 无 retryable/退避/降级覆盖 | 交付 3 的回归 fixture 落点 |
@@ -35,11 +35,11 @@ Issue: FLY-1770 (https://linear.app/geoforge3d/issue/FLY-1770/机制-land-收尾
 | class | 成员(现有 reason 字面) | 记账 | 退避 |
 |---|---|---|---|
 | **waiting**(正常等待外部推进) | `ship_workflow_pending`(等 CI)、`founder_projection_pending`、founder-review precondition retryable 族 | 不烧预算 | 无(维持 30s sweep 现状 —— merge 靠它被及时发现) |
-| **fault-retryable**(瞬时故障,期望自愈) | `linear_lookup_failed_retryable`、`arbitration_failed:*`(thrown)、`land_execution_error:*`(gh/网络等) | attempt++,**per reason-class 计数** | 1m/2m/4m/8m,第 5 次耗尽 → 真 held + fail-loud(镜像 FLY-1648 形态) |
-| **progress-tracked**(级联推进中) | `issue_closeout_incomplete`、`land_postconditions_incomplete:*` | 同 fault-retryable 记账,但 **reason-class 变化即重置**(级联每前进一步 reason 自然改变 = FLY-1648 R1「健康恢复重置预算」的零成本实现) | 同上 |
+| **fault-retryable**(瞬时故障,期望自愈) | `linear_lookup_failed_retryable`、`arbitration_failed:*`(thrown)、`land_execution_error:*`(gh/网络等) | attempt++,**同 durable progress epoch 合计** | 1m/2m/4m/8m/15m/30m/60m/120m,第 9 次耗尽 → 真 held + fail-loud(code review R1 从原 15 分钟窗加宽到约 4 小时) |
+| **progress-tracked**(级联推进中) | `issue_closeout_incomplete`、`land_postconditions_incomplete:*` | 同 fault-retryable 记账;只有新 `land_operation_step` receipt 改变 durable progress epoch 才重置 | 同上 |
 | **terminal**(真终态,不重试) | `pr_head_mismatch`、`pr_closed_unmerged`、`ship_workflow_failed:*`、`cool_trigger_receipt_corrupt`、`land_step_receipt_conflict`、确证 canceled/parked 拒绝 | — | 直接 held(现状不变) |
 
-计数键 = `retry_reason_class`(列)。class 变化 → `retry_count` 归零。这样 FLY-1751 的正常序列(closeout_incomplete → 推进 → linear 类)不会被跨类累计误杀。
+计数键 = `retry_epoch_key`(列),由 `{land_operation_step 行数}:{最新 step 名}` 组成。只有 durable step receipt 前进才令 `retry_count` 归零;reason 或 class 单独变化不会重置,避免两种错误交替时永远不耗尽。FLY-1751 的正常级联每完成一步都会落新 receipt,因此真实进展不会被跨阶段累计误杀。
 
 ## 3. Linear 依赖降级的两个判定点
 
@@ -90,12 +90,12 @@ fresh read 失败时按序:
 |---|---|---|---|
 | F1 | Linear lookup 失败一次 → 恢复(FLY-1751 重放) | 第一次 pass → operation `partial`(**非 held**)+ `retry_count=1` + `next_attempt_at≈+1m`;时钟推进后 sweep 重试 → preArbitrate 过 → 级联全走(closeout/thread/run completed,Done 经 `already_completed` 消)| `workflow-engine-dispatcher.test.ts` land 段 或新 `land-selfheal.test.ts` |
 | F2 | Linear 持续不可达(fresh read + markIssueDone 全 fail) | preArbitrate degraded PASS(审计事件在);本地清理全完成、run `completed`;`linear_done_deferred_at` 有账 + informational alert 恰一条;注入 Linear 恢复后 T9 慢扫翻 Done → `settled` | 同上 + `post-ship-finalization.test.ts` |
-| F3 | fault-class 持续故障(arbitration thrown ×5) | 退避时间戳序列 1m/2m/4m/8m;第 5 次 → operation `held` + run `held` + alert payload 含 attempt 历史 | `StateStore.land-lifecycle.test.ts` + dispatcher 测 |
+| F3 | fault-class 持续故障(arbitration thrown ×9) | 退避时间戳序列 1m/2m/4m/8m/15m/30m/60m/120m;第 9 次 → operation `held` + run `held` + alert payload 含 attempt 历史 | `StateStore.land-lifecycle.test.ts` + dispatcher 测 |
 | F4 | 守卫:canceled observation / park tombstone;markIssueDone 撞 canceled | 前两者 → 拒绝(held,不降级);后者 → settled-by-refusal,**零 Done 写** | `post-ship-finalization.test.ts` |
 | F5 | 字节兼容哨兵 | 无故障路径(全部成功)行为逐字不变;存量 NULL 列行 runnable 语义不变 | 各文件既有测试保持全绿即哨兵 |
 
 ## 6. 未解决 / 交给 plan 的裁量
 
-- 退避档位与 cap(1m/2m/4m/8m、cap=5)直接镜像 FLY-1648 已批形态 —— plan 中定死,不留可调 knob(无新 flag 铁律)。
+- 退避形态镜像 FLY-1648 的有界持久化做法,但 code review R1 将本单恢复窗定为 1m/2m/4m/8m/15m/30m/60m/120m、cap=9,约 4 小时后才转人工;plan 中定死,不留可调 knob(无新 flag 铁律)。
 - deferred Done 慢扫周期(15min)与 24h 提醒 bucket —— plan 定死为常量。
 - `thread_archive` postcondition 耗尽转 held 是行为收紧(现状静默永挂)—— plan 中明示为附带修复,codex-design-review 把关。

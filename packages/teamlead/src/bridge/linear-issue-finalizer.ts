@@ -141,21 +141,37 @@ export async function raceMarkIssueDoneWithAbort(
 	issueId: string,
 	issueIdentifier?: string,
 	timeoutMs = 15_000,
+	observer?: {
+		onRejected?: (error: Error) => void;
+		onTimeout?: (timeoutMs: number) => void;
+		timeoutReason?: string;
+	},
 ): Promise<MarkDoneResult> {
 	const controller = new AbortController();
 	let timeout: ReturnType<typeof setTimeout> | undefined;
 	const attempt = Promise.resolve()
 		.then(() => finalizer(issueId, issueIdentifier, controller.signal))
-		.catch(
-			(err): MarkDoneResult => ({
-				done: false,
-				reason: (err as Error).message,
-			}),
-		);
+		.catch((err): MarkDoneResult => {
+			const error = err instanceof Error ? err : new Error(String(err));
+			try {
+				observer?.onRejected?.(error);
+			} catch {
+				// Observability must never perturb best-effort finalization.
+			}
+			return { done: false, reason: error.message };
+		});
 	const deadline = new Promise<MarkDoneResult>((resolve) => {
 		timeout = setTimeout(() => {
 			controller.abort();
-			resolve({ done: false, reason: "linear_done_timeout" });
+			try {
+				observer?.onTimeout?.(timeoutMs);
+			} catch {
+				// Observability must never perturb best-effort finalization.
+			}
+			resolve({
+				done: false,
+				reason: observer?.timeoutReason ?? "linear_done_timeout",
+			});
 		}, timeoutMs);
 	});
 

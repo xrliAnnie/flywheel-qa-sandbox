@@ -307,7 +307,10 @@ import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
-import { sweepDeferredLandLinearDone } from "./land-linear-done-sweep.js";
+import {
+	buildAgedDeferredLinearDoneAlert,
+	sweepDeferredLandLinearDone,
+} from "./land-linear-done-sweep.js";
 import { resolveLandSourceSession } from "./land-source-session.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
@@ -5733,12 +5736,7 @@ export async function startBridge(
 						store,
 						projects,
 						removeCleanWorktree: landWorktreeCleanup,
-						markIssueDone:
-							landLinearDoneFinalizer ??
-							(async () => ({
-								done: false,
-								reason: "linear_finalizer_unavailable",
-							})),
+						markIssueDone: landLinearDoneFinalizer,
 						recordLinearDoneDisposition: (disposition) => {
 							if (!operation.owner_id) {
 								return { ok: false, reason: "stale_land_generation" };
@@ -7350,41 +7348,29 @@ export async function startBridge(
 									issueId: operation.issue_id,
 									runId: operation.run_id,
 								});
-								const source = resolveLandSourceSession(store, {
-									runId: operation.run_id,
-									issueId: operation.issue_id,
-									projectName: operation.project_name,
-									prNumber: operation.pr_number,
-									approvedHead: operation.approved_head,
+								const alert = buildAgedDeferredLinearDoneAlert({
+									operation,
+									leadId: identity.leadId,
+									leadResolution: identity.leadResolution,
+									dayBucket: detail.dayBucket,
 								});
-								const escalationUid = `linear_done_deferred_stale:${operation.operation_id}:${detail.dayBucket}`;
 								store.enqueueWorkflowEngineAlert({
-									escalationUid,
+									escalationUid: alert.escalationUid,
 									runId: operation.run_id,
 									payload: {
 										leadId: identity.leadId,
 										projectName: identity.projectName,
-										eventId: escalationUid,
+										eventId: alert.escalationUid,
 										eventType: "workflow_engine_issue_alert",
 										severity: "warning",
 										sessionKey: `wf:${operation.run_id}`,
-										title: `Linear Done still deferred for ${operation.issue_id}`,
-										body: `Local land cleanup completed ${detail.ageHours}h ago, but Linear Done is still deferred. Reason: ${detail.reason}.`,
+										title: alert.title,
+										body: alert.body,
 										metadata: {
 											workflowEngine: {
 												runId: operation.run_id,
 												issueId: operation.issue_id,
-												nodeId:
-													store.getWorkflowRun(operation.run_id)
-														?.current_node_id ?? "land",
-												executionId:
-													source?.execution_id ?? operation.operation_id,
-												disposition: "linear_done_deferred",
-												operationId: operation.operation_id,
-												reason: detail.reason,
-												deferredAt:
-													operation.linear_done_deferred_at ?? undefined,
-												leadResolution: identity.leadResolution,
+												...alert.workflowMetadata,
 											},
 										},
 									},

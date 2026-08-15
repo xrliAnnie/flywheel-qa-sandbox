@@ -9,11 +9,51 @@ type DeferredLinearDoneStore = Pick<
 	| "listDeferredLandLinearDone"
 	| "getLandOperation"
 	| "settleDeferredLandLinearDone"
+	| "deferLandLinearDoneRetry"
 >;
 
 export interface DeferredLinearDoneSweepReport {
 	inspected: number;
 	settled: number;
+}
+
+/** Stable for one operation/Lead/day so alert replay cannot UID-conflict. */
+export function buildAgedDeferredLinearDoneAlert(input: {
+	operation: LandOperationRow;
+	leadId: string;
+	leadResolution: "resolved" | "fallback";
+	dayBucket: string;
+}): {
+	escalationUid: string;
+	title: string;
+	body: string;
+	workflowMetadata: {
+		nodeId: "land";
+		executionId: string;
+		disposition: "linear_done_deferred";
+		operationId: string;
+		reason: "linear_done_deferred_stale";
+		deferredAt?: string;
+		leadResolution: "resolved" | "fallback";
+	};
+} {
+	const { operation } = input;
+	return {
+		escalationUid: `linear_done_deferred_stale:${operation.operation_id}:${input.leadId}:${input.leadResolution}:${input.dayBucket}`,
+		title: `Linear Done still deferred for ${operation.issue_id}`,
+		body: `Local land cleanup completed, but Linear Done remains deferred since ${operation.linear_done_deferred_at ?? "an unknown time"}. The bounded slow sweep will continue retrying.`,
+		workflowMetadata: {
+			nodeId: "land",
+			executionId: operation.operation_id,
+			disposition: "linear_done_deferred",
+			operationId: operation.operation_id,
+			reason: "linear_done_deferred_stale",
+			leadResolution: input.leadResolution,
+			...(operation.linear_done_deferred_at
+				? { deferredAt: operation.linear_done_deferred_at }
+				: {}),
+		},
+	};
 }
 
 function authorityRefusesLinearWrite(reason: string): boolean {
@@ -22,6 +62,28 @@ function authorityRefusesLinearWrite(reason: string): boolean {
 		reason === "canceled_observation" ||
 		reason === "canceled_fresh_linear"
 	);
+}
+
+const LINEAR_DONE_RETRY_DELAYS_MS = [
+	15 * 60_000,
+	30 * 60_000,
+	60 * 60_000,
+	2 * 60 * 60_000,
+	4 * 60 * 60_000,
+	8 * 60 * 60_000,
+	24 * 60 * 60_000,
+] as const;
+
+function nextLinearDoneAttemptAt(
+	operation: LandOperationRow,
+	now: Date,
+): string {
+	const retryCount = Math.max(0, operation.linear_done_retry_count ?? 0);
+	const delay =
+		LINEAR_DONE_RETRY_DELAYS_MS[
+			Math.min(retryCount, LINEAR_DONE_RETRY_DELAYS_MS.length - 1)
+		] ?? LINEAR_DONE_RETRY_DELAYS_MS.at(-1)!;
+	return new Date(now.getTime() + delay).toISOString();
 }
 
 /**
@@ -50,7 +112,7 @@ export async function sweepDeferredLandLinearDone(input: {
 }): Promise<DeferredLinearDoneSweepReport> {
 	const now = input.now ?? new Date();
 	const nowIso = now.toISOString();
-	const candidates = input.store.listDeferredLandLinearDone(10);
+	const candidates = input.store.listDeferredLandLinearDone(nowIso, 10);
 	let settled = 0;
 
 	for (const candidate of candidates) {
@@ -64,6 +126,33 @@ export async function sweepDeferredLandLinearDone(input: {
 				) {
 					return;
 				}
+				const alertIfAged = async (reason: string) => {
+					const deferredAt = Date.parse(
+						operation.linear_done_deferred_at ?? "",
+					);
+					const ageHours = Number.isFinite(deferredAt)
+						? Math.max(0, Math.floor((now.getTime() - deferredAt) / 3_600_000))
+						: 0;
+					if (ageHours >= 24 && input.onAgedDeferred) {
+						await input.onAgedDeferred(operation, {
+							ageHours,
+							dayBucket: nowIso.slice(0, 10),
+							reason,
+						});
+					}
+				};
+				const deferRetry = async (reason: string) => {
+					const deferred = input.store.deferLandLinearDoneRetry({
+						operationId: operation.operation_id,
+						reason,
+						now: nowIso,
+						nextAttemptAt: nextLinearDoneAttemptAt(operation, now),
+					});
+					if (!deferred.ok) {
+						throw new Error(deferred.reason);
+					}
+					await alertIfAged(reason);
+				};
 
 				let arbitration:
 					| { ok: true; degraded?: "linear_unreachable" }
@@ -90,47 +179,46 @@ export async function sweepDeferredLandLinearDone(input: {
 							now: nowIso,
 						});
 						if (result.ok) settled += 1;
+					} else {
+						await deferRetry(arbitration.reason);
 					}
 					return;
 				}
 
-				let reason = "linear_finalizer_unavailable";
-				if (input.markIssueDone) {
-					const result = await raceMarkIssueDoneWithAbort(
-						input.markIssueDone,
-						operation.issue_id,
-						undefined,
-					);
-					reason =
-						result.reason ?? (result.done ? "done" : "linear_done_failed");
-					const disposition = result.done
-						? "done"
-						: result.reason === "issue_canceled_never_overwritten"
-							? "canceled_refused"
-							: undefined;
-					if (disposition) {
-						const settlement = input.store.settleDeferredLandLinearDone({
-							operationId: operation.operation_id,
-							disposition,
-							reason,
-							now: nowIso,
-						});
-						if (settlement.ok) settled += 1;
-						return;
-					}
+				if (!input.markIssueDone) {
+					const settlement = input.store.settleDeferredLandLinearDone({
+						operationId: operation.operation_id,
+						disposition: "canceled_refused",
+						reason: "linear_finalizer_unavailable",
+						now: nowIso,
+					});
+					if (settlement.ok) settled += 1;
+					return;
 				}
 
-				const deferredAt = Date.parse(operation.linear_done_deferred_at ?? "");
-				const ageHours = Number.isFinite(deferredAt)
-					? Math.max(0, Math.floor((now.getTime() - deferredAt) / 3_600_000))
-					: 0;
-				if (ageHours >= 24 && input.onAgedDeferred) {
-					await input.onAgedDeferred(operation, {
-						ageHours,
-						dayBucket: nowIso.slice(0, 10),
+				const result = await raceMarkIssueDoneWithAbort(
+					input.markIssueDone,
+					operation.issue_id,
+					undefined,
+				);
+				const reason =
+					result.reason ?? (result.done ? "done" : "linear_done_failed");
+				const disposition = result.done
+					? "done"
+					: result.reason === "issue_canceled_never_overwritten"
+						? "canceled_refused"
+						: undefined;
+				if (disposition) {
+					const settlement = input.store.settleDeferredLandLinearDone({
+						operationId: operation.operation_id,
+						disposition,
 						reason,
+						now: nowIso,
 					});
+					if (settlement.ok) settled += 1;
+					return;
 				}
+				await deferRetry(reason);
 			});
 		} catch (error) {
 			(input.log ?? console.warn)(

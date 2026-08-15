@@ -579,6 +579,55 @@ export interface ResumablePostShipFinalizationReport {
 	};
 }
 
+type ResumableLinearDoneReport = {
+	issueDone: boolean;
+	disposition: "done" | "canceled_refused" | "deferred";
+	reason: string;
+	recorded: boolean;
+};
+
+async function reconcileResumableLinearDone(
+	opts: PostShipOpts,
+	deps: PostShipDeps,
+): Promise<ResumableLinearDoneReport> {
+	let issueDone = false;
+	let disposition: ResumableLinearDoneReport["disposition"] =
+		"canceled_refused";
+	let reason = "linear_finalizer_unavailable";
+	if (deps.markIssueDone) {
+		const result = (await raceMarkIssueDoneWithAbort(
+			deps.markIssueDone,
+			opts.issueId,
+			opts.issueIdentifier,
+		)) ?? { done: false, reason: "linear_done_result_missing" };
+		issueDone = result.done === true;
+		reason = result.reason ?? (result.done ? "done" : "linear_done_failed");
+		disposition = result.done
+			? "done"
+			: result.reason === "issue_canceled_never_overwritten"
+				? "canceled_refused"
+				: "deferred";
+	}
+
+	const recorded = deps.recordLinearDoneDisposition
+		? await Promise.resolve(
+				deps.recordLinearDoneDisposition({ disposition, reason }),
+			).catch((err) => ({
+				ok: false as const,
+				reason: (err as Error).message,
+			}))
+		: {
+				ok: false as const,
+				reason: "linear_done_disposition_recorder_missing",
+			};
+	if (!recorded.ok) {
+		console.error(
+			`[post-ship] Linear Done disposition was not recorded for ${opts.issueIdentifier ?? opts.issueId}: ${recorded.reason}`,
+		);
+	}
+	return { issueDone, disposition, reason, recorded: recorded.ok };
+}
+
 /** Land replay treats the old once-claim as started evidence, not completion. */
 export async function runResumablePostShipFinalization(
 	opts: PostShipOpts,
@@ -599,6 +648,32 @@ async function runPostShipFinalizationInner(
 	resumable: boolean,
 ): Promise<ResumablePostShipFinalizationReport> {
 	const { store, projects } = deps;
+	const replayCompletedFinalization =
+		async (): Promise<ResumablePostShipFinalizationReport> => {
+			if (!resumable) {
+				return { complete: true, outcome: "completed", details: {} };
+			}
+			const linear = await reconcileResumableLinearDone(opts, deps);
+			if (!linear.recorded) {
+				return {
+					complete: false,
+					outcome: "partial",
+					reason: "land_linear_done_disposition_incomplete",
+					details: {
+						issueDone: linear.issueDone,
+						linearDoneDisposition: linear.disposition,
+					},
+				};
+			}
+			return {
+				complete: true,
+				outcome: "completed",
+				details: {
+					issueDone: linear.issueDone,
+					linearDoneDisposition: linear.disposition,
+				},
+			};
+		};
 
 	// ── (0.9) Codex R2#8 + R3#9: disposition pre-arbitration — BEFORE any
 	// mutation AND before the dedupe claim, so a refusal never consumes the
@@ -709,7 +784,7 @@ async function runPostShipFinalizationInner(
 		}
 		declaredFinalization = manifestClaim.mode === "declared";
 		if (manifestClaim.mode === "declared" && manifestClaim.completed) {
-			return { complete: true, outcome: "completed", details: {} };
+			return replayCompletedFinalization();
 		}
 	}
 
@@ -734,7 +809,7 @@ async function runPostShipFinalizationInner(
 					`post-ship-finalization-completed-${opts.executionId}`,
 			);
 		if (alreadyCompleted) {
-			return { complete: true, outcome: "completed", details: {} };
+			return replayCompletedFinalization();
 		}
 		// A production caller holding the canonical issue mutex, or an explicit
 		// land replay, may repair a crash after the old once-claim. Unlocked legacy
@@ -993,45 +1068,29 @@ async function runPostShipFinalizationInner(
 		| "done"
 		| "canceled_refused"
 		| "deferred"
-		| undefined = resumable ? "deferred" : undefined;
-	let linearDoneReason = "linear_finalizer_unavailable";
+		| undefined;
 	let linearDispositionRecorded = !resumable;
-	if (deps.markIssueDone && !closeoutBlocked) {
-		const doneResult = (await raceMarkIssueDoneWithAbort(
+	if (!closeoutBlocked && resumable) {
+		const linear = await reconcileResumableLinearDone(opts, deps);
+		issueDone = linear.issueDone;
+		linearDoneDisposition = linear.disposition;
+		linearDispositionRecorded = linear.recorded;
+	} else if (!closeoutBlocked && deps.markIssueDone) {
+		await raceMarkIssueDoneWithAbort(
 			deps.markIssueDone,
 			opts.issueId,
 			opts.issueIdentifier,
-		)) ?? { done: false, reason: "linear_done_result_missing" };
-		issueDone = !resumable || doneResult?.done === true;
-		linearDoneReason =
-			doneResult.reason ?? (doneResult.done ? "done" : "linear_done_failed");
-		linearDoneDisposition = doneResult.done
-			? "done"
-			: doneResult.reason === "issue_canceled_never_overwritten"
-				? "canceled_refused"
-				: "deferred";
-	}
-	if (resumable && !closeoutBlocked && linearDoneDisposition) {
-		const recorded = deps.recordLinearDoneDisposition
-			? await Promise.resolve(
-					deps.recordLinearDoneDisposition({
-						disposition: linearDoneDisposition,
-						reason: linearDoneReason,
-					}),
-				).catch((err) => ({
-					ok: false as const,
-					reason: (err as Error).message,
-				}))
-			: {
-					ok: false as const,
-					reason: "linear_done_disposition_recorder_missing",
-				};
-		linearDispositionRecorded = recorded.ok;
-		if (!recorded.ok) {
-			console.error(
-				`[post-ship] Linear Done disposition was not recorded for ${opts.issueIdentifier ?? opts.issueId}: ${recorded.reason}`,
-			);
-		}
+			15_000,
+			{
+				timeoutReason: "mark_issue_done_timeout",
+				onTimeout: (timeoutMs) =>
+					console.warn(
+						`[post-ship] markIssueDone timed out after ${timeoutMs}ms for ${opts.issueIdentifier ?? opts.issueId} — issue left not-Done (Done-sweep / manual close can resolve)`,
+					),
+				onRejected: (error) =>
+					console.error(`[post-ship] markIssueDone failed:`, error.message),
+			},
+		);
 	}
 
 	// ── (4) FLY-1185 §2.6: fire-and-forget trailing project sweep — the

@@ -16703,6 +16703,10 @@ export class StateStore {
 				linear_done_deferred_at TEXT,
 				linear_done_settled_at TEXT,
 				linear_done_last_reason TEXT,
+				linear_done_retry_count INTEGER NOT NULL DEFAULT 0
+				  CHECK (linear_done_retry_count >= 0),
+				linear_done_next_attempt_at TEXT,
+				linear_done_last_attempt_at TEXT,
 				last_error TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
@@ -16736,11 +16740,29 @@ export class StateStore {
 			"linear_done_last_reason",
 			"TEXT",
 		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_retry_count",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (linear_done_retry_count >= 0)",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_next_attempt_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_last_attempt_at",
+			"TEXT",
+		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_operation_work ON land_operation(state, lease_expires_at, updated_at)",
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_operation_retry_work ON land_operation(state, next_attempt_at, lease_expires_at, updated_at)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_operation_linear_done_work ON land_operation(state, linear_done_disposition, linear_done_next_attempt_at, linear_done_deferred_at)",
 		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_operation_step (
@@ -39086,6 +39108,12 @@ export class StateStore {
 				result = { ok: true, idempotentReplay: true };
 				return;
 			}
+			// A settled external obligation is monotonic. A later pass that cannot
+			// re-read Linear must not downgrade proven Done/refusal back to deferred.
+			if (current && current !== "deferred" && input.disposition === "deferred") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
 			if (current && current !== "deferred") {
 				result = { ok: false, reason: "land_linear_done_disposition_conflict" };
 				return;
@@ -39097,6 +39125,7 @@ export class StateStore {
 				    SET linear_done_disposition = ?,
 				        linear_done_deferred_at = CASE WHEN ? = 'deferred' THEN COALESCE(linear_done_deferred_at, ?) ELSE linear_done_deferred_at END,
 				        linear_done_settled_at = CASE WHEN ? = 1 THEN COALESCE(linear_done_settled_at, ?) ELSE NULL END,
+				        linear_done_next_attempt_at = CASE WHEN ? = 'deferred' THEN COALESCE(linear_done_next_attempt_at, ?) ELSE NULL END,
 				        linear_done_last_reason = ?, updated_at = ?
 				  WHERE operation_id = ? AND state = 'running'
 				    AND owner_id = ? AND generation = ?`,
@@ -39105,6 +39134,8 @@ export class StateStore {
 					input.disposition,
 					input.now,
 					settled ? 1 : 0,
+					input.now,
+					input.disposition,
 					input.now,
 					input.reason,
 					input.now,
@@ -39152,15 +39183,70 @@ export class StateStore {
 		return result;
 	}
 
-	listDeferredLandLinearDone(limit = 10): LandOperationRow[] {
+	listDeferredLandLinearDone(now: string, limit = 10): LandOperationRow[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			throw new Error("invalid_land_linear_done_sweep_time");
+		}
 		const boundedLimit = Math.max(1, Math.min(10, Math.trunc(limit)));
 		return this.workflowSelectAll(
 			`SELECT * FROM land_operation
 			  WHERE state = 'completed' AND linear_done_disposition = 'deferred'
-			  ORDER BY linear_done_deferred_at ASC, operation_id ASC
+			    AND (linear_done_next_attempt_at IS NULL OR linear_done_next_attempt_at <= ?)
+			  ORDER BY COALESCE(linear_done_next_attempt_at, linear_done_deferred_at) ASC,
+			           linear_done_deferred_at ASC, operation_id ASC
 			  LIMIT ?`,
-			[boundedLimit],
+			[now, boundedLimit],
 		) as unknown as LandOperationRow[];
+	}
+
+	deferLandLinearDoneRetry(input: {
+		operationId: string;
+		reason: string;
+		now: string;
+		nextAttemptAt: string;
+	}): { ok: true; retryCount: number } | { ok: false; reason: string } {
+		if (
+			!input.reason ||
+			input.reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.nextAttemptAt) ||
+			Date.parse(input.nextAttemptAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_linear_done_retry" };
+		}
+		let result:
+			| { ok: true; retryCount: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_linear_done_not_deferred",
+		};
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE land_operation
+				    SET linear_done_retry_count = linear_done_retry_count + 1,
+				        linear_done_next_attempt_at = ?, linear_done_last_attempt_at = ?,
+				        linear_done_last_reason = ?, updated_at = ?
+				  WHERE operation_id = ? AND state = 'completed'
+				    AND linear_done_disposition = 'deferred'`,
+				[
+					input.nextAttemptAt,
+					input.now,
+					input.reason,
+					input.now,
+					input.operationId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			const retryCount = Number(
+				this.workflowSelectAll(
+					"SELECT linear_done_retry_count FROM land_operation WHERE operation_id = ?",
+					[input.operationId],
+				)[0]?.linear_done_retry_count ?? 0,
+			);
+			result = { ok: true, retryCount };
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	settleDeferredLandLinearDone(input: {
@@ -39199,6 +39285,7 @@ export class StateStore {
 			this.db.run(
 				`UPDATE land_operation
 				    SET linear_done_disposition = ?, linear_done_settled_at = ?,
+				        linear_done_next_attempt_at = NULL,
 				        linear_done_last_reason = ?, updated_at = ?
 				  WHERE operation_id = ? AND state = 'completed'
 				    AND linear_done_disposition = 'deferred'`,
@@ -40080,6 +40167,9 @@ export interface LandOperationRow {
 	linear_done_deferred_at: string | null;
 	linear_done_settled_at: string | null;
 	linear_done_last_reason: string | null;
+	linear_done_retry_count: number;
+	linear_done_next_attempt_at: string | null;
+	linear_done_last_attempt_at: string | null;
 	last_error: string | null;
 	created_at: string;
 	updated_at: string;

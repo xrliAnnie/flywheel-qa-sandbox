@@ -242,6 +242,36 @@ describe("bounded Linear Done finalization", () => {
 		expect(observedSignal?.aborted).toBe(true);
 	});
 
+	it("reports timeout and rejection observers without changing the bounded result", async () => {
+		vi.useFakeTimers();
+		const onTimeout = vi.fn();
+		const timeoutResult = raceMarkIssueDoneWithAbort(
+			vi.fn(async () => new Promise<never>(() => undefined)),
+			"ISSUE-timeout",
+			undefined,
+			10,
+			{ onTimeout, timeoutReason: "mark_issue_done_timeout" },
+		);
+		await vi.advanceTimersByTimeAsync(10);
+		await expect(timeoutResult).resolves.toEqual({
+			done: false,
+			reason: "mark_issue_done_timeout",
+		});
+		expect(onTimeout).toHaveBeenCalledWith(10);
+
+		const onRejected = vi.fn();
+		await expect(
+			raceMarkIssueDoneWithAbort(
+				vi.fn().mockRejectedValue(new Error("linear down")),
+				"ISSUE-reject",
+				undefined,
+				10,
+				{ onRejected },
+			),
+		).resolves.toEqual({ done: false, reason: "linear down" });
+		expect(onRejected).toHaveBeenCalledWith(expect.any(Error));
+	});
+
 	it("aborts before mutation when a delayed read recovers after timeout", async () => {
 		vi.useFakeTimers();
 		let resolveIssue:

@@ -13,7 +13,7 @@ held 语义纯化为「需要人的真终态」:一切 retryable 失败走既有
 ## 1. 目标 / 非目标
 
 **目标**(与 issue 交付一一对应):
-1. `held` + retryable reason ⇒ 自动重试(1m/2m/4m/8m 退避、epoch 内单调计数 cap=5;耗尽才转真 held + fail-loud 告警 Lead)。
+1. `held` + retryable reason ⇒ 自动重试(1m/2m/4m/8m/15m/30m/60m/120m 退避、epoch 内单调计数 cap=9;耗尽才转真 held + fail-loud 告警 Lead)。
 2. closeout 对 Linear 依赖降级:lookup 失败先查「Done 是否已由集成翻好」;Linear 完全不可达时本地清理(收体/归档/run completed)照走;Done 义务转为 durable 三态 disposition,deferred 走带 park/cancel 重仲裁的重试队列。
 3. 回归 fixture:瞬时失败自愈全级联(provider 级真实重放);持续不可达本地照走 + Done 入队 + 告警;预算耗尽;crash-point 可重放。
 
@@ -71,7 +71,7 @@ export function nextLandRetry(input: {
 
 实现时以 grep 全量核对三个 producer(land-executor authorize/主体、post-ship-finalization、preArbitrate)的 reason 字面,表有遗漏以「未知归 retryable」兜底。
 
-**预算规则(反震荡,R1#1)**:`retry_count` 是 **epoch 内所有 retryable reason 的合计单调计数** —— reason 文本变化**不**归零。归零唯一条件 = `retry_epoch_key` 变化,而 epoch key = **可证明的 durable progress 指纹**:`{land_operation_step 行数}:{最新 step 名}`。新 step receipt 落账(cool_triggered→merge_confirmed→cleanup_requested→…)才算前进;reason 在 `issue_closeout_incomplete` ↔ `land_execution_error` 间震荡而 step 无前进 → 计数持续累加 → 第 5 次 `held_exhausted`。对抗测试:任意无进展 reason 交替序列必在 5 次内停手。
+**预算规则(反震荡,R1#1;code review R1 加宽窗口)**:`retry_count` 是 **epoch 内所有 retryable reason 的合计单调计数** —— reason 文本变化**不**归零。归零唯一条件 = `retry_epoch_key` 变化,而 epoch key = **可证明的 durable progress 指纹**:`{land_operation_step 行数}:{最新 step 名}`。新 step receipt 落账(cool_triggered→merge_confirmed→cleanup_requested→…)才算前进;reason 在 `issue_closeout_incomplete` ↔ `land_execution_error` 间震荡而 step 无前进 → 计数持续累加。实现退避为 1m/2m/4m/8m/15m/30m/60m/120m,第 9 次才 `held_exhausted`;约 4 小时的恢复窗避免 Discord/worktree/Linear 等外部依赖在 15 分钟抖动后过早转人工。对抗测试:任意无进展 reason 交替序列必在有界 9 次内停手。
 
 **记账写点 = 一个 StateStore 原子方法(R2#1)**:现状 `land-executor.ts release()` 在 StateStore 事务之外调用 store,「同事务读指纹」与「executor 预计算传参」不能同时成立 —— 收敛为新方法 `releaseLandOperationWithRetryAccounting({operationId, ownerId, generation, class, reason, now})`:在**同一 `db.transaction` 内**验证 running/owner/generation → 读 operation 行 + step 指纹 → 调纯函数 `nextLandRetry` → 执行 disposition CAS → 返回终局 `{state, retryCount, epochKey, nextAttemptAt, lastError}`。executor 只消费结果,不在事务外预计算;waiting/terminal 走该方法内的字段冻结分支(waiting:预算三字段不动、`next_attempt_at` 置 NULL;held:全字段冻结 forensic)。现有 `setLandOperationDisposition` 签名保持字节兼容(legacy/测试调用不动)。StateStore 级测试:指纹读取、cap 决策、release 同一提交单元(注入并发扰动验证 CAS)。`held_exhausted` → 写 held 且 `last_error` 前缀 `retry_exhausted:`(原 reason 截断编码,合计 ≤500 字符,兼容 holdWorkflowLandNode 的 500 上限,R1#7)。
 
@@ -143,14 +143,21 @@ preArbitrate?: (issueId, projectName, alreadyLocked?) => Promise<
 
 ## 3. TDD 顺序(RED → GREEN)
 
-1. **刀 2 纯函数**:`land-retry-policy.test.ts` —— 分类表逐 reason;退避序列 1m/2m/4m/8m;**对抗测试:reason 震荡(closeout_incomplete ↔ land_execution_error 交替、step 无前进)5 次内 `held_exhausted`**;epoch key 变化(新 step receipt)归零;未知 reason 归 retryable;waiting 不记账。
+1. **刀 2 纯函数**:`land-retry-policy.test.ts` —— 分类表逐 reason;退避序列 1m/2m/4m/8m/15m/30m/60m/120m;**对抗测试:reason 震荡(closeout_incomplete ↔ land_execution_error 交替、step 无前进)第 9 次 `held_exhausted`**;epoch key 变化(新 step receipt)归零;未知 reason 归 retryable;waiting 不记账。
 2. **刀 1+3 StateStore**:`StateStore.land-lifecycle.test.ts` 增:新列迁移幂等(建两次);NULL 列行 runnable 语义逐字不变(F5);括号化谓词下 partial 未到点不被捞/不可 claim,`running` 过期 lease 分支不受 `next_attempt_at` 影响;到点可 claim;claim 预读与 UPDATE 同条件。
 3. **F1(FLY-1751 真实重放,provider 级,R1#5)**:
    - F1a:provider fresh read reject + observation=`completed` → 同 pass PASS → 本地级联全走(closeout→thread archive→run completed,Done 经 `already_completed` settled)。
    - F1b:provider fresh read reject + 无 observation → degraded PASS(审计事件在)→ 同 pass 本地级联全走;markIssueDone 同 fail → disposition=`deferred`;注入恢复 → 慢扫 settled。
    - F1c:provider fresh read **悬挂(never-resolving)** → 10s timeout → 走 F1b 路径(本地清理不被挂死)。
 4. **F2(consumer thrown → 退避恢复)**:preArbitrate thrown(`arbitration_failed:*`)一次 → operation `partial` + `retry_count=1` + `next_attempt_at≈+1m`(**断言非 held、run 仍 active**);推时钟 → 重试 → 级联全走。
-5. **F3(耗尽)**:arbitration 持续 thrown ×5 → 退避时间戳序列断言 → 第 5 次 operation `held`(`retry_exhausted:` 前缀)+ run `held` + alert payload 含 `{attempts, epochKey}`。
+5. **F3(耗尽)**:arbitration 持续 thrown ×9 → 退避时间戳序列断言 → 第 9 次 operation `held`(`retry_exhausted:` 前缀)+ run `held` + alert payload 含 `{attempts, epochKey}`。
+
+### Code review R1 收口(2026-08-14)
+
+- `post-ship-finalization` 的 manifest-completed / already-completed 两条 replay 短路也必须先重放并持久化 Linear disposition;记录失败返回 retryable partial,不允许被 `finalization_completed` 硬门确定性推成 held。
+- 已 settled 的 `done` / `canceled_refused` 单调不降级;后续 Linear 读失败算幂等成功。finalizer 被 kill switch 关闭或未配置时结算为 operator-refused,不创建永不出列的 deferred。
+- deferred sweep 增 `retry_count` / `next_attempt_at` / `last_attempt_at`,按 15m/30m/1h/2h/4h/8h/24h 轮转;固定前 10 条失败后会让出队头。24h 日告警只使用 operation/Lead/day 的稳定 payload,动态错误文本不参与 UID。
+- legacy finalizer 的 timeout/rejection 日志恢复;terminal classifier 同时识别带 `land_execution_error:` 包装的永久 receipt conflict。
 6. **F4(守卫)**:canceled observation / park tombstone → 拒绝不降级;markIssueDone 撞 canceled → `canceled_refused` 且零 Done 写;**defer 后 founder park → 慢扫重仲裁 → `canceled_refused`、零 Linear write**;慢扫 finalizer 悬挂 → 15s abort、单行隔离、rider 不卡死;**迟到写两例(R2#2):延迟到 timeout 后才推进到 update 的 client + timeout 后插 founder park → 断言 `updateIssue` 零调用(主路径、慢扫各一)**;reason 分类六个 `founder_review_*` 字面 + 一个未来未知字面逐一断言(R2#4)。
 7. **F5(crash-point + 哨兵)**:disposition 落账失败 → 返回 partial、run 未完成;deferred 已写但 run completion 未写 → 重放收敛;settled 重放幂等;**StateStore 负例:NULL disposition 不能记录新的 `finalization_completed`(R2#3);retry 记账原子性(指纹读取+cap 决策+release 同一提交单元,R2#1)**;既有 post-ship-finalization.test.ts(30)/StateStore.land-lifecycle(18)/dispatcher land 段全绿 + legacy 路径(DirectEventSink/event-route)对 degraded/retryable 维持零 mutation 短路(字节兼容断言)。
 

@@ -533,7 +533,7 @@ describe("land executor", () => {
 		store.close();
 	});
 
-	it("turns the fifth retryable failure into a fail-loud held operation", async () => {
+	it("turns the ninth retryable failure into a fail-loud held operation", async () => {
 		const { store, operation } = await fixture();
 		const attempts = [
 			"2026-07-21T20:00:00.000Z",
@@ -541,6 +541,10 @@ describe("land executor", () => {
 			"2026-07-21T20:03:00.000Z",
 			"2026-07-21T20:07:00.000Z",
 			"2026-07-21T20:15:00.000Z",
+			"2026-07-21T20:30:00.000Z",
+			"2026-07-21T21:00:00.000Z",
+			"2026-07-21T22:00:00.000Z",
+			"2026-07-22T00:00:00.000Z",
 		];
 		let attempt = 0;
 		const deps = {
@@ -562,11 +566,11 @@ describe("land executor", () => {
 
 		for (let index = 0; index < attempts.length; index += 1) {
 			const result = await executeLandOperation(operation.operation_id, deps);
-			expect(result.status).toBe(index === 4 ? "held" : "partial");
+			expect(result.status).toBe(index === 8 ? "held" : "partial");
 		}
 		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
 			state: "held",
-			retry_count: 5,
+			retry_count: 9,
 			retry_epoch_key: "0:start",
 			next_attempt_at: null,
 			last_error: "retry_exhausted:linear_lookup_failed_retryable",

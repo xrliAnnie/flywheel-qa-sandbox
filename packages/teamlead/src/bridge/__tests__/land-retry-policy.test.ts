@@ -38,16 +38,20 @@ describe("land retry policy", () => {
 		"ship_workflow_failed:tests failed",
 		"cool_trigger_receipt_corrupt",
 		"land_step_receipt_conflict",
+		"land_execution_error:land_step_receipt_conflict",
 	])("classifies %s as terminal", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("terminal");
 	});
 
-	it("backs retryable failures off for 1m, 2m, 4m, and 8m before exhausting on attempt five", () => {
+	it("backs retryable failures off through a bounded four-hour recovery window", () => {
 		const epochKey = "3:cleanup_requested";
 		const start = Date.parse("2026-08-14T20:00:00.000Z");
 		let retryCount = 0;
 		let retryEpochKey: string | null = null;
-		const expectedDelays = [60_000, 120_000, 240_000, 480_000];
+		const expectedDelays = [
+			60_000, 120_000, 240_000, 480_000, 900_000, 1_800_000, 3_600_000,
+			7_200_000,
+		];
 
 		for (const delay of expectedDelays) {
 			const now = new Date(start + retryCount * 1_000).toISOString();
@@ -80,7 +84,7 @@ describe("land retry policy", () => {
 		});
 		expect(exhausted).toMatchObject({
 			state: "held",
-			retryCount: 5,
+			retryCount: 9,
 			retryEpochKey: epochKey,
 			nextAttemptAt: null,
 		});
@@ -91,6 +95,10 @@ describe("land retry policy", () => {
 
 	it("does not reset the budget when retryable reasons oscillate without durable progress", () => {
 		const reasons = [
+			"issue_closeout_incomplete",
+			"land_execution_error:discord unavailable",
+			"issue_closeout_incomplete",
+			"land_execution_error:discord unavailable",
 			"issue_closeout_incomplete",
 			"land_execution_error:discord unavailable",
 			"issue_closeout_incomplete",
@@ -116,7 +124,9 @@ describe("land retry policy", () => {
 			return result;
 		});
 
-		expect(results.map((result) => result.retryCount)).toEqual([1, 2, 3, 4, 5]);
+		expect(results.map((result) => result.retryCount)).toEqual([
+			1, 2, 3, 4, 5, 6, 7, 8, 9,
+		]);
 		expect(results.at(-1)?.state).toBe("held");
 	});
 
