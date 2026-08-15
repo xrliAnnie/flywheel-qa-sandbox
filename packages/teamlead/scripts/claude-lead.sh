@@ -266,6 +266,11 @@ export FLYWHEEL_ROOT
 # path. The lib defines functions only; it does not change shell options.
 # shellcheck source=lib/reap-orphan-adapters.sh
 source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
+# FLY-1716: launcher and SessionStart(clear) share one authority lock. The
+# resume-gate library defines functions only; its reader runs immediately
+# before the v2 session decision near the physical launch.
+# shellcheck source=lib/lead-session-resume-gate.sh
+source "${SCRIPT_DIR}/lib/lead-session-resume-gate.sh"
 # FLY-1671: restart reporting observes a carrier-bound body breadcrumb. Missing
 # or malformed evidence is diagnostic only and must never block Lead startup.
 _LEAD_BODY_EVIDENCE_LIB="${FLYWHEEL_ROOT}/scripts/lib/lead-body-evidence.sh"
@@ -1361,10 +1366,8 @@ fi
 # restart guard above.
 converge_flywheel_bin
 
-# ── GEO-285: Early auto-compact + env exports ─────────────
-export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+# ── Lead env exports ────────────────────────────────────────
 export FLYWHEEL_LEAD_ID="$LEAD_ID"
-log "Auto-compact threshold: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE}%"
 
 # ── Bootstrap function ──────────────────────────────────────
 # GEO-285: Extracted from inline code. Called only on fresh start,
@@ -1624,31 +1627,18 @@ _emit_launch_plan() {
   printf 'LAUNCH_PLAN_END\n'
 }
 
-# Launch Claude as the private tmux server's only child.
-_launch_claude() {
-  local -a launch_args=("$@")
-  local _fly1496_entry="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-model-launch.js"
-  local _fly1496_result=""
-  local _fly1496_model="claude-fable-5"
-  local _fly1496_raw_model=""
-  local _fly1496_effort=""
-  local _fly1496_raw_effort=""
-  # FLY-1650: FLY-583's companion fallback, narrowed by the resolver to what the
-  # RESOLVED model accepts. Seeded with the historical literal for the
-  # resolver-unavailable path below, which launches literal Fable — a model
-  # that accepts xhigh, so that path is provably byte-identical.
-  local _fly1496_companion_effort=xhigh
-  local _fly1496_reason="resolver_unavailable"
-  local _fly1496_substituted=true
-  local _fly1496_arg _fly1496_skip
-  local -a _fly1496_filtered=()
-
-  # FLY-1496: every PHYSICAL launch re-reads projects.json through the validated
-  # ProjectConfig path and resolves the same hot model snapshot. Manifest and
-  # frozen launchd env values are evidence only — never inputs.
-  if command -v jq >/dev/null 2>&1 && [ -f "$_fly1496_entry" ]; then
-    _fly1496_result="$(
-      FLY1496_ENTRY="$_fly1496_entry" \
+# FLY-1716: freeze the canonical model decision before the resume gate. The
+# physical launcher consumes this exact JSON later instead of re-reading a hot
+# projects.json snapshot, so context-window selection and --model cannot split.
+_FLY1496_PRE_RESOLVED=false
+_FLY1496_PRE_RESOLVED_RESULT=""
+_pre_resolve_lead_model_decision() {
+  [ "$_FLY1496_PRE_RESOLVED" = true ] && return 0
+  local entry="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-model-launch.js"
+  local result=""
+  if command -v jq >/dev/null 2>&1 && [ -f "$entry" ]; then
+    result="$(
+      FLY1496_ENTRY="$entry" \
       FLY1496_PROJECT="$PROJECT_NAME" \
       FLY1496_LEAD="$LEAD_ID" \
       node --input-type=module -e '
@@ -1667,8 +1657,34 @@ _launch_claude() {
           }));
         }
       '
-    )" || _fly1496_result=""
+    )" || result=""
   fi
+  _FLY1496_PRE_RESOLVED_RESULT="$result"
+  _FLY1496_PRE_RESOLVED=true
+}
+
+# Launch Claude as the private tmux server's only child.
+_launch_claude() {
+  local -a launch_args=("$@")
+  local _fly1496_result=""
+  local _fly1496_model="claude-fable-5"
+  local _fly1496_raw_model=""
+  local _fly1496_effort=""
+  local _fly1496_raw_effort=""
+  # FLY-1650: FLY-583's companion fallback, narrowed by the resolver to what the
+  # RESOLVED model accepts. Seeded with the historical literal for the
+  # resolver-unavailable path below, which launches literal Fable — a model
+  # that accepts xhigh, so that path is provably byte-identical.
+  local _fly1496_companion_effort=xhigh
+  local _fly1496_reason="resolver_unavailable"
+  local _fly1496_substituted=true
+  local _fly1496_arg _fly1496_skip
+  local -a _fly1496_filtered=()
+
+  # FLY-1496/FLY-1716: every physical launch still resolves the hot registry,
+  # but the result is frozen once and shared with the pre-resume context gate.
+  _pre_resolve_lead_model_decision
+  _fly1496_result="$_FLY1496_PRE_RESOLVED_RESULT"
 
   if [ -n "$_fly1496_result" ] && jq -e '.ok == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
     _fly1496_model=$(jq -r '.decision.model' <<<"$_fly1496_result")
@@ -1858,7 +1874,6 @@ _launch_claude() {
     # plugin applies no core exemption. This explicit pass is required at the
     # same env -i barrier as TEAMLEAD_ISSUE_PREFIXES.
     -e "DISCORD_CORE_CHANNEL=${LEAD_CORE_CHANNEL:-}"
-    -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${_cz_openai_key}"
     -e "HOME=${HOME}"
     -e "USER=${_lead_os_user}"
@@ -1922,6 +1937,11 @@ _launch_claude() {
   if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
+  env_args+=(
+    -e "FLYWHEEL_LEAD_LAUNCH_GEN=${FLYWHEEL_LEAD_LAUNCH_GEN:-}"
+    -e "FLYWHEEL_SESSION_ID_FILE=${FLYWHEEL_SESSION_ID_FILE:-}"
+    -e "FLYWHEEL_LEAD_AUTHORITY_LIB=${SCRIPT_DIR}/lib/lead-session-authority.sh"
+  )
   env_args+=(-e "FLYWHEEL_LEAD_CARRIER=v2")
 
   # FLY-314 Phase 2 (Part b) / FLY-535 / FLY-569: roundtable reply-in-thread
@@ -2263,10 +2283,11 @@ CLAUDE_ARGS=(
   --permission-mode bypassPermissions
 )
 
-# FLY-1496: model and effort are deliberately absent from this static launch
-# array. _launch_claude derives both from projects.json on EVERY child launch,
-# after all static args are built. Frozen launchd env remains carrier evidence
-# for fleet tooling but has no runtime authority.
+# FLY-1496/FLY-1716: model and effort are deliberately absent from this static
+# launch array. The physical-launch path resolves both from projects.json after
+# all static args are built, then freezes that decision for the context gate and
+# child argv. Frozen launchd env remains carrier evidence for fleet tooling but
+# has no runtime authority.
 
 # FLY-143: claude-in-chrome — env-gated, default OFF.
 # `--chrome` + `--permission-mode bypassPermissions` together set
@@ -3087,11 +3108,10 @@ if [ "$_v2_identity_rc" -eq 1 ]; then
     "${PROJECT_NAME}/${LEAD_ID} could not acquire its identity lease; launch is degraded and receipt settlement remains fail-closed."
 fi
 
-  _v2_is_resume=false
-  _v2_session_id=""
-  if [ -s "$SESSION_ID_FILE" ]; then
-    _v2_session_id="$(head -1 "$SESSION_ID_FILE" 2>/dev/null || true)"
-    [ -z "$_v2_session_id" ] || _v2_is_resume=true
+  _pre_resolve_lead_model_decision
+  if ! lead_session_prepare; then
+    log "FATAL: Lead context resume gate could not establish launch authority"
+    exit 1
   fi
 
   if [ "$_v2_is_resume" = true ]; then

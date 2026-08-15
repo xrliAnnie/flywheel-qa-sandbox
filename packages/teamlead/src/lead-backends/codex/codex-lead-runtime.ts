@@ -404,7 +404,6 @@ export const FULL_ACCESS_ENV_ALLOWLIST = [
 	"TEAMLEAD_API_TOKEN",
 	"TEAMLEAD_ISSUE_PREFIXES",
 	"DISCORD_CORE_CHANNEL",
-	"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
 	"OPENAI_API_KEY",
 	"FLYWHEEL_TEAMLEAD_SCRIPT_DIR",
 	// gh/git auth — the ONLY sanctioned addition beyond the Claude-pane set (plan

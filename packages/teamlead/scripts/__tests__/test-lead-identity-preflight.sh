@@ -449,10 +449,15 @@ else
 fi
 
 identity_line="$(rg -n '^[[:space:]]+lead_identity_v2_acquire_bind' "$LEAD_SH" | head -1 | cut -d: -f1)"
-session_line="$(rg -n '^[[:space:]]+_v2_is_resume=false' "$LEAD_SH" | head -1 | cut -d: -f1)"
-if [ -n "$identity_line" ] && [ -n "$session_line" ] \
-  && [ "$identity_line" -lt "$session_line" ]; then
-  ok "production v2 body binds identity before choosing a session"
+model_line="$(rg -n '^[[:space:]]+_pre_resolve_lead_model_decision$' "$LEAD_SH" | tail -1 | cut -d: -f1)"
+gate_line="$(rg -n '^[[:space:]]+if ! lead_session_prepare;' "$LEAD_SH" | tail -1 | cut -d: -f1)"
+launch_line="$(rg -n '^[[:space:]]+_launch_claude "\$\{_v2_launch_args\[@\]\}"' "$LEAD_SH" | tail -1 | cut -d: -f1)"
+if [ -n "$identity_line" ] && [ -n "$model_line" ] \
+  && [ -n "$gate_line" ] && [ -n "$launch_line" ] \
+  && [ "$identity_line" -lt "$model_line" ] \
+  && [ "$model_line" -lt "$gate_line" ] \
+  && [ "$gate_line" -lt "$launch_line" ]; then
+  ok "production v2 body binds identity, resolves the model, and gates before launch"
 else
   bad "production v2 identity ordering drifted"
 fi

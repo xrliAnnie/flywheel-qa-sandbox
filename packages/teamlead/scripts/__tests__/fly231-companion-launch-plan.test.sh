@@ -54,10 +54,10 @@ fixture_projects() {
   cat <<JSON
 [
  {"projectName":"growth","projectRoot":"${h}/proj-growth","leads":[
-   {"agentId":"mufasa-lead","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
+   {"agentId":"mufasa-lead","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","botUserId":"10000000000000001","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
  {"projectName":"geoforge3d","projectRoot":"${h}/proj-gf","leads":[
-   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","canSpawnRunners":true},
-   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","canSpawnRunners":false}]}
+   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true},
+   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","botUserId":"10000000000000003","canSpawnRunners":false}]}
 ]
 JSON
 }
@@ -237,21 +237,32 @@ normalize_plan() {
 # goldens. The reverse (env=1 → still appended) is covered by T11 below.
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
-env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
 env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
+env=DISCORD_EXPECTED_BOT_USER_ID=empty
+env=DISCORD_IDENTITY_MODE=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
 env=FLYWHEEL_FOUNDER_TZ=empty
+env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
+env=FLYWHEEL_LEAD_BACKEND=empty
+env=FLYWHEEL_LEAD_CARRIER=set
 env=FLYWHEEL_LEAD_ID=set
+env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
+env=FLYWHEEL_LEAD_KEY=empty
+env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
+env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
+env=FLYWHEEL_LEAD_ROLE=empty
+env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
 env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
+env=FLYWHEEL_SESSION_ID_FILE=empty
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
@@ -286,21 +297,32 @@ rule=xiaohongshu-memory-rules.md
 G
 read -r -d '' COS_GOLDEN <<'G'
 env=BRIDGE_URL=set
-env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
 env=CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=set
 env=DISCORD_BOT_TOKEN=set
 env=DISCORD_CORE_CHANNEL=empty
+env=DISCORD_EXPECTED_BOT_USER_ID=empty
+env=DISCORD_IDENTITY_MODE=empty
 env=DISCORD_STATE_DIR=set
 env=FLYWHEEL_COMM_CLI=set
 env=FLYWHEEL_COMM_DB=set
 env=FLYWHEEL_FOUNDER_TZ=empty
+env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
+env=FLYWHEEL_LEAD_BACKEND=empty
+env=FLYWHEEL_LEAD_CARRIER=set
 env=FLYWHEEL_LEAD_ID=set
+env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
+env=FLYWHEEL_LEAD_KEY=empty
+env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
+env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
+env=FLYWHEEL_LEAD_ROLE=empty
+env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
 env=FLYWHEEL_RECEIPT_WINDOW_P0_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
+env=FLYWHEEL_SESSION_ID_FILE=empty
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set

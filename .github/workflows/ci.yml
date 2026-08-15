@@ -552,6 +552,10 @@ jobs:
         run: |
           command -v python3
           command -v rg
+          bash scripts/__tests__/autocompact-override-retirement.test.sh
+          bash scripts/__tests__/session-ctx-usage.test.sh
+          bash scripts/__tests__/lead-session-resume-gate.test.sh
+          bash scripts/__tests__/lead-clear-session-authority.test.sh
           bash scripts/__tests__/test-claude-lead-adopt-inflight.test.sh
           bash scripts/__tests__/test-claude-lead-session-start-adopt.test.sh
 
