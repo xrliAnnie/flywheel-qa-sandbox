@@ -28,7 +28,6 @@ _lead_authority_reap_stale() {
 
   if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$acquired" =~ ^[0-9]+$ ]]; then
     kill -0 "$pid" 2>/dev/null && return 1
-    [ $((now - acquired)) -ge "$stale_sec" ] || return 1
   else
     mtime="$(_lead_authority_mtime "$lock_dir")" || return 1
     [[ "$mtime" =~ ^[0-9]+$ ]] || return 1

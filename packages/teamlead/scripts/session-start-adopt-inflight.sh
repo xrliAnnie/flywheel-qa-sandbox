@@ -201,10 +201,14 @@ else
 fi
 
 bootstrap_ok=false
-bootstrap_path="${LEAD_WORKSPACE:-.}/agent.md"
-if printf '[clear-bootstrap] 新会话已接力。请重新读取 %s 与本地 identity/rules，并继续处理 in-flight mailbox。\n' \
-  "$bootstrap_path"; then
+bootstrap_path="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}/agents/${lead_id}.md"
+if [ -f "$bootstrap_path" ] \
+  && printf '[clear-bootstrap] 新会话已接力。请重新读取 %s 与当前 workspace 的 CLAUDE.md/AGENTS.md，并继续处理 in-flight mailbox。\n' \
+    "$bootstrap_path"; then
   bootstrap_ok=true
+else
+  printf '[session-start-adopt-inflight] identity file missing; clear bootstrap unavailable: %s\n' \
+    "$bootstrap_path" >&2
 fi
 if [ "$adopt_ok" = true ] && [ "$adopt_count" -gt 0 ]; then
   printf '[adopt-inflight] 已把上一现场的 %s 条在途消息重新排队，稍后将重投本会话（注意 [lead-instruction <id>] 幂等：已处理过的指令不要重做）\n' \

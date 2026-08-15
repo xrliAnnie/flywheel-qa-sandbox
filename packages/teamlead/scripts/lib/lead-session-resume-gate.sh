@@ -12,7 +12,7 @@ fi
 
 _lead_session_project_slug() {
   local path="$1"
-  printf '%s' "${path//\//-}"
+  printf '%s' "${path//[^a-zA-Z0-9]/-}"
 }
 
 _lead_session_model_from_decision() {
@@ -129,7 +129,7 @@ _lead_session_prepare_locked() {
       transcript_root="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
       project_slug="$(_lead_session_project_slug "$LEAD_WORKSPACE")"
       transcript="${transcript_root}/projects/${project_slug}/${session_id}.jsonl"
-      reader="${FLYWHEEL_SESSION_CTX_READER:-${FLYWHEEL_ROOT}/packages/teamlead/scripts/lib/session-ctx-usage.mjs}"
+      reader="${FLYWHEEL_SESSION_CTX_READER:-${SCRIPT_DIR}/lib/session-ctx-usage.mjs}"
       if [ -f "$reader" ]; then
         ctx="$(FLYWHEEL_LEAD_CTX_RESUME_MAX="$threshold" \
           node "$reader" --transcript "$transcript" --window "$window" 2>/dev/null || true)"
@@ -147,6 +147,9 @@ _lead_session_prepare_locked() {
       action="resumed"
       _v2_is_resume=true
     else
+      if [ "$verdict" = unknown ]; then
+        log "WARNING: Context resume gate returned unknown for ${session_id}: $(jq -r '.reason' <<< "$ctx")"
+      fi
       pct="na"
       if jq -e '.estTokens | type == "number"' >/dev/null 2>&1 <<< "$ctx"; then
         pct="$(jq -r '(.estTokens * 100 / .window) | floor' <<< "$ctx")"
@@ -175,10 +178,9 @@ _lead_session_prepare_locked() {
     --argjson ctx "$ctx" \
     '$ctx + {gate:$gate,sessionId:$sessionId,gen:$gen,ts:$ts,action:$action,model:$model}')" \
     || return 1
-  _lead_session_write_gate_receipt "$receipt_file" "$receipt" || {
-    log "FATAL: failed to persist Lead launch gate receipt"
-    return 1
-  }
+  if ! _lead_session_write_gate_receipt "$receipt_file" "$receipt"; then
+    log "WARNING: failed to persist Lead context gate receipt: ${receipt_file}"
+  fi
   return 0
 }
 

@@ -29,7 +29,11 @@ TEST_PROJECT_NAME=fixture-project
 TEST_LAUNCH_GEN=40000000-0000-4000-8000-000000000001
 TEST_STATE_ROOT="$TMP/state-root"
 TEST_SESSION_FILE="$TMP/sessions/${TEST_PROJECT_NAME}-eng-lead.session-id"
-mkdir -p "$TEST_STATE_ROOT/state/lead-launch-gen" "$(dirname "$TEST_SESSION_FILE")" "$TMP/workspace"
+TEST_HOME="$TMP/home"
+TEST_IDENTITY_FILE="$TEST_HOME/.claude/agents/eng-lead.md"
+mkdir -p "$TEST_STATE_ROOT/state/lead-launch-gen" "$(dirname "$TEST_SESSION_FILE")" \
+  "$(dirname "$TEST_IDENTITY_FILE")"
+printf '# fixture Lead identity\n' > "$TEST_IDENTITY_FILE"
 printf '%s\n' "$TEST_LAUNCH_GEN" \
   > "$TEST_STATE_ROOT/state/lead-launch-gen/${TEST_PROJECT_NAME}-eng-lead.gen"
 printf '%s\n' '50000000-0000-4000-8000-000000000001' > "$TEST_SESSION_FILE"
@@ -51,7 +55,8 @@ run_hook() {
     FLYWHEEL_SESSION_ID_FILE="$TEST_SESSION_FILE" \
     FLYWHEEL_LEAD_AUTHORITY_LIB="$ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh" \
     FLYWHEEL_STATE_DIR="$TEST_STATE_ROOT" \
-    LEAD_WORKSPACE="$TMP/workspace" \
+    HOME="$TEST_HOME" \
+    LEAD_WORKSPACE= \
     FLYWHEEL_COMM_CLI="${TEST_COMM_CLI-$TMP/comm-cli.js}" \
     FLYWHEEL_COMM_DB="${TEST_COMM_DB-$TMP/comm.db}" \
     bash "$HOOK" > "$TMP/stdout" 2> "$TMP/stderr"

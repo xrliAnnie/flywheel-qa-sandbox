@@ -151,7 +151,11 @@ if lead_session_prepare \
   && [ "$_v2_is_resume" = false ] \
   && jq -e '.verdict == "unknown" and .reason == "invalid_threshold" and
     .threshold == null and .action == "parked"' "$(receipt_file)" >/dev/null; then
-  ok "an invalid configured threshold fails closed instead of silently defaulting"
+  if grep -q 'WARNING: Context resume gate returned unknown.*invalid_threshold' "$TMP/gate.log"; then
+    ok "an invalid configured threshold fails closed and emits a searchable warning"
+  else
+    bad "invalid configured threshold was not visible in the launcher log"
+  fi
 else
   bad "invalid configured threshold did not fail closed"
 fi
@@ -193,11 +197,78 @@ else
   bad "launch receipt history was not append-only"
 fi
 
-slug="$(_lead_session_project_slug '/Users/xiaorongli//flywheel-lead-workspace/flywheel-cos-lead')"
+slug="$(_lead_session_project_slug '/Users/xiaorongli/.flywheel/lead-workspace/flywheel-cos-lead')"
 if [ "$slug" = '-Users-xiaorongli--flywheel-lead-workspace-flywheel-cos-lead' ]; then
   ok "Claude project slug derivation matches the real Cass transcript directory"
 else
   bad "Claude project slug derivation drifted ($slug)"
+fi
+
+production_slug_id="10000000-0000-4000-8000-000000000010"
+setup_case production-slug "$production_slug_id"
+LEAD_WORKSPACE="$CASE_ROOT/home/.flywheel/lead-workspace/$LEAD_ID"
+expected_slug="$(printf '%s' "$LEAD_WORKSPACE" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g')"
+TRANSCRIPT_DIR="$CLAUDE_CONFIG_DIR/projects/$expected_slug"
+TRANSCRIPT_FILE="$TRANSCRIPT_DIR/${production_slug_id}.jsonl"
+mkdir -p "$TRANSCRIPT_DIR"
+assistant_line 10000 > "$TRANSCRIPT_FILE"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && [ "$_v2_session_id" = "$production_slug_id" ] \
+  && ! find "$(dirname "$SESSION_ID_FILE")" -maxdepth 1 \
+    -name "$(basename "$SESSION_ID_FILE").parked-*" -print | grep -q .; then
+  ok "a healthy production-shaped .flywheel transcript resumes instead of silently parking"
+else
+  bad "production-shaped healthy transcript did not resume"
+fi
+
+packaged_id="10000000-0000-4000-8000-000000000011"
+setup_case packaged-reader "$packaged_id"
+assistant_line 10000 > "$TRANSCRIPT_FILE"
+source_script_dir="$SCRIPT_DIR"
+source_flywheel_root="$FLYWHEEL_ROOT"
+SCRIPT_DIR="$CASE_ROOT/node_modules/flywheel-teamlead/scripts"
+FLYWHEEL_ROOT="$CASE_ROOT"
+mkdir -p "$SCRIPT_DIR/lib"
+cp "$READER" "$SCRIPT_DIR/lib/session-ctx-usage.mjs"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && jq -e '.verdict == "safe_resume" and .action == "resumed"' \
+    "$(receipt_file)" >/dev/null; then
+  ok "the packaged launcher resolves the reader from its shipped scripts/lib closure"
+else
+  bad "packaged launcher could not resolve the shipped context reader"
+fi
+SCRIPT_DIR="$source_script_dir"
+FLYWHEEL_ROOT="$source_flywheel_root"
+
+receipt_failure_id="10000000-0000-4000-8000-000000000012"
+setup_case receipt-failure "$receipt_failure_id"
+assistant_line 10000 > "$TRANSCRIPT_FILE"
+mkdir -p "$FLYWHEEL_STATE_DIR/state"
+printf 'blocks receipt directory\n' > "$FLYWHEEL_STATE_DIR/state/lead-launch-gate"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && [ "$(cat "$SESSION_ID_FILE")" = "$receipt_failure_id" ] \
+  && grep -q 'WARNING: failed to persist Lead context gate receipt' "$TMP/gate.log"; then
+  ok "an audit-receipt failure warns without preventing a safe Lead launch"
+else
+  bad "audit-receipt failure incorrectly aborted or mutated the Lead launch"
+fi
+
+dead_owner_id="10000000-0000-4000-8000-000000000013"
+setup_case dead-owner "$dead_owner_id"
+assistant_line 10000 > "$TRANSCRIPT_FILE"
+dead_lock_dir="$FLYWHEEL_STATE_DIR/state/lead-authority-lock/${PROJECT_NAME}-${LEAD_ID}"
+mkdir -p "$dead_lock_dir"
+printf '999999999\t%s\tdead-owner\n' "$(date +%s)" > "$dead_lock_dir/owner"
+FLYWHEEL_LEAD_AUTHORITY_TIMEOUT_SEC=0
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && [ ! -e "$dead_lock_dir" ]; then
+  ok "a provably dead lock owner is reaped immediately"
+else
+  bad "dead lock owner waited for the malformed-lock stale window"
 fi
 
 resolver_body_count="$(grep -c 'await import(process.env.FLY1496_ENTRY)' \

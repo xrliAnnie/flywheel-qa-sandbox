@@ -44,7 +44,11 @@ setup_case() {
   STDERR_FILE="$CASE_ROOT/stderr"
   COMM_CLI="$CASE_ROOT/comm-cli.js"
   COMM_DB="$CASE_ROOT/comm.db"
-  mkdir -p "$(dirname "$SESSION_FILE")" "$(dirname "$GEN_FILE")" "$CASE_ROOT/workspace"
+  HOME_DIR="$CASE_ROOT/home"
+  IDENTITY_FILE="$HOME_DIR/.claude/agents/${LEAD_ID}.md"
+  mkdir -p "$(dirname "$SESSION_FILE")" "$(dirname "$GEN_FILE")" \
+    "$(dirname "$IDENTITY_FILE")"
+  printf '# fixture Lead identity\n' > "$IDENTITY_FILE"
   printf '%s\n' "$old_id" > "$SESSION_FILE"
   printf '%s\n' "$gen_a" > "$GEN_FILE"
   : > "$CALLS"
@@ -77,7 +81,8 @@ run_hook() {
     FLYWHEEL_STATE_DIR="$STATE_ROOT" \
     FLYWHEEL_COMM_CLI="$COMM_CLI" \
     FLYWHEEL_COMM_DB="$COMM_DB" \
-    LEAD_WORKSPACE="$CASE_ROOT/workspace" \
+    HOME="$HOME_DIR" \
+    LEAD_WORKSPACE= \
     bash "$HOOK" > "$STDOUT_FILE" 2> "$STDERR_FILE"
 }
 
@@ -90,6 +95,7 @@ if [ "$(cat "$SESSION_FILE")" = "$new_a" ] \
   && grep -q "$old_id" "${SESSION_FILE}.history" \
   && grep -q '3 条在途消息' "$STDOUT_FILE" \
   && grep -q 'clear-bootstrap' "$STDOUT_FILE" \
+  && grep -Fq "$IDENTITY_FILE" "$STDOUT_FILE" \
   && jq -e '.status == "completed" and .steps.fence.ok == true and
     .steps.claim.state == "created" and .steps.adopt.ok == true and
     .steps.adopt.count == 3 and .steps.writeback.ok == true and
@@ -210,6 +216,22 @@ if [ "$(cat "$SESSION_FILE")" = "$old_id" ] \
   ok "writeback failure is recorded without suppressing adoption or bootstrap"
 else
   bad "writeback failure short-circuited another business step"
+fi
+
+setup_case bootstrap-missing
+new_bootstrap_missing="20000000-0000-4000-8000-000000000013"
+rm -f "$IDENTITY_FILE"
+run_hook "$new_bootstrap_missing"
+if [ "$(cat "$SESSION_FILE")" = "$new_bootstrap_missing" ] \
+  && [ "$(wc -l < "$CALLS" | tr -d ' ')" -eq 1 ] \
+  && ! grep -q 'clear-bootstrap' "$STDOUT_FILE" \
+  && grep -q 'identity file missing' "$STDERR_FILE" \
+  && jq -e '.status == "completed" and .steps.adopt.ok == true and
+    .steps.writeback.ok == true and .steps.bootstrap.ok == false' \
+    "$RECEIPT_DIR/${gen_a}-${new_bootstrap_missing}.json" >/dev/null; then
+  ok "a missing real identity file is visible and recorded without short-circuiting continuity"
+else
+  bad "missing identity file was falsely reported as a successful bootstrap"
 fi
 
 setup_case lock-timeout
