@@ -1,14 +1,14 @@
 ---
 issue: FLY-1770
 phase: implement
-phaseCursor: 1/7
-updated: 2026-08-14T23:59:07.970Z
-nextStep: add StateStore schema, atomic retry accounting, and due claim gates
-  via RED tests
+phaseCursor: 2/7
+updated: 2026-08-15T00:04:48.847Z
+nextStep: "RED: resumable pre-arbitration degradation and durable Linear Done
+  disposition"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1770 progress
-**phase**: implement (1/7)
-**next**: add StateStore schema, atomic retry accounting, and due claim gates via RED tests
+**phase**: implement (2/7)
+**next**: RED: resumable pre-arbitration degradation and durable Linear Done disposition
