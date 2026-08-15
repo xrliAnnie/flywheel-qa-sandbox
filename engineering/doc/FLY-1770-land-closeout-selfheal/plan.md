@@ -4,7 +4,7 @@ Issue: FLY-1770 (https://linear.app/geoforge3d/issue/FLY-1770/机制-land-收尾
 日期: 2026-08-14
 基于: research.md
 
-**Status**: codex-approved(4 轮 design review:R1 七项 → R2 四项 → R3 一项 → R4 APPROVED;变更摘要见 §7/§8/§9。R4 non-blocking 备注:helper 保持单一来源;timeout/迟到 branch 测试用 fake timers + 显式 microtask flush,防测试自身悬挂 handle)
+**Status**: 原稿 codex-approved(4 轮 design review 对旧 blob `5adde5bb`:R1 七项 → R2 四项 → R3 一项 → R4 APPROVED;变更摘要见 §7/§8/§9。R4 non-blocking 备注:helper 保持单一来源;timeout/迟到 branch 测试用 fake timers + 显式 microtask flush,防测试自身悬挂 handle)。**重派确认复审**(2026-08-14,HEAD `15a4ef70a`,Bridge fail-closed design gate):确认轮 R5 三项 + R6 三项全部折入(刀 7 / §10);当前修订版的终局 verdict 以本 exec 的 Bridge design gate 回执(`.flywheel/runs/<exec>/codex/design-review.json`)为准,不在本行自证。
 
 ## 0. 一句话
 
@@ -19,7 +19,7 @@ held 语义纯化为「需要人的真终态」:一切 retryable 失败走既有
 
 **非目标**:不改 `:cool:`/merge 判定/QA verdict/gate 逻辑;不碰 FLY-1715 外部 merge 变体家族其它成员;不建跨 issue 通用 held 重试框架或通用 Linear 写队列;不改 `markLinearIssueDone` 守卫语义(只消费);**不加任何新 env flag**(FLY-1466 铁律);**legacy(非 land)finalization 路径字节兼容**(degraded-PASS 只对 resumable/land 生效,见刀 4)。
 
-## 2. 改动清单(7 刀,依赖序)
+## 2. 改动清单(8 刀,依赖序)
 
 ### 刀 0 — 存量 held 行的显式裁定(R1#2)
 
@@ -30,14 +30,19 @@ held 语义纯化为「需要人的真终态」:一切 retryable 失败走既有
 `packages/teamlead/src/StateStore.ts`(建表处 :16679 + 既有幂等 ADD COLUMN 迁移形态,FLY-267 同款):
 
 ```sql
-retry_count             INTEGER NOT NULL DEFAULT 0  -- epoch 内单调 attempt 计数(fault+progress 合计)
-retry_epoch_key         TEXT                        -- 进展指纹;变化 = 可证明的 durable progress → 计数归零
-next_attempt_at         TEXT                        -- 退避闸;NULL = 随时 runnable(存量行为)
-linear_done_disposition TEXT                        -- NULL | 'done' | 'canceled_refused' | 'deferred'
-linear_done_deferred_at TEXT                        -- 入队时刻(disposition='deferred' 时非空)
-linear_done_settled_at  TEXT                        -- 出列时刻(done / canceled_refused / 慢扫成功)
-linear_done_last_reason TEXT                        -- 最近一次 markIssueDone 失败原因(≤200 字符截断)
+retry_count                 INTEGER NOT NULL DEFAULT 0  -- epoch 内单调 attempt 计数(fault+progress 合计)
+retry_epoch_key             TEXT                        -- 进展指纹;变化 = 可证明的 durable progress → 计数归零
+next_attempt_at             TEXT                        -- 退避闸;NULL = 随时 runnable(存量行为)
+linear_done_disposition     TEXT                        -- NULL | 'done' | 'canceled_refused' | 'deferred'
+linear_done_deferred_at     TEXT                        -- 入队时刻(disposition='deferred' 时非空)
+linear_done_settled_at      TEXT                        -- 出列时刻(done / canceled_refused / 慢扫成功)
+linear_done_last_reason     TEXT                        -- 最近一次 markIssueDone 失败原因(经刀 7 归一化,≤200 字符)
+linear_done_retry_count     INTEGER NOT NULL DEFAULT 0  -- deferred 慢扫轮转计数(code review R1 收口)
+linear_done_next_attempt_at TEXT                        -- deferred 慢扫退避闸(15m/30m/1h/2h/4h/8h/24h)
+linear_done_last_attempt_at TEXT                        -- deferred 慢扫最近尝试时刻
 ```
+
+(共 10 列为最终规范;后三列由 code review R1 收口补入,此处折回刀 1 作唯一合同 —— R5#2。)
 
 存量行全 NULL/0 → 行为逐字不变(F5 哨兵)。新时间戳走 `workflowFiniteTimestamp` 校验。索引:对 runnable 查询与 deferred 慢扫查询各跑 EXPLAIN 实测;如需新索引用**新名字**建(`idx_land_operation_work` 系 `IF NOT EXISTS`,无法原地换定义,R1#7)。
 
@@ -46,20 +51,30 @@ linear_done_last_reason TEXT                        -- 最近一次 markIssueDon
 新纯函数模块 `packages/teamlead/src/bridge/land-retry-policy.ts`:
 
 ```ts
-export type LandReasonClass = "waiting" | "retryable" | "terminal";
-export function classifyLandReason(reason: string): LandReasonClass;
-export const LAND_RETRY_BACKOFF_MS = [60_000, 120_000, 240_000, 480_000] as const;
-export const LAND_RETRY_CAP = 5;
+export type LandRetryClassification = "waiting" | "retryable" | "terminal";
+export function classifyLandRetryReason(reason: string): LandRetryClassification;
+// 8 档退避(code review R1 加宽窗口后的最终合同;约 4 小时恢复窗):
+const RETRY_DELAYS_MS = [60_000, 120_000, 240_000, 480_000,
+                         900_000, 1_800_000, 3_600_000, 7_200_000] as const;
+// 耗尽规则:同 epoch 内 retryCount 超过 8(= 第 9 次)→ state:"held",
+// lastError 前缀 `retry_exhausted:` + 原 reason 截断编码(合计 ≤500 字符)。
 export function nextLandRetry(input: {
-  class: LandReasonClass;
-  priorCount: number;
-  priorEpochKey: string | undefined;
-  currentEpochKey: string;   // 见下:进展指纹
-  now: Date;
-}):
-  | { disposition: "partial"; retryCount: number; epochKey: string; nextAttemptAt?: string }
-  | { disposition: "held_exhausted"; retryCount: number; epochKey: string };
+  classification: LandRetryClassification;
+  reason: string;
+  now: string;               // ISO 时间戳
+  epochKey: string;          // 见下:进展指纹
+  priorRetryCount: number;
+  priorRetryEpochKey: string | null;
+}): {
+  state: "partial" | "held";
+  retryCount: number;
+  retryEpochKey: string | null;
+  nextAttemptAt: string | null;   // waiting/terminal/耗尽 = null
+  lastError: string;
+};
 ```
+
+(以上为最终合同 —— 早稿的四档 backoff / `LAND_RETRY_CAP = 5` 草图已被 code review R1 的加宽裁定取代,R5#2 折回本刀,消除自相矛盾。)
 
 **分类表(逐个枚举实际 producer,消灭「按类猜」)**:
 
@@ -141,9 +156,24 @@ preArbitrate?: (issueId, projectName, alreadyLocked?) => Promise<
 
 `holdWorkflowLandNode` 既有 alert 管道(→ `enqueueWorkflowEngineAlertTx` → routedAlertSink,FLY-1764)不动;`retry_exhausted:` 前缀的 hold,alert payload 附 `{attempts: retry_count, epochKey: retry_epoch_key}`(从 operation 行读;**不承诺 firstFailureAt** —— 无列支撑,R1#7)。无新告警面。
 
+### 刀 7 — durable reason 归一化 + 慢扫轮转对全失败模式成立(R5#1;重派确认轮新增)
+
+**问题(重派确认 review 在当前分支实证)**:`markIssueDone` 家族原样返回 `(err as Error).message`,主路径与慢扫把它未截断地传入 StateStore;而 `recordLandLinearDoneDisposition` / `deferLandLinearDoneRetry` 对 `reason.length > 500` fail-closed 拒绝(`invalid_land_linear_done_*`)。超长 SaaS 错误(长 HTML 错误页等)→ disposition 落账失败 → 主路径按刀 5 表返回 partial → 持续烧 retry 预算 → 最终 held —— 在这一窄边界上复活了本 issue 要杀的 bug 类,直接违反目标 2。慢扫侧同因:defer 写被拒 → 单行隔离 catch 只打日志、不推进 `linear_done_next_attempt_at` → 该行每轮重新占住固定 batch(≤10)队头,R1 收口「失败后让出队头」的轮转承诺在 reason 校验拒绝这一失败模式下不成立,且到不了 24h aged alert。
+
+**合同**:
+1. 新共享纯函数 `normalizeLandLinearDoneReason(reason: unknown): string`(落 `land-retry-policy.ts`,与既有 `exhaustedReason` 同居):非字符串/空串/纯空白 → `"unknown"`(空白视为 empty,R6#3);确定性截断至 **≤200 字符**(刀 1 既定上限,保留稳定前缀;同输入输出字节一致);输出恒满足 StateStore 的 ≤500 门(留余量)。
+2. **一切** `linear_done_*` 写边界统一先归一化再入库:主路径步骤 (3.5) → `recordLandLinearDoneDisposition`;慢扫 defer → `deferLandLinearDoneRetry`;settle 路径同。StateStore 的 >500 fail-closed 门**保留**作纵深(callers 归一化后永不因长度触发)。
+3. 慢扫 per-candidate **闭合状态机**(R6#1;「泛化 outer catch 推进」不闭合 —— Store `{ok:false}` 正常拒绝不抛异常、alert 抛错会造成双推进):
+   - **全部出口分类**:settle / defer / disposition 的 Store `{ok:false}` 返回与 thrown 异常一律进入同一 fallback 处置,不允许「fail-closed 返回 → 直接 return → 行留在队头且无告警」。
+   - **fallback reschedule 前先重读精确 operation 行**:已 settled / 不再 deferred → 幂等结束(零写);仍 `completed + deferred + unsettled` → 才 fallback 推进 `linear_done_next_attempt_at`(按其轮转档位)。
+   - **单次 attempt 至多推进一次**:fallback 推进以 expected `linear_done_retry_count` 作 CAS token(等价条件更新)—— 覆盖「Store 提交成功但 caller 见到异常」的歧义,`linear_done_retry_count` 恰增一次,不跳退避档。
+   - **aged alert 独立隔离**:24h aged 检查放在错误隔离的 post-outcome 阶段(不与 schedule 写耦合),执行前重确认仍 deferred;alert 失败仅日志,**不得**触发第二次 schedule;candidate 每次被 reschedule 也必须仍能到达 aged 检查(不被前段失败短路)。
+   - **保证边界(诚实)**:以上为 best-effort —— 持久化层完全不可写时 fallback 推进同样失败,仅日志;该模式下行会重占队头,由 landOperationTick 15min 节流限频,不在本刀承诺内。
+4. 回归(F4 增):(a) 主路径 markIssueDone 拒绝且 reason >500 字符 → run 照常完成、disposition=`deferred`、`linear_done_last_reason` 为归一化后缀本;(b) 慢扫撞 >500 字符 reason → 该行让位轮转、不占队头、24h aged alert 仍可达;(c) arbitration reject 超长 reason 变体同断言;(d) **settle `{ok:false}`** → 行不占队头(fallback 轮转)且幂等重放安全;(e) **defer 返回失败/抛错** → 轮转 + aged alert 可达;(f) **defer 成功后 alert 抛错** → `linear_done_retry_count` 恰增一次、无二次 schedule(R6#1 三组)。
+
 ## 3. TDD 顺序(RED → GREEN)
 
-1. **刀 2 纯函数**:`land-retry-policy.test.ts` —— 分类表逐 reason;退避序列 1m/2m/4m/8m/15m/30m/60m/120m;**对抗测试:reason 震荡(closeout_incomplete ↔ land_execution_error 交替、step 无前进)第 9 次 `held_exhausted`**;epoch key 变化(新 step receipt)归零;未知 reason 归 retryable;waiting 不记账。
+1. **刀 2 纯函数**:`land-retry-policy.test.ts` —— 分类表逐 reason;退避序列 1m/2m/4m/8m/15m/30m/60m/120m;**对抗测试:reason 震荡(closeout_incomplete ↔ land_execution_error 交替、step 无前进)第 9 次耗尽转 held(`retry_exhausted:` 前缀)**;epoch key 变化(新 step receipt)归零;未知 reason 归 retryable;waiting 不记账。**刀 7 归一化 helper 表驱动(R6#3,先于集成 RED)**:`undefined`/`null`/非字符串/空串/纯空白(均 → `"unknown"`,空白视为 empty);199/200/201 字符边界;超长 `arbitration_failed:` 前缀截断后稳定前缀保持;同输入重复调用输出字节一致(确定性)。
 2. **刀 1+3 StateStore**:`StateStore.land-lifecycle.test.ts` 增:新列迁移幂等(建两次);NULL 列行 runnable 语义逐字不变(F5);括号化谓词下 partial 未到点不被捞/不可 claim,`running` 过期 lease 分支不受 `next_attempt_at` 影响;到点可 claim;claim 预读与 UPDATE 同条件。
 3. **F1(FLY-1751 真实重放,provider 级,R1#5)**:
    - F1a:provider fresh read reject + observation=`completed` → 同 pass PASS → 本地级联全走(closeout→thread archive→run completed,Done 经 `already_completed` settled)。
@@ -158,7 +188,7 @@ preArbitrate?: (issueId, projectName, alreadyLocked?) => Promise<
 - 已 settled 的 `done` / `canceled_refused` 单调不降级;后续 Linear 读失败算幂等成功。finalizer 被 kill switch 关闭或未配置时结算为 operator-refused,不创建永不出列的 deferred。
 - deferred sweep 增 `retry_count` / `next_attempt_at` / `last_attempt_at`,按 15m/30m/1h/2h/4h/8h/24h 轮转;固定前 10 条失败后会让出队头。24h 日告警只使用 operation/Lead/day 的稳定 payload,动态错误文本不参与 UID。
 - legacy finalizer 的 timeout/rejection 日志恢复;terminal classifier 同时识别带 `land_execution_error:` 包装的永久 receipt conflict。
-6. **F4(守卫)**:canceled observation / park tombstone → 拒绝不降级;markIssueDone 撞 canceled → `canceled_refused` 且零 Done 写;**defer 后 founder park → 慢扫重仲裁 → `canceled_refused`、零 Linear write**;慢扫 finalizer 悬挂 → 15s abort、单行隔离、rider 不卡死;**迟到写两例(R2#2):延迟到 timeout 后才推进到 update 的 client + timeout 后插 founder park → 断言 `updateIssue` 零调用(主路径、慢扫各一)**;reason 分类六个 `founder_review_*` 字面 + 一个未来未知字面逐一断言(R2#4)。
+6. **F4(守卫)**:canceled observation / park tombstone → 拒绝不降级;markIssueDone 撞 canceled → `canceled_refused` 且零 Done 写;**defer 后 founder park → 慢扫重仲裁 → `canceled_refused`、零 Linear write**;慢扫 finalizer 悬挂 → 15s abort、单行隔离、rider 不卡死;**迟到写两例(R2#2)必须落在生产调用点级(R5#3 锐化):`post-ship-finalization.test.ts`(主路径)与 `land-linear-done-sweep.test.ts`(慢扫)各覆盖 (a) never-settle → 有界返回 + latch/mutex 释放、(b) timeout 后 client 恢复 + 插入 founder park → `updateIssue` 零调用 —— helper 级(`linear-issue-finalizer.test.ts`)只证局部算法,不能防调用点漏用 helper / 传错 finalizer / 在 helper 外继续等待,不算满足;按 R4 备注用 fake timers + 显式 microtask flush**;**刀 7 归一化三例(R5#1):主路径 >500 字符 reason → run 照常完成 + deferred 归一化落账;慢扫 >500 字符 → 让位轮转 + aged alert 可达;arbitration reject 超长变体**;reason 分类六个 `founder_review_*` 字面 + 一个未来未知字面逐一断言(R2#4)。
 7. **F5(crash-point + 哨兵)**:disposition 落账失败 → 返回 partial、run 未完成;deferred 已写但 run completion 未写 → 重放收敛;settled 重放幂等;**StateStore 负例:NULL disposition 不能记录新的 `finalization_completed`(R2#3);retry 记账原子性(指纹读取+cap 决策+release 同一提交单元,R2#1)**;既有 post-ship-finalization.test.ts(30)/StateStore.land-lifecycle(18)/dispatcher land 段全绿 + legacy 路径(DirectEventSink/event-route)对 degraded/retryable 维持零 mutation 短路(字节兼容断言)。
 
 全仓门:`pnpm lint` + `pnpm -r build` + 定向 vitest(host 全量套件不当验收门 —— 记忆红线)。
@@ -185,7 +215,7 @@ preArbitrate?: (issueId, projectName, alreadyLocked?) => Promise<
 
 ## 6. 交付物
 
-- 代码 + 测试(刀 0-6 + F1-F5)。
+- 代码 + 测试(刀 0-7 + F1-F5)。
 - 刀 0 census 输出贴 PR body。
 - 本 doc 文件夹三件套随分支合入 main;CLAUDE.md 里程碑行 + doc 归档 = PR 最后一 commit(`feedback_archive_docs_in_main_pr`)。
 
@@ -209,3 +239,19 @@ preArbitrate?: (issueId, projectName, alreadyLocked?) => Promise<
 ## 9. Round 3 → Round 4 变更摘要
 
 1. R3#1 timeout 合同补全:AbortController 单独不能让不吃 signal 的 Linear SDK promise 有界返回(`linear-query.ts:115-129` 已记录 rawRequest 无 AbortSignal)→ 改为共享 **aborting deadline race** helper:15s 分支先 abort 再 race 有界返回 `mark_issue_done_timeout`(rider latch 必然释放);遗留 branch 接住迟到 rejection;pre-dispatch abort check 继续保证恢复后零新 `updateIssue` dispatch;transport 支持 signal 时再作 best-effort 真取消。测试拆两条性质分别钉死(never-settle → 有界返回;timeout 后恢复 → 零 update)。
+
+## 10. 重派确认复审(R5/R6,2026-08-14)变更摘要
+
+背景:原 workflow run 因载体基建缺陷被判终,新 run 重派 design 节点;Bridge fail-closed design gate 要求对当前 HEAD(`15a4ef70a`,已 merge origin/main)做真实确认 review。Codex 独立复审判 CHANGES REQUESTED,三项全部经代码实读核实属实:
+
+1. **R5#1(实现缺口,新增刀 7)**:超长 Linear 错误 reason 未归一化即入库,撞 StateStore >500 fail-closed 门 → 主路径烧预算终至 held(在这一窄边界复活本 issue 要杀的 bug 类)、慢扫中毒行永占队头。合同见刀 7。
+2. **R5#2(plan 自相矛盾,已折回)**:刀 2 早稿四档 backoff / CAP=5 草图与 code review R1 加宽后的权威散文(8 档 / 第 9 次耗尽)冲突 —— 已把最终合同(实际导出名/签名/8 档数组/耗尽规则)折回刀 2,刀 1 折齐 10 列 schema。本 plan 恢复为唯一可执行合同。
+3. **R5#3(测试缺口,F4 锐化)**:F4 承诺的「主路径、慢扫各一」timeout/迟到写用例在分支上只落到 helper 级 —— F4 已锐化为点名两个生产调用点测试文件(`post-ship-finalization.test.ts` / `land-linear-done-sweep.test.ts`),helper 级不算满足。
+
+确认轮 R6(Round 2)追加三项,全部折入:
+
+4. **R6#1(刀 7 状态机闭合)**:「泛化 outer catch 推进」不闭合 —— Store `{ok:false}` 正常拒绝不抛异常(settle 分支直接 return 留行于队头)、alert 抛错会致同一 attempt 双推进跳档。刀 7 第 3 条改为闭合 per-candidate 状态机:全部出口分类、fallback 前重读精确行幂等结束、expected `linear_done_retry_count` CAS 单推进、aged alert 独立错误隔离且不触发二次 schedule、best-effort 边界诚实声明;F4 增 (d)/(e)/(f) 三组。
+5. **R6#2(顶层 scope 折齐)**:§2 标题 8 刀、交付物刀 0-7;Status 行按 blob 诚实分账(旧 R4 approval 属旧 blob `5adde5bb`,当前修订版 verdict 以 gate 回执为准,不自证)。
+6. **R6#3(归一化 helper 纯函数合同)**:TDD 步骤 1 增表驱动用例(non-string/空/纯空白 → `"unknown"`、199/200/201 边界、前缀保持、确定性字节一致),共享单一来源自身有直接验收。
+
+**对本 run 后继节点的 binding delta**:分支 HEAD(`15a4ef70a`)尚未满足刀 7 与 F4 的 R5#1/R5#3(含 R6 增补)用例 —— implement 节点的「代码零改动」假设作废,须按刀 7 + F4(R5/R6 增补)TDD 收口;QA 节点须知代码将变、既往 PASS 需按新 head 复验。其余全部刀(0-6)与现有实现经确认轮核实一致,不重做。合并 origin/main 带入的 #843/#844/#848 经确认轮核实未触碰 land 链路(StateStore/plugin 差异分别局限于 runner mailbox 状态与 Lead inbox 清理)。

@@ -47,7 +47,7 @@ th{color:var(--dim);font-weight:600;font-size:13px}
 <body>
 <div class="wrap">
 <h1>FLY-1770 · land 收尾自愈设计</h1>
-<div class="sub">Issue: FLY-1770 · 设计文档(已过 4 轮 Codex design review, APPROVED)· 2026-08-14 · 文中「land 收尾」= PR 合并之后系统自动做的一串清理:关掉干活的 runner、归档 Discord 讨论串、把 Linear 工单翻成 Done、给这单记上「完成」。</div>
+<div class="sub">Issue: FLY-1770 · 设计文档(原稿 4 轮 + 重派确认复审 3 轮 Codex design review,均 APPROVED)· 2026-08-14 · 文中「land 收尾」= PR 合并之后系统自动做的一串清理:关掉干活的 runner、归档 Discord 讨论串、把 Linear 工单翻成 Done、给这单记上「完成」。</div>
 
 <div class="section" id="s1">
   <div class="section-title"><span class="dot" style="color:var(--blue)">●</span>一句话总结</div>
@@ -149,7 +149,8 @@ th{color:var(--dim);font-weight:600;font-size:13px}
 <div class="section" id="s7">
   <div class="section-title"><span class="dot" style="color:var(--navy)">●</span>评审记录</div>
   <div class="card">
-    <p>Codex design review 共 4 轮,发现数逐轮收敛 7 → 4 → 1 → 0,最终 <span class="badge green">APPROVED</span>。抓出的真问题包括:重试计数可被失败文案震荡绕过、超时后迟到的 Linear 写可越过 founder 取消权限、Done 义务只在报告层承诺而未成为数据库不变量、失败原因清单与真实代码字面不符 —— 全部折入终稿。</p>
+    <p>Codex design review 原稿共 4 轮,发现数逐轮收敛 7 → 4 → 1 → 0,<span class="badge green">APPROVED</span>。抓出的真问题包括:重试计数可被失败文案震荡绕过、超时后迟到的 Linear 写可越过 founder 取消权限、Done 义务只在报告层承诺而未成为数据库不变量、失败原因清单与真实代码字面不符 —— 全部折入终稿。</p>
+    <p><b>重派确认复审(2026-08-14)</b>:原工作流因基础设施缺陷被判终、重新派发后,按门禁要求对同一份设计做了独立复审,又 3 轮(发现数 3 → 3 → 0)<span class="badge green">APPROVED</span>。复审抓出的新真问题:超长的 Linear 错误文字会撞上数据库的长度保护、把「稍后重试」的账写不进去,在这一窄边界上恰好复活本设计要杀的那类卡死 —— 已折入终稿(新增「错误文字统一裁剪归一」一刀 + 慢扫失败处置状态机收口 + 两处调用点级超时测试义务),由接下来的实现节点落码收尾。</p>
   </div>
   <div class="comment-box"><label>对「评审记录」这一节的意见(自动保存在你本机):</label>
 <textarea data-ckey="s7" data-ctitle="评审记录" placeholder="写点什么…"></textarea></div>
