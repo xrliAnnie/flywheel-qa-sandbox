@@ -157,7 +157,9 @@ statusline 落盘是运行时唯一官方口径;transcript 末条 usage 是**进
 
 ## 8. 开放问题(进 plan 决策)
 
-1. B 闸门阈值:70%(与 override 对齐)vs 更保守 60%?window 解析:model 字符串含 `[1m]` → 1M,否则按 200k;`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 未用可忽略。
+1. B 闸门阈值:70%(与 override 对齐)vs 更保守 60%?window 必须按 canonical model 的已知事实显式解析,不能再以「不含 `[1m]` → 200k」作总 fallback;`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 未用可忽略。
+
+> 2026-08-15 QA 更正:生产同会话双测显示 bare `claude-sonnet-5` / `claude-fable-5` 的真实窗口约为 1M(statusline `ctx%` 与 transcript `base` 反推误差 <1%)。因此实现采用显式 model→window 表并把来源写进 gate receipt;未知 model 不猜 200k/1M,直接以 `unknown_model_window` fail-closed 到 fresh。
 2. A 巡逻阈值与两级泄压的升级判据(compact 后 ctx% 未降 / 出现 Compaction failed / 超时)。
 3. 泄压动作频控:per-Lead 冷却(如 30min)+ 单 episode 只试一次 compact,失败直接 clear;clear 本身幂等安全(有 adopt-inflight)。
 4. C 范围终裁:实机确认 `FLYWHEEL_ALERT_ROUTING` + collapse_key 塌缩最小实现 vs 删列;flapping 节流是否并入本单。

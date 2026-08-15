@@ -45,7 +45,9 @@ Issue: FLY-1716 (https://linear.app/geoforge3d/issue/FLY-1716/投递撞-context-
 
 **改** `packages/teamlead/scripts/claude-lead.sh` resume 判定处(现 `:3090-3115` 一带):
 
-- **model/window resolution 提前**:把 `_launch_claude` 内 canonical model 解析(现 `:1646-1727`)抽出,闸门与 launch **共用同一次 decision**;window = resolved model 含 `[1m]` → 1,000,000,否则 200,000。transcript 内的 model 字符串不参与判定。
+- **model/window resolution 提前**:把 `_launch_claude` 内 canonical model 解析(现 `:1646-1727`)抽出,闸门与 launch **共用同一次 decision**;window 使用可审计的显式 model→window 表,其中 `[1m]`、bare `claude-sonnet-5`、bare `claude-fable-5` 均为 1,000,000,已知 200k compatibility ids 单列,未知 model 以 `unknown_model_window` fail-closed。transcript 内的 model 字符串不参与判定。
+
+  2026-08-15 QA 修订依据:同一 `belle-lead` session 的 Claude Code statusline 为 `ctx 52%`,reader `base=524777`,反推约 1.009M;另 3 个 Lead 交叉验证误差 <1%。receipt 必须记录 `windowSource`,测试须覆盖 524,777/52% 真机测量 fixture、140k–200k 旧误判带和 unknown model。
 - transcript 路径推导:`CLAUDE_CONFIG_DIR`-aware 的 Claude project-slug 规则(新写 helper + 单测,fixture 锚定本机真实目录名)。推导失败 → unknown。
 - 判定与副作用在 **per-Lead authority lock 内**执行(与 hook 共享同一把锁,见 2.3):锁内轮换 gen → 重读 session-id 文件 → 调读取器 → `verdict != safe_resume` 时 `mv` park(`.parked-<verdict>-ctx<pct|na>pct-<ts>`)→ `_v2_is_resume=false`(落 fresh:`send_bootstrap` + `_adopt_inflight_before_launch` 天然执行)。
 - **独立 launch-gate receipt**:`~/.flywheel/state/lead-launch-gate/<project>-<lead>.json` 原子写 `{verdict,estTokens,base,tailBytes,window,reason,sessionId,gen,ts,action:"parked|resumed"}`,旧值 append `.history`(不复用 `lead-body-receipt.sh` —— 它是退出后写的 exit receipt,同文件覆盖)。

@@ -133,6 +133,53 @@ else
   bad "1M model decision and gate window diverged"
 fi
 
+# Anonymized from the 2026-08-15 production QA cross-check: Claude Code's
+# statusline reported 52% for the same Sonnet 5 session whose last assistant
+# usage was 524,777 tokens. The two independent measurements imply a 1M window.
+measured_id="10000000-0000-4000-8000-000000000014"
+setup_case measured-sonnet "$measured_id" 'claude-sonnet-5'
+cp "$ROOT/scripts/__tests__/fixtures/fly1716/belle-transcript.jsonl" "$TRANSCRIPT_FILE"
+reported_pct="$(jq -r '.context_window.used_percentage' \
+  "$ROOT/scripts/__tests__/fixtures/fly1716/belle-statusline.json")"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && [ "$_v2_session_id" = "$measured_id" ] \
+  && jq -e --argjson reported "$reported_pct" '
+    .model == "claude-sonnet-5" and .window == 1000000 and
+    .windowSource == "qa_same_session_measurement_2026_08_15" and
+    .base == 524777 and .verdict == "safe_resume" and .action == "resumed" and
+    ((.base * 100 / .window) | floor) == $reported
+  ' "$(receipt_file)" >/dev/null; then
+  ok "the measured Sonnet 5 fixture agrees with Claude's real 52% statusline"
+else
+  bad "the measured Sonnet 5 fixture was assigned the wrong context window"
+fi
+
+fable_band_id="10000000-0000-4000-8000-000000000015"
+setup_case fable-failure-band "$fable_band_id" 'claude-fable-5'
+assistant_line 180000 0 'claude-fable-5' > "$TRANSCRIPT_FILE"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && jq -e '.window == 1000000 and .verdict == "safe_resume" and
+    .estTokens == 180001' "$(receipt_file)" >/dev/null; then
+  ok "a healthy Fable 5 session in the former 140k-200k failure band resumes"
+else
+  bad "Fable 5 still uses the false 200k window in the production failure band"
+fi
+
+unknown_model_id="10000000-0000-4000-8000-000000000016"
+setup_case unknown-model "$unknown_model_id" 'claude-future-unknown'
+assistant_line 10000 0 'claude-future-unknown' > "$TRANSCRIPT_FILE"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = false ] \
+  && jq -e '.window == null and .windowSource == "unknown_model_fail_closed" and
+    .verdict == "unknown" and .reason == "unknown_model_window" and
+    .action == "parked"' "$(receipt_file)" >/dev/null; then
+  ok "an unknown model window is explicit and fails closed instead of guessing"
+else
+  bad "an unknown model silently inherited a guessed context window"
+fi
+
 setup_case fresh ""
 if lead_session_prepare \
   && [ "$_v2_is_resume" = false ] \

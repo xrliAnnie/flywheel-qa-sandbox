@@ -25,9 +25,35 @@ _lead_session_model_from_decision() {
 }
 
 _lead_session_model_window() {
+  # Keep this table exact instead of inferring every unmarked model as 200k.
+  # Sources:
+  # - Bare Sonnet 5 and Fable 5: FLY-1716 production QA on 2026-08-15,
+  #   cross-checking transcript usage against Claude Code's same-session
+  #   statusline on four Leads (approximately 1M, under 1% error).
+  # - [1m] and the explicit 200k compatibility ids: canonical model identities
+  #   in packages/config/src/model-builtins.ts and the existing FLY-751 tier
+  #   contract. Unknown ids deliberately have no numeric default: guessing high
+  #   can resume a full session, while guessing low silently discards a healthy
+  #   one. The restart safety guarantee therefore parks them as unknown.
   case "$1" in
-    *"[1m]"*) printf '%s\n' 1000000 ;;
-    *) printf '%s\n' 200000 ;;
+    claude-fable-5|claude-sonnet-5|*"[1m]"*) printf '%s\n' 1000000 ;;
+    claude-opus-5|claude-opus-4-8|claude-opus-4-6|claude-sonnet-4-6|claude-haiku-4-5-20251001)
+      printf '%s\n' 200000
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+_lead_session_model_window_source() {
+  case "$1" in
+    claude-fable-5|claude-sonnet-5)
+      printf '%s\n' qa_same_session_measurement_2026_08_15
+      ;;
+    *"[1m]"*) printf '%s\n' canonical_1m_model_id ;;
+    claude-opus-5|claude-opus-4-8|claude-opus-4-6|claude-sonnet-4-6|claude-haiku-4-5-20251001)
+      printf '%s\n' explicit_200k_compatibility_table
+      ;;
+    *) printf '%s\n' unknown_model_fail_closed ;;
   esac
 }
 
@@ -64,11 +90,14 @@ _lead_session_unknown_context() {
 
 _lead_session_prepare_locked() {
   local gen_file="$1" receipt_file="$2"
-  local model window threshold threshold_json gen gen_tmp gate session_id ctx transcript_root
+  local model window window_source threshold threshold_json gen gen_tmp gate session_id ctx transcript_root
   local project_slug transcript reader verdict action gate_label pct ts parked receipt
 
   model="$(_lead_session_model_from_decision)"
-  window="$(_lead_session_model_window "$model")"
+  if ! window="$(_lead_session_model_window "$model")"; then
+    window=null
+  fi
+  window_source="$(_lead_session_model_window_source "$model")"
   threshold="${FLYWHEEL_LEAD_CTX_RESUME_MAX:-70}"
   threshold_json=null
   if [[ "$threshold" =~ ^[1-9][0-9]*$ ]] && [ "$threshold" -le 100 ]; then
@@ -123,7 +152,9 @@ _lead_session_prepare_locked() {
     }')"
   else
     gate_label="enabled"
-    if [[ ! "$session_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    if [ "$window" = null ]; then
+      ctx="$(_lead_session_unknown_context "$window" "$threshold_json" unknown_model_window)"
+    elif [[ ! "$session_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
       ctx="$(_lead_session_unknown_context "$window" "$threshold_json" invalid_session_id)"
     else
       transcript_root="${CLAUDE_CONFIG_DIR:-${HOME}/.claude}"
@@ -175,8 +206,9 @@ _lead_session_prepare_locked() {
     --arg ts "$ts" \
     --arg action "$action" \
     --arg model "$model" \
+    --arg windowSource "$window_source" \
     --argjson ctx "$ctx" \
-    '$ctx + {gate:$gate,sessionId:$sessionId,gen:$gen,ts:$ts,action:$action,model:$model}')" \
+    '$ctx + {gate:$gate,sessionId:$sessionId,gen:$gen,ts:$ts,action:$action,model:$model,windowSource:$windowSource}')" \
     || return 1
   if ! _lead_session_write_gate_receipt "$receipt_file" "$receipt"; then
     log "WARNING: failed to persist Lead context gate receipt: ${receipt_file}"
