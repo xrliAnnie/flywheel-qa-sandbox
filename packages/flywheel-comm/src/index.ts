@@ -54,6 +54,7 @@ import {
 	runnerStopped,
 	type StopFailureInput,
 } from "./commands/runner-stopped.js";
+import { runnerWakeSweep } from "./commands/runner-wake-sweep.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
@@ -122,6 +123,8 @@ Commands:
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
   complete  Emit session_completed terminal event to Bridge (Runner use)
   runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
+  runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
+            Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   workflow-output  Submit a generalized node's JSON output before completion
@@ -280,6 +283,9 @@ async function main(): Promise<void> {
 		case "runner-stopped":
 			await runRunnerStopped(commandArgs);
 			break;
+		case "runner-wake-sweep":
+			runRunnerWakeSweep(commandArgs);
+			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
 			break;
@@ -360,6 +366,34 @@ async function main(): Promise<void> {
 			printUsage();
 			process.exit(1);
 	}
+}
+
+function runRunnerWakeSweep(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+	const envExecId = process.env.FLYWHEEL_EXEC_ID;
+	const execId = values["exec-id"] ?? envExecId;
+	if (!execId) {
+		throw new Error("FLYWHEEL_EXEC_ID is required");
+	}
+	if (values["exec-id"] && values["exec-id"] !== envExecId) {
+		console.warn(
+			`runner-wake-sweep: debug --exec-id override targets ${values["exec-id"]}`,
+		);
+	}
+	const result = runnerWakeSweep({
+		dbPath: resolveDbPath({ db: values.db, project: values.project }),
+		execId,
+	});
+	console.log(values.json ? JSON.stringify(result) : result.kind);
 }
 
 async function runAckEvent(args: string[]): Promise<void> {

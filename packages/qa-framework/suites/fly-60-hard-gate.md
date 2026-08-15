@@ -51,11 +51,12 @@
 | `content` | text |
 | `parent_id` | links response → question |
 | `read_at` | DATETIME — set by `flywheel_inbox_ack` MCP (Lead ack) |
-| `delivered_at` | DATETIME — set by inbox-mcp after MCP notification succeeds |
+| `notified_at` | base mailbox transport receipt — set after MCP notification succeeds |
+| `delivered_at` | compatibility projection — appears only after recipient ACK |
 | `checkpoint` | text — e.g. `approve_to_ship` |
 | `created_at` / `expires_at` | DATETIME |
 
-**Critical**: `delivered_at` ≠ `read_at`. Don't conflate notification delivery with model ack.
+**Critical**: `notified_at` is transport evidence. Projection `delivered_at`/`read_at` appear only after model ACK.
 
 ## Trigger entry
 
@@ -132,8 +133,8 @@ This validates FLY-58's split but is not the HP main path. Skip if time-constrai
 **G coverage**: regression for FLY-109 (Lead resume must not silently drop flywheel-inbox events)
 
 **CommDB delivery semantics (critical)** — see plan §4.3 V1 for full breakdown:
-- `delivered_at` set by inbox-mcp **after** MCP notification succeeds (`packages/inbox-mcp/src/delivery.ts:47-51`)
-- `read_at` set by `flywheel_inbox_ack` MCP tool (`packages/inbox-mcp/src/index.ts:105-127`)
+- base `notified_at` set by inbox-mcp **after** MCP notification succeeds
+- projection `delivered_at` and `read_at` set by `flywheel_inbox_ack` MCP tool
 - The original gate question (`type='question'`) is **not** the row that tracks delivery; the Bridge-to-Lead push is a separate `type='instruction'` row inserted by `gate-poller.ts:182-204` + `commdb-lead-runtime.ts:38-42`.
 
 **Setup**: HP run to mid-HP-6 (Lead is relaying PR-ready notification; Bridge → Lead instruction row already in CommDB, being processed by inbox-mcp / dialog poller).
@@ -151,17 +152,18 @@ This validates FLY-58's split but is not the HP main path. Skip if time-constrai
 **Wait**: ≤30s for `claude-lead.sh` supervisor stdout to print `[restart #N] Resuming session ...`.
 
 **Two valid recovery timing windows** — V1 PASS must accept either:
-- **Timing 1** (Claude died before notification delivered): instruction row `delivered_at IS NULL` and `read_at IS NULL` → after resume: `delivered_at IS NOT NULL` AND `read_at IS NOT NULL`
-- **Timing 2** (Claude died after notification delivered, before ack): instruction row `delivered_at IS NOT NULL` and `read_at IS NULL` → after resume: `read_at IS NOT NULL` (`delivered_at` does not change)
+- **Timing 1** (Claude died before notification): base `notified_at IS NULL` and projection `read_at IS NULL` → after resume/ACK both `notified_at` and `read_at` are non-NULL
+- **Timing 2** (Claude died after notification, before ACK): base `notified_at IS NOT NULL`, projection `delivered_at/read_at IS NULL` → after resume both projection fields become non-NULL
 
 **Verify** (race-free protocol — see driver `run_v1`):
 1. **Pre-condition poll** (up to ~120s): wait until the Bridge → Lead instruction row exists AND `read_at IS NULL`. This guarantees:
    - The instruction has been written by GatePoller / `commdb-lead-runtime.ts:75-94` (content contains `Question ID: <id>`)
    - The Lead has not yet acked it (so the kill will actually exercise FLY-109 recovery)
    ```sql
-   SELECT id, type, from_agent, to_agent, delivered_at, read_at
-   FROM messages
-   WHERE to_agent='$LEAD_ID'
+   SELECT m.id, m.type, m.from_agent, m.to_agent, m.notified_at,
+          p.delivered_at, p.read_at
+   FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
+   WHERE m.to_agent='$LEAD_ID'
      AND type='instruction'
      AND content LIKE '%${question_id}%'
      AND read_at IS NULL
@@ -171,7 +173,7 @@ This validates FLY-58's split but is not the HP main path. Skip if time-constrai
 2. Snapshot before-row, kill Claude child, wait for supervisor `[restart #N]` line, sleep 60s for resume + redelivery.
 3. Snapshot after-row.
 4. **PASS**: `read_at` flipped from NULL → non-NULL.
-5. **FAIL**: `read_at` still NULL after recovery (Lead did not ack), or `delivered_at` semantics inverted (defensive guard against the codex R3 false-pass scenario).
+5. **FAIL**: `read_at` still NULL after recovery, or projection `delivered_at` appears before ACK.
 6. Driver may force a more deterministic Timing 1 by SIGSTOP-ing inbox-mcp before kill; this is optional.
 7. Lead's Discord notification eventually delivers (resend by Lead after resume is acceptable).
 

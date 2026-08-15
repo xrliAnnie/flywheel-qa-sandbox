@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -55,6 +55,172 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("keeps post-boot Lead mail live when the current roster recognizes the recipient", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1773-current-roster-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-current-roster",
+			currentLeadRecipientsForProject: () => ["lead-a", "lead-new"],
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "founder-to-new-lead",
+				fromAgent: "founder",
+				toAgent: "lead-new",
+				recipientKind: "lead",
+				type: "instruction",
+				content: "must survive the stale boot snapshot",
+				senderRef: encodeSenderRef(),
+			});
+
+			expect(runtime.reconcileRetiredLeadMailboxes()).toEqual({
+				dead: 0,
+				remaining: false,
+			});
+			expect(queue.getById("founder-to-new-lead")).toMatchObject({
+				state: "QUEUED",
+			});
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("fails closed when the current Lead roster cannot be read", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1773-roster-fail-closed-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-roster-fail-closed",
+			currentLeadRecipientsForProject: () => {
+				throw new Error("fleet config temporarily unreadable");
+			},
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "unknown-during-config-failure",
+				fromAgent: "founder",
+				toAgent: "lead-maybe-live",
+				recipientKind: "lead",
+				type: "instruction",
+				content: "do not destroy without roster authority",
+				senderRef: encodeSenderRef(),
+			});
+
+			expect(runtime.reconcileRetiredLeadMailboxes()).toEqual({
+				dead: 0,
+				remaining: true,
+			});
+			expect(queue.getById("unknown-during-config-failure")).toMatchObject({
+				state: "QUEUED",
+			});
+		} finally {
+			queue.close();
+		}
+	});
+
+	it("fails open for liveness when the canonical lease store cannot open", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1773-lease-open-"));
+		const blocker = join(root, "not-a-directory");
+		writeFileSync(blocker, "occupied");
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		let runtime: LeadInboxRuntime | undefined;
+		try {
+			expect(() => {
+				runtime = new LeadInboxRuntime({
+					projects,
+					store: runtimeStoreStub() as never,
+					registry: new RuntimeRegistry(),
+					commDbPathForProject: () => join(root, "project-a.db"),
+					leadLeaseDbPath: join(blocker, "lead-lease.db"),
+				});
+			}).not.toThrow();
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("Lead lease reader unavailable"),
+			);
+		} finally {
+			runtime?.close();
+			warning.mockRestore();
+		}
+	});
+
+	it("round-robins retired Lead sweeps even when the first backlog keeps growing", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1773-retired-sweep-"));
+		const dbPath = join(root, "project-a.db");
+		const closeLeaseReader = vi.fn();
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-retired-sweep",
+			leadLeaseReader: { getLease: () => undefined, close: closeLeaseReader },
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			for (const id of ["retired-a-1", "retired-a-2"]) {
+				queue.enqueue({
+					id,
+					fromAgent: "runner-a",
+					toAgent: "retired-a",
+					recipientKind: "lead",
+					type: "question",
+					content: id,
+					senderRef: encodeSenderRef(),
+				});
+			}
+			queue.enqueue({
+				id: "retired-b-1",
+				fromAgent: "runner-b",
+				toAgent: "retired-b",
+				recipientKind: "lead",
+				type: "question",
+				content: "retired-b-1",
+				senderRef: encodeSenderRef(),
+			});
+
+			expect(
+				runtime.reconcileRetiredLeadMailboxes({
+					maxRecipientsPerProject: 1,
+					maxRowsPerRecipient: 1,
+				}),
+			).toMatchObject({ dead: 1, remaining: true });
+			queue.enqueue({
+				id: "retired-a-new",
+				fromAgent: "runner-a",
+				toAgent: "retired-a",
+				recipientKind: "lead",
+				type: "question",
+				content: "keeps growing",
+				senderRef: encodeSenderRef(),
+			});
+			runtime.reconcileRetiredLeadMailboxes({
+				maxRecipientsPerProject: 1,
+				maxRowsPerRecipient: 1,
+			});
+			expect(queue.getById("retired-b-1")).toMatchObject({
+				state: "DEAD",
+				dead_reason: "recipient_terminal",
+			});
+		} finally {
+			queue.close();
+		}
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+		expect(closeLeaseReader).toHaveBeenCalledOnce();
+	});
+
 	it("writes one infra alert to the owner mailbox and nudges it immediately", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1764-owner-alert-"));
 		const dbPath = join(root, "project-a.db");
@@ -485,7 +651,7 @@ describe("LeadInboxRuntime", () => {
 		await vi.waitFor(() => expect(cutover).toHaveBeenCalledTimes(2));
 	});
 
-	it("derives a Lead dead-letter intent and settles it only after the sink records delivery", async () => {
+	it("routes a retired Lead dead-letter through the live primary Lead", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1573-alert-runtime-"));
 		const dbPath = join(root, "project-a.db");
 		const commDb = new CommDB(dbPath);
@@ -494,7 +660,7 @@ describe("LeadInboxRuntime", () => {
 		queue.enqueue({
 			id: "dead-lead-message",
 			fromAgent: "runner-a",
-			toAgent: "lead-a",
+			toAgent: "retired-lead",
 			recipientKind: "lead",
 			type: "question",
 			content: "unacknowledged",
@@ -537,11 +703,15 @@ describe("LeadInboxRuntime", () => {
 		await vi.waitFor(() => expect(sink).toHaveBeenCalledTimes(1));
 		const eventId = sink.mock.calls[0]?.[0].eventId as string;
 		expect(sink).toHaveBeenCalledWith(
-			expect.objectContaining({ replayAfterAmbiguousAttempt: false }),
+			expect.objectContaining({
+				leadId: "lead-a",
+				recipient: "retired-lead",
+				replayAfterAmbiguousAttempt: false,
+			}),
 		);
 		expect(store.getDeadLetterAlert(eventId)).toMatchObject({
 			state: "accepted",
-			recipient: "lead-a",
+			recipient: "retired-lead",
 			source_kind: "lead_unacked",
 		});
 		runtime.close();

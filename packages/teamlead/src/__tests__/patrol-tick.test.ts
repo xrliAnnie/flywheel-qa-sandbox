@@ -1,12 +1,13 @@
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { describe, expect, it, vi } from "vitest";
-import { formatPatrolTick } from "../bridge/hook-payload.js";
+import { formatPatrolTick, type HookPayload } from "../bridge/hook-payload.js";
 import { enqueueLeadEvent as enqueueDurableLeadEvent } from "../bridge/lead-event-queue.js";
 import { leadEventEnvelopeFromJournalRow } from "../bridge/legacy-lead-event-reconciler.js";
 import {
 	createLeadPatrolTickPass,
 	type PatrolTickDeps,
 	patrolSessionKey,
+	patrolTickOffsetMs,
 } from "../bridge/patrol-tick.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { LeadEventRow, Session, StateStore } from "../StateStore.js";
@@ -46,8 +47,9 @@ function harness(input?: { roster?: Session[]; nowMs?: number }) {
 		ReturnType<PatrolTickDeps["inspectDeliveryState"]>
 	>();
 	let nowMs = input?.nowMs ?? Date.parse("2026-08-13T12:00:00.000Z");
+	let roster = input?.roster ?? [session()];
 	const store = {
-		getPatrolRosterSessions: vi.fn(() => input?.roster ?? [session()]),
+		getPatrolRosterSessions: vi.fn(() => roster),
 		getLatestPatrolTickEvent: vi.fn(
 			(leadId: string, sessionKey: string) =>
 				[...rows]
@@ -117,10 +119,41 @@ function harness(input?: { roster?: Session[]; nowMs?: number }) {
 		setNow: (value: number) => {
 			nowMs = value;
 		},
+		setRoster: (value: Session[]) => {
+			roster = value;
+		},
 	};
 }
 
-describe("FLY-1687 Lead patrol tick pass", () => {
+function payload(row: LeadEventRow): HookPayload {
+	return JSON.parse(row.payload) as HookPayload;
+}
+
+function deliveryId(row: LeadEventRow): string {
+	return `lead_event:${row.lead_id}:${row.event_id}`;
+}
+
+function scheduledAtOrBefore(
+	nowMs: number,
+	leadId: string,
+	intervalMs: number,
+): number {
+	const offsetMs = patrolTickOffsetMs(leadId, intervalMs);
+	return Math.floor((nowMs - offsetMs) / intervalMs) * intervalMs + offsetMs;
+}
+
+describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
+	it("maps each Lead to a deterministic offset inside the configured interval", () => {
+		const intervalMs = 60 * 60_000;
+		const engOffset = patrolTickOffsetMs("eng-lead", intervalMs);
+		expect(engOffset).toBe(2_002_707);
+		expect(patrolTickOffsetMs("qa-lead", intervalMs)).toBe(3_447_123);
+		expect(patrolTickOffsetMs("eng-lead", intervalMs)).toBe(engOffset);
+		expect(engOffset).toBeGreaterThanOrEqual(0);
+		expect(engOffset).toBeLessThan(intervalMs);
+		expect(patrolTickOffsetMs("qa-lead", intervalMs)).not.toBe(engOffset);
+	});
+
 	it("emits genesis only when a Lead has a non-terminal roster", async () => {
 		const h = harness();
 		await createLeadPatrolTickPass(h.deps)();
@@ -134,6 +167,14 @@ describe("FLY-1687 Lead patrol tick pass", () => {
 		expect(JSON.parse(h.rows[0]!.payload)).toMatchObject({
 			event_type: "patrol_tick",
 			project_name: "foo_bar",
+			generated_at: "2026-08-13T12:00:00.000Z",
+			scheduled_at: new Date(
+				scheduledAtOrBefore(
+					Date.parse("2026-08-13T12:00:00.000Z"),
+					"eng-lead",
+					10 * 60_000,
+				),
+			).toISOString(),
 			roster: [
 				{ identifier: "FLY-1", sessionRole: "implement", status: "running" },
 			],
@@ -142,6 +183,99 @@ describe("FLY-1687 Lead patrol tick pass", () => {
 		const quiet = harness({ roster: [] });
 		await createLeadPatrolTickPass(quiet.deps)();
 		expect(quiet.rows).toHaveLength(0);
+	});
+
+	it("keeps every steady-state tick on the wall-clock slot with no missed or duplicate slot", async () => {
+		const intervalMs = 60 * 60_000;
+		const offsetMs = patrolTickOffsetMs("eng-lead", intervalMs);
+		const startMs = Date.parse("2026-08-13T00:00:00.000Z") + offsetMs;
+		const h = harness({ nowMs: startMs });
+		h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+		const pass = createLeadPatrolTickPass(h.deps);
+		const settlementLagMinutes = [1, 2, 3, 4, 5];
+
+		await pass();
+		let settledRows = 0;
+		for (let minute = 1; minute <= 12 * 60; minute += 1) {
+			while (settledRows < h.rows.length) {
+				const row = h.rows[settledRows]!;
+				const generatedAt = Date.parse(payload(row).generated_at!);
+				const lagMinutes =
+					settlementLagMinutes[settledRows % settlementLagMinutes.length]!;
+				h.settlements.set(deliveryId(row), {
+					kind: "live",
+					state: "ACKED",
+					settledAt: new Date(generatedAt + lagMinutes * 60_000).toISOString(),
+				});
+				settledRows += 1;
+			}
+			h.setNow(startMs + minute * 60_000);
+			await pass();
+		}
+
+		const steadyState = h.rows.slice(1).map(payload);
+		expect(steadyState).toHaveLength(12);
+		const scheduled = steadyState.map((event) =>
+			Date.parse(event.scheduled_at!),
+		);
+		for (let index = 0; index < steadyState.length; index += 1) {
+			const event = steadyState[index]!;
+			const scheduledAt = scheduled[index]!;
+			const generatedAt = Date.parse(event.generated_at!);
+			expect(scheduledAt % intervalMs).toBe(offsetMs);
+			expect(generatedAt - scheduledAt).toBeGreaterThanOrEqual(0);
+			expect(generatedAt - scheduledAt).toBeLessThanOrEqual(60_000);
+			if (index > 0) {
+				expect(scheduledAt - scheduled[index - 1]!).toBe(intervalMs);
+			}
+		}
+	});
+
+	it("fires different Leads at their own stable wall-clock phases", async () => {
+		const intervalMs = 60 * 60_000;
+		const baseMs = Date.parse("2026-08-13T00:00:00.000Z");
+		const runLead = async (leadId: string, label: string) => {
+			const offsetMs = patrolTickOffsetMs(leadId, intervalMs);
+			const h = harness({
+				nowMs: baseMs + offsetMs,
+				roster: [session({ issue_labels: JSON.stringify([label]) })],
+			});
+			h.deps.projects = [
+				{
+					...project,
+					leads: [
+						{
+							agentId: leadId,
+							chatChannel: leadId,
+							match: { labels: [label] },
+						},
+					],
+				},
+			];
+			h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+			const pass = createLeadPatrolTickPass(h.deps);
+			await pass();
+			h.settlements.set(deliveryId(h.rows[0]!), {
+				kind: "live",
+				state: "ACKED",
+				settledAt: new Date(baseMs + offsetMs + 60_000).toISOString(),
+			});
+			h.setNow(baseMs + offsetMs + intervalMs);
+			await pass();
+			return payload(h.rows[1]!);
+		};
+
+		const eng = await runLead("eng-lead", "Engineering");
+		const qa = await runLead("qa-lead", "QA");
+		expect(eng.generated_at).toBe(eng.scheduled_at);
+		expect(qa.generated_at).toBe(qa.scheduled_at);
+		expect(eng.scheduled_at).not.toBe(qa.scheduled_at);
+		expect(Date.parse(eng.scheduled_at!) % intervalMs).toBe(
+			patrolTickOffsetMs("eng-lead", intervalMs),
+		);
+		expect(Date.parse(qa.scheduled_at!) % intervalMs).toBe(
+			patrolTickOffsetMs("qa-lead", intervalMs),
+		);
 	});
 
 	it("keeps an idle Lead silent when another Lead in the project has runners", async () => {
@@ -239,50 +373,229 @@ describe("FLY-1687 Lead patrol tick pass", () => {
 		});
 	});
 
-	it("caps live QUEUED/LEASED at one and anchors ACKED/DEAD cadence to settlement time", async () => {
-		const h = harness();
+	it("caps live rows at one, then returns a late settlement to the next wall-clock slot", async () => {
+		const intervalMs = 60 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T02:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
 		h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
 		const pass = createLeadPatrolTickPass(h.deps);
 		await pass();
-		const deliveryId = `lead_event:eng-lead:${h.rows[0]!.event_id}`;
+		const firstDeliveryId = deliveryId(h.rows[0]!);
 
 		for (const state of ["QUEUED", "LEASED"] as const) {
-			h.settlements.set(deliveryId, { kind: "live", state, settledAt: null });
+			h.settlements.set(firstDeliveryId, {
+				kind: "live",
+				state,
+				settledAt: null,
+			});
 			await pass();
 			expect(h.rows).toHaveLength(1);
 		}
 
-		const settledAt = "2026-08-13T12:00:00.000Z";
-		h.settlements.set(deliveryId, {
+		h.settlements.set(firstDeliveryId, {
 			kind: "live",
 			state: "ACKED",
-			settledAt,
+			settledAt: new Date(startMs + 3 * intervalMs + 3 * 60_000).toISOString(),
 		});
-		h.setNow(Date.parse(settledAt) + 10 * 60_000);
+		h.setNow(startMs + 3 * intervalMs + 4 * 60_000);
 		await pass();
 		expect(h.rows).toHaveLength(1);
-		// The next decision hot-reads the changed interval without recreating pass.
-		h.deps.getProjectConfig = () => ({ interval_minutes: 10 });
+
+		h.setNow(startMs + 4 * intervalMs);
 		await pass();
 		expect(h.rows).toHaveLength(2);
-		expect(h.rows[1]!.event_id).toBe(
-			`patrol_tick:foo_bar:eng-lead:after-${h.rows[0]!.seq}`,
-		);
+		expect(payload(h.rows[1]!)).toMatchObject({
+			scheduled_at: new Date(startMs + 4 * intervalMs).toISOString(),
+			generated_at: new Date(startMs + 4 * intervalMs).toISOString(),
+		});
+	});
+
+	it("does not double-fire within one rider minute when settlement lands just before a Lead phase", async () => {
+		const intervalMs = 60 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T02:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const nextScheduledAt = startMs + intervalMs;
+		h.settlements.set(deliveryId(h.rows[0]!), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(nextScheduledAt - 30_000).toISOString(),
+		});
+
+		h.setNow(nextScheduledAt);
+		await pass();
+		expect(h.rows).toHaveLength(1);
+
+		h.setNow(nextScheduledAt + 60_000);
+		await pass();
+		expect(payload(h.rows[1]!)).toMatchObject({
+			scheduled_at: new Date(nextScheduledAt).toISOString(),
+			generated_at: new Date(nextScheduledAt + 60_000).toISOString(),
+		});
 	});
 
 	it("treats a live DEAD row as settled instead of wedging the chain", async () => {
+		const intervalMs = 10 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const first = h.rows[0]!;
+		h.settlements.set(deliveryId(first), {
+			kind: "live",
+			state: "DEAD",
+			// CommDB timestamps use SQLite UTC text without a zone suffix.
+			settledAt: new Date(startMs + 7 * 60_000)
+				.toISOString()
+				.replace("T", " ")
+				.replace("Z", ""),
+		});
+		h.setNow(startMs + 9 * 60_000);
+		await pass();
+		expect(h.rows).toHaveLength(1);
+		h.setNow(startMs + intervalMs);
+		await pass();
+		expect(h.rows).toHaveLength(2);
+	});
+
+	it("falls back to legacy generated_at and hot-reads shorter and longer slots", async () => {
+		const intervalMs = 60 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T02:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const first = h.rows[0]!;
+		const legacy = payload(first);
+		delete legacy.scheduled_at;
+		first.payload = JSON.stringify(legacy);
+		h.settlements.set(deliveryId(first), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(startMs + 3 * 60_000).toISOString(),
+		});
+
+		h.setNow(startMs + intervalMs);
+		await pass();
+		expect(payload(h.rows[1]!)).toMatchObject({
+			scheduled_at: new Date(startMs + intervalMs).toISOString(),
+		});
+
+		const second = h.rows[1]!;
+		h.settlements.set(deliveryId(second), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(startMs + intervalMs + 2 * 60_000).toISOString(),
+		});
+		const longerIntervalMs = 120 * 60_000;
+		const longerDueAt =
+			scheduledAtOrBefore(startMs + intervalMs, "eng-lead", longerIntervalMs) +
+			longerIntervalMs;
+		h.deps.getProjectConfig = () => ({ interval_minutes: 120 });
+		h.setNow(longerDueAt - 1);
+		await pass();
+		expect(h.rows).toHaveLength(2);
+		h.setNow(longerDueAt);
+		await pass();
+		expect(payload(h.rows[2]!)).toMatchObject({
+			scheduled_at: new Date(longerDueAt).toISOString(),
+		});
+
+		const shorter = harness({ nowMs: startMs });
+		shorter.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+		const shorterPass = createLeadPatrolTickPass(shorter.deps);
+		await shorterPass();
+		shorter.settlements.set(deliveryId(shorter.rows[0]!), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(startMs + 3 * 60_000).toISOString(),
+		});
+		shorter.deps.getProjectConfig = () => ({ interval_minutes: 30 });
+		shorter.setNow(startMs + 40 * 60_000);
+		await shorterPass();
+		expect(payload(shorter.rows[1]!)).toMatchObject({
+			scheduled_at: new Date(startMs + 30 * 60_000).toISOString(),
+			generated_at: new Date(startMs + 40 * 60_000).toISOString(),
+		});
+	});
+
+	it("catches up once after a mid-slot restart or roster re-entry, then returns to the boundary", async () => {
+		const intervalMs = 60 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T02:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		h.deps.getProjectConfig = () => ({ interval_minutes: 60 });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		h.settlements.set(deliveryId(h.rows[0]!), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(startMs + 3 * 60_000).toISOString(),
+		});
+		h.setRoster([]);
+		h.setNow(startMs + 3 * intervalMs);
+		await pass();
+		expect(h.rows).toHaveLength(1);
+
+		h.setRoster([session()]);
+		h.setNow(startMs + 3 * intervalMs + 30 * 60_000);
+		await pass();
+		expect(payload(h.rows[1]!)).toMatchObject({
+			scheduled_at: new Date(startMs + 3 * intervalMs).toISOString(),
+			generated_at: new Date(
+				startMs + 3 * intervalMs + 30 * 60_000,
+			).toISOString(),
+		});
+		h.settlements.set(deliveryId(h.rows[1]!), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(startMs + 3 * intervalMs + 33 * 60_000).toISOString(),
+		});
+		h.setNow(startMs + 4 * intervalMs);
+		await pass();
+		expect(payload(h.rows[2]!)).toMatchObject({
+			scheduled_at: new Date(startMs + 4 * intervalMs).toISOString(),
+			generated_at: new Date(startMs + 4 * intervalMs).toISOString(),
+		});
+	});
+
+	it("fails loud when a settled patrol payload has no valid scheduling basis", async () => {
 		const h = harness();
 		const pass = createLeadPatrolTickPass(h.deps);
 		await pass();
 		const first = h.rows[0]!;
-		h.settlements.set(`lead_event:eng-lead:${first.event_id}`, {
-			kind: "live",
-			state: "DEAD",
-			// CommDB timestamps use SQLite UTC text without a zone suffix.
-			settledAt: "2026-08-13 10:00:00",
+		first.payload = JSON.stringify({
+			event_type: "patrol_tick",
+			execution_id: patrolSessionKey("foo_bar", "eng-lead"),
+			issue_id: "",
 		});
+		h.settlements.set(deliveryId(first), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: "2026-08-13T10:00:00.000Z",
+		});
+
 		await pass();
-		expect(h.rows).toHaveLength(2);
+		await pass();
+		await pass();
+		expect(h.rows).toHaveLength(1);
+		expect(h.alerts).toEqual([
+			expect.objectContaining({
+				kind: "lead_failure",
+				detail: "patrol_tick payload lacks scheduled_at/generated_at",
+			}),
+		]);
 	});
 
 	it("redrives a true append/enqueue gap but treats archived terminal rows as settled", async () => {
@@ -302,6 +615,7 @@ describe("FLY-1687 Lead patrol tick pass", () => {
 			state: "DEAD",
 			settledAt: "2026-08-13T10:00:00.000Z",
 		});
+		h.setNow(Date.parse("2026-08-13T12:10:00.000Z"));
 		await pass();
 		expect(h.rows).toHaveLength(2);
 		expect(h.enqueued).toEqual([h.rows[1]]);

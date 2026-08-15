@@ -107,4 +107,6 @@ export interface Session {
 	 * NULL/undefined = legacy row → process-wide env transport (byte-compat).
 	 */
 	vendor?: string | null;
+	/** FLY-1774: this execution owns a resident Codex phase-hold consumer. */
+	phase_keep_alive?: 0 | 1;
 }

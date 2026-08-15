@@ -2,13 +2,21 @@ import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
 describe("FLY-1573 StateStore runner recipient state", () => {
-	it("distinguishes alive, terminal, approved_to_ship, and missing sessions", async () => {
+	it("keeps awaiting_review deliverable while preserving outcome-terminal states", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
 			for (const [execution_id, status] of [
 				["alive", "running"],
+				["reviewing", "awaiting_review"],
 				["shipping", "approved_to_ship"],
-				["dead", "completed"],
+				["completed", "completed"],
+				["approved", "approved"],
+				["blocked", "blocked"],
+				["failed", "failed"],
+				["rejected", "rejected"],
+				["deferred", "deferred"],
+				["shelved", "shelved"],
+				["terminated", "terminated"],
 			] as const) {
 				store.upsertSession({
 					execution_id,
@@ -23,12 +31,26 @@ describe("FLY-1573 StateStore runner recipient state", () => {
 				projectName: "flywheel",
 				issueLabels: '["backend"]',
 			});
+			expect(store.resolveRunnerRecipientState("reviewing")?.state).toBe(
+				"alive",
+			);
 			expect(store.resolveRunnerRecipientState("shipping")?.state).toBe(
 				"alive",
 			);
-			expect(store.resolveRunnerRecipientState("dead")?.state).toBe(
-				"terminal_or_missing",
-			);
+			for (const executionId of [
+				"completed",
+				"approved",
+				"blocked",
+				"failed",
+				"rejected",
+				"deferred",
+				"shelved",
+				"terminated",
+			]) {
+				expect(store.resolveRunnerRecipientState(executionId)?.state).toBe(
+					"terminal_or_missing",
+				);
+			}
 			expect(store.resolveRunnerRecipientState("missing")?.state).toBe(
 				"terminal_or_missing",
 			);

@@ -11,7 +11,11 @@ import {
 	discordBatchPartitionKey,
 	parseDiscordChatRoute,
 } from "flywheel-comm/discord-chat-ingest";
-import type { MailboxQueue, MailboxRow } from "flywheel-comm/mailbox-queue";
+import type {
+	MailboxQueue,
+	MailboxRecipientState,
+	MailboxRow,
+} from "flywheel-comm/mailbox-queue";
 import type {
 	LeadDeliveryAdapter,
 	LeadDeliveryBatch,
@@ -63,6 +67,8 @@ export interface LeadInboxLoopOptions {
 	renderModelBatch?: (rows: readonly MailboxRow[]) => string;
 	/** FLY-1573: resolved exactly once at the beginning of a tick. */
 	queueConfig?: () => MailboxQueueConfig;
+	/** Process-incarnation liveness; unknown holds expired batches in place. */
+	recipientState?: (leadId: string) => MailboxRecipientState;
 	ackInstruction?: string;
 	now?: () => Date;
 	batchIdFactory?: () => string;
@@ -142,6 +148,7 @@ export class LeadInboxLoop {
 	private lastTransportAlertMs = 0;
 	private discordStalled = false;
 	private lastDiscordStallAlertMs = 0;
+	private unknownRecipientHoldActive = false;
 
 	constructor(private readonly opts: LeadInboxLoopOptions) {
 		this.activeIntervalMs =
@@ -218,6 +225,14 @@ export class LeadInboxLoop {
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
 				enabled: false,
 			};
+			const recipientStates = new Map<string, MailboxRecipientState>();
+			const recipientState = (recipient: string): MailboxRecipientState => {
+				const cached = recipientStates.get(recipient);
+				if (cached) return cached;
+				const resolved = this.opts.recipientState?.(recipient) ?? "alive";
+				recipientStates.set(recipient, resolved);
+				return resolved;
+			};
 			// FLY-1599: recordTickStarted is synchronous SQL. It used to run BEFORE
 			// this try block, so a SQLITE_BUSY during a lead-restart herd escaped
 			// tick() entirely, became an unhandled rejection on the floating
@@ -238,15 +253,35 @@ export class LeadInboxLoop {
 			}
 			await this.opts.admit?.();
 			if (queueConfig.enabled) {
-				this.opts.queue.reconcileExpiredLeases({
+				const reconciliation = this.opts.queue.reconcileExpiredLeases({
 					ownerEpoch: this.opts.ownerEpoch,
 					now: this.isoNow(),
 					recipientKind: "lead",
 					toAgent: this.opts.leadId,
 					leaseRetryMax: queueConfig.leaseRetryMax,
-					recipientState: () => "alive",
+					recipientState,
 					maxBatches: 100,
 					maxTerminalRows: 0,
+				});
+				if (reconciliation.skippedUnknown > 0) {
+					if (!this.unknownRecipientHoldActive) {
+						this.opts.logger?.warn(
+							"Lead inbox held expired batches for an unknown recipient incarnation",
+							{
+								leadId: this.opts.leadId,
+								skippedUnknown: reconciliation.skippedUnknown,
+							},
+						);
+					}
+					this.unknownRecipientHoldActive = true;
+				} else {
+					this.unknownRecipientHoldActive = false;
+				}
+				this.opts.queue.releaseExpiredLegacyPushClaims({
+					toAgent: this.opts.leadId,
+					ownerEpoch: this.opts.ownerEpoch,
+					now: this.isoNow(),
+					maxRows: 100,
 				});
 			}
 
@@ -430,7 +465,7 @@ export class LeadInboxLoop {
 			queueConfig.enabled ? `${row.delivery_id}#r${attempt}` : row.delivery_id,
 		);
 		const header = queueConfig.enabled
-			? `[mailbox-batch ${batchId} | ${rows.length} messages | from ${rows[0]?.from_agent}]\nYou must ack this batch with ${this.opts.ackInstruction ?? "flywheel_inbox_ack_batch or lead_actions.ack_batch"}; once 3 batches are unacked, no further batch will be delivered.`
+			? `[mailbox-batch ${batchId} | ${rows.length} messages | from ${rows[0]?.from_agent}]\nYou must ack this batch with ${this.opts.ackInstruction ?? "flywheel_inbox_ack_batch or lead_actions.ack_batch"} promptly so the sender can see you received it; unacked batches are redelivered and eventually dead-lettered.`
 			: "";
 		const batch: LeadDeliveryBatch = {
 			batchId: transportBatchId,

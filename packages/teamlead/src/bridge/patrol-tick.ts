@@ -60,9 +60,33 @@ interface FailureTracker {
 }
 
 const PATROL_FAILURE_ALERT_COOLDOWN_MS = 30 * 60_000;
+// FLY-1687: a just-settled catch-up may sit immediately before this Lead's
+// phase boundary. Give it one nominal rider minute before minting a new tick.
+const PATROL_SETTLEMENT_DOUBLE_TICK_GUARD_MS = 60_000;
 
 export function patrolSessionKey(projectName: string, leadId: string): string {
 	return `patrol:${projectName}:${leadId}`;
+}
+
+/** Stable per-Lead phase inside one patrol interval. */
+export function patrolTickOffsetMs(leadId: string, intervalMs: number): number {
+	const interval = Math.floor(intervalMs);
+	if (!Number.isSafeInteger(interval) || interval <= 0) {
+		throw new Error(`invalid patrol interval: ${intervalMs}`);
+	}
+	return (
+		createHash("sha256").update(leadId).digest().readUInt32BE(0) % interval
+	);
+}
+
+function scheduledAtOrBefore(
+	nowMs: number,
+	leadId: string,
+	intervalMs: number,
+): number {
+	const interval = Math.floor(intervalMs);
+	const offsetMs = patrolTickOffsetMs(leadId, interval);
+	return Math.floor((nowMs - offsetMs) / interval) * interval + offsetMs;
 }
 
 function rosterEntry(session: Session): PatrolRosterEntry {
@@ -185,6 +209,11 @@ async function runLeadPatrolTickPass(
 					failures.succeeded(project.projectName, lead.agentId);
 					continue;
 				}
+				const currentScheduledAt = scheduledAtOrBefore(
+					nowMs,
+					lead.agentId,
+					intervalMs,
+				);
 
 				const sessionKey = patrolSessionKey(project.projectName, lead.agentId);
 				const previous = deps.store.getLatestPatrolTickEvent(
@@ -216,7 +245,29 @@ async function runLeadPatrolTickPass(
 							`invalid patrol settlement timestamp: ${String(anchor)}`,
 						);
 					}
-					if (nowMs - anchorMs < intervalMs) {
+					const previousPayload = JSON.parse(previous.payload) as HookPayload;
+					const previousBasisMs = parseSqliteUtcMs(
+						previousPayload.scheduled_at ?? previousPayload.generated_at,
+					);
+					if (previousBasisMs == null) {
+						throw new Error(
+							"patrol_tick payload lacks scheduled_at/generated_at",
+						);
+					}
+					const previousSlotStart = scheduledAtOrBefore(
+						previousBasisMs,
+						lead.agentId,
+						intervalMs,
+					);
+					// FLY-1771: phase is anchored to this Lead's deterministic wall-clock grid,
+					// not the previous mailbox settlement. Settlement retains one job:
+					// a stale tick settled inside the current slot counts that slot as
+					// served, preventing an immediate catch-up double tick.
+					if (
+						previousSlotStart >= currentScheduledAt ||
+						anchorMs >= currentScheduledAt ||
+						nowMs - anchorMs < PATROL_SETTLEMENT_DOUBLE_TICK_GUARD_MS
+					) {
 						failures.succeeded(project.projectName, lead.agentId);
 						continue;
 					}
@@ -230,6 +281,7 @@ async function runLeadPatrolTickPass(
 					project_name: project.projectName,
 					roster: roster.map(rosterEntry),
 					generated_at: new Date(nowMs).toISOString(),
+					scheduled_at: new Date(currentScheduledAt).toISOString(),
 				};
 				const seq = deps.store.appendLeadEvent(
 					lead.agentId,

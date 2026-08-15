@@ -12,14 +12,19 @@ describe("FLY-1573 mailbox queue flag", () => {
 	});
 
 	it("is registered as a direct-toggleable default-on kill switch", () => {
-		expect(
-			FEATURE_FLAGS.find((flag) => flag.name === "mailbox_queue"),
-		).toMatchObject({
+		const flag = FEATURE_FLAGS.find((flag) => flag.name === "mailbox_queue");
+		expect(flag).toMatchObject({
 			category: "kill_switch",
 			envVar: "FLYWHEEL_MAILBOX_QUEUE",
 			polarity: "default_on",
 			default: true,
 			toggleable: "direct",
+		});
+		expect(flag?.readSites).toContainEqual({
+			file: "packages/inbox-mcp/src/queue-mode.ts",
+			symbol: "resolveLiveMailboxQueueEnabled",
+			timing: "dotenv_live",
+			pattern: "dynamic",
 		});
 	});
 

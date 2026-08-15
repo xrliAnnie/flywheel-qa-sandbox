@@ -1,0 +1,11 @@
+flowchart LR
+  A["Lead 一句话指令"] --> B[("信箱：一行待投递记录")]
+  B --> C["门铃记录<br/>（不含信件正文，只有指针）"]
+  C --> D["停驻循环每轮看一眼<br/>发现门铃 → 唤起一轮"]
+  D --> E["Codex 收到<br/>[phase-wake doorbell:…]"]
+  E --> F["runner 自己去信箱取正文"]
+  F --> G["执行 → 自己签收<br/>门铃标记完成"]
+  G -. "没人读？租约到期原地重投<br/>整条链再走一遍" .-> B
+  classDef norm fill:#ffffff,stroke:#d2d2d7,color:#1d1d1f;
+  classDef good fill:#e6f7ec,stroke:#34c759,stroke-width:2px,color:#1d1d1f;
+  class A,B,C,D norm; class E,F,G good;

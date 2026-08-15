@@ -14,6 +14,7 @@ import { dirname } from "node:path";
 import {
 	CommDB,
 	type PhaseWakeInput,
+	type RunnerDoorbellWakeResult,
 	type RunnerPhaseWake,
 } from "flywheel-comm/db";
 
@@ -152,6 +153,11 @@ interface PhaseLifecycleDb {
 		message: PhaseWakeInput,
 		nowMs: number,
 	): unknown;
+	enqueueRunnerDoorbellWake(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	): RunnerDoorbellWakeResult;
 	markRunnerPhaseWakeStarted(
 		executionId: string,
 		messageId: string,
@@ -379,12 +385,32 @@ export class CodexPhaseLifecycleController implements CodexPhaseLifecycle {
 						`phase wake recipient mismatch: expected ${this.options.mailboxAgentName}, got ${message.to}`,
 					);
 				}
-				this.db.enqueueRunnerPhaseWake(
+				const flywheelId = message.metadata?.flywheelId;
+				const queueBatch =
+					typeof flywheelId === "string" &&
+					flywheelId.startsWith("mailbox-batch:");
+				if (!queueBatch) {
+					this.db.enqueueRunnerPhaseWake(
+						this.options.executionId,
+						message,
+						this.now(),
+					);
+					this.signalActivity();
+					return;
+				}
+				const result = this.db.enqueueRunnerDoorbellWake(
 					this.options.executionId,
 					message,
 					this.now(),
 				);
-				this.signalActivity();
+				if (
+					result.kind === "queued" ||
+					result.kind === "reused" ||
+					(result.kind === "already_covered" &&
+						result.wake.state !== "finished")
+				) {
+					this.signalActivity();
+				}
 			};
 			this.watcherStarted = true;
 			try {

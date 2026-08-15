@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1773 · Flow 2 批通道三件治病 — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .sub .mono { font-family: 'SF Mono', monospace; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.purple { border-left-color: #af52de; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 10px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p, li { font-size: 15px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .summary-line { font-size: 17px; font-weight: 600; color: #1d1d1f; background: #eef4ff; border-radius: 10px; padding: 14px 16px; margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .diagram { overflow-x: auto; margin: 14px 0; background: #fff; border-radius: 8px; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .note { color: #86868b; font-size: 13.5px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 13px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+  .badge.cure { background: #e8f8ee; color: #1d804a; }
+  .badge.sick { background: #ffebe9; color: #c9251a; }
+  .badge.keep { background: #f5f5f7; color: #6e6e73; }
+  .comment-box { margin-top: 14px; }
+  .comment-box label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #comment-summary .item { border-left: 3px solid #007aff; padding: 6px 10px; margin: 8px 0; background: #f5f5f7; border-radius: 6px; white-space: pre-wrap; font-size: 14px; }
+  #comment-summary .sec { font-weight: 600; color: #1a365d; font-size: 13px; }
+  #copy-all { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14.5px; font-weight: 600; cursor: pointer; margin-top: 10px; }
+  #copy-all:active { opacity: 0.7; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  .empty-hint { color: #86868b; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Flow 2(批通道)三件治病 — 设计方案</h1>
+  <div class="sub"><span class="mono">FLY-1773</span> · 2026-08-14 · 设计已通过 Codex 独立评审 8 轮 · 状态:待实施</div>
+
+  <div class="summary-line">一句话:8-13 你的消息被堵死 9 分钟的病根,是系统把「写进了 Lead 屏幕」当成「Lead 已收到」—— 本方案让盖「已送达」章的唯一依据变成 Lead 真实签收,忙碌或未读永远不再堵住新消息的投递,死掉/裁撤的收件人能被判出来不再白投;并把你提的「封口推迟到投递那一刻」一并设计进来(队列敞口攒、投递起点封口、上限 30 条)。</div>
+
+  <!-- Section 1 -->
+  <div class="card" data-sec="两条规则终稿">
+    <h2>1 · 背景:全系统消息只走两条通道(已拍板)</h2>
+    <p>8-14 讨论定稿:所有消息按<strong>收件人</strong>分流,零例外 —— 收件人是 <span class="term">Lead</span>(部门主管 AI)走 <strong>Flow 2 批通道</strong>(攒 10 条或 30 秒打一个包,投出后要求整包签收);收件人是 <span class="term">Runner</span>(干活的工程 AI)走 <strong>Flow 1 直投通道</strong>(一条条即时投递并唤醒)。本单只治 Flow 2,Flow 1 一行不动。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-two-rules" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 2 -->
+  <div class="card red" data-sec="8-13 事故机理">
+    <h2>2 · 病根:8-13 那晚到底发生了什么</h2>
+    <p>Flow 2 有个「在途上限」:同时最多 3 个批在外面飘着没签收,满了就<strong>一条新消息都不投</strong>。而「已送达」的章是传输一成功(文本写进 Lead 的屏幕)就盖的 —— Lead 读没读根本不知道。于是:Lead 一忙,3 个「已投出但没人读」的批把位子占满,每个位子要等 30 分钟租约到期才让出来,你的新消息就在队列里干等。这不是 bug 触发的偶然,是设计使然 —— 投递提示语里明写着「3 个批没签收就不再投递」。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p class="note">代码证据:盖章位点 mailbox-queue.ts recordBatchDelivered / inbox-mcp delivery.ts:49-50;占位计数 mailbox-queue.ts:1058-1068;30 分钟租约 mailbox-queue-config.ts:16。</p>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-incident" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 3 -->
+  <div class="card green" data-sec="三件治病方案">
+    <h2>3 · 方案:三件一起治,治完的世界长这样</h2>
+    <ul>
+      <li><span class="badge cure">治①</span><strong>真送达才盖章</strong> —— 传输成功只记一笔「已通知」时间(新增 <span class="mono">notified_at</span>);「已送达」(<span class="mono">delivered_at</span>)只在 Lead <span class="term">签收</span>(ack,Lead 读完批后主动回执)那一刻才盖。系统账本从此不说谎。</li>
+      <li><span class="badge cure">治②</span><strong>未读不占位</strong> —— 在途上限改成只数「传输一直失败、还在重试」的批(真正的通道故障才需要刹车);已投出没读的批不占位。<strong>忙只影响 Lead 何时读,永远堵不死新消息能不能投。</strong></li>
+      <li><span class="badge cure">治③</span><strong>读者可判活</strong> —— 重投之前先判活:Lead 进程暂时死了(系统会自动拉回)就先挂起等它回来;Lead 已被裁撤(不在编制里)就把消息转死信并<strong>告警给还活着的负责人</strong>,不再对着死人白投 3 轮。</li>
+    </ul>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-cures" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 3.5: seal timing -->
+  <div class="card" data-sec="封口时机(你的提案)">
+    <h2>3.5 · 你的提案「封口推迟到投递那一刻」—— 与「未读不占位」画进同一张图</h2>
+    <p><strong>先核实现状(以代码为准)</strong>:Tadashi 跟你说的「攒批即封口」与代码一致 —— 补两个细节:① 所谓「10 条/30 秒」里的 30 秒<strong>不是等一等再发</strong>,是「以第一条消息为锚,30 秒横界内已经到队的消息可以同批」;系统从不为凑批而等待,Lead 活跃时批经常只有 1-2 条。② 封口(成员定格)就发生在<strong>投递起点那一刻</strong>(打包动作和投递在同一个节拍里紧连)—— 所以你要的「封口推迟到投递那一刻」在结构上已经成立,真正缺的只是<strong>上限</strong>:堵住再解锁时,堆积的消息现在最多 10 条一批。本设计把 Lead 通道上限提到 <strong>30 条</strong>(Runner 通道保持 10,不动 Flow 1)。</p>
+    <div class="diagram">__SVG_D4__</div>
+    <h3>两条工程约束(都守住了)</h3>
+    <ul>
+      <li><strong>批号对账不乱</strong>:唯一「同批重发」是传输失败的冻结重发 —— 原批号原成员,绝不中途扩员(扩员会把签收对账搞乱);签收超时的重投走「拆包回队列、重新组新批」,天然是新批号,不违约。</li>
+      <li><strong>30 条上限 + 顺序保持</strong>:打包本来就按优先级+到达序取件,上限从 10 改 30 不碰顺序。</li>
+    </ul>
+    <p class="note">诚实边界:封口之后、真正写进屏幕之前还有一小段校验工序,这段极短的缝里到的新消息进下一批 —— 要做到字面上的「写屏那一刻才封口」需要一套全新的两阶段崩溃恢复机制,复杂度配不上收益,本单明确不做。</p>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-seal" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 4 -->
+  <div class="card purple" data-sec="数据与结构模型">
+    <h2>4 · 数据模型:两个时间戳,各说各的真话</h2>
+    <table>
+      <tr><th>字段</th><th>含义</th><th>谁写它</th><th>修改前的病</th></tr>
+      <tr><td class="mono">notified_at(新增)</td><td>传输证据:这条消息何时成功写进了收件人屏幕</td><td>传输层,每次投递成功刷新</td><td>(不存在 —— 传输成功被直接记成「已送达」)</td></tr>
+      <tr><td class="mono">delivered_at</td><td>送达证据:收件人何时真实签收</td><td>只有收件人 ack 时</td><td>传输一成功就盖,Lead 没读也算「已送达」</td></tr>
+      <tr><td class="mono">在途上限(3 个批)</td><td>纯传输刹车:只数「从没传成功、还在重试」的批</td><td>—</td><td>把「已投没读」也算在途,占满即全面停投</td></tr>
+      <tr><td class="mono">判活</td><td>两级:进程活着吗(lease 探针)+ 编制里还有它吗(registry)</td><td>Bridge 投递侧</td><td>Lead 批被硬编码当「永远活着」</td></tr>
+    </table>
+    <p>老库升级全自动:新列幂等添加;历史数据的「已通知」时间从旧编码里回填,升级瞬间不会触发重发风暴;所有旧行为在一个租约周期(≤30 分钟)内自然收敛到新语义。</p>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-model" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 5 -->
+  <div class="card amber" data-sec="关键权衡与被拒方案">
+    <h2>5 · 关键权衡 & 被拒掉的方案</h2>
+    <table>
+      <tr><th>决策点</th><th>选定</th><th>被拒方案(和原因)</th></tr>
+      <tr><td>送达证据</td><td>新增独立「已通知」时间戳,送达 = 签收</td><td>❌ 不加列、直接改读签收时间 —— 会丢掉「传输从没成功过」这个判断依据,冻结重发机制就瞎了;❌ 沿用旧的状态编码术 —— 正是它造成了注释和实现漂移的病</td></tr>
+      <tr><td>不堵新消息</td><td>上限只数传输失败批</td><td>❌ 给你的消息开 VIP 通道(bypass)—— 你拍的是「按收件人定通道,零例外」,开例外就是走回头路;❌ 完全删掉上限 —— 通道真坏的时候会无限开新批,重试流量没有边界</td></tr>
+      <tr><td>未签收就不停投,靠什么防灌爆?</td><td>攒批本身限流(每 30 秒至多 1 个新批)+ 重投每 30 分钟 1 轮 + 3 轮后死信上报</td><td>你拍板过:堵死比灌爆更痛。一个从不签收的 Lead,流量上限也就每 30 秒 1 批,可接受</td></tr>
+      <tr><td>判活怎么做</td><td>复用两个既有真源(进程 lease 探针 + 编制表),Runner 通道已有同款判活面,把它接到 Lead 分支</td><td>❌ 给每条消息记「第几代收件人」再检测换代 —— 和已有的「新生自报家门」机制形成双权威,加表加机制,违反「修结构别加报警器」</td></tr>
+      <tr><td>裁撤 Lead 的告警发给谁</td><td>还活着的同项目负责人(项目没人就发舰队告警身份)</td><td>❌ 发给被裁撤的 Lead 自己 —— 现状真是这样,告警进黑洞还被记成「已送达」(评审抓出来的假绿)</td></tr>
+    </table>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-tradeoffs" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Section 6 -->
+  <div class="card gray" data-sec="诚实边界">
+    <h2>6 · 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>Flow 2(Lead 收件)三件病根治;老库自动升级;验收含「复刻 8-13 事故形态,断言新消息照常投出」的可证伪测试</li>
+      <li>旧的逐条推送通道(legacy push):批通道开着时彻底关停(Lead 消息只走一条通道);关着时保留但补上并发与崩溃恢复的安全缝</li>
+    </ul>
+    <h3>不做(明确划出去)</h3>
+    <ul>
+      <li><strong>Flow 1(Runner 直投)一行不动</strong> —— 共享函数的每处改动都有 Runner 行为等价锁测试</li>
+      <li>lead_events 账本不并入(另案处理)</li>
+      <li>不加任何新配置开关、新定时器、新配置表</li>
+      <li>Lead 从不签收导致的重投流量(每 30 分钟一轮、3 轮后死信)是接受的设计代价,不在本单继续压缩</li>
+    </ul>
+    <p class="note">设计评审:Codex 独立评审 8 轮(主方案 6 轮:第 1 轮 7 项 → 第 6 轮 0 项;封口时机附录再 2 轮),抓出的真洞包括:传输成功批会被误当失败批立即重投、上限数不到真正的失败批、老库视图升级会丢历史证据、新旧两条通道会重复投递、告警黑洞假绿、上限一行全局改会误伤 Runner 通道等 —— 全部折入方案。</p>
+    <div class="comment-box"><label>给这一节留言(自动保存)</label><textarea data-key="sec-boundary" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <!-- Comment summary -->
+  <div class="card" data-sec="留言汇总" id="summary-card">
+    <h2>你的留言汇总</h2>
+    <div id="comment-summary"><p class="empty-hint">上面各节的留言会实时汇总到这里。</p></div>
+    <button id="copy-all">复制全部留言</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX = "fly-1773-design:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitle(el) {
+    var card = el.closest ? el.closest(".card") : null;
+    return card && card.getAttribute("data-sec") ? card.getAttribute("data-sec") : "未命名小节";
+  }
+
+  function renderSummary() {
+    var container = document.getElementById("comment-summary");
+    while (container.firstChild) container.removeChild(container.firstChild);
+    var any = false;
+    boxes.forEach(function (t) {
+      var v = t.value.trim();
+      if (!v) return;
+      any = true;
+      var item = document.createElement("div");
+      item.className = "item";
+      var sec = document.createElement("div");
+      sec.className = "sec";
+      sec.textContent = "【" + sectionTitle(t) + "】";
+      var body = document.createElement("div");
+      body.textContent = v;
+      item.appendChild(sec);
+      item.appendChild(body);
+      container.appendChild(item);
+    });
+    if (!any) {
+      var hint = document.createElement("p");
+      hint.className = "empty-hint";
+      hint.textContent = "上面各节的留言会实时汇总到这里。";
+      container.appendChild(hint);
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function collectAll() {
+    var out = [];
+    boxes.forEach(function (t) {
+      var v = t.value.trim();
+      if (v) out.push("【" + sectionTitle(t) + "】\n" + v);
+    });
+    return out.join("\n\n");
+  }
+
+  function fallbackCopy(text, status) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      status.textContent = ok ? "已复制 ✓" : "复制失败,请手动选择文本";
+    } catch (e) {
+      status.textContent = "复制失败,请手动选择文本";
+    }
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = collectAll();
+    var status = document.getElementById("copy-status");
+    if (!text) { status.textContent = "还没有留言"; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { status.textContent = "已复制 ✓"; },
+        function () { fallbackCopy(text, status); }
+      );
+    } else {
+      fallbackCopy(text, status);
+    }
+  });
+})();
+</script>
+</body>
+</html>

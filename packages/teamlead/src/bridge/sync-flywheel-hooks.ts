@@ -21,10 +21,10 @@
  * the fresh hook (parallelizing the sync against Runner spawn would leave
  * a short window where the old hook still runs).
  *
- * Allowlist is explicit: only `inbox-check.sh` is in scope. The other file
- * in `scripts/hooks/` is `flywheel-session-end.sh`, which is registered as
- * a Claude Code SessionEnd hook (separate registration mechanism, separate
- * deploy path) and is intentionally NOT covered here.
+ * Allowlist is explicit: `inbox-check.sh` and `runner-stop-notify.sh` are in
+ * scope. `flywheel-session-end.sh` is registered as a Claude Code SessionEnd
+ * hook (separate registration mechanism, separate deploy path) and is
+ * intentionally NOT covered here.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -48,7 +48,7 @@ import { fileURLToPath } from "node:url";
 import { isGlobalBinDir, isTempOrWorktreeRoot } from "./path-hygiene.js";
 
 /** Hooks that this module is allowed to write into the runtime directory. */
-const HOOKS_TO_DEPLOY = ["inbox-check.sh"] as const;
+const HOOKS_TO_DEPLOY = ["inbox-check.sh", "runner-stop-notify.sh"] as const;
 
 /**
  * Hook files MUST be readable + executable by the running user — without

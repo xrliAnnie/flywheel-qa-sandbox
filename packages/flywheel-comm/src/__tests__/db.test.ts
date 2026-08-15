@@ -78,11 +78,11 @@ describe("CommDB", () => {
 
 	describe("event ACK receipts", () => {
 		it("stores one consumable backend-neutral receipt without exposing token fields", () => {
-			const id = db.insertAckReceipt("lead-1", 42, "secret-token");
+			const id = db.insertAckReceipt("test-lead", 42, "secret-token");
 			expect(db.getPendingAckReceipts()).toMatchObject([
 				{
 					id,
-					from_agent: "lead-1",
+					from_agent: "test-lead",
 					type: "ack_receipt",
 					content: JSON.stringify({ event_seq: 42, ack_token: "secret-token" }),
 				},
@@ -520,6 +520,7 @@ describe("CommDB", () => {
 				lead_id: "flywheel-eng-lead",
 				status: "failed",
 				vendor: "codex",
+				phase_keep_alive: 0,
 			});
 			migrated.close();
 
@@ -530,6 +531,7 @@ describe("CommDB", () => {
 				)
 				.get() as { sql: string };
 			expect(schema.sql).toContain("'failed'");
+			expect(schema.sql).toContain("phase_keep_alive");
 			expect(
 				raw
 					.prepare(
@@ -940,9 +942,19 @@ describe("CommDB", () => {
 		});
 	});
 
-	// ── FLY-109: push-path helpers (delivered_at + ack semantics) ──
+	// ── FLY-109/1773: legacy push transport receipt + ack semantics ──
 
 	describe("FLY-109 push-path helpers", () => {
+		const pendingPush = (
+			leadId: string,
+			retryWindowSec = 30,
+			now = new Date().toISOString(),
+		) =>
+			db.getPendingPushInstructions(
+				leadId,
+				new Date(Date.parse(now) - retryWindowSec * 1_000).toISOString(),
+				now,
+			);
 		it("should expose delivery state through the mailbox projection", () => {
 			const dbPath = join(tmpDir, "delivered-migrate.db");
 			const db1 = new CommDB(dbPath);
@@ -971,57 +983,57 @@ describe("CommDB", () => {
 			}).not.toThrow();
 		});
 
-		it("getPendingPushInstructions returns undelivered instructions", () => {
-			const id1 = db.insertInstruction("bridge", "lead-1", "msg 1");
-			db.insertInstruction("bridge", "lead-1", "msg 2");
+		it("getPendingPushInstructions returns the first unnotified instruction", () => {
+			const id1 = db.insertInstruction("bridge", "test-lead", "msg 1");
+			db.insertInstruction("bridge", "test-lead", "msg 2");
 
-			const pending = db.getPendingPushInstructions("lead-1", 30);
-			expect(pending).toHaveLength(2);
+			const pending = pendingPush("test-lead");
+			expect(pending).toHaveLength(1);
 			expect(pending[0]!.id).toBe(id1);
 			expect(pending[0]!.delivered_at).toBeNull();
 		});
 
 		it("getPendingPushInstructions hides delivered messages within retry window", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			const id = db.insertInstruction("bridge", "test-lead", "msg");
 			db.markInstructionDelivered(id);
 
-			const pending = db.getPendingPushInstructions("lead-1", 30);
+			const pending = pendingPush("test-lead");
 			expect(pending).toHaveLength(0);
 		});
 
 		it("getPendingPushInstructions re-surfaces messages after retry window", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "stale");
+			const id = db.insertInstruction("bridge", "test-lead", "stale");
 			db.markInstructionDelivered(id);
-			// Backdate delivered_at 60s ago
+			// Backdate the transport receipt beyond the retry window.
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds') WHERE id = ?",
+					"UPDATE mailbox SET notified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds') WHERE id = ?",
 				)
 				.run(id);
 
-			const pending = db.getPendingPushInstructions("lead-1", 30);
+			const pending = pendingPush("test-lead");
 			expect(pending).toHaveLength(1);
 			expect(pending[0]!.id).toBe(id);
-			expect(pending[0]!.delivered_at).not.toBeNull();
+			expect(pending[0]!.delivered_at).toBeNull();
 		});
 
 		it("getPendingPushInstructions hides acked messages regardless of retry window", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "acked");
+			const id = db.insertInstruction("bridge", "test-lead", "acked");
 			db.markInstructionDelivered(id);
 			db.ackInstructionRead(id);
-			// Backdate delivered_at far past retry window
+			// Backdate transport evidence far past retry window.
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET claim_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-600 seconds') WHERE id = ?",
+					"UPDATE mailbox SET notified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-600 seconds') WHERE id = ?",
 				)
 				.run(id);
 
-			const pending = db.getPendingPushInstructions("lead-1", 30);
+			const pending = pendingPush("test-lead");
 			expect(pending).toHaveLength(0);
 		});
 
 		it("getPendingPushInstructions hides DEAD messages", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "dead");
+			const id = db.insertInstruction("bridge", "test-lead", "dead");
 			(db as any).db
 				.prepare(
 					`UPDATE mailbox
@@ -1031,11 +1043,11 @@ describe("CommDB", () => {
 				)
 				.run(id);
 
-			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+			expect(pendingPush("test-lead")).toHaveLength(0);
 		});
 
 		it("filters DEAD messages by state regardless of dead_reason", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "terminal");
+			const id = db.insertInstruction("bridge", "test-lead", "terminal");
 			(db as any).db
 				.prepare(
 					`UPDATE mailbox
@@ -1045,11 +1057,11 @@ describe("CommDB", () => {
 				)
 				.run(id);
 
-			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+			expect(pendingPush("test-lead")).toHaveLength(0);
 		});
 
 		it("does not re-deliver a leased message after it becomes DEAD", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "treadmill");
+			const id = db.insertInstruction("bridge", "test-lead", "treadmill");
 			db.markInstructionDelivered(id);
 			(db as any).db
 				.prepare(
@@ -1060,48 +1072,47 @@ describe("CommDB", () => {
 				)
 				.run(id);
 
-			expect(db.getPendingPushInstructions("lead-1", 0)).toHaveLength(0);
+			expect(pendingPush("test-lead", 0)).toHaveLength(0);
 		});
 
-		it("markInstructionDelivered sets delivered_at to now", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "msg");
+		it("the compatibility marker writes notified_at without sealing delivery", () => {
+			const id = db.insertInstruction("bridge", "test-lead", "msg");
 			db.markInstructionDelivered(id);
 
 			const row = (db as any).db
 				.prepare(
-					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
+					`SELECT m.notified_at, p.delivered_at
+					 FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
+					 WHERE m.id = ?`,
 				)
-				.get(id) as { delivered_at: string | null };
-			expect(row.delivered_at).not.toBeNull();
+				.get(id) as { notified_at: string | null; delivered_at: string | null };
+			expect(row.notified_at).not.toBeNull();
+			expect(row.delivered_at).toBeNull();
 		});
 
-		it("markInstructionDelivered is idempotent — preserves the first lease timestamp", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "msg");
+		it("the compatibility marker refreshes transport evidence", () => {
+			const id = db.insertInstruction("bridge", "test-lead", "msg");
 			db.markInstructionDelivered(id);
-			// Backdate delivered_at
+			// Backdate the receipt, then record another successful transport.
 			(db as any).db
 				.prepare(
-					"UPDATE mailbox SET claim_expires_at = datetime('now', '-60 seconds') WHERE id = ?",
+					"UPDATE mailbox SET notified_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
 				)
 				.run(id);
 			const before = (db as any).db
-				.prepare(
-					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
-				)
-				.get(id) as { delivered_at: string };
+				.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
+				.get(id) as { notified_at: string };
 
 			// Re-deliver
 			db.markInstructionDelivered(id);
 			const after = (db as any).db
-				.prepare(
-					"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
-				)
-				.get(id) as { delivered_at: string };
-			expect(after.delivered_at).toBe(before.delivered_at);
+				.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
+				.get(id) as { notified_at: string };
+			expect(after.notified_at).not.toBe(before.notified_at);
 		});
 
 		it("ackInstructionRead sets read_at", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			const id = db.insertInstruction("bridge", "test-lead", "msg");
 			db.markInstructionDelivered(id);
 			db.ackInstructionRead(id);
 
@@ -1112,7 +1123,7 @@ describe("CommDB", () => {
 		});
 
 		it("ackInstructionRead is idempotent — preserves original read_at on repeat", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			const id = db.insertInstruction("bridge", "test-lead", "msg");
 			db.markInstructionDelivered(id);
 			db.ackInstructionRead(id);
 
@@ -1136,18 +1147,18 @@ describe("CommDB", () => {
 			// Instruction marked delivered but NOT acked — CLI pull should still see it
 			const id = db.insertInstruction(
 				"bridge",
-				"lead-1",
+				"test-lead",
 				"delivered not acked",
 			);
 			db.markInstructionDelivered(id);
 
-			const unread = db.getUnreadInstructions("lead-1");
+			const unread = db.getUnreadInstructions("test-lead");
 			expect(unread).toHaveLength(1);
 			expect(unread[0]!.id).toBe(id);
 		});
 
 		it("getUnreadInstructions hides DEAD messages", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "dead pull");
+			const id = db.insertInstruction("bridge", "test-lead", "dead pull");
 			(db as any).db
 				.prepare(
 					`UPDATE mailbox
@@ -1157,50 +1168,70 @@ describe("CommDB", () => {
 				)
 				.run(id);
 
-			expect(db.getUnreadInstructions("lead-1")).toHaveLength(0);
+			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
 		});
 
 		it("markInstructionRead (CLI pull path) still hides from getUnreadInstructions", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "cli path");
+			const id = db.insertInstruction("bridge", "test-lead", "cli path");
 			db.markInstructionRead(id);
 
-			expect(db.getUnreadInstructions("lead-1")).toHaveLength(0);
+			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
 		});
 
 		it("getPendingPushInstructions filters out expired instructions", () => {
-			const id = db.insertInstruction("bridge", "lead-1", "expired");
+			const id = db.insertInstruction("bridge", "test-lead", "expired");
 			(db as any).db
 				.prepare(
 					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
 				)
 				.run(id);
 
-			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+			expect(pendingPush("test-lead")).toHaveLength(0);
 		});
 
-		it("getPendingPushInstructions returns FIFO by created_at", () => {
-			const id1 = db.insertInstruction("bridge", "lead-1", "first");
-			const id2 = db.insertInstruction("bridge", "lead-1", "second");
+		it("compares legacy ISO expiry spellings by time rather than text", () => {
+			const id = db.insertInstruction("bridge", "test-lead", "expired");
+			(db as any).db
+				.prepare("UPDATE mailbox SET expires_at = ? WHERE id = ?")
+				.run("2099-07-19T12:00:00Z", id);
 
-			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(
+				pendingPush("test-lead", 30, "2099-07-19T12:00:00.050Z"),
+			).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions advances FIFO by immutable seq", () => {
+			const id1 = db.insertInstruction("bridge", "test-lead", "first");
+			const id2 = db.insertInstruction("bridge", "test-lead", "second");
+
+			const pending = pendingPush("test-lead");
 			expect(pending[0]!.id).toBe(id1);
-			expect(pending[1]!.id).toBe(id2);
+			expect(pending.some(({ id }) => id === id2)).toBe(false);
 		});
 
 		it("uses mailbox_live for the production push query", () => {
 			const plan = (db as any).db
 				.prepare(`EXPLAIN QUERY PLAN ${PENDING_PUSH_INSTRUCTIONS_SQL}`)
-				.all("lead-1", 30) as Array<{ detail: string }>;
+				.all(
+					"test-lead",
+					"2026-08-14T12:00:00.000Z",
+					"2026-08-14T11:59:30.000Z",
+					"2026-08-14T12:00:00.000Z",
+					"2026-08-14T12:00:00.000Z",
+					"2026-08-14T12:00:00.000Z",
+					"2026-08-14T12:00:00.000Z",
+					"2026-08-14T11:59:30.000Z",
+				) as Array<{ detail: string }>;
 
-			expect(plan[0]?.detail).toContain(
-				"SEARCH m USING INDEX mailbox_live (to_agent=?)",
-			);
+			expect(
+				plan.some(({ detail }) => detail.includes("USING INDEX mailbox_live")),
+			).toBe(true);
 		});
 
 		it("uses mailbox_live for the production pull query", () => {
 			const plan = (db as any).db
 				.prepare(`EXPLAIN QUERY PLAN ${UNREAD_INSTRUCTIONS_SQL}`)
-				.all("lead-1") as Array<{ detail: string }>;
+				.all("test-lead") as Array<{ detail: string }>;
 
 			expect(plan[0]?.detail).toContain(
 				"SEARCH m USING INDEX mailbox_live (to_agent=?)",

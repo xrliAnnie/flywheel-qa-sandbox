@@ -1,0 +1,20 @@
+flowchart TB
+    E["新消息进队列 (QUEUED)"] --> CAP{"背压检查(修后):<br/>只数『传输一直失败、<br/>还在重试』的批"}
+    CAP -- "传输坏了才拦" --> HOLD["暂不开新批<br/>先把失败批重试成功"]
+    CAP -- "正常情况" --> BATCH["攒批:30 秒窗口<br/>最多 10 条打包"]
+    BATCH --> SEND["写进 Lead 屏幕<br/>(传输成功)"]
+    SEND --> NOTE["只记『已通知』时间<br/>notified_at —— 不算送达"]
+    NOTE --> READ{"Lead 读到并签收?<br/>(ack = 整批签收)"}
+    READ -- 是 --> DONE["✅ 此刻才盖『已送达』章<br/>delivered_at = 签收时刻"]
+    READ -- "30 分钟没签收" --> ALIVE{"先判活:<br/>收件 Lead 还活着吗?"}
+    ALIVE -- 活着 --> RETRY["重新投递<br/>(最多 3 轮,之后死信上报)"]
+    RETRY --> SEND
+    ALIVE -- "进程暂时死了" --> PARK["先挂起不投<br/>等它被系统拉回来再投"]
+    PARK --> ALIVE
+    ALIVE -- "Lead 已裁撤(不在编制)" --> DEAD["批转死信 + 告警<br/>发给还活着的负责人"]
+
+    style NOTE fill:#eef4ff,stroke:#007aff
+    style DONE fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style PARK fill:#fff8e6,stroke:#ff9500
+    style DEAD fill:#ffebe9,stroke:#ff3b30
+    style CAP fill:#f3eeff,stroke:#af52de

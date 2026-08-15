@@ -24,6 +24,9 @@ export interface HookPayload {
 	/** FLY-1687: Bridge ledger declaration only; Lead independently verifies it. */
 	roster?: PatrolRosterEntry[];
 	generated_at?: string;
+	/** FLY-1771: patrol_tick's scheduled per-Lead wall-clock phase. Drift is
+	 * `generated_at - scheduled_at`; journal-only, never rendered to the Lead. */
+	scheduled_at?: string;
 	// stuck-specific
 	minutes_since_activity?: number;
 	/** FLY-1234: session_stuck confirm-layer annotation — the bounded reason

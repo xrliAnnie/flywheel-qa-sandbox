@@ -1,0 +1,18 @@
+flowchart TB
+    F["Annie 在 Discord 发消息"] --> Q["消息进入队列<br/>(QUEUED 等待投递)"]
+    Q --> CAP{"在途批检查:<br/>已投出但没签收的批<br/>≥ 3 个?"}
+    CAP -- "是(8-13 当晚)" --> STOP["❌ 一条都不投<br/>新消息在队列里干等"]
+    STOP --> WAIT["每个占位批要等 30 分钟<br/>租约到期才让位"]
+    WAIT --> CAP
+    CAP -- 否 --> GO["✅ 正常攒批投出"]
+
+    subgraph WHY["为什么位子被占满"]
+        D1["批已写进 Lead 屏幕<br/>(传输成功)"] --> D2["系统当场盖『已送达』章<br/>—— 但 Lead 根本没读"]
+        D2 --> D3["没读 → 不签收<br/>→ 批一直占着在途位"]
+    end
+    WHY -.->|"病根"| CAP
+
+    style STOP fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style WAIT fill:#fff8e6,stroke:#ff9500
+    style D2 fill:#ffebe9,stroke:#ff3b30
+    style GO fill:#e8f8ee,stroke:#34c759

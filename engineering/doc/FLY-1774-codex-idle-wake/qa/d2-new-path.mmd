@@ -1,0 +1,16 @@
+flowchart LR
+  L["Lead 发出指令"] --> M[("信箱")]
+  M --> G{"收件人还活着吗？"}
+  G -- "停驻中(awaiting_review)<br/>【修 1】不再当成死人" --> D1
+  G -- "真的结束了" --> DEAD["信件退回 + 通知 Lead<br/>（这条没变）"]
+  subgraph RING["只按门铃 · 绝不替它签收"]
+    D1["【修 2】投递腿<br/>批次到达 → 敲门铃"]
+    D2["【修 3】每轮结束兜底扫<br/>还有未读 → 敲门铃"]
+  end
+  D1 --> BELL[("门铃：一条待办<br/>只写『去查信箱』")]
+  D2 --> BELL
+  BELL --> W["Codex 自己醒来<br/>把门铃当成新一轮任务"]
+  W --> R["runner 自己读信 → 执行 → 自己签收"]
+  classDef good fill:#e6f7ec,stroke:#34c759,stroke-width:2px,color:#1d1d1f;
+  classDef norm fill:#ffffff,stroke:#d2d2d7,color:#1d1d1f;
+  class D1,D2,BELL,W,R good; class L,M,G,DEAD norm;

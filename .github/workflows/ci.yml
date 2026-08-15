@@ -35,6 +35,9 @@ jobs:
       - name: Verify shell suite CI enumeration is complete
         run: bash scripts/__tests__/ci-shell-suite-enumeration.test.sh
 
+      - name: Enforce FLY-1773 ACK-only delivery semantics
+        run: bash scripts/__tests__/fly1773-delivery-semantics.test.sh
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4

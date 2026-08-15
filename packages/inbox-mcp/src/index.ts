@@ -7,8 +7,8 @@
  * readiness to Bridge's runtime selector.
  *
  * FLY-47: replaces Discord control channel for Bridge→Lead communication.
- * FLY-109: at-least-once semantics via delivered_at + explicit model-triggered
- * flywheel_inbox_ack tool. Lease is written AFTER server.connect() so Bridge
+ * FLY-109/1773: at-least-once transport evidence via notified_at; delivery is
+ * sealed only by the model-triggered flywheel_inbox_ack tool. Lease is written AFTER server.connect() so Bridge
  * never sees a "ready" signal while the MCP transport is still half-wired.
  */
 import { homedir } from "node:os";
@@ -28,6 +28,7 @@ import {
 	handleEventAck,
 	processPendingDeliveries,
 } from "./delivery.js";
+import { resolveLiveMailboxQueueEnabled } from "./queue-mode.js";
 
 // ── Required env vars (injected by claude-lead.sh) ──
 
@@ -212,6 +213,7 @@ async function pollOnce(): Promise<void> {
 					},
 				});
 			},
+			{ queueEnabled: resolveLiveMailboxQueueEnabled() },
 		);
 	} catch (err) {
 		process.stderr.write(`[inbox-mcp] Poll error: ${(err as Error).message}\n`);

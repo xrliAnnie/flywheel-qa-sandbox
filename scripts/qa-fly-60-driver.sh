@@ -11,9 +11,9 @@
 #   `:cool:`, NOT Bridge `approveExecution`. See scripts/test-auto-approve.sh
 #   :18-40 for the deadlock rationale.
 #
-# CommDB schema reminder (single `messages` table):
-#   `delivered_at` = inbox-mcp set after MCP notification succeeds
-#   `read_at`      = `flywheel_inbox_ack` MCP tool sets after Lead model ack
+# CommDB delivery reminder:
+#   base `notified_at` = inbox-mcp transport success
+#   projection `delivered_at` / `read_at` = Lead model ACK
 #
 # Manual steps requiring Chrome MCP / Annie attention are gated behind
 # `prompt_manual_step` and emit a TODO marker into the per-scenario verdict
@@ -577,13 +577,13 @@ run_v1() {
     fi
     if [[ -z "$question_id" ]]; then sleep 1; continue; fi
     instruction_row=$(sqlite3 "$COMM_DB" "
-      SELECT id||'|'||type||'|'||from_agent||'|'||to_agent||'|'||COALESCE(delivered_at,'NULL')||'|'||COALESCE(read_at,'NULL')
-      FROM messages
-      WHERE to_agent='${LEAD_ID}'
-        AND type='instruction'
-        AND content LIKE '%${question_id}%'
-        AND read_at IS NULL
-      ORDER BY created_at DESC LIMIT 1
+      SELECT m.id||'|'||m.type||'|'||m.from_agent||'|'||m.to_agent||'|'||COALESCE(m.notified_at,'NULL')||'|'||COALESCE(p.delivered_at,'NULL')||'|'||COALESCE(p.read_at,'NULL')
+      FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
+      WHERE m.to_agent='${LEAD_ID}'
+        AND m.type='instruction'
+        AND m.content LIKE '%${question_id}%'
+        AND p.read_at IS NULL
+      ORDER BY m.seq DESC LIMIT 1
     " 2>/dev/null || true)
     [[ -n "$instruction_row" ]] && break
     sleep 1
@@ -633,12 +633,12 @@ run_v1() {
   # If read_at is already non-null at this instant, the ack happened
   # before the kill landed — race lost, FAIL.
   local right_after_kill_row; right_after_kill_row=$(sqlite3 "$COMM_DB" "
-    SELECT id||'|'||type||'|'||from_agent||'|'||to_agent||'|'||COALESCE(delivered_at,'NULL')||'|'||COALESCE(read_at,'NULL')
-    FROM messages
-    WHERE id='${before_id}'
+    SELECT m.id||'|'||m.type||'|'||m.from_agent||'|'||m.to_agent||'|'||COALESCE(m.notified_at,'NULL')||'|'||COALESCE(p.delivered_at,'NULL')||'|'||COALESCE(p.read_at,'NULL')
+    FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
+    WHERE m.id='${before_id}'
   " 2>/dev/null || true)
   echo "$right_after_kill_row" > "${d}/instruction-right-after-kill.txt"
-  local rak_r; rak_r=$(awk -F'|' '{print $6}' "${d}/instruction-right-after-kill.txt")
+  local rak_r; rak_r=$(awk -F'|' '{print $7}' "${d}/instruction-right-after-kill.txt")
   if [[ -n "$rak_r" && "$rak_r" != "NULL" && "$rak_r" != "" ]]; then
     write_verdict "$id" "FAIL" "race lost — Lead acked instruction (read_at='${rak_r}') before C-c took effect; V1 cannot exercise recovery on this trial"
     return 1
@@ -696,24 +696,26 @@ run_v1() {
   # time; without pinning by id, AFTER could pick the bootstrap row and
   # false-pass while the original row stayed unread.
   local instruction_after; instruction_after=$(sqlite3 "$COMM_DB" "
-    SELECT id||'|'||type||'|'||from_agent||'|'||to_agent||'|'||COALESCE(delivered_at,'NULL')||'|'||COALESCE(read_at,'NULL')
-    FROM messages
-    WHERE id='${before_id}'
+    SELECT m.id||'|'||m.type||'|'||m.from_agent||'|'||m.to_agent||'|'||COALESCE(m.notified_at,'NULL')||'|'||COALESCE(p.delivered_at,'NULL')||'|'||COALESCE(p.read_at,'NULL')
+    FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
+    WHERE m.id='${before_id}'
   " 2>/dev/null || true)
   echo "$instruction_after" > "${d}/instruction-after.txt"
 
   # Parse before/after rows (we know before_r is NULL because of the
   # earlier polling guard; we only verify after_r flipped to non-null).
-  local before_d before_r after_d after_r
-  before_d=$(awk -F'|' '{print $5}' "${d}/instruction-before.txt")
-  before_r=$(awk -F'|' '{print $6}' "${d}/instruction-before.txt")
-  after_d=$(awk -F'|'  '{print $5}' "${d}/instruction-after.txt")
-  after_r=$(awk -F'|'  '{print $6}' "${d}/instruction-after.txt")
+  local before_n before_d before_r after_n after_d after_r
+	before_n=$(awk -F'|' '{print $5}' "${d}/instruction-before.txt")
+	before_d=$(awk -F'|' '{print $6}' "${d}/instruction-before.txt")
+	before_r=$(awk -F'|' '{print $7}' "${d}/instruction-before.txt")
+	after_n=$(awk -F'|'  '{print $5}' "${d}/instruction-after.txt")
+	after_d=$(awk -F'|'  '{print $6}' "${d}/instruction-after.txt")
+	after_r=$(awk -F'|'  '{print $7}' "${d}/instruction-after.txt")
 
   # The before-poll already guaranteed before_r=NULL. Defensive recheck.
   if [[ -z "$before_r" || "$before_r" == "NULL" ]]; then
     if [[ -n "$after_r" && "$after_r" != "NULL" && "$after_r" != "" ]]; then
-      write_verdict "$id" "PASS" "read_at flipped NULL → '${after_r}' (delivered_at before='${before_d}' after='${after_d}')"
+      write_verdict "$id" "PASS" "read_at flipped NULL → '${after_r}' (notified_at before='${before_n}' after='${after_n}'; delivered_at before='${before_d}' after='${after_d}')"
       return 0
     fi
     write_verdict "$id" "FAIL" "instruction never acked after recovery (before_r=NULL, after_r='${after_r}'). Recovery did not redeliver / Lead did not ack."

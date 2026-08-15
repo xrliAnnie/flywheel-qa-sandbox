@@ -38,6 +38,43 @@ DROP INDEX IF EXISTS mailbox_log_settlement_slot;
 `);
 }
 
+export const MAILBOX_MESSAGE_PROJECTION_VERSION =
+	"mailbox_projection_delivered_on_ack_v2" as const;
+
+export const MAILBOX_MESSAGE_PROJECTION_SELECT = `
+SELECT
+	seq AS rowid,
+  id,
+  from_agent,
+  to_agent,
+  type,
+  content,
+  ref_id AS parent_id,
+  CASE WHEN state = 'ACKED' THEN acked_at END AS read_at,
+  created_at,
+  expires_at,
+  deadline_at,
+  relay_state,
+  resolved_via,
+  source_ref AS logical_event_id,
+  superseded_at,
+  superseded_by,
+  json_extract(sender_ref, '$.lease_key') AS sender_lease_key,
+  json_extract(sender_ref, '$.generation') AS sender_generation,
+  json_extract(sender_ref, '$.holder_pid') AS sender_holder_pid,
+  json_extract(sender_ref, '$.holder_start') AS sender_holder_start,
+  json_extract(sender_ref, '$.writer_pid') AS writer_pid,
+  json_extract(sender_ref, '$.writer_start') AS writer_start,
+  checkpoint,
+  content_ref,
+  COALESCE(content_type, 'text') AS content_type,
+  resolved_at,
+  /* ${MAILBOX_MESSAGE_PROJECTION_VERSION} */
+  CASE WHEN state = 'ACKED' THEN acked_at END AS delivered_at,
+  NULL AS attachments,
+  kind
+FROM mailbox`;
+
 export const MAILBOX_CORE_SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,6 +108,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
   claimed_by TEXT,
   claim_expires_at TEXT,
   delivered_at TEXT,
+  notified_at TEXT,
   retry_count INTEGER NOT NULL DEFAULT 0,
   lease_retry_count INTEGER NOT NULL DEFAULT 0,
   next_retry_at TEXT,
@@ -115,40 +153,7 @@ CREATE INDEX IF NOT EXISTS mailbox_archive_dead
 -- Internal read-only compatibility projection while CommDB keeps its public
 -- Message shape. The legacy object names remain poisoned below.
 CREATE VIEW IF NOT EXISTS mailbox_message_projection AS
-SELECT
-	seq AS rowid,
-  id,
-  from_agent,
-  to_agent,
-  type,
-  content,
-  ref_id AS parent_id,
-  CASE WHEN state = 'ACKED' THEN acked_at END AS read_at,
-  created_at,
-  expires_at,
-  deadline_at,
-  relay_state,
-  resolved_via,
-  source_ref AS logical_event_id,
-  superseded_at,
-  superseded_by,
-  json_extract(sender_ref, '$.lease_key') AS sender_lease_key,
-  json_extract(sender_ref, '$.generation') AS sender_generation,
-  json_extract(sender_ref, '$.holder_pid') AS sender_holder_pid,
-  json_extract(sender_ref, '$.holder_start') AS sender_holder_start,
-  json_extract(sender_ref, '$.writer_pid') AS writer_pid,
-  json_extract(sender_ref, '$.writer_start') AS writer_start,
-  checkpoint,
-  content_ref,
-  COALESCE(content_type, 'text') AS content_type,
-  resolved_at,
-  CASE
-    WHEN state = 'LEASED' THEN claim_expires_at
-    WHEN state = 'ACKED' THEN acked_at
-  END AS delivered_at,
-  NULL AS attachments,
-  kind
-FROM mailbox;
+${MAILBOX_MESSAGE_PROJECTION_SELECT};
 
 CREATE TABLE IF NOT EXISTS mailbox_identity (
   id TEXT NOT NULL UNIQUE,
