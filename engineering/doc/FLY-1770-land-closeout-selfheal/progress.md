@@ -1,13 +1,13 @@
 ---
 issue: FLY-1770
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-15T01:50:37.988Z
-nextStep: "QA: read diff + run targeted regression"
+phaseCursor: 4/6
+updated: 2026-08-15T02:01:26.369Z
+nextStep: "QA: aged-alert + queue rotation scenario, then verdict"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1770 progress
-**phase**: implement (1/6)
-**next**: QA: read diff + run targeted regression
+**phase**: implement (4/6)
+**next**: QA: aged-alert + queue rotation scenario, then verdict
