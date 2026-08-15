@@ -1,0 +1,12 @@
+flowchart TD
+    CMD["有人(agent 或人)想用调度器<br/>去触发全量重启脚本"] --> L1{"第①层 命令护栏<br/>每条终端命令执行前的自动检查钩<br/>补上 submit / crontab 形态"}
+    L1 -- "命中 → 硬拦 + 指路正道" --> STOP1["命令直接被拒<br/>提示改走 request-restart.sh"]
+    L1 -- "护栏够不到<br/>(裸终端的人 / 没装钩子的 agent)" --> JOB["危险任务还是被建成了"]
+    JOB --> L2{"第②层 脚本自卫<br/>重启脚本认出自己被系统<br/>直接当任务拉起(父进程是系统)"}
+    L2 -- "拒绝执行 + 每天最多 1 条告警" --> STOP2["零重启副作用:<br/>只剩一个无害的拒绝循环,<br/>Annie 会收到告警去拆源头"]
+    TEST["第③层 测试合同<br/>代码库里永远不许再出现<br/>setsid / submit 这类危险链<br/>(出现即测试变红)"] -.守住代码.-> JOB
+    RULES["第④层 行为红线<br/>写进所有 Lead 的规则合同<br/>(覆盖没有钩子机制的 Codex Lead)"] -.管住行为.-> CMD
+
+    style STOP1 fill:#eaf9ef,stroke:#34c759
+    style STOP2 fill:#eaf9ef,stroke:#34c759
+    style JOB fill:#fff7e6,stroke:#ff9500

@@ -358,6 +358,41 @@ retry — remains a **reserved action** governed by R1/R2 and needs the founder.
 
 ---
 
+## R4 — Fleet Restart Discipline (FLY-1783, 2026-08-14 incident)
+
+Detached / survive-your-own-replacement full restarts have **EXACTLY ONE**
+sanctioned path:
+
+```bash
+bash ~/Dev/flywheel/scripts/request-restart.sh
+```
+
+It enqueues the standalone `com.flywheel.updater` outside the Lead fleet. The
+initiating Lead is itself replaced by the wave. That is the point: the Lead
+does not need to outlive the restart; the updater does.
+
+Hard red lines — no judgment calls:
+
+- **NEVER** use `launchctl submit`, a hand-rolled launchd job, or a crontab
+  entry that points at `restart-services.sh`. Submit-style jobs re-run on every
+  exit. On 2026-08-14 that produced 66 chained restarts and 20 minutes of
+  Bridge downtime.
+- macOS has no `setsid`; do not improvise detach chains such as
+  `nohup setsid …`, and do not invent a replacement when a detach attempt
+  fails. Failed detach means **STOP and report**, never silently switch
+  mechanisms.
+- Emergency direct `restart-services.sh` use is only for a broken updater /
+  queue with the Lead and founder explicitly aware. Run it as a plain
+  synchronous child in your shell; the script detaches itself. Never wrap it
+  in a scheduler.
+
+Enforcement is layered: the FLY-913 PreToolUse guard hard-blocks scheduler
+shapes at the Bash boundary for Claude sessions, and `restart-services.sh`
+refuses to run as a direct launchd child (ppid 1). This section is the
+behavioral layer and also binds Leads with no hook layer, including Codex.
+
+---
+
 ## Order of precedence and project-layer extension
 
 This file is appended **before** any project-layer rule files (per the

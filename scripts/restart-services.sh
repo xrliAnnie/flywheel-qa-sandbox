@@ -396,6 +396,19 @@ alert_discord_plugin_integrity() {
         --signature "$1-$(date -u +%Y%m%d)" 1>&2 || true
 }
 
+alert_launchd_refusal() {
+    # A refused repeating job can relaunch every few seconds. Keep this
+    # signature daily so the safe refusal loop cannot become an alert storm.
+    if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
+        log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
+    fi
+    "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
+        --kind deploy_failed --severity severe \
+        --title "restart-services refused a direct launchd invocation" --body "$1" \
+        --signature "restart-guard-launchd-refusal-$(date -u +%Y%m%d)" \
+        ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
+}
+
 # FLY-929 W3b ②: ROUTINE notices (✅/🔄/⏳ — progress/result, no human action
 # needed) ride the Claude Infra Bot → #flywheel-notify when BOTH
 # CLAUDE_INFRA_BOT_TOKEN and FLYWHEEL_NOTIFY_CHANNEL are set (P-identity).
@@ -1187,6 +1200,13 @@ validate_restart_contract() {
     fi
 }
 
+# FLY-1783: pure predicate. A foreground child belongs to the sanctioned
+# updater/self-detach path; entry mode with caller PID 1 is a direct launchd
+# job and must stop before validation, locking, build, or service mutation.
+_rs_is_direct_launchd_invocation() {
+    [[ "$2" != "1" && "$1" == "1" ]]
+}
+
 # ════════════════════════════════════════════════════════════════
 # Parse arguments
 # ════════════════════════════════════════════════════════════════
@@ -1226,19 +1246,46 @@ if [[ "$FORCE" == "true" && "$WAIT_IDLE" == "true" ]]; then
     WAIT_IDLE=false
 fi
 
+if _rs_is_direct_launchd_invocation "$PPID" "${FLYWHEEL_RESTART_FOREGROUND:-0}"; then
+    log "ERROR: started DIRECTLY by launchd (ppid 1) — refusing before any mutation (FLY-1783)."
+    log "A submit-style job relaunches on every exit — the 2026-08-14 66-spawn storm shape."
+    log "Detached restarts have exactly one sanctioned path:"
+    log "    bash ~/Dev/flywheel/scripts/request-restart.sh"
+    alert_launchd_refusal \
+        "refused direct launchd invocation of restart-services.sh (ppid 1); see FLY-1783 / incident 2026-08-14"
+    exit 78
+fi
+
 validate_restart_contract || exit 1
 
 # Direct invocation is safe even from a Lead that this run will replace. The
 # child gets its own process group before any lock, build, or service mutation.
+# This block is the only sanctioned self-detach mechanism. If it cannot start
+# a live child, stop and report; never improvise another process supervisor.
 if [[ "${FLYWHEEL_RESTART_FOREGROUND:-0}" != "1" && "$DRY_RUN" != "true" ]]; then
-    detach_log="/tmp/flywheel-restart-detached-$(date +%Y%m%d-%H%M%S).log"
+    detach_log_dir="${FLYWHEEL_RESTART_DETACH_LOG_DIR:-/tmp}"
+    detach_log="${detach_log_dir}/flywheel-restart-detached-$(date +%Y%m%d-%H%M%S).log"
     set -m
     FLYWHEEL_RESTART_FOREGROUND=1 nohup "$0" "${RESTART_ARGS[@]+"${RESTART_ARGS[@]}"}" \
         </dev/null >>"$detach_log" 2>&1 &
     detach_pid=$!
-    disown "$detach_pid" 2>/dev/null || true
-    echo "[restart] detached (PID $detach_pid, log: $detach_log)"
-    exit 0
+    sleep 1
+    if kill -0 "$detach_pid" 2>/dev/null; then
+        disown "$detach_pid" 2>/dev/null || true
+        echo "[restart] detached (PID $detach_pid, log: $detach_log)"
+        exit 0
+    fi
+    if wait "$detach_pid"; then
+        log "Detached restart child completed within 1s with exit 0 (PID $detach_pid)."
+        log "No live wave remains; child log: $detach_log"
+        exit 0
+    else
+        detach_rc=$?
+    fi
+    log "ERROR: detached restart child exited within 1s with status $detach_rc (PID $detach_pid) — failing LOUD."
+    log "NOT retrying via any re-spawning scheduler. Last log lines:"
+    tail -n 20 "$detach_log" >&2 || true
+    exit "$detach_rc"
 fi
 
 # FLY-1434: restart scope is no longer classified. These flags only decide

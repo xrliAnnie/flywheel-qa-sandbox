@@ -2,7 +2,7 @@
 """PreToolUse hook (matcher: Bash): hard-deny manual Flywheel service restarts
 (FLY-913 deployment guardrail).
 
-Manual `launchctl kickstart` / kill+relaunch of the Bridge or a Lead daemon
+Manual launchd mutation / kill+relaunch of the Bridge or a Lead daemon
 skips `pnpm build` (old code keeps running), skips the core-channel deploy
 broadcast (the founder's deploy audit trail breaks), and has no health-check
 rollback. Verbal promises and agent memory do not enforce behavior — this hook
@@ -14,11 +14,15 @@ emergency path.
 
 Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
 
-  block patterns (case-insensitive, raw command string — NO quote stripping
-  for P1/P2, so `bash -c "…"` gets no free escape hatch):
+  block patterns (case-insensitive; proven read-only grep/rg segments cannot
+  supply a P1/P2 mutating verb, but identifiers are matched against the full
+  command so a ps|grep|xargs kill pipeline cannot hide its target; command-
+  substitution and rg executable-option forms are never considered proven
+  reads):
     P1  launchctl + mutating subcommand (kickstart|bootout|bootstrap|kill|
-        stop|unload|load|enable|disable|remove) AND `com.flywheel.` in the
-        same command string. Read-only subcommands (print/list/…) never match.
+        stop|unload|load|enable|disable|remove|submit) AND either
+        `com.flywheel.` or a restart-script identifier in the same command
+        string. Read-only subcommands (print/list/…) never match.
     P2  kill family (kill/pkill/killall, incl. `xargs … kill`) AND a flywheel
         process identifier (run-bridge / claude-lead.sh /
         flywheel-bridge-wrapper / flywheel-codex-lead-wrapper / com.flywheel).
@@ -29,6 +33,9 @@ Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
         token (grep/rg/sed/cat/…) therefore never match. A `bash|sh|zsh -c`
         first token (incl. merged short-flag clusters like -lc/-lec) has its
         payload re-scanned ONCE with the full P1/P2/P3 set.
+    P4  a non-list crontab invocation + either a restart-script identifier or
+        `com.flywheel.` in the raw command string. `crontab -l`, including a
+        pipe into grep/rg, never matches.
 
   hit → the ONLY exits are: deny, or a bypass whose accounting FULLY succeeds.
     bypass = the command starts (anchored prefix, a real shell env assignment,
@@ -71,17 +78,24 @@ from pathlib import Path
 
 # ── Block patterns ────────────────────────────────────────────────────────────
 MUTATING_LAUNCHCTL = (
-    "kickstart|bootout|bootstrap|kill|stop|unload|load|enable|disable|remove"
+    "kickstart|bootout|bootstrap|kill|stop|unload|load|enable|disable|remove|submit"
 )
 P1_RE = re.compile(rf"\blaunchctl\b(?:\s+-\S+)*\s+(?:{MUTATING_LAUNCHCTL})\b", re.I)
 FLYWHEEL_LABEL_RE = re.compile(r"com\.flywheel\.", re.I)
+RESTART_SCRIPT_RE = re.compile(
+    r"restart-services|self-ship-restart|update-flywheel", re.I
+)
 
 KILL_RE = re.compile(r"\b(?:pkill|killall|kill)\b", re.I)
 PROC_IDENT_RE = re.compile(
     r"run-bridge|claude-lead\.sh|flywheel-bridge-wrapper|flywheel-codex-lead-wrapper"
-    r"|com\.flywheel",
+    r"|restart-services|com\.flywheel",
     re.I,
 )
+SCHEDULER_RE = re.compile(r"\bcrontab\b", re.I)
+SAFE_READ_TOOLS = {"grep", "rg"}
+RG_EXECUTABLE_OPTIONS = {"--pre", "--hostname-bin"}
+SHELL_EVAL_MARKERS = ("$(", "`", "<(", ">(")
 
 # Executor first tokens that can launch scripts/run-bridge.ts directly. Package
 # managers (pnpm/npm/yarn/pnpx) are here too (Codex R5): `pnpm tsx …` /
@@ -112,6 +126,8 @@ DENY_REASON = (
     "🚫 Flywheel 部署护栏(FLY-913):检测到手动重启/杀 Flywheel 服务的命令,已硬拦。\n"
     "手动 kickstart / kill+重拉会:漏 pnpm build(重启后跑的还是旧代码)、"
     "漏 core 频道部署播报(founder 的部署审计断链)、没有健康检查回滚。\n"
+    "launchctl submit 退出即重拉;crontab 周期重跑;自装 plist 可被配置成重拉 —— "
+    "2026-08-14 就是 submit 造成 66 连发重启风暴。\n"
     "正确做法:\n"
     "  • founder 拍板后的统一重启:bash ~/Dev/flywheel/scripts/request-restart.sh"
     "(入队给独立 com.flywheel.updater;发起 Lead 也会换本体)\n"
@@ -167,6 +183,107 @@ _WRAPPERS = {
 # consuming its value, `/usr/bin` would be mistaken for the first token and the
 # real executor never judged (Codex R3 MEDIUM).
 _WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir", "-P"}
+
+
+def _segment_command(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """Return the effective command and its args for conservative exemptions.
+
+    This is intentionally narrower than the P3 wrapper walker: an ambiguous
+    wrapper flag means "not a proven read", so the guard keeps scanning.
+    """
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if ENV_ASSIGN_RE.match(token):
+            i += 1
+            continue
+        base = os.path.basename(token)
+        if base not in {"sudo", "env", "command", "time"}:
+            return base, tokens[i + 1 :]
+        i += 1
+        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
+            flag = tokens[i]
+            # env split-string and unknown value-bearing wrapper flags can
+            # carry an executable payload. Never classify those as reads.
+            if "S" in flag or flag.startswith("--split-string"):
+                return None, []
+            if flag in _WRAPPER_ARG_FLAGS:
+                if i + 1 >= len(tokens):
+                    return None, []
+                i += 2
+            else:
+                i += 1
+        while i < len(tokens) and ENV_ASSIGN_RE.match(tokens[i]):
+            i += 1
+    return None, []
+
+
+def _shell_segments(cmd: str) -> list[list[str]]:
+    """Split shell control operators while preserving quoted regex tokens."""
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|\n")
+        # Newline is a command boundary, not ignorable whitespace.
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        # Malformed input gets only the older coarse split; exemptions remain
+        # conservative because broken quoting cannot prove a plain read.
+        return [seg.split() for seg in SEG_SPLIT_RE.split(cmd) if seg.strip()]
+    segments: list[list[str]] = []
+    current: list[str] = []
+    for token in tokens:
+        if token and all(ch in ";&|\n" for ch in token):
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(token)
+    if current:
+        segments.append(current)
+    return segments
+
+
+def _plain_read_tokens(tokens: list[str]) -> bool:
+    """True only for source-inspection segments that cannot spawn a payload."""
+    rendered = " ".join(tokens)
+    if any(marker in rendered for marker in SHELL_EVAL_MARKERS):
+        return False
+    command, args = _segment_command(tokens)
+    if command not in SAFE_READ_TOOLS:
+        return False
+    # ripgrep currently exposes two options whose values are external programs.
+    # Neither the space nor equals form can prove this segment is a plain read.
+    if command == "rg" and any(
+        a.split("=", 1)[0] in RG_EXECUTABLE_OPTIONS for a in args
+    ):
+        return False
+    return True
+
+
+def _non_read_segments(cmd: str) -> str:
+    """Mask proven read-only segments without hiding adjacent mutations."""
+    return " ; ".join(
+        " ".join(tokens) for tokens in _shell_segments(cmd)
+        if tokens and not _plain_read_tokens(tokens)
+    )
+
+
+def _p4_hit(cmd: str) -> bool:
+    """Detect a crontab write while preserving list-mode inspection."""
+    if not SCHEDULER_RE.search(cmd) or not (
+        RESTART_SCRIPT_RE.search(cmd) or FLYWHEEL_LABEL_RE.search(cmd)
+    ):
+        return False
+    for tokens in _shell_segments(cmd):
+        command, args = _segment_command(tokens)
+        if command != "crontab":
+            continue
+        if "-l" in args:
+            continue
+        return True
+    return False
 
 
 def _p3_hit(cmd: str, depth: int) -> bool:
@@ -255,16 +372,21 @@ def _p3_hit(cmd: str, depth: int) -> bool:
 
 
 def scan_block(cmd: str, depth: int = 0):
-    """Return the matched pattern name (P1/P2/P3) or None. One level of
+    """Return the matched pattern name (P1/P2/P3/P4) or None. One level of
     shell -c recursion only (depth > 1 stops)."""
     if depth > 1:
         return None
-    if P1_RE.search(cmd) and FLYWHEEL_LABEL_RE.search(cmd):
+    non_read_cmd = _non_read_segments(cmd)
+    if P1_RE.search(non_read_cmd) and (
+        FLYWHEEL_LABEL_RE.search(cmd) or RESTART_SCRIPT_RE.search(cmd)
+    ):
         return "P1"
-    if KILL_RE.search(cmd) and PROC_IDENT_RE.search(cmd):
+    if KILL_RE.search(non_read_cmd) and PROC_IDENT_RE.search(cmd):
         return "P2"
     if _p3_hit(cmd, depth):
         return "P3"
+    if _p4_hit(cmd):
+        return "P4"
     return None
 
 

@@ -110,6 +110,28 @@ def deny_reason(stdout: str) -> str:
 # ── T1: must-block matrix (incident forms, research §4) ─────────────────────
 MUST_BLOCK = [
     # P1 — launchctl mutating subcommand + com.flywheel.
+    (
+        "launchctl submit -l com.flywheel.restart-bus-manual "
+        "-o /tmp/restart.out -e /tmp/restart.err -- /bin/bash "
+        "/Users/x/Dev/flywheel/scripts/restart-services.sh --force",
+        "P1 incident submit restart bus",
+    ),
+    (
+        "launchctl submit -l com.example.restart -- bash "
+        "/Users/x/Dev/flywheel/scripts/restart-services.sh --force",
+        "P1 submit label evasion still names restart-services",
+    ),
+    (
+        'bash -c "launchctl submit -l com.flywheel.restart-bus -- '
+        '/bin/bash /Users/x/Dev/flywheel/scripts/restart-services.sh"',
+        "P1 nested submit restart bus",
+    ),
+    (
+        "launchctl submit -l com.example.restart -- /bin/bash -c "
+        "'FLYWHEEL_RESTART_FOREGROUND=1 bash "
+        "/Users/x/Dev/flywheel/scripts/restart-services.sh'",
+        "P1 submit foreground env payload",
+    ),
     ("launchctl kickstart -k gui/501/com.flywheel.bridge", "P1 kickstart -k"),
     ("launchctl kickstart gui/$(id -u)/com.flywheel.lead.flywheel-flywheel-eng-lead",
      "P1 kickstart uid-var lead"),
@@ -127,9 +149,51 @@ MUST_BLOCK = [
     ("pgrep -f run-bridge | xargs kill -9", "P2 pgrep|xargs kill (FLY-176 form)"),
     ("pkill -f run-bridge", "P2 pkill run-bridge"),
     ("pkill -f claude-lead.sh", "P2 pkill claude-lead.sh (FLY-239 form)"),
+    ("pkill -f restart-services.sh", "P2 pkill restart-services in-flight wave"),
+    ("grep \"$(pkill -f restart-services.sh)\" /tmp/input",
+     "P2 command substitution inside grep is executable"),
+    ("rg --pre 'pkill -f restart-services.sh' pattern /tmp/input",
+     "P2 rg preprocessor is executable"),
+    (
+        "rg --hostname-bin 'pkill -f run-bridge' pattern /tmp/input",
+        "P2 rg hostname program is executable",
+    ),
+    (
+        "rg --hostname-bin='pkill -f run-bridge' "
+        "--hyperlink-format 'x://{host}' pattern /tmp/input",
+        "P2 rg hostname program equals form is executable",
+    ),
+    ("grep harmless /tmp/input; pkill -f restart-services.sh",
+     "P2 adjacent mutation is not hidden by read segment"),
+    (
+        "ps aux | grep run-bridge | awk '{print $2}' | xargs kill -9",
+        "P2 grep pipeline preserves run-bridge identifier",
+    ),
+    (
+        "ps aux | grep -v grep | grep run-bridge | awk '{print $2}' | xargs kill",
+        "P2 chained grep pipeline preserves run-bridge identifier",
+    ),
+    (
+        "ps aux | grep claude-lead.sh | grep -v grep | awk '{print $2}' "
+        "| xargs kill -9",
+        "P2 grep pipeline preserves claude-lead identifier",
+    ),
+    (
+        "ps -ef | grep com.flywheel | awk '{print $2}' | xargs kill",
+        "P2 grep pipeline preserves launchd label identifier",
+    ),
+    (
+        "rg run-bridge /tmp/pslist | awk '{print $2}' | xargs kill -9",
+        "P2 rg pipeline preserves run-bridge identifier",
+    ),
     ("pkill -f flywheel-bridge-wrapper", "P2 pkill bridge wrapper"),
     ("killall node && npx tsx scripts/run-bridge.ts", "P2 killall + relaunch"),
     ("kill 1234 && nohup npx tsx scripts/run-bridge.ts &", "P2 kill+relaunch"),
+    (
+        "grep -l com.flywheel.bridge ~/Library/LaunchAgents/*.plist "
+        "| xargs launchctl unload",
+        "P1 grep pipeline preserves launchd label identifier",
+    ),
     # P3 — bare-handed bridge launch via executor first token
     ("nohup npx tsx scripts/run-bridge.ts &", "P3 nohup npx tsx"),
     ("node scripts/run-bridge.ts", "P3 node direct"),
@@ -195,6 +259,16 @@ MUST_BLOCK = [
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
     ('zsh -lc "node scripts/run-bridge.ts"', "P3 zsh -lc merged flag cluster"),
     ('bash -lec "npx tsx scripts/run-bridge.ts"', "P3 bash -lec cluster"),
+    # P4 — persistent scheduler payload that can repeatedly start a restart.
+    (
+        "echo '* * * * * bash /Users/x/Dev/flywheel/scripts/restart-services.sh --force' "
+        "| crontab -",
+        "P4 crontab restart-services payload",
+    ),
+    (
+        "crontab -l; echo '* * * * * bash scripts/restart-services.sh' | crontab -",
+        "P4 list followed by crontab write",
+    ),
     # pseudo-bypass forms must stay on the deny path (Codex R1 #4)
     ("echo FLYWHEEL_RESTART_GUARD_BYPASS=x; launchctl kickstart -k gui/501/com.flywheel.bridge",
      "pseudo-bypass echo prefix"),
@@ -222,8 +296,20 @@ MUST_PASS = [
     ("bash scripts/update-flywheel.sh", "legit updater"),
     ("launchctl print gui/501/com.flywheel.bridge", "read-only launchctl print"),
     ("launchctl list | grep flywheel", "read-only launchctl list"),
+    ("launchctl submit -l com.test.envprobe -- /usr/bin/env", "unrelated submit probe"),
+    ("launchctl remove com.test.envprobe", "unrelated launchctl remove"),
+    ("crontab -l", "read-only crontab list"),
+    ("crontab -l | grep restart-services", "read-only crontab output inspection"),
     ("pgrep -f run-bridge", "bare pgrep no kill"),
     ("grep -n launchctl scripts/restart-services.sh", "grep launchctl no label"),
+    ("grep -n kill scripts/restart-services.sh", "grep kill in restart source"),
+    ("rg -n 'kill' scripts/restart-services.sh", "rg kill in restart source"),
+    ("grep -En 'kill|restart-services' scripts/restart-services.sh",
+     "grep alternation in restart source"),
+    ("rg 'kill|restart-services' scripts/restart-services.sh",
+     "rg alternation in restart source"),
+    ("grep -n 'launchctl bootout' scripts/restart-services.sh",
+     "grep launchctl mutator in restart source"),
     ("sed -n '1,50p' scripts/run-bridge.ts", "sed read of run-bridge source"),
     ('rg "nohup npx tsx scripts/run-bridge.ts" scripts/restart-services.sh',
      "rg needle containing executor+run-bridge (read tool first token)"),
@@ -234,6 +320,8 @@ MUST_PASS = [
     ("tmux kill-session -t qa-slot-2", "QA slot tmux kill-session"),
     ("node scripts/qa-fly-529-alert-smoke.mjs", "executor without run-bridge"),
     ("git log --oneline -- scripts/run-bridge.ts", "git read of run-bridge path"),
+    ("git log --oneline -- scripts/restart-services.sh", "git read of restart-services path"),
+    ("bash scripts/test-restart-services.sh", "restart harness invocation"),
     ("sudo cat scripts/run-bridge.ts", "sudo-wrapped read tool"),
     ("env | grep run-bridge", "bare env piped to grep"),
     ("env node scripts/qa-tool.mjs", "env-wrapped executor without run-bridge"),

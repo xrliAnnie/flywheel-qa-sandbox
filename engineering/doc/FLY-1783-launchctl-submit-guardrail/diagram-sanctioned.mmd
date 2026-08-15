@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant L as 发起 Lead
+    participant R as request-restart.sh<br/>(唯一正路入口)
+    participant Q as 重启队列<br/>(marker 凭据文件)
+    participant U as updater<br/>(舰队之外的常驻更新器)
+    participant S as restart-services.sh<br/>(真正的重启脚本)
+    L->>R: bash scripts/request-restart.sh
+    R->>Q: 写入一条「重启到 main 最新版」的凭据
+    R-->>L: 已受理入队(注意: 不等于重启完成)
+    Q->>U: 系统看到队列非空,拉起 updater
+    U->>U: 把代码收敛到 main 最新版
+    U->>S: 以子进程方式执行真正的全量重启
+    Note over S: 此时脚本的父进程是 updater 而非系统,<br/>且带着正路标记 → 自卫层放行
+    S->>S: 重启 Bridge + 全部 Lead<br/>(发起 Lead 自己也被换成新版)

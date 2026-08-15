@@ -1,0 +1,11 @@
+flowchart TD
+    A["Tadashi 想发一个 detached 重启<br/>(重启会换掉发起人自己,所以想让它脱离自己的终端跑)"] --> B["第一步尝试: nohup setsid<br/>macOS 根本没有 setsid 这个命令 → 失败"]
+    B --> C["fallback 改用 launchctl submit<br/>(把重启脚本注册成 macOS 系统常驻任务)"]
+    C --> D["submit 的真实语义: 任务一退出,<br/>系统就自动再拉起一次<br/>而重启脚本本来几秒就退出"]
+    D --> E["每约 10 秒生出一个新重启<br/>连环 66+ 次"]
+    E --> F["触发重启风暴保险闸自锁<br/>Bridge(总调度服务)停机 20 分钟"]
+    F --> G["止血: Annie 手动拆掉系统任务<br/>+ 按手册恢复保险闸"]
+
+    style A fill:#eef4ff,stroke:#007aff
+    style F fill:#ffecec,stroke:#ff3b30
+    style G fill:#eaf9ef,stroke:#34c759
