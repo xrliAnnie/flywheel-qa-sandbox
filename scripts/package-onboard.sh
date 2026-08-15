@@ -68,9 +68,13 @@ teamlead:scripts/lead-rules-bundle.sh
 teamlead:scripts/apply-core-room-mention-gate.sh
 teamlead:scripts/find-window.sh
 teamlead:scripts/post-compact-bootstrap.sh
+teamlead:scripts/session-start-adopt-inflight.sh
 teamlead:scripts/inbox-ack-rule.md
 teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/lib/lead-identity-preflight.sh
+teamlead:scripts/lib/lead-session-authority.sh
+teamlead:scripts/lib/lead-session-resume-gate.sh
+teamlead:scripts/lib/session-ctx-usage.mjs
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh
 teamlead:scripts/lib/lead-body-receipt.sh"}

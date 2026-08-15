@@ -25,6 +25,15 @@ SH
 chmod +x "$TMP/bin/node"
 touch "$TMP/comm-cli.js" "$TMP/comm.db"
 
+TEST_PROJECT_NAME=fixture-project
+TEST_LAUNCH_GEN=40000000-0000-4000-8000-000000000001
+TEST_STATE_ROOT="$TMP/state-root"
+TEST_SESSION_FILE="$TMP/sessions/${TEST_PROJECT_NAME}-eng-lead.session-id"
+mkdir -p "$TEST_STATE_ROOT/state/lead-launch-gen" "$(dirname "$TEST_SESSION_FILE")" "$TMP/workspace"
+printf '%s\n' "$TEST_LAUNCH_GEN" \
+  > "$TEST_STATE_ROOT/state/lead-launch-gen/${TEST_PROJECT_NAME}-eng-lead.gen"
+printf '%s\n' '50000000-0000-4000-8000-000000000001' > "$TEST_SESSION_FILE"
+
 run_hook() {
   local input="$1"
   : > "$TMP/stdout"
@@ -37,6 +46,12 @@ run_hook() {
     FLY1751_NODE_FAIL="${FLY1751_NODE_FAIL:-0}" \
     LEAD_ID="${TEST_LEAD_ID-eng-lead}" \
     FLYWHEEL_LEAD_ID="${TEST_FLYWHEEL_LEAD_ID-eng-lead}" \
+    FLYWHEEL_PROJECT_NAME="$TEST_PROJECT_NAME" \
+    FLYWHEEL_LEAD_LAUNCH_GEN="$TEST_LAUNCH_GEN" \
+    FLYWHEEL_SESSION_ID_FILE="$TEST_SESSION_FILE" \
+    FLYWHEEL_LEAD_AUTHORITY_LIB="$ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh" \
+    FLYWHEEL_STATE_DIR="$TEST_STATE_ROOT" \
+    LEAD_WORKSPACE="$TMP/workspace" \
     FLYWHEEL_COMM_CLI="${TEST_COMM_CLI-$TMP/comm-cli.js}" \
     FLYWHEEL_COMM_DB="${TEST_COMM_DB-$TMP/comm.db}" \
     bash "$HOOK" > "$TMP/stdout" 2> "$TMP/stderr"
@@ -44,7 +59,10 @@ run_hook() {
 
 clear_input() {
   local agent_type="${1:-eng-lead}"
-  printf '{"hook_event_name":"SessionStart","source":"clear","agent_type":"%s"}' "$agent_type"
+  local session_id
+  session_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  printf '{"hook_event_name":"SessionStart","source":"clear","agent_type":"%s","session_id":"%s"}' \
+    "$agent_type" "$session_id"
 }
 
 if [ ! -f "$HOOK" ]; then
@@ -135,8 +153,9 @@ zero_rc=$?
 if [ "$three_rc" -eq 0 ] \
   && [[ "$three_stdout" == *'3 条在途消息'* ]] \
   && [ "$zero_rc" -eq 0 ] \
-  && [ ! -s "$TMP/stdout" ]; then
-  ok "adopted rows are counted as messages and zero adoption stays silent"
+  && grep -q 'clear-bootstrap' "$TMP/stdout" \
+  && ! grep -q '条在途消息' "$TMP/stdout"; then
+  ok "adopted rows are counted and every clear receives the local bootstrap pointer"
 else
   bad "SessionStart context output drifted"
 fi
@@ -174,6 +193,12 @@ if grep -q '^install_session_start_adopt_inflight_hook()' "$INSTALLER_HELPER"; t
       FLY1751_ADOPTED=0 \
       LEAD_ID=eng-lead \
       FLYWHEEL_LEAD_ID=eng-lead \
+      FLYWHEEL_PROJECT_NAME="$TEST_PROJECT_NAME" \
+      FLYWHEEL_LEAD_LAUNCH_GEN="$TEST_LAUNCH_GEN" \
+      FLYWHEEL_SESSION_ID_FILE="$TEST_SESSION_FILE" \
+      FLYWHEEL_LEAD_AUTHORITY_LIB="$ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh" \
+      FLYWHEEL_STATE_DIR="$TEST_STATE_ROOT" \
+      LEAD_WORKSPACE="$TMP/workspace" \
       FLYWHEEL_COMM_CLI="$TMP/comm-cli.js" \
       FLYWHEEL_COMM_DB="$TMP/comm.db" \
       bash -c "$command_value" >/dev/null 2>"$TMP/installed-command-stderr"

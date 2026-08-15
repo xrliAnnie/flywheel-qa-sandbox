@@ -77,10 +77,14 @@ node_modules/flywheel-teamlead/scripts/lead-rules-bundle.sh
 node_modules/flywheel-teamlead/scripts/apply-core-room-mention-gate.sh
 node_modules/flywheel-teamlead/scripts/find-window.sh
 node_modules/flywheel-teamlead/scripts/post-compact-bootstrap.sh
+node_modules/flywheel-teamlead/scripts/session-start-adopt-inflight.sh
 node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
 node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
 node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
 node_modules/flywheel-teamlead/scripts/lib/lead-body-receipt.sh
+node_modules/flywheel-teamlead/scripts/lib/lead-session-authority.sh
+node_modules/flywheel-teamlead/scripts/lib/lead-session-resume-gate.sh
+node_modules/flywheel-teamlead/scripts/lib/session-ctx-usage.mjs
 node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
 node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
 # staged vendored closures for registered disjoint dependency conflicts
