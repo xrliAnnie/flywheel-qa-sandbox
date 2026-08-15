@@ -195,6 +195,35 @@ if [[ "$teardown_retry_probe" == "0|2" ]]; then
 else
   fail "teardown did not retry unverifiable state probe=[$teardown_retry_probe]"
 fi
+
+echo "Test: FLY-1775 a full lease timeout gets exactly one fresh acquisition attempt"
+teardown_outer_retry_probe=$(/bin/bash -c '
+  source "$1"
+  tries=0
+  acquire_cmux_teardown_lease() {
+    tries=$((tries + 1))
+    (( tries == 1 )) && return 1
+    return 0
+  }
+  sleep() { :; }
+  rc=0
+  acquire_cmux_teardown_lease_with_retry || rc=$?
+  printf "%s|%s\n" "$rc" "$tries"
+' _ "$TEARDOWN" 2>/dev/null)
+teardown_outer_fail_probe=$(/bin/bash -c '
+  source "$1"
+  tries=0
+  acquire_cmux_teardown_lease() { tries=$((tries + 1)); return 1; }
+  sleep() { :; }
+  rc=0
+  acquire_cmux_teardown_lease_with_retry || rc=$?
+  printf "%s|%s\n" "$rc" "$tries"
+' _ "$TEARDOWN" 2>/dev/null)
+if [[ "$teardown_outer_retry_probe" == "0|2" && "$teardown_outer_fail_probe" == "1|2" ]]; then
+  pass "lease timeout retries once, succeeds transiently, and never spins a third time"
+else
+  fail "outer lease retry contract mismatch success=[$teardown_outer_retry_probe] fail=[$teardown_outer_fail_probe]"
+fi
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="lease-contract-incarnation"
 
 echo "Test: FLY-1482 claim fence survives parent SIGKILL while foreground child lives"

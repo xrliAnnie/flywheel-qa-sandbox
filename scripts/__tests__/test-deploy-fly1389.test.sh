@@ -71,6 +71,7 @@ mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
 cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" "$FR/scripts/"
 cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
+  "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
   "$FR/scripts/lib/"
@@ -472,6 +473,10 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks canonical default Lead"; }
   grep -q "^FLYWHEEL_PROJECTS_FILE=${I_SLOT_DIR}/flywheel-projects.json$" "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks slot-local canonical registry"; }
+  [[ "$(cat "$I_SLOT_DIR/state/api-token" 2>/dev/null || true)" == "fixture-api-token" ]] \
+    || { I_OK=0; fail "I/FLY-1775: reply-by-issue token was not persisted slot-locally"; }
+  [[ "$(stat -c '%a' "$I_SLOT_DIR/state/api-token" 2>/dev/null || stat -f '%Lp' "$I_SLOT_DIR/state/api-token")" == "600" ]] \
+    || { I_OK=0; fail "I/FLY-1775: reply-by-issue token file is not mode 0600"; }
   [[ "$(cat "$I_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
     || { I_OK=0; fail "I: package-cwd invocation did not keep production-aligned Lead cwd"; }
   [[ "$I_OK" == "1" ]] \

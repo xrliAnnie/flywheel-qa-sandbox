@@ -547,6 +547,12 @@ export class CodexTmuxAdapter implements IAdapter {
 				socketPath,
 				cwd: sandboxCwd,
 				threadId,
+				...(ctx.stateDbPath
+					? {
+							executionId: ctx.executionId,
+							stateDbPath: ctx.stateDbPath,
+						}
+					: {}),
 				// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
 				// rotation shim. The shim pipes stdout through `tee` to sniff
 				// 429s, and `codex resume --remote` refuses to render without a

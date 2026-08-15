@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { StateStore } from "../../StateStore.js";
-import { resolveWorkflowTmuxWindowAuthority } from "../run-infra.js";
+import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
+import {
+	createRunInfraDispatcher,
+	resolveWorkflowTmuxWindowAuthority,
+} from "../run-infra.js";
+
+class NoRegistrationRunDispatcher extends RunDispatcher {
+	protected override preRegisterCommDb(): void {}
+}
 
 function releasedLaunchStore(): StateStore {
 	return {
@@ -51,5 +59,72 @@ describe("resolveWorkflowTmuxWindowAuthority", () => {
 				...override,
 			}),
 		).toBe("keep");
+	});
+});
+
+describe("createRunInfraDispatcher inflight lifecycle wiring", () => {
+	function setup(statuses: Map<string, string>) {
+		const store = {
+			getSession: (executionId: string) => {
+				const status = statuses.get(executionId);
+				return status ? { status } : undefined;
+			},
+			getSkillFrameworkStamp: () => undefined,
+		} as unknown as StateStore;
+		const blueprint = {
+			run: vi.fn(() => new Promise(() => {})),
+		};
+		const runtime: ProjectRuntime = {
+			blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
+			projectRoot: "/tmp/fly1775",
+			tmuxSessionName: "runner-fly1775",
+		};
+		const dispatcher = createRunInfraDispatcher({
+			store,
+			projectRuntimes: new Map([["flywheel", runtime]]),
+			cleanupHandles: [],
+			dispatcherClass: NoRegistrationRunDispatcher,
+		});
+		return { dispatcher, blueprint };
+	}
+
+	it("uses the StateStore irreversible-terminal predicate to release a stale lane", async () => {
+		const statuses = new Map<string, string>();
+		const { dispatcher, blueprint } = setup(statuses);
+		const first = await dispatcher.start({
+			issueId: "FLY-1775",
+			projectName: "flywheel",
+			sessionRole: "implement",
+		});
+		statuses.set(first.executionId, "completed");
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1775",
+				projectName: "flywheel",
+				sessionRole: "implement",
+			}),
+		).resolves.toMatchObject({ issueId: "FLY-1775" });
+		expect(blueprint.run).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not release a lane for the resumable awaiting_review status", async () => {
+		const statuses = new Map<string, string>();
+		const { dispatcher, blueprint } = setup(statuses);
+		const first = await dispatcher.start({
+			issueId: "FLY-1775",
+			projectName: "flywheel",
+			sessionRole: "implement",
+		});
+		statuses.set(first.executionId, "awaiting_review");
+
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1775",
+				projectName: "flywheel",
+				sessionRole: "implement",
+			}),
+		).rejects.toThrow("already in progress");
+		expect(blueprint.run).toHaveBeenCalledOnce();
 	});
 });

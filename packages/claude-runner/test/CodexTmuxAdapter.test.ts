@@ -290,6 +290,17 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		]);
 	});
 
+	it("threads execution-bound state coordinates into the founder TUI", async () => {
+		await makeAdapter().execute(
+			ctx({ stateDbPath: "/tmp/slot-2/teamlead.db" }),
+		);
+		expect(ensureWindowCalls).toHaveLength(1);
+		expect(ensureWindowCalls[0]).toMatchObject({
+			executionId: execId,
+			stateDbPath: "/tmp/slot-2/teamlead.db",
+		});
+	});
+
 	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
 		const watcher = {
 			start: vi.fn(async () => {}),

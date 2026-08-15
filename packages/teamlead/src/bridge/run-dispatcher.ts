@@ -79,6 +79,14 @@ export type TmuxWorkflowWindowAuthority = (
 	},
 ) => "prune" | "keep";
 
+export type InflightSessionTerminalProbe = (executionId: string) => boolean;
+
+interface InflightEntry {
+	executionId: string;
+	promise: Promise<void>;
+	launchOutcome?: Promise<LaunchPrecommitOutcome>;
+}
+
 interface LaunchOutcomeDeferred {
 	promise: Promise<LaunchPrecommitOutcome>;
 	commit: (() => { ok: boolean; reason?: string }) | undefined;
@@ -577,14 +585,7 @@ export function assertDesignDispatchContract(
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
-	protected inflight = new Map<
-		string,
-		{
-			executionId: string;
-			promise: Promise<void>;
-			launchOutcome?: Promise<LaunchPrecommitOutcome>;
-		}
-	>();
+	protected inflight = new Map<string, InflightEntry>();
 	protected accepting = true;
 
 	constructor(
@@ -625,6 +626,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 		protected tmuxWindowAuthority?: TmuxWorkflowWindowAuthority,
 		protected doaBackoffAdmission?: DoaBackoffAdmissionFn,
+		/**
+		 * FLY-1775: StateStore-authoritative irreversible-terminal probe. A
+		 * Blueprint promise may outlive the runner session it launched; a terminal
+		 * session must not leave this process-local dedup lane poisoned forever.
+		 */
+		protected inflightSessionTerminal?: InflightSessionTerminalProbe,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -724,6 +731,42 @@ export class RetryDispatcher implements IRetryDispatcher {
 		return `${issueId}:${normalized}`;
 	}
 
+	/**
+	 * Return only a live inflight owner. StateStore is the durable lifecycle
+	 * authority; this Map is merely a process-local launch dedup. Probe failures
+	 * fail closed (keep the exclusion record) so an unreadable store cannot admit
+	 * a duplicate runner.
+	 */
+	protected currentInflightEntry(key: string): InflightEntry | undefined {
+		const entry = this.inflight.get(key);
+		if (!entry || !this.inflightSessionTerminal) return entry;
+		let terminal = false;
+		try {
+			terminal = this.inflightSessionTerminal(entry.executionId);
+		} catch (error) {
+			console.warn(
+				`[RunDispatcher] terminal inflight probe failed for ${entry.executionId}; keeping lane occupied: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return entry;
+		}
+		if (!terminal) return entry;
+		this.clearInflightEntry(key, entry);
+		return this.inflight.get(key);
+	}
+
+	/** Identity-guard cleanup so a late old promise cannot erase a replacement. */
+	protected clearInflightEntry(key: string, entry: InflightEntry): void {
+		if (this.inflight.get(key) === entry) {
+			this.inflight.delete(key);
+		}
+	}
+
+	protected pruneTerminalInflightEntries(): void {
+		for (const key of [...this.inflight.keys()]) {
+			this.currentInflightEntry(key);
+		}
+	}
+
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
 		this.assertRunnerAdmission();
 		if (!this.accepting) {
@@ -734,7 +777,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		const inflightEntry = this.inflight.get(key);
+		const inflightEntry = this.currentInflightEntry(key);
 		if (inflightEntry) {
 			// FLY-245 D2: a replay of the IDENTICAL gateway-bound dispatch (same
 			// pre-bound successor id) converges on the in-flight execution instead
@@ -1107,6 +1150,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 			entry.promise = runtime.blueprint
 				.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 				.then((result) => {
+					// Publish no failure signal while the lane still points at this
+					// failed launch: an immediate retry must see it clear. Successful
+					// launches retain the existing finally()-ordered convergence.
+					if (!result.success) this.clearInflightEntry(key, entry);
 					if (result.worktreePath) {
 						console.log(
 							`[RetryDispatcher] ${newExecutionId} ran in worktree: ${result.worktreePath}`,
@@ -1133,6 +1180,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					}
 				})
 				.catch((err: unknown) => {
+					this.clearInflightEntry(key, entry);
 					console.error(
 						`[RetryDispatcher] ${newExecutionId} failed:`,
 						err instanceof Error ? err.message : err,
@@ -1147,7 +1195,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 					this.cleanupPreRegistration(newExecutionId, req.projectName);
 				})
 				.finally(() => {
-					this.inflight.delete(key);
+					this.clearInflightEntry(key, entry);
 				});
 
 			return { newExecutionId, oldExecutionId: req.oldExecutionId };
@@ -1234,9 +1282,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// Several failures happen before this execution installs its own entry.
 			// A concurrent launch may already own the same lane by then; never let the
 			// older abort erase that newer execution's in-memory exclusion record.
-			if (this.inflight.get(key)?.executionId === executionId) {
-				this.inflight.delete(key);
-			}
+			const entry = this.inflight.get(key);
+			if (entry?.executionId === executionId)
+				this.clearInflightEntry(key, entry);
 		} catch {
 			/* Map.delete is expected not to throw; keep the remaining cleanup alive. */
 		}
@@ -1256,6 +1304,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 	/** FLY-59: Returns unique issueIds from composite keys (backward compat) */
 	getInflightIssues(): Set<string> {
+		this.pruneTerminalInflightEntries();
 		const issueIds = new Set<string>();
 		for (const key of this.inflight.keys()) {
 			const issueId = key.split(":")[0];
@@ -1266,7 +1315,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 	/** FLY-59: Check if a specific issue+role combo is currently inflight */
 	hasInflightForRole(issueId: string, role: string): boolean {
-		return this.inflight.has(this.inflightKey(issueId, role));
+		return Boolean(this.currentInflightEntry(this.inflightKey(issueId, role)));
 	}
 
 	stopAccepting(): void {
@@ -1274,6 +1323,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 	}
 
 	async drain(): Promise<void> {
+		this.pruneTerminalInflightEntries();
 		const promises = [...this.inflight.values()].map((v) => v.promise);
 		await Promise.allSettled(promises);
 	}
@@ -1321,6 +1371,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		private freshStartAudit?: FreshStartAuditRecorder,
 		/** FLY-1718 P4: predecessor reconciliation (base fresh + retry seam). */
 		doaBackoffAdmission?: DoaBackoffAdmissionFn,
+		/** FLY-1775: durable session terminality for process-local inflight repair. */
+		inflightSessionTerminal?: InflightSessionTerminalProbe,
 	) {
 		super(
 			blueprintsByProject,
@@ -1335,11 +1387,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			runnerAdmission,
 			tmuxWindowAuthority,
 			doaBackoffAdmission,
+			inflightSessionTerminal,
 		);
 	}
 
 	/** FLY-59: Count all inflight entries (each issue+role combo counts separately) */
 	getInflightCount(): number {
+		this.pruneTerminalInflightEntries();
 		return this.inflight.size;
 	}
 
@@ -1395,7 +1449,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		const inflightEntry = this.inflight.get(key);
+		const inflightEntry = this.currentInflightEntry(key);
 		if (
 			inflightEntry &&
 			req.generalizedExecution &&
@@ -1788,6 +1842,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			entry.promise = runtime.blueprint
 				.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 				.then((result) => {
+					// A failed launchOutcome wakes the workflow engine. Clear first so
+					// that wake cannot race finally() and poison the retry with itself.
+					if (!result.success) this.clearInflightEntry(key, entry);
 					launchOutcome?.observeResult(result);
 					if (result.worktreePath) {
 						console.log(
@@ -1816,6 +1873,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					}
 				})
 				.catch((err: unknown) => {
+					this.clearInflightEntry(key, entry);
 					launchOutcome?.observeError(err);
 					console.error(
 						`[RunDispatcher] ${executionId} failed:`,
@@ -1831,7 +1889,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					this.cleanupPreRegistration(executionId, req.projectName);
 				})
 				.finally(() => {
-					this.inflight.delete(key);
+					this.clearInflightEntry(key, entry);
 				});
 
 			return {

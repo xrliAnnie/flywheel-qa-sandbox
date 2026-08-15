@@ -1,0 +1,11 @@
+flowchart LR
+    subgraph GAPS["今天缺的四件东西 (0/4 → 房里 generalized 跑不了)"]
+        F1["5 个 workflow 开关<br/>生产在 .env 里<br/>隔离房收不到 → 0/5"]
+        F2["category→模板 绑定表<br/>0 行 (没人种)<br/>今天要停 Bridge 手工 INSERT"]
+        F3["API master token<br/>默认房根本不设<br/>→ 请求永远走旧路径"]
+        F4["项目配置 pipeline 段<br/>+ menu 两文件<br/>生成器今天不产"]
+    end
+    GAPS --> RS["run-start 判定链<br/>(四件同时齐才进 DAG 引擎)"]
+    RS --> V2["generalized workflow run<br/>(与生产同形态)"]
+    style GAPS fill:#fff4e5,stroke:#ff9500
+    style V2 fill:#e8f5e9,stroke:#34c759

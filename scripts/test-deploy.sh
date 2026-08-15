@@ -2,6 +2,7 @@
 # FLY-96: Deploy a test slot (Bridge + Lead) for Discord E2E testing.
 #
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
+#        [--generalized [--stub-runner] [--expect-head <full-sha>]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
 #   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
@@ -23,6 +24,11 @@ source "${SCRIPT_DIR}/lib/qa-room.sh"
 # scripts/__tests__/test-deploy-multilead.test.sh A1-A3).
 # shellcheck source=lib/qa-multilead.sh
 source "${SCRIPT_DIR}/lib/qa-multilead.sh"
+
+# FLY-1775: generalized-DAG room provisioning helpers. Default-off; sourcing
+# is side-effect free and ordinary slots stay on their existing byte path.
+# shellcheck source=lib/qa-generalized.sh
+source "${SCRIPT_DIR}/lib/qa-generalized.sh"
 
 # FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
 # target fleet, with labels and state scoped to the ephemeral QA slot.
@@ -154,6 +160,9 @@ NO_LEAD=0                 # FLY-1389 P2-b: --no-lead skips identity staging + Le
                           # startup entirely — Bridge-only deploy for pure
                           # Bridge/API/DB QA suites (Discord-Lead suites must
                           # NOT use it).
+GENERALIZED=0             # FLY-1775: generalized workflow flags/config/bindings/readiness.
+STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
+EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -184,6 +193,14 @@ while [[ $# -gt 0 ]]; do
       LEAD_READY_TIMEOUT_ARG="${1#*=}"; shift ;;
     --no-lead)
       NO_LEAD=1; shift ;;
+    --generalized)
+      GENERALIZED=1; shift ;;
+    --stub-runner)
+      STUB_RUNNER=1; shift ;;
+    --expect-head)
+      EXPECT_HEAD="${2:?--expect-head requires a full SHA}"; shift 2 ;;
+    --expect-head=*)
+      EXPECT_HEAD="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -195,6 +212,51 @@ done
 
 # Default branch — sandbox `main` works for most smoke / regression suites.
 FROM_BRANCH="${FROM_BRANCH:-main}"
+
+# FLY-1775 pit 1: the slot Bridge runs this checkout's bytes, never the
+# --from-branch clone. Fence the actual script repository before any slot,
+# lock, build, clone, or process mutation.
+SCRIPT_REPO_HEAD=""
+if [[ "$GENERALIZED" == "1" ]]; then
+  [[ "$MODE" == "slot" ]] || {
+    echo "ERROR: --generalized is only supported with --mode slot (mirror/roundtable are distinct topologies)." >&2
+    exit 1
+  }
+  SCRIPT_REPO_HEAD=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")
+  qa_generalized_validate_expected_head "$SCRIPT_REPO_HEAD" "$EXPECT_HEAD" || exit 1
+  log "GENERALIZED ROOM SOURCE HEAD: ${SCRIPT_REPO_HEAD} (Bridge runs this checkout; --from-branch only selects the sandbox clone)"
+fi
+if [[ "$STUB_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
+  echo "ERROR: --stub-runner requires --generalized" >&2
+  exit 1
+fi
+if [[ "$GENERALIZED" == "1" ]]; then
+  case "${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}" in
+    on|off) ;;
+    *)
+      echo "ERROR: TEST_BRIDGE_DEPT_SCOPE_REJECT must be 'on' or 'off' (got '${TEST_BRIDGE_DEPT_SCOPE_REJECT}')." >&2
+      exit 1
+      ;;
+  esac
+fi
+if [[ -n "$EXPECT_HEAD" && "$GENERALIZED" != "1" ]]; then
+  echo "ERROR: --expect-head requires --generalized" >&2
+  exit 1
+fi
+
+# Generalized master entry always requires a token, independently of the
+# reply-by-issue Discord route. Reuse TEST_API_TOKEN when supplied; otherwise
+# mint the same per-room random form as the existing reply-by-issue path.
+if [[ "$GENERALIZED" == "1" && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
+  if [[ -n "${TEST_API_TOKEN:-}" ]]; then
+    TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
+  elif command -v uuidgen >/dev/null 2>&1; then
+    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(uuidgen | tr -d '-' | head -c 12)"
+  else
+    TEST_TEAMLEAD_API_TOKEN="fly-1775-test-$(date +%s)-$$"
+  fi
+  log "generalized master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
+fi
 
 # FLY-1439: fail immediately on a typo'd isolated Claude root instead of
 # materializing an empty config and waiting minutes for an unauthenticated
@@ -369,7 +431,7 @@ trap release_preflight_lock EXIT
   BSQLITE_DIR=$(find "$REPO_ROOT/node_modules/.pnpm" -type d \
     -path "*better-sqlite3@*/node_modules/better-sqlite3" 2>/dev/null | head -1)
   if [[ -z "$BSQLITE_DIR" ]]; then
-    echo "ERROR: better-sqlite3 not installed in pnpm store. Run 'pnpm install' first." >&2
+    echo "ERROR: better-sqlite3 not installed in pnpm store. Run 'pnpm install --frozen-lockfile' first." >&2
     exit 11
   fi
   BSQLITE_BINARY="${BSQLITE_DIR}/build/Release/better_sqlite3.node"
@@ -389,12 +451,19 @@ trap release_preflight_lock EXIT
   ( cd "$REPO_ROOT/packages/inbox-mcp" && node -e "require('better-sqlite3')" ) \
     || exit 12
 
-  # 2. Rebuild edge-worker dist so scripts/run-bridge.ts → dist/WorktreeManager.js
+  # 2. FLY-1775: generalized rooms consume the built config package as the
+  #    canonical workflow-menu binding authority. Keep ordinary deploys on
+  #    their exact historical build path.
+  if [[ "$GENERALIZED" == "1" ]]; then
+    pnpm --filter flywheel-config build || exit 16
+  fi
+
+  # 3. Rebuild edge-worker dist so scripts/run-bridge.ts → dist/WorktreeManager.js
   #    picks up the FLYWHEEL_RUNNER_START_POINT env fallback. Without this,
   #    /api/runs/start spawns Runners against stale origin/main dist.
   pnpm --filter flywheel-edge-worker build || exit 13
 
-  # 3. FLY-162 QA round 1: rebuild teamlead dist too. scripts/run-bridge.ts
+  # 4. FLY-162 QA round 1: rebuild teamlead dist too. scripts/run-bridge.ts
   #    imports compiled artifacts from packages/teamlead/dist (route handlers,
   #    config loader, plugin). Without this rebuild, edits to tools.ts /
   #    config.ts / plugin.ts (e.g. new POST /api/chat-threads/send route) are
@@ -402,12 +471,12 @@ trap release_preflight_lock EXIT
   #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
   pnpm --filter flywheel-teamlead build || exit 15
 
-  # 4. Assert the env fallback actually landed in the built artifact. Cheaper
+  # 5. Assert the env fallback actually landed in the built artifact. Cheaper
   #    than rerunning unit tests under the lock, and it catches the case where
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed (better-sqlite3 rebuild, edge-worker build, teamlead build, or dist freshness check)"
+) || fail_preflight "preflight failed. Run pnpm install --frozen-lockfile, then pnpm -r build; verify better-sqlite3, config, edge-worker, teamlead, and dist freshness."
 
 release_preflight_lock
 trap - EXIT
@@ -462,6 +531,31 @@ fi
 cleanup_on_failure() {
   local lock="/tmp/flywheel-test-slot-${SLOT}.lock"
   local lock_pid
+	local generalized_bridge_stopped=1
+	# FLY-1775: generalized readiness remains inside the deploy transaction even
+	# after bridge.pid replaces the "claiming" sentinel. A failure between
+	# /health and room-info finalization must leave no process, port, lock, or
+	# half-ready slot for a later QA run to mistake as usable.
+	if [[ "${GENERALIZED_READINESS_PENDING:-0}" == "1" ]]; then
+		if [[ -n "${BRIDGE_PID:-}" ]]; then
+			if ! qa_generalized_terminate_pid "$BRIDGE_PID"; then
+				generalized_bridge_stopped=0
+			fi
+		fi
+		if [[ -n "${QA_LEAD_REGISTRY:-}" && -f "${QA_LEAD_REGISTRY}" ]]; then
+			qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
+			QA_LEAD_REGISTRY=""
+		fi
+		qa_generalized_invalidate_room_info "$SLOT_DIR"
+		if (( generalized_bridge_stopped == 1 )); then
+			rm -rf "$lock"
+		else
+			echo "ERROR: generalized Bridge ${BRIDGE_PID} did not exit; retaining slot ${SLOT} lock" >&2
+		fi
+		# Preserve the partial slot directory (especially bridge.log) for the
+		# operator diagnosis named by this script. The ordinary campaign rollback
+		# below still owns borrowed locks and extra-Lead supervisors.
+	fi
   if [[ -n "${QA_LEAD_REGISTRY:-}" && -f "$QA_LEAD_REGISTRY" ]]; then
     qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
   fi
@@ -616,6 +710,29 @@ fi
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
+GENERALIZED_READINESS_PENDING=0
+GENERALIZED_CHILD_TMPDIR="${TMPDIR:-/tmp}"
+GENERALIZED_ENV_ATTESTATION=""
+GENERALIZED_API_TOKEN_PATH=""
+GENERALIZED_ROOM_INFO=""
+# FLY-1775 pit 9 intentionally extends the ordinary reply-by-issue opt-in:
+# inject-linear-issue needs the same slot-local Bearer credential. Default
+# ordinary rooms still create no token file; the opt-in file is always 0600.
+if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  GENERALIZED_API_TOKEN_PATH="${SLOT_DIR}/state/api-token"
+  mkdir -p "${SLOT_DIR}/state"
+  printf '%s\n' "$TEST_TEAMLEAD_API_TOKEN" > "$GENERALIZED_API_TOKEN_PATH"
+  chmod 600 "$GENERALIZED_API_TOKEN_PATH"
+fi
+if [[ "$GENERALIZED" == "1" ]]; then
+  GENERALIZED_READINESS_PENDING=1
+  GENERALIZED_CHILD_TMPDIR=$(qa_generalized_safe_tmpdir "${TMPDIR:-/tmp}" "$(id -u)")
+  if [[ "$GENERALIZED_CHILD_TMPDIR" != "${TMPDIR:-/tmp}" ]]; then
+    log "generalized preflight: TMPDIR socket path is too long; child processes use TMPDIR=/tmp (sun_path safety)"
+  fi
+  GENERALIZED_ENV_ATTESTATION="${SLOT_DIR}/state/generalized-env-attestation.json"
+  GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
+fi
 
 # ── FLY-529: QA Room roundtable + alert mirror config + env arrays ─────────
 # Resolved here (after SLOT/SLOT_DIR, before access.json / FLYWHEEL_PROJECTS /
@@ -625,6 +742,7 @@ QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 # `set -u` would otherwise abort).
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
+GENERALIZED_ENV_UNSET_ARGS=()
 # FLY-1608: isolate both sides of the fail-close complete marker protocol.
 # Bridge reads/drains this directory; spawned Runners write to it via adapter
 # passthrough. Without both injections a QA slot can consume production markers
@@ -637,6 +755,25 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
+if [[ "$GENERALIZED" == "1" ]]; then
+  while IFS= read -r _generalized_env; do
+    [[ -n "$_generalized_env" ]] || continue
+    BRIDGE_EXTRA_ENV+=("$_generalized_env")
+    LEAD_EXTRA_ENV+=("$_generalized_env")
+  done < <(qa_generalized_feature_env)
+  BRIDGE_EXTRA_ENV+=("BRIDGE_DEPT_SCOPE_REJECT=${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}")
+  LEAD_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
+  # launchd manifests are explicit env maps rather than `env -u`; empty values
+  # are the v2 carrier's scrubbed representation for ambient-only coordinates.
+  # The same centralized list becomes repeated `env -u` flags at the Bridge
+  # boundary below so new production roundtable settings cannot leak into only
+  # one side of a generalized slot.
+  while IFS= read -r _generalized_scrub_name; do
+    [[ -n "$_generalized_scrub_name" ]] || continue
+    LEAD_EXTRA_ENV+=("${_generalized_scrub_name}=")
+    GENERALIZED_ENV_UNSET_ARGS+=(-u "$_generalized_scrub_name")
+  done < <(qa_generalized_ambient_scrub_env_names)
+fi
 # FLY-1439: opt-in isolated Claude config for pinned-plugin real-machine QA.
 # The dedicated knob is appended after the Lead launcher's `env -u
 # CLAUDE_CONFIG_DIR`, so inherited production values remain scrubbed while an
@@ -801,9 +938,16 @@ HOST_REPO_DIRNAME="project-slot-${SLOT}"
 HOST_REPO="${SLOT_DIR}/${HOST_REPO_DIRNAME}"
 QA_TEMP_BRANCH="qa-slot-${SLOT}-$(date +%s)"
 log "Cloning sandbox → ${HOST_REPO} (branch: ${FROM_BRANCH})"
-rm -rf "${HOST_REPO}"
-git clone --branch "${FROM_BRANCH}" "${SANDBOX_REMOTE_URL}" "${HOST_REPO}" \
-  || fail_preflight "git clone --branch ${FROM_BRANCH} failed. Did you push the branch to sandbox? (see doc/qa/framework/real-runner-e2e-guide.md §6)"
+if [[ "$GENERALIZED" == "1" ]]; then
+  TMPDIR="$GENERALIZED_CHILD_TMPDIR" \
+    qa_generalized_clone_with_stall_watchdog \
+      "$SANDBOX_REMOTE_URL" "$FROM_BRANCH" "$HOST_REPO" \
+    || fail_preflight "git clone --branch ${FROM_BRANCH} failed or stopped growing twice. Partial clones were killed and removed; retry after checking network/auth."
+else
+  rm -rf "${HOST_REPO}"
+  git clone --branch "${FROM_BRANCH}" "${SANDBOX_REMOTE_URL}" "${HOST_REPO}" \
+    || fail_preflight "git clone --branch ${FROM_BRANCH} failed. Did you push the branch to sandbox? (see doc/qa/framework/real-runner-e2e-guide.md §6)"
+fi
 
 # Resolve remote-tracking ref for the Runner worktree start point
 RUNNER_START_REF="refs/remotes/origin/${FROM_BRANCH}"
@@ -845,9 +989,43 @@ TEST_PROJECT_NAME="test-slot-${SLOT}"
 # Linear/Discord routing logic during the test.
 mkdir -p "${HOST_REPO}/.flywheel"
 # FLY-1189: content generation extracted to qa_multilead_config_yaml.
-qa_multilead_config_yaml "${TEST_PROJECT_NAME}" \
+if [[ "$GENERALIZED" == "1" ]]; then
+  QA_CONFIG_MODE="generalized"
+else
+  QA_CONFIG_MODE="ordinary"
+fi
+qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" \
   > "${HOST_REPO}/.flywheel/config.yaml"
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
+
+if [[ "$GENERALIZED" == "1" ]]; then
+  # Complete menu-domain activation: a partial roster/adoption pair is a hard
+  # config error. Role content is copied from the checkout under test; Bridge
+  # validates and injects it when compiling each node prompt.
+  mkdir -p "${HOST_REPO}/.flywheel/menus" \
+    "${HOST_REPO}/.flywheel/agents/engineering"
+  cp "${REPO_ROOT}/.flywheel/agents/engineering/engineer-executor.md" \
+    "${HOST_REPO}/.flywheel/agents/engineering/engineer-executor.md"
+  cp "${REPO_ROOT}/.flywheel/agents/engineering/qa-executor.md" \
+    "${HOST_REPO}/.flywheel/agents/engineering/qa-executor.md"
+  cp "${REPO_ROOT}/.flywheel/agents/general-executor.md" \
+    "${HOST_REPO}/.flywheel/agents/general-executor.md"
+  cat > "${HOST_REPO}/.flywheel/menus/ic-roster.yaml" <<'EOF'
+design: .flywheel/agents/engineering/engineer-executor.md
+implement: .flywheel/agents/engineering/engineer-executor.md
+qa: .flywheel/agents/engineering/qa-executor.md
+generic: .flywheel/agents/general-executor.md
+EOF
+  printf '%s: [code, generic]\n' "$AGENT_ID" \
+    > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
+  if [[ "$STUB_RUNNER" == "1" ]]; then
+    qa_generalized_install_stub "${SLOT_DIR}/stub-bin" \
+      "${REPO_ROOT}/scripts/qa-529-generalized-stub.mjs" \
+      "${REPO_ROOT}/scripts/qa-529-generalized-codex-stub.mjs"
+    BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
+  fi
+  log "Wrote generalized menu roster/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
+fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
 # .env with test bot token
@@ -1131,6 +1309,38 @@ fi
 FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
 echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
 log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
+
+# FLY-1775 pit 5: GET visibility does not prove Send Messages. In a
+# generalized --alerts room, exercise every bot that the scrubbed Bridge send
+# chain can actually select, then delete its marker. This catches the observed
+# slot-1-works/slot-2-403 invitation matrix before Bridge startup.
+if [[ "$GENERALIZED" == "1" && "$ALERTS" == "1" ]]; then
+  _alert_sender_envs=""
+  while IFS= read -r _sender_env; do
+    [[ -n "$_sender_env" ]] || continue
+    [[ " $_alert_sender_envs " == *" $_sender_env "* ]] && continue
+    _alert_sender_envs="${_alert_sender_envs} ${_sender_env}"
+  done < <(
+    {
+      jq -r '.[].leads[].botTokenEnv // empty' <<<"$FLYWHEEL_PROJECTS"
+      printf '%s\n' "$ALERT_REPAIR_BOT_TOKEN_ENV"
+    }
+  )
+  for _sender_env in $_alert_sender_envs; do
+    _sender_token="${!_sender_env:-}"
+    if [[ -z "$_sender_token" ]]; then
+      echo "ERROR: generalized alert sender ${_sender_env} has no token value." >&2
+      echo "  Configure the slot-local token; production fallback is intentionally scrubbed." >&2
+      exit 1
+    fi
+    if ! qa_generalized_probe_discord_sender "$ALERT_CHANNEL_ID" "$_sender_env" "$_sender_token"; then
+      echo "ERROR: invite slot ${SLOT} bot ${_sender_env} to alert channel ${ALERT_CHANNEL_ID} and grant Send Messages + Manage Messages (marker cleanup)." >&2
+      exit 1
+    fi
+  done
+  unset _alert_sender_envs _sender_env _sender_token
+  log "generalized alert preflight: every sender-capable slot bot passed POST+DELETE"
+fi
 
 # Build the launch environment captured in a v2 manifest from NAME=value
 # arguments. Values stay data (jq --arg), never shell syntax.
@@ -1507,7 +1717,39 @@ log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 # (packages/teamlead/src/ProjectConfig.ts:179-189). Fallback works for a
 # single-slot test but masks a real misconfiguration (wrong tokenEnvVar,
 # wrong .env key). Exporting both keeps botTokenEnv load-bearing.
-if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+if [[ "$GENERALIZED" == "1" ]]; then
+  GENERALIZED_REPLY_ENV=()
+  if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+    GENERALIZED_REPLY_ENV+=("TEAMLEAD_CHAT_THREADS_ENABLED=true")
+    GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true")
+    GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
+  fi
+  env ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
+    -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
+    -u TEAMLEAD_REPLY_GUARD_ENABLED \
+    -u TEAMLEAD_CHAT_THREADS_ENABLED \
+    TMPDIR="${GENERALIZED_CHILD_TMPDIR}" \
+    TEAMLEAD_PORT="${SLOT_PORT}" \
+    TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
+    DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
+    DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
+    "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
+    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
+    TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
+    FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    LINEAR_API_KEY="${LINEAR_API_KEY}" \
+    FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
+    FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
+    TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+    ${GENERALIZED_REPLY_ENV[@]+"${GENERALIZED_REPLY_ENV[@]}"} \
+    ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
+    bash "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
+      "$GENERALIZED_ENV_ATTESTATION" \
+      npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
+    > "${SLOT_DIR}/bridge.log" 2>&1 &
+elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
   # runtime deploy (sync-flywheel-hooks.ts seams, "for test slots" by design)
   # to slot-local dirs — without them every slot Bridge boot rewrote the
@@ -1606,6 +1848,78 @@ if [[ "$BRIDGE_READY" != "true" ]]; then
   exit 1
 fi
 
+# FLY-1775: /health is only the first readiness signal. Generalized rooms are
+# not publishable until the exact built checkout, flag exec boundary, strict
+# config, complete menu domain, and canonical category bindings all agree.
+if [[ "$GENERALIZED" == "1" ]]; then
+  GENERALIZED_HEALTH_JSON=$(curl -sS "http://localhost:${SLOT_PORT}/health") \
+    || { log "ERROR: generalized /health body unavailable"; exit 1; }
+  if ! jq -e --arg sha "$SCRIPT_REPO_HEAD" \
+    '.ok == true and .buildMode == "built" and .buildSha == $sha and .artifactBuildSha == $sha' \
+    <<<"$GENERALIZED_HEALTH_JSON" >/dev/null; then
+    log "ERROR: generalized health identity mismatch; expected built ${SCRIPT_REPO_HEAD}, got $(jq -c '{ok,buildMode,buildSha,artifactBuildSha}' <<<"$GENERALIZED_HEALTH_JSON" 2>/dev/null || echo invalid-json)"
+    exit 1
+  fi
+  if ! jq -e '
+    .schemaVersion == 1 and
+    (.flags | length == 5) and
+    ([.flags[]] | all(. == "1"))
+  ' "$GENERALIZED_ENV_ATTESTATION" >/dev/null; then
+    log "ERROR: generalized Bridge env attestation is missing or incomplete"
+    exit 1
+  fi
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: generalized workflow_category_binding seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: generalized binding verification failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
+    --file "${HOST_REPO}/.flywheel/config.yaml" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: generalized pipeline config verification failed"; exit 1; }
+  GENERALIZED_MENU_JSON=$(curl -sS --get \
+    --data-urlencode "projectName=${TEST_PROJECT_NAME}" \
+    --data-urlencode "leadId=${AGENT_ID}" \
+    "http://localhost:${SLOT_PORT}/api/workflow/menus") \
+    || { log "ERROR: generalized menu endpoint unavailable"; exit 1; }
+  if ! jq -e '
+    .success == true and
+    ([.menus[].item] | sort) == ["code","generic"] and
+    (any(.menus[]; .item == "code" and
+      ([.nodes[] | select(.role != null) | .role] | sort) == ["design","implement","qa"]))
+  ' <<<"$GENERALIZED_MENU_JSON" >/dev/null; then
+    log "ERROR: generalized menu readiness failed: $(jq -c '{success,code,reason,legal,menus}' <<<"$GENERALIZED_MENU_JSON" 2>/dev/null || echo invalid-json)"
+    exit 1
+  fi
+  if [[ "$STUB_RUNNER" == "1" ]]; then
+    GENERALIZED_RUNNER_MODE="stub"
+  else
+    GENERALIZED_RUNNER_MODE="real"
+  fi
+  _room_tmp="${GENERALIZED_ROOM_INFO}.tmp.$$"
+  jq -n \
+    --argjson slot "$SLOT" --argjson port "$SLOT_PORT" \
+    --arg projectName "$TEST_PROJECT_NAME" --arg agentId "$AGENT_ID" \
+    --arg mode "$MODE" --arg runnerMode "$GENERALIZED_RUNNER_MODE" \
+    --arg bridgeUrl "http://localhost:${SLOT_PORT}" \
+    --arg dbPath "${SLOT_DIR}/teamlead.db" --arg hostRepo "$HOST_REPO" \
+    --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
+    --arg flywheelRepo "$REPO_ROOT" \
+    --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
+    --arg envAttestationPath "$GENERALIZED_ENV_ATTESTATION" \
+    --arg bridgeLog "${SLOT_DIR}/bridge.log" \
+    '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
+      mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,
+      dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
+      flywheelProjectsFile:$flywheelProjectsFile,
+      apiTokenPath:$apiTokenPath,envAttestationPath:$envAttestationPath,
+      bridgeLog:$bridgeLog}' > "$_room_tmp" \
+    || { rm -f "$_room_tmp"; exit 1; }
+  chmod 600 "$_room_tmp"
+  mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
+  log "generalized readiness: flags 5/5 · bindings 5/5 · pipeline+work_kind on · menu on"
+fi
+
 # ── Bridge confirmed up → NOW finalize campaign locks + disarm the failure trap ──
 # FLY-1189: write the SAME live Bridge PID + campaign sidecar into EVERY
 # campaign lock (owner + borrowed). The live PID protects borrowed locks from
@@ -1621,6 +1935,7 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
   log "Campaign locks finalized (Bridge PID ${BRIDGE_PID}, campaign ${CAMPAIGN_ID}, slots: ${CAMPAIGN_SLOT_IDS[*]})"
 fi
 # Bridge ready + locks finalized — disable the failure cleanup trap.
+GENERALIZED_READINESS_PENDING=0
 trap - EXIT
 
 # FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
@@ -1658,6 +1973,19 @@ log "  Lead PID file: ${LEAD_PID_FILE}"
 # Output JSON for downstream scripts.
 # FLY-153: also surface mode + mirrorChannelId + flywheelProjectsFile so smoke
 # tests and qa-fly-60-driver can branch on mode without re-reading config.
+GENERALIZED_OUTPUT_FIELDS=""
+if [[ "$GENERALIZED" == "1" ]]; then
+  GENERALIZED_OUTPUT_FIELDS=$(cat <<EOF
+,
+  "generalized": true,
+  "runnerMode": "${GENERALIZED_RUNNER_MODE}",
+  "buildSha": "${SCRIPT_REPO_HEAD}",
+  "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
+  "envAttestationPath": "${GENERALIZED_ENV_ATTESTATION}",
+  "roomInfo": "${GENERALIZED_ROOM_INFO}"
+EOF
+)
+fi
 cat <<EOF
 {
   "slot": ${SLOT},
@@ -1691,6 +2019,6 @@ cat <<EOF
   "campaignManifest": "${CAMPAIGN_MANIFEST_FILE:-}",
   "campaignId": "${CAMPAIGN_ID:-}",
   "leadLabel": "${LEAD_LABEL}",
-  "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")
+  "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")${GENERALIZED_OUTPUT_FIELDS}
 }
 EOF

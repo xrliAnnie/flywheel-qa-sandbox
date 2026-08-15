@@ -101,6 +101,34 @@ BRIDGE_LOG="${SLOT_DIR}/bridge.log"
 curl -sf "${BRIDGE_URL}/health" >/dev/null \
   || { echo "ERROR: Bridge ${BRIDGE_URL} not healthy — tail ${BRIDGE_LOG} and redeploy" >&2; exit 1; }
 
+# FLY-1775: generalized rooms activate the menu/master boundary and require a
+# full taskCategory + leadId request. The legacy inject body below cannot
+# truthfully select that path, so fail before trust-file or run mutation and
+# direct the operator to the dedicated driver.
+ROOM_INFO="${SLOT_DIR}/room-info.json"
+if [[ -f "$ROOM_INFO" ]]; then
+  if ! jq -e . "$ROOM_INFO" >/dev/null 2>&1; then
+    echo "ERROR: ${ROOM_INFO} is malformed; teardown and redeploy slot ${SLOT}." >&2
+    exit 1
+  fi
+  if [[ "$(jq -r '.generalized // false' "$ROOM_INFO")" == "true" ]]; then
+    echo "ERROR: slot ${SLOT} is a generalized room; inject-linear-issue.sh is intentionally disabled." >&2
+    echo "  Use scripts/qa-529-generalized-e2e.mjs ${SLOT} --issue ${ISSUE_ID}." >&2
+    exit 1
+  fi
+fi
+
+# FLY-1775 pit 9: TEST_REPLY_BY_ISSUE turns /api/* auth on. test-deploy stores
+# that slot-local token mode 0600; consume it automatically without logging a
+# byte. A room with no token stays on the exact legacy curl path.
+AUTH_ARGS=()
+API_TOKEN_PATH="${SLOT_DIR}/state/api-token"
+if [[ -f "$API_TOKEN_PATH" ]]; then
+  API_TOKEN=$(tr -d '\r\n' < "$API_TOKEN_PATH")
+  [[ -n "$API_TOKEN" ]] || { echo "ERROR: ${API_TOKEN_PATH} is empty" >&2; exit 1; }
+  AUTH_ARGS=(-H "Authorization: Bearer ${API_TOKEN}")
+fi
+
 echo "[inject] slot=${SLOT} issue=${ISSUE_ID} project=${PROJECT_NAME} role=${ROLE}" >&2
 
 # FLY-115 fix: Pre-accept workspace trust for the Runner worktree so Claude CLI
@@ -242,6 +270,7 @@ trap 'rm -f "$RESP_FILE"' EXIT
 # POST /api/runs/start — see packages/teamlead/src/bridge/runs-route.ts
 HTTP_CODE=$(curl -s -o "$RESP_FILE" -w '%{http_code}' \
   -XPOST "${BRIDGE_URL}/api/runs/start" \
+  ${AUTH_ARGS[@]+"${AUTH_ARGS[@]}"} \
   -H 'content-type: application/json' \
   -d "{\"issueId\":\"${ISSUE_ID}\",\"projectName\":\"${PROJECT_NAME}\",\"sessionRole\":\"${ROLE}\"}" \
   || echo "000")

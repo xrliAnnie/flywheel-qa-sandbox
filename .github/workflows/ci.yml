@@ -353,6 +353,17 @@ jobs:
       - name: Test — FLY-1189 multi-Lead campaign harness
         run: bash scripts/__tests__/test-deploy-multilead.test.sh
 
+      # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
+      # seed/verify, deterministic persistent stub, and the nine-step replay
+      # state machine. Hermetic: temporary SQLite/clone fixtures and fake
+      # Discord HTTP responses; it never starts a real room or writes GitHub.
+      - name: Test — FLY-1775 generalized-DAG 529 room
+        run: |
+          bash scripts/__tests__/test-deploy-generalized.test.sh
+          node --test scripts/__tests__/qa-generalized-helper.test.mjs
+          node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
+          node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
+
       # FLY-1189: fault injector S1 SAFETY LOCK — the anchor rejection matrix
       # (execId/tmux/path anchors + prod denylist + prefix-collision + symlink
       # escape + TOCTOU start-time/inode drift + restore direction lock +

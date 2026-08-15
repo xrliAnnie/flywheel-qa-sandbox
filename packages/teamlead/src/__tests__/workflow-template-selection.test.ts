@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { classifyDurableLaunchDrain } from "../../../../scripts/lib/qa-generalized-e2e-lib.mjs";
 import { StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
@@ -926,6 +927,71 @@ describe("workflow template selection", () => {
 		).toEqual({ ok: false, reason: "active_engine_run" });
 		expect(engineFirst.getLaunchClaim("legacy-loses")).toBeUndefined();
 		engineFirst.close();
+	});
+
+	it("FLY-1775 A3 terminal postcondition is settled by drain and ignored by entry arbitration", async () => {
+		const executionId = "qa-a3-terminal";
+		const issueId = "FLY-A3-TERMINAL";
+		expect(
+			classifyDurableLaunchDrain({
+				runStatus: "terminated",
+				launchOwners: [
+					{
+						execution_id: executionId,
+						committed_generation: 1,
+						delivery_state: "delivered",
+					},
+				],
+				actors: [
+					{
+						executionId,
+						liveness: "dead",
+						sessionStatus: "terminated",
+						parkOpen: false,
+					},
+				],
+			}),
+		).toEqual({ settled: true, reason: "settled" });
+
+		const store = await StateStore.create(":memory:");
+		const seed = v2Seed();
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "research",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		expect(
+			store.claimLegacyWorkflowEntry({
+				issueId,
+				projectName: "flywheel",
+				executionId,
+				role: "qa",
+			}),
+		).toEqual({ ok: true });
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: issueId,
+			project_name: "flywheel",
+			status: "terminated",
+		});
+
+		await expect(
+			resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId,
+				taskCategory: "research",
+				selectedBy: "lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: setupRoot(),
+				idempotencyKey: "a3-terminal-entry",
+				entryKind: "workflow_v2",
+				env: enabled,
+			}),
+		).resolves.toBeTruthy();
+		store.close();
 	});
 
 	it("scopes legacy claims by lifecycle root and role while ignoring terminal owners", async () => {

@@ -1,0 +1,9 @@
+flowchart TB
+    A["操作者: 一条命令<br/>test-deploy.sh &lt;slot&gt; --generalized --stub-runner --no-lead"] --> B["预检 (preflight)<br/>依赖已装 · socket 路径长度 · 被测仓 HEAD 核对"]
+    B --> C["环境净化<br/>清掉会漏进来的生产变量<br/>(告警发送 token · roundtable 频道)"]
+    C --> D["起隔离 Bridge<br/>注入 5 个 workflow 开关 + API token<br/>launch wrapper 落 env 存证文件"]
+    D --> E["写沙箱项目配置<br/>pipeline.dag + work_kind + menu 两文件"]
+    E --> F["种 5 行 category→模板 绑定<br/>单事务 · 外键校验 · 可重复执行"]
+    F --> G{"部署终点自检<br/>flags 5/5 · bindings 5/5<br/>health 双 SHA · menu 端点"}
+    G -->|全绿| H["房间就绪 room-info.json<br/>零手工 SQL · 零手工 env"]
+    G -->|任一失败| I["走既有回滚<br/>不留活房 / 锁 / 残留进程"]

@@ -236,6 +236,18 @@ describe("buildRunnerTuiCommand", () => {
 		expect(cmd).toContain("codex resume");
 	});
 
+	it("injects execution-bound state coordinates for durable stub exit fences", () => {
+		const cmd = buildRunnerTuiCommand({
+			...spec,
+			executionId: "exec-1",
+			stateDbPath: "/tmp/flywheel-test-slot-2/teamlead.db",
+		} as RunnerTuiWindowSpec);
+		expect(cmd).toContain('FLYWHEEL_EXEC_ID="exec-1"');
+		expect(cmd).toContain(
+			'FLYWHEEL_STATE_DB_PATH="/tmp/flywheel-test-slot-2/teamlead.db"',
+		);
+	});
+
 	it("throws (fail-loud) on a shell-unsafe threadId or path", () => {
 		expect(() =>
 			buildRunnerTuiCommand({ ...spec, threadId: 'x"; rm -rf /' }),

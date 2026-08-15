@@ -137,6 +137,37 @@ class CleanupObservingRunDispatcher extends RunDispatcher {
 		this.abortPreLaunch(key, failedExecutionId, "TestProject", false);
 		return this.inflight.get(key)?.executionId;
 	}
+
+	seedInflight(issueId: string, role: string, executionId: string): void {
+		this.inflight.set(this.inflightKey(issueId, role), {
+			executionId,
+			promise: new Promise(() => {}),
+		});
+	}
+}
+
+function cleanupDispatcherWithTerminalProbe(
+	runtimes: Map<string, ProjectRuntime>,
+	probe: (executionId: string) => boolean,
+): CleanupObservingRunDispatcher {
+	return new CleanupObservingRunDispatcher(
+		runtimes,
+		[],
+		RunnerAdmissionController.alwaysAdmit(),
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		probe,
+	);
 }
 
 describe("RunDispatcher", () => {
@@ -570,6 +601,173 @@ describe("RunDispatcher", () => {
 		resolveRun();
 		await dispatcher.drain();
 		expect(dispatcher.getInflightCount()).toBe(0);
+	});
+
+	it.each(["resolved failure", "rejected launch"] as const)(
+		"clears a generalized %s before publishing its launch outcome",
+		async (failureMode) => {
+			let resolveFirst!: (result: { success: false; error: string }) => void;
+			let rejectFirst!: (error: Error) => void;
+			const firstRun = new Promise<{ success: false; error: string }>(
+				(resolve, reject) => {
+					resolveFirst = resolve;
+					rejectFirst = reject;
+				},
+			);
+			const blueprint = {
+				run: vi
+					.fn()
+					.mockImplementationOnce(() => firstRun)
+					.mockImplementationOnce(() => new Promise(() => {})),
+			};
+			const runtime: ProjectRuntime = {
+				blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
+				projectRoot: "/tmp/test",
+				tmuxSessionName: "runner-test",
+			};
+			const dispatcher = new CleanupObservingRunDispatcher(
+				new Map([["TestProject", runtime]]),
+				[],
+				RunnerAdmissionController.alwaysAdmit(),
+			);
+			const generalizedExecution = (executionId: string) => ({
+				engineOwned: true as const,
+				executionId,
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				snapshotDigest: "digest",
+				gateCarrierEpoch: 0,
+				dispatch: { vendor: "codex" as const, model: "gpt-5.6-sol" },
+				capabilities: {},
+				agentContent: "Implement.",
+				idempotencyKey: `launch-${executionId}`,
+				launchGateToken: `token-${executionId}`,
+				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+			});
+
+			const first = await dispatcher.start({
+				issueId: "FLY-1775",
+				projectName: "TestProject",
+				sessionRole: "implement",
+				generalizedExecution: generalizedExecution("exec-old"),
+			});
+			const replacement = first.launchOutcome?.then(() =>
+				dispatcher.start({
+					issueId: "FLY-1775",
+					projectName: "TestProject",
+					sessionRole: "implement",
+					generalizedExecution: generalizedExecution("exec-new"),
+				}),
+			);
+
+			if (failureMode === "resolved failure") {
+				resolveFirst({ success: false, error: "hold_lock_unavailable" });
+			} else {
+				rejectFirst(new Error("hold_lock_unavailable"));
+			}
+
+			await expect(replacement).resolves.toMatchObject({
+				executionId: "exec-new",
+			});
+			expect(blueprint.run).toHaveBeenCalledTimes(2);
+		},
+	);
+
+	it("evicts an irreversible-terminal execution and a late old settle cannot erase its replacement", async () => {
+		let resolveOld!: (result: { success: true }) => void;
+		const blueprint = {
+			run: vi
+				.fn()
+				.mockImplementationOnce(
+					() =>
+						new Promise<{ success: true }>((resolve) => {
+							resolveOld = resolve;
+						}),
+				)
+				.mockImplementationOnce(() => new Promise(() => {})),
+		};
+		const runtime: ProjectRuntime = {
+			blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
+			projectRoot: "/tmp/test",
+			tmuxSessionName: "runner-test",
+		};
+		const terminal = new Set<string>();
+		const dispatcher = cleanupDispatcherWithTerminalProbe(
+			new Map([["TestProject", runtime]]),
+			(executionId) => terminal.has(executionId),
+		);
+		const generalizedExecution = (executionId: string) => ({
+			engineOwned: true as const,
+			executionId,
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+			snapshotDigest: "digest",
+			gateCarrierEpoch: 0,
+			dispatch: { vendor: "codex" as const, model: "gpt-5.6-sol" },
+			capabilities: {},
+			agentContent: "Implement.",
+			idempotencyKey: `launch-${executionId}`,
+			launchGateToken: `token-${executionId}`,
+			commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+		});
+
+		await dispatcher.start({
+			issueId: "FLY-1775",
+			projectName: "TestProject",
+			sessionRole: "implement",
+			generalizedExecution: generalizedExecution("exec-old"),
+		});
+		terminal.add("exec-old");
+		await expect(
+			dispatcher.start({
+				issueId: "FLY-1775",
+				projectName: "TestProject",
+				sessionRole: "implement",
+				generalizedExecution: generalizedExecution("exec-new"),
+			}),
+		).resolves.toMatchObject({ executionId: "exec-new" });
+
+		resolveOld({ success: true });
+		await new Promise((resolve) => setImmediate(resolve));
+		expect(dispatcher.getInflightCount()).toBe(1);
+		expect(dispatcher.hasInflightForRole("FLY-1775", "implement")).toBe(true);
+		expect(blueprint.run).toHaveBeenCalledTimes(2);
+	});
+
+	it("removes irreversible-terminal entries from every public inflight probe", () => {
+		const makeSeeded = () => {
+			const dispatcher = cleanupDispatcherWithTerminalProbe(
+				new Map([makeRuntime("TestProject")]),
+				() => true,
+			);
+			dispatcher.seedInflight("FLY-1775", "implement", "exec-terminal");
+			return dispatcher;
+		};
+
+		expect(makeSeeded().hasInflightForRole("FLY-1775", "implement")).toBe(
+			false,
+		);
+		expect(makeSeeded().getInflightIssues()).toEqual(new Set());
+		expect(makeSeeded().getInflightCount()).toBe(0);
+	});
+
+	it("keeps the lane occupied when the terminal-session probe is unreadable", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const dispatcher = cleanupDispatcherWithTerminalProbe(
+			new Map([makeRuntime("TestProject")]),
+			() => {
+				throw new Error("state store unavailable");
+			},
+		);
+		dispatcher.seedInflight("FLY-1775", "implement", "exec-unknown");
+
+		expect(dispatcher.hasInflightForRole("FLY-1775", "implement")).toBe(true);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("keeping lane occupied"),
+		);
+		warn.mockRestore();
 	});
 });
 

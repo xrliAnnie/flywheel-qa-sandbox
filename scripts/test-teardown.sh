@@ -22,6 +22,8 @@ TEARDOWN_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
 # shellcheck source=lib/qa-launchd-lead.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
+# shellcheck source=lib/qa-generalized.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-generalized.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
 if [[ ! -r "$_CMUX_PROCESS_CENSUS_LIB" ]]; then
   log "ERROR: required cmux process census library unavailable"
@@ -355,6 +357,22 @@ acquire_cmux_teardown_lease() {
     fi
     sleep 1
   done
+}
+
+# FLY-1775 pit 11: an entire lease wait can lose a handoff race even though a
+# fresh attempt succeeds immediately. Retry one complete acquisition budget;
+# never loop indefinitely or let teardown mutate anything without the lease.
+acquire_cmux_teardown_lease_with_retry() {
+  if acquire_cmux_teardown_lease; then
+    return 0
+  fi
+  log "WARN: cmux mutator lease acquisition timed out; retrying once after the handoff settles"
+  sleep 1
+  if acquire_cmux_teardown_lease; then
+    return 0
+  fi
+  log "ERROR: cmux mutator lease failed twice; rerun teardown after the watcher/maintenance handoff settles"
+  return 1
 }
 
 cmux_teardown_lease_owned_by_self() {
@@ -941,6 +959,15 @@ teardown_slot() {
     fi
   fi
 
+  # FLY-1775: the deterministic Codex app-server stub is a Bridge child but not
+  # a tmux child. The Bridge supervises its workflow actors, so reaping the stub
+  # before shutting down Lead/Bridge creates a restart race and can orphan the
+  # replacement under launchd. Break the supervision chain first, then reap by
+  # exact stub argv plus a live socket derived from this slot's executions.
+  if [[ -n "$CANONICAL_SLOT_DIR" && "$CANONICAL_SLOT_DIR" != "/" ]]; then
+    qa_generalized_reap_codex_stub_orphans "$CANONICAL_SLOT_DIR"
+  fi
+
   # ── Step 5b (FLY-115): Clean FLY-95 Runner worktrees + slot-local branches ──
   # Runner worktrees live as siblings of the host clone inside SLOT_DIR
   # (e.g. ${SLOT_DIR}/project-slot-${SLOT}-FLY-108). Host clone basename is
@@ -1066,7 +1093,7 @@ test_teardown_main() {
   trap 'release_cmux_teardown_resources; exit 130' INT
   trap 'release_cmux_teardown_resources; exit 143' TERM
 
-  if ! acquire_cmux_teardown_lease; then
+  if ! acquire_cmux_teardown_lease_with_retry; then
     log "ERROR: unable to acquire qa_teardown mutator lease; no teardown action taken"
     return 1
   fi

@@ -776,6 +776,10 @@ export function createRunInfraDispatcher(input: {
 		input.continuityComputer,
 		input.freshStartAudit,
 		input.doaBackoffAdmission,
+		(executionId) =>
+			isStateStoreIrreversibleTerminalForZombie(
+				input.store.getSession(executionId)?.status,
+			),
 	);
 }
 

@@ -66,6 +66,10 @@ export interface RunnerTuiWindowSpec {
 	cwd: string;
 	/** Thread the TUI must resume (the one the runner's daemon is driving). */
 	threadId: string;
+	/** Execution identity inherited by generalized-room stub binaries. */
+	executionId?: string;
+	/** Slot StateStore path used to derive the execution's durable exit fence. */
+	stateDbPath?: string;
 	/** codex binary (default "codex"). */
 	codexBin?: string;
 }
@@ -81,10 +85,18 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 	assertShellSafe("socketPath", spec.socketPath, SAFE_PATH);
 	assertShellSafe("cwd", spec.cwd, SAFE_PATH);
 	assertShellSafe("threadId", spec.threadId, SAFE_ID);
+	if (spec.executionId)
+		assertShellSafe("executionId", spec.executionId, SAFE_ID);
+	if (spec.stateDbPath)
+		assertShellSafe("stateDbPath", spec.stateDbPath, SAFE_PATH);
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_PATH);
 	const bin = spec.codexBin ?? "codex";
 	return [
 		`CODEX_HOME="${spec.codexHome}"`,
+		...(spec.executionId ? [`FLYWHEEL_EXEC_ID="${spec.executionId}"`] : []),
+		...(spec.stateDbPath
+			? [`FLYWHEEL_STATE_DB_PATH="${spec.stateDbPath}"`]
+			: []),
 		bin,
 		"resume",
 		`--remote "unix://${spec.socketPath}"`,
