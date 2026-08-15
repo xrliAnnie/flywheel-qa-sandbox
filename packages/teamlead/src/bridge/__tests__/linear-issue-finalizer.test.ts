@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	makeLinearDoneFinalizer,
 	markLinearIssueDone,
+	raceMarkIssueDoneWithAbort,
 } from "../linear-issue-finalizer.js";
 
 function fakeClient(over: Record<string, unknown> = {}) {
@@ -207,6 +208,81 @@ describe("FLY-1185 Codex R2#9 — fail-closed + double-read", () => {
 		const r = await markLinearIssueDone(client as never, "ISSUE-1");
 		expect(r.done).toBe(false);
 		expect(r.reason).toBe("issue_canceled_never_overwritten");
+		expect(client.updateIssue).not.toHaveBeenCalled();
+	});
+});
+
+describe("bounded Linear Done finalization", () => {
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("returns after the deadline when the SDK promise never settles", async () => {
+		vi.useFakeTimers();
+		let observedSignal: AbortSignal | undefined;
+		const finalizer = vi.fn(
+			async (_issueId: string, _identifier?: string, signal?: AbortSignal) => {
+				observedSignal = signal;
+				return new Promise<never>(() => undefined);
+			},
+		);
+
+		const result = raceMarkIssueDoneWithAbort(
+			finalizer,
+			"ISSUE-1",
+			"FLY-1",
+			15_000,
+		);
+		await vi.advanceTimersByTimeAsync(15_000);
+
+		await expect(result).resolves.toEqual({
+			done: false,
+			reason: "linear_done_timeout",
+		});
+		expect(observedSignal?.aborted).toBe(true);
+	});
+
+	it("aborts before mutation when a delayed read recovers after timeout", async () => {
+		vi.useFakeTimers();
+		let resolveIssue:
+			| ((
+					value: Awaited<ReturnType<ReturnType<typeof fakeClient>["issue"]>>,
+			  ) => void)
+			| undefined;
+		const delayedIssue = new Promise<
+			Awaited<ReturnType<ReturnType<typeof fakeClient>["issue"]>>
+		>((resolve) => {
+			resolveIssue = resolve;
+		});
+		const client = fakeClient({
+			issue: vi.fn().mockReturnValue(delayedIssue),
+		});
+		const result = raceMarkIssueDoneWithAbort(
+			(issueId, _identifier, signal) =>
+				markLinearIssueDone(client as never, issueId, signal),
+			"ISSUE-1",
+			undefined,
+			15_000,
+		);
+
+		await vi.advanceTimersByTimeAsync(15_000);
+		await expect(result).resolves.toEqual({
+			done: false,
+			reason: "linear_done_timeout",
+		});
+		resolveIssue?.({
+			team: Promise.resolve({
+				states: vi.fn().mockResolvedValue({ nodes: [] }),
+			}),
+			state: Promise.resolve({
+				id: "s-started",
+				name: "Started",
+				type: "started",
+			}),
+		});
+		await vi.runAllTimersAsync();
+		await Promise.resolve();
+
 		expect(client.updateIssue).not.toHaveBeenCalled();
 	});
 });

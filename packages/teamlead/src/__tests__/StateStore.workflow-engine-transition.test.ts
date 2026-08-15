@@ -776,6 +776,17 @@ describe("engine-owned snapshot transition transaction", () => {
 				leaseExpiresAt: "2026-08-14T01:30:00.000Z",
 			})!;
 			expect(
+				store.recordLandLinearDoneDisposition({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					disposition: "done",
+					reason: "already_completed",
+					executionId: "land-1",
+					now: "2026-08-14T01:22:30.000Z",
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
+			expect(
 				store.recordLandOperationStep({
 					operationId: operation.operation_id,
 					ownerId: claim.ownerId,

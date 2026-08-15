@@ -4,6 +4,10 @@ Issue: FLY-1770 (https://linear.app/geoforge3d/issue/FLY-1770/机制-land-收尾
 日期: 2026-08-14
 基于: exploration.md
 
+## 实施前存量 census（2026-08-14）
+
+对生产 `~/.flywheel/teamlead.db` 做只读查询：`land_operation` 共 14 条 `completed`、10 条 `held`，无 `partial`。10 条 `held` 中只有 1 条属于本次可安全自动分类的 `retryable` 存量：FLY-1751 / PR #835，`current_step=notification:finalization_partial`、`merge_confirmed_at=2026-08-14T16:02:28.325Z`、`last_error=linear_lookup_failed_retryable`。其余 9 条均为 `ship_workflow_failed` 或 `pr_head_mismatch`，继续按 terminal 存量保留，不做启动迁移或自动释放。
+
 ## 1. 精确触点清单(全部实读源码定位)
 
 | # | 文件 · 位置 | 现状 | 改动方向 |

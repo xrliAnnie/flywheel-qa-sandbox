@@ -43,6 +43,16 @@ export interface MarkDoneResult {
 	reason?: string;
 }
 
+export type LinearDoneFinalizer = (
+	issueId: string,
+	issueIdentifier?: string,
+	signal?: AbortSignal,
+) => Promise<MarkDoneResult>;
+
+function assertLinearDoneNotAborted(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error("linear_done_aborted");
+}
+
 /**
  * Flip a Linear issue to its team's Done state. Prefers a `type === "completed"`
  * workflow state (the canonical "Done" bucket, robust to renamed states); falls
@@ -55,13 +65,17 @@ export interface MarkDoneResult {
 export async function markLinearIssueDone(
 	client: LinearIssueFinalizerClient,
 	issueId: string,
+	signal?: AbortSignal,
 ): Promise<MarkDoneResult> {
 	// Codex R2#9: the state read is FAIL-CLOSED (unreadable/missing → no
 	// write) and the write is guarded by a SECOND fresh read right before the
 	// mutation — a cancel landing during the team/states awaits still wins.
 	const readStateType = async (): Promise<string | undefined> => {
+		assertLinearDoneNotAborted(signal);
 		const issue = await client.issue(issueId);
+		assertLinearDoneNotAborted(signal);
 		const current = issue.state ? await issue.state : undefined;
+		assertLinearDoneNotAborted(signal);
 		if (!current?.type) throw new Error("state_unreadable");
 		return current.type;
 	};
@@ -77,11 +91,16 @@ export async function markLinearIssueDone(
 			return { done: true, reason: "already_completed" };
 		}
 
+		assertLinearDoneNotAborted(signal);
 		const issue = await client.issue(issueId);
+		assertLinearDoneNotAborted(signal);
 		const team = await issue.team;
+		assertLinearDoneNotAborted(signal);
 		if (!team) return { done: false, reason: "no_team" };
 
+		assertLinearDoneNotAborted(signal);
 		const { nodes } = await team.states();
+		assertLinearDoneNotAborted(signal);
 		const doneState =
 			nodes.find((s) => s.type === "completed") ??
 			nodes.find((s) => s.name.toLowerCase() === "done");
@@ -105,10 +124,45 @@ export async function markLinearIssueDone(
 			};
 		}
 
+		assertLinearDoneNotAborted(signal);
 		await client.updateIssue(issueId, { stateId: doneState.id });
 		return { done: true };
 	} catch (err) {
 		return { done: false, reason: (err as Error).message };
+	}
+}
+
+/**
+ * Bound a best-effort Linear Done attempt. The timeout aborts first, so a
+ * delayed SDK read cannot later reach the mutation guarded by the same signal.
+ */
+export async function raceMarkIssueDoneWithAbort(
+	finalizer: LinearDoneFinalizer,
+	issueId: string,
+	issueIdentifier?: string,
+	timeoutMs = 15_000,
+): Promise<MarkDoneResult> {
+	const controller = new AbortController();
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	const attempt = Promise.resolve()
+		.then(() => finalizer(issueId, issueIdentifier, controller.signal))
+		.catch(
+			(err): MarkDoneResult => ({
+				done: false,
+				reason: (err as Error).message,
+			}),
+		);
+	const deadline = new Promise<MarkDoneResult>((resolve) => {
+		timeout = setTimeout(() => {
+			controller.abort();
+			resolve({ done: false, reason: "linear_done_timeout" });
+		}, timeoutMs);
+	});
+
+	try {
+		return await Promise.race([attempt, deadline]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
 	}
 }
 
@@ -122,19 +176,18 @@ export async function markLinearIssueDone(
  */
 export function makeLinearDoneFinalizer(config: {
 	linearApiKey?: string;
-}):
-	| ((issueId: string, issueIdentifier?: string) => Promise<MarkDoneResult>)
-	| undefined {
+}): LinearDoneFinalizer | undefined {
 	if (process.env.FLYWHEEL_AUTO_LINEAR_DONE === "0") return undefined;
 	const apiKey = config.linearApiKey;
 	if (!apiKey) return undefined;
-	return async (issueId, issueIdentifier) => {
+	return async (issueId, issueIdentifier, signal) => {
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({ apiKey });
 			const r = await markLinearIssueDone(
 				client as unknown as LinearIssueFinalizerClient,
 				issueId,
+				signal,
 			);
 			if (r.done) {
 				console.log(

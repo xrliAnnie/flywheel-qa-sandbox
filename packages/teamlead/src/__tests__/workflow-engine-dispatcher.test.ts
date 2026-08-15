@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { executeLandOperation } from "../bridge/land-executor.js";
 import {
 	type MaterializedHeadAuthority,
 	receiptBackedMaterializedHeadAuthority,
@@ -734,6 +735,16 @@ describe("WorkflowEngineDispatcher", () => {
 				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
 			});
 			if (!claim) throw new Error("land operation was not claimable");
+			const disposition = store.recordLandLinearDoneDisposition({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				disposition: "done",
+				reason: "already_completed",
+				executionId: "land-exec",
+				now: "2026-07-21T20:02:00.500Z",
+			});
+			if (!disposition.ok) throw new Error(disposition.reason);
 			const completed = store.recordLandOperationStep({
 				operationId,
 				ownerId: claim.ownerId,
@@ -820,6 +831,16 @@ describe("WorkflowEngineDispatcher", () => {
 				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
 			});
 			if (!claim) throw new Error("land operation was not claimable");
+			const disposition = store.recordLandLinearDoneDisposition({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				disposition: "done",
+				reason: "already_completed",
+				executionId: "land-exec",
+				now: "2026-07-21T20:02:00.500Z",
+			});
+			if (!disposition.ok) throw new Error(disposition.reason);
 			const completed = store.recordLandOperationStep({
 				operationId,
 				ownerId: claim.ownerId,
@@ -914,6 +935,202 @@ describe("WorkflowEngineDispatcher", () => {
 			store.close();
 		},
 	);
+
+	it("keeps the run active while a retryable land failure waits for backoff", async () => {
+		const store = await storeWithLandIntent();
+		const landExecutor = vi.fn(async (operationId: string) => {
+			const claim = store.claimLandOperation({
+				operationId,
+				ownerId: "land-test-worker",
+				now: "2026-07-21T20:02:00.000Z",
+				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
+			});
+			if (!claim) throw new Error("land operation was not claimable");
+			const released = store.releaseLandOperationWithRetryAccounting({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				class: "retryable",
+				reason: "linear_lookup_failed_retryable",
+				now: "2026-07-21T20:02:01.000Z",
+			});
+			if (!released) throw new Error("land release failed");
+			return {
+				status: "partial" as const,
+				reason: released.lastError,
+			};
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-21T20:02:02.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+		expect(store.getLandOperationForRun("run-land")).toMatchObject({
+			state: "partial",
+			retry_count: 1,
+			next_attempt_at: "2026-07-21T20:03:01.000Z",
+		});
+		store.close();
+	});
+
+	it("self-heals a one-shot Linear arbitration failure through the full land cascade", async () => {
+		const store = await storeWithLandIntent();
+		let now = new Date("2026-07-21T20:02:00.000Z");
+		let finalizeAttempt = 0;
+		const finalize = vi.fn(async (operation) => {
+			finalizeAttempt += 1;
+			if (finalizeAttempt === 1) {
+				return {
+					complete: false,
+					outcome: "partial" as const,
+					reason: "arbitration_failed:linear timeout",
+				};
+			}
+			if (!operation.owner_id) throw new Error("land owner missing");
+			const disposition = store.recordLandLinearDoneDisposition({
+				operationId: operation.operation_id,
+				ownerId: operation.owner_id,
+				generation: operation.generation,
+				disposition: "done",
+				reason: "already_completed",
+				executionId: "land-exec",
+				now: now.toISOString(),
+			});
+			if (!disposition.ok) throw new Error(disposition.reason);
+			return {
+				complete: true,
+				outcome: "completed" as const,
+				details: {
+					worktreeRemoved: true,
+					threadArchived: true,
+					linearDoneDisposition: "done",
+				},
+			};
+		});
+		const landExecutor = (operationId: string) =>
+			executeLandOperation(operationId, {
+				store,
+				mergeDriver: {
+					inspectPr: vi.fn().mockResolvedValue({
+						state: "MERGED",
+						headSha: HEAD,
+						mergeSha: "b".repeat(40),
+					}),
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize,
+				authorize: () => ({ ok: true }),
+				ownerId: "land-test-worker",
+				now: () => now,
+			});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => now,
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+		expect(store.getLandOperationForRun("run-land")).toMatchObject({
+			state: "partial",
+			retry_count: 1,
+			next_attempt_at: "2026-07-21T20:03:00.000Z",
+		});
+
+		now = new Date("2026-07-21T20:02:59.999Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+		expect(finalize).toHaveBeenCalledTimes(1);
+		expect(store.getWorkflowRun("run-land")?.status).toBe("active");
+
+		now = new Date("2026-07-21T20:03:00.000Z");
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(finalize).toHaveBeenCalledTimes(2);
+		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
+		expect(store.getLandOperationForRun("run-land")).toMatchObject({
+			state: "completed",
+			linear_done_disposition: "done",
+			finalization_completed_at: "2026-07-21T20:03:00.000Z",
+		});
+		store.close();
+	});
+
+	it("completes the run with local cleanup when Linear Done remains deferred", async () => {
+		const store = await storeWithLandIntent();
+		const now = new Date("2026-07-21T20:02:00.000Z");
+		const landExecutor = (operationId: string) =>
+			executeLandOperation(operationId, {
+				store,
+				mergeDriver: {
+					inspectPr: vi.fn().mockResolvedValue({
+						state: "MERGED",
+						headSha: HEAD,
+						mergeSha: "b".repeat(40),
+					}),
+					triggerCool: vi.fn(),
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize: async (operation) => {
+					if (!operation.owner_id) throw new Error("land owner missing");
+					const disposition = store.recordLandLinearDoneDisposition({
+						operationId: operation.operation_id,
+						ownerId: operation.owner_id,
+						generation: operation.generation,
+						disposition: "deferred",
+						reason: "linear offline",
+						executionId: "land-exec",
+						now: now.toISOString(),
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+					});
+					if (!disposition.ok) throw new Error(disposition.reason);
+					return {
+						complete: true,
+						outcome: "completed" as const,
+						details: {
+							worktreeRemoved: true,
+							threadArchived: true,
+							linearDoneDisposition: "deferred",
+						},
+					};
+				},
+				authorize: () => ({ ok: true }),
+				ownerId: "land-test-worker",
+				now: () => now,
+			});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: WORKFLOW_ON,
+			now: () => now,
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
+		const operation = store.getLandOperationForRun("run-land")!;
+		expect(operation).toMatchObject({
+			state: "completed",
+			linear_done_disposition: "deferred",
+			linear_done_last_reason: "linear offline",
+		});
+		expect(
+			store.getWorkflowAlertOutbox(
+				`linear_done_deferred:${operation.operation_id}`,
+			),
+		).toMatchObject({ state: "pending" });
+		store.close();
+	});
 
 	it.each([
 		["v1", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],

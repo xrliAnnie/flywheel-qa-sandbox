@@ -11,6 +11,7 @@ import {
 	workflowApprovalGate,
 } from "../workflow-template.js";
 import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
+import { classifyLandRetryReason } from "./land-retry-policy.js";
 import { computeAuthoritativeShipDecision } from "./merge-ship-gate.js";
 
 const execFileAsync = promisify(execFile);
@@ -240,12 +241,12 @@ function release(
 	reason: string,
 	now: string,
 ): LandExecutionResult {
-	const released = deps.store.setLandOperationDisposition({
+	const released = deps.store.releaseLandOperationWithRetryAccounting({
 		operationId: operation.operation_id,
 		ownerId: claim.ownerId,
 		generation: claim.generation,
-		state,
-		error: reason,
+		class: state === "held" ? "terminal" : classifyLandRetryReason(reason),
+		reason,
 		now,
 	});
 	if (!released) {
@@ -262,7 +263,11 @@ function release(
 		}
 		return { status: "busy", operationId: operation.operation_id };
 	}
-	return { status: state, operationId: operation.operation_id, reason };
+	return {
+		status: released.state,
+		operationId: operation.operation_id,
+		reason: released.lastError,
+	};
 }
 
 /**

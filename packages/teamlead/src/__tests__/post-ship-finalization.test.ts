@@ -701,7 +701,11 @@ describe("runPostShipFinalization", () => {
 			},
 			{ store, projects: PROJECTS, markIssueDone },
 		);
-		expect(markIssueDone).toHaveBeenCalledWith("FLY-102", "FLY-102");
+		expect(markIssueDone).toHaveBeenCalledWith(
+			"FLY-102",
+			"FLY-102",
+			expect.any(AbortSignal),
+		);
 		// teardown still ran: the atomic claim event exists.
 		expect(
 			store
@@ -744,6 +748,10 @@ describe("runPostShipFinalization", () => {
 			return { removed: true, bindingVerified: true };
 		});
 		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+		const recordLinearDoneDisposition = vi.fn().mockReturnValue({
+			ok: true,
+			idempotentReplay: false,
+		});
 		const opts = {
 			executionId: "exec-1",
 			issueId: "FLY-102",
@@ -759,6 +767,7 @@ describe("runPostShipFinalization", () => {
 				issueCloseout,
 				removeCleanWorktree,
 				markIssueDone,
+				recordLinearDoneDisposition,
 			}),
 		).toMatchObject({ complete: false, outcome: "partial" });
 		expect(removeCleanWorktree).not.toHaveBeenCalled();
@@ -770,6 +779,7 @@ describe("runPostShipFinalization", () => {
 				issueCloseout,
 				removeCleanWorktree,
 				markIssueDone,
+				recordLinearDoneDisposition,
 			}),
 		).toMatchObject({ complete: true, outcome: "completed" });
 		expect(order).toEqual([
@@ -777,5 +787,135 @@ describe("runPostShipFinalization", () => {
 			"closeout:completed",
 			"worktree",
 		]);
+	});
+
+	it("maps a thrown pre-arbitration read to retryable partial for resumable land", async () => {
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				preArbitrate: vi.fn().mockRejectedValue(new Error("linear timeout")),
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			reason: "arbitration_failed:linear timeout",
+		});
+		expect(mockKillTmuxSession).not.toHaveBeenCalled();
+	});
+
+	it("keeps retryable and degraded arbitration byte-compatible for legacy callers", async () => {
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				preArbitrate: vi.fn().mockResolvedValue({
+					ok: true,
+					degraded: "linear_unreachable",
+				}),
+			},
+		);
+
+		expect(mockKillTmuxSession).not.toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((event) => event.event_type === "post_ship_finalization_claim"),
+		).toBe(false);
+	});
+
+	it("audits degraded arbitration and continues local cleanup for resumable land", async () => {
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				preArbitrate: vi.fn().mockResolvedValue({
+					ok: true,
+					degraded: "linear_unreachable",
+				}),
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(mockKillTmuxSession).toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.filter(
+					(event) => event.event_type === "post_ship_arbitration_degraded",
+				),
+		).toHaveLength(1);
+	});
+
+	it("completes local cleanup and defers Linear Done when Linear stays unreachable", async () => {
+		const recordLinearDoneDisposition = vi.fn().mockReturnValue({
+			ok: true,
+			idempotentReplay: false,
+		});
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({
+					done: false,
+					reason: "linear offline",
+				}),
+				recordLinearDoneDisposition,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: true,
+			outcome: "completed",
+			details: {
+				worktreeRemoved: true,
+				threadArchived: true,
+				issueDone: false,
+				linearDoneDisposition: "deferred",
+			},
+		});
+		expect(recordLinearDoneDisposition).toHaveBeenCalledWith({
+			disposition: "deferred",
+			reason: "linear offline",
+		});
 	});
 });

@@ -26,6 +26,25 @@ async function fixture() {
 	return { store, operation };
 }
 
+function completedFinalizer(store: StateStore) {
+	return vi.fn(
+		async (operation: ReturnType<StateStore["getLandOperation"]>) => {
+			if (!operation?.owner_id) throw new Error("missing land owner in test");
+			const recorded = store.recordLandLinearDoneDisposition({
+				operationId: operation.operation_id,
+				ownerId: operation.owner_id,
+				generation: operation.generation,
+				disposition: "done",
+				reason: "already_completed",
+				executionId: "land-exec",
+				now: operation.updated_at,
+			});
+			if (!recorded.ok) throw new Error(recorded.reason);
+			return { complete: true, outcome: "completed" as const };
+		},
+	);
+}
+
 describe("land executor", () => {
 	it("holds a direct engine land attempt when founder_review has not passed even if the artifact checkout disables it", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1758-land-"));
@@ -231,10 +250,7 @@ describe("land executor", () => {
 				.fn()
 				.mockImplementation(async () => ({ state: "pending" })),
 		};
-		const finalize = vi.fn().mockResolvedValue({
-			complete: true,
-			outcome: "completed",
-		});
+		const finalize = completedFinalizer(store);
 		let tick = 0;
 		const deps = {
 			store,
@@ -250,6 +266,11 @@ describe("land executor", () => {
 		).toMatchObject({
 			status: "partial",
 			reason: "ship_workflow_pending",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			retry_count: 0,
+			retry_epoch_key: null,
+			next_attempt_at: null,
 		});
 		merged = true;
 		expect(
@@ -305,10 +326,7 @@ describe("land executor", () => {
 	it("skips :cool: when the exact head is already merged", async () => {
 		const { store, operation } = await fixture();
 		const triggerCool = vi.fn();
-		const finalize = vi.fn().mockResolvedValue({
-			complete: true,
-			outcome: "completed",
-		});
+		const finalize = completedFinalizer(store);
 		const result = await executeLandOperation(operation.operation_id, {
 			store,
 			mergeDriver: {
@@ -349,10 +367,7 @@ describe("land executor", () => {
 				triggerCool: vi.fn(),
 				inspectTriggeredWorkflow: vi.fn(),
 			} satisfies LandMergeDriver,
-			finalize: vi.fn().mockResolvedValue({
-				complete: true,
-				outcome: "completed" as const,
-			}),
+			finalize: completedFinalizer(store),
 			authorize: () => ({ ok: true as const }),
 			ownerId: "worker",
 			now: () => new Date(`2026-07-21T20:0${tick++}:00.000Z`),
@@ -394,10 +409,7 @@ describe("land executor", () => {
 				triggerCool,
 				inspectTriggeredWorkflow: vi.fn(),
 			} satisfies LandMergeDriver,
-			finalize: vi.fn().mockResolvedValue({
-				complete: true,
-				outcome: "completed" as const,
-			}),
+			finalize: completedFinalizer(store),
 			notify,
 			authorize: () => ({ ok: true as const }),
 			ownerId: "worker",
@@ -451,10 +463,7 @@ describe("land executor", () => {
 					reason: "failure",
 				}),
 			},
-			finalize: vi.fn().mockResolvedValue({
-				complete: true,
-				outcome: "completed",
-			}),
+			finalize: completedFinalizer(store),
 			authorize: () => ({ ok: true }),
 			ownerId: "worker",
 			now: () => new Date("2026-07-21T20:01:00.000Z"),
@@ -464,6 +473,104 @@ describe("land executor", () => {
 		expect(store.getLandOperation(operation.operation_id)?.state).toBe(
 			"completed",
 		);
+		store.close();
+	});
+
+	it("backs off a retryable authorization failure and resumes only when due", async () => {
+		const { store, operation } = await fixture();
+		let authorized = false;
+		let now = new Date("2026-07-21T20:00:00.000Z");
+		const inspectPr = vi.fn().mockResolvedValue({
+			state: "MERGED",
+			headSha: HEAD,
+			mergeSha: MERGE,
+		});
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr,
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			} satisfies LandMergeDriver,
+			finalize: completedFinalizer(store),
+			authorize: () =>
+				authorized
+					? ({ ok: true } as const)
+					: ({
+							ok: false,
+							reason: "linear_lookup_failed_retryable",
+							retryable: true,
+						} as const),
+			ownerId: "worker",
+			now: () => now,
+		};
+
+		await expect(
+			executeLandOperation(operation.operation_id, deps),
+		).resolves.toMatchObject({
+			status: "partial",
+			reason: "linear_lookup_failed_retryable",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "partial",
+			retry_count: 1,
+			retry_epoch_key: "0:start",
+			next_attempt_at: "2026-07-21T20:01:00.000Z",
+		});
+
+		authorized = true;
+		now = new Date("2026-07-21T20:00:59.999Z");
+		await expect(
+			executeLandOperation(operation.operation_id, deps),
+		).resolves.toMatchObject({ status: "busy" });
+		expect(inspectPr).not.toHaveBeenCalled();
+
+		now = new Date("2026-07-21T20:01:00.000Z");
+		await expect(
+			executeLandOperation(operation.operation_id, deps),
+		).resolves.toMatchObject({ status: "completed" });
+		expect(inspectPr).toHaveBeenCalledOnce();
+		store.close();
+	});
+
+	it("turns the fifth retryable failure into a fail-loud held operation", async () => {
+		const { store, operation } = await fixture();
+		const attempts = [
+			"2026-07-21T20:00:00.000Z",
+			"2026-07-21T20:01:00.000Z",
+			"2026-07-21T20:03:00.000Z",
+			"2026-07-21T20:07:00.000Z",
+			"2026-07-21T20:15:00.000Z",
+		];
+		let attempt = 0;
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn(),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			} satisfies LandMergeDriver,
+			finalize: vi.fn(),
+			authorize: () => ({
+				ok: false as const,
+				reason: "linear_lookup_failed_retryable",
+				retryable: true,
+			}),
+			ownerId: "worker",
+			now: () => new Date(attempts[attempt++]!),
+		};
+
+		for (let index = 0; index < attempts.length; index += 1) {
+			const result = await executeLandOperation(operation.operation_id, deps);
+			expect(result.status).toBe(index === 4 ? "held" : "partial");
+		}
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "held",
+			retry_count: 5,
+			retry_epoch_key: "0:start",
+			next_attempt_at: null,
+			last_error: "retry_exhausted:linear_lookup_failed_retryable",
+		});
 		store.close();
 	});
 });
