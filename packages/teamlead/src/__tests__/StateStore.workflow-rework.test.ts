@@ -754,6 +754,24 @@ describe("FLY-1423 durable unified rework request", () => {
 			expect(store.getWorkflowReworkDelivery(opened.requestId)).toMatchObject({
 				state: "pending",
 			});
+			const resumeAttachment = store
+				.listWorkflowResumeAttachments({
+					runId: "run-heavy",
+					nodeId: "implement",
+					attempt: 2,
+				})
+				.at(-1);
+			expect(resumeAttachment).toMatchObject({
+				receipt_kind: "operator_rework",
+				anchor_commit: "b".repeat(40),
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.find(
+						(event) => event.event_uid === resumeAttachment?.transition_uid,
+					),
+			).toMatchObject({ kind: "operator_rework_requested" });
 			expect(
 				store.listWorkflowRunEvents("run-heavy").map((event) => event.kind),
 			).toEqual(
@@ -2588,6 +2606,24 @@ describe("FLY-1423 durable unified rework request", () => {
 				route_revision: 2,
 				state: "pending",
 			});
+			const revisedAttachment = store
+				.listWorkflowResumeAttachments({
+					runId: "run-heavy",
+					nodeId: "design",
+					attempt: 2,
+				})
+				.at(-1);
+			expect(revisedAttachment).toMatchObject({
+				receipt_kind: "route_revision",
+				anchor_commit: "c".repeat(40),
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.find(
+						(event) => event.event_uid === revisedAttachment?.transition_uid,
+					),
+			).toMatchObject({ kind: "route_revision" });
 
 			db.run(
 				`UPDATE workflow_rework_delivery

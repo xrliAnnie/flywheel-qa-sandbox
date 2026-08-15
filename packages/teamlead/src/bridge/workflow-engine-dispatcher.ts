@@ -3,6 +3,10 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isWorkflowPhaseRole } from "flywheel-config";
+import type {
+	WorkflowIssueDeliveryInput,
+	WorkflowResumeContext,
+} from "flywheel-edge-worker/dist/Blueprint.js";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
@@ -57,6 +61,7 @@ import { parsePaneLossGenerationParams } from "./pane-loss-reconcile.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import type { AdmissionDecision } from "./runner-admission.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
+import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 import type { WorkflowReworkCoordinatorOutcome } from "./workflow-rework-coordinator.js";
 import {
 	drainWorkflowShipCarrierDeliveries,
@@ -1692,6 +1697,67 @@ export class WorkflowEngineDispatcher {
 		}
 	}
 
+	private deferDeadExecutionForReadyResume(input: {
+		runId: string;
+		issueId: string;
+		projectName: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+	}): boolean {
+		if (this.env.FLYWHEEL_WORKFLOW_RESUME !== "1") return false;
+		const delivery = this.options.store
+			.listWorkflowRunEvents(input.runId)
+			.filter(
+				(event) =>
+					event.kind === "issue_delivery" &&
+					event.node_id === input.nodeId &&
+					event.execution_id === input.executionId,
+			)
+			.at(-1);
+		const payload =
+			delivery?.payload && typeof delivery.payload === "object"
+				? (delivery.payload as Record<string, unknown>)
+				: undefined;
+		if (typeof payload?.bodyDigest !== "string") return false;
+		const resolution = resolveWorkflowResumeTarget(this.options.store, {
+			runId: input.runId,
+			envelopeObservation: {
+				source: "issue_delivery",
+				digest: payload.bodyDigest,
+			},
+			env: this.env,
+			verifyAnchor: () => true,
+		});
+		if (
+			!resolution.ok ||
+			resolution.targetNodeId !== input.nodeId ||
+			resolution.targetAttempt !== input.attempt
+		) {
+			return false;
+		}
+		const opened = this.options.store.openWorkflowResumeFirstWindow({
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+			executionId: input.executionId,
+			attachmentId: resolution.attachmentId,
+			alertIdentity: this.resolveRunAlertIdentity(
+				input.projectName,
+				input.issueId,
+				input.runId,
+			),
+			now: this.now().toISOString(),
+		});
+		if (!opened.ok) {
+			this.log(
+				`workflow resume-first window held for ${input.executionId}: ${opened.reason}`,
+			);
+			return false;
+		}
+		return opened.defer;
+	}
+
 	private async reconcileDeadExecutions(): Promise<void> {
 		const store = this.options.store;
 		const runs =
@@ -1735,7 +1801,39 @@ export class WorkflowEngineDispatcher {
 					) {
 						continue;
 					}
+					if (
+						store.shouldSuppressDeadExecutionRecovery({
+							executionId: node.execution_id,
+							now: this.now().toISOString(),
+						})
+					) {
+						continue;
+					}
 					if (session?.status === "completed") {
+						if (this.env.FLYWHEEL_WORKFLOW_RESUME === "1") {
+							let liveness: GeneralizedLaunchLiveness;
+							try {
+								liveness = await this.probeTerminalLaunchLiveness(
+									node.execution_id,
+									run.project_name,
+								);
+							} catch {
+								liveness = "unknown";
+							}
+							if (
+								liveness === "dead" &&
+								this.deferDeadExecutionForReadyResume({
+									runId: run.run_id,
+									issueId: run.issue_id,
+									projectName: run.project_name,
+									nodeId: workflowNode.id,
+									attempt: node.attempt,
+									executionId: node.execution_id,
+								})
+							) {
+								continue;
+							}
+						}
 						const held = store.holdCompletedWorkflowExecutionWithoutReceipt({
 							runId: run.run_id,
 							nodeId: workflowNode.id,
@@ -1838,6 +1936,18 @@ export class WorkflowEngineDispatcher {
 					this.unknownLivenessCounts.delete(
 						`${run.run_id}:${workflowNode.id}:${node.attempt}:${node.execution_id}`,
 					);
+					if (
+						this.deferDeadExecutionForReadyResume({
+							runId: run.run_id,
+							issueId: run.issue_id,
+							projectName: run.project_name,
+							nodeId: workflowNode.id,
+							attempt: node.attempt,
+							executionId: node.execution_id,
+						})
+					) {
+						continue;
+					}
 					const observedAt = this.now().toISOString();
 					let activityBaseline:
 						| WorkflowDeadExecutionActivityBaseline
@@ -2104,6 +2214,83 @@ export class WorkflowEngineDispatcher {
 		if (!node?.dispatch || !agentContent || node.type === "gate") {
 			throw new Error("engine_node_not_executable");
 		}
+		const workflowResumeAdmission =
+			store.getWorkflowResumeAdmissionForExecution(intent.execution_id);
+		let workflowResume: WorkflowResumeContext | undefined;
+		if (workflowResumeAdmission) {
+			const source = store.getWorkflowResumeAttachment(
+				workflowResumeAdmission.source_attachment_id,
+			);
+			const sourceState = source
+				? store.getWorkflowResumeAttachmentState(source.attachment_id)
+				: undefined;
+			const anchorCommit =
+				source?.anchor_commit ?? sourceState?.resolved_anchor_commit;
+			if (
+				workflowResumeAdmission.action_kind !== "redispatch_execution" ||
+				workflowResumeAdmission.run_id !== intent.run_id ||
+				workflowResumeAdmission.target_node_id !== intent.node_id ||
+				workflowResumeAdmission.new_attempt !== intent.attempt ||
+				workflowResumeAdmission.frozen_s3_body === null ||
+				!source?.anchor_ref ||
+				source.carrier_kind !== "git_checkpoint" ||
+				sourceState?.state !== "ready" ||
+				!anchorCommit ||
+				!/^[0-9a-f]{40}$/i.test(anchorCommit)
+			) {
+				throw new Error("engine_resume_admission_invalid");
+			}
+			workflowResume = {
+				runId: intent.run_id,
+				admissionKey: workflowResumeAdmission.admission_key,
+				sourceAttachmentId: workflowResumeAdmission.source_attachment_id,
+				anchorRef: source.anchor_ref,
+				anchorCommit: anchorCommit.toLowerCase(),
+				frozenBody: workflowResumeAdmission.frozen_s3_body,
+			};
+		}
+		const reworkReplacementRequestId = intent.reason?.startsWith(
+			"rework_replacement:",
+		)
+			? intent.reason.slice("rework_replacement:".length)
+			: undefined;
+		const replacementContext = reworkReplacementRequestId
+			? (() => {
+					const request = store.getWorkflowReworkRequest(
+						reworkReplacementRequestId,
+					);
+					const route = store.getLatestWorkflowReworkRoute(
+						reworkReplacementRequestId,
+					);
+					const delivery = store.getWorkflowReworkDelivery(
+						reworkReplacementRequestId,
+					);
+					const baseRevision = request?.base_revision?.trim().toLowerCase();
+					if (
+						!request ||
+						!route ||
+						!delivery ||
+						request.run_id !== intent.run_id ||
+						route.target_node_id !== intent.node_id ||
+						route.target_attempt !== intent.attempt ||
+						route.preferred_actor_execution_id !== intent.execution_id ||
+						delivery.route_revision !== route.revision ||
+						delivery.state !== "replacement_pending" ||
+						!baseRevision ||
+						!/^[0-9a-f]{40}$/.test(baseRevision)
+					) {
+						throw new Error("engine_rework_replacement_context_invalid");
+					}
+					return {
+						startPoint: baseRevision,
+						founderFeedback:
+							typeof request.founder_feedback_verbatim === "string" &&
+							request.founder_feedback_verbatim.length > 0
+								? request.founder_feedback_verbatim
+								: undefined,
+					};
+				})()
+			: undefined;
 		let transitionPayload:
 			| {
 					successorExecutionId?: unknown;
@@ -2165,8 +2352,17 @@ export class WorkflowEngineDispatcher {
 			transitionExecutionId !== intent.execution_id
 				? transitionExecutionId
 				: undefined;
+		const resumeSourceExecutionId = workflowResumeAdmission
+			? store.getWorkflowRunNode(
+					intent.run_id,
+					intent.node_id,
+					workflowResumeAdmission.target_attempt,
+				)?.execution_id
+			: undefined;
 		const predecessorExecutionId =
-			transition?.execution_id ?? startRetryExecutionId;
+			resumeSourceExecutionId ??
+			transition?.execution_id ??
+			startRetryExecutionId;
 		const predecessor = predecessorExecutionId
 			? store.getSession(predecessorExecutionId)
 			: undefined;
@@ -2186,24 +2382,32 @@ export class WorkflowEngineDispatcher {
 					}
 				: undefined;
 		const founderFeedback =
-			node.type === "implement" &&
-			transitionPayload?.outcome === "founder_feedback_kickback" &&
-			typeof transitionPayload.founderFeedback === "string" &&
-			transitionPayload.founderFeedback.trim()
-				? transitionPayload.founderFeedback.trim().slice(0, 4_000)
+			node.type === "implement"
+				? (
+						replacementContext?.founderFeedback ??
+						(transitionPayload?.outcome === "founder_feedback_kickback" &&
+						typeof transitionPayload.founderFeedback === "string"
+							? transitionPayload.founderFeedback
+							: undefined)
+					)
+						?.trim()
+						.slice(0, 4_000) || undefined
 				: undefined;
 		const contextualAgentContent = founderFeedback
 			? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
 			: agentContent;
 		let startPoint: string | undefined;
-		if (isWorkflowPhaseRole(node.type)) {
-			if (
+		if (workflowResume) {
+			startPoint = workflowResume.anchorCommit;
+		} else if (isWorkflowPhaseRole(node.type)) {
+			if (replacementContext) {
+				startPoint = replacementContext.startPoint;
+			} else if (
 				!isRootDesignFirstAttempt &&
 				(!predecessorExecutionId || !predecessor)
 			) {
 				throw new Error("engine_predecessor_unavailable");
-			}
-			if (predecessorExecutionId) {
+			} else if (predecessorExecutionId) {
 				startPoint = (
 					await this.resolvePredecessorHead(
 						predecessorExecutionId,
@@ -2250,11 +2454,6 @@ export class WorkflowEngineDispatcher {
 			nodeId: intent.node_id,
 			env: this.env,
 		});
-		const reworkReplacementRequestId = intent.reason?.startsWith(
-			"rework_replacement:",
-		)
-			? intent.reason.slice("rework_replacement:".length)
-			: undefined;
 		const admission = this.options.admissionProbe?.();
 		if (admission && !admission.admit) {
 			throw new Error(`engine_admission_${admission.reason}`);
@@ -2452,6 +2651,22 @@ export class WorkflowEngineDispatcher {
 				submissionCredential = rotated.submissionCredential;
 			}
 		}
+		const prepareWorkflowIssueDelivery = (
+			input: WorkflowIssueDeliveryInput,
+		) => {
+			const { anchorCommit, ...candidate } = input;
+			const prepared = store.prepareWorkflowIssueDelivery({
+				executionId: intent.execution_id,
+				activationId: admitted.activationId,
+				ownerId,
+				ownerGeneration: launchGeneration,
+				deliveryAttempt: deliveryRepair?.attempt ?? launch.deliveryAttempt,
+				anchorCommit,
+				candidate,
+				now: this.now().toISOString(),
+			});
+			if (!prepared.ok) throw new Error(prepared.reason);
+		};
 		const role = isWorkflowPhaseRole(node.type) ? node.type : "main";
 		let startResult: StartResult;
 		try {
@@ -2464,6 +2679,7 @@ export class WorkflowEngineDispatcher {
 				sessionRole: role,
 				shareParentBranch: isWorkflowPhaseRole(node.type) ? true : undefined,
 				...(startPoint && { startPoint }),
+				...(workflowResume && { workflowResume }),
 				ignoreRunnerLabelSelection: true,
 				...(predecessor?.issue_identifier && {
 					issueIdentifier: predecessor.issue_identifier,
@@ -2515,6 +2731,7 @@ export class WorkflowEngineDispatcher {
 					launchGateToken,
 					launchGeneration,
 					commitWorkflowLaunch,
+					prepareWorkflowIssueDelivery,
 					projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
 				},
 			});

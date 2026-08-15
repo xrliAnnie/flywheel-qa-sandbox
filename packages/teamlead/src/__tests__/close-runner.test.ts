@@ -1,7 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import {
+	closeRunnerTerminalView,
+	WORKFLOW_TRANSITIONS,
+	WorkflowFSM,
+} from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import {
@@ -38,6 +42,7 @@ vi.mock("flywheel-core", async (importOriginal) => {
 		})),
 	};
 });
+const mockCloseRunnerTerminalView = vi.mocked(closeRunnerTerminalView);
 
 vi.mock("../bridge/codex-phase-shutdown.js", () => ({
 	isResidentCodexPhase: (session: {
@@ -108,6 +113,11 @@ describe("closeRunner", () => {
 		mockPrepareCodexPhaseShutdown.mockResolvedValue({
 			kind: "not_applicable",
 		});
+		mockCloseRunnerTerminalView.mockReset();
+		mockCloseRunnerTerminalView.mockResolvedValue({
+			closedTab: true,
+			killedViewerSession: true,
+		});
 	});
 
 	it("FLY-1269: treats an adapter-acknowledged resident Codex phase as closed without direct kill", async () => {
@@ -136,6 +146,42 @@ describe("closeRunner", () => {
 			"exec-1",
 			"flywheel",
 		);
+	});
+
+	it("fences a stale collector after graceful phase shutdown before finalization", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-102",
+			project_name: "flywheel",
+			status: "completed",
+			adapter_type: "codex-tmux",
+			chat_thread_role: "qa",
+		});
+		let shutdownFinished = false;
+		mockPrepareCodexPhaseShutdown.mockImplementation(async () => {
+			shutdownFinished = true;
+			return { kind: "graceful", requestId: "shutdown-stale" };
+		});
+		const authorityCheck = vi.fn(async () =>
+			shutdownFinished
+				? { ok: false, reason: "collector_lease_lost" }
+				: { ok: true },
+		);
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "authority_lost:post_phase_shutdown:collector_lease_lost",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.filter(
+					(event) => event.event_type === "lead_close_runner_authority_lost",
+				),
+		).toHaveLength(1);
 	});
 
 	it("FLY-1269: preserves a live Codex phase and its rows when the shutdown handshake blocks", async () => {
@@ -270,6 +316,30 @@ describe("closeRunner", () => {
 		expect((evt!.payload as { alreadyGone?: boolean })?.alreadyGone).toBe(true);
 	});
 
+	it("checks sticky collection authority before the already-gone success path", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		const authorityCheck = vi.fn(async () => ({
+			ok: false,
+			reason: "collector_lease_lost",
+		}));
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "authority_lost:preflight:collector_lease_lost",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.filter(
+					(event) => event.event_type === "lead_close_runner_authority_lost",
+				),
+		).toHaveLength(1);
+	});
+
 	it("FLY-1238: fails communication finalization closed and skips archive when tmux is already gone", async () => {
 		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
@@ -375,7 +445,7 @@ describe("closeRunner", () => {
 			closed: false,
 			commDbFinalized: false,
 			retiredGateCount: 0,
-			error: "authority_lost:pre_cmux_kill:authority_reopened",
+			error: "authority_lost:preflight:authority_reopened",
 		});
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 		expect(authorityCheck).toHaveBeenCalled();
@@ -399,7 +469,7 @@ describe("closeRunner", () => {
 		const result = await closeRunner(makeOpts({ authorityCheck }), store);
 
 		expect(result.closed).toBe(false);
-		expect(result.error).toContain("authority_lost:pre_cmux_kill");
+		expect(result.error).toContain("authority_lost:preflight");
 		expect(result.error).toContain("authority_check_failed");
 		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 	});
@@ -424,6 +494,120 @@ describe("closeRunner", () => {
 		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
 		// called before EACH external boundary (pre-cmux, pre-tmux, post-kill).
 		expect(authorityCheck.mock.calls.length).toBeGreaterThanOrEqual(2);
+	});
+
+	it("brackets an explicit operator close with a committed intent and run cascade", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		const cascade = vi
+			.spyOn(store, "cascadeRunTerminationOnCarrierClose")
+			.mockReturnValue({
+				ok: false,
+				reason: "carrier_not_enrolled",
+			});
+
+		const result = await closeRunner(
+			makeOpts({
+				reason: "operator close",
+				runCloseAuthority: { mode: "done", principal: "lead-a" },
+			}),
+			store,
+		);
+
+		expect(result.closed).toBe(true);
+		expect(store.getWorkflowOperatorCloseIntent("exec-1")).toMatchObject({
+			mode: "done",
+			reason: "operator close",
+			stage: "committed",
+		});
+		expect(cascade).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "exec-1",
+				mode: "done",
+				principal: "lead-a",
+			}),
+		);
+
+		const replay = await closeRunner(
+			makeOpts({
+				reason: "operator close retry",
+				runCloseAuthority: { mode: "done", principal: "lead-a" },
+			}),
+			store,
+		);
+		expect(replay).toMatchObject({ closed: true, alreadyGone: true });
+		expect(mockKillTmuxWindow).toHaveBeenCalledTimes(1);
+		expect(cascade).toHaveBeenCalledTimes(2);
+	});
+
+	it("fences a stale collector after tmux closes before communication finalization", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		let tmuxKilled = false;
+		mockKillTmuxWindow.mockImplementation(async () => {
+			tmuxKilled = true;
+			return { killed: true };
+		});
+		const authorityCheck = vi.fn(async () =>
+			tmuxKilled ? { ok: false, reason: "collector_lease_lost" } : { ok: true },
+		);
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "authority_lost:post_tmux_kill:collector_lease_lost",
+		});
+		expect(mockCloseRunnerTerminalView).not.toHaveBeenCalled();
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.filter(
+					(event) => event.event_type === "lead_close_runner_authority_lost",
+				),
+		).toHaveLength(1);
+	});
+
+	it("fences a stale collector after bounded terminal-view cleanup", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+		let terminalViewClosed = false;
+		mockCloseRunnerTerminalView.mockImplementation(async () => {
+			terminalViewClosed = true;
+			return { closedTab: true, killedViewerSession: true };
+		});
+		const authorityCheck = vi.fn(async () =>
+			terminalViewClosed
+				? { ok: false, reason: "collector_lease_lost" }
+				: { ok: true },
+		);
+
+		const result = await closeRunner(makeOpts({ authorityCheck }), store);
+
+		expect(result).toMatchObject({
+			closed: false,
+			error: "authority_lost:post_terminal_view:collector_lease_lost",
+		});
+		expect(mockFinalizeCommDbSession).not.toHaveBeenCalled();
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.filter(
+					(event) => event.event_type === "lead_close_runner_authority_lost",
+				),
+		).toHaveLength(1);
 	});
 
 	it("FLY-369: a tmux kill failure does NOT archive (cascade only on success)", async () => {

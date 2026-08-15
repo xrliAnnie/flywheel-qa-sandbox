@@ -149,6 +149,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Test — FLY-1707 incident replay
+        run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
+
       # FLY-1393: prove the operator-facing flag-truth CLI is directly
       # executable and that its retired-switch positive control fails closed.
       - name: Test — FLY-1393 flag truth CLI

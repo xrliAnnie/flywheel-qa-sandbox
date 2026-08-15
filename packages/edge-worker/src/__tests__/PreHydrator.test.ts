@@ -6,6 +6,8 @@ describe("PreHydrator", () => {
 		const fetchIssue = vi.fn(async () => ({
 			title: "Add login page",
 			description: "Build a login form with OAuth",
+			descriptionSource: "authoritative" as const,
+			updatedAt: "2026-08-15T01:02:03.000Z",
 		}));
 		const hydrator = new PreHydrator(fetchIssue);
 
@@ -14,6 +16,20 @@ describe("PreHydrator", () => {
 		expect(ctx.issueId).toBe("GEO-101");
 		expect(ctx.issueTitle).toBe("Add login page");
 		expect(ctx.issueDescription).toBe("Build a login form with OAuth");
+		expect(ctx.issueDescriptionSource).toBe("authoritative");
+		expect(ctx.issueUpdatedAt).toBe("2026-08-15T01:02:03.000Z");
+	});
+
+	it("defaults legacy fetchers to fallback issue evidence", async () => {
+		const hydrator = new PreHydrator(async () => ({
+			title: "Title",
+			description: "Body",
+		}));
+
+		const ctx = await hydrator.hydrate({ id: "GEO-103", blockedBy: [] });
+
+		expect(ctx.issueDescriptionSource).toBe("fallback");
+		expect(ctx.issueUpdatedAt).toBeUndefined();
 	});
 
 	it("handles null description", async () => {

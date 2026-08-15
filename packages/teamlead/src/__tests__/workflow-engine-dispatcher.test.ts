@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { executeLandOperation } from "../bridge/land-executor.js";
 import {
@@ -465,10 +467,21 @@ async function storeWithBundledOutputFirstIntent(input: {
 	};
 }
 
-function fakeStartDispatcher(store: StateStore) {
+function fakeStartDispatcher(
+	store: StateStore,
+	options: { prepareIssueDelivery?: "authoritative" | "fallback" } = {},
+) {
 	const requests: StartRequest[] = [];
 	const start = vi.fn(async (request: StartRequest) => {
 		requests.push(request);
+		if (options.prepareIssueDelivery) {
+			request.generalizedExecution?.prepareWorkflowIssueDelivery?.({
+				sourceKind: options.prepareIssueDelivery,
+				body: "Pinned workflow issue body",
+				updatedAt: "2026-07-16T00:00:30.000Z",
+				anchorCommit: HEAD,
+			});
+		}
 		const committed = request.generalizedExecution?.commitWorkflowLaunch?.();
 		if (!committed?.ok) throw new Error(committed?.reason ?? "not_committed");
 		store.upsertSession({
@@ -634,7 +647,9 @@ async function storeWithQaFailKickback() {
 describe("WorkflowEngineDispatcher", () => {
 	it("launches an attempt-1 root design without inventing a predecessor", async () => {
 		const store = await storeWithIntent("design");
-		const fake = fakeStartDispatcher(store);
+		const fake = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "authoritative",
+		});
 		const resolvePredecessorHead = vi.fn(async () => HEAD);
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
@@ -657,6 +672,159 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 		expect(fake.requests[0]?.startPoint).toBeUndefined();
 		expect(resolvePredecessorHead).not.toHaveBeenCalled();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "issue_delivery"),
+		).toEqual([
+			expect.objectContaining({
+				execution_id: "design-1",
+				payload: expect.objectContaining({
+					body: "Pinned workflow issue body",
+					ownerGeneration: 1,
+					deliveryAttempt: 0,
+				}),
+			}),
+		]);
+		const startAttachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		const attachmentState = store.getWorkflowResumeAttachmentState(
+			startAttachment.attachment_id,
+		)!;
+		expect(attachmentState.resolved_anchor_commit).toBe(HEAD);
+		expect(JSON.parse(attachmentState.envelope_stamped_json!)).toMatchObject({
+			schemaVersion: 1,
+			issueBaseline: {
+				uid: "issue_input_baseline:run-1",
+			},
+		});
+		store.close();
+	});
+
+	it("marks a fallback-delivered root explicitly non-recoverable", async () => {
+		const store = await storeWithIntent("design");
+		const fake = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "fallback",
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:01:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1707-fallback-root-")),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		const attachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		expect(
+			store.getWorkflowResumeAttachmentState(attachment.attachment_id),
+		).toMatchObject({ state: "invalid", invalid_reason: "input_fallback" });
+		store.close();
+	});
+
+	it("dispatches an admitted replacement at the frozen anchor with resume context", async () => {
+		const store = await storeWithIntent("design");
+		const initial = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "authoritative",
+		});
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: initial.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-16T00:01:00.000Z"),
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-initial-")),
+			}).reconcile(),
+		).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "design-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			session_role: "design",
+			issue_identifier: "FLY-1307",
+			issue_title: "DAG template engine",
+		});
+		const source = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			`UPDATE workflow_resume_attachment_state
+			    SET state = 'ready', store_locator = '{}'
+			  WHERE attachment_id = ?`,
+			[source.attachment_id],
+		);
+		const runtime = store.getWorkflowExecutionRuntime("design-1")!;
+		const admission = store.admitWorkflowResume({
+			admissionKey: "resume-design-key",
+			admissionDigest: "d".repeat(64),
+			runId: "run-1",
+			actionKind: "redispatch_execution",
+			sourceAttachmentId: source.attachment_id,
+			targetNodeId: "design",
+			targetAttempt: 1,
+			observedBodyDigest: createHash("sha256")
+				.update("Pinned workflow issue body")
+				.digest("hex"),
+			runtimeSemanticsDigest: canonicalSubmissionDigest({
+				vendor: runtime.vendor,
+				model: runtime.model,
+				effort: runtime.effort ?? "",
+				resolvedFamily: runtime.resolved_family,
+				capabilitiesDigest: runtime.capabilities_digest,
+			}),
+			effectiveAnchor: HEAD,
+			frozenBody: "Pinned workflow issue body",
+			newExecutionId: "design-resumed-2",
+			now: "2026-07-16T00:02:00.000Z",
+		});
+		if (!admission.ok) throw new Error(admission.reason);
+		expect(admission).toMatchObject({ ok: true, newAttempt: 2 });
+
+		const resumed = fakeStartDispatcher(store);
+		const resolvePredecessorHead = vi.fn(async () => {
+			throw new Error("resume must use the admitted anchor");
+		});
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: resumed.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-07-16T00:03:00.000Z"),
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-dispatch-")),
+				resolvePredecessorHead,
+			}).reconcile(),
+		).toEqual({ started: 1, held: 0 });
+		expect(resolvePredecessorHead).not.toHaveBeenCalled();
+		expect(resumed.requests).toHaveLength(1);
+		expect(resumed.requests[0]).toMatchObject({
+			startPoint: HEAD,
+			workflowResume: {
+				runId: "run-1",
+				admissionKey: "resume-design-key",
+				sourceAttachmentId: source.attachment_id,
+				anchorRef: source.anchor_ref,
+				anchorCommit: HEAD,
+				frozenBody: "Pinned workflow issue body",
+			},
+			generalizedExecution: {
+				executionId: "design-resumed-2",
+				attempt: 2,
+			},
+		});
 		store.close();
 	});
 
@@ -2878,6 +3046,172 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
 		store.close();
 	});
+
+	it("gives a ready resume target one durable bounded window before dead-exec replacement", async () => {
+		const store = await storeWithIntent("design");
+		const env = { ...WORKFLOW_ON, FLYWHEEL_WORKFLOW_RESUME: "1" };
+		const initial = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "authoritative",
+		});
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: initial.dispatcher,
+				env,
+				now: () => new Date("2026-07-16T00:01:00.000Z"),
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-start-")),
+			}).reconcile(),
+		).toEqual({ started: 1, held: 0 });
+		const source = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			`UPDATE workflow_resume_attachment_state
+			    SET state = 'ready', store_locator = '{}'
+			  WHERE attachment_id = ?`,
+			[source.attachment_id],
+		);
+		store.upsertSession({
+			execution_id: "design-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "design",
+		});
+
+		const replacement = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
+		const identity = (projectName: string) => ({
+			leadId: "flywheel-eng-lead",
+			projectName,
+			leadResolution: "resolved" as const,
+		});
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: replacement.dispatcher,
+				env,
+				now: () => new Date(base),
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-open-")),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness: async () => "dead",
+				captureDeadExecutionActivityBaseline: async () => ({
+					commitMarker: { state: "absent" as const },
+					commDbMessageCount: 0,
+					tmuxTarget: null,
+					tmuxOutputDigest: null,
+					sessionCommitCount: 0,
+				}),
+				resolveRunAlertIdentity: identity,
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(replacement.requests).toHaveLength(0);
+		const opened = store
+			.listWorkflowRunEvents("run-1")
+			.filter((event) => event.kind === "resume_first_window_opened");
+		expect(opened).toHaveLength(1);
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
+
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: replacement.dispatcher,
+				env,
+				now: () => new Date(base + 9 * 60_000),
+				stateRoot: mkdtempSync(
+					join(tmpdir(), "fly1707-resume-window-restart-"),
+				),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness: async () => "dead",
+				captureDeadExecutionActivityBaseline: async () => ({
+					commitMarker: { state: "absent" as const },
+					commDbMessageCount: 0,
+					tmuxTarget: null,
+					tmuxOutputDigest: null,
+					sessionCommitCount: 0,
+				}),
+				resolveRunAlertIdentity: identity,
+			}).reconcile(),
+		).toEqual({ started: 0, held: 0 });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "resume_first_window_opened"),
+		).toHaveLength(1);
+
+		expect(
+			await new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: replacement.dispatcher,
+				env,
+				now: () => new Date(base + 10 * 60_000),
+				stateRoot: mkdtempSync(
+					join(tmpdir(), "fly1707-resume-window-expired-"),
+				),
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness: async () => "dead",
+				captureDeadExecutionActivityBaseline: async () => ({
+					commitMarker: { state: "absent" as const },
+					commDbMessageCount: 0,
+					tmuxTarget: null,
+					tmuxOutputDigest: null,
+					sessionCommitCount: 0,
+				}),
+				resolveRunAlertIdentity: identity,
+			}).reconcile(),
+		).toEqual({ started: 1, held: 0 });
+		expect(replacement.requests).toHaveLength(1);
+		store.close();
+	});
+
+	it.each(["completed", "failed"] as const)(
+		"suppresses dead-execution recovery for a fresh operator close intent on %s",
+		async (status) => {
+			const store = await storeWithIntent("implement");
+			const fake = fakeStartDispatcher(store);
+			const clock = new Date(deadExecEngineClockBaseMs());
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-close-intent-")),
+				env: WORKFLOW_ON,
+				now: () => clock,
+				resolvePredecessorHead: async () => HEAD,
+				probeLaunchLiveness: async () => "dead",
+			});
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			store.upsertSession({
+				execution_id: "implement-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+				status,
+				workflow_node_id: "implement",
+			});
+			expect(
+				store.prepareWorkflowOperatorCloseIntent({
+					executionId: "implement-1",
+					mode: "done",
+					reason: "operator close",
+					now: clock.toISOString(),
+				}),
+			).toMatchObject({ ok: true });
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(fake.requests).toHaveLength(1);
+			expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+				state: "running",
+				execution_id: "implement-1",
+			});
+			store.close();
+		},
+	);
 
 	it("observes the dead-exec sweep kill switch on every tick without a restart", async () => {
 		const store = await storeWithIntent("implement");

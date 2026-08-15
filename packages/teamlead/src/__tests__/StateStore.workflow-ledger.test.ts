@@ -153,6 +153,59 @@ describe("applyWorkflowLedgerBatch — run getOrCreate + active-run uniqueness",
 		}
 	});
 
+	it("keeps an explicitly targeted engine run side-effect-only", async () => {
+		const store = await freshStore();
+		dispatchBatch(store, "exec-1", { node: "qa", attempt: 1 });
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_run SET engine_owned = 1 WHERE run_id = 'run-shadow-1'",
+		);
+		const before = store.listWorkflowResumeAttachments({
+			runId: "run-shadow-1",
+		});
+
+		store.applyWorkflowLedgerBatch({
+			projectName: PROJECT,
+			issueId: ISSUE,
+			runId: "run-shadow-1",
+			expectedEngineOwned: 1,
+			ops: [
+				{
+					op: "side_effect",
+					node: "qa",
+					attempt: 1,
+					executionId: "exec-1",
+					to: "launch_committed",
+				},
+			],
+		});
+		expect(
+			store.listWorkflowResumeAttachments({ runId: "run-shadow-1" }),
+		).toEqual(before);
+		for (const op of [
+			{ op: "dispatch", node: "qa", attempt: 2, executionId: "exec-2" },
+			{ op: "wake", node: "qa", attempt: 1, executionId: "exec-1" },
+			{ op: "complete", node: "qa", attempt: 1, executionId: "exec-1" },
+			{ op: "edge", from: "qa", to: "land", attempt: 1 },
+			{ op: "kickback", round: 2 },
+			{ op: "finalize" },
+		] as const) {
+			expect(() =>
+				store.applyWorkflowLedgerBatch({
+					projectName: PROJECT,
+					issueId: ISSUE,
+					runId: "run-shadow-1",
+					expectedEngineOwned: 1,
+					ops: [op],
+				}),
+			).toThrow(/side_effect/);
+		}
+	});
+
 	it("explicit-runId batches validate project/issue identity against the targeted run (R3#1)", async () => {
 		const store = await freshStore();
 		dispatchBatch(store, "exec-1", { node: "qa", attempt: 1 });

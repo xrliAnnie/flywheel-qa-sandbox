@@ -8,6 +8,8 @@ import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-ma
 import { StateStore } from "../../StateStore.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { PhaseLiveness } from "../phase-actor-reentry.js";
+import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
+import { WorkflowEngineDispatcher } from "../workflow-engine-dispatcher.js";
 import { WorkflowReworkCoordinator } from "../workflow-rework-coordinator.js";
 
 const WORKFLOW_ON = {
@@ -315,13 +317,86 @@ describe("FLY-1423 capability-level rework flow", () => {
 			expect(
 				store.getWorkflowReworkDelivery(failed.reworkRequestId),
 			).toMatchObject({ state: "pending", hold_count: 1 });
+			for (let probe = 0; probe < 20; probe += 1) {
+				await coordinator.reconcile(failed.reworkRequestId);
+			}
+			expect(
+				store
+					.listWorkflowRunEvents("run-e2e")
+					.filter((event) => event.kind === "rework_delivery_claimed"),
+			).toHaveLength(1);
+			expect(supersessions).toHaveLength(1);
 			current = new Date("2026-07-23T00:12:00.000Z");
-			await expect(
-				coordinator.reconcile(failed.reworkRequestId),
-			).resolves.toMatchObject({
-				kind: "replacement_pending",
-				executionId: "implement-exec",
+			for (const intent of store
+				.listWorkflowSideEffects("run-e2e")
+				.filter((row) => row.state === "intent_recorded")) {
+				store.applyWorkflowLedgerBatch({
+					projectName: "flywheel",
+					issueId: "FLY-1423-E2E",
+					runId: "run-e2e",
+					ops: [
+						{
+							op: "side_effect",
+							node: intent.node_id,
+							attempt: intent.attempt,
+							executionId: intent.execution_id,
+							to: "started",
+						},
+					],
+				});
+			}
+			const launches: StartRequest[] = [];
+			const startDispatcher = {
+				start: async (request: StartRequest) => {
+					launches.push(request);
+					const generalized = request.generalizedExecution;
+					if (!generalized) throw new Error("generalized execution missing");
+					const committed = generalized.commitWorkflowLaunch?.();
+					if (!committed?.ok) {
+						throw new Error(committed?.reason ?? "launch commit failed");
+					}
+					store.upsertSession({
+						execution_id: generalized.executionId,
+						issue_id: request.issueId,
+						project_name: request.projectName,
+						status: "running",
+						session_role: request.sessionRole,
+						chat_thread_role: request.sessionRole,
+					});
+					return {
+						executionId: generalized.executionId,
+						issueId: request.issueId,
+					};
+				},
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher;
+			const stateRoot = mkdtempSync(join(tmpdir(), "fly1707-rescue-e2e-"));
+			roots.push(stateRoot);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env: WORKFLOW_ON,
+				now: () => current,
+				resolvePredecessorHead: async () => baseHead,
+				reconcileWorkflowRework: (requestId) =>
+					coordinator.reconcile(requestId),
 			});
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(launches).toHaveLength(1);
+			const replacementExecutionId =
+				launches[0]!.generalizedExecution!.executionId;
+			expect(replacementExecutionId).not.toBe("implement-exec");
+			expect(store.getWorkflowRunNode("run-e2e", "implement", 2)).toMatchObject(
+				{
+					state: "running",
+					execution_id: replacementExecutionId,
+				},
+			);
+			expect(
+				store.getLatestWorkflowReworkRoute(failed.reworkRequestId),
+			).toMatchObject({ preferred_actor_execution_id: replacementExecutionId });
 			expect(
 				store
 					.listWorkflowRunEvents("run-e2e")
@@ -330,7 +405,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
 			expect(
 				store.getWorkflowReworkDelivery(failed.reworkRequestId),
-			).toMatchObject({ state: "replacement_pending", hold_count: 1 });
+			).toMatchObject({ state: "wake_delivered", hold_count: 1 });
 		} finally {
 			store.close();
 			comm.close();

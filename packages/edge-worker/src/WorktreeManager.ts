@@ -19,6 +19,20 @@ import {
 export { canonicalizeWorktreePath } from "./worktree-paths.js";
 
 const logger = createLogger({ component: "WorktreeManager" });
+const RESUME_GIT_SAFE_CONFIG = [
+	"-c",
+	"core.fsmonitor=false",
+	"-c",
+	"core.hooksPath=/dev/null",
+	"-c",
+	"core.pager=cat",
+	"-c",
+	"core.sshCommand=false",
+	"-c",
+	"core.askpass=false",
+	"-c",
+	"protocol.ext.allow=never",
+] as const;
 
 // ─── Types ───────────────────────────────────────
 
@@ -26,6 +40,7 @@ export type WorktreeExecFn = (
 	cmd: string,
 	args: string[],
 	cwd: string,
+	options?: { env?: NodeJS.ProcessEnv },
 ) => Promise<{ stdout: string }>;
 
 export type BgDeleteFn = (cmd: string, args: string[]) => void;
@@ -74,6 +89,19 @@ export interface WorktreeInfo {
 	 */
 	generation: string;
 }
+
+export type ResumeWorktreeRebuildResult =
+	| {
+			ok: true;
+			worktree: WorktreeInfo;
+			quarantineRef?: string;
+			quarantineTip?: string;
+	  }
+	| {
+			ok: false;
+			reason: "external_drift" | "quarantine_overflow";
+			detail?: string;
+	  };
 
 /** FLY-1185 §2.1: classification result for a candidate worktree. */
 export interface WorktreeOwnership {
@@ -141,9 +169,9 @@ export function resolveWorktreeKey(
 // ─── Default exec ────────────────────────────────
 
 // Uses execFile (array args, no shell) — safe from injection by design.
-const defaultExec: WorktreeExecFn = (cmd, args, cwd) =>
+const defaultExec: WorktreeExecFn = (cmd, args, cwd, options) =>
 	new Promise((resolve, reject) => {
-		execFile(cmd, args, { cwd }, (err, stdout) => {
+		execFile(cmd, args, { cwd, env: options?.env }, (err, stdout) => {
 			if (err) return reject(err);
 			resolve({ stdout });
 		});
@@ -175,6 +203,75 @@ function contentDigest(content: Buffer): string {
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+type ResumeStatusEntry =
+	| { kind: "ordinary"; xy: string; sub: string; mode: string; path: string }
+	| {
+			kind: "rename";
+			xy: string;
+			sub: string;
+			mode: string;
+			score: string;
+			path: string;
+			originalPath: string;
+	  }
+	| { kind: "untracked"; path: string }
+	| { kind: "unmerged"; path: string };
+
+function parseResumeStatus(output: string): ResumeStatusEntry[] {
+	const fields = output.split("\0");
+	const entries: ResumeStatusEntry[] = [];
+	for (let index = 0; index < fields.length; index += 1) {
+		const field = fields[index];
+		if (!field) continue;
+		if (field.startsWith("? ")) {
+			entries.push({ kind: "untracked", path: field.slice(2) });
+			continue;
+		}
+		if (field.startsWith("u ")) {
+			entries.push({
+				kind: "unmerged",
+				path: field.slice(field.lastIndexOf(" ") + 1),
+			});
+			continue;
+		}
+		const ordinary = field.match(
+			/^1 (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (.*)$/,
+		);
+		if (ordinary) {
+			entries.push({
+				kind: "ordinary",
+				xy: ordinary[1]!,
+				sub: ordinary[2]!,
+				mode: ordinary[5]!,
+				path: ordinary[8]!,
+			});
+			continue;
+		}
+		const renamed = field.match(
+			/^2 (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (\S+) (.*)$/,
+		);
+		if (renamed) {
+			const originalPath = fields[index + 1];
+			if (!originalPath) throw new Error("resume_status_rename_origin_missing");
+			index += 1;
+			entries.push({
+				kind: "rename",
+				xy: renamed[1]!,
+				sub: renamed[2]!,
+				mode: renamed[5]!,
+				score: renamed[8]!,
+				path: renamed[9]!,
+				originalPath,
+			});
+			continue;
+		}
+		if (!field.startsWith("! ")) {
+			throw new Error("resume_status_record_unknown");
+		}
+	}
+	return entries;
 }
 
 // ─── WorktreeManager ────────────────────────────
@@ -251,6 +348,556 @@ export class WorktreeManager {
 			return path.join(this.baseDir, projectName) + path.sep;
 		}
 		return `${path.dirname(mainRepoPath)}${path.sep}${this.repoSlug(mainRepoPath)}-`;
+	}
+
+	async quarantineAndRebuild(opts: {
+		mainRepoPath: string;
+		projectName: string;
+		issueId: string;
+		runId: string;
+		admissionKey: string;
+		anchorRef: string;
+		anchorCommit: string;
+		/** @internal deterministic boundary injection. */
+		limits?: { maxFiles: number; maxBytes: number };
+	}): Promise<ResumeWorktreeRebuildResult> {
+		return this.locked(opts.mainRepoPath, async () => {
+			const safeExec: WorktreeExecFn = (cmd, args, cwd, options) =>
+				this.exec(cmd, [...RESUME_GIT_SAFE_CONFIG, ...args], cwd, options);
+			const anchor = opts.anchorCommit.toLowerCase();
+			const limits = opts.limits ?? {
+				maxFiles: 2_000,
+				maxBytes: 64 * 1024 * 1024,
+			};
+			if (
+				!/^[0-9a-f]{40}$/.test(anchor) ||
+				!opts.anchorRef.startsWith("refs/flywheel/checkpoints/") ||
+				limits.maxFiles < 1 ||
+				limits.maxBytes < 1
+			) {
+				return {
+					ok: false,
+					reason: "external_drift",
+					detail: "invalid_resume_anchor",
+				};
+			}
+			let verifiedAnchor: string;
+			try {
+				verifiedAnchor = (
+					await safeExec(
+						"git",
+						[
+							"-C",
+							opts.mainRepoPath,
+							"rev-parse",
+							"--verify",
+							`${opts.anchorRef}^{commit}`,
+						],
+						opts.mainRepoPath,
+					)
+				).stdout
+					.trim()
+					.toLowerCase();
+			} catch {
+				return {
+					ok: false,
+					reason: "external_drift",
+					detail: "anchor_unreachable",
+				};
+			}
+			if (verifiedAnchor !== anchor) {
+				return {
+					ok: false,
+					reason: "external_drift",
+					detail: "anchor_ref_mismatch",
+				};
+			}
+
+			const worktreePath = this.worktreeDir(
+				opts.mainRepoPath,
+				opts.projectName,
+				opts.issueId,
+			);
+			let quarantineRef: string | undefined;
+			let quarantineTip: string | undefined;
+			if (fs.existsSync(worktreePath)) {
+				const suffixHead = (
+					await safeExec(
+						"git",
+						["-C", worktreePath, "rev-parse", "HEAD"],
+						worktreePath,
+					)
+				).stdout
+					.trim()
+					.toLowerCase();
+				try {
+					await safeExec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"merge-base",
+							"--is-ancestor",
+							anchor,
+							suffixHead,
+						],
+						worktreePath,
+					);
+				} catch {
+					return {
+						ok: false,
+						reason: "external_drift",
+						detail: "anchor_not_ancestor",
+					};
+				}
+				const branch = this.worktreeName(opts.mainRepoPath, opts.issueId);
+				let remoteHead: string | undefined;
+				try {
+					const remote = (
+						await safeExec(
+							"git",
+							[
+								"-C",
+								opts.mainRepoPath,
+								"ls-remote",
+								"--heads",
+								"origin",
+								`refs/heads/${branch}`,
+							],
+							opts.mainRepoPath,
+						)
+					).stdout.trim();
+					remoteHead = remote
+						? remote.split(/\s+/)[0]?.toLowerCase()
+						: undefined;
+				} catch {
+					return {
+						ok: false,
+						reason: "external_drift",
+						detail: "remote_probe_indeterminate",
+					};
+				}
+				if (remoteHead && remoteHead !== suffixHead) {
+					try {
+						await safeExec(
+							"git",
+							[
+								"-C",
+								opts.mainRepoPath,
+								"cat-file",
+								"-e",
+								`${remoteHead}^{commit}`,
+							],
+							opts.mainRepoPath,
+						);
+					} catch {
+						try {
+							await safeExec(
+								"git",
+								[
+									"-C",
+									opts.mainRepoPath,
+									"fetch",
+									"--no-tags",
+									"origin",
+									remoteHead,
+								],
+								opts.mainRepoPath,
+							);
+						} catch {
+							return {
+								ok: false,
+								reason: "external_drift",
+								detail: "remote_head_unreachable",
+							};
+						}
+					}
+					try {
+						await safeExec(
+							"git",
+							[
+								"-C",
+								worktreePath,
+								"merge-base",
+								"--is-ancestor",
+								remoteHead,
+								suffixHead,
+							],
+							worktreePath,
+						);
+					} catch {
+						return {
+							ok: false,
+							reason: "external_drift",
+							detail: "remote_branch_advanced",
+						};
+					}
+				}
+
+				const status = (
+					await safeExec(
+						"git",
+						[
+							"-C",
+							worktreePath,
+							"status",
+							"--porcelain=v2",
+							"-z",
+							"--untracked-files=all",
+						],
+						worktreePath,
+					)
+				).stdout;
+				if (suffixHead !== anchor || status.length > 0) {
+					const tempDir = fs.mkdtempSync(
+						path.join(os.tmpdir(), "flywheel-resume-index-"),
+					);
+					const tempIndex = path.join(tempDir, "index");
+					const gitEnv = {
+						...process.env,
+						GIT_INDEX_FILE: tempIndex,
+						GIT_CONFIG_GLOBAL: "/dev/null",
+						GIT_CONFIG_SYSTEM: "/dev/null",
+					};
+					try {
+						const entries = parseResumeStatus(status);
+						if (
+							entries.some(
+								(entry) =>
+									entry.kind === "unmerged" ||
+									("sub" in entry &&
+										entry.sub.startsWith("S") &&
+										(entry.sub[2] !== "." || entry.sub[3] !== ".")),
+							)
+						) {
+							return {
+								ok: false,
+								reason: "quarantine_overflow",
+								detail: "unrepresentable_index",
+							};
+						}
+						const stagedNames = (
+							await safeExec(
+								"git",
+								[
+									"-C",
+									worktreePath,
+									"diff",
+									"--cached",
+									"--name-only",
+									"-z",
+									suffixHead,
+								],
+								worktreePath,
+							)
+						).stdout
+							.split("\0")
+							.filter(Boolean);
+						const changedPaths = new Set(stagedNames);
+						let totalBytes = 0;
+						for (const rel of stagedNames) {
+							const staged = (
+								await safeExec(
+									"git",
+									["-C", worktreePath, "ls-files", "--stage", "--", rel],
+									worktreePath,
+								)
+							).stdout.match(/^(\d+) ([0-9a-f]{40,64}) 0\t/);
+							if (staged && staged[1] !== "160000") {
+								totalBytes += Number(
+									(
+										await safeExec(
+											"git",
+											["-C", worktreePath, "cat-file", "-s", staged[2]!],
+											worktreePath,
+										)
+									).stdout.trim(),
+								);
+							}
+						}
+						const worktreePaths = entries.flatMap((entry) =>
+							entry.kind === "rename"
+								? [entry.path, entry.originalPath]
+								: [entry.path],
+						);
+						for (const rel of worktreePaths) changedPaths.add(rel);
+						if (changedPaths.size > limits.maxFiles) {
+							return {
+								ok: false,
+								reason: "quarantine_overflow",
+								detail: "file_limit",
+							};
+						}
+						for (const entry of entries) {
+							const needsBytes =
+								entry.kind === "untracked" ||
+								(entry.kind !== "unmerged" &&
+									entry.xy[1] !== "." &&
+									entry.xy[1] !== "D");
+							if (!needsBytes) continue;
+							const target = path.resolve(worktreePath, entry.path);
+							if (
+								!target.startsWith(`${path.resolve(worktreePath)}${path.sep}`)
+							) {
+								return {
+									ok: false,
+									reason: "quarantine_overflow",
+									detail: "path_escape",
+								};
+							}
+							const stat = fs.lstatSync(target);
+							if (stat.isFile()) totalBytes += stat.size;
+							else if (stat.isSymbolicLink())
+								totalBytes += Buffer.byteLength(fs.readlinkSync(target));
+							else if (
+								!stat.isDirectory() ||
+								!("mode" in entry) ||
+								entry.mode !== "160000"
+							) {
+								return {
+									ok: false,
+									reason: "quarantine_overflow",
+									detail: "unsupported_file_type",
+								};
+							}
+						}
+						if (totalBytes > limits.maxBytes) {
+							return {
+								ok: false,
+								reason: "quarantine_overflow",
+								detail: "byte_limit",
+							};
+						}
+
+						const indexTree = (
+							await safeExec(
+								"git",
+								["-C", worktreePath, "write-tree"],
+								worktreePath,
+							)
+						).stdout.trim();
+						const headTree = (
+							await safeExec(
+								"git",
+								["-C", worktreePath, "rev-parse", `${suffixHead}^{tree}`],
+								worktreePath,
+							)
+						).stdout.trim();
+						let indexCommit = suffixHead;
+						if (indexTree !== headTree) {
+							indexCommit = (
+								await safeExec(
+									"git",
+									[
+										"-C",
+										worktreePath,
+										"-c",
+										"user.name=Flywheel Resume",
+										"-c",
+										"user.email=resume@flywheel.local",
+										"commit-tree",
+										indexTree,
+										"-p",
+										suffixHead,
+										"-m",
+										`FLY-1707 staged quarantine ${opts.admissionKey}`,
+									],
+									worktreePath,
+								)
+							).stdout.trim();
+						}
+						await safeExec(
+							"git",
+							["-C", worktreePath, "read-tree", indexTree],
+							worktreePath,
+							{ env: gitEnv },
+						);
+
+						const removePath = async (rel: string) => {
+							await safeExec(
+								"git",
+								[
+									"-C",
+									worktreePath,
+									"update-index",
+									"--force-remove",
+									"--",
+									rel,
+								],
+								worktreePath,
+								{ env: gitEnv },
+							);
+						};
+						const writePath = async (rel: string, declaredMode?: string) => {
+							if (path.isAbsolute(rel) || rel.split("/").includes(".."))
+								throw new Error("path_escape");
+							const source = path.join(worktreePath, rel);
+							const stat = fs.lstatSync(source);
+							let mode: string;
+							let oid: string;
+							if (stat.isDirectory() && declaredMode === "160000") {
+								mode = "160000";
+								oid = (
+									await safeExec(
+										"git",
+										["-C", source, "rev-parse", "HEAD"],
+										source,
+									)
+								).stdout.trim();
+							} else {
+								mode = stat.isSymbolicLink()
+									? "120000"
+									: stat.mode & 0o111
+										? "100755"
+										: "100644";
+								let hashSource = source;
+								if (stat.isSymbolicLink()) {
+									hashSource = path.join(tempDir, `symlink-${randomUUID()}`);
+									fs.writeFileSync(hashSource, fs.readlinkSync(source));
+								}
+								oid = (
+									await safeExec(
+										"git",
+										[
+											"-C",
+											worktreePath,
+											"hash-object",
+											"--no-filters",
+											"-w",
+											hashSource,
+										],
+										worktreePath,
+									)
+								).stdout.trim();
+							}
+							await safeExec(
+								"git",
+								[
+									"-C",
+									worktreePath,
+									"update-index",
+									"--add",
+									"--cacheinfo",
+									mode,
+									oid,
+									rel,
+								],
+								worktreePath,
+								{ env: gitEnv },
+							);
+						};
+						for (const entry of entries) {
+							if (entry.kind === "untracked") {
+								await writePath(entry.path);
+							} else if (entry.kind === "ordinary" && entry.xy[1] !== ".") {
+								if (entry.xy[1] === "D") await removePath(entry.path);
+								else await writePath(entry.path, entry.mode);
+							} else if (entry.kind === "rename" && entry.xy[1] !== ".") {
+								if (entry.score.startsWith("R"))
+									await removePath(entry.originalPath);
+								else if (!entry.score.startsWith("C"))
+									throw new Error("rename_score_unknown");
+								await writePath(entry.path, entry.mode);
+							}
+						}
+						const worktreeTree = (
+							await safeExec(
+								"git",
+								["-C", worktreePath, "write-tree"],
+								worktreePath,
+								{ env: gitEnv },
+							)
+						).stdout.trim();
+						quarantineTip = indexCommit;
+						if (worktreeTree !== indexTree) {
+							quarantineTip = (
+								await safeExec(
+									"git",
+									[
+										"-C",
+										worktreePath,
+										"-c",
+										"user.name=Flywheel Resume",
+										"-c",
+										"user.email=resume@flywheel.local",
+										"commit-tree",
+										worktreeTree,
+										"-p",
+										indexCommit,
+										"-m",
+										`FLY-1707 worktree quarantine ${opts.admissionKey}`,
+									],
+									worktreePath,
+								)
+							).stdout.trim();
+						}
+					} catch (error) {
+						return {
+							ok: false,
+							reason: "quarantine_overflow",
+							detail: error instanceof Error ? error.message : String(error),
+						};
+					} finally {
+						fs.rmSync(tempDir, { recursive: true, force: true });
+					}
+					quarantineTip ??= suffixHead;
+					quarantineRef = `refs/flywheel/quarantine/${opts.runId}/${opts.admissionKey}`;
+					const existing = await safeExec(
+						"git",
+						["-C", opts.mainRepoPath, "rev-parse", "--verify", quarantineRef],
+						opts.mainRepoPath,
+					)
+						.then((result) => result.stdout.trim())
+						.catch(() => undefined);
+					if (existing && existing !== quarantineTip) {
+						return {
+							ok: false,
+							reason: "external_drift",
+							detail: "quarantine_ref_conflict",
+						};
+					}
+					if (!existing) {
+						try {
+							await safeExec(
+								"git",
+								[
+									"-C",
+									opts.mainRepoPath,
+									"update-ref",
+									quarantineRef,
+									quarantineTip,
+									"0".repeat(40),
+								],
+								opts.mainRepoPath,
+							);
+						} catch {
+							return {
+								ok: false,
+								reason: "external_drift",
+								detail: "quarantine_ref_race",
+							};
+						}
+					}
+				}
+			}
+
+			await this.removeIfExistsUnlocked(
+				opts.mainRepoPath,
+				opts.projectName,
+				opts.issueId,
+			);
+			const worktree = await this.create({
+				mainRepoPath: opts.mainRepoPath,
+				projectName: opts.projectName,
+				issueId: opts.issueId,
+				startPoint: anchor,
+			});
+			return {
+				ok: true,
+				worktree,
+				...(quarantineRef ? { quarantineRef, quarantineTip } : {}),
+			};
+		});
 	}
 
 	/** FLY-1759: derive the kill target from WorktreeManager's path authority. */

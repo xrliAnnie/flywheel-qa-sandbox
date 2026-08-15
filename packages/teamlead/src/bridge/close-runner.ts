@@ -146,6 +146,9 @@ export interface CloseRunnerOpts {
 	 * check by the caller only).
 	 */
 	authorityCheck?: () => Promise<{ ok: boolean; reason?: string }>;
+	/** Explicit operator authority for the run-carrier close cascade. Automated
+	 * teardown callers omit this and remain byte-compatible. */
+	runCloseAuthority?: RunCloseAuthority;
 	/**
 	 * FLY-638: FSM transition opts, required when `finalizeDone` is set so the
 	 * done-finalize goes through the canonical `applyTransition` path. Absent →
@@ -161,6 +164,11 @@ export interface CloseRunnerOpts {
 	 * failures never affect the close result.
 	 */
 	archive?: CloseArchiveDeps;
+}
+
+export interface RunCloseAuthority {
+	mode: "done" | "abandon";
+	principal: string;
 }
 
 /**
@@ -210,10 +218,93 @@ export async function closeRunner(
 		const guard = lifecycleCloseGuard;
 		const keys = guard.resolveLockKeys(store, opts.issueId);
 		return guard.withIssueMutex(keys, () =>
-			closeRunnerInner({ ...opts, skipLifecycleGuard: true }, store),
+			closeRunnerWithRunAuthority({ ...opts, skipLifecycleGuard: true }, store),
 		);
 	}
-	return closeRunnerInner(opts, store);
+	return closeRunnerWithRunAuthority(opts, store);
+}
+
+async function closeRunnerWithRunAuthority(
+	opts: CloseRunnerOpts,
+	store: StateStore,
+): Promise<CloseRunnerResult> {
+	const authority = opts.runCloseAuthority;
+	if (!authority) return closeRunnerInner(opts, store);
+	if (!authority.principal.trim()) {
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: "invalid_run_close_authority",
+		};
+	}
+	const reason = (opts.reason?.trim() || `operator_${authority.mode}`).slice(
+		0,
+		500,
+	);
+	const cascadeRun = (): void => {
+		try {
+			const cascade = store.cascadeRunTerminationOnCarrierClose({
+				executionId: opts.executionId,
+				mode: authority.mode,
+				principal: authority.principal,
+				now: new Date().toISOString(),
+			});
+			if (cascade.ok && !cascade.idempotentReplay) {
+				store.ensureTerminalWorkflowRunCollection({
+					runId: cascade.runId,
+					now: new Date().toISOString(),
+				});
+			}
+		} catch (error) {
+			console.warn(
+				`[close-runner] run cascade failed for ${opts.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
+	const prepared = store.prepareWorkflowOperatorCloseIntent({
+		executionId: opts.executionId,
+		mode: authority.mode,
+		reason,
+		now: new Date().toISOString(),
+	});
+	if (!prepared.ok) {
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: prepared.reason,
+		};
+	}
+	if (prepared.stage === "committed") {
+		cascadeRun();
+		return {
+			closed: true,
+			alreadyGone: true,
+			commDbFinalized: true,
+			retiredGateCount: 0,
+		};
+	}
+	const result = await closeRunnerInner(opts, store);
+	const intentStage =
+		result.closed && result.commDbFinalized ? "committed" : "failed";
+	const finalized = store.finalizeWorkflowOperatorCloseIntent({
+		executionId: opts.executionId,
+		stage: intentStage,
+		now: new Date().toISOString(),
+	});
+	if (!finalized.ok) {
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: `close_intent_finalize_failed:${finalized.reason}`,
+		};
+	}
+	if (intentStage === "committed") {
+		cascadeRun();
+	}
+	return result;
 }
 
 async function closeRunnerInner(
@@ -232,6 +323,46 @@ async function closeRunnerInner(
 
 	// FLY-102 Round 3 QA finding: audit event_id is Lead-dimensional.
 	const auditKey = `${opts.executionId}-${opts.leadId ?? "unknown"}`;
+	// FLY-1707: collector ownership is sticky for the entire close, including
+	// paths that return before tmux lookup (already-gone and graceful shutdown).
+	let authorityStickyLost: string | undefined;
+	const authorityLostReason = async (): Promise<string | undefined> => {
+		if (authorityStickyLost) return authorityStickyLost;
+		if (!opts.authorityCheck) return undefined;
+		try {
+			const res = await opts.authorityCheck();
+			if (res.ok) return undefined;
+			authorityStickyLost = res.reason ?? "authority_lost";
+			return authorityStickyLost;
+		} catch (err) {
+			authorityStickyLost = `authority_check_failed:${(err as Error).message}`;
+			return authorityStickyLost;
+		}
+	};
+	const abortAuthorityLost = (
+		stage: string,
+		reason: string,
+	): CloseRunnerResult => {
+		store.insertEvent({
+			event_id: `close-runner-authority-lost-${auditKey}`,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: "lead_close_runner_authority_lost",
+			source: "bridge.close-runner",
+			payload: { stage, reason, leadId: opts.leadId },
+		});
+		return {
+			closed: false,
+			commDbFinalized: false,
+			retiredGateCount: 0,
+			error: `authority_lost:${stage}:${reason}`,
+		};
+	};
+	{
+		const lost = await authorityLostReason();
+		if (lost) return abortAuthorityLost("preflight", lost);
+	}
 
 	// FLY-638: done-mode finalize. A done-but-stuck runner (ship succeeded / QA
 	// passed but it exited before its final `stage set completed`, so the FSM
@@ -408,25 +539,9 @@ async function closeRunnerInner(
 	// Claude phases and ordinary Codex executions are not applicable and remain
 	// byte-compatible.
 	if (isResidentCodexPhase(session)) {
-		if (opts.authorityCheck) {
-			try {
-				const authority = await opts.authorityCheck();
-				if (!authority.ok) {
-					return {
-						closed: false,
-						commDbFinalized: false,
-						retiredGateCount: 0,
-						error: `authority_lost:pre_phase_shutdown:${authority.reason ?? "authority_lost"}`,
-					};
-				}
-			} catch (err) {
-				return {
-					closed: false,
-					commDbFinalized: false,
-					retiredGateCount: 0,
-					error: `authority_lost:pre_phase_shutdown:authority_check_failed:${(err as Error).message}`,
-				};
-			}
+		const preShutdownLost = await authorityLostReason();
+		if (preShutdownLost) {
+			return abortAuthorityLost("pre_phase_shutdown", preShutdownLost);
 		}
 		const shutdown = await prepareCodexPhaseShutdown({
 			executionId: opts.executionId,
@@ -455,25 +570,9 @@ async function closeRunnerInner(
 			};
 		}
 		if (shutdown.kind === "graceful") {
-			if (opts.authorityCheck) {
-				try {
-					const authority = await opts.authorityCheck();
-					if (!authority.ok) {
-						return {
-							closed: false,
-							commDbFinalized: false,
-							retiredGateCount: 0,
-							error: `authority_lost:post_phase_shutdown:${authority.reason ?? "authority_lost"}`,
-						};
-					}
-				} catch (err) {
-					return {
-						closed: false,
-						commDbFinalized: false,
-						retiredGateCount: 0,
-						error: `authority_lost:post_phase_shutdown:authority_check_failed:${(err as Error).message}`,
-					};
-				}
+			const postShutdownLost = await authorityLostReason();
+			if (postShutdownLost) {
+				return abortAuthorityLost("post_phase_shutdown", postShutdownLost);
 			}
 			store.insertEvent({
 				event_id: `close-runner-${auditKey}`,
@@ -571,45 +670,6 @@ async function closeRunnerInner(
 		};
 	}
 
-	// FLY-1185 (Codex R4#2 + R7#2): fail-closed, STICKY authority re-check
-	// between the slow external boundaries of the kill sequence. A throw counts
-	// as lost, and once lost in this run it STAYS lost — a later transient
-	// success can't revive it and let the remaining teardown proceed.
-	let authorityStickyLost: string | undefined;
-	const authorityLostReason = async (): Promise<string | undefined> => {
-		if (authorityStickyLost) return authorityStickyLost;
-		if (!opts.authorityCheck) return undefined;
-		try {
-			const res = await opts.authorityCheck();
-			if (res.ok) return undefined;
-			authorityStickyLost = res.reason ?? "authority_lost";
-			return authorityStickyLost;
-		} catch (err) {
-			authorityStickyLost = `authority_check_failed:${(err as Error).message}`;
-			return authorityStickyLost;
-		}
-	};
-	const abortAuthorityLost = (
-		stage: string,
-		reason: string,
-	): CloseRunnerResult => {
-		store.insertEvent({
-			event_id: `close-runner-authority-lost-${auditKey}`,
-			execution_id: opts.executionId,
-			issue_id: opts.issueId,
-			project_name: opts.projectName,
-			event_type: "lead_close_runner_authority_lost",
-			source: "bridge.close-runner",
-			payload: { stage, reason, leadId: opts.leadId },
-		});
-		return {
-			closed: false,
-			commDbFinalized: false,
-			retiredGateCount: 0,
-			error: `authority_lost:${stage}:${reason}`,
-		};
-	};
-
 	// FLY-1185 §2.5: reap the runner's MCP-family descendant processes BEFORE
 	// any kill (the pane pid is only resolvable while the window is alive).
 	// Reap-only + best-effort — the battle-tested kill sequence below is
@@ -664,31 +724,15 @@ async function closeRunnerInner(
 	// display cleanup only — still re-verify so a reopen skips even the
 	// cosmetic mutations (audited; the close result itself stands since the
 	// window is already gone).
-	let lostPostKill: string | undefined;
 	if (res.killed) {
-		lostPostKill = await authorityLostReason();
-		if (lostPostKill) {
-			store.insertEvent({
-				event_id: `close-runner-authority-lost-post-${auditKey}`,
-				execution_id: opts.executionId,
-				issue_id: opts.issueId,
-				project_name: opts.projectName,
-				event_type: "lead_close_runner_authority_lost",
-				source: "bridge.close-runner",
-				payload: {
-					stage: "post_tmux_kill",
-					reason: lostPostKill,
-					leadId: opts.leadId,
-				},
-			});
-		}
+		const lost = await authorityLostReason();
+		if (lost) return abortAuthorityLost("post_tmux_kill", lost);
 	}
-	if (res.killed && !lostPostKill) {
+	if (res.killed) {
 		// FLY-685: request cmux workspace-pin (sidebar tab) removal — BEFORE the
 		// terminal-view close (Codex design R1 #1). `closeRunnerTerminalView`
-		// awaits an `osascript` call with no exec timeout; if it stalls, the tmux
-		// window is already gone but the pin would fall back to the 5-min FLY-293
-		// reaper. Writing the marker first preserves the "next watcher tick" path.
+		// awaits a bounded `osascript` call; writing the marker first preserves the
+		// "next watcher tick" cleanup path even if that call times out.
 		// window_name = the cmux workspace TITLE, reused from killCmuxLinkedSession's
 		// already-resolved `cmuxSession` ("cmux-<window_name>"). Absent → the window
 		// was already gone → nothing to target (FLY-293 reaper still backstops).
@@ -716,6 +760,12 @@ async function closeRunnerInner(
 			console.warn(
 				`[close-runner] could not resolve viewer identity for ${opts.executionId} (tmuxWindow=${target.tmuxWindow}); skipping terminal close`,
 			);
+		}
+	}
+	if (res.killed) {
+		const postTerminalViewLost = await authorityLostReason();
+		if (postTerminalViewLost) {
+			return abortAuthorityLost("post_terminal_view", postTerminalViewLost);
 		}
 	}
 

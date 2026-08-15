@@ -92,6 +92,17 @@ function makeWtManager(opts: {
 		})),
 		isRegistered: vi.fn(async () => opts.registered),
 		removeIfExists: vi.fn(async () => true),
+		quarantineAndRebuild: vi.fn(async () => ({
+			ok: true as const,
+			worktree: {
+				projectName: "flywheel",
+				issueId: "FLY-887",
+				worktreePath: opts.path,
+				branch: opts.branch ?? "feat/branch-b",
+				mainRepoPath: "/project",
+				generation: "resume-generation",
+			},
+		})),
 		create: vi.fn(async () => ({
 			projectName: "flywheel",
 			issueId: "FLY-887",
@@ -319,5 +330,88 @@ describe("FLY-887 worktree in-place takeover", () => {
 		);
 		expect(result.success).toBe(true);
 		expect(wt.create).toHaveBeenCalled();
+	});
+
+	it("resume launch quarantines and rebuilds instead of taking over in place", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const prepareWorkflowIssueDelivery = vi.fn();
+		const { result, adapter } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "implement",
+				shareParentBranch: true,
+				startPoint: HEAD,
+				workflowResume: {
+					runId: "run-1",
+					admissionKey: "admission-1",
+					sourceAttachmentId: "attachment-1",
+					anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
+					anchorCommit: HEAD,
+					frozenBody: "Frozen issue body",
+				},
+				prepareWorkflowIssueDelivery,
+			},
+		);
+
+		expect(result.success).toBe(true);
+		expect(wt.quarantineAndRebuild).toHaveBeenCalledWith({
+			mainRepoPath: "/project",
+			projectName: "eng",
+			issueId: "FLY-887",
+			runId: "run-1",
+			admissionKey: "admission-1",
+			anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
+			anchorCommit: HEAD,
+		});
+		expect(wt.removeIfExists).not.toHaveBeenCalled();
+		expect(wt.create).not.toHaveBeenCalled();
+		expect(prepareWorkflowIssueDelivery).toHaveBeenCalledWith({
+			sourceKind: "frozen_replay",
+			body: "Frozen issue body",
+			admissionKey: "admission-1",
+			sourceAttachmentId: "attachment-1",
+			anchorCommit: HEAD,
+		});
+		expect(adapter.execute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringContaining("Frozen issue body"),
+			}),
+		);
+		expect(adapter.execute).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				prompt: expect.stringContaining("Description for FLY-887"),
+			}),
+		);
+	});
+
+	it("resume launch fails closed when startPoint does not match the admitted anchor", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const { result, adapter } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "implement",
+				shareParentBranch: true,
+				startPoint: "f".repeat(40),
+				workflowResume: {
+					runId: "run-1",
+					admissionKey: "admission-1",
+					sourceAttachmentId: "attachment-1",
+					anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
+					anchorCommit: HEAD,
+					frozenBody: "frozen",
+				},
+			},
+		);
+
+		expect(result).toMatchObject({ success: false });
+		expect(result.error).toContain("resume_start_point_mismatch");
+		expect(wt.quarantineAndRebuild).not.toHaveBeenCalled();
+		expect(adapter.execute).not.toHaveBeenCalled();
 	});
 });

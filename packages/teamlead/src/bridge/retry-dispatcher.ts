@@ -12,9 +12,13 @@ import type {
 	WorkflowDispatchVendor,
 } from "flywheel-config";
 import type { LaunchPrecommitOutcome } from "flywheel-core";
-import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
+import type {
+	QaContext,
+	WorkflowIssueDeliveryInput,
+	WorkflowResumeContext,
+} from "flywheel-edge-worker/dist/Blueprint.js";
 
-export type { QaContext };
+export type { QaContext, WorkflowResumeContext };
 
 export interface GeneralizedExecutionDispatch {
 	/** True only for a typed run whose transitions are owned by the DAG engine. */
@@ -39,6 +43,7 @@ export interface GeneralizedExecutionDispatch {
 	idempotencyKey: string;
 	launchGateToken?: string;
 	commitWorkflowLaunch?: () => { ok: boolean; reason?: string };
+	prepareWorkflowIssueDelivery?: (input: WorkflowIssueDeliveryInput) => void;
 	/** Persist CommDB's granted TURN epoch into the activation ledger before launch. */
 	projectTurn?: (input: {
 		activationId: string;
@@ -267,6 +272,8 @@ export interface StartRequest {
 	 * Absent → existing behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
+	/** FLY-1707: Bridge-internal resume admission; never accepted from HTTP. */
+	workflowResume?: WorkflowResumeContext;
 	/**
 	 * FLY-1718 P1: authenticated human override that deliberately starts from
 	 * main even when the managed origin branch exists. Only runs-route may mint

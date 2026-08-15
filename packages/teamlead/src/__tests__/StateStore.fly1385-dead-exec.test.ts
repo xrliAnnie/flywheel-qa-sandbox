@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
@@ -53,6 +54,7 @@ async function engineRunWithImplement(
 			executionId: "design-1",
 			outcome: "design_done",
 			successorExecutionId: "implement-dead",
+			subjectDigest: "a".repeat(40),
 			now: "2026-07-20T00:05:00.000Z",
 		}),
 	).toMatchObject({ ok: true });
@@ -420,6 +422,24 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 			state: "pending",
 			execution_id: "implement-retry-1",
 		});
+		const attachments = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+		});
+		// This fixture never delivered or reconciled the issue input, so recovery
+		// must not manufacture a ready checkpoint for the replacement writer.
+		expect(attachments).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.kind === "resume_target_unrecoverable"),
+		).toMatchObject({
+			payload: expect.objectContaining({
+				reason: "attachment_missing",
+				detail: { cause: "writer_source_evidence_unavailable" },
+			}),
+		});
 		expect(store.listWorkflowSideEffects("run-1")).toEqual([
 			expect.objectContaining({
 				launch_ordinal: 1,
@@ -445,6 +465,53 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 				}),
 			}),
 		]);
+		store.close();
+	});
+
+	it("keeps dead-execution recovery committed when its resume-only writer receipt conflicts", async () => {
+		const store = await engineRunWithImplement();
+		const newExecutionId = "implement-retry-conflict";
+		const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
+			{
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				newExecutionId,
+			},
+		)}`;
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: writerTransitionUid,
+			kind: "writer_replacement",
+			nodeId: "implement",
+			executionId: newExecutionId,
+			payload: { targetNodeId: "wrong", targetAttempt: 99 },
+		});
+
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				deadExecutionId: "implement-dead",
+				newExecutionId,
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:10:00.000Z",
+				},
+				now: "2026-07-20T00:10:00.000Z",
+			}),
+		).toMatchObject({ ok: true, launchOrdinal: 2 });
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "pending",
+			execution_id: newExecutionId,
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "execution_dead_rolled_back"),
+		).toHaveLength(1);
 		store.close();
 	});
 

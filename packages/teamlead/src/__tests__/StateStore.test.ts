@@ -867,9 +867,13 @@ describe("StateStore", () => {
 		// archived columns. Re-open through StateStore.create() and confirm the
 		// migration drops the table, leaves sessions intact (with thread_id
 		// physical column preserved as deprecated).
-		const path = "/tmp/fly163-legacy.sqlite";
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const dir = mkdtempSync(join(tmpdir(), "fly163-legacy-"));
+		const path = join(dir, "state.sqlite");
+		let migrated: StateStore | undefined;
 		try {
-			const fs = await import("node:fs");
 			const initSqlJs = (await import("sql.js")).default;
 			const SQL = await initSqlJs();
 			const seed = new SQL.Database();
@@ -887,10 +891,10 @@ describe("StateStore", () => {
 				"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES (?, ?, ?)",
 				["legacy-1", "CH1", "GEO-LEG-1"],
 			);
-			fs.writeFileSync(path, Buffer.from(seed.export()));
+			writeFileSync(path, Buffer.from(seed.export()));
 			seed.close();
 
-			const migrated = await StateStore.create(path);
+			migrated = await StateStore.create(path);
 			const stmt = migrated.db.prepare(
 				"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
 			);
@@ -908,10 +912,8 @@ describe("StateStore", () => {
 				migrated.getChatThreadByIssue("issue-1", "channel-xyz"),
 			).toBeDefined();
 		} finally {
-			try {
-				const fs = await import("node:fs");
-				fs.unlinkSync(path);
-			} catch {}
+			migrated?.close();
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 

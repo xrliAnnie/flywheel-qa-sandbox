@@ -114,6 +114,7 @@ import {
 	type Session,
 	StateStore,
 	type WorkflowEngineAlertIdentity,
+	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
 import { importWorkflowMenuSeeds } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -555,9 +556,18 @@ import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
 import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
+	GitWorkflowResumeCheckpointStore,
+	reconcileWorkflowResumeCheckpoint,
+} from "./workflow-resume-checkpoint.js";
+import { runWorkflowResumeShadowTick } from "./workflow-resume-shadow.js";
+import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
+import {
+	collectWorkflowRunReceipt,
+	reconcileWorkflowRunCollections,
+} from "./workflow-run-collector.js";
 import {
 	grantWorkflowShipCarrierTurn,
 	WorkflowShipCarrierDeliveryHandler,
@@ -1289,6 +1299,80 @@ function parseJsonStringArray(raw: string | undefined): string[] {
 	} catch {
 		return [];
 	}
+}
+
+function createWorkflowRunCollector(
+	store: StateStore,
+	transitionOpts: ApplyTransitionOpts,
+): (receiptKey: string) => Promise<WorkflowRunCollectReceiptRow> {
+	return (receiptKey) =>
+		collectWorkflowRunReceipt({
+			store,
+			receiptKey,
+			ownerId: `bridge:${process.pid}:${randomUUID()}`,
+			closeExecution: async (executionId, authorityCheck) => {
+				const session = store.getSession(executionId);
+				if (!session) {
+					return {
+						closed: true,
+						alreadyGone: true,
+						commDbFinalized: true,
+						retiredGateCount: 0,
+					};
+				}
+				const closed = await closeRunner(
+					{
+						executionId,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						reason: `workflow_force_cancel:${receiptKey}`,
+						executorType: "workflow-collector",
+						forcePreserved: true,
+						issueTerminalOverride: true,
+						authorityCheck,
+					},
+					store,
+				);
+				if (
+					(!closed.closed && !closed.alreadyGone) ||
+					!closed.commDbFinalized
+				) {
+					return closed;
+				}
+				const authority = await authorityCheck();
+				if (!authority.ok) {
+					return {
+						...closed,
+						closed: false,
+						commDbFinalized: false,
+						error: `authority_lost:post_close:${authority.reason ?? "collector_authority_lost"}`,
+					};
+				}
+				const transitioned = applyTransition(
+					transitionOpts,
+					executionId,
+					"terminated",
+					{
+						executionId,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						trigger: "workflow_force_cancel",
+					},
+					{
+						last_activity_at: sqliteDatetime(),
+						last_error: `operator_terminate:${receiptKey}`,
+					},
+				);
+				return transitioned.ok
+					? closed
+					: {
+							...closed,
+							closed: false,
+							commDbFinalized: false,
+							error: `session_terminate_failed:${transitioned.error ?? "fsm"}`,
+						};
+			},
+		});
 }
 
 export function createBridgeApp(
@@ -2680,6 +2764,10 @@ export function createBridgeApp(
 					// fires. transitionOpts is initialized later in this setup fn but
 					// is captured by this request-time closure (always defined here).
 					finalizeDone: !!done,
+					runCloseAuthority: {
+						mode: done || session.status === "completed" ? "done" : "abandon",
+						principal: leadIdTrimmed,
+					},
 					transitionOpts,
 					// FLY-369: central close→archive cascade (done-cleanup + no
 					// other active runner). Archives via the Bridge-local sink.
@@ -3757,6 +3845,9 @@ export function createBridgeApp(
 		},
 	);
 
+	const workflowRunCollector = transitionOpts
+		? createWorkflowRunCollector(store, transitionOpts)
+		: undefined;
 	// GEO-267: /api/runs — start new Runner executions
 	if (startDispatcher) {
 		// FLY-742: stale-blocker guard for the run-start 409 path. Own fsm/executor
@@ -3887,6 +3978,7 @@ export function createBridgeApp(
 				masterToken: config.apiToken,
 				scopedToken: config.geminiAgentToken,
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
+				collectWorkflowRun: workflowRunCollector,
 			},
 		);
 		if (config.apiToken) {
@@ -4386,6 +4478,10 @@ export async function startBridge(
 			terminalCommDbSync.enqueue(executionId, targetStatus, ctx.projectName);
 		},
 	};
+	const workflowRunCollector = createWorkflowRunCollector(
+		store,
+		transitionOpts,
+	);
 	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
 	// the boot topology; structural change → restart-required, R3#4) + the
 	// 30s evidence poller (single probe owner for Dashboard + fleet sensors, R6#5).
@@ -7226,65 +7322,88 @@ export async function startBridge(
 		if (workflowGateMaterializationRunning) return;
 		workflowGateMaterializationRunning = true;
 		try {
-			const holders = store.listWorkflowGateHoldersForMaterialization(20);
-			await Promise.all(
-				holders.map(async (holder) => {
-					try {
-						const run = store.getWorkflowRun(holder.run_id);
-						if (!run) throw new Error("workflow_gate_run_not_found");
-						const source = store.getSession(holder.source_execution_id);
-						const { lead } = resolveLeadForIssue(
-							projects,
-							run.project_name,
-							source ? store.getSessionLabels(holder.source_execution_id) : [],
-						);
-						const thread = store.getChatThreadByIssue(
-							run.issue_id,
-							lead.chatChannel,
-						);
-						if (!thread?.thread_id) {
-							throw new Error("workflow_gate_thread_not_found");
-						}
-						await materializeWorkflowGateHolder(
-							{
-								store,
-								commDbPath: commDbPathForProject(run.project_name),
-								leadId: lead.agentId,
-								threadId: thread.thread_id,
-								postCard: async (input) => {
-									const result = await emitFounderThreadNotification(
-										{
-											questionId: input.questionId,
-											checkpoint: "approve_to_ship",
-											executionId: input.sourceExecutionId,
-											issueId: input.issueId,
-											issueIdentifier: source?.issue_identifier,
-											projectName: input.projectName,
-											summary: input.content,
-											ageMinutes: 0,
-											thread,
-											botToken: lead.botToken ?? config.discordBotToken,
-											ownerUserId: config.discordOwnerUserId,
-										},
-										{ store },
-									);
-									if (result.kind !== "posted" || !result.gateMessageId) {
-										throw new Error(
-											`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
-										);
-									}
-									return { messageId: result.gateMessageId };
-								},
-							},
-							holder.question_id,
-						);
-					} catch (error) {
-						console.warn(
-							`[workflow-gate] materialization failed for ${holder.question_id}: ${error instanceof Error ? error.message : String(error)}`,
-						);
+			const materializeQuestion = async (
+				questionId: string,
+			): Promise<boolean> => {
+				const holder =
+					store.getCurrentWorkflowGateHolderByQuestionId(questionId);
+				if (!holder) return false;
+				try {
+					const run = store.getWorkflowRun(holder.run_id);
+					if (!run) throw new Error("workflow_gate_run_not_found");
+					const source = store.getSession(holder.source_execution_id);
+					const { lead } = resolveLeadForIssue(
+						projects,
+						run.project_name,
+						source ? store.getSessionLabels(holder.source_execution_id) : [],
+					);
+					const thread = store.getChatThreadByIssue(
+						run.issue_id,
+						lead.chatChannel,
+					);
+					if (!thread?.thread_id) {
+						throw new Error("workflow_gate_thread_not_found");
 					}
-				}),
+					await materializeWorkflowGateHolder(
+						{
+							store,
+							commDbPath: commDbPathForProject(run.project_name),
+							leadId: lead.agentId,
+							threadId: thread.thread_id,
+							postCard: async (input) => {
+								const result = await emitFounderThreadNotification(
+									{
+										questionId: input.questionId,
+										checkpoint: "approve_to_ship",
+										executionId: input.sourceExecutionId,
+										issueId: input.issueId,
+										issueIdentifier: source?.issue_identifier,
+										projectName: input.projectName,
+										summary: input.content,
+										ageMinutes: 0,
+										thread,
+										botToken: lead.botToken ?? config.discordBotToken,
+										ownerUserId: config.discordOwnerUserId,
+									},
+									{ store },
+								);
+								if (result.kind !== "posted" || !result.gateMessageId) {
+									throw new Error(
+										`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
+									);
+								}
+								return { messageId: result.gateMessageId };
+							},
+						},
+						holder.question_id,
+					);
+					return true;
+				} catch (error) {
+					console.warn(
+						`[workflow-gate] materialization failed for ${holder.question_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					return false;
+				}
+			};
+			await Promise.all(
+				store
+					.listWorkflowGateHoldersForMaterialization(20)
+					.map((holder) => materializeQuestion(holder.question_id)),
 			);
+			for (const admission of store.listWorkflowResumeRedriveWork(20)) {
+				const holder = store.getCurrentWorkflowGateHolder(
+					admission.run_id,
+					admission.target_node_id,
+				);
+				if (!holder || !(await materializeQuestion(holder.question_id))) {
+					continue;
+				}
+				store.ackWorkflowResumeRedrive({
+					admissionKey: admission.admission_key,
+					questionId: holder.question_id,
+					now: new Date().toISOString(),
+				});
+			}
 		} finally {
 			workflowGateMaterializationRunning = false;
 		}
@@ -7520,6 +7639,9 @@ export async function startBridge(
 		},
 		log: (message) => console.warn(message),
 	});
+	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
+		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
+	});
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -7533,6 +7655,127 @@ export async function startBridge(
 		onLandOperationTick: landOperationTick,
 		onLeadPatrolTick: leadPatrolTickPass,
 		onReconcilePatrolTick: async () => {
+			// First rollout window: inventory historical terminal-run residue but do
+			// not create a collection receipt or tear anything down. Explicit
+			// force-cancel receipts above are safe to resume immediately.
+			await reconcileWorkflowRunCollections({
+				store,
+				collect: workflowRunCollector,
+				log: (message) => console.warn(message),
+			});
+			for (const candidate of store.listWorkflowResumeCheckpointPruneWork({
+				now: new Date().toISOString(),
+				limit: 3,
+			})) {
+				const project = projects.find(
+					(entry) => entry.projectName === candidate.projectName,
+				);
+				if (!project) continue;
+				const now = new Date().toISOString();
+				if (
+					!store.isWorkflowResumeCheckpointRefPrunable({
+						...candidate,
+						now,
+					})
+				) {
+					continue;
+				}
+				try {
+					workflowResumeCheckpointStore.pruneRef({
+						project: candidate.projectName,
+						projectRoot: project.projectRoot,
+						ref: candidate.ref,
+						anchor: candidate.anchor,
+					});
+				} catch (error) {
+					console.warn(
+						`[workflow-resume] checkpoint prune failed for ${candidate.ref}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			for (const attachment of store.listWorkflowResumeEnvelopeStampWork(3)) {
+				try {
+					store.stampWorkflowResumeAttachmentEnvelope({
+						attachmentId: attachment.attachment_id,
+						now: new Date().toISOString(),
+					});
+				} catch (error) {
+					console.warn(
+						`[workflow-resume] envelope stamp failed for ${attachment.attachment_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			for (const work of store.listWorkflowResumeCheckpointWork({
+				now: new Date().toISOString(),
+				limit: 3,
+			})) {
+				const project = projects.find(
+					(candidate) => candidate.projectName === work.project_name,
+				);
+				if (!project) continue;
+				try {
+					reconcileWorkflowResumeCheckpoint({
+						stateStore: store,
+						checkpointStore: workflowResumeCheckpointStore,
+						attachment: work.attachment,
+						project: work.project_name,
+						projectRoot: project.projectRoot,
+						now: new Date().toISOString(),
+					});
+				} catch (error) {
+					console.warn(
+						`[workflow-resume] checkpoint reconcile failed for ${work.attachment.attachment_id}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			await runWorkflowResumeShadowTick({
+				store,
+				observeEnvelope: async (opportunity) => {
+					if (!config.linearApiKey) {
+						return { source: "issue_body", unavailable: true };
+					}
+					try {
+						const { LinearClient } = await import("@linear/sdk");
+						const issue = await new LinearClient({
+							apiKey: config.linearApiKey,
+						}).issue(opportunity.issueId);
+						return {
+							source: "issue_body",
+							digest: createHash("sha256")
+								.update(issue.description ?? "")
+								.digest("hex"),
+						};
+					} catch {
+						return { source: "issue_body", unavailable: true };
+					}
+				},
+				verifyAnchor: ({ attachment, effectiveAnchor }) => {
+					const run = store.getWorkflowRun(attachment.run_id);
+					const project = projects.find(
+						(candidate) => candidate.projectName === run?.project_name,
+					);
+					const repoIdentity = attachment.repo_identity;
+					if (
+						!project ||
+						!repoIdentity ||
+						(repoIdentity !== project.projectName &&
+							(!pathIsAbsolute(repoIdentity) ||
+								resolve(repoIdentity) !== resolve(project.projectRoot)))
+					) {
+						return false;
+					}
+					workflowResumeCheckpointStore.recover({
+						project: project.projectName,
+						projectRoot: project.projectRoot,
+						ref: attachment.anchor_ref!,
+						anchor: effectiveAnchor,
+					});
+					return true;
+				},
+				env: process.env,
+				now: new Date().toISOString(),
+				log: (message) => console.warn(message),
+			});
 			await drainTurnWakeOutbox({
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,

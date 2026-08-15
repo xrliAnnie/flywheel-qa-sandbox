@@ -359,6 +359,16 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(dispatched[0]?.generalizedExecution).toMatchObject({
 			launchGeneration: 1,
 		});
+		dispatched[0]?.generalizedExecution?.prepareWorkflowIssueDelivery?.({
+			sourceKind: "authoritative",
+			body: "Retry issue body",
+			anchorCommit: "a".repeat(40),
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("retry-run-1")
+				.some((event) => event.kind === "issue_delivery_prepared"),
+		).toBe(true);
 		expect(store.getSession("pred-1")?.retry_successor).toBe(SUCC);
 		expect(store.getRetryDispatchIntent("gwreq-12345")?.state).toBe(
 			"dispatched",

@@ -9,7 +9,10 @@ import {
 } from "flywheel-config";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
-import { parseDocTier } from "flywheel-edge-worker/dist/Blueprint.js";
+import {
+	parseDocTier,
+	type WorkflowIssueDeliveryInput,
+} from "flywheel-edge-worker/dist/Blueprint.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -37,7 +40,11 @@ import {
 } from "./approval-signal/write-gate-response.js";
 import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
-import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
+import {
+	AUTO_CLOSE_STATES,
+	closeRunner,
+	type RunCloseAuthority,
+} from "./close-runner.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
@@ -1042,6 +1049,9 @@ async function handleRetry(
 		let submissionCredential = admitted.submissionCredential;
 		let launchGateToken: string | undefined;
 		let launchGeneration: number | undefined;
+		let launchDeliveryAuthority:
+			| { generation: number; attempt: number }
+			| undefined;
 		let commitWorkflowLaunch:
 			| (() => { ok: boolean; reason?: string })
 			| undefined;
@@ -1091,6 +1101,10 @@ async function handleRetry(
 				}
 				launchGateToken = repair.token;
 				launchGeneration = repair.generation;
+				launchDeliveryAuthority = {
+					generation: repair.generation,
+					attempt: repair.attempt,
+				};
 				commitWorkflowLaunch = () =>
 					store.commitWorkflowLaunchDeliveryRepair({
 						executionId: successorExecutionId,
@@ -1160,6 +1174,10 @@ async function handleRetry(
 			}
 			launchGateToken = launch.token;
 			launchGeneration = launch.generation;
+			launchDeliveryAuthority = {
+				generation: launch.generation,
+				attempt: launch.deliveryAttempt,
+			};
 			commitWorkflowLaunch = () =>
 				store.fencedCommitWorkflowLaunch({
 					executionId: successorExecutionId,
@@ -1171,6 +1189,23 @@ async function handleRetry(
 				});
 		}
 		if (!adoptedGeneralizedExecutionId) {
+			const deliveryAuthority = launchDeliveryAuthority;
+			const prepareWorkflowIssueDelivery = deliveryAuthority
+				? (input: WorkflowIssueDeliveryInput) => {
+						const { anchorCommit, ...candidate } = input;
+						const prepared = store.prepareWorkflowIssueDelivery({
+							executionId: successorExecutionId,
+							activationId: admitted.activationId,
+							ownerId: launchOwnerId,
+							ownerGeneration: deliveryAuthority.generation,
+							deliveryAttempt: deliveryAuthority.attempt,
+							anchorCommit,
+							candidate,
+							now: new Date().toISOString(),
+						});
+						if (!prepared.ok) throw new Error(prepared.reason);
+					}
+				: undefined;
 			generalizedExecution = {
 				executionId: successorExecutionId,
 				runId: predecessorBinding.run_id,
@@ -1190,6 +1225,9 @@ async function handleRetry(
 				launchGateToken,
 				launchGeneration,
 				commitWorkflowLaunch,
+				...(prepareWorkflowIssueDelivery && {
+					prepareWorkflowIssueDelivery,
+				}),
 			};
 		}
 	}
@@ -1467,6 +1505,7 @@ export async function handleTerminate(
 	eventFilter?: EventFilter,
 	registry?: RuntimeRegistry,
 	reason?: string,
+	runCloseAuthority?: RunCloseAuthority,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -1474,6 +1513,37 @@ export async function handleTerminate(
 			success: false,
 			message: `No session found for execution_id ${executionId}`,
 		};
+	}
+	if (
+		session.status === "terminated" &&
+		runCloseAuthority?.mode === "abandon"
+	) {
+		const intent = store.getWorkflowOperatorCloseIntent(executionId);
+		if (intent?.stage === "committed" && intent.mode === "abandon") {
+			try {
+				const cascade = store.cascadeRunTerminationOnCarrierClose({
+					executionId,
+					mode: "abandon",
+					principal: runCloseAuthority.principal,
+					now: new Date().toISOString(),
+				});
+				if (cascade.ok && !cascade.idempotentReplay) {
+					store.ensureTerminalWorkflowRunCollection({
+						runId: cascade.runId,
+						now: new Date().toISOString(),
+					});
+				}
+				return {
+					success: true,
+					message: `${session.issue_identifier ?? executionId} already terminated`,
+				};
+			} catch (error) {
+				return {
+					success: false,
+					message: `Run close cascade failed: ${error instanceof Error ? error.message : String(error)}`,
+				};
+			}
+		}
 	}
 
 	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "terminate");
@@ -1489,6 +1559,17 @@ export async function handleTerminate(
 	// EVERY caller (not just the MCP abandon client) gets the same bound on the
 	// persisted last_error / hook audit content.
 	const auditReason = (reason?.trim() || "Terminated by CEO").slice(0, 500);
+	if (runCloseAuthority) {
+		const prepared = store.prepareWorkflowOperatorCloseIntent({
+			executionId,
+			mode: runCloseAuthority.mode,
+			reason: auditReason,
+			now: new Date().toISOString(),
+		});
+		if (!prepared.ok) {
+			return { success: false, message: prepared.reason };
+		}
+	}
 
 	// 1) TRANSITION FIRST (race-safe): if a concurrent change made this illegal,
 	// fail here with the FSM + tmux untouched.
@@ -1506,6 +1587,13 @@ export async function handleTerminate(
 			{ last_activity_at: sqliteDatetime(), last_error: auditReason },
 		);
 		if (!result.ok) {
+			if (runCloseAuthority) {
+				store.finalizeWorkflowOperatorCloseIntent({
+					executionId,
+					stage: "failed",
+					now: new Date().toISOString(),
+				});
+			}
 			return {
 				success: false,
 				message: result.error ?? "Transition rejected by FSM",
@@ -1580,6 +1668,36 @@ export async function handleTerminate(
 		});
 		if (!finalized.ok) {
 			cleanupError = `commdb finalize failed: ${finalized.error ?? "unknown"}`;
+		}
+	}
+	if (runCloseAuthority) {
+		const intentStage = cleanupError ? "failed" : "committed";
+		const finalized = store.finalizeWorkflowOperatorCloseIntent({
+			executionId,
+			stage: intentStage,
+			now: new Date().toISOString(),
+		});
+		if (!finalized.ok) {
+			cleanupError = `close intent finalization failed: ${finalized.reason}`;
+		} else if (intentStage === "committed") {
+			try {
+				const cascade = store.cascadeRunTerminationOnCarrierClose({
+					executionId,
+					mode: runCloseAuthority.mode,
+					principal: runCloseAuthority.principal,
+					now: new Date().toISOString(),
+				});
+				if (cascade.ok && !cascade.idempotentReplay) {
+					store.ensureTerminalWorkflowRunCollection({
+						runId: cascade.runId,
+						now: new Date().toISOString(),
+					});
+				}
+			} catch (error) {
+				console.warn(
+					`[terminate] run close cascade deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 	}
 	if (cleanupError) {
@@ -1798,6 +1916,13 @@ export function createActionRouter(
 					registry,
 					// FLY-228: optional audit reason (e.g. close_runner --abandon).
 					typeof terminateReason === "string" ? terminateReason : undefined,
+					{
+						mode: "abandon",
+						principal:
+							typeof leadId === "string" && leadId.trim()
+								? leadId.trim()
+								: "founder",
+					},
 				);
 				if (
 					(terminateResult.success || terminateResult.cleanupPending) &&

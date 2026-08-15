@@ -118,6 +118,7 @@ export class WorkflowEventUidConflictError extends Error {
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
 
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
@@ -17290,6 +17291,183 @@ export class StateStore {
 				FOREIGN KEY (idempotency_key) REFERENCES workflow_start_reservation(idempotency_key)
 			)
 		`);
+		// FLY-1707 S1: recovery evidence is attached to the existing authoritative
+		// run frontier. These tables are write-only substrate until later slices
+		// add producers, the shadow resolver, and enforcement.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resume_attachment (
+				attachment_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				target_node_id TEXT NOT NULL,
+				target_attempt INTEGER NOT NULL CHECK (target_attempt > 0),
+				transition_uid TEXT NOT NULL,
+				receipt_kind TEXT NOT NULL CHECK (receipt_kind IN
+				 ('start_reservation','edge_traversed','writer_replacement','rework_replacement',
+				  'operator_rework','route_revision','admission_frontier','resume_replacement')),
+				receipt_digest TEXT NOT NULL,
+				carrier_kind TEXT NOT NULL CHECK (carrier_kind IN
+				 ('git_checkpoint','state_only_checkpoint')),
+				anchor_ref TEXT,
+				anchor_commit TEXT CHECK (anchor_commit IS NULL OR length(anchor_commit) = 40),
+				repo_identity TEXT,
+				snapshot_digest TEXT NOT NULL,
+				resolved_node_digest TEXT NOT NULL,
+				runtime_semantics_digest TEXT,
+				rework_authority_digest TEXT NOT NULL DEFAULT 'none',
+				envelope_json TEXT NOT NULL,
+				schema_version INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL,
+				UNIQUE (run_id, target_node_id, target_attempt, transition_uid),
+				CHECK (
+				  (carrier_kind = 'state_only_checkpoint'
+				   AND anchor_ref IS NULL AND anchor_commit IS NULL AND repo_identity IS NULL)
+				  OR
+				  (carrier_kind = 'git_checkpoint' AND anchor_ref IS NOT NULL
+				   AND repo_identity IS NOT NULL
+				   AND (anchor_commit IS NOT NULL OR receipt_kind = 'start_reservation'))
+				)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resume_attachment_state (
+				attachment_id TEXT PRIMARY KEY,
+				state TEXT NOT NULL CHECK (state IN
+				 ('intent','ref_prepared','store_pushed','ready','invalid')),
+				resolved_anchor_commit TEXT
+				 CHECK (resolved_anchor_commit IS NULL OR length(resolved_anchor_commit) = 40),
+				store_locator TEXT,
+				envelope_stamped_json TEXT,
+				runtime_semantics_stamped TEXT,
+				invalid_reason TEXT,
+				attempt_count INTEGER NOT NULL DEFAULT 0,
+				next_attempt_at TEXT,
+				revision INTEGER NOT NULL DEFAULT 0,
+				updated_at TEXT NOT NULL,
+				CHECK ((state = 'invalid') = (invalid_reason IS NOT NULL)),
+				FOREIGN KEY (attachment_id)
+				 REFERENCES workflow_resume_attachment(attachment_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resume_admission (
+				admission_key TEXT PRIMARY KEY,
+				admission_digest TEXT NOT NULL,
+				run_id TEXT NOT NULL,
+				action_kind TEXT NOT NULL CHECK (action_kind IN
+				 ('redispatch_execution','reconcile_state_only')),
+				source_attachment_id TEXT NOT NULL,
+				result_attachment_id TEXT,
+				target_node_id TEXT NOT NULL,
+				target_attempt INTEGER NOT NULL,
+				new_attempt INTEGER,
+				new_execution_id TEXT UNIQUE,
+				redrive_generation INTEGER,
+				frozen_s3_body TEXT,
+				requested_entry TEXT,
+				verdict TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				CHECK (
+				  (action_kind = 'redispatch_execution'
+				   AND result_attachment_id IS NOT NULL
+				   AND new_attempt IS NOT NULL AND new_execution_id IS NOT NULL
+				   AND redrive_generation IS NULL AND frozen_s3_body IS NOT NULL
+				   AND length(CAST(frozen_s3_body AS BLOB)) <= 262144)
+				  OR
+				  (action_kind = 'reconcile_state_only'
+				   AND result_attachment_id IS NULL
+				   AND new_attempt IS NULL AND new_execution_id IS NULL
+				   AND redrive_generation IS NOT NULL AND frozen_s3_body IS NULL)
+				),
+				FOREIGN KEY (source_attachment_id)
+				 REFERENCES workflow_resume_attachment(attachment_id),
+				FOREIGN KEY (result_attachment_id)
+				 REFERENCES workflow_resume_attachment(attachment_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resume_response (
+				admission_key TEXT PRIMARY KEY,
+				response_json TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (admission_key)
+				 REFERENCES workflow_resume_admission(admission_key)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resume_probe (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id TEXT NOT NULL,
+				probe_kind TEXT NOT NULL CHECK (probe_kind IN ('shadow','admission')),
+				opportunity_key TEXT,
+				proposed_node_id TEXT,
+				proposed_attempt INTEGER,
+				verdict TEXT NOT NULL,
+				detail_json TEXT,
+				created_at TEXT NOT NULL
+			)
+		`);
+		// FLY-1707 S7: explicit operator close intent distinguishes an intentional
+		// carrier teardown from an accidental dead execution during engine repair.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_operator_close_intent (
+				execution_id TEXT PRIMARY KEY,
+				mode TEXT NOT NULL CHECK (mode IN ('done','abandon')),
+				reason TEXT NOT NULL,
+				stage TEXT NOT NULL CHECK (stage IN ('prepared','committed','failed')),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)
+		`);
+		// FLY-1707 S6: a force-cancel freezes the exact live execution set in
+		// the same transaction that terminalizes the run. Physical collection is
+		// restartable and lease-fenced; client keys are run-scoped aliases rather
+		// than receipt identities.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_collect_receipt (
+				receipt_key TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN
+				 ('frozen','collecting','collected','responded')),
+				owner_id TEXT,
+				owner_generation INTEGER,
+				lease_expires_at TEXT,
+				target_list_json TEXT NOT NULL,
+				outcomes_json TEXT NOT NULL DEFAULT '[]',
+				response_json TEXT,
+				updated_at TEXT NOT NULL,
+				UNIQUE (run_id, receipt_key),
+				CHECK ((state = 'responded') = (response_json IS NOT NULL)),
+				CHECK (
+				  (state = 'frozen' AND owner_id IS NULL
+				   AND owner_generation IS NULL AND lease_expires_at IS NULL)
+				  OR
+				  (state IN ('collecting','collected','responded')
+				   AND owner_id IS NOT NULL AND owner_generation > 0
+				   AND lease_expires_at IS NOT NULL)
+				)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_collect_one_open
+			ON workflow_run_collect_receipt(run_id) WHERE state != 'responded'
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_collect_alias (
+				run_id TEXT NOT NULL,
+				client_request_id TEXT NOT NULL,
+				receipt_key TEXT NOT NULL,
+				request_digest TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (run_id, client_request_id),
+				FOREIGN KEY (run_id, receipt_key)
+				 REFERENCES workflow_run_collect_receipt(run_id, receipt_key)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_probe_opportunity
+			ON workflow_resume_probe(probe_kind, opportunity_key)
+			WHERE opportunity_key IS NOT NULL
+		`);
 		// FLY-1407: dispatch route receipts live outside workflow_run because an
 		// explicit no-three-stage bypass is forbidden from creating a workflow
 		// run/reservation. The immutable digest makes a decided claim resumable;
@@ -17440,6 +17618,10 @@ export class StateStore {
 			"workflow_claims",
 			"workflow_claim_revocation",
 			"workflow_run_event",
+			"workflow_resume_attachment",
+			"workflow_resume_admission",
+			"workflow_resume_response",
+			"workflow_run_collect_alias",
 		]) {
 			this.db.run(`
 				CREATE TRIGGER IF NOT EXISTS ${table}_no_update
@@ -17464,6 +17646,291 @@ export class StateStore {
 		while (stmt.step()) rows.push(stmt.getAsObject());
 		stmt.free();
 		return rows;
+	}
+
+	private recordWorkflowResumeAttachmentTx(input: {
+		runId: string;
+		targetNodeId: string;
+		targetAttempt: number;
+		transitionUid: string;
+		receiptKind: WorkflowResumeReceiptKind;
+		receiptPayload: Record<string, unknown>;
+		carrierKind: WorkflowResumeCarrierKind;
+		anchorCommit?: string;
+		repoIdentity?: string;
+		snapshotDigest: string;
+		resolvedNodeDigest: string;
+		runtimeSemanticsDigest?: string;
+		reworkAuthorityDigest?: string;
+		envelopeJson: string;
+		createdAt: string;
+	}): WorkflowResumeAttachmentRow {
+		const prior = this.workflowSelectAll(
+			`SELECT * FROM workflow_resume_attachment
+			  WHERE run_id = ? AND target_node_id = ? AND target_attempt = ?
+			    AND transition_uid = ?`,
+			[
+				input.runId,
+				input.targetNodeId,
+				input.targetAttempt,
+				input.transitionUid,
+			],
+		)[0] as unknown as WorkflowResumeAttachmentRow | undefined;
+		const receiptDigest = canonicalSubmissionDigest(input.receiptPayload);
+		const projection = {
+			runId: input.runId,
+			targetNodeId: input.targetNodeId,
+			targetAttempt: input.targetAttempt,
+			transitionUid: input.transitionUid,
+			receiptKind: input.receiptKind,
+			receiptDigest,
+			carrierKind: input.carrierKind,
+			anchorCommit:
+				input.carrierKind === "git_checkpoint"
+					? (input.anchorCommit ?? null)
+					: null,
+			repoIdentity:
+				input.carrierKind === "git_checkpoint"
+					? (input.repoIdentity ?? "__project__")
+					: null,
+			snapshotDigest: input.snapshotDigest,
+			resolvedNodeDigest: input.resolvedNodeDigest,
+			runtimeSemanticsDigest: input.runtimeSemanticsDigest ?? null,
+			reworkAuthorityDigest: input.reworkAuthorityDigest ?? "none",
+			envelopeJson: input.envelopeJson,
+		};
+		if (prior) {
+			const persisted = {
+				runId: prior.run_id,
+				targetNodeId: prior.target_node_id,
+				targetAttempt: prior.target_attempt,
+				transitionUid: prior.transition_uid,
+				receiptKind: prior.receipt_kind,
+				receiptDigest: prior.receipt_digest,
+				carrierKind: prior.carrier_kind,
+				anchorCommit: prior.anchor_commit,
+				repoIdentity: prior.repo_identity,
+				snapshotDigest: prior.snapshot_digest,
+				resolvedNodeDigest: prior.resolved_node_digest,
+				runtimeSemanticsDigest: prior.runtime_semantics_digest,
+				reworkAuthorityDigest: prior.rework_authority_digest,
+				envelopeJson: prior.envelope_json,
+			};
+			if (
+				canonicalSubmissionDigest(persisted) !==
+				canonicalSubmissionDigest(projection)
+			) {
+				throw new Error("workflow_resume_attachment_conflict");
+			}
+			return prior;
+		}
+		const attachmentId = randomUUID();
+		const anchorRef =
+			input.carrierKind === "git_checkpoint"
+				? `refs/flywheel/checkpoints/${input.runId}/${attachmentId}`
+				: null;
+		this.db.run(
+			`INSERT INTO workflow_resume_attachment (
+			   attachment_id, run_id, target_node_id, target_attempt, transition_uid,
+			   receipt_kind, receipt_digest, carrier_kind, anchor_ref, anchor_commit,
+			   repo_identity, snapshot_digest, resolved_node_digest,
+			   runtime_semantics_digest, rework_authority_digest, envelope_json,
+			   created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				attachmentId,
+				input.runId,
+				input.targetNodeId,
+				input.targetAttempt,
+				input.transitionUid,
+				input.receiptKind,
+				receiptDigest,
+				input.carrierKind,
+				anchorRef,
+				input.carrierKind === "git_checkpoint"
+					? (input.anchorCommit ?? null)
+					: null,
+				input.carrierKind === "git_checkpoint"
+					? (input.repoIdentity ?? "__project__")
+					: null,
+				input.snapshotDigest,
+				input.resolvedNodeDigest,
+				input.runtimeSemanticsDigest ?? null,
+				input.reworkAuthorityDigest ?? "none",
+				input.envelopeJson,
+				input.createdAt,
+			],
+		);
+		this.db.run(
+			`INSERT INTO workflow_resume_attachment_state
+			   (attachment_id, state, updated_at) VALUES (?, 'intent', ?)`,
+			[attachmentId, input.createdAt],
+		);
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+			[attachmentId],
+		)[0] as unknown as WorkflowResumeAttachmentRow;
+	}
+
+	private recordWorkflowResumeTargetUnrecoverableTx(input: {
+		runId: string;
+		targetNodeId: string;
+		targetAttempt: number;
+		transitionUid: string;
+		reason: WorkflowResumeFailureReason;
+		detail: Record<string, unknown>;
+		createdAt: string;
+	}): void {
+		const eventUid = `resume_target_unrecoverable:${input.transitionUid}`;
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid,
+			kind: "resume_target_unrecoverable",
+			nodeId: input.targetNodeId,
+			payload: {
+				targetNodeId: input.targetNodeId,
+				targetAttempt: input.targetAttempt,
+				transitionUid: input.transitionUid,
+				reason: input.reason,
+				detail: input.detail,
+			},
+		});
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_resume_probe
+			   (run_id, probe_kind, opportunity_key, proposed_node_id,
+			    proposed_attempt, verdict, detail_json, created_at)
+			 VALUES (?, 'shadow', ?, ?, ?, ?, ?, ?)`,
+			[
+				input.runId,
+				eventUid,
+				input.targetNodeId,
+				input.targetAttempt,
+				input.reason,
+				JSON.stringify(input.detail),
+				input.createdAt,
+			],
+		);
+	}
+
+	private recordWorkflowResumeEvidenceSafelyTx<T>(
+		input: {
+			runId: string;
+			targetNodeId: string;
+			targetAttempt: number;
+			transitionUid: string;
+			createdAt: string;
+		},
+		write: () => T,
+	): T | undefined {
+		this.db.run("SAVEPOINT workflow_resume_evidence");
+		try {
+			const value = write();
+			this.db.run("RELEASE SAVEPOINT workflow_resume_evidence");
+			return value;
+		} catch (error) {
+			this.db.run("ROLLBACK TO SAVEPOINT workflow_resume_evidence");
+			this.db.run("RELEASE SAVEPOINT workflow_resume_evidence");
+			if (
+				!(error instanceof WorkflowEventUidConflictError) &&
+				!(error instanceof Error && error.message.startsWith("workflow_resume_"))
+			) {
+				throw error;
+			}
+			try {
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_resume_probe
+					   (run_id, probe_kind, opportunity_key, proposed_node_id,
+					    proposed_attempt, verdict, detail_json, created_at)
+					 VALUES (?, 'shadow', ?, ?, ?, 'receipt_digest_mismatch', ?, ?)`,
+					[
+						input.runId,
+						`resume_evidence_conflict:${input.transitionUid}`,
+						input.targetNodeId,
+						input.targetAttempt,
+						JSON.stringify({
+							transitionUid: input.transitionUid,
+							cause: error.message,
+						}),
+						input.createdAt,
+					],
+				);
+			} catch {
+				// Resume-only diagnostics never roll back the host DAG mutation.
+			}
+			return undefined;
+		}
+	}
+
+	private recordWorkflowResumeInheritedAttachmentTx(input: {
+		source: WorkflowResumeAttachmentRow;
+		runId: string;
+		targetNodeId: string;
+		targetAttempt: number;
+		transitionUid: string;
+		receiptKind: WorkflowResumeReceiptKind;
+		receiptPayload: Record<string, unknown>;
+		createdAt: string;
+	}): WorkflowResumeAttachmentRow | undefined {
+		const sourceState = this.getWorkflowResumeAttachmentState(
+			input.source.attachment_id,
+		);
+		if (!sourceState || sourceState.state === "invalid") return undefined;
+		const anchorCommit =
+			input.source.anchor_commit ?? sourceState.resolved_anchor_commit;
+		if (input.source.carrier_kind === "git_checkpoint" && !anchorCommit) {
+			return undefined;
+		}
+		const attachmentId = randomUUID();
+		this.db.run(
+			`INSERT INTO workflow_resume_attachment (
+			   attachment_id, run_id, target_node_id, target_attempt, transition_uid,
+			   receipt_kind, receipt_digest, carrier_kind, anchor_ref, anchor_commit,
+			   repo_identity, snapshot_digest, resolved_node_digest,
+			   runtime_semantics_digest, rework_authority_digest, envelope_json,
+			   created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				attachmentId,
+				input.runId,
+				input.targetNodeId,
+				input.targetAttempt,
+				input.transitionUid,
+				input.receiptKind,
+				canonicalSubmissionDigest(input.receiptPayload),
+				input.source.carrier_kind,
+				input.source.anchor_ref,
+				input.source.carrier_kind === "git_checkpoint"
+					? anchorCommit
+					: null,
+				input.source.repo_identity,
+				input.source.snapshot_digest,
+				input.source.resolved_node_digest,
+				input.source.runtime_semantics_digest,
+				input.source.rework_authority_digest,
+				input.source.envelope_json,
+				input.createdAt,
+			],
+		);
+		this.db.run(
+			`INSERT INTO workflow_resume_attachment_state (
+			   attachment_id, state, resolved_anchor_commit, store_locator,
+			   envelope_stamped_json, runtime_semantics_stamped,
+			   attempt_count, next_attempt_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
+			[
+				attachmentId,
+				sourceState.state,
+				sourceState.resolved_anchor_commit,
+				sourceState.store_locator,
+				sourceState.envelope_stamped_json,
+				sourceState.runtime_semantics_stamped,
+				input.createdAt,
+			],
+		);
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+			[attachmentId],
+		)[0] as unknown as WorkflowResumeAttachmentRow;
 	}
 
 	/** Fail-closed expiry: AT the expiry instant counts as expired. */
@@ -18858,6 +19325,7 @@ export class StateStore {
 				],
 			);
 			if (input.startReservation) {
+				const startReservation = input.startReservation;
 				this.db.run(
 					`INSERT INTO workflow_start_reservation
 					   (idempotency_key, selection_digest, run_id, node_id, attempt,
@@ -18897,6 +19365,67 @@ export class StateStore {
 						executionId: input.startReservation.executionId,
 					});
 				}
+				const startNode = engineSnapshot?.resolved.nodes.find(
+					(node) => node.id === input.startReservation!.nodeId,
+				);
+				if (!engineSnapshot || !startNode) {
+					throw new Error("workflow_resume_start_node_missing");
+				}
+				const resumeOriginUid = `resume_origin:${input.runId}`;
+				const resumeOriginReceipt = {
+					targetNodeId: input.startReservation.nodeId,
+					targetAttempt: input.startReservation.attempt,
+					executionId: input.startReservation.executionId,
+					startReservationKey: input.startReservation.idempotencyKey,
+					snapshotDigest: engineSnapshot.snapshot_digest,
+				};
+				this.recordWorkflowResumeEvidenceSafelyTx(
+					{
+						runId: input.runId,
+						targetNodeId: startReservation.nodeId,
+						targetAttempt: startReservation.attempt,
+						transitionUid: resumeOriginUid,
+						createdAt: startReservation.createdAt,
+					},
+					() => {
+						this.appendWorkflowRunEventCheckedTx({
+							runId: input.runId,
+							eventUid: resumeOriginUid,
+							kind: "start_reservation",
+							nodeId: startReservation.nodeId,
+							executionId: startReservation.executionId,
+							payload: resumeOriginReceipt,
+						});
+						return this.recordWorkflowResumeAttachmentTx({
+							runId: input.runId,
+							targetNodeId: startReservation.nodeId,
+							targetAttempt: startReservation.attempt,
+							transitionUid: resumeOriginUid,
+							receiptKind: "start_reservation",
+							receiptPayload: resumeOriginReceipt,
+							carrierKind:
+								startNode.type === "gate" || !startNode.dispatch
+									? "state_only_checkpoint"
+									: "git_checkpoint",
+							repoIdentity: input.canonicalRoot ?? input.projectName,
+							snapshotDigest: engineSnapshot.snapshot_digest,
+							resolvedNodeDigest: canonicalSubmissionDigest(startNode),
+							...(startNode.type === "gate" || !startNode.dispatch
+								? {
+										runtimeSemanticsDigest: canonicalSubmissionDigest({
+											type: startNode.type,
+											capabilities: startNode.capabilities,
+										}),
+									}
+								: {}),
+							envelopeJson: JSON.stringify({
+								schemaVersion: 1,
+								issueBaselineUid: `issue_input_baseline:${input.runId}`,
+							}),
+							createdAt: startReservation.createdAt,
+						});
+					},
+				);
 			}
 			if (applied.override) {
 				this.db.run(
@@ -19016,6 +19545,1423 @@ export class StateStore {
 			entry_kind: (r.entry_kind as string) ?? null,
 			created_at: r.created_at as string,
 		};
+	}
+
+	listWorkflowResumeAttachments(input: {
+		runId: string;
+		nodeId?: string;
+		attempt?: number;
+	}): WorkflowResumeAttachmentRow[] {
+		const clauses = ["run_id = ?"];
+		const params: unknown[] = [input.runId];
+		if (input.nodeId !== undefined) {
+			clauses.push("target_node_id = ?");
+			params.push(input.nodeId);
+		}
+		if (input.attempt !== undefined) {
+			clauses.push("target_attempt = ?");
+			params.push(input.attempt);
+		}
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_resume_attachment
+			  WHERE ${clauses.join(" AND ")}
+			  ORDER BY created_at, rowid`,
+			params,
+		) as unknown as WorkflowResumeAttachmentRow[];
+	}
+
+	listWorkflowResumeShadowOpportunities(
+		limit = 3,
+	): WorkflowResumeShadowOpportunity[] {
+		const terminalStatuses = [...OPERATIONAL_TERMINAL_STATUSES];
+		const terminalPlaceholders = terminalStatuses.map(() => "?").join(",");
+		const rows = this.workflowSelectAll(
+			`SELECT a.*, s.state AS checkpoint_state, s.resolved_anchor_commit,
+			        s.store_locator, s.envelope_stamped_json,
+			        s.runtime_semantics_stamped, s.invalid_reason,
+			        s.attempt_count, s.next_attempt_at, s.revision,
+			        s.updated_at AS state_updated_at, r.issue_id, r.project_name,
+			        n.state AS node_state, n.execution_id AS node_execution_id
+			   FROM workflow_resume_attachment a
+			   JOIN workflow_resume_attachment_state s
+			     ON s.attachment_id = a.attachment_id
+			   JOIN workflow_run r ON r.run_id = a.run_id
+			   JOIN workflow_run_node n
+			     ON n.run_id = a.run_id AND n.node_id = a.target_node_id
+			    AND n.attempt = a.target_attempt
+			  WHERE r.status = 'active' AND r.engine_owned = 1
+			    AND r.current_node_id = a.target_node_id
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_run_node newer_node
+			       WHERE newer_node.run_id = n.run_id
+			         AND newer_node.node_id = n.node_id
+			         AND newer_node.attempt > n.attempt
+			    )
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_resume_attachment newer_attachment
+			       WHERE newer_attachment.run_id = a.run_id
+			         AND newer_attachment.rowid > a.rowid
+			    )
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_resume_probe p
+			       WHERE p.probe_kind = 'shadow'
+			         AND p.opportunity_key = a.attachment_id || ':' || s.state
+			    )
+			    AND (
+			      (a.carrier_kind = 'git_checkpoint'
+			       AND n.execution_id IS NOT NULL
+			       AND EXISTS (
+			         SELECT 1 FROM workflow_run_event delivery
+			          WHERE delivery.run_id = a.run_id
+			            AND delivery.kind = 'issue_delivery'
+			            AND delivery.node_id = a.target_node_id
+			            AND delivery.execution_id = n.execution_id
+			       )
+			       AND (
+			         EXISTS (SELECT 1 FROM sessions session
+			                  WHERE session.execution_id = n.execution_id
+			                    AND session.status IN (${terminalPlaceholders}))
+			         OR EXISTS (SELECT 1 FROM workflow_launch_cancellation cancellation
+			                     WHERE cancellation.execution_id = n.execution_id)
+			         OR EXISTS (SELECT 1 FROM workflow_dead_execution_watch dead
+			                     WHERE dead.dead_execution_id = n.execution_id
+			                       AND dead.run_id = a.run_id
+			                       AND dead.node_id = a.target_node_id
+			                       AND dead.attempt = a.target_attempt)
+			       ))
+			      OR
+			      (a.carrier_kind = 'state_only_checkpoint' AND s.state = 'ready'
+			       AND n.state = 'review'
+			       AND EXISTS (
+			         SELECT 1 FROM workflow_gate_holder holder
+			         JOIN workflow_run_event transition_receipt
+			           ON transition_receipt.event_uid = a.transition_uid
+			          AND transition_receipt.run_id = a.run_id
+			          AND transition_receipt.execution_id = holder.source_execution_id
+			         JOIN workflow_run_event holder_receipt
+			           ON holder_receipt.event_uid = 'gate_holder:' || holder.question_id
+			          AND holder_receipt.run_id = holder.run_id
+			          AND holder_receipt.kind = 'gate_holder_created'
+			          AND holder_receipt.node_id = holder.gate_node_id
+			          AND holder_receipt.execution_id = holder.source_execution_id
+			        WHERE holder.run_id = a.run_id
+			          AND holder.gate_node_id = a.target_node_id
+			          AND holder.attempt = a.target_attempt
+			          AND holder.state = 'awaiting_review'
+			       ))
+			    )
+			  ORDER BY a.created_at, a.attachment_id
+			  LIMIT ?`,
+			[
+				...terminalStatuses,
+				Math.max(1, Math.min(100, Math.trunc(limit))),
+			],
+		);
+		return rows.map((row) => ({
+			runId: row.run_id as string,
+			issueId: row.issue_id as string,
+			projectName: row.project_name as string,
+			opportunityKey: `${row.attachment_id as string}:${row.checkpoint_state as string}`,
+			attachment: row as unknown as WorkflowResumeAttachmentRow,
+			state: {
+				attachment_id: row.attachment_id as string,
+				state: row.checkpoint_state as WorkflowResumeAttachmentState,
+				resolved_anchor_commit:
+					(row.resolved_anchor_commit as string | null) ?? null,
+				store_locator: (row.store_locator as string | null) ?? null,
+				envelope_stamped_json:
+					(row.envelope_stamped_json as string | null) ?? null,
+				runtime_semantics_stamped:
+					(row.runtime_semantics_stamped as string | null) ?? null,
+				invalid_reason:
+					(row.invalid_reason as WorkflowResumeFailureReason | null) ?? null,
+				attempt_count: Number(row.attempt_count),
+				next_attempt_at: (row.next_attempt_at as string | null) ?? null,
+				revision: Number(row.revision),
+				updated_at: row.state_updated_at as string,
+			},
+		}));
+	}
+
+	recordWorkflowResumeProbe(input: {
+		runId: string;
+		opportunityKey?: string;
+		probeKind?: "shadow" | "admission";
+		proposedNodeId?: string;
+		proposedAttempt?: number;
+		verdict: "proposed" | WorkflowResumeFailureReason;
+		detail?: Record<string, unknown>;
+		createdAt: string;
+	}): boolean {
+		if (!input.runId || !StateStore.workflowFiniteTimestamp(input.createdAt)) {
+			return false;
+		}
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_resume_probe
+			   (run_id, probe_kind, opportunity_key, proposed_node_id,
+			    proposed_attempt, verdict, detail_json, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.runId,
+				input.probeKind ?? "shadow",
+				input.opportunityKey ?? null,
+				input.proposedNodeId ?? null,
+				input.proposedAttempt ?? null,
+				input.verdict,
+				input.detail ? JSON.stringify(input.detail) : null,
+				input.createdAt,
+			],
+		);
+		const inserted = this.db.getRowsModified() === 1;
+		if (inserted) this.save();
+		return inserted;
+	}
+
+	listWorkflowResumeProbes(runId?: string): WorkflowResumeProbeRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_resume_probe
+			  ${runId ? "WHERE run_id = ?" : ""}
+			  ORDER BY id`,
+			runId ? [runId] : [],
+		) as unknown as WorkflowResumeProbeRow[];
+	}
+
+	getWorkflowResumeAdmission(
+		admissionKey: string,
+	): WorkflowResumeAdmissionRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_admission WHERE admission_key = ?",
+			[admissionKey],
+		)[0];
+		if (!row) return undefined;
+		return {
+			admission_key: row.admission_key as string,
+			admission_digest: row.admission_digest as string,
+			run_id: row.run_id as string,
+			action_kind: row.action_kind as WorkflowResumeActionKind,
+			source_attachment_id: row.source_attachment_id as string,
+			result_attachment_id:
+				(row.result_attachment_id as string | null) ?? null,
+			target_node_id: row.target_node_id as string,
+			target_attempt: Number(row.target_attempt),
+			new_attempt:
+				row.new_attempt == null ? null : Number(row.new_attempt),
+			new_execution_id: (row.new_execution_id as string | null) ?? null,
+			redrive_generation:
+				row.redrive_generation == null
+					? null
+					: Number(row.redrive_generation),
+			frozen_s3_body: (row.frozen_s3_body as string | null) ?? null,
+			requested_entry: (row.requested_entry as string | null) ?? null,
+			verdict: row.verdict as string,
+			created_at: row.created_at as string,
+		};
+	}
+
+	getWorkflowResumeAdmissionForExecution(
+		executionId: string,
+	): WorkflowResumeAdmissionRow | undefined {
+		const admissionKey = this.workflowSelectAll(
+			`SELECT admission_key FROM workflow_resume_admission
+			  WHERE new_execution_id = ? AND action_kind = 'redispatch_execution'`,
+			[executionId],
+		)[0]?.admission_key;
+		return typeof admissionKey === "string"
+			? this.getWorkflowResumeAdmission(admissionKey)
+			: undefined;
+	}
+
+	getWorkflowResumeAttachment(
+		attachmentId: string,
+	): WorkflowResumeAttachmentRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+			[attachmentId],
+		)[0] as unknown as WorkflowResumeAttachmentRow | undefined;
+	}
+
+	getWorkflowResumeResponse(
+		admissionKey: string,
+	): Record<string, unknown> | undefined {
+		const value = this.workflowSelectAll(
+			"SELECT response_json FROM workflow_resume_response WHERE admission_key = ?",
+			[admissionKey],
+		)[0]?.response_json;
+		if (typeof value !== "string") return undefined;
+		try {
+			return JSON.parse(value) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+	}
+
+	recordWorkflowResumeResponse(input: {
+		admissionKey: string;
+		response: Record<string, unknown>;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.admissionKey ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const responseJson = JSON.stringify(input.response);
+		const prior = this.workflowSelectAll(
+			"SELECT response_json FROM workflow_resume_response WHERE admission_key = ?",
+			[input.admissionKey],
+		)[0]?.response_json;
+		if (typeof prior === "string") {
+			return prior === responseJson
+				? { ok: true, idempotentReplay: true }
+				: { ok: false, reason: "response_conflict" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: false }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "admission_missing",
+		};
+		this.db.transaction(() => {
+			const admission = this.getWorkflowResumeAdmission(input.admissionKey);
+			if (!admission) return;
+			const events = this.listWorkflowRunEvents(admission.run_id);
+			const evidencePresent =
+				admission.action_kind === "redispatch_execution"
+					? events.some((event) => {
+							if (
+								event.kind !== "issue_delivery" ||
+								event.execution_id !== admission.new_execution_id
+							) {
+								return false;
+							}
+							const payload = event.payload as Record<string, unknown> | null;
+							return (
+								payload?.sourceKind === "frozen_replay" &&
+								payload.admissionKey === admission.admission_key &&
+								payload.sourceAttachmentId ===
+									admission.source_attachment_id &&
+								payload.body === admission.frozen_s3_body
+							);
+						})
+					: events.some(
+							(event) =>
+								event.event_uid ===
+								`resume_redrive_ack:${admission.admission_key}` &&
+								event.kind === "resume_redrive_ack",
+						);
+			if (!evidencePresent) {
+				result = { ok: false, reason: "completion_evidence_missing" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_resume_response
+				   (admission_key, response_json, created_at) VALUES (?, ?, ?)`,
+				[input.admissionKey, responseJson, input.now],
+			);
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowResumeRedriveWork(limit = 20): WorkflowResumeAdmissionRow[] {
+		return this.workflowSelectAll(
+			`SELECT admission_key FROM workflow_resume_admission admission
+			  WHERE action_kind = 'reconcile_state_only'
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_run_event event
+			       WHERE event.run_id = admission.run_id
+			         AND event.event_uid = 'resume_redrive_ack:' || admission.admission_key
+			    )
+			  ORDER BY created_at, admission_key
+			  LIMIT ?`,
+			[Math.max(1, Math.min(100, Math.trunc(limit)))],
+		)
+			.map((row) => this.getWorkflowResumeAdmission(String(row.admission_key)))
+			.filter(
+				(row): row is WorkflowResumeAdmissionRow => row !== undefined,
+			);
+	}
+
+	ackWorkflowResumeRedrive(input: {
+		admissionKey: string;
+		questionId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.admissionKey ||
+			!input.questionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "admission_missing",
+		};
+		this.db.transaction(() => {
+			const admission = this.getWorkflowResumeAdmission(input.admissionKey);
+			if (!admission || admission.action_kind !== "reconcile_state_only") return;
+			const eventUid = `resume_redrive_ack:${input.admissionKey}`;
+			if (
+				this.listWorkflowRunEvents(admission.run_id).some(
+					(event) => event.event_uid === eventUid,
+				)
+			) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			const holder = this.getCurrentWorkflowGateHolder(
+				admission.run_id,
+				admission.target_node_id,
+			);
+			if (
+				!holder ||
+				holder.question_id !== input.questionId ||
+				holder.attempt !== admission.target_attempt ||
+				holder.state !== "awaiting_review" ||
+				holder.materialization_stage !== "completed"
+			) {
+				result = { ok: false, reason: "authority_context_mismatch" };
+				return;
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: admission.run_id,
+				eventUid,
+				kind: "resume_redrive_ack",
+				nodeId: admission.target_node_id,
+				executionId: holder.source_execution_id,
+				payload: {
+					questionId: input.questionId,
+					redriveGeneration: admission.redrive_generation,
+					sourceAttachmentId: admission.source_attachment_id,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	admitWorkflowResume(input: {
+		admissionKey: string;
+		admissionDigest: string;
+		runId: string;
+		actionKind: WorkflowResumeActionKind;
+		sourceAttachmentId: string;
+		targetNodeId: string;
+		targetAttempt: number;
+		runtimeSemanticsDigest: string;
+		observedBodyDigest: string;
+		effectiveAnchor?: string;
+		frozenBody?: string;
+		requestedEntry?: string;
+		newExecutionId?: string;
+		now: string;
+	}): WorkflowResumeAdmissionResult {
+		if (
+			!input.admissionKey ||
+			!/^[0-9a-f]{64}$/i.test(input.admissionDigest) ||
+			!input.runId ||
+			!input.sourceAttachmentId ||
+			!input.targetNodeId ||
+			!Number.isInteger(input.targetAttempt) ||
+			input.targetAttempt < 1 ||
+			!/^[0-9a-f]{64}$/i.test(input.observedBodyDigest) ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.requestedEntry !== undefined &&
+				input.requestedEntry !== input.targetNodeId)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const prior = this.getWorkflowResumeAdmission(input.admissionKey);
+		if (prior) {
+			return prior.admission_digest === input.admissionDigest
+				? {
+						ok: true,
+						idempotentReplay: true,
+						actionKind: prior.action_kind,
+						targetNodeId: prior.target_node_id,
+						targetAttempt: prior.target_attempt,
+						...(prior.result_attachment_id
+							? { resultAttachmentId: prior.result_attachment_id }
+							: {}),
+						...(prior.new_attempt !== null
+							? { newAttempt: prior.new_attempt }
+							: {}),
+						...(prior.new_execution_id
+							? { newExecutionId: prior.new_execution_id }
+							: {}),
+						...(prior.redrive_generation !== null
+							? { redriveGeneration: prior.redrive_generation }
+							: {}),
+					}
+				: { ok: false, reason: "admission_conflict" };
+		}
+		let result: WorkflowResumeAdmissionResult = {
+			ok: false,
+			reason: "target_moved",
+		};
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.targetNodeId
+			) {
+				result = { ok: false, reason: "run_not_active" };
+				return;
+			}
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.targetNodeId,
+				input.targetAttempt,
+			);
+			const latestNode = this.listWorkflowRunNodes(
+				input.runId,
+				input.targetNodeId,
+			).at(-1);
+			if (!node || latestNode?.attempt !== input.targetAttempt) {
+				result = { ok: false, reason: "target_moved" };
+				return;
+			}
+			const source = this.listWorkflowResumeAttachments({
+				runId: input.runId,
+			}).at(-1);
+			const sourceState = source
+				? this.getWorkflowResumeAttachmentState(source.attachment_id)
+				: undefined;
+			const effectiveRuntime =
+				source?.runtime_semantics_digest ??
+				sourceState?.runtime_semantics_stamped;
+			if (
+				!source ||
+				source.attachment_id !== input.sourceAttachmentId ||
+				source.target_node_id !== input.targetNodeId ||
+				source.target_attempt !== input.targetAttempt ||
+				sourceState?.state !== "ready"
+			) {
+				result = { ok: false, reason: "attachment_frontier_divergence" };
+				return;
+			}
+			if (effectiveRuntime !== input.runtimeSemanticsDigest) {
+				result = { ok: false, reason: "runtime_mismatch" };
+				return;
+			}
+			let stampedEnvelope: Record<string, unknown> | undefined;
+			try {
+				stampedEnvelope = JSON.parse(
+					sourceState.envelope_stamped_json ?? "null",
+				) as Record<string, unknown>;
+			} catch {
+				// The resolver already rejected malformed stamps; repeat the check in
+				// this write transaction so admission cannot race a changed frontier.
+			}
+			const stampedBaseline = stampedEnvelope?.issueBaseline as
+				| Record<string, unknown>
+				| undefined;
+			if (
+				stampedEnvelope?.schemaVersion !== 1 ||
+				typeof stampedBaseline?.bodyDigest !== "string" ||
+				input.observedBodyDigest !== stampedBaseline.bodyDigest
+			) {
+				result = { ok: false, reason: "envelope_changed:issue_body" };
+				return;
+			}
+
+			if (input.actionKind === "redispatch_execution") {
+				const effectiveAnchor =
+					source.anchor_commit ?? sourceState.resolved_anchor_commit;
+				const oldExecutionId = node.execution_id;
+				const oldSession = oldExecutionId
+					? this.getSession(oldExecutionId)
+					: undefined;
+				const oldDead = oldExecutionId
+					? this.getWorkflowDeadExecutionWatch(oldExecutionId)
+					: undefined;
+				const migrationDelivery = oldExecutionId
+					? this.listWorkflowRunEvents(input.runId)
+							.filter(
+								(event) =>
+									event.kind === "issue_delivery" &&
+									event.node_id === input.targetNodeId &&
+									event.execution_id === oldExecutionId,
+							)
+							.at(-1)
+					: undefined;
+				const migrationPayload =
+					migrationDelivery?.payload &&
+					typeof migrationDelivery.payload === "object"
+						? (migrationDelivery.payload as Record<string, unknown>)
+						: undefined;
+				const migrationBinding =
+					migrationPayload?.sourceKind === "writer_migration" &&
+					typeof migrationPayload.migrationBindingUid === "string"
+						? this.listWorkflowRunEvents(input.runId).find(
+								(event) =>
+									event.event_uid === migrationPayload.migrationBindingUid,
+							)
+						: undefined;
+				const migrationBindingPayload =
+					migrationBinding?.payload &&
+					typeof migrationBinding.payload === "object"
+						? (migrationBinding.payload as Record<string, unknown>)
+						: undefined;
+				const unlaunchedReplacementFenced =
+					typeof oldExecutionId === "string" &&
+					migrationBinding?.kind === "resume_writer_binding" &&
+					migrationBinding.execution_id === oldExecutionId &&
+					migrationBindingPayload?.writerTransitionUid ===
+						source.transition_uid &&
+					typeof migrationBindingPayload.sourceExecutionId === "string" &&
+					Number.isInteger(migrationBindingPayload.launchOrdinal) &&
+					this.isUnlaunchedWorkflowResumeReplacement({
+						runId: input.runId,
+						nodeId: input.targetNodeId,
+						attempt: input.targetAttempt,
+						sourceExecutionId:
+							migrationBindingPayload.sourceExecutionId,
+						newExecutionId: oldExecutionId,
+						launchOrdinal: Number(migrationBindingPayload.launchOrdinal),
+					});
+				if (
+					source.carrier_kind !== "git_checkpoint" ||
+					!oldExecutionId ||
+					!input.newExecutionId ||
+					this.getWorkflowActor(input.newExecutionId) ||
+					input.frozenBody === undefined ||
+					!effectiveAnchor ||
+					input.effectiveAnchor?.toLowerCase() !==
+						effectiveAnchor.toLowerCase()
+				) {
+					result = { ok: false, reason: "carrier_action_mismatch" };
+					return;
+				}
+				if (Buffer.byteLength(input.frozenBody, "utf8") > 262_144) {
+					result = { ok: false, reason: "frozen_input_too_large" };
+					return;
+				}
+				if (
+					createHash("sha256").update(input.frozenBody).digest("hex") !==
+						input.observedBodyDigest
+				) {
+					result = { ok: false, reason: "envelope_changed:issue_body" };
+					return;
+				}
+				const writerFenced =
+					unlaunchedReplacementFenced ||
+					Boolean(this.getWorkflowLaunchCancellation(oldExecutionId)) ||
+					isStateStoreIrreversibleTerminalForZombie(oldSession?.status) ||
+					(oldDead?.run_id === input.runId &&
+						oldDead.node_id === input.targetNodeId &&
+						oldDead.attempt === input.targetAttempt);
+				if (!writerFenced) {
+					result = {
+						ok: false,
+						reason: oldSession
+							? "writer_not_fenced"
+							: "writer_liveness_unknown",
+					};
+					return;
+				}
+				const newAttempt = input.targetAttempt + 1;
+				this.db.run(
+					`UPDATE workflow_run_node
+					    SET state = 'superseded', ended_at = COALESCE(ended_at, ?)
+					  WHERE run_id = ? AND node_id = ? AND attempt = ?
+					    AND execution_id = ? AND state IN ('pending','admitted','running')`,
+					[
+						input.now,
+						input.runId,
+						input.targetNodeId,
+						input.targetAttempt,
+						oldExecutionId,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "target_moved" };
+					return;
+				}
+				for (const table of [
+					"workflow_output_credential",
+					"workflow_submission_credential",
+				]) {
+					this.db.run(
+						`UPDATE ${table}
+						    SET revoked = 1, revoked_reason = 'workflow_resume_superseded'
+						  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+						[oldExecutionId],
+					);
+				}
+				const owner = this.getWorkflowLaunchOwner(oldExecutionId);
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						oldExecutionId,
+						run.project_name,
+						run.issue_id,
+						input.targetNodeId,
+						input.now,
+					],
+				);
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_launch_cancellation
+					   (execution_id, generation, reason, created_at)
+					 VALUES (?, ?, 'workflow_resume_superseded', ?)`,
+					[oldExecutionId, (owner?.owner_generation ?? 0) + 1, input.now],
+				);
+				this.db.run(
+					`UPDATE lifecycle_launch_claims SET state = 'closed', updated_at = ?
+					  WHERE execution_id = ? AND state IN ('starting','active')`,
+					[input.now, oldExecutionId],
+				);
+				this.allocateWorkflowLaunchOrdinalTx(
+					input.runId,
+					input.targetNodeId,
+					newAttempt,
+					input.newExecutionId,
+				);
+				this.upsertWorkflowRunNodeTx({
+					runId: input.runId,
+					nodeId: input.targetNodeId,
+					attempt: newAttempt,
+					state: "pending",
+					executionId: input.newExecutionId,
+				});
+				this.db.run(
+					`INSERT INTO workflow_actor
+					   (execution_id, project_name, issue_id, role, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						input.newExecutionId,
+						run.project_name,
+						run.issue_id,
+						input.targetNodeId,
+						input.now,
+					],
+				);
+				const transitionUid = `resume_replacement:${input.admissionKey}`;
+				const receipt = {
+					targetNodeId: input.targetNodeId,
+					targetAttempt: newAttempt,
+					sourceAttempt: input.targetAttempt,
+					sourceExecutionId: oldExecutionId,
+					newExecutionId: input.newExecutionId,
+					admissionKey: input.admissionKey,
+					effectiveAnchor,
+				};
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: transitionUid,
+					kind: "resume_replacement",
+					nodeId: input.targetNodeId,
+					executionId: input.newExecutionId,
+					payload: receipt,
+				});
+				const inherited = this.recordWorkflowResumeInheritedAttachmentTx({
+					source,
+					runId: input.runId,
+					targetNodeId: input.targetNodeId,
+					targetAttempt: newAttempt,
+					transitionUid,
+					receiptKind: "resume_replacement",
+					receiptPayload: receipt,
+					createdAt: input.now,
+				});
+				if (!inherited) {
+					throw new Error("workflow_resume_source_state_changed");
+				}
+				this.db.run(
+					`INSERT INTO workflow_resume_admission
+					   (admission_key, admission_digest, run_id, action_kind,
+					    source_attachment_id, result_attachment_id, target_node_id,
+					    target_attempt, new_attempt, new_execution_id, frozen_s3_body,
+					    requested_entry, verdict, created_at)
+					 VALUES (?, ?, ?, 'redispatch_execution', ?, ?, ?, ?, ?, ?, ?, ?,
+					         'admitted', ?)`,
+					[
+						input.admissionKey,
+						input.admissionDigest,
+						input.runId,
+						input.sourceAttachmentId,
+						inherited.attachment_id,
+						input.targetNodeId,
+						input.targetAttempt,
+						newAttempt,
+						input.newExecutionId,
+						input.frozenBody,
+						input.requestedEntry ?? null,
+						input.now,
+					],
+				);
+				result = {
+					ok: true,
+					idempotentReplay: false,
+					actionKind: "redispatch_execution",
+					targetNodeId: input.targetNodeId,
+					targetAttempt: input.targetAttempt,
+					resultAttachmentId: inherited.attachment_id,
+					newAttempt,
+					newExecutionId: input.newExecutionId,
+				};
+				return;
+			}
+
+			if (
+				input.actionKind !== "reconcile_state_only" ||
+				source.carrier_kind !== "state_only_checkpoint" ||
+				input.effectiveAnchor !== undefined ||
+				input.frozenBody !== undefined ||
+				input.newExecutionId !== undefined ||
+				node.state !== "review"
+			) {
+				result = { ok: false, reason: "carrier_action_mismatch" };
+				return;
+			}
+			const holder = this.getCurrentWorkflowGateHolder(
+				input.runId,
+				input.targetNodeId,
+			);
+			if (
+				!holder ||
+				holder.attempt !== input.targetAttempt ||
+				holder.state !== "awaiting_review"
+			) {
+				result = { ok: false, reason: "authority_context_mismatch" };
+				return;
+			}
+			const redriveGeneration =
+				Number(
+					this.workflowSelectAll(
+						`SELECT COALESCE(MAX(redrive_generation), 0) AS generation
+						   FROM workflow_resume_admission
+						  WHERE run_id = ? AND target_node_id = ? AND target_attempt = ?`,
+						[input.runId, input.targetNodeId, input.targetAttempt],
+					)[0]?.generation ?? 0,
+				) + 1;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `resume_redrive:${input.admissionKey}`,
+				kind: "resume_redrive_requested",
+				nodeId: input.targetNodeId,
+				executionId: holder.source_execution_id,
+				payload: {
+					targetNodeId: input.targetNodeId,
+					targetAttempt: input.targetAttempt,
+					questionId: holder.question_id,
+					redriveGeneration,
+					sourceAttachmentId: input.sourceAttachmentId,
+				},
+			});
+			this.db.run(
+				`INSERT INTO workflow_resume_admission
+				   (admission_key, admission_digest, run_id, action_kind,
+				    source_attachment_id, target_node_id, target_attempt,
+				    redrive_generation, requested_entry, verdict, created_at)
+				 VALUES (?, ?, ?, 'reconcile_state_only', ?, ?, ?, ?, ?, 'admitted', ?)`,
+				[
+					input.admissionKey,
+					input.admissionDigest,
+					input.runId,
+					input.sourceAttachmentId,
+					input.targetNodeId,
+					input.targetAttempt,
+					redriveGeneration,
+					input.requestedEntry ?? null,
+					input.now,
+				],
+			);
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				actionKind: "reconcile_state_only",
+				targetNodeId: input.targetNodeId,
+				targetAttempt: input.targetAttempt,
+				redriveGeneration,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	pruneWorkflowResumeProbes(input: { now: string; limit?: number }): number {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return 0;
+		this.db.run(
+			`DELETE FROM workflow_resume_probe
+			  WHERE id IN (
+			    SELECT id FROM (
+			      SELECT id, created_at,
+			             ROW_NUMBER() OVER (
+			               PARTITION BY run_id ORDER BY created_at DESC, id DESC
+			             ) AS run_rank
+			        FROM workflow_resume_probe
+			    ) ranked
+			    WHERE run_rank > 20
+			       OR julianday(created_at) < julianday(?, '-90 days')
+			    LIMIT ?
+			  )`,
+			[input.now, Math.max(1, Math.min(1_000, input.limit ?? 100))],
+		);
+		const removed = this.db.getRowsModified();
+		if (removed > 0) this.save();
+		return removed;
+	}
+
+	listWorkflowResumeCheckpointWork(input: {
+		now: string;
+		limit?: number;
+	}): WorkflowResumeCheckpointWorkRow[] {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return [];
+		const limit = Math.max(1, Math.min(input.limit ?? 3, 100));
+		return this.workflowSelectAll(
+			`SELECT a.*, s.state AS checkpoint_state, s.resolved_anchor_commit,
+			        s.store_locator, s.envelope_stamped_json,
+			        s.runtime_semantics_stamped, s.invalid_reason,
+			        s.attempt_count, s.next_attempt_at, s.revision,
+			        s.updated_at AS state_updated_at, r.project_name
+			   FROM workflow_resume_attachment a
+			   JOIN workflow_resume_attachment_state s
+			     ON s.attachment_id = a.attachment_id
+			   JOIN workflow_run r ON r.run_id = a.run_id
+			  WHERE a.carrier_kind = 'git_checkpoint'
+			    AND s.state IN ('intent','ref_prepared','store_pushed')
+			    AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= ?)
+			    AND r.status NOT IN ('completed','terminated','superseded')
+			  ORDER BY s.updated_at, a.created_at, a.attachment_id
+			  LIMIT ?`,
+			[input.now, limit],
+		).map((row) => ({
+			attachment: row as unknown as WorkflowResumeAttachmentRow,
+			state: {
+				attachment_id: row.attachment_id as string,
+				state: row.checkpoint_state as WorkflowResumeAttachmentState,
+				resolved_anchor_commit:
+					(row.resolved_anchor_commit as string | null) ?? null,
+				store_locator: (row.store_locator as string | null) ?? null,
+				envelope_stamped_json:
+					(row.envelope_stamped_json as string | null) ?? null,
+				runtime_semantics_stamped:
+					(row.runtime_semantics_stamped as string | null) ?? null,
+				invalid_reason:
+					(row.invalid_reason as WorkflowResumeFailureReason | null) ?? null,
+				attempt_count: Number(row.attempt_count),
+				next_attempt_at: (row.next_attempt_at as string | null) ?? null,
+				revision: Number(row.revision),
+				updated_at: row.state_updated_at as string,
+			},
+			project_name: row.project_name as string,
+		}));
+	}
+
+	private workflowResumeCheckpointPruneRows(input: {
+		now: string;
+		limit: number;
+		projectName?: string;
+		ref?: string;
+	}): WorkflowResumeCheckpointPruneRow[] {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return [];
+		const filters = ["a.carrier_kind = 'git_checkpoint'", "a.anchor_ref IS NOT NULL"];
+		const params: unknown[] = [];
+		if (input.projectName !== undefined) {
+			filters.push("r.project_name = ?");
+			params.push(input.projectName);
+		}
+		if (input.ref !== undefined) {
+			filters.push("a.anchor_ref = ?");
+			params.push(input.ref);
+		}
+		params.push(input.now, Math.max(1, Math.min(input.limit, 100)));
+		return this.workflowSelectAll(
+			`SELECT r.project_name, a.anchor_ref,
+			        MIN(COALESCE(a.anchor_commit, s.resolved_anchor_commit)) AS anchor
+			   FROM workflow_resume_attachment a
+			   JOIN workflow_resume_attachment_state s
+			     ON s.attachment_id = a.attachment_id
+			   JOIN workflow_run r ON r.run_id = a.run_id
+			  WHERE ${filters.join(" AND ")}
+			  GROUP BY r.project_name, a.anchor_ref
+			 HAVING COUNT(DISTINCT COALESCE(a.anchor_commit, s.resolved_anchor_commit)) = 1
+			    AND MIN(COALESCE(a.anchor_commit, s.resolved_anchor_commit)) IS NOT NULL
+			    AND SUM(CASE
+			      WHEN r.status NOT IN ('completed','terminated','superseded') THEN 1
+			      WHEN s.state <> 'invalid'
+			       AND julianday(a.created_at) >= julianday(?, '-90 days') THEN 1
+			      ELSE 0 END) = 0
+			  ORDER BY a.anchor_ref
+			  LIMIT ?`,
+			params,
+		).map((row) => ({
+			projectName: row.project_name as string,
+			ref: row.anchor_ref as string,
+			anchor: row.anchor as string,
+		}));
+	}
+
+	listWorkflowResumeCheckpointPruneWork(input: {
+		now: string;
+		limit?: number;
+	}): WorkflowResumeCheckpointPruneRow[] {
+		return this.workflowResumeCheckpointPruneRows({
+			now: input.now,
+			limit: input.limit ?? 3,
+		});
+	}
+
+	isWorkflowResumeCheckpointRefPrunable(
+		input: WorkflowResumeCheckpointPruneRow & { now: string },
+	): boolean {
+		return this.workflowResumeCheckpointPruneRows({
+			now: input.now,
+			limit: 1,
+			projectName: input.projectName,
+			ref: input.ref,
+		}).some((row) => row.anchor === input.anchor);
+	}
+
+	listWorkflowResumeEnvelopeStampWork(
+		limit = 3,
+	): WorkflowResumeAttachmentRow[] {
+		return this.workflowSelectAll(
+			`SELECT a.*
+			   FROM workflow_resume_attachment a
+			   JOIN workflow_resume_attachment_state s
+			     ON s.attachment_id = a.attachment_id
+			   JOIN workflow_run r ON r.run_id = a.run_id
+			  WHERE s.state NOT IN ('ready','invalid')
+			    AND s.envelope_stamped_json IS NULL
+			    AND r.status NOT IN ('completed','terminated','superseded')
+			  ORDER BY s.updated_at, a.created_at, a.attachment_id
+			  LIMIT ?`,
+			[Math.max(1, Math.min(limit, 100))],
+		) as unknown as WorkflowResumeAttachmentRow[];
+	}
+
+	stampWorkflowResumeAttachmentEnvelope(input: {
+		attachmentId: string;
+		now: string;
+	}):
+		| WorkflowResumeAttachmentAdvanceResult
+		| {
+				ok: false;
+				reason:
+					| "attachment_missing"
+					| "receipt_missing"
+					| "receipt_digest_mismatch"
+					| "envelope_unavailable:linear_issue";
+		  } {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "receipt_digest_mismatch" };
+		}
+		const attachment = this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+			[input.attachmentId],
+		)[0] as unknown as WorkflowResumeAttachmentRow | undefined;
+		if (!attachment) return { ok: false, reason: "attachment_missing" };
+		let envelope: Record<string, unknown>;
+		try {
+			envelope = JSON.parse(attachment.envelope_json) as Record<string, unknown>;
+		} catch {
+			return { ok: false, reason: "receipt_digest_mismatch" };
+		}
+		const baselineUid = envelope.issueBaselineUid;
+		if (typeof baselineUid !== "string") {
+			return { ok: false, reason: "receipt_digest_mismatch" };
+		}
+		const baseline = this.workflowSelectAll(
+			"SELECT run_id, kind, payload FROM workflow_run_event WHERE event_uid = ?",
+			[baselineUid],
+		)[0];
+		if (!baseline) return { ok: false, reason: "receipt_missing" };
+		let payload: Record<string, unknown>;
+		try {
+			payload = JSON.parse(baseline.payload as string) as Record<string, unknown>;
+		} catch {
+			return { ok: false, reason: "receipt_digest_mismatch" };
+		}
+		if (
+			baseline.run_id !== attachment.run_id ||
+			baseline.kind !== "issue_input_baseline" ||
+			payload.outcome !== "authoritative" ||
+			typeof payload.bodyDigest !== "string" ||
+			!/^[0-9a-f]{64}$/i.test(payload.bodyDigest)
+		) {
+			return payload.outcome === "unavailable"
+				? { ok: false, reason: "envelope_unavailable:linear_issue" }
+				: { ok: false, reason: "receipt_digest_mismatch" };
+		}
+		const state = this.getWorkflowResumeAttachmentState(input.attachmentId);
+		if (!state) return { ok: false, reason: "attachment_missing" };
+		return this.advanceWorkflowResumeAttachment({
+			attachmentId: input.attachmentId,
+			expectedRevision: state.revision,
+			action: {
+				kind: "stamp_envelope",
+				envelopeJson: JSON.stringify({
+					schemaVersion: 1,
+					issueBaseline: {
+						uid: baselineUid,
+						updatedAt: payload.updatedAt ?? null,
+						bodyDigest: payload.bodyDigest,
+					},
+				}),
+			},
+			now: input.now,
+		});
+	}
+
+	getWorkflowResumeAttachmentState(
+		attachmentId: string,
+	): WorkflowResumeAttachmentStateRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resume_attachment_state WHERE attachment_id = ?",
+			[attachmentId],
+		)[0] as unknown as WorkflowResumeAttachmentStateRow | undefined;
+	}
+
+	recordWorkflowResumeAttachmentRetry(input: {
+		attachmentId: string;
+		expectedState: WorkflowResumeRetryableState;
+		expectedRevision: number;
+		error: WorkflowResumeFailureReason;
+		now: string;
+	}): WorkflowResumeAttachmentRetryResult {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!Number.isInteger(input.expectedRevision) ||
+			input.expectedRevision < 0
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const state = this.getWorkflowResumeAttachmentState(input.attachmentId);
+		if (!state) return { ok: false, reason: "attachment_missing" };
+		if (state.revision !== input.expectedRevision) {
+			return { ok: false, reason: "revision_conflict" };
+		}
+		if (state.state !== input.expectedState) {
+			return { ok: false, reason: "state_conflict" };
+		}
+		const attemptCount = state.attempt_count + 1;
+		const delayMinutes = [1, 2, 4, 8, 8][
+			Math.min(attemptCount - 1, 4)
+		]!;
+		const nextAttemptAt = new Date(
+			Date.parse(input.now) + delayMinutes * 60_000,
+		).toISOString();
+		this.db.run(
+			`UPDATE workflow_resume_attachment_state
+			    SET attempt_count = ?, next_attempt_at = ?, revision = revision + 1,
+			        updated_at = ?
+			  WHERE attachment_id = ? AND state = ? AND revision = ?`,
+			[
+				attemptCount,
+				nextAttemptAt,
+				input.now,
+				input.attachmentId,
+				input.expectedState,
+				input.expectedRevision,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "revision_conflict" };
+		}
+		this.save();
+		return {
+			ok: true,
+			attemptCount,
+			nextAttemptAt,
+			revision: input.expectedRevision + 1,
+		};
+	}
+
+	invalidateWorkflowResumeAttachment(input: {
+		attachmentId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		reason: WorkflowResumeFailureReason;
+		authority: WorkflowResumeInvalidationAuthority;
+		now: string;
+	}): WorkflowResumeAttachmentInvalidationResult {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!input.reason ||
+			input.reason.length > 64
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		let result: WorkflowResumeAttachmentInvalidationResult = {
+			ok: false,
+			reason: "attachment_missing",
+		};
+		this.db.transaction(() => {
+			const attachment = this.workflowSelectAll(
+				"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+				[input.attachmentId],
+			)[0] as unknown as WorkflowResumeAttachmentRow | undefined;
+			const state = this.getWorkflowResumeAttachmentState(input.attachmentId);
+			if (!attachment || !state) return;
+			if (
+				attachment.run_id !== input.runId ||
+				attachment.target_node_id !== input.nodeId ||
+				attachment.target_attempt !== input.attempt
+			) {
+				result = { ok: false, reason: "authority_mismatch" };
+				return;
+			}
+			if (state.state === "invalid") {
+				result = { ok: true, revision: state.revision };
+				return;
+			}
+
+			let expectedRevision: number;
+			switch (input.authority.kind) {
+				case "attachment_reconciler":
+					expectedRevision = input.authority.expectedRevision;
+					if (state.revision !== expectedRevision) {
+						result = { ok: false, reason: "revision_conflict" };
+						return;
+					}
+					if (
+						state.state !== input.authority.expectedState ||
+						state.attempt_count !== input.authority.expectedAttemptCount ||
+						state.next_attempt_at !==
+							input.authority.expectedNextAttemptAt ||
+						state.attempt_count < 5
+					) {
+						result = { ok: false, reason: "authority_mismatch" };
+						return;
+					}
+					break;
+				case "launch_delivery": {
+					expectedRevision = state.revision;
+					if (attachment.carrier_kind !== "git_checkpoint") {
+						result = { ok: false, reason: "authority_mismatch" };
+						return;
+					}
+					const binding = this.getWorkflowExecutionBinding(
+						input.authority.executionId,
+					);
+					const owner = this.getWorkflowLaunchOwner(input.authority.executionId);
+					if (
+						!binding ||
+						binding.activation_id !== input.authority.activationId ||
+						binding.run_id !== input.runId ||
+						binding.node_id !== input.nodeId ||
+						binding.attempt !== input.attempt ||
+						owner?.committed_generation !== input.authority.ownerGeneration ||
+						owner.delivery_attempt !== input.authority.deliveryAttempt
+					) {
+						result = { ok: false, reason: "authority_mismatch" };
+						return;
+					}
+					break;
+				}
+				case "gate_target": {
+					expectedRevision = state.revision;
+					const holder = this.workflowSelectAll(
+						`SELECT question_id FROM workflow_gate_holder
+						  WHERE run_id = ? AND gate_node_id = ? AND attempt = ?
+						    AND state IN ('materializing','awaiting_review','approved')`,
+						[input.runId, input.nodeId, input.attempt],
+					)[0];
+					if (
+						attachment.carrier_kind !== "state_only_checkpoint" ||
+						attachment.receipt_digest !== input.authority.sourceReceipt ||
+						holder?.question_id !== input.authority.holderRef
+					) {
+						result = { ok: false, reason: "authority_mismatch" };
+						return;
+					}
+					break;
+				}
+			}
+
+			this.db.run(
+				`UPDATE workflow_resume_attachment_state
+				    SET state = 'invalid', invalid_reason = ?, revision = revision + 1,
+				        updated_at = ?
+				  WHERE attachment_id = ? AND revision = ? AND state <> 'invalid'`,
+				[input.reason, input.now, input.attachmentId, expectedRevision],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "revision_conflict" };
+				return;
+			}
+			const revision = expectedRevision + 1;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `resume_attachment_invalidated:${input.attachmentId}:${revision}`,
+				kind: "resume_attachment_invalidated",
+				nodeId: input.nodeId,
+				payload: {
+					attachmentId: input.attachmentId,
+					attempt: input.attempt,
+					reason: input.reason,
+					authority: input.authority.kind,
+				},
+			});
+			result = { ok: true, revision };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	advanceWorkflowResumeAttachment(input: {
+		attachmentId: string;
+		expectedRevision: number;
+		action: WorkflowResumeAttachmentAdvanceAction;
+		now: string;
+	}): WorkflowResumeAttachmentAdvanceResult {
+		if (
+			!input.attachmentId ||
+			!Number.isInteger(input.expectedRevision) ||
+			input.expectedRevision < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		let result: WorkflowResumeAttachmentAdvanceResult = {
+			ok: false,
+			reason: "attachment_missing",
+		};
+		this.db.transaction(() => {
+			const attachment = this.workflowSelectAll(
+				"SELECT * FROM workflow_resume_attachment WHERE attachment_id = ?",
+				[input.attachmentId],
+			)[0] as unknown as WorkflowResumeAttachmentRow | undefined;
+			const state = this.getWorkflowResumeAttachmentState(input.attachmentId);
+			if (!attachment || !state) return;
+			if (state.revision !== input.expectedRevision) {
+				result = { ok: false, reason: "revision_conflict" };
+				return;
+			}
+			if (state.state === "invalid" || state.state === "ready") {
+				result = { ok: false, reason: "state_conflict" };
+				return;
+			}
+
+			let nextState: WorkflowResumeAttachmentState = state.state;
+			let resolvedAnchor = state.resolved_anchor_commit;
+			let storeLocator = state.store_locator;
+			let envelopeStamp = state.envelope_stamped_json;
+			let runtimeStamp = state.runtime_semantics_stamped;
+			switch (input.action.kind) {
+				case "stamp_anchor":
+					if (
+						attachment.carrier_kind !== "git_checkpoint" ||
+						attachment.receipt_kind !== "start_reservation" ||
+						state.state !== "intent" ||
+						!/^[0-9a-f]{40}$/i.test(input.action.anchorCommit) ||
+						(resolvedAnchor !== null &&
+							resolvedAnchor !== input.action.anchorCommit.toLowerCase())
+					) {
+						result = { ok: false, reason: "state_conflict" };
+						return;
+					}
+					resolvedAnchor = input.action.anchorCommit.toLowerCase();
+					break;
+				case "ref_prepared":
+					if (
+						attachment.carrier_kind !== "git_checkpoint" ||
+						state.state !== "intent" ||
+						!(attachment.anchor_commit ?? resolvedAnchor)
+					) {
+						result = { ok: false, reason: "state_conflict" };
+						return;
+					}
+					nextState = "ref_prepared";
+					break;
+				case "store_pushed":
+					if (
+						attachment.carrier_kind !== "git_checkpoint" ||
+						state.state !== "ref_prepared" ||
+						!input.action.storeLocator.trim() ||
+						(storeLocator !== null && storeLocator !== input.action.storeLocator)
+					) {
+						result = { ok: false, reason: "state_conflict" };
+						return;
+					}
+					storeLocator = input.action.storeLocator;
+					nextState = "store_pushed";
+					break;
+				case "stamp_envelope":
+					if (
+						Buffer.byteLength(input.action.envelopeJson, "utf8") > 32_768 ||
+						(envelopeStamp !== null &&
+							envelopeStamp !== input.action.envelopeJson)
+					) {
+						result = { ok: false, reason: "state_conflict" };
+						return;
+					}
+					try {
+						JSON.parse(input.action.envelopeJson);
+					} catch {
+						result = { ok: false, reason: "invalid_input" };
+						return;
+					}
+					envelopeStamp = input.action.envelopeJson;
+					break;
+				case "stamp_runtime":
+					if (
+						!input.action.runtimeSemanticsDigest.trim() ||
+						(runtimeStamp !== null &&
+							runtimeStamp !== input.action.runtimeSemanticsDigest)
+					) {
+						result = { ok: false, reason: "state_conflict" };
+						return;
+					}
+					runtimeStamp = input.action.runtimeSemanticsDigest;
+					break;
+			}
+
+			const runtimeReady = Boolean(
+				attachment.runtime_semantics_digest ?? runtimeStamp,
+			);
+			const envelopeReady = envelopeStamp !== null;
+			const carrierReady =
+				attachment.carrier_kind === "state_only_checkpoint"
+					? true
+					: nextState === "store_pushed" &&
+						Boolean(attachment.anchor_commit ?? resolvedAnchor) &&
+						storeLocator !== null;
+			if (runtimeReady && envelopeReady && carrierReady) nextState = "ready";
+
+			this.db.run(
+				`UPDATE workflow_resume_attachment_state
+				    SET state = ?, resolved_anchor_commit = ?, store_locator = ?,
+				        envelope_stamped_json = ?, runtime_semantics_stamped = ?,
+				        revision = revision + 1, updated_at = ?
+				  WHERE attachment_id = ? AND revision = ? AND state = ?`,
+				[
+					nextState,
+					resolvedAnchor,
+					storeLocator,
+					envelopeStamp,
+					runtimeStamp,
+					input.now,
+					input.attachmentId,
+					input.expectedRevision,
+					state.state,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "revision_conflict" };
+				return;
+			}
+			result = {
+				ok: true,
+				state: nextState,
+				revision: input.expectedRevision + 1,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	/**
@@ -19359,6 +21305,379 @@ export class StateStore {
 		});
 	}
 
+	prepareWorkflowIssueDelivery(input: {
+		executionId: string;
+		activationId: string;
+		ownerId: string;
+		ownerGeneration: number;
+		deliveryAttempt: number;
+		anchorCommit: string;
+		candidate:
+			| { sourceKind: "authoritative"; body: string; updatedAt?: string }
+			| { sourceKind: "fallback"; body: string }
+			| {
+					sourceKind: "frozen_replay";
+					body: string;
+					admissionKey: string;
+					sourceAttachmentId: string;
+			  };
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!/^[0-9a-f]{40}$/i.test(input.anchorCommit) ||
+			(input.candidate.sourceKind === "authoritative" &&
+				input.candidate.updatedAt !== undefined &&
+				!StateStore.workflowFiniteTimestamp(input.candidate.updatedAt))
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		if (Buffer.byteLength(input.candidate.body, "utf8") > 262_144) {
+			return { ok: false, reason: "frozen_input_too_large" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_launch_owner",
+		};
+		let targetAttachmentId: string | undefined;
+		this.db.transaction(() => {
+			if (this.getWorkflowLaunchCancellation(input.executionId)) {
+				result = { ok: false, reason: "launch_cancelled" };
+				return;
+			}
+			const activation = this.resolveCurrentWorkflowActivation(input.executionId);
+			if (
+				activation.kind !== "current" ||
+				!this.assertCurrentWorkflowWriterTx({
+					runId: activation.binding.run_id,
+					nodeId: activation.binding.node_id,
+					attempt: activation.binding.attempt,
+					executionId: activation.binding.execution_id,
+					activationId: activation.binding.activation_id,
+				})
+			) {
+				result = { ok: false, reason: "stale_workflow_writer" };
+				return;
+			}
+			const owner = this.getWorkflowLaunchOwner(input.executionId);
+			const binding = this.getWorkflowExecutionBinding(input.executionId);
+			const initialAuthority =
+				owner?.committed_generation == null &&
+				owner?.owner_id === input.ownerId &&
+				owner?.owner_generation === input.ownerGeneration &&
+				owner?.delivery_attempt === input.deliveryAttempt &&
+				Date.parse(input.now) < Date.parse(owner.lease_expires_at);
+			const repairAuthority =
+				owner?.committed_generation === input.ownerGeneration &&
+				owner?.delivery_state === "repairing" &&
+				owner?.delivery_owner === input.ownerId &&
+				owner?.delivery_attempt === input.deliveryAttempt &&
+				owner.delivery_lease_expires_at !== null &&
+				Date.parse(input.now) < Date.parse(owner.delivery_lease_expires_at);
+			if (
+				!owner ||
+				!binding ||
+				binding.activation_id !== input.activationId ||
+				(owner.released_generation ?? 0) >= input.ownerGeneration ||
+				(!initialAuthority && !repairAuthority)
+			) {
+				return;
+			}
+			const targetAttachments = this.listWorkflowResumeAttachments({
+				runId: binding.run_id,
+				nodeId: binding.node_id,
+				attempt: binding.attempt,
+			});
+			targetAttachmentId = targetAttachments.at(-1)?.attachment_id;
+			const startAttachment = targetAttachments.find(
+				(attachment) => attachment.receipt_kind === "start_reservation",
+			);
+			const startState = startAttachment
+				? this.getWorkflowResumeAttachmentState(startAttachment.attachment_id)
+				: undefined;
+			const normalizedAnchor = input.anchorCommit.toLowerCase();
+			if (
+				startAttachment &&
+				(!startState ||
+					startAttachment.carrier_kind !== "git_checkpoint" ||
+					(startState.resolved_anchor_commit !== null &&
+						startState.resolved_anchor_commit !== normalizedAnchor) ||
+					(startState.resolved_anchor_commit === null &&
+						startState.state !== "intent"))
+			) {
+				result = { ok: false, reason: "start_anchor_conflict" };
+				return;
+			}
+			const bodyDigest = createHash("sha256")
+				.update(input.candidate.body)
+				.digest("hex");
+			const baselineUid = `issue_input_baseline:${binding.run_id}`;
+			const baseline = this.workflowSelectAll(
+				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+				[baselineUid],
+			)[0];
+			if (!baseline && input.candidate.sourceKind === "frozen_replay") {
+				result = { ok: false, reason: "receipt_missing" };
+				return;
+			}
+			if (!baseline) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: binding.run_id,
+					eventUid: baselineUid,
+					kind: "issue_input_baseline",
+					payload:
+						input.candidate.sourceKind === "authoritative"
+							? {
+									outcome: "authoritative",
+									updatedAt: input.candidate.updatedAt ?? null,
+									bodyDigest,
+								}
+							: { outcome: "unavailable" },
+				});
+			} else {
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(baseline.payload as string) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					result = { ok: false, reason: "baseline_malformed" };
+					return;
+				}
+				const authoritative =
+					payload.outcome === "authoritative" &&
+					typeof payload.bodyDigest === "string" &&
+					/^[0-9a-f]{64}$/i.test(payload.bodyDigest);
+				if (
+					baseline.kind !== "issue_input_baseline" ||
+					(!authoritative && payload.outcome !== "unavailable")
+				) {
+					result = { ok: false, reason: "baseline_malformed" };
+					return;
+				}
+			}
+			const eventUid = `issue_delivery_prepared:${input.executionId}:${input.ownerGeneration}:${input.deliveryAttempt}`;
+			const preparedPayload = {
+				activationId: input.activationId,
+				sourceKind: input.candidate.sourceKind,
+				body: input.candidate.body,
+				bodyDigest,
+				...(input.candidate.sourceKind === "authoritative" &&
+				input.candidate.updatedAt
+					? { updatedAt: input.candidate.updatedAt }
+					: {}),
+				...(input.candidate.sourceKind === "frozen_replay"
+					? {
+							admissionKey: input.candidate.admissionKey,
+							sourceAttachmentId: input.candidate.sourceAttachmentId,
+						}
+					: {}),
+			};
+			const appended = this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid,
+				kind: "issue_delivery_prepared",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: preparedPayload,
+			});
+			if (startAttachment && startState?.resolved_anchor_commit === null) {
+				this.db.run(
+					`UPDATE workflow_resume_attachment_state
+					    SET resolved_anchor_commit = ?, revision = revision + 1, updated_at = ?
+					  WHERE attachment_id = ? AND state = 'intent' AND revision = ?
+					    AND resolved_anchor_commit IS NULL`,
+					[
+						normalizedAnchor,
+						input.now,
+						startAttachment.attachment_id,
+						startState.revision,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_resume_start_anchor_cas_failed");
+				}
+			}
+			result = { ok: true, idempotentReplay: appended.deduped };
+		});
+		if (result.ok) {
+			this.save();
+			if (targetAttachmentId) {
+				this.stampWorkflowResumeAttachmentEnvelope({
+					attachmentId: targetAttachmentId,
+					now: input.now,
+				});
+			}
+		}
+		return result;
+	}
+
+	private commitWorkflowIssueDeliveryEvidenceTx(input: {
+		executionId: string;
+		generation: number;
+		deliveryAttempt: number;
+	}): void {
+		const preparedUid = `issue_delivery_prepared:${input.executionId}:${input.generation}:${input.deliveryAttempt}`;
+		const prepared = this.workflowSelectAll(
+			"SELECT run_id, kind, node_id, execution_id, payload FROM workflow_run_event WHERE event_uid = ?",
+			[preparedUid],
+		)[0];
+		if (!prepared || prepared.kind !== "issue_delivery_prepared") return;
+		let payload: Record<string, unknown>;
+		try {
+			payload = JSON.parse(prepared.payload as string) as Record<string, unknown>;
+		} catch {
+			return;
+		}
+		const binding = this.getWorkflowExecutionBinding(input.executionId);
+		const sourceKind = payload.sourceKind;
+		const body = payload.body;
+		const bodyDigest = payload.bodyDigest;
+		if (
+			!binding ||
+			prepared.run_id !== binding.run_id ||
+			prepared.node_id !== binding.node_id ||
+			prepared.execution_id !== input.executionId ||
+			payload.activationId !== binding.activation_id ||
+			!(
+				sourceKind === "authoritative" ||
+				sourceKind === "fallback" ||
+				sourceKind === "frozen_replay"
+			) ||
+			typeof body !== "string" ||
+			typeof bodyDigest !== "string" ||
+			createHash("sha256").update(body).digest("hex") !== bodyDigest ||
+			(sourceKind === "frozen_replay" &&
+				(typeof payload.admissionKey !== "string" ||
+					typeof payload.sourceAttachmentId !== "string"))
+		) {
+			return;
+		}
+		try {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: prepared.run_id as string,
+				eventUid: `issue_delivery:${input.executionId}:${input.generation}:${input.deliveryAttempt}`,
+				kind: "issue_delivery",
+				nodeId: prepared.node_id as string,
+				executionId: input.executionId,
+				payload: {
+					...payload,
+					ownerGeneration: input.generation,
+					deliveryAttempt: input.deliveryAttempt,
+					preparedEventUid: preparedUid,
+				},
+			});
+			this.invalidateWorkflowResumeTargetForIssueDeliveryTx(input, payload);
+		} catch {
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_resume_probe
+				   (run_id, probe_kind, opportunity_key, proposed_node_id,
+				    proposed_attempt, verdict, detail_json, created_at)
+				 VALUES (?, 'shadow', ?, ?, ?, 'receipt_digest_mismatch', ?, ?)`,
+				[
+					binding.run_id,
+					`issue_delivery_conflict:${input.executionId}:${input.generation}:${input.deliveryAttempt}`,
+					binding.node_id,
+					binding.attempt,
+					JSON.stringify({ preparedEventUid: preparedUid }),
+					new Date().toISOString(),
+				],
+			);
+		}
+	}
+
+	private invalidateWorkflowResumeTargetForIssueDeliveryTx(
+		input: {
+			executionId: string;
+			generation: number;
+			deliveryAttempt: number;
+		},
+		payload: Record<string, unknown>,
+	): void {
+		const binding = this.getWorkflowExecutionBinding(input.executionId);
+		const owner = this.getWorkflowLaunchOwner(input.executionId);
+		if (
+			!binding ||
+			owner?.committed_generation !== input.generation ||
+			owner.delivery_attempt !== input.deliveryAttempt
+		) {
+			return;
+		}
+		const baseline = this.workflowSelectAll(
+			"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+			[`issue_input_baseline:${binding.run_id}`],
+		)[0];
+		let baselinePayload: Record<string, unknown> | undefined;
+		try {
+			baselinePayload = baseline
+				? (JSON.parse(baseline.payload as string) as Record<string, unknown>)
+				: undefined;
+		} catch {
+			baselinePayload = undefined;
+		}
+		const sourceKind = payload.sourceKind;
+		const baselineDigest = baselinePayload?.bodyDigest;
+		const deliveredDigest = payload.bodyDigest;
+		let reason: WorkflowResumeFailureReason | undefined;
+		if (sourceKind === "fallback" || baselinePayload?.outcome === "unavailable") {
+			reason = "input_fallback";
+		} else if (
+			baseline?.kind !== "issue_input_baseline" ||
+			baselinePayload?.outcome !== "authoritative" ||
+			typeof baselineDigest !== "string" ||
+			typeof deliveredDigest !== "string"
+		) {
+			reason = "receipt_missing";
+		} else if (baselineDigest !== deliveredDigest) {
+			reason =
+				sourceKind === "frozen_replay"
+					? "receipt_digest_mismatch"
+					: "envelope_changed:issue_body";
+		}
+		if (!reason) return;
+		const attachment = this.listWorkflowResumeAttachments({
+			runId: binding.run_id,
+			nodeId: binding.node_id,
+			attempt: binding.attempt,
+		}).at(-1);
+		if (!attachment) return;
+		const state = this.getWorkflowResumeAttachmentState(
+			attachment.attachment_id,
+		);
+		if (!state || state.state === "invalid") return;
+		const revision = state.revision + 1;
+		const now = new Date().toISOString();
+		this.db.run(
+			`UPDATE workflow_resume_attachment_state
+			    SET state = 'invalid', invalid_reason = ?, revision = ?, updated_at = ?
+			  WHERE attachment_id = ? AND revision = ? AND state <> 'invalid'`,
+			[
+				reason,
+				revision,
+				now,
+				attachment.attachment_id,
+				state.revision,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) return;
+		this.appendWorkflowRunEventCheckedTx({
+			runId: binding.run_id,
+			eventUid: `resume_attachment_invalidated:${attachment.attachment_id}:${revision}`,
+			kind: "resume_attachment_invalidated",
+			nodeId: binding.node_id,
+			executionId: input.executionId,
+			payload: {
+				attachmentId: attachment.attachment_id,
+				attempt: binding.attempt,
+				reason,
+				authority: "launch_delivery",
+			},
+		});
+	}
+
 	private static readWorkflowLaunchMarker(path: string):
 		| {
 				executionId: string;
@@ -19437,6 +21756,52 @@ export class StateStore {
 			reason: row.reason as string,
 			created_at: row.created_at as string,
 		};
+	}
+
+	isUnlaunchedWorkflowResumeReplacement(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		sourceExecutionId: string;
+		newExecutionId: string;
+		launchOrdinal: number;
+	}): boolean {
+		const node = this.getWorkflowRunNode(
+			input.runId,
+			input.nodeId,
+			input.attempt,
+		);
+		const latest = this.workflowSelectAll(
+			`SELECT launch_ordinal, execution_id, state
+			   FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			  ORDER BY launch_ordinal DESC LIMIT 1`,
+			[input.runId, input.nodeId, input.attempt],
+		)[0];
+		const watch = this.getWorkflowDeadExecutionWatch(input.sourceExecutionId);
+		const lifecycleClaim = this.workflowSelectAll(
+			"SELECT 1 AS present FROM lifecycle_launch_claims WHERE execution_id = ? LIMIT 1",
+			[input.newExecutionId],
+		)[0];
+		const executionBinding = this.workflowSelectAll(
+			"SELECT 1 AS present FROM workflow_execution_binding WHERE execution_id = ? LIMIT 1",
+			[input.newExecutionId],
+		)[0];
+		return (
+			node?.state === "pending" &&
+			node.execution_id === input.newExecutionId &&
+			Number(latest?.launch_ordinal) === input.launchOrdinal &&
+			latest?.execution_id === input.newExecutionId &&
+			latest.state === "intent_recorded" &&
+			watch?.run_id === input.runId &&
+			watch.node_id === input.nodeId &&
+			watch.attempt === input.attempt &&
+			watch.new_execution_id === input.newExecutionId &&
+			!this.getSession(input.newExecutionId) &&
+			!this.getWorkflowLaunchOwner(input.newExecutionId) &&
+			!executionBinding &&
+			!lifecycleClaim
+		);
 	}
 
 	beginUnlaunchedWorkflowCancellation(input: {
@@ -20433,6 +22798,11 @@ export class StateStore {
 						[input.executionId, owner.owner_generation],
 					);
 				}
+				this.commitWorkflowIssueDeliveryEvidenceTx({
+					executionId: input.executionId,
+					generation: marker.generation,
+					deliveryAttempt: marker.deliveryAttempt,
+				});
 				result = {
 					status: "committed",
 					generation: owner.owner_generation,
@@ -21353,6 +23723,13 @@ export class StateStore {
 				[input.executionId, input.attempt, input.repairOwner],
 			);
 			committed = this.db.getRowsModified() === 1;
+			if (committed) {
+				this.commitWorkflowIssueDeliveryEvidenceTx({
+					executionId: input.executionId,
+					generation: input.generation,
+					deliveryAttempt: input.attempt,
+				});
+			}
 		});
 		this.save();
 		if (cancelled) return { ok: false, reason: "launch_cancelled" };
@@ -21381,6 +23758,20 @@ export class StateStore {
 		this.db.transaction(() => {
 			if (this.getWorkflowLaunchCancellation(input.executionId)) {
 				result = { ok: false, reason: "launch_cancelled" };
+				return;
+			}
+			const activation = this.resolveCurrentWorkflowActivation(input.executionId);
+			if (
+				activation.kind !== "current" ||
+				!this.assertCurrentWorkflowWriterTx({
+					runId: activation.binding.run_id,
+					nodeId: activation.binding.node_id,
+					attempt: activation.binding.attempt,
+					executionId: activation.binding.execution_id,
+					activationId: activation.binding.activation_id,
+				})
+			) {
+				result = { ok: false, reason: "stale_workflow_writer" };
 				return;
 			}
 			const owner = this.getWorkflowLaunchOwner(input.executionId);
@@ -21431,6 +23822,11 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				throw new Error("workflow launch commit fence lost");
 			}
+			this.commitWorkflowIssueDeliveryEvidenceTx({
+				executionId: input.executionId,
+				generation: input.generation,
+				deliveryAttempt: input.deliveryAttempt,
+			});
 			result = { ok: true, token };
 		});
 		this.save();
@@ -22369,6 +24765,87 @@ export class StateStore {
 						heldPaneLossRecovery,
 					},
 			});
+			const resumeTransitionUid = `rework_replacement:${input.requestId}`;
+			const resumeReceipt = {
+				requestId: input.requestId,
+				targetNodeId: route.target_node_id,
+				targetAttempt: route.target_attempt,
+				newExecutionId: input.newExecutionId,
+				routeRevision: nextRevision,
+			};
+			let resumeNode:
+				| ReturnType<typeof parseWorkflowRunSnapshot>["resolved"]["nodes"][number]
+				| undefined;
+			let resumeSnapshotDigest: string | undefined;
+			try {
+				const parsed = run.snapshot
+					? parseWorkflowRunSnapshot(run.snapshot)
+					: undefined;
+				resumeNode = parsed?.resolved.nodes.find(
+					(candidate) => candidate.id === route.target_node_id,
+				);
+				resumeSnapshotDigest = parsed?.snapshot_digest;
+			} catch {
+				// Legacy replacement remains healthy; missing resume evidence is explicit below.
+			}
+			const sourceAttachment = this.listWorkflowResumeAttachments({
+				runId: request.run_id,
+				nodeId: route.target_node_id,
+				attempt: route.target_attempt,
+			}).at(-1);
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: request.run_id,
+					targetNodeId: route.target_node_id,
+					targetAttempt: route.target_attempt,
+					transitionUid: resumeTransitionUid,
+					createdAt: input.observedAt,
+				},
+				() => {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: request.run_id,
+						eventUid: resumeTransitionUid,
+						kind: "rework_replacement",
+						nodeId: route.target_node_id,
+						executionId: input.newExecutionId,
+						payload: resumeReceipt,
+					});
+					if (resumeNode && resumeSnapshotDigest) {
+						this.recordWorkflowResumeAttachmentTx({
+							runId: request.run_id,
+							targetNodeId: route.target_node_id,
+							targetAttempt: route.target_attempt,
+							transitionUid: resumeTransitionUid,
+							receiptKind: "rework_replacement",
+							receiptPayload: resumeReceipt,
+							carrierKind: "git_checkpoint",
+							anchorCommit: request.base_revision,
+							repoIdentity:
+								sourceAttachment?.repo_identity ?? run.project_name,
+							snapshotDigest: resumeSnapshotDigest,
+							resolvedNodeDigest: canonicalSubmissionDigest(resumeNode),
+							reworkAuthorityDigest: request.authority_context_digest,
+							envelopeJson:
+								sourceAttachment?.envelope_json ??
+								JSON.stringify({
+									schemaVersion: 1,
+									issueBaselineUid: `issue_input_baseline:${request.run_id}`,
+								}),
+							createdAt: input.observedAt,
+						});
+					} else {
+						this.recordWorkflowResumeTargetUnrecoverableTx({
+							runId: request.run_id,
+							targetNodeId: route.target_node_id,
+							targetAttempt: route.target_attempt,
+							transitionUid: resumeTransitionUid,
+							reason: "snapshot_mismatch",
+							detail: { cause: "replacement_snapshot_unavailable" },
+							createdAt: input.observedAt,
+						});
+					}
+				},
+			);
 			result = {
 				ok: true,
 				executionId: input.newExecutionId,
@@ -23686,6 +26163,83 @@ export class StateStore {
 					interpretationReason: input.interpretationReason,
 				},
 			});
+			const resumeTransitionUid = `route_revision:${input.requestId}:${revision}`;
+			const resumeReceipt = {
+				requestId: input.requestId,
+				revision,
+				targetNodeId: input.targetNodeId,
+				targetAttempt: input.targetAttempt,
+				preferredActorExecutionId: input.preferredActorExecutionId,
+			};
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: request.run_id,
+					targetNodeId: input.targetNodeId,
+					targetAttempt: input.targetAttempt,
+					transitionUid: resumeTransitionUid,
+					createdAt: input.now,
+				},
+				() => {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: request.run_id,
+						eventUid: resumeTransitionUid,
+						kind: "route_revision",
+						nodeId: input.targetNodeId,
+						executionId: input.preferredActorExecutionId,
+						payload: resumeReceipt,
+					});
+					let snapshot:
+						| ReturnType<typeof parseWorkflowRunSnapshot>
+						| undefined;
+					try {
+						snapshot = run.snapshot
+							? parseWorkflowRunSnapshot(run.snapshot)
+							: undefined;
+					} catch {
+						// Legacy route mutation survives malformed resume-only snapshot evidence.
+					}
+					const targetNode = snapshot?.resolved.nodes.find(
+						(candidate) => candidate.id === input.targetNodeId,
+					);
+					if (snapshot && targetNode) {
+						const sourceAttachment = this.listWorkflowResumeAttachments({
+							runId: request.run_id,
+						}).at(-1);
+						this.recordWorkflowResumeAttachmentTx({
+							runId: request.run_id,
+							targetNodeId: input.targetNodeId,
+							targetAttempt: input.targetAttempt,
+							transitionUid: resumeTransitionUid,
+							receiptKind: "route_revision",
+							receiptPayload: resumeReceipt,
+							carrierKind: "git_checkpoint",
+							anchorCommit: request.base_revision,
+							repoIdentity:
+								sourceAttachment?.repo_identity ?? run.project_name,
+							snapshotDigest: snapshot.snapshot_digest,
+							resolvedNodeDigest: canonicalSubmissionDigest(targetNode),
+							reworkAuthorityDigest: request.authority_context_digest,
+							envelopeJson:
+								sourceAttachment?.envelope_json ??
+								JSON.stringify({
+									schemaVersion: 1,
+									issueBaselineUid: `issue_input_baseline:${request.run_id}`,
+								}),
+							createdAt: input.now,
+						});
+					} else {
+						this.recordWorkflowResumeTargetUnrecoverableTx({
+							runId: request.run_id,
+							targetNodeId: input.targetNodeId,
+							targetAttempt: input.targetAttempt,
+							transitionUid: resumeTransitionUid,
+							reason: "snapshot_mismatch",
+							detail: { cause: "route_revision_snapshot_unavailable" },
+							createdAt: input.now,
+						});
+					}
+				},
+			);
 			result = { ok: true, revision };
 		});
 		if (result.ok) this.save();
@@ -24141,12 +26695,13 @@ export class StateStore {
 				  WHERE run_id = ?`,
 				[input.nodeId, input.runId],
 			);
+			const admissionEventUid =
+				activationMode === "spawn" && input.attempt === 1
+					? `generalized_execution_admitted:${input.executionId}`
+					: `workflow_activation_admitted:${activationId}`;
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
-				eventUid:
-					activationMode === "spawn" && input.attempt === 1
-						? `generalized_execution_admitted:${input.executionId}`
-						: `workflow_activation_admitted:${activationId}`,
+				eventUid: admissionEventUid,
 				kind: "execution_admitted",
 				nodeId: input.nodeId,
 				executionId: input.executionId,
@@ -24159,6 +26714,87 @@ export class StateStore {
 					at: now,
 				},
 			});
+			const attachment = this.listWorkflowResumeAttachments({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			}).at(-1);
+			const runtimeDigest = canonicalSubmissionDigest({
+				vendor: resolvedDispatch.vendor,
+				model: resolvedDispatch.model,
+				effort: resolvedDispatch.effort ?? "",
+				resolvedFamily: resolvedDispatch.vendor,
+				capabilitiesDigest: canonicalSubmissionDigest(node.capabilities),
+			});
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: input.runId,
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					transitionUid: admissionEventUid,
+					createdAt: now,
+				},
+				() => {
+					if (attachment) {
+						const attachmentState = this.getWorkflowResumeAttachmentState(
+							attachment.attachment_id,
+						);
+						if (
+							attachmentState &&
+							attachmentState.state !== "invalid" &&
+							attachmentState.state !== "ready" &&
+							attachmentState.runtime_semantics_stamped === null
+						) {
+							const carrierReady =
+								attachment.carrier_kind === "state_only_checkpoint" ||
+								(attachmentState.state === "store_pushed" &&
+									Boolean(
+										attachment.anchor_commit ??
+											attachmentState.resolved_anchor_commit,
+									) &&
+									attachmentState.store_locator !== null);
+							const nextState =
+								carrierReady && attachmentState.envelope_stamped_json !== null
+									? "ready"
+									: attachmentState.state;
+							this.db.run(
+								`UPDATE workflow_resume_attachment_state
+								    SET state = ?, runtime_semantics_stamped = ?,
+								        revision = revision + 1, updated_at = ?
+								  WHERE attachment_id = ? AND revision = ? AND state = ?
+								    AND runtime_semantics_stamped IS NULL`,
+								[
+									nextState,
+									runtimeDigest,
+									now,
+									attachment.attachment_id,
+									attachmentState.revision,
+									attachmentState.state,
+								],
+							);
+							if (this.db.getRowsModified() !== 1) {
+								throw new Error("workflow_resume_runtime_stamp_cas_failed");
+							}
+						} else if (
+							attachmentState &&
+							attachmentState.runtime_semantics_stamped !== null &&
+							attachmentState.runtime_semantics_stamped !== runtimeDigest
+						) {
+							throw new Error("workflow_resume_runtime_stamp_conflict");
+						}
+					} else {
+						this.recordWorkflowResumeTargetUnrecoverableTx({
+							runId: input.runId,
+							targetNodeId: input.nodeId,
+							targetAttempt: input.attempt,
+							transitionUid: admissionEventUid,
+							reason: "attachment_missing",
+							detail: { cause: "admission_frontier_attachment_missing" },
+							createdAt: now,
+						});
+					}
+				},
+			);
 			if (input.idempotencyKey) {
 				this.db.run(
 					`UPDATE workflow_start_stage SET stage = 'admitted', updated_at = ?
@@ -24859,6 +27495,736 @@ export class StateStore {
 		return cancelled;
 	}
 
+	getWorkflowOperatorCloseIntent(
+		executionId: string,
+	): WorkflowOperatorCloseIntentRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM workflow_operator_close_intent WHERE execution_id = ?",
+			[executionId],
+		)[0];
+		return row
+			? {
+					execution_id: String(row.execution_id),
+					mode: row.mode as WorkflowOperatorCloseIntentRow["mode"],
+					reason: String(row.reason),
+					stage: row.stage as WorkflowOperatorCloseIntentRow["stage"],
+					created_at: String(row.created_at),
+					updated_at: String(row.updated_at),
+				}
+			: undefined;
+	}
+
+	prepareWorkflowOperatorCloseIntent(input: {
+		executionId: string;
+		mode: "done" | "abandon";
+		reason: string;
+		now: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				stage: WorkflowOperatorCloseIntentRow["stage"];
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.executionId ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_close_intent" };
+		}
+		let result:
+			| {
+					ok: true;
+					idempotentReplay: boolean;
+					stage: WorkflowOperatorCloseIntentRow["stage"];
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "close_intent_conflict",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const prior = this.getWorkflowOperatorCloseIntent(input.executionId);
+			if (prior?.stage === "failed") {
+				this.db.run(
+					`UPDATE workflow_operator_close_intent
+					    SET mode = ?, reason = ?, stage = 'prepared', updated_at = ?
+					  WHERE execution_id = ? AND stage = 'failed'`,
+					[input.mode, input.reason.trim(), input.now, input.executionId],
+				);
+				if (this.db.getRowsModified() === 1) {
+					changed = true;
+					result = {
+						ok: true,
+						idempotentReplay: false,
+						stage: "prepared",
+					};
+				}
+				return;
+			}
+			if (prior) {
+				if (
+					prior.mode === input.mode &&
+					(prior.stage === "committed" ||
+						prior.reason === input.reason.trim())
+				) {
+					result = {
+						ok: true,
+						idempotentReplay: true,
+						stage: prior.stage,
+					};
+				}
+				return;
+			}
+			this.db.run(
+				`INSERT INTO workflow_operator_close_intent
+				   (execution_id, mode, reason, stage, created_at, updated_at)
+				 VALUES (?, ?, ?, 'prepared', ?, ?)`,
+				[
+					input.executionId,
+					input.mode,
+					input.reason.trim(),
+					input.now,
+					input.now,
+				],
+			);
+			changed = true;
+			result = { ok: true, idempotentReplay: false, stage: "prepared" };
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	finalizeWorkflowOperatorCloseIntent(input: {
+		executionId: string;
+		stage: "committed" | "failed";
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_close_intent_finalization" };
+		}
+		const prior = this.getWorkflowOperatorCloseIntent(input.executionId);
+		if (prior?.stage === input.stage) {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (!prior || prior.stage !== "prepared") {
+			return { ok: false, reason: "close_intent_not_prepared" };
+		}
+		this.db.run(
+			`UPDATE workflow_operator_close_intent SET stage = ?, updated_at = ?
+			  WHERE execution_id = ? AND stage = 'prepared'`,
+			[input.stage, input.now, input.executionId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "close_intent_not_prepared" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	shouldSuppressDeadExecutionRecovery(input: {
+		executionId: string;
+		now: string;
+	}): boolean {
+		const intent = this.getWorkflowOperatorCloseIntent(input.executionId);
+		if (!intent) return false;
+		if (intent.stage === "committed") return true;
+		if (intent.stage === "failed") return false;
+		const nowMs = Date.parse(input.now);
+		if (!Number.isFinite(nowMs)) return true;
+		const preparedMs = Date.parse(intent.updated_at);
+		if (
+			Number.isFinite(preparedMs) &&
+			nowMs - preparedMs < 10 * 60_000
+		) {
+			return true;
+		}
+		let changed = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_operator_close_intent SET stage = 'failed', updated_at = ?
+				  WHERE execution_id = ? AND stage = 'prepared' AND updated_at = ?`,
+				[input.now, input.executionId, intent.updated_at],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			changed = true;
+			const context = this.generalizedExecutionContext(input.executionId);
+			if (!context) return;
+			this.appendWorkflowRunEventCheckedTx({
+				runId: context.binding.run_id,
+				eventUid: `close_intent_expired:${context.binding.run_id}:${input.executionId}:${intent.updated_at}`,
+				kind: "close_intent_expired",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					mode: intent.mode,
+					reason: intent.reason,
+					preparedAt: intent.updated_at,
+					expiredAt: input.now,
+				},
+			});
+		});
+		if (changed) this.save();
+		return false;
+	}
+
+	cascadeRunTerminationOnCarrierClose(input: {
+		executionId: string;
+		mode: "done" | "abandon";
+		principal: string;
+		now: string;
+	}):
+		| { ok: true; runId: string; idempotentReplay: boolean }
+		| { ok: false; reason: string; runId?: string } {
+		if (
+			!input.executionId ||
+			!input.principal.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_carrier_close_cascade" };
+		}
+		let result:
+			| { ok: true; runId: string; idempotentReplay: boolean }
+			| { ok: false; reason: string; runId?: string } = {
+			ok: false,
+			reason: "carrier_not_enrolled",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const context = this.generalizedExecutionContext(input.executionId);
+			if (!context) return;
+			const runId = context.binding.run_id;
+			const refuse = (reason: string): void => {
+				const refusalKey = canonicalSubmissionDigest({
+					mode: input.mode,
+					principal: input.principal.trim(),
+					reason,
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId,
+					eventUid: `cascade_refused:${runId}:${input.executionId}:${refusalKey}`,
+					kind: "cascade_refused",
+					nodeId: context.binding.node_id,
+					executionId: input.executionId,
+					payload: {
+						mode: input.mode,
+						principal: input.principal.trim(),
+						reason,
+					},
+				});
+				changed = true;
+				result = { ok: false, reason, runId };
+			};
+			const successEventUid = `run_terminated:${runId}:carrier_closed:${input.executionId}`;
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 AS present FROM workflow_run_event WHERE event_uid = ?",
+					[successEventUid],
+				).length > 0
+			) {
+				result = { ok: true, runId, idempotentReplay: true };
+				return;
+			}
+			const intent = this.getWorkflowOperatorCloseIntent(input.executionId);
+			const session = this.getSession(input.executionId);
+			const run = this.getWorkflowRun(runId);
+			let refusal: string | undefined;
+			if (
+				!intent ||
+				intent.stage !== "committed" ||
+				intent.mode !== input.mode
+			) {
+				refusal = "close_intent_not_committed";
+			} else if (!session || !isOperationalTerminalStatus(session.status)) {
+				refusal = "carrier_not_terminal";
+			} else if (!run || run.status !== "active") {
+				refusal = "run_not_active";
+			} else if (
+				this.liveRunAttributedExecutionsTx(runId).some(
+					(executionId) => executionId !== input.executionId,
+				)
+			) {
+				refusal = "other_live_carriers";
+			} else if (
+				this.workflowSelectAll(
+					`SELECT 1 AS present FROM workflow_side_effect_ledger
+					  WHERE run_id = ? AND kind = 'dispatch'
+					    AND state IN ('intent_recorded','launch_committed') LIMIT 1`,
+					[runId],
+				).length > 0
+			) {
+				refusal = "pending_dispatch_intent";
+			} else if (
+				this.workflowSelectAll(
+					`SELECT 1 AS present
+					   FROM workflow_rework_delivery d
+					   JOIN workflow_rework_request r ON r.request_id = d.request_id
+					  WHERE r.run_id = ?
+					    AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+					  LIMIT 1`,
+					[runId],
+				).length > 0
+			) {
+				refusal = "rework_delivery_inflight";
+			}
+			if (refusal) {
+				refuse(refusal);
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'terminated' WHERE run_id = ? AND status = 'active'",
+				[runId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				refuse("run_status_changed");
+				return;
+			}
+			this.settleReworkParksForRunTx(runId, input.now);
+			this.cancelOpenWorkflowCarrierDeliveriesTx({
+				runId,
+				now: input.now,
+				reason: `carrier_closed:${input.mode}`,
+				eventSuffix: "operator_terminate",
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId,
+				eventUid: successEventUid,
+				kind: "run_terminated",
+				nodeId: context.binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					reason: `carrier_closed:${input.mode}`,
+					clientRequestId: `carrier_closed:${input.executionId}`,
+					principal: input.principal.trim(),
+				},
+			});
+			changed = true;
+			result = { ok: true, runId, idempotentReplay: false };
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	private workflowRunCollectReceipt(
+		row: Record<string, unknown> | undefined,
+	): WorkflowRunCollectReceiptRow | undefined {
+		if (!row) return undefined;
+		try {
+			const targetExecutionIds = JSON.parse(
+				String(row.target_list_json),
+			) as unknown;
+			const outcomes = JSON.parse(String(row.outcomes_json)) as unknown;
+			if (
+				!Array.isArray(targetExecutionIds) ||
+				!targetExecutionIds.every((value) => typeof value === "string") ||
+				!Array.isArray(outcomes)
+			) {
+				return undefined;
+			}
+			const response =
+				typeof row.response_json === "string"
+					? (JSON.parse(row.response_json) as Record<string, unknown>)
+					: undefined;
+			return {
+				receipt_key: String(row.receipt_key),
+				run_id: String(row.run_id),
+				state: row.state as WorkflowRunCollectReceiptRow["state"],
+				owner_id:
+					typeof row.owner_id === "string" ? row.owner_id : null,
+				owner_generation:
+					row.owner_generation == null
+						? null
+						: Number(row.owner_generation),
+				lease_expires_at:
+					typeof row.lease_expires_at === "string"
+						? row.lease_expires_at
+						: null,
+				targetExecutionIds,
+				outcomes: outcomes as WorkflowRunCollectOutcome[],
+				...(response ? { response } : {}),
+				updated_at: String(row.updated_at),
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	getWorkflowRunCollectReceipt(
+		receiptKey: string,
+	): WorkflowRunCollectReceiptRow | undefined {
+		return this.workflowRunCollectReceipt(
+			this.workflowSelectAll(
+				"SELECT * FROM workflow_run_collect_receipt WHERE receipt_key = ?",
+				[receiptKey],
+			)[0],
+		);
+	}
+
+	listOpenWorkflowRunCollections(limit = 2): WorkflowRunCollectReceiptRow[] {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_run_collect_receipt
+			  WHERE state != 'responded' ORDER BY updated_at, receipt_key LIMIT ?`,
+			[bounded],
+		)
+			.map((row) => this.workflowRunCollectReceipt(row))
+			.filter(
+				(row): row is WorkflowRunCollectReceiptRow => row !== undefined,
+			);
+	}
+
+	private liveRunAttributedExecutionsTx(runId: string): string[] {
+		return this.listRunAttributedExecutions(runId)
+			.filter((executionId) => {
+				const session = this.getSession(executionId);
+				return session && !isOperationalTerminalStatus(session.status);
+			})
+			.sort();
+	}
+
+	private createWorkflowRunCollectReceiptTx(input: {
+		runId: string;
+		now: string;
+		targetExecutionIds?: string[];
+	}): WorkflowRunCollectReceiptRow {
+		const episode = Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS n FROM workflow_run_collect_receipt
+				  WHERE run_id = ? AND state = 'responded'`,
+				[input.runId],
+			)[0]?.n ?? 0,
+		);
+		const receiptKey = `episode:${input.runId}:${episode}`;
+		const targetExecutionIds = [
+			...(input.targetExecutionIds ??
+				this.liveRunAttributedExecutionsTx(input.runId)),
+		].sort();
+		this.db.run(
+			`INSERT INTO workflow_run_collect_receipt
+			   (receipt_key, run_id, state, target_list_json, updated_at)
+			 VALUES (?, ?, 'frozen', ?, ?)`,
+			[receiptKey, input.runId, JSON.stringify(targetExecutionIds), input.now],
+		);
+		return this.getWorkflowRunCollectReceipt(receiptKey)!;
+	}
+
+	private workflowRunCollectionSnapshot(
+		receipt: WorkflowRunCollectReceiptRow,
+	): WorkflowRunCollectionSnapshot {
+		return {
+			receiptKey: receipt.receipt_key,
+			state: receipt.state,
+			targetExecutionIds: receipt.targetExecutionIds,
+			outcomes: receipt.outcomes,
+			...(receipt.response ? { response: receipt.response } : {}),
+		};
+	}
+
+	ensureTerminalWorkflowRunCollection(input: {
+		runId: string;
+		now: string;
+	}): WorkflowRunCollectReceiptRow | undefined {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return undefined;
+		let receipt: WorkflowRunCollectReceiptRow | undefined;
+		let created = false;
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			if (!run || run.status === "active" || run.status === "held") return;
+			receipt = this.workflowRunCollectReceipt(
+				this.workflowSelectAll(
+					`SELECT * FROM workflow_run_collect_receipt
+					  WHERE run_id = ? AND state != 'responded'`,
+					[input.runId],
+				)[0],
+			);
+			if (receipt) return;
+			const targets = this.liveRunAttributedExecutionsTx(input.runId);
+			if (targets.length === 0) return;
+			receipt = this.createWorkflowRunCollectReceiptTx({
+				runId: input.runId,
+				now: input.now,
+				targetExecutionIds: targets,
+			});
+			created = true;
+		});
+		if (created) this.save();
+		return receipt;
+	}
+
+	listTerminalWorkflowRunsWithResidue(limit = 2): Array<{
+		runId: string;
+		projectName: string;
+		issueId: string;
+		executionIds: string[];
+		receiptKey?: string;
+	}> {
+		const bounded = Math.max(1, Math.min(20, Math.floor(limit)));
+		const candidates = this.workflowSelectAll(
+			`SELECT run_id FROM workflow_run
+			  WHERE engine_owned = 1 AND status NOT IN ('active','held')
+			  ORDER BY created_at, run_id`,
+			[],
+		);
+		const results: Array<{
+			runId: string;
+			projectName: string;
+			issueId: string;
+			executionIds: string[];
+			receiptKey?: string;
+		}> = [];
+		for (const candidate of candidates) {
+			const run = this.getWorkflowRun(String(candidate.run_id));
+			if (!run) continue;
+			const executionIds = this.liveRunAttributedExecutionsTx(run.run_id);
+			if (executionIds.length === 0) continue;
+			const receiptKey = this.workflowSelectAll(
+				`SELECT receipt_key FROM workflow_run_collect_receipt
+				  WHERE run_id = ? AND state != 'responded'`,
+				[run.run_id],
+			)[0]?.receipt_key;
+			results.push({
+				runId: run.run_id,
+				projectName: run.project_name,
+				issueId: run.issue_id,
+				executionIds,
+				...(typeof receiptKey === "string" ? { receiptKey } : {}),
+			});
+			if (results.length === bounded) break;
+		}
+		return results;
+	}
+
+	claimWorkflowRunCollection(input: {
+		receiptKey: string;
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}):
+		| { status: "claimed"; receipt: WorkflowRunCollectReceiptRow }
+		| { status: "busy" | "missing"; receipt?: WorkflowRunCollectReceiptRow } {
+		let status: "claimed" | "busy" | "missing" = "missing";
+		let receipt: WorkflowRunCollectReceiptRow | undefined;
+		this.db.transaction(() => {
+			if (!input.ownerId) return;
+			receipt = this.getWorkflowRunCollectReceipt(input.receiptKey);
+			if (!receipt) return;
+			if (receipt.state === "responded") {
+				status = "busy";
+				return;
+			}
+			const nowMs = Date.parse(input.now);
+			const leaseMs = Date.parse(input.leaseExpiresAt);
+			if (!Number.isFinite(nowMs) || !Number.isFinite(leaseMs) || leaseMs <= nowMs) {
+				status = "busy";
+				return;
+			}
+			const leaseLive =
+				receipt.lease_expires_at !== null &&
+				Date.parse(receipt.lease_expires_at) > nowMs;
+			if (leaseLive && receipt.owner_id !== input.ownerId) {
+				status = "busy";
+				return;
+			}
+			const generation =
+				receipt.owner_id === input.ownerId && leaseLive
+					? receipt.owner_generation!
+					: (receipt.owner_generation ?? 0) + 1;
+			this.db.run(
+				`UPDATE workflow_run_collect_receipt
+				    SET state = CASE WHEN state = 'frozen' THEN 'collecting' ELSE state END,
+				        owner_id = ?, owner_generation = ?, lease_expires_at = ?, updated_at = ?
+				  WHERE receipt_key = ? AND state != 'responded'`,
+				[
+					input.ownerId,
+					generation,
+					input.leaseExpiresAt,
+					input.now,
+					input.receiptKey,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			receipt = this.getWorkflowRunCollectReceipt(input.receiptKey);
+			status = "claimed";
+		});
+		const finalStatus = status as "claimed" | "busy" | "missing";
+		if (finalStatus === "claimed") this.save();
+		return finalStatus === "claimed"
+			? { status: finalStatus, receipt: receipt! }
+			: { status: finalStatus, ...(receipt ? { receipt } : {}) };
+	}
+
+	renewWorkflowRunCollectionLease(input: {
+		receiptKey: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+		leaseExpiresAt: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		const nowMs = Date.parse(input.now);
+		if (
+			!input.ownerId ||
+			!Number.isFinite(nowMs) ||
+			Date.parse(input.leaseExpiresAt) <= nowMs
+		) {
+			return { ok: false, reason: "collector_authority_lost" };
+		}
+		this.db.run(
+			`UPDATE workflow_run_collect_receipt
+			    SET lease_expires_at = ?, updated_at = ?
+			  WHERE receipt_key = ? AND owner_id = ? AND owner_generation = ?
+			    AND state IN ('collecting','collected') AND lease_expires_at > ?`,
+			[
+				input.leaseExpiresAt,
+				input.now,
+				input.receiptKey,
+				input.ownerId,
+				input.generation,
+				input.now,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "collector_authority_lost" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	recordWorkflowRunCollectionOutcome(input: {
+		receiptKey: string;
+		ownerId: string;
+		generation: number;
+		outcome: WorkflowRunCollectOutcome;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "collector_authority_lost",
+		};
+		this.db.transaction(() => {
+			const receipt = this.getWorkflowRunCollectReceipt(input.receiptKey);
+			const nowMs = Date.parse(input.now);
+			if (
+				!receipt ||
+				!Number.isFinite(nowMs) ||
+				receipt.state !== "collecting" ||
+				receipt.owner_id !== input.ownerId ||
+				receipt.owner_generation !== input.generation ||
+				!receipt.lease_expires_at ||
+				Date.parse(receipt.lease_expires_at) <= nowMs ||
+				!receipt.targetExecutionIds.includes(input.outcome.executionId)
+			) {
+				return;
+			}
+			const prior = receipt.outcomes.find(
+				(candidate) =>
+					candidate.executionId === input.outcome.executionId &&
+					candidate.closed &&
+					candidate.commDbFinalized,
+			);
+			if (prior) {
+				result =
+					canonicalSubmissionDigest(prior) ===
+					canonicalSubmissionDigest(input.outcome)
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "outcome_conflict" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_run_collect_receipt SET outcomes_json = ?, updated_at = ?
+				  WHERE receipt_key = ? AND owner_id = ? AND owner_generation = ?
+				    AND state = 'collecting'`,
+				[
+					JSON.stringify([...receipt.outcomes, input.outcome]),
+					input.now,
+					input.receiptKey,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = { ok: true, idempotentReplay: false };
+			}
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markWorkflowRunCollectionCollected(input: {
+		receiptKey: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		const receipt = this.getWorkflowRunCollectReceipt(input.receiptKey);
+		const nowMs = Date.parse(input.now);
+		if (
+			!receipt ||
+			!Number.isFinite(nowMs) ||
+			receipt.state !== "collecting" ||
+			receipt.owner_id !== input.ownerId ||
+			receipt.owner_generation !== input.generation ||
+			!receipt.lease_expires_at ||
+			Date.parse(receipt.lease_expires_at) <= nowMs ||
+			!receipt.targetExecutionIds.every((executionId) =>
+				receipt.outcomes.some(
+					(outcome) =>
+						outcome.executionId === executionId &&
+						outcome.closed &&
+						outcome.commDbFinalized,
+				),
+			)
+		) {
+			return { ok: false, reason: "collection_incomplete" };
+		}
+		this.db.run(
+			`UPDATE workflow_run_collect_receipt SET state = 'collected', updated_at = ?
+			  WHERE receipt_key = ? AND owner_id = ? AND owner_generation = ?
+			    AND state = 'collecting'`,
+			[input.now, input.receiptKey, input.ownerId, input.generation],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "collector_authority_lost" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	respondWorkflowRunCollection(input: {
+		receiptKey: string;
+		ownerId: string;
+		generation: number;
+		response: Record<string, unknown>;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (!Number.isFinite(Date.parse(input.now))) {
+			return { ok: false, reason: "collector_authority_lost" };
+		}
+		this.db.run(
+			`UPDATE workflow_run_collect_receipt
+			    SET state = 'responded', response_json = ?, updated_at = ?
+			  WHERE receipt_key = ? AND owner_id = ? AND owner_generation = ?
+			    AND state = 'collected' AND lease_expires_at > ?`,
+			[
+				JSON.stringify(input.response),
+				input.now,
+				input.receiptKey,
+				input.ownerId,
+				input.generation,
+				input.now,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "collector_authority_lost" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
 	private changeWorkflowRunStateByOperator(input: {
 		runId: string;
 		reason: string;
@@ -24875,6 +28241,7 @@ export class StateStore {
 			headSha: string;
 			state: "MERGED";
 		};
+		collectExecutions?: boolean;
 	}): WorkflowRunOperatorResult {
 		if (
 			!input.runId ||
@@ -24882,7 +28249,8 @@ export class StateStore {
 			input.reason.length > 500 ||
 			!input.clientRequestId ||
 			!input.principal ||
-			!StateStore.workflowFiniteTimestamp(input.now)
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.collectExecutions === true && input.target !== "terminated")
 		) {
 			return { ok: false, reason: "invalid_operator_request" };
 		}
@@ -24893,6 +28261,7 @@ export class StateStore {
 		const requestedCloseoutKind =
 			input.target === "terminated" ? (input.closeoutKind ?? "operator") : null;
 		this.db.transaction(() => {
+			const collectExecutions = input.collectExecutions === true;
 			const eventUid = `run_${input.target === "held" ? "held_by_operator" : "terminated"}:${input.runId}:${input.clientRequestId}`;
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
@@ -24912,16 +28281,54 @@ export class StateStore {
 							(input.clientRequestId ?? null) ||
 						(payload.closeoutInvariantDigest ?? null) !==
 							(input.closeoutInvariantDigest ?? null) ||
-						(payload.closeoutKind ?? null) !== requestedCloseoutKind
+						(payload.closeoutKind ?? null) !== requestedCloseoutKind ||
+						(payload.collectExecutions ?? false) !== collectExecutions
 					) {
 						result = { ok: false, reason: "operator_request_conflict" };
 						return;
 					}
-					result = {
-						ok: true,
-						status: input.target,
-						idempotentReplay: true,
-					};
+					if (collectExecutions) {
+						const alias = this.workflowSelectAll(
+							`SELECT receipt_key, request_digest
+							   FROM workflow_run_collect_alias
+							  WHERE run_id = ? AND client_request_id = ?`,
+							[input.runId, input.clientRequestId],
+						)[0];
+						const receipt = alias
+							? this.getWorkflowRunCollectReceipt(String(alias.receipt_key))
+							: undefined;
+						const digest = receipt
+							? canonicalSubmissionDigest({
+									principal: input.principal,
+									action: "terminate",
+									collectExecutions: true,
+									targetListDigest: canonicalSubmissionDigest(
+										receipt.targetExecutionIds,
+									),
+								})
+							: undefined;
+						const currentStatus = this.getWorkflowRun(input.runId)?.status;
+						if (
+							!receipt ||
+							alias?.request_digest !== digest ||
+							(currentStatus !== "terminated" && currentStatus !== "completed")
+						) {
+							result = { ok: false, reason: "operator_request_conflict" };
+							return;
+						}
+						result = {
+							ok: true,
+							status: currentStatus,
+							idempotentReplay: true,
+							collection: this.workflowRunCollectionSnapshot(receipt),
+						};
+					} else {
+						result = {
+							ok: true,
+							status: input.target,
+							idempotentReplay: true,
+						};
+					}
 					return;
 				} catch {
 					result = { ok: false, reason: "operator_request_conflict" };
@@ -24933,15 +28340,79 @@ export class StateStore {
 				input.target === "held"
 					? run?.status === "active"
 					: run?.status === "active" || run?.status === "held";
+			if (
+				run &&
+				!allowed &&
+				collectExecutions &&
+				(run.status === "terminated" || run.status === "completed")
+			) {
+				const receipt =
+					this.workflowRunCollectReceipt(
+						this.workflowSelectAll(
+							`SELECT * FROM workflow_run_collect_receipt
+							  WHERE run_id = ? AND state != 'responded'`,
+							[input.runId],
+						)[0],
+					) ??
+					this.createWorkflowRunCollectReceiptTx({
+						runId: input.runId,
+						now: input.now,
+					});
+				const requestDigest = canonicalSubmissionDigest({
+					principal: input.principal,
+					action: "terminate",
+					collectExecutions: true,
+					targetListDigest: canonicalSubmissionDigest(
+						receipt.targetExecutionIds,
+					),
+				});
+				this.db.run(
+					`INSERT INTO workflow_run_collect_alias
+					   (run_id, client_request_id, receipt_key, request_digest, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						input.runId,
+						input.clientRequestId,
+						receipt.receipt_key,
+						requestDigest,
+						input.now,
+					],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid,
+					kind: "run_collection_requested",
+					payload: {
+						reason: input.reason,
+						principal: input.principal,
+						status: input.target,
+						clientRequestId: input.clientRequestId,
+						closeoutInvariantDigest: input.closeoutInvariantDigest ?? null,
+						closeoutKind: requestedCloseoutKind,
+						collectExecutions: true,
+						receiptKey: receipt.receipt_key,
+						at: input.now,
+					},
+				});
+				result = {
+					ok: true,
+					status: run.status,
+					idempotentReplay: false,
+					collection: this.workflowRunCollectionSnapshot(receipt),
+				};
+				return;
+			}
 			if (!run || !allowed) {
 				result = { ok: false, reason: "run_not_manageable" };
 				return;
 			}
-			const quiescence = this.validateRunQuiescenceEvidenceTx(
-				input.runId,
-				input.evidence,
-				input.now,
-			);
+			const quiescence = collectExecutions
+				? ({ ok: true } as const)
+				: this.validateRunQuiescenceEvidenceTx(
+						input.runId,
+						input.evidence,
+						input.now,
+					);
 			if (!quiescence.ok) {
 				result = {
 					ok: false,
@@ -24952,7 +28423,11 @@ export class StateStore {
 			}
 			let effectiveCloseoutKind: "nested_manual" | "operator" | null =
 				input.target === "terminated" ? "operator" : null;
-			if (input.target === "terminated" && run.status === "held") {
+			if (
+				!collectExecutions &&
+				input.target === "terminated" &&
+				run.status === "held"
+			) {
 				const diagnostic = this.getWorkflowRunDiagnostic({
 					runId: input.runId,
 					evidence: input.evidence,
@@ -25038,6 +28513,9 @@ export class StateStore {
 					effectiveCloseoutKind = "nested_manual";
 				}
 			}
+			const frozenExecutionIds = collectExecutions
+				? this.liveRunAttributedExecutionsTx(input.runId)
+				: undefined;
 			this.db.run(
 				"UPDATE workflow_run SET status = ? WHERE run_id = ? AND status = ?",
 				[input.target, input.runId, run.status],
@@ -25055,6 +28533,43 @@ export class StateStore {
 					eventSuffix: "operator_terminate",
 				});
 			}
+			let collection: WorkflowRunCollectionSnapshot | undefined;
+			if (collectExecutions) {
+				const open = this.workflowSelectAll(
+					`SELECT receipt_key FROM workflow_run_collect_receipt
+					  WHERE run_id = ? AND state != 'responded'`,
+					[input.runId],
+				)[0];
+				if (open) {
+					throw new Error("workflow_run_collection_phase_a_open_receipt");
+				}
+				const receipt = this.createWorkflowRunCollectReceiptTx({
+					runId: input.runId,
+					now: input.now,
+					targetExecutionIds: frozenExecutionIds,
+				});
+				const requestDigest = canonicalSubmissionDigest({
+					principal: input.principal,
+					action: "terminate",
+					collectExecutions: true,
+					targetListDigest: canonicalSubmissionDigest(
+						receipt.targetExecutionIds,
+					),
+				});
+				this.db.run(
+					`INSERT INTO workflow_run_collect_alias
+					   (run_id, client_request_id, receipt_key, request_digest, created_at)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						input.runId,
+						input.clientRequestId,
+						receipt.receipt_key,
+						requestDigest,
+						input.now,
+					],
+				);
+				collection = this.workflowRunCollectionSnapshot(receipt);
+			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid,
@@ -25070,6 +28585,12 @@ export class StateStore {
 					closeoutInvariantDigest: input.closeoutInvariantDigest ?? null,
 					closeoutKind: effectiveCloseoutKind,
 					mergeProof: input.mergeProof ?? null,
+					...(collectExecutions
+						? {
+								collectExecutions: true,
+								receiptKey: collection!.receiptKey,
+							}
+						: {}),
 					at: input.now,
 				},
 			});
@@ -25077,6 +28598,7 @@ export class StateStore {
 				ok: true,
 				status: input.target,
 				idempotentReplay: false,
+				...(collection ? { collection } : {}),
 			};
 		});
 		if (result.ok) this.save();
@@ -25151,6 +28673,7 @@ export class StateStore {
 		principal: string;
 		evidence: RunQuiescenceEvidence[];
 		now: string;
+		escalationAck?: WorkflowLoopLimitEscalationAck;
 		consent?: {
 			mode: "off" | "audit_only" | "enforce";
 			decision: string;
@@ -25164,11 +28687,25 @@ export class StateStore {
 			input.feedback.length > 4_000 ||
 			!input.clientRequestId.trim() ||
 			!input.principal ||
-			!StateStore.workflowFiniteTimestamp(input.now)
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.escalationAck !== undefined &&
+				(typeof input.escalationAck.holdEventUid !== "string" ||
+					!input.escalationAck.holdEventUid.trim() ||
+					typeof input.escalationAck.holdReceiptDigest !== "string" ||
+					!/^[0-9a-f]{64}$/.test(input.escalationAck.holdReceiptDigest) ||
+					(input.escalationAck.decision !== "continue" &&
+						input.escalationAck.decision !== "reclassify")))
 		) {
 			return { ok: false, reason: "invalid_operator_rework_request" };
 		}
 		const sourceEventId = `operator_rework:${input.runId}:${input.clientRequestId}`;
+		const escalationAck = input.escalationAck
+			? {
+					holdEventUid: input.escalationAck.holdEventUid,
+					holdReceiptDigest: input.escalationAck.holdReceiptDigest,
+					decision: input.escalationAck.decision,
+				}
+			: undefined;
 		let result: WorkflowOperatorReworkResult = {
 			ok: false,
 			reason: "operator_rework_not_committed",
@@ -25187,12 +28724,15 @@ export class StateStore {
 						preferredActorExecutionId?: unknown;
 						feedback?: unknown;
 						principal?: unknown;
+						escalationAck?: unknown;
 					};
 					if (
 						prior.kind !== "operator_rework_requested" ||
 						payload.targetNodeId !== input.targetNodeId ||
 						payload.feedback !== input.feedback.trim() ||
 						payload.principal !== input.principal ||
+						canonicalSubmissionDigest(payload.escalationAck ?? null) !==
+							canonicalSubmissionDigest(escalationAck ?? null) ||
 						typeof payload.requestId !== "string" ||
 						typeof payload.targetAttempt !== "number" ||
 						typeof payload.preferredActorExecutionId !== "string"
@@ -25216,6 +28756,74 @@ export class StateStore {
 			}
 
 			const run = this.getWorkflowRun(input.runId);
+			const latestHold =
+				run?.status === "held"
+					? this.workflowSelectAll(
+							`SELECT event_uid, kind, edge_id, payload
+							   FROM workflow_run_event
+							  WHERE run_id = ? AND kind IN (
+							    'run_held_by_operator','land_held',
+							    'unlaunched_admission_rolled_back','unlaunched_admission_held',
+							    'rework_activation_stalled_held','rework_pane_loss_handoff',
+							    'rework_retry_exhausted','completion_receipt_missing',
+							    'retry_limit_escalated','loop_limit_escalated',
+							    'rework_suppressed_idle_spin'
+							  )
+							  ORDER BY seq DESC LIMIT 1`,
+							[input.runId],
+						)[0]
+					: undefined;
+			const heldLoopLimit = latestHold?.kind === "loop_limit_escalated";
+			if (heldLoopLimit) {
+				if (!escalationAck) {
+					result = {
+						ok: false,
+						reason: "loop_limit_escalation_ack_required",
+					};
+					return;
+				}
+				if (latestHold.event_uid !== escalationAck.holdEventUid) {
+					result = {
+						ok: false,
+						reason: "loop_limit_escalation_ack_stale",
+					};
+					return;
+				}
+				try {
+					const payload = JSON.parse(String(latestHold.payload)) as Record<
+						string,
+						unknown
+					>;
+					if (
+						payload.onLimit !== "escalate" ||
+						payload.edgeId !== latestHold.edge_id ||
+						!Number.isInteger(payload.loopIteration) ||
+						canonicalSubmissionDigest(payload) !==
+							escalationAck.holdReceiptDigest
+					) {
+						result = {
+							ok: false,
+							reason: "loop_limit_escalation_ack_invalid",
+						};
+						return;
+					}
+				} catch {
+					result = {
+						ok: false,
+						reason: "loop_limit_escalation_ack_invalid",
+					};
+					return;
+				}
+			} else if (escalationAck) {
+				result = {
+					ok: false,
+					reason:
+						run?.status === "held"
+							? "loop_limit_escalation_ack_stale"
+							: "loop_limit_escalation_ack_not_applicable",
+				};
+				return;
+			}
 			const needsLeadRow = this.workflowSelectAll(
 				`SELECT d.request_id
 				   FROM workflow_rework_delivery d
@@ -25250,7 +28858,8 @@ export class StateStore {
 				(run.status !== "active" &&
 					run.status !== "completed" &&
 					!heldNeedsLead &&
-					!heldLandHeadMismatch)
+					!heldLandHeadMismatch &&
+					!heldLoopLimit)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
 				return;
@@ -25461,6 +29070,7 @@ export class StateStore {
 				targetNodeId: target.id,
 				targetAttempt,
 				feedback: input.feedback.trim(),
+				...(escalationAck ? { escalationAck } : {}),
 			};
 			const authorityContextJson = JSON.stringify(authorityContext);
 			const authorityContextDigest =
@@ -25655,25 +29265,59 @@ export class StateStore {
 				executionId: preferredActorExecutionId,
 				payload: { requestId, attempt: targetAttempt },
 			});
+			const operatorReceipt = {
+				requestId,
+				targetNodeId: target.id,
+				targetAttempt,
+				preferredActorExecutionId,
+				feedback: input.feedback.trim(),
+				principal: input.principal,
+				...(escalationAck ? { escalationAck } : {}),
+				consent: input.consent ?? {
+					mode: "off",
+					decision: "pass_through",
+				},
+			};
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid: sourceEventId,
 				kind: "operator_rework_requested",
 				nodeId: target.id,
 				executionId: preferredActorExecutionId,
-				payload: {
-					requestId,
+				payload: operatorReceipt,
+			});
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: input.runId,
 					targetNodeId: target.id,
 					targetAttempt,
-					preferredActorExecutionId,
-					feedback: input.feedback.trim(),
-					principal: input.principal,
-					consent: input.consent ?? {
-						mode: "off",
-						decision: "pass_through",
-					},
+					transitionUid: sourceEventId,
+					createdAt: input.now,
 				},
-			});
+				() =>
+					this.recordWorkflowResumeAttachmentTx({
+						runId: input.runId,
+						targetNodeId: target.id,
+						targetAttempt,
+						transitionUid: sourceEventId,
+						receiptKind: "operator_rework",
+						receiptPayload: operatorReceipt,
+						carrierKind: "git_checkpoint",
+						anchorCommit: baseRevision,
+						repoIdentity:
+							this.listWorkflowResumeAttachments({ runId: input.runId }).at(
+								-1,
+							)?.repo_identity ?? run.project_name,
+						snapshotDigest: snapshot.snapshot_digest,
+						resolvedNodeDigest: canonicalSubmissionDigest(target),
+						reworkAuthorityDigest: authorityContextDigest,
+						envelopeJson: JSON.stringify({
+							schemaVersion: 1,
+							issueBaselineUid: `issue_input_baseline:${input.runId}`,
+						}),
+						createdAt: input.now,
+					}),
+			);
 			result = {
 				ok: true,
 				requestId,
@@ -26322,6 +29966,158 @@ export class StateStore {
 	}
 
 	/**
+	 * Give one ready checkpoint candidate a durable grace window before the dead
+	 * execution sweep is allowed to allocate a replacement writer.
+	 */
+	openWorkflowResumeFirstWindow(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		attachmentId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; defer: boolean; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.runId ||
+			!input.nodeId ||
+			!input.executionId ||
+			!input.attachmentId ||
+			!Number.isInteger(input.attempt) ||
+			input.attempt < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resume_first_window" };
+		}
+		const eventUid = `resume_first_window_opened:${input.runId}:${input.nodeId}:${input.attempt}:${input.executionId}`;
+		let result:
+			| { ok: true; defer: boolean; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_first_window_not_committed",
+		};
+		let inserted = false;
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			const node = this.getWorkflowRunNode(
+				input.runId,
+				input.nodeId,
+				input.attempt,
+			);
+			const attachment = this.listWorkflowResumeAttachments({
+				runId: input.runId,
+			}).at(-1);
+			const attachmentState = attachment
+				? this.getWorkflowResumeAttachmentState(attachment.attachment_id)
+				: undefined;
+			if (
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				run.current_node_id !== input.nodeId ||
+				node?.state !== "running" ||
+				node.execution_id !== input.executionId ||
+				this.getWorkflowNodeCompletion(
+					input.runId,
+					input.nodeId,
+					input.attempt,
+				) ||
+				attachment?.attachment_id !== input.attachmentId ||
+				attachment.target_node_id !== input.nodeId ||
+				attachment.target_attempt !== input.attempt ||
+				attachmentState?.state !== "ready"
+			) {
+				result = { ok: false, reason: "resume_target_not_current" };
+				return;
+			}
+			const prior = this.listWorkflowRunEvents(input.runId).find(
+				(event) => event.event_uid === eventUid,
+			);
+			if (prior) {
+				const payload =
+					prior.payload && typeof prior.payload === "object"
+						? (prior.payload as Record<string, unknown>)
+						: undefined;
+				const observedAt =
+					typeof payload?.observedAt === "string"
+						? Date.parse(payload.observedAt)
+						: Number.NaN;
+				const expiresAt =
+					typeof payload?.expiresAt === "string"
+						? Date.parse(payload.expiresAt)
+						: Number.NaN;
+				if (
+					prior.kind !== "resume_first_window_opened" ||
+					prior.node_id !== input.nodeId ||
+					prior.execution_id !== input.executionId ||
+					payload?.targetAttempt !== input.attempt ||
+					payload.attachmentId !== input.attachmentId ||
+					!Number.isFinite(observedAt) ||
+					!Number.isFinite(expiresAt) ||
+					expiresAt - observedAt !== WORKFLOW_RESUME_FIRST_WINDOW_MS
+				) {
+					result = { ok: false, reason: "resume_first_window_conflict" };
+					return;
+				}
+				result = {
+					ok: true,
+					defer: Date.parse(input.now) < expiresAt,
+					idempotentReplay: true,
+				};
+				return;
+			}
+			const expiresAt = new Date(
+				Date.parse(input.now) + WORKFLOW_RESUME_FIRST_WINDOW_MS,
+			).toISOString();
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid,
+				kind: "resume_first_window_opened",
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: {
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					attachmentId: input.attachmentId,
+					observedAt: input.now,
+					expiresAt,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: input.runId,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_issue_alert",
+					severity: "warning",
+					sessionKey: `wf:${input.runId}`,
+					title: `Resume candidate available for ${run.issue_id}`,
+					body: `Run ${input.runId} node ${input.nodeId} has a ready checkpoint candidate. Attempt resume before ${expiresAt}; admission will revalidate the issue input and anchor, and dead-execution replacement remains paused until then.`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "resume_first_available",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			inserted = true;
+			result = { ok: true, defer: true, idempotentReplay: false };
+		});
+		if (inserted) this.save();
+		return result;
+	}
+
+	/**
 	 * A completed lifecycle session is positive evidence that the runner already
 	 * finished its work. When its engine node is still running only because the
 	 * completion receipt is missing, replaying the work is never safe: freeze the
@@ -26657,6 +30453,162 @@ export class StateStore {
 				state: "pending",
 				executionId: input.newExecutionId,
 			});
+			const writerTransitionUid = `writer_replacement:${canonicalSubmissionDigest(
+				{
+					runId: input.runId,
+					nodeId: input.nodeId,
+					attempt: input.attempt,
+					newExecutionId: input.newExecutionId,
+				},
+			)}`;
+			const writerReceipt = {
+				targetNodeId: input.nodeId,
+				targetAttempt: input.attempt,
+				deadExecutionId: input.deadExecutionId,
+				newExecutionId: input.newExecutionId,
+				launchOrdinal,
+			};
+			const sourceAttachment = this.listWorkflowResumeAttachments({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			}).at(-1);
+			const sourceState = sourceAttachment
+				? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+				: undefined;
+			const sourceDelivery = this.listWorkflowRunEvents(input.runId)
+				.filter(
+					(event) =>
+						event.kind === "issue_delivery" &&
+						event.node_id === input.nodeId &&
+						event.execution_id === input.deadExecutionId,
+				)
+				.at(-1);
+			const sourceDeliveryPayload =
+				sourceDelivery?.payload && typeof sourceDelivery.payload === "object"
+					? (sourceDelivery.payload as Record<string, unknown>)
+					: undefined;
+			let stampedBaselineDigest: string | undefined;
+			try {
+				const stamp = JSON.parse(
+					sourceState?.envelope_stamped_json ?? "null",
+				) as Record<string, unknown> | null;
+				const baseline = stamp?.issueBaseline as
+					| Record<string, unknown>
+					| undefined;
+				stampedBaselineDigest =
+					typeof baseline?.bodyDigest === "string"
+						? baseline.bodyDigest
+						: undefined;
+			} catch {
+				// Malformed resume evidence is diagnosed below without aborting recovery.
+			}
+			const sourceDeliveryDigest = sourceDelivery
+				? canonicalSubmissionDigest(sourceDelivery.payload ?? null)
+				: undefined;
+			const sourceKind = sourceDeliveryPayload?.sourceKind;
+			const canMigrate =
+				sourceAttachment !== undefined &&
+				sourceState?.state === "ready" &&
+				sourceDelivery !== undefined &&
+				sourceDeliveryPayload !== undefined &&
+				(sourceKind === "authoritative" ||
+					sourceKind === "frozen_replay" ||
+					sourceKind === "writer_migration") &&
+				typeof sourceDeliveryPayload.body === "string" &&
+				typeof sourceDeliveryPayload.bodyDigest === "string" &&
+				createHash("sha256")
+					.update(sourceDeliveryPayload.body)
+					.digest("hex") === sourceDeliveryPayload.bodyDigest &&
+				sourceDeliveryPayload.bodyDigest === stampedBaselineDigest;
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: input.runId,
+					targetNodeId: input.nodeId,
+					targetAttempt: input.attempt,
+					transitionUid: writerTransitionUid,
+					createdAt: now,
+				},
+				() => {
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: writerTransitionUid,
+						kind: "writer_replacement",
+						nodeId: input.nodeId,
+						executionId: input.newExecutionId,
+						payload: writerReceipt,
+					});
+					if (!canMigrate || !sourceAttachment || !sourceDelivery) {
+						this.recordWorkflowResumeTargetUnrecoverableTx({
+							runId: input.runId,
+							targetNodeId: input.nodeId,
+							targetAttempt: input.attempt,
+							transitionUid: writerTransitionUid,
+							reason: "attachment_missing",
+							detail: { cause: "writer_source_evidence_unavailable" },
+							createdAt: now,
+						});
+						return;
+					}
+					const migrationBindingUid = `resume_writer_binding:${canonicalSubmissionDigest(
+						{
+							writerTransitionUid,
+							sourceDeliveryUid: sourceDelivery.event_uid,
+							sourceAttachmentId: sourceAttachment.attachment_id,
+						},
+					)}`;
+					const bindingPayload = {
+						targetNodeId: input.nodeId,
+						targetAttempt: input.attempt,
+						sourceExecutionId: input.deadExecutionId,
+						newExecutionId: input.newExecutionId,
+						launchOrdinal,
+						writerTransitionUid,
+						sourceAttachmentId: sourceAttachment.attachment_id,
+						sourceIssueDeliveryUid: sourceDelivery.event_uid,
+						sourceIssueDeliveryDigest: sourceDeliveryDigest,
+					};
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: migrationBindingUid,
+						kind: "resume_writer_binding",
+						nodeId: input.nodeId,
+						executionId: input.newExecutionId,
+						payload: bindingPayload,
+					});
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `issue_delivery_migration:${canonicalSubmissionDigest(
+							bindingPayload,
+						)}`,
+						kind: "issue_delivery",
+						nodeId: input.nodeId,
+						executionId: input.newExecutionId,
+						payload: {
+							sourceKind: "writer_migration",
+							body: sourceDeliveryPayload.body,
+							bodyDigest: sourceDeliveryPayload.bodyDigest,
+							migrationBindingUid,
+							sourceIssueDeliveryUid: sourceDelivery.event_uid,
+							sourceIssueDeliveryDigest: sourceDeliveryDigest,
+						},
+					});
+					if (
+						!this.recordWorkflowResumeInheritedAttachmentTx({
+							source: sourceAttachment,
+							runId: input.runId,
+							targetNodeId: input.nodeId,
+							targetAttempt: input.attempt,
+							transitionUid: writerTransitionUid,
+							receiptKind: "writer_replacement",
+							receiptPayload: writerReceipt,
+							createdAt: now,
+						})
+					) {
+						throw new Error("workflow_resume_attachment_conflict");
+					}
+				},
+			);
 			this.appendWorkflowRunEventCheckedTx({
 				runId: input.runId,
 				eventUid,
@@ -26833,18 +30785,15 @@ export class StateStore {
 				result = { ok: false, reason: "credential_expired" };
 				return;
 			}
-			const currentOwner = this.workflowSelectAll(
-				`SELECT 1 AS present FROM workflow_run_node
-				  WHERE run_id = ? AND node_id = ? AND attempt = ?
-				    AND execution_id = ? AND state IN ('admitted','running')`,
-				[
-					credential.run_id as string,
-					credential.node_id as string,
-					Number(credential.attempt),
-					credential.execution_id as string,
-				],
-			)[0];
-			if (!currentOwner) {
+			if (
+				!this.assertCurrentWorkflowWriterTx({
+					runId: credential.run_id as string,
+					nodeId: credential.node_id as string,
+					attempt: Number(credential.attempt),
+					executionId: credential.execution_id as string,
+					activationId: credential.activation_id as string,
+				})
+			) {
 				result = { ok: false, reason: "credential_revoked" };
 				return;
 			}
@@ -27047,6 +30996,98 @@ export class StateStore {
 	private workflowRunAcceptsAuthorityMutation(runId: string): boolean {
 		const status = this.getWorkflowRun(runId)?.status;
 		return status === "active" || status === "held";
+	}
+
+	private assertCurrentWorkflowWriterTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		activationId: string;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_run_node node
+				   JOIN workflow_run run ON run.run_id = node.run_id
+				   JOIN workflow_execution_binding binding
+				     ON binding.run_id = node.run_id AND binding.node_id = node.node_id
+				    AND binding.attempt = node.attempt
+				    AND binding.execution_id = node.execution_id
+				  WHERE node.run_id = ? AND node.node_id = ? AND node.attempt = ?
+				    AND node.execution_id = ? AND binding.activation_id = ?
+				    AND node.state IN ('pending','admitted','running')
+				    AND run.status IN ('active','held')
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_run_node newer
+				       WHERE newer.run_id = node.run_id AND newer.node_id = node.node_id
+				         AND newer.attempt > node.attempt
+				    )
+				    AND (run.engine_owned <> 1 OR (
+				      run.current_node_id = node.node_id
+				      AND NOT EXISTS (
+				        SELECT 1 FROM workflow_launch_cancellation cancellation
+				         WHERE cancellation.execution_id = node.execution_id
+				      )
+				      AND NOT EXISTS (
+				        SELECT 1 FROM workflow_resume_admission admission
+				         WHERE admission.run_id = node.run_id
+				           AND admission.action_kind = 'redispatch_execution'
+				           AND admission.target_node_id = node.node_id
+					           AND (admission.new_attempt > node.attempt
+					             OR (admission.new_attempt = node.attempt
+					               AND admission.new_execution_id <> node.execution_id))
+					      )
+					    ))`,
+				[
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+					input.activationId,
+				],
+			)[0],
+		);
+	}
+
+	private assertCurrentWorkflowGateAuthorityTx(input: {
+		runId: string;
+		gateNodeId: string;
+		attempt: number;
+		questionId: string;
+		headSha: string;
+		sourceExecutionId: string;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present
+				   FROM workflow_gate_holder holder
+				   JOIN workflow_run run ON run.run_id = holder.run_id
+				   JOIN workflow_run_node node
+				     ON node.run_id = holder.run_id AND node.node_id = holder.gate_node_id
+				    AND node.attempt = holder.attempt
+				  WHERE holder.run_id = ? AND holder.gate_node_id = ? AND holder.attempt = ?
+				    AND holder.question_id = ? AND holder.head_sha = ?
+				    AND holder.source_execution_id = ? AND holder.state = 'awaiting_review'
+				    AND node.state = 'review' AND run.engine_owned = 1
+				    AND run.status = 'active' AND run.current_node_id = holder.gate_node_id
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_gate_holder newer
+				       WHERE newer.run_id = holder.run_id
+				         AND newer.gate_node_id = holder.gate_node_id
+				         AND newer.attempt > holder.attempt
+				         AND newer.state IN ('materializing','awaiting_review','approved')
+				    )`,
+				[
+					input.runId,
+					input.gateNodeId,
+					input.attempt,
+					input.questionId,
+					input.headSha,
+					input.sourceExecutionId,
+				],
+			)[0],
+		);
 	}
 
 	private workflowRunRequiresShipTarget(runId: string): boolean {
@@ -28344,6 +32385,24 @@ export class StateStore {
 			row.worktree_binding_generation === normalized.worktreeBindingGeneration;
 		if (priorReceipt) return tupleMatches(priorReceipt);
 		if (!this.workflowRunAcceptsAuthorityMutation(input.runId)) return false;
+		const activation = this.getWorkflowActivationForAttempt({
+			executionId: input.executionId,
+			runId: input.runId,
+			nodeId: input.nodeId,
+			attempt: input.attempt,
+		});
+		if (
+			!activation ||
+			!this.assertCurrentWorkflowWriterTx({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+				executionId: input.executionId,
+				activationId: activation.activation_id,
+			})
+		) {
+			return false;
+		}
 		const currentMax = Number(
 			this.workflowSelectAll(
 				`SELECT MAX(attempt) AS attempt FROM workflow_node_pr_binding
@@ -29150,12 +33209,15 @@ export class StateStore {
 				...(completionDisposition ? { completionDisposition } : {}),
 			};
 		}
-		const currentNode = this.getWorkflowRunNode(
-			context.binding.run_id,
-			context.binding.node_id,
-			context.binding.attempt,
-		);
-		if (currentNode?.execution_id !== context.binding.execution_id) {
+		if (
+			!this.assertCurrentWorkflowWriterTx({
+				runId: context.binding.run_id,
+				nodeId: context.binding.node_id,
+				attempt: context.binding.attempt,
+				executionId: context.binding.execution_id,
+				activationId: context.binding.activation_id,
+			})
+		) {
 			return { ok: false, reason: "stale_execution_superseded" };
 		}
 		if (context.node.capabilities.produces_output && !genericNoCodeExit) {
@@ -29201,6 +33263,18 @@ export class StateStore {
 		let transitionGateOpened = false;
 		try {
 			this.db.transaction(() => {
+				if (
+					!this.assertCurrentWorkflowWriterTx({
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						executionId: context.binding.execution_id,
+						activationId: context.binding.activation_id,
+					})
+				) {
+					transitionRefusal = "stale_execution_superseded";
+					throw new Error("engine_completion_transition_refused");
+				}
 				const sessionStatus = this.getSession(input.executionId)?.status;
 				if (
 					isNoOutEdgeTerminalStatus(sessionStatus) &&
@@ -29692,7 +33766,16 @@ export class StateStore {
 						credential.attempt,
 					],
 				)[0];
-				if (!binding) {
+				if (
+					!binding ||
+					!this.assertCurrentWorkflowWriterTx({
+						runId: credential.run_id as string,
+						nodeId: credential.node_id as string,
+						attempt: Number(credential.attempt),
+						executionId: credential.execution_id as string,
+						activationId: credential.activation_id as string,
+					})
+				) {
 					result = { ok: false, reason: "binding_not_current" };
 					return;
 				}
@@ -29928,6 +34011,17 @@ export class StateStore {
 	 * the physical successor execution so competing drivers converge on the
 	 * first committed choice instead of allocating a second writer.
 	 */
+	private workflowLoopIterationCount(runId: string, edgeId: string): number {
+		return Number(
+			this.workflowSelectAll(
+				`SELECT COUNT(*) AS n FROM workflow_run_event
+				  WHERE run_id = ? AND edge_id = ?
+				    AND kind IN ('loop_iteration','loop_limit_escalated')`,
+				[runId, edgeId],
+			)[0]?.n ?? 0,
+		);
+	}
+
 	resolveWorkflowLoopReentryCanonical(
 		executionId: string,
 		loopId: string,
@@ -29958,14 +34052,7 @@ export class StateStore {
 			return undefined;
 		}
 		const expectedIteration =
-			Number(
-				this.workflowSelectAll(
-					`SELECT COUNT(*) AS n
-					   FROM workflow_run_event
-					  WHERE run_id = ? AND kind = 'loop_iteration' AND edge_id = ?`,
-					[binding.run_id, loop.id],
-				)[0]?.n ?? 0,
-			) + 1;
+			this.workflowLoopIterationCount(binding.run_id, loop.id) + 1;
 		const identity = {
 			runId: binding.run_id,
 			loopId: loop.id,
@@ -30170,7 +34257,8 @@ export class StateStore {
 		attempt: number;
 		executionId: string;
 		outcome: string;
-		/** Git head decided by QA/founder; required when land_v1 opens its gate. */
+		/** Legacy name: this is also the authoritative rework base Git head, not
+		 * an arbitrary subject digest. Keep the public field stable. */
 		subjectDigest?: string;
 		/** Trusted founder feedback carried to the kickback successor receipt. */
 		founderFeedback?: string;
@@ -30296,7 +34384,7 @@ export class StateStore {
 							  WHERE run_id = ? AND gate_node_id = ? AND attempt = ?
 							    AND source_execution_id = ?
 							    AND head_sha = ?
-							    AND state IN ('awaiting_review','approved','superseded')
+							    AND state IN ('awaiting_review','approved')
 							  ORDER BY updated_at DESC LIMIT 1`,
 							[
 								input.runId,
@@ -30314,12 +34402,27 @@ export class StateStore {
 						exactGateHolder !== undefined &&
 						(input.outcome === "founder_feedback_kickback" ||
 							input.outcome === "founder_approved")));
+			const writerActivation = this.getWorkflowActivationForAttempt({
+				executionId: input.executionId,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			});
 			if (
 				!source ||
 				!current ||
 				run.current_node_id !== input.nodeId ||
 				(!authorityDrivenGate && current.execution_id !== input.executionId) ||
-				current.state === "done"
+				(!authorityDrivenGate &&
+					writerActivation !== undefined &&
+					!this.assertCurrentWorkflowWriterTx({
+						runId: input.runId,
+						nodeId: input.nodeId,
+						attempt: input.attempt,
+						executionId: input.executionId,
+						activationId: writerActivation.activation_id,
+					})) ||
+				(!authorityDrivenGate && current.state === "done")
 			) {
 				result = { ok: false, reason: "node_attempt_not_current" };
 				return;
@@ -30460,13 +34563,7 @@ export class StateStore {
 					0,
 				) + 1;
 			const loopIteration = loop
-				? Number(
-						this.workflowSelectAll(
-							`SELECT COUNT(*) AS n FROM workflow_run_event
-							  WHERE run_id = ? AND kind = 'loop_iteration' AND edge_id = ?`,
-							[input.runId, loop.id],
-						)[0]?.n ?? 0,
-					) + 1
+				? this.workflowLoopIterationCount(input.runId, loop.id) + 1
 				: undefined;
 			if (
 				loop &&
@@ -31110,6 +35207,85 @@ export class StateStore {
 					throw new Error("workflow_rework_verification_step_missing_chain");
 				}
 			}
+			const sourceAttachment = this.listWorkflowResumeAttachments({
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt,
+			}).at(-1);
+			const sourceAttachmentState = sourceAttachment
+				? this.getWorkflowResumeAttachmentState(sourceAttachment.attachment_id)
+				: undefined;
+			const subjectHead = /^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")
+				? input.subjectDigest!.toLowerCase()
+				: undefined;
+			const inheritedAnchor =
+				sourceAttachment?.anchor_commit ??
+				sourceAttachmentState?.resolved_anchor_commit ??
+				undefined;
+			const carrierKind: WorkflowResumeCarrierKind =
+				target.type === "gate"
+					? "state_only_checkpoint"
+					: "git_checkpoint";
+			const targetAnchor = subjectHead ?? inheritedAnchor;
+			this.recordWorkflowResumeEvidenceSafelyTx(
+				{
+					runId: input.runId,
+					targetNodeId: target.id,
+					targetAttempt,
+					transitionUid,
+					createdAt: now,
+				},
+				() => {
+					if (carrierKind === "git_checkpoint" && !targetAnchor) {
+						this.recordWorkflowResumeTargetUnrecoverableTx({
+							runId: input.runId,
+							targetNodeId: target.id,
+							targetAttempt,
+							transitionUid,
+							reason: "attachment_missing",
+							detail: { cause: "anchor_source_unavailable" },
+							createdAt: now,
+						});
+						return;
+					}
+					const reworkAuthorityDigest = reworkRequestId
+						? this.getWorkflowReworkRequest(reworkRequestId)
+								?.authority_context_digest
+						: undefined;
+					this.recordWorkflowResumeAttachmentTx({
+						runId: input.runId,
+						targetNodeId: target.id,
+						targetAttempt,
+						transitionUid,
+						receiptKind: "edge_traversed",
+						receiptPayload: receipt,
+						carrierKind,
+						...(targetAnchor ? { anchorCommit: targetAnchor } : {}),
+						repoIdentity:
+							sourceAttachment?.repo_identity ?? run.project_name,
+						snapshotDigest: snapshot.snapshot_digest,
+						resolvedNodeDigest: canonicalSubmissionDigest(target),
+						...(target.type === "gate"
+							? {
+									runtimeSemanticsDigest: canonicalSubmissionDigest({
+										type: target.type,
+										capabilities: target.capabilities,
+									}),
+								}
+							: {}),
+						...(reworkAuthorityDigest
+							? { reworkAuthorityDigest }
+							: {}),
+						envelopeJson:
+							sourceAttachment?.envelope_json ??
+							JSON.stringify({
+								schemaVersion: 1,
+								issueBaselineUid: `issue_input_baseline:${input.runId}`,
+							}),
+						createdAt: now,
+					});
+				},
+			);
 			this.db.run(
 				"UPDATE workflow_run SET current_node_id = ? WHERE run_id = ?",
 				[target.id, input.runId],
@@ -31172,7 +35348,7 @@ export class StateStore {
 			run_id: r.run_id as string,
 			node_id: r.node_id as string,
 			attempt: Number(r.attempt),
-			state: r.state as string,
+			state: r.state as WorkflowRunNodeState,
 			execution_id: (r.execution_id as string) ?? null,
 			started_at: r.started_at as string,
 			ended_at: (r.ended_at as string) ?? null,
@@ -31189,7 +35365,7 @@ export class StateStore {
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
 			attempt: Number(row.attempt),
-			state: row.state as string,
+			state: row.state as WorkflowRunNodeState,
 			execution_id: (row.execution_id as string) ?? null,
 			started_at: row.started_at as string,
 			ended_at: (row.ended_at as string) ?? null,
@@ -31210,7 +35386,7 @@ export class StateStore {
 			run_id: row.run_id as string,
 			node_id: row.node_id as string,
 			attempt: Number(row.attempt),
-			state: row.state as string,
+			state: row.state as WorkflowRunNodeState,
 			execution_id: (row.execution_id as string) ?? null,
 			started_at: row.started_at as string,
 			ended_at: (row.ended_at as string) ?? null,
@@ -32111,9 +36287,18 @@ export class StateStore {
 				)[0];
 				if (
 					!holder ||
+					authorityId !== questionId ||
 					holder.state !== "awaiting_review" ||
 					holder.head_sha !== approvedHead ||
 					!holder.card_message_id ||
+					!this.assertCurrentWorkflowGateAuthorityTx({
+						runId,
+						gateNodeId,
+						attempt: Number(holder.attempt),
+						questionId,
+						headSha: approvedHead,
+						sourceExecutionId: holder.source_execution_id as string,
+					}) ||
 					(run.gate_carrier_epoch === 1 &&
 						(!holder.authority_mode ||
 							holder.authority_mode === "engine_terminal" ||
@@ -32125,6 +36310,21 @@ export class StateStore {
 					);
 				}
 				const now = new Date().toISOString();
+				const transition = this.commitWorkflowTransitionTx({
+					runId,
+					nodeId: gateNodeId,
+					attempt: Number(holder.attempt),
+					executionId: holder.source_execution_id as string,
+					outcome: "founder_feedback_kickback",
+					subjectDigest: approvedHead,
+					founderFeedback: response.feedback,
+					now,
+				});
+				if (!transition.ok || transition.targetNodeId !== feedbackLoop.to) {
+					throw new Error(
+						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
+					);
+				}
 				this.db.run(
 					`UPDATE workflow_gate_holder
 					    SET state = 'superseded', superseded_reason = 'founder_feedback', updated_at = ?
@@ -32162,21 +36362,6 @@ export class StateStore {
 						);
 					}
 					this.bumpLifecycleRevision(holder.source_execution_id as string);
-				}
-				const transition = this.commitWorkflowTransitionTx({
-					runId,
-					nodeId: gateNodeId,
-					attempt: Number(holder.attempt),
-					executionId: holder.source_execution_id as string,
-					outcome: "founder_feedback_kickback",
-					subjectDigest: approvedHead,
-					founderFeedback: response.feedback,
-					now,
-				});
-				if (!transition.ok || transition.targetNodeId !== feedbackLoop.to) {
-					throw new Error(
-						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
-					);
 				}
 				if (founderRework) {
 					if (!transition.reworkRequestId) {
@@ -32267,6 +36452,21 @@ export class StateStore {
 							approvedHead))
 			) {
 				throw new Error("founder decision source payload invalid: subject");
+			}
+			if (
+				run.engine_owned === 1 &&
+				(!decisionHolder ||
+					authorityId !== decisionQuestionId ||
+					!this.assertCurrentWorkflowGateAuthorityTx({
+						runId,
+						gateNodeId: decisionHolder.gate_node_id as string,
+						attempt: Number(decisionHolder.attempt),
+						questionId: decisionQuestionId,
+						headSha: approvedHead,
+						sourceExecutionId: decisionHolder.source_execution_id as string,
+					}))
+			) {
+				throw new Error("founder decision source payload invalid: gate authority");
 			}
 			const serverSeq = this.nextWorkflowClaimSeq();
 			this.db.run(
@@ -39459,6 +43659,46 @@ export class StateStore {
 		return claim;
 	}
 
+	isCurrentLandOperationClaim(input: {
+		operation: LandOperationRow;
+		claim: LandOperationClaim;
+		now: string;
+	}): boolean {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return false;
+		const operation = input.operation;
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM land_operation
+				  WHERE operation_id = ? AND run_id IS ? AND issue_id = ?
+				    AND project_name = ? AND pr_number = ? AND approved_head = ?
+				    AND state = 'running' AND owner_id = ? AND generation = ?
+				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
+				[
+					operation.operation_id,
+					operation.run_id,
+					operation.issue_id,
+					operation.project_name,
+					operation.pr_number,
+					operation.approved_head,
+					input.claim.ownerId,
+					input.claim.generation,
+					input.now,
+				],
+			)[0],
+		);
+	}
+
+	hasWorkflowResumeRedispatchAfter(runId: string, createdAt: string): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_resume_admission
+				  WHERE run_id = ? AND action_kind = 'redispatch_execution'
+				    AND created_at > ? LIMIT 1`,
+				[runId, createdAt],
+			)[0],
+		);
+	}
+
 	recordLandOperationStep(input: {
 		operationId: string;
 		ownerId: string;
@@ -40112,6 +44352,259 @@ export class StateStore {
 	}
 }
 
+// ── FLY-1707: workflow resume contracts ───────────────────────────────────
+
+export const WORKFLOW_RUN_NODE_STATES = [
+	"pending",
+	"admitted",
+	"running",
+	"review",
+	"done",
+	"failed",
+	"completed",
+	"superseded",
+] as const;
+export type WorkflowRunNodeState = (typeof WORKFLOW_RUN_NODE_STATES)[number];
+
+export const WORKFLOW_RESUME_REASON_CODES = [
+	"target_moved",
+	"receipt_missing",
+	"receipt_digest_mismatch",
+	"attachment_frontier_divergence",
+	"attachment_missing",
+	"anchor_pending",
+	"anchor_unreachable",
+	"envelope_changed",
+	"envelope_unavailable",
+	"snapshot_mismatch",
+	"runtime_mismatch",
+	"authority_context_mismatch",
+	"carrier_unknown",
+	"carrier_action_mismatch",
+	"input_fallback",
+	"frozen_input_too_large",
+	"writer_not_fenced",
+	"writer_liveness_unknown",
+	"external_drift",
+	"quarantine_overflow",
+	"run_not_active",
+	"rewind_not_supported",
+	"resume_disabled",
+] as const;
+export type WorkflowResumeReasonCode =
+	(typeof WORKFLOW_RESUME_REASON_CODES)[number];
+export type WorkflowResumeFailureReason =
+	| Exclude<
+			WorkflowResumeReasonCode,
+			"envelope_changed" | "envelope_unavailable"
+	  >
+	| `envelope_changed:${string}`
+	| `envelope_unavailable:${string}`;
+
+export const WORKFLOW_RESUME_ROLLOUT_STATES = [
+	"legacy_passthrough",
+	"enforced_attachment_missing",
+	"enforced_resume",
+] as const;
+export type WorkflowResumeRolloutState =
+	(typeof WORKFLOW_RESUME_ROLLOUT_STATES)[number];
+
+export const WORKFLOW_RESUME_RECEIPT_KINDS = [
+	"start_reservation",
+	"edge_traversed",
+	"writer_replacement",
+	"rework_replacement",
+	"operator_rework",
+	"route_revision",
+	"admission_frontier",
+	"resume_replacement",
+] as const;
+export type WorkflowResumeReceiptKind =
+	(typeof WORKFLOW_RESUME_RECEIPT_KINDS)[number];
+export type WorkflowResumeCarrierKind =
+	| "git_checkpoint"
+	| "state_only_checkpoint";
+export type WorkflowResumeAttachmentState =
+	| "intent"
+	| "ref_prepared"
+	| "store_pushed"
+	| "ready"
+	| "invalid";
+export type WorkflowResumeRetryableState = Exclude<
+	WorkflowResumeAttachmentState,
+	"ready" | "invalid"
+>;
+export type WorkflowResumeActionKind =
+	| "redispatch_execution"
+	| "reconcile_state_only";
+export type WorkflowResumeAttachmentAdvanceAction =
+	| { kind: "stamp_anchor"; anchorCommit: string }
+	| { kind: "ref_prepared" }
+	| { kind: "store_pushed"; storeLocator: string }
+	| { kind: "stamp_envelope"; envelopeJson: string }
+	| { kind: "stamp_runtime"; runtimeSemanticsDigest: string };
+export type WorkflowResumeAttachmentAdvanceResult =
+	| { ok: true; state: WorkflowResumeAttachmentState; revision: number }
+	| {
+			ok: false;
+			reason:
+				| "attachment_missing"
+				| "revision_conflict"
+				| "state_conflict"
+				| "invalid_input";
+		  };
+export type WorkflowResumeAttachmentRetryResult =
+	| {
+			ok: true;
+			attemptCount: number;
+			nextAttemptAt: string;
+			revision: number;
+	  }
+	| {
+			ok: false;
+			reason:
+				| "attachment_missing"
+				| "revision_conflict"
+				| "state_conflict"
+				| "invalid_input";
+	  };
+export type WorkflowResumeInvalidationAuthority =
+	| {
+			kind: "attachment_reconciler";
+			expectedState: WorkflowResumeRetryableState;
+			expectedAttemptCount: number;
+			expectedNextAttemptAt: string | null;
+			expectedRevision: number;
+	  }
+	| {
+			kind: "launch_delivery";
+			executionId: string;
+			activationId: string;
+			ownerGeneration: number;
+			deliveryAttempt: number;
+	  }
+	| {
+			kind: "gate_target";
+			holderRef: string;
+			sourceReceipt: string;
+	  };
+export type WorkflowResumeAttachmentInvalidationResult =
+	| { ok: true; revision: number }
+	| {
+			ok: false;
+			reason:
+				| "attachment_missing"
+				| "revision_conflict"
+				| "authority_mismatch"
+				| "invalid_input";
+	  };
+
+export interface WorkflowResumeAttachmentRow {
+	attachment_id: string;
+	run_id: string;
+	target_node_id: string;
+	target_attempt: number;
+	transition_uid: string;
+	receipt_kind: WorkflowResumeReceiptKind;
+	receipt_digest: string;
+	carrier_kind: WorkflowResumeCarrierKind;
+	anchor_ref: string | null;
+	anchor_commit: string | null;
+	repo_identity: string | null;
+	snapshot_digest: string;
+	resolved_node_digest: string;
+	runtime_semantics_digest: string | null;
+	rework_authority_digest: string;
+	envelope_json: string;
+	schema_version: number;
+	created_at: string;
+}
+
+export interface WorkflowResumeAttachmentStateRow {
+	attachment_id: string;
+	state: WorkflowResumeAttachmentState;
+	resolved_anchor_commit: string | null;
+	store_locator: string | null;
+	envelope_stamped_json: string | null;
+	runtime_semantics_stamped: string | null;
+	invalid_reason: WorkflowResumeFailureReason | null;
+	attempt_count: number;
+	next_attempt_at: string | null;
+	revision: number;
+	updated_at: string;
+}
+
+export interface WorkflowResumeCheckpointWorkRow {
+	attachment: WorkflowResumeAttachmentRow;
+	state: WorkflowResumeAttachmentStateRow;
+	project_name: string;
+}
+
+export interface WorkflowResumeCheckpointPruneRow {
+	projectName: string;
+	ref: string;
+	anchor: string;
+}
+
+export interface WorkflowResumeShadowOpportunity {
+	runId: string;
+	issueId: string;
+	projectName: string;
+	opportunityKey: string;
+	attachment: WorkflowResumeAttachmentRow;
+	state: WorkflowResumeAttachmentStateRow;
+}
+
+export interface WorkflowResumeAdmissionRow {
+	admission_key: string;
+	admission_digest: string;
+	run_id: string;
+	action_kind: WorkflowResumeActionKind;
+	source_attachment_id: string;
+	result_attachment_id: string | null;
+	target_node_id: string;
+	target_attempt: number;
+	new_attempt: number | null;
+	new_execution_id: string | null;
+	redrive_generation: number | null;
+	frozen_s3_body: string | null;
+	requested_entry: string | null;
+	verdict: string;
+	created_at: string;
+}
+
+export type WorkflowResumeAdmissionResult =
+	| {
+			ok: true;
+			idempotentReplay: boolean;
+			actionKind: WorkflowResumeActionKind;
+			targetNodeId: string;
+			targetAttempt: number;
+			resultAttachmentId?: string;
+			newAttempt?: number;
+			newExecutionId?: string;
+			redriveGeneration?: number;
+	  }
+	| {
+			ok: false;
+			reason:
+				| WorkflowResumeFailureReason
+				| "invalid_input"
+				| "admission_conflict";
+	  };
+
+export interface WorkflowResumeProbeRow {
+	id: number;
+	run_id: string;
+	probe_kind: "shadow" | "admission";
+	opportunity_key: string | null;
+	proposed_node_id: string | null;
+	proposed_attempt: number | null;
+	verdict: "proposed" | WorkflowResumeFailureReason;
+	detail_json: string | null;
+	created_at: string;
+}
+
 // ── FLY-1244: workflow template + claims row/result types ──────────────────
 
 export type WorkflowGateHolderState =
@@ -40504,7 +44997,7 @@ export interface WorkflowRunNodeRow {
 	run_id: string;
 	node_id: string;
 	attempt: number;
-	state: string;
+	state: WorkflowRunNodeState;
 	execution_id: string | null;
 	started_at: string;
 	ended_at: string | null;
@@ -41284,11 +45777,57 @@ export interface RunQuiescenceEvidence {
 	trustedZombieEventUid?: string;
 }
 
+export interface WorkflowLoopLimitEscalationAck {
+	holdEventUid: string;
+	holdReceiptDigest: string;
+	decision: "continue" | "reclassify";
+}
+
+export interface WorkflowRunCollectOutcome {
+	executionId: string;
+	closed: boolean;
+	commDbFinalized: boolean;
+	retiredGateCount: number;
+	alreadyGone?: boolean;
+	error?: string;
+}
+
+export interface WorkflowOperatorCloseIntentRow {
+	execution_id: string;
+	mode: "done" | "abandon";
+	reason: string;
+	stage: "prepared" | "committed" | "failed";
+	created_at: string;
+	updated_at: string;
+}
+
+export interface WorkflowRunCollectReceiptRow {
+	receipt_key: string;
+	run_id: string;
+	state: "frozen" | "collecting" | "collected" | "responded";
+	owner_id: string | null;
+	owner_generation: number | null;
+	lease_expires_at: string | null;
+	targetExecutionIds: string[];
+	outcomes: WorkflowRunCollectOutcome[];
+	response?: Record<string, unknown>;
+	updated_at: string;
+}
+
+export interface WorkflowRunCollectionSnapshot {
+	receiptKey: string;
+	state: WorkflowRunCollectReceiptRow["state"];
+	targetExecutionIds: string[];
+	outcomes: WorkflowRunCollectOutcome[];
+	response?: Record<string, unknown>;
+}
+
 export type WorkflowRunOperatorResult =
 	| {
 			ok: true;
-			status: "held" | "terminated";
+			status: "held" | "terminated" | "completed";
 			idempotentReplay: boolean;
+			collection?: WorkflowRunCollectionSnapshot;
 	  }
 	| {
 			ok: false;
@@ -41393,6 +45932,7 @@ export interface WorkflowEngineAlertPayload {
 				| "runner_ship_head_enrichment_failed"
 				| "runner_ship_hydration_reval_failed"
 				| "runner_ship_authority_conflict"
+				| "resume_first_available"
 				| "linear_done_deferred"
 				| "observation_corrupt";
 			launchCount?: number;

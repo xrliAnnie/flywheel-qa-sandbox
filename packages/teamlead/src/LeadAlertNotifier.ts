@@ -399,6 +399,7 @@ export interface AlertMetadata {
 			| "runner_ship_head_enrichment_failed"
 			| "runner_ship_hydration_reval_failed"
 			| "runner_ship_authority_conflict"
+			| "resume_first_available"
 			| "linear_done_deferred"
 			| "observation_corrupt";
 		launchCount?: number;

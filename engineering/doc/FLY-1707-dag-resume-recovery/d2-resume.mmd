@@ -1,0 +1,15 @@
+flowchart TB
+  classDef good fill:#f0fff4,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef step fill:#ffffff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef hold fill:#fff8f0,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+
+  W["平时:每走一步,引擎在同一笔账里<br/>给『当前该做的那一步』挂一份恢复凭据<br/>(代码锚点 + 输入快照 + 语义指纹)"]:::step
+  C["崩溃 / 重启后重新派单"]:::step
+  V["五道验证(任一不过就不恢复):<br/>V1 代码锚点还找得回(双备份)<br/>V2 输入没变(issue 正文/反馈)<br/>V3 语义没变(模板快照/模型)<br/>V4 恢复方式明确<br/>V5 旧执行者已被围住(不能再写)"]:::step
+  Q["有半成品?<br/>先原样封存进隔离区(不算『代码变了』)<br/>再从代码锚点精确重建工作目录"]:::step
+  GO["✅ 从当前那一步接着跑<br/>(做完的步骤不重跑)"]:::good
+  HOLD["❌ 验证不过 → 明确拒绝 + 落账可查<br/>给出三条出路:稍后重试 / 返工 / 显式重开<br/>绝不悄悄退回第一步"]:::hold
+
+  W --> C --> V
+  V -->|全过| Q --> GO
+  V -->|任一不过| HOLD

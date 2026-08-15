@@ -742,7 +742,7 @@ export async function closeRunnerTerminalView(
 	].join("\n");
 
 	return new Promise((resolve) => {
-		execFile("osascript", ["-e", script], (err, stdout) => {
+		execFile("osascript", ["-e", script], { timeout: 5_000 }, (err, stdout) => {
 			if (err) {
 				// ENOENT = osascript binary not installed (e.g. Linux CI / non-macOS).
 				// Treat as benign — we can't close a macOS Terminal tab on Linux,

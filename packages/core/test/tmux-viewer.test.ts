@@ -382,6 +382,7 @@ describe("closeRunnerTerminalView (FLY-116)", () => {
 			(
 				_cmd: string,
 				_args: string[],
+				_options: { timeout?: number },
 				cb: (err: Error | null, stdout?: string, stderr?: string) => void,
 			) => {
 				cb(null, "closed\n", "");
@@ -414,6 +415,7 @@ describe("closeRunnerTerminalView (FLY-116)", () => {
 
 		// osascript close uses exact-match selector with full title
 		const lastCall = mockExecFile.mock.calls.at(-1)!;
+		expect(lastCall[2]).toMatchObject({ timeout: 5_000 });
 		const script = lastCall[1][1] as string;
 		expect(script).toContain(
 			"flywheel:runner:runner-flywheel:flywheel:exec_close_001:@42:qa",
@@ -436,6 +438,7 @@ describe("closeRunnerTerminalView (FLY-116)", () => {
 			(
 				_cmd: string,
 				_args: string[],
+				_options: { timeout?: number },
 				cb: (err: Error | null, stdout?: string, stderr?: string) => void,
 			) => {
 				cb(null, "not_found\n", "");
@@ -458,6 +461,7 @@ describe("closeRunnerTerminalView (FLY-116)", () => {
 			(
 				_cmd: string,
 				_args: string[],
+				_options: { timeout?: number },
 				cb: (err: Error | null, stdout?: string, stderr?: string) => void,
 			) => {
 				cb(new Error("osascript boom"));

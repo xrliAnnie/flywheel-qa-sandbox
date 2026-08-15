@@ -242,6 +242,8 @@ export function createFetchIssue(store: StateStore) {
 					return {
 						title: issue.title,
 						description: issue.description ?? "",
+						descriptionSource: "authoritative" as const,
+						updatedAt: issue.updatedAt.toISOString(),
 						labels: labelNames,
 						projectId: issue.project ? (await issue.project)?.id : undefined,
 						identifier: issue.identifier,
@@ -266,6 +268,7 @@ export function createFetchIssue(store: StateStore) {
 		return {
 			title: session?.issue_title ?? `Issue ${id}`,
 			description: session?.summary ?? `Execution for issue ${id}`,
+			descriptionSource: "fallback" as const,
 			identifier: session?.issue_identifier ?? id,
 		};
 	};

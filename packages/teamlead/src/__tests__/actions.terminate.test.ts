@@ -164,6 +164,52 @@ describe("handleTerminate (FLY-228)", () => {
 		expect(store.getSession("e1")!.status).toBe("terminated");
 	});
 
+	it("commits explicit abandon intent before cascading the closed carrier", async () => {
+		seedAwaitingReview();
+		const cascade = vi
+			.spyOn(store, "cascadeRunTerminationOnCarrierClose")
+			.mockReturnValue({ ok: false, reason: "carrier_not_enrolled" });
+
+		const res = await handleTerminate(
+			store,
+			"e1",
+			opts,
+			undefined,
+			[],
+			undefined,
+			undefined,
+			"operator abandon",
+			{ mode: "abandon", principal: "lead-a" },
+		);
+
+		expect(res.success).toBe(true);
+		expect(store.getWorkflowOperatorCloseIntent("e1")).toMatchObject({
+			mode: "abandon",
+			stage: "committed",
+		});
+		expect(cascade).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: "e1",
+				mode: "abandon",
+				principal: "lead-a",
+			}),
+		);
+
+		const replay = await handleTerminate(
+			store,
+			"e1",
+			opts,
+			undefined,
+			[],
+			undefined,
+			undefined,
+			"operator abandon",
+			{ mode: "abandon", principal: "lead-a" },
+		);
+		expect(replay.success).toBe(true);
+		expect(cascade).toHaveBeenCalledTimes(2);
+	});
+
 	it("FLY-1238: atomic gate finalization failure is cleanup-pending and rolls back", async () => {
 		mkdirSync(join(commRoot, "geoforge3d"), { recursive: true });
 		const dbPath = join(commRoot, "geoforge3d", "comm.db");

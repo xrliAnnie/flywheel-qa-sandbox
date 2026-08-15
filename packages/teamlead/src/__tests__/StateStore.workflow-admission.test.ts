@@ -209,6 +209,36 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 });
 
 describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
+	it("rejects a late verdict after the admitted writer is superseded", async () => {
+		const store = await storeWithRun();
+		const admission = admit(store);
+		if (!admission.ok) throw new Error("fixture admission failed");
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run_node SET state = 'superseded' WHERE run_id = 'run-1' AND node_id = 'qa' AND attempt = 1",
+		);
+
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				credential: admission.credential,
+				clientRequestId: "late-verdict",
+				predicate: "qa_passed",
+				subjectDigest: H1,
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerExecutionId: "impl-exec",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: T1,
+				now: T0,
+			}),
+		).toEqual({ ok: false, reason: "binding_not_current" });
+		expect(store.countWorkflowClaims("run-1")).toBe(0);
+		store.close();
+	});
+
 	it("writes and returns one head-bound claim, consuming credential + internal capability atomically", async () => {
 		const store = await storeWithRun();
 		const admission = admit(store);

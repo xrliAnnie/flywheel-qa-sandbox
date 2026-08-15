@@ -134,6 +134,30 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		expect(captured?.startPoint).toBe("caller-pinned-sha");
 	});
 
+	it("threads a workflow resume admission with its explicit startPoint", async () => {
+		const dispatcher = makeDispatcher();
+		const anchor = "a".repeat(40);
+		const workflowResume = {
+			runId: "run-1",
+			admissionKey: "admission-1",
+			sourceAttachmentId: "attachment-1",
+			anchorRef: "refs/flywheel/checkpoints/run-1/attachment-1",
+			anchorCommit: anchor,
+			frozenBody: "frozen",
+		};
+		await dispatcher.start({
+			issueId: "issue-uuid",
+			projectName: "proj",
+			sessionRole: "implement",
+			startPoint: anchor,
+			workflowResume,
+		});
+		await dispatcher.drain();
+
+		expect(captured?.startPoint).toBe(anchor);
+		expect(captured?.workflowResume).toEqual(workflowResume);
+	});
+
 	it("inherits a verified origin tip without enabling DAG workflow semantics", async () => {
 		const continuityComputer = vi.fn<ContinuityComputer>(async () => ({
 			kind: "found",

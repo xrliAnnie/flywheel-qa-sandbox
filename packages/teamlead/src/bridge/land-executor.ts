@@ -9,6 +9,7 @@ import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	isWorkflowManifestLand,
 	workflowApprovalGate,
+	workflowTerminalNode,
 } from "../workflow-template.js";
 import { evaluateWorkflowFounderReviewPrecondition } from "./founder-review-authority.js";
 import { classifyLandRetryReason } from "./land-retry-policy.js";
@@ -145,6 +146,12 @@ async function authorizeLandOperation(
 	if (!isWorkflowManifestLand(snapshot.manifest)) {
 		return { ok: false, reason: "land_manifest_required" };
 	}
+	if (
+		run.status !== "active" ||
+		run.current_node_id !== workflowTerminalNode(snapshot.manifest)
+	) {
+		return { ok: false, reason: "land_target_not_current" };
+	}
 	const holder = store.getCurrentWorkflowGateHolder(
 		operation.run_id,
 		workflowApprovalGate(snapshot.manifest).node,
@@ -158,6 +165,11 @@ async function authorizeLandOperation(
 	}
 	if (holder.head_sha !== operation.approved_head) {
 		return { ok: false, reason: "approved_head_mismatch" };
+	}
+	if (
+		store.hasWorkflowResumeRedispatchAfter(operation.run_id, holder.created_at)
+	) {
+		return { ok: false, reason: "resume_admission_changed" };
 	}
 	const prBinding = store.getCurrentWorkflowNodePrBindingForHead(
 		operation.run_id,
@@ -190,6 +202,24 @@ async function authorizeLandOperation(
 	return claims.valid
 		? { ok: true }
 		: { ok: false, reason: `workflow_ship_claims:${claims.reason}` };
+}
+
+async function authorizeLandEffect(
+	deps: LandExecutorDeps,
+	operation: LandOperationRow,
+	claim: LandOperationClaim,
+): Promise<{ ok: true } | { ok: false; reason: string; retryable?: boolean }> {
+	const authorization = await (
+		deps.authorize ?? ((op) => authorizeLandOperation(deps.store, op))
+	)(operation);
+	if (!authorization.ok) return authorization;
+	return deps.store.isCurrentLandOperationClaim({
+		operation,
+		claim,
+		now: (deps.now?.() ?? new Date()).toISOString(),
+	})
+		? { ok: true }
+		: { ok: false, reason: "stale_land_generation" };
 }
 
 function recordStep(
@@ -270,6 +300,25 @@ function release(
 	};
 }
 
+async function rejectUnauthorizedLandEffect(
+	deps: LandExecutorDeps,
+	operation: LandOperationRow,
+	claim: LandOperationClaim,
+	now: string,
+): Promise<LandExecutionResult | undefined> {
+	const authorization = await authorizeLandEffect(deps, operation, claim);
+	return authorization.ok
+		? undefined
+		: release(
+				deps,
+				operation,
+				claim,
+				authorization.retryable ? "partial" : "held",
+				authorization.reason,
+				now,
+			);
+}
+
 /**
  * Advance one engine-owned land operation by durable receipts. A pending
  * sanctioned workflow intentionally yields `partial` and releases the lease;
@@ -304,9 +353,7 @@ export async function executeLandOperation(
 	if (!claim) return { status: "busy", operationId };
 	operation = deps.store.getLandOperation(operationId)!;
 	try {
-		const authorization = await (
-			deps.authorize ?? ((op) => authorizeLandOperation(deps.store, op))
-		)(operation);
+		const authorization = await authorizeLandEffect(deps, operation, claim);
 		if (!authorization.ok) {
 			return release(
 				deps,
@@ -356,12 +403,26 @@ export async function executeLandOperation(
 		if (pr.state !== "MERGED") {
 			let trigger = stepReceipt(deps.store, operationId, "cool_triggered");
 			if (!trigger) {
+				const rejected = await rejectUnauthorizedLandEffect(
+					deps,
+					operation,
+					claim,
+					now,
+				);
+				if (rejected) return rejected;
 				const posted = await deps.mergeDriver.triggerCool({
 					projectName: operation.project_name,
 					prNumber: operation.pr_number,
 					operationId,
 					headSha: operation.approved_head,
 				});
+				const rejectedAfterTrigger = await rejectUnauthorizedLandEffect(
+					deps,
+					operation,
+					claim,
+					now,
+				);
+				if (rejectedAfterTrigger) return rejectedAfterTrigger;
 				trigger = posted;
 				recordStep(deps, operation, claim, "cool_triggered", posted, now);
 			}
@@ -383,6 +444,13 @@ export async function executeLandOperation(
 				triggerCommentId,
 				headSha: operation.approved_head,
 			});
+			const rejectedAfterWorkflow = await rejectUnauthorizedLandEffect(
+				deps,
+				operation,
+				claim,
+				now,
+			);
+			if (rejectedAfterWorkflow) return rejectedAfterWorkflow;
 			if (workflow.state === "failed") {
 				// Duplicate sanctioned triggers can race: one run may merge while a
 				// later run fails because the PR is already gone. Exact-head PR state
@@ -450,16 +518,44 @@ export async function executeLandOperation(
 
 		let cleanup = stepReceipt(deps.store, operationId, "cleanup_requested");
 		if (!cleanup) {
+			const rejected = await rejectUnauthorizedLandEffect(
+				deps,
+				operation,
+				claim,
+				now,
+			);
+			if (rejected) return rejected;
 			cleanup = (await deps.requestCleanup?.(operation)) ?? {
 				requested: 0,
 				acked: 0,
 				timedOut: 0,
 			};
+			const rejectedAfterCleanup = await rejectUnauthorizedLandEffect(
+				deps,
+				operation,
+				claim,
+				now,
+			);
+			if (rejectedAfterCleanup) return rejectedAfterCleanup;
 			recordStep(deps, operation, claim, "cleanup_requested", cleanup, now);
 		}
 		await announce(deps, operation, claim, "cleanup_requested", cleanup, now);
 
+		const rejected = await rejectUnauthorizedLandEffect(
+			deps,
+			operation,
+			claim,
+			now,
+		);
+		if (rejected) return rejected;
 		const closure = await deps.finalize(operation);
+		const rejectedAfterFinalize = await rejectUnauthorizedLandEffect(
+			deps,
+			operation,
+			claim,
+			now,
+		);
+		if (rejectedAfterFinalize) return rejectedAfterFinalize;
 		if (!closure.complete) {
 			await announce(
 				deps,

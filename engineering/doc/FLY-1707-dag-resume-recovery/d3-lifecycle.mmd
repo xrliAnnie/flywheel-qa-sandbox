@@ -1,0 +1,13 @@
+flowchart TB
+  classDef good fill:#f0fff4,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef step fill:#ffffff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef prim fill:#f5f0ff,stroke:#af52de,stroke-width:2px,color:#1d1d1f
+
+  FC["Ch.3 force-cancel(FLY-1416)<br/>一步到位:先把 run 定成终态<br/>(引擎立即停止补人)<br/>再逐个收掉活着的执行体"]:::step
+  CC["Ch.4 close 级联(FLY-1711)<br/>运维关掉最后一个执行体时<br/>run 一并判终、死预留随之释放<br/>(多执行体的 run 绝不误杀)"]:::step
+  SW["共享兜底:巡检收敛<br/>终态 run 里还活着的残留会话<br/>逐个收干净(先只列账、后动手)"]:::prim
+  OK["✅ 关得掉、死得透<br/>新单立刻能开(不再被残留锁死)"]:::good
+
+  FC --> SW
+  CC --> SW
+  SW --> OK

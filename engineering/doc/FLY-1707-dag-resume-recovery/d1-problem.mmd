@@ -1,0 +1,18 @@
+flowchart TB
+  classDef bad fill:#fff2f0,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef neutral fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+  classDef root fill:#1a365d,stroke:#1a365d,color:#ffffff
+
+  ROOT["根因:系统知道『该做哪一步』<br/>但没有『凭什么还能接着做』的证据"]:::root
+  S1["症状① 重新进场永远从模板第一步<br/>(152 个历史 run,零例外)"]:::bad
+  S2["症状② 『做完了』的记录散在两处<br/>且『done』不等于『成功』"]:::bad
+  S3["症状③ 完成记录里没有代码指纹<br/>(判不了『代码变没变』)"]:::bad
+  S4["症状④ 恢复要靠会消失的东西<br/>(临时窗口、可能被删的工作目录)"]:::bad
+  COST["2026-08-11 崩溃:五个单全部从设计重跑<br/>单日白烧 4.1 小时(最贵档位)"]:::bad
+  E5A["并入① FLY-1416<br/>run 关不干净(杀了还复活)"]:::neutral
+  E5B["并入② FLY-1711<br/>run 死不透(残留锁死新单)"]:::neutral
+  E5C["并入③ FLY-1668<br/>救援路径从未走通"]:::neutral
+
+  ROOT --> S1 & S2 & S3 & S4
+  S1 & S2 & S3 & S4 --> COST
+  ROOT -.同一个根的邻接死角.-> E5A & E5B & E5C

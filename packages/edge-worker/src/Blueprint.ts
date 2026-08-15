@@ -378,10 +378,37 @@ interface ResolvedSkillFrameworkForRun {
 	codexMattSkillsSourceDir?: string;
 }
 
+export type WorkflowIssueDeliveryInput =
+	| {
+			sourceKind: "authoritative" | "fallback";
+			body: string;
+			updatedAt?: string;
+			anchorCommit: string;
+	  }
+	| {
+			sourceKind: "frozen_replay";
+			body: string;
+			admissionKey: string;
+			sourceAttachmentId: string;
+			anchorCommit: string;
+	  };
+
+/** Bridge-trusted proof that this launch was admitted as a workflow resume. */
+export interface WorkflowResumeContext {
+	runId: string;
+	admissionKey: string;
+	sourceAttachmentId: string;
+	anchorRef: string;
+	anchorCommit: string;
+	frozenBody: string;
+}
+
 /** Runtime context for a single Blueprint execution */
 export interface BlueprintContext {
 	teamName: string;
 	runnerName: string;
+	/** Freeze the exact hydrated issue body and resolved git origin before spawn. */
+	prepareWorkflowIssueDelivery?: (input: WorkflowIssueDeliveryInput) => void;
 	/**
 	 * FLY-615: ponytail input for this run — `start_signal` (fresh resolve from
 	 * run-param + labels + project config) or `frozen_requested` (retry preserves
@@ -600,6 +627,8 @@ export interface BlueprintContext {
 	 * behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
+	/** FLY-1707: quarantine stale state, then rebuild at the admitted anchor. */
+	workflowResume?: WorkflowResumeContext;
 
 	/**
 	 * FLY-1718 P1: the dispatcher found the managed origin branch for an
@@ -983,7 +1012,14 @@ export class Blueprint {
 		const projectScope = ctx.projectName ?? ctx.teamName ?? "unknown";
 
 		// Hydrate BEFORE emitStarted so labels are available in session_started payload
-		const hydrated = await this.hydrator.hydrate(node);
+		const liveHydrated = await this.hydrator.hydrate(node);
+		const hydrated = ctx.workflowResume
+			? {
+					...liveHydrated,
+					issueDescription: ctx.workflowResume.frozenBody,
+					issueUpdatedAt: undefined,
+				}
+			: liveHydrated;
 
 		// FLY-1356: resolve the skill-framework arm BEFORE the event envelope so
 		// session_started carries `skill_framework_mode`/`_via` (the attribution
@@ -1318,6 +1354,7 @@ export class Blueprint {
 			// that is clean AND at the exact captured head (`ctx.startPoint`); any
 			// drift → error (never silently discard the parked phase's work).
 			const takeover =
+				!ctx.workflowResume &&
 				ctx.shareParentBranch === true &&
 				(ctx.sessionRole === "implement" ||
 					ctx.sessionRole === "qa" ||
@@ -1334,7 +1371,41 @@ export class Blueprint {
 						).path,
 					)
 					.catch(() => false));
-			if (takeover) {
+			if (ctx.workflowResume) {
+				const resume = ctx.workflowResume;
+				if (
+					ctx.startPoint?.toLowerCase() !== resume.anchorCommit.toLowerCase()
+				) {
+					return {
+						success: false,
+						error: "resume_start_point_mismatch",
+					};
+				}
+				try {
+					const rebuilt = await this.worktreeManager.quarantineAndRebuild({
+						mainRepoPath: projectRoot,
+						projectName,
+						issueId: worktreeIssueId,
+						runId: resume.runId,
+						admissionKey: resume.admissionKey,
+						anchorRef: resume.anchorRef,
+						anchorCommit: resume.anchorCommit,
+					});
+					if (!rebuilt.ok) {
+						return {
+							success: false,
+							error: `workflow_resume_rebuild_failed:${rebuilt.reason}${rebuilt.detail ? `:${rebuilt.detail}` : ""}`,
+						};
+					}
+					worktreeInfo = rebuilt.worktree;
+					cwd = worktreeInfo.worktreePath;
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+					};
+				}
+			} else if (takeover) {
 				const expected = this.worktreeManager.expectedWorktree(
 					projectRoot,
 					projectName,
@@ -1538,6 +1609,32 @@ export class Blueprint {
 		// ── Git preflight (existing — THROWS on failure) ──────
 		await this.gitChecker.assertCleanTree(cwd);
 		const baseSha = await this.gitChecker.captureBaseline(cwd);
+		if (ctx.prepareWorkflowIssueDelivery) {
+			try {
+				ctx.prepareWorkflowIssueDelivery(
+					ctx.workflowResume
+						? {
+								sourceKind: "frozen_replay",
+								body: hydrated.issueDescription,
+								admissionKey: ctx.workflowResume.admissionKey,
+								sourceAttachmentId: ctx.workflowResume.sourceAttachmentId,
+								anchorCommit: baseSha,
+							}
+						: {
+								sourceKind: hydrated.issueDescriptionSource,
+								body: hydrated.issueDescription,
+								...(hydrated.issueUpdatedAt && {
+									updatedAt: hydrated.issueUpdatedAt,
+								}),
+								anchorCommit: baseSha,
+							},
+				);
+			} catch (error) {
+				console.warn(
+					`[Blueprint] workflow issue delivery evidence unavailable for ${hydrated.issueId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 
 		// ── Skill injection (v0.2 — best-effort, non-blocking) ─
 		let skillInjectionSucceeded = false;

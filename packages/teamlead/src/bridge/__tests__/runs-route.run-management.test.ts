@@ -25,21 +25,7 @@ afterEach(async () => {
 
 async function startApp(
 	store: StateStore,
-	auth:
-		| {
-				masterToken?: string;
-				scopedToken?: string;
-				probeMergedPr?: (input: {
-					probeRepoSlug: string;
-					prNumber: number;
-				}) => Promise<{
-					probeRepoSlug: string;
-					prNumber: number;
-					headSha: string;
-					state: "MERGED";
-				}>;
-		  }
-		| undefined = {
+	auth: Parameters<typeof createRunsRouter>[7] = {
 		masterToken: "master-secret",
 		scopedToken: "scoped-secret",
 	},
@@ -220,6 +206,132 @@ describe("runs-route run management", () => {
 		},
 	);
 
+	it("force-cancel skips liveness probes and returns the collector's durable response", async () => {
+		const change = vi.fn(() => ({
+			ok: true as const,
+			status: "terminated",
+			idempotentReplay: false,
+			collection: {
+				receiptKey: "episode:run-1:0",
+				state: "frozen" as const,
+				targetExecutionIds: ["exec-live"],
+				outcomes: [],
+			},
+		}));
+		const probeRunLiveness = vi.fn(async () => {
+			throw new Error("probe unavailable");
+		});
+		const responseBody = {
+			success: true,
+			runId: "run-1",
+			status: "terminated",
+			receiptKey: "episode:run-1:0",
+			inProgress: false,
+			snapshot: {
+				targetExecutionIds: ["exec-live"],
+				outcomes: [{ executionId: "exec-live", closed: true }],
+			},
+		};
+		const collectWorkflowRun = vi.fn(async () => ({
+			receipt_key: "episode:run-1:0",
+			run_id: "run-1",
+			state: "responded" as const,
+			owner_id: "collector",
+			owner_generation: 1,
+			lease_expires_at: "2026-08-15T08:01:00.000Z",
+			targetExecutionIds: ["exec-live"],
+			outcomes: [],
+			response: responseBody,
+			updated_at: "2026-08-15T08:00:00.000Z",
+		}));
+		const store = managementStore(change);
+		store.listRunAttributedExecutions = vi.fn(() => ["exec-live"]);
+		const baseUrl = await startApp(store, {
+			masterToken: "master-secret",
+			scopedToken: "scoped-secret",
+			probeRunLiveness,
+			collectWorkflowRun,
+		});
+
+		const response = await fetch(`${baseUrl}/api/runs/run-1/terminate`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: "Bearer master-secret",
+			},
+			body: JSON.stringify({
+				reason: "force cancel",
+				clientRequestId: "force-1",
+				collectExecutions: true,
+			}),
+		});
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual(responseBody);
+		expect(probeRunLiveness).not.toHaveBeenCalled();
+		expect(change).toHaveBeenCalledWith(
+			expect.objectContaining({ collectExecutions: true, evidence: [] }),
+		);
+		expect(collectWorkflowRun).toHaveBeenCalledWith("episode:run-1:0");
+	});
+
+	it("returns the documented 202 snapshot while force-cancel collection is open", async () => {
+		const change = vi.fn(() => ({
+			ok: true as const,
+			status: "terminated" as const,
+			idempotentReplay: false,
+			collection: {
+				receiptKey: "episode:run-1:0",
+				state: "frozen" as const,
+				targetExecutionIds: ["exec-live"],
+				outcomes: [],
+			},
+		}));
+		const store = managementStore(change);
+		const baseUrl = await startApp(store, {
+			masterToken: "master-secret",
+			scopedToken: "scoped-secret",
+			collectWorkflowRun: async () => ({
+				receipt_key: "episode:run-1:0",
+				run_id: "run-1",
+				state: "collecting",
+				owner_id: "collector",
+				owner_generation: 1,
+				lease_expires_at: "2026-08-15T08:01:00.000Z",
+				targetExecutionIds: ["exec-live"],
+				outcomes: [],
+				updated_at: "2026-08-15T08:00:00.000Z",
+			}),
+		});
+
+		const response = await fetch(`${baseUrl}/api/runs/run-1/terminate`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: "Bearer master-secret",
+			},
+			body: JSON.stringify({
+				reason: "force cancel",
+				clientRequestId: "force-open",
+				collectExecutions: true,
+			}),
+		});
+
+		expect(response.status).toBe(202);
+		expect(await response.json()).toEqual({
+			success: true,
+			runId: "run-1",
+			status: "terminated",
+			inProgress: true,
+			snapshot: {
+				receiptKey: "episode:run-1:0",
+				state: "collecting",
+				targetExecutionIds: ["exec-live"],
+				outcomes: [],
+			},
+		});
+	});
+
 	it("proves an exact nested PR merge before sending invariant-bound termination", async () => {
 		const change = vi.fn(() => ({
 			ok: true as const,
@@ -337,6 +449,11 @@ describe("runs-route run management", () => {
 			idempotentReplay: false,
 		}));
 		const baseUrl = await startApp(managementStore(open));
+		const escalationAck = {
+			holdEventUid: "hold-run-1",
+			holdReceiptDigest: "a".repeat(64),
+			decision: "continue",
+		};
 
 		const response = await fetch(`${baseUrl}/api/runs/run-1/rework`, {
 			method: "POST",
@@ -348,6 +465,7 @@ describe("runs-route run management", () => {
 				targetNodeId: "implement",
 				feedback: "repair the blocked implementation",
 				clientRequestId: "request-rework",
+				escalationAck,
 			}),
 		});
 
@@ -369,6 +487,7 @@ describe("runs-route run management", () => {
 				clientRequestId: "request-rework",
 				principal: "master",
 				evidence: [],
+				escalationAck,
 			}),
 		);
 	});
@@ -384,6 +503,36 @@ describe("runs-route run management", () => {
 		});
 
 		expect(response.status).toBe(404);
+		expect(open).not.toHaveBeenCalled();
+	});
+
+	it("rejects a malformed loop-limit escalation acknowledgement at the route boundary", async () => {
+		const open = vi.fn();
+		const baseUrl = await startApp(managementStore(open));
+
+		const response = await fetch(`${baseUrl}/api/runs/run-1/rework`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				authorization: "Bearer master-secret",
+			},
+			body: JSON.stringify({
+				targetNodeId: "implement",
+				feedback: "continue",
+				clientRequestId: "bad-ack",
+				escalationAck: {
+					holdEventUid: "hold-run-1",
+					holdReceiptDigest: "not-a-digest",
+					decision: "continue",
+				},
+			}),
+		});
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			success: false,
+			code: "INVALID_REWORK_REQUEST",
+		});
 		expect(open).not.toHaveBeenCalled();
 	});
 

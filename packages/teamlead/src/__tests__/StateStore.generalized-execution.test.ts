@@ -6,7 +6,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
@@ -429,6 +429,82 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("rejects every execution mutation after its node writer is superseded", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store, { output: true });
+		const staleHead = "a".repeat(40);
+		if (!admitted.outputCredential)
+			throw new Error("output credential missing");
+		const owner = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath: admitted.markerPath,
+		});
+		if (owner.status !== "acquired") throw new Error("owner not acquired");
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run_node SET state = 'superseded' WHERE run_id = 'run-1' AND node_id = 'execute' AND attempt = 1",
+		);
+
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: admitted.outputCredential,
+				clientRequestId: "late-output",
+				payload: '{"late":true}',
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "credential_revoked" });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "late-completion",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: staleHead,
+				prBinding: {
+					prNumber: 1707,
+					headSha: staleHead,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: dirname(admitted.markerPath),
+					worktreeBindingGeneration: "stale-generation",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "stale_execution_superseded" });
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "run-1",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "exec-1",
+				outcome: "node_done",
+			}),
+		).toEqual({ ok: false, reason: "node_attempt_not_current" });
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: owner.generation,
+				deliveryAttempt: owner.deliveryAttempt,
+				markerPath: admitted.markerPath,
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "stale_workflow_writer" });
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "execute", 1),
+		).toBeUndefined();
+		expect(
+			store.getCurrentWorkflowNodePrBindingForHead("run-1", staleHead),
+		).toBeUndefined();
+		store.close();
+	});
+
 	it("rotates a lost output credential only under the live pre-commit launch owner", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store, { output: true });
@@ -517,9 +593,287 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
+	it("commits prepared issue delivery evidence when adopting a marker-after crash", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		const acquired = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath: admitted.markerPath,
+		});
+		if (acquired.status !== "acquired") throw new Error("owner not acquired");
+		expect(
+			store.prepareWorkflowIssueDelivery({
+				executionId: "exec-1",
+				activationId: admitted.activationId,
+				ownerId: "dispatcher-a",
+				ownerGeneration: acquired.generation,
+				deliveryAttempt: acquired.deliveryAttempt,
+				anchorCommit: "a".repeat(40),
+				candidate: {
+					sourceKind: "authoritative",
+					body: "frozen issue body",
+					updatedAt: "2026-07-15T00:00:30.000Z",
+				},
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		expect(() =>
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: acquired.generation,
+				deliveryAttempt: acquired.deliveryAttempt,
+				markerPath: admitted.markerPath,
+				now: "2026-07-15T00:03:00.000Z",
+				afterMarkerWrite: () => {
+					throw new Error("simulated crash after marker");
+				},
+			}),
+		).toThrow("simulated crash after marker");
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-b",
+				now: "2026-07-15T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:20:00.000Z",
+				markerPath: admitted.markerPath,
+			}),
+		).toMatchObject({ status: "committed" });
+		const events = store.listWorkflowRunEvents("run-1");
+		expect(
+			events.filter((event) => event.kind === "issue_input_baseline"),
+		).toHaveLength(1);
+		expect(events.filter((event) => event.kind === "issue_delivery")).toEqual([
+			expect.objectContaining({
+				execution_id: "exec-1",
+				payload: expect.objectContaining({
+					sourceKind: "authoritative",
+					body: "frozen issue body",
+					ownerGeneration: 1,
+					deliveryAttempt: 0,
+				}),
+			}),
+		]);
+		store.close();
+	});
+
+	it("accepts delivery evidence up to the resume admission body limit", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		const acquired = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath: admitted.markerPath,
+		});
+		if (acquired.status !== "acquired") throw new Error("owner not acquired");
+
+		expect(
+			store.prepareWorkflowIssueDelivery({
+				executionId: "exec-1",
+				activationId: admitted.activationId,
+				ownerId: "dispatcher-a",
+				ownerGeneration: acquired.generation,
+				deliveryAttempt: acquired.deliveryAttempt,
+				anchorCommit: "a".repeat(40),
+				candidate: { sourceKind: "authoritative", body: "x".repeat(40_000) },
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toEqual({ ok: true, idempotentReplay: false });
+		store.close();
+	});
+
+	it.each(["missing", "malformed"])(
+		"adopts a marker with %s prepared evidence without minting delivery proof",
+		async (preparedShape) => {
+			const store = await StateStore.create(":memory:");
+			const admitted = createAdmittedEngineRun(store);
+			const acquired = store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				now: "2026-07-15T00:01:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+				markerPath: admitted.markerPath,
+			});
+			if (acquired.status !== "acquired") throw new Error("owner not acquired");
+			if (preparedShape === "malformed") {
+				(
+					store as unknown as {
+						db: { run(sql: string, params?: unknown[]): void };
+					}
+				).db.run(
+					`INSERT INTO workflow_run_event
+					   (run_id, seq, event_uid, kind, node_id, execution_id, payload, at)
+					 VALUES ('run-1', 999, 'issue_delivery_prepared:exec-1:1:0',
+					         'issue_delivery_prepared', 'execute', 'exec-1', '{}',
+					         '2026-07-15T00:02:00.000Z')`,
+				);
+			}
+			expect(() =>
+				store.fencedCommitWorkflowLaunch({
+					executionId: "exec-1",
+					ownerId: "dispatcher-a",
+					generation: acquired.generation,
+					deliveryAttempt: acquired.deliveryAttempt,
+					markerPath: admitted.markerPath,
+					now: "2026-07-15T00:03:00.000Z",
+					afterMarkerWrite: () => {
+						throw new Error("simulated crash after marker");
+					},
+				}),
+			).toThrow("simulated crash after marker");
+			expect(
+				store.recoverOrAcquireWorkflowLaunch({
+					executionId: "exec-1",
+					ownerId: "dispatcher-b",
+					now: "2026-07-15T00:11:00.000Z",
+					leaseExpiresAt: "2026-07-15T00:20:00.000Z",
+					markerPath: admitted.markerPath,
+				}),
+			).toMatchObject({ status: "committed" });
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "issue_delivery"),
+			).toEqual([]);
+			store.close();
+		},
+	);
+
+	it("never consumes repair N prepared evidence while adopting marker N-1", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		const acquired = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath: admitted.markerPath,
+		});
+		if (acquired.status !== "acquired") throw new Error("owner not acquired");
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: acquired.generation,
+				deliveryAttempt: acquired.deliveryAttempt,
+				markerPath: admitted.markerPath,
+				now: "2026-07-15T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		const repair = store.claimWorkflowLaunchDeliveryRepair({
+			executionId: "exec-1",
+			repairOwner: "repair-a",
+			now: "2026-07-15T00:03:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:12:00.000Z",
+		});
+		if (repair.status !== "claimed") throw new Error("repair not claimed");
+		expect(
+			store.prepareWorkflowIssueDelivery({
+				executionId: "exec-1",
+				activationId: admitted.activationId,
+				ownerId: "repair-a",
+				ownerGeneration: repair.generation,
+				deliveryAttempt: repair.attempt,
+				anchorCommit: "b".repeat(40),
+				candidate: {
+					sourceKind: "authoritative",
+					body: "repair N body",
+				},
+				now: "2026-07-15T00:04:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		expect(
+			store.recoverOrAcquireWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-b",
+				now: "2026-07-15T00:05:00.000Z",
+				leaseExpiresAt: "2026-07-15T00:14:00.000Z",
+				markerPath: admitted.markerPath,
+			}),
+		).toMatchObject({ status: "committed" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "issue_delivery"),
+		).toEqual([]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some(
+					(event) => event.event_uid === "issue_delivery_prepared:exec-1:1:1",
+				),
+		).toBe(true);
+		store.close();
+	});
+
+	it("keeps a healthy launch committed when issue delivery evidence conflicts", async () => {
+		const store = await StateStore.create(":memory:");
+		const admitted = createAdmittedEngineRun(store);
+		const acquired = store.recoverOrAcquireWorkflowLaunch({
+			executionId: "exec-1",
+			ownerId: "dispatcher-a",
+			now: "2026-07-15T00:01:00.000Z",
+			leaseExpiresAt: "2026-07-15T00:10:00.000Z",
+			markerPath: admitted.markerPath,
+		});
+		if (acquired.status !== "acquired") throw new Error("owner not acquired");
+		store.prepareWorkflowIssueDelivery({
+			executionId: "exec-1",
+			activationId: admitted.activationId,
+			ownerId: "dispatcher-a",
+			ownerGeneration: acquired.generation,
+			deliveryAttempt: acquired.deliveryAttempt,
+			anchorCommit: "c".repeat(40),
+			candidate: { sourceKind: "authoritative", body: "expected body" },
+			now: "2026-07-15T00:02:00.000Z",
+		});
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`INSERT INTO workflow_run_event
+			   (run_id, seq, event_uid, kind, node_id, execution_id, payload, at)
+			 VALUES ('run-1', 999, 'issue_delivery:exec-1:1:0',
+			         'conflicting_issue_delivery', 'execute', 'exec-1', '{}',
+			         '2026-07-15T00:02:30.000Z')`,
+		);
+
+		expect(
+			store.fencedCommitWorkflowLaunch({
+				executionId: "exec-1",
+				ownerId: "dispatcher-a",
+				generation: acquired.generation,
+				deliveryAttempt: acquired.deliveryAttempt,
+				markerPath: admitted.markerPath,
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getWorkflowLaunchOwner("exec-1")).toMatchObject({
+			committed_generation: 1,
+			delivery_state: "delivered",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "issue_delivery"),
+		).toEqual([]);
+		store.close();
+	});
+
 	it("installs an append-only cancellation fence that rejects every launch entrance", async () => {
 		const store = await StateStore.create(":memory:");
-		const { markerPath } = createAdmittedEngineRun(store);
+		const { markerPath, outputCredential } = createAdmittedEngineRun(store, {
+			output: true,
+		});
+		if (!outputCredential) throw new Error("output credential missing");
 		const fenced = store.beginUnlaunchedWorkflowCancellation({
 			runId: "run-1",
 			nodeId: "execute",
@@ -587,6 +941,23 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T02:01:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "launch_cancelled" });
+		expect(
+			store.submitWorkflowNodeOutput({
+				token: outputCredential,
+				clientRequestId: "cancelled-output",
+				payload: '{"cancelled":true}',
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "credential_revoked" });
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "exec-1",
+				route: "needs_review",
+				sourceEventId: "cancelled-completion",
+				completionSubmission: { decision: { route: "needs_review" } },
+				now: "2026-07-15T00:03:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "stale_execution_superseded" });
 		expect(existsSync(markerPath)).toBe(false);
 		store.close();
 	});
@@ -1025,6 +1396,11 @@ describe("generalized execution admission and terminal contracts", () => {
 			committed_generation: 1,
 			delivery_state: "delivered",
 		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "issue_delivery"),
+		).toEqual([]);
 		const repairA = store.claimWorkflowLaunchDeliveryRepair({
 			executionId: "exec-1",
 			repairOwner: "repair-a",

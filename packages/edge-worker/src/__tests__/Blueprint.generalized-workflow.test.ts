@@ -27,6 +27,7 @@ function harness(checkpoints?: CheckpointsConfig) {
 	const hydrator = new PreHydrator(async (id) => ({
 		title: `Issue ${id}`,
 		description: "Bounded generalized task",
+		descriptionSource: "authoritative",
 		labels: ["sonnet"],
 	}));
 	const git = {
@@ -86,6 +87,23 @@ const generalized: BlueprintContext = {
 };
 
 describe("Blueprint generalized workflow capability contract", () => {
+	it("prepares the exact hydrated issue body and launch anchor before dispatch", async () => {
+		const { blueprint, adapter } = harness();
+		const prepareWorkflowIssueDelivery = vi.fn();
+
+		await blueprint.run(node, "/tmp/fly1707-delivery", {
+			...generalized,
+			prepareWorkflowIssueDelivery,
+		});
+
+		expect(prepareWorkflowIssueDelivery).toHaveBeenCalledWith({
+			sourceKind: "authoritative",
+			body: "Bounded generalized task",
+			anchorCommit: "base",
+		});
+		expect(adapter.execute).toHaveBeenCalledOnce();
+	});
+
 	it("uses pinned agent/capabilities, injects the output ticket, and suppresses write/ship", async () => {
 		const { blueprint, adapter } = harness();
 		await blueprint.run(node, "/tmp/fly1281-generalized", {

@@ -2651,6 +2651,30 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
 	},
 	{
+		name: "workflow_resume",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_RESUME",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-1707: admit same-run workflow resume requests from durable checkpoints; default off preserves the existing /runs/start path.",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/runs-route.ts",
+				"isWorkflowResumeEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/runs-route.dag-entry.test.ts",
+		note: "Only explicit resume:true requests enter the T3/T4 admission namespace; existing start reservation keys are untouched.",
+	},
+	{
 		name: "workflow_gate_carrier",
 		category: "feature",
 		source: "env",

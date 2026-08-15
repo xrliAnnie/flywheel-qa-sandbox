@@ -295,7 +295,11 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 					source_event_id: "turn:engine:forged",
 				}),
 			]);
-			expect(store.listWorkflowRunEvents("engine-run")).toHaveLength(1);
+			expect(
+				store
+					.listWorkflowRunEvents("engine-run")
+					.filter((event) => event.kind === "turn_granted"),
+			).toHaveLength(0);
 
 			const drained = drainWorkflowSourceEvents({
 				projects: ["flywheel"],
@@ -533,6 +537,18 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			classification: "dashboard_founder_action",
 			authority_id: questionId,
 		};
+		const forgedAuthority = { ...payload, authority_id: "forged-question" };
+		expect(() =>
+			store.applyWorkflowSourceEvent({
+				project: "flywheel",
+				sourceEventId: `founder-approval-forged:${questionId}`,
+				kind: "founder_approval",
+				payloadJson: canonicalJsonString(forgedAuthority),
+				payloadDigest: canonicalSubmissionDigest(forgedAuthority),
+				schemaVersion: 1,
+			}),
+		).toThrow(/gate authority/i);
+		expect(store.countWorkflowClaims("product-run")).toBe(1);
 		store.applyWorkflowSourceEvent({
 			project: "flywheel",
 			sourceEventId: `founder-approval:${questionId}`,

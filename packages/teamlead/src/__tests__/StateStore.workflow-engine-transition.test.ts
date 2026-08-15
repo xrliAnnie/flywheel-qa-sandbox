@@ -393,6 +393,266 @@ const carrierAlertIdentity = {
 };
 
 describe("engine-owned snapshot transition transaction", () => {
+	it("co-writes the W1 start attachment and immutable typed receipt", async () => {
+		const store = await engineRun();
+		const attachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0];
+		expect(attachment).toMatchObject({
+			run_id: "run-1",
+			target_node_id: "design",
+			target_attempt: 1,
+			transition_uid: "resume_origin:run-1",
+			receipt_kind: "start_reservation",
+			carrier_kind: "git_checkpoint",
+			anchor_commit: null,
+		});
+		expect(
+			store.getWorkflowResumeAttachmentState(attachment!.attachment_id),
+		).toMatchObject({ state: "intent", revision: 0 });
+		const receipt = store
+			.listWorkflowRunEvents("run-1")
+			.find((event) => event.event_uid === "resume_origin:run-1");
+		expect(receipt?.kind).toBe("start_reservation");
+		expect(attachment?.receipt_digest).toBe(
+			canonicalSubmissionDigest(receipt!.payload),
+		);
+	});
+
+	it("keeps a legacy transition committed when its resume-only diagnostic UID conflicts", async () => {
+		const store = await engineRun();
+		const transitionUid = `workflow_transition:${canonicalSubmissionDigest({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+			outcome: "design_done",
+		})}`;
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: `resume_target_unrecoverable:${transitionUid}`,
+			kind: "preseeded_resume_evidence_conflict",
+			payload: { conflict: true },
+		});
+
+		expect(
+			advance(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-1",
+				outcome: "design_done",
+				successorExecutionId: "implement-1",
+			}),
+		).toMatchObject({
+			ok: true,
+			targetNodeId: "implement",
+			successorExecutionId: "implement-1",
+		});
+		expect(store.getWorkflowRun("run-1")?.current_node_id).toBe("implement");
+		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
+			state: "pending",
+			execution_id: "implement-1",
+		});
+		store.close();
+	});
+
+	it("advances a git attachment by revision and becomes ready only after every required stamp", async () => {
+		const store = await engineRun();
+		const attachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		const anchor = "c".repeat(40);
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 0,
+				action: { kind: "stamp_anchor", anchorCommit: anchor },
+				now: "2026-07-16T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "intent", revision: 1 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 0,
+				action: { kind: "ref_prepared" },
+				now: "2026-07-16T00:02:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "revision_conflict" });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 1,
+				action: { kind: "ref_prepared" },
+				now: "2026-07-16T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "ref_prepared", revision: 2 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 2,
+				action: { kind: "store_pushed", storeLocator: "store:ref:g1" },
+				now: "2026-07-16T00:03:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "store_pushed", revision: 3 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 3,
+				action: { kind: "stamp_envelope", envelopeJson: '{"s3":"digest"}' },
+				now: "2026-07-16T00:04:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "store_pushed", revision: 4 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 4,
+				action: { kind: "stamp_runtime", runtimeSemanticsDigest: "runtime" },
+				now: "2026-07-16T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "ready", revision: 5 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: 5,
+				action: { kind: "stamp_runtime", runtimeSemanticsDigest: "changed" },
+				now: "2026-07-16T00:06:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "state_conflict" });
+	});
+
+	it("backs off checkpoint reconciliation and invalidates only an exact exhausted revision", async () => {
+		const store = await engineRun();
+		const attachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+		})[0]!;
+		let revision = 0;
+		let nextAttemptAt: string | null = null;
+		for (let attempt = 1; attempt <= 5; attempt += 1) {
+			const retry = store.recordWorkflowResumeAttachmentRetry({
+				attachmentId: attachment.attachment_id,
+				expectedState: "intent",
+				expectedRevision: revision,
+				error: "anchor_pending",
+				now: `2026-07-16T00:0${attempt}:00.000Z`,
+			});
+			expect(retry).toMatchObject({ ok: true, attemptCount: attempt });
+			if (!retry.ok) throw new Error(retry.reason);
+			revision = retry.revision;
+			nextAttemptAt = retry.nextAttemptAt;
+		}
+		expect(
+			store.invalidateWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				runId: "run-1",
+				nodeId: "design",
+				attempt: 1,
+				reason: "anchor_unreachable",
+				authority: {
+					kind: "attachment_reconciler",
+					expectedState: "intent",
+					expectedAttemptCount: 5,
+					expectedNextAttemptAt: nextAttemptAt,
+					expectedRevision: revision - 1,
+				},
+				now: "2026-07-16T00:10:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "revision_conflict" });
+		expect(
+			store.invalidateWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				runId: "run-1",
+				nodeId: "design",
+				attempt: 1,
+				reason: "anchor_unreachable",
+				authority: {
+					kind: "attachment_reconciler",
+					expectedState: "intent",
+					expectedAttemptCount: 5,
+					expectedNextAttemptAt: nextAttemptAt,
+					expectedRevision: revision,
+				},
+				now: "2026-07-16T00:10:00.000Z",
+			}),
+		).toEqual({ ok: true, revision: revision + 1 });
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: attachment.attachment_id,
+				expectedRevision: revision + 1,
+				action: { kind: "stamp_anchor", anchorCommit: "d".repeat(40) },
+				now: "2026-07-16T00:11:00.000Z",
+			}),
+		).toEqual({ ok: false, reason: "state_conflict" });
+	});
+
+	it("co-writes the W2 executable target attachment against the exact edge receipt", async () => {
+		const store = await engineRun();
+		const head = "b".repeat(40);
+		const transition = store.commitWorkflowTransitionTx({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-1",
+			outcome: "design_done",
+			subjectDigest: head,
+			successorExecutionId: "implement-1",
+			now: "2026-07-16T01:00:00.000Z",
+		});
+		expect(transition).toMatchObject({
+			ok: true,
+			targetNodeId: "implement",
+			targetAttempt: 1,
+		});
+		const attachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+		})[0];
+		expect(attachment).toMatchObject({
+			receipt_kind: "edge_traversed",
+			carrier_kind: "git_checkpoint",
+			anchor_commit: head,
+		});
+		const receipt = store
+			.listWorkflowRunEvents("run-1")
+			.find((event) => event.event_uid === attachment?.transition_uid);
+		expect(receipt?.kind).toBe("edge_traversed");
+		expect(attachment?.receipt_digest).toBe(
+			canonicalSubmissionDigest(receipt!.payload),
+		);
+	});
+
+	it("uses a state-only W2 attachment for the current approval gate", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		await openRunnerShipGate(store);
+		const gate = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "founder_gate",
+			attempt: 1,
+		})[0];
+		expect(gate).toMatchObject({
+			receipt_kind: "edge_traversed",
+			carrier_kind: "state_only_checkpoint",
+			anchor_ref: null,
+			anchor_commit: null,
+			repo_identity: null,
+		});
+		expect(
+			store.getWorkflowResumeAttachmentState(gate!.attachment_id)?.state,
+		).toBe("intent");
+		expect(gate?.runtime_semantics_digest).toBeTruthy();
+		expect(
+			store.advanceWorkflowResumeAttachment({
+				attachmentId: gate!.attachment_id,
+				expectedRevision: 0,
+				action: { kind: "stamp_envelope", envelopeJson: '{"s3":"digest"}' },
+				now: "2026-07-16T01:20:00.000Z",
+			}),
+		).toMatchObject({ ok: true, state: "ready", revision: 1 });
+	});
+
 	it("exposes park evidence only for the exact current activation and generation", async () => {
 		const store = await engineRun();
 		expect(
@@ -407,6 +667,18 @@ describe("engine-owned snapshot transition transaction", () => {
 				env: engineFlags,
 			}),
 		).toMatchObject({ ok: true });
+		const admittedAttachment = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "design",
+			attempt: 1,
+		})[0]!;
+		expect(
+			store.getWorkflowResumeAttachmentState(admittedAttachment.attachment_id),
+		).toMatchObject({
+			state: "intent",
+			runtime_semantics_stamped: expect.stringMatching(/^[0-9a-f]{64}$/),
+			revision: 1,
+		});
 		const activation = store.resolveCurrentWorkflowActivation("design-1");
 		expect(activation.kind).toBe("current");
 		if (activation.kind !== "current") throw new Error("activation missing");
@@ -974,6 +1246,23 @@ describe("engine-owned snapshot transition transaction", () => {
 			ok: true,
 			idempotentReplay: false,
 		});
+		const replacementAttachments = store.listWorkflowResumeAttachments({
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 2,
+		});
+		expect(replacementAttachments.at(-1)).toMatchObject({
+			receipt_kind: "rework_replacement",
+			anchor_commit: "a".repeat(40),
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find(
+					(event) =>
+						event.event_uid === replacementAttachments.at(-1)?.transition_uid,
+				),
+		).toMatchObject({ kind: "rework_replacement" });
 		expect(store.getSession("implement-1")?.status).toBe("completed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
@@ -3570,6 +3859,186 @@ describe("engine-owned snapshot transition transaction", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "gate_opened"),
 		).toHaveLength(1);
+		store.close();
+	});
+
+	it("reopens a loop-limit hold only with its current receipt and keeps iteration history continuous", async () => {
+		const store = await engineRun();
+		const settleOpenRework = () => {
+			const db = (
+				store as unknown as {
+					db: { run(sql: string): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
+			);
+			db.run(
+				"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",
+			);
+		};
+		advance(store, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-1",
+			outcome: "design_done",
+			successorExecutionId: "implement-1",
+		});
+		for (let attempt = 1; attempt <= 4; attempt += 1) {
+			advance(store, {
+				nodeId: "implement",
+				attempt,
+				executionId: "implement-1",
+				outcome: "implement_done",
+				successorExecutionId: "qa-1",
+			});
+			const failure = advance(store, {
+				nodeId: "qa",
+				attempt,
+				executionId: "qa-1",
+				outcome: "qa_fail",
+			});
+			expect(failure).toMatchObject({
+				ok: true,
+				loopIteration: attempt,
+			});
+			expect(failure.ok && failure.escalated).toBe(
+				attempt === 4 ? true : undefined,
+			);
+			if (attempt < 4) settleOpenRework();
+		}
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "completed",
+			workflow_node_id: "implement",
+		});
+		store.patchSessionMetadata("implement-1", { pr_head_sha: "b".repeat(40) });
+
+		const hold = store
+			.listWorkflowRunEvents("run-1")
+			.find((event) => event.kind === "loop_limit_escalated")!;
+		const ack = {
+			holdEventUid: hold.event_uid,
+			holdReceiptDigest: canonicalSubmissionDigest(hold.payload),
+			decision: "continue" as const,
+		};
+		const rework = (clientRequestId: string, escalationAck?: typeof ack) =>
+			store.openOperatorRework({
+				runId: "run-1",
+				targetNodeId: "implement",
+				feedback: "continue after reviewing the loop limit",
+				clientRequestId,
+				principal: "master",
+				evidence: [],
+				now: "2026-07-16T01:10:00.000Z",
+				escalationAck,
+			});
+
+		expect(rework("missing-ack")).toEqual({
+			ok: false,
+			reason: "loop_limit_escalation_ack_required",
+		});
+		expect(
+			rework("wrong-digest", {
+				...ack,
+				holdReceiptDigest: "0".repeat(64),
+			}),
+		).toEqual({ ok: false, reason: "loop_limit_escalation_ack_invalid" });
+
+		const opened = rework("continue-4", ack);
+		if (!opened.ok) throw new Error(opened.reason);
+		expect(opened).toMatchObject({
+			ok: true,
+			targetAttempt: 5,
+			idempotentReplay: false,
+		});
+		const request = store.getWorkflowReworkRequest(opened.requestId)!;
+		expect(JSON.parse(request.authority_context_json)).toMatchObject({
+			escalationAck: ack,
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.event_uid === "operator_rework:run-1:continue-4")
+				?.payload,
+		).toMatchObject({ escalationAck: ack });
+		expect(rework("continue-4", ack)).toMatchObject({
+			ok: true,
+			idempotentReplay: true,
+		});
+		expect(
+			store.openOperatorRework({
+				runId: "run-1",
+				targetNodeId: "implement",
+				feedback: "continue after reviewing the loop limit",
+				clientRequestId: "continue-4",
+				principal: "master",
+				evidence: [],
+				now: "2026-07-16T01:10:00.000Z",
+				escalationAck: { ...ack, decision: "reclassify" },
+			}),
+		).toEqual({ ok: false, reason: "operator_request_conflict" });
+		settleOpenRework();
+
+		for (let attempt = 5; attempt <= 6; attempt += 1) {
+			advance(store, {
+				nodeId: "implement",
+				attempt,
+				executionId: "implement-1",
+				outcome: "implement_done",
+				successorExecutionId: "qa-1",
+			});
+			const failure = advance(store, {
+				nodeId: "qa",
+				attempt,
+				executionId: "qa-1",
+				outcome: "qa_fail",
+			});
+			expect(failure).toMatchObject({
+				ok: true,
+				loopIteration: attempt,
+				escalated: true,
+			});
+			if (attempt === 5) {
+				const latestHold = store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "loop_limit_escalated")
+					.at(-1)!;
+				const reopened = store.openOperatorRework({
+					runId: "run-1",
+					targetNodeId: "implement",
+					feedback: "continue after reviewing the next loop limit",
+					clientRequestId: "continue-5",
+					principal: "master",
+					evidence: [],
+					now: "2026-07-16T01:20:00.000Z",
+					escalationAck: {
+						holdEventUid: latestHold.event_uid,
+						holdReceiptDigest: canonicalSubmissionDigest(latestHold.payload),
+						decision: "continue",
+					},
+				});
+				expect(reopened).toMatchObject({ ok: true, targetAttempt: 6 });
+				settleOpenRework();
+			}
+		}
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "loop_limit_escalated")
+				.map((event) => event.payload?.loopIteration),
+		).toEqual([4, 5, 6]);
+		expect(rework("stale-ack", ack)).toEqual({
+			ok: false,
+			reason: "loop_limit_escalation_ack_stale",
+		});
+		expect(
+			store
+				.listWorkflowRunNodes("run-1", "implement")
+				.map((node) => node.attempt),
+		).toEqual([1, 2, 3, 4, 5, 6]);
 		store.close();
 	});
 

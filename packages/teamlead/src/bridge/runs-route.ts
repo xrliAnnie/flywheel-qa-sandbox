@@ -15,7 +15,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
 import type {
@@ -39,6 +39,7 @@ import {
 	DOC_TIERS,
 	type DocTier,
 	parseDocTier,
+	type WorkflowIssueDeliveryInput,
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import { DepartmentRegistry } from "../department-registry.js";
 import {
@@ -50,6 +51,8 @@ import {
 	type Session,
 	type StateStore,
 	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
+	type WorkflowResumeAttachmentRow,
+	type WorkflowRunCollectReceiptRow,
 	type WorkflowStartReservationRow,
 } from "../StateStore.js";
 import {
@@ -113,6 +116,8 @@ import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 import { waitForWorkflowLaunchOutcome } from "./workflow-launch-outcome.js";
+import { GitWorkflowResumeCheckpointStore } from "./workflow-resume-checkpoint.js";
+import { resolveWorkflowResumeTarget } from "./workflow-resume-resolver.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -315,6 +320,12 @@ export async function loadFounderUxExemptLabels(
 	}
 }
 
+export function isWorkflowResumeEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_WORKFLOW_RESUME === "1";
+}
+
 export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
 	store: StateStore,
@@ -357,9 +368,21 @@ export function createRunsRouter(
 			probeRepoSlug: string;
 			prNumber: number;
 		}) => Promise<RunCloseoutMergeProof>;
+		verifyWorkflowResumeAnchor?: (input: {
+			attachment: WorkflowResumeAttachmentRow;
+			effectiveAnchor: string;
+			project: ProjectEntry;
+		}) => boolean;
+		probeRunLiveness?: typeof probeGeneralizedLaunchLiveness;
+		collectWorkflowRun?: (
+			receiptKey: string,
+		) => Promise<WorkflowRunCollectReceiptRow>;
 	},
 ): Router {
 	const router = Router();
+	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
+		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
+	});
 	// FLY-127: registry is constructed once per router and re-read on each
 	// request through the same `projects` reference. Bridge restart picks up
 	// new project config; runtime toggles use the env-var flag instead.
@@ -383,6 +406,7 @@ export function createRunsRouter(
 			const reason = req.body?.reason;
 			const clientRequestId = req.body?.clientRequestId;
 			const closeoutInvariantDigest = req.body?.closeoutInvariantDigest;
+			const collectExecutions = req.body?.collectExecutions;
 			if (
 				typeof reason !== "string" ||
 				!reason.trim() ||
@@ -391,7 +415,10 @@ export function createRunsRouter(
 				!clientRequestId.trim() ||
 				(closeoutInvariantDigest !== undefined &&
 					(typeof closeoutInvariantDigest !== "string" ||
-						!/^[0-9a-f]{64}$/.test(closeoutInvariantDigest)))
+						!/^[0-9a-f]{64}$/.test(closeoutInvariantDigest))) ||
+				(collectExecutions !== undefined &&
+					typeof collectExecutions !== "boolean") ||
+				(collectExecutions === true && action !== "terminate")
 			) {
 				res.status(400).json({
 					success: false,
@@ -404,16 +431,20 @@ export function createRunsRouter(
 				return;
 			}
 			try {
-				const evidence = await collectRunQuiescenceEvidence(
-					store,
-					runId,
-					probeGeneralizedLaunchLiveness,
-				);
+				const forceCollect =
+					action === "terminate" && collectExecutions === true;
+				const evidence = forceCollect
+					? []
+					: await collectRunQuiescenceEvidence(
+							store,
+							runId,
+							auth?.probeRunLiveness ?? probeGeneralizedLaunchLiveness,
+						);
 				const now = new Date().toISOString();
 				const run = store.getWorkflowRun(runId)!;
 				let closeoutKind: "nested_manual" | "operator" | undefined;
 				let mergeProof: RunCloseoutMergeProof | undefined;
-				if (action === "terminate" && run.status === "held") {
+				if (action === "terminate" && run.status === "held" && !forceCollect) {
 					const diagnostic = store.getWorkflowRunDiagnostic({
 						runId,
 						evidence,
@@ -474,6 +505,7 @@ export function createRunsRouter(
 					...(closeoutInvariantDigest ? { closeoutInvariantDigest } : {}),
 					...(closeoutKind ? { closeoutKind } : {}),
 					...(mergeProof ? { mergeProof } : {}),
+					...(forceCollect ? { collectExecutions: true } : {}),
 				};
 				const result =
 					action === "hold"
@@ -499,6 +531,42 @@ export function createRunsRouter(
 								? { executionIds: result.executionIds }
 								: {}),
 						});
+					return;
+				}
+				if (forceCollect && result.collection) {
+					let snapshot = result.collection;
+					if (snapshot.response) {
+						res.json(snapshot.response);
+						return;
+					}
+					if (auth?.collectWorkflowRun) {
+						try {
+							const collected = await auth.collectWorkflowRun(
+								snapshot.receiptKey,
+							);
+							if (collected.response) {
+								res.json(collected.response);
+								return;
+							}
+							snapshot = {
+								receiptKey: collected.receipt_key,
+								state: collected.state,
+								targetExecutionIds: collected.targetExecutionIds,
+								outcomes: collected.outcomes,
+							};
+						} catch (error) {
+							console.warn(
+								`[runs/terminate] collection held for ${snapshot.receiptKey}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+					res.status(202).json({
+						success: true,
+						runId,
+						status: result.status,
+						inProgress: true,
+						snapshot,
+					});
 					return;
 				}
 				res.json({
@@ -817,6 +885,24 @@ export function createRunsRouter(
 		const targetNodeId = req.body?.targetNodeId;
 		const feedback = req.body?.feedback;
 		const clientRequestId = req.body?.clientRequestId;
+		const escalationAckBody = req.body?.escalationAck;
+		const escalationAck =
+			escalationAckBody === undefined
+				? undefined
+				: typeof escalationAckBody === "object" &&
+						escalationAckBody !== null &&
+						typeof escalationAckBody.holdEventUid === "string" &&
+						escalationAckBody.holdEventUid.trim() &&
+						typeof escalationAckBody.holdReceiptDigest === "string" &&
+						/^[0-9a-f]{64}$/.test(escalationAckBody.holdReceiptDigest) &&
+						(escalationAckBody.decision === "continue" ||
+							escalationAckBody.decision === "reclassify")
+					? {
+							holdEventUid: escalationAckBody.holdEventUid,
+							holdReceiptDigest: escalationAckBody.holdReceiptDigest,
+							decision: escalationAckBody.decision,
+						}
+					: null;
 		if (
 			typeof targetNodeId !== "string" ||
 			!targetNodeId.trim() ||
@@ -824,7 +910,8 @@ export function createRunsRouter(
 			!feedback.trim() ||
 			feedback.length > 4_000 ||
 			typeof clientRequestId !== "string" ||
-			!clientRequestId.trim()
+			!clientRequestId.trim() ||
+			escalationAck === null
 		) {
 			res.status(400).json({
 				success: false,
@@ -875,6 +962,7 @@ export function createRunsRouter(
 				principal: "master",
 				evidence,
 				now: new Date().toISOString(),
+				...(escalationAck ? { escalationAck } : {}),
 				consent: consent.consent,
 			});
 			if (!result.ok) {
@@ -1043,6 +1131,41 @@ export function createRunsRouter(
 		// downstream code reads `req.body.projectName` directly. Unknown projects
 		// pass through unchanged and still reject normally below.
 		const projectName = resolveCanonicalProjectName(projects, rawProjectName);
+		const resumeRequested =
+			isWorkflowResumeEnabled(process.env) && req.body.resume === true;
+		const requestedResumeAttachment = resumeRequested
+			? typeof req.body.attachmentId === "string"
+				? req.body.attachmentId.trim()
+				: ""
+			: undefined;
+		const requestedResumeEntry = resumeRequested
+			? typeof req.body.entryNodeId === "string"
+				? req.body.entryNodeId.trim()
+				: req.body.entryNodeId === undefined
+					? undefined
+					: ""
+			: undefined;
+		if (resumeRequested) {
+			if (requestAuthKind !== "master") {
+				res.status(403).json({
+					success: false,
+					code: "WORKFLOW_RESUME_AUTH_REQUIRED",
+				});
+				return;
+			}
+			if (
+				!requestedResumeAttachment ||
+				requestedResumeEntry === "" ||
+				typeof req.body.idempotencyKey !== "string" ||
+				!req.body.idempotencyKey.trim()
+			) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_WORKFLOW_RESUME_REQUEST",
+				});
+				return;
+			}
+		}
 
 		// FLY-137 v1.27.2: optional Lead override `agentName` body field.
 		// Semantics per Codex v1.27.0 Round 1 #2:
@@ -1207,9 +1330,10 @@ export function createRunsRouter(
 			typeof req.body.idempotencyKey === "string"
 				? req.body.idempotencyKey.trim()
 				: undefined;
-		const replayReservation = requestedStartKey
-			? store.getWorkflowStartReservation(requestedStartKey)
-			: undefined;
+		const replayReservation =
+			!resumeRequested && requestedStartKey
+				? store.getWorkflowStartReservation(requestedStartKey)
+				: undefined;
 		const rejectInvalidStartReplay = (
 			reservation: WorkflowStartReservationRow,
 			inspection: WorkflowStartReplayInspection,
@@ -1258,6 +1382,7 @@ export function createRunsRouter(
 			? inspectWorkflowStartReplay(store, activeEngineStartReservation)
 			: undefined;
 		if (
+			!resumeRequested &&
 			activeEngineStartReservation &&
 			activeEngineStartInspection &&
 			store.getWorkflowStartResponse(
@@ -1285,6 +1410,7 @@ export function createRunsRouter(
 			);
 		if (
 			alreadyActive &&
+			!resumeRequested &&
 			!exactGeneralizedReplay &&
 			!exactActiveEngineStartSession
 		) {
@@ -1312,8 +1438,8 @@ export function createRunsRouter(
 		// FLY-123 WS-D (P4): resource-based admission — no count cap. Defer only
 		// under real load/memory pressure, with a typed reason (never a string-
 		// matched "Max concurrent" message).
-		const admission = runnerAdmission.tryAdmit();
-		if (!admission.admit) {
+		const admission = resumeRequested ? undefined : runnerAdmission.tryAdmit();
+		if (admission && !admission.admit) {
 			if (admission.retryAfterSeconds !== undefined) {
 				res.setHeader("Retry-After", String(admission.retryAfterSeconds));
 			}
@@ -1350,6 +1476,7 @@ export function createRunsRouter(
 		let issueUuid: string | undefined;
 		let issueIdentifier: string | undefined;
 		let issueUrl: string | undefined;
+		let issueDescription = "";
 		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
 		// new department-scope check. Fetch once, reuse for both.
 		let issueLabelNames: string[] = [];
@@ -1374,6 +1501,7 @@ export function createRunsRouter(
 			issueUuid = typeof issue.id === "string" ? issue.id : undefined;
 			issueIdentifier = issue.identifier;
 			issueUrl = issue.url;
+			issueDescription = issue.description ?? "";
 
 			// FLY-127: fetch labels regardless of whether leadId is provided.
 			// Auto-resolve (FLY-80) and dept-scope check (FLY-127) both need them.
@@ -1469,6 +1597,239 @@ export function createRunsRouter(
 				});
 				return;
 			}
+		}
+
+		if (resumeRequested) {
+			const admissionKey = requestedStartKey!;
+			const issueAliases = new Set(
+				[issueId, issueUuid, issueIdentifier].filter(
+					(value): value is string => typeof value === "string" && !!value,
+				),
+			);
+			const responseFor = (
+				row: NonNullable<ReturnType<StateStore["getWorkflowResumeAdmission"]>>,
+			) => ({
+				success: true,
+				resumed: true,
+				workflowRunId: row.run_id,
+				workflowNodeId: row.target_node_id,
+				workflowAttempt: row.new_attempt ?? row.target_attempt,
+				actionKind: row.action_kind,
+				...(row.new_execution_id ? { executionId: row.new_execution_id } : {}),
+			});
+			const digestFor = (
+				row: Pick<
+					NonNullable<ReturnType<StateStore["getWorkflowResumeAdmission"]>>,
+					"run_id" | "target_node_id" | "target_attempt" | "action_kind"
+				>,
+			) =>
+				canonicalSubmissionDigest({
+					resume: true,
+					issueId,
+					projectName,
+					runId: row.run_id,
+					requestedEntry: requestedResumeEntry ?? null,
+					sourceAttachmentId: requestedResumeAttachment,
+					targetNodeId: row.target_node_id,
+					targetAttempt: row.target_attempt,
+					actionKind: row.action_kind,
+				});
+			const prior = store.getWorkflowResumeAdmission(admissionKey);
+			if (prior) {
+				const priorRun = store.getWorkflowRun(prior.run_id);
+				if (
+					!priorRun ||
+					priorRun.project_name !== projectName ||
+					!issueAliases.has(priorRun.issue_id) ||
+					prior.source_attachment_id !== requestedResumeAttachment ||
+					prior.admission_digest !== digestFor(prior)
+				) {
+					res.status(409).json({
+						success: false,
+						code: "RESUME_ADMISSION_CONFLICT",
+					});
+					return;
+				}
+				const cached = store.getWorkflowResumeResponse(admissionKey);
+				if (cached) {
+					res.json(cached);
+					return;
+				}
+				const response = responseFor(prior);
+				const recorded = store.recordWorkflowResumeResponse({
+					admissionKey,
+					response,
+					now: new Date().toISOString(),
+				});
+				if (recorded.ok) {
+					res.json(response);
+					return;
+				}
+				if (recorded.reason !== "completion_evidence_missing") {
+					res.status(409).json({
+						success: false,
+						code: "WORKFLOW_RESUME_STATE_CONFLICT",
+						reason: recorded.reason,
+					});
+					return;
+				}
+				const currentAttempt = priorRun
+					? store
+							.listWorkflowRunNodes(priorRun.run_id, prior.target_node_id)
+							.at(-1)?.attempt
+					: undefined;
+				if (
+					priorRun?.status !== "active" ||
+					priorRun.current_node_id !== prior.target_node_id ||
+					currentAttempt !== (prior.new_attempt ?? prior.target_attempt)
+				) {
+					res.status(409).json({
+						success: false,
+						code: "WORKFLOW_RESUME_REFUSED",
+						reason: "target_moved",
+					});
+					return;
+				}
+				res.status(202).json({
+					...response,
+					pending: true,
+					code: "WORKFLOW_RESUME_PENDING",
+				});
+				return;
+			}
+
+			const activeRuns = [...issueAliases]
+				.map((alias) => store.getActiveWorkflowRunForIssue(alias))
+				.filter((run): run is NonNullable<typeof run> => run !== undefined);
+			const activeRun = activeRuns[0];
+			if (
+				!activeRun ||
+				activeRuns.some((run) => run.run_id !== activeRun.run_id) ||
+				activeRun.project_name !== projectName
+			) {
+				res.status(409).json({
+					success: false,
+					code: "WORKFLOW_RESUME_REFUSED",
+					reason: activeRun ? "target_moved" : "run_not_active",
+				});
+				return;
+			}
+			const project = projects.find(
+				(candidate) => candidate.projectName === projectName,
+			);
+			if (!project) {
+				res.status(409).json({
+					success: false,
+					code: "WORKFLOW_RESUME_REFUSED",
+					reason: "anchor_unreachable",
+				});
+				return;
+			}
+			const observedBodyDigest = createHash("sha256")
+				.update(issueDescription)
+				.digest("hex");
+			const resolution = resolveWorkflowResumeTarget(store, {
+				runId: activeRun.run_id,
+				...(requestedResumeEntry
+					? { requestedEntry: requestedResumeEntry }
+					: {}),
+				envelopeObservation: {
+					source: "issue_body",
+					digest: observedBodyDigest,
+				},
+				verifyAnchor: ({ attachment, effectiveAnchor }) => {
+					if (auth?.verifyWorkflowResumeAnchor) {
+						return auth.verifyWorkflowResumeAnchor({
+							attachment,
+							effectiveAnchor,
+							project,
+						});
+					}
+					if (
+						attachment.repo_identity !== project.projectName &&
+						(!attachment.repo_identity ||
+							!pathIsAbsolute(attachment.repo_identity) ||
+							resolve(attachment.repo_identity) !==
+								resolve(project.projectRoot))
+					) {
+						return false;
+					}
+					workflowResumeCheckpointStore.recover({
+						project: project.projectName,
+						projectRoot: project.projectRoot,
+						ref: attachment.anchor_ref!,
+						anchor: effectiveAnchor,
+					});
+					return true;
+				},
+				env: process.env,
+			});
+			if (
+				!resolution.ok ||
+				resolution.attachmentId !== requestedResumeAttachment
+			) {
+				const reason = resolution.ok
+					? "attachment_frontier_divergence"
+					: resolution.reason;
+				store.recordWorkflowResumeProbe({
+					runId: activeRun.run_id,
+					probeKind: "admission",
+					verdict: reason,
+					detail: resolution.ok ? {} : resolution.detail,
+					createdAt: new Date().toISOString(),
+				});
+				res.status(409).json({
+					success: false,
+					code: "WORKFLOW_RESUME_REFUSED",
+					reason,
+				});
+				return;
+			}
+			const admissionDigest = digestFor({
+				run_id: activeRun.run_id,
+				target_node_id: resolution.targetNodeId,
+				target_attempt: resolution.targetAttempt,
+				action_kind: resolution.actionKind,
+			});
+			const admitted = store.admitWorkflowResume({
+				admissionKey,
+				admissionDigest,
+				runId: activeRun.run_id,
+				actionKind: resolution.actionKind,
+				sourceAttachmentId: resolution.attachmentId,
+				targetNodeId: resolution.targetNodeId,
+				targetAttempt: resolution.targetAttempt,
+				runtimeSemanticsDigest: resolution.runtimeSemanticsDigest,
+				observedBodyDigest,
+				...(resolution.effectiveAnchor
+					? { effectiveAnchor: resolution.effectiveAnchor }
+					: {}),
+				...(resolution.actionKind === "redispatch_execution"
+					? { frozenBody: issueDescription, newExecutionId: randomUUID() }
+					: {}),
+				...(requestedResumeEntry
+					? { requestedEntry: requestedResumeEntry }
+					: {}),
+				now: new Date().toISOString(),
+			});
+			if (!admitted.ok) {
+				res.status(409).json({
+					success: false,
+					code:
+						admitted.reason === "admission_conflict"
+							? "RESUME_ADMISSION_CONFLICT"
+							: "WORKFLOW_RESUME_REFUSED",
+					reason: admitted.reason,
+				});
+				return;
+			}
+			const row = store.getWorkflowResumeAdmission(admissionKey)!;
+			res.status(202).json({
+				...responseFor(row),
+				pending: true,
+				code: "WORKFLOW_RESUME_PENDING",
+			});
+			return;
 		}
 
 		// FLY-91 Round 2: Pre-register chat thread if Lead already created one.
@@ -2462,6 +2823,9 @@ export function createRunsRouter(
 			let workflowSubmissionCredential = workflowAdmission.submissionCredential;
 			let launchGateToken: string | undefined;
 			let launchGeneration: number | undefined;
+			let launchDeliveryAuthority:
+				| { ownerId: string; generation: number; attempt: number }
+				| undefined;
 			let commitWorkflowLaunch:
 				| (() => { ok: boolean; reason?: string })
 				| undefined;
@@ -2570,6 +2934,11 @@ export function createRunsRouter(
 						}
 						launchGateToken = repair.token;
 						launchGeneration = repair.generation;
+						launchDeliveryAuthority = {
+							ownerId: launchOwnerId,
+							generation: repair.generation,
+							attempt: repair.attempt,
+						};
 						commitWorkflowLaunch = () =>
 							store.commitWorkflowLaunchDeliveryRepair({
 								executionId: generalizedSelection!.executionId,
@@ -2583,6 +2952,11 @@ export function createRunsRouter(
 					}
 				} else {
 					launchGeneration = launch.generation;
+					launchDeliveryAuthority = {
+						ownerId: launchOwnerId,
+						generation: launch.generation,
+						attempt: launch.deliveryAttempt,
+					};
 					launchReleaseFence = {
 						ownerId: launchOwnerId,
 						generation: launch.generation,
@@ -2667,6 +3041,23 @@ export function createRunsRouter(
 						});
 				}
 				if (shouldDispatch) {
+					const deliveryAuthority = launchDeliveryAuthority;
+					const prepareWorkflowIssueDelivery = deliveryAuthority
+						? (input: WorkflowIssueDeliveryInput) => {
+								const { anchorCommit, ...candidate } = input;
+								const prepared = store.prepareWorkflowIssueDelivery({
+									executionId: generalizedSelection!.executionId,
+									activationId: workflowAdmission.activationId,
+									ownerId: deliveryAuthority.ownerId,
+									ownerGeneration: deliveryAuthority.generation,
+									deliveryAttempt: deliveryAuthority.attempt,
+									anchorCommit,
+									candidate,
+									now: new Date().toISOString(),
+								});
+								if (!prepared.ok) throw new Error(prepared.reason);
+							}
+						: undefined;
 					const workflowRole = isWorkflowPhaseRole(
 						generalizedSelection.node.type,
 					)
@@ -2744,6 +3135,9 @@ export function createRunsRouter(
 								launchGateToken,
 								launchGeneration,
 								commitWorkflowLaunch,
+								...(prepareWorkflowIssueDelivery && {
+									prepareWorkflowIssueDelivery,
+								}),
 								projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
 							},
 						});

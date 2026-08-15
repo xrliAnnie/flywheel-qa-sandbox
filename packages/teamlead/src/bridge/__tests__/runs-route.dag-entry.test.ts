@@ -11,6 +11,7 @@
  * 400 · #9b/#9c candidate missing · #10 param echo · #13 v2 untouched.
  */
 
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -23,6 +24,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
+import { canonicalSubmissionDigest } from "flywheel-config";
 import {
 	afterAll,
 	afterEach,
@@ -34,8 +36,12 @@ import {
 } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
-import { StateStore } from "../../StateStore.js";
+import {
+	StateStore,
+	type WorkflowResumeAttachmentRow,
+} from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
+import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 
@@ -50,7 +56,10 @@ const ghostGuardEnv = vi.hoisted(() => {
 import { createRunsRouter } from "../runs-route.js";
 
 // ── Linear pre-flight mock (route does a dynamic import) ──
-const linearMock = { labels: [] as string[] };
+const linearMock = {
+	labels: [] as string[],
+	description: "Runs route issue body",
+};
 vi.mock("@linear/sdk", () => ({
 	LinearClient: class {
 		async issue(id: string) {
@@ -58,6 +67,7 @@ vi.mock("@linear/sdk", () => ({
 				title: `Issue ${id}`,
 				identifier: id,
 				url: `https://linear.app/x/${id}`,
+				description: linearMock.description,
 				labels: async () => ({
 					nodes: linearMock.labels.map((name) => ({ name })),
 				}),
@@ -141,11 +151,17 @@ function v2Seed() {
 }
 
 beforeEach(() => {
-	for (const key of [...Object.keys(DAG_ENV), "HOME", "LINEAR_API_KEY"]) {
+	for (const key of [
+		...Object.keys(DAG_ENV),
+		"FLYWHEEL_WORKFLOW_RESUME",
+		"HOME",
+		"LINEAR_API_KEY",
+	]) {
 		savedEnv[key] = process.env[key];
 	}
 	process.env.LINEAR_API_KEY = "test-linear-key";
 	linearMock.labels = [];
+	linearMock.description = "Runs route issue body";
 });
 
 afterEach(async () => {
@@ -184,10 +200,16 @@ async function startHarness(options: {
 	menuMode?: boolean;
 	bindingTemplateId?: string;
 	launchBehavior?: { commit: boolean };
+	prepareIssueDelivery?: boolean;
 	afterSessionPersisted?: (input: {
 		executionId: string;
 		store: StateStore;
 	}) => void;
+	verifyWorkflowResumeAnchor?: (input: {
+		attachment: WorkflowResumeAttachmentRow;
+		effectiveAnchor: string;
+		project: ProjectEntry;
+	}) => boolean;
 }): Promise<Harness> {
 	if (options.menuMode) linearMock.labels = ["Engineering"];
 	// Isolate HOME so launch-commit markers never touch the real ~/.flywheel.
@@ -280,6 +302,14 @@ async function startHarness(options: {
 				session_role: req.sessionRole ?? "main",
 			});
 			options.afterSessionPersisted?.({ executionId, store });
+			if (options.prepareIssueDelivery) {
+				req.generalizedExecution?.prepareWorkflowIssueDelivery?.({
+					sourceKind: "authoritative",
+					body: "Runs route issue body",
+					updatedAt: "2026-08-15T01:02:03.000Z",
+					anchorCommit: "b".repeat(40),
+				});
+			}
 			if (
 				req.generalizedExecution &&
 				options.launchBehavior?.commit !== false
@@ -323,7 +353,11 @@ async function startHarness(options: {
 			undefined,
 			false,
 			undefined,
-			{ masterToken: MASTER, scopedToken: SCOPED },
+			{
+				masterToken: MASTER,
+				scopedToken: SCOPED,
+				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
+			},
 		),
 	);
 	server = createServer(app);
@@ -359,6 +393,233 @@ async function post(
 		json: (await res.json()) as Record<string, unknown>,
 	};
 }
+
+function seedResumeTarget(store: StateStore, projectRoot: string): string {
+	const now = "2026-08-15T01:02:03.000Z";
+	const anchor = "a".repeat(40);
+	const attachmentId = "resume-attachment-1";
+	const snapshot = buildWorkflowRunSnapshotV2({
+		template: { id: "tpl-resume-route", revision: 1 },
+		canonicalRoot: projectRoot,
+		manifest: v2Seed().manifest,
+	});
+	store.createWorkflowRun({
+		runId: "resume-run-1",
+		issueId: "FLY-802",
+		projectName: "flywheel",
+		snapshotJson: JSON.stringify(snapshot),
+		claimsReadEnrolled: true,
+	});
+	store.upsertWorkflowRunNode({
+		runId: "resume-run-1",
+		nodeId: "generic",
+		attempt: 1,
+		state: "running",
+		executionId: "resume-old-exec",
+	});
+	store.appendWorkflowRunEvent({
+		runId: "resume-run-1",
+		eventUid: "issue_input_baseline:resume-run-1",
+		kind: "issue_input_baseline",
+		payload: {
+			outcome: "authoritative",
+			updatedAt: now,
+			bodyDigest: createHash("sha256")
+				.update(linearMock.description)
+				.digest("hex"),
+		},
+	});
+	const receipt = {
+		targetNodeId: "generic",
+		targetAttempt: 1,
+		executionId: "resume-old-exec",
+		startReservationKey: "original-start-key",
+		snapshotDigest: snapshot.snapshot_digest,
+	};
+	store.appendWorkflowRunEvent({
+		runId: "resume-run-1",
+		eventUid: "resume-route-origin",
+		kind: "start_reservation",
+		nodeId: "generic",
+		executionId: "resume-old-exec",
+		payload: receipt,
+	});
+	store.appendWorkflowRunEvent({
+		runId: "resume-run-1",
+		eventUid: "issue_delivery:resume-old-exec:1:0",
+		kind: "issue_delivery",
+		nodeId: "generic",
+		executionId: "resume-old-exec",
+		payload: {
+			sourceKind: "authoritative",
+			body: linearMock.description,
+			bodyDigest: createHash("sha256")
+				.update(linearMock.description)
+				.digest("hex"),
+		},
+	});
+	const target = snapshot.resolved.nodes.find((node) => node.id === "generic")!;
+	const runtimeDigest = canonicalSubmissionDigest({
+		vendor: "codex",
+		model: "gpt-5.6-sol",
+		effort: "low",
+		resolvedFamily: "codex",
+		capabilitiesDigest: canonicalSubmissionDigest(target.capabilities),
+	});
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run(
+		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'generic' WHERE run_id = 'resume-run-1'",
+	);
+	db.run(
+		`INSERT INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES ('resume-old-exec', 'flywheel', 'FLY-802', 'generic', ?)`,
+		[now],
+	);
+	db.run(
+		`INSERT INTO workflow_execution_runtime
+		   (execution_id, run_id, node_id, attempt, vendor, model, effort,
+		    resolved_family, capabilities_digest, created_at)
+		 VALUES ('resume-old-exec', 'resume-run-1', 'generic', 1, 'codex',
+		         'gpt-5.6-sol', 'low', 'codex', ?, ?)`,
+		[canonicalSubmissionDigest(target.capabilities), now],
+	);
+	db.run(
+		`INSERT INTO workflow_resume_attachment
+		   (attachment_id, run_id, target_node_id, target_attempt, transition_uid,
+		    receipt_kind, receipt_digest, carrier_kind, anchor_ref, anchor_commit,
+		    repo_identity, snapshot_digest, resolved_node_digest,
+		    runtime_semantics_digest, rework_authority_digest, envelope_json, created_at)
+		 VALUES (?, 'resume-run-1', 'generic', 1, 'resume-route-origin',
+		         'start_reservation', ?, 'git_checkpoint', ?, ?, 'flywheel', ?, ?,
+		         NULL, 'none', ?, ?)`,
+		[
+			attachmentId,
+			canonicalSubmissionDigest(receipt),
+			`refs/flywheel/checkpoints/resume-run-1/${attachmentId}`,
+			anchor,
+			snapshot.snapshot_digest,
+			canonicalSubmissionDigest(target),
+			JSON.stringify({
+				schemaVersion: 1,
+				issueBaselineUid: "issue_input_baseline:resume-run-1",
+			}),
+			now,
+		],
+	);
+	db.run(
+		`INSERT INTO workflow_resume_attachment_state
+		   (attachment_id, state, store_locator, envelope_stamped_json,
+		    runtime_semantics_stamped, updated_at)
+		 VALUES (?, 'ready', '{}', ?, ?, ?)`,
+		[
+			attachmentId,
+			JSON.stringify({
+				schemaVersion: 1,
+				issueBaseline: {
+					uid: "issue_input_baseline:resume-run-1",
+					updatedAt: now,
+					bodyDigest: createHash("sha256")
+						.update(linearMock.description)
+						.digest("hex"),
+				},
+			}),
+			runtimeDigest,
+			now,
+		],
+	);
+	store.upsertSession({
+		execution_id: "resume-old-exec",
+		issue_id: "FLY-802",
+		project_name: "flywheel",
+		status: "failed",
+	});
+	return attachmentId;
+}
+
+describe("FLY-1707 workflow resume entry", () => {
+	it("observes the opt-in live and admits a new key before the legacy start-key guard", async () => {
+		const h = await startHarness({ verifyWorkflowResumeAnchor: () => true });
+		const attachmentId = seedResumeTarget(h.store, h.projectRoot);
+		const request = {
+			resume: true,
+			attachmentId,
+			idempotencyKey: "resume-admission-key",
+		};
+
+		process.env.FLYWHEEL_WORKFLOW_RESUME = "0";
+		const disabled = await post(h.url, request);
+		expect(disabled.status).toBe(409);
+		expect(disabled.json.code).not.toBe("WORKFLOW_RESUME_PENDING");
+
+		process.env.FLYWHEEL_WORKFLOW_RESUME = "1";
+		const admitted = await post(h.url, request);
+		expect(admitted).toMatchObject({
+			status: 202,
+			json: {
+				success: true,
+				resumed: true,
+				pending: true,
+				code: "WORKFLOW_RESUME_PENDING",
+				workflowRunId: "resume-run-1",
+				workflowNodeId: "generic",
+				workflowAttempt: 2,
+			},
+		});
+		expect(h.calls).toHaveLength(0);
+		expect(
+			h.store.getWorkflowResumeAdmission("resume-admission-key"),
+		).toMatchObject({
+			source_attachment_id: attachmentId,
+			target_attempt: 1,
+			new_attempt: 2,
+			frozen_s3_body: linearMock.description,
+		});
+		expect(
+			h.store.getWorkflowStartReservation("resume-admission-key"),
+		).toBeUndefined();
+
+		expect(await post(h.url, request)).toEqual(admitted);
+		const resumedExecutionId = h.store.getWorkflowResumeAdmission(
+			"resume-admission-key",
+		)!.new_execution_id!;
+		h.store.appendWorkflowRunEvent({
+			runId: "resume-run-1",
+			eventUid: `issue_delivery:${resumedExecutionId}:1:0`,
+			kind: "issue_delivery",
+			nodeId: "generic",
+			executionId: resumedExecutionId,
+			payload: {
+				sourceKind: "frozen_replay",
+				body: linearMock.description,
+				admissionKey: "resume-admission-key",
+				sourceAttachmentId: attachmentId,
+			},
+		});
+		const completed = await post(h.url, request);
+		expect(completed).toMatchObject({
+			status: 200,
+			json: {
+				success: true,
+				resumed: true,
+				executionId: resumedExecutionId,
+			},
+		});
+		expect(await post(h.url, request)).toEqual(completed);
+		const conflict = await post(h.url, {
+			...request,
+			attachmentId: "different-attachment",
+		});
+		expect(conflict).toMatchObject({
+			status: 409,
+			json: { code: "RESUME_ADMISSION_CONFLICT" },
+		});
+	});
+});
 
 describe("Authenticated fresh-start controls", () => {
 	it("FLY-1718: authenticated freshStart is minted by runs-route and reaches generalized dispatch", async () => {
@@ -490,6 +751,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 	it("starts a keyless master v2 request with a synthetic durable entry key", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
+			prepareIssueDelivery: true,
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
 		});
 		const { status, json } = await post(h.url, {});
@@ -499,6 +761,11 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
 		const reservation = h.store.getWorkflowStartReservationForRun(run.run_id)!;
 		expect(reservation.idempotency_key).toMatch(/^wf2-auto-/);
+		expect(
+			h.store
+				.listWorkflowRunEvents(run.run_id)
+				.filter((event) => event.kind === "issue_delivery"),
+		).toHaveLength(1);
 		expect(json.templateAuthority).toBeUndefined();
 	});
 

@@ -258,7 +258,8 @@ describe("land executor", () => {
 			finalize,
 			authorize: () => ({ ok: true as const }),
 			ownerId: "worker",
-			now: () => new Date(`2026-07-21T20:0${tick++}:00.000Z`),
+			now: () =>
+				new Date(Date.parse("2026-07-21T20:00:00.000Z") + tick++ * 60_000),
 		};
 
 		expect(
@@ -323,6 +324,41 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it.each([
+		"holder_superseded",
+		"resume_admitted",
+		"head_changed",
+		"claim_changed",
+	])(
+		"rechecks %s authority before the sanctioned merge effect",
+		async (reason) => {
+			const { store, operation } = await fixture();
+			const triggerCool = vi.fn().mockResolvedValue({ commentId: "9001" });
+			const authorize = vi
+				.fn()
+				.mockReturnValueOnce({ ok: true as const })
+				.mockReturnValue({ ok: false as const, reason });
+			const result = await executeLandOperation(operation.operation_id, {
+				store,
+				mergeDriver: {
+					inspectPr: vi
+						.fn()
+						.mockResolvedValue({ state: "OPEN", headSha: HEAD }),
+					triggerCool,
+					inspectTriggeredWorkflow: vi.fn(),
+				},
+				finalize: vi.fn(),
+				authorize,
+				ownerId: "worker",
+				now: () => new Date("2026-07-21T20:01:00.000Z"),
+			});
+
+			expect(result).toMatchObject({ status: "held", reason });
+			expect(triggerCool).not.toHaveBeenCalled();
+			store.close();
+		},
+	);
+
 	it("skips :cool: when the exact head is already merged", async () => {
 		const { store, operation } = await fixture();
 		const triggerCool = vi.fn();
@@ -370,7 +406,8 @@ describe("land executor", () => {
 			finalize: completedFinalizer(store),
 			authorize: () => ({ ok: true as const }),
 			ownerId: "worker",
-			now: () => new Date(`2026-07-21T20:0${tick++}:00.000Z`),
+			now: () =>
+				new Date(Date.parse("2026-07-21T20:00:00.000Z") + tick++ * 60_000),
 		};
 
 		await expect(
@@ -413,7 +450,8 @@ describe("land executor", () => {
 			notify,
 			authorize: () => ({ ok: true as const }),
 			ownerId: "worker",
-			now: () => new Date(`2026-07-21T20:0${tick++}:00.000Z`),
+			now: () =>
+				new Date(Date.parse("2026-07-21T20:00:00.000Z") + tick++ * 60_000),
 		};
 
 		await expect(

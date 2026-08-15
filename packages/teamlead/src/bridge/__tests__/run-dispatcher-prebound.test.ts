@@ -133,6 +133,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 
 	it("threads only pinned generalized retry identity, capabilities, agent, and capability tickets", async () => {
 		const d = makeDispatcher();
+		const prepareWorkflowIssueDelivery = vi.fn();
 		await d.dispatch({
 			...baseReq,
 			successorExecutionId: "succ-generalized",
@@ -158,6 +159,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 				launchGateToken: "launch-token",
 				launchGeneration: 7,
 				commitWorkflowLaunch: () => ({ ok: true }),
+				prepareWorkflowIssueDelivery,
 			},
 		});
 		await d.drain();
@@ -179,6 +181,7 @@ describe("RetryDispatcher pre-bound successor id (D2)", () => {
 			workflowSubmissionExpected: true,
 			launchGateToken: "launch-token",
 			launchGeneration: 7,
+			prepareWorkflowIssueDelivery,
 			launchFingerprint: createHash("sha256")
 				.update("succ-generalized:7:launch-token")
 				.digest("hex"),

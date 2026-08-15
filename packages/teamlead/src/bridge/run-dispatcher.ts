@@ -1067,6 +1067,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 								.digest("hex")
 						: undefined,
 				commitWorkflowLaunch: req.generalizedExecution?.commitWorkflowLaunch,
+				prepareWorkflowIssueDelivery:
+					req.generalizedExecution?.prepareWorkflowIssueDelivery,
 				workflowTmuxWindowAuthority: (candidate) =>
 					this.tmuxWindowAuthority?.(newExecutionId, candidate) ?? "keep",
 				...(runnerSpawn.runnerBackend === "claude-tmux" &&
@@ -1698,6 +1700,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// rebuilds WITH the committed progress.md (never override a caller's own).
 				startPoint:
 					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
+				...(req.workflowResume && { workflowResume: req.workflowResume }),
 				...(continuityInherit && { continuityInherit }),
 				qaContext: req.qaContext,
 				...(req.generalizedExecution && {
@@ -1724,6 +1727,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				commitWorkflowLaunch:
 					launchOutcome?.commit ??
 					req.generalizedExecution?.commitWorkflowLaunch,
+				prepareWorkflowIssueDelivery:
+					req.generalizedExecution?.prepareWorkflowIssueDelivery,
 				...(runnerSpawn.runnerBackend === "claude-tmux" &&
 					this.tmuxGenerationRecorder && {
 						onTmuxWindowOpened: (info) =>
