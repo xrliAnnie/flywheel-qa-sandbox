@@ -499,6 +499,11 @@ jobs:
       - name: Test — FLY-880 PM executor role contract
         run: bash scripts/__tests__/test-pm-executor-contract.sh
 
+      # FLY-1787: Flywheel CoS prompt rules must keep department labels
+      # single-select and abstain from messages addressed to another user.
+      - name: Test — FLY-1787 CoS identity contract
+        run: bash scripts/__tests__/cos-identity-contract.test.sh
+
       # FLY-1461: QA executor role .md guard. Pure text assertions — defends the
       # "Discord-capable change → real Discord N-to-N in the 529 QA Room is part of
       # QA-done" mandate (self-owned by the QA Runner, not the Lead's memory) + the

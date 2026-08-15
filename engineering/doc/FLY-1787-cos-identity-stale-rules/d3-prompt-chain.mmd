@@ -1,0 +1,13 @@
+flowchart LR
+    subgraph repo["代码仓库(本次要改的两个文件)"]
+        I["identity.md\nAunt Cass 的身份规则\n(.lead/flywheel-cos-lead/)"]
+        B["cos-lead-rules.md\n所有 CoS 共用的底层守则\n(packages/teamlead/lead-rules-base/)"]
+    end
+    I -->|"每次启动时\n自动拷贝一份"| A["~/.claude/agents/\nflywheel-cos-lead.md"]
+    A -->|"作为身份说明书\n排在提示词最前面"| S["Aunt Cass\n运行中的会话"]
+    B -->|"打包后追加\n排在提示词后面"| S
+    S -.->|"⚠️ 启动时读一次,改完要等重启才生效\n(今天有一班重启车可搭)"| S
+    style I fill:#e8f1ff,stroke:#007aff
+    style B fill:#e8f1ff,stroke:#007aff
+    style A fill:#f5f0ff,stroke:#af52de
+    style S fill:#e6f9ec,stroke:#34c759

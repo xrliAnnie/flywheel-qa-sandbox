@@ -1,0 +1,11 @@
+flowchart TD
+    A["#flywheel-core 来了一条消息"] --> B{"规则 1\n点到我了吗?\n(@ Aunt Cass 的 id\n或文字 Aunt Cass / Cass)"}
+    B -->|"是"| C["✅ Aunt Cass 回复"]
+    B -->|"否"| D{"规则 2(本次修复)\n@ 了任何别人?\n(任意不是我的 @-mention)\n或点了名册里的名字\n(Tadashi / Honey Lemon)"}
+    D -->|"是"| E["🤐 Aunt Cass 沉默\n被点名的人自己接"]
+    D -->|"否"| F["✅ Aunt Cass 回复\n(泛问题默认应答者)"]
+    G["❌ 旧规则 2 只认 Tadashi\n只 @ Honey Lemon 的消息\n落到默认应答 → CoS 抢答她的单"] -.-> D
+    style C fill:#e6f9ec,stroke:#34c759
+    style E fill:#e8f1ff,stroke:#007aff
+    style F fill:#e6f9ec,stroke:#34c759
+    style G fill:#fff4e5,stroke:#ff9500

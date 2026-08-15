@@ -1,0 +1,12 @@
+flowchart TD
+    A["要路由一张已存在的 issue"] --> B["读取它当前的全部 label\n数一数带了几个部门标签\n(部门标签 = Flywheel 或 Flywheel-Product)"]
+    B --> C{"部门标签有几个?"}
+    C -->|"2 个或更多\n(坏状态)"| D["🚫 不路由\n系统会拒绝所有派单\n只有明确记录过归属才自己修\n否则问 Annie 归谁"]
+    C -->|"恰好 1 个"| E["✅ 归那位 Lead\nFlywheel → Tadashi\nFlywheel-Product → Honey Lemon\n不碰 label"]
+    C -->|"0 个"| F["补上唯一正确的那一个\n(工程活 → Flywheel\n产品活 → Flywheel-Product)\n其余非部门标签全保留"]
+    G["❌ 旧规则:一律补 Flywheel\n(写 union)"] -.->|"撞上已带\nFlywheel-Product 的 issue"| H["变成 2 个部门标签\n= 谁都派不了\n还要惊动 Annie"]
+    style D fill:#ffe5e2,stroke:#ff3b30
+    style E fill:#e6f9ec,stroke:#34c759
+    style F fill:#e8f1ff,stroke:#007aff
+    style G fill:#fff4e5,stroke:#ff9500
+    style H fill:#ffe5e2,stroke:#ff3b30
