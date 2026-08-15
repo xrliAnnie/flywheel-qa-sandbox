@@ -1664,8 +1664,21 @@ describe("StateStore land lifecycle ledger", () => {
 				reason: "no_done_state",
 				now: "2026-08-15T02:02:00.000Z",
 				nextAttemptAt: "2026-08-15T02:17:00.000Z",
+				expectedRetryCount: 0,
 			}),
 		).toEqual({ ok: true, retryCount: 1 });
+		expect(
+			store.deferLandLinearDoneRetry({
+				operationId: first.operation_id,
+				reason: "ambiguous retry replay",
+				now: "2026-08-15T02:02:01.000Z",
+				nextAttemptAt: "2026-08-15T02:32:01.000Z",
+				expectedRetryCount: 0,
+			}),
+		).toEqual({ ok: false, reason: "land_linear_done_retry_count_changed" });
+		expect(
+			store.getLandOperation(first.operation_id)?.linear_done_retry_count,
+		).toBe(1);
 		expect(
 			store.listDeferredLandLinearDone("2026-08-15T02:02:00.000Z", 1)[0]
 				?.issue_id,

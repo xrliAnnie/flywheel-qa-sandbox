@@ -32,6 +32,7 @@ import type {
 import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { archiveThreadAndRecord } from "./done-thread-archiver.js";
+import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
 import {
 	type LinearDoneFinalizer,
 	raceMarkIssueDoneWithAbort,
@@ -599,6 +600,8 @@ async function reconcileResumableLinearDone(
 			deps.markIssueDone,
 			opts.issueId,
 			opts.issueIdentifier,
+			15_000,
+			{ timeoutReason: "mark_issue_done_timeout" },
 		)) ?? { done: false, reason: "linear_done_result_missing" };
 		issueDone = result.done === true;
 		reason = result.reason ?? (result.done ? "done" : "linear_done_failed");
@@ -608,6 +611,7 @@ async function reconcileResumableLinearDone(
 				? "canceled_refused"
 				: "deferred";
 	}
+	reason = normalizeLandLinearDoneReason(reason);
 
 	const recorded = deps.recordLinearDoneDisposition
 		? await Promise.resolve(

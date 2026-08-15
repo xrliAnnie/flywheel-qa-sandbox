@@ -67,6 +67,31 @@ function seedThread(store: StateStore): void {
 	store.upsertChatThread("thread-1", "chan-1", "FLY-102");
 }
 
+function seedCompletedFinalization(store: StateStore): void {
+	store.insertEvent({
+		event_id: "post-ship-finalization-exec-1",
+		execution_id: "exec-1",
+		issue_id: "FLY-102",
+		project_name: "flywheel",
+		event_type: "post_ship_finalization_claim",
+		source: "test",
+	});
+	store.insertEvent({
+		event_id: "post-ship-finalization-completed-exec-1",
+		execution_id: "exec-1",
+		issue_id: "FLY-102",
+		project_name: "flywheel",
+		event_type: "post_ship_finalization_completed",
+		source: "test",
+	});
+}
+
+async function flushMicrotasks(rounds = 4): Promise<void> {
+	for (let index = 0; index < rounds; index += 1) {
+		await Promise.resolve();
+	}
+}
+
 // ── Predicate tests ──────────────────────────────────────────
 
 describe("isPostApproveShipComplete", () => {
@@ -919,23 +944,51 @@ describe("runPostShipFinalization", () => {
 		});
 	});
 
+	it("normalizes an oversized Linear failure before recording deferred disposition", async () => {
+		const oversizedReason = `linear_api_failed:${"x".repeat(600)}`;
+		const recordLinearDoneDisposition = vi
+			.fn()
+			.mockImplementation((input: { disposition: string; reason: string }) =>
+				input.reason.length <= 500
+					? { ok: true, idempotentReplay: false }
+					: { ok: false, reason: "invalid_land_linear_done_disposition" },
+			);
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({
+					done: false,
+					reason: oversizedReason,
+				}),
+				recordLinearDoneDisposition,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: true,
+			outcome: "completed",
+			details: { linearDoneDisposition: "deferred" },
+		});
+		expect(recordLinearDoneDisposition).toHaveBeenCalledWith({
+			disposition: "deferred",
+			reason: oversizedReason.slice(0, 200),
+		});
+	});
+
 	it("reconciles Linear disposition before replaying an already-completed finalization", async () => {
-		store.insertEvent({
-			event_id: "post-ship-finalization-exec-1",
-			execution_id: "exec-1",
-			issue_id: "FLY-102",
-			project_name: "flywheel",
-			event_type: "post_ship_finalization_claim",
-			source: "test",
-		});
-		store.insertEvent({
-			event_id: "post-ship-finalization-completed-exec-1",
-			execution_id: "exec-1",
-			issue_id: "FLY-102",
-			project_name: "flywheel",
-			event_type: "post_ship_finalization_completed",
-			source: "test",
-		});
+		seedCompletedFinalization(store);
 		const markIssueDone = vi.fn().mockResolvedValue({
 			done: true,
 			reason: "already_completed",
@@ -967,6 +1020,124 @@ describe("runPostShipFinalization", () => {
 			disposition: "done",
 			reason: "already_completed",
 		});
+	});
+
+	it("bounds a never-settling resumable Linear finalizer and releases the lifecycle mutex", async () => {
+		vi.useFakeTimers();
+		try {
+			seedCompletedFinalization(store);
+			let capturedSignal: AbortSignal | undefined;
+			let mutexReleased = false;
+			const markIssueDone = vi.fn(
+				async (
+					_issueId: string,
+					_identifier?: string,
+					signal?: AbortSignal,
+				) => {
+					capturedSignal = signal;
+					return new Promise<{ done: boolean }>(() => undefined);
+				},
+			);
+			const recordLinearDoneDisposition = vi.fn().mockReturnValue({
+				ok: true,
+				idempotentReplay: false,
+			});
+			const finalization = runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{
+					store,
+					projects: PROJECTS,
+					withIssueLifecycleMutex: async (_issueId, fn) => {
+						try {
+							return await fn();
+						} finally {
+							mutexReleased = true;
+						}
+					},
+					markIssueDone,
+					recordLinearDoneDisposition,
+				},
+			);
+			await flushMicrotasks();
+			expect(markIssueDone).toHaveBeenCalledOnce();
+			expect(mutexReleased).toBe(false);
+
+			await vi.advanceTimersByTimeAsync(15_000);
+			expect(await finalization).toMatchObject({
+				complete: true,
+				outcome: "completed",
+				details: { linearDoneDisposition: "deferred" },
+			});
+			expect(capturedSignal?.aborted).toBe(true);
+			expect(mutexReleased).toBe(true);
+			expect(recordLinearDoneDisposition).toHaveBeenCalledWith({
+				disposition: "deferred",
+				reason: "mark_issue_done_timeout",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("prevents a late resumable Linear mutation after timeout and a subsequent founder park", async () => {
+		vi.useFakeTimers();
+		try {
+			seedCompletedFinalization(store);
+			let releaseRead!: () => void;
+			const delayedRead = new Promise<void>((resolve) => {
+				releaseRead = resolve;
+			});
+			let founderParked = false;
+			const updateIssue = vi.fn(() => {
+				if (founderParked) throw new Error("late write after founder park");
+			});
+			const markIssueDone = vi.fn(
+				async (
+					_issueId: string,
+					_identifier?: string,
+					signal?: AbortSignal,
+				) => {
+					await delayedRead;
+					if (signal?.aborted) {
+						return { done: false, reason: "linear_done_aborted" };
+					}
+					updateIssue();
+					return { done: true };
+				},
+			);
+			const finalization = runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{
+					store,
+					projects: PROJECTS,
+					markIssueDone,
+					recordLinearDoneDisposition: vi.fn().mockReturnValue({
+						ok: true,
+						idempotentReplay: false,
+					}),
+				},
+			);
+			await flushMicrotasks();
+			await vi.advanceTimersByTimeAsync(15_000);
+			await finalization;
+
+			founderParked = true;
+			releaseRead();
+			await flushMicrotasks();
+			expect(updateIssue).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("settles Linear as operator-refused when the optional finalizer is unavailable", async () => {

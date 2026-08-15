@@ -37,6 +37,14 @@ const RETRY_DELAYS_MS = [
 ] as const;
 const RETRY_EXHAUSTED_PREFIX = "retry_exhausted:";
 const MAX_LAND_ERROR_LENGTH = 500;
+const MAX_LINEAR_DONE_REASON_LENGTH = 200;
+
+export function normalizeLandLinearDoneReason(reason: unknown): string {
+	if (typeof reason !== "string" || reason.trim().length === 0) {
+		return "unknown";
+	}
+	return reason.slice(0, MAX_LINEAR_DONE_REASON_LENGTH);
+}
 
 export function classifyLandRetryReason(
 	reason: string,

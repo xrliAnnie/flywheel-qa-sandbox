@@ -39208,10 +39208,14 @@ export class StateStore {
 		reason: string;
 		now: string;
 		nextAttemptAt: string;
+		expectedRetryCount?: number;
 	}): { ok: true; retryCount: number } | { ok: false; reason: string } {
 		if (
 			!input.reason ||
 			input.reason.length > 500 ||
+			(input.expectedRetryCount !== undefined &&
+				(!Number.isInteger(input.expectedRetryCount) ||
+					input.expectedRetryCount < 0)) ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
 			!StateStore.workflowFiniteTimestamp(input.nextAttemptAt) ||
 			Date.parse(input.nextAttemptAt) <= Date.parse(input.now)
@@ -39225,19 +39229,44 @@ export class StateStore {
 			reason: "land_linear_done_not_deferred",
 		};
 		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT state, linear_done_disposition, linear_done_retry_count
+				   FROM land_operation WHERE operation_id = ?`,
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "completed" ||
+				operation.linear_done_disposition !== "deferred"
+			) {
+				return;
+			}
+			if (
+				input.expectedRetryCount !== undefined &&
+				Number(operation.linear_done_retry_count) !== input.expectedRetryCount
+			) {
+				result = {
+					ok: false,
+					reason: "land_linear_done_retry_count_changed",
+				};
+				return;
+			}
 			this.db.run(
 				`UPDATE land_operation
 				    SET linear_done_retry_count = linear_done_retry_count + 1,
 				        linear_done_next_attempt_at = ?, linear_done_last_attempt_at = ?,
 				        linear_done_last_reason = ?, updated_at = ?
 				  WHERE operation_id = ? AND state = 'completed'
-				    AND linear_done_disposition = 'deferred'`,
+				    AND linear_done_disposition = 'deferred'
+				    AND (? IS NULL OR linear_done_retry_count = ?)`,
 				[
 					input.nextAttemptAt,
 					input.now,
 					input.reason,
 					input.now,
 					input.operationId,
+					input.expectedRetryCount ?? null,
+					input.expectedRetryCount ?? null,
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;

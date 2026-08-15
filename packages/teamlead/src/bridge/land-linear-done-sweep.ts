@@ -1,4 +1,5 @@
 import type { LandOperationRow, StateStore } from "../StateStore.js";
+import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
 import {
 	type LinearDoneFinalizer,
 	raceMarkIssueDoneWithAbort,
@@ -114,6 +115,11 @@ export async function sweepDeferredLandLinearDone(input: {
 	const nowIso = now.toISOString();
 	const candidates = input.store.listDeferredLandLinearDone(nowIso, 10);
 	let settled = 0;
+	const logFailure = (operationId: string, error: unknown) => {
+		(input.log ?? console.warn)(
+			`[land] deferred Linear Done candidate ${operationId} failed: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	};
 
 	for (const candidate of candidates) {
 		try {
@@ -126,32 +132,62 @@ export async function sweepDeferredLandLinearDone(input: {
 				) {
 					return;
 				}
-				const alertIfAged = async (reason: string) => {
-					const deferredAt = Date.parse(
-						operation.linear_done_deferred_at ?? "",
-					);
-					const ageHours = Number.isFinite(deferredAt)
-						? Math.max(0, Math.floor((now.getTime() - deferredAt) / 3_600_000))
-						: 0;
-					if (ageHours >= 24 && input.onAgedDeferred) {
-						await input.onAgedDeferred(operation, {
-							ageHours,
-							dayBucket: nowIso.slice(0, 10),
-							reason,
+				const baselineRetryCount = Math.max(
+					0,
+					operation.linear_done_retry_count ?? 0,
+				);
+				let lastReason = normalizeLandLinearDoneReason(
+					operation.linear_done_last_reason,
+				);
+				let fallbackReason: string | undefined;
+				const deferRetry = (reason: unknown) => {
+					const normalized = normalizeLandLinearDoneReason(reason);
+					lastReason = normalized;
+					try {
+						const deferred = input.store.deferLandLinearDoneRetry({
+							operationId: operation.operation_id,
+							reason: normalized,
+							now: nowIso,
+							nextAttemptAt: nextLinearDoneAttemptAt(operation, now),
+							expectedRetryCount: baselineRetryCount,
 						});
+						if (deferred.ok) return true;
+						fallbackReason = normalizeLandLinearDoneReason(
+							`linear_done_retry_failed:${deferred.reason}`,
+						);
+					} catch (error) {
+						fallbackReason = normalizeLandLinearDoneReason(
+							`linear_done_retry_failed:${error instanceof Error ? error.message : String(error)}`,
+						);
 					}
+					return false;
 				};
-				const deferRetry = async (reason: string) => {
-					const deferred = input.store.deferLandLinearDoneRetry({
-						operationId: operation.operation_id,
-						reason,
-						now: nowIso,
-						nextAttemptAt: nextLinearDoneAttemptAt(operation, now),
-					});
-					if (!deferred.ok) {
-						throw new Error(deferred.reason);
+				const settle = (
+					disposition: "done" | "canceled_refused",
+					reason: unknown,
+				) => {
+					const normalized = normalizeLandLinearDoneReason(reason);
+					lastReason = normalized;
+					try {
+						const result = input.store.settleDeferredLandLinearDone({
+							operationId: operation.operation_id,
+							disposition,
+							reason: normalized,
+							now: nowIso,
+						});
+						if (result.ok) {
+							settled += 1;
+							return true;
+						}
+						fallbackReason = normalizeLandLinearDoneReason(
+							`linear_done_settlement_failed:${result.reason}`,
+						);
+					} catch (error) {
+						fallbackReason = normalizeLandLinearDoneReason(
+							`linear_done_settlement_failed:${error instanceof Error ? error.message : String(error)}`,
+						);
 					}
-					await alertIfAged(reason);
+					return false;
 				};
 
 				let arbitration:
@@ -172,58 +208,88 @@ export async function sweepDeferredLandLinearDone(input: {
 				}
 				if (!arbitration.ok) {
 					if (authorityRefusesLinearWrite(arbitration.reason)) {
-						const result = input.store.settleDeferredLandLinearDone({
-							operationId: operation.operation_id,
-							disposition: "canceled_refused",
-							reason: arbitration.reason,
-							now: nowIso,
-						});
-						if (result.ok) settled += 1;
+						settle("canceled_refused", arbitration.reason);
 					} else {
-						await deferRetry(arbitration.reason);
+						deferRetry(arbitration.reason);
 					}
-					return;
+				} else if (!input.markIssueDone) {
+					settle("canceled_refused", "linear_finalizer_unavailable");
+				} else {
+					const result = await raceMarkIssueDoneWithAbort(
+						input.markIssueDone,
+						operation.issue_id,
+						undefined,
+					);
+					const reason =
+						result.reason ?? (result.done ? "done" : "linear_done_failed");
+					const disposition = result.done
+						? "done"
+						: result.reason === "issue_canceled_never_overwritten"
+							? "canceled_refused"
+							: undefined;
+					if (disposition) {
+						settle(disposition, reason);
+					} else {
+						deferRetry(reason);
+					}
 				}
 
-				if (!input.markIssueDone) {
-					const settlement = input.store.settleDeferredLandLinearDone({
-						operationId: operation.operation_id,
-						disposition: "canceled_refused",
-						reason: "linear_finalizer_unavailable",
-						now: nowIso,
-					});
-					if (settlement.ok) settled += 1;
-					return;
+				if (fallbackReason) {
+					try {
+						const current = input.store.getLandOperation(
+							operation.operation_id,
+						);
+						if (
+							current?.state === "completed" &&
+							current.linear_done_disposition === "deferred" &&
+							Math.max(0, current.linear_done_retry_count ?? 0) ===
+								baselineRetryCount
+						) {
+							const fallback = input.store.deferLandLinearDoneRetry({
+								operationId: operation.operation_id,
+								reason: fallbackReason,
+								now: nowIso,
+								nextAttemptAt: nextLinearDoneAttemptAt(current, now),
+								expectedRetryCount: baselineRetryCount,
+							});
+							if (!fallback.ok)
+								logFailure(operation.operation_id, fallback.reason);
+						}
+					} catch (error) {
+						logFailure(operation.operation_id, error);
+					}
+					lastReason = fallbackReason;
 				}
 
-				const result = await raceMarkIssueDoneWithAbort(
-					input.markIssueDone,
-					operation.issue_id,
-					undefined,
-				);
-				const reason =
-					result.reason ?? (result.done ? "done" : "linear_done_failed");
-				const disposition = result.done
-					? "done"
-					: result.reason === "issue_canceled_never_overwritten"
-						? "canceled_refused"
-						: undefined;
-				if (disposition) {
-					const settlement = input.store.settleDeferredLandLinearDone({
-						operationId: operation.operation_id,
-						disposition,
-						reason,
-						now: nowIso,
-					});
-					if (settlement.ok) settled += 1;
-					return;
+				try {
+					const current = input.store.getLandOperation(operation.operation_id);
+					if (
+						current?.state === "completed" &&
+						current.linear_done_disposition === "deferred"
+					) {
+						const deferredAt = Date.parse(
+							current.linear_done_deferred_at ?? "",
+						);
+						const ageHours = Number.isFinite(deferredAt)
+							? Math.max(
+									0,
+									Math.floor((now.getTime() - deferredAt) / 3_600_000),
+								)
+							: 0;
+						if (ageHours >= 24 && input.onAgedDeferred) {
+							await input.onAgedDeferred(current, {
+								ageHours,
+								dayBucket: nowIso.slice(0, 10),
+								reason: lastReason,
+							});
+						}
+					}
+				} catch (error) {
+					logFailure(operation.operation_id, error);
 				}
-				await deferRetry(reason);
 			});
 		} catch (error) {
-			(input.log ?? console.warn)(
-				`[land] deferred Linear Done candidate ${candidate.operation_id} failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			logFailure(candidate.operation_id, error);
 		}
 	}
 

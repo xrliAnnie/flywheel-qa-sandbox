@@ -2,9 +2,35 @@ import { describe, expect, it } from "vitest";
 import {
 	classifyLandRetryReason,
 	nextLandRetry,
+	normalizeLandLinearDoneReason,
 } from "../land-retry-policy.js";
 
 describe("land retry policy", () => {
+	it.each([
+		[undefined, "unknown"],
+		[null, "unknown"],
+		[42, "unknown"],
+		[{}, "unknown"],
+		["", "unknown"],
+		["   \t\n", "unknown"],
+	])("normalizes non-reasons (%j) to unknown", (reason, expected) => {
+		expect(normalizeLandLinearDoneReason(reason)).toBe(expected);
+	});
+
+	it("bounds durable Linear Done reasons at 200 characters deterministically", () => {
+		const prefix = "arbitration_failed:";
+		const reason199 = `${prefix}${"x".repeat(199 - prefix.length)}`;
+		const reason200 = `${prefix}${"x".repeat(200 - prefix.length)}`;
+		const reason201 = `${prefix}${"x".repeat(201 - prefix.length)}`;
+
+		expect(normalizeLandLinearDoneReason(reason199)).toBe(reason199);
+		expect(normalizeLandLinearDoneReason(reason200)).toBe(reason200);
+		const normalized = normalizeLandLinearDoneReason(reason201);
+		expect(normalized).toHaveLength(200);
+		expect(normalized.startsWith(prefix)).toBe(true);
+		expect(normalizeLandLinearDoneReason(reason201)).toBe(normalized);
+	});
+
 	it.each([
 		"ship_workflow_pending",
 		"workflow_pr_manifest_partial:1; partial delivery must stay flag-off until all declared PRs merge",
