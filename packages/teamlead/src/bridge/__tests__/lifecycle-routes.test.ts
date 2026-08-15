@@ -151,6 +151,57 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 		expect(kick).toHaveBeenCalledWith(accepted.body.operation_id);
 	});
 
+	it("land: an explicit kick bypasses a future retry delay without resetting its budget", async () => {
+		const operation = store.ensureLandOperation({
+			issueId: UUID,
+			projectName: "proj",
+			prNumber: 1375,
+			approvedHead: "a".repeat(40),
+			now: "2026-07-21T20:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-route-test",
+			now: "2026-07-21T20:00:01.000Z",
+			leaseExpiresAt: "2026-07-21T20:01:01.000Z",
+		});
+		expect(claim).toBeDefined();
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim!.ownerId,
+			generation: claim!.generation,
+			class: "retryable",
+			reason: "linear_lookup_failed_retryable",
+			now: "2026-07-21T20:00:02.000Z",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			retry_count: 1,
+			next_attempt_at: "2026-07-21T20:01:02.000Z",
+		});
+
+		const kick = vi.fn();
+		serve(
+			makeDeps({
+				land: {
+					enabled: () => true,
+					createIntent: () => store.getLandOperation(operation.operation_id)!,
+					kick,
+				},
+			}),
+		);
+		const accepted = await request(server, "/api/lifecycle/land", {
+			issueId: UUID,
+			project: "proj",
+		});
+
+		expect(accepted.status).toBe(202);
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			retry_count: 1,
+			next_attempt_at: null,
+		});
+		expect(kick).toHaveBeenCalledWith(operation.operation_id);
+	});
+
 	it("park: delegates to the ATOMIC parkFn (mutex-held tombstone + closeout)", async () => {
 		serve(makeDeps());
 		const res = await request(server, "/api/lifecycle/park", {

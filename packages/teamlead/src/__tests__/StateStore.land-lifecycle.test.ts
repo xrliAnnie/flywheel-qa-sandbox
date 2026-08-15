@@ -1340,6 +1340,42 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("rejects an invalid retry release time without throwing or mutating the lease", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			runId: "run-invalid-retry-time",
+			issueId: "issue-invalid-retry-time",
+			projectName: "flywheel",
+			prNumber: 1770,
+			approvedHead: HEAD,
+			now: "2026-08-14T20:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker-a",
+			now: "2026-08-14T20:00:01.000Z",
+			leaseExpiresAt: "2026-08-14T20:10:01.000Z",
+		})!;
+
+		expect(
+			store.releaseLandOperationWithRetryAccounting({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				class: "retryable",
+				reason: "linear_lookup_failed_retryable",
+				now: "not-a-timestamp",
+			}),
+		).toBeUndefined();
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "running",
+			owner_id: claim.ownerId,
+			generation: claim.generation,
+			retry_count: 0,
+		});
+		store.close();
+	});
+
 	it("accounts retry budget atomically against the durable step epoch", async () => {
 		const store = await StateStore.create(":memory:");
 		const operation = store.ensureLandOperation({

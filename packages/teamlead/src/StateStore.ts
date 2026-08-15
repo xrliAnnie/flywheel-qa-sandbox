@@ -39354,6 +39354,19 @@ export class StateStore {
 		) as unknown as LandOperationRow[];
 	}
 
+	makeLandOperationRetryRunnable(operationId: string): boolean {
+		this.db.run(
+			`UPDATE land_operation
+			    SET next_attempt_at = NULL
+			  WHERE operation_id = ? AND state = 'partial'
+			    AND next_attempt_at IS NOT NULL`,
+			[operationId],
+		);
+		const updated = this.db.getRowsModified() === 1;
+		if (updated) this.save();
+		return updated;
+	}
+
 	hasMergeConfirmedForIssue(issueId: string): boolean {
 		const land = this.workflowSelectAll(
 			`SELECT 1 AS x FROM land_operation
@@ -39616,6 +39629,7 @@ export class StateStore {
 		reason: string;
 		now: string;
 	}): LandOperationRetryRelease | undefined {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return undefined;
 		let result: LandOperationRetryRelease | undefined;
 		this.db.transaction(() => {
 			const operation = this.workflowSelectAll(

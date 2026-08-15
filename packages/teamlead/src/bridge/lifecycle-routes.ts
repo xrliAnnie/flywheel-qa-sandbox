@@ -241,6 +241,7 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 					? { approvedHead: approvedHead.toLowerCase() }
 					: {}),
 			});
+			deps.store.makeLandOperationRetryRunnable(operation.operation_id);
 			deps.land.kick(operation.operation_id);
 			res.status(202).json({
 				operation_id: operation.operation_id,

@@ -2056,7 +2056,7 @@ export class WorkflowEngineDispatcher {
 			}
 			if (
 				execution.status === "partial" &&
-				/^(?:ship_workflow_pending|issue_closeout_incomplete|land_postconditions_incomplete:)/.test(
+				/^(?:ship_workflow_pending|issue_closeout_incomplete|land_linear_done_disposition_incomplete|land_postconditions_incomplete:)/.test(
 					execution.reason ?? "",
 				)
 			) {

@@ -30,7 +30,6 @@ export async function arbitrateFreshLinearState(input: {
 		}
 		return { ok: true };
 	} catch {
-		if (input.persistedStateType === "completed") return { ok: true };
 		return { ok: true, degraded: "linear_unreachable" };
 	} finally {
 		if (timeout) clearTimeout(timeout);

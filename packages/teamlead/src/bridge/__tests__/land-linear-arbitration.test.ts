@@ -26,13 +26,13 @@ describe("arbitrateFreshLinearState", () => {
 		});
 	});
 
-	it("uses a durable completed observation when the fresh read rejects", async () => {
+	it("audits degraded cleanup when a durable completed observation backs a failed fresh read", async () => {
 		await expect(
 			arbitrateFreshLinearState({
 				persistedStateType: "completed",
 				readFreshStateType: vi.fn().mockRejectedValue(new Error("offline")),
 			}),
-		).resolves.toEqual({ ok: true });
+		).resolves.toEqual({ ok: true, degraded: "linear_unreachable" });
 	});
 
 	it("degrades safely when Linear is unreachable without a completed observation", async () => {

@@ -884,7 +884,11 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it.each(["issue_closeout_incomplete", "ship_workflow_pending"])(
+	it.each([
+		"issue_closeout_incomplete",
+		"ship_workflow_pending",
+		"land_linear_done_disposition_incomplete",
+	])(
 		"durably escalates land partial %s without holding the run",
 		async (reason) => {
 			const store = await storeWithLandIntent();
