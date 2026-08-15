@@ -1,13 +1,13 @@
 ---
 issue: FLY-1716
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-15T04:00:13.443Z
-nextStep: Push exact head and obtain fresh code-review approval before QA retest
+phaseCursor: 4/4
+updated: 2026-08-15T04:27:15.386Z
+nextStep: QA retest on exact reviewed PR head
 chunks: []
 pointers: {}
 ---
 
 # FLY-1716 progress
-**phase**: implement (3/4)
-**next**: Push exact head and obtain fresh code-review approval before QA retest
+**phase**: implement (4/4)
+**next**: QA retest on exact reviewed PR head
