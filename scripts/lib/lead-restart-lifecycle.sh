@@ -186,7 +186,7 @@ _lead_restart_gate_snapshot() {
     return 1
   fi
   state="$(printf '%s' "$output" | jq -er \
-    'select(type == "object") | .state | select(. == "active" or . == "resumed" or . == "held_alert_pending" or . == "held_alert_attempted")' \
+    'select(type == "object") | .state | select(. == "active" or . == "resumed" or . == "held_alert_pending" or . == "held_alert_attempted" or . == "terminal_hold")' \
     2>/dev/null)" || {
       LEAD_RESTART_GATE_FAILURE_REASON="status_invalid_json"
       return 1

@@ -1,0 +1,11 @@
+flowchart TB
+    A["23:33 launchctl submit 连环重启风暴<br/>(雷 1,另单 FLY-913/1671 治)"] --> B["23:35–23:44 Bridge 被风暴反复杀/拉<br/>gate 一直放行,窗口内累计 6 次启动"]
+    B --> C["23:44:32 第 6 次 > 5 → gate 转 held<br/>(告警 1 秒内投递成功,含 resume 命令)"]
+    C --> D["23:44–23:55 launchd 每 30 秒重拉 wrapper<br/>gate 全部拒绝 — Bridge down"]
+    D --> E["23:52 Annie 手动拆掉风暴源头<br/>此刻起真实启动请求已归零"]
+    E --> F["❌ gate 感知不到「风暴已停」<br/>held 是终态:唯一出口 = 有人记得 runbook"]
+    F --> G["23:55 人工 resume → Bridge 恢复<br/>全程 down 约 20 分钟"]
+
+    style C fill:#fff3e0,stroke:#ff9500,stroke-width:2px
+    style F fill:#ffebee,stroke:#ff3b30,stroke-width:2px
+    style G fill:#e8f5e9,stroke:#34c759,stroke-width:2px

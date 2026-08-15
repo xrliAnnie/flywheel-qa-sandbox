@@ -24,7 +24,7 @@ import subprocess
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -47,6 +47,7 @@ STATE_NAMES = {
     "active",
     "held_alert_pending",
     "held_alert_attempted",
+    "terminal_hold",
     "resumed",
 }
 
@@ -128,6 +129,31 @@ def _parse_positive_env(name: str, default: int) -> int:
     if not re.fullmatch(r"[1-9][0-9]*", raw):
         raise UsageFailure(f"{name} must be a positive integer")
     return int(raw)
+
+
+def _parse_autoresume_env() -> tuple[int, int, int, int]:
+    base = _parse_positive_env(
+        "FLYWHEEL_RESTART_STORM_AUTORESUME_BASE_SEC", 300
+    )
+    cap = _parse_positive_env(
+        "FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC", 3600
+    )
+    stick = _parse_positive_env(
+        "FLYWHEEL_RESTART_STORM_AUTORESUME_STICK_SEC", 1800
+    )
+    cap_probes = _parse_positive_env(
+        "FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_PROBES", 6
+    )
+    if base > cap:
+        raise UsageFailure(
+            "FLYWHEEL_RESTART_STORM_AUTORESUME_BASE_SEC must not exceed "
+            "FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC"
+        )
+    if cap > 31_536_000:
+        raise UsageFailure(
+            "FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC must not exceed 31536000"
+        )
+    return base, cap, stick, cap_probes
 
 
 def _parse_nonnegative_int(raw: str) -> int:
@@ -378,7 +404,11 @@ def _validate_state(value: object, child: str) -> dict[str, Any]:
     state = value.get("state")
     if state not in STATE_NAMES:
         raise DataFailure("restart state name is invalid")
-    if state in {"held_alert_pending", "held_alert_attempted"}:
+    if state in {
+        "held_alert_pending",
+        "held_alert_attempted",
+        "terminal_hold",
+    }:
         expected = {
             "state",
             "episode_key",
@@ -396,7 +426,11 @@ def _validate_state(value: object, child: str) -> dict[str, Any]:
         or last_resumed < 0
     ):
         raise DataFailure("restart state last_resumed_seq is invalid")
-    if state in {"held_alert_pending", "held_alert_attempted"}:
+    if state in {
+        "held_alert_pending",
+        "held_alert_attempted",
+        "terminal_hold",
+    }:
         episode = value.get("episode_key")
         window_start = value.get("window_start")
         if not isinstance(episode, str):
@@ -580,14 +614,271 @@ def _emit_corruption_alert(child: str, reason: str, body: str) -> None:
         _run_best_effort([str(meta), reason, "Restart gate state is corrupt", body])
 
 
-def _attempt_hold_alert(record: dict[str, Any]) -> bool:
+def _quarantine_autoresume_sidecar(
+    root: Path, child: str, detail: str
+) -> None:
+    path = root / f"{child}.auto-resume.json"
+    destination = root / (
+        f"{child}.auto-resume.json.corrupt.{uuid.uuid4().hex}"
+    )
+    try:
+        os.replace(path, destination)
+        _fsync_dir(root)
+    except OSError:
+        pass
+    _emit_corruption_alert(
+        child,
+        "restart_gate_autoresume_corrupt",
+        f"{child}: discarded invalid auto-resume state ({detail})",
+    )
+
+
+def _read_autoresume_sidecar(
+    root: Path, child: str, now: datetime
+) -> dict[str, Any] | None:
+    path = root / f"{child}.auto-resume.json"
+    try:
+        fd = _open_nofollow(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        _quarantine_autoresume_sidecar(root, child, str(error))
+        return None
+    try:
+        sidecar_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(sidecar_stat.st_mode)
+            or stat.S_IMODE(sidecar_stat.st_mode) != 0o600
+        ):
+            raise ValueError("sidecar must be a 0600 regular file")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read()
+    except (OSError, ValueError) as error:
+        os.close(fd)
+        _quarantine_autoresume_sidecar(root, child, str(error))
+        return None
+    os.close(fd)
+    try:
+        value = json.loads(raw.decode("utf-8"))
+        expected_v1 = {
+            "schema_version",
+            "step",
+            "last_auto_resume_ts",
+            "episode_key",
+        }
+        expected_v2 = expected_v1 | {
+            "probe_count",
+            "cap_probe_count",
+            "total_delay_sec",
+            "terminal_episode_key",
+        }
+        if not isinstance(value, dict):
+            raise ValueError("sidecar has an invalid shape")
+        schema_version = value.get("schema_version")
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version not in {1, 2}
+        ):
+            raise ValueError("sidecar schema_version is invalid")
+        if set(value) != (expected_v1 if schema_version == 1 else expected_v2):
+            raise ValueError("sidecar has an invalid shape")
+        step = value["step"]
+        if (
+            isinstance(step, bool)
+            or not isinstance(step, int)
+            or not 0 <= step <= 32
+        ):
+            raise ValueError("sidecar step is invalid")
+        last_auto_resume = _parse_iso(value["last_auto_resume_ts"])
+        if last_auto_resume > now:
+            raise ValueError("sidecar timestamp is in the future")
+        if not isinstance(value["episode_key"], str):
+            raise ValueError("sidecar episode_key is invalid")
+        episode_child, _, _ = _decode_episode(value["episode_key"])
+        if episode_child != child:
+            raise ValueError("sidecar episode belongs to another child")
+        if schema_version == 1:
+            value.update(
+                {
+                    "schema_version": 2,
+                    "probe_count": step,
+                    "cap_probe_count": 0,
+                    "total_delay_sec": 0,
+                    "terminal_episode_key": None,
+                }
+            )
+        else:
+            counters = (
+                value["probe_count"],
+                value["cap_probe_count"],
+                value["total_delay_sec"],
+            )
+            if any(
+                isinstance(counter, bool)
+                or not isinstance(counter, int)
+                or counter < 0
+                for counter in counters
+            ):
+                raise ValueError("sidecar counters are invalid")
+            if value["cap_probe_count"] > value["probe_count"]:
+                raise ValueError("sidecar cap probe count is invalid")
+            if step > value["probe_count"]:
+                raise ValueError("sidecar step exceeds probe count")
+            terminal_episode = value["terminal_episode_key"]
+            if terminal_episode is not None:
+                if not isinstance(terminal_episode, str):
+                    raise ValueError("sidecar terminal episode is invalid")
+                terminal_child, _, _ = _decode_episode(terminal_episode)
+                if terminal_child != child:
+                    raise ValueError(
+                        "sidecar terminal episode belongs to another child"
+                    )
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, ValueError) as error:
+        _quarantine_autoresume_sidecar(root, child, str(error))
+        return None
+    return dict(value)
+
+
+def _remove_autoresume_sidecar(root: Path, child: str) -> None:
+    path = root / f"{child}.auto-resume.json"
+    try:
+        path.unlink()
+        _fsync_dir(root)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        sys.stderr.write(
+            f"restart-storm-gate: cannot clear auto-resume state for {child}: {error}\n"
+        )
+
+
+def _autoresume_schedule(
+    sidecar: dict[str, Any] | None,
+    hold_at: datetime,
+    base: int,
+    cap: int,
+    stick: int,
+) -> tuple[int, int, datetime, bool]:
+    step = 0
+    inherited = False
+    if sidecar is not None:
+        gap = (
+            hold_at - _parse_iso(sidecar["last_auto_resume_ts"])
+        ).total_seconds()
+        if gap <= stick:
+            step = sidecar["step"]
+            inherited = True
+    delay = cap if step >= 32 else min(base * (2**step), cap)
+    try:
+        eta = hold_at + timedelta(seconds=delay)
+    except OverflowError as error:
+        raise DataFailure(
+            "auto-resume ETA overflows the representable range"
+        ) from error
+    return step, delay, eta, inherited
+
+
+def _autoresume_display_plan(
+    root: Path,
+    child: str,
+    state_value: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    base: int,
+    cap: int,
+    stick: int,
+    cap_probes: int,
+) -> dict[str, Any]:
+    record = _record_for_state(child, state_value, events)
+    hold_at = _parse_iso(events[-1]["ts"])
+    sidecar = _read_autoresume_sidecar(root, child, now)
+    if (
+        sidecar is not None
+        and sidecar["terminal_episode_key"] == record["episode_key"]
+    ):
+        return {"mode": "terminal", "sidecar": sidecar}
+    if sidecar is not None and sidecar["episode_key"] == record["episode_key"]:
+        if sidecar["step"] >= 1:
+            return {
+                "mode": "replay",
+                "step_next": sidecar["step"],
+                "probe_no": sidecar["probe_count"],
+                "probe_count_next": sidecar["probe_count"],
+                "cap_probe_count_next": sidecar["cap_probe_count"],
+                "total_delay_sec_next": sidecar["total_delay_sec"],
+                "delay": 0,
+                "eta": now,
+            }
+        _quarantine_autoresume_sidecar(root, child, "prepared sidecar has step 0")
+        sidecar = None
+    step, delay, eta, inherited = _autoresume_schedule(
+        sidecar, hold_at, base, cap, stick
+    )
+    if (
+        inherited
+        and sidecar is not None
+        and sidecar["cap_probe_count"] >= cap_probes
+    ):
+        return {"mode": "terminal", "sidecar": sidecar}
+    step_next = min(step + 1, 32)
+    probe_count = sidecar["probe_count"] if inherited else 0
+    cap_probe_count = sidecar["cap_probe_count"] if inherited else 0
+    total_delay = sidecar["total_delay_sec"] if inherited else 0
+    return {
+        "mode": "probe",
+        "step_next": step_next,
+        "probe_no": probe_count + 1,
+        "probe_count_next": probe_count + 1,
+        "cap_probe_count_next": cap_probe_count + (delay == cap),
+        "total_delay_sec_next": total_delay + delay,
+        "delay": delay,
+        "eta": eta,
+    }
+
+
+def _autoresume_plan(
+    root: Path,
+    child: str,
+    state_value: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    base: int,
+    cap: int,
+    stick: int,
+    cap_probes: int,
+) -> dict[str, Any] | None:
+    plan = _autoresume_display_plan(
+        root, child, state_value, events, now, base, cap, stick, cap_probes
+    )
+    if plan["mode"] in {"replay", "terminal"}:
+        return plan
+    hold_at = _parse_iso(events[-1]["ts"])
+    if max(0.0, (now - hold_at).total_seconds()) < plan["delay"]:
+        return None
+    return plan
+
+
+def _attempt_hold_alert(
+    record: dict[str, Any], plan: dict[str, Any]
+) -> bool:
     child = record["child_key"]
     episode = record["episode_key"]
     title = f"Restart storm held: {child}"
+    eta = _format_iso(plan["eta"])
+    manual = f"python3 {Path(__file__).resolve()} resume {child}"
+    schedule = (
+        f"prepared probe #{plan['probe_no']} replaying now"
+        if plan["mode"] == "replay"
+        else (
+            f"Auto-resume probe #{plan['probe_no']} ≈ {eta} "
+            f"(backoff {plan['delay'] / 60:g}min)"
+        )
+    )
     body = (
         f"{child} crashed {record['count']} times since "
         f"{record['window_start']}; automatic restart is held. "
-        f"Inspect the service, then run restart-storm-gate.py resume {child}."
+        f"{schedule}. Manual now: {manual}"
     )
     meta = _script_path("FLYWHEEL_META_ALERT_BIN", "meta-alert.sh")
     if meta.is_file() and os.access(meta, os.X_OK):
@@ -627,12 +918,210 @@ def _recover_pending(
     child: str,
     state_value: dict[str, Any],
     events: list[dict[str, Any]],
+    plan: dict[str, Any],
 ) -> None:
     record = _record_for_state(child, state_value, events)
-    if _attempt_hold_alert(record):
+    if _attempt_hold_alert(record, plan):
         attempted = dict(state_value)
         attempted["state"] = "held_alert_attempted"
         _write_state(root, child, attempted)
+
+
+def _append_autoresume_audit(
+    root: Path, child: str, value: dict[str, Any]
+) -> None:
+    path = root / f"{child}.auto-resume.ndjson"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    try:
+        fd = _open_nofollow(path, flags, 0o600)
+        try:
+            audit_stat = os.fstat(fd)
+            if (
+                not stat.S_ISREG(audit_stat.st_mode)
+                or stat.S_IMODE(audit_stat.st_mode) != 0o600
+            ):
+                raise DataFailure(
+                    "auto-resume audit must be a 0600 regular file"
+                )
+            if (
+                os.environ.get("FLYWHEEL_RESTART_STORM_FAULT")
+                == "autoresume_audit_error"
+            ):
+                raise DataFailure("simulated auto-resume audit failure")
+            _write_all(fd, _json_bytes(value))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        _fsync_dir(root)
+    except OSError as error:
+        raise DataFailure(f"cannot append auto-resume audit: {error}") from error
+
+
+def _attempt_autoresume_alert(
+    record: dict[str, Any],
+    plan: dict[str, Any],
+    base: int,
+    cap: int,
+    cap_probes: int,
+) -> None:
+    child = record["child_key"]
+    probe_no = plan["probe_no"]
+    next_delay = (
+        cap
+        if plan["step_next"] >= 32
+        else min(base * (2 ** plan["step_next"]), cap)
+    )
+    replay = (
+        " Prepared probe replayed after an interrupted commit."
+        if plan["mode"] == "replay"
+        else ""
+    )
+    manual = f"python3 {Path(__file__).resolve()} resume {child}"
+    title = f"Restart storm auto-resume probe #{probe_no}: {child}"
+    retrip = (
+        "If it re-trips, automatic recovery will stop."
+        if plan["cap_probe_count_next"] >= cap_probes
+        else f"If it re-trips, the next cooldown is {next_delay / 60:g}min."
+    )
+    body = (
+        f"Releasing held episode {record['episode_key']} for half-open probe "
+        f"#{probe_no}.{replay} {retrip} Manual override: {manual}"
+    )
+    meta = _script_path("FLYWHEEL_META_ALERT_BIN", "meta-alert.sh")
+    if meta.is_file() and os.access(meta, os.X_OK):
+        _run_best_effort(
+            [str(meta), f"restart_storm_autoresume_{child}", title, body]
+        )
+    lead = _script_path("FLYWHEEL_LEAD_ALERT_BIN", "lead-alert.sh")
+    if lead.is_file() and os.access(lead, os.X_OK):
+        _run_best_effort(
+            [
+                str(lead),
+                "--project",
+                "flywheel",
+                "--lead",
+                child,
+                "--kind",
+                "restart_storm_hold",
+                "--severity",
+                "warning",
+                "--title",
+                title,
+                "--body",
+                body,
+                "--signature",
+                f"{record['episode_key']}__auto__{probe_no}",
+                "--strict-delivery",
+            ],
+            capture=True,
+        )
+
+
+def _commit_auto_resume(
+    root: Path,
+    child: str,
+    record: dict[str, Any],
+    plan: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    base: int,
+    cap: int,
+    cap_probes: int,
+) -> None:
+    last_seq = events[-1]["seq"] if events else 0
+    _append_autoresume_audit(
+        root,
+        child,
+        {
+            "event": (
+                "probe_replayed" if plan["mode"] == "replay" else "probe_intent"
+            ),
+            "episode_key": record["episode_key"],
+            "resume_seq": last_seq,
+            "step": plan["step_next"],
+            "ts": _format_iso(now),
+        },
+    )
+    _fault("after_autoresume_audit")
+    _atomic_write(
+        root / f"{child}.auto-resume.json",
+        {
+            "schema_version": 2,
+            "step": plan["step_next"],
+            "last_auto_resume_ts": _format_iso(now),
+            "episode_key": record["episode_key"],
+            "probe_count": plan["probe_count_next"],
+            "cap_probe_count": plan["cap_probe_count_next"],
+            "total_delay_sec": plan["total_delay_sec_next"],
+            "terminal_episode_key": None,
+        },
+    )
+    _fault("after_autoresume_sidecar")
+    _write_state(
+        root,
+        child,
+        {"state": "resumed", "last_resumed_seq": last_seq},
+    )
+    _fault("after_autoresume_state")
+    _attempt_autoresume_alert(record, plan, base, cap, cap_probes)
+
+
+def _attempt_terminal_alert(
+    record: dict[str, Any], sidecar: dict[str, Any]
+) -> None:
+    child = record["child_key"]
+    manual = f"python3 {Path(__file__).resolve()} resume {child}"
+    hours = sidecar["total_delay_sec"] / 3600
+    title = f"Restart storm auto-recovery abandoned: {child}"
+    body = (
+        f"Automatic recovery abandoned after {sidecar['probe_count']} probes "
+        f"over {hours:g}h; terminal_hold requires manual recovery: {manual}"
+    )
+    meta = _script_path("FLYWHEEL_META_ALERT_BIN", "meta-alert.sh")
+    if meta.is_file() and os.access(meta, os.X_OK):
+        _run_best_effort(
+            [str(meta), f"restart_storm_autoresume_{child}", title, body]
+        )
+    lead = _script_path("FLYWHEEL_LEAD_ALERT_BIN", "lead-alert.sh")
+    if lead.is_file() and os.access(lead, os.X_OK):
+        _run_best_effort(
+            [
+                str(lead),
+                "--project",
+                "flywheel",
+                "--lead",
+                child,
+                "--kind",
+                "restart_storm_hold",
+                "--severity",
+                "severe",
+                "--title",
+                title,
+                "--body",
+                body,
+                "--signature",
+                f"{record['episode_key']}__terminal",
+                "--strict-delivery",
+            ],
+            capture=True,
+        )
+
+
+def _enter_terminal_hold(
+    root: Path,
+    child: str,
+    state_value: dict[str, Any],
+    record: dict[str, Any],
+    plan: dict[str, Any],
+) -> None:
+    sidecar = dict(plan["sidecar"])
+    _attempt_terminal_alert(record, sidecar)
+    sidecar["terminal_episode_key"] = record["episode_key"]
+    _atomic_write(root / f"{child}.auto-resume.json", sidecar)
+    _fault("after_terminal_sidecar")
+    terminal = dict(state_value)
+    terminal["state"] = "terminal_hold"
+    _write_state(root, child, terminal)
 
 
 def _normalize_resumed_state(
@@ -656,6 +1145,10 @@ def _evaluate_brake(
     now: datetime,
     window_seconds: int,
     max_restarts: int,
+    autoresume_base: int,
+    autoresume_cap: int,
+    autoresume_stick: int,
+    autoresume_cap_probes: int,
 ) -> int:
     cutoff = now.timestamp() - window_seconds
     relevant = [
@@ -676,7 +1169,24 @@ def _evaluate_brake(
     }
     _write_state(root, child, pending)
     _fault("after_hold_claim")
-    _recover_pending(root, child, pending, events)
+    alert_plan = _autoresume_display_plan(
+        root,
+        child,
+        pending,
+        events,
+        now,
+        autoresume_base,
+        autoresume_cap,
+        autoresume_stick,
+        autoresume_cap_probes,
+    )
+    if alert_plan["mode"] == "terminal":
+        record = _record_for_state(child, pending, events)
+        _enter_terminal_hold(
+            root, child, pending, record, alert_plan
+        )
+        return EXIT_HELD
+    _recover_pending(root, child, pending, events, alert_plan)
     return EXIT_HELD
 
 
@@ -700,6 +1210,12 @@ def _gate(root: Path, child: str) -> int:
         "FLYWHEEL_RESTART_STORM_WINDOW_SEC", 600
     )
     max_restarts = _parse_positive_env("FLYWHEEL_RESTART_STORM_MAX", 5)
+    (
+        autoresume_base,
+        autoresume_cap,
+        autoresume_stick,
+        autoresume_cap_probes,
+    ) = _parse_autoresume_env()
     lock = _acquire_lock(root, f"{child}.lock")
     if lock is None:
         return EXIT_LOCKED
@@ -707,16 +1223,94 @@ def _gate(root: Path, child: str) -> int:
         try:
             state_value = _read_state(root, child)
             state_name = state_value["state"]
-            if state_name == "held_alert_attempted":
+            if state_name == "terminal_hold":
                 return EXIT_HELD
-            if state_name == "held_alert_pending":
+            if state_name in {
+                "held_alert_pending",
+                "held_alert_attempted",
+            }:
                 ledger_fd, events = _read_ledger(root, child, True)
                 try:
-                    _recover_pending(root, child, state_value, events)
+                    now = datetime.now(timezone.utc)
+                    plan = _autoresume_plan(
+                        root,
+                        child,
+                        state_value,
+                        events,
+                        now,
+                        autoresume_base,
+                        autoresume_cap,
+                        autoresume_stick,
+                        autoresume_cap_probes,
+                    )
+                    if plan is None:
+                        if state_name == "held_alert_pending":
+                            alert_plan = _autoresume_display_plan(
+                                root,
+                                child,
+                                state_value,
+                                events,
+                                now,
+                                autoresume_base,
+                                autoresume_cap,
+                                autoresume_stick,
+                                autoresume_cap_probes,
+                            )
+                            _recover_pending(
+                                root,
+                                child,
+                                state_value,
+                                events,
+                                alert_plan,
+                            )
+                        return EXIT_HELD
+                    if plan["mode"] == "terminal":
+                        record = _record_for_state(
+                            child, state_value, events
+                        )
+                        _enter_terminal_hold(
+                            root, child, state_value, record, plan
+                        )
+                        return EXIT_HELD
+                    if state_name == "held_alert_pending":
+                        _recover_pending(
+                            root, child, state_value, events, plan
+                        )
+                        state_value = _read_state(root, child)
+                    record = _record_for_state(
+                        child, state_value, events
+                    )
+                    _commit_auto_resume(
+                        root,
+                        child,
+                        record,
+                        plan,
+                        events,
+                        now,
+                        autoresume_base,
+                        autoresume_cap,
+                        autoresume_cap_probes,
+                    )
+                    state_value = _normalize_resumed_state(
+                        root, child, _read_state(root, child)
+                    )
+                    _append_ledger(ledger_fd, events, now)
+                    return _evaluate_brake(
+                        root,
+                        child,
+                        state_value,
+                        events,
+                        now,
+                        window_seconds,
+                        max_restarts,
+                        autoresume_base,
+                        autoresume_cap,
+                        autoresume_stick,
+                        autoresume_cap_probes,
+                    )
                 finally:
                     if ledger_fd >= 0:
                         os.close(ledger_fd)
-                return EXIT_HELD
             state_value = _normalize_resumed_state(root, child, state_value)
 
             ledger_fd, events = _read_ledger(root, child, True)
@@ -734,6 +1328,10 @@ def _gate(root: Path, child: str) -> int:
                 now,
                 window_seconds,
                 max_restarts,
+                autoresume_base,
+                autoresume_cap,
+                autoresume_stick,
+                autoresume_cap_probes,
             )
         except DataFailure as error:
             alert_kind = (
@@ -757,6 +1355,12 @@ def _record_failure(root: Path, child: str, expected_seq: int) -> int:
         "FLYWHEEL_RESTART_STORM_WINDOW_SEC", 600
     )
     max_restarts = _parse_positive_env("FLYWHEEL_RESTART_STORM_MAX", 5)
+    (
+        autoresume_base,
+        autoresume_cap,
+        autoresume_stick,
+        autoresume_cap_probes,
+    ) = _parse_autoresume_env()
     lock = _acquire_lock(root, f"{child}.lock")
     if lock is None:
         return EXIT_LOCKED
@@ -766,13 +1370,50 @@ def _record_failure(root: Path, child: str, expected_seq: int) -> int:
             ledger_fd, events = _read_ledger(root, child, True)
             try:
                 ledger_seq = events[-1]["seq"] if events else 0
-                if state_value["state"] == "held_alert_pending":
-                    _recover_pending(root, child, state_value, events)
+                if state_value["state"] == "terminal_hold":
                     _print_record_result(
                         root, child, ledger_seq, False, "held"
                     )
                     return EXIT_HELD
-                if state_value["state"] == "held_alert_attempted":
+                if state_value["state"] in {
+                    "held_alert_pending",
+                    "held_alert_attempted",
+                }:
+                    now = datetime.now(timezone.utc)
+                    alert_plan = _autoresume_display_plan(
+                        root,
+                        child,
+                        state_value,
+                        events,
+                        now,
+                        autoresume_base,
+                        autoresume_cap,
+                        autoresume_stick,
+                        autoresume_cap_probes,
+                    )
+                    if alert_plan["mode"] == "terminal":
+                        record = _record_for_state(
+                            child, state_value, events
+                        )
+                        _enter_terminal_hold(
+                            root,
+                            child,
+                            state_value,
+                            record,
+                            alert_plan,
+                        )
+                        _print_record_result(
+                            root, child, ledger_seq, False, "held"
+                        )
+                        return EXIT_HELD
+                    if state_value["state"] == "held_alert_pending":
+                        _recover_pending(
+                            root,
+                            child,
+                            state_value,
+                            events,
+                            alert_plan,
+                        )
                     _print_record_result(
                         root, child, ledger_seq, False, "held"
                     )
@@ -798,6 +1439,10 @@ def _record_failure(root: Path, child: str, expected_seq: int) -> int:
                 now,
                 window_seconds,
                 max_restarts,
+                autoresume_base,
+                autoresume_cap,
+                autoresume_stick,
+                autoresume_cap_probes,
             )
             _print_record_result(root, child, event["seq"], True)
             return result
@@ -889,6 +1534,7 @@ def _arm_controlled_wave(
                 child,
                 {"state": "resumed", "last_resumed_seq": ledger_seq},
             )
+            _remove_autoresume_sidecar(root, child)
             _fault("after_controlled_state")
             _append_controlled_audit(
                 root,
@@ -926,9 +1572,11 @@ def _resume(root: Path, child: str) -> int:
     try:
         try:
             state_value = _read_state(root, child)
+            _remove_autoresume_sidecar(root, child)
             if state_value["state"] not in {
                 "held_alert_pending",
                 "held_alert_attempted",
+                "terminal_hold",
             }:
                 return EXIT_OK
             ledger_fd, events = _read_ledger(root, child, True)

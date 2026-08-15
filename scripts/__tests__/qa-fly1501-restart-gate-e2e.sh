@@ -185,6 +185,121 @@ PY
 )"
 eq "S12 no corrupt lines survive" "$TAIL_OK" "clean"
 
+echo "== S13: expired hold half-opens with durable backoff state =="
+C11=bridge7
+for i in 1 2 3 4 5; do gate $C11 >/dev/null; done
+eq "S13 initial sixth launch held" "$(gate $C11)" "3"
+python3 - "$ROOT" "$C11" <<'PY'
+from datetime import datetime, timedelta, timezone
+import json, os, sys
+
+root, child = sys.argv[1:]
+hold_at = datetime.now(timezone.utc) - timedelta(seconds=2)
+window_start = hold_at - timedelta(seconds=5)
+events = [
+    {
+        "seq": index + 1,
+        "ts": (window_start + timedelta(seconds=index)).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+    }
+    for index in range(6)
+]
+with open(os.path.join(root, f"{child}.jsonl"), "w", encoding="utf-8") as handle:
+    for event in events:
+        handle.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+state = {
+    "state": "held_alert_attempted",
+    "episode_key": f"{child}__{window_start.strftime('%Y%m%dT%H%M%SZ')}__1",
+    "window_start": events[0]["ts"],
+    "last_resumed_seq": 0,
+}
+with open(os.path.join(root, f"{child}.state"), "w", encoding="utf-8") as handle:
+    handle.write(json.dumps(state, separators=(",", ":"), sort_keys=True) + "\n")
+PY
+: >"$FLYWHEEL_QA_ALERT_LOG"
+S13_RC="$(FLYWHEEL_RESTART_STORM_AUTORESUME_BASE_SEC=1 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC=4 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_STICK_SEC=30 \
+  python3 "$GATE" gate --root "$ROOT" $C11 >/dev/null 2>&1; echo $?)"
+eq "S13 expired hold is released" "$S13_RC" "0"
+eq "S13 state normalized active" "$(status $C11 | jget state)" "active"
+eq "S13 launch appended once" "$(status $C11 | jget ledger_seq)" "7"
+eq "S13 sidecar starts at step one" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["step"])' "$ROOT/$C11.auto-resume.json")" "1"
+eq "S13 durable audit records intent" "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["event"])' "$ROOT/$C11.auto-resume.ndjson")" "probe_intent"
+eq "S13 auto-resume alert attempted" "$(grep -c '__auto__1' "$FLYWHEEL_QA_ALERT_LOG")" "1"
+
+echo "== S14: finite cap probes end in a durable operator-only terminal hold =="
+C12=bridge8
+python3 - "$ROOT" "$C12" <<'PY'
+from datetime import datetime, timedelta, timezone
+import json, os, sys
+
+root, child = sys.argv[1:]
+hold_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+window_start = hold_at - timedelta(seconds=5)
+events = [
+    {"seq": i + 1, "ts": (window_start + timedelta(seconds=i)).isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+    for i in range(6)
+]
+with open(os.path.join(root, f"{child}.jsonl"), "w", encoding="utf-8") as handle:
+    for event in events:
+        handle.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+episode = f"{child}__{window_start.strftime('%Y%m%dT%H%M%SZ')}__1"
+with open(os.path.join(root, f"{child}.state"), "w", encoding="utf-8") as handle:
+    json.dump({"state": "held_alert_attempted", "episode_key": episode, "window_start": events[0]["ts"], "last_resumed_seq": 0}, handle, separators=(",", ":"), sort_keys=True)
+    handle.write("\n")
+last = hold_at - timedelta(seconds=1)
+with open(os.path.join(root, f"{child}.auto-resume.json"), "w", encoding="utf-8") as handle:
+    json.dump({"schema_version": 2, "step": 2, "last_auto_resume_ts": last.isoformat(timespec="milliseconds").replace("+00:00", "Z"), "episode_key": f"{child}__{last.strftime('%Y%m%dT%H%M%SZ')}__99", "probe_count": 2, "cap_probe_count": 0, "total_delay_sec": 3, "terminal_episode_key": None}, handle, separators=(",", ":"), sort_keys=True)
+    handle.write("\n")
+os.chmod(os.path.join(root, f"{child}.auto-resume.json"), 0o600)
+PY
+: >"$FLYWHEEL_QA_ALERT_LOG"
+S14_PROBE_RC="$(FLYWHEEL_RESTART_STORM_AUTORESUME_BASE_SEC=1 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC=4 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_STICK_SEC=30 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_PROBES=1 \
+  python3 "$GATE" gate --root "$ROOT" $C12 >/dev/null 2>&1; echo $?)"
+eq "S14 first capped probe releases" "$S14_PROBE_RC" "0"
+eq "S14 capped probe count persisted" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["cap_probe_count"])' "$ROOT/$C12.auto-resume.json")" "1"
+python3 - "$ROOT" "$C12" <<'PY'
+from datetime import datetime, timedelta, timezone
+import json, os, sys
+
+root, child = sys.argv[1:]
+hold_at = datetime.now(timezone.utc)
+window_start = hold_at - timedelta(seconds=5)
+events = [
+    {"seq": i + 1, "ts": (window_start + timedelta(seconds=i)).isoformat(timespec="milliseconds").replace("+00:00", "Z")}
+    for i in range(6)
+]
+with open(os.path.join(root, f"{child}.jsonl"), "w", encoding="utf-8") as handle:
+    for event in events:
+        handle.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+episode = f"{child}__{window_start.strftime('%Y%m%dT%H%M%SZ')}__1"
+with open(os.path.join(root, f"{child}.state"), "w", encoding="utf-8") as handle:
+    json.dump({"state": "held_alert_attempted", "episode_key": episode, "window_start": events[0]["ts"], "last_resumed_seq": 0}, handle, separators=(",", ":"), sort_keys=True)
+    handle.write("\n")
+PY
+: >"$FLYWHEEL_QA_ALERT_LOG"
+S14_TERMINAL_RC="$(FLYWHEEL_RESTART_STORM_AUTORESUME_BASE_SEC=1 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_SEC=4 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_STICK_SEC=30 \
+  FLYWHEEL_RESTART_STORM_AUTORESUME_CAP_PROBES=1 \
+  python3 "$GATE" gate --root "$ROOT" $C12 >/dev/null 2>&1; echo $?)"
+eq "S14 capped re-trip is held" "$S14_TERMINAL_RC" "3"
+eq "S14 explicit terminal state" "$(status $C12 | jget state)" "terminal_hold"
+eq "S14 sidecar marks the terminal episode" \
+  "$(python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); print(a["terminal_episode_key"] == b["episode_key"])' "$ROOT/$C12.auto-resume.json" "$ROOT/$C12.state")" "True"
+eq "S14 final alert is severe" "$(grep -c -- '--severity severe' "$FLYWHEEL_QA_ALERT_LOG")" "1"
+eq "S14 final Lead alert carries manual resume" "$(grep -c "^lead .*terminal_hold requires manual recovery: python3 $GATE resume $C12" "$FLYWHEEL_QA_ALERT_LOG")" "1"
+S14_SEQ="$(status $C12 | jget ledger_seq)"
+S14_ALERTS="$(wc -l < "$FLYWHEEL_QA_ALERT_LOG" | tr -d ' ')"
+eq "S14 terminal retry stays held" "$(gate $C12)" "3"
+eq "S14 terminal retry appends no launch" "$(status $C12 | jget ledger_seq)" "$S14_SEQ"
+eq "S14 terminal retry sends no alert" "$(wc -l < "$FLYWHEEL_QA_ALERT_LOG" | tr -d ' ')" "$S14_ALERTS"
+eq "S14 manual resume exits terminal" "$(resume $C12)" "0"
+eq "S14 manual resume clears sidecar" "$([ ! -e "$ROOT/$C12.auto-resume.json" ] && echo yes || echo no)" "yes"
+
 echo
 echo "root=$ROOT"
 printf 'TOTAL pass=%d fail=%d\n' "$PASS" "$FAIL"

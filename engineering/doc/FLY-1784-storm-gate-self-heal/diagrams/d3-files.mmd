@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph ledger["~/.flywheel/restart-ledger/(gate 的账本目录)"]
+        J["bridge.jsonl<br/>启动流水账(已有)<br/>每次放行记一行时间戳"]
+        S["bridge.state<br/>状态机(已有,格式严格校验)<br/>active / held / resumed"]
+        N1["bridge.auto-resume.json<br/>★ 新增:退避梯子记忆<br/>step + 上次探测时间 + episode"]
+        N2["bridge.auto-resume.ndjson<br/>★ 新增:探测审计流水<br/>每次自动放行必留一行"]
+    end
+
+    W["Bridge wrapper<br/>(launchd 每 30 秒拉起)"] -->|"gate bridge"| G["restart-storm-gate.py<br/>(纯 Python 标准库,全系统最底层兜底)"]
+    G --> J
+    G --> S
+    G -.->|"只有新代码读写<br/>旧代码完全无视 → 回滚零风险"| N1
+    G -.-> N2
+    G -->|"hold / 探测告警"| A["lead-alert.sh → Discord<br/>(复用现有通道,零新告警类型)"]
+
+    style N1 fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style N2 fill:#e8f5e9,stroke:#34c759,stroke-width:2px

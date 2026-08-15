@@ -1,0 +1,14 @@
+stateDiagram-v2
+    direction TB
+    [*] --> active
+    active --> held : 10 分钟窗口内启动超过 5 次<br/>发 hold 告警(带探测时间表 + 一行命令)
+    held --> active : ① 人工 resume(永远优先)<br/>退避梯子归零
+    held --> active : ② 自动探测(新增)<br/>冷却期满自动放行一次<br/>留痕告警
+    active --> held : 探测后 30 分钟内又触发<br/>= 探测失败 → 下次冷却翻倍<br/>5→10→20→40→60 分钟封顶
+    active --> [*] : 探测后 30 分钟安然无事<br/>= 故障已过 → 梯子归零
+
+    note right of held
+        修复前:held 无自动出口
+        修复后:最迟 60 分钟必有一次探测
+        永不永久闸死
+    end note

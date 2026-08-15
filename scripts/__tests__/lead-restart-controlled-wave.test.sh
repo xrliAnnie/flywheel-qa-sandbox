@@ -18,6 +18,7 @@ ATTEMPT="11111111-1111-4111-8111-111111111111"
 printf '{"attempt_id":"%s"}\n' "$ATTEMPT" > "$MARKER"
 AUTHORITY_OK=1
 ARM_MODE=race-once
+STATUS_STATE=terminal_hold
 CALL_LOG="$TMP_ROOT/gate.calls"
 DIGEST_FILE="$TMP_ROOT/marker.digest"
 printf '%s\n' fixture-digest > "$DIGEST_FILE"
@@ -31,7 +32,7 @@ lead_restart_gate_exec() {
   case "$command" in
     status)
       if [ "$(grep -c $'\tarm-controlled-wave\t' "$CALL_LOG" || true)" -eq 0 ]; then
-        printf '%s\n' '{"state":"held_alert_attempted","last_resumed_seq":0,"episode_key":"lead.flywheel-eng-lead__20260802T120000Z__1","window_start":"2026-08-02T12:00:00.000Z","ledger_seq":4}'
+        printf '{"state":"%s","last_resumed_seq":0,"episode_key":"lead.flywheel-eng-lead__20260802T120000Z__1","window_start":"2026-08-02T12:00:00.000Z","ledger_seq":4}\n' "$STATUS_STATE"
       else
         printf '%s\n' '{"state":"active","last_resumed_seq":0,"ledger_seq":5}'
       fi
@@ -48,6 +49,17 @@ lead_restart_gate_exec() {
   esac
 }
 
+if lead_restart_arm_controlled_wave \
+  flywheel-eng-lead "$MARKER" "$ATTEMPT" "$TMP_ROOT/ledger" \
+  && [ "$(grep -c $'\tstatus\t' "$CALL_LOG")" -eq 2 ] \
+  && [ "$(grep -c $'\tarm-controlled-wave\t' "$CALL_LOG")" -eq 2 ]; then
+  pass "controlled-wave arm accepts terminal hold snapshot"
+else
+  fail "terminal hold blocked controlled-wave recovery"
+fi
+
+: > "$CALL_LOG"
+STATUS_STATE=held_alert_attempted
 if lead_restart_arm_controlled_wave \
   flywheel-eng-lead "$MARKER" "$ATTEMPT" "$TMP_ROOT/ledger" \
   && [ "$(grep -c $'\tstatus\t' "$CALL_LOG")" -eq 2 ] \
