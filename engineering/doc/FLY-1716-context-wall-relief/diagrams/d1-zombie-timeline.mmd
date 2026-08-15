@@ -1,0 +1,11 @@
+flowchart TB
+    A["6月16日<br/>Cass 的对话会话出生<br/>(session-id 文件写入,此后再没更新过)"] --> B["两个月里记忆一路涨<br/>8月6日凌晨:涨到 73%(731,028 tokens)<br/>这是她最后一次成功回话"]
+    B --> C["8月11日晚:撞墙冻死<br/>47 条消息排队 2.5 小时进不去<br/>手动压缩也失败"]
+    C --> D["Tadashi 手工 /clear 救活<br/>(清空重开一个新会话)"]
+    D -.->|"但 session-id 文件<br/>没有人更新它"| E
+    E["8月14日全舰重启<br/>启动脚本读的还是6月16日那个旧会话号<br/>→ 又把满记忆的僵尸会话原样恢复"] --> F["Annie 看到:<br/>重启之后 Cass 窗口又是满的<br/>只能每个手工 /clear 一遍"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style C fill:#ffe5e2,stroke:#ff3b30
+    style E fill:#ffe5e2,stroke:#ff3b30
+    style F fill:#fff3e0,stroke:#ff9500
+    style D fill:#e6f9ec,stroke:#34c759

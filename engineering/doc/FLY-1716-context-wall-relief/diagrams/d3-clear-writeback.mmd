@@ -1,0 +1,9 @@
+flowchart TB
+    C["任何时候有人对 Lead 执行 /clear<br/>(手工救火,或她自己清)"] --> H["新会话出生的瞬间<br/>自动触发一个小钩子(已有机制,本次加两件事)"]
+    H --> H1["已有:认领在途消息<br/>(排队的消息转给新会话,不丢)"]
+    H --> H2["新增①:把新会话号写回 session-id 文件<br/>(带防错闩:旧会话残留的钩子写不进来)"]
+    H --> H3["新增②:给新会话发开机简报"]
+    H2 --> R["下次重启时<br/>启动脚本读到的就是这个活会话<br/>不再回到僵尸"]
+    style C fill:#e8f0fe,stroke:#007aff
+    style H2 fill:#e6f9ec,stroke:#34c759
+    style R fill:#e6f9ec,stroke:#34c759

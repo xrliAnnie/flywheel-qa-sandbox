@@ -1,0 +1,17 @@
+flowchart TB
+    S["重启:准备拉起一个 Lead"] --> R["先离线读上一会话的记忆占用<br/>(不打开会话,直接读它的对话记录文件<br/>算出上次用了多少容量,按保守上限估)"]
+    R --> J{"三种判定"}
+    J -->|"可证明安全<br/>(占用 < 70%)"| OK["照常恢复原会话<br/>(--resume,和今天一样)"]
+    J -->|"超阈(≥70%)"| P["把旧会话号改名留档<br/>(.parked-*,不删,可查)"]
+    J -->|"读不出/异常<br/>(unknown)"| P
+    P --> F["起全新干净会话"]
+    F --> F1["自动发开机简报<br/>(bootstrap:告诉她自己是谁、该干嘛)"]
+    F --> F2["自动认领在途消息<br/>(上一个会话没处理完的排队消息<br/>原封不动转给新会话,一条不丢)"]
+    F1 --> DONE["重启出来一定不满 ✓"]
+    F2 --> DONE
+    OK --> DONE2["健康会话记忆延续 ✓"]
+    style S fill:#e8f0fe,stroke:#007aff
+    style P fill:#fff3e0,stroke:#ff9500
+    style F fill:#e6f9ec,stroke:#34c759
+    style DONE fill:#e6f9ec,stroke:#34c759
+    style DONE2 fill:#e6f9ec,stroke:#34c759
