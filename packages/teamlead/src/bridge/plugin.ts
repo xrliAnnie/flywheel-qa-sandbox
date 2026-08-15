@@ -306,6 +306,11 @@ import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
+import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
+import {
+	buildAgedDeferredLinearDoneAlert,
+	sweepDeferredLandLinearDone,
+} from "./land-linear-done-sweep.js";
 import { resolveLandSourceSession } from "./land-source-session.js";
 import { probeLaunchdJobAlive } from "./launchctl.js";
 import {
@@ -5234,7 +5239,7 @@ export async function startBridge(
 			// history → nothing to arbitrate, the closeout's in-mutex
 			// arbitration remains the second line.
 			if (!res.ok && res.reason === "uuid_conflict") {
-				return { ok: false, reason: "root_uuid_conflict" };
+				return { ok: false, reason: "root_uuid_conflict" } as const;
 			}
 			const rootKey = res.ok ? res.rootKey : issueId;
 			const lockKeys = res.lockKeys.length > 0 ? res.lockKeys : [issueId];
@@ -5243,31 +5248,27 @@ export async function startBridge(
 					isUuidKey(rootKey) &&
 					store.getActiveIssueDispositionIntent(rootKey)
 				) {
-					return { ok: false, reason: "founder_parked" };
+					return { ok: false, reason: "founder_parked" } as const;
 				}
 				const obs = store.getLinearStateObservation(projectName, rootKey);
 				if (obs?.lastStateType === "canceled") {
-					return { ok: false, reason: "canceled_observation" };
+					return { ok: false, reason: "canceled_observation" } as const;
 				}
 				if (config.linearApiKey) {
-					try {
-						const { LinearClient } = await import("@linear/sdk");
-						const client = new LinearClient({
-							apiKey: config.linearApiKey as string,
-						});
-						const issue = await client.issue(issueId);
-						const state = await issue.state;
-						if (state?.type === "canceled") {
-							return { ok: false, reason: "canceled_fresh_linear" };
-						}
-					} catch {
-						// R3#9: a failed FRESH read is fail-closed BUT retryable —
-						// the refusal happens before the dedupe claim, so the next
-						// finalization attempt re-arbitrates from scratch.
-						return { ok: false, reason: "linear_lookup_failed_retryable" };
-					}
+					return arbitrateFreshLinearState({
+						persistedStateType: obs?.lastStateType,
+						readFreshStateType: async () => {
+							const { LinearClient } = await import("@linear/sdk");
+							const client = new LinearClient({
+								apiKey: config.linearApiKey as string,
+							});
+							const issue = await client.issue(issueId);
+							const state = await issue.state;
+							return state?.type;
+						},
+					});
 				}
-				return { ok: true };
+				return { ok: true } as const;
 			};
 			// R4#3: the ship DAG may already hold the canonical mutex (the
 			// keyed lock is not re-entrant).
@@ -5686,6 +5687,7 @@ export async function startBridge(
 			projects.find((project) => project.projectName === projectName)
 				?.projectRoot,
 	);
+	const landLinearDoneFinalizer = makeLinearDoneFinalizer(config);
 	const landWorktreeCleanup = makeBridgeWorktreeCleanup(
 		store,
 		projects,
@@ -5722,7 +5724,6 @@ export async function startBridge(
 						reason: "land_source_session_unavailable",
 					};
 				}
-				const markIssueDone = makeLinearDoneFinalizer(config);
 				return runResumablePostShipFinalization(
 					{
 						executionId: session.execution_id,
@@ -5742,12 +5743,32 @@ export async function startBridge(
 						store,
 						projects,
 						removeCleanWorktree: landWorktreeCleanup,
-						markIssueDone:
-							markIssueDone ??
-							(async () => ({
-								done: false,
-								reason: "linear_finalizer_unavailable",
-							})),
+						markIssueDone: landLinearDoneFinalizer,
+						recordLinearDoneDisposition: (disposition) => {
+							if (!operation.owner_id) {
+								return { ok: false, reason: "stale_land_generation" };
+							}
+							const alertIdentity = operation.run_id
+								? resolveWorkflowRunAlertIdentity({
+										store,
+										projects,
+										defaultLeadAgentId: config.defaultLeadAgentId,
+										projectName: operation.project_name,
+										issueId: operation.issue_id,
+										runId: operation.run_id,
+									})
+								: undefined;
+							return store.recordLandLinearDoneDisposition({
+								operationId: operation.operation_id,
+								ownerId: operation.owner_id,
+								generation: operation.generation,
+								disposition: disposition.disposition,
+								reason: disposition.reason,
+								executionId: session.execution_id,
+								now: new Date().toISOString(),
+								...(alertIdentity ? { alertIdentity } : {}),
+							});
+						},
 						finalizeWorkflowPhaseRoles,
 						refreshIssueDisplay: (issueId) =>
 							issueDisplayRefreshHolder.current?.refresh(issueId) ??
@@ -7271,33 +7292,109 @@ export async function startBridge(
 	let landOperationSweepRunning = false;
 	let landOperationLastSweepAt = 0;
 	const landOperationSweepIntervalMs = 30_000;
+	let linearDoneSweepRunning = false;
+	let linearDoneLastSweepAt = 0;
+	const linearDoneSweepIntervalMs = 15 * 60_000;
 	const landOperationTick = async (): Promise<void> => {
 		const now = Date.now();
+		const work: Promise<void>[] = [];
 		if (
-			landOperationSweepRunning ||
-			now - landOperationLastSweepAt < landOperationSweepIntervalMs
+			!landOperationSweepRunning &&
+			now - landOperationLastSweepAt >= landOperationSweepIntervalMs
 		) {
-			return;
-		}
-		landOperationLastSweepAt = now;
-		landOperationSweepRunning = true;
-		try {
-			const operations = store.listRunnableLandOperations(
-				new Date().toISOString(),
-				20,
+			landOperationLastSweepAt = now;
+			landOperationSweepRunning = true;
+			work.push(
+				(async () => {
+					try {
+						const operations = store.listRunnableLandOperations(
+							new Date().toISOString(),
+							20,
+						);
+						await Promise.all(
+							operations.map((operation) =>
+								landExecutor(operation.operation_id).catch((error) =>
+									console.warn(
+										`[land] sweep failed for ${operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
+									),
+								),
+							),
+						);
+					} finally {
+						landOperationSweepRunning = false;
+					}
+				})(),
 			);
-			await Promise.all(
-				operations.map((operation) =>
-					landExecutor(operation.operation_id).catch((error) =>
+		}
+		if (
+			!linearDoneSweepRunning &&
+			now - linearDoneLastSweepAt >= linearDoneSweepIntervalMs
+		) {
+			linearDoneLastSweepAt = now;
+			linearDoneSweepRunning = true;
+			work.push(
+				(async () => {
+					try {
+						await sweepDeferredLandLinearDone({
+							store,
+							preArbitrate: lifecycleInfra.preArbitrate!,
+							withIssueMutex: lifecycleInfra.withIssueLifecycleMutex!,
+							markIssueDone: landLinearDoneFinalizer,
+							onAgedDeferred: (operation, detail) => {
+								if (!operation.run_id) {
+									console.warn(
+										`[land] deferred Linear Done remains stale for ${operation.operation_id} (${detail.ageHours}h)`,
+									);
+									return;
+								}
+								const identity = resolveWorkflowRunAlertIdentity({
+									store,
+									projects,
+									defaultLeadAgentId: config.defaultLeadAgentId,
+									projectName: operation.project_name,
+									issueId: operation.issue_id,
+									runId: operation.run_id,
+								});
+								const alert = buildAgedDeferredLinearDoneAlert({
+									operation,
+									leadId: identity.leadId,
+									leadResolution: identity.leadResolution,
+									dayBucket: detail.dayBucket,
+								});
+								store.enqueueWorkflowEngineAlert({
+									escalationUid: alert.escalationUid,
+									runId: operation.run_id,
+									payload: {
+										leadId: identity.leadId,
+										projectName: identity.projectName,
+										eventId: alert.escalationUid,
+										eventType: "workflow_engine_issue_alert",
+										severity: "warning",
+										sessionKey: `wf:${operation.run_id}`,
+										title: alert.title,
+										body: alert.body,
+										metadata: {
+											workflowEngine: {
+												runId: operation.run_id,
+												issueId: operation.issue_id,
+												...alert.workflowMetadata,
+											},
+										},
+									},
+								});
+							},
+						});
+					} catch (error) {
 						console.warn(
-							`[land] sweep failed for ${operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
-						),
-					),
-				),
+							`[land] deferred Linear Done sweep failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					} finally {
+						linearDoneSweepRunning = false;
+					}
+				})(),
 			);
-		} finally {
-			landOperationSweepRunning = false;
 		}
+		await Promise.all(work);
 	};
 	const terminalGateRetirement = new TerminalGateRetirement({
 		store,

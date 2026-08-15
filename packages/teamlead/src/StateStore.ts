@@ -26,6 +26,10 @@ import {
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
+import {
+	type LandRetryClassification,
+	nextLandRetry,
+} from "./bridge/land-retry-policy.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	buildWorkflowSelectionDigestBody,
@@ -16695,14 +16699,74 @@ export class StateStore {
 				current_step TEXT,
 				merge_confirmed_at TEXT,
 				finalization_completed_at TEXT,
+				retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+				retry_epoch_key TEXT,
+				next_attempt_at TEXT,
+				linear_done_disposition TEXT
+				  CHECK (linear_done_disposition IN ('done','canceled_refused','deferred')),
+				linear_done_deferred_at TEXT,
+				linear_done_settled_at TEXT,
+				linear_done_last_reason TEXT,
+				linear_done_retry_count INTEGER NOT NULL DEFAULT 0
+				  CHECK (linear_done_retry_count >= 0),
+				linear_done_next_attempt_at TEXT,
+				linear_done_last_attempt_at TEXT,
 				last_error TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
 				UNIQUE (project_name, issue_id, pr_number, approved_head)
 			)
 		`);
+		this.addColumnIfMissing(
+			"land_operation",
+			"retry_count",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0)",
+		);
+		this.addColumnIfMissing("land_operation", "retry_epoch_key", "TEXT");
+		this.addColumnIfMissing("land_operation", "next_attempt_at", "TEXT");
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_disposition",
+			"TEXT CHECK (linear_done_disposition IN ('done','canceled_refused','deferred'))",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_deferred_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_settled_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_last_reason",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_retry_count",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (linear_done_retry_count >= 0)",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_next_attempt_at",
+			"TEXT",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"linear_done_last_attempt_at",
+			"TEXT",
+		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_operation_work ON land_operation(state, lease_expires_at, updated_at)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_operation_retry_work ON land_operation(state, next_attempt_at, lease_expires_at, updated_at)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_operation_linear_done_work ON land_operation(state, linear_done_disposition, linear_done_next_attempt_at, linear_done_deferred_at)",
 		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_operation_step (
@@ -25717,6 +25781,8 @@ export class StateStore {
 		executionId: string;
 		reason: string;
 		disposition: "held" | "partial";
+		attempts?: number;
+		epochKey?: string;
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
 		const partial = input.disposition === "partial";
@@ -25740,6 +25806,9 @@ export class StateStore {
 					nodeId: input.nodeId,
 					executionId: input.executionId,
 					disposition: input.disposition,
+					...(input.attempts === undefined
+						? {}
+						: { attempts: input.attempts, epochKey: input.epochKey }),
 					leadResolution: input.identity.leadResolution,
 				},
 			},
@@ -38997,6 +39066,277 @@ export class StateStore {
 		)[0] as unknown as LandOperationRow | undefined;
 	}
 
+	recordLandLinearDoneDisposition(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		disposition: "done" | "canceled_refused" | "deferred";
+		reason: string;
+		executionId: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.reason ||
+			input.reason.length > 500 ||
+			!input.executionId ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_linear_done_disposition" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				Number(operation.generation) !== input.generation
+			) {
+				return;
+			}
+			const current = operation.linear_done_disposition as
+				| "done"
+				| "canceled_refused"
+				| "deferred"
+				| null;
+			if (current === input.disposition) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			// A settled external obligation is monotonic. A later pass that cannot
+			// re-read Linear must not downgrade proven Done/refusal back to deferred.
+			if (current && current !== "deferred" && input.disposition === "deferred") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (current && current !== "deferred") {
+				result = { ok: false, reason: "land_linear_done_disposition_conflict" };
+				return;
+			}
+			const firstDeferred = current === null && input.disposition === "deferred";
+			const settled = input.disposition !== "deferred";
+			this.db.run(
+				`UPDATE land_operation
+				    SET linear_done_disposition = ?,
+				        linear_done_deferred_at = CASE WHEN ? = 'deferred' THEN COALESCE(linear_done_deferred_at, ?) ELSE linear_done_deferred_at END,
+				        linear_done_settled_at = CASE WHEN ? = 1 THEN COALESCE(linear_done_settled_at, ?) ELSE NULL END,
+				        linear_done_next_attempt_at = CASE WHEN ? = 'deferred' THEN COALESCE(linear_done_next_attempt_at, ?) ELSE NULL END,
+				        linear_done_last_reason = ?, updated_at = ?
+				  WHERE operation_id = ? AND state = 'running'
+				    AND owner_id = ? AND generation = ?`,
+				[
+					input.disposition,
+					input.disposition,
+					input.now,
+					settled ? 1 : 0,
+					input.now,
+					input.disposition,
+					input.now,
+					input.reason,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			if (firstDeferred && input.alertIdentity && operation.run_id) {
+				const escalationUid = `linear_done_deferred:${input.operationId}`;
+				const run = this.getWorkflowRun(String(operation.run_id));
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: String(operation.run_id),
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_issue_alert",
+						severity: "warning",
+						sessionKey: `wf:${String(operation.run_id)}`,
+						title: `Linear Done deferred for ${String(operation.issue_id)}`,
+						body: `Local land cleanup completed independently, but Linear Done is deferred for operation ${input.operationId}. Reason: ${input.reason}. The bounded slow sweep will retry.`,
+						metadata: {
+							workflowEngine: {
+								runId: String(operation.run_id),
+								issueId: String(operation.issue_id),
+								nodeId: run?.current_node_id ?? "land",
+								executionId: input.executionId,
+								disposition: "linear_done_deferred",
+								operationId: input.operationId,
+								reason: input.reason,
+								deferredAt: input.now,
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+			}
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listDeferredLandLinearDone(now: string, limit = 10): LandOperationRow[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			throw new Error("invalid_land_linear_done_sweep_time");
+		}
+		const boundedLimit = Math.max(1, Math.min(10, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM land_operation
+			  WHERE state = 'completed' AND linear_done_disposition = 'deferred'
+			    AND (linear_done_next_attempt_at IS NULL OR linear_done_next_attempt_at <= ?)
+			  ORDER BY COALESCE(linear_done_next_attempt_at, linear_done_deferred_at) ASC,
+			           linear_done_deferred_at ASC, operation_id ASC
+			  LIMIT ?`,
+			[now, boundedLimit],
+		) as unknown as LandOperationRow[];
+	}
+
+	deferLandLinearDoneRetry(input: {
+		operationId: string;
+		reason: string;
+		now: string;
+		nextAttemptAt: string;
+		expectedRetryCount?: number;
+	}): { ok: true; retryCount: number } | { ok: false; reason: string } {
+		if (
+			!input.reason ||
+			input.reason.length > 500 ||
+			(input.expectedRetryCount !== undefined &&
+				(!Number.isInteger(input.expectedRetryCount) ||
+					input.expectedRetryCount < 0)) ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.nextAttemptAt) ||
+			Date.parse(input.nextAttemptAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_linear_done_retry" };
+		}
+		let result:
+			| { ok: true; retryCount: number }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_linear_done_not_deferred",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT state, linear_done_disposition, linear_done_retry_count
+				   FROM land_operation WHERE operation_id = ?`,
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "completed" ||
+				operation.linear_done_disposition !== "deferred"
+			) {
+				return;
+			}
+			if (
+				input.expectedRetryCount !== undefined &&
+				Number(operation.linear_done_retry_count) !== input.expectedRetryCount
+			) {
+				result = {
+					ok: false,
+					reason: "land_linear_done_retry_count_changed",
+				};
+				return;
+			}
+			this.db.run(
+				`UPDATE land_operation
+				    SET linear_done_retry_count = linear_done_retry_count + 1,
+				        linear_done_next_attempt_at = ?, linear_done_last_attempt_at = ?,
+				        linear_done_last_reason = ?, updated_at = ?
+				  WHERE operation_id = ? AND state = 'completed'
+				    AND linear_done_disposition = 'deferred'
+				    AND (? IS NULL OR linear_done_retry_count = ?)`,
+				[
+					input.nextAttemptAt,
+					input.now,
+					input.reason,
+					input.now,
+					input.operationId,
+					input.expectedRetryCount ?? null,
+					input.expectedRetryCount ?? null,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			const retryCount = Number(
+				this.workflowSelectAll(
+					"SELECT linear_done_retry_count FROM land_operation WHERE operation_id = ?",
+					[input.operationId],
+				)[0]?.linear_done_retry_count ?? 0,
+			);
+			result = { ok: true, retryCount };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	settleDeferredLandLinearDone(input: {
+		operationId: string;
+		disposition: "done" | "canceled_refused";
+		reason: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.reason ||
+			input.reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_linear_done_settlement" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "land_linear_done_not_deferred",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT state, linear_done_disposition FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (!operation || operation.state !== "completed") return;
+			if (operation.linear_done_disposition === input.disposition) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (operation.linear_done_disposition !== "deferred") {
+				result = { ok: false, reason: "land_linear_done_disposition_conflict" };
+				return;
+			}
+			this.db.run(
+				`UPDATE land_operation
+				    SET linear_done_disposition = ?, linear_done_settled_at = ?,
+				        linear_done_next_attempt_at = NULL,
+				        linear_done_last_reason = ?, updated_at = ?
+				  WHERE operation_id = ? AND state = 'completed'
+				    AND linear_done_disposition = 'deferred'`,
+				[
+					input.disposition,
+					input.now,
+					input.reason,
+					input.now,
+					input.operationId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	listRunnableLandOperations(now: string, limit = 20): LandOperationRow[] {
 		if (!StateStore.workflowFiniteTimestamp(now)) {
 			throw new Error("invalid_land_operation_sweep_time");
@@ -39004,12 +39344,27 @@ export class StateStore {
 		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 		return this.workflowSelectAll(
 			`SELECT * FROM land_operation
-			  WHERE state IN ('intent','partial')
+			  WHERE (
+			        (state IN ('intent','partial') AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
 			     OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
+			        )
 			  ORDER BY updated_at ASC, operation_id ASC
 			  LIMIT ?`,
-			[now, boundedLimit],
+			[now, now, boundedLimit],
 		) as unknown as LandOperationRow[];
+	}
+
+	makeLandOperationRetryRunnable(operationId: string): boolean {
+		this.db.run(
+			`UPDATE land_operation
+			    SET next_attempt_at = NULL
+			  WHERE operation_id = ? AND state = 'partial'
+			    AND next_attempt_at IS NOT NULL`,
+			[operationId],
+		);
+		const updated = this.db.getRowsModified() === 1;
+		if (updated) this.save();
+		return updated;
 	}
 
 	hasMergeConfirmedForIssue(issueId: string): boolean {
@@ -39062,11 +39417,13 @@ export class StateStore {
 				"SELECT * FROM land_operation WHERE operation_id = ?",
 				[input.operationId],
 			)[0];
-			if (
-				!row ||
-				!["intent", "running", "partial"].includes(String(row.state)) ||
-				(row.lease_expires_at && String(row.lease_expires_at) > input.now)
-			) {
+			const due =
+				row?.state === "intent" ||
+				(row?.state === "partial" &&
+					(!row.next_attempt_at || String(row.next_attempt_at) <= input.now)) ||
+				(row?.state === "running" &&
+					(!row.lease_expires_at || String(row.lease_expires_at) <= input.now));
+			if (!row || !due) {
 				return;
 			}
 			const generation = Number(row.generation) + 1;
@@ -39075,8 +39432,11 @@ export class StateStore {
 				    SET state = 'running', owner_id = ?, lease_expires_at = ?,
 				        generation = ?, updated_at = ?
 				  WHERE operation_id = ? AND generation = ?
-				    AND state IN ('intent','running','partial')
-				    AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`,
+				    AND (
+				          state = 'intent'
+				       OR (state = 'partial' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+				       OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
+				        )`,
 				[
 					input.ownerId,
 					input.leaseExpiresAt,
@@ -39084,6 +39444,7 @@ export class StateStore {
 					input.now,
 					input.operationId,
 					row.generation,
+					input.now,
 					input.now,
 				],
 			);
@@ -39137,6 +39498,16 @@ export class StateStore {
 				!operation.lease_expires_at ||
 				String(operation.lease_expires_at) <= input.now
 			) {
+				return;
+			}
+			if (
+				input.step === "finalization_completed" &&
+				!operation.linear_done_disposition
+			) {
+				result = {
+					ok: false,
+					reason: "land_linear_done_disposition_incomplete",
+				};
 				return;
 			}
 			if (
@@ -39248,6 +39619,77 @@ export class StateStore {
 		const updated = this.db.getRowsModified() === 1;
 		if (updated) this.save();
 		return updated;
+	}
+
+	releaseLandOperationWithRetryAccounting(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		class: LandRetryClassification;
+		reason: string;
+		now: string;
+	}): LandOperationRetryRelease | undefined {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return undefined;
+		let result: LandOperationRetryRelease | undefined;
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (
+				!operation ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				Number(operation.generation) !== input.generation
+			) {
+				return;
+			}
+			const stepCount = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM land_operation_step WHERE operation_id = ?",
+					[input.operationId],
+				)[0]?.count ?? 0,
+			);
+			const epochKey = `${stepCount}:${String(operation.current_step ?? "start")}`;
+			const decision = nextLandRetry({
+				classification: input.class,
+				reason: input.reason,
+				now: input.now,
+				epochKey,
+				priorRetryCount: Number(operation.retry_count ?? 0),
+				priorRetryEpochKey:
+					(operation.retry_epoch_key as string | null | undefined) ?? null,
+			});
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = ?, last_error = ?, retry_count = ?, retry_epoch_key = ?,
+				        next_attempt_at = ?, owner_id = NULL, lease_expires_at = NULL,
+				        updated_at = ?
+				  WHERE operation_id = ? AND state = 'running'
+				    AND owner_id = ? AND generation = ?`,
+				[
+					decision.state,
+					decision.lastError,
+					decision.retryCount,
+					decision.retryEpochKey,
+					decision.nextAttemptAt,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			result = {
+				state: decision.state,
+				retryCount: decision.retryCount,
+				retryEpochKey: decision.retryEpochKey,
+				nextAttemptAt: decision.nextAttemptAt,
+				lastError: decision.lastError,
+			};
+		});
+		if (result) this.save();
+		return result;
 	}
 
 	recordWorkflowLandPartial(input: {
@@ -39396,6 +39838,9 @@ export class StateStore {
 				result = { ok: false, reason: "land_hold_precondition_failed" };
 				return;
 			}
+			let retryExhaustion:
+				| { attempts: number; epochKey: string | undefined }
+				| undefined;
 			if (input.operationId) {
 				const operation = this.getLandOperation(input.operationId);
 				if (
@@ -39405,6 +39850,12 @@ export class StateStore {
 				) {
 					result = { ok: false, reason: "land_operation_not_held" };
 					return;
+				}
+				if (input.reason.startsWith("retry_exhausted:")) {
+					retryExhaustion = {
+						attempts: operation.retry_count,
+						epochKey: operation.retry_epoch_key ?? undefined,
+					};
 				}
 			}
 			this.db.run(
@@ -39425,6 +39876,7 @@ export class StateStore {
 					attempt: input.attempt,
 					operationId: input.operationId ?? null,
 					reason: input.reason,
+					...(retryExhaustion ?? {}),
 					at: input.now,
 				},
 			});
@@ -39441,6 +39893,7 @@ export class StateStore {
 						executionId: input.executionId,
 						reason: input.reason,
 						disposition: "held",
+						...(retryExhaustion ?? {}),
 						identity: input.alertIdentity,
 					}),
 				});
@@ -39754,6 +40207,16 @@ export interface LandOperationRow {
 	current_step: string | null;
 	merge_confirmed_at: string | null;
 	finalization_completed_at: string | null;
+	retry_count: number;
+	retry_epoch_key: string | null;
+	next_attempt_at: string | null;
+	linear_done_disposition: "done" | "canceled_refused" | "deferred" | null;
+	linear_done_deferred_at: string | null;
+	linear_done_settled_at: string | null;
+	linear_done_last_reason: string | null;
+	linear_done_retry_count: number;
+	linear_done_next_attempt_at: string | null;
+	linear_done_last_attempt_at: string | null;
 	last_error: string | null;
 	created_at: string;
 	updated_at: string;
@@ -39763,6 +40226,14 @@ export interface LandOperationClaim {
 	operationId: string;
 	ownerId: string;
 	generation: number;
+}
+
+export interface LandOperationRetryRelease {
+	state: "partial" | "held";
+	retryCount: number;
+	retryEpochKey: string | null;
+	nextAttemptAt: string | null;
+	lastError: string;
 }
 
 export interface LandOperationStepRow {
@@ -40922,10 +41393,16 @@ export interface WorkflowEngineAlertPayload {
 				| "runner_ship_head_enrichment_failed"
 				| "runner_ship_hydration_reval_failed"
 				| "runner_ship_authority_conflict"
+				| "linear_done_deferred"
 				| "observation_corrupt";
 			launchCount?: number;
 			maxBlindReplacements?: number;
 			outputExistsForAttempt?: boolean;
+			attempts?: number;
+			epochKey?: string;
+			operationId?: string;
+			reason?: string;
+			deferredAt?: string;
 			management?: { terminate: string };
 			questionId?: string;
 			subjectDigest?: string;
