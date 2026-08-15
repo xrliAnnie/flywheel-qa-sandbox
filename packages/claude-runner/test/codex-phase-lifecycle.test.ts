@@ -204,6 +204,67 @@ describe("CodexPhaseLifecycleController (FLY-1269)", () => {
 		await lifecycle.stop();
 	});
 
+	it("routes queue batches through the zero-settlement doorbell path", async () => {
+		db.registerSession(
+			"exec-1",
+			"flywheel:@1",
+			"flywheel",
+			"FLY-1774",
+			"flywheel-eng-lead",
+			"codex",
+			true,
+		);
+		const first = db.insertInstruction("lead", "exec-1", "first");
+		const second = db.insertInstruction("lead", "exec-1", "second");
+		const raw = (db as unknown as { db: import("better-sqlite3").Database }).db;
+		raw
+			.prepare(
+				`UPDATE mailbox SET state='LEASED', batch_id='mailbox-batch:batch-a',
+				 claimed_by='bridge:1', claim_expires_at='2099-01-01T00:00:00.000Z'
+				 WHERE id IN (?, ?)`,
+			)
+			.run(first, second);
+		const memberIds = (
+			raw
+				.prepare(
+					"SELECT delivery_id FROM mailbox WHERE id IN (?, ?) ORDER BY seq",
+				)
+				.all(first, second) as Array<{ delivery_id: string }>
+		).map((row) => row.delivery_id);
+		const watcher = new FakeWatcher();
+		const lifecycle = controller(watcher);
+		await lifecycle.start();
+		await lifecycle.enterHold({
+			deadlineRemainingMs: 1,
+			hardDeadlineRemainingMs: 2,
+		});
+		await lifecycle.confirmHoldPaused();
+
+		await watcher.emit({
+			id: "transport-batch-a",
+			to: "runner-agent",
+			content: "full transport body",
+			metadata: {
+				flywheelId: "mailbox-batch:batch-a#r0",
+				durableBatchId: "mailbox-batch:batch-a",
+				memberIds,
+				execId: "exec-1",
+			},
+		});
+
+		expect(db.listRunnerPhaseWakes("exec-1")).toMatchObject([
+			{
+				message_id: "doorbell:mailbox-batch:batch-a#r0",
+				source_instruction_id: null,
+			},
+		]);
+		expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
+			first,
+			second,
+		]);
+		await lifecycle.stop();
+	});
+
 	it("queues an instruction envelope even after the active runner listed it", async () => {
 		const instructionId = db.insertInstruction("lead", "exec-1", "listed");
 		db.markInstructionRead(instructionId);

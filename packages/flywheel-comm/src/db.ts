@@ -73,7 +73,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   lead_id       TEXT,
   started_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
   ended_at      DATETIME,
-  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed'))
+  status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed')),
+  phase_keep_alive INTEGER NOT NULL DEFAULT 0 CHECK(phase_keep_alive IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS session_receipt_lineage (
   execution_id  TEXT PRIMARY KEY,
@@ -489,6 +490,93 @@ export interface RunnerPhaseWake {
 		| "terminal"
 		| null;
 	purpose: "message_traffic" | "gate_response" | "park_wake" | null;
+}
+
+export type RunnerDoorbellWakeResult =
+	| {
+			kind: "queued" | "reused" | "already_covered";
+			wake: RunnerPhaseWake;
+	  }
+	| {
+			kind: "already_settled" | "stale_attempt" | "no_consumer" | "no_messages";
+	  };
+
+interface RunnerDoorbellObligation {
+	attemptId: string;
+	memberIds: string[];
+	hasInstruction: boolean;
+	responseRefIds: string[];
+	audit: Record<string, unknown>;
+}
+
+interface RunnerDoorbellMetadata {
+	doorbellAttemptId: string;
+	coveredDoorbellAttemptIds: string[];
+	memberIds: string[];
+	hasInstruction: boolean;
+	responseRefIds: string[];
+	[key: string]: unknown;
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+	return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+function renderRunnerDoorbellContent(
+	executionId: string,
+	hasInstruction: boolean,
+	responseRefIds: readonly string[],
+): string {
+	const commands: string[] = [];
+	if (hasInstruction) {
+		commands.push(`flywheel-comm inbox --exec-id ${executionId}`);
+	}
+	for (const refId of uniqueStrings(responseRefIds)) {
+		commands.push(`flywheel-comm check ${refId}`);
+	}
+	if (commands.length === 0) {
+		throw new Error("doorbell wake has no readable mailbox obligation");
+	}
+	return `Unread Lead traffic is waiting. Run ${commands.map((command) => `'${command}'`).join(" and ")} to read and execute it. This doorbell carries no authority and does not contain the message body.`;
+}
+
+function parseRunnerDoorbellMetadata(
+	wake: RunnerPhaseWake,
+): RunnerDoorbellMetadata {
+	let parsed: Record<string, unknown> = {};
+	if (wake.metadata_json) {
+		try {
+			const candidate = JSON.parse(wake.metadata_json) as unknown;
+			if (typeof candidate === "object" && candidate !== null) {
+				parsed = candidate as Record<string, unknown>;
+			}
+		} catch {
+			throw new Error(`malformed doorbell metadata for ${wake.message_id}`);
+		}
+	}
+	const mainAttempt = wake.message_id.startsWith("doorbell:")
+		? wake.message_id.slice("doorbell:".length)
+		: "";
+	const stringArray = (value: unknown): string[] =>
+		Array.isArray(value)
+			? uniqueStrings(
+					value.filter((item): item is string => typeof item === "string"),
+				)
+			: [];
+	return {
+		...parsed,
+		doorbellAttemptId:
+			typeof parsed.doorbellAttemptId === "string"
+				? parsed.doorbellAttemptId
+				: mainAttempt,
+		coveredDoorbellAttemptIds: uniqueStrings([
+			mainAttempt,
+			...stringArray(parsed.coveredDoorbellAttemptIds),
+		]),
+		memberIds: stringArray(parsed.memberIds),
+		hasInstruction: parsed.hasInstruction === true,
+		responseRefIds: stringArray(parsed.responseRefIds),
+	};
 }
 
 export interface RunnerWakeFailureEpisode {
@@ -913,6 +1001,21 @@ export class CommDB {
 				}
 			}
 		}
+		if (!sessionColumns.some((c) => c.name === "phase_keep_alive")) {
+			// FLY-1774: execution-scoped capability for the resident Codex
+			// phase-hold consumer. Install it before the FLY-1066 rebuild below so
+			// every legacy starting point has a source column to copy.
+			try {
+				this.db.exec(
+					"ALTER TABLE sessions ADD COLUMN phase_keep_alive INTEGER NOT NULL DEFAULT 0 CHECK(phase_keep_alive IN (0,1))",
+				);
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: phase_keep_alive/i.test(msg)) {
+					throw err;
+				}
+			}
+		}
 
 		// FLY-1279 / FLY-1066: resident goals can end in truthful `blocked` or
 		// `failed` states. SQLite cannot ALTER a CHECK constraint, so rebuild the
@@ -935,14 +1038,15 @@ export class CommDB {
 						started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 						ended_at DATETIME,
 						status TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout','blocked','failed')),
-						vendor TEXT
+						vendor TEXT,
+						phase_keep_alive INTEGER NOT NULL DEFAULT 0 CHECK(phase_keep_alive IN (0,1))
 					);
 					INSERT INTO sessions_fly1066 (
 						execution_id, tmux_window, project_name, issue_id, lead_id,
-						started_at, ended_at, status, vendor
+						started_at, ended_at, status, vendor, phase_keep_alive
 					)
 					SELECT execution_id, tmux_window, project_name, issue_id, lead_id,
-						started_at, ended_at, status, vendor
+						started_at, ended_at, status, vendor, phase_keep_alive
 					FROM sessions;
 					DROP TABLE sessions;
 					ALTER TABLE sessions_fly1066 RENAME TO sessions;
@@ -2728,6 +2832,305 @@ export class CommDB {
 		});
 
 		return enqueue();
+	}
+
+	/**
+	 * FLY-1774: translate one queue-enabled Codex mailbox batch into a durable
+	 * phase-hold doorbell. Unlike the legacy single-message callback above, this
+	 * path never settles mailbox rows; the resumed agent remains the only ACKer.
+	 */
+	enqueueRunnerDoorbellWake(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	): RunnerDoorbellWakeResult {
+		if (!executionId || !message.id || !message.content) {
+			throw new Error(
+				"runner doorbell requires executionId, message id, and content",
+			);
+		}
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+			throw new Error("doorbell nowMs must be a non-negative safe integer");
+		}
+		const enqueue = this.db.transaction((): RunnerDoorbellWakeResult => {
+			if (!this.runnerDoorbellConsumerIsLive(executionId)) {
+				return { kind: "no_consumer" };
+			}
+			const metadata = message.metadata;
+			if (!metadata || metadata.execId !== executionId) {
+				throw new Error(`doorbell batch execId mismatch for ${executionId}`);
+			}
+			const flywheelId = metadata.flywheelId;
+			const durableBatchId = metadata.durableBatchId;
+			const rawMemberIds = metadata.memberIds;
+			if (
+				typeof flywheelId !== "string" ||
+				typeof durableBatchId !== "string" ||
+				!durableBatchId.startsWith("mailbox-batch:") ||
+				!Array.isArray(rawMemberIds) ||
+				rawMemberIds.length === 0 ||
+				rawMemberIds.some((id) => typeof id !== "string" || id.length === 0)
+			) {
+				throw new Error("malformed runner mailbox batch doorbell metadata");
+			}
+			const memberIds = rawMemberIds as string[];
+			if (new Set(memberIds).size !== memberIds.length) {
+				throw new Error("runner mailbox batch doorbell has duplicate members");
+			}
+			const attemptMatch = flywheelId.match(
+				/^(mailbox-batch:[A-Za-z0-9-]+)#r([0-9]+)$/,
+			);
+			if (!attemptMatch || attemptMatch[1] !== durableBatchId) {
+				throw new Error("runner mailbox batch doorbell attempt is malformed");
+			}
+			const retry = Number(attemptMatch[2]);
+			if (!Number.isSafeInteger(retry)) {
+				throw new Error("runner mailbox batch retry is invalid");
+			}
+			const placeholders = memberIds.map(() => "?").join(",");
+			const rows = this.db
+				.prepare(
+					`SELECT * FROM mailbox WHERE delivery_id IN (${placeholders}) ORDER BY seq`,
+				)
+				.all(...memberIds) as MailboxRow[];
+			if (rows.length !== memberIds.length) {
+				throw new Error("runner mailbox batch doorbell member not found");
+			}
+			for (const row of rows) {
+				if (
+					row.to_agent !== executionId ||
+					row.recipient_kind !== "runner" ||
+					row.carrier !== "inbox"
+				) {
+					throw new Error(
+						`runner mailbox batch doorbell ownership mismatch for ${row.delivery_id}`,
+					);
+				}
+			}
+			if (rows.every((row) => row.state === "ACKED" || row.state === "DEAD")) {
+				return { kind: "already_settled" };
+			}
+			const current = rows.filter(
+				(row) =>
+					row.state === "LEASED" &&
+					row.batch_id === durableBatchId &&
+					row.lease_retry_count === retry,
+			);
+			const unsettled = rows.filter(
+				(row) => row.state !== "ACKED" && row.state !== "DEAD",
+			);
+			if (current.length === 0 || current.length !== unsettled.length) {
+				return { kind: "stale_attempt" };
+			}
+			return this.commitRunnerDoorbellWake(
+				executionId,
+				this.runnerDoorbellObligation(flywheelId, current, {
+					source: "mailbox_batch",
+					transportMessageId: message.id,
+					flywheelId,
+					durableBatchId,
+				}),
+				nowMs,
+			);
+		});
+		return enqueue.immediate();
+	}
+
+	/** Turn-end fallback: ring only when a live resident consumer has unread work. */
+	sweepRunnerDoorbellWake(
+		executionId: string,
+		nowMs: number,
+	): RunnerDoorbellWakeResult {
+		if (!executionId) throw new Error("doorbell sweep executionId is required");
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+			throw new Error("doorbell nowMs must be a non-negative safe integer");
+		}
+		const sweep = this.db.transaction((): RunnerDoorbellWakeResult => {
+			if (!this.runnerDoorbellConsumerIsLive(executionId)) {
+				return { kind: "no_consumer" };
+			}
+			const nowIso = new Date(nowMs).toISOString();
+			const rows = this.db
+				.prepare(
+					`SELECT * FROM mailbox
+					  WHERE to_agent = ? AND recipient_kind = 'runner'
+					    AND carrier = 'inbox' AND state IN ('QUEUED','LEASED')
+					    AND type IN ('instruction','response')
+					    AND (expires_at IS NULL OR expires_at > ?)
+					  ORDER BY seq`,
+				)
+				.all(executionId, nowIso) as MailboxRow[];
+			if (rows.length === 0) return { kind: "no_messages" };
+
+			const leasedGroups = new Map<string, MailboxRow[]>();
+			const frontierRows: MailboxRow[] = [];
+			for (const row of rows) {
+				if (row.state === "LEASED" && row.batch_id) {
+					const attemptId = `${row.batch_id}#r${row.lease_retry_count}`;
+					const group = leasedGroups.get(attemptId) ?? [];
+					group.push(row);
+					leasedGroups.set(attemptId, group);
+				} else {
+					frontierRows.push(row);
+				}
+			}
+			const oldestLeased = [...leasedGroups.entries()].sort(
+				([, left], [, right]) => left[0]!.seq - right[0]!.seq,
+			)[0];
+			if (oldestLeased) {
+				return this.commitRunnerDoorbellWake(
+					executionId,
+					this.runnerDoorbellObligation(oldestLeased[0], oldestLeased[1], {
+						source: "turn_end_sweep",
+					}),
+					nowMs,
+				);
+			}
+			const frontier = Math.max(...frontierRows.map((row) => row.seq));
+			return this.commitRunnerDoorbellWake(
+				executionId,
+				this.runnerDoorbellObligation(
+					`sweep:${executionId}:${frontier}`,
+					frontierRows,
+					{ source: "turn_end_sweep" },
+				),
+				nowMs,
+			);
+		});
+		return sweep.immediate();
+	}
+
+	private runnerDoorbellConsumerIsLive(executionId: string): boolean {
+		const session = this.db
+			.prepare(
+				"SELECT status, phase_keep_alive FROM sessions WHERE execution_id = ?",
+			)
+			.get(executionId) as
+			| { status: string; phase_keep_alive: number }
+			| undefined;
+		return session?.status === "running" && session.phase_keep_alive === 1;
+	}
+
+	private runnerDoorbellObligation(
+		attemptId: string,
+		rows: readonly MailboxRow[],
+		audit: Record<string, unknown>,
+	): RunnerDoorbellObligation {
+		const responseRefIds = uniqueStrings(
+			rows
+				.filter((row) => row.type === "response")
+				.map((row) => row.ref_id ?? ""),
+		);
+		const hasInstruction = rows.some((row) => row.type === "instruction");
+		if (!hasInstruction && responseRefIds.length === 0) {
+			throw new Error(`doorbell attempt ${attemptId} has no readable messages`);
+		}
+		return {
+			attemptId,
+			memberIds: rows.map((row) => row.delivery_id),
+			hasInstruction,
+			responseRefIds,
+			audit,
+		};
+	}
+
+	/** Caller holds the connection's IMMEDIATE transaction. */
+	private commitRunnerDoorbellWake(
+		executionId: string,
+		obligation: RunnerDoorbellObligation,
+		nowMs: number,
+	): RunnerDoorbellWakeResult {
+		const doorbells = this.db
+			.prepare(
+				`SELECT * FROM runner_phase_wakes
+				  WHERE execution_id = ? AND message_id LIKE 'doorbell:%'
+				  ORDER BY queue_seq`,
+			)
+			.all(executionId) as RunnerPhaseWake[];
+		for (const wake of doorbells) {
+			const metadata = parseRunnerDoorbellMetadata(wake);
+			if (metadata.coveredDoorbellAttemptIds.includes(obligation.attemptId)) {
+				return { kind: "already_covered", wake };
+			}
+		}
+
+		const inflight = doorbells.find((wake) => wake.state !== "finished");
+		if (inflight) {
+			if (inflight.state === "pending") {
+				const metadata = parseRunnerDoorbellMetadata(inflight);
+				const merged: RunnerDoorbellMetadata = {
+					...metadata,
+					coveredDoorbellAttemptIds: uniqueStrings([
+						...metadata.coveredDoorbellAttemptIds,
+						obligation.attemptId,
+					]),
+					memberIds: uniqueStrings([
+						...metadata.memberIds,
+						...obligation.memberIds,
+					]),
+					hasInstruction: metadata.hasInstruction || obligation.hasInstruction,
+					responseRefIds: uniqueStrings([
+						...metadata.responseRefIds,
+						...obligation.responseRefIds,
+					]),
+				};
+				this.db
+					.prepare(
+						`UPDATE runner_phase_wakes SET content = ?, metadata_json = ?
+						  WHERE queue_seq = ? AND state = 'pending'`,
+					)
+					.run(
+						renderRunnerDoorbellContent(
+							executionId,
+							merged.hasInstruction,
+							merged.responseRefIds,
+						),
+						JSON.stringify(merged),
+						inflight.queue_seq,
+					);
+				const updated = this.db
+					.prepare("SELECT * FROM runner_phase_wakes WHERE queue_seq = ?")
+					.get(inflight.queue_seq) as RunnerPhaseWake;
+				return { kind: "reused", wake: updated };
+			}
+			// A started wake must keep its byte-exact obligation. Do not mark this
+			// new attempt covered; a later sweep may ring it after the current turn.
+			return { kind: "reused", wake: inflight };
+		}
+
+		const messageId = `doorbell:${obligation.attemptId}`;
+		const metadata: RunnerDoorbellMetadata = {
+			...obligation.audit,
+			doorbellAttemptId: obligation.attemptId,
+			coveredDoorbellAttemptIds: [obligation.attemptId],
+			memberIds: uniqueStrings(obligation.memberIds),
+			hasInstruction: obligation.hasInstruction,
+			responseRefIds: uniqueStrings(obligation.responseRefIds),
+		};
+		this.db
+			.prepare(
+				`INSERT INTO runner_phase_wakes
+				   (execution_id, message_id, content, metadata_json,
+				    source_instruction_id, state, queued_at, purpose)
+				 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'message_traffic')`,
+			)
+			.run(
+				executionId,
+				messageId,
+				renderRunnerDoorbellContent(
+					executionId,
+					metadata.hasInstruction,
+					metadata.responseRefIds,
+				),
+				JSON.stringify(metadata),
+				nowMs,
+			);
+		const wake = this.db
+			.prepare(
+				"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND message_id = ?",
+			)
+			.get(executionId, messageId) as RunnerPhaseWake;
+		return { kind: "queued", wake };
 	}
 
 	listRunnerPhaseWakes(executionId: string): RunnerPhaseWake[] {
@@ -4869,18 +5272,21 @@ export class CommDB {
 		leadId?: string,
 		/** FLY-1188: transport vendor ("claude-code" | "codex"); routes `send` wakes. */
 		vendor?: string,
+		/** FLY-1774: execution has a resident Codex phase-hold consumer. */
+		phaseKeepAlive = false,
 	): void {
 		this.db.transaction(() => {
 			this.db
 				.prepare(
-					`INSERT INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor)
-			 VALUES (?, ?, ?, ?, ?, ?)
+					`INSERT INTO sessions (execution_id, tmux_window, project_name, issue_id, lead_id, vendor, phase_keep_alive)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
 			 ON CONFLICT(execution_id) DO UPDATE SET
 		   tmux_window = excluded.tmux_window,
 		   project_name = excluded.project_name,
 		   issue_id = excluded.issue_id,
 		   lead_id = excluded.lead_id,
 		   vendor = excluded.vendor,
+		   phase_keep_alive = MAX(sessions.phase_keep_alive, excluded.phase_keep_alive),
 		   started_at = CASE
 		     WHEN sessions.status = 'running' THEN excluded.started_at
 		     ELSE sessions.started_at
@@ -4897,6 +5303,7 @@ export class CommDB {
 					issueId ?? null,
 					leadId ?? null,
 					vendor ?? null,
+					phaseKeepAlive ? 1 : 0,
 				);
 			this.upsertSessionReceiptLineage({
 				executionId,
@@ -4905,6 +5312,22 @@ export class CommDB {
 				leadId: leadId ?? null,
 			});
 		})();
+	}
+
+	/** Fail-loud producer assertion before a resident phase controller starts. */
+	assertPhaseKeepAliveSessionRunning(executionId: string): void {
+		const session = this.db
+			.prepare(
+				"SELECT status, phase_keep_alive FROM sessions WHERE execution_id = ?",
+			)
+			.get(executionId) as
+			| { status: string; phase_keep_alive: number }
+			| undefined;
+		if (session?.status !== "running" || session.phase_keep_alive !== 1) {
+			throw new Error(
+				`phase keep-alive session is not running for ${executionId}`,
+			);
+		}
 	}
 
 	/**
@@ -5025,10 +5448,15 @@ export class CommDB {
 		status: "completed" | "timeout" | "blocked",
 	): void {
 		this.db
-			.prepare(
-				"UPDATE sessions SET status = ?, ended_at = datetime('now') WHERE execution_id = ?",
-			)
-			.run(status, executionId);
+			.transaction(() => {
+				this.db
+					.prepare(
+						"UPDATE sessions SET status = ?, ended_at = datetime('now') WHERE execution_id = ?",
+					)
+					.run(status, executionId);
+				this.disposeRunnerDoorbellsForTerminal(executionId, Date.now());
+			})
+			.immediate();
 	}
 
 	/**
@@ -5041,10 +5469,17 @@ export class CommDB {
 		status: "completed" | "timeout" | "blocked",
 	): void {
 		this.db
-			.prepare(
-				"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ? AND status = 'running'",
-			)
-			.run(status, executionId);
+			.transaction(() => {
+				const changed = this.db
+					.prepare(
+						"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ? AND status = 'running'",
+					)
+					.run(status, executionId).changes;
+				if (changed === 1) {
+					this.disposeRunnerDoorbellsForTerminal(executionId, Date.now());
+				}
+			})
+			.immediate();
 	}
 
 	/**
@@ -5057,10 +5492,34 @@ export class CommDB {
 		status: "failed" | "blocked",
 	): void {
 		this.db
+			.transaction(() => {
+				const changed = this.db
+					.prepare(
+						"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ?",
+					)
+					.run(status, executionId).changes;
+				if (changed === 1) {
+					this.disposeRunnerDoorbellsForTerminal(executionId, Date.now());
+				}
+			})
+			.immediate();
+	}
+
+	private disposeRunnerDoorbellsForTerminal(
+		executionId: string,
+		nowMs: number,
+	): number {
+		return this.db
 			.prepare(
-				"UPDATE sessions SET status = ?, ended_at = COALESCE(ended_at, datetime('now')) WHERE execution_id = ?",
+				`UPDATE runner_phase_wakes
+				    SET state = 'finished', finished_at = COALESCE(finished_at, ?),
+				        last_push_result = 'disposed:terminal_target',
+				        started_ack_scope = 'terminal',
+				        claim_token = NULL, claim_expires_at = NULL
+				  WHERE execution_id = ? AND message_id LIKE 'doorbell:%'
+				    AND state IN ('pending','started')`,
 			)
-			.run(status, executionId);
+			.run(nowMs, executionId).changes;
 	}
 
 	getSession(executionId: string): Session | undefined {

@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph DB["CommDB(每个项目一个 SQLite 数据库)"]
+        MB["📮 mailbox 信箱表<br/>一封信一行<br/>状态: 排队→已投→已签收/死信<br/>30 分钟租约"]
+        PW["🔔 runner_phase_wakes 门铃表<br/>每个 runner 至多一条在途门铃<br/>门铃编号 = 投递批次号(稳定可去重)"]
+        SS["👤 sessions 会话表<br/>新列 phase_keep_alive:<br/>『这个 runner 有停驻消费者吗』<br/>+ status 是否还活着"]
+    end
+
+    LANE["Bridge 投递循环"] -->|"写投递状态"| MB
+    LANE -->|"送信"| WATCH["watcher 哨兵"]
+    WATCH -->|"按门铃(不碰信的签收状态)"| PW
+    SWEEP["notify 兜底扫<br/>(回合结束时跑)"] -->|"查未签收的信"| MB
+    SWEEP -->|"按门铃(同一把闸)"| PW
+    SWEEP -->|"先验资格:<br/>有消费者 + 还活着"| SS
+    HOLD["daemon 停驻循环<br/>(唯一注入者)"] -->|"消费门铃"| PW
+    HOLD -->|"注入唤醒回合"| RUNNER["Codex runner"]
+    RUNNER -->|"醒来自己签收<br/>(唯一签收者)"| MB
+    TERM["收尾(两个出口共用):<br/>会话终结时同一事务里<br/>关资格 + 收走残留门铃"] --> SS
+    TERM --> PW

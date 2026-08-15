@@ -1,0 +1,24 @@
+flowchart TD
+    subgraph LEG1["腿一 · 投递腿(主腿,修好即通)"]
+        A["Lead 发指令<br/>flywheel-comm send"] --> B["📮 信箱表落一行<br/>(耐久,不会丢)"]
+        B --> C["Bridge 投递循环<br/>1~30 秒一轮"]
+        C --> D{"投递闸:<br/>收件人还活着吗?"}
+        D -- "修复① 停驻≠死亡" --> E["写入 runner 的<br/>收件 JSON 文件"]
+        E --> F["watcher 哨兵<br/>(停驻期间每秒看一眼)"]
+        F -- "修复② 批量信封<br/>不再报错" --> G["🔔 门铃表落一行<br/>(runner_phase_wakes)"]
+    end
+
+    subgraph LEG2["腿二 · notify 兜底扫"]
+        H["Codex 每个回合结束<br/>notify 钩子被调用"] --> I{"信箱里还有<br/>没接下的信?"}
+        I -- "有" --> G
+        I -- "没有" --> J["静默退出<br/>(不打扰)"]
+    end
+
+    subgraph LEG3["腿三 · 租约兜底(已有机制,免费复用)"]
+        K["30 分钟没人接下<br/>租约到期"] --> L["同一行原地重投<br/>(不复制新行)"]
+        L --> C
+    end
+
+    G --> M["daemon 停驻循环<br/>最迟 15 秒看到门铃"]
+    M --> N["⏰ 注入唤醒回合:<br/>『你有未读指令,去读信箱』"]
+    N --> O["runner 醒来<br/>自己读信、自己签收"]

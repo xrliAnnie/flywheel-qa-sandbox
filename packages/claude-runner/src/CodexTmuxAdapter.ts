@@ -1513,15 +1513,24 @@ export class CodexTmuxAdapter implements IAdapter {
 	/**
 	 * Register the CommDB session (vendor=codex) for send-routing + tracking. The
 	 * tmux target is name-based (the founder window is created lazily on the
-	 * first threadId). Best-effort — non-fatal, mirrors TmuxAdapter.
+	 * first threadId). Ordinary registration remains best-effort. A resident
+	 * phase consumer is fail-loud because its doorbell fence depends on this row.
 	 */
 	private registerCommDbSession(
 		ctx: AdapterExecutionContext,
 		windowName: string,
 	): boolean {
-		if (!ctx.commDbPath) return false;
+		if (!ctx.commDbPath) {
+			if (ctx.phaseKeepAlive) {
+				throw new Error(
+					`phase keep-alive requires CommDB registration for ${ctx.executionId}`,
+				);
+			}
+			return false;
+		}
+		let commDb: CommDB | undefined;
 		try {
-			const commDb = new CommDB(ctx.commDbPath);
+			commDb = new CommDB(ctx.commDbPath);
 			commDb.registerSession(
 				ctx.executionId,
 				`${this.sessionName}:${windowName}`,
@@ -1531,11 +1540,17 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1188: vendor routes `flywheel-comm send` wakes to the codex
 				// mailbox (the claude-code env default misrouted them).
 				"codex",
+				ctx.phaseKeepAlive !== undefined,
 			);
-			commDb.close();
+			if (ctx.phaseKeepAlive) {
+				commDb.assertPhaseKeepAliveSessionRunning(ctx.executionId);
+			}
 			return true;
-		} catch {
+		} catch (error) {
+			if (ctx.phaseKeepAlive) throw error;
 			return false; // non-fatal (same as TmuxAdapter)
+		} finally {
+			commDb?.close();
 		}
 	}
 

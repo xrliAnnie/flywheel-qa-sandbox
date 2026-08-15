@@ -346,6 +346,80 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+		const comm = new CommDB(dbPath);
+		try {
+			expect(comm.getSession(execId)?.phase_keep_alive).toBe(1);
+		} finally {
+			comm.close();
+		}
+	});
+
+	it("FLY-1774: phase registration failure prevents runtime and controller startup", async () => {
+		const runtimeFactory = vi.fn(() => runtime);
+		const phaseLifecycleFactory = vi.fn();
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), runtimeFactory, phaseLifecycleFactory },
+		);
+
+		const result = await adapter.execute(
+			ctx({
+				phaseKeepAlive: { role: "implement" },
+				commDbPath: dir,
+			}),
+		);
+
+		expect(result.success).toBe(false);
+		expect(runtimeFactory).not.toHaveBeenCalled();
+		expect(phaseLifecycleFactory).not.toHaveBeenCalled();
+	});
+
+	it("FLY-1774: terminal phase session cannot be revived into a consumer", async () => {
+		const comm = new CommDB(dbPath);
+		try {
+			comm.registerSession(
+				execId,
+				"testsess:FLY-1188",
+				"proj",
+				"FLY-1188",
+				"flywheel-eng-lead",
+				"codex",
+				true,
+			);
+			comm.markSessionTerminalStatus(execId, "failed");
+		} finally {
+			comm.close();
+		}
+		const runtimeFactory = vi.fn(() => runtime);
+		const phaseLifecycleFactory = vi.fn();
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			{ ...makeDeps(), runtimeFactory, phaseLifecycleFactory },
+		);
+
+		const result = await adapter.execute(
+			ctx({ phaseKeepAlive: { role: "implement" } }),
+		);
+
+		expect(result.success).toBe(false);
+		expect(runtimeFactory).not.toHaveBeenCalled();
+		expect(phaseLifecycleFactory).not.toHaveBeenCalled();
+		const after = new CommDB(dbPath);
+		try {
+			expect(after.getSession(execId)?.status).toBe("failed");
+		} finally {
+			after.close();
+		}
 	});
 
 	it("request-bound phase shutdown stops the runtime, drains, then acknowledges", async () => {

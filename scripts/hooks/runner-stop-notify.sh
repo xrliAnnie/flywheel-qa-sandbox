@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# FLY-1571: best-effort Runner turn-end reporter. This hook is notify-only.
-# A future blocking Runner Stop hook (FLY-1569 batch G) owns the stop decision
-# and must invoke this reporter only after it allows the turn to stop.
+# FLY-1571: best-effort Runner turn-end reporter.
+# FLY-1774: Codex notify also rings the durable mailbox doorbell after the
+# reporter leg finishes. Claude Stop/StopFailure remain reporter-only.
 set -u
 
 log_dir="${HOME:-/tmp}/.flywheel/logs"
@@ -11,6 +11,41 @@ if mkdir -p "$log_dir" 2>/dev/null && touch "$log_file" 2>/dev/null; then
 else
   exec >/dev/null 2>&1
 fi
+
+run_supervised_leg() {
+  "$@" &
+  local child_pid=$!
+  local child_pgid supervisor_pgid parent_pgid watchdog_pid watchdog_pgid
+  child_pgid="$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')"
+  supervisor_pgid="$(ps -o pgid= -p "${BASHPID:-$$}" 2>/dev/null | tr -d ' ')"
+  parent_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  (
+    sleep 12
+    if kill -0 "$child_pid" 2>/dev/null; then
+      if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
+        kill -TERM -- "-$child_pgid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+      else
+        kill -TERM "$child_pid" 2>/dev/null || true
+      fi
+      sleep 2
+      if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
+        kill -KILL -- "-$child_pgid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+      else
+        kill -KILL "$child_pid" 2>/dev/null || true
+      fi
+    fi
+  ) &
+  watchdog_pid=$!
+  watchdog_pgid="$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')"
+  wait "$child_pid" 2>/dev/null || true
+  if [ "$watchdog_pgid" = "$watchdog_pid" ] && [ "$watchdog_pgid" != "$supervisor_pgid" ] && [ "$watchdog_pgid" != "$parent_pgid" ]; then
+    kill -TERM -- "-$watchdog_pgid" 2>/dev/null || kill -TERM "$watchdog_pid" 2>/dev/null || true
+  else
+    kill -TERM "$watchdog_pid" 2>/dev/null || true
+  fi
+  wait "$watchdog_pid" 2>/dev/null || true
+  return 0
+}
 
 main() {
   local exec_id="${FLYWHEEL_EXEC_ID:-}"
@@ -136,38 +171,19 @@ PY
   [ -z "$last_message" ] || emitter+=(--last-message "$last_message")
   [ -z "$turn_id" ] || emitter+=(--turn-id "$turn_id")
 
+  local -a sweep=()
+  if [ "$source" = "codex-notify" ]; then
+    sweep=(node "$cli" runner-wake-sweep --exec-id "$exec_id")
+    [ -z "${FLYWHEEL_COMM_DB:-}" ] || sweep+=(--db "$FLYWHEEL_COMM_DB")
+    [ -z "${FLYWHEEL_PROJECT_NAME:-}" ] || sweep+=(--project "$FLYWHEEL_PROJECT_NAME")
+  fi
+
   (
     set -m
-    "${emitter[@]}" &
-    child_pid=$!
-    child_pgid="$(ps -o pgid= -p "$child_pid" 2>/dev/null | tr -d ' ')"
-    supervisor_pgid="$(ps -o pgid= -p "${BASHPID:-$$}" 2>/dev/null | tr -d ' ')"
-    parent_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-    (
-      sleep 12
-      if kill -0 "$child_pid" 2>/dev/null; then
-        if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
-          kill -TERM -- "-$child_pgid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
-        else
-          kill -TERM "$child_pid" 2>/dev/null || true
-        fi
-        sleep 2
-        if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
-          kill -KILL -- "-$child_pgid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
-        else
-          kill -KILL "$child_pid" 2>/dev/null || true
-        fi
-      fi
-    ) &
-    watchdog_pid=$!
-    watchdog_pgid="$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')"
-    wait "$child_pid" 2>/dev/null || true
-    if [ "$watchdog_pgid" = "$watchdog_pid" ] && [ "$watchdog_pgid" != "$supervisor_pgid" ] && [ "$watchdog_pgid" != "$parent_pgid" ]; then
-      kill -TERM -- "-$watchdog_pgid" 2>/dev/null || kill -TERM "$watchdog_pid" 2>/dev/null || true
-    else
-      kill -TERM "$watchdog_pid" 2>/dev/null || true
+    run_supervised_leg "${emitter[@]}"
+    if [ "${#sweep[@]}" -gt 0 ]; then
+      run_supervised_leg "${sweep[@]}"
     fi
-    wait "$watchdog_pid" 2>/dev/null || true
   ) </dev/null &
   return 0
 }

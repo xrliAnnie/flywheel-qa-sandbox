@@ -30,6 +30,7 @@ export { sessions } from "./commands/sessions.js";
 export type {
 	GateSupersedeRow,
 	PhaseWakeInput,
+	RunnerDoorbellWakeResult,
 	RunnerPhaseWake,
 	RunnerShutdownControl,
 	TurnWakeOutboxRow,

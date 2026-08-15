@@ -5524,10 +5524,14 @@ export class StateStore {
 	resolveRunnerRecipientState(executionId: string): RunnerRecipientState {
 		const session = this.getSession(executionId);
 		if (!session) return { state: "terminal_or_missing" };
+		// FLY-1774: awaiting_review is a resident, reachable runner state. Keep
+		// StateStore's broader FSM monotonicity set intact, but do not let the
+		// mailbox lease lane instant-DEAD Lead instructions for a parked runner.
+		const mailboxTerminal =
+			session.status !== "awaiting_review" &&
+			TERMINAL_STATUSES.has(session.status);
 		return {
-			state: TERMINAL_STATUSES.has(session.status)
-				? "terminal_or_missing"
-				: "alive",
+			state: mailboxTerminal ? "terminal_or_missing" : "alive",
 			projectName: session.project_name,
 			issueLabels: session.issue_labels,
 		};

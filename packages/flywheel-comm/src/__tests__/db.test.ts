@@ -520,6 +520,7 @@ describe("CommDB", () => {
 				lead_id: "flywheel-eng-lead",
 				status: "failed",
 				vendor: "codex",
+				phase_keep_alive: 0,
 			});
 			migrated.close();
 
@@ -530,6 +531,7 @@ describe("CommDB", () => {
 				)
 				.get() as { sql: string };
 			expect(schema.sql).toContain("'failed'");
+			expect(schema.sql).toContain("phase_keep_alive");
 			expect(
 				raw
 					.prepare(

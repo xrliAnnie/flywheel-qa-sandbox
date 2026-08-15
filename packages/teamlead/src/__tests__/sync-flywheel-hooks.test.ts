@@ -92,6 +92,29 @@ describe("syncFlywheelHooks", () => {
 		expect(st.mode & 0o755).toBe(0o755);
 	});
 
+	it("FLY-1774: deploys the Codex turn-end wake hook by default", async () => {
+		await writeFile(
+			join(ctx.sourceDir, "inbox-check.sh"),
+			"#!/bin/bash\ninbox\n",
+		);
+		await writeFile(
+			join(ctx.sourceDir, "runner-stop-notify.sh"),
+			"#!/bin/bash\nwake\n",
+		);
+
+		const result = await syncFlywheelHooks({
+			sourceDir: ctx.sourceDir,
+			targetDir: ctx.targetDir,
+			log: () => {},
+		});
+
+		expect(result.synced).toEqual(["inbox-check.sh", "runner-stop-notify.sh"]);
+		for (const name of result.synced) {
+			const deployed = await stat(join(ctx.targetDir, name));
+			expect(deployed.mode & 0o755).toBe(0o755);
+		}
+	});
+
 	it("source / runtime checksum diverge: copies new content", async () => {
 		await writeFile(
 			join(ctx.sourceDir, "inbox-check.sh"),
@@ -173,7 +196,10 @@ describe("syncFlywheelHooks", () => {
 			log: () => {},
 		});
 
-		expect(result.missingSource).toEqual(["inbox-check.sh"]);
+		expect(result.missingSource).toEqual([
+			"inbox-check.sh",
+			"runner-stop-notify.sh",
+		]);
 		expect(result.synced).toEqual([]);
 		expect(result.errors).toEqual([]);
 	});

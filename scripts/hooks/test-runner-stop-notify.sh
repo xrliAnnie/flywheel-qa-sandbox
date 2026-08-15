@@ -18,7 +18,11 @@ check() {
 mkdir -p "$WORK/bin" "$WORK/home" "$WORK/state"
 touch "$WORK/flywheel-comm.js"
 
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$@" >> "$FLY1571_CAPTURE"' > "$WORK/bin/node"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'printf "%s\\n" "$@" >> "$FLY1571_CAPTURE"' \
+  'if [ "${FLY1774_FAIL_REPORTER:-}" = "1" ] && [ "${2:-}" = "runner-stopped" ]; then exit 9; fi' \
+  > "$WORK/bin/node"
 chmod +x "$WORK/bin/node"
 
 run_hook() {
@@ -40,6 +44,16 @@ wait_capture() {
     tries=$((tries - 1))
   done
   [ -s "$WORK/capture" ]
+}
+
+wait_capture_pattern() {
+  local pattern="$1"
+  local tries=100
+  while [ "$tries" -gt 0 ] && ! grep -q -- "$pattern" "$WORK/capture" 2>/dev/null; do
+    sleep 0.02
+    tries=$((tries - 1))
+  done
+  grep -q -- "$pattern" "$WORK/capture" 2>/dev/null
 }
 
 if [ ! -x "$HOOK" ]; then
@@ -74,6 +88,19 @@ else
 fi
 check "Codex source flag forwarded" grep -q -- '--source' "$WORK/capture"
 check "Codex turn id forwarded" grep -q -- 'main-turn' "$WORK/capture"
+if wait_capture_pattern '^runner-wake-sweep$'; then
+  pass "Codex main turn invokes detached wake sweep"
+else
+  fail "Codex main turn invokes detached wake sweep"
+fi
+
+rm -f "$WORK/capture"
+FLY1774_FAIL_REPORTER=1 run_hook '{}' --codex turn-ended '{"type":"agent-turn-complete","client":"codex-tui","turn-id":"reporter-fails"}'
+if wait_capture_pattern '^runner-wake-sweep$'; then
+  pass "runner-stopped failure does not suppress wake sweep"
+else
+  fail "runner-stopped failure does not suppress wake sweep"
+fi
 
 rm -f "$WORK/capture"
 printf '%s\n' \
@@ -88,6 +115,8 @@ else
 fi
 check "Claude source forwarded" grep -q -- 'claude-stop' "$WORK/capture"
 check "Claude session forwarded" grep -q -- 'session-1' "$WORK/capture"
+sleep 0.1
+check "Claude Stop never invokes wake sweep" test "$(grep -c '^runner-wake-sweep$' "$WORK/capture" || true)" -eq 0
 
 rm -f "$WORK/capture"
 run_hook "{\"hook_event_name\":\"StopFailure\",\"session_id\":\"session-2\",\"transcript_path\":\"$WORK/transcript.jsonl\",\"error\":\"rate_limit\",\"error_details\":null,\"last_assistant_message\":\"API Error 429\"}"

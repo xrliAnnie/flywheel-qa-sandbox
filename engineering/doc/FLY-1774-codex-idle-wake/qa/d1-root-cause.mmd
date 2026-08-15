@@ -1,0 +1,10 @@
+flowchart LR
+  L["Lead 发出指令<br/>flywheel-comm send"] --> M[("信箱<br/>指令躺在这里")]
+  M --> B{{"Codex runner<br/>目标做完了，停驻"}}
+  B -. "停驻后不再看信箱" .-> X["❌ 永远醒不来"]
+  X --> H["只能人肉去终端<br/>敲一次 /goal 指针"]
+  M -. "投递腿在这里踩空<br/>批次编号被当成单条信件<br/>去查，查不到 → 报错重试" .-> X
+  classDef bad fill:#ffe5e2,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f;
+  classDef norm fill:#ffffff,stroke:#d2d2d7,color:#1d1d1f;
+  classDef human fill:#fff4e0,stroke:#ff9500,stroke-width:2px,color:#1d1d1f;
+  class X bad; class H human; class L,M,B norm;
