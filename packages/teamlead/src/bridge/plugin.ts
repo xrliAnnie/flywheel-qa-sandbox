@@ -4819,6 +4819,13 @@ export async function startBridge(
 		}) => Promise<void>;
 	} = {};
 	const leadInboxRuntime = new LeadInboxRuntime({
+		leadLeaseDbPath:
+			process.env.FLYWHEEL_LEAD_LEASE_DB ??
+			join(homedir(), ".flywheel", "lead-lease.db"),
+		currentLeadRecipientsForProject: (projectName) =>
+			loadProjects()
+				.find((project) => project.projectName === projectName)
+				?.leads.map(({ agentId }) => agentId) ?? [],
 		onQuarantineAlert: async (input) => {
 			const send = quarantineAlertSink.current;
 			if (!send) throw new Error("quarantine alert sink not ready");
@@ -7482,6 +7489,15 @@ export async function startBridge(
 				commDbPathForProject,
 			});
 			await terminalGateRetirement.pass();
+			// Destructive mailbox hygiene is last and isolated: a config/SQLite
+			// failure must not skip the ship-critical reconcile work above.
+			try {
+				leadInboxRuntime.reconcileRetiredLeadMailboxes();
+			} catch (error) {
+				console.warn(
+					`[lead-inbox] retired-recipient reconcile failed closed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		},
 		// FLY-1560: both holders are populated ~1.5k lines below, well after
 		// gatePoller.start(). The readiness probes stop an unarmed boot tick from

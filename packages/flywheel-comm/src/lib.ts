@@ -35,7 +35,11 @@ export type {
 	RunnerShutdownControl,
 	TurnWakeOutboxRow,
 } from "./db.js";
-export { askHygieneEnabled, CommDB } from "./db.js";
+export {
+	askHygieneEnabled,
+	CommDB,
+	PENDING_PUSH_INSTRUCTIONS_SQL,
+} from "./db.js";
 export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";
 export {
 	discordBatchPartitionKey,

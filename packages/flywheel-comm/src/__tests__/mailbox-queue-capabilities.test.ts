@@ -254,7 +254,318 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("stops at three delivered batches and resumes immediately after one batch ack", () => {
+	it("records a Lead transport receipt without sealing delivery until recipient ACK", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "lead-receipt");
+			claimLead(queue, "batch-lead-receipt");
+			expect(
+				queue.recordLeadBatchDelivered({
+					batchId: "batch-lead-receipt",
+					ownerEpoch: OWNER,
+					now: at(1),
+					ackLeaseTtlMs: 30_000,
+				}),
+			).toBe("applied");
+			expect(queue.getById("lead-receipt")).toMatchObject({
+				notified_at: at(1),
+				delivered_at: null,
+				acked_at: null,
+			});
+
+			expect(
+				queue.ackBatchByRecipient({
+					batchId: "batch-lead-receipt",
+					fromAgent: "lead-a",
+					now: at(2),
+				}),
+			).toBe("applied");
+			expect(queue.getById("lead-receipt")).toMatchObject({
+				state: "ACKED",
+				notified_at: at(1),
+				delivered_at: at(2),
+				acked_at: at(2),
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("preserves Flow 1 runner delivery stamps while adding transport evidence", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "runner-receipt", {
+				toAgent: "exec-a",
+				recipientKind: "runner",
+			});
+			const batch = queue.claimRunnerBatch({
+				ownerEpoch: OWNER,
+				now: T0,
+				transportClaimTtlMs: 30_000,
+				batchWindowMs: 60_000,
+				batchMaxSize: 10,
+				inflightMaxBatches: 3,
+			});
+			expect(batch).toHaveLength(1);
+			expect(
+				queue.recordRunnerBatchDelivered({
+					batchId: batch![0]!.batch_id!,
+					ownerEpoch: OWNER,
+					now: at(1),
+					ackLeaseTtlMs: 30_000,
+				}),
+			).toBe("applied");
+			expect(queue.getById("runner-receipt")).toMatchObject({
+				notified_at: at(1),
+				delivered_at: at(1),
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("does not reclaim a successfully notified Lead batch as frozen", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "notified-not-frozen");
+			claimLead(queue, "batch-notified");
+			db.prepare(
+				"UPDATE mailbox SET notified_at = ?, delivered_at = NULL WHERE id = ?",
+			).run(at(1), "notified-not-frozen");
+			expect(claimLead(queue, "must-not-reclaim", at(2))).toEqual([]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("lease-retries a notified Lead batch instead of treating it as a frozen transport failure", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "notified-expired");
+			claimLead(queue, "batch-notified-expired");
+			db.prepare(
+				`UPDATE mailbox SET notified_at = ?, delivered_at = NULL,
+				 claim_expires_at = ? WHERE id = ?`,
+			).run(at(1), at(1), "notified-expired");
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(2),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 0,
+			});
+			expect(result).toMatchObject({ requeued: 1, frozenResend: [] });
+			expect(queue.getById("notified-expired")).toMatchObject({
+				state: "QUEUED",
+				lease_retry_count: 1,
+				notified_at: null,
+				delivered_at: null,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("holds an expired Lead batch when the recipient process cannot be judged alive", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "lead-liveness-unknown");
+			claimLead(queue, "batch-lead-unknown");
+			queue.recordLeadBatchDelivered({
+				batchId: "batch-lead-unknown",
+				ownerEpoch: OWNER,
+				now: T0,
+				ackLeaseTtlMs: 1_000,
+			});
+
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(2),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "unknown",
+				maxBatches: 10,
+				maxTerminalRows: 0,
+			});
+			expect(result).toMatchObject({
+				requeued: 0,
+				dead: 0,
+				skippedUnknown: 1,
+			});
+			expect(queue.getById("lead-liveness-unknown")).toMatchObject({
+				state: "LEASED",
+				lease_retry_count: 0,
+			});
+			const recovered = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(3),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 0,
+			});
+			expect(recovered.requeued).toBe(1);
+			expect(queue.getById("lead-liveness-unknown")).toMatchObject({
+				state: "QUEUED",
+				lease_retry_count: 1,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("hands an expired batchless legacy-push claim back to Flow 2", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "legacy-handoff");
+			db.prepare(
+				`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
+				 claim_expires_at = ?, notified_at = ? WHERE id = ?`,
+			).run(at(1), T0, "legacy-handoff");
+
+			expect(
+				queue.releaseExpiredLegacyPushClaims({
+					toAgent: "lead-a",
+					ownerEpoch: OWNER,
+					now: at(2),
+					maxRows: 10,
+				}),
+			).toEqual({ requeued: 1, remaining: false });
+			expect(
+				claimLead(queue, "flow-2-handoff", at(2)).map(({ id }) => id),
+			).toEqual(["legacy-handoff"]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("adopts a suffix-free Lead's steady legacy row into Flow 2", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "suffix-free-lead", {
+				recipientKind: "runner",
+				type: "instruction",
+			});
+			db.prepare("UPDATE mailbox SET notified_at = ? WHERE id = ?").run(
+				T0,
+				"suffix-free-lead",
+			);
+
+			expect(
+				queue.releaseExpiredLegacyPushClaims({
+					toAgent: "lead-a",
+					ownerEpoch: OWNER,
+					now: at(2),
+					maxRows: 10,
+				}),
+			).toEqual({ requeued: 0, remaining: false });
+			expect(
+				claimLead(queue, "flow-2-suffix-free", at(2)).map(({ id }) => id),
+			).toEqual(["suffix-free-lead"]);
+			expect(queue.getById("suffix-free-lead")?.recipient_kind).toBe("lead");
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("never steals an active legacy retry merely because it has old transport evidence", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "legacy-active", {
+				recipientKind: "runner",
+				type: "instruction",
+			});
+			db.prepare(
+				`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
+				 claim_expires_at = ?, notified_at = ? WHERE id = ?`,
+			).run(at(30), T0, "legacy-active");
+
+			expect(
+				queue.releaseExpiredLegacyPushClaims({
+					toAgent: "lead-a",
+					ownerEpoch: OWNER,
+					now: at(2),
+					maxRows: 10,
+				}),
+			).toEqual({ requeued: 0, remaining: false });
+			expect(claimLead(queue, "must-not-double-deliver", at(2))).toEqual([]);
+			expect(queue.getById("legacy-active")).toMatchObject({
+				state: "LEASED",
+				recipient_kind: "lead",
+				claimed_by: "legacy-push",
+				claim_expires_at: at(30),
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("terminal-sweeps every queued and leased shape for a retired Lead within a row budget", () => {
+		const { db, queue } = fixture();
+		try {
+			for (const id of ["retired-queued", "retired-future", "retired-null"]) {
+				enqueue(queue, id, { toAgent: "retired-lead" });
+			}
+			db.prepare(
+				`UPDATE mailbox SET state = 'LEASED', batch_id = 'future-batch',
+				 claimed_by = ?, claim_expires_at = ?, notified_at = ? WHERE id = ?`,
+			).run(OWNER, at(60), T0, "retired-future");
+			db.prepare(
+				`UPDATE mailbox SET state = 'LEASED', batch_id = 'failed-batch',
+				 claimed_by = NULL, claim_expires_at = NULL, notified_at = NULL,
+				 last_error = 'transport failed' WHERE id = ?`,
+			).run("retired-null");
+
+			expect(
+				queue.sweepRecipientTerminal({
+					recipientKind: "lead",
+					toAgent: "retired-lead",
+					ownerEpoch: OWNER,
+					now: at(2),
+					maxRows: 2,
+				}),
+			).toEqual({ dead: 2, remaining: true });
+			expect(
+				queue.sweepRecipientTerminal({
+					recipientKind: "lead",
+					toAgent: "retired-lead",
+					ownerEpoch: OWNER,
+					now: at(3),
+					maxRows: 2,
+				}),
+			).toEqual({ dead: 1, remaining: false });
+			expect(
+				db
+					.prepare(
+						"SELECT state, dead_reason FROM mailbox WHERE to_agent = ? ORDER BY seq",
+					)
+					.all("retired-lead"),
+			).toEqual([
+				{ state: "DEAD", dead_reason: "recipient_terminal" },
+				{ state: "DEAD", dead_reason: "recipient_terminal" },
+				{ state: "DEAD", dead_reason: "recipient_terminal" },
+			]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("delivers a new founder message despite three notified but unread Lead batches", () => {
 		const { db, queue } = fixture();
 		try {
 			for (let index = 0; index < 4; index += 1) {
@@ -275,17 +586,88 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 					}),
 				).toBe("applied");
 			}
-			expect(claimLead(queue, "batch-3", at(4))).toEqual([]);
-			expect(
-				queue.ackBatchByRecipient({
-					batchId: "batch-0",
-					fromAgent: "lead-a",
-					now: at(5),
-				}),
-			).toBe("applied");
-			expect(claimLead(queue, "batch-3", at(6)).map((row) => row.id)).toEqual([
+			// Reproduces the 8-13 incident shape: three batches reached the Lead
+			// transport, none were read/ACKed, then a founder message arrived.
+			expect(claimLead(queue, "batch-3", at(4)).map((row) => row.id)).toEqual([
 				"q3",
 			]);
+			expect(queue.getById("q0")).toMatchObject({
+				state: "LEASED",
+				notified_at: at(0),
+				delivered_at: null,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("caps only batches whose transport handoff is still unfinished", () => {
+		const { db, queue } = fixture();
+		try {
+			for (let index = 0; index < 4; index += 1) {
+				enqueue(queue, `transport-${index}`, {
+					fromAgent: `runner-${index}`,
+					createdAt: at(index),
+				});
+			}
+			for (let index = 0; index < 3; index += 1) {
+				db.prepare(
+					`UPDATE mailbox SET state = 'LEASED', batch_id = ?, claimed_by = ?,
+					 claim_expires_at = ?, notified_at = NULL, delivered_at = NULL
+					 WHERE id = ?`,
+				).run(
+					`transport-batch-${index}`,
+					"other-live-owner",
+					at(60),
+					`transport-${index}`,
+				);
+			}
+
+			expect(claimLead(queue, "must-wait", at(4))).toEqual([]);
+			db.prepare(
+				"UPDATE mailbox SET notified_at = ? WHERE id = 'transport-0'",
+			).run(at(5));
+			expect(
+				claimLead(queue, "slot-released", at(6)).map(({ id }) => id),
+			).toEqual(["transport-3"]);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("backpressures after three real Lead transport failures and releases a terminal slot", () => {
+		const { db, queue } = fixture();
+		try {
+			for (let index = 0; index < 4; index += 1) {
+				enqueue(queue, `failure-${index}`, {
+					fromAgent: `runner-${index}`,
+					createdAt: at(index),
+				});
+			}
+			for (let index = 0; index < 3; index += 1) {
+				expect(
+					claimLead(queue, `failure-batch-${index}`, at(index)),
+				).toHaveLength(1);
+				expect(
+					queue.recordLeadDeliveryFailure({
+						batchId: `failure-batch-${index}`,
+						ownerEpoch: OWNER,
+						now: at(index),
+						nextRetryAt: at(100),
+						error: "transport failed",
+						maxAttempts: 3,
+					}),
+				).toBe(1);
+			}
+			expect(claimLead(queue, "blocked-by-transport", at(4))).toEqual([]);
+			expect(queue.markDead("failure-0", at(5), "transport_terminal")).toBe(
+				true,
+			);
+			expect(
+				claimLead(queue, "released-after-terminal", at(6)).map(({ id }) => id),
+			).toEqual(["failure-3"]);
 		} finally {
 			queue.close();
 			db.close();

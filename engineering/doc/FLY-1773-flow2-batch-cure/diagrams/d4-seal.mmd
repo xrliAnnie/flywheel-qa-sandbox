@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph POOL["敞口期(封口前):队列持续吸新消息"]
+        N1["消息 1"] --> POOLBOX["同源消息池 (QUEUED)<br/>顺序保持,来一条吸一条"]
+        N2["消息 2 …"] --> POOLBOX
+        N3["消息 N"] --> POOLBOX
+    end
+    POOLBOX --> GATE{"机制②修后:<br/>投递被堵吗?"}
+    GATE -- "只有传输连续失败<br/>且失败批 ≥3 才堵" --> WAITQ["消息留在池里继续攒<br/>(不丢、不乱序)"]
+    WAITQ --> GATE
+    GATE -- "正常/恢复后" --> SEAL["封口 = 投递起点那一刻<br/>把池里消息一次打包<br/>上限 30 条(Lead 通道)"]
+    SEAL --> DELIVER["立即投递<br/>(封口和投递之间不再吸新<br/>—— 晚到的进下一批)"]
+    DELIVER --> ACK["Lead 签收 → 盖『已送达』章<br/>(机制①)"]
+
+    subgraph FROZEN["唯一例外:传输失败重发批"]
+        FZ["原批原成员冻结重发<br/>同一批号 —— 保签收对账<br/>绝不中途扩员"]
+    end
+    DELIVER -.->|"传输失败时"| FROZEN
+    FROZEN -.-> GATE
+
+    style POOLBOX fill:#eef4ff,stroke:#007aff
+    style SEAL fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style DELIVER fill:#e8f8ee,stroke:#34c759
+    style WAITQ fill:#fff8e6,stroke:#ff9500
+    style FZ fill:#f3eeff,stroke:#af52de
+    style ACK fill:#e8f8ee,stroke:#34c759

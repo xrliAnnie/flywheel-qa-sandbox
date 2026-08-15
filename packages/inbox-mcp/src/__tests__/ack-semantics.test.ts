@@ -2,7 +2,7 @@
  * FLY-109 — inbox-mcp push delivery + ack state machine.
  *
  * Verifies the at-least-once semantics introduced by Direction B:
- *   1. First poll: instruction is undelivered → notify → markDelivered
+ *   1. First poll: instruction is unnotified → claim → notify → record receipt
  *   2. Subsequent polls within retry window: instruction hidden
  *   3. After retry window: re-delivered if still unacked
  *   4. After ack: hidden permanently regardless of retry window
@@ -36,7 +36,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		rmSync(testDir, { recursive: true, force: true });
 	});
 
-	it("first poll delivers message and marks delivered_at (not read_at)", async () => {
+	it("first poll records notified_at while delivered_at stays unset until ack", async () => {
 		const id = db.insertInstruction("bridge", leadId, "hello");
 		const notifier = vi.fn().mockResolvedValue(undefined);
 
@@ -48,10 +48,17 @@ describe("inbox-mcp delivery + ack state machine", () => {
 
 		const row = (db as any).db
 			.prepare(
-				"SELECT delivered_at, read_at FROM mailbox_message_projection WHERE id = ?",
+				`SELECT m.notified_at, p.delivered_at, p.read_at
+				 FROM mailbox m JOIN mailbox_message_projection p ON p.id = m.id
+				 WHERE m.id = ?`,
 			)
-			.get(id) as { delivered_at: string | null; read_at: string | null };
-		expect(row.delivered_at).not.toBeNull();
+			.get(id) as {
+			notified_at: string | null;
+			delivered_at: string | null;
+			read_at: string | null;
+		};
+		expect(row.notified_at).not.toBeNull();
+		expect(row.delivered_at).toBeNull();
 		expect(row.read_at).toBeNull();
 	});
 
@@ -75,7 +82,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		// Simulate time passing past retry window
 		(db as any).db
 			.prepare(
-				"UPDATE mailbox SET claim_expires_at = datetime('now', '-60 seconds') WHERE id = ?",
+				"UPDATE mailbox SET notified_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
 			)
 			.run(id);
 
@@ -95,7 +102,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 
 		(db as any).db
 			.prepare(
-				"UPDATE mailbox SET claim_expires_at = datetime('now', '-600 seconds') WHERE id = ?",
+				"UPDATE mailbox SET notified_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
 			)
 			.run(id);
 
@@ -225,13 +232,15 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		});
 
 		await processPendingDeliveries(db, leadId, 30, notifier);
+		await processPendingDeliveries(db, leadId, 30, notifier);
+		await processPendingDeliveries(db, leadId, 30, notifier);
 		expect(seen).toEqual([id1, id2, id3]);
 	});
 
 	it("stops batch on notifier failure and preserves undelivered state", async () => {
 		const id1 = db.insertInstruction("bridge", leadId, "ok");
 		const id2 = db.insertInstruction("bridge", leadId, "fails");
-		db.insertInstruction("bridge", leadId, "after-fail");
+		const id3 = db.insertInstruction("bridge", leadId, "after-fail");
 
 		let callCount = 0;
 		const notifier = vi.fn().mockImplementation(async () => {
@@ -241,27 +250,38 @@ describe("inbox-mcp delivery + ack state machine", () => {
 			}
 		});
 
+		const firstResult = await processPendingDeliveries(
+			db,
+			leadId,
+			30,
+			notifier,
+		);
 		const result = await processPendingDeliveries(db, leadId, 30, notifier);
 
-		expect(result.delivered).toContain(id1);
+		expect(firstResult.delivered).toContain(id1);
 		expect(result.failed).toContain(id2);
 
 		// After failure, subsequent calls (still within retry window) should NOT
 		// redeliver id1 but SHOULD retry id2 and the untouched id3 on the next pass
 		// (since id2 was never marked delivered).
 		const id1Row = (db as any).db
-			.prepare(
-				"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
-			)
-			.get(id1) as { delivered_at: string | null };
-		expect(id1Row.delivered_at).not.toBeNull();
+			.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
+			.get(id1) as { notified_at: string | null };
+		expect(id1Row.notified_at).not.toBeNull();
 
 		const id2Row = (db as any).db
-			.prepare(
-				"SELECT delivered_at FROM mailbox_message_projection WHERE id = ?",
-			)
-			.get(id2) as { delivered_at: string | null };
-		expect(id2Row.delivered_at).toBeNull();
+			.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
+			.get(id2) as { notified_at: string | null };
+		expect(id2Row.notified_at).toBeNull();
+
+		await processPendingDeliveries(db, leadId, 30, notifier);
+		await processPendingDeliveries(db, leadId, 30, notifier);
+		expect(notifier.mock.calls.map(([message]) => message.id)).toEqual([
+			id1,
+			id2,
+			id2,
+			id3,
+		]);
 	});
 
 	it("supports custom retry window (short)", async () => {
@@ -273,7 +293,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		// Backdate by 6s → beyond 5s window
 		(db as any).db
 			.prepare(
-				"UPDATE mailbox SET claim_expires_at = datetime('now', '-6 seconds') WHERE id = ?",
+				"UPDATE mailbox SET notified_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
 			)
 			.run(id);
 

@@ -145,6 +145,12 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"call_time",
 				"env-param",
 			),
+			envSite(
+				"packages/inbox-mcp/src/queue-mode.ts",
+				"resolveLiveMailboxQueueEnabled",
+				"dotenv_live",
+				"dynamic",
+			),
 		],
 		toggleable: "direct",
 		directToggleProof:

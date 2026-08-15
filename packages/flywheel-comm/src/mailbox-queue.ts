@@ -11,6 +11,8 @@ import {
 import {
 	dropReceiptLedgerSchema,
 	installMailboxRelayInvariantTriggers,
+	MAILBOX_MESSAGE_PROJECTION_SELECT,
+	MAILBOX_MESSAGE_PROJECTION_VERSION,
 	MAILBOX_SCHEMA,
 } from "./mailbox-schema.js";
 import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
@@ -111,6 +113,7 @@ export interface MailboxRow {
 	claimed_by: string | null;
 	claim_expires_at: string | null;
 	delivered_at: string | null;
+	notified_at: string | null;
 	retry_count: number;
 	lease_retry_count: number;
 	next_retry_at: string | null;
@@ -247,7 +250,7 @@ function hasMailboxColumn(db: Database.Database, name: string): boolean {
 
 function addMailboxColumn(
 	db: Database.Database,
-	name: "delivered_at" | "lease_retry_count",
+	name: "delivered_at" | "notified_at" | "lease_retry_count",
 	sql: string,
 ): void {
 	if (hasMailboxColumn(db, name)) return;
@@ -279,19 +282,48 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 	if (!mailboxExists) {
 		throw new Error("mailbox table must exist before queue schema upgrade");
 	}
-	addMailboxColumn(
-		db,
-		"delivered_at",
-		"ALTER TABLE mailbox ADD COLUMN delivered_at TEXT",
-	);
-	addMailboxColumn(
-		db,
-		"lease_retry_count",
-		"ALTER TABLE mailbox ADD COLUMN lease_retry_count INTEGER NOT NULL DEFAULT 0",
-	);
-	db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
-		ON mailbox(claim_expires_at)
-		WHERE state = 'LEASED' AND carrier = 'inbox'`);
+	db.transaction(() => {
+		addMailboxColumn(
+			db,
+			"delivered_at",
+			"ALTER TABLE mailbox ADD COLUMN delivered_at TEXT",
+		);
+		addMailboxColumn(
+			db,
+			"notified_at",
+			"ALTER TABLE mailbox ADD COLUMN notified_at TEXT",
+		);
+		addMailboxColumn(
+			db,
+			"lease_retry_count",
+			"ALTER TABLE mailbox ADD COLUMN lease_retry_count INTEGER NOT NULL DEFAULT 0",
+		);
+		db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
+			ON mailbox(claim_expires_at)
+			WHERE state = 'LEASED' AND carrier = 'inbox'`);
+
+		const projection = db
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'view' AND name = 'mailbox_message_projection'",
+			)
+			.get() as { sql: string } | undefined;
+		// Caller-owned minimal mailbox schemas intentionally do not own the CommDB
+		// projection. Do not prepare full-schema migration SQL against them.
+		if (!projection) return;
+		if (projection.sql.includes(MAILBOX_MESSAGE_PROJECTION_VERSION)) return;
+
+		// One-time v1 -> v2 evidence migration only. Once the projection is v2,
+		// legacy-push may be a live pre-notify claim and must remain unnotified.
+		db.prepare(
+			`UPDATE mailbox SET notified_at = claim_expires_at
+			  WHERE type = 'instruction' AND state = 'LEASED'
+			    AND claimed_by = 'legacy-push' AND batch_id IS NULL
+			    AND notified_at IS NULL`,
+		).run();
+		db.exec(`DROP VIEW mailbox_message_projection;
+			CREATE VIEW mailbox_message_projection AS
+			${MAILBOX_MESSAGE_PROJECTION_SELECT};`);
+	}).immediate();
 	upgradedMailboxConnections.add(db);
 }
 
@@ -315,7 +347,7 @@ export function adoptInflightForRecipientOnConnection(
 					`UPDATE mailbox SET state = 'QUEUED',
 					   lease_retry_count = lease_retry_count + 1,
 					   claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL,
-					   delivered_at = NULL, next_retry_at = NULL,
+					   notified_at = NULL, delivered_at = NULL, next_retry_at = NULL,
 					   last_error = 'recipient_reborn'
 					 WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
 					   AND state = 'LEASED' AND batch_id IS NOT NULL`,
@@ -1001,7 +1033,7 @@ export class MailboxQueue {
 						    AND (? IS NULL OR to_agent = ?)
 						    AND (? IS NULL OR msg_class = ?)
 						    AND state = 'LEASED' AND batch_id IS NOT NULL
-						    AND delivered_at IS NULL
+						    AND COALESCE(notified_at, delivered_at) IS NULL
 						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 						    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)
 						  ORDER BY priority, seq LIMIT 1`,
@@ -1021,7 +1053,7 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT id FROM mailbox
 							  WHERE batch_id = ? AND state = 'LEASED'
-							    AND delivered_at IS NULL
+							    AND COALESCE(notified_at, delivered_at) IS NULL
 							    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 							    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)
 							  ORDER BY priority, seq`,
@@ -1037,7 +1069,7 @@ export class MailboxQueue {
 						.prepare(
 							`UPDATE mailbox SET claimed_by = ?, claim_expires_at = ?, last_error = NULL
 							  WHERE id IN (${placeholders(remaining.length)}) AND state = 'LEASED'
-							    AND delivered_at IS NULL
+							    AND COALESCE(notified_at, delivered_at) IS NULL
 							    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)`,
 						)
 						.run(
@@ -1060,10 +1092,10 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT COUNT(DISTINCT batch_id) AS count FROM mailbox
 							  WHERE to_agent = ? AND recipient_kind = 'lead' AND carrier = 'inbox'
-							    AND state = 'LEASED' AND delivered_at IS NOT NULL
-							    AND claim_expires_at > ? AND batch_id IS NOT NULL`,
+							    AND state = 'LEASED' AND batch_id IS NOT NULL
+							    AND COALESCE(notified_at, delivered_at) IS NULL`,
 						)
-						.get(input.toAgent, input.now) as { count: number };
+						.get(input.toAgent) as { count: number };
 					if (inflight.count >= input.inflightMaxBatches) return [];
 				}
 
@@ -1157,7 +1189,7 @@ export class MailboxQueue {
 				const updated = this.db
 					.prepare(
 						`UPDATE mailbox SET state = 'LEASED', batch_id = ?, claimed_by = ?,
-						   claim_expires_at = ?, delivered_at = NULL
+					   claim_expires_at = ?, notified_at = NULL, delivered_at = NULL
 						 WHERE id IN (${placeholders(ids.length)})
 						   AND state = 'QUEUED' AND batch_id IS NULL`,
 					)
@@ -1186,6 +1218,149 @@ export class MailboxQueue {
 		partitionKey?: (row: MailboxRow) => string;
 	}): MailboxRow[] {
 		return this.claimQueueBatch({ ...input, recipientKind: "lead" });
+	}
+
+	releaseExpiredLegacyPushClaims(input: {
+		toAgent: string;
+		ownerEpoch: string;
+		now: string;
+		maxRows: number;
+	}): { requeued: number; remaining: boolean } {
+		assertUtcIsoTimestamp(input.now, "now");
+		if (!Number.isSafeInteger(input.maxRows) || input.maxRows <= 0) {
+			throw new Error("maxRows must be a positive safe integer");
+		}
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
+					return { requeued: 0, remaining: false };
+				}
+				// The live Lead loop is the recipient authority. Older CommDB writers
+				// inferred recipient_kind from a "-lead" suffix, so a valid suffix-free
+				// Lead could otherwise strand a steady QUEUED legacy-push row forever.
+				this.db
+					.prepare(
+						`UPDATE mailbox SET recipient_kind = 'lead'
+						 WHERE to_agent = ? AND type = 'instruction' AND carrier = 'inbox'
+						   AND recipient_kind <> 'lead' AND batch_id IS NULL
+						   AND (state = 'QUEUED' OR (state = 'LEASED' AND claimed_by = 'legacy-push'))`,
+					)
+					.run(input.toAgent);
+				const rows = this.db
+					.prepare(
+						`SELECT id FROM mailbox
+						 WHERE recipient_kind = 'lead' AND to_agent = ? AND carrier = 'inbox'
+						   AND state = 'LEASED' AND claimed_by = 'legacy-push'
+						   AND batch_id IS NULL AND claim_expires_at <= ?
+						 ORDER BY seq LIMIT ?`,
+					)
+					.all(input.toAgent, input.now, input.maxRows) as Array<{
+					id: string;
+				}>;
+				const ids = rows.map(({ id }) => id);
+				const requeued =
+					ids.length === 0
+						? 0
+						: this.db
+								.prepare(
+									`UPDATE mailbox SET state = 'QUEUED', claimed_by = NULL,
+									   claim_expires_at = NULL, last_error = 'legacy_push_handoff'
+									 WHERE id IN (${placeholders(ids.length)})
+									   AND state = 'LEASED' AND claimed_by = 'legacy-push'
+									   AND batch_id IS NULL AND claim_expires_at <= ?`,
+								)
+								.run(...ids, input.now).changes;
+				const remaining =
+					this.db
+						.prepare(
+							`SELECT 1 FROM mailbox
+							 WHERE recipient_kind = 'lead' AND to_agent = ? AND carrier = 'inbox'
+							   AND state = 'LEASED' AND claimed_by = 'legacy-push'
+							   AND batch_id IS NULL AND claim_expires_at <= ? LIMIT 1`,
+						)
+						.get(input.toAgent, input.now) !== undefined;
+				return { requeued, remaining };
+			})
+			.immediate();
+	}
+
+	listRetiredLeadRecipients(input: {
+		liveToAgents: readonly string[];
+		afterToAgent: string;
+		limit: number;
+	}): string[] {
+		if (input.liveToAgents.length === 0) return [];
+		if (!Number.isSafeInteger(input.limit) || input.limit <= 0) {
+			throw new Error("limit must be a positive safe integer");
+		}
+		return (
+			this.db
+				.prepare(
+					`SELECT to_agent FROM mailbox
+					 WHERE recipient_kind = 'lead' AND carrier = 'inbox'
+					   AND state IN ('QUEUED','LEASED') AND to_agent > ?
+					   AND to_agent NOT IN (${placeholders(input.liveToAgents.length)})
+					 GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
+				)
+				.all(input.afterToAgent, ...input.liveToAgents, input.limit) as Array<{
+				to_agent: string;
+			}>
+		).map(({ to_agent }) => to_agent);
+	}
+
+	sweepRecipientTerminal(input: {
+		recipientKind: "lead";
+		toAgent: string;
+		ownerEpoch: string;
+		now: string;
+		maxRows: number;
+	}): { dead: number; remaining: boolean } {
+		assertUtcIsoTimestamp(input.now, "now");
+		if (!Number.isSafeInteger(input.maxRows) || input.maxRows <= 0) {
+			throw new Error("maxRows must be a positive safe integer");
+		}
+		return this.db
+			.transaction(() => {
+				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
+					return { dead: 0, remaining: false };
+				}
+				const ids = (
+					this.db
+						.prepare(
+							`SELECT id FROM mailbox
+							 WHERE recipient_kind = ? AND to_agent = ? AND carrier = 'inbox'
+							   AND state IN ('QUEUED','LEASED')
+							 ORDER BY seq LIMIT ?`,
+						)
+						.all(input.recipientKind, input.toAgent, input.maxRows) as Array<{
+						id: string;
+					}>
+				).map(({ id }) => id);
+				const dead =
+					ids.length === 0
+						? 0
+						: this.db
+								.prepare(
+									`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
+									   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
+									   claimed_by = NULL, claim_expires_at = NULL,
+									   next_retry_at = NULL, batch_id = NULL
+									 WHERE id IN (${placeholders(ids.length)})
+									   AND recipient_kind = ? AND to_agent = ?
+									   AND state IN ('QUEUED','LEASED')`,
+								)
+								.run(input.now, ...ids, input.recipientKind, input.toAgent)
+								.changes;
+				const remaining =
+					this.db
+						.prepare(
+							`SELECT 1 FROM mailbox WHERE recipient_kind = ? AND to_agent = ?
+							   AND carrier = 'inbox' AND state IN ('QUEUED','LEASED') LIMIT 1`,
+						)
+						.get(input.recipientKind, input.toAgent) !== undefined;
+				return { dead, remaining };
+			})
+			.immediate();
 	}
 
 	claimRunnerBatch(input: {
@@ -1236,12 +1411,16 @@ export class MailboxQueue {
 				}
 				const updated = this.db
 					.prepare(
-						`UPDATE mailbox SET delivered_at = COALESCE(delivered_at, ?),
+						`UPDATE mailbox SET notified_at = COALESCE(notified_at, ?),
+						   delivered_at = CASE WHEN ? = 'runner'
+						     THEN COALESCE(delivered_at, ?) ELSE delivered_at END,
 						   claim_expires_at = ?, last_error = NULL, next_retry_at = NULL
 						 WHERE batch_id = ? AND recipient_kind = ? AND state = 'LEASED'
 						   AND claimed_by = ?`,
 					)
 					.run(
+						input.now,
+						input.recipientKind,
 						input.now,
 						expiresAt,
 						input.batchId,
@@ -1297,10 +1476,11 @@ export class MailboxQueue {
 				const updated = this.db
 					.prepare(
 						`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
+						   delivered_at = COALESCE(delivered_at, ?),
 						   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL
 						 WHERE batch_id = ? AND state = 'LEASED'`,
 					)
-					.run(input.now, input.batchId);
+					.run(input.now, input.now, input.batchId);
 				return updated.changes === leased ? "applied" : "ack_late_noop";
 			})
 			.immediate();
@@ -1424,7 +1604,7 @@ export class MailboxQueue {
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
 								   dead_reason = 'recipient_terminal', last_error = 'recipient_terminal',
 								   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL,
-								   batch_id = NULL, delivered_at = NULL
+								   batch_id = NULL, notified_at = NULL, delivered_at = NULL
 								 WHERE id = ? AND state = 'QUEUED'`,
 							)
 							.run(input.now, row.id).changes;
@@ -1475,22 +1655,20 @@ export class MailboxQueue {
 					);
 				}
 				for (const batch of expired) {
-					const recipientState =
-						input.recipientKind === "runner"
-							? input.recipientState(batch.to_agent)
-							: "alive";
+					const recipientState = input.recipientState(batch.to_agent);
 					if (recipientState === "unknown") {
 						result.skippedUnknown += 1;
 						continue;
 					}
 					const members = this.db
 						.prepare(
-							`SELECT id, delivered_at, lease_retry_count FROM mailbox
+							`SELECT id, notified_at, delivered_at, lease_retry_count FROM mailbox
 							  WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?
 							  ORDER BY priority, seq`,
 						)
 						.all(batch.batch_id, input.now) as Array<{
 						id: string;
+						notified_at: string | null;
 						delivered_at: string | null;
 						lease_retry_count: number;
 					}>;
@@ -1508,7 +1686,12 @@ export class MailboxQueue {
 						result.dead += changed;
 						continue;
 					}
-					if (members.every(({ delivered_at }) => delivered_at === null)) {
+					if (
+						members.every(
+							({ notified_at, delivered_at }) =>
+								notified_at === null && delivered_at === null,
+						)
+					) {
 						this.db
 							.prepare(
 								`UPDATE mailbox SET claimed_by = NULL
@@ -1541,7 +1724,7 @@ export class MailboxQueue {
 							`UPDATE mailbox SET state = 'QUEUED',
 							   lease_retry_count = lease_retry_count + 1,
 							   claimed_by = NULL, claim_expires_at = NULL, batch_id = NULL,
-							   delivered_at = NULL, next_retry_at = NULL,
+							   notified_at = NULL, delivered_at = NULL, next_retry_at = NULL,
 							   last_error = 'lease_expired_unacked'
 							 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
 						)
@@ -2062,7 +2245,8 @@ export class MailboxQueue {
 						   dead_reason = CASE WHEN retry_count + 1 >= ?
 						     THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
 						   batch_id = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE batch_id END,
-						   claimed_by = NULL, claim_expires_at = NULL, delivered_at = NULL
+						   claimed_by = NULL, claim_expires_at = NULL,
+						   notified_at = NULL, delivered_at = NULL
 						 WHERE batch_id = ? AND recipient_kind = 'runner'
 						   AND state = 'LEASED' AND claimed_by = ?`,
 					)

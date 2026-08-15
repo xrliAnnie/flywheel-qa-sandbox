@@ -6,6 +6,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
+import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
+import {
+	LeadLeaseStore,
+	type ProcessTupleState,
+	processTupleStateWithStart,
+} from "flywheel-comm/lead-lease";
 import {
 	MailboxQueue,
 	type MailboxSettlement,
@@ -28,6 +34,10 @@ import {
 import type { DeliverySecretProvider } from "./lead-event-delivery.js";
 import { enqueueLeadEvent as enqueueEvent } from "./lead-event-queue.js";
 import { LeadInboxLoop } from "./lead-inbox-loop.js";
+import {
+	type LeadLeaseReader,
+	readLeadRecipientState,
+} from "./lead-recipient-liveness.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { resolveMailboxQueueConfig } from "./mailbox-queue-config.js";
@@ -71,6 +81,16 @@ export interface LeadInboxRuntimeOptions {
 		projectName: string,
 		leadId: string,
 	) => Promise<void>;
+	/** Production passes the canonical lease DB path; tests may inject a reader. */
+	leadLeaseDbPath?: string;
+	leadLeaseReader?: LeadLeaseReader;
+	/**
+	 * Destructive retired-recipient sweeps use the current fleet authority. The
+	 * normal file-backed provider is live; an explicitly env-pinned deployment
+	 * is intentionally static for that process. Throwing/empty providers fail closed.
+	 */
+	currentLeadRecipientsForProject?: (projectName: string) => readonly string[];
+	processLeadTupleState?: (pid: number, start: string) => ProcessTupleState;
 	/**
 	 * FLY-1586 R2 HIGH-5 — direct sink for quarantine alerts.
 	 *
@@ -144,10 +164,27 @@ export class LeadInboxRuntime {
 	private readonly runnerAdapters: RunnerMailboxDeliveryAdapter[] = [];
 	private readonly projectByLead = new Map<string, ProjectEntry>();
 	private readonly ownerEpoch: string;
+	private readonly leadLeaseReader: LeadLeaseReader;
+	private readonly processLeadTupleState: (
+		pid: number,
+		start: string,
+	) => ProcessTupleState;
+	private readonly retiredLeadScanCursor = new Map<string, string>();
+	private retiredLeadReconcileRunning = false;
 	private cutoverPromise?: Promise<void>;
 
 	constructor(private readonly opts: LeadInboxRuntimeOptions) {
 		this.ownerEpoch = opts.ownerEpoch ?? randomUUID();
+		const identityByLead = new Map(
+			compileLeadIdentityRegistry(opts.projects).map((identity) => [
+				this.key(identity.projectName, identity.leadId),
+				identity,
+			]),
+		);
+		this.leadLeaseReader =
+			opts.leadLeaseReader ?? openLeadLeaseReader(opts.leadLeaseDbPath);
+		this.processLeadTupleState =
+			opts.processLeadTupleState ?? processTupleStateWithStart;
 		const adapterForLead = opts.adapterForLead ?? createProductionAdapter;
 		const runnerAdapterForProject =
 			opts.runnerAdapterForProject ??
@@ -222,6 +259,14 @@ export class LeadInboxRuntime {
 					throw new Error(`duplicate Lead id across projects: ${lead.agentId}`);
 				}
 				this.projectByLead.set(lead.agentId, project);
+				const identity = identityByLead.get(
+					this.key(project.projectName, lead.agentId),
+				);
+				if (!identity) {
+					throw new Error(
+						`canonical Lead identity missing: ${project.projectName}/${lead.agentId}`,
+					);
+				}
 				const admission = new QuestionAdmission({
 					queue,
 					dbPath: opts.commDbPathForProject(project.projectName),
@@ -243,6 +288,12 @@ export class LeadInboxRuntime {
 					ownerEpoch: this.ownerEpoch,
 					adapter: adapterForLead(project, lead),
 					queueConfig: resolveMailboxQueueConfig,
+					recipientState: () =>
+						readLeadRecipientState({
+							leadKey: identity.leadKey,
+							leaseReader: this.leadLeaseReader,
+							processTupleState: this.processLeadTupleState,
+						}),
 					ackInstruction:
 						effectiveLeadBackend(
 							lead.backend,
@@ -378,6 +429,7 @@ export class LeadInboxRuntime {
 		for (const admission of this.admissions) admission.close();
 		for (const adapter of this.runnerAdapters) adapter.close();
 		for (const queue of this.queues.values()) queue.close();
+		this.leadLeaseReader.close?.();
 		this.loops.clear();
 		this.queues.clear();
 		this.admissions.length = 0;
@@ -488,6 +540,92 @@ export class LeadInboxRuntime {
 		return this.ownerEpoch;
 	}
 
+	reconcileRetiredLeadMailboxes(input?: {
+		maxRecipientsPerProject?: number;
+		maxRowsPerRecipient?: number;
+	}): { dead: number; remaining: boolean } {
+		if (this.retiredLeadReconcileRunning) {
+			return { dead: 0, remaining: true };
+		}
+		this.retiredLeadReconcileRunning = true;
+		try {
+			const maxRecipients = input?.maxRecipientsPerProject ?? 20;
+			const maxRows = input?.maxRowsPerRecipient ?? 100;
+			let dead = 0;
+			let remaining = false;
+			for (const project of this.opts.projects) {
+				let liveToAgents: readonly string[];
+				try {
+					liveToAgents = this.opts.currentLeadRecipientsForProject
+						? this.opts.currentLeadRecipientsForProject(project.projectName)
+						: project.leads.map(({ agentId }) => agentId);
+				} catch {
+					// A stale/unreadable roster can never authorize destructive cleanup.
+					remaining = true;
+					continue;
+				}
+				liveToAgents = [
+					...new Set(liveToAgents.map((value) => value.trim()).filter(Boolean)),
+				];
+				// An empty/failed roster is not authority to retire everyone.
+				if (liveToAgents.length === 0) {
+					remaining = true;
+					continue;
+				}
+				const queue = this.queues.get(project.projectName);
+				if (!queue) continue;
+				const now = new Date().toISOString();
+				if (
+					!queue.acquireOrRenewOwner({
+						ownerEpoch: this.ownerEpoch,
+						now,
+						leaseTtlMs: 10_000,
+					})
+				) {
+					remaining = true;
+					continue;
+				}
+				const cursor =
+					this.retiredLeadScanCursor.get(project.projectName) ?? "";
+				const recipients = queue.listRetiredLeadRecipients({
+					liveToAgents,
+					afterToAgent: cursor,
+					limit: maxRecipients,
+				});
+				if (recipients.length < maxRecipients && cursor) {
+					const selected = new Set(recipients);
+					for (const recipient of queue.listRetiredLeadRecipients({
+						liveToAgents,
+						afterToAgent: "",
+						limit: maxRecipients,
+					})) {
+						if (selected.has(recipient)) continue;
+						recipients.push(recipient);
+						selected.add(recipient);
+						if (recipients.length >= maxRecipients) break;
+					}
+				}
+				for (const recipient of recipients) {
+					const swept = queue.sweepRecipientTerminal({
+						recipientKind: "lead",
+						toAgent: recipient,
+						ownerEpoch: this.ownerEpoch,
+						now,
+						maxRows,
+					});
+					dead += swept.dead;
+					remaining ||= swept.remaining;
+				}
+				const last = recipients.at(-1);
+				if (last) this.retiredLeadScanCursor.set(project.projectName, last);
+				remaining ||= recipients.length === maxRecipients;
+			}
+			return { dead, remaining };
+		} finally {
+			this.retiredLeadReconcileRunning = false;
+		}
+	}
+
 	private key(projectName: string, leadId: string): string {
 		return `${projectName}\u001f${leadId}`;
 	}
@@ -555,7 +693,8 @@ export class LeadInboxRuntime {
 			probeFactsByRecipient: this.runnerProbeFacts(input.project.projectName),
 		})) {
 			const destinationLead =
-				candidate.sourceKind === "lead_unacked"
+				candidate.sourceKind === "lead_unacked" &&
+				this.projectByLead.has(candidate.recipient)
 					? candidate.recipient
 					: input.project.leads[0]?.agentId;
 			if (!destinationLead) continue;
@@ -666,6 +805,18 @@ export class LeadInboxRuntime {
 			if (this.cutoverPromise === attempt) this.cutoverPromise = undefined;
 		});
 		return attempt;
+	}
+}
+
+function openLeadLeaseReader(dbPath: string | undefined): LeadLeaseReader {
+	if (!dbPath) return { getLease: () => undefined };
+	try {
+		return new LeadLeaseStore(dbPath);
+	} catch (error) {
+		console.warn(
+			`[LeadInboxRuntime] Lead lease reader unavailable; recipient liveness will fail open: ${error instanceof Error ? error.message : String(error)}`,
+		);
+		return { getLease: () => undefined };
 	}
 }
 

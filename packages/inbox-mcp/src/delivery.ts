@@ -4,8 +4,9 @@
  * Extracted from index.ts so the core logic can be unit-tested without
  * booting the MCP server. The at-least-once semantics this implements:
  *
- *   inserted → delivered_at=NULL, read_at=NULL  (returned by getPendingPushInstructions)
- *   notify succeeds → markInstructionDelivered (hidden within retry window)
+ *   inserted → notified_at=NULL, read_at=NULL  (returned by getPendingPushInstructions)
+ *   pre-notify CAS → short legacy-push transport claim
+ *   notify succeeds → attempt-fenced notified_at receipt (delivered_at stays NULL)
  *   retry window expires → re-surfaces, redelivered
  *   Lead calls flywheel_inbox_ack(message_id) → ackInstructionRead (hidden permanently)
  */
@@ -25,31 +26,55 @@ export interface DeliveryResult {
 
 export type Notifier = (msg: DeliveryMessage) => Promise<void>;
 
+export interface PendingDeliveryOptions {
+	/** Flow 2 owns all Lead content while the queue is enabled. */
+	queueEnabled?: boolean;
+	/** Immutable timestamp for one poll pass; injectable for deterministic tests. */
+	now?: string;
+	transportClaimTtlMs?: number;
+}
+
 /**
  * Fetch all pending push instructions and attempt to deliver each.
- * On notifier success: mark delivered_at.
+ * On notifier success: record transport evidence in notified_at.
  * On notifier failure: stop the batch (preserve FIFO ordering for retry)
- * and leave delivered_at NULL so the next poll retries immediately.
+ * and release the fenced claim without notified_at so the next poll retries.
  */
 export async function processPendingDeliveries(
 	db: CommDB,
 	toAgent: string,
 	retryWindowSec: number,
 	notify: Notifier,
+	options: PendingDeliveryOptions = {},
 ): Promise<DeliveryResult> {
-	const pending = db.getPendingPushInstructions(
-		toAgent,
-		retryWindowSec,
-	) as DeliveryMessage[];
 	const delivered: string[] = [];
 	const failed: string[] = [];
+	if (options.queueEnabled) return { delivered, failed };
+	const now = options.now ?? new Date().toISOString();
+	const retryCutoff = new Date(
+		Date.parse(now) - retryWindowSec * 1_000,
+	).toISOString();
+	const pending = db.getPendingPushInstructions(
+		toAgent,
+		retryCutoff,
+		now,
+	) as DeliveryMessage[];
 
 	for (const msg of pending) {
+		const fence = db.tryClaimInstructionForPush({
+			id: msg.id,
+			toAgent,
+			now,
+			retryCutoff,
+			transportClaimTtlMs: options.transportClaimTtlMs ?? 30_000,
+		});
+		if (!fence) continue;
 		try {
 			await notify(msg);
-			db.markInstructionDelivered(msg.id);
+			db.recordInstructionNotified(msg.id, fence, now);
 			delivered.push(msg.id);
 		} catch {
+			db.releaseInstructionPushClaim(msg.id, fence);
 			failed.push(msg.id);
 			break; // preserve FIFO — fail fast, retry on next poll cycle
 		}

@@ -1,0 +1,12 @@
+flowchart LR
+    subgraph SRC["任何发件人"]
+        S1["Annie / Bridge / Lead / Runner"]
+    end
+    S1 --> WHO{"收件人是谁?"}
+    WHO -- "Lead" --> F2["Flow 2 · Batch 通道<br/>攒 10 条 / 30 秒打包<br/>+ 租约 + 整批签收"]
+    WHO -- "Runner" --> F1["Flow 1 · 直投通道<br/>即时投递 + 唤醒<br/>(本单不动)"]
+    F2 --> CURE["本单治的三件病都在这条通道:<br/>① 真送达才盖章<br/>② 未读不占位<br/>③ 读者可判活"]
+
+    style F2 fill:#eef4ff,stroke:#007aff,stroke-width:2px
+    style F1 fill:#f5f5f7,stroke:#86868b
+    style CURE fill:#e8f8ee,stroke:#34c759

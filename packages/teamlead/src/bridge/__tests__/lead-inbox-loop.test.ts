@@ -109,6 +109,59 @@ function loop(
 }
 
 describe("LeadInboxLoop mailbox consumption", () => {
+	it("probes one Lead incarnation only once while reconciling several expired batches", async () => {
+		const queue = makeQueue();
+		const claimAt = "2099-07-19T11:59:50.000Z";
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "epoch-a",
+			now: claimAt,
+			leaseTtlMs: 60_000,
+		});
+		for (const [index, id] of ["expired-a", "expired-b"].entries()) {
+			enqueueModel(queue, id);
+			const batchId = `expired-batch-${index}`;
+			expect(
+				queue.claimLeadBatchQueue({
+					toAgent: "lead-a",
+					msgClass: "model",
+					ownerEpoch: "epoch-a",
+					batchId,
+					now: claimAt,
+					transportClaimTtlMs: 1_000,
+					batchWindowMs: 0,
+					batchMaxSize: 1,
+					inflightMaxBatches: 3,
+				}),
+			).toHaveLength(1);
+			queue.recordLeadBatchDelivered({
+				batchId,
+				ownerEpoch: "epoch-a",
+				now: claimAt,
+				ackLeaseTtlMs: 1_000,
+			});
+		}
+		const recipientState = vi.fn(() => "unknown" as const);
+		const logger = { warn: vi.fn() };
+		const consumer = loop(
+			queue,
+			{ deliverBatch: vi.fn() },
+			{
+				queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG }),
+				recipientState,
+				logger,
+			},
+		);
+
+		expect(await consumer.tick()).toMatchObject({ ok: true, modelConsumed: 0 });
+		expect(recipientState).toHaveBeenCalledOnce();
+		expect(logger.warn).toHaveBeenCalledWith(
+			"Lead inbox held expired batches for an unknown recipient incarnation",
+			{ leadId: "lead-a", skippedUnknown: 2 },
+		);
+		await consumer.tick();
+		expect(logger.warn).toHaveBeenCalledTimes(1);
+	});
+
 	it("ON delivers one attempt-scoped batch and waits for agent ACK", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");
@@ -146,7 +199,8 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(queue.getById("A")).toMatchObject({
 			state: "LEASED",
 			batch_id: "batch-1",
-			delivered_at: "2099-07-19T12:00:00.000Z",
+			notified_at: "2099-07-19T12:00:00.000Z",
+			delivered_at: null,
 		});
 		expect(
 			queue.ackBatchByRecipient({

@@ -108,7 +108,7 @@ A specialized 1 happy path + 6 variants suite that validates the spec-defined Ha
 
 - **HP follows the production approve wire**: `flywheel-comm respond` (CommDB write) + Runner self-posts `:cool:`. Bridge `approveExecution` is *not* on the production path — calling it while Runner is gate-blocked deadlocks (`scripts/test-auto-approve.sh:18-40` documents this).
 - **DB paths are distinct**: StateStore = `${SLOT_DIR}/teamlead.db` (= `/tmp/flywheel-test-slot-N/teamlead.db`, taken from deploy JSON `dbPath`). CommDB = `~/.flywheel/comm/test-slot-N/comm.db`. They are not the same database.
-- **CommDB schema is one `messages` table**. `delivered_at` set after MCP notification succeeds (inbox-mcp); `read_at` set after Lead's `flywheel_inbox_ack`. Don't conflate them. See `packages/flywheel-comm/src/db.ts:8-37,84-104,176-241,329-363`.
+- **CommDB authority is `mailbox` plus `mailbox_message_projection`**. Base `notified_at` records MCP transport success; projection `delivered_at`/`read_at` appear only after Lead ACK. Don't conflate transport with receipt.
 - **V3 alert evidence** comes from `~/.flywheel/alerts/claims.db` + `~/.flywheel/alert-queue/*.json` (filesystem queue). Discord channel push is **not** validated in this suite because test-slot config does not wire `alertChannel`.
 - **Slot host repo path** is `/tmp/flywheel-test-slot-N/project-slot-N` (deploy JSON `hostRepo`). Runner worktrees are derived as `${HOST_REPO}-<ISSUE_ID>` and branches as `$(basename "$HOST_REPO")-<ISSUE_ID>`. V2 (residual worktree) plants stale resources at exactly these paths.
 
