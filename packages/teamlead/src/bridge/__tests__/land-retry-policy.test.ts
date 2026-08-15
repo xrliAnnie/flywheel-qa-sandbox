@@ -38,10 +38,6 @@ describe("land retry policy", () => {
 		"founder_review_missing",
 		"founder_review_not_passed",
 		"founder_review_stale_artifact",
-		"issue_closeout_incomplete",
-		"founder_review_producer_ambiguous",
-		"founder_review_artifact_binding_missing",
-		"founder_review_authority_unavailable",
 	])("classifies %s as waiting without spending retry budget", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("waiting");
 	});
@@ -50,8 +46,12 @@ describe("land retry policy", () => {
 		"linear_lookup_failed_retryable",
 		"arbitration_failed:linear timeout",
 		"land_execution_error:github temporarily unavailable",
+		"issue_closeout_incomplete",
 		"land_postconditions_incomplete:thread_archive",
 		"workflow_pr_manifest_manifest_unavailable",
+		"founder_review_producer_ambiguous",
+		"founder_review_artifact_binding_missing",
+		"founder_review_authority_unavailable",
 		"land_source_session_unavailable",
 		"future_reason_not_yet_known",
 	])("classifies %s as retryable", (reason) => {
@@ -121,15 +121,15 @@ describe("land retry policy", () => {
 
 	it("does not reset the budget when retryable reasons oscillate without durable progress", () => {
 		const reasons = [
-			"arbitration_failed:linear timeout",
+			"issue_closeout_incomplete",
 			"land_execution_error:discord unavailable",
-			"arbitration_failed:linear timeout",
+			"issue_closeout_incomplete",
 			"land_execution_error:discord unavailable",
-			"arbitration_failed:linear timeout",
+			"issue_closeout_incomplete",
 			"land_execution_error:discord unavailable",
-			"arbitration_failed:linear timeout",
+			"issue_closeout_incomplete",
 			"land_execution_error:discord unavailable",
-			"arbitration_failed:linear timeout",
+			"issue_closeout_incomplete",
 		];
 		let priorRetryCount = 0;
 		let priorRetryEpochKey: string | null = null;

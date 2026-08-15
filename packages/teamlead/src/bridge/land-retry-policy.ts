@@ -23,10 +23,6 @@ const WAITING_REASONS = new Set([
 	"founder_review_missing",
 	"founder_review_not_passed",
 	"founder_review_stale_artifact",
-	"issue_closeout_incomplete",
-	"founder_review_producer_ambiguous",
-	"founder_review_artifact_binding_missing",
-	"founder_review_authority_unavailable",
 ]);
 
 const TERMINAL_REASONS = new Set([
