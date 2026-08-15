@@ -1,13 +1,13 @@
 ---
 issue: FLY-1716
 phase: implement
-phaseCursor: 1/4
-updated: 2026-08-15T03:53:27.377Z
-nextStep: Add RED production-window and launcher-ordering regressions
+phaseCursor: 2/4
+updated: 2026-08-15T03:56:06.603Z
+nextStep: Amend reviewed docs, inspect diff, and run full repository gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1716 progress
-**phase**: implement (1/4)
-**next**: Add RED production-window and launcher-ordering regressions
+**phase**: implement (2/4)
+**next**: Amend reviewed docs, inspect diff, and run full repository gates
