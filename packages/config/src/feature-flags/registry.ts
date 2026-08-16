@@ -91,6 +91,84 @@ export interface FeatureFlagSpec {
 	note?: string;
 	/** Policy retirement marker; the flag remains discoverable but cannot revive. */
 	retiring?: string;
+	/**
+	 * FLY-1779 (FLY-1412 §5.2) — SCAN-WRITTEN state, NOT a birth-time
+	 * declaration. The weekly retirement scan puts a flag in front of Annie; if
+	 * she answers 「留」, the system writes `true` here and the scan stops asking
+	 * about it. Absent = she has never been asked / has not decided, which is
+	 * perfectly legal.
+	 *
+	 * ⛔ There is deliberately NO creation-time gate on this field. Annie killed
+	 * that whole idea outright — 「flag 不需要必须带退役条件呀」 — so no CI
+	 * assertion may require a new flag to carry it, and nothing here may
+	 * fail-loud when it is missing. (The separate 「必须登记、不许野建」 gate is
+	 * FLY-1455 and is unrelated to this field.)
+	 */
+	longTermKeep?: boolean;
+	/** The one-line reason she gave when she answered 「留」. §5.6. */
+	keepReason?: string;
+}
+
+/** §5.6 rule 3: `retiring` names the issue that is retiring the flag. */
+const RETIRING_ISSUE_RE = /^(FLY|GEO)-\d+$/;
+
+/**
+ * FLY-1779 (FLY-1412 §5.6) — the simplified mutual exclusion between the
+ * scan-written keep fields and the pre-existing `retiring` marker.
+ *
+ * Returns one message per violated rule (all of them, not just the first);
+ * an empty array means the spec is legal. This is a pure predicate so the
+ * contract is executable in its own right: no production flag carries either
+ * keep field yet (B3 is what writes them), so asserting only over the real
+ * table would be vacuously green and would prove nothing.
+ *
+ * NOT enforced here, on purpose:
+ * - §5.6 rule 2 (「retiring 的 flag 扫描不再摆它,但在报告里列已认领」) is scan
+ *   behaviour and belongs to B3, not to a registry-shape predicate.
+ * - 「longTermKeep === true 就必须给 keepReason」 is NOT required. This is the
+ *   deliberate reading of a documented conflict, not a derivation: the Linear
+ *   issue's own field comment says the reason 可为空, PRD §5.3's field table
+ *   says it is 必填 when longTermKeep is true. Tadashi adjudicated in favour of
+ *   the issue, treating §5.3 as text that was never updated after Annie's
+ *   2026-07-23 ruling. (Requiring a reason *conditionally* would not by itself
+ *   make `longTermKeep` mandatory at creation time — the two are separate
+ *   questions.) A reason that is *written but blank* is still rejected — write
+ *   something or write nothing.
+ */
+export function validateKeepFieldContract(spec: FeatureFlagSpec): string[] {
+	const violations: string[] = [];
+	// §5.6 speaks of a NON-EMPTY `retiring`. An empty string violates the id
+	// format rule below and nothing else — it must not also be reported as a
+	// contradiction, or one malformed value would produce two diagnoses.
+	const claimedByRetiringIssue =
+		spec.retiring !== undefined && spec.retiring.trim() !== "";
+
+	if (spec.retiring !== undefined && !RETIRING_ISSUE_RE.test(spec.retiring)) {
+		violations.push(
+			`${spec.name}: retiring must be a bare issue id matching (FLY|GEO)-<n>, got ${JSON.stringify(spec.retiring)}`,
+		);
+	}
+
+	if (spec.longTermKeep === true && claimedByRetiringIssue) {
+		violations.push(
+			`${spec.name}: longTermKeep === true contradicts retiring ${JSON.stringify(spec.retiring)} — a flag cannot be long-term kept and on its way out at the same time`,
+		);
+	}
+
+	if (spec.keepReason !== undefined) {
+		if (spec.longTermKeep !== true) {
+			violations.push(
+				`${spec.name}: keepReason is only meaningful behind longTermKeep === true`,
+			);
+		}
+		if (spec.keepReason.trim() === "") {
+			violations.push(
+				`${spec.name}: keepReason is present but blank — record the reason or omit the field`,
+			);
+		}
+	}
+
+	return violations;
 }
 
 // Helper builders keep the big table terse and consistent.

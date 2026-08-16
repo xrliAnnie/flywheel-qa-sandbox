@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import * as FeatureFlags from "../feature-flags/index.js";
-import { FEATURE_FLAGS } from "../feature-flags/registry.js";
+import type { FeatureFlagSpec } from "../feature-flags/registry.js";
+import {
+	FEATURE_FLAGS,
+	validateKeepFieldContract,
+} from "../feature-flags/registry.js";
 import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 
 // FLY-709: the registry's hard invariants — these are the safety rails that keep
@@ -479,5 +483,155 @@ describe("feature-flag registry invariants", () => {
 				toggleable: "readonly",
 			});
 		}
+	});
+});
+
+// FLY-1779 (FLY-1412 §9.2 B1) — `longTermKeep` / `keepReason` are SCAN-WRITTEN
+// state, not a birth-time declaration. Annie killed the "every new flag must
+// declare its retirement condition" gate outright ("flag 不需要必须带退役条件呀"),
+// so nothing here may force a new flag to carry these fields. What IS nailed
+// down is §5.6: the two fields must not contradict `retiring`.
+//
+// The rules are asserted through the exported `validateKeepFieldContract`
+// helper, on purpose. Scanning the real table alone would be VACUOUSLY GREEN —
+// no production flag carries either field yet (by design; B3 writes them) — so
+// a table-only assertion would prove nothing about the rule itself.
+describe("FLY-1779 keep-field contract (§5.6)", () => {
+	const base: FeatureFlagSpec = {
+		name: "probe_flag",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PROBE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "test fixture",
+		readSites: [
+			{
+				file: "packages/teamlead/src/probe.ts",
+				symbol: "probe",
+				pattern: "process.env",
+				timing: "call_time",
+			},
+		],
+		toggleable: "readonly",
+	};
+
+	it("accepts a flag that declares neither field (never scanned = legal)", () => {
+		expect(validateKeepFieldContract(base)).toEqual([]);
+	});
+
+	it("accepts longTermKeep with a reason, and without one", () => {
+		expect(
+			validateKeepFieldContract({
+				...base,
+				longTermKeep: true,
+				keepReason: "Annie 扫描时答留:merge 安全门,永久保留",
+			}),
+		).toEqual([]);
+		// The issue's own field comment says the reason 可为空 — a missing reason
+		// must NOT be an error, or this becomes the forced-declaration gate again.
+		expect(validateKeepFieldContract({ ...base, longTermKeep: true })).toEqual(
+			[],
+		);
+	});
+
+	it("rejects a flag that is both long-term-kept and retiring (§5.6 rule 1)", () => {
+		const violations = validateKeepFieldContract({
+			...base,
+			longTermKeep: true,
+			retiring: "FLY-1393",
+		});
+		expect(violations).toHaveLength(1);
+		expect(violations[0]).toMatch(/longTermKeep/);
+		expect(violations[0]).toMatch(/retiring/);
+	});
+
+	it("rejects a keepReason with no longTermKeep behind it", () => {
+		expect(
+			validateKeepFieldContract({ ...base, keepReason: "因为重要" }),
+		).toHaveLength(1);
+		expect(
+			validateKeepFieldContract({
+				...base,
+				longTermKeep: false,
+				keepReason: "因为重要",
+			}),
+		).toHaveLength(1);
+	});
+
+	it("rejects a blank keepReason (write a reason or write nothing)", () => {
+		expect(
+			validateKeepFieldContract({
+				...base,
+				longTermKeep: true,
+				keepReason: "   ",
+			}),
+		).toHaveLength(1);
+	});
+
+	it("rejects a retiring value that is not a FLY-/GEO- issue id (§5.6 rule 3)", () => {
+		for (const bad of ["", "FLY", "1393", "fly-1393", "FLY-", "see FLY-1393"]) {
+			expect(
+				validateKeepFieldContract({ ...base, retiring: bad }),
+				bad,
+			).toHaveLength(1);
+		}
+		for (const good of ["FLY-1393", "GEO-206"]) {
+			expect(
+				validateKeepFieldContract({ ...base, retiring: good }),
+				good,
+			).toEqual([]);
+		}
+	});
+
+	it("reports every violation at once rather than stopping at the first", () => {
+		const violations = validateKeepFieldContract({
+			...base,
+			longTermKeep: true,
+			keepReason: "",
+			retiring: "nope",
+		});
+		// Identity, not just arity: three duplicates of one message would also
+		// have length 3, and so would "one rule missed, another double-reported".
+		expect(violations).toEqual(
+			expect.arrayContaining([
+				expect.stringMatching(/retiring must be a bare issue id/),
+				expect.stringMatching(/contradicts retiring/),
+				expect.stringMatching(/keepReason is present but blank/),
+			]),
+		);
+		expect(new Set(violations).size).toBe(3);
+	});
+
+	it("a blank retiring is one diagnosis (format), not also a contradiction", () => {
+		// §5.6 rule 1 is about a NON-EMPTY retiring. "" is malformed and nothing
+		// more — reporting it twice would misdescribe what the author got wrong.
+		const violations = validateKeepFieldContract({
+			...base,
+			retiring: "",
+			longTermKeep: true,
+		});
+		expect(violations).toHaveLength(1);
+		expect(violations[0]).toMatch(/retiring must be a bare issue id/);
+	});
+
+	it("the real registry satisfies the contract", () => {
+		for (const flag of FEATURE_FLAGS) {
+			expect(validateKeepFieldContract(flag), flag.name).toEqual([]);
+		}
+	});
+
+	it("no CI gate demands longTermKeep at creation time (Annie killed that)", () => {
+		// A plain, never-scanned flag is the shape of every production row today.
+		// If some future change makes the contract require the field, this flips
+		// red. Deliberately NOT asserted here: that no real flag carries the field
+		// — that would forbid the very write B3 exists to perform.
+		expect(validateKeepFieldContract(base)).toEqual([]);
+		// `base` declares neither field and still type-checks as a FeatureFlagSpec,
+		// which is the compile-time half of the same guarantee.
+		expect(Object.hasOwn(base, "longTermKeep")).toBe(false);
+		expect(Object.hasOwn(base, "keepReason")).toBe(false);
 	});
 });

@@ -12,7 +12,7 @@ export type {
 	FlagValueKind,
 	ReadTiming,
 } from "./registry.js";
-export { FEATURE_FLAGS } from "./registry.js";
+export { FEATURE_FLAGS, validateKeepFieldContract } from "./registry.js";
 export type {
 	FlagEffectiveByProject,
 	FlagResolveCtx,
