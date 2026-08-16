@@ -88,6 +88,10 @@ import {
 	isOperationalTerminalStatus,
 	OPERATIONAL_TERMINAL_STATUSES,
 } from "./operational-terminal-status.js";
+import {
+	parseFounderReworkHint,
+	type FounderReworkHint,
+} from "./workflow-rework-hint.js";
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -513,6 +517,8 @@ export interface FounderDeferredApproval {
 	content: string;
 	author_user_id: string;
 	founder_id_at_capture: string;
+	/** Immutable server-interpreted route, captured with the founder decision. */
+	founder_rework?: FounderReworkHint;
 	created_at: string;
 	expires_at: string;
 	consumed_at?: string;
@@ -3844,6 +3850,7 @@ export class StateStore {
 				content         TEXT NOT NULL,
 				author_user_id  TEXT NOT NULL,
 				founder_id_at_capture TEXT NOT NULL,
+				founder_rework_json TEXT,
 				created_at      TEXT NOT NULL DEFAULT (datetime('now')),
 				expires_at      TEXT NOT NULL,
 				consumed_at     TEXT,
@@ -3852,6 +3859,11 @@ export class StateStore {
 				PRIMARY KEY (question_id, msg_id)
 			)
 		`);
+		this.addColumnIfMissing(
+			"founder_deferred_approval",
+			"founder_rework_json",
+			"TEXT",
+		);
 		this.db.run(
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_deferred_active
 			   ON founder_deferred_approval(question_id)
@@ -13247,6 +13259,19 @@ export class StateStore {
 	private rowToDeferredApproval(
 		row: Record<string, unknown>,
 	): FounderDeferredApproval {
+		let founderRework: FounderReworkHint | undefined;
+		if (typeof row.founder_rework_json === "string") {
+			try {
+				founderRework = parseFounderReworkHint(
+					JSON.parse(row.founder_rework_json),
+				);
+			} catch {
+				// handled by the fail-closed check below
+			}
+			if (!founderRework) {
+				throw new Error("founder deferred rework hint invalid");
+			}
+		}
 		return {
 			question_id: row.question_id as string,
 			msg_id: row.msg_id as string,
@@ -13259,6 +13284,7 @@ export class StateStore {
 			content: row.content as string,
 			author_user_id: row.author_user_id as string,
 			founder_id_at_capture: row.founder_id_at_capture as string,
+			...(founderRework ? { founder_rework: founderRework } : {}),
 			created_at: row.created_at as string,
 			expires_at: row.expires_at as string,
 			consumed_at: (row.consumed_at as string) ?? undefined,
@@ -13325,6 +13351,7 @@ export class StateStore {
 		content: string;
 		authorUserId: string;
 		founderIdAtCapture: string;
+		founderRework?: FounderReworkHint;
 		ttlSeconds: number;
 		heldReplyAction?: FounderActionIntent;
 		audit?: SessionEvent;
@@ -13349,8 +13376,9 @@ export class StateStore {
 			this.db.run(
 				`INSERT INTO founder_deferred_approval
 				   (question_id, msg_id, execution_id, issue_id, project_name, pr_head_sha,
-				    thread_id, decision, content, author_user_id, founder_id_at_capture, expires_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))`,
+				    thread_id, decision, content, author_user_id, founder_id_at_capture,
+				    founder_rework_json, expires_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))`,
 				[
 					input.questionId,
 					input.msgId,
@@ -13363,6 +13391,7 @@ export class StateStore {
 					input.content,
 					input.authorUserId,
 					input.founderIdAtCapture,
+					input.founderRework ? JSON.stringify(input.founderRework) : null,
 					Math.max(1, Math.floor(input.ttlSeconds)),
 				],
 			);
@@ -16467,6 +16496,21 @@ export class StateStore {
 				    'card_posted','card_bound','completed'
 				  )),
 				superseded_reason TEXT,
+				card_void_state TEXT
+				  CHECK (card_void_state IS NULL OR card_void_state IN (
+				    'pending','done','failed','skipped_legacy'
+				  )),
+				card_void_attempts INTEGER NOT NULL DEFAULT 0
+				  CHECK (card_void_attempts >= 0),
+				card_void_transient_attempts INTEGER NOT NULL DEFAULT 0
+				  CHECK (card_void_transient_attempts >= 0),
+				card_void_next_at TEXT,
+				superseded_from_state TEXT
+				  CHECK (superseded_from_state IS NULL OR superseded_from_state IN (
+				    'materializing','awaiting_review','approved'
+				  )),
+				card_watch_next_at TEXT,
+				card_watch_expires_at TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
 				PRIMARY KEY (run_id, gate_node_id, attempt, head_sha)
@@ -16476,6 +16520,13 @@ export class StateStore {
 			"authority_mode TEXT",
 			"subject_kind TEXT",
 			"carrier_binding_state TEXT",
+			"card_void_state TEXT CHECK (card_void_state IS NULL OR card_void_state IN ('pending','done','failed','skipped_legacy'))",
+			"card_void_attempts INTEGER NOT NULL DEFAULT 0 CHECK (card_void_attempts >= 0)",
+			"card_void_transient_attempts INTEGER NOT NULL DEFAULT 0 CHECK (card_void_transient_attempts >= 0)",
+			"card_void_next_at TEXT",
+			"superseded_from_state TEXT CHECK (superseded_from_state IS NULL OR superseded_from_state IN ('materializing','awaiting_review','approved'))",
+			"card_watch_next_at TEXT",
+			"card_watch_expires_at TEXT",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_gate_holder ADD COLUMN ${column}`);
@@ -16483,6 +16534,11 @@ export class StateStore {
 				/* column already exists */
 			}
 		}
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET card_void_state = 'skipped_legacy'
+			  WHERE state = 'superseded' AND card_void_state IS NULL`,
+		);
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_gate_holder_current
 			ON workflow_gate_holder(run_id, gate_node_id)
@@ -25944,7 +26000,7 @@ export class StateStore {
 
 	appendWorkflowReworkRouteRevision(input: {
 		requestId: string;
-		targetNodeId: "design" | "implement";
+		targetNodeId: "design" | "implement" | "qa";
 		targetAttempt: number;
 		preferredActorExecutionId: string;
 		invalidationScope: Array<"design" | "implement" | "qa">;
@@ -25977,6 +26033,12 @@ export class StateStore {
 				sameSequence(input.invalidationScope, ["implement", "qa"]) &&
 				sameSequence(input.verificationPolicy, [
 					"code_review",
+					"qa_retest",
+					"founder_gate",
+				])) ||
+			(input.targetNodeId === "qa" &&
+				sameSequence(input.invalidationScope, ["qa"]) &&
+				sameSequence(input.verificationPolicy, [
 					"qa_retest",
 					"founder_gate",
 				]));
@@ -29184,15 +29246,11 @@ export class StateStore {
 				    )`,
 				[input.now, input.runId],
 			);
-			this.db.run(
-				`UPDATE workflow_gate_holder
-				    SET state = 'superseded',
-				        superseded_reason = 'operator_rework',
-				        updated_at = ?
-				  WHERE run_id = ?
-				    AND state IN ('materializing','awaiting_review','approved')`,
-				[input.now, input.runId],
-			);
+			this.supersedeWorkflowGateHoldersTx({
+				runId: input.runId,
+				reason: "operator_rework",
+				now: input.now,
+			});
 			this.cancelOpenWorkflowCarrierDeliveriesTx({
 				runId: input.runId,
 				now: input.now,
@@ -29494,6 +29552,38 @@ export class StateStore {
 						stage: "POST /api/workflow/gate-carrier-rebind/stage",
 						apply: "POST /api/workflow/gate-carrier-rebind",
 					},
+				},
+			},
+		};
+	}
+
+	private workflowGateCardVoidStuckAlertPayload(input: {
+		escalationUid: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		questionId: string;
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: `【需人工】${input.issueId} 的旧 ship 卡无法作废`,
+			body: `${input.issueId} 的旧 ship 卡 ${input.questionId} 已在账面作废,但 Discord 卡面连续无法更新。请检查卡片权限与 thread binding,避免 founder 继续在旧卡操作。`,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: "card_void_stuck",
+					questionId: input.questionId,
+					leadResolution: input.identity.leadResolution,
 				},
 			},
 		};
@@ -32859,6 +32949,76 @@ export class StateStore {
 		return undefined;
 	}
 
+	private recordLandHeadUnavailableRefusal(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		head: string;
+		now: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): void {
+		const run = this.getWorkflowRun(input.runId);
+		if (!run) throw new Error("land_head_unavailable_run_missing");
+		const head8 = input.head.trim().toLowerCase().slice(0, 8);
+		const escalationUid = `land_head_unavailable:${input.runId}:${input.nodeId}:${input.attempt}`;
+		const stableExecutionId = `workflow-attempt:${input.nodeId}:${input.attempt}`;
+		const identity = input.alertIdentity ?? {
+			leadId: "unassigned",
+			projectName: run.project_name,
+			leadResolution: "fallback" as const,
+		};
+		this.db.transaction(() => {
+			let recordedHead8 = head8;
+			const existing = this.getWorkflowAlertOutbox(escalationUid);
+			if (existing) {
+				const metadata = existing.payload.metadata.workflowEngine;
+				if (
+					existing.run_id !== input.runId ||
+					metadata.runId !== input.runId ||
+					metadata.issueId !== run.issue_id ||
+					metadata.nodeId !== input.nodeId ||
+					metadata.disposition !== "land_head_unavailable" ||
+					metadata.attempt !== input.attempt ||
+					typeof metadata.head8 !== "string" ||
+					!/^[0-9a-f]{8}$/.test(metadata.head8)
+				) {
+					throw new Error(`workflow_alert_uid_conflict:${escalationUid}`);
+				}
+				recordedHead8 = metadata.head8;
+			} else {
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: input.runId,
+					now: input.now,
+					payload: buildLandHeadUnavailableAlertPayload({
+						escalationUid,
+						runId: input.runId,
+						issueId: run.issue_id,
+						nodeId: input.nodeId,
+						attempt: input.attempt,
+						head8,
+						identity,
+					}),
+				});
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: escalationUid,
+				kind: "land_head_unavailable",
+				nodeId: input.nodeId,
+				executionId: stableExecutionId,
+				payload: { attempt: input.attempt, head8: recordedHead8 },
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `alert_enqueued:${escalationUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid },
+			});
+		});
+		this.save();
+	}
+
 	commitEnrolledCompletion(input: {
 		executionId: string;
 		route: string;
@@ -33477,6 +33637,17 @@ export class StateStore {
 				return { ok: false, reason: "terminal_status_immune" };
 			}
 			if (transitionRefusal) {
+				if (transitionRefusal === "land_head_unavailable") {
+					this.recordLandHeadUnavailableRefusal({
+						runId: context.binding.run_id,
+						nodeId: context.binding.node_id,
+						attempt: context.binding.attempt,
+						head: completionSubjectDigest ?? input.subjectDigest ?? "",
+						now,
+						alertIdentity: input.alertIdentity,
+					});
+					return { ok: false, reason: "land_head_unavailable" };
+				}
 				const refusalDigest = canonicalSubmissionDigest({
 					runId: context.binding.run_id,
 					nodeId: context.binding.node_id,
@@ -33968,6 +34139,20 @@ export class StateStore {
 			});
 		} catch (error) {
 			if (transitionRefusal) {
+				const credential = this.getWorkflowSubmissionCredentialByToken(
+					input.credential,
+				);
+				if (transitionRefusal === "land_head_unavailable" && credential) {
+					this.recordLandHeadUnavailableRefusal({
+						runId: credential.run_id,
+						nodeId: credential.node_id,
+						attempt: credential.attempt,
+						head: input.subjectDigest,
+						now: nowIso,
+						alertIdentity: input.alertIdentity,
+					});
+					return { ok: false, reason: "land_head_unavailable" };
+				}
 				const refusalDigest = canonicalSubmissionDigest({
 					runId: String(
 						this.getWorkflowSubmissionCredentialByToken(input.credential)?.run_id ??
@@ -33976,9 +34161,6 @@ export class StateStore {
 					clientRequestId: input.clientRequestId,
 					transitionReason: transitionRefusal,
 				});
-				const credential = this.getWorkflowSubmissionCredentialByToken(
-					input.credential,
-				);
 				if (credential) {
 					this.appendWorkflowRunEventChecked({
 						runId: credential.run_id,
@@ -34568,7 +34750,15 @@ export class StateStore {
 			if (
 				loop &&
 				reworkAuthority !== "founder" &&
-				loopIteration! > loop.max_iterations
+				(loop.max_iterations === undefined || loop.on_limit === undefined)
+			) {
+				result = { ok: false, reason: "loop_limit_missing" };
+				return;
+			}
+			if (
+				loop &&
+				reworkAuthority !== "founder" &&
+				loopIteration! > loop.max_iterations!
 			) {
 				this.upsertWorkflowRunNodeTx({
 					runId: input.runId,
@@ -34765,7 +34955,7 @@ export class StateStore {
 				executionId: input.executionId,
 				payload: { attempt: input.attempt, outcome: input.outcome },
 			});
-			if (loop && reworkAuthority !== "founder") {
+			if (loop) {
 				this.appendWorkflowRunEventTx({
 					runId: input.runId,
 					eventUid: `loop_iteration:${transitionUid}`,
@@ -34775,9 +34965,56 @@ export class StateStore {
 					executionId: input.executionId,
 					payload: {
 						iteration: loopIteration,
-						maxIterations: loop.max_iterations,
+						...(loop.max_iterations !== undefined
+							? { maxIterations: loop.max_iterations }
+							: {}),
 					},
 				});
+				if (
+					reworkAuthority === "founder" &&
+					loopIteration! >= 4 &&
+					input.alertIdentity
+				) {
+					const escalationUid = `founder_rework_round:${input.runId}:${loopIteration}`;
+					try {
+						this.enqueueWorkflowEngineAlertTx({
+							escalationUid,
+							runId: input.runId,
+							now,
+							payload: {
+								leadId: input.alertIdentity.leadId,
+								projectName: input.alertIdentity.projectName,
+								eventId: escalationUid,
+								eventType: "workflow_engine_escalation",
+								severity: "warning",
+								sessionKey: `wf:${input.runId}`,
+								title: `${run.issue_id} 已进入第 ${loopIteration} 轮 founder 返工`,
+								body: `${run.issue_id} 的 founder 打回已进入第 ${loopIteration} 轮;引擎继续返工且不设上限,请 Lead 关注但无需阻断 founder。`,
+								metadata: {
+									workflowEngine: {
+										runId: input.runId,
+										issueId: run.issue_id,
+										nodeId: input.nodeId,
+										executionId: input.executionId,
+										disposition: "founder_rework_round_high",
+										loopIteration: loopIteration!,
+										leadResolution: input.alertIdentity.leadResolution,
+									},
+								},
+							},
+						});
+						this.appendWorkflowRunEventCheckedTx({
+							runId: input.runId,
+							eventUid: `alert_enqueued:${escalationUid}`,
+							kind: "workflow_engine_alert_enqueued",
+							payload: { escalationUid },
+						});
+					} catch (error) {
+						console.warn(
+							`[workflow-engine] founder_rework_round_alert_degraded run=${input.runId} iteration=${loopIteration}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
 			}
 			let preferredActorExecutionId: string | undefined;
 			if (reworkAuthority && reworkRequestId) {
@@ -35040,13 +35277,12 @@ export class StateStore {
 						gateNodeId: target.id,
 						now,
 					});
-					this.db.run(
-						`UPDATE workflow_gate_holder
-						    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
-						  WHERE run_id = ? AND gate_node_id = ?
-						    AND state IN ('materializing','awaiting_review','approved')`,
-						[now, input.runId, target.id],
-					);
+					this.supersedeWorkflowGateHoldersTx({
+						runId: input.runId,
+						gateNodeId: target.id,
+						reason: "new_gate_attempt",
+						now,
+					});
 					this.db.run(
 						`INSERT INTO workflow_gate_holder
 						   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
@@ -36055,6 +36291,12 @@ export class StateStore {
 		) {
 			throw new Error("workflow source payload digest mismatch (poison)");
 		}
+		if (
+			input.alertIdentity !== undefined &&
+			!StateStore.workflowAlertIdentityValid(input.alertIdentity)
+		) {
+			throw new Error("workflow source alert identity invalid");
+		}
 
 		let result: WorkflowSourceApplyResult | undefined;
 		this.db.transaction(() => {
@@ -36183,7 +36425,7 @@ export class StateStore {
 				const rawRework = payload.rework;
 				let founderRework:
 					| {
-							target: "design" | "implement";
+							target: "design" | "implement" | "qa";
 							invalidationScope: Array<"design" | "implement" | "qa">;
 							verificationPolicy: Array<
 								"design_review" | "code_review" | "qa_retest" | "founder_gate"
@@ -36214,7 +36456,9 @@ export class StateStore {
 						"interpretation_reason",
 					];
 					if (
-						(target !== "design" && target !== "implement") ||
+						(target !== "design" &&
+							target !== "implement" &&
+							target !== "qa") ||
 						!Array.isArray(invalidationScope) ||
 						!invalidationScope.every((value) =>
 							(["design", "implement", "qa"] as readonly unknown[]).includes(
@@ -36318,6 +36562,7 @@ export class StateStore {
 					outcome: "founder_feedback_kickback",
 					subjectDigest: approvedHead,
 					founderFeedback: response.feedback,
+					alertIdentity: input.alertIdentity,
 					now,
 				});
 				if (!transition.ok || transition.targetNodeId !== feedbackLoop.to) {
@@ -36325,13 +36570,15 @@ export class StateStore {
 						`founder feedback kickback failed: ${transition.ok ? "wrong_target" : transition.reason}`,
 					);
 				}
-				this.db.run(
-					`UPDATE workflow_gate_holder
-					    SET state = 'superseded', superseded_reason = 'founder_feedback', updated_at = ?
-					  WHERE question_id = ? AND state = 'awaiting_review'`,
-					[now, questionId],
-				);
-				if (this.db.getRowsModified() !== 1) {
+				const superseded = this.supersedeWorkflowGateHoldersTx({
+					runId,
+					gateNodeId,
+					questionId,
+					fromStates: ["awaiting_review"],
+					reason: "founder_feedback",
+					now,
+				});
+				if (superseded.updated !== 1) {
 					throw new Error(
 						"founder feedback source payload invalid: holder raced",
 					);
@@ -36363,6 +36610,8 @@ export class StateStore {
 					}
 					this.bumpLifecycleRevision(holder.source_execution_id as string);
 				}
+				let effectiveTargetNodeId = transition.targetNodeId;
+				let effectiveTargetAttempt = transition.targetAttempt;
 				if (founderRework) {
 					if (!transition.reworkRequestId) {
 						throw new Error(
@@ -36408,6 +36657,8 @@ export class StateStore {
 							`founder feedback source payload invalid: ${interpreted.reason}`,
 						);
 					}
+					effectiveTargetNodeId = founderRework.target;
+					effectiveTargetAttempt = targetAttempt;
 				}
 				this.db.run(
 					`INSERT INTO workflow_source_receipt
@@ -36424,8 +36675,8 @@ export class StateStore {
 					payload: {
 						questionId,
 						head: approvedHead,
-						targetNodeId: transition.targetNodeId,
-						targetAttempt: transition.targetAttempt,
+						targetNodeId: effectiveTargetNodeId,
+						targetAttempt: effectiveTargetAttempt,
 					},
 				});
 				result = { kind: "founder_feedback", status: "applied" };
@@ -36740,18 +36991,103 @@ export class StateStore {
 		project: string;
 		sourceEventId: string;
 		reason: string;
-	}): void {
-		this.db.run(
-			`INSERT OR IGNORE INTO workflow_source_deadletter
-			   (project, source_event_id, reason, at) VALUES (?, ?, ?, ?)`,
-			[
-				input.project,
-				input.sourceEventId,
-				input.reason,
-				new Date().toISOString(),
-			],
-		);
-		this.save();
+		founderOrigin?: {
+			kind: "founder_approval" | "founder_feedback";
+			payloadJson: string;
+			alertIdentity: WorkflowEngineAlertIdentity;
+		};
+	}): { deadlettered: boolean; alertEnqueued: boolean } {
+		const now = new Date().toISOString();
+		let result = { deadlettered: false, alertEnqueued: false };
+		this.db.transaction(() => {
+			let founder:
+				| {
+						runId: string;
+						issueId: string;
+						questionId: string;
+						holder?: WorkflowGateHolderRow;
+				  }
+				| undefined;
+			if (input.founderOrigin) {
+				let payload: Record<string, unknown>;
+				try {
+					payload = JSON.parse(input.founderOrigin.payloadJson) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					throw new Error("workflow source deadletter founder binding invalid");
+				}
+				const runId = String(payload.run_id ?? "");
+				const issueId = String(payload.issue_id ?? "");
+				const questionId = String(payload.question_id ?? "");
+				const run = this.getWorkflowRun(runId);
+				if (
+					!runId ||
+					!issueId ||
+					!questionId ||
+					!run ||
+					run.issue_id !== issueId ||
+					run.project_name !== input.project
+				) {
+					throw new Error("workflow source deadletter founder binding invalid");
+				}
+				founder = {
+					runId,
+					issueId,
+					questionId,
+					holder: this.getWorkflowGateHolderByQuestionId(questionId),
+				};
+			}
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_source_deadletter
+				   (project, source_event_id, reason, at) VALUES (?, ?, ?, ?)`,
+				[input.project, input.sourceEventId, input.reason, now],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			result = { deadlettered: true, alertEnqueued: false };
+			if (!founder || !input.founderOrigin) return;
+			const escalationUid = `founder_input_deadletter:${input.sourceEventId}`;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: founder.runId,
+				payload: buildFounderInputDeadletterAlertPayload({
+					escalationUid,
+					projectName: input.project,
+					runId: founder.runId,
+					issueId: founder.issueId,
+					questionId: founder.questionId,
+					nodeId: founder.holder?.gate_node_id ?? "workflow-source-projector",
+					executionId:
+						founder.holder?.source_execution_id ?? input.sourceEventId,
+					kind: input.founderOrigin.kind,
+					reason: input.reason,
+					identity: input.founderOrigin.alertIdentity,
+				}),
+				now,
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: founder.runId,
+				eventUid: `founder_input_deadlettered:${input.sourceEventId}`,
+				kind: "founder_input_deadlettered",
+				nodeId: founder.holder?.gate_node_id,
+				executionId: founder.holder?.source_execution_id,
+				payload: {
+					questionId: founder.questionId,
+					sourceEventId: input.sourceEventId,
+					action: input.founderOrigin.kind,
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: founder.runId,
+				eventUid: `alert_enqueued:${escalationUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid },
+			});
+			result = { deadlettered: true, alertEnqueued: true };
+		});
+		if (result.deadlettered) this.save();
+		return result;
 	}
 
 	getWorkflowSourceDeadletter(
@@ -37098,15 +37434,12 @@ export class StateStore {
 			gateNodeId: input.gateNodeId,
 			now: input.now,
 		});
-		this.db.run(
-			`UPDATE workflow_gate_holder
-			    SET state = 'superseded',
-			        superseded_reason = 'new_gate_attempt',
-			        updated_at = ?
-			  WHERE run_id = ? AND gate_node_id = ?
-			    AND state IN ('materializing','awaiting_review','approved')`,
-			[input.now, input.runId, input.gateNodeId],
-		);
+		this.supersedeWorkflowGateHoldersTx({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			reason: "new_gate_attempt",
+			now: input.now,
+		});
 		this.db.run(
 			`INSERT INTO workflow_gate_holder
 			   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
@@ -38996,6 +39329,59 @@ export class StateStore {
 		}
 	}
 
+	private supersedeWorkflowGateHoldersTx(input: {
+		runId: string;
+		gateNodeId?: string;
+		questionId?: string;
+		fromStates?: Array<"materializing" | "awaiting_review" | "approved">;
+		reason: "founder_feedback" | "new_gate_attempt" | "operator_rework";
+		now: string;
+	}): { updated: number } {
+		const predicates = ["run_id = ?"];
+		const params: unknown[] = [input.reason, input.now, input.runId];
+		if (input.gateNodeId) {
+			predicates.push("gate_node_id = ?");
+			params.push(input.gateNodeId);
+		}
+		if (input.questionId) {
+			predicates.push("question_id = ?");
+			params.push(input.questionId);
+		}
+		const fromStates = input.fromStates ?? [
+			"materializing",
+			"awaiting_review",
+			"approved",
+		];
+		predicates.push(`state IN (${fromStates.map(() => "?").join(",")})`);
+		params.push(...fromStates);
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET superseded_from_state = state,
+			        state = 'superseded',
+			        superseded_reason = ?,
+			        card_void_state = CASE
+			          WHEN card_message_id IS NOT NULL THEN 'pending'
+			          ELSE card_void_state
+			        END,
+			        card_void_attempts = CASE
+			          WHEN card_message_id IS NOT NULL THEN 0
+			          ELSE card_void_attempts
+			        END,
+			        card_void_transient_attempts = CASE
+			          WHEN card_message_id IS NOT NULL THEN 0
+			          ELSE card_void_transient_attempts
+			        END,
+			        card_void_next_at = CASE
+			          WHEN card_message_id IS NOT NULL THEN NULL
+			          ELSE card_void_next_at
+			        END,
+			        updated_at = ?
+			  WHERE ${predicates.join(" AND ")}`,
+			params,
+		);
+		return { updated: this.db.getRowsModified() };
+	}
+
 	ensureWorkflowGateHolder(input: {
 		runId: string;
 		gateNodeId: string;
@@ -39045,13 +39431,12 @@ export class StateStore {
 				gateNodeId: input.gateNodeId,
 				now: input.now,
 			});
-			this.db.run(
-				`UPDATE workflow_gate_holder
-				    SET state = 'superseded', superseded_reason = 'new_gate_attempt', updated_at = ?
-				  WHERE run_id = ? AND gate_node_id = ?
-				    AND state IN ('materializing','awaiting_review','approved')`,
-				[input.now, input.runId, input.gateNodeId],
-			);
+			this.supersedeWorkflowGateHoldersTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				reason: "new_gate_attempt",
+				now: input.now,
+			});
 			this.db.run(
 				`INSERT INTO workflow_gate_holder
 				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
@@ -39151,6 +39536,345 @@ export class StateStore {
 			  WHERE question_id = ? AND state IN ('materializing','awaiting_review','approved')`,
 			[questionId],
 		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	getWorkflowGateHolderByQuestionId(
+		questionId: string,
+	): WorkflowGateHolderRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
+			[questionId],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+	}
+
+	listWorkflowGateHoldersForCardVoid(
+		now: string,
+		limit = 20,
+	): WorkflowGateHolderRow[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE state = 'superseded' AND card_void_state = 'pending'
+			    AND (card_void_next_at IS NULL OR card_void_next_at <= ?)
+			  ORDER BY card_void_next_at ASC, question_id ASC
+			  LIMIT ?`,
+			[now, boundedLimit],
+		) as unknown as WorkflowGateHolderRow[];
+	}
+
+	deferWorkflowGateCardVoid(input: {
+		questionId: string;
+		now: string;
+		retryAt: string;
+	}):
+		| { ok: true; transientAttempts: number; budgetExhausted: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.retryAt) ||
+			Date.parse(input.retryAt) <= Date.parse(input.now)
+		) {
+			return { ok: false, reason: "invalid_workflow_gate_card_void_defer" };
+		}
+		let result:
+			| { ok: true; transientAttempts: number; budgetExhausted: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "workflow_gate_card_void_not_pending",
+		};
+		this.db.transaction(() => {
+			const holder = this.workflowSelectAll(
+				"SELECT card_void_transient_attempts FROM workflow_gate_holder WHERE question_id = ? AND state = 'superseded' AND card_void_state = 'pending'",
+				[input.questionId],
+			)[0];
+			if (!holder) return;
+			const nextTransientAttempts =
+				Number(holder.card_void_transient_attempts ?? 0) + 1;
+			const budgetExhausted = nextTransientAttempts >= 5;
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET card_void_transient_attempts = ?,
+				        card_void_next_at = ?, updated_at = ?
+				  WHERE question_id = ? AND state = 'superseded'
+				    AND card_void_state = 'pending'`,
+				[
+					budgetExhausted ? 0 : nextTransientAttempts,
+					input.retryAt,
+					input.now,
+					input.questionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "workflow_gate_card_void_raced" };
+				return;
+			}
+			result = {
+				ok: true,
+				transientAttempts: budgetExhausted ? 0 : nextTransientAttempts,
+				budgetExhausted,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	advanceWorkflowGateCardVoid(input: {
+		questionId: string;
+		outcome: "done" | "failed";
+		now: string;
+		skipWatch?: boolean;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| {
+				ok: true;
+				state: "pending" | "done" | "failed";
+				attempts: number;
+				alertEnqueued: boolean;
+		  }
+		| { ok: false; reason: string } {
+		if (!input.questionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_workflow_gate_card_void" };
+		}
+		let result:
+			| {
+					ok: true;
+					state: "pending" | "done" | "failed";
+					attempts: number;
+					alertEnqueued: boolean;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "workflow_gate_card_void_not_pending",
+		};
+		this.db.transaction(() => {
+			const holder = this.workflowSelectAll(
+				"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
+				[input.questionId],
+			)[0];
+			if (
+				!holder ||
+				holder.state !== "superseded" ||
+				holder.card_void_state !== "pending"
+			) {
+				return;
+			}
+			const attempts = Number(holder.card_void_attempts ?? 0);
+			if (input.outcome === "done") {
+				const watchExpiresAt = input.skipWatch
+					? input.now
+					: new Date(Date.parse(input.now) + 48 * 60 * 60 * 1_000).toISOString();
+				this.db.run(
+					`UPDATE workflow_gate_holder
+					    SET card_void_state = 'done',
+					        card_void_transient_attempts = 0,
+					        card_void_next_at = NULL,
+					        card_watch_next_at = ?, card_watch_expires_at = ?,
+					        updated_at = ?
+					  WHERE question_id = ? AND state = 'superseded'
+					    AND card_void_state = 'pending'`,
+					[input.now, watchExpiresAt, input.now, input.questionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "workflow_gate_card_void_raced" };
+					return;
+				}
+				result = {
+					ok: true,
+					state: "done",
+					attempts,
+					alertEnqueued: false,
+				};
+				return;
+			}
+			const nextAttempts = attempts + 1;
+			if (nextAttempts < 5) {
+				this.db.run(
+					`UPDATE workflow_gate_holder
+					    SET card_void_attempts = ?,
+					        card_void_transient_attempts = 0,
+					        updated_at = ?
+					  WHERE question_id = ? AND state = 'superseded'
+					    AND card_void_state = 'pending'`,
+					[nextAttempts, input.now, input.questionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					result = { ok: false, reason: "workflow_gate_card_void_raced" };
+					return;
+				}
+				result = {
+					ok: true,
+					state: "pending",
+					attempts: nextAttempts,
+					alertEnqueued: false,
+				};
+				return;
+			}
+			const run = this.getWorkflowRun(String(holder.run_id));
+			if (!run) throw new Error("workflow_gate_card_void_run_not_found");
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET card_void_state = 'failed', card_void_attempts = ?,
+				        card_void_transient_attempts = 0,
+				        card_void_next_at = NULL, updated_at = ?
+				  WHERE question_id = ? AND state = 'superseded'
+				    AND card_void_state = 'pending'`,
+				[nextAttempts, input.now, input.questionId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "workflow_gate_card_void_raced" };
+				return;
+			}
+			const escalationUid = `card_void_stuck:${input.questionId}`;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: String(holder.run_id),
+				now: input.now,
+				payload: this.workflowGateCardVoidStuckAlertPayload({
+					escalationUid,
+					runId: String(holder.run_id),
+					issueId: run.issue_id,
+					nodeId: String(holder.gate_node_id),
+					executionId: String(holder.source_execution_id),
+					questionId: input.questionId,
+					identity: input.alertIdentity,
+				}),
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(holder.run_id),
+				eventUid: `gate_card_void_failed:${input.questionId}`,
+				kind: "gate_card_void_failed",
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				payload: { questionId: input.questionId },
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(holder.run_id),
+				eventUid: `alert_enqueued:${escalationUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid },
+			});
+			result = {
+				ok: true,
+				state: "failed",
+				attempts: nextAttempts,
+				alertEnqueued: true,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listWorkflowGateHoldersForCardWatch(
+		now: string,
+		limit = 10,
+	): WorkflowGateHolderRow[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		return this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE state = 'superseded'
+			    AND card_void_state = 'done'
+			    AND superseded_from_state != 'approved'
+			    AND card_watch_next_at <= ?
+			    AND ? < card_watch_expires_at
+			  ORDER BY card_watch_next_at ASC, question_id ASC
+			  LIMIT ?`,
+			[now, now, boundedLimit],
+		) as unknown as WorkflowGateHolderRow[];
+	}
+
+	advanceWorkflowGateCardWatch(input: {
+		questionId: string;
+		now: string;
+		stop?: boolean;
+	}): boolean {
+		if (!input.questionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET card_watch_next_at = CASE
+			      WHEN ? THEN card_watch_expires_at
+			      ELSE MIN(?, card_watch_expires_at)
+			    END,
+			    updated_at = ?
+			  WHERE question_id = ? AND state = 'superseded'
+			    AND card_void_state = 'done'`,
+			[
+				input.stop ? 1 : 0,
+				new Date(Date.parse(input.now) + 10 * 60 * 1_000).toISOString(),
+				input.now,
+				input.questionId,
+			],
+		);
+		const updated = this.db.getRowsModified() === 1;
+		if (updated) this.save();
+		return updated;
+	}
+
+	getSupersededWorkflowGateHolderByCardMessageId(
+		cardMessageId: string,
+	): WorkflowGateHolderRow | undefined {
+		if (!cardMessageId) return undefined;
+		const rows = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE card_message_id = ? AND state = 'superseded'
+			  ORDER BY updated_at DESC, question_id ASC
+			  LIMIT 2`,
+			[cardMessageId],
+		);
+		return rows.length === 1
+			? (rows[0] as unknown as WorkflowGateHolderRow)
+			: undefined;
+	}
+
+	recordVoidedWorkflowGateInput(input: {
+		questionId: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (!input.questionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_voided_workflow_gate_input" };
+		}
+		const holder = this.getWorkflowGateHolderByQuestionId(input.questionId);
+		if (!holder || holder.state !== "superseded") {
+			return { ok: false, reason: "superseded_workflow_gate_not_found" };
+		}
+		const escalationUid = `voided_card_input:${holder.question_id}`;
+		const existing = this.getWorkflowAlertOutbox(escalationUid);
+		if (existing) {
+			return existing.run_id === holder.run_id
+				? { ok: true, idempotentReplay: true }
+				: { ok: false, reason: "voided_card_input_alert_uid_conflict" };
+		}
+		const run = this.getWorkflowRun(holder.run_id);
+		if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
+		try {
+			this.enqueueWorkflowEngineAlert({
+				escalationUid,
+				runId: holder.run_id,
+				payload: voidedCardInputAlertPayload({
+					holder,
+					issueId: run.issue_id,
+					identity: input.alertIdentity,
+				}),
+				now: input.now,
+			});
+			return { ok: true, idempotentReplay: false };
+		} catch (error) {
+			const raced = this.getWorkflowAlertOutbox(escalationUid);
+			if (raced?.run_id === holder.run_id) {
+				return { ok: true, idempotentReplay: true };
+			}
+			return {
+				ok: false,
+				reason: error instanceof Error ? error.message : String(error),
+			};
+		}
 	}
 
 	getCurrentWorkflowGateHolder(
@@ -44613,6 +45337,12 @@ export type WorkflowGateHolderState =
 	| "approved"
 	| "superseded";
 
+export type WorkflowGateCardVoidState =
+	| "pending"
+	| "done"
+	| "failed"
+	| "skipped_legacy";
+
 export type WorkflowGateMaterializationStage =
 	| "question_intent"
 	| "question_written"
@@ -44638,6 +45368,13 @@ export interface WorkflowGateHolderRow {
 	state: WorkflowGateHolderState;
 	materialization_stage: WorkflowGateMaterializationStage;
 	superseded_reason: string | null;
+	card_void_state: WorkflowGateCardVoidState | null;
+	card_void_attempts: number;
+	card_void_transient_attempts: number;
+	card_void_next_at: string | null;
+	superseded_from_state: Exclude<WorkflowGateHolderState, "superseded"> | null;
+	card_watch_next_at: string | null;
+	card_watch_expires_at: string | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -45764,6 +46501,7 @@ export type WorkflowCompletionResult =
 				| "no_code_attestation_stale"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
+				| "land_head_unavailable"
 				| "transition_refused";
 			detail?: { transitionReason: string };
 	  };
@@ -45856,6 +46594,104 @@ export interface WorkflowEngineAlertIdentity {
 	leadResolution: "resolved" | "fallback";
 }
 
+export function buildFounderInputDeadletterAlertPayload(input: {
+	escalationUid: string;
+	projectName: string;
+	runId: string;
+	issueId: string;
+	questionId: string;
+	nodeId: string;
+	executionId: string;
+	kind: "founder_approval" | "founder_feedback";
+	reason: string;
+	identity: WorkflowEngineAlertIdentity;
+}): WorkflowEngineAlertPayload {
+	const action = input.kind === "founder_approval" ? "批准" : "打回";
+	return {
+		leadId: input.identity.leadId,
+		projectName: input.projectName,
+		eventId: input.escalationUid,
+		eventType: "workflow_engine_escalation",
+		severity: "severe",
+		sessionKey: `wf:${input.runId}`,
+		title: `【需人工】${input.issueId} 的 founder 输入未入账`,
+		body: `${input.issueId} 的 founder ${action}输入未入账(question_id=${input.questionId}): ${input.reason}。请确认新 ship 卡是否已出,必要时人工跟进。`,
+		metadata: {
+			workflowEngine: {
+				runId: input.runId,
+				issueId: input.issueId,
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				disposition: "founder_input_deadletter",
+				questionId: input.questionId,
+				leadResolution: input.identity.leadResolution,
+			},
+		},
+	};
+}
+
+export function voidedCardInputAlertPayload(input: {
+	holder: WorkflowGateHolderRow;
+	issueId: string;
+	identity: WorkflowEngineAlertIdentity;
+}): WorkflowEngineAlertPayload {
+	const escalationUid = `voided_card_input:${input.holder.question_id}`;
+	return {
+		leadId: input.identity.leadId,
+		projectName: input.identity.projectName,
+		eventId: escalationUid,
+		eventType: "workflow_engine_escalation",
+		severity: "warning",
+		sessionKey: `wf:${input.holder.run_id}`,
+		title: "founder 在已作废的 ship 卡上有操作 — 未入账",
+		body: `${input.issueId} 的已作废 ship 卡 ${input.holder.question_id}(head ${input.holder.head_sha.slice(0, 8)}) 收到 founder 输入;该输入按裁定未入账。请确认最新 ship 卡已送达并跟进 founder。`,
+		metadata: {
+			workflowEngine: {
+				runId: input.holder.run_id,
+				issueId: input.issueId,
+				nodeId: input.holder.gate_node_id,
+				executionId: input.holder.source_execution_id,
+				disposition: "voided_card_input",
+				questionId: input.holder.question_id,
+				leadResolution: input.identity.leadResolution,
+			},
+		},
+	};
+}
+
+export function buildLandHeadUnavailableAlertPayload(input: {
+	escalationUid: string;
+	runId: string;
+	issueId: string;
+	nodeId: string;
+	attempt: number;
+	head8: string;
+	identity: WorkflowEngineAlertIdentity;
+}): WorkflowEngineAlertPayload {
+	return {
+		leadId: input.identity.leadId,
+		projectName: input.identity.projectName,
+		eventId: input.escalationUid,
+		eventType: "workflow_engine_escalation",
+		severity: "severe",
+		sessionKey: `wf:${input.runId}`,
+		title: `${input.issueId} 返工后的 land head 缺少当前 attempt 绑定`,
+		body: `${input.issueId} 在 ${input.nodeId} attempt ${input.attempt} 进入 founder gate 时无法验证 head ${input.head8}… 的当前 PR 绑定。decision/completion 已拒绝且保持可重试;请检查 gate-entry binding producer。`,
+		metadata: {
+			workflowEngine: {
+				runId: input.runId,
+				issueId: input.issueId,
+				nodeId: input.nodeId,
+				executionId: `workflow-attempt:${input.nodeId}:${input.attempt}`,
+				disposition: "land_head_unavailable",
+				attempt: input.attempt,
+				head8: input.head8,
+				leadResolution: input.identity.leadResolution,
+			},
+		},
+	};
+}
+
 export type WorkflowDeadExecutionCommitMarkerBaseline =
 	| { state: "present"; mtimeMs: number }
 	| { state: "absent" }
@@ -45925,6 +46761,12 @@ export interface WorkflowEngineAlertPayload {
 				| "ship_ready_stalled"
 				| "ship_ready_delivery_failed"
 				| "gate_carrier_unbound"
+				| "gate_materialization_stuck"
+				| "card_void_stuck"
+				| "founder_input_deadletter"
+				| "founder_rework_round_high"
+				| "voided_card_input"
+				| "land_head_unavailable"
 				| "runner_ship_merged_before_approval"
 				| "runner_ship_merged_head_mismatch"
 				| "runner_ship_completion_failure"
@@ -45945,6 +46787,9 @@ export interface WorkflowEngineAlertPayload {
 			deferredAt?: string;
 			management?: { terminate: string };
 			questionId?: string;
+			loopIteration?: number;
+			attempt?: number;
+			head8?: string;
 			subjectDigest?: string;
 			carrierNodeId?: string | null;
 			rebind?: {
@@ -46042,6 +46887,7 @@ export type WorkflowCredentialSubmissionResult =
 				| "same_vendor_review"
 				| "invalid_timestamp"
 				| "run_not_found"
+				| "land_head_unavailable"
 				| "transition_refused";
 			detail?: { transitionReason: string };
 	  };
@@ -46186,6 +47032,8 @@ export interface WorkflowSourceEventInput {
 	payloadJson: string;
 	payloadDigest: string;
 	schemaVersion: number;
+	/** Best-effort Lead target for non-blocking founder rework advisories. */
+	alertIdentity?: WorkflowEngineAlertIdentity;
 }
 
 export type WorkflowSourceApplyResult =

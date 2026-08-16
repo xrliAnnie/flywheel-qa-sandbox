@@ -60,9 +60,24 @@ describe("classifyFounderShipApproval — mapping", () => {
 			runnerImpl: runnerFor({
 				decision: "reject",
 				evidence_message_id: "MSG-1",
+				rework_target: "qa",
 			}),
 		});
-		expect(res.kind).toBe("reject");
+		expect(res).toMatchObject({ kind: "reject", reworkTarget: "qa" });
+	});
+
+	it("invalid rework_target is ignored without changing the reject verdict", async () => {
+		const res = await classifyFounderShipApproval(INPUT, {
+			runnerImpl: runnerFor({
+				decision: "reject",
+				evidence_message_id: "MSG-1",
+				rework_target: "deploy",
+			}),
+		});
+		expect(res).toEqual({
+			kind: "reject",
+			reason: "founder rejected",
+		});
 	});
 
 	it("unclear → unclear", async () => {
@@ -115,6 +130,7 @@ describe("classifyFounderShipApproval — prompt binding", () => {
 		expect(prompt).toContain("MSG-1");
 		expect(prompt).toContain("FLY-799");
 		expect(prompt).toContain(INPUT.messageContent);
+		expect(prompt).toContain('"rework_target":"design"|"implement"|"qa"|null');
 	});
 });
 

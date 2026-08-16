@@ -554,6 +554,11 @@ import { GitWorkflowDocsGit } from "./workflow-docs-git.js";
 import { WorkflowDocsMaterializer } from "./workflow-docs-materializer.js";
 import { WorkflowEngineDispatcher } from "./workflow-engine-dispatcher.js";
 import { projectWorkflowEngineParkOutbox } from "./workflow-engine-park-projector.js";
+import {
+	voidSupersededWorkflowGateCards,
+	watchVoidedWorkflowGateCards,
+} from "./workflow-gate-card-lifecycle.js";
+import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
 import {
 	GitWorkflowResumeCheckpointStore,
@@ -4332,10 +4337,28 @@ export async function startBridge(
 			`[workflow-template] generalized stranded executions held (no successor dispatch): ${strandedGeneralized.join(", ")}`,
 		);
 	}
+	const workflowSourceAlertFallback: {
+		current?: (payload: AlertPayload) => Promise<{ accepted: boolean }>;
+	} = {};
 	const workflowSourceProjector = startWorkflowSourceProjector({
 		projects: () => loadProjects().map((project) => project.projectName),
 		openCommDb: (project) => new CommDB(commDbPathForProject(project)),
 		store,
+		resolveAlertIdentity: ({ project, issueId, runId }) =>
+			resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: config.defaultLeadAgentId,
+				projectName: project,
+				issueId,
+				runId,
+				log: (message) =>
+					console.warn(`[workflow-source-projector] ${message}`),
+			}),
+		alertFallback: async (payload) => {
+			const fallback = workflowSourceAlertFallback.current;
+			return fallback ? fallback(payload) : { accepted: false };
+		},
 		log: (message) => console.warn(message),
 	});
 
@@ -4997,6 +5020,10 @@ export async function startBridge(
 		leadInboxRuntime.nudge(leadId, projectName),
 	);
 	leadInboxRuntime.start();
+	workflowSourceAlertFallback.current = async (payload) => {
+		const receipt = leadInboxRuntime.enqueueInfraAlert(payload.leadId, payload);
+		return { accepted: receipt.queued };
+	};
 	const deliveryLoopWired = true;
 	const livenessHealthProvider: { current?: () => unknown } = {
 		current: () =>
@@ -7322,68 +7349,130 @@ export async function startBridge(
 		if (workflowGateMaterializationRunning) return;
 		workflowGateMaterializationRunning = true;
 		try {
-			const materializeQuestion = async (
-				questionId: string,
-			): Promise<boolean> => {
-				const holder =
-					store.getCurrentWorkflowGateHolderByQuestionId(questionId);
-				if (!holder) return false;
-				try {
-					const run = store.getWorkflowRun(holder.run_id);
-					if (!run) throw new Error("workflow_gate_run_not_found");
+			await voidSupersededWorkflowGateCards({
+				store,
+				resolveAlertIdentity: ({ run }) =>
+					resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
+						projectName: run.project_name,
+						issueId: run.issue_id,
+						runId: run.run_id,
+						log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+					}),
+				resolveDelivery: ({ holder, run }) => {
 					const source = store.getSession(holder.source_execution_id);
 					const { lead } = resolveLeadForIssue(
 						projects,
 						run.project_name,
 						source ? store.getSessionLabels(holder.source_execution_id) : [],
 					);
-					const thread = store.getChatThreadByIssue(
-						run.issue_id,
-						lead.chatChannel,
-					);
-					if (!thread?.thread_id) {
-						throw new Error("workflow_gate_thread_not_found");
-					}
-					await materializeWorkflowGateHolder(
-						{
+					const botToken = lead.botToken ?? config.discordBotToken;
+					if (!botToken) return undefined;
+					return {
+						botToken,
+						alertIdentity: resolveWorkflowRunAlertIdentity({
 							store,
-							commDbPath: commDbPathForProject(run.project_name),
-							leadId: lead.agentId,
-							threadId: thread.thread_id,
-							postCard: async (input) => {
-								const result = await emitFounderThreadNotification(
-									{
-										questionId: input.questionId,
-										checkpoint: "approve_to_ship",
-										executionId: input.sourceExecutionId,
-										issueId: input.issueId,
-										issueIdentifier: source?.issue_identifier,
-										projectName: input.projectName,
-										summary: input.content,
-										ageMinutes: 0,
-										thread,
-										botToken: lead.botToken ?? config.discordBotToken,
-										ownerUserId: config.discordOwnerUserId,
-									},
-									{ store },
-								);
-								if (result.kind !== "posted" || !result.gateMessageId) {
-									throw new Error(
-										`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
-									);
-								}
-								return { messageId: result.gateMessageId };
-							},
-						},
-						holder.question_id,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+						}),
+					};
+				},
+				log: (message: string) => console.warn(message),
+			});
+			const materializeQuestion = async (
+				questionId: string,
+			): Promise<boolean> => {
+				const holder =
+					store.getCurrentWorkflowGateHolderByQuestionId(questionId);
+				if (!holder) return false;
+				const run = store.getWorkflowRun(holder.run_id);
+				if (!run) {
+					console.warn(
+						`[workflow-gate] materialization failed for ${holder.question_id}: workflow_gate_run_not_found`,
 					);
-					return true;
+					return false;
+				}
+				let materialized = false;
+				try {
+					await materializeWorkflowGateWithFailLoud({
+						store,
+						holder,
+						alertIdentity: resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) => console.warn(`[workflow-gate] ${message}`),
+						}),
+						materialize: async () => {
+							const source = store.getSession(holder.source_execution_id);
+							const { lead } = resolveLeadForIssue(
+								projects,
+								run.project_name,
+								source
+									? store.getSessionLabels(holder.source_execution_id)
+									: [],
+							);
+							const thread = store.getChatThreadByIssue(
+								run.issue_id,
+								lead.chatChannel,
+							);
+							if (!thread?.thread_id) {
+								throw new Error("workflow_gate_thread_not_found");
+							}
+							const result = await materializeWorkflowGateHolder(
+								{
+									store,
+									commDbPath: commDbPathForProject(run.project_name),
+									leadId: lead.agentId,
+									threadId: thread.thread_id,
+									postCard: async (input) => {
+										const result = await emitFounderThreadNotification(
+											{
+												questionId: input.questionId,
+												checkpoint: "approve_to_ship",
+												executionId: input.sourceExecutionId,
+												issueId: input.issueId,
+												issueIdentifier: source?.issue_identifier,
+												projectName: input.projectName,
+												summary: input.content,
+												ageMinutes: 0,
+												thread,
+												botToken: lead.botToken ?? config.discordBotToken,
+												ownerUserId: config.discordOwnerUserId,
+											},
+											{ store },
+										);
+										if (result.kind !== "posted" || !result.gateMessageId) {
+											throw new Error(
+												`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
+											);
+										}
+										return { messageId: result.gateMessageId };
+									},
+								},
+								holder.question_id,
+							);
+							materialized = result.ok;
+							return result;
+						},
+						log: (message) => console.warn(message),
+					});
 				} catch (error) {
 					console.warn(
 						`[workflow-gate] materialization failed for ${holder.question_id}: ${error instanceof Error ? error.message : String(error)}`,
 					);
 					return false;
 				}
+				return materialized;
 			};
 			await Promise.all(
 				store
@@ -7404,6 +7493,33 @@ export async function startBridge(
 					now: new Date().toISOString(),
 				});
 			}
+			await watchVoidedWorkflowGateCards({
+				store,
+				founderId: config.discordOwnerUserId ?? "",
+				resolveDelivery: ({ holder, run }) => {
+					const source = store.getSession(holder.source_execution_id);
+					const { lead } = resolveLeadForIssue(
+						projects,
+						run.project_name,
+						source ? store.getSessionLabels(holder.source_execution_id) : [],
+					);
+					const botToken = lead.botToken ?? config.discordBotToken;
+					if (!botToken) return undefined;
+					return {
+						botToken,
+						alertIdentity: resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) => console.warn(`[workflow-gate-card] ${message}`),
+						}),
+					};
+				},
+				log: (message) => console.warn(message),
+			});
 		} finally {
 			workflowGateMaterializationRunning = false;
 		}

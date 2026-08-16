@@ -157,6 +157,73 @@ describe("FLY-1686 gate-entry PR binding", () => {
 			last_activity_at: "2026-08-11T00:04:30.000Z",
 		});
 
+		const missingBindingSubmission = {
+			credential: qaAdmission.submissionCredential,
+			clientRequestId: "qa-pass-fly1686-missing-binding",
+			predicate: "qa_passed",
+			subjectDigest: gateEntryHead,
+			issuerVendor: "claude",
+			issuerModel: "claude-opus-4-8",
+			subjectProducerExecutionId: "implement-fly1686",
+			subjectProducerVendor: "codex",
+			claimExpiresAt: "2026-08-11T03:00:00.000Z",
+			now: "2026-08-11T00:04:45.000Z",
+		};
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				...missingBindingSubmission,
+				subjectDigest: "d".repeat(40),
+				alertIdentity: {
+					leadId: "lead-before-restart",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			} as never),
+		).toEqual({ ok: false, reason: "land_head_unavailable" });
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				...missingBindingSubmission,
+				alertIdentity: {
+					leadId: "lead-after-restart",
+					projectName: "flywheel",
+					leadResolution: "fallback",
+				},
+			} as never),
+		).toEqual({ ok: false, reason: "land_head_unavailable" });
+		expect(
+			store.getWorkflowSubmissionCredentialByToken(
+				qaAdmission.submissionCredential,
+			)?.consumed_at,
+		).toBeNull();
+		expect(
+			store.getCurrentWorkflowGateHolder("run-fly1686", "founder_gate"),
+		).toBeUndefined();
+		const bindingAlertUid = "land_head_unavailable:run-fly1686:qa:1";
+		expect(
+			store.getWorkflowAlertOutbox(bindingAlertUid)?.payload,
+		).toMatchObject({
+			leadId: "lead-before-restart",
+			metadata: {
+				workflowEngine: {
+					runId: "run-fly1686",
+					nodeId: "qa",
+					disposition: "land_head_unavailable",
+				},
+			},
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-fly1686")
+				.filter((event) => event.event_uid === bindingAlertUid),
+		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-fly1686")
+				.filter(
+					(event) => event.event_uid === `alert_enqueued:${bindingAlertUid}`,
+				),
+		).toHaveLength(1);
+
 		expect(
 			store.submitWorkflowDecisionByCredential({
 				credential: qaAdmission.submissionCredential,

@@ -1,0 +1,9 @@
+flowchart LR
+    subgraph OLD["改造前(founder 已否)"]
+        O1["打回第 1-3 轮:正常"] --> O2["声明写着最多 3 轮"]
+    end
+    subgraph NEW["改造后"]
+        N1["打回第 1、2、3…N 轮<br/>永远畅通,机器不设闸"] --> N2["第 4 轮起:<br/>每轮悄悄提醒 Lead 一次<br/>『循环在变长,关注一下』"]
+        N2 --> N3["Annie 全程零打扰<br/>每一轮都照常出新卡"]
+    end
+    OLD -.->|"去掉上限"| NEW

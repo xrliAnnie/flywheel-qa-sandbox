@@ -1,0 +1,11 @@
+flowchart TB
+    A["🚀 ship 卡(旧 head)"] --> B["founder 文字打回"]
+    B --> C["引擎记下打回,安排返工"]
+    C --> D["返工环当天断裂<br/>(FLY-1765,已另单修复)"]
+    D -.->|"新卡从未出现"| E["founder 白等,零提示"]
+    A --> F["founder 又在旧卡上点 ✅<br/>(当天连点四张)"]
+    F --> G["系统静默丢弃<br/>(死信只写内部日志,无人收到告警)"]
+    G -.-> E
+    style D fill:#ffe5e3,stroke:#ff3b30
+    style G fill:#ffe5e3,stroke:#ff3b30
+    style E fill:#fff3e0,stroke:#ff9500

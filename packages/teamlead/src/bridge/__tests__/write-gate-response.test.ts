@@ -464,6 +464,82 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 
+	it("serializes the QA correction route for a trusted founder reject", async () => {
+		const trustedFounderGateResponse = vi
+			.fn()
+			.mockReturnValue({ responseId: "R-feedback-qa" });
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			trustedFounderGateResponse,
+		};
+		await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			answer: '{"approved":false,"feedback":"qa: rerun the checks"}',
+			actor: "founder-discord",
+			db,
+			store: store(),
+			founderId: "founder-discord",
+			gateAuthorityView: {
+				resolve: () => ({
+					kind: "engine",
+					runId: "run-land",
+					questionId: "Q-1",
+					executionId: "E-1",
+					issueId: "FLY-1772",
+					projectName: "flywheel",
+					headSha: "b".repeat(40),
+					authorityMode: "land",
+					subjectKind: "git_head",
+					state: "awaiting_review",
+					cardMessageId: "M-1",
+				}),
+			},
+			founderMessage: { msgId: "M-QA", now: "2026-08-15T08:00:00.000Z" },
+			founderRework: {
+				target: "qa",
+				invalidationScope: ["qa"],
+				verificationPolicy: ["qa_retest", "founder_gate"],
+				interpretedBy: "founder-reply-prefix",
+				interpretationReason: "matched_prefix:qa",
+			},
+		});
+
+		expect(trustedFounderGateResponse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				approvalSource: expect.objectContaining({
+					payload: expect.objectContaining({
+						rework: expect.objectContaining({ target: "qa" }),
+					}),
+				}),
+			}),
+		);
+	});
+
+	it("fails closed before touching storage when a Lead relay carries a founder route hint", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		await expect(
+			writeGateResponseAndRunPostWrite({
+				...baseArgs,
+				db,
+				store: store("awaiting_review"),
+				leadRequest: {
+					requestingLeadId: "lead-1",
+					projectName: "flywheel",
+					identityDigest: "digest",
+				},
+				founderRework: {
+					target: "qa",
+					invalidationScope: ["qa"],
+					verificationPolicy: ["qa_retest", "founder_gate"],
+					interpretedBy: "untrusted-lead-relay",
+					interpretationReason: "must never reach the projector",
+				},
+			}),
+		).rejects.toThrow("lead requests cannot carry founder rework hints");
+		expect(db.getMessageById).not.toHaveBeenCalled();
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
 	it("never emits a founder source event for feedback or an untrusted actor", async () => {
 		const db = {
 			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),

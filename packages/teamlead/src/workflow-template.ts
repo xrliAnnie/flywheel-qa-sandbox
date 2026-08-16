@@ -80,8 +80,8 @@ export interface WorkflowManifestLoop {
 	to: string;
 	loop_when: "qa_fail" | "review_fail" | "founder_feedback_kickback";
 	exit_when: "qa_pass" | "review_pass" | "founder_approved";
-	max_iterations: number;
-	on_limit: "escalate";
+	max_iterations?: number;
+	on_limit?: "escalate";
 }
 
 export interface WorkflowManifestV1Legacy {
@@ -608,9 +608,29 @@ function validateWorkflowManifestV1(
 		if (!nodeIds.has(from) || !nodeIds.has(to)) {
 			throw new Error(`loop ${id} references an unknown node`);
 		}
+		const loopWhen = oneOf(
+			loop.loop_when,
+			["qa_fail", "founder_feedback_kickback"] as const,
+			`manifest.loops[${index}].loop_when`,
+		);
+		const hasMaxIterations = loop.max_iterations !== undefined;
+		const hasOnLimit = loop.on_limit !== undefined;
+		if (hasMaxIterations !== hasOnLimit) {
+			throw new Error(
+				`loop ${id}.max_iterations and on_limit must be provided together`,
+			);
+		}
+		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
+			throw new Error(
+				`loop ${id}.max_iterations and on_limit are required for ${loopWhen}`,
+			);
+		}
+		const maxIterations = hasMaxIterations
+			? Number(loop.max_iterations)
+			: undefined;
 		if (
-			!Number.isInteger(loop.max_iterations) ||
-			Number(loop.max_iterations) <= 0
+			maxIterations !== undefined &&
+			(!Number.isInteger(maxIterations) || maxIterations <= 0)
 		) {
 			throw new Error(`loop ${id}.max_iterations must be a positive integer`);
 		}
@@ -618,22 +638,22 @@ function validateWorkflowManifestV1(
 			id,
 			from,
 			to,
-			loop_when: oneOf(
-				loop.loop_when,
-				["qa_fail", "founder_feedback_kickback"] as const,
-				`manifest.loops[${index}].loop_when`,
-			),
+			loop_when: loopWhen,
 			exit_when: oneOf(
 				loop.exit_when,
 				["qa_pass", "founder_approved"] as const,
 				`manifest.loops[${index}].exit_when`,
 			),
-			max_iterations: Number(loop.max_iterations),
-			on_limit: oneOf(
-				loop.on_limit,
-				["escalate"] as const,
-				`manifest.loops[${index}].on_limit`,
-			),
+			...(maxIterations !== undefined
+				? {
+						max_iterations: maxIterations,
+						on_limit: oneOf(
+							loop.on_limit,
+							["escalate"] as const,
+							`manifest.loops[${index}].on_limit`,
+						),
+					}
+				: {}),
 		};
 	});
 
@@ -1195,9 +1215,29 @@ function validateWorkflowManifestV2(
 		if (!nodeIds.has(from) || !nodeIds.has(to)) {
 			throw new Error(`loop ${id} references an unknown node`);
 		}
+		const loopWhen = oneOf(
+			loop.loop_when,
+			["qa_fail", "review_fail", "founder_feedback_kickback"] as const,
+			`manifest.loops[${index}].loop_when`,
+		);
+		const hasMaxIterations = loop.max_iterations !== undefined;
+		const hasOnLimit = loop.on_limit !== undefined;
+		if (hasMaxIterations !== hasOnLimit) {
+			throw new Error(
+				`loop ${id}.max_iterations and on_limit must be provided together`,
+			);
+		}
+		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
+			throw new Error(
+				`loop ${id}.max_iterations and on_limit are required for ${loopWhen}`,
+			);
+		}
+		const maxIterations = hasMaxIterations
+			? Number(loop.max_iterations)
+			: undefined;
 		if (
-			!Number.isInteger(loop.max_iterations) ||
-			Number(loop.max_iterations) <= 0
+			maxIterations !== undefined &&
+			(!Number.isInteger(maxIterations) || maxIterations <= 0)
 		) {
 			throw new Error(`loop ${id}.max_iterations must be a positive integer`);
 		}
@@ -1205,11 +1245,7 @@ function validateWorkflowManifestV2(
 			id,
 			from,
 			to,
-			loop_when: oneOf(
-				loop.loop_when,
-				["qa_fail", "review_fail", "founder_feedback_kickback"] as const,
-				`manifest.loops[${index}].loop_when`,
-			),
+			loop_when: loopWhen,
 			exit_when: oneOf(
 				loop.exit_when,
 				(isLandVariant
@@ -1220,12 +1256,16 @@ function validateWorkflowManifestV2(
 						]) as readonly WorkflowManifestLoop["exit_when"][],
 				`manifest.loops[${index}].exit_when`,
 			),
-			max_iterations: Number(loop.max_iterations),
-			on_limit: oneOf(
-				loop.on_limit,
-				["escalate"] as const,
-				`manifest.loops[${index}].on_limit`,
-			),
+			...(maxIterations !== undefined
+				? {
+						max_iterations: maxIterations,
+						on_limit: oneOf(
+							loop.on_limit,
+							["escalate"] as const,
+							`manifest.loops[${index}].on_limit`,
+						),
+					}
+				: {}),
 		};
 	});
 

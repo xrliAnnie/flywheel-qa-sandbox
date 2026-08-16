@@ -572,6 +572,112 @@ function seedWorkflowBinding(
 	);
 }
 
+async function storeWithMaterializedFounderReplacement(
+	target: "design" | "qa",
+): Promise<{ store: StateStore; requestId: string; replacementId: string }> {
+	const store = await storeWithIntent(target);
+	const deadExecutionId = target === "design" ? "design-1" : "qa-1";
+	store.applyWorkflowLedgerBatch({
+		projectName: "flywheel",
+		issueId: "FLY-1307",
+		runId: "run-1",
+		ops: [
+			{
+				op: "side_effect",
+				node: target,
+				attempt: 1,
+				executionId: deadExecutionId,
+				to: "started",
+			},
+		],
+	});
+	store.upsertSession({
+		execution_id: deadExecutionId,
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "failed",
+		session_role: target,
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-1",
+		nodeId: target,
+		attempt: 2,
+		state: "pending",
+		executionId: deadExecutionId,
+	});
+	const requestId = `founder-rework-${target}`;
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run("UPDATE workflow_run SET current_node_id = ? WHERE run_id = 'run-1'", [
+		target,
+	]);
+	db.run(
+		`INSERT OR IGNORE INTO workflow_actor
+		   (execution_id, project_name, issue_id, role, created_at)
+		 VALUES (?, 'flywheel', 'FLY-1307', ?, '2026-08-15T08:00:00.000Z')`,
+		[deadExecutionId, target],
+	);
+	db.run(
+		`INSERT INTO workflow_rework_request
+		   (request_id, run_id, source_event_id, authority, source_node_id,
+		    source_attempt, base_revision, authority_context_json,
+		    authority_context_digest, founder_feedback_verbatim, requested_at)
+		 VALUES (?, 'run-1', ?, 'founder', 'founder_gate', 1, ?, '{}', ?, ?,
+		         '2026-08-15T08:00:00.000Z')`,
+		[
+			requestId,
+			`founder-source-${target}`,
+			HEAD,
+			`digest-${target}`,
+			`${target}: keep  double spaces and punctuation!`,
+		],
+	);
+	const invalidationScope =
+		target === "design" ? ["design", "implement", "qa"] : ["qa"];
+	const verificationPolicy =
+		target === "design"
+			? ["design_review", "code_review", "qa_retest", "founder_gate"]
+			: ["qa_retest", "founder_gate"];
+	db.run(
+		`INSERT INTO workflow_rework_route_revision
+		   (request_id, revision, target_node_id, target_attempt,
+		    preferred_actor_execution_id, invalidation_scope_json,
+		    verification_policy_json, interpreted_by, interpretation_reason, created_at)
+		 VALUES (?, 1, ?, 2, ?, ?, ?, 'founder-reply-prefix', 'explicit prefix',
+		         '2026-08-15T08:00:00.000Z')`,
+		[
+			requestId,
+			target,
+			deadExecutionId,
+			JSON.stringify(invalidationScope),
+			JSON.stringify(verificationPolicy),
+		],
+	);
+	db.run(
+		`INSERT INTO workflow_rework_delivery
+		   (request_id, route_revision, state, updated_at)
+		 VALUES (?, 1, 'replacement_pending', '2026-08-15T08:00:00.000Z')`,
+		[requestId],
+	);
+	const replacementId = `${target}-replacement-2`;
+	const materialized = store.materializeWorkflowReworkReplacement({
+		requestId,
+		deadExecutionId,
+		newExecutionId: replacementId,
+		reason: "persisted_target_dead",
+		observedAt: "2026-08-15T08:01:00.000Z",
+	});
+	expect(materialized).toMatchObject({
+		ok: true,
+		executionId: replacementId,
+		idempotentReplay: false,
+	});
+	return { store, requestId, replacementId };
+}
+
 async function storeWithQaFailKickback() {
 	const store = await storeWithIntent("qa");
 	seedCompletedKickbackHusk(store, {
@@ -645,6 +751,42 @@ async function storeWithQaFailKickback() {
 }
 
 describe("WorkflowEngineDispatcher", () => {
+	it.each(["design", "qa"] as const)(
+		"dispatches a real %s founder-rework replacement from base_revision with verbatim feedback",
+		async (target) => {
+			const { store, replacementId } =
+				await storeWithMaterializedFounderReplacement(target);
+			const fake = fakeStartDispatcher(store);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				now: () => new Date("2026-08-15T08:02:00.000Z"),
+				stateRoot: mkdtempSync(
+					join(tmpdir(), `fly1772-${target}-replacement-`),
+				),
+				resolvePredecessorHead: vi.fn(async () => {
+					throw new Error("replacement must not need a predecessor session");
+				}),
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+			expect(fake.requests).toHaveLength(1);
+			expect(fake.requests[0]).toMatchObject({
+				successorExecutionId: replacementId,
+				sessionRole: target,
+				startPoint: HEAD,
+				generalizedExecution: {
+					activationId: expect.any(String),
+					agentContent: expect.stringContaining(
+						`${target}: keep  double spaces and punctuation!`,
+					),
+				},
+			});
+			store.close();
+		},
+	);
+
 	it("launches an attempt-1 root design without inventing a predecessor", async () => {
 		const store = await storeWithIntent("design");
 		const fake = fakeStartDispatcher(store, {

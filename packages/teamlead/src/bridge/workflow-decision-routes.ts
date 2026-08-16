@@ -123,10 +123,21 @@ async function resolveEngineDecisionCanonical(
 	credential: SubmissionCredential,
 	status: "pass" | "fail",
 ): Promise<EngineDecisionCanonical | undefined> {
-	const context = deps.store.getGeneralizedWorkflowNodeForExecution(
+	const current = deps.store.resolveCurrentWorkflowActivation(
 		credential.execution_id,
 	);
-	if (!context || context.run.engine_owned !== 1) return undefined;
+	if (current.kind === "none") return undefined;
+	if (current.kind === "ambiguous") {
+		if (!deps.store.isWorkflowEngineOwnedExecution(credential.execution_id)) {
+			return undefined;
+		}
+		throw new Error("execution_binding_ambiguous");
+	}
+	if (current.run.engine_owned !== 1) return undefined;
+	if (current.binding.activation_id !== credential.activation_id) {
+		throw new Error("submission_binding_not_current");
+	}
+	const context = current;
 	const decision = resolveWorkflowDecisionContract(
 		context.snapshot,
 		context.node.id,

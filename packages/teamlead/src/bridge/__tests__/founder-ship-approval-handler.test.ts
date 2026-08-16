@@ -263,6 +263,13 @@ describe("tryFounderShipApproval — fail-closed (returns null → WAKE-only)", 
 
 describe("tryFounderShipApproval — reject path", () => {
 	it("TextSource reject → writes feedback (not approval), returns handled", async () => {
+		const founderRework = {
+			target: "qa" as const,
+			invalidationScope: ["qa" as const],
+			verificationPolicy: ["qa_retest" as const, "founder_gate" as const],
+			interpretedBy: "founder-reply-prefix",
+			interpretationReason: "matched_prefix:qa",
+		};
 		const d = deps({
 			evaluateTextImpl: vi.fn().mockResolvedValue({
 				source: "text",
@@ -271,6 +278,7 @@ describe("tryFounderShipApproval — reject path", () => {
 				prHeadSha: HEAD,
 				messageId: "MSG-1",
 				authorUserId: "FOUNDER-1",
+				founderRework,
 			}),
 		});
 		const r = await tryFounderShipApproval(
@@ -283,6 +291,7 @@ describe("tryFounderShipApproval — reject path", () => {
 		});
 		const [writeArgs] = d.writeGateResponseImpl.mock.calls[0];
 		expect(JSON.parse(writeArgs.answer).approved).not.toBe(true);
+		expect(writeArgs.founderRework).toEqual(founderRework);
 	});
 });
 
@@ -397,6 +406,55 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 			});
 		},
 	);
+
+	it("held reject parks the same immutable route hint for deferred replay", async () => {
+		const founderRework = {
+			target: "design" as const,
+			invalidationScope: [
+				"design" as const,
+				"implement" as const,
+				"qa" as const,
+			],
+			verificationPolicy: [
+				"design_review" as const,
+				"code_review" as const,
+				"qa_retest" as const,
+				"founder_gate" as const,
+			],
+			interpretedBy: "founder-reply-prefix",
+			interpretationReason: "matched_prefix:design",
+		};
+		const deferral = {
+			holdReason: vi.fn(() => "codex_pending" as const),
+			deferredEnabled: () => true,
+			heldReplyEnabled: () => true,
+			defer: vi.fn(() => "inserted" as const),
+			queueHeldNotice: vi.fn(),
+			parkForConvergence: vi.fn(),
+			queueFeedbackWake: vi.fn(),
+		};
+		const d = deps({
+			deferral,
+			evaluateTextImpl: vi.fn().mockResolvedValue({
+				source: "text",
+				kind: "reject",
+				questionId: "Q-1",
+				prHeadSha: HEAD,
+				messageId: "MSG-1",
+				authorUserId: "FOUNDER-1",
+				founderRework,
+			}),
+		});
+
+		await tryFounderShipApproval(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+
+		expect(deferral.defer).toHaveBeenCalledWith(
+			expect.objectContaining({ decision: "reject", founderRework }),
+		);
+	});
 
 	it("un-held session: isHeld false → normal write path", async () => {
 		const d = deps({ isHeld: vi.fn().mockReturnValue(false) });

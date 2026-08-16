@@ -59,6 +59,10 @@ describe("workflow gate materializer", () => {
 		expect(cardContent).toContain(
 			"Approval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.",
 		);
+		expect(cardContent).toContain(
+			"打回:直接回复意见即可;可用 design: / implement: / qa:",
+		);
+		expect(cardContent).toContain("前缀只指定返工对象,不代表单独打回");
 		const comm = CommDB.openReadonly(commPath);
 		try {
 			expect(comm.getPendingQuestions("flywheel-eng-lead")).toMatchObject([

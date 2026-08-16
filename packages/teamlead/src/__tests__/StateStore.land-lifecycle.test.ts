@@ -7,7 +7,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeGateAuthorityView } from "../bridge/approval-signal/gate-authority-view.js";
 import { StateStore } from "../StateStore.js";
 import {
@@ -227,7 +227,8 @@ function prepareAwaitingFounderGate(store: StateStore, runId: string) {
 		`INSERT INTO workflow_actor
 		   (execution_id, project_name, issue_id, role, created_at)
 		 VALUES ('design-exec','flywheel','FLY-1375','design','2026-07-21T19:00:00.000Z'),
-		        ('implement-exec','flywheel','FLY-1375','implement','2026-07-21T19:00:00.000Z')`,
+		        ('implement-exec','flywheel','FLY-1375','implement','2026-07-21T19:00:00.000Z'),
+		        ('qa-feedback','flywheel','FLY-1375','qa','2026-07-21T19:00:00.000Z')`,
 	);
 	store.upsertWorkflowRunNode({
 		runId,
@@ -428,6 +429,111 @@ describe("StateStore land lifecycle ledger", () => {
 		expect(
 			store.getWorkflowRunNode("run-claimless", "publish", 1),
 		).toMatchObject({ state: "pending" });
+		store.close();
+	});
+
+	it("completion gate-entry refusal atomically alerts and remains replayable", async () => {
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-claimless-completion",
+			issueId: "FLY-1772",
+			projectName: "flywheel",
+			snapshotJson: claimlessLandSnapshot(),
+			claimsReadEnrolled: true,
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET engine_owned = 1, gate_carrier_epoch = 1, current_node_id = 'craft' WHERE run_id = 'run-claimless-completion'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-claimless-completion",
+			nodeId: "craft",
+			attempt: 1,
+			state: "pending",
+			executionId: "craft-completion",
+		});
+		const admitted = store.admitGeneralizedWorkflowExecution({
+			runId: "run-claimless-completion",
+			nodeId: "craft",
+			executionId: "craft-completion",
+			attempt: 1,
+			now: "2026-08-15T08:00:00.000Z",
+			expiresAt: "2026-08-15T09:00:00.000Z",
+			absoluteDeadlineAt: "2026-08-16T08:00:00.000Z",
+			env: WORKFLOW_ON,
+		});
+		expect(admitted).toMatchObject({ ok: true });
+		if (!admitted.ok) throw new Error(admitted.reason);
+		if (admitted.outputCredential) {
+			expect(
+				store.submitWorkflowNodeOutput({
+					token: admitted.outputCredential,
+					clientRequestId: "craft-output",
+					payload: '{"summary":"done"}',
+					now: "2026-08-15T08:00:30.000Z",
+				}),
+			).toMatchObject({ ok: true });
+		}
+		store.upsertSession({
+			execution_id: "craft-completion",
+			issue_id: "FLY-1772",
+			project_name: "flywheel",
+			status: "running",
+			pr_head_sha: HEAD,
+		});
+		const submission = {
+			executionId: "craft-completion",
+			route: "needs_review",
+			sourceEventId: "craft-completion-event",
+			completionSubmission: { decision: { route: "needs_review" } },
+			subjectDigest: HEAD,
+			now: "2026-08-15T08:01:00.000Z",
+		};
+
+		expect(
+			store.commitEnrolledCompletion({
+				...submission,
+				alertIdentity: {
+					leadId: "lead-completion-first",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toEqual({ ok: false, reason: "land_head_unavailable" });
+		expect(
+			store.commitEnrolledCompletion({
+				...submission,
+				alertIdentity: {
+					leadId: "lead-completion-restart",
+					projectName: "flywheel",
+					leadResolution: "fallback",
+				},
+			}),
+		).toEqual({ ok: false, reason: "land_head_unavailable" });
+		expect(
+			store.getCurrentWorkflowGateHolder(
+				"run-claimless-completion",
+				"decision",
+			),
+		).toBeUndefined();
+		expect(
+			store.getWorkflowRunNode("run-claimless-completion", "craft", 1),
+		).toMatchObject({ state: "admitted" });
+		const uid = "land_head_unavailable:run-claimless-completion:craft:1";
+		expect(store.getWorkflowAlertOutbox(uid)?.payload).toMatchObject({
+			leadId: "lead-completion-first",
+			metadata: {
+				workflowEngine: { disposition: "land_head_unavailable" },
+			},
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-claimless-completion")
+				.filter((event) => event.event_uid === uid),
+		).toHaveLength(1);
 		store.close();
 	});
 
@@ -741,6 +847,74 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("routes a trusted QA correction and audits the effective target instead of the default implement edge", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder = prepareAwaitingFounderGate(store, "run-qa-only");
+		const sourceEventId = `founder-feedback:${holder.question_id}:qa-only`;
+		const sourcePayload = {
+			schema_version: 1,
+			run_id: "run-qa-only",
+			issue_id: "FLY-1375",
+			question_id: holder.question_id,
+			response: {
+				approved: false,
+				feedback: "qa: 重做验收，原文不可改。  ",
+			},
+			actor: "founder",
+			approved_head: HEAD,
+			classification: "founder_direct_signal",
+			authority_id: holder.question_id,
+			rework: {
+				target: "qa",
+				invalidation_scope: ["qa"],
+				verification_policy: ["qa_retest", "founder_gate"],
+				interpreted_by: "founder-reply-prefix",
+				interpretation_reason: "matched_prefix:qa",
+			},
+		};
+
+		expect(
+			store.applyWorkflowSourceEvent({
+				project: "flywheel",
+				sourceEventId,
+				kind: "founder_feedback",
+				payloadJson: canonicalJsonString(sourcePayload),
+				payloadDigest: canonicalSubmissionDigest(sourcePayload),
+				schemaVersion: 1,
+			}),
+		).toEqual({ kind: "founder_feedback", status: "applied" });
+
+		const requestEvent = store
+			.listWorkflowRunEvents("run-qa-only")
+			.find((entry) => entry.kind === "rework_requested");
+		const requestId = (requestEvent?.payload as { requestId?: string })
+			.requestId;
+		expect(requestId).toBeTruthy();
+		expect(store.getWorkflowReworkRequest(requestId!)).toMatchObject({
+			founder_feedback_verbatim: "qa: 重做验收，原文不可改。  ",
+		});
+		expect(store.getLatestWorkflowReworkRoute(requestId!)).toMatchObject({
+			revision: 2,
+			target_node_id: "qa",
+			target_attempt: 2,
+			preferred_actor_execution_id: "qa-feedback",
+			invalidation_scope: ["qa"],
+			verification_policy: ["qa_retest", "founder_gate"],
+		});
+		expect(store.getWorkflowRun("run-qa-only")).toMatchObject({
+			current_node_id: "qa",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-qa-only")
+				.find(
+					(event) =>
+						event.event_uid === `source_feedback:flywheel:${sourceEventId}`,
+				)?.payload,
+		).toMatchObject({ targetNodeId: "qa", targetAttempt: 2 });
+		store.close();
+	});
+
 	it("runs an implement correction through a new QA attempt and returns the new head to founder gate", async () => {
 		const store = await StateStore.create(":memory:");
 		const holder = prepareAwaitingFounderGate(store, "run-implement-full");
@@ -995,6 +1169,153 @@ describe("StateStore land lifecycle ledger", () => {
 				)?.payload,
 		).toMatchObject({ founderFeedback: "please fix the release note" });
 		store.close();
+	});
+
+	it("keeps frozen max-3 founder loops running through rounds 4 and 5 with one Lead warning per high round", async () => {
+		for (const round of [3, 4, 5]) {
+			const runId = `run-founder-round-${round}`;
+			const store = await StateStore.create(":memory:");
+			try {
+				const holder = prepareAwaitingFounderGate(store, runId);
+				for (let iteration = 1; iteration < round; iteration += 1) {
+					store.appendWorkflowRunEvent({
+						runId,
+						eventUid: `seed-founder-loop:${runId}:${iteration}`,
+						kind: "loop_iteration",
+						nodeId: "founder_gate",
+						edgeId: "founder_feedback",
+						executionId: "qa-feedback",
+						payload: { iteration },
+					});
+				}
+				const sourcePayload = {
+					schema_version: 1,
+					run_id: runId,
+					issue_id: "FLY-1375",
+					question_id: holder.question_id,
+					response: { approved: false, feedback: `fix round ${round}` },
+					actor: "founder",
+					approved_head: HEAD,
+					classification: "founder_direct_signal",
+					authority_id: holder.question_id,
+				};
+				expect(
+					store.applyWorkflowSourceEvent({
+						project: "flywheel",
+						sourceEventId: `founder-feedback:${holder.question_id}`,
+						kind: "founder_feedback",
+						payloadJson: canonicalJsonString(sourcePayload),
+						payloadDigest: canonicalSubmissionDigest(sourcePayload),
+						schemaVersion: 1,
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved",
+						},
+					}),
+				).toEqual({ kind: "founder_feedback", status: "applied" });
+				const loopEvents = store
+					.listWorkflowRunEvents(runId)
+					.filter(
+						(event) =>
+							event.kind === "loop_iteration" &&
+							event.edge_id === "founder_feedback",
+					);
+				expect(loopEvents).toHaveLength(round);
+				expect(loopEvents.at(-1)?.payload).toMatchObject({ iteration: round });
+				const alert = store.getWorkflowAlertOutbox(
+					`founder_rework_round:${runId}:${round}`,
+				);
+				if (round < 4) {
+					expect(alert).toBeUndefined();
+				} else {
+					expect(alert?.payload).toMatchObject({
+						severity: "warning",
+						metadata: {
+							workflowEngine: {
+								disposition: "founder_rework_round_high",
+								loopIteration: round,
+							},
+						},
+					});
+				}
+				expect(store.getWorkflowRun(runId)).toMatchObject({
+					status: "active",
+					current_node_id: "implement",
+				});
+			} finally {
+				store.close();
+			}
+		}
+	});
+
+	it("does not roll back a founder kickback when the high-round warning enqueue fails", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const holder = prepareAwaitingFounderGate(
+				store,
+				"run-founder-alert-fail",
+			);
+			for (let iteration = 1; iteration <= 3; iteration += 1) {
+				store.appendWorkflowRunEvent({
+					runId: "run-founder-alert-fail",
+					eventUid: `seed-founder-alert-fail:${iteration}`,
+					kind: "loop_iteration",
+					nodeId: "founder_gate",
+					edgeId: "founder_feedback",
+					executionId: "qa-feedback",
+					payload: { iteration },
+				});
+			}
+			const enqueue = vi
+				.spyOn(
+					store as unknown as {
+						enqueueWorkflowEngineAlertTx(input: unknown): void;
+					},
+					"enqueueWorkflowEngineAlertTx",
+				)
+				.mockImplementation(() => {
+					throw new Error("workflow_alert_uid_conflict:injected");
+				});
+			const sourcePayload = {
+				schema_version: 1,
+				run_id: "run-founder-alert-fail",
+				issue_id: "FLY-1375",
+				question_id: holder.question_id,
+				response: { approved: false, feedback: "still needs work" },
+				actor: "founder",
+				approved_head: HEAD,
+				classification: "founder_direct_signal",
+				authority_id: holder.question_id,
+			};
+			expect(
+				store.applyWorkflowSourceEvent({
+					project: "flywheel",
+					sourceEventId: `founder-feedback:${holder.question_id}`,
+					kind: "founder_feedback",
+					payloadJson: canonicalJsonString(sourcePayload),
+					payloadDigest: canonicalSubmissionDigest(sourcePayload),
+					schemaVersion: 1,
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ kind: "founder_feedback", status: "applied" });
+			expect(enqueue).toHaveBeenCalledOnce();
+			expect(store.getWorkflowRun("run-founder-alert-fail")).toMatchObject({
+				status: "active",
+				current_node_id: "implement",
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-founder-alert-fail")
+					.filter((event) => event.kind === "loop_iteration"),
+			).toHaveLength(4);
+		} finally {
+			store.close();
+		}
 	});
 
 	it("fences stale land workers and resumes from durable step receipts", async () => {

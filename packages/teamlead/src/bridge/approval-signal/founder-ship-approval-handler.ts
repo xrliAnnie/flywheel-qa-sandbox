@@ -22,6 +22,7 @@
  *     refused) → the deliverer's byte-compatible WAKE-only fallback.
  */
 
+import type { FounderReworkHint } from "../../workflow-rework-hint.js";
 import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
@@ -93,6 +94,7 @@ export interface DeferralSupport {
 		/** The canonical founder id THIS attribution ran under (rebind re-verifies). */
 		founderIdAtCapture: string;
 		holdReason: "codex_pending" | "qa_not_green";
+		founderRework?: FounderReworkHint;
 	}): "inserted" | "noop_existing";
 	/**
 	 * Queue the held explainer thread notice (merge_block recovery pointer,
@@ -127,6 +129,7 @@ export interface DeferralSupport {
 		authorUserId: string;
 		founderIdAtCapture: string;
 		reason: string;
+		founderRework?: FounderReworkHint;
 	}): void;
 	/**
 	 * FLY-1099 (Codex code R1 HIGH-2): durably commit the reject feedback wake
@@ -478,6 +481,8 @@ export async function tryFounderShipApproval(
 			// stored. WAKE-only + ❓ (or bounded retry on infra failure).
 			return unclearDisposition(signal);
 		}
+		const founderRework =
+			signal.source === "text" ? signal.founderRework : undefined;
 		try {
 			const outcome = deferral.defer({
 				questionId: gate.questionId,
@@ -489,6 +494,7 @@ export async function tryFounderShipApproval(
 				authorUserId: args.msg.authorId ?? "",
 				founderIdAtCapture: deps.canonicalFounderId,
 				holdReason: reason,
+				founderRework,
 			});
 			deps.auditSink?.("founder_approval_deferred", {
 				questionId: gate.questionId,
@@ -574,6 +580,10 @@ export async function tryFounderShipApproval(
 	}
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
+	const founderRework =
+		signal.source === "text" && signal.kind === "reject"
+			? signal.founderRework
+			: undefined;
 	const answer =
 		signal.kind === "approve"
 			? '{"approved": true}'
@@ -624,6 +634,7 @@ export async function tryFounderShipApproval(
 					authorUserId: args.msg.authorId ?? "",
 					founderIdAtCapture: deps.canonicalFounderId,
 					reason,
+					founderRework,
 				});
 				deps.auditSink?.("founder_approval_parked_convergence", {
 					questionId: gate.questionId,
@@ -676,6 +687,7 @@ export async function tryFounderShipApproval(
 			actor: deps.canonicalFounderId,
 			founderId: deps.canonicalFounderId,
 			founderMessage: args.founderMessage,
+			founderRework,
 			answer,
 			expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
 			holdReasonFor: deps.deferral

@@ -392,6 +392,12 @@ export interface AlertMetadata {
 			| "ship_ready_stalled"
 			| "ship_ready_delivery_failed"
 			| "gate_carrier_unbound"
+			| "gate_materialization_stuck"
+			| "card_void_stuck"
+			| "founder_input_deadletter"
+			| "founder_rework_round_high"
+			| "voided_card_input"
+			| "land_head_unavailable"
 			| "runner_ship_merged_before_approval"
 			| "runner_ship_merged_head_mismatch"
 			| "runner_ship_completion_failure"
@@ -406,6 +412,9 @@ export interface AlertMetadata {
 		maxBlindReplacements?: number;
 		outputExistsForAttempt?: boolean;
 		management?: { terminate: string };
+		loopIteration?: number;
+		attempt?: number;
+		head8?: string;
 		leadResolution: "resolved" | "fallback";
 	};
 	runnerStuck?: {

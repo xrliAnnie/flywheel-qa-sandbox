@@ -10,6 +10,10 @@
  */
 
 import {
+	makeFounderReworkHint,
+	parseFounderReworkPrefix,
+} from "../../workflow-rework-hint.js";
+import {
 	type ClassifierDeps,
 	classifyFounderShipApproval,
 	type FounderShipApprovalInput,
@@ -127,9 +131,25 @@ export async function evaluateTextSource(
 			: verdict.kind === "unclear"
 				? verdict.reason
 				: undefined;
+	const explicitPrefix = parseFounderReworkPrefix(message.content);
+	const founderRework =
+		verdict.kind === "reject" && explicitPrefix
+			? makeFounderReworkHint(
+					explicitPrefix.target,
+					"founder-reply-prefix",
+					`matched_prefix:${explicitPrefix.prefix}`,
+				)
+			: verdict.kind === "reject" && verdict.reworkTarget
+				? makeFounderReworkHint(
+						verdict.reworkTarget,
+						"founder-ship-approval-classifier",
+						`evidence_message_id:${message.id}`,
+					)
+				: undefined;
 	return {
 		...base,
 		kind: verdict.kind,
 		evidence: { stage, ...(reason !== undefined ? { reason } : {}) },
+		...(founderRework ? { founderRework } : {}),
 	};
 }

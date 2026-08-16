@@ -2282,6 +2282,7 @@ export class WorkflowEngineDispatcher {
 						throw new Error("engine_rework_replacement_context_invalid");
 					}
 					return {
+						requestId: reworkReplacementRequestId,
 						startPoint: baseRevision,
 						founderFeedback:
 							typeof request.founder_feedback_verbatim === "string" &&
@@ -2382,17 +2383,15 @@ export class WorkflowEngineDispatcher {
 					}
 				: undefined;
 		const founderFeedback =
-			node.type === "implement"
-				? (
-						replacementContext?.founderFeedback ??
-						(transitionPayload?.outcome === "founder_feedback_kickback" &&
-						typeof transitionPayload.founderFeedback === "string"
-							? transitionPayload.founderFeedback
-							: undefined)
-					)
-						?.trim()
-						.slice(0, 4_000) || undefined
-				: undefined;
+			(
+				replacementContext?.founderFeedback ??
+				(transitionPayload?.outcome === "founder_feedback_kickback" &&
+				typeof transitionPayload.founderFeedback === "string"
+					? transitionPayload.founderFeedback
+					: undefined)
+			)
+				?.trim()
+				.slice(0, 4_000) || undefined;
 		const contextualAgentContent = founderFeedback
 			? `${agentContent}\n\nFounder feedback for this revision:\n${founderFeedback}`
 			: agentContent;

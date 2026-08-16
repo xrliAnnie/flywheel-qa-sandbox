@@ -20,6 +20,7 @@ import type {
 	FounderDeferredApproval,
 	SessionEvent,
 } from "../../StateStore.js";
+import type { FounderReworkHint } from "../../workflow-rework-hint.js";
 import type { ReviewHoldReason } from "../auto-qa-held.js";
 import {
 	parseSqliteUtcMs,
@@ -200,6 +201,7 @@ export interface DeferralCaptureStore {
 		content: string;
 		authorUserId: string;
 		founderIdAtCapture: string;
+		founderRework?: FounderReworkHint;
 		ttlSeconds: number;
 		heldReplyAction?: FounderActionIntent;
 		audit?: SessionEvent;
@@ -234,6 +236,7 @@ export function makeDeferralSupport(args: {
 				content: a.content,
 				authorUserId: a.authorUserId,
 				founderIdAtCapture: a.founderIdAtCapture,
+				founderRework: a.founderRework,
 				ttlSeconds: Math.floor(ttlMs / 1000),
 				// §4.4: the "已存着" notice intent lands ONLY in the same durable
 				// transaction as the deferral row (truth-in-time), and only when the
@@ -320,6 +323,7 @@ export function makeDeferralSupport(args: {
 				content: a.content,
 				authorUserId: a.authorUserId,
 				founderIdAtCapture: a.founderIdAtCapture,
+				founderRework: a.founderRework,
 				ttlSeconds: Math.floor(deferredApprovalTtlMs(env) / 1000),
 				audit: {
 					event_id: `founder-approval-parked-${a.questionId}-${a.msgId}`,
@@ -659,6 +663,7 @@ async function rebindOne(
 			gateAuthorityView: deps.gateAuthorityView,
 			actor: founderId,
 			founderId,
+			founderRework: row.founder_rework,
 			answer,
 			expectedCurrentReviewQuestionId: row.question_id,
 			holdReasonFor: deps.holdReasonFor,

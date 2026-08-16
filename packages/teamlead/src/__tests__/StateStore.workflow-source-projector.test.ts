@@ -103,6 +103,22 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		expect(store.countWorkflowClaims("run-1")).toBe(0);
 	});
 
+	it("rejects a malformed optional alert identity before writing the source receipt", async () => {
+		const store = await freshStore();
+
+		expect(() =>
+			store.applyWorkflowSourceEvent({
+				...founderEvent(),
+				alertIdentity: {
+					leadId: " ",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toThrow(/alert identity/i);
+		expect(store.countWorkflowClaims("run-1")).toBe(0);
+	});
+
 	it("records project-level TURN disposition without inventing a run event", async () => {
 		const store = await freshStore();
 		const payload = {
@@ -301,7 +317,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 					.filter((event) => event.kind === "turn_granted"),
 			).toHaveLength(0);
 
-			const drained = drainWorkflowSourceEvents({
+			const drained = await drainWorkflowSourceEvents({
 				projects: ["flywheel"],
 				openCommDb: () => new CommDB(commPath),
 				store,
@@ -332,7 +348,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 			// Cursor replay is a no-op, and the terminal poison is never promoted to
 			// a receipt or a run event that could be counted as success.
 			expect(
-				drainWorkflowSourceEvents({
+				await drainWorkflowSourceEvents({
 					projects: ["flywheel"],
 					openCommDb: () => new CommDB(commPath),
 					store,
@@ -589,5 +605,85 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		expect(
 			store.getWorkflowSourceDeadletter("flywheel", "bad:1"),
 		).toMatchObject({ reason: "malformed_payload" });
+	});
+
+	it("atomically deadletters a bound founder input and enqueues a Lead alert", async () => {
+		const store = await freshStore();
+		store.createWorkflowRun({
+			runId: "deadletter-run",
+			issueId: "FLY-1772",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		store.ensureWorkflowGateHolder({
+			runId: "deadletter-run",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: HEAD,
+			sourceExecutionId: "qa-exec",
+			questionId: "deadletter-question",
+			now: "2026-08-14T20:00:00.000Z",
+		});
+		const payloadJson = JSON.stringify({
+			schema_version: 1,
+			run_id: "deadletter-run",
+			issue_id: "FLY-1772",
+			question_id: "deadletter-question",
+		});
+
+		expect(
+			store.recordWorkflowSourceDeadletter({
+				project: "flywheel",
+				sourceEventId: "founder-feedback:deadletter-question",
+				reason: "founder feedback source payload invalid: run state",
+				founderOrigin: {
+					kind: "founder_feedback",
+					payloadJson,
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				},
+			}),
+		).toEqual({ deadlettered: true, alertEnqueued: true });
+		expect(
+			store.getWorkflowSourceDeadletter(
+				"flywheel",
+				"founder-feedback:deadletter-question",
+			),
+		).toBeDefined();
+		expect(
+			store.getWorkflowAlertOutbox(
+				"founder_input_deadletter:founder-feedback:deadletter-question",
+			),
+		).toMatchObject({
+			run_id: "deadletter-run",
+			payload: {
+				metadata: {
+					workflowEngine: {
+						disposition: "founder_input_deadletter",
+						questionId: "deadletter-question",
+					},
+				},
+			},
+		});
+		expect(
+			store.recordWorkflowSourceDeadletter({
+				project: "flywheel",
+				sourceEventId: "founder-feedback:deadletter-question",
+				reason: "founder feedback source payload invalid: run state",
+				founderOrigin: {
+					kind: "founder_feedback",
+					payloadJson,
+					alertIdentity: {
+						leadId: "replacement-lead",
+						projectName: "flywheel",
+						leadResolution: "fallback",
+					},
+				},
+			}),
+		).toEqual({ deadlettered: false, alertEnqueued: false });
+		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
 	});
 });

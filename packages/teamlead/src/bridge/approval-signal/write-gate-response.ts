@@ -27,6 +27,7 @@ import {
 	type LeadWriteAuthorizationDeps,
 	type MessageProvenance,
 } from "flywheel-comm/lead-lease";
+import type { FounderReworkHint } from "../../workflow-rework-hint.js";
 import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
@@ -160,15 +161,7 @@ export interface WriteGateResponseArgs {
 	 * never founder authority: the immutable feedback text remains the authority,
 	 * while StateStore validates and versions this impact plan separately.
 	 */
-	founderRework?: {
-		target: "design" | "implement";
-		invalidationScope: Array<"design" | "implement" | "qa">;
-		verificationPolicy: Array<
-			"design_review" | "code_review" | "qa_retest" | "founder_gate"
-		>;
-		interpretedBy: string;
-		interpretationReason: string;
-	};
+	founderRework?: FounderReworkHint;
 	/**
 	 * Present only for the token-authenticated Lead HTTP route. Internal founder
 	 * writers omit this and retain their existing trusted-server path.
@@ -308,6 +301,9 @@ async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
 export async function writeGateResponseAndRunPostWrite(
 	args: WriteGateResponseArgs,
 ): Promise<WriteGateResponseResult> {
+	if (args.leadRequest && args.founderRework) {
+		throw new Error("lead requests cannot carry founder rework hints");
+	}
 	const guardOk = (reason: string): WriteGateResponseResult => ({
 		written: false,
 		retrySafe: true,

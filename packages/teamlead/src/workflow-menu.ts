@@ -51,10 +51,10 @@ export interface WorkflowMenuLoop {
 	id: string;
 	from: string;
 	to: string;
-	loopWhen: "qa_fail";
-	exitWhen: "qa_pass";
-	maxIterations: number;
-	onLimit: "escalate";
+	loopWhen: "qa_fail" | "founder_feedback_kickback";
+	exitWhen: "qa_pass" | "founder_approved";
+	maxIterations?: number;
+	onLimit?: "escalate";
 }
 
 export interface WorkflowMenuShape {
@@ -264,29 +264,73 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 		if (!nodeIds.has(from) || !nodeIds.has(to)) {
 			throw new Error(`${path} references an unknown node`);
 		}
-		const maxIterations = Number(loop.maxIterations);
-		if (!Number.isInteger(maxIterations) || maxIterations <= 0) {
+		const loopWhen = oneOf(
+			loop.loopWhen,
+			["qa_fail", "founder_feedback_kickback"] as const,
+			`${path}.loopWhen`,
+		);
+		const hasMaxIterations = loop.maxIterations !== undefined;
+		const hasOnLimit = loop.onLimit !== undefined;
+		if (hasMaxIterations !== hasOnLimit) {
+			throw new Error(
+				`${path}.maxIterations and ${path}.onLimit must be provided together`,
+			);
+		}
+		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
+			throw new Error(
+				`${path}.maxIterations and ${path}.onLimit are required for ${loopWhen}`,
+			);
+		}
+		const maxIterations = hasMaxIterations
+			? Number(loop.maxIterations)
+			: undefined;
+		if (
+			maxIterations !== undefined &&
+			(!Number.isInteger(maxIterations) || maxIterations <= 0)
+		) {
 			throw new Error(`${path}.maxIterations must be a positive integer`);
 		}
 		return {
 			id: nonempty(loop.id, `${path}.id`),
 			from,
 			to,
-			loopWhen: oneOf(loop.loopWhen, ["qa_fail"] as const, `${path}.loopWhen`),
-			exitWhen: oneOf(loop.exitWhen, ["qa_pass"] as const, `${path}.exitWhen`),
-			maxIterations,
-			onLimit: oneOf(loop.onLimit, ["escalate"] as const, `${path}.onLimit`),
+			loopWhen,
+			exitWhen: oneOf(
+				loop.exitWhen,
+				["qa_pass", "founder_approved"] as const,
+				`${path}.exitWhen`,
+			),
+			...(maxIterations !== undefined
+				? {
+						maxIterations,
+						onLimit: oneOf(
+							loop.onLimit,
+							["escalate"] as const,
+							`${path}.onLimit`,
+						),
+					}
+				: {}),
 		};
 	});
 	const executableCount = nodes.filter((node) => node.type !== "gate").length;
 	if (shape === "code") {
+		const qaLoop = loops.find(
+			(loop) => loop.loopWhen === "qa_fail" && loop.exitWhen === "qa_pass",
+		);
+		const founderLoop = loops.find(
+			(loop) =>
+				loop.loopWhen === "founder_feedback_kickback" &&
+				loop.exitWhen === "founder_approved",
+		);
 		if (
 			executableCount !== 3 ||
-			loops.length !== 1 ||
-			loops[0]!.maxIterations !== 3
+			loops.length !== 2 ||
+			qaLoop?.maxIterations !== 3 ||
+			founderLoop?.maxIterations !== undefined ||
+			founderLoop?.onLimit !== undefined
 		) {
 			throw new Error(
-				`${source} code must have three executable nodes and one max-3 QA loop`,
+				`${source} code must have three executable nodes plus a max-3 QA loop and an unbounded founder-rework loop`,
 			);
 		}
 	} else if (executableCount !== 1 || loops.length !== 0) {
@@ -399,8 +443,12 @@ export function compileWorkflowMenuSeed(
 			to: loop.to,
 			loop_when: loop.loopWhen,
 			exit_when: loop.exitWhen,
-			max_iterations: loop.maxIterations,
-			on_limit: loop.onLimit,
+			...(loop.maxIterations !== undefined
+				? {
+						max_iterations: loop.maxIterations,
+						on_limit: loop.onLimit!,
+					}
+				: {}),
 		})),
 		...(hasPrProducer
 			? {

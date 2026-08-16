@@ -86,6 +86,61 @@ describe("evaluateTextSource — Tier-3 fallback", () => {
 			{ classifyImpl },
 		);
 		expect(sig).toMatchObject({ source: "text", kind: "reject" });
+		expect(sig).not.toHaveProperty("founderRework");
+	});
+
+	it("classifier-selected QA route is preserved on the reject signal", async () => {
+		const classifyImpl = vi.fn().mockResolvedValue({
+			kind: "reject",
+			reason: "tests need correction",
+			reworkTarget: "qa",
+		});
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("the test evidence is wrong") },
+			{ classifyImpl },
+		);
+		expect(sig).toMatchObject({
+			kind: "reject",
+			founderRework: {
+				target: "qa",
+				invalidationScope: ["qa"],
+				verificationPolicy: ["qa_retest", "founder_gate"],
+				interpretedBy: "founder-ship-approval-classifier",
+			},
+		});
+	});
+
+	it.each([
+		["design: redo the architecture", "design"],
+		["IMPLEMENT：fix the handler", "implement"],
+		["测试: 重做验收", "qa"],
+	])(
+		"explicit prefix %s overrides the classifier route",
+		async (content, target) => {
+			const classifyImpl = vi.fn().mockResolvedValue({
+				kind: "reject",
+				reason: "changes requested",
+				reworkTarget: target === "qa" ? "design" : "qa",
+			});
+			const sig = await evaluateTextSource(
+				{ gate: GATE, message: msg(content) },
+				{ classifyImpl },
+			);
+			expect(sig).toMatchObject({
+				kind: "reject",
+				founderRework: { target, interpretedBy: "founder-reply-prefix" },
+			});
+		},
+	);
+
+	it("a prefix alone does not turn an unclear message into a rejection", async () => {
+		const classifyImpl = vi.fn().mockResolvedValue({ kind: "unclear" });
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("qa:") },
+			{ classifyImpl },
+		);
+		expect(sig).toMatchObject({ kind: "unclear" });
+		expect(sig).not.toHaveProperty("founderRework");
 	});
 
 	it("ambiguous text → classifier unclear → unclear", async () => {

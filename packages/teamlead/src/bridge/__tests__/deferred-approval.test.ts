@@ -109,6 +109,15 @@ async function rebindHarness(opts: {
 		| { kind: "suppress_merged"; cleanupComplete: boolean }
 		| { kind: "retry_later"; reason: "unknown" | "missing_binding" }
 		| { kind: "terminal_unavailable"; reason: "unknown_exhausted" };
+	founderRework?: {
+		target: "design" | "implement" | "qa";
+		invalidationScope: Array<"design" | "implement" | "qa">;
+		verificationPolicy: Array<
+			"design_review" | "code_review" | "qa_retest" | "founder_gate"
+		>;
+		interpretedBy: string;
+		interpretationReason: string;
+	};
 }) {
 	const store = await freshStore();
 	const sessionState: SessionState = opts.session ?? {
@@ -130,6 +139,7 @@ async function rebindHarness(opts: {
 		authorUserId: FOUNDER,
 		founderIdAtCapture: FOUNDER,
 		ttlSeconds: opts.expiresInSeconds ?? 2700,
+		founderRework: opts.founderRework,
 	});
 	const { db, state } = fakeCommDb({
 		pending: opts.pending,
@@ -304,6 +314,31 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 			source: "deferred",
 			cardAuthority,
 		});
+	});
+
+	it("replays a deferred reject with the exact persisted QA route hint", async () => {
+		const founderRework = {
+			target: "qa" as const,
+			invalidationScope: ["qa" as const],
+			verificationPolicy: ["qa_retest" as const, "founder_gate" as const],
+			interpretedBy: "founder-reply-prefix",
+			interpretationReason: "matched_prefix:qa",
+		};
+		const { deps } = await rebindHarness({
+			decision: "reject",
+			content: "qa: test the regression",
+			founderRework,
+		});
+		const writeImpl = vi
+			.fn()
+			.mockResolvedValue({ written: true, retrySafe: true });
+		Object.assign(deps, { writeImpl });
+
+		await runDeferredApprovalRebindPass(deps as never);
+
+		expect(writeImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ founderRework }),
+		);
 	});
 
 	it("硬要求③代码级: hold clear → writes {approved:true} via the REAL writer, hook flips FSM, consume + ✅ upgrade + rebound notice", async () => {

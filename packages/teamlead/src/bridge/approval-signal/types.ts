@@ -1,3 +1,5 @@
+import type { FounderReworkHint } from "../../workflow-rework-hint.js";
+
 /**
  * FLY-799 Part A — ApprovalSignal abstraction (Annie: extensible to voice).
  *
@@ -45,6 +47,8 @@ export type ApprovalSignal =
 			authorUserId: string;
 			/** FLY-1041 Chunk 4: attribution evidence (additive — optional). */
 			evidence?: ApprovalAttributionEvidence;
+			/** Present only for a classified founder rejection with a route hint. */
+			founderRework?: FounderReworkHint;
 	  }
 	| {
 			source: "voice";

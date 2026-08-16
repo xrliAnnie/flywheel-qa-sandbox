@@ -557,6 +557,31 @@ async function processFounderMessage(
 			msg.message_reference.type === 0) &&
 		msg.message_reference?.channel_id === ctx.threadId &&
 		Boolean(msg.message_reference.message_id);
+	if (isCardReply && msg.message_reference?.message_id) {
+		const superseded =
+			deps.store.getSupersededWorkflowGateHolderByCardMessageId?.(
+				msg.message_reference.message_id,
+			);
+		if (superseded) {
+			const recorded = deps.store.recordVoidedWorkflowGateInput({
+				questionId: superseded.question_id,
+				alertIdentity: {
+					leadId: ctx.leadId,
+					projectName: ctx.projectName,
+					leadResolution: "resolved",
+				},
+				now,
+			});
+			if (!recorded.ok) {
+				return {
+					ok: false,
+					stage: "voided_card_input_alert_failed",
+					reason: recorded.reason,
+				};
+			}
+			return { ok: true };
+		}
+	}
 	let founderReviewGate: PendingQuestionForThread | undefined;
 	if (isCardReply) {
 		const binding = deps.store.getFounderReviewCardBindingByMessage(

@@ -229,6 +229,210 @@ describe("FLY-1392 v2 founder ingress", () => {
 		queue.close();
 	});
 
+	it("consumes a reply to a superseded ship card before the sole-current-gate fallback", async () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-current",
+			"runner",
+			"flywheel",
+			"FLY-1392",
+			"test-lead",
+		);
+		const currentQuestionId = db.insertQuestion(
+			"exec-current",
+			"test-lead",
+			"ship current?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const oldHolder = {
+			run_id: "run-1",
+			gate_node_id: "founder_gate",
+			attempt: 1,
+			head_sha: "a".repeat(40),
+			source_execution_id: "exec-old",
+			question_id: "question-old",
+			state: "superseded",
+		};
+		const recordOldCardInput = vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		}));
+		const testStore = {
+			insertEvent: vi.fn(() => true),
+			getSupersededWorkflowGateHolderByCardMessageId: vi.fn(() => oldHolder),
+			recordVoidedWorkflowGateInput: recordOldCardInput,
+		} as unknown as FounderReplyDeliverDeps["store"];
+		const tryFounderShipApproval = vi.fn();
+		const handoff = vi.fn(async () => true);
+		const msg: RawMsg = {
+			id: snowflakeAt(Date.now() - 10_000),
+			content: "ship",
+			author: { id: OWNER },
+			type: 19,
+			message_reference: {
+				type: 0,
+				message_id: "card-old",
+				channel_id: THREAD,
+			},
+		};
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: currentQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-current",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: testStore,
+				fetchImpl: discordGet([msg]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(recordOldCardInput).toHaveBeenCalledWith({
+			questionId: "question-old",
+			alertIdentity: {
+				leadId: "test-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			now: expect.any(String),
+		});
+		expect(tryFounderShipApproval).not.toHaveBeenCalled();
+		expect(handoff).not.toHaveBeenCalled();
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(currentQuestionId)).toBeUndefined();
+		expect(verify.getResponse("question-old")).toBeUndefined();
+		expect(verify.listWorkflowSourceEventsAfter(0)).toEqual([]);
+		verify.close();
+	});
+
+	it("alerts on an approved-origin superseded-card reply without approving the current gate", async () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-current",
+			"runner",
+			"flywheel",
+			"FLY-1392",
+			"test-lead",
+		);
+		const currentQuestionId = db.insertQuestion(
+			"exec-current",
+			"test-lead",
+			"ship current?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const recordOldCardInput = vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		}));
+		const tryFounderShipApproval = vi.fn();
+		const testStore = {
+			insertEvent: vi.fn(() => true),
+			getSupersededWorkflowGateHolderByCardMessageId: vi.fn(() => ({
+				question_id: "question-old",
+				superseded_from_state: "approved",
+			})),
+			recordVoidedWorkflowGateInput: recordOldCardInput,
+		} as unknown as FounderReplyDeliverDeps["store"];
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: currentQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-current",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: testStore,
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "ship",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "card-old",
+							channel_id: THREAD,
+						},
+					},
+				]),
+				cursorStore: cursor,
+				tryFounderShipApproval,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(recordOldCardInput).toHaveBeenCalledWith({
+			questionId: "question-old",
+			alertIdentity: {
+				leadId: "test-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			now: expect.any(String),
+		});
+		expect(tryFounderShipApproval).not.toHaveBeenCalled();
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(currentQuestionId)).toBeUndefined();
+		verify.close();
+	});
+
+	it("pins an old-card reply when the durable Lead alert cannot be recorded", async () => {
+		const before = cursor.load(THREAD);
+		const recordOldCardInput = vi.fn(() => ({
+			ok: false as const,
+			reason: "alert_outbox_unavailable",
+		}));
+		const testStore = {
+			insertEvent: vi.fn(() => true),
+			getSupersededWorkflowGateHolderByCardMessageId: vi.fn(() => ({
+				question_id: "question-old",
+			})),
+			recordVoidedWorkflowGateInput: recordOldCardInput,
+		} as unknown as FounderReplyDeliverDeps["store"];
+		const handoff = vi.fn(async () => true);
+
+		const outcome = await emitFounderReplyDeliveryForThread(ctx(dbPath), [], {
+			store: testStore,
+			fetchImpl: discordGet([
+				{
+					id: snowflakeAt(Date.now() - 10_000),
+					content: "ship",
+					author: { id: OWNER },
+					type: 19,
+					message_reference: {
+						type: 0,
+						message_id: "card-old",
+						channel_id: THREAD,
+					},
+				},
+			]),
+			cursorStore: cursor,
+			deliverAmbiguousToLead: handoff,
+		});
+
+		expect(outcome).toMatchObject({
+			result: "process_failed",
+			stage: "voided_card_input_alert_failed",
+		});
+		expect(cursor.load(THREAD)).toBe(before);
+		expect(handoff).not.toHaveBeenCalled();
+	});
+
 	it.each([
 		["通过", true, undefined],
 		["这里的定位还不对，请按页面批注修改", false, "这里的定位还不对"],

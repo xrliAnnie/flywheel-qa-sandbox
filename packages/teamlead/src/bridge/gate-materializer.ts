@@ -88,7 +88,7 @@ export async function materializeWorkflowGateHolder(
 	const run = deps.store.getWorkflowRun(holder.run_id);
 	if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
 	const now = deps.now ?? (() => new Date().toISOString());
-	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.`;
+	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.\n打回:直接回复意见即可;可用 design: / implement: / qa:(或 设计:/实现:/测试:)起头指定返工对象,不写默认给 implement。前缀只指定返工对象,不代表单独打回;请说清楚要改什么。`;
 
 	if (
 		STAGE_ORDER[holder.materialization_stage] < STAGE_ORDER.question_written

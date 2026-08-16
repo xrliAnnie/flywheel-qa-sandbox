@@ -203,7 +203,7 @@ export async function editDiscordMessageInChannel(
 	messageId: string,
 	text: string,
 	botToken: string,
-	options: Pick<PostDiscordOptions, "origin">,
+	options: Pick<PostDiscordOptions, "origin"> & { signal?: AbortSignal },
 	fetchImpl: typeof fetch = fetch,
 ): Promise<EditDiscordResult> {
 	const content =
@@ -222,6 +222,7 @@ export async function editDiscordMessageInChannel(
 					content,
 					allowed_mentions: { parse: [] },
 				}),
+				signal: options.signal,
 			},
 		);
 	} catch (err) {

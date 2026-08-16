@@ -42,12 +42,15 @@ describe("FLY-1686 workflow decision route", () => {
 			resolved: { nodes: legacyLandEngineeringSeed().manifest.nodes },
 			snapshot_digest: "snapshot",
 		};
-		const submit = vi.fn().mockReturnValue({
-			ok: true,
-			claimId: 1,
-			serverSeq: 1,
-			idempotentReplay: false,
-		});
+		const submit = vi
+			.fn()
+			.mockReturnValueOnce({ ok: false, reason: "land_head_unavailable" })
+			.mockReturnValue({
+				ok: true,
+				claimId: 1,
+				serverSeq: 1,
+				idempotentReplay: false,
+			});
 		const prProbe = vi
 			.fn()
 			.mockResolvedValueOnce({
@@ -85,6 +88,7 @@ describe("FLY-1686 workflow decision route", () => {
 		const store = {
 			getWorkflowSubmissionCredentialByToken: () => ({
 				id: 7,
+				activation_id: "activation-qa-route",
 				execution_id: "qa-route",
 				run_id: "run-route",
 				node_id: "qa",
@@ -93,7 +97,9 @@ describe("FLY-1686 workflow decision route", () => {
 				expires_at: "2026-08-12T00:00:00.000Z",
 				consumed_at: consumedAt,
 			}),
-			getGeneralizedWorkflowNodeForExecution: () => ({
+			resolveCurrentWorkflowActivation: () => ({
+				kind: "current",
+				binding: { activation_id: "activation-qa-route" },
 				run: { engine_owned: 1 },
 				node: snapshot.resolved.nodes.find((node) => node.id === "qa"),
 				snapshot,
@@ -161,6 +167,24 @@ describe("FLY-1686 workflow decision route", () => {
 				},
 			});
 			expect(submit).not.toHaveBeenCalled();
+
+			const unavailable = await fetch(
+				`http://127.0.0.1:${address.port}/api/workflow/decision`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						credential: "credential",
+						client_request_id: "request-route",
+						status: "pass",
+					}),
+				},
+			);
+			expect(unavailable.status).toBe(409);
+			expect(await unavailable.json()).toEqual({
+				ok: false,
+				reason: "land_head_unavailable",
+			});
 
 			const response = await fetch(
 				`http://127.0.0.1:${address.port}/api/workflow/decision`,

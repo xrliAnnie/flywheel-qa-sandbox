@@ -1,0 +1,14 @@
+flowchart TB
+    A["🚀 ship 卡 A(绑 head 1)"] --> B["founder 打回"]
+    B --> C["⛔ 旧卡 A 卡面立即改为作废态(D2)"]
+    B --> D["返工:修改代码,产生新 head 2"]
+    D --> E["QA 重测通过"]
+    E --> F["🚀 引擎自动出新卡 A2(绑 head 2)(D1)"]
+    F --> G["founder 在新卡 ✅ → 正常入账走 ship"]
+    F -.->|"发卡卡住超 10 分钟"| H["🔔 告警 Lead(D1)"]
+    C -.->|"作废卡上仍有输入"| I["🔔 告警 Lead,founder 不被打扰(D3/D4)"]
+    style C fill:#f2f2f7,stroke:#86868b
+    style F fill:#e8f7ed,stroke:#34c759
+    style G fill:#e8f7ed,stroke:#34c759
+    style H fill:#fff3e0,stroke:#ff9500
+    style I fill:#fff3e0,stroke:#ff9500

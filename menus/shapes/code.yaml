@@ -50,3 +50,8 @@ loops:
     exitWhen: qa_pass
     maxIterations: 3
     onLimit: escalate
+  - id: founder_rework
+    from: founder_gate
+    to: implement
+    loopWhen: founder_feedback_kickback
+    exitWhen: founder_approved

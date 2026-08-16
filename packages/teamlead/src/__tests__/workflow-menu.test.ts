@@ -105,6 +105,13 @@ describe("founder-approved workflow menu source", () => {
 				maxIterations: 3,
 				onLimit: "escalate",
 			},
+			{
+				id: "founder_rework",
+				from: "founder_gate",
+				to: "implement",
+				loopWhen: "founder_feedback_kickback",
+				exitWhen: "founder_approved",
+			},
 		]);
 		for (const [nodeId, models, defaultModel] of [
 			["design", ["fable", "codex"], "fable"],
@@ -122,6 +129,44 @@ describe("founder-approved workflow menu source", () => {
 					model.model === "opus" ? "high" : "xhigh",
 				);
 			}
+		}
+	});
+
+	it("accepts an unbounded founder loop while keeping the QA loop bounded", () => {
+		const shapes = mkdtempSync(join(tmpdir(), "fly1772-unbounded-menu-"));
+		try {
+			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
+			const codePath = join(shapes, "code.yaml");
+			const code = readFileSync(codePath, "utf8").replace(
+				/    maxIterations: 3\n    onLimit: escalate\n$/,
+				"",
+			);
+			writeFileSync(codePath, code);
+
+			const menu = loadWorkflowMenuLibrary({ shapesDirectory: shapes }).find(
+				(candidate) => candidate.shape === "code",
+			)!;
+			expect(menu.loops).toEqual([
+				expect.objectContaining({
+					loopWhen: "qa_fail",
+					maxIterations: 3,
+					onLimit: "escalate",
+				}),
+				{
+					id: "founder_rework",
+					from: "founder_gate",
+					to: "implement",
+					loopWhen: "founder_feedback_kickback",
+					exitWhen: "founder_approved",
+				},
+			]);
+			const founderLoop = compileWorkflowMenuSeed(menu).manifest.loops.find(
+				(loop) => loop.loop_when === "founder_feedback_kickback",
+			)!;
+			expect(founderLoop).not.toHaveProperty("max_iterations");
+			expect(founderLoop).not.toHaveProperty("on_limit");
+		} finally {
+			rmSync(shapes, { recursive: true, force: true });
 		}
 	});
 

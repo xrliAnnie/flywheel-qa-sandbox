@@ -787,6 +787,83 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
+	it("reopens a completed run directly at QA with the topology-derived QA-only route", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				state: "done",
+				executionId: "qa-exec",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?", [
+				"run-heavy",
+			]);
+			bindActorHead(store, "qa-exec", "qa", "b".repeat(40));
+			const evidence = store
+				.listRunAttributedExecutions("run-heavy")
+				.map((executionId) => ({
+					executionId,
+					sessionStatus: null,
+					lifecycleRevision: null,
+					liveness: "dead" as const,
+					observedAt: "2026-07-23T00:10:00.000Z",
+				}));
+
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "qa",
+				feedback: "rerun the acceptance checks",
+				clientRequestId: "operator-rework-qa",
+				principal: "master",
+				evidence,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(opened).toMatchObject({
+				ok: true,
+				targetNodeId: "qa",
+				targetAttempt: 2,
+				preferredActorExecutionId: "qa-exec",
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(
+				store.getLatestWorkflowReworkRoute(opened.requestId),
+			).toMatchObject({
+				target_node_id: "qa",
+				invalidation_scope: ["qa"],
+				verification_policy: ["qa_retest", "founder_gate"],
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+				state: "pending",
+				execution_id: "qa-exec",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("reopens only an engine-owned terminal land hold caused by PR head mismatch", async () => {
 		const store = await createHeldTerminalLandRun("pr_head_mismatch");
 		try {

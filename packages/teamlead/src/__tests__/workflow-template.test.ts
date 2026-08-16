@@ -195,6 +195,47 @@ describe("workflow template manifest v1", () => {
 		).toThrow(/mixed|unknown key|land_v1/i);
 	});
 
+	it("allows only founder feedback loops to omit their iteration limit pair", () => {
+		const manifest = structuredClone(
+			legacyWorkflowSeeds().find(
+				(seed) => seed.templateId === "tpl_eng_heavy_land_v1",
+			)!.manifest,
+		);
+		const founderLoop = manifest.loops.find(
+			(loop) => loop.loop_when === "founder_feedback_kickback",
+		)! as unknown as Record<string, unknown>;
+		delete founderLoop.max_iterations;
+		delete founderLoop.on_limit;
+
+		const parsed = validateWorkflowManifest(manifest);
+		const parsedFounderLoop = parsed.loops.find(
+			(loop) => loop.loop_when === "founder_feedback_kickback",
+		)!;
+		expect(parsedFounderLoop).not.toHaveProperty("max_iterations");
+		expect(parsedFounderLoop).not.toHaveProperty("on_limit");
+
+		for (const missing of ["max_iterations", "on_limit"] as const) {
+			const invalid = structuredClone(manifest);
+			const qaLoop = invalid.loops.find(
+				(loop) => loop.loop_when === "qa_fail",
+			)! as unknown as Record<string, unknown>;
+			delete qaLoop[missing];
+			expect(() => validateWorkflowManifest(invalid)).toThrow(
+				/max_iterations.*on_limit|on_limit.*max_iterations|positive integer/i,
+			);
+		}
+
+		const halfBounded = structuredClone(manifest);
+		(
+			halfBounded.loops.find(
+				(loop) => loop.loop_when === "founder_feedback_kickback",
+			)! as unknown as Record<string, unknown>
+		).max_iterations = 3;
+		expect(() => validateWorkflowManifest(halfBounded)).toThrow(
+			/max_iterations.*on_limit|on_limit.*max_iterations/i,
+		);
+	});
+
 	it("rejects unknown keys, inline handoffs, unsupported schemas, and invalid graphs", () => {
 		const valid = legacyWorkflowSeeds()[0]!.manifest;
 		expect(WORKFLOW_OUTCOME_VOCABULARY.qa_fail).toEqual({
