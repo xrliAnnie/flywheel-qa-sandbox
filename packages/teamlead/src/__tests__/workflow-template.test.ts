@@ -15,7 +15,6 @@ import {
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
-import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const generalizedManifest = () => ({
@@ -69,12 +68,6 @@ const generalizedManifest = () => ({
 });
 
 describe("workflow template manifest v1", () => {
-	it("ships the land engine default-on with an explicit emergency kill switch", () => {
-		expect(isLandNodeEnabled({})).toBe(true);
-		expect(isLandNodeEnabled({ FLYWHEEL_LAND_NODE: "1" })).toBe(true);
-		expect(isLandNodeEnabled({ FLYWHEEL_LAND_NODE: "0" })).toBe(false);
-	});
-
 	it("accepts a land_v1 engine node with binding-engine tier presets", () => {
 		const manifest = {
 			schema_version: 1,

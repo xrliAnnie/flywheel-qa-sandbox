@@ -1614,16 +1614,11 @@ export class AutoQaCoordinator {
 		return `ship-gate-rebind-notify-failed-${questionId}-${newSha}`;
 	}
 
-	private shipGateRebindEnabled(): boolean {
-		const env = this.deps.env ?? process.env;
-		return env.FLYWHEEL_SHIP_GATE_REBIND !== "0";
-	}
-
 	/**
 	 * Attempt the FLY-945 head rebind. ALL conditions must hold (each one
 	 * fail-closed; a miss returns false and the caller drops the verdict exactly
 	 * as before FLY-945):
-	 *  1. feature on + seams wired + verdict is a PASS (only a QA-proven head
+	 *  1. seams wired + verdict is a PASS (only a QA-proven head
 	 *     deserves the gate);
 	 *  2. the parent is awaiting_review (caller-checked) with a REAL bound
 	 *     review question (not null / 'unbound');
@@ -1650,7 +1645,6 @@ export class AutoQaCoordinator {
 		verdictStatus: "pass" | "fail";
 	}): Promise<boolean> {
 		const { parent, oldSha, newSha, reportedQaExec } = args;
-		if (!this.shipGateRebindEnabled()) return false;
 		if (args.verdictStatus !== "pass") return false;
 		const seams = this.deps.shipGateRebind;
 		if (!seams) return false; // not wired → byte-compatible drop
@@ -1818,7 +1812,6 @@ export class AutoQaCoordinator {
 		parent: Session,
 		sha: string,
 	): Promise<void> {
-		if (!this.shipGateRebindEnabled()) return;
 		const seams = this.deps.shipGateRebind;
 		if (!seams) return;
 		const qid = parent.review_question_id;

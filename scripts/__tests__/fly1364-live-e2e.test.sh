@@ -149,8 +149,6 @@ export CMUX_SOCK_IDENT_FILE="$TEST_ROOT/socket-identity"
 export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TEST_ROOT/watcher.lock"
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
 export FLYWHEEL_CMUX_LINKED_VIEW=0
-export FLYWHEEL_CMUX_VIEW_INVARIANT=1
-export FLYWHEEL_CMUX_STRICT_VIEW=1
 export FLYWHEEL_CMUX_STOCK_ADOPTION=1
 export FLYWHEEL_CMUX_ORPHAN_REAPER=0
 export FLYWHEEL_CMUX_CLEANUP_DELAY=1
@@ -368,7 +366,6 @@ case "$runner_wid" in @*) ;; *) fail "isolated runner did not expose a window id
   # This capability case owns one exact title/ref. Disable global cmux hygiene
   # passes so the real watcher can never inspect or mutate unrelated tabs.
   reap_ghost_workspaces() { return 0; }
-  dedup_workspaces_by_title() { return 0; }
   reap_unledgered_stock_workspaces() { return 0; }
   reap_orphan_workspace_pins() { return 0; }
   process_close_requests() { return 0; }

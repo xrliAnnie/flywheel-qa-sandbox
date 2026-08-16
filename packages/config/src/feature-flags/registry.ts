@@ -105,27 +105,6 @@ function envSite(
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// ─── FLY-1393: liveness controls ───
-	{
-		name: "liveness_alerts",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LIVENESS_ALERTS",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "approved_to_ship Runner 死亡人工告警(Bridge 启动时读取)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/liveness-manifest.ts",
-				"livenessAlertsEnabled",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "Bridge boot 时捕获;修改后需重启 Bridge。",
-	},
 	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
 	{
 		name: "mailbox_queue",
@@ -159,74 +138,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
 	{
-		// FLY-1329 (A4/A5): an unexpired `runner_declared_states` park declaration —
-		// the runner asserting "I am alive and waiting" — vetoes both destructive
-		// reconcile sweeps. Shared by the FLY-324 done-but-running boot sweep and the
-		// CommDB row prune. Both fail closed: a declared-state lookup that throws
-		// vetoes too.
-		name: "prune_park_guard",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PRUNE_PARK_GUARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"park 声明 veto 两条破坏性 reconcile 清扫:FLY-324 done-but-running 强转 completed + CommDB row prune(=0 回退到无 veto 的旧清扫)。取代原来靠人手填 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单的保护 (FLY-1329 A4/A5)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/done-running-reconciler.ts",
-				"reconcileDoneButRunning",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/commdb-session-prune.ts",
-				"pruneDeadTerminalCommDbSessions",
-				"call_time",
-			),
-			// A4 running-face reconcile (boot-first) + A5 live FLY-324 handler both
-			// read this same guard (Codex R2 LOW — registry must list every site).
-			envSite(
-				"packages/teamlead/src/bridge/commdb-fsm-reconcile.ts",
-				"reconcileCommDbRunningAgainstFsm",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/event-route.ts",
-				"isRunnerDeclaredParked",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "Lead 的 FLYWHEEL_FLY324_SWEEP_EXCLUDE 名单仍在且仍先生效;本 veto 是结构性补位。改后需重启 Bridge。",
-	},
-	{
-		// FLY-1329 (A3): boot re-adopt used to filter status='running' — the one
-		// status the PARKING roles are never in (HANDOFF_STATUS parks design at
-		// design_done, implement at awaiting_review). That is why the FLY-1319
-		// restart re-adopted QA and lost the parked implement.
-		name: "readopt_parked_roles",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_READOPT_PARKED",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"boot re-adopt 覆盖全角色 park 态(running|awaiting_review|design_done|approved_to_ship);=0 回退只认 running 的旧过滤器。keep-alive 下每个 role park 在不同 status,只认 running 恰好漏掉所有会 park 的 role (FLY-1329 A3)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/HeartbeatService.ts",
-				"seedReconnecting",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "终态永不进候选(re-adopt 终态=复活死人)。改后需重启 Bridge。",
-	},
-	{
 		// FLY-1329 (A2): wording-only. Deliberately NOT an input to the destructive
 		// verdict — a decision that swung on "was there traffic recently" would be
 		// unreproducible and would re-introduce the FLY-1319 bug class.
@@ -251,28 +162,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "非法/未设/≤0 的 env 值由 activityWindowMs() 在运行时 sanitize 回默认 600000;resolveFlag 对本 flag 走同款 sanitizer(见 resolve.ts 特判),故 registry 显示的 effective 值 = 运行时实际生效值(Codex R2 LOW,修正 R1 LOW-6 的 raw-string 展示)。改这个改不了任何生命周期决定,只改人读的那句话。",
 	},
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
-	{
-		name: "tmux_keepalive",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_TMUX_KEEPALIVE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1446: under the per-socket rescue lock, set tmux exit-empty off and maintain the flywheel-keepalive sentinel so the runner server survives losing its last business session",
-		readSites: [
-			envSite(
-				"scripts/lib/tmux-server-rescue.sh",
-				"_tmux_rescue_keepalive_enabled",
-				"call_time",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "owner=tmux-server-rescue；下一次 ensure/policy-enforce 调用生效。=0 只停止后续 enforcement，不自动删除 sentinel 或恢复 exit-empty on；非法值 fail-safe 回默认开启。",
-	},
 	{
 		name: "converge_cmux_symlink",
 		category: "kill_switch",
@@ -327,7 +216,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: true,
 		description:
-			"FLY-1272/1364: 默认 exact-one-window link topology；仅设 =0 仍由 STRICT_VIEW 保持独立视图，完整 grouped rollback 需同时设 FLYWHEEL_CMUX_STRICT_VIEW=0",
+			"FLY-1272/1364: 默认 exact-one-window link topology；关闭后仍保持独立视图的生命周期保护",
 		readSites: [
 			envSite(
 				"scripts/flywheel-cmux-sync.sh",
@@ -339,198 +228,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW",
 				"cli_invocation",
 			),
-			envSite(
-				"packages/teamlead/src/bridge/tmux-lookup.ts",
-				"killCmuxLinkedSession",
-				"call_time",
-			),
 		],
-		toggleable: "conversational",
-	},
-	{
-		name: "cmux_wal_quarantine",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_WAL_QUARANTINE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1446: quarantine syntactically malformed cmux construction WALs so unrelated views keep reconciling; =0 restores legacy global abort",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"wal_quarantine_enabled / recover_all_view_constructions",
-				"cli_invocation",
-				"dynamic",
-			),
-			envSite(
-				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag FLYWHEEL_CMUX_WAL_QUARANTINE",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "owner=launchd watcher；inherited env > ~/.flywheel/.env，watcher kickstart 后生效；非法值 fail-safe 回到默认开启。只隔离四类纯语法/文件身份错误，generation、I/O、guard、cleanup 不确定性仍整轮 fail-closed。",
-	},
-	{
-		name: "cmux_roster",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_ROSTER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1446: derive the loaded Lead roster from launchd/manifests and reconcile active Runner execution ids against global tmux identity options",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"roster_enabled / reconcile_roster_read_phase",
-				"cli_invocation",
-				"dynamic",
-			),
-			envSite(
-				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag FLYWHEEL_CMUX_ROSTER",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "owner=launchd watcher；inherited env > ~/.flywheel/.env，watcher kickstart 后生效；非法值 fail-safe 回默认开启。关闭只暂停 roster 派生/对账，不改变既有 linked-view/cleanup 行为。",
-	},
-	{
-		name: "cmux_view_invariant",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_VIEW_INVARIANT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1272: 验证 managed view 的 active @window_id 并用 ledger-safe repair 收敛",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"view_invariant_enabled",
-				"cli_invocation",
-			),
-			envSite(
-				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag FLYWHEEL_CMUX_VIEW_INVARIANT",
-				"cli_invocation",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "cmux_strict_view",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_STRICT_VIEW",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1364: A0B1 managed tab 使用 independent exact-window view；=0 有序回滚 grouped topology",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"strict_view_enabled",
-				"cli_invocation",
-			),
-			envSite(
-				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag FLYWHEEL_CMUX_STRICT_VIEW",
-				"cli_invocation",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/tmux-lookup.ts",
-				"strictCmuxViewEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "codex_gate_wait",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CODEX_GATE_WAIT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"Codex resident goal 在 mandatory gate 未答时保活并在门解析后恢复（=0 回滚为 blocked 终态）",
-		readSites: [
-			envSite(
-				"packages/claude-runner/src/codex-daemon-client.ts",
-				"runGoalToTerminal",
-				"call_time",
-			),
-		],
-		// The flag lives in the runner process. Ops can change it conversationally,
-		// but a Bridge/process restart is the conservative activation boundary.
-		toggleable: "conversational",
-	},
-	{
-		// FLY-1309: the Bridge constructs its duplicate-identity monitor once at
-		// boot, while FleetPoller also checks the same switch before each evidence
-		// refresh. Because one owning read is construction-time, changing this
-		// value requires a Bridge restart; it must never be advertised as a direct
-		// live toggle. `=0` is the emergency rollback for the default-on scanner.
-		name: "lead_dual_active_scan",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DUAL_ACTIVE_SCAN",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1309: 检测同一 leadId 双活并立刻告警、标记后起进程（=0 应急停用；改后需重启 Bridge）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"leadIdentityMonitor",
-				"object_construction",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/fleet-data.ts",
-				"carrierEvidenceEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "quota_degraded_switch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QUOTA_DEGRADED_SWITCH",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1252: 允许 quota daemon 执行已在 quota-monitor config 开启的受控降级切号（=0 立即压制）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/account-heal/quota-monitor.ts",
-				"pollOnce",
-				"call_time",
-			),
-		],
-		// The owning reader is the external daemon, not the Bridge process whose
-		// env the direct-toggle surface mutates.
 		toggleable: "conversational",
 	},
 	{
@@ -585,28 +283,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		// founder dashboard toggle, never set in production.
 		toggleable: "readonly",
 		note: "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
-	},
-	{
-		name: "quota_daemon_wake",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QUOTA_WAKE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1252: Bridge 在可信 quota-limit 信号后通过能力协商 pidfile 立即唤醒 daemon（=0 停发信号）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/quota-daemon-wake.ts",
-				"createQuotaDaemonWaker",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/quota-daemon-wake.test.ts:createQuotaDaemonWaker observes disabled wake",
 	},
 	{
 		name: "auto_qa_killswitch",
@@ -671,34 +347,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		// the runner-CLI verify-approval .env bidirectional live-toggle test.
 		directToggleProof:
 			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
-	},
-	{
-		// FLY-1278: default-ON convergence policy for cross-family review. It
-		// classifies MEDIUM/LOW findings as advisory and applies Lead-settled
-		// finding rulings; `=0` restores the legacy reviewer-verdict lane byte for
-		// byte. The coordinator reads this at the start of every review job, so a
-		// live mutation affects the next round without reconstructing the Bridge.
-		name: "review_severity_policy_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_REVIEW_SEVERITY_POLICY",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉跨家族审查收敛政策（=0 回滚 legacy verdict；默认 ON=MEDIUM/LOW 不阻塞并尊重 Lead 已裁决 finding）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/review-verdict-policy.ts",
-				"severityPolicyEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"review-verdict-policy.test:FLYWHEEL_REVIEW_SEVERITY_POLICY live-observe",
 	},
 	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
@@ -836,69 +484,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "启动时一次性 best-effort git 检查;改后需重启 Bridge 才生效。",
 	},
 	{
-		// FLY-795: global kill-switch for restart-resilient resume. Default ON: a
-		// re-dispatched dead runner resumes from its committed progress.md cursor
-		// (reusing 793's shareParentBranch/startPoint worktree mechanism) instead of
-		// starting over. `=0` = fully revert to the pre-795 fresh-every-time behavior
-		// — the teamlead resume computer produces no progressResume AND the Blueprint
-		// PROGRESS LEDGER write-discipline prompt line is suppressed (byte-identical
-		// prompt). readonly ops safety lever, not a founder dashboard toggle.
-		name: "progress_resume_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PROGRESS_RESUME",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉 restart-resilient resume（重启/terminate/reboot 后从 progress.md 游标续做）；=0 = 纯 fresh 现状 + 抑制写台账纪律 prompt（FLY-795）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/run-infra.ts",
-				"resumeComputer",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/edge-worker/src/Blueprint.ts",
-				"buildSystemPromptLines",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "重启/terminate resume 主机制；=0 全局关，改后需重启 Bridge。",
-	},
-	{
-		// FLY-685: close_runner (Bridge) writes a cmux pin close-request marker on a
-		// successful window kill; the cmux-sync watcher drains it and closes the
-		// stale sidebar pin immediately. readonly (not web-toggleable): the switch
-		// is honored on BOTH the Bridge TS side (marker write) and the separate
-		// long-running bash watcher (marker drain, its own env) — flipping the
-		// Bridge's process.env would not live-affect the watcher, so it needs an
-		// env change + restart of both, never a single-process live toggle.
-		name: "cmux_close_request_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_CLOSE_REQUEST",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"close_runner 写 cmux pin close-request marker + watcher 立即移除 stale pin（FLY-685）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/cmux-close-request.ts",
-				"requestCmuxPinClose",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "watcher 侧同名读取在 scripts/flywheel-cmux-sync.sh（cli_invocation）；=0 关闭两侧，需重启 Bridge + watcher。",
-	},
-	{
 		name: "gatepoller_circuit",
 		category: "feature",
 		source: "env",
@@ -941,28 +526,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "已写入 superseded_at/superseded_by 的 disposition 永久有效；=0 只停止新的 mutation，不回滚历史 stamp。",
-	},
-	{
-		name: "founder_review_gate_exclude",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1314: founder 单字母回复候选排除 review_design/review_code gate（=0 恢复旧候选集合）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"founderReplyDeliverPass",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"gate-poller-fly1041-report-exclusion.test:FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE=0 restores review candidates",
 	},
 	{
 		name: "ship_ci_guard",
@@ -1051,74 +614,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	// ─── FLY-799: founder-in-thread ship approval + auto-finalize ───
-	{
-		name: "founder_auto_approve",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_AUTO_APPROVE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-799: founder 在 [FLY-XX] thread 的文字/✅ 批准 → 归属 founder → 写 approve_to_ship gate → runner 自 ship",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
-				"autoApproveEnabled",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/founder-reaction-approval-factory.ts",
-				"autoApproveEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "call_time reads (live-toggleable in principle); marked readonly pending a resolve.direct-toggle proof test (fast-follow). `=0` → deliverer falls back to WAKE-only.",
-	},
-	{
-		name: "stale_ship_rewake",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_STALE_SHIP_REWAKE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-799 Part B: 重新唤醒卡在 approved_to_ship 的 runner（漏掉的自-ship wake）；死 runner → alert 一次 defer FLY-795",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"staleShipRewakeEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "GatePoller sub-cadence pass；`=0` 关掉再唤醒。call_time read (readonly pending direct-toggle proof).",
-	},
-	{
-		name: "auto_linear_done",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_AUTO_LINEAR_DONE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-799: runner 自-ship（confirmed merged）后自动把 Linear issue 翻到 Done",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/linear-issue-finalizer.ts",
-				"makeLinearDoneFinalizer",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "在 runPostShipFinalization（merge-evidence gated）里读；`=0` 关掉自动 Done。call_time read (readonly pending direct-toggle proof).",
-	},
 	{
 		name: "founder_reply_deliver",
 		category: "feature",
@@ -1260,81 +755,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
-		name: "founder_reply_unreachable",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "founder-reply unreachable runner 数据一致性告警",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/founder-reply-unreachable.ts",
-				"founderReplyUnreachableEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "ask_hygiene",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ASK_HYGIENE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"runner 收尾清它名下未答的 ask(A1 close 级联 + A2 巡检 sweep;OFF=今日字节路径,含 gate 行 resolved_via 保持 NULL)",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/db.ts",
-				"askHygieneEnabled",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/zombie-gate-hygiene.ts",
-				"askHygieneEnabled",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"askHygieneEnabled",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/StateStore.ts",
-				"askHygieneEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "founder_milestone_notify",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_MILESTONE_NOTIFY",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "founder 里程碑推送（FLY-725）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"GatePoller (method)",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"resolve.direct-toggle.test:founder_milestone_notify live-observe",
-	},
-	{
 		name: "heartbeat_readopt",
 		category: "feature",
 		source: "env",
@@ -1377,28 +797,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:liveness_pane_dead live-observe",
 	},
 	{
-		name: "engine_dead_exec_sweep",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"DAG terminal dead-execution recovery sweep (OFF pauses new replacement decisions)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				"reconcile",
-				"call_time",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-engine-dispatcher.test:live-sweep-flag same-instance OFF-to-ON",
-	},
-	{
 		name: "workflow_rework_reentry",
 		category: "kill_switch",
 		source: "env",
@@ -1433,74 +831,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-engine-dispatcher.test:rework coordinator reads the re-entry switch on every reconcile",
 	},
-	{
-		name: "engine_unlaunched_tripwire",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1423: alert, fence, and recover blocked or admitted-but-unlaunched workflow retries",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				"unlaunchedTripwireEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-engine-dispatcher.test:reads the unlaunched tripwire switch on every reconcile",
-	},
 
 	// ─── env features/kill-switches captured at boot/construction → RESTART ───
-	{
-		name: "remote_reports",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_REMOTE_REPORTS",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "远程报告发布管线 /api/reports（Bridge + CLI 双侧）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp (reportsEnabled)",
-				"object_construction",
-			),
-			envSite(
-				"packages/flywheel-comm/src/commands/publish-report.ts",
-				"publishReport",
-				"cli_invocation",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "fleet_console",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FLEET_CONSOLE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "Fleet console 面 + fleet 路由（=0 回退旧 dashboard）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
 	{
 		name: "worktree_autoclean",
 		category: "feature",
@@ -1697,66 +1029,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "commdb_residue_harvest",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"Bridge scope-free residue harvest — 清 CommDB-only 注册与 StateStore ghost (FLY-1066)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "terminal_commdb_sync",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_TERMINAL_COMMDB_SYNC",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"StateStore failed/blocked → CommDB 异步终态同步（FLY-1066 根因层）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "cron_stale_guard",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CRON_STALE_GUARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"run-start 409 路径的 stale-blocker guard（=0 回退旧 409，FLY-742）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createStaleBlockerGuard (enabled)",
-				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "ship_gate_grace_ms",
 		category: "feature",
 		source: "env",
@@ -1772,27 +1044,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/gate-poller.ts",
 				"shipGateGraceMs",
 				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "ship_gate_rebind",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_GATE_REBIND",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"QA PASS 证据 commit 使 PR head 前移时自动 rebind ship gate(=0 回到 FLY-945 前的 drop 行为)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-coordinator.ts",
-				"shipGateRebindEnabled",
-				"call_time",
-				"env-param",
 			),
 		],
 		toggleable: "conversational",
@@ -1841,51 +1092,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
 	{
-		name: "ship_gate_retire",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_GATE_RETIRE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix A: rebind 后 retire 被取代的 approve_to_ship gate(event-route 主路径 + GatePoller sweeper 兜底)——同一时刻只留一个可绑 ship gate(=0 回到 FLY-910 前的僵尸 gate 现状)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/event-route.ts",
-				"retireSupersededShipGate",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"shipGateRetireEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "ship_gate_card",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_GATE_CARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix B: approve_to_ship 的 founder 卡转正为主载体(15s grace;=0 回到 10min FLY-605 兜底节奏)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"shipGateCardEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "ship_gate_card_grace_ms",
 		category: "feature",
 		source: "env",
@@ -1901,66 +1107,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/gate-poller.ts",
 				"shipGateCardGraceMs",
 				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "tier2_prefix_norm",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_TIER2_PREFIX_NORM",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1041 Fix C: tier2 允许剥离纯语气前缀(「嗯ship」→「ship」确定性命中;=0 回到降级 tier3 的现状——确定性批准语义扩张的独立回滚)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/text-approval-source.ts",
-				"evaluateTextSource",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "viewer_session_reaper",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_VIEWER_SESSION_REAPER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"boot sweep 清理泄漏的 viewer-<execId> tmux session（FLY-754）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"viewer-session reaper boot sweep",
-				"bridge_boot",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "chrome_session_reaper",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CHROME_REAPER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"周期清理泄漏的 agent-browser headless Chrome（=0 关闭 reaper，FLY-766）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"chrome-session reaper enable gate",
-				"bridge_boot",
 			),
 		],
 		toggleable: "conversational",
@@ -2494,27 +1640,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
 	},
 	{
-		name: "fleet_sensor_tmux_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FLEET_SENSOR_TMUX",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1082: 关掉 tmux server-loss coordinator（HeartbeatService pre-reaper phase：fleet 级检测 + 成组终态迁移 + 单张 fleet ticket + 按 Lead 分组通知）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp (HeartbeatService serverLoss pre-reaper phase arg)",
-				"object_construction",
-			),
-		],
-		toggleable: "readonly",
-		note: "=0 时 server-loss 整段关闭,退回 per-runner crash-reaper/reapOrphans 旧行为。HeartbeatService 构造时读一次（ternary 选 phase 对象或 undefined）,翻转需重启 Bridge。",
-	},
-	{
 		// FLY-1165: done-thread reconcile sweep (boot + periodic) — the structural
 		// backstop behind the FLY-369 close→archive cascade. Double gate (fresh
 		// Linear Done/Canceled + no live runner) + triple liveness veto; archives
@@ -2723,30 +1848,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Set =1 after observing the shadow episodes. Set =0 to stop new severe alerts without disabling comparison, recovery closure, or durable episode evidence.",
 	},
 	{
-		name: "land_node",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LAND_NODE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1375: engine-owned land node (sanctioned merge → close sessions → worktree cleanup → Done/archive). =0 stops new land activation; already claimed operations keep converging.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-template-dispatch.ts",
-				"isLandNodeEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-template tests: next land predicate call observes apply",
-		note: "New land template IDs are selected explicitly; existing legacy bindings remain unchanged.",
-	},
-	{
 		name: "workflow_generalized_templates",
 		category: "feature",
 		source: "env",
@@ -2769,30 +1870,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-template tests: next generalized predicate call observes apply",
 		note: "FLY-1344 founder-controlled DAG v2 lever (FLY-1307/1281 lineage). A v2 start still requires template dispatch + claims WRITE + READ.",
-	},
-	{
-		name: "workflow_vendor_at_dispatch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_VENDOR_AT_DISPATCH",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1385: resolve each workflow node from the current approved phase/template dispatch at launch time; =0 immediately returns to the pinned snapshot.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-dispatch-resolution.ts",
-				"resolveNodeDispatchAtLaunch",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-dispatch-resolution tests: the next node resolution observes =0 and returns the pinned snapshot without an audit event",
-		note: "Emergency escape only. Current configured dispatch remains authoritative; automatic replacement is limited to the separately enforced design Fable to GPT-5.6 exception.",
 	},
 	{
 		name: "workflow_claims_write",
@@ -2859,26 +1936,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"ship-eligibility + verify-approval tests: Bridge env and CLI dotenv readers observe one apply",
 		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
-	},
-	{
-		name: "commdb_protection",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_COMMDB_PROTECTION",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1279 H2: retain unanswered actionable CommDB rows through expiry, finalize, and prune paths",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/db.ts",
-				"commDbProtectionEnabled",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
 	},
 	{
 		name: "delivery_secret_path",
@@ -2965,48 +2022,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── FLY-1718: re-dispatch inventory reconciliation ───
 	{
-		name: "continuity_preflight",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CONTINUITY_PREFLIGHT",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1718 P1: re-dispatch 前对账 origin 同名分支与 open PR，避免从 main 另起分叉",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/run-dispatcher.ts",
-				"RetryDispatcher.dispatch continuity preflight",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "安全回滚开关；显式 freshStart 仍保留审计与存量对账语义。",
-	},
-	{
-		name: "push_guard",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PUSH_GUARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1718 P2: runner worktree 注入 pre-push hook，阻止 open PR 分支非快进推送与删除",
-		readSites: [
-			envSite(
-				"packages/edge-worker/src/WorktreeManager.ts",
-				"WorktreeManager.create",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "worktree 创建时读取；切换只影响随后创建或重建的 runner worktree。",
-	},
-	{
 		name: "instruction_path_check",
 		category: "kill_switch",
 		source: "env",
@@ -3049,31 +2064,5 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 		note: "Bridge 与独立 flywheel-comm CLI 均读取；跨进程授权安全面不提供 web toggle。",
-	},
-	{
-		name: "doa_backoff",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DOA_BACKOFF",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1718 P4: re-dispatch 前对账前任 DOA 死因并执行 1/2/4/8 分钟退避与第五击 Lead 闸",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/run-dispatcher.ts",
-				"RetryDispatcher.admitDoaBackoff",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"runDoaBackoffMaintenance",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "运行时安全回滚开关；readonly，待独立 direct-toggle proof 后再开放控制面。",
 	},
 ];

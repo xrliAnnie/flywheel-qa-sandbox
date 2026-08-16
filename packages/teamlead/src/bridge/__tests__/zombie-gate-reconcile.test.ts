@@ -21,7 +21,6 @@ import {
 } from "../zombie-gate-hygiene.js";
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 	delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
 	vi.restoreAllMocks();
 });
@@ -525,21 +524,6 @@ describe("FounderReplyUnreachableReconcile — unreachable-runner detector", () 
 			posted.filter((e) => e.startsWith("founder-reply-unreachable-E-9")),
 		).toHaveLength(2);
 	});
-
-	it("kill-switch FLYWHEEL_FOUNDER_REPLY_UNREACHABLE=0 keeps the detector inert", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
-		const { reconcile, posted } = wd();
-		reconcile.beginUnreachableSweep();
-		reconcile.noteUnreachableRunner({
-			executionId: "E-9",
-			issueId: "FLY-1049",
-			projectName: "proj",
-			questionId: "Q-9",
-		});
-		reconcile.endUnreachableSweep();
-		await reconcile.tick();
-		expect(posted).toHaveLength(0);
-	});
 });
 
 describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
@@ -587,7 +571,6 @@ describe("Codex code R1 MED-1: dangling-intent reconcile", () => {
 
 describe("Codex code R8 MED-1: GatePoller wrapper — empty filtered candidate set still reconciles dangling intents", () => {
 	it("formal retirement leaves dangling legacy intent untouched and never touches the tracked gate", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
 		const originalHome = process.env.HOME;
 		const tmpHome = join(
 			tmpdir(),

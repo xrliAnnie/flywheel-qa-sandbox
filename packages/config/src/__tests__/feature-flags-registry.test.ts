@@ -8,6 +8,59 @@ import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 // restricted to flags the running Bridge will actually observe live.
 
 describe("feature-flag registry invariants", () => {
+	it("FLY-1807 retires the approved default-on e-stop wave", () => {
+		const retired = [
+			"FLYWHEEL_LIVENESS_ALERTS",
+			"FLYWHEEL_PRUNE_PARK_GUARD",
+			"FLYWHEEL_READOPT_PARKED",
+			"FLYWHEEL_TMUX_KEEPALIVE",
+			"FLYWHEEL_CMUX_WAL_QUARANTINE",
+			"FLYWHEEL_CMUX_ROSTER",
+			"FLYWHEEL_CMUX_VIEW_INVARIANT",
+			"FLYWHEEL_CMUX_STRICT_VIEW",
+			"FLYWHEEL_CODEX_GATE_WAIT",
+			"FLYWHEEL_DUAL_ACTIVE_SCAN",
+			"FLYWHEEL_QUOTA_DEGRADED_SWITCH",
+			"FLYWHEEL_QUOTA_WAKE",
+			"FLYWHEEL_REVIEW_SEVERITY_POLICY",
+			"FLYWHEEL_PROGRESS_RESUME",
+			"FLYWHEEL_CMUX_CLOSE_REQUEST",
+			"FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
+			"FLYWHEEL_FOUNDER_AUTO_APPROVE",
+			"FLYWHEEL_STALE_SHIP_REWAKE",
+			"FLYWHEEL_AUTO_LINEAR_DONE",
+			"FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
+			"FLYWHEEL_ASK_HYGIENE",
+			"FLYWHEEL_FOUNDER_MILESTONE_NOTIFY",
+			"FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+			"FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
+			"FLYWHEEL_REMOTE_REPORTS",
+			"FLYWHEEL_FLEET_CONSOLE",
+			"FLYWHEEL_COMMDB_RESIDUE_HARVEST",
+			"FLYWHEEL_TERMINAL_COMMDB_SYNC",
+			"FLYWHEEL_CRON_STALE_GUARD",
+			"FLYWHEEL_SHIP_GATE_REBIND",
+			"FLYWHEEL_SHIP_GATE_RETIRE",
+			"FLYWHEEL_SHIP_GATE_CARD",
+			"FLYWHEEL_TIER2_PREFIX_NORM",
+			"FLYWHEEL_VIEWER_SESSION_REAPER",
+			"FLYWHEEL_CHROME_REAPER",
+			"FLYWHEEL_FLEET_SENSOR_TMUX",
+			"FLYWHEEL_LAND_NODE",
+			"FLYWHEEL_VENDOR_AT_DISPATCH",
+			"FLYWHEEL_COMMDB_PROTECTION",
+			"FLYWHEEL_CONTINUITY_PREFLIGHT",
+			"FLYWHEEL_PUSH_GUARD",
+			"FLYWHEEL_DOA_BACKOFF",
+		] as const;
+
+		expect(retired).toHaveLength(42);
+		for (const envVar of retired) {
+			expect(FEATURE_FLAGS.some((flag) => flag.envVar === envVar)).toBe(false);
+			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1807" });
+		}
+	});
+
 	it("names are unique", () => {
 		const names = FEATURE_FLAGS.map((f) => f.name);
 		expect(new Set(names).size).toBe(names.length);
@@ -103,49 +156,7 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1257 registers the resident Codex gate-wait rollback switch as default-on", () => {
-		const flag = FEATURE_FLAGS.find((f) => f.name === "codex_gate_wait");
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			envVar: "FLYWHEEL_CODEX_GATE_WAIT",
-			polarity: "default_on",
-			default: true,
-		});
-		expect(flag?.readSites).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					file: "packages/claude-runner/src/codex-daemon-client.ts",
-					symbol: "runGoalToTerminal",
-					timing: "call_time",
-				}),
-			]),
-		);
-	});
-
-	it("FLY-1309 registers Lead identity safety controls with governance-safe toggleability", () => {
-		const scan = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_DUAL_ACTIVE_SCAN",
-		);
-		expect(scan).toMatchObject({
-			name: "lead_dual_active_scan",
-			category: "kill_switch",
-			polarity: "default_on",
-			default: true,
-			toggleable: "readonly",
-		});
-		expect(scan?.readSites).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					file: "packages/teamlead/src/bridge/plugin.ts",
-					timing: "object_construction",
-				}),
-				expect.objectContaining({
-					file: "packages/teamlead/src/bridge/fleet-data.ts",
-					timing: "call_time",
-				}),
-			]),
-		);
-
+	it("FLY-1309 keeps the Lead lease bypass governance-safe", () => {
 		const bypass = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_LEAD_LEASE_BYPASS",
 		);
@@ -179,13 +190,6 @@ describe("feature-flag registry invariants", () => {
 				name,
 			).toBeUndefined();
 		}
-		const founderReply = FEATURE_FLAGS.find(
-			(flag) => flag.name === "founder_reply_unreachable",
-		);
-		expect(founderReply).toMatchObject({
-			envVar: "FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
-		});
-		expect(founderReply?.retiring).toBeUndefined();
 		expect(RETIRED_FLAGS).toContainEqual({
 			envVar: "FLYWHEEL_FOUNDER_REPLY_WATCHDOG",
 			retiredBy: "FLY-1560",
@@ -202,16 +206,10 @@ describe("feature-flag registry invariants", () => {
 		});
 	});
 
-	it("FLY-1560 retires idle polling and narrows W-1 to alert delivery", () => {
+	it("FLY-1560 retires idle polling", () => {
 		expect(
 			FEATURE_FLAGS.find((flag) => flag.name === "watchdog_liveness"),
 		).toBeUndefined();
-		expect(
-			FEATURE_FLAGS.find((flag) => flag.name === "liveness_alerts"),
-		).toMatchObject({
-			envVar: "FLYWHEEL_LIVENESS_ALERTS",
-			description: expect.stringMatching(/approved_to_ship/),
-		});
 		expect(RETIRED_FLAGS).toEqual(
 			expect.arrayContaining([
 				{ envVar: "FLYWHEEL_WATCHDOG_LIVENESS", retiredBy: "FLY-1560" },
@@ -314,24 +312,6 @@ describe("feature-flag registry invariants", () => {
 			}),
 		]);
 
-		const founderReviewExclusion = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
-		);
-		expect(founderReviewExclusion).toMatchObject({
-			name: "founder_review_gate_exclude",
-			category: "kill_switch",
-			polarity: "default_on",
-			default: true,
-			toggleable: "direct",
-		});
-		expect(founderReviewExclusion?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/gate-poller.ts",
-				symbol: "founderReplyDeliverPass",
-				timing: "call_time",
-			}),
-		]);
-
 		const shipCiGuard = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_SHIP_CI_GUARD",
 		);
@@ -351,89 +331,24 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1066 residue harvest is a registered default-on Bridge kill-switch", () => {
-		const flag = FEATURE_FLAGS.find((f) => f.name === "commdb_residue_harvest");
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			scope: "bridge_global",
-			envVar: "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
-			polarity: "default_on",
-			default: true,
-		});
-	});
-
-	it("FLY-1385 registers the dead-exec sweep as a live default-on kill switch", () => {
+	it("FLY-1423 keeps workflow re-entry as a default-on kill switch", () => {
 		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.envVar === "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+			(candidate) => candidate.envVar === "FLYWHEEL_WORKFLOW_REWORK_REENTRY",
 		);
 		expect(flag).toMatchObject({
-			name: "engine_dead_exec_sweep",
+			name: "workflow_rework_reentry",
 			category: "kill_switch",
 			scope: "bridge_global",
 			polarity: "default_on",
 			default: true,
 			toggleable: "direct",
 		});
-		expect(flag?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				symbol: "reconcile",
-				timing: "call_time",
-			}),
+		expect(flag?.readSites.map((site) => site.symbol)).toEqual([
+			"reconcile",
+			"reconcileWorkflowReworks",
+			"reconcileWorkflowReworkStalls",
 		]);
-		expect(flag?.directToggleProof).toMatch(/live-sweep-flag/i);
-	});
-
-	it("FLY-1423 registers rework re-entry and the fresh-spawn tripwire as default-on kill switches", () => {
-		for (const [envVar, name, file, symbol] of [
-			[
-				"FLYWHEEL_WORKFLOW_REWORK_REENTRY",
-				"workflow_rework_reentry",
-				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts",
-				"reconcile",
-			],
-			[
-				"FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
-				"engine_unlaunched_tripwire",
-				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				"unlaunchedTripwireEnabled",
-			],
-		] as const) {
-			const flag = FEATURE_FLAGS.find(
-				(candidate) => candidate.envVar === envVar,
-			);
-			expect(flag).toMatchObject({
-				name,
-				category: "kill_switch",
-				scope: "bridge_global",
-				polarity: "default_on",
-				default: true,
-				toggleable: "direct",
-			});
-			const expectedReadSites = [
-				expect.objectContaining({
-					file,
-					symbol,
-					timing: "call_time",
-				}),
-				...(envVar === "FLYWHEEL_WORKFLOW_REWORK_REENTRY"
-					? [
-							expect.objectContaining({
-								file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-								symbol: "reconcileWorkflowReworks",
-								timing: "call_time",
-							}),
-							expect.objectContaining({
-								file: "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-								symbol: "reconcileWorkflowReworkStalls",
-								timing: "call_time",
-							}),
-						]
-					: []),
-			];
-			expect(flag?.readSites).toEqual(expectedReadSites);
-			expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
-		}
+		expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
 		expect(
 			FEATURE_FLAGS.find(
 				(candidate) => candidate.envVar === "FLYWHEEL_KICKBACK_EVICT",
@@ -441,43 +356,11 @@ describe("feature-flag registry invariants", () => {
 		).toBeUndefined();
 	});
 
-	it("FLY-1066 terminal CommDB sync is a registered default-on Bridge kill-switch", () => {
-		const flag = FEATURE_FLAGS.find((f) => f.name === "terminal_commdb_sync");
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			scope: "bridge_global",
-			envVar: "FLYWHEEL_TERMINAL_COMMDB_SYNC",
-			polarity: "default_on",
-			default: true,
-		});
-	});
-
 	it("FLY-1456 removes the temporary quota daemon cutover flag", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
 		);
 		expect(cutover).toBeUndefined();
-	});
-
-	it("FLY-1446 registers tmux keepalive enforcement as a default-on kill switch", () => {
-		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.envVar === "FLYWHEEL_TMUX_KEEPALIVE",
-		);
-		expect(flag).toMatchObject({
-			name: "tmux_keepalive",
-			category: "kill_switch",
-			scope: "bridge_global",
-			polarity: "default_on",
-			default: true,
-			toggleable: "conversational",
-		});
-		expect(flag?.readSites).toEqual([
-			expect.objectContaining({
-				file: "scripts/lib/tmux-server-rescue.sh",
-				symbol: "_tmux_rescue_keepalive_enabled",
-				timing: "call_time",
-			}),
-		]);
 	});
 
 	it("FLY-1252 registers account identity verification as a default-off external-runtime feature", () => {
@@ -522,15 +405,9 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1272/1364 registers the three default-on cmux rollback switches with exact read sites", () => {
+	it("FLY-1272 keeps the linked-view rollout switch with exact read sites", () => {
 		const linked = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",
-		);
-		const invariant = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_CMUX_VIEW_INVARIANT",
-		);
-		const strict = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_CMUX_STRICT_VIEW",
 		);
 		expect(linked).toMatchObject({
 			name: "cmux_linked_view",
@@ -538,36 +415,12 @@ describe("feature-flag registry invariants", () => {
 			default: true,
 			toggleable: "conversational",
 			description:
-				"FLY-1272/1364: 默认 exact-one-window link topology；仅设 =0 仍由 STRICT_VIEW 保持独立视图，完整 grouped rollback 需同时设 FLYWHEEL_CMUX_STRICT_VIEW=0",
+				"FLY-1272/1364: 默认 exact-one-window link topology；关闭后仍保持独立视图的生命周期保护",
 		});
-		expect(linked?.readSites).toHaveLength(3);
+		expect(linked?.readSites).toHaveLength(2);
 		expect(linked?.readSites.map((s) => s.file)).toEqual([
 			"scripts/flywheel-cmux-sync.sh",
 			"scripts/flywheel-cmux-autostart.sh",
-			"packages/teamlead/src/bridge/tmux-lookup.ts",
-		]);
-		expect(invariant).toMatchObject({
-			name: "cmux_view_invariant",
-			polarity: "default_on",
-			default: true,
-			toggleable: "conversational",
-		});
-		expect(invariant?.readSites).toHaveLength(2);
-		expect(invariant?.readSites.map((s) => s.file)).toEqual([
-			"scripts/flywheel-cmux-sync.sh",
-			"scripts/flywheel-cmux-autostart.sh",
-		]);
-		expect(strict).toMatchObject({
-			name: "cmux_strict_view",
-			polarity: "default_on",
-			default: true,
-			toggleable: "conversational",
-		});
-		expect(strict?.readSites).toHaveLength(3);
-		expect(strict?.readSites.map((s) => s.file)).toEqual([
-			"scripts/flywheel-cmux-sync.sh",
-			"scripts/flywheel-cmux-autostart.sh",
-			"packages/teamlead/src/bridge/tmux-lookup.ts",
 		]);
 	});
 
@@ -611,26 +464,6 @@ describe("feature-flag registry invariants", () => {
 				readSites,
 			);
 		}
-	});
-
-	it("FLY-1385 registers vendor-at-dispatch as a hot default-on escape switch", () => {
-		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.name === "workflow_vendor_at_dispatch",
-		);
-		expect(flag).toMatchObject({
-			category: "kill_switch",
-			envVar: "FLYWHEEL_VENDOR_AT_DISPATCH",
-			polarity: "default_on",
-			default: true,
-			toggleable: "direct",
-		});
-		expect(flag?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/workflow-dispatch-resolution.ts",
-				symbol: "resolveNodeDispatchAtLaunch",
-				timing: "call_time",
-			}),
-		]);
 	});
 
 	it("FLY-1344 leaves true authorization surfaces governance-readonly", () => {

@@ -300,13 +300,11 @@ function harness() {
 let h: Harness;
 
 beforeEach(() => {
-	delete process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH;
 	delete process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK;
 	h = harness();
 });
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH;
 	delete process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK;
 });
 
@@ -1395,23 +1393,12 @@ describe("pollOnce", () => {
 		expect(h.alerts.at(-1)?.kind).toBe("account_switch_degraded");
 	});
 
-	it("keeps degraded switching disabled by default and honors the emergency env suppression", async () => {
+	it("keeps degraded switching disabled by default", async () => {
 		h.usages.set("secret-shopping", usage(95, 20));
 		h.usages.set("secret-school", { error: "network" });
 		h.usages.set("secret-business", { error: "network" });
 
-		let result = await pollOnce(h.deps);
-		expect(result.outcome).toBe("no_target");
-		expect(h.switchImpl).not.toHaveBeenCalled();
-
-		h = harness();
-		h.usages.set("secret-shopping", usage(95, 20));
-		h.usages.set("secret-school", { error: "network" });
-		h.usages.set("secret-business", { error: "network" });
-		h.deps.config = loadedConfig({ degradedSwitch: true });
-		process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH = "0";
-
-		result = await pollOnce(h.deps);
+		const result = await pollOnce(h.deps);
 		expect(result.outcome).toBe("no_target");
 		expect(h.switchImpl).not.toHaveBeenCalled();
 	});

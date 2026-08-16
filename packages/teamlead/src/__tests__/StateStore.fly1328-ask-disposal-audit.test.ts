@@ -17,7 +17,6 @@ import { StateStore } from "../StateStore.js";
 
 describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)", () => {
 	let store: StateStore;
-	let previousAskHygiene: string | undefined;
 
 	const audit = {
 		retiredGateCount: 2,
@@ -26,16 +25,11 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 	};
 
 	beforeEach(async () => {
-		previousAskHygiene = process.env.FLYWHEEL_ASK_HYGIENE;
-		delete process.env.FLYWHEEL_ASK_HYGIENE;
 		store = await StateStore.create(":memory:");
 	});
 
 	afterEach(() => {
 		store.close();
-		if (previousAskHygiene === undefined)
-			delete process.env.FLYWHEEL_ASK_HYGIENE;
-		else process.env.FLYWHEEL_ASK_HYGIENE = previousAskHygiene;
 	});
 
 	const disposalEvents = () => store.getEventsByType("commdb_ask_disposed");
@@ -113,28 +107,5 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			ok: true,
 		});
 		expect(disposalEvents()).toEqual([]);
-	});
-
-	it("FLYWHEEL_ASK_HYGIENE=0 writes no disposal event", () => {
-		// Control arm: with the flag at its default the same input DOES emit.
-		store.recordCommDbFinalizeOutcome({
-			executionId: "exec-on",
-			issueId: "FLY-1328",
-			projectName: "flywheel",
-			ok: true,
-			audit,
-		});
-		expect(disposalEvents()).toHaveLength(1);
-
-		process.env.FLYWHEEL_ASK_HYGIENE = "0";
-		store.recordCommDbFinalizeOutcome({
-			executionId: "exec-off",
-			issueId: "FLY-1328",
-			projectName: "flywheel",
-			ok: true,
-			audit,
-		});
-		expect(disposalEvents()).toHaveLength(1); // still only exec-on's
-		expect(disposalEvents()[0].execution_id).toBe("exec-on");
 	});
 });

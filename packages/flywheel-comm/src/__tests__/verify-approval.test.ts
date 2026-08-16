@@ -298,7 +298,6 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				env: {
 					FLYWHEEL_CODEX_HARD_GATE: "0",
 					FLYWHEEL_ISSUE_GATE_SUPERSEDE: "0",
-					FLYWHEEL_SHIP_GATE_RETIRE: "0",
 				} as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmpDir, "nonexistent.env"),
 			}),

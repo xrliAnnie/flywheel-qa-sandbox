@@ -189,10 +189,7 @@ export function reconcileDoneButRunning(
 		excluded: 0,
 		parkedVetoed: 0,
 	};
-	// FLY-1329 (A5): kill-switch restores the pre-veto sweep byte-for-byte.
-	const parkGuardOn =
-		process.env.FLYWHEEL_PRUNE_PARK_GUARD !== "0" &&
-		opts.isParked !== undefined;
+	const parkGuardOn = opts.isParked !== undefined;
 
 	// getActiveSessions() returns running / awaiting_review / approved_to_ship.
 	// isDoneButRunning narrows to the running-only zombie shape.

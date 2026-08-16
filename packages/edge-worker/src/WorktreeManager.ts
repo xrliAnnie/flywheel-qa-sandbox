@@ -1238,40 +1238,38 @@ export class WorktreeManager {
 					worktreePath,
 				);
 
-				if (process.env.FLYWHEEL_PUSH_GUARD !== "0") {
-					const guardPath = this.ensurePushGuardInstalled();
-					const existingHooksDir =
-						await this.resolveExistingHooksDir(worktreePath);
-					const hooksDir = this.composePushGuardHooks(
+				const guardPath = this.ensurePushGuardInstalled();
+				const existingHooksDir =
+					await this.resolveExistingHooksDir(worktreePath);
+				const hooksDir = this.composePushGuardHooks(
+					worktreePath,
+					guardPath,
+					existingHooksDir,
+				);
+				await this.exec(
+					"git",
+					[
+						"-C",
 						worktreePath,
-						guardPath,
-						existingHooksDir,
-					);
-					await this.exec(
-						"git",
-						[
-							"-C",
-							worktreePath,
-							"config",
-							"--local",
-							"extensions.worktreeConfig",
-							"true",
-						],
+						"config",
+						"--local",
+						"extensions.worktreeConfig",
+						"true",
+					],
+					worktreePath,
+				);
+				await this.exec(
+					"git",
+					[
+						"-C",
 						worktreePath,
-					);
-					await this.exec(
-						"git",
-						[
-							"-C",
-							worktreePath,
-							"config",
-							"--worktree",
-							"core.hooksPath",
-							hooksDir,
-						],
-						worktreePath,
-					);
-				}
+						"config",
+						"--worktree",
+						"core.hooksPath",
+						hooksDir,
+					],
+					worktreePath,
+				);
 
 				// FLY-1185 §2.1: creation-generation nonce into the git ADMIN area
 				// (resolved via --git-path, never guessed from `.git/worktrees/<id>`).

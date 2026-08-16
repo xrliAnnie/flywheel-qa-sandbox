@@ -1,15 +1,7 @@
 /**
- * FLY-1328 Chunk 4 — the reverse-compat sentinel across ASK × ZOMBIE ×
- * LEAD-RECONCILE.
- *
- * FLY-1328 puts a third capability inside a pass that already hosted two, so
- * "does the new flag change the old flags' behavior, or vice versa" is not a
- * theoretical question. Each combination below is asserted BOTH ways: what the
- * enabled capability does, and what the disabled ones must not do.
- *
- * Every negative assertion here is paired with a positive control in the same
- * test — an assertion that something did NOT happen passes just as happily when
- * the harness never wired the thing up at all (FLY-1281/1285).
+ * FLY-1328 / FLY-1807 — retained ON-path coverage after ask hygiene became
+ * unconditional. The pass must keep ASK and zombie-gate handling independent
+ * and preserve their event order.
  */
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -34,7 +26,6 @@ const ASK: ZombieCandidateQuestion = {
 	created_at: agedSqliteUtc(),
 };
 
-/** A zombie gate in the Z1 shape: no session, no CommDB row, chronology n/a. */
 const GATE: ZombieCandidateQuestion = {
 	id: "q-gate",
 	from_agent: RUNNER,
@@ -42,17 +33,14 @@ const GATE: ZombieCandidateQuestion = {
 	created_at: agedSqliteUtc(),
 };
 
-function harness(
-	env: Record<string, string | undefined>,
-	resolveDeadGates = true,
-) {
+function harness(resolveDeadGates = true) {
 	const events: string[] = [];
 	const retire = vi.fn().mockReturnValue(true);
 	const deps = {
 		store: {
 			getSession: vi.fn().mockReturnValue(undefined),
-			insertEvent: vi.fn((e) => {
-				events.push(e.event_type);
+			insertEvent: vi.fn((event) => {
+				events.push(event.event_type);
 				return true;
 			}),
 			getEventsByType: vi.fn().mockReturnValue([]),
@@ -67,53 +55,27 @@ function harness(
 			getMessageById: vi.fn().mockReturnValue({ id: "q" }),
 			isQuestionPending: vi.fn().mockReturnValue(false),
 		},
-		env,
 		resolveDeadGates,
 	} as unknown as ZombieGateHygieneDeps;
 	return { deps, events, retire };
 }
 
-describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
-	it("ASK=0 + Z1 audit replay: the gate branch runs and the ask is untouched", async () => {
-		const h = harness({ FLYWHEEL_ASK_HYGIENE: "0" });
+describe("FLY-1328 unconditional ASK hygiene", () => {
+	it("runs the ask sweep without a gate intent under production Z1 policy", async () => {
+		const h = harness(false);
 		const result = await runZombieGateHygiene(h.deps);
 
-		// Positive control: the zombie gate path still fires on this same input, so
-		// "the ask was skipped" below means the ask branch was skipped — not that
-		// the harness failed to produce a candidate at all.
-		expect(result.resolved).toEqual(["q-gate"]);
-		expect(h.events).toEqual([
-			"founder_gate_zombie_resolve_intent",
-			"founder_gate_zombie_resolved",
-		]);
-
-		expect(result.retiredAsks).toEqual([]);
-		expect(h.retire.mock.calls.filter(([id]) => id === "q-ask")).toEqual([]);
-		// The gate's own retire must NOT gain FLY-1328's provenance/retention.
-		expect(h.retire).toHaveBeenCalledWith("q-gate", {
-			expectedFromAgent: RUNNER,
-			requireUnanswered: true,
-		});
-	});
-
-	it("ASK on + production Z1 policy: the ask sweep runs without a gate intent", async () => {
-		const h = harness({}, false);
-		const result = await runZombieGateHygiene(h.deps);
-
-		// Positive control: the ask branch fires, so the gate silence below is a
-		// real kill-switch effect on a live pass.
 		expect(result.retiredAsks).toEqual(["q-ask"]);
+		expect(result.resolved).toEqual([]);
 		expect(h.events).toEqual([
 			"ask_hygiene_retire_intent",
 			"ask_hygiene_retired",
 		]);
-
-		expect(result.resolved).toEqual([]);
 		expect(h.retire.mock.calls.filter(([id]) => id === "q-gate")).toEqual([]);
 	});
 
-	it("ASK and Z1 audit replay each handle their own candidate", async () => {
-		const h = harness({});
+	it("handles ASK and gate candidates independently in event order", async () => {
+		const h = harness();
 		const result = await runZombieGateHygiene(h.deps);
 
 		expect(result.retiredAsks).toEqual(["q-ask"]);
@@ -124,14 +86,5 @@ describe("FLY-1328 flag matrix (ASK × ZOMBIE)", () => {
 			"founder_gate_zombie_resolve_intent",
 			"founder_gate_zombie_resolved",
 		]);
-	});
-
-	it("ASK off + production Z1 policy writes nothing", async () => {
-		const h = harness({ FLYWHEEL_ASK_HYGIENE: "0" }, false);
-		const result = await runZombieGateHygiene(h.deps);
-
-		expect(result).toEqual({ resolved: [], unreachable: [], retiredAsks: [] });
-		expect(h.events).toEqual([]);
-		expect(h.retire).not.toHaveBeenCalled();
 	});
 });

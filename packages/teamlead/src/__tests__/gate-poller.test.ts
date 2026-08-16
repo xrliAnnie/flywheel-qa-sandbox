@@ -771,7 +771,6 @@ describe("GatePoller (FLY-161)", () => {
 	});
 
 	it("FLY-1570: production wrapper never retires terminal gates", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
 		insertSession("exec-chronology", {
 			status: "blocked",
 			labels: ["product"],
@@ -814,7 +813,6 @@ describe("GatePoller (FLY-161)", () => {
 		).zombieGateHygienePass();
 
 		expect(pendingFor("product-lead")).toHaveLength(1);
-		delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 	});
 
 	// FLY-1257 defect ④ (Codex R5 HIGH) through the REAL wrapper: same terminal
@@ -823,7 +821,6 @@ describe("GatePoller (FLY-161)", () => {
 	// reviewer — not the gone author — answers it, so Z1 must never retire it.
 	// Drop the isReviewGateCheckpoint exemption and this goes red (length 0).
 	it("FLY-1257 defect ④: a review_code gate is NOT retired by the zombie pass (Z1 exemption, real wrapper)", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
 		insertSession("exec-review-z1", {
 			status: "blocked",
 			labels: ["product"],
@@ -866,6 +863,5 @@ describe("GatePoller (FLY-161)", () => {
 		const pending = pendingFor("product-lead") as Array<{ id: string }>;
 		expect(pending).toHaveLength(1);
 		expect(pending[0]?.id).toBe(qid);
-		delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 	});
 });

@@ -1,18 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-	livenessAlertsEnabled,
-	qaStallInboxLoopLead,
-} from "../liveness-manifest.js";
+import { qaStallInboxLoopLead } from "../liveness-manifest.js";
 
 describe("FLY-1393 minimum-set policy", () => {
-	it("keeps only the stale-approved-ship alert lane switchable", () => {
-		expect(livenessAlertsEnabled({})).toBe(true);
-
-		expect(livenessAlertsEnabled({ FLYWHEEL_LIVENESS_ALERTS: "0" })).toBe(
-			false,
-		);
-	});
-
 	it("enables the destructive inbox-loop stall seam only under an isolated comm root", () => {
 		const target = "flywheel-eng-lead";
 		expect(

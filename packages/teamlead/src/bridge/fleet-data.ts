@@ -27,7 +27,6 @@ import { join } from "node:path";
 import {
 	type CarrierEvidenceEntry,
 	processAliveWithStart as defaultProcessAliveWithStart,
-	LeadLeaseModeStore,
 	readCarrierRuntimeAssertion,
 	writeCarrierAuthorizationEvidenceSnapshot,
 } from "flywheel-comm/lead-lease";
@@ -736,14 +735,6 @@ export interface FleetPollerOptions {
 	processAliveWithStart?: (pid: number, lstart: string) => boolean;
 }
 
-function carrierEvidenceEnabled(env: NodeJS.ProcessEnv): boolean {
-	if (env.FLYWHEEL_DUAL_ACTIVE_SCAN !== "0") return true;
-	const modePath =
-		env.FLYWHEEL_LEAD_LEASE_MODE_FILE ??
-		join(homedir(), ".flywheel", "lead-lease-mode.json");
-	return new LeadLeaseModeStore(modePath, env).read().mode !== "off";
-}
-
 /**
  * Aggregate generation-bound runtime assertions into one fresh authorization
  * snapshot. Assertion wall-clock age is intentionally not an expiry signal:
@@ -837,10 +828,7 @@ export class FleetPoller {
 				this.opts.deps,
 				state,
 			);
-			if (
-				this.opts.carrierEnv &&
-				carrierEvidenceEnabled(this.opts.carrierEnv)
-			) {
+			if (this.opts.carrierEnv) {
 				materializeCarrierAuthorizationEvidence({
 					projects,
 					legacyBackendOf: this.opts.legacyBackendOf,

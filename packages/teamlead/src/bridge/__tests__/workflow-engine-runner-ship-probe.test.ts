@@ -222,7 +222,6 @@ function dispatcher(store: StateStore, shipReadyArm: WorkflowShipReadyArm) {
 		stateRoot: mkdtempSync(join(tmpdir(), "fly1624-dispatcher-")),
 		env: {
 			...engineFlags,
-			FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			FLYWHEEL_SHIP_READY_NOTIFY: "0",
 		},
 		now: () => new Date(NOW),

@@ -99,7 +99,7 @@ describe("feature-flag drift guard", () => {
 		const found = scanFlywheelEnvNames();
 		expect(found.size).toBeGreaterThan(5);
 		// a known gate read via direct process.env access
-		expect(found.has("FLYWHEEL_FLEET_CONSOLE")).toBe(true);
+		expect(found.has("FLYWHEEL_HEARTBEAT_READOPT")).toBe(true);
 	});
 
 	it("every registered env flag is read where its readSite file claims", () => {

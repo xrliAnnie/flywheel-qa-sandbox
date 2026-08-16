@@ -709,7 +709,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 		role: string;
 		leadId?: string;
 	}): Promise<void> {
-		if (!this.doaBackoffAdmission || process.env.FLYWHEEL_DOA_BACKOFF === "0") {
+		if (!this.doaBackoffAdmission) {
 			return;
 		}
 		const result = await this.doaBackoffAdmission(input);
@@ -1520,8 +1520,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		let continuityBranch: string | undefined;
 		let skippedOriginTip: string | undefined;
 		if (
-			(process.env.FLYWHEEL_CONTINUITY_PREFLIGHT !== "0" ||
-				req.freshStart !== undefined) &&
 			!req.startPoint &&
 			!req.qaContext &&
 			!resume &&

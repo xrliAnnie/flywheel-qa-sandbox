@@ -139,14 +139,13 @@ Commands:
             --html <file> --project <name> [--title <t>]
             [--channel <id> | --issue <FLY-123>]
             [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
-            Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
-            FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
+            Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN. Always prints a one-line
             JSON envelope to stdout.
   feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
             report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
             Bridge loopback endpoint and deliver via publish-report (hosted URL
-            + Discord). Honors FLYWHEEL_REMOTE_REPORTS=0.
+            + Discord).
             apply --name <flag> --to on|off [--bridge-url <url>]  — the command
             the founder pastes to the Lead (copy-paste-apply); stage→apply a
             direct-toggle flag on the loopback Bridge routes.

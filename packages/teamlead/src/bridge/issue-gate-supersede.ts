@@ -162,12 +162,6 @@ export function sweepIssueGatesForProject(args: {
 		const issueId = key.slice(0, key.indexOf("\u0000"));
 		for (const row of group.slice(0, -1)) {
 			if (row.pending !== 1) continue;
-			if (
-				row.checkpoint === "approve_to_ship" &&
-				args.env.FLYWHEEL_SHIP_GATE_RETIRE === "0"
-			) {
-				continue;
-			}
 			candidates.push({ row, supersessor, issueId });
 		}
 	}

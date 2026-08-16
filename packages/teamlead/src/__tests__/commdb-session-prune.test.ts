@@ -19,11 +19,8 @@ describe("commdb-session-prune (FLY-638)", () => {
 	let dir: string;
 	let dbPath: string;
 	let db: CommDB;
-	let previousProtection: string | undefined;
 
 	beforeEach(() => {
-		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
-		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
 		dir = mkdtempSync(join(tmpdir(), "fly638-prune-"));
 		dbPath = join(dir, "comm.db");
 		db = new CommDB(dbPath);
@@ -31,11 +28,6 @@ describe("commdb-session-prune (FLY-638)", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(dir, { recursive: true, force: true });
-		if (previousProtection === undefined) {
-			delete process.env.FLYWHEEL_COMMDB_PROTECTION;
-		} else {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = previousProtection;
-		}
 	});
 
 	function seed(
@@ -98,22 +90,6 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.listRunnerPhaseWakes("e1")).toEqual([]);
 			expect(db.getRunnerShutdown("e1")).toBeNull();
 			expect(db.getMessageById(qid)?.relay_state).toBe("terminal_disposed");
-		});
-
-		it("preserves legacy gate retirement when protection is explicitly off", () => {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
-			seed("e1", "completed");
-			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
-				checkpoint: "approve_to_ship",
-			});
-			expect(finalizeCommDbSession("e1", "flywheel", dbPath)).toEqual({
-				ok: true,
-				outcome: "finalized",
-				retiredGateCount: 1,
-				retiredAskCount: 0,
-				deletedSessionCount: 1,
-			});
-			expect(db.isQuestionPending(qid)).toBe(false);
 		});
 
 		it("is an explicit successful no-op when the DB is absent", () => {

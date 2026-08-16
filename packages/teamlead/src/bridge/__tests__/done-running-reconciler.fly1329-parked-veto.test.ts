@@ -119,26 +119,6 @@ describe("FLY-1329 A5: FLY-324 boot sweep respects a park declaration", () => {
 		expect(store.getSession("unknowable")!.status).toBe("running");
 	});
 
-	it("kill-switch FLYWHEEL_PRUNE_PARK_GUARD=0 restores the un-vetoed sweep", () => {
-		const prev = process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-		process.env.FLYWHEEL_PRUNE_PARK_GUARD = "0";
-		try {
-			seedZombie("killswitch");
-
-			const result = reconcileDoneButRunning(store, transitionOpts, {
-				markerDir,
-				isParked: vi.fn(() => true),
-			});
-
-			expect(result.reconciled).toBe(1);
-			expect(result.parkedVetoed).toBe(0);
-			expect(store.getSession("killswitch")!.status).toBe("completed");
-		} finally {
-			if (prev === undefined) delete process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-			else process.env.FLYWHEEL_PRUNE_PARK_GUARD = prev;
-		}
-	});
-
 	it("the Lead env exclude list still wins before any park lookup", () => {
 		seedZombie("excluded", "FLY-999");
 		const isParked = vi.fn(() => false);

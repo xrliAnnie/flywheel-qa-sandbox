@@ -4,7 +4,7 @@
  * TmuxRunner seam so no real tmux server is needed; the real-tmux happy path is
  * covered in tmux-lookup.real-tmux.test.ts.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
 	buildAttachCommand,
 	killCmuxLinkedSession,
@@ -130,94 +130,9 @@ describe("buildAttachCommand", () => {
 	});
 });
 
-// ── FLY-638: killCmuxLinkedSession ──────────────────────────────────────────
+// ── FLY-638: canonical cmux views are never name-killed ─────────────────────
 describe("killCmuxLinkedSession", () => {
-	beforeEach(() => {
-		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
-		vi.stubEnv("FLYWHEEL_CMUX_STRICT_VIEW", "0");
-	});
-	afterEach(() => {
-		vi.unstubAllEnvs();
-	});
-	it("resolves window_name then kills cmux-<name> by EXACT (=) match", async () => {
-		const calls: string[][] = [];
-		const runner: TmuxRunner = async (args) => {
-			calls.push(args);
-			if (args[0] === "display-message") {
-				return { stdout: "FLY-638-claude-cleanup\n" };
-			}
-			return { stdout: "" }; // kill-session ok
-		};
-		const res = await killCmuxLinkedSession("runner-flywheel:@46", runner);
-		expect(res).toEqual({
-			killed: true,
-			cmuxSession: "cmux-FLY-638-claude-cleanup",
-		});
-		// display-message reads the window_name from the FULL window target.
-		expect(calls[0]).toEqual([
-			"display-message",
-			"-p",
-			"-t",
-			"runner-flywheel:@46",
-			"#{window_name}",
-		]);
-		// kill-session uses the EXACT (=) name (cmux-sync convention).
-		expect(calls[1]).toEqual([
-			"kill-session",
-			"-t",
-			"=cmux-FLY-638-claude-cleanup",
-		]);
-	});
-
-	it("is benign success when the window is already gone (display-message absent)", async () => {
-		const runner: TmuxRunner = async () => {
-			throw new Error("can't find window: runner-flywheel:@99");
-		};
-		const res = await killCmuxLinkedSession("runner-flywheel:@99", runner);
-		expect(res).toEqual({ killed: true });
-	});
-
-	it("is benign success when the cmux session is already gone (kill-session absent)", async () => {
-		const runner: TmuxRunner = async (args) => {
-			if (args[0] === "display-message") return { stdout: "FLY-638-x" };
-			throw new Error("can't find session: cmux-FLY-638-x");
-		};
-		const res = await killCmuxLinkedSession("base:@1", runner);
-		expect(res).toEqual({ killed: true, cmuxSession: "cmux-FLY-638-x" });
-	});
-
-	it("surfaces a real (non-absence) kill error without throwing", async () => {
-		const runner: TmuxRunner = async (args) => {
-			if (args[0] === "display-message") return { stdout: "FLY-638-x" };
-			throw new Error("permission denied");
-		};
-		const res = await killCmuxLinkedSession("base:@1", runner);
-		expect(res).toEqual({
-			killed: false,
-			cmuxSession: "cmux-FLY-638-x",
-			error: "permission denied",
-		});
-	});
-
-	it("does nothing to kill when window_name resolves empty", async () => {
-		const calls: string[][] = [];
-		const runner: TmuxRunner = async (args) => {
-			calls.push(args);
-			return { stdout: "   \n" };
-		};
-		const res = await killCmuxLinkedSession("base:@1", runner);
-		expect(res).toEqual({ killed: true });
-		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
-	});
-});
-
-describe("killCmuxLinkedSession linked-view mode", () => {
-	afterEach(() => {
-		vi.unstubAllEnvs();
-	});
-
-	it("defaults on and never name-kills a resolved canonical view", async () => {
-		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
+	it("never name-kills a resolved canonical view", async () => {
 		const calls: string[][] = [];
 		const runner: TmuxRunner = async (args) => {
 			calls.push(args);
@@ -233,55 +148,12 @@ describe("killCmuxLinkedSession linked-view mode", () => {
 		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
 	});
 
-	it("preserves an A0B1 canonical view because B keeps strict lifetime binding active", async () => {
-		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
-		vi.stubEnv("FLYWHEEL_CMUX_VIEW_INVARIANT", "1");
-		const calls: string[][] = [];
-		const runner: TmuxRunner = async (args) => {
-			calls.push(args);
-			return { stdout: "FLY-1364-implement\n" };
-		};
-		const res = await killCmuxLinkedSession("runner-flywheel:@42", runner);
-		expect(res).toEqual({
-			killed: true,
-			viewSkipped: true,
-			cmuxSession: "cmux-FLY-1364-implement",
-		});
-		expect(calls.some((c) => c[0] === "kill-session")).toBe(false);
-	});
-
-	it("allows the grouped-view kill path when the explicit strict rollback is off", async () => {
-		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "0");
-		vi.stubEnv("FLYWHEEL_CMUX_VIEW_INVARIANT", "1");
-		vi.stubEnv("FLYWHEEL_CMUX_STRICT_VIEW", "0");
-		const calls: string[][] = [];
-		const runner: TmuxRunner = async (args) => {
-			calls.push(args);
-			if (args[0] === "display-message") {
-				return { stdout: "FLY-1364-implement\n" };
-			}
-			return { stdout: "" };
-		};
-		await expect(
-			killCmuxLinkedSession("runner-flywheel:@42", runner),
-		).resolves.toEqual({
-			killed: true,
-			cmuxSession: "cmux-FLY-1364-implement",
-		});
-		expect(calls).toContainEqual([
-			"kill-session",
-			"-t",
-			"=cmux-FLY-1364-implement",
-		]);
-	});
-
 	it.each([
 		["missing window", new Error("can't find window"), "can't find window"],
 		["probe failure", new Error("permission denied"), "permission denied"],
 	])(
 		"permits lifecycle and remains non-destructive on %s",
 		async (_label, error, message) => {
-			vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
 			const calls: string[][] = [];
 			const runner: TmuxRunner = async (args) => {
 				calls.push(args);
@@ -299,7 +171,6 @@ describe("killCmuxLinkedSession linked-view mode", () => {
 	);
 
 	it("treats an empty resolved name as a safe skip", async () => {
-		vi.stubEnv("FLYWHEEL_CMUX_LINKED_VIEW", "1");
 		const calls: string[][] = [];
 		const runner: TmuxRunner = async (args) => {
 			calls.push(args);

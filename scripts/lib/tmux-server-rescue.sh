@@ -516,14 +516,6 @@ _tmux_rescue_validate_argv() {
   [ "$saw_socket" = true ]
 }
 
-_tmux_rescue_keepalive_enabled() {
-  case "${FLYWHEEL_TMUX_KEEPALIVE:-1}" in
-    0) return 1 ;;
-    1|'') return 0 ;;
-    *) return 0 ;;
-  esac
-}
-
 _tmux_rescue_policy_alert() {
   local socket_path="$1" reason="$2" lock_hash
   lock_hash="$(_tmux_rescue_lock_hash "$socket_path" 2>/dev/null || printf unknown)"
@@ -548,7 +540,6 @@ _tmux_rescue_policy_postcondition() {
   # idempotent, then prove the same generation and both postconditions.
   local socket_path="$1" before verdict before_pid after after_verdict after_pid
   local command_timeout output rc reason
-  _TMUX_RESCUE_POLICY_RESULT=""
   _TMUX_RESCUE_POLICY_FAILURE_REASON=""
   _TMUX_RESCUE_POLICY_REACHABLE_PID=""
   _tmux_rescue_prepare_runtime
@@ -561,12 +552,6 @@ _tmux_rescue_policy_postcondition() {
       || [ "$before_pid" = "null" ]; then
     _tmux_rescue_policy_fail "$socket_path" policy_server_unreachable
     return $?
-  fi
-
-  if ! _tmux_rescue_keepalive_enabled; then
-    _TMUX_RESCUE_POLICY_RESULT=disabled
-    _TMUX_RESCUE_POLICY_REACHABLE_PID="$before_pid"
-    return 0
   fi
 
   _tmux_rescue_bounded_exec "$command_timeout" \
@@ -635,7 +620,6 @@ _tmux_rescue_policy_postcondition() {
     return $?
   fi
 
-  _TMUX_RESCUE_POLICY_RESULT=enforced
   _TMUX_RESCUE_POLICY_REACHABLE_PID="$after_pid"
   return 0
 }
@@ -664,10 +648,7 @@ _tmux_socket_policy_enforce_locked() {
       "$(_tmux_rescue_json_escape "${_TMUX_RESCUE_POLICY_FAILURE_REASON:-policy_postcondition_failed}")"
     return "$rc"
   fi
-  case "${_TMUX_RESCUE_POLICY_RESULT:-}" in
-    disabled) printf '{"action":"policy_disabled","reachablePid":%s}\n' "$_TMUX_RESCUE_POLICY_REACHABLE_PID" ;;
-    *) printf '{"action":"policy_enforced","reachablePid":%s}\n' "$_TMUX_RESCUE_POLICY_REACHABLE_PID" ;;
-  esac
+  printf '{"action":"policy_enforced","reachablePid":%s}\n' "$_TMUX_RESCUE_POLICY_REACHABLE_PID"
   return 0
 }
 

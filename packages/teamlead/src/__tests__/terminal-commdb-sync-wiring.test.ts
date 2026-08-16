@@ -50,7 +50,7 @@ describe("FLY-1066 terminal CommDB sync production inventory", () => {
 		);
 	});
 
-	it("warms before enablement, threads marker callbacks, and drains on shutdown", () => {
+	it("warms before use, threads marker callbacks, and drains on shutdown", () => {
 		const here = dirname(fileURLToPath(import.meta.url));
 		const plugin = readFileSync(
 			join(here, "..", "bridge", "plugin.ts"),
@@ -58,7 +58,7 @@ describe("FLY-1066 terminal CommDB sync production inventory", () => {
 		);
 
 		expect(plugin).toContain(
-			'process.env.FLYWHEEL_TERMINAL_COMMDB_SYNC !== "0"',
+			"const terminalCommDbSync = createTerminalCommDbSync({",
 		);
 		expect(plugin).toContain("await terminalCommDbSync.warmProjects(");
 		expect(

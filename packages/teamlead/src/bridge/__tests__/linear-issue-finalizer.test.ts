@@ -138,19 +138,10 @@ describe("markLinearIssueDone", () => {
 });
 
 describe("makeLinearDoneFinalizer — gating", () => {
-	afterEach(() => {
-		delete process.env.FLYWHEEL_AUTO_LINEAR_DONE;
-	});
-
 	it("default-ON with an api key → returns a closure", () => {
 		expect(makeLinearDoneFinalizer({ linearApiKey: "k" })).toBeInstanceOf(
 			Function,
 		);
-	});
-
-	it("kill-switch FLYWHEEL_AUTO_LINEAR_DONE=0 → undefined (byte-compat skip)", () => {
-		process.env.FLYWHEEL_AUTO_LINEAR_DONE = "0";
-		expect(makeLinearDoneFinalizer({ linearApiKey: "k" })).toBeUndefined();
 	});
 
 	it("no api key → undefined (no client, no-op)", () => {

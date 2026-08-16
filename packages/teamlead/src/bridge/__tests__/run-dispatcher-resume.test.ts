@@ -282,12 +282,6 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		});
 		await dispatcher.drain();
 		expect(doaBackoffAdmission).not.toHaveBeenCalled();
-
-		vi.stubEnv("FLYWHEEL_DOA_BACKOFF", "0");
-		const killed = makeDispatcher({ doaBackoffAdmission });
-		await killed.start({ issueId: "other", projectName: "proj" });
-		await killed.drain();
-		expect(doaBackoffAdmission).not.toHaveBeenCalled();
 	});
 
 	it("releases a reserved lane when continuity fails before lifecycle admission", async () => {
@@ -358,16 +352,6 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		await dispatcher.drain();
 		expect(continuityComputer).not.toHaveBeenCalled();
 		expect(captured?.startPoint).toBe(RESUME.startPoint);
-	});
-
-	it("kill switch restores the old fresh path without probing origin", async () => {
-		vi.stubEnv("FLYWHEEL_CONTINUITY_PREFLIGHT", "0");
-		const continuityComputer = vi.fn<ContinuityComputer>();
-		const dispatcher = makeDispatcher({ continuityComputer });
-		await dispatcher.start({ issueId: "issue-uuid", projectName: "proj" });
-		await dispatcher.drain();
-		expect(continuityComputer).not.toHaveBeenCalled();
-		expect(captured?.startPoint).toBeUndefined();
 	});
 
 	it("an authenticated fresh-start override skips the preserved tip only after durable audit", async () => {

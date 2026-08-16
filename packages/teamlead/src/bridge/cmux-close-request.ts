@@ -19,9 +19,8 @@
  * mis-closed).
  *
  * Contract: best-effort. It MUST NOT throw and MUST NOT block or fail the
- * close — any failure just falls back to the existing FLY-293 reaper. Gated by
- * `FLYWHEEL_CMUX_CLOSE_REQUEST` (default on; `=0` disables → byte-compatible
- * with the pre-FLY-685 behavior). The file path is `FLYWHEEL_CMUX_CLOSE_REQUEST_FILE`
+ * close — any failure just falls back to the existing FLY-293 reaper. The file
+ * path is `FLYWHEEL_CMUX_CLOSE_REQUEST_FILE`
  * (default `/tmp/flywheel-cmux-close-requested`); the watcher reads the same env.
  */
 
@@ -40,7 +39,6 @@ const MAX_WINDOW_NAME_LEN = 200;
  * closes the matching workspace pin on its next tick.
  *
  * Best-effort and defensive:
- * - `FLYWHEEL_CMUX_CLOSE_REQUEST === "0"` → no-op (kill-switch, byte-compat).
  * - Rejects empty / whitespace-only / overlong names, and any name containing a
  *   newline or tab (the marker file is line-based; those would corrupt it —
  *   mirrors the watcher's own defensive input handling).
@@ -48,8 +46,6 @@ const MAX_WINDOW_NAME_LEN = 200;
  *   reaper remains the backstop).
  */
 export function requestCmuxPinClose(windowName: string): void {
-	if (process.env.FLYWHEEL_CMUX_CLOSE_REQUEST === "0") return;
-
 	const name = typeof windowName === "string" ? windowName.trim() : "";
 	if (
 		name.length === 0 ||

@@ -30,20 +30,6 @@ describe("flywheel-comm feature-flags report", () => {
 		);
 	});
 
-	it("FLYWHEEL_REMOTE_REPORTS=0 → skipped, no fetch/publish", async () => {
-		const fetchFn = vi.fn();
-		const publish = vi.fn();
-		const deps = baseDeps({
-			env: { FLYWHEEL_REMOTE_REPORTS: "0" },
-			fetchFn,
-			publish,
-		});
-		await runFeatureFlags(["report"], deps);
-		expect(fetchFn).not.toHaveBeenCalled();
-		expect(publish).not.toHaveBeenCalled();
-		expect(deps.log).toHaveBeenCalledWith(expect.stringContaining("skipped"));
-	});
-
 	it("happy path: fetches loopback report → writes → publishes", async () => {
 		const publish = vi.fn(async () => 0);
 		const writeFile = vi.fn();

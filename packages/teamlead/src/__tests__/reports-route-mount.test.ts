@@ -107,9 +107,7 @@ describe("/api/reports mount (plugin layer)", () => {
 		store = await StateStore.create(":memory:");
 		reportsDir = mkdtempSync(join(tmpdir(), "fly203-mount-"));
 		envBackup.FLYWHEEL_REPORTS_DIR = process.env.FLYWHEEL_REPORTS_DIR;
-		envBackup.FLYWHEEL_REMOTE_REPORTS = process.env.FLYWHEEL_REMOTE_REPORTS;
 		process.env.FLYWHEEL_REPORTS_DIR = reportsDir;
-		delete process.env.FLYWHEEL_REMOTE_REPORTS;
 	});
 
 	afterEach(() => {
@@ -253,19 +251,6 @@ describe("/api/reports mount (plugin layer)", () => {
 		);
 		expect(gemini.status).toBe(401);
 		expect(forged.status).toBe(403);
-	});
-
-	it("FLYWHEEL_REMOTE_REPORTS=0 → 503 even with good token", async () => {
-		process.env.FLYWHEEL_REMOTE_REPORTS = "0";
-		const app = makeApp({ apiToken: "secret" });
-		const res = await makeRequest(
-			app,
-			"/api/reports/deliver",
-			{ url: "https://x", projectName: "p" },
-			{ Authorization: "Bearer secret" },
-		);
-		expect(res.status).toBe(503);
-		expect(JSON.parse(res.body).error).toContain("disabled");
 	});
 
 	it("FLY-1715: lead-inbox nudge accepts master or ingest while other APIs remain master-only", async () => {

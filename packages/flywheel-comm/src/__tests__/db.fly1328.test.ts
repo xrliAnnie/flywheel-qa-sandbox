@@ -5,10 +5,8 @@
  * / Linear / MCP but never the CommDB ask queue, so a closed runner's asks sat
  * in the Lead's `pending` list forever and drowned live ones.
  *
- * Reverse-compat discipline (FLY-1281/1285): every `FLYWHEEL_ASK_HYGIENE=0`
- * assertion here is paired with a mutation control proving the flag-on path
- * really differs — a sentinel that passes with the feature disabled proves
- * nothing.
+ * Closing a runner permanently retires its aged asks while preserving the
+ * delivery grace window and review-gate ownership rules.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -51,14 +49,8 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 	let db: CommDB;
 	let tmpDir: string;
 	let dbPath: string;
-	let previousProtection: string | undefined;
-	let previousAskHygiene: string | undefined;
 
 	beforeEach(() => {
-		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
-		previousAskHygiene = process.env.FLYWHEEL_ASK_HYGIENE;
-		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
-		delete process.env.FLYWHEEL_ASK_HYGIENE;
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-fly1328-db-"));
 		dbPath = join(tmpDir, "comm.db");
 		db = new CommDB(dbPath);
@@ -71,13 +63,6 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 			// already closed by a test that reopens
 		}
 		rmSync(tmpDir, { recursive: true, force: true });
-		for (const [key, value] of [
-			["FLYWHEEL_COMMDB_PROTECTION", previousProtection],
-			["FLYWHEEL_ASK_HYGIENE", previousAskHygiene],
-		] as const) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
 	});
 
 	// ── T1: migration ────────────────────────────────────────────────────────
@@ -158,8 +143,7 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		}
 	});
 
-	it("T2b: protection ON keeps the retired ask alive for a 1h forensic window, then purges it", () => {
-		process.env.FLYWHEEL_COMMDB_PROTECTION = "1";
+	it("T2b: keeps the retired ask alive for a 1h forensic window, then purges it", () => {
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1328", "lead");
 		const ask = db.insertQuestion("exec-a", "lead", "which approach?");
 		backdate(dbPath, ask, "-16 minutes");
@@ -189,21 +173,6 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		afterTtl.close();
 		expect(readRow(dbPath, ask)).toBeUndefined();
 		db = new CommDB(dbPath);
-	});
-
-	it("T8: protection OFF expires the retired ask immediately (legacy pending semantics)", () => {
-		process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
-		db.registerSession("exec-a", "window-a", "proj", "FLY-1328", "lead");
-		const aged = db.insertQuestion("exec-a", "lead", "aged ask");
-		const fresh = db.insertQuestion("exec-a", "lead", "fresh ask");
-		backdate(dbPath, aged, "-16 minutes");
-
-		expect(db.finalizeSession("exec-a").retiredAskCount).toBe(1);
-		// Legacy pending filters on expires_at > now, so the row must leave the
-		// queue by expiring — not by relay_state.
-		expect(expiresAtMs(dbPath, aged) - Date.now()).toBeLessThanOrEqual(1000);
-		expect(db.isQuestionPending(aged)).toBe(false);
-		expect(db.isQuestionPending(fresh)).toBe(true);
 	});
 
 	it("T3: spares asks inside the 15-minute delivery grace window", () => {
@@ -262,44 +231,5 @@ describe("FLY-1328 CommDB ask cascade on finalizeSession", () => {
 		expect(db.finalizeSession("exec-a").retiredAskCount).toBe(1);
 		expect(readRow(dbPath, theirs)?.relay_state).toBe("open");
 		expect(db.isQuestionPending(theirs)).toBe(true);
-	});
-
-	// ── T6: kill-switch, with the mutation control that makes it meaningful ──
-	it("T6: FLYWHEEL_ASK_HYGIENE=0 restores today's behavior field-for-field", () => {
-		// Control arm — flag default (ON): prove the feature really fires here,
-		// otherwise the OFF assertions below are vacuous.
-		db.registerSession("exec-on", "window-on", "proj", "FLY-1328", "lead");
-		const askOn = db.insertQuestion("exec-on", "lead", "ask");
-		const gateOn = db.insertQuestion("exec-on", "lead", "design?", {
-			checkpoint: "brainstorm",
-		});
-		backdate(dbPath, askOn, "-16 minutes");
-		backdate(dbPath, gateOn, "-16 minutes");
-		const on = db.finalizeSession("exec-on");
-		expect(on.retiredAskCount).toBe(1);
-		expect(readRow(dbPath, askOn)?.relay_state).toBe("terminal_disposed");
-		expect(readRow(dbPath, gateOn)?.resolved_via).toBe("owner_closed");
-
-		// Experimental arm — flag OFF: the ask is untouched and the gate row is
-		// byte-identical to the pre-FLY-1328 world (resolved_via stays NULL).
-		process.env.FLYWHEEL_ASK_HYGIENE = "0";
-		db.registerSession("exec-off", "window-off", "proj", "FLY-1328", "lead");
-		const askOff = db.insertQuestion("exec-off", "lead", "ask");
-		const gateOff = db.insertQuestion("exec-off", "lead", "design?", {
-			checkpoint: "brainstorm",
-		});
-		backdate(dbPath, askOff, "-16 minutes");
-		backdate(dbPath, gateOff, "-16 minutes");
-		const askBefore = readRow(dbPath, askOff);
-
-		const off = db.finalizeSession("exec-off");
-		expect(off.retiredAskCount).toBe(0);
-		expect(off.retiredQuestionCount).toBe(1);
-		expect(readRow(dbPath, askOff)).toEqual(askBefore);
-		expect(db.isQuestionPending(askOff)).toBe(true);
-
-		const gateRow = readRow(dbPath, gateOff);
-		expect(gateRow?.relay_state).toBe("terminal_disposed");
-		expect(gateRow?.resolved_via).toBeNull();
 	});
 });

@@ -958,7 +958,6 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 	let dir: string;
 	let markerFile: string;
 	const prevFile = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
-	const prevSwitch = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
@@ -968,7 +967,6 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 		dir = mkdtempSync(join(tmpdir(), "fly685-close-"));
 		markerFile = join(dir, "close-requested");
 		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = markerFile;
-		delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
 		mockGetTmuxTarget.mockReturnValue({
 			tmuxWindow: "runner-flywheel:@46",
 			sessionName: "runner-flywheel",
@@ -980,9 +978,6 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 		if (prevFile === undefined)
 			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
 		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = prevFile;
-		if (prevSwitch === undefined)
-			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
-		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = prevSwitch;
 		// restore the shared mock's default resolution for the rest of the suite
 		mockKillCmuxLinkedSession.mockResolvedValue({ killed: true });
 	});
@@ -1031,26 +1026,6 @@ describe("closeRunner — FLY-685 cmux pin marker", () => {
 
 		await closeRunner(makeOpts(), store);
 
-		expect(existsSync(markerFile)).toBe(false);
-	});
-
-	it("does NOT write when the kill-switch is off (byte-compat)", async () => {
-		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = "0";
-		seedSession(store, "completed");
-		mockKillCmuxLinkedSession.mockResolvedValue({
-			killed: true,
-			cmuxSession: "cmux-FLY-102-claude-x",
-		});
-		mockKillTmuxWindow.mockResolvedValue({ killed: true });
-
-		const result = await closeRunner(makeOpts(), store);
-
-		expect(result).toEqual({
-			closed: true,
-			commDbFinalized: true,
-			retiredGateCount: 2,
-			error: undefined,
-		});
 		expect(existsSync(markerFile)).toBe(false);
 	});
 

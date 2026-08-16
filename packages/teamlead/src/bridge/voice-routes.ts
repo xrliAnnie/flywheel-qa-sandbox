@@ -335,12 +335,6 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 				res.status(403).json({ error: "disabled_by_kill_switch" });
 				return;
 			}
-			// ② the master founder-auto-approve switch outranks the voice source.
-			if (env().FLYWHEEL_FOUNDER_AUTO_APPROVE === "0") {
-				res.status(403).json({ error: "founder_auto_approve_disabled" });
-				return;
-			}
-
 			const body = (req.body ?? {}) as {
 				gateMessageId?: string;
 				questionId?: string;

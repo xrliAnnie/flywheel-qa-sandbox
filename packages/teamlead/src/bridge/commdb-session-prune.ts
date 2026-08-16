@@ -170,8 +170,6 @@ export async function pruneDeadTerminalCommDbSessions(
 	const dbPath = opts.dbPath ?? resolveCommDbPath(projectName);
 	if (!dbPath) return result;
 	const probe = opts.probe ?? probeTmuxWindowLiveness;
-	// FLY-1329 (A4): kill-switch restores the pre-veto prune byte-for-byte.
-	const parkGuardOn = process.env.FLYWHEEL_PRUNE_PARK_GUARD !== "0";
 
 	let db: CommDB | undefined;
 	try {
@@ -212,25 +210,23 @@ export async function pruneDeadTerminalCommDbSessions(
 			// FLY-1319. An unexpired park declaration is the runner contradicting
 			// this reading, so it vetoes the delete. Fail-closed: a lookup that
 			// throws also keeps the row.
-			if (parkGuardOn) {
-				let parked: boolean;
-				try {
-					parked =
-						db.getEffectiveDeclaredState(s.execution_id, Date.now())?.kind ===
-						"parked";
-				} catch (err) {
-					parked = true;
-					console.warn(
-						`[commdb-prune] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
-					);
-				}
-				if (parked) {
-					result.parkedVetoed++;
-					console.log(
-						`[commdb-prune] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-					);
-					continue;
-				}
+			let parked: boolean;
+			try {
+				parked =
+					db.getEffectiveDeclaredState(s.execution_id, Date.now())?.kind ===
+					"parked";
+			} catch (err) {
+				parked = true;
+				console.warn(
+					`[commdb-prune] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
+				);
+			}
+			if (parked) {
+				result.parkedVetoed++;
+				console.log(
+					`[commdb-prune] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
+				);
+				continue;
 			}
 			try {
 				const guarded = db.finalizeSessionUnlessTurnHolder(s.execution_id);

@@ -89,7 +89,6 @@ echo "[TEST] policy-enforce keeps a server alive after its last business session
 SOCK_KEEP="$BASE/keepalive-on.sock"
 PID_KEEP="$(start_server "$SOCK_KEEP")"
 SPAWNED="$SPAWNED $PID_KEEP"
-export FLYWHEEL_TMUX_KEEPALIVE=1
 POLICY_KEEP="$(tmux_socket_policy_enforce "$SOCK_KEEP")"
 POLICY_KEEP_RC=$?
 PID_KEEP_AFTER_POLICY="$(server_pid_on "$SOCK_KEEP")"
@@ -107,33 +106,6 @@ if [ "$POLICY_KEEP_RC" -eq 0 ] \
 else
   fail "keepalive policy failed: rc=$POLICY_KEEP_RC out=$POLICY_KEEP pid=$PID_KEEP/$PID_KEEP_AFTER_POLICY/$PID_KEEP_AFTER_KILL option=$OPTION_KEEP"
 fi
-
-echo "[TEST] disabled policy leaves the historical exit-on-empty behavior untouched"
-SOCK_NO_KEEP="$BASE/keepalive-off.sock"
-PID_NO_KEEP="$(start_server "$SOCK_NO_KEEP")"
-SPAWNED="$SPAWNED $PID_NO_KEEP"
-export FLYWHEEL_TMUX_KEEPALIVE=0
-POLICY_NO_KEEP="$(tmux_socket_policy_enforce "$SOCK_NO_KEEP")"
-POLICY_NO_KEEP_RC=$?
-NO_KEEP_SENTINEL=0
-tmux -S "$SOCK_NO_KEEP" has-session -t =flywheel-keepalive 2>/dev/null \
-  && NO_KEEP_SENTINEL=1
-tmux -S "$SOCK_NO_KEEP" kill-session -t =live 2>/dev/null
-PID_NO_KEEP_AFTER=""
-for _ in $(seq 1 40); do
-  PID_NO_KEEP_AFTER="$(server_pid_on "$SOCK_NO_KEEP")"
-  [ -z "$PID_NO_KEEP_AFTER" ] && break
-  sleep 0.05
-done
-if [ "$POLICY_NO_KEEP_RC" -eq 0 ] \
-  && [ "$(_tmux_rescue_json_field "$POLICY_NO_KEEP" action)" = "policy_disabled" ] \
-  && [ "$NO_KEEP_SENTINEL" -eq 0 ] \
-  && [ -z "$PID_NO_KEEP_AFTER" ]; then
-  pass "kill-switch performs no persistent mutation and the empty server exits"
-else
-  fail "disabled policy changed old behavior: rc=$POLICY_NO_KEEP_RC out=$POLICY_NO_KEEP sentinel=$NO_KEEP_SENTINEL pid_after=$PID_NO_KEEP_AFTER"
-fi
-export FLYWHEEL_TMUX_KEEPALIVE=1
 
 echo "[TEST] a real daemonized tmux server is recognized as a server candidate"
 SOCK_A="$BASE/recognize.sock"

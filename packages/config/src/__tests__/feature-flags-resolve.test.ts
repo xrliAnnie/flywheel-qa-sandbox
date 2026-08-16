@@ -202,7 +202,7 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 
 	it.each([
 		["all call_time", spec("auto_qa_killswitch"), "bridge_stale"],
-		["boot-captured", spec("remote_reports"), "staged_restart"],
+		["boot-captured", spec("worktree_autoclean"), "staged_restart"],
 		[
 			"mixed dotenv-live",
 			{

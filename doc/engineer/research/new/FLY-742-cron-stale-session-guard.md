@@ -83,7 +83,7 @@ if (alreadyActive) {
 | 告警噪音(快 scheduler 每 tick 告警) | 按 `(exec_id, awaiting_review_entered_at)` 去重,一 park-incident 只报一次 |
 | 健康在跑的 running blocker 被误动 | classify 只对 park 态(awaiting_review/approved_to_ship)动作;running → block_silent(现状 in-flight guard 不变) |
 | thread archive churn(daily 复用 issue) | archive best-effort、跟随 completed 常规行为;若 churn → Codex/QA 阶段再收(记为 open question) |
-| 字节兼容 | 全程 kill-switch env(`FLYWHEEL_CRON_STALE_GUARD`,default-on 但可一键回退到纯静默 409) |
+| 字节兼容 | guard 未注入时回退到纯静默 409;生产 guard 已由 FLY-1807 固化开启 |
 
 ## 8. Open questions(带进 Codex design review)
 

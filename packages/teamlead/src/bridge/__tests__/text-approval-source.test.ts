@@ -8,7 +8,7 @@
  * through. The text signal always binds to the founder's OWN message id.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { evaluateTextSource } from "../approval-signal/text-approval-source.js";
 import type { GateBinding } from "../approval-signal/types.js";
 
@@ -199,10 +199,6 @@ describe("evaluateTextSource — explicit wrong-target fail-closed (Codex R1 HIG
 });
 
 describe("evaluateTextSource — tier2 prefix normalization wiring (FLY-1041 Fix C)", () => {
-	afterEach(() => {
-		delete process.env.FLYWHEEL_TIER2_PREFIX_NORM;
-	});
-
 	it("default ON: '嗯ship' hits Tier-2 deterministically (no classifier call)", async () => {
 		const classifyImpl = vi.fn();
 		const sig = await evaluateTextSource(
@@ -211,17 +207,6 @@ describe("evaluateTextSource — tier2 prefix normalization wiring (FLY-1041 Fix
 		);
 		expect(sig?.kind).toBe("approve");
 		expect(classifyImpl).not.toHaveBeenCalled();
-	});
-
-	it("FLYWHEEL_TIER2_PREFIX_NORM=0 (kill-switch): '嗯ship' falls to Tier-3 (byte-compat sentinel)", async () => {
-		process.env.FLYWHEEL_TIER2_PREFIX_NORM = "0";
-		const classifyImpl = vi.fn().mockResolvedValue({ kind: "unclear" });
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("嗯ship") },
-			{ classifyImpl },
-		);
-		expect(sig?.kind).toBe("unclear");
-		expect(classifyImpl).toHaveBeenCalledOnce();
 	});
 });
 

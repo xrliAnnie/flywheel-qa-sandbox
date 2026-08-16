@@ -140,11 +140,9 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		tmp = mkdtempSync(join(tmpdir(), "fly1041-sweeper-"));
 		dbPath = join(tmp, "comm.db");
 		insertedEvents = [];
-		delete process.env.FLYWHEEL_SHIP_GATE_RETIRE;
 	});
 
 	afterEach(() => {
-		delete process.env.FLYWHEEL_SHIP_GATE_RETIRE;
 		rmSync(tmp, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -290,26 +288,4 @@ describe("GatePoller.maybeSweepSupersededShipGate (integration with real CommDB)
 		).toBe(false);
 		db.close();
 	});
-
-	it("FLYWHEEL_SHIP_GATE_RETIRE=0 disables the sweeper (byte-compat sentinel)", async () => {
-		process.env.FLYWHEEL_SHIP_GATE_RETIRE = "0";
-		const db = new CommDB(dbPath);
-		const q1 = db.insertQuestion("exec-sw", "lead", "old gate", {
-			checkpoint: "approve_to_ship",
-		});
-		await new Promise((r) => setTimeout(r, 1_100));
-		const q2 = db.insertQuestion("exec-sw", "lead", "new gate", {
-			checkpoint: "approve_to_ship",
-		});
-		const poller = makePoller();
-		expect(
-			poller.maybeSweepSupersededShipGate(
-				pendingRow(db, q1),
-				makeSession(q2),
-				dbPath,
-			),
-		).toBe(false);
-		expect(db.getPendingQuestions("lead").map((q) => q.id)).toContain(q1);
-		db.close();
-	}, 15_000);
 });

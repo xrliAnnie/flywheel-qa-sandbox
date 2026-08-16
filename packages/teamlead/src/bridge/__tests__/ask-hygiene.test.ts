@@ -256,24 +256,6 @@ describe("FLY-1328 A2 ask sweep", () => {
 		expect(result.retiredAsks).toHaveLength(200);
 	});
 
-	it("M9: FLYWHEEL_ASK_HYGIENE=0 makes the ask branch a total no-op", async () => {
-		// Control arm proves the sweep fires on this exact input.
-		const on = harness({ candidates: [ask()] });
-		expect((await runZombieGateHygiene(on.deps)).retiredAsks).toEqual([
-			"q-ask",
-		]);
-
-		const off = harness({
-			candidates: [ask()],
-			env: { FLYWHEEL_ASK_HYGIENE: "0" },
-		});
-		const result = await runZombieGateHygiene(off.deps);
-		expect(result.retiredAsks).toEqual([]);
-		expect(off.retire).not.toHaveBeenCalled();
-		expect(off.deps.store.getSession).not.toHaveBeenCalled(); // zero side effects
-		expect(typesOf(off)).toEqual([]);
-	});
-
 	it("M11: a completed-but-alive runner keeps its ask (the FLY-161 guarantee)", async () => {
 		// Positive evidence, not just absence: session completed AND the CommDB row
 		// present = parked/awaiting founder. This runner can still be woken.

@@ -2293,34 +2293,6 @@ describe("Event route — GEO-292 stage tracking", () => {
 		expect(store.getSession("exec-1")!.status).toBe("running");
 	});
 
-	it("FLY-324 + FLY-1329 A5: kill-switch FLYWHEEL_PRUNE_PARK_GUARD=0 restores the un-vetoed force-complete", async () => {
-		process.env.FLYWHEEL_PRUNE_PARK_GUARD = "0";
-		try {
-			await postEvent(); // running
-			const dbPath = commDbPathForProject("geoforge3d");
-			mkdirSync(dirname(dbPath), { recursive: true });
-			const declaredDb = new CommDB(dbPath);
-			declaredDb.upsertDeclaredState(
-				"exec-1",
-				"parked",
-				"parked",
-				Date.now(),
-				null,
-			);
-			declaredDb.close();
-
-			const res = await postEvent({
-				event_id: "evt-a5-killswitch",
-				event_type: "stage_changed",
-				payload: { stage: "completed" },
-			});
-			expect(res.status).toBe(200);
-			expect(store.getSession("exec-1")!.status).toBe("completed");
-		} finally {
-			delete process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-		}
-	});
-
 	// Codex R2 HIGH: an UNREADABLE comm.db (exists but throws on read) is the
 	// absence of evidence, not proof of "not parked". The live force-complete is
 	// destructive, so it must FAIL CLOSED (veto), exactly like the boot sweep.

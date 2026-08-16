@@ -1690,8 +1690,7 @@ export async function pollOnce(
 	if (
 		modelDetection === null &&
 		preferredOrder.length === 0 &&
-		deps.config.config.degradedSwitch &&
-		process.env.FLYWHEEL_QUOTA_DEGRADED_SWITCH !== "0"
+		deps.config.config.degradedSwitch
 	) {
 		preferredOrder = degradedOrder(deps, snapshot, candidates.panorama);
 		degraded = preferredOrder.length > 0;

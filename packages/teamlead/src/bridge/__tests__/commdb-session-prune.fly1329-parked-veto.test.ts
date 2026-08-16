@@ -103,25 +103,6 @@ describe("FLY-1329 A4: CommDB prune respects a park declaration", () => {
 		}
 	});
 
-	it("kill-switch FLYWHEEL_PRUNE_PARK_GUARD=0 restores the un-vetoed prune", async () => {
-		const prev = process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-		process.env.FLYWHEEL_PRUNE_PARK_GUARD = "0";
-		try {
-			seedTerminal("killswitch", true);
-
-			const result = await pruneDeadTerminalCommDbSessions("flywheel", {
-				dbPath,
-				probe: probeDead,
-			});
-
-			expect(result.pruned).toBe(1);
-			expect(result.parkedVetoed).toBe(0);
-		} finally {
-			if (prev === undefined) delete process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-			else process.env.FLYWHEEL_PRUNE_PARK_GUARD = prev;
-		}
-	});
-
 	/** An alive probe already kept the row before this change — unchanged. */
 	it("an alive probe still keeps the row (existing behavior, unchanged)", async () => {
 		seedTerminal("alive-window", false);

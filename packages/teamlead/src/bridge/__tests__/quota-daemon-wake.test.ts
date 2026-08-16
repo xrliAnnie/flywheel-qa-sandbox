@@ -70,7 +70,7 @@ describe("quota daemon wake capability", () => {
 		expect(kill).not.toHaveBeenCalled();
 	});
 
-	it("noops on identity mismatch or kill-switch", () => {
+	it("noops on identity mismatch", () => {
 		record();
 		const kill = vi.fn();
 		const mismatch = createQuotaDaemonWaker({
@@ -80,14 +80,6 @@ describe("quota daemon wake capability", () => {
 			kill,
 		});
 		expect(mismatch()).toBe("identity_mismatch");
-
-		const disabled = createQuotaDaemonWaker({
-			pidfilePath: pidfile,
-			uid: UID,
-			wakeEnabled: () => false,
-			kill,
-		});
-		expect(disabled()).toBe("disabled");
 		expect(kill).not.toHaveBeenCalled();
 	});
 

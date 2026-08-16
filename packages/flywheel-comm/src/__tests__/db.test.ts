@@ -12,11 +12,8 @@ import {
 describe("CommDB", () => {
 	let db: CommDB;
 	let tmpDir: string;
-	let previousProtection: string | undefined;
 
 	beforeEach(() => {
-		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
-		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-test-"));
 		db = new CommDB(join(tmpDir, "comm.db"));
 	});
@@ -24,11 +21,6 @@ describe("CommDB", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(tmpDir, { recursive: true, force: true });
-		if (previousProtection === undefined) {
-			delete process.env.FLYWHEEL_COMMDB_PROTECTION;
-		} else {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = previousProtection;
-		}
 	});
 
 	describe("schema creation", () => {
@@ -117,19 +109,6 @@ describe("CommDB", () => {
 	});
 
 	describe("expiry", () => {
-		it("does not mutate relay metadata when protection is disabled", () => {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
-			const qId = db.insertQuestion("runner-1", "product-lead", "Ship?", {
-				checkpoint: "approve_to_ship",
-			});
-
-			expect(db.markQuestionProtected(qId, "lead-event-off")).toBe(true);
-			expect(db.getMessageById(qId)).toMatchObject({
-				relay_state: "open",
-				logical_event_id: null,
-			});
-		});
-
 		it("protects an expired unanswered question by default, including on reopen", () => {
 			const dbPath = join(tmpDir, "comm.db");
 			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?", {
@@ -214,24 +193,6 @@ describe("CommDB", () => {
 
 			expect(db.cleanupReadMessages()).toBe(0);
 			expect(db.isQuestionPending(qId)).toBe(true);
-		});
-
-		it("hides an expired question without deleting queued evidence when protection is off", () => {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
-			// Insert a question, then manually set expires_at to past
-			const qId = db.insertQuestion("runner-1", "product-lead", "Old Q?");
-			// Access internal db to force expire
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
-				)
-				.run(qId);
-
-			const purged = db.purgeExpired();
-			expect(purged).toBe(0);
-
-			// Should not appear in pending
-			expect(db.getPendingQuestions("product-lead")).toHaveLength(0);
 		});
 	});
 

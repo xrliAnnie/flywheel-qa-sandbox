@@ -597,14 +597,6 @@ get_tmux_agent_windows() {
 
 # ── FLY-1446: authoritative Lead/Runner roster read phase ──
 
-roster_enabled() {
-  case "${FLYWHEEL_CMUX_ROSTER:-1}" in
-    0) return 1 ;;
-    1|"") return 0 ;;
-    *) log "WARN: invalid FLYWHEEL_CMUX_ROSTER='${FLYWHEEL_CMUX_ROSTER}' — using 1"; return 0 ;;
-  esac
-}
-
 classify_lead_carrier() {
   local wrapper="$1" backend="$2"
   case "$wrapper" in
@@ -1089,7 +1081,6 @@ reconcile_runner_roster() {
 }
 
 reconcile_roster_read_phase() {
-  roster_enabled || return 0
   maintenance_requested && return 0
   reconcile_lead_roster
   reconcile_runner_roster
@@ -1265,23 +1256,6 @@ for w in json.load(sys.stdin).get("workspaces", []):
 ' | sort
 }
 
-get_ghost_workspace_refs() {
-  # Tri-state — rc=2 on JSON failure. Returns refs whose title is missing
-  # (null / empty / legacy "~" tilde-placeholder). Phase 4 ghost reaper
-  # uses this; mutation callers MUST check rc.
-  local raw
-  raw=$(get_cmux_workspaces_json) || return 2
-  printf '%s' "$raw" | python3 -c '
-import sys, json
-for w in json.load(sys.stdin).get("workspaces", []):
-    title = w.get("title")
-    if title is None or title == "" or title == "~":
-        ref = w.get("ref", "")
-        if ref:
-            print(ref)
-'
-}
-
 close_workspace_by_ref() {
   # Single chokepoint for all cmux workspace closes. Audit log per call;
   # FLYWHEEL_CMUX_DRY_RUN=1 short-circuits the actual cmux call but still
@@ -1319,92 +1293,12 @@ close_workspace_by_ref() {
 # the visible clutter and frees Electron-side surface state.
 # Fail-closed: rc=2 on the JSON gate → return 0 (next tick retries).
 reap_ghost_workspaces() {
-  if linked_view_enabled || view_invariant_enabled; then
-    reconcile_prepared_ledger || {
-      # Durable-state reads are a fail-closed pass gate, not a daemon-fatal
-      # error. The next additive tick retries once cmux/state IO recovers.
-      log "WARN: prepared-ledger reconciliation skipped; deferring ghost pass"
-      return 0
-    }
+  reconcile_prepared_ledger || {
+    # Durable-state reads are a fail-closed pass gate, not a daemon-fatal
+    # error. The next additive tick retries once cmux/state IO recovers.
+    log "WARN: prepared-ledger reconciliation skipped; deferring ghost pass"
     return 0
-  fi
-  local refs
-  refs=$(get_ghost_workspace_refs) || return 0  # JSON unavailable → skip
-  [[ -z "$refs" ]] && return 0
-  while read -r ref; do
-    [[ -z "$ref" ]] && continue
-    close_workspace_by_ref "$ref" "ghost-reaper"
-  done <<< "$refs"
-}
-
-# FLY-129 Phase 6 (scope #2, R2-6): periodic dedup of workspaces with the
-# same title. Tie-breaker (highest priority kept):
-#   1. pinned (if cmux JSON exposes the field)
-#   2. selected
-#   3. highest workspace:N number (cmux ID is monotonically increasing
-#      and not reused, so the newest is the most likely live one — the
-#      stale UI-cache copy is typically the older ID)
-# Refs that don't match ^workspace:\d+$ are prefixed with "SKIP " on stdout
-# so they're logged (not closed) — avoids taking a destructive action on
-# a malformed entry.
-dedup_workspaces_by_title() {
-  # New mode's exact-ref ledger + single mutator lease owns duplicate
-  # prevention. Title-only dedup has no authority over founder workspaces.
-  if linked_view_enabled || view_invariant_enabled; then
-    return 0
-  fi
-  local raw
-  raw=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
-
-  # Python emits two kinds of stdout lines:
-  #   "SKIP <ref> <title>"  → malformed ref; log + skip
-  #   "<ref>"               → close (loser in the dedup group)
-  local plan
-  plan=$(printf '%s' "$raw" | python3 -c '
-import sys, json, re
-data = json.load(sys.stdin)
-ws = data.get("workspaces", [])
-by_title = {}
-for w in ws:
-    title = w.get("title")
-    ref = w.get("ref", "")
-    if not title or not ref:
-        continue
-    by_title.setdefault(title, []).append(w)
-
-REF_RE = re.compile(r"^workspace:(\d+)$")
-
-for title, group in by_title.items():
-    if len(group) < 2:
-        continue
-    valid = []
-    for w in group:
-        if REF_RE.match(w.get("ref", "")):
-            valid.append(w)
-        else:
-            print("SKIP " + w.get("ref", "") + " " + title)
-    if len(valid) < 2:
-        continue
-    def key(w):
-        n = int(REF_RE.match(w["ref"]).group(1))
-        return (
-            1 if w.get("pinned") else 0,
-            1 if w.get("selected") else 0,
-            n,
-        )
-    valid.sort(key=key)
-    for w in valid[:-1]:
-        print(w["ref"])
-') || return 0
-  [[ -z "$plan" ]] && return 0
-  while read -r line; do
-    [[ -z "$line" ]] && continue
-    if [[ "$line" == SKIP\ * ]]; then
-      log "WARN: dedup skipping malformed ref: ${line#SKIP }"
-      continue
-    fi
-    close_workspace_by_ref "$line" "dedup-newest-wins"
-  done <<< "$plan"
+  }
 }
 
 # ── FLY-293: orphan cmux workspace-pin reaper ──
@@ -1630,7 +1524,6 @@ _stock_final_close_guard() {
 
 reap_unledgered_stock_workspaces() {
   [[ "${FLYWHEEL_CMUX_STOCK_ADOPTION:-1}" == "0" ]] && return 0
-  linked_view_enabled || view_invariant_enabled || return 0
   assert_or_reuse_owned_lease || return 0
 
   local generation records rc=0 grace now dir tmp keep=""
@@ -1774,10 +1667,8 @@ collect_agent_window_names_strict() {
 orphan_pin_refs() {
   local raw sessions agent_names pairs ledger_generation=""
   raw=$(get_cmux_workspaces_json) || return 2
-  if linked_view_enabled || view_invariant_enabled; then
-    ledger_generation=$(cmux_socket_identity)
-    [[ -n "$ledger_generation" ]] || return 2
-  fi
+  ledger_generation=$(cmux_socket_identity)
+  [[ -n "$ledger_generation" ]] || return 2
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
   agent_names=$(collect_agent_window_names_strict "$sessions") || return 2
   pairs=$(printf '%s' "$raw" | python3 -c '
@@ -1834,11 +1725,9 @@ close_orphan_workspace_pin_if_still_orphan() {
     return 1
   fi
   local raw sessions agent_names cur_title ledger_generation=""
-  if linked_view_enabled || view_invariant_enabled; then
-    ledger_generation=$(cmux_socket_identity)
-    [[ -n "$ledger_generation" ]] || return 2
-    ledger_committed_ref "$ledger_generation" "$ref" "$want_title" || return 1
-  fi
+  ledger_generation=$(cmux_socket_identity)
+  [[ -n "$ledger_generation" ]] || return 2
+  ledger_committed_ref "$ledger_generation" "$ref" "$want_title" || return 1
   raw=$(get_cmux_workspaces_json) || return 2                        # FLY-685: uncertain
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2  # FLY-685: uncertain
   agent_names=$(collect_agent_window_names_strict "$sessions") || return 2     # FLY-685: uncertain
@@ -2033,10 +1922,8 @@ reap_orphan_pins_oneshot() {
 # unavailable — rc=2 from workspace_refs_for OR the chokepoint) is kept for the
 # next tick. Predicate skips (rc=1: restarted / not-orphan / gone) are DROPPED
 # and left to the FLY-293 reaper — requeueing them would let an old marker outlive
-# a same-title restarted runner. Kill-switch FLYWHEEL_CMUX_CLOSE_REQUEST=0 → fully
-# inert (byte-compat). Marker lines are untrusted local IPC (validated below).
+# a same-title restarted runner. Marker lines are untrusted local IPC (validated below).
 process_close_requests() {
-  [[ "${FLYWHEEL_CMUX_CLOSE_REQUEST:-1}" == "0" ]] && return 0
   local tmp="${CLOSE_REQUEST_FILE}.processing" drain_rc=0
   # Crash recovery: fold a leftover .processing batch (a previous drain that was
   # interrupted) back into the live file so the drain below processes it exactly
@@ -2138,10 +2025,9 @@ _drain_close_requests() {
 
 # gc_close_request_file — watcher-startup GC: drop marker lines whose title has no
 # matching cmux workspace (leaked by a previous watcher, or the pin was already
-# closed). Env-gated (OFF path byte-compatible). cmux JSON unavailable → skip
+# closed). cmux JSON unavailable → skip
 # (keep the file, retry next startup). Mirrors gc_orphan_pin_state_file.
 gc_close_request_file() {
-  [[ "${FLYWHEEL_CMUX_CLOSE_REQUEST:-1}" == "0" ]] && return 0
   [[ -f "$CLOSE_REQUEST_FILE" ]] || return 0
   local raw live_titles tmp wname
   raw=$(get_cmux_workspaces_json) || return 0   # JSON unavailable → keep file
@@ -2207,7 +2093,7 @@ is_pane_alive() {
   # disappearance alone must not authorize cleanup. This is preservation-only:
   # any lookup uncertainty returns rc=2 and authorizes zero cleanup mutation.
   local strict_view_session="${VIEW_PREFIX}${wname}" strict_view_dead
-  if strict_view_enabled && printf '%s\n' "$sessions" | grep -qxF "$strict_view_session"; then
+  if printf '%s\n' "$sessions" | grep -qxF "$strict_view_session"; then
     strict_view_dead=$(tmux display-message -p -t "=${strict_view_session}:=${wname}" "#{pane_dead}" 2>/dev/null) || return 2
     case "$strict_view_dead" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
   fi
@@ -2241,29 +2127,8 @@ cleanup_workspace_for() {
   #     STALE_STATE grow unbounded across cmux outages.
   # FLY-129 Phase 3 (R2-6 dup handling): close ALL matching refs (dedup
   # convergence), not just the first one.
-  local agent_name="$1" refs
-  local view_session="${VIEW_PREFIX}${agent_name}"
-
-  if linked_view_enabled || view_invariant_enabled; then
-    dismantle_view_display "$agent_name" "stale-${agent_name}" || true
-    drain_stale_state_row "$agent_name"
-    return 0
-  fi
-
-  # 1. cmux close — gated by JSON availability (R4-1: only this is gated).
-  if refs=$(workspace_refs_for "$agent_name"); then
-    while read -r ref; do
-      [[ -z "$ref" ]] && continue
-      close_workspace_by_ref "$ref" "stale-${agent_name}"
-    done <<< "$refs"
-  else
-    log "WARN: cmux JSON unavailable; skipping cmux close for $agent_name this tick"
-  fi
-
-  # 2. Local tmux kill — unconditional (cmux-independent state).
-  tmux kill-session -t "=$view_session" 2>/dev/null || true
-
-  # 3. STALE_STATE drain — unconditional (Phase 5).
+  local agent_name="$1"
+  dismantle_view_display "$agent_name" "stale-${agent_name}" || true
   drain_stale_state_row "$agent_name"
 }
 
@@ -2819,13 +2684,12 @@ heal_send_attach() {
   _GUARD_WORKSPACE_REF="$ref"
   _GUARD_SURFACE_REF="$surface_ref"
   _GUARD_EXPECTED_GENERATION="$expected_generation"
-  _GUARD_REQUIRE_STRICT_VIEW=0
-  strict_view_enabled && _GUARD_REQUIRE_STRICT_VIEW=1
+  _GUARD_REQUIRE_STRICT_VIEW=1
   cmux_call_guarded _heal_send_final_guard send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
   if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
     return "${GUARD_BLOCK_RC:-1}"
   fi
-  return 0   # send attempted — cmux failure is best-effort (legacy || true)
+  return 0   # send attempted — cmux failure is best-effort
 }
 
 # Ref-scoped self-heal primitive. Heals ONE known cmux workspace ref. Used by
@@ -3180,7 +3044,7 @@ self_heal_render_escalate() {
   [[ "${HEAL_USER_INTERVENED:-0}" == "1" ]] && return 1
   [[ "${HEAL_GEN_CHANGED:-0}" == "1" ]] && return 1
   # Malformed refs must never be fed to a focus mutation (REF_RE caution,
-  # matching dedup_workspaces_by_title).
+  # matching the current exact-ref workspace set).
   printf '%s' "$ref" | grep -qE '^workspace:[0-9]+$' || return 1
   # GENERATION pin (Codex CR R1 HIGH-2): if the cmux app instance changed
   # since this sweep's generation was consumed (reopen mid-sweep), every
@@ -3305,20 +3169,17 @@ select_live_view_window() {
 # heal each via the ref-scoped primitive. Attach-only — the "workspace exists
 # but linked session is dead" case is reconcile_existing_workspaces' job.
 self_heal_one_workspace() {
-  local wname="$1" require_receipt="${2:-0}" receipt_generation=""
+  local wname="$1" receipt_generation=""
   local view_session="${VIEW_PREFIX}${wname}"
   # Every strict-view heal is exact-ref authorized, regardless of whether this
   # title was discovered from a live source window or a sole-holder view. The
   # source-discovery distinction is topology, not workspace ownership.
-  strict_view_enabled && require_receipt=1
   # Need a live linked session to attach to.
   linked_session_exists "$view_session" || return 0
-  if strict_view_enabled; then
-    # A receipt proves the cmux workspace, not the tmux destination. Re-prove
-    # that the canonical name still resolves to the exact live Flywheel view
-    # before injecting an attach command into its detached surface.
-    _view_shell_owned_for_title "$view_session" "$wname" 0 1 1 || return 0
-  fi
+  # A receipt proves the cmux workspace, not the tmux destination. Re-prove
+  # that the canonical name still resolves to the exact live Flywheel view
+  # before injecting an attach command into its detached surface.
+  _view_shell_owned_for_title "$view_session" "$wname" 0 1 1 || return 0
 
   # Mutation path uses workspace_refs_for with rc=2 handling (NOT
   # get_workspace_ref_for, which is unsafe as a mutation gate).
@@ -3326,10 +3187,8 @@ self_heal_one_workspace() {
   refs=$(workspace_refs_for "$wname") || rc=$?
   [[ $rc -eq 2 ]] && return 0          # JSON unavailable → skip (event-time tradeoff)
   [[ -z "$refs" ]] && return 0
-  if [[ "$require_receipt" == "1" ]]; then
-    receipt_generation=$(cmux_socket_identity)
-    [[ -n "$receipt_generation" ]] || return 0
-  fi
+  receipt_generation=$(cmux_socket_identity)
+  [[ -n "$receipt_generation" ]] || return 0
 
   # STATE: only "tmux succeeded AND count==0" = detached. Per view_session
   # (shared by all dup workspaces for this window name).
@@ -3357,8 +3216,7 @@ self_heal_one_workspace() {
   local healed=0 ref hr
   while read -r ref; do
     [[ -z "$ref" ]] && continue
-    if [[ "$require_receipt" == "1" ]] \
-        && ! ledger_committed_ref "$receipt_generation" "$ref" "$wname"; then
+    if ! ledger_committed_ref "$receipt_generation" "$ref" "$wname"; then
       _alert_cmux_cleanup \
         "cmux attach heal refused" \
         "Periodic strict-view healing preserved an unreceipted same-title workspace: generation=$receipt_generation ref=$ref title=$wname." \
@@ -3389,7 +3247,6 @@ self_heal_one_workspace() {
 # source-window discovery remains the primary path. Every field is re-read from
 # tmux so a user-created cmux-* session cannot opt itself into command injection.
 strict_view_heal_titles() {
-  strict_view_enabled || return 0
   local sessions session title snapshot sid grouped active owner marker members observed dead
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
   while IFS= read -r session; do
@@ -3415,10 +3272,8 @@ self_heal_sweep_all() {
   local tmux_windows heal_names strict_names=""
   tmux_windows=$(get_tmux_agent_windows)
   heal_names=$(printf '%s\n' "$tmux_windows" | awk -F'|' 'NF >= 3 && $3 != "" { print $3 }')
-  if strict_view_enabled; then
-    strict_names=$(strict_view_heal_titles) || return 0
-    [[ -n "$strict_names" ]] && heal_names="${heal_names}${heal_names:+$'\n'}${strict_names}"
-  fi
+  strict_names=$(strict_view_heal_titles) || return 0
+  [[ -n "$strict_names" ]] && heal_names="${heal_names}${heal_names:+$'\n'}${strict_names}"
   heal_names=$(printf '%s\n' "$heal_names" | awk 'NF && !seen[$0]++')
   [[ -z "$heal_names" ]] && return 0
 
@@ -3442,16 +3297,10 @@ self_heal_sweep_all() {
     fi
   fi
 
-  local wname require_receipt
+  local wname
   while IFS= read -r wname; do
     [[ -z "$wname" ]] && continue
-    require_receipt=0
-    if [[ -n "$strict_names" ]] \
-        && printf '%s\n' "$strict_names" | grep -qxF "$wname" \
-        && ! printf '%s\n' "$tmux_windows" | awk -F'|' -v n="$wname" '$3 == n { found=1 } END { exit(found ? 0 : 1) }'; then
-      require_receipt=1
-    fi
-    self_heal_one_workspace "$wname" "$require_receipt"
+    self_heal_one_workspace "$wname"
   done <<< "$heal_names"
 
   # FLY-254: single cleanup epilogue — the focus restore decision. Restore the
@@ -3542,14 +3391,6 @@ linked_view_enabled() {
   esac
 }
 
-wal_quarantine_enabled() {
-  case "${FLYWHEEL_CMUX_WAL_QUARANTINE:-1}" in
-    0) return 1 ;;
-    1|"") return 0 ;;
-    *) log "WARN: invalid FLYWHEEL_CMUX_WAL_QUARANTINE='${FLYWHEEL_CMUX_WAL_QUARANTINE}' — using 1"; return 0 ;;
-  esac
-}
-
 cmux_wal_block_view() {
   local view="$1" source="$2" wid="$3" row="${1}|${2}|${3}"
   case "$row" in *$'\n'*) return 1 ;; esac
@@ -3577,19 +3418,6 @@ cmux_wal_keeper_blocked() {
     case ",$members," in *",$wid,"*) return 0 ;; esac
   done <<< "$CMUX_WAL_BLOCKED_VIEWS"
   return 1
-}
-
-# FLY-1364 R6: lifetime protection is strict whenever either the isolated-view
-# producer (A) or invariant consumer (B) is enabled. This closes the unsafe
-# A0B1 split-brain where create used a grouped session while Bridge treated the
-# view as disposable. STRICT_VIEW=0 is the ordered rollback lever.
-strict_view_enabled() {
-  case "${FLYWHEEL_CMUX_STRICT_VIEW:-1}" in
-    0) return 1 ;;
-    1|"") ;;
-    *) log "WARN: invalid FLYWHEEL_CMUX_STRICT_VIEW='${FLYWHEEL_CMUX_STRICT_VIEW}' — using 1" ;;
-  esac
-  linked_view_enabled || view_invariant_enabled
 }
 
 tmux_server_generation() {
@@ -6030,10 +5858,6 @@ reconcile_keeper_inventory() {
 
 _quarantine_malformed_view_wal() {
   local wal="$1" reason="$2" base sha sha8 quarantine target
-  wal_quarantine_enabled || {
-    log "WARN: malformed view WAL preserved (quarantine disabled): $wal reason=$reason"
-    return 1
-  }
   base=$(basename "$wal")
   sha=$(shasum -a 256 "$wal" 2>/dev/null | awk '{print $1}') || return 1
   [[ -n "$sha" ]] || return 1
@@ -6105,23 +5929,21 @@ recover_all_view_constructions() {
 
 prepare_linked_view_state() {
   local phase="${1:-all}"
-  if linked_view_enabled || view_invariant_enabled; then
-    case "$phase" in
-      pre|all)
-        tmux_server_generation >/dev/null || return 1
-        recover_all_view_constructions || return 1
-        # Keeper recovery consumes no cmux receipt and must precede restored
-        # recovery so an escrow residue is visible without letting prepared
-        # ledger consumers run first.
-        reconcile_keeper_inventory || return 1
-        ;;
-    esac
-    case "$phase" in
-      post|all)
-        reconcile_prepared_ledger || return 1
-        ;;
-    esac
-  fi
+  case "$phase" in
+    pre|all)
+      tmux_server_generation >/dev/null || return 1
+      recover_all_view_constructions || return 1
+      # Keeper recovery consumes no cmux receipt and must precede restored
+      # recovery so an escrow residue is visible without letting prepared
+      # ledger consumers run first.
+      reconcile_keeper_inventory || return 1
+      ;;
+  esac
+  case "$phase" in
+    post|all)
+      reconcile_prepared_ledger || return 1
+      ;;
+  esac
 }
 
 _view_mismatch_key() {
@@ -6606,7 +6428,6 @@ create_or_replace_view_session() {
   local stage_sid="" placeholder_id="" snapshot source_snapshot sid grouped active owner marker members
   local observed source_name source_dead
   VIEW_BUILD_OUTCOME=""
-  strict_view_enabled || return 1
   case "$source_session$window_id$window_name" in *'|'*|*$'\n'*) return 1 ;; esac
   if cmux_wal_view_blocked "$view_session"; then
     log "WARN: linked-view build blocked by preserved construction collision: view=$view_session"
@@ -6775,20 +6596,16 @@ create_workspace_for_window() {
   fi
 
   local raw_before cmux_generation="" clients_before="" attachment_unverified=0 snapshot_generation=""
-  if linked_view_enabled || view_invariant_enabled; then
-    cmux_generation=$(cmux_socket_identity)
-    if [[ -z "$cmux_generation" ]]; then
-      log "WARN: cmux generation unreadable; refusing unledgered create for $window_name"
-      return 0
-    fi
+  cmux_generation=$(cmux_socket_identity)
+  if [[ -z "$cmux_generation" ]]; then
+    log "WARN: cmux generation unreadable; refusing unledgered create for $window_name"
+    return 0
   fi
   raw_before=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
-  if linked_view_enabled || view_invariant_enabled; then
-    snapshot_generation=$(cmux_socket_identity)
-    if [[ "$snapshot_generation" != "$cmux_generation" ]]; then
-      log "WARN: cmux generation changed during pre-create snapshot for $window_name; refusing create"
-      return 0
-    fi
+  snapshot_generation=$(cmux_socket_identity)
+  if [[ "$snapshot_generation" != "$cmux_generation" ]]; then
+    log "WARN: cmux generation changed during pre-create snapshot for $window_name; refusing create"
+    return 0
   fi
 
   # Existence check against the snapshot — inline so we never read rc=2 as
@@ -6811,21 +6628,13 @@ sys.exit(0 if exists else 1)
 
   log "Creating workspace for: $window_name ($window_id) from session $source_session"
 
-  # 1. Create the tmux view. Effective strict mode builds an independent,
-  # exact-one-window view through the staging WAL above. Only the explicit
-  # strict rollback switch enters the grouped-session path.
-  if strict_view_enabled; then
-    recover_view_construction "$view_session" || return 0
-    if ! linked_session_exists "$view_session"; then
-      create_or_replace_view_session "$source_session" "$window_id" "$window_name" || {
-        log "WARN: isolated view build deferred for $window_name"
-        return 0
-      }
-    fi
-  else
-    if ! linked_session_exists "$view_session"; then
-      tmux new-session -d -t "$source_session" -s "$view_session" 2>/dev/null || true
-    fi
+  # 1. Create the independent exact-one-window tmux view through the staging WAL.
+  recover_view_construction "$view_session" || return 0
+  if ! linked_session_exists "$view_session"; then
+    create_or_replace_view_session "$source_session" "$window_id" "$window_name" || {
+      log "WARN: isolated view build deferred for $window_name"
+      return 0
+    }
   fi
 
   # 2. (FLY-169 §2.6) Ready gate: require the linked session to exist AND the
@@ -6840,17 +6649,9 @@ sys.exit(0 if exists else 1)
   #    deferred every tick forever, so live runners never got a sidebar tab).
   #    Grouped sessions share window objects, so the id is a valid view-session
   #    target — same form FLY-177 already uses in refresh_linked_sessions.
-  if strict_view_enabled; then
-    if ! _linked_view_matches "$view_session" "$window_id" "$source_session"; then
-      log "WARN: $view_session failed isolated topology ready gate — deferring create for $window_name"
-      return 0
-    fi
-  else
-    if ! linked_session_exists "$view_session" \
-       || ! tmux select-window -t "=${view_session}:${window_id}" 2>/dev/null; then
-      log "WARN: $view_session not ready (session/select-window) — deferring create for $window_name"
-      return 0
-    fi
+  if ! _linked_view_matches "$view_session" "$window_id" "$source_session"; then
+    log "WARN: $view_session failed isolated topology ready gate — deferring create for $window_name"
+    return 0
   fi
 
   # FLY-825: mark AFTER the ready gate passes (this call site is truly
@@ -6879,21 +6680,15 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # process env; when cmux was launched from within tmux, `$TMUX` is set and
   # `tmux attach` nest-fails ("sessions should be nested with care"). Strip it
   # for this attach so the fresh surface attaches cleanly.
-  if strict_view_enabled; then
-    clients_before=$(view_session_client_count "$view_session") || attachment_unverified=1
-  fi
+  clients_before=$(view_session_client_count "$view_session") || attachment_unverified=1
   local attach_cmd
   attach_cmd=$(build_attach_command "$view_session") || {
     log "WARN: attach command rejected for $window_name; deferring workspace create"
     return 0
   }
   local create_rc=0
-  if linked_view_enabled || view_invariant_enabled; then
-    _GUARD_CREATE_GENERATION="$cmux_generation"
-    cmux_call_guarded _create_generation_guard new-workspace --command "$attach_cmd" || create_rc=$?
-  else
-    cmux_call new-workspace --command "$attach_cmd" || create_rc=$?
-  fi
+  _GUARD_CREATE_GENERATION="$cmux_generation"
+  cmux_call_guarded _create_generation_guard new-workspace --command "$attach_cmd" || create_rc=$?
   if [[ "$create_rc" -ne 0 ]]; then
     log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
     return 0
@@ -6904,9 +6699,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # until next reconcile pass.
   local raw_after refs_after new_ref
   raw_after=$(get_cmux_workspaces_json) || {
-    if strict_view_enabled; then
-      log "WARN: attachment_unverified generation=$cmux_generation ref=unknown title=$window_name reason=post-create-read-failed"
-    fi
+    log "WARN: attachment_unverified generation=$cmux_generation ref=unknown title=$window_name reason=post-create-read-failed"
     log "WARN: cmux JSON unavailable post-create; cannot rename or verify-attach $window_name this tick (deferred to later event / --once)"
     return 0
   }
@@ -6923,8 +6716,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   new_ref=$(printf '%s\n' "$new_refs" | head -1 || true)
 
   # 6. Rename using the exact ref — immune to user tab switching
-  if linked_view_enabled || view_invariant_enabled; then
-    local current_generation confirm_raw confirm_count post_clients
+  local current_generation confirm_raw confirm_count post_clients
     current_generation=$(cmux_socket_identity)
     if [[ "$current_generation" != "$cmux_generation" || "$new_ref_count" != "1" || -z "$new_ref" ]]; then
       log "WARN: create ref diff/generation ambiguous for $window_name; leaving workspace unledgered and unnamed"
@@ -6989,24 +6781,12 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
       log "WARN: cannot commit ledger row for renamed workspace $new_ref"
       return 0
     }
-    if strict_view_enabled; then
-      post_clients=$(view_session_client_count "$view_session") || attachment_unverified=1
-      if [[ "$attachment_unverified" == "1" \
-         || -z "$clients_before" || "$clients_before" -gt 0 ]]; then
-        log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=client-baseline-ambiguous"
-      elif [[ -z "$post_clients" || "$post_clients" -le 0 ]]; then
-        log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=no-post-create-client"
-      fi
-    fi
-  elif [[ -n "$new_ref" ]]; then
-    # FLY-1550 (Codex R1 MEDIUM-4): tab rename only follows a SUCCESSFUL
-    # workspace rename — a failed workspace rename must not present a
-    # half-named pair as success. The legacy (unledgered) path stays
-    # best-effort by design; strict mode carries the durable retry.
-    if cmux_call rename-workspace --workspace "$new_ref" "$window_name"; then
-      cmux_call rename-tab --workspace "$new_ref" "$window_name" || \
-        log "WARN: rename-tab failed for $new_ref ($window_name); tab keeps the raw command title (legacy path has no durable retry)"
-    fi
+  post_clients=$(view_session_client_count "$view_session") || attachment_unverified=1
+  if [[ "$attachment_unverified" == "1" \
+     || -z "$clients_before" || "$clients_before" -gt 0 ]]; then
+    log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=client-baseline-ambiguous"
+  elif [[ -z "$post_clients" || "$post_clients" -le 0 ]]; then
+    log "WARN: attachment_unverified generation=$cmux_generation ref=$new_ref title=$window_name reason=no-post-create-client"
   fi
 
   # 7. (FLY-169 §2.5) Verify-at-create + bounded retry — the primary fix.
@@ -7023,10 +6803,7 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
   #    gating it to event-only would reintroduce the bug for sync_additive-born
   #    workspaces. "Zero new idle load" holds: no create → no verify.
   if [[ -n "$new_ref" ]]; then
-    local vc_attempt vc_clients vc_generation=""
-    if linked_view_enabled || view_invariant_enabled; then
-      vc_generation="$cmux_generation"
-    fi
+    local vc_attempt vc_clients vc_generation="$cmux_generation"
     for vc_attempt in 1 2 3; do
       vc_clients=$(view_session_client_count "$view_session") || break  # tmux error → stop (fail-closed)
       [[ "$vc_clients" -gt 0 ]] && break                                # attached — done
@@ -7063,21 +6840,12 @@ cleanup_stale_workspaces() {
   done <<< "$linked_sessions"
 }
 
-view_invariant_enabled() {
-  case "${FLYWHEEL_CMUX_VIEW_INVARIANT:-1}" in
-    0) return 1 ;;
-    1|"") return 0 ;;
-    *) log "WARN: invalid FLYWHEEL_CMUX_VIEW_INVARIANT='${FLYWHEEL_CMUX_VIEW_INVARIANT}' — using 1"; return 0 ;;
-  esac
-}
-
 check_cmux_flag_state() {
   # Durable transition latch: restarts inside A0B1 do not re-page, while a
   # genuine exit and re-entry increments the episode counter.
-  local linked_bit=0 invariant_bit=0 state last_state="" counter=0 line="" dir tmp topology
+  local linked_bit=0 state last_state="" counter=0 line="" dir tmp
   linked_view_enabled && linked_bit=1
-  view_invariant_enabled && invariant_bit=1
-  state="A${linked_bit}B${invariant_bit}"
+  state="A${linked_bit}B1"
   if [[ -f "$CMUX_FLAG_STATE" ]]; then
     line=$(cat "$CMUX_FLAG_STATE" 2>/dev/null || true)
     IFS='|' read -r last_state counter <<< "$line"
@@ -7106,14 +6874,9 @@ check_cmux_flag_state() {
     return 0
   fi
   if [[ "$state" == "A0B1" ]]; then
-    if strict_view_enabled; then
-      topology="strict-independent"
-    else
-      topology="grouped-rollback"
-    fi
     flywheel_alert cmux_flag_state info \
       "cmux sync flags entered A0B1" \
-      "FLYWHEEL_CMUX_LINKED_VIEW=0 while FLYWHEEL_CMUX_VIEW_INVARIANT=1. Exact-ref receipts remain mandatory; topology=$topology; episode=$counter." \
+      "FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=$counter." \
       "cmux_flag_state|state=A0B1|episode=$counter"
   fi
   return 0
@@ -7173,77 +6936,50 @@ END { for (name in row) print row[name] }
       continue
     fi
     IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
-    if strict_view_enabled; then
-      if [[ "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$source" \
+    if [[ "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$source" \
          && "$marker" == "0" && "$members" == "$wid" ]]; then
-        clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
-        clear_cmux_log_episodes_for_title "$title" || true
+      clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+      clear_cmux_log_episodes_for_title "$title" || true
+      continue
+    fi
+    mismatch_signature="$repair_generation|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"
+    log_cmux_episode view-invariant-mismatch "$title" "$mismatch_signature" \
+      "Invariant mismatch: ${VIEW_PREFIX}${title} grouped=$grouped active=$active members=$members expected=$wid"
+    if ! view_mismatch_confirmed "$title" \
+        "$mismatch_signature"; then
+      log_cmux_episode view-mismatch-pending "$title" "$mismatch_signature" \
+        "Invariant mismatch pending second conclusive pass: ${VIEW_PREFIX}${title}"
+      continue
+    fi
+    if [[ "$grouped" == "1" && -z "$owner" && -z "$marker" ]]; then
+      cmux_generation=$(cmux_socket_identity) || {
+        log "WARN: legacy grouped backfill deferred for $title; cmux generation unavailable"
+        continue
+      }
+      current_refs=$(ledger_refs_for_title "$cmux_generation" "$title")
+      if [[ -z "$current_refs" ]]; then
+        _alert_cmux_cleanup \
+          "cmux legacy grouped migration refused" \
+          "A legacy grouped view was preserved because no current-generation exact workspace receipt authorizes migration: generation=$cmux_generation title=$title view=${VIEW_PREFIX}${title}." \
+          "cmux_cleanup|legacy-grouped|generation=$cmux_generation|title=$title|reason=missing-exact-receipt"
+        log_cmux_episode legacy-grouped-refused "$title" \
+          "$cmux_generation|missing-exact-receipt|$mismatch_signature" \
+          "WARN: legacy grouped migration refused for $title; no exact receipt"
         continue
       fi
-      mismatch_signature="$repair_generation|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"
-      log_cmux_episode view-invariant-mismatch "$title" "$mismatch_signature" \
-        "Invariant mismatch: ${VIEW_PREFIX}${title} grouped=$grouped active=$active members=$members expected=$wid"
-      if ! view_mismatch_confirmed "$title" \
-          "$mismatch_signature"; then
-        log_cmux_episode view-mismatch-pending "$title" "$mismatch_signature" \
-          "Invariant mismatch pending second conclusive pass: ${VIEW_PREFIX}${title}"
-        continue
-      fi
-      if [[ "$grouped" == "1" && -z "$owner" && -z "$marker" ]]; then
-        cmux_generation=$(cmux_socket_identity) || {
-          log "WARN: legacy grouped backfill deferred for $title; cmux generation unavailable"
-          continue
-        }
-        current_refs=$(ledger_refs_for_title "$cmux_generation" "$title")
-        if [[ -z "$current_refs" ]]; then
-          _alert_cmux_cleanup \
-            "cmux legacy grouped migration refused" \
-            "A legacy grouped view was preserved because no current-generation exact workspace receipt authorizes migration: generation=$cmux_generation title=$title view=${VIEW_PREFIX}${title}." \
-            "cmux_cleanup|legacy-grouped|generation=$cmux_generation|title=$title|reason=missing-exact-receipt"
-          log_cmux_episode legacy-grouped-refused "$title" \
-            "$cmux_generation|missing-exact-receipt|$mismatch_signature" \
-            "WARN: legacy grouped migration refused for $title; no exact receipt"
-          continue
-        fi
-      fi
-      if dismantle_view_display "$title" "view-invariant-mismatch"; then
-        create_or_replace_view_session "$source" "$wid" "$title" || {
-          rm -f "$plan"; return 1;
-        }
-        clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
-        clear_cmux_log_episodes_for_title "$title" || true
-      else
-        # Most commonly an unledgered founder/pre-upgrade collision. The
-        # alert/manual contract forbids inventing authority or touching it.
-        log_cmux_episode invariant-repair-deferred "$title" \
-          "$mismatch_signature|${DISMANTLE_OUTCOME:-preflight-refused}|${DISMANTLE_REASON:-unknown}" \
-          "WARN: invariant repair deferred for $title outcome=${DISMANTLE_OUTCOME:-preflight-refused} reason=${DISMANTLE_REASON:-unknown}"
-      fi
-    elif view_invariant_enabled; then
-      if [[ "$grouped" == "1" ]]; then
-        clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
-        clear_cmux_log_episodes_for_title "$title" || true
-        tmux select-window -t "=${VIEW_PREFIX}${title}:${wid}" 2>/dev/null || {
-          rm -f "$plan"; return 1;
-        }
-      else
-        if ! view_mismatch_confirmed "$title" \
-            "$repair_generation|rollback|$source|$wid|$sid|$grouped|$active|$owner|$marker|$members"; then
-          continue
-        fi
-        # Rollback convergence from A1 to legacy grouped topology still uses
-        # the same ledger-safe dismantle boundary.
-        if dismantle_view_display "$title" "rollback-to-grouped"; then
-          tmux new-session -d -t "$source" -s "${VIEW_PREFIX}${title}" 2>/dev/null || {
-            rm -f "$plan"; return 1;
-          }
-          tmux select-window -t "=${VIEW_PREFIX}${title}:${wid}" 2>/dev/null || {
-            rm -f "$plan"; return 1;
-          }
-          clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
-          clear_cmux_log_episodes_for_title "$title" || true
-        fi
-      fi
+    fi
+    if dismantle_view_display "$title" "view-invariant-mismatch"; then
+      create_or_replace_view_session "$source" "$wid" "$title" || {
+        rm -f "$plan"; return 1;
+      }
+      clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
+      clear_cmux_log_episodes_for_title "$title" || true
+    else
+      # Most commonly an unledgered founder/pre-upgrade collision. The
+      # alert/manual contract forbids inventing authority or touching it.
+      log_cmux_episode invariant-repair-deferred "$title" \
+        "$mismatch_signature|${DISMANTLE_OUTCOME:-preflight-refused}|${DISMANTLE_REASON:-unknown}" \
+        "WARN: invariant repair deferred for $title outcome=${DISMANTLE_OUTCOME:-preflight-refused} reason=${DISMANTLE_REASON:-unknown}"
     fi
   done < "$plan"
   rm -f "$plan"
@@ -7267,42 +7003,19 @@ refresh_linked_sessions() {
   # iterated) wins deterministically. Pure tmux, idempotent, no cmux IPC, no new
   # periodic load (FLY-129) — runs only inside the existing additive/bootstrap
   # passes, so it does not touch the FLY-102 high-frequency surface.
-  if linked_view_enabled || view_invariant_enabled; then
-    prepare_linked_view_state pre || {
-      log "WARN: linked-view durable state reconciliation failed; refresh skipped"
-      return 1
-    }
-    recover_restored_transactions || {
-      log "WARN: restored transaction recovery failed; refresh skipped"
-      return 1
-    }
-    prepare_linked_view_state post || {
-      log "WARN: linked-view ledger reconciliation failed; refresh skipped"
-      return 1
-    }
-    repair_view_invariants
-    return $?
-  fi
-
-  local tmux_windows
-  tmux_windows=$(get_tmux_agent_windows)
-  [[ -z "$tmux_windows" ]] && return 0
-
-  local src_sess wid wname
-  while IFS='|' read -r src_sess wid wname; do
-    [[ -z "$wname" || -z "$wid" ]] && continue
-    local view_session="${VIEW_PREFIX}${wname}"
-    linked_session_exists "$view_session" || continue
-    # ID-scoped liveness (NOT the name-based is_pane_alive, which would report a
-    # dead row as alive when a different same-name window is live).
-    local dead
-    dead=$(tmux display-message -p -t "=${src_sess}:${wid}" "#{pane_dead}" 2>/dev/null || echo "1")
-    if [[ "$dead" == "0" ]]; then
-      # Select by window_id — grouped sessions share the window object, so the
-      # id is a valid target-window in the view session. Idempotent.
-      tmux select-window -t "=${view_session}:${wid}" 2>/dev/null || true
-    fi
-  done <<< "$tmux_windows"
+  prepare_linked_view_state pre || {
+    log "WARN: linked-view durable state reconciliation failed; refresh skipped"
+    return 1
+  }
+  recover_restored_transactions || {
+    log "WARN: restored transaction recovery failed; refresh skipped"
+    return 1
+  }
+  prepare_linked_view_state post || {
+    log "WARN: linked-view ledger reconciliation failed; refresh skipped"
+    return 1
+  }
+  repair_view_invariants
 }
 
 reconcile_existing_workspaces() {
@@ -7310,49 +7023,20 @@ reconcile_existing_workspaces() {
   # session (e.g., after Lead restart or cmux reopen with stale workspace),
   # close the broken workspace and let the create phase rebuild it.
   #
-  # Fail-closed gate: snapshot JSON ONCE at the top of this reconcile pass
-  # (one call instead of per-candidate). rc=2 → return 0 — next tick retries.
-  # All closes go through close_workspace_by_ref (single audit log path).
+  # Fail-closed gate: verify workspace JSON ONCE at the top of this pass.
+  # Unreadable inventory means zero reconcile actions; the next tick retries.
   local tmux_windows raw
   tmux_windows=$(get_tmux_agent_windows)
   [[ -z "$tmux_windows" ]] && return 0
-  raw=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
-
-  if linked_view_enabled || view_invariant_enabled; then
-    while IFS='|' read -r src_sess wid wname; do
-      [[ -z "$wname" ]] && continue
-      local strict_view="${VIEW_PREFIX}${wname}"
-      linked_session_exists "$strict_view" && continue
-      # Exact-ref ledger authority closes only the Flywheel-owned broken tab;
-      # unledgered same-title workspaces remain visible for manual resolution.
-      dismantle_view_display "$wname" "reconcile-${wname}-view-dead" || true
-    done <<< "$tmux_windows"
-    return 0
-  fi
+  raw=$(get_cmux_workspaces_json) || return 0
 
   while IFS='|' read -r src_sess wid wname; do
-    local view_session="${VIEW_PREFIX}${wname}"
-    # Skip if the linked session is alive — nothing to reconcile.
-    linked_session_exists "$view_session" && continue
-    # Find ALL refs matching this window name (dup-tolerant; Phase 6 dedup
-    # also runs later but we still close every matching ref here in case
-    # dedup hasn't run this tick).
-    local refs
-    refs=$(printf '%s' "$raw" | python3 -c '
-import sys, json
-name = sys.argv[1]
-for w in json.load(sys.stdin).get("workspaces", []):
-    if w.get("title") == name:
-        ref = w.get("ref", "")
-        if ref:
-            print(ref)
-' "$wname")
-    [[ -z "$refs" ]] && continue
-    log "Reconciling: closing stale workspace(s) for '$wname' (linked session dead)"
-    while read -r ref; do
-      [[ -z "$ref" ]] && continue
-      close_workspace_by_ref "$ref" "reconcile-${wname}-linked-dead"
-    done <<< "$refs"
+    [[ -z "$wname" ]] && continue
+    local strict_view="${VIEW_PREFIX}${wname}"
+    linked_session_exists "$strict_view" && continue
+    # Exact-ref ledger authority closes only the Flywheel-owned broken tab;
+    # unledgered same-title workspaces remain visible for manual resolution.
+    dismantle_view_display "$wname" "reconcile-${wname}-view-dead" || true
   done <<< "$tmux_windows"
 }
 
@@ -7514,7 +7198,7 @@ cleanup_event_source_allowed() {
   # itself ended. Exact namespace equality prevents unrelated cmux sessions
   # from manufacturing cleanup candidates; exact-ref ledger authority still
   # gates the later workspace close.
-  if strict_view_enabled && [[ "$session" == "${VIEW_PREFIX}${wname}" ]]; then
+  if [[ "$session" == "${VIEW_PREFIX}${wname}" ]]; then
     return 0
   fi
   return 1
@@ -7839,7 +7523,7 @@ sync_additive_bootstrap() {
 
 sync_additive() {
   # Called every 60s. Mirrors bootstrap, plus conservative cleanup, hook
-  # top-up, ghost reaping (Phase 4), and dedup (Phase 6).
+  # top-up, receipt reconciliation, and conservative cleanup.
   # The marker is the first operation: maintenance preserves existing episode
   # state and authorizes neither derivation/alerting nor mutation.
   maintenance_requested && return 0
@@ -7918,7 +7602,6 @@ sync_additive() {
   # JSON-unavailable — they no-op rather than mis-acting on stale state.
   reap_ghost_workspaces
   watcher_mutation_latch_clear || return 0
-  dedup_workspaces_by_title
   watcher_mutation_latch_clear || return 0
   reap_unledgered_stock_workspaces
   watcher_mutation_latch_clear || return 0
@@ -9091,7 +8774,6 @@ sync_once() {
   # 5. FLY-129 Phase 4 + Phase 6: ghost reap + dedup (manual full-sync mode
   #    benefits from the same hygiene the periodic watcher gives).
   reap_ghost_workspaces
-  dedup_workspaces_by_title
   reap_unledgered_stock_workspaces
   # FLY-293: orphan-pin reaper in manual full-sync too.
   reap_orphan_workspace_pins

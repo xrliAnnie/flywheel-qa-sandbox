@@ -651,9 +651,6 @@ export async function runGoalToTerminal(
 		input.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 	const overallTimeoutMs = input.overallTimeoutMs ?? 60 * 60_000;
 	const pollIntervalMs = input.pollIntervalMs ?? 15_000;
-	// Default-on rollback switch. Read at call time so an emergency Bridge env
-	// change affects the next goal run without changing Claude/non-goal paths.
-	const gateWaitEnabled = process.env.FLYWHEEL_CODEX_GATE_WAIT !== "0";
 
 	// R20 HIGH-1: arm the deadline BEFORE any RPC, so setGoal/startTurn latency
 	// counts against the ceiling. FLY-1188 MED-7: the ceiling is DYNAMIC — the
@@ -991,7 +988,7 @@ export async function runGoalToTerminal(
 		if (latched) writeGateHold(false);
 	};
 	const classifyTerminalStatus = (status: GoalStatus): "terminal" | "held" => {
-		if (gateWaitEnabled && status === "blocked") {
+		if (status === "blocked") {
 			const waiting = input.isWaiting?.() === true;
 			if (waiting || gateHoldActive) {
 				if (waiting) enterGateHold();
@@ -1099,7 +1096,7 @@ export async function runGoalToTerminal(
 				// continuation turn.
 				await enterPhaseHold();
 				skipInitialActivation = true;
-			} else if (gateWaitEnabled) {
+			} else {
 				// FLY-1257: no phase hold to adopt — but a phase runner still opens
 				// gates DURING a phase (the brainstorm gate), so this preflight runs
 				// for phase and non-phase runs alike.
@@ -1180,7 +1177,7 @@ export async function runGoalToTerminal(
 			if (!skipInitialActivation) {
 				await activateGoal();
 				await startInitialTurn();
-				if (gateWaitEnabled && gateHoldLatched) writeGateHold(false);
+				if (gateHoldLatched) writeGateHold(false);
 			}
 		} catch (err) {
 			// A durable-latch failure always wins over a streamed terminal. The
@@ -1241,7 +1238,7 @@ export async function runGoalToTerminal(
 			let verdict = await settleTerminal();
 			if (verdict === "terminal") break;
 			if (verdict === "phase_held") continue;
-			if (gateWaitEnabled && gateHoldActive) {
+			if (gateHoldActive) {
 				if (input.isWaiting?.()) {
 					terminalSeen = null;
 					await pauseGateGoal();

@@ -82,29 +82,6 @@ describe("FLY-1309 FleetPoller carrier evidence single-writer path", () => {
 		});
 	}
 
-	it("is byte-compatible with the unwired poller when mode and scan are both off", async () => {
-		env.FLYWHEEL_LEAD_LEASE_MODE = "off";
-		env.FLYWHEEL_DUAL_ACTIVE_SCAN = "0";
-		publishCarrierRuntimeAssertion({
-			env,
-			leadKey: "flywheel-codex-lead",
-			identityDigest: IDENTITY_DIGEST,
-			rawCarrierInstanceId: RAW_CLAIM,
-			pid: 777,
-			lstart: "carrier-start",
-		});
-		const baseline = makePoller(false);
-		const wired = makePoller(true);
-
-		await baseline.collectOnce();
-		await wired.collectOnce();
-
-		expect(JSON.stringify(wired.snapshot())).toBe(
-			JSON.stringify(baseline.snapshot()),
-		);
-		expect(existsSync(env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!)).toBe(false);
-	});
-
 	it("turns an old-but-live per-lead assertion into a fresh full snapshot", async () => {
 		publishCarrierRuntimeAssertion({
 			env,

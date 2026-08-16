@@ -4,8 +4,7 @@
  * Fetches the read-only feature-flag report HTML from the Bridge loopback
  * endpoint (`GET /api/fleet/flag-report.html`) and hands it to the existing
  * `publish-report` flow → an unguessable hosted URL + Discord delivery (so Annie
- * can open the flag state on her phone). Respects `FLYWHEEL_REMOTE_REPORTS=0`
- * (the same dual-sided kill-switch publish-report honors).
+ * can open the flag state on her phone).
  *
  * Dependency direction: flywheel-comm does NOT import teamlead's renderer (that
  * would cycle) — it only fetches HTML over loopback and reuses publish-report.
@@ -152,11 +151,6 @@ export async function runFeatureFlags(
 	if (sub !== "report") {
 		errorLog(USAGE);
 		return exit(1);
-	}
-
-	if (env.FLYWHEEL_REMOTE_REPORTS === "0") {
-		log(JSON.stringify({ skipped: true, reason: "FLYWHEEL_REMOTE_REPORTS=0" }));
-		return;
 	}
 
 	const project = flagVal(rest, "--project") ?? "flywheel";

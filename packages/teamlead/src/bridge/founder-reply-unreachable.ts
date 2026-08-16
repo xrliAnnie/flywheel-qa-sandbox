@@ -13,17 +13,10 @@
 
 import type { DrainAlertSink } from "./founder-action-drain.js";
 
-export function founderReplyUnreachableEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE !== "0";
-}
-
 export interface FounderReplyUnreachableDeps {
 	alertSink?: DrainAlertSink;
 	/** The unified infra alert owner (§7.2). */
 	infraRoute(): { leadId: string; projectName: string } | undefined;
-	env?: Record<string, string | undefined>;
 	nowMs?: () => number;
 }
 
@@ -40,10 +33,6 @@ export class FounderReplyUnreachableReconcile {
 	private readonly unreachable = new Map<string, UnreachableEntry>();
 
 	constructor(private readonly deps: FounderReplyUnreachableDeps) {}
-
-	private env(): Record<string, string | undefined> {
-		return this.deps.env ?? process.env;
-	}
 
 	// ── Z2 sweep (diff-based episodes, driven by the zombie pass) ──
 
@@ -116,7 +105,6 @@ export class FounderReplyUnreachableReconcile {
 
 	/** Reconcile tick — piggybacked on the founder-reply sub-cadence. */
 	async tick(): Promise<void> {
-		if (!founderReplyUnreachableEnabled(this.env())) return;
 		for (const [execId, entry] of this.unreachable) {
 			if (entry.alerted) continue;
 			entry.alerted = true;

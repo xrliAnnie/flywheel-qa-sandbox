@@ -41,7 +41,6 @@ import {
 	computeEffectiveVerdict,
 	type EffectiveReviewVerdict,
 	type ReviewFindingRulingSnapshot,
-	severityPolicyEnabled,
 } from "./review-verdict-policy.js";
 
 const execFileAsync = promisify(execFile);
@@ -169,7 +168,7 @@ export interface ReviewCoordinatorDeps {
 	 */
 	reviewerEffort?: RoleEffort;
 	reviewerTimeoutMs?: number;
-	/** Test seam; production follows FLYWHEEL_REVIEW_SEVERITY_POLICY. */
+	/** Test seam for the legacy policy branch. */
 	reviewSeverityPolicyEnabled?: boolean;
 	/** Slice seam: StateStore-backed issue lookup is connected in FLY-1278/2. */
 	listActiveReviewFindingRulings?: (input: {
@@ -1053,8 +1052,7 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
-		const policyEnabled =
-			this.deps.reviewSeverityPolicyEnabled ?? severityPolicyEnabled();
+		const policyEnabled = this.deps.reviewSeverityPolicyEnabled ?? true;
 		// FLY-1278 R2 #1: one immutable pre-prompt snapshot is reused after the
 		// reviewer returns. Mid-round create/revoke takes effect next round only.
 		const rulingSnapshot: readonly ReviewFindingRulingSnapshot[] = policyEnabled

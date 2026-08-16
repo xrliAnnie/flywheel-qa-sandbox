@@ -19,10 +19,6 @@ export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
 
 export type LivenessEnv = Record<string, string | undefined>;
 
-export function livenessAlertsEnabled(env: LivenessEnv = process.env): boolean {
-	return env.FLYWHEEL_LIVENESS_ALERTS !== "0";
-}
-
 /**
  * The W-2 hang seam is destructive, so a target Lead alone is insufficient.
  * It is armed only when CommDB is redirected inside the process temp root.

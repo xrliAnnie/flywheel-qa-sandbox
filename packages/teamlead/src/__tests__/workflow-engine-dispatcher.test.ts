@@ -1122,78 +1122,6 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("continues an activated land operation after the land flag is disabled", async () => {
-		const store = await storeWithLandIntent();
-		const operation = store.ensureLandOperation({
-			runId: "run-land",
-			issueId: "FLY-1375",
-			projectName: "flywheel",
-			prNumber: 1375,
-			approvedHead: HEAD,
-			now: "2026-07-21T20:01:30.000Z",
-		});
-		const landExecutor = vi.fn(async (operationId: string) => {
-			expect(operationId).toBe(operation.operation_id);
-			const claim = store.claimLandOperation({
-				operationId,
-				ownerId: "land-test-worker",
-				now: "2026-07-21T20:02:00.000Z",
-				leaseExpiresAt: "2026-07-21T20:03:00.000Z",
-			});
-			if (!claim) throw new Error("land operation was not claimable");
-			const disposition = store.recordLandLinearDoneDisposition({
-				operationId,
-				ownerId: claim.ownerId,
-				generation: claim.generation,
-				disposition: "done",
-				reason: "already_completed",
-				executionId: "land-exec",
-				now: "2026-07-21T20:02:00.500Z",
-			});
-			if (!disposition.ok) throw new Error(disposition.reason);
-			const completed = store.recordLandOperationStep({
-				operationId,
-				ownerId: claim.ownerId,
-				generation: claim.generation,
-				step: "finalization_completed",
-				receipt: { complete: true },
-				now: "2026-07-21T20:02:01.000Z",
-			});
-			if (!completed.ok) throw new Error(completed.reason);
-			return { status: "completed" as const };
-		});
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fakeStartDispatcher(store).dispatcher,
-			env: { ...WORKFLOW_ON, FLYWHEEL_LAND_NODE: "0" },
-			now: () => new Date("2026-07-21T20:02:00.000Z"),
-			landExecutor,
-		});
-
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		expect(landExecutor).toHaveBeenCalledOnce();
-		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
-		store.close();
-	});
-
-	it("holds an unactivated land node when the land flag is disabled", async () => {
-		const store = await storeWithLandIntent();
-		const landExecutor = vi.fn();
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fakeStartDispatcher(store).dispatcher,
-			env: { ...WORKFLOW_ON, FLYWHEEL_LAND_NODE: "0" },
-			now: () => new Date("2026-07-21T20:02:00.000Z"),
-			landExecutor,
-		});
-
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		expect(landExecutor).not.toHaveBeenCalled();
-		expect(store.getWorkflowRun("run-land")?.status).toBe("held");
-		expect(store.getLandOperationForRun("run-land")).toBeUndefined();
-		store.close();
-	});
-
 	it.each([
 		"issue_closeout_incomplete",
 		"ship_workflow_pending",
@@ -2729,44 +2657,6 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("reads the unlaunched tripwire switch on every reconcile", async () => {
-		const store = await storeWithIntent("implement");
-		const start = vi.fn(async () => {
-			throw new Error("synthetic prelaunch failure");
-		});
-		const env = {
-			...WORKFLOW_ON,
-			FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE: "0",
-			FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS: "1000",
-			FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS: "2000",
-		};
-		const now = vi.fn(() => new Date("2026-07-16T00:16:00.000Z"));
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: {
-				start,
-				getInflightCount: () => 0,
-				validateAgentName: () => ({ ok: true as const }),
-			} as IStartDispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1423-tripwire-switch-")),
-			env,
-			now,
-			resolvePredecessorHead: async () => HEAD,
-		});
-
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		now.mockReturnValue(new Date("2026-07-16T00:30:00.000Z"));
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
-		expect(store.listWorkflowAlertOutbox()).toHaveLength(0);
-
-		env.FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE = "1";
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
-		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
-		expect(store.listWorkflowAlertOutbox()).toHaveLength(2);
-		store.close();
-	});
-
 	it("keeps the cancellation fence and refuses rollback when evidence appears after fencing", async () => {
 		const store = await storeWithIntent("implement");
 		const start = vi.fn(async () => {
@@ -3355,51 +3245,6 @@ describe("WorkflowEngineDispatcher", () => {
 		},
 	);
 
-	it("observes the dead-exec sweep kill switch on every tick without a restart", async () => {
-		const store = await storeWithIntent("implement");
-		const fake = fakeStartDispatcher(store);
-		const env = {
-			...WORKFLOW_ON,
-			FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
-		};
-		const probeLaunchLiveness = vi.fn(async () => "dead" as const);
-		const base = deadExecEngineClockBaseMs();
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: fake.dispatcher,
-			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-live-sweep-flag-")),
-			env,
-			now: () => new Date(base),
-			resolvePredecessorHead: async () => HEAD,
-			probeLaunchLiveness,
-		});
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		store.upsertSession({
-			execution_id: "implement-1",
-			issue_id: "FLY-1307",
-			project_name: "flywheel",
-			status: "failed",
-			workflow_node_id: "implement",
-		});
-
-		// OFF is observed at call time: no probe and no replacement mutation.
-		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
-		expect(probeLaunchLiveness).not.toHaveBeenCalled();
-		expect(fake.requests).toHaveLength(1);
-		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
-			state: "running",
-			execution_id: "implement-1",
-		});
-
-		// The same dispatcher sees the direct-console mutation on its next tick.
-		env.FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP = "1";
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
-		expect(probeLaunchLiveness).toHaveBeenCalledOnce();
-		expect(fake.requests).toHaveLength(2);
-		expect(fake.requests[1]?.successorExecutionId).not.toBe("implement-1");
-		store.close();
-	});
-
 	it("keeps the dead execution in place when its tripwire baseline cannot be captured", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
@@ -3495,7 +3340,6 @@ describe("WorkflowEngineDispatcher", () => {
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1385-tripwire-patrol-")),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			resolvePredecessorHead: async () => HEAD,
 			probeDeadExecutionActivity,
@@ -4288,7 +4132,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1424-ordering-")),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 				FLYWHEEL_SHIP_READY_NOTIFY: "1",
 			},
 			resolvePredecessorHead: async () => HEAD,
@@ -4322,7 +4165,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: {
 					...WORKFLOW_ON,
-					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 				},
 				now: () => new Date("2026-07-22T01:01:00.000Z"),
 				shipReadyArm: {
@@ -4368,7 +4210,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: {
 					...WORKFLOW_ON,
-					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 				},
 				shipReadyArm: {
 					queueLeadNotice,
@@ -4402,7 +4243,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			now: () => new Date("2026-07-22T01:01:00.000Z"),
 			shipReadyArm: {
@@ -4442,7 +4282,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			now: () => new Date(nowMs),
 			shipReadyArm: {
@@ -4481,7 +4320,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			now: () => new Date("2026-07-22T01:01:00.000Z"),
 			shipReadyArm: {
@@ -4515,7 +4353,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 				startDispatcher: inertStartDispatcher(),
 				env: {
 					...WORKFLOW_ON,
-					FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 				},
 				now: () => new Date("2026-07-22T01:46:00.000Z"),
 				resolveRunAlertIdentity: (projectName) => ({
@@ -4563,7 +4400,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 				FLYWHEEL_SHIP_READY_REMIND_MS: "1000",
 			},
 			now: () => new Date("2026-07-22T01:31:00.000Z"),
@@ -4606,7 +4442,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			now: () => new Date("2026-07-22T01:01:00.000Z"),
 			shipReadyArm: {
@@ -4655,7 +4490,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			},
 			now: () => new Date("2026-07-22T01:01:00.000Z"),
 			shipReadyArm: {
@@ -4690,7 +4524,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 	it("reads notify and reminder flags at call time on the same instance", async () => {
 		const env = {
 			...WORKFLOW_ON,
-			FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
 			FLYWHEEL_SHIP_READY_NOTIFY: "0",
 			FLYWHEEL_SHIP_READY_REMIND_MS: "2500",
 		};

@@ -74,10 +74,7 @@ import {
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
-import {
-	FounderReplyUnreachableReconcile,
-	founderReplyUnreachableEnabled,
-} from "./founder-reply-unreachable.js";
+import { FounderReplyUnreachableReconcile } from "./founder-reply-unreachable.js";
 import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
 import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
 import {
@@ -116,7 +113,6 @@ import {
 	probeTmuxServerStartTime,
 } from "./tmux-lookup.js";
 import {
-	askHygieneEnabled,
 	runZombieGateHygiene,
 	type ZombieCommDb,
 } from "./zombie-gate-hygiene.js";
@@ -126,8 +122,6 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
-	/** Human alert lane for stale approved-to-ship runners. */
-	livenessAlertsEnabled?: boolean;
 	/** FLY-1251: async producer for the exact-head ship-diff hold snapshot. */
 	ensureShipRelevantDiff?: (session: Session) => Promise<void> | void;
 	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
@@ -222,8 +216,7 @@ export interface GatePollerConfig {
 	 * posted (the deterministic approval carrier — reply-to-card / ✅). The
 	 * 10min FLY-605 grace made the card a rarely-seen fallback; for ship gates
 	 * the card IS the primary surface, so it fires after ~15s (default). Env
-	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides; `FLYWHEEL_SHIP_GATE_CARD=0`
-	 * restores the 10min fallback behavior. Brainstorm is untouched.
+	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides. Brainstorm is untouched.
 	 */
 	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
@@ -905,10 +898,7 @@ export class GatePoller {
 				// never a poll abort). Zero new timer (piggybacks this tick). Pushes
 				// one @founder ping to the issue thread when a Runner reached a
 				// terminal milestone the founder was never told about.
-				if (
-					this.founderMilestoneNotifyEnabled() &&
-					this.tickCount % this.milestonePatrolEveryNTicks() === 1
-				) {
+				if (this.tickCount % this.milestonePatrolEveryNTicks() === 1) {
 					try {
 						await this.maybeEmitMilestoneReports(project);
 					} catch (err) {
@@ -987,16 +977,14 @@ export class GatePoller {
 					this.maybeRecoverStore(err);
 				}
 				// FLY-1099 §7.2: retained unreachable-runner detector tick.
-				if (founderReplyUnreachableEnabled()) {
-					try {
-						await this.founderReplyUnreachable.tick();
-					} catch (err) {
-						console.warn(
-							"[GatePoller] founder-reply reconcile tick error:",
-							err instanceof Error ? err.message : String(err),
-						);
-						this.maybeRecoverStore(err);
-					}
+				try {
+					await this.founderReplyUnreachable.tick();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-reply reconcile tick error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
 				}
 			}
 
@@ -1035,10 +1023,7 @@ export class GatePoller {
 
 			// FLY-799 Part B: re-wake sessions stranded in approved_to_ship (a
 			// missed self-ship wake). Default-ON kill-switch; same sub-cadence.
-			if (
-				this.staleShipRewakeEnabled() &&
-				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
-			) {
+			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
 					await this.staleApprovedShipReconcilePass();
 				} catch (err) {
@@ -1555,11 +1540,6 @@ export class GatePoller {
 	/** FLY-799 Part B: execIds already dead-alerted (one alert per stranded ship). */
 	private readonly staleShipDeadAlerted = new Set<string>();
 
-	/** FLY-1041: default-ON kill-switch shared with the event-route retire path. */
-	private shipGateRetireEnabled(): boolean {
-		return process.env.FLYWHEEL_SHIP_GATE_RETIRE !== "0";
-	}
-
 	/**
 	 * FLY-1041 Fix A (sweeper): converge a superseded approve_to_ship gate the
 	 * event-route retire missed (crash between rebind and retire, manual gate).
@@ -1573,7 +1553,6 @@ export class GatePoller {
 		session: Session,
 		dbPath: string,
 	): boolean {
-		if (!this.shipGateRetireEnabled()) return false;
 		if (question.checkpoint !== "approve_to_ship") return false;
 		const boundQid = session.review_question_id;
 		if (
@@ -1638,11 +1617,6 @@ export class GatePoller {
 
 	private founderThreadGraceMs(): number {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
-	}
-
-	/** FLY-1041 Chunk 6: default-ON kill-switch for the fast ship card. */
-	private shipGateCardEnabled(): boolean {
-		return process.env.FLYWHEEL_SHIP_GATE_CARD !== "0";
 	}
 
 	/** FLY-1041 Chunk 6: ship-card grace (env > config > 15s default). */
@@ -1725,8 +1699,7 @@ export class GatePoller {
 		if (createdMs === null) return;
 		const now = Date.now();
 		const graceMs =
-			cp === "founder_review" ||
-			(cp === "approve_to_ship" && this.shipGateCardEnabled())
+			cp === "founder_review" || cp === "approve_to_ship"
 				? this.shipGateCardGraceMs()
 				: this.founderThreadGraceMs();
 		if (now - createdMs < graceMs) return;
@@ -2031,10 +2004,6 @@ export class GatePoller {
 	>();
 	/** Per-process cache: projects whose first-enable baseline was already seeded. */
 	private readonly milestoneBaselineSeeded = new Set<string>();
-
-	private founderMilestoneNotifyEnabled(): boolean {
-		return process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY !== "0";
-	}
 
 	// FLY-725 tuning: config override → env knob → default. The env reads make the
 	// cadence / lookback / grace ops-tunable without a config edit (Codex code R1).
@@ -2361,10 +2330,6 @@ export class GatePoller {
 		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
 	}
 
-	private founderReviewGateExcludeEnabled(): boolean {
-		return process.env.FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE !== "0";
-	}
-
 	private founderReplyDeliverGraceMs(): number {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
@@ -2471,10 +2436,7 @@ export class GatePoller {
 					// makes a one-letter founder reply ambiguous with the actual ship
 					// gate. This exclusion deliberately does not alter relay/pending/
 					// liveness semantics for review gates.
-					if (
-						this.founderReviewGateExcludeEnabled() &&
-						isReviewGateCheckpoint(q.checkpoint)
-					) {
+					if (isReviewGateCheckpoint(q.checkpoint)) {
 						continue;
 					}
 					const createdMs = parseSqliteUtcMs(q.created_at);
@@ -2916,10 +2878,7 @@ export class GatePoller {
 
 	/** §5: zombie gate hygiene (Z1 guarded retire + Z2 unreachable detection). */
 	private async zombieGateHygienePass(): Promise<void> {
-		const reconcileOn = founderReplyUnreachableEnabled();
-		const askOn = askHygieneEnabled();
-		if (!reconcileOn && !askOn) return;
-		if (reconcileOn) this.founderReplyUnreachable.beginUnreachableSweep();
+		this.founderReplyUnreachable.beginUnreachableSweep();
 		for (const project of this.config.projects) {
 			for (const lead of project.leads) {
 				let db: CommDB;
@@ -2964,9 +2923,8 @@ export class GatePoller {
 						db: db as unknown as ZombieCommDb,
 						env: process.env,
 						resolveDeadGates: false,
-						noteUnreachableRunner: reconcileOn
-							? (a) => this.founderReplyUnreachable.noteUnreachableRunner(a)
-							: undefined,
+						noteUnreachableRunner: (a) =>
+							this.founderReplyUnreachable.noteUnreachableRunner(a),
 					});
 				} catch (err) {
 					console.warn(
@@ -2979,7 +2937,7 @@ export class GatePoller {
 				}
 			}
 		}
-		if (reconcileOn) this.founderReplyUnreachable.endUnreachableSweep();
+		this.founderReplyUnreachable.endUnreachableSweep();
 	}
 
 	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */
@@ -3141,11 +3099,6 @@ export class GatePoller {
 		}
 	}
 
-	/** FLY-799 Part B: default-ON re-wake reconciler kill-switch (`=0` disables). */
-	private staleShipRewakeEnabled(): boolean {
-		return process.env.FLYWHEEL_STALE_SHIP_REWAKE !== "0";
-	}
-
 	/**
 	 * FLY-799 Part B: re-wake sessions stranded in approved_to_ship. A LIVE runner
 	 * gets the approval wake re-sent (idempotent; verify-approval still gates the
@@ -3153,7 +3106,6 @@ export class GatePoller {
 	 * to FLY-795. Re-wake-only — never self-ships, never reads 795's progress.md.
 	 */
 	private async staleApprovedShipReconcilePass(): Promise<void> {
-		if (this.config.livenessAlertsEnabled === false) return;
 		const sessions = this.config.store
 			.getActiveSessions()
 			.filter((s) => s.status === "approved_to_ship")

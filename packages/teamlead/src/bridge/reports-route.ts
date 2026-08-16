@@ -9,9 +9,9 @@
  *     → resolve channel (explicit param → ProjectEntry.generalChannel → 400)
  *     → ONE Discord message: screenshot attachment + link (or link-only)
  *
- * Ownership (Codex design review R2#4): this router owns business logic and
- * the `enabled` kill switch only. Auth — including the "no apiToken → 503"
- * sensitive-surface refusal — is owned by the plugin mount layer.
+ * Ownership (Codex design review R2#4): this router owns business logic. Auth —
+ * including the "no apiToken → 503" sensitive-surface refusal — is owned by
+ * the plugin mount layer.
  *
  * Transaction semantics are documented in report-registry.ts. Publishes are
  * serialized through an in-process promise-chain mutex: the registry
@@ -62,8 +62,6 @@ export type ReportPostTextFn = (
 ) => Promise<PostDiscordResult>;
 
 export interface ReportsRouterOptions {
-	/** FLYWHEEL_REMOTE_REPORTS kill switch — plugin reads env and injects. */
-	enabled: boolean;
 	vercelToken: string | undefined;
 	discordBotToken: string | undefined;
 	projects: ProjectEntry[];
@@ -196,15 +194,6 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			postDiscordMessageToChannel(channelId, content, botToken, {
 				origin: "automation",
 			}));
-
-	// Kill switch — before any handler (plugin injects env state).
-	router.use((_req, res, next) => {
-		if (!opts.enabled) {
-			res.status(503).json({ error: "remote reports disabled" });
-			return;
-		}
-		next();
-	});
 
 	// In-process publish mutex (promise chain).
 	let publishChain: Promise<void> = Promise.resolve();

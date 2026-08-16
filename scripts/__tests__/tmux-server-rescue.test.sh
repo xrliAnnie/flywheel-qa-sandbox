@@ -186,7 +186,6 @@ export FAKE_POLICY_SHOW_VALUE=off
 export FAKE_KEEPALIVE_RC=0
 export FAKE_KEEPALIVE_STATE_FILE=""
 export FAKE_KEEPALIVE_CREATE_RC=0
-export FLYWHEEL_TMUX_KEEPALIVE=1
 export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="/usr/bin/true"
 MACOS_TMUX_COMMAND='tmux -S /private/tmp/fly1285-fixture.sock new-session -Ad -s flywheel'
 ORIGINAL_HOME="$HOME"
@@ -826,7 +825,6 @@ export FAKE_SOCKET_PIDS=4242
 export FAKE_KEEPALIVE_RC=1
 export FAKE_KEEPALIVE_STATE_FILE="$TMP_DIR/keepalive-state"
 rm -f "$FAKE_KEEPALIVE_STATE_FILE"
-unset FLYWHEEL_TMUX_KEEPALIVE
 OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
 POLICY_RC=$?
 OUT_AGAIN="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
@@ -841,36 +839,6 @@ else
   fail "policy enforcement was not idempotent: first=$POLICY_RC/$OUT second=$POLICY_AGAIN_RC/$OUT_AGAIN calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
 fi
 
-echo "[TEST] keepalive kill-switch stops enforcement without mutating server state"
-: > "$TMUX_CALL_LOG"
-rm -f "$FAKE_KEEPALIVE_STATE_FILE"
-export FLYWHEEL_TMUX_KEEPALIVE=0
-OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
-POLICY_RC=$?
-if [ "$POLICY_RC" -eq 0 ] \
-  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "policy_disabled" ] \
-  && ! grep -Eq 'set-option|show-options|has-session -t =flywheel-keepalive|new-session -d -s flywheel-keepalive' "$TMUX_CALL_LOG" \
-  && [ ! -e "$FAKE_KEEPALIVE_STATE_FILE" ]; then
-  pass "disabled enforcement performs reachability proof only"
-else
-  fail "disabled policy mutated state: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
-fi
-
-echo "[TEST] invalid keepalive flag fails safe to enabled"
-: > "$TMUX_CALL_LOG"
-rm -f "$FAKE_KEEPALIVE_STATE_FILE"
-export FLYWHEEL_TMUX_KEEPALIVE=invalid
-OUT="$(tmux_socket_policy_enforce "$REQUEST_SOCKET")"
-POLICY_RC=$?
-if [ "$POLICY_RC" -eq 0 ] \
-  && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "policy_enforced" ] \
-  && grep -q 'set-option -s exit-empty off' "$TMUX_CALL_LOG" \
-  && grep -q 'new-session -d -s flywheel-keepalive' "$TMUX_CALL_LOG"; then
-  pass "malformed flag values retain the protective default"
-else
-  fail "malformed flag disabled protection: rc=$POLICY_RC out=$OUT calls=$(tr '\n' ';' < "$TMUX_CALL_LOG")"
-fi
-
 echo "[TEST] policy failure alerts and converts an ensure success into a typed hold"
 : > "$TMUX_CALL_LOG"
 POLICY_ALERTS="$TMP_DIR/policy-alerts"
@@ -881,7 +849,6 @@ printf '%s\n' '#!/bin/bash' \
 chmod +x "$POLICY_ALERT_BIN"
 export FLYWHEEL_TEST_POLICY_ALERTS="$POLICY_ALERTS"
 export FLYWHEEL_TMUX_RESCUE_ALERT_BIN="$POLICY_ALERT_BIN"
-export FLYWHEEL_TMUX_KEEPALIVE=1
 export FAKE_KEEPALIVE_RC=0
 export FAKE_KEEPALIVE_STATE_FILE=""
 export FAKE_POLICY_SET_RC=1
@@ -942,7 +909,6 @@ echo "[TEST] ensure verifies under the socket lock before considering create"
 export HOME="$ORIGINAL_HOME"
 : > "$REQUEST_SOCKET"
 : > "$TMUX_CALL_LOG"
-export FLYWHEEL_TMUX_KEEPALIVE=1
 export FAKE_REACHABLE_PID=4242
 export FAKE_PS_ROWS="4242 1 ${MACOS_TMUX_COMMAND}\n"
 export FAKE_SOCKET_PIDS=4242

@@ -184,16 +184,14 @@ export async function raceMarkIssueDoneWithAbort(
 
 /**
  * Compose the `markIssueDone` closure runPostShipFinalization calls. Returns
- * undefined (→ finalization skips the Linear transition, byte-compatibly) when
- * the default-ON kill-switch `FLYWHEEL_AUTO_LINEAR_DONE=0` is set OR no Linear
- * api key is configured. Built at each finalization call site from the config it
+ * undefined (→ finalization skips the Linear transition) when no Linear api key
+ * is configured. Built at each finalization call site from the config it
  * already holds — avoids threading a new positional dep through createEventRouter
  * / DirectEventSink. Best-effort: the closure never throws.
  */
 export function makeLinearDoneFinalizer(config: {
 	linearApiKey?: string;
 }): LinearDoneFinalizer | undefined {
-	if (process.env.FLYWHEEL_AUTO_LINEAR_DONE === "0") return undefined;
 	const apiKey = config.linearApiKey;
 	if (!apiKey) return undefined;
 	return async (issueId, issueIdentifier, signal) => {

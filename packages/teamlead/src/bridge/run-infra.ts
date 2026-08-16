@@ -1127,14 +1127,12 @@ export async function setupRunInfrastructure(
 	// shareParentBranch/startPoint worktree mechanism) instead of starting over.
 	// This is the live wiring of the c3 core (`computeProgressResume`) — the pure
 	// git/StateStore lookups are provided here so the dispatcher stays generic.
-	//   - kill-switch: FLYWHEEL_PROGRESS_RESUME=0 → always fresh (byte-compatible).
 	//   - branch B is read from the ground-truth session row (branch, else the
 	//     worktree_path basename, which equals the branch name by construction);
 	//     never recomputed from a trusted-key string.
 	//   - reads the BRANCH BLOB via `git show` (never the worktree fs — it may be
 	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
 	const resumeComputer: ResumeComputer = async (issueId, role, projectName) => {
-		if (process.env.FLYWHEEL_PROGRESS_RESUME === "0") return null;
 		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
 		// and writes NO progress ledger — it must never be resumed from a prior
 		// ledger (code-review MED-3). Only writer roles resume.

@@ -12,9 +12,7 @@ FAILED=0
 pass() { echo "[TEST] ✓ $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "[TEST] ✗ $1"; FAILED=$((FAILED + 1)); }
 
-# FLY-1560 刀 6: FLYWHEEL_WATCHDOG_LIVENESS was renamed FLYWHEEL_LIVENESS_ALERTS
-# (and the old name is now a tombstone, exercised by the retired case below).
-printf '%s\n' 'FLYWHEEL_LIVENESS_ALERTS=1' > "$TMP/valid.env"
+printf '%s\n' 'FLYWHEEL_CMUX_LINKED_VIEW=1' > "$TMP/valid.env"
 if "$REPO_ROOT/scripts/check-flag-truth.ts" --env-file "$TMP/valid.env" > "$TMP/valid.out" 2>&1 \
   && grep -q 'flag truth OK' "$TMP/valid.out"; then
   pass "valid registered env passes via executable shebang"

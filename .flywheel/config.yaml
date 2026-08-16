@@ -110,9 +110,8 @@ doc_flow:
 # (route / PR / last_error), NOT the possibly-lagging thread title. v1 = failed +
 # blocked only: routine `completed` → FLY-727 daily digest; `ship_ready` is already
 # an @founder ping via the FLY-605 approve_to_ship gate (not duplicated here).
-# Absent/enabled:false = off (byte-compatible); FLYWHEEL_FOUNDER_MILESTONE_NOTIFY=0
-# is a fleet kill-switch. Loaded from this CANONICAL root only, so a runner can't
-# edit its own PR config to change founder notifications.
+# Absent/enabled:false = off (byte-compatible). Loaded from this CANONICAL root
+# only, so a runner can't edit its own PR config to change founder notifications.
 founder_milestone_report:
   enabled: true
   milestones: [failed, blocked]

@@ -21,11 +21,6 @@ export function isWorkflowGateCarrierEnabled(env: EnvLike): boolean {
 	return env.FLYWHEEL_WORKFLOW_GATE_CARRIER === "1";
 }
 
-/** FLY-1375 final-slice contract: land is active unless explicitly killed. */
-export function isLandNodeEnabled(env: EnvLike): boolean {
-	return env.FLYWHEEL_LAND_NODE !== "0";
-}
-
 /**
  * One fail-closed predicate shared by selection, materialization, admission,
  * and successor consumption. Schema v1 needs dispatch + claims write/read;

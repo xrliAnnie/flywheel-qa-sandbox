@@ -155,7 +155,6 @@ for (const [label, zombieEnv] of [
 		afterEach(() => {
 			service?.stop();
 			delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
-			delete process.env.FLYWHEEL_READOPT_PARKED;
 		});
 
 		it("RE-ADOPTS a parked awaiting_review implement whose tmux is alive (FLY-1319 shape)", async () => {
@@ -275,22 +274,6 @@ for (const [label, zombieEnv] of [
 			);
 			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 			expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		});
-
-		it("kill-switch FLYWHEEL_READOPT_PARKED=0 → parked candidate is not even queried, no re-adopt", async () => {
-			process.env.FLYWHEEL_READOPT_PARKED = "0";
-			store = makeStore(parkedImplement());
-			// With the kill-switch off, seedReconnecting falls back to the
-			// running-only getActiveSessions filter — the parked candidate never
-			// reaches a consumer.
-			store.getActiveSessions.mockReturnValue([]);
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-
-			await service.seedReconnecting();
-
-			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-			expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
 		});
 	});
 }

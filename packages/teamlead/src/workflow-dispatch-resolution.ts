@@ -55,7 +55,6 @@ export function resolveNodeDispatchAtLaunch(
 	input: {
 		runId: string;
 		nodeId: string;
-		env?: Record<string, string | undefined>;
 	},
 ): WorkflowDispatchResolution {
 	const run = store.getWorkflowRun(input.runId);
@@ -66,15 +65,6 @@ export function resolveNodeDispatchAtLaunch(
 	);
 	if (!node?.dispatch) throw new Error("workflow_dispatch_node_not_executable");
 	const pinned = { ...node.dispatch };
-	const env = input.env ?? process.env;
-
-	if (env.FLYWHEEL_VENDOR_AT_DISPATCH === "0") {
-		return {
-			dispatch: narrowEffort(pinned),
-			source: "snapshot_fallback",
-			audit: false,
-		};
-	}
 	if (node.dispatchPinned) {
 		return {
 			dispatch: narrowEffort(pinned),

@@ -155,9 +155,6 @@ export async function reconcileCommDbRunningAgainstFsm(
 		finalizeFailed: 0,
 		parkedVetoed: 0,
 	};
-	// FLY-1329 (A4): kill-switch (shared with the terminal-face prune) restores the
-	// pre-veto reconcile byte-for-byte.
-	const parkGuardOn = process.env.FLYWHEEL_PRUNE_PARK_GUARD !== "0";
 	if (opts.harvest) {
 		result.harvest = {
 			orphanHarvested: 0,
@@ -262,35 +259,33 @@ export async function reconcileCommDbRunningAgainstFsm(
 			// on a live parked runner (the FLY-1319 shape). This is the running-face
 			// delete site that runs FIRST on boot, before the terminal-face prune the
 			// veto also guards. Fail-closed: a lookup that throws keeps the row.
-			if (parkGuardOn) {
-				const activeDb = db;
-				let parked: boolean;
-				try {
-					parked = opts.isParked
-						? opts.isParked(s.execution_id)
-						: activeDb.getEffectiveDeclaredState(s.execution_id, Date.now())
-								?.kind === "parked";
-				} catch (err) {
-					parked = true;
-					console.warn(
-						`[commdb-fsm-reconcile] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
+			const activeDb = db;
+			let parked: boolean;
+			try {
+				parked = opts.isParked
+					? opts.isParked(s.execution_id)
+					: activeDb.getEffectiveDeclaredState(s.execution_id, Date.now())
+							?.kind === "parked";
+			} catch (err) {
+				parked = true;
+				console.warn(
+					`[commdb-fsm-reconcile] declared-state lookup failed for ${s.execution_id}: ${(err as Error).message} — KEEPING the row (fail-closed)`,
+				);
+			}
+			if (parked) {
+				const evidence = opts.parkedGenerationEvidence
+					? await opts
+							.parkedGenerationEvidence(s.execution_id, s.tmux_window)
+							.catch(() => "unavailable" as const)
+					: "unavailable";
+				if (evidence === "superseded") {
+					parkedSuperseded = true;
+				} else {
+					result.parkedVetoed++;
+					console.log(
+						`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
 					);
-				}
-				if (parked) {
-					const evidence = opts.parkedGenerationEvidence
-						? await opts
-								.parkedGenerationEvidence(s.execution_id, s.tmux_window)
-								.catch(() => "unavailable" as const)
-						: "unavailable";
-					if (evidence === "superseded") {
-						parkedSuperseded = true;
-					} else {
-						result.parkedVetoed++;
-						console.log(
-							`[commdb-fsm-reconcile] prune_skipped_parked_conflict: ${s.execution_id} (${projectName}) declares itself parked while its window name does not resolve — KEEPING the row (stale mapping suspected, FLY-1319 shape)`,
-						);
-						continue;
-					}
+					continue;
 				}
 			}
 			try {

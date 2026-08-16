@@ -763,16 +763,6 @@ export async function killTmuxWindow(
  * separately by `killTmuxWindow`. Best-effort: a missing window / cmux session /
  * tmux server is benign success. Never throws.
  */
-function strictCmuxViewEnabled(): boolean {
-	// Shell parity: only an explicit "0" disables a flag; missing or invalid
-	// values fail safe to enabled. A or B is sufficient to require lifetime
-	// protection, while STRICT_VIEW=0 is the ordered rollback lever.
-	const strict = process.env.FLYWHEEL_CMUX_STRICT_VIEW !== "0";
-	const linked = process.env.FLYWHEEL_CMUX_LINKED_VIEW !== "0";
-	const invariant = process.env.FLYWHEEL_CMUX_VIEW_INVARIANT !== "0";
-	return strict && (linked || invariant);
-}
-
 export async function killCmuxLinkedSession(
 	tmuxWindow: string,
 	runTmux: TmuxRunner = defaultTmuxRunner,
@@ -787,42 +777,9 @@ export async function killCmuxLinkedSession(
 	// window. A name-based observe→kill sequence also has an unavoidable rebind
 	// race: the watcher can escrow the observed session and atomically claim a
 	// replacement under the same name before kill-session executes. Therefore
-	// effective strict mode (STRICT && (A || B)) means no Bridge-side view kill
-	// under any observation result. We
+	// strict view mode means no Bridge-side view kill under any observation result. We
 	// still resolve the name when possible so close_runner can write its existing
 	// pin-close marker; resolution failure remains lifecycle-permitting.
-	if (strictCmuxViewEnabled()) {
-		try {
-			const { stdout } = await runTmux([
-				"display-message",
-				"-p",
-				"-t",
-				tmuxWindow,
-				"#{window_name}",
-			]);
-			const windowName = stdout.trim();
-			if (!windowName) {
-				return {
-					killed: true,
-					viewSkipped: true,
-					resolutionError: "empty window_name",
-				};
-			}
-			return {
-				killed: true,
-				viewSkipped: true,
-				cmuxSession: `cmux-${windowName}`,
-			};
-		} catch (err) {
-			return {
-				killed: true,
-				viewSkipped: true,
-				resolutionError: (err as Error).message ?? String(err),
-			};
-		}
-	}
-
-	let windowName: string;
 	try {
 		const { stdout } = await runTmux([
 			"display-message",
@@ -831,23 +788,24 @@ export async function killCmuxLinkedSession(
 			tmuxWindow,
 			"#{window_name}",
 		]);
-		windowName = stdout.trim();
+		const windowName = stdout.trim();
+		if (!windowName) {
+			return {
+				killed: true,
+				viewSkipped: true,
+				resolutionError: "empty window_name",
+			};
+		}
+		return {
+			killed: true,
+			viewSkipped: true,
+			cmuxSession: `cmux-${windowName}`,
+		};
 	} catch (err) {
-		const msg = (err as Error).message ?? String(err);
-		// Window already gone → its linked cmux session is gone too. Benign.
-		if (isTmuxAbsenceMessage(msg)) return { killed: true };
-		console.error(`[tmux-lookup] cmux display-message error: ${msg}`);
-		return { killed: false, error: msg };
-	}
-	if (!windowName) return { killed: true }; // nothing resolved → nothing to kill
-	const cmuxSession = `cmux-${windowName}`;
-	try {
-		await runTmux(["kill-session", "-t", `=${cmuxSession}`]);
-		return { killed: true, cmuxSession };
-	} catch (err) {
-		const msg = (err as Error).message ?? String(err);
-		if (isTmuxAbsenceMessage(msg)) return { killed: true, cmuxSession }; // already gone
-		console.error(`[tmux-lookup] cmux kill-session error: ${msg}`);
-		return { killed: false, cmuxSession, error: msg };
+		return {
+			killed: true,
+			viewSkipped: true,
+			resolutionError: (err as Error).message ?? String(err),
+		};
 	}
 }

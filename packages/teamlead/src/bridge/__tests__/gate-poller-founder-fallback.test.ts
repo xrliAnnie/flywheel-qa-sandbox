@@ -481,7 +481,6 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 
 describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 	afterEach(() => {
-		delete process.env.FLYWHEEL_SHIP_GATE_CARD;
 		delete process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS;
 		vi.restoreAllMocks();
 	});
@@ -511,23 +510,6 @@ describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 			poller,
 			makeSession(),
 			makeQuestion({ created_at: sqliteAgo(30_000) }),
-		);
-		expect(fetchImpl).not.toHaveBeenCalled();
-	});
-
-	it("FLYWHEEL_SHIP_GATE_CARD=0 → ship gate 30s old NOT posted (byte-compat 10min sentinel)", async () => {
-		process.env.FLYWHEEL_SHIP_GATE_CARD = "0";
-		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
-		const poller = makePoller({
-			fetchImpl: fetchImpl as unknown as typeof fetch,
-		});
-		await fallback(
-			poller,
-			makeSession(),
-			makeQuestion({
-				checkpoint: "approve_to_ship",
-				created_at: sqliteAgo(30_000),
-			}),
 		);
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});

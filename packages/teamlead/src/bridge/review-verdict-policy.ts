@@ -46,13 +46,6 @@ export interface ComputeEffectiveVerdictInput {
 	enabled: boolean;
 }
 
-/** Default-on bug-fix switch: only an explicit string "0" restores legacy. */
-export function severityPolicyEnabled(
-	env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-	return env.FLYWHEEL_REVIEW_SEVERITY_POLICY !== "0";
-}
-
 /** MEDIUM/LOW are advisory; missing and unknown severities fail closed. */
 export function isNonBlockingSeverity(severity: unknown): boolean {
 	if (typeof severity !== "string") return false;

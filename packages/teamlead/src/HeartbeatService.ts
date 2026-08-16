@@ -461,7 +461,7 @@ export class HeartbeatService implements ReconnectController {
 		 * server loss is claimed as ONE grouped episode before the per-runner
 		 * orphan machinery buries it silently. Returns the claimed exec ids;
 		 * they join the orphan suppression set. Absent → no-op (byte-compat).
-		 * Gated on FLYWHEEL_FLEET_SENSOR_TMUX=0 at the wiring layer.
+		 * Wired at the Bridge layer.
 		 */
 		private serverLoss?: {
 			check(): Promise<
@@ -1389,11 +1389,7 @@ export class HeartbeatService implements ReconnectController {
 		// design→design_done, implement→awaiting_review), so a `running`-only filter
 		// saw exactly the roles that never park. That is why the FLY-1319 restart
 		// re-adopted the QA session and left the parked implement unmonitored.
-		// `FLYWHEEL_READOPT_PARKED=0` restores the running-only filter.
-		const candidates =
-			process.env.FLYWHEEL_READOPT_PARKED === "0"
-				? this.store.getActiveSessions().filter((s) => s.status === "running")
-				: this.store.getReadoptCandidateSessions();
+		const candidates = this.store.getReadoptCandidateSessions();
 		// FLY-1282 (R3 #1): the public Promise<string[]> contract (FLY-1264 boot
 		// title ids) is unchanged. On the zombie-ON path the boot pass uses the
 		// same aggregated V2 consumption; its held-set is deliberately DISCARDED

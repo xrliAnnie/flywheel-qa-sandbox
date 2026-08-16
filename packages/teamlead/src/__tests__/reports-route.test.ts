@@ -90,7 +90,6 @@ describe("reports-route", () => {
 		app.use(
 			"/api/reports",
 			createReportsRouter({
-				enabled: true,
 				vercelToken: "vt",
 				discordBotToken: "bt",
 				projects,
@@ -124,23 +123,6 @@ describe("reports-route", () => {
 			json: (await res.json()) as Record<string, unknown>,
 		};
 	}
-
-	// ── kill switch ─────────────────────────────────────────────────────
-
-	it("enabled=false → 503 for both endpoints", async () => {
-		await startApp({ enabled: false });
-		const p = await post("/api/reports/publish", {
-			projectName: "x",
-			html: HTML,
-		});
-		expect(p.status).toBe(503);
-		expect(p.json.error).toContain("disabled");
-		const d = await post("/api/reports/deliver", {
-			url: "https://x",
-			projectName: "x",
-		});
-		expect(d.status).toBe(503);
-	});
 
 	// ── publish ─────────────────────────────────────────────────────────
 

@@ -11,14 +11,11 @@ describe("requestCmuxPinClose", () => {
 	let dir: string;
 	let file: string;
 	const prevFile = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
-	const prevSwitch = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly685-"));
 		file = join(dir, "close-requested");
 		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = file;
-		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = undefined as unknown as string;
-		delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
 	});
 
 	afterEach(() => {
@@ -26,9 +23,6 @@ describe("requestCmuxPinClose", () => {
 		if (prevFile === undefined)
 			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
 		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = prevFile;
-		if (prevSwitch === undefined)
-			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
-		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = prevSwitch;
 	});
 
 	it("writes the window_name as its own line", () => {
@@ -47,12 +41,6 @@ describe("requestCmuxPinClose", () => {
 	it("trims surrounding whitespace", () => {
 		requestCmuxPinClose("  FLY-3-claude-c  ");
 		expect(readFileSync(file, "utf8")).toBe("FLY-3-claude-c\n");
-	});
-
-	it("is a no-op when the kill-switch is off (byte-compat)", () => {
-		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = "0";
-		requestCmuxPinClose("FLY-4-claude-d");
-		expect(existsSync(file)).toBe(false);
 	});
 
 	it.each([

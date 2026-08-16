@@ -37,10 +37,7 @@ import {
 } from "../workflow-ship-ready.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import { workflowApprovalGate } from "../workflow-template.js";
-import {
-	isLandNodeEnabled,
-	workflowTemplateDispatchBlockReason,
-} from "../workflow-template-dispatch.js";
+import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
 import {
 	captureDeadExecutionActivityBaseline,
 	probeDeadExecutionActivity,
@@ -186,16 +183,6 @@ export class WorkflowEngineDispatcher {
 	private timer: NodeJS.Timeout | undefined;
 	private reconciling = false;
 
-	/** Default-on, call-time read so the direct flag console needs no restart. */
-	private deadExecutionSweepEnabled(): boolean {
-		return this.env.FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP !== "0";
-	}
-
-	/** Default-on and call-time so operators can stop both tripwire branches. */
-	private unlaunchedTripwireEnabled(): boolean {
-		return this.env.FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE !== "0";
-	}
-
 	private unlaunchedThresholdMs(
 		name:
 			| "FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS"
@@ -309,15 +296,11 @@ export class WorkflowEngineDispatcher {
 			await this.reconcileAdmissionPauseAlert();
 			this.reconcileWorkflowDivergence();
 			await this.reconcileDeadExecutionTripwires();
-			if (this.deadExecutionSweepEnabled()) {
-				await this.reconcileDeadExecutions();
-			}
+			await this.reconcileDeadExecutions();
 			await this.reconcileWorkflowReworks(result);
 			await this.reconcileWorkflowCarriers(result);
-			if (this.unlaunchedTripwireEnabled()) {
-				this.reconcileWorkflowReworkStalls();
-				await this.reconcileUnlaunchedWorkflowStalls();
-			}
+			this.reconcileWorkflowReworkStalls();
+			await this.reconcileUnlaunchedWorkflowStalls();
 			for (const intent of this.options.store.listNonTerminalWorkflowSideEffects()) {
 				if (intent.kind !== "dispatch") continue;
 				const run = this.options.store.getWorkflowRun(intent.run_id);
@@ -2107,9 +2090,6 @@ export class WorkflowEngineDispatcher {
 				return false;
 			};
 			const existingOperation = store.getLandOperationForRun(run.run_id);
-			if (!isLandNodeEnabled(this.env) && !existingOperation) {
-				return holdLandRun("engine_land_node_disabled");
-			}
 			if (!this.options.landExecutor) {
 				return holdLandRun("engine_land_executor_unavailable");
 			}
@@ -2451,7 +2431,6 @@ export class WorkflowEngineDispatcher {
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: intent.run_id,
 			nodeId: intent.node_id,
-			env: this.env,
 		});
 		const admission = this.options.admissionProbe?.();
 		if (admission && !admission.admit) {

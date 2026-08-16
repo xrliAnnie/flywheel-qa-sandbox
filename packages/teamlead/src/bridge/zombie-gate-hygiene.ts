@@ -24,14 +24,12 @@
  * enable it; Z2 detection and checkpoint-less ask hygiene remain live.
  */
 
-import { askHygieneEnabled, type CommDB } from "flywheel-comm/db";
+import type { CommDB } from "flywheel-comm/db";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
 	type SessionEvent,
 } from "../StateStore.js";
 import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
-
-export { askHygieneEnabled };
 
 /**
  * FLY-1328 A2: an ask younger than this is never swept. Longer than the A1
@@ -284,7 +282,6 @@ function classifyRetireOutcome(
 export async function runZombieGateHygiene(
 	deps: ZombieGateHygieneDeps,
 ): Promise<ZombieHygieneResult> {
-	const env = deps.env ?? process.env;
 	const result: ZombieHygieneResult = {
 		resolved: [],
 		unreachable: [],
@@ -299,7 +296,7 @@ export async function runZombieGateHygiene(
 		// nobody can ever read the answer. Those asks go to the ask branch; the
 		// gate branch below is byte-unchanged.
 		if (q.checkpoint == null) {
-			if (askHygieneEnabled(env)) await sweepOwnerlessAsk(q, deps, result);
+			await sweepOwnerlessAsk(q, deps, result);
 			continue;
 		}
 
@@ -431,14 +428,12 @@ export async function runZombieGateHygiene(
 	// FLY-1328: the ask branch owns an isomorphic reconcile over its OWN event
 	// family. Separate event types on purpose — feeding ask intents to the gate
 	// reconcile would let them be classified as gate dispositions.
-	if (askHygieneEnabled(env)) {
-		try {
-			reconcileDanglingIntents(deps, ASK_INTENT_FAMILY);
-		} catch (err) {
-			console.warn(
-				`[ask-hygiene] dangling-intent reconcile error (${deps.projectName}): ${(err as Error).message}`,
-			);
-		}
+	try {
+		reconcileDanglingIntents(deps, ASK_INTENT_FAMILY);
+	} catch (err) {
+		console.warn(
+			`[ask-hygiene] dangling-intent reconcile error (${deps.projectName}): ${(err as Error).message}`,
+		);
 	}
 	return result;
 }

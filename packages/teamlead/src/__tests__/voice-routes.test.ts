@@ -374,18 +374,6 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 		expect(res.status).toBe(200); // reaches the source, not 403
 	});
 
-	it("② respects the master FLYWHEEL_FOUNDER_AUTO_APPROVE=0 switch", async () => {
-		const { app } = makeApp({ env: { FLYWHEEL_FOUNDER_AUTO_APPROVE: "0" } });
-		const res = await httpRequest(
-			app,
-			"POST",
-			"/api/voice/ship-approval",
-			SHIP_BODY,
-		);
-		expect(res.status).toBe(403);
-		expect(res.body.error).toBe("founder_auto_approve_disabled");
-	});
-
 	it("⑤ receipt-first: missing receiptMessageId → 400, nothing written", async () => {
 		const { app, responses } = makeApp();
 		const { receiptMessageId: _omit, ...noReceipt } = SHIP_BODY;

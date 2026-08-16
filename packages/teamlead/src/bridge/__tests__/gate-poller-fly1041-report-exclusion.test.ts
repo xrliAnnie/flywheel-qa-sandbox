@@ -44,7 +44,6 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 
 	afterEach(() => {
 		delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
-		delete process.env.FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE;
 		rmSync(tmp, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -152,44 +151,6 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 		expect(qids).toEqual([ship]);
 		expect(qids).not.toContain(reviewDesign);
 		expect(qids).not.toContain(reviewCode);
-	});
-
-	it("FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE=0 restores review candidates", async () => {
-		process.env.FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE = "0";
-		const db = new CommDB(join(tmp, "flywheel", "comm.db"));
-		const review = db.insertQuestion("exec-1", "test-lead", "review", {
-			checkpoint: "review_code",
-		});
-		db.close();
-		const store = {
-			listNonTerminalSessions: vi.fn(() => []),
-			getSession: vi.fn(() => ({
-				execution_id: "exec-1",
-				issue_id: "FLY-1314",
-				project_name: "flywheel",
-			})),
-			getChatThreadByIssue: vi.fn(() => ({ thread_id: "T1" })),
-		} as unknown as GatePollerConfig["store"];
-		const poller = new GatePoller({
-			pollIntervalMs: 3_000,
-			projects: [
-				{
-					projectName: "flywheel",
-					leads: [{ agentId: "test-lead", botToken: "bot", chatChannel: "C1" }],
-				},
-			] as unknown as GatePollerConfig["projects"],
-			store,
-			runtimeRegistry: {} as unknown as GatePollerConfig["runtimeRegistry"],
-			chatThreadsEnabled: true,
-			discordOwnerUserId: OWNER,
-			founderReplyDeliverGraceMs: 0,
-		}) as unknown as Priv;
-
-		await poller.founderReplyDeliverPass();
-		const qids = (
-			emitSpy.mock.calls[0]?.[1] as Array<{ questionId: string }>
-		).map((q) => q.questionId);
-		expect(qids).toEqual([review]);
 	});
 
 	it("receipt foundation scans a non-terminal issue thread with zero pending questions", async () => {

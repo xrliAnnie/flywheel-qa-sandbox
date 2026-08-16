@@ -25,13 +25,10 @@ Founder 在当前审批卡片上批准后，Bridge 会把审批投影到对应�
 所有 land operation 以批准 head 为幂等键，并由 generation-fenced lease 保护。进程退出后可安全重试；已存在的步骤收据不会重复执行不可逆动作。
 
 - `partial`：通常是 workflow 尚未完成、closeout 尚未收敛、worktree/归档/Linear Done 暂时失败。修复依赖后让 dispatcher 下一轮重试，或对同一参数重发 lifecycle land 请求。
-- `held`：authority/head 不一致、PR 已关闭未合并、sanctioned workflow 明确失败，或 land 功能在 operation 激活前被关闭。Workflow run 同时进入 held，并通过 workflow alert outbox 向 Lead 升级；先处理原因，再按 run 管理流程恢复。已激活的 operation 不受随后 flag-off 影响，会继续收尾，避免 merge 后留下半成品。
+- `held`：authority/head 不一致、PR 已关闭未合并或 sanctioned workflow 明确失败。Workflow run 同时进入 held，并通过 workflow alert outbox 向 Lead 升级；先处理原因，再按 run 管理流程恢复。
 - `busy`：另一个有效 lease 正在执行，无需人工干预。
 
-Flag-off 恢复分两类：
-
-- A. `FLYWHEEL_LAND_NODE=0`：尚未激活 operation 的 engine run 会被安全 hold，不会 merge；已激活 operation 继续运行。恢复 flag 后，由 Lead 在确认 head 和审批仍有效后恢复 held run。
-- B. 紧急回退：保留旧工程模板绑定，按 FLY-1338 人工范式完成 sanctioned `:cool:` merge、全部 session close、worktree 清理、Linear Done 与 thread archive；不要使用裸 `gh pr merge --squash`。
+紧急回退时，保留旧工程模板绑定，按 FLY-1338 人工范式完成 sanctioned `:cool:` merge、全部 session close、worktree 清理、Linear Done 与 thread archive；不要使用裸 `gh pr merge --squash`。
 
 ## Legacy 在飞单检查单
 

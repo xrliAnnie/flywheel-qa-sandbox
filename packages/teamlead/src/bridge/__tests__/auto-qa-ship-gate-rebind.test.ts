@@ -270,15 +270,6 @@ describe("FLY-945 Fix B: ship-gate rebind on drifted PASS qa_result", () => {
 		expect(s.store.getSession("main-1")?.pr_head_sha).toBe(OLD);
 	});
 
-	it("⑤ FLYWHEEL_SHIP_GATE_REBIND=0 → reverse-compat drop", async () => {
-		const s = await setup({ env: { FLYWHEEL_SHIP_GATE_REBIND: "0" } });
-		seed(s.store);
-		await s.coord.onQaResult(verdict());
-		expect(s.store.getSession("main-1")?.pr_head_sha).toBe(OLD);
-		expect(s.rebindNotifies).toHaveLength(0);
-		expect(s.shipReady()).toBe(0);
-	});
-
 	it("⑦ follow-up post fails → session head STILL rebound (text path fixed), NO binding, durable retry marker; next PASS re-send anchors it", async () => {
 		const s = await setup();
 		seed(s.store);

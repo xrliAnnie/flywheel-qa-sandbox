@@ -10,13 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { type WorktreeExecFn, WorktreeManager } from "../WorktreeManager.js";
 
 const execFileAsync = promisify(execFile);
 
 const roots: string[] = [];
-let priorPushGuard: string | undefined;
 
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" }).trim();
@@ -47,7 +46,16 @@ function seedRepo() {
 		root,
 		baseDir,
 		base: git(root, "rev-parse", "HEAD"),
-		manager: new WorktreeManager({ baseDir }),
+		manager: new WorktreeManager({
+			baseDir,
+			pushGuardStateDir: join(baseDir, "state"),
+			pushGuardSourcePath: join(
+				process.cwd(),
+				"assets",
+				"push-guard",
+				"pre-push",
+			),
+		}),
 	};
 }
 
@@ -84,14 +92,7 @@ function addSubmodule(repo: ReturnType<typeof seedRepo>) {
 	return { anchor, second: git(source, "rev-parse", "HEAD") };
 }
 
-beforeEach(() => {
-	priorPushGuard = process.env.FLYWHEEL_PUSH_GUARD;
-	process.env.FLYWHEEL_PUSH_GUARD = "0";
-});
-
 afterEach(() => {
-	if (priorPushGuard === undefined) delete process.env.FLYWHEEL_PUSH_GUARD;
-	else process.env.FLYWHEEL_PUSH_GUARD = priorPushGuard;
 	for (const root of roots.splice(0)) {
 		rmSync(root, { recursive: true, force: true });
 	}

@@ -71,12 +71,10 @@ export async function evaluateTextSource(
 
 	// Tier-2 exact allowlist — zero AI, never calls the classifier.
 	// FLY-1041 Fix C: affirmation-prefix normalization ("嗯ship" → "ship") is
-	// default-ON with its own kill-switch (read per call — flip without a
-	// Bridge restart). `FLYWHEEL_TIER2_PREFIX_NORM=0` → byte-compatible
-	// pre-FLY-1041 matcher (「嗯ship」 downgrades to Tier-3).
-	const prefixNorm = process.env.FLYWHEEL_TIER2_PREFIX_NORM !== "0";
+	// part of the deterministic matcher before Tier-3 classification.
 	if (
-		matchTier2Approval(message.content, tier2Gate, { prefixNorm }) === "approve"
+		matchTier2Approval(message.content, tier2Gate, { prefixNorm: true }) ===
+		"approve"
 	) {
 		return { ...base, kind: "approve", evidence: { stage: "tier2_approve" } };
 	}

@@ -2755,7 +2755,6 @@ export function createRunsRouter(
 			const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 				runId: generalizedSelection.runId,
 				nodeId: generalizedSelection.nodeId,
-				env: process.env,
 			});
 			const workflowAdmission = store.admitGeneralizedWorkflowExecution({
 				runId: generalizedSelection.runId,

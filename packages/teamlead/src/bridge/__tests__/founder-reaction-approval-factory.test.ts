@@ -2,12 +2,12 @@
  * FLY-799 — founder REACTION ship-approval factory (RED first).
  *
  * Produces the per-gate reaction callback the gate-poller's reaction pass calls.
- * Same gating as the text factory (default-ON kill-switch + per-project denylist
- * + resolvable canonical founder id — all read per-call); any gate failing →
- * null (the pass simply skips, re-checks next tick).
+ * Same gating as the text factory (per-project denylist + resolvable canonical
+ * founder id); any gate failing → null (the pass simply skips, re-checks next
+ * tick).
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeFounderReactionApprovalCallback } from "../approval-signal/founder-reaction-approval-factory.js";
 
 const gate = {
@@ -22,10 +22,6 @@ const callArgs = {
 	db: {} as never,
 	reactionFetcherImpl: vi.fn(),
 };
-
-afterEach(() => {
-	delete process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE;
-});
 
 function make(over = {}) {
 	const handlerImpl = vi
@@ -47,13 +43,6 @@ describe("makeFounderReactionApprovalCallback — gating", () => {
 		const r = await cb(callArgs);
 		expect(r).toEqual({ handled: ["Q-1"], retrySafe: true });
 		expect(handlerImpl).toHaveBeenCalledOnce();
-	});
-
-	it("kill-switch =0 → null, never delegates", async () => {
-		process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE = "0";
-		const { cb, handlerImpl } = make();
-		expect(await cb(callArgs)).toBeNull();
-		expect(handlerImpl).not.toHaveBeenCalled();
 	});
 
 	it("per-project denylist → null", async () => {

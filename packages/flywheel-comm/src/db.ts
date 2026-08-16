@@ -390,8 +390,7 @@ export interface FinalizeSessionResult {
 	 * teardown. Required, not optional: `CommDB.finalizeSession` is the single
 	 * authoritative producer of this type, so requiring the field makes any
 	 * consumer that forgets to carry the count a compile error rather than a
-	 * silent zero. Always 0 when FLYWHEEL_ASK_HYGIENE=0 — the DB path reverts,
-	 * and the authority result reports that truthfully.
+	 * silent zero.
 	 */
 	retiredAskCount: number;
 	deletedSessionCount: number;
@@ -401,22 +400,6 @@ export type GuardedFinalizeSessionResult =
 	| { finalized: false; reason: "turn_holder" }
 	| { finalized: false; reason: "target_changed" }
 	| { finalized: true; result: FinalizeSessionResult };
-
-function commDbProtectionEnabled(): boolean {
-	return process.env.FLYWHEEL_COMMDB_PROTECTION !== "0";
-}
-
-/**
- * FLY-1328 kill-switch (default ON). OFF restores the pre-FLY-1328 byte path on
- * both sides of the cascade: no ask retirement, and no `resolved_via` stamp on
- * the gate rows either. Shared export — `db.ts` (A1 cascade) and the teamlead
- * patrol (A2 sweep) must never disagree about whether the feature is live.
- */
-export function askHygieneEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_ASK_HYGIENE !== "0";
-}
 
 /**
  * FLY-1328: an ask younger than this at teardown is spared. It kills the
@@ -1335,9 +1318,7 @@ export class CommDB {
 		questionId: string,
 		opts?: { supersededBy?: string },
 	): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "relay_state != 'terminal_disposed'"
-			: "datetime(expires_at) > datetime('now')";
+		const answerable = "relay_state != 'terminal_disposed'";
 		const info = this.db
 			.prepare(
 				`UPDATE mailbox SET
@@ -1471,15 +1452,9 @@ export class CommDB {
 			supersededBy?: string;
 		},
 	): boolean {
-		const protection = commDbProtectionEnabled();
-		const answerable = protection
-			? "relay_state != 'terminal_disposed'"
-			: "datetime(expires_at) > datetime('now')";
-		// Legacy pending filters on expires_at, so the forensic window only applies
-		// where relay_state does the filtering — otherwise the row would linger in
-		// the very queue this is clearing.
+		const answerable = "relay_state != 'terminal_disposed'";
 		const expiry =
-			opts.retention === "ask_forensic" && protection
+			opts.retention === "ask_forensic"
 				? `strftime('%Y-%m-%dT%H:%M:%fZ','now', '${ASK_FORENSIC_TTL_SQL}')`
 				: "strftime('%Y-%m-%dT%H:%M:%fZ','now')";
 		const info = this.db
@@ -1516,9 +1491,7 @@ export class CommDB {
 	 * applies, point-queried for the deferred-approval rebind pass.)
 	 */
 	isQuestionPending(questionId: string): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		const row = this.db
 			.prepare(
 				`SELECT 1 AS hit FROM mailbox_message_projection q
@@ -1534,9 +1507,7 @@ export class CommDB {
 
 	/** FLY-1314: complete narrow-row read for global issue/family ordering. */
 	getGatesForSupersede(): GateSupersedeRow[] {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.prepare(
 				`SELECT q.rowid AS row_id, q.id, q.from_agent, q.checkpoint,
@@ -1585,9 +1556,7 @@ export class CommDB {
 	 * deliberately count; answered targets deliberately do not.
 	 */
 	canSupersedeGate(questionId: string, supersessorId: string): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "old.relay_state != 'terminal_disposed'"
-			: "datetime(old.expires_at) > datetime('now')";
+		const answerable = "old.relay_state != 'terminal_disposed'";
 		const hit = this.db
 			.prepare(
 				`SELECT 1 AS hit
@@ -1741,7 +1710,6 @@ export class CommDB {
 	}
 
 	markQuestionProtected(questionId: string, logicalEventId: string): boolean {
-		if (!commDbProtectionEnabled()) return true;
 		const result = this.db
 			.prepare(
 				`UPDATE mailbox SET
@@ -1784,9 +1752,7 @@ export class CommDB {
 		expectedCheckpoint: string;
 		provenance?: MessageProvenance;
 	}): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "relay_state != 'terminal_disposed'"
-			: "datetime(expires_at) > datetime('now')";
+		const answerable = "relay_state != 'terminal_disposed'";
 		return this.db
 			.transaction(() => {
 				const question = this.db
@@ -1936,10 +1902,7 @@ export class CommDB {
 				if (
 					question.resolved_at !== null ||
 					question.superseded_at !== null ||
-					question.relay_state === "terminal_disposed" ||
-					(!commDbProtectionEnabled() &&
-						question.expires_at !== null &&
-						Date.parse(question.expires_at) <= Date.parse(input.now))
+					question.relay_state === "terminal_disposed"
 				) {
 					throw new Error(`question ${input.questionId} is no longer open`);
 				}
@@ -1982,9 +1945,7 @@ export class CommDB {
 		const payload = canonicalJsonString(input.payload);
 		const payloadDigest = canonicalSubmissionDigest(input.payload);
 		const at = new Date().toISOString();
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.transaction(() => {
 				const question = this.db
@@ -2439,9 +2400,7 @@ export class CommDB {
 	}
 
 	getPendingQuestions(leadId: string): Message[] {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM mailbox_message_projection q
@@ -2483,9 +2442,7 @@ export class CommDB {
 		runnerId: string,
 		checkpoint: string,
 	): Message | undefined {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.prepare(
 				`SELECT q.* FROM mailbox_message_projection q
@@ -4174,9 +4131,7 @@ export class CommDB {
 	// ── Dynamic Timeout (Phase 2) ──
 
 	hasPendingQuestionsFrom(execId: string): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
@@ -4199,9 +4154,7 @@ export class CommDB {
 	 * asks must not stop the loop). Stuck detection keeps the broad predicate.
 	 */
 	hasPendingBlockingGateFrom(execId: string): boolean {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		const row = this.db
 			.prepare(
 				`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
@@ -5692,9 +5645,7 @@ export class CommDB {
 		leadId: string,
 		lowerBound?: string,
 	): PendingRunnerQuestion | undefined {
-		const answerable = commDbProtectionEnabled()
-			? "q.relay_state != 'terminal_disposed'"
-			: "datetime(q.expires_at) > datetime('now')";
+		const answerable = "q.relay_state != 'terminal_disposed'";
 		return this.db
 			.prepare(
 				`SELECT q.id, q.checkpoint FROM mailbox_message_projection q
@@ -5730,7 +5681,6 @@ export class CommDB {
 	 * reading. Gate semantics (predicates, review-gate exemption) are untouched.
 	 */
 	finalizeSession(executionId: string): FinalizeSessionResult {
-		const askHygiene = askHygieneEnabled();
 		return this.db.transaction((targetExecutionId: string) => {
 			// A machine-proven terminal runner is an explicit H2 disposal condition:
 			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
@@ -5741,8 +5691,8 @@ export class CommDB {
 					   state = 'ACKED',
 					   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 					   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-					   relay_state = 'terminal_disposed'
-					   ${askHygiene ? ", resolved_via = 'owner_closed'" : ""}
+					   relay_state = 'terminal_disposed',
+					   resolved_via = 'owner_closed'
 					 WHERE q.from_agent = ?
 					   AND q.type = 'question'
 					   AND q.checkpoint IS NOT NULL
@@ -5764,20 +5714,13 @@ export class CommDB {
 			// the grace window is spared: it may not have reached the Lead yet, and
 			// the queue can afford one more tick far more than the founder can afford
 			// a swallowed report.
-			let retiredAsks = 0;
-			if (askHygiene) {
-				const forensicTtl = commDbProtectionEnabled()
-					? ASK_FORENSIC_TTL_SQL
-					: // Legacy pending filters on expires_at > now — expire on the spot
-						// or the row would linger in the very queue we are clearing.
-						"+0 seconds";
-				retiredAsks = this.db
-					.prepare(
-						`UPDATE mailbox AS q SET
+			const retiredAsks = this.db
+				.prepare(
+					`UPDATE mailbox AS q SET
 						   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 						   state = 'ACKED',
 						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-						   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '${forensicTtl}'),
+						   expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now', '${ASK_FORENSIC_TTL_SQL}'),
 						   relay_state = 'terminal_disposed',
 						   resolved_via = 'owner_closed'
 						 WHERE q.from_agent = ?
@@ -5790,9 +5733,8 @@ export class CommDB {
 						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
-					)
-					.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
-			}
+				)
+				.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
 
 			this.pruneTerminalRunnerReceiptWakes(targetExecutionId);
 			this.db

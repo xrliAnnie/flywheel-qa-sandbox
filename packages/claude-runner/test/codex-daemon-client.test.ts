@@ -965,38 +965,6 @@ describe("runGoalToTerminal", () => {
 		expect(latched).toBe(true);
 	});
 
-	it("FLY-1257: FLYWHEEL_CODEX_GATE_WAIT=0 restores the legacy blocked terminal", async () => {
-		const prior = process.env.FLYWHEEL_CODEX_GATE_WAIT;
-		process.env.FLYWHEEL_CODEX_GATE_WAIT = "0";
-		try {
-			const d = new FakeDaemon();
-			d.responders.set("thread/goal/set", () => ({}));
-			d.responders.set("turn/start", (_p, _id, push) => {
-				push({
-					method: "goal/updated",
-					params: { threadId: "t", goal: { status: "blocked" } },
-				});
-				return {};
-			});
-			const writes: boolean[] = [];
-			const res = await runGoalToTerminal(makeClient(d), {
-				threadId: "t",
-				objective: "legacy",
-				isWaiting: () => true,
-				readGateHoldLatch: () => true,
-				writeGateHoldLatch: (held) => writes.push(held),
-				sleep: noSleep,
-				now: () => 0,
-			});
-			expect(res.status).toBe("blocked");
-			expect(writes).toEqual([]);
-			expect(d.sentMethods()[0]).toBe("thread/goal/set");
-		} finally {
-			if (prior === undefined) delete process.env.FLYWHEEL_CODEX_GATE_WAIT;
-			else process.env.FLYWHEEL_CODEX_GATE_WAIT = prior;
-		}
-	});
-
 	it("poll fallback catches a terminal status missed by the notification stream", async () => {
 		const d = new FakeDaemon();
 		d.responders.set("thread/goal/set", () => ({}));

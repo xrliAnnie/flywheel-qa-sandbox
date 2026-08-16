@@ -508,7 +508,7 @@ export interface StaleBlockerGuardDeps {
 	 * the residue kill-switch's zero-call path. Runs before every FLY-742 gate.
 	 */
 	reconcileGhost?: (blocker: Session) => Promise<boolean>;
-	/** FLYWHEEL_CRON_STALE_GUARD !== "0" (default-on). */
+	/** Whether this guard is wired for the caller. */
 	enabled: boolean;
 	/** FLYWHEEL_CRON_STALE_TTL_MIN (default 120), in ms. */
 	staleTtlMs: number;

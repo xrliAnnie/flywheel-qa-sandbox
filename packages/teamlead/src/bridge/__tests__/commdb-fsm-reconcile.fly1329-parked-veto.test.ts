@@ -187,24 +187,4 @@ describe("FLY-1329 A4: reconcileCommDbRunningAgainstFsm respects a park declarat
 			db.close();
 		}
 	});
-
-	it("kill-switch FLYWHEEL_PRUNE_PARK_GUARD=0 restores the un-vetoed reconcile", async () => {
-		const prev = process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-		process.env.FLYWHEEL_PRUNE_PARK_GUARD = "0";
-		try {
-			seedRunning("killswitch", true);
-
-			const result = await reconcileCommDbRunningAgainstFsm(
-				"flywheel",
-				fsmCompleted,
-				{ dbPath, probe: probeDead },
-			);
-
-			expect(result.reconciled).toBe(1);
-			expect(result.parkedVetoed).toBe(0);
-		} finally {
-			if (prev === undefined) delete process.env.FLYWHEEL_PRUNE_PARK_GUARD;
-			else process.env.FLYWHEEL_PRUNE_PARK_GUARD = prev;
-		}
-	});
 });

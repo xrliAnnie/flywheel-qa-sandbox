@@ -97,8 +97,6 @@ export interface PublishReportEnvelope {
 	messageId: string | null;
 	screenshot: string | null;
 	delivered: boolean;
-	/** Present when FLYWHEEL_REMOTE_REPORTS=0 short-circuited the run. */
-	skipped?: boolean;
 	/** Present when --publish-only intentionally stopped after hosting. */
 	publishOnly?: boolean;
 	error?: string;
@@ -115,24 +113,6 @@ export async function publishReport(
 	const env = args.env ?? process.env;
 	const fetchImpl = args.fetchImpl ?? fetch;
 	const warn = args.warn ?? ((msg: string) => console.error(msg));
-
-	// Kill switch — zero network calls (Bridge enforces its own 503 too).
-	if (env.FLYWHEEL_REMOTE_REPORTS === "0") {
-		warn(
-			"publish-report: FLYWHEEL_REMOTE_REPORTS=0 — remote report pipeline disabled, skipping (local report untouched)",
-		);
-		return {
-			envelope: {
-				url: null,
-				reportId: null,
-				messageId: null,
-				screenshot: null,
-				delivered: false,
-				skipped: true,
-			},
-			exitCode: 0,
-		};
-	}
 
 	const fail = (error: string): PublishReportResult => ({
 		envelope: {

@@ -128,7 +128,7 @@ describe("FLY-1041 QA · single bindable ship gate (real CommDB, end-to-end)", (
 		db.insertQuestion("exec-1", "lead-1", "g2", {
 			checkpoint: "approve_to_ship",
 		});
-		// No retireShipGate call (mirrors FLYWHEEL_SHIP_GATE_RETIRE=0 leaving both live).
+		// No retireShipGate call, leaving both gates live for candidate selection.
 		expect(shipBindingCandidates(db, "lead-1")).toHaveLength(2);
 	});
 });

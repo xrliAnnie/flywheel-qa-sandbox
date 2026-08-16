@@ -7,11 +7,8 @@ import { CommDB } from "../db.js";
 describe("CommDB.finalizeSession (FLY-1238)", () => {
 	let db: CommDB;
 	let tmpDir: string;
-	let previousProtection: string | undefined;
 
 	beforeEach(() => {
-		previousProtection = process.env.FLYWHEEL_COMMDB_PROTECTION;
-		delete process.env.FLYWHEEL_COMMDB_PROTECTION;
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-fly1238-db-"));
 		db = new CommDB(join(tmpDir, "comm.db"));
 	});
@@ -19,11 +16,6 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 	afterEach(() => {
 		db.close();
 		rmSync(tmpDir, { recursive: true, force: true });
-		if (previousProtection === undefined) {
-			delete process.env.FLYWHEEL_COMMDB_PROTECTION;
-		} else {
-			process.env.FLYWHEEL_COMMDB_PROTECTION = previousProtection;
-		}
 	});
 
 	it("machine-proven terminal finalization disposes checkpoint gates even with protection on", () => {
@@ -49,8 +41,7 @@ describe("CommDB.finalizeSession (FLY-1238)", () => {
 		}
 	});
 
-	it("retires only unanswered checkpoint gates in explicit legacy mode too", () => {
-		process.env.FLYWHEEL_COMMDB_PROTECTION = "0";
+	it("retires only unanswered checkpoint gates and preserves fresh asks", () => {
 		db.registerSession("exec-a", "window-a", "proj", "FLY-1238", "lead");
 		db.registerSession("exec-b", "window-b", "proj", "FLY-OTHER", "lead");
 		db.enqueueRunnerPhaseWake(

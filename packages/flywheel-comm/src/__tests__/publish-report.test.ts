@@ -111,19 +111,6 @@ describe("publishReport", () => {
 		);
 	}
 
-	// ── kill switch ─────────────────────────────────────────────────────
-
-	it("FLYWHEEL_REMOTE_REPORTS=0 → skipped envelope, exit 0, zero network", async () => {
-		const args = makeArgs();
-		(args.env as Record<string, string>).FLYWHEEL_REMOTE_REPORTS = "0";
-		const { envelope, exitCode } = await publishReport(args);
-		expect(exitCode).toBe(0);
-		expect(envelope.skipped).toBe(true);
-		expect(envelope.delivered).toBe(false);
-		expect(fetchMock).not.toHaveBeenCalled();
-		expect(proofShotCalls).toEqual([]);
-	});
-
 	// ── input validation ────────────────────────────────────────────────
 
 	it("missing bridge url env → exit 1", async () => {

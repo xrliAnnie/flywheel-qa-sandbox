@@ -79,8 +79,6 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		if (originalCommDir !== undefined)
 			process.env.FLYWHEEL_COMM_DIR = originalCommDir;
 		else delete process.env.FLYWHEEL_COMM_DIR;
-		delete process.env.FLYWHEEL_ASK_HYGIENE;
-		delete process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE;
 		rmSync(tmpHome, { recursive: true, force: true });
 		warnSpy.mockRestore();
 	});
@@ -161,50 +159,7 @@ describe("FLY-1328 A2 sweep — real GatePoller wiring", () => {
 		expect(row.relay_state).toBe("terminal_disposed");
 	});
 
-	it("FLYWHEEL_ASK_HYGIENE=0 leaves the ask pending even though the pass still runs", async () => {
-		process.env.FLYWHEEL_ASK_HYGIENE = "0";
-		const qid = seedOwnerlessAsk();
-
-		await runPass(makePoller());
-
-		expect(isPending(qid)).toBe(true);
-		const db = new CommDB(dbPath);
-		const row = db.getMessageById(qid) as unknown as {
-			resolved_via?: string | null;
-		};
-		db.close();
-		expect(row.resolved_via).toBeNull();
-	});
-
-	it("ASK-only does NOT touch disabled reconcile bookkeeping", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "0";
-		const qid = seedOwnerlessAsk();
-		const poller = makePoller();
-		const reconcile = (
-			poller as unknown as { founderReplyUnreachable: Record<string, unknown> }
-		).founderReplyUnreachable;
-		const begin = vi.spyOn(
-			reconcile as unknown as { beginUnreachableSweep: () => void },
-			"beginUnreachableSweep",
-		);
-		const end = vi.spyOn(
-			reconcile as unknown as { endUnreachableSweep: () => void },
-			"endUnreachableSweep",
-		);
-
-		await runPass(poller);
-
-		// Positive control FIRST: the ask sweep really ran on this pass, so the
-		// two "not called" assertions below describe a live pass, not a dead one.
-		expect(isPending(qid)).toBe(false);
-		// Delete the `sweepBookkeeping` guard and these go red: an ASK-only pass
-		// would clear unreachable episodes neither capability looked for.
-		expect(begin).not.toHaveBeenCalled();
-		expect(end).not.toHaveBeenCalled();
-	});
-
-	it("with the reconcile ON, the same pass DOES run the bookkeeping (control for the case above)", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_UNREACHABLE = "1";
+	it("runs founder-reply reconciliation bookkeeping on the same pass", async () => {
 		seedOwnerlessAsk();
 		const poller = makePoller();
 		const reconcile = (

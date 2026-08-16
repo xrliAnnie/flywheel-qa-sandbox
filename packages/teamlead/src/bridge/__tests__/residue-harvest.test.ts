@@ -264,17 +264,14 @@ describe("residueMaintenanceEveryNTicks", () => {
 });
 
 describe("plugin production wiring", () => {
-	it("captures the residue flag once and wires the same harvester into all three entries", () => {
+	it("wires the same harvester into all three entries", () => {
 		const here = dirname(fileURLToPath(import.meta.url));
 		const source = readFileSync(join(here, "..", "plugin.ts"), "utf8");
-		expect(source).toContain(
-			'process.env.FLYWHEEL_COMMDB_RESIDUE_HARVEST !== "0"',
-		);
 		expect(source).toContain("reconcileGhost: opts?.residueHarvester");
 		expect(source).toContain("residueHarvester,");
 		expect(source).toContain("runResidueAwareBootSweep({");
 		expect(source).toContain("pruneTerminalCommDb: pruneResidueCommDb");
-		expect(source).toContain("includeCrashPreserve: residueHarvestEnabled");
+		expect(source).toContain("includeCrashPreserve: true");
 
 		const maintenanceStart = source.indexOf("async (tick) => {");
 		const residueTick = source.indexOf(

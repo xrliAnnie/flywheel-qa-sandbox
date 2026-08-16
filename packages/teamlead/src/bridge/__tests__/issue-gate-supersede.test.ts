@@ -257,11 +257,11 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 		expect(db.getResponse(oldGate)).toBeDefined();
 	});
 
-	it("leaves unmapped gates untouched and honors both mutation kill switches", () => {
+	it("leaves unmapped gates untouched and honors the patrol mode", () => {
 		const oldApprove = db.insertQuestion("unknown-a", "lead", "ship 1", {
 			checkpoint: "approve_to_ship",
 		});
-		db.insertQuestion("unknown-b", "lead", "ship 2", {
+		const newApprove = db.insertQuestion("unknown-b", "lead", "ship 2", {
 			checkpoint: "approve_to_ship",
 		});
 		const unmappedEvents: string[] = [];
@@ -309,10 +309,12 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 				projectName: "flywheel",
 				db,
 				store: mappedStore,
-				env: { FLYWHEEL_SHIP_GATE_RETIRE: "0" },
+				env: {},
 			}),
-		).toMatchObject({ retired: 1 });
-		expect(db.getMessageById(oldApprove)?.superseded_at).toBeNull();
+		).toMatchObject({ retired: 2 });
+		expect(db.getMessageById(oldApprove)).toMatchObject({
+			superseded_by: newApprove,
+		});
 		expect(db.getMessageById(oldReview)).toMatchObject({
 			superseded_by: newReview,
 		});

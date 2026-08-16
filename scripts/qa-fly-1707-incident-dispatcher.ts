@@ -316,8 +316,6 @@ const dispatcher = new WorkflowEngineDispatcher({
 		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
 		FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-		FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP: "0",
-		FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE: "0",
 	},
 	stateRoot: mkdtempSync(join(tmpdir(), "fly1707-dispatch-replay-")),
 	now: () => new Date("2026-08-11T14:32:00.000Z"),

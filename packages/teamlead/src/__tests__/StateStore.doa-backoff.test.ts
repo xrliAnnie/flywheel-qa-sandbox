@@ -285,49 +285,6 @@ describe("StateStore DOA re-dispatch backoff", () => {
 		});
 	});
 
-	it("kill switch activates and closes claims without enforcing or settling DOA rows", () => {
-		store.upsertSession(failedSession("failed-1", BASE - 30_000, 30_000));
-		evaluate(store, "reserved-owner", BASE);
-		evaluate(store, "reserved-owner", BASE + 60_000);
-		store.insertLaunchClaim({
-			executionId: "kill-switch-exempt",
-			rootUuid: "issue-uuid",
-			project: "flywheel",
-			role: "main",
-		});
-		store.bindWorktreeOnce(
-			"kill-switch-exempt",
-			{
-				path: "/tmp/kill-switch",
-				branch: "flywheel-FLY-1718-qa",
-				generation: "kill-switch",
-			},
-			{ issueId: "issue-uuid", projectName: "flywheel" },
-		);
-		vi.stubEnv("FLYWHEEL_DOA_BACKOFF", "0");
-
-		expect(
-			store.verifyAndRenewDoaReleaseOwner(
-				"kill-switch-exempt",
-				BASE + 61_000,
-				600_000,
-			),
-		).toEqual({ ok: true });
-		expect(store.activateLaunchAndSettleDoa("kill-switch-exempt")).toEqual({
-			ok: true,
-		});
-		store.closeLaunchAndReleaseDoa("kill-switch-exempt", BASE + 62_000);
-		expect(store.getLaunchClaim("kill-switch-exempt")).toMatchObject({
-			state: "closed",
-		});
-		expect(
-			store.getDoaBackoffLedger("flywheel", "issue-uuid", "main"),
-		).toMatchObject({
-			releaseState: "reserved",
-			releaseOwnerExecutionId: "reserved-owner",
-		});
-	});
-
 	it("moves the fifth settled DOA failure to needs_lead with one durable alert", () => {
 		let now = BASE;
 		let predecessor = "failed-1";

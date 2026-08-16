@@ -245,45 +245,6 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
-	it("refuses to materialize a land snapshot while the land kill switch is off", async () => {
-		const store = await StateStore.create(":memory:");
-		const seed = legacyWorkflowSeeds().find(
-			(candidate) => candidate.templateId === "tpl_eng_heavy_land_v1",
-		)!;
-		store.importWorkflowTemplateSeed(seed);
-		store.bindWorkflowCategory({
-			project: "flywheel",
-			taskCategory: "land",
-			templateId: seed.templateId,
-			updatedBy: "lead",
-		});
-
-		expect(() =>
-			store.materializeWorkflowRun({
-				runId: "run-land-disabled",
-				issueId: "FLY-LAND-OFF",
-				projectName: "flywheel",
-				taskCategory: "land",
-				claimsReadEnrolled: true,
-				actor: "lead",
-				env: {
-					...WORKFLOW_ON,
-					FLYWHEEL_LAND_NODE: "0",
-				},
-				startReservation: {
-					idempotencyKey: "land-disabled-start",
-					selectionDigest: "selection-digest",
-					nodeId: "design",
-					attempt: 1,
-					executionId: "design-land-disabled",
-					createdAt: "2026-07-21T20:00:00.000Z",
-				},
-			}),
-		).toThrow(/land workflow node is disabled/);
-		expect(store.getWorkflowRun("run-land-disabled")).toBeUndefined();
-		store.close();
-	});
-
 	it("gates all schema-v2 mutation seams independently and requires the dispatch predicate before materialization", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-agent-"));

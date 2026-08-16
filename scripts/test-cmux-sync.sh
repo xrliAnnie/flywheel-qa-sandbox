@@ -207,6 +207,7 @@ topo_tmux() {
       done < "$TOPO_SESSIONS"
       ;;
     list-windows)
+      [[ "${MOCK_TMUX_LISTWINDOWS_FAIL:-0}" == "1" ]] && return 1
       local target="" fmt='#{session_name}|#{window_id}|#{window_name}'
       while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -292,6 +293,10 @@ topo_tmux() {
       while [[ $# -gt 0 ]]; do
         case "$1" in -p) shift ;; -t) target="$2"; shift 2 ;; *) fmt="$1"; shift ;; esac
       done
+      case "$fmt" in
+        '#{pid}') printf '%s\n' "$MOCK_TMUX_SERVER_PID"; return 0 ;;
+        '#{socket_path}') printf '%s\n' "$MOCK_TMUX_SOCKET_PATH"; return 0 ;;
+      esac
       topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"
       if ! topo_session_exists "$session"; then
         if [[ "$session" == "${MOCK_TMUX_GENERATION_FLIP_ON_MISSING_SESSION:-}" ]]; then
@@ -359,6 +364,7 @@ topo_tmux() {
       topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"; window="$TOPO_TARGET_WINDOW"
       row=$(topo_window_row "$session" "$window") || return 1
       window=$(printf '%s' "$row" | cut -d'|' -f2)
+      MOCK_TMUX_SELECTS+="$target"$'\n'
       tmp="$TOPO_WINDOWS.tmp"
       awk -F'|' -v OFS='|' -v s="$session" -v w="$window" '$1 == s { $4=($2 == w ? 1 : 0) } { print }' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
       ;;
@@ -382,12 +388,20 @@ topo_tmux() {
       topo_target_parts "$target"; session="$TOPO_TARGET_SESSION"; window="$TOPO_TARGET_WINDOW"
       row=$(topo_window_row "$session" "$window") || return 1
       window=$(printf '%s' "$row" | cut -d'|' -f2)
+      MOCK_TMUX_KILLED_WINDOWS+="$target"$'\n'
       tmp="$TOPO_WINDOWS.tmp"; awk -F'|' -v w="$window" '$2 != w' "$TOPO_WINDOWS" > "$tmp"; mv "$tmp" "$TOPO_WINDOWS"
       ;;
     kill-session)
       local target=""; while [[ $# -gt 0 ]]; do case "$1" in -t) target="${2#=}"; shift 2 ;; *) shift ;; esac; done
       topo_session_exists "$target" || return 1
+      MOCK_TMUX_KILLED+="=$target"$'\n'
       topo_remove_session "$target"
+      ;;
+    set-hook)
+      MOCK_TMUX_HOOKS+="$*"$'\n'
+      ;;
+    show-hooks)
+      printf '%s' "$MOCK_SHOW_HOOKS"
       ;;
     rename-session)
       [[ "${MOCK_TOPO_RENAME_FAIL:-0}" == "1" ]] && return 1
@@ -420,6 +434,66 @@ topo_tmux() {
   esac
 }
 
+# Pre-FLY-1272 tests describe tmux through MOCK_TMUX_* rows. Convert that
+# description once per test into the independent, one-window topology that is
+# now unconditional in production. Tests which exercise topology transitions
+# directly continue to opt into MOCK_TOPOLOGY_MODE=1 and build their own rows.
+seed_fixed_topology_fixture() {
+  local seeded="$TMPDIR_ROOT/fixed-topology.seeded"
+  [[ -e "$seeded" ]] && return 0
+  : > "$seeded"
+
+  local session sid=1 wid name active dead source title view_sid=1000
+  while IFS= read -r session; do
+    [[ -n "$session" && "$session" != cmux-* ]] || continue
+    topo_session_exists "$session" || topo_add_session "$session" "\$$sid"
+    sid=$((sid + 1))
+  done < <({ printf '%s\n' "$MOCK_TMUX_SESSIONS"; printf '%s\n' "$MOCK_TMUX_WINDOWS" | cut -d'|' -f1; } | awk 'NF && !seen[$0]++')
+
+  while IFS='|' read -r session wid name; do
+    [[ -n "$session" && -n "$wid" && -n "$name" ]] || continue
+    [[ "$session" != cmux-* ]] || continue
+    topo_session_exists "$session" || { topo_add_session "$session" "\$$sid"; sid=$((sid + 1)); }
+    active=0
+    awk -F'|' -v s="$session" '$1 == s { found=1 } END { exit(found ? 0 : 1) }' "$TOPO_WINDOWS" || active=1
+    dead=$(printf '%s\n' "$MOCK_PANE_DEAD" | awk -F= \
+      -v k1="${session}:${wid}" -v k2="${session}:${name}" \
+      '$1 == k1 || $1 == k2 { print $2; found=1; exit } END { if (!found) print "0" }')
+    topo_add_window "$session" "$wid" "$name" "$active" "$dead"
+  done <<< "$MOCK_TMUX_WINDOWS"
+
+  while IFS= read -r session; do
+    [[ "$session" == cmux-* ]] || continue
+    title=${session#cmux-}
+    IFS='|' read -r source wid name < <(printf '%s\n' "$MOCK_TMUX_WINDOWS" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
+    if [[ -z "$source" || -z "$wid" ]]; then
+      source="runner-fixture"
+      wid="@${view_sid}"
+    fi
+    topo_add_session "$session" "\$$view_sid" "" "$source" "0"
+    view_sid=$((view_sid + 1))
+    dead=$(printf '%s\n' "$MOCK_PANE_DEAD" | awk -F= \
+      -v k1="${source}:${wid}" -v k2="${source}:${title}" \
+      '$1 == k1 || $1 == k2 { print $2; found=1; exit } END { if (!found) print "0" }')
+    topo_add_window "$session" "$wid" "$title" 1 "$dead"
+  done <<< "$MOCK_TMUX_SESSIONS"
+}
+
+sync_fixed_topology_dynamics() {
+  [[ "$MOCK_TOPOLOGY_MODE" == "compat" && -e "$TMPDIR_ROOT/fixed-topology.seeded" ]] || return 0
+  local row session target dead tmp="$TOPO_WINDOWS.tmp"
+  while IFS= read -r row; do
+    [[ "$row" == *=* ]] || continue
+    session=${row%%:*}
+    target=${row#*:}; target=${target%%=*}
+    dead=${row##*=}
+    awk -F'|' -v OFS='|' -v s="$session" -v t="$target" -v d="$dead" \
+      '$1 == s && ($2 == t || $3 == t) { $5=d } { print }' \
+      "$TOPO_WINDOWS" > "$tmp"
+    mv "$tmp" "$TOPO_WINDOWS"
+  done <<< "$MOCK_PANE_DEAD"
+}
+
 tmux() {
   if [[ "${1:-}" == "-S" && -n "${MOCK_PRIVATE_TMUX_SOCKET:-}" ]]; then
     local private_socket="$2"
@@ -432,7 +506,11 @@ tmux() {
     esac
     return 0
   fi
-  if [[ "${MOCK_TOPOLOGY_MODE:-0}" == "1" ]]; then
+  if [[ "${MOCK_TOPOLOGY_MODE:-0}" == "compat" ]]; then
+    seed_fixed_topology_fixture
+    sync_fixed_topology_dynamics
+  fi
+  if [[ "${MOCK_TOPOLOGY_MODE:-0}" == "1" || "${MOCK_TOPOLOGY_MODE:-0}" == "compat" ]]; then
     topo_tmux "$@"
     return $?
   fi
@@ -968,7 +1046,7 @@ kill() {
 export -f tmux cmux ps pgrep kill
 
 reset_mocks() {
-  MOCK_TOPOLOGY_MODE="0"
+  MOCK_TOPOLOGY_MODE="compat"
   MOCK_TOPO_LINK_FAIL="0"
   MOCK_TOPO_UNLINK_FAIL="0"
   MOCK_TOPO_RENAME_FAIL="0"
@@ -979,11 +1057,8 @@ reset_mocks() {
   MOCK_TMUX_GENERATION_FLIP_ON_MISSING_SESSION=""
   MOCK_TMUX_GENERATION_SEQ=""
   MOCK_TMUX_REUSE_SESSION_AFTER_WINDOW_PROBE=""
-  FLYWHEEL_CMUX_LINKED_VIEW="0"       # pre-FLY-1272 fixtures exercise byte-compatible legacy paths
-  FLYWHEEL_CMUX_VIEW_INVARIANT="0"
-  FLYWHEEL_CMUX_STRICT_VIEW="1"
-  FLYWHEEL_CMUX_WAL_QUARANTINE="1"
-  FLYWHEEL_CMUX_ROSTER="0"             # roster has a dedicated hermetic suite
+  FLYWHEEL_CMUX_LINKED_VIEW="0"
+  FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"
   CMUX_WAL_BLOCKED_VIEWS=""
   CMUX_TITLE_TOPOLOGY_REFUSED_KEYS=""
   FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
@@ -1029,9 +1104,8 @@ reset_mocks() {
   FLYWHEEL_CMUX_ADOPTION_GRACE=300
   FLYWHEEL_CMUX_ADOPTION_BUDGET=""
   RESTORED_BOOTSTRAP_PASS=0
-  # FLY-685: close-request marker file + kill-switch (default on).
+  # FLY-685: close-request marker file.
   CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"
-  FLYWHEEL_CMUX_CLOSE_REQUEST=1
   # FLY-867: husk-reaper state + knobs (default on, production-default grace).
   MOCK_TMUX_DISPLAY_FAIL="0"
   HUSK_STATE="$TMPDIR_ROOT/husk.state"
@@ -1090,6 +1164,7 @@ reset_mocks() {
   rm -f "$TMPDIR_ROOT"/clients.*.n
   rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
   rm -f "$TMPDIR_ROOT/cmux.next-ref"
+  rm -f "$TMPDIR_ROOT/fixed-topology.seeded" "$TMPDIR_ROOT/fixed-receipts.seeded"
   rm -rf "$VIEW_WAL_DIR"
   rm -f "$VIEW_LEDGER" "$KEEPER_INVENTORY" "$RESTORED_STATE" "$VIEW_ABSENT_STATE" "$FLYWHEEL_CMUX_MAINTENANCE_MARKER"
   rm -rf "${KEEPER_INVENTORY}.lock"
@@ -1129,6 +1204,35 @@ reset_mocks() {
 # Source the script (guarded — dispatcher won't run because BASH_SOURCE != $0)
 source "$SCRIPT_DIR/flywheel-cmux-sync.sh"
 eval "$(declare -f _snapshot_live_mutator_processes | sed '1s/_snapshot_live_mutator_processes/_production_snapshot_live_mutator_processes/')"
+
+seed_fixed_receipt_fixture() {
+  local generation="$1" seeded="$TMPDIR_ROOT/fixed-receipts.seeded" ref title
+  [[ "$MOCK_TOPOLOGY_MODE" == "compat" && ! -e "$seeded" ]] || return 0
+  : > "$seeded"
+  while IFS='|' read -r ref title; do
+    [[ -n "$ref" && -n "$title" ]] || continue
+    printf '%s\n' "$MOCK_TMUX_WINDOWS" | awk -F'|' -v t="$title" \
+      '$3 == t { found=1 } END { exit(found ? 0 : 1) }' || continue
+    awk -F'|' -v r="$ref" '$3 == r { found=1 } END { exit(found ? 0 : 1) }' \
+      "$VIEW_LEDGER" 2>/dev/null && continue
+    printf 'committed|%s|%s|%s\n' "$generation" "$ref" "$title" >> "$VIEW_LEDGER"
+  done < <(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,re,sys
+attach=re.compile(r"^env -u TMUX tmux attach -t '\''=cmux-([^'\''\\n]+)'\''$")
+for workspace in json.load(sys.stdin).get("workspaces", []):
+    ref, title = workspace.get("ref"), workspace.get("title")
+    match = attach.fullmatch(title) if isinstance(title, str) else None
+    logical = match.group(1) if match else title
+    if isinstance(ref, str) and isinstance(logical, str):
+        print(f"{ref}|{logical}")
+')
+}
+
+cmux_socket_identity() {
+  local generation="${MOCK_SOCK_IDENT:-cmux-test-generation}"
+  seed_fixed_receipt_fixture "$generation"
+  printf '%s' "$generation"
+}
 
 # R6 lease tests are hermetic: a production watcher may be live on this host
 # but owns a different lock namespace than the harness tempdir.
@@ -1317,12 +1421,9 @@ if grep -q "^expired-win|" "$CLEANUP_PENDING" 2>/dev/null; then
 else
   pass "expired entry cleaned up (>= 30s)"
 fi
-# kill-session called for expired-win's linked session
-if echo "$MOCK_TMUX_KILLED" | grep -q "=cmux-expired-win"; then
-  pass "linked session cmux-expired-win killed"
-else
-  fail "expected kill-session =cmux-expired-win. Got: $MOCK_TMUX_KILLED"
-fi
+# No tmux/workspace authority was present, so only the durable queue row moves.
+[[ -z "$MOCK_CMUX_OPS" ]] && pass "unproven display state receives no mutation" \
+  || fail "unproven display state was mutated: $MOCK_CMUX_OPS"
 
 # ════════════════════════════════════════════════════════════════
 # Test 6: process_pending_cleanups cancels on pane restart
@@ -1383,7 +1484,6 @@ fi
 # runner session must not make its still-live watched pane look dead; once that
 # pane actually dies, the same view must become cleanup-eligible.
 reset_mocks
-FLYWHEEL_CMUX_VIEW_INVARIANT=1
 MOCK_TMUX_SESSIONS="cmux-FLY-1364-qa-live"
 MOCK_PANE_DEAD="cmux-FLY-1364-qa-live:FLY-1364-qa-live=0"
 if is_pane_alive "FLY-1364-qa-live"; then
@@ -1399,7 +1499,6 @@ else
 fi
 
 reset_mocks
-FLYWHEEL_CMUX_VIEW_INVARIANT=1
 printf 'exited|cmux-FLY-1364-qa-live|FLY-1364-qa-live\n' > "$TMPDIR_ROOT/strict-view-exited"
 _drain_file "$TMPDIR_ROOT/strict-view-exited"
 if grep -q '^FLY-1364-qa-live|' "$CLEANUP_PENDING" 2>/dev/null; then
@@ -1432,15 +1531,20 @@ MOCK_TMUX_SESSIONS=""
 # targets alive (the implicit pre-FLY-867 assumption, now explicit).
 MOCK_TMUX_WINDOWS=$'flywheel|@42|worker-fly-102\nrunner-geoforge3d|@43|runner-task-1'
 MOCK_PANE_DEAD=$'flywheel:@42=0\nrunner-geoforge3d:@43=0'
+saved_create_workspace_for_window=$(declare -f create_workspace_for_window)
+create_workspace_for_window() {
+  MOCK_CMUX_OPS+="new-workspace --command env -u TMUX tmux attach -t '=${VIEW_PREFIX}${3}'"$'\n'
+}
 
-drain_events >/dev/null
+drain_events >/dev/null 2>"$TMPDIR_ROOT/drain-events-create.log"
+eval "$saved_create_workspace_for_window"
 
 # create events: should trigger new-workspace twice (worker-fly-102 + runner-task-1)
 create_count=$(echo "$MOCK_CMUX_OPS" | grep -c "^new-workspace" || true)
 if [[ "$create_count" == "2" ]]; then
   pass "drain_events creates workspaces for 2 valid sessions"
 else
-  fail "expected 2 new-workspace calls, got $create_count. Ops: $MOCK_CMUX_OPS"
+  fail "expected 2 new-workspace calls, got $create_count. Ops: $MOCK_CMUX_OPS Log: $(tr '\n' ';' < "$TMPDIR_ROOT/drain-events-create.log")"
 fi
 # FLY-756: the create-time attach command must run under `env -u TMUX` — a cmux
 # surface that inherited $TMUX (cmux launched from within tmux) would otherwise
@@ -1500,7 +1604,10 @@ reset_mocks
 # linked session exists; its corresponding tmux window doesn't
 MOCK_TMUX_WINDOWS=""
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-orphan-win'
-MOCK_CMUX_WORKSPACES="  workspace:3  orphan-win"
+MOCK_PANE_DEAD="cmux-orphan-win:orphan-win=1"
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:3","title":"orphan-win"}]}'
+MOCK_CMUX_MUTATE_JSON=1
+test_ledger_upsert committed cmux-test-generation workspace:3 orphan-win
 
 # First pass — marker gets recorded, no cleanup yet
 cleanup_stale_conservative >/dev/null
@@ -1521,10 +1628,10 @@ past=$((now - 400))
 printf 'orphan-win|%s\n' "$past" > "$STALE_STATE"
 
 cleanup_stale_conservative >/dev/null
-if echo "$MOCK_TMUX_KILLED" | grep -q "=cmux-orphan-win"; then
-  pass "conservative cleanup fires after 5min"
+if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:3"; then
+  pass "conservative cleanup closes the exact receipted workspace after 5min"
 else
-  fail "expected kill-session =cmux-orphan-win. Got: $MOCK_TMUX_KILLED"
+  fail "expected exact-ref close after 5min. Ops: $MOCK_CMUX_OPS"
 fi
 
 # ════════════════════════════════════════════════════════════════
@@ -1558,7 +1665,9 @@ reset_mocks
 MOCK_TMUX_WINDOWS="flywheel|@1|dead-pane-win"
 MOCK_PANE_DEAD="flywheel:dead-pane-win=1"
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-dead-pane-win'
-MOCK_CMUX_WORKSPACES=""
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:4","title":"dead-pane-win"}]}'
+MOCK_CMUX_MUTATE_JSON=1
+test_ledger_upsert committed cmux-test-generation workspace:4 dead-pane-win
 
 # First pass: mark stale
 cleanup_stale_conservative >/dev/null
@@ -1573,10 +1682,10 @@ now=$(date +%s)
 past=$((now - 400))
 printf 'dead-pane-win|%s\n' "$past" > "$STALE_STATE"
 cleanup_stale_conservative >/dev/null
-if echo "$MOCK_TMUX_KILLED" | grep -q "=cmux-dead-pane-win"; then
-  pass "dead-pane window cleaned up after threshold (closes event-loss leak)"
+if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:4"; then
+  pass "dead-pane exact workspace cleaned up after threshold"
 else
-  fail "expected cleanup of dead-pane-win after 5min. Got: $MOCK_TMUX_KILLED"
+  fail "expected exact workspace cleanup after 5min. Ops: $MOCK_CMUX_OPS"
 fi
 
 # ════════════════════════════════════════════════════════════════
@@ -2284,8 +2393,6 @@ test_hooks_partial_reregister
 
 JSON_TWO_DUP='{"workspaces":[{"ref":"workspace:1","title":"foo"},{"ref":"workspace:29","title":"foo"}]}'
 JSON_WHITESPACE_TITLE='{"workspaces":[{"ref":"workspace:7","title":"foo bar baz"}]}'
-JSON_GHOST_MIXED='{"workspaces":[{"ref":"workspace:10","title":null},{"ref":"workspace:11","title":"~"},{"ref":"workspace:12","title":""},{"ref":"workspace:13","title":"keep-me"}]}'
-
 test_get_cmux_workspaces_json_fail_closed_rc_nonzero() {
   echo "Test: get_cmux_workspaces_json_fail_closed_rc_nonzero (R2-1)"
   reset_mocks
@@ -2344,6 +2451,36 @@ test_get_cmux_workspaces_json_recover_logs_once() {
   else
     fail "no 'recovered' log; stderr=$(cat "$stderr_file")"
   fi
+}
+
+test_reconcile_existing_workspaces_skips_tick_without_json() {
+  echo "Test: reconcile_existing_workspaces skips the whole tick when JSON is unavailable"
+  local calls="$TMPDIR_ROOT/reconcile-existing-json-gate" saved_windows saved_json saved_linked saved_dismantle saved_json_state
+  saved_windows=$(declare -f get_tmux_agent_windows)
+  saved_json=$(declare -f get_cmux_workspaces_json)
+  saved_linked=$(declare -f linked_session_exists)
+  saved_dismantle=$(declare -f dismantle_view_display)
+  saved_json_state="$CMUX_JSON_LAST_STATE"
+  : > "$calls"
+
+  get_tmux_agent_windows() { printf 'runner-flywheel|@42|FLY-1807-json-gate\n'; }
+  get_cmux_workspaces_json() { printf 'json\n' >> "$calls"; CMUX_JSON_LAST_STATE="fail"; return 2; }
+  linked_session_exists() { printf 'linked\n' >> "$calls"; return 1; }
+  dismantle_view_display() { printf 'dismantle\n' >> "$calls"; return 0; }
+
+  CMUX_JSON_LAST_STATE="ok"
+  reconcile_existing_workspaces
+
+  eval "$saved_windows"
+  eval "$saved_json"
+  eval "$saved_linked"
+  eval "$saved_dismantle"
+  if [[ "$(cat "$calls")" == "json" && "$CMUX_JSON_LAST_STATE" == "ok" ]]; then
+    pass "unreadable workspace JSON causes zero reconcile actions or latch changes"
+  else
+    fail "reconcile crossed the JSON gate: calls=$(tr '\n' ';' < "$calls") latch=$CMUX_JSON_LAST_STATE"
+  fi
+  CMUX_JSON_LAST_STATE="$saved_json_state"
 }
 
 test_workspace_refs_for_dup() {
@@ -2414,26 +2551,6 @@ test_workspace_exists_for_tri_state() {
   [[ $rc -eq 2 ]] && pass "rc=2 for JSON unavailable" || fail "expected 2, got $rc"
 }
 
-test_get_ghost_workspace_refs_mixed_titles() {
-  echo "Test: get_ghost_workspace_refs collects null/empty/tilde"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON="$JSON_GHOST_MIXED"
-  local refs
-  refs=$(get_ghost_workspace_refs)
-  # workspace:13 has title "keep-me", should NOT appear. Others should.
-  local expected_count=0
-  for r in workspace:10 workspace:11 workspace:12; do
-    if echo "$refs" | grep -qx "$r"; then
-      expected_count=$((expected_count + 1))
-    fi
-  done
-  if [[ $expected_count -eq 3 ]] && ! echo "$refs" | grep -qx "workspace:13"; then
-    pass "3 ghost refs returned, non-ghost excluded"
-  else
-    fail "refs=$refs (expected workspace:10/11/12 only)"
-  fi
-}
-
 test_close_workspace_by_ref_dry_run() {
   echo "Test: close_workspace_by_ref dry-run skips cmux call but logs audit"
   reset_mocks
@@ -2456,54 +2573,6 @@ test_close_workspace_by_ref_real() {
     pass "1 cmux close call + audit log"
   else
     fail "ops='$MOCK_CMUX_OPS' stderr='$(cat "$stderr_file")'"
-  fi
-}
-
-test_cleanup_workspace_for_handles_dup() {
-  echo "Test: cleanup_workspace_for closes ALL dup refs"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON="$JSON_TWO_DUP"
-  cleanup_workspace_for "foo" 2>/dev/null
-  local close_count
-  close_count=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace" || true)
-  if [[ "$close_count" == "2" ]]; then
-    pass "both dup refs closed (workspace:1 + workspace:29)"
-  else
-    fail "expected 2 closes, got $close_count. Ops: $MOCK_CMUX_OPS"
-  fi
-}
-
-test_cleanup_workspace_for_json_unavailable_still_kills_linked_session_and_drains_state() {
-  echo "Test: cleanup_workspace_for JSON unavailable — skips cmux close, runs local cleanup (R4-1)"
-  reset_mocks
-  MOCK_CMUX_JSON_FAIL="1"
-  # Pre-seed STALE_STATE so drain has something to remove.
-  echo "foo|1700000000" > "$STALE_STATE"
-  local stderr_file="$TMPDIR_ROOT/cleanup.stderr"
-  cleanup_workspace_for "foo" 2>"$stderr_file"
-  # 1. NO cmux close (JSON was unavailable).
-  if [[ -z "$MOCK_CMUX_OPS" ]]; then
-    pass "no cmux close calls"
-  else
-    fail "unexpected cmux ops: $MOCK_CMUX_OPS"
-  fi
-  # 2. WARN log emitted ("cmux JSON unavailable").
-  if grep -q "cmux JSON unavailable" "$stderr_file"; then
-    pass "log emits 'cmux JSON unavailable'"
-  else
-    fail "missing JSON-unavailable warn; stderr=$(cat "$stderr_file")"
-  fi
-  # 3. tmux kill-session was called (unconditional).
-  if echo "$MOCK_TMUX_KILLED" | grep -q "=cmux-foo"; then
-    pass "tmux kill-session called unconditionally"
-  else
-    fail "no kill-session for cmux-foo; killed=$MOCK_TMUX_KILLED"
-  fi
-  # 4. STALE_STATE row drained.
-  if ! grep -q "^foo|" "$STALE_STATE" 2>/dev/null; then
-    pass "STALE_STATE row drained unconditionally"
-  else
-    fail "STALE_STATE still contains foo: $(cat "$STALE_STATE")"
   fi
 }
 
@@ -2535,7 +2604,7 @@ test_is_pane_alive_handles_regex_metachars() {
   if [[ $rc -eq 0 ]]; then
     pass "is_pane_alive('foo.bar[1]') = alive (literal match found live pane)"
   else
-    fail "expected alive (rc=0), got rc=$rc"
+    fail "expected alive (rc=0), got rc=$rc topology=[$(tr '\n' ';' < "$TOPO_WINDOWS")] sessions=[$(tr '\n' ';' < "$TOPO_SESSIONS")]"
   fi
   rc=0
   is_pane_alive "foo-bar-1" || rc=$?
@@ -2551,16 +2620,14 @@ echo "═══ FLY-129 Phase 3+5: JSON reverse-index + fail-closed + STALE_STAT
 test_get_cmux_workspaces_json_fail_closed_rc_nonzero
 test_get_cmux_workspaces_json_fail_closed_invalid_json
 test_get_cmux_workspaces_json_recover_logs_once
+test_reconcile_existing_workspaces_skips_tick_without_json
 test_workspace_refs_for_dup
 test_workspace_refs_for_with_whitespace_title
 test_workspace_refs_for_none
 test_workspace_refs_for_rc2_on_json_fail
 test_workspace_exists_for_tri_state
-test_get_ghost_workspace_refs_mixed_titles
 test_close_workspace_by_ref_dry_run
 test_close_workspace_by_ref_real
-test_cleanup_workspace_for_handles_dup
-test_cleanup_workspace_for_json_unavailable_still_kills_linked_session_and_drains_state
 test_drain_handles_regex_metachars_in_name
 test_is_pane_alive_handles_regex_metachars
 
@@ -2568,110 +2635,9 @@ test_is_pane_alive_handles_regex_metachars
 # FLY-129 Phase 4: ghost reaper
 # ════════════════════════════════════════════════════════════════
 
-test_reap_ghost_workspaces_closes_only_ghosts() {
-  echo "Test: reap_ghost_workspaces closes null/empty/'~' titles only"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON="$JSON_GHOST_MIXED"
-  reap_ghost_workspaces
-  local close_count
-  close_count=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace" || true)
-  if [[ "$close_count" == "3" ]]; then
-    pass "3 ghost workspaces closed (workspace:10/11/12)"
-  else
-    fail "expected 3 closes, got $close_count. Ops: $MOCK_CMUX_OPS"
-  fi
-  if echo "$MOCK_CMUX_OPS" | grep -q "workspace:13"; then
-    fail "non-ghost workspace:13 (title=keep-me) should NOT be closed"
-  else
-    pass "non-ghost workspace:13 left alone"
-  fi
-}
-
-test_reap_ghost_skips_on_json_fail() {
-  echo "Test: reap_ghost_workspaces no-ops on JSON failure"
-  reset_mocks
-  MOCK_CMUX_JSON_FAIL="1"
-  reap_ghost_workspaces 2>/dev/null
-  if [[ -z "$MOCK_CMUX_OPS" ]]; then
-    pass "no closes attempted when JSON unavailable"
-  else
-    fail "unexpected ops on JSON failure: $MOCK_CMUX_OPS"
-  fi
-}
-
 # ════════════════════════════════════════════════════════════════
-# FLY-129 Phase 6: dedup newest-wins
+# FLY-129 Phase 6: newest-wins
 # ════════════════════════════════════════════════════════════════
-
-test_dedup_keeps_newest_workspace_n() {
-  echo "Test: dedup_workspaces_by_title keeps highest workspace:N"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1","title":"foo"},{"ref":"workspace:29","title":"foo"}]}'
-  dedup_workspaces_by_title 2>/dev/null
-  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:1" \
-     && ! echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:29"; then
-    pass "closed workspace:1, kept workspace:29 (newest-N wins)"
-  else
-    fail "ops: $MOCK_CMUX_OPS"
-  fi
-}
-
-test_dedup_prefers_pinned_over_newest() {
-  echo "Test: dedup_workspaces_by_title prefers pinned over newest-N"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1","title":"foo","pinned":true},{"ref":"workspace:29","title":"foo","pinned":false}]}'
-  dedup_workspaces_by_title 2>/dev/null
-  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:29" \
-     && ! echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:1"; then
-    pass "closed workspace:29 (un-pinned), kept workspace:1 (pinned)"
-  else
-    fail "ops: $MOCK_CMUX_OPS"
-  fi
-}
-
-test_dedup_prefers_selected_over_newest() {
-  echo "Test: dedup_workspaces_by_title prefers selected over newest-N"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1","title":"foo","selected":true},{"ref":"workspace:29","title":"foo"}]}'
-  dedup_workspaces_by_title 2>/dev/null
-  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:29" \
-     && ! echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:1"; then
-    pass "closed workspace:29 (unselected), kept workspace:1 (selected)"
-  else
-    fail "ops: $MOCK_CMUX_OPS"
-  fi
-}
-
-test_dedup_logs_and_skips_malformed_ref() {
-  echo "Test: dedup logs + skips malformed ref"
-  reset_mocks
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:abc","title":"foo"},{"ref":"workspace:5","title":"foo"}]}'
-  local stderr_file="$TMPDIR_ROOT/dedup.stderr"
-  dedup_workspaces_by_title 2>"$stderr_file"
-  # workspace:abc is malformed; workspace:5 is the only valid → no dedup needed.
-  if grep -q "malformed ref" "$stderr_file"; then
-    pass "malformed ref logged"
-  else
-    fail "no malformed-ref log; stderr=$(cat "$stderr_file")"
-  fi
-  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace"; then
-    fail "should NOT close anything (only one valid ref): $MOCK_CMUX_OPS"
-  else
-    pass "no close attempted (only one valid ref in dup group)"
-  fi
-}
-
-test_dedup_skips_on_json_fail() {
-  echo "Test: dedup_workspaces_by_title no-ops on JSON failure"
-  reset_mocks
-  MOCK_CMUX_JSON_FAIL="1"
-  dedup_workspaces_by_title 2>/dev/null
-  if [[ -z "$MOCK_CMUX_OPS" ]]; then
-    pass "no closes attempted on JSON failure (R2-6 fail-closed)"
-  else
-    fail "unexpected ops: $MOCK_CMUX_OPS"
-  fi
-}
 
 # ════════════════════════════════════════════════════════════════
 # FLY-129 Phase 7: cmux ping backoff + state-transition log (R2-2)
@@ -2788,16 +2754,9 @@ test_json_missing_workspaces_key_treated_as_fail() {
 
 echo ""
 echo "═══ FLY-129 Phase 4: ghost reaper ═══"
-test_reap_ghost_workspaces_closes_only_ghosts
-test_reap_ghost_skips_on_json_fail
 
 echo ""
-echo "═══ FLY-129 Phase 6: dedup newest-wins ═══"
-test_dedup_keeps_newest_workspace_n
-test_dedup_prefers_pinned_over_newest
-test_dedup_prefers_selected_over_newest
-test_dedup_logs_and_skips_malformed_ref
-test_dedup_skips_on_json_fail
+echo "═══ FLY-129 Phase 6: newest-wins ═══"
 
 echo ""
 echo "═══ FLY-129 Phase 7: cmux ping backoff + state-transition log (R2-2) ═══"
@@ -2896,7 +2855,6 @@ if [[ -z "$MOCK_TMUX_SELECTS" ]]; then pass "no terminal surface: no select-wind
 # the strict-only title set before the ordinary agent-window sweep reads it.
 if (
   reset_mocks
-  FLYWHEEL_CMUX_STRICT_VIEW=0
   MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
   MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
@@ -3006,12 +2964,11 @@ if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2"; then fail "se
 # attach that lands BETWEEN GATE1 and the send is caught: GATE1=0 passes, the
 # final guard re-reads clients as 1 → MUST NOT send, and rc=2 (client appeared)
 # surfaces to the caller. This is the exact nested-attach injection race.
-reset_mocks
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
+fly169_setup_one 0
 MOCK_TMUX_CLIENTS="cmux-lead-a=0,1"   # GATE1=0 (pass) → FINAL-GUARD=1 (client raced in)
 fr756=0
-self_heal_workspace_ref "lead-a" "workspace:1" || fr756=$?
+fr756_generation=$(cmux_socket_identity)
+self_heal_workspace_ref "lead-a" "workspace:1" "$fr756_generation" || fr756=$?
 if echo "$MOCK_CMUX_OPS" | grep -q "send"; then
   fail "FLY-756: plain-path final guard must block send when a client appears after GATE1; got: $MOCK_CMUX_OPS"
 else
@@ -3048,32 +3005,17 @@ MOCK_CMUX_JSON_FAIL=1
 self_heal_one_workspace "lead-a"
 if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must skip on workspace JSON rc=2"; else pass "JSON rc=2: no send (skip tick)"; fi
 
-# Test 11: verify-at-create is ref-scoped — heals via new_ref BEFORE rename
-# (workspace not yet title-addressable). self_heal_workspace_ref takes the ref.
-reset_mocks
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_CMUX_SURFACES="workspace:5;;surface:5;;terminal;;true"
-MOCK_TMUX_CLIENTS="cmux-lead-a=0"
-hr=0
-self_heal_workspace_ref "lead-a" "workspace:5" || hr=$?
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:5 --surface surface:5 env -u TMUX tmux attach"; then
-  pass "verify-at-create: ref-scoped heal works pre-rename (via new_ref)"
-else
-  fail "ref-scoped send failed; got: $MOCK_CMUX_OPS"
-fi
-[[ "$hr" == "0" ]] && pass "self_heal_workspace_ref rc=0 on send attempt" || fail "expected rc=0, got $hr"
-
-# Test 12: create-time §2.6 gate — select-window failure defers new-workspace
+# Test 12: an incomplete independent-view build defers new-workspace.
 reset_mocks
 MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-b'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-b'
+MOCK_TMUX_SESSIONS=$'flywheel'
 MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'   # lead-b not present → create proceeds to gate
-MOCK_TMUX_SELECT_FAIL=1
+MOCK_TOPO_LINK_FAIL=1
 create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
 if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
-  fail "must NOT new-workspace when select-window fails (§2.6 gate)"
+  fail "must NOT new-workspace when independent topology construction fails"
 else
-  pass "create gate: defers new-workspace on select-window failure"
+  pass "create gate defers new-workspace on incomplete independent topology"
 fi
 
 # Test 13a: event wiring — 'create' event for an EXISTING workspace → self-heal
@@ -3113,8 +3055,6 @@ fi
 reset_mocks
 MOCK_TOPOLOGY_MODE=1
 FLYWHEEL_CMUX_LINKED_VIEW=0
-FLYWHEEL_CMUX_VIEW_INVARIANT=1
-FLYWHEEL_CMUX_STRICT_VIEW=1
 topo_add_session "flywheel" '$1'
 topo_add_window "flywheel" "@1" "zsh" 1 0
 topo_add_session "cmux-FLY-1404-design" '$1404' "" "runner-flywheel" "0"
@@ -3301,8 +3241,6 @@ fi
 # must not inherit the old receipt and receive an attach command.
 fly169_setup_one 0
 FLYWHEEL_CMUX_LINKED_VIEW=0
-FLYWHEEL_CMUX_VIEW_INVARIANT=0
-FLYWHEEL_CMUX_STRICT_VIEW=0
 MOCK_SOCK_IDENT="generation-heal-a"
 printf 'committed|generation-heal-a|workspace:1|lead-a\n' > "$VIEW_LEDGER"
 fly1364_client_probe_count="$TMPDIR_ROOT/fly1364-client-probe.n"
@@ -3404,113 +3342,6 @@ if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2 --surface surfa
   pass "errexit-safe: rc=1 first ref does not abort; later ref still heals"
 else
   fail "errexit/loop continuation failed; got: $MOCK_CMUX_OPS"
-fi
-
-# ════════════════════════════════════════════════════════════════
-# FLY-280: render-drift — self_heal_one_workspace must re-point the cmux view at
-# the LIVE same-name window (never a stale remain-on-exit DEAD window) and force a
-# refresh-surfaces repaint. Reproduces the cos-lead drift: a Lead crash/restart
-# (cos-lead exited 128 / respawned; eng-lead never crashed → only cos-lead drifts)
-# leaves a DEAD same-name window at a LOWER index. The legacy `select-window -t
-# =wname` picks the lowest-index window → the cmux pane lands on the dead pane and
-# renders frozen/blank, even though the view session still has a client attached.
-# Same root cause FLY-177 fixed in refresh_linked_sessions — self_heal lacked it.
-# ════════════════════════════════════════════════════════════════
-echo ""
-echo "═══ FLY-280: render-drift — live-window select + repaint ═══"
-
-# Scenario: Lead restarted. flywheel session now has TWO 'lead-a' windows —
-#   @7 DEAD (remain-on-exit leftover, LOWER index) + @9 LIVE (respawned, higher).
-# The cmux view session is STILL attached (clients>0) but its current-window can
-# point at the dead @7.
-reset_mocks
-MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@9|lead-a'
-MOCK_PANE_DEAD=$'flywheel:@7=1\nflywheel:@9=0'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
-MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
-MOCK_TMUX_CLIENTS="cmux-lead-a=1"   # attached → exercises the clients>0 drift branch
-self_heal_one_workspace "lead-a"
-if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@9"; then
-  pass "drift: re-points the view at the LIVE window @9"
-else
-  fail "expected select of live window @9; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
-fi
-if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@7"; then
-  fail "CRITICAL drift bug: selected the DEAD same-name window @7"
-else
-  pass "drift: never selects the dead window @7 (=name lowest-index trap avoided)"
-fi
-if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then
-  pass "drift: forces refresh-surfaces repaint after re-point"
-else
-  fail "expected refresh-surfaces repaint; got: $(echo "$MOCK_CMUX_OPS" | tr '\n' ' ')"
-fi
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
-  fail "CRITICAL: attached surface must never receive a send (Claude-prompt risk)"
-else
-  pass "drift: attached surface receives no send (Claude-prompt safe)"
-fi
-
-# FLY-280 case 2: 0-client healed path also re-points by LIVE id (defensive — the
-# post-heal select must not land on the dead dup either).
-reset_mocks
-MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@9|lead-a'
-MOCK_PANE_DEAD=$'flywheel:@7=1\nflywheel:@9=0'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
-MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
-MOCK_TMUX_CLIENTS="cmux-lead-a=0"   # detached → heal + re-point
-self_heal_one_workspace "lead-a"
-if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@9" \
-   && ! echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@7"; then
-  pass "drift (0-client): post-heal re-point selects live @9, not dead @7"
-else
-  fail "0-client re-point wrong; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
-fi
-
-set +e   # restore lenient mode for the new FLY-177 tests (process juggling)
-
-# ════════════════════════════════════════════════════════════════
-# FLY-177: ④ refresh_linked_sessions selects by LIVE window_id (not name)
-# ════════════════════════════════════════════════════════════════
-echo "Test: FLY-177 ④ refresh selects live window_id, skips stale dup"
-reset_mocks
-# Two same-name windows: @1 (remain-on-exit DEAD) + @2 (live). Old name-based
-# select would land on @1 (lowest index); ④ must pick @2.
-MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nflywheel|@2|lead-a'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_PANE_DEAD=$'flywheel:@1=1\nflywheel:@2=0'
-refresh_linked_sessions || true
-if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@2" \
-   && ! echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@1"; then
-  pass "④ selects live @2, skips dead @1 (no stale-window drift)"
-else
-  fail "④ dup-name: expected select =cmux-lead-a:@2 only; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
-fi
-
-echo "Test: FLY-177 ④ single live window still selected (equivalence)"
-reset_mocks
-MOCK_TMUX_WINDOWS=$'flywheel|@5|lead-a'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_PANE_DEAD=$'flywheel:@5=0'
-refresh_linked_sessions || true
-if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@5"; then
-  pass "④ single live window selected by id"
-else
-  fail "④ single-live: expected select =cmux-lead-a:@5; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
-fi
-
-echo "Test: FLY-177 ④ all-dead window → no select"
-reset_mocks
-MOCK_TMUX_WINDOWS=$'flywheel|@9|lead-a'
-MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
-MOCK_PANE_DEAD=$'flywheel:@9=1'
-refresh_linked_sessions || true
-if [[ -z "$MOCK_TMUX_SELECTS" ]]; then
-  pass "④ dead-only window: no select (leaves to reconcile / restart)"
-else
-  fail "④ dead-only: expected no select; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
 fi
 
 # ════════════════════════════════════════════════════════════════
@@ -3715,11 +3546,14 @@ set +e   # restore lenient mode before the FLY-254 section + summary
 # via a file (FLY-254 CR-R3 race tests).
 eval "$(declare -f tmux_server_generation | sed '1s/tmux_server_generation/_production_tmux_server_generation/')"
 cmux_socket_identity() {
+  local generation
   if [[ -f "$TMPDIR_ROOT/mock-ident.override" ]]; then
-    cat "$TMPDIR_ROOT/mock-ident.override"
-    return 0
+    generation=$(cat "$TMPDIR_ROOT/mock-ident.override")
+  else
+    generation="${MOCK_SOCK_IDENT:-cmux-test-generation}"
   fi
-  printf '%s' "${MOCK_SOCK_IDENT:-}"
+  seed_fixed_receipt_fixture "$generation"
+  printf '%s' "$generation"
 }
 tmux_server_generation() {
   if [[ -n "${MOCK_TMUX_GENERATION_SEQ:-}" ]]; then
@@ -4388,11 +4222,11 @@ echo "Test: FLY-254 CR-R3-HIGH-1 — identity flip DURING the epilogue selected-
 setup_escalation_scenario
 MOCK_SOCK_IDENT="A:1:1"
 echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
-# JSON call #6 is the epilogue current_selected_ref (5 = render-loop refs).
+# JSON call #7 is the epilogue current_selected_ref (5-6 = render-loop reads).
 # The heal completes on A; the flip lands during the epilogue read; the
 # pre-restore re-stat must skip the restore — generation B keeps its focus.
 MOCK_JSON_FLIP_IDENT="B:2:2"
-MOCK_JSON_FLIP_AT=6
+MOCK_JSON_FLIP_AT=7
 consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
   pass "heal completed on generation A before the flip"
@@ -4520,6 +4354,8 @@ _fly293_fixture() {
     {"ref":"workspace:5","title":"home"},
     {"ref":"workspace:7","title":"FLY-1-codex-x"}
   ]}'
+  test_ensure_mutator_lease || return 1
+  printf 'committed|cmux-test-generation|workspace:36|FLY-637-runner-codex-G-FLY-626-follow-up\n' > "$VIEW_LEDGER"
 }
 
 test_fly293_managed_title_gate() {
@@ -4674,6 +4510,8 @@ test_fly293_reap_grace_ref_keyed_not_title() {
     {"ref":"workspace:40","title":"FLY-500-claude-x"},
     {"ref":"workspace:41","title":"FLY-500-claude-x"}
   ]}'
+  test_ensure_mutator_lease || return 1
+  printf 'committed|cmux-test-generation|workspace:40|FLY-500-claude-x\ncommitted|cmux-test-generation|workspace:41|FLY-500-claude-x\n' > "$VIEW_LEDGER"
   # workspace:40 already aged (ancient), workspace:41 unseen
   printf 'workspace:40|1|eA==\n' > "$ORPHAN_PIN_STATE"
   reap_orphan_workspace_pins
@@ -4690,6 +4528,8 @@ test_fly293_reap_multiple_orphans() {
     {"ref":"workspace:40","title":"FLY-500-claude-a"},
     {"ref":"workspace:41","title":"FLY-501-claude-b"}
   ]}'
+  test_ensure_mutator_lease || return 1
+  printf 'committed|cmux-test-generation|workspace:40|FLY-500-claude-a\ncommitted|cmux-test-generation|workspace:41|FLY-501-claude-b\n' > "$VIEW_LEDGER"
   printf 'workspace:40|1|eA==\nworkspace:41|1|eA==\n' > "$ORPHAN_PIN_STATE"
   reap_orphan_workspace_pins
   local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace --workspace workspace:4" || true)
@@ -4895,15 +4735,6 @@ test_fly685_close_request_input_hardening() {
   if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "malformed lines → no cmux ops"; else fail "malformed line acted on: ops=[$MOCK_CMUX_OPS]"; fi
 }
 
-test_fly685_close_request_env_off_inert() {
-  echo "Test: FLYWHEEL_CMUX_CLOSE_REQUEST=0 → process_close_requests fully inert (byte-compat)"
-  _fly293_fixture
-  printf 'FLY-637-runner-codex-G-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
-  FLYWHEEL_CMUX_CLOSE_REQUEST=0 process_close_requests
-  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "no cmux ops when off"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
-  if grep -qxF "FLY-637-runner-codex-G-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "marker untouched when off"; else fail "marker mutated when off"; fi
-}
-
 test_fly685_gc_close_request_drops_stale() {
   echo "Test: gc_close_request_file drops marker lines with no live workspace, keeps live ones"
   _fly293_fixture
@@ -4975,13 +4806,12 @@ test_fly685_close_request_survives_set_e
 test_fly685_close_request_final_gate_rc2_requeue_rc1_drop
 test_fly685_chokepoint_rc2_on_uncertainty
 test_fly685_close_request_input_hardening
-test_fly685_close_request_env_off_inert
 test_fly685_gc_close_request_drops_stale
 test_fly685_chokepoint_rc2_on_close_mutation_failure
 test_fly685_close_request_requeues_on_close_mutation_failure
 
 # ════════════════════════════════════════════════════════════════
-# FLY-825: create-vs-create dedup (drain_events + sync_additive same-tick
+# FLY-825: create-vs-create (drain_events + sync_additive same-tick
 # race) + the orphan-watcher wait_for_watcher_exit helper.
 # ════════════════════════════════════════════════════════════════
 
@@ -5011,6 +4841,9 @@ test_fly825_no_dedup_different_window_id() {
   MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nflywheel|@2|lead-a'
   MOCK_PANE_DEAD=$'flywheel:@1=0\nflywheel:@2=0'
   create_workspace_for_window "flywheel" "@1" "lead-a" >/dev/null 2>&1 || true
+  # A restarted source is reconciled onto a fresh independent view before
+  # the create retry reaches this helper.
+  topo_remove_session "cmux-lead-a"
   create_workspace_for_window "flywheel" "@2" "lead-a" >/dev/null 2>&1 || true
   local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
   if [[ "$n" -eq 2 ]]; then
@@ -5021,13 +4854,13 @@ test_fly825_no_dedup_different_window_id() {
 }
 
 test_fly825_ready_gate_failure_no_mark() {
-  echo "Test: a deferred create (select-window fails) does NOT burn the dedup TTL"
+  echo "Test: a deferred create (independent view build fails) does NOT burn the TTL"
   reset_mocks
-  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-b'
+  MOCK_TMUX_SESSIONS='flywheel'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
   MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-b'
   MOCK_PANE_DEAD=$'flywheel:@1=0'   # FLY-867: creates require a live source pane
-  MOCK_TMUX_SELECT_FAIL=1
+  MOCK_TOPO_LINK_FAIL=1
   create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
   if [[ -f "$CREATE_STATE" ]] && grep -q "^lead-b|@1|" "$CREATE_STATE"; then
     fail "deferred (not-ready) create wrongly wrote CREATE_STATE — would suppress the legitimate retry"
@@ -5035,7 +4868,7 @@ test_fly825_ready_gate_failure_no_mark() {
     pass "deferred create does not write CREATE_STATE (next tick's retry is not suppressed)"
   fi
   # Retry with select-window now succeeding must proceed (not falsely deduped).
-  MOCK_TMUX_SELECT_FAIL=0
+  MOCK_TOPO_LINK_FAIL=0
   create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
   if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
     pass "retry after ready-gate recovers actually creates (not suppressed by the earlier deferred attempt)"
@@ -5232,7 +5065,7 @@ test_fly1482_wait_for_watcher_exit_requires_conclusive_absence() {
 }
 
 echo ""
-echo "═══ FLY-825: create-vs-create dedup + orphan-watcher wait helper ═══"
+echo "═══ FLY-825: create-vs-create + orphan-watcher wait helper ═══"
 test_fly825_create_dedup_same_window_id
 test_fly825_no_dedup_different_window_id
 test_fly825_ready_gate_failure_no_mark
@@ -5251,23 +5084,6 @@ test_fly1482_wait_for_watcher_exit_requires_conclusive_absence
 # FLY-867: dead-tab closure — Fix A (ready-gate by window_id),
 # Fix B (create husk-immunity), Fix C (dead-husk window reaper)
 # ════════════════════════════════════════════════════════════════
-
-test_fly867_mock_select_name_ambiguity() {
-  echo "Test: FLY-867 mock fidelity — select-window '=sess:=name' fails on same-name >=2"
-  reset_mocks
-  MOCK_TMUX_WINDOWS=$'runner-flywheel|@100|FLY-9852-claude-qa\nrunner-flywheel|@200|FLY-9852-claude-qa'
-  local rc=0
-  tmux select-window -t "=cmux-FLY-9852-claude-qa:=FLY-9852-claude-qa" || rc=$?
-  if [[ $rc -ne 0 ]]; then pass "dup-name '=name' target → rc=1 (real-tmux ambiguity modeled)"; else fail "expected rc!=0 on dup-name select"; fi
-  rc=0
-  tmux select-window -t "=cmux-FLY-9852-claude-qa:@200" || rc=$?
-  if [[ $rc -eq 0 ]]; then pass "'@id' target unaffected → rc=0"; else fail "id target must succeed"; fi
-  reset_mocks
-  MOCK_TMUX_WINDOWS=$'runner-flywheel|@100|FLY-9852-claude-qa'
-  rc=0
-  tmux select-window -t "=cmux-FLY-9852-claude-qa:=FLY-9852-claude-qa" || rc=$?
-  if [[ $rc -eq 0 ]]; then pass "single-match '=name' keeps default success (pre-FLY-867 fixtures unaffected)"; else fail "single-name select must succeed"; fi
-}
 
 test_fly867_fixA_create_by_id_survives_dup_name() {
   echo "Test: FLY-867 Fix A — dup-name LIVE windows: create proceeds via by-id ready gate"
@@ -5297,7 +5113,7 @@ test_fly867_fixB_create_skips_dead_husk() {
   else
     pass "dead husk: create silently skipped (no cmux new-workspace)"
   fi
-  # Deferred husk skip must NOT burn the FLY-825 dedup TTL (guard sits above the mark).
+  # Deferred husk skip must NOT burn the FLY-825 TTL (guard sits above the mark).
   if [[ -f "$CREATE_STATE" ]] && grep -q "FLY-9808-claude-husk" "$CREATE_STATE"; then
     fail "husk skip wrongly burned the create-dedup TTL"
   else
@@ -5383,7 +5199,6 @@ test_fly1672_event_backlog_does_not_starve_additive_create() {
 
 echo ""
 echo "═══ FLY-867: dead-tab closure — husk-immune create + by-id gate + husk reaper ═══"
-test_fly867_mock_select_name_ambiguity
 test_fly867_fixA_create_by_id_survives_dup_name
 test_fly867_fixB_create_skips_dead_husk
 test_fly867_fixB_mixed_creates_live_only
@@ -5647,7 +5462,6 @@ test_fly1272_skip_rc_never_kills_watcher() {
   (
     set -euo pipefail
     linked_view_enabled() { return 0; }
-    view_invariant_enabled() { return 1; }
     reconcile_prepared_ledger() { return 1; }
     reap_ghost_workspaces
     : > "$reaper_marker"
@@ -5730,17 +5544,6 @@ test_fly1446_malformed_wals_quarantine_and_other_view_progresses() {
     fail "quarantine/progress mismatch rc=$rc quarantine=$quarantine_count root_wals=$root_wals alerts=[$(tr '\n' ';' < "$alerts")] ops=[$MOCK_CMUX_OPS]"
   fi
 
-  reset_mocks
-  FLYWHEEL_CMUX_WAL_QUARANTINE=0
-  mkdir -p "$VIEW_WAL_DIR"
-  printf 'malformed\nsecond-line\n' > "$VIEW_WAL_DIR/rollback.wal"
-  rc=0
-  recover_all_view_constructions >/dev/null 2>&1 || rc=$?
-  if [[ "$rc" -ne 0 && -f "$VIEW_WAL_DIR/rollback.wal" && ! -d "$VIEW_WAL_DIR/quarantine" ]]; then
-    pass "FLYWHEEL_CMUX_WAL_QUARANTINE=0 preserves the legacy global-abort behavior"
-  else
-    fail "quarantine rollback flag did not preserve malformed WAL (rc=$rc)"
-  fi
 }
 
 test_fly1446_collision_blocks_only_its_logical_view() {
@@ -5980,7 +5783,7 @@ test_fly1272_p2_foreign_same_title_is_untouched() {
 test_fly1272_p4_grouped_husk_cannot_back_wrong_tab() {
   echo "Test: FLY-1272 P4 — grouped view pointing at husk is escrowed and rebuilt exact"
   reset_mocks
-  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_TEST_NONCE="nonce-invariant"; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
   topo_add_session "runner-flywheel" '$1'
   topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 0 0
@@ -6008,7 +5811,7 @@ test_fly1272_p4_grouped_husk_cannot_back_wrong_tab() {
 test_fly1272_p4_uncertain_source_snapshot_mutates_nothing() {
   echo "Test: FLY-1272 P4 — uncertain source inventory causes zero mutation"
   reset_mocks
-  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_SOCK_IDENT="cmux-generation-1"; MOCK_TMUX_LIST_FAIL="1"
   topo_add_session "runner-flywheel" '$1'
   topo_add_window "runner-flywheel" "@42" "FLY-1272-implement" 1 0
@@ -6170,7 +5973,7 @@ test_fly1272_p3_unreadable_pre_capture_positive_post_is_unverified() {
 test_fly1272_p5_bootstrap_converges_once_then_is_quiet() {
   echo "Test: FLY-1272 P5 — bootstrap converges grouped husk drift, second pass is mutation-free"
   reset_mocks
-  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE="1"; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_TEST_NONCE="nonce-bootstrap"; MOCK_CMUX_MUTATE_JSON=1; MOCK_SOCK_IDENT="cmux-generation-1"
   BOOTSTRAP_SKIP_HEAL_SWEEP=1
   topo_add_session "runner-flywheel" '$1'
@@ -6456,7 +6259,7 @@ test_fly1596_restored_ledger_cas_preserves_reused_current_ref() {
 test_fly1596_w1_two_pass_adoption_closes_restored_row() {
   echo "Test: FLY-1596 Fix 2 — W1 two-pass adoption closes the restored row"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
   local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
   local first_marker first_ledger first_ops rc=0
@@ -6488,7 +6291,7 @@ test_fly1596_w1_two_pass_adoption_closes_restored_row() {
 test_fly1596_restored_adoption_accepts_production_lead_titles() {
   echo "Test: FLY-1596 Fix 2 — restored adoption includes production Lead titles"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
   local title="flywheel-flywheel-cos-lead" generation="cmux-generation-1" ref="workspace:60"
   local first_marker original_derive rc=0
@@ -6522,7 +6325,7 @@ test_fly1596_restored_adoption_accepts_production_lead_titles() {
 test_fly1596_restored_adoption_rejects_unrostered_live_titles() {
   echo "Test: FLY-1596 Fix 2 — restored adoption rejects unrostered live titles"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
   local title="founder-scratch" generation="cmux-generation-1"
   local before original_derive rc=0
@@ -6695,7 +6498,7 @@ test_fly1596_flag_off_aborts_synthetic_receipt_without_close() {
 test_fly1596_w1p_promotes_then_closes_drifted_prepared_row() {
   echo "Test: FLY-1596 Fix 2 — W1p promotes then closes through the committed choke"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_RESTORED_ADOPTION=1; MOCK_CMUX_MUTATE_JSON=1
   local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596" rc=0 first
   MOCK_SOCK_IDENT="$generation"
@@ -6721,7 +6524,7 @@ test_fly1596_w1p_promotes_then_closes_drifted_prepared_row() {
 test_fly1596_w1dead_is_roster_only_and_leaves_runner_stock() {
   echo "Test: FLY-1596 Fix 2 — W1-dead authority is roster-only"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   FLYWHEEL_CMUX_RESTORED_ADOPTION=1; FLYWHEEL_CMUX_ADOPTION_GRACE=0; MOCK_CMUX_MUTATE_JSON=1
   local lead="FLY-1596-qa" runner="FLY-1596-runner" generation="cmux-generation-1" rc=0
   local original_derive first
@@ -6752,7 +6555,7 @@ workspace:1597;;surface:2;;terminal;;true;;$runner"
 test_fly1596_all_normal_receipt_consumers_skip_restored_inflight() {
   echo "Test: FLY-1596 Fix 2 — all normal receipt consumers skip restored in-flight tuples"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
   local title_b64 orig_b64 fingerprint epoch canonical before rc=0
   MOCK_SOCK_IDENT="$generation"
@@ -6837,7 +6640,7 @@ test_fly1596_adoption_budget_meets_five_minute_restart_bound() {
 
 _fly1596_setup_healthy_sidebar_fixture() {
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   local title="${1:-FLY-1596-implement}" source="${2:-runner-flywheel}"
   local generation="cmux-generation-1"
   MOCK_SOCK_IDENT="$generation"
@@ -7339,7 +7142,7 @@ test_fly1596_rebuild_dry_run_and_exact_ref_are_read_only() {
 test_fly1596_rebuild_executes_grouped_to_verified_a1_and_preserves_out_of_scope_marker() {
   echo "Test: FLY-1596 Fix 3 — production generation converges one grouped target and preserves unrelated in-flight state"
   reset_mocks
-  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1; FLYWHEEL_CMUX_VIEW_INVARIANT=1
+  MOCK_TOPOLOGY_MODE=1; FLYWHEEL_CMUX_LINKED_VIEW=1
   MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1; MOCK_SOCK_IDENT=cmux-generation-1
   FLYWHEEL_CMUX_OPS_REPROBE_SECONDS=0
   local title=FLY-1596-implement other=FLY-1596-other title_b64 orig_b64 fingerprint epoch rc=0
@@ -7743,7 +7546,6 @@ test_fly1482_authority_latch_stops_inner_batch_loops() {
       self_heal_sweep_all() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       cleanup_stale_conservative() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       reap_ghost_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
-      dedup_workspaces_by_title() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       reap_unledgered_stock_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       reap_orphan_workspace_pins() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       sync_additive
@@ -7957,8 +7759,6 @@ test_fly1446_historical_double_committed_alerts_without_mutation() {
 _fly1364_legacy_create_fixture() {
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=0
   MOCK_CMUX_MUTATE_JSON=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_TMUX_WINDOWS='runner-flywheel|@42|FLY-1364-implement'
@@ -8028,8 +7828,6 @@ PY
   IFS='|' read -r session wid title dead expected_view deadline <<< "$fixture_row"
   MOCK_TOPOLOGY_MODE="1"
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  unset FLYWHEEL_CMUX_STRICT_VIEW
   FLYWHEEL_CMUX_TEST_NONCE="nonce-r6-a0b1"
   MOCK_CMUX_MUTATE_JSON=1
   MOCK_SOCK_IDENT="cmux-generation-1"
@@ -8052,54 +7850,6 @@ PY
     pass "1393 fixture drives redispatch creation, exact receipt, and strict view expectation"
   else
     fail "1393 fixture mismatch deadline=$deadline grouped=$grouped active=$active owner=[$owner] members=[$members] ledger=[$ledger_row]"
-  fi
-}
-
-test_fly1364_strict_view_rollback_restores_grouped_topology() {
-  echo "Test: FLY-1364 view lifetime rollback — strict=0 restores grouped A0B1 topology"
-  reset_mocks
-  MOCK_TOPOLOGY_MODE="1"
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=0
-  MOCK_CMUX_MUTATE_JSON=1
-  MOCK_SOCK_IDENT="cmux-generation-1"
-  topo_add_session "runner-flywheel" '$1'
-  topo_add_window "runner-flywheel" "@42" "FLY-1364-implement" 1 0
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
-  test_ensure_mutator_lease
-
-  create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement"
-
-  local grouped active ledger_row
-  grouped=$(tmux display-message -p -t "=cmux-FLY-1364-implement" '#{session_grouped}' 2>/dev/null || true)
-  active=$(tmux display-message -p -t "=cmux-FLY-1364-implement" '#{window_id}' 2>/dev/null || true)
-  ledger_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
-  if [[ "$grouped" == "1" && "$active" == "@42" \
-      && "$ledger_row" == "committed|cmux-generation-1|workspace:100|FLY-1364-implement" ]]; then
-    pass "strict rollback preserves exact-ref ledgering while restoring grouped topology"
-  else
-    fail "strict rollback mismatch grouped=$grouped active=$active ledger=[$ledger_row]"
-  fi
-}
-
-test_fly1364_a0b0_create_keeps_legacy_no_ledger_contract() {
-  echo "Test: FLY-1364 Fix B — A0B0 create remains legacy and unledgered"
-  reset_mocks
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=0
-  MOCK_CMUX_MUTATE_JSON=1
-  MOCK_SOCK_IDENT="cmux-generation-1"
-  MOCK_TMUX_WINDOWS='runner-flywheel|@42|FLY-1364-implement'
-  MOCK_PANE_DEAD='runner-flywheel:@42=0'
-  MOCK_TMUX_SESSIONS='runner-flywheel'
-  create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement"
-  local title
-  title=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["workspaces"][0]["title"])')
-  if [[ "$title" == "FLY-1364-implement" && ! -e "$VIEW_LEDGER" ]]; then
-    pass "A0B0 still renames through the legacy path without ledger authority"
-  else
-    fail "A0B0 compatibility drift title=[$title] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
   fi
 }
 
@@ -8211,7 +7961,6 @@ test_fly1364_unledgered_zero_ref_converges_only_view_shell() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
   topo_add_session "runner-flywheel" '$1'
@@ -8409,7 +8158,6 @@ test_fly1364_unledgered_json_uncertain_is_zero_mutation() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_JSON_FAIL=1
   topo_add_session "cmux-FLY-1364-implement" '$2' "" "runner-flywheel" "0"
@@ -8431,7 +8179,6 @@ test_fly1364_unledgered_present_ref_logs_operator_evidence_without_mutation() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="cmux-generation-1"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:900","title":"FLY-1364-implement"}]}'
   topo_add_session "cmux-FLY-1364-implement" '$9' "" "founder-owned" "0"
@@ -8475,7 +8222,7 @@ test_fly1364_run_mutator_once_rebuilds_malformed_lease_and_continues() {
       && "$(cat "$malformed_log")" != *"manual inspection required"* \
       && "$(cat "$malformed_log")" != *"already running"* \
       && ! -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]]; then
-    pass "busy remains a quiet dedup while a conclusively ownerless malformed lease is rebuilt and executed"
+    pass "busy remains a quiet while a conclusively ownerless malformed lease is rebuilt and executed"
   else
     fail "malformed lease did not safely rebuild-and-continue rc=$rc busy=[$(cat "$busy_log")] malformed=[$(cat "$malformed_log")] mutation=$([[ -e "$mutation_probe" ]] && echo yes || echo no) lock=$([[ -d "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" ]] && echo present || echo absent)"
   fi
@@ -8658,7 +8405,6 @@ test_fly1364_stale_generation_absent_ref_is_gced_without_current_rows() {
   echo "Test: FLY-1364 Fix F — stale-generation absent ref is GCed even with no current-generation rows"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="generation-current"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
   test_ensure_mutator_lease
@@ -8678,7 +8424,6 @@ test_fly1364_stale_generation_present_ref_is_preserved_without_migration() {
   echo "Test: FLY-1364 Fix F — stale-generation present ref is preserved and never migrated"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="generation-current"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:90","title":"FLY-1364-implement"}]}'
   test_ensure_mutator_lease
@@ -8701,7 +8446,6 @@ test_fly1364_stale_prepared_unnamed_ref_is_not_renamed() {
   echo "Test: FLY-1364 Fix F — stale prepared row cannot rename a current unnamed foreign ref"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="generation-current"
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:90","title":null}]}'
   test_ensure_mutator_lease
@@ -8721,7 +8465,6 @@ test_fly1364_stale_generation_pass_aborts_on_midpass_generation_flip() {
   echo "Test: FLY-1364 Fix F — generation flip during stale pass preserves old authority"
   reset_mocks
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   MOCK_SOCK_IDENT="generation-current"
   MOCK_JSON_FLIP_IDENT="generation-next"
   MOCK_JSON_FLIP_AT=1
@@ -8812,7 +8555,6 @@ test_fly1364_a0b1_flag_latch_survives_restart_and_rearms() {
   : > "$alerts"
   flywheel_alert() { printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$alerts"; return 0; }
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
   check_cmux_flag_state || rc=$?
   check_cmux_flag_state || rc=$?
   FLYWHEEL_CMUX_LINKED_VIEW=1
@@ -8821,16 +8563,15 @@ test_fly1364_a0b1_flag_latch_survives_restart_and_rearms() {
   check_cmux_flag_state || rc=$?
   FLYWHEEL_CMUX_LINKED_VIEW=1
   check_cmux_flag_state || rc=$?
-  FLYWHEEL_CMUX_STRICT_VIEW=0
   FLYWHEEL_CMUX_LINKED_VIEW=0
   check_cmux_flag_state || rc=$?
   local first second third expected_first expected_second expected_third
   first=$(sed -n '1p' "$alerts" 2>/dev/null)
   second=$(sed -n '2p' "$alerts" 2>/dev/null)
   third=$(sed -n '3p' "$alerts" 2>/dev/null)
-  expected_first='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while FLYWHEEL_CMUX_VIEW_INVARIANT=1. Exact-ref receipts remain mandatory; topology=strict-independent; episode=1.|cmux_flag_state|state=A0B1|episode=1'
-  expected_second='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while FLYWHEEL_CMUX_VIEW_INVARIANT=1. Exact-ref receipts remain mandatory; topology=strict-independent; episode=2.|cmux_flag_state|state=A0B1|episode=2'
-  expected_third='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while FLYWHEEL_CMUX_VIEW_INVARIANT=1. Exact-ref receipts remain mandatory; topology=grouped-rollback; episode=3.|cmux_flag_state|state=A0B1|episode=3'
+  expected_first='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=1.|cmux_flag_state|state=A0B1|episode=1'
+  expected_second='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=2.|cmux_flag_state|state=A0B1|episode=2'
+  expected_third='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=3.|cmux_flag_state|state=A0B1|episode=3'
   if [[ "$rc" -eq 0 && "$(wc -l < "$alerts" | tr -d ' ')" == "3" \
       && "$first" == "$expected_first" \
       && "$second" == "$expected_second" \
@@ -8981,8 +8722,6 @@ _fly1364_fixture_base() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=1
   FLYWHEEL_CMUX_ADOPTION_GRACE=0
   MOCK_SOCK_IDENT="generation-stock"
   MOCK_CMUX_MUTATE_JSON=1
@@ -9236,8 +8975,6 @@ PY
   IFS='|' read -r session wid title dead workspace_ref workspace_title view surface_ref screen clients deadline generation <<< "$fixture_row"
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=1
   MOCK_SOCK_IDENT="$generation"
   _fly1364_load_fixture_topology fly-1404-attach-exited.json full || {
     fail "1404 fixture topology did not load"
@@ -9449,8 +9186,6 @@ test_fly1364_receipted_legacy_grouped_view_migrates() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=1
   MOCK_SOCK_IDENT="generation-upgrade"
   MOCK_CMUX_MUTATE_JSON=1
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1364","title":"FLY-1364-qa-retest"}]}'
@@ -9484,8 +9219,6 @@ test_fly1364_legacy_grouped_backfill_refuses_foreign_same_title_ref() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=1
   MOCK_SOCK_IDENT="generation-upgrade-foreign"
   MOCK_CMUX_MUTATE_JSON=1
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:999","title":"FLY-1364-qa-retest"}]}'
@@ -9521,8 +9254,6 @@ test_fly1364_ledger_receipt_does_not_authorize_foreign_view_shell() {
     MOCK_TOPOLOGY_MODE=1
     MOCK_CMUX_MUTATE_JSON=1
     FLYWHEEL_CMUX_LINKED_VIEW=0
-    FLYWHEEL_CMUX_VIEW_INVARIANT=1
-    FLYWHEEL_CMUX_STRICT_VIEW=1
     MOCK_SOCK_IDENT="generation-view-ownership"
     MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1364","title":"FLY-1364-qa-retest"}]}'
     if [[ "$kind" == "independent" ]]; then
@@ -9552,8 +9283,6 @@ test_fly1364_strict_view_probe_uncertainty_never_authorizes_cleanup() {
   reset_mocks
   MOCK_TOPOLOGY_MODE=1
   FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=1
-  FLYWHEEL_CMUX_STRICT_VIEW=1
   MOCK_SOCK_IDENT="generation-liveness"
   topo_add_session "cmux-FLY-1364-qa-retest" '$2' "" "runner-flywheel" "0"
   topo_add_window "cmux-FLY-1364-qa-retest" "@1364" "FLY-1364-qa-retest" 1 0
@@ -9861,8 +9590,6 @@ test_fly1446_historical_double_committed_alerts_without_mutation
 test_fly1364_a0b1_create_records_prepared_then_committed_receipt
 test_fly1364_a0b1_create_accepts_exact_provisional_attach_title
 test_fly1364_a0b1_create_uses_independent_view_by_default
-test_fly1364_strict_view_rollback_restores_grouped_topology
-test_fly1364_a0b0_create_keeps_legacy_no_ledger_contract
 test_fly1364_first_receipt_failure_rolls_back_exact_unnamed_ref
 test_fly1482_midpass_authority_loss_preserves_unreceipted_workspace
 test_fly1364_prepared_recovery_repins_generation_at_rename
@@ -9924,24 +9651,6 @@ test_fly1364_cleanup_alert_latch_resets_per_generation
 test_fly1364_cleanup_episode_signatures_cover_each_refusal_class
 
 # ════════════════════════════════════════════════════════════════
-test_fly1550_create_sets_workspace_and_tab_titles() {
-  echo "Test: FLY-1550 — create path renames the workspace AND the tab (legacy rename branch)"
-  reset_mocks
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  FLYWHEEL_CMUX_VIEW_INVARIANT=0
-  MOCK_CMUX_MUTATE_JSON=1
-  MOCK_TMUX_SESSIONS=$'runner-flywheel'
-  MOCK_TMUX_WINDOWS=$'runner-flywheel|@3|FLY-1550-runner-claude-Fable-runner-lead-config'
-  MOCK_PANE_DEAD=$'runner-flywheel:@3=0'
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
-  create_workspace_for_window "runner-flywheel" "@3" "FLY-1550-runner-claude-Fable-runner-lead-config" >/dev/null 2>&1 || true
-  local ok=1
-  echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace" || { fail "no new-workspace issued. ops=[$MOCK_CMUX_OPS]"; ok=0; }
-  echo "$MOCK_CMUX_OPS" | grep -qF "rename-workspace --workspace workspace:100 FLY-1550-runner-claude-Fable-runner-lead-config" || { fail "workspace title not set. ops=[$MOCK_CMUX_OPS]"; ok=0; }
-  echo "$MOCK_CMUX_OPS" | grep -qF "rename-tab --workspace workspace:100 FLY-1550-runner-claude-Fable-runner-lead-config" || { fail "tab title not set (raw command would stay visible). ops=[$MOCK_CMUX_OPS]"; ok=0; }
-  [[ "$ok" == "1" ]] && pass "workspace and tab both carry the founder-facing title"
-}
-
 test_fly1550_tab_rename_is_recoverable_state() {
   echo "Test: FLY-1550 — a failed tab rename preserves the prepared row; the next pass converges both titles"
   reset_mocks
@@ -10000,7 +9709,6 @@ test_fly1550_attach_command_grammar_holds() {
 
 echo ""
 echo "═══ FLY-1550: managed Runner workspace titles ═══"
-test_fly1550_create_sets_workspace_and_tab_titles
 test_fly1550_tab_rename_is_recoverable_state
 test_fly1550_attach_command_grammar_holds
 
@@ -10169,14 +9877,13 @@ test_fly1605_prepared_surface_drift_does_not_block_additive_pass() {
     create_workspace_for_window() { printf 'create\n' >> "$trace"; }
     self_heal_sweep_all() { printf 'heal\n' >> "$trace"; }
     reap_ghost_workspaces() { printf 'ghost\n' >> "$trace"; }
-    dedup_workspaces_by_title() { printf 'dedup\n' >> "$trace"; }
     reap_unledgered_stock_workspaces() { printf 'stock\n' >> "$trace"; }
     reap_orphan_workspace_pins() { printf 'pins\n' >> "$trace"; }
     cleanup_stale_conservative() { printf 'cleanup\n' >> "$trace"; }
     sync_additive
   ) >/dev/null 2>&1 || rc=$?
 
-  local expected="existing titles exists create heal ghost dedup stock pins cleanup" item ok=1
+  local expected="existing titles exists create heal ghost stock pins cleanup" item ok=1
   [[ "$rc" -eq 0 ]] || { fail "prepared surface drift escaped as additive rc=$rc"; ok=0; }
   [[ "$(cat "$VIEW_LEDGER")" == "$before" ]] \
     || { fail "prepared surface drift changed receipt ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"; ok=0; }
@@ -10597,7 +10304,6 @@ test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
         cleanup_stale_conservative() { :; }
         cleanup_stale_workspaces() { :; }
         reap_ghost_workspaces() { :; }
-        dedup_workspaces_by_title() { :; }
         reap_unledgered_stock_workspaces() { :; }
         reap_orphan_workspace_pins() { :; }
         pgrep() { return 1; }
@@ -10632,7 +10338,6 @@ test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
         cleanup_stale_conservative() { :; }
         cleanup_stale_workspaces() { :; }
         reap_ghost_workspaces() { :; }
-        dedup_workspaces_by_title() { :; }
         reap_unledgered_stock_workspaces() { :; }
         reap_orphan_workspace_pins() { :; }
         pgrep() { return 1; }

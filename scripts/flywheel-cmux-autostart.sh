@@ -46,10 +46,6 @@ load_cmux_bool_flag() {
 }
 
 load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW 1
-load_cmux_bool_flag FLYWHEEL_CMUX_VIEW_INVARIANT 1
-load_cmux_bool_flag FLYWHEEL_CMUX_STRICT_VIEW 1
-load_cmux_bool_flag FLYWHEEL_CMUX_WAL_QUARANTINE 1
-load_cmux_bool_flag FLYWHEEL_CMUX_ROSTER 1
 load_cmux_bool_flag FLYWHEEL_CMUX_AUTOSTART_EXEC 0
 
 if [[ -e "$MAINTENANCE_MARKER" && "${FLYWHEEL_CMUX_SUPERVISED:-0}" != "1" ]]; then

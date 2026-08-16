@@ -976,7 +976,6 @@ async function handleRetry(
 		const dispatchResolution = resolveNodeDispatchAtLaunch(store, {
 			runId: predecessorBinding.run_id,
 			nodeId: predecessorBinding.node_id,
-			env: process.env,
 		});
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: predecessorBinding.run_id,

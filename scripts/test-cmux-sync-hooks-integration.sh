@@ -96,6 +96,8 @@ EVENT_FILE_BASE="$TMPDIR_ROOT/events"
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="hooks-integration-$$"
 export FLYWHEEL_CMUX_TMUX_GENERATION="hooks-integration-generation"
 VIEW_WAL_DIR="$TMPDIR_ROOT/view-wal"
+VIEW_LEDGER="$TMPDIR_ROOT/view-ledger"
+export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/watcher.lock"
 
 cleanup() {
   # Best-effort cleanup. Never fail the script in cleanup.
@@ -199,6 +201,8 @@ reset_scenario() {
   rm -f "$EVENT_FILE"
   # Kill any leftover isolated server windows from a previous scenario.
   command tmux -S "$TMUX_SOCKET" kill-server 2>/dev/null || true
+  rm -f "$VIEW_LEDGER"
+  rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
 setup_session() {
@@ -518,10 +522,9 @@ fi
 echo
 echo "── Scenario E (FLY-293): orphan-pin reaper (real tmux inventory) ──"
 reset_scenario "E293"
-# This is explicitly the legacy FLY-293 contract. New mode requires ledger
-# authority and is covered by the FLY-1272 unit suite.
+# Linked-view creation remains independently switchable, while cleanup now
+# always requires an exact receipt.
 FLYWHEEL_CMUX_LINKED_VIEW=0
-FLYWHEEL_CMUX_VIEW_INVARIANT=0
 # LIVE runner: real window + real grouped linked cmux- session → must be KEPT.
 tmux new-session -d -s "runner-test-fly293" -n "FLY-100-claude-alive" "sleep 60" 2>/dev/null
 tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/dev/null
@@ -550,6 +553,13 @@ FLY293JSON
 }
 export -f cmux
 
+cmux_socket_identity() { printf '%s' 'hooks-integration-cmux-generation'; }
+acquire_mutator_lease reaper
+printf '%s\n' \
+  'committed|hooks-integration-cmux-generation|workspace:1|FLY-100-claude-alive' \
+  'committed|hooks-integration-cmux-generation|workspace:2|FLY-777-claude-orphan' \
+  > "$VIEW_LEDGER"
+
 d293_out=$(orphan_pin_refs)
 if echo "$d293_out" | grep -q "^workspace:2	FLY-777-claude-orphan$" \
    && [[ "$(echo "$d293_out" | grep -c '^workspace:')" == "1" ]]; then
@@ -576,7 +586,7 @@ if [[ $d293_fc_rc -eq 2 && -z "$d293_fc_out" ]]; then
 else
   fail "Scenario E: expected rc=2 on tmux-down, got rc=$d293_fc_rc out=[$d293_fc_out]"
 fi
-unset -f cmux 2>/dev/null || true
+unset -f cmux cmux_socket_identity 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────
 

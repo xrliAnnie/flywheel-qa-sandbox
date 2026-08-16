@@ -2243,11 +2243,8 @@ export class Blueprint {
 		// regardless of slug. `flywheel-comm progress` path-limited commits ONLY
 		// progress.md (never sweeps code). QA runners write no ledger (isQaRunner
 		// skip). Byte-compat: the command is new; a runner that never calls it just
-		// doesn't write a ledger (= current behavior). The FLYWHEEL_PROGRESS_RESUME=0
-		// kill-switch fully reverts the feature — with no resume there is nothing to
-		// write for, so the discipline line is suppressed too (prompt byte-identical
-		// to pre-795).
-		if (!isQaRunner && process.env.FLYWHEEL_PROGRESS_RESUME !== "0") {
+		// doesn't write a ledger (= current behavior).
+		if (!isQaRunner) {
 			const progressLedgerLines = [
 				"PROGRESS LEDGER (restart-resilient — keep this current as you work):",
 				"Maintain a `progress.md` cursor in YOUR doc folder (the SAME folder as your",
@@ -2369,15 +2366,13 @@ export class Blueprint {
 		// FLY-1718 P2: the hook is the structural accident guard; this contract
 		// closes its documented client-side bypasses and makes the one-shot ACK a
 		// Lead-supervised, auditable action rather than a runner convenience.
-		if (process.env.FLYWHEEL_PUSH_GUARD !== "0") {
-			systemPromptLines.push(
-				"",
-				"FORCE-PUSH GUARD (all runner worktrees):",
-				"Do not use `git push --no-verify`, and do not change or unset `core.hooksPath` or `extensions.worktreeConfig`.",
-				"If a non-fast-forward push is genuinely required, ask your Lead through `flywheel-comm ask` and wait for explicit Lead confirmation.",
-				"Only after that confirmation, set `FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>` for that one command. The hook records the acknowledged rewrite; never reuse the ACK for another branch or command.",
-			);
-		}
+		systemPromptLines.push(
+			"",
+			"FORCE-PUSH GUARD (all runner worktrees):",
+			"Do not use `git push --no-verify`, and do not change or unset `core.hooksPath` or `extensions.worktreeConfig`.",
+			"If a non-fast-forward push is genuinely required, ask your Lead through `flywheel-comm ask` and wait for explicit Lead confirmation.",
+			"Only after that confirmation, set `FLYWHEEL_FORCE_PUSH_ACK=<exact-branch>` for that one command. The hook records the acknowledged rewrite; never reuse the ACK for another branch or command.",
+		);
 
 		// FLY-1257 M1-a: every resident-Codex gate surface requests the same
 		// wait law, while this latch renders it exactly once per prompt. Keeping

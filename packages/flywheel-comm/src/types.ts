@@ -15,7 +15,7 @@ export interface Message {
 	 * FLY-1328: how this question was disposed of — 'owner_closed' (the owning
 	 * runner's teardown cascade) or 'owner_closed_sweep' (the patrol catching a
 	 * runner that died without one). Null for every row disposed of by any other
-	 * path, and for every row while FLYWHEEL_ASK_HYGIENE=0.
+	 * path.
 	 */
 	resolved_via?: string | null;
 	logical_event_id: string | null;

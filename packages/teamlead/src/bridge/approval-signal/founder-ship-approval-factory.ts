@@ -4,8 +4,6 @@
  * Produces the `tryFounderShipApproval` callback the deliverer's ship branch
  * calls, binding the composition-root deps (canonical founder id, StateStore,
  * onResponseWritten) and gating on:
- *   - the default-ON kill-switch `FLYWHEEL_FOUNDER_AUTO_APPROVE` (`=0` disables;
- *     read per-call so ops can flip without a Bridge restart);
  *   - a per-project denylist (turn one project off without stopping the fleet);
  *   - a resolvable canonical founder id (fail-closed when missing / split).
  * Any gate failing → the callback returns null → the deliverer falls back to the
@@ -88,11 +86,6 @@ export interface FounderShipApprovalCallbackArgs {
 	recordDecisionClassification?: ShipApprovalHandlerArgs["recordDecisionClassification"];
 }
 
-/** Default ON — only an explicit `=0` disables (kill-switch). */
-function autoApproveEnabled(): boolean {
-	return process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE !== "0";
-}
-
 export function makeFounderShipApprovalCallback(
 	config: FounderShipApprovalFactoryConfig,
 ): (
@@ -100,7 +93,6 @@ export function makeFounderShipApprovalCallback(
 ) => Promise<ShipApprovalOutcome | null> {
 	const handler = config.handlerImpl ?? defaultHandler;
 	return async (args) => {
-		if (!autoApproveEnabled()) return null; // kill-switch
 		if (config.denylistProjects?.has(args.ctx.projectName)) return null;
 		const canonicalFounderId = deriveCanonicalFounderId(
 			config.discordOwnerUserId,

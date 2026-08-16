@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
-import { askHygieneEnabled } from "flywheel-comm/db";
 import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
@@ -79,7 +78,6 @@ import {
 	workflowTerminalNode,
 } from "./workflow-template.js";
 import {
-	isLandNodeEnabled,
 	isWorkflowGateCarrierEnabled,
 	workflowTemplateDispatchBlockMessage,
 	workflowTemplateDispatchBlockReason,
@@ -13864,12 +13862,7 @@ export class StateStore {
 		// disposed of nothing, and inventing an `owner_closed` record for it would
 		// put a fiction in the forensic log. Flag off, no audit, or zero asks all
 		// leave today's event set exactly as it is.
-		if (
-			input.ok &&
-			input.audit &&
-			input.audit.retiredAskCount > 0 &&
-			askHygieneEnabled()
-		) {
+		if (input.ok && input.audit && input.audit.retiredAskCount > 0) {
 			this.insertEvent({
 				event_id: `commdb-ask-disposed-${input.executionId}`,
 				execution_id: input.executionId,
@@ -15936,7 +15929,6 @@ export class StateStore {
 		nowMs: number,
 		leaseMs: number,
 	): { ok: true } | { ok: false; reason: string } {
-		if (process.env.FLYWHEEL_DOA_BACKOFF === "0") return { ok: true };
 		const participant = this.getDoaBackoffParticipant(executionId);
 		if (!participant) return { ok: true };
 		const claim = this.getLaunchClaim(executionId);
@@ -15995,10 +15987,7 @@ export class StateStore {
 	): { ok: true } | { ok: false; reason: string } {
 		let result: { ok: true } | { ok: false; reason: string } = { ok: true };
 		this.db.transaction(() => {
-			const enforceDoa = process.env.FLYWHEEL_DOA_BACKOFF !== "0";
-			const participant = enforceDoa
-				? this.getDoaBackoffParticipant(executionId)
-				: undefined;
+			const participant = this.getDoaBackoffParticipant(executionId);
 			const owned = participant
 				? this.workflowSelectAll(
 						`SELECT * FROM doa_backoff
@@ -16090,20 +16079,18 @@ export class StateStore {
 				  WHERE execution_id = ?`,
 				[executionId],
 			);
-			if (process.env.FLYWHEEL_DOA_BACKOFF !== "0") {
-				this.db.run(
-					`UPDATE doa_backoff
-					    SET release_owner_execution_id = NULL,
-					        release_lease_expires_at = NULL, release_state = 'none',
-					        revision = revision + 1, updated_at = ?
-					  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
-					[nowMs, executionId],
-				);
-				this.db.run(
-					"DELETE FROM doa_backoff_participants WHERE execution_id = ?",
-					[executionId],
-				);
-			}
+			this.db.run(
+				`UPDATE doa_backoff
+				    SET release_owner_execution_id = NULL,
+				        release_lease_expires_at = NULL, release_state = 'none',
+				        revision = revision + 1, updated_at = ?
+				  WHERE release_owner_execution_id = ? AND release_state = 'reserved'`,
+				[nowMs, executionId],
+			);
+			this.db.run(
+				"DELETE FROM doa_backoff_participants WHERE execution_id = ?",
+				[executionId],
+			);
 		});
 		this.save();
 	}
@@ -19128,12 +19115,6 @@ export class StateStore {
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override)
 			: { manifest: base, override: undefined };
-		if (
-			isWorkflowManifestLand(applied.manifest) &&
-			!isLandNodeEnabled(input.env ?? process.env)
-		) {
-			throw new Error("land workflow node is disabled by flag");
-		}
 		const generalizedSnapshot =
 			applied.manifest.schema_version === 2
 				? buildWorkflowRunSnapshotV2({

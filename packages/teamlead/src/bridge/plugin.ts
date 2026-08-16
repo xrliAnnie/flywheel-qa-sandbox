@@ -122,7 +122,6 @@ import {
 	isWorkflowManifestLand,
 	retireLegacyWorkflowTemplates,
 } from "../workflow-template.js";
-import { isLandNodeEnabled } from "../workflow-template-dispatch.js";
 import {
 	AlertChannelHub,
 	correlationKeyFor,
@@ -363,7 +362,6 @@ import {
 	buildLivenessManifest,
 	inboxLoopStallMs,
 	LivenessCheckTracker,
-	livenessAlertsEnabled,
 	qaStallInboxLoopLead,
 } from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
@@ -3858,8 +3856,7 @@ export function createBridgeApp(
 		// FLY-742: stale-blocker guard for the run-start 409 path. Own fsm/executor
 		// (stateless config) since the shared transitionOpts is built later in
 		// setup; teardown primitives are the same module-level fns crash-reaper
-		// uses (equivalent to close_runner done=true). Default-on;
-		// FLYWHEEL_CRON_STALE_GUARD=0 → unchanged 409 (byte-compat).
+		// uses (equivalent to close_runner done=true).
 		const staleGuardTransitionOpts: ApplyTransitionOpts = {
 			store,
 			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
@@ -3881,7 +3878,7 @@ export function createBridgeApp(
 			reconcileGhost: opts?.residueHarvester
 				? (blocker) => opts.residueHarvester!.reapTarget(blocker)
 				: undefined,
-			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
+			enabled: true,
 			staleTtlMs: resolveCronStaleTtlMs(),
 			now: () => Date.now(),
 			projectRootFor: (name) =>
@@ -4033,9 +4030,7 @@ export function createBridgeApp(
 	const reportsBaseDir =
 		process.env.FLYWHEEL_REPORTS_DIR ??
 		resolve(homedir(), ".flywheel", "reports");
-	const reportsEnabled = process.env.FLYWHEEL_REMOTE_REPORTS !== "0";
 	const reportsRouter = createReportsRouter({
-		enabled: reportsEnabled,
 		vercelToken: opts?.vercelToken,
 		// FLY-929 W3b ①: sender = Claude Infra Bot when P-identity holds (BOTH
 		// CLAUDE_INFRA_BOT_TOKEN + FLYWHEEL_NOTIFY_CHANNEL), else the legacy
@@ -4194,9 +4189,6 @@ export async function startBridge(
 		);
 	}
 	const bridgeBootTs = Date.now();
-	const livenessFlags = {
-		livenessAlerts: livenessAlertsEnabled(process.env),
-	};
 	const livenessTrackers = {
 		liveness: new LivenessCheckTracker({
 			cadenceMs: config.stuckCheckIntervalMs,
@@ -4310,7 +4302,7 @@ export async function startBridge(
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
 	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
 	const terminalCommDbSync = createTerminalCommDbSync({
-		enabled: process.env.FLYWHEEL_TERMINAL_COMMDB_SYNC !== "0",
+		enabled: true,
 		getAuthoritativeStatus: (executionId) =>
 			store.getSession(executionId)?.status,
 		resolveDbPath: resolveCommDbPath,
@@ -4545,10 +4537,8 @@ export async function startBridge(
 		fleetSupplier,
 	);
 
-	// FLY-247 inc2a: Fleet console (founder-admin surface). Local-first; default
-	// ON, `FLYWHEEL_FLEET_CONSOLE=0` falls back to the old dashboard + no fleet
-	// routes (byte-compat escape hatch). The console reads the live hot-overlay
-	// topology + computes everything server-side (secret-free DTO). Env-pinned
+	// FLY-247 inc2a: Fleet console (founder-admin surface). The console reads the
+	// live hot-overlay topology + computes everything server-side (secret-free DTO). Env-pinned
 	// (FLYWHEEL_PROJECTS) deployments can't run the engine (split-brain guard), so
 	// the console is disabled there too.
 	let fleetConsole: FleetConsole | undefined;
@@ -4556,10 +4546,7 @@ export async function startBridge(
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
 	let fleetReconcileTimer: ReturnType<typeof setInterval> | undefined;
-	if (
-		process.env.FLYWHEEL_FLEET_CONSOLE !== "0" &&
-		!process.env.FLYWHEEL_PROJECTS
-	) {
+	if (!process.env.FLYWHEEL_PROJECTS) {
 		try {
 			const here = dirname(fileURLToPath(import.meta.url));
 			const repoRoot =
@@ -5456,8 +5443,6 @@ export async function startBridge(
 	// never suppresses StateStore ghosts, orphan escalations, or the targeted path.
 	const commDbFsmReconcileEnabled =
 		process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
-	const residueHarvestEnabled =
-		process.env.FLYWHEEL_COMMDB_RESIDUE_HARVEST !== "0";
 	const openResidueCommDb = <T>(
 		projectName: string,
 		read: (db: CommDB) => T,
@@ -5529,7 +5514,7 @@ export async function startBridge(
 	const pruneResidueCommDb = async (projectName: string) => {
 		try {
 			const pruned = await pruneDeadTerminalCommDbSessions(projectName, {
-				includeCrashPreserve: residueHarvestEnabled,
+				includeCrashPreserve: true,
 				onFinalizeOutcome: recordResidueFinalizeOutcome,
 			});
 			if (pruned.pruned > 0) {
@@ -5568,104 +5553,97 @@ export async function startBridge(
 			if (store.listActiveTmuxHolds().length > 0) return "skipped_hold";
 			return "ran";
 		};
-	const residueHarvester = residueHarvestEnabled
-		? createResidueHarvester({
-				projectNames: projects.map((project) => project.projectName),
-				commDbFsmEnabled: commDbFsmReconcileEnabled,
-				harvestCommDb: async (projectName) => {
-					const result = await reconcileCommDbRunningAgainstFsm(
-						projectName,
-						(executionId) => store.getSession(executionId)?.status,
-						{
-							harvest: {
-								orphanMinAgeMs: 24 * 3_600_000,
-								nowMs: () => Date.now(),
-							},
-							onFinalizeOutcome: (executionId, project, outcome) => {
-								const session = store.getSession(executionId);
-								store.recordCommDbFinalizeOutcome({
-									executionId,
-									issueId: session?.issue_id ?? executionId,
-									projectName: project,
-									ok: outcome.ok,
-									error: outcome.error,
-									audit: {
-										retiredGateCount: outcome.retiredGateCount,
-										retiredAskCount: outcome.retiredAskCount,
-										source: "bridge.commdb-fsm-reconcile",
-									},
-								});
-							},
-							finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
-								db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
-							parkedGenerationEvidence,
-						},
-					);
-					if (result.reconciled > 0) {
-						console.log(
-							`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
-						);
-					}
-				},
-				pruneTerminalCommDb: pruneResidueCommDb,
-				harvestStateStoreGhosts: async (projectName, provenDeadTargets) => {
-					const targetsByExecution = new Map(
-						provenDeadTargets.map((item) => [
-							item.executionId,
-							item.tmuxWindow,
-						]),
-					);
-					const result = await reconcileStateStoreGhosts(projectName, {
-						...residueGhostDeps,
-						getProvenDeadTmuxTarget: (executionId) =>
-							targetsByExecution.get(executionId),
-					});
-					if (result.reaped > 0) {
-						console.log(
-							`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
-						);
-					}
-				},
-				harvestPaneLoss: async (projectName) => {
-					const result = await reconcilePaneLoss(projectName, {
-						store,
-						transitionOpts,
-						mutate: true,
+	const residueHarvester = createResidueHarvester({
+		projectNames: projects.map((project) => project.projectName),
+		commDbFsmEnabled: commDbFsmReconcileEnabled,
+		harvestCommDb: async (projectName) => {
+			const result = await reconcileCommDbRunningAgainstFsm(
+				projectName,
+				(executionId) => store.getSession(executionId)?.status,
+				{
+					harvest: {
+						orphanMinAgeMs: 24 * 3_600_000,
 						nowMs: () => Date.now(),
-						preflight: async () => {
-							const fenced = paneLossFence();
-							if (fenced !== "ran") return fenced;
-							return (await probeTmuxServer()) === "up"
-								? "ran"
-								: "skipped_server";
-						},
-						fence: paneLossFence,
-						lookupTarget: lookupTmuxTarget,
-						probeRunner: probeRunnerProcessLiveness,
-						discoverTarget: discoverTmuxTargetByExecutionId,
-						probeServerGeneration: probeTmuxServerStartTime,
-						isCompleteMarkerPending: (executionId) =>
-							hasPendingCompleteMarker(executionId, defaultMarkerDir()),
-						notify: (session, classification, terminalStatus) =>
-							paneLossNotifyHolder.current?.(
-								session,
-								classification,
-								terminalStatus,
-							) ?? Promise.resolve(false),
-						lifecycleMutex: residueGhostDeps.lifecycleMutex,
-					});
-					if (result.failed > 0 || result.advisories > 0) {
-						console.warn(
-							`[Bridge] FLY-1628 pane loss (${projectName}): scanned=${result.scanned} failed=${result.failed} advisories=${result.advisories}`,
-						);
-					}
-					return result.face;
+					},
+					onFinalizeOutcome: (executionId, project, outcome) => {
+						const session = store.getSession(executionId);
+						store.recordCommDbFinalizeOutcome({
+							executionId,
+							issueId: session?.issue_id ?? executionId,
+							projectName: project,
+							ok: outcome.ok,
+							error: outcome.error,
+							audit: {
+								retiredGateCount: outcome.retiredGateCount,
+								retiredAskCount: outcome.retiredAskCount,
+								source: "bridge.commdb-fsm-reconcile",
+							},
+						});
+					},
+					finalizePaneLossResidue: (db, executionId, expectedTmuxWindow) =>
+						db.finalizePaneLossResidue(executionId, expectedTmuxWindow),
+					parkedGenerationEvidence,
 				},
-				reapStateStoreGhost: async (session) =>
-					(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
-				log: (message) => console.warn(message),
-			})
-		: undefined;
+			);
+			if (result.reconciled > 0) {
+				console.log(
+					`[Bridge] FLY-1066 CommDB residue (${projectName}): scanned=${result.scanned} reconciled=${result.reconciled} orphan=${result.harvest?.orphanHarvested ?? 0} preserve=${result.harvest?.preserveHarvested ?? 0}`,
+				);
+			}
+		},
+		pruneTerminalCommDb: pruneResidueCommDb,
+		harvestStateStoreGhosts: async (projectName, provenDeadTargets) => {
+			const targetsByExecution = new Map(
+				provenDeadTargets.map((item) => [item.executionId, item.tmuxWindow]),
+			);
+			const result = await reconcileStateStoreGhosts(projectName, {
+				...residueGhostDeps,
+				getProvenDeadTmuxTarget: (executionId) =>
+					targetsByExecution.get(executionId),
+			});
+			if (result.reaped > 0) {
+				console.log(
+					`[Bridge] FLY-1066 StateStore ghosts (${projectName}): scanned=${result.scanned} reaped=${result.reaped}`,
+				);
+			}
+		},
+		harvestPaneLoss: async (projectName) => {
+			const result = await reconcilePaneLoss(projectName, {
+				store,
+				transitionOpts,
+				mutate: true,
+				nowMs: () => Date.now(),
+				preflight: async () => {
+					const fenced = paneLossFence();
+					if (fenced !== "ran") return fenced;
+					return (await probeTmuxServer()) === "up" ? "ran" : "skipped_server";
+				},
+				fence: paneLossFence,
+				lookupTarget: lookupTmuxTarget,
+				probeRunner: probeRunnerProcessLiveness,
+				discoverTarget: discoverTmuxTargetByExecutionId,
+				probeServerGeneration: probeTmuxServerStartTime,
+				isCompleteMarkerPending: (executionId) =>
+					hasPendingCompleteMarker(executionId, defaultMarkerDir()),
+				notify: (session, classification, terminalStatus) =>
+					paneLossNotifyHolder.current?.(
+						session,
+						classification,
+						terminalStatus,
+					) ?? Promise.resolve(false),
+				lifecycleMutex: residueGhostDeps.lifecycleMutex,
+			});
+			if (result.failed > 0 || result.advisories > 0) {
+				console.warn(
+					`[Bridge] FLY-1628 pane loss (${projectName}): scanned=${result.scanned} failed=${result.failed} advisories=${result.advisories}`,
+				);
+			}
+			return result.face;
+		},
+		reapStateStoreGhost: async (session) =>
+			(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
+		log: (message) => console.warn(message),
+	});
 	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. Single
 	// boot-time switch capture — OFF (=0) means neither sink receives an
 	// enqueue function at all (byte-compat: zero enqueue, scheduler
@@ -6188,7 +6166,7 @@ export async function startBridge(
 							},
 						),
 					land: {
-						enabled: () => isLandNodeEnabled(process.env),
+						enabled: () => true,
 						createIntent: (input: {
 							projectName: string;
 							issueId: string;
@@ -6568,13 +6546,10 @@ export async function startBridge(
 			},
 		},
 		// FLY-1082 (Task 2.3): the server-loss coordinator pre-reaper phase —
-		// holder-backed (the coordinator is built later, alongside the alert
-		// sink). FLYWHEEL_FLEET_SENSOR_TMUX=0 kills the phase entirely.
-		process.env.FLYWHEEL_FLEET_SENSOR_TMUX !== "0"
-			? {
-					check: coordinatedServerLossCheck,
-				}
-			: undefined,
+		// holder-backed (the coordinator is built later, alongside the alert sink).
+		{
+			check: coordinatedServerLossCheck,
+		},
 		// FLY-1204: parked-phase reclaim chokepoint — the safety net that reclaims
 		// leaked DAG workflow keep-alive phase sessions (design_done holders never
 		// closed after handoff; completed QA processes never torn down → OOM).
@@ -6883,24 +6858,21 @@ export async function startBridge(
 	// viewers); this migrates the existing backlog + backstops the terminal-app
 	// path. Runs after the FLY-324 sweep; the late-bound FLY-172 alert-aware drain
 	// runs later in boot and owns completion settlement. One-shot,
-	// fire-and-forget, best-effort. `FLYWHEEL_VIEWER_SESSION_REAPER=0` disables
-	// (same escape-hatch shape as FLYWHEEL_CRASH_REAPER).
-	if (process.env.FLYWHEEL_VIEWER_SESSION_REAPER !== "0") {
-		import("./viewer-session-reaper.js")
-			.then(({ deriveOwnedBaseSessions, reapViewerSessions }) =>
-				reapViewerSessions(
-					store,
-					deriveOwnedBaseSessions((projects ?? []).map((p) => p.projectName)),
-				).then((r) =>
-					console.log(
-						`[viewer-session-reaper] scanned=${r.scanned} killed=${r.killed} skippedAttached=${r.skippedAttached} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} errors=${r.errors.length}`,
-					),
+	// fire-and-forget, best-effort.
+	import("./viewer-session-reaper.js")
+		.then(({ deriveOwnedBaseSessions, reapViewerSessions }) =>
+			reapViewerSessions(
+				store,
+				deriveOwnedBaseSessions((projects ?? []).map((p) => p.projectName)),
+			).then((r) =>
+				console.log(
+					`[viewer-session-reaper] scanned=${r.scanned} killed=${r.killed} skippedAttached=${r.skippedAttached} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} errors=${r.errors.length}`,
 				),
-			)
-			.catch((e: Error) =>
-				console.warn(`[viewer-session-reaper] failed: ${e.message}`),
-			);
-	}
+			),
+		)
+		.catch((e: Error) =>
+			console.warn(`[viewer-session-reaper] failed: ${e.message}`),
+		);
 
 	// FLY-766: Chrome-session reaper — kill leaked `agent-browser` Chrome-for-Testing
 	// instances (the real root of the fleet memory spikes: any session using
@@ -6910,12 +6882,8 @@ export async function startBridge(
 	// FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED=1). Skips entirely for a
 	// `:memory:` store (unit-test Bridges) so tests never enumerate real processes
 	// or start a timer. Boot + periodic share one single-flight guard.
-	// `FLYWHEEL_CHROME_REAPER=0` disables both.
 	let chromeReaperTimer: ReturnType<typeof setInterval> | undefined;
-	if (
-		process.env.FLYWHEEL_CHROME_REAPER !== "0" &&
-		store.getDbPath() !== ":memory:"
-	) {
+	if (store.getDbPath() !== ":memory:") {
 		const chromeGraceMin = (() => {
 			const n = Number(process.env.FLYWHEEL_CHROME_REAPER_ORPHAN_GRACE_MIN);
 			return Number.isFinite(n) && n > 0 ? n : 30;
@@ -7764,7 +7732,6 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
-		livenessAlertsEnabled: livenessFlags.livenessAlerts,
 		ensureShipRelevantDiff,
 		onIssueGateSupersedeTick: issueGateSupersedeTick,
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
@@ -8197,7 +8164,7 @@ export async function startBridge(
 	// StateStore row until the notifier has durably sent/queued/dead-lettered it.
 	let doaBackoffMaintenanceBusy = false;
 	const runDoaBackoffMaintenance = async (): Promise<void> => {
-		if (doaBackoffMaintenanceBusy || process.env.FLYWHEEL_DOA_BACKOFF === "0") {
+		if (doaBackoffMaintenanceBusy) {
 			return;
 		}
 		doaBackoffMaintenanceBusy = true;
@@ -10176,7 +10143,7 @@ export async function startBridge(
 		};
 	};
 	const leadIdentityMonitor = new LeadDualActiveMonitor({
-		enabled: process.env.FLYWHEEL_DUAL_ACTIVE_SCAN !== "0",
+		enabled: true,
 		notify: async (finding) => {
 			const payload = leadIdentityFindingPayload(finding);
 			const leadKey = `${finding.projectName}-${finding.leadId}`;

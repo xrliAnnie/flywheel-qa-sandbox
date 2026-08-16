@@ -114,11 +114,9 @@ export { commDbPathForProject } from "./commdb-path.js";
  * carries no parked marker). But an UNREADABLE comm.db — one that exists yet
  * throws on open/read (corrupt / locked) — is NOT evidence of "not parked"; it is
  * the absence of evidence, and this force-complete is destructive, so it must
- * FAIL CLOSED (veto) exactly like the boot sweep (Codex R2 HIGH). Kill-switch
- * shared with the prune (FLYWHEEL_PRUNE_PARK_GUARD).
+ * FAIL CLOSED (veto) exactly like the boot sweep (Codex R2 HIGH).
  */
 function isRunnerDeclaredParked(execId: string, projectName: string): boolean {
-	if (process.env.FLYWHEEL_PRUNE_PARK_GUARD === "0") return false;
 	if (/[/\\]|\.\./.test(projectName)) return false;
 	const dbPath = commDbPathForProject(projectName);
 	if (!existsSync(dbPath)) return false; // no channel opened = no parked signal
@@ -1928,10 +1926,8 @@ export function createEventRouter(
 				// between leaves the old gate alive a little longer and the
 				// gate-poller sweeper converges it (R2). retireShipGate's WHERE is
 				// double-guarded (approve_to_ship + unanswered), so an answered
-				// gate can never be rewritten. Kill-switch
-				// `FLYWHEEL_SHIP_GATE_RETIRE=0` restores byte-compat (no retire).
+				// gate can never be rewritten.
 				const retireSupersededShipGate = (): void => {
-					if (process.env.FLYWHEEL_SHIP_GATE_RETIRE === "0") return;
 					if (status !== "awaiting_review") return;
 					const supersededQid = existingSession?.review_question_id;
 					if (

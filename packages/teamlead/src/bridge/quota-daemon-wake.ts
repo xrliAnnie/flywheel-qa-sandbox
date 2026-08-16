@@ -10,7 +10,6 @@ import type { AlertMetadata } from "../LeadAlertNotifier.js";
 
 export type QuotaDaemonWakeOutcome =
 	| "signaled"
-	| "disabled"
 	| "throttled"
 	| "unsupported"
 	| "unsafe_pidfile"
@@ -23,7 +22,6 @@ export interface QuotaDaemonWakeDeps {
 	readProcessStartTime?: (pid: number) => string | null;
 	kill?: (pid: number, signal: NodeJS.Signals) => void;
 	now?: () => number;
-	wakeEnabled?: () => boolean;
 	warn?: (message: string) => void;
 }
 
@@ -49,13 +47,10 @@ export function createQuotaDaemonWaker(
 	const readStart = deps.readProcessStartTime ?? processStartTime;
 	const kill = deps.kill ?? ((pid, signal) => void process.kill(pid, signal));
 	const now = deps.now ?? Date.now;
-	const wakeEnabled =
-		deps.wakeEnabled ?? (() => process.env.FLYWHEEL_QUOTA_WAKE !== "0");
 	const warn = deps.warn ?? ((message) => console.warn(message));
 	let lastWakeAt: number | null = null;
 
 	return () => {
-		if (!wakeEnabled()) return "disabled";
 		const current = now();
 		if (lastWakeAt !== null && current - lastWakeAt < 60_000) {
 			return "throttled";

@@ -375,8 +375,7 @@ export const SUPPORTED_MILESTONE_KINDS_V1: readonly MilestoneKind[] = [
 /**
  * FLY-725: per-project founder milestone-report policy. Absent or `enabled:false`
  * ⇒ feature OFF (opt-in; byte-compatible — the Bridge milestone patrol no-ops).
- * The global env `FLYWHEEL_FOUNDER_MILESTONE_NOTIFY=0` is a hard kill-switch on
- * top of this. Loaded from the project's CANONICAL root only (never a runner's
+ * Loaded from the project's CANONICAL root only (never a runner's
  * PR worktree) so a runner cannot edit its own config to change founder
  * notifications.
  */

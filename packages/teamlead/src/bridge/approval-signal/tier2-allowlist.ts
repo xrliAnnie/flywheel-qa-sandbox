@@ -77,9 +77,7 @@ export const TIER2_DENY_CJK: readonly string[] = [
 
 /**
  * FLY-1041 Fix C: PURE affirmation prefixes ("嗯ship" → "ship"). Stripped only
- * when `prefixNorm` is on (caller reads FLYWHEEL_TIER2_PREFIX_NORM per call —
- * a deterministic-approval semantic expansion MUST have its own kill-switch,
- * Codex R1 #2). CJK affirmations glue without whitespace, so stripping is
+ * when `prefixNorm` is on. CJK affirmations glue without whitespace, so stripping is
  * prefix-based (longest-first), not token-based. Deny tokens are checked both
  * BEFORE stripping (whole message) and AFTER (a boundary-hidden hedge can be
  * exposed by the strip), so this list must stay PURE affirmation — never add

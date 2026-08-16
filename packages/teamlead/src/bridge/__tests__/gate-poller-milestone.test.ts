@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
@@ -100,17 +100,6 @@ function makePoller(
 }
 
 describe("FLY-725 GatePoller milestone patrol (v1 = failed/blocked, B)", () => {
-	let envBak: string | undefined;
-	beforeEach(() => {
-		envBak = process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY;
-		delete process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY;
-	});
-	afterEach(() => {
-		if (envBak === undefined)
-			delete process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY;
-		else process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY = envBak;
-	});
-
 	it("first patrol marker-seeds pre-existing history (no post); 2nd does not reseed; a fresh session then pings", async () => {
 		const { store, events } = makeStore([makeSession()]);
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
@@ -266,7 +255,7 @@ describe("FLY-725 GatePoller milestone patrol (v1 = failed/blocked, B)", () => {
 		).toBe(false);
 	});
 
-	it("no-op when the feature is disabled (config enabled:false / env=0 / chatThreadsEnabled=false)", async () => {
+	it("no-op when project config or chat threads disable the report", async () => {
 		for (const over of [
 			{
 				founderMilestoneReportByProject: new Map([
@@ -288,16 +277,6 @@ describe("FLY-725 GatePoller milestone patrol (v1 = failed/blocked, B)", () => {
 			expect(fetchImpl).not.toHaveBeenCalled();
 			expect(events).toHaveLength(0);
 		}
-
-		// env kill-switch
-		process.env.FLYWHEEL_FOUNDER_MILESTONE_NOTIFY = "0";
-		expect(
-			(
-				makePoller(makeStore([]).store) as unknown as {
-					founderMilestoneNotifyEnabled(): boolean;
-				}
-			).founderMilestoneNotifyEnabled(),
-		).toBe(false);
 	});
 
 	it("milestones subset only sends the configured kinds", async () => {

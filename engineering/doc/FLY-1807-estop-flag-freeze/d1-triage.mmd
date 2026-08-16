@@ -1,0 +1,15 @@
+flowchart TD
+    A["体检名单 §2<br/>急停开关 49 条<br/>(裁决:删 + 固化成开)"] --> B{设计期逐条对账}
+    B -->|"6 条在「解析器待查」名单<br/>(E6 是硬前置)"| C["暂缓,等 FLY-1811 (E6)<br/>判完放行 → wave-2"]
+    B -->|"1 条:done_thread_reconcile<br/>QA 测试房靠它的「关」隔离生产"| D["退出本批<br/>报 Lead 另行处置"]
+    B -->|"42 条通过"| E["wave-1 执行集<br/>(其中 2 条带附加条件)"]
+    E --> F["PR-A:36 条<br/>读点全在 TypeScript 代码"]
+    E --> G["PR-B:6 条<br/>读点含 bash 运维脚本<br/>(cmux 侧栏一族)"]
+    F --> H["先 A 后 B 串行<br/>每条逐一走六步删除配方"]
+    G --> H
+    H --> I["守卫兜底:<br/>墓碑 + 漂移测试 + 残留扫描"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style D fill:#fde8e8,stroke:#ff3b30
+    style C fill:#fff4e0,stroke:#ff9500
+    style E fill:#e6f7ec,stroke:#34c759
+    style I fill:#f3e8fd,stroke:#af52de

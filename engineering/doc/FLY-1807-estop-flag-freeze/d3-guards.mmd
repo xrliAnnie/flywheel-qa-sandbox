@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph CODE["代码里(删干净)"]
+        R1["TypeScript 读点<br/>if (env.X !== '0')"]
+        R2["bash 脚本读点<br/>${X:-1}"]
+    end
+    subgraph REG["登记处(改两处)"]
+        R3["registry.ts<br/>删掉该行"]
+        R4["truth.ts 墓碑<br/>+ retiredBy: FLY-1807"]
+    end
+    subgraph GUARD["三道守卫(删之后)"]
+        G1["漂移测试:墓碑名字<br/>再出现在代码里 → CI 红"]
+        G2["环境校验:.env 里残留该行<br/>→ 报「已退役,删这行」"]
+        G3["残留扫描:交付前全仓搜名字<br/>期望零命中(白名单外)"]
+    end
+    R1 --> R3
+    R2 --> R3
+    R3 --> R4
+    R4 --> G1
+    R4 --> G2
+    R3 --> G3
+    style GUARD fill:#f3e8fd,stroke:#af52de

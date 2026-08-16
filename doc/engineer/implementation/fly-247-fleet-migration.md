@@ -72,7 +72,7 @@ inc2a 在 inc1 之上加:① `GET /` 从旧 Dashboard 换成 **Fleet 控制台**
 ## A. 生效方式(merge 后)
 
 - 控制台前端 + 路由在 `flywheel-fleet.sh`(scripts/)+ teamlead dist 内 → **生效 = merge + 生产 `git pull` + 一次 Bridge 重启**(`createBridgeApp` 在 boot 时挂路由 + 实例化 `FleetConsole`)。
-- **kill-switch**:`FLYWHEEL_FLEET_CONSOLE=0` → 回落旧 Dashboard + 不挂任何 `/api/fleet/*` 路由(字节兼容逃生口)。`FLYWHEEL_PROJECTS`(env-pinned,如 QA slot)下控制台**自动禁用**(引擎对 env-pinned 一律 fail-close,split-brain 守卫)。
+- `FLYWHEEL_FLEET_CONSOLE` 已由 FLY-1807 固化开启并退役;旧 Dashboard 回退仍由初始化失败与 optional-console 路径保留。`FLYWHEEL_PROJECTS`(env-pinned,如 QA slot)下控制台**自动禁用**(引擎对 env-pinned 一律 fail-close,split-brain 守卫)。
 - **启动期零落盘**:不用控制台时 `audit.db` 的 `fleet_admin_audit` 表 lazy-init(首次 stage/apply 才建)、`fleet-txns/` 与 `fleet-logs/` 首次写才建 → 未用控制台 = boot 零磁盘变化(字节兼容)。
 
 ## B. Mufasa 后端迁移(deploy-time,§2.4)— **ship 前必做**
