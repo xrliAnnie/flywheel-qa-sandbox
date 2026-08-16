@@ -110,8 +110,7 @@ normalized_cross_dept_ids() {
 # FLY-1243 — echo "1" when roundtable in-thread member-follow (autoContinue) is
 # EFFECTIVELY on, else "". FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD is RETIRED (固化
 # default-on) — MUST mirror parseCodexLeadRuntimeConfig's new rule exactly: a
-# RESOLVABLE parent channel AND autoContinue not explicitly disabled
-# (FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE != "0", i.e. DEFAULT-ON). The parent is
+# RESOLVABLE parent channel. The parent is
 # FLYWHEEL_ROUNDTABLE_CHANNEL_ID (trimmed) if set, else crossDeptChannelIds[0] — derived
 # from normalized_cross_dept_ids() so it can never drift from the value the renderers write.
 roundtable_autocontinue_effective() {
@@ -121,7 +120,7 @@ roundtable_autocontinue_effective() {
     parent="$(normalized_cross_dept_ids)"
     parent="${parent%%,*}"   # first survivor = crossDept[0] (already trimmed/base-filtered)
   fi
-  if [ -n "$parent" ] && [ "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE:-}" != "0" ]; then
+  if [ -n "$parent" ]; then
     printf '1'
   fi
 }

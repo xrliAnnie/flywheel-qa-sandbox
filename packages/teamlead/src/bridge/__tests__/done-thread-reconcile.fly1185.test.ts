@@ -171,7 +171,7 @@ describe("FLY-1185 D entry — cutover episode machine (plan §4 #30)", () => {
 				closeRunnerFn,
 				archiveSinkFn,
 				transitionOpts: { store, fsm: undefined } as never,
-				newMutatorsEnabled: false, // FLYWHEEL_WORKTREE_AUTOCLEAN=0
+				newMutatorsEnabled: false, // injected autoclean seam disabled
 			}),
 		);
 		expect(lifecycleCloseout).not.toHaveBeenCalled();

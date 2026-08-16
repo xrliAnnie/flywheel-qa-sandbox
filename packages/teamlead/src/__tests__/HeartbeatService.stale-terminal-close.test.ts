@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -44,7 +44,6 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	let notifier: { onSessionStale: ReturnType<typeof vi.fn> };
 	let closeStale: ReturnType<typeof vi.fn>;
 	let staleCfg: StaleTerminalCloseConfig;
-	const envBefore = process.env.FLYWHEEL_STALE_TERMINAL_CLOSE;
 
 	function makeService(cfg?: StaleTerminalCloseConfig): HeartbeatService {
 		return new HeartbeatService(
@@ -73,15 +72,6 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		notifier = { onSessionStale: vi.fn().mockResolvedValue(undefined) };
 		closeStale = vi.fn().mockResolvedValue({ closed: true });
 		staleCfg = { closeStale };
-		delete process.env.FLYWHEEL_STALE_TERMINAL_CLOSE;
-	});
-
-	afterEach(() => {
-		if (envBefore === undefined) {
-			delete process.env.FLYWHEEL_STALE_TERMINAL_CLOSE;
-		} else {
-			process.env.FLYWHEEL_STALE_TERMINAL_CLOSE = envBefore;
-		}
 	});
 
 	it("closes a leaked completed session and skips the stale notify", async () => {
@@ -261,22 +251,6 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
 	});
 
-	it("kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → pre-FLY-867 notify-only (byte-compat sentinel)", async () => {
-		process.env.FLYWHEEL_STALE_TERMINAL_CLOSE = "0";
-		const s = makeSession();
-		store.getStaleCompletedSessions.mockReturnValue([s]);
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).not.toHaveBeenCalled();
-		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
-
-		// Dedup still works exactly as before.
-		await service.checkStaleCompleted();
-		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
-	});
-
 	it("unwired (no 14th constructor arg) → pre-FLY-867 notify-only", async () => {
 		const s = makeSession();
 		store.getStaleCompletedSessions.mockReturnValue([s]);
@@ -288,26 +262,10 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
 	});
 
-	// FLY-867 (Codex code R1 MEDIUM): the OFF/unwired path must be byte-compatible
+	// FLY-867 (Codex code R1 MEDIUM): the unwired path must be byte-compatible
 	// with pre-FLY-867 GEO-270 — an already-notified stale session is dedup'd
 	// BEFORE the CommDB/tmux probe, not after. Assert the probe runs exactly once
 	// across two cycles (not once per cycle).
-	it("kill-switch OFF: an already-notified session is NOT re-probed on the next cycle (byte-compat)", async () => {
-		process.env.FLYWHEEL_STALE_TERMINAL_CLOSE = "0";
-		const s = makeSession();
-		store.getStaleCompletedSessions.mockReturnValue([s]);
-		mockGetTmuxTarget.mockClear();
-		mockIsTmuxAlive.mockClear();
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted(); // cycle 1: probe + notify
-		await service.checkStaleCompleted(); // cycle 2: dedup short-circuit, NO probe
-
-		expect(mockGetTmuxTarget).toHaveBeenCalledTimes(1);
-		expect(mockIsTmuxAlive).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionStale).toHaveBeenCalledTimes(1);
-	});
-
 	it("unwired: an already-notified session is NOT re-probed on the next cycle (byte-compat)", async () => {
 		const s = makeSession();
 		store.getStaleCompletedSessions.mockReturnValue([s]);
@@ -352,9 +310,9 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		// Cycle 2: close succeeds → dedup entry cleared.
 		closeStale.mockResolvedValueOnce({ closed: true });
 		await service.checkStaleCompleted();
-		// Cycle 3: same exec leaks AGAIN (reincarnation); close disabled this
-		// time (flag flipped) → the notify must fire again, not be deduped.
-		process.env.FLYWHEEL_STALE_TERMINAL_CLOSE = "0";
+		// Cycle 3: same exec leaks AGAIN (reincarnation); close fails, so the
+		// notify must fire again rather than being suppressed by stale dedup state.
+		closeStale.mockResolvedValueOnce({ closed: false });
 		await service.checkStaleCompleted();
 		expect(notifier.onSessionStale).toHaveBeenCalledTimes(2);
 	});

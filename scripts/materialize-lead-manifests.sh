@@ -87,7 +87,7 @@ while IFS= read -r proj; do
       '{
          leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
 		 projectsFile: $projectsFile, subdir: "", workspace: $workspace,
-         mcpExclude: "", chromeEnabled: false
+		 mcpExclude: ""
        }
        | (if $model != "" then . + {model: $model} else . end)
        | (if $backendId != "" then . + {leadBackend: {backendId: $backendId}} else . end)' \

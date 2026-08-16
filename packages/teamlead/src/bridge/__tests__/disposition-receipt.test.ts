@@ -10,7 +10,7 @@
  *     generation earns its own row via the anchor UNIQUE;
  *   - delivery: single consumer, confirmed-post-only stamping keyed by
  *     receipt_id + state='pending', bounded post, fair rotation, 7d expiry,
- *     FLYWHEEL_DISPOSITION_RECEIPT as the ONLY delivery gate.
+ *     one always-on delivery path.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -504,7 +504,6 @@ describe("M10 delivery — single consumer", () => {
 			store,
 			projects: PROJECTS,
 			globalBotToken: "tok-global",
-			env: { FLYWHEEL_DISPOSITION_RECEIPT: "1" } as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn,
 		});
@@ -528,7 +527,6 @@ describe("M10 delivery — single consumer", () => {
 			store,
 			projects: PROJECTS,
 			globalBotToken: "tok-global",
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn,
 		});
@@ -559,7 +557,6 @@ describe("M10 delivery — single consumer", () => {
 			store,
 			projects: PROJECTS,
 			globalBotToken: "tok-global",
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn: post,
 		});
@@ -582,7 +579,6 @@ describe("M10 delivery — single consumer", () => {
 		const pass = createDispositionReceiptPass({
 			store,
 			projects: PROJECTS,
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn,
 			log,
@@ -619,7 +615,6 @@ describe("M10 delivery — single consumer", () => {
 		const pass = createDispositionReceiptPass({
 			store,
 			projects: PROJECTS,
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn: vi.fn(),
 			log: () => {},
@@ -630,32 +625,11 @@ describe("M10 delivery — single consumer", () => {
 		expect(row?.attempts).toBe(1); // the failure was stamped for rotation
 	});
 
-	it("FLYWHEEL_DISPOSITION_RECEIPT=0 → zero delivery, rows retained; re-enable delivers", async () => {
-		store.upsertChatThread("thread-1", "ch-eng", "FLY-1282", "tadashi");
-		seedPendingReceipt();
-		const postFn = vi.fn().mockResolvedValue(undefined);
-		const env: NodeJS.ProcessEnv = { FLYWHEEL_DISPOSITION_RECEIPT: "0" };
-		const pass = createDispositionReceiptPass({
-			store,
-			projects: PROJECTS,
-			env,
-			now: () => NOW,
-			postFn,
-		});
-		await pass();
-		expect(postFn).not.toHaveBeenCalled();
-		expect(store.getPendingDispositionReceipts(10)).toHaveLength(1);
-		env.FLYWHEEL_DISPOSITION_RECEIPT = "1"; // live flip
-		await pass();
-		expect(postFn).toHaveBeenCalledTimes(1);
-	});
-
 	it("unresolvable thread counts as a FAILED attempt (stamped, rotates) — never a zero-stamp squatter", async () => {
 		seedPendingReceipt(); // no chat thread seeded at all
 		const pass = createDispositionReceiptPass({
 			store,
 			projects: PROJECTS,
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn: vi.fn(),
 		});
@@ -676,7 +650,6 @@ describe("M10 delivery — single consumer", () => {
 		const pass = createDispositionReceiptPass({
 			store,
 			projects: PROJECTS,
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			postFn,
 		});
@@ -699,7 +672,6 @@ describe("M10 delivery — single consumer", () => {
 		const pass = createDispositionReceiptPass({
 			store,
 			projects: PROJECTS,
-			env: {} as NodeJS.ProcessEnv,
 			now: () => NOW,
 			fetchImpl: hangingFetch,
 			postFn: (tok, thread, content, opts) =>

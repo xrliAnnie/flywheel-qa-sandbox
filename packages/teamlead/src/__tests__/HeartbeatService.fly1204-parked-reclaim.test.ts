@@ -55,7 +55,6 @@ let commDir: string;
 beforeEach(() => {
 	commDir = mkdtempSync(join(tmpdir(), "fly1204-parked-"));
 	process.env.FLYWHEEL_COMM_DIR = commDir;
-	delete process.env.FLYWHEEL_STALE_TERMINAL_CLOSE;
 	tmuxState.clear();
 	vi.mocked(lookupTmuxTarget).mockClear();
 	vi.mocked(probeRunnerProcessLiveness).mockClear();
@@ -443,30 +442,6 @@ describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
 			status: "completed",
 			chat_thread_role: "qa",
 			last_activity_at: FRESH_TS,
-		});
-		tmuxState.set("q", "alive");
-		const { cfg, closeParked, alertOrphan } = makeConfig();
-		await makeService(store, cfg).checkStaleParkedPhases();
-		expect(closeParked).not.toHaveBeenCalled();
-		expect(alertOrphan).not.toHaveBeenCalled();
-	});
-
-	it("kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → complete no-op", async () => {
-		process.env.FLYWHEEL_STALE_TERMINAL_CLOSE = "0";
-		const store = await makeStore();
-		seed(store, {
-			execution_id: "q",
-			issue_id: "FLY-14",
-			status: "completed",
-			chat_thread_role: "qa",
-		});
-		store.insertEvent({
-			event_id: "claim-FLY-14",
-			execution_id: "q",
-			issue_id: "FLY-14",
-			project_name: PROJECT,
-			event_type: "post_ship_finalization_claim",
-			source: "test",
 		});
 		tmuxState.set("q", "alive");
 		const { cfg, closeParked, alertOrphan } = makeConfig();

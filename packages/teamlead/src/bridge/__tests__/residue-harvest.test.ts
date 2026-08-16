@@ -64,7 +64,7 @@ describe("createResidueHarvester", () => {
 		]);
 	});
 
-	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 gates only face ①/②", async () => {
+	it("commDbFsmEnabled=false gates only face ①/②", async () => {
 		const harvestCommDb = vi.fn(async () => {});
 		const pruneTerminalCommDb = vi.fn(async () => []);
 		const harvestStateStoreGhosts = vi.fn(async () => {});
@@ -87,7 +87,7 @@ describe("createResidueHarvester", () => {
 		);
 	});
 
-	it("FLYWHEEL_COMMDB_FSM_RECONCILE=0 does not gate the targeted StateStore entry", async () => {
+	it("commDbFsmEnabled=false does not gate the targeted StateStore entry", async () => {
 		const reapStateStoreGhost = vi.fn(async () => true);
 		const harvester = createResidueHarvester({
 			projectNames: ["flywheel"],

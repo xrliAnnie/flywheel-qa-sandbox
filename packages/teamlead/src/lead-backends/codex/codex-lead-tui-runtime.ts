@@ -549,8 +549,8 @@ function buildTuiGeneration(
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
 						});
-						// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
-						// disables). The TUI sidecar drives Discord I/O through this SAME router,
+						// FLY-1806: Discord typing indicator is fixed on. The TUI sidecar drives
+						// Discord I/O through this SAME router,
 						// so the founder sees "typing…" in Discord while a windowed Mufasa works.
 						// Closed on stopGateway (also fired on each generation rebuild).
 						const typing = config.typingEnabled

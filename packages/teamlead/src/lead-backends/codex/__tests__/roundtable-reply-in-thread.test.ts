@@ -69,24 +69,11 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 			autoContinue: true,
 		});
 	});
-	it("FLY-676: THREAD_AUTOCONTINUE=0 (kill-switch) → autoContinue OMITTED (reverse-compat OFF-shape)", () => {
+	it("FLY-314 Part(b): resolvable parent + THREAD_BUDGET → autoContinue + budgetN", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({
 				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
 				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
-				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "0",
-			}),
-		).replyInThread;
-		expect(cfg).toEqual({ enabled: true, parentChannelId: RT });
-		expect("autoContinue" in (cfg ?? {})).toBe(false);
-	});
-
-	it("FLY-314 Part(b): THREAD_AUTOCONTINUE=1 + THREAD_BUDGET → autoContinue + budgetN", () => {
-		const cfg = parseCodexLeadRuntimeConfig(
-			env({
-				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
-				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
-				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
 				FLYWHEEL_ROUNDTABLE_THREAD_BUDGET: "3",
 			}),
 		).replyInThread;

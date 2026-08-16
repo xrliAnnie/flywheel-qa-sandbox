@@ -616,7 +616,6 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	 */
 	stampIssueStage(args: { session: Session; stage: string }): void {
 		// Respect the same kill switch as the runner-driven stamp path (event-route).
-		if (process.env.FLYWHEEL_ISSUE_STATUS_EMOJI === "0") return;
 		const creator = this.deps.chatThreadCreator;
 		if (!creator) return; // chat-thread feature off → nothing to stamp
 
@@ -660,7 +659,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 				},
 				thread.thread_id,
 				args.stage,
-				process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0",
+				true,
 			)
 			.catch((err: unknown) => {
 				console.warn(

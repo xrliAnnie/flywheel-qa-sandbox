@@ -41,7 +41,7 @@ describe("isDirectToggleable", () => {
 		const gov = FEATURE_FLAGS.find(
 			(f) => f.name === "founder_consent_decision_mode",
 		);
-		const restart = FEATURE_FLAGS.find((f) => f.name === "worktree_autoclean");
+		const restart = FEATURE_FLAGS.find((f) => f.name === "runner_autocontinue");
 		expect(isDirectToggleable(autoQa as never)).toBe(true);
 		expect(isDirectToggleable(gov as never)).toBe(false);
 		expect(isDirectToggleable(restart as never)).toBe(false);
@@ -131,7 +131,7 @@ describe("applyFlagToggle", () => {
 
 	it("rejects a non-direct (restart) flag", () => {
 		const r = applyFlagToggle(deps(), {
-			name: "worktree_autoclean",
+			name: "runner_autocontinue",
 			rawFrom: null,
 			rawTo: "0",
 			fileSha: SHA,

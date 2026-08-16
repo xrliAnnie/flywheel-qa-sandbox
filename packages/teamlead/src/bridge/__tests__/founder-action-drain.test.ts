@@ -12,9 +12,9 @@ import type { FounderActionIntent } from "../../StateStore.js";
 import { StateStore } from "../../StateStore.js";
 import {
 	drainFounderActionLedger,
+	FOUNDER_NOTIFY_RETRY_MAX,
 	type FounderActionDrainDeps,
 	feedbackWakeContent,
-	founderNotifyRetryMax,
 } from "../founder-action-drain.js";
 
 const SHA_A = "a".repeat(40);
@@ -164,7 +164,7 @@ describe("drainFounderActionLedger — bounded failure + must-deliver alerts (§
 			postNotice: vi.fn(async () => ({ ok: false, error: "discord 500" })),
 		});
 		store.insertFounderAction(intent());
-		const max = founderNotifyRetryMax();
+		const max = FOUNDER_NOTIFY_RETRY_MAX;
 		for (let i = 0; i < max; i++) await drainFounderActionLedger(deps);
 		const row = store.getFounderAction("held-reply-Q-1-100");
 		expect(row?.status).toBe("failed");
@@ -216,7 +216,7 @@ describe("drainFounderActionLedger — bounded failure + must-deliver alerts (§
 				payload: { alert: {} },
 			}),
 		);
-		const max = founderNotifyRetryMax();
+		const max = FOUNDER_NOTIFY_RETRY_MAX;
 		for (let i = 0; i < max; i++) await drainFounderActionLedger(deps);
 		expect(store.getFounderAction("emit-alert-x")?.status).toBe("failed");
 		// bounded terminal: exactly ONE row with the emit-alert prefix ever exists

@@ -654,8 +654,7 @@ export interface RunInfraOptions {
 	/**
 	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
 	 * FLY-1165 scheduler consumer), set on the DirectEventSink completion path.
-	 * The composition root passes this ONLY when FLYWHEEL_TERMINAL_THREAD_ARCHIVE
-	 * is ON (single boot-time capture). Absent → zero enqueue (byte-compat).
+	 * Production always passes it; optionality is retained for embedding/tests.
 	 */
 	terminalArchiveEnqueue?: (issueId: string) => void;
 	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */

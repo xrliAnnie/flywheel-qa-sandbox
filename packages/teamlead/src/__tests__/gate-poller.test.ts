@@ -646,40 +646,6 @@ describe("GatePoller (FLY-161)", () => {
 		expect(runtime.captured).toHaveLength(1); // delivered on the probe
 	});
 
-	it("Case 10c (FLY-307 B): FLYWHEEL_GATEPOLLER_CIRCUIT=0 never skips a failing lead", async () => {
-		const prev = process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
-		process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = "0";
-		try {
-			insertSession("exec-nocirc", { status: "running", labels: ["product"] });
-			insertQuestion({
-				execId: "exec-nocirc",
-				leadId: "product-lead",
-				content: "Always fails",
-			});
-			const getSessionSpy = vi
-				.spyOn(store, "getSession")
-				.mockImplementation(() => {
-					// Neutral non-corruption fault: these FLY-307 circuit tests only
-					// need getSession to FAIL repeatedly; the cause is irrelevant to
-					// circuit counting. (Avoid a sql.js-corruption signature so the
-					// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
-					throw new Error("simulated getSession failure (FLY-307 circuit)");
-				});
-
-			const poller = makePoller({ circuitThreshold: 2 });
-			await runPoll(poller);
-			await runPoll(poller);
-			await runPoll(poller);
-			await runPoll(poller);
-			// Circuit disabled → every poll still reaches getSession (never skipped).
-			expect(getSessionSpy).toHaveBeenCalledTimes(4);
-			getSessionSpy.mockRestore();
-		} finally {
-			if (prev === undefined) delete process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
-			else process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = prev;
-		}
-	});
-
 	it("Case 9: skips gate_question when source session resolves to a different Lead (lead-scope check)", async () => {
 		// Question is addressed to product-lead, but source session's labels
 		// resolve to ops-lead — label-routing wins over to_agent for gate.

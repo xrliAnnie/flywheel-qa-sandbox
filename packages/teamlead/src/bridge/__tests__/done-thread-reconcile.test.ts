@@ -643,12 +643,8 @@ describe("resolveDoneThreadReconcileConfig (FLY-1165)", () => {
 		).toBe(360);
 	});
 
-	it("DRYRUN=1 and MAX_PER_RUN", () => {
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN: "1",
-			}).dryRun,
-		).toBe(true);
+	it("keeps production dry-run disabled and parses MAX_PER_RUN", () => {
+		expect(resolveDoneThreadReconcileConfig({}).dryRun).toBe(false);
 		expect(
 			resolveDoneThreadReconcileConfig({
 				FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN: "7",

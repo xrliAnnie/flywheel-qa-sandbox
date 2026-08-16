@@ -1957,7 +1957,7 @@ _launch_claude() {
   # test isolation); unset => plugin uses the default path (byte-compatible).
   local _rt_var
   for _rt_var in FLYWHEEL_ROUNDTABLE_CHANNEL_ID FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD \
-    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE FLYWHEEL_ROUNDTABLE_THREAD_BUDGET \
+    FLYWHEEL_ROUNDTABLE_THREAD_BUDGET \
     FLYWHEEL_ROUNDTABLE_CONFIG_FILE; do
     if [ -n "${!_rt_var:-}" ]; then
       env_args+=(-e "${_rt_var}=${!_rt_var}")
@@ -2288,22 +2288,6 @@ CLAUDE_ARGS=(
 # all static args are built, then freezes that decision for the context gate and
 # child argv. Frozen launchd env remains carrier evidence for fleet tooling but
 # has no runtime authority.
-
-# FLY-143: claude-in-chrome — env-gated, default OFF.
-# `--chrome` + `--permission-mode bypassPermissions` together set
-# CLAUDE_CHROME_PERMISSION_MODE=skip_all_permission_checks (verified upstream
-# in setup.ts:101-104). That gives an autonomous Lead access to Annie's
-# logged-in Chrome session without per-site friction. Keep this opt-in.
-#
-# Wrapper reads `chromeEnabled: true` from manifest and exports the env var.
-# To enable for one Lead: set "chromeEnabled": true in its manifest, restart.
-if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-false}" = "true" ]; then
-  CLAUDE_ARGS+=(--chrome)
-  log "Claude in Chrome: ENABLED (--chrome flag set)"
-  log "WARNING: Lead operates in Annie's logged-in Chrome session with skip_all_permission_checks"
-else
-  log "Claude in Chrome: disabled (set FLYWHEEL_LEAD_CHROME_ENABLED=true to enable)"
-fi
 
 # FLY-47: Channel configuration
 # The private pointer marketplace is not on Claude's approved-channel allowlist.

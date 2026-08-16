@@ -21,7 +21,6 @@ import {
 } from "../zombie-gate-hygiene.js";
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
 	vi.restoreAllMocks();
 });
 

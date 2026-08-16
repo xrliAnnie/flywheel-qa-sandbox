@@ -95,9 +95,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 	/**
 	 * FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
-	 * FLY-1165 scheduler consumer). Set by the composition root ONLY when
-	 * FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON (single boot-time capture).
-	 * Absent → zero enqueue (byte-compat).
+	 * FLY-1165 scheduler consumer). Production always wires it; optionality is
+	 * retained for embedding/test callers.
 	 */
 	public terminalArchiveEnqueue?: (issueId: string) => void;
 

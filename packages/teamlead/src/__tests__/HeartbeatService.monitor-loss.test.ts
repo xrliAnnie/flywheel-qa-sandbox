@@ -1,11 +1,9 @@
 /**
  * FLY-172 + FLY-623: orchestration tests for HeartbeatService's monitoring-loss
- * reconcile pass. FLY-623 makes RE-ADOPT the default (FLYWHEEL_HEARTBEAT_READOPT
- * unset / ON): a detached-but-alive Runner gets its heartbeat refreshed +
+ * reconcile pass. FLY-623 makes RE-ADOPT the sole path: a detached-but-alive
+ * Runner gets its heartbeat refreshed +
  * suppressed from stuck/orphan/idle while the title is restored to the actual
- * phase/status, via the `reconnecting` set. `FLYWHEEL_HEARTBEAT_READOPT=0`
- * reverts to the exact FLY-172 legacy
- * (advisory-only, no refresh). The marker mechanics are covered in
+ * phase/status, via the `reconnecting` set. The marker mechanics are covered in
  * complete-marker-reconciler.test.ts; here we mock that module + tmux-lookup to
  * test the orchestration deterministically.
  */
@@ -143,18 +141,12 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 	let service: HeartbeatService;
 
 	beforeEach(() => {
-		// FLY-1282: these tests freeze the FLY-623 LEGACY consumption (still the
-		// exact contract behind FLYWHEEL_ZOMBIE_RECONCILE=0). The zombie-ON
-		// tri-state consumption has its own suite
-		// (HeartbeatService.zombie-reconcile.test.ts).
-		process.env.FLYWHEEL_ZOMBIE_RECONCILE = "0";
 		store = makeStore();
 		notifier = makeNotifier();
 		service = makeService(store, notifier);
 	});
 	afterEach(() => {
 		service.stop();
-		delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
 	});
 
 	it("no marker + tmux alive → re-adopt (updateHeartbeat) + one-time re-established advisory", async () => {
@@ -195,25 +187,6 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		await service.reconcileMonitorLoss(); // reconnecting member still re-processed
 		expect(service.isReconnecting("exec-1")).toBe(false);
 		expect(store.updateHeartbeat.mock.calls.length).toBe(callsAfterCycle1);
-	});
-
-	it("alive→dead next cycle: removed from reconnecting, reapOrphans force-fails", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		mockedAlive.mockResolvedValue(true);
-		await service.reconcileMonitorLoss();
-		expect(service.isReconnecting("exec-1")).toBe(true);
-
-		mockedAlive.mockResolvedValue(false); // tmux died
-		await service.reconcileMonitorLoss();
-		expect(service.isReconnecting("exec-1")).toBe(false);
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-1",
-			"failed",
-			expect.any(String),
-			expect.stringContaining("Orphaned"),
-		);
 	});
 
 	it("clear-on-event: clearReconnecting removes from set + restamps", async () => {
@@ -293,7 +266,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
 			sess(),
 			expect.any(Number),
-			{ stampReconnectTitle: true },
+			expect.objectContaining({ stampReconnectTitle: true }),
 		);
 
 		// Same process, same episode: no duplicate boot candidate or title stamp.
@@ -312,7 +285,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
 			sess(),
 			expect.any(Number),
-			{ stampReconnectTitle: false },
+			expect.objectContaining({ stampReconnectTitle: false }),
 		);
 	});
 
@@ -334,7 +307,7 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledWith(
 			sess(),
 			expect.any(Number),
-			{ stampReconnectTitle: false },
+			expect.objectContaining({ stampReconnectTitle: false }),
 		);
 	});
 
@@ -400,154 +373,5 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		service.clearReconnecting("exec-1");
 		expect(service.isReconnecting("exec-1")).toBe(false);
 		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
-	});
-});
-
-describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOPT=0)", () => {
-	let store: MockStore;
-	let notifier: MockNotifier;
-	let service: HeartbeatService;
-
-	beforeEach(() => {
-		process.env.FLYWHEEL_HEARTBEAT_READOPT = "0";
-		store = makeStore();
-		notifier = makeNotifier();
-		service = makeService(store, notifier);
-	});
-	afterEach(() => {
-		service.stop();
-		delete process.env.FLYWHEEL_HEARTBEAT_READOPT;
-	});
-
-	it("no-op when monitorReconcile config absent", async () => {
-		const noCfg = new HeartbeatService(
-			store as never,
-			notifier as never,
-			15,
-			60_000,
-			60,
-		);
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await noCfg.reconcileMonitorLoss();
-		expect(mockedTry).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
-	});
-
-	it("no marker + tmux alive → advisory once, no force-fail, no heartbeat refresh", async () => {
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await service.reconcileMonitorLoss();
-		await service.reconcileMonitorLoss(); // second cycle
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		// legacy path NEVER refreshes heartbeat (exact FLY-172)
-		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-	});
-
-	it("reapOrphans skips a monitor-lost (alive) session — no false failed", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.reconcileMonitorLoss();
-		await service.reapOrphans();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
-	});
-
-	it("alive→dead next cycle: removed from set, then reapOrphans force-fails", async () => {
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		mockedAlive.mockResolvedValueOnce(true);
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-
-		mockedAlive.mockResolvedValue(false);
-		await service.reconcileMonitorLoss();
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledWith(
-			"exec-1",
-			"failed",
-			expect.any(String),
-			expect.stringContaining("Orphaned"),
-		);
-	});
-
-	it("no marker + tmux dead → not monitor-lost → reapOrphans force-fails", async () => {
-		mockedAlive.mockResolvedValue(false);
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledTimes(1);
-	});
-
-	it("valid marker wins over tmux alive (marker-first): reconciled, no advisory", async () => {
-		mockedTry.mockResolvedValue({
-			kind: "reconciled",
-			status: "awaiting_review",
-		});
-		mockedAlive.mockResolvedValue(true);
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
-		expect(mockedAlive).not.toHaveBeenCalled();
-	});
-
-	it("settled ship-attempt marker is fully consumed: no legacy liveness fallthrough", async () => {
-		mockedTry.mockResolvedValue({
-			kind: "settled_ship_attempt_failed",
-			settle: "marked",
-		});
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
-		expect(mockedAlive).not.toHaveBeenCalled();
-	});
-
-	it("transient marker failure → reapOrphans skips force-fail (retry next cycle)", async () => {
-		mockedTry.mockResolvedValue({ kind: "transient_failed", error: "down" });
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.reconcileMonitorLoss();
-		await service.reapOrphans();
-		expect(store.forceStatus).not.toHaveBeenCalled();
-	});
-
-	it("quarantined marker → applyQuarantineFallback invoked with tmux liveness", async () => {
-		mockedTry.mockResolvedValue({
-			kind: "quarantined",
-			reason: "rejected",
-			routeStatus: "blocked",
-			quarantinePath: "/q/exec-1.json",
-		});
-		mockedAlive.mockResolvedValue(false);
-		store.getOrphanSessions.mockReturnValue([sess()]);
-		await service.reconcileMonitorLoss();
-		expect(mockedFallback).toHaveBeenCalledWith(
-			expect.objectContaining({
-				executionId: "exec-1",
-				tmuxAlive: false,
-				routeStatus: "blocked",
-			}),
-		);
-	});
-
-	it("no CommDB target (gone) → not protected → reapOrphans force-fails", async () => {
-		mockedTarget.mockReturnValue(undefined);
-		mockedLookup.mockReturnValue({ kind: "gone" }); // FLY-720: liveness reads via lookupTmuxTarget
-		const s = sess();
-		store.getOrphanSessions.mockReturnValue([s]);
-		await service.reconcileMonitorLoss();
-		expect(notifier.onSessionMonitoringLost).not.toHaveBeenCalled();
-		await service.reapOrphans();
-		expect(store.forceStatus).toHaveBeenCalledTimes(1);
-	});
-
-	it("boot-seed is a no-op under kill-switch", async () => {
-		store.getActiveSessions.mockReturnValue([sess()]);
-		store.getReadoptCandidateSessions.mockReturnValue([sess()]);
-		expect(await service.seedReconnecting()).toEqual([]);
-		expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
 	});
 });

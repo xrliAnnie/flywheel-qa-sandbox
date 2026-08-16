@@ -53,7 +53,7 @@ describe("handleFlagStage", () => {
 	it("rejects a non-direct / governance flag", () => {
 		const deps = makeDeps();
 		expect(
-			handleFlagStage(deps, { name: "worktree_autoclean", to: false }, "o")
+			handleFlagStage(deps, { name: "runner_autocontinue", to: false }, "o")
 				.code,
 		).toBe(400);
 		expect(

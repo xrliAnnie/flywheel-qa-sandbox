@@ -21,7 +21,7 @@ export interface ResidueHarvester {
 
 export interface ResidueHarvesterDeps {
 	projectNames: readonly string[];
-	/** FLYWHEEL_COMMDB_FSM_RECONCILE gates only the CommDB-running face. */
+	/** Generic seam that gates only the CommDB-running face. */
 	commDbFsmEnabled: boolean;
 	harvestCommDb: (projectName: string) => Promise<unknown>;
 	pruneTerminalCommDb: (

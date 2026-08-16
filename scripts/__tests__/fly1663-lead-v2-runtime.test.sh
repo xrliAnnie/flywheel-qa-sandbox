@@ -305,12 +305,11 @@ cp "$ROOT/packages/teamlead/scripts/lead-body.sh" "$TMP/body-fixture/lead-body.s
 cat > "$TMP/body-fixture/claude-lead.sh" <<'BODY_STUB'
 #!/bin/bash
 jq -n \
-  --arg token "${DISCORD_BOT_TOKEN:-}" \
-  --arg workspace "${LEAD_WORKSPACE:-}" \
-  --arg mcpExclude "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}" \
-  --arg chromeEnabled "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" \
-  --arg alertChannel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
-  '{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,chromeEnabled:$chromeEnabled,alertChannel:$alertChannel}' \
+	--arg token "${DISCORD_BOT_TOKEN:-}" \
+	--arg workspace "${LEAD_WORKSPACE:-}" \
+	--arg mcpExclude "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}" \
+	--arg alertChannel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
+	'{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,alertChannel:$alertChannel}' \
   > "${FLY1663_BODY_OUT:?}"
 BODY_STUB
 cat > "$TMP/body.env" <<'ENV'
@@ -324,11 +323,10 @@ FLY1663_BODY_OUT="$TMP/body.out" \
   bash "$TMP/body-fixture/lead-body.sh" "$TMP/manifest.json"
 if jq -e \
     --arg workspace "$TMP/custom-workspace" \
-    '.token == "right-lead-token"
-      and .workspace == $workspace
-      and .mcpExclude == "dangerous-mcp,chrome"
-      and .chromeEnabled == "true"
-      and .alertChannel == "alert-channel-123"' \
+	'.token == "right-lead-token"
+	  and .workspace == $workspace
+	  and .mcpExclude == "dangerous-mcp,chrome"
+	  and .alertChannel == "alert-channel-123"' \
     "$TMP/body.out" >/dev/null; then
   pass "body preserves v1 manifest projection and exports launcher configuration to helpers"
 else

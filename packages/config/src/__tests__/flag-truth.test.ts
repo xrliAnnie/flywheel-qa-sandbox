@@ -23,6 +23,40 @@ const W1_TRACKED_FIELDS = {
 	freshness: "fresh",
 };
 
+const FLY_1806_RETIRED_FLAGS = [
+	"FLYWHEEL_GATEPOLLER_CIRCUIT",
+	"FLYWHEEL_FOUNDER_THREAD_NOTIFY",
+	"FLYWHEEL_FOUNDER_REPLY_DELIVER",
+	"FLYWHEEL_DEFERRED_FOUNDER_APPROVAL",
+	"FLYWHEEL_HELD_DECLINED_REPLY",
+	"FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX",
+	"FLYWHEEL_FOUNDER_REPLY_RETRY_MAX",
+	"FLYWHEEL_HEARTBEAT_READOPT",
+	"FLYWHEEL_LIVENESS_PANE_DEAD",
+	"FLYWHEEL_ISSUE_STATUS_WORD",
+	"FLYWHEEL_STALE_TERMINAL_CLOSE",
+	"FLYWHEEL_ZOMBIE_RECONCILE",
+	"FLYWHEEL_BOOT_SHA_CHECK",
+	"FLYWHEEL_WORKTREE_AUTOCLEAN",
+	"FLYWHEEL_BRIDGE_LOOP_GUARD",
+	"FLYWHEEL_ISSUE_STATUS_EMOJI",
+	"FLYWHEEL_ISSUE_ATTACH_PIN",
+	"FLYWHEEL_ISSUE_DISPLAY_REFRESH",
+	"FLYWHEEL_CRASH_REAPER",
+	"FLYWHEEL_COMMDB_FSM_RECONCILE",
+	"FLYWHEEL_TERMINAL_THREAD_ARCHIVE",
+	"FLYWHEEL_DISPOSITION_RECEIPT",
+	"FLYWHEEL_SHIP_READY_NOTIFY",
+	"FLYWHEEL_SHIP_READY_REMIND_MS",
+	"FLYWHEEL_CODEX_LEAD_TYPING",
+	"FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE",
+	"FLYWHEEL_LEAD_CHROME_ENABLED",
+	"FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT",
+	"FLYWHEEL_CMUX_AUTOSTART_EXEC",
+	"FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
+	"FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN",
+] as const;
+
 describe("FLY-1393 flag truth", () => {
 	it("classifies the founder-review runner capability as context, not a feature flag", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toMatch(
@@ -120,6 +154,24 @@ describe("FLY-1393 flag truth", () => {
 			const validation = validateFlagTruthEnvironment([`${envVar}=0`]);
 			expect(validation.ok, envVar).toBe(false);
 			expect(validation.errors.join("\n"), envVar).toMatch(/删这行/);
+		}
+	});
+
+	it("FLY-1806 tombstones feature flags after solidifying their current behavior", () => {
+		const registered = new Set(
+			FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+		);
+		const tombstones = new Map(
+			RETIRED_FLAGS.map((flag) => [flag.envVar, flag.retiredBy]),
+		);
+		expect(FLY_1806_RETIRED_FLAGS).toHaveLength(31);
+
+		for (const envVar of FLY_1806_RETIRED_FLAGS) {
+			expect(registered.has(envVar), envVar).toBe(false);
+			expect(tombstones.get(envVar), envVar).toBe("FLY-1806");
+			expect(validateFlagTruthEnvironment([`${envVar}=0`]).ok, envVar).toBe(
+				false,
+			);
 		}
 	});
 

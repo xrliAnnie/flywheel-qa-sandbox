@@ -48,7 +48,6 @@ export function classifyBootSha(input: {
 export interface BootShaCheckDeps {
 	/** The Bridge's own source checkout root (where `git rev-parse HEAD` runs). */
 	projectRoot: string;
-	env: NodeJS.ProcessEnv;
 	/**
 	 * Run a git subcommand in `projectRoot`. Resolves with trimmed stdout on exit
 	 * 0; REJECTS on any non-zero exit or spawn error (standard execFile shape).
@@ -88,10 +87,6 @@ const FETCH_ARGS = [
  * awaited on the critical path). Fully guarded — any error is swallowed.
  */
 export async function runBootShaCheck(deps: BootShaCheckDeps): Promise<void> {
-	// FLY-939: kill-switch (default ON). QA-slot / worktree Bridges run branches,
-	// so the `branch` classification already silences them; the env is a double
-	// safety for any operator who wants the check fully off.
-	if (deps.env.FLYWHEEL_BOOT_SHA_CHECK === "0") return;
 	try {
 		let head: string;
 		try {

@@ -47,11 +47,11 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		const autoQa = FLAGS.find((f) => f.name === "auto_qa_killswitch");
 		if (!autoQa) throw new Error("missing");
 		expect(effectLabel(autoQa)).toBe("热生效");
-		const worktreeAutoclean = FLAGS.find(
-			(f) => f.name === "worktree_autoclean",
+		const runnerAutocontinue = FLAGS.find(
+			(f) => f.name === "runner_autocontinue",
 		);
-		if (!worktreeAutoclean) throw new Error("missing");
-		expect(effectLabel(worktreeAutoclean)).toBe("需重启");
+		if (!runnerAutocontinue) throw new Error("missing");
+		expect(effectLabel(runnerAutocontinue)).toBe("需重启");
 		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
 		if (!qaAuto) throw new Error("missing");
 		expect(effectLabel(qaAuto)).toBe("新 run 生效");

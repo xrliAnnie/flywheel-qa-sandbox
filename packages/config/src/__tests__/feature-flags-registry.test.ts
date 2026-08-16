@@ -255,33 +255,6 @@ describe("feature-flag registry invariants", () => {
 		);
 	});
 
-	it("FLY-1424 registers ship-ready notification and reminder controls", () => {
-		const notify = FEATURE_FLAGS.find(
-			(flag) => flag.envVar === "FLYWHEEL_SHIP_READY_NOTIFY",
-		);
-		expect(notify).toMatchObject({
-			name: "ship_ready_notify",
-			category: "feature",
-			polarity: "default_on",
-			valueKind: "bool",
-			default: true,
-			toggleable: "direct",
-		});
-		expect(notify?.directToggleProof).toContain("workflow-ship-ready.test");
-
-		const remind = FEATURE_FLAGS.find(
-			(flag) => flag.envVar === "FLYWHEEL_SHIP_READY_REMIND_MS",
-		);
-		expect(remind).toMatchObject({
-			name: "ship_ready_remind_ms",
-			category: "feature",
-			polarity: "default_on",
-			valueKind: "value",
-			default: "1800000",
-			toggleable: "readonly",
-		});
-	});
-
 	it("FLY-1645 retires receipt rollout switches without active readers", () => {
 		const retired = [
 			"FLYWHEEL_RECEIPT_FOUNDATION",
@@ -365,24 +338,6 @@ describe("feature-flag registry invariants", () => {
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",
 		);
 		expect(cutover).toBeUndefined();
-	});
-
-	it("FLY-1252 registers account identity verification as a default-off external-runtime feature", () => {
-		const identity = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
-		);
-		expect(identity).toMatchObject({
-			name: "claude_account_identity_check",
-			category: "feature",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "conversational",
-		});
-		expect(identity?.readSites.map((site) => site.timing)).toEqual([
-			"call_time",
-			"cli_invocation",
-		]);
-		expect(identity?.note).toContain("identity-set + identity-audit");
 	});
 
 	it("FLY-1353 registers the voice presence QA seam with its real external-daemon read site", () => {

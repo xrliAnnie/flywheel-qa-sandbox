@@ -44,11 +44,9 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 
 	beforeEach(() => {
 		envSnapshot = {
-			off: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD,
 			stall: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS,
 			hb: process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS,
 		};
-		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD;
 		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS;
 		delete process.env.FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS;
 		vi.useFakeTimers();
@@ -57,7 +55,6 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		for (const [k, key] of [
-			["off", "FLYWHEEL_BRIDGE_LOOP_GUARD"],
 			["stall", "FLYWHEEL_BRIDGE_LOOP_GUARD_STALL_MS"],
 			["hb", "FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS"],
 		] as const) {
@@ -135,19 +132,6 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 		expect(create).not.toHaveBeenCalled();
 		expect(wd._peekHeartbeat()).toBeNull();
 		expect(wd.isEnabled()).toBe(false);
-	});
-
-	it("FLYWHEEL_BRIDGE_LOOP_GUARD=0 overrides enabled:true", () => {
-		process.env.FLYWHEEL_BRIDGE_LOOP_GUARD = "0";
-		const create = vi.fn(() => stubWorker());
-		const wd = new BridgeEventLoopGuard({
-			enabled: true,
-			ensureDir: () => {},
-			createWorker: create,
-		});
-		expect(wd.isEnabled()).toBe(false);
-		wd.start();
-		expect(create).not.toHaveBeenCalled();
 	});
 
 	it("stop() terminates the worker", () => {

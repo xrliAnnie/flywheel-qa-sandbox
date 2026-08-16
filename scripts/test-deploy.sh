@@ -1367,7 +1367,7 @@ qa_slot_start_lead() {
   local projects="${state}/projects.json" env_file="${state}/.env"
   local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
-  local lead_row mcp_exclude chrome_enabled
+  local lead_row mcp_exclude
   label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
   wrapper="${FLYWHEEL_QA_LEAD_WRAPPER:-${REPO_ROOT}/scripts/flywheel-lead-wrapper-v2.sh}"
   mkdir -p "$runtime" "$state" "$workspace" || return 1
@@ -1380,7 +1380,6 @@ qa_slot_start_lead() {
     '[.[].leads[]? | select(.agentId == $agent)] | if length == 1 then .[0] else error("expected one Lead") end' \
     <<<"$FLYWHEEL_PROJECTS") || return 1
   mcp_exclude=$(jq -r '.mcpExclude // ""' <<<"$lead_row")
-  chrome_enabled=$(jq -r '.chromeEnabled // false' <<<"$lead_row")
   launch_env=$(qa_slot_launch_env_json \
     "DISCORD_GUILD_ID=${GUILD_ID}" \
     "BRIDGE_URL=http://localhost:${SLOT_PORT}" \
@@ -1395,10 +1394,10 @@ qa_slot_start_lead() {
     --arg leadId "$agent" --arg projectDir "$HOST_REPO" \
     --arg projectName "$TEST_PROJECT_NAME" --arg projectsFile "$projects" \
     --arg workspace "$workspace" --arg mcpExclude "$mcp_exclude" \
-    --argjson chromeEnabled "$chrome_enabled" --argjson launchEnvironment "$launch_env" \
+    --argjson launchEnvironment "$launch_env" \
     '{leadId:$leadId,projectDir:$projectDir,projectName:$projectName,
       projectsFile:$projectsFile,workspace:$workspace,mcpExclude:$mcpExclude,
-      chromeEnabled:$chromeEnabled,launchEnvironment:$launchEnvironment}' \
+      launchEnvironment:$launchEnvironment}' \
     > "$manifest" || return 1
   chmod 600 "$manifest"
   FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \

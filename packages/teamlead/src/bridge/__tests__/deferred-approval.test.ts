@@ -1,6 +1,6 @@
 /**
- * FLY-1099 §4 — deferred founder approvals: capture support (2×2 truth table
- * via the handler's DeferralSupport) + the rebind pass state machine
+ * FLY-1099 §4 — deferred founder approvals: capture support via the handler's
+ * DeferralSupport + the rebind pass state machine
  * (TTL / identity / gate_gone / head drift / hold recheck / write outcomes,
  * incl. the R4 #2 conflicting_prior_feedback terminal via the REAL
  * writeGateResponseAndRunPostWrite + a spy production hook — Codex R5 #1
@@ -32,8 +32,6 @@ function snowflakeAt(iso: string): string {
 }
 
 afterEach(() => {
-	delete process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL;
-	delete process.env.FLYWHEEL_HELD_DECLINED_REPLY;
 	vi.restoreAllMocks();
 });
 
@@ -288,14 +286,6 @@ describe("rebind pass — guard chain", () => {
 		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
 		expect(hook).not.toHaveBeenCalled();
 	});
-
-	it("kill-switch FLYWHEEL_DEFERRED_FOUNDER_APPROVAL=0 → whole pass inert", async () => {
-		process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL = "0";
-		const { store, deps, hook } = await rebindHarness({});
-		await runDeferredApprovalRebindPass(deps);
-		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
-		expect(hook).not.toHaveBeenCalled();
-	});
 });
 
 describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", () => {
@@ -432,7 +422,7 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 	});
 });
 
-describe("capture support — 2×2 truth table (§4.4)", () => {
+describe("capture support", () => {
 	async function captureHarness(holdReason: "codex_pending" | "merge_block") {
 		const store = await freshStore();
 		const support = makeDeferralSupport({
@@ -443,7 +433,7 @@ describe("capture support — 2×2 truth table (§4.4)", () => {
 		return { store, support };
 	}
 
-	it("ON/ON: defer lands the row + the 已存着 held_reply notice atomically", async () => {
+	it("defer lands the row + the 已存着 held_reply notice atomically", async () => {
 		const { store, support } = await captureHarness("codex_pending");
 		support.defer({
 			questionId: "Q-1",
@@ -466,24 +456,6 @@ describe("capture support — 2×2 truth table (§4.4)", () => {
 				Math.round(deferredApprovalTtlMs() / 60_000),
 			),
 		);
-	});
-
-	it("ON/OFF: defer WITHOUT the thread notice (reply flag off)", async () => {
-		process.env.FLYWHEEL_HELD_DECLINED_REPLY = "0";
-		const { store, support } = await captureHarness("codex_pending");
-		support.defer({
-			questionId: "Q-1",
-			msgId: "100",
-			executionId: "E-1",
-			prHeadSha: SHA_A,
-			decision: "approve",
-			content: "ship",
-			authorUserId: FOUNDER,
-			founderIdAtCapture: FOUNDER,
-			holdReason: "codex_pending",
-		});
-		expect(store.listActiveDeferredApprovals()).toHaveLength(1);
-		expect(store.getFounderAction("held-reply-Q-1-100")).toBeUndefined();
 	});
 
 	it("queueHeldNotice(merge_block) lands the recovery pointer text", async () => {
@@ -521,16 +493,6 @@ describe("capture support — 2×2 truth table (§4.4)", () => {
 			);
 		},
 	);
-
-	it("flag faces read env per call", async () => {
-		const { support } = await captureHarness("codex_pending");
-		expect(support.deferredEnabled()).toBe(true);
-		process.env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL = "0";
-		expect(support.deferredEnabled()).toBe(false);
-		expect(support.heldReplyEnabled()).toBe(true);
-		process.env.FLYWHEEL_HELD_DECLINED_REPLY = "0";
-		expect(support.heldReplyEnabled()).toBe(false);
-	});
 });
 
 describe("founder-facing texts", () => {

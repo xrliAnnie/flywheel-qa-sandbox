@@ -1,13 +1,6 @@
 #!/bin/bash
-# FLY-143 Codex code-review r2 must-fix #1: verify legacy `restart-services.sh`
-# nohup path passes per-Lead MCP scope env vars correctly to claude-lead.sh.
-#
-# The bug being prevented: late-expanded `NAME=value` words like
-# `$_chrome_env` are NOT recognized as bash assignment words; they become
-# the command name. Pre-fix, `chromeEnabled: true` would have caused
-# `bash: FLYWHEEL_LEAD_CHROME_ENABLED=true: command not found`.
-#
-# Fix uses `env "${lead_env[@]}"` with explicit array elements.
+# Verify the legacy restart path passes per-Lead MCP scope and workspace env
+# through `env "${lead_env[@]}"` with explicit array elements.
 set -euo pipefail
 
 PASSED=0
@@ -31,14 +24,13 @@ cat > "$MOCK_LEAD" <<'EOF'
   echo "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-<unset>}"
   echo "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-<unset>}"
   echo "FLYWHEEL_LEAD_MCP_EXCLUDE=${FLYWHEEL_LEAD_MCP_EXCLUDE:-<unset>}"
-  echo "FLYWHEEL_LEAD_CHROME_ENABLED=${FLYWHEEL_LEAD_CHROME_ENABLED:-<unset>}"
-  echo "LEAD_WORKSPACE=${LEAD_WORKSPACE:-<unset>}"
+	echo "LEAD_WORKSPACE=${LEAD_WORKSPACE:-<unset>}"
 } > "$CAPTURE_FILE"
 EOF
 chmod +x "$MOCK_LEAD"
 
 # Helper that mirrors restart-services.sh:646-668 logic exactly.
-# Inputs (all required): mcp_exclude, chrome_enabled, workspace, lead_id,
+# Inputs (all required): mcp_exclude, workspace, lead_id,
 #                        project_dir, project_name, bot_token_env, subdir_args (opt),
 #                        discord_state_dir
 launch() {
@@ -50,9 +42,6 @@ launch() {
   )
   if [[ -n "$workspace" && "$workspace" != "null" ]]; then
     lead_env+=("LEAD_WORKSPACE=$workspace")
-  fi
-  if [[ "$chrome_enabled" == "true" ]]; then
-    lead_env+=("FLYWHEEL_LEAD_CHROME_ENABLED=true")
   fi
   env "${lead_env[@]}" "$MOCK_LEAD" \
     "$lead_id" "$project_dir" "$project_name" $subdir_args \
@@ -70,20 +59,13 @@ bot_token_env="TEST_COS_BOT_TOKEN"
 subdir_args=""
 
 # ════════════════════════════════════════════════════════════════
-# Test 1: chromeEnabled=true + mcpExclude set + workspace set
+# Test 1: mcpExclude set + workspace set
 # ════════════════════════════════════════════════════════════════
-log_test "Test 1: chromeEnabled=true + mcpExclude + workspace propagate correctly"
+log_test "Test 1: mcpExclude + workspace propagate correctly"
 CAPTURE_FILE="$TMP_DIR/capture-1.txt"
 mcp_exclude="bambu-h2d,xiaohongshu-mcp"
-chrome_enabled="true"
 workspace="/tmp/custom-ws"
 launch
-
-if grep -q "FLYWHEEL_LEAD_CHROME_ENABLED=true" "$CAPTURE_FILE"; then
-  pass "FLYWHEEL_LEAD_CHROME_ENABLED=true reaches subshell"
-else
-  fail "FLYWHEEL_LEAD_CHROME_ENABLED missing/wrong: $(grep CHROME "$CAPTURE_FILE")"
-fi
 if grep -q "FLYWHEEL_LEAD_MCP_EXCLUDE=bambu-h2d,xiaohongshu-mcp" "$CAPTURE_FILE"; then
   pass "FLYWHEEL_LEAD_MCP_EXCLUDE propagated"
 else
@@ -96,20 +78,13 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════
-# Test 2: chromeEnabled=false → env var must NOT be set
+# Test 2: empty optional values remain harmless
 # ════════════════════════════════════════════════════════════════
-log_test "Test 2: chromeEnabled=false → FLYWHEEL_LEAD_CHROME_ENABLED unset"
+log_test "Test 2: empty optional values remain harmless"
 CAPTURE_FILE="$TMP_DIR/capture-2.txt"
 mcp_exclude=""
-chrome_enabled="false"
 workspace=""
 launch
-
-if grep -q "FLYWHEEL_LEAD_CHROME_ENABLED=<unset>" "$CAPTURE_FILE"; then
-  pass "FLYWHEEL_LEAD_CHROME_ENABLED correctly unset when chromeEnabled=false"
-else
-  fail "FLYWHEEL_LEAD_CHROME_ENABLED leaked: $(grep CHROME "$CAPTURE_FILE")"
-fi
 if grep -q "FLYWHEEL_LEAD_MCP_EXCLUDE=$" "$CAPTURE_FILE" || grep -q "FLYWHEEL_LEAD_MCP_EXCLUDE=<unset>" "$CAPTURE_FILE"; then
   pass "Empty mcpExclude → empty env var (treated same as unset by claude-lead.sh)"
 else

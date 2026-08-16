@@ -137,146 +137,128 @@ beforeEach(() => {
 		);
 });
 
-// The two consumers, driven by the zombie-machinery switch. Both must re-adopt
-// parked candidates; run every assertion against each.
-for (const [label, zombieEnv] of [
-	["legacy consumer (FLYWHEEL_ZOMBIE_RECONCILE=0)", "0"],
-	["zombie-ON consumer (V2, default)", undefined],
-] as const) {
-	describe(`FLY-1329 A3 — ${label}`, () => {
-		let store: MockStore;
-		let notifier: MockNotifier;
-		let service: HeartbeatService;
+describe("FLY-1329 A3 — parked readopt", () => {
+	let store: MockStore;
+	let notifier: MockNotifier;
+	let service: HeartbeatService;
 
-		beforeEach(() => {
-			if (zombieEnv === undefined) delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
-			else process.env.FLYWHEEL_ZOMBIE_RECONCILE = zombieEnv;
-		});
-		afterEach(() => {
-			service?.stop();
-			delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
-		});
-
-		it("RE-ADOPTS a parked awaiting_review implement whose tmux is alive (FLY-1319 shape)", async () => {
-			store = makeStore(parkedImplement());
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-			mockedAlive.mockResolvedValue(true);
-
-			await service.seedReconnecting();
-
-			// The proof the parked candidate was NOT dropped on entry: monitoring
-			// was restored (heartbeat refreshed + re-established advisory).
-			expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
-				1,
-			);
-			// A re-adopt is never a status change.
-			expect(store.forceStatus).not.toHaveBeenCalled();
-		});
-
-		it("re-adopts a parked design_done too", async () => {
-			store = makeStore(parkedImplement({ status: "design_done" }));
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-			mockedAlive.mockResolvedValue(true);
-
-			await service.seedReconnecting();
-
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
-				1,
-			);
-		});
-
-		it("re-adopts the neutral pre-Gate ship_parked carrier too", async () => {
-			store = makeStore(parkedImplement({ status: "ship_parked" }));
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-
-			await service.seedReconnecting();
-
-			expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
-			expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(
-				1,
-			);
-			expect(store.forceStatus).not.toHaveBeenCalled();
-		});
-
-		it("a parked implement whose tmux is DEAD → alert-only, never a status change or re-adopt", async () => {
-			store = makeStore(parkedImplement());
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-			mockedAlive.mockResolvedValue(false); // window gone
-
-			await service.seedReconnecting();
-
-			expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
-			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-			expect(store.forceStatus).not.toHaveBeenCalled();
-			expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		});
-
-		// Codex R2 MEDIUM: the boolean isSessionTmuxAlive folded `indeterminate`
-		// (probe/CommDB failure) into "alive". A probe failure must ONLY alert
-		// (unverified), never refresh the heartbeat or announce re-establishment —
-		// otherwise a dead parked session is life-supported forever.
-		it("indeterminate via a CommDB lookup error → unverified alert, NOT a re-adopt", async () => {
-			mockedLookup.mockReturnValue({ kind: "error", error: "db locked" });
-			store = makeStore(parkedImplement());
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-
-			await service.seedReconnecting();
-
-			// Alert-only, and explicitly UNVERIFIED (the 3-arg details form).
-			expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
-				expect.objectContaining({ execution_id: "parked-impl" }),
-				expect.any(Number),
-				{ unverified: true },
-			);
-			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-			expect(store.updateHeartbeat).not.toHaveBeenCalled();
-			expect(store.forceStatus).not.toHaveBeenCalled();
-		});
-
-		it("indeterminate via a probe throw → unverified alert, never enterReconnecting", async () => {
-			mockedProbe.mockRejectedValue(new Error("tmux probe blew up"));
-			store = makeStore(parkedImplement());
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-
-			await service.seedReconnecting();
-
-			expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
-				expect.objectContaining({ execution_id: "parked-impl" }),
-				expect.any(Number),
-				{ unverified: true },
-			);
-			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-			expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		});
-
-		it("a dead-pin corpse → alert carries the death verdict (NOT unverified, NOT 'still alive'), never a re-adopt", async () => {
-			mockedProbe.mockResolvedValue("dead_pin");
-			store = makeStore(parkedImplement());
-			notifier = makeNotifier();
-			service = makeService(store, notifier);
-
-			await service.seedReconnecting();
-
-			// dead_pin is provable death, not a probe failure: the alert must carry
-			// the death verdict (so the notifier renders honest death copy, not the
-			// legacy "still alive"), and never the re-established notice / heartbeat.
-			expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
-				expect.objectContaining({ execution_id: "parked-impl" }),
-				expect.any(Number),
-				{ parkedLiveness: "dead_pin" },
-			);
-			expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
-			expect(store.updateHeartbeat).not.toHaveBeenCalled();
-		});
+	afterEach(() => {
+		service?.stop();
 	});
-}
+
+	it("RE-ADOPTS a parked awaiting_review implement whose tmux is alive (FLY-1319 shape)", async () => {
+		store = makeStore(parkedImplement());
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+		mockedAlive.mockResolvedValue(true);
+
+		await service.seedReconnecting();
+
+		// The proof the parked candidate was NOT dropped on entry: monitoring
+		// was restored (heartbeat refreshed + re-established advisory).
+		expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+		// A re-adopt is never a status change.
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
+	it("re-adopts a parked design_done too", async () => {
+		store = makeStore(parkedImplement({ status: "design_done" }));
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+		mockedAlive.mockResolvedValue(true);
+
+		await service.seedReconnecting();
+
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+	});
+
+	it("re-adopts the neutral pre-Gate ship_parked carrier too", async () => {
+		store = makeStore(parkedImplement({ status: "ship_parked" }));
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+
+		await service.seedReconnecting();
+
+		expect(store.updateHeartbeat).toHaveBeenCalledWith("parked-impl");
+		expect(notifier.onSessionMonitoringReestablished).toHaveBeenCalledTimes(1);
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
+	it("a parked implement whose tmux is DEAD → alert-only, never a status change or re-adopt", async () => {
+		store = makeStore(parkedImplement());
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+		mockedAlive.mockResolvedValue(false); // window gone
+
+		await service.seedReconnecting();
+
+		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledTimes(1);
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+	});
+
+	// Codex R2 MEDIUM: the boolean isSessionTmuxAlive folded `indeterminate`
+	// (probe/CommDB failure) into "alive". A probe failure must ONLY alert
+	// (unverified), never refresh the heartbeat or announce re-establishment —
+	// otherwise a dead parked session is life-supported forever.
+	it("indeterminate via a CommDB lookup error → unverified alert, NOT a re-adopt", async () => {
+		mockedLookup.mockReturnValue({ kind: "error", error: "db locked" });
+		store = makeStore(parkedImplement());
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+
+		await service.seedReconnecting();
+
+		// Alert-only, and explicitly UNVERIFIED (the 3-arg details form).
+		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "parked-impl" }),
+			expect.any(Number),
+			{ unverified: true },
+		);
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+	});
+
+	it("indeterminate via a probe throw → unverified alert, never enterReconnecting", async () => {
+		mockedProbe.mockRejectedValue(new Error("tmux probe blew up"));
+		store = makeStore(parkedImplement());
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+
+		await service.seedReconnecting();
+
+		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "parked-impl" }),
+			expect.any(Number),
+			{ unverified: true },
+		);
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+	});
+
+	it("a dead-pin corpse → alert carries the death verdict (NOT unverified, NOT 'still alive'), never a re-adopt", async () => {
+		mockedProbe.mockResolvedValue("dead_pin");
+		store = makeStore(parkedImplement());
+		notifier = makeNotifier();
+		service = makeService(store, notifier);
+
+		await service.seedReconnecting();
+
+		// dead_pin is provable death, not a probe failure: the alert must carry
+		// the death verdict (so the notifier renders honest death copy, not the
+		// legacy "still alive"), and never the re-established notice / heartbeat.
+		expect(notifier.onSessionMonitoringLost).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "parked-impl" }),
+			expect.any(Number),
+			{ parkedLiveness: "dead_pin" },
+		);
+		expect(notifier.onSessionMonitoringReestablished).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+	});
+});
 
 /**
  * Codex R3 MEDIUM: verifying the mock notifier's ARGUMENTS is not enough — it

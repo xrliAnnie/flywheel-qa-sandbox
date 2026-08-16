@@ -182,7 +182,6 @@ beforeEach(() => {
 
 afterEach(() => {
 	service.stop();
-	delete process.env.FLYWHEEL_ZOMBIE_RECONCILE;
 });
 
 describe("M2 tri-state dispatch", () => {
@@ -622,12 +621,6 @@ describe("M3 backfill wiring", () => {
 		);
 		await service.check(); // next pass processes healthy
 		expect(notifier.persistPreparedZombieDetected).toHaveBeenCalledTimes(1);
-	});
-
-	it("zero backfill queries when the machinery is OFF", async () => {
-		process.env.FLYWHEEL_ZOMBIE_RECONCILE = "0";
-		await service.check();
-		expect(store.getZombieAlertBacklog).not.toHaveBeenCalled();
 	});
 });
 

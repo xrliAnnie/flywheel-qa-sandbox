@@ -448,8 +448,8 @@ export class ChatThreadCreator {
 	 *
 	 * `withWord` (FLY-560 UX iteration): when true the badge carries a short word
 	 * after the emoji (Annie's feedback — emoji alone is hard to memorise). The
-	 * production wiring reads it from `FLYWHEEL_ISSUE_STATUS_WORD` (default ON);
-	 * it defaults to false here so an omitted arg keeps the emoji-only behaviour.
+	 * production wiring passes true; it defaults to false here so an omitted arg
+	 * keeps the API's historical emoji-only behaviour.
 	 *
 	 * Idempotent + churn-safe: reads the current name, swaps only the leading
 	 * status badge (the title text is preserved, or rebuilt from `ctx` when the

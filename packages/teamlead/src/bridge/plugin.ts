@@ -1204,8 +1204,7 @@ export interface BridgeAppOptions {
 	chatThreadCreator?: ChatThreadCreator;
 	/**
 	 * FLY-1282 Part C: targeted terminal-archive enqueue for the /events
-	 * completion sites. Passed ONLY when FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON
-	 * (single boot-time capture in startBridge). Absent → zero enqueue.
+	 * completion sites. Production always wires it in startBridge.
 	 */
 	terminalArchiveEnqueue?: (issueId: string) => void;
 	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
@@ -1278,8 +1277,7 @@ export interface BridgeAppOptions {
 	 * (pre-listen), but the refresher is built post-listen in startBridge (it
 	 * needs AutoQaEffects) — so every surface reads `.current` at fire time.
 	 * Absent / `.current` undefined ⇒ triggers dormant and the stage_changed
-	 * path falls back to the legacy stamp+pin (byte-compat / the
-	 * FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 escape hatch).
+	 * path falls back to legacy stamp+pin when the refresher is unavailable.
 	 */
 	issueDisplayRefresh?: IssueDisplayRefreshHolder;
 	/**
@@ -1818,17 +1816,11 @@ export function createBridgeApp(
 	// /events — ingest auth
 	//
 	// FLY-560 Feature A: auto-stamp pipeline-stage emoji onto issue thread
-	// titles. Default ON; set FLYWHEEL_ISSUE_STATUS_EMOJI=0 to disable. Passing
-	// the creator only when enabled keeps byte-compat (createEventRouter without
-	// it = no stamping). Naturally a no-op when chat threads are off
-	// (opts.chatThreadCreator is only set when chatThreadsEnabled).
-	const issueStatusEmojiEnabled =
-		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0";
+	// titles. Permanently enabled; naturally a no-op when chat threads are off.
+	const issueStatusEmojiEnabled = true;
 	// FLY-560 Feature C: pin a `tmux attach` rescue command on each issue thread.
-	// Default ON; set FLYWHEEL_ISSUE_ATTACH_PIN=0 to disable. Independent from the
-	// emoji flag — the creator is passed when EITHER feature is on, and each
-	// behaviour is gated separately inside createEventRouter (all 4 combos clean).
-	const issueAttachPinEnabled = process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0";
+	// Permanently enabled alongside the status badge.
+	const issueAttachPinEnabled = true;
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
@@ -4458,19 +4450,14 @@ export async function startBridge(
 	let retryDispatcher = opts?.retryDispatcher;
 	// FLY-907: unified issue-display refresh. The holder is threaded into every
 	// trigger surface NOW (they read `.current` at fire time); the refresher
-	// itself is built post-listen (it needs AutoQaEffects). Master escape hatch:
-	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 leaves `.current` unset forever → all
-	// NEW trigger surfaces stay dormant and stage_changed uses the legacy
-	// stamp+pin path (pre-FLY-907 behavior).
-	const issueDisplayRefreshEnabled =
-		process.env.FLYWHEEL_ISSUE_DISPLAY_REFRESH !== "0";
+	// itself is built post-listen (it needs AutoQaEffects).
 	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
 	const pendingIssueDisplayRefreshes = new Set<string>();
 	const enqueueIssueDisplayRefresh = (issueId: string): void => {
 		const refresher = issueDisplayRefreshHolder.current;
 		if (refresher) {
 			refresher.enqueue(issueId);
-		} else if (issueDisplayRefreshEnabled && chatThreadCreator) {
+		} else if (chatThreadCreator) {
 			// Startup status writes can precede the late-bound refresher. Preserve
 			// the exact write trigger and drain it as soon as the renderer exists.
 			pendingIssueDisplayRefreshes.add(issueId);
@@ -5245,7 +5232,7 @@ export async function startBridge(
 	// bundle threaded to all three finalization call sites (event-route ×2 via
 	// createBridgeApp opts + the DirectEventSink below). Merge-enable by
 	// contract (Annie 直令): zero new flags — every NEW deleter hangs off the
-	// existing FLYWHEEL_WORKTREE_AUTOCLEAN escape hatch inside its module.
+	// existing autoclean integration seam inside its module.
 	const repoMutationLock = createRepoMutationLock();
 	const materializedHeadAuthority =
 		receiptBackedMaterializedHeadAuthority(store);
@@ -5437,12 +5424,10 @@ export async function startBridge(
 		},
 	};
 
-	// FLY-1066: one startup-captured master switch and one shared single-flight
-	// instance for boot, maintenance, and the scope-free scheduled-run fast path.
-	// FLYWHEEL_COMMDB_FSM_RECONCILE remains the face-①/② sub-switch only: it
-	// never suppresses StateStore ghosts, orphan escalations, or the targeted path.
-	const commDbFsmReconcileEnabled =
-		process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
+	// FLY-1066: one shared single-flight instance for boot, maintenance, and the
+	// scope-free scheduled-run fast path. CommDB↔FSM reconciliation is permanently
+	// enabled for face ①/② and never suppresses the other residue faces.
+	const commDbFsmReconcileEnabled = true;
 	const openResidueCommDb = <T>(
 		projectName: string,
 		read: (db: CommDB) => T,
@@ -5644,18 +5629,12 @@ export async function startBridge(
 			(await reapStateStoreGhost(session, residueGhostDeps)) === "reaped",
 		log: (message) => console.warn(message),
 	});
-	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. Single
-	// boot-time switch capture — OFF (=0) means neither sink receives an
-	// enqueue function at all (byte-compat: zero enqueue, scheduler
-	// byte-identical). The buffer retains pre-binding enqueues (bounded 64)
+	// FLY-1282 Part C: targeted terminal-archive enqueue buffer. It retains
+	// pre-binding enqueues (bounded 64)
 	// until the FLY-1165 scheduler binds as consumer further down.
-	const terminalArchiveBuffer =
-		process.env.FLYWHEEL_TERMINAL_THREAD_ARCHIVE !== "0"
-			? createTerminalArchiveEnqueueBuffer()
-			: undefined;
-	const terminalArchiveEnqueue = terminalArchiveBuffer
-		? (issueId: string) => terminalArchiveBuffer.enqueue(issueId)
-		: undefined;
+	const terminalArchiveBuffer = createTerminalArchiveEnqueueBuffer();
+	const terminalArchiveEnqueue = (issueId: string) =>
+		terminalArchiveBuffer.enqueue(issueId);
 
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
@@ -6355,9 +6334,7 @@ export async function startBridge(
 					// FLY-623 Display-A: stamp/clear the "⚠️重连中" title only when the
 					// issue-status-emoji feature is ON (same gate as the event-route
 					// stamper); absent → re-adopt still works, just no title marker.
-					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
-						? chatThreadCreator
-						: undefined,
+					chatThreadCreator,
 					issueDisplayRefreshHolder,
 				)
 			: {
@@ -6403,8 +6380,7 @@ export async function startBridge(
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
 
-	// FLY-720: crash-reaper injected deps. Default ON; `FLYWHEEL_CRASH_REAPER=0`
-	// disables the whole reaper (falls back to reapOrphans→failed). Grace defaults
+	// FLY-720: crash-reaper injected deps, permanently enabled. Grace defaults
 	// to the orphan threshold (clean handoff with reapOrphans); a larger
 	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
 	// archive reuse the same primitives as close_runner (killCmux/window, terminal
@@ -6419,7 +6395,7 @@ export async function startBridge(
 		return Math.max(v, config.orphanThresholdMinutes);
 	})();
 	const crashReaperConfig: CrashReaperInjectedDeps = {
-		enabled: process.env.FLYWHEEL_CRASH_REAPER !== "0",
+		enabled: true,
 		crashGraceMinutes: crashReaperGraceMinutes,
 		// Codex R2#3 (entry C): each crash reap serializes with the unified
 		// executor's per-issue mutex — never interleaved with a closeout.
@@ -6520,8 +6496,7 @@ export async function startBridge(
 		// predicate and the 24h stale gate — a failed/blocked session whose tmux
 		// lingers past that is a leak, not a crash-forensics scene, so the
 		// CRASH_PRESERVE gate is deliberately bypassed here (Codex design R1 #1).
-		// Kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → notify-only (in
-		// HeartbeatService.staleCloseEnabled).
+		// If this chokepoint is not wired, HeartbeatService stays notify-only.
 		{
 			closeStale: async (session) => {
 				const result = await closeRunner(
@@ -6790,7 +6765,7 @@ export async function startBridge(
 				probeLiveness: (w) => probeRunnerProcessLiveness(w),
 				// FLY-1185 entry D: authorized issue closeout (episode-gated inside
 				// the reconcile) + the dual-switch contract — the NEW mutators hang
-				// off FLYWHEEL_WORKTREE_AUTOCLEAN, the original FLY-1165 behavior
+				// disable autoclean through the integration seam; the original FLY-1165 behavior
 				// stays under FLYWHEEL_DONE_THREAD_RECONCILE.
 				lifecycleCloseout: (input) =>
 					lifecycleCloseoutFn({
@@ -6816,41 +6791,34 @@ export async function startBridge(
 			});
 		},
 		// FLY-1282 Part C: archive-only targeted consumption — same scheduler,
-		// shared single-flight with the global pass. Wired only when the
-		// terminal-archive switch was ON at boot (buffer exists); otherwise the
-		// scheduler is byte-identical to pre-FLY-1282. dryRun is re-read per
+		// shared single-flight with the global pass. dryRun is re-read per
 		// invocation so a dry-run flip takes effect without restart.
-		runTargeted: terminalArchiveBuffer
-			? async (issueId) => {
-					const targetedCfg = resolveDoneThreadReconcileConfig();
-					const outcome = await runTargetedArchiveCheck(issueId, {
-						store,
-						projects: projects ?? [],
-						linearApiKey: config.linearApiKey,
-						globalBotToken: config.discordBotToken,
-						discordOwnerUserId: config.discordOwnerUserId,
-						dryRun: targetedCfg.dryRun,
-						// Canonical per-issue lock — the SAME keys the lifecycle
-						// close guard / admission serialize on (never split-lock).
-						withIssueLock: (lockIssueId, fn) => {
-							const res = resolveLifecycleRootKey(store, lockIssueId, []);
-							const keys =
-								res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
-							return issueMutex(keys, fn);
-						},
-						lookupTarget: lookupTmuxTarget,
-						probeLiveness: (w) => probeRunnerProcessLiveness(w),
-					});
-					return { done: !isRetryableOutcome(outcome), note: outcome.kind };
-				}
-			: undefined,
+		runTargeted: async (issueId) => {
+			const targetedCfg = resolveDoneThreadReconcileConfig();
+			const outcome = await runTargetedArchiveCheck(issueId, {
+				store,
+				projects: projects ?? [],
+				linearApiKey: config.linearApiKey,
+				globalBotToken: config.discordBotToken,
+				discordOwnerUserId: config.discordOwnerUserId,
+				dryRun: targetedCfg.dryRun,
+				// Canonical per-issue lock — the SAME keys the lifecycle
+				// close guard / admission serialize on (never split-lock).
+				withIssueLock: (lockIssueId, fn) => {
+					const res = resolveLifecycleRootKey(store, lockIssueId, []);
+					const keys = res.lockKeys.length > 0 ? res.lockKeys : [lockIssueId];
+					return issueMutex(keys, fn);
+				},
+				lookupTarget: lookupTmuxTarget,
+				probeLiveness: (w) => probeRunnerProcessLiveness(w),
+			});
+			return { done: !isRetryableOutcome(outcome), note: outcome.kind };
+		},
 	});
 	// FLY-1282 Part C: bind the pre-created enqueue buffer to the scheduler's
 	// targeted queue — completion enqueues that arrived before this point
 	// (bounded 64) flush now.
-	terminalArchiveBuffer?.bind((issueId) =>
-		doneThreadReconcile.enqueue(issueId),
-	);
+	terminalArchiveBuffer.bind((issueId) => doneThreadReconcile.enqueue(issueId));
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -6955,8 +6923,8 @@ export async function startBridge(
 	// `running` rows whose Bridge FSM is a non-preserve terminal outcome AND whose
 	// tmux target is provably dead (the FLY-638 blind spot). Both sweeps probe tmux
 	// per row and share the fire-and-forget + dedup shape; their candidate sets are
-	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
-	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
+	// disjoint (running vs completed/timeout). The generic seam stays injectable
+	// for tests, while production always enables reconciliation.
 	{
 		const runLegacyCommDbFsm = async (projectName: string) => {
 			try {
@@ -7945,7 +7913,7 @@ export async function startBridge(
 			return Number.isFinite(n) && n > 0 ? n : undefined;
 		})(),
 		// FLY-1282 Part D: disposition-receipt delivery has its own stage and
-		// single-flight. FLYWHEEL_DISPOSITION_RECEIPT is checked inside the pass.
+		// single-flight. Receipt delivery is permanently enabled.
 		onDispositionReceiptTick: createDispositionReceiptPass({
 			store,
 			projects: projects ?? [],
@@ -8084,8 +8052,8 @@ export async function startBridge(
 
 	// FLY-307 C: Bridge event-loop self-guard — converts a main-loop hang
 	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
-	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_LOOP_GUARD=0`
-	// is the ops kill-switch. Auto-disabled under VITEST at this wiring boundary
+	// gap launchd KeepAlive can't cover. Permanently enabled in production and
+	// auto-disabled under VITEST at this wiring boundary
 	// so general Bridge integration suites are never SIGKILLed by the worker
 	// (the dedicated loop-guard tests exercise the real worker directly).
 	const bridgeLoopGuard = new BridgeEventLoopGuard({
@@ -8354,18 +8322,16 @@ export async function startBridge(
 	// DirectEventSink, event router, actions router, park/wake effects, sweep,
 	// founder-consent gate hook), so filling it here (post-listen) is correct;
 	// the GatePoller sweep reconciles anything that changed before this point.
-	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 / chat-threads off → holder stays empty →
-	// every new trigger dormant + stage_changed keeps the legacy stamp+pin path.
-	if (issueDisplayRefreshEnabled && chatThreadCreator) {
+	// Chat threads off → holder stays empty and every trigger remains dormant.
+	if (chatThreadCreator) {
 		const issueDisplayRefresher = new IssueDisplayRefresher({
 			store,
 			projects,
 			config,
 			chatThreadCreator,
 			flags: {
-				issueStatusEmojiEnabled:
-					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0",
-				issueAttachPinEnabled: process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0",
+				issueStatusEmojiEnabled: true,
+				issueAttachPinEnabled: true,
 			},
 			keepAliveEnabled: () => true,
 			// FLY-623 interaction: while HeartbeatService owns the ⚠️重连中 title,
@@ -9106,7 +9072,6 @@ export async function startBridge(
 			resolve(here, "..", "..", "..", "..");
 		void runBootShaCheck({
 			projectRoot: bridgeRepoRoot,
-			env: process.env,
 			git: async (args) => {
 				const { stdout } = await execFileP(
 					"git",

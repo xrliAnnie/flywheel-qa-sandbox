@@ -104,7 +104,7 @@ export function resolveDoneThreadReconcileConfig(
 			360,
 			{ allowZero: true },
 		),
-		dryRun: env.FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN === "1",
+		dryRun: false,
 		maxArchivesPerRun: parsePositiveInt(
 			env.FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN,
 			25,
@@ -201,7 +201,7 @@ export interface DoneThreadReconcileDeps {
 	}) => Promise<void>;
 	/**
 	 * FLY-1185 dual-switch contract (R9#4): the NEW mutators (closeout) hang
-	 * off FLYWHEEL_WORKTREE_AUTOCLEAN; the ORIGINAL FLY-1165 husk/archive
+	 * off the autoclean integration seam; the ORIGINAL FLY-1165 husk/archive
 	 * behavior stays under FLYWHEEL_DONE_THREAD_RECONCILE — neither switch
 	 * crosses into the other's territory. Injectable for the byte-compat
 	 * integration tests.

@@ -14,8 +14,8 @@
  * variants; per-issue coalesce-to-latest keeps Discord traffic flat under
  * trigger bursts. This file also hosts the moved-verbatim legacy
  * `stage_changed` renderers (`stampStageEmojiForSession` /
- * `pinRunnerAttachForSession`) so the `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0`
- * escape hatch falls back to the exact pre-FLY-907 behavior (event-route
+ * `pinRunnerAttachForSession`) as the fallback when the unified refresher is
+ * unavailable (event-route
  * keeps thin forwards), now with the Step-3 attach cross-wire guard.
  */
 
@@ -78,8 +78,7 @@ export type IssueDisplayRefreshHandle = {
 };
 
 /** Forward-reference holder (same pattern as phaseStatusLineRefreshHolder):
- *  populated post-listen; `current` undefined = triggers dormant (byte-compat
- *  and the FLYWHEEL_ISSUE_DISPLAY_REFRESH=0 escape hatch). */
+ *  populated post-listen; `current` undefined = triggers dormant. */
 export type IssueDisplayRefreshHolder = {
 	current?: IssueDisplayRefreshHandle;
 };
@@ -140,14 +139,9 @@ function plannedPhaseModels(
 	}
 }
 
-/**
- * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
- * (Annie's feedback — emoji alone is hard to memorise); set
- * `FLYWHEEL_ISSUE_STATUS_WORD=0` to fall back to emoji-only. Read at stamp time
- * so a flag flip takes effect on the next refresh without a code path change.
- */
+/** FLY-560: issue status badges always include their short status word. */
 export function issueStatusWordEnabled(): boolean {
-	return process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
+	return true;
 }
 
 /**
@@ -185,8 +179,8 @@ interface StampDeps {
 /**
  * FLY-560 Feature A (moved verbatim from event-route.ts for FLY-907): the
  * legacy stage_changed title stamp — badge = the REPORTED stage (or the
- * reporting session's phase badge on a DAG workflow issue). Still the active
- * path when `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` (escape hatch). Fire-and-forget.
+ * reporting session's phase badge on a DAG workflow issue). This remains the
+ * fallback when the unified refresher is unavailable. Fire-and-forget.
  */
 export function stampStageEmojiForSession(
 	deps: StampDeps,
@@ -249,7 +243,7 @@ export function stampStageEmojiForSession(
 /**
  * FLY-560 Feature C + FLY-892 Step 4 (moved verbatim from event-route.ts for
  * FLY-907, + the Step-3 attach cross-wire guard): the legacy stage_changed pin
- * renderer. Still the active path when `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0`.
+ * fallback when the unified refresher is unavailable.
  * Fire-and-forget; the whole chain (incl. sync CommDB reads) runs past a real
  * async boundary (CommDB busy_timeout must never stall the caller).
  */
@@ -398,8 +392,8 @@ export function pinRunnerAttachForSession(
 }
 
 /**
- * FLY-892 (Step 4) — the legacy header-local done set, kept ONLY for the
- * `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` escape-hatch path above. The unified
+ * FLY-892 (Step 4) — the legacy header-local done set for the fallback path
+ * above. The unified
  * refresher derives through `derivePhaseDisplayState` instead.
  */
 const LEGACY_HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([

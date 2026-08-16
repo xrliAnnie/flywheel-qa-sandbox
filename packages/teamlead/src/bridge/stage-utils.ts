@@ -231,8 +231,8 @@ export function stageBadge(
  * FLY-623: build the cross-cutting reconnecting badge:
  *   withWord=false → `⚠️`        (emoji only)
  *   withWord=true  → `⚠️重连中`   (emoji + short word)
- * Mirrors stageBadge()'s emoji-only vs emoji+word modes so Display-A respects
- * the same FLYWHEEL_ISSUE_STATUS_WORD setting as the stage badges.
+ * Mirrors stageBadge()'s emoji-only vs emoji+word modes for callers that render
+ * badges directly.
  */
 export function reconnectingBadge(withWord: boolean): string {
 	return withWord

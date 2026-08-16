@@ -57,19 +57,17 @@ fi
 OUT=$(qa_room_roundtable_lead_env "555" "1" "1" "3")
 if grep -q '^FLYWHEEL_ROUNDTABLE_CHANNEL_ID=555$' <<<"$OUT" \
   && grep -q '^FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1$' <<<"$OUT" \
-  && grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1$' <<<"$OUT" \
   && grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_BUDGET=3$' <<<"$OUT"; then
-  pass "roundtable lead env ON+autoContinue emits channel+reply+autocontinue+budget"
+  pass "roundtable lead env ON+autoContinue emits channel+reply+budget"
 else
   fail "roundtable lead env ON+autoContinue" "$OUT"
 fi
 
-# ── FLY-676: autoContinue ON but NO explicit budget => emit autocontinue, OMIT budget ──
+# ── FLY-676: autoContinue ON but NO explicit budget => OMIT budget ──
 # (test-deploy.sh now passes empty when threadBudget is unset, so the backend default 12 is
 # exercised instead of forcing 2). The lead env must NOT carry FLYWHEEL_ROUNDTABLE_THREAD_BUDGET.
 OUT=$(qa_room_roundtable_lead_env "555" "1" "1" "")
-if grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1$' <<<"$OUT" \
-  && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_BUDGET' <<<"$OUT"; then
+if ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_BUDGET' <<<"$OUT"; then
   pass "FLY-676: autoContinue ON + empty budget omits THREAD_BUDGET (backend default 12 used)"
 else
   fail "FLY-676 autoContinue ON + empty budget omits THREAD_BUDGET" "$OUT"
@@ -79,7 +77,6 @@ fi
 OUT=$(qa_room_roundtable_lead_env "555" "1" "0" "2")
 if grep -q '^FLYWHEEL_ROUNDTABLE_CHANNEL_ID=555$' <<<"$OUT" \
   && grep -q '^FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1$' <<<"$OUT" \
-  && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE' <<<"$OUT" \
   && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_BUDGET' <<<"$OUT"; then
   pass "roundtable lead env replyInThread-only omits autocontinue+budget (budget unused without autoContinue)"
 else

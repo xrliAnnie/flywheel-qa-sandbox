@@ -61,10 +61,9 @@ export function gitWorktreeClean(
 	});
 }
 
-/** FLY-603: `FLYWHEEL_WORKTREE_AUTOCLEAN=0` disables both Layer A + Layer B
- *  (default on; byte-compat escape hatch). */
+/** FLY-603: worktree autoclean is permanently enabled in production. */
 export function worktreeAutocleanEnabled(): boolean {
-	return process.env.FLYWHEEL_WORKTREE_AUTOCLEAN !== "0";
+	return true;
 }
 
 export interface WorktreeCleanupInput {
@@ -112,7 +111,7 @@ export interface WorktreeCleanupDeps {
 	resolveProjectRoot: (projectName: string) => string | undefined;
 	/** `git status --porcelain` empty? `"unknown"` on probe error (fail-closed). */
 	isWorktreeClean: (worktreePath: string) => Promise<boolean | "unknown">;
-	/** FLYWHEEL_WORKTREE_AUTOCLEAN !== "0". */
+	/** Generic test/integration seam; production always supplies true. */
 	autoclean: boolean;
 	/** FLY-1185 §2.11: repo mutation lock (re-entrant). Absent → unlocked. */
 	withRepoLock?: WithRepoLock;

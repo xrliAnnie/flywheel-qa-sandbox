@@ -1,9 +1,4 @@
-import {
-	compareAccountIdentity,
-	expectedIdentityDigest,
-	identityDigest,
-	type ProfileIdentityResult,
-} from "./account-identity.js";
+import type { ProfileIdentityResult } from "./account-identity.js";
 import {
 	type AccountEntry,
 	type AccountQuotaObservation,
@@ -332,32 +327,6 @@ async function sweepCandidates(
 		if (isAuthUnusable(entry) || !isQuotaUsable(entry, now)) continue;
 		const { credential } = await readCandidateCredential(deps, name, false);
 		if (credential === null || credential.expiresAt <= now) continue;
-		if (identityCheckEnabled() && entry.identity !== undefined) {
-			const actual = await deps.fetchIdentity(credential.accessToken);
-			if ("error" in actual) {
-				deps.log(
-					JSON.stringify({
-						event: "account_identity_unknown",
-						label: name,
-						checkpoint: "candidate",
-						reason: actual.error,
-					}),
-				);
-				if (actual.error === "profile_unauthorized") continue;
-			} else if (
-				compareAccountIdentity(entry.identity, actual) === "mismatch"
-			) {
-				await openIdentityEpisode(deps, state, {
-					label: name,
-					checkpoint: "candidate",
-					expectedKey: expectedIdentityDigest(entry.identity),
-					actualDigest: identityDigest(actual),
-				});
-				continue;
-			} else {
-				await clearIdentityEpisode(deps, state, name);
-			}
-		}
 		const candidateUsage = await deps.fetchUsage(credential.accessToken);
 		if ("ok" in candidateUsage) {
 			await projectObservation(
@@ -452,17 +421,6 @@ export function formatModelBenchRetryNote(
 	return `next retry / revalidation unknown; ${reason}; this is not a quota recovery guarantee`;
 }
 
-type IdentityMismatchFact = {
-	label: string;
-	checkpoint: IdentityMismatchCheckpoint;
-	expectedKey: string;
-	actualDigest: string;
-};
-
-function identityCheckEnabled(): boolean {
-	return process.env.FLYWHEEL_ACCOUNT_IDENTITY_CHECK === "1";
-}
-
 export async function verifyAndRankCandidates(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
@@ -473,8 +431,6 @@ export async function verifyAndRankCandidates(
 	usageByName: Map<string, SuccessfulUsage>;
 	malformedModelBenches: string[];
 	verifiedAt: string;
-	identityMismatches: IdentityMismatchFact[];
-	identityMatches: string[];
 }> {
 	const now = deps.now();
 	const verifiedAt = new Date(now).toISOString();
@@ -492,8 +448,6 @@ export async function verifyAndRankCandidates(
 	}> = [];
 	const usageByName = new Map<string, SuccessfulUsage>();
 	const malformedModelBenches: string[] = [];
-	const identityMismatches: IdentityMismatchFact[] = [];
-	const identityMatches: string[] = [];
 
 	for (const [orderIndex, name] of deps.config.config.order.entries()) {
 		if (name === snapshot.activeName) continue;
@@ -545,42 +499,6 @@ export async function verifyAndRankCandidates(
 			});
 			continue;
 		}
-		let identityUnknown = false;
-		if (identityCheckEnabled()) {
-			if (entry.identity === undefined) {
-				identityUnknown = true;
-			} else {
-				const actual = await deps.fetchIdentity(checked.credential.accessToken);
-				if ("error" in actual) {
-					if (actual.error === "profile_unauthorized") {
-						panorama.push({ name, status: "identity_unauthorized" });
-						continue;
-					}
-					identityUnknown = true;
-					deps.log(
-						JSON.stringify({
-							event: "account_identity_unknown",
-							label: name,
-							checkpoint: "candidate",
-							reason: actual.error,
-						}),
-					);
-				} else if (
-					compareAccountIdentity(entry.identity, actual) === "mismatch"
-				) {
-					identityMismatches.push({
-						label: name,
-						checkpoint: "candidate",
-						expectedKey: expectedIdentityDigest(entry.identity),
-						actualDigest: identityDigest(actual),
-					});
-					panorama.push({ name, status: "identity_mismatch" });
-					continue;
-				} else {
-					identityMatches.push(name);
-				}
-			}
-		}
 		const candidateUsage = await deps.fetchUsage(
 			checked.credential.accessToken,
 		);
@@ -615,14 +533,14 @@ export async function verifyAndRankCandidates(
 		if (candidateUsage.ok.fiveH.pct < deps.config.config.trigger5hPct) {
 			panorama.push({
 				name,
-				status: identityUnknown ? "identity_unknown" : "qualified",
+				status: "qualified",
 				usage: candidateUsage.ok,
 			});
 			tier0.push({ name, resetMs, orderIndex });
 		} else {
 			panorama.push({
 				name,
-				status: identityUnknown ? "identity_unknown" : "qualified_low_headroom",
+				status: "qualified_low_headroom",
 				usage: candidateUsage.ok,
 			});
 			tier1.push({
@@ -647,8 +565,6 @@ export async function verifyAndRankCandidates(
 		usageByName,
 		malformedModelBenches,
 		verifiedAt,
-		identityMismatches,
-		identityMatches,
 	};
 }
 
@@ -725,6 +641,13 @@ async function safeAlert(
 
 const IDENTITY_DIGEST = /^[a-f0-9]{64}$/;
 const IDENTITY_LABEL = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
+
+type IdentityMismatchFact = {
+	label: string;
+	checkpoint: IdentityMismatchCheckpoint;
+	expectedKey: string;
+	actualDigest: string;
+};
 
 function validIdentityFact(fact: IdentityMismatchFact): boolean {
 	return (
@@ -1442,50 +1365,6 @@ export async function pollOnce(
 		return finish("blind");
 	}
 
-	if (identityCheckEnabled()) {
-		const activeEntry = snapshot.store.accounts.find(
-			(account) => account.name === snapshot.activeName,
-		);
-		if (activeEntry?.identity === undefined) {
-			deps.log(
-				JSON.stringify({
-					event: "account_identity_unknown",
-					label: snapshot.activeName,
-					checkpoint: "active",
-					reason: "unknown_missing",
-				}),
-			);
-		} else {
-			const activeIdentity = await deps.fetchIdentity(
-				snapshot.activeCredential.accessToken,
-			);
-			if ("error" in activeIdentity) {
-				deps.log(
-					JSON.stringify({
-						event: "account_identity_unknown",
-						label: snapshot.activeName,
-						checkpoint: "active",
-						reason: activeIdentity.error,
-					}),
-				);
-			} else if (
-				compareAccountIdentity(activeEntry.identity, activeIdentity) ===
-				"mismatch"
-			) {
-				await openIdentityEpisode(deps, state, {
-					label: snapshot.activeName,
-					checkpoint: "active",
-					expectedKey: expectedIdentityDigest(activeEntry.identity),
-					actualDigest: identityDigest(activeIdentity),
-				});
-				await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
-				return finish("identity_mismatch_active");
-			} else {
-				await clearIdentityEpisode(deps, state, snapshot.activeName, "active");
-			}
-		}
-	}
-
 	const currentUsage = await deps.fetchUsage(
 		snapshot.activeCredential.accessToken,
 	);
@@ -1662,17 +1541,6 @@ export async function pollOnce(
 		snapshot,
 		triggerModels,
 	);
-	for (const name of candidates.identityMatches) {
-		// A candidate can only reach this point after an audit has cleared any
-		// sticky identityMismatch marker and a fresh profile probe has confirmed
-		// the current pool credential. That positive reconciliation closes stale
-		// facts for the label regardless of the checkpoint that originally found
-		// them (for example, an executor pre_write mismatch).
-		await clearIdentityEpisode(deps, state, name);
-	}
-	for (const fact of candidates.identityMismatches) {
-		await openIdentityEpisode(deps, state, fact);
-	}
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	panorama = candidates.panorama.map(({ name, status }) => `${name}:${status}`);
 	if (modelDetection !== null && candidates.malformedModelBenches.length > 0) {

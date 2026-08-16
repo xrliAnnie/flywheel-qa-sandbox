@@ -148,7 +148,7 @@ export function loadRoundtableConfig(env: Env): RoundtableConfig | undefined {
 		trigger: { mode: triggerMode, prefixes, minMentions, leadUserIds },
 		memberUserIds,
 		founderUserId,
-		threadOwnBotMessages: env.FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT === "1",
+		threadOwnBotMessages: false,
 		pollIntervalMs,
 		cursorPath,
 	};

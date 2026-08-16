@@ -119,9 +119,7 @@ export interface CodexLeadRuntimeConfig {
 	 * exactly-once). Default "direct". */
 	outboundMode: "direct" | "bridge";
 	/** FLY-404: show the Discord "typing…" indicator while processing a founder
-	 * message (parity with the Claude Lead). Default ON; the kill-switch
-	 * FLYWHEEL_CODEX_LEAD_TYPING=0 disables it (defensive — touches live Mufasa).
-	 * Posts via the Lead's own bot token, independent of the outbound mode. */
+	 * message. Permanently enabled; posts via the Lead's own bot token. */
 	typingEnabled: boolean;
 	/** Persona/identity files (e.g. `.lead/<id>/identity.md` + companion-safety-
 	 * contract) read + concatenated into the thread's `baseInstructions` system
@@ -510,8 +508,7 @@ export function parseCodexLeadRuntimeConfig(
 
 	const outboundMode: "direct" | "bridge" =
 		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
-	// FLY-404: Discord typing indicator — default ON, kill-switch via "=0".
-	const typingEnabled = env.FLYWHEEL_CODEX_LEAD_TYPING !== "0";
+	const typingEnabled = true;
 
 	const leadId = req("FLYWHEEL_LEAD_ID");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
@@ -641,11 +638,9 @@ export function parseCodexLeadRuntimeConfig(
 			(env.FLYWHEEL_ROUNDTABLE_REPLY_CAP ?? "").trim(),
 			10,
 		);
-		// FLY-676: no-@ in-thread continuation (member-follow) is now DEFAULT-ON when
-		// reply-in-thread is enabled — on unless explicitly disabled with "0" (the
-		// kill-switch). Was `=== "1"` (default-off) under FLY-314. Mirrors the Claude
-		// plugin's loadRoundtableConfig. Same env names across both backends.
-		const autoContinue = env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE !== "0";
+		// FLY-676: no-@ in-thread continuation is permanent when a resolvable
+		// roundtable parent exists. The EFFECTIVE marker still encodes that parent
+		// precondition for downstream consumers.
 		const budgetParsed = Number.parseInt(
 			(env.FLYWHEEL_ROUNDTABLE_THREAD_BUDGET ?? "").trim(),
 			10,
@@ -653,10 +648,7 @@ export function parseCodexLeadRuntimeConfig(
 		replyInThread = {
 			enabled: true,
 			parentChannelId,
-			// Only include autoContinue when ON — preserves the prior config shape when
-			// off (Codex code review R1 finding 3: keep the exact-shape test / OFF-config
-			// consumers byte-compatible).
-			...(autoContinue ? { autoContinue: true } : {}),
+			autoContinue: true,
 			...(Number.isFinite(budgetParsed) && budgetParsed > 0
 				? { budgetN: budgetParsed }
 				: {}),
@@ -666,10 +658,7 @@ export function parseCodexLeadRuntimeConfig(
 			...(Number.isFinite(capN) && capN > 0 ? { cap: capN } : {}),
 		};
 	}
-	const chromeEnabled = env.FLYWHEEL_LEAD_CHROME_ENABLED === "1";
-	const chrome = chromeEnabled
-		? { enabled: true, browserUrl: env.FLYWHEEL_LEAD_CHROME_URL?.trim() }
-		: undefined;
+	const chrome = undefined;
 	// Persona/identity files → baseInstructions (comma-separated paths; missing skipped).
 	const systemPromptFiles = (env.FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES ?? "")
 		.split(",")
@@ -1596,9 +1585,9 @@ export function buildCodexLeadRuntime(
 				journal,
 			});
 			const executor = new CodexTurnExecutor({ process: proc, threadId });
-			// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
-			// disables). Posts with the Lead's own bot token in the reply channel while a
-			// founder message is processed; closed on stopGateway.
+			// FLY-1806: Discord typing is fixed on. Posts with the Lead's own bot token
+			// in the reply channel while a founder message is processed; closed on
+			// stopGateway.
 			const typing = config.typingEnabled
 				? new DiscordTypingNotifier({
 						botToken: config.botToken,
@@ -1859,7 +1848,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`outbound mode : ${config.outboundMode}${noBridge ? " → DIRECT post to Discord (own bot token), NO Bridge" : ` → Bridge ${config.bridgeUrl}`}`,
 		// FLY-404: surface the typing indicator state so the operator can verify it
 		// before the Mufasa flip (parity with the Claude Lead's "typing…").
-		`typing        : ${config.typingEnabled ? "ON (Discord typing… while processing — parity with Claude Lead; kill-switch FLYWHEEL_CODEX_LEAD_TYPING=0)" : "OFF (FLYWHEEL_CODEX_LEAD_TYPING=0)"}`,
+		"typing        : ON (Discord typing… while processing — parity with Claude Lead)",
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,

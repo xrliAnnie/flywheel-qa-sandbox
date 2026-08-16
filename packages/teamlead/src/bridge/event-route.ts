@@ -516,7 +516,7 @@ function handleCodexAutoTrigger(
 // moved verbatim to `issue-display-refresher.ts` — event-route keeps thin
 // forwards. When the unified refresher holder is wired (default), the
 // stage_changed branch enqueues a full derive-from-state refresh instead; the
-// legacy functions remain the `FLYWHEEL_ISSUE_DISPLAY_REFRESH=0` escape hatch.
+// legacy functions remain the fallback while the unified holder is unavailable.
 
 export function createEventRouter(
 	store: StateStore,
@@ -532,7 +532,7 @@ export function createEventRouter(
 	// FLY-560 Feature C: independent gating for the two chat-thread behaviours
 	// (emoji stamp vs attach pin). Defaults keep byte-compat: when a creator is
 	// passed without flags, emoji stamping stays ON (Feature A) and attach pin
-	// stays OFF (opt-in). plugin.ts passes the resolved env flags.
+	// stays OFF (opt-in). Production passes both as enabled.
 	featureFlags?: {
 		issueStatusEmojiEnabled?: boolean;
 		issueAttachPinEnabled?: boolean;
@@ -563,17 +563,16 @@ export function createEventRouter(
 	},
 	// FLY-907: late-bound unified issue-display refresher. `.current` set (the
 	// default once startBridge wires it) → stage_changed enqueues ONE unified
-	// derive-from-state refresh of all three faces; unset (byte-compat /
-	// FLYWHEEL_ISSUE_DISPLAY_REFRESH=0) → the legacy per-face stamp+pin path.
+	// derive-from-state refresh of all three faces; unset → the legacy per-face
+	// stamp+pin fallback.
 	issueDisplayRefresh?: IssueDisplayRefreshHolder,
 	// FLY-1185: the ship-entry lifecycle bundle (remote branch CAS + issue
 	// closeout + trailing sweep) built once at the composition root. Absent →
 	// classic finalization only (byte-compat).
 	lifecycleInfra?: LifecycleShipInfra,
 	// FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
-	// FLY-1165 scheduler consumer). The composition root injects this ONLY when
-	// FLYWHEEL_TERMINAL_THREAD_ARCHIVE is ON (single boot-time capture);
-	// absent → zero enqueue (byte-compat).
+	// FLY-1165 scheduler consumer). Production always injects it; absent remains a
+	// compatibility no-op for embedding/tests.
 	terminalArchiveEnqueue?: (issueId: string) => void,
 	// FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews.
 	materializedHeadAuthority?: MaterializedHeadAuthority,
@@ -2504,8 +2503,7 @@ export function createEventRouter(
 								// the derivation reads, so the reported stage is honored).
 								issueDisplayRefresh.current.enqueue(event.issue_id);
 							} else {
-								// Legacy per-face path (FLYWHEEL_ISSUE_DISPLAY_REFRESH=0
-								// escape hatch, or refresher not yet wired).
+								// Legacy per-face fallback while the refresher is not yet wired.
 								if (issueStatusEmojiEnabled) {
 									stampStageEmojiForSession(
 										{ store, projects, config, chatThreadCreator },

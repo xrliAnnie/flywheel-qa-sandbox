@@ -220,10 +220,9 @@ export interface LifecycleCloseoutDeps {
 	 * (A re-entrant keyed mutex; keys are canonical root UUIDs.) */
 	withIssueMutex: <T>(keys: string[], fn: () => Promise<T>) => Promise<T>;
 	/**
-	 * FLY-1185 hard constraint (Codex R1#4): the ONE master switch. Every NEW
-	 * mutation in this executor is disabled when it returns false
-	 * (FLYWHEEL_WORKTREE_AUTOCLEAN=0) — the closeout then reports
-	 * blocked(autoclean_disabled) with ZERO mutators run. Default reads env.
+	 * FLY-1185 hard constraint (Codex R1#4): optional integration seam. When a
+	 * caller supplies false, closeout reports blocked(autoclean_disabled) with
+	 * ZERO mutators run. Production uses the always-on default.
 	 */
 	mutationEnabled?: () => boolean;
 	/** Codex R1#14 — per-run mutator budget/deadline (D entry supplies). */
@@ -299,10 +298,9 @@ function makeAudit(
 	);
 }
 
-/** The ONE master switch (hard constraint: zero new flags — everything hangs
- * off the existing FLYWHEEL_WORKTREE_AUTOCLEAN; =0 disables all new mutation). */
+/** Production closeout mutations are permanently enabled. */
 function defaultMutationEnabled(): boolean {
-	return process.env.FLYWHEEL_WORKTREE_AUTOCLEAN !== "0";
+	return true;
 }
 
 /**
@@ -510,12 +508,12 @@ export async function closeoutIssue(
 	opts?: { alreadyLocked?: boolean },
 ): Promise<ClosureReport> {
 	const { store } = deps;
-	// R4#7: master switch BEFORE any resolution/audit — =0 means ZERO
+	// R4#7: integration seam BEFORE any resolution/audit — false means ZERO
 	// StateStore writes from this entry (console only), same contract as park.
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — closeout skipped for ${input.issueKey} (zero writes)`,
+			`[lifecycle-closeout] mutations disabled — closeout skipped for ${input.issueKey} (zero writes)`,
 		);
 		return {
 			rootKey: input.issueKey,
@@ -592,12 +590,12 @@ export async function parkIssue(
 		authority: "founder_park",
 	};
 	// R5#7: master switch BEFORE any audit/resolution write — an unresolved /
-	// uuid-conflict direct park with FLYWHEEL_WORKTREE_AUTOCLEAN=0 must be
-	// ZERO-write (console only), same contract as closeoutIssue.
+	// A caller-disabled uuid-conflict direct park must be ZERO-write (console
+	// only), same contract as closeoutIssue.
 	const mutationEnabledTop = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabledTop()) {
 		console.warn(
-			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — park skipped for ${input.issueUuid} (zero writes)`,
+			`[lifecycle-closeout] mutations disabled — park skipped for ${input.issueUuid} (zero writes)`,
 		);
 		return {
 			rootKey: input.issueUuid,
@@ -628,12 +626,12 @@ export async function parkIssue(
 	}
 	return deps.withIssueMutex(resolution.lockKeys, async () => {
 		// Codex R2#1: the master switch gates the TOMBSTONE + AUTHORITY writes
-		// too — with FLYWHEEL_WORKTREE_AUTOCLEAN=0 a park performs ZERO
+		// too — with the integration seam disabled a park performs ZERO
 		// StateStore mutation (a tombstone would silently block every future
 		// spawn and flip cutover authority while "everything is off").
 		const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 		if (!mutationEnabled()) {
-			// R3#1: with the master switch OFF even the AUDIT stays out of the
+			// R3#1: with the integration seam disabled even the AUDIT stays out of the
 			// StateStore — zero writes of any kind. Non-durable log only.
 			(deps.log ?? console.warn)(
 				`[lifecycle-closeout] park refused for ${resolution.rootKey}: autoclean disabled (zero-write)`,
@@ -692,12 +690,12 @@ export async function closeoutIssueWithSnapshotGuard(
 	},
 ): Promise<ClosureReport | { rejected: true; reason: string }> {
 	const { store } = deps;
-	// R4#7: master switch BEFORE any audit/claim write — a disabled apply is
+	// R4#7: integration seam BEFORE any audit/claim write — a disabled apply is
 	// rejected with ZERO StateStore writes (no epoch claim, no audit row).
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — apply closeout rejected for ${input.issueKey} (zero writes)`,
+			`[lifecycle-closeout] mutations disabled — apply closeout rejected for ${input.issueKey} (zero writes)`,
 		);
 		return { rejected: true, reason: "autoclean_disabled" };
 	}
@@ -886,7 +884,7 @@ export async function unparkIssue(
 	>,
 	input: { issueUuid: string; supersededBy: string },
 ): Promise<boolean> {
-	// R3#1: the supersede is a StateStore mutation too — master-gated.
+	// R3#1: the supersede is a StateStore mutation too — seam-gated.
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) return false;
 	const resolution = resolveLifecycleRootKey(deps.store, input.issueUuid, []);
@@ -920,13 +918,13 @@ async function closeoutIssueLocked(
 		outcome,
 	});
 
-	// ── Master switch (Codex R1#4 + R4#7): =0 → ZERO new mutation AND zero
+	// ── Integration seam (Codex R1#4 + R4#7): false → ZERO mutation AND zero
 	// StateStore writes (console only — the entry-level gates normally catch
 	// this earlier; this is the defensive backstop for direct locked calls).
 	const mutationEnabled = deps.mutationEnabled ?? defaultMutationEnabled;
 	if (!mutationEnabled()) {
 		console.warn(
-			`[lifecycle-closeout] FLYWHEEL_WORKTREE_AUTOCLEAN=0 — locked closeout skipped for ${rootKey} (zero writes)`,
+			`[lifecycle-closeout] mutations disabled — locked closeout skipped for ${rootKey} (zero writes)`,
 		);
 		const report = baseReport("blocked");
 		report.operatorItems.push("autoclean_disabled");

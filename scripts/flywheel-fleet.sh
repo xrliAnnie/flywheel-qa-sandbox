@@ -476,7 +476,10 @@ manifest_projection_sha() {
   jq -S -c '{leadId: (.leadId // null), projectName: (.projectName // null),
              projectDir: (.projectDir // null), subdir: (.subdir // null),
              workspace: (.workspace // null), projectsFile: (.projectsFile // null),
-             mcpExclude: (.mcpExclude // null), chromeEnabled: (.chromeEnabled // null),
+             mcpExclude: (.mcpExclude // null),
+             # FLY-1806: retained as legacy manifest schema for rollback CAS;
+             # the runtime flag is retired and false/missing both canonicalize to null.
+             chromeEnabled: (.chromeEnabled // null),
              model: (.model // null), effort: (.effort // null),
              leadBackend: (.leadBackend // null),
              launchEnvironment: (.launchEnvironment // null)}' \

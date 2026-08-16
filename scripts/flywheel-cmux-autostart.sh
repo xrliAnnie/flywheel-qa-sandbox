@@ -46,8 +46,6 @@ load_cmux_bool_flag() {
 }
 
 load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW 1
-load_cmux_bool_flag FLYWHEEL_CMUX_AUTOSTART_EXEC 0
-
 if [[ -e "$MAINTENANCE_MARKER" && "${FLYWHEEL_CMUX_SUPERVISED:-0}" != "1" ]]; then
   echo "flywheel-cmux-autostart: maintenance marker present; watcher not started" >&2
   exit 0
@@ -66,10 +64,8 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 # ── Run watcher or guard the launchd job ──
 #
 # FLY-177: under launchd, `exec` so the KeepAlive-managed PID is the real
-# watcher. FLY-1446: every unsupervised invocation is only a job guard. The
-# explicit AUTOSTART_EXEC=1 escape exists for incident response; the
-# maintenance marker above still wins.
-if [[ "${FLYWHEEL_CMUX_SUPERVISED:-0}" == "1" || "$FLYWHEEL_CMUX_AUTOSTART_EXEC" == "1" ]]; then
+# watcher. Every unsupervised invocation is only a job guard.
+if [[ "${FLYWHEEL_CMUX_SUPERVISED:-0}" == "1" ]]; then
   RESTART_STORM_GATE_BIN="${FLYWHEEL_RESTART_STORM_GATE_BIN:-$SELF_DIR/restart-storm-gate.py}"
   # `set -e` aborts on a bare non-zero command, so the exit code must be
   # captured in an errexit-exempt `||` list — otherwise a held brake would

@@ -21,8 +21,8 @@
  * handler is useless: the loop that would run it is dead; `process.exit()` in a
  * worker stops only the worker).
  *
- * Default ON. `FLYWHEEL_BRIDGE_LOOP_GUARD=0` is the ops kill-switch. The
- * VITEST/test auto-disable lives at the `startBridge()` wiring boundary (so the
+ * The guard is permanently enabled in production. The VITEST/test auto-disable
+ * lives at the `startBridge()` wiring boundary (so the
  * dedicated tests in this package can still exercise the real worker
  * directly), NOT in this class.
  */
@@ -223,9 +223,8 @@ export class BridgeEventLoopGuard {
 		this.testMode = options.testMode ?? false;
 	}
 
-	/** True unless the `=0` ops kill-switch or `enabled: false` disables it. */
+	/** The injected `enabled` option remains a test and embedding seam. */
 	isEnabled(): boolean {
-		if (process.env.FLYWHEEL_BRIDGE_LOOP_GUARD === "0") return false;
 		return this.enabledOption;
 	}
 

@@ -73,17 +73,13 @@ function fakeGit(opts: {
 	};
 }
 
-function harness(
-	gitOpts: Parameters<typeof fakeGit>[0],
-	env: Record<string, string | undefined> = {},
-) {
+function harness(gitOpts: Parameters<typeof fakeGit>[0]) {
 	const logs: string[] = [];
 	const warns: string[] = [];
 	const stale: unknown[] = [];
 	const alerts: unknown[] = [];
 	const deps: BootShaCheckDeps = {
 		projectRoot: "/repo",
-		env: env as NodeJS.ProcessEnv,
 		git: fakeGit(gitOpts),
 		logger: { log: (m) => logs.push(m), warn: (m) => warns.push(m) },
 		recordStaleEvent: (p) => stale.push(p),
@@ -164,20 +160,9 @@ describe("runBootShaCheck effect", () => {
 		expect(h.stale).toHaveLength(0);
 	});
 
-	it("FLYWHEEL_BOOT_SHA_CHECK=0 → entirely skipped (no git calls)", async () => {
-		const h = harness(
-			{ head: HEAD, originMain: MAIN, isAncestor: true, calls: [] },
-			{ FLYWHEEL_BOOT_SHA_CHECK: "0" },
-		);
-		await runBootShaCheck(h.deps);
-		expect(h.calls).toHaveLength(0);
-		expect(h.logs).toHaveLength(0);
-	});
-
 	it("git rev-parse HEAD throwing does NOT break boot (swallowed)", async () => {
 		const deps: BootShaCheckDeps = {
 			projectRoot: "/repo",
-			env: {} as NodeJS.ProcessEnv,
 			git: async () => {
 				throw new Error("git missing");
 			},

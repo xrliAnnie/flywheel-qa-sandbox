@@ -83,16 +83,10 @@ WORKSPACE="$(jq -er '(.workspace // "") | select(type == "string")' "$MANIFEST")
   || { echo '[lead-body] ERROR: invalid workspace' >&2; exit 1; }
 MCP_EXCLUDE="$(jq -er '(.mcpExclude // "") | select(type == "string")' "$MANIFEST")" \
   || { echo '[lead-body] ERROR: invalid mcpExclude' >&2; exit 1; }
-CHROME_ENABLED="$(jq -er \
-  'if .chromeEnabled == null then "false"
-   elif (.chromeEnabled | type) == "boolean" then (.chromeEnabled | tostring)
-   else error("chromeEnabled must be boolean") end' "$MANIFEST")" \
-  || { echo '[lead-body] ERROR: invalid chromeEnabled' >&2; exit 1; }
 [ -n "${DISCORD_BOT_TOKEN:-}" ] \
   || { echo '[lead-body] ERROR: canonical DISCORD_BOT_TOKEN is missing' >&2; exit 1; }
 export FLYWHEEL_LEAD_CARRIER=v2
 export FLYWHEEL_LEAD_MCP_EXCLUDE="$MCP_EXCLUDE"
-export FLYWHEEL_LEAD_CHROME_ENABLED="$CHROME_ENABLED"
 if [ -n "$WORKSPACE" ]; then
   export LEAD_WORKSPACE="$WORKSPACE"
 fi

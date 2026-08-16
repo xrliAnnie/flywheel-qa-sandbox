@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
@@ -26,14 +26,7 @@ async function tick(poller: GatePoller, n: number) {
 }
 
 describe("FLY-605 GatePoller founder-reply deliver pass wiring (Part B)", () => {
-	let envBak: string | undefined;
-	beforeEach(() => {
-		envBak = process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
-		delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
-	});
 	afterEach(() => {
-		if (envBak === undefined) delete process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER;
-		else process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER = envBak;
 		vi.restoreAllMocks();
 	});
 
@@ -44,16 +37,6 @@ describe("FLY-605 GatePoller founder-reply deliver pass wiring (Part B)", () => 
 			.mockResolvedValue(undefined);
 		await tick(poller, 7); // fires at ticks 1, 4, 7
 		expect(spy).toHaveBeenCalledTimes(3);
-	});
-
-	it("env FLYWHEEL_FOUNDER_REPLY_DELIVER=0 → pass never runs", async () => {
-		process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER = "0";
-		const poller = makePoller();
-		const spy = vi
-			.spyOn(poller as unknown as Priv, "founderReplyDeliverPass")
-			.mockResolvedValue(undefined);
-		await tick(poller, 7);
-		expect(spy).not.toHaveBeenCalled();
 	});
 
 	it("missing owner / chatThreadsEnabled=false → pass early-returns (no project iteration)", async () => {

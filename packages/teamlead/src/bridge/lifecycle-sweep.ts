@@ -261,8 +261,8 @@ export async function sweepProjectLifecycle(
 		audit("lifecycle_sweep_policy_disabled", { reason: policy.reason });
 		return result;
 	}
-	// Master escape hatch: mutations require FLYWHEEL_WORKTREE_AUTOCLEAN != 0;
-	// the read-only dry-run manifest is exempt (plan §0 hard rule).
+	// The read-only dry-run manifest never mutates; the optional autoclean seam is
+	// retained for tests and non-production callers.
 	const mayMutate = !dryRun && autoclean;
 	if (!dryRun && !autoclean) {
 		audit("lifecycle_sweep_disabled_by_autoclean", {});

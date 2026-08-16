@@ -35,14 +35,6 @@ export const RECEIPT_POST_TIMEOUT_MS = 15_000;
 /** Default cadence for the dedicated GatePoller stage (≈60s at 3s ticks). */
 export const RECEIPT_TICK_CADENCE = 20;
 
-/** The ONLY delivery gate (read per pass — live flippable). Prepare always
- * writes regardless: the disposition fact is bookkeeping, not delivery. */
-export function dispositionReceiptEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.FLYWHEEL_DISPOSITION_RECEIPT !== "0";
-}
-
 // ── Copy (prepare-time; delivery never reconstructs semantics) ─────────────
 
 const KIND_LABELS: Record<string, string> = {
@@ -160,7 +152,6 @@ export interface DispositionReceiptPassDeps {
 	projects: ProjectEntry[];
 	globalBotToken?: string;
 	fetchImpl?: typeof fetch;
-	env?: NodeJS.ProcessEnv;
 	now?: () => number;
 	/** Test seam — defaults to postThreadMessage. */
 	postFn?: typeof postThreadMessage;
@@ -183,8 +174,6 @@ export function createDispositionReceiptPass(
 		if (inFlight) return;
 		inFlight = true;
 		try {
-			const env = deps.env ?? process.env;
-			if (!dispositionReceiptEnabled(env)) return;
 			const nowMs = deps.now?.() ?? Date.now();
 			const rows = deps.store.getPendingDispositionReceipts(
 				RECEIPT_BATCH_PER_PASS,

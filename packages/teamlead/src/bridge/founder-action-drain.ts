@@ -20,9 +20,8 @@
  * explicitly at-least-once (a crash between the side effect and the
  * `delivered` mark may repeat one message — accepted, never lost).
  *
- * Runs on the GatePoller founder-reply sub-cadence but OUTSIDE the
- * `FLYWHEEL_FOUNDER_REPLY_DELIVER` ingest switch (§8): already-committed
- * notices/alerts still converge when ops turn ingest off.
+ * Runs on the GatePoller founder-reply sub-cadence. Already-committed
+ * notices/alerts converge independently from founder-reply ingestion.
  */
 
 import type {
@@ -101,14 +100,7 @@ export interface FounderActionDrainDeps {
 	resolveProjectRoot?: (projectName: string) => string | undefined;
 }
 
-const DEFAULT_NOTIFY_RETRY_MAX = 5;
-
-export function founderNotifyRetryMax(
-	env: Record<string, string | undefined> = process.env,
-): number {
-	const n = Number.parseInt(env.FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX ?? "", 10);
-	return Number.isFinite(n) && n > 0 ? n : DEFAULT_NOTIFY_RETRY_MAX;
-}
+export const FOUNDER_NOTIFY_RETRY_MAX = 5;
 
 const NOTICE_KINDS = new Set([
 	"held_reply",
@@ -383,7 +375,7 @@ export async function drainFounderActionLedger(
 ): Promise<void> {
 	const rows = deps.store.listPendingFounderActions();
 	if (rows.length === 0) return;
-	const maxAttempts = founderNotifyRetryMax(deps.env ?? process.env);
+	const maxAttempts = FOUNDER_NOTIFY_RETRY_MAX;
 	const nowMs = deps.nowMs?.() ?? Date.now();
 	for (const row of rows) {
 		try {

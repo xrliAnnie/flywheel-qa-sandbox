@@ -50,7 +50,6 @@ qa_room_roundtable_lead_env() {
 	# no-@ in-thread continuation + its bounded anti-loop budget (FLY-314 Part b).
 	# budgetN is only consulted on the autoContinue path, so omit it when off.
 	if [[ "$auto_continue" == "1" ]]; then
-		printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1"
 		[[ -n "$thread_budget" ]] &&
 			printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_BUDGET=${thread_budget}"
 	fi

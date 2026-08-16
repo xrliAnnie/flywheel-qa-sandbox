@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
 
 const OWNER = "123456789012345678";
@@ -159,14 +159,7 @@ async function fallback(
 }
 
 describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
-	let envBak: string | undefined;
-	beforeEach(() => {
-		envBak = process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
-		delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
-	});
 	afterEach(() => {
-		if (envBak === undefined) delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
-		else process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY = envBak;
 		vi.restoreAllMocks();
 	});
 
@@ -437,7 +430,7 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("chatThreadsEnabled=false / env=0 / missing owner → never triggers", async () => {
+	it("chatThreadsEnabled=false / missing owner → never triggers", async () => {
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
 		await fallback(
 			makePoller({
@@ -447,13 +440,6 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 			makeSession(),
 			makeQuestion(),
 		);
-		process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY = "0";
-		await fallback(
-			makePoller({ fetchImpl: fetchImpl as unknown as typeof fetch }),
-			makeSession(),
-			makeQuestion(),
-		);
-		delete process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY;
 		await fallback(
 			makePoller({
 				discordOwnerUserId: undefined,

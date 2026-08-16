@@ -45,19 +45,18 @@ run_autostart() {
     >"$TMP/stdout" 2>"$TMP/stderr"
 }
 
-# The old direct-exec behavior remains an explicit incident escape. Keep the
-# existing .env parser contract covered under that path.
+# Keep the existing .env parser contract covered under the supervised path.
 printf 'FLYWHEEL_CMUX_LINKED_VIEW=0\nUNRELATED=$(touch /tmp/must-not-run)\n' > "$HOME_DIR/.flywheel/.env"
 record="$TMP/file-values"
-run_autostart "$record" FLYWHEEL_CMUX_AUTOSTART_EXEC=1
+run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1
 if [[ "$(cat "$record")" == "0|--watch" && ! -e /tmp/must-not-run ]]; then
-  pass "escape path extracts only cmux bool flags from .env without sourcing unrelated code"
+  pass "supervised path extracts only cmux bool flags from .env without sourcing unrelated code"
 else
   fail "file extraction/exec mismatch: $(cat "$record" 2>/dev/null || true)"
 fi
 
 record="$TMP/env-precedence"
-run_autostart "$record" FLYWHEEL_CMUX_AUTOSTART_EXEC=1 \
+run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1 \
   FLYWHEEL_CMUX_LINKED_VIEW=1
 if [[ "$(cat "$record")" == "1|--watch" ]]; then
   pass "process env overrides .env"
@@ -67,7 +66,7 @@ fi
 
 printf 'FLYWHEEL_CMUX_LINKED_VIEW=wat\n' > "$HOME_DIR/.flywheel/.env"
 record="$TMP/invalid"
-run_autostart "$record" FLYWHEEL_CMUX_AUTOSTART_EXEC=1
+run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1
 if [[ "$(cat "$record")" == "1|--watch" ]]; then
   pass "invalid/empty values fail safe to default-on"
 else
@@ -129,14 +128,13 @@ else
   fail "bootstrap failure handling mismatch: $(cat "$TMP/control/calls" "$TMP/stderr" 2>/dev/null)"
 fi
 
-# The marker dominates both launchctl and the explicit direct-exec escape on
-# unsupervised paths.
+# The marker dominates launchctl on unsupervised paths.
 : > "$TMP/control/calls"
 touch "$HOME_DIR/.flywheel/state/cmux-maintenance"
 record="$TMP/maintenance-zsh"
-run_autostart "$record" FLYWHEEL_CMUX_AUTOSTART_EXEC=1
+run_autostart "$record"
 if [[ ! -e "$record" && ! -s "$TMP/control/calls" ]]; then
-  pass "unsupervised maintenance marker precedes launchctl and direct-exec escape"
+  pass "unsupervised maintenance marker precedes launchctl"
 else
   fail "unsupervised maintenance path touched launchctl/watcher"
 fi
@@ -147,18 +145,6 @@ if [[ "$(cat "$record")" == "1|--watch" ]]; then
   pass "supervised launchd path remains exec-based and delegates maintenance waiting to sync"
 else
   fail "supervised maintenance path did not exec watcher"
-fi
-
-# The escape can be loaded key-specifically from .env; it must not require
-# sourcing arbitrary shell.
-rm -f "$HOME_DIR/.flywheel/state/cmux-maintenance"
-printf 'FLYWHEEL_CMUX_AUTOSTART_EXEC=1\nUNRELATED=$(touch /tmp/must-not-run)\n' > "$HOME_DIR/.flywheel/.env"
-record="$TMP/file-escape"
-run_autostart "$record"
-if [[ "$(cat "$record")" == "1|--watch" && ! -e /tmp/must-not-run ]]; then
-  pass "FLYWHEEL_CMUX_AUTOSTART_EXEC=1 loads from .env via key-specific parser"
-else
-  fail "file escape parser mismatch: $(cat "$record" "$TMP/stderr" 2>/dev/null)"
 fi
 
 echo "Results: $PASS passed, $FAIL failed"

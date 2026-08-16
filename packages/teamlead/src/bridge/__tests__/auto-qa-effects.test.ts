@@ -383,9 +383,6 @@ describe("AutoQaEffects.createQaIssue (FLY-643)", () => {
 });
 
 describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
-	const ORIG_EMOJI = process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
-	const ORIG_WORD = process.env.FLYWHEEL_ISSUE_STATUS_WORD;
-
 	const projects: ProjectEntry[] = [
 		{
 			projectName: "proj",
@@ -433,16 +430,9 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 	let store: StateStore;
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		delete process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
-		delete process.env.FLYWHEEL_ISSUE_STATUS_WORD;
 	});
 	afterEach(() => {
 		store.close();
-		if (ORIG_EMOJI === undefined)
-			delete process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
-		else process.env.FLYWHEEL_ISSUE_STATUS_EMOJI = ORIG_EMOJI;
-		if (ORIG_WORD === undefined) delete process.env.FLYWHEEL_ISSUE_STATUS_WORD;
-		else process.env.FLYWHEEL_ISSUE_STATUS_WORD = ORIG_WORD;
 	});
 
 	const session = (over: Partial<Session> = {}): Session =>
@@ -497,38 +487,6 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 		});
 
 		expect(markers[0]).toBe("O");
-	});
-
-	it("no-ops when the feature flag is off (FLYWHEEL_ISSUE_STATUS_EMOJI=0)", async () => {
-		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI = "0";
-		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
-		const { creator, calls } = fakeCreator();
-		const effects = new AutoQaEffects({
-			store,
-			projects,
-			config: {} as never,
-			chatThreadCreator: creator,
-		});
-
-		await effects.stampIssueStage({ session: session(), stage: "approve" });
-
-		expect(calls).toEqual([]);
-	});
-
-	it("respects FLYWHEEL_ISSUE_STATUS_WORD=0 (emoji-only)", async () => {
-		process.env.FLYWHEEL_ISSUE_STATUS_WORD = "0";
-		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
-		const { creator, calls } = fakeCreator();
-		const effects = new AutoQaEffects({
-			store,
-			projects,
-			config: {} as never,
-			chatThreadCreator: creator,
-		});
-
-		await effects.stampIssueStage({ session: session(), stage: "implement" });
-
-		expect(calls[0]?.withWord).toBe(false);
 	});
 
 	it("no-ops (no throw) when the parent thread does not exist yet", () => {

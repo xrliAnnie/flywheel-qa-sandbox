@@ -25,21 +25,6 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		).toBe(true);
 	});
 
-	it("opt_in: off unless env === '1'", () => {
-		const s = spec("lead_chrome_enabled"); // FLYWHEEL_LEAD_CHROME_ENABLED
-		expect(resolveFlag(s, { env: {} }).effective).toBe(false);
-		expect(
-			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "1" } }).effective,
-		).toBe(true);
-		expect(
-			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "true" } })
-				.effective,
-		).toBe(false);
-		expect(
-			resolveFlag(s, { env: { FLYWHEEL_LEAD_CHROME_ENABLED: "0" } }).effective,
-		).toBe(false);
-	});
-
 	it("isDefault reflects whether effective == default", () => {
 		const s = spec("auto_qa_killswitch");
 		expect(resolveFlag(s, { env: {} }).isDefault).toBe(true);
@@ -202,7 +187,7 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 
 	it.each([
 		["all call_time", spec("auto_qa_killswitch"), "bridge_stale"],
-		["boot-captured", spec("worktree_autoclean"), "staged_restart"],
+		["boot-captured", spec("runner_autocontinue"), "staged_restart"],
 		[
 			"mixed dotenv-live",
 			{

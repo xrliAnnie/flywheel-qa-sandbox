@@ -205,8 +205,8 @@ export interface HeartbeatNotifier {
 	 * FLY-172: Bridge lost monitoring of a still-running Runner (heartbeat went
 	 * stale but tmux is alive — typically after a Flywheel restart). One-time
 	 * advisory so the Lead knows to fall back to driving the Runner via tmux.
-	 * FLY-623: this is the LEGACY (FLYWHEEL_HEARTBEAT_READOPT=0) path's advisory;
-	 * the readopt-ON path uses onSessionMonitoringReestablished instead.
+	 * FLY-623: this advisory remains for indeterminate liveness; positively alive
+	 * sessions use onSessionMonitoringReestablished instead.
 	 */
 	onSessionMonitoringLost(
 		session: Session,
@@ -396,8 +396,7 @@ export class HeartbeatService implements ReconnectController {
 	 * poll loop died with the previous Bridge) and suppress stuck/orphan/idle. A
 	 * member leaves on a genuine runner event
 	 * (clearReconnecting), tmux death, or a terminal marker. Used only on the
-	 * readopt-ON path; stays empty when FLYWHEEL_HEARTBEAT_READOPT=0 (exact FLY-172
-	 * legacy behavior preserved).
+	 * readopt path.
 	 */
 	private reconnecting = new Set<string>();
 	/**
@@ -450,9 +449,8 @@ export class HeartbeatService implements ReconnectController {
 		/**
 		 * FLY-867: injected stale-terminal close (see StaleTerminalCloseConfig).
 		 * Wired (production) → checkStaleCompleted upgrades from notify-only to
-		 * notify+close for leaked terminal-status sessions, behind the
-		 * FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch (default ON) and the FLY-752
-		 * retest-protection predicate. Absent → pre-FLY-867 notify-only.
+		 * notify+close for leaked terminal-status sessions, guarded by the FLY-752
+		 * retest-protection predicate. Absent wiring → pre-FLY-867 notify-only.
 		 */
 		private staleTerminalClose?: StaleTerminalCloseConfig,
 		/**
@@ -475,9 +473,8 @@ export class HeartbeatService implements ReconnectController {
 		/**
 		 * FLY-1204: injected parked-phase reclaim chokepoint (see
 		 * StaleParkedCloseConfig). Wired (production) → `checkStaleParkedPhases`
-		 * reclaims leaked DAG workflow sessions behind the same
-		 * FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch (via `staleCloseEnabled`) plus
-		 * its own `FLYWHEEL_PARKED_PHASE_STALE_HOURS` threshold. Absent → inert.
+		 * reclaims leaked DAG workflow sessions behind its own
+		 * `FLYWHEEL_PARKED_PHASE_STALE_HOURS` threshold. Absent → inert.
 		 */
 		private staleParkedClose?: StaleParkedCloseConfig,
 		/**
@@ -540,13 +537,12 @@ export class HeartbeatService implements ReconnectController {
 		// rejects — on any throw it logs, attempts a best-effort StateStore
 		// self-heal, and skips the cycle. (start() still wraps check() in a .catch()
 		// as belt-and-suspenders.)
-		// FLY-1282 (R4 #4 / R6 #1): one per-tick gate decision for the zombie
-		// machinery. When ON, the liveness-dependent chain (reconcileMonitorLoss →
+		// FLY-1282 (R4 #4 / R6 #1): the liveness-dependent chain
+		// (reconcileMonitorLoss →
 		// reapOrphans) is single-flighted as ONE unit — a slow/hung
 		// pass makes later ticks skip those checks (observable) while
 		// maintenance, retry, server-loss, crash reaper, stale/parked/review
-		// stages keep running. OFF → no guard, current overlap semantics.
-		const zombieOn = this.zombieMachineryEnabled();
+		// stages keep running.
 		try {
 			// FLY-1282 (R5 #4): recurring zombie-alert backfill — an INDEPENDENT
 			// stage outside the liveness guard (a hung liveness pass must not pause
@@ -554,7 +550,7 @@ export class HeartbeatService implements ReconnectController {
 			// Byte-compat: legacy mock stores may lack the
 			// backfill query — skip WITHOUT an await so the pre-existing
 			// synchronous path is preserved under fake timers.
-			if (zombieOn && typeof this.store.getZombieAlertBacklog === "function") {
+			if (typeof this.store.getZombieAlertBacklog === "function") {
 				await this.reconcileZombieAlertBacklog();
 			}
 			// FLY-1282 (code R1 #1): the single-flight guard is acquired HERE — at
@@ -564,22 +560,20 @@ export class HeartbeatService implements ReconnectController {
 			// must never freeze the liveness chain for later ticks (and a hung
 			// liveness pass must never freeze them — they run on skipped ticks).
 			let livenessOwner = false;
-			if (zombieOn) {
-				if (this.livenessChainInFlight) {
-					this.skippedLivenessTicks++;
-					const inFlightMs = Date.now() - this.livenessPassStartedAt;
-					const log = inFlightMs > 10 * 60_000 ? console.warn : console.log;
-					log(
-						`[HeartbeatService] FLY-1282 liveness chain still in flight (${Math.round(inFlightMs / 1000)}s, ${this.skippedLivenessTicks} tick(s) skipped) — skipping reconcile/orphan this tick`,
-					);
-				} else {
-					this.livenessChainInFlight = true;
-					this.livenessPassStartedAt = Date.now();
-					this.skippedLivenessTicks = 0;
-					livenessOwner = true;
-				}
+			if (this.livenessChainInFlight) {
+				this.skippedLivenessTicks++;
+				const inFlightMs = Date.now() - this.livenessPassStartedAt;
+				const log = inFlightMs > 10 * 60_000 ? console.warn : console.log;
+				log(
+					`[HeartbeatService] FLY-1282 liveness chain still in flight (${Math.round(inFlightMs / 1000)}s, ${this.skippedLivenessTicks} tick(s) skipped) — skipping reconcile/orphan this tick`,
+				);
+			} else {
+				this.livenessChainInFlight = true;
+				this.livenessPassStartedAt = Date.now();
+				this.skippedLivenessTicks = 0;
+				livenessOwner = true;
 			}
-			const runLivenessChain = livenessOwner || !zombieOn;
+			const runLivenessChain = livenessOwner;
 			const livenessGeneration = runLivenessChain
 				? this.livenessPassTracker?.started()
 				: undefined;
@@ -667,33 +661,6 @@ export class HeartbeatService implements ReconnectController {
 		}
 	}
 
-	/**
-	 * FLY-623: kill-switch — readopt is ON by default (the FLY-172 advisory-only
-	 * behavior is the bug: a restart-orphaned but live Runner stays permanently
-	 * monitoring-lost). `FLYWHEEL_HEARTBEAT_READOPT=0` reverts to the exact FLY-172
-	 * legacy path (no re-adopt, no reconnecting set, no boot-seed, no Display-A).
-	 * Read at cycle/boot time so a flip needs no restart and no signature change.
-	 */
-	private readoptEnabled(): boolean {
-		return process.env.FLYWHEEL_HEARTBEAT_READOPT !== "0";
-	}
-
-	/**
-	 * FLY-1282 unified gate (R6 #1): the zombie machinery — tri-state liveness
-	 * consumption, liveness-chain single-flight, and the alert backfill — is ON
-	 * only when the readopt path itself is ON and neither zombie kill-switch is
-	 * pulled. `READOPT=0` therefore keeps the legacy chain unguarded and
-	 * unserialized; `ZOMBIE=0` / `PANE_DEAD=0` revert the readopt consumption
-	 * to the exact pre-FLY-1282 boolean behavior (M0 goldens).
-	 */
-	private zombieMachineryEnabled(): boolean {
-		return (
-			this.readoptEnabled() &&
-			process.env.FLYWHEEL_ZOMBIE_RECONCILE !== "0" &&
-			process.env.FLYWHEEL_LIVENESS_PANE_DEAD !== "0"
-		);
-	}
-
 	/** FLY-172: marker-reconciler deps, or null when monitor-reconcile isn't wired. */
 	private buildMarkerDeps(): MarkerReconcilerDeps | null {
 		if (!this.monitorReconcile) return null;
@@ -718,9 +685,8 @@ export class HeartbeatService implements ReconnectController {
 	 * try the completion marker FIRST (a valid terminal marker wins over tmux
 	 * liveness), and only if there is no usable marker, probe tmux.
 	 *
-	 * - readopt OFF (`FLYWHEEL_HEARTBEAT_READOPT=0`): exact FLY-172 — tmux alive →
-	 *   one-time advisory, never force-fail, never refresh heartbeat.
-	 * - readopt ON (default, FLY-623): tmux alive → RE-ADOPT (refresh heartbeat so
+	 * The FLY-623 readopt path is the sole behavior: tmux alive → RE-ADOPT
+	 * (refresh heartbeat so
 	 *   the session reads healthy + no false stuck/orphan/idle), once-per-episode
 	 *   "re-established" advisory + "⚠️重连中" title. Members of `reconnecting` are
 	 *   re-processed through the SAME marker-first order each cycle (so a later
@@ -733,68 +699,7 @@ export class HeartbeatService implements ReconnectController {
 		this.markerRetryPending.clear();
 		const deps = this.buildMarkerDeps();
 		if (!deps) return EMPTY_SET; // not wired (e.g. unit tests) → no-op
-		if (this.readoptEnabled()) {
-			return this.reconcileMonitorLossReadopt(deps);
-		}
-		await this.reconcileMonitorLossLegacy(deps);
-		return EMPTY_SET;
-	}
-
-	/** FLY-172 legacy path (readopt OFF): advisory-only, never refresh heartbeat. */
-	private async reconcileMonitorLossLegacy(
-		deps: MarkerReconcilerDeps,
-	): Promise<void> {
-		// Candidate set: running + heartbeat stale ≥ stuck threshold.
-		const candidates = this.store.getOrphanSessions(this.thresholdMinutes);
-		const candidateIds = new Set(candidates.map((s) => s.execution_id));
-		// Prune monitor-lost advisory dedup for sessions no longer candidates.
-		for (const id of this.notifiedMonitorLost) {
-			if (!candidateIds.has(id)) this.notifiedMonitorLost.delete(id);
-		}
-
-		for (const session of candidates) {
-			const execId = session.execution_id;
-			const outcome = await tryReconcileComplete(execId, deps);
-			if (isSettledMarkerOutcome(outcome)) {
-				this.notifiedMonitorLost.delete(execId);
-				continue;
-			}
-			if (outcome.kind === "transient_failed") {
-				this.markerRetryPending.add(execId);
-				continue;
-			}
-			if (outcome.kind === "quarantined") {
-				const alive = await this.isSessionTmuxAlive(session);
-				applyQuarantineFallback({
-					store: this.store,
-					transitionOpts: this.transitionOpts,
-					executionId: execId,
-					issueId: session.issue_id,
-					projectName: session.project_name,
-					tmuxAlive: alive,
-					routeStatus: outcome.routeStatus,
-					quarantinePath: outcome.quarantinePath,
-					onTerminalStatusPersisted:
-						this.monitorReconcile?.onTerminalStatusPersisted,
-				});
-				if (alive) {
-					// CODEX R1 HIGH FIX (FLY-172): marker moved to quarantine but the
-					// Runner is STILL alive — treat as monitoring-lost so reapOrphans
-					// skips it (else a live Runner gets force-failed → GEO-374).
-					await this.emitMonitorLostOnce(session);
-				} else {
-					this.notifiedMonitorLost.delete(execId);
-				}
-				continue;
-			}
-
-			const alive = await this.isSessionTmuxAlive(session);
-			if (alive) {
-				await this.emitMonitorLostOnce(session);
-			} else {
-				this.notifiedMonitorLost.delete(execId);
-			}
-		}
+		return this.reconcileMonitorLossReadopt(deps);
 	}
 
 	/**
@@ -824,14 +729,6 @@ export class HeartbeatService implements ReconnectController {
 			if (!byId.has(id)) this.notifiedMonitorLost.delete(id);
 		}
 
-		if (!this.zombieMachineryEnabled()) {
-			// M0 golden path: exact pre-FLY-1282 consumption.
-			for (const session of byId.values()) {
-				await this.reconcileCandidateReadopt(session, deps);
-			}
-			return EMPTY_SET;
-		}
-
 		// FLY-1282 (R3 #2): prune streaks for execs that left the candidate union
 		// — an exit-then-reenter session restarts its dead streak at 1.
 		for (const id of [...this.zombieDeadStreak.keys()]) {
@@ -844,70 +741,6 @@ export class HeartbeatService implements ReconnectController {
 		}
 		await this.flushReestablishedNotices(ctx);
 		return ctx.held;
-	}
-
-	/**
-	 * FLY-623: marker-first → quarantine → tmux probe → re-adopt for one candidate
-	 * on the readopt path. Shared by the per-cycle union pass and `seedReconnecting`.
-	 */
-	private async reconcileCandidateReadopt(
-		session: Session,
-		deps: MarkerReconcilerDeps,
-	): Promise<void> {
-		const execId = session.execution_id;
-
-		// FLY-1329 (A3): a PARKED phase (awaiting_review / design_done /
-		// approved_to_ship) is a keep-alive runner intentionally waiting for the
-		// pipeline — the widened boot candidate query surfaces it. It is NOT a
-		// terminalized session, so re-adopt it: restore monitoring if its tmux is
-		// alive, alert-only if not. Never a status change, never a close. Without
-		// this branch the candidate is dropped on entry and A3 is a no-op (Codex
-		// R1 HIGH-1).
-		if (session.status !== "running") {
-			if (isReadoptParkedStatus(session.status)) {
-				await this.readoptParkedPhase(session);
-				return;
-			}
-			// A reconnecting member terminalized by an accepted event (its status is
-			// no longer `running`) leaves reconnecting + gets its terminal title
-			// re-stamped.
-			this.clearReconnecting(execId);
-			return;
-		}
-
-		// 1) Marker-first. A valid terminal marker proves the Runner finished.
-		const outcome = await tryReconcileComplete(execId, deps);
-		if (isSettledMarkerOutcome(outcome)) {
-			this.clearReconnecting(execId);
-			return;
-		}
-		if (outcome.kind === "transient_failed") {
-			this.markerRetryPending.add(execId);
-			return;
-		}
-		if (outcome.kind === "quarantined") {
-			const alive = await this.isSessionTmuxAlive(session);
-			applyQuarantineFallback({
-				store: this.store,
-				transitionOpts: this.transitionOpts,
-				executionId: execId,
-				issueId: session.issue_id,
-				projectName: session.project_name,
-				tmuxAlive: alive,
-				routeStatus: outcome.routeStatus,
-				quarantinePath: outcome.quarantinePath,
-				onTerminalStatusPersisted:
-					this.monitorReconcile?.onTerminalStatusPersisted,
-			});
-			if (alive) await this.enterReconnecting(session);
-			else this.clearReconnecting(execId);
-			return;
-		}
-
-		// 2) No marker (absent) → probe tmux.
-		const alive = await this.isSessionTmuxAlive(session);
-		if (alive) await this.enterReconnecting(session);
-		else this.clearReconnecting(execId);
 	}
 
 	/**
@@ -932,8 +765,8 @@ export class HeartbeatService implements ReconnectController {
 
 		if (session.status !== "running") {
 			// FLY-1329 (A3): parked phases are re-adopted here too (Codex R1 HIGH-1)
-			// — see reconcileCandidateReadopt for the rationale. Tri-state probe:
-			// monitoring restored ONLY on a positive `alive`, alert-only otherwise,
+			// via the tri-state probe. Monitoring is restored only on a positive
+			// `alive`, alert-only otherwise,
 			// never a status change (Codex R2 — no indeterminate→alive fold).
 			if (isReadoptParkedStatus(session.status)) {
 				await this.readoptParkedPhase(session);
@@ -1377,11 +1210,11 @@ export class HeartbeatService implements ReconnectController {
 	 * set restart-safe (re-seeded every boot → survives repeated restarts) and
 	 * closes the on-boot false-alarm window (a parked Runner already has stale
 	 * `last_activity_at`, so stale state could be observed before reconciliation).
-	 * No-op when not wired or readopt OFF.
+	 * No-op when monitor reconciliation is not wired.
 	 */
 	async seedReconnecting(): Promise<string[]> {
 		const deps = this.buildMarkerDeps();
-		if (!deps || !this.readoptEnabled()) return [];
+		if (!deps) return [];
 		this.markerRetryPending.clear();
 		const seeded: string[] = [];
 		// FLY-1329 (A3): re-adopt EVERY role's parked status, not just `running`.
@@ -1391,21 +1224,19 @@ export class HeartbeatService implements ReconnectController {
 		// re-adopted the QA session and left the parked implement unmonitored.
 		const candidates = this.store.getReadoptCandidateSessions();
 		// FLY-1282 (R3 #1): the public Promise<string[]> contract (FLY-1264 boot
-		// title ids) is unchanged. On the zombie-ON path the boot pass uses the
-		// same aggregated V2 consumption; its held-set is deliberately DISCARDED
+		// title ids) is unchanged. The boot pass uses the same aggregated V2
+		// consumption; its held-set is deliberately DISCARDED
 		// (the first post-boot check() re-probes and owns suppression).
-		const zombieOn = this.zombieMachineryEnabled();
 		const ctx: ReadoptPassCtx = { held: new Set(), intents: [] };
 		for (const session of candidates) {
 			const execId = session.execution_id;
 			const wasTitleActive = this.reconnectTitleActive.has(execId);
-			if (zombieOn) await this.reconcileCandidateReadoptV2(session, deps, ctx);
-			else await this.reconcileCandidateReadopt(session, deps);
+			await this.reconcileCandidateReadoptV2(session, deps, ctx);
 			if (!wasTitleActive && this.reconnectTitleActive.has(execId)) {
 				seeded.push(execId);
 			}
 		}
-		if (zombieOn) await this.flushReestablishedNotices(ctx);
+		await this.flushReestablishedNotices(ctx);
 		return seeded;
 	}
 
@@ -1545,54 +1376,6 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
-	 * FLY-172 + FLY-720: resolve + probe tmux for a session. Single owner of the
-	 * heartbeat-side liveness read.
-	 *
-	 * FLY-720 root-cause fix: a crashed Runner's cmux `remain-on-exit on` window
-	 * PERSISTS with a dead `[exited]` pane, so the old window-existence probe
-	 * (`isTmuxWindowAlive`) read the corpse as alive → the readopt loop re-adopted
-	 * it forever → it never aged into an orphan → never reaped. This now reads
-	 * `#{pane_dead}` (via `probeRunnerProcessLiveness`) so a dead-pin is NOT alive.
-	 *
-	 * Liveness for the readopt / monitor-loss path (alive = keep monitoring):
-	 *   - CommDB `gone` (no target) → false (today's behavior; reapOrphans owns it).
-	 *   - CommDB `error` (locked/corrupt/transient) → TRUE, alive-for-suppression
-	 *     (GEO-374: a transient read must never look dead → never reaped).
-	 *   - pane probe `alive` / `indeterminate` → true (keep monitoring).
-	 *   - pane probe `dead_pin` / `absent` → false (ages into orphan → crash reaper
-	 *     claims dead_pin; reapOrphans claims absent).
-	 *
-	 * `FLYWHEEL_LIVENESS_PANE_DEAD=0` reverts to the exact pre-FLY-720
-	 * window-existence probe (emergency byte-compat).
-	 */
-	private async isSessionTmuxAlive(session: Session): Promise<boolean> {
-		if (!session.project_name) return false;
-		if (process.env.FLYWHEEL_LIVENESS_PANE_DEAD === "0") {
-			const target = getTmuxTargetFromCommDb(
-				session.execution_id,
-				session.project_name,
-			);
-			if (!target) return false;
-			try {
-				return await isTmuxWindowAlive(target.tmuxWindow);
-			} catch {
-				return false;
-			}
-		}
-		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);
-		if (lookup.kind === "gone") return false;
-		if (lookup.kind === "error") return true; // alive-for-suppression (GEO-374)
-		try {
-			const liveness = await probeRunnerProcessLiveness(
-				lookup.target.tmuxWindow,
-			);
-			return liveness === "alive" || liveness === "indeterminate";
-		} catch {
-			return true; // fail-closed to alive-for-suppression
-		}
-	}
-
-	/**
 	 * GEO-270: Check for completed/failed/blocked sessions with tmux still alive.
 	 *
 	 * FLY-867: upgraded from notify-only to notify+close. A terminal-status
@@ -1621,7 +1404,7 @@ export class HeartbeatService implements ReconnectController {
 		}
 
 		// FLY-867: compute the close-enabled gate ONCE per sweep. When close is
-		// disabled (kill-switch OFF or unwired), the loop must restore the exact
+		// disabled because the chokepoint is unwired, the loop must restore the exact
 		// pre-FLY-867 ordering — dedup short-circuit BEFORE the CommDB/tmux probe
 		// — so the OFF/unwired path is byte-compatible (no repeated I/O or logs
 		// for already-notified sessions). Codex code review R1 (MEDIUM).
@@ -1690,9 +1473,9 @@ export class HeartbeatService implements ReconnectController {
 	 * FLY-1204: periodic safety net that reclaims DAG workflow keep-alive phase
 	 * sessions (design/implement/qa) that leaked alive past ship or pipeline
 	 * termination — the root of the OOM incident (design_done holders never
-	 * closed after handoff; completed QA processes never torn down). Runs behind
-	 * the shared FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch, its own independent
-	 * throttle, and a global re-entrancy guard. Never throws (best-effort).
+	 * closed after handoff; completed QA processes never torn down). Uses its own
+	 * independent throttle and a global re-entrancy guard. Never throws
+	 * (best-effort).
 	 *
 	 * The reclaim is issue-grouped and verdict-driven (`computeIssueReclaimVerdict`)
 	 * so it NEVER kills a healthy parked context-holder: any phase still working
@@ -1703,10 +1486,6 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	async checkStaleParkedPhases(): Promise<void> {
 		if (!this.staleParkedClose) return; // feature not wired → inert
-		// Shared kill-switch with FLY-867 (the env is the switch; the parked patrol
-		// has its own wiring check above, so it does NOT also require the terminal
-		// close chokepoint to be wired).
-		if (process.env.FLYWHEEL_STALE_TERMINAL_CLOSE === "0") return;
 		if (this.parkedSweepRunning) return; // a prior long sweep is still running
 		const now = Date.now();
 		if (now - this.lastParkedCheckAt < this.staleCheckIntervalMs) return;
@@ -2059,12 +1838,10 @@ export class HeartbeatService implements ReconnectController {
 
 	/**
 	 * FLY-867: stale-terminal close is active iff production wired the close
-	 * chokepoint AND the kill-switch is not off. Default ON
-	 * (FLYWHEEL_STALE_TERMINAL_CLOSE=0 reverts to pre-FLY-867 notify-only).
+	 * chokepoint.
 	 */
 	private staleCloseEnabled(): boolean {
-		if (!this.staleTerminalClose) return false;
-		return process.env.FLYWHEEL_STALE_TERMINAL_CLOSE !== "0";
+		return this.staleTerminalClose !== undefined;
 	}
 
 	/**
@@ -2442,7 +2219,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		);
 		if (!thread) return; // thread not created yet
 
-		const withWord = process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
 		const ctx: ChatThreadContext = {
 			chatChannelId: chatChannel,
 			issueId: session.issue_id,
@@ -2458,14 +2234,14 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		const phaseBadge = phaseThreadBadge(session.chat_thread_role) || undefined;
 		let badge: string | null;
 		if (mode === "enter") {
-			badge = reconnectingBadge(withWord);
+			badge = reconnectingBadge(true);
 		} else if (session.status === "completed") {
-			badge = stageBadge("completed", withWord) ?? null;
+			badge = stageBadge("completed", true) ?? null;
 		} else if (session.status === "running" && phaseBadge) {
 			badge = phaseBadge;
 		} else if (session.status === "running" && session.session_stage) {
 			// A non-phase runner restores its current real stage badge.
-			badge = stageBadge(session.session_stage, withWord) ?? null;
+			badge = stageBadge(session.session_stage, true) ?? null;
 		} else {
 			// failed / blocked / unknown terminal → strip the prefix to the base title.
 			badge = null;

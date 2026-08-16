@@ -43,14 +43,8 @@ describe("parseGatewayConfig (F-a boundary)", () => {
 		);
 	});
 
-	it("FLY-676: roundtableAutoContinue only on for the runtime EFFECTIVE flag (not raw THREAD_AUTOCONTINUE)", () => {
+	it("FLY-676: roundtableAutoContinue only follows the runtime EFFECTIVE flag", () => {
 		expect(parseGatewayConfig(FULL_ENV).roundtableAutoContinue).toBe(false);
-		expect(
-			parseGatewayConfig({
-				...FULL_ENV,
-				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
-			}).roundtableAutoContinue,
-		).toBe(false);
 		expect(
 			parseGatewayConfig({
 				...FULL_ENV,

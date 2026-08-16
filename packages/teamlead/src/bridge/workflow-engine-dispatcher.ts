@@ -29,8 +29,7 @@ import {
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
 import {
-	shipReadyNotifyEnabled,
-	shipReadyRemindMs,
+	SHIP_READY_REMIND_MS,
 	type WorkflowShipReadyArm,
 	type WorkflowShipReadyNotice,
 	workflowShipReadyUid,
@@ -395,7 +394,6 @@ export class WorkflowEngineDispatcher {
 		const nowIso = now.toISOString();
 		const nowMs = now.getTime();
 		await this.reconcileRunnerShipMerges(arm, nowIso);
-		if (!shipReadyNotifyEnabled(this.env)) return;
 
 		try {
 			const ready = store.listWorkflowShipReadyGates({ now: nowIso });
@@ -496,7 +494,7 @@ export class WorkflowEngineDispatcher {
 		try {
 			stalled = store.listWorkflowShipReadyStalled({
 				now: nowIso,
-				remindAfterMs: shipReadyRemindMs(this.env),
+				remindAfterMs: SHIP_READY_REMIND_MS,
 			});
 		} catch (error) {
 			this.log(

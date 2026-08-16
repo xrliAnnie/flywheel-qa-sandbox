@@ -4132,7 +4132,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1424-ordering-")),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_SHIP_READY_NOTIFY: "1",
 			},
 			resolvePredecessorHead: async () => HEAD,
 			shipReadyArm: arm,
@@ -4400,7 +4399,6 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 			startDispatcher: inertStartDispatcher(),
 			env: {
 				...WORKFLOW_ON,
-				FLYWHEEL_SHIP_READY_REMIND_MS: "1000",
 			},
 			now: () => new Date("2026-07-22T01:31:00.000Z"),
 			resolveRunAlertIdentity: (projectName) => ({
@@ -4519,46 +4517,5 @@ describe("WorkflowEngineDispatcher ship-ready reconcile pass", () => {
 		readyEmpty = false;
 		await dispatcher.reconcile();
 		expect(postFounderCard).toHaveBeenCalledTimes(2);
-	});
-
-	it("reads notify and reminder flags at call time on the same instance", async () => {
-		const env = {
-			...WORKFLOW_ON,
-			FLYWHEEL_SHIP_READY_NOTIFY: "0",
-			FLYWHEEL_SHIP_READY_REMIND_MS: "2500",
-		};
-		const item = shipReadyNotice({ pending: { lead: true, founder: false } });
-		const thresholds: number[] = [];
-		const store = shipReadyOnlyStore({
-			ready: () => [item],
-			stalled: (threshold) => {
-				thresholds.push(threshold);
-				return [];
-			},
-		});
-		const queueLeadNotice = vi.fn(async () => ({ queued: true }));
-		const dispatcher = new WorkflowEngineDispatcher({
-			store,
-			startDispatcher: inertStartDispatcher(),
-			env,
-			shipReadyArm: {
-				queueLeadNotice,
-				postFounderCard: vi.fn(),
-				classifyShipHandled: vi.fn(async () => new Map()),
-			},
-		});
-		await dispatcher.reconcile();
-		expect(queueLeadNotice).not.toHaveBeenCalled();
-
-		env.FLYWHEEL_SHIP_READY_NOTIFY = "1";
-		await dispatcher.reconcile();
-		expect(queueLeadNotice).toHaveBeenCalledOnce();
-		expect(thresholds).toEqual([2_500]);
-		env.FLYWHEEL_SHIP_READY_REMIND_MS = "invalid";
-		await dispatcher.reconcile();
-		expect(thresholds).toEqual([2_500, 1_800_000]);
-		env.FLYWHEEL_SHIP_READY_NOTIFY = "0";
-		await dispatcher.reconcile();
-		expect(queueLeadNotice).toHaveBeenCalledTimes(2);
 	});
 });

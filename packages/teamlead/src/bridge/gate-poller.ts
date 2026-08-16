@@ -338,6 +338,7 @@ export const DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS = 20;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
+const FOUNDER_REPLY_RETRY_MAX = 10;
 // FLY-307 A: backoff before retrying a failed stale-gate eviction write.
 const DEFAULT_EVICTION_RETRY_TICKS = 20;
 
@@ -744,7 +745,7 @@ export class GatePoller {
 					const leadKey = `${project.projectName}::${lead.agentId}`;
 					// FLY-307 B: while a lead's circuit is open, skip question relay for
 					// that lead. `tickCount` still advances once per poll (above).
-					if (this.circuitEnabled() && this.circuitOpen(leadKey)) {
+					if (this.circuitOpen(leadKey)) {
 						continue;
 					}
 					const dbPath = projectDbPath;
@@ -871,10 +872,8 @@ export class GatePoller {
 						// FLY-307 B: a clean pass closes the circuit; a relay throw counts as
 						// a failure (preserves the pre-FLY-605 break-on-throw circuit semantics
 						// while letting the founder-thread fallback still run — Codex R2 #3).
-						if (this.circuitEnabled()) {
-							if (relayFailed) this.recordCircuitFailure(leadKey);
-							else this.recordCircuitSuccess(leadKey);
-						}
+						if (relayFailed) this.recordCircuitFailure(leadKey);
+						else this.recordCircuitSuccess(leadKey);
 					} catch (err) {
 						relayFailed = true;
 						console.warn(
@@ -883,7 +882,7 @@ export class GatePoller {
 						);
 						// FLY-307 B: count the failed poll even if earlier questions in
 						// this iteration were delivered (no reset-on-partial-delivery).
-						if (this.circuitEnabled()) this.recordCircuitFailure(leadKey);
+						this.recordCircuitFailure(leadKey);
 						// FLY-639: a sql.js corruption thrown by getSession/getPendingQuestions
 						// here is contained by this catch (no Bridge crash). Attempt a
 						// best-effort StateStore self-heal so the next lead/cycle is healthy.
@@ -916,10 +915,7 @@ export class GatePoller {
 			// FLY-605 Part B: founder-reply inbound auto-delivery on a slow
 			// sub-cadence (~60s). Piggybacks this tick (zero new timer); fully
 			// isolated — its errors never abort the poll loop.
-			if (
-				this.founderReplyDeliverEnabled() &&
-				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
-			) {
+			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
 					await this.founderReplyDeliverPass();
 				} catch (err) {
@@ -939,7 +935,6 @@ export class GatePoller {
 			// checks inside runDeferredApprovalRebindPass).
 			if (
 				this.config.deferredRebind &&
-				this.founderReplyDeliverEnabled() &&
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
@@ -953,10 +948,9 @@ export class GatePoller {
 				}
 			}
 
-			// FLY-1099 §3.3 + §8: founder action-ledger drain — DELIBERATELY
-			// outside the FLYWHEEL_FOUNDER_REPLY_DELIVER ingest switch: intents
-			// already committed (held notices / nudges / feedback wakes / MUST-
-			// DELIVER alerts) still converge when ops turn ingest off.
+			// FLY-1099 §3.3 + §8: founder action-ledger drain. Already-committed
+			// held notices / nudges / feedback wakes / MUST-DELIVER alerts converge
+			// independently from founder-reply ingestion.
 			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
 					await this.founderActionDrainPass();
@@ -1007,7 +1001,6 @@ export class GatePoller {
 			// wired; fully isolated so its errors never abort the poll loop.
 			if (
 				this.config.tryFounderReactionApproval &&
-				this.founderReplyDeliverEnabled() &&
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
@@ -1304,11 +1297,6 @@ export class GatePoller {
 	}
 
 	// ── FLY-307 B: per-lead circuit breaker ─────────────────────────────────
-
-	/** ON by default; `FLYWHEEL_GATEPOLLER_CIRCUIT=0` is the explicit bypass. */
-	private circuitEnabled(): boolean {
-		return process.env.FLYWHEEL_GATEPOLLER_CIRCUIT !== "0";
-	}
 
 	private circuitThreshold(): number {
 		return this.config.circuitThreshold ?? DEFAULT_CIRCUIT_THRESHOLD;
@@ -1611,10 +1599,6 @@ export class GatePoller {
 		return true;
 	}
 
-	private founderThreadNotifyEnabled(): boolean {
-		return process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY !== "0";
-	}
-
 	private founderThreadGraceMs(): number {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
 	}
@@ -1658,7 +1642,6 @@ export class GatePoller {
 		question: PendingQuestion,
 		_dbPath: string,
 	): Promise<void> {
-		if (!this.founderThreadNotifyEnabled()) return;
 		if (!this.config.chatThreadsEnabled) return;
 		const cp = question.checkpoint;
 		if (
@@ -2326,10 +2309,6 @@ export class GatePoller {
 
 	// ── Founder-reply inbound delivery (FLY-1392: founder→Lead) ──
 
-	private founderReplyDeliverEnabled(): boolean {
-		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
-	}
-
 	private founderReplyDeliverGraceMs(): number {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
@@ -2514,11 +2493,6 @@ export class GatePoller {
 	}
 
 	// ── FLY-1099: founder-reply reliability wiring ──────────────────────────
-
-	/** §7.1: FLYWHEEL_FOUNDER_REPLY_RETRY_MAX (default 10). */
-	private founderReplyRetryMax(): number {
-		return positiveIntEnv(process.env.FLYWHEEL_FOUNDER_REPLY_RETRY_MAX, 10);
-	}
 
 	/** §7.1: FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS (default 30min). */
 	private founderReplyDeadletterAgeMs(): number {
@@ -2712,7 +2686,7 @@ export class GatePoller {
 					nowMs,
 				});
 				if (
-					row.attempts < this.founderReplyRetryMax() &&
+					row.attempts < FOUNDER_REPLY_RETRY_MAX &&
 					nowMs - row.first_seen_ms < this.founderReplyDeadletterAgeMs()
 				) {
 					return { deadLettered: false };

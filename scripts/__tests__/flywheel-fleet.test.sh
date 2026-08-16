@@ -787,6 +787,22 @@ write_projects '"claude-fable-5"'
 # Source the fleet functions directly to pin the shared evidence helpers.
 # shellcheck disable=SC1090
 FLYWHEEL_FLEET_SOURCED=1 source "$REPO_ROOT/scripts/flywheel-fleet.sh"
+
+# FLY-1806: retiring the runtime Chrome flag must not silently change the
+# legacy manifest projection schema used by rollback CAS. In jq, false and a
+# missing key both canonicalize through `// null`, so both fixtures share the
+# historical golden hash.
+CHROME_PROJECTION_WITH="$SANDBOX/chrome-projection-with.json"
+CHROME_PROJECTION_WITHOUT="$SANDBOX/chrome-projection-without.json"
+printf '%s\n' '{"leadId":"lead","projectName":"proj","projectDir":"/repo","subdir":"","workspace":"/repo","projectsFile":"/projects.json","mcpExclude":"","chromeEnabled":false,"model":"m","effort":"medium","leadBackend":{"backendId":"claude-code"},"launchEnvironment":{"A":"B"}}' > "$CHROME_PROJECTION_WITH"
+printf '%s\n' '{"leadId":"lead","projectName":"proj","projectDir":"/repo","subdir":"","workspace":"/repo","projectsFile":"/projects.json","mcpExclude":"","model":"m","effort":"medium","leadBackend":{"backendId":"claude-code"},"launchEnvironment":{"A":"B"}}' > "$CHROME_PROJECTION_WITHOUT"
+CHROME_PROJECTION_GOLDEN="66d747b54b2ead7f2d70d29358166df3783a2bb1ebcb8dee800c52bf78ebceb8"
+if [ "$(manifest_projection_sha "$CHROME_PROJECTION_WITH")" = "$CHROME_PROJECTION_GOLDEN" ] \
+  && [ "$(manifest_projection_sha "$CHROME_PROJECTION_WITHOUT")" = "$CHROME_PROJECTION_GOLDEN" ]; then
+  pass "FLY-1806: legacy chromeEnabled projection keeps its golden CAS hash"
+else
+  fail "FLY-1806: legacy chromeEnabled projection hash drifted"
+fi
 set +e
 
 # T21 (QA F-2): a DEAD claude pane is NOT runtime evidence (production had a

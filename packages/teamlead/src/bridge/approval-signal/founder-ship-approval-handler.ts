@@ -75,10 +75,6 @@ const APPROVE_FLIPPED_STATUSES = new Set(["approved_to_ship", "completed"]);
 export interface DeferralSupport {
 	/** Why the session is founder-held (null = not held). */
 	holdReason(executionId: string): ReviewHoldReason | null;
-	/** FLYWHEEL_DEFERRED_FOUNDER_APPROVAL !== "0" (read per call). */
-	deferredEnabled(): boolean;
-	/** FLYWHEEL_HELD_DECLINED_REPLY !== "0" (read per call). */
-	heldReplyEnabled(): boolean;
 	/**
 	 * Durable single-transaction deferral: deferred row + `held_reply` thread
 	 * notice intent (§4.2 step 2). Throws on failure (mapped to retry).
@@ -429,41 +425,19 @@ export async function tryFounderShipApproval(
 				const disposition = guardDisposition(guardResult);
 				if (disposition !== undefined) return disposition;
 			}
-			if (deferral.heldReplyEnabled()) {
-				deferral.queueHeldNotice({
-					questionId: gate.questionId,
-					msgId: args.msg.id,
-					executionId: gate.executionId,
-					kind:
-						reason === "merge_block"
-							? "merge_block"
-							: reason === "qa_evidence_missing" ||
-									reason === "qa_evidence_unknown"
-								? "readiness_hold"
-								: "deferred_off",
-					holdReason: reason,
-				});
-			}
-			return null;
-		}
-		if (!deferral.deferredEnabled()) {
-			// §4.4 OFF rows: no deferral (today's early decline), but with the
-			// reply flag ON the founder still gets an explanation (硬要求① — the
-			// silence is what made tonight dangerous).
-			deps.auditSink?.("held_declined", {
+			deferral.queueHeldNotice({
 				questionId: gate.questionId,
+				msgId: args.msg.id,
 				executionId: gate.executionId,
+				kind:
+					reason === "merge_block"
+						? "merge_block"
+						: reason === "qa_evidence_missing" ||
+								reason === "qa_evidence_unknown"
+							? "readiness_hold"
+							: "deferred_off",
 				holdReason: reason,
 			});
-			if (deferral.heldReplyEnabled()) {
-				deferral.queueHeldNotice({
-					questionId: gate.questionId,
-					msgId: args.msg.id,
-					executionId: gate.executionId,
-					kind: "deferred_off",
-					holdReason: reason,
-				});
-			}
 			return null;
 		}
 		// Deferred flag ON: classify (read-only; fail-closed semantics unchanged).

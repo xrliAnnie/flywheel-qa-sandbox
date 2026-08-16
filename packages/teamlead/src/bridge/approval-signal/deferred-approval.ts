@@ -41,20 +41,6 @@ import {
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
-// ── env knobs (read per call — flip without a Bridge restart) ───────────────
-
-export function deferredApprovalEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_DEFERRED_FOUNDER_APPROVAL !== "0";
-}
-
-export function heldReplyEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_HELD_DECLINED_REPLY !== "0";
-}
-
 const DEFAULT_TTL_MS = 45 * 60_000; // §8: FLYWHEEL_DEFERRED_APPROVAL_TTL_MS
 
 export function deferredApprovalTtlMs(
@@ -219,8 +205,6 @@ export function makeDeferralSupport(args: {
 	const { store, ctx } = args;
 	return {
 		holdReason: (executionId) => args.holdReasonFor(executionId),
-		deferredEnabled: () => deferredApprovalEnabled(env),
-		heldReplyEnabled: () => heldReplyEnabled(env),
 		defer: (a) => {
 			const ttlMs = deferredApprovalTtlMs(env);
 			const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
@@ -238,25 +222,22 @@ export function makeDeferralSupport(args: {
 				founderIdAtCapture: a.founderIdAtCapture,
 				founderRework: a.founderRework,
 				ttlSeconds: Math.floor(ttlMs / 1000),
-				// §4.4: the "已存着" notice intent lands ONLY in the same durable
-				// transaction as the deferral row (truth-in-time), and only when the
-				// reply flag is ON (ON/OFF row of the 2×2 table).
-				heldReplyAction: heldReplyEnabled(env)
-					? {
-							actionKey: heldReplyActionKey(a.questionId, a.msgId),
-							kind: "held_reply",
-							executionId: a.executionId,
-							issueId: ctx.issueId,
-							projectName: ctx.projectName,
-							threadId: ctx.threadId,
-							payload: {
-								text: heldReplyText(a.decision, a.holdReason, ttlMinutes),
-								questionId: a.questionId,
-								msgId: a.msgId,
-								decision: a.decision,
-							},
-						}
-					: undefined,
+				// The "已存着" notice intent lands in the same durable transaction as
+				// the deferral row (truth-in-time).
+				heldReplyAction: {
+					actionKey: heldReplyActionKey(a.questionId, a.msgId),
+					kind: "held_reply",
+					executionId: a.executionId,
+					issueId: ctx.issueId,
+					projectName: ctx.projectName,
+					threadId: ctx.threadId,
+					payload: {
+						text: heldReplyText(a.decision, a.holdReason, ttlMinutes),
+						questionId: a.questionId,
+						msgId: a.msgId,
+						decision: a.decision,
+					},
+				},
 				audit: {
 					event_id: `founder-approval-deferred-${a.questionId}-${a.msgId}`,
 					execution_id: a.executionId,
@@ -479,8 +460,6 @@ const APPROVE_FLIPPED_STATUSES = new Set(["approved_to_ship", "completed"]);
 export async function runDeferredApprovalRebindPass(
 	deps: DeferredRebindDeps,
 ): Promise<void> {
-	const env = deps.env ?? process.env;
-	if (!deferredApprovalEnabled(env)) return; // kill-switch: no rebind writes
 	const now = deps.nowMs?.() ?? Date.now();
 	const rows = deps.store.listActiveDeferredApprovals();
 	if (rows.length === 0) return;

@@ -42,7 +42,7 @@ fi
 
 # ── M2: canonical pre-launch shape excludes wrapper-v2 runtime identity ──
 KEYS="$(jq -r 'keys_unsorted | sort | join(",")' "$MDIR/flywheel-flywheel-cos-lead.json")"
-EXPECT="chromeEnabled,leadId,mcpExclude,projectDir,projectName,projectsFile,subdir,workspace"
+EXPECT="leadId,mcpExclude,projectDir,projectName,projectsFile,subdir,workspace"
 if [ "$KEYS" = "$EXPECT" ]; then
   pass "M2 canonical pre-launch key set"
 else
@@ -62,10 +62,10 @@ if [ "$(jq -r '.leadId' "$F")" = "flywheel-eng-lead" ] \
    && [ "$(jq -r '.workspace' "$F")" = "$H/Dev/flywheel" ] \
    && [ "$(jq -r '.projectsFile' "$F")" = "$H/.flywheel/projects.json" ] \
    && ! jq -e 'has("botTokenEnv") or has("botUserId") or has("discordStateDir")' "$F" >/dev/null 2>&1 \
-   && [ "$(jq -r '.model' "$F")" = "fable" ] \
-   && [ "$(jq -r '.leadBackend.backendId' "$F")" = "claude-code" ] \
-   && [ "$(jq -r '.subdir' "$F")" = "" ] \
-   && [ "$(jq -r '.chromeEnabled' "$F")" = "false" ]; then
+	&& [ "$(jq -r '.model' "$F")" = "fable" ] \
+	&& [ "$(jq -r '.leadBackend.backendId' "$F")" = "claude-code" ] \
+	&& [ "$(jq -r '.subdir' "$F")" = "" ] \
+	&& ! jq -e 'has("chromeEnabled")' "$F" >/dev/null 2>&1; then
   pass "M3 values + carrier fields (model/leadBackend) preserved"
 else
   fail "M3 values: $(cat "$F")"

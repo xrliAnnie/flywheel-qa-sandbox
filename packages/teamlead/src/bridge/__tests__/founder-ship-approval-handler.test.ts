@@ -380,8 +380,6 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 		async (holdReason) => {
 			const deferral = {
 				holdReason: vi.fn(() => holdReason),
-				deferredEnabled: () => true,
-				heldReplyEnabled: () => true,
 				defer: vi.fn(() => "inserted" as const),
 				queueHeldNotice: vi.fn(),
 				parkForConvergence: vi.fn(),
@@ -426,8 +424,6 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 		};
 		const deferral = {
 			holdReason: vi.fn(() => "codex_pending" as const),
-			deferredEnabled: () => true,
-			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(),
@@ -548,8 +544,6 @@ describe("tryFounderShipApproval — attribution audit + hold guard (FLY-1041)",
 describe("FLY-1099 Codex code R1 fixes — postcondition ownership", () => {
 	const baseDeferral = () => ({
 		holdReason: vi.fn(() => null),
-		deferredEnabled: () => true,
-		heldReplyEnabled: () => true,
 		defer: vi.fn(() => "inserted" as const),
 		queueHeldNotice: vi.fn(),
 		parkForConvergence: vi.fn(),
@@ -631,8 +625,6 @@ describe("Codex code R2 HIGH: reject wake-intent failure is PARKED (not an unrea
 	it("queueFeedbackWake throws after the reject response is durable → parkForConvergence(reject) → deferred outcome", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => null),
-			deferredEnabled: () => true,
-			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(),
@@ -676,8 +668,6 @@ describe("Codex code R3 HIGH: double failure (wake intent + park) → deadLetter
 	it("queueFeedbackWake AND parkForConvergence both throw → immediate deadLetter, never a bare retry", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => null),
-			deferredEnabled: () => true,
-			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(() => {
@@ -723,8 +713,6 @@ describe("FLY-1238 merged-PR last-mile guard", () => {
 	it("silences the exact merge_block incident before queuing the stale pointer", async () => {
 		const deferral = {
 			holdReason: vi.fn(() => "merge_block" as const),
-			deferredEnabled: () => true,
-			heldReplyEnabled: () => true,
 			defer: vi.fn(() => "inserted" as const),
 			queueHeldNotice: vi.fn(),
 			parkForConvergence: vi.fn(),

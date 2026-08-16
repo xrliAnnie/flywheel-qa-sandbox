@@ -178,7 +178,9 @@ while IFS= read -r name; do
 done < <(
 	rg -o --no-filename 'FLYWHEEL_ROUNDTABLE_[A-Z0-9_]+' \
 		"$ROOT/packages" "$ROOT/scripts" \
-		--glob '!test-deploy-generalized.test.sh' | sort -u
+		--glob '!test-deploy-generalized.test.sh' \
+		--glob '!**/feature-flags/truth.ts' \
+		--glob '!**/flag-truth.test.ts' | sort -u
 )
 for name in "${repo_roundtable_names[@]}"; do
 	assert_contains "$(printf '%s\n' "${scrub_names[@]}")" "$name" \
@@ -189,7 +191,6 @@ for name in \
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV \
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID \
 	FLYWHEEL_ROUNDTABLE_BOT_TOKEN_ENV \
-	FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE \
 	FLYWHEEL_ROUNDTABLE_THREAD_BUDGET; do
 	assert_contains "$(printf '%s\n' "${scrub_names[@]}")" "$name" \
 		"generalized scrub includes ${name}"
@@ -199,10 +200,9 @@ for name in "${scrub_names[@]}"; do scrub_args+=(-u "$name"); done
 scrubbed=$(FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=prod-cross-dept \
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV=PROD_ALERT_TOKEN \
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID=prod-roundtable \
-	FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1 \
 	env "${scrub_args[@]}" bash -c \
-	'printf "%s|%s|%s|%s" "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS-unset}" "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV-unset}" "${FLYWHEEL_ROUNDTABLE_CHANNEL_ID-unset}" "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE-unset}"')
-assert_eq "$scrubbed" 'unset|unset|unset|unset' \
+	'printf "%s|%s|%s" "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS-unset}" "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV-unset}" "${FLYWHEEL_ROUNDTABLE_CHANNEL_ID-unset}"')
+assert_eq "$scrubbed" 'unset|unset|unset' \
 	'generalized scrub removes ambient cross-dept, alert-sender, and roundtable values'
 
 wrapper="$ROOT/scripts/lib/qa-generalized-bridge-wrapper.sh"

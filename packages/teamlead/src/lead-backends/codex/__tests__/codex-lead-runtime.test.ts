@@ -120,19 +120,15 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		);
 	});
 
-	it("includes the core channel + chrome when set", () => {
+	it("includes the core channel while Chrome integration stays disabled", () => {
 		const c = parseCodexLeadRuntimeConfig(
 			fullEnv({
 				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
-				FLYWHEEL_LEAD_CHROME_ENABLED: "1",
 				FLYWHEEL_LEAD_CHROME_URL: "http://127.0.0.1:9222",
 			}),
 		);
 		expect(c.channelIds).toEqual(["chan-chat", "chan-core"]);
-		expect(c.chrome).toEqual({
-			enabled: true,
-			browserUrl: "http://127.0.0.1:9222",
-		});
+		expect(c.chrome).toBeUndefined();
 	});
 
 	// ── FLY-267 收: cross-dept channels merged into channelIds ──────────────
@@ -206,28 +202,8 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.mentionPatterns).toEqual(["\\bMufasa\\b", "\\bMufu\\b"]);
 	});
 
-	// FLY-404: Discord typing indicator — default ON, kill-switch via "=0".
-	it("FLY-404: typingEnabled defaults to true (parity with Claude Lead)", () => {
+	it("FLY-1806: typingEnabled is fixed on (parity with Claude Lead)", () => {
 		expect(parseCodexLeadRuntimeConfig(fullEnv()).typingEnabled).toBe(true);
-	});
-
-	it("FLY-404: FLYWHEEL_CODEX_LEAD_TYPING=0 disables typing (kill-switch)", () => {
-		const c = parseCodexLeadRuntimeConfig(
-			fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "0" }),
-		);
-		expect(c.typingEnabled).toBe(false);
-	});
-
-	it("FLY-404: any non-'0' value keeps typing ON (only '0' is the off switch)", () => {
-		expect(
-			parseCodexLeadRuntimeConfig(fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "1" }))
-				.typingEnabled,
-		).toBe(true);
-		expect(
-			parseCodexLeadRuntimeConfig(
-				fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "false" }),
-			).typingEnabled,
-		).toBe(true);
 	});
 
 	it("fail-loud: lists ALL missing always-required env in one error", () => {
@@ -318,18 +294,10 @@ describe("dryRunReport", () => {
 		expect(report).toContain("WILL CONNECT (bridge mode)");
 	});
 
-	// FLY-404: the typing-indicator state is auditable in the dry-run.
-	it("surfaces typing ON by default and OFF under the kill-switch", () => {
+	it("surfaces the fixed-on typing state in the dry-run", () => {
 		expect(
 			dryRunReport(parseCodexLeadRuntimeConfig(fullEnv())).join("\n"),
 		).toContain("typing        : ON");
-		expect(
-			dryRunReport(
-				parseCodexLeadRuntimeConfig(
-					fullEnv({ FLYWHEEL_CODEX_LEAD_TYPING: "0" }),
-				),
-			).join("\n"),
-		).toContain("typing        : OFF");
 	});
 
 	// FLY-350 (Z) L-1 (Codex review LOW): a write-capable dry-run surfaces the

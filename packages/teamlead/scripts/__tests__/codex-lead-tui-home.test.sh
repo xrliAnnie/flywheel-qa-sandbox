@@ -229,10 +229,9 @@ rt_marker_case 2 "FLY-1243: REPLY_IN_THREAD unset + cross-dept → marker presen
 # FLY-1243: no resolvable parent (no roundtable channel id, no cross-dept) → no marker.
 rt_marker_case 3 "FLY-1243: no resolvable parent → no marker" 0
 
-# FLY-1243: THREAD_AUTOCONTINUE=0 kill-switch → no marker even with a resolvable parent.
-rt_marker_case 4 "FLY-1243: THREAD_AUTOCONTINUE=0 → no marker" 0 \
-  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333 \
-  FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=0
+# FLY-1806: auto-continue is fixed on whenever the parent is resolvable.
+rt_marker_case 4 "FLY-1806: resolvable parent → marker present" 1 \
+  FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=1512578695468941333
 
 # FLY-1243 (Codex R2): empty-leading cross list (" ,<id>") → after split/trim/filter the
 # first survivor is the real id → resolvable parent → marker present.
