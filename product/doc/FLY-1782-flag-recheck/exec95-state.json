@@ -1,0 +1,30 @@
+{
+	"dist": {
+		"无解析器": 72,
+		"待查": 19,
+		"无解析器(数值 sanitizer)": 3,
+		"有解析器": 1
+	},
+	"has": ["qa_auto [feature]"],
+	"todo": [
+		"mailbox_queue",
+		"converge_cmux_symlink",
+		"auto_qa_killswitch",
+		"workflow_rework_reentry",
+		"external_merge_reconcile",
+		"instruction_path_check",
+		"liveness_activity_window_ms",
+		"deferred_approval_ttl_ms",
+		"founder_reply_deadletter_age_ms",
+		"issue_display_sweep_ticks",
+		"ship_gate_grace_ms",
+		"merge_reconcile_window_days",
+		"ship_gate_card_grace_ms",
+		"reports_ttl_days",
+		"ghost_guard_wait_ms",
+		"runner_autocontinue",
+		"done_thread_reconcile_interval_min",
+		"done_thread_reconcile_max_per_run",
+		"delivery_secret_path"
+	]
+}

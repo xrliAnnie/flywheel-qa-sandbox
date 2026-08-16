@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>124 个开关 · 换了问法之后</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 120px}
+header{margin-bottom:32px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.quick{background:#e8f4ff;color:#0060d0}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+h2{font-size:20px;margin:34px 0 6px;letter-spacing:-.01em}
+h3{font-size:17px;margin:0 0 10px;letter-spacing:-.01em}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:14px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.facts li{margin:6px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+.stat{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px}
+.stat div{flex:1 1 150px;background:#fafafc;border-radius:10px;padding:14px 16px}
+.stat b{display:block;font-size:26px;line-height:1.2;letter-spacing:-.02em}
+.stat span{font-size:13px;color:var(--dim)}
+textarea{width:100%;min-height:72px;margin-top:12px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:14px;display:block}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:40px -20px -120px;padding:18px 20px 22px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.mini{background:#fafafc;border-radius:10px;padding:14px 16px;margin:12px 0}
+.mini h4{margin:0 0 6px;font-size:15.5px}
+.mini .row{font-size:14px;margin:3px 0}
+.mini .row b{color:var(--navy)}
+.danger{color:#c92a20;font-weight:600}
+@media (max-width:640px){ .wrap{padding:24px 14px 120px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>124 个开关,按你的新问法重判完了</h1>
+  <p class="sub">2026-08-15 · <b>这一页是新的</b> —— 上一版问的是「这个开关状态对不对」,这一版问的是你要的那个:「<b>它还需不需要作为一个开关存在</b>」</p>
+</header>
+
+<div class="big">
+  <div class="stat">
+    <div><b>1</b><span>件要你拍<br>就一句话</span></div>
+    <div><b>12–14</b><span>条留下<br>(那 1 件若选「留」= 18–20)</span></div>
+    <div><b>95</b><span>条可以直接删<br>零行为变化</span></div>
+    <div><b>10</b><span>条删了会改变行为<br>下面逐条讲给你</span></div>
+  </div>
+  <p class="note">你上一轮说「我不相信我们有 116 个开关都需要留着,我希望最后留下不超过 20 个」—— 按你给的两条口子(<b>真正还在测的</b> / <b>本来就需要多种选择的</b>)重判之后,落在 <b>12–14</b>。<b>无论怎么落,都在你说的 20 以内。</b></p>
+  <p class="note">为什么是个区间而不是一个数:还有 <b>3 条没落定</b>(两条在等 Tadashi 取证、一条我刚从「留」里拿掉)。我不想给你一个看起来精确、其实还在动的数字 —— 这一轮我们已经在数字上栽过一次了。</p>
+</div>
+
+<h2>1 · 唯一要你拍的</h2>
+
+<section data-t="要你拍:六个守 ship 路的急停开关">
+<div class="card red">
+  <h3><span class="tag must">要你拍</span>那六个守着「ship 这条路」的急停开关,留还是删?</h3>
+
+  <p>严格按你给的两条口子,<b>54 个急停开关一个都留不下</b> —— 它们既不是「还在测」,也不是「需要多选」。按你的口径就该全部固化成开、把开关删掉。</p>
+
+  <p><b>但其中六个不太一样。它们守的是 ship 这条路本身:</b></p>
+
+  <div class="scroll">
+  <table>
+    <tr><th>这个开关</th><th>它守的那道门坏了的时候</th></tr>
+    <tr><td>Codex 评审闸</td><td>评审挂了 ⇒ 所有 PR 卡死,关掉它是唯一放行方式</td></tr>
+    <tr><td>批准链闸</td><td>批准链挂了 ⇒ 同上</td></tr>
+    <tr><td>QA 记录闸</td><td>QA 链挂了 ⇒ 同上</td></tr>
+    <tr><td>CI 证据闸</td><td>GitHub 证据链挂了 ⇒ 同上</td></tr>
+    <tr><td>设计校验闸</td><td>校验挂了 ⇒ design 节点收不了工</td></tr>
+    <tr><td>签字门总撤除杆</td><td>签字门自己出问题时,唯一的全局撤除手段</td></tr>
+  </table>
+  </div>
+
+  <p class="q">两种选择的代价:</p>
+  <div class="facts">
+  <ul>
+    <li><b>留</b> ⇒ 最终 <b>18–20 条</b> —— <b>仍然在你说的「不超过 20」以内,不会超</b></li>
+    <li><b>删</b> ⇒ 最终 <b>12–14 条</b>,更干净;但这几道门任何一道出故障时,<b>恢复手段从「改一行配置」变成「改代码 + 重新发版」</b></li>
+  </ul>
+  </div>
+
+  <p><b>我的建议:留。</b> 这六条的共同点是 —— <b>它坏的时候,你正好最需要它</b>;而留着的成本只是登记表里六行。</p>
+
+  <p class="q">为什么这一条必须你拍,而不是我们收敛掉:</p>
+  <p>因为它等于<b>给你的判据加第三条</b>(「坏了之后还有没有退路」)。你只给了两条,我们按纪律不替你扩判据 —— 这是 runner 自己坚持没有擅自加的,我同意它。</p>
+
+  <p class="q">回「留」或「删」就行。</p>
+  <span class="lbl">你的意见</span>
+  <textarea data-c="c1" placeholder="留 / 删,或写点别的"></textarea>
+</div>
+</section>
+
+<h2>2 · 那 10 条「删了会改变行为」的 —— 你说要我讲清楚,这里逐条讲</h2>
+
+<p>你的原话:「<b>你确实需要跟我讲一下,我需要理解它到底是怎么样的情况。</b>」</p>
+
+<div class="card amber">
+  <h3>先说一件差点出事的事:「删掉一个开关」有两个方向</h3>
+  <p>代码里删一个开关的自然写法是「删掉判断、留下一条分支」—— <b>留哪条,是一个必须有人选的动作</b>。</p>
+  <div class="facts">
+  <ul>
+    <li><b>冻结在现在的值</b> ⇒ 行为不变(这是对的那条)</li>
+    <li><b>落回代码里的默认值</b> ⇒ 行为会变(这是最省事、也最容易被默默做出来的那条)</li>
+  </ul>
+  </div>
+  <p>对下面这 10 条,两个方向<b>指向不同的结果</b>。最狠的样本是那五个派工开关:冻结在现值 = 零变化;落回默认 = <span class="danger">整条派工链停摆</span> —— 包括产出这份报告的那条链。</p>
+  <p>⇒ 所以我们定死了口径:<b>一律冻结在现在的值</b>;每删一条,都必须在改动里写明「固化成哪个值、为什么」,写不出来的不许删。Tadashi 在工程侧把这条做成硬门。</p>
+</div>
+
+<section data-t="那 10 条会改变行为的">
+<div class="card blue">
+
+<div class="mini">
+  <h4>1 · cmux 侧栏的窗口摆法 <span class="tag">你点名要删的那条</span></h4>
+  <div class="row"><b>现在</b>:关(生产上被人显式设成 0,而代码默认是开)</div>
+  <div class="row"><b>删掉之后</b>:还是关 —— <b>和你说的「关掉删了算了」一致</b></div>
+  <div class="row"><b>谁会感觉到</b>:你自己,每天打开 cmux 侧栏</div>
+  <div class="row note">⚠️ 它当初为什么被关,到今天仍然查不到书面原因。重测的前提三周前就满足了,只是没人去做。</div>
+</div>
+
+<div class="mini">
+  <h4>2 · 跨部门频道 id <span class="tag">其实不是开关</span></h4>
+  <div class="row"><b>现在</b>:填着 #leads-roundtable 的频道 id,Codex Lead 靠它知道去哪儿轮询</div>
+  <div class="row"><b>删掉之后</b>:把频道 id 写死进代码 —— <b>所以它不该被「删」,该搬去配置</b>(以后加频道就不用改代码)</div>
+  <div class="row"><b>谁会感觉到</b>:你在 roundtable 里 @ Mufasa 的时候</div>
+</div>
+
+<div class="mini">
+  <h4>3 · 「你的同意闸门」的三段模式 <span class="tag ok">建议留</span></h4>
+  <div class="row"><b>现在</b>:audit_only —— 三段上线里的<b>第 1 阶</b>:只记账、不拦截,在攒「哪些动作该不该拦」的语料</div>
+  <div class="row"><b>删掉之后</b>:保持只记账;但它<b>还有第三档没走</b>(真正拦截)</div>
+  <div class="row"><b>谁会感觉到</b>:短期没人。代价是以后想真开拦截时,手里没有依据</div>
+</div>
+
+<div class="mini">
+  <h4>4 · 过程文档开关 <span class="tag">逐项目</span></h4>
+  <div class="row"><b>现在</b>:六个项目里三开三关</div>
+  <div class="row"><b>删掉之后</b>:得逐项目固化,<b>不能一刀切</b></div>
+  <div class="row"><b>谁会感觉到</b>:那三个项目里,以后想回头查「当时为什么这么做」的人</div>
+</div>
+
+<div class="mini">
+  <h4>5 · 四臂实验的分流开关 <span class="tag ok">建议留</span></h4>
+  <div class="row"><b>现在</b>:split —— 把 runner 分流到四条不同的 skill 框架做对比</div>
+  <div class="row"><b>删掉之后</b>:等于把「一直做实验」写死 —— 不合理,实验总要结束</div>
+  <div class="row"><b>谁会感觉到</b>:那个对比实验的结论</div>
+  <div class="row note">这是「真正还在测的」最标准的例子。但我要求它写上「什么条件下算跑完」,否则下一轮它还是「还在测」。</div>
+</div>
+
+<div class="mini">
+  <h4>6–10 · 五个派工开关 <span class="tag must">全场风险最高</span></h4>
+  <div class="row"><b>现在</b>:五个全开,<b>整条派工链跑在它们上面</b></div>
+  <div class="row"><b>删掉(冻结在现值)</b>:全部固化成开 ⇒ <b>零行为变化,这是正确做法</b></div>
+  <div class="row"><b>删错方向(落回默认)</b>:五个全关 ⇒ <span class="danger">整条派工链停摆</span></div>
+  <div class="row"><b>谁会感觉到</b>:所有人,立刻 —— 包括这份报告本身,它就是跑在这条链上产出的</div>
+  <div class="row note">你上一轮对它们说过「好像也没有在用」,我用实数拦下了:光今天就有 22 个 run / 31 个 claim 全在它们上面。</div>
+</div>
+
+  <span class="lbl">对这 10 条有话说的话</span>
+  <textarea data-c="c2" placeholder="可留空"></textarea>
+</div>
+</section>
+
+<h2>3 · 那 95 条为什么可以直接删,不用你逐条看</h2>
+
+<div class="card green">
+  <p>它们的共同事实是:<b>现在的值 = 代码里的默认值</b>。</p>
+  <p>⇒ 「冻结在现值」和「落回默认」<b>指向同一个值</b> ⇒ <b>不存在方向,也就没有选错的余地。</b> 这正是它们能批量走、而上面那 10 条不能的原因。</p>
+  <div class="facts">
+  <ul>
+    <li><b>49 条是急停开关</b> —— 即使能批量,也单独走一批,不和功能类混</li>
+    <li><b>46 条是功能开关</b></li>
+    <li>每一条都已经写好「固化成哪个值」,<b>写不出来的一条都没有</b></li>
+  </ul>
+  </div>
+  <p class="note">⚠️ 动手前还有一道前置检查(见下一节),不是现在就删。这一轮只负责判,不负责删。</p>
+</div>
+
+<h2>4 · 体检本身抓到的两件事(不用你回)</h2>
+
+<section data-t="体检抓到的两件事">
+<div class="card purple">
+  <h3>① 登记表里有一行,从三周前起就在说谎 —— 而且现在还在生效</h3>
+  <p>自动 QA 那一行,登记表写的是「默认关、要逐项目主动打开」;<b>而真正在跑的代码是「默认开、要主动关才关」</b>。两个字段都反了。</p>
+  <p>原因:三周前代码把默认翻了过来,<b>登记表那一行没跟着翻</b>。</p>
+  <p class="q">为什么这不只是「删 flag 时才咬人」:</p>
+  <p><b>任何东西按登记表行事 —— 后台开关、脚本、或者一个人 —— 都会把 Flywheel 自己的自动 QA 悄悄关掉,而且不报错。</b></p>
+  <p>Tadashi 正在从机制上堵:不是加一条「记得以代码为准」的规矩(规矩早就写在那儿了,还是差点出事),而是加一条自动检查 —— 登记表和代码对不上就直接报红。</p>
+  <p class="note">这一条是这次体检的副产品,但我认为它比「清掉 95 条」更能说明这轮值得做:<b>我们在清点的过程中,发现清单本身是错的。</b></p>
+</div>
+
+<div class="card plain">
+  <h3>② 你上一轮问的那条(消息通路)有答案了</h3>
+  <p>你问:「这是什么东西?如果把它删掉的话,会有什么影响?」</p>
+  <p><b>答案:删掉它不会让消息消失,而是把 Discord 进来的消息从新通路切回旧通路。</b>(新通路有顺序和不丢的保证,旧的没有。)</p>
+  <p>性质是<b>两个仓库的退役进度不同步</b> —— 主仓已经把它标成「该删」,插件那边却还在读它。<b>建议先别动,要动两边一起动。</b></p>
+  <p class="note">⚠️ 更正一处:我们之前跟你说「删掉会把入站直接关掉」,那个说法不准确 —— 是换轨,不是断路。</p>
+</div>
+</section>
+
+<h2>5 · 已经定了的,不用你回</h2>
+
+<div class="card plain">
+  <div class="facts">
+  <ul>
+    <li><b>清掉配置文件里那 9 行死键</b> —— 你已批准</li>
+    <li><b>「让 runner 自己续跑」退役</b> —— 你已批准</li>
+    <li><b>对外发布通道</b> —— 留着,以后要 enable</li>
+    <li><b>小红书学习</b> —— 留着,值得专门排期</li>
+    <li><b>ProofShot</b> —— 你说开,<b>它不缺任何前置步骤</b>,直接开(我们之前说「还差一步」是错的,已撤回)</li>
+    <li><b>两个 ship 授权开关</b> —— 你说「关掉删了算了」,我拦下了:今天所有派工都跑在它们上面,关掉 = 全线停摆。按新口径「删 = 冻结在现值」,它们会被删掉但保持开着,行为不变</li>
+  </ul>
+  </div>
+</div>
+
+<h2>6 · 还没落定的,也不占你</h2>
+
+<div class="card plain">
+  <div class="facts">
+  <ul>
+    <li><b>两个应急旁路开关</b> —— 等 Tadashi 查完。⚠️ 有个限制要先说:记录「谁批准了 ship」的那本审计账本坏了,所以他只能给「代码里有没有实装」这类证据,<b>给不出「从来没被用过」这种结论</b>。补上来时会带着这个限制</li>
+    <li><b>2 条机器判不了的</b> —— 一条要跑一次才知道实际值;一条是你之前说过「不要开」的那个,按新口径删掉 = 保持不开,和你说的一致</li>
+    <li><b>那 95 条动手之前</b> —— 每一条还要再核一次「登记表 vs 真正跑的代码」,就是第 4 节那个坑</li>
+  </ul>
+  </div>
+</div>
+
+<section data-t="其他想说的">
+<div class="card plain">
+  <h3>其他想说的(可留空)</h3>
+  <textarea data-c="c3" placeholder="任何不同意的地方"></textarea>
+</div>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何意见</span>
+    <div id="preview"></div>
+    <p class="note">写在这页上的字<b>只存在你自己的浏览器里,不会自动传回来</b>。点上面的按钮复制,然后粘回 <b>[FLY-1782]</b> 那个 thread —— 我才收得到。</p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1782-recut-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1782 开关重判 · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1782 开关重判:我这轮没有意见。';
+    function done(ok){
+      countEl.textContent = ok ? '已复制,粘回 [FLY-1782] thread' : '复制失败 —— 请手动选中下面的文字复制';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent = text; }
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(false);});
+    } else {
+      done(false);
+    }
+  });
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

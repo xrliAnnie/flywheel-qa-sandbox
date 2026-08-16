@@ -1,0 +1,250 @@
+[
+	{
+		"name": "checkpoint_watchdog",
+		"b": "clear"
+	},
+	{
+		"name": "legacy_delivery_watchdogs",
+		"b": "clear"
+	},
+	{
+		"name": "park_watch",
+		"b": "clear"
+	},
+	{
+		"name": "park_watch_cadence",
+		"b": "clear"
+	},
+	{
+		"name": "park_watch_n1_ms",
+		"b": "clear"
+	},
+	{
+		"name": "park_watch_n2_ms",
+		"b": "clear"
+	},
+	{
+		"name": "park_watch_qa_n3_ms",
+		"b": "clear"
+	},
+	{
+		"name": "quota_daemon_cutover",
+		"b": "unknown"
+	},
+	{
+		"name": "delivery_ack",
+		"b": "clear"
+	},
+	{
+		"name": "delivery_unconsumed_v2",
+		"b": "clear"
+	},
+	{
+		"name": "delivery_ack_timeout_ms",
+		"b": "clear"
+	},
+	{
+		"name": "delivery_max_redeliver",
+		"b": "clear"
+	},
+	{
+		"name": "delivery_max_transport_failures",
+		"b": "clear"
+	},
+	{
+		"name": "ack_late_window_ms",
+		"b": "clear"
+	},
+	{
+		"name": "receipt_foundation",
+		"b": "dynamize"
+	},
+	{
+		"name": "receipt_activation_dry_run",
+		"b": "dynamize"
+	},
+	{
+		"name": "park_biased_handoff",
+		"b": "dynamize"
+	},
+	{
+		"name": "prune_park_guard",
+		"b": "dynamize"
+	},
+	{
+		"name": "readopt_parked_roles",
+		"b": "dynamize"
+	},
+	{
+		"name": "codex_gate_wait",
+		"b": "dynamize"
+	},
+	{
+		"name": "quota_degraded_switch",
+		"b": "dynamize"
+	},
+	{
+		"name": "three_stage_codex_design_toggle",
+		"b": "dynamize"
+	},
+	{
+		"name": "issue_gate_supersede_mode",
+		"b": "dynamize"
+	},
+	{
+		"name": "ask_hygiene",
+		"b": "dynamize"
+	},
+	{
+		"name": "stuck_pane_confirm",
+		"b": "dynamize"
+	},
+	{
+		"name": "commdb_protection",
+		"b": "dynamize"
+	},
+	{
+		"name": "zombie_reconcile",
+		"b": "dynamize"
+	},
+	{
+		"name": "disposition_receipt",
+		"b": "dynamize"
+	},
+	{
+		"name": "watchdog_liveness",
+		"b": "dynamize"
+	},
+	{
+		"name": "watchdog_loop_heartbeat",
+		"b": "dynamize"
+	},
+	{
+		"name": "watchdog_blocked",
+		"b": "dynamize"
+	},
+	{
+		"name": "commdb_residue_harvest",
+		"b": "dynamize"
+	},
+	{
+		"name": "terminal_commdb_sync",
+		"b": "dynamize"
+	},
+	{
+		"name": "terminal_thread_archive",
+		"b": "dynamize"
+	},
+	{
+		"name": "lead_dual_active_scan",
+		"b": "dynamize"
+	},
+	{
+		"name": "cmux_linked_view",
+		"b": "unknown"
+	},
+	{
+		"name": "claude_account_identity_check",
+		"b": "dynamize"
+	},
+	{
+		"name": "liveness_activity_window_ms",
+		"b": "dynamize"
+	},
+	{
+		"name": "ship_ready_remind_ms",
+		"b": "dynamize"
+	},
+	{
+		"name": "ghost_guard_wait_ms",
+		"b": "dynamize"
+	},
+	{
+		"name": "quota_daemon_wake",
+		"b": "keep"
+	},
+	{
+		"name": "review_severity_policy_killswitch",
+		"b": "keep"
+	},
+	{
+		"name": "founder_review_gate_exclude",
+		"b": "keep"
+	},
+	{
+		"name": "retest_head_delta_guard",
+		"b": "keep"
+	},
+	{
+		"name": "ship_ready_notify",
+		"b": "keep"
+	},
+	{
+		"name": "engine_dead_exec_sweep",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_rework_reentry",
+		"b": "keep"
+	},
+	{
+		"name": "engine_unlaunched_tripwire",
+		"b": "keep"
+	},
+	{
+		"name": "skill_framework_mode",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_template_dispatch",
+		"b": "keep"
+	},
+	{
+		"name": "land_node",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_generalized_templates",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_vendor_at_dispatch",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_claims_write",
+		"b": "keep"
+	},
+	{
+		"name": "workflow_claims_read",
+		"b": "keep"
+	},
+	{
+		"name": "design_html_gate",
+		"b": "keep"
+	},
+	{
+		"name": "lead_lease_bypass",
+		"b": "keep"
+	},
+	{
+		"name": "skill_framework_split_participation",
+		"b": "keep"
+	},
+	{
+		"name": "cmux_view_invariant",
+		"b": "keep"
+	},
+	{
+		"name": "ship_ci_guard",
+		"b": "keep"
+	},
+	{
+		"name": "voice_qa_presence_override",
+		"b": "keep"
+	},
+	{
+		"name": "delivery_secret_path",
+		"b": "keep"
+	}
+]

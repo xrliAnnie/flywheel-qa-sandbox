@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10 张单的依赖与批次</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 60px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:24px 26px;margin:20px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+.tag.diff{background:#f3e8ff;color:#7b2fbf}
+h2{font-size:20px;margin:38px 0 6px;letter-spacing:-.01em}
+h3{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}
+.num{color:var(--dim);font-size:13px;font-weight:600;letter-spacing:.06em;margin-bottom:6px}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:16px;margin-bottom:4px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+textarea{width:100%;min-height:64px;margin-top:10px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:16px;display:block;font-weight:600}
+/* NOT position:sticky — a sticky bar gets baked into the MIDDLE of a full-page
+   screenshot and covers whatever is behind it (it hid a diagram in v2). */
+.sumbox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  margin:40px 0 0;padding:20px 22px}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+.dia{margin:16px 0}
+.dia svg{display:block;width:100%;max-width:700px;height:auto}
+.legend{font-size:12.5px;color:var(--dim);margin-top:6px}
+.danger{color:#c92a20;font-weight:600}
+@media (max-width:640px){ .wrap{padding:24px 14px 60px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>10 张单:依赖关系 + 怎么分批</h1>
+  <p class="sub">2026-08-15 23:00 PDT · 你问「是不是真有先后顺序」—— 答案是<b>基本没有</b>,下面是逐条查完的结果</p>
+</header>
+
+<div class="card red">
+  <h2 style="margin-top:0">🔴 先更正我上一版</h2>
+  <p>我上一版写「<b>1811 是硬前置,挡着 1806 / 1807</b>」—— <b>这句是错的。</b></p>
+  <p>1811 要查的那 19 条,<b>本来就已经被排除在 1806 / 1807 的执行范围之外</b>。所以它挡的不是那两张单,<b>只挡那 19 条自己</b>。1806 / 1807 现在就能开工。</p>
+  <p class="note">我把「更省事的顺序」写成了「依赖」。你让我去查依赖,查完发现大部分是我的偏好,不是硬约束。</p>
+</div>
+
+<h2>① 真正的硬依赖:只有 2 条</h2>
+<div class="card amber">
+  <div class="scroll">
+  <table>
+    <tr><th>谁等谁</th><th>为什么是硬的</th></tr>
+    <tr><td><b>FLY-1781 等 FLY-1779</b></td><td>每周扫描要能区分「有意留的」和「没人管的」,而那两个字段是 1779 加的。没有它,扫描每周都会把同一批已决定保留的再摆一遍</td></tr>
+    <tr><td><b>那 19 条 flag 等 FLY-1811</b></td><td>它们的登记值和代码真缺省可能不一致(<code>qa_auto</code> 就是这样被抓到的)。判不清就删 = 可能悄悄改行为。<b>但它只挡这 19 条,不挡 1806 / 1807 的其余部分</b></td></tr>
+  </table>
+  </div>
+  <p><b>除这两条之外,其余全部互不依赖。</b></p>
+</div>
+
+<h2>② 所以:8 张可以立刻并行</h2>
+<div class="card green">
+  <div class="scroll">
+  <table>
+    <tr><th>单</th><th>做什么</th><th>要等谁</th></tr>
+    <tr><td><b>FLY-1806</b></td><td>功能类删除(排除待查的那批)</td><td>不等</td></tr>
+    <tr><td><b>FLY-1807</b></td><td>急停开关删除(同上)</td><td>不等</td></tr>
+    <tr><td><b>FLY-1808</b></td><td>会改行为的 10 条,逐条删</td><td>不等 · 和 1806/1807 是<b>不同的 flag</b></td></tr>
+    <tr><td><b>FLY-1809</b></td><td>2 条搬去配置</td><td>不等</td></tr>
+    <tr><td><b>FLY-1810</b></td><td>doc_flow 铺完再删</td><td>不等 · 内部自带观察期</td></tr>
+    <tr><td><b>FLY-1811</b></td><td>19 条人工过目</td><td>不等 · 它是别人的前置,自己不等谁</td></tr>
+    <tr><td><b>FLY-1455</b></td><td>不许野建 flag + CI 断言</td><td>不等</td></tr>
+    <tr><td><b>FLY-1779</b></td><td>registry 加两个字段</td><td>不等</td></tr>
+  </table>
+  </div>
+</div>
+
+<h2>③ 2 张必须等</h2>
+<div class="card blue">
+  <div class="scroll">
+  <table>
+    <tr><th>单</th><th>等什么</th></tr>
+    <tr><td><b>FLY-1781</b> 每周扫描</td><td>等 <b>1779</b> 的字段</td></tr>
+    <tr><td><b>FLY-1778</b> 动态 flag store</td><td><b>不是硬等</b>,但建议放最后:等 flag 从 124 降到十几,要迁移的东西少一个数量级</td></tr>
+  </table>
+  </div>
+  <p class="note">另外那 19 条 flag 的删除是 <b>1811 的尾巴</b>,不单独开单 —— 1811 判完直接并回 1806 / 1807 的收尾。</p>
+</div>
+
+<h2>④ 那要不要分批?</h2>
+<section data-t="分几批">
+<div class="card purple">
+  <p><b>按依赖看,不需要分批 —— 8 张可以同时开。</b></p>
+  <p>真正会逼我们分批的只有一件事:<b>同时能跑几个 runner、你能审几个 PR</b>。那是产能,不是依赖。</p>
+  <div class="scroll">
+  <table>
+    <tr><th>如果按产能分</th><th>放什么</th><th>理由</th></tr>
+    <tr><td><b>第一波</b></td><td>1811 · 1806 · 1807 · 1809</td><td>全是低风险,而且 1811 越早判完,尾巴越早收</td></tr>
+    <tr><td><b>第二波</b></td><td>1808 · 1455 · 1779 · 1810</td><td>1808 放这儿只有一个理由:<b>前面 95 条把「逐条写固化值」练过一遍再碰它</b>。这是建议,不是依赖 —— 你要它先做也行</td></tr>
+    <tr><td><b>收尾</b></td><td>1781 · 1778</td><td>1781 等字段;1778 等 flag 数降下来</td></tr>
+  </table>
+  </div>
+  <p class="q">要你定的就这一句:</p>
+  <p><b>按产能分几波?</b> 或者直接八张一起开?</p>
+  <span class="lbl">你的决定</span>
+  <textarea data-c="x1" placeholder="比如:一次开四张 / 全开 / 1808 提到第一波"></textarea>
+</div>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">复制我的决定</button>
+    <span id="count">还没写</span>
+    <div id="preview"></div>
+    <p class="note">写的字只存在你自己的浏览器里。点按钮复制,粘回 <b>[FLY-1782]</b> thread。</p>
+  </div>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly-deps-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' / 8 条') : '还没写任何决定';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1782 · 我的决定\n\n' + items.join('\n\n'))
+      : 'FLY-1782:我还没写决定。';
+    function done(ok){
+      countEl.textContent = ok ? '已复制,粘回 [FLY-1782] thread' : '复制失败 —— 请手动选中下面的文字复制';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent = text; }
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(false);});
+    } else {
+      done(false);
+    }
+  });
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

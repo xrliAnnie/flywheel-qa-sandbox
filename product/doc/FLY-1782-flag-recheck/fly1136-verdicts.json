@@ -1,0 +1,210 @@
+[
+	{
+		"name": "alert_threads",
+		"b": "2"
+	},
+	{
+		"name": "stuck_errorsig",
+		"b": "2"
+	},
+	{
+		"name": "pane_multiframe",
+		"b": "2"
+	},
+	{
+		"name": "detection_gap_scan",
+		"b": "2"
+	},
+	{
+		"name": "auto_repair",
+		"b": "2"
+	},
+	{
+		"name": "account_self_heal",
+		"b": "2"
+	},
+	{
+		"name": "notify_digest_expect",
+		"b": "2"
+	},
+	{
+		"name": "xhs_review",
+		"b": "2"
+	},
+	{
+		"name": "roundtable_reply_in_thread",
+		"b": "2"
+	},
+	{
+		"name": "roundtable_enabled",
+		"b": "2"
+	},
+	{
+		"name": "runner_autocontinue",
+		"b": "unknown"
+	},
+	{
+		"name": "lead_pane_readiness",
+		"b": "unknown"
+	},
+	{
+		"name": "roundtable_thread_own_bot",
+		"b": "unknown"
+	},
+	{
+		"name": "founder_image_approval",
+		"b": "unknown"
+	},
+	{
+		"name": "codex_lead_read_deny",
+		"b": "3"
+	},
+	{
+		"name": "founder_consent_decision_mode",
+		"b": "3"
+	},
+	{
+		"name": "founder_attribution_gate",
+		"b": "3"
+	},
+	{
+		"name": "comm_bypass_bridge",
+		"b": "3"
+	},
+	{
+		"name": "founder_ux_gate",
+		"b": "3"
+	},
+	{
+		"name": "founder_ux_gate_killswitch",
+		"b": "3"
+	},
+	{
+		"name": "qa_auto",
+		"b": "2"
+	},
+	{
+		"name": "doc_flow",
+		"b": "3"
+	},
+	{
+		"name": "proofshot",
+		"b": "3"
+	},
+	{
+		"name": "xiaohongshu_learning",
+		"b": "3"
+	},
+	{
+		"name": "ponytail",
+		"b": "3"
+	},
+	{
+		"name": "issue_display_sweep_ticks",
+		"b": "3"
+	},
+	{
+		"name": "ship_gate_grace_ms",
+		"b": "3"
+	},
+	{
+		"name": "merge_reconcile_window_days",
+		"b": "3"
+	},
+	{
+		"name": "ship_gate_card_grace_ms",
+		"b": "3"
+	},
+	{
+		"name": "lead_chrome_enabled",
+		"b": "3"
+	},
+	{
+		"name": "lead_core_mention_gated",
+		"b": "3"
+	},
+	{
+		"name": "lead_dry_run",
+		"b": "3"
+	},
+	{
+		"name": "lead_cross_dept_channel_ids",
+		"b": "3"
+	},
+	{
+		"name": "reports_ttl_days",
+		"b": "3"
+	},
+	{
+		"name": "three_stage_codex_implement_killswitch",
+		"b": "3"
+	},
+	{
+		"name": "deferred_founder_approval",
+		"b": "3"
+	},
+	{
+		"name": "held_declined_reply",
+		"b": "3"
+	},
+	{
+		"name": "codex_hold_nudge",
+		"b": "3"
+	},
+	{
+		"name": "founder_reply_watchdog",
+		"b": "3"
+	},
+	{
+		"name": "zombie_gate_resolve",
+		"b": "3"
+	},
+	{
+		"name": "done_thread_reconcile",
+		"b": "3"
+	},
+	{
+		"name": "deferred_approval_ttl_ms",
+		"b": "3"
+	},
+	{
+		"name": "founder_notify_retry_max",
+		"b": "3"
+	},
+	{
+		"name": "codex_hold_nudge_ms",
+		"b": "3"
+	},
+	{
+		"name": "founder_reply_retry_max",
+		"b": "3"
+	},
+	{
+		"name": "founder_reply_deadletter_age_ms",
+		"b": "3"
+	},
+	{
+		"name": "done_thread_reconcile_interval_min",
+		"b": "3"
+	},
+	{
+		"name": "done_thread_reconcile_max_per_run",
+		"b": "3"
+	},
+	{
+		"name": "done_thread_reconcile_dryrun",
+		"b": "3"
+	},
+	{
+		"name": "watchdog_judge",
+		"b": "3"
+	},
+	{
+		"name": "detection_escalation",
+		"b": "3"
+	},
+	{
+		"name": "publish_broker",
+		"b": "3"
+	}
+]

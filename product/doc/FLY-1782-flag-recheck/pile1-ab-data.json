@@ -1,0 +1,42 @@
+{
+	"real": [
+		{
+			"name": "runner_autocontinue",
+			"hits": ["待 canary", "先单-runner 试点"],
+			"text": "FLY-818 ①: opt-in /loop-native goal-driven 自动续跑 arming（AutoContinueArmer） boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
+			"ruling": "建议退役",
+			"why": "canary **从没发生** ⇒ 删 = 真的放弃一个没验证过的选项"
+		}
+	],
+	"notReal": [
+		{
+			"name": "converge_cmux_symlink",
+			"hits": ["写明退役条件"],
+			"text": "FLY-1446: converge 将 flywheel-cmux-sync/autostart 普通部署副本留档后原子恢复为 trusted main checkout symlink；=0 暂停形态收敛 owner=converge CLI；每个 Lead 启动、daily update/self-ship、restart-services pre-k",
+			"ruling": "保留,不退",
+			"why": "HL/Tadashi:机制还活着,FLY-1784 部署刚用到 ⇒ 不删 ⇒ 不构成放弃"
+		},
+		{
+			"name": "cmux_autostart_exec",
+			"hits": ["稳定后退役"],
+			"text": "FLY-1446 incident escape: 允许 unsupervised flywheel-cmux-autostart 直接 exec --watch；默认 0 时 .zshrc 只守护/bootstrap launchd KeepAlive job owner=autostart wrapper；inherited env > ~/.flywh",
+			"ruling": "提议退役(条件已达标)",
+			"why": "稳定标准=30 天无告警,已达标 ⇒ 验证计划**已完成**,不是放弃"
+		},
+		{
+			"name": "claude_account_identity_check",
+			"hits": ["有未完成前置"],
+			"text": "FLY-1252: 对 Claude active/候选/切换/池写凭据执行 label 身份核验（默认 OFF，需先灌可信映射并 audit） 启用前必须完成 identity-set + identity-audit；=0 立即停核验，但既有 identityMismatch 排除标记需 audit 清除。",
+			"ruling": "保留,重起 30 天表",
+			"why": "HL/Tadashi:前置没做恰恰说明该做 ⇒ 不删 ⇒ 不构成放弃"
+		},
+		{
+			"name": "workflow_turn_divergence_alerts",
+			"hits": ["英文:观察/通过后再开"],
+			"text": "FLY-1614: emit severe Lead alerts for durable engine/CommDB TURN divergence. Default off keeps detection and episode recording in shadow mode. Set =1 after observing the shadow epi",
+			"ruling": "我判 ③ 留",
+			"why": "影子观察期未满 ⇒ 不删 ⇒ 不构成放弃(但**必须给出到期日**,否则下一轮它还是「还在测」)"
+		}
+	],
+	"aCount": 107
+}

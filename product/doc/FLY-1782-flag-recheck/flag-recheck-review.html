@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>124 个开关体检 · 要你拍的部分</title>
+<style>
+/* Light-only, declared to the UA too: without this a dark-mode browser paints
+   the textareas with its dark widget styling on top of a light page. */
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 120px}
+header{margin-bottom:32px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.quick{background:#e8f4ff;color:#0060d0}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+h2{font-size:20px;margin:34px 0 6px;letter-spacing:-.01em}
+h3{font-size:17px;margin:0 0 10px;letter-spacing:-.01em}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:14px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.facts li{margin:6px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+.stat{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px}
+.stat div{flex:1 1 150px;background:#fafafc;border-radius:10px;padding:14px 16px}
+.stat b{display:block;font-size:26px;line-height:1.2;letter-spacing:-.02em}
+.stat span{font-size:13px;color:var(--dim)}
+textarea{width:100%;min-height:72px;margin-top:12px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:14px;display:block}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:40px -20px -120px;padding:18px 20px 22px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+@media (max-width:640px){ .wrap{padding:24px 14px 120px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>124 个开关,体检完了</h1>
+  <p class="sub">2026-08-15 · 全部逐条过了一遍 · <b>这一页只放需要你的 8 件事</b>,其余的我们自己收敛掉了</p>
+</header>
+
+<div class="big">
+  <h3 style="margin-bottom:14px">先给你三句话</h3>
+  <div class="stat">
+    <div><b>117</b><span>开关不用你管<br>我们收敛完直接执行</span></div>
+    <div><b>5</b><span>必须你裁决<br>我们判得了,但定不了</span></div>
+    <div><b>3</b><span>只有你知道<br>一句话就够</span></div>
+  </div>
+  <p style="margin-top:18px"><b>1. 你担心的「删了一堆功能、开关留在那烂着」——查了,不在你想的地方。</b><br>
+  开关登记表本身很干净:功能被删的时候,它的开关会跟着下线并留一块墓碑,这套机制一直在正常工作。</p>
+  <p><b>2. 真正烂着的在机器上那份配置文件里。</b> 那里有 <b>11 行</b>设的是已经下线的开关 —— 设了完全没用。
+  更有意思的是:<b>代码里早就写好了一个能查出这 11 行的检查器,只是从来没人拿它扫过生产。</b>
+  所以我们要修的不是「这次清一遍」,是「让它以后自己被查出来」。</p>
+  <p><b>3. 顺手抓到一个会骗人的 bug。</b> 上一版体检工具在读配置文件时,会把行尾的中文注释也当成值的一部分。
+  受影响的正好是<b>最重要的那根杠杆</b>(派工总闸)——按老工具出表,你会看到「它是关的」,而实际上<b>它是开的</b>。
+  已经修好了,而且不靠推理:这次体检本身就是用那条派工流程跑出来的,它关着就不会存在。</p>
+</div>
+
+<h2>第一组 · 必须你裁决的</h2>
+<p class="sub" style="margin-bottom:4px">这几条<b>我们有能力判,但没有权力定</b> —— 它们要么是取舍,要么落在授权链和不可逆动作上。每条下面都可以写字。</p>
+
+<section class="card red" data-k="d1" data-t="D-1 cmux 侧栏的窗口拓扑开关(关了三周,没人写过为什么)">
+  <h3><span class="tag must">要你拍</span>D-1 · 有个开关被关着,到今天还是查不出为什么</h3>
+  <p>它管的是你打开 cmux 侧栏时,窗口怎么摆。默认应该是开的,但生产上被人手动关成了 0。</p>
+  <ul class="facts">
+    <li><b>三周前那轮体检就发现了</b>,当时的处置是「先维持关着,等另一条修复(cmux 总修)上线之后重测再定」。</li>
+    <li><b>那条修复 7 月 23 号就上线了。</b> 也就是说 —— <b>重测的前提 23 天前就满足了,不是还在等条件,是条件到了没人去做。</b></li>
+    <li>Tadashi 当时说「大概是某次 cmux 不稳定的时候关的」—— <b>那是回忆,不是证据</b>,我们不拿它当结论写。</li>
+  </ul>
+  <p class="q">要你定的:再挂一轮,还是这次就把重测排掉?</p>
+  <p class="note">取舍点:重测要占人手;但它影响的是你自己每天看的那个侧栏。</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="d1" placeholder="例:排掉,别再拖了 / 先挂着,等 cmux 那摊彻底稳了再说"></textarea>
+</section>
+
+<section class="card red" data-k="d2" data-t="D-2 两个管 ship 授权的开关:说明书写着必须关,实际开着">
+  <h3><span class="tag must">要你拍</span>D-2 · 两个管「什么能被合进去」的开关,说明书写着必须关,实际是开着的</h3>
+  <p>它们自己的说明写着:<b>在某两道验收过掉之前必须保持关闭</b>。但生产里两个都开着。</p>
+
+  <p class="q" style="margin-bottom:2px">硬的那一半(不好听,但是事实)</p>
+  <ul class="facts">
+    <li>这两个开关<b>和自己写明的准入条件脱钩,而且开着</b>。</li>
+    <li><b>启用时的批准出处,查不到记录。</b> 我们没有替它找理由 —— 查不到就是查不到。</li>
+    <li><b>你可能会想:七月底我不是拍过一次「恢复 DAG 派工」吗?</b> —— 拍过,但<b>那次动的是另一个开关</b>
+    (同一族里管「派工走不走新路」的那个)。<b>这两个开关那次没被碰过</b>,前后两次调整都只动了那一个。
+    所以<b>那次拍板不能当成这两个的批准</b>。这一条我们特意查了,免得你凭印象以为自己已经批过。</li>
+  </ul>
+
+  <p class="q" style="margin-bottom:2px">软的那一半(同样是事实)</p>
+  <ul class="facts">
+    <li><b>不是被谁偷偷翻开的</b>:它们是 <b>7 月 19 号</b>随引擎上线一起生效的。
+    机器记录能指到分钟 —— 其中一个开关在 00:54 被经控制台翻开并生效,<b>8 分钟后</b>系统落下第一条派工记录。</li>
+    <li>之后<b>一直在重度使用</b>:FLY-1693 的端到端、测试房里反复跑的全链路、今天四张单(含四单一体那次)全部跑在它们上面,光今天这条链就落了二十多个结论。</li>
+  </ul>
+
+  <p><b>这两半是两条独立的腿,谁也顶替不了谁:</b><br>
+  「<b>谁批准的</b>」和「<b>它是不是真的在被依赖</b>」是两回事。<br>
+  用了十二天、跑得很稳 —— <b>不等于当初有人批准过</b>;<br>
+  查不到批准记录 —— <b>也不等于它坏了或者出过事</b>。</p>
+
+  <p class="note">Tadashi 的工程判断(<b>这是判断,不是事实</b>):说明书的条款没跟上后来的实证,属于<b>说明书欠账</b>,
+  该做的是把条款更新成引用实证清单 —— <b>不是关开关</b>。</p>
+
+  <p class="q">要你定的:按哪个现实对齐?<br>
+  <span style="font-weight:400">① 把条款改成现状 —— 承认这十二天的实证已经超过当年那两道门;还是<br>
+  ② 把现状改回条款 —— 先关掉,按原条款把验收走完。</span></p>
+  <p class="note">为什么这条必须问你:它落在 <b>ship 授权链</b>上,而且<b>没有批准记录可以援引</b>。
+  证据我们能给,方向我们不能替你定。</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="d2" placeholder="例:改条款,实证够了 / 先关掉,按原验收走一遍"></textarea>
+</section>
+
+<section class="card red" data-k="d3" data-t="D-3 主仓说这行该删,插件还在读它">
+  <h3><span class="tag must">要你拍</span>D-3 · 有一行配置,主仓说「该删」,插件还在读它</h3>
+  <p>这一行控制消息从 Discord 进来的一条通路。</p>
+  <ul class="facts">
+    <li>主仓已经把它标成「已下线」,自带的检查器对这行的判词逐字是「<b>已退役假开关,删这行</b>」。</li>
+    <li><b>但装在机器上的 Discord 插件还在直接读这一行</b>,而且读不到就当成「关」。</li>
+    <li>⇒ <b>照着主仓的判词删掉,会把这条消息通路直接关掉。</b></li>
+  </ul>
+  <p class="q">要你定的:在两边对齐之前,这一行怎么处置?</p>
+  <p class="note">技术上怎么修是 Tadashi 的事。要你拍的是:<b>消息层这条路,现在要不要冒这个险。</b>
+  我们已经把它从「可以清理」的那批里拿出来了,不会顺手删。</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="d3" placeholder="例:别动,等插件跟上 / 先把主仓那块墓碑撤回来"></textarea>
+</section>
+
+<section class="card purple" data-k="s1" data-t="S-1 清掉配置文件里 9 行死键(不可逆)">
+  <h3><span class="tag ok">要你点头</span>S-1 · 清掉配置文件里那 9 行死键</h3>
+  <p>就是开头说的那 11 行里,<b>确定零风险的 9 行</b>(另外 1 行是 D-3,不动;还有一行是同一个键写了两遍、值还不一样)。
+  它们对应的开关代码里已经不存在了,设了完全没用。</p>
+  <p>删掉<b>零行为变化</b> —— 我们查过每一个键在代码里已经没有任何读取点。
+  <b>插件那边也一起扫了,同样是 0</b> —— 因为 D-3 正好证明了「主仓说没人读了、插件其实还在读」这种事真的会发生,所以这次没只查主仓。</p>
+  <p class="q">要你点头的:同意动生产那份配置文件吗?</p>
+  <p class="note">提上来的唯一原因:<b>它不可逆</b>。按规矩不可逆的动作必须你点头,哪怕内容本身没风险。</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="s1" placeholder="例:删吧 / 先给我看一眼具体哪 9 行"></textarea>
+</section>
+
+<section class="card purple" data-k="s2" data-t="S-2 让 runner 自己续跑 —— 建议退役(真删要你点头)">
+  <h3><span class="tag must">要你裁决</span>S-2 · 「让 runner 自己续跑」这条,我们建议退役</h3>
+  <p>不用人再戳一下,runner 自己朝着目标接着干。<b>建好 42 天,从建好那天起一次都没开过。</b></p>
+  <ul class="facts">
+    <li>它接线是完整的 —— 不是残骸。但<b>从来没启用过,也就从来没被要求证明过自己有必要。</b></li>
+    <li>它想干的事已经被后来的两个机制分掉了(Codex 那侧的停驻唤醒、Claude 那侧的闲置续跑各归各家)。</li>
+    <li><b>我们建议退它的理由不是「它没用」,是「它会误导人」</b> —— 留着会让下一个读这段代码的人,
+    以为系统里还有第三条唤醒通道,然后照着一条不存在的路去排查。</li>
+  </ul>
+  <p class="q">要你定的:同意退役吗?</p>
+  <p class="note">提到你面前的两条理由:① 这是一个<b>删除提议</b>,按规矩删除的决定权在你;
+  ② 它改的是<b>「要不要人在环里」</b> —— 这条线归你。<br>
+  ⚠️ <b>退役动作本身仍需你点头,不由那张地基单顺手带掉。</b></p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="s2" placeholder="例:同意退 / 先别退,我还想要这个能力"></textarea>
+</section>
+
+<h2>第二组 · 只有你知道答案的</h2>
+<p class="sub" style="margin-bottom:4px">这三个能力都<b>建好了、但从建好那天起一次都没开过</b>。<b>不是我们判不了,是这件事的答案只在你那儿</b> —— 收敛多少次都问不出来。一句「还要 / 不要了」就够。</p>
+
+<section class="card amber" data-k="q1" data-t="Q-1 对外发布通道(建好 34 天没用过)">
+  <h3><span class="tag quick">一句话</span>Q-1 · 对外发布通道</h3>
+  <p>把东西正式发布出去(比如发个包)的唯一执行入口。<b>建好 34 天,一次没开过。</b>
+  它自己也写着「真要发布还得另外配凭据 + 你批一次」。</p>
+  <p class="q">近期还有对外发布的打算吗?</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="q1" placeholder="例:留着,年底可能要用 / 没打算,归档"></textarea>
+</section>
+
+<section class="card amber" data-k="q2" data-t="Q-2 视觉验证 ProofShot(六个项目全关)">
+  <h3><span class="tag quick">一句话</span>Q-2 · 改完界面自动截图验证(ProofShot)</h3>
+  <p>六个项目<b>全部关着</b>,一个都没开过。而且配套的浏览器能力在<b>所有 Lead 身上也都是关的</b> ——
+  也就是说<b>整条「让 agent 自己去看界面」的能力线都没在用</b>。</p>
+  <p class="q">这条线还要吗?</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="q2" placeholder="例:还要,只是没排上 / 不用了"></textarea>
+</section>
+
+<section class="card amber" data-k="q3" data-t="Q-3 小红书定期学习(六个项目全关)">
+  <h3><span class="tag quick">一句话</span>Q-3 · 小红书收藏定期学习</h3>
+  <p>定期把你收藏的小红书内容抓回来学习的那条管线。六个项目<b>全部关着</b>,当前没有任何项目在用。</p>
+  <p class="q">是暂时不用,还是不再用了?</p>
+  <label class="lbl">你的意见</label>
+  <textarea data-c="q3" placeholder="例:暂时不用,别删 / 不用了,归档"></textarea>
+</section>
+
+<h2>附录 · 已收敛,不需要你裁决</h2>
+<p class="sub" style="margin-bottom:4px">这三条我们本来准备提上来问你,<b>Tadashi 收敛掉了,所以不占你的决策</b>。
+放在这里只是让你看得见我们替你挡掉了什么 —— <b>不需要你做任何动作。</b></p>
+
+<section class="card blue">
+  <div class="scroll">
+  <table>
+    <tr><th>是什么</th><th>结论</th><th>为什么</th></tr>
+    <tr>
+      <td><b>cmux 自启动的应急逃生口</b></td>
+      <td><b>提议退役</b>(已达标)</td>
+      <td>「稳定」的标准定为 30 天没有相关告警,已经达标。动作排在开关地基那张单落地之后,先要有翻转审计。<br>
+      ⚠️ <b>退役动作本身仍需你点头,不由那张地基单顺手带掉。</b></td>
+    </tr>
+    <tr>
+      <td><b>cmux 脚本副本收敛</b></td>
+      <td><b>保留,不退</b></td>
+      <td>我一开始判它「可能该退」,<b>Tadashi 推翻了</b>:这套机制现在还活着,最近一次部署刚用到它。</td>
+    </tr>
+    <tr>
+      <td><b>账号凭据身份核验</b></td>
+      <td><b>保留,重新计时</b></td>
+      <td>我一开始把「前置 30 天没做」读成「没人要它」,<b>正好读反了</b>:Tadashi 那天早上刚撞过它要防的那种污染(账号标签和真身对不上)。</td>
+    </tr>
+  </table>
+  </div>
+  <p class="note">这三条已经有结论了,你不用回。如果你不同意其中任何一条,写在最下面那个框里就行。</p>
+</section>
+
+<h2>124 条整体是怎么裁的</h2>
+
+<section class="card green plain" data-k="rest" data-t="124 条整体裁决(我的补充意见)">
+  <p style="margin-top:0">上面那两组一共动到 <b>7 个开关</b>(另外两件 —— 删死行、和那条主仓/插件对不上的 —— 动的是配置文件里的行,不是开关本身)。
+  <b>剩下 117 个开关不需要你管。</b> 全部 124 条的裁决分布是(116 + 5 + 3 + 0 = 124):</p>
+  <div class="scroll">
+  <table>
+    <tr><th>怎么裁</th><th>条数</th><th>什么意思</th></tr>
+    <tr><td><b>留着不动</b></td><td>116</td><td>绝大多数是同一个形状:<b>默认开着的急停开关,守着一个正在用的功能,没人动过</b>。这种「留」是唯一对的答案——它们的价值就在于平时不用。</td></tr>
+    <tr><td><b>该收口了</b></td><td>5</td><td>建好之后一直没人负责的存量。其中 <b>4 条在上面问你</b>(第一组 S-2「让 runner 自己续跑」+ 第二组 Q-1 / Q-2 / Q-3)、<b>1 条已由 Tadashi 收敛</b>(见附录)。</td></tr>
+    <tr><td><b>有分歧</b></td><td>3</td><td>我们判得了,但定不了 —— 就是上面第一组里 <b>D-1</b>(cmux 侧栏那条,1 个)和 <b>D-2</b>(那两个管 ship 授权的,2 个)。</td></tr>
+    <tr><td><b>该删的</b></td><td>0</td><td>登记表里一条都没有 —— 该删的都在机器上那份配置文件里,<b>也就是上面 S-1 那件</b>(清掉配置文件里 9 行死键);<b>等你点头之后才会动,现在还没有开任何执行单。</b></td></tr>
+  </table>
+  </div>
+  <p style="margin-top:14px"><b>另外量了一件对下一步有用的事:</b>登记表里记的「这个开关在哪几个文件被读」,
+  <b>124 条里有 29 条是记漏的</b>,还有 4 条记了一个根本搜不到的文件。漏得最厉害的都是跨到启动脚本那一侧的。
+  这条实测直接交给做「开关值存哪、怎么现读」那张地基单 —— 它的第一道硬门问的正好是这个问题,答案是「<b>是,比登记表记的更乱</b>」。</p>
+  <p class="note">要看 124 条逐条写的「在干嘛 / 现在开还是关 / 为什么是这个状态」,在仓库
+  <code>product/doc/FLY-1782-flag-recheck/audit-table.md</code>。这一页只放需要你的部分。</p>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="rest" placeholder="可留空"></textarea>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何意见</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:10px">
+      写在这页上的字<b>只存在你自己的浏览器里,不会自动传回来</b>。
+      点上面的按钮复制,然后粘回 <code>[FLY-1782]</code> 那个 thread —— 我才收得到。
+    </p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1782-flag-recheck-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1782 开关体检 · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1782 开关体检:我这轮没有意见。';
+    // Never claim success we did not observe: a failed copy that still says
+    // 「已复制 ✓」 makes her paste an empty message and lose the round.
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      var old = '一键汇总复制';
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = old; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  // Returns whether the copy actually happened — execCommand reports false
+  // (without throwing) when the browser refuses, e.g. no user activation.
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

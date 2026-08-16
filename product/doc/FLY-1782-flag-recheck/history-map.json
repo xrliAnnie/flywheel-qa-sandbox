@@ -1,0 +1,268 @@
+{
+	"liveness_alerts": null,
+	"mailbox_queue": null,
+	"prune_park_guard": {
+		"f1413": "dynamize"
+	},
+	"readopt_parked_roles": {
+		"f1413": "dynamize"
+	},
+	"liveness_activity_window_ms": {
+		"f1413": "dynamize"
+	},
+	"tmux_keepalive": null,
+	"converge_cmux_symlink": null,
+	"cmux_autostart_exec": null,
+	"cmux_linked_view": {
+		"f1413": "unknown"
+	},
+	"cmux_wal_quarantine": null,
+	"cmux_roster": null,
+	"cmux_view_invariant": {
+		"f1413": "keep"
+	},
+	"cmux_strict_view": null,
+	"codex_gate_wait": {
+		"f1413": "dynamize"
+	},
+	"lead_dual_active_scan": {
+		"f1413": "dynamize"
+	},
+	"quota_degraded_switch": {
+		"f1413": "dynamize"
+	},
+	"claude_account_identity_check": {
+		"f1413": "dynamize"
+	},
+	"voice_qa_presence_override": {
+		"f1413": "keep"
+	},
+	"quota_daemon_wake": {
+		"f1413": "keep"
+	},
+	"auto_qa_killswitch": null,
+	"codex_hard_gate_killswitch": null,
+	"review_severity_policy_killswitch": {
+		"f1413": "keep"
+	},
+	"merge_approval_gate_killswitch": null,
+	"qa_done_gate_killswitch": null,
+	"design_html_gate": {
+		"f1413": "keep"
+	},
+	"boot_sha_check": null,
+	"progress_resume_killswitch": null,
+	"cmux_close_request_killswitch": null,
+	"gatepoller_circuit": null,
+	"issue_gate_supersede_mode": {
+		"f1413": "dynamize"
+	},
+	"founder_review_gate_exclude": {
+		"f1413": "keep"
+	},
+	"ship_ci_guard": {
+		"f1413": "keep"
+	},
+	"founder_thread_notify": null,
+	"ship_ready_notify": {
+		"f1413": "keep"
+	},
+	"ship_ready_remind_ms": {
+		"f1413": "dynamize"
+	},
+	"founder_auto_approve": null,
+	"stale_ship_rewake": null,
+	"auto_linear_done": null,
+	"founder_reply_deliver": null,
+	"deferred_founder_approval": {
+		"f1136": "3"
+	},
+	"held_declined_reply": {
+		"f1136": "3"
+	},
+	"deferred_approval_ttl_ms": {
+		"f1136": "3"
+	},
+	"founder_notify_retry_max": {
+		"f1136": "3"
+	},
+	"founder_reply_retry_max": {
+		"f1136": "3"
+	},
+	"founder_reply_deadletter_age_ms": {
+		"f1136": "3"
+	},
+	"founder_reply_unreachable": null,
+	"ask_hygiene": {
+		"f1413": "dynamize"
+	},
+	"founder_milestone_notify": null,
+	"heartbeat_readopt": null,
+	"liveness_pane_dead": null,
+	"engine_dead_exec_sweep": {
+		"f1413": "keep"
+	},
+	"workflow_rework_reentry": {
+		"f1413": "keep"
+	},
+	"engine_unlaunched_tripwire": {
+		"f1413": "keep"
+	},
+	"remote_reports": null,
+	"fleet_console": null,
+	"worktree_autoclean": null,
+	"bridge_loop_guard": null,
+	"issue_status_emoji": null,
+	"issue_status_word": null,
+	"issue_attach_pin": null,
+	"issue_display_refresh": null,
+	"issue_display_sweep_ticks": {
+		"f1136": "3"
+	},
+	"crash_reaper": null,
+	"stale_terminal_close": null,
+	"commdb_fsm_reconcile": null,
+	"commdb_residue_harvest": {
+		"f1413": "dynamize"
+	},
+	"terminal_commdb_sync": {
+		"f1413": "dynamize"
+	},
+	"cron_stale_guard": null,
+	"ship_gate_grace_ms": {
+		"f1136": "3"
+	},
+	"ship_gate_rebind": null,
+	"external_merge_reconcile": null,
+	"merge_reconcile_window_days": {
+		"f1136": "3"
+	},
+	"ship_gate_retire": null,
+	"ship_gate_card": null,
+	"ship_gate_card_grace_ms": {
+		"f1136": "3"
+	},
+	"tier2_prefix_norm": null,
+	"viewer_session_reaper": null,
+	"chrome_session_reaper": null,
+	"codex_lead_typing": null,
+	"roundtable_thread_autocontinue": null,
+	"lead_chrome_enabled": {
+		"f1136": "3"
+	},
+	"lead_core_mention_gated": {
+		"f1136": "3"
+	},
+	"roundtable_thread_own_bot": {
+		"f1136": "unknown"
+	},
+	"lead_dry_run": {
+		"f1136": "3"
+	},
+	"lead_cross_dept_channel_ids": {
+		"f1136": "3"
+	},
+	"reports_ttl_days": {
+		"f1136": "3"
+	},
+	"ghost_guard_wait_ms": {
+		"f1413": "dynamize"
+	},
+	"founder_consent_decision_mode": {
+		"f1136": "3"
+	},
+	"founder_attribution_gate": {
+		"f1136": "3"
+	},
+	"comm_bypass_bridge": {
+		"f1136": "3"
+	},
+	"lead_lease_bypass": {
+		"f1413": "keep"
+	},
+	"qa_auto": {
+		"f1136": "2"
+	},
+	"doc_flow": {
+		"f1136": "3"
+	},
+	"skill_framework_mode": {
+		"f1413": "keep"
+	},
+	"skill_framework_split_participation": {
+		"f1413": "keep"
+	},
+	"proofshot": {
+		"f1136": "3"
+	},
+	"xiaohongshu_learning": {
+		"f1136": "3"
+	},
+	"ponytail": {
+		"f1136": "3"
+	},
+	"founder_ux_gate": {
+		"f1136": "3"
+	},
+	"founder_ux_gate_killswitch": {
+		"f1136": "3"
+	},
+	"runner_autocontinue": {
+		"f1136": "unknown"
+	},
+	"fleet_sensor_tmux_killswitch": null,
+	"done_thread_reconcile": {
+		"f1136": "3"
+	},
+	"done_thread_reconcile_interval_min": {
+		"f1136": "3"
+	},
+	"done_thread_reconcile_dryrun": {
+		"f1136": "3"
+	},
+	"done_thread_reconcile_max_per_run": {
+		"f1136": "3"
+	},
+	"publish_broker": {
+		"f1136": "3"
+	},
+	"workflow_template_dispatch": {
+		"f1413": "keep"
+	},
+	"workflow_gate_carrier": null,
+	"workflow_turn_divergence_alerts": null,
+	"land_node": {
+		"f1413": "keep"
+	},
+	"workflow_generalized_templates": {
+		"f1413": "keep"
+	},
+	"workflow_vendor_at_dispatch": {
+		"f1413": "keep"
+	},
+	"workflow_claims_write": {
+		"f1413": "keep"
+	},
+	"workflow_claims_read": {
+		"f1413": "keep"
+	},
+	"commdb_protection": {
+		"f1413": "dynamize"
+	},
+	"delivery_secret_path": {
+		"f1413": "keep"
+	},
+	"zombie_reconcile": {
+		"f1413": "dynamize"
+	},
+	"terminal_thread_archive": {
+		"f1413": "dynamize"
+	},
+	"disposition_receipt": {
+		"f1413": "dynamize"
+	},
+	"continuity_preflight": null,
+	"push_guard": null,
+	"instruction_path_check": null,
+	"doa_backoff": null
+}

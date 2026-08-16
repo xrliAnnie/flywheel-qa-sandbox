@@ -1,0 +1,1298 @@
+[
+	{
+		"name": "liveness_alerts",
+		"token": "FLYWHEEL_LIVENESS_ALERTS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "mailbox_queue",
+		"token": "FLYWHEEL_MAILBOX_QUEUE",
+		"declared": 2,
+		"found": 7,
+		"missing": [
+			"packages/teamlead/src/bridge/runner-mailbox-lane.ts",
+			"packages/teamlead/src/bridge/lead-inbox-loop.ts",
+			"packages/teamlead/src/bridge/mailbox-queue-deploy-barrier.ts",
+			"scripts/restart-services.sh",
+			"scripts/lib/mailbox-queue-deploy-barrier.sh"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/src/bridge/mailbox-queue-deploy-barrier.ts",
+			"scripts/restart-services.sh",
+			"scripts/lib/mailbox-queue-deploy-barrier.sh"
+		]
+	},
+	{
+		"name": "prune_park_guard",
+		"token": "FLYWHEEL_PRUNE_PARK_GUARD",
+		"declared": 4,
+		"found": 4,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "readopt_parked_roles",
+		"token": "FLYWHEEL_READOPT_PARKED",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "liveness_activity_window_ms",
+		"token": "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "tmux_keepalive",
+		"token": "FLYWHEEL_TMUX_KEEPALIVE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "converge_cmux_symlink",
+		"token": "FLYWHEEL_CONVERGE_CMUX_SYMLINK",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_autostart_exec",
+		"token": "FLYWHEEL_CMUX_AUTOSTART_EXEC",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_linked_view",
+		"token": "FLYWHEEL_CMUX_LINKED_VIEW",
+		"declared": 3,
+		"found": 3,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_wal_quarantine",
+		"token": "FLYWHEEL_CMUX_WAL_QUARANTINE",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_roster",
+		"token": "FLYWHEEL_CMUX_ROSTER",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_view_invariant",
+		"token": "FLYWHEEL_CMUX_VIEW_INVARIANT",
+		"declared": 2,
+		"found": 3,
+		"missing": ["packages/teamlead/src/bridge/tmux-lookup.ts"],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/tmux-lookup.ts"]
+	},
+	{
+		"name": "cmux_strict_view",
+		"token": "FLYWHEEL_CMUX_STRICT_VIEW",
+		"declared": 3,
+		"found": 3,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "codex_gate_wait",
+		"token": "FLYWHEEL_CODEX_GATE_WAIT",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "lead_dual_active_scan",
+		"token": "FLYWHEEL_DUAL_ACTIVE_SCAN",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "quota_degraded_switch",
+		"token": "FLYWHEEL_QUOTA_DEGRADED_SWITCH",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "claude_account_identity_check",
+		"token": "FLYWHEEL_ACCOUNT_IDENTITY_CHECK",
+		"declared": 2,
+		"found": 1,
+		"missing": [],
+		"stale": ["packages/claude-runner/bin/flywheel-claude-profile"],
+		"realMissing": []
+	},
+	{
+		"name": "voice_qa_presence_override",
+		"token": "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/voice-bridge/e2e/gemini-voice-loop.mjs",
+			"packages/voice-bridge/e2e/gemini-staged.mjs"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/voice-bridge/e2e/gemini-voice-loop.mjs",
+			"packages/voice-bridge/e2e/gemini-staged.mjs"
+		]
+	},
+	{
+		"name": "quota_daemon_wake",
+		"token": "FLYWHEEL_QUOTA_WAKE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "auto_qa_killswitch",
+		"token": "FLYWHEEL_AUTO_QA",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/config/src/types.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "codex_hard_gate_killswitch",
+		"token": "FLYWHEEL_CODEX_HARD_GATE",
+		"declared": 2,
+		"found": 2,
+		"missing": ["packages/flywheel-comm/src/commands/verify-approval.ts"],
+		"stale": ["packages/teamlead/src/bridge/auto-qa-held.ts"],
+		"realMissing": ["packages/flywheel-comm/src/commands/verify-approval.ts"]
+	},
+	{
+		"name": "review_severity_policy_killswitch",
+		"token": "FLYWHEEL_REVIEW_SEVERITY_POLICY",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/review-request-coordinator.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "merge_approval_gate_killswitch",
+		"token": "FLYWHEEL_MERGE_APPROVAL_GATE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "qa_done_gate_killswitch",
+		"token": "FLYWHEEL_QA_DONE_GATE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "design_html_gate",
+		"token": "FLYWHEEL_DESIGN_HTML_GATE",
+		"declared": 4,
+		"found": 4,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "boot_sha_check",
+		"token": "FLYWHEEL_BOOT_SHA_CHECK",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "progress_resume_killswitch",
+		"token": "FLYWHEEL_PROGRESS_RESUME",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cmux_close_request_killswitch",
+		"token": "FLYWHEEL_CMUX_CLOSE_REQUEST",
+		"declared": 1,
+		"found": 2,
+		"missing": ["scripts/flywheel-cmux-sync.sh"],
+		"stale": [],
+		"realMissing": ["scripts/flywheel-cmux-sync.sh"]
+	},
+	{
+		"name": "gatepoller_circuit",
+		"token": "FLYWHEEL_GATEPOLLER_CIRCUIT",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "issue_gate_supersede_mode",
+		"token": "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_review_gate_exclude",
+		"token": "FLYWHEEL_FOUNDER_REVIEW_GATE_EXCLUDE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_ci_guard",
+		"token": "FLYWHEEL_SHIP_CI_GUARD",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_thread_notify",
+		"token": "FLYWHEEL_FOUNDER_THREAD_NOTIFY",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_ready_notify",
+		"token": "FLYWHEEL_SHIP_READY_NOTIFY",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_ready_remind_ms",
+		"token": "FLYWHEEL_SHIP_READY_REMIND_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_auto_approve",
+		"token": "FLYWHEEL_FOUNDER_AUTO_APPROVE",
+		"declared": 2,
+		"found": 4,
+		"missing": [
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/voice-routes.ts"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/voice-routes.ts"
+		]
+	},
+	{
+		"name": "stale_ship_rewake",
+		"token": "FLYWHEEL_STALE_SHIP_REWAKE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "auto_linear_done",
+		"token": "FLYWHEEL_AUTO_LINEAR_DONE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_reply_deliver",
+		"token": "FLYWHEEL_FOUNDER_REPLY_DELIVER",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/founder-action-drain.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "deferred_founder_approval",
+		"token": "FLYWHEEL_DEFERRED_FOUNDER_APPROVAL",
+		"declared": 1,
+		"found": 2,
+		"missing": [
+			"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-handler.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "held_declined_reply",
+		"token": "FLYWHEEL_HELD_DECLINED_REPLY",
+		"declared": 1,
+		"found": 2,
+		"missing": [
+			"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-handler.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "deferred_approval_ttl_ms",
+		"token": "FLYWHEEL_DEFERRED_APPROVAL_TTL_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_notify_retry_max",
+		"token": "FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_reply_retry_max",
+		"token": "FLYWHEEL_FOUNDER_REPLY_RETRY_MAX",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_reply_deadletter_age_ms",
+		"token": "FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_reply_unreachable",
+		"token": "FLYWHEEL_FOUNDER_REPLY_UNREACHABLE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ask_hygiene",
+		"token": "FLYWHEEL_ASK_HYGIENE",
+		"declared": 4,
+		"found": 2,
+		"missing": ["packages/flywheel-comm/src/types.ts"],
+		"stale": [
+			"packages/teamlead/src/bridge/zombie-gate-hygiene.ts",
+			"packages/teamlead/src/bridge/gate-poller.ts",
+			"packages/teamlead/src/StateStore.ts"
+		],
+		"realMissing": []
+	},
+	{
+		"name": "founder_milestone_notify",
+		"token": "FLYWHEEL_FOUNDER_MILESTONE_NOTIFY",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/config/src/types.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "heartbeat_readopt",
+		"token": "FLYWHEEL_HEARTBEAT_READOPT",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "liveness_pane_dead",
+		"token": "FLYWHEEL_LIVENESS_PANE_DEAD",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "engine_dead_exec_sweep",
+		"token": "FLYWHEEL_ENGINE_DEAD_EXEC_SWEEP",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_rework_reentry",
+		"token": "FLYWHEEL_WORKFLOW_REWORK_REENTRY",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "engine_unlaunched_tripwire",
+		"token": "FLYWHEEL_ENGINE_UNLAUNCHED_TRIPWIRE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "remote_reports",
+		"token": "FLYWHEEL_REMOTE_REPORTS",
+		"declared": 2,
+		"found": 5,
+		"missing": [
+			"packages/flywheel-comm/src/commands/feature-flags.ts",
+			"packages/flywheel-comm/src/index.ts",
+			"packages/teamlead/src/bridge/reports-route.ts"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/flywheel-comm/src/commands/feature-flags.ts",
+			"packages/flywheel-comm/src/index.ts"
+		]
+	},
+	{
+		"name": "fleet_console",
+		"token": "FLYWHEEL_FLEET_CONSOLE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "worktree_autoclean",
+		"token": "FLYWHEEL_WORKTREE_AUTOCLEAN",
+		"declared": 1,
+		"found": 5,
+		"missing": [
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/done-thread-reconcile.ts",
+			"packages/teamlead/src/bridge/lifecycle-sweep.ts",
+			"packages/teamlead/src/bridge/lifecycle-closeout.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/lifecycle-closeout.ts"]
+	},
+	{
+		"name": "bridge_loop_guard",
+		"token": "FLYWHEEL_BRIDGE_LOOP_GUARD",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/src/bridge/bridge-exit-marker.ts",
+			"packages/teamlead/src/bridge/plugin.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/bridge-exit-marker.ts"]
+	},
+	{
+		"name": "issue_status_emoji",
+		"token": "FLYWHEEL_ISSUE_STATUS_EMOJI",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/auto-qa-effects.ts"],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/auto-qa-effects.ts"]
+	},
+	{
+		"name": "issue_status_word",
+		"token": "FLYWHEEL_ISSUE_STATUS_WORD",
+		"declared": 1,
+		"found": 5,
+		"missing": [
+			"packages/teamlead/src/bridge/issue-display-refresher.ts",
+			"packages/teamlead/src/bridge/ChatThreadCreator.ts",
+			"packages/teamlead/src/bridge/auto-qa-effects.ts",
+			"packages/teamlead/src/bridge/stage-utils.ts"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/src/bridge/issue-display-refresher.ts",
+			"packages/teamlead/src/bridge/auto-qa-effects.ts"
+		]
+	},
+	{
+		"name": "issue_attach_pin",
+		"token": "FLYWHEEL_ISSUE_ATTACH_PIN",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "issue_display_refresh",
+		"token": "FLYWHEEL_ISSUE_DISPLAY_REFRESH",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/src/bridge/issue-display-refresher.ts",
+			"packages/teamlead/src/bridge/event-route.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "issue_display_sweep_ticks",
+		"token": "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/gate-poller.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "crash_reaper",
+		"token": "FLYWHEEL_CRASH_REAPER",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "stale_terminal_close",
+		"token": "FLYWHEEL_STALE_TERMINAL_CLOSE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/plugin.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "commdb_fsm_reconcile",
+		"token": "FLYWHEEL_COMMDB_FSM_RECONCILE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/residue-harvest.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "commdb_residue_harvest",
+		"token": "FLYWHEEL_COMMDB_RESIDUE_HARVEST",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "terminal_commdb_sync",
+		"token": "FLYWHEEL_TERMINAL_COMMDB_SYNC",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "cron_stale_guard",
+		"token": "FLYWHEEL_CRON_STALE_GUARD",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/stale-blocker-guard.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_gate_grace_ms",
+		"token": "FLYWHEEL_SHIP_GATE_GRACE_MS",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/founder-reply-deliverer.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_gate_rebind",
+		"token": "FLYWHEEL_SHIP_GATE_REBIND",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "external_merge_reconcile",
+		"token": "FLYWHEEL_EXTERNAL_MERGE_RECONCILE",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/gate-poller.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "merge_reconcile_window_days",
+		"token": "FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_gate_retire",
+		"token": "FLYWHEEL_SHIP_GATE_RETIRE",
+		"declared": 2,
+		"found": 3,
+		"missing": ["packages/teamlead/src/bridge/issue-gate-supersede.ts"],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/issue-gate-supersede.ts"]
+	},
+	{
+		"name": "ship_gate_card",
+		"token": "FLYWHEEL_SHIP_GATE_CARD",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ship_gate_card_grace_ms",
+		"token": "FLYWHEEL_SHIP_GATE_CARD_GRACE_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "tier2_prefix_norm",
+		"token": "FLYWHEEL_TIER2_PREFIX_NORM",
+		"declared": 1,
+		"found": 2,
+		"missing": [
+			"packages/teamlead/src/bridge/approval-signal/tier2-allowlist.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "viewer_session_reaper",
+		"token": "FLYWHEEL_VIEWER_SESSION_REAPER",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "chrome_session_reaper",
+		"token": "FLYWHEEL_CHROME_REAPER",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/chrome-session-reaper.ts"],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/bridge/chrome-session-reaper.ts"]
+	},
+	{
+		"name": "codex_lead_typing",
+		"token": "FLYWHEEL_CODEX_LEAD_TYPING",
+		"declared": 1,
+		"found": 2,
+		"missing": [
+			"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "roundtable_thread_autocontinue",
+		"token": "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE",
+		"declared": 1,
+		"found": 7,
+		"missing": [
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/scripts/codex-lead-tui-home.sh",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/config.ts",
+			"packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts",
+			"scripts/lib/qa-room.sh"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/scripts/codex-lead-tui-home.sh",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/config.ts",
+			"packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts",
+			"scripts/lib/qa-room.sh"
+		]
+	},
+	{
+		"name": "lead_chrome_enabled",
+		"token": "FLYWHEEL_LEAD_CHROME_ENABLED",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/scripts/lead-body.sh",
+			"packages/teamlead/scripts/claude-lead.sh"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/scripts/lead-body.sh",
+			"packages/teamlead/scripts/claude-lead.sh"
+		]
+	},
+	{
+		"name": "lead_core_mention_gated",
+		"token": "FLYWHEEL_LEAD_CORE_MENTION_GATED",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/scripts/apply-core-room-mention-gate.sh",
+			"packages/teamlead/scripts/codex-lead.sh"
+		],
+		"stale": [],
+		"realMissing": ["packages/teamlead/scripts/codex-lead.sh"]
+	},
+	{
+		"name": "roundtable_thread_own_bot",
+		"token": "FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "lead_dry_run",
+		"token": "FLYWHEEL_LEAD_DRY_RUN",
+		"declared": 1,
+		"found": 14,
+		"missing": [
+			"packages/teamlead/scripts/run-codex-lead-mufasa-writecapable.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-fullaccess.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui-fullaccess.sh",
+			"packages/teamlead/scripts/lib/canonical-lead-identity.sh",
+			"packages/teamlead/scripts/codex-lead.sh",
+			"packages/teamlead/scripts/run-codex-infra-bot-tui.sh",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
+			"scripts/verify-anna-isolation.sh",
+			"scripts/hooks/test-reply-enforcer-install-integration.sh",
+			"scripts/lib/buddy-captain-preview.sh"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/scripts/run-codex-lead-mufasa-writecapable.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-fullaccess.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui-fullaccess.sh",
+			"packages/teamlead/scripts/lib/canonical-lead-identity.sh",
+			"packages/teamlead/scripts/codex-lead.sh",
+			"packages/teamlead/scripts/run-codex-infra-bot-tui.sh",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
+			"scripts/verify-anna-isolation.sh",
+			"scripts/hooks/test-reply-enforcer-install-integration.sh",
+			"scripts/lib/buddy-captain-preview.sh"
+		]
+	},
+	{
+		"name": "lead_cross_dept_channel_ids",
+		"token": "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+		"declared": 1,
+		"found": 15,
+		"missing": [
+			"packages/teamlead/scripts/run-codex-lead-mufasa-writecapable.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-fullaccess.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui-fullaccess.sh",
+			"packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh",
+			"packages/teamlead/scripts/run-codex-infra-bot-tui.sh",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/scripts/codex-lead-tui-home.sh",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/alias-allowlist.ts",
+			"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+			"packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts",
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/mailbox-queue-ack-readiness-probe.ts"
+		],
+		"stale": [],
+		"realMissing": [
+			"packages/teamlead/scripts/run-codex-lead-mufasa-writecapable.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-fullaccess.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui.sh",
+			"packages/teamlead/scripts/run-codex-lead-mufasa-tui-fullaccess.sh",
+			"packages/teamlead/scripts/run-codex-infra-bot-tui.sh",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/scripts/codex-lead-tui-home.sh",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/mcp-config.ts",
+			"packages/teamlead/src/lead-backends/codex/lead-actions/alias-allowlist.ts",
+			"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+			"packages/teamlead/src/lead-backends/codex/gateway/gateway-main.ts",
+			"packages/teamlead/src/bridge/plugin.ts",
+			"packages/teamlead/src/bridge/mailbox-queue-ack-readiness-probe.ts"
+		]
+	},
+	{
+		"name": "reports_ttl_days",
+		"token": "FLYWHEEL_REPORTS_TTL_DAYS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ghost_guard_wait_ms",
+		"token": "FLYWHEEL_GHOST_GUARD_WAIT_MS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_consent_decision_mode",
+		"token": "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/config/src/decision-mode.ts"],
+		"stale": [],
+		"realMissing": ["packages/config/src/decision-mode.ts"]
+	},
+	{
+		"name": "founder_attribution_gate",
+		"token": "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/flywheel-comm/src/commands/verify-approval.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "comm_bypass_bridge",
+		"token": "FLYWHEEL_COMM_BYPASS_BRIDGE",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/flywheel-comm/src/founder-consent-audit.ts",
+			"packages/flywheel-comm/src/index.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/flywheel-comm/src/index.ts"]
+	},
+	{
+		"name": "lead_lease_bypass",
+		"token": "FLYWHEEL_LEAD_LEASE_BYPASS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "qa_auto",
+		"token": "qa.auto",
+		"declared": 1,
+		"found": 7,
+		"missing": [
+			"packages/flywheel-comm/src/ship-eligibility.ts",
+			"packages/config/src/ConfigLoader.ts",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/src/bridge/auto-qa-coordinator.ts",
+			"packages/teamlead/src/bridge/auto-qa-config-source.ts",
+			"packages/teamlead/src/StateStore.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/config/src/ConfigLoader.ts"]
+	},
+	{
+		"name": "doc_flow",
+		"token": "doc_flow.enabled",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/config/src/ConfigLoader.ts"],
+		"stale": [],
+		"realMissing": ["packages/config/src/ConfigLoader.ts"]
+	},
+	{
+		"name": "skill_framework_mode",
+		"token": "FLYWHEEL_SKILL_FRAMEWORK_MODE",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/config/src/skill-framework-mode.ts",
+			"packages/config/src/types.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/config/src/skill-framework-mode.ts"]
+	},
+	{
+		"name": "skill_framework_split_participation",
+		"token": "skill_framework.split",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/config/src/skill-framework-mode.ts",
+			"packages/config/src/ConfigLoader.ts",
+			"packages/teamlead/src/bridge/skill-framework-participation.ts"
+		],
+		"stale": ["packages/edge-worker/src/Blueprint.ts"],
+		"realMissing": [
+			"packages/config/src/skill-framework-mode.ts",
+			"packages/config/src/ConfigLoader.ts",
+			"packages/teamlead/src/bridge/skill-framework-participation.ts"
+		]
+	},
+	{
+		"name": "proofshot",
+		"token": "skills.proofshot.enabled",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "xiaohongshu_learning",
+		"token": "xiaohongshu_learning.enabled",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/project-runner-model-source.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "ponytail",
+		"token": "ponytail.enabled",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/run-infra.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "founder_ux_gate",
+		"token": "founder_ux_gate.mode",
+		"declared": 1,
+		"found": 6,
+		"missing": [
+			"packages/config/src/founder-ux-config.ts",
+			"packages/teamlead/scripts/claude-lead.sh",
+			"packages/teamlead/src/DirectEventSink.ts",
+			"packages/teamlead/src/bridge/runs-route.ts",
+			"packages/teamlead/src/StateStore.ts"
+		],
+		"stale": [],
+		"realMissing": ["packages/teamlead/scripts/claude-lead.sh"]
+	},
+	{
+		"name": "founder_ux_gate_killswitch",
+		"token": "FLYWHEEL_FOUNDER_UX_GATE_ENABLED",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/edge-worker/src/Blueprint.ts",
+			"packages/teamlead/scripts/claude-lead.sh"
+		],
+		"stale": [],
+		"realMissing": ["packages/teamlead/scripts/claude-lead.sh"]
+	},
+	{
+		"name": "runner_autocontinue",
+		"token": "FLYWHEEL_RUNNER_AUTOCONTINUE",
+		"declared": 2,
+		"found": 2,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "fleet_sensor_tmux_killswitch",
+		"token": "FLYWHEEL_FLEET_SENSOR_TMUX",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/HeartbeatService.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "done_thread_reconcile",
+		"token": "FLYWHEEL_DONE_THREAD_RECONCILE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/plugin.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "done_thread_reconcile_interval_min",
+		"token": "FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "done_thread_reconcile_dryrun",
+		"token": "FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "done_thread_reconcile_max_per_run",
+		"token": "FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "publish_broker",
+		"token": "FLYWHEEL_PUBLISH_BROKER",
+		"declared": 1,
+		"found": 3,
+		"missing": [
+			"packages/teamlead/src/bridge/plugin.ts",
+			"scripts/release/broker-request.mjs"
+		],
+		"stale": [],
+		"realMissing": ["scripts/release/broker-request.mjs"]
+	},
+	{
+		"name": "workflow_template_dispatch",
+		"token": "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_gate_carrier",
+		"token": "FLYWHEEL_WORKFLOW_GATE_CARRIER",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_turn_divergence_alerts",
+		"token": "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "land_node",
+		"token": "FLYWHEEL_LAND_NODE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_generalized_templates",
+		"token": "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_vendor_at_dispatch",
+		"token": "FLYWHEEL_VENDOR_AT_DISPATCH",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_claims_write",
+		"token": "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/StateStore.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "workflow_claims_read",
+		"token": "FLYWHEEL_WORKFLOW_CLAIMS_READ",
+		"declared": 3,
+		"found": 3,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "commdb_protection",
+		"token": "FLYWHEEL_COMMDB_PROTECTION",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "delivery_secret_path",
+		"token": "FLYWHEEL_DELIVERY_SECRET_PATH",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "zombie_reconcile",
+		"token": "FLYWHEEL_ZOMBIE_RECONCILE",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "terminal_thread_archive",
+		"token": "FLYWHEEL_TERMINAL_THREAD_ARCHIVE",
+		"declared": 1,
+		"found": 4,
+		"missing": [
+			"packages/teamlead/src/DirectEventSink.ts",
+			"packages/teamlead/src/bridge/run-infra.ts",
+			"packages/teamlead/src/bridge/event-route.ts"
+		],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "disposition_receipt",
+		"token": "FLYWHEEL_DISPOSITION_RECEIPT",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/teamlead/src/bridge/plugin.ts"],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "continuity_preflight",
+		"token": "FLYWHEEL_CONTINUITY_PREFLIGHT",
+		"declared": 1,
+		"found": 1,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "push_guard",
+		"token": "FLYWHEEL_PUSH_GUARD",
+		"declared": 1,
+		"found": 2,
+		"missing": ["packages/edge-worker/src/Blueprint.ts"],
+		"stale": [],
+		"realMissing": ["packages/edge-worker/src/Blueprint.ts"]
+	},
+	{
+		"name": "instruction_path_check",
+		"token": "FLYWHEEL_INSTRUCTION_PATH_CHECK",
+		"declared": 4,
+		"found": 4,
+		"missing": [],
+		"stale": [],
+		"realMissing": []
+	},
+	{
+		"name": "doa_backoff",
+		"token": "FLYWHEEL_DOA_BACKOFF",
+		"declared": 2,
+		"found": 3,
+		"missing": ["packages/teamlead/src/StateStore.ts"],
+		"stale": [],
+		"realMissing": ["packages/teamlead/src/StateStore.ts"]
+	}
+]

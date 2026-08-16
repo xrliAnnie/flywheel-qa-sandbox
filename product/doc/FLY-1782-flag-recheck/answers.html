@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>你问的四件 + 还剩两条要拍</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 60px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:24px 26px;margin:20px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+.tag.diff{background:#f3e8ff;color:#7b2fbf}
+h2{font-size:20px;margin:38px 0 6px;letter-spacing:-.01em}
+h3{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}
+.num{color:var(--dim);font-size:13px;font-weight:600;letter-spacing:.06em;margin-bottom:6px}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:16px;margin-bottom:4px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+textarea{width:100%;min-height:64px;margin-top:10px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:16px;display:block;font-weight:600}
+/* NOT position:sticky — a sticky bar gets baked into the MIDDLE of a full-page
+   screenshot and covers whatever is behind it (it hid a diagram in v2). */
+.sumbox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  margin:40px 0 0;padding:20px 22px}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+.dia{margin:16px 0}
+.dia svg{display:block;width:100%;max-width:700px;height:auto}
+.legend{font-size:12.5px;color:var(--dim);margin-top:6px}
+.danger{color:#c92a20;font-weight:600}
+@media (max-width:640px){ .wrap{padding:24px 14px 60px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>你问的四件,查完了</h1>
+  <p class="sub">2026-08-15 · 结论 + 证据位置 · 查不到的写「查不到」</p>
+</header>
+
+<div class="big">
+  <p><b>先给结论:③ 和 ④ 你是对的。</b> 那不是「要不要留应急开关」的问题,是<b>那道门本身该不该存在</b>。这一层比我之前摆给你的高一层,所以我把它单独开单,不塞进这次清理。</p>
+  <p class="note">六个应急开关你答「留」—— 那条已定,下面不再问。这一页只回答你的疑问,外加两条新的要你拍。</p>
+</div>
+
+<h2>② 先补我漏掉的:这些门现在到底是开是关</h2>
+<section data-t="② 门现在是开是关">
+<div class="card green">
+  <p>你问「这个开关现在是开着的,还是关着的啊」—— 我卡片上没写,是我漏了。查完了,<b>五道门一模一样</b>:</p>
+  <div class="facts">
+  <ul>
+    <li><b>门:全部开着,正在生效</b>(生产配置里一个都没设过 ⇒ 走代码默认 = 开)</li>
+    <li><b>关掉它的那个应急开关:从来没有人用过</b>(同上,没设过就等于没按下)</li>
+  </ul>
+  </div>
+  <p>⇒ 所以准确说法是:<b>五道门天天在拦,而那五个开关是五个从没被按下过的红色按钮。</b></p>
+  <p class="note">⑤ 你问设计校验门那个应急口 —— 同样:生产配置里没设过。我查的是配置,不是运行记录,所以严格讲是「从没被配置启用过」。</p>
+  <span class="lbl">对这一条有话说吗(可留空)</span>
+  <textarea data-c="a2" placeholder=""></textarea>
+</div>
+</section>
+
+<h2>③ QA 门 —— 你说得对,而且比你说的更彻底</h2>
+<section data-t="③ QA 门">
+<div class="card red">
+  <p>你说:「不是每一种节点都需要 QA 通过记录,如果有 QA 通过记录的,我们直接在它的 DAG 里面加上 QA 节点就可以了。」</p>
+  <p><b>查实:这正是现在新一代模板的做法,不是设想。</b></p>
+  <div class="facts">
+  <ul>
+    <li><code>qa</code> <b>已经是 DAG 的一种正式节点类型</b>(和 design / implement / review 并列)</li>
+    <li>新一代(通用)模板里,<b>QA 节点是可选的</b> —— 有就声明,没有就没有</li>
+    <li>而且有强制配对:<b>放了 QA 节点,就必须同时声明「qa 通过」这条放行条件</b>;两者必须同进同出</li>
+    <li>老一代模板则相反:<b>硬性要求「有且只有一个」QA 节点</b></li>
+  </ul>
+  </div>
+  <div class="dia">
+  <svg viewBox="0 0 640 130" width="640" height="130" role="img" aria-label="老一代全局 QA 门 vs 新一代 QA 节点">
+    <g font-size="11.5">
+      <text x="16" y="18" fill="#86868b">老做法:一道全局门,不管你这单需不需要</text>
+      <rect x="16" y="26" width="90" height="28" rx="7" fill="#fff" stroke="#e5e5ea"/><text x="61" y="45" text-anchor="middle">干活</text>
+      <rect x="126" y="26" width="120" height="28" rx="7" fill="#ffe9e7" stroke="#ffc9c4"/><text x="186" y="45" text-anchor="middle" fill="#c92a20">全局 QA 门</text>
+      <rect x="266" y="26" width="90" height="28" rx="7" fill="#fff" stroke="#e5e5ea"/><text x="311" y="45" text-anchor="middle">完成</text>
+      <text x="372" y="45" fill="#86868b" font-size="11">门在流程外面,靠豁免名单挑谁不用查</text>
+
+      <text x="16" y="86" fill="#86868b">新做法:要 QA 就在图里放一个 QA 节点</text>
+      <rect x="16" y="94" width="90" height="28" rx="7" fill="#fff" stroke="#e5e5ea"/><text x="61" y="113" text-anchor="middle">干活</text>
+      <rect x="126" y="94" width="120" height="28" rx="7" fill="#e6f8ec" stroke="#b6e8c6"/><text x="186" y="113" text-anchor="middle" fill="#1d8f43">QA 节点</text>
+      <rect x="266" y="94" width="90" height="28" rx="7" fill="#fff" stroke="#e5e5ea"/><text x="311" y="113" text-anchor="middle">完成</text>
+      <text x="372" y="113" fill="#86868b" font-size="11">不需要 QA 的单,图里根本没有这个节点</text>
+    </g>
+  </svg>
+  </div>
+  <p><b>所以那道全局 QA 门是老一代留下的东西。</b> 它今天还在,靠一串豁免口(纯文档 / 没代码 / 没 PR / 项目关了 QA)来挑谁不用查 —— 而新做法根本不需要豁免口,因为<b>不需要 QA 的单,图里就没有那个节点。</b></p>
+  <p class="q">我的建议</p>
+  <p>这已经不是 flag 清理能处理的了,是<b>去掉一层旧机制</b>。我单独开一张单,题目就是你这句话:<b>「全局 QA 门能不能被 DAG 里的 QA 节点取代」</b>。不塞进这次清理,因为它要改的是流程不是开关。</p>
+  <span class="lbl">你怎么看(可留空)</span>
+  <textarea data-c="a3" placeholder="比如:直接退役 / 先观察 / 有我没想到的情况"></textarea>
+</div>
+</section>
+
+<h2>④ CI 证据门 —— 部分成立,我不夸大</h2>
+<section data-t="④ CI 证据门">
+<div class="card amber">
+  <p>你说:「如果我们的 ship 都是走 cool 的话,cool 本来就可以去 reinforce CI 这一项。」</p>
+  <p><b>查实:两者确实都在管 CI,但卡在不同的时刻,不是简单的重复。</b></p>
+  <div class="facts">
+  <ul>
+    <li><b>:cool 这条路</b> —— 触发 CI/CD 工作流,然后<b>去看那次工作流跑成什么样</b>,再决定落不落地。<b>你说的没错:落地这一步已经被 CI 管着了。</b></li>
+    <li><b>那道 CI 证据门</b> —— 卡在<b>更早一步</b>:批准 / 放行的时候实时去 GitHub 查一次绿不绿。</li>
+  </ul>
+  </div>
+  <p>⇒ 所以是<b>同一个性质,在两个时刻各查一次</b>。要不要保留早的那一次,是取舍:早查一次能在批准前就拦住,不早查则等到落地时才发现。</p>
+  <p class="note">这条我一并写进上面那张新单里,和 QA 门放一起看 —— 它们是同一类问题:<b>老机制和新流程各管了一遍同一件事。</b></p>
+  <span class="lbl">你怎么看(可留空)</span>
+  <textarea data-c="a4" placeholder="早查那一次要不要保留"></textarea>
+</div>
+</section>
+
+<h2>① 和 ⑤ —— 你问「为什么要删掉」</h2>
+<section data-t="①⑤ 为什么要删掉">
+<div class="card plain">
+  <p>老实说:<b>因为是你让我们清掉 95% 的开关</b>,所以每一条都得回答「它还需不需要存在」,包括这五个。<b>不是我们主张删它们。</b></p>
+  <p>你答了「留」,那就留 —— 而且现在看,留的理由比我原来给的更硬:<b>这五道门天天在生效,而它们的应急开关一次都没被按过</b>,说明它们既没添乱、成本也几乎为零。</p>
+  <p>⑤ 你问「design 节点本来就必须交设计 HTML,为什么要关掉」—— 对,<b>那就是它的设计意图</b>。那个应急口存在的唯一理由是「校验本身坏了怎么办」,而它从没被用过。<b>留着,不动。</b></p>
+  <span class="lbl">对这两条有话说吗(可留空)</span>
+  <textarea data-c="a5" placeholder=""></textarea>
+</div>
+</section>
+
+<h2>⑦ 过程文档 —— 你要的详细版</h2>
+<section data-t="⑦ 过程文档:三开三关要不要统一">
+<div class="card blue">
+  <div class="num">要你拍 1 / 2</div>
+
+  <p class="q">哪三个开、哪三个关</p>
+  <div class="scroll">
+  <table>
+    <tr><th>写过程文档</th><th>不写</th></tr>
+    <tr>
+      <td>flywheel(我们自己)<br>joycon-typeless<br>tidal-echo</td>
+      <td>geoforge3d<br>growth<br>personal-assistant</td>
+    </tr>
+  </table>
+  </div>
+  <p class="note">注:配置里 <code>sub</code> 也是开的,但它不在开关登记表统计的那六个项目里 —— 这是个小口径不一致,我另外处理,不影响你这个决定。</p>
+
+  <p class="q">开了之后,runner 实际会写什么</p>
+  <p>不是「写不写文档」这么粗,是<b>按这单的难度分三档</b>,由 Lead 在派活时判:</p>
+
+  <div class="dia">
+  <svg viewBox="0 0 660 168" width="660" height="168" role="img" aria-label="过程文档三档">
+    <g font-size="12">
+      <rect x="14" y="14" width="200" height="66" rx="9" fill="#ffe9e7" stroke="#ffc9c4"/>
+      <text x="28" y="36" fill="#c92a20" font-weight="600">复杂:写三份</text>
+      <text x="28" y="56" fill="#1d1d1f" font-size="11">摸索记录 + 调研 + 实施方案</text>
+      <text x="28" y="72" fill="#86868b" font-size="10.5">新架构 / 跨系统 / 说不清会碰到什么</text>
+
+      <rect x="230" y="14" width="200" height="66" rx="9" fill="#fff4e5" stroke="#ffdfb0"/>
+      <text x="244" y="36" fill="#8a5200" font-weight="600">中等:只写实施方案</text>
+      <text x="244" y="56" fill="#1d1d1f" font-size="11">一份 plan</text>
+      <text x="244" y="72" fill="#86868b" font-size="10.5">边界清楚、不碰陌生子系统</text>
+
+      <rect x="446" y="14" width="200" height="66" rx="9" fill="#e6f8ec" stroke="#b6e8c6"/>
+      <text x="460" y="36" fill="#1d8f43" font-weight="600">简单:零文档</text>
+      <text x="460" y="56" fill="#1d1d1f" font-size="11">直接做</text>
+      <text x="460" y="72" fill="#86868b" font-size="10.5">改文案 / 一行配置 / 半小时的活</text>
+
+      <text x="14" y="108" fill="#86868b" font-size="11">判档的人是 Lead;判中等或简单时,必须在频道里知会一句「我判的是哪档 + 为什么」</text>
+      <text x="14" y="128" fill="#86868b" font-size="11">你任何时候回一句「补文档」,runner 就停下来补齐再继续</text>
+      <text x="14" y="152" fill="#c92a20" font-size="11">关掉这个开关 = 这三档全没有,该项目一律零文档</text>
+    </g>
+  </svg>
+  </div>
+
+  <p class="q">这个差异是你想要的,还是只是没铺完</p>
+  <p>这就是要你定的。两种读法:</p>
+  <div class="facts">
+  <ul>
+    <li><b>「本来就该不同」</b> —— 比如 geoforge3d 是产品仓、改动形态稳定,过程记录价值低 ⇒ 开关留着,合理</li>
+    <li><b>「只是没铺完」</b> —— 那按你自己的规矩:<b>把它铺完,然后把开关删掉</b></li>
+  </ul>
+  </div>
+  <p><b>我的建议:铺完然后删。</b> 理由是这三份文档的价值不在当下,在<b>三个月后有人问「当时为什么这么做」</b> —— 而那个价值和项目无关。反对意见我也说清楚:铺完意味着另外三个项目的每单都多一道工序。</p>
+
+  <span class="lbl">你的决定</span>
+  <textarea data-c="e1" placeholder="铺完然后删 / 保持现在这样 / 其他"></textarea>
+</div>
+</section>
+
+<h2>还有一条新的,查出来的</h2>
+<section data-t="⑧ runner 自己续跑:删掉等于放弃一次没做过的试验">
+<div class="card purple">
+  <div class="num">要你拍 2 / 2</div>
+  <h3>「让 runner 自己续跑」 —— 删掉等于宣布不试了</h3>
+
+  <p>你之前批过「直接清理掉」。查下来有一件事你可能想知道再确认一次:</p>
+  <div class="facts">
+  <ul>
+    <li>它建好 42 天,<b>一次都没开过</b></li>
+    <li>但它的登记里写着启用条件:<b>「先拿单个 runner 做小范围试验」</b></li>
+    <li><b>那次试验从来没发生过。</b></li>
+  </ul>
+  </div>
+  <p>⇒ 所以删掉它,准确说不是「试过了不好所以删」,而是 <b>「我们决定不试了」</b>。这是本轮 124 条里<b>唯一一条</b>属于这种性质的。</p>
+  <p><b>我的建议:仍然删。</b> 它想做的事后来被另外两个机制分掉了,而且留着会让人以为系统里还有第三条唤醒通道。但「决定不试了」这句话该由你说,不该由我们默默替你说掉。</p>
+
+  <span class="lbl">你的决定</span>
+  <textarea data-c="e2" placeholder="删 / 先试一次再说 / 其他"></textarea>
+</div>
+</section>
+
+<section data-t="其余已定的">
+<div class="card green">
+  <p><b>其余全部按你说的走</b> —— 没留回复的算你同意我的选择。</p>
+  <div class="facts">
+  <ul>
+    <li>六个应急开关:<b>留</b></li>
+    <li>签字门那个开关:<b>删</b></li>
+    <li>频道 id / 文件路径:<b>搬去配置</b>,不删</li>
+    <li>95 条:删 + 固化成现在的值,零行为变化</li>
+    <li>五个派工开关:合成<b>一个</b>决定,删掉必须固化成开</li>
+  </ul>
+  </div>
+  <span class="lbl">这几条有要改的吗(可留空)</span>
+  <textarea data-c="a6" placeholder="没写就是同意"></textarea>
+</div>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何决定</span>
+    <div id="preview"></div>
+    <p class="note">写在这页上的字只存在你自己的浏览器里。点按钮复制,粘回 <b>[FLY-1782]</b> thread。</p>
+  </div>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1782-answers-v2';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' / 8 条') : '还没写任何决定';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1782 · 我的决定\n\n' + items.join('\n\n'))
+      : 'FLY-1782:我还没写决定。';
+    function done(ok){
+      countEl.textContent = ok ? '已复制,粘回 [FLY-1782] thread' : '复制失败 —— 请手动选中下面的文字复制';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent = text; }
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(false);});
+    } else {
+      done(false);
+    }
+  });
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

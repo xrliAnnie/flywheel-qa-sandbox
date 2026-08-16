@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>两批各 5 张</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 60px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:24px 26px;margin:20px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+.tag.diff{background:#f3e8ff;color:#7b2fbf}
+h2{font-size:20px;margin:38px 0 6px;letter-spacing:-.01em}
+h3{font-size:18px;margin:0 0 4px;letter-spacing:-.01em}
+.num{color:var(--dim);font-size:13px;font-weight:600;letter-spacing:.06em;margin-bottom:6px}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:16px;margin-bottom:4px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+textarea{width:100%;min-height:64px;margin-top:10px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:16px;display:block;font-weight:600}
+/* NOT position:sticky — a sticky bar gets baked into the MIDDLE of a full-page
+   screenshot and covers whatever is behind it (it hid a diagram in v2). */
+.sumbox{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  margin:40px 0 0;padding:20px 22px}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+.dia{margin:16px 0}
+.dia svg{display:block;width:100%;max-width:700px;height:auto}
+.legend{font-size:12.5px;color:var(--dim);margin-top:6px}
+.danger{color:#c92a20;font-weight:600}
+@media (max-width:640px){ .wrap{padding:24px 14px 60px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>两批,各 5 张</h1>
+  <p class="sub">2026-08-15 23:25 PDT · 按你说的:并行,但同时不超过 5 件 · 两条硬依赖都已经跨批满足</p>
+</header>
+
+<h2>第 1 批 · 5 张(全部可同时开)</h2>
+<div class="card green">
+  <div class="scroll">
+  <table>
+    <tr><th>单</th><th>做什么</th><th>为什么放第一批</th></tr>
+    <tr><td><b>FLY-1811</b></td><td>19 条解析器状态人工过目</td><td><b>它是解锁者</b> —— 判完那 19 条才能删。越早判完,尾巴越早收</td></tr>
+    <tr><td><b>FLY-1779</b></td><td>registry 加两个字段</td><td><b>它是解锁者</b> —— 第 2 批的 1781 等它。小活</td></tr>
+    <tr><td><b>FLY-1806</b></td><td>功能类删除</td><td>零行为变化,最安全,顺便把「逐条写固化值」的流程跑顺</td></tr>
+    <tr><td><b>FLY-1807</b></td><td>急停开关删除</td><td>同样零变化,但按规矩单独一张单走</td></tr>
+    <tr><td><b>FLY-1809</b></td><td>2 条搬去配置</td><td>小活</td></tr>
+  </table>
+  </div>
+  <p class="note"><b>第一批把两个解锁者都放进来了</b> —— 这样第 2 批开工时不用等任何东西。</p>
+</div>
+
+<h2>第 2 批 · 5 张</h2>
+<div class="card amber">
+  <div class="scroll">
+  <table>
+    <tr><th>单</th><th>做什么</th><th>为什么放第二批</th></tr>
+    <tr><td><b>FLY-1808</b></td><td>会改行为的 10 条,逐条删</td><td>风险最高的一张。前面 95 条把固化值流程练过一遍再碰它 —— <b>这是建议,不是依赖</b></td></tr>
+    <tr><td><b>FLY-1781</b></td><td>每周扫描 → 摆候选给你</td><td><b>等 1779 的字段</b>(第 1 批做完就满足)</td></tr>
+    <tr><td><b>FLY-1778</b></td><td>动态 flag store</td><td>等 flag 从 124 降到十几,要迁移的东西少一个数量级</td></tr>
+    <tr><td><b>FLY-1455</b></td><td>不许野建 flag + CI 断言</td><td>防复发。它那条断言正好把 1811 的人工活自动化</td></tr>
+    <tr><td><b>FLY-1810</b></td><td>doc_flow 铺完再删</td><td>中间有观察期,天然慢,不占第一批的节奏</td></tr>
+  </table>
+  </div>
+</div>
+
+<h2>两条硬依赖,已经满足</h2>
+<div class="card blue">
+  <div class="scroll">
+  <table>
+    <tr><th>依赖</th><th>怎么满足的</th></tr>
+    <tr><td>1781 等 1779</td><td>1779 在第 1 批,1781 在第 2 批 ✅</td></tr>
+    <tr><td>那 19 条 flag 等 1811</td><td>1811 在第 1 批;判完的直接并回 1806 / 1807 的收尾,不单独开单 ✅</td></tr>
+  </table>
+  </div>
+  <p><b>除这两条外没有别的依赖</b> —— 每批内部 5 张可以完全并行。</p>
+</div>
+
+<section data-t="两批安排">
+<div class="card plain">
+  <span class="lbl">要调的话写这儿(可留空 = 按这个走)</span>
+  <textarea data-c="w1" placeholder=""></textarea>
+</div>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">复制</button>
+    <span id="count">还没写</span>
+    <div id="preview"></div>
+    <p class="note">写的字只存在你自己的浏览器里。点按钮复制,粘回 <b>[FLY-1782]</b> thread。</p>
+  </div>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly-waves-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' / 8 条') : '还没写任何决定';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1782 · 我的决定\n\n' + items.join('\n\n'))
+      : 'FLY-1782:我还没写决定。';
+    function done(ok){
+      countEl.textContent = ok ? '已复制,粘回 [FLY-1782] thread' : '复制失败 —— 请手动选中下面的文字复制';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent = text; }
+    }
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){done(true);},function(){done(false);});
+    } else {
+      done(false);
+    }
+  });
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>
