@@ -406,6 +406,44 @@ describe("complete command", () => {
 		});
 	});
 
+	it("refuses a stale generic activation with a typed error before delivery", async () => {
+		activateCompletion();
+		const db = new CommDB(process.env.FLYWHEEL_COMM_DB!);
+		try {
+			db.registerSession(
+				"exec-new",
+				"win:2",
+				"geoforge3d",
+				"issue-108",
+				"lead",
+			);
+			db.grantTurn("issue-108", "exec-new", "produce", 1_700_000_001_000, {
+				project: "geoforge3d",
+				sourceEventId: "turn:spawn:exec-new",
+				targetRunId: "run-1",
+				activation: {
+					activationId: "activation-new",
+					runId: "run-1",
+					nodeId: "produce",
+					attempt: 3,
+					context: {},
+				},
+			});
+		} finally {
+			db.close();
+		}
+
+		await expect(
+			complete({ route: "needs_review", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"workflow activation authority is unavailable; refusing route=needs_review",
+			),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
 	it("does not attach a ship-carrier activation to the runner completion", async () => {
 		activateCompletion();
 		const db = new CommDB(process.env.FLYWHEEL_COMM_DB!);

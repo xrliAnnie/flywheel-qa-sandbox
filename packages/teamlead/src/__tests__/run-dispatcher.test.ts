@@ -210,6 +210,7 @@ describe("RunDispatcher", () => {
 			generalizedExecution: {
 				engineOwned: true,
 				executionId: "launch-exec",
+				activationId: "activation-launch-exec",
 				runId: "launch-run",
 				nodeId: "execute",
 				attempt: 1,
@@ -221,6 +222,10 @@ describe("RunDispatcher", () => {
 				idempotencyKey: "launch-key",
 				launchGateToken: "launch-token",
 				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+				projectTurn: vi.fn(() => ({
+					ok: true,
+					idempotentReplay: false,
+				})),
 			},
 		});
 
@@ -306,6 +311,7 @@ describe("RunDispatcher", () => {
 			generalizedExecution: {
 				engineOwned: true,
 				executionId: "qa-engine-exec",
+				activationId: "activation-qa-engine-exec",
 				runId: "run-engine",
 				nodeId: "qa",
 				attempt: 1,
@@ -322,6 +328,10 @@ describe("RunDispatcher", () => {
 				agentContent: "Verify and submit the QA decision.",
 				submissionCredential: "decision-ticket",
 				idempotencyKey: "qa-engine-key",
+				projectTurn: vi.fn(() => ({
+					ok: true,
+					idempotentReplay: false,
+				})),
 			},
 		});
 		await dispatcher.drain();
@@ -633,6 +643,7 @@ describe("RunDispatcher", () => {
 			const generalizedExecution = (executionId: string) => ({
 				engineOwned: true as const,
 				executionId,
+				activationId: `activation-${executionId}`,
 				runId: "run-1",
 				nodeId: "implement",
 				attempt: 1,
@@ -644,6 +655,10 @@ describe("RunDispatcher", () => {
 				idempotencyKey: `launch-${executionId}`,
 				launchGateToken: `token-${executionId}`,
 				commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+				projectTurn: vi.fn(() => ({
+					ok: true as const,
+					idempotentReplay: false,
+				})),
 			});
 
 			const first = await dispatcher.start({
@@ -700,6 +715,7 @@ describe("RunDispatcher", () => {
 		const generalizedExecution = (executionId: string) => ({
 			engineOwned: true as const,
 			executionId,
+			activationId: `activation-${executionId}`,
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 1,
@@ -711,6 +727,10 @@ describe("RunDispatcher", () => {
 			idempotencyKey: `launch-${executionId}`,
 			launchGateToken: `token-${executionId}`,
 			commitWorkflowLaunch: vi.fn(() => ({ ok: true })),
+			projectTurn: vi.fn(() => ({
+				ok: true as const,
+				idempotentReplay: false,
+			})),
 		});
 
 		await dispatcher.start({

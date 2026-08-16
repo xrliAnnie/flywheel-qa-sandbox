@@ -1,0 +1,17 @@
+flowchart TD
+    subgraph COMM["comm 数据库(runner 侧的凭证账本)"]
+        TURN["three_stage_turn(轮值权表)<br/>一个 issue 一行<br/>记录:当前持有人 + 轮次 epoch<br/>+ 指向哪张通行证"]
+        ACT["runner_workflow_activation(通行证表)<br/>主键 = (执行 id, 轮次 epoch)<br/>记录:run / 节点 / 第几次尝试<br/>+ 两把提交凭证"]
+    end
+
+    TURN -- "四项字段逐一对得上<br/>才算有效(防冒用)" --- ACT
+
+    G["runner 跑<br/>gate founder_review"] --> R{"resolveRunnerWorkflowActivation<br/>核验链"}
+    C["runner 跑 complete<br/>(founder 审阅必需时)"] --> R
+    R -- "① 轮值权在我手上?" --> TURN
+    R -- "② 通行证四项全对?" --> ACT
+    R -- "全过" --> OK["✅ active:放行"]
+    R -- "缺 TURN 或缺证" --> NO["❌ 拒绝(fail-closed)<br/>这是刻意设计:<br/>宁可拒,不冒用<br/>—— 所以修复只能在铸造侧,<br/>不能在核验侧放水"]
+
+    style OK fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style NO fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px

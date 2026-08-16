@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,6 +84,7 @@ function harness(
 	const store = {
 		getSession: vi.fn(() => session),
 		getGeneralizedWorkflowNodeForExecution: vi.fn(() => undefined),
+		resolveCurrentWorkflowActivation: vi.fn(() => ({ kind: "none" })),
 		appendLeadEvent: vi.fn(() => 41),
 		workflowGatePresentationDisposition: vi.fn(() => gatePresentation),
 	};
@@ -159,7 +160,8 @@ describe("QuestionAdmission mailbox claim service", () => {
 
 	it("admits founder_review only from the exact sealed capable run", async () => {
 		const h = harness();
-		h.store.getGeneralizedWorkflowNodeForExecution.mockReturnValue({
+		h.store.resolveCurrentWorkflowActivation.mockReturnValue({
+			kind: "current",
 			run: { run_id: "run-1" },
 			node: { id: "produce" },
 			snapshot: {
@@ -191,7 +193,8 @@ describe("QuestionAdmission mailbox claim service", () => {
 		"rejects founder_review with %s",
 		async (_label, capable, runId) => {
 			const h = harness();
-			h.store.getGeneralizedWorkflowNodeForExecution.mockReturnValue({
+			h.store.resolveCurrentWorkflowActivation.mockReturnValue({
+				kind: "current",
 				run: { run_id: "run-1" },
 				node: { id: "produce" },
 				snapshot: {
@@ -218,6 +221,159 @@ describe("QuestionAdmission mailbox claim service", () => {
 			});
 		},
 	);
+
+	it.each([
+		["none", { kind: "none" }],
+		[
+			"ambiguous",
+			{ kind: "ambiguous", activationIds: ["activation-1", "activation-2"] },
+		],
+	] as const)(
+		"retries founder_review while current activation authority is %s",
+		async (_label, activation) => {
+			const h = harness();
+			h.store.resolveCurrentWorkflowActivation.mockReturnValue(
+				activation as never,
+			);
+			h.db.insertQuestion(
+				"exec-1",
+				"lead-a",
+				JSON.stringify({
+					version: 1,
+					round: 1,
+					runId: "run-1",
+					artifactDigest: "a".repeat(64),
+					hostedUrl: "https://reports.example/prd",
+					paths: ["review.html"],
+				}),
+				{ checkpoint: "founder_review" },
+			);
+
+			expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+				deliver: false,
+				disposition: "revoked_founder_review_authority",
+				retry: true,
+			});
+		},
+	);
+
+	it("FLY-1788: admits founder_review from the current activation when one exec has two bindings", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1788-question-admission-"));
+		mkdirSync(join(root, "agents"), { recursive: true });
+		mkdirSync(join(root, ".flywheel", "menus"), { recursive: true });
+		writeFileSync(join(root, "agents", "pm-executor.md"), "Write the PRD.\n");
+		writeFileSync(
+			join(root, ".flywheel", "menus", "ic-roster.yaml"),
+			"pm: agents/pm-executor.md\n",
+		);
+		writeFileSync(
+			join(root, ".flywheel", "menus", "adoption.yaml"),
+			"lead-a:\n  - prd\n",
+		);
+		const dbPath = join(root, "comm.db");
+		const db = new CommDB(dbPath);
+		const queue = new MailboxQueue(dbPath);
+		const store = await StateStore.create(":memory:");
+		resources.push(db, queue, store, {
+			close: () => rmSync(root, { recursive: true, force: true }),
+		});
+		queue.acquireOrRenewOwner({
+			ownerEpoch: "owner-1",
+			now: "2026-08-16T08:00:00.000Z",
+			leaseTtlMs: 60_000,
+		});
+		importWorkflowMenuSeeds(store, menuEngineFlags);
+		store.materializeWorkflowRun({
+			runId: "run-fly1788",
+			issueId: "FLY-1788",
+			projectName: "project-a",
+			taskCategory: "prd",
+			templateId: "tpl_prd",
+			claimsReadEnrolled: true,
+			actor: "lead-a",
+			canonicalRoot: root,
+			env: menuEngineFlags,
+			startReservation: {
+				idempotencyKey: "start-fly1788",
+				selectionDigest: "selection-fly1788",
+				nodeId: "produce",
+				attempt: 1,
+				executionId: "exec-1",
+				createdAt: "2026-08-16T08:00:00.000Z",
+			},
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-fly1788",
+				nodeId: "produce",
+				executionId: "exec-1",
+				attempt: 1,
+				activationId: "activation-fly1788-1",
+				expiresAt: "2026-08-16T10:00:00.000Z",
+				absoluteDeadlineAt: "2026-08-17T08:00:00.000Z",
+				now: "2026-08-16T08:01:00.000Z",
+				env: menuEngineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertWorkflowRunNode({
+			runId: "run-fly1788",
+			nodeId: "produce",
+			attempt: 2,
+			state: "pending",
+			executionId: "exec-1",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-fly1788",
+				nodeId: "produce",
+				executionId: "exec-1",
+				attempt: 2,
+				activationId: "activation-fly1788-2",
+				activationMode: "wake",
+				expiresAt: "2026-08-16T10:00:00.000Z",
+				absoluteDeadlineAt: "2026-08-17T08:00:00.000Z",
+				now: "2026-08-16T08:02:00.000Z",
+				env: menuEngineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.listWorkflowActivationsForActor("exec-1")).toHaveLength(2);
+		expect(store.resolveCurrentWorkflowActivation("exec-1")).toMatchObject({
+			kind: "current",
+			binding: { activation_id: "activation-fly1788-2", attempt: 2 },
+		});
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1788",
+			issue_identifier: "FLY-1788",
+			project_name: "project-a",
+			status: "running",
+			issue_labels: JSON.stringify(["Engineering"]),
+		});
+		db.insertQuestion(
+			"exec-1",
+			"lead-a",
+			JSON.stringify({
+				version: 1,
+				round: 2,
+				runId: "run-fly1788",
+				artifactDigest: "a".repeat(64),
+				hostedUrl: "https://reports.example/prd-r2",
+				paths: ["review.html"],
+			}),
+			{ checkpoint: "founder_review" },
+		);
+		const admission = new QuestionAdmission({
+			queue,
+			dbPath,
+			lead,
+			projects,
+			store,
+			runtimeRegistry: new RuntimeRegistry(),
+		});
+		resources.push(admission);
+
+		expect(await admission.revalidate(claim(queue))).toEqual({ deliver: true });
+	});
 
 	it.each(["completed", "ship_parked", "blocked"])(
 		"materializes the current workflow gate for a %s source session",

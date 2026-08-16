@@ -27,6 +27,7 @@ import {
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import {
+	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
 	workflowGateEntryPromptCapabilities,
@@ -939,6 +940,14 @@ async function handleRetry(
 
 	let generalizedExecution: GeneralizedExecutionDispatch | undefined;
 	let adoptedGeneralizedExecutionId: string | undefined;
+	let generalizedLaunchReleaseFence:
+		| {
+				executionId: string;
+				ownerId: string;
+				generation: number;
+				markerPath: string;
+		  }
+		| undefined;
 	const predecessorBinding = preflightGeneralizedBinding;
 	if (predecessorBinding) {
 		const run = store.getWorkflowRun(predecessorBinding.run_id);
@@ -1115,6 +1124,12 @@ async function handleRetry(
 					});
 			}
 		} else {
+			generalizedLaunchReleaseFence = {
+				executionId: successorExecutionId,
+				ownerId: launchOwnerId,
+				generation: launch.generation,
+				markerPath: launchMarkerPath,
+			};
 			const rotationNow = new Date();
 			const rotationWindow = credentialWindowForNode(
 				snapshot,
@@ -1206,7 +1221,9 @@ async function handleRetry(
 					}
 				: undefined;
 			generalizedExecution = {
+				engineOwned: run.engine_owned === 1,
 				executionId: successorExecutionId,
+				activationId: admitted.activationId,
 				runId: predecessorBinding.run_id,
 				nodeId: predecessorBinding.node_id,
 				attempt: predecessorBinding.attempt + 1,
@@ -1215,6 +1232,7 @@ async function handleRetry(
 				dispatch: runtimeDispatch,
 				capabilities: {
 					...node.capabilities,
+					founder_review_required: nodeRequiresFounderReview(snapshot, node.id),
 					...workflowGateEntryPromptCapabilities(snapshot, node.id),
 				},
 				agentContent,
@@ -1227,6 +1245,7 @@ async function handleRetry(
 				...(prepareWorkflowIssueDelivery && {
 					prepareWorkflowIssueDelivery,
 				}),
+				projectTurn: (turn) => store.recordWorkflowActivationTurn(turn),
 			};
 		}
 	}
@@ -1329,6 +1348,19 @@ async function handleRetry(
 		} catch (err) {
 			// PRE-dispatch failure — provably nothing started. Safe to terminalize.
 			const msg = err instanceof Error ? err.message : String(err);
+			if (generalizedLaunchReleaseFence) {
+				const released = store.releaseFailedWorkflowLaunch({
+					...generalizedLaunchReleaseFence,
+					now: new Date().toISOString(),
+					reason: `dispatcher_start_failed:${msg}`,
+					physicalEvidence: "absent",
+				});
+				if (!released.ok) {
+					console.error(
+						`[retry] generalized launch release failed for ${generalizedLaunchReleaseFence.executionId}: ${released.reason}`,
+					);
+				}
+			}
 			return { success: false, message: `Retry dispatch failed: ${msg}` };
 		}
 	}

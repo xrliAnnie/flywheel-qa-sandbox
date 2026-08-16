@@ -36330,6 +36330,9 @@ export class StateStore {
 					const context = turnBinding
 						? this.generalizedExecutionContextForBinding(turnBinding)
 						: undefined;
+					// Phase TURNs use the node type; generic spawn/rework/carrier TURNs
+					// use the bound node id. Both representations stay pinned to this
+					// exact activation, while any unrelated role still fails closed.
 					if (
 						!run ||
 						run.engine_owned !== 1 ||
@@ -36337,7 +36340,8 @@ export class StateStore {
 						run.issue_id !== issueId ||
 						!turnBinding ||
 						turnBinding.run_id !== targetRunId ||
-						context?.node.type !== toRole
+						(context?.node.type !== toRole &&
+							context?.node.id !== toRole)
 					) {
 						throw new Error(
 							"TURN source payload invalid: run ownership mismatch",

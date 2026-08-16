@@ -11,6 +11,7 @@ import {
 	turnStatus,
 	turnWaitAskAfterMs,
 } from "../commands/turn.js";
+import { currentWorkflowCompletionActivationFromEnv } from "../commands/workflow-activation.js";
 import { CommDB } from "../db.js";
 
 /**
@@ -96,6 +97,41 @@ describe("CommDB three_stage_turn (FLY-887)", () => {
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 2,
+		});
+	});
+
+	it("FLY-1788: a generic runner stays legacy until its TURN and activation are minted together", () => {
+		db.registerSession("exec-prd", "win:prd", "flywheel", "ISSUE-PRD", "lead");
+		expect(
+			currentWorkflowCompletionActivationFromEnv("exec-prd", {
+				FLYWHEEL_COMM_DB: dbPath,
+			}),
+		).toBeNull();
+
+		db.grantTurn("ISSUE-PRD", "exec-prd", "produce", T0, {
+			project: "flywheel",
+			sourceEventId: "turn:spawn:exec-prd",
+			targetRunId: "run-prd",
+			activation: {
+				activationId: "activation-prd",
+				runId: "run-prd",
+				nodeId: "produce",
+				attempt: 1,
+				outputCredential: "output-prd",
+				submissionCredential: "submission-prd",
+				context: {},
+			},
+		});
+
+		expect(
+			currentWorkflowCompletionActivationFromEnv("exec-prd", {
+				FLYWHEEL_COMM_DB: dbPath,
+			}),
+		).toMatchObject({
+			activation_id: "activation-prd",
+			run_id: "run-prd",
+			node_id: "produce",
+			attempt: 1,
 		});
 	});
 

@@ -9,7 +9,10 @@ import {
 import { describe, expect, it } from "vitest";
 import { drainWorkflowSourceEvents } from "../bridge/founder-approval-projector.js";
 import { StateStore } from "../StateStore.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyGenericSeed,
+	legacyWorkflowSeeds,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -240,6 +243,108 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 				.filter((event) => event.kind === "turn_granted"),
 		).toHaveLength(1);
 		store.close();
+	});
+
+	it("FLY-1788: projects generic spawn and rework TURNs addressed by bound node id", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1788-generic-projector-"));
+		mkdirSync(join(root, "agents"));
+		writeFileSync(
+			join(root, "agents", "generic-executor.md"),
+			"Produce the pinned artifact.\n",
+		);
+		const store = await StateStore.create(":memory:");
+		try {
+			const seed = legacyGenericSeed("tpl-generic-fly1788");
+			store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+			store.materializeWorkflowRun({
+				runId: "generic-run",
+				issueId: "FLY-1788",
+				projectName: "flywheel",
+				taskCategory: "generic",
+				templateId: seed.templateId,
+				claimsReadEnrolled: true,
+				actor: "lead",
+				canonicalRoot: root,
+				env: WORKFLOW_ON,
+				startReservation: {
+					idempotencyKey: "start-generic",
+					selectionDigest: "selection",
+					nodeId: "execute",
+					attempt: 1,
+					executionId: "engine-generic",
+					createdAt: "2026-08-16T00:00:00.000Z",
+				},
+			});
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "generic-run",
+					nodeId: "execute",
+					executionId: "engine-generic",
+					attempt: 1,
+					now: "2026-08-16T00:01:00.000Z",
+					expiresAt: "2026-08-16T01:01:00.000Z",
+					absoluteDeadlineAt: "2026-08-17T00:01:00.000Z",
+					env: WORKFLOW_ON,
+				}),
+			).toMatchObject({ ok: true });
+
+			const sourceEventIds = [
+				"turn:spawn:engine-generic",
+				"rework:req-1:activation-generic",
+				"ship-carrier:approval-1:activation-generic",
+			];
+			for (const [index, sourceEventId] of sourceEventIds.entries()) {
+				const payload = {
+					schema_version: 1,
+					issue_id: "FLY-1788",
+					old_holder: null,
+					new_holder: "engine-generic",
+					from_role: null,
+					to_role: "execute",
+					resulting_epoch: index + 1,
+					target_run_id: "generic-run",
+				};
+				expect(
+					store.applyWorkflowSourceEvent({
+						project: "flywheel",
+						sourceEventId,
+						kind: "turn_grant",
+						payloadJson: canonicalJsonString(payload),
+						payloadDigest: canonicalSubmissionDigest(payload),
+						schemaVersion: 1,
+					}),
+				).toEqual({ kind: "turn_run_event", status: "applied" });
+			}
+			expect(
+				store
+					.listWorkflowRunEvents("generic-run")
+					.filter((event) => event.kind === "turn_granted"),
+			).toHaveLength(3);
+
+			const forged = {
+				schema_version: 1,
+				issue_id: "FLY-1788",
+				old_holder: null,
+				new_holder: "engine-generic",
+				from_role: null,
+				to_role: "qa",
+				resulting_epoch: 3,
+				target_run_id: "generic-run",
+			};
+			expect(() =>
+				store.applyWorkflowSourceEvent({
+					project: "flywheel",
+					sourceEventId: "turn:forged:engine-generic",
+					kind: "turn_grant",
+					payloadJson: canonicalJsonString(forged),
+					payloadDigest: canonicalSubmissionDigest(forged),
+					schemaVersion: 1,
+				}),
+			).toThrow(/run ownership mismatch/i);
+		} finally {
+			store.close();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("FLY-1307 hard gate: proves engine TURN authority from CommDB source outbox through the durable projector", async () => {

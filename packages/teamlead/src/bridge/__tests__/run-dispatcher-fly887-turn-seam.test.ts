@@ -11,7 +11,12 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import type { BlueprintContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	compileWorkflowMenuSeed,
+	loadWorkflowMenuLibrary,
+} from "../../workflow-menu.js";
 import { commDbPathForProject } from "../commdb-path.js";
+import type { GeneralizedExecutionDispatch } from "../retry-dispatcher.js";
 import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
 
@@ -20,6 +25,12 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 	let commDir: string;
 	/** The TURN holder observed INSIDE blueprint.run (proves happens-before). */
 	let turnAtLaunch: { holder: string; phase: string } | null;
+	let activationAtLaunch: {
+		activationId: string;
+		runId: string;
+		nodeId: string;
+		attempt: number;
+	} | null;
 	let startPointAtLaunch: string | undefined;
 
 	function makeRuntime(): ProjectRuntime {
@@ -29,9 +40,20 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 					// Read the TURN the moment the runner would launch.
 					const db = new CommDB(commDbPathForProject("proj"));
 					const t = db.getTurn("issue-1");
+					const activation = db.getCurrentRunnerWorkflowActivation(
+						ctx.executionId,
+					);
 					db.close();
 					turnAtLaunch = t
 						? { holder: t.holder_exec_id, phase: t.phase }
+						: null;
+					activationAtLaunch = activation
+						? {
+								activationId: activation.activation_id,
+								runId: activation.run_id,
+								nodeId: activation.node_id,
+								attempt: activation.attempt,
+							}
 						: null;
 					startPointAtLaunch = ctx.startPoint;
 					// Confirm the ctx phase role matches (the seam keys on it).
@@ -85,11 +107,47 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		};
 	}
 
+	function genericExecution(input: {
+		executionId: string;
+		runId: string;
+		nodeId: string;
+		attempt?: number;
+	}): {
+		workflow: GeneralizedExecutionDispatch;
+		projectTurn: ReturnType<typeof vi.fn>;
+	} {
+		const projectTurn = vi.fn(() => ({
+			ok: true as const,
+			idempotentReplay: false,
+		}));
+		return {
+			workflow: {
+				engineOwned: true,
+				executionId: input.executionId,
+				activationId: `activation:${input.executionId}`,
+				runId: input.runId,
+				nodeId: input.nodeId,
+				attempt: input.attempt ?? 1,
+				snapshotDigest: "snapshot",
+				gateCarrierEpoch: 1,
+				dispatch: { vendor: "codex", model: "gpt-5.6-sol" },
+				capabilities: { completion_route: "no_code" },
+				agentContent: "Produce the pinned artifact.",
+				outputCredential: `output:${input.executionId}`,
+				submissionCredential: `submission:${input.executionId}`,
+				idempotencyKey: `engine:${input.runId}:${input.nodeId}:${input.attempt ?? 1}`,
+				projectTurn,
+			},
+			projectTurn,
+		};
+	}
+
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "fly887-seam-"));
 		commDir = mkdtempSync(join(tmpdir(), "fly887-seam-comm-"));
 		process.env.FLYWHEEL_COMM_DIR = commDir;
 		turnAtLaunch = null;
+		activationAtLaunch = null;
 		startPointAtLaunch = undefined;
 		vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -173,6 +231,96 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 			target_attempt: 1,
 			activation_id: "activation:engine-design",
 		});
+	});
+
+	it("FLY-1788: all four engine-owned single-node templates mint activation before launch", async () => {
+		const menus = loadWorkflowMenuLibrary();
+		const cases = [
+			{ shape: "prd", templateId: "tpl_prd" },
+			{ shape: "design", templateId: "tpl_design" },
+			{ shape: "prototype", templateId: "tpl_prototype" },
+			{ shape: "generic", templateId: "tpl_generic_menu" },
+		] as const;
+
+		for (const testCase of cases) {
+			const menu = menus.find(
+				(candidate) => candidate.shape === testCase.shape,
+			)!;
+			const seed = compileWorkflowMenuSeed(menu);
+			expect(seed.templateId).toBe(testCase.templateId);
+			const node = seed.manifest.nodes.find(
+				(candidate) => candidate.type === "generic",
+			)!;
+			const executionId = `engine-${testCase.shape}`;
+			const { workflow, projectTurn } = genericExecution({
+				executionId,
+				runId: `run-${testCase.shape}`,
+				nodeId: node.id,
+			});
+			const dispatcher = makeDispatcher();
+
+			await dispatcher.start({
+				issueId: "issue-1",
+				projectName: "proj",
+				sessionRole: "main",
+				leadId: "flywheel-eng-lead",
+				generalizedExecution: workflow,
+			});
+			await dispatcher.drain();
+
+			expect(turnAtLaunch, testCase.templateId).toEqual({
+				holder: executionId,
+				phase: node.id,
+			});
+			expect(activationAtLaunch, testCase.templateId).toEqual({
+				activationId: `activation:${executionId}`,
+				runId: `run-${testCase.shape}`,
+				nodeId: node.id,
+				attempt: 1,
+			});
+			expect(projectTurn, testCase.templateId).toHaveBeenCalledWith(
+				expect.objectContaining({
+					activationId: `activation:${executionId}`,
+					executionId,
+					issueId: "issue-1",
+				}),
+			);
+		}
+	});
+
+	it("FLY-1788: an engine-owned generic retry mints activation without phase branch semantics", async () => {
+		const compute = vi.fn(() => ({ kind: "missing" as const }));
+		const dispatcher = makeDispatcher(compute);
+		const { workflow, projectTurn } = genericExecution({
+			executionId: "engine-prd-retry",
+			runId: "run-prd",
+			nodeId: "produce",
+			attempt: 2,
+		});
+
+		await dispatcher.dispatch(
+			retryRequest({
+				sessionRole: "main",
+				shareParentBranch: undefined,
+				successorExecutionId: workflow.executionId,
+				generalizedExecution: workflow,
+			}),
+		);
+		await dispatcher.drain();
+
+		expect(turnAtLaunch).toEqual({
+			holder: "engine-prd-retry",
+			phase: "produce",
+		});
+		expect(activationAtLaunch).toEqual({
+			activationId: "activation:engine-prd-retry",
+			runId: "run-prd",
+			nodeId: "produce",
+			attempt: 2,
+		});
+		expect(projectTurn).toHaveBeenCalledOnce();
+		expect(compute).not.toHaveBeenCalled();
+		expect(startPointAtLaunch).toBeUndefined();
 	});
 
 	it("FLY-1257: phase retry atomically transfers the existing TURN before launch and increments epoch", async () => {
@@ -407,6 +555,41 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		const db = new CommDB(commDbPathForProject("proj"));
 		expect(db.getSession(failedExec)).toBeUndefined();
 		db.close();
+	});
+
+	it("FLY-1788: generic activation mint failure aborts before Blueprint launch", async () => {
+		vi.spyOn(CommDB.prototype, "grantTurn").mockImplementation(() => {
+			throw new Error("sqlite is read-only");
+		});
+		const onSpawnFailed = vi.fn();
+		const runtime = makeRuntime();
+		const dispatcher = new RunDispatcher(
+			new Map([["proj", runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+			undefined,
+			undefined,
+			undefined,
+			async () => ({ admitted: true }),
+			{ commitLaunch: vi.fn(async () => ({ ok: true })), onSpawnFailed },
+		);
+		const { workflow } = genericExecution({
+			executionId: "engine-generic-failure",
+			runId: "run-prd",
+			nodeId: "produce",
+		});
+
+		await expect(
+			dispatcher.start({
+				issueId: "issue-1",
+				projectName: "proj",
+				sessionRole: "main",
+				generalizedExecution: workflow,
+			}),
+		).rejects.toThrow(/pre-launch TURN grant failed/i);
+		expect(runtime.blueprint.run).not.toHaveBeenCalled();
+		expect(dispatcher.hasInflightForRole("issue-1", "main")).toBe(false);
+		expect(onSpawnFailed).toHaveBeenCalledWith("engine-generic-failure");
 	});
 
 	it("byte-compat: a non-phase (no shareParentBranch) dispatch grants NO turn", async () => {

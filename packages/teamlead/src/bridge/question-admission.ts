@@ -244,14 +244,29 @@ export class QuestionAdmission {
 		if (question.checkpoint != null) {
 			if (question.checkpoint === "founder_review") {
 				const content = parseFounderReviewQuestionContent(question.content);
-				const context = this.opts.store.getGeneralizedWorkflowNodeForExecution(
+				if (!content) {
+					return {
+						ok: false,
+						disposition: "revoked_founder_review_authority",
+						permanent: true,
+					};
+				}
+				const activation = this.opts.store.resolveCurrentWorkflowActivation(
 					question.from_agent,
 				);
+				if (activation.kind !== "current") {
+					return {
+						ok: false,
+						disposition: "revoked_founder_review_authority",
+						// A held run or in-flight rework can temporarily have no unique
+						// current activation. Preserve the mailbox row for the bounded
+						// retry horizon instead of dead-lettering recoverable authority.
+						permanent: false,
+					};
+				}
 				if (
-					!content ||
-					!context ||
-					content.runId !== context.run.run_id ||
-					!nodeRequiresFounderReview(context.snapshot, context.node.id)
+					content.runId !== activation.run.run_id ||
+					!nodeRequiresFounderReview(activation.snapshot, activation.node.id)
 				) {
 					return {
 						ok: false,

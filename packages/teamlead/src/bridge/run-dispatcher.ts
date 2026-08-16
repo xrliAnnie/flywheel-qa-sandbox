@@ -944,6 +944,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// an indeterminate git/IO failure must never reset branch B to origin/main.
 			const isPhaseRetry =
 				req.shareParentBranch === true && isWorkflowPhaseRole(role);
+			const engineOwnedRetry = req.generalizedExecution?.engineOwned === true;
 			let retryStartPoint: string | undefined;
 			const computeRetryStartPoint = (): string | undefined => {
 				const computed = this.phaseRetryStartPointComputer?.(
@@ -977,11 +978,15 @@ export class RetryDispatcher implements IRetryDispatcher {
 				}
 			}
 
-			// FLY-1257 M2: retry is a real DAG workflow launch, so it must receive
-			// the shared-worktree TURN before Blueprint can start the runner's first
-			// self-check. grantTurn's upsert increments the epoch atomically, moving
-			// ownership from the predecessor to this successor.
-			if (isPhaseRetry) {
+			// FLY-1257 / FLY-1788: a shared-worktree phase retry needs the TURN as
+			// its single-writer fence; every engine-owned retry also needs the same
+			// atomic TURN + activation bundle as workflow authority. The phase-only
+			// branch-tip probes above and below intentionally stay gated by
+			// isPhaseRetry.
+			if (isPhaseRetry || engineOwnedRetry) {
+				const turnPhase = isWorkflowPhaseRole(role)
+					? role
+					: req.generalizedExecution!.nodeId;
 				try {
 					const db = new CommDB(defaultGetCommDbPath(req.projectName));
 					try {
@@ -990,7 +995,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 							issueId: req.issueId,
 							projectName: req.projectName,
 							executionId: newExecutionId,
-							phase: role,
+							phase: turnPhase,
 							grantedAtMs: Date.now(),
 							generalizedExecution: req.generalizedExecution,
 						});
@@ -1000,7 +1005,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				} catch (err) {
 					this.abortPreLaunch(key, newExecutionId, req.projectName);
 					throw new Error(
-						`pre-launch TURN grant failed for ${role} phase retry on ${req.issueId}: ${(err as Error).message}`,
+						`pre-launch TURN grant failed for ${turnPhase} workflow retry on ${req.issueId}: ${(err as Error).message}`,
 					);
 				}
 			}
@@ -1676,9 +1681,17 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// (runs-route), the handoff spawn-fallback, the QA-FAIL spawn-fallback, and
 			// the reconcile spawn. Already-alive WAKE targets grant their TURN before the
 			// wake instead (orchestrator). Fail-closed: a grant failure fails the
-			// dispatch (never launch a phase that cannot establish single-writer
-			// ownership). Gated on keep-alive (=0 → the legacy path needs no TURN).
-			if (req.shareParentBranch === true && isWorkflowPhaseRole(role)) {
+			// dispatch. Shared-worktree phases need the single-writer fence; all
+			// engine-owned nodes need the atomic TURN + activation authority bundle.
+			// Legacy non-engine dispatches remain byte-compatible and grant nothing.
+			const engineOwnedSpawn = req.generalizedExecution?.engineOwned === true;
+			if (
+				engineOwnedSpawn ||
+				(req.shareParentBranch === true && isWorkflowPhaseRole(role))
+			) {
+				const turnPhase = isWorkflowPhaseRole(role)
+					? role
+					: req.generalizedExecution!.nodeId;
 				try {
 					const dbPath = defaultGetCommDbPath(req.projectName);
 					const db = new CommDB(dbPath);
@@ -1688,7 +1701,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 							issueId: req.issueId,
 							projectName: req.projectName,
 							executionId,
-							phase: role,
+							phase: turnPhase,
 							grantedAtMs: Date.now(),
 							generalizedExecution: req.generalizedExecution,
 						});
@@ -1698,7 +1711,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				} catch (err) {
 					this.abortPreLaunch(key, executionId, req.projectName);
 					throw new Error(
-						`pre-launch TURN grant failed for ${role} phase on ${req.issueId}: ${(err as Error).message}`,
+						`pre-launch TURN grant failed for ${turnPhase} workflow spawn on ${req.issueId}: ${(err as Error).message}`,
 					);
 				}
 			}

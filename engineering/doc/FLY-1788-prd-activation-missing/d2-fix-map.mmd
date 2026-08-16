@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph SPAWN["三条真实派单路径(全部要修的入口)"]
+        P1["路径 1<br/>fresh 首节点派发<br/>runs-route.ts"]
+        P2["路径 2<br/>引擎后继节点派发<br/>workflow-engine-dispatcher.ts"]
+        P3["路径 3<br/>Lead 手动/网关 retry<br/>actions.ts<br/>(评审第 1 轮抓出:<br/>缺引擎材料,修①够不着)"]
+    end
+
+    P1 --> RD["run-dispatcher.ts<br/>唯一铸造关口<br/>修①:放行条件从<br/>『三角色专属』改成<br/>『引擎派的都铸造』"]
+    P2 --> RD
+    P3 -- "修②:补齐引擎材料<br/>(activation 编号 + 投影回调<br/>+ founder 审阅标记)" --> RD
+
+    RD --> MINT["grantPrelaunchWorkflowTurn<br/>一笔事务写两行:<br/>TURN(轮值权)+<br/>activation(通行证)"]
+    MINT --> CDB[("comm 数据库<br/>runner 查证用")]
+    MINT --> PROJ["修③:引擎账本投影校验<br/>StateStore projector<br/>原只认节点『类型』,<br/>generic 节点会被误判成毒信;<br/>放宽为『类型或名字』二选一,<br/>伪造值照样拒收"]
+
+    style P3 fill:#fff4e0,stroke:#ff9500,stroke-width:2px
+    style RD fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style PROJ fill:#fff4e0,stroke:#ff9500,stroke-width:2px
+    style MINT fill:#e6f9ec,stroke:#34c759,stroke-width:2px

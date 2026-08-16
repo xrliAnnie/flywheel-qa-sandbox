@@ -316,7 +316,17 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		};
 	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
-	const workflowActivation = currentWorkflowCompletionActivationFromEnv(execId);
+	let workflowActivation: ReturnType<
+		typeof currentWorkflowCompletionActivationFromEnv
+	>;
+	try {
+		workflowActivation = currentWorkflowCompletionActivationFromEnv(execId);
+	} catch (error) {
+		console.error(
+			`[complete] workflow activation authority is unavailable; refusing route=${opts.route}. ${error instanceof Error ? error.message : String(error)}`,
+		);
+		process.exit(1);
+	}
 	const founderReviewRequired =
 		process.env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED === "1";
 	if (

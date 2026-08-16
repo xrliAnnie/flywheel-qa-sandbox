@@ -21,6 +21,10 @@ import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import { StateStore } from "../../StateStore.js";
+import {
+	compileWorkflowMenuSeed,
+	loadWorkflowMenuLibrary,
+} from "../../workflow-menu.js";
 import { createActionRouter } from "../actions.js";
 import type { IRetryDispatcher, RetryRequest } from "../retry-dispatcher.js";
 
@@ -104,6 +108,71 @@ function bindPredecessorToGeneralizedWorkflow(): void {
 	store.upsertWorkflowRunNode({
 		runId: "retry-run-1",
 		nodeId: "research",
+		attempt: 2,
+		state: "pending",
+		executionId: "11111111-2222-3333-4444-555555555555",
+	});
+}
+
+function bindPredecessorToPrdWorkflow(): void {
+	for (const [name, value] of Object.entries(WORKFLOW_ON)) {
+		process.env[name] = value;
+	}
+	generalizedRoot = mkdtempSync(join(tmpdir(), "fly1788-actions-prd-"));
+	process.env.HOME = generalizedRoot;
+	mkdirSync(join(generalizedRoot, "agents"), { recursive: true });
+	mkdirSync(join(generalizedRoot, ".flywheel", "menus"), { recursive: true });
+	writeFileSync(
+		join(generalizedRoot, "agents", "generic-executor.md"),
+		"Produce the pinned PRD.\n",
+	);
+	writeFileSync(
+		join(generalizedRoot, ".flywheel", "menus", "ic-roster.yaml"),
+		"pm: agents/generic-executor.md\n",
+	);
+	writeFileSync(
+		join(generalizedRoot, ".flywheel", "menus", "adoption.yaml"),
+		"flywheel-eng-lead:\n  - prd\n",
+	);
+	const seed = compileWorkflowMenuSeed(
+		loadWorkflowMenuLibrary().find((candidate) => candidate.shape === "prd")!,
+	);
+	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+	store.materializeWorkflowRun({
+		runId: "retry-run-1",
+		issueId: "issue-1",
+		projectName: "fly245-d2-route-test",
+		taskCategory: "prd",
+		templateId: seed.templateId,
+		claimsReadEnrolled: true,
+		actor: "test",
+		canonicalRoot: generalizedRoot,
+		env: WORKFLOW_ON,
+		startReservation: {
+			idempotencyKey: "retry-start-1",
+			selectionDigest: "retry-selection-1",
+			nodeId: "produce",
+			attempt: 1,
+			executionId: "pred-1",
+			createdAt: "2026-08-16T00:00:00.000Z",
+		},
+	});
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "retry-run-1",
+			nodeId: "produce",
+			executionId: "pred-1",
+			attempt: 1,
+			now: "2026-08-16T00:00:01.000Z",
+			expiresAt: "2026-08-16T01:00:00.000Z",
+			absoluteDeadlineAt: "2026-08-17T00:00:00.000Z",
+			env: WORKFLOW_ON,
+			idempotencyKey: "retry-start-1",
+		}),
+	).toMatchObject({ ok: true });
+	store.upsertWorkflowRunNode({
+		runId: "retry-run-1",
+		nodeId: "produce",
 		attempt: 2,
 		state: "pending",
 		executionId: "11111111-2222-3333-4444-555555555555",
@@ -357,7 +426,11 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(r.json).toMatchObject({ success: true, pending: true });
 		expect(dispatched).toHaveLength(1);
 		expect(dispatched[0]?.generalizedExecution).toMatchObject({
+			engineOwned: true,
+			activationId: expect.any(String),
 			launchGeneration: 1,
+			capabilities: { founder_review_required: false },
+			projectTurn: expect.any(Function),
 		});
 		dispatched[0]?.generalizedExecution?.prepareWorkflowIssueDelivery?.({
 			sourceKind: "authoritative",
@@ -381,6 +454,53 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(
 			Date.parse(admission!.absoluteDeadlineAt) - Date.parse(admission!.now!),
 		).toBe(24 * 60 * 60_000);
+	});
+
+	it("FLY-1788: a tpl_prd retry carries activation authority and founder-review capability", async () => {
+		bindPredecessorToPrdWorkflow();
+
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+
+		expect(r.status, JSON.stringify(r.json)).toBe(202);
+		expect(dispatched).toHaveLength(1);
+		const workflow = dispatched[0]?.generalizedExecution;
+		expect(workflow).toMatchObject({
+			engineOwned: true,
+			executionId: SUCC,
+			activationId: expect.any(String),
+			runId: "retry-run-1",
+			nodeId: "produce",
+			attempt: 2,
+			capabilities: { founder_review_required: true },
+			projectTurn: expect.any(Function),
+		});
+		expect(
+			workflow?.projectTurn?.({
+				activationId: workflow.activationId!,
+				issueId: "issue-1",
+				executionId: SUCC,
+				epoch: 1,
+				sourceEventId: `turn:spawn:${SUCC}`,
+				grantedAt: "2026-08-16T00:01:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+	});
+
+	it("FLY-1788: a pre-dispatch generic mint failure releases the launch owner", async () => {
+		bindPredecessorToPrdWorkflow();
+		dispatchImpl = async () => {
+			throw new Error("activation mint failed before launch");
+		};
+
+		const r = await postRetry({ execution_id: "pred-1", ...gw });
+
+		expect(r.status).toBe(400);
+		expect(dispatched).toHaveLength(1);
+		expect(store.getWorkflowLaunchOwner(SUCC)).toMatchObject({
+			owner_generation: 1,
+			released_generation: 1,
+			released_reason: expect.stringContaining("dispatcher_start_failed"),
+		});
 	});
 
 	it("still attempts the WAL write and returns accepted-pending when lineage persistence throws", async () => {

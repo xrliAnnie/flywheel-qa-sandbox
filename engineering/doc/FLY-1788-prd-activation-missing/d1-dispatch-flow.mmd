@@ -1,0 +1,16 @@
+flowchart TD
+    A["Founder / Lead 派单<br/>tpl_prd(产品需求文档模板)"] --> B["引擎建 workflow run<br/>状态 = active ✅"]
+    B --> C{"节点是<br/>design / implement / qa<br/>三种流水线角色吗?"}
+    C -- "是(tpl_code 三节点)" --> D["✅ 铸造通行证<br/>TURN + activation<br/>写入 comm 数据库"]
+    C -- "否(tpl_prd 等单节点<br/>= generic 类型)" --> E["❌ 铸造被跳过<br/>(本 bug)"]
+    D --> F["runner 启动干活"]
+    E --> F
+    F --> G["runner 干完,想开<br/>founder 审阅之门<br/>gate founder_review"]
+    G --> H{"comm 数据库里<br/>有通行证吗?"}
+    H -- 有 --> I["✅ 门打开<br/>founder 收到审阅请求"]
+    H -- 没有 --> J["🔒 报错并永久卡死:<br/>founder_review requires a<br/>current workflow activation<br/>(FLY-1782 实测)"]
+
+    style E fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style J fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style D fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style I fill:#e6f9ec,stroke:#34c759,stroke-width:2px
