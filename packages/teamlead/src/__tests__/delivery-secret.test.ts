@@ -1,4 +1,10 @@
-import { chmodSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdtempSync,
+	rmSync,
+	unlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -81,5 +87,40 @@ describe("FileDeliverySecretProvider (FLY-1279 D1)", () => {
 		expect(deriveLeadEventAckToken(after, tuple)).not.toBe(
 			deriveLeadEventAckToken(before, tuple),
 		);
+	});
+
+	/**
+	 * FLY-1809 (Codex review MEDIUM). Every test above hands the provider an
+	 * explicit `secretPath`, so nothing sealed the `FLYWHEEL_DELIVERY_SECRET_PATH`
+	 * fallback — yet that env var is the QA isolation lever. An isolated Bridge
+	 * that fails to honor it resolves the RESIDENT `~/.flywheel/delivery-secret`,
+	 * and provisioning against that Bridge's empty StateStore then runs
+	 * `removeOrphanVersions()` over the production secret versions.
+	 *
+	 * `HOME` is redirected first so this test can go red WITHOUT reproducing that
+	 * damage: if the env read is ever removed, the fallback lands in a throwaway
+	 * dir instead of the real `~/.flywheel`.
+	 */
+	it("FLY-1809 resolves the secret path from FLYWHEEL_DELIVERY_SECRET_PATH", () => {
+		const home = mkdtempSync(join(tmpdir(), "fly1809-home-"));
+		const configured = join(dir, "isolated-slot", "delivery-secret");
+		const prevHome = process.env.HOME;
+		const prevPath = process.env.FLYWHEEL_DELIVERY_SECRET_PATH;
+		process.env.HOME = home;
+		process.env.FLYWHEEL_DELIVERY_SECRET_PATH = configured;
+		try {
+			// No `secretPath` — the env var is the ONLY thing that can steer this.
+			const active = new FileDeliverySecretProvider({ store }).getActive();
+			expect(existsSync(`${configured}.${active.secretId}`)).toBe(true);
+			// and nothing was written to the fallback location
+			expect(existsSync(join(home, ".flywheel"))).toBe(false);
+		} finally {
+			if (prevHome === undefined) delete process.env.HOME;
+			else process.env.HOME = prevHome;
+			if (prevPath === undefined)
+				delete process.env.FLYWHEEL_DELIVERY_SECRET_PATH;
+			else process.env.FLYWHEEL_DELIVERY_SECRET_PATH = prevPath;
+			rmSync(home, { recursive: true, force: true });
+		}
 	});
 });

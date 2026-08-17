@@ -39,6 +39,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",
+	FLYWHEEL_DELIVERY_SECRET_PATH:
+		"plumbing: versioned 0600 HMAC delivery-secret key path (FLY-1279); defaults to ~/.flywheel/delivery-secret and every isolated QA Bridge MUST point it at its own slot dir, moved off the flag table by FLY-1809 because it is a path, not a switch",
 	FLYWHEEL_HOOK_SOURCE_DIR: "plumbing: hook source dir",
 	FLYWHEEL_HOOKS_DIR: "plumbing: hooks dir",
 	FLYWHEEL_BIN_DIR: "plumbing: bin dir",
@@ -189,6 +191,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_NOTIFY_CHANNEL: "config value: restart notification channel id",
 	FLYWHEEL_ROUNDTABLE_GUILD_ID: "config value: roundtable Discord guild id",
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID: "config value: roundtable Discord channel id",
+	FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:
+		"config value: comma-separated cross-department Discord channel ids (FLY-267), read by BOTH the Codex lead-actions MCP child (poll + mention-gate) and the Bridge voice router; configured per Lead via the launcher / ~/.flywheel/.env, moved off the flag table by FLY-1809 because it is a channel id, not a switch",
 	FLYWHEEL_ROUNDTABLE_BOT_TOKEN_ENV:
 		"config value: roundtable bot token env name",
 	FLYWHEEL_ROUNDTABLE_BOT_USER_ID:

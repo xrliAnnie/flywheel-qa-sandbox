@@ -757,26 +757,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 
 	// ─── value-type env (non-boolean) → readonly display ───
-	{
-		name: "lead_cross_dept_channel_ids",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "",
-		description:
-			"Codex Lead poll+mention-gate 的 #leads-roundtable 频道 id（逗号分隔）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/lead-actions/config.ts",
-				"config",
-				"object_construction",
-			),
-		],
-		toggleable: "readonly",
-	},
+	// FLY-1809: `lead_cross_dept_channel_ids` used to sit here. It is a Discord
+	// channel id, not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to
+	// its FLYWHEEL_ROUNDTABLE_CHANNEL_ID sibling. Not deleted (that would inline
+	// the id) and not tombstoned (production still reads it).
 	{
 		name: "reports_ttl_days",
 		category: "feature",
@@ -1435,26 +1419,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"ship-eligibility + verify-approval tests: Bridge env and CLI dotenv readers observe one apply",
 		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
 	},
-	{
-		name: "delivery_secret_path",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DELIVERY_SECRET_PATH",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "~/.flywheel/delivery-secret",
-		description:
-			"FLY-1279: versioned 0600 HMAC key path for per-event ACK bearer capabilities",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/delivery-secret.ts",
-				"FileDeliverySecretProvider constructor",
-				"object_construction",
-			),
-		],
-		toggleable: "readonly",
-	},
+	// FLY-1809: `delivery_secret_path` used to sit here. It is a filesystem path,
+	// not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to the other
+	// plumbing paths. Not deleted (that would inline the path and take the QA
+	// isolation override with it) and not tombstoned (production still reads it).
 	// ─── FLY-1282: zombie-session liveness + folded family defects ───
 	// ─── FLY-1718: re-dispatch inventory reconciliation ───
 	{

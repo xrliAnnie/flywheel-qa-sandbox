@@ -230,6 +230,56 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	/**
+	 * FLY-1809 (from the FLY-1782 audit): these two were never on/off switches —
+	 * one is a Discord channel id, the other a filesystem path. They are MOVED off
+	 * the flag table into the non-flag config registry, NOT deleted (deleting a
+	 * flag means inlining its default, which would hardcode the channel id / path)
+	 * and NOT tombstoned (a tombstone asserts production no longer reads the var —
+	 * both are still read). They therefore do not count toward the cleared-flag
+	 * denominator.
+	 */
+	it("FLY-1809 moves the two config values off the flag table into NON_FLAG_ALLOWLIST", () => {
+		const registeredEnv = new Set(
+			FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+		);
+		const registeredNames = new Set(FEATURE_FLAGS.map((flag) => flag.name));
+		const tombstones = new Set(RETIRED_FLAGS.map((flag) => flag.envVar));
+
+		for (const [envVar, flagName] of [
+			["FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS", "lead_cross_dept_channel_ids"],
+			["FLYWHEEL_DELIVERY_SECRET_PATH", "delivery_secret_path"],
+		] as const) {
+			// off the flag table, by env var AND by flag name
+			expect(registeredEnv.has(envVar), envVar).toBe(false);
+			expect(registeredNames.has(flagName), flagName).toBe(false);
+			// not a tombstone — production still reads it
+			expect(tombstones.has(envVar as never), envVar).toBe(false);
+			// registered as a config value, with a reason
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/config value|plumbing/i,
+			);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/FLY-1809/);
+			// a live `~/.flywheel/.env` carrying it still validates clean
+			expect(validateFlagTruthEnvironment([`${envVar}=x`]), envVar).toEqual({
+				ok: true,
+				errors: [],
+			});
+		}
+	});
+
+	// The other half of "moved, not deleted" — that each value is still really
+	// resolved FROM the environment — is sealed behaviorally, not by scanning
+	// source text here. A lexical scan is the wrong instrument: a commented-out
+	// `process.env.X` satisfies it, and a valid destructured read fails it.
+	//   • FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS — already covered at its parsers
+	//     (lead-actions config, codex-lead-runtime, gateway-main) and in the
+	//     roundtable / mcp-argv suites.
+	//   • FLYWHEEL_DELIVERY_SECRET_PATH — was NOT covered; every provider test
+	//     passed `secretPath` explicitly. Sealed by "FLY-1809 resolves the secret
+	//     path from FLYWHEEL_DELIVERY_SECRET_PATH" in
+	//     packages/teamlead/src/__tests__/delivery-secret.test.ts.
+
 	it("fails tombstones and unknown variables", () => {
 		const tombstone = validateFlagTruthEnvironment([
 			"FLYWHEEL_DETECTION_GAP_SCAN",
