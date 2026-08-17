@@ -1,147 +1,286 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
-import { NON_FLAG_ALLOWLIST, RETIRED_FLAGS } from "../feature-flags/truth.js";
+import {
+	NON_FLAG_ALLOWLIST,
+	NON_FLAG_CONFIG_KEYS,
+	RETIRED_FLAGS,
+} from "../feature-flags/truth.js";
+import {
+	auditFlagAccounts,
+	collectProductionSources,
+	enumerateBooleanConfigPaths,
+	type ReadSiteLike,
+	scanSources,
+	validateReadSiteEvidence,
+} from "./drift-scan/index.js";
 
-// FLY-709 F5: two-way drift guard. Keep the registry and the code in sync so a
-// NEW `FLYWHEEL_*` boolean gate added to production code but not registered fails
-// CI, and every registered env flag really is read where the registry claims.
-//
-// First version (Codex-endorsed): a SCOPED scan of production runtime `src`
-// dirs (excludes tests/dist/node_modules). The forward direction (no silent new
-// gate) uses a `process.env.FLYWHEEL_*` regex; plumbing / value / context vars
-// are excluded via an allowlist WITH A REASON. The reverse direction (registered
-// → read) checks the flag's declared readSite FILE actually contains the env var
-// (robust to read form: process.env.X, injected `env.X`, destructured). A full
-// AST scanner is a follow-up.
-
+// FLY-1455: the registry-or-owned-exemption invariant runs over every package
+// production src plus production TS/MJS/shell scripts. AST hits are the only
+// TypeScript/MJS authority; regex candidates are diagnostic cross-checks.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
-
-const SCAN_DIRS = [
-	"packages/teamlead/src",
-	"packages/config/src",
-	"packages/flywheel-comm/src",
-	"packages/edge-worker/src",
-];
-
-/**
- * `FLYWHEEL_*` env vars that are NOT on/off feature gates — runtime context,
- * plumbing, ids, paths, tuning knobs, secrets, value config. Each MUST carry a
- * reason. If you add a real feature gate, register it instead of allowlisting.
- */
-function walk(dir: string, out: string[]): void {
-	let entries: string[];
-	try {
-		entries = readdirSync(dir);
-	} catch {
-		return;
-	}
-	for (const e of entries) {
-		const p = join(dir, e);
-		if (statSync(p).isDirectory()) {
-			if (e === "__tests__" || e === "node_modules" || e === "dist") continue;
-			walk(p, out);
-		} else if (
-			e.endsWith(".ts") &&
-			!e.endsWith(".test.ts") &&
-			!e.endsWith(".d.ts")
-		) {
-			out.push(p);
-		}
-	}
-}
-
-// Direct `process.env.X` reads (broad — plumbing/value vars are allowlisted).
-// PLUS injected `env.X` reads (function-parameter reads like
-// `env.FLYWHEEL_STUCK_DETECT !== "0"`, which the process.env scan missed — Codex
-// R1 HIGH), but ONLY anchored to a BOOLEAN-GATE comparison (=== / !== "0"|"1"|
-// "true"|"false"). Matching every `env.X` catches dozens of injected config
-// VALUES (channel ids, thresholds, paths) that are not gates — the boolean
-// anchor isolates real on/off gates and keeps the guard low-noise.
-const BOOL_CMP = String.raw`\s*(?:===|!==)\s*["'](?:0|1|true|false)["']`;
-const ENV_PATTERNS = [
-	/process\.env\.(FLYWHEEL_[A-Z0-9_]+)/g,
-	/process\.env\[\s*["'](FLYWHEEL_[A-Z0-9_]+)["']\s*\]/g,
-	new RegExp(String.raw`\benv\.(FLYWHEEL_[A-Z0-9_]+)` + BOOL_CMP, "g"),
-	new RegExp(
-		String.raw`\benv\[\s*["'](FLYWHEEL_[A-Z0-9_]+)["']\s*\]` + BOOL_CMP,
-		"g",
+const sources = collectProductionSources(REPO_ROOT);
+const sourceByFile = new Map(
+	sources.map((source) => [source.file, source.text]),
+);
+const scan = scanSources(sources);
+const configPaths = enumerateBooleanConfigPaths(
+	join(REPO_ROOT, "packages/config/src/types.ts"),
+);
+const registeredEnvVars = new Set(
+	FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
+);
+const registeredConfigKeys = new Set(
+	FEATURE_FLAGS.flatMap((flag) =>
+		flag.valueKind === "bool" && flag.configKey ? [flag.configKey] : [],
 	),
-];
-
-function scanFlywheelEnvNames(): Set<string> {
-	const files: string[] = [];
-	for (const d of SCAN_DIRS) walk(join(REPO_ROOT, d), files);
-	const names = new Set<string>();
-	for (const f of files) {
-		const src = readFileSync(f, "utf-8");
-		for (const re of ENV_PATTERNS) {
-			re.lastIndex = 0;
-			let m: RegExpExecArray | null = re.exec(src);
-			while (m !== null) {
-				names.add(m[1] as string);
-				m = re.exec(src);
-			}
-		}
-	}
-	return names;
-}
+);
 
 describe("feature-flag drift guard", () => {
-	const registeredEnvVars = new Set(
-		FEATURE_FLAGS.filter((f) => f.envVar).map((f) => f.envVar as string),
-	);
-
-	it("scanner finds FLYWHEEL_* env reads in production src", () => {
-		const found = scanFlywheelEnvNames();
-		expect(found.size).toBeGreaterThan(5);
-		// a known gate read via direct process.env access
-		expect(found.has("FLYWHEEL_DESIGN_HTML_GATE")).toBe(true);
+	it("scans every production package root plus root/package scripts", () => {
+		expect(
+			sources.some((source) =>
+				source.file.startsWith("packages/claude-runner/src/"),
+			),
+		).toBe(true);
+		expect(
+			sources.some((source) =>
+				source.file.startsWith("packages/voice-bridge/src/"),
+			),
+		).toBe(true);
+		expect(sources.some((source) => source.file.endsWith(".mjs"))).toBe(true);
+		expect(
+			sources.some(
+				(source) =>
+					source.file === "packages/onboard-shell/bin/flywheel-onboard.js",
+			),
+		).toBe(true);
+		expect(
+			sources.some(
+				(source) => source.file === "packages/onboard-shell/lib/key.mjs",
+			),
+		).toBe(true);
+		expect(
+			sources.some(
+				(source) =>
+					source.file.startsWith("scripts/") && source.file.endsWith(".sh"),
+			),
+		).toBe(true);
+		expect(
+			sources.some(
+				(source) =>
+					source.file.startsWith("scripts/") && source.file.endsWith(".ts"),
+			),
+		).toBe(true);
 	});
 
-	it("every registered env flag is read where its readSite file claims", () => {
+	it("parses every TypeScript/MJS source and reconciles every code regex occurrence", () => {
+		expect(
+			scan.diagnostics,
+			`drift scanner diagnostics:\n${scan.diagnostics.join("\n")}`,
+		).toEqual([]);
+	});
+
+	it("finds known direct, helper, MJS, and shell gates", () => {
+		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
+		expect(found.has("FLYWHEEL_DESIGN_HTML_GATE")).toBe(true);
+		expect(found.has("FLYWHEEL_MERGE_APPROVAL_GATE")).toBe(true);
+		expect(found.has("FLYWHEEL_CONVERGE_CMUX_SYMLINK")).toBe(true);
+	});
+
+	it("validates every declared readSite with pattern-aware code evidence", () => {
 		const missing: string[] = [];
 		for (const flag of FEATURE_FLAGS) {
-			if (!flag.envVar) continue;
-			const found = flag.readSites.some((s) => {
-				try {
-					return readFileSync(join(REPO_ROOT, s.file), "utf-8").includes(
-						flag.envVar as string,
+			for (const site of flag.readSites) {
+				const text = sourceByFile.get(site.file);
+				if (text === undefined) {
+					missing.push(
+						`${flag.name} @ ${site.file}: production file not scanned`,
 					);
-				} catch {
-					return false;
+					continue;
 				}
-			});
-			if (!found) missing.push(`${flag.name} (${flag.envVar})`);
+				const issue = validateReadSiteEvidence({
+					file: site.file,
+					text,
+					site: site as ReadSiteLike,
+					envVar: flag.envVar,
+					configKey: flag.configKey,
+				});
+				if (issue) missing.push(`${flag.name} @ ${site.file}: ${issue}`);
+			}
 		}
 		expect(
 			missing,
-			`registered but not found in readSite file: ${missing.join(", ")}`,
+			`registered readSite evidence missing:\n${missing.join("\n")}`,
 		).toEqual([]);
 	});
 
-	it("no silent new gate: every scanned FLYWHEEL_* is registered or allowlisted", () => {
-		const found = scanFlywheelEnvNames();
-		const unregistered = [...found].filter(
-			(v) => !registeredEnvVars.has(v) && !(v in NON_FLAG_ALLOWLIST),
-		);
+	it("pins migrated config, delegated, and dynamic readSite identities", () => {
 		expect(
-			unregistered,
-			`new FLYWHEEL_* env not registered or allowlisted (register it, or add to NON_FLAG_ALLOWLIST with a reason): ${unregistered.join(", ")}`,
-		).toEqual([]);
+			FEATURE_FLAGS.find((flag) => flag.name === "checkpoint_enabled")
+				?.readSites[0],
+		).toEqual({
+			file: "packages/edge-worker/src/Blueprint.ts",
+			symbol: "Blueprint.runInner",
+			pattern: "config",
+			timing: "call_time",
+			configAccess: "cpConfig.enabled",
+		});
+
+		const configFlags = new Set([
+			"qa_auto",
+			"doc_flow",
+			"skill_framework_split_participation",
+			"proofshot",
+			"xiaohongshu_learning",
+			"ponytail",
+			"founder_ux_gate",
+		]);
+		expect(
+			FEATURE_FLAGS.filter((flag) => configFlags.has(flag.name)).map(
+				(flag) => ({
+					name: flag.name,
+					site: flag.readSites[0],
+				}),
+			),
+		).toEqual([
+			{
+				name: "qa_auto",
+				site: {
+					file: "packages/teamlead/src/bridge/auto-qa-policy.ts",
+					symbol: "resolveAutoQaPolicy",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "cfg.auto",
+				},
+			},
+			{
+				name: "doc_flow",
+				site: {
+					file: "packages/edge-worker/src/Blueprint.ts",
+					symbol: "Blueprint.runInner",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "this.docFlowConfig.enabled",
+				},
+			},
+			{
+				name: "skill_framework_split_participation",
+				site: {
+					file: "packages/teamlead/src/bridge/skill-framework-participation.ts",
+					symbol: "makeSkillFrameworkParticipationReader",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "skillFramework.split",
+				},
+			},
+			{
+				name: "proofshot",
+				site: {
+					file: "packages/config/src/ConfigLoader.ts",
+					symbol: "ConfigLoader.validate",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "ps.enabled",
+				},
+			},
+			{
+				name: "xiaohongshu_learning",
+				site: {
+					file: "packages/config/src/ConfigLoader.ts",
+					symbol: "ConfigLoader.validate",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "xhs.enabled",
+				},
+			},
+			{
+				name: "ponytail",
+				site: {
+					file: "packages/config/src/ConfigLoader.ts",
+					symbol: "ConfigLoader.validate",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "ponytail.enabled",
+				},
+			},
+			{
+				name: "founder_ux_gate",
+				site: {
+					file: "packages/config/src/ConfigLoader.ts",
+					symbol: "ConfigLoader.validate",
+					pattern: "config",
+					timing: "call_time",
+					configAccess: "founderUxGate.mode",
+				},
+			},
+		]);
+
+		expect(
+			FEATURE_FLAGS.flatMap((flag) =>
+				flag.readSites
+					.filter((site) => site.pattern === "delegated")
+					.map((site) => ({ name: flag.name, site })),
+			),
+		).toEqual([
+			{
+				name: "codex_hard_gate_killswitch",
+				site: {
+					file: "packages/teamlead/src/bridge/auto-qa-held.ts",
+					symbol: "codexHardGateEnabled",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/codex-gate.ts",
+					resolverSymbol: "codexHardGateEnabled",
+				},
+			},
+		]);
+
+		expect(
+			FEATURE_FLAGS.flatMap((flag) =>
+				flag.readSites
+					.filter((site) => site.pattern === "dynamic")
+					.map((site) => `${flag.name}:${site.symbol}`),
+			),
+		).toEqual([
+			"mailbox_queue:resolveLiveMailboxQueueEnabled",
+			"converge_cmux_symlink:converge_cmux_symlink",
+			"cmux_linked_view:load_cmux_bool_flag",
+			"merge_approval_gate_killswitch:resolveDefaultOnGate",
+			"qa_done_gate_killswitch:resolveDefaultOnGate",
+			"workflow_claims_read:resolveDefaultOffGate",
+			"workflow_claims_read:verifyApprovalWithBridgeHead",
+		]);
 	});
 
-	it("no retired tombstone is still read as a production boolean gate", () => {
-		const found = scanFlywheelEnvNames();
-		const revived = RETIRED_FLAGS.map((flag) => flag.envVar).filter((envVar) =>
-			found.has(envVar),
+	it("enforces registry-or-reasoned-accounting for every env/config boolean", () => {
+		const issues = auditFlagAccounts({
+			rawCodeHits: scan.rawCodeHits,
+			configPaths,
+			registeredEnvVars,
+			registeredConfigKeys,
+			nonFlagEnv: NON_FLAG_ALLOWLIST,
+			nonFlagConfigKeys: NON_FLAG_CONFIG_KEYS,
+			exemptions: FLAG_EXEMPTIONS,
+			retiredEnvVars: new Set(RETIRED_FLAGS.map((flag) => flag.envVar)),
+		});
+		expect(issues, `flag accounting violations:\n${issues.join("\n")}`).toEqual(
+			[],
 		);
-		expect(
-			revived,
-			`retired FLYWHEEL_* tombstone still has a production gate read: ${revived.join(", ")}`,
-		).toEqual([]);
+	});
+
+	it("keeps drift tooling test-only and out of production package exports", () => {
+		for (const file of ["src/index.ts", "src/feature-flags/index.ts"]) {
+			const text = readFileSync(
+				join(REPO_ROOT, "packages/config", file),
+				"utf8",
+			);
+			expect(text).not.toContain("drift-scan");
+			expect(text).not.toContain("exemptions");
+		}
 	});
 });

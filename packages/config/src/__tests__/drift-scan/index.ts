@@ -1,0 +1,908 @@
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import ts from "typescript";
+import type { FlagExemption } from "../../feature-flags/exemptions.js";
+
+const FLAG_NAME_RE = /^FLYWHEEL_[A-Z0-9_]+$/;
+const BOOL_LITERAL = "(?:0|1|true|false)";
+
+export interface ScanSource {
+	file: string;
+	text: string;
+}
+
+export interface CodeHit {
+	name: string;
+	file: string;
+	form: string;
+	start: number;
+	end: number;
+}
+
+export interface RegexCandidate extends CodeHit {}
+
+export interface ScanResult {
+	rawCodeHits: CodeHit[];
+	regexCandidates: RegexCandidate[];
+	diagnostics: string[];
+}
+
+export interface ReadSiteLike {
+	file: string;
+	symbol: string;
+	pattern: "process.env" | "env-param" | "dynamic" | "config" | "delegated";
+	timing: string;
+	resolverModule?: string;
+	resolverSymbol?: string;
+	configAccess?: string;
+}
+
+const REGEX_PATTERNS = [
+	/process\.env\.(FLYWHEEL_[A-Z0-9_]+)/g,
+	/process\.env\[\s*["'](FLYWHEEL_[A-Z0-9_]+)["']\s*\]/g,
+	new RegExp(
+		String.raw`\benv\.(FLYWHEEL_[A-Z0-9_]+)\s*(?:===|!==)\s*["']${BOOL_LITERAL}["']`,
+		"g",
+	),
+	new RegExp(
+		String.raw`\benv\[\s*["'](FLYWHEEL_[A-Z0-9_]+)["']\s*\]\s*(?:===|!==)\s*["']${BOOL_LITERAL}["']`,
+		"g",
+	),
+];
+
+function scriptKind(file: string): ts.ScriptKind {
+	return file.endsWith(".mjs") || file.endsWith(".js")
+		? ts.ScriptKind.JS
+		: ts.ScriptKind.TS;
+}
+
+function normalizeFile(path: string): string {
+	return path.split("\\").join("/");
+}
+
+const DEFAULT_SCAN_EXCLUDED_DIRS = new Set([
+	"__mocks__",
+	"__tests__",
+	"dist",
+	"node_modules",
+]);
+const PACKAGE_SCAN_EXCLUDED_DIRS = new Set([
+	...DEFAULT_SCAN_EXCLUDED_DIRS,
+	"coverage",
+	"e2e",
+	"examples",
+	"test-scripts",
+]);
+
+function walkFiles(
+	dir: string,
+	include: (file: string) => boolean,
+	excludedDirs: ReadonlySet<string> = DEFAULT_SCAN_EXCLUDED_DIRS,
+): string[] {
+	if (!existsSync(dir)) return [];
+	const found: string[] = [];
+	for (const entry of readdirSync(dir).sort()) {
+		if (excludedDirs.has(entry)) {
+			continue;
+		}
+		const path = join(dir, entry);
+		if (statSync(path).isDirectory()) {
+			found.push(...walkFiles(path, include, excludedDirs));
+		} else if (include(path)) found.push(path);
+	}
+	return found;
+}
+
+function isTestInfrastructure(file: string): boolean {
+	const normalized = normalizeFile(file);
+	return (
+		/\/vitest[.](?:config|setup)[.](?:js|mjs|ts)$/.test(normalized) ||
+		/\/test\/(?:fixtures|setup)[.](?:js|mjs|ts)$/.test(normalized)
+	);
+}
+
+function isProductionCode(file: string): boolean {
+	return (
+		(file.endsWith(".ts") || file.endsWith(".mjs") || file.endsWith(".js")) &&
+		!/[.](?:spec|test)[.](?:js|mjs|ts)$/.test(file) &&
+		!file.endsWith(".d.ts") &&
+		!isTestInfrastructure(file)
+	);
+}
+
+function isProductionScript(file: string): boolean {
+	return (
+		(isProductionCode(file) || file.endsWith(".sh")) &&
+		!file.endsWith(".test.sh")
+	);
+}
+
+export function collectProductionSources(repoRoot: string): ScanSource[] {
+	const files: string[] = [];
+	const packagesDir = join(repoRoot, "packages");
+	if (existsSync(packagesDir)) {
+		for (const packageName of readdirSync(packagesDir).sort()) {
+			const packageRoot = join(packagesDir, packageName);
+			if (!statSync(packageRoot).isDirectory()) continue;
+			files.push(
+				...walkFiles(
+					packageRoot,
+					isProductionScript,
+					PACKAGE_SCAN_EXCLUDED_DIRS,
+				),
+			);
+		}
+	}
+	files.push(...walkFiles(join(repoRoot, "scripts"), isProductionScript));
+	return [...new Set(files)].sort().map((file) => ({
+		file: normalizeFile(relative(repoRoot, file)),
+		text: readFileSync(file, "utf8"),
+	}));
+}
+
+export function findRegexCandidates(source: ScanSource): RegexCandidate[] {
+	const candidates: RegexCandidate[] = [];
+	for (const pattern of REGEX_PATTERNS) {
+		pattern.lastIndex = 0;
+		let match = pattern.exec(source.text);
+		while (match) {
+			candidates.push({
+				name: match[1] as string,
+				file: source.file,
+				form: "regex-candidate",
+				start: match.index,
+				end: match.index + match[0].length,
+			});
+			match = pattern.exec(source.text);
+		}
+	}
+	return candidates.filter(
+		(candidate, index) =>
+			candidates.findIndex(
+				(other) =>
+					other.name === candidate.name &&
+					other.start === candidate.start &&
+					other.end === candidate.end,
+			) === index,
+	);
+}
+
+function candidateStartsInTrivia(
+	source: ScanSource,
+	position: number,
+): boolean {
+	const scanner = ts.createScanner(
+		ts.ScriptTarget.Latest,
+		false,
+		ts.LanguageVariant.Standard,
+		source.text,
+	);
+	const trivia = new Set([
+		ts.SyntaxKind.SingleLineCommentTrivia,
+		ts.SyntaxKind.MultiLineCommentTrivia,
+		ts.SyntaxKind.StringLiteral,
+		ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+		ts.SyntaxKind.TemplateHead,
+		ts.SyntaxKind.TemplateMiddle,
+		ts.SyntaxKind.TemplateTail,
+	]);
+	let token = scanner.scan();
+	while (token !== ts.SyntaxKind.EndOfFileToken) {
+		if (scanner.getTokenPos() <= position && position < scanner.getTextPos()) {
+			return trivia.has(token);
+		}
+		token = scanner.scan();
+	}
+	return false;
+}
+
+export function reconcileRegexCandidates(
+	source: ScanSource,
+	candidates: readonly RegexCandidate[],
+	hits: readonly CodeHit[],
+): string[] {
+	return candidates
+		.filter((candidate) => !candidateStartsInTrivia(source, candidate.start))
+		.filter(
+			(candidate) =>
+				!hits.some(
+					(hit) =>
+						hit.file === candidate.file &&
+						hit.name === candidate.name &&
+						hit.start < candidate.end &&
+						candidate.start < hit.end,
+				),
+		)
+		.map(
+			(candidate) =>
+				`${candidate.file}: unmatched ${candidate.name} regex occurrence at ${candidate.start}`,
+		);
+}
+
+function diagnosticText(diagnostic: ts.Diagnostic): string {
+	return ts.flattenDiagnosticMessageText(diagnostic.messageText, " ");
+}
+
+function addHit(
+	hits: CodeHit[],
+	source: ScanSource,
+	name: string,
+	form: string,
+	node: ts.Node,
+): void {
+	if (!FLAG_NAME_RE.test(name)) return;
+	const hit = {
+		name,
+		file: source.file,
+		form,
+		start: node.getStart(),
+		end: node.getEnd(),
+	};
+	if (
+		!hits.some(
+			(other) =>
+				other.file === hit.file &&
+				other.name === hit.name &&
+				other.start === hit.start &&
+				other.end === hit.end,
+		)
+	) {
+		hits.push(hit);
+	}
+}
+
+function isProcessEnv(node: ts.Expression | undefined): boolean {
+	return Boolean(
+		node &&
+			ts.isPropertyAccessExpression(node) &&
+			node.name.text === "env" &&
+			ts.isIdentifier(node.expression) &&
+			node.expression.text === "process",
+	);
+}
+
+function scanCode(source: ScanSource): ScanResult {
+	const candidates = findRegexCandidates(source);
+	const file = ts.createSourceFile(
+		source.file,
+		source.text,
+		ts.ScriptTarget.Latest,
+		true,
+		scriptKind(source.file),
+	);
+	const parseDiagnostics = (
+		file as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }
+	).parseDiagnostics;
+	if (!Array.isArray(parseDiagnostics)) {
+		return {
+			rawCodeHits: [],
+			regexCandidates: candidates,
+			diagnostics: [
+				`${source.file}: parse error: TypeScript parser diagnostics unavailable`,
+			],
+		};
+	}
+	if (parseDiagnostics?.length) {
+		return {
+			rawCodeHits: [],
+			regexCandidates: candidates,
+			diagnostics: parseDiagnostics.map(
+				(diagnostic) =>
+					`${source.file}: parse error: ${diagnosticText(diagnostic)}`,
+			),
+		};
+	}
+
+	const stringKeys = new Map<string, string>();
+	const gatherKeys = (node: ts.Node): void => {
+		if (
+			ts.isVariableDeclaration(node) &&
+			ts.isIdentifier(node.name) &&
+			node.initializer &&
+			ts.isStringLiteralLike(node.initializer) &&
+			FLAG_NAME_RE.test(node.initializer.text)
+		) {
+			stringKeys.set(node.name.text, node.initializer.text);
+		}
+		ts.forEachChild(node, gatherKeys);
+	};
+	gatherKeys(file);
+
+	const hits: CodeHit[] = [];
+	const visit = (node: ts.Node): void => {
+		if (ts.isPropertyAccessExpression(node)) {
+			addHit(hits, source, node.name.text, "property", node);
+		}
+		if (ts.isElementAccessExpression(node) && node.argumentExpression) {
+			const argument = node.argumentExpression;
+			if (ts.isStringLiteralLike(argument)) {
+				addHit(hits, source, argument.text, "element", node);
+			} else if (ts.isIdentifier(argument)) {
+				const name = stringKeys.get(argument.text);
+				if (name) addHit(hits, source, name, "const-key", node);
+			}
+		}
+		if (
+			ts.isVariableDeclaration(node) &&
+			ts.isObjectBindingPattern(node.name) &&
+			isProcessEnv(node.initializer)
+		) {
+			for (const element of node.name.elements) {
+				const property = element.propertyName ?? element.name;
+				if (ts.isIdentifier(property) || ts.isStringLiteralLike(property)) {
+					addHit(hits, source, property.text, "destructure", element);
+				}
+			}
+		}
+		if (ts.isCallExpression(node)) {
+			for (const argument of node.arguments) {
+				if (ts.isStringLiteralLike(argument)) {
+					addHit(hits, source, argument.text, "helper-key", argument);
+				} else if (ts.isIdentifier(argument)) {
+					const name = stringKeys.get(argument.text);
+					if (name) addHit(hits, source, name, "const-key", argument);
+				}
+			}
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+
+	return {
+		rawCodeHits: hits,
+		regexCandidates: candidates,
+		diagnostics: reconcileRegexCandidates(source, candidates, hits),
+	};
+}
+
+function shellMentions(line: string): Array<{ name: string; start: number }> {
+	const found: Array<{ name: string; start: number }> = [];
+	const pattern = /\$\{?(FLYWHEEL_[A-Z0-9_]+)/g;
+	let match = pattern.exec(line);
+	while (match) {
+		found.push({ name: match[1] as string, start: match.index });
+		match = pattern.exec(line);
+	}
+	return found;
+}
+
+function isShellConditional(line: string): boolean {
+	return /(?:^\s*(?:if\b|elif\b|while\b|\[|\[\[|test\b)|&&\s*(?:\[|\[\[|test\b))/.test(
+		line,
+	);
+}
+
+function shellBoolComparison(line: string): boolean {
+	return new RegExp(
+		String.raw`(?:=|==|!=)\s*["']?${BOOL_LITERAL}["']?`,
+		"i",
+	).test(line);
+}
+
+function scanShell(source: ScanSource): ScanResult {
+	const hits: CodeHit[] = [];
+	const lines = source.text.split(/\r?\n/);
+	let offset = 0;
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index] as string;
+		if (/^\s*#/.test(line)) {
+			offset += line.length + 1;
+			continue;
+		}
+		const mentions = shellMentions(line);
+		for (const mention of mentions) {
+			const node = {
+				getStart: () => offset + mention.start,
+				getEnd: () => offset + mention.start + mention.name.length,
+			} as ts.Node;
+			if (isShellConditional(line) && shellBoolComparison(line)) {
+				addHit(hits, source, mention.name, "shell-comparison", node);
+			}
+			if (isShellConditional(line) && /\s-(?:n|z)\s/.test(line)) {
+				addHit(hits, source, mention.name, "shell-presence", node);
+			}
+			if (
+				isShellConditional(line) &&
+				new RegExp(
+					String.raw`\$\{${mention.name}:-${BOOL_LITERAL}\}`,
+					"i",
+				).test(line)
+			) {
+				addHit(hits, source, mention.name, "shell-bool-default", node);
+			}
+			if (
+				new RegExp(
+					String.raw`(?:^|\s)(?:local\s+)?[A-Za-z_][A-Za-z0-9_]*=["']?\$\{${mention.name}:-${BOOL_LITERAL}\}`,
+					"i",
+				).test(line)
+			) {
+				addHit(hits, source, mention.name, "shell-alias", node);
+			}
+			if (/^\s*case\b/.test(line)) {
+				const body = lines.slice(index + 1, index + 12).join("\n");
+				if (
+					new RegExp(
+						String.raw`(?:^\s*|\|)${BOOL_LITERAL}(?:\|${BOOL_LITERAL})*\)`,
+						"im",
+					).test(body)
+				) {
+					addHit(hits, source, mention.name, "shell-case", node);
+				}
+			}
+		}
+		offset += line.length + 1;
+	}
+	return { rawCodeHits: hits, regexCandidates: [], diagnostics: [] };
+}
+
+export function scanSources(sources: readonly ScanSource[]): ScanResult {
+	const result: ScanResult = {
+		rawCodeHits: [],
+		regexCandidates: [],
+		diagnostics: [],
+	};
+	for (const source of sources) {
+		const scanned = source.file.endsWith(".sh")
+			? scanShell(source)
+			: scanCode(source);
+		result.rawCodeHits.push(...scanned.rawCodeHits);
+		result.regexCandidates.push(...scanned.regexCandidates);
+		result.diagnostics.push(...scanned.diagnostics);
+	}
+	return result;
+}
+
+function isBooleanType(checker: ts.TypeChecker, type: ts.Type): boolean {
+	const narrowed = checker.getNonNullableType(type);
+	if (narrowed.isUnion()) {
+		return narrowed.types.every(
+			(member) =>
+				(member.flags &
+					(ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !==
+				0,
+		);
+	}
+	return (
+		(narrowed.flags & (ts.TypeFlags.Boolean | ts.TypeFlags.BooleanLiteral)) !==
+		0
+	);
+}
+
+export function enumerateBooleanConfigPaths(typesFile: string): string[] {
+	const program = ts.createProgram({
+		rootNames: [typesFile],
+		options: {
+			target: ts.ScriptTarget.ES2022,
+			module: ts.ModuleKind.NodeNext,
+			moduleResolution: ts.ModuleResolutionKind.NodeNext,
+			noEmit: true,
+			skipLibCheck: true,
+		},
+	});
+	const checker = program.getTypeChecker();
+	const file = program.getSourceFile(typesFile);
+	if (!file) throw new Error(`cannot load config schema ${typesFile}`);
+	const declaration = file.statements.find(
+		(statement): statement is ts.InterfaceDeclaration =>
+			ts.isInterfaceDeclaration(statement) &&
+			statement.name.text === "FlywheelConfig",
+	);
+	if (!declaration) throw new Error("FlywheelConfig interface not found");
+	const symbol = checker.getSymbolAtLocation(declaration.name);
+	if (!symbol) throw new Error("FlywheelConfig symbol not found");
+
+	const paths = new Set<string>();
+	const visit = (type: ts.Type, path: string, depth: number): void => {
+		if (depth > 12)
+			throw new Error(`config schema recursion too deep at ${path}`);
+		const narrowed = checker.getNonNullableType(type);
+		if (isBooleanType(checker, narrowed)) {
+			paths.add(path);
+			return;
+		}
+		if (checker.isArrayType(narrowed) || checker.isTupleType(narrowed)) {
+			const element = checker.getIndexTypeOfType(narrowed, ts.IndexKind.Number);
+			if (element) visit(element, `${path}[]`, depth + 1);
+			return;
+		}
+		const stringIndex = checker.getIndexTypeOfType(
+			narrowed,
+			ts.IndexKind.String,
+		);
+		if (stringIndex) visit(stringIndex, `${path}.*`, depth + 1);
+		for (const property of checker.getPropertiesOfType(narrowed)) {
+			const location = property.valueDeclaration ?? property.declarations?.[0];
+			if (!location) continue;
+			const propertyType = checker.getTypeOfSymbolAtLocation(
+				property,
+				location,
+			);
+			visit(
+				propertyType,
+				path ? `${path}.${property.name}` : property.name,
+				depth + 1,
+			);
+		}
+	};
+	visit(checker.getDeclaredTypeOfSymbol(symbol), "", 0);
+	return [...paths].sort();
+}
+
+export interface AuditFlagAccountsInput {
+	rawCodeHits: readonly CodeHit[];
+	configPaths: readonly string[];
+	registeredEnvVars: ReadonlySet<string>;
+	registeredConfigKeys: ReadonlySet<string>;
+	nonFlagEnv: Readonly<Record<string, string>>;
+	nonFlagConfigKeys: Readonly<Record<string, string>>;
+	exemptions: readonly FlagExemption[];
+	retiredEnvVars: ReadonlySet<string>;
+}
+
+function duplicateValues(values: readonly string[]): string[] {
+	return [
+		...new Set(
+			values.filter((value, index) => values.indexOf(value) !== index),
+		),
+	];
+}
+
+export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
+	const issues: string[] = [];
+	const envNames = new Set(input.rawCodeHits.map((hit) => hit.name));
+	const configPaths = new Set(input.configPaths);
+	const envExemptions = new Set(
+		input.exemptions
+			.filter((entry) => entry.kind === "env")
+			.map((entry) => entry.name),
+	);
+	const configExemptions = new Set(
+		input.exemptions
+			.filter((entry) => entry.kind === "config_key")
+			.map((entry) => entry.name),
+	);
+
+	for (const name of [...envNames].sort()) {
+		if (input.retiredEnvVars.has(name)) {
+			issues.push(`retired env flag ${name} has a production boolean read`);
+		}
+		if (
+			!input.registeredEnvVars.has(name) &&
+			!(name in input.nonFlagEnv) &&
+			!envExemptions.has(name)
+		) {
+			issues.push(
+				`${name}: register it, classify it in NON_FLAG_ALLOWLIST with a reason, or add an owned FLAG_EXEMPTION`,
+			);
+		}
+	}
+	for (const path of [...configPaths].sort()) {
+		if (
+			!input.registeredConfigKeys.has(path) &&
+			!(path in input.nonFlagConfigKeys) &&
+			!configExemptions.has(path)
+		) {
+			issues.push(
+				`${path}: register this boolean config gate, classify it in NON_FLAG_CONFIG_KEYS with a reason, or add an owned FLAG_EXEMPTION`,
+			);
+		}
+	}
+
+	for (const [name, reason] of Object.entries(input.nonFlagEnv)) {
+		if (!reason.trim())
+			issues.push(`blank NON_FLAG_ALLOWLIST reason for ${name}`);
+	}
+	for (const [name, reason] of Object.entries(input.nonFlagConfigKeys)) {
+		if (!reason.trim())
+			issues.push(`blank NON_FLAG_CONFIG_KEYS reason for ${name}`);
+	}
+	for (const exemption of input.exemptions) {
+		if (!exemption.reason.trim() || !exemption.owner.trim()) {
+			issues.push(
+				`blank exemption reason/owner for ${exemption.kind}:${exemption.name}`,
+			);
+		}
+	}
+	for (const key of duplicateValues(
+		input.exemptions.map((entry) => `${entry.kind}:${entry.name}`),
+	)) {
+		issues.push(`duplicate FLAG_EXEMPTION ${key}`);
+	}
+
+	for (const name of input.registeredEnvVars) {
+		if (name in input.nonFlagEnv) issues.push(`ledger overlap for env ${name}`);
+		if (envExemptions.has(name)) issues.push(`ledger overlap for env ${name}`);
+		if (input.retiredEnvVars.has(name))
+			issues.push(`ledger overlap for env ${name}`);
+	}
+	for (const name of Object.keys(input.nonFlagEnv)) {
+		if (envExemptions.has(name) || input.retiredEnvVars.has(name)) {
+			issues.push(`ledger overlap for env ${name}`);
+		}
+	}
+	for (const name of envExemptions) {
+		if (input.retiredEnvVars.has(name))
+			issues.push(`ledger overlap for env ${name}`);
+		if (!envNames.has(name)) issues.push(`stale env FLAG_EXEMPTION ${name}`);
+	}
+	for (const path of input.registeredConfigKeys) {
+		if (path in input.nonFlagConfigKeys || configExemptions.has(path)) {
+			issues.push(`ledger overlap for config key ${path}`);
+		}
+		if (!configPaths.has(path)) {
+			issues.push(`stale registered config key ${path}`);
+		}
+	}
+	for (const path of Object.keys(input.nonFlagConfigKeys)) {
+		if (configExemptions.has(path)) {
+			issues.push(`ledger overlap for config key ${path}`);
+		}
+	}
+	for (const path of configExemptions) {
+		if (!configPaths.has(path))
+			issues.push(`stale config FLAG_EXEMPTION ${path}`);
+	}
+	return [...new Set(issues)];
+}
+
+function sourceFile(source: ScanSource): ts.SourceFile {
+	return ts.createSourceFile(
+		source.file,
+		source.text,
+		ts.ScriptTarget.Latest,
+		true,
+		scriptKind(source.file),
+	);
+}
+
+function normalizedImportTarget(importer: string, target: string): string {
+	const base = normalizeFile(join(dirname(importer), target));
+	return base.replace(/\.(?:js|mjs)$/, ".ts");
+}
+
+function containsIdentifierEvidence(
+	file: ts.SourceFile,
+	symbol: string,
+): boolean {
+	let found = false;
+	const visit = (node: ts.Node): void => {
+		if (found) return;
+		if (
+			(ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+			node.name?.text === symbol
+		) {
+			found = true;
+			return;
+		}
+		if (
+			(ts.isVariableDeclaration(node) || ts.isMethodDeclaration(node)) &&
+			node.name &&
+			ts.isIdentifier(node.name) &&
+			node.name.text === symbol
+		) {
+			found = true;
+			return;
+		}
+		if (
+			ts.isCallExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			node.expression.text === symbol
+		) {
+			found = true;
+			return;
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return found;
+}
+
+function delegatedEvidence(
+	file: ts.SourceFile,
+	importer: string,
+	modulePath: string,
+	exportName: string,
+): boolean {
+	const locals = new Set<string>();
+	const expected = normalizeFile(modulePath).replace(/\.(?:js|mjs)$/, ".ts");
+	for (const statement of file.statements) {
+		if (
+			!ts.isImportDeclaration(statement) ||
+			!ts.isStringLiteral(statement.moduleSpecifier) ||
+			normalizedImportTarget(importer, statement.moduleSpecifier.text) !==
+				expected
+		) {
+			continue;
+		}
+		const bindings = statement.importClause?.namedBindings;
+		if (!bindings || !ts.isNamedImports(bindings)) continue;
+		for (const element of bindings.elements) {
+			if ((element.propertyName?.text ?? element.name.text) === exportName) {
+				locals.add(element.name.text);
+			}
+		}
+	}
+	let called = false;
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isCallExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			locals.has(node.expression.text)
+		) {
+			called = true;
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return called;
+}
+
+function unwrapExpression(node: ts.Expression): ts.Expression {
+	if (
+		ts.isParenthesizedExpression(node) ||
+		ts.isAsExpression(node) ||
+		ts.isTypeAssertionExpression(node) ||
+		ts.isNonNullExpression(node)
+	) {
+		return unwrapExpression(node.expression);
+	}
+	return node;
+}
+
+function accessPath(node: ts.Expression): string | null {
+	const unwrapped = unwrapExpression(node);
+	if (unwrapped.kind === ts.SyntaxKind.ThisKeyword) return "this";
+	if (ts.isIdentifier(unwrapped)) return unwrapped.text;
+	if (ts.isPropertyAccessExpression(unwrapped)) {
+		const parent = accessPath(unwrapped.expression);
+		return parent ? `${parent}.${unwrapped.name.text}` : null;
+	}
+	if (
+		ts.isElementAccessExpression(unwrapped) &&
+		unwrapped.argumentExpression &&
+		ts.isStringLiteralLike(unwrapped.argumentExpression)
+	) {
+		const parent = accessPath(unwrapped.expression);
+		return parent ? `${parent}.${unwrapped.argumentExpression.text}` : null;
+	}
+	return null;
+}
+
+function findSymbolNode(file: ts.SourceFile, symbol: string): ts.Node | null {
+	const [className, memberName] = symbol.split(".");
+	let found: ts.Node | null = null;
+	const visit = (node: ts.Node): void => {
+		if (found) return;
+		if (memberName) {
+			if (ts.isClassDeclaration(node) && node.name?.text === className) {
+				found =
+					node.members.find(
+						(member) =>
+							member.name &&
+							ts.isIdentifier(member.name) &&
+							member.name.text === memberName,
+					) ?? null;
+			}
+		} else if (
+			(ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+			node.name &&
+			ts.isIdentifier(node.name) &&
+			node.name.text === symbol
+		) {
+			found = node;
+		}
+		if (!found) ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return found;
+}
+
+function symbolContainsAccess(node: ts.Node, expected: string): boolean {
+	let found = false;
+	const visit = (child: ts.Node): void => {
+		if (found) return;
+		if (
+			(ts.isPropertyAccessExpression(child) ||
+				ts.isElementAccessExpression(child)) &&
+			accessPath(child) === expected
+		) {
+			found = true;
+			return;
+		}
+		ts.forEachChild(child, visit);
+	};
+	visit(node);
+	return found;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function validateShellDynamic(
+	text: string,
+	symbol: string,
+	envVar: string,
+): string | null {
+	const lines = text.split(/\r?\n/).filter((line) => !/^\s*#/.test(line));
+	const assignment = new RegExp(
+		String.raw`(?:^|\s)(?:local\s+)?${escapeRegExp(symbol)}=["']?\$\{${escapeRegExp(envVar)}:-${BOOL_LITERAL}\}`,
+		"i",
+	);
+	if (!lines.some((line) => assignment.test(line))) {
+		const functionDeclaration = new RegExp(
+			String.raw`^\s*${escapeRegExp(symbol)}\s*\(\)\s*\{`,
+		);
+		const helperCall = new RegExp(
+			String.raw`^\s*${escapeRegExp(symbol)}\s+${escapeRegExp(envVar)}(?:\s|$)`,
+		);
+		if (
+			lines.some((line) => functionDeclaration.test(line)) &&
+			lines.some((line) => helperCall.test(line))
+		) {
+			return null;
+		}
+		return `dynamic shell site lacks ${symbol} assignment from ${envVar}`;
+	}
+	const reference = new RegExp(String.raw`\$\{?${escapeRegExp(symbol)}\}?`);
+	const gateLine = lines.find(
+		(line) =>
+			reference.test(line) &&
+			(shellBoolComparison(line) || /^\s*case\b/.test(line)),
+	);
+	if (!gateLine) return `dynamic shell site lacks a gate use of ${symbol}`;
+	return null;
+}
+
+export function validateReadSiteEvidence(input: {
+	file: string;
+	text: string;
+	site: ReadSiteLike;
+	envVar?: string;
+	configKey?: string;
+}): string | null {
+	const source = { file: input.file, text: input.text };
+	if (input.site.pattern === "dynamic" && input.file.endsWith(".sh")) {
+		return input.envVar
+			? validateShellDynamic(input.text, input.site.symbol, input.envVar)
+			: "dynamic shell site requires envVar";
+	}
+	const file = sourceFile(source);
+	if (input.site.pattern === "delegated") {
+		if (!input.site.resolverModule || !input.site.resolverSymbol) {
+			return "delegated site requires resolverModule and resolverSymbol";
+		}
+		return delegatedEvidence(
+			file,
+			input.file,
+			input.site.resolverModule,
+			input.site.resolverSymbol,
+		)
+			? null
+			: "delegated site lacks canonical import and call";
+	}
+	if (input.site.pattern === "config") {
+		if (!input.site.configAccess) return "config site requires configAccess";
+		const symbol = findSymbolNode(file, input.site.symbol);
+		if (!symbol) return `config symbol ${input.site.symbol} not found`;
+		return symbolContainsAccess(symbol, input.site.configAccess)
+			? null
+			: `config access ${input.site.configAccess} not found in ${input.site.symbol}`;
+	}
+	const scan = scanSources([source]);
+	if (
+		!input.envVar ||
+		!scan.rawCodeHits.some((hit) => hit.name === input.envVar)
+	) {
+		return `${input.envVar ?? "envVar"} not found as code in ${input.file}`;
+	}
+	if (input.site.pattern === "dynamic") {
+		if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(input.site.symbol)) {
+			return `dynamic symbol must be a real identifier: ${input.site.symbol}`;
+		}
+		if (!containsIdentifierEvidence(file, input.site.symbol)) {
+			return `dynamic identifier ${input.site.symbol} not found`;
+		}
+	}
+	return null;
+}

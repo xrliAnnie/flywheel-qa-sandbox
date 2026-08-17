@@ -1,0 +1,8 @@
+flowchart TB
+    SRC["源码文件"] --> L2["rawCodeHits — 唯一权威<br/>TS/MJS 用 AST(语法树,只认真代码)<br/>shell 用注释感知锚定扫描"]
+    SRC -.-> L1["regexCandidates — 只作诊断<br/>(正则粗扫,含注释里的假命中)"]
+    L1 -."交叉护栏:代码位的粗扫命中<br/>若不在权威集 → 守卫红(说明 AST 有洞)".-> L2
+    L2 --> CLS{"四本账分类"}
+    CLS -->|"入了账"| GREEN["✅ 绿"]
+    CLS -->|"没入账"| L3["unhandledHits ≠ 空<br/>→ CI 红 ⛔"]
+    NOTE["注释 / 字符串里写 flag 名:<br/>进不了权威集 → 骗不过守卫<br/>也救不活挂空账的豁免"] -.- L2

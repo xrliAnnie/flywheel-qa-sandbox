@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph before["现状:网有洞(只扫 4/21 个 package)"]
+        direction TB
+        B1["teamlead / config /<br/>flywheel-comm / edge-worker<br/>✅ 被扫"]
+        B2["其余 17 个 package<br/>❌ 盲区"]
+        B3["195 个 shell 脚本<br/>❌ 盲区"]
+        B4["换个写法(解构/helper)<br/>❌ 认不出"]
+    end
+    subgraph after["本单之后:全生产面入网"]
+        direction TB
+        A1["21/21 个 package 源码<br/>(.ts + .mjs,自动枚举)"]
+        A2["全部生产脚本<br/>(.sh + .ts + .mjs)"]
+        A3["project_config 布尔键<br/>(schema 枚举)"]
+    end
+    before ==>|"B0a 扩面 + B0b 认写法"| after
+    after --> V{"每个 flag 读点"}
+    V -->|已登记| OK1["registry ✅"]
+    V -->|带理由入账| OK2["分类账 / 豁免账 ✅"]
+    V -->|"都不是 = 野建"| RED["CI 红 ⛔"]

@@ -94,14 +94,21 @@ export interface FlagView {
 	retiring?: string;
 }
 
-/** Navigate a dot path (e.g. "qa.auto") on a plain object; undefined if absent. */
-function getByPath(obj: unknown, path: string): unknown {
-	let cur: unknown = obj;
-	for (const key of path.split(".")) {
-		if (cur == null || typeof cur !== "object") return undefined;
-		cur = (cur as Record<string, unknown>)[key];
+/** Navigate a schema path, expanding Record (`*`) and array (`[]`) segments. */
+function getByPath(obj: unknown, path: string): unknown[] {
+	let values: unknown[] = [obj];
+	for (const segment of path.split(".")) {
+		const arraySegment = segment.endsWith("[]");
+		const key = arraySegment ? segment.slice(0, -2) : segment;
+		values = values.flatMap((value) => {
+			if (value == null || typeof value !== "object") return [undefined];
+			if (key === "*") return Object.values(value);
+			const next = (value as Record<string, unknown>)[key];
+			if (!arraySegment) return [next];
+			return Array.isArray(next) ? next : [];
+		});
 	}
-	return cur;
+	return values;
 }
 
 function uniqueTimings(spec: FeatureFlagSpec): ReadTiming[] {
@@ -211,11 +218,18 @@ function withEnvSources(
 function resolveConfigValue(
 	spec: FeatureFlagSpec,
 	config: FlywheelConfig,
-): boolean | string {
-	const raw = spec.configKey ? getByPath(config, spec.configKey) : undefined;
-	if (raw === undefined || raw === null) return spec.default;
-	if (spec.valueKind === "bool") return Boolean(raw);
-	return String(raw);
+): { value: boolean | string } | { error: string } {
+	const rawValues = spec.configKey ? getByPath(config, spec.configKey) : [];
+	const values = (rawValues.length > 0 ? rawValues : [undefined]).map((raw) => {
+		if (raw === undefined || raw === null) return spec.default;
+		if (spec.valueKind === "bool") return Boolean(raw);
+		return String(raw);
+	});
+	const value = values[0] ?? spec.default;
+	if (values.some((candidate) => candidate !== value)) {
+		return { error: `mixed values for ${spec.configKey}` };
+	}
+	return { value };
 }
 
 export function resolveFlag(
@@ -314,7 +328,12 @@ export function resolveFlag(
 			});
 			continue;
 		}
-		const value = resolveConfigValue(spec, entry.config);
+		const resolution = resolveConfigValue(spec, entry.config);
+		if ("error" in resolution) {
+			effectiveByProject.push({ projectName, error: resolution.error });
+			continue;
+		}
+		const { value } = resolution;
 		effectiveByProject.push({
 			projectName,
 			value,

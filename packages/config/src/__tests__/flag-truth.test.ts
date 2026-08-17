@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import {
 	NON_FLAG_ALLOWLIST,
@@ -58,6 +59,33 @@ const FLY_1806_RETIRED_FLAGS = [
 ] as const;
 
 describe("FLY-1393 flag truth", () => {
+	it("accepts only FLY-1455 exemptions allowed in persistent environments", () => {
+		for (const exemption of FLAG_EXEMPTIONS.filter(
+			(entry) => entry.kind === "env" && entry.persistentEnvAllowed,
+		)) {
+			expect(
+				validateFlagTruthEnvironment([`${exemption.name}=0`]),
+				exemption.name,
+			).toEqual({ ok: true, errors: [] });
+		}
+	});
+
+	it("rejects transient QA exemptions in persistent environments", () => {
+		for (const exemption of FLAG_EXEMPTIONS.filter(
+			(entry) => entry.kind === "env" && !entry.persistentEnvAllowed,
+		)) {
+			expect(
+				validateFlagTruthEnvironment([`${exemption.name}=0`]),
+				exemption.name,
+			).toEqual({
+				ok: false,
+				errors: [
+					`${exemption.name}: transient exemption must not appear in a persistent environment`,
+				],
+			});
+		}
+	});
+
 	it("classifies the founder-review runner capability as context, not a feature flag", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toMatch(
 			/sealed workflow node capability/,

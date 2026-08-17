@@ -51,8 +51,13 @@ export interface FlagReadSite {
 	/** Stable anchor: the function/class/const that reads the flag. */
 	symbol: string;
 	/** How the value is reached (drives the drift scanner). */
-	pattern: "process.env" | "env-param" | "dynamic" | "config";
+	pattern: "process.env" | "env-param" | "dynamic" | "config" | "delegated";
 	timing: ReadTiming;
+	/** Required for delegated sites: canonical module and named export. */
+	resolverModule?: string;
+	resolverSymbol?: string;
+	/** Required for config sites: exact member-access chain inside symbol. */
+	configAccess?: string;
 }
 
 export interface FeatureFlagSpec {
@@ -281,8 +286,9 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 			envSite(
 				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW",
+				"load_cmux_bool_flag",
 				"cli_invocation",
+				"dynamic",
 			),
 		],
 		toggleable: "conversational",
@@ -363,12 +369,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"call_time",
 				"env-param",
 			),
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-held.ts",
-				"isReviewHeld",
-				"call_time",
-				"env-param",
-			),
+			{
+				file: "packages/teamlead/src/bridge/auto-qa-held.ts",
+				symbol: "codexHardGateEnabled",
+				pattern: "delegated",
+				timing: "call_time",
+				resolverModule: "packages/teamlead/src/bridge/codex-gate.ts",
+				resolverSymbol: "codexHardGateEnabled",
+			},
 		],
 		toggleable: "direct",
 		// Two live-observe proofs: the Bridge-side registry direct-toggle test AND
@@ -403,7 +411,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate live dotenv CLI fallback (MERGE_APPROVAL_GATE_KEY)",
+				"resolveDefaultOnGate",
 				"dotenv_live",
 				"dynamic",
 			),
@@ -436,7 +444,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate live dotenv CLI fallback (QA_DONE_GATE_KEY)",
+				"resolveDefaultOnGate",
 				"dotenv_live",
 				"dynamic",
 			),
@@ -815,7 +823,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description: "founder-consent 硬门模式（治理门，只读）",
 		readSites: [
 			envSite(
-				"packages/teamlead/src/bridge/founder-consent/config.ts",
+				"packages/config/src/decision-mode.ts",
 				"resolveDecisionMode",
 				"call_time",
 				"env-param",
@@ -892,6 +900,112 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "checkpoint_enabled",
+		category: "governance_gate",
+		source: "project_config",
+		scope: "project",
+		configKey: "checkpoints.*.enabled",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "逐 checkpoint 的启用开关(动态 checkpoint 名)",
+		readSites: [
+			{
+				file: "packages/edge-worker/src/Blueprint.ts",
+				symbol: "Blueprint.runInner",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "cpConfig.enabled",
+			},
+		],
+		toggleable: "readonly",
+		note: "登记只补治理账，不改变 question 或任何 checkpoint 行为。",
+	},
+	{
+		name: "pipeline_dag",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "pipeline.dag",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "项目级 DAG dispatch enrollment",
+		readSites: [
+			{
+				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
+				symbol: "loadWorkKindConfigStrict",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "values.dag",
+			},
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "pipeline_work_kind",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "pipeline.work_kind",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "项目级 dispatch work-kind enforcement",
+		readSites: [
+			{
+				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
+				symbol: "loadWorkKindConfigStrict",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "values.work_kind",
+			},
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "founder_milestone_report_enabled",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "founder_milestone_report.enabled",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description: "项目级 founder terminal-milestone push",
+		readSites: [
+			{
+				file: "packages/teamlead/src/bridge/gate-poller.ts",
+				symbol: "GatePoller.maybeEmitMilestoneReports",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "cfg.enabled",
+			},
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "xiaohongshu_auto_create",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "xiaohongshu_learning.collections[].auto_create",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description: "每个小红书 collection 是否自动创建筛出的 issue",
+		readSites: [
+			{
+				file: "packages/teamlead/src/xiaohongshu-scheduler.ts",
+				symbol: "planLearningRuns",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "col.auto_create",
+			},
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "qa_auto",
 		category: "feature",
 		source: "project_config",
@@ -907,6 +1021,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				symbol: "resolveAutoQaPolicy",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "cfg.auto",
 			},
 		],
 		toggleable: "conversational",
@@ -924,9 +1039,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			{
 				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "doc-flow injection",
+				symbol: "Blueprint.runInner",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "this.docFlowConfig.enabled",
 			},
 		],
 		toggleable: "conversational",
@@ -953,8 +1069,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"FLY-1356/1609: Runner skill 框架四臂（superpowers=A / matt=B / bare=C / bare-ponytail=D / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
 		readSites: [
 			envSite(
-				"packages/edge-worker/src/Blueprint.ts",
-				"resolveSkillFrameworkForRun",
+				"packages/config/src/skill-framework-mode.ts",
+				"resolveSkillFrameworkMode",
 				"call_time",
 				"env-param",
 			),
@@ -982,10 +1098,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
 		readSites: [
 			{
-				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "skillFrameworkParticipation",
+				file: "packages/teamlead/src/bridge/skill-framework-participation.ts",
+				symbol: "makeSkillFrameworkParticipationReader",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "skillFramework.split",
 			},
 		],
 		toggleable: "readonly",
@@ -1006,6 +1123,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				symbol: "ConfigLoader.validate",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "ps.enabled",
 			},
 		],
 		toggleable: "conversational",
@@ -1026,6 +1144,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				symbol: "ConfigLoader.validate",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "xhs.enabled",
 			},
 		],
 		toggleable: "conversational",
@@ -1047,6 +1166,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				symbol: "ConfigLoader.validate",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "ponytail.enabled",
 			},
 		],
 		toggleable: "readonly",
@@ -1073,6 +1193,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				symbol: "ConfigLoader.validate",
 				pattern: "config",
 				timing: "call_time",
+				configAccess: "founderUxGate.mode",
 			},
 		],
 		toggleable: "readonly",
@@ -1403,13 +1524,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOffGate live dotenv CLI fallback",
+				"resolveDefaultOffGate",
 				"dotenv_live",
 				"dynamic",
 			),
 			envSite(
 				"packages/flywheel-comm/src/commands/verify-approval.ts",
-				"verifyApprovalWithBridgeHead workflow dotenv read",
+				"verifyApprovalWithBridgeHead",
 				"dotenv_live",
 				"dynamic",
 			),

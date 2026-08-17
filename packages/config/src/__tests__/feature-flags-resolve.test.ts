@@ -260,6 +260,69 @@ describe("resolveFlag — project scope", () => {
 		expect(row?.isDefault).toBe(true);
 	});
 
+	it("resolves wildcard config families without fabricating their defaults", () => {
+		const checkpoints = resolveFlag(spec("checkpoint_enabled"), {
+			projectConfigs: new Map([
+				[
+					"proj",
+					{
+						config: {
+							checkpoints: {
+								brainstorm: { enabled: true },
+								question: { enabled: true },
+							},
+						} as FlywheelConfig,
+					},
+				],
+			]),
+		});
+		expect(checkpoints.effectiveByProject).toEqual([
+			{ projectName: "proj", value: true, isDefault: false },
+		]);
+
+		const collections = resolveFlag(spec("xiaohongshu_auto_create"), {
+			projectConfigs: new Map([
+				[
+					"proj",
+					{
+						config: {
+							xiaohongshu_learning: {
+								collections: [{ auto_create: false }],
+							},
+						} as unknown as FlywheelConfig,
+					},
+				],
+			]),
+		});
+		expect(collections.effectiveByProject).toEqual([
+			{ projectName: "proj", value: false, isDefault: false },
+		]);
+	});
+
+	it("surfaces mixed wildcard config values as an error", () => {
+		const view = resolveFlag(spec("checkpoint_enabled"), {
+			projectConfigs: new Map([
+				[
+					"proj",
+					{
+						config: {
+							checkpoints: {
+								brainstorm: { enabled: true },
+								question: { enabled: false },
+							},
+						} as FlywheelConfig,
+					},
+				],
+			]),
+		});
+		expect(view.effectiveByProject).toEqual([
+			{
+				projectName: "proj",
+				error: "mixed values for checkpoints.*.enabled",
+			},
+		]);
+	});
+
 	it("no projectConfigs → empty effectiveByProject (not a crash)", () => {
 		const view = resolveFlag(spec("qa_auto"), {});
 		expect(view.effectiveByProject).toEqual([]);

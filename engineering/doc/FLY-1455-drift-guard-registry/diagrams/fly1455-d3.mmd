@@ -1,0 +1,8 @@
+flowchart TB
+    HIT["一个 flag 读点<br/>(env 变量或 config 布尔键)"] --> Q1{"它是 feature flag /<br/>开关吗?"}
+    Q1 -->|"是,正常登记"| REG["<b>registry</b>(登记簿)<br/>FEATURE_FLAGS<br/>全字段声明 + 读点证据"]
+    Q1 -->|"不是开关<br/>(路径/ID/普通配置)"| ALLOW["<b>分类账</b> ×2<br/>NON_FLAG_ALLOWLIST(env)<br/>NON_FLAG_CONFIG_KEYS(config)<br/>必填:理由"]
+    Q1 -->|"是开关,但刻意不登记<br/>(QA 故障注入等接缝)"| EX["<b>豁免账</b><br/>FLAG_EXEMPTIONS<br/>必填:理由 + 归属人<br/>挂空账即红(防预埋)"]
+    Q1 -->|"哪本账都不在"| RED["⛔ 野建,CI 红"]
+    TOMB["<b>墓碑</b> RETIRED_FLAGS<br/>已退役的 flag 复活即红"] -.-> RED
+    RULE["不变量:要么登记,要么带理由入账<br/>—— 没有第三种存在方式"] === Q1
