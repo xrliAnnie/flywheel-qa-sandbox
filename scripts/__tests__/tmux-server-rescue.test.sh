@@ -214,20 +214,43 @@ fi
 export FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR=1
 
 echo "[TEST] operation-scoped probes get a fresh budget without mutating the caller"
-_TMUX_RESCUE_BUDGET_ANCHOR=$((SECONDS - 61))
+# FLY-1853: pin the anchor we assign instead of recomputing `SECONDS - 61` inside
+# the assertion. The old form compared a stored constant against a moving target,
+# so the check went red purely because the ~0.1-0.7s probe crossed a whole-second
+# boundary. Nothing in the old failure message varied with the clock — the suite
+# always reached here inside its first second, so `anchor` read -61 every time and
+# the other fields are fixture constants. Unrelated runs therefore printed
+# byte-identical output, and a real flake read as a deterministic break.
+EXHAUSTED_ANCHOR=$((SECONDS - 61))
+_TMUX_RESCUE_BUDGET_ANCHOR=$EXHAUSTED_ANCHOR
 _TMUX_RESCUE_TOTAL_BUDGET=60
 _TMUX_RESCUE_CACHED_LOAD_FACTOR=1
-PROBE_OUT="$(tmux_rescue_probe 1 /bin/sh -c 'printf fresh-probe')"
+# Call the probe directly and capture stdout through a file. Command substitution
+# forks a subshell of its own, so it hid any caller-state leak the callee could
+# have made — the "without mutating the caller" half of this assertion could only
+# ever fail falsely, never truly. A direct call exposes the caller's shell, so a
+# probe that stopped isolating its `unset`s now actually fails here.
+PROBE_STDOUT="$TMP_DIR/fresh-probe.out"
+tmux_rescue_probe 1 /bin/sh -c 'printf fresh-probe' >"$PROBE_STDOUT"
 PROBE_RC=$?
+PROBE_OUT="$(<"$PROBE_STDOUT")"
+# Read the caller's state through `${VAR-<unset>}`. A leaked `unset` would abort
+# the whole suite under `set -u` before this assertion could name the defect;
+# the sentinel turns that same leak into a readable `fail` line instead.
+SEEN_ANCHOR="${_TMUX_RESCUE_BUDGET_ANCHOR-<unset>}"
+SEEN_TOTAL="${_TMUX_RESCUE_TOTAL_BUDGET-<unset>}"
+SEEN_FACTOR="${_TMUX_RESCUE_CACHED_LOAD_FACTOR-<unset>}"
 if [ "$PROBE_RC" -eq 0 ] \
   && [ "$PROBE_OUT" = "fresh-probe" ] \
-  && [ "$_TMUX_RESCUE_BUDGET_ANCHOR" -eq $((SECONDS - 61)) ] \
-  && [ "$_TMUX_RESCUE_TOTAL_BUDGET" = 60 ] \
-  && [ "$_TMUX_RESCUE_CACHED_LOAD_FACTOR" = 1 ]; then
+  && [ "$SEEN_ANCHOR" = "$EXHAUSTED_ANCHOR" ] \
+  && [ "$SEEN_TOTAL" = 60 ] \
+  && [ "$SEEN_FACTOR" = 1 ]; then
   pass "fresh read probes do not inherit or pollute the enclosing rescue budget"
 else
-  fail "probe budget leaked or stayed exhausted: rc=$PROBE_RC out=$PROBE_OUT anchor=$_TMUX_RESCUE_BUDGET_ANCHOR total=$_TMUX_RESCUE_TOTAL_BUDGET factor=$_TMUX_RESCUE_CACHED_LOAD_FACTOR"
+  fail "probe budget leaked or stayed exhausted: rc=$PROBE_RC out=$PROBE_OUT anchor=$SEEN_ANCHOR expected_anchor=$EXHAUSTED_ANCHOR total=$SEEN_TOTAL factor=$SEEN_FACTOR"
 fi
+rm -f "$PROBE_STDOUT"
+unset EXHAUSTED_ANCHOR PROBE_STDOUT SEEN_ANCHOR SEEN_TOTAL SEEN_FACTOR
 unset _TMUX_RESCUE_BUDGET_ANCHOR _TMUX_RESCUE_TOTAL_BUDGET _TMUX_RESCUE_CACHED_LOAD_FACTOR
 
 echo "[TEST] load factor parses macOS/Linux fixtures, clamps, and rejects malformed overrides"
