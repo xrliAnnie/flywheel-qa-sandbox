@@ -19,6 +19,25 @@ export type {
 	FlagView,
 } from "./resolve.js";
 export { resolveAllFlags, resolveFlag } from "./resolve.js";
+export type {
+	ComputeFlagScanInput,
+	FlagDeparture,
+	FlagIndeterminateClass,
+	FlagKeepAnchor,
+	FlagSample,
+	FlagScanCandidate,
+	FlagScanClaimed,
+	FlagScanKeepUnbound,
+	FlagScanNoClock,
+	FlagScanState,
+	ProposedFlagScan,
+	ResolvedFlagKeepBinding,
+} from "./scan.js";
+export {
+	canonicalizeFlagSample,
+	computeFlagScan,
+	FLAG_SCAN_INTERVAL_MS,
+} from "./scan.js";
 export {
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,

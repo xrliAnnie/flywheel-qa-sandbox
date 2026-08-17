@@ -14,11 +14,14 @@ import {
 	canonicalSubmissionDigest,
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
+	type FlagKeepAnchor,
+	type FlagScanState,
 	getNodeTypeRegistryEntry,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
 	type ModelConfigSnapshot,
+	type ProposedFlagScan,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
 } from "flywheel-config";
@@ -1425,6 +1428,129 @@ export function deadLetterAlertReclaimAt(
 ): string {
 	return new Date(Date.parse(attemptedAt) + windowMs).toISOString();
 }
+
+export type FlagScanRunStatus = "committed" | "published";
+export type FlagScanLeg = "linear" | "report" | "discord" | "lead_notify";
+export type FlagScanLegStatus =
+	| "pending"
+	| "claimed"
+	| "ambiguous"
+	| "done"
+	| "degraded";
+export type FlagScanItemBucket =
+	| "candidate"
+	| "orphan_candidate"
+	| "claimed"
+	| "no_clock"
+	| "keep_unbound";
+
+export interface FlagScanRunRow {
+	runId: number;
+	runToken: string;
+	startedAt: number;
+	committedAt: number;
+	candidateCount: number;
+	indeterminateCount: number;
+	status: FlagScanRunStatus;
+}
+
+export interface FlagScanLegRow {
+	runId: number;
+	leg: FlagScanLeg;
+	status: FlagScanLegStatus;
+	claimedAt: number | null;
+	leaseExpiresAt: number | null;
+	leaseOwner: string | null;
+	ambiguousAt: number | null;
+	reconcileNotBefore: number | null;
+	evidence: string | null;
+}
+
+export interface FlagScanRunItemRow {
+	runId: number;
+	flagName: string;
+	bucket: FlagScanItemBucket;
+	canonical: string | null;
+	description: string | null;
+	currentValue: string | null;
+	stableForMs: number | null;
+	askPhrase: string | null;
+	reason: string | null;
+	askCount: number;
+	provenance: Record<string, unknown> | null;
+}
+
+export interface FlagProvenanceRow {
+	flagName: string;
+	incarnationCommit: string;
+	status: "resolved" | "unresolved";
+	sourceIssue: string | null;
+	author: string;
+	committedAt: number;
+	prNumber: number | null;
+}
+
+export interface FlagDepartureRow {
+	departureId: number;
+	flagName: string;
+	kind: "feature_removed" | "governance_cleared";
+	departedAt: number;
+	lastState: Record<string, unknown> | null;
+	lastProvenance: Record<string, unknown> | null;
+}
+
+export interface FlagScanFailureAlertIntentRow {
+	intentId: string;
+	baselineRunId: number;
+	failureClass: string;
+	milestone: "initial" | "24h";
+	eventId: string;
+	state: "pending" | "claimed" | "ambiguous" | "done";
+	createdAt: number;
+	claimedAt: number | null;
+	leaseOwner: string | null;
+	lastError: string | null;
+}
+
+export interface FlagScanRunItemInput {
+	flagName: string;
+	bucket: FlagScanItemBucket;
+	canonical: string | null;
+	description: string | null;
+	currentValue: string | null;
+	stableForMs: number | null;
+	askPhrase: string | null;
+	reason: string | null;
+	provenance: FlagProvenanceInput | null;
+}
+
+export interface FlagProvenanceInput {
+	[key: string]: unknown;
+	flagName: string;
+	incarnationCommit: string;
+	status: "resolved" | "unresolved";
+	sourceIssue: string | null;
+	author: string;
+	committedAt: number;
+	prNumber: number | null;
+}
+
+export interface CommitFlagScanInput {
+	expectedLatestCommittedAt: number | null;
+	runToken: string;
+	now: number;
+	proposed: ProposedFlagScan;
+	items: FlagScanRunItemInput[];
+	provenance: FlagProvenanceInput[];
+	requiredLegs: FlagScanLeg[];
+}
+
+export type CommitFlagScanResult =
+	| { committed: true; run: FlagScanRunRow }
+	| {
+			committed: false;
+			reason: "pending_exists" | "cas_mismatch";
+	  };
 
 export class StateStore {
 	private db: CompatDb;
@@ -4267,7 +4393,930 @@ export class StateStore {
 		this.migrateChatThreadsDisplayFingerprintColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
+		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
+	}
+
+	/** FLY-1781: durable weekly flag-retirement scan + side-effect outbox. */
+	private migrateFlagRetirementScan(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_state (
+				flag_name TEXT PRIMARY KEY,
+				canonical TEXT,
+				streak_started_at INTEGER,
+				streak_samples INTEGER NOT NULL DEFAULT 0,
+				last_sampled_at INTEGER NOT NULL,
+				indeterminate_streak INTEGER NOT NULL DEFAULT 0,
+				indeterminate_class TEXT CHECK (
+					indeterminate_class IS NULL OR
+					indeterminate_class IN ('read_unavailable','observed_instability')
+				),
+				last_retiring_issue TEXT,
+				ask_count INTEGER NOT NULL DEFAULT 0,
+				last_asked_run_id INTEGER
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_runs (
+				run_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_token TEXT NOT NULL UNIQUE,
+				started_at INTEGER NOT NULL,
+				committed_at INTEGER NOT NULL,
+				candidate_count INTEGER NOT NULL,
+				indeterminate_count INTEGER NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('committed','published'))
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS flag_scan_one_pending
+			ON flag_scan_runs(status) WHERE status = 'committed'
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_run_legs (
+				run_id INTEGER NOT NULL REFERENCES flag_scan_runs(run_id) ON DELETE CASCADE,
+				leg TEXT NOT NULL CHECK (leg IN ('linear','report','discord','lead_notify')),
+				status TEXT NOT NULL CHECK (
+					status IN ('pending','claimed','ambiguous','done','degraded')
+				),
+				claimed_at INTEGER,
+				lease_expires_at INTEGER,
+				lease_owner TEXT,
+				ambiguous_at INTEGER,
+				reconcile_not_before INTEGER,
+				evidence TEXT,
+				PRIMARY KEY (run_id, leg)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_run_items (
+				run_id INTEGER NOT NULL REFERENCES flag_scan_runs(run_id) ON DELETE CASCADE,
+				flag_name TEXT NOT NULL,
+				bucket TEXT NOT NULL CHECK (
+					bucket IN ('candidate','orphan_candidate','claimed','no_clock','keep_unbound')
+				),
+				canonical TEXT,
+				description TEXT,
+				current_value TEXT,
+				stable_for_ms INTEGER,
+				ask_phrase TEXT,
+				reason TEXT,
+				ask_count INTEGER NOT NULL,
+				provenance_json TEXT,
+				PRIMARY KEY (run_id, flag_name)
+			)
+		`);
+		this.addColumnIfMissing("flag_scan_run_items", "description", "TEXT");
+		this.addColumnIfMissing("flag_scan_run_items", "current_value", "TEXT");
+		this.addColumnIfMissing("flag_scan_run_items", "stable_for_ms", "INTEGER");
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_keep_anchor (
+				flag_name TEXT PRIMARY KEY,
+				anchor_canonical TEXT NOT NULL,
+				bound_run_token TEXT NOT NULL,
+				decided_at TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_provenance (
+				flag_name TEXT PRIMARY KEY,
+				incarnation_commit TEXT NOT NULL,
+				status TEXT NOT NULL CHECK (status IN ('resolved','unresolved')),
+				source_issue TEXT,
+				author TEXT NOT NULL,
+				committed_at INTEGER NOT NULL,
+				pr_number INTEGER,
+				updated_at INTEGER NOT NULL
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_departures (
+				departure_id INTEGER PRIMARY KEY AUTOINCREMENT,
+				flag_name TEXT NOT NULL,
+				kind TEXT NOT NULL CHECK (kind IN ('feature_removed','governance_cleared')),
+				departed_at INTEGER NOT NULL,
+				last_state_json TEXT,
+				last_provenance_json TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_flag_departures_name ON flag_departures(flag_name, departed_at)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_failure_alert_intents (
+				intent_id TEXT PRIMARY KEY,
+				baseline_run_id INTEGER NOT NULL,
+				failure_class TEXT NOT NULL,
+				milestone TEXT NOT NULL CHECK (milestone IN ('initial','24h')),
+				event_id TEXT NOT NULL UNIQUE,
+				state TEXT NOT NULL DEFAULT 'pending' CHECK (
+					state IN ('pending','claimed','ambiguous','done')
+				),
+				created_at INTEGER NOT NULL,
+				claimed_at INTEGER,
+				lease_owner TEXT,
+				last_error TEXT,
+				UNIQUE (baseline_run_id, failure_class, milestone)
+			)
+		`);
+	}
+
+	private flagScanRunFromRow(row: Record<string, unknown>): FlagScanRunRow {
+		return {
+			runId: Number(row.run_id),
+			runToken: String(row.run_token),
+			startedAt: Number(row.started_at),
+			committedAt: Number(row.committed_at),
+			candidateCount: Number(row.candidate_count),
+			indeterminateCount: Number(row.indeterminate_count),
+			status: row.status as FlagScanRunStatus,
+		};
+	}
+
+	private flagScanLegFromRow(row: Record<string, unknown>): FlagScanLegRow {
+		return {
+			runId: Number(row.run_id),
+			leg: row.leg as FlagScanLeg,
+			status: row.status as FlagScanLegStatus,
+			claimedAt: row.claimed_at == null ? null : Number(row.claimed_at),
+			leaseExpiresAt:
+				row.lease_expires_at == null ? null : Number(row.lease_expires_at),
+			leaseOwner: row.lease_owner == null ? null : String(row.lease_owner),
+			ambiguousAt:
+				row.ambiguous_at == null ? null : Number(row.ambiguous_at),
+			reconcileNotBefore:
+				row.reconcile_not_before == null
+					? null
+					: Number(row.reconcile_not_before),
+			evidence: row.evidence == null ? null : String(row.evidence),
+		};
+	}
+
+	getFlagScanState(): FlagScanState[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_state ORDER BY flag_name",
+			[],
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			canonical: row.canonical == null ? null : String(row.canonical),
+			streakStartedAt:
+				row.streak_started_at == null ? null : Number(row.streak_started_at),
+			streakSamples: Number(row.streak_samples),
+			lastSampledAt: Number(row.last_sampled_at),
+			indeterminateStreak: Number(row.indeterminate_streak),
+			indeterminateClass:
+				(row.indeterminate_class as FlagScanState["indeterminateClass"]) ??
+				null,
+			lastRetiringIssue:
+				row.last_retiring_issue == null
+					? null
+					: String(row.last_retiring_issue),
+			askCount: Number(row.ask_count),
+			lastAskedRunId:
+				row.last_asked_run_id == null ? null : Number(row.last_asked_run_id),
+		}));
+	}
+
+	getFlagKeepAnchors(): FlagKeepAnchor[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_keep_anchor ORDER BY flag_name",
+			[],
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			anchorCanonical: String(row.anchor_canonical),
+			boundRunToken: String(row.bound_run_token),
+			decidedAt: String(row.decided_at),
+		}));
+	}
+
+	getFlagProvenance(flagName: string): FlagProvenanceRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM flag_provenance WHERE flag_name = ?",
+			[flagName],
+		)[0];
+		if (!row) return undefined;
+		return {
+			flagName: String(row.flag_name),
+			incarnationCommit: String(row.incarnation_commit),
+			status: row.status as FlagProvenanceRow["status"],
+			sourceIssue:
+				row.source_issue == null ? null : String(row.source_issue),
+			author: String(row.author),
+			committedAt: Number(row.committed_at),
+			prNumber: row.pr_number == null ? null : Number(row.pr_number),
+		};
+	}
+
+	listFlagProvenance(): FlagProvenanceRow[] {
+		return this.workflowSelectAll(
+			"SELECT flag_name FROM flag_provenance ORDER BY flag_name",
+			[],
+		)
+			.map((row) => this.getFlagProvenance(String(row.flag_name)))
+			.filter((row): row is FlagProvenanceRow => row !== undefined);
+	}
+
+	getFlagKeepBinding(
+		runToken: string,
+		flagName: string,
+	): { canonical: string; bucket: "candidate" | "orphan_candidate" } | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT i.canonical, i.bucket
+			   FROM flag_scan_run_items i
+			   JOIN flag_scan_runs r ON r.run_id = i.run_id
+			  WHERE r.run_token = ? AND i.flag_name = ?
+			    AND i.bucket IN ('candidate','orphan_candidate')
+			    AND i.canonical IS NOT NULL`,
+			[runToken, flagName],
+		)[0];
+		return row
+			? {
+					canonical: String(row.canonical),
+					bucket: row.bucket as "candidate" | "orphan_candidate",
+				}
+			: undefined;
+	}
+
+	getFlagScanRun(runId: number): FlagScanRunRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM flag_scan_runs WHERE run_id = ?",
+			[runId],
+		)[0];
+		return row ? this.flagScanRunFromRow(row) : undefined;
+	}
+
+	getFlagScanRunByToken(runToken: string): FlagScanRunRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM flag_scan_runs WHERE run_token = ?",
+			[runToken],
+		)[0];
+		return row ? this.flagScanRunFromRow(row) : undefined;
+	}
+
+	getLatestFlagScanRun(): FlagScanRunRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM flag_scan_runs ORDER BY committed_at DESC, run_id DESC LIMIT 1",
+			[],
+		)[0];
+		return row ? this.flagScanRunFromRow(row) : undefined;
+	}
+
+	getPendingFlagScanRun(): FlagScanRunRow | undefined {
+		const row = this.workflowSelectAll(
+			"SELECT * FROM flag_scan_runs WHERE status = 'committed' LIMIT 1",
+			[],
+		)[0];
+		return row ? this.flagScanRunFromRow(row) : undefined;
+	}
+
+	listFlagScanRuns(): FlagScanRunRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_runs ORDER BY run_id",
+			[],
+		).map((row) => this.flagScanRunFromRow(row));
+	}
+
+	getFlagScanRunLegs(runId: number): FlagScanLegRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_run_legs WHERE run_id = ? ORDER BY leg",
+			[runId],
+		).map((row) => this.flagScanLegFromRow(row));
+	}
+
+	getFlagScanRunItems(runId: number): FlagScanRunItemRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_run_items WHERE run_id = ? ORDER BY flag_name",
+			[runId],
+		).map((row) => ({
+			runId: Number(row.run_id),
+			flagName: String(row.flag_name),
+			bucket: row.bucket as FlagScanItemBucket,
+			canonical: row.canonical == null ? null : String(row.canonical),
+			description:
+				row.description == null ? null : String(row.description),
+			currentValue:
+				row.current_value == null ? null : String(row.current_value),
+			stableForMs:
+				row.stable_for_ms == null ? null : Number(row.stable_for_ms),
+			askPhrase: row.ask_phrase == null ? null : String(row.ask_phrase),
+			reason: row.reason == null ? null : String(row.reason),
+			askCount: Number(row.ask_count),
+			provenance:
+				row.provenance_json == null
+					? null
+					: (JSON.parse(String(row.provenance_json)) as Record<
+							string,
+							unknown
+						>),
+		}));
+	}
+
+	listFlagDepartures(): FlagDepartureRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_departures ORDER BY departure_id",
+			[],
+		).map((row) => ({
+			departureId: Number(row.departure_id),
+			flagName: String(row.flag_name),
+			kind: row.kind as FlagDepartureRow["kind"],
+			departedAt: Number(row.departed_at),
+			lastState:
+				row.last_state_json == null
+					? null
+					: (JSON.parse(String(row.last_state_json)) as Record<
+							string,
+							unknown
+						>),
+			lastProvenance:
+				row.last_provenance_json == null
+					? null
+					: (JSON.parse(String(row.last_provenance_json)) as Record<
+							string,
+							unknown
+						>),
+		}));
+	}
+
+	listFlagScanFailureAlertIntents(input?: {
+		baselineRunId?: number;
+		failureClass?: string;
+	}): FlagScanFailureAlertIntentRow[] {
+		const clauses: string[] = [];
+		const params: unknown[] = [];
+		if (input?.baselineRunId !== undefined) {
+			clauses.push("baseline_run_id = ?");
+			params.push(input.baselineRunId);
+		}
+		if (input?.failureClass !== undefined) {
+			clauses.push("failure_class = ?");
+			params.push(input.failureClass);
+		}
+		return this.workflowSelectAll(
+			`SELECT * FROM flag_scan_failure_alert_intents${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ORDER BY created_at, intent_id`,
+			params,
+		).map((row) => ({
+			intentId: String(row.intent_id),
+			baselineRunId: Number(row.baseline_run_id),
+			failureClass: String(row.failure_class),
+			milestone: row.milestone as "initial" | "24h",
+			eventId: String(row.event_id),
+			state: row.state as FlagScanFailureAlertIntentRow["state"],
+			createdAt: Number(row.created_at),
+			claimedAt: row.claimed_at == null ? null : Number(row.claimed_at),
+			leaseOwner: row.lease_owner == null ? null : String(row.lease_owner),
+			lastError: row.last_error == null ? null : String(row.last_error),
+		}));
+	}
+
+	ensureFlagScanFailureAlertIntent(input: {
+		baselineRunId: number;
+		failureClass: string;
+		milestone: "initial" | "24h";
+		eventId: string;
+		now: number;
+	}): FlagScanFailureAlertIntentRow {
+		this.db.run(
+			`INSERT OR IGNORE INTO flag_scan_failure_alert_intents
+			 (intent_id, baseline_run_id, failure_class, milestone, event_id, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			[
+				input.eventId,
+				input.baselineRunId,
+				input.failureClass,
+				input.milestone,
+				input.eventId,
+				input.now,
+			],
+		);
+		const row = this.listFlagScanFailureAlertIntents({
+			baselineRunId: input.baselineRunId,
+			failureClass: input.failureClass,
+		}).find((candidate) => candidate.milestone === input.milestone);
+		if (!row) throw new Error("flag scan failure alert intent disappeared");
+		return row;
+	}
+
+	claimFlagScanFailureAlertIntent(input: {
+		intentId: string;
+		leaseOwner: string;
+		now: number;
+		leaseMs: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_failure_alert_intents
+			    SET state = 'claimed', claimed_at = ?, lease_owner = ?, last_error = NULL
+			  WHERE intent_id = ? AND state IN ('pending','ambiguous')
+			    AND (claimed_at IS NULL OR claimed_at + ? <= ?)`,
+			[
+				input.now,
+				input.leaseOwner,
+				input.intentId,
+				input.leaseMs,
+				input.now,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	settleFlagScanFailureAlertIntent(input: {
+		intentId: string;
+		leaseOwner: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_failure_alert_intents SET state = 'done'
+			  WHERE intent_id = ? AND state = 'claimed' AND lease_owner = ?
+			    AND EXISTS (
+			      SELECT 1 FROM alert_delivery_receipts
+			       WHERE event_id = flag_scan_failure_alert_intents.event_id
+			    )`,
+			[input.intentId, input.leaseOwner],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	voidFlagScanFailureAlertIntent(input: {
+		intentId: string;
+		now: number;
+		leaseMs: number;
+		reason: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_failure_alert_intents
+			    SET state = 'done', claimed_at = NULL, lease_owner = NULL, last_error = ?
+			  WHERE intent_id = ? AND state != 'done'
+			    AND (
+			      state IN ('pending','ambiguous')
+			      OR (state = 'claimed' AND claimed_at IS NOT NULL AND claimed_at + ? <= ?)
+			    )`,
+			[input.reason, input.intentId, input.leaseMs, input.now],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	markFlagScanFailureAlertIntentAmbiguous(input: {
+		intentId: string;
+		leaseOwner: string;
+		error: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_failure_alert_intents
+			    SET state = 'ambiguous', last_error = ?
+			  WHERE intent_id = ? AND state = 'claimed' AND lease_owner = ?`,
+			[input.error, input.intentId, input.leaseOwner],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	/**
+	 * The scan's sole commit point. BEGIN IMMEDIATE + the observed-latest CAS
+	 * prevents two Bridge generations from publishing the same weekly batch.
+	 */
+	commitFlagScan(input: CommitFlagScanInput): CommitFlagScanResult {
+		if (!Number.isSafeInteger(input.now) || input.now < 0) {
+			throw new Error("flag scan commit time must be a non-negative integer");
+		}
+		if (!input.runToken.trim()) throw new Error("flag scan run token is required");
+		if (new Set(input.requiredLegs).size !== input.requiredLegs.length) {
+			throw new Error("flag scan required legs contain a duplicate");
+		}
+		this.db.raw.exec("BEGIN IMMEDIATE");
+		try {
+			const pending = this.workflowSelectAll(
+				"SELECT run_id FROM flag_scan_runs WHERE status = 'committed' LIMIT 1",
+				[],
+			)[0];
+			if (pending) {
+				this.db.raw.exec("ROLLBACK");
+				return { committed: false, reason: "pending_exists" };
+			}
+			const latest = this.workflowSelectAll(
+				"SELECT committed_at FROM flag_scan_runs ORDER BY committed_at DESC, run_id DESC LIMIT 1",
+				[],
+			)[0];
+			const latestCommittedAt = latest ? Number(latest.committed_at) : null;
+			if (latestCommittedAt !== input.expectedLatestCommittedAt) {
+				this.db.raw.exec("ROLLBACK");
+				return { committed: false, reason: "cas_mismatch" };
+			}
+
+			const status: FlagScanRunStatus =
+				input.requiredLegs.length === 0 ? "published" : "committed";
+			const candidateCount = input.items.filter(
+				(item) =>
+					item.bucket === "candidate" || item.bucket === "orphan_candidate",
+			).length;
+			const indeterminateCount = input.items.filter(
+				(item) =>
+					item.bucket === "no_clock" || item.bucket === "keep_unbound",
+			).length;
+			this.db.run(
+				`INSERT INTO flag_scan_runs
+				 (run_token, started_at, committed_at, candidate_count, indeterminate_count, status)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.runToken,
+					input.now,
+					input.now,
+					candidateCount,
+					indeterminateCount,
+					status,
+				],
+			);
+			const runId = Number(
+				this.workflowSelectAll(
+					"SELECT run_id FROM flag_scan_runs WHERE run_token = ?",
+					[input.runToken],
+				)[0]?.run_id,
+			);
+
+			for (const state of input.proposed.nextState) {
+				this.db.run(
+					`INSERT INTO flag_scan_state
+					 (flag_name, canonical, streak_started_at, streak_samples,
+					  last_sampled_at, indeterminate_streak, indeterminate_class,
+					  last_retiring_issue, ask_count, last_asked_run_id)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name) DO UPDATE SET
+					  canonical = excluded.canonical,
+					  streak_started_at = excluded.streak_started_at,
+					  streak_samples = excluded.streak_samples,
+					  last_sampled_at = excluded.last_sampled_at,
+					  indeterminate_streak = excluded.indeterminate_streak,
+					  indeterminate_class = excluded.indeterminate_class,
+					  last_retiring_issue = excluded.last_retiring_issue`,
+					[
+						state.flagName,
+						state.canonical,
+						state.streakStartedAt,
+						state.streakSamples,
+						state.lastSampledAt,
+						state.indeterminateStreak,
+						state.indeterminateClass,
+						state.lastRetiringIssue,
+						state.askCount,
+						state.lastAskedRunId,
+					],
+				);
+			}
+
+			for (const anchor of input.proposed.nextAnchors) {
+				this.db.run(
+					`INSERT INTO flag_keep_anchor
+					 (flag_name, anchor_canonical, bound_run_token, decided_at, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name) DO UPDATE SET
+					  anchor_canonical = excluded.anchor_canonical,
+					  bound_run_token = excluded.bound_run_token,
+					  decided_at = excluded.decided_at,
+					  updated_at = excluded.updated_at`,
+					[
+						anchor.flagName,
+						anchor.anchorCanonical,
+						anchor.boundRunToken,
+						anchor.decidedAt,
+						input.now,
+						input.now,
+					],
+				);
+			}
+
+			for (const provenance of input.provenance) {
+				this.db.run(
+					`INSERT INTO flag_provenance
+					 (flag_name, incarnation_commit, status, source_issue, author,
+					  committed_at, pr_number, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name) DO UPDATE SET
+					  incarnation_commit = excluded.incarnation_commit,
+					  status = excluded.status,
+					  source_issue = excluded.source_issue,
+					  author = excluded.author,
+					  committed_at = excluded.committed_at,
+					  pr_number = excluded.pr_number,
+					  updated_at = excluded.updated_at`,
+					[
+						provenance.flagName,
+						provenance.incarnationCommit,
+						provenance.status,
+						provenance.sourceIssue,
+						provenance.author,
+						provenance.committedAt,
+						provenance.prNumber,
+						input.now,
+					],
+				);
+			}
+
+			for (const departure of input.proposed.departures) {
+				const stateSnapshot = this.workflowSelectAll(
+					"SELECT * FROM flag_scan_state WHERE flag_name = ?",
+					[departure.flagName],
+				)[0];
+				const provenanceSnapshot = this.workflowSelectAll(
+					"SELECT * FROM flag_provenance WHERE flag_name = ?",
+					[departure.flagName],
+				)[0];
+				this.db.run(
+					`INSERT INTO flag_departures
+					 (flag_name, kind, departed_at, last_state_json, last_provenance_json)
+					 VALUES (?, ?, ?, ?, ?)`,
+					[
+						departure.flagName,
+						departure.kind,
+						input.now,
+						stateSnapshot ? JSON.stringify(stateSnapshot) : null,
+						provenanceSnapshot ? JSON.stringify(provenanceSnapshot) : null,
+					],
+				);
+				for (const table of [
+					"flag_scan_state",
+					"flag_keep_anchor",
+					"flag_provenance",
+				]) {
+					this.db.run(`DELETE FROM ${table} WHERE flag_name = ?`, [
+						departure.flagName,
+					]);
+				}
+			}
+
+			for (const item of input.items) {
+				const asked =
+					item.bucket === "candidate" || item.bucket === "orphan_candidate";
+				if (asked) {
+					this.db.run(
+						`UPDATE flag_scan_state
+						    SET ask_count = ask_count + 1, last_asked_run_id = ?
+						  WHERE flag_name = ?`,
+						[runId, item.flagName],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error(
+							`candidate item has no flag_scan_state row: ${item.flagName}`,
+						);
+					}
+				}
+				const askCount = Number(
+					this.workflowSelectAll(
+						"SELECT ask_count FROM flag_scan_state WHERE flag_name = ?",
+						[item.flagName],
+					)[0]?.ask_count ?? 0,
+				);
+				this.db.run(
+					`INSERT INTO flag_scan_run_items
+					 (run_id, flag_name, bucket, canonical, description, current_value,
+					  stable_for_ms, ask_phrase, reason, ask_count, provenance_json)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						runId,
+						item.flagName,
+						item.bucket,
+						item.canonical,
+						item.description,
+						item.currentValue,
+						item.stableForMs,
+						item.askPhrase,
+						item.reason,
+						askCount,
+						item.provenance ? JSON.stringify(item.provenance) : null,
+					],
+				);
+			}
+
+			for (const leg of input.requiredLegs) {
+				this.db.run(
+					`INSERT INTO flag_scan_run_legs (run_id, leg, status)
+					 VALUES (?, ?, 'pending')`,
+					[runId, leg],
+				);
+			}
+
+			this.db.raw.exec("COMMIT");
+			return {
+				committed: true,
+				run: {
+					runId,
+					runToken: input.runToken,
+					startedAt: input.now,
+					committedAt: input.now,
+					candidateCount,
+					indeterminateCount,
+					status,
+				},
+			};
+		} catch (error) {
+			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	claimFlagScanLeg(input: {
+		runId: number;
+		leg: FlagScanLeg;
+		leaseOwner: string;
+		now: number;
+		leaseMs: number;
+	}):
+		| { claimed: true; leg: FlagScanLegRow }
+		| { claimed: false; reason: "dependencies_unsettled" | "not_pending" } {
+		if (!input.leaseOwner || input.leaseMs <= 0) {
+			throw new Error("flag scan leg claim requires owner and positive lease");
+		}
+		if (input.leg === "discord") {
+			const dependencies = new Map(
+				this.getFlagScanRunLegs(input.runId).map((leg) => [leg.leg, leg.status]),
+			);
+			if (
+				dependencies.get("linear") !== "done" ||
+				!(["done", "degraded"] as FlagScanLegStatus[]).includes(
+					dependencies.get("report") as FlagScanLegStatus,
+				)
+			) {
+				return { claimed: false, reason: "dependencies_unsettled" };
+			}
+		}
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'claimed', claimed_at = ?, lease_expires_at = ?,
+			        lease_owner = ?, ambiguous_at = NULL,
+			        reconcile_not_before = NULL
+			  WHERE run_id = ? AND leg = ? AND status = 'pending'`,
+			[
+				input.now,
+				input.now + input.leaseMs,
+				input.leaseOwner,
+				input.runId,
+				input.leg,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { claimed: false, reason: "not_pending" };
+		}
+		const row = this.getFlagScanRunLegs(input.runId).find(
+			(leg) => leg.leg === input.leg,
+		);
+		if (!row) throw new Error("claimed flag scan leg disappeared");
+		return { claimed: true, leg: row };
+	}
+
+	completeFlagScanLeg(input: {
+		runId: number;
+		leg: FlagScanLeg;
+		leaseOwner: string;
+		evidence: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'done', evidence = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
+			    AND lease_owner = ?`,
+			[input.evidence, input.runId, input.leg, input.leaseOwner],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
+		return changed;
+	}
+
+	degradeFlagScanLeg(input: {
+		runId: number;
+		leg: FlagScanLeg;
+		leaseOwner: string;
+		evidence: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'degraded', evidence = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
+			    AND lease_owner = ?`,
+			[input.evidence, input.runId, input.leg, input.leaseOwner],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
+		return changed;
+	}
+
+	markFlagScanLegAmbiguous(input: {
+		runId: number;
+		leg: "linear" | "discord";
+		leaseOwner: string;
+		now: number;
+		reconcileNotBefore: number;
+	}): boolean {
+		if (input.reconcileNotBefore <= input.now) {
+			throw new Error("flag scan ambiguity fence must be in the future");
+		}
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'ambiguous', ambiguous_at = ?, reconcile_not_before = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
+			    AND lease_owner = ?`,
+			[
+				input.now,
+				input.reconcileNotBefore,
+				input.runId,
+				input.leg,
+				input.leaseOwner,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	adoptAmbiguousFlagScanLeg(input: {
+		runId: number;
+		leg: "linear" | "discord";
+		evidence: string;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'done', evidence = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'ambiguous'`,
+			[input.evidence, input.runId, input.leg],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
+		return changed;
+	}
+
+	requeueAmbiguousFlagScanLeg(input: {
+		runId: number;
+		leg: "linear" | "discord";
+		now: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'pending', claimed_at = NULL, lease_expires_at = NULL,
+			        lease_owner = NULL
+			  WHERE run_id = ? AND leg = ? AND status = 'ambiguous'
+			    AND reconcile_not_before <= ?`,
+			[input.runId, input.leg, input.now],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	requeueExpiredReportFlagScanLeg(input: {
+		runId: number;
+		now: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'pending', claimed_at = NULL, lease_expires_at = NULL,
+			        lease_owner = NULL
+			  WHERE run_id = ? AND leg = 'report' AND status = 'claimed'
+			    AND lease_expires_at <= ?`,
+			[input.runId, input.now],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	requeueExpiredLeadNotifyFlagScanLeg(input: {
+		runId: number;
+		now: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'pending', claimed_at = NULL, lease_expires_at = NULL,
+			        lease_owner = NULL
+			  WHERE run_id = ? AND leg = 'lead_notify' AND status = 'claimed'
+			    AND lease_expires_at <= ?`,
+			[input.runId, input.now],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	markExpiredVisibleFlagScanLegAmbiguous(input: {
+		runId: number;
+		leg: "linear" | "discord";
+		now: number;
+		reconcileNotBefore: number;
+	}): boolean {
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'ambiguous', ambiguous_at = ?, reconcile_not_before = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
+			    AND lease_expires_at <= ?`,
+			[
+				input.now,
+				input.reconcileNotBefore,
+				input.runId,
+				input.leg,
+				input.now,
+			],
+		);
+		return this.db.getRowsModified() === 1;
+	}
+
+	finalizeFlagScanRunIfSettled(runId: number): boolean {
+		const unsettled = this.workflowSelectAll(
+			`SELECT 1 AS present FROM flag_scan_run_legs
+			  WHERE run_id = ? AND status NOT IN ('done','degraded') LIMIT 1`,
+			[runId],
+		)[0];
+		if (unsettled) return false;
+		this.db.run(
+			"UPDATE flag_scan_runs SET status = 'published' WHERE run_id = ? AND status = 'committed'",
+			[runId],
+		);
+		return this.db.getRowsModified() === 1;
 	}
 
 	/**

@@ -12,6 +12,27 @@ import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 // restricted to flags the running Bridge will actually observe live.
 
 describe("feature-flag registry invariants", () => {
+	it("FLY-1781 registers one default-on weekly-scan kill switch", () => {
+		const flag = FEATURE_FLAGS.find(
+			(entry) => entry.name === "flag_retirement_scan",
+		);
+		expect(flag).toMatchObject({
+			category: "kill_switch",
+			envVar: "FLYWHEEL_FLAG_RETIREMENT_SCAN",
+			polarity: "default_on",
+			valueKind: "bool",
+			default: true,
+			toggleable: "direct",
+		});
+		expect(flag?.readSites).toEqual([
+			expect.objectContaining({
+				file: "packages/teamlead/src/bridge/flag-retirement-scan.ts",
+				symbol: "flagRetirementScanEnabled",
+				timing: "call_time",
+			}),
+		]);
+	});
+
 	it("FLY-1807 retires the approved default-on e-stop wave", () => {
 		const retired = [
 			"FLYWHEEL_LIVENESS_ALERTS",

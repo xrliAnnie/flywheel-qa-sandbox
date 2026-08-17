@@ -242,6 +242,10 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux cleanup needs operator review";
 		case "cmux_flag_state":
 			return "cmux A0B1 topology transition";
+		case "flag_scan_failed":
+			return "Weekly flag scan failed closed";
+		case "flag_scan_no_clock":
+			return "Weekly flag scan has no trustworthy clock";
 		case "tmux_rescue_hold":
 			return "tmux rescue lock held too long";
 	}
@@ -473,6 +477,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "cmux-sync refused an unsafe cleanup or found authority state requiring manual review. Inspect the supplied generation, ref, and lease evidence; no foreign workspace was closed.";
 		case "cmux_flag_state":
 			return "cmux-sync entered A0B1. Exact-ref receipts remain mandatory; use the event evidence to distinguish strict-independent from grouped-rollback topology. The durable transition notice is informational; convergence remains enabled.";
+		case "flag_scan_failed":
+			return "The weekly flag scan failed closed before publishing governance output. Repair the named source or provenance failure; no flag was deleted.";
+		case "flag_scan_no_clock":
+			return "One or more flags lack two trustworthy effective-value samples. The scan withheld them from Annie rather than guessing; repair the named read or keep-binding gap.";
 		case "tmux_rescue_hold":
 			return "A tmux rescue operation held its per-socket kernel lock beyond the warning threshold. Inspect the supplied socket, verb, caller, and acquisition audit evidence.";
 	}

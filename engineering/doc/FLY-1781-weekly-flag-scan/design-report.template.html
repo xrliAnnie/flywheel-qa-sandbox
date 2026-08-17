@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1781 · 开关每周体检:退役出口设计</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.7; padding: 24px 16px 64px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 24px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 22px 24px; margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; font-size: 15px; }
+  .big { font-size: 17px; }
+  .dim { color: #86868b; font-size: 13px; }
+  .term { color: #007aff; }
+  .diagram { overflow-x: auto; background: #fff; padding: 8px 0; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f5f5f7; padding: 1px 5px; border-radius: 4px; }
+  ul, ol { margin: 6px 0 10px 22px; }
+  li { margin-bottom: 5px; font-size: 14.5px; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 10px; margin-right: 6px; font-weight: 600; }
+  .pill.g { background: #e8f8ee; color: #1d804b; }
+  .pill.r { background: #ffe5e3; color: #c22c22; }
+  .pill.b { background: #e5f1ff; color: #0a63c9; }
+  .comment-box { margin-top: 16px; border-top: 1px dashed #e5e5ea; padding-top: 12px; }
+  .comment-box label { font-size: 13px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #summary-list { white-space: pre-wrap; font-size: 14px; background: #f5f5f7; border-radius: 8px; padding: 12px; min-height: 40px; }
+  #copy-all { margin-top: 10px; background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px; cursor: pointer; }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>开关每周体检:退役出口怎么建</h1>
+  <div class="sub">FLY-1781 · 设计方案(供 Annie 审阅)· 2026-08-16 · Codex 独立评审 6 轮通过</div>
+
+  <div class="card green" data-section="一句话">
+    <h2>1 · 一句话</h2>
+    <p class="big">系统每 7 天给全部功能开关做一次体检:<b>哪个开关在同一个状态待满一周(值一直没变),就打包摆到你面前问一句「这个还要留着吗」</b>。你答「留」→ 记下来,以后不再问;你答「清」→ 由人开清理单去删。<b>系统自己永远不删任何东西。</b></p>
+    <p class="dim">「功能开关」(feature flag,以下简称开关)= 代码里控制某个功能开或关的配置项。现在登记在册 51 个;没有出口机制,它们只进不出。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在本机)</label><textarea data-key="s1" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="核心流程">
+    <h2>2 · 核心流程</h2>
+    <p>每周一轮,从采样到你的裁决,再回到系统记账,是一个闭环:</p>
+    <div class="diagram"><!--SVG:d1--></div>
+    <p><b>三条你定过的规矩,原样落地:</b></p>
+    <ul>
+      <li><span class="pill r">铁律</span><b>节奏就是每周</b> —— 你 08-14 亲自否掉了「攒批再问」的替代方案。周期在代码里写死 7 天,<b>不做任何可调旋钮</b>(免得旋钮变成「改成每月」的后门)。</li>
+      <li><span class="pill r">铁律</span><b>永不自动删</b> —— 扫描只「摆出来问」;清理由人开单、人执行。</li>
+      <li><span class="pill r">铁律</span><b>一周一张批量单</b> —— 不会一个开关给你发一条消息;裁决在一页 HTML 上逐条留言,一键复制贴回 Discord 即可。</li>
+    </ul>
+    <p class="dim">判稳的口径:看的是开关<b>解析后的生效值</b>(实际起作用的那个值),不是某一层配置文件 —— 某层配置改了但被上层盖住、实际值没变,就算「没变」。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s2" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="一个开关的一生">
+    <h2>3 · 一个开关的一生</h2>
+    <div class="diagram"><!--SVG:d2--></div>
+    <ul>
+      <li><b>你答「留」后它不会打扰你</b> —— 除非它的值以后又变了:那说明情况变了,重新开始计时,满一周后允许再问你一次。系统记住的是「你当时看到的那个值」,所以「你刚答完留、值就变了」这种边角也不会漏。</li>
+      <li><b>你没答的开关</b>下周照常再摆,并标「已问过 N 次」—— 不永久静音(静音是最危险的默认),重复问多了噪音会自己显形,那时再收敛。</li>
+      <li><b>问法按开关类型变</b>:开着且稳定的问「写死成默认 + 删?」;一直关着的问「删?」;多分支的问「选个赢家留下?」;数值旋钮问「写死成当前值?」。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s3" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与结构">
+    <h2>4 · 数据与结构模型</h2>
+    <p>三块数据,各管各的,闭环靠登记表自愈 —— <b>没有额外的「裁决数据库」</b>:</p>
+    <table>
+      <tr><th>数据</th><th>住哪</th><th>记什么</th></tr>
+      <tr><td><b>开关登记表</b><br><span class="dim">registry(代码里的清单)</span></td><td>代码仓库,改动走 PR(代码评审合入流程)</td><td>每个开关的定义;你的裁决最终落在这里:「留」写 <code>longTermKeep</code> + 一句理由,「清」写 <code>retiring</code>(哪张单在退它)。<b>下一轮扫描读到这些字段就自动不再问</b> —— 这就是闭环自愈。</td></tr>
+      <tr><td><b>快照库</b><br><span class="dim">Bridge(调度中枢进程)本地的 SQLite 数据库</span></td><td>Bridge 的状态库,新增 8 张表</td><td>每周每个开关的采样值、连续稳定了多久、问过几次、你答「留」时看到的值(用来判断「值后来变没变」)、每轮冻结的候选清单、对外发送的进度账。</td></tr>
+      <tr><td><b>来源</b><br><span class="dim">git 历史现算</span></td><td>不建表,查代码提交历史</td><td>每个候选开关「是谁、为哪张单加的」—— 摆到你面前时带上;真查不到来源的,单列「无主」一节(查不到本身就是该清的信号)。</td></tr>
+    </table>
+    <p class="dim">为什么扫描器必须住在 Bridge 进程里:有一类开关是 Bridge 启动时读一次的,它的真实生效值只有 Bridge 自己知道,外面的脚本看到的可能是错的。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s4" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="安全设计">
+    <h2>5 · 安全设计:错了宁可不发,绝不发错</h2>
+    <div class="diagram"><!--SVG:d3--></div>
+    <ul>
+      <li><b>判据凑不齐就明说</b>:某个开关这轮读不准(比如配置正在换、两处来源打架),它不进候选,单独列「判据不可用」,绝不估一个值来问你 —— 你看到的候选,判据一定是干净的。</li>
+      <li><b>查询失败 ≠ 查不到</b>:来源<b>查询动作失败</b>(git 出错)→ 整轮作废、只告警 Lead,不给你发半份残缺报告;<b>确实查不到来源</b> → 照常摆出来,标「无主」。</li>
+      <li><b>崩溃不重复打扰</b>:建单/发通知每一步都记账,中途崩了重启后只补没发的,不会给你发两张单、两条消息。</li>
+      <li><b>裁决单不会被机器人当成活儿</b>:三道防线(见上图)保证这张「问你」的单永远不会被自动派工去执行。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s5" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="关键取舍">
+    <h2>6 · 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>取舍点</th><th>选了什么</th><th>否掉了什么、为什么</th></tr>
+      <tr><td>判稳怎么算</td><td><b>快照法</b>:每周记一次当前值,连续两次相同且间隔满 7 天 = 稳定。向前采样,不重建历史。</td><td>❌ 等 FLY-1778 那套「值变更账本」地基 —— 不需要;❌ 从历史日志倒推 —— 上游 PRD 已证伪(四个洞会算错)。</td></tr>
+      <tr><td>扫描周期</td><td>代码写死 7 天。</td><td>❌ 做成可配置 —— 旋钮就是「改成每月」的后门,而每月正是你否掉的方案。</td></tr>
+      <tr><td>你的裁决怎么落账</td><td>人按手册改登记表、走正常 PR;附一个<b>只读校验器</b>确认每条裁决恰好落位。</td><td>❌ 系统自动改代码 —— 自动改代码的工具复杂又危险,每周就几行字,不值。</td></tr>
+      <tr><td>「留」之后值又变了</td><td>系统记住你裁决时看到的值;值变了就重新计时、可再问。</td><td>❌ 答过「留」永久静音 —— 会把「情况已经变了」的开关藏一辈子。</td></tr>
+      <tr><td>裁决请求送达</td><td>Linear 批量单(台账)+ HTML 留言页(你用的界面)+ Discord 一条通知。</td><td>❌ 页面留言自动回传 —— 那是 FLY-298,还在 Backlog;现在的真实闭环是你复制留言贴回 Discord,页面上会明写,不假装自动。</td></tr>
+    </table>
+    <p class="dim">独立把关:方案经 Codex(另一家的模型)以最高强度评审 6 轮才通过,前 5 轮共揪出 27 处真缺口(重复建单、崩溃窗、时钟偏移、锚定漏洞等),全部折入。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s6" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="诚实边界">
+    <h2>7 · 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><b>两次采样之间的短暂翻转看不到</b>(值变了又变回去)—— 快照法的固有盲区,Tadashi 认可的工程取舍。</li>
+      <li><b>判据的正确性上限 = 解析器的正确性</b> —— 解析器读错值的那类 bug(出过两次)由另一条审计线守着,不在本单半径内。</li>
+      <li><b>HTML 留言不自动回传</b> —— 你留言后要点「复制全部」贴回 Discord,由 Lead 转达执行。</li>
+      <li><b>本单不删任何开关、不建执行单</b> —— 只负责「按时摆出来问你」;执行是裁决之后另外的人类动作。</li>
+      <li><b>上线后第一周零候选</b> —— 时钟从上线那刻起攒,第二周开始才有开关攒满一周浮现。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s7" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="留言汇总">
+    <h2>8 · 你的留言汇总</h2>
+    <p class="dim">下面自动汇集你在各节的留言。点「复制全部」,贴回 Discord 即可 —— 留言只存在你这台设备的浏览器里,不会自动发送。</p>
+    <div id="summary-list">(还没有留言)</div>
+    <button id="copy-all">复制全部留言</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX = "fly1781-design:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var summaryEl = document.getElementById("summary-list");
+  function sectionTitle(area) {
+    var card = area.closest ? area.closest(".card") : null;
+    return card && card.getAttribute("data-section") ? card.getAttribute("data-section") : area.getAttribute("data-key");
+  }
+  function renderSummary() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push("【" + sectionTitle(a) + "】" + v);
+    });
+    summaryEl.textContent = parts.length ? parts.join("\n\n") : "(还没有留言)";
+    return parts.join("\n\n");
+  }
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute("data-key"));
+    a.addEventListener("input", function () {
+      lsSet(a.getAttribute("data-key"), a.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  var btn = document.getElementById("copy-all");
+  var status = document.getElementById("copy-status");
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  btn.addEventListener("click", function () {
+    var text = renderSummary();
+    if (!text) { status.textContent = "还没有留言"; return; }
+    var done = function (ok) { status.textContent = ok ? "已复制,请贴回 Discord" : "复制失败,请手动全选复制"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>

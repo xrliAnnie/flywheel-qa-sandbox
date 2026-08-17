@@ -169,6 +169,28 @@ describe("FLY-1560 late-armed riders do not burn the cadence anchor", () => {
 		expect(onRunnerQuotaScanTick).toHaveBeenCalledTimes(2);
 	});
 
+	it("anchors the weekly flag-scan rider on the first ARMED tick", async () => {
+		const onFlagScanTick = vi.fn();
+		let armed = false;
+		const poller = makePoller({
+			onFlagScanTick,
+			onFlagScanReady: () => armed,
+			flagScanEveryNTicks: 2,
+		});
+
+		await poll(poller);
+		await poll(poller);
+		expect(onFlagScanTick).toHaveBeenCalledTimes(0);
+
+		armed = true;
+		await poll(poller);
+		expect(onFlagScanTick).toHaveBeenCalledTimes(1);
+		await poll(poller);
+		expect(onFlagScanTick).toHaveBeenCalledTimes(1);
+		await poll(poller);
+		expect(onFlagScanTick).toHaveBeenCalledTimes(2);
+	});
+
 	it("keeps byte-compatible tick-1 behavior when no readiness probe is given", async () => {
 		const onLeadReconcileTick = vi.fn();
 		const poller = makePoller({

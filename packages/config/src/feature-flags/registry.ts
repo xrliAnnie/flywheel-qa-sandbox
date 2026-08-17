@@ -187,6 +187,31 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	// ─── FLY-1781: weekly retirement candidate scan ───
+	{
+		name: "flag_retirement_scan",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FLAG_RETIREMENT_SCAN",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"每 7 天扫描解析后生效值稳定的 flag，生成一批留/清候选；扫描本身永不删除 flag",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/flag-retirement-scan.ts",
+				"flagRetirementScanEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-retirement-scan.test.ts: kill switch live-observe",
+		note: "固定每周，故意没有周期配置；=0 只暂停扫描 rider，不改变已有裁决或删除任何东西。",
+	},
 	// ─── FLY-1393: liveness controls ───
 	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
 	{

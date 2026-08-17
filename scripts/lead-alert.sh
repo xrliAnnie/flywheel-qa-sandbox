@@ -117,7 +117,7 @@ MENTION_USER=""
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
-INFORMATIONAL_KINDS="account_switched model_cap_switched model_cap_unknown quota_switch_confirmation quota_blocked_recovered workflow_route_input_rejected cmux_flag_state"
+INFORMATIONAL_KINDS="account_switched model_cap_switched model_cap_unknown quota_switch_confirmation quota_blocked_recovered workflow_route_input_rejected cmux_flag_state flag_scan_failed flag_scan_no_clock"
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
@@ -182,7 +182,7 @@ case "$KIND" in
   # on this leg (the wrapper preflight dirty-marker page fires while the Bridge
   # is down); the other four are added for face parity with the TS union
   # (kind-contract.test.ts is the drift guard on both faces).
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|machine_account_conflict|model_config|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_flag_state|tmux_rescue_hold) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|workflow_route_input_rejected|tui_window_lost|restart_guard_bypass|restart_storm_hold|quota_guard_bypassed|bridge_wrapper_fail|bin_integrity_drift|discord_plugin_integrity_failed|notify_digest_failed|deploy_failed|deploy_degraded|swap_pressure_high|tmux_server_lost|tmux_hold|tmux_split_brain|bridge_abnormal_exit|infra_bot_down|zombie_session_backlog|three_stage_takeover_failed|account_switched|account_switch_degraded|machine_account_conflict|model_config|model_cap_switched|model_cap_unknown|model_cap_persistent_unknown|model_bench_malformed|quota_choice|quota_switch_confirmation|quota_no_target|quota_blocked_recovered|quota_read_blind|account_switch_failed|account_identity_mismatch|quota_revive_stuck|quota_monitor_down|lead_dual_active|lead_dual_active_sensor_degraded|lead_lease_store_broken|lead_lease_bypass_used|lead_lease_would_block|lead_lease_control_broken|lead_identity_source_broken|lead_backend_drift|cmux_cleanup|cmux_flag_state|tmux_rescue_hold|flag_scan_failed|flag_scan_no_clock) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     emit_result "config_error"

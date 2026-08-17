@@ -124,6 +124,21 @@ const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
 const execFileAsync = promisify(execFile);
 
+export const FLAG_GOVERNANCE_LABEL = "flag-governance";
+export const FLAG_GOVERNANCE_MARKER = "<!-- flywheel:flag-governance run=";
+
+/** FLY-1781: governance ledgers are decision records, never executable work. */
+export function isFlagGovernanceIssue(
+	labelNames: string[],
+	description: string,
+): boolean {
+	return (
+		labelNames.some(
+			(label) => label.trim().toLowerCase() === FLAG_GOVERNANCE_LABEL,
+		) || description.includes(FLAG_GOVERNANCE_MARKER)
+	);
+}
+
 interface RunCloseoutMergeProof {
 	probeRepoSlug: string;
 	prNumber: number;
@@ -1519,6 +1534,21 @@ export function createRunsRouter(
 				// snapshot fail-closes rather than treating an unreadable label set
 				// as "not founder-facing".
 				issueLabelsFetchFailed = true;
+			}
+
+			// FLY-1781: four-layer anti-dispatch contract. The marker is checked
+			// even when Linear label loading failed, so a governance batch cannot
+			// become executable work through the existing label-read fail-open path.
+			// This guard is deliberately independent of leadId: explicit and
+			// auto-resolved starts are rejected identically.
+			if (isFlagGovernanceIssue(issueLabelNames, issueDescription)) {
+				res.status(409).json({
+					success: false,
+					code: "FLAG_GOVERNANCE_NOT_EXECUTABLE",
+					message:
+						"This flag-governance issue is a decision ledger and cannot start a Runner.",
+				});
+				return;
 			}
 
 			// FLY-80: Auto-resolve leadId from project config if not provided.

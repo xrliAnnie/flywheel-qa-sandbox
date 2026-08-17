@@ -48,6 +48,7 @@ import {
 } from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
+	FEATURE_FLAGS,
 	phaseMessageTag,
 	readEnvFileSource,
 	resolveAllFlags,
@@ -86,6 +87,7 @@ import {
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
 import {
+	type AlertAttemptOptions,
 	type AlertPayload,
 	type AlertResult,
 	FLEET_ALERT_PROJECT,
@@ -234,6 +236,16 @@ import {
 } from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
+import { buildFlagProvenance } from "./flag-provenance.js";
+import {
+	createProductionFlagScanEffects,
+	resolveFlagScanOwner,
+} from "./flag-retirement-production.js";
+import {
+	createFlagRetirementScanner,
+	type FlagScanSourceSnapshot,
+	flagRetirementScanEnabled,
+} from "./flag-retirement-scan.js";
 import {
 	type FlagCanonical,
 	type FlagRouteDeps,
@@ -4533,6 +4545,8 @@ export async function startBridge(
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
 	let fleetReconcileTimer: ReturnType<typeof setInterval> | undefined;
+	let flagScanSourceLoader: (() => Promise<FlagScanSourceSnapshot>) | undefined;
+	let flagScanRepoRoot: string | undefined;
 	if (!process.env.FLYWHEEL_PROJECTS) {
 		try {
 			const here = dirname(fileURLToPath(import.meta.url));
@@ -4583,6 +4597,49 @@ export async function startBridge(
 				await managementProjectSource.refresh();
 				managementProjects = managementProjectSource.projects();
 				managementProjectsRevision = managementProjectSource.revision();
+			};
+			flagScanRepoRoot = repoRoot;
+			flagScanSourceLoader = async () => {
+				let projectSourcesReadable = true;
+				try {
+					await refreshManagementSources();
+					await ffConfigCache.get(managementProjects);
+				} catch (error) {
+					projectSourcesReadable = false;
+					console.warn(
+						`[flag-scan] project source refresh unavailable; project-scoped flags have no clock this round: ${(error as Error).message}`,
+					);
+				}
+				const resolvedViews = resolveAllFlags({
+					env: process.env,
+					envFile: managementEnvSource(),
+					projectConfigs: ffConfigCache.current(),
+				});
+				const views = projectSourcesReadable
+					? resolvedViews
+					: resolvedViews.map((view) =>
+							view.scope === "project"
+								? { ...view, effectiveByProject: undefined }
+								: view,
+						);
+				const viewByName = new Map(views.map((view) => [view.name, view]));
+				if (
+					viewByName.size !== FEATURE_FLAGS.length ||
+					FEATURE_FLAGS.some((spec) => !viewByName.has(spec.name))
+				) {
+					throw new Error(
+						"resolved feature-flag roster did not match registry",
+					);
+				}
+				return {
+					rows: FEATURE_FLAGS.map((spec) => ({
+						spec,
+						view: viewByName.get(spec.name)!,
+					})),
+					expectedProjectNames: managementProjects.map(
+						(project) => project.projectName,
+					),
+				};
 			};
 			fleetConsole = new FleetConsole(
 				defaultFleetConsoleOptions({
@@ -7022,6 +7079,12 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	const flagScanAlertHolder: {
+		current?: (
+			payload: AlertPayload,
+			attempt?: AlertAttemptOptions,
+		) => Promise<AlertResult>;
+	} = {};
 	// FLY-927 (Task 1.1): late-bound ROUTED alert sink — the single funnel every
 	// emission source calls, so the D1 Router sees every infra event. Populated
 	// right after the raw alertSink below; emitters constructed earlier read
@@ -7031,6 +7094,192 @@ export async function startBridge(
 	const routedAlertSinkHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+
+	const flagScanOwner = (() => {
+		try {
+			return resolveFlagScanOwner(projects);
+		} catch (error) {
+			console.warn(
+				`[flag-scan] owner resolution unavailable: ${(error as Error).message}`,
+			);
+			return undefined;
+		}
+	})();
+	const flagRetirementScanner =
+		flagScanSourceLoader && flagScanRepoRoot && flagScanOwner
+			? createFlagRetirementScanner({
+					store,
+					loadSources: flagScanSourceLoader,
+					loadProvenance: (currentFlagNames) =>
+						buildFlagProvenance({
+							currentFlagNames,
+							execGit: async (args) => {
+								try {
+									const result = await execFileP("git", args, {
+										cwd: flagScanRepoRoot,
+										timeout: 20_000,
+										maxBuffer: 16 * 1024 * 1024,
+									});
+									return {
+										exitCode: 0,
+										stdout: result.stdout,
+										stderr: result.stderr,
+									};
+								} catch (error) {
+									const failed = error as {
+										code?: number | string;
+										stdout?: string;
+										stderr?: string;
+										message?: string;
+									};
+									return {
+										exitCode:
+											typeof failed.code === "number" ? failed.code : 124,
+										stdout: failed.stdout ?? "",
+										stderr: failed.stderr ?? failed.message ?? "git failed",
+									};
+								}
+							},
+						}),
+					effects: createProductionFlagScanEffects({
+						linearApiKey: config.linearApiKey,
+						projects,
+						reportBaseUrl: loopbackBaseUrl,
+						reportToken: config.apiToken,
+						discordBotToken:
+							flagScanOwner.project.announcerBotToken ?? config.discordBotToken,
+						store,
+						alert: (payload, attempt) =>
+							flagScanAlertHolder.current?.(payload, attempt) ??
+							Promise.resolve({ skipped: "unknown-lead" }),
+					}),
+					alertFailure: async (message) => {
+						const baselineRunId = store.getLatestFlagScanRun()?.runId ?? 0;
+						const failureClass = /provenance|git|registry/i.test(message)
+							? "provenance"
+							: /source|config|resolve/i.test(message)
+								? "source"
+								: "orchestration";
+						const now = Date.now();
+						const initial = store.ensureFlagScanFailureAlertIntent({
+							baselineRunId,
+							failureClass,
+							milestone: "initial",
+							eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:initial`,
+							now,
+						});
+						if (now - initial.createdAt >= 24 * 60 * 60_000) {
+							store.ensureFlagScanFailureAlertIntent({
+								baselineRunId,
+								failureClass,
+								milestone: "24h",
+								eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:24h`,
+								now,
+							});
+						}
+						for (const intent of store.listFlagScanFailureAlertIntents({
+							baselineRunId,
+							failureClass,
+						})) {
+							if (intent.state === "done") continue;
+							if (
+								store.getAlertDeliveryReceipt(intent.eventId) &&
+								store.claimFlagScanFailureAlertIntent({
+									intentId: intent.intentId,
+									leaseOwner: `bridge:${process.pid}`,
+									now,
+									leaseMs: 2 * 60_000,
+								})
+							) {
+								store.settleFlagScanFailureAlertIntent({
+									intentId: intent.intentId,
+									leaseOwner: `bridge:${process.pid}`,
+								});
+								continue;
+							}
+							if (
+								!store.claimFlagScanFailureAlertIntent({
+									intentId: intent.intentId,
+									leaseOwner: `bridge:${process.pid}`,
+									now,
+									leaseMs: 2 * 60_000,
+								})
+							) {
+								continue;
+							}
+							const result = await flagScanAlertHolder.current?.(
+								{
+									leadId: flagScanOwner.leadId,
+									projectName: flagScanOwner.project.projectName,
+									eventId: intent.eventId,
+									eventType: "flag_scan_failed",
+									title: `Weekly flag scan failed closed (${intent.milestone})`,
+									body: `${message}\nThe scan remains fail-closed; inspect the referenced run before retrying.`,
+									severity: "warning",
+								},
+								{ replayAfterAmbiguousAttempt: true },
+							);
+							if (
+								result &&
+								store.settleFlagScanFailureAlertIntent({
+									intentId: intent.intentId,
+									leaseOwner: `bridge:${process.pid}`,
+								})
+							) {
+								continue;
+							}
+							store.markFlagScanFailureAlertIntentAmbiguous({
+								intentId: intent.intentId,
+								leaseOwner: `bridge:${process.pid}`,
+								error: result
+									? "delivery receipt missing"
+									: "alert sink unavailable",
+							});
+						}
+					},
+					now: () => Date.now(),
+					newRunToken: () =>
+						`${new Date().toISOString().slice(0, 10)}-${randomBytes(8).toString("hex")}`,
+					leaseOwner: `bridge:${process.pid}:${randomUUID()}`,
+					enabled: () => flagRetirementScanEnabled(process.env),
+				})
+			: undefined;
+
+	const flagScanRunHandler: express.RequestHandler = async (req, res) => {
+		if (!loopbackSelfOrigin(req.headers.host)) {
+			res.status(403).json({ error: "loopback host required" });
+			return;
+		}
+		if (!flagRetirementScanner) {
+			res.status(503).json({ error: "flag scan is not ready" });
+			return;
+		}
+		const body = (req.body ?? {}) as Record<string, unknown>;
+		if (
+			Object.keys(body).some((key) => key !== "dryRun") ||
+			(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
+		) {
+			res.status(400).json({ error: "body must be {dryRun?: boolean}" });
+			return;
+		}
+		const outcome = body.dryRun
+			? await flagRetirementScanner.dryRun()
+			: await flagRetirementScanner.recoverPending();
+		res.json(outcome);
+	};
+	if (config.apiToken) {
+		app.post(
+			"/api/flag-scan/run",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			flagScanRunHandler,
+		);
+	} else {
+		app.post("/api/flag-scan/run", (_req, res) => {
+			res.status(503).json({
+				error: "flag scan API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
@@ -7898,6 +8147,10 @@ export async function startBridge(
 		onLeadReconcileReady: () => leadReconcilePassHolder.current !== null,
 		onRunnerQuotaScanTick: () => runnerQuotaScanPassHolder.current?.(),
 		onRunnerQuotaScanReady: () => runnerQuotaScanPassHolder.current !== null,
+		onFlagScanTick: async () => {
+			await flagRetirementScanner?.scanIfDue();
+		},
+		onFlagScanReady: () => flagRetirementScanner !== undefined,
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();
 		},
@@ -8127,6 +8380,11 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+	// FLY-1781: the scan's own SQLite outboxes provide the ambiguity fence and
+	// exclusive lease, so their retries may use the notifier's fenced replay
+	// option instead of being swallowed by attempt-only claims after a crash.
+	flagScanAlertHolder.current = (payload, attempt) =>
+		leadAlertNotifier.alert(payload, attempt);
 	// FLY-1718 P4: startup + periodic crash convergence. A durable binding can
 	// re-drive activation/settlement; pending fifth-strike alerts retain their
 	// StateStore row until the notifier has durably sent/queued/dead-lettered it.

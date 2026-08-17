@@ -260,6 +260,12 @@ export interface GatePollerConfig {
 	runnerQuotaScanEveryNTicks?: number;
 	/** See `onLeadReconcileReady` — same late-arming contract. */
 	onRunnerQuotaScanReady?: () => boolean;
+	/** FLY-1781: weekly flag scan rider on the existing GatePoller timer. */
+	onFlagScanTick?: () => void | Promise<void>;
+	/** Cadence in poll ticks (default 200, about 10min in production). */
+	flagScanEveryNTicks?: number;
+	/** Late-arm guard: an unready boot tick must not burn the cadence anchor. */
+	onFlagScanReady?: () => boolean;
 
 	/**
 	 * FLY-945 Fix D: the external-merge convergence sweeper closure (built in
@@ -439,11 +445,13 @@ export class GatePoller {
 	private reconcilePatrolPass: Promise<void> | null = null;
 	private leadReconcilePass: Promise<void> | null = null;
 	private runnerQuotaScanPass: Promise<void> | null = null;
+	private flagScanPass: Promise<void> | null = null;
 	// FLY-1560: cadence anchors for the two late-armed riders. `null` means the
 	// rider has never run, so the next ready tick anchors it (see the
 	// `onLeadReconcileReady` contract in GatePollerConfig).
 	private leadReconcileAnchorTick: number | null = null;
 	private runnerQuotaScanAnchorTick: number | null = null;
+	private flagScanAnchorTick: number | null = null;
 	// FLY-1099 §7.2: retained unreachable-runner consistency reconcile.
 	private readonly founderReplyUnreachable: FounderReplyUnreachableReconcile;
 
@@ -609,6 +617,24 @@ export class GatePoller {
 				void this.runRunnerQuotaScanPass().catch((err) =>
 					console.warn(
 						`[GatePoller] runner quota scan error (non-fatal): ${(err as Error).message}`,
+					),
+				);
+			}
+
+			if (
+				this.config.onFlagScanTick &&
+				this.riderDueThisTick(
+					this.flagScanAnchorTick,
+					this.flagScanEveryNTicks(),
+					this.config.onFlagScanReady,
+					(anchor) => {
+						this.flagScanAnchorTick = anchor;
+					},
+				)
+			) {
+				void this.runFlagScanPass().catch((err) =>
+					console.warn(
+						`[GatePoller] flag retirement scan error (non-fatal): ${(err as Error).message}`,
 					),
 				);
 			}
@@ -1159,6 +1185,22 @@ export class GatePoller {
 			}
 		});
 		this.runnerQuotaScanPass = guarded;
+		return guarded;
+	}
+
+	private flagScanEveryNTicks(): number {
+		return Math.max(1, this.config.flagScanEveryNTicks ?? 200);
+	}
+
+	private runFlagScanPass(): Promise<void> {
+		if (this.flagScanPass) return this.flagScanPass;
+		const pass = Promise.resolve()
+			.then(() => this.config.onFlagScanTick?.())
+			.then(() => undefined);
+		const guarded = pass.finally(() => {
+			if (this.flagScanPass === guarded) this.flagScanPass = null;
+		});
+		this.flagScanPass = guarded;
 		return guarded;
 	}
 

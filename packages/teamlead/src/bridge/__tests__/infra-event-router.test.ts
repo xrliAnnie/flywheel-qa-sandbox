@@ -55,6 +55,18 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		).toBe("notify");
 	});
 
+	it.each(["flag_scan_failed", "flag_scan_no_clock"] as const)(
+		"routes %s as engineering-only notify with no ticket/thread lifecycle",
+		(kind) => {
+			expect(INFORMATIONAL_KINDS.has(kind)).toBe(true);
+			expect(TICKET_KINDS.has(kind)).toBe(false);
+			expect(ISSUE_PROGRESS_KINDS.has(kind)).toBe(false);
+			expect(
+				classifyInfraEvent({ eventType: kind, boundIssueThread: THREAD }),
+			).toBe("notify");
+		},
+	);
+
 	it("every TICKET_KIND routes to ticket, with or without a bound thread", () => {
 		for (const kind of TICKET_KINDS) {
 			expect(

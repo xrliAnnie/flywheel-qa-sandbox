@@ -330,6 +330,10 @@ export const ALERT_EVENT_TYPES = [
 	"cmux_cleanup",
 	"cmux_flag_state",
 	"tmux_rescue_hold",
+	// FLY-1781: engineering-only weekly flag-governance health notices. These
+	// are informational (no ticket/ARC/founder DM lifecycle).
+	"flag_scan_failed",
+	"flag_scan_no_clock",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
 	 * skipped it. A REAL notification is being held back, so someone has to be
@@ -350,6 +354,8 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"cmux_flag_state",
+	"flag_scan_failed",
+	"flag_scan_no_clock",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {

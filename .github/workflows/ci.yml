@@ -48,6 +48,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Enforce FLY-1781 flag-governance safety contracts
+        run: |
+          bash scripts/__tests__/flag-governance-cos-contract.test.sh
+          bash scripts/__tests__/test-verify-flag-verdicts.test.sh
+
       - name: Build
         run: pnpm build
 
