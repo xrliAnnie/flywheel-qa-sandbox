@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>新 CoS · 我查到什么(第 3 版)</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.62;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:22px 16px 110px}
+  h1{font-size:23px;margin:.2em 0 .12em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .55em;letter-spacing:-.01em;color:var(--navy)}
+  h3{font-size:14.5px;margin:1.35em 0 .5em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:14px}
+  .v3{background:#fff4e3;border:1px solid #ffe0b0;border-radius:10px;padding:11px 14px;
+    margin:0 0 16px;font-size:13.4px;color:#7a4a00}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:15px 17px;margin:6px 0 20px;font-size:14.5px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .hero b{color:var(--navy)}
+  section{background:var(--card);border-radius:12px;padding:17px 18px;margin:0 0 16px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.q{border-left-color:var(--purple)}
+  section.s2{border-left-color:var(--red)}
+  section.s3{border-left-color:var(--green)}
+  section.s4{border-left-color:var(--amber)}
+  section.s6{border-left-color:var(--dim)}
+  section.blank{border-left-color:var(--navy);background:#fbfbfd}
+  .qtag{display:inline-block;background:var(--purple);color:#fff;font-size:11px;
+    padding:2px 9px;border-radius:20px;margin-bottom:7px;font-weight:600}
+  p{margin:.55em 0}
+  ul{margin:.5em 0;padding-left:1.15em}
+  li{margin:.36em 0}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:.7em 0;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f7f8fa;color:var(--navy);font-weight:600;white-space:nowrap}
+  code{font-family:"SF Mono",ui-monospace,monospace;font-size:12.4px;
+    background:#f2f2f5;padding:1px 5px;border-radius:4px}
+  .kill{background:#fff5f4;border:1px solid #ffd9d5;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .kill b{color:var(--red)}
+  .good{background:#f2fbf5;border:1px solid #cdedd8;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .warn{background:#fffaf0;border:1px solid #ffe3b8;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .fact{background:#f6f8fc;border:1px solid #dde5f2;border-radius:9px;padding:11px 13px;margin:.6em 0;font-size:13.4px}
+  .quote{background:#faf7ff;border-left:3px solid var(--purple);padding:9px 13px;margin:.7em 0;
+    font-size:13.6px;color:#4a3663}
+  .tag{display:inline-block;font-size:11px;padding:1.5px 7px;border-radius:20px;
+    margin-right:5px;font-weight:600;vertical-align:1px}
+  .t-ok{background:#e8f8ed;color:#177a37}
+  .t-fail{background:#fdeceb;color:#c22a20}
+  .t-half{background:#fff4e3;color:#9a5b00}
+  .t-none{background:#f2e9fb;color:#6b2fa8}
+  .src{color:var(--dim);font-size:12.3px;margin-top:.35em}
+  .cbox{margin-top:15px;border-top:1px dashed var(--line);padding-top:12px}
+  .cbox label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:5px}
+  textarea{width:100%;min-height:66px;border:1px solid var(--line);border-radius:9px;
+    padding:9px 11px;font:inherit;font-size:14px;background:#fcfcfd;resize:vertical;color:var(--ink)}
+  textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+  .footer{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);
+    border-top:1px solid var(--line);padding:10px 16px;backdrop-filter:blur(10px)}
+  .fin{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+  #count{font-size:12.8px;color:var(--dim);flex:1;min-width:110px}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:9px 16px;
+    font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  button:active{opacity:.8}
+  #preview{display:none;max-width:900px;margin:9px auto 0;background:#f7f8fa;border:1px solid var(--line);
+    border-radius:9px;padding:9px 11px;font-size:12.2px;white-space:pre-wrap;max-height:130px;overflow:auto}
+  .note{font-size:12.6px;color:var(--dim);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>那个「新 CoS」—— 我查到什么</h1>
+<div class="sub">FLY-1827 第 3 版 · 2026-08-17</div>
+
+<div class="v3">
+<b>这一版:</b>你问「我有跟你讨论过要一个新的 COS…这部分你还记得吗?」——
+我按你说的去翻了 Linear 和仓库。这一版就围着这个问题写,前面几版的内容压到后面。
+</div>
+
+<div class="hero">
+<b>直接答:那次讨论我没找到留档 —— 但你不是记错了。</b>
+<br><br>
+我翻遍了 Linear 和整个仓库,<b>没有任何一个 issue 或文档记着「新起一个管所有项目的 CoS」</b>。
+<br><br>
+但有两件事让我确定这个想法是真的存在过:<br>
+① <b>这个问题被记下来了,只是答案没有</b> —— 语音总管那个单里的第一个待定问题,问的正是
+「是给 Aunt Cass 装上嘴和耳朵,<b>还是新起一个总管</b>」。你刚才那段话,就是在答这一题(你选了后者,还把它扩大了)。<br>
+② <b>今天的结构现状,正好长成你描述的那个缺口的形状</b> —— 见下面第 ② 节,这条我觉得是这一轮最有用的。
+</div>
+
+<!-- ① -->
+<section class="q" data-t="① 那次讨论查到什么 / 没查到什么">
+<div class="qtag">你问的</div>
+<h2>① 「这部分讨论你还记得吗?」</h2>
+
+<p><b>我不记得,而且我要说清楚为什么 —— 这不是记忆力问题,是我根本没有那段记录。</b></p>
+
+<div class="kill">
+<b>一个我必须先讲的盲区:我读不到 Discord 聊天记录。</b><br>
+你让我看「Linear、PRD 还有我们的聊天记录」。前两个我翻了。但<b>聊天记录我物理上读不到</b> ——
+我手上没有任何能读 Discord 历史消息的工具。<br>
+所以如果那次讨论是在 Discord 里发生、而且没有落成 issue 或文档,<b>它对我就是不存在的</b>。
+这是我这次搜索的真实边界,不是我偷懒。
+</div>
+
+<h3>Linear + 仓库里,我找到的最接近的东西</h3>
+
+<div class="good">
+<b>1. 那个问题本身,被明确记下来了。</b><br>
+语音总管那个单(FLY-1451)里列了 7 个待定问题,<b>第 1 个</b>就是:
+<div class="quote">「它跟 Aunt Cass 是什么关系 —— 是『给 Cass 装上嘴和耳朵』,<b>还是新起一个总管</b>?」</div>
+而且当时标着「当前正在钻这一块」。<b>所以问题记下来了,答案没记 —— 你刚才那段话就是那个答案。</b>
+</div>
+
+<div class="warn">
+<b>2. 「帮你做 prioritization」这块,有留档,但讲的是另一件事。</b><br>
+有三个单在讲「让 CoS 学会你的决策方式」:
+<ul>
+  <li><b>FLY-1034</b>(7/08 建,Backlog)—— CoS 通过每天的晨会,学你<b>怎么派活</b>:你的节奏、依赖关系、什么先做什么后做。你当时说「不知道现在要不要做」。</li>
+  <li><b>FLY-922 / FLY-1045</b> —— 学你的<b>决策模式</b>,目标是逐步减少「什么都要问你」。</li>
+</ul>
+<b>但这三个讲的都是「现有的 CoS 变聪明」,不是「新起一个跨所有项目的 CoS」。</b>范围不一样。
+</div>
+
+<div class="fact">
+<b>3. 上位目标是有的。</b>FLY-212 那条北极星写着:
+<div class="quote">「手机上的 Discord 就能操纵电脑上所有 process,理论上随时随地工作……让 Annie 出去玩、做家务、睡前都能一直顺畅工作,<b>敢离开屏幕</b>。」</div>
+语音总管那个单明确引用了它当上位目标。<b>方向是一脉相承的。</b>
+</div>
+
+<div class="cbox"><label>你对这段的意见 —— 那次讨论如果是在 Discord 里,能给我个大概时间吗?我让 Honey Lemon 帮我捞</label>
+<textarea data-c="c1" placeholder="写在这里…"></textarea></div>
+</section>
+
+<!-- ② -->
+<section class="s2" data-t="② 今天的结构现状(这条我觉得最有用)">
+<h2>② 今天的结构长什么样 —— 这条我觉得最有用</h2>
+
+<p>我去数了一遍现在真实跑着的配置。结果正好长成你描述的那个缺口:</p>
+
+<table>
+<tr><th>项目</th><th>有几个 Lead</th><th>有没有 CoS(主管)</th></tr>
+<tr><td>flywheel</td><td>5</td><td><span class="tag t-ok">有</span>Aunt Cass</td></tr>
+<tr><td>geoforge3d</td><td>3</td><td><span class="tag t-ok">有</span>Simba</td></tr>
+<tr><td>tidal-echo</td><td>3</td><td><span class="tag t-ok">有</span>Triton</td></tr>
+<tr><td>growth</td><td>3</td><td><span class="tag t-fail">没有</span></td></tr>
+<tr><td>joycon-typeless</td><td>1</td><td><span class="tag t-fail">没有</span></td></tr>
+<tr><td>personal-assistant</td><td>1</td><td><span class="tag t-fail">没有</span></td></tr>
+</table>
+
+<div class="kill">
+<b>三句话总结:</b>
+<ul>
+  <li><b>6 个项目、16 个 Lead,只有 3 个主管</b> —— 一半的项目根本没人管总</li>
+  <li><b>每个主管只看得见自己那一个项目</b> —— Aunt Cass 不知道 GeoForge 在干嘛,Simba 不知道 tidal-echo 在干嘛</li>
+  <li><b>所以今天没有任何一个角色,能同时看见你所有项目的全貌</b> —— 那个位置是空的</li>
+</ul>
+</div>
+
+<div class="warn">
+<b>唯一一个跨项目的东西是 <code>#leads-roundtable</code></b> —— 一个所有部门 Lead 都在的共享频道。
+但它是<b>一个让 Lead 互相说话的房间,不是一个掌握全局的人</b>。房间里没有一个角色负责「知道全部、帮你排优先级」。
+<br><br>
+换句话说:<b>今天全局这件事,是靠你自己在脑子里拼的。</b>
+</div>
+
+<div class="cbox"><label>你对这段的意见</label>
+<textarea data-c="c2" placeholder="写在这里…"></textarea></div>
+</section>
+
+<!-- ③ -->
+<section class="s3" data-t="③ 我把你这段话记下来了">
+<h2>③ 我把你这段话当新信息记下来了</h2>
+<p>因为它在系统里找不到,所以我把它<b>逐字</b>存进了这次的文档,并会请 Honey Lemon 把它补进语音总管那个单
+—— 那样下次不管是谁来接,都不用再问你一遍。</p>
+<div class="quote">
+「我有跟你讨论过,说我们需要一个新的 COS。这个 COS 已经不单单是一个语音主管的角色,他是我们<b>所有项目的主管</b>。
+他会知道我<b>所有项目的信息</b>,这样也可以帮助我去做一些 <b>prioritization</b> 的工作,但同时他也<b>兼顾语音主管</b>的工作。」
+</div>
+<p>我读出来的三件事(如果理解错了请直接改我):</p>
+<ul>
+  <li><b>范围变了</b> —— 从「一个语音入口」变成「一个跨所有项目的主管」;语音只是它的一个面,不是它的定义</li>
+  <li><b>多了一个职责</b> —— 帮你做 prioritization。这是原来那个语音总管里<b>没有</b>的</li>
+  <li><b>它是新起的,不是给 Cass 装嘴耳</b> —— 你答了那道题的 B</li>
+</ul>
+<div class="cbox"><label>我理解对了吗?哪里要改</label>
+<textarea data-c="c3" placeholder="写在这里…"></textarea></div>
+</section>
+
+<!-- ④ -->
+<section class="s4" data-t="④ 前几版的结论(压缩版,方便你回看)">
+<h2>④ 前两版查到的,压缩放这儿</h2>
+
+<h3>语音总管当时打算怎么实现</h3>
+<p>四层:<b>Codex 自己的实时语音会话</b>当耳朵嘴巴(不租 Gemini/ElevenLabs)· <b>Codex 本身</b>当脑子
+(实测过「说话 → 它真执行命令 → 语音回报」)· Codex 当 Lead 已经是生产模式 · 进 Discord 语音房用老 voice-bridge 那条腿。</p>
+<div class="kill">
+<b>但有一条硬的没解:</b>它要能「控制」,就得能执行命令。而靠脚本做安全边界被判死了 ——
+沙盒只管写不管读,只读命令免审批,<code>cat ~/.ssh/id_rsa</code> 直接通。结论是<b>要 OS 级隔离</b>,
+这条挂在 FLY-1453,Backlog,没人做。<b>不管新 CoS 长什么样,只要它要能动手,这一条都绕不过去。</b>
+</div>
+
+<h3>Codex 语音的真实状态</h3>
+<table>
+<tr><td>本机 Codex 版本</td><td><code>0.147.0</code></td></tr>
+<tr><td>语音开关</td><td><b>开发中 + 默认关</b>,<code>--help</code> 里没有语音命令</td></tr>
+<tr><td>我们验过吗</td><td>验过,<b>但在 <code>0.145.0</code> 上</b> —— 隔了两个版本没重跑</td></tr>
+</table>
+<p class="note">所以「Codex 能跑通语音」这个结论今天<b>还没被重新验证过</b>。重跑很便宜,但要花订阅额度,等你或 Tadashi 说一声。</p>
+
+<h3>我对 Codex 的认知边界</h3>
+<p>Codex 语音相关<b>全集就 3 个单,全部创建于 7/24,之后三周多零新增</b>。
+我不是「记得」,我是从文件挖的 —— 所以没落成文字的部分,我这边就是空白(这一轮的「新 CoS」正是一例)。</p>
+
+<h3>eleven 的清理</h3>
+<p><span class="tag t-ok">已建单</span>Honey Lemon 已经按你的话建了 <b>FLY-1843</b>(删掉所有 ElevenLabs 相关逻辑)。
+范围:一个干净目录 6 个源文件 + 6 测试 + 2 个 e2e,另有约 10 处共享接线要拆。</p>
+
+<div class="cbox"><label>你对这段的意见</label>
+<textarea data-c="c4" placeholder="写在这里…"></textarea></div>
+</section>
+
+<!-- ⑤ -->
+<section class="s6" data-t="⑤ 我还没查清的">
+<h2>⑤ 我还没查清的</h2>
+<ul>
+  <li><b>那次「新 CoS」讨论的原文</b> —— 如果在 Discord 里,我读不到。给我个大概时间,我请 Honey Lemon 捞。</li>
+  <li><b>7/24 之后 voice 为什么停</b> —— 没有任何 issue 或文档写过原因。</li>
+  <li><b>Codex 0.147.0 上语音还能不能跑通</b> —— 没重跑(要授权 + 花额度)。</li>
+  <li><b>「用 Codex 开会」这块</b> —— 产品设计有老 PRD 可复用的底子,但 Codex 版本的技术路径是零。</li>
+</ul>
+<div class="cbox"><label>你对这段的意见 —— 哪条要我先补?</label>
+<textarea data-c="c5" placeholder="写在这里…"></textarea></div>
+</section>
+
+<!-- 结论区留空 -->
+<section class="blank" data-t="结论(留空 · 下周一起填)">
+<h2>结论 —— 还是留空</h2>
+<p>方向你拍。这一页只负责摆清楚「有什么、没什么、我知道到哪儿」。</p>
+<div class="cbox"><label>想先写点什么就写这儿</label>
+<textarea data-c="c6" placeholder="（可以先留白，下周一起填）"></textarea></div>
+</section>
+
+<div class="note" style="text-align:center">
+  你在这一页写的意见<b>不会自动传给我</b>。写完点下面的「一键汇总复制」,再贴回 issue 里 —— 我才看得到。
+</div>
+
+</div>
+
+<div class="footer">
+  <div class="fin">
+    <span id="count">还没写任何意见</span>
+    <button id="copy" type="button">一键汇总复制</button>
+  </div>
+  <div id="preview"></div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1827-voice-audit-v3';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  // Never claim a copy we did not observe: a failed copy that still says
+  // 「已复制 ✓」 makes her paste an empty message and lose the round.
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1827 新 CoS(第3版) · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1827 第3版:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      var old = '一键汇总复制';
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = old; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>
