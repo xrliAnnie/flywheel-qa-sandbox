@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>账单为什么猛升 · 和要你拍的那一件</title>
+<style>
+/* Light-only, declared to the UA too: without this a dark-mode browser paints
+   the textareas with its dark widget styling on top of a light page. */
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 120px}
+header{margin-bottom:32px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.must{background:#ffe9e7;color:#c92a20}
+.tag.quick{background:#e8f4ff;color:#0060d0}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+h2{font-size:20px;margin:34px 0 6px;letter-spacing:-.01em}
+h3{font-size:17px;margin:0 0 10px;letter-spacing:-.01em}
+p{margin:10px 0}
+.q{font-weight:600;color:var(--navy);margin-top:14px}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.facts li{margin:6px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+.stat{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px}
+.stat div{flex:1 1 150px;background:#fafafc;border-radius:10px;padding:14px 16px}
+.stat b{display:block;font-size:26px;line-height:1.2;letter-spacing:-.02em}
+.stat span{font-size:13px;color:var(--dim)}
+textarea{width:100%;min-height:72px;margin-top:12px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:14px;display:block}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:40px -20px -120px;padding:18px 20px 22px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+@media (max-width:640px){ .wrap{padding:24px 14px 120px} h1{font-size:24px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>账单为什么猛升,和要你拍的那一件</h1>
+  <p class="sub">2026-08-18 · 第 3 版 · <b>你问的「最近发生了什么」找到答案了</b></p>
+</header>
+
+<section class="card red" data-t="0 这一轮只是补记录,内容没变">
+  <span class="tag must">先看这个,30 秒</span>
+  <h3>这一版和上一版内容<b>完全一样</b>,一个字都没改</h3>
+  <p>这一轮只是把<b>你已经做的决定补记到系统里</b> ——
+  上一张卡的记录被系统判成了「打回」,所以它<b>不认你已经同意过</b>。<b>你不用重看一遍。</b></p>
+  <p class="q">你要做的只有一件,二选一:</p>
+  <ul>
+    <li><b>点 ✅</b> —— 一下就行,这是最省事的。</li>
+    <li>或者 <b>回复:都可以了</b> —— 必须是这四个字。<br>
+      ⚠️ <b>不要用这页上的「一键汇总复制」按钮来表示同意</b> ——
+      复制出来的内容前面带一段前缀,系统会把它判成「打回」,你就得再来一次。
+      <b>那个按钮是「要提意见」的时候才用的。</b></li>
+  </ul>
+  <p><b>如果你不同意,或者还没想好</b>:直接说,或者写下原因 ——
+  <b>这也是一个正常选项,不用勉强通过。</b></p>
+</section>
+
+
+
+<section class="card red" data-t="1 你问的:最近发生了什么">
+  <span class="tag must">你的问题的答案</span>
+  <h3>两级台阶,而<b>第一级是一次 CI 改造,不是干活变多</b></h3>
+  <p>先对账:你说本月至今约 $250,我独立算 8/1–8/18 是 <b>$256</b> —— 差 2.4%,所以下面的数不是估算。
+  (我第一版漏了最大那一级,因为我的数据从 7/18 开始,<b>而台阶正好在 7/18</b>。补了 6 月到 7 月中才看见。)</p>
+  <div class="scroll">
+  <table>
+    <tr><th>时间</th><th>每天跑几轮</th><th>每轮几分钟</th><th>折一个月</th></tr>
+    <tr><td>6 月</td><td>14–27</td><td>6.8–7.8</td><td>$17–37</td></tr>
+    <tr><td>7/6–7/17</td><td><b>113.6</b></td><td>9.2</td><td><b>$188</b> ← 你说的「之前 ~$200」</td></tr>
+    <tr><td><b>7/18–8/8</b></td><td>43.5</td><td><b>38.8</b></td><td><b>$304</b></td></tr>
+    <tr><td><b>8/9–8/18</b></td><td><b>64.5</b></td><td><b>44.8</b></td><td><b>$520</b></td></tr>
+  </table>
+  </div>
+  <p class="q">第一级(7/18):一个 commit,同样跑成功的一轮从 17.5 分钟变 35.4 分钟。</p>
+  <p>那天合入的是 <b>#643「把 CI 墙钟砍一半:改成分层并行」</b>,把检查从 2 个格子拆成 9 个。
+  <b>并行不省总机器时间,只会更费</b>:每个格子各自重拉代码装依赖编译(约 +10 分钟),
+  而且按格子分别向上取整,2 个变 9 个多付 7 次零头(约 +3.5 分钟)。
+  我核过老配置 —— <b>拆之前那一个格子已经在跑同样的活,所以不是加了新测试。</b></p>
+  <p class="q">而且那次改造兑现了承诺,但现在已经还回去了。</p>
+  <p>等待时间(中位数):改造前 <b>16.9 分钟</b> → 改造后 <b>5.9 分钟</b> → <b>现在 17.8 分钟</b>。
+  因为脚本套件涨到 18.7 分钟,成了新的最慢环节。<b>钱还在付 2 倍,当初买的速度已经没了。</b></p>
+  <p class="q">你上面那段复述,我核过 —— <b>全对</b>,一个字都不用改。</p>
+  <p>并行本身没问题,它就是拿钱换时间;你感觉变快了、实际花得更多,正是这个意思;
+  而现在<b>脚本套件太慢,把并行省下的时间又吃回去了</b> —— 所以现在是「钱照付,时间没省到」。</p>
+
+  <p class="q">第二级(8/9 起):这一级才是「干活变多」。那两个词我换成人话 ——</p>
+  <div class="scroll">
+  <table>
+    <tr><th>我原来写的</th><th>人话</th><th>8/9 之后</th></tr>
+    <tr><td>轮次变多</td><td><b>推送的次数变多了</b> —— 每往 PR 推一次,就跑一整轮检查</td><td>每天 43.5 轮 → <b>64.5 轮</b></td></tr>
+    <tr><td>每轮更贵</td><td><b>一轮里面的测试本身变慢了</b></td><td>每轮 38.8 分钟 → <b>44.8 分钟</b></td></tr>
+  </table>
+  </div>
+  <p>两者相乘就是账单:<b>66% 来自推得更频繁,34% 来自测试变慢</b>(变慢的主因还是那个脚本套件,它一直在长)。</p>
+  <p><b>所以 8/9 那天没有发生任何「事件」</b> —— 没有谁改了什么。就是舰队干得更多了:
+  同期每天合进主干的 PR 从 1~5 个涨到 7~27 个。<b>账单如实反映了产出变多。</b></p>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="why" placeholder="可留空"></textarea>
+</section>
+
+<section class="card purple" data-t="2 要你拍的这一件">
+  <span class="tag must">要你拍</span>
+  <h3>要你拍的就一件事</h3>
+  <p class="q" style="font-size:17px;line-height:1.75">
+  你要拍的是:<b>让一个自动判定(这次推送里没有代码)去决定某些测试不跑。</b><br>
+  守卫的存在,就是为了逼这个语义变化摆上台面讨论 —— 而这个改动是<b>把守卫更新并写明理由,不是绕过它</b>。<br>
+  换来的是 <b>$53 一个月(上界)</b>。</p>
+  <p class="note">我原来把这句写成「换打开这道守卫锁的门」—— 那描述的是<b>机制</b>(要改守卫),不是<b>风险</b>。
+  你读完并不知道自己在承担什么。这一版改成了真正的风险。</p>
+
+  <h3 style="margin-top:22px">这个判定具体怎么做(你要的那件事)</h3>
+  <p><b>你说的方向和这个机制在做的事是一致的</b> —— 只有代码改了才跑。判定分三步:</p>
+  <ol>
+    <li><b>先找「上一次跑绿的那个版本」</b> —— 也就是这个 PR 最近一次完整跑过、并且全绿的那一次。</li>
+    <li><b>把这次推的东西和那个版本比一比</b>,列出中间改了哪些文件。</li>
+    <li><b>只有这些文件<u>全部</u>是文档,才判「没有代码」</b>,跳过重的那几格。<b>只要有一个不是,就全跑。</b></li>
+  </ol>
+  <p class="q">但有一件和你设想不一样的事,我必须说清楚。</p>
+  <p>你说「应该分成文字的目录和代码的目录」—— 方向对,<b>但我们仓库现在做不到那么干净</b>:
+  里面有 <b>60 多个 <code>.md</code> 文件其实是程序运行时真的要去读的</b>
+  (各个 agent 的规则、提示词 —— 它们长得像文档,功能上是代码),而且<b>它们就住在代码目录里,
+  也搬不走</b>(要挨着读它们的代码放)。</p>
+  <p>所以判定不能只看目录,得<b>目录和文件类型两个条件都满足</b>才算文档:
+  <b>既要在 <code>doc/</code> 那几个目录下面,又要是 .md / 图片 / PDF 这类文档格式。</b>
+  这样那 60 多个「住在代码目录里的 .md」就不会被误判成文档 —— 改了它们照样跑全套。</p>
+  <p class="note">还有一条保险:<b>如果找不到「上一次跑绿的版本」,就不跳,直接全跑。</b>
+  宁可多跑也不敢赌 —— 这也是为什么实际能省下的钱比理论上少一半(见下面第 5 节)。</p>
+  <label class="lbl">你的判断(这一格是最重要的)</label>
+  <textarea data-c="decision" placeholder="可留空"></textarea>
+</section>
+
+<section class="card blue" data-t="3 为什么从 207 掉到 53">
+  <h3>这个数从 $207 掉到 $53,是我们算准了,不是算错了</h3>
+  <p>三件事各砍一刀,每一刀都是往<b>更严</b>的方向:</p>
+  <ul>
+    <li><b>单价</b>:我一开始用的 $0.008 是作废旧价,现价 <b>$0.006</b>(官方文档核过)—— 所有金额下修 25%。</li>
+    <li><b>放行名单收严</b>:仓库里 60 多个 <code>.md</code> 其实是程序运行时要读的(agent 规则和提示词),
+        长得像文档但改了必须跑。真实现只放行 4 个 doc 目录下的特定后缀。</li>
+    <li><b>真实跳过规则比我假设的严得多</b>:我去读了实现 —— 它要求「这个 PR 最新一条已完成的检查<b>恰好是绿的</b>」,
+        <b>而且不往回找更早的绿轮</b>。最近一轮被打断就不跳,哪怕以前绿过很多次。</li>
+  </ul>
+  <p>最后这条是大头:实测<b>没命中的主因是「这条分支此刻没有可用的绿基线」</b>,不是文档判断本身。</p>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="why53" placeholder="可留空"></textarea>
+</section>
+
+<section class="card amber" data-t="4 退路我们查过了">
+  <span class="tag">查过退路</span>
+  <h3>有没有「不动守卫也能拿到钱」的路?我们查了,没有</h3>
+  <p>我提了一个想法:不新增格子,让每个重格子自己第一步判断、没代码就早退。Tadashi 去证伪了,三条结论:</p>
+  <ul>
+    <li><b>最重要的一条:风险在两种形态里<u>一模一样</u>。</b>你要拍的从来不是「多一个格子」,
+        而是「让自动判定决定某些测试不跑」。早退只是把同一扇门拆成 8 扇小门 ——
+        <b>所谓「不动守卫」根本不存在。</b></li>
+    <li><b>而且它也做不到不动守卫</b>:加条件被守卫明文禁止,在脚本开头塞早退会破坏逐字比对。
+        要改 8 个格子的钉死内容,<b>守卫改动量比现在这个方案更大</b>。</li>
+    <li><b>即便可行也净亏</b>:扔掉已经建好、测试也快做完的机制,换八成的钱;
+        而且 8 个格子各查一次,同一轮里有的跳有的跑,<b>账目和观测都会变浑</b>。</li>
+  </ul>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="alt" placeholder="可留空"></textarea>
+</section>
+
+<section class="card green" data-t="5 这个数会往上走(两件还没发生的事)">
+  <h3>$53 不是终点 —— 但下面两件<b>都还没发生</b></h3>
+  <p><b>你现在能拿到的就是 $53(上界)。</b>下面两条是「以后可能更多」,<b>不是你今天拍下去就有的</b>,
+  所以我把它们分开写,不合成一个数。</p>
+  <div class="scroll">
+  <table>
+    <tr><th>还没发生的事</th><th>发生之后</th><th>状态</th></tr>
+    <tr><td>把「往回多翻几页找绿基线」补上</td><td>约 <b>+$8</b>,到约 <b>$61</b></td><td><b>正在折入,尚未落地</b></td></tr>
+    <tr><td><b>FLY-1861</b> 把「反复被打断」清掉</td><td>上界约 <b>$86</b>(反事实上界,不是承诺)<br>实际落在 <b>$53(上界)和 $86 之间</b></td><td><b>另一张单,尚未落地</b></td></tr>
+  </table>
+  </div>
+  <p class="q">关于那个 +$8,有一件事我要先说清楚,免得你按 $61 拍板。</p>
+  <p>要折进来的是<b>有界</b>翻页(往回翻几页就停),而 <b>+$8 是我按「无限往回翻」算出来的</b> ——
+  <b>所以真实增量只会 ≤ $8。</b>我逐条量过那些能救回来的轮次:它们要往回翻 <b>4 到 15 天</b>才找得到绿基线,
+  换算成页数是 3 到 11 页。<b>上限设 2 页的话一条都救不回;要 8 页以上才接近 +$8。</b></p>
+  <p class="q">「反复被打断」是什么意思?</p>
+  <p>你往 PR 推一次,检查就开始跑。<b>它还没跑完,你又推了一次 —— 系统会把上一轮直接掐掉,换成跑新的。</b>
+  (这本身是对的:旧那轮已经过时了。)</p>
+  <p><b>但被掐掉的那一轮不算「跑绿过」。</b>于是下一次判定去找「上一次跑绿的版本」时找不到,
+  只好保守地全跑。<b>推得越密、被掐得越多,就越省不到钱。</b></p>
+  <p class="note">这就是第二条为什么会涨:没命中的最大原因正是「这条分支此刻没有跑绿过的版本可比」——
+  而那正是 FLY-1861 在修的东西。
+  两件事是<b>叠加</b>不是二选一:没有这个机制,1861 落地也拿不到那 $86。</p>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="future" placeholder="可留空"></textarea>
+</section>
+
+<section class="card red" data-t="6 我们不知道的">
+  <span class="tag must">不确定性</span>
+  <h3>我们不知道的三件事(不藏在脚注里)</h3>
+  <ul>
+    <li><b>20.5% 的轮次我判不了。</b>它们的绿基线完成得太近,系统当时可能还没看见 ——
+        我没有为了让这个数字好看而放宽判据。</li>
+    <li><b>有一个条件我完全测不了</b>(基线的比较基准有没有漂移)。GitHub 把历史数据里那个字段清空了,
+        我试过用本地推算代替,<b>实测 18% 对不上而且会系统性偏乐观,所以我没有用它</b>。
+        <b>⇒ 因此 $53 是上界,真实值只会更低。</b></li>
+    <li><b>「太近」的界线我取了 5 分钟,这是判断不是测量。</b>唯一的实测数据只有一次(2 分 07 秒),
+        取 2.4 倍留余量。取 0 到 10 分钟之间,答案在 $48–59 之间动。</li>
+  </ul>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="unknown" placeholder="可留空"></textarea>
+</section>
+
+<section class="card plain" data-t="7 其余能省的">
+  <h3>其余几条(都比这条小,不用现在拍)</h3>
+  <div class="scroll">
+  <table>
+    <tr><th></th><th>做什么</th><th>省/月</th><th>拿什么换</th></tr>
+    <tr><td>B</td><td>合并时读检查结论,别重跑一遍</td><td>$25.6</td><td>几乎不用换,覆盖一点不少</td></tr>
+    <tr><td>C</td><td>最慢的 4 个脚本测试挪出 PR 期</td><td>≤$44~47(上界)</td><td>回归晚一步;<b>不在本单执行</b>,归工程侧</td></tr>
+    <tr><td>D</td><td>编译只做一次 / 三份包测试合一</td><td>$17~23</td><td>聊胜于无</td></tr>
+    <tr><td>E</td><td>PR 期只跑轻量门</td><td>省最多</td><td>runner 迭代期间没有测试反馈</td></tr>
+    <tr><td>F</td><td>主干推送那 11.9%</td><td><b>我没量化</b></td><td>要先确认发布流程依不依赖它</td></tr>
+    <tr><td>G</td><td>自建独立机器</td><td>接近 100%</td><td>唯一能到接近零的路,<b>但不能放生产那台 Mac</b></td></tr>
+  </table>
+  </div>
+  <p class="note"><b>G 为什么不能放生产机</b>:整套测试在生产宿主上跑会把负载顶到 88、压死 Bridge,
+  一轮并行 9 个格子等于每天重复几十次。要走必须是独立机器,建议单开一张单评。</p>
+  <label class="lbl">对这些有话说的话(可留空)</label>
+  <textarea data-c="rest" placeholder="可留空"></textarea>
+</section>
+
+<section class="card purple" data-t="8 你要是同意,得点哪里">
+  <span class="tag must">重要:回在这一页不算数</span>
+  <h3>你要是同意,<b>不是在这一页回</b> —— 系统听不见</h3>
+  <p><b>在这一页写的字,只会到我这里</b>(而且要你自己点复制、粘回 thread)。
+  <b>它不会让任何事情发生。</b></p>
+  <p class="q">系统只在一个地方听得见你的同意:</p>
+  <p><b>去 FLY-1861 那个 thread,找引擎发的那张 🚀 卡,长按 ✅</b>(或在那张卡的子线程里回)。
+  只有那里的动作会真正触发合入。</p>
+  <p class="note">⚠️ <b>时机</b>:那个 thread 里现在挂着的 🚀 卡对应的是<b>旧版本</b>,已经被标了「先别点」。
+  要等改动推完、重测过、<b>新的那张卡出来再点</b>。
+  Honey Lemon 会在新卡出来时告诉你 —— <b>在那之前,那张旧卡点了也不作数。</b></p>
+  <label class="lbl">对这部分有话说的话(可留空)</label>
+  <textarea data-c="howto" placeholder="可留空"></textarea>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何意见</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:10px">
+      写在这页上的字<b>只存在你自己的浏览器里,不会自动传回来</b> —— 要你自己复制出去我才收得到。<br>
+      <b>要提意见</b> → 点上面这个「一键汇总复制」,粘回 <code>[FLY-1866]</code> 那个 thread。<br>
+      <b>要通过</b> → <b>别用这个按钮</b>,点 <b>✅</b> 或回<b>「都可以了」</b>就行
+      (复制出来的内容带前缀,会被判成打回)。
+    </p>
+  </div>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1866-actions-cost:' + window.location.pathname;
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  // Never claim a success we did not observe: a failed copy that still says
+  // 「已复制 ✓」 makes her paste an empty message and lose the whole round.
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1866 CI 花费调查 · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1866 CI 花费调查:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = '一键汇总复制'; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>
