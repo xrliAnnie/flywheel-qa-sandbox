@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import type {
 	StateStore,
@@ -31,7 +32,26 @@ export interface GateMaterializerDeps {
 		headSha: string;
 		sourceExecutionId: string;
 		content: string;
-	}): Promise<{ messageId: string }>;
+		correlationMarker: string;
+	}): Promise<
+		| { messageId: string }
+		| { kind: "posted"; messageId: string }
+		| { kind: "posted_ambiguous" }
+		| { kind: "no_effect"; reason?: string }
+	>;
+	scanCard?(input: {
+		questionId: string;
+		postedAt: string;
+		correlationMarker: string;
+		legacyTerms: string[];
+	}): Promise<
+		| { kind: "found"; messageId: string; frontier: string | null }
+		| { kind: "none"; frontier: string | null }
+		| { kind: "ambiguous"; frontier: string | null; reason?: string }
+	>;
+	reconcileNotBeforeMs?: number;
+	reconcileQuietIntervalMs?: number;
+	maxPostIntents?: number;
 	now?: () => string;
 }
 
@@ -52,10 +72,78 @@ function current(
 	return store.getCurrentWorkflowGateHolderByQuestionId(questionId);
 }
 
+function gateCorrelationMarker(questionId: string): string {
+	return `gate:${createHash("sha256").update(questionId).digest("hex").slice(0, 12)}`;
+}
+
+function normalizedPostResult(
+	result:
+		| { messageId: string }
+		| { kind: "posted"; messageId: string }
+		| { kind: "posted_ambiguous" }
+		| { kind: "no_effect"; reason?: string },
+):
+	| { kind: "posted"; messageId: string }
+	| { kind: "posted_ambiguous" }
+	| { kind: "no_effect" } {
+	if ("messageId" in result) {
+		return result.messageId
+			? { kind: "posted", messageId: result.messageId }
+			: { kind: "posted_ambiguous" };
+	}
+	return result.kind === "no_effect"
+		? { kind: "no_effect" }
+		: { kind: "posted_ambiguous" };
+}
+
+function ensureFounderCardAudit(input: {
+	store: StateStore;
+	holder: WorkflowGateHolderRow;
+	issueId: string;
+	projectName: string;
+	threadId: string;
+	messageId: string;
+}): boolean {
+	const matching = input.store
+		.getEventsByExecution(input.holder.source_execution_id)
+		.filter((event) => {
+			if (event.event_type !== "founder_thread_notified") return false;
+			const payload = event.payload as Record<string, unknown> | undefined;
+			return payload?.questionId === input.holder.question_id;
+		});
+	if (matching.length > 1) return false;
+	if (matching.length === 1) {
+		const payload = matching[0]!.payload as Record<string, unknown> | undefined;
+		return (
+			payload?.gateMessageId === undefined ||
+			payload.gateMessageId === input.messageId
+		);
+	}
+	input.store.insertEvent({
+		event_id: `founder-thread-notified-workflow-gate-${createHash("sha256")
+			.update(input.holder.question_id)
+			.digest("hex")
+			.slice(0, 16)}`,
+		execution_id: input.holder.source_execution_id,
+		issue_id: input.issueId,
+		project_name: input.projectName,
+		event_type: "founder_thread_notified",
+		source: "bridge.gate-materializer",
+		payload: {
+			questionId: input.holder.question_id,
+			checkpoint: "approve_to_ship",
+			threadId: input.threadId,
+			gateMessageId: input.messageId,
+			status: "converged",
+		},
+	});
+	return true;
+}
+
 /**
  * Converge one first-class workflow gate through CommDB and the founder card.
- * Every stage is durable. Card delivery is deliberately at-least-once; only
- * the message id recorded on the current holder is authoritative.
+ * Every stage is durable. Card delivery uses a persisted intent plus bounded,
+ * fail-closed Discord reconciliation so an ambiguous 2xx is never blind-retried.
  */
 export async function materializeWorkflowGateHolder(
 	deps: GateMaterializerDeps,
@@ -72,11 +160,25 @@ export async function materializeWorkflowGateHolder(
 	) {
 		return { ok: false, reason: "workflow_gate_carrier_unbound" };
 	}
+	const run = deps.store.getWorkflowRun(holder.run_id);
+	if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
 	if (
 		holder.materialization_stage === "completed" &&
 		holder.state === "awaiting_review" &&
 		holder.card_message_id
 	) {
+		if (
+			!ensureFounderCardAudit({
+				store: deps.store,
+				holder,
+				issueId: run.issue_id,
+				projectName: run.project_name,
+				threadId: deps.threadId,
+				messageId: holder.card_message_id,
+			})
+		) {
+			return { ok: false, reason: "workflow_gate_card_audit_conflict" };
+		}
 		return {
 			ok: true,
 			idempotentReplay: true,
@@ -85,8 +187,6 @@ export async function materializeWorkflowGateHolder(
 			cardMessageId: holder.card_message_id,
 		};
 	}
-	const run = deps.store.getWorkflowRun(holder.run_id);
-	if (!run) return { ok: false, reason: "workflow_gate_run_not_found" };
 	const now = deps.now ?? (() => new Date().toISOString());
 	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.\n打回:直接回复意见即可;可用 design: / implement: / qa:(或 设计:/实现:/测试:)起头指定返工对象,不写默认给 implement。前缀只指定返工对象,不代表单独打回;请说清楚要改什么。`;
 
@@ -120,25 +220,134 @@ export async function materializeWorkflowGateHolder(
 		holder = current(deps.store, questionId)!;
 	}
 	if (STAGE_ORDER[holder.materialization_stage] < STAGE_ORDER.card_posted) {
-		const posted = await deps.postCard({
+		const observedNow = now();
+		const marker = gateCorrelationMarker(questionId);
+		const reconcileAt = new Date(
+			Date.parse(observedNow) + (deps.reconcileNotBeforeMs ?? 60_000),
+		).toISOString();
+		const intent = deps.store.claimWorkflowGateCardPostIntent({
 			questionId,
-			runId: holder.run_id,
-			issueId: run.issue_id,
-			projectName: run.project_name,
-			headSha: holder.head_sha,
-			sourceExecutionId: holder.source_execution_id,
-			content,
+			correlationMarker: marker,
+			now: observedNow,
+			reconcileNotBefore: reconcileAt,
+			maxAttempts: deps.maxPostIntents ?? 3,
 		});
-		if (!posted.messageId) {
-			return { ok: false, reason: "workflow_gate_card_missing_message_id" };
+		if (!intent.ok) return { ok: false, reason: intent.reason };
+
+		if (intent.created) {
+			let posted:
+				| { kind: "posted"; messageId: string }
+				| { kind: "posted_ambiguous" }
+				| { kind: "no_effect" };
+			try {
+				posted = normalizedPostResult(
+					await deps.postCard({
+						questionId,
+						runId: holder.run_id,
+						issueId: run.issue_id,
+						projectName: run.project_name,
+						headSha: holder.head_sha,
+						sourceExecutionId: holder.source_execution_id,
+						content,
+						correlationMarker: intent.correlationMarker,
+					}),
+				);
+			} catch {
+				// A network exception can happen after Discord accepted the bytes.
+				posted = { kind: "posted_ambiguous" };
+			}
+			if (posted.kind === "posted") {
+				deps.store.advanceWorkflowGateHolderMaterialization({
+					questionId,
+					stage: "card_posted",
+					cardMessageId: posted.messageId,
+					now: now(),
+				});
+				holder = current(deps.store, questionId)!;
+			} else {
+				deps.store.markWorkflowGateCardPostOutcome({
+					questionId,
+					sequence: intent.sequence,
+					outcome: posted.kind === "no_effect" ? "no_effect" : "ambiguous",
+				});
+				return {
+					ok: false,
+					reason:
+						posted.kind === "no_effect"
+							? "workflow_gate_card_post_no_effect"
+							: "workflow_gate_card_post_ambiguous",
+				};
+			}
+		} else {
+			if (Date.parse(observedNow) < Date.parse(intent.reconcileNotBefore)) {
+				return { ok: false, reason: "workflow_gate_card_reconcile_wait" };
+			}
+			if (!deps.scanCard) {
+				return { ok: false, reason: "workflow_gate_card_reconciler_missing" };
+			}
+			const scan = await deps.scanCard({
+				questionId,
+				postedAt: intent.postedAt,
+				correlationMarker: intent.correlationMarker,
+				legacyTerms: intent.legacyUnknown
+					? [run.issue_id, holder.head_sha]
+					: [],
+			});
+			if (scan.kind === "ambiguous") {
+				return { ok: false, reason: "workflow_gate_card_reconcile_ambiguous" };
+			}
+			if (scan.kind === "found") {
+				deps.store.advanceWorkflowGateHolderMaterialization({
+					questionId,
+					stage: "card_posted",
+					cardMessageId: scan.messageId,
+					now: now(),
+				});
+				deps.store.insertEvent({
+					event_id: `workflow-gate-card-reconciled-${createHash("sha256")
+						.update(questionId)
+						.digest("hex")
+						.slice(0, 16)}`,
+					execution_id: holder.source_execution_id,
+					issue_id: run.issue_id,
+					project_name: run.project_name,
+					event_type: "workflow_gate_card_reconciled",
+					source: "bridge.gate-materializer",
+					payload: {
+						questionId,
+						gateMessageId: scan.messageId,
+						legacyUnknown: intent.legacyUnknown,
+					},
+				});
+				holder = current(deps.store, questionId)!;
+			} else {
+				const zero = deps.store.recordWorkflowGateCardZeroScan({
+					questionId,
+					sequence: intent.sequence,
+					at: observedNow,
+					frontier: scan.frontier,
+				});
+				if (!zero.ok) return { ok: false, reason: zero.reason };
+				const quietElapsed =
+					!zero.first &&
+					Date.parse(observedNow) - Date.parse(zero.priorAt!) >=
+						(deps.reconcileQuietIntervalMs ?? 30_000);
+				if (zero.first || !zero.frontierStable || !quietElapsed) {
+					return {
+						ok: false,
+						reason: "workflow_gate_card_zero_scan_unconfirmed",
+					};
+				}
+				const marked = deps.store.markWorkflowGateCardPostOutcome({
+					questionId,
+					sequence: intent.sequence,
+					outcome: "no_effect",
+				});
+				return marked.ok
+					? { ok: false, reason: "workflow_gate_card_retry_authorized" }
+					: { ok: false, reason: marked.reason };
+			}
 		}
-		deps.store.advanceWorkflowGateHolderMaterialization({
-			questionId,
-			stage: "card_posted",
-			cardMessageId: posted.messageId,
-			now: now(),
-		});
-		holder = current(deps.store, questionId)!;
 	}
 	if (
 		STAGE_ORDER[holder.materialization_stage] < STAGE_ORDER.card_bound &&
@@ -188,6 +397,18 @@ export async function materializeWorkflowGateHolder(
 	}
 	if (!holder.card_message_id || holder.state !== "awaiting_review") {
 		return { ok: false, reason: "workflow_gate_materialization_incomplete" };
+	}
+	if (
+		!ensureFounderCardAudit({
+			store: deps.store,
+			holder,
+			issueId: run.issue_id,
+			projectName: run.project_name,
+			threadId: deps.threadId,
+			messageId: holder.card_message_id,
+		})
+	) {
+		return { ok: false, reason: "workflow_gate_card_audit_conflict" };
 	}
 	return {
 		ok: true,

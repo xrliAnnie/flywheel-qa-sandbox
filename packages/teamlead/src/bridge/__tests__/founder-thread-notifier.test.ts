@@ -7,9 +7,121 @@ import {
 	type FounderMilestoneNotifyOpts,
 	type FounderStuckNotifyOpts,
 	type FounderThreadNotifyOpts,
+	scanFounderThreadForGateCard,
 } from "../founder-thread-notifier.js";
 
 const OWNER = "123456789012345678";
+
+describe("FLY-1832 gate-card reconciliation", () => {
+	it("finds exactly one bot-authored correlation marker", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify([
+						{
+							id: "human-copy",
+							content: "gate:0123456789ab",
+							timestamp: "2026-08-17T00:00:02.000Z",
+							author: { bot: false },
+						},
+						{
+							id: "card-1",
+							content: "ship card\ngate:0123456789ab",
+							timestamp: "2026-08-17T00:00:01.000Z",
+							author: { bot: true },
+						},
+					]),
+					{ status: 200 },
+				),
+		);
+		expect(
+			await scanFounderThreadForGateCard({
+				threadId: "thread-1",
+				botToken: "token",
+				postedAt: "2026-08-17T00:00:00.000Z",
+				correlationMarker: "gate:0123456789ab",
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+			}),
+		).toEqual({ kind: "found", messageId: "card-1", frontier: "human-copy" });
+	});
+
+	it("keeps multiple matches and incomplete pagination ambiguous", async () => {
+		const duplicateFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify(
+						["card-1", "card-2"].map((id) => ({
+							id,
+							content: "gate:0123456789ab",
+							timestamp: "2026-08-17T00:00:01.000Z",
+							author: { bot: true },
+						})),
+					),
+					{ status: 200 },
+				),
+		);
+		expect(
+			await scanFounderThreadForGateCard({
+				threadId: "thread-1",
+				botToken: "token",
+				postedAt: "2026-08-17T00:00:00.000Z",
+				correlationMarker: "gate:0123456789ab",
+				fetchImpl: duplicateFetch as unknown as typeof fetch,
+			}),
+		).toMatchObject({ kind: "ambiguous", reason: "multiple_matches" });
+
+		const cappedFetch = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify(
+						Array.from({ length: 100 }, (_, index) => ({
+							id: `newer-${index}`,
+							content: "other",
+							timestamp: "2026-08-17T00:01:00.000Z",
+							author: { bot: true },
+						})),
+					),
+					{ status: 200 },
+				),
+		);
+		expect(
+			await scanFounderThreadForGateCard({
+				threadId: "thread-1",
+				botToken: "token",
+				postedAt: "2026-08-17T00:00:00.000Z",
+				correlationMarker: "gate:0123456789ab",
+				pageCap: 1,
+				fetchImpl: cappedFetch as unknown as typeof fetch,
+			}),
+		).toMatchObject({ kind: "ambiguous", reason: "scan_page_cap" });
+	});
+
+	it("returns none only after a complete scan", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify([
+						{
+							id: "other",
+							content: "unrelated",
+							timestamp: "2026-08-17T00:00:01.000Z",
+							author: { bot: true },
+						},
+					]),
+					{ status: 200 },
+				),
+		);
+		expect(
+			await scanFounderThreadForGateCard({
+				threadId: "thread-1",
+				botToken: "token",
+				postedAt: "2026-08-17T00:00:00.000Z",
+				correlationMarker: "gate:0123456789ab",
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+			}),
+		).toEqual({ kind: "none", frontier: "other" });
+	});
+});
 
 function makeStore() {
 	const events: Array<{ event_type: string; payload: unknown }> = [];
@@ -126,6 +238,7 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		});
 		expect(r.kind).toBe("transient_failed");
 		expect(r.retryAfterMs).toBe(2000);
+		expect(r.deliveryRejected).toBe(true);
 	});
 
 	it("5xx / network throw → transient_failed, never throws", async () => {
@@ -142,6 +255,62 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 			}) as unknown as typeof fetch,
 		});
 		expect(r2.kind).toBe("transient_failed");
+	});
+
+	it("2xx whose response body never settles is bounded and classified posted_ambiguous", async () => {
+		vi.useFakeTimers();
+		try {
+			const { store, events } = makeStore();
+			const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => ({
+				ok: true,
+				status: 200,
+				headers: { get: () => null },
+				json: () =>
+					new Promise((_resolve, reject) => {
+						init.signal?.addEventListener("abort", () =>
+							reject(new Error("body aborted")),
+						);
+					}),
+			})) as unknown as typeof fetch;
+			const pending = emitFounderThreadNotification(
+				baseOpts({
+					checkpoint: "approve_to_ship",
+					correlationMarker: "gate:0123456789ab",
+					deferSuccessAudit: true,
+				}),
+				{ store, fetchImpl },
+			);
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(pending).resolves.toMatchObject({
+				kind: "posted_ambiguous",
+			});
+			expect(
+				events.some((event) => event.event_type === "founder_thread_notified"),
+			).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("renders a gate correlation marker outside the truncated summary", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => okJson());
+		await emitFounderThreadNotification(
+			baseOpts({
+				checkpoint: "approve_to_ship",
+				summary: "x".repeat(2_000),
+				correlationMarker: "gate:0123456789ab",
+			}),
+			{ store, fetchImpl: fetchImpl as unknown as typeof fetch },
+		);
+		const body = JSON.parse(
+			(fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1]
+				.body as string,
+		);
+		expect(body.content).toContain("x".repeat(1_499));
+		expect(body.content).toContain("gate:0123456789ab");
+		expect(body.content.endsWith("gate:0123456789ab")).toBe(true);
 	});
 
 	it("body differs by checkpoint and founder_review is honest about manual comment return", async () => {
@@ -529,6 +698,57 @@ describe("FLY-927 emitIssueThreadInfraNotification", () => {
 		);
 		expect(r.kind).toBe("posted");
 		expect(opts.onUndeliverable).not.toHaveBeenCalled();
+	});
+
+	it("2xx with an unreadable body is an accepted effect and is never retried", async () => {
+		const { store } = makeStore();
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			headers: { get: () => null },
+			json: async () => {
+				throw new Error("body unavailable");
+			},
+		})) as unknown as typeof fetch;
+		const opts = infraOpts();
+		const result = await emitIssueThreadInfraNotification(
+			opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store, fetchImpl },
+		);
+
+		expect(result.kind).toBe("posted");
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect(opts.onUndeliverable).not.toHaveBeenCalled();
+	});
+
+	it("bounds a never-settling 2xx body and still posts infra exactly once", async () => {
+		vi.useFakeTimers();
+		try {
+			const { store } = makeStore();
+			const fetchImpl = vi.fn(async (_url: string, init: RequestInit) => ({
+				ok: true,
+				status: 200,
+				headers: { get: () => null },
+				json: () =>
+					new Promise((_resolve, reject) => {
+						init.signal?.addEventListener("abort", () =>
+							reject(new Error("body aborted")),
+						);
+					}),
+			})) as unknown as typeof fetch;
+			const opts = infraOpts();
+			const pending = emitIssueThreadInfraNotification(
+				opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+				{ store, fetchImpl },
+			);
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(pending).resolves.toMatchObject({ kind: "posted" });
+			expect(fetchImpl).toHaveBeenCalledTimes(1);
+			expect(opts.onUndeliverable).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("permanent 4xx → NO retry, onUndeliverable fires once", async () => {

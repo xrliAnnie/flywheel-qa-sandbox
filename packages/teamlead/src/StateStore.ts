@@ -17524,6 +17524,19 @@ export class StateStore {
 				carrier_binding_state TEXT
 				  CHECK (carrier_binding_state IN ('unbound','bound')),
 				card_message_id TEXT,
+				card_post_intent_seq INTEGER NOT NULL DEFAULT 0
+				  CHECK (card_post_intent_seq >= 0),
+				card_post_intent_at TEXT,
+				card_post_correlation_marker TEXT,
+				card_post_reconcile_not_before TEXT,
+				card_post_outcome TEXT
+				  CHECK (card_post_outcome IS NULL OR card_post_outcome IN (
+				    'pending','ambiguous','no_effect'
+				  )),
+				card_post_first_zero_at TEXT,
+				card_post_first_zero_frontier TEXT,
+				card_post_legacy_unknown INTEGER NOT NULL DEFAULT 0
+				  CHECK (card_post_legacy_unknown IN (0,1)),
 				state TEXT NOT NULL DEFAULT 'materializing'
 				  CHECK (state IN ('materializing','awaiting_review','approved','superseded')),
 				materialization_stage TEXT NOT NULL DEFAULT 'question_intent'
@@ -17563,6 +17576,14 @@ export class StateStore {
 			"superseded_from_state TEXT CHECK (superseded_from_state IS NULL OR superseded_from_state IN ('materializing','awaiting_review','approved'))",
 			"card_watch_next_at TEXT",
 			"card_watch_expires_at TEXT",
+			"card_post_intent_seq INTEGER NOT NULL DEFAULT 0 CHECK (card_post_intent_seq >= 0)",
+			"card_post_intent_at TEXT",
+			"card_post_correlation_marker TEXT",
+			"card_post_reconcile_not_before TEXT",
+			"card_post_outcome TEXT CHECK (card_post_outcome IS NULL OR card_post_outcome IN ('pending','ambiguous','no_effect'))",
+			"card_post_first_zero_at TEXT",
+			"card_post_first_zero_frontier TEXT",
+			"card_post_legacy_unknown INTEGER NOT NULL DEFAULT 0 CHECK (card_post_legacy_unknown IN (0,1))",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_gate_holder ADD COLUMN ${column}`);
@@ -17575,6 +17596,33 @@ export class StateStore {
 			    SET card_void_state = 'skipped_legacy'
 			  WHERE state = 'superseded' AND card_void_state IS NULL`,
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS state_store_migration (
+				migration_id TEXT PRIMARY KEY,
+				applied_at TEXT NOT NULL
+			)
+		`);
+		const cardIntentMigrationId = "fly-1832-workflow-gate-card-intent-v1";
+		this.db.raw.transaction(() => {
+			// Claim the one-shot migration inside the same write transaction as the
+			// backfill. Concurrent first-open processes serialize here; only the
+			// INSERT winner mutates legacy holders, while every replay is a no-op.
+			this.db.run(
+				"INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at) VALUES (?, datetime('now'))",
+				[cardIntentMigrationId],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			// Rows that predate the durable POST intent cannot safely be treated as
+			// never-posted. This one-shot migration marks only rows present at the
+			// cutover; a post-cutover holder must never become legacy on restart.
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET card_post_legacy_unknown = 1
+				  WHERE card_post_intent_seq = 0
+				    AND card_post_outcome IS NULL
+				    AND materialization_stage IN ('question_intent','question_written','session_bound')`,
+			);
+		})();
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS ux_workflow_gate_holder_current
 			ON workflow_gate_holder(run_id, gate_node_id)
@@ -40562,6 +40610,196 @@ export class StateStore {
 		return { ok: true, idempotentReplay: false, state };
 	}
 
+	claimWorkflowGateCardPostIntent(input: {
+		questionId: string;
+		correlationMarker: string;
+		now: string;
+		reconcileNotBefore: string;
+		maxAttempts?: number;
+	}):
+		| {
+				ok: true;
+				created: boolean;
+				legacyUnknown: boolean;
+				sequence: number;
+				postedAt: string;
+				reconcileNotBefore: string;
+				correlationMarker: string;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!/^gate:[0-9a-f]{12}$/.test(input.correlationMarker) ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.reconcileNotBefore)
+		) {
+			return { ok: false, reason: "invalid_workflow_gate_card_post_intent" };
+		}
+		const row = this.getCurrentWorkflowGateHolderByQuestionId(input.questionId);
+		if (!row) return { ok: false, reason: "workflow_gate_holder_not_found" };
+		if (
+			row.state === "approved" ||
+			row.materialization_stage === "card_posted" ||
+			row.materialization_stage === "card_bound" ||
+			row.materialization_stage === "completed"
+		) {
+			return { ok: false, reason: "workflow_gate_card_post_not_applicable" };
+		}
+		if (row.card_post_legacy_unknown === 1 && row.card_post_intent_seq === 0) {
+			return {
+				ok: true,
+				created: false,
+				legacyUnknown: true,
+				sequence: 0,
+				postedAt: row.created_at,
+				reconcileNotBefore: row.created_at,
+				correlationMarker: input.correlationMarker,
+			};
+		}
+		if (
+			(row.card_post_outcome === "pending" ||
+				row.card_post_outcome === "ambiguous") &&
+			row.card_post_intent_at &&
+			row.card_post_reconcile_not_before &&
+			row.card_post_correlation_marker
+		) {
+			return {
+				ok: true,
+				created: false,
+				legacyUnknown: false,
+				sequence: row.card_post_intent_seq,
+				postedAt: row.card_post_intent_at,
+				reconcileNotBefore: row.card_post_reconcile_not_before,
+				correlationMarker: row.card_post_correlation_marker,
+			};
+		}
+		const maxAttempts = Math.max(1, Math.min(10, input.maxAttempts ?? 3));
+		if (row.card_post_intent_seq >= maxAttempts) {
+			return { ok: false, reason: "workflow_gate_card_post_budget_exhausted" };
+		}
+		const sequence = row.card_post_intent_seq + 1;
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET card_post_intent_seq = ?, card_post_intent_at = ?,
+			        card_post_correlation_marker = ?,
+			        card_post_reconcile_not_before = ?, card_post_outcome = 'pending',
+			        card_post_first_zero_at = NULL,
+			        card_post_first_zero_frontier = NULL,
+			        card_post_legacy_unknown = 0, updated_at = ?
+			  WHERE question_id = ?
+			    AND state IN ('materializing','awaiting_review')
+			    AND card_post_intent_seq = ?
+			    AND (card_post_outcome IS NULL OR card_post_outcome = 'no_effect')`,
+			[
+				sequence,
+				input.now,
+				input.correlationMarker,
+				input.reconcileNotBefore,
+				input.now,
+				input.questionId,
+				row.card_post_intent_seq,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_card_post_intent_raced" };
+		}
+		this.save();
+		return {
+			ok: true,
+			created: true,
+			legacyUnknown: false,
+			sequence,
+			postedAt: input.now,
+			reconcileNotBefore: input.reconcileNotBefore,
+			correlationMarker: input.correlationMarker,
+		};
+	}
+
+	markWorkflowGateCardPostOutcome(input: {
+		questionId: string;
+		sequence: number;
+		outcome: "ambiguous" | "no_effect";
+	}): { ok: true } | { ok: false; reason: string } {
+		const row = this.getCurrentWorkflowGateHolderByQuestionId(input.questionId);
+		if (!row || row.card_post_intent_seq !== input.sequence) {
+			return { ok: false, reason: "workflow_gate_card_post_intent_stale" };
+		}
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET card_post_outcome = ?,
+			        card_post_legacy_unknown = CASE
+			          WHEN ? = 'no_effect' THEN 0 ELSE card_post_legacy_unknown
+			        END
+			  WHERE question_id = ? AND card_post_intent_seq = ?
+			    AND materialization_stage IN ('question_intent','question_written','session_bound')`,
+			[input.outcome, input.outcome, input.questionId, input.sequence],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_card_post_outcome_raced" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	recordWorkflowGateCardZeroScan(input: {
+		questionId: string;
+		sequence: number;
+		at: string;
+		frontier: string | null;
+	}):
+		| { ok: true; first: boolean; priorAt?: string; frontierStable?: boolean }
+		| { ok: false; reason: string } {
+		if (!StateStore.workflowFiniteTimestamp(input.at)) {
+			return { ok: false, reason: "invalid_workflow_gate_card_zero_scan" };
+		}
+		const row = this.getCurrentWorkflowGateHolderByQuestionId(input.questionId);
+		if (!row || row.card_post_intent_seq !== input.sequence) {
+			return { ok: false, reason: "workflow_gate_card_post_intent_stale" };
+		}
+		if (!row.card_post_first_zero_at) {
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET card_post_first_zero_at = ?, card_post_first_zero_frontier = ?
+				  WHERE question_id = ? AND card_post_intent_seq = ?
+				    AND card_post_first_zero_at IS NULL`,
+				[input.at, input.frontier, input.questionId, input.sequence],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				return { ok: false, reason: "workflow_gate_card_zero_scan_raced" };
+			}
+			this.save();
+			return { ok: true, first: true };
+		}
+		if (row.card_post_first_zero_frontier !== input.frontier) {
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET card_post_first_zero_at = ?, card_post_first_zero_frontier = ?
+				  WHERE question_id = ? AND card_post_intent_seq = ?
+				    AND card_post_first_zero_at = ?
+				    AND card_post_first_zero_frontier IS ?`,
+				[
+					input.at,
+					input.frontier,
+					input.questionId,
+					input.sequence,
+					row.card_post_first_zero_at,
+					row.card_post_first_zero_frontier,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				return { ok: false, reason: "workflow_gate_card_zero_scan_raced" };
+			}
+			this.save();
+			return { ok: true, first: true };
+		}
+		return {
+			ok: true,
+			first: false,
+			priorAt: row.card_post_first_zero_at,
+			frontierStable: row.card_post_first_zero_frontier === input.frontier,
+		};
+	}
+
 	getCurrentWorkflowGateHolderByQuestionId(
 		questionId: string,
 	): WorkflowGateHolderRow | undefined {
@@ -44924,7 +45162,15 @@ export class StateStore {
 			`SELECT h.* FROM workflow_gate_holder AS h
 			  LEFT JOIN workflow_run AS r ON r.run_id = h.run_id
 			  WHERE h.state IN ('materializing','awaiting_review')
-			    AND h.materialization_stage != 'completed'
+			    AND (
+			      h.materialization_stage != 'completed'
+			      OR NOT EXISTS (
+			        SELECT 1 FROM session_events AS e
+			         WHERE e.execution_id = h.source_execution_id
+			           AND e.event_type = 'founder_thread_notified'
+			           AND json_extract(e.payload, '$.questionId') = h.question_id
+			      )
+			    )
 			    AND (r.run_id IS NULL OR r.status = 'active')
 			    AND (
 			      h.authority_mode IS NULL
@@ -46399,6 +46645,14 @@ export interface WorkflowGateHolderRow {
 	/** NULL is legacy bound compatibility. */
 	carrier_binding_state: "unbound" | "bound" | null;
 	card_message_id: string | null;
+	card_post_intent_seq: number;
+	card_post_intent_at: string | null;
+	card_post_correlation_marker: string | null;
+	card_post_reconcile_not_before: string | null;
+	card_post_outcome: "pending" | "ambiguous" | "no_effect" | null;
+	card_post_first_zero_at: string | null;
+	card_post_first_zero_frontier: string | null;
+	card_post_legacy_unknown: 0 | 1;
 	state: WorkflowGateHolderState;
 	materialization_stage: WorkflowGateMaterializationStage;
 	superseded_reason: string | null;

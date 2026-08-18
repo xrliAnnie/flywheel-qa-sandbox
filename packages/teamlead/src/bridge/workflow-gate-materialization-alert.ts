@@ -71,6 +71,8 @@ export async function materializeWorkflowGateWithFailLoud(
 	const current = deps.store.getWorkflowGateHolderByQuestionId(
 		deps.holder.question_id,
 	);
+	const completedAuditConflict =
+		failureReason === "workflow_gate_card_audit_conflict";
 	if (
 		!current ||
 		current.run_id !== deps.holder.run_id ||
@@ -78,7 +80,7 @@ export async function materializeWorkflowGateWithFailLoud(
 		!(["materializing", "awaiting_review"] as const).includes(
 			current.state as "materializing" | "awaiting_review",
 		) ||
-		current.materialization_stage === "completed"
+		(current.materialization_stage === "completed" && !completedAuditConflict)
 	) {
 		return;
 	}

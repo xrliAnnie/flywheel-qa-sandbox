@@ -1,0 +1,16 @@
+flowchart TB
+    G["Ship gate 打开<br/>(等 founder 批准合入)"]
+    G --> M["链路一:工作流引擎投卡器<br/>发第 1 张卡(裸标题)<br/>自己的账本:holder 阶段机"]
+    G --> F["链路二:GatePoller 兜底通道<br/>15 秒后又发第 2 张卡([QA·Opus] 前缀)<br/>自己的账本:notify marker"]
+    M --> D["founder 同一分钟收到两张一样的卡"]
+    F --> D
+    D --> X["只有第 1 张的 ✅ 真正绑定批准<br/>第 2 张看着能点、其实是死入口"]
+
+    X ==> FIX["修后:兜底通道识别出<br/>『这个 gate 已有引擎投卡器负责』→ 让位<br/>一个 gate 恰好一张卡"]
+
+    style G fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style M fill:#fff4e5,stroke:#ff9500
+    style F fill:#fff4e5,stroke:#ff9500
+    style D fill:#fdecea,stroke:#ff3b30
+    style X fill:#fdecea,stroke:#ff3b30
+    style FIX fill:#e6f7ec,stroke:#34c759,stroke-width:2px

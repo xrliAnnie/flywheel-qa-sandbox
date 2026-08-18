@@ -86,6 +86,28 @@ function seedCompletedFinalization(store: StateStore): void {
 	});
 }
 
+function seedLandOperationClaim(store: StateStore) {
+	const operation = store.ensureLandOperation({
+		issueId: "FLY-102",
+		projectName: "flywheel",
+		prNumber: 1832,
+		approvedHead: "a".repeat(40),
+		now: "2026-08-17T00:00:00.000Z",
+	});
+	const claim = store.claimLandOperation({
+		operationId: operation.operation_id,
+		ownerId: "land-worker",
+		now: "2026-08-17T00:00:01.000Z",
+		leaseExpiresAt: "2026-08-18T01:00:01.000Z",
+	});
+	if (!claim) throw new Error("test land claim missing");
+	return {
+		operationId: operation.operation_id,
+		ownerId: claim.ownerId,
+		generation: claim.generation,
+	};
+}
+
 async function flushMicrotasks(rounds = 4): Promise<void> {
 	for (let index = 0; index < rounds; index += 1) {
 		await Promise.resolve();
@@ -812,6 +834,231 @@ describe("runPostShipFinalization", () => {
 			"closeout:completed",
 			"worktree",
 		]);
+	});
+
+	it("does not send the terminal message, archive, or mark Linear Done until worktree cleanup succeeds", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const archiveFn = vi.fn();
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+		const fetchForThread = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ id: "ready-message" }), { status: 200 }),
+		);
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue(undefined),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			reason: "land_postconditions_incomplete:worktree,thread_archive",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(markIssueDone).not.toHaveBeenCalled();
+		expect(
+			store
+				.listLandOperationSteps(landOperation.operationId)
+				.some((step) => step.step === "terminal_notified"),
+		).toBe(false);
+	});
+
+	it("settles a terminal receipt before archive and leaves archive as the final thread write", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const order: string[] = [];
+		const postedBodies: string[] = [];
+		const fetchForThread = vi.fn(async (_url: string, init: RequestInit) => {
+			if (init.method === "POST") {
+				const body = JSON.parse(init.body as string) as { content: string };
+				postedBodies.push(body.content);
+				order.push(
+					body.content.includes("已合入 PR #1832")
+						? "terminal"
+						: "ready-to-close",
+				);
+			}
+			return new Response(JSON.stringify({ id: `message-${order.length}` }), {
+				status: 200,
+			});
+		});
+		const archiveFn = vi.fn(async () => {
+			order.push("archive");
+			return {
+				archived: true,
+				attempts: 1,
+				status: 200,
+				reason: "ok" as const,
+			};
+		});
+		const markIssueDone = vi.fn(async () => {
+			order.push("linear-done");
+			return { done: true };
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(order).toEqual([
+			"ready-to-close",
+			"terminal",
+			"archive",
+			"linear-done",
+		]);
+		expect(postedBodies.some((body) => body.includes("清理完成"))).toBe(true);
+		expect(
+			store
+				.listLandOperationSteps(landOperation.operationId)
+				.filter((step) => step.step === "terminal_notified"),
+		).toHaveLength(1);
+	});
+
+	it("keeps the thread open and Linear untouched when the terminal message fails", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const archiveFn = vi.fn();
+		const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+		let posts = 0;
+		const fetchForThread = vi.fn(async () => {
+			posts += 1;
+			return posts === 1
+				? new Response(JSON.stringify({ id: "ready-message" }), { status: 200 })
+				: new Response("refused", { status: 403 });
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone,
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			reason: "land_terminal_notification_incomplete",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(markIssueDone).not.toHaveBeenCalled();
+	});
+
+	it("explains an archive policy waiver and settles one generation-fenced receipt", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const postedBodies: string[] = [];
+		const fetchForThread = vi.fn(async (_url: string, init: RequestInit) => {
+			if (init.method === "POST") {
+				postedBodies.push(
+					(JSON.parse(init.body as string) as { content: string }).content,
+				);
+			}
+			return new Response(
+				JSON.stringify({ id: `message-${postedBodies.length}` }),
+				{
+					status: 200,
+				},
+			);
+		});
+		const archiveFn = vi.fn(async () => ({
+			archived: false,
+			attempts: 0,
+			reason: "founder_reopened" as const,
+		}));
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				removeCleanWorktree: vi.fn().mockResolvedValue({
+					removed: true,
+					bindingVerified: true,
+				}),
+				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+				recordLinearDoneDisposition: vi.fn().mockReturnValue({
+					ok: true,
+					idempotentReplay: false,
+				}),
+				archiveFn,
+				fetchImpl: fetchForThread as unknown as typeof fetch,
+			},
+		);
+
+		expect(result).toMatchObject({ complete: true, outcome: "completed" });
+		expect(
+			postedBodies.filter((body) => body.includes("本 thread 未自动归档")),
+		).toHaveLength(1);
+		expect(
+			store
+				.listLandOperationSteps(landOperation.operationId)
+				.filter((step) => step.step === "archive_waiver_notified"),
+		).toHaveLength(1);
 	});
 
 	it("maps a thrown pre-arbitration read to retryable partial for resumable land", async () => {

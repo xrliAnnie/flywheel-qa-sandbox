@@ -32,6 +32,7 @@ import type {
 import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { archiveThreadAndRecord } from "./done-thread-archiver.js";
+import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
 import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
 import {
 	type LinearDoneFinalizer,
@@ -284,6 +285,12 @@ export interface PostShipOpts {
 	discordOwnerUserId?: string;
 	/** Fallback if lead has no per-lead bot token. */
 	fallbackBotToken?: string;
+	/** Generation-fenced owner of terminal notification + archive receipts. */
+	landOperation?: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+	};
 }
 
 /**
@@ -652,6 +659,7 @@ async function runPostShipFinalizationInner(
 	resumable: boolean,
 ): Promise<ResumablePostShipFinalizationReport> {
 	const { store, projects } = deps;
+	const landManaged = resumable && !!opts.landOperation;
 	const replayCompletedFinalization =
 		async (): Promise<ResumablePostShipFinalizationReport> => {
 			if (!resumable) {
@@ -1023,11 +1031,90 @@ async function runPostShipFinalizationInner(
 		{ store, fetchImpl: deps.fetchImpl },
 	);
 
+	// FLY-1832: the resumable land operation owns one terminal founder message.
+	// It is generation-fenced and must settle only after closeout + worktree
+	// cleanup; archive is the final Discord mutation after this receipt.
+	const landReady = !closeoutBlocked && worktreeRemoved;
+	let terminalNotified = !landManaged || !thread;
+	if (landManaged && thread && landReady) {
+		const context = opts.landOperation!;
+		const operation = store.getLandOperation(context.operationId);
+		const prNumber = opts.mergedPr?.prNumber ?? operation?.pr_number;
+		const terminalReceipt = {
+			threadId: thread.thread_id,
+			prNumber: prNumber ?? null,
+		};
+		const prior = store
+			.listLandOperationSteps(context.operationId)
+			.find((step) => step.step === "terminal_notified");
+		if (prior) {
+			terminalNotified = store.recordLandOperationStep({
+				operationId: context.operationId,
+				ownerId: context.ownerId,
+				generation: context.generation,
+				step: "terminal_notified",
+				receipt: terminalReceipt,
+				now: new Date().toISOString(),
+			}).ok;
+		} else if (botToken) {
+			const terminal = await emitIssueThreadInfraNotification(
+				{
+					executionId: opts.executionId,
+					issueId: opts.issueId,
+					issueIdentifier: opts.issueIdentifier,
+					projectName: opts.projectName,
+					kind: "land_terminal",
+					content: [
+						`✅ **已合入 PR #${prNumber ?? "?"} — ${opts.issueIdentifier ?? opts.issueId}**`,
+						"清理完成(worktree / runner 已收),本 thread 将自动归档;Linear 状态随后落 Done。",
+					].join("\n"),
+					thread,
+					botToken,
+					onUndeliverable: (reason) =>
+						console.warn(
+							`[post-ship] terminal founder notification undeliverable for ${opts.issueId}: ${reason}`,
+						),
+				},
+				{ store, fetchImpl: deps.fetchImpl },
+			);
+			if (terminal.kind === "posted") {
+				const recorded = store.recordLandOperationStep({
+					operationId: context.operationId,
+					ownerId: context.ownerId,
+					generation: context.generation,
+					step: "terminal_notified",
+					receipt: terminalReceipt,
+					now: new Date().toISOString(),
+				});
+				terminalNotified = recorded.ok;
+			}
+		}
+		if (!terminalNotified) {
+			return {
+				complete: false,
+				outcome: "partial",
+				reason: "land_terminal_notification_incomplete",
+				details: {
+					tmuxClosed: cleanup.tmuxClosed,
+					commDbFinalized: cleanup.commDbFinalized,
+					closeoutBlocked: false,
+					worktreeRemoved,
+					threadArchived: false,
+				},
+			};
+		}
+	}
+
 	// ── (3) thread teardown — only after notifier has landed AND the issue
 	// closeout confirmed every related node gone (Codex R1#3: an archive over
 	// a blocked closeout would hide a still-live runner). ──
 	let threadArchived = !resumable || !thread;
-	if (thread && botToken && !closeoutBlocked) {
+	if (
+		thread &&
+		botToken &&
+		!closeoutBlocked &&
+		(!landManaged || (landReady && terminalNotified))
+	) {
 		// FLY-1165: route through the shared archive sink — per-thread
 		// serialization + the sink-level archive-once guard (a founder re-open
 		// is never fought; matches the cascade + endpoint paths). The owner
@@ -1059,6 +1146,71 @@ async function runPostShipFinalizationInner(
 			console.log(
 				`[post-ship] thread archive waived for ${opts.issueId}: ${archive.reason}`,
 			);
+			if (landManaged) {
+				const context = opts.landOperation!;
+				const waiverReceipt = {
+					reason: archive.reason,
+					archiveEpoch: thread.archived_at ?? "open",
+				};
+				const prior = store
+					.listLandOperationSteps(context.operationId)
+					.find((step) => step.step === "archive_waiver_notified");
+				if (!prior) {
+					const explained = await emitIssueThreadInfraNotification(
+						{
+							executionId: opts.executionId,
+							issueId: opts.issueId,
+							issueIdentifier: opts.issueIdentifier,
+							projectName: opts.projectName,
+							kind: "land_archive_waiver",
+							content: `ℹ️ 本 thread 未自动归档:${archive.reason === "founder_reopened" ? "founder 已重新打开" : "仍有活跃使用者"};原因解除后会由清理流程重试。`,
+							thread,
+							botToken,
+							onUndeliverable: (reason) =>
+								console.warn(
+									`[post-ship] archive waiver explanation undeliverable for ${opts.issueId}: ${reason}`,
+								),
+						},
+						{ store, fetchImpl: deps.fetchImpl },
+					);
+					if (explained.kind !== "posted") {
+						return {
+							complete: false,
+							outcome: "partial",
+							reason: "land_archive_waiver_notification_incomplete",
+							details: {
+								tmuxClosed: cleanup.tmuxClosed,
+								commDbFinalized: cleanup.commDbFinalized,
+								closeoutBlocked: false,
+								worktreeRemoved,
+								threadArchived: false,
+							},
+						};
+					}
+				}
+				const recorded = store.recordLandOperationStep({
+					operationId: context.operationId,
+					ownerId: context.ownerId,
+					generation: context.generation,
+					step: "archive_waiver_notified",
+					receipt: waiverReceipt,
+					now: new Date().toISOString(),
+				});
+				if (!recorded.ok) {
+					return {
+						complete: false,
+						outcome: "partial",
+						reason: `land_archive_waiver_receipt_incomplete:${recorded.reason}`,
+						details: {
+							tmuxClosed: cleanup.tmuxClosed,
+							commDbFinalized: cleanup.commDbFinalized,
+							closeoutBlocked: false,
+							worktreeRemoved,
+							threadArchived: false,
+						},
+					};
+				}
+			}
 		}
 	}
 
@@ -1074,12 +1226,16 @@ async function runPostShipFinalizationInner(
 		| "deferred"
 		| undefined;
 	let linearDispositionRecorded = !resumable;
-	if (!closeoutBlocked && resumable) {
+	if (
+		!closeoutBlocked &&
+		resumable &&
+		(!landManaged || (landReady && terminalNotified && threadArchived))
+	) {
 		const linear = await reconcileResumableLinearDone(opts, deps);
 		issueDone = linear.issueDone;
 		linearDoneDisposition = linear.disposition;
 		linearDispositionRecorded = linear.recorded;
-	} else if (!closeoutBlocked && deps.markIssueDone) {
+	} else if (!closeoutBlocked && !resumable && deps.markIssueDone) {
 		await raceMarkIssueDoneWithAbort(
 			deps.markIssueDone,
 			opts.issueId,
@@ -1129,7 +1285,11 @@ async function runPostShipFinalizationInner(
 			},
 		};
 	}
-	if (resumable && !linearDispositionRecorded) {
+	if (
+		resumable &&
+		!linearDispositionRecorded &&
+		(!landManaged || (landReady && terminalNotified && threadArchived))
+	) {
 		return {
 			complete: false,
 			outcome: "partial",

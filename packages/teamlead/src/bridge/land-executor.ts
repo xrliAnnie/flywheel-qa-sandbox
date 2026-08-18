@@ -54,6 +54,25 @@ export interface LandClosureReport {
 	details?: Record<string, unknown>;
 }
 
+export type LandThreadNotificationDisposition =
+	| "posted"
+	| "suppressed_archived"
+	| "covered_by_terminal_notification";
+
+export interface LandThreadNotificationResult {
+	disposition: LandThreadNotificationDisposition;
+}
+
+/** No land narrative may write after archive; completed is owned by finalization. */
+export function landThreadNotificationPreflight(
+	stage: string,
+	archivedAt: string | null | undefined,
+): Exclude<LandThreadNotificationDisposition, "posted"> | undefined {
+	if (stage === "completed") return "covered_by_terminal_notification";
+	if (archivedAt) return "suppressed_archived";
+	return undefined;
+}
+
 export interface LandExecutorDeps {
 	store: StateStore;
 	mergeDriver: LandMergeDriver;
@@ -67,7 +86,10 @@ export interface LandExecutorDeps {
 		operation: LandOperationRow,
 		stage: string,
 		detail: Record<string, unknown>,
-	) => Promise<void> | void;
+	) =>
+		| Promise<LandThreadNotificationResult | undefined>
+		| LandThreadNotificationResult
+		| undefined;
 	authorize?: (
 		operation: LandOperationRow,
 	) =>
@@ -252,13 +274,14 @@ async function announce(
 	if (!deps.notify) return;
 	const receiptStep = `notification:${stage}`;
 	if (stepReceipt(deps.store, operation.operation_id, receiptStep)) return;
-	await deps.notify(operation, stage, detail);
+	const notified = await deps.notify(operation, stage, detail);
+	const disposition = notified?.disposition ?? "posted";
 	recordStep(
 		deps,
 		operation,
 		claim,
 		receiptStep,
-		{ delivered: true, stage },
+		{ delivered: disposition === "posted", disposition, stage },
 		now,
 	);
 }

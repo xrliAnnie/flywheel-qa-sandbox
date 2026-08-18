@@ -290,6 +290,7 @@ import {
 	emitFounderStuckNotification,
 	emitFounderThreadNotification,
 	emitIssueThreadInfraNotification,
+	scanFounderThreadForGateCard,
 } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
@@ -317,7 +318,11 @@ import {
 import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
-import { executeLandOperation, GhCliLandMergeDriver } from "./land-executor.js";
+import {
+	executeLandOperation,
+	GhCliLandMergeDriver,
+	landThreadNotificationPreflight,
+} from "./land-executor.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
 	buildAgedDeferredLinearDoneAlert,
@@ -5875,6 +5880,15 @@ export async function startBridge(
 						sessionStatus: session.status,
 						discordOwnerUserId: config.discordOwnerUserId,
 						fallbackBotToken: config.discordBotToken,
+						...(operation.owner_id
+							? {
+									landOperation: {
+										operationId: operation.operation_id,
+										ownerId: operation.owner_id,
+										generation: operation.generation,
+									},
+								}
+							: {}),
 					},
 					{
 						store,
@@ -5915,6 +5929,13 @@ export async function startBridge(
 				);
 			},
 			notify: async (operation, stage, detail) => {
+				const terminalDisposition = landThreadNotificationPreflight(
+					stage,
+					null,
+				);
+				if (terminalDisposition) {
+					return { disposition: terminalDisposition };
+				}
 				const session = store.getSessionByIssue(operation.issue_id);
 				let lead: LeadConfig | undefined;
 				try {
@@ -5932,6 +5953,13 @@ export async function startBridge(
 					operation.issue_id,
 					lead.chatChannel,
 				);
+				const archivedDisposition = landThreadNotificationPreflight(
+					stage,
+					thread?.archived_at,
+				);
+				if (archivedDisposition) {
+					return { disposition: archivedDisposition };
+				}
 				const result = await emitIssueThreadInfraNotification(
 					{
 						executionId: session?.execution_id ?? `land:${operation.issue_id}`,
@@ -5954,6 +5982,7 @@ export async function startBridge(
 						`land_notification_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
 					);
 				}
+				return { disposition: "posted" as const };
 			},
 		});
 	const workflowShipReadyArm = createWorkflowShipReadyArm({
@@ -7613,6 +7642,7 @@ export async function startBridge(
 							if (!thread?.thread_id) {
 								throw new Error("workflow_gate_thread_not_found");
 							}
+							const gateBotToken = lead.botToken ?? config.discordBotToken;
 							const result = await materializeWorkflowGateHolder(
 								{
 									store,
@@ -7631,17 +7661,46 @@ export async function startBridge(
 												summary: input.content,
 												ageMinutes: 0,
 												thread,
-												botToken: lead.botToken ?? config.discordBotToken,
+												botToken: gateBotToken,
 												ownerUserId: config.discordOwnerUserId,
+												correlationMarker: input.correlationMarker,
+												deferSuccessAudit: true,
 											},
 											{ store },
 										);
-										if (result.kind !== "posted" || !result.gateMessageId) {
-											throw new Error(
-												`workflow_gate_card_${result.kind}${result.skipReason ? `_${result.skipReason}` : ""}`,
-											);
+										if (result.kind === "posted" && result.gateMessageId) {
+											return {
+												kind: "posted" as const,
+												messageId: result.gateMessageId,
+											};
 										}
-										return { messageId: result.gateMessageId };
+										if (
+											result.kind === "posted_ambiguous" ||
+											(result.kind === "transient_failed" &&
+												!result.deliveryRejected)
+										) {
+											return { kind: "posted_ambiguous" as const };
+										}
+										return {
+											kind: "no_effect" as const,
+											reason: result.skipReason ?? result.kind,
+										};
+									},
+									scanCard: async (input) => {
+										if (!gateBotToken) {
+											return {
+												kind: "ambiguous" as const,
+												frontier: null,
+												reason: "no_bot_token",
+											};
+										}
+										return scanFounderThreadForGateCard({
+											threadId: thread.thread_id,
+											botToken: gateBotToken,
+											postedAt: input.postedAt,
+											correlationMarker: input.correlationMarker,
+											legacyTerms: input.legacyTerms,
+										});
 									},
 								},
 								holder.question_id,

@@ -190,6 +190,36 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 	});
 
+	it("holder-backed approve gate yields to the materializer while a legacy gate still posts", async () => {
+		const { store } = makeStore();
+		store.workflowGatePresentationDisposition = vi.fn((input) =>
+			input.questionId === "holder-q"
+				? { allow: true, reason: "holder_authoritative" }
+				: { allow: true, reason: "legacy" },
+		) as never;
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const poller = makePoller(
+			{ fetchImpl: fetchImpl as unknown as typeof fetch },
+			store,
+		);
+
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({
+				id: "holder-q",
+				checkpoint: "approve_to_ship",
+			}),
+		);
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({ id: "legacy-q", checkpoint: "approve_to_ship" }),
+		);
+
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+	});
+
 	it("founder_review becomes delivered only after the Discord card is immutably bound", async () => {
 		const { store, events } = makeStore();
 		const fetchImpl = vi.fn(

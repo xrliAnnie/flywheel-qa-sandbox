@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant L as land 收尾流程
+    participant T as Discord issue 线程
+    participant A as founder Annie
+
+    rect rgb(253,236,234)
+    note over L,A: 现状 — 生产实录 FLY-1811,时间差 1 秒
+    L->>T: 合并确认 + 清理完成
+    L->>T: 归档线程(01:48:47,成功)
+    L->>T: 又发「land completed」消息(01:48:48)
+    note over T: Discord 规则:归档线程收到新消息 → 自动解除归档
+    A->>T: 看到线程还开着,每次都要提醒 Lead 手动归档
+    end
+
+    rect rgb(230,247,236)
+    note over L,A: 修后 — 归档是线程的最后一次写入
+    L->>T: 终局消息「已合入 + 清理完成,将自动归档」
+    L->>T: 归档线程(此后零写入,保持归档)
+    note over A: 打开就是归档好的,她随时说话仍可重新打开
+    end

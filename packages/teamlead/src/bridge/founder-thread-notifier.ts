@@ -63,6 +63,10 @@ export interface FounderThreadNotifyOpts {
 	 * session.design_backend)`.
 	 */
 	phasePrefix?: string;
+	/** Stable footer used to reconcile a successful POST whose response id was lost. */
+	correlationMarker?: string;
+	/** The workflow materializer owns the one authoritative success audit. */
+	deferSuccessAudit?: boolean;
 }
 
 export interface FounderThreadNotifyDeps {
@@ -73,6 +77,7 @@ export interface FounderThreadNotifyDeps {
 
 export type FounderThreadNotifyKind =
 	| "posted"
+	| "posted_ambiguous"
 	| "skipped"
 	| "permanent_failed"
 	| "transient_failed";
@@ -88,6 +93,8 @@ export interface FounderThreadNotifyResult {
 	kind: FounderThreadNotifyKind;
 	/** Only on a 429 transient_failed — Discord's honored Retry-After in ms. */
 	retryAfterMs?: number;
+	/** True when Discord definitively rejected the write before creating a message. */
+	deliveryRejected?: boolean;
 	/**
 	 * Only on `skipped`. `no_chat_thread` is TRANSIENT (the thread may be created
 	 * later → the caller retries within budget); the others are config errors the
@@ -120,6 +127,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			// spell out the two binding actions + the ✅ receipt promise so a short
 			// reply elsewhere in the thread is never mistaken for the protocol.
 			"直接**回复这条消息**或点 ✅ 即批准；其它回复不会被当成批准。批准绑定后我会在你的消息上点 ✅ 确认。",
+			...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 		].join("\n");
 	}
 	if (opts.checkpoint === "ship_ready") {
@@ -130,6 +138,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			summary,
 			"",
 			"Lead 已同步收到。要 ship 请在本 thread 表态，由 Lead 执行合并；此卡为通知，回复/✅ 不会自动记为批准。",
+			...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 		].join("\n");
 	}
 	if (opts.checkpoint === "founder_review") {
@@ -144,6 +153,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 			"",
 			"请在互动页面逐处留言。页面留言完成后，点「一键汇总复制」，把汇总贴回本 thread（页面留言目前不会自动同步给 runner）。",
 			"直接回复这条卡片 = 打回并把原文交给 runner；只有明确回复「都可以了 / 可以了 / 通过 / LGTM / approved」或点 ✅ 才算本轮通过。",
+			...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 		].join("\n");
 	}
 	return [
@@ -153,6 +163,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 		summary,
 		"",
 		`已等 ${opts.ageMinutes} 分钟没人答（Lead 可能漏转）。在本 thread 回复确认/纠正。`,
+		...(opts.correlationMarker ? ["", opts.correlationMarker] : []),
 	].join("\n");
 }
 
@@ -220,12 +231,31 @@ export async function emitFounderThreadNotification(
 	);
 	// Audit + return (byte-compatible; FLY-799 adds the optional gateMessageId).
 	if (outcome.kind === "posted") {
-		audit(store, opts, "founder_thread_notified", {
+		if (!opts.deferSuccessAudit) {
+			audit(store, opts, "founder_thread_notified", {
+				threadId: opts.thread.thread_id,
+				status: outcome.status,
+				gateMessageId: outcome.messageId,
+			});
+		}
+		return { kind: "posted", gateMessageId: outcome.messageId };
+	}
+	if (outcome.kind === "posted_ambiguous") {
+		// Legacy callers do not require a message id and historically treat a 2xx
+		// as delivered. Only a correlation-marked materializer call must reconcile
+		// before claiming the authoritative gate card.
+		if (!opts.correlationMarker) {
+			audit(store, opts, "founder_thread_notified", {
+				threadId: opts.thread.thread_id,
+				status: outcome.status,
+			});
+			return { kind: "posted" };
+		}
+		audit(store, opts, "founder_thread_notify_ambiguous", {
 			threadId: opts.thread.thread_id,
 			status: outcome.status,
-			gateMessageId: outcome.messageId,
 		});
-		return { kind: "posted", gateMessageId: outcome.messageId };
+		return { kind: "posted_ambiguous" };
 	}
 	if (outcome.kind === "transient_failed") {
 		if (outcome.status === 429) {
@@ -234,7 +264,11 @@ export async function emitFounderThreadNotification(
 				status: 429,
 				retryAfterMs: outcome.retryAfterMs,
 			});
-			return { kind: "transient_failed", retryAfterMs: outcome.retryAfterMs };
+			return {
+				kind: "transient_failed",
+				retryAfterMs: outcome.retryAfterMs,
+				deliveryRejected: true,
+			};
 		}
 		if (outcome.status !== undefined) {
 			// 5xx
@@ -270,6 +304,7 @@ export async function emitFounderThreadNotification(
  */
 type PostFounderThreadOutcome =
 	| { kind: "posted"; status: number; messageId?: string }
+	| { kind: "posted_ambiguous"; status: number }
 	| {
 			kind: "transient_failed";
 			/** 429 or 5xx status; undefined for a network error / abort / timeout. */
@@ -290,7 +325,7 @@ async function postFounderThreadCore(
 	fetchImpl: typeof fetch,
 ): Promise<PostFounderThreadOutcome> {
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+	const headerTimer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
 	try {
 		const res = await fetchImpl(
 			`${DISCORD_API}/channels/${threadId}/messages`,
@@ -319,17 +354,32 @@ async function postFounderThreadCore(
 				signal: controller.signal,
 			},
 		);
+		clearTimeout(headerTimer);
 		if (res.ok) {
 			// FLY-799 A-0b: capture the created message id so the ship-gate path can
 			// durably bind (questionId,prHeadSha)->gateMessageId for ReactionSource.
 			// Best-effort: a body-parse failure must NOT change the posted outcome.
 			let messageId: string | undefined;
+			let bodyTimer: ReturnType<typeof setTimeout> | undefined;
 			try {
-				messageId = extractGateMessageId(await res.json()) ?? undefined;
+				const parsed = await Promise.race([
+					res.json(),
+					new Promise<never>((_, reject) => {
+						bodyTimer = setTimeout(() => {
+							controller.abort();
+							reject(new Error("discord_post_body_timeout"));
+						}, POST_TIMEOUT_MS);
+					}),
+				]);
+				messageId = extractGateMessageId(parsed) ?? undefined;
 			} catch {
-				// keep messageId undefined
+				return { kind: "posted_ambiguous", status: res.status };
+			} finally {
+				if (bodyTimer) clearTimeout(bodyTimer);
 			}
-			return { kind: "posted", status: res.status, messageId };
+			return messageId
+				? { kind: "posted", status: res.status, messageId }
+				: { kind: "posted_ambiguous", status: res.status };
 		}
 		if (res.status === 429) {
 			const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
@@ -347,8 +397,118 @@ async function postFounderThreadCore(
 	} catch (err) {
 		return { kind: "transient_failed", error: (err as Error).message };
 	} finally {
-		clearTimeout(timer);
+		clearTimeout(headerTimer);
 	}
+}
+
+export type FounderGateCardScanResult =
+	| { kind: "found"; messageId: string; frontier: string | null }
+	| { kind: "none"; frontier: string | null }
+	| { kind: "ambiguous"; frontier: string | null; reason: string };
+
+/**
+ * Reconcile an ambiguous Discord POST without guessing. A retry is eligible
+ * only after a complete scan proves the correlation marker absent; pagination,
+ * timeouts, malformed responses, and multiple matches all stay fail-closed.
+ */
+export async function scanFounderThreadForGateCard(input: {
+	threadId: string;
+	botToken: string;
+	postedAt: string;
+	correlationMarker?: string;
+	legacyTerms?: string[];
+	pageCap?: number;
+	deadlineMs?: number;
+	fetchImpl?: typeof fetch;
+}): Promise<FounderGateCardScanResult> {
+	const fetchImpl = input.fetchImpl ?? fetch;
+	const pageCap = Math.max(1, Math.min(20, input.pageCap ?? 4));
+	const deadlineMs = Math.max(100, input.deadlineMs ?? 10_000);
+	const startedAt = Date.now();
+	const postedAtMs = Date.parse(input.postedAt);
+	const lowerBound = Number.isFinite(postedAtMs) ? postedAtMs - 30_000 : 0;
+	const matches = new Set<string>();
+	let before: string | undefined;
+	let frontier: string | null = null;
+
+	for (let page = 0; page < pageCap; page += 1) {
+		const remaining = deadlineMs - (Date.now() - startedAt);
+		if (remaining <= 0) {
+			return { kind: "ambiguous", frontier, reason: "scan_deadline" };
+		}
+		const controller = new AbortController();
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const query = new URLSearchParams({ limit: "100" });
+			if (before) query.set("before", before);
+			timeout = setTimeout(() => controller.abort(), remaining);
+			const response = await fetchImpl(
+				`${DISCORD_API}/channels/${input.threadId}/messages?${query.toString()}`,
+				{
+					method: "GET",
+					headers: { Authorization: `Bot ${input.botToken}` },
+					signal: controller.signal,
+				},
+			);
+			if (!response.ok) {
+				return {
+					kind: "ambiguous",
+					frontier,
+					reason: `scan_http_${response.status}`,
+				};
+			}
+			const rows = (await response.json()) as Array<{
+				id?: string;
+				content?: string;
+				timestamp?: string;
+				author?: { bot?: boolean };
+			}>;
+			if (!Array.isArray(rows)) {
+				return { kind: "ambiguous", frontier, reason: "scan_shape" };
+			}
+			if (page === 0) frontier = rows[0]?.id ?? null;
+			for (const row of rows) {
+				if (!row.id || row.author?.bot !== true) continue;
+				const timestampMs = Date.parse(row.timestamp ?? "");
+				if (Number.isFinite(timestampMs) && timestampMs < lowerBound) continue;
+				const content = row.content ?? "";
+				const markerMatch =
+					!!input.correlationMarker &&
+					content.includes(input.correlationMarker);
+				const legacyMatch =
+					(input.legacyTerms?.length ?? 0) > 0 &&
+					input.legacyTerms!.every((term) => content.includes(term));
+				if (markerMatch || legacyMatch) matches.add(row.id);
+			}
+			if (matches.size > 1) {
+				return { kind: "ambiguous", frontier, reason: "multiple_matches" };
+			}
+			const oldest = rows.at(-1);
+			const oldestMs = Date.parse(oldest?.timestamp ?? "");
+			const complete =
+				rows.length < 100 ||
+				(Number.isFinite(oldestMs) && oldestMs <= lowerBound);
+			if (complete) {
+				const messageId = [...matches][0];
+				return messageId
+					? { kind: "found", messageId, frontier }
+					: { kind: "none", frontier };
+			}
+			before = oldest?.id;
+			if (!before) {
+				return { kind: "ambiguous", frontier, reason: "scan_cursor_missing" };
+			}
+		} catch (error) {
+			return {
+				kind: "ambiguous",
+				frontier,
+				reason: `scan_error:${error instanceof Error ? error.message : String(error)}`,
+			};
+		} finally {
+			if (timeout) clearTimeout(timeout);
+		}
+	}
+	return { kind: "ambiguous", frontier, reason: "scan_page_cap" };
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -545,7 +705,7 @@ export async function emitFounderStuckNotification(
 		opts.ownerUserId,
 		fetchImpl,
 	);
-	if (outcome.kind === "posted") {
+	if (outcome.kind === "posted" || outcome.kind === "posted_ambiguous") {
 		auditStuck(store, opts, "founder_stuck_notified", {
 			threadId: opts.thread.thread_id,
 			status: outcome.status,
@@ -699,7 +859,7 @@ export async function emitIssueThreadInfraNotification(
 			mention,
 			fetchImpl,
 		);
-		if (outcome.kind === "posted") {
+		if (outcome.kind === "posted" || outcome.kind === "posted_ambiguous") {
 			auditInfra(store, opts, "issue_thread_infra_notified", {
 				threadId: opts.thread.thread_id,
 				status: outcome.status,
@@ -779,7 +939,7 @@ export async function emitFounderMilestoneNotification(
 		opts.ownerUserId,
 		fetchImpl,
 	);
-	if (outcome.kind === "posted") {
+	if (outcome.kind === "posted" || outcome.kind === "posted_ambiguous") {
 		auditMilestone(store, opts, "founder_milestone_notified", {
 			threadId: opts.thread.thread_id,
 			status: outcome.status,

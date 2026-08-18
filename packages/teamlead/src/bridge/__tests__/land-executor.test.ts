@@ -8,6 +8,7 @@ import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import {
 	executeLandOperation,
 	type LandMergeDriver,
+	landThreadNotificationPreflight,
 } from "../land-executor.js";
 
 const HEAD = "a".repeat(40);
@@ -479,6 +480,64 @@ describe("land executor", () => {
 			]),
 		);
 		store.close();
+	});
+
+	it("records a covered terminal notification as intentionally not delivered", async () => {
+		const { store, operation } = await fixture();
+		const notify = vi.fn(async (_operation, stage: string) => ({
+			disposition:
+				stage === "completed"
+					? ("covered_by_terminal_notification" as const)
+					: ("posted" as const),
+		}));
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "MERGED",
+					headSha: HEAD,
+					mergeSha: MERGE,
+				}),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			},
+			finalize: completedFinalizer(store),
+			notify,
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-08-17T00:00:00.000Z"),
+		});
+
+		expect(result.status).toBe("completed");
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.find((step) => step.step === "notification:completed")?.receipt,
+		).toEqual({
+			delivered: false,
+			disposition: "covered_by_terminal_notification",
+			stage: "completed",
+		});
+		store.close();
+	});
+
+	it("prevents every land narrative write after archive and reserves completed for the terminal notification", () => {
+		expect(landThreadNotificationPreflight("completed", null)).toBe(
+			"covered_by_terminal_notification",
+		);
+		expect(
+			landThreadNotificationPreflight(
+				"execution_retry",
+				"2026-08-17T00:00:00.000Z",
+			),
+		).toBe("suppressed_archived");
+		expect(
+			landThreadNotificationPreflight(
+				"finalization_partial",
+				"2026-08-17T00:00:00.000Z",
+			),
+		).toBe("suppressed_archived");
+		expect(landThreadNotificationPreflight("activated", null)).toBeUndefined();
 	});
 
 	it("ignores a losing duplicate workflow failure when the exact head is already merged", async () => {

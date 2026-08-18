@@ -97,6 +97,37 @@ describe("workflow gate materialization fail-loud", () => {
 		expect(store.listWorkflowAlertOutbox()).toEqual([]);
 	});
 
+	it("alerts when a completed holder has a durable audit conflict", async () => {
+		const { store, holder } = await fixture();
+		for (const [stage, cardMessageId] of [
+			["card_posted", "card-1"],
+			["card_bound", "card-1"],
+			["completed", undefined],
+		] as const) {
+			store.advanceWorkflowGateHolderMaterialization({
+				questionId: holder.question_id,
+				stage,
+				...(cardMessageId ? { cardMessageId } : {}),
+				now: "2026-08-14T19:00:00.000Z",
+			});
+		}
+
+		await materializeWorkflowGateWithFailLoud({
+			store,
+			holder,
+			materialize: async () => ({
+				ok: false,
+				reason: "workflow_gate_card_audit_conflict",
+			}),
+			alertIdentity: identity,
+			now: () => "2026-08-14T19:10:00.001Z",
+		});
+
+		expect(
+			store.getWorkflowAlertOutbox("gate_materialization_stuck:question-1"),
+		).toMatchObject({ run_id: "run-1" });
+	});
+
 	it("starts the stuck window from the holder's latest materialization progress", async () => {
 		const { store, holder } = await fixture();
 		expect(

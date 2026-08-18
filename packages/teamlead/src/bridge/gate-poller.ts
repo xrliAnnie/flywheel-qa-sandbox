@@ -1704,6 +1704,17 @@ export class GatePoller {
 		if (!gateOwnership.allow) {
 			return;
 		}
+		// FLY-1832: an engine workflow holder owns approve_to_ship presentation.
+		// `holder_authoritative` means the materializer is responsible for the one
+		// durable card; it is not permission for this legacy fallback to post a
+		// second, phase-prefixed copy. Holder-less legacy gates still use this path.
+		if (
+			cp === "approve_to_ship" &&
+			"reason" in gateOwnership &&
+			gateOwnership.reason === "holder_authoritative"
+		) {
+			return;
+		}
 
 		// Same liveness + scope gate as the gate-question relay path.
 		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
