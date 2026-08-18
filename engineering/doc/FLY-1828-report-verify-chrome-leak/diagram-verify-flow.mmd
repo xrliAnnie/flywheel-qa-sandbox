@@ -1,0 +1,13 @@
+flowchart TD
+    A["要验证一张发给你的 HTML 页"] --> B{"这页是什么?"}
+    B -->|"只是 QA/Lead 自产的报告<br/>(triage / ship / flag 报告)"| C["轻量校验(零浏览器)<br/>flywheel-comm verify-report<br/>查: 页面打得开 · 占位符残留 · 脚本许可证"]
+    B -->|"需要看一眼渲染效果"| D["加 --screenshot<br/>单次后台截图"]
+    B -->|"你要亲手点按的交互页<br/>(候选卡 · 评论层)"| E["真视觉验收<br/>复用 QA 已开着的浏览器会话"]
+    D --> F["硬超时 30 秒<br/>到点把整组进程杀干净<br/>确认死透才收工"]
+    C --> G["✅ 一行结论: 通过 / 不通过"]
+    F --> G
+    E --> G
+    H["万一还有漏网卡死的"] --> I["Bridge 每分钟巡逻:<br/>一次性截图形态 + 活过 5 分钟<br/>= 必然卡死 → 收尸"]
+    style A fill:#e8f0fe,stroke:#007aff
+    style G fill:#e6f9ed,stroke:#34c759
+    style I fill:#fff4e5,stroke:#ff9500

@@ -69,6 +69,7 @@ import {
 	turnWaitAskAfterMs,
 } from "./commands/turn.js";
 import { verifyApprovalWithBridgeHead } from "./commands/verify-approval.js";
+import { verifyReport } from "./commands/verify-report.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -141,6 +142,13 @@ Commands:
             [--no-screenshot] [--kind token_report --expected-date YYYY-MM-DD].
             Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN. Always prints a one-line
             JSON envelope to stdout.
+  verify-report   Verify a hosted HTML report. Default is browser-free HTTP/CSP
+            validation; screenshot is opt-in and process-group bounded. Flags:
+            --url <http(s)://url> [--expect <substring>]
+            [--screenshot <absolute.png>] [--shot-window <WxH>]
+            [--timeout-ms <n>] [--shot-timeout-ms <n>]
+            [--chrome-bin <absolute executable>]. Always prints a one-line JSON
+            envelope to stdout.
   feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
             report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
@@ -326,6 +334,9 @@ async function main(): Promise<void> {
 			break;
 		case "publish-report":
 			await runPublishReport(commandArgs);
+			break;
+		case "verify-report":
+			await runVerifyReport(commandArgs);
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
@@ -1746,6 +1757,96 @@ async function runPublishReport(args: string[]): Promise<void> {
 	const { envelope, exitCode } = await publishReport(reportArgs);
 	console.log(JSON.stringify(envelope));
 	process.exit(exitCode);
+}
+
+async function runVerifyReport(args: string[]): Promise<void> {
+	let rawUrl = "";
+	const failEnvelope = (error: string): never => {
+		console.error(`verify-report: ${error}`);
+		console.log(
+			JSON.stringify({
+				ok: false,
+				url: rawUrl,
+				status: null,
+				checks: {
+					http: "skipped",
+					noncePlaceholder: "skipped",
+					scriptNonce: "skipped",
+					expect: "skipped",
+				},
+				warnings: [],
+				info: { hasInlineSvg: false, imgCount: 0 },
+				screenshot: null,
+				error,
+			}),
+		);
+		process.exit(1);
+	};
+
+	let values: {
+		url?: string;
+		expect?: string;
+		screenshot?: string;
+		"shot-window"?: string;
+		"timeout-ms"?: string;
+		"shot-timeout-ms"?: string;
+		"chrome-bin"?: string;
+	};
+	try {
+		values = parseArgs({
+			args,
+			options: {
+				url: { type: "string" },
+				expect: { type: "string" },
+				screenshot: { type: "string" },
+				"shot-window": { type: "string" },
+				"timeout-ms": { type: "string" },
+				"shot-timeout-ms": { type: "string" },
+				"chrome-bin": { type: "string" },
+			},
+			allowPositionals: false,
+		}).values;
+	} catch (error) {
+		return failEnvelope(`invalid arguments: ${(error as Error).message}`);
+	}
+
+	rawUrl = values.url ?? "";
+	if (!values.url) return failEnvelope("--url <http(s)://url> is required");
+	const timeoutMs = parseOptionalNumber(values["timeout-ms"]);
+	if (timeoutMs === null) {
+		return failEnvelope("--timeout-ms must be a number");
+	}
+	const shotTimeoutMs = parseOptionalNumber(values["shot-timeout-ms"]);
+	if (shotTimeoutMs === null) {
+		return failEnvelope("--shot-timeout-ms must be a number");
+	}
+
+	let envelope: Awaited<ReturnType<typeof verifyReport>>["envelope"];
+	let exitCode: number;
+	try {
+		({ envelope, exitCode } = await verifyReport({
+			url: values.url,
+			expect: values.expect,
+			screenshotPath: values.screenshot,
+			shotWindow: values["shot-window"],
+			timeoutMs,
+			shotTimeoutMs,
+			chromeBin: values["chrome-bin"],
+		}));
+	} catch (error) {
+		return failEnvelope(`verification failed: ${(error as Error).message}`);
+	}
+	if (!envelope.ok) console.error(`verify-report: ${envelope.error}`);
+	console.log(JSON.stringify(envelope));
+	process.exit(exitCode);
+}
+
+function parseOptionalNumber(
+	raw: string | undefined,
+): number | undefined | null {
+	if (raw === undefined) return undefined;
+	if (!/^-?\d+(?:\.\d+)?$/.test(raw)) return null;
+	return Number(raw);
 }
 
 async function runVisualCapture(args: string[]): Promise<void> {
