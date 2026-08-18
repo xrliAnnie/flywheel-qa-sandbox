@@ -1,0 +1,10 @@
+flowchart LR
+    A["她批准的 head A<br/>(她看过的内容)"] --> B["机器把 main 合并进来<br/>得到新 head M"]
+    B --> C["证明 1:M 的父提交<br/>恰为 A + main 顶点"]
+    B --> D["证明 2:M 的内容树 ==<br/>机器干净合并的结果<br/>(人手改一行都会露馅)"]
+    C --> E["不可变留痕收据<br/>(链回她的原始批准)"]
+    D --> E
+    E --> F["发车前全量 CI 再验一遍"]
+    F --> G["合入的 = 她批的内容<br/>只是底座位置更新了"]
+    style E fill:#e9f2ff,stroke:#007aff
+    style G fill:#e8f7ee,stroke:#34c759

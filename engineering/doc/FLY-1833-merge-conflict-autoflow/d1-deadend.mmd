@@ -1,0 +1,13 @@
+flowchart LR
+    A["founder 批准 ✅"] --> B["引擎发车 :cool:"]
+    B --> C{"合入失败"}
+    C -->|"代码冲突<br/>(别的 PR 先合入)"| D["land 判死 held"]
+    C -->|"head 没对齐<br/>(差 5 分钟的竞速)"| D
+    C -->|"GitHub 故障 503"| D
+    D --> E["run 判死 held<br/>无任何自动出口"]
+    E --> F["人工手术:terminate<br/>+ 重开新 run + DB 改账"]
+    F --> G["founder 重批整轮<br/>(一夜点了 3 次)"]
+    style D fill:#ffe5e3,stroke:#ff3b30
+    style E fill:#ffe5e3,stroke:#ff3b30
+    style F fill:#fff3e0,stroke:#ff9500
+    style G fill:#fff3e0,stroke:#ff9500

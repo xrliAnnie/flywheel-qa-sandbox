@@ -557,6 +557,86 @@ describe("FLY-1423 stable workflow actor activations", () => {
 });
 
 describe("FLY-1423 durable unified rework request", () => {
+	it("preserves legacy qa and founder rows while adding engine rework authority", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly1833-rework-authority-"));
+		roots.push(root);
+		const dbPath = join(root, "state.db");
+		const original = await createHeavyEngineRun(dbPath);
+		advanceHeavy(original, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-exec",
+			outcome: "design_done",
+			successorExecutionId: "implement-exec",
+		});
+		advanceHeavy(original, {
+			nodeId: "implement",
+			attempt: 1,
+			executionId: "implement-exec",
+			outcome: "implement_done",
+			successorExecutionId: "qa-exec",
+		});
+		const failed = advanceHeavy(original, {
+			nodeId: "qa",
+			attempt: 1,
+			executionId: "qa-exec",
+			outcome: "qa_fail",
+			subjectDigest: "a".repeat(40),
+		});
+		if (!failed.ok || !failed.reworkRequestId) {
+			throw new Error("legacy qa rework request missing");
+		}
+		original.close();
+
+		const raw = new Database(dbPath);
+		raw.pragma("foreign_keys = OFF");
+		raw.exec(`
+			DROP TRIGGER IF EXISTS workflow_rework_request_no_update;
+			DROP TRIGGER IF EXISTS workflow_rework_request_no_delete;
+			CREATE TABLE workflow_rework_request_legacy (
+				request_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				source_event_id TEXT NOT NULL UNIQUE,
+				authority TEXT NOT NULL CHECK (authority IN ('qa','founder')),
+				source_node_id TEXT NOT NULL,
+				source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+				base_revision TEXT NOT NULL,
+				authority_context_json TEXT NOT NULL,
+				authority_context_digest TEXT NOT NULL,
+				founder_feedback_verbatim TEXT,
+				requested_at TEXT NOT NULL,
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			);
+			INSERT INTO workflow_rework_request_legacy
+			SELECT * FROM workflow_rework_request;
+			DROP TABLE workflow_rework_request;
+			ALTER TABLE workflow_rework_request_legacy
+				RENAME TO workflow_rework_request;
+		`);
+		raw.close();
+
+		for (let boot = 0; boot < 2; boot += 1) {
+			const migrated = await StateStore.create(dbPath);
+			try {
+				expect(
+					migrated.getWorkflowReworkRequest(failed.reworkRequestId),
+				).toMatchObject({ authority: "qa" });
+				const migratedRaw = (
+					migrated as unknown as { db: { raw: Database.Database } }
+				).db.raw;
+				const sql = migratedRaw
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_request'",
+					)
+					.get() as { sql: string };
+				expect(sql.sql).toContain("'engine'");
+				expect(migratedRaw.pragma("foreign_key_check")).toEqual([]);
+			} finally {
+				migrated.close();
+			}
+		}
+	});
+
 	it("rebuilds every legacy delivery state with budget columns exactly once", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1638-rework-migration-"));
 		roots.push(root);
@@ -864,7 +944,7 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
-	it("reopens only an engine-owned terminal land hold caused by PR head mismatch", async () => {
+	it("reopens an engine-owned terminal land hold caused by PR head mismatch", async () => {
 		const store = await createHeldTerminalLandRun("pr_head_mismatch");
 		try {
 			const opened = store.openOperatorRework({
@@ -907,7 +987,7 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
-	it("keeps other terminal land hold reasons non-reworkable", async () => {
+	it("reopens every current-generation terminal land hold", async () => {
 		const store = await createHeldTerminalLandRun("merge_failed");
 		try {
 			expect(
@@ -928,7 +1008,11 @@ describe("FLY-1423 durable unified rework request", () => {
 						})),
 					now: "2026-08-10T06:21:00.000Z",
 				}),
-			).toEqual({ ok: false, reason: "run_not_reworkable" });
+			).toMatchObject({
+				ok: true,
+				targetNodeId: "craft",
+				targetAttempt: 2,
+			});
 		} finally {
 			store.close();
 		}

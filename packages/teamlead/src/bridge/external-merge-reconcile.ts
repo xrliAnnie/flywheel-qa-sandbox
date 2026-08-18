@@ -632,12 +632,13 @@ export function createExternalMergeReconciler(
 					.map((node) => node.id);
 				if (producerIds.length > 0) {
 					const producerBindings = current
-						.map((row) =>
-							deps.store.getCurrentWorkflowNodePrBindingForHead(
+						.map((row) => {
+							const authority = deps.store.resolveWorkflowExactHeadAuthority({
 								runId,
-								row.frozen_head_sha,
-							),
-						)
+								headSha: row.frozen_head_sha,
+							});
+							return authority.valid ? authority.binding : undefined;
+						})
 						.filter(
 							(binding) =>
 								binding !== undefined && producerIds.includes(binding.node_id),

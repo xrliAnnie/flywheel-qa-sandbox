@@ -18,7 +18,11 @@ interface WorkflowSourceRow {
 	row_id: number;
 	project: string;
 	source_event_id: string;
-	kind: "founder_approval" | "founder_feedback" | "turn_grant";
+	kind:
+		| "founder_approval"
+		| "founder_feedback"
+		| "turn_grant"
+		| "land_departure_cutoff";
 	payload: string;
 	payload_digest: string;
 	schema_version: number;
@@ -37,10 +41,15 @@ interface WorkflowSourceStore {
 	applyWorkflowSourceEvent(input: {
 		project: string;
 		sourceEventId: string;
-		kind: "founder_approval" | "founder_feedback" | "turn_grant";
+		kind:
+			| "founder_approval"
+			| "founder_feedback"
+			| "turn_grant"
+			| "land_departure_cutoff";
 		payloadJson: string;
 		payloadDigest: string;
 		schemaVersion: number;
+		sourceRowId?: number;
 		at: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { status: "applied" | "replayed" };
@@ -190,6 +199,7 @@ async function drainWorkflowSourceEventsAsync(
 						payloadJson: event.payload,
 						payloadDigest: event.payload_digest,
 						schemaVersion: event.schema_version,
+						sourceRowId: event.row_id,
 						at: event.at,
 						...(alertIdentity ? { alertIdentity } : {}),
 					});

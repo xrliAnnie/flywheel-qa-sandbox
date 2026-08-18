@@ -1125,6 +1125,13 @@ describe("WorkflowEngineDispatcher", () => {
 	it.each([
 		"issue_closeout_incomplete",
 		"ship_workflow_pending",
+		"pr_head_mismatch",
+		"merge_conflict",
+		"external_outage",
+		"policy_alignment_pending",
+		"mergeability_pending",
+		"ambiguous_cool_reconcile_pending",
+		"land_queue_busy",
 		"land_linear_done_disposition_incomplete",
 	])(
 		"durably escalates land partial %s without holding the run",

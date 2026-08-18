@@ -1,0 +1,14 @@
+flowchart TD
+    A["合入前预检 + 失败分类<br/>(冲突 / CI 挂 / GitHub 故障分开认)"] -->|"底座干净可机器合并"| B["Tier-1:机器把 main<br/>合并进 PR 分支"]
+    B --> C["树同一性证明<br/>(数学上证明内容零改动)"]
+    C -->|"证明成立"| D["批准延续 + 不可变留痕<br/>founder 零打扰"]
+    D --> E["自动重新发车 → 合入 ✅"]
+    C -->|"证明不成立"| F
+    A -->|"真冲突,机器合不了"| F["Tier-2:原地唤醒 implement<br/>解冲突(不杀会话)"]
+    F --> G["重走 QA → 自动出新批准卡"]
+    G --> H["founder 一次 ✅"] --> E
+    A -->|"GitHub 故障"| I["暂停等待,不烧重试预算<br/>恢复后自动续"] --> A
+    A -->|"CI 真挂了"| J["held + 告警 Lead<br/>永远有返工门,零手术"]
+    style D fill:#e8f7ee,stroke:#34c759
+    style E fill:#e8f7ee,stroke:#34c759
+    style H fill:#e9f2ff,stroke:#007aff

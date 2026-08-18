@@ -129,7 +129,13 @@ if [ "$MODE" = "verify" ]; then
   fi
   # tmux probe — fail-CLOSED: rc 0 = session exists (fail), rc 1 = no session (ok),
   # anything else = the probe could not run (e.g. missing binary) → not clean.
-  "$TMUX_BIN" -L "$TMUX_SOCKET" has-session -t "$TMUX_SOCKET" >/dev/null 2>&1 && TMUX_RC=0 || TMUX_RC=$?
+  if ! command -v "$TMUX_BIN" >/dev/null 2>&1; then
+    TMUX_RC=127
+  elif "$TMUX_BIN" -L "$TMUX_SOCKET" has-session -t "$TMUX_SOCKET" >/dev/null 2>&1; then
+    TMUX_RC=0
+  else
+    TMUX_RC=$?
+  fi
   case "$TMUX_RC" in
     0) log "VERIFY FAIL: legacy tmux session still alive (-L $TMUX_SOCKET)"; fail=1 ;;
     1) log "verify ok: no legacy tmux session (-L $TMUX_SOCKET)" ;;

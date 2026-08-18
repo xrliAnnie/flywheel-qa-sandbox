@@ -102,6 +102,10 @@ export function voidedWorkflowGateCardText(input: {
 			return `⛔ 已打回作废 — 请勿在本卡操作\n${prior}\n返工完成后会自动出一张新的 ship 卡(绑新 head),请在新卡上批准。`;
 		case "operator_rework":
 			return `⛔ 已作废(工单已被 operator 重开返工)\n${prior}\n返工完成后会出新的 ship 卡。`;
+		case "head_refresh_equivalent":
+			return `✅ 已自动换到内容等价的新 head\n${prior}\n引擎已验证这只是机械 rebase,原批准继续有效,无需再次批准。`;
+		case "land_rework":
+			return `⛔ 已进入冲突返工 — 本卡批准已作废\n${prior}\n引擎会驱动 implement 解冲突并重新通过 QA；随后会出新 ship 卡,需要 founder 重新批准。`;
 		default:
 			return `⛔ 已作废(head 已换代)— 新的 ship 卡见下\n${prior}\n请在最新的 ship 卡上操作。`;
 	}

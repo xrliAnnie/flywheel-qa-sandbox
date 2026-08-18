@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeGateMessageBinding } from "../bridge/approval-signal/gate-message-binding-store.js";
 import {
+	voidedWorkflowGateCardText,
 	voidSupersededWorkflowGateCards,
 	watchVoidedWorkflowGateCards,
 } from "../bridge/workflow-gate-card-lifecycle.js";
@@ -99,6 +100,52 @@ afterEach(() => {
 });
 
 describe("workflow gate card lifecycle", () => {
+	it("explains equivalent head carryover without asking founder to approve a nonexistent card", async () => {
+		const store = await createStore();
+		approvedSupersededPostedCard(store);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_gate_holder SET superseded_reason = 'head_refresh_equivalent' WHERE question_id = ?",
+			["question-1"],
+		);
+		const holder = store.getWorkflowGateHolderByQuestionId("question-1");
+		if (!holder) throw new Error("holder missing");
+
+		const text = voidedWorkflowGateCardText({
+			holder,
+			issueId: "FLY-1772",
+		});
+		expect(text).toContain("内容等价");
+		expect(text).toContain("无需再次批准");
+		expect(text).not.toContain("新的 ship 卡");
+	});
+
+	it("explains that land conflict rework must pass QA and founder approval again", async () => {
+		const store = await createStore();
+		approvedSupersededPostedCard(store);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_gate_holder SET superseded_reason = 'land_rework' WHERE question_id = ?",
+			["question-1"],
+		);
+		const holder = store.getWorkflowGateHolderByQuestionId("question-1");
+		if (!holder) throw new Error("holder missing");
+
+		const text = voidedWorkflowGateCardText({
+			holder,
+			issueId: "FLY-1833",
+		});
+		expect(text).toContain("冲突返工");
+		expect(text).toContain("QA");
+		expect(text).toContain("重新批准");
+	});
+
 	it("records the pre-supersede state and schedules a posted card for voiding", async () => {
 		const store = await createStore();
 		store.ensureWorkflowGateHolder({

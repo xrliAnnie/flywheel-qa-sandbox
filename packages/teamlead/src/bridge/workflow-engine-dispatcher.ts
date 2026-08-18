@@ -107,7 +107,7 @@ interface WorkflowEngineDispatcherOptions {
 	) => WorkflowEngineAlertIdentity;
 	/** FLY-1375: engine-owned land nodes execute here instead of spawning. */
 	landExecutor?: (operationId: string) => Promise<{
-		status: "completed" | "busy" | "partial" | "held";
+		status: "completed" | "busy" | "partial" | "held" | "superseded" | "rework";
 		reason?: string;
 	}>;
 	shipReadyArm?: WorkflowShipReadyArm;
@@ -2154,7 +2154,6 @@ export class WorkflowEngineDispatcher {
 				}
 				return false;
 			};
-			const existingOperation = store.getLandOperationForRun(run.run_id);
 			if (!this.options.landExecutor) {
 				return holdLandRun("engine_land_executor_unavailable");
 			}
@@ -2162,11 +2161,14 @@ export class WorkflowEngineDispatcher {
 				intent.run_id,
 				workflowApprovalGate(snapshot.manifest).node,
 			);
-			const prBinding = holder
-				? store.getCurrentWorkflowNodePrBindingForHead(
-						intent.run_id,
-						holder.head_sha,
-					)
+			const exactHeadAuthority = holder
+				? store.resolveWorkflowExactHeadAuthority({
+						runId: intent.run_id,
+						headSha: holder.head_sha,
+					})
+				: undefined;
+			const prBinding = exactHeadAuthority?.valid
+				? exactHeadAuthority.binding
 				: undefined;
 			const prNumber = prBinding?.pr_number;
 			if (
@@ -2179,6 +2181,17 @@ export class WorkflowEngineDispatcher {
 			}
 			if (prBinding.target_repo_identity !== "__main__") {
 				return holdLandRun("nested_land_unsupported");
+			}
+			const currentOperation = store.getLandOperationForRun(run.run_id);
+			const existingOperation = store.getLandOperationForRun(
+				run.run_id,
+				holder.head_sha,
+			);
+			if (currentOperation && !existingOperation) {
+				return holdLandRun(
+					"engine_land_operation_authority_mismatch",
+					currentOperation.operation_id,
+				);
 			}
 			if (
 				existingOperation &&
@@ -2203,6 +2216,12 @@ export class WorkflowEngineDispatcher {
 					now: this.now().toISOString(),
 				});
 			const execution = await this.options.landExecutor(operation.operation_id);
+			if (execution.status === "superseded" || execution.status === "rework") {
+				// The holder + operation generation swap committed atomically. Leave
+				// the run active; the next reconciliation pass selects either the new
+				// head or the durable rework delivery.
+				return false;
+			}
 			if (execution.status === "held") {
 				return holdLandRun(
 					execution.reason ?? "land_operation_held",
@@ -2211,7 +2230,7 @@ export class WorkflowEngineDispatcher {
 			}
 			if (
 				execution.status === "partial" &&
-				/^(?:ship_workflow_pending|issue_closeout_incomplete|land_linear_done_disposition_incomplete|land_postconditions_incomplete:)/.test(
+				/^(?:ship_workflow_pending|pr_head_mismatch|head_alignment_pending|base_refresh_pending|merge_conflict|merge_conflict_rework_pending:|external_outage|policy_alignment_pending|mergeability_pending|ambiguous_cool_reconcile_pending|land_queue_busy|issue_closeout_incomplete|land_linear_done_disposition_incomplete|land_postconditions_incomplete:)/.test(
 					execution.reason ?? "",
 				)
 			) {

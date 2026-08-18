@@ -84,10 +84,13 @@ export function makeGateAuthorityView(store: StateStore): GateAuthorityView {
 				: holder.gate_node_id;
 		if (run.current_node_id !== expectedCurrentNode) return undefined;
 		const source = store.getSession(holder.source_execution_id);
-		const prBinding = store.getCurrentWorkflowNodePrBindingForHead(
-			holder.run_id,
-			holder.head_sha,
-		);
+		const exactHeadAuthority = store.resolveWorkflowExactHeadAuthority({
+			runId: holder.run_id,
+			headSha: holder.head_sha,
+		});
+		const prBinding = exactHeadAuthority.valid
+			? exactHeadAuthority.binding
+			: undefined;
 		return {
 			kind: "engine",
 			runId: holder.run_id,

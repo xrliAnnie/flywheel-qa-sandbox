@@ -82,9 +82,37 @@ describe("workflow source projector", () => {
 			payloadJson: EVENT.payload,
 			payloadDigest: EVENT.payload_digest,
 			schemaVersion: 1,
+			sourceRowId: EVENT.row_id,
 			at: EVENT.at,
 		});
 		expect(db.close).toHaveBeenCalledOnce();
+	});
+
+	it("forwards the immutable CommDB rowid for a land departure cutoff", async () => {
+		const cutoff = {
+			...EVENT,
+			row_id: 42,
+			source_event_id: "land-departure-cutoff:receipt-1",
+			kind: "land_departure_cutoff" as const,
+		};
+		const { db, store } = harness([cutoff]);
+		store.applyWorkflowSourceEvent.mockReturnValue({
+			kind: "land_departure_cutoff",
+			status: "applied",
+		});
+
+		await drainWorkflowSourceEvents({
+			projects: ["flywheel"],
+			openCommDb: () => db,
+			store,
+		});
+
+		expect(store.applyWorkflowSourceEvent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				kind: "land_departure_cutoff",
+				sourceRowId: 42,
+			}),
+		);
 	});
 
 	it("replays safely when destination commit wins but durable cursor advance fails", async () => {

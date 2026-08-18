@@ -150,6 +150,54 @@ describe("CommDB workflow source events", () => {
 		]);
 	});
 
+	it("appends an idempotent land departure cutoff in the founder-event rowid domain", () => {
+		db.grantTurn("FLY-1833", "exec-land", "land", 100, {
+			project: "flywheel",
+			sourceEventId: "turn:before-cutoff",
+		});
+		const input = {
+			project: "flywheel",
+			carryoverReceiptId: "carryover-receipt-1",
+			operationId: "land-operation-2",
+			ordinal: 1,
+			runId: "run-1833",
+			approvedHead: "a".repeat(40),
+			operationGeneration: 0,
+			at: "2026-08-17T20:00:00.000Z",
+		};
+
+		const first = db.appendLandDepartureCutoff(input);
+		const replay = db.appendLandDepartureCutoff(input);
+		expect(first).toMatchObject({
+			rowId: 2,
+			idempotentReplay: false,
+			sourceEventId: expect.stringMatching(/^land-departure-cutoff:/),
+		});
+		expect(replay).toEqual({ ...first, idempotentReplay: true });
+		expect(db.listWorkflowSourceEventsAfter(1, 10)).toEqual([
+			expect.objectContaining({
+				row_id: 2,
+				kind: "land_departure_cutoff",
+				source_event_id: first.sourceEventId,
+				payload_digest: canonicalSubmissionDigest({
+					schema_version: 1,
+					run_id: input.runId,
+					carryover_receipt_id: input.carryoverReceiptId,
+					operation_id: input.operationId,
+					ordinal: input.ordinal,
+					approved_head: input.approvedHead,
+					operation_generation: input.operationGeneration,
+				}),
+			}),
+		]);
+		expect(() =>
+			db.appendLandDepartureCutoff({
+				...input,
+				approvedHead: "b".repeat(40),
+			}),
+		).toThrow(/conflict|mismatch|poison/i);
+	});
+
 	it("conditionally writes a trusted founder response and its frozen source atomically", () => {
 		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
 			checkpoint: "approve_to_ship",

@@ -33,11 +33,19 @@ describe("land retry policy", () => {
 
 	it.each([
 		"ship_workflow_pending",
+		"pr_head_mismatch",
+		"merge_conflict",
+		"head_moved",
+		"external_outage",
+		"policy_alignment_pending",
+		"mergeability_pending",
+		"land_queue_busy",
 		"workflow_pr_manifest_partial:1; partial delivery must stay flag-off until all declared PRs merge",
 		"founder_projection_pending",
 		"founder_review_missing",
 		"founder_review_not_passed",
 		"founder_review_stale_artifact",
+		"ambiguous_cool_reconcile_pending",
 	])("classifies %s as waiting without spending retry budget", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("waiting");
 	});
@@ -63,8 +71,10 @@ describe("land retry policy", () => {
 	});
 
 	it.each([
-		"pr_head_mismatch",
 		"pr_closed_unmerged",
+		"ship_workflow_failed:tests failed",
+		"policy_blocked",
+		"ambiguous_cool_effect",
 		"ship_workflow_failed:ci_failure",
 		"ship_workflow_failed:head_moved",
 		"ship_workflow_failed:pr_not_open",
@@ -81,6 +91,44 @@ describe("land retry policy", () => {
 		"land_execution_error:land_step_receipt_conflict",
 	])("classifies %s as terminal", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("terminal");
+	});
+
+	it("classifies a cancelled ship workflow as retryable", () => {
+		expect(classifyLandRetryReason("ship_workflow_failed:cancelled")).toBe(
+			"retryable",
+		);
+	});
+
+	it("keeps legacy generic merge failure terminal while retrying classified unknown evidence", () => {
+		expect(classifyLandRetryReason("ship_workflow_failed:failure")).toBe(
+			"terminal",
+		);
+		expect(classifyLandRetryReason("ship_failure_unknown")).toBe("retryable");
+	});
+
+	it("preserves waiting classification through the executor error envelope", () => {
+		expect(
+			classifyLandRetryReason("land_execution_error:external_outage"),
+		).toBe("waiting");
+	});
+
+	it("throttles outage probes for five minutes without spending retry budget", () => {
+		expect(
+			nextLandRetry({
+				classification: "waiting",
+				reason: "external_outage",
+				now: "2026-08-14T23:00:00.000Z",
+				epochKey: "2:cool_triggered",
+				priorRetryCount: 2,
+				priorRetryEpochKey: "1:authority_verified",
+			}),
+		).toEqual({
+			state: "partial",
+			retryCount: 2,
+			retryEpochKey: "1:authority_verified",
+			nextAttemptAt: "2026-08-14T23:05:00.000Z",
+			lastError: "external_outage",
+		});
 	});
 
 	it("backs retryable failures off through a bounded four-hour recovery window", () => {
@@ -207,7 +255,7 @@ describe("land retry policy", () => {
 
 		const terminal = nextLandRetry({
 			classification: "terminal",
-			reason: "pr_head_mismatch",
+			reason: "pr_closed_unmerged",
 			now: "2026-08-14T23:00:00.000Z",
 			epochKey: "2:cool_triggered",
 			priorRetryCount: 2,
@@ -218,7 +266,7 @@ describe("land retry policy", () => {
 			retryCount: 2,
 			retryEpochKey: "1:authority_verified",
 			nextAttemptAt: null,
-			lastError: "pr_head_mismatch",
+			lastError: "pr_closed_unmerged",
 		});
 	});
 });

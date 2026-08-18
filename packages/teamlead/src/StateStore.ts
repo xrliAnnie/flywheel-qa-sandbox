@@ -34,6 +34,10 @@ import {
 } from "./bridge/land-retry-policy.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
+	isOperationalTerminalStatus,
+	OPERATIONAL_TERMINAL_STATUSES,
+} from "./operational-terminal-status.js";
+import {
 	buildWorkflowSelectionDigestBody,
 	type CategorySource,
 	type EngTier,
@@ -52,6 +56,10 @@ import {
 	type WorkflowClaimPredicate,
 	type WorkflowDecisionFamily,
 } from "./workflow-claims.js";
+import {
+	type FounderReworkHint,
+	parseFounderReworkHint,
+} from "./workflow-rework-hint.js";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
@@ -85,14 +93,6 @@ import {
 	workflowTemplateDispatchBlockMessage,
 	workflowTemplateDispatchBlockReason,
 } from "./workflow-template-dispatch.js";
-import {
-	isOperationalTerminalStatus,
-	OPERATIONAL_TERMINAL_STATUSES,
-} from "./operational-terminal-status.js";
-import {
-	parseFounderReworkHint,
-	type FounderReworkHint,
-} from "./workflow-rework-hint.js";
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -1866,9 +1866,7 @@ export class StateStore {
 			journalMode: String(
 				this.db.raw.pragma("journal_mode", { simple: true }),
 			).toLowerCase(),
-			foreignKeys: Number(
-				this.db.raw.pragma("foreign_keys", { simple: true }),
-			),
+			foreignKeys: Number(this.db.raw.pragma("foreign_keys", { simple: true })),
 			busyTimeoutMs: Number(
 				this.db.raw.pragma("busy_timeout", { simple: true }),
 			),
@@ -2156,9 +2154,7 @@ export class StateStore {
 			return;
 		}
 		const holdCount = columns.has("hold_count") ? "hold_count" : "0";
-		const nextRetryAt = columns.has("next_retry_at")
-			? "next_retry_at"
-			: "NULL";
+		const nextRetryAt = columns.has("next_retry_at") ? "next_retry_at" : "NULL";
 		const grantStartedAt = columns.has("grant_started_at")
 			? "grant_started_at"
 			: "NULL";
@@ -2194,6 +2190,52 @@ export class StateStore {
 					  FROM workflow_rework_delivery;
 					DROP TABLE workflow_rework_delivery;
 					ALTER TABLE workflow_rework_delivery_next RENAME TO workflow_rework_delivery;
+				`);
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
+	private migrateWorkflowReworkEngineAuthority(): void {
+		const table = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_rework_request'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!table?.sql || table.sql.includes("'engine'")) return;
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS workflow_rework_request_next;
+					CREATE TABLE workflow_rework_request_next (
+						request_id TEXT PRIMARY KEY,
+						run_id TEXT NOT NULL,
+						source_event_id TEXT NOT NULL UNIQUE,
+						authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine')),
+						source_node_id TEXT NOT NULL,
+						source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
+						base_revision TEXT NOT NULL,
+						authority_context_json TEXT NOT NULL,
+						authority_context_digest TEXT NOT NULL,
+						founder_feedback_verbatim TEXT,
+						requested_at TEXT NOT NULL,
+						FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+					);
+					INSERT INTO workflow_rework_request_next
+						(request_id, run_id, source_event_id, authority, source_node_id,
+						 source_attempt, base_revision, authority_context_json,
+						 authority_context_digest, founder_feedback_verbatim, requested_at)
+					SELECT request_id, run_id, source_event_id, authority, source_node_id,
+					       source_attempt, base_revision, authority_context_json,
+					       authority_context_digest, founder_feedback_verbatim, requested_at
+					  FROM workflow_rework_request;
+					DROP TABLE workflow_rework_request;
+					ALTER TABLE workflow_rework_request_next RENAME TO workflow_rework_request;
 				`);
 			})();
 		} finally {
@@ -4543,8 +4585,7 @@ export class StateStore {
 			leaseExpiresAt:
 				row.lease_expires_at == null ? null : Number(row.lease_expires_at),
 			leaseOwner: row.lease_owner == null ? null : String(row.lease_owner),
-			ambiguousAt:
-				row.ambiguous_at == null ? null : Number(row.ambiguous_at),
+			ambiguousAt: row.ambiguous_at == null ? null : Number(row.ambiguous_at),
 			reconcileNotBefore:
 				row.reconcile_not_before == null
 					? null
@@ -4600,8 +4641,7 @@ export class StateStore {
 			flagName: String(row.flag_name),
 			incarnationCommit: String(row.incarnation_commit),
 			status: row.status as FlagProvenanceRow["status"],
-			sourceIssue:
-				row.source_issue == null ? null : String(row.source_issue),
+			sourceIssue: row.source_issue == null ? null : String(row.source_issue),
 			author: String(row.author),
 			committedAt: Number(row.committed_at),
 			prNumber: row.pr_number == null ? null : Number(row.pr_number),
@@ -4620,7 +4660,9 @@ export class StateStore {
 	getFlagKeepBinding(
 		runToken: string,
 		flagName: string,
-	): { canonical: string; bucket: "candidate" | "orphan_candidate" } | undefined {
+	):
+		| { canonical: string; bucket: "candidate" | "orphan_candidate" }
+		| undefined {
 		const row = this.workflowSelectAll(
 			`SELECT i.canonical, i.bucket
 			   FROM flag_scan_run_items i
@@ -4693,12 +4735,10 @@ export class StateStore {
 			flagName: String(row.flag_name),
 			bucket: row.bucket as FlagScanItemBucket,
 			canonical: row.canonical == null ? null : String(row.canonical),
-			description:
-				row.description == null ? null : String(row.description),
+			description: row.description == null ? null : String(row.description),
 			currentValue:
 				row.current_value == null ? null : String(row.current_value),
-			stableForMs:
-				row.stable_for_ms == null ? null : Number(row.stable_for_ms),
+			stableForMs: row.stable_for_ms == null ? null : Number(row.stable_for_ms),
 			askPhrase: row.ask_phrase == null ? null : String(row.ask_phrase),
 			reason: row.reason == null ? null : String(row.reason),
 			askCount: Number(row.ask_count),
@@ -4808,13 +4848,7 @@ export class StateStore {
 			    SET state = 'claimed', claimed_at = ?, lease_owner = ?, last_error = NULL
 			  WHERE intent_id = ? AND state IN ('pending','ambiguous')
 			    AND (claimed_at IS NULL OR claimed_at + ? <= ?)`,
-			[
-				input.now,
-				input.leaseOwner,
-				input.intentId,
-				input.leaseMs,
-				input.now,
-			],
+			[input.now, input.leaseOwner, input.intentId, input.leaseMs, input.now],
 		);
 		return this.db.getRowsModified() === 1;
 	}
@@ -4876,7 +4910,8 @@ export class StateStore {
 		if (!Number.isSafeInteger(input.now) || input.now < 0) {
 			throw new Error("flag scan commit time must be a non-negative integer");
 		}
-		if (!input.runToken.trim()) throw new Error("flag scan run token is required");
+		if (!input.runToken.trim())
+			throw new Error("flag scan run token is required");
 		if (new Set(input.requiredLegs).size !== input.requiredLegs.length) {
 			throw new Error("flag scan required legs contain a duplicate");
 		}
@@ -4907,8 +4942,7 @@ export class StateStore {
 					item.bucket === "candidate" || item.bucket === "orphan_candidate",
 			).length;
 			const indeterminateCount = input.items.filter(
-				(item) =>
-					item.bucket === "no_clock" || item.bucket === "keep_unbound",
+				(item) => item.bucket === "no_clock" || item.bucket === "keep_unbound",
 			).length;
 			this.db.run(
 				`INSERT INTO flag_scan_runs
@@ -5124,7 +5158,10 @@ export class StateStore {
 		}
 		if (input.leg === "discord") {
 			const dependencies = new Map(
-				this.getFlagScanRunLegs(input.runId).map((leg) => [leg.leg, leg.status]),
+				this.getFlagScanRunLegs(input.runId).map((leg) => [
+					leg.leg,
+					leg.status,
+				]),
 			);
 			if (
 				dependencies.get("linear") !== "done" ||
@@ -5294,13 +5331,7 @@ export class StateStore {
 			    SET status = 'ambiguous', ambiguous_at = ?, reconcile_not_before = ?
 			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
 			    AND lease_expires_at <= ?`,
-			[
-				input.now,
-				input.reconcileNotBefore,
-				input.runId,
-				input.leg,
-				input.now,
-			],
+			[input.now, input.reconcileNotBefore, input.runId, input.leg, input.now],
 		);
 		return this.db.getRowsModified() === 1;
 	}
@@ -6096,8 +6127,7 @@ export class StateStore {
 			);
 		}
 
-		const wasOperationalTerminal =
-			isOperationalTerminalStatus(previousStatus);
+		const wasOperationalTerminal = isOperationalTerminalStatus(previousStatus);
 		const isOperationalTerminal = isOperationalTerminalStatus(nextStatus);
 		if (isOperationalTerminal && !wasOperationalTerminal) {
 			this.db.run(
@@ -6164,12 +6194,7 @@ export class StateStore {
 				    AND status = ?
 				    AND lifecycle_revision = ?
 				    AND terminal_lifecycle_id IS NULL`,
-				[
-					candidate,
-					executionId,
-					observedStatus,
-					observedLifecycleRevision,
-				],
+				[candidate, executionId, observedStatus, observedLifecycleRevision],
 			);
 			changed = this.db.getRowsModified() === 1;
 			const current = this.workflowSelectAll(
@@ -6188,7 +6213,6 @@ export class StateStore {
 		if (changed) this.save();
 		return result;
 	}
-
 
 	/**
 	 * Persist a status change that has already been validated by FSM.
@@ -6828,7 +6852,6 @@ export class StateStore {
 		return rows;
 	}
 
-
 	/**
 	 * FLY-887: the parsed JSON payload of a single event by its event_id, or
 	 * undefined. Backs `recordFixRound`'s insert-or-read: after an `insertEvent`
@@ -6851,7 +6874,6 @@ export class StateStore {
 			return undefined;
 		}
 	}
-
 
 	/**
 	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
@@ -9864,10 +9886,10 @@ export class StateStore {
 	/** FLY-369 / FLY-1709: record a new archive epoch with millisecond precision. */
 	markChatThreadArchived(threadId: string): void {
 		const archivedAt = new Date().toISOString();
-		this.db.run(
-			"UPDATE chat_threads SET archived_at = ? WHERE thread_id = ?",
-			[archivedAt, threadId],
-		);
+		this.db.run("UPDATE chat_threads SET archived_at = ? WHERE thread_id = ?", [
+			archivedAt,
+			threadId,
+		]);
 		// FLY-793 (Step 11): no-op for a main thread; archives a phase thread.
 		this.db.run(
 			"UPDATE phase_chat_threads SET archived_at = ? WHERE thread_id = ?",
@@ -10684,7 +10706,9 @@ export class StateStore {
 		if (!row) return undefined;
 		const remainingSeconds = Math.max(
 			0,
-			Math.ceil((Date.parse(row.paused_until as string) - Date.parse(now)) / 1_000),
+			Math.ceil(
+				(Date.parse(row.paused_until as string) - Date.parse(now)) / 1_000,
+			),
 		);
 		return {
 			active: remainingSeconds > 0,
@@ -10703,10 +10727,7 @@ export class StateStore {
 		return changed > 0;
 	}
 
-	claimAdmissionPauseAlert(input: {
-		now: string;
-		minAgeMs: number;
-	}):
+	claimAdmissionPauseAlert(input: { now: string; minAgeMs: number }):
 		| {
 				paused_until: string;
 				set_by: string;
@@ -11482,8 +11503,7 @@ export class StateStore {
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,
-			terminal_lifecycle_id:
-				(row.terminal_lifecycle_id as string) ?? undefined,
+			terminal_lifecycle_id: (row.terminal_lifecycle_id as string) ?? undefined,
 		};
 	}
 
@@ -11964,7 +11984,11 @@ export class StateStore {
 	}
 
 	getAlertDeliveryReceipt(eventId: string):
-		| { event_id: string; outcome: AlertDeliveryReceiptOutcome; recorded_at: string }
+		| {
+				event_id: string;
+				outcome: AlertDeliveryReceiptOutcome;
+				recorded_at: string;
+		  }
 		| undefined {
 		return this.db.raw
 			.prepare("SELECT * FROM alert_delivery_receipts WHERE event_id = ?")
@@ -12012,7 +12036,10 @@ export class StateStore {
 		now: string;
 		windowMs: number;
 	}): "created" | "pending" | "rate_limited" | "idempotent" {
-		if (!Number.isSafeInteger(input.throughDeadSeq) || input.throughDeadSeq <= 0)
+		if (
+			!Number.isSafeInteger(input.throughDeadSeq) ||
+			input.throughDeadSeq <= 0
+		)
 			throw new Error("throughDeadSeq must be a positive safe integer");
 		if (!Number.isFinite(input.windowMs) || input.windowMs <= 0)
 			throw new Error("windowMs must be positive");
@@ -12036,8 +12063,7 @@ export class StateStore {
 				.get(input.recipient) as { accepted_at: string } | undefined;
 			if (
 				latest?.accepted_at &&
-				Date.parse(input.now) <
-					Date.parse(latest.accepted_at) + input.windowMs
+				Date.parse(input.now) < Date.parse(latest.accepted_at) + input.windowMs
 			) {
 				return "rate_limited";
 			}
@@ -13388,9 +13414,7 @@ export class StateStore {
 					"completed",
 				);
 				this.bumpLifecycleRevision(open.execution_id);
-			} else if (
-				!isStateStoreIrreversibleTerminalForZombie(session?.status)
-			) {
+			} else if (!isStateStoreIrreversibleTerminalForZombie(session?.status)) {
 				continue;
 			}
 			this.appendWorkflowEngineParkSettlementClearTx({
@@ -16521,9 +16545,7 @@ export class StateStore {
 			alertId: (row.alert_id as string | null) ?? null,
 			alertPending: Number(row.alert_pending) === 1,
 			alertDeliveredAtMs:
-				row.alert_delivered_at == null
-					? null
-					: Number(row.alert_delivered_at),
+				row.alert_delivered_at == null ? null : Number(row.alert_delivered_at),
 			createdAtMs: Number(row.created_at),
 			updatedAtMs: Number(row.updated_at),
 		};
@@ -16716,8 +16738,7 @@ export class StateStore {
 			const predecessorExecutionId = predecessor.execution_id as string;
 			const tracked =
 				!ledger ||
-				predecessorExecutionId ===
-					ledger.lastCountedPredecessorExecutionId ||
+				predecessorExecutionId === ledger.lastCountedPredecessorExecutionId ||
 				predecessorExecutionId === ledger.lastSettledSuccessorExecutionId;
 			const startedAtMs = Date.parse(String(predecessor.started_at ?? ""));
 			const endedAtMs = Date.parse(
@@ -16737,8 +16758,7 @@ export class StateStore {
 					ok: false,
 					status: "needs_lead",
 					count: ledger.count,
-					predecessorExecutionId:
-						ledger.lastCountedPredecessorExecutionId,
+					predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 					reason: "needs_lead",
 				};
 				return;
@@ -16794,8 +16814,7 @@ export class StateStore {
 					input.role,
 				)!;
 			} else if (
-				predecessorExecutionId !==
-					ledger.lastCountedPredecessorExecutionId &&
+				predecessorExecutionId !== ledger.lastCountedPredecessorExecutionId &&
 				predecessorExecutionId === ledger.lastSettledSuccessorExecutionId
 			) {
 				const count = ledger.count + 1;
@@ -16845,8 +16864,7 @@ export class StateStore {
 					ok: false,
 					status: "needs_lead",
 					count: ledger.count,
-					predecessorExecutionId:
-						ledger.lastCountedPredecessorExecutionId,
+					predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 					reason: "needs_lead",
 				};
 				return;
@@ -16857,16 +16875,17 @@ export class StateStore {
 					ok: false,
 					status: "reserved",
 					count: ledger.count,
-					predecessorExecutionId:
-						ledger.lastCountedPredecessorExecutionId,
-					ownerExecutionId:
-						ledger.lastSettledSuccessorExecutionId ?? undefined,
+					predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
+					ownerExecutionId: ledger.lastSettledSuccessorExecutionId ?? undefined,
 					reason: "settled_successor_pending_terminal",
 				};
 				return;
 			}
 
-			if (ledger.releaseState === "reserved" && ledger.releaseOwnerExecutionId) {
+			if (
+				ledger.releaseState === "reserved" &&
+				ledger.releaseOwnerExecutionId
+			) {
 				if (ledger.releaseOwnerExecutionId === input.successorExecutionId) {
 					this.recordDoaBackoffParticipant({
 						executionId: input.successorExecutionId,
@@ -16879,8 +16898,7 @@ export class StateStore {
 						ok: true,
 						status: "reserved",
 						count: ledger.count,
-						predecessorExecutionId:
-							ledger.lastCountedPredecessorExecutionId,
+						predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 						ownerExecutionId: input.successorExecutionId,
 						releaseLeaseExpiresAtMs:
 							ledger.releaseLeaseExpiresAtMs ?? input.nowMs + leaseMs,
@@ -16892,8 +16910,7 @@ export class StateStore {
 						ok: false,
 						status: "reserved",
 						count: ledger.count,
-						predecessorExecutionId:
-							ledger.lastCountedPredecessorExecutionId,
+						predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 						ownerExecutionId: ledger.releaseOwnerExecutionId,
 						reason: "bound_owner_fenced",
 					};
@@ -16907,8 +16924,7 @@ export class StateStore {
 						ok: false,
 						status: "reserved",
 						count: ledger.count,
-						predecessorExecutionId:
-							ledger.lastCountedPredecessorExecutionId,
+						predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 						ownerExecutionId: ledger.releaseOwnerExecutionId,
 						reason: "reservation_held",
 					};
@@ -16924,8 +16940,7 @@ export class StateStore {
 					ok: false,
 					status: "backoff",
 					count: ledger.count,
-					predecessorExecutionId:
-						ledger.lastCountedPredecessorExecutionId,
+					predecessorExecutionId: ledger.lastCountedPredecessorExecutionId,
 					reason: "backoff_active",
 					nextEligibleAtMs: ledger.nextEligibleAtMs,
 				};
@@ -17523,6 +17538,8 @@ export class StateStore {
 				  CHECK (subject_kind IN ('git_head','snapshot_digest')),
 				carrier_binding_state TEXT
 				  CHECK (carrier_binding_state IN ('unbound','bound')),
+				approval_origin TEXT
+				  CHECK (approval_origin IS NULL OR approval_origin = 'engine_equivalence_carryover'),
 				card_message_id TEXT,
 				card_post_intent_seq INTEGER NOT NULL DEFAULT 0
 				  CHECK (card_post_intent_seq >= 0),
@@ -17584,6 +17601,7 @@ export class StateStore {
 			"card_post_first_zero_at TEXT",
 			"card_post_first_zero_frontier TEXT",
 			"card_post_legacy_unknown INTEGER NOT NULL DEFAULT 0 CHECK (card_post_legacy_unknown IN (0,1))",
+			"approval_origin TEXT CHECK (approval_origin IS NULL OR approval_origin = 'engine_equivalence_carryover')",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE workflow_gate_holder ADD COLUMN ${column}`);
@@ -17764,6 +17782,97 @@ export class StateStore {
 			END
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_head_carryover_receipt (
+				receipt_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				gate_node_id TEXT NOT NULL,
+				holder_attempt INTEGER NOT NULL CHECK (holder_attempt > 0),
+				predecessor_receipt_id TEXT,
+				from_head TEXT NOT NULL CHECK (length(from_head) = 40),
+				to_head TEXT NOT NULL CHECK (length(to_head) = 40),
+				base_oid TEXT NOT NULL CHECK (length(base_oid) = 40),
+				second_parent_observed TEXT NOT NULL CHECK (length(second_parent_observed) = 40),
+				proof_tree_oid TEXT NOT NULL CHECK (length(proof_tree_oid) = 40),
+				proof_kind TEXT NOT NULL CHECK (proof_kind = 'clean_base_merge_tree_identity'),
+				root_founder_claim_ref TEXT NOT NULL,
+				root_source_receipt_ref TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				UNIQUE (run_id, gate_node_id, root_founder_claim_ref, to_head),
+				UNIQUE (run_id, gate_node_id, from_head, to_head),
+				FOREIGN KEY (predecessor_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt(receipt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_head_carryover_receipt_no_update
+			BEFORE UPDATE ON workflow_head_carryover_receipt
+			BEGIN SELECT RAISE(ABORT, 'workflow_head_carryover_receipt is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_head_carryover_receipt_no_delete
+			BEFORE DELETE ON workflow_head_carryover_receipt
+			BEGIN SELECT RAISE(ABORT, 'workflow_head_carryover_receipt is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_carryover_pr_binding (
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				to_head TEXT NOT NULL CHECK (length(to_head) = 40),
+				carryover_receipt_id TEXT NOT NULL UNIQUE,
+				root_binding_receipt_ref TEXT NOT NULL,
+				PRIMARY KEY (run_id, node_id, attempt, to_head),
+				FOREIGN KEY (carryover_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt(receipt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_carryover_pr_binding_no_update
+			BEFORE UPDATE ON workflow_carryover_pr_binding
+			BEGIN SELECT RAISE(ABORT, 'workflow_carryover_pr_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_carryover_pr_binding_no_delete
+			BEFORE DELETE ON workflow_carryover_pr_binding
+			BEGIN SELECT RAISE(ABORT, 'workflow_carryover_pr_binding is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_gate_holder_carryover_evidence (
+				question_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				gate_node_id TEXT NOT NULL,
+				holder_attempt INTEGER NOT NULL CHECK (holder_attempt > 0),
+				holder_subject_digest TEXT NOT NULL CHECK (length(holder_subject_digest) = 40),
+				carryover_receipt_id TEXT NOT NULL UNIQUE,
+				root_evidence_digest TEXT NOT NULL,
+				FOREIGN KEY (carryover_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt(receipt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_gate_holder_carryover_evidence_no_update
+			BEFORE UPDATE ON workflow_gate_holder_carryover_evidence
+			BEGIN SELECT RAISE(ABORT, 'workflow_gate_holder_carryover_evidence is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TRIGGER IF NOT EXISTS workflow_gate_holder_carryover_evidence_no_delete
+			BEFORE DELETE ON workflow_gate_holder_carryover_evidence
+			BEGIN SELECT RAISE(ABORT, 'workflow_gate_holder_carryover_evidence is immutable'); END
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_carryover_activation (
+				carryover_receipt_id TEXT PRIMARY KEY,
+				state TEXT NOT NULL CHECK (state IN ('pending','departure_authorized','superseded')),
+				source_cutoff_row_id INTEGER,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				first_observed_at TEXT NOT NULL,
+				next_probe_at TEXT,
+				alert_uid TEXT,
+				FOREIGN KEY (carryover_receipt_id)
+				  REFERENCES workflow_head_carryover_receipt(receipt_id)
+			)
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_gate_carrier_rebind_receipt (
 				request_id TEXT PRIMARY KEY,
 				canonical_digest TEXT NOT NULL,
@@ -17845,6 +17954,7 @@ export class StateStore {
 				retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
 				retry_epoch_key TEXT,
 				next_attempt_at TEXT,
+				carryover_receipt_id TEXT,
 				linear_done_disposition TEXT
 				  CHECK (linear_done_disposition IN ('done','canceled_refused','deferred')),
 				linear_done_deferred_at TEXT,
@@ -17877,6 +17987,13 @@ export class StateStore {
 		);
 		this.addColumnIfMissing("land_operation", "retry_epoch_key", "TEXT");
 		this.addColumnIfMissing("land_operation", "next_attempt_at", "TEXT");
+		this.addColumnIfMissing("land_operation", "carryover_receipt_id", "TEXT");
+		this.addColumnIfMissing("land_operation", "superseded_at", "TEXT");
+		this.addColumnIfMissing(
+			"land_operation",
+			"superseded_by_operation_id",
+			"TEXT",
+		);
 		this.addColumnIfMissing(
 			"land_operation",
 			"linear_done_disposition",
@@ -17887,11 +18004,7 @@ export class StateStore {
 			"linear_done_deferred_at",
 			"TEXT",
 		);
-		this.addColumnIfMissing(
-			"land_operation",
-			"linear_done_settled_at",
-			"TEXT",
-		);
+		this.addColumnIfMissing("land_operation", "linear_done_settled_at", "TEXT");
 		this.addColumnIfMissing(
 			"land_operation",
 			"linear_done_last_reason",
@@ -17921,6 +18034,9 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_land_operation_linear_done_work ON land_operation(state, linear_done_disposition, linear_done_next_attempt_at, linear_done_deferred_at)",
 		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_operation_current_work ON land_operation(superseded_at, state, next_attempt_at, lease_expires_at, updated_at)",
+		);
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS land_operation_step (
 				operation_id TEXT NOT NULL,
@@ -17933,6 +18049,92 @@ export class StateStore {
 				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_cool_attempt (
+				operation_id TEXT NOT NULL,
+				ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+				project_name TEXT NOT NULL,
+				repo_identity TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('prepared','sent','terminal','voided')),
+				comment_id TEXT,
+				ship_run_id TEXT,
+				head_sha TEXT NOT NULL CHECK (length(head_sha) = 40),
+				classification TEXT,
+				generation INTEGER NOT NULL CHECK (generation >= 0),
+				prepared_at TEXT NOT NULL,
+				sent_at TEXT,
+				terminal_at TEXT,
+				voided_at TEXT,
+				PRIMARY KEY (operation_id, ordinal),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.db.run(
+			`CREATE INDEX IF NOT EXISTS idx_land_cool_attempt_fence
+			   ON land_cool_attempt(project_name, repo_identity, state, prepared_at)`,
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_cool_adjudication_receipt (
+				receipt_id TEXT PRIMARY KEY,
+				operation_id TEXT NOT NULL,
+				ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+				basis TEXT NOT NULL CHECK (basis IN
+				 ('comment_absence','exact_run_terminal','remote_head_invalidated')),
+				confirming_operation_id TEXT,
+				adjudicated_by TEXT NOT NULL,
+				evidence_json TEXT NOT NULL,
+				evidence_digest TEXT NOT NULL,
+				adjudicated_at TEXT NOT NULL,
+				UNIQUE (operation_id, ordinal),
+				FOREIGN KEY (operation_id, ordinal)
+					REFERENCES land_cool_attempt(operation_id, ordinal),
+				FOREIGN KEY (confirming_operation_id)
+					REFERENCES land_operation(operation_id)
+			)
+		`);
+		for (const trigger of ["update", "delete"]) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS land_cool_adjudication_receipt_no_${trigger}
+				BEFORE ${trigger.toUpperCase()} ON land_cool_adjudication_receipt
+				BEGIN SELECT RAISE(ABORT, 'land_cool_adjudication_receipt is immutable'); END
+			`);
+		}
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_repo_admission (
+				project_name TEXT NOT NULL,
+				repo_identity TEXT NOT NULL,
+				owner_operation_id TEXT NOT NULL,
+				owner_id TEXT NOT NULL,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				lease_expires_at TEXT NOT NULL,
+				PRIMARY KEY (project_name, repo_identity),
+				FOREIGN KEY (owner_operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_recovery_episode (
+				episode_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				root_approval_ref TEXT NOT NULL,
+				kind TEXT NOT NULL
+				  CHECK (kind IN ('alignment','outage','conflict','policy','refire')),
+				scope_key TEXT NOT NULL DEFAULT '',
+				current_operation_id TEXT NOT NULL,
+				first_observed_at TEXT NOT NULL,
+				last_probe_at TEXT NOT NULL,
+				next_probe_at TEXT,
+				state TEXT NOT NULL CHECK (state IN ('open','closed')),
+				closed_reason TEXT,
+				closed_at TEXT,
+				alert_uid TEXT,
+				FOREIGN KEY (current_operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS ux_land_episode_open
+			   ON land_recovery_episode(run_id, root_approval_ref, kind, scope_key)
+			   WHERE state = 'open'`,
+		);
 		// FLY-1861: legacy land rows have no workflow run id, so they cannot use
 		// workflow_alert_outbox's NOT NULL run identity. This parallel outbox is
 		// committed atomically with the held transition and uses the same fenced
@@ -18208,7 +18410,7 @@ export class StateStore {
 				request_id TEXT PRIMARY KEY,
 				run_id TEXT NOT NULL,
 				source_event_id TEXT NOT NULL UNIQUE,
-				authority TEXT NOT NULL CHECK (authority IN ('qa','founder')),
+				authority TEXT NOT NULL CHECK (authority IN ('qa','founder','engine')),
 				source_node_id TEXT NOT NULL,
 				source_attempt INTEGER NOT NULL CHECK (source_attempt > 0),
 				base_revision TEXT NOT NULL,
@@ -18219,6 +18421,7 @@ export class StateStore {
 				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
 			)
 		`);
+		this.migrateWorkflowReworkEngineAuthority();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_rework_route_revision (
 				request_id TEXT NOT NULL,
@@ -18761,11 +18964,13 @@ export class StateStore {
 				source_event_id TEXT NOT NULL,
 				payload_digest TEXT NOT NULL,
 				claim_id INTEGER,
+				source_row_id INTEGER,
 				applied_at TEXT NOT NULL,
 				PRIMARY KEY (project, source_event_id),
 				FOREIGN KEY (claim_id) REFERENCES workflow_claims(id)
 			)
 		`);
+		this.addColumnIfMissing("workflow_source_receipt", "source_row_id", "INTEGER");
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_source_deadletter (
 				project TEXT NOT NULL,
@@ -19009,7 +19214,9 @@ export class StateStore {
 			this.db.run("RELEASE SAVEPOINT workflow_resume_evidence");
 			if (
 				!(error instanceof WorkflowEventUidConflictError) &&
-				!(error instanceof Error && error.message.startsWith("workflow_resume_"))
+				!(
+					error instanceof Error && error.message.startsWith("workflow_resume_")
+				)
 			) {
 				throw error;
 			}
@@ -19076,9 +19283,7 @@ export class StateStore {
 				canonicalSubmissionDigest(input.receiptPayload),
 				input.source.carrier_kind,
 				input.source.anchor_ref,
-				input.source.carrier_kind === "git_checkpoint"
-					? anchorCommit
-					: null,
+				input.source.carrier_kind === "git_checkpoint" ? anchorCommit : null,
 				input.source.repo_identity,
 				input.source.snapshot_digest,
 				input.source.resolved_node_digest,
@@ -20278,7 +20483,7 @@ export class StateStore {
 									},
 								}
 							: {}),
-				})
+					})
 				: undefined;
 		const engineSnapshot =
 			applied.manifest.schema_version === 1 && input.startReservation
@@ -20823,10 +21028,7 @@ export class StateStore {
 			    )
 			  ORDER BY a.created_at, a.attachment_id
 			  LIMIT ?`,
-			[
-				...terminalStatuses,
-				Math.max(1, Math.min(100, Math.trunc(limit))),
-			],
+			[...terminalStatuses, Math.max(1, Math.min(100, Math.trunc(limit)))],
 		);
 		return rows.map((row) => ({
 			runId: row.run_id as string,
@@ -20911,17 +21113,13 @@ export class StateStore {
 			run_id: row.run_id as string,
 			action_kind: row.action_kind as WorkflowResumeActionKind,
 			source_attachment_id: row.source_attachment_id as string,
-			result_attachment_id:
-				(row.result_attachment_id as string | null) ?? null,
+			result_attachment_id: (row.result_attachment_id as string | null) ?? null,
 			target_node_id: row.target_node_id as string,
 			target_attempt: Number(row.target_attempt),
-			new_attempt:
-				row.new_attempt == null ? null : Number(row.new_attempt),
+			new_attempt: row.new_attempt == null ? null : Number(row.new_attempt),
 			new_execution_id: (row.new_execution_id as string | null) ?? null,
 			redrive_generation:
-				row.redrive_generation == null
-					? null
-					: Number(row.redrive_generation),
+				row.redrive_generation == null ? null : Number(row.redrive_generation),
 			frozen_s3_body: (row.frozen_s3_body as string | null) ?? null,
 			requested_entry: (row.requested_entry as string | null) ?? null,
 			verdict: row.verdict as string,
@@ -20971,10 +21169,7 @@ export class StateStore {
 		response: Record<string, unknown>;
 		now: string;
 	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
-		if (
-			!input.admissionKey ||
-			!StateStore.workflowFiniteTimestamp(input.now)
-		) {
+		if (!input.admissionKey || !StateStore.workflowFiniteTimestamp(input.now)) {
 			return { ok: false, reason: "invalid_input" };
 		}
 		const responseJson = JSON.stringify(input.response);
@@ -21010,15 +21205,14 @@ export class StateStore {
 							return (
 								payload?.sourceKind === "frozen_replay" &&
 								payload.admissionKey === admission.admission_key &&
-								payload.sourceAttachmentId ===
-									admission.source_attachment_id &&
+								payload.sourceAttachmentId === admission.source_attachment_id &&
 								payload.body === admission.frozen_s3_body
 							);
 						})
 					: events.some(
 							(event) =>
 								event.event_uid ===
-								`resume_redrive_ack:${admission.admission_key}` &&
+									`resume_redrive_ack:${admission.admission_key}` &&
 								event.kind === "resume_redrive_ack",
 						);
 			if (!evidencePresent) {
@@ -21050,9 +21244,7 @@ export class StateStore {
 			[Math.max(1, Math.min(100, Math.trunc(limit)))],
 		)
 			.map((row) => this.getWorkflowResumeAdmission(String(row.admission_key)))
-			.filter(
-				(row): row is WorkflowResumeAdmissionRow => row !== undefined,
-			);
+			.filter((row): row is WorkflowResumeAdmissionRow => row !== undefined);
 	}
 
 	ackWorkflowResumeRedrive(input: {
@@ -21075,7 +21267,8 @@ export class StateStore {
 		};
 		this.db.transaction(() => {
 			const admission = this.getWorkflowResumeAdmission(input.admissionKey);
-			if (!admission || admission.action_kind !== "reconcile_state_only") return;
+			if (!admission || admission.action_kind !== "reconcile_state_only")
+				return;
 			const eventUid = `resume_redrive_ack:${input.admissionKey}`;
 			if (
 				this.listWorkflowRunEvents(admission.run_id).some(
@@ -21294,8 +21487,7 @@ export class StateStore {
 						runId: input.runId,
 						nodeId: input.targetNodeId,
 						attempt: input.targetAttempt,
-						sourceExecutionId:
-							migrationBindingPayload.sourceExecutionId,
+						sourceExecutionId: migrationBindingPayload.sourceExecutionId,
 						newExecutionId: oldExecutionId,
 						launchOrdinal: Number(migrationBindingPayload.launchOrdinal),
 					});
@@ -21306,8 +21498,7 @@ export class StateStore {
 					this.getWorkflowActor(input.newExecutionId) ||
 					input.frozenBody === undefined ||
 					!effectiveAnchor ||
-					input.effectiveAnchor?.toLowerCase() !==
-						effectiveAnchor.toLowerCase()
+					input.effectiveAnchor?.toLowerCase() !== effectiveAnchor.toLowerCase()
 				) {
 					result = { ok: false, reason: "carrier_action_mismatch" };
 					return;
@@ -21318,7 +21509,7 @@ export class StateStore {
 				}
 				if (
 					createHash("sha256").update(input.frozenBody).digest("hex") !==
-						input.observedBodyDigest
+					input.observedBodyDigest
 				) {
 					result = { ok: false, reason: "envelope_changed:issue_body" };
 					return;
@@ -21637,7 +21828,10 @@ export class StateStore {
 		ref?: string;
 	}): WorkflowResumeCheckpointPruneRow[] {
 		if (!StateStore.workflowFiniteTimestamp(input.now)) return [];
-		const filters = ["a.carrier_kind = 'git_checkpoint'", "a.anchor_ref IS NOT NULL"];
+		const filters = [
+			"a.carrier_kind = 'git_checkpoint'",
+			"a.anchor_ref IS NOT NULL",
+		];
 		const params: unknown[] = [];
 		if (input.projectName !== undefined) {
 			filters.push("r.project_name = ?");
@@ -21736,7 +21930,10 @@ export class StateStore {
 		if (!attachment) return { ok: false, reason: "attachment_missing" };
 		let envelope: Record<string, unknown>;
 		try {
-			envelope = JSON.parse(attachment.envelope_json) as Record<string, unknown>;
+			envelope = JSON.parse(attachment.envelope_json) as Record<
+				string,
+				unknown
+			>;
 		} catch {
 			return { ok: false, reason: "receipt_digest_mismatch" };
 		}
@@ -21751,7 +21948,10 @@ export class StateStore {
 		if (!baseline) return { ok: false, reason: "receipt_missing" };
 		let payload: Record<string, unknown>;
 		try {
-			payload = JSON.parse(baseline.payload as string) as Record<string, unknown>;
+			payload = JSON.parse(baseline.payload as string) as Record<
+				string,
+				unknown
+			>;
 		} catch {
 			return { ok: false, reason: "receipt_digest_mismatch" };
 		}
@@ -21818,9 +22018,7 @@ export class StateStore {
 			return { ok: false, reason: "state_conflict" };
 		}
 		const attemptCount = state.attempt_count + 1;
-		const delayMinutes = [1, 2, 4, 8, 8][
-			Math.min(attemptCount - 1, 4)
-		]!;
+		const delayMinutes = [1, 2, 4, 8, 8][Math.min(attemptCount - 1, 4)]!;
 		const nextAttemptAt = new Date(
 			Date.parse(input.now) + delayMinutes * 60_000,
 		).toISOString();
@@ -21901,8 +22099,7 @@ export class StateStore {
 					if (
 						state.state !== input.authority.expectedState ||
 						state.attempt_count !== input.authority.expectedAttemptCount ||
-						state.next_attempt_at !==
-							input.authority.expectedNextAttemptAt ||
+						state.next_attempt_at !== input.authority.expectedNextAttemptAt ||
 						state.attempt_count < 5
 					) {
 						result = { ok: false, reason: "authority_mismatch" };
@@ -21918,7 +22115,9 @@ export class StateStore {
 					const binding = this.getWorkflowExecutionBinding(
 						input.authority.executionId,
 					);
-					const owner = this.getWorkflowLaunchOwner(input.authority.executionId);
+					const owner = this.getWorkflowLaunchOwner(
+						input.authority.executionId,
+					);
 					if (
 						!binding ||
 						binding.activation_id !== input.authority.activationId ||
@@ -22053,7 +22252,8 @@ export class StateStore {
 						attachment.carrier_kind !== "git_checkpoint" ||
 						state.state !== "ref_prepared" ||
 						!input.action.storeLocator.trim() ||
-						(storeLocator !== null && storeLocator !== input.action.storeLocator)
+						(storeLocator !== null &&
+							storeLocator !== input.action.storeLocator)
 					) {
 						result = { ok: false, reason: "state_conflict" };
 						return;
@@ -22518,7 +22718,9 @@ export class StateStore {
 				result = { ok: false, reason: "launch_cancelled" };
 				return;
 			}
-			const activation = this.resolveCurrentWorkflowActivation(input.executionId);
+			const activation = this.resolveCurrentWorkflowActivation(
+				input.executionId,
+			);
 			if (
 				activation.kind !== "current" ||
 				!this.assertCurrentWorkflowWriterTx({
@@ -22699,7 +22901,10 @@ export class StateStore {
 		if (!prepared || prepared.kind !== "issue_delivery_prepared") return;
 		let payload: Record<string, unknown>;
 		try {
-			payload = JSON.parse(prepared.payload as string) as Record<string, unknown>;
+			payload = JSON.parse(prepared.payload as string) as Record<
+				string,
+				unknown
+			>;
 		} catch {
 			return;
 		}
@@ -22793,7 +22998,10 @@ export class StateStore {
 		const baselineDigest = baselinePayload?.bodyDigest;
 		const deliveredDigest = payload.bodyDigest;
 		let reason: WorkflowResumeFailureReason | undefined;
-		if (sourceKind === "fallback" || baselinePayload?.outcome === "unavailable") {
+		if (
+			sourceKind === "fallback" ||
+			baselinePayload?.outcome === "unavailable"
+		) {
 			reason = "input_fallback";
 		} else if (
 			baseline?.kind !== "issue_input_baseline" ||
@@ -22825,13 +23033,7 @@ export class StateStore {
 			`UPDATE workflow_resume_attachment_state
 			    SET state = 'invalid', invalid_reason = ?, revision = ?, updated_at = ?
 			  WHERE attachment_id = ? AND revision = ? AND state <> 'invalid'`,
-			[
-				reason,
-				revision,
-				now,
-				attachment.attachment_id,
-				state.revision,
-			],
+			[reason, revision, now, attachment.attachment_id, state.revision],
 		);
 		if (this.db.getRowsModified() !== 1) return;
 		this.appendWorkflowRunEventCheckedTx({
@@ -24238,9 +24440,7 @@ export class StateStore {
 	 * uncommitted generation may revoke the lost ticket and create one replacement.
 	 */
 	private workflowCredentialRotationExpiryTx(
-		table:
-			| "workflow_output_credential"
-			| "workflow_submission_credential",
+		table: "workflow_output_credential" | "workflow_submission_credential",
 		executionId: string,
 		now: string,
 		requestedExpiresAt: string,
@@ -24931,7 +25131,9 @@ export class StateStore {
 				result = { ok: false, reason: "launch_cancelled" };
 				return;
 			}
-			const activation = this.resolveCurrentWorkflowActivation(input.executionId);
+			const activation = this.resolveCurrentWorkflowActivation(
+				input.executionId,
+			);
 			if (
 				activation.kind !== "current" ||
 				!this.assertCurrentWorkflowWriterTx({
@@ -25271,13 +25473,7 @@ export class StateStore {
 				`INSERT INTO founder_review_card_binding
 				   (question_id, message_id, run_id, artifact_digest, created_at)
 				 VALUES (?, ?, ?, ?, ?)`,
-				[
-					questionId,
-					messageId,
-					runId,
-					input.artifactDigest,
-					input.createdAt,
-				],
+				[questionId, messageId, runId, input.artifactDigest, input.createdAt],
 			);
 			outcome.status = "inserted";
 		});
@@ -25391,7 +25587,7 @@ export class StateStore {
 			request_id: row.request_id as string,
 			run_id: row.run_id as string,
 			source_event_id: row.source_event_id as string,
-			authority: row.authority as "qa" | "founder",
+			authority: row.authority as "qa" | "founder" | "engine",
 			source_node_id: row.source_node_id as string,
 			source_attempt: Number(row.source_attempt),
 			base_revision: row.base_revision as string,
@@ -25401,6 +25597,16 @@ export class StateStore {
 				(row.founder_feedback_verbatim as string | null) ?? null,
 			requested_at: row.requested_at as string,
 		};
+	}
+
+	listWorkflowReworkRequests(runId: string): WorkflowReworkRequestRow[] {
+		return this.workflowSelectAll(
+			`SELECT request_id FROM workflow_rework_request
+			  WHERE run_id = ? ORDER BY requested_at, request_id`,
+			[runId],
+		)
+			.map((row) => this.getWorkflowReworkRequest(String(row.request_id)))
+			.filter((row): row is WorkflowReworkRequestRow => row !== undefined);
 	}
 
 	getWorkflowActivationTurn(
@@ -25763,12 +25969,7 @@ export class StateStore {
 					        next_retry_at = NULL, last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND route_revision = ? AND state = 'held'
 					    AND last_error = 'persisted_target_missing'`,
-					[
-						input.reason,
-						input.observedAt,
-						input.requestId,
-						route.revision,
-					],
+					[input.reason, input.observedAt, input.requestId, route.revision],
 				);
 				if (this.db.getRowsModified() !== 1) {
 					throw new Error("workflow_rework_pane_loss_delivery_cas_failed");
@@ -25932,9 +26133,9 @@ export class StateStore {
 					newExecutionId: input.newExecutionId,
 					launchOrdinal,
 					routeRevision: nextRevision,
-						reason: input.reason,
-						heldPaneLossRecovery,
-					},
+					reason: input.reason,
+					heldPaneLossRecovery,
+				},
 			});
 			const resumeTransitionUid = `rework_replacement:${input.requestId}`;
 			const resumeReceipt = {
@@ -25945,7 +26146,9 @@ export class StateStore {
 				routeRevision: nextRevision,
 			};
 			let resumeNode:
-				| ReturnType<typeof parseWorkflowRunSnapshot>["resolved"]["nodes"][number]
+				| ReturnType<
+						typeof parseWorkflowRunSnapshot
+				  >["resolved"]["nodes"][number]
 				| undefined;
 			let resumeSnapshotDigest: string | undefined;
 			try {
@@ -25991,8 +26194,7 @@ export class StateStore {
 							receiptPayload: resumeReceipt,
 							carrierKind: "git_checkpoint",
 							anchorCommit: request.base_revision,
-							repoIdentity:
-								sourceAttachment?.repo_identity ?? run.project_name,
+							repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
 							snapshotDigest: resumeSnapshotDigest,
 							resolvedNodeDigest: canonicalSubmissionDigest(resumeNode),
 							reworkAuthorityDigest: request.authority_context_digest,
@@ -26090,14 +26292,17 @@ export class StateStore {
 						: typeof payload.at === "string"
 							? payload.at
 							: undefined;
-				return value && StateStore.workflowFiniteTimestamp(value) ? [value] : [];
+				return value && StateStore.workflowFiniteTimestamp(value)
+					? [value]
+					: [];
 			} catch {
 				return [];
 			}
 		});
 		const firstAlertedAt =
-			priorTimes.sort((left, right) => Date.parse(left) - Date.parse(right))[0] ??
-			input.now;
+			priorTimes.sort(
+				(left, right) => Date.parse(left) - Date.parse(right),
+			)[0] ?? input.now;
 		const durationMinutes = Math.max(
 			0,
 			Math.floor((Date.parse(input.now) - Date.parse(firstAlertedAt)) / 60_000),
@@ -26147,10 +26352,7 @@ export class StateStore {
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 	}): { ok: true; updated: boolean } | { ok: false; reason: string } {
-		if (
-			!input.executionId ||
-			!StateStore.workflowFiniteTimestamp(input.now)
-		) {
+		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
 			return { ok: false, reason: "invalid_rework_replacement_launch" };
 		}
 		const binding = this.getWorkflowExecutionBinding(input.executionId);
@@ -26658,8 +26860,7 @@ export class StateStore {
 		const terminalValid =
 			input.terminal === undefined ||
 			Boolean(input.terminal.status.trim() && input.terminal.cause.trim());
-		const handoffRequested =
-			input.onExhausted === "handoff_held_pane_loss";
+		const handoffRequested = input.onExhausted === "handoff_held_pane_loss";
 		if (
 			!input.requestId ||
 			!input.ownerId ||
@@ -26835,8 +27036,9 @@ export class StateStore {
 								target.execution_id === route.preferred_actor_execution_id
 							? "rollback_pre_admission"
 							: activation &&
-								(target?.state === "admitted" || target?.state === "pending") &&
-								target.execution_id === route.preferred_actor_execution_id
+									(target?.state === "admitted" ||
+										target?.state === "pending") &&
+									target.execution_id === route.preferred_actor_execution_id
 								? "abandon_ungranted_activation"
 								: "retain_ambiguous_grant";
 				if (cleanupDisposition !== "retain_ambiguous_grant") {
@@ -26867,7 +27069,9 @@ export class StateStore {
 						],
 					);
 					if (this.db.getRowsModified() !== 1) {
-						throw new Error("workflow_rework_budget_reservation_cleanup_cas_failed");
+						throw new Error(
+							"workflow_rework_budget_reservation_cleanup_cas_failed",
+						);
 					}
 					this.db.run(
 						`UPDATE workflow_rework_verification_path
@@ -26974,13 +27178,7 @@ export class StateStore {
 			    SET grant_started_at = COALESCE(grant_started_at, ?), updated_at = ?
 			  WHERE request_id = ? AND owner_id = ? AND generation = ?
 			    AND state IN ('pending','turn_granted')`,
-			[
-				input.now,
-				input.now,
-				input.requestId,
-				input.ownerId,
-				input.generation,
-			],
+			[input.now, input.now, input.requestId, input.ownerId, input.generation],
 		);
 		if (this.db.getRowsModified() !== 1) {
 			return { ok: false, reason: "stale_delivery_owner" };
@@ -27153,10 +27351,7 @@ export class StateStore {
 				])) ||
 			(input.targetNodeId === "qa" &&
 				sameSequence(input.invalidationScope, ["qa"]) &&
-				sameSequence(input.verificationPolicy, [
-					"qa_retest",
-					"founder_gate",
-				]));
+				sameSequence(input.verificationPolicy, ["qa_retest", "founder_gate"]));
 		if (
 			!input.requestId ||
 			!input.preferredActorExecutionId ||
@@ -27365,9 +27560,7 @@ export class StateStore {
 						executionId: input.preferredActorExecutionId,
 						payload: resumeReceipt,
 					});
-					let snapshot:
-						| ReturnType<typeof parseWorkflowRunSnapshot>
-						| undefined;
+					let snapshot: ReturnType<typeof parseWorkflowRunSnapshot> | undefined;
 					try {
 						snapshot = run.snapshot
 							? parseWorkflowRunSnapshot(run.snapshot)
@@ -27391,8 +27584,7 @@ export class StateStore {
 							receiptPayload: resumeReceipt,
 							carrierKind: "git_checkpoint",
 							anchorCommit: request.base_revision,
-							repoIdentity:
-								sourceAttachment?.repo_identity ?? run.project_name,
+							repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
 							snapshotDigest: snapshot.snapshot_digest,
 							resolvedNodeDigest: canonicalSubmissionDigest(targetNode),
 							reworkAuthorityDigest: request.authority_context_digest,
@@ -28593,13 +28785,7 @@ export class StateStore {
 				        next_retry_at = NULL, last_error = ?, updated_at = ?
 				  WHERE question_id = ? AND state = 'held' AND generation = ?
 				    AND last_error = ?`,
-				[
-					input.reason,
-					input.now,
-					questionId,
-					generation,
-					delivery.last_error,
-				],
+				[input.reason, input.now, questionId, generation, delivery.last_error],
 			);
 			if (this.db.getRowsModified() !== 1) continue;
 			revived += 1;
@@ -28644,13 +28830,7 @@ export class StateStore {
 				    SET state = 'completed', owner_id = NULL, lease_expires_at = NULL,
 				        next_retry_at = NULL, last_error = ?, updated_at = ?
 				  WHERE question_id = ? AND generation = ? AND state = ?`,
-				[
-					input.reason,
-					input.now,
-					questionId,
-					generation,
-					previousState,
-				],
+				[input.reason, input.now, questionId, generation, previousState],
 			);
 			if (this.db.getRowsModified() !== 1) continue;
 			cancelled += 1;
@@ -28743,8 +28923,7 @@ export class StateStore {
 			if (prior) {
 				if (
 					prior.mode === input.mode &&
-					(prior.stage === "committed" ||
-						prior.reason === input.reason.trim())
+					(prior.stage === "committed" || prior.reason === input.reason.trim())
 				) {
 					result = {
 						ok: true,
@@ -28777,9 +28956,7 @@ export class StateStore {
 		executionId: string;
 		stage: "committed" | "failed";
 		now: string;
-	}):
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string } {
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		if (!input.executionId || !StateStore.workflowFiniteTimestamp(input.now)) {
 			return { ok: false, reason: "invalid_close_intent_finalization" };
 		}
@@ -28813,10 +28990,7 @@ export class StateStore {
 		const nowMs = Date.parse(input.now);
 		if (!Number.isFinite(nowMs)) return true;
 		const preparedMs = Date.parse(intent.updated_at);
-		if (
-			Number.isFinite(preparedMs) &&
-			nowMs - preparedMs < 10 * 60_000
-		) {
+		if (Number.isFinite(preparedMs) && nowMs - preparedMs < 10 * 60_000) {
 			return true;
 		}
 		let changed = false;
@@ -29009,12 +29183,9 @@ export class StateStore {
 				receipt_key: String(row.receipt_key),
 				run_id: String(row.run_id),
 				state: row.state as WorkflowRunCollectReceiptRow["state"],
-				owner_id:
-					typeof row.owner_id === "string" ? row.owner_id : null,
+				owner_id: typeof row.owner_id === "string" ? row.owner_id : null,
 				owner_generation:
-					row.owner_generation == null
-						? null
-						: Number(row.owner_generation),
+					row.owner_generation == null ? null : Number(row.owner_generation),
 				lease_expires_at:
 					typeof row.lease_expires_at === "string"
 						? row.lease_expires_at
@@ -29048,9 +29219,7 @@ export class StateStore {
 			[bounded],
 		)
 			.map((row) => this.workflowRunCollectReceipt(row))
-			.filter(
-				(row): row is WorkflowRunCollectReceiptRow => row !== undefined,
-			);
+			.filter((row): row is WorkflowRunCollectReceiptRow => row !== undefined);
 	}
 
 	private liveRunAttributedExecutionsTx(runId: string): string[] {
@@ -29194,7 +29363,11 @@ export class StateStore {
 			}
 			const nowMs = Date.parse(input.now);
 			const leaseMs = Date.parse(input.leaseExpiresAt);
-			if (!Number.isFinite(nowMs) || !Number.isFinite(leaseMs) || leaseMs <= nowMs) {
+			if (
+				!Number.isFinite(nowMs) ||
+				!Number.isFinite(leaseMs) ||
+				leaseMs <= nowMs
+			) {
 				status = "busy";
 				return;
 			}
@@ -29836,6 +30009,350 @@ export class StateStore {
 		});
 	}
 
+	openEngineLandConflictRework(input: {
+		runId: string;
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		proofStep: string;
+		reason: "merge_conflict_requires_rework";
+		now: string;
+	}): WorkflowLandConflictReworkResult {
+		if (
+			!input.runId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!/^base_refresh_(?:prepared|requested)$|^alignment_observed:[0-9a-f]{40}$/.test(
+				input.proofStep,
+			) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_engine_land_rework" };
+		}
+		const sourceEventId = `engine_land_rework:${canonicalSubmissionDigest({
+			runId: input.runId,
+			operationId: input.operationId,
+			generation: input.generation,
+			proofStep: input.proofStep,
+			reason: input.reason,
+		})}`;
+		let result: WorkflowLandConflictReworkResult = {
+			ok: false,
+			reason: "engine_land_rework_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const replay = this.workflowSelectAll(
+				`SELECT payload FROM workflow_run_event
+				  WHERE run_id = ? AND event_uid = ? AND kind = 'engine_land_rework_requested'`,
+				[input.runId, sourceEventId],
+			)[0];
+			if (replay) {
+				const payload = JSON.parse(String(replay.payload)) as Record<
+					string,
+					unknown
+				>;
+				if (
+					typeof payload.requestId === "string" &&
+					typeof payload.targetAttempt === "number" &&
+					typeof payload.preferredActorExecutionId === "string"
+				) {
+					result = {
+						ok: true,
+						idempotentReplay: true,
+						requestId: payload.requestId,
+						targetNodeId: "implement",
+						targetAttempt: payload.targetAttempt,
+						preferredActorExecutionId: payload.preferredActorExecutionId,
+					};
+				}
+				return;
+			}
+			const priorEngineCycles = Number(
+				this.workflowSelectAll(
+					`SELECT COUNT(*) AS count FROM workflow_rework_request
+					  WHERE run_id = ? AND authority = 'engine'`,
+					[input.runId],
+				)[0]?.count ?? 0,
+			);
+			if (priorEngineCycles >= 3) {
+				result = { ok: false, reason: "engine_land_rework_cycle_limit" };
+				return;
+			}
+
+			const run = this.getWorkflowRun(input.runId);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				!run?.snapshot ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				operation.superseded_at !== null ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			const proof = this.workflowSelectAll(
+				`SELECT receipt_digest, receipt_json, generation FROM land_operation_step
+				  WHERE operation_id = ? AND step = ? AND generation <= ?
+				  ORDER BY generation DESC LIMIT 1`,
+				[input.operationId, input.proofStep, input.generation],
+			)[0];
+			if (!proof) {
+				result = { ok: false, reason: "engine_land_rework_proof_missing" };
+				return;
+			}
+			let snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				snapshot = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "engine_land_rework_snapshot_invalid" };
+				return;
+			}
+			if (
+				!isWorkflowManifestLand(snapshot.manifest) ||
+				run.current_node_id !== workflowTerminalNode(snapshot.manifest)
+			) {
+				return;
+			}
+			const target = snapshot.resolved.nodes.find(
+				(node) => node.id === "implement",
+			);
+			if (!target?.dispatch || target.type === "gate") {
+				result = { ok: false, reason: "engine_land_rework_target_invalid" };
+				return;
+			}
+			const openDelivery = this.workflowSelectAll(
+				`SELECT d.request_id FROM workflow_rework_delivery d
+				  JOIN workflow_rework_request r ON r.request_id = d.request_id
+				 WHERE r.run_id = ?
+				   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+				 LIMIT 1`,
+				[input.runId],
+			)[0];
+			if (openDelivery) {
+				result = { ok: false, reason: "engine_land_rework_already_open" };
+				return;
+			}
+			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
+			const preferredActorExecutionId = [...targetAttempts]
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			if (!preferredActorExecutionId) {
+				result = { ok: false, reason: "engine_land_rework_actor_missing" };
+				return;
+			}
+			const targetAttempt =
+				targetAttempts.reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) + 1;
+			const sourceNodeId = workflowTerminalNode(snapshot.manifest);
+			const sourceAttempt =
+				this.listWorkflowRunNodes(input.runId, sourceNodeId).reduce(
+					(max, candidate) => Math.max(max, candidate.attempt),
+					0,
+				) || 1;
+			const invalidationScope = ["implement", "qa"];
+			const verificationPolicy = ["code_review", "qa_retest", "founder_gate"];
+			const authorityContext = {
+				authority: "engine",
+				sourceEventId,
+				operationId: input.operationId,
+				operationGeneration: input.generation,
+				proofStep: input.proofStep,
+				proofReceiptGeneration: Number(proof.generation),
+				proofReceiptDigest: String(proof.receipt_digest),
+				proofReceipt: JSON.parse(String(proof.receipt_json)),
+				reason: input.reason,
+				targetNodeId: target.id,
+				targetAttempt,
+			};
+			const authorityContextJson = JSON.stringify(authorityContext);
+			const authorityContextDigest =
+				canonicalSubmissionDigest(authorityContext);
+			const requestId = `rework:${canonicalSubmissionDigest({
+				runId: input.runId,
+				sourceEventId,
+				targetNodeId: target.id,
+				targetAttempt,
+			})}`;
+
+			this.db.run(
+				`INSERT INTO workflow_rework_request
+				   (request_id, run_id, source_event_id, authority, source_node_id,
+				    source_attempt, base_revision, authority_context_json,
+				    authority_context_digest, founder_feedback_verbatim, requested_at)
+				 VALUES (?, ?, ?, 'engine', ?, ?, ?, ?, ?, NULL, ?)`,
+				[
+					requestId,
+					input.runId,
+					sourceEventId,
+					sourceNodeId,
+					sourceAttempt,
+					operation.approved_head,
+					authorityContextJson,
+					authorityContextDigest,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:land_conflict',
+				         'semantic_merge_conflict_requires_runner', ?)`,
+				[
+					requestId,
+					target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					JSON.stringify(invalidationScope),
+					JSON.stringify(verificationPolicy),
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_delivery
+				   (request_id, route_revision, state, updated_at)
+				 VALUES (?, 1, 'pending', ?)`,
+				[requestId, input.now],
+			);
+			this.db.run(
+				`INSERT INTO workflow_rework_verification_path
+				   (request_id, run_id, route_revision, state,
+				    current_node_id, current_attempt, updated_at)
+				 VALUES (?, ?, 1, 'pending', ?, ?, ?)`,
+				[requestId, input.runId, target.id, targetAttempt, input.now],
+			);
+			this.upsertWorkflowRunNodeTx({
+				runId: input.runId,
+				nodeId: target.id,
+				attempt: targetAttempt,
+				state: "pending",
+				executionId: preferredActorExecutionId,
+			});
+
+			const staleClaims = this.workflowSelectAll(
+				`SELECT c.id, c.node_id FROM workflow_claims c
+				  WHERE c.workflow_run_id = ?
+				    AND (c.predicate = 'founder_approved' OR c.node_id IN ('implement','qa'))
+				    AND NOT EXISTS (
+				      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
+				    )`,
+				[input.runId],
+			);
+			for (const stale of staleClaims) {
+				this.revokeWorkflowClaimTx({
+					claimId: Number(stale.id),
+					reason: "engine_land_conflict_rework",
+					actor: "workflow-engine",
+					runId: input.runId,
+					nodeId: (stale.node_id as string | null) ?? undefined,
+				});
+			}
+			this.db.run(
+				`UPDATE workflow_ship_target_binding SET superseded_at = ?
+				  WHERE superseded_at IS NULL AND approve_question_id IN (
+				    SELECT question_id FROM workflow_gate_holder WHERE run_id = ?
+				  )`,
+				[input.now, input.runId],
+			);
+			this.supersedeWorkflowGateHoldersTx({
+				runId: input.runId,
+				reason: "land_rework",
+				now: input.now,
+			});
+			this.db.run(
+				`UPDATE workflow_carryover_activation
+				    SET state = 'superseded', generation = generation + 1,
+				        next_probe_at = NULL
+				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
+				[operation.carryover_receipt_id],
+			);
+			this.db.run(
+				`UPDATE land_operation
+				    SET superseded_at = ?, generation = generation + 1,
+				        owner_id = NULL, lease_expires_at = NULL,
+				        current_step = 'rework', updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND state = 'running' AND owner_id = ? AND generation = ?`,
+				[
+					input.now,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("engine_land_rework_operation_cas_lost");
+			}
+			this.db.run(
+				"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+				[input.operationId],
+			);
+			this.db.run(
+				`UPDATE workflow_run SET status = 'active', current_node_id = ?
+				  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+				[target.id, input.runId, sourceNodeId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("engine_land_rework_run_cas_lost");
+			}
+			for (const event of [
+				{
+					uid: `rework_requested:${requestId}`,
+					kind: "rework_requested",
+				},
+				{
+					uid: `rework_route_interpreted:${requestId}:1`,
+					kind: "rework_route_interpreted",
+				},
+				{
+					uid: `rework_target_reserved:${requestId}`,
+					kind: "rework_target_reserved",
+				},
+				{ uid: sourceEventId, kind: "engine_land_rework_requested" },
+			]) {
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: event.uid,
+					kind: event.kind,
+					nodeId: target.id,
+					executionId: preferredActorExecutionId,
+					payload: {
+						requestId,
+						targetNodeId: target.id,
+						targetAttempt,
+						preferredActorExecutionId,
+						invalidationScope,
+						verificationPolicy,
+						authorityContextDigest,
+					},
+				});
+			}
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				requestId,
+				targetNodeId: target.id,
+				targetAttempt,
+				preferredActorExecutionId,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	/**
 	 * FLY-1434: master-authorized recovery entry for completed or quiescent
 	 * active engine runs. It writes the same request/route/delivery contract as
@@ -30015,16 +30532,16 @@ export class StateStore {
 				: undefined;
 			const heldNeedsLead =
 				run?.status === "held" && needsLeadRequestId && needsLeadRoute;
-			let heldLandHeadMismatch = false;
+			let heldTerminalLand = false;
 			if (run?.status === "held" && run.snapshot) {
 				try {
 					const snapshot = parseWorkflowRunSnapshot(run.snapshot);
 					const land = this.getLandOperationForRun(input.runId);
-					heldLandHeadMismatch =
+					heldTerminalLand =
 						isWorkflowManifestLand(snapshot.manifest) &&
 						run.current_node_id === workflowTerminalNode(snapshot.manifest) &&
 						land?.state === "held" &&
-						land.last_error === "pr_head_mismatch";
+						land.superseded_at === null;
 				} catch {
 					// Invalid snapshots remain non-reworkable below.
 				}
@@ -30035,7 +30552,7 @@ export class StateStore {
 				(run.status !== "active" &&
 					run.status !== "completed" &&
 					!heldNeedsLead &&
-					!heldLandHeadMismatch &&
+					!heldTerminalLand &&
 					!heldLoopLimit)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
@@ -30183,9 +30700,9 @@ export class StateStore {
 				result = { ok: false, reason: "target_actor_history_missing" };
 				return;
 			}
-			const baseRevision = this.getSession(
-				preferredActorExecutionId,
-			)?.pr_head_sha?.trim().toLowerCase();
+			const baseRevision = this.getSession(preferredActorExecutionId)
+				?.pr_head_sha?.trim()
+				.toLowerCase();
 			if (!baseRevision || !/^[0-9a-f]{40}$/.test(baseRevision)) {
 				result = { ok: false, reason: "base_revision_unavailable" };
 				return;
@@ -30478,9 +30995,8 @@ export class StateStore {
 						carrierKind: "git_checkpoint",
 						anchorCommit: baseRevision,
 						repoIdentity:
-							this.listWorkflowResumeAttachments({ runId: input.runId }).at(
-								-1,
-							)?.repo_identity ?? run.project_name,
+							this.listWorkflowResumeAttachments({ runId: input.runId }).at(-1)
+								?.repo_identity ?? run.project_name,
 						snapshotDigest: snapshot.snapshot_digest,
 						resolvedNodeDigest: canonicalSubmissionDigest(target),
 						reworkAuthorityDigest: authorityContextDigest,
@@ -31343,9 +31859,7 @@ export class StateStore {
 		executionId: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now?: string;
-	}):
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string } {
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.runId ||
@@ -32129,12 +32643,12 @@ export class StateStore {
 				? "completed"
 				: reworkReachableLandCompletion
 					? "ship_parked"
-				: gateAuthority?.mode === "runner_ship" &&
-						gateAuthority.carrierNodeId === binding.node_id
-				? previousStatus === "awaiting_review"
-					? "awaiting_review"
-					: "ship_parked"
-				: "completed";
+					: gateAuthority?.mode === "runner_ship" &&
+							gateAuthority.carrierNodeId === binding.node_id
+						? previousStatus === "awaiting_review"
+							? "awaiting_review"
+							: "ship_parked"
+						: "completed";
 		this.db.run(
 			`UPDATE workflow_run_node SET state = 'done', ended_at = ?
 			  WHERE run_id = ? AND node_id = ? AND attempt = ?`,
@@ -33307,19 +33821,43 @@ export class StateStore {
 			return { ok: false, reason: "run_terminal_authority_frozen" };
 		}
 		const identityClause = input.repoIdentity ? "repo_identity = ?" : "1 = 1";
-		const params: unknown[] = [
-			input.runId,
-			manifest.current_revision,
-			input.prNumber,
-			input.headSha.toLowerCase(),
-		];
-		if (input.repoIdentity) params.push(input.repoIdentity);
-		const rows = this.workflowSelectAll(
-			`SELECT * FROM workflow_declared_pr
-			  WHERE run_id = ? AND revision = ? AND pr_number = ?
-			    AND frozen_head_sha = ? AND ${identityClause}`,
-			params,
-		);
+		const effectiveHeadSha = input.headSha.toLowerCase();
+		let declaredHeadSha = effectiveHeadSha;
+		let carryoverReceiptId: string | undefined;
+		const selectRows = (headSha: string): Record<string, unknown>[] => {
+			const params: unknown[] = [
+				input.runId,
+				manifest.current_revision,
+				input.prNumber,
+				headSha,
+			];
+			if (input.repoIdentity) params.push(input.repoIdentity);
+			return this.workflowSelectAll(
+				`SELECT * FROM workflow_declared_pr
+				  WHERE run_id = ? AND revision = ? AND pr_number = ?
+				    AND frozen_head_sha = ? AND ${identityClause}`,
+				params,
+			);
+		};
+		let rows = selectRows(declaredHeadSha);
+		if (rows.length === 0) {
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: effectiveHeadSha,
+				now: input.now,
+			});
+			if (
+				authority.valid &&
+				authority.kind === "carryover" &&
+				authority.binding.pr_number === input.prNumber &&
+				(!input.repoIdentity ||
+					authority.binding.target_repo_identity === input.repoIdentity)
+			) {
+				declaredHeadSha = authority.rootHead;
+				carryoverReceiptId = authority.endpointReceiptId;
+				rows = selectRows(declaredHeadSha);
+			}
+		}
 		if (rows.length !== 1) {
 			return {
 				ok: false,
@@ -33366,7 +33904,10 @@ export class StateStore {
 				revision: manifest.current_revision,
 				repoIdentity: row.repo_identity,
 				prNumber: input.prNumber,
-				headSha: input.headSha.toLowerCase(),
+				headSha: effectiveHeadSha,
+				declaredHeadSha,
+				effectiveHeadSha,
+				...(carryoverReceiptId ? { carryoverReceiptId } : {}),
 				partialDelivery: Number(allMerged ?? 0) > 0,
 			},
 		});
@@ -33685,8 +34226,7 @@ export class StateStore {
 	}): boolean {
 		const gateNodeId = workflowApprovalGate(input.snapshot.manifest).node;
 		const matching = input.snapshot.manifest.edges.filter(
-			(edge) =>
-				edge.from === input.nodeId && edge.condition === input.outcome,
+			(edge) => edge.from === input.nodeId && edge.condition === input.outcome,
 		);
 		return matching.length === 1 && matching[0]!.to === gateNodeId;
 	}
@@ -33773,9 +34313,7 @@ export class StateStore {
 					| "land_gate_entry_sealed_manifest_stale";
 		  } {
 		const candidate = input.candidate;
-		if (
-			candidate.headSha.toLowerCase() !== input.subjectDigest.toLowerCase()
-		) {
+		if (candidate.headSha.toLowerCase() !== input.subjectDigest.toLowerCase()) {
 			return { ok: false, reason: "land_gate_entry_binding_mismatch" };
 		}
 		if (
@@ -33910,7 +34448,10 @@ export class StateStore {
 		)[0];
 		if (!row) return undefined;
 		try {
-			const payload = JSON.parse(String(row.payload)) as Record<string, unknown>;
+			const payload = JSON.parse(String(row.payload)) as Record<
+				string,
+				unknown
+			>;
 			const producerExecutionId = String(payload.producerExecutionId ?? "");
 			const expectedProducerMirrorHead = String(
 				payload.expectedProducerMirrorHead ?? "",
@@ -34303,8 +34844,7 @@ export class StateStore {
 					const parsed = JSON.parse(binding.repoBaselineSetJson);
 					return (
 						canonicalJsonString(parsed) === binding.repoBaselineSetJson &&
-						canonicalSubmissionDigest(parsed) ===
-							binding.repoBaselineSetDigest
+						canonicalSubmissionDigest(parsed) === binding.repoBaselineSetDigest
 					);
 				} catch {
 					return false;
@@ -34476,7 +35016,8 @@ export class StateStore {
 							});
 							completionDisposition = reconstructed;
 						} catch (error) {
-							if (!(error instanceof WorkflowEventUidConflictError)) throw error;
+							if (!(error instanceof WorkflowEventUidConflictError))
+								throw error;
 							console.warn(
 								`[workflow-completion] disposition receipt conflict for ${context.binding.run_id}/${context.binding.node_id}/${context.binding.attempt}`,
 							);
@@ -34988,8 +35529,7 @@ export class StateStore {
 					subjectDigest: input.subjectDigest,
 					issuerVendor: input.issuerVendor,
 					issuerModel: input.issuerModel,
-					subjectProducerExecutionId:
-						input.subjectProducerExecutionId ?? null,
+					subjectProducerExecutionId: input.subjectProducerExecutionId ?? null,
 					subjectProducerVendor: input.subjectProducerVendor ?? null,
 					...(permanent
 						? { claimLifetime: "permanent" }
@@ -35094,7 +35634,9 @@ export class StateStore {
 					return;
 				}
 				let engineOutcome: string | undefined;
-				let engineSnapshot: ReturnType<typeof parseWorkflowRunSnapshot> | undefined;
+				let engineSnapshot:
+					| ReturnType<typeof parseWorkflowRunSnapshot>
+					| undefined;
 				if (run.engine_owned === 1 && run.snapshot) {
 					engineSnapshot = parseWorkflowRunSnapshot(run.snapshot);
 					const decision = resolveWorkflowDecisionContract(
@@ -35122,16 +35664,16 @@ export class StateStore {
 						throw new Error("engine_decision_transition_refused");
 					}
 					const gateBinding = this.recordWorkflowGateEntryBindingTx({
-							runId: credential.run_id as string,
-							nodeId: credential.node_id as string,
-							attempt: Number(credential.attempt),
-							executionId: credential.execution_id as string,
-							subjectDigest: input.subjectDigest,
-							producerExecutionId: input.subjectProducerExecutionId,
-							receiptId: `gate-entry:${credential.id}:${input.clientRequestId}`,
-							candidate: input.gateEntryBinding,
-							now: nowIso,
-						});
+						runId: credential.run_id as string,
+						nodeId: credential.node_id as string,
+						attempt: Number(credential.attempt),
+						executionId: credential.execution_id as string,
+						subjectDigest: input.subjectDigest,
+						producerExecutionId: input.subjectProducerExecutionId,
+						receiptId: `gate-entry:${credential.id}:${input.clientRequestId}`,
+						candidate: input.gateEntryBinding,
+						now: nowIso,
+					});
 					if (!gateBinding.ok) {
 						transitionRefusal = gateBinding.reason;
 						throw new Error("engine_decision_transition_refused");
@@ -35278,8 +35820,8 @@ export class StateStore {
 				}
 				const refusalDigest = canonicalSubmissionDigest({
 					runId: String(
-						this.getWorkflowSubmissionCredentialByToken(input.credential)?.run_id ??
-							"unknown",
+						this.getWorkflowSubmissionCredentialByToken(input.credential)
+							?.run_id ?? "unknown",
 					),
 					clientRequestId: input.clientRequestId,
 					transitionReason: transitionRefusal,
@@ -36384,9 +36926,9 @@ export class StateStore {
 						alertIdentity: input.alertIdentity,
 						now,
 					});
-					} else if (isWorkflowManifestLand(snapshot.manifest)) {
-						if (!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")) {
-							throw new Error("land_gate_holder_requires_head");
+				} else if (isWorkflowManifestLand(snapshot.manifest)) {
+					if (!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")) {
+						throw new Error("land_gate_holder_requires_head");
 					}
 					const head = input.subjectDigest!.toLowerCase();
 					const questionId = `workflow-gate:${canonicalSubmissionDigest({
@@ -36582,9 +37124,7 @@ export class StateStore {
 				sourceAttachmentState?.resolved_anchor_commit ??
 				undefined;
 			const carrierKind: WorkflowResumeCarrierKind =
-				target.type === "gate"
-					? "state_only_checkpoint"
-					: "git_checkpoint";
+				target.type === "gate" ? "state_only_checkpoint" : "git_checkpoint";
 			const targetAnchor = subjectHead ?? inheritedAnchor;
 			this.recordWorkflowResumeEvidenceSafelyTx(
 				{
@@ -36620,8 +37160,7 @@ export class StateStore {
 						receiptPayload: receipt,
 						carrierKind,
 						...(targetAnchor ? { anchorCommit: targetAnchor } : {}),
-						repoIdentity:
-							sourceAttachment?.repo_identity ?? run.project_name,
+						repoIdentity: sourceAttachment?.repo_identity ?? run.project_name,
 						snapshotDigest: snapshot.snapshot_digest,
 						resolvedNodeDigest: canonicalSubmissionDigest(target),
 						...(target.type === "gate"
@@ -36632,9 +37171,7 @@ export class StateStore {
 									}),
 								}
 							: {}),
-						...(reworkAuthorityDigest
-							? { reworkAuthorityDigest }
-							: {}),
+						...(reworkAuthorityDigest ? { reworkAuthorityDigest } : {}),
 						envelopeJson:
 							sourceAttachment?.envelope_json ??
 							JSON.stringify({
@@ -37393,6 +37930,280 @@ export class StateStore {
 		return result;
 	}
 
+	private openPendingCarryoverFounderFeedbackTx(input: {
+		run: WorkflowRunRow;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+		questionId: string;
+		approvedHead: string;
+		feedback: string;
+		sourceEventId: string;
+		targetNodeId: "design" | "implement" | "qa";
+		invalidationScope: Array<"design" | "implement" | "qa">;
+		verificationPolicy: Array<
+			"design_review" | "code_review" | "qa_retest" | "founder_gate"
+		>;
+		now: string;
+	}):
+		| {
+				requestId: string;
+				targetNodeId: string;
+				targetAttempt: number;
+				preferredActorExecutionId: string;
+		  }
+		| undefined {
+		const gateNodeId = workflowApprovalGate(input.snapshot.manifest).node;
+		const terminalNodeId = workflowTerminalNode(input.snapshot.manifest);
+		if (
+			input.run.current_node_id !== terminalNodeId ||
+			!isWorkflowManifestLand(input.snapshot.manifest)
+		) {
+			return undefined;
+		}
+		const rootHolder = this.getWorkflowGateHolderByQuestionId(input.questionId);
+		const operation = this.getLandOperationForRun(input.run.run_id);
+		if (
+			!rootHolder ||
+			rootHolder.run_id !== input.run.run_id ||
+			rootHolder.gate_node_id !== gateNodeId ||
+			rootHolder.state !== "superseded" ||
+			rootHolder.superseded_reason !== "head_refresh_equivalent" ||
+			rootHolder.head_sha !== input.approvedHead ||
+			!operation?.carryover_receipt_id ||
+			operation.superseded_at !== null
+		) {
+			return undefined;
+		}
+		const activation = this.getWorkflowCarryoverActivation(
+			operation.carryover_receipt_id,
+		);
+		const authority = this.resolveWorkflowExactHeadAuthority({
+			runId: input.run.run_id,
+			headSha: operation.approved_head,
+			now: input.now,
+		});
+		if (
+			activation?.state !== "pending" ||
+			!authority.valid ||
+			authority.kind !== "carryover" ||
+			authority.endpointReceiptId !== operation.carryover_receipt_id ||
+			authority.rootHolderQuestionId !== input.questionId
+		) {
+			return undefined;
+		}
+		const target = input.snapshot.resolved.nodes.find(
+			(node) => node.id === input.targetNodeId,
+		);
+		if (!target?.dispatch || target.type === "gate") {
+			throw new Error("founder feedback source payload invalid: rework target");
+		}
+		const openDelivery = this.workflowSelectAll(
+			`SELECT d.request_id FROM workflow_rework_delivery d
+			  JOIN workflow_rework_request r ON r.request_id = d.request_id
+			 WHERE r.run_id = ?
+			   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+			 LIMIT 1`,
+			[input.run.run_id],
+		)[0];
+		if (openDelivery) {
+			throw new Error("founder feedback kickback failed: rework_already_open");
+		}
+		const targetAttempts = this.listWorkflowRunNodes(
+			input.run.run_id,
+			target.id,
+		);
+		const preferredActorExecutionId = [...targetAttempts]
+			.filter((candidate) => candidate.execution_id)
+			.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+		if (!preferredActorExecutionId) {
+			throw new Error("founder feedback source payload invalid: target actor");
+		}
+		const targetAttempt =
+			targetAttempts.reduce(
+				(max, candidate) => Math.max(max, candidate.attempt),
+				0,
+			) + 1;
+		const sourceAttempt = Number(rootHolder.attempt);
+		const authorityContext = {
+			authority: "founder",
+			sourceEventId: input.sourceEventId,
+			questionId: input.questionId,
+			rootApprovedHead: input.approvedHead,
+			carriedHead: operation.approved_head,
+			carryoverReceiptId: operation.carryover_receipt_id,
+			cutoffState: "pending",
+			targetNodeId: target.id,
+			targetAttempt,
+		};
+		const authorityContextJson = JSON.stringify(authorityContext);
+		const authorityContextDigest = canonicalSubmissionDigest(authorityContext);
+		const requestId = `rework:${canonicalSubmissionDigest({
+			runId: input.run.run_id,
+			sourceEventId: input.sourceEventId,
+			targetNodeId: target.id,
+			targetAttempt,
+		})}`;
+		this.db.run(
+			`INSERT INTO workflow_rework_request
+			   (request_id, run_id, source_event_id, authority, source_node_id,
+			    source_attempt, base_revision, authority_context_json,
+			    authority_context_digest, founder_feedback_verbatim, requested_at)
+			 VALUES (?, ?, ?, 'founder', ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				requestId,
+				input.run.run_id,
+				input.sourceEventId,
+				gateNodeId,
+				sourceAttempt,
+				input.approvedHead,
+				authorityContextJson,
+				authorityContextDigest,
+				input.feedback,
+				input.now,
+			],
+		);
+		this.db.run(
+			`INSERT INTO workflow_rework_route_revision
+			   (request_id, revision, target_node_id, target_attempt,
+			    preferred_actor_execution_id, invalidation_scope_json,
+			    verification_policy_json, interpreted_by,
+			    interpretation_reason, created_at)
+			 VALUES (?, 1, ?, ?, ?, ?, ?, 'engine:founder_cutoff',
+			         'founder_feedback_precedes_land_departure', ?)`,
+			[
+				requestId,
+				target.id,
+				targetAttempt,
+				preferredActorExecutionId,
+				JSON.stringify(input.invalidationScope),
+				JSON.stringify(input.verificationPolicy),
+				input.now,
+			],
+		);
+		this.db.run(
+			`INSERT INTO workflow_rework_delivery
+			   (request_id, route_revision, state, updated_at)
+			 VALUES (?, 1, 'pending', ?)`,
+			[requestId, input.now],
+		);
+		this.db.run(
+			`INSERT INTO workflow_rework_verification_path
+			   (request_id, run_id, route_revision, state,
+			    current_node_id, current_attempt, updated_at)
+			 VALUES (?, ?, 1, 'pending', ?, ?, ?)`,
+			[requestId, input.run.run_id, target.id, targetAttempt, input.now],
+		);
+		this.upsertWorkflowRunNodeTx({
+			runId: input.run.run_id,
+			nodeId: target.id,
+			attempt: targetAttempt,
+			state: "pending",
+			executionId: preferredActorExecutionId,
+		});
+		const staleClaims = this.workflowSelectAll(
+			`SELECT c.id, c.node_id FROM workflow_claims c
+			  WHERE c.workflow_run_id = ?
+			    AND (c.predicate = 'founder_approved' OR c.node_id IN (${input.invalidationScope.map(() => "?").join(",") || "NULL"}))
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
+			    )`,
+			[input.run.run_id, ...input.invalidationScope],
+		);
+		for (const stale of staleClaims) {
+			this.revokeWorkflowClaimTx({
+				claimId: Number(stale.id),
+				reason: "founder_feedback_before_land_departure",
+				actor: "founder",
+				runId: input.run.run_id,
+				nodeId: (stale.node_id as string | null) ?? undefined,
+			});
+		}
+		this.db.run(
+			`UPDATE workflow_ship_target_binding SET superseded_at = ?
+			  WHERE superseded_at IS NULL AND approve_question_id IN (
+			    SELECT question_id FROM workflow_gate_holder WHERE run_id = ?
+			  )`,
+			[input.now, input.run.run_id],
+		);
+		this.supersedeWorkflowGateHoldersTx({
+			runId: input.run.run_id,
+			reason: "founder_feedback",
+			now: input.now,
+		});
+		this.db.run(
+			`UPDATE workflow_carryover_activation
+			    SET state = 'superseded', generation = generation + 1,
+			        next_probe_at = NULL
+			  WHERE carryover_receipt_id = ? AND state = 'pending'`,
+			[operation.carryover_receipt_id],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("founder feedback cutoff activation raced");
+		}
+		this.db.run(
+			`UPDATE land_operation
+			    SET superseded_at = ?, generation = generation + 1,
+			        owner_id = NULL, lease_expires_at = NULL,
+			        current_step = 'rework', updated_at = ?
+			  WHERE operation_id = ? AND superseded_at IS NULL
+			    AND carryover_receipt_id = ?`,
+			[
+				input.now,
+				input.now,
+				operation.operation_id,
+				operation.carryover_receipt_id,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("founder feedback cutoff operation raced");
+		}
+		this.db.run(
+			"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+			[operation.operation_id],
+		);
+		this.db.run(
+			`UPDATE workflow_run SET status = 'active', current_node_id = ?
+			  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
+			[target.id, input.run.run_id, terminalNodeId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new Error("founder feedback cutoff run raced");
+		}
+		for (const event of [
+			{ uid: `rework_requested:${requestId}`, kind: "rework_requested" },
+			{
+				uid: `rework_route_interpreted:${requestId}:1`,
+				kind: "rework_route_interpreted",
+			},
+			{
+				uid: `rework_target_reserved:${requestId}`,
+				kind: "rework_target_reserved",
+			},
+		]) {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.run.run_id,
+				eventUid: event.uid,
+				kind: event.kind,
+				nodeId: target.id,
+				executionId: preferredActorExecutionId,
+				payload: {
+					requestId,
+					targetNodeId: target.id,
+					targetAttempt,
+					preferredActorExecutionId,
+					invalidationScope: input.invalidationScope,
+					verificationPolicy: input.verificationPolicy,
+					authorityContextDigest,
+				},
+			});
+		}
+		return {
+			requestId,
+			targetNodeId: target.id,
+			targetAttempt,
+			preferredActorExecutionId,
+		};
+	}
+
 	/**
 	 * Apply one immutable CommDB source event to the workflow ledger. Receipt
 	 * and founder claim commit together; exact replay returns the original
@@ -37447,9 +38258,129 @@ export class StateStore {
 							}
 						: input.kind === "founder_feedback"
 							? { kind: "founder_feedback", status: "replayed" }
-							: targetRunId
-								? { kind: "turn_run_event", status: "replayed" }
-								: { kind: "turn_project_history", status: "replayed" };
+							: input.kind === "land_departure_cutoff"
+								? { kind: "land_departure_cutoff", status: "replayed" }
+								: targetRunId
+									? { kind: "turn_run_event", status: "replayed" }
+									: { kind: "turn_project_history", status: "replayed" };
+				return;
+			}
+
+			if (input.kind === "land_departure_cutoff") {
+				const runId = typeof payload.run_id === "string" ? payload.run_id : "";
+				const carryoverReceiptId =
+					typeof payload.carryover_receipt_id === "string"
+						? payload.carryover_receipt_id
+						: "";
+				const operationId =
+					typeof payload.operation_id === "string" ? payload.operation_id : "";
+				const ordinal = Number(payload.ordinal);
+				const approvedHead =
+					typeof payload.approved_head === "string"
+						? payload.approved_head.toLowerCase()
+						: "";
+				const operationGeneration = Number(payload.operation_generation);
+				const sourceRowId = input.sourceRowId;
+				const expectedSourceEventId = `land-departure-cutoff:${canonicalSubmissionDigest(
+					{
+						carryoverReceiptId,
+						operationId,
+						ordinal,
+					},
+				)}`;
+				const operation = this.getLandOperation(operationId);
+				const run = this.getWorkflowRun(runId);
+				if (
+					!runId ||
+					!carryoverReceiptId ||
+					!operationId ||
+					!Number.isInteger(ordinal) ||
+					ordinal < 1 ||
+					!Number.isInteger(operationGeneration) ||
+					operationGeneration < 0 ||
+					!Number.isInteger(sourceRowId) ||
+					Number(sourceRowId) < 1 ||
+					input.sourceEventId !== expectedSourceEventId ||
+					!operation ||
+					operation.run_id !== runId ||
+					operation.approved_head !== approvedHead ||
+					operation.carryover_receipt_id !== carryoverReceiptId ||
+					!run ||
+					run.project_name !== input.project
+				) {
+					throw new Error("land departure cutoff source payload invalid");
+				}
+				const activation =
+					this.getWorkflowCarryoverActivation(carryoverReceiptId);
+				if (activation?.state === "superseded") {
+					this.db.run(
+						`INSERT INTO workflow_source_receipt
+						   (project, source_event_id, payload_digest, claim_id,
+						    source_row_id, applied_at)
+						 VALUES (?, ?, ?, NULL, ?, ?)`,
+						[
+							input.project,
+							input.sourceEventId,
+							input.payloadDigest,
+							input.sourceRowId ?? null,
+							input.at ?? new Date().toISOString(),
+						],
+					);
+					this.appendWorkflowRunEventTx({
+						runId,
+						eventUid: `source_land_departure_ignored:${input.project}:${input.sourceEventId}`,
+						kind: "land_departure_cutoff_ignored",
+						nodeId: run.current_node_id ?? undefined,
+						payload: {
+							carryoverReceiptId,
+							operationId,
+							ordinal,
+							sourceRowId,
+							reason: "carryover_superseded_before_departure",
+						},
+					});
+					result = { kind: "land_departure_cutoff", status: "applied" };
+					return;
+				}
+				const authorized = this.authorizeWorkflowCarryoverDeparture({
+					carryoverReceiptId,
+					sourceCutoffRowId: Number(sourceRowId),
+					operationId,
+					expectedGeneration: operationGeneration,
+					now: input.at ?? new Date().toISOString(),
+					deferSave: true,
+				});
+				if (!authorized.ok) {
+					throw new Error(
+						`land departure cutoff retryable: ${authorized.reason}`,
+					);
+				}
+				this.db.run(
+					`INSERT INTO workflow_source_receipt
+					   (project, source_event_id, payload_digest, claim_id,
+					    source_row_id, applied_at)
+					 VALUES (?, ?, ?, NULL, ?, ?)`,
+					[
+						input.project,
+						input.sourceEventId,
+						input.payloadDigest,
+						input.sourceRowId ?? null,
+						input.at ?? new Date().toISOString(),
+					],
+				);
+				this.appendWorkflowRunEventTx({
+					runId,
+					eventUid: `source_land_departure:${input.project}:${input.sourceEventId}`,
+					kind: "land_departure_authorized",
+					nodeId: run.current_node_id ?? undefined,
+					payload: {
+						carryoverReceiptId,
+						operationId,
+						ordinal,
+						sourceRowId,
+					},
+				});
+				result = { kind: "land_departure_cutoff", status: "applied" };
 				return;
 			}
 
@@ -37482,8 +38413,7 @@ export class StateStore {
 						run.issue_id !== issueId ||
 						!turnBinding ||
 						turnBinding.run_id !== targetRunId ||
-						(context?.node.type !== toRole &&
-							context?.node.id !== toRole)
+						(context?.node.type !== toRole && context?.node.id !== toRole)
 					) {
 						throw new Error(
 							"TURN source payload invalid: run ownership mismatch",
@@ -37492,12 +38422,14 @@ export class StateStore {
 				}
 				this.db.run(
 					`INSERT INTO workflow_source_receipt
-					   (project, source_event_id, payload_digest, claim_id, applied_at)
-					 VALUES (?, ?, ?, NULL, ?)`,
+					   (project, source_event_id, payload_digest, claim_id,
+					    source_row_id, applied_at)
+					 VALUES (?, ?, ?, NULL, ?, ?)`,
 					[
 						input.project,
 						input.sourceEventId,
 						input.payloadDigest,
+						input.sourceRowId ?? null,
 						new Date().toISOString(),
 					],
 				);
@@ -37646,11 +38578,75 @@ export class StateStore {
 						loop.loop_when === "founder_feedback_kickback" &&
 						loop.exit_when === "founder_approved",
 				);
-				if (run.current_node_id !== gateNodeId || !feedbackLoop) {
+				if (!feedbackLoop) {
 					throw new Error("founder feedback source payload invalid: run state");
 				}
 				const questionId =
 					typeof payload.question_id === "string" ? payload.question_id : "";
+				if (run.current_node_id !== gateNodeId) {
+					const cutoffTarget = founderRework?.target ?? feedbackLoop.to;
+					if (
+						cutoffTarget !== "design" &&
+						cutoffTarget !== "implement" &&
+						cutoffTarget !== "qa"
+					) {
+						throw new Error(
+							"founder feedback source payload invalid: rework target",
+						);
+					}
+					const early = this.openPendingCarryoverFounderFeedbackTx({
+						run,
+						snapshot,
+						questionId,
+						approvedHead,
+						feedback: response.feedback,
+						sourceEventId: input.sourceEventId,
+						targetNodeId: cutoffTarget,
+						invalidationScope: founderRework?.invalidationScope ?? [
+							"implement",
+							"qa",
+						],
+						verificationPolicy: founderRework?.verificationPolicy ?? [
+							"code_review",
+							"qa_retest",
+							"founder_gate",
+						],
+						now: input.at ?? new Date().toISOString(),
+					});
+					if (!early) {
+						throw new Error(
+							"founder feedback source payload invalid: run state",
+						);
+					}
+					this.db.run(
+						`INSERT INTO workflow_source_receipt
+						   (project, source_event_id, payload_digest, claim_id,
+						    source_row_id, applied_at)
+						 VALUES (?, ?, ?, NULL, ?, ?)`,
+						[
+							input.project,
+							input.sourceEventId,
+							input.payloadDigest,
+							input.sourceRowId ?? null,
+							input.at ?? new Date().toISOString(),
+						],
+					);
+					this.appendWorkflowRunEventTx({
+						runId,
+						eventUid: `source_feedback:${input.project}:${input.sourceEventId}`,
+						kind: "founder_feedback_kickback",
+						nodeId: gateNodeId,
+						payload: {
+							questionId,
+							head: approvedHead,
+							targetNodeId: early.targetNodeId,
+							targetAttempt: early.targetAttempt,
+							cutoffDisposition: "founder_feedback_won",
+						},
+					});
+					result = { kind: "founder_feedback", status: "applied" };
+					return;
+				}
 				const holder = this.workflowSelectAll(
 					`SELECT * FROM workflow_gate_holder
 					  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?`,
@@ -37789,9 +38785,16 @@ export class StateStore {
 				}
 				this.db.run(
 					`INSERT INTO workflow_source_receipt
-					   (project, source_event_id, payload_digest, claim_id, applied_at)
-					 VALUES (?, ?, ?, NULL, ?)`,
-					[input.project, input.sourceEventId, input.payloadDigest, now],
+					   (project, source_event_id, payload_digest, claim_id,
+					    source_row_id, applied_at)
+					 VALUES (?, ?, ?, NULL, ?, ?)`,
+					[
+						input.project,
+						input.sourceEventId,
+						input.payloadDigest,
+						input.sourceRowId ?? null,
+						now,
+					],
 				);
 				this.appendWorkflowRunEventTx({
 					runId,
@@ -37844,7 +38847,9 @@ export class StateStore {
 						sourceExecutionId: decisionHolder.source_execution_id as string,
 					}))
 			) {
-				throw new Error("founder decision source payload invalid: gate authority");
+				throw new Error(
+					"founder decision source payload invalid: gate authority",
+				);
 			}
 			const serverSeq = this.nextWorkflowClaimSeq();
 			this.db.run(
@@ -37877,13 +38882,15 @@ export class StateStore {
 			});
 			this.db.run(
 				`INSERT INTO workflow_source_receipt
-				   (project, source_event_id, payload_digest, claim_id, applied_at)
-				 VALUES (?, ?, ?, ?, ?)`,
+				   (project, source_event_id, payload_digest, claim_id,
+				    source_row_id, applied_at)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
 				[
 					input.project,
 					input.sourceEventId,
 					input.payloadDigest,
 					claimId,
+					input.sourceRowId ?? null,
 					new Date().toISOString(),
 				],
 			);
@@ -37942,7 +38949,8 @@ export class StateStore {
 						});
 						if (
 							!transition.ok ||
-							transition.targetNodeId !== workflowTerminalNode(snapshot.manifest)
+							transition.targetNodeId !==
+								workflowTerminalNode(snapshot.manifest)
 						) {
 							throw new Error(
 								`founder approval source land activation failed: ${transition.ok ? "wrong_target" : transition.reason}`,
@@ -38516,12 +39524,14 @@ export class StateStore {
 				session?.pr_number === prBinding?.pr_number &&
 				(session?.pr_head_sha?.toLowerCase() ===
 					mirrorFence.expectedProducerMirrorHead ||
-					session?.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase());
+					session?.pr_head_sha?.toLowerCase() ===
+						proof.subjectDigest.toLowerCase());
 			const carrierMatchesDirectBinding =
 				prBinding?.node_id === authority.carrierNodeId &&
 				prBinding?.attempt === candidate?.attempt &&
 				session?.pr_number === prBinding.pr_number &&
-				session.pr_head_sha?.toLowerCase() === proof.subjectDigest.toLowerCase();
+				session.pr_head_sha?.toLowerCase() ===
+					proof.subjectDigest.toLowerCase();
 			if (
 				candidate?.execution_id &&
 				activation &&
@@ -38780,9 +39790,95 @@ export class StateStore {
 		} catch {
 			return { valid: false, reason: "snapshot_invalid" };
 		}
+		const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
+		const currentHolder = this.getCurrentWorkflowGateHolder(
+			input.runId,
+			gateNodeId,
+		);
+		if (currentHolder?.approval_origin === "engine_equivalence_carryover") {
+			if ((input.subjectKind ?? "git_head") !== "git_head") {
+				return { valid: false, reason: "carryover_subject_kind_invalid" };
+			}
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: input.subjectDigest,
+				now: input.now,
+			});
+			if (!authority.valid || authority.kind !== "carryover") {
+				return {
+					valid: false,
+					reason: `carryover_authority:${
+						authority.valid
+							? "normal_binding_for_carryover_holder"
+							: authority.reason
+					}`,
+				};
+			}
+			const rootHolder = this.getWorkflowGateHolderByQuestionId(
+				authority.rootHolderQuestionId,
+			);
+			if (!rootHolder) {
+				return { valid: false, reason: "carryover_root_holder_missing" };
+			}
+			const evidence = this.listWorkflowGateHolderEvidence(rootHolder);
+			const expectedEvidence = snapshot.manifest.ship_claims.filter(
+				(predicate) => predicate !== "founder_approved",
+			);
+			if (
+				evidence.length === expectedEvidence.length &&
+				expectedEvidence.every(
+					(predicate) =>
+						evidence.filter((entry) => entry.predicate === predicate).length ===
+						1,
+				)
+			) {
+				return { valid: true };
+			}
+			// Legacy gate-carrier epoch 0 predates frozen holder evidence. Its
+			// normal path resolves each exact-head prerequisite at USE time; keep
+			// that predicate unchanged, but resolve it at the proven root head.
+			if (run.gate_carrier_epoch === 0 && evidence.length === 0) {
+				for (const required of expectedEvidence) {
+					const contracts = snapshot.resolved.nodes.flatMap((node) => {
+						const contract = resolveWorkflowDecisionContract(snapshot, node.id);
+						return contract?.passPredicate === required
+							? [{ nodeId: node.id, contract }]
+							: [];
+					});
+					if (contracts.length !== 1) {
+						return {
+							valid: false,
+							reason: `ship_claim_node_ambiguous:${required}`,
+						};
+					}
+					const nodeId = contracts[0]!.nodeId;
+					const requiredAttempt = this.listWorkflowRunNodes(
+						input.runId,
+						nodeId,
+					).at(-1)?.attempt;
+					if (requiredAttempt === undefined) {
+						return { valid: false, reason: `${required}:attempt_unavailable` };
+					}
+					const resolved = this.resolveWorkflowDecisionClaim({
+						runId: input.runId,
+						nodeId,
+						decisionKind: contracts[0]!.contract.family,
+						predicate: required,
+						requiredAttempt,
+						subjectKind: "git_head",
+						subjectDigest: authority.rootHead,
+						now: input.now,
+					});
+					if (!resolved.valid) {
+						return { valid: false, reason: `${required}:${resolved.reason}` };
+					}
+				}
+				return { valid: true };
+			}
+			return { valid: false, reason: "carryover_gate_evidence_set_mismatch" };
+		}
 		if (run.gate_carrier_epoch === 1) {
-			const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
-			const holder = this.getCurrentWorkflowGateHolder(input.runId, gateNodeId);
+			const holder = currentHolder;
 			const subjectKind = input.subjectKind ?? "git_head";
 			if (
 				!holder ||
@@ -39874,9 +40970,7 @@ export class StateStore {
 			: undefined;
 	}
 
-	getWorkflowMaterializedHeadByEffect(
-		effectId: string,
-	):
+	getWorkflowMaterializedHeadByEffect(effectId: string):
 		| {
 				head: string;
 				outputId: number;
@@ -40104,7 +41198,6 @@ export class StateStore {
 			issue_id: r.issue_id as string,
 		}));
 	}
-
 
 	/** True when `executionId` was dispatched by (or produced an event in)
 	 * this workflow run — THE cross-run attribution predicate (R2 #1/#2/#3). */
@@ -40396,10 +41489,7 @@ export class StateStore {
 							"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
 							[runId],
 						);
-						this.settleReworkParksForRunTx(
-							runId,
-							new Date().toISOString(),
-						);
+						this.settleReworkParksForRunTx(runId, new Date().toISOString());
 						break;
 					}
 					case "side_effect": {
@@ -40461,7 +41551,12 @@ export class StateStore {
 		gateNodeId?: string;
 		questionId?: string;
 		fromStates?: Array<"materializing" | "awaiting_review" | "approved">;
-		reason: "founder_feedback" | "new_gate_attempt" | "operator_rework";
+		reason:
+			| "founder_feedback"
+			| "new_gate_attempt"
+			| "operator_rework"
+			| "land_rework"
+			| "head_refresh_equivalent";
 		now: string;
 	}): { updated: number } {
 		const predicates = ["run_id = ?"];
@@ -40981,7 +42076,9 @@ export class StateStore {
 			if (input.outcome === "done") {
 				const watchExpiresAt = input.skipWatch
 					? input.now
-					: new Date(Date.parse(input.now) + 48 * 60 * 60 * 1_000).toISOString();
+					: new Date(
+							Date.parse(input.now) + 48 * 60 * 60 * 1_000,
+						).toISOString();
 				this.db.run(
 					`UPDATE workflow_gate_holder
 					    SET card_void_state = 'done',
@@ -41151,9 +42248,7 @@ export class StateStore {
 		questionId: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
 		now: string;
-	}):
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string } {
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		if (!input.questionId || !StateStore.workflowFiniteTimestamp(input.now)) {
 			return { ok: false, reason: "invalid_voided_workflow_gate_input" };
 		}
@@ -41242,10 +42337,8 @@ export class StateStore {
 			hold_count: Number(row.hold_count),
 			redrive_generation: Number(row.redrive_generation ?? 0),
 			next_retry_at: (row.next_retry_at as string | null) ?? null,
-			turn_epoch:
-				row.turn_epoch == null ? null : Number(row.turn_epoch),
-			turn_source_event_id:
-				(row.turn_source_event_id as string | null) ?? null,
+			turn_epoch: row.turn_epoch == null ? null : Number(row.turn_epoch),
+			turn_source_event_id: (row.turn_source_event_id as string | null) ?? null,
 			turn_granted_at: (row.turn_granted_at as string | null) ?? null,
 			last_error: (row.last_error as string | null) ?? null,
 			created_at: row.created_at as string,
@@ -41333,9 +42426,7 @@ export class StateStore {
 		principal: "master";
 		reason: string;
 		now: string;
-	}):
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string } {
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		if (
 			!/^carrier-redrive:[0-9a-f]{64}$/i.test(input.requestId) ||
 			!input.questionId ||
@@ -41393,7 +42484,11 @@ export class StateStore {
 					        turn_source_event_id = NULL, turn_granted_at = NULL,
 					        last_error = ?, updated_at = ?
 					  WHERE question_id = ? AND state != 'completed'`,
-					[`operator_redrive:${input.reason.trim()}`, input.now, input.questionId],
+					[
+						`operator_redrive:${input.reason.trim()}`,
+						input.now,
+						input.questionId,
+					],
 				);
 				if (this.db.getRowsModified() !== 1) {
 					result = { ok: false, reason: "carrier_redrive_state_changed" };
@@ -41458,7 +42553,11 @@ export class StateStore {
 		states?: WorkflowCarrierDeliveryRow["state"][];
 		now?: string;
 	}): WorkflowCarrierDeliveryRow[] {
-		const states = input?.states ?? ["pending", "grant_started", "turn_granted"];
+		const states = input?.states ?? [
+			"pending",
+			"grant_started",
+			"turn_granted",
+		];
 		if (states.length === 0) return [];
 		const placeholders = states.map(() => "?").join(", ");
 		const now = input?.now ?? new Date().toISOString();
@@ -41469,9 +42568,7 @@ export class StateStore {
 			  ORDER BY updated_at, question_id`,
 			[...states, now],
 		)
-			.map((row) =>
-				this.getWorkflowCarrierDelivery(row.question_id as string),
-			)
+			.map((row) => this.getWorkflowCarrierDelivery(row.question_id as string))
 			.filter((row): row is WorkflowCarrierDeliveryRow => row !== undefined);
 	}
 
@@ -41497,8 +42594,16 @@ export class StateStore {
 		this.db.transaction(() => {
 			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
 			if (!delivery) return;
-			if (!(["pending", "grant_started", "turn_granted"] as const).includes(delivery.state as never)) {
-				result = { ok: false, reason: "delivery_settled", state: delivery.state };
+			if (
+				!(["pending", "grant_started", "turn_granted"] as const).includes(
+					delivery.state as never,
+				)
+			) {
+				result = {
+					ok: false,
+					reason: "delivery_settled",
+					state: delivery.state,
+				};
 				return;
 			}
 			if (
@@ -41511,7 +42616,11 @@ export class StateStore {
 			const leaseLive =
 				delivery.lease_expires_at !== null &&
 				Date.parse(delivery.lease_expires_at) > Date.parse(input.now);
-			if (delivery.owner_id && delivery.owner_id !== input.ownerId && leaseLive) {
+			if (
+				delivery.owner_id &&
+				delivery.owner_id !== input.ownerId &&
+				leaseLive
+			) {
 				result = { ok: false, reason: "delivery_busy" };
 				return;
 			}
@@ -41584,7 +42693,10 @@ export class StateStore {
 			[
 				input.to,
 				input.releaseOwner ? null : input.ownerId,
-				input.releaseOwner ? null : this.getWorkflowCarrierDelivery(input.questionId)?.lease_expires_at ?? null,
+				input.releaseOwner
+					? null
+					: (this.getWorkflowCarrierDelivery(input.questionId)
+							?.lease_expires_at ?? null),
 				input.error ?? null,
 				input.now,
 				input.questionId,
@@ -41638,7 +42750,10 @@ export class StateStore {
 				delivery.source_execution_id !== input.executionId ||
 				delivery.carrier_activation_id !== input.activationId
 			) {
-				result = { ok: false, reason: "carrier_activation_turn_identity_conflict" };
+				result = {
+					ok: false,
+					reason: "carrier_activation_turn_identity_conflict",
+				};
 				return;
 			}
 			if (delivery.turn_epoch !== null) {
@@ -41877,8 +42992,7 @@ export class StateStore {
 			expectedEpoch: Number(row.expected_epoch),
 			expectedActivationId:
 				(row.expected_activation_id as string | null) ?? null,
-			observedExecutionId:
-				(row.observed_execution_id as string | null) ?? null,
+			observedExecutionId: (row.observed_execution_id as string | null) ?? null,
 			observedEpoch:
 				row.observed_epoch == null ? null : Number(row.observed_epoch),
 			observedActivationId:
@@ -42008,29 +43122,29 @@ export class StateStore {
 			const episodeUid = `turn_ledger_divergence:${input.expectationKey}:${current.first_observed_at}`;
 			if (input.alertEnabled !== false && current.alerted_at == null) {
 				this.enqueueWorkflowEngineAlertTx({
-				escalationUid: episodeUid,
-				runId: input.runId,
-				now: input.now,
-				payload: {
-					leadId: input.alertIdentity.leadId,
-					projectName: input.alertIdentity.projectName,
-					eventId: episodeUid,
-					eventType: "workflow_engine_escalation",
-					severity: "severe",
-					sessionKey: `wf:${input.runId}`,
-					title: `TURN ledger divergence for ${input.issueId}`,
-					body: `Engine expects holder ${input.expectedExecutionId}, epoch ${input.expectedEpoch}, activation ${input.expectedActivationId ?? "legacy"}; CommDB reports holder ${input.observedExecutionId ?? "none"}, epoch ${input.observedEpoch ?? "none"}, activation ${input.observedActivationId ?? "none"}. Re-drive the owning carrier/rework delivery through the guarded recovery route; do not patch engine-owned TURN with SQL.`,
-					metadata: {
-						workflowEngine: {
-							runId: input.runId,
-							issueId: input.issueId,
-							nodeId: "turn",
-							executionId: input.expectedExecutionId,
-							disposition: "turn_ledger_divergence",
-							leadResolution: input.alertIdentity.leadResolution,
+					escalationUid: episodeUid,
+					runId: input.runId,
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: episodeUid,
+						eventType: "workflow_engine_escalation",
+						severity: "severe",
+						sessionKey: `wf:${input.runId}`,
+						title: `TURN ledger divergence for ${input.issueId}`,
+						body: `Engine expects holder ${input.expectedExecutionId}, epoch ${input.expectedEpoch}, activation ${input.expectedActivationId ?? "legacy"}; CommDB reports holder ${input.observedExecutionId ?? "none"}, epoch ${input.observedEpoch ?? "none"}, activation ${input.observedActivationId ?? "none"}. Re-drive the owning carrier/rework delivery through the guarded recovery route; do not patch engine-owned TURN with SQL.`,
+						metadata: {
+							workflowEngine: {
+								runId: input.runId,
+								issueId: input.issueId,
+								nodeId: "turn",
+								executionId: input.expectedExecutionId,
+								disposition: "turn_ledger_divergence",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
 						},
 					},
-				},
 				});
 				this.db.run(
 					`UPDATE workflow_turn_divergence_episode SET alerted_at = ?
@@ -42154,7 +43268,9 @@ export class StateStore {
 			if (
 				delivery.owner_id !== input.ownerId ||
 				delivery.generation !== input.generation ||
-				!(["pending", "grant_started", "turn_granted"] as const).includes(delivery.state as never)
+				!(["pending", "grant_started", "turn_granted"] as const).includes(
+					delivery.state as never,
+				)
 			) {
 				result = { ok: false, reason: "stale_delivery_owner" };
 				return;
@@ -42247,7 +43363,9 @@ export class StateStore {
 			const exhausted = holdCount >= 5;
 			const nextRetryAt = exhausted
 				? null
-				: new Date(Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1)).toISOString();
+				: new Date(
+						Date.parse(input.now) + 60_000 * 2 ** (holdCount - 1),
+					).toISOString();
 			const nextState:
 				| "pending"
 				| "grant_started"
@@ -42280,10 +43398,17 @@ export class StateStore {
 			this.appendWorkflowRunEventCheckedTx({
 				runId: delivery.run_id,
 				eventUid,
-				kind: exhausted ? "carrier_delivery_exhausted" : "carrier_delivery_retry",
+				kind: exhausted
+					? "carrier_delivery_exhausted"
+					: "carrier_delivery_retry",
 				nodeId: delivery.gate_node_id,
 				executionId: delivery.source_execution_id,
-				payload: { questionId: input.questionId, holdCount, nextRetryAt, reason: input.reason },
+				payload: {
+					questionId: input.questionId,
+					holdCount,
+					nextRetryAt,
+					reason: input.reason,
+				},
 			});
 			if (exhausted) {
 				const escalationUid = `carrier_delivery_exhausted:${input.questionId}:${input.generation}`;
@@ -42344,7 +43469,10 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_wake_send_claim" };
 		}
-		let result: WorkflowWakeSendClaimResult = { ok: false, reason: "target_changed" };
+		let result: WorkflowWakeSendClaimResult = {
+			ok: false,
+			reason: "target_changed",
+		};
 		this.db.transaction(() => {
 			const prior = this.workflowSelectAll(
 				"SELECT * FROM workflow_wake_send_claim WHERE wake_id = ?",
@@ -42376,7 +43504,11 @@ export class StateStore {
 				) {
 					result =
 						prior.owner_id === input.ownerId
-							? { ok: true, generation: Number(prior.generation), idempotentReplay: true }
+							? {
+									ok: true,
+									generation: Number(prior.generation),
+									idempotentReplay: true,
+								}
 							: { ok: false, reason: "wake_send_busy" };
 					return;
 				}
@@ -42393,7 +43525,12 @@ export class StateStore {
 				  WHERE d.carrier_activation_id = ?`,
 				[input.activationId],
 			)[0];
-			const terminalNode = new Set(["done", "failed", "superseded", "completed"]);
+			const terminalNode = new Set([
+				"done",
+				"failed",
+				"superseded",
+				"completed",
+			]);
 			if (
 				!delivery ||
 				delivery.run_id !== input.runId ||
@@ -42411,7 +43548,9 @@ export class StateStore {
 			if (
 				terminalNode.has(String(delivery.node_state)) ||
 				(delivery.session_status &&
-					isStateStoreIrreversibleTerminalForZombie(String(delivery.session_status)))
+					isStateStoreIrreversibleTerminalForZombie(
+						String(delivery.session_status),
+					))
 			) {
 				result = { ok: false, reason: "target_terminal" };
 				return;
@@ -42423,7 +43562,14 @@ export class StateStore {
 					    SET state = 'sending', owner_id = ?, generation = ?, lease_expires_at = ?,
 					        updated_at = ?, last_error = NULL
 					  WHERE wake_id = ? AND state IN ('sending','retryable') AND generation = ?`,
-					[input.ownerId, generation, input.leaseExpiresAt, input.now, input.wakeId, Number(prior.generation)],
+					[
+						input.ownerId,
+						generation,
+						input.leaseExpiresAt,
+						input.now,
+						input.wakeId,
+						Number(prior.generation),
+					],
 				);
 			} else {
 				this.db.run(
@@ -42588,6 +43734,241 @@ export class StateStore {
 			headSha,
 		);
 		return resolution.status === "one" ? resolution.binding : undefined;
+	}
+
+	private workflowGateEvidenceDigest(
+		holder: Pick<
+			WorkflowGateHolderRow,
+			"run_id" | "gate_node_id" | "attempt" | "head_sha"
+		>,
+	): string {
+		return canonicalSubmissionDigest(
+			this.listWorkflowGateHolderEvidence(holder).map((entry) => ({
+				claimId: entry.claim_id,
+				predicate: entry.predicate,
+				decisionKind: entry.decision_kind,
+				nodeId: entry.node_id,
+				nodeAttempt: entry.node_attempt,
+				subjectKind: entry.subject_kind,
+				subjectDigest: entry.subject_digest,
+			})),
+		);
+	}
+
+	/**
+	 * The sole exact-head authority resolver for land-capable paths. Normal
+	 * bindings remain byte-for-byte authoritative. A carryover is accepted only
+	 * when its immutable chain reaches a live founder claim, frozen QA evidence,
+	 * and the original PR binding in at most three proven base-merge segments.
+	 */
+	resolveWorkflowExactHeadAuthority(input: {
+		runId: string;
+		headSha: string;
+		now?: string;
+	}): WorkflowExactHeadAuthorityResolution {
+		const headSha = input.headSha.trim().toLowerCase();
+		if (!input.runId || !/^[0-9a-f]{40}$/.test(headSha)) {
+			return { valid: false, reason: "invalid_exact_head" };
+		}
+		const normal = this.getCurrentWorkflowNodePrBindingForHead(
+			input.runId,
+			headSha,
+		);
+		if (normal) {
+			return {
+				valid: true,
+				kind: "normal",
+				binding: normal,
+				authorityHead: headSha,
+				rootHead: headSha,
+				depth: 0,
+			};
+		}
+		const holder = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE run_id = ? AND lower(head_sha) = ? AND state = 'approved'`,
+			[input.runId, headSha],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+		if (holder?.approval_origin !== "engine_equivalence_carryover") {
+			return { valid: false, reason: "exact_head_binding_missing" };
+		}
+		const holderEvidence = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder_carryover_evidence
+			  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?
+			    AND holder_attempt = ? AND holder_subject_digest = ?`,
+			[
+				holder.question_id,
+				input.runId,
+				holder.gate_node_id,
+				holder.attempt,
+				headSha,
+			],
+		)[0];
+		if (!holderEvidence) {
+			return { valid: false, reason: "carryover_holder_evidence_missing" };
+		}
+		const endpointId = String(holderEvidence.carryover_receipt_id);
+		const visited = new Set<string>();
+		const receiptIds: string[] = [];
+		let receipt = this.workflowSelectAll(
+			"SELECT * FROM workflow_head_carryover_receipt WHERE receipt_id = ?",
+			[endpointId],
+		)[0];
+		let expectedTo = headSha;
+		let depth = 0;
+		let rootHead = "";
+		let rootFounderClaimRef = "";
+		let rootSourceReceiptRef = "";
+		while (receipt) {
+			const receiptId = String(receipt.receipt_id);
+			if (visited.has(receiptId) || depth >= 3) {
+				return { valid: false, reason: "carryover_lineage_invalid" };
+			}
+			visited.add(receiptId);
+			receiptIds.unshift(receiptId);
+			depth += 1;
+			if (
+				receipt.run_id !== input.runId ||
+				receipt.gate_node_id !== holder.gate_node_id ||
+				String(receipt.to_head).toLowerCase() !== expectedTo ||
+				receipt.proof_kind !== "clean_base_merge_tree_identity" ||
+				String(receipt.base_oid).toLowerCase() !==
+					String(receipt.second_parent_observed).toLowerCase() ||
+				!/^[0-9a-f]{40}$/.test(String(receipt.proof_tree_oid).toLowerCase())
+			) {
+				return { valid: false, reason: "carryover_receipt_invalid" };
+			}
+			if (!rootFounderClaimRef) {
+				rootFounderClaimRef = String(receipt.root_founder_claim_ref);
+				rootSourceReceiptRef = String(receipt.root_source_receipt_ref);
+			} else if (
+				rootFounderClaimRef !== String(receipt.root_founder_claim_ref) ||
+				rootSourceReceiptRef !== String(receipt.root_source_receipt_ref)
+			) {
+				return { valid: false, reason: "carryover_root_changed" };
+			}
+			const predecessorId = receipt.predecessor_receipt_id
+				? String(receipt.predecessor_receipt_id)
+				: undefined;
+			if (!predecessorId) {
+				rootHead = String(receipt.from_head).toLowerCase();
+				break;
+			}
+			expectedTo = String(receipt.from_head).toLowerCase();
+			receipt = this.workflowSelectAll(
+				"SELECT * FROM workflow_head_carryover_receipt WHERE receipt_id = ?",
+				[predecessorId],
+			)[0];
+		}
+		if (!rootHead || !receipt || receiptIds.length !== depth) {
+			return { valid: false, reason: "carryover_lineage_broken" };
+		}
+		const rootHolder = this.workflowSelectAll(
+			`SELECT * FROM workflow_gate_holder
+			  WHERE question_id = ? AND run_id = ? AND gate_node_id = ?
+			    AND lower(head_sha) = ?`,
+			[rootSourceReceiptRef, input.runId, holder.gate_node_id, rootHead],
+		)[0] as unknown as WorkflowGateHolderRow | undefined;
+		if (
+			!rootHolder ||
+			!new Set(["approved", "superseded"]).has(rootHolder.state) ||
+			(rootHolder.state === "superseded" &&
+				rootHolder.superseded_from_state !== "approved")
+		) {
+			return { valid: false, reason: "carryover_root_holder_invalid" };
+		}
+		if (
+			String(holderEvidence.root_evidence_digest) !==
+			this.workflowGateEvidenceDigest(rootHolder)
+		) {
+			return { valid: false, reason: "carryover_root_evidence_mismatch" };
+		}
+		for (const frozen of this.listWorkflowGateHolderEvidence(rootHolder)) {
+			const claim = this.getWorkflowClaim(frozen.claim_id);
+			const currentAttempt = this.listWorkflowRunNodes(
+				input.runId,
+				frozen.node_id,
+			).at(-1)?.attempt;
+			const revoked = this.workflowSelectAll(
+				"SELECT 1 AS x FROM workflow_claim_revocation WHERE claim_id = ?",
+				[frozen.claim_id],
+			)[0];
+			if (
+				!claim ||
+				revoked ||
+				currentAttempt !== frozen.node_attempt ||
+				claim.attempt !== frozen.node_attempt ||
+				claim.node_id !== frozen.node_id ||
+				claim.predicate !== frozen.predicate ||
+				claim.decision_kind !== frozen.decision_kind ||
+				claim.subject_kind !== frozen.subject_kind ||
+				claim.subject_digest.toLowerCase() !==
+					frozen.subject_digest.toLowerCase() ||
+				frozen.subject_digest.toLowerCase() !== rootHead
+			) {
+				return { valid: false, reason: "carryover_root_evidence_invalid" };
+			}
+		}
+		const founderClaimId = Number(rootFounderClaimRef);
+		const founderClaim = Number.isInteger(founderClaimId)
+			? this.getWorkflowClaim(founderClaimId)
+			: undefined;
+		const founderRevoked = founderClaim
+			? this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_claim_revocation WHERE claim_id = ?",
+					[founderClaim.id],
+				)[0]
+			: undefined;
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!founderClaim ||
+			founderRevoked ||
+			founderClaim.workflow_run_id !== input.runId ||
+			founderClaim.decision_kind !== "founder_decision" ||
+			founderClaim.predicate !== "founder_approved" ||
+			founderClaim.issuer_kind !== "founder_challenge" ||
+			founderClaim.subject_kind !== "git_head" ||
+			founderClaim.subject_digest.toLowerCase() !== rootHead ||
+			founderClaim.authority_id !== rootSourceReceiptRef ||
+			(founderClaim.permanent !== 1 &&
+				(!founderClaim.expires_at ||
+					StateStore.workflowExpired(founderClaim.expires_at, now)))
+		) {
+			return { valid: false, reason: "carryover_root_founder_claim_invalid" };
+		}
+		const carryoverBinding = this.workflowSelectAll(
+			`SELECT * FROM workflow_carryover_pr_binding
+			  WHERE run_id = ? AND to_head = ? AND carryover_receipt_id = ?`,
+			[input.runId, headSha, endpointId],
+		)[0];
+		if (!carryoverBinding) {
+			return { valid: false, reason: "carryover_pr_binding_missing" };
+		}
+		const rootBinding = this.workflowSelectAll(
+			`SELECT * FROM workflow_node_pr_binding
+			  WHERE receipt_id = ? AND run_id = ? AND lower(head_sha) = ?`,
+			[carryoverBinding.root_binding_receipt_ref, input.runId, rootHead],
+		)[0] as unknown as WorkflowNodePrBindingRow | undefined;
+		if (
+			!rootBinding ||
+			rootBinding.node_id !== carryoverBinding.node_id ||
+			rootBinding.attempt !== Number(carryoverBinding.attempt)
+		) {
+			return { valid: false, reason: "carryover_root_binding_invalid" };
+		}
+		return {
+			valid: true,
+			kind: "carryover",
+			binding: { ...rootBinding, head_sha: headSha },
+			authorityHead: rootHead,
+			rootHead,
+			rootHolderQuestionId: rootSourceReceiptRef,
+			rootFounderClaimRef,
+			rootEvidenceDigest: String(holderEvidence.root_evidence_digest),
+			endpointReceiptId: endpointId,
+			receiptIds,
+			depth,
+		};
 	}
 
 	private resolveCurrentWorkflowNodePrBindingForHead(
@@ -43172,9 +44553,7 @@ export class StateStore {
 			const observationUidParts = lineageUid.startsWith(
 				"runner_ship_merged_observed:",
 			)
-				? lineageUid
-						.slice("runner_ship_merged_observed:".length)
-						.split(":")
+				? lineageUid.slice("runner_ship_merged_observed:".length).split(":")
 				: [];
 			const uidFingerprint =
 				observationUidParts.length >= 4
@@ -43238,7 +44617,7 @@ export class StateStore {
 				payload.mergedHead === null
 					? null
 					: typeof payload.mergedHead === "string" &&
-						/^[0-9a-f]{40}$/i.test(payload.mergedHead)
+							/^[0-9a-f]{40}$/i.test(payload.mergedHead)
 						? payload.mergedHead.toLowerCase()
 						: undefined;
 			if (
@@ -43363,9 +44742,9 @@ export class StateStore {
 		const resolvedProjection =
 			projection ??
 			(fingerprint
-				? this.loadRunnerShipObservationProjections().get(fingerprint) ?? {
+				? (this.loadRunnerShipObservationProjections().get(fingerprint) ?? {
 						status: "none" as const,
-					}
+					})
 				: { status: "none" as const });
 		const carrier = this.getSession(String(holder.source_execution_id));
 		const claims = this.resolveEngineWorkflowShipClaims({
@@ -43559,7 +44938,7 @@ export class StateStore {
 					? StateStore.runnerShipFingerprint(authority)
 					: undefined;
 			const projection = fingerprint
-				? projections.get(fingerprint) ?? { status: "none" as const }
+				? (projections.get(fingerprint) ?? { status: "none" as const })
 				: { status: "none" as const };
 			if (projection.status === "quarantined") continue;
 			if (
@@ -43763,7 +45142,9 @@ export class StateStore {
 		);
 	}
 
-	private runnerShipHolderMembershipValid(holder: Record<string, unknown>): boolean {
+	private runnerShipHolderMembershipValid(
+		holder: Record<string, unknown>,
+	): boolean {
 		return (
 			holder.authority_mode === "runner_ship" &&
 			["materializing", "awaiting_review", "approved"].includes(
@@ -43776,7 +45157,10 @@ export class StateStore {
 		);
 	}
 
-	inspectRunnerShipGateCloseout(questionId: string, now: string):
+	inspectRunnerShipGateCloseout(
+		questionId: string,
+		now: string,
+	):
 		| {
 				ok: true;
 				holder: {
@@ -43824,9 +45208,7 @@ export class StateStore {
 		questionId: string;
 		now: string;
 		alertIdentity: WorkflowEngineAlertIdentity;
-	}):
-		| { ok: true; idempotentReplay: boolean }
-		| { ok: false; reason: string } {
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
 		const inspection = this.inspectRunnerShipGateCloseout(
 			input.questionId,
 			input.now,
@@ -43907,9 +45289,7 @@ export class StateStore {
 			const semanticPayload = {
 				fingerprint,
 				mergedHead,
-				...(rawHeadRefOid !== undefined
-					? { rawHeadRefOid }
-					: {}),
+				...(rawHeadRefOid !== undefined ? { rawHeadRefOid } : {}),
 			};
 			if (!base) {
 				this.appendWorkflowRunEventTx({
@@ -43992,7 +45372,10 @@ export class StateStore {
 			this.recordRunnerShipObservationQuarantineBundleTx({
 				holder,
 				fingerprint,
-				conflictingHeads: [existingHead ?? "invalid", mergedHead ?? "invalid"].sort(),
+				conflictingHeads: [
+					existingHead ?? "invalid",
+					mergedHead ?? "invalid",
+				].sort(),
 				alertIdentity: input.alertIdentity,
 				now: input.now,
 			});
@@ -44262,9 +45645,8 @@ export class StateStore {
 				return;
 			}
 			const fingerprint = StateStore.runnerShipFingerprint(authority);
-			const projection = this.loadRunnerShipObservationProjections().get(
-				fingerprint,
-			);
+			const projection =
+				this.loadRunnerShipObservationProjections().get(fingerprint);
 			if (
 				projection?.status !== "valid" ||
 				projection.headSha !== expectedObservationHead ||
@@ -44373,8 +45755,7 @@ export class StateStore {
 									issueId: String(holder.issue_id),
 									nodeId: String(holder.gate_node_id),
 									executionId: String(holder.source_execution_id),
-									disposition:
-										"runner_ship_merged_before_approval",
+									disposition: "runner_ship_merged_before_approval",
 									leadResolution: input.alertIdentity.leadResolution,
 								},
 							},
@@ -44518,9 +45899,8 @@ export class StateStore {
 				return;
 			}
 			const fingerprint = StateStore.runnerShipFingerprint(authority);
-			const projection = this.loadRunnerShipObservationProjections().get(
-				fingerprint,
-			);
+			const projection =
+				this.loadRunnerShipObservationProjections().get(fingerprint);
 			if (
 				projection?.status !== "valid" ||
 				projection.headSha !== expectedObservationHead ||
@@ -44789,7 +46169,10 @@ export class StateStore {
 			| { status: "not_due" }
 			| { status: "dead_ended"; attempt: number }
 			| { status: "candidate_changed" };
-		if (settled.status !== "candidate_changed" && settled.status !== "not_due") {
+		if (
+			settled.status !== "candidate_changed" &&
+			settled.status !== "not_due"
+		) {
 			this.save();
 		}
 		return settled;
@@ -44900,9 +46283,7 @@ export class StateStore {
 					holderHead,
 					prNumber: input.observed.prNumber,
 					mergedHead,
-					...(rawHeadRefOid !== undefined
-						? { rawHeadRefOid }
-						: {}),
+					...(rawHeadRefOid !== undefined ? { rawHeadRefOid } : {}),
 					anomaly: input.observed.anomaly,
 				},
 			});
@@ -45228,6 +46609,420 @@ export class StateStore {
 		) as unknown as WorkflowGateHolderRow[];
 	}
 
+	commitEquivalentHeadCarryover(input: {
+		runId: string;
+		gateNodeId: string;
+		fromQuestionId: string;
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		proof: {
+			proofKind: "clean_base_merge_tree_identity";
+			approvedHead: string;
+			baseOid: string;
+			candidateHead: string;
+			secondParentObserved: string;
+			proofTreeOid: string;
+		};
+		now: string;
+	}):
+		| {
+				ok: true;
+				idempotentReplay: boolean;
+				receiptId: string;
+				ordinal: number;
+				questionId: string;
+				operation: LandOperationRow;
+		  }
+		| { ok: false; reason: string } {
+		const fromHead = input.proof.approvedHead.trim().toLowerCase();
+		const toHead = input.proof.candidateHead.trim().toLowerCase();
+		const baseOid = input.proof.baseOid.trim().toLowerCase();
+		const secondParentObserved = input.proof.secondParentObserved
+			.trim()
+			.toLowerCase();
+		const proofTreeOid = input.proof.proofTreeOid.trim().toLowerCase();
+		if (
+			!input.runId ||
+			!input.gateNodeId ||
+			!input.fromQuestionId ||
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			input.proof.proofKind !== "clean_base_merge_tree_identity" ||
+			![fromHead, toHead, baseOid, secondParentObserved, proofTreeOid].every(
+				(value) => /^[0-9a-f]{40}$/.test(value),
+			) ||
+			fromHead === toHead ||
+			baseOid !== secondParentObserved ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_equivalent_head_carryover" };
+		}
+		const receiptId = `head-carryover:${canonicalSubmissionDigest({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			fromHead,
+			toHead,
+			baseOid,
+			proofTreeOid,
+		})}`;
+		const questionId = `workflow-gate-carryover:${canonicalSubmissionDigest({
+			runId: input.runId,
+			gateNodeId: input.gateNodeId,
+			receiptId,
+			toHead,
+		})}`;
+
+		const replayReceipt = this.workflowSelectAll(
+			"SELECT * FROM workflow_head_carryover_receipt WHERE receipt_id = ?",
+			[receiptId],
+		)[0];
+		if (replayReceipt) {
+			const oldOperation = this.getLandOperation(input.operationId);
+			const successor = oldOperation?.superseded_by_operation_id
+				? this.getLandOperation(oldOperation.superseded_by_operation_id)
+				: undefined;
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(questionId);
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: toHead,
+				now: input.now,
+			});
+			if (
+				replayReceipt.run_id === input.runId &&
+				replayReceipt.gate_node_id === input.gateNodeId &&
+				String(replayReceipt.from_head).toLowerCase() === fromHead &&
+				String(replayReceipt.to_head).toLowerCase() === toHead &&
+				String(replayReceipt.base_oid).toLowerCase() === baseOid &&
+				String(replayReceipt.second_parent_observed).toLowerCase() ===
+					secondParentObserved &&
+				String(replayReceipt.proof_tree_oid).toLowerCase() === proofTreeOid &&
+				holder?.state === "approved" &&
+				holder.approval_origin === "engine_equivalence_carryover" &&
+				authority.valid &&
+				authority.kind === "carryover" &&
+				successor?.approved_head === toHead &&
+				successor.superseded_at === null
+			) {
+				return {
+					ok: true,
+					idempotentReplay: true,
+					receiptId,
+					ordinal: authority.depth,
+					questionId,
+					operation: successor,
+				};
+			}
+			return { ok: false, reason: "equivalent_head_carryover_replay_conflict" };
+		}
+
+		let result:
+			| {
+					ok: true;
+					idempotentReplay: boolean;
+					receiptId: string;
+					ordinal: number;
+					questionId: string;
+					operation: LandOperationRow;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "equivalent_head_carryover_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const run = this.getWorkflowRun(input.runId);
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+				input.fromQuestionId,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				run?.engine_owned !== 1 ||
+				!run.snapshot ||
+				run.status !== "active" ||
+				run.current_node_id == null ||
+				!holder ||
+				holder.run_id !== input.runId ||
+				holder.gate_node_id !== input.gateNodeId ||
+				holder.state !== "approved" ||
+				holder.head_sha.toLowerCase() !== fromHead ||
+				!operation ||
+				operation.run_id !== input.runId ||
+				operation.approved_head !== fromHead ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			let parsed: ReturnType<typeof parseWorkflowRunSnapshot>;
+			try {
+				parsed = parseWorkflowRunSnapshot(run.snapshot);
+			} catch {
+				result = { ok: false, reason: "equivalent_head_snapshot_invalid" };
+				return;
+			}
+			if (
+				workflowApprovalGate(parsed.manifest).node !== input.gateNodeId ||
+				workflowTerminalNode(parsed.manifest) !== run.current_node_id
+			) {
+				return;
+			}
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: input.runId,
+				headSha: fromHead,
+				now: input.now,
+			});
+			if (!authority.valid) {
+				result = {
+					ok: false,
+					reason: `equivalent_head_authority:${authority.reason}`,
+				};
+				return;
+			}
+			if (authority.depth >= 3) {
+				result = { ok: false, reason: "carryover_lineage_limit" };
+				return;
+			}
+			let rootFounderClaimRef: string;
+			let rootHolderQuestionId: string;
+			let rootEvidenceDigest: string;
+			let predecessorReceiptId: string | null;
+			if (authority.kind === "carryover") {
+				rootFounderClaimRef = authority.rootFounderClaimRef;
+				rootHolderQuestionId = authority.rootHolderQuestionId;
+				rootEvidenceDigest = authority.rootEvidenceDigest;
+				predecessorReceiptId = authority.endpointReceiptId;
+			} else {
+				const founder = this.resolveWorkflowDecisionClaim({
+					runId: input.runId,
+					decisionKind: "founder_decision",
+					predicate: "founder_approved",
+					subjectKind: "git_head",
+					subjectDigest: fromHead,
+					now: input.now,
+				});
+				if (
+					!founder.valid ||
+					founder.claim.authority_id !== holder.question_id
+				) {
+					result = {
+						ok: false,
+						reason: "carryover_root_founder_claim_invalid",
+					};
+					return;
+				}
+				rootFounderClaimRef = String(founder.claim.id);
+				rootHolderQuestionId = holder.question_id;
+				rootEvidenceDigest = this.workflowGateEvidenceDigest(holder);
+				predecessorReceiptId = null;
+			}
+			this.db.run(
+				`INSERT INTO workflow_head_carryover_receipt
+				   (receipt_id, run_id, gate_node_id, holder_attempt,
+				    predecessor_receipt_id, from_head, to_head, base_oid,
+				    second_parent_observed, proof_tree_oid, proof_kind,
+				    root_founder_claim_ref, root_source_receipt_ref, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+				         'clean_base_merge_tree_identity', ?, ?, ?)`,
+				[
+					receiptId,
+					input.runId,
+					input.gateNodeId,
+					holder.attempt,
+					predecessorReceiptId,
+					fromHead,
+					toHead,
+					baseOid,
+					secondParentObserved,
+					proofTreeOid,
+					rootFounderClaimRef,
+					rootHolderQuestionId,
+					input.now,
+				],
+			);
+			this.supersedeWorkflowShipTargetsForCurrentGateTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				now: input.now,
+			});
+			const superseded = this.supersedeWorkflowGateHoldersTx({
+				runId: input.runId,
+				gateNodeId: input.gateNodeId,
+				questionId: input.fromQuestionId,
+				fromStates: ["approved"],
+				reason: "head_refresh_equivalent",
+				now: input.now,
+			});
+			if (superseded.updated !== 1) {
+				throw new Error("equivalent_head_holder_cas_lost");
+			}
+			this.db.run(
+				`INSERT INTO workflow_gate_holder
+				   (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+				    question_id, authority_mode, subject_kind, carrier_binding_state,
+				    approval_origin, state, materialization_stage, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'bound',
+				         'engine_equivalence_carryover', 'approved', 'completed', ?, ?)`,
+				[
+					input.runId,
+					input.gateNodeId,
+					holder.attempt,
+					toHead,
+					holder.source_execution_id,
+					questionId,
+					holder.authority_mode,
+					holder.subject_kind ?? "git_head",
+					input.now,
+					input.now,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_carryover_pr_binding
+				   (run_id, node_id, attempt, to_head, carryover_receipt_id,
+				    root_binding_receipt_ref)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.runId,
+					authority.binding.node_id,
+					authority.binding.attempt,
+					toHead,
+					receiptId,
+					authority.binding.receipt_id,
+				],
+			);
+			this.db.run(
+				`INSERT INTO workflow_gate_holder_carryover_evidence
+				   (question_id, run_id, gate_node_id, holder_attempt,
+				    holder_subject_digest, carryover_receipt_id, root_evidence_digest)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+				[
+					questionId,
+					input.runId,
+					input.gateNodeId,
+					holder.attempt,
+					toHead,
+					receiptId,
+					rootEvidenceDigest,
+				],
+			);
+			this.recordWorkflowShipTargetBindingTx({
+				approveQuestionId: questionId,
+				runId: input.runId,
+				sourceRequestId: receiptId,
+				binding: { ...authority.binding, head_sha: toHead },
+			});
+			this.db.run(
+				`INSERT INTO workflow_carryover_activation
+				   (carryover_receipt_id, state, first_observed_at)
+				 VALUES (?, 'pending', ?)`,
+				[receiptId, input.now],
+			);
+
+			const nextOperationId = `land:${canonicalSubmissionDigest({
+				projectName: operation.project_name,
+				issueId: operation.issue_id,
+				prNumber: Number(operation.pr_number),
+				approvedHead: toHead,
+			})}`;
+			this.db.run(
+				`INSERT INTO land_operation
+				   (operation_id, run_id, issue_id, project_name, pr_number,
+				    approved_head, carryover_receipt_id, state, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+				[
+					nextOperationId,
+					operation.run_id,
+					operation.issue_id,
+					operation.project_name,
+					operation.pr_number,
+					toHead,
+					receiptId,
+					input.now,
+					input.now,
+				],
+			);
+			const supersedeReceipt = {
+				nextApprovedHead: toHead,
+				nextOperationId,
+				reason: "head_refresh_equivalent",
+			};
+			this.db.run(
+				`INSERT INTO land_operation_step
+				   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+				 VALUES (?, 'superseded', ?, ?, ?, ?)`,
+				[
+					input.operationId,
+					canonicalSubmissionDigest(supersedeReceipt),
+					JSON.stringify(supersedeReceipt),
+					input.generation,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE land_operation
+				    SET superseded_at = ?, superseded_by_operation_id = ?,
+				        generation = generation + 1, owner_id = NULL,
+				        lease_expires_at = NULL, current_step = 'superseded', updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND state = 'running' AND owner_id = ? AND generation = ?`,
+				[
+					input.now,
+					nextOperationId,
+					input.now,
+					input.operationId,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("equivalent_head_operation_cas_lost");
+			}
+			this.db.run(
+				"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+				[input.operationId],
+			);
+			this.db.run(
+				`UPDATE land_recovery_episode SET current_operation_id = ?
+				  WHERE current_operation_id = ? AND state = 'open'`,
+				[nextOperationId, input.operationId],
+			);
+			this.appendWorkflowRunEventTx({
+				runId: input.runId,
+				eventUid: `head_carryover:${receiptId}`,
+				kind: "head_equivalence_carried_over",
+				nodeId: input.gateNodeId,
+				executionId: holder.source_execution_id,
+				payload: {
+					receiptId,
+					fromHead,
+					toHead,
+					baseOid,
+					proofTreeOid,
+					depth: authority.depth + 1,
+					questionId,
+					nextOperationId,
+				},
+			});
+			const nextOperation = this.getLandOperation(nextOperationId);
+			if (!nextOperation) throw new Error("equivalent_head_operation_missing");
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				receiptId,
+				ordinal: authority.depth + 1,
+				questionId,
+				operation: nextOperation,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	ensureLandOperation(input: {
 		runId?: string;
 		issueId: string;
@@ -45279,11 +47074,13 @@ export class StateStore {
 		}
 		if (input.runId && !row.run_id) {
 			this.db.run(
-				"UPDATE land_operation SET run_id = ?, updated_at = ? WHERE operation_id = ? AND run_id IS NULL",
+				"UPDATE land_operation SET run_id = ?, updated_at = ? WHERE operation_id = ? AND run_id IS NULL AND superseded_at IS NULL",
 				[input.runId, input.now, operationId],
 			);
-			row.run_id = input.runId;
-			row.updated_at = input.now;
+			if (this.db.getRowsModified() === 1) {
+				row.run_id = input.runId;
+				row.updated_at = input.now;
+			}
 		}
 		this.save();
 		return row as unknown as LandOperationRow;
@@ -45296,10 +47093,1175 @@ export class StateStore {
 		)[0] as unknown as LandOperationRow | undefined;
 	}
 
-	getLandOperationForRun(runId: string): LandOperationRow | undefined {
+	getWorkflowCarryoverActivation(
+		carryoverReceiptId: string,
+	): WorkflowCarryoverActivationRow | undefined {
 		return this.workflowSelectAll(
-			"SELECT * FROM land_operation WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
-			[runId],
+			"SELECT * FROM workflow_carryover_activation WHERE carryover_receipt_id = ?",
+			[carryoverReceiptId],
+		)[0] as unknown as WorkflowCarryoverActivationRow | undefined;
+	}
+
+	getWorkflowSourceReceipt(
+		project: string,
+		sourceEventId: string,
+	):
+		| {
+				project: string;
+				source_event_id: string;
+				payload_digest: string;
+				claim_id: number | null;
+				source_row_id: number | null;
+				applied_at: string;
+		  }
+		| undefined {
+		return this.workflowSelectAll(
+			`SELECT project, source_event_id, payload_digest, claim_id,
+			        source_row_id, applied_at
+			   FROM workflow_source_receipt
+			  WHERE project = ? AND source_event_id = ?`,
+			[project, sourceEventId],
+		)[0] as
+			| {
+					project: string;
+					source_event_id: string;
+					payload_digest: string;
+					claim_id: number | null;
+					source_row_id: number | null;
+					applied_at: string;
+			  }
+			| undefined;
+	}
+
+	expireWorkflowCarryoverDeparture(input: {
+		carryoverReceiptId: string;
+		operationId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.carryoverReceiptId ||
+			!input.operationId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowAlertIdentityValid(input.alertIdentity)
+		) {
+			return { ok: false, reason: "invalid_carryover_departure_expiry" };
+		}
+		const escalationUid = `carryover_departure_horizon:${input.carryoverReceiptId}`;
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "carryover_departure_expiry_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const activation = this.getWorkflowCarryoverActivation(
+				input.carryoverReceiptId,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			const run = operation?.run_id
+				? this.getWorkflowRun(operation.run_id)
+				: undefined;
+			if (
+				activation?.state === "superseded" &&
+				activation.alert_uid === escalationUid &&
+				operation?.state === "held" &&
+				run?.status === "held"
+			) {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (
+				!activation ||
+				activation.state !== "pending" ||
+				!operation ||
+				operation.operation_id !== input.operationId ||
+				operation.carryover_receipt_id !== input.carryoverReceiptId ||
+				operation.superseded_at !== null ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active"
+			) {
+				return;
+			}
+			if (
+				Date.parse(input.now) - Date.parse(activation.first_observed_at) <
+				60 * 60_000
+			) {
+				result = { ok: false, reason: "carryover_departure_horizon_pending" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_carryover_activation
+				    SET state = 'superseded', generation = generation + 1,
+				        next_probe_at = NULL, alert_uid = ?
+				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
+				[escalationUid, input.carryoverReceiptId],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`UPDATE land_operation
+				    SET state = 'held', owner_id = NULL, lease_expires_at = NULL,
+				        generation = generation + 1, current_step = 'carryover_departure',
+				        next_attempt_at = NULL,
+				        last_error = 'carryover_activation_horizon_exceeded',
+				        updated_at = ?
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND carryover_receipt_id = ?
+				    AND state IN ('intent','partial','running')`,
+				[input.now, input.operationId, input.carryoverReceiptId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("carryover departure expiry operation raced");
+			}
+			this.db.run(
+				"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+				[input.operationId],
+			);
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[run.run_id],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("carryover departure expiry run raced");
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: run.run_id,
+				eventUid: escalationUid,
+				kind: "land_held",
+				nodeId: run.current_node_id ?? undefined,
+				payload: {
+					operationId: input.operationId,
+					carryoverReceiptId: input.carryoverReceiptId,
+					reason: "carryover_activation_horizon_exceeded",
+					firstObservedAt: activation.first_observed_at,
+					at: input.now,
+				},
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: run.run_id,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: escalationUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${run.run_id}`,
+					title: `Workflow carryover cutoff stalled for ${run.issue_id}`,
+					body: `Run ${run.run_id} could not project the immutable land-departure cutoff within one hour. Land is held without revoking founder intent; inspect the source projector, then resume through the normal operator recovery path.`,
+					metadata: {
+						workflowEngine: {
+							runId: run.run_id,
+							issueId: run.issue_id,
+							nodeId: run.current_node_id ?? "land",
+							executionId: "workflow-engine:carryover-cutoff",
+							disposition: "held",
+							operationId: input.operationId,
+							reason: "carryover_activation_horizon_exceeded",
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listPendingWorkflowCarryoverDepartures(
+		limit = 20,
+	): WorkflowPendingCarryoverDeparture[] {
+		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+		const candidates = this.workflowSelectAll(
+			`SELECT operation.*,
+			        activation.first_observed_at AS carryover_first_observed_at
+			   FROM workflow_carryover_activation AS activation
+			   JOIN land_operation AS operation
+			     ON operation.carryover_receipt_id = activation.carryover_receipt_id
+			  WHERE activation.state = 'pending'
+			    AND operation.superseded_at IS NULL
+			  ORDER BY activation.first_observed_at ASC, operation.operation_id ASC
+			  LIMIT ?`,
+			[boundedLimit],
+		) as unknown as Array<
+			LandOperationRow & {
+				carryover_first_observed_at: string;
+			}
+		>;
+		const pending: WorkflowPendingCarryoverDeparture[] = [];
+		for (const operation of candidates) {
+			if (!operation.run_id || !operation.carryover_receipt_id) continue;
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: operation.run_id,
+				headSha: operation.approved_head,
+			});
+			if (
+				!authority.valid ||
+				authority.kind !== "carryover" ||
+				authority.endpointReceiptId !== operation.carryover_receipt_id
+			) {
+				continue;
+			}
+			pending.push({
+				operation,
+				carryoverReceiptId: operation.carryover_receipt_id,
+				ordinal: authority.depth,
+				firstObservedAt: operation.carryover_first_observed_at,
+			});
+		}
+		return pending;
+	}
+
+	authorizeWorkflowCarryoverDeparture(input: {
+		carryoverReceiptId: string;
+		sourceCutoffRowId: number;
+		operationId: string;
+		expectedGeneration: number;
+		now: string;
+		deferSave?: boolean;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.carryoverReceiptId ||
+			!Number.isInteger(input.sourceCutoffRowId) ||
+			input.sourceCutoffRowId < 1 ||
+			!input.operationId ||
+			!Number.isInteger(input.expectedGeneration) ||
+			input.expectedGeneration < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_carryover_departure" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "carryover_departure_precondition_failed",
+		};
+		this.db.transaction(() => {
+			const activation = this.getWorkflowCarryoverActivation(
+				input.carryoverReceiptId,
+			);
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				!activation ||
+				!operation ||
+				operation.carryover_receipt_id !== input.carryoverReceiptId ||
+				operation.superseded_at !== null ||
+				operation.generation !== input.expectedGeneration ||
+				operation.run_id == null
+			) {
+				return;
+			}
+			if (activation.state === "departure_authorized") {
+				result =
+					activation.source_cutoff_row_id === input.sourceCutoffRowId
+						? { ok: true, idempotentReplay: true }
+						: { ok: false, reason: "carryover_departure_cutoff_conflict" };
+				return;
+			}
+			if (activation.state !== "pending") return;
+			const authority = this.resolveWorkflowExactHeadAuthority({
+				runId: operation.run_id,
+				headSha: operation.approved_head,
+				now: input.now,
+			});
+			if (
+				!authority.valid ||
+				authority.kind !== "carryover" ||
+				authority.endpointReceiptId !== input.carryoverReceiptId
+			) {
+				result = { ok: false, reason: "carryover_departure_authority_invalid" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_carryover_activation
+				    SET state = 'departure_authorized', source_cutoff_row_id = ?,
+				        generation = generation + 1, next_probe_at = NULL
+				  WHERE carryover_receipt_id = ? AND state = 'pending'`,
+				[input.sourceCutoffRowId, input.carryoverReceiptId],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = { ok: true, idempotentReplay: false };
+			}
+		});
+		if (result.ok && !input.deferSave) this.save();
+		return result;
+	}
+
+	private landCarryoverDepartureAuthorized(
+		operation: Pick<LandOperationRow, "carryover_receipt_id">,
+	): boolean {
+		if (!operation.carryover_receipt_id) return true;
+		return (
+			this.getWorkflowCarryoverActivation(operation.carryover_receipt_id)
+				?.state === "departure_authorized"
+		);
+	}
+
+	openLandRecoveryEpisode(input: {
+		runId: string;
+		rootApprovalRef: string;
+		kind: LandRecoveryKind;
+		scopeKey?: string;
+		currentOperationId: string;
+		firstObservedAt: string;
+		lastProbeAt: string;
+		nextProbeAt?: string | null;
+		alertUid?: string | null;
+	}): LandRecoveryEpisodeRow {
+		const scopeKey = input.scopeKey ?? "";
+		if (
+			!input.runId ||
+			!input.rootApprovalRef ||
+			!input.currentOperationId ||
+			!(
+				["alignment", "outage", "conflict", "policy", "refire"] as const
+			).includes(input.kind) ||
+			!StateStore.workflowFiniteTimestamp(input.firstObservedAt) ||
+			!StateStore.workflowFiniteTimestamp(input.lastProbeAt) ||
+			(input.nextProbeAt !== undefined &&
+				input.nextProbeAt !== null &&
+				!StateStore.workflowFiniteTimestamp(input.nextProbeAt))
+		) {
+			throw new Error("invalid_land_recovery_episode");
+		}
+		let episode: LandRecoveryEpisodeRow | undefined;
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT run_id FROM land_operation WHERE operation_id = ? AND superseded_at IS NULL",
+				[input.currentOperationId],
+			)[0];
+			if (!operation || operation.run_id !== input.runId) {
+				throw new Error("land_recovery_operation_mismatch");
+			}
+			const existing = this.workflowSelectAll(
+				`SELECT * FROM land_recovery_episode
+				  WHERE run_id = ? AND root_approval_ref = ? AND kind = ?
+				    AND scope_key = ? AND state = 'open'`,
+				[input.runId, input.rootApprovalRef, input.kind, scopeKey],
+			)[0];
+			if (existing) {
+				this.db.run(
+					`UPDATE land_recovery_episode
+					    SET current_operation_id = ?, last_probe_at = ?, next_probe_at = ?,
+					        alert_uid = COALESCE(alert_uid, ?)
+					  WHERE episode_id = ? AND state = 'open'`,
+					[
+						input.currentOperationId,
+						input.lastProbeAt,
+						input.nextProbeAt ?? null,
+						input.alertUid ?? null,
+						existing.episode_id,
+					],
+				);
+				episode = this.workflowSelectAll(
+					"SELECT * FROM land_recovery_episode WHERE episode_id = ?",
+					[existing.episode_id],
+				)[0] as unknown as LandRecoveryEpisodeRow;
+				return;
+			}
+			const episodeId = `land-episode:${canonicalSubmissionDigest({
+				runId: input.runId,
+				rootApprovalRef: input.rootApprovalRef,
+				kind: input.kind,
+				scopeKey,
+				firstObservedAt: input.firstObservedAt,
+			})}`;
+			this.db.run(
+				`INSERT INTO land_recovery_episode
+				   (episode_id, run_id, root_approval_ref, kind, scope_key,
+				    current_operation_id, first_observed_at, last_probe_at,
+				    next_probe_at, state, alert_uid)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+				[
+					episodeId,
+					input.runId,
+					input.rootApprovalRef,
+					input.kind,
+					scopeKey,
+					input.currentOperationId,
+					input.firstObservedAt,
+					input.lastProbeAt,
+					input.nextProbeAt ?? null,
+					input.alertUid ?? null,
+				],
+			);
+			episode = this.workflowSelectAll(
+				"SELECT * FROM land_recovery_episode WHERE episode_id = ?",
+				[episodeId],
+			)[0] as unknown as LandRecoveryEpisodeRow;
+		});
+		if (!episode) throw new Error("land_recovery_episode_not_created");
+		this.save();
+		return episode;
+	}
+
+	getLandRecoveryEpisode(
+		episodeId: string,
+	): LandRecoveryEpisodeRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM land_recovery_episode WHERE episode_id = ?",
+			[episodeId],
+		)[0] as unknown as LandRecoveryEpisodeRow | undefined;
+	}
+
+	getOpenLandRecoveryEpisode(input: {
+		runId: string;
+		rootApprovalRef: string;
+		kind: LandRecoveryKind;
+		scopeKey?: string;
+	}): LandRecoveryEpisodeRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_recovery_episode
+			  WHERE run_id = ? AND root_approval_ref = ? AND kind = ?
+			    AND scope_key = ? AND state = 'open'`,
+			[input.runId, input.rootApprovalRef, input.kind, input.scopeKey ?? ""],
+		)[0] as unknown as LandRecoveryEpisodeRow | undefined;
+	}
+
+	closeLandRecoveryEpisode(input: {
+		episodeId: string;
+		closedReason: string;
+		now: string;
+	}): boolean {
+		if (
+			!input.episodeId ||
+			!input.closedReason ||
+			input.closedReason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE land_recovery_episode
+			    SET state = 'closed', closed_reason = ?, closed_at = ?, next_probe_at = NULL
+			  WHERE episode_id = ? AND state = 'open'`,
+			[input.closedReason, input.now, input.episodeId],
+		);
+		const updated = this.db.getRowsModified() === 1;
+		if (updated) this.save();
+		return updated;
+	}
+
+	listLandCoolAttempts(operationId: string): LandCoolAttemptRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_cool_attempt
+			  WHERE operation_id = ? ORDER BY ordinal`,
+			[operationId],
+		) as unknown as LandCoolAttemptRow[];
+	}
+
+	getOpenLandCoolAttempt(operationId: string): LandCoolAttemptRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_cool_attempt
+			  WHERE operation_id = ? AND state IN ('prepared','sent')
+			  ORDER BY ordinal DESC LIMIT 1`,
+			[operationId],
+		)[0] as unknown as LandCoolAttemptRow | undefined;
+	}
+
+	prepareLandCoolAttempt(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		repoIdentity: string;
+		now: string;
+	}): LandCoolAttemptMutationResult {
+		if (
+			!input.operationId ||
+			!input.ownerId ||
+			!input.repoIdentity ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_attempt" };
+		}
+		let result: LandCoolAttemptMutationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			if (
+				!operation ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			const open = this.getOpenLandCoolAttempt(input.operationId);
+			if (open) {
+				result = { ok: true, idempotentReplay: true, attempt: open };
+				return;
+			}
+			const ordinal =
+				Number(
+					this.workflowSelectAll(
+						"SELECT COALESCE(MAX(ordinal), 0) AS ordinal FROM land_cool_attempt WHERE operation_id = ?",
+						[input.operationId],
+					)[0]?.ordinal ?? 0,
+				) + 1;
+			if (ordinal > 3) {
+				result = { ok: false, reason: "land_cool_refire_limit" };
+				return;
+			}
+			const competing = this.workflowSelectAll(
+				`SELECT operation_id, ordinal FROM land_cool_attempt
+				  WHERE project_name = ? AND repo_identity = ?
+				    AND state IN ('prepared','sent')
+				    AND operation_id <> ? LIMIT 1`,
+				[operation.project_name, input.repoIdentity, input.operationId],
+			)[0];
+			if (competing) {
+				result = { ok: false, reason: "land_external_effect_inflight" };
+				return;
+			}
+			this.db.run(
+				`INSERT INTO land_cool_attempt
+				   (operation_id, ordinal, project_name, repo_identity, state,
+				    head_sha, generation, prepared_at)
+				 VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?)`,
+				[
+					input.operationId,
+					ordinal,
+					operation.project_name,
+					input.repoIdentity,
+					operation.approved_head,
+					input.generation,
+					input.now,
+				],
+			);
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				attempt: this.getOpenLandCoolAttempt(input.operationId)!,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markLandCoolAttemptSent(input: {
+		operationId: string;
+		ordinal: number;
+		ownerId: string;
+		generation: number;
+		attemptGeneration?: number;
+		commentId: string;
+		now: string;
+	}): LandCoolAttemptMutationResult {
+		if (
+			!input.commentId ||
+			!Number.isInteger(input.ordinal) ||
+			input.ordinal < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_sent" };
+		}
+		let result: LandCoolAttemptMutationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			const attempt = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			if (
+				!operation ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!attempt ||
+				attempt.generation !== (input.attemptGeneration ?? input.generation)
+			) {
+				return;
+			}
+			if (attempt.state === "sent" && attempt.comment_id === input.commentId) {
+				result = { ok: true, idempotentReplay: true, attempt };
+				return;
+			}
+			if (attempt.state !== "prepared") {
+				result = { ok: false, reason: "land_cool_attempt_state_conflict" };
+				return;
+			}
+			this.db.run(
+				`UPDATE land_cool_attempt SET state = 'sent', comment_id = ?, sent_at = ?
+				  WHERE operation_id = ? AND ordinal = ? AND state = 'prepared'
+				    AND generation = ?`,
+				[
+					input.commentId,
+					input.now,
+					input.operationId,
+					input.ordinal,
+					input.attemptGeneration ?? input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			result = {
+				ok: true,
+				idempotentReplay: false,
+				attempt: this.getOpenLandCoolAttempt(input.operationId)!,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	adjudicateAbsentLandCoolAttempt(input: {
+		operationId: string;
+		ordinal: number;
+		ownerId: string;
+		generation: number;
+		attemptGeneration: number;
+		observedAt: string;
+		now: string;
+	}): LandCoolAdjudicationResult {
+		if (
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.ordinal) ||
+			input.ordinal < 1 ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!Number.isInteger(input.attemptGeneration) ||
+			input.attemptGeneration < 0 ||
+			!StateStore.workflowFiniteTimestamp(input.observedAt) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_adjudication" };
+		}
+		let result: LandCoolAdjudicationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			const attempt = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			if (
+				!operation ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!operation.lease_expires_at ||
+				operation.lease_expires_at <= input.now ||
+				!attempt ||
+				attempt.generation !== input.attemptGeneration ||
+				attempt.head_sha !== operation.approved_head
+			) {
+				return;
+			}
+			const existing = this.workflowSelectAll(
+				`SELECT receipt_id FROM land_cool_adjudication_receipt
+				  WHERE operation_id = ? AND ordinal = ? AND basis = 'comment_absence'`,
+				[input.operationId, input.ordinal],
+			)[0];
+			if (attempt.state === "voided" && existing) {
+				result = { ok: true, idempotentReplay: true, voidedCount: 0 };
+				return;
+			}
+			if (
+				attempt.state !== "prepared" ||
+				Date.parse(input.observedAt) - Date.parse(attempt.prepared_at) <
+					2 * 60_000 ||
+				Date.parse(input.now) < Date.parse(input.observedAt)
+			) {
+				result = {
+					ok: false,
+					reason: "land_cool_absence_proof_invalid",
+				};
+				return;
+			}
+			const evidence = {
+				basis: "comment_absence" as const,
+				projectName: operation.project_name,
+				prNumber: operation.pr_number,
+				headSha: attempt.head_sha,
+				preparedAt: attempt.prepared_at,
+				observedAt: input.observedAt,
+			};
+			const evidenceDigest = canonicalSubmissionDigest(evidence);
+			const receiptId = `cool-adjudication:${canonicalSubmissionDigest({
+				operationId: input.operationId,
+				ordinal: input.ordinal,
+				basis: evidence.basis,
+				evidenceDigest,
+			})}`;
+			this.db.run(
+				`UPDATE land_cool_attempt
+				    SET state = 'voided',
+				        classification = 'adjudicated:comment_absence',
+				        voided_at = ?
+				  WHERE operation_id = ? AND ordinal = ? AND state = 'prepared'
+				    AND generation = ?`,
+				[
+					input.now,
+					input.operationId,
+					input.ordinal,
+					input.attemptGeneration,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT INTO land_cool_adjudication_receipt
+				   (receipt_id, operation_id, ordinal, basis,
+				    confirming_operation_id, adjudicated_by, evidence_json,
+				    evidence_digest, adjudicated_at)
+				 VALUES (?, ?, ?, 'comment_absence', ?,
+				         'workflow-engine:comment-absence-probe', ?, ?, ?)`,
+				[
+					receiptId,
+					input.operationId,
+					input.ordinal,
+					input.operationId,
+					JSON.stringify(evidence),
+					evidenceDigest,
+					input.now,
+				],
+			);
+			result = { ok: true, idempotentReplay: false, voidedCount: 1 };
+			changed = true;
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	markLandCoolAttemptTerminal(input: {
+		operationId: string;
+		ordinal: number;
+		ownerId: string;
+		generation: number;
+		attemptGeneration?: number;
+		classification: string;
+		shipRunId?: string;
+		now: string;
+	}): LandCoolAttemptMutationResult {
+		if (
+			!input.classification ||
+			input.classification.length > 200 ||
+			!Number.isInteger(input.ordinal) ||
+			input.ordinal < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_terminal" };
+		}
+		let result: LandCoolAttemptMutationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			const attempt = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			if (
+				!operation ||
+				operation.superseded_at !== null ||
+				operation.state !== "running" ||
+				operation.owner_id !== input.ownerId ||
+				operation.generation !== input.generation ||
+				!attempt ||
+				attempt.generation !== (input.attemptGeneration ?? input.generation)
+			) {
+				return;
+			}
+			if (
+				attempt.state === "terminal" &&
+				attempt.classification === input.classification &&
+				attempt.ship_run_id === (input.shipRunId ?? null)
+			) {
+				result = { ok: true, idempotentReplay: true, attempt };
+				return;
+			}
+			if (attempt.state !== "sent") {
+				result = { ok: false, reason: "land_cool_attempt_state_conflict" };
+				return;
+			}
+			this.db.run(
+				`UPDATE land_cool_attempt
+				    SET state = 'terminal', classification = ?, ship_run_id = ?, terminal_at = ?
+				  WHERE operation_id = ? AND ordinal = ? AND state = 'sent'
+				    AND generation = ?`,
+				[
+					input.classification,
+					input.shipRunId ?? null,
+					input.now,
+					input.operationId,
+					input.ordinal,
+					input.attemptGeneration ?? input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			const settled = this.listLandCoolAttempts(input.operationId).find(
+				(candidate) => candidate.ordinal === input.ordinal,
+			);
+			if (settled) {
+				result = { ok: true, idempotentReplay: false, attempt: settled };
+			}
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	listLandCoolAdjudicationReceipts(): LandCoolAdjudicationReceiptRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_cool_adjudication_receipt
+			  ORDER BY adjudicated_at, receipt_id`,
+			[],
+		).map((row) => ({
+			receipt_id: row.receipt_id as string,
+			operation_id: row.operation_id as string,
+			ordinal: Number(row.ordinal),
+			basis: row.basis as LandCoolAdjudicationBasis,
+			confirming_operation_id:
+				(row.confirming_operation_id as string | null) ?? null,
+			adjudicated_by: row.adjudicated_by as string,
+			evidence: JSON.parse(row.evidence_json as string) as Record<
+				string,
+				unknown
+			>,
+			evidence_digest: row.evidence_digest as string,
+			adjudicated_at: row.adjudicated_at as string,
+		}));
+	}
+
+	adjudicateRemoteInvalidatedLandCoolAttempts(input: {
+		confirmingOperationId: string;
+		ownerId: string;
+		generation: number;
+		repoIdentity: string;
+		observedPrNumber: number;
+		observedHeadSha: string;
+		observedPrState: "OPEN" | "MERGED" | "CLOSED";
+		now: string;
+	}): LandCoolAdjudicationResult {
+		const observedHeadSha = input.observedHeadSha.trim().toLowerCase();
+		if (
+			!input.confirmingOperationId ||
+			!input.ownerId ||
+			!input.repoIdentity ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!Number.isInteger(input.observedPrNumber) ||
+			input.observedPrNumber < 1 ||
+			!/^[0-9a-f]{40}$/.test(observedHeadSha) ||
+			!new Set(["OPEN", "MERGED", "CLOSED"]).has(input.observedPrState) ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_cool_adjudication" };
+		}
+		let result: LandCoolAdjudicationResult = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		let changed = false;
+		this.db.transaction(() => {
+			const confirming = this.getLandOperation(input.confirmingOperationId);
+			if (
+				!confirming ||
+				confirming.superseded_at !== null ||
+				confirming.state !== "running" ||
+				confirming.owner_id !== input.ownerId ||
+				confirming.generation !== input.generation ||
+				!confirming.lease_expires_at ||
+				confirming.lease_expires_at <= input.now
+			) {
+				return;
+			}
+			if (
+				confirming.pr_number !== input.observedPrNumber ||
+				confirming.approved_head !== observedHeadSha
+			) {
+				result = {
+					ok: false,
+					reason: "observed_head_not_confirming_operation",
+				};
+				return;
+			}
+			const candidates = this.workflowSelectAll(
+				`SELECT attempt.operation_id, attempt.ordinal, attempt.head_sha,
+				        attempt.generation, prior.pr_number
+				   FROM land_cool_attempt attempt
+				   JOIN land_operation prior
+				     ON prior.operation_id = attempt.operation_id
+				  WHERE attempt.project_name = ? AND attempt.repo_identity = ?
+				    AND prior.pr_number = ?
+				    AND attempt.state IN ('prepared','sent')
+				    AND lower(attempt.head_sha) <> ?
+				  ORDER BY attempt.prepared_at, attempt.operation_id, attempt.ordinal`,
+				[
+					confirming.project_name,
+					input.repoIdentity,
+					input.observedPrNumber,
+					observedHeadSha,
+				],
+			);
+			let voidedCount = 0;
+			for (const candidate of candidates) {
+				const evidence = {
+					basis: "remote_head_invalidated" as const,
+					confirmingOperationId: input.confirmingOperationId,
+					observedPrNumber: input.observedPrNumber,
+					observedHeadSha,
+					observedPrState: input.observedPrState,
+					invalidatedHeadSha: String(candidate.head_sha).toLowerCase(),
+				};
+				const evidenceDigest = canonicalSubmissionDigest(evidence);
+				const receiptId = `cool-adjudication:${canonicalSubmissionDigest({
+					operationId: candidate.operation_id,
+					ordinal: Number(candidate.ordinal),
+					basis: evidence.basis,
+					evidenceDigest,
+				})}`;
+				this.db.run(
+					`UPDATE land_cool_attempt
+					    SET state = 'voided',
+					        classification = 'adjudicated:remote_head_invalidated',
+					        voided_at = ?
+					  WHERE operation_id = ? AND ordinal = ?
+					    AND state IN ('prepared','sent') AND generation = ?`,
+					[
+						input.now,
+						candidate.operation_id,
+						Number(candidate.ordinal),
+						Number(candidate.generation),
+					],
+				);
+				if (this.db.getRowsModified() !== 1) continue;
+				this.db.run(
+					`INSERT INTO land_cool_adjudication_receipt
+					   (receipt_id, operation_id, ordinal, basis,
+					    confirming_operation_id, adjudicated_by, evidence_json,
+					    evidence_digest, adjudicated_at)
+					 VALUES (?, ?, ?, 'remote_head_invalidated', ?,
+					         'workflow-engine:exact-pr-probe', ?, ?, ?)`,
+					[
+						receiptId,
+						candidate.operation_id,
+						Number(candidate.ordinal),
+						input.confirmingOperationId,
+						JSON.stringify(evidence),
+						evidenceDigest,
+						input.now,
+					],
+				);
+				voidedCount += 1;
+			}
+			result = {
+				ok: true,
+				idempotentReplay: voidedCount === 0,
+				voidedCount,
+			};
+			changed = voidedCount > 0;
+		});
+		if (changed) this.save();
+		return result;
+	}
+
+	supersedeLandOperation(input: {
+		operationId: string;
+		ownerId: string;
+		generation: number;
+		nextApprovedHead: string;
+		reason: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean; operation: LandOperationRow }
+		| { ok: false; reason: string } {
+		if (
+			!input.operationId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 0 ||
+			!/^[0-9a-f]{40}$/i.test(input.nextApprovedHead) ||
+			!input.reason ||
+			input.reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_land_supersede" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean; operation: LandOperationRow }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_generation",
+		};
+		try {
+			this.db.transaction(() => {
+				const current = this.workflowSelectAll(
+					"SELECT * FROM land_operation WHERE operation_id = ?",
+					[input.operationId],
+				)[0];
+				if (!current) {
+					result = { ok: false, reason: "land_operation_not_found" };
+					return;
+				}
+				const nextApprovedHead = input.nextApprovedHead.toLowerCase();
+				const nextOperationId = `land:${canonicalSubmissionDigest({
+					projectName: current.project_name,
+					issueId: current.issue_id,
+					prNumber: Number(current.pr_number),
+					approvedHead: nextApprovedHead,
+				})}`;
+				if (current.superseded_at) {
+					if (current.superseded_by_operation_id !== nextOperationId) {
+						result = { ok: false, reason: "land_supersede_conflict" };
+						return;
+					}
+					const expectedReceiptDigest = canonicalSubmissionDigest({
+						nextApprovedHead,
+						nextOperationId,
+						reason: input.reason,
+					});
+					const receipt = this.workflowSelectAll(
+						`SELECT receipt_digest FROM land_operation_step
+						  WHERE operation_id = ? AND step = 'superseded'`,
+						[input.operationId],
+					)[0];
+					if (receipt?.receipt_digest !== expectedReceiptDigest) {
+						result = { ok: false, reason: "land_supersede_receipt_conflict" };
+						return;
+					}
+					const successor = this.workflowSelectAll(
+						"SELECT * FROM land_operation WHERE operation_id = ?",
+						[nextOperationId],
+					)[0] as unknown as LandOperationRow | undefined;
+					result = successor
+						? { ok: true, idempotentReplay: true, operation: successor }
+						: { ok: false, reason: "land_supersede_successor_missing" };
+					return;
+				}
+				if (
+					current.state !== "running" ||
+					current.owner_id !== input.ownerId ||
+					Number(current.generation) !== input.generation ||
+					!current.lease_expires_at ||
+					String(current.lease_expires_at) <= input.now
+				) {
+					return;
+				}
+				if (current.approved_head === nextApprovedHead) {
+					result = { ok: false, reason: "land_supersede_same_head" };
+					return;
+				}
+				this.db.run(
+					`INSERT OR IGNORE INTO land_operation
+					   (operation_id, run_id, issue_id, project_name, pr_number,
+					    approved_head, state, created_at, updated_at)
+					 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+					[
+						nextOperationId,
+						current.run_id,
+						current.issue_id,
+						current.project_name,
+						current.pr_number,
+						nextApprovedHead,
+						input.now,
+						input.now,
+					],
+				);
+				const successor = this.workflowSelectAll(
+					"SELECT * FROM land_operation WHERE operation_id = ?",
+					[nextOperationId],
+				)[0] as unknown as LandOperationRow | undefined;
+				if (
+					!successor ||
+					successor.run_id !== current.run_id ||
+					successor.issue_id !== current.issue_id ||
+					successor.project_name !== current.project_name ||
+					Number(successor.pr_number) !== Number(current.pr_number) ||
+					successor.approved_head !== nextApprovedHead ||
+					successor.superseded_at !== null
+				) {
+					throw new Error("land_supersede_successor_conflict");
+				}
+				const receipt = {
+					nextApprovedHead,
+					nextOperationId,
+					reason: input.reason,
+				};
+				this.db.run(
+					`INSERT INTO land_operation_step
+					   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+					 VALUES (?, 'superseded', ?, ?, ?, ?)`,
+					[
+						input.operationId,
+						canonicalSubmissionDigest(receipt),
+						JSON.stringify(receipt),
+						input.generation,
+						input.now,
+					],
+				);
+				this.db.run(
+					`UPDATE land_operation
+					    SET superseded_at = ?, superseded_by_operation_id = ?,
+					        generation = generation + 1, owner_id = NULL,
+					        lease_expires_at = NULL, current_step = 'superseded', updated_at = ?
+					  WHERE operation_id = ? AND superseded_at IS NULL
+					    AND state = 'running' AND owner_id = ? AND generation = ?`,
+					[
+						input.now,
+						nextOperationId,
+						input.now,
+						input.operationId,
+						input.ownerId,
+						input.generation,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("land_supersede_cas_lost");
+				}
+				this.db.run(
+					"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+					[input.operationId],
+				);
+				this.db.run(
+					`UPDATE land_recovery_episode
+					    SET current_operation_id = ?
+					  WHERE current_operation_id = ? AND state = 'open'`,
+					[nextOperationId, input.operationId],
+				);
+				result = { ok: true, idempotentReplay: false, operation: successor };
+			});
+		} catch (error) {
+			if (
+				!(error instanceof Error) ||
+				error.message !== "land_supersede_cas_lost"
+			) {
+				throw error;
+			}
+		}
+		if (result.ok) this.save();
+		return result;
+	}
+
+	getLandOperationForRun(
+		runId: string,
+		approvedHead?: string,
+	): LandOperationRow | undefined {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_operation
+			  WHERE run_id = ? AND superseded_at IS NULL
+			    AND (? IS NULL OR approved_head = ?)
+			  ORDER BY created_at DESC LIMIT 1`,
+			[
+				runId,
+				approvedHead?.toLowerCase() ?? null,
+				approvedHead?.toLowerCase() ?? null,
+			],
 		)[0] as unknown as LandOperationRow | undefined;
 	}
 
@@ -45309,7 +48271,7 @@ export class StateStore {
 	): LandOperationRow | undefined {
 		return this.workflowSelectAll(
 			`SELECT * FROM land_operation
-			  WHERE project_name = ? AND issue_id = ?
+			  WHERE project_name = ? AND issue_id = ? AND superseded_at IS NULL
 			  ORDER BY created_at DESC LIMIT 1`,
 			[projectName, issueId],
 		)[0] as unknown as LandOperationRow | undefined;
@@ -45346,6 +48308,7 @@ export class StateStore {
 			)[0];
 			if (
 				!operation ||
+				operation.superseded_at ||
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
 				Number(operation.generation) !== input.generation
@@ -45363,7 +48326,11 @@ export class StateStore {
 			}
 			// A settled external obligation is monotonic. A later pass that cannot
 			// re-read Linear must not downgrade proven Done/refusal back to deferred.
-			if (current && current !== "deferred" && input.disposition === "deferred") {
+			if (
+				current &&
+				current !== "deferred" &&
+				input.disposition === "deferred"
+			) {
 				result = { ok: true, idempotentReplay: true };
 				return;
 			}
@@ -45371,7 +48338,8 @@ export class StateStore {
 				result = { ok: false, reason: "land_linear_done_disposition_conflict" };
 				return;
 			}
-			const firstDeferred = current === null && input.disposition === "deferred";
+			const firstDeferred =
+				current === null && input.disposition === "deferred";
 			const settled = input.disposition !== "deferred";
 			this.db.run(
 				`UPDATE land_operation
@@ -45380,7 +48348,7 @@ export class StateStore {
 				        linear_done_settled_at = CASE WHEN ? = 1 THEN COALESCE(linear_done_settled_at, ?) ELSE NULL END,
 				        linear_done_next_attempt_at = CASE WHEN ? = 'deferred' THEN COALESCE(linear_done_next_attempt_at, ?) ELSE NULL END,
 				        linear_done_last_reason = ?, updated_at = ?
-				  WHERE operation_id = ? AND state = 'running'
+				  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'running'
 				    AND owner_id = ? AND generation = ?`,
 				[
 					input.disposition,
@@ -45593,7 +48561,14 @@ export class StateStore {
 		const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
 		return this.workflowSelectAll(
 			`SELECT * FROM land_operation
-			  WHERE (
+			  WHERE superseded_at IS NULL
+			    AND (
+			      carryover_receipt_id IS NULL OR EXISTS (
+			        SELECT 1 FROM workflow_carryover_activation activation
+			         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+			           AND activation.state = 'departure_authorized'
+			      )
+			    ) AND (
 			        (state IN ('intent','partial') AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
 			     OR (state = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?))
 			        )
@@ -45607,7 +48582,7 @@ export class StateStore {
 		this.db.run(
 			`UPDATE land_operation
 			    SET next_attempt_at = NULL
-			  WHERE operation_id = ? AND state = 'partial'
+			  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'partial'
 			    AND next_attempt_at IS NOT NULL`,
 			[operationId],
 		);
@@ -45667,12 +48642,30 @@ export class StateStore {
 				[input.operationId],
 			)[0];
 			const due =
-				row?.state === "intent" ||
-				(row?.state === "partial" &&
-					(!row.next_attempt_at || String(row.next_attempt_at) <= input.now)) ||
-				(row?.state === "running" &&
-					(!row.lease_expires_at || String(row.lease_expires_at) <= input.now));
+				!row?.superseded_at &&
+				this.landCarryoverDepartureAuthorized(
+					row as unknown as LandOperationRow,
+				) &&
+				(row?.state === "intent" ||
+					(row?.state === "partial" &&
+						(!row.next_attempt_at ||
+							String(row.next_attempt_at) <= input.now)) ||
+					(row?.state === "running" &&
+						(!row.lease_expires_at ||
+							String(row.lease_expires_at) <= input.now)));
 			if (!row || !due) {
+				return;
+			}
+			const admission = this.workflowSelectAll(
+				`SELECT * FROM land_repo_admission
+				  WHERE project_name = ? AND repo_identity = '__main__'`,
+				[row.project_name],
+			)[0];
+			if (
+				admission &&
+				admission.owner_operation_id !== input.operationId &&
+				String(admission.lease_expires_at) > input.now
+			) {
 				return;
 			}
 			const generation = Number(row.generation) + 1;
@@ -45681,6 +48674,14 @@ export class StateStore {
 				    SET state = 'running', owner_id = ?, lease_expires_at = ?,
 				        generation = ?, updated_at = ?
 				  WHERE operation_id = ? AND generation = ?
+				    AND superseded_at IS NULL
+				    AND (
+				      carryover_receipt_id IS NULL OR EXISTS (
+				        SELECT 1 FROM workflow_carryover_activation activation
+				         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+				           AND activation.state = 'departure_authorized'
+				      )
+				    )
 				    AND (
 				          state = 'intent'
 				       OR (state = 'partial' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
@@ -45698,6 +48699,23 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT INTO land_repo_admission
+				   (project_name, repo_identity, owner_operation_id, owner_id,
+				    generation, lease_expires_at)
+				 VALUES (?, '__main__', ?, ?, 1, ?)
+				 ON CONFLICT(project_name, repo_identity) DO UPDATE SET
+				   owner_operation_id = excluded.owner_operation_id,
+				   owner_id = excluded.owner_id,
+				   generation = land_repo_admission.generation + 1,
+				   lease_expires_at = excluded.lease_expires_at`,
+				[
+					row.project_name,
+					input.operationId,
+					input.ownerId,
+					input.leaseExpiresAt,
+				],
+			);
 			claim = {
 				operationId: input.operationId,
 				ownerId: input.ownerId,
@@ -45720,6 +48738,14 @@ export class StateStore {
 				`SELECT 1 AS present FROM land_operation
 				  WHERE operation_id = ? AND run_id IS ? AND issue_id = ?
 				    AND project_name = ? AND pr_number = ? AND approved_head = ?
+				    AND superseded_at IS NULL
+				    AND (
+				      carryover_receipt_id IS NULL OR EXISTS (
+				        SELECT 1 FROM workflow_carryover_activation activation
+				         WHERE activation.carryover_receipt_id = land_operation.carryover_receipt_id
+				           AND activation.state = 'departure_authorized'
+				      )
+				    )
 				    AND state = 'running' AND owner_id = ? AND generation = ?
 				    AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
 				[
@@ -45764,6 +48790,11 @@ export class StateStore {
 			reason: "stale_land_generation",
 		};
 		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[input.operationId],
+			)[0];
+			if (!operation || operation.superseded_at) return;
 			const prior = this.workflowSelectAll(
 				"SELECT receipt_digest FROM land_operation_step WHERE operation_id = ? AND step = ?",
 				[input.operationId, input.step],
@@ -45775,12 +48806,7 @@ export class StateStore {
 						: { ok: false, reason: "land_step_receipt_conflict" };
 				return;
 			}
-			const operation = this.workflowSelectAll(
-				"SELECT * FROM land_operation WHERE operation_id = ?",
-				[input.operationId],
-			)[0];
 			if (
-				!operation ||
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
 				Number(operation.generation) !== input.generation ||
@@ -45838,7 +48864,8 @@ export class StateStore {
 				        merge_confirmed_at = CASE WHEN ? = 'merge_confirmed' THEN COALESCE(merge_confirmed_at, ?) ELSE merge_confirmed_at END,
 				        finalization_completed_at = CASE WHEN ? = 'finalization_completed' THEN COALESCE(finalization_completed_at, ?) ELSE finalization_completed_at END,
 				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END
-				  WHERE operation_id = ? AND owner_id = ? AND generation = ?`,
+				  WHERE operation_id = ? AND superseded_at IS NULL
+				    AND owner_id = ? AND generation = ?`,
 				[
 					input.step,
 					input.now,
@@ -45852,6 +48879,12 @@ export class StateStore {
 					input.generation,
 				],
 			);
+			if (completed) {
+				this.db.run(
+					"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
+					[input.operationId],
+				);
+			}
 			result = { ok: true, idempotentReplay: false };
 		});
 		if (result.ok) this.save();
@@ -46093,7 +49126,7 @@ export class StateStore {
 			`UPDATE land_operation
 			    SET state = ?, last_error = ?, owner_id = NULL,
 			        lease_expires_at = NULL, updated_at = ?
-			  WHERE operation_id = ? AND state = 'running'
+			  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'running'
 			    AND owner_id = ? AND generation = ?`,
 			[
 				input.state,
@@ -46105,7 +49138,13 @@ export class StateStore {
 			],
 		);
 		const updated = this.db.getRowsModified() === 1;
-		if (updated) this.save();
+		if (updated) {
+			this.db.run(
+				"DELETE FROM land_repo_admission WHERE owner_operation_id = ? AND owner_id = ?",
+				[input.operationId, input.ownerId],
+			);
+			this.save();
+		}
 		return updated;
 	}
 
@@ -46126,6 +49165,7 @@ export class StateStore {
 			)[0];
 			if (
 				!operation ||
+				operation.superseded_at ||
 				operation.state !== "running" ||
 				operation.owner_id !== input.ownerId ||
 				Number(operation.generation) !== input.generation
@@ -46157,7 +49197,7 @@ export class StateStore {
 				        next_attempt_at = ?, owner_id = NULL, lease_expires_at = NULL,
 				        ship_attempt = ship_attempt + ?,
 				        updated_at = ?
-				  WHERE operation_id = ? AND state = 'running'
+				  WHERE operation_id = ? AND superseded_at IS NULL AND state = 'running'
 				    AND owner_id = ? AND generation = ?`,
 				[
 					decision.state,
@@ -46180,6 +49220,11 @@ export class StateStore {
 			if (decision.state === "held") {
 				this.enqueueLegacyLandAlertTx(operation, decision.lastError, input.now);
 			}
+			this.db.run(
+				`DELETE FROM land_repo_admission
+				  WHERE owner_operation_id = ? AND owner_id = ?`,
+				[input.operationId, input.ownerId],
+			);
 			result = {
 				state: decision.state,
 				retryCount: decision.retryCount,
@@ -46420,6 +49465,11 @@ export class StateStore {
 			reason: "land_partial_not_committed",
 		};
 		this.db.transaction(() => {
+			const operation = this.getLandOperation(input.operationId);
+			if (operation?.superseded_at) {
+				result = { ok: false, reason: "land_partial_precondition_failed" };
+				return;
+			}
 			if (
 				this.workflowSelectAll(
 					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
@@ -46435,7 +49485,6 @@ export class StateStore {
 				input.nodeId,
 				input.attempt,
 			);
-			const operation = this.getLandOperation(input.operationId);
 			if (
 				!run ||
 				run.engine_owned !== 1 ||
@@ -46557,6 +49606,7 @@ export class StateStore {
 				const operation = this.getLandOperation(input.operationId);
 				if (
 					!operation ||
+					operation.superseded_at ||
 					operation.run_id !== input.runId ||
 					operation.state !== "held"
 				) {
@@ -46658,6 +49708,7 @@ export class StateStore {
 				!node ||
 				node.execution_id !== input.executionId ||
 				!operation ||
+				operation.superseded_at ||
 				operation.run_id !== input.runId ||
 				operation.state !== "completed"
 			) {
@@ -46926,7 +49977,7 @@ export type WorkflowResumeAttachmentAdvanceResult =
 				| "revision_conflict"
 				| "state_conflict"
 				| "invalid_input";
-		  };
+	  };
 export type WorkflowResumeAttachmentRetryResult =
 	| {
 			ok: true;
@@ -47114,6 +50165,7 @@ export interface WorkflowGateHolderRow {
 	subject_kind: WorkflowGateSubjectKind | null;
 	/** NULL is legacy bound compatibility. */
 	carrier_binding_state: "unbound" | "bound" | null;
+	approval_origin: "engine_equivalence_carryover" | null;
 	card_message_id: string | null;
 	card_post_intent_seq: number;
 	card_post_intent_at: string | null;
@@ -47200,6 +50252,9 @@ export interface LandOperationRow {
 	retry_count: number;
 	retry_epoch_key: string | null;
 	next_attempt_at: string | null;
+	carryover_receipt_id: string | null;
+	superseded_at: string | null;
+	superseded_by_operation_id: string | null;
 	linear_done_disposition: "done" | "canceled_refused" | "deferred" | null;
 	linear_done_deferred_at: string | null;
 	linear_done_settled_at: string | null;
@@ -47210,6 +50265,46 @@ export interface LandOperationRow {
 	last_error: string | null;
 	created_at: string;
 	updated_at: string;
+}
+
+export type LandRecoveryKind =
+	| "alignment"
+	| "outage"
+	| "conflict"
+	| "policy"
+	| "refire";
+
+export interface LandRecoveryEpisodeRow {
+	episode_id: string;
+	run_id: string;
+	root_approval_ref: string;
+	kind: LandRecoveryKind;
+	scope_key: string;
+	current_operation_id: string;
+	first_observed_at: string;
+	last_probe_at: string;
+	next_probe_at: string | null;
+	state: "open" | "closed";
+	closed_reason: string | null;
+	closed_at: string | null;
+	alert_uid: string | null;
+}
+
+export interface WorkflowCarryoverActivationRow {
+	carryover_receipt_id: string;
+	state: "pending" | "departure_authorized" | "superseded";
+	source_cutoff_row_id: number | null;
+	generation: number;
+	first_observed_at: string;
+	next_probe_at: string | null;
+	alert_uid: string | null;
+}
+
+export interface WorkflowPendingCarryoverDeparture {
+	operation: LandOperationRow;
+	carryoverReceiptId: string;
+	ordinal: number;
+	firstObservedAt: string;
 }
 
 export interface LandOperationClaim {
@@ -47233,6 +50328,52 @@ export interface LandOperationStepRow {
 	generation: number;
 	completed_at: string;
 }
+
+export interface LandCoolAttemptRow {
+	operation_id: string;
+	ordinal: number;
+	project_name: string;
+	repo_identity: string;
+	state: "prepared" | "sent" | "terminal" | "voided";
+	comment_id: string | null;
+	ship_run_id: string | null;
+	head_sha: string;
+	classification: string | null;
+	generation: number;
+	prepared_at: string;
+	sent_at: string | null;
+	terminal_at: string | null;
+	voided_at: string | null;
+}
+
+export type LandCoolAdjudicationBasis =
+	| "comment_absence"
+	| "exact_run_terminal"
+	| "remote_head_invalidated";
+
+export interface LandCoolAdjudicationReceiptRow {
+	receipt_id: string;
+	operation_id: string;
+	ordinal: number;
+	basis: LandCoolAdjudicationBasis;
+	confirming_operation_id: string | null;
+	adjudicated_by: string;
+	evidence: Record<string, unknown>;
+	evidence_digest: string;
+	adjudicated_at: string;
+}
+
+export type LandCoolAdjudicationResult =
+	| { ok: true; idempotentReplay: boolean; voidedCount: number }
+	| { ok: false; reason: string };
+
+export type LandCoolAttemptMutationResult =
+	| {
+			ok: true;
+			idempotentReplay: boolean;
+			attempt: LandCoolAttemptRow;
+	  }
+	| { ok: false; reason: string };
 
 export interface LandAlertPayload {
 	operationId: string;
@@ -47545,6 +50686,30 @@ export interface WorkflowNodePrBindingRow {
 	receipt_id: string;
 	bound_at: string;
 }
+
+export type WorkflowExactHeadAuthorityResolution =
+	| {
+			valid: true;
+			kind: "normal";
+			binding: WorkflowNodePrBindingRow;
+			authorityHead: string;
+			rootHead: string;
+			depth: 0;
+	  }
+	| {
+			valid: true;
+			kind: "carryover";
+			binding: WorkflowNodePrBindingRow;
+			authorityHead: string;
+			rootHead: string;
+			rootHolderQuestionId: string;
+			rootFounderClaimRef: string;
+			rootEvidenceDigest: string;
+			endpointReceiptId: string;
+			receiptIds: string[];
+			depth: number;
+	  }
+	| { valid: false; reason: string };
 
 interface WorkflowGateEntryBindingBase {
 	prNumber: number;
@@ -47894,7 +51059,7 @@ export interface WorkflowReworkRequestRow {
 	request_id: string;
 	run_id: string;
 	source_event_id: string;
-	authority: "qa" | "founder";
+	authority: "qa" | "founder" | "engine";
 	source_node_id: string;
 	source_attempt: number;
 	base_revision: string;
@@ -47903,6 +51068,17 @@ export interface WorkflowReworkRequestRow {
 	founder_feedback_verbatim: string | null;
 	requested_at: string;
 }
+
+export type WorkflowLandConflictReworkResult =
+	| {
+			ok: true;
+			idempotentReplay: boolean;
+			requestId: string;
+			targetNodeId: string;
+			targetAttempt: number;
+			preferredActorExecutionId: string;
+	  }
+	| { ok: false; reason: string };
 
 export interface WorkflowReworkRouteRevisionRow {
 	request_id: string;
@@ -48821,10 +51997,18 @@ export type WorkflowShipClaimsResolution =
 export interface WorkflowSourceEventInput {
 	project: string;
 	sourceEventId: string;
-	kind: "founder_approval" | "founder_feedback" | "turn_grant";
+	kind:
+		| "founder_approval"
+		| "founder_feedback"
+		| "turn_grant"
+		| "land_departure_cutoff";
 	payloadJson: string;
 	payloadDigest: string;
 	schemaVersion: number;
+	/** Immutable CommDB rowid used as the ordered departure cutoff marker. */
+	sourceRowId?: number;
+	/** Frozen source timestamp; projector callers must forward it unchanged. */
+	at?: string;
 	/** Best-effort Lead target for non-blocking founder rework advisories. */
 	alertIdentity?: WorkflowEngineAlertIdentity;
 }
@@ -48845,6 +52029,10 @@ export type WorkflowSourceApplyResult =
 	  }
 	| {
 			kind: "turn_run_event";
+			status: "applied" | "replayed";
+	  }
+	| {
+			kind: "land_departure_cutoff";
 			status: "applied" | "replayed";
 	  };
 

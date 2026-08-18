@@ -324,6 +324,7 @@ import {
 	landThreadNotificationPreflight,
 	resumeHeldLandOperation,
 } from "./land-executor.js";
+import { GitLandHeadRefreshProver } from "./land-head-refresh-proof.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
 	buildAgedDeferredLinearDoneAlert,
@@ -5825,11 +5826,39 @@ export async function startBridge(
 	const workflowEngineAlertHolder: {
 		current?: { alert: (payload: AlertPayload) => Promise<AlertResult> };
 	} = {};
-	const landMergeDriver = new GhCliLandMergeDriver(
-		(projectName) =>
-			projects.find((project) => project.projectName === projectName)
-				?.projectRoot,
+	const landProjectRootFor = (projectName: string) =>
+		projects.find((project) => project.projectName === projectName)
+			?.projectRoot;
+	const landMergeDriver = new GhCliLandMergeDriver(landProjectRootFor);
+	const landHeadRefreshProver = new GitLandHeadRefreshProver(
+		landProjectRootFor,
 	);
+	const recordCarryoverDepartureCutoff = (input: {
+		operation: import("../StateStore.js").LandOperationRow;
+		receiptId: string;
+		ordinal: number;
+		at: string;
+	}) => {
+		const operation = input.operation;
+		if (!operation.run_id) {
+			throw new Error("carryover departure requires an engine run");
+		}
+		const db = new CommDB(commDbPathForProject(operation.project_name));
+		try {
+			db.appendLandDepartureCutoff({
+				project: operation.project_name,
+				carryoverReceiptId: input.receiptId,
+				operationId: operation.operation_id,
+				ordinal: input.ordinal,
+				runId: operation.run_id,
+				approvedHead: operation.approved_head,
+				operationGeneration: operation.generation,
+				at: input.at,
+			});
+		} finally {
+			db.close();
+		}
+	};
 	const landLinearDoneFinalizer = makeLinearDoneFinalizer(config);
 	const landWorktreeCleanup = makeBridgeWorktreeCleanup(
 		store,
@@ -5840,6 +5869,8 @@ export async function startBridge(
 		executeLandOperation(operationId, {
 			store,
 			mergeDriver: landMergeDriver,
+			headRefreshProver: landHeadRefreshProver,
+			recordCarryoverDepartureCutoff,
 			requestCleanup: (operation) =>
 				requestLandCleanupOpportunities(operation, {
 					store,
@@ -5949,6 +5980,61 @@ export async function startBridge(
 					throw new Error(
 						`land_lead_resolution_failed:${error instanceof Error ? error.message : String(error)}`,
 					);
+				}
+				if (
+					operation.run_id &&
+					[
+						"conflict_rework_started",
+						"external_outage_fyi",
+						"external_outage_horizon_exceeded",
+						"cool_fence_horizon_exceeded",
+					].includes(stage)
+				) {
+					const identity = resolveWorkflowRunAlertIdentity({
+						store,
+						projects,
+						defaultLeadAgentId: config.defaultLeadAgentId,
+						projectName: operation.project_name,
+						issueId: operation.issue_id,
+						runId: operation.run_id,
+					});
+					const run = store.getWorkflowRun(operation.run_id);
+					const severe = stage.endsWith("horizon_exceeded");
+					const detailIdentity =
+						typeof detail.escalationUid === "string"
+							? detail.escalationUid
+							: typeof detail.requestId === "string"
+								? detail.requestId
+								: operation.operation_id;
+					const escalationUid = `land-transition:${stage}:${detailIdentity}`;
+					store.enqueueWorkflowEngineAlert({
+						escalationUid,
+						runId: operation.run_id,
+						payload: {
+							leadId: identity.leadId,
+							projectName: identity.projectName,
+							eventId: escalationUid,
+							eventType: severe
+								? "workflow_engine_escalation"
+								: "workflow_engine_issue_alert",
+							severity: severe ? "severe" : "warning",
+							sessionKey: `wf:${operation.run_id}`,
+							title: `Land ${stage.replaceAll("_", " ")} for ${operation.issue_id}`,
+							body: `PR #${operation.pr_number} entered ${stage}. ${JSON.stringify(detail)}`,
+							metadata: {
+								workflowEngine: {
+									runId: operation.run_id,
+									issueId: operation.issue_id,
+									nodeId: run?.current_node_id ?? "land",
+									executionId: `workflow-engine:land:${operation.operation_id}`,
+									disposition: severe ? "held" : "partial",
+									operationId: operation.operation_id,
+									reason: stage,
+									leadResolution: identity.leadResolution,
+								},
+							},
+						},
+					});
 				}
 				const thread = store.getChatThreadByIssue(
 					operation.issue_id,
@@ -6270,11 +6356,14 @@ export async function startBridge(
 									run.run_id,
 									snapshot.manifest.approval_gate.node,
 								);
-								const prBinding = holder
-									? store.getCurrentWorkflowNodePrBindingForHead(
-											run.run_id,
-											holder.head_sha,
-										)
+								const exactHeadAuthority = holder
+									? store.resolveWorkflowExactHeadAuthority({
+											runId: run.run_id,
+											headSha: holder.head_sha,
+										})
+									: undefined;
+								const prBinding = exactHeadAuthority?.valid
+									? exactHeadAuthority.binding
 									: undefined;
 								const prNumber = prBinding?.pr_number;
 								if (!holder || holder.state !== "approved" || !prNumber) {
@@ -7797,6 +7886,49 @@ export async function startBridge(
 			work.push(
 				(async () => {
 					try {
+						for (const pending of store.listPendingWorkflowCarryoverDepartures(
+							20,
+						)) {
+							try {
+								const sweepNow = new Date().toISOString();
+								if (
+									Date.parse(sweepNow) - Date.parse(pending.firstObservedAt) >=
+									60 * 60_000
+								) {
+									if (!pending.operation.run_id) continue;
+									const identity = resolveWorkflowRunAlertIdentity({
+										store,
+										projects,
+										defaultLeadAgentId: config.defaultLeadAgentId,
+										projectName: pending.operation.project_name,
+										issueId: pending.operation.issue_id,
+										runId: pending.operation.run_id,
+									});
+									const expired = store.expireWorkflowCarryoverDeparture({
+										carryoverReceiptId: pending.carryoverReceiptId,
+										operationId: pending.operation.operation_id,
+										now: sweepNow,
+										alertIdentity: identity,
+									});
+									if (!expired.ok) {
+										console.warn(
+											`[land] carryover cutoff horizon failed for ${pending.operation.operation_id}: ${expired.reason}`,
+										);
+									}
+									continue;
+								}
+								recordCarryoverDepartureCutoff({
+									operation: pending.operation,
+									receiptId: pending.carryoverReceiptId,
+									ordinal: pending.ordinal,
+									at: pending.firstObservedAt,
+								});
+							} catch (error) {
+								console.warn(
+									`[land] carryover cutoff recovery failed for ${pending.operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
+								);
+							}
+						}
 						const operations = store.listRunnableLandOperations(
 							new Date().toISOString(),
 							20,

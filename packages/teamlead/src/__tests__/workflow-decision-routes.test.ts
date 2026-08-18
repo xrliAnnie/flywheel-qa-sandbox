@@ -24,6 +24,23 @@ const WORKFLOW_ON = {
 const T0 = "2026-07-14T00:00:00.000Z";
 const T1 = "2026-07-14T01:00:00.000Z";
 const T2 = "2026-07-14T02:00:00.000Z";
+const nativeFetch = globalThis.fetch;
+
+const fetch = async (
+	input: Parameters<typeof globalThis.fetch>[0],
+	init?: Parameters<typeof globalThis.fetch>[1],
+): Promise<Response> => {
+	try {
+		return await nativeFetch(input, init);
+	} catch (error) {
+		const method = init?.method?.toUpperCase() ?? "GET";
+		const target = input instanceof Request ? input.url : String(input);
+		throw new Error(
+			`workflow-decision test request failed: ${method} ${target}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error },
+		);
+	}
+};
 
 function gitWorktree(): { path: string; head: string } {
 	const path = mkdtempSync(join(tmpdir(), "fly1244-head-"));
@@ -330,6 +347,12 @@ async function fixture() {
 }
 
 describe("schema-v1 workflow recovery decision routes", () => {
+	it("reports the request target when a test-server fetch fails", async () => {
+		await expect(fetch("http://127.0.0.1:1/unavailable")).rejects.toThrow(
+			"workflow-decision test request failed: GET http://127.0.0.1:1/unavailable",
+		);
+	});
+
 	it("derives identity + server head, commits one claim, and replays idempotently", async () => {
 		const f = await fixture();
 		try {

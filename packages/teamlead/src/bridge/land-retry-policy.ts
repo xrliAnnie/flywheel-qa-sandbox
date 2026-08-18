@@ -19,17 +19,35 @@ export interface LandRetryDecision {
 
 const WAITING_REASONS = new Set([
 	"ship_workflow_pending",
+	"pr_head_mismatch",
+	"merge_conflict",
+	"merge_conflict_requires_rework",
+	"base_refresh_pending",
+	"head_alignment_pending",
+	"head_moved",
+	"external_outage",
+	"policy_alignment_pending",
+	"mergeability_pending",
+	"land_queue_busy",
 	"founder_projection_pending",
 	"founder_review_missing",
 	"founder_review_not_passed",
 	"founder_review_stale_artifact",
+	"ambiguous_cool_reconcile_pending",
 ]);
 
 const TERMINAL_REASONS = new Set([
-	"pr_head_mismatch",
 	"pr_closed_unmerged",
 	"cool_trigger_receipt_corrupt",
 	"land_step_receipt_conflict",
+	"policy_blocked",
+	"ambiguous_cool_effect",
+]);
+
+const WAITING_CADENCE_MS = new Map<string, number>([
+	["external_outage", 5 * 60_000],
+	["policy_alignment_pending", 60_000],
+	["ambiguous_cool_reconcile_pending", 60_000],
 ]);
 
 export const SHIP_WORKFLOW_RETRYABLE_FAILURES = new Set([
@@ -60,14 +78,15 @@ export function classifyLandRetryReason(
 		? reason.slice("land_execution_error:".length)
 		: reason;
 	if (
-		WAITING_REASONS.has(reason) ||
+		WAITING_REASONS.has(unwrapped) ||
 		reason.startsWith("workflow_pr_manifest_partial:")
 	) {
 		return "waiting";
 	}
 	if (unwrapped.startsWith("ship_workflow_failed:")) {
 		const failure = unwrapped.slice("ship_workflow_failed:".length);
-		return SHIP_WORKFLOW_RETRYABLE_FAILURES.has(failure)
+		return failure === "cancelled" ||
+			SHIP_WORKFLOW_RETRYABLE_FAILURES.has(failure)
 			? "retryable"
 			: "terminal";
 	}
@@ -86,11 +105,18 @@ function exhaustedReason(reason: string): string {
 
 export function nextLandRetry(input: LandRetryInput): LandRetryDecision {
 	if (input.classification !== "retryable") {
+		const cadenceMs =
+			input.classification === "waiting"
+				? WAITING_CADENCE_MS.get(input.reason)
+				: undefined;
 		return {
 			state: input.classification === "terminal" ? "held" : "partial",
 			retryCount: input.priorRetryCount,
 			retryEpochKey: input.priorRetryEpochKey,
-			nextAttemptAt: null,
+			nextAttemptAt:
+				cadenceMs === undefined
+					? null
+					: new Date(Date.parse(input.now) + cadenceMs).toISOString(),
 			lastError: input.reason,
 		};
 	}

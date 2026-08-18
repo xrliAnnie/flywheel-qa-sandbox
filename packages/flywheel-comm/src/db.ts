@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS runner_workflow_activation (
 CREATE TABLE IF NOT EXISTS workflow_source_event (
   project             TEXT NOT NULL,
   source_event_id     TEXT NOT NULL,
-  kind                TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant')),
+  kind                TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant','land_departure_cutoff')),
   payload             TEXT NOT NULL,
   payload_digest      TEXT NOT NULL,
   schema_version      INTEGER NOT NULL,
@@ -423,7 +423,11 @@ const ASK_FORENSIC_TTL_SQL = "+1 hour";
 export interface WorkflowSourceEvent {
 	project: string;
 	source_event_id: string;
-	kind: "founder_approval" | "founder_feedback" | "turn_grant";
+	kind:
+		| "founder_approval"
+		| "founder_feedback"
+		| "turn_grant"
+		| "land_departure_cutoff";
 	payload: string;
 	payload_digest: string;
 	schema_version: number;
@@ -1078,7 +1082,7 @@ export class CommDB {
 				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_source_event'",
 			)
 			.get() as { sql?: string } | undefined;
-		if (!workflowSourceSchema?.sql?.includes("'founder_feedback'")) {
+		if (!workflowSourceSchema?.sql?.includes("'land_departure_cutoff'")) {
 			this.db.transaction(() => {
 				this.db.exec(`
 					DROP TRIGGER IF EXISTS workflow_source_event_no_update;
@@ -1086,7 +1090,7 @@ export class CommDB {
 					CREATE TABLE workflow_source_event_fly1375 (
 						project TEXT NOT NULL,
 						source_event_id TEXT NOT NULL,
-						kind TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant')),
+						kind TEXT NOT NULL CHECK(kind IN ('founder_approval','founder_feedback','turn_grant','land_departure_cutoff')),
 						payload TEXT NOT NULL,
 						payload_digest TEXT NOT NULL,
 						schema_version INTEGER NOT NULL,
@@ -1094,9 +1098,9 @@ export class CommDB {
 						PRIMARY KEY (project, source_event_id)
 					);
 					INSERT INTO workflow_source_event_fly1375
-						(project, source_event_id, kind, payload, payload_digest, schema_version, at)
-					SELECT project, source_event_id, kind, payload, payload_digest, schema_version, at
-					FROM workflow_source_event;
+						(rowid, project, source_event_id, kind, payload, payload_digest, schema_version, at)
+					SELECT rowid, project, source_event_id, kind, payload, payload_digest, schema_version, at
+					FROM workflow_source_event ORDER BY rowid;
 					DROP TABLE workflow_source_event;
 					ALTER TABLE workflow_source_event_fly1375 RENAME TO workflow_source_event;
 					CREATE TRIGGER workflow_source_event_no_update
@@ -2002,6 +2006,97 @@ export class CommDB {
 						at,
 					);
 				return true;
+			})
+			.immediate();
+	}
+
+	appendLandDepartureCutoff(input: {
+		project: string;
+		carryoverReceiptId: string;
+		operationId: string;
+		ordinal: number;
+		runId: string;
+		approvedHead: string;
+		operationGeneration: number;
+		at: string;
+	}): {
+		sourceEventId: string;
+		rowId: number;
+		idempotentReplay: boolean;
+	} {
+		assertUtcIsoTimestamp(input.at, "at");
+		const approvedHead = input.approvedHead.trim().toLowerCase();
+		if (
+			!input.project.trim() ||
+			!input.carryoverReceiptId.trim() ||
+			!input.operationId.trim() ||
+			!input.runId.trim() ||
+			!Number.isInteger(input.ordinal) ||
+			input.ordinal < 1 ||
+			!Number.isInteger(input.operationGeneration) ||
+			input.operationGeneration < 0 ||
+			!/^[0-9a-f]{40}$/.test(approvedHead)
+		) {
+			throw new Error("invalid land departure cutoff");
+		}
+		const identity = {
+			carryoverReceiptId: input.carryoverReceiptId,
+			operationId: input.operationId,
+			ordinal: input.ordinal,
+		};
+		const sourceEventId = `land-departure-cutoff:${canonicalSubmissionDigest(identity)}`;
+		const payload = {
+			schema_version: 1,
+			run_id: input.runId,
+			carryover_receipt_id: input.carryoverReceiptId,
+			operation_id: input.operationId,
+			ordinal: input.ordinal,
+			approved_head: approvedHead,
+			operation_generation: input.operationGeneration,
+		};
+		const payloadJson = canonicalJsonString(payload);
+		const payloadDigest = canonicalSubmissionDigest(payload);
+		return this.db
+			.transaction(() => {
+				const inserted = this.db
+					.prepare(
+						`INSERT OR IGNORE INTO workflow_source_event
+						   (project, source_event_id, kind, payload, payload_digest, schema_version, at)
+						 VALUES (?, ?, 'land_departure_cutoff', ?, ?, 1, ?)`,
+					)
+					.run(
+						input.project,
+						sourceEventId,
+						payloadJson,
+						payloadDigest,
+						input.at,
+					);
+				const row = this.db
+					.prepare(
+						`SELECT rowid AS row_id, project, kind, payload_digest
+						   FROM workflow_source_event WHERE source_event_id = ?`,
+					)
+					.get(sourceEventId) as
+					| {
+							row_id: number;
+							project: string;
+							kind: string;
+							payload_digest: string;
+					  }
+					| undefined;
+				if (
+					!row ||
+					row.project !== input.project ||
+					row.kind !== "land_departure_cutoff" ||
+					row.payload_digest !== payloadDigest
+				) {
+					throw new Error("land departure cutoff replay conflict (poison)");
+				}
+				return {
+					sourceEventId,
+					rowId: Number(row.row_id),
+					idempotentReplay: inserted.changes === 0,
+				};
 			})
 			.immediate();
 	}

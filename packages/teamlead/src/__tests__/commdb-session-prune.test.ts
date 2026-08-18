@@ -128,7 +128,7 @@ describe("commdb-session-prune (FLY-638)", () => {
 	});
 
 	describe("pruneDeadTerminalCommDbSessions", () => {
-		it("deletes only PROVABLY-dead terminal rows; keeps alive/indeterminate + running", async () => {
+		it("deletes only PROVABLY-dead terminal rows in any scan order; keeps alive/indeterminate + running", async () => {
 			seed("dead1", "completed", "base:@1");
 			db.enqueueRunnerPhaseWake(
 				"dead1",
@@ -140,6 +140,17 @@ describe("commdb-session-prune (FLY-638)", () => {
 			seed("parked", "completed", "base:@3"); // terminal but tmux alive
 			seed("flaky", "completed", "base:@5"); // terminal but probe indeterminate
 			seed("run", "running", "base:@4"); // running → never a prune candidate
+			const rawDb = db as unknown as {
+				db: { prepare(sql: string): { run(...params: string[]): void } };
+			};
+			// listSessions orders by started_at, not execution_id. Force the valid
+			// scan order opposite to the fixture labels so this contract stays a set.
+			rawDb.db
+				.prepare("UPDATE sessions SET started_at = ? WHERE execution_id = ?")
+				.run("2026-08-18T01:00:00.000Z", "dead1");
+			rawDb.db
+				.prepare("UPDATE sessions SET started_at = ? WHERE execution_id = ?")
+				.run("2026-08-18T01:00:01.000Z", "dead2");
 
 			const res = await pruneDeadTerminalCommDbSessions("flywheel", {
 				dbPath,
@@ -155,7 +166,11 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(res.pruned).toBe(2); // dead1 + dead2 (proven dead)
 			expect(res.kept).toBe(2); // parked (alive) + flaky (indeterminate)
 			expect(res.failed).toBe(0);
-			expect(res.provenDeadTargets).toEqual([
+			expect(
+				[...res.provenDeadTargets].sort((a, b) =>
+					a.executionId.localeCompare(b.executionId),
+				),
+			).toEqual([
 				{ executionId: "dead1", tmuxWindow: "base:@1" },
 				{ executionId: "dead2", tmuxWindow: "base:@2" },
 			]);

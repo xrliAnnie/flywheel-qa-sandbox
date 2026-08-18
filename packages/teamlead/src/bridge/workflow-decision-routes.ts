@@ -585,11 +585,14 @@ export function createWorkflowDecisionRouter(
 					throw new Error("ship_target_authority_drift");
 				}
 				if (materialized) {
-					const nodeBinding = binding.run_id
-						? deps.store.getCurrentWorkflowNodePrBindingForHead(
-								binding.run_id,
-								binding.frozen_head_sha,
-							)
+					const exactHeadAuthority = binding.run_id
+						? deps.store.resolveWorkflowExactHeadAuthority({
+								runId: binding.run_id,
+								headSha: binding.frozen_head_sha,
+							})
+						: undefined;
+					const nodeBinding = exactHeadAuthority?.valid
+						? exactHeadAuthority.binding
 						: undefined;
 					if (!nodeBinding) throw new Error("ship_target_authority_drift");
 					let probe: WorkflowPrProbeResult;

@@ -10,7 +10,7 @@ function source(relativePath: string): string {
 }
 
 describe("FLY-1434 workflow PR binding wiring", () => {
-	it("uses the run-scoped ledger at every Bridge ship/land production reader", () => {
+	it("uses the exact-head authority resolver at every Bridge ship/land production reader", () => {
 		for (const file of [
 			"../approval-signal/gate-authority-view.ts",
 			"../workflow-engine-dispatcher.ts",
@@ -18,7 +18,7 @@ describe("FLY-1434 workflow PR binding wiring", () => {
 			"../plugin.ts",
 		]) {
 			const body = source(file);
-			expect(body).toContain("getCurrentWorkflowNodePrBindingForHead");
+			expect(body).toContain("resolveWorkflowExactHeadAuthority");
 			expect(body).not.toContain("getWorkflowRunPrNumber");
 		}
 	});

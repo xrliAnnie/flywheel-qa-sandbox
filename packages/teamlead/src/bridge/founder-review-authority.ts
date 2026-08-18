@@ -98,10 +98,13 @@ export async function evaluateWorkflowFounderReviewPrecondition(input: {
 	if (producerIds.length !== 1) {
 		return { eligible: false, reason: "founder_review_producer_ambiguous" };
 	}
-	const binding = input.store.getCurrentWorkflowNodePrBindingForHead(
-		input.runId,
-		input.head,
-	);
+	const exactHeadAuthority = input.store.resolveWorkflowExactHeadAuthority({
+		runId: input.runId,
+		headSha: input.head,
+	});
+	const binding = exactHeadAuthority.valid
+		? exactHeadAuthority.binding
+		: undefined;
 	if (!binding || binding.node_id !== producerIds[0]) {
 		return {
 			eligible: false,
@@ -120,7 +123,9 @@ export async function evaluateWorkflowFounderReviewPrecondition(input: {
 			nodeId: binding.node_id,
 			snapshot: input.snapshot,
 			repoRoot: binding.target_repo_path,
-			head: input.head,
+			head: exactHeadAuthority.valid
+				? exactHeadAuthority.authorityHead
+				: input.head,
 			founderId: resolveFounderId({
 				processEnv: input.processEnv ?? process.env,
 			}),
