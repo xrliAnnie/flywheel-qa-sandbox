@@ -341,6 +341,7 @@ expected_shard_tests = {
         "Test — Lead rules single-bundle load chain (FLY-1402)",
         "Test — FLY-1496 model resolution + Lead derivation",
         "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1830 non-Lead daemon convergence",
         "Test — FLY-1678 statusline model-scoped bar + installer",
     ],
     "script-tests-2": [
@@ -554,6 +555,35 @@ expected_fly1364_commands = [
 require(
     fly1364_commands == expected_fly1364_commands,
     f"FLY-1364 CI command set/order drifted: {fly1364_commands}",
+)
+
+# FLY-1830: the non-Lead daemon convergence is the only thing that puts a
+# launchd label back after it leaves the domain. A suite that quietly falls out
+# of the gate would restore exactly the silence this issue was filed about.
+fly1830_steps = [
+    step
+    for step in script_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-1830 non-Lead daemon convergence"
+]
+require(
+    len(fly1830_steps) == 1,
+    "script-tests must contain exactly one FLY-1830 non-Lead daemon convergence step",
+)
+fly1830_step = fly1830_steps[0]
+require("if" not in fly1830_step, "FLY-1830 convergence suite must not be conditional")
+require(
+    "continue-on-error" not in fly1830_step,
+    "FLY-1830 convergence suite must fail the PR gate",
+)
+fly1830_commands = [
+    line.strip()
+    for line in str(fly1830_step.get("run", "")).splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+]
+require(
+    fly1830_commands == ["bash scripts/__tests__/converge-nonlead-daemons.test.sh"],
+    f"FLY-1830 CI command set/order drifted: {fly1830_commands}",
 )
 
 with open(os.environ["DISCORD_E2E"], encoding="utf-8") as handle:

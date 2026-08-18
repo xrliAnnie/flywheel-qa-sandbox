@@ -322,6 +322,17 @@ jobs:
           bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
           bash scripts/__tests__/materialize-lead-manifests.test.sh
 
+      # FLY-1830: the non-Lead launchd daemons (quota-monitor, updater,
+      # bridge-liveness-probe, daily-standup) had no owner — a label that left
+      # the domain stayed gone with its plist still on disk. The restart wave now
+      # reconciles them, and the Lead family must stay excluded (bootstrapping
+      # the FLY-398 TUI carrier would create a second listener). Hermetic: the
+      # launchctl seam is a scripted mock, so this never touches a real domain.
+      # Step seconds: ~1.
+      - name: Test — FLY-1830 non-Lead daemon convergence
+        run: |
+          bash scripts/__tests__/converge-nonlead-daemons.test.sh
+
       # FLY-1678: the statusline renders on every Lead and Runner pane and is
       # re-read every frame, so a bad edit blanks the whole fleet at once. Both
       # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because

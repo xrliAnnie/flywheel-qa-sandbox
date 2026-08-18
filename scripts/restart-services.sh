@@ -48,6 +48,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 # shellcheck source=lib/restart-cmux-watcher.sh
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
+# shellcheck source=lib/converge-nonlead-daemons.sh
+source "${FLYWHEEL_DIR}/scripts/lib/converge-nonlead-daemons.sh"
 # shellcheck source=lib/deploy-build-identity.sh
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/mailbox-queue-deploy-barrier.sh
@@ -2641,6 +2643,7 @@ deploy_and_verify() {
         trigger_cmux_refresh
     fi
 
+
     # FLY-1573: the default-ON queue may become live only after a conclusive,
     # zero-degradation Lead wave and real stdio MCP probes for BOTH backends.
     # Unknown/skipped/failed/empty fleet evidence is fail-closed and durable.
@@ -2694,6 +2697,25 @@ deploy_and_verify() {
     echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
     log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
     update_project_shas
+
+    # FLY-1830: the Bridge, the Leads and the cmux watcher all have somebody who
+    # puts them back. The rest of the non-Lead daemons had nobody — a label that
+    # left the domain stayed gone, plist still on disk, override still "enabled".
+    # quota-monitor sat like that for eleven days with automatic account
+    # switching off. This reconciles that set on the wave that already exists.
+    #
+    # Deliberately AFTER deployed-sha advances: a job converged back into the
+    # domain can start immediately (RunAtLoad, or QueueDirectories over a
+    # non-empty queue as com.flywheel.updater has). Converging mid-deploy could
+    # therefore hand the updater a git fetch/pull on the very checkout this
+    # deploy is still building from. By this point the build is finished and
+    # deployed-sha is current, so a woken updater simply finds nothing to do or
+    # drains its queue through the normal restart lock.
+    #
+    # Auxiliary by design: a degraded result is reported, never a deploy abort.
+    converge_nonlead_daemons
+    local nonlead_state="$NONLEAD_DAEMON_CONVERGE_STATE"
+    local nonlead_detail="$NONLEAD_DAEMON_CONVERGE_DETAIL"
 
     if [[ "$lead_counts_known" == "true" ]]; then
         local leads_status="healthy"
@@ -2802,6 +2824,17 @@ deploy_and_verify() {
         tail_log_subject="full restart result"
         [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
         tail_detail="${tail_detail}cmux watcher=${watcher_state}: ${watcher_detail}"
+    fi
+    # FLY-1830: a daemon this wave could not put back must not pass silently —
+    # silence is exactly how quota-monitor stayed gone for eleven days.
+    if [[ "$nonlead_state" != "healthy" ]]; then
+        if [[ -z "$tail_signature" ]]; then
+            tail_signature="nonlead-daemons-${nonlead_state}"
+        fi
+        tail_title="Flywheel restart degraded"
+        tail_log_subject="full restart result"
+        [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
+        tail_detail="${tail_detail}非-Lead daemon 收敛=${nonlead_state}: ${nonlead_detail}"
     fi
     if [[ -n "$tail_signature" ]]; then
         log "WARNING: code deployed; ${tail_log_subject} is degraded — $tail_detail"

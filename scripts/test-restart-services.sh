@@ -1744,6 +1744,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/converge-nonlead-daemons.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
@@ -1791,6 +1792,10 @@ if [[ "\${1:-}" == "print" ]]; then
     echo "state = running"
     echo "pid = 434343"
   fi
+elif [[ "\${1:-}" == "print-disabled" ]]; then
+  # FLY-1830: verbatim launchd shape, so the non-Lead convergence exercises its
+  # real parse instead of failing closed on an empty stub.
+  printf '\n\tdisabled services = {\n\t}\n'
 elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.cmux-watcher" ]]; then
   :
 elif [[ "\${1:-}" == "kickstart" && "\$*" == *"com.flywheel.lead.flywheel-eng" ]]; then
@@ -2032,7 +2037,15 @@ cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.bridge.plist" <<'EOF'
 <key>KeepAlive</key><true/>
 </dict></plist>
 EOF
-printf '<plist/>\n' > "$BO_HOME/Library/LaunchAgents/com.flywheel.cmux-watcher.plist"
+# FLY-1830: fixtures must carry the Label launchd actually registers — the
+# non-Lead convergence reads the declared Label, never the file name.
+cat > "$BO_HOME/Library/LaunchAgents/com.flywheel.cmux-watcher.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict>
+<key>Label</key><string>com.flywheel.cmux-watcher</string>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+EOF
 
 bo_run() {
     rm -f "$BO_CALLS"/*.calls
