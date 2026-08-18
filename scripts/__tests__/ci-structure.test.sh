@@ -52,6 +52,7 @@ with open(workflow_path, encoding="utf-8") as handle:
 
 jobs = mapping(workflow.get("jobs"), "jobs")
 expected_job_ids = {
+    "classify",
     "quick-gate",
     "unit-tests",
     "script-tests",
@@ -65,6 +66,7 @@ require(
 )
 require(
     list(jobs) == [
+        "classify",
         "quick-gate",
         "unit-tests",
         "script-tests",
@@ -76,18 +78,60 @@ require(
 )
 
 quick_gate = mapping(jobs["quick-gate"], "quick-gate")
+classify = mapping(jobs["classify"], "classify")
 unit_tests = mapping(jobs["unit-tests"], "unit-tests")
 script_tests = mapping(jobs["script-tests"], "script-tests")
+payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
 for job_id, job in (
     ("quick-gate", quick_gate),
+    ("classify", classify),
+):
+    require("needs" not in job, f"{job_id} must start independently (no needs)")
+
+for job_id, job in (
     ("unit-tests", unit_tests),
     ("script-tests", script_tests),
     ("script-tests-2", script_tests_2),
+    ("payload-distribution", payload_distribution),
 ):
-    require("needs" not in job, f"{job_id} must start independently (no needs)")
+    require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
+    require(
+        normalize_expression(job.get("if")) == "needs.classify.outputs.no_code!='true'",
+        f"{job_id} must run unless classify proves no_code=true",
+    )
+
+permissions = mapping(classify.get("permissions"), "classify.permissions")
+require(
+    permissions == {"contents": "read", "actions": "read"},
+    "classify must explicitly retain contents:read + actions:read under job-level permissions",
+)
+classify_steps = classify.get("steps")
+require(isinstance(classify_steps, list), "classify.steps must be a list")
+classify_checkout = [
+    step for step in classify_steps
+    if isinstance(step, dict) and step.get("uses") == "actions/checkout@v4"
+]
+require(len(classify_checkout) == 1, "classify must have one checkout")
+require(
+    mapping(classify_checkout[0].get("with"), "classify checkout.with").get("fetch-depth") == 0,
+    "classify checkout must fetch full history",
+)
+classify_runs = [
+    step for step in classify_steps
+    if isinstance(step, dict) and str(step.get("run", "")).strip() == "bash scripts/ci-classify.sh"
+]
+require(len(classify_runs) == 1, "classify must run scripts/ci-classify.sh exactly once")
+require(classify_runs[0].get("id") == "classify", "classifier step id must be classify")
+
+concurrency = mapping(workflow.get("concurrency"), "concurrency")
+require(
+    normalize_expression(concurrency.get("group")) == "ci-${{github.ref}}",
+    "CI concurrency must remain grouped by github.ref",
+)
+require(concurrency.get("cancel-in-progress") is True, "cancel-in-progress must remain true")
 
 strategy = mapping(unit_tests.get("strategy"), "unit-tests.strategy")
 require(strategy.get("fail-fast") is False, "unit-tests strategy.fail-fast must be false")
@@ -172,6 +216,7 @@ require(actual_matrix == expected_matrix, "unit-tests matrix name/cmd contract c
 ci_ok_needs = ci_ok.get("needs")
 require(isinstance(ci_ok_needs, list), "ci-ok.needs must be a list")
 expected_needs = {
+    "classify",
     "quick-gate",
     "unit-tests",
     "script-tests",
@@ -197,9 +242,30 @@ for step in ci_ok_steps:
     if isinstance(env, dict) and normalize_expression(env.get("NEEDS_JSON")) == "toJSON(needs)":
         aggregate_steps.append(step)
         require(
-            re.search(r"jq\s+-e\s+['\"]all\(\.\[\];\s*\.result\s*==\s*['\"]success['\"]\)['\"]", run)
-            is not None,
-            "ci-ok NEEDS_JSON step must jq-check that every result is success",
+            normalize_expression(env.get("NO_CODE")) == "needs.classify.outputs.no_code",
+            "ci-ok aggregate must receive classify no_code output",
+        )
+        normalized_run = re.sub(r"\s+", "", run)
+        expected_run = re.sub(
+            r"\s+",
+            "",
+            """printf '%s\\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" '
+              . as $needs
+              | ($needs["quick-gate"].result == "success")
+                and ($needs.classify.result == "success")
+                and (
+                  ["unit-tests", "script-tests", "script-tests-2", "payload-distribution"]
+                  | all(
+                      . as $job
+                      | ($needs[$job].result == "success")
+                        or ($no_code == "true" and $needs[$job].result == "skipped")
+                    )
+                )
+            '""",
+        )
+        require(
+            normalized_run == expected_run,
+            "ci-ok aggregate must accept heavy-job skips only when no_code=true",
         )
 require(len(aggregate_steps) == 1, "ci-ok must contain exactly one NEEDS_JSON aggregate step")
 
@@ -220,6 +286,24 @@ for job_id, (job, timeout_floor) in timeout_floors.items():
 
 script_steps = script_tests.get("steps")
 require(isinstance(script_steps, list), "script-tests.steps must be a list")
+quick_steps = quick_gate.get("steps")
+require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
+ci_structure_in_quick = sum(
+    "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
+    for step in quick_steps if isinstance(step, dict)
+)
+ci_structure_in_scripts = sum(
+    "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
+    for step in script_steps if isinstance(step, dict)
+)
+ci_structure_in_scripts_2 = sum(
+    "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
+    for step in (script_tests_2.get("steps") or []) if isinstance(step, dict)
+)
+require(
+    ci_structure_in_quick == 1 and ci_structure_in_scripts == 0 and ci_structure_in_scripts_2 == 0,
+    "ci-structure.test.sh must run exactly once in the always-on quick-gate",
+)
 script_steps_2 = script_tests_2.get("steps")
 require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
 
@@ -294,7 +378,7 @@ expected_shard_tests = {
         "Test — FLY-957 record_deployed_range best-effort",
         "Test — FLY-1729/1743 restart update + consistency guards",
         "Test — FLY-1081 notify-path migration",
-        "Test — FLY-1338 CI structure guard",
+        "Test — FLY-1861 CI cancellation and classification contracts",
         "Test — FLY-1674 legacy-path residue guard",
         "Test — FLY-1338 matrix coverage parity (QA)",
         "Test — FLY-1870 job elapsed tripwire contract",
@@ -379,6 +463,8 @@ for job_id, job in jobs.items():
         if not isinstance(step, dict):
             continue
         for line in str(step.get("run", "")).splitlines():
+            if re.search(r"\bbash\s+", line) is None:
+                continue
             try:
                 tokens = shlex.split(line, comments=True)
             except ValueError as exc:

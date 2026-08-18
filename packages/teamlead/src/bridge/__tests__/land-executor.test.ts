@@ -9,6 +9,7 @@ import {
 	executeLandOperation,
 	type LandMergeDriver,
 	landThreadNotificationPreflight,
+	resumeHeldLandOperation,
 } from "../land-executor.js";
 
 const HEAD = "a".repeat(40);
@@ -286,7 +287,7 @@ describe("land executor", () => {
 			store.listLandOperationSteps(operation.operation_id).map((s) => s.step),
 		).toEqual([
 			"authority_verified",
-			"cool_triggered",
+			"cool_triggered:attempt=0",
 			"merge_confirmed",
 			"cleanup_requested",
 			"finalization_completed",
@@ -573,6 +574,142 @@ describe("land executor", () => {
 		store.close();
 	});
 
+	it("advances exactly one ship attempt after a retryable workflow failure and posts a fresh trigger when due", async () => {
+		const { store, operation } = await fixture();
+		const triggerCool = vi
+			.fn()
+			.mockResolvedValueOnce({ commentId: "9001" })
+			.mockResolvedValueOnce({ commentId: "9002" });
+		const inspectTriggeredWorkflow = vi
+			.fn()
+			.mockResolvedValueOnce({
+				state: "failed" as const,
+				reason: "await_ci_timeout",
+			})
+			.mockResolvedValueOnce({ state: "pending" as const });
+		let now = new Date("2026-08-18T00:00:00.000Z");
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({ state: "OPEN", headSha: HEAD }),
+				triggerCool,
+				inspectTriggeredWorkflow,
+			} satisfies LandMergeDriver,
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true as const }),
+			ownerId: "worker",
+			now: () => now,
+		};
+
+		await expect(
+			executeLandOperation(operation.operation_id, deps),
+		).resolves.toMatchObject({
+			status: "partial",
+			reason: "ship_workflow_failed:await_ci_timeout",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "partial",
+			ship_attempt: 1,
+			retry_count: 1,
+			retry_epoch_key: `ship:1375:${HEAD}:budget=0`,
+			next_attempt_at: "2026-08-18T00:01:00.000Z",
+		});
+
+		now = new Date("2026-08-18T00:01:00.000Z");
+		await expect(
+			executeLandOperation(operation.operation_id, deps),
+		).resolves.toMatchObject({
+			status: "partial",
+			reason: "ship_workflow_pending",
+		});
+		expect(triggerCool).toHaveBeenCalledTimes(2);
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.map((step) => step.step),
+		).toEqual(
+			expect.arrayContaining([
+				"cool_triggered:attempt=0",
+				"cool_triggered:attempt=1",
+			]),
+		);
+		store.close();
+	});
+
+	it("keeps a true CI failure terminal and does not spend retry budget", async () => {
+		const { store, operation } = await fixture();
+		const result = await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({ state: "OPEN", headSha: HEAD }),
+				triggerCool: vi.fn().mockResolvedValue({ commentId: "9001" }),
+				inspectTriggeredWorkflow: vi.fn().mockResolvedValue({
+					state: "failed",
+					reason: "ci_failure",
+				}),
+			},
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-08-18T00:00:00.000Z"),
+		});
+		expect(result).toMatchObject({
+			status: "held",
+			reason: "ship_workflow_failed:ci_failure",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "held",
+			ship_attempt: 0,
+			retry_count: 0,
+		});
+		store.close();
+	});
+
+	it("adopts the legacy attempt-zero cool_triggered receipt without reposting", async () => {
+		const { store, operation } = await fixture();
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "seed",
+			now: "2026-08-18T00:00:00.000Z",
+			leaseExpiresAt: "2026-08-18T00:10:00.000Z",
+		})!;
+		expect(
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "cool_triggered",
+				receipt: { commentId: "legacy-9001" },
+				now: "2026-08-18T00:00:01.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "waiting",
+			reason: "ship_workflow_pending",
+			now: "2026-08-18T00:00:02.000Z",
+		});
+		const triggerCool = vi.fn();
+		await executeLandOperation(operation.operation_id, {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({ state: "OPEN", headSha: HEAD }),
+				triggerCool,
+				inspectTriggeredWorkflow: vi
+					.fn()
+					.mockResolvedValue({ state: "pending" }),
+			},
+			finalize: vi.fn(),
+			authorize: () => ({ ok: true }),
+			ownerId: "worker",
+			now: () => new Date("2026-08-18T00:01:00.000Z"),
+		});
+		expect(triggerCool).not.toHaveBeenCalled();
+		store.close();
+	});
+
 	it("backs off a retryable authorization failure and resumes only when due", async () => {
 		const { store, operation } = await fixture();
 		let authorized = false;
@@ -627,6 +764,82 @@ describe("land executor", () => {
 			executeLandOperation(operation.operation_id, deps),
 		).resolves.toMatchObject({ status: "completed" });
 		expect(inspectPr).toHaveBeenCalledOnce();
+		store.close();
+	});
+
+	it("refuses a moved PR head without mutation, then resumes the exact legacy head", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "issue-resume",
+			projectName: "flywheel",
+			prNumber: 1861,
+			approvedHead: HEAD,
+			now: "2026-08-18T00:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "worker",
+			now: "2026-08-18T00:00:01.000Z",
+			leaseExpiresAt: "2026-08-18T00:10:01.000Z",
+		})!;
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "terminal",
+			reason: "ship_workflow_failed:ci_failure",
+			now: "2026-08-18T00:00:02.000Z",
+		});
+		const inspectPr = vi
+			.fn()
+			.mockResolvedValueOnce({ state: "OPEN", headSha: "c".repeat(40) })
+			.mockResolvedValueOnce({ state: "OPEN", headSha: HEAD });
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr,
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			} satisfies LandMergeDriver,
+			now: () => new Date("2026-08-18T00:01:00.000Z"),
+		};
+
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "operator",
+					reason: "retry",
+				},
+				deps,
+			),
+		).resolves.toEqual({
+			ok: false,
+			reason: "resume_refused:pr_head_mismatch",
+		});
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "held",
+			resume_generation: 0,
+			ship_attempt: 0,
+		});
+
+		await expect(
+			resumeHeldLandOperation(
+				{
+					operationId: operation.operation_id,
+					actor: "operator",
+					reason: "required CI is now green",
+				},
+				deps,
+			),
+		).resolves.toMatchObject({
+			ok: true,
+			operation: {
+				state: "partial",
+				resume_generation: 1,
+				ship_attempt: 1,
+			},
+		});
 		store.close();
 	});
 

@@ -1,0 +1,13 @@
+flowchart LR
+    P["runner 推台账 /<br/>文档 commit"] --> C1["分支 head 变<br/>(最新提交换了)"]
+    C1 --> C2["CI 掐掉在跑的旧轮<br/>(cancel-in-progress)"]
+    C2 --> C3["head 拿到绿章的时刻<br/>每次推送都被推迟 15~50 分钟"]
+    S1[":cool: 发车<br/>ship 自跑 20 分钟测试"] --> S2["Merge 步:撞门<br/>405「CI OK 还没结论」"]
+    C3 -.两个时钟互不同步.-> S2
+    S2 --> H1["ship run 失败<br/>回执 status=failure"]
+    H1 --> H2["land 判 held<br/>(终态,零重试)"]
+    H2 --> H3["死角:held 没有任何出口<br/>生产已积 18 张"]
+    style P fill:#fff4e5,stroke:#ff9500
+    style S2 fill:#ffe5e3,stroke:#ff3b30
+    style H2 fill:#ffe5e3,stroke:#ff3b30
+    style H3 fill:#ffd7d4,stroke:#ff3b30,stroke-width:2px

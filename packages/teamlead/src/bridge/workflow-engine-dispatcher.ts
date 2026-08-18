@@ -1610,8 +1610,8 @@ export class WorkflowEngineDispatcher {
 	async reconcileWorkflowEngineAlerts(max = 20): Promise<number> {
 		const sink = this.alertSink?.current;
 		if (!sink) return 0;
-		let finalized = 0;
-		for (let index = 0; index < max; index += 1) {
+		let finalized = await this.reconcileLegacyLandAlerts(sink, max);
+		for (let index = finalized; index < max; index += 1) {
 			const now = this.now();
 			const claim = this.options.store.claimNextWorkflowAlert({
 				ownerId: this.ownerId,
@@ -1649,6 +1649,73 @@ export class WorkflowEngineDispatcher {
 				});
 				finalized += 1;
 			}
+		}
+		return finalized;
+	}
+
+	private async reconcileLegacyLandAlerts(
+		sink: { alert: (payload: AlertPayload) => Promise<AlertResult> },
+		max: number,
+	): Promise<number> {
+		let finalized = 0;
+		for (let index = 0; index < max; index += 1) {
+			const now = this.now();
+			const claim = this.options.store.claimNextLandAlert({
+				ownerId: this.ownerId,
+				now: now.toISOString(),
+				leaseExpiresAt: new Date(now.getTime() + 60_000).toISOString(),
+			});
+			if (!claim) break;
+			const identity = this.resolveRunAlertIdentity(
+				claim.payload.projectName,
+				claim.payload.issueId,
+				`land:${claim.operationId}`,
+			);
+			try {
+				const delivery = await sink.alert({
+					leadId: identity.leadId,
+					projectName: identity.projectName,
+					eventId: `land-held:${claim.operationId}:${claim.resumeGeneration}:${claim.attempt}`,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `land:${claim.operationId}`,
+					title: `Land operation held for ${claim.payload.issueId}`,
+					body: `PR #${claim.payload.prNumber} land operation ${claim.operationId} is held. Reason: ${claim.payload.reason}. Inspect the PR, then recover with POST /api/lifecycle/land/${claim.operationId}/resume using audited actor and reason fields.`,
+					metadata: {
+						workflowEngine: {
+							runId: `land:${claim.operationId}`,
+							issueId: claim.payload.issueId,
+							nodeId: "land",
+							executionId: `land:${claim.operationId}`,
+							disposition: "held",
+							leadResolution: identity.leadResolution,
+						},
+					},
+				});
+				const accepted = delivery.sent === true || delivery.queued === true;
+				this.options.store.finishLandAlertDelivery({
+					operationId: claim.operationId,
+					resumeGeneration: claim.resumeGeneration,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: accepted ? "sent" : "failed",
+					...(accepted
+						? {}
+						: { error: delivery.skipped ?? "alert_not_delivered" }),
+					now: this.now().toISOString(),
+				});
+			} catch (error) {
+				this.options.store.finishLandAlertDelivery({
+					operationId: claim.operationId,
+					resumeGeneration: claim.resumeGeneration,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					outcome: "failed",
+					error: error instanceof Error ? error.message : String(error),
+					now: this.now().toISOString(),
+				});
+			}
+			finalized += 1;
 		}
 		return finalized;
 	}

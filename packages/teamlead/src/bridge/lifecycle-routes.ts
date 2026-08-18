@@ -76,6 +76,13 @@ export interface LifecycleRoutesDeps {
 			prNumber?: number;
 			approvedHead?: string;
 		}): LandOperationRow;
+		resume?(input: {
+			operationId: string;
+			actor: string;
+			reason: string;
+		}): Promise<
+			{ ok: true; operation: LandOperationRow } | { ok: false; reason: string }
+		>;
 		kick(operationId: string): void;
 	};
 }
@@ -265,6 +272,39 @@ export function createLifecycleRouter(deps: LifecycleRoutesDeps): Router {
 			...operation,
 			steps: deps.store.listLandOperationSteps(operation.operation_id),
 		});
+	});
+
+	router.post("/land/:operationId/resume", async (req, res) => {
+		if (!guard(res)) return;
+		if (!deps.land?.enabled() || !deps.land.resume) {
+			res.status(503).json({ error: "land_node_disabled" });
+			return;
+		}
+		const actor =
+			typeof req.body?.actor === "string" ? req.body.actor.trim() : "";
+		const reason =
+			typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+		if (!actor || actor.length > 200 || !reason || reason.length > 500) {
+			res.status(400).json({ error: "actor + reason required" });
+			return;
+		}
+		try {
+			const resumed = await deps.land.resume({
+				operationId: req.params.operationId,
+				actor,
+				reason,
+			});
+			if (!resumed.ok) {
+				res.status(409).json({ error: resumed.reason });
+				return;
+			}
+			deps.land.kick(req.params.operationId);
+			res.status(200).json(resumed.operation);
+		} catch (error) {
+			res.status(409).json({
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	});
 
 	// ── founder park-close (atomic tombstone + closeout, Codex R1#5) ──

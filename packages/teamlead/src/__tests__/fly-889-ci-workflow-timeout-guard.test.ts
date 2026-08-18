@@ -11,8 +11,9 @@
  * to catch a silent revert — mirrors the R4-2 pattern in
  * `workflow-permissions.test.ts`. FLY-1338 split that serial job into
  * independently scheduled unit and shell jobs, so this guard now follows the
- * long-running work and also proves the new shell structure guard stays wired
- * into CI.
+ * long-running work. FLY-1861 moved the shell structure guard into the
+ * always-on quick gate so a documentation-only skip can never bypass the
+ * governance check that authorizes that skip shape.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -93,30 +94,28 @@ describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get"
 		}
 	});
 
-	it("script shards run the FLY-1338 structure guard exactly once in shard 2", () => {
+	it("quick-gate runs the FLY-1338/1861 structure guard as an always-on required step", () => {
 		const jobs = loadCiJobs();
 		if (!jobs) {
 			expect(true).toBe(true);
 			return;
 		}
-		const guardSteps = scriptShardIds.flatMap((jobId) => {
-			const job = jobs[jobId] as Record<string, unknown> | undefined;
-			expect(job, `ci.yml exists but jobs.${jobId} is missing`).toBeDefined();
-			return ((job?.steps ?? []) as Array<Record<string, unknown>>)
-				.filter((step) =>
-					/\bbash\s+scripts\/__tests__\/ci-structure\.test\.sh\b/.test(
-						String(step.run ?? ""),
-					),
-				)
-				.map((step) => ({ jobId, step }));
-		});
+		const job = jobs["quick-gate"] as Record<string, unknown> | undefined;
+		expect(job, "ci.yml exists but jobs.quick-gate is missing").toBeDefined();
+		expect(job).not.toHaveProperty("if");
+		expect(job).not.toHaveProperty("needs");
+		const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
+		const guardSteps = steps.filter((step) =>
+			/\bbash\s+scripts\/__tests__\/ci-structure\.test\.sh\b/.test(
+				String(step.run ?? ""),
+			),
+		);
 		expect(
 			guardSteps,
 			"expected exactly one required CI structure guard step",
 		).toHaveLength(1);
-		expect(guardSteps[0]?.jobId).toBe("script-tests-2");
-		expect(guardSteps[0]?.step).not.toHaveProperty("if");
-		expect(guardSteps[0]?.step).not.toHaveProperty("continue-on-error");
+		expect(guardSteps[0]).not.toHaveProperty("if");
+		expect(guardSteps[0]).not.toHaveProperty("continue-on-error");
 	});
 
 	it("CI OK requires both script shards", () => {

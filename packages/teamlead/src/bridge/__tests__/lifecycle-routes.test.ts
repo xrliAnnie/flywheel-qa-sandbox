@@ -101,6 +101,10 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 		serve(makeDeps({ apiTokenConfigured: false }));
 		for (const [path, body] of [
 			["/api/lifecycle/land", { issueId: UUID, project: "proj" }],
+			[
+				"/api/lifecycle/land/land%3Aone/resume",
+				{ actor: "operator", reason: "CI recovered" },
+			],
 			["/api/lifecycle/park", { issueUuid: UUID, project: "proj" }],
 			["/api/lifecycle/unpark", { issueUuid: UUID, supersededBy: "x" }],
 			["/api/lifecycle/dry-run", { project: "proj" }],
@@ -200,6 +204,82 @@ describe("lifecycle routes (FLY-1185 §2.12, manifest v2)", () => {
 			next_attempt_at: null,
 		});
 		expect(kick).toHaveBeenCalledWith(operation.operation_id);
+	});
+
+	it("land resume: requires audited authority fields and kicks only after an accepted resume", async () => {
+		const kick = vi.fn();
+		const resume = vi.fn(async () => ({
+			ok: true as const,
+			operation: {
+				...store.ensureLandOperation({
+					issueId: UUID,
+					projectName: "proj",
+					prNumber: 1375,
+					approvedHead: "a".repeat(40),
+					now: "2026-08-18T00:00:00.000Z",
+				}),
+				state: "partial" as const,
+			},
+		}));
+		serve(
+			makeDeps({
+				land: {
+					enabled: () => true,
+					createIntent: vi.fn(),
+					resume,
+					kick,
+				},
+			}),
+		);
+
+		const invalid = await request(
+			server,
+			"/api/lifecycle/land/land%3Aone/resume",
+			{ actor: "operator" },
+		);
+		expect(invalid.status).toBe(400);
+		expect(resume).not.toHaveBeenCalled();
+
+		const accepted = await request(
+			server,
+			"/api/lifecycle/land/land%3Aone/resume",
+			{ actor: "operator", reason: "required CI is now green" },
+		);
+		expect(accepted.status).toBe(200);
+		expect(accepted.body).toMatchObject({ state: "partial" });
+		expect(resume).toHaveBeenCalledWith({
+			operationId: "land:one",
+			actor: "operator",
+			reason: "required CI is now green",
+		});
+		expect(kick).toHaveBeenCalledWith("land:one");
+	});
+
+	it("land resume: returns a typed 409 and does not kick on refusal", async () => {
+		const kick = vi.fn();
+		serve(
+			makeDeps({
+				land: {
+					enabled: () => true,
+					createIntent: vi.fn(),
+					resume: vi.fn(async () => ({
+						ok: false as const,
+						reason: "resume_refused:pr_head_mismatch",
+					})),
+					kick,
+				},
+			}),
+		);
+		const refused = await request(
+			server,
+			"/api/lifecycle/land/land%3Aone/resume",
+			{ actor: "operator", reason: "retry" },
+		);
+		expect(refused).toEqual({
+			status: 409,
+			body: { error: "resume_refused:pr_head_mismatch" },
+		});
+		expect(kick).not.toHaveBeenCalled();
 	});
 
 	it("park: delegates to the ATOMIC parkFn (mutex-held tombstone + closeout)", async () => {

@@ -109,6 +109,49 @@ export type LandExecutionResult =
 	| { status: "partial"; operationId: string; reason: string }
 	| { status: "held"; operationId: string; reason: string };
 
+export async function resumeHeldLandOperation(
+	input: { operationId: string; actor: string; reason: string },
+	deps: Pick<LandExecutorDeps, "store" | "mergeDriver"> & { now?: () => Date },
+): Promise<
+	{ ok: true; operation: LandOperationRow } | { ok: false; reason: string }
+> {
+	const operation = deps.store.getLandOperation(input.operationId);
+	if (!operation) return { ok: false, reason: "resume_refused:not_found" };
+	if (operation.state !== "held") {
+		return { ok: false, reason: "resume_refused:not_held" };
+	}
+	let pr: LandPrState;
+	try {
+		pr = await deps.mergeDriver.inspectPr({
+			projectName: operation.project_name,
+			prNumber: operation.pr_number,
+		});
+	} catch (error) {
+		return {
+			ok: false,
+			reason:
+				`resume_refused:pr_inspection_failed:${error instanceof Error ? error.message : String(error)}`.slice(
+					0,
+					500,
+				),
+		};
+	}
+	if (pr.headSha.toLowerCase() !== operation.approved_head.toLowerCase()) {
+		return { ok: false, reason: "resume_refused:pr_head_mismatch" };
+	}
+	if (pr.state === "CLOSED") {
+		return { ok: false, reason: "resume_refused:pr_closed_unmerged" };
+	}
+	return deps.store.resumeHeldLandOperation({
+		operationId: input.operationId,
+		actor: input.actor,
+		reason: input.reason,
+		now: (deps.now ?? (() => new Date()))().toISOString(),
+		expectedPrDisposition: pr.state === "MERGED" ? "merged" : "open",
+		expectedHeadSha: pr.headSha,
+	});
+}
+
 function stepReceipt(
 	store: StateStore,
 	operationId: string,
@@ -117,6 +160,19 @@ function stepReceipt(
 	return store
 		.listLandOperationSteps(operationId)
 		.find((candidate) => candidate.step === step)?.receipt;
+}
+
+function coolTriggerReceipt(
+	store: StateStore,
+	operation: LandOperationRow,
+): { step: string; receipt?: Record<string, unknown> } {
+	const step = `cool_triggered:attempt=${operation.ship_attempt}`;
+	const receipt = stepReceipt(store, operation.operation_id, step);
+	if (receipt || operation.ship_attempt !== 0) return { step, receipt };
+	return {
+		step,
+		receipt: stepReceipt(store, operation.operation_id, "cool_triggered"),
+	};
 }
 
 async function authorizeLandOperation(
@@ -424,7 +480,8 @@ export async function executeLandOperation(
 		}
 
 		if (pr.state !== "MERGED") {
-			let trigger = stepReceipt(deps.store, operationId, "cool_triggered");
+			const triggerReceipt = coolTriggerReceipt(deps.store, operation);
+			let trigger = triggerReceipt.receipt;
 			if (!trigger) {
 				const rejected = await rejectUnauthorizedLandEffect(
 					deps,
@@ -447,7 +504,7 @@ export async function executeLandOperation(
 				);
 				if (rejectedAfterTrigger) return rejectedAfterTrigger;
 				trigger = posted;
-				recordStep(deps, operation, claim, "cool_triggered", posted, now);
+				recordStep(deps, operation, claim, triggerReceipt.step, posted, now);
 			}
 			await announce(deps, operation, claim, "cool_triggered", trigger, now);
 			const triggerCommentId = String(trigger.commentId ?? "");
@@ -487,12 +544,13 @@ export async function executeLandOperation(
 					pr.headSha.toLowerCase() !== operation.approved_head
 				) {
 					await announce(deps, operation, claim, "merge_failed", workflow, now);
+					const reason = `ship_workflow_failed:${workflow.reason}`;
 					return release(
 						deps,
 						operation,
 						claim,
-						"held",
-						`ship_workflow_failed:${workflow.reason}`,
+						classifyLandRetryReason(reason) === "terminal" ? "held" : "partial",
+						reason,
 						now,
 					);
 				}
@@ -663,6 +721,7 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 				stdout: string;
 				stderr: string;
 			}>,
+		private readonly now: () => Date = () => new Date(),
 	) {}
 
 	private root(projectName: string): string {
@@ -747,28 +806,31 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 			],
 			{ cwd },
 		);
-		const pages = parseJson<Array<Array<{ body?: string }>>>(
-			comments.stdout,
-			"land_comments",
-		);
+		const pages = parseJson<
+			Array<Array<{ body?: string; created_at?: string }>>
+		>(comments.stdout, "land_comments");
 		const rows = pages.flat();
 		const marker = `trigger_comment_id=${input.triggerCommentId}`;
 		const head = `head=${input.headSha}`;
-		const bodies = rows
-			.map((row) => row.body ?? "")
-			.filter((body) => body.includes("flywheel-ship-receipt"))
-			.filter((body) => body.includes(marker) && body.includes(head));
-		const latest = bodies.at(-1);
+		const latest = rows
+			.filter((row) => (row.body ?? "").includes("flywheel-ship-receipt"))
+			.filter(
+				(row) =>
+					(row.body ?? "").includes(marker) && (row.body ?? "").includes(head),
+			)
+			.at(-1);
 		if (!latest) return { state: "pending" };
-		const runId = /run_id=([^\s>]+)/.exec(latest)?.[1];
-		const runUrl = /run_url=([^\s>]+)/.exec(latest)?.[1];
-		const status = /status=([^\s>]+)/.exec(latest)?.[1];
+		const body = latest.body ?? "";
+		const runId = /run_id=([^\s>]+)/.exec(body)?.[1];
+		const runUrl = /run_url=([^\s>]+)/.exec(body)?.[1];
+		const status = /status=([^\s>]+)/.exec(body)?.[1];
 		if (status === "failure" || status === "cancelled") {
+			const failedStep = /failed_step=([^\s>]+)/.exec(body)?.[1];
 			return {
 				state: "failed",
 				...(runId ? { runId } : {}),
 				...(runUrl ? { runUrl } : {}),
-				reason: status,
+				reason: failedStep ?? status,
 			};
 		}
 		if (status === "success") {
@@ -777,6 +839,47 @@ export class GhCliLandMergeDriver implements LandMergeDriver {
 				...(runId ? { runId } : {}),
 				...(runUrl ? { runUrl } : {}),
 			};
+		}
+		if (
+			status === "started" &&
+			runId &&
+			latest.created_at &&
+			this.now().getTime() - Date.parse(latest.created_at) >= 45 * 60_000
+		) {
+			try {
+				const run = await this.exec(
+					"gh",
+					["run", "view", runId, "--json", "status,conclusion"],
+					{ cwd },
+				);
+				const observed = parseJson<{
+					status: string;
+					conclusion: string | null;
+				}>(run.stdout, "land_run_view");
+				if (observed.status !== "completed") {
+					return {
+						state: "pending",
+						runId,
+						...(runUrl ? { runUrl } : {}),
+					};
+				}
+				if (observed.conclusion === "success") {
+					return {
+						state: "succeeded",
+						runId,
+						...(runUrl ? { runUrl } : {}),
+					};
+				}
+				return {
+					state: "failed",
+					runId,
+					...(runUrl ? { runUrl } : {}),
+					reason: `run_${observed.conclusion ?? "unknown"}`,
+				};
+			} catch {
+				// A transient receiver lookup cannot safely turn an incomplete receipt
+				// into failure. The durable operation will poll again.
+			}
 		}
 		return {
 			state: "pending",

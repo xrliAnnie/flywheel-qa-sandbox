@@ -32,6 +32,13 @@ const TERMINAL_REASONS = new Set([
 	"land_step_receipt_conflict",
 ]);
 
+export const SHIP_WORKFLOW_RETRYABLE_FAILURES = new Set([
+	"await_ci_timeout",
+	"merge_405_required_check",
+	"run_cancelled",
+	"run_timed_out",
+]);
+
 const RETRY_DELAYS_MS = [
 	60_000, 120_000, 240_000, 480_000, 900_000, 1_800_000, 3_600_000, 7_200_000,
 ] as const;
@@ -58,10 +65,13 @@ export function classifyLandRetryReason(
 	) {
 		return "waiting";
 	}
-	if (
-		TERMINAL_REASONS.has(unwrapped) ||
-		reason.startsWith("ship_workflow_failed:")
-	) {
+	if (unwrapped.startsWith("ship_workflow_failed:")) {
+		const failure = unwrapped.slice("ship_workflow_failed:".length);
+		return SHIP_WORKFLOW_RETRYABLE_FAILURES.has(failure)
+			? "retryable"
+			: "terminal";
+	}
+	if (TERMINAL_REASONS.has(unwrapped)) {
 		return "terminal";
 	}
 	return "retryable";

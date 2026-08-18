@@ -21,6 +21,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # FLY-1861: cost-only classifier. It may skip heavy jobs only when the
+  # current PR head is a documentation-only descendant of the latest green
+  # exact-PR baseline under the same base SHA. Every uncertainty runs full CI.
+  classify:
+    name: Classify CI scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      no_code: ${{ steps.classify.outputs.no_code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Classify cumulative diff from latest green baseline
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci-classify.sh
+
   quick-gate:
     name: Quick Gate (build + typecheck + lint)
     runs-on: ubuntu-latest
@@ -34,6 +60,11 @@ jobs:
       # without executing anywhere in the required lane.
       - name: Verify shell suite CI enumeration is complete
         run: bash scripts/__tests__/ci-shell-suite-enumeration.test.sh
+
+      # This guard intentionally runs in the always-on lane. It is the
+      # governance surface for changing the CI job graph and skip semantics.
+      - name: Test — FLY-1338/1861 CI structure guard
+        run: bash scripts/__tests__/ci-structure.test.sh
 
       - name: Enforce FLY-1773 ACK-only delivery semantics
         run: bash scripts/__tests__/fly1773-delivery-semantics.test.sh
@@ -73,6 +104,8 @@ jobs:
   unit-tests:
     name: Unit (${{ matrix.name }})
     runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -125,6 +158,8 @@ jobs:
   script-tests:
     name: Script Tests 1/2 — cmux/session (shell suites)
     runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
     # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
     # serial lane into two independent shards; this cmux/session shard measured
     # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
@@ -305,6 +340,8 @@ jobs:
   script-tests-2:
     name: Script Tests 2/2 — fleet/setup/packaging (shell suites)
     runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
     # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
     # serial lane into two independent shards; this fleet/setup/packaging shard
     # measured ~10.4min (52%) as of 2026-08-17. Rebalance only whole named steps
@@ -693,8 +730,11 @@ jobs:
           # --lead deploy call form — infra identity used, no Simba fallback.
           bash scripts/__tests__/qa-fly1081-notify-identity.test.sh
 
-      - name: Test — FLY-1338 CI structure guard
-        run: bash scripts/__tests__/ci-structure.test.sh
+      - name: Test — FLY-1861 CI cancellation and classification contracts
+        run: |
+          bash scripts/__tests__/ship-await-ci.test.sh
+          bash scripts/__tests__/ship-report-failure.test.sh
+          bash scripts/__tests__/ci-classify.test.sh
 
       # FLY-1674: retired dispatcher/config/flag names cannot return outside
       # exact persisted-compatibility seams.
@@ -724,6 +764,8 @@ jobs:
   payload-distribution:
     name: NPM payload distribution (endpoint + release pipeline)
     runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -785,11 +827,24 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [quick-gate, unit-tests, script-tests, script-tests-2, payload-distribution]
+    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all jobs passed
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          NO_CODE: ${{ needs.classify.outputs.no_code }}
         run: |
-          printf '%s\n' "$NEEDS_JSON" | jq -e 'all(.[]; .result == "success")'
+          printf '%s\n' "$NEEDS_JSON" | jq -e --arg no_code "$NO_CODE" '
+            . as $needs
+            | ($needs["quick-gate"].result == "success")
+              and ($needs.classify.result == "success")
+              and (
+                ["unit-tests", "script-tests", "script-tests-2", "payload-distribution"]
+                | all(
+                    . as $job
+                    | ($needs[$job].result == "success")
+                      or ($no_code == "true" and $needs[$job].result == "skipped")
+                  )
+              )
+          '

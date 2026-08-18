@@ -1501,6 +1501,229 @@ describe("StateStore land lifecycle ledger", () => {
 		store.close();
 	});
 
+	it("atomically enqueues and lease-fences legacy held alerts", async () => {
+		const store = await StateStore.create(":memory:");
+		const operation = store.ensureLandOperation({
+			issueId: "FLY-1861-legacy",
+			projectName: "flywheel",
+			prNumber: 1861,
+			approvedHead: HEAD,
+			now: "2026-08-18T00:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "legacy-worker",
+			now: "2026-08-18T00:00:01.000Z",
+			leaseExpiresAt: "2026-08-18T00:10:01.000Z",
+		})!;
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			class: "terminal",
+			reason: "ship_workflow_failed:ci_failure",
+			now: "2026-08-18T00:00:02.000Z",
+		});
+
+		expect(store.getLandOperation(operation.operation_id)?.state).toBe("held");
+		expect(store.listLandAlertOutbox()).toMatchObject([
+			{
+				operation_id: operation.operation_id,
+				resume_generation: 0,
+				state: "pending",
+				attempt: 0,
+				payload: {
+					issueId: "FLY-1861-legacy",
+					reason: "ship_workflow_failed:ci_failure",
+				},
+			},
+		]);
+		const first = store.claimNextLandAlert({
+			ownerId: "alert-a",
+			now: "2026-08-18T00:00:03.000Z",
+			leaseExpiresAt: "2026-08-18T00:01:03.000Z",
+		});
+		expect(first).toMatchObject({ attempt: 1, generation: 1 });
+		expect(
+			store.claimNextLandAlert({
+				ownerId: "alert-b",
+				now: "2026-08-18T00:00:04.000Z",
+				leaseExpiresAt: "2026-08-18T00:01:04.000Z",
+			}),
+		).toBeUndefined();
+		const reclaimed = store.claimNextLandAlert({
+			ownerId: "alert-b",
+			now: "2026-08-18T00:01:03.000Z",
+			leaseExpiresAt: "2026-08-18T00:02:03.000Z",
+		});
+		expect(reclaimed).toMatchObject({ attempt: 2, generation: 2 });
+		expect(
+			store.finishLandAlertDelivery({
+				operationId: operation.operation_id,
+				resumeGeneration: 0,
+				ownerId: first!.ownerId,
+				generation: first!.generation,
+				outcome: "sent",
+				now: "2026-08-18T00:01:04.000Z",
+			}),
+		).toEqual({ ok: false, reason: "stale_land_alert_generation" });
+		expect(
+			store.finishLandAlertDelivery({
+				operationId: operation.operation_id,
+				resumeGeneration: 0,
+				ownerId: reclaimed!.ownerId,
+				generation: reclaimed!.generation,
+				outcome: "sent",
+				now: "2026-08-18T00:01:04.000Z",
+			}),
+		).toEqual({ ok: true, state: "sent" });
+		store.close();
+	});
+
+	it("resumes an engine-owned held land operation and its run in one audited generation", async () => {
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-resume-held",
+			issueId: "FLY-1861",
+			projectName: "flywheel",
+			snapshotJson: landSnapshot(),
+			claimsReadEnrolled: true,
+		});
+		const sql = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		sql.run(
+			"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'land' WHERE run_id = 'run-resume-held'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-resume-held",
+			nodeId: "land",
+			attempt: 1,
+			state: "pending",
+			executionId: "land-resume-exec",
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-resume-held",
+			nodeId: "qa",
+			attempt: 1,
+			state: "done",
+			executionId: "qa-resume-exec",
+		});
+		sql.run(
+			`INSERT INTO workflow_side_effect_ledger
+			   (run_id,node_id,attempt,kind,launch_ordinal,execution_id,state,
+			    created_at,updated_at,committed_at)
+			 VALUES ('run-resume-held','land',1,'dispatch',1,
+			         'land-resume-exec','launch_committed',?,?,?)`,
+			[
+				"2026-08-18T00:00:00.000Z",
+				"2026-08-18T00:00:00.000Z",
+				"2026-08-18T00:00:00.000Z",
+			],
+		);
+		sql.run(
+			`INSERT INTO workflow_node_pr_binding
+			   (run_id,node_id,attempt,pr_number,head_sha,target_repo_identity,
+			    probe_repo_slug,target_repo_path,worktree_binding_generation,
+			    receipt_id,bound_at)
+			 VALUES ('run-resume-held','qa',1,1861,?,'__main__',
+			         'xrliAnnie/flywheel','/tmp/flywheel','generation-1',
+			         'resume-binding','2026-08-18T00:00:00.000Z')`,
+			[HEAD],
+		);
+		const holder = store.ensureWorkflowGateHolder({
+			runId: "run-resume-held",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: HEAD,
+			sourceExecutionId: "qa-resume-exec",
+			questionId: "resume-ship-question",
+			now: "2026-08-18T00:00:00.000Z",
+		});
+		sql.run(
+			"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = ?",
+			[holder.question_id],
+		);
+		const operation = store.ensureLandOperation({
+			runId: "run-resume-held",
+			issueId: "FLY-1861",
+			projectName: "flywheel",
+			prNumber: 1861,
+			approvedHead: HEAD,
+			now: "2026-08-18T00:00:00.000Z",
+		});
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "land-worker",
+			now: "2026-08-18T00:00:01.000Z",
+			leaseExpiresAt: "2026-08-18T00:10:01.000Z",
+		})!;
+		store.setLandOperationDisposition({
+			operationId: operation.operation_id,
+			ownerId: claim.ownerId,
+			generation: claim.generation,
+			state: "held",
+			error: "ship_workflow_failed:ci_failure",
+			now: "2026-08-18T00:00:02.000Z",
+		});
+		expect(
+			store.holdWorkflowLandNode({
+				runId: "run-resume-held",
+				nodeId: "land",
+				attempt: 1,
+				executionId: "land-resume-exec",
+				operationId: operation.operation_id,
+				reason: "ship_workflow_failed:ci_failure",
+				now: "2026-08-18T00:00:03.000Z",
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+			}),
+		).toMatchObject({ ok: true });
+
+		const beforeNode = store.getWorkflowRunNode("run-resume-held", "land", 1);
+		const beforeLedger = store.listWorkflowSideEffects("run-resume-held");
+		const resumed = store.resumeHeldLandOperation({
+			operationId: operation.operation_id,
+			actor: "operator",
+			reason: "CI failure reviewed; retry authorized",
+			now: "2026-08-18T00:01:00.000Z",
+			expectedPrDisposition: "open",
+			expectedHeadSha: HEAD,
+		});
+		expect(resumed).toMatchObject({
+			ok: true,
+			operation: {
+				state: "partial",
+				resume_generation: 1,
+				ship_attempt: 1,
+				retry_count: 0,
+				next_attempt_at: "2026-08-18T00:01:00.000Z",
+			},
+		});
+		expect(store.getWorkflowRun("run-resume-held")?.status).toBe("active");
+		expect(store.getWorkflowRunNode("run-resume-held", "land", 1)).toEqual(
+			beforeNode,
+		);
+		expect(store.listWorkflowSideEffects("run-resume-held")).toEqual(
+			beforeLedger,
+		);
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.find((step) => step.step === "resume_authorized:1")?.receipt,
+		).toMatchObject({
+			actor: "operator",
+			reason: "CI failure reviewed; retry authorized",
+			priorLastError: "ship_workflow_failed:ci_failure",
+		});
+		store.close();
+	});
+
 	it("creates the land retry and Linear Done columns with byte-compatible defaults", async () => {
 		const store = await StateStore.create(":memory:");
 		const db = (
@@ -1519,6 +1742,8 @@ describe("StateStore land lifecycle ledger", () => {
 				.map((row) => row.name),
 		);
 		for (const column of [
+			"ship_attempt",
+			"resume_generation",
 			"retry_count",
 			"retry_epoch_key",
 			"next_attempt_at",
@@ -1542,6 +1767,8 @@ describe("StateStore land lifecycle ledger", () => {
 			now: "2026-08-14T20:00:00.000Z",
 		});
 		expect(operation).toMatchObject({
+			ship_attempt: 0,
+			resume_generation: 0,
 			retry_count: 0,
 			retry_epoch_key: null,
 			next_attempt_at: null,
@@ -1595,6 +1822,8 @@ describe("StateStore land lifecycle ledger", () => {
 					now: "2026-08-14T20:00:00.000Z",
 				});
 				expect(operation).toMatchObject({
+					ship_attempt: 0,
+					resume_generation: 0,
 					retry_count: 0,
 					next_attempt_at: null,
 					linear_done_disposition: null,

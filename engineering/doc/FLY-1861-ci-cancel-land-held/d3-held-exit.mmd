@@ -1,0 +1,15 @@
+stateDiagram-v2
+    direction LR
+    state "held(卡死区)" as held
+    [*] --> intent : founder 批准落地
+    intent --> running : 被认领
+    running --> partial : 环境性失败(退避后自动重试)
+    partial --> running : 到点重新认领,推进新一次发车
+    running --> held : 代码真红 / 重试耗尽(需要人看)
+    running --> completed : 合入 + 收尾完成
+    held --> partial : 本单新增 resume 授权出口(连同引擎权限一起恢复)
+    completed --> [*]
+    note right of held
+        现状 —— held 没有任何出边,永远卡死
+        修复后 —— 人看完一键放回,重新进入循环
+    end note

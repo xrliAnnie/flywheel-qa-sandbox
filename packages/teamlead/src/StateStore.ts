@@ -17837,6 +17837,8 @@ export class StateStore {
 				owner_id TEXT,
 				lease_expires_at TEXT,
 				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				ship_attempt INTEGER NOT NULL DEFAULT 0 CHECK (ship_attempt >= 0),
+				resume_generation INTEGER NOT NULL DEFAULT 0 CHECK (resume_generation >= 0),
 				current_step TEXT,
 				merge_confirmed_at TEXT,
 				finalization_completed_at TEXT,
@@ -17858,6 +17860,16 @@ export class StateStore {
 				UNIQUE (project_name, issue_id, pr_number, approved_head)
 			)
 		`);
+		this.addColumnIfMissing(
+			"land_operation",
+			"ship_attempt",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (ship_attempt >= 0)",
+		);
+		this.addColumnIfMissing(
+			"land_operation",
+			"resume_generation",
+			"INTEGER NOT NULL DEFAULT 0 CHECK (resume_generation >= 0)",
+		);
 		this.addColumnIfMissing(
 			"land_operation",
 			"retry_count",
@@ -17921,6 +17933,31 @@ export class StateStore {
 				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
 			)
 		`);
+		// FLY-1861: legacy land rows have no workflow run id, so they cannot use
+		// workflow_alert_outbox's NOT NULL run identity. This parallel outbox is
+		// committed atomically with the held transition and uses the same fenced
+		// lease/attempt delivery contract.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS land_alert_outbox (
+				operation_id TEXT NOT NULL,
+				resume_generation INTEGER NOT NULL CHECK (resume_generation >= 0),
+				payload_json TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'pending'
+				  CHECK (state IN ('pending','delivering','sent','failed')),
+				attempt INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
+				lease_owner TEXT,
+				lease_expires_at TEXT,
+				generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (operation_id, resume_generation),
+				FOREIGN KEY (operation_id) REFERENCES land_operation(operation_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_land_alert_delivery ON land_alert_outbox(state, lease_expires_at, created_at)",
+		);
 		// FLY-1385: alert delivery is a durable outbox, not a best-effort side
 		// effect of the state transition. A lease generation fences late send
 		// results from an earlier worker; three failed attempts dead-letter.
@@ -30563,6 +30600,8 @@ export class StateStore {
 		disposition: "held" | "partial";
 		attempts?: number;
 		epochKey?: string;
+		operationId?: string;
+		resumeGeneration?: number;
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
 		const partial = input.disposition === "partial";
@@ -30578,7 +30617,7 @@ export class StateStore {
 				: `Workflow run held for ${input.issueId}`,
 			body: partial
 				? `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
-				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}. Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`,
+				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -30589,6 +30628,12 @@ export class StateStore {
 					...(input.attempts === undefined
 						? {}
 						: { attempts: input.attempts, epochKey: input.epochKey }),
+					...(input.operationId
+						? {
+								operationId: input.operationId,
+								resumeGeneration: input.resumeGeneration,
+							}
+						: {}),
 					leadResolution: input.identity.leadResolution,
 				},
 			},
@@ -45817,12 +45862,12 @@ export class StateStore {
 		return this.workflowSelectAll(
 			`SELECT operation_id, step, receipt_json, generation, completed_at
 			   FROM land_operation_step WHERE operation_id = ?
-			   ORDER BY CASE step
-			     WHEN 'authority_verified' THEN 1
-			     WHEN 'cool_triggered' THEN 2
-			     WHEN 'merge_confirmed' THEN 3
-			     WHEN 'cleanup_requested' THEN 4
-			     WHEN 'finalization_completed' THEN 5
+			   ORDER BY CASE
+			     WHEN step = 'authority_verified' THEN 1
+			     WHEN step = 'cool_triggered' OR step LIKE 'cool_triggered:attempt=%' THEN 2
+			     WHEN step = 'merge_confirmed' THEN 3
+			     WHEN step = 'cleanup_requested' THEN 4
+			     WHEN step = 'finalization_completed' THEN 5
 			     ELSE 100 END, completed_at, step`,
 			[operationId],
 		).map((row) => ({
@@ -45835,6 +45880,205 @@ export class StateStore {
 			generation: Number(row.generation),
 			completed_at: row.completed_at as string,
 		}));
+	}
+
+	private landAlertOutboxRow(
+		row: Record<string, unknown>,
+	): LandAlertOutboxRow {
+		return {
+			operation_id: row.operation_id as string,
+			resume_generation: Number(row.resume_generation),
+			payload: JSON.parse(row.payload_json as string) as LandAlertPayload,
+			state: row.state as LandAlertOutboxRow["state"],
+			attempt: Number(row.attempt),
+			lease_owner: (row.lease_owner as string) ?? null,
+			lease_expires_at: (row.lease_expires_at as string) ?? null,
+			generation: Number(row.generation),
+			last_error: (row.last_error as string) ?? null,
+			created_at: row.created_at as string,
+			updated_at: row.updated_at as string,
+		};
+	}
+
+	private enqueueLegacyLandAlertTx(
+		operation: Record<string, unknown>,
+		reason: string,
+		now: string,
+	): void {
+		if (operation.run_id != null) return;
+		const resumeGeneration = Number(operation.resume_generation ?? 0);
+		const payload: LandAlertPayload = {
+			operationId: operation.operation_id as string,
+			resumeGeneration,
+			issueId: operation.issue_id as string,
+			projectName: operation.project_name as string,
+			prNumber: Number(operation.pr_number),
+			reason,
+		};
+		const payloadJson = JSON.stringify(payload);
+		const prior = this.workflowSelectAll(
+			`SELECT payload_json FROM land_alert_outbox
+			  WHERE operation_id = ? AND resume_generation = ?`,
+			[payload.operationId, resumeGeneration],
+		)[0];
+		if (prior) {
+			if (prior.payload_json !== payloadJson) {
+				throw new Error(
+					`land_alert_identity_conflict:${payload.operationId}:${resumeGeneration}`,
+				);
+			}
+			return;
+		}
+		this.db.run(
+			`INSERT INTO land_alert_outbox
+			   (operation_id, resume_generation, payload_json, state, attempt,
+			    generation, created_at, updated_at)
+			 VALUES (?, ?, ?, 'pending', 0, 0, ?, ?)`,
+			[
+				payload.operationId,
+				resumeGeneration,
+				payloadJson,
+				now,
+				now,
+			],
+		);
+	}
+
+	listLandAlertOutbox(): LandAlertOutboxRow[] {
+		return this.workflowSelectAll(
+			`SELECT * FROM land_alert_outbox
+			  ORDER BY created_at, operation_id, resume_generation`,
+			[],
+		).map((row) => this.landAlertOutboxRow(row));
+	}
+
+	claimNextLandAlert(input: {
+		ownerId: string;
+		now: string;
+		leaseExpiresAt: string;
+	}): LandAlertDeliveryClaim | undefined {
+		if (
+			!input.ownerId ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!StateStore.workflowFiniteTimestamp(input.leaseExpiresAt) ||
+			Date.parse(input.leaseExpiresAt) <= Date.parse(input.now)
+		) {
+			throw new Error("invalid_land_alert_lease");
+		}
+		let claimed: LandAlertDeliveryClaim | undefined;
+		this.db.transaction(() => {
+			const candidate = this.workflowSelectAll(
+				`SELECT * FROM land_alert_outbox
+				  WHERE attempt < 3 AND (
+				    state = 'pending' OR
+				    (state = 'delivering' AND lease_expires_at <= ?)
+				  )
+				  ORDER BY created_at, operation_id, resume_generation LIMIT 1`,
+				[input.now],
+			)[0];
+			if (!candidate) return;
+			const generation = Number(candidate.generation) + 1;
+			const attempt = Number(candidate.attempt) + 1;
+			this.db.run(
+				`UPDATE land_alert_outbox
+				    SET state = 'delivering', attempt = ?, lease_owner = ?,
+				        lease_expires_at = ?, generation = ?, updated_at = ?
+				  WHERE operation_id = ? AND resume_generation = ?
+				    AND generation = ? AND attempt = ?
+				    AND (state = 'pending' OR
+				         (state = 'delivering' AND lease_expires_at <= ?))`,
+				[
+					attempt,
+					input.ownerId,
+					input.leaseExpiresAt,
+					generation,
+					input.now,
+					candidate.operation_id,
+					candidate.resume_generation,
+					candidate.generation,
+					candidate.attempt,
+					input.now,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			claimed = {
+				operationId: candidate.operation_id as string,
+				resumeGeneration: Number(candidate.resume_generation),
+				payload: JSON.parse(candidate.payload_json as string) as LandAlertPayload,
+				attempt,
+				generation,
+				ownerId: input.ownerId,
+			};
+		});
+		if (claimed) this.save();
+		return claimed;
+	}
+
+	finishLandAlertDelivery(input: {
+		operationId: string;
+		resumeGeneration: number;
+		ownerId: string;
+		generation: number;
+		outcome: "sent" | "failed";
+		error?: string;
+		now: string;
+	}):
+		| { ok: true; state: "pending" | "sent" | "failed" }
+		| { ok: false; reason: string } {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_land_alert_finish" };
+		}
+		let result:
+			| { ok: true; state: "pending" | "sent" | "failed" }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "stale_land_alert_generation",
+		};
+		this.db.transaction(() => {
+			const row = this.workflowSelectAll(
+				`SELECT * FROM land_alert_outbox
+				  WHERE operation_id = ? AND resume_generation = ?`,
+				[input.operationId, input.resumeGeneration],
+			)[0];
+			if (
+				!row ||
+				row.state !== "delivering" ||
+				row.lease_owner !== input.ownerId ||
+				Number(row.generation) !== input.generation
+			) {
+				return;
+			}
+			const attempt = Number(row.attempt);
+			const state =
+				input.outcome === "sent"
+					? "sent"
+					: attempt >= 3
+						? "failed"
+						: "pending";
+			this.db.run(
+				`UPDATE land_alert_outbox
+				    SET state = ?, lease_owner = NULL, lease_expires_at = NULL,
+				        last_error = ?, updated_at = ?
+				  WHERE operation_id = ? AND resume_generation = ?
+				    AND state = 'delivering' AND lease_owner = ? AND generation = ?`,
+				[
+					state,
+					input.outcome === "failed"
+						? (input.error ?? "delivery_failed")
+						: null,
+					input.now,
+					input.operationId,
+					input.resumeGeneration,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() === 1) {
+				result = { ok: true, state };
+			}
+		});
+		if (result.ok) this.save();
+		return result;
 	}
 
 	setLandOperationDisposition(input: {
@@ -45894,7 +46138,10 @@ export class StateStore {
 					[input.operationId],
 				)[0]?.count ?? 0,
 			);
-			const epochKey = `${stepCount}:${String(operation.current_step ?? "start")}`;
+			const shipFailure = input.reason.startsWith("ship_workflow_failed:");
+			const epochKey = shipFailure
+				? `ship:${Number(operation.pr_number)}:${String(operation.approved_head)}:budget=${Number(operation.resume_generation ?? 0)}`
+				: `${stepCount}:${String(operation.current_step ?? "start")}`;
 			const decision = nextLandRetry({
 				classification: input.class,
 				reason: input.reason,
@@ -45908,6 +46155,7 @@ export class StateStore {
 				`UPDATE land_operation
 				    SET state = ?, last_error = ?, retry_count = ?, retry_epoch_key = ?,
 				        next_attempt_at = ?, owner_id = NULL, lease_expires_at = NULL,
+				        ship_attempt = ship_attempt + ?,
 				        updated_at = ?
 				  WHERE operation_id = ? AND state = 'running'
 				    AND owner_id = ? AND generation = ?`,
@@ -45917,6 +46165,11 @@ export class StateStore {
 					decision.retryCount,
 					decision.retryEpochKey,
 					decision.nextAttemptAt,
+					shipFailure &&
+					input.class === "retryable" &&
+					decision.state === "partial"
+						? 1
+						: 0,
 					input.now,
 					input.operationId,
 					input.ownerId,
@@ -45924,6 +46177,9 @@ export class StateStore {
 				],
 			);
 			if (this.db.getRowsModified() !== 1) return;
+			if (decision.state === "held") {
+				this.enqueueLegacyLandAlertTx(operation, decision.lastError, input.now);
+			}
 			result = {
 				state: decision.state,
 				retryCount: decision.retryCount,
@@ -45933,6 +46189,214 @@ export class StateStore {
 			};
 		});
 		if (result) this.save();
+		return result;
+	}
+
+	resumeHeldLandOperation(input: {
+		operationId: string;
+		actor: string;
+		reason: string;
+		now: string;
+		expectedPrDisposition: "open" | "merged";
+		expectedHeadSha: string;
+	}):
+		| { ok: true; operation: LandOperationRow }
+		| { ok: false; reason: string } {
+		const actor = input.actor.trim();
+		const reason = input.reason.trim();
+		const expectedHeadSha = input.expectedHeadSha.trim().toLowerCase();
+		if (
+			!input.operationId ||
+			!actor ||
+			actor.length > 200 ||
+			!reason ||
+			reason.length > 500 ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!/^[0-9a-f]{40}$/.test(expectedHeadSha)
+		) {
+			return { ok: false, reason: "resume_refused:invalid_input" };
+		}
+		let result:
+			| { ok: true; operation: LandOperationRow }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resume_refused:state_changed",
+		};
+		try {
+			this.db.transaction(() => {
+				const operation = this.getLandOperation(input.operationId);
+				if (!operation) {
+					result = { ok: false, reason: "resume_refused:not_found" };
+					return;
+				}
+				if (operation.state !== "held") {
+					result = { ok: false, reason: "resume_refused:not_held" };
+					return;
+				}
+				if (operation.approved_head.toLowerCase() !== expectedHeadSha) {
+					result = { ok: false, reason: "resume_refused:head_moved" };
+					return;
+				}
+
+				let runId: string | undefined;
+				if (operation.run_id) {
+					runId = operation.run_id;
+					const run = this.getWorkflowRun(runId);
+					if (
+						!run ||
+						run.engine_owned !== 1 ||
+						run.status !== "held" ||
+						!run.snapshot
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:engine_run_not_held",
+						};
+						return;
+					}
+					let terminalNode: string;
+					let gateNode: string;
+					try {
+						const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+						if (!isWorkflowManifestLand(snapshot.manifest)) {
+							result = {
+								ok: false,
+								reason: "resume_refused:land_manifest_required",
+							};
+							return;
+						}
+						terminalNode = workflowTerminalNode(snapshot.manifest);
+						gateNode = workflowApprovalGate(snapshot.manifest).node;
+					} catch {
+						result = { ok: false, reason: "resume_refused:snapshot_invalid" };
+						return;
+					}
+					if (run.current_node_id !== terminalNode) {
+						result = {
+							ok: false,
+							reason: "resume_refused:land_target_not_current",
+						};
+						return;
+					}
+					const node = this.listWorkflowRunNodes(runId, terminalNode).at(-1);
+					const dispatch = this.listWorkflowSideEffects(runId)
+						.filter(
+							(row) =>
+								row.kind === "dispatch" &&
+								row.node_id === terminalNode &&
+								row.attempt === node?.attempt,
+						)
+						.at(-1);
+					if (
+						!node?.execution_id ||
+						!dispatch ||
+						dispatch.execution_id !== node.execution_id ||
+						!new Set(["intent_recorded", "launch_committed"]).has(
+							dispatch.state,
+						)
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:land_dispatch_unfenced",
+						};
+						return;
+					}
+					const holder = this.getCurrentWorkflowGateHolder(runId, gateNode);
+					if (
+						!holder ||
+						holder.state !== "approved" ||
+						holder.head_sha.toLowerCase() !== expectedHeadSha
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:approval_not_current",
+						};
+						return;
+					}
+					const binding = this.getCurrentWorkflowNodePrBindingForHead(
+						runId,
+						expectedHeadSha,
+					);
+					if (
+						!binding ||
+						binding.pr_number !== operation.pr_number ||
+						binding.target_repo_identity !== "__main__"
+					) {
+						result = {
+							ok: false,
+							reason: "resume_refused:pr_binding_not_current",
+						};
+						return;
+					}
+				}
+
+				const resumeGeneration = operation.resume_generation + 1;
+				this.db.run(
+					`UPDATE land_operation
+					    SET state = 'partial', owner_id = NULL, lease_expires_at = NULL,
+					        retry_count = 0, retry_epoch_key = NULL, next_attempt_at = ?,
+					        resume_generation = ?, ship_attempt = ship_attempt + ?,
+					        last_error = ?, updated_at = ?
+					  WHERE operation_id = ? AND state = 'held'
+					    AND resume_generation = ? AND lower(approved_head) = ?`,
+					[
+						input.now,
+						resumeGeneration,
+						input.expectedPrDisposition === "open" ? 1 : 0,
+						`resumed:${operation.last_error ?? "held"}`.slice(0, 500),
+						input.now,
+						input.operationId,
+						operation.resume_generation,
+						expectedHeadSha,
+					],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("resume_state_changed");
+				}
+				if (runId) {
+					this.db.run(
+						"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
+						[runId],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("resume_run_state_changed");
+					}
+				}
+				const receipt = {
+					actor,
+					reason,
+					expectedPrDisposition: input.expectedPrDisposition,
+					expectedHeadSha,
+					priorLastError: operation.last_error,
+					priorRetryCount: operation.retry_count,
+					priorRetryEpochKey: operation.retry_epoch_key,
+					resumeGeneration,
+				};
+				this.db.run(
+					`INSERT INTO land_operation_step
+					   (operation_id, step, receipt_digest, receipt_json, generation, completed_at)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[
+						input.operationId,
+						`resume_authorized:${resumeGeneration}`,
+						canonicalSubmissionDigest(receipt),
+						JSON.stringify(receipt),
+						operation.generation,
+						input.now,
+					],
+				);
+				result = {
+					ok: true,
+					operation: this.getLandOperation(input.operationId)!,
+				};
+			});
+		} catch (error) {
+			result = {
+				ok: false,
+				reason: `resume_refused:${error instanceof Error ? error.message : "transaction_failed"}`,
+			};
+		}
+		if (result.ok) this.save();
 		return result;
 	}
 
@@ -46044,9 +46508,13 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_land_hold" };
 		}
+		const resumeGeneration = input.operationId
+			? (this.getLandOperation(input.operationId)?.resume_generation ?? 0)
+			: 0;
 		const escalationUid = `land_held:${input.runId}:${input.nodeId}:${input.attempt}:${canonicalSubmissionDigest(
 			{
 				operationId: input.operationId ?? null,
+				resumeGeneration,
 				reason: input.reason,
 			},
 		)}`;
@@ -46138,6 +46606,8 @@ export class StateStore {
 						reason: input.reason,
 						disposition: "held",
 						...(retryExhaustion ?? {}),
+						operationId: input.operationId,
+						resumeGeneration,
 						identity: input.alertIdentity,
 					}),
 				});
@@ -46722,6 +47192,8 @@ export interface LandOperationRow {
 	owner_id: string | null;
 	lease_expires_at: string | null;
 	generation: number;
+	ship_attempt: number;
+	resume_generation: number;
 	current_step: string | null;
 	merge_confirmed_at: string | null;
 	finalization_completed_at: string | null;
@@ -46760,6 +47232,38 @@ export interface LandOperationStepRow {
 	receipt: Record<string, unknown>;
 	generation: number;
 	completed_at: string;
+}
+
+export interface LandAlertPayload {
+	operationId: string;
+	resumeGeneration: number;
+	issueId: string;
+	projectName: string;
+	prNumber: number;
+	reason: string;
+}
+
+export interface LandAlertOutboxRow {
+	operation_id: string;
+	resume_generation: number;
+	payload: LandAlertPayload;
+	state: "pending" | "delivering" | "sent" | "failed";
+	attempt: number;
+	lease_owner: string | null;
+	lease_expires_at: string | null;
+	generation: number;
+	last_error: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface LandAlertDeliveryClaim {
+	operationId: string;
+	resumeGeneration: number;
+	payload: LandAlertPayload;
+	attempt: number;
+	generation: number;
+	ownerId: string;
 }
 
 export type WorkflowRouteDecisionRoute =
@@ -48072,6 +48576,7 @@ export interface WorkflowEngineAlertPayload {
 			epochKey?: string;
 			operationId?: string;
 			reason?: string;
+			resumeGeneration?: number;
 			deferredAt?: string;
 			management?: { terminate: string };
 			questionId?: string;

@@ -9,6 +9,7 @@ permissions:
   issues: write
   pull-requests: write
   checks: read
+  actions: write
 
 concurrency:
   group: ship-pr-${{ github.event.issue.number }}
@@ -18,14 +19,9 @@ jobs:
   ship:
     name: "🚀 CI + Merge"
     runs-on: ubuntu-latest
-    # 30min, not 10 (FLY-1504): this single job runs setup+build+typecheck+lint
-    # (3m08s measured) plus the FULL `pnpm test:packages:run` suite (packages in
-    # topo order, <=4-way concurrent on the 4-core runner) — estimated ~18-20min
-    # total from CI shard timings. Regular CI only fits ~10min wall-clock because
-    # FLY-1338 split tests into 5 parallel 15-min-budget shards; this job never
-    # followed. At 10min every :cool: ship got force-cancelled mid-Test (run
-    # 30305893305: cancelled at 10m18s, Merge skipped). 30 leaves ~10-12min
-    # headroom (~33-40% of the cap) and matches the payload-* workflows.
+    # FLY-1861: the job waits up to 25m for the required exact-head CI verdict.
+    # The 30m job cap leaves bounded reporting/merge headroom without re-running
+    # the package suite that branch protection already requires.
     timeout-minutes: 30
     if: |
       github.event.issue.pull_request &&
@@ -105,42 +101,24 @@ jobs:
             body: `🚀 Ship triggered for \`${pr.head.ref}\` at \`${pr.head.sha.slice(0, 7)}\` — running CI checks...`
           });
 
-    - uses: actions/checkout@v4
+    # issue_comment workflows are loaded from the protected default branch.
+    # Checkout that same trusted source for the await helper; never execute the
+    # PR head in this write-capable job.
+    - id: checkout
+      uses: actions/checkout@v4
       with:
-        ref: ${{ steps.pr-info.outputs.head_sha }}
         persist-credentials: false
 
-    - uses: pnpm/action-setup@v4
-
-    - uses: actions/setup-node@v4
-      with:
-        node-version-file: .node-version
-        cache: pnpm
-
-    - name: Configure git for tests
-      run: |
-        git config --global user.email "ci@flywheel.dev"
-        git config --global user.name "Flywheel CI"
-
-    - name: Install dependencies
-      run: pnpm install --frozen-lockfile
-
-    - name: Install better-sqlite3 prebuilt binary
-      run: |
-        cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3
-        npx --yes prebuild-install || npm run build-release
-
-    - name: Build
-      run: pnpm build
-
-    - name: Typecheck
-      run: pnpm typecheck
-
-    - name: Lint
-      run: pnpm lint
-
-    - name: Test
-      run: pnpm test:packages:run
+    - name: "⏳ Await exact-head CI verdict"
+      id: await-ci
+      env:
+        GH_TOKEN: ${{ github.token }}
+        GITHUB_REPOSITORY: ${{ github.repository }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+        AWAIT_BUDGET_SECONDS: 1500
+        POLL_SECONDS: 30
+      run: bash scripts/ship-await-ci.sh
 
     - name: "✅ Merge PR"
       id: merge-pr
@@ -161,15 +139,23 @@ jobs:
         github-token: ${{ secrets.SHIP_PAT || secrets.GITHUB_TOKEN }}
         script: |
           const prNumber = parseInt(process.env.PR_NUMBER, 10);
-          await github.rest.pulls.merge({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            pull_number: prNumber,
-            merge_method: 'squash',
-            commit_title: `${process.env.PR_TITLE} (#${prNumber})`,
-            commit_message: 'Shipped via :cool: comment',
-            sha: process.env.HEAD_SHA
-          });
+          try {
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash',
+              commit_title: `${process.env.PR_TITLE} (#${prNumber})`,
+              commit_message: 'Shipped via :cool: comment',
+              sha: process.env.HEAD_SHA
+            });
+          } catch (error) {
+            core.setOutput('merge_error', JSON.stringify({
+              status: Number.isInteger(error?.status) ? error.status : null,
+              message: error instanceof Error ? error.message : String(error)
+            }));
+            throw error;
+          }
           await github.rest.issues.createComment({
             owner: context.repo.owner,
             repo: context.repo.repo,
@@ -187,11 +173,50 @@ jobs:
     - name: "❌ Report failure"
       if: failure()
       uses: actions/github-script@v7
+      env:
+        PR_INFO_OUTCOME: ${{ steps.pr-info.outcome }}
+        CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+        AWAIT_CI_OUTCOME: ${{ steps.await-ci.outcome }}
+        AWAIT_CI_RESULT: ${{ steps.await-ci.outputs.outcome }}
+        MERGE_OUTCOME: ${{ steps.merge-pr.outcome }}
+        MERGE_ERROR: ${{ steps.merge-pr.outputs.merge_error }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
           const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-          let headSha = `${{ steps.pr-info.outputs.head_sha }}`;
+          let failedStep = 'preflight';
+          if (process.env.AWAIT_CI_OUTCOME === 'failure') {
+            const knownAwaitOutcomes = new Set([
+              'await_ci_timeout', 'ci_failure', 'head_moved', 'pr_not_open', 'preflight'
+            ]);
+            failedStep = knownAwaitOutcomes.has(process.env.AWAIT_CI_RESULT)
+              ? process.env.AWAIT_CI_RESULT
+              : 'preflight';
+          } else if (process.env.MERGE_OUTCOME === 'failure') {
+            let status = null;
+            let message = '';
+            try {
+              const parsed = JSON.parse(process.env.MERGE_ERROR || '{}');
+              status = Number.isInteger(parsed.status) ? parsed.status : null;
+              message = typeof parsed.message === 'string' ? parsed.message : '';
+            } catch { /* malformed output remains merge_other */ }
+            if (status === 405 && /Required status check .+ is expected\./is.test(message)) {
+              failedStep = 'merge_405_required_check';
+            } else if (status === 405) {
+              failedStep = 'merge_405_other';
+            } else if (status === 409) {
+              failedStep = 'merge_409_head';
+            } else if (status === 403) {
+              failedStep = 'merge_403';
+            } else if (status === 422) {
+              failedStep = 'merge_422';
+            } else {
+              failedStep = 'merge_other';
+            }
+          }
+
+          let headSha = process.env.HEAD_SHA || '';
           if (!headSha) {
             try {
               const { data: pr } = await github.rest.pulls.get({
@@ -206,5 +231,5 @@ jobs:
             owner: context.repo.owner,
             repo: context.repo.repo,
             issue_number: context.issue.number,
-            body: `❌ Ship failed — PR was NOT merged. Check the [workflow run](${runUrl}) for details. Fix the issue and post :cool: again.\n<!-- flywheel-ship-receipt trigger_comment_id=${context.payload.comment.id} run_id=${context.runId} run_url=${runUrl} head=${headSha} status=failure -->`
+            body: `❌ Ship failed — PR was NOT merged. Check the [workflow run](${runUrl}) for details. Fix the issue and post :cool: again.\n<!-- flywheel-ship-receipt trigger_comment_id=${context.payload.comment.id} run_id=${context.runId} run_url=${runUrl} head=${headSha} status=failure failed_step=${failedStep} -->`
           });

@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph PRA["PR-A · ship 侧:等结论,不撞门"]
+        A1[":cool: 发车"] --> A2["等待 head 当前轮的<br/>CI 真结论(≤25 分钟)"]
+        A2 -->|绿| A3["Merge 合入"]
+        A2 -->|"轮被掐/超时"| A4["催熟:重跑那一轮<br/>(至多一次)"] --> A2
+        A2 -->|"真红/等不到"| A5["失败回执<br/>带失败步骤标签"]
+    end
+    subgraph PRB["PR-B · land 侧:分类 + 出口"]
+        B1["读回执按失败步骤分类"] -->|环境性| B2["退避自动重试<br/>下一轮重新 :cool:"]
+        B1 -->|代码真红| B3["held + 告警 Lead"]
+        B3 --> B4["resume 授权出口<br/>人看完一键放回"]
+    end
+    subgraph PRC["PR-C · CI 侧:文档推送不烧重活"]
+        X1["classify:这次推送<br/>只改了文档吗?"] -->|"是,且代码早已跑绿"| X2["跳过 7 个重格子<br/>约 5 分钟拿绿章"]
+        X1 -->|"有代码/判不准"| X3["全量跑(保守)"]
+    end
+    A5 --> B1
+    X2 -.等待时间变有界.-> A2
+    style A3 fill:#e3f7e8,stroke:#34c759
+    style B4 fill:#e8f0fe,stroke:#007aff
+    style X2 fill:#e3f7e8,stroke:#34c759

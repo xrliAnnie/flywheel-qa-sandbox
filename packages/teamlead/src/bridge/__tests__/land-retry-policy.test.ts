@@ -54,6 +54,10 @@ describe("land retry policy", () => {
 		"founder_review_authority_unavailable",
 		"land_source_session_unavailable",
 		"future_reason_not_yet_known",
+		"ship_workflow_failed:await_ci_timeout",
+		"ship_workflow_failed:merge_405_required_check",
+		"ship_workflow_failed:run_cancelled",
+		"ship_workflow_failed:run_timed_out",
 	])("classifies %s as retryable", (reason) => {
 		expect(classifyLandRetryReason(reason)).toBe("retryable");
 	});
@@ -61,7 +65,17 @@ describe("land retry policy", () => {
 	it.each([
 		"pr_head_mismatch",
 		"pr_closed_unmerged",
-		"ship_workflow_failed:tests failed",
+		"ship_workflow_failed:ci_failure",
+		"ship_workflow_failed:head_moved",
+		"ship_workflow_failed:pr_not_open",
+		"ship_workflow_failed:preflight",
+		"ship_workflow_failed:merge_405_other",
+		"ship_workflow_failed:merge_409_head",
+		"ship_workflow_failed:merge_403",
+		"ship_workflow_failed:merge_422",
+		"ship_workflow_failed:merge_other",
+		"ship_workflow_failed:future_unknown_step",
+		"ship_workflow_failed:failure",
 		"cool_trigger_receipt_corrupt",
 		"land_step_receipt_conflict",
 		"land_execution_error:land_step_receipt_conflict",

@@ -322,6 +322,7 @@ import {
 	executeLandOperation,
 	GhCliLandMergeDriver,
 	landThreadNotificationPreflight,
+	resumeHeldLandOperation,
 } from "./land-executor.js";
 import { arbitrateFreshLinearState } from "./land-linear-arbitration.js";
 import {
@@ -6341,6 +6342,15 @@ export async function startBridge(
 								now: new Date().toISOString(),
 							});
 						},
+						resume: (input: {
+							operationId: string;
+							actor: string;
+							reason: string;
+						}) =>
+							resumeHeldLandOperation(input, {
+								store,
+								mergeDriver: landMergeDriver,
+							}),
 						kick: (operationId: string) => {
 							void landExecutor(operationId).catch((error) =>
 								console.warn(

@@ -1,0 +1,114 @@
+[
+	{
+		"status": "queued",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "in_progress",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "requested",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "waiting",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "pending",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "future_status",
+		"conclusion": null,
+		"await": "wait",
+		"receiver": "pending",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "success",
+		"await": "success",
+		"receiver": "success",
+		"baseline": true
+	},
+	{
+		"status": "completed",
+		"conclusion": "failure",
+		"await": "fail",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "cancelled",
+		"await": "rerun",
+		"receiver": "retryable",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "timed_out",
+		"await": "rerun",
+		"receiver": "retryable",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "startup_failure",
+		"await": "rerun",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "stale",
+		"await": "rerun",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "action_required",
+		"await": "wait",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "neutral",
+		"await": "wait",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "skipped",
+		"await": "wait",
+		"receiver": "terminal",
+		"baseline": false
+	},
+	{
+		"status": "completed",
+		"conclusion": "future_conclusion",
+		"await": "wait",
+		"receiver": "terminal",
+		"baseline": false
+	}
+]
