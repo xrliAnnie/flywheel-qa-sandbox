@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>在正确的时刻提醒 — 机构怎么做</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:16px 14px 28px;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.44;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-size:26px;line-height:1.25;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 14px}
+.card{background:var(--card);border-radius:12px;padding:12px 16px;margin:7px 0;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}.card.navy{border-left-color:var(--navy)}
+.card h2{font-size:18px;margin:0 0 3px;letter-spacing:-.01em}
+.card h3{font-size:14.5px;margin:11px 0 3px;color:var(--navy)}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:5px;
+margin-right:6px;vertical-align:2px}
+.t-fact{background:#e8f4ff;color:#0057b8}.t-inf{background:#f2e8ff;color:#6b21a8}
+.t-gap{background:#ffe8e6;color:#b3261e}
+.lead{font-size:15px;margin:0 0 1px}
+p{margin:5px 0;font-size:14px}
+ul{margin:5px 0;padding-left:18px;font-size:14px}li{margin:2px 0}
+.q{background:#fbfbfd;border:1px solid var(--line);border-radius:8px;padding:8px 11px;margin:7px 0;
+font-size:13.5px}
+.q b{color:var(--navy)}
+.cost{font-size:13px;color:#8a4b00;background:#fff8ee;border-radius:8px;padding:7px 10px;margin:7px 0}
+.fail{font-size:13px;color:#7a1f1a;background:#fff1f0;border-radius:8px;padding:7px 10px;margin:7px 0}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:8px 0}
+th,td{border:1px solid var(--line);padding:5px 8px;text-align:left;vertical-align:top}
+th{background:#fafafc;font-weight:600}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+details{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:#fbfbfd}
+summary{cursor:pointer;padding:8px 13px;font-size:14px;font-weight:600;color:var(--navy);user-select:none}
+details[open] summary{border-bottom:1px solid var(--line)}
+.dbody{padding:4px 14px 14px}
+.note{color:var(--dim);font-size:12.5px;margin-top:7px}
+textarea{width:100%;min-height:36px;margin-top:4px;padding:8px 11px;border:1px solid var(--line);
+border-radius:8px;font-family:inherit;font-size:14px;line-height:1.6;resize:vertical;background:#fcfcfe}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.lbl{font-size:11.5px;color:var(--dim);margin-top:7px;display:block}
+.btn{background:var(--blue);color:#fff;border:0;border-radius:9px;padding:11px 18px;font-size:15px;
+font-weight:600;cursor:pointer;font-family:inherit}
+.btn:active{opacity:.8}
+.btn.sec{background:#e8e8ed;color:var(--ink)}
+#status{font-size:14px;margin-left:12px;font-weight:600}
+#out{width:100%;min-height:120px;margin-top:12px;font-size:13px;background:#fff}
+.hr{height:1px;background:var(--line);margin:12px 0}
+.kicker{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:8px}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<div class="kicker">FLY-1854 · 只摊事实,不给结论</div>
+<h1>一个「总管」怎么在正确的时刻提醒正确的事</h1>
+<p class="sub">人类机构真实用过的做法 · 每种的代价和失效方式 · 以及三块我们目前答不了的空白<br>
+2026-08-17 · 外部证据来自<b>你自己跑的那份 Deep Research</b>(《Timing Control in Human Organizations》)</p>
+
+<div class="card navy">
+<h2>先说这份东西是什么</h2>
+<p class="lead"><b>是</b>:一份形状清单。人类机构在「什么时候开口打断」这件事上真实用过哪几种做法,每种解决什么、代价是什么、什么时候会坏。</p>
+<p class="lead"><b>不是</b>:一个推荐。这里<b>没有</b>「所以我们应该用 X」。选哪个是你的事,我只负责把牌摊开。</p>
+<p class="lead"><b>也不是</b>在重新讨论「要不要主动提醒」—— 那个你已经倾向要了,这份东西直接从「那有哪些形状」开始。</p>
+<span class="lbl">这一段有什么要说的</span>
+<textarea data-k="intro" placeholder="…"></textarea>
+</div>
+
+<div class="card red">
+<h2>最反直觉的一条:这不是权力问题</h2>
+<p><span class="tag t-fact">事实</span>那份研究扫了九个领域(战略管理、应急管理、航空航天、医疗、制造、金融市场、软件开发、风险投资、临床试验、职业安全)之后,第一句结论是这个:</p>
+<div class="q"><b>机构很少靠「给一个领导更多权力」来解决转向的时机问题。</b>这些机制起作用的位置,全都在<b>领导下令之前</b>的某一环 —— 察觉变化 / 认出它重要 / 判定越线了 / 把信息送到对的人手里 / 打断当前的活 / 挑战当前的解读 / 约束领导接下来能做什么。</div>
+<p>研究把这条提炼成一个明确的二分,并说这是「整篇里实证后果最重大的区分」:</p>
+<div class="scroll"><table>
+<tr><th></th><th>权力机制</th><th>时机机制</th></tr>
+<tr><td><b>回答的问题</b></td><td><b>谁</b>可以下令转向</td><td>信息<b>什么时候</b>到达那个人、当前的活<b>什么时候</b>能被打断</td></tr>
+<tr><td><b>长什么样</b></td><td>决策权分配、指挥结构、授权</td><td>触发阈值、持续监测、评审节奏、升级路径、停工权、唱反调、说得出口的文化</td></tr>
+</table></div>
+<p><span class="tag t-fact">事实</span>这条二分有一个可验证的落点:在跨机制对比里,<b>「决策权矩阵」在「行动过晚」这一栏被标成高风险</b>,理由写得很直白 —— <b>「单有归属权不会让变化自己显形」</b>。</p>
+<p><span class="tag t-inf">我的推断</span>你问的是「一个 director 凭什么有这个能动性」。这份研究的回答是:<b>你问的那半,可能不是卡住的那半。</b>安排一个人有权说「A 先停一停」是相对容易的;难的是他<b>怎么知道现在该说</b>。九个领域里,机构投入的绝大部分工夫都花在后半截。</p>
+<span class="lbl">这条你怎么看</span>
+<textarea data-k="reframe" placeholder="…"></textarea>
+</div>
+
+<details><summary>🧩 展开:它把「时机」拆成了五段(以及三种不同的「时机错误」)</summary><div class="dbody">
+<p><span class="tag t-fact">事实</span>(研究明说这是它自己的综合,不是哪个文献统一在用的说法)从「事情变了」到「真的转向了」,中间是五段独立的延迟:</p>
+<div class="q" style="text-align:center;font-size:15px">
+察觉 &nbsp;→&nbsp; 认出它重要 &nbsp;→&nbsp; 送到对的人 &nbsp;→&nbsp; 做决定 &nbsp;→&nbsp; 执行
+</div>
+<p>因此存在<b>三种不同的「时机错误」</b>,它们的解法完全不同:</p>
+<ul>
+<li>真实的变化<b>察觉得太晚</b></li>
+<li><b>过早、或者根本不必要</b>地对一个信号动了手</li>
+<li><b>察觉对了</b>,但在等升级、等审批、等执行的过程里<b>把窗口耗掉了</b></li>
+</ul>
+<p><span class="tag t-fact">事实</span>医疗急救文献同时给了第 1 种和第 3 种的例子;告警疲劳和股市熔断研究让第 2 种「异常清晰可见」。</p>
+<span class="lbl">这一段有什么要说的</span>
+<textarea data-k="latency" placeholder="…"></textarea>
+</div></details>
+
+<div class="hr"></div>
+<div class="kicker">六种形状 · 每种都摊开代价</div>
+
+<div class="card blue">
+<h2>① 固定节奏</h2>
+<p class="sub" style="margin:0 0 10px">= 你说的「每周定时 review 一下,给我一些汇总」</p>
+<p><b>它的定义</b>:<span class="tag t-fact">事实</span>研究给这类机制下的「正确时刻」定义是 —— <b>「一个有上界的最大等待时间,到了就必须重新审视」</b>。它<b>不试图</b>算出每一次环境变化,它只保证「最晚多久之后一定会重新想一遍」。</p>
+<h3>真实的两个例子</h3>
+<ul>
+<li><b>Scrum</b>:每个工作日 15 分钟的检视;一个月的周期,回顾会上限 4 小时。关键是它检视的对象是写死的 —— 不只看做完了什么,<b>也看环境变了什么</b>。</li>
+<li><b>美国应急管理(FEMA)</b>:把行动切成一段一段的「作战周期」,<b>每个周期强制产出一份计划</b>,写明这一周期的目标、谁干什么、怎么通信。</li>
+</ul>
+<div class="cost"><b>代价</b> · 周期性的会议和准备时间、上下文切换、协调开销。Scrum 的做法是把这部分成本<b>直接写成时间盒</b>,让它可测量。</div>
+<div class="fail"><b>什么时候坏</b> · <span class="tag t-fact">事实</span>研究的原话:<b>最大延迟被节奏「界住」了,但没有被消除</b> —— 一件刚好发生在评审之后的事,可能要等将近一整个周期。周期太短造成反复搅动;太长则推迟重新考虑。<br>
+<span class="tag t-fact">事实</span>而且它诚实地承认:<b>把某个具体节奏和「最优转向时机」联系起来的强因果证据,是有限的。</b></div>
+<div class="q"><b>直接对上你那句「每周一次可能有点频繁」——</b><br>
+<span class="tag t-fact">事实</span>关于每日站会的实证:它确实能快速交换阻塞,但在实现不好时有大量不满。而致病条件被识别出来是<b>三条并列的</b>:① 变成向管理层<b>汇报状态</b> ② <b>过于频繁</b> ③ <b>时间过长</b>。<br>
+<span class="tag t-inf">我的推断</span>「频繁」确实是已被识别的病因之一,<b>但它从来不是单独起作用的旋钮</b> —— 另外两条和它并列。所以「多久一次」在人类那边不是一个可以单独调的参数。<b>三条都摆给你,频率我不替你选。</b></div>
+<p><span class="tag t-inf">我的推断</span>这一类对人的要求最轻:<b>不要求任何人主动察觉异常,只要求人到点会来。</b>这也是它成本低、但证据只停留在「描述性」层面的原因。</p>
+<div class="q"><b>🟢 顺带回答了「一个不亲自干活的人做什么才有用」</b><br>
+<span class="tag t-fact">事实</span>一项针对 <b>62 个项目团队</b>的研究把这种角色的行为拆成两半:<b>启动时做时间规划</b> + <b>执行中做时间提醒</b>。这两项合起来占了可预测方差的 <b>91.7%</b>;而<b>传统那种「布置任务」式的领导行为不显著</b>。<br>
+<span class="tag t-inf">我的推断</span>这是整份材料里唯一<b>正面</b>回答这个问题的证据,而且答案不是「有权叫停」,是<b>规划时间 + 提醒时间</b>。⚠️ 但它是相关性研究、单项、测的是<b>按时完成</b>而不是「转向得对不对」—— <b>不能</b>读成「所以总管只做提醒就够了」。</div>
+<span class="lbl">固定节奏这一格</span>
+<textarea data-k="m1" placeholder="…"></textarea>
+</div>
+
+<div class="card blue">
+<h2>② 节奏 + 例外过滤</h2>
+<p class="sub" style="margin:0 0 10px">= 平时不吵你,只有某个数越线了才吵</p>
+<p><b>它解决什么</b>:<span class="tag t-fact">事实</span>缩短「底层条件变了」到「机构认出这件事」之间的时间。注意它<b>只给信号,不规定动作</b>。</p>
+<h3>真实的两个例子</h3>
+<ul>
+<li><b>医院早期预警</b>:用生命体征算分,利用的事实是 —— <b>病情恶化往往在心跳骤停前好几个小时就露出迹象</b>。</li>
+<li><b>实时看板</b>:一个 2024 年、524 人的实验发现,看板的信息格式、时效性、完整性,是<b>通过降低「感觉这事很复杂」来间接</b>影响决策质量的。研究特地标注:这支持的是「感知」这条路径,<b>不是</b>「看板必然改善硬结果」。</li>
+</ul>
+<h3>你卡住的那点:阈值谁定、怎么定</h3>
+<p><span class="tag t-gap">要如实说</span>这份研究<b>没有</b>给出「阈值该由谁定、怎么定」的通用答案。它给的是<b>阈值被调过之后发生了什么</b>的量化证据 —— 换句话说,它证明了阈值<b>是可调的、调了有效</b>,但没告诉你第一次该定在哪。</p>
+<p><span class="tag t-fact">事实</span>一次标准化改造:每个监护病人每天的心脏告警中位数 <b>从 180 降到 40</b>,误报率中位数 <b>从 95% 降到 50%</b>。另一次干预把误报从 18.8% 降到 9.6%。研究由此说:这类机制存在一个<b>看得见的「注意力预算」</b>。</p>
+<div class="q"><b>一个设计得特别精细的阈值,可以直接抄的思路 ——</b><br>
+<span class="tag t-fact">事实</span>美国股市熔断:标普跌 7% / 13% / 20% 三档。但关键在这里 —— <b>下午 3:25 之前</b>触发前两档 → 停 15 分钟;<b>同样的跌幅在 3:25 之后</b> → <b>不停</b>。<br>
+研究的评语:<b>监管没有把「正确时刻」定义成「跌 7% 一发生就是」;触发条件同时挂在「幅度」和「还剩多少时间」上。</b></div>
+<div class="cost"><b>代价</b> · 滞后的指标会在「有用的选项已经收窄」之后才发现变化;有噪声的指标造成信号过载;<b>反复出现的、不需要行动的信号会让人脱敏</b>。</div>
+<div class="fail"><b>什么时候坏</b> · <span class="tag t-fact">事实</span>医疗告警数据显示某些研究里<b>误报率高达 72%–99%</b>;某个学术中心 <b>12 天内超过 59,000 次告警</b>。<br>
+<span class="tag t-fact">事实</span>还有一个高可见阈值的通用毛病 —— 熔断研究发现明显的<b>「磁吸效应」</b>:参与者一旦知道那条线在哪,行为会<b>在到线之前</b>就开始变。</div>
+<span class="lbl">节奏+例外这一格</span>
+<textarea data-k="m2" placeholder="…"></textarea>
+</div>
+
+<div class="card blue">
+<h2>③ 预设触发器 + 把「叫停权」交给离问题最近的人</h2>
+<p class="sub" style="margin:0 0 10px">= 事先写死「一旦 X 发生,就做 Y」</p>
+<h3>真实的三个例子</h3>
+<ul>
+<li><b>NASA 发射判据</b>:明确规定运行限值,<b>以及限值被突破后必须发生什么</b>。</li>
+<li><b>医院急救响应团队</b>:近 130 万入院人次的汇总分析 —— 成人在普通病房的心跳骤停<b>下降 33.8%</b>;但<b>成人住院死亡率没有显著下降</b>。儿科骤停下降 37.7%、死亡率下降 21.4%,<b>但后面这个数经不起敏感性检验</b>。</li>
+<li><b>美国职安署的起重机规则</b>:操作员在安全存疑时<b>有权直接停</b>,直到合格的人判定安全为止 —— 把<b>第一个合法的打断者,放在离异常最近的人身上</b>,而不是远处的管理者。</li>
+</ul>
+<h3>这一格里对我们最要紧的一条结构性发现</h3>
+<div class="q"><b>测量和响应,必须分开看。</b><br>
+<span class="tag t-fact">事实</span>急救系统有一条「传入支」(检测并叫人)和一条「传出支」(真的来了)。研究原话:<b>一个完美的触发器,如果叫人这一步被社会性地压住了、或者响应的人不在,它就是无效的。</b>而美国医疗研究与质量署报告有大量证据表明:<b>阈值被满足了,但没人激活</b> —— 而且这种延迟和更差的结局相关。</div>
+<p><span class="tag t-fact">事实</span><b>两条特别容易被忽略的量化结论:</b></p>
+<ul>
+<li><b>光是「触发次数变多」不等于结果变好。</b>一个早期的随机对照试验发现:实施之后急救呼叫次数大幅上升,但主要临床结局<b>没有明显改善</b>。研究的评语 —— 这把「机构反应得更频繁」和「机构<b>在有益的时刻</b>反应」分开了。</li>
+<li><b>存在一个「最小剂量」。</b>早前证据显示这类系统要达到<b>一定的激活频率门槛</b>之后,才出现可测量的效果。研究的评语 —— <b>一个几乎从不被行使的名义权利,不构成一个有效的时机机制。</b></li>
+</ul>
+<div class="q"><b>🔴 装上去 ≠ 有用 —— 这条我认为是整份研究里对我们最直接的一条</b><br>
+<span class="tag t-fact">事实</span>2021 年一份系统综述发现:<b>装了急救响应系统本身,在若干结局上几乎没有差别</b>。<br>
+<span class="tag t-fact">事实</span>但另一个案例里,把<b>预测模型 + 集中监控 + 受训的响应者 + 明确的工作流</b>整合在一起做的那套,在 19 家医院分批部署后,被预警的干预组<b>死亡率低 16%</b>,估算<b>每年少死约 520 人</b>。<br>
+⇒ <b>机制只在「和响应者 + 工作流整合」时才有效,光装上去没用。</b><br>
+<span class="tag t-inf">我的推断</span>翻译成我们的话:<b>「总管建起来」不等于「总管有用」</b>。决定有没有用的是它旁边有没有一条「谁接、接了做什么」的路。</div>
+<div class="cost"><b>代价</b> · 规则开发与验证、训练、响应能力、误激活、打断。一份儿科急救团队的成本分析:<b>年运营约 28.7 万 – 230 万美元</b>,取决于怎么配人。</div>
+<div class="fail"><b>什么时候坏</b> · 阈值可能过敏或过钝;<b>人在阈值到了之后可能不激活</b>;响应能力可能不在;<b>刚性阈值不理解上下文</b>。延迟和遗漏激活<b>至今仍然常见</b>。<br>
+<span class="tag t-fact">事实</span>停工权这类机制,<b>假阴性风险从「领导没及时听到」转移到了「一线的人没有行使这个权利」</b>。职安署因此专门加了反报复条款 —— 研究的评语:<b>正式权力本身,不能消除「打断」这件事的社会维度。</b></div>
+<span class="lbl">触发器这一格</span>
+<textarea data-k="m3" placeholder="…"></textarea>
+</div>
+
+<details><summary>④ 展开:阶段闸门 —— 机构<b>并不在所有时刻用同一种机制</b>;离不可逆越近,判据越硬、自动约束越多(NASA 实例)</summary><div class="dbody">
+<p><span class="tag t-fact">事实</span>NASA 是这份研究里写得最细的一个。它的发射流程是:发射前 <b>30–60 天</b>一次评审 → 前 <b>3–12 天</b>一次 → 不晚于前 <b>1 天</b>一次 → 发射前<b>约 5 分钟</b>最终点名表决,<b>所有被点名的人都必须说 Go</b>。</p>
+<div class="q"><b>这一条直接回答了「阶段闸门和固定节奏的区别」——</b><br>
+<span class="tag t-fact">事实</span>打断的代价<b>随时机急剧变化</b>。Artemis I 的终端倒计时:T−6 到 T−1:30 之间停,可以 hold 最多 3 分钟然后接上;停久一点,就要<b>退回到 T−10</b>;<b>移交给自动序列器之后</b>,任何足以停止计数的问题<b>直接结束当天的发射</b>。</div>
+<p><span class="tag t-fact">事实</span>研究从中提炼的通用模式,原话:</p>
+<div class="q"><b>机构并不在所有时刻使用同一种转向机制。</b>离不可逆事件远的时候,用<b>审议式的评审</b>;靠近的时候,<b>明确判据 + 表决权</b>变得更重要;到最后阶段,<b>自动约束替代了一部分实时的人为判断</b>。</div>
+<p><span class="tag t-fact">事实</span>研究给这类时刻起的名字是「保留选择权的决策点」,并说相关的量往往是 —— <b>「距离可逆性崩塌还剩多少时间」</b>。</p>
+<div class="cost"><b>代价</b> · 评审人力、文档、等待关闭、进度储备。而且<b>闸门失败得越晚,代价越陡</b>,因为承诺已经累积了。</div>
+<div class="fail"><b>什么时候坏</b> · <b>闸门合规会变成仪式</b>(走过场);晚到的信息会绕过早先的假设;闸门太多增加延迟、太少让隐藏问题存续。<span class="tag t-fact">事实</span>研究诚实标注:<b>直接的对照因果估计是稀缺的。</b></div>
+<span class="lbl">阶段闸门这一格</span>
+<textarea data-k="m4" placeholder="…"></textarea>
+</div></details>
+
+<details><summary>⑤ 展开:事先立好规矩 —— 治的是「<b>投进去之后,做决定的已经不是当初那个人了</b>」;⚠️ 这一类靠预算稀缺起作用,对我们可能整类失效</summary><div class="dbody">
+<p><span class="tag t-fact">事实</span>研究给这一类的心理学定位很精确 —— 它针对的是另一种病:</p>
+<div class="q"><b>做「要不要继续」这个决定的人,在资源已经投进去之后,实际上已经不是当初评估同一件事的那个人了。</b></div>
+<h3>真实的三个例子</h3>
+<ul>
+<li><b>风险投资合同</b>:现金流权、董事会席位、投票权、清算权是<b>分开分配</b>的,让控制权可以随融资推进而转移。</li>
+<li><b>一个量化的时机观察</b>:2000–2017 年获投的印度公司里,<b>市场不确定性每上升 1%,到下一轮的延迟增加超过 6%</b>;而代理问题更严重时,这个间隔<b>缩短 55%</b>。</li>
+<li><b>临床试验的独立数据监查委员会</b>:它给「时机」的定义比阈值更细一层 —— 不只是「证据什么时候越线」,还有<b>「证据什么时候成熟到,一个独立机构能把真信号和统计涨落分开」</b>。</li>
+</ul>
+<p><span class="tag t-fact">事实</span><b>「太早行动」的代价在这一族里最可测</b>:统计学文献记载,<b>过早停止试验会牺牲精度、并放大表观效应</b>。</p>
+<div class="cost"><b>代价</b> · 谈判/法务、监控、失去管理自由度、围绕里程碑的博弈。研究单列了一项<b>「刚性成本」</b> —— 预设的阈值与合同<b>在条件变了之后会变得不合适</b>;⚠️ 而且它诚实标注:<b>这种刚性成本的直接因果估计仍然稀少。</b></div>
+<div class="fail"><b>什么时候坏</b> · <b>里程碑会被做手脚</b>;刚性的权利可能诱发过早终止、也可能诱发过度延续。研究标注:对实际合同条款的<b>描述性证据很强</b>,但「某个具体条款产生了最优时机」的<b>因果证据弱得多</b>。</div>
+<span class="lbl">事先立规矩这一格</span>
+<textarea data-k="m5" placeholder="…"></textarea>
+</div></details>
+
+<details><summary>⑥ 展开:指定一个人专门唱反调 —— 不属于上面五格,但研究把它当独立一族</summary><div class="dbody">
+<p class="sub" style="margin:0 0 10px">这一族不解决「察觉」,它解决的是「偏见和不好意思说」</p>
+<ul>
+<li><span class="tag t-fact">事实</span>经典实验:指定唱反调的人,产出的建议与假设质量<b>高于共识法</b>。后续汇总分析:总体上比「只用专家」更有效,<b>但结果随任务结构变化</b>。</li>
+<li><span class="tag t-fact">事实</span><b>2025 年一个实验,对我们特别相关</b>:指派一名唱反调的人,<b>在收到负面反馈之后,减少了「明知不行还往里投」</b>。机制是让负面信息更显眼,并对抗那种<b>从「这个项目的原本目的」漂移到「把它做完」</b>的转移。</li>
+</ul>
+<div class="cost"><b>代价,而且是可测量的社会代价</b> · <span class="tag t-fact">事实</span>实验发现参与者<b>此后与彼此合作的意愿下降</b>。研究的评语:这个机制的成本<b>不只是多花的会议时间</b> —— 制度化的反复异议会改变关系和未来的协调。</div>
+<div class="fail"><b>一条打破「气氛好 = 更早叫停」这个口号的直接证据</b> · <span class="tag t-fact">事实</span>同一个 2025 实验发现:开放的氛围<b>既</b>让人更容易承认失败,<b>也</b>增加了冒险意愿,两个效应<b>在总体上互相抵消</b>。研究的评语:这是不寻常地直接的证据 —— 一个让「坏消息说得出口」的机制,可能<b>同时</b>让管理者更愿意继续高风险的事。</div>
+<span class="lbl">唱反调这一格</span>
+<textarea data-k="m6" placeholder="…"></textarea>
+</div></details>
+
+<div class="hr"></div>
+
+<div class="card amber">
+<h2>打断本身的代价</h2>
+<p class="sub" style="margin:0 0 10px">这一维在我们之前那份组织研究(FLY-1045)里完全没有,而它决定了任何提醒机制的上限</p>
+<details><summary>展开:七类代价的完整表格</summary><div class="dbody"><div class="scroll"><table>
+<tr><th>代价类别</th><th>什么造成的</th><th>举证</th></tr>
+<tr><td><b>直接运营</b></td><td>传感器、数据系统、专职响应者、评审人力</td><td>儿科急救团队:年运营 28.7 万–230 万美元</td></tr>
+<tr><td><b>注意力</b></td><td>告警负荷、指标、升级消息</td><td>某些场景误报率 72%–99%</td></tr>
+<tr><td><b>打断/机会</b></td><td>停产、交易暂停、取消发射</td><td>熔断停 15 分钟;NASA 可能直接结束当天尝试</td></tr>
+<tr><td><b>审议/延迟</b></td><td>闸门、审批、升级跳数、委员会</td><td>Scrum 保留固定窗口:每日 15 分钟 + 有上限的回顾</td></tr>
+<tr><td><b>关系</b></td><td>结构化冲突、挑战上级、被归咎的风险</td><td>唱反调:批判性提高,但未来合作意愿下降</td></tr>
+<tr><td><b>错误</b></td><td>该不动的动了 / 该动的没动</td><td>熔断可能打断正当交易;预警可能过度或漏掉</td></tr>
+<tr><td><b>刚性</b></td><td>预设阈值在条件变化后不再合适</td><td>⚠️ 直接因果估计<b>稀少</b></td></tr>
+</table></div></div></details>
+<p><span class="tag t-fact">事实</span>研究里有一句总结,直接冲着「实时」这个词去的:</p>
+<div class="q"><b>「实时」描述的是数据可得性,不必然是人的认知、或机构真正动起来的延迟。</b></div>
+<h3>一条对「宁可多报」还是「宁可少报」的关键提醒</h3>
+<div class="q"><span class="tag t-fact">事实</span><b>在自动系统之外,「白报了」经常被少算。</b>一次「预防了事故」的干预,留下的是一个模糊的反事实 —— 也许本来就不会出事。自动告警、统计停止边界、交易暂停让「误干预率」比较容易研究;<b>非正式的领导层转向,通常做不到。</b></div>
+<p><span class="tag t-inf">我的推断</span>这条对我们尤其锋利:「总管提醒了一次,你照做了,结果还不错」—— 这个观察<b>无法证明</b>那次提醒是对的,因为「不提醒的那个世界」看不到。<b>这不是靠更好的实现能绕过去的,是这类机制的固有属性。</b></p>
+<span class="lbl">打断代价这一段</span>
+<textarea data-k="cost" placeholder="…"></textarea>
+</div>
+
+<details>
+<summary>📊 展开:两张对比表(证据强度 · 每种机制在攻击哪一段延迟)</summary>
+<div class="dbody">
+<p class="note">研究明确标注:成本量级是<b>跨情境的序数评估</b>,不是汇总的货币估计 —— 因为只有少数机制存在可比的成本效果研究。</p>
+<div class="scroll"><table>
+<tr><th>机制</th><th>时机效果的证据强度</th><th>介入延迟</th><th>「白报了」风险</th><th>「太晚」风险</th></tr>
+<tr><td>触发协议</td><td><b>强—中</b>(医疗有随机对照)</td><td>认出后数秒—数分</td><td>阈值敏感则中—高</td><td>阈值钝或没人激活则中</td></tr>
+<tr><td>监测/指标</td><td>检测中;最终结果因果<b>较弱</b></td><td>近实时—报告周期</td><td>指标有噪声则<b>高</b></td><td>指标滞后则<b>高</b></td></tr>
+<tr><td>升级规则</td><td>描述性中;因果<b>有限</b></td><td>数分—数小时,<b>随跳数增加</b></td><td>中</td><td>路由延迟则中—高</td></tr>
+<tr><td>停工权</td><td>文档强;孤立因果<b>有限</b></td><td><b>即刻—数分</b></td><td>中(打断可能是预防性的)</td><td>没人敢用则中—高</td></tr>
+<tr><td>固定节奏</td><td>描述性强;因果<b>有限</b></td><td><b>被节奏界住</b></td><td>低(评审是预期内的)</td><td>中:刚过评审的变化要等下一轮</td></tr>
+<tr><td><b>决策权矩阵</b></td><td>决策速度上有中等旁证</td><td>可显著减少路由延迟</td><td>低(<b>它本身不会触发</b>)</td><td><b>高 —— 若不与触发器配对</b></td></tr>
+<tr><td>实时看板</td><td>信息处理上中等;硬结果有限</td><td>技术上数秒—数分</td><td>中—高(过载)</td><td>中—高(被忽略或数据过时)</td></tr>
+<tr><td>阶段闸门</td><td>操作性中;项目证据<b>混杂</b></td><td>闸门间数天—数月;临近承诺时极快</td><td>中</td><td><b>闸门间隔宽则高</b></td></tr>
+<tr><td>唱反调</td><td>实验室中;现场硬结果<b>有限</b></td><td>数小时—数周</td><td>中(过度挑战会拖垮可行方案)</td><td>中(仪式化的挑战会漏掉真问题)</td></tr>
+<tr><td>预承诺合同</td><td>描述与观察中</td><td>在里程碑/轮次</td><td>里程碑过时则中—高</td><td>里程碑抓不到新风险则中</td></tr>
+<tr><td>独立停止委员会</td><td>统计理据强;组织实证<b>参差</b></td><td>中期分析节奏</td><td><b>显式重大</b>:早停损失精度</td><td><b>显式重大</b>:晚停延长浪费</td></tr>
+<tr><td>说得出口的文化</td><td>行为上中—强;硬结果<b>弱—中</b></td><td>潜在即刻</td><td>更多发声也意味着更多低价值信号</td><td>层级/恐惧下<b>高</b></td></tr>
+</table></div>
+<h3 style="margin-top:18px">按「它攻击哪一段延迟」重排 —— 这张对设计最有用</h3>
+<div class="scroll"><table>
+<tr><th>卡在哪</th><th>主要针对它的机制</th><th>仍然没解决的</th></tr>
+<tr><td>机构<b>看不见</b>变化</td><td>监测、指标、看板</td><td>传感器有效性与<b>注意力容量</b></td></tr>
+<tr><td>看见了但<b>分不清信号和噪声</b></td><td>阈值、预测、唱反调、独立监查</td><td>敏感度/特异度与模型误差</td></tr>
+<tr><td>有人看见了但<b>没说出来</b></td><td>说得出口的规范、停工权、法律保护</td><td>地位、报复恐惧、激励</td></tr>
+<tr><td>说了但<b>送错了地方</b></td><td>升级规则、决策权分配</td><td>交接与排队延迟</td></tr>
+<tr><td>决策者<b>偏向继续</b></td><td>唱反调、独立评审、分期出资、停止规则</td><td>评审者偏见、过早停止</td></tr>
+<tr><td>机构<b>从不停下来重新想</b></td><td>固定节奏、闸门、作战周期</td><td><b>发生在两次评审之间的事</b></td></tr>
+<tr><td>决定了但<b>执行太慢</b></td><td>预写好的响应、本地授权、自动化</td><td>容量约束与实施摩擦</td></tr>
+<tr><td><b>干预本身有代价</b></td><td>阈值校准、条件性暂停、重启前评审</td><td><b>「白报」和「漏报」的根本权衡消不掉</b></td></tr>
+</table></div>
+<span class="lbl">这两张表有什么要说的</span>
+<textarea data-k="tables" placeholder="…"></textarea>
+</div>
+</details>
+
+<div class="hr"></div>
+
+<div class="card red">
+<h2>原来那三块空白 —— 一块已经补上,两块仍然答不了</h2>
+<p class="sub" style="margin:0 0 12px">不是免责声明,是让你知道哪些地方<b>不能</b>拿这份东西去下判断</p>
+
+<h3>✅ 一、「有没有人在做类似的 agent」—— 已经查了,结果在下一张卡</h3>
+<p>上一版这里写的是「<b>没查</b>」。你说「是不是现在也应该去查一下呢」—— <b>查了</b>,第二份 Deep Research(59 引用 / 520 次检索)。结果不是简单的有或没有,<b>见下面那张绿色的卡</b>。</p>
+<p class="note">保留一句原来的话,因为它仍然是判据:「<b>查了没有</b>」是信息,「<b>没查</b>」什么都推不出来。现在它从后者变成了前者。</p>
+
+<details><summary>🟡 展开:仍然答不了的那两块(权力从哪来 · 一次打断花掉你多少)</summary><div class="dbody">
+<h3>二、「chief of staff 这种角色的权力从哪来」—— 研究没覆盖</h3>
+<p>它没有 chief of staff / PMO 这类角色的专门文献。<b>但它可能给了一个更有用的替代回答</b> —— 就是最上面那条:<b>时机问题根本不是权力问题</b>。所以这一块要不要补,是个判断题。</p>
+<p class="note">研究里最接近的一条:美国应急管理体系明确规定<b>哪些请求可以本地处理、哪些必须最高指挥官批准</b>,并<b>明确警告绕过既定流程会造成严重问题</b>。同时另一项对九次灾难的分析结论是:这套体系<b>只是一个部分解,效果强烈依赖情境</b> —— 在大家已经熟悉彼此角色和术语时最快,<b>新颖的情况会让同一套结构不那么顺滑</b>。</p>
+
+<h3>🟡 三、「一次打断实际花掉你多少」—— 答不了</h3>
+<p>研究里的注意力证据<b>全部是机构层面的告警负荷</b>(医院告警、看板复杂度),没有个人层面的「被打断之后要多久才回得来」。所以这个问题本单目前<b>没有证据回答</b>。</p>
+</div></details>
+
+<details><summary>⚪ 四、来源独立性,如实交代(点开)</summary><div class="dbody">
+<p>每种形状我都挑了至少两个<b>互相独立的机构/领域</b>来举证(比如固定节奏 = Scrum + FEMA)。但这些举证<b>全部经由同一份研究转述</b>,我没有独立复核过任何一条原始文献。<b>所以来源独立性在「机构层面」达成了,在「检索路径层面」没有。</b></p>
+<p><b>两份研究的可核性不一样,不要混:</b>人类机构那份<b>没有</b>可点开的链接,出处只能点名到机构;而 agent 那份<b>带 57 条已解析 URL</b>,可以逐条点开核。</p>
+</div></details>
+<span class="lbl">这些空白你怎么看 / 要不要补</span>
+<textarea data-k="gaps" placeholder="…"></textarea>
+</div>
+
+<div class="card green">
+<h2>🔎 有没有人在做类似的 agent —— 查了,答案比「有 / 没有」有意思</h2>
+<p class="sub" style="margin:0 0 10px">你要的第二份 Deep Research · 59 引用 / 520 次检索 · 2026-08-17</p>
+
+<p><span class="tag t-fact">事实</span>它先把这类 agent 分成<b>四层</b>,然后给了一个很干脆的判断:</p>
+<div class="scroll"><table>
+<tr><th>层</th><th>它是什么</th><th>公开证据</th></tr>
+<tr><td>①</td><td>在若干工具之间做选择</td><td>已部署</td></tr>
+<tr><td>②</td><td><b>在一个目标内</b>管理多个 agent</td><td>已部署</td></tr>
+<tr><td>③</td><td>在一个业务域内管理若干持续的工作流</td><td>已部署</td></tr>
+<tr><td><b>④</b></td><td><b>跨独立项目持续存在 · 维护整体的优先级模型 · 自己发现条件变了 · 在项目之间挪动力量,而且不需要每次挪动都由一个新的人类指令发起</b></td><td>🔴 <b>公开证据稀薄</b></td></tr>
+</table></div>
+<p><span class="tag t-inf">我的推断</span><b>第④层的定义几乎是你那句话的逐字翻译</b> ——「他可能也会在 some point 去说 ok,A team 的东西这个东西可能暂时不做了,然后我们要去 prioritize 其他的东西」。所以答案不是「没人做」,而是:<b>做到第三层的很多,做到第四层的公开证据很稀薄。</b></p>
+
+<h3>用我们那条判据筛了十家,一家都没过</h3>
+<div class="q">判据(你已经采纳的那条):<b>它有没有在没人问它的时候,对一件它自己不负责执行的工作,说出「这件事现在该让位」?</b></div>
+<p><span class="tag t-fact">事实</span>Devin(2026-03) · ServiceNow(2025-03 GA) · Amazon Bedrock(2025-03 GA,每个主管最多 10 个下级) · Microsoft Copilot Studio(2025-05) · Google Gemini Enterprise(2026-04) · Anthropic Claude Code agent teams(2026-02 预览) · C3 AI · CrewAI · UiPath(<b>只有专利,专利不是部署证据</b>) · Infosys —— <b>十个,判据一个都没过。</b></p>
+<p><b>最接近的是 Devin</b>:主 agent 能创建下级、读它们的轨迹、发消息纠正、<b>暂停或终止</b>它们,还能排周期任务并跨运行保留状态。但展示范围以代码仓为主,<b>没有公开证据显示自主的、跨业务项目的力量重分配</b>。</p>
+
+<div class="fail"><b>⚠️ 一个正好印证我们那条反拉伸纪律的发现</b> · <span class="tag t-fact">事实</span>研究单独警告:<b>「多项目」在厂商材料里经常是含糊的</b> —— 一个平台可以连很多代码仓、很多部门、很多云 project,<b>同时仍然只是在执行一个更高层的请求</b>。Google 那个「跨 project」尤其要小心:那个 project 是<b>云管理边界,不是业务项目组合</b>。</div>
+
+<div class="fail"><b>🔴 研究自己给这个结论加的限定,我原样带上</b> · <span class="tag t-fact">事实</span>原话:这个结论是<b>从已披露的架构与部署推断出来的,而不是「不存在任何私有部署」的证明</b>。<br>
+⇒ 正确读法是<b>「公开证据里没有」,不是「世界上没有」</b>。这正是我们一直守的那条 —— 零命中只说明我扫的范围里没有 —— 只不过这次是研究自己主动标出了自己的范围。</div>
+<h3>缺的到底是哪一块</h3>
+<div class="q"><span class="tag t-fact">事实</span>研究的原话 —— 证据最薄的是:<b>在没有被要求的情况下,发现「项目 A 已经不如项目 B 有价值」,并据此挪动稀缺的力量。</b>目前的公开系统绝大多数,是从人类或确定性自动化那里接收它的目标、触发、排程或任务边界。</div>
+<p><span class="tag t-fact">事实</span><b>但技术前提已经具备了</b> —— 持久运行时、会话状态、持久记忆、周期排程、跨运行保留状态,这些都是真的了。研究的原话:<b>一个持续存在的 meta-agent 的技术前提已经存在,与「组织有没有把这个权交给它」无关。</b></p>
+<p><span class="tag t-inf">我的推断</span>⇒ 卡住第四层的<b>不是技术</b>。这跟最上面那条(时机不是权力问题)摆在一起是<b>有张力的</b>:外面的世界卡在「敢不敢授权」,而人类机构那半的证据说「授权不是关键,信息到达才是」。<b>这个张力我不替你消解。</b></p>
+
+<details><summary>📊 展开:多 agent 本身值不值 —— 有量化证据,而且是双向的</summary><div class="dbody">
+<p><span class="tag t-fact">事实</span>一项 2026-04 的研究评了 <b>260 种配置</b>、5 种架构、6 个基准、3 个模型家族。相对单个 agent:</p>
+<ul>
+<li>在<b>可分解</b>的任务上 <b>+80.8%</b></li>
+<li>在<b>顺序性</b>的规划任务上 <b>−70.0%</b></li>
+<li><b>协调的收益,随单个 agent 本身能力上升而递减</b></li>
+</ul>
+<div class="q"><b>这条直接打在「什么时候开口」上</b> —— 研究指出一个主管至少有<b>三个时机决策</b>:什么时候拆解 · 什么时候介入下级 · 什么时候停止协调开始汇总。那个 <b>−70%</b> 的意思是:<b>在错误的结构性时刻发起协调,可能比让一个 agent 自己做糟糕得多。</b></div>
+<p><span class="tag t-fact">事实</span>另一项研究分析了 7 个框架的 <b>1,600+ 条轨迹</b>,归纳出 <b>14 种失效模式</b>。它的出发观察是:<b>多 agent 的性能收益往往很小,尽管系统复杂度显著上升。</b></p>
+<p><span class="tag t-fact">事实</span><b>成本</b>:一次 16-agent 的实验用了近 2,000 个 session、约 <b>$20,000</b>;而普通单开发者日常约 $13/活跃日。Devin 那边<b>每个下级都是一台完整的机器</b>,所以委派的边际成本不是多一次调用,是<b>多一条有状态的轨迹加上主管自己的协调工作</b>。AWS 自己的成本指南<b>明确警告不要用 AI 主管去做确定性路由</b>。</p>
+</div></details>
+
+<p class="note">✅ <b>这一段的出处是可以点开逐条核的</b> —— 这份研究带了 <b>57 条已解析的来源链接</b>(arxiv、AWS、Google Cloud、SEC 文件等)。⚠️ 但仍然只有<b>这一份</b>研究,我没有独立复核过任何一条。<br>
+⚠️ <b>这一轴保质期最短</b>(表里多条是 2026 年内的产品动态),建议<b>按季度</b>重核。重核时先问一句:有没有任何一个系统开始能过那条判据?只要答案还是「没有」,上面的结论就还成立。<br>
+⚠️ <b>厂商宣传 ≠ 事实</b>:上面「做到了什么」是厂商披露,「过没过判据」是我拿判据筛出来的判断,两者不要混。</p>
+<span class="lbl">这一轴你怎么看</span>
+<textarea data-k="agents" placeholder="…"></textarea>
+</div>
+
+<div class="card green">
+<h2>最后:我们这边有一条约束和上面所有例子都不一样</h2>
+<p>上面九个领域里,几乎每一个机制都建立在<b>「有一个可测量的量」</b>之上 —— 心跳、股价、限值、里程碑。</p>
+<div class="q"><b>而「A 这条线该让路了」没有这样一个量。</b><br>
+这跟我们已经做过的看门狗(FLY-942)是两件事:那个报的是「机器坏没坏」—— 卡死没卡死是<b>可验证的客观事实</b>,所以它能用「判对率」验收。<br>
+这一个报的是「方向该转了」—— <b>不存在一个可以被检测的『此刻确实该转』</b>。</p>
+<p><span class="tag t-inf">我的推断</span>所以任何形状拿过来,都要先问一句:<b>「它在人家那儿测的那个量,在我们这儿对应的是什么?」</b>—— 很多时候答案是:没有对应物。</p>
+<p>另外两条我们和人类机构的差别,也值得放在你选形状的时候一起看:</p>
+<ul>
+<li><b>我们没有预算约束</b> —— 上面「资源闸」那一整类,在人家那儿之所以有效,是因为钱是稀缺的。我们这儿算力不稀缺,<b>唯一稀缺的是你的注意力</b>。</li>
+<li><b>我们发一条提醒的成本近似为零</b> —— 这<b>反而是个问题</b>。人类机构的很多机制之所以不被滥用,是因为<b>开一次会本身就很贵</b>。我们没有这个天然的节流器。</li>
+</ul>
+<span class="lbl">这一段有什么要说的</span>
+<textarea data-k="ours" placeholder="…"></textarea>
+</div>
+
+<div class="card navy" id="summary">
+<h2>📋 把你写的都收起来</h2>
+<p class="note" style="margin-top:0">写完点下面的按钮。<b>页面上的意见不会自动传回给我</b> —— 复制之后请贴回 issue 里那条讨论串。</p>
+<button class="btn" id="copyBtn">一键汇总复制</button>
+<span id="status"></span>
+<div id="wrapOut" style="display:none">
+  <p class="note" style="margin-bottom:2px">下面是汇总内容:</p>
+  <textarea id="out" readonly></textarea>
+</div>
+<p class="note" id="live">还没有填写任何意见。</p>
+</div>
+
+<p class="note" style="text-align:center;margin-top:26px">
+FLY-1854 · 2026-08-17 · 外部证据来自你自己跑的 Deep Research,单一来源,未独立复核<br>
+组织学的另一半(谁有权决定 / 层级形状 / 升级停线)在 FLY-1045 里,这份不重复
+</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1854-notes-v1';
+  var store={};
+  try{ store=JSON.parse(localStorage.getItem(KEY)||'{}')||{}; }catch(e){ store={}; }
+
+  var areas=[].slice.call(document.querySelectorAll('textarea[data-k]'));
+
+  function titleFor(ta){
+    var card=ta.closest('.card')||ta.closest('.dbody');
+    var h=card?card.querySelector('h2'):null;
+    if(!h && card){ h=card.parentNode.querySelector('summary'); }
+    var t=h?h.textContent.trim():(ta.getAttribute('data-k')||'');
+    // 汇总里不要出现「展开:」「📊」这类界面用词
+    t=t.replace(/^[^\u4e00-\u9fa5A-Za-z0-9①-⑨]+/,'').replace(/^展开[::]\s*/,'').replace(/\s*\(点开\)\s*$/,'');
+    t=t.replace(/^([①-⑨])\s*展开[::]\s*/,'$1 ');
+    return t.trim();
+  }
+
+  function save(){
+    var o={};
+    areas.forEach(function(ta){ if(ta.value.trim()) o[ta.getAttribute('data-k')]=ta.value; });
+    store=o;
+    try{ localStorage.setItem(KEY,JSON.stringify(o)); }catch(e){}
+    render();
+  }
+
+  function collect(){
+    var lines=[];
+    areas.forEach(function(ta){
+      var v=ta.value.trim();
+      if(!v) return;
+      lines.push('【'+titleFor(ta)+'】\n'+v);
+    });
+    return lines.join('\n\n');
+  }
+
+  function render(){
+    var n=areas.filter(function(ta){return ta.value.trim();}).length;
+    var live=document.getElementById('live');
+    live.textContent = n===0 ? '还没有填写任何意见。' : ('已填写 '+n+' 段意见。');
+  }
+
+  areas.forEach(function(ta){
+    var k=ta.getAttribute('data-k');
+    if(store[k]) ta.value=store[k];
+    ta.addEventListener('input',save);
+  });
+  render();
+
+  var btn=document.getElementById('copyBtn');
+  var st=document.getElementById('status');
+  var wrapOut=document.getElementById('wrapOut');
+  var out=document.getElementById('out');
+
+  function showManual(text,reason){
+    wrapOut.style.display='block';
+    out.value=text;
+    st.textContent='⚠️ 自动复制没成功('+reason+'),请在下框里手动全选复制';
+    st.style.color='#b3261e';
+    try{ out.focus(); out.select(); }catch(e){}
+  }
+  function ok(){
+    st.textContent='已复制 ✓';
+    st.style.color='#1a7f37';
+  }
+
+  btn.addEventListener('click',function(){
+    var text=collect();
+    if(!text){
+      st.textContent='还没有写任何意见,没有可复制的内容。';
+      st.style.color='#86868b';
+      wrapOut.style.display='none';
+      return;
+    }
+    st.textContent='';
+    // 关键:writeText 返回 Promise,同步 try/catch 抓不到异步失败。
+    // 只有 Promise 真的 resolve 了才敢说「已复制」。
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      var p;
+      try{ p=navigator.clipboard.writeText(text); }
+      catch(e){ showManual(text,'浏览器拒绝了剪贴板调用'); return; }
+      if(p && typeof p.then==='function'){
+        p.then(function(){
+          // 二次确认:能读回来才算数;读不回来也不改判(很多浏览器不给读权限)
+          ok();
+        }).catch(function(err){
+          showManual(text, (err && err.name) ? err.name : '权限被拒');
+        });
+      } else {
+        showManual(text,'剪贴板接口没有返回预期结果');
+      }
+    } else {
+      showManual(text,'这个浏览器没有剪贴板接口');
+    }
+  });
+})();
+</script>
+</body>
+</html>
