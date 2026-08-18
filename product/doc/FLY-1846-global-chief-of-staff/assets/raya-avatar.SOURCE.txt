@@ -1,0 +1,5 @@
+raya-avatar.png
+  source: https://static.wikia.nocookie.net/disney/images/8/8b/Profile_-_Raya.jpg
+  origin: Disney Wiki "File:Profile - Raya.jpg" (movie render, character portrait)
+  fetched: 2026-08-18 by flywheel-product-lead for FLY-1846
+  note: converted webp->png; 879x783, NOT square (crop to square for a circular avatar)
