@@ -12,10 +12,11 @@ import {
 import {
 	auditFlagAccounts,
 	collectProductionSources,
+	driftScanParseStats,
 	enumerateBooleanConfigPaths,
-	type ReadSiteLike,
+	resetDriftScanParseStats,
 	scanSources,
-	validateReadSiteEvidence,
+	validateDeclaredReadSites,
 } from "./drift-scan/index.js";
 
 // FLY-1455: the registry-or-owned-exemption invariant runs over every package
@@ -92,31 +93,67 @@ describe("feature-flag drift guard", () => {
 		expect(found.has("FLYWHEEL_CONVERGE_CMUX_SYMLINK")).toBe(true);
 	});
 
+	// FLY-1852: the registry-wide pass lives in validateDeclaredReadSites() so
+	// that the code counted by the work-sharing invariants in drift-scan.test.ts
+	// is the same code that ships here. It groups the declared sites by file, so
+	// each production file is parsed and scanned ONCE for all of its sites.
+	// Site-by-site evaluation re-derived both artifacts per site — and twice per
+	// site, because the nested scan parsed the file again — which put this single
+	// assertion at ~3s of its 5s budget and made it time out whenever the CI
+	// runner was busy. Same sites, same evidence rules, same declaration-ordered
+	// failure text; only the work sharing changed.
+	//
+	// The work is asserted HERE, on the real registry, and not only in
+	// drift-scan.test.ts against the helper (Codex review R2, Medium): otherwise
+	// this guard could quietly go back to calling the helper once per site — an
+	// unchanged helper, unchanged [] result, unchanged helper-level tests, and
+	// the timeout right back. Measured, that revert costs 71 parses / 59 scans.
+	//
+	// The invariant is per file rather than a total, because a total only
+	// supports a threshold and the threshold has slack. Measured: dropping the
+	// scan memo for packages/teamlead/src/bridge/plugin.ts alone — 4 sites,
+	// 1624ms of the original 2962ms — takes that file from 1 scan to 4 while the
+	// total only moves 39 -> 42 against 47 distinct files, so the total-form
+	// assertion passed 7/7 with that regression present. The per-file form
+	// caught it at 4 > 1, and stays correct as the registry grows.
 	it("validates every declared readSite with pattern-aware code evidence", () => {
-		const missing: string[] = [];
-		for (const flag of FEATURE_FLAGS) {
-			for (const site of flag.readSites) {
-				const text = sourceByFile.get(site.file);
-				if (text === undefined) {
-					missing.push(
-						`${flag.name} @ ${site.file}: production file not scanned`,
-					);
-					continue;
-				}
-				const issue = validateReadSiteEvidence({
-					file: site.file,
-					text,
-					site: site as ReadSiteLike,
-					envVar: flag.envVar,
-					configKey: flag.configKey,
-				});
-				if (issue) missing.push(`${flag.name} @ ${site.file}: ${issue}`);
-			}
-		}
+		const declaredFiles = new Set(
+			FEATURE_FLAGS.flatMap((flag) =>
+				flag.readSites
+					.map((site) => site.file)
+					.filter((file) => sourceByFile.has(file)),
+			),
+		);
+		const declaredSites = FEATURE_FLAGS.reduce(
+			(count, flag) => count + flag.readSites.length,
+			0,
+		);
+
+		resetDriftScanParseStats();
+		const missing = validateDeclaredReadSites({
+			flags: FEATURE_FLAGS,
+			sourceByFile,
+		});
+		const work = driftScanParseStats();
+
 		expect(
 			missing,
 			`registered readSite evidence missing:\n${missing.join("\n")}`,
 		).toEqual([]);
+
+		// Work sharing: no file is parsed or scanned twice for the whole pass.
+		expect(work.maxFileParses).toBeLessThanOrEqual(1);
+		expect(work.maxFileScans).toBeLessThanOrEqual(1);
+		// Coverage: every declared site reached a verdict. This is counted, not
+		// derived from the artifact tallies (Codex review R4, Medium): a floor
+		// over parses+scans is satisfiable while most of the registry goes
+		// unchecked, because a checked file contributes both a parse and a scan
+		// and can cover for a skipped one. Measured, evaluating only the first 26
+		// of 56 flags produced 24 parses + 24 scans against 47 files and passed;
+		// so did deduping config sites by (file, symbol), which silently dropped
+		// five real sites while every other number matched the baseline exactly.
+		expect(declaredFiles.size).toBeGreaterThan(0);
+		expect(work.siteChecks).toBe(declaredSites);
 	});
 
 	it("pins migrated config, delegated, and dynamic readSite identities", () => {

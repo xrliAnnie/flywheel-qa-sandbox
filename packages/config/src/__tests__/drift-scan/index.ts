@@ -261,15 +261,10 @@ function isProcessEnv(node: ts.Expression | undefined): boolean {
 	);
 }
 
-function scanCode(source: ScanSource): ScanResult {
+function scanCode(source: ScanSource, parsed?: ts.SourceFile): ScanResult {
+	tally(scanTally, source.file);
 	const candidates = findRegexCandidates(source);
-	const file = ts.createSourceFile(
-		source.file,
-		source.text,
-		ts.ScriptTarget.Latest,
-		true,
-		scriptKind(source.file),
-	);
+	const file = parsed ?? sourceFile(source);
 	const parseDiagnostics = (
 		file as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }
 	).parseDiagnostics;
@@ -380,6 +375,7 @@ function shellBoolComparison(line: string): boolean {
 }
 
 function scanShell(source: ScanSource): ScanResult {
+	tally(scanTally, source.file);
 	const hits: CodeHit[] = [];
 	const lines = source.text.split(/\r?\n/);
 	let offset = 0;
@@ -645,7 +641,102 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 	return [...new Set(issues)];
 }
 
+/**
+ * FLY-1852: every `ts.createSourceFile` for a scanned source, and every flag
+ * scan of one, is tallied here BY FILE so the work-sharing invariants can be
+ * asserted deterministically instead of by wall-clock time.
+ *
+ * Both artifacts are tallied because they are memoized independently, and a
+ * test that only counts parses cannot see a lost scan memo (the scan derives
+ * the parse, not the other way round).
+ *
+ * Scope of the per-file tallies (Codex review R4, Low): they count calls to
+ * `sourceFile`, `scanCode` and `scanShell` — at most one of each per file —
+ * not AST traversals. One `scanCode` call already walks the tree twice
+ * (`gatherKeys` then `visit`), and adding a third walk inside it would not
+ * move these numbers. That is in scope for this issue, whose regression was
+ * repeated whole-file parses and scans, but the invariant should not be read
+ * as "no repeated tree walk".
+ *
+ * The tally is per file, not a total, because a total only supports a
+ * threshold and a threshold is not the property. Measured: dropping the scan
+ * memo for one file — packages/teamlead/src/bridge/plugin.ts, whose 4 sites
+ * cost 1624ms of the original 2962ms — takes it from 1 scan to 4, but the
+ * total only moves 39 -> 42 against 47 distinct files, so a "<= one per
+ * distinct file" TOTAL still passed (verified: 7/7 green with that regression
+ * present). `maxFileParses`/`maxFileScans` state the actual property — no file
+ * is parsed or scanned twice — and caught the same regression at 4 > 1.
+ */
+const parseTally = new Map<string, number>();
+const scanTally = new Map<string, number>();
+/**
+ * How many declared sites produced a verdict. This is the COVERAGE half of
+ * the accounting, and it is separate from the per-file tallies on purpose
+ * (Codex review R4, Medium): a derived floor over parses+scans could be
+ * satisfied while most of the registry went unchecked — evaluating only the
+ * first 26 of 56 flags still produced 24 parses + 24 scans against 47 files.
+ * Counting verdicts makes "skipped" and "checked" different numbers instead of
+ * interchangeable ones.
+ *
+ * It is incremented at each terminal `return`, via `recordVerdict`, and NOT on
+ * entry to the evaluator (Codex review R5, Medium): counting on entry measures
+ * dispatch cardinality, not evaluation. An early `return null` inserted after
+ * an entry-side increment skipped five real sites — pipeline_work_kind,
+ * doc_flow and three ConfigLoader.validate sites — while every number,
+ * siteChecks included, matched the baseline exactly. Recording at the returns
+ * means a bypass that does not go through `recordVerdict` is not counted.
+ * This is a bypass detector, not a proof of semantic correctness; the fixtures
+ * carrying same-(file, symbol) config sites are what pin that shape directly.
+ */
+let siteChecks = 0;
+
+function recordVerdict(verdict: string | null): string | null {
+	siteChecks += 1;
+	return verdict;
+}
+
+function tally(counter: Map<string, number>, file: string): void {
+	counter.set(file, (counter.get(file) ?? 0) + 1);
+}
+
+function total(counter: Map<string, number>): number {
+	let sum = 0;
+	for (const count of counter.values()) sum += count;
+	return sum;
+}
+
+function max(counter: Map<string, number>): number {
+	let highest = 0;
+	for (const count of counter.values()) {
+		if (count > highest) highest = count;
+	}
+	return highest;
+}
+
+export function driftScanParseStats(): {
+	sourceFileParses: number;
+	sourceScans: number;
+	maxFileParses: number;
+	maxFileScans: number;
+	siteChecks: number;
+} {
+	return {
+		sourceFileParses: total(parseTally),
+		sourceScans: total(scanTally),
+		maxFileParses: max(parseTally),
+		maxFileScans: max(scanTally),
+		siteChecks,
+	};
+}
+
+export function resetDriftScanParseStats(): void {
+	parseTally.clear();
+	scanTally.clear();
+	siteChecks = 0;
+}
+
 function sourceFile(source: ScanSource): ts.SourceFile {
+	tally(parseTally, source.file);
 	return ts.createSourceFile(
 		source.file,
 		source.text,
@@ -854,6 +945,192 @@ function validateShellDynamic(
 	return null;
 }
 
+export interface ReadSiteEvidenceRequest {
+	site: ReadSiteLike;
+	envVar?: string;
+	configKey?: string;
+}
+
+/**
+ * FLY-1852: evaluate every declared readSite of ONE production file, sharing
+ * the two expensive per-file artifacts — the `ts.SourceFile` and the flag scan
+ * — across all of that file's sites.
+ *
+ * The previous shape (`validateReadSiteEvidence` per site) re-derived both from
+ * scratch on every call, and derived them TWICE per call, because the nested
+ * `scanSources([source])` parsed the file a second time. Big multi-site files
+ * paid the bill over and over: packages/teamlead/src/bridge/plugin.ts is 372KB
+ * with 4 declared sites and alone cost ~1.6s of a 5s test budget.
+ *
+ * Both artifacts stay lazy, so a `.sh` file whose sites resolve entirely
+ * through the shell scanner never gets TypeScript-parsed at all. Nothing about
+ * WHAT counts as evidence changes here — this is work sharing only.
+ *
+ * What backs that claim, stated precisely (Codex review, Low). The in-repo
+ * tests pin AGGREGATION consistency, not old-vs-new equivalence: the
+ * single-site `validateReadSiteEvidence()` now delegates here, so using it as
+ * an oracle is circular. The old-vs-new evidence is external — a review-time
+ * harness ran both implementations over all declared readSites crossed with
+ * injected site mutations and compared every verdict — plus direct reading of
+ * the two code paths, which are the same branches in the same order.
+ *
+ * That equivalence holds for inputs the TypeScript parser can complete. The
+ * old code parsed eagerly before the pattern switch, so an input pathological
+ * enough to make the parser itself throw (e.g. thousands of nested
+ * parentheses) used to surface a RangeError even for a site whose pattern
+ * never consults the AST; such a site now returns its normal verdict instead.
+ * No real readSite is affected and no evidence rule is loosened. Note this
+ * helper never reported parser `diagnostics` in either version — that is the
+ * separate full-source `scanSources()` guard's job, and it is unchanged.
+ */
+export function validateReadSitesForFile(input: {
+	file: string;
+	text: string;
+	requests: readonly ReadSiteEvidenceRequest[];
+}): (string | null)[] {
+	const source = { file: input.file, text: input.text };
+	const isShell = input.file.endsWith(".sh");
+	let parsedFile: ts.SourceFile | undefined;
+	const parseOnce = (): ts.SourceFile => {
+		parsedFile ??= sourceFile(source);
+		return parsedFile;
+	};
+	let scanned: ScanResult | undefined;
+	const scanOnce = (): ScanResult => {
+		scanned ??= isShell ? scanShell(source) : scanCode(source, parseOnce());
+		return scanned;
+	};
+
+	return input.requests.map(({ site, envVar }) => {
+		if (site.pattern === "dynamic" && isShell) {
+			return recordVerdict(
+				envVar
+					? validateShellDynamic(input.text, site.symbol, envVar)
+					: "dynamic shell site requires envVar",
+			);
+		}
+		if (site.pattern === "delegated") {
+			if (!site.resolverModule || !site.resolverSymbol) {
+				return recordVerdict(
+					"delegated site requires resolverModule and resolverSymbol",
+				);
+			}
+			return recordVerdict(
+				delegatedEvidence(
+					parseOnce(),
+					input.file,
+					site.resolverModule,
+					site.resolverSymbol,
+				)
+					? null
+					: "delegated site lacks canonical import and call",
+			);
+		}
+		if (site.pattern === "config") {
+			if (!site.configAccess) {
+				return recordVerdict("config site requires configAccess");
+			}
+			const symbol = findSymbolNode(parseOnce(), site.symbol);
+			if (!symbol) {
+				return recordVerdict(`config symbol ${site.symbol} not found`);
+			}
+			return recordVerdict(
+				symbolContainsAccess(symbol, site.configAccess)
+					? null
+					: `config access ${site.configAccess} not found in ${site.symbol}`,
+			);
+		}
+		if (!envVar || !scanOnce().rawCodeHits.some((hit) => hit.name === envVar)) {
+			return recordVerdict(
+				`${envVar ?? "envVar"} not found as code in ${input.file}`,
+			);
+		}
+		if (site.pattern === "dynamic") {
+			if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(site.symbol)) {
+				return recordVerdict(
+					`dynamic symbol must be a real identifier: ${site.symbol}`,
+				);
+			}
+			if (!containsIdentifierEvidence(parseOnce(), site.symbol)) {
+				return recordVerdict(`dynamic identifier ${site.symbol} not found`);
+			}
+		}
+		return recordVerdict(null);
+	});
+}
+
+export interface DeclaredFlagLike {
+	name: string;
+	envVar?: string;
+	configKey?: string;
+	readSites: readonly ReadSiteLike[];
+}
+
+/**
+ * FLY-1852: the whole registry-wide readSite evidence pass, in one place.
+ *
+ * This lives here rather than inline in feature-flags-drift.test.ts on
+ * purpose. The guard's expensive part is the per-file work sharing, and the
+ * regression that reintroduces the timeout is "go back to evaluating one site
+ * at a time". If the guard owned the grouping inline, a revert of the GUARD
+ * would slip past parse-count tests that only exercise the batch helper —
+ * verified, that revert really did stay green. Keeping the grouping here makes
+ * the guard a thin call, so the counted path and the shipped path are the same
+ * code.
+ *
+ * Messages come back in declaration order (flag order, then readSite order),
+ * identical to evaluating the sites one by one, so failure output is stable
+ * regardless of how the work is grouped underneath.
+ */
+export function validateDeclaredReadSites(input: {
+	flags: readonly DeclaredFlagLike[];
+	sourceByFile: ReadonlyMap<string, string>;
+}): string[] {
+	interface Entry {
+		slot: number;
+		flag: string;
+		site: ReadSiteLike;
+		envVar?: string;
+		configKey?: string;
+	}
+	const slots: (string | null)[] = [];
+	const byFile = new Map<string, Entry[]>();
+	for (const flag of input.flags) {
+		for (const site of flag.readSites) {
+			const slot = slots.length;
+			slots.push(null);
+			if (!input.sourceByFile.has(site.file)) {
+				slots[slot] = recordVerdict(
+					`${flag.name} @ ${site.file}: production file not scanned`,
+				);
+				continue;
+			}
+			const entry: Entry = {
+				slot,
+				flag: flag.name,
+				site,
+				envVar: flag.envVar,
+				configKey: flag.configKey,
+			};
+			const bucket = byFile.get(site.file);
+			if (bucket) bucket.push(entry);
+			else byFile.set(site.file, [entry]);
+		}
+	}
+	for (const [file, bucket] of byFile) {
+		const issues = validateReadSitesForFile({
+			file,
+			text: input.sourceByFile.get(file) as string,
+			requests: bucket,
+		});
+		issues.forEach((issue, index) => {
+			const entry = bucket[index] as Entry;
+			if (issue) slots[entry.slot] = `${entry.flag} @ ${file}: ${issue}`;
+		});
+	}
+	return slots.filter((entry): entry is string => entry !== null);
+}
+
 export function validateReadSiteEvidence(input: {
 	file: string;
 	text: string;
@@ -861,48 +1138,11 @@ export function validateReadSiteEvidence(input: {
 	envVar?: string;
 	configKey?: string;
 }): string | null {
-	const source = { file: input.file, text: input.text };
-	if (input.site.pattern === "dynamic" && input.file.endsWith(".sh")) {
-		return input.envVar
-			? validateShellDynamic(input.text, input.site.symbol, input.envVar)
-			: "dynamic shell site requires envVar";
-	}
-	const file = sourceFile(source);
-	if (input.site.pattern === "delegated") {
-		if (!input.site.resolverModule || !input.site.resolverSymbol) {
-			return "delegated site requires resolverModule and resolverSymbol";
-		}
-		return delegatedEvidence(
-			file,
-			input.file,
-			input.site.resolverModule,
-			input.site.resolverSymbol,
-		)
-			? null
-			: "delegated site lacks canonical import and call";
-	}
-	if (input.site.pattern === "config") {
-		if (!input.site.configAccess) return "config site requires configAccess";
-		const symbol = findSymbolNode(file, input.site.symbol);
-		if (!symbol) return `config symbol ${input.site.symbol} not found`;
-		return symbolContainsAccess(symbol, input.site.configAccess)
-			? null
-			: `config access ${input.site.configAccess} not found in ${input.site.symbol}`;
-	}
-	const scan = scanSources([source]);
-	if (
-		!input.envVar ||
-		!scan.rawCodeHits.some((hit) => hit.name === input.envVar)
-	) {
-		return `${input.envVar ?? "envVar"} not found as code in ${input.file}`;
-	}
-	if (input.site.pattern === "dynamic") {
-		if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(input.site.symbol)) {
-			return `dynamic symbol must be a real identifier: ${input.site.symbol}`;
-		}
-		if (!containsIdentifierEvidence(file, input.site.symbol)) {
-			return `dynamic identifier ${input.site.symbol} not found`;
-		}
-	}
-	return null;
+	return validateReadSitesForFile({
+		file: input.file,
+		text: input.text,
+		requests: [
+			{ site: input.site, envVar: input.envVar, configKey: input.configKey },
+		],
+	})[0] as string | null;
 }
