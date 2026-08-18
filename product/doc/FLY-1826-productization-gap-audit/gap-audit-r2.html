@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产品化盘点 第 2 轮 · 深挖结果 + 拆单方案</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 130px}
+header{margin-bottom:24px}
+h1{font-size:29px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.hard{background:#ffe9e7;color:#c92a20}
+.tag.soft{background:#fff2e0;color:#a15c00}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+.tag.new{background:#e8f4ff;color:#0060d0}
+.tag.you{background:#f3ecff;color:#6b3fb5}
+h2{font-size:21px;margin:38px 0 4px;letter-spacing:-.01em}
+h3{font-size:17px;margin:0 0 8px;letter-spacing:-.01em}
+p{margin:10px 0}
+ul,ol{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.facts li{margin:6px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+pre{background:#1d1d1f;color:#f5f5f7;border-radius:9px;padding:13px 15px;overflow-x:auto;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;margin:12px 0}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.warnbox{background:#fff8ec;border:1px solid #ffe2b8;border-radius:10px;padding:14px 18px;margin:16px 0;font-size:14.5px}
+.hotbox{background:#fff0ee;border:1px solid #ffcdc7;border-radius:10px;padding:16px 20px;margin:16px 0}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+textarea{width:100%;min-height:72px;margin-top:12px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:14px;display:block}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:40px -20px -130px;padding:18px 20px 22px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.batch{background:#fafafc;border-radius:10px;padding:16px 18px;margin:14px 0}
+.batch h4{margin:0 0 8px;font-size:15px}
+.batch .item{padding:6px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.batch .item:last-child{border-bottom:none}
+@media (max-width:640px){ .wrap{padding:24px 14px 130px} h1{font-size:22px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>第 2 轮 · 我按你说的深挖了,并拆成了单</h1>
+  <p class="sub">2026-08-17 · 回答你在第 1 轮页面上留的四条意见 · <b>三个新发现（其中一个跟你本人有关）+ 8 张已建好的单</b></p>
+</header>
+
+<div class="warnbox">
+  <b>先说一句:「不给结论、不排序」那条红线是你自己解除的</b> —— 你上一轮明确要了 batch 和依赖关系。
+  所以这轮我给排序了,并且<b>逐条标明哪些是技术上绕不过的硬依赖、哪些只是我的判断可以改</b>。
+  <br><b>A-2 的真机验证我仍然没做</b> —— Honey Lemon 的理由（会干扰正在跑的团队、而且它本质就是你那张「陪走一遍」的单）在你的回复里没有被推翻。这轮的深挖<b>全部是只读的</b>。
+</div>
+
+<!-- ═══ 三个新发现 ═══ -->
+<section data-t="三个新发现">
+<h2>这轮的三个新发现</h2>
+
+<div class="hotbox">
+  <h3 style="margin-top:0">🔴 新发现一:发版流水线坏掉这件事,<b>不是没人发现 —— 是你在 8 月 14 日拍过一次「暂时不用修」</b></h3>
+  <p>有一张单叫 <b>FLY-1582</b>,标题就是
+  「[生产·静默] Payload Beta Release 连红 54 次 / 13 天零发布 — 卡在 reserve 的 CAS 重试耗尽,无人知晓」。</p>
+  <ul class="facts">
+    <li><b>8 月 1 日建的</b>,写得非常完整:症状、可复现命令、失败日志、4 条候选方向（还专门标了「这些是候选不是结论」）、
+    甚至连验收标准都写好了（「workflow 变绿不算,要在接收方那侧查到产物才算」）。</li>
+    <li><b>8 月 14 日被关掉了。</b>唯一一条评论写着:
+    <br>「关闭依据(2026-08-14 backlog 大扫除,Annie 批注页裁决):她裁:<b>『这个也暂时不用修,关掉吧』</b>(P1 族批注)」</li>
+  </ul>
+  <p><b>我不是来说这个决定错了。</b>我是来补当时那张单<b>没有告诉你</b>的两条上下文:</p>
+  <ol>
+    <li>这条流水线<b>是客户拿到软件的唯一通道</b> —— 不是一个内部的测试任务。</li>
+    <li><b>给客户的那条通道从头到尾一次都没开过</b>（切通道的动作历史运行次数 = 0）。</li>
+  </ol>
+  <p>知道这两条之后要不要改判,是你的决定。我只把当时缺的信息补上。</p>
+</div>
+
+<div class="card red">
+  <h3>🔴 新发现二:你问的「新改动会不会影响已有系统」—— 会,<b>一共 6 条,而且是同一个根因</b></h3>
+  <p><b>根因先说,因为逐条补是补不完的:</b></p>
+  <p><b>打包出来的那个安装包,从来没有对着「真正的安装步骤」检查过完整性。</b></p>
+  <p>那个被当成护栏的「客户端到端验收」测试,<b>在第 68 行把入口脚本换成了一个假的</b>:</p>
+  <pre>cat &gt; "$stage/scripts/flywheel-onboard.sh" &lt;&lt;'INNER'</pre>
+  <p>所以它证明的是「下载 → 校验 → 解包 → 接上」,<b>12 个安装步骤一步都没真跑过</b>。
+  另一个护栏（「队长能不能起来」）走的是演习模式,而演习模式在代码里<b>明确跳过后面所有硬门</b>。
+  <b>两个护栏都停在被测对象的上游。</b>这就是为什么下面 6 条能一条都不被发现。</p>
+</div>
+
+<div class="card red">
+  <h3>那 6 条(全部去调用点核实过,不是 grep 完就下结论)</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>#</th><th>缺什么</th><th>后果</th><th>性质</th></tr>
+    <tr>
+      <td><b>N-1</b></td>
+      <td><code>setup-new-project.sh</code> 没被打进包,而且没有替代品</td>
+      <td><b>安装第 2 步（建项目骨架）直接失败</b> —— 12 步里的第 2 步。每一个客户装到这儿就死</td>
+      <td><span class="tag hard">硬·致命</span></td>
+    </tr>
+    <tr>
+      <td><b>N-2</b></td>
+      <td>那两个 Discord 插件管理脚本没被打进包,<b>而且客户机上没有任何东西会去创建它们</b></td>
+      <td>队长启动直接退出（这就是上一轮的 A-2,这轮追到了完整链路）</td>
+      <td><span class="tag hard">硬</span></td>
+    </tr>
+    <tr>
+      <td><b>N-3</b></td>
+      <td>8 月 11 日起,启动脚本新增一道「必须由新版载体启动」的致命检查</td>
+      <td>「先跟队长打个招呼」那条路<b>彻底死了</b>,而且死在 Discord 那道检查<b>之前</b></td>
+      <td><span class="tag hard">硬</span>（该功能本就默认关）</td>
+    </tr>
+    <tr>
+      <td><b>N-4</b></td>
+      <td>一个身份解析脚本没被打进包,但包里的 Codex 版启动器在严格模式下无守卫地加载它</td>
+      <td>客户如果用 Codex 那一侧 → 队长立即退出</td>
+      <td><span class="tag hard">硬·条件性</span>（默认走 Claude,不触发）</td>
+    </tr>
+    <tr>
+      <td><b>N-5</b></td>
+      <td>一个 Discord 指针守卫没被打进包,但包里的<b>客户自动更新器</b>无守卫地加载它</td>
+      <td>更新器不会崩,但会<b>静默走进「不需要处理」的错误分支</b> —— 这种最难查</td>
+      <td><span class="tag soft">软·静默走错</span></td>
+    </tr>
+    <tr>
+      <td><b>N-6</b></td>
+      <td>技能同步脚本没被打进包</td>
+      <td>客户机上的技能库<b>永远不会同步</b>（而且技能仓库本身还是私有的）</td>
+      <td><span class="tag soft">软</span></td>
+    </tr>
+  </table>
+  </div>
+  <p class="note"><b>我查过但排除掉的 3 条误报</b>（列出来是想让上面这个「6」这个数字可信）:
+  <code>restart-services.sh</code> 和 <code>flywheel-daemon.sh</code> 看着也缺,但代码里<b>明确写了</b>它们在打包路径上是<b>故意禁用</b>的、有替代;
+  <code>sync-gbrain-docs.sh</code> 有存在性守卫且注明非致命。<b>这三条不算洞。</b></p>
+</div>
+
+<div class="card green">
+  <h3>🟢 新发现三:发版流水线坏掉,<b>不是代码被改坏的</b></h3>
+  <p>分发那三块代码（发布脚本 / 对外 npm 薄壳 / 分发服务器）—— <b>自 7 月 18 日上线以来 0 个改动</b>。
+  所以问题更可能出在<b>服务端的状态</b>（发布台账被推到了一个自相矛盾的位置），不是代码回归。</p>
+  <p class="note">这<b>仍然是推断</b> —— 要读那个状态需要一把管理钥匙,只在你和运维手里,我没有。见最后一节。</p>
+  <p><b>反过来还有一条值得注意的</b>:那份「打包清单」在同一个窗口里<b>有 10 次改动</b>（最近一次 8 月 14 日）——
+  说明<b>是有人在维护它的</b>。但 8 月 10 日那个改坏 N-2 的改动<b>不在这 10 次里面</b>:改硬门的人没有同步改打包清单。</p>
+</div>
+
+<div class="card amber">
+  <h3>顺带查到的一条:FLY-1323 的验收标准从来没执行过</h3>
+  <p>那张「激活分发层」的单,验收写的是<b>「在无私仓权限的干净环境:一条命令走通下载+安装引导」</b>。</p>
+  <p>它 <b>7 月 18 日 13:46:46 关单</b>,而 npm 首发是 <b>13:47:50</b> —— <b>关单在发布之前 64 秒</b>。
+  那条验收要的「干净环境」,正是你那张陪走单要做的事,而陪走单至今零动作。</p>
+</div>
+<label class="lbl">对这三个新发现有话说的话(可留空)</label>
+<textarea data-c="r2a" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══ 拆单 ═══ -->
+<section data-t="拆单:已有的怎么处理 + 要新建哪些">
+<h2>你要的拆单</h2>
+
+<div class="hotbox">
+  <b>先说清我做了什么、没做什么:</b>
+  <ul style="margin-bottom:0">
+    <li><b>新单我建了</b>(8 张,下面有真实编号)—— Honey Lemon 授权的。<b>但一张都没派工</b>,派谁做是他和 Tadashi 的事。</li>
+    <li><b>现有的单我一张都没碰</b> —— 没关、没改描述、没改标签。下面全部是<b>建议</b>,执行由你或他来。
+    理由是他定的:关单是不可逆动作,关错一张会让一条线在账上凭空消失 —— <b>FLY-648 就是刚吃过的亏</b>。</li>
+  </ul>
+</div>
+
+<h3 style="margin-top:26px">现有的单 —— 我的建议(未执行)</h3>
+<div class="card blue">
+<div class="scroll">
+<table>
+  <tr><th>单子</th><th>现状</th><th>我的建议</th><th>为什么</th></tr>
+  <tr><td><b>FLY-1582</b></td><td>Canceled（你 8-14 拍的）</td><td><span class="tag you">等你改判</span>内容完整,可直接开工</td><td>它就是「发版流水线坏了」这条</td></tr>
+  <tr><td><b>FLY-1143</b></td><td>Backlog · PRD 定稿 + 你 7-10 放行 · 已拆 7 块</td><td><span class="tag ok">建议复用</span>不必新建</td><td>它的 B1/B2/B5 正好压住「发布 / 托管+许可证 / 客户自动更新」</td></tr>
+  <tr><td><b>FLY-1322</b></td><td>Backlog · 建单一个月零动作</td><td><span class="tag ok">建议复用</span>并把 1323 那条没跑的验收并进去</td><td>它是<b>唯一</b>能抓到 N-1…N-6 那一类的机制</td></tr>
+  <tr><td><b>FLY-649</b></td><td>Backlog</td><td><span class="tag ok">建议复用</span></td><td>Windows / WSL2 那条</td></tr>
+  <tr><td><b>FLY-654</b></td><td>Backlog</td><td><span class="tag new">建议改写,别关</span></td><td>它写的「容器化是前置」已被现实推翻;剩下的实质 = 客户面文档 + 运营面</td></tr>
+  <tr><td><b>FLY-303</b></td><td>Backlog · 建单起没动过</td><td><span class="tag">建议关闭</span></td><td>它的目标（做成可安装的包）<b>已经被 FLY-1062 做掉了</b></td></tr>
+  <tr><td><b>FLY-652 / 559 / 653</b></td><td>Backlog</td><td><span class="tag">建议保留,去掉「是 654 前置」这个定性</span></td><td>它们现在不阻塞任何东西</td></tr>
+  <tr><td><b>FLY-679</b></td><td>Backlog</td><td><span class="tag">建议保留,不属这一批</span></td><td>它是客户访谈那条线,跟「能不能在别人电脑上跑」无关</td></tr>
+  <tr><td><b>FLY-648 / 1323</b></td><td>Done</td><td><span class="tag">建议不重开</span></td><td>把「它们关闭时实际没完成的部分」记进 654 的改写和 1322 里</td></tr>
+</table>
+</div>
+<p class="note">这 9 行的完整版（每条带证据）我已经写进 <b>FLY-1842</b>,你或他照着执行就行。</p>
+</div>
+
+<h3 style="margin-top:26px">新建的 8 张 —— 已建好,<b>未派工</b></h3>
+<div class="card blue">
+<div class="scroll">
+<table>
+  <tr><th>编号</th><th>做什么</th><th>治哪条</th><th>多大</th></tr>
+  <tr><td><b>FLY-1835</b><br><span class="note">X-1</span></td><td><b>打包完整性门</b>:让安装包对着<b>真正的安装步骤</b>做检查,任何「被用到但没打进包」的文件必须让 CI 变红（顺便替掉那个把入口换成假脚本的测试）</td><td>N-1…N-6 的<b>根因</b></td><td>中</td></tr>
+  <tr><td><b>FLY-1836</b><br><span class="note">X-2</span></td><td>补上安装第 2 步缺的那个文件 —— <b>现在每个客户装到第 2 步就死</b></td><td>N-1</td><td>小</td></tr>
+  <tr><td><b>FLY-1837</b><br><span class="note">X-3</span></td><td>Discord 插件在客户机上到底该是什么形态（补件,还是给客户模式一个合法出口 + 诚实降级）</td><td>N-2 / A-2</td><td>中</td></tr>
+  <tr><td><b>FLY-1838</b><br><span class="note">X-4</span></td><td>新的启动检查把「先跟队长打个招呼」那条路打死了</td><td>N-3</td><td>小</td></tr>
+  <tr><td><b>FLY-1839</b><br><span class="note">X-5</span></td><td>Mac 上的「自动安置」真正自动起来</td><td>B-1（<b>PRD 里早就写了要做,但从没建过单</b>）</td><td>中</td></tr>
+  <tr><td><b>FLY-1840</b><br><span class="note">X-6</span></td><td>启动器传钥匙的方式改掉 → 解封「先跟队长打个招呼」</td><td>B-2（<b>手册里说是 follow-up,也从没建过单</b>）</td><td>中</td></tr>
+  <tr><td><b>FLY-1841</b><br><span class="note">X-7</span></td><td>客户面文档（现在只有 18 行）+ Discord 那 4 步的截图/短视频</td><td>C-1 + 那个没找到的素材</td><td>中</td></tr>
+  <tr><td><b>FLY-1842</b><br><span class="note">X-8</span></td><td><b>台账收口</b>:上面那 9 行建议的完整版,带每条的证据</td><td>你的第 3 条意见</td><td>小</td></tr>
+</table>
+</div>
+<p class="note">每张单里都写明了<b>它对应差距清单的哪一条</b>、<b>为什么不能复用现有单</b>、以及验收标准。
+只有 <b>FLY-1836</b> 我标了 Urgent（它是唯一一条「今天每个客户都会撞上」的）,其余按依赖关系标 High / Medium —— 优先级你可以随便改。</p>
+</div>
+<label class="lbl">对这个裁定有话说的话 —— 哪张该关的不该关、哪张不该新建(可留空)</label>
+<textarea data-c="r2b" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══ 批次 ═══ -->
+<section data-t="批次和依赖关系">
+<h2>依赖 与 顺序 —— 分开说</h2>
+
+<div class="warnbox">
+  Honey Lemon 提醒我这两件事必须分开写,不然你没法只推翻其中一半:
+  <b>「依赖」是事实</b>（A 没做完 B 根本跑不了,不是我的意见）;
+  <b>「顺序」是我的判断</b>（先做哪个更划算,你随便改)。下面分成两块。
+</div>
+
+<div class="card red">
+  <h3>① 依赖 —— 这是事实,不是建议</h3>
+  <ul>
+    <li><b>FLY-1836（第 2 步就死）→ FLY-1322（陪走）</b>:装到第 2 步就死,陪走走不到第 3 步。</li>
+    <li><b>FLY-1837（队长起不来）→ FLY-1322</b>:队长起不来,陪走到不了「见到你的队长」那一步。</li>
+    <li><b>FLY-1582（发版流水线）→ FLY-1322</b>:没有可安装的版本,陪走<b>没有东西可装</b>。</li>
+    <li><b>FLY-1582 → FLY-1143</b>:1143 的三块主体（发布 / 托管 / 客户自动更新）全都建在那条流水线上。</li>
+    <li><b>FLY-1838 + FLY-1840 → 「先跟队长打个招呼」可用</b>:这是<b>两个独立的原因</b>（一个是启动形态被新门拒,一个是密钥卫生），<b>只解一个不够</b>。</li>
+  </ul>
+  <p class="note">以上五条我都能指到具体的文件和行号。它们跟「先做哪个划算」无关 —— 顺序怎么排,这些依赖都成立。</p>
+</div>
+
+<div class="card amber">
+  <h3>② 顺序 —— 这是我的建议,你随便推翻</h3>
+
+  <div class="batch">
+    <h4>批次 0 · 先让它「装得上 + 起得来」</h4>
+    <div class="item"><b>FLY-1836</b> 补第 2 步缺的文件　·　<b>FLY-1837</b> Discord 插件形态</div>
+    <div class="item"><b>FLY-1835</b> 打包完整性门</div>
+    <div class="item"><b>FLY-1582</b> 修发版流水线 —— <b>等你改判</b></div>
+  </div>
+
+  <div class="batch">
+    <h4>批次 1 · 真机走一次</h4>
+    <div class="item"><b>FLY-1322</b> 你亲走一遍 + Runner 影随记摩擦（并入 1323 那条没执行的验收）</div>
+  </div>
+
+  <div class="batch">
+    <h4>批次 2 · 体验补齐（内容可能被批次 1 的摩擦清单改写）</h4>
+    <div class="item"><b>FLY-1839</b> Mac 自动安置　·　<b>FLY-1838 + FLY-1840</b> 解封「先跟队长打个招呼」</div>
+    <div class="item"><b>FLY-649</b> Windows / WSL2　·　<b>FLY-1841</b> 客户面文档</div>
+  </div>
+
+  <div class="batch">
+    <h4>批次 3 · 长期机制</h4>
+    <div class="item"><b>FLY-1143</b> 发布 / 自动更新 / 撤版（B0–B6,PRD 已定稿、你已放行）</div>
+  </div>
+
+  <div class="batch">
+    <h4>随时做,不阻塞任何人</h4>
+    <div class="item"><b>FLY-1842</b> 台账收口</div>
+  </div>
+
+  <p style="margin-top:16px"><b>三个地方是判断,不是依赖 —— 我说清理由,你自己拍:</b></p>
+  <ul>
+    <li><b>FLY-1835（完整性门）放批次 0</b>:技术上它<b>不阻塞任何人</b>。放前面纯粹是因为 —— 不放前面,1836/1837 修完还会冒出第 7、第 8 条。这是「修结构 vs 逐条补漏」的取舍。</li>
+    <li><b>陪走排在批次 2 之前</b>:因为陪走会<b>产出一份新的摩擦清单</b>,可能直接改写批次 2 的内容。倒过来做也行,只是可能白做一部分。</li>
+    <li><b>1143 靠后</b>:它是长期机制,在「一个客户都还没装上」之前收益低。</li>
+  </ul>
+
+  <p><b>不进批次、要你先定商业形态才排得了的:</b>运营面（客户名册 / 计费 / 支持通道）· 容器化 · 云端 · 收费模式。
+  这些取决于走自托管还是托管版 —— PRD 把托管版定为 V2,但没定时间。</p>
+</div>
+<label class="lbl">对批次和依赖有话说的话 —— 顺序想怎么改(可留空)</label>
+<textarea data-c="r2c" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══ 挖不动的 ═══ -->
+<section data-t="挖不动、要交给你和 Tadashi 的">
+<h2>你说「挖不动的另列清单」—— 这是那张清单</h2>
+
+<div class="card green">
+  <h3>这轮已经挖掉的（上一轮 6 条不确定项里）</h3>
+  <ul class="facts">
+    <li>✅「新改动会不会影响已有系统」→ 挖出 6 条 + 1 个根因</li>
+    <li>✅「流水线坏掉是不是代码改坏的」→ 分发层 0 改动,排除代码回归</li>
+    <li>✅「队长起不来有没有更早的拦截点」→ 有,新的载体检查在 Discord 检查<b>之前</b></li>
+  </ul>
+</div>
+
+<div class="card purple">
+  <h3>挖不动的 4 条,给你和 Tadashi</h3>
+  <p class="note">按「为什么挖不动」分类 —— Honey Lemon 说分类比条目本身有用,因为分类决定了该找谁。</p>
+  <div class="scroll">
+  <table>
+    <tr><th>#</th><th>要查什么</th><th>卡在哪一类</th><th>具体原因</th><th>谁能做</th></tr>
+    <tr>
+      <td>1</td>
+      <td><b>发布台账在服务器上的实际内容</b> —— 流水线的根因十有八九就在这里</td>
+      <td><span class="tag you">缺权限</span></td>
+      <td>读它要一把管理钥匙,按运维手册只在你手里</td>
+      <td>你 + Tadashi<br><span class="note">FLY-1582 那张单的第 2 条验收要的就是这个前后对比</span></td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td><b>客户通道的指针到底是不是空的</b>（我现在只有三条间接证据）</td>
+      <td><span class="tag you">缺权限</span></td>
+      <td>同上,要一把许可证钥匙</td>
+      <td>你</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td><b>N-1…N-6 的真机确认</b>（我给的全是静态推断）</td>
+      <td><span class="tag hard">缺真机</span></td>
+      <td>要在一台干净机器上跑非演习模式,有干扰正在跑的团队的风险;Honey Lemon 明确划到本单范围外</td>
+      <td>FLY-1322（你亲走）</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>今天在本地还能不能成功打出安装包</td>
+      <td><span class="tag soft">我可以做但不该在这台机器上做</span></td>
+      <td>要在生产机上跑重型构建,有把机器压垮的风险</td>
+      <td>Tadashi,一条命令</td>
+    </tr>
+  </table>
+  </div>
+  <p class="note"><b>没有「只有 Annie 知道」这一类</b> —— 这轮我没有撞上任何一件「答案只在你脑子里」的事。<b>唯一像的那件</b>是 FLY-1582 为什么被关,而那件<b>已经有答案了</b>(评论里写着你的原话),所以我把它当事实报了,没列进这张表。</p>
+</div>
+
+<div class="warnbox">
+  <b>这轮仍然成立的不确定项:</b>
+  N-1…N-6 全部是<b>静态推断,没有真机验证</b> —— 但每一条都给了文件和行号,可以逐条证伪。
+  流水线的根因仍未诊断（见上表第 1 条）。
+  失败次数是个会涨的数（我取证时 118,Honey Lemon 复核时已经 119）。
+</div>
+<label class="lbl">还想让我去挖什么(可留空)</label>
+<textarea data-c="r2d" placeholder="可留空"></textarea>
+</section>
+
+<p class="note" style="margin-top:30px">
+逐条带文件行号、命令和取证的完整版在仓库:<code>product/doc/FLY-1826-productization-gap-audit/findings.md</code>（第 2 轮在文件后半部分）。
+第 1 轮那页仍然有效,这一页只放新的东西。
+</p>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何意见</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:10px">
+      写在这页上的字<b>只存在你自己的浏览器里,不会自动传回来</b>。
+      点上面的按钮复制,然后粘回 <code>[FLY-1826]</code> 那个 thread —— 我才收得到。
+    </p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1826-productization-gap-r2';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1826 产品化盘点 第 2 轮 · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1826 产品化盘点 第 2 轮:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      var old = '一键汇总复制';
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = old; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

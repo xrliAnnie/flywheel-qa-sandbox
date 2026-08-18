@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>只是补一个记录 · 内容一个字没改</title>
+<style>
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:820px;margin:0 auto;padding:30px 20px 110px}
+h1{font-size:24px;line-height:1.3;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14.5px;margin:0}
+.okbox{background:#f0faf3;border:1px solid #c5ebd3;border-radius:10px;padding:14px 18px;margin:14px 0}
+.hotbox{background:#fff0ee;border:1px solid #ffcdc7;border-radius:10px;padding:14px 18px;margin:14px 0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:17px 19px;margin:13px 0}
+h2{font-size:18px;margin:24px 0 4px}
+p{margin:8px 0}
+ul{margin:6px 0;padding-left:19px} li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.note{color:var(--dim);font-size:13px;margin-top:7px}
+.big{font-size:17px;line-height:1.7}
+textarea{width:100%;min-height:56px;margin-top:9px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14px;line-height:1.55;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:10px;display:block}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0 2px}
+.opts label{flex:1 1 240px;display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;background:#fcfcfe;cursor:pointer;font-size:13.5px;line-height:1.45}
+.opts input{margin:2px 0 0;flex:0 0 auto;accent-color:var(--blue)}
+.opts label.on{border-color:var(--blue);background:#f2f8ff}
+.q{font-weight:600;color:var(--navy);margin:14px 0 2px;font-size:14.5px}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:28px -20px -110px;padding:14px 20px 18px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:820px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:10px 20px;border-radius:9px;border:none;background:var(--blue);color:#fff;cursor:pointer}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:11px 13px;margin-top:10px;font-size:13px;max-height:140px;overflow:auto;display:none}
+@media (max-width:640px){.wrap{padding:22px 14px 110px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>只是补一个记录 —— 内容一个字没改</h1>
+<p class="sub">2026-08-18 · <b>内容与上一版完全相同,这一轮只是把记录补上</b> · 不用重看</p>
+
+<div class="okbox">
+<p class="big" style="margin-top:0"><b>你已经拍过了,这一轮不是让你重新决定。</b></p>
+<p style="margin-bottom:0">你今天说了 <b>ship</b>,之前也圈了「可以定稿」。<b>PRD 和 PR 都没有任何改动。</b>
+这张卡存在的唯一原因是:上一轮的记录没被系统认成「通过」,导致我这边交不了工。</p>
+</div>
+
+<h2>为什么会这样(不是你的问题)</h2>
+<div class="card">
+<p>上一轮你回的是 <code>ok what's next</code> —— <b>那是同意的意思</b>。
+但系统的判定是<b>整串精确相等</b>:只认「都可以了 / 可以了 / 通过 / LGTM / approved」这五句,或者点 ✅。</p>
+<p style="margin-bottom:0"><b>其余任何回复都被记成「打回」</b> —— 于是你的同意被记成了否决,而且当时谁都没收到提示。
+<b>这是那个判定的毛病,已经报上去修了。</b>所以这一轮是<b>把记录补正</b> —— 不是让你重新决定。</p>
+</div>
+
+<h2>怎么回(两种都行,选一个)</h2>
+<div class="okbox">
+<p class="big" style="margin-top:0">① <b>同意就点 ✅,一下就行。</b></p>
+<p class="big" style="margin-bottom:0">② 或者回复 <b>都可以了</b> —— <b>必须是这四个字</b>,
+<b style="color:#c92a20">不要用页面上的复制按钮</b>,复制出来的内容带前缀,会被判成打回。</p>
+</div>
+
+<h2>如果你其实想先不通过</h2>
+<div class="hotbox">
+<p style="margin-top:0"><b>这条路是真的,不是摆设。</b>圈下面那一项 + 写原因,<b>这一种才用复制按钮</b>把它贴回来。</p>
+<div class="q">你的选择</div>
+<div class="opts" data-r="hold">
+  <label><input type="radio" name="hold" value="先不通过,原因见下"><span><b>先不通过</b> —— 原因写在下面</span></label>
+  <label><input type="radio" name="hold" value="我要改内容,说明见下"><span><b>我要改内容</b> —— 说明写在下面</span></label>
+</div>
+<label class="lbl">原因 / 要改什么(选了上面任一项就写这里)</label>
+<textarea data-c="why" placeholder="可留空"></textarea>
+<div class="okbox" style="margin-bottom:0"><p style="margin:0"><b>这个按钮怎么用,两句话:</b><br>
+· <b>要提意见 / 先不通过</b> → 点一键复制,粘回 thread,<b>我才收得到</b>;<br>
+· <b>要通过</b> → 别用这个按钮,点 ✅ 或回「都可以了」。</p></div>
+</div>
+
+<div class="card">
+<p class="note" style="margin-top:0"><b>这一轮给你的全部选项(记录在案):</b>
+① 点 ✅ · ② 回「都可以了」· ③ 圈「先不通过」+ 原因 · ④ 圈「我要改内容」+ 说明。
+<br>PRD 全文在仓库 <code>product/doc/FLY-1826-productization-gap-audit/prd.md</code>,与上一版逐字相同。</p>
+</div>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">有意见就写,然后点复制</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:8px"><b>要提意见 / 先不通过</b> → 点它,粘回 thread,我才收得到。<b>要通过</b> → 别用它,点 ✅ 或回「都可以了」。</p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1826-rebind-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  var groups=Array.prototype.slice.call(document.querySelectorAll('.opts[data-r]'));
+  function picked(g){var e=g.querySelector('input:checked');return e?e.value:'';}
+  function paint(){groups.forEach(function(g){Array.prototype.slice.call(g.querySelectorAll('label')).forEach(function(l){var i=l.querySelector('input');if(i&&i.checked)l.classList.add('on');else l.classList.remove('on');});});}
+  function load(){var r=null;try{r=window.localStorage.getItem(KEY);}catch(e){return;}if(!r)return;var d;try{d=JSON.parse(r);}catch(e){return;}if(!d||typeof d!=='object')return;
+    boxes.forEach(function(b){var v=d['t:'+b.getAttribute('data-c')];if(typeof v==='string')b.value=v;});
+    groups.forEach(function(g){var v=d['r:'+g.getAttribute('data-r')];if(typeof v!=='string'||!v)return;
+      Array.prototype.slice.call(g.querySelectorAll('input')).forEach(function(i){if(i.value===v)i.checked=true;});});}
+  function save(){var d={};boxes.forEach(function(b){d['t:'+b.getAttribute('data-c')]=b.value;});
+    groups.forEach(function(g){d['r:'+g.getAttribute('data-r')]=picked(g);});
+    try{window.localStorage.setItem(KEY,JSON.stringify(d));}catch(e){}}
+  function collect(){var o=[];groups.forEach(function(g){var v=picked(g);if(v)o.push('· '+v);});
+    boxes.forEach(function(b){var t=(b.value||'').trim();if(t)o.push('· 原因/说明:'+t);});return o;}
+  var c=document.getElementById('count'),p=document.getElementById('preview');
+  function refresh(){paint();var it=collect();
+    c.textContent=it.length?('已写 '+it.length+' 条'):'有意见就写,然后点复制';
+    if(it.length){p.style.display='block';p.textContent=it.join('\n');}else{p.style.display='none';p.textContent='';}}
+  boxes.forEach(function(b){b.addEventListener('input',function(){save();refresh();});});
+  groups.forEach(function(g){g.addEventListener('change',function(){save();refresh();});});
+  document.getElementById('copy').addEventListener('click',function(){
+    var it=collect();
+    var text=it.length?('FLY-1826 · 先不通过\n\n'+it.join('\n')):'FLY-1826:我没有填「先不通过」的原因 —— 如果是同意,请直接点 ✅ 或回「都可以了」。';
+    var settle=function(ok){var b=document.getElementById('copy');
+      b.textContent=ok?'已复制 ✓':'复制没成功 — 请手动选下面的文字';
+      if(!ok){p.style.display='block';p.textContent=text;}
+      window.setTimeout(function(){b.textContent='一键汇总复制';},ok?1600:4000);};
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){settle(true);},function(){settle(fb(text));});
+    }else{settle(fb(text));}});
+  function fb(t){var ta=document.createElement('textarea');ta.value=t;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);ta.select();var ok=false;
+    try{ok=document.execCommand('copy')===true;}catch(e){ok=false;}
+    document.body.removeChild(ta);return ok;}
+  load();refresh();
+})();
+</script>
+</body>
+</html>

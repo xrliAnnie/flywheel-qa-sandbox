@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产品化现状盘点 · 离「能在别人电脑上跑」还差什么</title>
+<style>
+html{color-scheme:light only}
+:root{
+  --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --line:#e5e5ea;
+  --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:40px 20px 130px}
+header{margin-bottom:28px}
+h1{font-size:30px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:15px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.plain{border-left-color:var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.04em;
+  padding:3px 9px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:8px;vertical-align:2px}
+.tag.stop{background:#ffe9e7;color:#c92a20}
+.tag.half{background:#fff2e0;color:#a15c00}
+.tag.old{background:#f3ecff;color:#6b3fb5}
+.tag.none{background:#eef0f2;color:#5a6470}
+.tag.ok{background:#e6f8ec;color:#1d8f43}
+h2{font-size:21px;margin:38px 0 4px;letter-spacing:-.01em}
+h3{font-size:17px;margin:0 0 8px;letter-spacing:-.01em}
+p{margin:10px 0}
+ul{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+.facts{background:#fafafc;border-radius:8px;padding:12px 16px;margin:12px 0;font-size:14.5px}
+.facts li{margin:6px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+.note{color:var(--dim);font-size:13.5px;margin-top:10px}
+.warnbox{background:#fff8ec;border:1px solid #ffe2b8;border-radius:10px;padding:14px 18px;margin:16px 0;font-size:14.5px}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:24px;margin:20px 0}
+.stat{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px}
+.stat div{flex:1 1 165px;background:#fafafc;border-radius:10px;padding:14px 16px}
+.stat b{display:block;font-size:25px;line-height:1.2;letter-spacing:-.02em}
+.stat span{font-size:13px;color:var(--dim)}
+textarea{width:100%;min-height:72px;margin-top:12px;padding:11px 13px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14.5px;line-height:1.6;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:14px;display:block}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:40px -20px -130px;padding:18px 20px 22px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:11px 22px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:12px 14px;margin-top:12px;
+  font-size:13.5px;max-height:190px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.pipe{background:#fafafc;border-radius:10px;padding:16px 18px;margin:14px 0;font-size:14px}
+.pipe .row{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line)}
+.pipe .row:last-child{border-bottom:none}
+.pipe .row .n{flex:0 0 auto;font-weight:600}
+.pipe .row .s{flex:0 0 auto}
+.pipe .row .d{flex:1 1 240px;color:var(--dim);font-size:13.5px}
+@media (max-width:640px){ .wrap{padding:24px 14px 130px} h1{font-size:23px} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>离「能在别人电脑上跑」还差什么</h1>
+  <p class="sub">2026-08-17 · 只有事实和差距,<b>没有排序、没有方案</b> —— 排序是你和我一起定的事,不是这一单的事</p>
+</header>
+
+<div class="warnbox">
+  <b>先说清这份东西的边界。</b>全部结论来自<b>读代码</b>和<b>三次线上探测</b>(去查了 npm、查了那台分发服务器、查了自动发布任务的历史)。
+  <b>没有在任何一台陌生电脑上真跑过一次。</b>凡是靠推断的地方,我都在那一条里单独标了,并写了「怎么验证我是错的」。
+</div>
+
+<!-- ═══════════════ 0 · 三句话 ═══════════════ -->
+<section data-t="总览:三句话">
+<h2>先给你三句话</h2>
+<div class="big">
+  <p><b>一、比你想的做得多。</b>「一条命令装完 → 一个叫 Buddy 的助手陪你把团队搭起来 → 拿到第一个真产出」这整条路
+  <b>是真的建出来了</b>,而且对外那个安装包<b>已经真的发布在 npm 上了</b>(7 月 18 日),分发服务器<b>也真的部署着、还活着</b>。</p>
+
+  <p><b>二、但今天陌生人还是装不上。</b>把新版本推给客户的那条自动流水线
+  <b>从 7 月 18 日晚上起,连续坏了 30 天、失败 118 次</b>,每 6 小时坏一次没人管;
+  而「把某个版本正式给客户」这个动作<b>从头到尾一次都没执行过</b>。</p>
+
+  <p><b>三、最要紧的是:这条路一次都没在别人的电脑上走过。</b>
+  你 7 月 17 日建的那张「陪我亲走一遍」的单,一个月零动作。
+  代码里那份「上真机要验的 5 件事」清单,一件都没验。
+  下面 A-2 那条(客户机上队长起不来)就是没人走真机才会漏掉的那一类。</p>
+</div>
+<label class="lbl">对这三句话有话说的话(可留空)</label>
+<textarea data-c="s0" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══════════════ 1 · 你问的那个疑点 ═══════════════ -->
+<section data-t="① 那个 EPIC 标 Done,是不是就等于做完了">
+<h2>① 你问的那个疑点:「EPIC 标 Done」= 这条线做完了吗</h2>
+
+<div class="card red">
+  <h3>不等于。你的猜测(容器关闭、不是交付完成)——<span class="tag stop">证实</span> 而且比你猜的还多一层</h3>
+  <p><b>三条依据:</b></p>
+  <ol>
+    <li><b>关掉它的时候,它自己下面 8 件事里有 6 件还没做完。</b>其中<b>它自己标为「立刻做、给老公 ASAP」的那件(FLY-649,Windows)至今还在 Backlog</b>。</li>
+    <li><b>关掉它的那个 PR 只覆盖了一小块。</b>FLY-648 挂的唯一一个 PR 是 #477「一条命令的安装向导 + WSL2 路径」。它是在<b>这一刀落地那天</b>被关的,不是在「可部署产品」达成那天。</li>
+    <li><b>但活儿没停,只是换了个容器。</b>648 关掉(7 月 7 日)之后,同一件事在<b>另一棵树</b>上又跑了整整一周,而且交付的东西<b>远比 648 多</b>。</li>
+  </ol>
+</div>
+
+<div class="card amber">
+  <h3>所以要更正你给我的那个 issue 清单 —— 它漏了真正干活的那条线</h3>
+  <p>你列的是 <code>648 / 654 / 303 / 1322 / 679</code>。真正把「别人能装」做出来的是<b>另一条</b>,因为除了 910 以外它们都不挂在 648 下面,按 648 的子任务翻是看不见的:</p>
+  <div class="pipe">
+    <div class="row"><span class="n">FLY-908</span><span class="s"><span class="tag ok">Done 7-08</span></span><span class="d">对外定位(「非工程小企业也能用」)</span></div>
+    <div class="row"><span class="n">FLY-910</span><span class="s"><span class="tag ok">Done 7-09</span></span><span class="d">onboarding 的 PRD —— 你逐小节共创定稿的那份,292 行</span></div>
+    <div class="row"><span class="n">FLY-1023</span><span class="s"><span class="tag ok">Done 7-09</span></span><span class="d">照那份 PRD 把 Buddy 整套建出来(PR #523)</span></div>
+    <div class="row"><span class="n">FLY-1062</span><span class="s"><span class="tag ok">Done 7-12</span></span><span class="d">分发层:客户装一个包就行、拿不到我们源码(4 个 PR)</span></div>
+    <div class="row"><span class="n">FLY-1098</span><span class="s"><span class="tag ok">Done 7-10</span></span><span class="d">发布流程的 PRD —— 8 轮共创 + 你 7 月 10 日说了 lgtm</span></div>
+    <div class="row"><span class="n">FLY-1143</span><span class="s"><span class="tag none">Backlog · 零开工</span></span><span class="d"><b>照那份 PRD 该建的东西 —— 建单一个多月,一行没动</b></span></div>
+  </div>
+  <p class="note">另外你清单里的 <b>FLY-303</b>(「装成可安装的包」):它描述的目标<b>其实已经被 FLY-1062 做掉了</b>,但这张单从 6 月 17 日建起就再没被碰过,也没被关。</p>
+</div>
+
+<div class="card blue">
+  <h3>顺带回答了你真正想知道的那件事:两份 PRD 现在 ready 到什么程度</h3>
+  <div class="scroll">
+  <table>
+    <tr><th>PRD</th><th>成熟度</th><th>拆到多细</th><th>下游做了没</th></tr>
+    <tr>
+      <td><b>FLY-910</b><br>怎么把人 onboard 进来</td>
+      <td>v3 · 你逐小节收敛过 · Codex 设计评审通过</td>
+      <td>直接列了 <b>9 个可派的建造单</b>,每个带范围、验收、依赖顺序;还专门有一节把「MVP 最少要做到什么 vs 目标形态」逐条分开</td>
+      <td><b>已经建完了</b>(FLY-1023)</td>
+    </tr>
+    <tr>
+      <td><b>FLY-1098</b><br>版本怎么打包、怎么发给客户</td>
+      <td>定稿 · 8 轮共创 · Codex 评审 4 轮通过 · <b>你 7-10 放行</b></td>
+      <td>列了 <b>7 块(B0–B6)</b>,含激活的先后顺序</td>
+      <td><b>一行都没开工</b>(FLY-1143 Backlog)</td>
+    </tr>
+  </table>
+  </div>
+  <p class="note">还有一件事实:910 那份 PRD 里被明确标成「先不做、后面补」的 5 项
+  (macOS 全自动安置 · Discord 权限扩到角色和 webhook · 换成一次授权不贴密钥 · Codex 版底座 · 更多业务场景),
+  <b>至今没有一张对应的跟进单被建出来</b>。它们现在只活在那份 PRD 的表格里。</p>
+</div>
+<label class="lbl">对这一节有话说的话(可留空)</label>
+<textarea data-c="s1" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══════════════ 2 · 实际建了什么 ═══════════════ -->
+<section data-t="② 实际上建出来了什么">
+<h2>② 实际上建出来了什么(读代码,不看单子自述)</h2>
+
+<div class="card green">
+  <h3>整条路是通的,而且比你的浅扫看到的多不少</h3>
+  <p>你扫到 8 个脚本。<b>漏掉的恰好是核心那几个</b>:</p>
+  <ul class="facts">
+    <li><b>Buddy 本体</b> —— <code>scripts/flywheel-buddy.sh</code>(442 行,整个对话流程的状态机)+ <code>flywheel-buddy-steps.sh</code>(505 行,机器可读的分步执行层)</li>
+    <li><b>Buddy 说的话</b> —— <code>scripts/buddy/copy/</code> 里 <b>21 份用户面话术</b>(欢迎、接 Discord、接后台清单、卡住转人工…),而且有一个测试在盯着不许出现工程黑话</li>
+    <li><b>业务系统连接器</b> —— Shopify / Veeqo / Ordoro / 邮箱,四个,只读</li>
+    <li><b>底座可换</b> —— Claude Code 和 Codex 两个适配器 + 一份契约文档</li>
+    <li><b>对外那个 npm 包</b> —— <code>packages/onboard-shell/</code>,客户敲 <code>npx @flywheel-ai/onboard</code> 的那一层</li>
+    <li><b>分发服务器</b> —— <code>packages/payload-endpoint/</code>(跑在 Cloudflare 上,凭许可证发安装包)</li>
+    <li><b>发布脚本 6 个</b> —— <code>scripts/release/</code>(发版、切通道、签发许可证、撤版、清理)</li>
+  </ul>
+  <p>PRD 里列的 9 个建造单,逐个对到代码:<b>8 个真有实现,1 个没找到</b>
+  (Discord 建 bot 那 4 步的截图/短视频素材,BI-8)。</p>
+  <p class="note">你扫的「零 Dockerfile」——<b>确认属实</b>,一个都没有。</p>
+</div>
+
+<div class="card green">
+  <h3>而且分发这一层,有一部分是<b>真的上线了</b> —— 这是我这轮最意外的发现</h3>
+  <div class="stat">
+    <div><b>已发布</b><span>npm 上真有 <code>@flywheel-ai/onboard@0.1.0</code>,7-18 13:47 发的</span></div>
+    <div><b>活着</b><span>那台分发服务器在跑,没许可证访问会被挡回来</span></div>
+    <div><b>已配好</b><span>发布用的地址、账号、令牌在 GitHub 上都配齐了</span></div>
+  </div>
+  <p class="note">怎么验的:<code>curl registry.npmjs.org/@flywheel-ai/onboard</code> 返回 200;
+  <code>curl .../manifest</code> 返回 401「无效或已吊销的钥匙」= 服务器活着且鉴权在工作。</p>
+</div>
+
+<div class="card amber">
+  <h3>但有一个「已验收」需要打上诚实的括号</h3>
+  <p>代码里确实有一个「客户端到端验收」测试,写着「一台干净的客户机完整装到 9.9.9」。
+  <b>它跑在同一台机器上</b>(新建一个空的用户目录 + 本机起一个假的分发服务器)。
+  它证明的是<b>这条链条的形状成立</b>,<b>不是</b>「陌生人的电脑上跑通了」。
+  那个 PR 自己也写明:<b>「真的 npm 发布一次都没有发生,也发生不了。」</b></p>
+</div>
+<label class="lbl">对这一节有话说的话(可留空)</label>
+<textarea data-c="s2" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══════════════ 3 · 差距清单 ═══════════════ -->
+<section data-t="③ 差距清单(本单最重要的部分)">
+<h2>③ 差距清单</h2>
+<p>分四档:<span class="tag stop">走不通</span> 今天陌生人会卡死 ·
+<span class="tag half">半成品</span> 能走但被削了 ·
+<span class="tag old">写死本机</span> 只在这台机器上成立 ·
+<span class="tag none">从没验过</span> 代码在、真机没跑过。<br>
+「多大」= 小(≤1 天)/ 中(2–5 天)/ 大(&gt;1 周),依据写在每条里。<b>这是规模估计,不是先做谁的建议。</b></p>
+
+<div class="card red">
+  <h3><span class="tag stop">走不通</span> A-1 · 发新版本那条流水线,已经坏了 30 天;给客户的通道从没开过 <span class="tag">中</span></h3>
+  <ul class="facts">
+    <li><b>坏了多久:</b>那个每 6 小时自动发内部测试版的任务,<b>从 7 月 18 日晚上 18:22 起连续失败 118 次</b>(之前成功过 26 次)。今天凌晨那次也是同一个错。</li>
+    <li><b>错在哪:</b>每次都停在同一个动作上 ——「占位」这一步反复撞车 8 次后放弃退出。</li>
+    <li><b>更要紧的:</b>把某个版本<b>正式切给客户</b>的那个动作(promote)—— <b>历史上一次都没运行过</b>。
+    所以客户那条通道的指针<b>大概率还是空的</b>,也就是说<b>今天没有任何版本是客户装得上的</b>。</li>
+    <li><b>许可证也发不出去:</b>发钥匙的脚本会先检查「客户通道是不是空的」,空的就拒绝。所以这一步被上面那条卡着。</li>
+  </ul>
+  <p><b>卡住的是什么:</b>①缺代码(撞车的根因还没诊断)②<b>缺一次真跑</b> —— 正式发布要你在 Discord 卡片上点 ✅ 才能执行,
+  而这套机制在生产机上<b>压根没打开过</b>(开关没配、执行记录文件不存在)。</p>
+  <p class="note"><b>为什么估「中」不估「小」:</b>撞车那个根因可能只要改一行;但「正式发给客户 + 签发许可证 + 给发布机制供密钥」这一整段
+  是<b>从来没有真跑过的流程</b>,按运维手册是 6 步一次性初始化 + 两段发布。</p>
+</div>
+
+<div class="card red">
+  <h3><span class="tag stop">走不通</span> A-2 · 客户机上「队长」根本起不来 —— 而且这是 8 月 10 日刚弄坏的 <span class="tag">中偏大</span></h3>
+  <p>这条是我这轮最不想报但必须报的。链条是这样的:</p>
+  <ol>
+    <li>启动队长的那个脚本,<b>硬性要求</b>机器上有两个 Discord 插件的管理脚本,没有就<b>直接拒绝启动</b>。</li>
+    <li>而且从 <b>8 月 10 日</b>(PR #802)起,它还要求那个脚本<b>能报出一个精确的版本口令字符串</b>,报不出也拒绝启动。</li>
+    <li>客户机上装的是一个<b>空壳桩</b>(7 月写的,内容只有一行「直接成功」)——<b>它报不出任何口令</b>。</li>
+    <li>而且<b>安装包里根本没带</b>这两个脚本,也没带那个 Discord 插件本身 —— 那个插件来自一个<b>只在这台机器上注册的本地私有源</b>。</li>
+  </ol>
+  <p><b>为什么一个月了没人发现:</b>唯一那个「队长能不能起来」的测试,走的是<b>演习模式</b>,
+  而演习模式在代码里<b>明确跳过整段插件检查</b>。所以这条路在自动测试里<b>结构上就测不到</b>。</p>
+  <p><b>卡住的是什么:</b>缺代码(要么空壳桩补上口令,要么启动器给客户模式一个合法出口)+ 缺分发件(插件怎么到客户机上)。</p>
+  <div class="warnbox">
+    <b>⚠️ 这条是我读代码推出来的,没有真机验证。</b>
+    要证明我错了很简单:找一台干净的用户目录,装上那个空壳桩,然后<b>非演习模式</b>跑一次启动脚本,看它是不是直接退出。
+  </div>
+</div>
+
+<div class="card red">
+  <h3><span class="tag stop">走不通</span> A-3 · 安装包里带着一条对陌生人无效的老路 <span class="tag">小</span></h3>
+  <p>那个一条命令的脚本,如果不是从代码库里跑的,它会去 <b>clone 我们的主仓库</b> —— 而那个仓库是<b>私有的</b>
+  (顺带:默认的技能库仓库也是私有的)。npm 那条路绕开了它,<b>但这个脚本本身是在安装包白名单里的</b>,
+  客户拿到的包里就带着这条对他来说是死路的回落路径。</p>
+  <p><b>卡住的是什么:</b>缺代码(打包时剔掉或改写)或缺一个决定(明确把老入口废掉)。<b>为什么估小:</b>一处默认值 + 一条打包断言。</p>
+</div>
+
+<div class="card amber">
+  <h3><span class="tag half">半成品</span> B-1 · macOS 上「自动安置」<b>并不自动</b> <span class="tag">中</span></h3>
+  <p>在 Mac 上,那一步的代码里所有动作都只是<b>打印一行字</b>,不真的装、不真的起服务。
+  接着下一步会等 60 秒等不到服务,然后报错并打印一句
+  <b>「linux 请跑 systemctl…;darwin 请照运维手册 §B 把服务起起来」</b>——
+  一个非技术客户在这一步会正面撞上一句工程运维手册,而这正是那份 PRD 第一条铁律要禁的东西。</p>
+  <p class="note">这件事 PRD 早就诚实标注过(「macOS 安置最少可以是引导/手动」),所以它不是隐瞒,是<b>一个已知的、被推迟的缺口,但没有跟进单在盯</b>。
+  <b>为什么估中:</b>PRD 自己把它拆成 5 段真实验收。</p>
+</div>
+
+<div class="card amber">
+  <h3><span class="tag half">半成品</span> B-2 · 「先跟队长打个招呼」这一步,默认是关的 <span class="tag">中</span></h3>
+  <p>PRD 里最讲究的一个设计,是让客户<b>很早</b>就见到一个活的队长跟他说话(「有个搭档在」的那一刻)。
+  这一步现在<b>默认关闭</b>,原因写在运维手册里:启动队长时会把钥匙经命令行参数传过去,
+  <b>违反「密钥不进命令行参数」的红线</b>,所以对客户产品默认降级成「等全部装完再聊」。</p>
+  <p><b>卡住的是什么:</b>缺代码(启动器那侧的参数卫生)。手册自己称它「独立的跟进项」——<b>同样没有对应的单</b>。</p>
+</div>
+
+<div class="card amber">
+  <h3><span class="tag half">半成品</span> B-3 · 上线自检只证明「管子通」,不证明「队长会说话」 <span class="tag">小</span></h3>
+  <p>这条代码<b>自己打了诚实标记</b>,注释写着「证明的是管道通,不是有一个活的队长在应答」。
+  真的「队长回一句话」被留给真机验收 —— 而真机验收没做(见 D-1)。<b>不缺代码,缺验证。</b></p>
+</div>
+
+<div class="card purple">
+  <h3><span class="tag old">写死本机</span> C-1 · 客户能看到的文档,总共 18 行 <span class="tag">中</span></h3>
+  <p>客户能读到的全部文字 = 那个 npm 包的说明文件,<b>18 行</b>(怎么装、怎么更新、怎么换钥匙)。
+  安装指引、出错怎么办、「我卡住了找谁」——<b>在代码库里找不到</b>。
+  仓库里那两份手册都是给我们自己人看的运维视角,开头就写着「排障时不许绕」。
+  另外 PRD 要的「Discord 建 bot 那 4 步的截图/短视频」,也没找到。</p>
+  <p class="note"><b>为什么估中:</b>要覆盖 12 个步骤 × 每步的失败分支,再加那套截图素材。</p>
+</div>
+
+<div class="card purple">
+  <h3><span class="tag old">写死本机</span> C-2 · 陌生人仍然要自带一串前置 <span class="tag">小(写清)/ 大(消掉)</span></h3>
+  <div class="scroll">
+  <table>
+    <tr><th>他必须先有 / 先做</th><th>能不能自动化</th></tr>
+    <tr><td><b>Node</b>(在 Linux/WSL2 上装不了只能硬拦);打包模式外还要 pnpm</td><td>Mac 上能自动装,Linux 上是硬前置</td></tr>
+    <tr><td><b>一台 7×24 常开的电脑</b></td><td>PRD 已明确记为已知取舍:「会挡掉纯非技术小白」</td></tr>
+    <tr><td><b>Discord 账号 + 自己建 server + 自己建 bot + 开 2 个开关 + 点邀请链接</b>(4 步)</td><td><b>平台锁死,没有 API 可以省掉</b> —— 这是 Discord 的边界,不是我们偷懒</td></tr>
+    <tr><td><b>Linear 账号 + 一个密钥</b></td><td>目标是「一次授权不贴密钥」,现在还是贴密钥</td></tr>
+    <tr><td><b>GitHub 账号</b></td><td>已经是浏览器点一下登录,较顺</td></tr>
+    <tr><td><b>他自己的 Claude 订阅</b></td><td>刻意设计:用他自己的账号,我们不收密钥</td></tr>
+    <tr><td><b>一把许可证钥匙</b></td><td>明文只在签发那一瞬间打印一次,<b>要经你的手交给客户</b></td></tr>
+  </table>
+  </div>
+  <p class="note">这一条<b>不全是缺口</b> —— 一部分是平台边界,一部分是 PRD 里已经拍过的定位取舍(第一版客户 = 「有技术直觉但不是程序员」的经营者)。
+  列在这儿是为了清单完整。</p>
+</div>
+
+<div class="card blue">
+  <h3><span class="tag none">从没验过</span> D-1 · 这条路,一次都没在别人的电脑上走过 <span class="tag">中</span></h3>
+  <ul class="facts">
+    <li>运维手册里列了<b>「上真机要验的 5 件事」</b>(干净的 Linux/WSL2 + Mac 各走一遍全流程 · 各家登录方式真测 · 60 秒出第一个产出的真机计时 · 队长真的活着并回一句话 · WSL2 两个已知坑回归)——<b>在代码库和 Linear 里都找不到任何一件的执行证据。</b></li>
+    <li><b>FLY-1322</b>(你 7 月 17 日建的「我亲走一遍、Runner 影随记摩擦」)—— <b>建单那一秒之后再没动过</b>。</li>
+    <li>代码注释里还写着「Linux + Windows 的真机验收,要 founder 在她自己的机器上跑一遍并报回来」——<b>这道门没有关闭记录。</b></li>
+  </ul>
+  <p><b>为什么这条比它看起来重要:</b>上面 A-2 那种坑<b>只有真机能抓</b>,自动测试结构上抓不到,而它已经躺了一个多星期没人知道。</p>
+  <p class="note"><b>为什么估中:</b>照 FLY-1322 自己设计的办法(本机建一个干净的标准用户,你走我跟)大概半天到一天,加上边走边修的摩擦。</p>
+</div>
+
+<div class="card blue">
+  <h3><span class="tag none">从没验过</span> D-2 · Windows 只有 WSL2 一条路,而且没验过 <span class="tag">中</span></h3>
+  <p>那个一条命令的脚本只认 Mac 和 Linux,Windows 得先进 WSL2 才算 Linux。
+  手册里把「WSL2 的浏览器回环 + gh 的软件源」列为<b>已知会出问题的两项</b>,没有回归记录。
+  <b>FLY-649(给老公 ASAP 的那件)还在 Backlog。</b></p>
+</div>
+
+<div class="card plain">
+  <h3>E · 两件结构性的、刻意留的空白(不是 bug,是当时的取舍) <span class="tag">大</span></h3>
+  <p><b>E-1 · 「多租户」= 各跑各的,没有任何运营面。</b>
+  这正是 FLY-654 的原始定义(每人独立部署、天然隔离),现在的实现符合它。
+  但随之而来的是:<b>没有客户名册、没有计费、没有支持通道、看不到客户那边发生了什么</b>。
+  客户卡住时产物是他自己电脑上的一个脱敏摘要文件,脚本让他<b>「发给我们的支持同学」——而这个角色目前不存在。</b></p>
+  <p><b>E-2 · 容器化 / 云端 = 零代码。</b>确认零 Dockerfile。相关三张单都在 Backlog。</p>
+</div>
+<label class="lbl">对差距清单有话说的话 —— 哪条你觉得判重了/判轻了、哪条描述不对(可留空)</label>
+<textarea data-c="s3" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══════════════ 4 · 单子与代码不符 ═══════════════ -->
+<section data-t="④ 单子上写的 和 代码里的现实 对不上的地方">
+<h2>④ 单子上写的 和 代码里的现实,对不上的 7 处</h2>
+<p>(按你的要求:<b>以代码为准</b>,并单独列出来)</p>
+<div class="card plain">
+<div class="scroll">
+<table>
+  <tr><th>#</th><th>单子上怎么说</th><th>代码里的现实</th></tr>
+  <tr><td>1</td><td>FLY-648 EPIC <b>Done</b></td><td>它 8 个子任务里 6 个未完成;关它的 PR 只覆盖安装向导 + WSL2 路径</td></tr>
+  <tr><td>2</td><td>FLY-654:「容器化 + 配置驱动项目 = <b>前置</b>」</td><td>容器化零代码,但 FLY-1062 <b>在零容器的情况下</b>已经做出了「客户零仓库访问安装」→ <b>这个前置不成立</b>,它是 6 月立单时的假设</td></tr>
+  <tr><td>3</td><td>FLY-303:「未来把 Flywheel 做成可安装的包」= Backlog</td><td><b>这个目标已经被 FLY-1062 做掉了</b>,303 从建单起没被更新也没被关</td></tr>
+  <tr><td>4</td><td>FLY-1062 <b>Done</b>,PR 说「客户链条在真形态下走通」</td><td>走通的是<b>同机的密闭测试</b>;那个 PR 自己写明「真的 npm 发布一次都没发生」。后来薄壳确实发了(走的是你本人的本地发布路径),但<b>给客户的通道从没切过</b></td></tr>
+  <tr><td>5</td><td>FLY-1023 <b>Done</b>,「自动安置」的验收 = 自检全绿</td><td>Mac 上那一步只打印不执行;自检自己标着「只证明管道通」</td></tr>
+  <tr><td>6</td><td>FLY-649「立刻做,给老公 ASAP」</td><td>建单 6-28,至今零动作;WSL2 的两个已知坑没回归</td></tr>
+  <tr><td>7</td><td>FLY-1322 描述里的「真机首考」</td><td>真机首考<b>从未发生</b></td></tr>
+</table>
+</div>
+</div>
+<label class="lbl">对这一节有话说的话(可留空)</label>
+<textarea data-c="s4" placeholder="可留空"></textarea>
+</section>
+
+<!-- ═══════════════ 5 · 我不确定的 ═══════════════ -->
+<section data-t="⑤ 我不确定 / 没验证的地方">
+<h2>⑤ 我不确定的地方(别把这些当结论用)</h2>
+<div class="card amber">
+<ol>
+  <li><b>A-2(客户机上队长起不来)是读代码推断的</b>,没真机跑过。怎么证明我错:干净用户目录 + 装桩 + 非演习模式跑一次启动脚本。</li>
+  <li><b>A-1 那个「撞车」的根因我没诊断。</b>8 次重试在 1.2 秒内耗尽、而且没有别的东西在同时写 —— 这<b>看起来</b>不像真的抢占,但我没去读服务器那侧的实现来证实。<b>我只报现象,不报根因。</b></li>
+  <li><b>「客户通道是空的」我无法直接证实</b> —— 要有许可证钥匙才读得到,我没有。我的依据是三条间接证据:切通道的任务零次运行 + 发布机制零执行记录 + 生产机上开关没配。</li>
+  <li>「那 5 项跟进没有对应的单」是我按关键词查的,<b>可能漏</b>。</li>
+  <li><b>今天本地还能不能成功打包,我没跑过。</b>那条流水线是在打包之后的步骤挂的,说明当时之前的步骤是过的,但这不等于今天在本地也过。</li>
+  <li>所有单子状态取自 <b>2026-08-17</b> 的快照。</li>
+</ol>
+</div>
+<label class="lbl">还想让我去查什么、或者你觉得我哪里判错了(可留空)</label>
+<textarea data-c="s5" placeholder="可留空"></textarea>
+</section>
+
+<p class="note" style="margin-top:30px">
+逐条带文件行号和取证命令的完整版在仓库:<code>product/doc/FLY-1826-productization-gap-audit/findings.md</code>。
+这一页是给你看的版本。
+</p>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没写任何意见</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:10px">
+      写在这页上的字<b>只存在你自己的浏览器里,不会自动传回来</b>。
+      点上面的按钮复制,然后粘回 <code>[FLY-1826]</code> 那个 thread —— 我才收得到。
+    </p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1826-productization-gap-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1826 产品化现状盘点 · 我的意见\n\n' + items.join('\n\n'))
+      : 'FLY-1826 产品化现状盘点:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      var old = '一键汇总复制';
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = old; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

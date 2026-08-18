@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产品化 · 形态对齐 + 做的顺序</title>
+<style>
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:960px;margin:0 auto;padding:32px 20px 120px}
+h1{font-size:26px;line-height:1.3;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14.5px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:18px 20px;margin:14px 0;border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.purple{border-left-color:var(--purple)}
+.tag{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.03em;
+  padding:2px 8px;border-radius:20px;background:#f0f0f3;color:var(--dim);margin-right:5px;vertical-align:2px;white-space:nowrap}
+.tag.fixed{background:#e6f8ec;color:#1d8f43}
+.tag.defacto{background:#fff2e0;color:#a15c00}
+.tag.open{background:#ffe9e7;color:#c92a20}
+h2{font-size:20px;margin:32px 0 4px;letter-spacing:-.01em}
+h3{font-size:16px;margin:0 0 6px}
+p{margin:8px 0}
+ul,ol{margin:6px 0;padding-left:19px}
+li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+.note{color:var(--dim);font-size:13px;margin-top:7px}
+.warnbox{background:#fff8ec;border:1px solid #ffe2b8;border-radius:10px;padding:12px 16px;margin:13px 0;font-size:14px}
+.hotbox{background:#fff0ee;border:1px solid #ffcdc7;border-radius:10px;padding:14px 18px;margin:14px 0}
+.okbox{background:#f0faf3;border:1px solid #c5ebd3;border-radius:10px;padding:13px 17px;margin:12px 0}
+.big{background:linear-gradient(180deg,#fff,#fcfcfe);border-radius:12px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06);padding:22px;margin:16px 0}
+.oneline{font-size:18px;line-height:1.6;font-weight:600;letter-spacing:-.01em;margin:0}
+textarea{width:100%;min-height:60px;margin-top:9px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14px;line-height:1.55;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:11px;display:block}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0 2px}
+.opts label{flex:1 1 190px;display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;background:#fcfcfe;cursor:pointer;font-size:13.5px;line-height:1.45}
+.opts label:hover{border-color:#c8c8cd}
+.opts input{margin:2px 0 0;flex:0 0 auto;accent-color:var(--blue)}
+.opts label.on{border-color:var(--blue);background:#f2f8ff}
+.q{font-weight:600;color:var(--navy);margin:16px 0 2px;font-size:14.5px}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:34px -20px -120px;padding:16px 20px 20px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:960px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:10px 21px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:11px 13px;margin-top:10px;
+  font-size:13px;max-height:170px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.stop{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px 16px;margin:10px 0}
+.stop .h{font-weight:600;font-size:15px;margin-bottom:3px}
+.stop .n{display:inline-block;width:23px;height:23px;line-height:23px;text-align:center;border-radius:50%;
+  background:var(--navy);color:#fff;font-size:12px;font-weight:600;margin-right:7px}
+.stop p{margin:6px 0;font-size:14px}
+.batch{background:#fafafc;border-radius:9px;padding:12px 15px;margin:9px 0;font-size:13.5px}
+.batch b.t{display:block;margin-bottom:4px;font-size:14px}
+@media (max-width:640px){.wrap{padding:22px 14px 120px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>产品化到底要做成什么样 —— 先跟你对一遍</h1>
+<p class="sub">2026-08-17 · 你说「免得理解不一致最后做出来四不像」 —— 所以先讲形态,再讲顺序。<br>
+<b>这一页可以直接圈选</b>,不用打字也能给我答案。</p>
+
+<div class="warnbox">
+  <b>怎么保证这不是我编的:</b>每条形态都标了来源 ——
+  <span class="tag fixed">已定</span>你和 HL 白纸黑字定过(我给出处) ·
+  <span class="tag defacto">事实如此</span>没人正式拍过、但代码已经长成这样(<b>这档最需要你看,可能不是你要的</b>) ·
+  <span class="tag open">没定</span>需要你拍。
+  <br><br>
+  <b>另外:你提到的「P40、P41、P42、P43」—— 我这边没有对应物。</b>我建的是 <b>FLY-1835 到 FLY-1842</b> 共 8 张,没有 1843。
+  猜是语音转写偏差,但我不想默默换成别的号让你以为它存在,所以说一声。下面一律用真实编号。
+  <br><br>
+  <b>给 Tadashi 的工程详细版拆成了另一个链接</b>(这页塞不下):
+  <a href="https://fw-reports-a53de2.vercel.app/r/40f7d701c8812429e3f6900c6a287040/">工程版形态与边界 →</a>
+  你不用读,它是给他看的。等你把这页纠完,我再收敛成 PRD。
+</div>
+
+<!-- ① -->
+<section data-t="① 一句话形态">
+<h2>① 如果只看一句</h2>
+<div class="big">
+  <p class="oneline">产品化 = 让一个<b>不是程序员的一人公司老板</b>,在<b>他自己的电脑上</b>,用<b>一条命令 + 一把钥匙</b>,
+  装出一支<b>属于他自己的、常驻的 AI 团队</b> —— 而且他<b>当天就能拿到第一个真结果</b>,<b>下周它还在</b>。</p>
+  <p class="note" style="margin-top:12px">每个加粗的词都是一个已定的决定,不是修辞。出处:FLY-911 定位文档 §0/§1 · FLY-910 onboarding PRD §2/§4/§10。</p>
+</div>
+<div class="q">这一句跟你脑子里的一样吗?</div>
+<div class="opts" data-r="q1">
+  <label><input type="radio" name="q1" value="一样"><span>一样,可以照这个做</span></label>
+  <label><input type="radio" name="q1" value="大方向对但有词不对"><span>大方向对,但有词不对(下面说)</span></label>
+  <label><input type="radio" name="q1" value="不是我要的"><span>不是我要的</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="s1" placeholder="可留空"></textarea>
+</section>
+
+<!-- ② -->
+<section data-t="② 一个陌生人从零到持续用的 8 站">
+<h2>② 一个陌生人从零到持续用,整条路长什么样</h2>
+<p class="note" style="margin-top:2px">形态最容易理解不一致的地方不在定义,在具体每一站发生什么。</p>
+
+<div class="stop">
+  <div class="h"><span class="n">0</span>他是谁 <span class="tag fixed">已定</span></div>
+  <p><b>自己做电商 / social 的一人公司老板,有技术直觉但不是程序员。</b>他的痛不是「帮我做杂活」,是
+  <b>「我得持续地建 + 养我的业务软件 / 自动化 / 内容系统」</b>。<b>明确不服务</b>:想自己搭 agent 框架的程序员 · 想要通用知识助手的人 · 想要「零人自动赚钱」的人。</p>
+  <p class="note">FLY-911 §1。MVP 还要再收窄一档(PRD §2「有技术直觉但非程序员」)—— 因为自托管要一台常开电脑,这条<b>会挡掉纯非技术小白</b>,PRD 自己写的已知取舍。</p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">1</span>他怎么拿到 <span class="tag defacto">事实如此</span></div>
+  <p>敲一条 <code>npx</code> 命令,然后被要求<b>粘一把许可证钥匙</b>。钥匙<b>只在签发那一瞬间打印一次,要经你的手交给他</b>。</p>
+  <p><b>也就是说:你是发钥匙的人,客户获取是手工的、没有自助注册。</b>这形态<b>从没被正式拍过</b>,是实现时选的。</p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">2</span>他要自带什么 <span class="tag fixed">已定(平台边界)</span></div>
+  <p><b>一台 7×24 常开的电脑</b>(Mac/Linux/Windows 走 WSL2)· <b>Discord 账号 + 自己建 server + 自己建 bot + 开 2 个开关 + 点邀请链接</b>(这 4 步 <b>省不掉</b> —— Discord 不给 API,是边界不是偷懒)· <b>Linear 账号</b>(团队的后台小本子,他平时不用打开)· <b>GitHub 账号</b> · <b>他自己的 Claude 订阅</b>(刻意的:用他的账号,我们不收他密钥、也不替他付模型钱)。</p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">3</span>装的过程是什么体验 <span class="tag fixed">已定</span></div>
+  <p><b>不是一份说明书,是一个陪他装的助手,叫 Buddy。</b>一次只让他做一件事 · 每步当场验 · 失败给具体原因不是「出错了」 · 中断能接着来 · 同一步失败两次转人工。</p>
+  <p><b>全程不许出现工程黑话</b> —— 他听到的词只有:向导(Buddy)/ 你的 Team(Captain + Crew)/ 后台清单 / 安置。<b>Lead、Runner、Bridge、manifest、launchd、repo、token 一个都不许露。</b></p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">4</span>什么时候算「装好了」 <span class="tag fixed">已定,这条最重要</span></div>
+  <div class="okbox">
+    <p style="margin-top:0"><b>不是「环境 ready」,是他拿到第一个真结果</b>,目标 <b>≤60 秒</b>。</p>
+    <p style="margin-bottom:0">样例:他问「看看我今天有没有卡住的单」→ 几十秒后回他
+    <b>「今天 26 单,1 单要注意:#1234 显示 pending 但不是丢单 —— 供应商已发货、确认邮件没读到才没更新。要我盯着到了自动更新吗?」</b>
+    <br>价值是<b>一个结果</b>,不是一个仪表盘。</p>
+  </div>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">5</span>他电脑上到底跑着什么 <span class="tag defacto">事实如此</span></div>
+  <p>一个常驻后台服务 + 每个 Lead 一个常驻进程(挂了自动拉起) + 每天凌晨 3 点一次汇报;干活的 Crew 按需起。
+  <b>他电脑上跑的是一整套完整的 Flywheel,不是精简版。</b></p>
+  <p><b>意味着:</b>体验取决于他的机器;他关机 = 团队下班(Buddy 欢迎语里已经诚实说了这句)。<b>这个形态没被单独拍过</b>,是「自托管」的自然结果。</p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">6</span>他日常怎么用 · 凭什么敢用 <span class="tag fixed">已定</span></div>
+  <p><b>在 Discord 里,用手机就行。</b>跟一个有名字的 Captain 说话,像跟员工/承包商说话。系统自己往前推,<b>只在要他拍板时来找他</b>,而且是用大白话说「我打算做 X,行吗」——<b>他批的是听得懂的决定,不是一屏代码</b>。</p>
+  <p>他敢用是因为六道能亲身感知的保障:可读的审批 · 能喊停 · 预算护栏 · 有名字能追问的 Captain · 结果他自己验得了 · 持续维护不是做完就扔。
+  一句话:<b>「它动你的业务,但每一步你都看得懂、拦得住、验得了。」</b></p>
+</div>
+
+<div class="stop">
+  <div class="h"><span class="n">7</span>多个客户之间什么关系 <span class="tag fixed">已定,但后果没被讨论过</span></div>
+  <p><b>各跑各的</b>,每人一套独立部署、天然隔离 —— 我们这边<b>没有一个统一的后台</b>。</p>
+  <p><b>后果:</b>没有客户名册、没有计费、<b>没有支持通道</b>、我们看不见客户那边发生了什么。而现在程序让卡住的客户把摘要
+  <b>「发给我们的支持同学」—— 这个角色目前不存在</b>。</p>
+</div>
+
+<div class="q">这条时间线里,哪一站跟你想的不一样?</div>
+<div class="opts" data-r="q2">
+  <label><input type="radio" name="q2" value="全部对"><span>全部对</span></label>
+  <label><input type="radio" name="q2" value="橙色那三站要改"><span>橙色那几站(1/5)要改</span></label>
+  <label><input type="radio" name="q2" value="有站不对,下面说"><span>有站不对(下面说是哪站)</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="s2" placeholder="可留空"></textarea>
+</section>
+
+<!-- ③ -->
+<section data-t="③ 「做完」指哪一档 — 最需要你拍">
+<h2>③ 最容易「四不像」的一件:「做完」指哪一档</h2>
+<div class="hotbox">
+  <p style="margin-top:0;margin-bottom:0"><b>我觉得四不像最可能从这里来。</b>「产品化做完了」可以指三个差别巨大的东西,
+  而现有这批单<b>只覆盖了 A 档和一半 B 档</b>。</p>
+</div>
+<div class="scroll">
+<table>
+  <tr><th>档</th><th>意思</th><th>现有单覆盖</th></tr>
+  <tr><td><b>A · 装得上</b></td><td>陌生人能<b>独立</b>装完并拿到第一个真结果 = <b>PRD 北极星,一字不多</b></td><td>8 张新单 + FLY-1582 + FLY-1322 <b>正好这一档</b></td></tr>
+  <tr><td><b>B · 用得住</b></td><td>装完后<b>一周还在用</b>、能自动更新、坏版本能撤 = 定位文档的信任锚点「一试真能跑、<b>下周还能跑</b>」</td><td>只覆盖一半(FLY-1143);定位文档 §7 明说这条<b>「是要争的,不是已赢」</b></td></tr>
+  <tr><td><b>C · 卖得出</b></td><td>有收费 · 有客户名册 · <b>有支持通道</b>(有人接「我卡住了」)</td><td><b>一张单都没有</b> —— 它取决于你先定商业形态</td></tr>
+</table>
+</div>
+<div class="q">👉 这一批要做到哪一档?(这一格最影响后面怎么拆)</div>
+<div class="opts" data-r="q3">
+  <label><input type="radio" name="q3" value="A 装得上"><span><b>只做 A</b> —— 先让人装得上</span></label>
+  <label><input type="radio" name="q3" value="A + 尽量到 B"><span><b>A + 尽量到 B</b> —— 加上能自动更新</span></label>
+  <label><input type="radio" name="q3" value="一直做到 C"><span><b>一直做到 C</b> —— 要能卖</span></label>
+</div>
+<p class="note"><b>我的理解是第二个</b>(A + 尽量到 B,C 等你定商业形态)。<b>如果你要的其实是 C,这批单缺得很多</b> ——
+得先补商业形态那一层再拆,这正是你担心的四不像。</p>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="s3" placeholder="可留空"></textarea>
+</section>
+
+<!-- ④ 顺序 -->
+<section data-t="④ 做的顺序">
+<h2>④ 做的顺序(你要的第 1 块)</h2>
+<div class="card red">
+<h3>依赖 —— 这是事实,不是我的意见</h3>
+<ul>
+  <li><b>FLY-1836 / FLY-1837 / FLY-1582 → FLY-1322</b>:装到第 2 步就死 · 队长起不来 · 没有可安装的版本 —— 三条任一不解,陪走都走不完。</li>
+  <li><b>FLY-1582 → FLY-1143</b>:1143 的三块主体都建在那条流水线上。</li>
+  <li><b>FLY-1838 + FLY-1840 → 「早聊一句」可用</b>:两个独立原因,只解一个不够。</li>
+</ul>
+</div>
+<div class="card amber">
+<h3>顺序 —— 这是建议,随便改</h3>
+<div class="batch"><b class="t">批次 0 · 装得上 + 起得来</b>
+FLY-1836 补第 2 步缺的文件 · FLY-1837 Discord 插件形态 · FLY-1835 打包完整性门 · <b>FLY-1582 修发版流水线(等你改判 —— 你 8-14 拍过「暂时不用修」)</b></div>
+<div class="batch"><b class="t">批次 1 · 真机走一次</b>
+FLY-1322 你亲走 + Runner 影随记摩擦(并入 FLY-1323 那条从没执行的验收)</div>
+<div class="batch"><b class="t">批次 2 · 体验补齐(可能被批次 1 的摩擦清单改写)</b>
+FLY-1839 Mac 自动安置 · FLY-1838 + FLY-1840 解封「早聊一句」 · FLY-649 Windows/WSL2 · FLY-1841 客户面文档</div>
+<div class="batch"><b class="t">批次 3 · 长期机制(= B 档主体)</b>
+FLY-1143 发布 / 客户自动更新 / 撤版(PRD 已定稿、你 7-10 已放行、至今零开工)</div>
+<div class="batch"><b class="t">随时,不阻塞</b>
+FLY-1842 台账收口(含建议关 FLY-303、改写 FLY-654 —— <b>执行由你或 HL,我没动过任何现有单</b>)</div>
+<p class="note">三处是判断不是依赖:① FLY-1835 放批次 0 是「修结构 vs 逐条补漏」的取舍,它技术上不阻塞谁;② 陪走排在批次 2 前,因为它会产出新摩擦清单;③ 1143 靠后,因为还没有客户装上。</p>
+</div>
+<div class="q">顺序你要改吗?</div>
+<div class="opts" data-r="q4">
+  <label><input type="radio" name="q4" value="就按这个"><span>就按这个</span></label>
+  <label><input type="radio" name="q4" value="要改,下面说"><span>要改(下面说)</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="s4" placeholder="可留空"></textarea>
+</section>
+
+<!-- ⑤ 需要拍 -->
+<section data-t="⑤ 需要你拍的 5 件">
+<h2>⑤ 真的没定、需要你拍的 5 件 <span class="tag open">圈就行</span></h2>
+<p class="note" style="margin-top:2px">（第 1 件「做到哪一档」已经在上面第 ③ 节了。每一件都有「先不定」这个出口 —— 现在拍不了就选它,不用勉强。）</p>
+
+<div class="card purple">
+<div class="q">1 · 第一批客户是谁?(决定陪走验什么场景、第一个产出接哪些业务系统)</div>
+<div class="opts" data-r="c1">
+  <label><input type="radio" name="c1" value="老公"><span>老公</span></label>
+  <label><input type="radio" name="c1" value="Anna 在谈的那家"><span>Anna 在谈的那家</span></label>
+  <label><input type="radio" name="c1" value="两个都要"><span>两个都要</span></label>
+  <label><input type="radio" name="c1" value="先不定"><span>先不定</span></label>
+</div>
+
+<div class="q">2 · 自托管 → 托管版(替客户托管、免掉常开电脑)什么时候做?</div>
+<div class="opts" data-r="c2">
+  <label><input type="radio" name="c2" value="这批之后紧接着做"><span>这批之后紧接着做</span></label>
+  <label><input type="radio" name="c2" value="等第一个客户跑顺再说"><span>等第一个客户跑顺再说</span></label>
+  <label><input type="radio" name="c2" value="先不定"><span>先不定</span></label>
+</div>
+
+<div class="q">3 · 收费(FLY-920 至今 Backlog)</div>
+<div class="opts" data-r="c3">
+  <label><input type="radio" name="c3" value="这批不碰,继续免费给熟人"><span>这批不碰,继续免费给熟人</span></label>
+  <label><input type="radio" name="c3" value="这批要一起定"><span>这批要一起定</span></label>
+  <label><input type="radio" name="c3" value="先不定"><span>先不定</span></label>
+</div>
+
+<div class="q">4 · 「支持同学」这个角色 —— 现在程序让客户「发给我们的支持同学」,<b>但这个人不存在</b></div>
+<div class="opts" data-r="c4">
+  <label><input type="radio" name="c4" value="建这个角色"><span>建这个角色(谁来当?下面写)</span></label>
+  <label><input type="radio" name="c4" value="先改掉那句话"><span>先改掉那句话(诚实红线)</span></label>
+  <label><input type="radio" name="c4" value="先不定"><span>先不定</span></label>
+</div>
+
+<div class="q">5 · 容器化还要不要?(npm 路线已经在零容器下做到了客户零仓库访问安装;FLY-652/559/653 三张单现在悬着)</div>
+<div class="opts" data-r="c5">
+  <label><input type="radio" name="c5" value="不做了,建议关掉那三张单"><span>不做了,那三张单可以关</span></label>
+  <label><input type="radio" name="c5" value="保留但不排期"><span>保留,但不排期</span></label>
+  <label><input type="radio" name="c5" value="还是要做"><span>还是要做</span></label>
+  <label><input type="radio" name="c5" value="先不定"><span>先不定</span></label>
+</div>
+
+<label class="lbl">这 5 件的补充说明(可留空)</label>
+<textarea data-c="s5" placeholder="可留空"></textarea>
+</div>
+</section>
+
+<div class="card">
+<h3>下一步(按你说的流程)</h3>
+<ol>
+  <li>你在这页上圈 + 纠 —— 尤其第 ① 节那一句、第 ② 节的时间线、第 ③ 节的档位。</li>
+  <li>我按你圈的收敛成一份 <b>PRD 给 Tadashi</b>(等他手上 feature flag 那批做完)。</li>
+  <li>那份 PRD 是这一页的工程版 + 逐条验收,不会是另一个东西。</li>
+</ol>
+<p class="note">这轮<b>只出了这一页,没有越到 PRD</b> —— 你说「先做成一个可互动的 HTML」,校准完再写才不会白写。</p>
+</div>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没圈也没写</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:8px">
+      圈的和写的<b>只存在你自己的浏览器里,不会自动传回来</b>。点上面的按钮复制,粘回 <code>[FLY-1826]</code> thread —— 我才收得到。
+    </p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1826-shape-and-plan-v2';
+  var boxes  = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  var groups = Array.prototype.slice.call(document.querySelectorAll('.opts[data-r]'));
+
+  function qText(g){
+    var prev = g.previousElementSibling;
+    while(prev && !prev.classList.contains('q')) prev = prev.previousElementSibling;
+    return prev ? prev.textContent.trim() : g.getAttribute('data-r');
+  }
+  function picked(g){
+    var el = g.querySelector('input:checked');
+    return el ? el.value : '';
+  }
+  function paint(){
+    groups.forEach(function(g){
+      Array.prototype.slice.call(g.querySelectorAll('label')).forEach(function(l){
+        var i = l.querySelector('input');
+        if(i && i.checked) l.classList.add('on'); else l.classList.remove('on');
+      });
+    });
+  }
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data['t:' + b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+    groups.forEach(function(g){
+      var v = data['r:' + g.getAttribute('data-r')];
+      if(typeof v !== 'string' || !v) return;
+      Array.prototype.slice.call(g.querySelectorAll('input')).forEach(function(i){
+        if(i.value === v) i.checked = true;
+      });
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data['t:' + b.getAttribute('data-c')] = b.value; });
+    groups.forEach(function(g){ data['r:' + g.getAttribute('data-r')] = picked(g); });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+
+  function sectionOf(el){
+    var sec = el.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [], seen = {};
+    // walk in document order so the summary reads like the page
+    Array.prototype.slice.call(document.querySelectorAll('.opts[data-r], textarea[data-c]')).forEach(function(el){
+      if(el.classList && el.classList.contains('opts')){
+        var v = picked(el);
+        if(!v) return;
+        var sec = sectionOf(el);
+        if(!seen[sec]){ out.push('【' + sec + '】'); seen[sec] = 1; }
+        out.push('· ' + qText(el) + '\n  → ' + v);
+      } else {
+        var t = (el.value || '').trim();
+        if(!t) return;
+        var s2 = sectionOf(el);
+        if(!seen[s2]){ out.push('【' + s2 + '】'); seen[s2] = 1; }
+        out.push('· 补充:' + t);
+      }
+    });
+    return out;
+  }
+  function countAnswers(){
+    var n = 0;
+    groups.forEach(function(g){ if(picked(g)) n++; });
+    boxes.forEach(function(b){ if((b.value||'').trim()) n++; });
+    return n;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    paint();
+    var n = countAnswers();
+    countEl.textContent = n ? ('已回答 ' + n + ' 项') : '还没圈也没写';
+    var items = collect();
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){ b.addEventListener('input', function(){ save(); refresh(); }); });
+  groups.forEach(function(g){ g.addEventListener('change', function(){ save(); refresh(); }); });
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1826 产品化形态对齐 · 我的回答\n\n' + items.join('\n'))
+      : 'FLY-1826 产品化形态对齐:我这轮没有意见。';
+    // Never claim a copy we did not observe — a false 「已复制」 makes her
+    // paste an empty message and lose the round.
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = '一键汇总复制'; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>回答你的两个问题 + 已定项固化</title>
+<style>
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.65;-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:30px 20px 120px}
+h1{font-size:25px;line-height:1.3;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14.5px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:18px 20px;margin:14px 0;border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}
+.card.blue{border-left-color:var(--blue)}
+.card.amber{border-left-color:var(--amber)}
+h2{font-size:19px;margin:30px 0 4px;letter-spacing:-.01em}
+h3{font-size:16px;margin:0 0 6px}
+p{margin:8px 0}
+ul,ol{margin:6px 0;padding-left:19px}
+li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+.note{color:var(--dim);font-size:13px;margin-top:7px}
+.okbox{background:#f0faf3;border:1px solid #c5ebd3;border-radius:10px;padding:13px 17px;margin:12px 0}
+.warnbox{background:#fff8ec;border:1px solid #ffe2b8;border-radius:10px;padding:12px 16px;margin:12px 0;font-size:14px}
+textarea{width:100%;min-height:58px;margin-top:9px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14px;line-height:1.55;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:11px;display:block}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0 2px}
+.opts label{flex:1 1 200px;display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;background:#fcfcfe;cursor:pointer;font-size:13.5px;line-height:1.45}
+.opts input{margin:2px 0 0;flex:0 0 auto;accent-color:var(--blue)}
+.opts label.on{border-color:var(--blue);background:#f2f8ff}
+.q{font-weight:600;color:var(--navy);margin:15px 0 2px;font-size:14.5px}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:32px -20px -120px;padding:16px 20px 20px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:920px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:10px 21px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:11px 13px;margin-top:10px;
+  font-size:13px;max-height:160px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.role{background:#fafafc;border-radius:9px;padding:11px 14px;margin:8px 0;font-size:14px}
+.role b{color:var(--navy)}
+@media (max-width:640px){.wrap{padding:22px 14px 120px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>回答你那两个问题</h1>
+<p class="sub">2026-08-17 · 你上一轮基本全过了,这页只有两件事:<b>答你的两个问题</b> + <b>把你已定的固化一遍让你过目</b>。<br>
+这页很短,确认完我就去写 PRD 了。</p>
+
+<!-- 已定 -->
+<section data-t="① 你已经定了的(固化,请过目)">
+<h2>① 你已经定了的 —— 固化一遍,错了叫我</h2>
+<div class="okbox">
+<div class="scroll">
+<table>
+  <tr><th>问题</th><th>你的答案</th><th>它会怎么影响 PRD</th></tr>
+  <tr><td>那一句形态</td><td><b>一样</b></td><td>直接当 PRD 第一段</td></tr>
+  <tr><td>8 站时间线</td><td><b>全部对</b></td><td>成为 PRD 的主体骨架</td></tr>
+  <tr><td><b>做到哪一档</b></td><td><b>A + 尽量到 B</b></td><td><b>决定范围</b>:批次 0+1 必做,批次 2+3 里「能自动更新」要做到;<b>收费/名册/支持通道那一档不进这批</b></td></tr>
+  <tr><td>第一批客户</td><td><b>老公</b></td><td>陪走验的场景 = 他的电商;第一个真产出走 <b>dropship 订单</b>——正好是唯一已经建好连接器的那个,不用新建</td></tr>
+  <tr><td>托管版</td><td><b>等第一个客户跑顺再说</b></td><td>进 PRD 的 non-goals,不排期</td></tr>
+  <tr><td>收费</td><td><b>这批不碰,继续免费给熟人</b></td><td>同上</td></tr>
+</table>
+</div>
+<p style="margin-bottom:0"><b>还有你自己补的一条,我会原样写进 PRD 的「不做什么」并注明是你的判断:</b><br>
+托管/云端暂时不做 —— 因为 Colab 和 Cloud Code 也在往这个方向发展,以后很可能不需要我们自己做;
+但<b>多机</b>已经在往那个程度发展了。<span class="note">(我把它读成:云端是可能被平台吃掉的方向,所以不投;多机另说。读错了叫我。)</span></p>
+</div>
+<div class="q">这几条固化对吗?</div>
+<div class="opts" data-r="ok">
+  <label><input type="radio" name="ok" value="都对"><span>都对,去写 PRD 吧</span></label>
+  <label><input type="radio" name="ok" value="有一条记错了"><span>有一条记错了(下面说)</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="a1" placeholder="可留空"></textarea>
+</section>
+
+<!-- 问题一 -->
+<section data-t="② 支持同学是什么">
+<h2>② 「支持同学」是什么 —— 不是 Buddy,是个<b>人</b></h2>
+<p>这是我上一页没说清楚,不是你没看懂。你的东西里有<b>三个角色</b>,前两个是软件,第三个是人:</p>
+
+<div class="role"><b>Buddy</b> —— 装的时候陪他的那个助手。<b>软件。</b>装完它的活就干完了。</div>
+<div class="role"><b>Captain</b> —— 装完之后他每天在 Discord 里说话的那个。<b>软件。</b>一直在。</div>
+<div class="role"><b>「支持同学」</b> —— <b>Buddy 也搞不定的时候,接手的那个人。软件之外的人。</b></div>
+
+<p>现在程序里真实发生的事:某一步<b>连续失败两次</b> → Buddy 生成一份脱敏摘要(不含任何密钥)→
+跟客户说:<b>「已经把情况整理好了,把这个文件发给我们的支持同学,他们会帮你接着弄。」</b></p>
+
+<div class="warnbox">
+  <b>问题就在这:这个「他们」现在不存在。</b>
+  客户照做,把文件发出来 —— 发给谁?没有这个人,也没有收件的地方。
+  <br>这是一句<b>程序已经替我们许出去的承诺</b>,而我们没有兑现的人。所以它要么补上人,要么改掉话。
+</div>
+
+<div class="q">👉 这一件怎么办?</div>
+<div class="opts" data-r="sup">
+  <label><input type="radio" name="sup" value="先改掉那句话"><span><b>先改掉那句话</b> —— 换成诚实的说法(比如「我把情况整理好了,你可以拿它来问 Annie」),不许空承诺</span></label>
+  <label><input type="radio" name="sup" value="就是我,写成找我"><span><b>就是我</b> —— 那句话直接写成找 Annie</span></label>
+  <label><input type="radio" name="sup" value="以后让某个 agent 当"><span>以后让某个 <b>agent</b> 来当(这批先改话)</span></label>
+  <label><input type="radio" name="sup" value="先不定"><span>先不定</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="a2" placeholder="可留空"></textarea>
+</section>
+
+<!-- 问题二 -->
+<section data-t="③ 容器化是不是多平台的必答题">
+<h2>③ 容器化 —— 你担心的那个成本,现在实际上不成立</h2>
+<p>你的问题是:<b>要做到 Windows 和 Mac 都能用,容器化是不是必须的?会不会做了之后就不用每次出两套版本?</b></p>
+
+<div class="card blue">
+<h3>短答:不必须。而且「出两套版本」这件事现在没在发生。</h3>
+<ol>
+  <li><b>Windows 已经有路径了</b> —— 走 WSL2,在里面它就是 Linux。<b>不是没做,是没人验过</b>
+  (那张单还在 Backlog,手册里列了两个已知会出问题的点没回归)。</li>
+  <li><b>现在不是两套版本,是一套代码 + 一个适配层。</b>代码里原话:
+  <b>「launchd(macOS)是整个运行时里唯一承重的 macOS 耦合」</b> —— 同一个安装程序在 Mac 和 Linux 上跑的是同一份。</li>
+  <li><b>分叉有多大我数了</b>:客户装的那 57 个脚本里,<b>只有 12 个</b>含平台分支,而且集中在 5 个文件里。
+  唯一只有 Mac 才有的依赖是 cmux(那个看窗口的),而它是<b>可选的、不承重</b>。</li>
+</ol>
+</div>
+
+<div class="card amber">
+<h3>反过来,容器化会给你的客户<b>加</b>一道门槛</h3>
+<p>容器要先装 Docker。Mac 上是 Docker Desktop —— 对一个<b>非技术的一人公司老板</b>来说,
+这是在「一条命令」前面又插了一步,<b>跟你要的 done-for-you 是反的</b>。</p>
+<p>而且容器里还得跑起终端会话、跑 Runner、连出去到 Discord、状态还要存得住 —— 不是套个壳的事。</p>
+</div>
+
+<div class="card green">
+<h3>那容器化到底对什么有用?—— 云端和多机,不是多平台</h3>
+<p>它真正买到的是<b>「环境一致」</b>:少踩客户机千奇百怪的差异。这个价值在<b>云端 / 多机</b>那边最大 ——
+而<b>云端你刚说了暂时不做</b>,多机你说在发展。</p>
+<p style="margin-bottom:0"><b>所以正确的关联不是「容器化 ↔ 多平台」,是「容器化 ↔ 云端/多机」。</b>
+按你这批的选择(A+B、自托管、第一个客户是老公),<b>容器化不在关键路径上</b>。</p>
+</div>
+
+<div class="warnbox">
+<b>诚实边界:</b>上面第 2、3 条是我从代码里读出来的事实(有出处),
+但「所以不必须」这个结论是<b>我的推断</b> —— <b>该让 Tadashi 从工程角度复核一次</b>,我不替工程拍板。
+<br>另外真正拦着 Windows 的<b>不是</b>缺容器,是<b>没人在 Windows 上真跑过</b> —— 而这个用容器也解决不了
+(WSL2 里再跑容器 = 又加一层)。
+</div>
+
+<div class="q">👉 听完这些,容器化你要怎么定?</div>
+<div class="opts" data-r="ctr">
+  <label><input type="radio" name="ctr" value="这批不做,那三张单保留不排期"><span><b>这批不做</b>,那三张单保留但不排期</span></label>
+  <label><input type="radio" name="ctr" value="这批不做,那三张单可以关"><span><b>这批不做</b>,而且那三张单可以关</span></label>
+  <label><input type="radio" name="ctr" value="等 Tadashi 复核完再定"><span>等 <b>Tadashi 复核</b>完再定</span></label>
+  <label><input type="radio" name="ctr" value="还是先不定"><span>还是先不定</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="a3" placeholder="可留空"></textarea>
+</section>
+
+<div class="card">
+<h3>你回完之后我做什么</h3>
+<p>写 <b>PRD</b>,范围按你定的 <b>A + 尽量到 B</b>、第一个客户 <b>老公</b>、第一个产出 <b>dropship 订单</b>。
+托管/云端/收费进「不做什么」并注明是你的判断。写完等 Tadashi 手上 feature flag 那批做完再交给他。</p>
+<p class="note">PRD 会是形态那页的工程版 + 逐条验收,不是另一个东西。你没答的那格我会写成 open question,不替你填。</p>
+</div>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没圈也没写</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:8px">圈的和写的<b>只在你自己浏览器里</b>。点按钮复制,粘回 <code>[FLY-1826]</code> thread。</p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1826-answers-v1';
+  var boxes  = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  var groups = Array.prototype.slice.call(document.querySelectorAll('.opts[data-r]'));
+
+  function qText(g){
+    var prev = g.previousElementSibling;
+    while(prev && !prev.classList.contains('q')) prev = prev.previousElementSibling;
+    return prev ? prev.textContent.trim() : g.getAttribute('data-r');
+  }
+  function picked(g){ var el = g.querySelector('input:checked'); return el ? el.value : ''; }
+  function paint(){
+    groups.forEach(function(g){
+      Array.prototype.slice.call(g.querySelectorAll('label')).forEach(function(l){
+        var i = l.querySelector('input');
+        if(i && i.checked) l.classList.add('on'); else l.classList.remove('on');
+      });
+    });
+  }
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data; try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data['t:' + b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+    groups.forEach(function(g){
+      var v = data['r:' + g.getAttribute('data-r')];
+      if(typeof v !== 'string' || !v) return;
+      Array.prototype.slice.call(g.querySelectorAll('input')).forEach(function(i){
+        if(i.value === v) i.checked = true;
+      });
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data['t:' + b.getAttribute('data-c')] = b.value; });
+    groups.forEach(function(g){ data['r:' + g.getAttribute('data-r')] = picked(g); });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function sectionOf(el){ var s = el.closest('section[data-t]'); return s ? (s.getAttribute('data-t')||'') : ''; }
+  function collect(){
+    var out = [], seen = {};
+    Array.prototype.slice.call(document.querySelectorAll('.opts[data-r], textarea[data-c]')).forEach(function(el){
+      if(el.classList && el.classList.contains('opts')){
+        var v = picked(el); if(!v) return;
+        var s = sectionOf(el);
+        if(!seen[s]){ out.push('【' + s + '】'); seen[s] = 1; }
+        out.push('· ' + qText(el) + '\n  → ' + v);
+      } else {
+        var t = (el.value||'').trim(); if(!t) return;
+        var s2 = sectionOf(el);
+        if(!seen[s2]){ out.push('【' + s2 + '】'); seen[s2] = 1; }
+        out.push('· 补充:' + t);
+      }
+    });
+    return out;
+  }
+  var countEl = document.getElementById('count'), previewEl = document.getElementById('preview');
+  function refresh(){
+    paint();
+    var n = 0;
+    groups.forEach(function(g){ if(picked(g)) n++; });
+    boxes.forEach(function(b){ if((b.value||'').trim()) n++; });
+    countEl.textContent = n ? ('已回答 ' + n + ' 项') : '还没圈也没写';
+    var items = collect();
+    if(items.length){ previewEl.style.display='block'; previewEl.textContent = items.join('\n'); }
+    else { previewEl.style.display='none'; previewEl.textContent=''; }
+  }
+  boxes.forEach(function(b){ b.addEventListener('input', function(){ save(); refresh(); }); });
+  groups.forEach(function(g){ g.addEventListener('change', function(){ save(); refresh(); }); });
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('FLY-1826 我的回答(第 2 批)\n\n' + items.join('\n'))
+      : 'FLY-1826:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = '一键汇总复制'; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ settle(true); }, function(){ settle(fallback(text)); });
+    } else { settle(fallback(text)); }
+  });
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy') === true; } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  load(); refresh();
+})();
+</script>
+</body>
+</html>

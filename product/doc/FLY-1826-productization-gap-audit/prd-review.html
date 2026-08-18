@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRD 写好了 · 还差你拍一件</title>
+<style>
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.62;-webkit-font-smoothing:antialiased}
+.wrap{max-width:920px;margin:0 auto;padding:30px 20px 120px}
+h1{font-size:25px;line-height:1.3;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14.5px;margin:0}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:17px 19px;margin:13px 0;border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}
+.card.blue{border-left-color:var(--blue)}
+.card.red{border-left-color:var(--red)}
+h2{font-size:19px;margin:28px 0 4px;letter-spacing:-.01em}
+h3{font-size:16px;margin:0 0 6px}
+p{margin:7px 0}
+ul,ol{margin:5px 0;padding-left:19px}
+li{margin:3px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+.note{color:var(--dim);font-size:13px;margin-top:6px}
+.hotbox{background:#fff0ee;border:1px solid #ffcdc7;border-radius:10px;padding:15px 18px;margin:13px 0}
+.okbox{background:#f0faf3;border:1px solid #c5ebd3;border-radius:10px;padding:12px 16px;margin:11px 0}
+textarea{width:100%;min-height:56px;margin-top:9px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:9px;font:inherit;font-size:14px;line-height:1.55;resize:vertical;background:#fcfcfe;color:var(--ink)}
+textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+.lbl{font-size:12.5px;color:var(--dim);margin-top:10px;display:block}
+.opts{display:flex;flex-wrap:wrap;gap:8px;margin:9px 0 2px}
+.opts label{flex:1 1 210px;display:flex;align-items:flex-start;gap:8px;border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;background:#fcfcfe;cursor:pointer;font-size:13.5px;line-height:1.45}
+.opts input{margin:2px 0 0;flex:0 0 auto;accent-color:var(--blue)}
+.opts label.on{border-color:var(--blue);background:#f2f8ff}
+.q{font-weight:600;color:var(--navy);margin:14px 0 2px;font-size:14.5px}
+.sumbox{position:sticky;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+  margin:30px -20px -120px;padding:15px 20px 19px;backdrop-filter:blur(10px)}
+.sumbox .inner{max-width:920px;margin:0 auto}
+button{font:inherit;font-size:15px;font-weight:600;padding:10px 21px;border-radius:9px;border:none;
+  background:var(--blue);color:#fff;cursor:pointer}
+button:active{opacity:.8}
+#count{color:var(--dim);font-size:14px;margin-left:12px}
+#preview{white-space:pre-wrap;background:#fafafc;border-radius:9px;padding:11px 13px;margin-top:10px;
+  font-size:13px;max-height:150px;overflow:auto;display:none}
+table{width:100%;border-collapse:collapse;margin:9px 0;font-size:13.5px}
+th,td{text-align:left;padding:6px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+.batch{background:#fafafc;border-radius:9px;padding:10px 14px;margin:7px 0;font-size:13.5px}
+.batch b.t{display:block;margin-bottom:3px;font-size:14px}
+@media (max-width:640px){.wrap{padding:22px 14px 120px}h1{font-size:20px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>PRD 写好了 —— 还差你拍一件</h1>
+<p class="sub">2026-08-17 · 范围完全按你这几轮定的 · <b>只有一件事还卡着,在最下面</b><br>
+全文在仓库 <code>product/doc/FLY-1826-productization-gap-audit/prd.md</code>,这页是给你看的摘要。</p>
+
+<!-- 你定的 -->
+<section data-t="① PRD 的范围 = 你定的">
+<h2>① PRD 的范围,一条都不是我加的</h2>
+<div class="okbox">
+<div class="scroll">
+<table>
+  <tr><th>PRD 里怎么写</th><th>谁定的</th></tr>
+  <tr><td><b>只服务一个人:你老公</b>。所有多客户的东西(名册/计费/支持通道)不做</td><td>你:「我们的 customer 也只有我老公啊」</td></tr>
+  <tr><td><b>做到 A + 尽量到 B</b>(装得上 + 能自动更新),C 不做</td><td>你圈的</td></tr>
+  <tr><td>第一个真产出走 <b>dropship 订单</b></td><td>推导:老公=电商,而这正好是唯一已建好连接器的那个</td></tr>
+  <tr><td><b>托管/云端不做</b> —— 并注明理由是「Colab 和 Cloud Code 也在往这个方向发展,以后很可能不需要我们自己做」</td><td>你的原话,原样写进去了</td></tr>
+  <tr><td><b>收费不碰</b>,继续免费给熟人</td><td>你圈的</td></tr>
+  <tr><td><b>不建「支持同学」这个角色</b>,只把那句空承诺改成找你</td><td>你:「就是我,写成找我」</td></tr>
+  <tr><td><b>容器化不做</b>,另开一张 deep research(虚拟机 vs 容器)= <b>FLY-1848</b></td><td>你圈的 + 你提的研究方向</td></tr>
+</table>
+</div>
+</div>
+<label class="lbl">这些范围有记错的吗(可留空)</label>
+<textarea data-c="p1" placeholder="可留空"></textarea>
+</section>
+
+<!-- 要做什么 -->
+<section data-t="② PRD 说要做什么">
+<h2>② 要做的事,10 条,分 4 批</h2>
+<div class="card blue">
+<div class="batch"><b class="t">批次 0 · 先让它装得上、起得来</b>
+补安装第 2 步缺的文件(<b>最致命,每个客户都会撞</b>)· Discord 插件形态 · 打包完整性门 · <b>修发版流水线 ← 这条卡着,见下</b></div>
+<div class="batch"><b class="t">批次 1 · 你亲走一次</b>
+你扮新用户装一遍,Runner 影随记摩擦。<b>这是「装得上」唯一的真验收</b> —— 前面那些都是隔离环境里验的,只有这条是真人真机</div>
+<div class="batch"><b class="t">批次 2 · 体验补齐</b>
+Mac 上「自动安置」真自动起来 · 解封「先跟队长打个招呼」 · 把那句空承诺改成找你 · 客户面文档(现在只有 18 行) · Windows/WSL2</div>
+<div class="batch"><b class="t">批次 3 · 用得住</b>
+客户能自动更新 + 坏版本能撤回(= B 档主体,PRD 早定稿、你 7-10 已放行、至今零开工)</div>
+<p class="note">PRD 里每条都写了验收标准。三处顺序是我的判断不是硬依赖,里面标了。</p>
+</div>
+</section>
+
+<!-- 卡着的 -->
+<section data-t="③ 唯一还卡着的一件 — 请你拍">
+<h2>③ 唯一还卡着的一件</h2>
+<div class="hotbox">
+<h3 style="margin-top:0">发版流水线要不要修 —— 你 8 月 14 日拍过「暂时不用修」</h3>
+<p>那张单是 <b>FLY-1582</b>。8 月 1 日有人建的,写得很完整。<b>8 月 14 日 backlog 大扫除时你裁了:「这个也暂时不用修,关掉吧」。</b></p>
+<p><b>我不是来说这个决定错了。</b>我是把当时那张单<b>没告诉你</b>的两条补上:</p>
+<ol>
+  <li>这条流水线<b>是客户拿到软件的唯一通道</b> —— 不是一个内部测试任务;</li>
+  <li><b>给客户的那条通道从头到尾一次都没开过</b>(切通道的动作历史运行次数 = 0)。</li>
+</ol>
+<p style="margin-bottom:0"><b>后果很直接:不修 = 今天没有任何版本是老公装得上的 = 批次 1「你亲走一次」根本没东西可装。</b>
+它是批次 0 里唯一卡着整条线的一件。</p>
+</div>
+<div class="q">👉 这一件你怎么定?</div>
+<div class="opts" data-r="p1582">
+  <label><input type="radio" name="p1582" value="改判,修"><span><b>改判,要修</b> —— 重开 FLY-1582,进批次 0</span></label>
+  <label><input type="radio" name="p1582" value="先查清根因再定"><span><b>先查清根因再定</b> —— 那需要你的一把管理钥匙去读发布台账(见下)</span></label>
+  <label><input type="radio" name="p1582" value="还是不修"><span><b>还是不修</b> —— 那我把「陪走」的前提改成手工装一次给他</span></label>
+  <label><input type="radio" name="p1582" value="先不定"><span>先不定</span></label>
+</div>
+<p class="note">补充一句:根因我查不了 —— 读发布台账要一把管理钥匙,按运维手册只在你手里。
+所以就算决定「修」,<b>第一步大概率也是你花两分钟读一下那个台账</b>,而不是工程直接动手。</p>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="p2" placeholder="可留空"></textarea>
+</section>
+
+<!-- 下一步 -->
+<section data-t="④ 你拍完之后">
+<h2>④ 你拍完之后</h2>
+<div class="card">
+<p>PRD 就定稿了,等 Tadashi 手上 feature flag 那批做完再交给他 —— 顺序是你定的。</p>
+<p class="note">另外有一条我在 PRD 里标成了「需要 Tadashi 复核」而不是结论:
+我说容器化不必须,依据是代码里读到的三条事实,但「所以不必须」是我的推断,该让工程看一眼。不阻塞这批。</p>
+</div>
+<div class="q">PRD 可以定稿了吗?</div>
+<div class="opts" data-r="done">
+  <label><input type="radio" name="done" value="可以定稿"><span>可以定稿</span></label>
+  <label><input type="radio" name="done" value="还要改"><span>还要改(上面说了)</span></label>
+</div>
+<label class="lbl">补充(可留空)</label>
+<textarea data-c="p3" placeholder="可留空"></textarea>
+</section>
+
+<div class="sumbox">
+  <div class="inner">
+    <button id="copy">一键汇总复制</button>
+    <span id="count">还没圈也没写</span>
+    <div id="preview"></div>
+    <p class="note" style="margin-top:8px">圈的和写的<b>只在你自己浏览器里</b>。点按钮复制,粘回 <code>[FLY-1826]</code> thread。</p>
+  </div>
+</div>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1826-prd-review-v1';
+  var boxes  = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+  var groups = Array.prototype.slice.call(document.querySelectorAll('.opts[data-r]'));
+  function qText(g){
+    var prev = g.previousElementSibling;
+    while(prev && !prev.classList.contains('q')) prev = prev.previousElementSibling;
+    return prev ? prev.textContent.trim() : g.getAttribute('data-r');
+  }
+  function picked(g){ var el = g.querySelector('input:checked'); return el ? el.value : ''; }
+  function paint(){
+    groups.forEach(function(g){
+      Array.prototype.slice.call(g.querySelectorAll('label')).forEach(function(l){
+        var i = l.querySelector('input');
+        if(i && i.checked) l.classList.add('on'); else l.classList.remove('on');
+      });
+    });
+  }
+  function load(){
+    var raw=null; try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data; try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){ var v=data['t:'+b.getAttribute('data-c')]; if(typeof v==='string') b.value=v; });
+    groups.forEach(function(g){
+      var v=data['r:'+g.getAttribute('data-r')]; if(typeof v!=='string'||!v) return;
+      Array.prototype.slice.call(g.querySelectorAll('input')).forEach(function(i){ if(i.value===v) i.checked=true; });
+    });
+  }
+  function save(){
+    var data={};
+    boxes.forEach(function(b){ data['t:'+b.getAttribute('data-c')]=b.value; });
+    groups.forEach(function(g){ data['r:'+g.getAttribute('data-r')]=picked(g); });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function sectionOf(el){ var s=el.closest('section[data-t]'); return s ? (s.getAttribute('data-t')||'') : ''; }
+  function collect(){
+    var out=[], seen={};
+    Array.prototype.slice.call(document.querySelectorAll('.opts[data-r], textarea[data-c]')).forEach(function(el){
+      if(el.classList && el.classList.contains('opts')){
+        var v=picked(el); if(!v) return;
+        var s=sectionOf(el); if(!seen[s]){ out.push('【'+s+'】'); seen[s]=1; }
+        out.push('· '+qText(el)+'\n  → '+v);
+      } else {
+        var t=(el.value||'').trim(); if(!t) return;
+        var s2=sectionOf(el); if(!seen[s2]){ out.push('【'+s2+'】'); seen[s2]=1; }
+        out.push('· 补充:'+t);
+      }
+    });
+    return out;
+  }
+  var countEl=document.getElementById('count'), previewEl=document.getElementById('preview');
+  function refresh(){
+    paint();
+    var n=0;
+    groups.forEach(function(g){ if(picked(g)) n++; });
+    boxes.forEach(function(b){ if((b.value||'').trim()) n++; });
+    countEl.textContent = n ? ('已回答 '+n+' 项') : '还没圈也没写';
+    var items=collect();
+    if(items.length){ previewEl.style.display='block'; previewEl.textContent=items.join('\n'); }
+    else { previewEl.style.display='none'; previewEl.textContent=''; }
+  }
+  boxes.forEach(function(b){ b.addEventListener('input', function(){ save(); refresh(); }); });
+  groups.forEach(function(g){ g.addEventListener('change', function(){ save(); refresh(); }); });
+  document.getElementById('copy').addEventListener('click', function(){
+    var items=collect();
+    var text = items.length ? ('FLY-1826 PRD review · 我的回答\n\n'+items.join('\n')) : 'FLY-1826 PRD review:我这轮没有意见。';
+    var settle=function(ok){
+      var btn=document.getElementById('copy');
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display='block'; previewEl.textContent=text; }
+      window.setTimeout(function(){ btn.textContent='一键汇总复制'; }, ok?1600:4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ settle(true); }, function(){ settle(fallback(text)); });
+    } else { settle(fallback(text)); }
+  });
+  function fallback(text){
+    var ta=document.createElement('textarea');
+    ta.value=text; ta.setAttribute('style','position:fixed;top:-1000px;left:-1000px;');
+    document.body.appendChild(ta); ta.select();
+    var ok=false; try { ok = document.execCommand('copy')===true; } catch(e){ ok=false; }
+    document.body.removeChild(ta); return ok;
+  }
+  load(); refresh();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>产品化 · 工程版形态与边界(给 Tadashi)</title>
+<style>
+html{color-scheme:light only}
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+  line-height:1.7;-webkit-font-smoothing:antialiased}
+.wrap{max-width:980px;margin:0 auto;padding:36px 20px 60px}
+h1{font-size:26px;line-height:1.3;margin:0 0 8px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14.5px;margin:0 0 22px}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+  padding:20px 22px;margin:16px 0;border-left:4px solid var(--line)}
+.card.blue{border-left-color:var(--blue)}
+.card.amber{border-left-color:var(--amber)}
+.card.red{border-left-color:var(--red)}
+h2{font-size:19px;margin:30px 0 4px;letter-spacing:-.01em}
+h3{font-size:16.5px;margin:0 0 8px}
+p{margin:9px 0}
+ul,ol{margin:8px 0;padding-left:20px}
+li{margin:5px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;
+  background:#f0f0f3;padding:1px 5px;border-radius:4px;word-break:break-all}
+.note{color:var(--dim);font-size:13.5px;margin-top:9px}
+.warnbox{background:#fff8ec;border:1px solid #ffe2b8;border-radius:10px;padding:13px 17px;margin:14px 0;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:11px 0;font-size:13.5px}
+th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;letter-spacing:.03em}
+.scroll{overflow-x:auto}
+@media (max-width:640px){.wrap{padding:22px 14px 50px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>产品化 · 工程版形态与边界</h1>
+<p class="sub">2026-08-17 · 给 Tadashi 的详细版 · 主页面(给 Annie 的形态对齐 + 顺序)是另一个链接<br>
+出处:FLY-1826 盘点 · <code>product/doc/FLY-1826-productization-gap-audit/findings.md</code></p>
+
+<div class="warnbox">
+  <b>这一页的性质</b>:它<b>不是 PRD</b>。它是「Annie 校准完形态之后,那份 PRD 会覆盖哪些工程面」的预览。
+  <b>PRD 在她把主页面纠完之后才写</b>,顺序是她定的。
+  <br>凡是标「未真机验证」的,都是静态代码阅读的推断,每条都给了文件行号可以逐条证伪。
+</div>
+
+<h2>1 · 交付物形态(已实现,FLY-1062)</h2>
+<div class="card blue">
+<ul>
+  <li><b>对外面</b>:公开 npm scoped 包 <code>@flywheel-ai/onboard</code>(薄壳:bin + lib + README)。已发布 0.1.0(2026-07-18)。</li>
+  <li><b>鉴权</b>:客户粘 license key → 走 <code>Authorization</code> header 到 Cloudflare Worker。key 只存 sha256,可吊销、可轮换;明文只在签发瞬间打印一次,经 founder 手交。</li>
+  <li><b>产物</b>:R2 上的 payload tarball —— <b>零仓库访问、零源码暴露、零 TypeScript 运行时</b>。根部一个 <code>.flywheel-prebuilt</code> 哨兵,所有 packaged 分支以它为键。</li>
+  <li><b>打包边界</b>:<code>scripts/package-onboard-files.allow</code>(125 行显式路径白名单)+ 发布安全门(secret 扫描 / 零 .ts / 零私仓 slug / 零 git clone)。<b>新文件进包必须显式登记。</b></li>
+  <li><b>发布链路</b>:beta 每 6h 自动发 → promote 到 customer 通道要 founder 在 Discord 卡上点 ✅。两把对外发布 token 只在 Bridge 父进程内存(boot 时从 process.env 读入并抹除),<b>永不落盘 / 永不进 CI / 永不进子进程</b>。</li>
+</ul>
+</div>
+
+<h2>2 · 客户机上的运行时(已实现)</h2>
+<div class="card blue">
+<ul>
+  <li><b>常驻</b>:Bridge(受管服务)· 每个 Lead 一个 keepAlive 服务(<code>flywheel-lead-wrapper-v2.sh &lt;manifest&gt;</code> → <code>lead-body.sh</code> → <code>claude-lead.sh</code>)· daily-standup 定时器(每天 03:00)。</li>
+  <li><b>按需</b>:Runner 在 tmux 里起。</li>
+  <li><b>状态根</b>:<code>~/.flywheel/</code> —— journal(v2,含 buddy 区)· <code>.env</code>(0600)· 日志 · 缓存,全部 0600。</li>
+  <li><b>平台</b>:darwin = launchd · linux/WSL2 = systemd-user,经统一 supervisor seam。<b>container 是 fail-loud 的桩,零实现。</b></li>
+  <li><b>密钥红线</b>:所有 secret 只在步骤/连接器进程内经隐藏 TTY 读 → 0600 <code>.env</code>;journal / 日志 / 对话 / 转人工摘要全程 secret-scan。业务系统只申请<b>只读</b>;写/改走运行期 founder-gated。</li>
+</ul>
+<p class="note">来源:<code>scripts/packaged/bootstrap-services.sh</code>(packaged 路径的服务安装)· <code>scripts/lib/supervisor.sh</code>。
+注意:packaged 路径<b>明确禁用</b> <code>restart-services.sh</code> 与 <code>flywheel-daemon.sh</code>(它们 hardcode <code>~/Dev/flywheel</code>),由 bootstrap-services 替代。</p>
+</div>
+
+<h2>3 · 安装流程(12 步,已实现)</h2>
+<div class="card blue">
+<p><code>preflight · skeleton · model_key · bots · channels · linear · github · config · services · finish · captain_health · digest</code></p>
+<ul>
+  <li>每步可单独 <code>run</code> / <code>verify</code> / 续传;journal 记 cursor + 非密证据。</li>
+  <li>上层是 Buddy 对话状态机(b0–b8),它<b>拥有全部用户面措辞</b>(<code>scripts/buddy/copy/</code> 21 份,有黑话 lint 测试);下层 step CLI 每次只吐一行 JSON —— <b>引擎原始输出到达用户面即视为黑话红线违规</b>。</li>
+  <li>业务连接器 seam 已有 4 个(Shopify / Veeqo / Ordoro / IMAP),全部只读 probe/pull。第一个真产出的 vertical 只做了 dropship 订单一个。</li>
+  <li>Discord 那 4 步是平台边界(bot 不能建归用户所有的 server、不能建自己、intent 只能在 Portal 开),其余频道结构 bot 自动建。</li>
+</ul>
+</div>
+
+<h2>4 · 已知的工程债 —— 建议先读这一节</h2>
+<div class="card red">
+<div class="scroll">
+<table>
+  <tr><th>#</th><th>债</th><th>后果</th><th>单</th><th>取证</th></tr>
+  <tr><td>1</td><td><b>安装第 2 步现在就死</b> —— <code>setup-new-project.sh</code> 没被打进包,无 packaged 替代</td><td>每个客户装到 skeleton 就失败</td><td><b>FLY-1836</b></td><td><code>flywheel-setup.sh:1077</code> 硬 <code>[ -x ]</code> 门;白名单零命中<br><span class="note">未真机验证</span></td></tr>
+  <tr><td>2</td><td><b>Lead 在客户机上起不来</b> —— launcher 要求 Discord 插件契约字符串,插件与其管理脚本都不在包里,客户机上也没人创建</td><td>安置完成后 Lead 服务 <code>exit 1</code></td><td><b>FLY-1837</b></td><td><code>claude-lead.sh:957-974</code>(契约门 2026-08-10 PR #802 引入)<br><span class="note">未真机验证</span></td></tr>
+  <tr><td>3</td><td><b>打包完整性从没被测过</b> —— 客户 e2e 把入口脚本换成假的、captain 合同测试走 dry-run 而 dry-run 跳过所有硬门</td><td><b>这是 #1 #2 能长期存在的原因</b>;闭包扫描共 6 条洞</td><td><b>FLY-1835</b></td><td><code>customer-e2e-acceptance.test.sh:68</code> · <code>claude-lead.sh:946-947</code></td></tr>
+  <tr><td>4</td><td><b>macOS 的服务安装是空的</b> —— provisioner darwin 分支只 echo</td><td>Mac 客户在第 9/10 步撞上一句工程运维手册</td><td><b>FLY-1839</b></td><td><code>provision-fleet-host.sh:520-534</code> + <code>step()</code>:151-157</td></tr>
+  <tr><td>5</td><td><b>发版流水线已连红 30 天</b>,客户通道从未 promote 过</td><td>今天没有任何版本是客户装得上的</td><td><b>FLY-1582</b><br><span class="note">待 founder 改判</span></td><td>119 次连败;<code>payload-promote.yml</code> 运行次数 = 0</td></tr>
+  <tr><td>6</td><td><b>密钥经 tmux 参数传递</b>(全 fleet 既有形态)</td><td>对客户产品违反红线 → 「早聊一句」默认关;<b>改它会碰生产 fleet</b></td><td><b>FLY-1840</b></td><td>runbook <code>fly-1023-…:56</code></td></tr>
+  <tr><td>7</td><td><b>v2 载体 FATAL 门</b>(2026-08-11 PR #806)打死了 buddy 预览的 live 路径</td><td>「早聊一句」即使开开关也起不来,死在 Discord 门之前</td><td><b>FLY-1838</b></td><td><code>claude-lead.sh:603-607</code> vs <code>buddy-captain-preview.sh:168</code></td></tr>
+</table>
+</div>
+<p class="note"><b>第 3 条是根因</b>:另外 5 条闭包洞(Codex 身份脚本 / Discord 指针守卫 / 技能同步)都是同一个机制漏的。
+逐条含误报排除见 <code>findings.md</code> §2.1。</p>
+</div>
+
+<h2>5 · 一个结构性问题,需要产品侧先答</h2>
+<div class="card amber">
+<p><b>容器化 = 零实现</b>(全仓零 Dockerfile / compose / devcontainer),而 npm 路线<b>已经在零容器的前提下</b>做到了「客户零仓库访问安装」。</p>
+<p>所以 FLY-654 里写的「容器化 + 配置驱动项目 = 前置」<b>已经不成立</b>。FLY-652 / 559 / 653 三张单现在悬着 ——
+<b>要不要做、什么时候做,取决于产品侧对托管版(V2)的决定</b>,不是工程能自己拍的。</p>
+</div>
+
+<h2>6 · 这一批的顺序(依赖是事实,顺序是建议)</h2>
+<div class="card blue">
+<p><b>硬依赖:</b></p>
+<ul>
+  <li><code>FLY-1836 / FLY-1837 / FLY-1582</code> → <code>FLY-1322</code>(真机陪走)—— 三条任一不解,陪走走不完。</li>
+  <li><code>FLY-1582</code> → <code>FLY-1143</code> —— 1143 的三块主体都建在那条流水线上。</li>
+  <li><code>FLY-1838 + FLY-1840</code> → 「早聊一句」可用 —— <b>两个独立原因,只解一个不够</b>。</li>
+</ul>
+<p><b>建议批次:</b>
+批次 0 = <code>1836 · 1837 · 1835 · 1582</code>(装得上+起得来)→
+批次 1 = <code>1322</code>(真机走一次)→
+批次 2 = <code>1839 · 1838 · 1840 · 649 · 1841</code>(体验补齐)→
+批次 3 = <code>1143</code>(发布/自动更新/撤版)。
+<code>1842</code> 台账收口随时,不阻塞。</p>
+<p class="note">三处是判断不是依赖:1835 放批次 0(修结构 vs 逐条补漏的取舍,它技术上不阻塞谁)· 陪走排在批次 2 前(它会产出新摩擦清单可能改写批次 2)· 1143 靠后(还没有客户装上)。</p>
+</div>
+
+<p class="note" style="margin-top:26px">
+逐条带命令与取证的完整版:<code>product/doc/FLY-1826-productization-gap-audit/findings.md</code>。
+</p>
+
+</div>
+</body>
+</html>
