@@ -87,18 +87,21 @@ function seedCompletedFinalization(store: StateStore): void {
 }
 
 function seedLandOperationClaim(store: StateStore) {
+	// recordLandOperationStep compares the lease with the real clock, so this
+	// fixture must stay relative to now instead of becoming a wall-clock fuse.
+	const base = Date.now();
 	const operation = store.ensureLandOperation({
 		issueId: "FLY-102",
 		projectName: "flywheel",
 		prNumber: 1832,
 		approvedHead: "a".repeat(40),
-		now: "2026-08-17T00:00:00.000Z",
+		now: new Date(base - 1_000).toISOString(),
 	});
 	const claim = store.claimLandOperation({
 		operationId: operation.operation_id,
 		ownerId: "land-worker",
-		now: "2026-08-17T00:00:01.000Z",
-		leaseExpiresAt: "2026-08-18T01:00:01.000Z",
+		now: new Date(base).toISOString(),
+		leaseExpiresAt: new Date(base + 60 * 60 * 1_000).toISOString(),
 	});
 	if (!claim) throw new Error("test land claim missing");
 	return {
@@ -430,6 +433,65 @@ describe("runPostShipFinalization", () => {
 				return new Response("{}", { status: 200 });
 			});
 		vi.stubGlobal("fetch", fetchImpl);
+	});
+
+	it("derives the land seed lease from the clock (FLY-1863)", async () => {
+		const fakeBase = Date.now() + 400 * 24 * 60 * 60 * 1_000;
+		vi.useFakeTimers({ toFake: ["Date"], now: fakeBase });
+		try {
+			const landOperation = seedLandOperationClaim(store);
+			const operation = store.getLandOperation(landOperation.operationId);
+
+			expect(operation?.created_at).toBe(
+				new Date(fakeBase - 1_000).toISOString(),
+			);
+			expect(operation?.updated_at).toBe(new Date(fakeBase).toISOString());
+			expect(operation?.lease_expires_at).toBe(
+				new Date(fakeBase + 60 * 60 * 1_000).toISOString(),
+			);
+
+			const result = await runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+					landOperation,
+				},
+				{
+					store,
+					projects: PROJECTS,
+					removeCleanWorktree: vi.fn().mockResolvedValue({
+						removed: true,
+						bindingVerified: true,
+					}),
+					markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+					recordLinearDoneDisposition: vi.fn().mockReturnValue({
+						ok: true,
+						idempotentReplay: false,
+					}),
+					archiveFn: vi.fn().mockResolvedValue({
+						archived: true,
+						attempts: 1,
+						status: 200,
+						reason: "ok" as const,
+					}),
+					fetchImpl: vi.fn().mockResolvedValue(
+						new Response(JSON.stringify({ id: "message-1" }), {
+							status: 200,
+						}),
+					) as unknown as typeof fetch,
+				},
+			);
+
+			expect(result).toMatchObject({
+				complete: true,
+				outcome: "completed",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("runs tmux → notifier → archive in strict order (archive not before notifier)", async () => {

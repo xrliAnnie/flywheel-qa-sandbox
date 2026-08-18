@@ -1,0 +1,10 @@
+flowchart LR
+    A["代码合入 main"] --> B["main 自己的 CI 照常跑"]
+    B -->|"全绿"| C["无声,一切照旧"]
+    B -->|"任一环节红"| D["新增 main-red-alert 任务"]
+    D --> E["Discord #flywheel-alerts 频道<br/>失败清单 + 提交 + 链接<br/>(要求平台确认消息已落盘)"]
+    E --> F["值班 bot / Lead 接手处置"]
+    D -.->|"webhook 密钥没配"| G["任务自身转红,页面可见<br/>绝不静默吞掉"]
+    style C fill:#e8f8ee,stroke:#34c759
+    style E fill:#fff7e6,stroke:#ff9500
+    style G fill:#ffecea,stroke:#ff3b30

@@ -1,0 +1,7 @@
+flowchart TD
+    A["测试种子 seedLandOperationClaim<br/>把租约到期时间写死为<br/>2026-08-18 01:00:01 UTC"] --> B["被测代码执行 post-ship 收尾流程"]
+    B --> C{"StateStore 校验租约:<br/>到期时间是否已过<br/>(对照真实时钟)"}
+    C -->|"真实时间还没到<br/>(#869 合入后只有 46 分钟这样的窗口)"| D["租约有效 → 收尾步骤放行<br/>✅ 测试绿"]
+    C -->|"真实时间已过 01:00:01"| E["租约过期 → 收尾步骤被拒<br/>❌ 测试红,而且永远红"]
+    style D fill:#e8f8ee,stroke:#34c759
+    style E fill:#ffecea,stroke:#ff3b30
