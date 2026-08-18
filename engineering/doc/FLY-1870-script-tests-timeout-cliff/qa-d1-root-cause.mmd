@@ -1,0 +1,10 @@
+flowchart LR
+  A["Script Tests 一条串行车道<br/>50 个 shell 测试步骤"] --> B["实测总时长 19 分 21 秒"]
+  B --> C{"job 上限 20 分钟"}
+  C -->|"只剩 39 秒余量"| D["套件再长一点<br/>就会被系统掐断"]
+  D --> E["掐断后的报错<br/>看起来像 flaky:<br/>时好时坏、重跑有时过"]
+  E --> F["下一个人从零重查<br/>再烧掉几小时"]
+  style C fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+  style D fill:#ffecec,stroke:#ff3b30,stroke-width:2px
+  style E fill:#ffecec,stroke:#ff3b30,stroke-width:2px
+  style F fill:#ffecec,stroke:#ff3b30,stroke-width:2px

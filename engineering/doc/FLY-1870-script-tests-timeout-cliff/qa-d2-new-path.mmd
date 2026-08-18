@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph OLD["修之前 · 一条车道"]
+    O1["50 个测试步骤 串行跑<br/>19 分 21 秒 = 上限的 97%"]
+  end
+  subgraph NEW["修之后 · 两条车道并行"]
+    N1["车道 1 · cmux / session<br/>13 个步骤 · 10 分 39 秒 = 53%"]
+    N2["车道 2 · fleet / setup / packaging<br/>38 个步骤 · 10 分 14 秒 = 51%"]
+  end
+  OLD --> NEW
+  N1 --> G["CI OK<br/>唯一挡住合并的必过检查"]
+  N2 --> G
+  style O1 fill:#ffecec,stroke:#ff3b30,stroke-width:2px
+  style N1 fill:#edfbf1,stroke:#34c759,stroke-width:2px
+  style N2 fill:#edfbf1,stroke:#34c759,stroke-width:2px
+  style G fill:#eaf3ff,stroke:#007aff,stroke-width:2px

@@ -20,6 +20,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
+const scriptShardIds = ["script-tests", "script-tests-2"] as const;
+
 /** Walk up from this test file to the repo root (the dir holding .github). */
 function findRepoRoot(): string | undefined {
 	let dir = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +57,7 @@ describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get"
 			["unit-tests", 15],
 			// FLY-1482: main reached 13m42s and the PR replay hit the old 15m cap.
 			["script-tests", 20],
+			["script-tests-2", 20],
 		]);
 		for (const [jobId, timeoutFloor] of timeoutFloors) {
 			const job = jobs[jobId] as Record<string, unknown> | undefined;
@@ -66,47 +69,64 @@ describe("FLY-889 regression guard — CI job timeout headroom + merged apt-get"
 		}
 	});
 
-	it("script-tests keeps tmux/lsof/sqlite3 merged into one apt-get install", () => {
+	it("each script shard keeps tmux/lsof/sqlite3 merged into one apt-get install", () => {
 		const jobs = loadCiJobs();
 		if (!jobs) {
 			expect(true).toBe(true);
 			return;
 		}
-		const job = jobs["script-tests"] as Record<string, unknown> | undefined;
-		expect(job, "ci.yml exists but jobs.script-tests is missing").toBeDefined();
-		const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
-		const updateSteps = steps.filter((s) =>
-			/apt-get\s+update/.test(String(s.run ?? "")),
-		);
-		expect(
-			updateSteps,
-			`expected exactly 1 step running \`apt-get update\`, found ${updateSteps.length}`,
-		).toHaveLength(1);
-		const run = String(updateSteps[0]?.run ?? "");
-		for (const pkg of ["tmux", "lsof", "sqlite3"]) {
-			expect(run).toMatch(new RegExp(`\\b${pkg}\\b`));
+		for (const jobId of scriptShardIds) {
+			const job = jobs[jobId] as Record<string, unknown> | undefined;
+			expect(job, `ci.yml exists but jobs.${jobId} is missing`).toBeDefined();
+			const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
+			const updateSteps = steps.filter((s) =>
+				/apt-get\s+update/.test(String(s.run ?? "")),
+			);
+			expect(
+				updateSteps,
+				`${jobId}: expected exactly 1 step running \`apt-get update\`, found ${updateSteps.length}`,
+			).toHaveLength(1);
+			const run = String(updateSteps[0]?.run ?? "");
+			for (const pkg of ["tmux", "lsof", "sqlite3"]) {
+				expect(run).toMatch(new RegExp(`\\b${pkg}\\b`));
+			}
 		}
 	});
 
-	it("script-tests runs the FLY-1338 structure guard as a required step", () => {
+	it("script shards run the FLY-1338 structure guard exactly once in shard 2", () => {
 		const jobs = loadCiJobs();
 		if (!jobs) {
 			expect(true).toBe(true);
 			return;
 		}
-		const job = jobs["script-tests"] as Record<string, unknown> | undefined;
-		expect(job, "ci.yml exists but jobs.script-tests is missing").toBeDefined();
-		const steps = (job?.steps ?? []) as Array<Record<string, unknown>>;
-		const guardSteps = steps.filter((step) =>
-			/\bbash\s+scripts\/__tests__\/ci-structure\.test\.sh\b/.test(
-				String(step.run ?? ""),
-			),
-		);
+		const guardSteps = scriptShardIds.flatMap((jobId) => {
+			const job = jobs[jobId] as Record<string, unknown> | undefined;
+			expect(job, `ci.yml exists but jobs.${jobId} is missing`).toBeDefined();
+			return ((job?.steps ?? []) as Array<Record<string, unknown>>)
+				.filter((step) =>
+					/\bbash\s+scripts\/__tests__\/ci-structure\.test\.sh\b/.test(
+						String(step.run ?? ""),
+					),
+				)
+				.map((step) => ({ jobId, step }));
+		});
 		expect(
 			guardSteps,
 			"expected exactly one required CI structure guard step",
 		).toHaveLength(1);
-		expect(guardSteps[0]).not.toHaveProperty("if");
-		expect(guardSteps[0]).not.toHaveProperty("continue-on-error");
+		expect(guardSteps[0]?.jobId).toBe("script-tests-2");
+		expect(guardSteps[0]?.step).not.toHaveProperty("if");
+		expect(guardSteps[0]?.step).not.toHaveProperty("continue-on-error");
+	});
+
+	it("CI OK requires both script shards", () => {
+		const jobs = loadCiJobs();
+		if (!jobs) {
+			expect(true).toBe(true);
+			return;
+		}
+		const ciOk = jobs["ci-ok"] as Record<string, unknown> | undefined;
+		expect(ciOk, "ci.yml exists but jobs.ci-ok is missing").toBeDefined();
+		expect(ciOk?.needs).toEqual(expect.arrayContaining([...scriptShardIds]));
 	});
 });

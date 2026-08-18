@@ -1,0 +1,12 @@
+flowchart LR
+  S["车道开跑第一步<br/>记下开始时间"] --> T["所有测试步骤跑完"]
+  T --> M["最后一步 量一次实际用时"]
+  M --> Q{"用时 是否 >= 上限的 85%<br/>即 17 分钟"}
+  Q -->|"否 · 今天是 53% / 51%"| OK["打印一行观测数字<br/>绿灯放行"]
+  Q -->|"是"| RED["这条车道变红<br/>错误信息第一句写着<br/>这不是 flaky 是快撞上限了"]
+  RED --> B["CI OK 跟着变红<br/>= 这个 PR 合不进去"]
+  B --> H["人来处理:<br/>先在两条车道之间挪步骤<br/>不够再加第三条<br/>提高上限是最后手段"]
+  style Q fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+  style OK fill:#edfbf1,stroke:#34c759,stroke-width:2px
+  style RED fill:#ffecec,stroke:#ff3b30,stroke-width:2px
+  style B fill:#eaf3ff,stroke:#007aff,stroke-width:2px

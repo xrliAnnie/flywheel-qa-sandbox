@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN" style="color-scheme:light only">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="ship-report-issue" content="FLY-1870">
+  <title>FLY-1870 · Ship 决策总账</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;color:#1d1d1f;background:#f5f5f7;font-synthesis:none}
+    *{box-sizing:border-box}
+    body{margin:0;background:#f5f5f7;color:#1d1d1f;line-height:1.55}
+    a{color:#06c;text-underline-offset:3px}
+    button,input,textarea{font:inherit}
+    .page{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:38px 0 80px}
+    .hero{position:relative;overflow:hidden;padding:42px;border:1px solid #e5e5ea;border-radius:28px;background:linear-gradient(145deg,#fff 0%,#f7f9ff 70%,#edf4ff 100%);box-shadow:0 18px 55px rgba(0,0,0,.07)}
+    .eyebrow{margin:0 0 10px;color:#6e6e73;font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+    h1{margin:0;max-width:820px;font-size:clamp(34px,6vw,64px);line-height:1.04;letter-spacing:-.045em}
+    .dek{max-width:760px;margin:18px 0 0;color:#515154;font-size:19px}
+    .badges{display:flex;flex-wrap:wrap;gap:9px;margin-top:24px}
+    .badge{padding:7px 11px;border-radius:999px;background:#fff;border:1px solid #dedee3;color:#424245;font-size:13px;font-weight:650}
+    .badge.pass{border-color:#bce8ca;background:#edfbf1;color:#147a38}
+    .meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0 0}
+    .meta div{padding:14px 16px;border-radius:14px;background:rgba(255,255,255,.78);border:1px solid #e5e5ea}
+    .meta span{display:block;color:#86868b;font-size:12px}
+    .meta strong{display:block;margin-top:3px;font-size:14px;overflow-wrap:anywhere}
+    .report-section{margin-top:22px;padding:30px;border:1px solid #e1e1e6;border-radius:22px;background:#fff;box-shadow:0 8px 28px rgba(0,0,0,.045)}
+    .section-kicker{margin:0 0 6px;color:#0071e3;font-size:12px;font-weight:750;letter-spacing:.08em;text-transform:uppercase}
+    h2{margin:0;font-size:clamp(25px,4vw,38px);line-height:1.12;letter-spacing:-.028em}
+    h3{margin:0 0 8px;font-size:18px}
+    p{margin:9px 0}
+    .lead{max-width:820px;color:#515154;font-size:17px}
+    .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:18px}
+    .card{padding:20px;border-radius:17px;background:#f7f7f9;border:1px solid #e8e8ed}
+    .card p:last-child{margin-bottom:0}
+    .callout{margin-top:16px;padding:16px 18px;border-left:4px solid #0071e3;border-radius:10px;background:#f2f7ff}
+    .fix-list{margin:10px 0 0;padding-left:21px}
+    .fix-list li+li{margin-top:8px}
+    .diagram-grid{display:grid;gap:14px;margin-top:18px}
+    .diagram-card{overflow:hidden;padding:18px;border:1px solid #dfdfe5;border-radius:18px;background:#fbfbfd}
+    .diagram-card svg{display:block;width:100%;height:auto;min-height:180px}
+    .diagram-note{margin:10px 0 0;color:#6e6e73;font-size:13px}
+    .flow-node{fill:#fff;stroke:#b7b7be;stroke-width:2}
+    .flow-node.hot{fill:#fff4f2;stroke:#ff6b5f}
+    .flow-node.good{fill:#effaf3;stroke:#34a853}
+    .flow-line{fill:none;stroke:#8e8e93;stroke-width:2.5;marker-end:url(#arrow)}
+    .flow-text{fill:#1d1d1f;font-size:15px;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif}
+    .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-top:18px}
+    .metric{padding:18px;border-radius:16px;background:#f7f7f9;border:1px solid #e5e5ea}
+    .metric strong{display:block;font-size:28px;line-height:1.1;letter-spacing:-.025em}
+    .metric span{display:block;margin-top:5px;color:#6e6e73;font-size:13px}
+    .evidence{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.15fr);gap:16px;margin-top:18px}
+    .evidence-visual{overflow:hidden;border:1px solid #dedee3;border-radius:16px;background:#f2f2f4}
+    .evidence-visual img{display:block;width:100%;height:auto}
+    .boundary{border-color:#f1d599;background:#fffaf0}
+    .boundary strong{color:#875c00}
+    .comment-box{margin-top:24px;padding-top:18px;border-top:1px solid #e5e5ea}
+    .comment-box label{display:block;margin-bottom:8px;color:#515154;font-size:13px;font-weight:700}
+    textarea{width:100%;min-height:76px;padding:12px 14px;border:1px solid #c7c7cc;border-radius:12px;background:#fff;color:#1d1d1f;resize:vertical}
+    textarea:focus{outline:none;border-color:#0071e3;box-shadow:0 0 0 4px rgba(0,113,227,.13)}
+    .decision{border-color:#cbdffc;background:linear-gradient(150deg,#fff 0%,#f2f7ff 100%)}
+    .export{margin-top:18px;padding:18px;border-radius:16px;background:#1d1d1f;color:#fff}
+    .export-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px}
+    .primary{border:0;border-radius:999px;padding:11px 18px;background:#0a84ff;color:#fff;font-weight:720;cursor:pointer}
+    .primary:hover{background:#0071e3}
+    .status{font-size:13px;color:#d1e7ff}
+    #feedback-output{margin-top:14px;min-height:150px;border-color:#424245;background:#2c2c2e;color:#f5f5f7;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .footer{padding:24px 4px;color:#86868b;font-size:12px;text-align:center}
+    @media(max-width:760px){.page{width:min(100% - 20px,1120px);padding-top:10px}.hero,.report-section{padding:22px;border-radius:18px}.meta,.grid,.metrics,.evidence{grid-template-columns:1fr}h1{font-size:39px}}
+    @media print{body{background:#fff}.page{width:100%;padding:0}.hero,.report-section{break-inside:avoid;box-shadow:none}.comment-box,.export{display:none}}
+
+    .tbl{width:100%;border-collapse:collapse;font-size:14px}
+    .tbl th,.tbl td{padding:9px 10px;border-bottom:1px solid #e5e5ea;text-align:left}
+    .tbl th{color:#6e6e73;font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+    .tbl .bad{color:#c1121f;font-weight:700}
+    .tbl .good{color:#147a38;font-weight:700}
+    figcaption{margin-top:8px;color:#86868b;font-size:12px}
+    .diagram-card svg{display:block;width:100%;height:auto}
+
+    .hero{padding:30px}
+    .report-section{margin-top:14px;padding:22px}
+    .comment-box{margin-top:16px;padding-top:12px}
+    .comment-box textarea{min-height:64px}
+    .diagram-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px}
+    .diagram-card{padding:14px}
+    .diagram-card[data-diagram="new-path"]{grid-column:1 / -1}
+    .diagram-card svg{display:block;width:auto;max-width:100%;max-height:250px;height:auto;margin:0 auto}
+    .diagram-note{margin:8px 0 0;font-size:13px}
+    @media (max-width:820px){.diagram-grid{grid-template-columns:1fr}.diagram-card[data-diagram="new-path"]{grid-column:auto}}
+
+    h1{font-size:clamp(30px,4.4vw,44px)}
+    .hero{padding:26px}
+    .dek{margin-top:14px;font-size:18px}
+    .report-section{margin-top:12px;padding:20px}
+    .comment-box textarea{min-height:54px}
+    .diagram-card svg{max-height:196px}
+    .metrics{margin-top:12px}
+
+    .diagram-card[data-diagram="root-cause"]{order:1}
+    .diagram-card[data-diagram="data-flow"]{order:2}
+    .diagram-card[data-diagram="new-path"]{order:3;grid-column:1 / -1}
+    .diagram-card{display:flex;flex-direction:column;justify-content:flex-start}
+    .diagram-card svg{max-height:230px}
+  </style>
+</head>
+<body>
+<main class="page">
+  <header class="hero">
+    <p class="eyebrow">Founder ship gate · 一页总账</p>
+    <h1>FLY-1870<br>CI 防雷：Script Tests 距超时悬崖只剩 39 秒</h1>
+    <p class="dek">一条快要撞上限的测试车道，被拆成两条并行车道（97% → 53% / 51%），并装上一个「快撞上了」就会把 PR 卡住的报警；测试一个没少。</p>
+    <div class="badges">
+      <span class="badge pass">QA PASS</span>
+      <span class="badge">CI 流程改动 · 无生产运行时代码</span>
+      <span class="badge">真机验证 = 真实 GitHub Actions 跑批</span>
+    </div>
+    <div class="meta">
+      <div><span>PR</span><strong><a href="https://github.com/xrliAnnie/flywheel/pull/880">PR #880</a></strong></div>
+      <div><span>验证 head</span><strong>92f31f49da1199b3f5e88d972d79dafef5f3b278</strong></div>
+      <div><span>QA 时间</span><strong>2026-08-18</strong></div>
+      <div><span>报告作者</span><strong>独立 QA runner-e10200ad</strong></div>
+    </div>
+  </header>
+
+  <section class="report-section" data-section="summary">
+    <p class="section-kicker">01 · 先看结论</p>
+    <h2>这次修好了吗？</h2>
+    <p class="lead">修好了，而且实际情况比工单里写的更险。工单说缓冲还有 1.3 分钟；我去量最近一次 main 上的真实跑批，它已经跑到 19 分 21 秒 —— 上限 20 分钟，只剩 39 秒。拆分之后两条车道分别是 10 分 39 秒和 10 分 14 秒，各占上限的 53% 和 51%。</p>
+    <div class="grid">
+      <article class="card"><h3>原来会怎样</h3><p>50 个测试排成一条队串行跑，占满上限的 97%。任何人再加一个测试、或者机器当天慢一点，就会被系统在 20 分钟处掐断。掐断后的报错长得跟 flaky 一模一样：时好时坏、重跑有时能过 —— 于是下一个人会当成偶发问题从零重查一遍。</p></article>
+      <article class="card"><h3>现在会怎样</h3><p>同样这 50 个测试被分到两条并行车道，各占上限的一半左右，加起来的墙钟时间反而从 19.4 分钟降到 10.7 分钟。另外每条车道跑完会自己量一次用时，一旦超过上限的 85%（17 分钟）就把这条车道判红、连带把 PR 的必过检查 CI OK 判红，错误信息第一句就写着「这不是 flaky」。</p></article>
+    </div>
+    <div class="callout"><strong>QA 判断：</strong> PASS。工单的三条验收全部达成，而且不是靠推算 —— 时长是从真实 CI 跑批的接口里逐步骤取回来的；「测试一个没少」是拿真实执行过的步骤名做集合比对（不是只读 YAML）；报警会不会真的响，是用 9 个人为破坏实验逐个验过的。</div>
+    <div class="comment-box">
+      <label for="comment-summary">对结论有问题？写在这里（自动保存在本机）</label>
+      <textarea id="comment-summary" data-k="summary" data-name="结论" placeholder="例如：这个判断缺了哪个用户场景？"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section" data-section="fix">
+    <p class="section-kicker">02 · 怎么修</p>
+    <h2>病根和修法</h2>
+    <p class="lead">这不是某段代码写错了，是一条车道装太满。测试套件这两年一直在加，车道容量没动过，于是余量被慢慢吃到只剩 39 秒。</p>
+    <div class="grid">
+      <article class="card"><h3>真正的病根</h3><p>Script Tests 是一条串行车道：50 个 shell 测试步骤一个接一个跑，总时长 19 分 21 秒，上限 20 分钟。其中 4 个测试就吃掉 55%（647 秒），而它们慢是因为在等真实的东西 —— 真 tmux 服务、真重启闸门的 36 秒空转、真 15 秒超时证明 —— 把这些等待缩短就等于不再测真实行为。所以病根不在这 4 个测试，在「只有一条车道」。</p></article>
+      <article class="card"><h3>修复原则</h3><p>不缩短任何一个测试，不降低任何覆盖，也不靠单纯把上限调高来买时间。做法是把同一批测试分到两条互不依赖的并行车道上，再给每条车道装一个自己量自己的报警 —— 报警的落点选在「会挡住合并」的地方，而不是一个没人看的告警频道。</p></article>
+    </div>
+    <article class="card" style="margin-top:14px">
+      <h3>具体改了什么</h3>
+      <ul class="fix-list">
+        <li>把原来的 Script Tests 拆成两条并行 job：车道 1（cmux / session，13 个测试步骤）和车道 2（fleet / setup / packaging，38 个测试步骤）。步骤是整块搬家，连注释一起，没有改动任何测试内部。</li>
+        <li>每条车道开跑第一步记下时间、最后一步量一次用时；超过上限的 85% 就判红，并打印一段明确写着「这不是 flaky，是快撞上限了」的处置说明。没超线的轮次也会打印一行观测数字，方便日后看趋势。</li>
+        <li>给这套结构加了机器守卫：两条车道各自的测试清单、顺序、超时上限、报警参数、以及 CI OK 必须同时依赖两条车道 —— 任何一项被改动或漏掉，守卫会先变红。这是防止「以后有人顺手删掉一个测试，CI 却还是绿的」。</li>
+      </ul>
+    </article>
+    <div class="comment-box">
+      <label for="comment-fix">对修法有问题？写在这里</label>
+      <textarea id="comment-fix" data-k="fix-approach" data-name="修法" placeholder="例如：为什么不直接改另一条路？"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section" data-section="architecture">
+    <p class="section-kicker">03 · Technical architecture graph</p>
+    <h2>三张图看清改动路径</h2>
+    <p class="lead">这些图由 Mermaid 源码生成，并在发布前预渲染成 inline SVG；因此 hosted HTML 在真实 CSP 下也能直接显示。</p>
+    <div class="diagram-grid">
+      <article class="diagram-card" data-diagram="root-cause">
+        <h3>图 1 · 病根：哪里断了</h3>
+        <svg style="max-width:100%;height:auto" id="my-svg" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1592.2px; background-color: transparent;" viewBox="0 0 1592.203125 188.609375" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#my-svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#my-svg .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#my-svg .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#my-svg .error-icon{fill:#552222;}#my-svg .error-text{fill:#552222;stroke:#552222;}#my-svg .edge-thickness-normal{stroke-width:1px;}#my-svg .edge-thickness-thick{stroke-width:3.5px;}#my-svg .edge-pattern-solid{stroke-dasharray:0;}#my-svg .edge-thickness-invisible{stroke-width:0;fill:none;}#my-svg .edge-pattern-dashed{stroke-dasharray:3;}#my-svg .edge-pattern-dotted{stroke-dasharray:2;}#my-svg .marker{fill:#333333;stroke:#333333;}#my-svg .marker.cross{stroke:#333333;}#my-svg svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#my-svg p{margin:0;}#my-svg .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#my-svg .cluster-label text{fill:#333;}#my-svg .cluster-label span{color:#333;}#my-svg .cluster-label span p{background-color:transparent;}#my-svg .label text,#my-svg span{fill:#333;color:#333;}#my-svg .node rect,#my-svg .node circle,#my-svg .node ellipse,#my-svg .node polygon,#my-svg .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#my-svg .rough-node .label text,#my-svg .node .label text,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-anchor:middle;}#my-svg .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#my-svg .rough-node .label,#my-svg .node .label,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-align:center;}#my-svg .node.clickable{cursor:pointer;}#my-svg .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#my-svg .arrowheadPath{fill:#333333;}#my-svg .edgePath .path{stroke:#333333;stroke-width:2.0px;}#my-svg .flowchart-link{stroke:#333333;fill:none;}#my-svg .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#my-svg .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#my-svg .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#my-svg .cluster text{fill:#333;}#my-svg .cluster span{color:#333;}#my-svg div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#my-svg .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#my-svg rect.text{fill:none;stroke-width:0;}#my-svg .icon-shape,#my-svg .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .icon-shape p,#my-svg .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#my-svg .icon-shape rect,#my-svg .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#my-svg .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#my-svg :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="my-svg_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M250.328,94.305L254.495,94.305C258.661,94.305,266.995,94.305,274.661,94.305C282.328,94.305,289.328,94.305,292.828,94.305L296.328,94.305" id="L_A_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A_B_0" data-points="W3sieCI6MjUwLjMyODEyNSwieSI6OTQuMzA0Njg3NX0seyJ4IjoyNzUuMzI4MTI1LCJ5Ijo5NC4zMDQ2ODc1fSx7IngiOjMwMC4zMjgxMjUsInkiOjk0LjMwNDY4NzV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M525.172,94.305L529.339,94.305C533.505,94.305,541.839,94.305,549.505,94.305C557.172,94.305,564.172,94.305,567.672,94.305L571.172,94.305" id="L_B_C_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_C_0" data-points="W3sieCI6NTI1LjE3MTg3NSwieSI6OTQuMzA0Njg3NX0seyJ4Ijo1NTAuMTcxODc1LCJ5Ijo5NC4zMDQ2ODc1fSx7IngiOjU3NS4xNzE4NzUsInkiOjk0LjMwNDY4NzV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M747.781,94.305L760.816,94.305C773.852,94.305,799.922,94.305,825.326,94.305C850.729,94.305,875.466,94.305,887.835,94.305L900.203,94.305" id="L_C_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_D_0" data-points="W3sieCI6NzQ3Ljc4MTI1LCJ5Ijo5NC4zMDQ2ODc1fSx7IngiOjgyNS45OTIxODc1LCJ5Ijo5NC4zMDQ2ODc1fSx7IngiOjkwNC4yMDMxMjUsInkiOjk0LjMwNDY4NzV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M1076.203,94.305L1080.37,94.305C1084.536,94.305,1092.87,94.305,1100.536,94.305C1108.203,94.305,1115.203,94.305,1118.703,94.305L1122.203,94.305" id="L_D_E_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_E_0" data-points="W3sieCI6MTA3Ni4yMDMxMjUsInkiOjk0LjMwNDY4NzV9LHsieCI6MTEwMS4yMDMxMjUsInkiOjk0LjMwNDY4NzV9LHsieCI6MTEyNi4yMDMxMjUsInkiOjk0LjMwNDY4NzV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M1346.203,94.305L1350.37,94.305C1354.536,94.305,1362.87,94.305,1370.536,94.305C1378.203,94.305,1385.203,94.305,1388.703,94.305L1392.203,94.305" id="L_E_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_F_0" data-points="W3sieCI6MTM0Ni4yMDMxMjUsInkiOjk0LjMwNDY4NzV9LHsieCI6MTM3MS4yMDMxMjUsInkiOjk0LjMwNDY4NzV9LHsieCI6MTM5Ni4yMDMxMjUsInkiOjk0LjMwNDY4NzV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B_C_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(825.9921875, 94.3046875)"><g class="label" data-id="L_C_D_0" transform="translate(-53.2109375, -12)"><foreignObject width="106.421875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>只剩 39 秒余量</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_E_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_E_F_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A-0" transform="translate(129.1640625, 94.3046875)"><rect class="basic label-container" style="" x="-121.1640625" y="-39" width="242.328125" height="78"/><g class="label" style="" transform="translate(-91.1640625, -24)"><rect/><foreignObject width="182.328125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Script Tests 一条串行车道<br />50 个 shell 测试步骤</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-1" transform="translate(412.75, 94.3046875)"><rect class="basic label-container" style="" x="-112.421875" y="-27" width="224.84375" height="54"/><g class="label" style="" transform="translate(-82.421875, -12)"><rect/><foreignObject width="164.84375" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>实测总时长 19 分 21 秒</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-C-3" transform="translate(661.4765625, 94.3046875)"><polygon points="86.3046875,0 172.609375,-86.3046875 86.3046875,-172.609375 0,-86.3046875" class="label-container" transform="translate(-85.8046875, 86.3046875)" style="fill:#fff4e5 !important;stroke:#ff9500 !important;stroke-width:2px !important"/><g class="label" style="" transform="translate(-59.3046875, -12)"><rect/><foreignObject width="118.609375" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>job 上限 20 分钟</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-5" transform="translate(990.203125, 94.3046875)"><rect class="basic label-container" style="fill:#ffecec !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-86" y="-39" width="172" height="78"/><g class="label" style="" transform="translate(-56, -24)"><rect/><foreignObject width="112" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>套件再长一点<br />就会被系统掐断</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-E-7" transform="translate(1236.203125, 94.3046875)"><rect class="basic label-container" style="fill:#ffecec !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-110" y="-51" width="220" height="102"/><g class="label" style="" transform="translate(-80, -36)"><rect/><foreignObject width="160" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>掐断后的报错<br />看起来像 flaky:<br />时好时坏、重跑有时过</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-F-9" transform="translate(1490.203125, 94.3046875)"><rect class="basic label-container" style="fill:#ffecec !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-94" y="-39" width="188" height="78"/><g class="label" style="" transform="translate(-64, -24)"><rect/><foreignObject width="128" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>下一个人从零重查<br />再烧掉几小时</p></span></div></foreignObject></g></g></g></g></g></svg>
+        <p class="diagram-note">为什么它会伪装成 flaky：被上限掐断的那一轮，报错和一个真正的偶发失败长得一样。</p>
+      </article>
+      <article class="diagram-card" data-diagram="new-path">
+        <h3>图 2 · 新路径：改了哪条路</h3>
+        <svg style="max-width:100%;height:auto" id="my-svg" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 656px; background-color: transparent;" viewBox="0 0 656 518" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#my-svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#my-svg .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#my-svg .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#my-svg .error-icon{fill:#552222;}#my-svg .error-text{fill:#552222;stroke:#552222;}#my-svg .edge-thickness-normal{stroke-width:1px;}#my-svg .edge-thickness-thick{stroke-width:3.5px;}#my-svg .edge-pattern-solid{stroke-dasharray:0;}#my-svg .edge-thickness-invisible{stroke-width:0;fill:none;}#my-svg .edge-pattern-dashed{stroke-dasharray:3;}#my-svg .edge-pattern-dotted{stroke-dasharray:2;}#my-svg .marker{fill:#333333;stroke:#333333;}#my-svg .marker.cross{stroke:#333333;}#my-svg svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#my-svg p{margin:0;}#my-svg .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#my-svg .cluster-label text{fill:#333;}#my-svg .cluster-label span{color:#333;}#my-svg .cluster-label span p{background-color:transparent;}#my-svg .label text,#my-svg span{fill:#333;color:#333;}#my-svg .node rect,#my-svg .node circle,#my-svg .node ellipse,#my-svg .node polygon,#my-svg .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#my-svg .rough-node .label text,#my-svg .node .label text,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-anchor:middle;}#my-svg .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#my-svg .rough-node .label,#my-svg .node .label,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-align:center;}#my-svg .node.clickable{cursor:pointer;}#my-svg .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#my-svg .arrowheadPath{fill:#333333;}#my-svg .edgePath .path{stroke:#333333;stroke-width:2.0px;}#my-svg .flowchart-link{stroke:#333333;fill:none;}#my-svg .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#my-svg .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#my-svg .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#my-svg .cluster text{fill:#333;}#my-svg .cluster span{color:#333;}#my-svg div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#my-svg .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#my-svg rect.text{fill:none;stroke-width:0;}#my-svg .icon-shape,#my-svg .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .icon-shape p,#my-svg .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#my-svg .icon-shape rect,#my-svg .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#my-svg .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#my-svg :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="my-svg_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="NEW" data-look="classic"><rect style="" x="8" y="206" width="640" height="176"/><g class="cluster-label" transform="translate(248.2421875, 206)"><foreignObject width="159.515625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>修之后 · 两条车道并行</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M173,345L173,351.167C173,357.333,173,369.667,173,380C173,390.333,173,398.667,182.475,406.746C191.95,414.824,210.9,422.649,220.375,426.561L229.85,430.473" id="L_N1_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_N1_G_0" data-points="W3sieCI6MTczLCJ5IjozNDV9LHsieCI6MTczLCJ5IjozODJ9LHsieCI6MTczLCJ5Ijo0MDd9LHsieCI6MjMzLjU0Njg3NSwieSI6NDMyfV0=" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M483,357L483,361.167C483,365.333,483,373.667,483,382C483,390.333,483,398.667,473.525,406.746C464.05,414.824,445.1,422.649,435.625,426.561L426.15,430.473" id="L_N2_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_N2_G_0" data-points="W3sieCI6NDgzLCJ5IjozNTd9LHsieCI6NDgzLCJ5IjozODJ9LHsieCI6NDgzLCJ5Ijo0MDd9LHsieCI6NDIyLjQ1MzEyNSwieSI6NDMyfV0=" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M173,156L173,160.167C173,164.333,173,172.667,173,180.333C173,188,173,195,173,198.5L173,202" id="L_OLD_NEW_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_OLD_NEW_0" data-points="W3sieCI6MTczLCJ5IjoxNTZ9LHsieCI6MTczLCJ5IjoxODF9LHsieCI6MTczLCJ5IjoyMDZ9LHsieCI6MTczLCJ5IjoyNDN9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_N1_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_N2_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_OLD_NEW_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="root" transform="translate(8.8671875, 0)"><g class="clusters"><g class="cluster" id="OLD" data-look="classic"><rect style="" x="8" y="8" width="312.265625" height="148"/><g class="cluster-label" transform="translate(100.375, 8)"><foreignObject width="127.515625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>修之前 · 一条车道</p></span></div></foreignObject></g></g></g><g class="edgePaths"/><g class="edgeLabels"/><g class="nodes"><g class="node default" id="flowchart-O1-0" transform="translate(164.1328125, 82)"><rect class="basic label-container" style="fill:#ffecec !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-118.6328125" y="-39" width="237.265625" height="78"/><g class="label" style="" transform="translate(-88.6328125, -24)"><rect/><foreignObject width="177.265625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>50 个测试步骤 串行跑<br />19 分 21 秒 = 上限的 97%</p></span></div></foreignObject></g></g></g></g><g class="node default" id="flowchart-N1-1" transform="translate(173, 294)"><rect class="basic label-container" style="fill:#edfbf1 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>车道 1 · cmux / session<br />13 个步骤 · 10 分 39 秒 = 53%</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-N2-2" transform="translate(483, 294)"><rect class="basic label-container" style="fill:#edfbf1 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>车道 2 · fleet / setup / packaging<br />38 个步骤 · 10 分 14 秒 = 51%</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-6" transform="translate(328, 471)"><rect class="basic label-container" style="fill:#eaf3ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-118" y="-39" width="236" height="78"/><g class="label" style="" transform="translate(-88, -24)"><rect/><foreignObject width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>CI OK<br />唯一挡住合并的必过检查</p></span></div></foreignObject></g></g></g></g></g></svg>
+        <p class="diagram-note">拆分后的形态。两条车道并行跑，任何一条红都会让 CI OK 红 —— 也就是 PR 合不进去。</p>
+      </article>
+      <article class="diagram-card" data-diagram="data-flow">
+        <h3>图 3 · 数据流：证据怎么一路到结果</h3>
+        <svg style="max-width:100%;height:auto" id="my-svg" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 2006.16px; background-color: transparent;" viewBox="0 0 2006.15625 275.2265625" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#my-svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#my-svg .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#my-svg .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#my-svg .error-icon{fill:#552222;}#my-svg .error-text{fill:#552222;stroke:#552222;}#my-svg .edge-thickness-normal{stroke-width:1px;}#my-svg .edge-thickness-thick{stroke-width:3.5px;}#my-svg .edge-pattern-solid{stroke-dasharray:0;}#my-svg .edge-thickness-invisible{stroke-width:0;fill:none;}#my-svg .edge-pattern-dashed{stroke-dasharray:3;}#my-svg .edge-pattern-dotted{stroke-dasharray:2;}#my-svg .marker{fill:#333333;stroke:#333333;}#my-svg .marker.cross{stroke:#333333;}#my-svg svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#my-svg p{margin:0;}#my-svg .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#my-svg .cluster-label text{fill:#333;}#my-svg .cluster-label span{color:#333;}#my-svg .cluster-label span p{background-color:transparent;}#my-svg .label text,#my-svg span{fill:#333;color:#333;}#my-svg .node rect,#my-svg .node circle,#my-svg .node ellipse,#my-svg .node polygon,#my-svg .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#my-svg .rough-node .label text,#my-svg .node .label text,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-anchor:middle;}#my-svg .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#my-svg .rough-node .label,#my-svg .node .label,#my-svg .image-shape .label,#my-svg .icon-shape .label{text-align:center;}#my-svg .node.clickable{cursor:pointer;}#my-svg .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#my-svg .arrowheadPath{fill:#333333;}#my-svg .edgePath .path{stroke:#333333;stroke-width:2.0px;}#my-svg .flowchart-link{stroke:#333333;fill:none;}#my-svg .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#my-svg .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#my-svg .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#my-svg .cluster text{fill:#333;}#my-svg .cluster span{color:#333;}#my-svg div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#my-svg .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#my-svg rect.text{fill:none;stroke-width:0;}#my-svg .icon-shape,#my-svg .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#my-svg .icon-shape p,#my-svg .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#my-svg .icon-shape rect,#my-svg .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#my-svg .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#my-svg .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#my-svg :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="my-svg_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="my-svg_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M180,134.227L184.167,134.227C188.333,134.227,196.667,134.227,204.333,134.227C212,134.227,219,134.227,222.5,134.227L226,134.227" id="L_S_T_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S_T_0" data-points="W3sieCI6MTgwLCJ5IjoxMzQuMjI2NTYyNX0seyJ4IjoyMDUsInkiOjEzNC4yMjY1NjI1fSx7IngiOjIzMCwieSI6MTM0LjIyNjU2MjV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M418,134.227L422.167,134.227C426.333,134.227,434.667,134.227,442.333,134.227C450,134.227,457,134.227,460.5,134.227L464,134.227" id="L_T_M_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_T_M_0" data-points="W3sieCI6NDE4LCJ5IjoxMzQuMjI2NTYyNX0seyJ4Ijo0NDMsInkiOjEzNC4yMjY1NjI1fSx7IngiOjQ2OCwieSI6MTM0LjIyNjU2MjV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M708.828,134.227L712.995,134.227C717.161,134.227,725.495,134.227,733.161,134.227C740.828,134.227,747.828,134.227,751.328,134.227L754.828,134.227" id="L_M_Q_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_M_Q_0" data-points="W3sieCI6NzA4LjgyODEyNSwieSI6MTM0LjIyNjU2MjV9LHsieCI6NzMzLjgyODEyNSwieSI6MTM0LjIyNjU2MjV9LHsieCI6NzU4LjgyODEyNSwieSI6MTM0LjIyNjU2MjV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M981.71,104.655L1003.733,97.917C1025.757,91.179,1069.804,77.703,1113.31,70.965C1156.815,64.227,1199.779,64.227,1221.26,64.227L1242.742,64.227" id="L_Q_OK_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q_OK_0" data-points="W3sieCI6OTgxLjcwOTc5MTU0NjgyODUsInkiOjEwNC42NTUxMDQwNDY4Mjg0M30seyJ4IjoxMTEzLjg1MTU2MjUsInkiOjY0LjIyNjU2MjV9LHsieCI6MTI0Ni43NDIxODc1LCJ5Ijo2NC4yMjY1NjI1fV0=" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M981.71,163.798L1003.733,170.536C1025.757,177.274,1069.804,190.75,1108.256,197.488C1146.708,204.227,1179.565,204.227,1195.993,204.227L1212.422,204.227" id="L_Q_RED_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q_RED_0" data-points="W3sieCI6OTgxLjcwOTc5MTU0NjgyODUsInkiOjE2My43OTgwMjA5NTMxNzE1N30seyJ4IjoxMTEzLjg1MTU2MjUsInkiOjIwNC4yMjY1NjI1fSx7IngiOjEyMTYuNDIxODc1LCJ5IjoyMDQuMjI2NTYyNX1d" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M1465.063,204.227L1469.229,204.227C1473.396,204.227,1481.729,204.227,1489.396,204.227C1497.063,204.227,1504.063,204.227,1507.563,204.227L1511.063,204.227" id="L_RED_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_RED_B_0" data-points="W3sieCI6MTQ2NS4wNjI1LCJ5IjoyMDQuMjI2NTYyNX0seyJ4IjoxNDkwLjA2MjUsInkiOjIwNC4yMjY1NjI1fSx7IngiOjE1MTUuMDYyNSwieSI6MjA0LjIyNjU2MjV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/><path d="M1712.156,204.227L1716.323,204.227C1720.49,204.227,1728.823,204.227,1736.49,204.227C1744.156,204.227,1751.156,204.227,1754.656,204.227L1758.156,204.227" id="L_B_H_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_H_0" data-points="W3sieCI6MTcxMi4xNTYyNSwieSI6MjA0LjIyNjU2MjV9LHsieCI6MTczNy4xNTYyNSwieSI6MjA0LjIyNjU2MjV9LHsieCI6MTc2Mi4xNTYyNSwieSI6MjA0LjIyNjU2MjV9XQ==" marker-end="url(#my-svg_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_S_T_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_T_M_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_M_Q_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(1113.8515625, 64.2265625)"><g class="label" data-id="L_Q_OK_0" transform="translate(-77.5703125, -12)"><foreignObject width="155.140625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>否 · 今天是 53% / 51%</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(1113.8515625, 204.2265625)"><g class="label" data-id="L_Q_RED_0" transform="translate(-8, -12)"><foreignObject width="16" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>是</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_RED_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B_H_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-S-0" transform="translate(94, 134.2265625)"><rect class="basic label-container" style="" x="-86" y="-39" width="172" height="78"/><g class="label" style="" transform="translate(-56, -24)"><rect/><foreignObject width="112" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>车道开跑第一步<br />记下开始时间</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-T-1" transform="translate(324, 134.2265625)"><rect class="basic label-container" style="" x="-94" y="-27" width="188" height="54"/><g class="label" style="" transform="translate(-64, -12)"><rect/><foreignObject width="128" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>所有测试步骤跑完</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-M-3" transform="translate(588.4140625, 134.2265625)"><rect class="basic label-container" style="" x="-120.4140625" y="-27" width="240.828125" height="54"/><g class="label" style="" transform="translate(-90.4140625, -12)"><rect/><foreignObject width="180.828125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>最后一步 量一次实际用时</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q-5" transform="translate(885.0546875, 134.2265625)"><polygon points="126.2265625,0 252.453125,-126.2265625 126.2265625,-252.453125 0,-126.2265625" class="label-container" transform="translate(-125.7265625, 126.2265625)" style="fill:#fff4e5 !important;stroke:#ff9500 !important;stroke-width:2px !important"/><g class="label" style="" transform="translate(-87.2265625, -24)"><rect/><foreignObject width="174.453125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>用时 是否 &gt;= 上限的 85%<br />即 17 分钟</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-OK-7" transform="translate(1340.7421875, 64.2265625)"><rect class="basic label-container" style="fill:#edfbf1 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-94" y="-39" width="188" height="78"/><g class="label" style="" transform="translate(-64, -24)"><rect/><foreignObject width="128" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>打印一行观测数字<br />绿灯放行</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-RED-9" transform="translate(1340.7421875, 204.2265625)"><rect class="basic label-container" style="fill:#ffecec !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-124.3203125" y="-51" width="248.640625" height="102"/><g class="label" style="" transform="translate(-94.3203125, -36)"><rect/><foreignObject width="188.640625" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>这条车道变红<br />错误信息第一句写着<br />这不是 flaky 是快撞上限了</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-11" transform="translate(1613.609375, 204.2265625)"><rect class="basic label-container" style="fill:#eaf3ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-98.546875" y="-39" width="197.09375" height="78"/><g class="label" style="" transform="translate(-68.546875, -24)"><rect/><foreignObject width="137.09375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>CI OK 跟着变红<br />= 这个 PR 合不进去</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-H-13" transform="translate(1880.15625, 204.2265625)"><rect class="basic label-container" style="" x="-118" y="-63" width="236" height="126"/><g class="label" style="" transform="translate(-88, -48)"><rect/><foreignObject width="176" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>人来处理:<br />先在两条车道之间挪步骤<br />不够再加第三条<br />提高上限是最后手段</p></span></div></foreignObject></g></g></g></g></g></svg>
+        <p class="diagram-note">报警的完整链路：自己量用时 → 越过 85% → 车道变红 → CI OK 变红 → 挡住合并 → 人按 runbook 先挪步骤。</p>
+      </article>
+    </div>
+    <div class="comment-box">
+      <label for="comment-architecture">哪张图不清楚？写图号和问题</label>
+      <textarea id="comment-architecture" data-k="arch-graph" data-name="架构图" placeholder="例如：图 2 没说明失败时走哪里。"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section" data-section="qa">
+    <p class="section-kicker">04 · QA 测了什么</p>
+    <h2>不是只看绿灯，是把关键路径走了一遍</h2>
+    <div class="metrics">
+      <div class="metric"><strong>40</strong><span>单测通过</span></div>
+      <div class="metric"><strong>10</strong><span>集成测试通过</span></div>
+      <div class="metric"><strong>3</strong><span>真实场景通过</span></div>
+    </div>
+    <div class="grid">
+      <article class="card"><h3>单测 / 集成</h3><p>40 项契约断言全通过：报警脚本自身的 36 项（含参数校验、时钟异常、以及 1019 秒放行 / 1020 秒判红的边界），加上 CI 工作流守卫的 4 项。另外 10 项是我自己做的破坏实验：先确认守卫在未改动状态下是绿的（防止它是个永远绿的空壳），再逐个注入 9 种破坏 —— 删掉一个测试步骤、删掉报警步骤、删掉计时起点、把 CI OK 的依赖砍掉一条车道、把报警阈值偷偷调松、把上限和报警参数改得不一致、把上限压到 20 分钟以下 —— 9 次全部被守卫抓红。</p></article>
+      <article class="card"><h3>真机验证</h3><p>真机 = 真实的 GitHub Actions 跑批，不是本地模拟。在最终 commit 上的那一轮：车道 1 用时 639 秒（53%），车道 2 用时 614 秒（51%），报警步骤本身也在真实日志里打印了 usage=52% 和 usage=50%。同时我取回拆分前 main 上最近一次成功跑批做对照：1161 秒 = 上限的 97%。最关键的一项是拿三轮跑批里「真实执行过的测试步骤名」做集合比对：拆分前 50 个，拆分后 13 + 38 = 51 个，少的 0 个、重复的 0 个，多出来的 1 个正是新增的报警自测。</p></article>
+    </div>
+    <div class="callout"><strong>最终验证 commit：</strong> 92f31f49da1199b3f5e88d972d79dafef5f3b278 · <strong>结果：</strong> CI 全绿（Quick Gate 构建/类型/lint、Unit 五个分片、两条 Script Tests 车道、payload 分发、CI OK 汇总）。分支保护接口确认 CI OK 是 main 上唯一的必过检查，且它的判定是「所有依赖 job 都必须 success」。</div>
+    <div class="comment-box">
+      <label for="comment-qa">想补测什么？写在这里</label>
+      <textarea id="comment-qa" data-k="qa-unit-integration-real" data-name="QA 测试" placeholder="例如：再补一个断网恢复场景。"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section" data-section="e2e-529">
+    <p class="section-kicker">05 · 真实链路证据</p>
+    <h2>没有 Discord 面可测 —— 改用真实 CI 跑批取证</h2>
+    <p class="lead">按规矩必须明说，不能沉默略过：这次改动只碰了 CI 配置、一个报警脚本、几个测试文件和文档，代码里<strong>没有任何发消息 / 转发 / 渲染 / founder 交互 / 跨 Lead 协作的面</strong>，因此 529 QA 房的 N-to-N 真机跑不适用。对一个 CI 改动来说，真正的生产面就是 GitHub Actions 本身，所以证据取自真实跑批。</p>
+    <div class="evidence">
+      <article class="card">
+        <h3>三轮真实跑批（可点开核对）</h3>
+        <p><a href="https://github.com/xrliAnnie/flywheel/actions/runs/32080816590" target="_blank" rel="noreferrer">拆分前 · main 基线跑批 ↗</a><br>Script Tests 单条车道：<strong>1161 秒 = 上限的 97%</strong>，50 个测试步骤，只剩 39 秒余量。</p>
+        <p><a href="https://github.com/xrliAnnie/flywheel/actions/runs/32120143497" target="_blank" rel="noreferrer">拆分后 · 最终 commit 上的跑批 ↗</a><br>车道 1：<strong>639 秒 = 53%</strong>（13 个测试步骤）；车道 2：<strong>614 秒 = 51%</strong>（38 个测试步骤）。报警步骤在真实日志里打印了 <code>usage=52%</code> 与 <code>usage=50%</code>。</p>
+        <p><strong>结果：</strong>三轮全绿；真实执行过的测试步骤集合比对为「少 0 个、重复 0 个、多 1 个（新增的报警自测）」。</p>
+      </article>
+      <figure class="evidence-visual">
+        <table class="tbl">
+          <thead><tr><th>跑批</th><th>用时</th><th>占上限</th><th>测试步骤</th></tr></thead>
+          <tbody>
+            <tr><td>拆分前 · 单车道</td><td>1161 秒</td><td class="bad">97%</td><td>50</td></tr>
+            <tr><td>拆分后 · 车道 1</td><td>639 秒</td><td class="good">53%</td><td>13</td></tr>
+            <tr><td>拆分后 · 车道 2</td><td>614 秒</td><td class="good">51%</td><td>38</td></tr>
+          </tbody>
+        </table>
+        <figcaption>数字取自 GitHub Actions 的 jobs 接口逐步骤时间戳，不是估算。</figcaption>
+      </figure>
+    </div>
+    <div class="comment-box">
+      <label for="comment-e2e">对这段证据有问题？写在这里</label>
+      <textarea id="comment-e2e" data-k="qa-e2e-529" data-name="E2E / 真实跑批" placeholder="例如：想看某一条车道的完整日志。"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section" data-section="boundary">
+    <p class="section-kicker">06 · 诚实边界</p>
+    <h2>什么没测，为什么</h2>
+    <article class="card boundary">
+      <h3><strong>没有藏起来的空白</strong></h3>
+      <p>三件事没测到，都不是漏做，是这次的能力边界：① 真正撞上限的那一轮，报警本身发不出声 —— job 连同它的步骤会被系统一起杀掉；② 拆分后只积累了 2 轮跑批，两轮都绿，所以「两条车道之间没有隐藏的先后依赖」是经验支持、不是压力验证；③ 这次没有任何 Discord / 聊天链路可测。</p>
+      <p><strong>原因：</strong> ① 是这个做法的固有边界：任何跑在 job 里的报警，都无法在 job 被杀掉之后再说话，它的价值在 85%～100% 这段「还来得及」的区间；② CI 跑批需要真实推送才能积累，两轮是本次窗口内能拿到的全部；③ 这次改动只碰 CI 配置、一个报警脚本、几个测试文件和文档，代码里没有任何发消息 / 转发 / 渲染 / founder 交互的面 —— 所以按规矩明说：本单没有 N-to-N 面，改用真实 GitHub Actions 跑批 + 9 个破坏实验来验。</p>
+      <p><strong>风险与补测时间：</strong> ① 的残余风险是「一步跨过 85%」：现在离报警线还有约 6 分钟增长空间，要一次性多出 6 分钟才会毫无预警翻崖，可能性低但不为零；真发生了，症状仍然是超时，只是少了提前一轮的提醒。② 会在接下来几轮 main 跑批里自然消解，不需要额外动作。另有一条设计上的软点值得知道：把上限和报警参数同步调高（比如都从 20 改成 40）是能通过全部守卫的 —— 这是有意留的最后手段，但它意味着「提高上限」这条路除了代码评审之外没有额外阻力。</p>
+    </article>
+    <div class="comment-box">
+      <label for="comment-boundary">这个边界能接受吗？写条件或担忧</label>
+      <textarea id="comment-boundary" data-k="qa-boundary" data-name="诚实边界" placeholder="例如：这项必须 ship 前补。"></textarea>
+    </div>
+  </section>
+
+  <section class="report-section decision" data-section="decision">
+    <p class="section-kicker">07 · 批准入口</p>
+    <h2>请只在 ship 卡片上决定</h2>
+    <p class="lead">系统仅认 founder 在 ship 卡片上的 ✅ reaction，或 founder 在该卡片 thread 内的直接回复。本报告只收集逐区评论，不承载 ship 批准。</p>
+    <div class="comment-box">
+      <label for="comment-decision">裁决说明（可选）</label>
+      <textarea id="comment-decision" data-k="feedback-note" data-name="补充说明" placeholder="例如：先补完诚实边界里的真机测试再回来。"></textarea>
+    </div>
+    <div class="export">
+      <div class="export-actions">
+        <button class="primary" id="copy-feedback" type="button">复制逐区评论</button>
+        <span class="status" id="copy-status" role="status" aria-live="polite">内容会自动保存在这份报告的专属路径下。</span>
+      </div>
+      <label for="feedback-output" style="display:block;margin-top:14px;font-size:12px">可复制文本预览（剪贴板失败时可手动复制）</label>
+      <textarea id="feedback-output" readonly></textarea>
+    </div>
+  </section>
+
+  <footer class="footer">Flywheel QA ship report · FLY-1870 · report path scoped feedback</footer>
+</main>
+<script nonce="__CSP_NONCE__">
+(() => {
+  "use strict";
+  const issue = document.querySelector('meta[name="ship-report-issue"]')?.content || "UNKNOWN";
+  const storageKey = "flywheel:ship-report:" + location.pathname;
+  const fields = Array.from(document.querySelectorAll("textarea[data-k]"));
+  const output = document.getElementById("feedback-output");
+  const status = document.getElementById("copy-status");
+
+  function readSaved() {
+    try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); }
+    catch { return {}; }
+  }
+  function save() {
+    const comments = {};
+    fields.forEach((field) => { comments[field.dataset.k] = field.value; });
+    try { localStorage.setItem(storageKey, JSON.stringify({ comments })); }
+    catch { /* The export still works when storage is unavailable. */ }
+    render();
+  }
+  function payload() {
+    const lines = [
+      "ISSUE: " + issue,
+      "REPORT: " + location.href,
+      "SHIP DECISION: use the bound ship card only",
+      ""
+    ];
+    fields.forEach((field) => {
+      const value = field.value.trim();
+      if (value) lines.push("## " + field.dataset.k + " · " + field.dataset.name, value, "");
+    });
+    if (!fields.some((field) => field.value.trim())) lines.push("COMMENTS: none", "");
+    return lines.join("\n").trim() + "\n";
+  }
+  function render() { output.value = payload(); }
+
+  const saved = readSaved();
+  fields.forEach((field) => {
+    field.value = saved.comments?.[field.dataset.k] || "";
+    field.addEventListener("input", save);
+  });
+  document.getElementById("copy-feedback").addEventListener("click", async () => {
+    const text = payload();
+    output.value = text;
+    try {
+      await navigator.clipboard.writeText(text);
+      status.textContent = "已复制。现在贴回 issue thread，Lead 就能按区域处理。";
+    } catch {
+      output.focus();
+      output.select();
+      status.textContent = "浏览器不允许自动复制；下方文本已选中，请按 ⌘C 后贴回 issue thread。";
+    }
+  });
+  render();
+})();
+</script>
+</body>
+</html>

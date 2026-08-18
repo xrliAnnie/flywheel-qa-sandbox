@@ -1,0 +1,9 @@
+flowchart TB
+  A["PR 提交 → CI 跑 Script Tests<br/>(一个 job 串行跑 51 个测试步骤)"] --> B["实测 19 分 21 秒<br/>(两轮对照几乎逐秒一致 = 确定性慢)"]
+  B --> C{"job 超时上限 20 分钟"}
+  C -->|"只剩 39 秒缓冲"| D["套件自然增长一点<br/>→ 翻崖:job 在 20:00 被强制掐掉"]
+  D --> E["症状:时好时坏、重跑有时过<br/>长得和 flaky(偶发抖动)一模一样"]
+  E --> F["下一轮排查从零重走『是不是 flaky』<br/>(FLY-1863 当晚全员烧掉数小时的同款)"]
+  style D fill:#ffe5e2,stroke:#ff3b30
+  style E fill:#ffe5e2,stroke:#ff3b30
+  style F fill:#ffe5e2,stroke:#ff3b30

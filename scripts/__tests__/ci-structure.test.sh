@@ -55,6 +55,7 @@ expected_job_ids = {
     "quick-gate",
     "unit-tests",
     "script-tests",
+    "script-tests-2",
     "payload-distribution",
     "ci-ok",
 }
@@ -62,16 +63,29 @@ require(
     set(jobs) == expected_job_ids,
     f"job ids must be exactly {sorted(expected_job_ids)}, got {sorted(jobs)}",
 )
+require(
+    list(jobs) == [
+        "quick-gate",
+        "unit-tests",
+        "script-tests",
+        "script-tests-2",
+        "payload-distribution",
+        "ci-ok",
+    ],
+    f"job order must preserve the unit-tests/script-tests boundary, got {list(jobs)}",
+)
 
 quick_gate = mapping(jobs["quick-gate"], "quick-gate")
 unit_tests = mapping(jobs["unit-tests"], "unit-tests")
 script_tests = mapping(jobs["script-tests"], "script-tests")
+script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
 for job_id, job in (
     ("quick-gate", quick_gate),
     ("unit-tests", unit_tests),
     ("script-tests", script_tests),
+    ("script-tests-2", script_tests_2),
 ):
     require("needs" not in job, f"{job_id} must start independently (no needs)")
 
@@ -161,6 +175,7 @@ expected_needs = {
     "quick-gate",
     "unit-tests",
     "script-tests",
+    "script-tests-2",
     "payload-distribution",
 }
 require(
@@ -194,6 +209,7 @@ timeout_floors = {
     # replay was cancelled at the old 15-minute ceiling. Keep enough capacity
     # for the required real-watcher teardown coverage and ordinary CI variance.
     "script-tests": (script_tests, 20),
+    "script-tests-2": (script_tests_2, 20),
 }
 for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
@@ -204,6 +220,156 @@ for job_id, (job, timeout_floor) in timeout_floors.items():
 
 script_steps = script_tests.get("steps")
 require(isinstance(script_steps, list), "script-tests.steps must be a list")
+script_steps_2 = script_tests_2.get("steps")
+require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
+
+
+def step_identity(step: object) -> str:
+    require(isinstance(step, dict), "every script shard step must be a mapping")
+    identity = step.get("name") or step.get("uses")
+    require(bool(identity), f"script shard step lacks name/uses: {step}")
+    return str(identity)
+
+
+expected_setup = [
+    "Record job start (FLY-1870 tripwire)",
+    "actions/checkout@v4",
+    "pnpm/action-setup@v4",
+    "actions/setup-node@v4",
+    "Configure git for tests",
+    "Install dependencies",
+    "Install better-sqlite3 prebuilt binary",
+    "Build",
+    "Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts",
+]
+expected_shard_tests = {
+    "script-tests": [
+        "Test — FLY-1707 incident replay",
+        "Test — FLY-1393 flag truth CLI",
+        "Test — FLY-1436 work-kind cutover CLI",
+        "Test — FLY-1759 reap-first worktree teardown",
+        "Test — FLY-1572 mailbox migration CLI",
+        "Test — FLY-1764 legacy swap broadcast retirement",
+        "Test — FLY-1327 cycle-time report",
+        "Integration test — cmux-sync hooks",
+        "Test — FLY-1364 cmux sync repair",
+        "Test — Discord adapter orphan reaper (FLY-183)",
+        "Test — Lead rules single-bundle load chain (FLY-1402)",
+        "Test — FLY-1496 model resolution + Lead derivation",
+        "Test — FLY-1663 launchd-native Lead lifecycle",
+        "Test — FLY-1678 statusline model-scoped bar + installer",
+    ],
+    "script-tests-2": [
+        "Test — FLY-519 fleet provisioning + zero-secret gate",
+        "Test — FLY-1356 skill-framework vendor + variant contracts",
+        "Test — FLY-1609 four-arm analysis contract",
+        "Test — FLY-648 one-command setup wizard",
+        "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
+        "Test — FLY-1189 multi-Lead campaign harness",
+        "Test — FLY-1775 generalized-DAG 529 room",
+        "Test — FLY-1189 fault injector safety lock",
+        "Test — FLY-1189 assert library + driver trap owner",
+        "Test — FLY-1389 path-hygiene + 529-Room repair batch",
+        "Test — NPM packaging pipeline + packaged-mode seams",
+        "Test — FLY-1501 restart brake + heartbeat guard contracts",
+        "Test — FLY-1634 restart net-deletion contracts",
+        "Test — FLY-1671 updater trigger + body provenance contracts",
+        "Test — payload real-install smoke",
+        "Test — onboard-shell public install chain",
+        "Test — FLY-882 Discord bot token pool",
+        "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-697 codex-log-guard",
+        "Test — FLY-1018 gemini-agent guard",
+        "Test — FLY-880 PM executor role contract",
+        "Test — FLY-1787 CoS identity contract",
+        "Test — FLY-1461 QA executor 529 N-to-N contract",
+        "Test — FLY-1463 QA executor ship-report contract",
+        "Test — FLY-913 restart-guard hook + install + strict-delivery",
+        "Test — FLY-1434 unified restart + quota caller",
+        "Test — FLY-1715 runner boundary shell contracts",
+        "Test — FLY-1726 canonical Lead identity delivery",
+        "Test — Lead in-flight mailbox adoption contracts",
+        "Test — FLY-1649 r4 migration-window hardening",
+        "Test — FLY-927 infra-alert shell path",
+        "Test — FLY-957 record_deployed_range best-effort",
+        "Test — FLY-1729/1743 restart update + consistency guards",
+        "Test — FLY-1081 notify-path migration",
+        "Test — FLY-1338 CI structure guard",
+        "Test — FLY-1674 legacy-path residue guard",
+        "Test — FLY-1338 matrix coverage parity (QA)",
+        "Test — FLY-1870 job elapsed tripwire contract",
+    ],
+}
+script_shards = {
+    "script-tests": (script_tests, script_steps),
+    "script-tests-2": (script_tests_2, script_steps_2),
+}
+
+all_expected_tests = [
+    name for names in expected_shard_tests.values() for name in names
+]
+require(
+    len(all_expected_tests) == len(set(all_expected_tests)),
+    "script shard test inventory must not contain duplicate step names",
+)
+
+for job_id, (job, steps) in script_shards.items():
+    identities = [step_identity(step) for step in steps]
+    require(
+        identities[: len(expected_setup)] == expected_setup,
+        f"{job_id} setup prefix drifted: {identities[:len(expected_setup)]}",
+    )
+    actual_tests = identities[len(expected_setup) : -1]
+    require(
+        actual_tests == expected_shard_tests[job_id],
+        f"{job_id} test inventory/order drifted: {actual_tests}",
+    )
+    for step in steps[len(expected_setup) : -1]:
+        require("if" not in step, f"{step_identity(step)} must not be conditional")
+        require(
+            "continue-on-error" not in step,
+            f"{step_identity(step)} must fail the PR gate",
+        )
+
+    record = steps[0]
+    require(
+        str(record.get("run", "")).strip()
+        == 'date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"',
+        f"{job_id} must record its start epoch in the first step",
+    )
+    tripwire = steps[-1]
+    require(
+        step_identity(tripwire) == "Enforce FLY-1870 capacity tripwire",
+        f"{job_id} must end with the FLY-1870 capacity tripwire",
+    )
+    require(
+        normalize_expression(tripwire.get("if")) == "always()",
+        f"{job_id} tripwire must run under always()",
+    )
+    require(
+        "continue-on-error" not in tripwire,
+        f"{job_id} tripwire must fail the PR gate",
+    )
+    tripwire_tokens = shlex.split(str(tripwire.get("run", "")))
+    require(
+        tripwire_tokens
+        == [
+            "bash",
+            "scripts/ci-job-elapsed-tripwire.sh",
+            "--cap-minutes",
+            str(job.get("timeout-minutes")),
+            "--threshold-pct",
+            "85",
+            "--start-file",
+            "$RUNNER_TEMP/flywheel-job-start-epoch",
+        ],
+        f"{job_id} tripwire invocation drifted: {tripwire_tokens}",
+    )
+    require(
+        "--now-epoch" not in tripwire_tokens,
+        f"{job_id} production tripwire must use the real clock",
+    )
+
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
 missing_bash_paths = []
 for job_id, job in jobs.items():
@@ -235,13 +401,13 @@ require(
 # script-tests intentionally does not glob; pin the exact commands here.
 fly1715_steps = [
     step
-    for step in script_steps
+    for step in script_steps_2
     if isinstance(step, dict)
     and step.get("name") == "Test — FLY-1715 runner boundary shell contracts"
 ]
 require(
     len(fly1715_steps) == 1,
-    "script-tests must contain exactly one FLY-1715 runner boundary shell contracts step",
+    "script-tests-2 must contain exactly one FLY-1715 runner boundary shell contracts step",
 )
 fly1715_step = fly1715_steps[0]
 require("if" not in fly1715_step, "FLY-1715 shell contracts must not be conditional")
@@ -368,19 +534,27 @@ require(
     "FLY-1364 live E2E wrapper must pin tmux to its private socket",
 )
 
-apt_steps = [
-    step
-    for step in script_steps
-    if isinstance(step, dict) and re.search(r"apt-get\s+update", str(step.get("run", "")))
-]
-require(len(apt_steps) == 1, f"script-tests must have exactly one apt-get update step, got {len(apt_steps)}")
-apt_run = str(apt_steps[0].get("run", ""))
-for package in ("tmux", "lsof", "sqlite3"):
-    require(re.search(rf"\b{re.escape(package)}\b", apt_run) is not None, f"apt step must install {package}")
+for job_id, (_, steps) in script_shards.items():
+    apt_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and re.search(r"apt-get\s+update", str(step.get("run", "")))
+    ]
+    require(
+        len(apt_steps) == 1,
+        f"{job_id} must have exactly one apt-get update step, got {len(apt_steps)}",
+    )
+    apt_run = str(apt_steps[0].get("run", ""))
+    for package in ("tmux", "lsof", "sqlite3"):
+        require(
+            re.search(rf"\b{re.escape(package)}\b", apt_run) is not None,
+            f"{job_id} apt step must install {package}",
+        )
 
 script_runs = [
     str(step.get("run", ""))
-    for step in script_steps
+    for step in script_steps + script_steps_2
     if isinstance(step, dict)
 ]
 for required_command in (
@@ -403,10 +577,11 @@ for required_command in (
     "bash scripts/__tests__/fly1726-lead-identity-wrapper.test.sh",
     "bash scripts/__tests__/fly1697-v2-lease-body.test.sh",
     "bash packages/teamlead/scripts/__tests__/canonical-lead-identity.test.sh",
+    "bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh",
 ):
     require(
         sum(required_command in run for run in script_runs) == 1,
-        f"script-tests must run exactly once: {required_command}",
+        f"script shards must run exactly once: {required_command}",
     )
 
 unit_steps = unit_tests.get("steps")

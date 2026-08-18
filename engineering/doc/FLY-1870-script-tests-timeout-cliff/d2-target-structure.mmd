@@ -1,0 +1,21 @@
+flowchart TB
+  subgraph ci["拆分后的 CI 结构(其余 job 原样不动)"]
+    QG["quick-gate<br/>构建 + 类型检查 + lint"]
+    UT["unit-tests<br/>5 路并行矩阵(原样)"]
+    S1["script-tests 片 1(cmux/会话族)<br/>14 个测试步骤 ≈ 10.9 分钟 = 上限 54%<br/>片尾:85% 容量 tripwire"]
+    S2["script-tests-2 片 2(fleet/安装/打包族)<br/>38 个测试步骤 ≈ 10.4 分钟 = 上限 52%<br/>片尾:85% 容量 tripwire"]
+    PD["payload-distribution(原样)"]
+    OK["CI OK(聚合检查)<br/>= merge 的唯一门,分片对它不可见"]
+    QG --> OK
+    UT --> OK
+    S1 --> OK
+    S2 --> OK
+    PD --> OK
+  end
+  G1["守卫 ci-structure.test.sh<br/>逐项断言两片步骤清单:51+1 个,不缺、不重、不许静默跳过"] -.校验.-> S1
+  G1 -.校验.-> S2
+  G2["守卫 fly-889 Vitest(独立第二道,跑在 unit-tests 里)<br/>两片 timeout/apt/聚合关系"] -.校验.-> S1
+  G2 -.校验.-> S2
+  style S1 fill:#e8f4ff,stroke:#007aff
+  style S2 fill:#e8f4ff,stroke:#007aff
+  style OK fill:#e9f9ee,stroke:#34c759

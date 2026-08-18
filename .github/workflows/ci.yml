@@ -123,14 +123,20 @@ jobs:
         run: ${{ matrix.cmd }}
 
   script-tests:
-    name: Script Tests (shell suites)
+    name: Script Tests 1/2 — cmux/session (shell suites)
     runs-on: ubuntu-latest
-    # FLY-889/FLY-1482: the ordered shell suites now take ~14min on main, and a
-    # PR replay was cancelled by the old 15min ceiling after all cmux teardown
-    # coverage passed. Keep a 20min capacity floor so runner variance cannot
-    # mask real failures; package tests remain in the sharded matrix above.
+    # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
+    # serial lane into two independent shards; this cmux/session shard measured
+    # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
+    # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
+    # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1572=12, 1764=2,
+    # 1327=1, cmux-hooks=10, 1364=312, 183=11, 1402=4, 1496=10,
+    # 1663=97, 1678=78 (test total ~542s).
     timeout-minutes: 20
     steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
@@ -154,6 +160,16 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
+      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). ripgrep is
+      # needed by the shell suites that assert on production source anchors
+      # (test-lead-identity-preflight, restart-self-detach) — it is NOT preinstalled
+      # on the runner, and a missing `rg` makes those assertions fail as if the
+      # production seam were gone. Installing them here in one apt-get avoids
+      # repeating `apt-get update` for the same effect.
+      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
+        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
+
       - name: Test — FLY-1707 incident replay
         run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
 
@@ -166,16 +182,6 @@ jobs:
       # module, so workspace Vitest jobs do not discover it.
       - name: Test — FLY-1436 work-kind cutover CLI
         run: node --test scripts/__tests__/workkind-cutover.test.mjs
-
-      # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
-      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). ripgrep is
-      # needed by the shell suites that assert on production source anchors
-      # (test-lead-identity-preflight, restart-self-detach) — it is NOT preinstalled
-      # on the runner, and a missing `rg` makes those assertions fail as if the
-      # production seam were gone. Installing them here in one apt-get avoids
-      # repeating `apt-get update` for the same effect.
-      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
-        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
 
       # FLY-1759: script-tests are explicitly enumerated (no glob discovery).
       # The first suite runs real child/sun process cleanup on Ubuntu; the
@@ -281,6 +287,68 @@ jobs:
           bash scripts/__tests__/flywheel-daemon-install-verify.test.sh
           bash scripts/__tests__/materialize-lead-manifests.test.sh
 
+      # FLY-1678: the statusline renders on every Lead and Runner pane and is
+      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
+      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
+      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
+      # AND implementation; curl/security are forbidden-call markers so CI can
+      # never touch the real usage API or Keychain).
+      - name: Test — FLY-1678 statusline model-scoped bar + installer
+        run: |
+          bash scripts/__tests__/fly1678-statusline-fable.test.sh
+          bash scripts/__tests__/fly1678-install-statusline.test.sh
+
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+  script-tests-2:
+    name: Script Tests 2/2 — fleet/setup/packaging (shell suites)
+    runs-on: ubuntu-latest
+    # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
+    # serial lane into two independent shards; this fleet/setup/packaging shard
+    # measured ~10.4min (52%) as of 2026-08-17. Rebalance only whole named steps
+    # and keep ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
+    # Step seconds: 519=2, 1356=0, 1609=1, 648=12, 1023=19, 1189=2+2+21,
+    # 1775=9, 1389=48, npm-seams=13, 1501=104, 1634=10, 1671=2,
+    # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1018=0,
+    # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
+    # 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
+    # 1081=2, 1338-structure=0, 1674=0, 1338-parity=2, tripwire-test~1
+    # (test total ~512s).
+    timeout-minutes: 20
+    steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      # FLY-889: keep one dependency install per independent shard. ripgrep is
+      # required by source-anchor suites and is not preinstalled on the runner.
+      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
+        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
+
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
       # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
@@ -304,17 +372,6 @@ jobs:
       # sessions whose effective ponytail condition does not match their arm.
       - name: Test — FLY-1609 four-arm analysis contract
         run: bash scripts/__tests__/test-fly1609-design-compare.test.sh
-
-      # FLY-1678: the statusline renders on every Lead and Runner pane and is
-      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
-      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
-      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
-      # AND implementation; curl/security are forbidden-call markers so CI can
-      # never touch the real usage API or Keychain).
-      - name: Test — FLY-1678 statusline model-scoped bar + installer
-        run: |
-          bash scripts/__tests__/fly1678-statusline-fable.test.sh
-          bash scripts/__tests__/fly1678-install-statusline.test.sh
 
       # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
       # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
@@ -651,6 +708,13 @@ jobs:
       - name: Test — FLY-1338 matrix coverage parity (QA)
         run: bash scripts/__tests__/ci-matrix-coverage.test.sh
 
+      - name: Test — FLY-1870 job elapsed tripwire contract
+        run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh
+
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
   # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
   # original Build & Test job above was split by FLY-1338; this payload job
   # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
@@ -721,7 +785,7 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [quick-gate, unit-tests, script-tests, payload-distribution]
+    needs: [quick-gate, unit-tests, script-tests, script-tests-2, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all jobs passed
