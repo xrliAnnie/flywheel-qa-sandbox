@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>语音总管怎么落地 · 一个实验翻了旧结论</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.62;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:22px 16px 110px}
+  h1{font-size:23px;margin:.2em 0 .12em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .55em;letter-spacing:-.01em;color:var(--navy)}
+  h3{font-size:14.5px;margin:1.3em 0 .45em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:14px}
+  .hero{background:linear-gradient(135deg,#eaf7ee,#fff);border-left:4px solid var(--green);
+    border-radius:12px;padding:15px 17px;margin:6px 0 20px;font-size:14.5px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .hero b{color:var(--navy)}
+  section{background:var(--card);border-radius:12px;padding:17px 18px;margin:0 0 16px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.s1{border-left-color:var(--green)}
+  section.s2{border-left-color:var(--purple)}
+  section.s3{border-left-color:var(--blue)}
+  section.s4{border-left-color:var(--amber)}
+  section.s5{border-left-color:var(--red)}
+  section.s6{border-left-color:var(--dim)}
+  .qtag{display:inline-block;background:var(--purple);color:#fff;font-size:11px;
+    padding:2px 9px;border-radius:20px;margin-bottom:7px;font-weight:600}
+  p{margin:.55em 0}
+  ul{margin:.5em 0;padding-left:1.15em}
+  ol{margin:.5em 0;padding-left:1.35em}
+  li{margin:.36em 0}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:.7em 0;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:#f7f8fa;color:var(--navy);font-weight:600;white-space:nowrap}
+  code{font-family:"SF Mono",ui-monospace,monospace;font-size:12.4px;
+    background:#f2f2f5;padding:1px 5px;border-radius:4px}
+  .kill{background:#fff5f4;border:1px solid #ffd9d5;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .kill b{color:var(--red)}
+  .good{background:#f2fbf5;border:1px solid #cdedd8;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .warn{background:#fffaf0;border:1px solid #ffe3b8;border-radius:9px;padding:11px 13px;margin:.6em 0}
+  .fact{background:#f6f8fc;border:1px solid #dde5f2;border-radius:9px;padding:11px 13px;margin:.6em 0;font-size:13.4px}
+  .stack{background:#fbfbfd;border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:.7em 0}
+  .stack .row{display:flex;gap:10px;align-items:flex-start;padding:7px 0;border-bottom:1px dashed var(--line)}
+  .stack .row:last-child{border-bottom:0}
+  .stack .lbl{flex:0 0 96px;font-weight:600;color:var(--navy);font-size:13px}
+  .stack .val{flex:1;font-size:13.4px}
+  .tag{display:inline-block;font-size:11px;padding:1.5px 7px;border-radius:20px;
+    margin-right:5px;font-weight:600;vertical-align:1px}
+  .t-ok{background:#e8f8ed;color:#177a37}
+  .t-fail{background:#fdeceb;color:#c22a20}
+  .t-half{background:#fff4e3;color:#9a5b00}
+  .t-off{background:#eeeef1;color:#5a5a60}
+  .src{color:var(--dim);font-size:12.3px;margin-top:.35em}
+  .cbox{margin-top:15px;border-top:1px dashed var(--line);padding-top:12px}
+  .cbox label{display:block;font-size:12.5px;color:var(--dim);margin-bottom:5px}
+  textarea{width:100%;min-height:62px;border:1px solid var(--line);border-radius:9px;
+    padding:9px 11px;font:inherit;font-size:14px;background:#fcfcfd;resize:vertical;color:var(--ink)}
+  textarea:focus{outline:none;border-color:var(--blue);background:#fff}
+  .footer{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);
+    border-top:1px solid var(--line);padding:10px 16px;backdrop-filter:blur(10px)}
+  .fin{max-width:900px;margin:0 auto;display:flex;align-items:center;gap:11px;flex-wrap:wrap}
+  #count{font-size:12.8px;color:var(--dim);flex:1;min-width:110px}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:9px 16px;
+    font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+  button:active{opacity:.8}
+  #preview{display:none;max-width:900px;margin:9px auto 0;background:#f7f8fa;border:1px solid var(--line);
+    border-radius:9px;padding:9px 11px;font-size:12.2px;white-space:pre-wrap;max-height:130px;overflow:auto}
+  .note{font-size:12.6px;color:var(--dim);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>语音总管怎么落地</h1>
+<div class="sub">第 2 版 · 2026-08-17 · 按你逐节的意见重写</div>
+
+<div class="hero">
+你问:<b>「和 Codex CLI 打电话这个功能,现在到底是好的还是没有好?」</b>我先直接回答,不绕:<br><br>
+
+<b>能打通,还不能通话。</b><br><br>
+
+具体一点 —— 把它想成打电话:<br>
+✅ <b>号码是对的、电话接通了</b>(我拨了两次,对面都接了,而且接的正是我们要的那一档)<br>
+❓ <b>接通之后没说过话</b> —— 我拿到「接通」就挂了,所以<b>声音清不清楚、会不会卡、能不能打断它,全都没试过</b><br><br>
+
+<b>为什么这仍然是好消息:</b>我们卡了三周多的那个问题是「他们到底给不给我们用」——
+现在确定<b>给</b>,不用换账号、不用换密钥、不用等。之前以为是道关着的门,其实是我们一直在敲隔壁。
+剩下的「能不能好好通话」是纯粹的干活、不是求人 —— 但它<b>还没干</b>,我不会说成已经好了。
+</div>
+
+<div class="fact" style="margin-bottom:16px">
+<b>这一版新增:</b>回答你问的「为什么 Claude 的 lead 没限制、Codex 的一堆限制」——
+答案在第②节,<b>今天其实没有这个差别,是我上一版把你看糊涂了</b>。其余各节和上一版一样,你写的意见都还在。
+</div>
+
+<section class="s1" data-t="① 那个十分钟实验:我跑了什么,拿到了什么">
+<div class="qtag">实验</div>
+<h2>① 我跑了什么,拿到了什么</h2>
+
+<p>我没有直接信七月那份报告,也没有直接信 issue 里对它的转述。我把探针重跑了一遍,
+用的是你机器上<b>现在这个版本</b>(七月验的是两个版本之前的)。一共六组、每组几秒钟,
+全程没让它说过一句话,所以基本没花额度。下面只列关键的四组:</p>
+
+<table>
+<tr><th>#</th><th>我问了什么</th><th>后端怎么回的</th><th>结果</th></tr>
+<tr><td>1</td><td>最新档 · 走旧通道</td><td>「语音会话权限被拒绝」</td><td><span class="tag t-fail">拒</span>七月那句,原样复现</td></tr>
+<tr><td>2</td><td>当前在用那档 · 旧通道</td><td>会话建立</td><td><span class="tag t-ok">通</span>账号是健康的</td></tr>
+<tr><td><b>3</b></td><td><b>最新档 · 走对的通道</b></td><td><b>会话建立,后端回了握手应答</b></td><td><span class="tag t-ok">通</span><b>翻案</b></td></tr>
+<tr><td><b>4</b></td><td><b>同上,再跑一次</b></td><td><b>会话建立</b></td><td><span class="tag t-ok">通</span><b>复现</b></td></tr>
+</table>
+<div class="src">另外两组是边角探测(最老那档、只要文字不要声音),对结论没有影响,不占你时间 —— 记录在仓库里。</div>
+
+<div class="good">
+<b>第 3、4 组就是答案。</b>两次都是全新的会话、独立跑的,后端都正常接了,而且回执里明明白白写着
+版本就是我们要的那一档。这不是「看起来像通了」,是握手完成、协议层确认。
+</div>
+
+<h3>为什么之前会看错</h3>
+<p>我把 Codex 程序本身拆开看了,里面写着(大意):<b>最老那档和最新那档走「打电话」那条线,中间那档走「打字聊天」那条线。</b>
+七月的探针只会走打字聊天那条 —— 拿最新档去敲聊天线的门,门当然不开,而它回的那句恰好长得像「你没权限」。
+这次我给探针装上了打电话的能力(一个现成的组件,没改任何系统配置),再问一次,当场就通了。</p>
+
+<h3>我要主动纠正三处 —— 包括对我自己有利的那处</h3>
+<ul>
+<li><b>issue 里说旧结论「归因不可靠,因为音色名单重叠」—— 这个质疑本身是误读。</b>七月那次用的音色对最新档是合法的,
+本机校验放行了,拿到的是<b>服务端</b>的回答。旧报告也明说了「不做进一步归因」。旧报告比我们对它的印象更谨慎。</li>
+<li><b>但重跑仍然是对的</b> —— 不是因为旧结论不严谨,是因为<b>没人试过另一条通道</b>。这是设计盲区,不是数据问题。</li>
+<li><b>七月报告里留的一条待办可以划掉了。</b>它说「换 API 密钥能不能开最新档,从未验证」。现在不必验了 ——
+<b>你现在的订阅身份就能开</b>,不需要另外买密钥。</li>
+</ul>
+<div class="src">原始记录(每一条协议报文 + 程序指纹)已经归档在仓库里,可以逐字节复核。</div>
+
+<div class="cbox"><label>这一节你的意见</label>
+<textarea data-c="c1" placeholder="写在这里…"></textarea></div>
+</section>
+
+<section class="s2" data-t="② 嘴和耳朵 · 脑子:你那句话在代码层成不成立">
+<div class="qtag">实现</div>
+<h2>② 嘴、耳朵、脑子</h2>
+
+<h3>嘴和耳朵</h3>
+<p>Codex 自己就有。不用租 Gemini,也不用租 ElevenLabs。已经实测过的能力:
+<b>外面的声音喂得进去、它听懂了、它用可听清的人声答出来</b>,而且<b>没有界面也能跑</b>(全是后台的数据管道,
+不碰系统的麦克风和喇叭)—— 这一点很关键,因为我们所有 Lead 都是后台跑的。</p>
+<div class="warn">
+<b>但有一条必须记住:这是一个还标着「开发中」、默认关闭的实验开关,不是正式功能。</b>
+命令行里没有任何语音命令,它只能从内部协议进去。协议随时可能改。
+我们能做的是「先跑起来再磨」—— 这正好是你自己说过的排期方式。
+</div>
+
+<h3>你问:为什么 Claude 的 lead 没限制,Codex 的 lead 一堆限制?</h3>
+<div class="good">
+<b>答案是:今天生产上其实并没有这个差别。是我上一版把你看糊涂了。</b>
+</div>
+<p>生产上一共 <b>2 个</b> Codex lead:</p>
+<div class="stack">
+<div class="row"><div class="lbl">干工程活那个</div><div class="val"><b>权限跟 Claude lead 一模一样</b> —— 能写、联网、能用本地 git,没有任何额外的笼子。
+这不是我定的,是<b>你自己拍的</b>(当时的原话就是「跟每个 Claude lead 同款信任」)。</div></div>
+<div class="row"><div class="lbl">Mufasa</div><div class="val">受限,但<b>因为它是陪聊角色,不是因为它是 Codex</b>。<br>
+<b>对照:Belle 也是陪聊,Belle 是 Claude —— 受的是同一份限制。</b>所以限制来自角色,不来自厂牌。</div></div>
+</div>
+<p><b>那为什么会给你「Codex 限制多」的印象?</b>两个原因,都算我的:</p>
+<ul>
+<li><b>Codex 有一个「关笼子」的旋钮,Claude 没有。</b>Claude lead 我们是直接全开跑的,压根没有档位可选;
+Codex 自带三档,<b>有旋钮就会去拧它</b>。于是文档里长出了三档,而 Claude 那边只有一档 —— 看起来像不信任,其实是选项多少的差别。</li>
+<li><b>我上一版把三档都列出来了,让它看起来像三道现行的限制。</b>实际上中间那档
+<b>在生产中一次都没用过</b>(数量 = 0,代码里标着「休眠」)。<b>这是我给错了印象,不是系统真的这样。</b></li>
+</ul>
+
+<h3>脑子 —— 你说「Codex 本身就能执行命令,只是把语音加进去」</h3>
+<p><b>这句话在代码层成立。</b>我核了:</p>
+<div class="stack">
+<div class="row"><div class="lbl">已经在跑</div><div class="val">16 个 Lead 里已经有 <b>2 个</b>用的是 Codex,不是 Claude。这不是新东西,是既有生产形态。</div></div>
+<div class="row"><div class="lbl">跑法</div><div class="val">一套完整的启动器已经写好并且上过线:开一个可以看得见的终端窗口,Codex 在里面跑,读它自己的人设,连 Discord。</div></div>
+<div class="row"><div class="lbl">加语音</div><div class="val">是<b>在同一个 Codex 会话上多开一条语音通道</b>,不是另起一个脑子。所以「说话 → 它真去干活 → 再说给你听」是同一个它,不会精神分裂。</div></div>
+</div>
+<p>所以这一块<b>确实是「加一层」,不是「重做」</b>。你的直觉是对的。</p>
+
+<h3>权限:按你说的办,但有一段历史要交给你</h3>
+<p>你说得很清楚:<b>「我们并没有要限制 Codex 呀,我们希望的就是它有很多权限……
+让它能够去和我对话,然后它有所有足够的权限去做很多东西。」</b></p>
+<div class="good">
+<b>那这块就不是拦路虎了,是顺风的。</b>今天的现状<b>正好就是不限制</b> ——
+沙盒只管得住「不许乱写」,本来就不管「读」;而且曾经做过的那版「禁止读」<b>后来已经被删掉了</b>
+(我在今天的代码里逐个搜过,一处都没剩)。<br>
+⇒ <b>你要的宽权限,不需要额外开工,现在就是这样。</b>
+</div>
+<div class="warn">
+<b>有一段历史你应该拿到,因为这件事你已经决定过两次了。</b><br><br>
+
+<b>① 一处跟你的理由对不上的地方。</b>你说「能跟它对话的人只有我一个,所以不存在泄露」。
+对不上的是:风险不在于<b>谁跟它说话</b>,而在于它<b>自己会说话</b> —— 它读到密钥后,
+可以用一句看起来很正常的回复把内容发出去,<b>不需要任何外人参与</b>;而这台机器上放着<b>整个舰队</b>的密钥。<br><br>
+
+<b>② 这件事你已经定过一次了。</b>6 月做过一版「禁止读」的加固;<b>7 月 14 日你在一份逐条清单上圈了「删」</b>,
+理由写的是「我们已经全面转向全权限,这个限制的存在理由消失了」。<b>所以今晚这句是延续,不是反转。</b><br>
+⇒ 这一项<b>已定,不是待定</b>。上面那个机制仍然真实,身份是<b>一个我们知道、并且有意接受的风险</b>,记着备查。
+</div>
+
+<div class="cbox"><label>这一节你的意见</label>
+<textarea data-c="c2" placeholder="写在这里…"></textarea></div>
+</section>
+
+<section class="s3" data-t="③ 进 Discord 语音房那条腿 · 我要更正一个说法">
+<div class="qtag">更正</div>
+<h2>③ 进语音房那条腿</h2>
+
+<p>issue 里写「往语音房推音频的能力,四条命令天天在生产用」。<b>这句要更正。</b></p>
+
+<div class="stack">
+<div class="row"><div class="lbl">建了多少</div><div class="val">很多。一个一万三千行的独立语音服务已经写好:进语音房、收你的话、放它的声音、你插话它闭嘴、开会记纪要 —— 都有。</div></div>
+<div class="row"><div class="lbl">验收过几条</div><div class="val"><b>四条里只有一条</b>你真机点过头(那条快聊)。开会那条你真机 <b>两次都 FAIL</b>,另一条被你当场判「插话风暴」。</div></div>
+<div class="row"><div class="lbl">今天在跑吗</div><div class="val"><b>一条都没在跑。</b>我查了四处:没有开机自启项、没有进程、端口没响应、配置文件里缺必需的那一块所以它<b>根本起不来</b>。</div></div>
+</div>
+
+<div class="good">
+<b>你说的对上了 ——</b>你说「这一部分就是要整个去修改的部分,因为之前我们是用 Gemini 去自己写的,
+现在大概率用 Codex 自带的功能就行了,应该是可以简化其中的很多步骤」。<b>确实是这样。</b><br>
+当年那套是「Gemini 当耳朵和嘴 + 我们自己写一大堆接线」,现在 Codex 自带耳朵和嘴,
+中间那层翻译<b>大概率可以整段删掉</b>,不是加东西是减东西。
+</div>
+<div class="fact">
+<b>能留下来的是这部分:</b>「进语音房、把声音放出来、把你的话收进来」这套管子跟用谁的脑子无关,
+是现成的、不用重写。<b>要换的是它和脑子之间那一段。</b><br>
+工作量我<b>没估</b> —— 估它需要真机接一次试试,读代码读不出来。
+</div>
+
+<div class="cbox"><label>这一节你的意见</label>
+<textarea data-c="c3" placeholder="写在这里…"></textarea></div>
+</section>
+
+<section class="s4" data-t="④ 它怎么知道别的 Lead 在干什么 —— 四个选项,不替你选">
+<div class="qtag">选项</div>
+<h2>④ 它怎么知道别人在干什么</h2>
+
+<div class="fact">
+<b>你已经说了怎么走,所以这一节改成给 Honey Lemon 备料,不再让你挑。</b>你的原话:
+先跟他 iterative 地聊清楚 Voice 的 flow 要做成什么样,再由他转化成产品形态;
+用<b>一个 issue 来 track</b>(因为之前聊了很多没被 track 下来);预计出 <b>2~3 个 PRD</b>;
+可能要做 <b>prototype</b> 验证形态做不做得出来;最后把 PRD 和 prototype 结果<b>交给 Tadashi</b> 实现。<br>
+⇒ 这段我已经<b>逐字存进文档了</b>,不会再丢。下面四条是等你们聊到那一步时的现成材料。
+</div>
+
+<p>你说进语音房它就该实时告诉你「Tadashi 怎么样了、Honey Lemon 怎么样了」。
+这件事有<b>四条现成的路</b>,各有各的代价:读系统总账(快、准,但只有骨架)· 读 Linear(适合排优先级,但有延迟)·
+直接看 Lead 的屏幕(最真实,但量大没结构)· 直接问 Lead(质量最高,<b>但要等</b>)。</p>
+<p>四条不互斥、可以混。<b>逐条的对比我写在仓库里了,不占你这一页</b> —— 等你们聊到那一步再拿出来。</p>
+<div class="fact">
+真正要先定的不是用哪几条,是 —— <b>你进语音房那三秒钟,它应该先说什么?</b>
+那个答案会反过来决定用哪几条。这一题正好属于你说的「先聊清楚要做成什么样」那一步。
+</div>
+
+<div class="cbox"><label>这一节你的意见</label>
+<textarea data-c="c4" placeholder="写在这里…"></textarea></div>
+</section>
+
+<section class="s5" data-t="⑤ 风险与未知 —— 按「缺什么」分类">
+<div class="qtag">诚实清单</div>
+<h2>⑤ 我没验的 / 验不了的</h2>
+
+<h3>缺授权(要你或 Tadashi 点头才能做)</h3>
+<ul>
+<li><b>点着那个语音服务</b> —— 要往生产配置里加一块,会影响正在跑的舰队。我只读,没动。</li>
+<li><s>安全边界</s> —— <b>这条你已经拍了,不再是待办</b>:不限制权限。删掉了。</li>
+</ul>
+
+<h3>缺真机(要真跑一次才知道)</h3>
+<ul>
+<li><b>最新档说话好不好听、快不快</b> —— 我只验到「门开了」,<b>没让它说过一句话</b>。音质、延迟、能不能打断,全未测。</li>
+<li><b>长时间稳不稳</b> —— 我每次会话只活了几秒。断线重连、开半小时会不会崩,全未测。</li>
+<li><b>Codex 的嘴接进语音房</b> —— 两边都现成,但<b>从没接过</b>。中间的格式转换、延迟叠加,是真机活。</li>
+<li><b>能不能一边说话一边真去干活</b> —— 七月在中间那档上验过,<b>最新档上没验过</b>。</li>
+</ul>
+
+<h3>缺外部信息(不在我们手里)</h3>
+<ul>
+<li><b>这个开关什么时候转正</b> —— 它还标着「开发中」。协议随时可能变,变了我们就得跟着改。这个只能等,等不来就自己扛。</li>
+<li><b>会不会有用量限制</b> —— 我没跑够长的会话去撞限制,不知道天花板在哪。</li>
+</ul>
+
+<div class="warn">
+<b>一句总结风险:</b>「门开不开」这个最大的未知已经解决了,而且是好消息。
+剩下的风险<b>没有一个是「做不了」,全都是「还没做」</b> —— 也就是说,现在缺的是工时,不是运气。
+</div>
+
+<div class="cbox"><label>这一节你的意见</label>
+<textarea data-c="c5" placeholder="写在这里…"></textarea></div>
+</section>
+
+<section class="s6" data-t="⑥ 我刻意没做的事">
+<h2>⑥ 我刻意没做的事</h2>
+<ul>
+<li><b>没设计产品形态。</b>它跟现有三个 CoS 什么关系、汇报为主还是指挥为主、你一进门它先说什么 ——
+这些是你和 Honey Lemon 共创的部分,不是我该替你填的。</li>
+<li><b>没排优先级、没拆单、没建 issue。</b>你说的那个用来 track 的 issue,归 Honey Lemon 开。</li>
+<li><b>没改任何生产代码、没改配置、没启动任何服务、没碰账号和密钥。</b>全程只读 + 写文档。</li>
+<li><b>没让语音说过一句话。</b>实验只测「门开不开」,拿到答案就立刻断开 —— 省额度,也避免在夜里给舰队添负载。</li>
+</ul>
+
+<div class="cbox"><label>还有什么想问的</label>
+<textarea data-c="c6" placeholder="写在这里…"></textarea></div>
+</section>
+
+<div class="note" style="text-align:center">
+  你在这一页写的意见<b>不会自动传给我</b>。写完点下面的「一键汇总复制」,再贴回 issue 里 —— 我才看得到。
+</div>
+
+</div>
+
+<div class="footer">
+  <div class="fin">
+    <span id="count">还没写任何意见</span>
+    <button id="copy" type="button">一键汇总复制</button>
+  </div>
+  <div id="preview"></div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = 'fly1844-voice-cos-v1';
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-c]'));
+
+  function load(){
+    var raw = null;
+    try { raw = window.localStorage.getItem(KEY); } catch(e){ return; }
+    if(!raw) return;
+    var data;
+    try { data = JSON.parse(raw); } catch(e){ return; }
+    if(!data || typeof data !== 'object') return;
+    boxes.forEach(function(b){
+      var v = data[b.getAttribute('data-c')];
+      if(typeof v === 'string') b.value = v;
+    });
+  }
+  function save(){
+    var data = {};
+    boxes.forEach(function(b){ data[b.getAttribute('data-c')] = b.value; });
+    try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+  }
+  function titleFor(box){
+    var sec = box.closest('section[data-t]');
+    return sec ? (sec.getAttribute('data-t') || '') : '';
+  }
+  function collect(){
+    var out = [];
+    boxes.forEach(function(b){
+      var v = (b.value || '').trim();
+      if(v) out.push('【' + titleFor(b) + '】\n' + v);
+    });
+    return out;
+  }
+
+  var countEl = document.getElementById('count');
+  var previewEl = document.getElementById('preview');
+  function refresh(){
+    var items = collect();
+    countEl.textContent = items.length ? ('已写 ' + items.length + ' 条意见') : '还没写任何意见';
+    if(items.length){
+      previewEl.style.display = 'block';
+      previewEl.textContent = items.join('\n\n');
+    } else {
+      previewEl.style.display = 'none';
+      previewEl.textContent = '';
+    }
+  }
+
+  boxes.forEach(function(b){
+    b.addEventListener('input', function(){ save(); refresh(); });
+  });
+
+  // Never claim a copy we did not observe: a failed copy that still says
+  // 「已复制 ✓」 makes her paste an empty message and lose the round.
+  function fallback(text){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch(e){ ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  document.getElementById('copy').addEventListener('click', function(){
+    var items = collect();
+    var text = items.length
+      ? ('语音总管怎么落地 · 我的意见\n\n' + items.join('\n\n'))
+      : '语音总管这一页:我这轮没有意见。';
+    var settle = function(ok){
+      var btn = document.getElementById('copy');
+      var old = '一键汇总复制';
+      btn.textContent = ok ? '已复制 ✓' : '复制没成功 — 请手动选下面的文字';
+      if(!ok){ previewEl.style.display = 'block'; previewEl.textContent = text; }
+      window.setTimeout(function(){ btn.textContent = old; }, ok ? 1600 : 4000);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ settle(true); },
+        function(){ settle(fallback(text)); }
+      );
+    } else {
+      settle(fallback(text));
+    }
+  });
+
+  load();
+  refresh();
+})();
+</script>
+</body>
+</html>

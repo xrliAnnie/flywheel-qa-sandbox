@@ -1,0 +1,41 @@
+{
+  "issue": "FLY-1844",
+  "probe": "admission-only, webrtc transport",
+  "startedAt": "2026-08-17T07:09:41.322Z",
+  "codexRequested": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "19c4f144c5226a9f17c58e6f0fa854843b0f77a6eb420f40e2745a12f10f5d37",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeScriptSha256": "7d1b957d1d4de9776d5929fa4aeaa206fb7485f1e9fee8eb937e753e9df07436",
+  "params": {
+    "version": "v1",
+    "voice": "cove",
+    "outputModality": "audio",
+    "transport": "webrtc"
+  },
+  "sdpOffer": {
+    "chars": 911,
+    "sha256": "c8fe3c5578a902d28ef7b742ef39fd02955d80169a86cb5fee955cbb9629b189",
+    "hasAudioMLine": true
+  },
+  "cliUserAgent": "fly1844-admit-webrtc/0.147.0 (Mac OS 26.3.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1844-admit-webrtc; 0.0.1)",
+  "threadId": "01a00e8d-fe24-7812-879f-9f0a69a331dc",
+  "startRequestResponse": {
+    "result": {}
+  },
+  "startOutcome": {
+    "outcome": "error",
+    "waitedMs": 813,
+    "message": "{\n    \"error\": {\n        \"message\": \"AVAS requires OpenAI-Alpha: quicksilver=v2.\",\n        \"type\": \"invalid_request_error\",\n        \"code\": \"invalid_quicksilver_alpha_header\",\n        \"param\": \"\"\n    }\n}"
+  },
+  "sawSdpAnswer": false,
+  "result": {
+    "admitted": false
+  },
+  "finishedAt": "2026-08-17T07:09:44.059Z"
+}

@@ -1,0 +1,70 @@
+{
+  "issue": "FLY-1844",
+  "probe": "admission-only",
+  "startedAt": "2026-08-17T07:05:38.694Z",
+  "cwd": "/Users/xiaorongli/Dev/flywheel-FLY-1844/product/doc/FLY-1844-codex-voice-cos/evidence",
+  "codexRequested": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "19c4f144c5226a9f17c58e6f0fa854843b0f77a6eb420f40e2745a12f10f5d37",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.147.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeScriptSha256": "c0a1dabee8e44dc6007049e4512855f89e09929ed064daeea9e698d7b4576dcb",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "outputModality": "text",
+    "transport": "websocket"
+  },
+  "gates": {
+    "enableFlag": true,
+    "experimentalApiCapability": true
+  },
+  "cliUserAgent": "fly1844-admit/0.147.0 (Mac OS 26.3.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1844-admit; 0.0.1)",
+  "listVoices": {
+    "voices": {
+      "v1": [
+        "juniper",
+        "maple",
+        "spruce",
+        "ember",
+        "vale",
+        "breeze",
+        "arbor",
+        "sol",
+        "cove"
+      ],
+      "v2": [
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "sage",
+        "shimmer",
+        "verse",
+        "marin",
+        "cedar"
+      ],
+      "defaultV1": "cove",
+      "defaultV2": "marin"
+    }
+  },
+  "threadId": "01a00e8a-4a67-72f2-89c2-52d306afba91",
+  "cliVersionReported": "0.147.0",
+  "startRequestResponse": {
+    "result": {}
+  },
+  "startOutcome": {
+    "outcome": "error",
+    "waitedMs": 204,
+    "message": "text realtime output modality requires realtime v2"
+  },
+  "result": {
+    "admitted": false
+  },
+  "finishedAt": "2026-08-17T07:05:40.874Z"
+}
