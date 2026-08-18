@@ -5,10 +5,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import {
-	isWorkflowClaimsReadEnabled,
-	isWorkflowClaimsWriteEnabled,
-} from "../workflow-claims.js";
 
 /**
  * FLY-1135 PR-1 — identity + transaction substrate for the workflow claims
@@ -967,25 +963,5 @@ describe("substrate hardening — fail-closed timestamps + identity derivation (
 		expect(ok.ok).toBe(true);
 		if (!ok.ok) return;
 		expect(store.getWorkflowClaim(ok.claimId)?.issue_id).toBe("FLY-1135");
-	});
-});
-
-describe("workflow flags — independent DEFAULT-OFF switches (plan §3.2)", () => {
-	it("write / read flags are default-off and independent", () => {
-		expect(isWorkflowClaimsWriteEnabled({})).toBe(false);
-		expect(isWorkflowClaimsReadEnabled({})).toBe(false);
-		expect(
-			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" }),
-		).toBe(true);
-		expect(
-			isWorkflowClaimsReadEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" }),
-		).toBe(true);
-		expect(
-			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "0" }),
-		).toBe(false);
-		// enrollment / behavior is never inferred from other flags
-		expect(
-			isWorkflowClaimsReadEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" }),
-		).toBe(false);
 	});
 });

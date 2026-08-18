@@ -80,8 +80,6 @@ export interface WorkflowDecisionRouterDeps {
 	}) => Promise<WorkflowPrProbeResult>;
 	now?: () => string;
 	reQa?: {
-		/** Hot claims-write gate, checked independently at stage and apply time. */
-		enabled?: () => boolean;
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
 		respawn(
 			canonical: WorkflowReQaCanonical,
@@ -884,10 +882,10 @@ export function createWorkflowDecisionRouter(
 	});
 
 	router.post("/re-qa/stage", (req, res) => {
-		if (!deps.reQa || deps.reQa.enabled?.() === false) {
+		if (!deps.reQa) {
 			res.status(503).json({
 				ok: false,
-				reason: deps.reQa ? "claims_write_disabled" : "re_qa_unavailable",
+				reason: "re_qa_unavailable",
 			});
 			return;
 		}
@@ -1143,10 +1141,10 @@ export function createWorkflowDecisionRouter(
 	});
 
 	router.post("/re-qa", async (req, res) => {
-		if (!deps.reQa || deps.reQa.enabled?.() === false) {
+		if (!deps.reQa) {
 			res.status(503).json({
 				ok: false,
-				reason: deps.reQa ? "claims_write_disabled" : "re_qa_unavailable",
+				reason: "re_qa_unavailable",
 			});
 			return;
 		}

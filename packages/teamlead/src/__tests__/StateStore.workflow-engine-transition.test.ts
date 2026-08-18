@@ -58,6 +58,15 @@ async function engineRun(
 			createdAt: "2026-07-16T00:00:00.000Z",
 		},
 	});
+	if (!options.gateCarrier) {
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = 'run-1'",
+		);
+	}
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
 		nodeId: "design",

@@ -43,8 +43,6 @@ rollout — and then `audit_only` before `enforce`, never straight to `enforce`)
 
 - **`founder_consent` / `FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE`** (FLY-175) — the
   server-side hard gate on merge / ship / runner-lifecycle actions.
-- **`founder_ux_gate`** (FLY-598) — hard-blocks founder-facing issues from
-  entering `implement` without a verified founder UX sign-off.
 - **Branch-protection / merge gates** and anything whose "on" state *enforces
   consent* or *blocks the pipeline* rather than adding a capability.
 

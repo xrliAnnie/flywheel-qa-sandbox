@@ -7,6 +7,7 @@
  * converges such sessions on the patrol cadence with strict, fail-closed
  * validation; PR open/unknown/closed-unmerged rows are never touched.
  */
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,7 +42,7 @@ import {
 	mergedPrCiProbe,
 } from "../merge-ship-gate.js";
 
-const HEAD = "a".repeat(40);
+let HEAD = "";
 const OTHER_HEAD = "b".repeat(40);
 const MERGE_OID = "c".repeat(40);
 const OLD_TS = "2026-07-01 00:00:00"; // way past any TTL, inside the 7d window when now is pinned
@@ -88,6 +89,7 @@ function seedSession(store: StateStore, over: Partial<Session> = {}): void {
 		issue_labels: JSON.stringify(["engineer"]),
 		pr_number: 478,
 		last_activity_at: OLD_TS,
+		worktree_path: worktreePath,
 		...over,
 	} as Session);
 	// pr_head_sha is owned by setReviewBinding/patchSessionMetadata, not
@@ -163,6 +165,7 @@ interface Setup {
 }
 
 let tmpRoot: string;
+let worktreePath: string;
 let stateDbSequence = 0;
 
 async function setup(opts?: {
@@ -232,6 +235,23 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			FLYWHEEL_CODEX_HARD_GATE: process.env.FLYWHEEL_CODEX_HARD_GATE,
 		};
 		tmpRoot = mkdtempSync(join(tmpdir(), "fly945-external-merge-"));
+		worktreePath = join(tmpRoot, "worktree");
+		mkdirSync(worktreePath);
+		execFileSync("git", ["init", "-q", worktreePath]);
+		execFileSync("git", [
+			"-C",
+			worktreePath,
+			"config",
+			"user.email",
+			"test@example.com",
+		]);
+		execFileSync("git", ["-C", worktreePath, "config", "user.name", "Test"]);
+		writeFileSync(join(worktreePath, "fixture.txt"), "fixture\n");
+		execFileSync("git", ["-C", worktreePath, "add", "fixture.txt"]);
+		execFileSync("git", ["-C", worktreePath, "commit", "-qm", "fixture"]);
+		HEAD = execFileSync("git", ["-C", worktreePath, "rev-parse", "HEAD"], {
+			encoding: "utf8",
+		}).trim();
 		priorCommDir = process.env.FLYWHEEL_COMM_DIR;
 		process.env.FLYWHEEL_COMM_DIR = join(tmpRoot, "comm");
 		stateDbSequence = 0;
@@ -437,9 +457,7 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 				?.payload,
 		).toMatchObject({
 			engineShipEligible: false,
-			// The snapshot-bound ship gate now fails at the first missing durable
-			// authority: this fixture never materialized a worktree head.
-			engineShipReason: "worktree_not_found",
+			engineShipReason: "gate_holder_subject_mismatch",
 		});
 	});
 

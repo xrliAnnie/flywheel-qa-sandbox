@@ -12,7 +12,7 @@ FAILED=0
 pass() { echo "[TEST] ✓ $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "[TEST] ✗ $1"; FAILED=$((FAILED + 1)); }
 
-printf '%s\n' 'FLYWHEEL_CMUX_LINKED_VIEW=1' > "$TMP/valid.env"
+printf '%s\n' 'FLYWHEEL_MERGE_APPROVAL_GATE=1' > "$TMP/valid.env"
 if "$REPO_ROOT/scripts/check-flag-truth.ts" --env-file "$TMP/valid.env" > "$TMP/valid.out" 2>&1 \
   && grep -q 'flag truth OK' "$TMP/valid.out"; then
   pass "valid registered env passes via executable shebang"
@@ -20,10 +20,10 @@ else
   fail "valid env failed: $(cat "$TMP/valid.out")"
 fi
 
-printf '%s\n' 'FLYWHEEL_DETECTION_GAP_SCAN=1' > "$TMP/tombstone.env"
+printf '%s\n' 'FLYWHEEL_CMUX_LINKED_VIEW=1' > "$TMP/tombstone.env"
 if "$REPO_ROOT/scripts/check-flag-truth.ts" --env-file "$TMP/tombstone.env" > "$TMP/tombstone.out" 2>&1; then
   fail "retired tombstone unexpectedly passed"
-elif grep -q 'FLYWHEEL_DETECTION_GAP_SCAN.*已退役假开关' "$TMP/tombstone.out"; then
+elif grep -q 'FLYWHEEL_CMUX_LINKED_VIEW.*已退役假开关' "$TMP/tombstone.out"; then
   pass "retired tombstone fails with an actionable error"
 else
   fail "retired tombstone failed without the expected error: $(cat "$TMP/tombstone.out")"

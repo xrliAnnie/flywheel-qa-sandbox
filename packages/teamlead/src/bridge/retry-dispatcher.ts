@@ -85,13 +85,6 @@ export interface RetryRequest {
 	 */
 	codexSkip?: boolean;
 	/**
-	 * FLY-1372 §2.5 (Codex code R1 #3): the predecessor's trusted
-	 * founder-facing-ux snapshot. Threaded so a generalized retry's session
-	 * row is created WITH the behavior fields (durable emitStarted seam) —
-	 * a founder-facing DAG retry must never fail open on the DB default.
-	 */
-	founderFacingUx?: boolean;
-	/**
 	 * FLY-205: doc tier carried over from the predecessor session row
 	 * (`session.doc_tier`). Retry must REUSE the original tier — a missing
 	 * value (pre-FLY-205 session) falls back to "full" downstream. Never let
@@ -226,13 +219,6 @@ export interface StartRequest {
 	docTier?: "full" | "plan_only" | "none";
 	/** FLY-205: Linear issue URL from runs-route preflight (DOC-FLOW header). */
 	issueUrl?: string;
-	/**
-	 * FLY-1372 §2.5: server-computed founder-facing-ux snapshot. Set ONLY by the
-	 * pipeline.dag entry (and the engine's successor propagation) so the durable
-	 * emitStarted seam persists it with the session row. Bridge-trusted — never
-	 * populated from the public `/api/runs/start` body or a runner payload.
-	 */
-	founderFacingUx?: boolean;
 	/**
 	 * FLY-728 Part C: the per-run `/api/runs/start` `model` param — the
 	 * difficulty-sorter's output, normalized to a canonical tier id + whitelisted

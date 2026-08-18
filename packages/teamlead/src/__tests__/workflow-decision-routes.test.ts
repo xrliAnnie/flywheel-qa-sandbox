@@ -1031,7 +1031,6 @@ describe("in-flight re-QA recovery", () => {
 			if (!admitted.ok) throw new Error(admitted.reason);
 			return { executionId: "replacement-qa" };
 		});
-		const claimsWrite = { enabled: false };
 		const app = express();
 		app.use(express.json());
 		app.use(
@@ -1039,7 +1038,6 @@ describe("in-flight re-QA recovery", () => {
 			createWorkflowDecisionRouter({
 				store,
 				reQa: {
-					enabled: () => claimsWrite.enabled,
 					tokens: new ConfirmTokenStore(),
 					respawn,
 				},
@@ -1071,13 +1069,6 @@ describe("in-flight re-QA recovery", () => {
 				body: JSON.stringify(staged),
 			});
 		try {
-			const disabledStage = await stageResponse();
-			expect(disabledStage.status).toBe(503);
-			expect(await disabledStage.json()).toMatchObject({
-				ok: false,
-				reason: "claims_write_disabled",
-			});
-			claimsWrite.enabled = true;
 			const staged = await stage();
 			expect(staged.canonical).toMatchObject({
 				runId: "run-reqa",
@@ -1085,15 +1076,6 @@ describe("in-flight re-QA recovery", () => {
 				sourceAttempt: 1,
 				targetAttempt: 2,
 			});
-			claimsWrite.enabled = false;
-			const disabledApply = await apply(staged);
-			expect(disabledApply.status).toBe(503);
-			expect(await disabledApply.json()).toMatchObject({
-				ok: false,
-				reason: "claims_write_disabled",
-			});
-			expect(respawn).not.toHaveBeenCalled();
-			claimsWrite.enabled = true;
 			const first = await apply(staged);
 			expect(await first.json()).toMatchObject({
 				ok: true,

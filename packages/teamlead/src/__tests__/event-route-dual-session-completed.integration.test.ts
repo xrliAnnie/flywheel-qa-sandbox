@@ -88,9 +88,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		// approval gate is covered by ship-eligibility + dedicated integration tests).
 		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
 		vi.stubEnv("FLYWHEEL_QA_DONE_GATE", "0");
-		// These are legacy-session FSM tests. Keep the host Bridge's generalized
-		// claims rollout from changing their completion-path assertions.
-		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0");
+		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0"); // retired input is ignored
 		runPostShipSpy.mockClear();
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
@@ -124,6 +122,17 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			headers: ingestHeaders,
 			body: JSON.stringify(body),
 		});
+		if (body.event_type === "session_started") {
+			const executionId = String(body.execution_id);
+			const session = store.getSession(executionId);
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: session?.issue_id ?? String(body.issue_id),
+				project_name: session?.project_name ?? String(body.project_name),
+				status: session?.status ?? "running",
+				worktree_path: process.cwd(),
+			});
+		}
 		return res;
 	}
 

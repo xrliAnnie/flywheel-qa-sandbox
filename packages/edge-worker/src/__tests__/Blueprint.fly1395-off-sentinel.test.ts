@@ -107,14 +107,13 @@ async function runCodex(envValue?: string): Promise<{
 			},
 		} as never,
 		dispatcher,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		() => true,
+		undefined, // checkpointConfig
+		undefined, // flywheelRepoRoot
+		undefined, // docFlowConfig
+		undefined, // ponytailConfig
+		undefined, // ponytailReadiness
+		undefined, // skillFrameworkParticipation
+		() => true, // skillFrameworkReadiness
 		() => ({ disableNames: ["superpowers:fixture"] }),
 	);
 	const ctx: BlueprintContext = {

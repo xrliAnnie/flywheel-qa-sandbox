@@ -16,7 +16,7 @@ mkdir -p "$HOME_DIR/.flywheel/bin" "$HOME_DIR/.flywheel/state" \
   "$HOME_DIR/Library/LaunchAgents" "$TMP/bin" "$TMP/control"
 cat > "$HOME_DIR/.flywheel/bin/flywheel-cmux-sync" <<'STUB'
 #!/bin/bash
-printf '%s|%s\n' "$FLYWHEEL_CMUX_LINKED_VIEW" "$*" > "$RECORD"
+printf '%s\n' "$*" > "$RECORD"
 STUB
 chmod +x "$HOME_DIR/.flywheel/bin/flywheel-cmux-sync"
 
@@ -44,34 +44,6 @@ run_autostart() {
     CONTROL_DIR="$TMP/control" "$@" /bin/bash "$SCRIPT" \
     >"$TMP/stdout" 2>"$TMP/stderr"
 }
-
-# Keep the existing .env parser contract covered under the supervised path.
-printf 'FLYWHEEL_CMUX_LINKED_VIEW=0\nUNRELATED=$(touch /tmp/must-not-run)\n' > "$HOME_DIR/.flywheel/.env"
-record="$TMP/file-values"
-run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1
-if [[ "$(cat "$record")" == "0|--watch" && ! -e /tmp/must-not-run ]]; then
-  pass "supervised path extracts only cmux bool flags from .env without sourcing unrelated code"
-else
-  fail "file extraction/exec mismatch: $(cat "$record" 2>/dev/null || true)"
-fi
-
-record="$TMP/env-precedence"
-run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1 \
-  FLYWHEEL_CMUX_LINKED_VIEW=1
-if [[ "$(cat "$record")" == "1|--watch" ]]; then
-  pass "process env overrides .env"
-else
-  fail "env precedence mismatch: $(cat "$record" 2>/dev/null || true)"
-fi
-
-printf 'FLYWHEEL_CMUX_LINKED_VIEW=wat\n' > "$HOME_DIR/.flywheel/.env"
-record="$TMP/invalid"
-run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1
-if [[ "$(cat "$record")" == "1|--watch" ]]; then
-  pass "invalid/empty values fail safe to default-on"
-else
-  fail "invalid bool handling mismatch: $(cat "$record" 2>/dev/null || true)"
-fi
 
 # Default unsupervised invocation is now only a launchd job guard. A loaded
 # KeepAlive job means success with no direct watcher exec.
@@ -141,7 +113,7 @@ fi
 
 record="$TMP/maintenance-supervised"
 run_autostart "$record" FLYWHEEL_CMUX_SUPERVISED=1
-if [[ "$(cat "$record")" == "1|--watch" ]]; then
+if [[ "$(cat "$record")" == "--watch" ]]; then
   pass "supervised launchd path remains exec-based and delegates maintenance waiting to sync"
 else
   fail "supervised maintenance path did not exec watcher"

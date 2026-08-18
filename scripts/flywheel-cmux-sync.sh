@@ -102,7 +102,6 @@ CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/sta
 CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
 CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
 CMUX_REBUILD_REPORT_DIR="${FLYWHEEL_CMUX_REBUILD_REPORT_DIR:-$HOME/.flywheel/state/cmux-rebuild-reports}"
-CMUX_FLAG_STATE="${CMUX_FLAG_STATE:-$HOME/.flywheel/state/cmux-flag-state}"
 LEDGER_CONFLICT_STATE="${LEDGER_CONFLICT_STATE:-$HOME/.flywheel/state/cmux-ledger-conflicts}"
 ROSTER_EPISODE_STATE="${ROSTER_EPISODE_STATE:-$HOME/.flywheel/state/cmux-roster-episodes}"
 CMUX_LOG_EPISODE_STATE="${CMUX_LOG_EPISODE_STATE:-$HOME/.flywheel/state/cmux-log-episodes}"
@@ -3380,16 +3379,6 @@ self_heal_sweep_session() {
 }
 
 # ── FLY-1272: isolated linked-view construction ──
-
-# Default-on boolean gate. Invalid values choose the safe new behavior; only an
-# explicit 0 enters the legacy grouped-session path.
-linked_view_enabled() {
-  case "${FLYWHEEL_CMUX_LINKED_VIEW:-1}" in
-    0) return 1 ;;
-    1|"") return 0 ;;
-    *) log "WARN: invalid FLYWHEEL_CMUX_LINKED_VIEW='${FLYWHEEL_CMUX_LINKED_VIEW}' — using 1"; return 0 ;;
-  esac
-}
 
 cmux_wal_block_view() {
   local view="$1" source="$2" wid="$3" row="${1}|${2}|${3}"
@@ -6840,48 +6829,6 @@ cleanup_stale_workspaces() {
   done <<< "$linked_sessions"
 }
 
-check_cmux_flag_state() {
-  # Durable transition latch: restarts inside A0B1 do not re-page, while a
-  # genuine exit and re-entry increments the episode counter.
-  local linked_bit=0 state last_state="" counter=0 line="" dir tmp
-  linked_view_enabled && linked_bit=1
-  state="A${linked_bit}B1"
-  if [[ -f "$CMUX_FLAG_STATE" ]]; then
-    line=$(cat "$CMUX_FLAG_STATE" 2>/dev/null || true)
-    IFS='|' read -r last_state counter <<< "$line"
-    case "$last_state" in A0B0|A0B1|A1B0|A1B1) ;; *) last_state="" ;; esac
-    case "$counter" in ''|*[!0-9]*) counter=0 ;; esac
-  fi
-  if [[ "$state" == "$last_state" ]]; then
-    return 0
-  fi
-  if [[ "$state" == "A0B1" ]]; then
-    counter=$((counter + 1))
-  fi
-  dir=$(dirname "$CMUX_FLAG_STATE")
-  mkdir -p "$dir" 2>/dev/null || {
-    log "WARN: cannot persist cmux flag-state latch at $CMUX_FLAG_STATE"
-    return 0
-  }
-  tmp=$(mktemp "${CMUX_FLAG_STATE}.XXXX" 2>/dev/null) || {
-    log "WARN: cannot stage cmux flag-state latch at $CMUX_FLAG_STATE"
-    return 0
-  }
-  if ! printf '%s|%s\n' "$state" "$counter" > "$tmp" 2>/dev/null \
-      || ! mv "$tmp" "$CMUX_FLAG_STATE" 2>/dev/null; then
-    rm -f "$tmp" 2>/dev/null || true
-    log "WARN: cannot commit cmux flag-state latch at $CMUX_FLAG_STATE"
-    return 0
-  fi
-  if [[ "$state" == "A0B1" ]]; then
-    flywheel_alert cmux_flag_state info \
-      "cmux sync flags entered A0B1" \
-      "FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=$counter." \
-      "cmux_flag_state|state=A0B1|episode=$counter"
-  fi
-  return 0
-}
-
 repair_view_invariants() {
   # Strict two-phase pass: first read every source and candidate view. A single
   # inconclusive read returns before any mutation. Only then repair mismatches.
@@ -8648,8 +8595,6 @@ watch_loop() {
 # without falling foul of the case-statement scope.
 watch_main() {
   log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
-  check_cmux_flag_state
-
   # Advisory: warn if cmux app preference is the broken default. This catches
   # the case where the watcher will work today (we're inside cmux pane) but
   # will fail post-reparent.

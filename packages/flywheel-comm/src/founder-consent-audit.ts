@@ -2,13 +2,8 @@
  * FLY-175 Track 2 — Founder Consent audit store (the calibration corpus).
  *
  * Lives in flywheel-comm (not teamlead) for one structural reason: the audit
- * DB is written by TWO processes — the Bridge (teamlead) on every evaluation,
- * AND the `flywheel-comm` CLI on an emergency `FLYWHEEL_COMM_BYPASS_BRIDGE=1`
- * bypass. teamlead's StateStore uses sql.js (in-memory WASM, load-modify-export
- * — unsafe for concurrent cross-process writers); flywheel-comm uses
- * better-sqlite3 (file-backed, WAL, busy_timeout). A single better-sqlite3
- * implementation with ONE schema is the only correct home, so both processes
- * write the same file safely and the schema can't drift.
+ * The Bridge (teamlead) imports this store from flywheel-comm so the audit
+ * schema has one implementation and cannot drift between packages.
  *
  * Schema is plan §6. It is a calibration corpus for Track 3, not just a debug
  * log — denormalized context columns capture the mutable state at decision
@@ -94,7 +89,6 @@ export type AuditDecisionSource =
 	| "bypass_env"
 	| "bypass_label"
 	| "bypass_label_stored_fallback"
-	| "bypass_env_cli"
 	| "fail_mode";
 
 /** One audit row to insert. All context columns optional except the few

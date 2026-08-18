@@ -187,7 +187,19 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 
 	it.each([
 		["all call_time", spec("auto_qa_killswitch"), "bridge_stale"],
-		["boot-captured", spec("runner_autocontinue"), "staged_restart"],
+		[
+			"boot-captured",
+			{
+				...spec("auto_qa_killswitch"),
+				readSites: [
+					{
+						...spec("auto_qa_killswitch").readSites[0],
+						timing: "object_construction",
+					},
+				],
+			} as FeatureFlagSpec,
+			"staged_restart",
+		],
 		[
 			"mixed dotenv-live",
 			{

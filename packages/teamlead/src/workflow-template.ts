@@ -11,12 +11,6 @@ import { ENG_TIERS, type EngTier } from "./work-kind.js";
 export const WORKFLOW_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const GENERALIZED_WORKFLOW_MANIFEST_SCHEMA_VERSION = 2 as const;
 
-type EnvLike = Record<string, string | undefined>;
-
-export function isGeneralizedTemplatesEnabled(env: EnvLike): boolean {
-	return env.FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES === "1";
-}
-
 export const WORKFLOW_OUTCOME_VOCABULARY = {
 	qa_pass: { claim: "qa_passed", edge: "qa_pass" },
 	qa_fail: { claim: "qa_failed", edge: "qa_fail" },

@@ -80,7 +80,6 @@ export interface EventEnvelope {
 	docTier?: string;
 	issueUrl?: string;
 	codexSkip?: boolean;
-	founderFacingUx?: boolean;
 }
 
 /**

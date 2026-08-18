@@ -73,6 +73,49 @@ function makeEvent(
 	};
 }
 
+const headAuthorityRepos: string[] = [];
+afterEach(() => {
+	for (const repo of headAuthorityRepos.splice(0)) {
+		rmSync(repo, { recursive: true, force: true });
+	}
+});
+
+function attachGitHeadAuthority(
+	store: StateStore,
+	executionId = "exec-1",
+): string {
+	const repo = mkdtempSync(join(tmpdir(), "flywheel-event-head-"));
+	headAuthorityRepos.push(repo);
+	const git = (...args: string[]) =>
+		execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
+	git("init", "-q");
+	writeFileSync(join(repo, "fixture.txt"), "fixture\n");
+	git("add", "fixture.txt");
+	git(
+		"-c",
+		"user.name=Test",
+		"-c",
+		"user.email=test@example.com",
+		"commit",
+		"-qm",
+		"fixture",
+	);
+	const session = store.getSession(executionId);
+	store.upsertSession({
+		execution_id: executionId,
+		issue_id: session?.issue_id ?? "issue-1",
+		project_name: session?.project_name ?? "geoforge3d",
+		status: session?.status ?? "running",
+		worktree_path: repo,
+	});
+	const head = git("rev-parse", "HEAD");
+	store.setReviewBinding(executionId, {
+		questionId: session?.review_question_id ?? null,
+		prHeadSha: head,
+	});
+	return head;
+}
+
 function bindGeneralizedExecution(
 	store: StateStore,
 	executionId: string,
@@ -1530,6 +1573,7 @@ describe("Event route", () => {
 	});
 
 	it("POST /events with auto_approve + landingStatus merged → completed (FLY-58)", async () => {
+		attachGitHeadAuthority(store);
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -2575,6 +2619,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 			});
 			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
 			expect(store.getSession("exec-1")!.decision_route).toBe("needs_review");
+			attachGitHeadAuthority(store);
 
 			// (3) Runner rewrote land-status.json after PR merge and emits
 			//     stage_changed=completed with landing_status proving merge.
@@ -2702,6 +2747,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 				},
 			});
 			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+			attachGitHeadAuthority(store);
 
 			// W2 fires (stage_changed=completed + merged) → status=completed
 			const res1 = await postEvent({

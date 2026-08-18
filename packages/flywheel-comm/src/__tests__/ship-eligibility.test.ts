@@ -251,8 +251,9 @@ describe("FLY-869 ship-eligibility", () => {
 			expect(r).toMatchObject({ passed: true, reason: "qa_not_required" });
 		});
 
-		it("durable QA + claims READ off → fail-closed and never trusts qa_required=0", () => {
+		it("durable QA ignores the retired claims READ zero and uses the enrolled claim", () => {
 			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
+			enrollQaClaim();
 			const r = evaluateQaShipGate({
 				execId: EXEC,
 				prHead: HEAD,
@@ -263,10 +264,7 @@ describe("FLY-869 ship-eligibility", () => {
 					FLYWHEEL_WORKFLOW_FORCE_LEGACY: "0",
 				} as NodeJS.ProcessEnv,
 			});
-			expect(r).toMatchObject({
-				passed: false,
-				reason: "qa_claim_gate_unenrolled_failclosed",
-			});
+			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
 		});
 
 		it("durable QA + READ on + explicit enrollment + current bound PASS → qa_claim_ok", () => {
@@ -285,11 +283,11 @@ describe("FLY-869 ship-eligibility", () => {
 			expect(r).toMatchObject({ passed: true, reason: "qa_claim_ok" });
 		});
 
-		it("durable QA resolves claims READ from the live dotenv", () => {
+		it("durable QA ignores a retired claims READ zero in the live dotenv", () => {
 			writeSession({ qa_required: 0, pr_number: 5, durableQa: true });
 			enrollQaClaim();
 			const dotenvPath = join(tmpDir, ".env");
-			writeFileSync(dotenvPath, "FLYWHEEL_WORKFLOW_CLAIMS_READ=1\n");
+			writeFileSync(dotenvPath, "FLYWHEEL_WORKFLOW_CLAIMS_READ=0\n");
 			const r = evaluateQaShipGate({
 				execId: EXEC,
 				prHead: HEAD,

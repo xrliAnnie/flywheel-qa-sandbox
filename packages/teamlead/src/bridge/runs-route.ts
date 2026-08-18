@@ -13,7 +13,6 @@
 
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -24,12 +23,10 @@ import type {
 	SkillFrameworkMode,
 } from "flywheel-config";
 import {
-	ConfigLoader,
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
 	isSkillFrameworkMode,
 	isWorkflowPhaseRole,
-	resolveEffectiveFounderUxConfig,
 	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
@@ -84,10 +81,6 @@ import {
 } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
-	isWorkflowTemplateDispatchEnabled,
-	workflowTemplateDispatchBlockReason,
-} from "../workflow-template-dispatch.js";
-import {
 	recoverWorkflowStartSelection,
 	resolveWorkflowTemplateCandidateSchema,
 	resolveWorkflowTemplateSelection,
@@ -96,10 +89,6 @@ import {
 	WorkKindRouteError,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
-import {
-	isQaIssueTitle,
-	resolveFounderFacingUx,
-} from "./founder-ux/trigger.js";
 import {
 	getGeneralizedLaunchDelivery,
 	probeGeneralizedLaunchLiveness,
@@ -299,40 +288,6 @@ function isDeptScopeRejectEnabled(): boolean {
 	if (v === undefined) return true;
 	const lower = v.toLowerCase();
 	return lower !== "off" && lower !== "false" && lower !== "0";
-}
-
-/**
- * FLY-869: load a project's `founder_ux_gate.exempt_labels` from its
- * CANONICAL `.flywheel/config.yaml` root — mirrors
- * `loadPipelineConfigByProject` (SECURITY: reads the mainline checkout, NEVER
- * an implementation PR's worktree, so a runner cannot self-exempt its own
- * issue). Resolved through `resolveEffectiveFounderUxConfig` so an absent
- * project / absent config file / absent `founder_ux_gate` block / malformed
- * config all collapse to the resolver's default exempt list
- * (`["brainstorm-exempt"]`) rather than an empty "nothing is exempt" set —
- * the gate itself still defaults to enforce regardless of this list.
- */
-export async function loadFounderUxExemptLabels(
-	project: ProjectEntry | undefined,
-	readFile: (p: string) => string = (p) => readFileSync(p, "utf-8"),
-): Promise<readonly string[]> {
-	if (!project) return resolveEffectiveFounderUxConfig().exempt_labels;
-	const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
-	try {
-		const loader = new ConfigLoader(async (p) => readFile(p));
-		const cfg = await loader.load(configPath);
-		return resolveEffectiveFounderUxConfig(cfg?.founder_ux_gate).exempt_labels;
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException).code;
-		if (code !== "ENOENT") {
-			console.warn(
-				`[founder-ux] config load failed for ${project.projectName}: ${
-					(err as Error).message
-				} — using default exempt labels`,
-			);
-		}
-		return resolveEffectiveFounderUxConfig().exempt_labels;
-	}
 }
 
 export function isWorkflowResumeEnabled(
@@ -1495,9 +1450,8 @@ export function createRunsRouter(
 		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
 		// new department-scope check. Fetch once, reuse for both.
 		let issueLabelNames: string[] = [];
-		// FLY-598 (Codex R1 MEDIUM): track whether the label fetch FAILED (distinct
-		// from "fetched, but empty"). A failed read must NOT silently downgrade the
-		// founder-facing-ux primary trigger to "not founder-facing" (fail-open).
+		// Track whether the label fetch failed so ponytail can fail closed instead
+		// of treating an unreadable set as an ordinary empty set.
 		let issueLabelsFetchFailed = false;
 		try {
 			const { LinearClient } = await import("@linear/sdk");
@@ -1530,9 +1484,6 @@ export function createRunsRouter(
 				);
 				// Leave issueLabelNames empty — dept-scope check will treat as
 				// `issue_no_department_label` and reject (when enforcement is on).
-				// FLY-598 (Codex R1 MEDIUM): record the failure so the founder-ux
-				// snapshot fail-closes rather than treating an unreadable label set
-				// as "not founder-facing".
 				issueLabelsFetchFailed = true;
 			}
 
@@ -2084,9 +2035,8 @@ export function createRunsRouter(
 						? await loadMainPipelineConfig()
 						: undefined;
 				if (
-					workflowTemplateDispatchBlockReason(runSchema, process.env) !==
-						undefined ||
-					(classifiedKind === "pipeline_dag_v1" && pipelineConfig?.dag !== true)
+					classifiedKind === "pipeline_dag_v1" &&
+					pipelineConfig?.dag !== true
 				) {
 					res.status(409).json({
 						success: false,
@@ -2094,7 +2044,7 @@ export function createRunsRouter(
 							classifiedKind === "pipeline_dag_v1"
 								? "ACTIVE_DAG_RUN_RECOVERY_HELD"
 								: "ACTIVE_WORKFLOW_RUN_RECOVERY_HELD",
-						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but its dispatch policy is currently disabled — restore the workflow flags${classifiedKind === "pipeline_dag_v1" ? " + pipeline.dag" : ""} to converge it, or finalize/terminate the run before dispatching legacy`,
+						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but pipeline.dag is disabled — restore pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
 					});
 					return;
 				}
@@ -2163,12 +2113,6 @@ export function createRunsRouter(
 			}
 		}
 
-		// FLY-1407: the fleet-wide dispatch flag is the FIRST rollback lever.
-		// When it is off we deliberately skip strict config parsing and every new
-		// input check, preserving today's request bytes and error ordering.
-		const workflowDispatchEnabled = isWorkflowTemplateDispatchEnabled(
-			process.env,
-		);
 		const freshMasterMain =
 			!engineRecovery &&
 			!replayReservation &&
@@ -2188,7 +2132,7 @@ export function createRunsRouter(
 		let menuTemplateOverride:
 			| ReturnType<typeof resolveMenuOverrides>["templateOverride"]
 			| undefined;
-		if (workflowDispatchEnabled && freshMasterMain) {
+		if (freshMasterMain) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
 				const strict = loadWorkKindConfigStrict(project);
@@ -2458,13 +2402,8 @@ export function createRunsRouter(
 				? noWorkflowPhaseOverride || genericFallback
 				: normalizedIssueLabels.includes(LEGACY_ROUTING_OVERRIDE_LABEL));
 		let candidateSchemaAtEntry: 1 | 2 | null;
-		if (
-			engineRecovery ||
-			freshLegacyEntry ||
-			freshNoWorkflowPhaseLegacy ||
-			(!workflowDispatchEnabled && !replayReservation)
-		) {
-			// Recovery, the dispatch rollback lever, and a fresh explicit opt-out are
+		if (engineRecovery || freshLegacyEntry || freshNoWorkflowPhaseLegacy) {
+			// Recovery and a fresh explicit opt-out are
 			// candidate-free. A bad current binding/revision cannot strand recovery or
 			// turn a legacy request into a generalized 409.
 			// The current resolver can throw on a corrupted/nonexistent current
@@ -2510,26 +2449,9 @@ export function createRunsRouter(
 		//
 		// codexSkip — FLY-137 Phase 5: "label the issue before triggering; if you
 		// forgot, cancel + retry" (no mid-run Linear refresh).
-		// founderFacingUx — FLY-598/FLY-869: default-ON, exempt only via the
-		// project's configured exempt labels (canonical `.flywheel/config.yaml`)
-		// or a `QA · <ident>` title; FAIL-CLOSED on a label-read failure (an
-		// unreadable label set must never read as "not founder-facing"). Inert
-		// unless founder_ux_gate.mode != off.
-		const computeStartBehaviorSnapshot = async () => {
-			const codexSkip = normalizedIssueLabels.includes("codex-skip");
-			const founderUxProject = projects.find(
-				(p) => p.projectName === projectName,
-			);
-			const founderUxExemptLabels =
-				await loadFounderUxExemptLabels(founderUxProject);
-			const founderFacingUx = resolveFounderFacingUx(
-				normalizedIssueLabels,
-				issueLabelsFetchFailed,
-				founderUxExemptLabels,
-				isQaIssueTitle(issueTitle),
-			);
-			return { codexSkip, founderFacingUx };
-		};
+		const computeStartBehaviorSnapshot = () => ({
+			codexSkip: normalizedIssueLabels.includes("codex-skip"),
+		});
 		const buildPonytailInput = (): PonytailInput => {
 			const rawPonytail = (req.body as { ponytail?: unknown }).ponytail;
 			const ponytailRunOverride =
@@ -2596,7 +2518,6 @@ export function createRunsRouter(
 			!engineRecovery &&
 			!freshLegacyEntry &&
 			!freshNoWorkflowPhaseLegacy &&
-			workflowDispatchEnabled &&
 			candidateSchemaAtEntry === 2;
 		const effectiveStartKey =
 			requestedStartKey ?? (v2Entry ? `wf2-auto-${randomUUID()}` : undefined);
@@ -2606,11 +2527,7 @@ export function createRunsRouter(
 			| undefined;
 		if (engineRecovery) {
 			generalizedSelection = engineRecovery;
-		} else if (
-			freshLegacyEntry ||
-			freshNoWorkflowPhaseLegacy ||
-			!workflowDispatchEnabled
-		) {
+		} else if (freshLegacyEntry || freshNoWorkflowPhaseLegacy) {
 			generalizedSelection = null;
 		} else {
 			try {
@@ -2638,7 +2555,6 @@ export function createRunsRouter(
 					tier: workKindActiveAtEntry ? canonicalTier : undefined,
 					override: menuTemplateOverride,
 					...(v2Entry ? { entryKind: "workflow_v2" as const } : {}),
-					env: process.env,
 				});
 			} catch (err) {
 				if (err instanceof WorkKindRouteError) {
@@ -2794,7 +2710,6 @@ export function createRunsRouter(
 				now: now.toISOString(),
 				expiresAt: credentialWindow.expiresAt,
 				absoluteDeadlineAt: credentialWindow.absoluteDeadlineAt,
-				env: process.env,
 				idempotencyKey: generalizedSelection.idempotencyKey,
 				dispatchResolution,
 			});
@@ -3093,12 +3008,12 @@ export function createRunsRouter(
 						? generalizedSelection.node.type
 						: "main";
 					// FLY-1372 §2.5: DAG starts carry the EFFECTIVE behavior snapshot
-					// (docTier defaulted, founder-ux computed, ponytail ladder input)
+					// (docTier defaulted, ponytail ladder input)
 					// so the durable emitStarted seam persists them with the session
 					// row. Non-DAG generalized starts keep today's exact shape.
 					const dagBehavior =
 						engineRecoveryKind === "pipeline_dag_v1"
-							? await computeStartBehaviorSnapshot()
+							? computeStartBehaviorSnapshot()
 							: undefined;
 					const routeSummary = generalizedSelection.categorySource
 						? formatWorkflowRouteVisibility({
@@ -3131,7 +3046,6 @@ export function createRunsRouter(
 								normalizedIssueLabels.includes("codex-skip"),
 							docTier: dagBehavior ? (docTier ?? "full") : docTier,
 							...(dagBehavior && {
-								founderFacingUx: dagBehavior.founderFacingUx,
 								ponytailInput: buildPonytailInput(),
 							}),
 							issueUrl,
@@ -3467,7 +3381,7 @@ export function createRunsRouter(
 		// `computeStartBehaviorSnapshot` helper (FLY-1372 §2.5) — this call site
 		// keeps its original position, so the flags-OFF legacy persistence timing
 		// is byte-identical. See the helper for the fail-closed label semantics.
-		const { codexSkip, founderFacingUx } = await computeStartBehaviorSnapshot();
+		const { codexSkip } = computeStartBehaviorSnapshot();
 
 		// FLY-137 v1.27.2 (Codex Track A #2): validate `agentName` SYNCHRONOUSLY
 		// before kicking off any async work. Without this, InvalidAgentNameError
@@ -3662,8 +3576,6 @@ export function createRunsRouter(
 					agent_name: agentName ?? undefined,
 					agent_match_method: matchMethod,
 					codex_skip: codexSkip ? 1 : 0,
-					// FLY-598: founder-facing-ux label snapshot (inert unless gate active)
-					founder_facing_ux: founderFacingUx ? 1 : 0,
 					// FLY-205: persist the EFFECTIVE tier (explicit "full" when the
 					// Lead sent nothing) so retry reuses exactly what this run got —
 					// never a silent re-default. issue_url for header continuity.

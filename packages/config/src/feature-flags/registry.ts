@@ -293,32 +293,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "owner=converge CLI；每个 Lead 启动、daily update/self-ship、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
 	},
 	{
-		name: "cmux_linked_view",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_LINKED_VIEW",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1272/1364: 默认 exact-one-window link topology；关闭后仍保持独立视图的生命周期保护",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"linked_view_enabled",
-				"cli_invocation",
-			),
-			envSite(
-				"scripts/flywheel-cmux-autostart.sh",
-				"load_cmux_bool_flag",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "voice_qa_presence_override",
 		category: "feature",
 		source: "env",
@@ -768,27 +742,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "conversational",
 	},
-	{
-		name: "lead_dry_run",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_DRY_RUN",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "Codex Lead dry-run 预演模式（只描述不执行）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
-				"dry-run gate",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-
 	// ─── value-type env (non-boolean) → readonly display ───
 	// FLY-1809: `lead_cross_dept_channel_ids` used to sit here. It is a Discord
 	// channel id, not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to
@@ -873,26 +826,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"resolveFounderAttributionGateOn",
 				"cli_invocation",
 				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "comm_bypass_bridge",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_COMM_BYPASS_BRIDGE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"应急：绕过 founder-consent 直写 approve gate（治理门 override，只读）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/commands/respond.ts",
-				"respond",
-				"cli_invocation",
 			),
 		],
 		toggleable: "readonly",
@@ -1199,124 +1132,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "run-infra.ts 明确不加载 flywheelConfig?.ponytail（项目层 dormant）；Annie-exception。",
 	},
 	{
-		name: "founder_ux_gate",
-		category: "governance_gate",
-		source: "project_config",
-		scope: "project",
-		configKey: "founder_ux_gate.mode",
-		// FLY-869: flipped default_on — an absent config resolves to `enforce`
-		// via resolveEffectiveFounderUxConfig (was opt_in `off` under FLY-598).
-		polarity: "default_on",
-		valueKind: "enum",
-		enumValues: ["off", "audit_only", "enforce"],
-		default: "enforce",
-		description:
-			"全 issue brainstorm 对齐门（治理门，只读）— 默认 gate 所有实质性 issue，仅 brainstorm-exempt 标签豁免",
-		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "founderUxGate.mode",
-			},
-		],
-		toggleable: "readonly",
-		note: "absent → enforce（resolveEffectiveFounderUxConfig 收口，FLY-869）；显式 mode:off 才是旧行为的 kill-switch。",
-	},
-	{
-		// FLY-900: fleet-wide kill-switch that RETIRES the founder-UX
-		// implement-before-signoff gate (FLY-598 / FLY-869). Annie declared the gate
-		// unnecessary AND it is currently mis-configured (no FLYWHEEL_FOUNDER_USER_ID
-		// → the sign-off write fail-closes 503, permanently blocking every
-		// founder-facing issue's implement). Stacks OVER the per-project
-		// `founder_ux_gate.mode` (governance gate) as a fleet-wide override, like
-		// the retired route kill switch — but OPPOSITE polarity: default OFF (gate
-		// disabled), only `=1` re-enables the original enforce. Governance gate →
-		// ALWAYS readonly (never a founder dashboard toggle). Requires a Bridge
-		// restart to take effect. The single flag semantic lives in the helper
-		// `isFounderUxGateEnabled`; Blueprint (prompt injection), the status route,
-		// the stage-guard call site, and claude-lead.sh all CONSUME that helper
-		// (they carry no env literal, so the drift scanner does not scan them and
-		// they are documented here as consumers, not readSites).
-		name: "founder_ux_gate_killswitch",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_UX_GATE_ENABLED",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"全局撤掉 founder-UX 签字门（implement 前必须 thread 签字，FLY-598/869）；默认 OFF=门禁用，=1 恢复原 enforce（叠在 per-project founder_ux_gate.mode 上，FLY-900）",
-		readSites: [
-			envSite(
-				"packages/config/src/founder-ux-config.ts",
-				"isFounderUxGateEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "单一语义在 helper isFounderUxGateEnabled；Blueprint(A)/status route(B)/stage-guard(C)/claude-lead.sh(D) 消费该 helper（无 env 字面量，非 readSite）；默认 OFF 撤门，=1 恢复；改后需重启 Bridge。",
-	},
-	// ─── FLY-818: auto-continue (①) + stuck→founder-page (②) ───
-	{
-		name: "runner_autocontinue",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_RUNNER_AUTOCONTINUE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-818 ①: opt-in /loop-native goal-driven 自动续跑 arming（AutoContinueArmer）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"createBridgeApp (AutoContinueArmer boot gate)",
-				"bridge_boot",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/autocontinue-armer.ts",
-				"AutoContinueArmer.enabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
-	},
-	{
-		// FLY-1165: done-thread reconcile sweep (boot + periodic) — the structural
-		// backstop behind the FLY-369 close→archive cascade. Double gate (fresh
-		// Linear Done/Canceled + no live runner) + triple liveness veto; archives
-		// through the shared sink (archive-once, per-thread serialized).
-		name: "done_thread_reconcile",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1165: 关掉 done-thread reconcile sweep（Done/Canceled issue 的未归档 thread 自动归档兜底；调度器每 tick 重读 env，off→on/on→off 无需重启）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
-				"resolveDoneThreadReconcileConfig",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"resolve.direct-toggle.test:done_thread_reconcile live-observe",
-		note: "伴生 knobs：FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN / _DRYRUN / _MAX_PER_RUN（下方三条）。QA slot Bridge 由 test-deploy.sh 显式注入 =0 隔离（防扫真 Linear）。",
-	},
-	{
 		name: "done_thread_reconcile_interval_min",
 		category: "feature",
 		source: "env",
@@ -1380,30 +1195,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
-		name: "workflow_template_dispatch",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1307: enable candidate-first workflow-template dispatch through the typed snapshot engine. Default off for exact legacy compatibility; starts also require claims WRITE and READ, and schema v2 additionally requires generalized templates.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-template-dispatch.ts",
-				"isWorkflowTemplateDispatchEnabled / workflowTemplateDispatchBlockReason",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-template-dispatch tests: next predicate call observes apply",
-		note: "FLY-1344 founder-controlled DAG lever (FLY-1307 lineage). Dispatch still requires claims WRITE + READ; force_legacy is a separate ship-reader fallback.",
-	},
-	{
 		name: "workflow_resume",
 		category: "feature",
 		source: "env",
@@ -1428,30 +1219,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "Only explicit resume:true requests enter the T3/T4 admission namespace; existing start reservation keys are untouched.",
 	},
 	{
-		name: "workflow_gate_carrier",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_GATE_CARRIER",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1441: freeze new engine-owned runs onto Gate-arrival ship approval carriers. Existing epoch-0 runs finish with legacy semantics; toggling affects only the next run.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-template-dispatch.ts",
-				"isWorkflowGateCarrierEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"FLY-1441 epoch matrix proves an in-process toggle changes only the next materialized run",
-		note: "Rollout flag only. The run-frozen gate_carrier_epoch, not the live env, owns prompt, fence, holder, and scanner behavior.",
-	},
-	{
 		name: "workflow_turn_divergence_alerts",
 		category: "feature",
 		source: "env",
@@ -1474,96 +1241,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-turn-ledger-validator test mutates the injected env and the next read changes",
 		note: "Set =1 after observing the shadow episodes. Set =0 to stop new severe alerts without disabling comparison, recovery closure, or durable episode evidence.",
-	},
-	{
-		name: "workflow_generalized_templates",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1281: gates schema-v2 selection, admission, and submission; bundled v2 seed installation/publication stays always-on and dormant until explicitly bound. Default off for byte-compatible routing. V2 admission also requires workflow_claims_write, and workflow_claims_write must not be enabled before the pinned real fresh-spawn E2E passes.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-template.ts",
-				"isGeneralizedTemplatesEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-template tests: next generalized predicate call observes apply",
-		note: "FLY-1344 founder-controlled DAG v2 lever (FLY-1307/1281 lineage). A v2 start still requires template dispatch + claims WRITE + READ.",
-	},
-	{
-		name: "workflow_claims_write",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1232/1244: workflow claims shadow writes and enrolled execution admission. Must remain off until the pinned fresh-spawn E2E and peer-credential hardening gates pass.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-claims.ts",
-				"isWorkflowClaimsWriteEnabled",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"workflow-claims tests prove the parser and template-dispatch predicate observe the next call",
-		note: "Founder-controlled DAG claims-write admission lever.",
-	},
-	{
-		name: "workflow_claims_read",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1244: switch explicitly enrolled durable workflow runs to claims-backed ship eligibility and authoritative head reads.",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/workflow-claims.ts",
-				"isWorkflowClaimsReadEnabled",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOffGate argsEnv-wins Bridge caller",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOffGate",
-				"dotenv_live",
-				"dynamic",
-			),
-			envSite(
-				"packages/flywheel-comm/src/commands/verify-approval.ts",
-				"verifyApprovalWithBridgeHead",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"ship-eligibility + verify-approval tests: Bridge env and CLI dotenv readers observe one apply",
-		note: "FLY-1344 founder-controlled DAG claims-read lever (FLY-1307/1244 lineage). Bridge and CLI are both live authoritative consumers; explicit run enrollment remains required.",
 	},
 	// FLY-1809: `delivery_secret_path` used to sit here. It is a filesystem path,
 	// not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to the other

@@ -64,7 +64,6 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
-	"cmux_flag_state",
 	"flag_scan_failed",
 	"flag_scan_no_clock",
 ]);
@@ -88,11 +87,7 @@ const LEAD_IDENTITY_KINDS = [
 	"lead_backend_drift",
 ] as const;
 
-const CMUX_SYNC_KINDS = [
-	"cmux_cleanup",
-	"cmux_flag_state",
-	"tmux_rescue_hold",
-] as const;
+const CMUX_SYNC_KINDS = ["cmux_cleanup", "tmux_rescue_hold"] as const;
 
 const DISCORD_PLUGIN_KINDS = ["discord_plugin_integrity_failed"] as const;
 
@@ -193,7 +188,6 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 				arc: "human_by_design",
 			});
 		}
-		expect(INFORMATIONAL_KINDS.has("cmux_flag_state")).toBe(true);
 		expect(INFORMATIONAL_KINDS.has("cmux_cleanup")).toBe(false);
 		expect(INFORMATIONAL_KINDS.has("tmux_rescue_hold")).toBe(false);
 	});

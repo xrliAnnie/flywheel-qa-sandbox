@@ -4,7 +4,6 @@ import {
 	type ModelCatalog,
 	type ModelSurface,
 } from "flywheel-config";
-import type { DagFlagPanel } from "./dag-flag-panel.js";
 import {
 	assertManagementSnapshot,
 	MANAGEMENT_SCHEMA_VERSION,
@@ -23,7 +22,6 @@ export interface ManagementSnapshotFragment {
 	projects?: ManagementProjectView[];
 	presentationGroups?: PresentationGroupView[];
 	flags?: ManagementFlagView[];
-	dagPanel?: DagFlagPanel;
 	extensions?: ManagementExtensionSection[];
 	modelCatalog?: Partial<Record<ModelSurface, ModelCatalog>>;
 	/** Provider-owned project sections joined after all authority reads complete. */
@@ -77,8 +75,6 @@ export function composeManagementSnapshot(input: {
 		runnerDefault: ManagementRunnerDefaultView;
 	}> = [];
 	const unassignedCrons: ManagementCronView[] = [];
-	let dagPanel: DagFlagPanel | undefined;
-
 	for (const provider of [...input.providers].sort((a, b) =>
 		a.id.localeCompare(b.id),
 	)) {
@@ -93,7 +89,6 @@ export function composeManagementSnapshot(input: {
 			projects.push(...(result.fragment.projects ?? []));
 			presentationGroups.push(...(result.fragment.presentationGroups ?? []));
 			flags.push(...(result.fragment.flags ?? []));
-			dagPanel = result.fragment.dagPanel ?? dagPanel;
 			extensions.push(...(result.fragment.extensions ?? []));
 			Object.assign(modelCatalog, result.fragment.modelCatalog ?? {});
 			projectDags.push(...(result.fragment.projectDags ?? []));
@@ -145,7 +140,6 @@ export function composeManagementSnapshot(input: {
 		presentationGroups,
 		unassignedCrons,
 		flags,
-		...(dagPanel ? { dagPanel } : {}),
 		extensions,
 	};
 	const snapshot: ManagementSnapshotV1 = {

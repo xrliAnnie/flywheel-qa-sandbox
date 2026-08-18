@@ -501,7 +501,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			expect(isReservedApprovalAttribution("founder-bridge-auto")).toBe(false);
 		});
 
-		it("🔴 spoof guard e2e: respond bypass path REFUSES a reserved --lead on an approve_to_ship gate", async () => {
+		it("🔴 spoof guard e2e: respond REFUSES a reserved --lead on an approve_to_ship gate", async () => {
 			const { respond } = await import("../commands/respond.js");
 			const qid = createGateQuestion();
 			for (const forged of ["bridge", "bridge-founder-consent", FOUNDER]) {
@@ -511,9 +511,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 						fromAgent: forged,
 						answer: JSON.stringify({ approved: true }),
 						dbPath: commDbPath,
-						env: {
-							FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-						} as NodeJS.ProcessEnv,
+						env: {} as NodeJS.ProcessEnv,
 					}),
 				).rejects.toThrow(/RESERVED approval attribution/);
 			}

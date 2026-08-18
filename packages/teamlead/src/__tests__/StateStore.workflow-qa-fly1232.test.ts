@@ -5,10 +5,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import {
-	isWorkflowClaimsReadEnabled,
-	isWorkflowClaimsWriteEnabled,
-} from "../workflow-claims.js";
 
 /**
  * FLY-1232 QA acceptance probe — INDEPENDENT verification (DAG workflow QA
@@ -401,19 +397,5 @@ describe("FLY-1232 QA · B6 — applyWorkflowLedgerBatch is atomic on a real fil
 		expect(replay.events.every((e) => e.deduped)).toBe(true);
 		expect(store.listWorkflowSideEffects("run-good")).toHaveLength(1);
 		store.close();
-	});
-});
-
-describe("FLY-1232 QA · A10/B1 — rollout switches default OFF (byte-compat seam)", () => {
-	it("the two remaining flags are independent and OFF unless explicitly '1'", async () => {
-		expect(isWorkflowClaimsWriteEnabled({})).toBe(false);
-		expect(isWorkflowClaimsReadEnabled({})).toBe(false);
-		// Only the literal "1" enables — "true"/"0"/"yes" do not.
-		expect(
-			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "true" }),
-		).toBe(false);
-		expect(
-			isWorkflowClaimsWriteEnabled({ FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1" }),
-		).toBe(true);
 	});
 });

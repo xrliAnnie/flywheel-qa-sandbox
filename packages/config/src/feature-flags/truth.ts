@@ -509,8 +509,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: per-session land cleanup opportunity grace period (FLY-1375)",
 	FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS:
 		"tuning knob: active Claude review subprocess timeout (FLY-1254)",
-	FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS:
-		"tuning knob: FLY-818 autocontinue arm-observe window (ms), lifecycle-bound",
 	FLYWHEEL_CRASH_REAP_GRACE_MIN: "tuning knob: crash reap grace minutes",
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",
@@ -771,6 +769,16 @@ export const RETIRED_FLAGS = [
 		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN",
 		retiredBy: "FLY-1806",
 	},
+	{ envVar: "FLYWHEEL_FOUNDER_UX_GATE_ENABLED", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_RUNNER_AUTOCONTINUE", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_COMM_BYPASS_BRIDGE", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_CMUX_LINKED_VIEW", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_WORKFLOW_GATE_CARRIER", retiredBy: "FLY-1808" },
 ] as const;
 
 export interface FlagTruthValidation {

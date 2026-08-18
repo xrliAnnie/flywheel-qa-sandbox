@@ -66,6 +66,24 @@ const AUXILIARY_RUNTIME_SEAMS = [
 ] as const;
 
 export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
+	{
+		name: "FLYWHEEL_LEAD_DRY_RUN",
+		kind: "env",
+		persistentEnvAllowed: false,
+		reason:
+			"one-invocation preview seam; it suppresses side effects for tests and operator inspection rather than rolling out runtime behavior",
+		owner: "flywheel-eng-lead",
+		issue: "FLY-1808",
+	},
+	{
+		name: "FLYWHEEL_DONE_THREAD_RECONCILE",
+		kind: "env",
+		persistentEnvAllowed: false,
+		reason:
+			"QA isolation seam; production behavior stays enabled while test-deploy may disable reconciliation for an isolated slot",
+		owner: "flywheel-eng-lead",
+		issue: "FLY-1808",
+	},
 	...QA_AND_INVOCATION_SEAMS.map((name) => ({
 		name,
 		kind: "env" as const,

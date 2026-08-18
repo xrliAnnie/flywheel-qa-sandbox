@@ -13,7 +13,7 @@
  *                    ONLY when a thread is actually bound; otherwise fail-safe
  *                    to "ticket" (never silently drop).
  *  - "notify":       root-only informational notices; these bypass ticket and
- *                    issue-thread lifecycle (for example cmux_flag_state).
+ *                    issue-thread lifecycle.
  *
  * The classification is a PURE function; the routed sink wrapper
  * (`createInfraAlertSink`) is what plugin.ts installs in front of the raw

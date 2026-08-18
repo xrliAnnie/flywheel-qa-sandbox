@@ -90,13 +90,12 @@ async function runOnce(opts: {
 			},
 		} as any,
 		opts.agentDispatcher,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
+		undefined, // checkpointConfig
+		undefined, // flywheelRepoRoot
+		undefined, // docFlowConfig
+		undefined, // ponytailConfig
+		undefined, // ponytailReadiness
+		undefined, // skillFrameworkParticipation
 		() => true, // matt readiness stub (irrelevant at default)
 	);
 	const ctx: BlueprintContext = {

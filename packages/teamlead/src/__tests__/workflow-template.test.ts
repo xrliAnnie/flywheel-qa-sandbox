@@ -8,7 +8,6 @@ import {
 } from "../workflow-run-snapshot.js";
 import {
 	applyWorkflowOverride,
-	isGeneralizedTemplatesEnabled,
 	isWorkflowManifestV1Land,
 	parseWorkflowManifestYaml,
 	validatePinnedWorkflowManifest,
@@ -423,20 +422,6 @@ describe("workflow template manifest v2", () => {
 		expect(() =>
 			validateWorkflowManifest(v1, { allowUnsupportedModels: true }),
 		).not.toThrow();
-	});
-
-	it("is independently default-off", () => {
-		expect(isGeneralizedTemplatesEnabled({})).toBe(false);
-		expect(
-			isGeneralizedTemplatesEnabled({
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "true",
-			}),
-		).toBe(false);
-		expect(
-			isGeneralizedTemplatesEnabled({
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			}),
-		).toBe(true);
 	});
 
 	it("accepts a linear no-code generic→review→gate graph with output and review loop contracts", () => {

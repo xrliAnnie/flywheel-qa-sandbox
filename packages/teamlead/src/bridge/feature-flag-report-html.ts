@@ -17,11 +17,6 @@
  */
 
 import type { FlagView } from "flywheel-config";
-import { buildDagFlagPanel } from "./dag-flag-panel.js";
-import {
-	DAG_FLAG_PANEL_CSS,
-	renderDagFlagPanelHtml,
-} from "./dag-flag-panel-render.js";
 import {
 	esc,
 	FEATURE_FLAG_CSS,
@@ -153,10 +148,6 @@ function copyPasteSurface(): string {
 		'  for (var i=0;i<enumCtls.length;i++){ enumCtls[i].addEventListener("change", rebuild); }',
 		'  var cfgSels=document.querySelectorAll("[data-cfg-group]");',
 		'  for (var i=0;i<cfgSels.length;i++){ cfgSels[i].addEventListener("change", rebuild); }',
-		'  var dagButtons=document.querySelectorAll("[data-dag-copy]");',
-		'  for (var i=0;i<dagButtons.length;i++){ dagButtons[i].addEventListener("click", function(){',
-		'    var command=this.getAttribute("data-dag-copy")||""; if(out){out.value=command;} if(count){count.textContent=command?"1":"0";}',
-		"  }); }",
 		'  var copyBtn=q("ffCopyBtn");',
 		"  if (copyBtn){",
 		'    copyBtn.addEventListener("click", function(){',
@@ -329,7 +320,6 @@ export function renderFlagReport(
 		? { leads: [], featureFlags: data }
 		: data;
 	const flags = snap.featureFlags ?? [];
-	const dagPanel = snap.dagPanel ?? buildDagFlagPanel(flags);
 	const interactive = opts.interactive === true;
 	const genLine = opts.generatedAt
 		? `<p class="sub">生成于 ${esc(opts.generatedAt)}</p>`
@@ -346,17 +336,16 @@ export function renderFlagReport(
 		'<meta charset="utf-8">',
 		'<meta name="viewport" content="width=device-width, initial-scale=1">',
 		"<title>Flywheel Feature Flags</title>",
-		`<style>${BASE_CSS}${FEATURE_FLAG_CSS}${DAG_FLAG_PANEL_CSS}</style>`,
+		`<style>${BASE_CSS}${FEATURE_FLAG_CSS}</style>`,
 		`</head><body${bodyAttrs}><div class="wrap">`,
 		'<div class="card">',
 		"<h1>Fleet 控制台</h1>",
 		`<p class="sub">${subCopy}</p>`,
 		genLine,
-		'<p class="note">治理门（founder-consent / founder-ux-gate 等）与 dormant 项只读，永不在此 toggle。生效路径：热生效=改后即生效；需重启=改 .env 后要重启 Bridge；新 run 生效=改项目 config 对新 run 生效。</p>',
+		'<p class="note">治理门（如 founder-consent）与 dormant 项只读，永不在此 toggle。生效路径：热生效=改后即生效；需重启=改 .env 后要重启 Bridge；新 run 生效=改项目 config 对新 run 生效。</p>',
 		"</div>",
 		interactive ? leadConfigSection(snap.leads) : "",
 		interactive ? runnerCronSections(snap) : "",
-		renderDagFlagPanelHtml(dagPanel, interactive),
 		renderFeatureFlagsHtml(flags, interactive ? "phone" : "none"),
 		interactive ? copyPasteSurface() : "",
 		"</div></body></html>",

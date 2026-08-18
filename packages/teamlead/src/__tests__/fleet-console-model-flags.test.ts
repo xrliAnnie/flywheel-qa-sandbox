@@ -21,8 +21,6 @@ describe("buildConsoleSnapshot — feature flags", () => {
 			featureFlags: flags,
 		});
 		expect(snap.featureFlags?.length).toBe(flags.length);
-		expect(snap.dagPanel).toBeDefined();
-		expect(snap.dagPanel?.shipReader).toBe("blocked_fail_closed");
 		// governance gates come through read-only.
 		const gate = snap.featureFlags?.find(
 			(f) => f.name === "founder_consent_decision_mode",

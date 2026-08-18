@@ -1385,13 +1385,9 @@ describe("WorkflowEngineDispatcher", () => {
 		["v1", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
 		["v1", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
 		["v1", "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
-		["v2", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
-		["v2", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
-		["v2", "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
-		["v2", "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
 	] as const)(
-		"holds an existing %s engine successor without mutating it when %s is removed",
-		async (schema, missing) => {
+		"converges an existing %s successor despite retired %s=0",
+		async (schema, disabled) => {
 			const fixture =
 				schema === "v1"
 					? {
@@ -1408,7 +1404,7 @@ describe("WorkflowEngineDispatcher", () => {
 				status: "running",
 			});
 			const env = { ...WORKFLOW_ON };
-			delete env[missing];
+			env[disabled] = "0";
 			const start = vi.fn();
 			const dispatcher = new WorkflowEngineDispatcher({
 				store,
@@ -1420,11 +1416,9 @@ describe("WorkflowEngineDispatcher", () => {
 				env,
 			});
 
-			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 1 });
+			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 			expect(start).not.toHaveBeenCalled();
-			expect(store.listNonTerminalWorkflowSideEffects()[0]).toMatchObject({
-				state: "intent_recorded",
-			});
+			expect(store.listNonTerminalWorkflowSideEffects()).toEqual([]);
 			store.close();
 			if (fixture.canonicalRoot) {
 				rmSync(fixture.canonicalRoot, { recursive: true, force: true });

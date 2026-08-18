@@ -47,10 +47,7 @@ import {
 	isTrustedApprovalAttribution,
 	resolveFounderId,
 } from "flywheel-comm/founder-attribution";
-import {
-	resolveWorkflowClaimsReadEnabled,
-	type ShipEligibilityDecision,
-} from "flywheel-comm/ship-eligibility";
+import type { ShipEligibilityDecision } from "flywheel-comm/ship-eligibility";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -748,14 +745,12 @@ export function createExternalMergeReconciler(
 	) {
 		const boundHead = session.pr_head_sha?.trim().toLowerCase();
 		let authoritativeHead: string | undefined = boundHead;
-		if (resolveWorkflowClaimsReadEnabled({ env: process.env })) {
-			try {
-				authoritativeHead = (
-					await resolveWorkflowHeadAuthority(deps.store, session.execution_id)
-				).prHeadSha;
-			} catch {
-				authoritativeHead = undefined;
-			}
+		try {
+			authoritativeHead = (
+				await resolveWorkflowHeadAuthority(deps.store, session.execution_id)
+			).prHeadSha;
+		} catch {
+			authoritativeHead = undefined;
 		}
 		const headMatch =
 			!!boundHead &&

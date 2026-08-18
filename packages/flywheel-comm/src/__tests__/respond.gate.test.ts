@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,6 @@ import { createTestLeadIdentityEnvs } from "./helpers/lead-identity-env.js";
 
 let dir: string;
 let dbPath: string;
-let auditPath: string;
 let leadEnv: NodeJS.ProcessEnv;
 
 function respond(args: RespondArgs): Promise<void> {
@@ -36,7 +35,6 @@ function hasResponse(qid: string): boolean {
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "respond-"));
 	dbPath = join(dir, "comm.db");
-	auditPath = join(dir, "audit.db");
 	leadEnv = createTestLeadIdentityEnvs(dir, ["lead-x"], "Proj")["lead-x"]!;
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -54,7 +52,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(true);
 	});
 
-	it("approve_to_ship + no bridge + no bypass → FAIL-CLOSED (throws, no write)", async () => {
+	it("approve_to_ship + no bridge fails closed even when the retired bypass env is set", async () => {
 		const qid = seed("approve_to_ship");
 		await expect(
 			respond({
@@ -62,7 +60,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				fromAgent: "lead-x",
 				answer: "changes requested",
 				dbPath,
-				env: {},
+				env: { FLYWHEEL_COMM_BYPASS_BRIDGE: "1" },
 			}),
 		).rejects.toThrow(/refusing to resolve approve_to_ship/);
 		expect(hasResponse(qid)).toBe(false);
@@ -233,7 +231,7 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
-	it("rejects Lead approval intent even with the emergency bypass enabled", async () => {
+	it("rejects Lead approval intent even when the retired bypass env is set", async () => {
 		const qid = seed("approve_to_ship");
 		await expect(
 			respond({
@@ -244,15 +242,13 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				projectName: "Proj",
 				env: {
 					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
 				},
 			}),
 		).rejects.toThrow(/lead_ack_rejected/);
 		expect(hasResponse(qid)).toBe(false);
-		expect(existsSync(auditPath)).toBe(false);
 	});
 
-	it("a superseded gate rejects the emergency bypass without audit or wake side effects", async () => {
+	it("the retired bypass cannot write a superseded gate", async () => {
 		const oldGate = seed("approve_to_ship");
 		const db = new CommDB(dbPath, false);
 		try {
@@ -275,12 +271,10 @@ describe("respond() fail-closed gate (§11.2)", () => {
 				projectName: "Proj",
 				env: {
 					FLYWHEEL_COMM_BYPASS_BRIDGE: "1",
-					FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH: auditPath,
 				},
 			}),
-		).rejects.toThrow(/gate is no longer open/);
+		).rejects.toThrow(/refusing to resolve approve_to_ship/);
 		expect(hasResponse(oldGate)).toBe(false);
-		expect(existsSync(auditPath)).toBe(false);
 	});
 
 	it("throws when question not found", async () => {

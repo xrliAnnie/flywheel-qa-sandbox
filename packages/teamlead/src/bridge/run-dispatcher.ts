@@ -1057,10 +1057,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 				// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
 				docTier: req.docTier,
 				issueUrl: req.issueUrl,
-				// FLY-1372 §2.5 (Codex code R1 #3): behavior snapshots ride the retry
-				// context too, so the retry session row is created WITH them.
+				// FLY-1372 §2.5: behavior snapshot rides the retry context too.
 				codexSkip: req.codexSkip,
-				founderFacingUx: req.founderFacingUx,
 				...(req.generalizedExecution && {
 					generalizedExecutionContext: {
 						runId: req.generalizedExecution.runId,
@@ -1756,10 +1754,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
 				docTier: req.docTier,
 				issueUrl: req.issueUrl,
-				// FLY-1372 §2.5: Bridge-trusted behavior snapshots for the durable
+				// FLY-1372 §2.5: Bridge-trusted behavior snapshot for the durable
 				// emitStarted seam (pipeline.dag entry / engine successor only).
 				codexSkip: req.codexSkip,
-				founderFacingUx: req.founderFacingUx,
 				// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context.
 				// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
 				// rebuilds WITH the committed progress.md (never override a caller's own).

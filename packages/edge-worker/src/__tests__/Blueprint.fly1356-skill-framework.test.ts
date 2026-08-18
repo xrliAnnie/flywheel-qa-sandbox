@@ -169,7 +169,6 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
-		undefined, // founderUxGateConfig
 		opts.ponytailConfig,
 		opts.ponytailReadiness ?? (() => true),
 		opts.participation, // FLY-1356 participation reader

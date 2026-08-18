@@ -10,11 +10,7 @@ import type {
 	WorkflowBindingCutoverBinding,
 	WorkflowBindingCutoverReceipt,
 } from "../StateStore.js";
-import {
-	isGeneralizedTemplatesEnabled,
-	validateWorkflowManifest,
-} from "../workflow-template.js";
-import { isWorkflowTemplateDispatchEnabled } from "../workflow-template-dispatch.js";
+import { validateWorkflowManifest } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
 import { loadWorkKindConfigStrict } from "./pipeline-config-source.js";
@@ -88,7 +84,6 @@ export interface WorkKindCutoverRouteDeps {
 
 export interface Fly1436ActivationEvidenceOptions {
 	projectRoot: string;
-	env?: Record<string, string | undefined>;
 	readFile?: (path: string) => string;
 	gitHead?: (projectRoot: string) => string;
 }
@@ -781,7 +776,6 @@ export function readFly1436ActivationEvidence(
 ): Fly1436ActivationEvidence {
 	const read =
 		options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
-	const env = options.env ?? process.env;
 	const project = {
 		projectName: PROJECT,
 		projectRoot: options.projectRoot,
@@ -859,8 +853,8 @@ export function readFly1436ActivationEvidence(
 		deployedSha = "";
 	}
 	return {
-		templateDispatch: isWorkflowTemplateDispatchEnabled(env),
-		generalizedTemplates: isGeneralizedTemplatesEnabled(env),
+		templateDispatch: true,
+		generalizedTemplates: true,
 		workKind,
 		prBAssetsReady: menuReady && geminiReady,
 		deployedSha,

@@ -1,9 +1,6 @@
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { hasApprovalIntent } from "../approval-intent.js";
 import { CommDB } from "../db.js";
 import { isReservedApprovalAttribution } from "../founder-attribution.js";
-import { FounderConsentAuditStore } from "../founder-consent-audit.js";
 import { isFounderReviewCheckpoint } from "../founder-review.js";
 import {
 	defaultGateMarkerDir,
@@ -85,35 +82,10 @@ export async function respond(args: RespondArgs): Promise<void> {
 				retireMarker(args.questionId, question.from_agent, env);
 				return;
 			}
-			if (env.FLYWHEEL_COMM_BYPASS_BRIDGE !== "1") {
-				throw new Error(
-					"flywheel-comm: refusing to resolve approve_to_ship gate directly. " +
-						"Set BRIDGE_URL or --bridge-url so the wrapper enforces founder consent. " +
-						"Emergency override: FLYWHEEL_COMM_BYPASS_BRIDGE=1.",
-				);
-			}
-			const written = db.insertResponse(
-				args.questionId,
-				args.fromAgent,
-				args.answer,
-				authorization.provenance,
+			throw new Error(
+				"flywheel-comm: refusing to resolve approve_to_ship gate directly. " +
+					"Set BRIDGE_URL or --bridge-url so the wrapper enforces founder consent.",
 			);
-			if (!written.written) {
-				throw new Error(
-					`flywheel-comm: approve_to_ship gate is no longer open (${args.questionId}); response was not written.`,
-				);
-			}
-			writeBypassAudit(env, {
-				questionId: args.questionId,
-				executionId: question.from_agent,
-				projectName: args.projectName,
-				leadId: args.fromAgent,
-			});
-			process.stderr.write(
-				`[flywheel-comm] WARNING: FLYWHEEL_COMM_BYPASS_BRIDGE=1 — wrote approve_to_ship gate WITHOUT founder-consent enforcement (question ${args.questionId}). A loud audit row was recorded.\n`,
-			);
-			retireMarker(args.questionId, question.from_agent, env);
-			return;
 		}
 		if (args.sourceThread) {
 			const bridgeUrl =
@@ -253,8 +225,7 @@ async function routeThroughBridge(opts: {
 	const token = opts.env.TEAMLEAD_API_TOKEN;
 	if (!token) {
 		throw new Error(
-			"flywheel-comm: TEAMLEAD_API_TOKEN required when routing approve_to_ship via Bridge. " +
-				"Set the env or use FLYWHEEL_COMM_BYPASS_BRIDGE=1 for emergency override.",
+			"flywheel-comm: TEAMLEAD_API_TOKEN required when routing approve_to_ship via Bridge.",
 		);
 	}
 	const url = `${opts.bridgeUrl.replace(/\/+$/, "")}/api/founder-consent/runner-gate-response`;
@@ -303,43 +274,4 @@ async function routeThroughBridge(opts: {
 			);
 		}
 	} catch {}
-}
-
-function writeBypassAudit(
-	env: NodeJS.ProcessEnv,
-	ctx: {
-		questionId: string;
-		executionId?: string;
-		projectName?: string;
-		leadId: string;
-	},
-): void {
-	const auditPath =
-		env.FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH?.trim() ||
-		join(homedir(), ".flywheel", "audit.db");
-	let store: FounderConsentAuditStore | undefined;
-	try {
-		store = new FounderConsentAuditStore(auditPath);
-		store.insert({
-			ts: new Date().toISOString(),
-			evaluator_version: "cli-bypass",
-			decision_mode: "cli",
-			action: "approve_to_ship_gate",
-			issue_id: ctx.executionId ?? "(cli-bypass-unknown)",
-			execution_id: ctx.executionId ?? null,
-			actor_source: "gate_response_wrapper",
-			lead_id: ctx.leadId,
-			request_reason: "FLYWHEEL_COMM_BYPASS_BRIDGE=1 emergency override",
-			decision: "bypass",
-			decision_source: "bypass_env_cli",
-			comm_question_id: ctx.questionId,
-			comm_project_name: ctx.projectName ?? null,
-		});
-	} catch (error) {
-		process.stderr.write(
-			`[flywheel-comm] WARNING: failed to write bypass audit row: ${(error as Error).message}\n`,
-		);
-	} finally {
-		store?.close();
-	}
 }

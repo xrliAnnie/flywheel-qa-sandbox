@@ -175,7 +175,6 @@ describe("feature-flag drift guard", () => {
 			"proofshot",
 			"xiaohongshu_learning",
 			"ponytail",
-			"founder_ux_gate",
 		]);
 		expect(
 			FEATURE_FLAGS.filter((flag) => configFlags.has(flag.name)).map(
@@ -245,16 +244,6 @@ describe("feature-flag drift guard", () => {
 					configAccess: "ponytail.enabled",
 				},
 			},
-			{
-				name: "founder_ux_gate",
-				site: {
-					file: "packages/config/src/ConfigLoader.ts",
-					symbol: "ConfigLoader.validate",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "founderUxGate.mode",
-				},
-			},
 		]);
 
 		expect(
@@ -286,11 +275,8 @@ describe("feature-flag drift guard", () => {
 		).toEqual([
 			"mailbox_queue:resolveLiveMailboxQueueEnabled",
 			"converge_cmux_symlink:converge_cmux_symlink",
-			"cmux_linked_view:load_cmux_bool_flag",
 			"merge_approval_gate_killswitch:resolveDefaultOnGate",
 			"qa_done_gate_killswitch:resolveDefaultOnGate",
-			"workflow_claims_read:resolveDefaultOffGate",
-			"workflow_claims_read:verifyApprovalWithBridgeHead",
 		]);
 	});
 

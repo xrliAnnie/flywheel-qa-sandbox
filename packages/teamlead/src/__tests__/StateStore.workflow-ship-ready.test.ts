@@ -60,6 +60,10 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 			createdAt: "2026-07-22T00:00:00.000Z",
 		},
 	});
+	testDb(store).run(
+		"UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = ?",
+		[runId],
+	);
 	store.upsertWorkflowRunNode({
 		runId,
 		nodeId: "design",
@@ -168,7 +172,7 @@ function seedGateCandidate(input: {
 		claimsReadEnrolled: true,
 	});
 	testDb(input.store).run(
-		"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'founder_gate' WHERE run_id = ?",
+		"UPDATE workflow_run SET engine_owned = 1, gate_carrier_epoch = 0, current_node_id = 'founder_gate' WHERE run_id = ?",
 		[input.runId],
 	);
 	testDb(input.store).run(
@@ -545,7 +549,7 @@ describe("workflow ship-ready StateStore contract", () => {
 				claimsReadEnrolled: true,
 			});
 			db.run(
-				"UPDATE workflow_run SET engine_owned = 1, current_node_id = 'founder_gate' WHERE run_id = ?",
+				"UPDATE workflow_run SET engine_owned = 1, gate_carrier_epoch = 0, current_node_id = 'founder_gate' WHERE run_id = ?",
 				[runId],
 			);
 			db.run(

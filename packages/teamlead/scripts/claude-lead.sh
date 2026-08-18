@@ -2533,8 +2533,8 @@ elif [ "$IS_COS_ROLE" = false ]; then
   # ── FLY-707 (FLY-698 epic): Default-Enable Policy (non-cos dept leads only) ──
   # Built features ship ENABLED for the project (config opt-ins like qa.auto /
   # doc_flow, default-off env flags), not left dormant behind an un-flipped
-  # opt-in — with security/governance gates (founder_consent, founder_ux_gate,
-  # branch protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
+	# opt-in — with security/governance gates (founder_consent and branch
+	# protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
   # merge/ship). Pure guidance prose; harmless everywhere. Optional — missing
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_DEFAULT_ENABLE_RULES="${BASE_RULES_DIR}/default-enable-policy.md"
@@ -2587,53 +2587,6 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   # covers each one's boundary in a non-engineering tone.
   rules_bundle_add "$BASE_FOUNDER_AUTH_RULES" base
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
-fi
-
-# ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──
-# Loads UNLESS this project EXPLICITLY disables the founder-UX gate
-# (founder_ux_gate.mode: off in .flywheel/config.yaml). FLY-869 flips the
-# default from opt-in to default-ON — an ABSENT founder_ux_gate block (or an
-# absent config file entirely) now resolves to "enforce" (mirrors
-# resolveEffectiveFounderUxConfig in flywheel-config), so this block is
-# appended for the common case. Only an EXPLICIT `mode: off` keeps the
-# pre-FLY-598 byte-compatible zero-prompt-change behavior (Codex R3-#3 / R2-#6
-# byte-compat, preserved for that one escape hatch). Guides whoever
-# writes/triages issues (cos + dept) that every substantial issue is gated by
-# default and only the `brainstorm-exempt` label opts an issue OUT; judgment
-# is model-driven loose guidance, the enforcement is the Bridge gate.
-BASE_FOUNDER_UX_RULES="${BASE_RULES_DIR}/founder-ux-rules.md"
-if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
-  # Read founder_ux_gate.mode from the project config WITHOUT aborting under
-  # `set -euo pipefail`: only awk when the config file exists, and `|| true` so a
-  # missing/malformed config (awk exit != 0) never kills the launch. This is why
-  # doc-flow-rules above self-checks inside the rule file instead — this block is
-  # the one shell-side read.
-  FOUNDER_UX_MODE=""
-  _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
-  if [ -f "$_founder_ux_cfg" ]; then
-    FOUNDER_UX_MODE="$(awk '
-      /^founder_ux_gate:/ { inblk=1; next }
-      inblk && /^[^[:space:]]/ { inblk=0 }
-      inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
-    ' "$_founder_ux_cfg" 2>/dev/null || true)"
-  fi
-  # FLY-869: absent config (no file / no founder_ux_gate block / no mode key —
-  # FOUNDER_UX_MODE still empty here) now DEFAULTS TO "enforce", mirroring
-  # resolveEffectiveFounderUxConfig's absent → enforce resolution. Only an
-  # EXPLICIT `mode: off` in the project config stays the byte-compatible
-  # no-append kill-switch.
-  if [ -z "$FOUNDER_UX_MODE" ]; then
-    FOUNDER_UX_MODE="enforce"
-  fi
-  # FLY-900: fleet-wide kill-switch — the founder-UX signoff gate is retired by
-  # default. Only append the founder-ux rules when the switch is explicitly
-  # re-enabled (FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1), matching the TS helper
-  # isFounderUxGateEnabled (=== "1"). Disabled → the Lead is not handed the
-  # founder-ux rules at all.
-  if [ "${FLYWHEEL_FOUNDER_UX_GATE_ENABLED:-}" = "1" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
-    rules_bundle_add "$BASE_FOUNDER_UX_RULES" base
-    log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
-  fi
 fi
 
 # ── FLY-203: Founder HTML delivery (universal — both roles) ──

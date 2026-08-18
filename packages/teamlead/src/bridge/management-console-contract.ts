@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import type { ModelCatalog, ModelSurface } from "flywheel-config";
-import type { DagFlagPanel } from "./dag-flag-panel.js";
 
 export const MANAGEMENT_SCHEMA_VERSION = 1 as const;
 
@@ -269,8 +268,6 @@ export interface ManagementSnapshotV1 {
 	presentationGroups: PresentationGroupView[];
 	unassignedCrons: ManagementCronView[];
 	flags: ManagementFlagView[];
-	/** FLY-1344: same DAG truth/preset model as the phone console. */
-	dagPanel?: DagFlagPanel;
 	extensions: ManagementExtensionSection[];
 }
 

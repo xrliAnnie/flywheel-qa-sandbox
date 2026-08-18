@@ -36,7 +36,6 @@ import {
 } from "../workflow-ship-ready.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import { workflowApprovalGate } from "../workflow-template.js";
-import { workflowTemplateDispatchBlockReason } from "../workflow-template-dispatch.js";
 import {
 	captureDeadExecutionActivityBaseline,
 	probeDeadExecutionActivity,
@@ -2123,13 +2122,6 @@ export class WorkflowEngineDispatcher {
 			throw new Error("engine_run_not_active");
 		}
 		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
-		const dispatchBlocked = workflowTemplateDispatchBlockReason(
-			snapshot.schema_version,
-			this.env,
-		);
-		if (dispatchBlocked) {
-			throw new Error(`engine_dispatch_${dispatchBlocked}`);
-		}
 		const node = snapshot.resolved.nodes.find(
 			(candidate) => candidate.id === intent.node_id,
 		);
@@ -2534,7 +2526,6 @@ export class WorkflowEngineDispatcher {
 						reworkRequestId: reworkReplacementRequestId,
 					}
 				: {}),
-			env: this.env,
 			dispatchResolution,
 		});
 		if (!admitted.ok) {
@@ -2761,12 +2752,6 @@ export class WorkflowEngineDispatcher {
 				...(phaseFixContext && { phaseFixContext }),
 				...(predecessor?.codex_skip !== undefined && {
 					codexSkip: predecessor.codex_skip,
-				}),
-				// FLY-1372 §2.5: propagate the founder-ux snapshot hop-by-hop — the
-				// successor session row must carry it (via the emitStarted seam) or
-				// hop-2 would copy nothing and the gate would misread the run.
-				...(predecessor?.founder_facing_ux !== undefined && {
-					founderFacingUx: !!predecessor.founder_facing_ux,
 				}),
 				generalizedExecution: {
 					engineOwned: true,

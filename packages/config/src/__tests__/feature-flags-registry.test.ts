@@ -385,64 +385,21 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1272 keeps the linked-view rollout switch with exact read sites", () => {
-		const linked = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_CMUX_LINKED_VIEW",
-		);
-		expect(linked).toMatchObject({
-			name: "cmux_linked_view",
-			polarity: "default_on",
-			default: true,
-			toggleable: "conversational",
-			description:
-				"FLY-1272/1364: 默认 exact-one-window link topology；关闭后仍保持独立视图的生命周期保护",
-		});
-		expect(linked?.readSites).toHaveLength(2);
-		expect(linked?.readSites.map((s) => s.file)).toEqual([
-			"scripts/flywheel-cmux-sync.sh",
-			"scripts/flywheel-cmux-autostart.sh",
-		]);
-	});
-
-	it("FLY-1344 enrolls the four DAG controls with exact hot read-site timings", () => {
-		const expected = {
-			workflow_template_dispatch: [
-				["packages/teamlead/src/workflow-template-dispatch.ts", "call_time"],
+	it("FLY-1808 retires the five linked DAG controls together", () => {
+		for (const [name, envVar] of [
+			["workflow_template_dispatch", "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+			[
+				"workflow_generalized_templates",
+				"FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES",
 			],
-			workflow_generalized_templates: [
-				["packages/teamlead/src/workflow-template.ts", "call_time"],
-			],
-			workflow_claims_write: [
-				["packages/teamlead/src/workflow-claims.ts", "call_time"],
-			],
-			workflow_claims_read: [
-				["packages/teamlead/src/workflow-claims.ts", "call_time"],
-				["packages/flywheel-comm/src/ship-eligibility.ts", "call_time"],
-				["packages/flywheel-comm/src/ship-eligibility.ts", "dotenv_live"],
-				[
-					"packages/flywheel-comm/src/commands/verify-approval.ts",
-					"dotenv_live",
-				],
-			],
-		} as const;
-		for (const [name, readSites] of Object.entries(expected)) {
-			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-			expect(flag).toMatchObject({
-				source: "env",
-				scope: "bridge_global",
-				polarity: "opt_in",
-				default: false,
-				toggleable: "direct",
-			});
-			expect(flag?.category).toBe("feature");
-			if (name === "workflow_generalized_templates") {
-				expect(flag?.description).toMatch(
-					/bundled v2 seed installation\/publication stays always-on and dormant/i,
-				);
-			}
-			expect(flag?.readSites.map((site) => [site.file, site.timing])).toEqual(
-				readSites,
+			["workflow_claims_write", "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+			["workflow_claims_read", "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+			["workflow_gate_carrier", "FLYWHEEL_WORKFLOW_GATE_CARRIER"],
+		] as const) {
+			expect(FEATURE_FLAGS.find((candidate) => candidate.name === name)).toBe(
+				undefined,
 			);
+			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1808" });
 		}
 	});
 
@@ -450,9 +407,7 @@ describe("feature-flag registry invariants", () => {
 		for (const name of [
 			"founder_consent_decision_mode",
 			"founder_attribution_gate",
-			"comm_bypass_bridge",
 			"lead_lease_bypass",
-			"founder_ux_gate",
 		]) {
 			expect(FEATURE_FLAGS.find((flag) => flag.name === name)).toMatchObject({
 				category: "governance_gate",

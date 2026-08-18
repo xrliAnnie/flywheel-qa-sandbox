@@ -42,17 +42,10 @@ function payload(eventType: AlertEventType): AlertPayload {
 }
 
 describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
-	it("routes FLY-1364 actionable incidents to tickets and flag state to notify", () => {
+	it("routes FLY-1364 actionable incidents to tickets", () => {
 		expect(TICKET_KINDS.has("cmux_cleanup")).toBe(true);
 		expect(TICKET_KINDS.has("tmux_rescue_hold")).toBe(true);
 		expect(TICKET_KINDS.has("ship_attempt_failed")).toBe(true);
-		expect(TICKET_KINDS.has("cmux_flag_state")).toBe(false);
-		expect(
-			classifyInfraEvent({
-				eventType: "cmux_flag_state",
-				boundIssueThread: null,
-			}),
-		).toBe("notify");
 	});
 
 	it.each(["flag_scan_failed", "flag_scan_no_clock"] as const)(

@@ -76,6 +76,14 @@ describe("session_completed route guard (FLY-108)", () => {
 			}),
 		});
 		expect(res.status).toBe(200);
+		const session = store.getSession(executionId);
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: session?.issue_id ?? issueId,
+			project_name: session?.project_name ?? "geoforge3d",
+			status: session?.status ?? "running",
+			worktree_path: process.cwd(),
+		});
 	}
 
 	async function postCompleted(body: Record<string, unknown>) {
@@ -89,7 +97,7 @@ describe("session_completed route guard (FLY-108)", () => {
 	beforeEach(async () => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
-		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);

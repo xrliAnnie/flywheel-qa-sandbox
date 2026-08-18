@@ -15,7 +15,6 @@
 
 import {
 	evaluateShipEligibility,
-	resolveWorkflowClaimsReadEnabled,
 	type ShipEligibilityArgs,
 	type ShipEligibilityDecision,
 } from "flywheel-comm/ship-eligibility";
@@ -297,28 +296,6 @@ export async function computeAuthoritativeShipDecision(
 	const engine = engineShipContext(store, session.execution_id);
 	const typedEngine =
 		engine.engineOwned && !("reason" in engine) ? engine : undefined;
-	const claimsReadEnabled = resolveWorkflowClaimsReadEnabled({ env });
-	// Legacy byte compatibility remains exact while the read switch is off. An
-	// engine-owned run instead holds: it must never fall back to cached legacy
-	// authority after admission.
-	if (!engine.engineOwned && !claimsReadEnabled) {
-		return {
-			...computeShipDecision(store, session, observedHead ?? "", env, ciProbe),
-			authoritativeHead: observedHead?.trim().toLowerCase() ?? "",
-		};
-	}
-	if (engine.engineOwned && !claimsReadEnabled) {
-		return {
-			eligible: false,
-			mergeApprovalOk: false,
-			qaOk: false,
-			mergeReason: "workflow_ship_claims_claims_read_disabled",
-			qaReason: "qa_claim_gate_unenrolled_failclosed",
-			authoritativeHead: "",
-			workflowClaimsOk: false,
-			workflowClaimsReason: "claims_read_disabled",
-		};
-	}
 	if (engine.engineOwned && "reason" in engine) {
 		return {
 			eligible: false,

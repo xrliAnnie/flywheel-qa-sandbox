@@ -14,7 +14,6 @@ import {
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import { buildDagFlagPanel } from "./dag-flag-panel.js";
 import { computeEnvSha } from "./env-file-writer.js";
 import { formatFlagDivergence } from "./feature-flag-render.js";
 import {
@@ -373,7 +372,6 @@ export function createManagementFlagProvider(
 					flags: views.map((view) =>
 						buildFlagView(view, revision, names, input.projectRevision),
 					),
-					dagPanel: buildDagFlagPanel(views),
 				},
 			};
 		},

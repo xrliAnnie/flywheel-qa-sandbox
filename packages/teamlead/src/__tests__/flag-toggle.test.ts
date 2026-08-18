@@ -41,7 +41,9 @@ describe("isDirectToggleable", () => {
 		const gov = FEATURE_FLAGS.find(
 			(f) => f.name === "founder_consent_decision_mode",
 		);
-		const restart = FEATURE_FLAGS.find((f) => f.name === "runner_autocontinue");
+		const restart = FEATURE_FLAGS.find(
+			(f) => f.name === "voice_qa_presence_override",
+		);
 		expect(isDirectToggleable(autoQa as never)).toBe(true);
 		expect(isDirectToggleable(gov as never)).toBe(false);
 		expect(isDirectToggleable(restart as never)).toBe(false);
@@ -57,12 +59,10 @@ describe("isDirectToggleable", () => {
 
 describe("applyFlagToggle", () => {
 	it("a successful apply heals a pre-existing live/file divergence", () => {
-		const spec = FEATURE_FLAGS.find(
-			(flag) => flag.name === "workflow_claims_read",
-		)!;
-		let file = "FLYWHEEL_WORKFLOW_CLAIMS_READ=0\n";
+		const spec = FEATURE_FLAGS.find((flag) => flag.name === "workflow_resume")!;
+		let file = "FLYWHEEL_WORKFLOW_RESUME=0\n";
 		const d = deps({
-			env: { FLYWHEEL_WORKFLOW_CLAIMS_READ: "1" },
+			env: { FLYWHEEL_WORKFLOW_RESUME: "1" },
 			readFile: () => file,
 			writeFile: vi.fn((_path: string, content: string) => {
 				file = content;
@@ -72,7 +72,7 @@ describe("applyFlagToggle", () => {
 			env: d.env,
 			envFile: { status: "readable", content: file },
 		});
-		expect(before.divergence).toBe("split_brain");
+		expect(before.divergence).toBe("bridge_stale");
 
 		expect(
 			applyFlagToggle(d, {
@@ -129,9 +129,9 @@ describe("applyFlagToggle", () => {
 		).toBe(400);
 	});
 
-	it("rejects a non-direct (restart) flag", () => {
+	it("rejects a non-direct flag", () => {
 		const r = applyFlagToggle(deps(), {
-			name: "runner_autocontinue",
+			name: "voice_qa_presence_override",
 			rawFrom: null,
 			rawTo: "0",
 			fileSha: SHA,

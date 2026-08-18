@@ -155,7 +155,6 @@ import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
 import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
-import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
@@ -183,10 +182,7 @@ import {
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
-import {
-	hasPendingBlockingGateFromCommDb,
-	probeDeclaredStateFromCommDb,
-} from "./commdb-probes.js";
+import { probeDeclaredStateFromCommDb } from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -292,7 +288,6 @@ import {
 	emitIssueThreadInfraNotification,
 	scanFounderThreadForGateCard,
 } from "./founder-thread-notifier.js";
-import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { materializeWorkflowGateHolder } from "./gate-materializer.js";
 import { GatePoller } from "./gate-poller.js";
 import { hasHostProcessByExecutionId } from "./generalized-launch-recovery.js";
@@ -551,7 +546,6 @@ import {
 	probeTmuxServerStartTime,
 	probeTmuxWindowLiveness,
 	sendEnterToWindow,
-	sendKeysToWindow,
 } from "./tmux-lookup.js";
 import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
@@ -1944,22 +1938,6 @@ export function createBridgeApp(
 			opts?.reviewCoordinator ?? { current: undefined },
 		),
 	);
-
-	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
-	// token middleware so the ingest-token status READ is not shadowed by the
-	// api-token middleware (Codex R3-#1). Always mounted (per-request, operates
-	// on session state) — byte-compatible at the prompt/stage layer; the
-	// per-project mode gates the runner injection + the stage guard, not these
-	// routes. Signoff WRITE fail-closes unless apiToken is set AND distinct from
-	// the ingest token (Codex R2-#1 / R3-#2).
-	mountFounderUxRoutes(app, {
-		store,
-		projects,
-		founderUserId: config.founderConsent?.founderUserId ?? "",
-		ingestToken: config.ingestToken,
-		apiToken: config.apiToken,
-		discordBotToken: config.discordBotToken,
-	});
 
 	// FLY-1251: manual QA is a server-owned enrollment, never a client-minted
 	// verdict or executor identity. The stage endpoint issues a single-use token
@@ -10495,38 +10473,6 @@ export async function startBridge(
 			},
 			log: (message) => console.warn(message),
 		});
-	}
-
-	// FLY-818: opt-in auto-continue arming worker (default OFF —
-	// FLYWHEEL_RUNNER_AUTOCONTINUE=1). This separate poller
-	// only observes a spawned claude-tmux runner until its idle input box appears,
-	// then sends `/loop <goal>` ONCE so the runner self-continues toward its phase
-	// goal instead of idling after a turn (the FLY-818 root cause). It never touches
-	// the stuck-detector / idle-notification path. Reuses the audited nudge helpers
-	// (capture / tmux target / pending-gate probe / literal send-keys).
-	if (process.env.FLYWHEEL_RUNNER_AUTOCONTINUE === "1") {
-		const armWindowEnv = Number(
-			process.env.FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS,
-		);
-		const autoContinueArmer = new AutoContinueArmer({
-			pollIntervalMs: 20_000,
-			projects,
-			store,
-			captureSessionFn: defaultCaptureSession,
-			getTmuxTarget: getTmuxTargetFromCommDb,
-			sendKeys: sendKeysToWindow,
-			// FLY-818 (Codex code review R1 #2): BLOCKING-only gate probe — a
-			// non-blocking `flywheel-comm ask` must NOT stop the runner from being
-			// armed to self-continue (only a checkpointed gate parks it).
-			hasPendingGate: hasPendingBlockingGateFromCommDb,
-			...(Number.isFinite(armWindowEnv) && armWindowEnv > 0
-				? { armWindowMs: armWindowEnv }
-				: {}),
-		});
-		autoContinueArmer.start();
-		console.log(
-			"[Bridge] AutoContinueArmer started (FLY-818 /loop self-continue arming, opt-in)",
-		);
 	}
 
 	const leadIdentityFindingPayload = (

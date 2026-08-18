@@ -23,10 +23,8 @@ import {
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
-	type FounderUxGateConfig,
 	type PonytailConfig,
 	type RoleBackendMap,
-	resolveEffectiveFounderUxConfig,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
@@ -319,7 +317,6 @@ async function createRunBlueprint(
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
 	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
-	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
 	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
 	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
@@ -566,7 +563,6 @@ async function createRunBlueprint(
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
 			docFlowConfig, // FLY-205
-			founderUxGateConfig, // FLY-598
 			ponytailConfig, // FLY-615: per-project ponytail rollout layer
 			undefined, // ponytailReadiness — use Blueprint's default probe
 			skillFrameworkParticipation, // FLY-1356: split-participation reader
@@ -963,7 +959,6 @@ export async function setupRunInfrastructure(
 			let skillsConfig: SkillsConfig | undefined;
 			let rolesConfig: RoleBackendMap | undefined;
 			let docFlowConfig: DocFlowConfig | undefined;
-			let founderUxGateConfig: FounderUxGateConfig | undefined;
 			let ponytailConfig: PonytailConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
@@ -979,7 +974,6 @@ export async function setupRunInfrastructure(
 				// ConfigLoader — unknown roles/backends rejected at load)
 				rolesConfig = flywheelConfig?.roles;
 				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
-				founderUxGateConfig = flywheelConfig?.founder_ux_gate; // FLY-598
 				// FLY-615 v1 = per-issue only (Tadashi): the per-project config
 				// layer is DORMANT — we intentionally do NOT load
 				// `flywheelConfig?.ponytail`, so the project layer of the resolver
@@ -998,20 +992,6 @@ export async function setupRunInfrastructure(
 				}
 			}
 
-			// FLY-869: resolve the RAW `founder_ux_gate` block (absent whenever the
-			// config file is missing, the key is omitted, or load failed with
-			// ENOENT above) into its EFFECTIVE form through the one resolution
-			// choke point. Absent → `enforce` + the default exempt-label list —
-			// NEVER a bare `undefined` that a downstream consumer would read as
-			// "gate off" (the FLY-598 opt-in behavior this issue reverses).
-			// Explicit project config (including an explicit `mode: "off"`
-			// kill-switch) passes through untouched. Both DirectEventSink's
-			// per-run mode snapshot (below) and Blueprint's prompt-injection
-			// config (createRunBlueprint call below) MUST receive this EFFECTIVE
-			// object, never the raw (possibly absent) `founderUxGateConfig`.
-			const effectiveFounderUxGateConfig =
-				resolveEffectiveFounderUxConfig(founderUxGateConfig);
-
 			const directSink = new DirectEventSink(
 				store,
 				config,
@@ -1020,7 +1000,6 @@ export async function setupRunInfrastructure(
 				registry,
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
-				effectiveFounderUxGateConfig.mode, // FLY-598/869: EFFECTIVE mode snapshot (absent → enforce)
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
@@ -1075,7 +1054,6 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
 				docFlowConfig, // FLY-205
-				effectiveFounderUxGateConfig, // FLY-598/869: EFFECTIVE config (absent → enforce)
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
 				skillFrameworkParticipation, // FLY-1356

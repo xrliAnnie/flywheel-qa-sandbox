@@ -1390,136 +1390,18 @@ ponytail: "on"
 		});
 	});
 
-	// FLY-598: founder_ux_gate validation
-	describe("founder_ux_gate validation", () => {
-		const withGate = (gateYaml: string) => `
-${MINIMAL_CONFIG_YAML}
-${gateYaml}
-`;
-
-		it("accepts absent founder_ux_gate (feature off, backward compatible)", async () => {
-			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_ux_gate).toBeUndefined();
-		});
-
-		it.each(["off", "audit_only", "enforce"])(
-			"accepts valid mode %s",
-			async (mode) => {
-				readFile.mockResolvedValue(
-					withGate(`
-founder_ux_gate:
-  mode: ${mode}
-`),
-				);
+	describe("FLY-1808 retired founder UX config", () => {
+		it.each([
+			"founder_ux_gate:\n  mode: enforce",
+			'founder_ux_gate: "legacy malformed value"',
+		])(
+			"ignores stale config without affecting project load: %s",
+			async (stale) => {
+				readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\n${stale}\n`);
 				const config = await loader.load("/p/config.yaml");
-				expect(config.founder_ux_gate?.mode).toBe(mode);
+				expect(config.project).toBe("test-project");
 			},
 		);
-
-		it("rejects an unknown mode", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: blocking
-`),
-			);
-			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_ux_gate\.mode must be one of/,
-			);
-		});
-
-		it("rejects a missing mode key", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  enabled: true
-`),
-			);
-			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_ux_gate\.mode must be one of/,
-			);
-		});
-
-		it("rejects a non-mapping founder_ux_gate", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate: "enforce"
-`),
-			);
-			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_ux_gate must be a YAML mapping/,
-			);
-		});
-
-		// FLY-869: exempt_labels validation
-		it("accepts absent exempt_labels (resolver applies the default downstream)", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: enforce
-`),
-			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_ux_gate?.exempt_labels).toBeUndefined();
-		});
-
-		it("accepts a valid exempt_labels array and normalizes to lowercase", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: enforce
-  exempt_labels:
-    - "Brainstorm-Exempt"
-    - CHORE
-`),
-			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_ux_gate?.exempt_labels).toEqual([
-				"brainstorm-exempt",
-				"chore",
-			]);
-		});
-
-		it("accepts an empty exempt_labels array", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: enforce
-  exempt_labels: []
-`),
-			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_ux_gate?.exempt_labels).toEqual([]);
-		});
-
-		it("rejects a non-array exempt_labels", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: enforce
-  exempt_labels: "brainstorm-exempt"
-`),
-			);
-			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_ux_gate\.exempt_labels must be an array of strings/,
-			);
-		});
-
-		it("rejects an exempt_labels array with a non-string element", async () => {
-			readFile.mockResolvedValue(
-				withGate(`
-founder_ux_gate:
-  mode: enforce
-  exempt_labels:
-    - "chore"
-    - 42
-`),
-			);
-			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_ux_gate\.exempt_labels must be an array of strings/,
-			);
-		});
 	});
 
 	describe("founder_milestone_report validation (FLY-725)", () => {

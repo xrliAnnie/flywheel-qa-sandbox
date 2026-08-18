@@ -1,13 +1,11 @@
 /**
  * FLY-1372 §2.5: the durable emitStarted seam for Bridge-trusted behavior
- * fields (doc_tier / issue_url / codex_skip / founder_facing_ux).
+ * fields (doc_tier / issue_url / codex_skip).
  *
  * - Envelope WITH fields (pipeline.dag start) → columns land in the SAME
  *   upsert transaction as row creation (crash-convergent by construction).
  * - Envelope WITHOUT fields (every legacy start) → columns untouched — the
  *   legacy route-patch persistence timing stays byte-identical (#14d).
- * - Engine successor propagation: the successor start request carries the
- *   predecessor row's founder_facing_ux (hop-2 continuity).
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -63,14 +61,13 @@ async function harness() {
 		try {
 			return reader
 				.prepare(
-					`SELECT doc_tier, issue_url, codex_skip, founder_facing_ux
+					`SELECT doc_tier, issue_url, codex_skip
 					   FROM sessions WHERE execution_id = ?`,
 				)
 				.get(executionId) as {
 				doc_tier: string | null;
 				issue_url: string | null;
 				codex_skip: number;
-				founder_facing_ux: number;
 			};
 		} finally {
 			reader.close();
@@ -129,20 +126,18 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 		expect(store.getWorktreeBinding("seam-1")?.generation).toBe("generation-1");
 	});
 
-	it("persists the four behavior fields atomically with session-row creation", async () => {
+	it("persists the three behavior fields atomically with session-row creation", async () => {
 		const { sink, raw } = await harness();
 		await sink.emitStarted({
 			...baseEnv,
 			docTier: "full",
 			issueUrl: "https://linear.app/x/FLY-802",
 			codexSkip: false,
-			founderFacingUx: true,
 		});
 		expect(raw("seam-1")).toEqual({
 			doc_tier: "full",
 			issue_url: "https://linear.app/x/FLY-802",
 			codex_skip: 0,
-			founder_facing_ux: 1,
 		});
 	});
 
@@ -153,7 +148,6 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 			doc_tier: null,
 			issue_url: null,
 			codex_skip: 0,
-			founder_facing_ux: 0,
 		});
 	});
 
@@ -165,14 +159,12 @@ describe("FLY-1372 DirectEventSink behavior-field seam", () => {
 			docTier: "plan_only",
 			issueUrl: "https://linear.app/x/FLY-802",
 			codexSkip: true,
-			founderFacingUx: true,
 		});
 		await sink.emitStarted({ ...baseEnv, executionId: "seam-re" });
 		expect(raw("seam-re")).toEqual({
 			doc_tier: "plan_only",
 			issue_url: "https://linear.app/x/FLY-802",
 			codex_skip: 1,
-			founder_facing_ux: 1,
 		});
 	});
 });

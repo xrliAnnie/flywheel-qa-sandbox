@@ -66,7 +66,6 @@ export RESTORED_STATE="$TMPDIR_ROOT/restored-adoption"  # FLY-1596
 export VIEW_ABSENT_STATE="$TMPDIR_ROOT/view-absent.state"  # FLY-1272
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/cmux-maintenance"  # FLY-1272
 export FLYWHEEL_CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"  # FLY-1596
-export CMUX_FLAG_STATE="$TMPDIR_ROOT/cmux-flag-state"  # FLY-1364
 export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
 export CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"  # FLY-1596
@@ -1176,7 +1175,7 @@ reset_mocks() {
   rm -f "$ROSTER_EPISODE_STATE"
   CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"
   rm -f "$CMUX_LOG_EPISODE_STATE"
-  rm -f "$CMUX_FLAG_STATE" "$TMPDIR_ROOT/fly1364-alert-args"
+  rm -f "$TMPDIR_ROOT/fly1364-alert-args"
   CMUX_CLEANUP_ALERT_LATCH=""
   CMUX_CLEANUP_ALERT_LATCH_COUNT=0
   CMUX_CLEANUP_ALERT_LATCH_GENERATION=""
@@ -5461,7 +5460,6 @@ test_fly1272_skip_rc_never_kills_watcher() {
 
   (
     set -euo pipefail
-    linked_view_enabled() { return 0; }
     reconcile_prepared_ledger() { return 1; }
     reap_ghost_workspaces
     : > "$reaper_marker"
@@ -5676,21 +5674,6 @@ test_fly1272_p3_create_uses_isolated_view_by_default() {
     pass "workspace attach target is isolated and its exact renamed ref is ledger-committed"
   else
     fail "create topology/ledger mismatch (grouped=$grouped active=$active members=[$members] ledger=[$ledger_row] ops=[$MOCK_CMUX_OPS])"
-  fi
-}
-
-test_fly1272_flags_default_on_and_explicit_off() {
-  echo "Test: FLY-1272 flags — linked view defaults on; only explicit 0 selects legacy"
-  reset_mocks
-  unset FLYWHEEL_CMUX_LINKED_VIEW
-  local default_rc=0 off_rc=0 invalid_rc=0
-  linked_view_enabled || default_rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=0; linked_view_enabled || off_rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=garbage; linked_view_enabled >/dev/null 2>&1 || invalid_rc=$?
-  if [[ "$default_rc" -eq 0 && "$off_rc" -ne 0 && "$invalid_rc" -eq 0 ]]; then
-    pass "default/invalid fail safe to A=1; explicit A=0 preserves rollback"
-  else
-    fail "flag semantics default=$default_rc off=$off_rc invalid=$invalid_rc"
   fi
 }
 
@@ -8548,41 +8531,6 @@ test_fly1364_optional_alert_library_missing_is_noop() {
   fi
 }
 
-test_fly1364_a0b1_flag_latch_survives_restart_and_rearms() {
-  echo "Test: FLY-1364 Fix D — A0B1 latch suppresses restarts and rearms after recovery"
-  reset_mocks
-  local alerts="$TMPDIR_ROOT/fly1364-flag-alerts" rc=0
-  : > "$alerts"
-  flywheel_alert() { printf '%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "$5" >> "$alerts"; return 0; }
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  check_cmux_flag_state || rc=$?
-  check_cmux_flag_state || rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=1
-  check_cmux_flag_state || rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  check_cmux_flag_state || rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=1
-  check_cmux_flag_state || rc=$?
-  FLYWHEEL_CMUX_LINKED_VIEW=0
-  check_cmux_flag_state || rc=$?
-  local first second third expected_first expected_second expected_third
-  first=$(sed -n '1p' "$alerts" 2>/dev/null)
-  second=$(sed -n '2p' "$alerts" 2>/dev/null)
-  third=$(sed -n '3p' "$alerts" 2>/dev/null)
-  expected_first='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=1.|cmux_flag_state|state=A0B1|episode=1'
-  expected_second='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=2.|cmux_flag_state|state=A0B1|episode=2'
-  expected_third='cmux_flag_state|info|cmux sync flags entered A0B1|FLYWHEEL_CMUX_LINKED_VIEW=0 while invariant enforcement remains active. Exact-ref receipts remain mandatory; topology=strict-independent; episode=3.|cmux_flag_state|state=A0B1|episode=3'
-  if [[ "$rc" -eq 0 && "$(wc -l < "$alerts" | tr -d ' ')" == "3" \
-      && "$first" == "$expected_first" \
-      && "$second" == "$expected_second" \
-      && "$third" == "$expected_third" \
-      && "$(cat "$CMUX_FLAG_STATE")" == 'A0B1|3' ]]; then
-    pass "A0B1 reports once per durable transition episode"
-  else
-    fail "A0B1 latch mismatch rc=$rc state=[$(cat "$CMUX_FLAG_STATE" 2>/dev/null)] alerts=[$(tr '\n' ';' < "$alerts")]"
-  fi
-}
-
 _fly1364_fixture_workspace_json() {
   python3 -c 'import json,sys; json.dump(json.load(open(sys.argv[1]))["workspace_json"], sys.stdout)' \
     "$SCRIPT_DIR/__tests__/fixtures/fly1364/$1"
@@ -9515,7 +9463,6 @@ test_fly1446_malformed_wals_quarantine_and_other_view_progresses
 test_fly1446_collision_blocks_only_its_logical_view
 test_fly1446_wal_indeterminate_failures_still_abort
 test_fly1272_p3_create_uses_isolated_view_by_default
-test_fly1272_flags_default_on_and_explicit_off
 test_fly1272_p2_dismantle_linked_preserves_source
 test_fly1272_p2_sole_holder_escrows_instead_of_destroying
 test_fly1272_p2_grouped_view_always_escrows
@@ -9622,7 +9569,6 @@ test_fly1364_stale_prepared_unnamed_ref_is_not_renamed
 test_fly1364_stale_generation_pass_aborts_on_midpass_generation_flip
 test_fly1364_alert_library_forwards_exact_argv_and_fails_open
 test_fly1364_optional_alert_library_missing_is_noop
-test_fly1364_a0b1_flag_latch_survives_restart_and_rearms
 test_fly1364_stock_fixture_contracts
 test_fly1364_complete_stock_fixtures_drive_terminal_state
 test_fly1364_raw_attach_normalization_is_exact

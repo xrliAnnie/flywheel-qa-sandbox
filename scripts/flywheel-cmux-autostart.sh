@@ -10,42 +10,7 @@
 LOG="/tmp/flywheel-cmux-watcher.log"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SYNC_SCRIPT="$HOME/.flywheel/bin/flywheel-cmux-sync"
-ENV_FILE="$HOME/.flywheel/.env"
 MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
-
-# FLY-1272/1364/1446: extract only declared cmux bool flags. Never source the whole .env — it
-# may contain unrelated shell syntax/secrets, and autostart needs only these
-# literals. Precedence: inherited env > .env > the caller-supplied safe
-# default. Any non-0/1 value falls back to that default.
-load_cmux_bool_flag() {
-  local name="$1" default="${2:-1}" raw="" inherited=""
-  eval "inherited=\${${name}+set}"
-  if [[ "$inherited" == "set" ]]; then
-    eval "raw=\${${name}}"
-  elif [[ -f "$ENV_FILE" ]]; then
-    raw=$(awk -v key="$name" '
-      /^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ {
-        line=$0
-        sub(/^[[:space:]]*export[[:space:]]+/, "", line)
-        lhs=line; sub(/[[:space:]]*=.*/, "", lhs)
-        if (lhs == key) {
-          sub(/^[^=]*=[[:space:]]*/, "", line)
-          sub(/[[:space:]]*#.*/, "", line)
-          gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-          if ((line ~ /^".*"$/) || (line ~ /^'\''.*'\''$/)) {
-            line=substr(line, 2, length(line)-2)
-          }
-          value=line
-        }
-      }
-      END { if (value != "") print value }
-    ' "$ENV_FILE")
-  fi
-  case "$raw" in 0|1) ;; *) raw="$default" ;; esac
-  export "${name}=${raw}"
-}
-
-load_cmux_bool_flag FLYWHEEL_CMUX_LINKED_VIEW 1
 if [[ -e "$MAINTENANCE_MARKER" && "${FLYWHEEL_CMUX_SUPERVISED:-0}" != "1" ]]; then
   echo "flywheel-cmux-autostart: maintenance marker present; watcher not started" >&2
   exit 0

@@ -8,7 +8,6 @@ import type {
 	DesignBackend,
 	DocFlowConfig,
 	ExecutorBackend,
-	FounderUxGateConfig,
 	PonytailConfig,
 	PonytailInput,
 	PonytailRetryInput,
@@ -22,7 +21,6 @@ import {
 	captureRepositoryBaselineSet,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
-	isFounderUxGateEnabled,
 	isUiDesignFlavored,
 	MATT_SKILLS_PLUGIN_KEY,
 	normalizeOptionalBearer,
@@ -455,14 +453,13 @@ export interface BlueprintContext {
 	// (fail-safe: no Lead signal → full docs, never silently fewer).
 	docTier?: DocTier;
 	/**
-	 * FLY-1372 §2.5: Bridge-computed behavior snapshots (codex-skip label +
-	 * founder-facing-ux). Threaded ONLY by the pipeline.dag entry / engine
+	 * FLY-1372 §2.5: Bridge-computed codex-skip behavior snapshot. Threaded ONLY
+	 * by the pipeline.dag entry / engine
 	 * successor dispatch so the durable emitStarted seam persists them with the
 	 * session row (Direct sink only — never over HTTP). Absent on every legacy
 	 * dispatch (byte-compatible: the route patch keeps its original timing).
 	 */
 	codexSkip?: boolean;
-	founderFacingUx?: boolean;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
 	/** FLY-1259: effective design vendor locked at DAG workflow admission. */
@@ -966,14 +963,9 @@ export class Blueprint {
 		// break shipped-generic agent resolution). Absent/disabled → no
 		// DOC-FLOW prompt block (byte-compatible spawn prompt).
 		private docFlowConfig?: DocFlowConfig,
-		// FLY-598 — optional founder-UX gate config. MUST stay the LAST
-		// constructor parameter (same positional-alignment contract as
-		// docFlowConfig). Absent or mode==="off" → no founder-UX prompt block
-		// (byte-compatible spawn prompt).
-		private founderUxGateConfig?: FounderUxGateConfig,
 		// FLY-615 — optional per-project ponytail config (lowest ladder layer).
 		// MUST stay among the LAST constructor parameters (same positional-
-		// alignment contract as docFlowConfig / founderUxGateConfig). Absent →
+		// alignment contract as docFlowConfig). Absent →
 		// no per-project ponytail (label/run layers still apply); byte-compatible.
 		private ponytailConfig?: PonytailConfig,
 		// FLY-615 — readiness probe: is ponytail actually usable for `backend`?
@@ -1087,9 +1079,6 @@ export class Blueprint {
 				...(ctx.docTier && { docTier: ctx.docTier }),
 				...(ctx.issueUrl && { issueUrl: ctx.issueUrl }),
 				...(ctx.codexSkip !== undefined && { codexSkip: ctx.codexSkip }),
-				...(ctx.founderFacingUx !== undefined && {
-					founderFacingUx: ctx.founderFacingUx,
-				}),
 			}),
 		};
 
@@ -2258,47 +2247,6 @@ export class Blueprint {
 				"",
 			];
 			systemPromptLines.unshift(...progressLedgerLines);
-		}
-
-		// FLY-598: FOUNDER-UX GATE block — injected ONLY when the project enables
-		// founder_ux_gate (mode !== off). Absent/off → zero lines added
-		// (byte-compatible prompt). The judgment ("is this founder-facing UX") is
-		// model-driven loose guidance, not a hardcoded rule (Annie decision #2);
-		// the HARD enforcement is the Bridge (await-founder-ux-gate fail-closed +
-		// stage_changed→implement guard). Self-declare guidance is shown for ALL
-		// runs (Codex R2-#5: the backup trigger must not depend on pre-flagging).
-		// FLY-900: the founder-UX gate is retired fleet-wide by default. Only when
-		// the kill-switch is explicitly re-enabled (FLYWHEEL_FOUNDER_UX_GATE_ENABLED
-		// === "1") do we inject the gate block — otherwise the runner is never told
-		// to run record-signoff / await-founder-ux-gate (cuts the Layer A source).
-		const founderUxMode = this.founderUxGateConfig?.mode;
-		if (founderUxMode && founderUxMode !== "off" && isFounderUxGateEnabled()) {
-			const fuxLines = [
-				"FOUNDER-UX GATE (this project enables founder_ux_gate):",
-				"FOUNDER-FACING UX = anything the founder (Annie) directly sees or operates",
-				"— notifications, flows, Discord messages, report layouts, command",
-				"interactions, visuals, copy. (Examples, not a checklist — use judgment.)",
-				"For such work the UX must be brainstormed with Annie and approved by HER",
-				"before any implementation code.",
-				"",
-				"Self-declare (backup): if this issue involves founder-facing UX and was not",
-				`already flagged, run \`node ${commCliPath} declare-founder-ux "<one-line why>"\`.`,
-				"It prints the exact next steps and opens the gate for this run.",
-				"",
-				"Every substantial issue MUST brainstorm and align with the founder",
-				"(Annie) before implement. Only issues explicitly labeled",
-				"`brainstorm-exempt` (trivial / purely mechanical) skip this. BEFORE",
-				"entering implement you MUST:",
-				"  1. Brainstorm the UX with Annie; capture the agreed UX in a canonical",
-				"     UX-brief file (e.g. <dept>/doc/<issue>-<slug>/ux-brief.md).",
-				"  2. Have your Lead record Annie's natural-language approval (she replies in",
-				"     Discord). Then block on the gate before writing implementation code:",
-				`       node ${commCliPath} await-founder-ux-gate --ux-file <ux-brief>`,
-				"     It fail-closes until Annie's verified sign-off for THIS ux-brief exists.",
-				`  3. Enter implement WITH the brief: \`node ${commCliPath} stage set implement --ux-file <ux-brief>\`.`,
-				"",
-			];
-			systemPromptLines.unshift(...fuxLines);
 		}
 
 		// FLY-137 v1.27.2: onboard stage preamble. Reports intent BEFORE attempting

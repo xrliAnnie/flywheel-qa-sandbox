@@ -53,8 +53,11 @@ describe("handleFlagStage", () => {
 	it("rejects a non-direct / governance flag", () => {
 		const deps = makeDeps();
 		expect(
-			handleFlagStage(deps, { name: "runner_autocontinue", to: false }, "o")
-				.code,
+			handleFlagStage(
+				deps,
+				{ name: "voice_qa_presence_override", to: false },
+				"o",
+			).code,
 		).toBe(400);
 		expect(
 			handleFlagStage(

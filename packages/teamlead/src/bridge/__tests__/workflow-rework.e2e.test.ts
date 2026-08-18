@@ -94,6 +94,13 @@ async function createHarness(
 			createdAt: "2026-07-23T00:00:00.000Z",
 		},
 	});
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		"UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = 'run-e2e'",
+	);
 	store.upsertWorkflowRunNode({
 		runId: "run-e2e",
 		nodeId: "design",

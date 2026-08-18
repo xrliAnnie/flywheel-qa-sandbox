@@ -119,16 +119,16 @@ const enabled = {
 
 describe("generalized execution admission and terminal contracts", () => {
 	it.each([
-		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", "template_dispatch_disabled"],
-		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", "claims_write_disabled"],
-		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ", "claims_read_disabled"],
-		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", "template_dispatch_disabled"],
-		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", "claims_write_disabled"],
-		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ", "claims_read_disabled"],
-		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", "generalized_disabled"],
+		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
 	] as const)(
-		"schema v%s admission rejects without credentials when %s is removed",
-		async (schemaVersion, missing, reason) => {
+		"schema v%s admission ignores retired %s=0",
+		async (schemaVersion, retired) => {
 			const store = await StateStore.create(":memory:");
 			let runId: string;
 			let nodeId: string;
@@ -165,10 +165,8 @@ describe("generalized execution admission and terminal contracts", () => {
 				nodeId = "execute";
 				executionId = "v2-execute";
 			}
-			const beforeClaims = store.countWorkflowClaims(runId);
-			const beforeEffects = store.listWorkflowSideEffects(runId);
 			const env = { ...enabled };
-			delete env[missing];
+			env[retired] = "0";
 
 			expect(
 				store.admitGeneralizedWorkflowExecution({
@@ -181,11 +179,12 @@ describe("generalized execution admission and terminal contracts", () => {
 					absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
 					env,
 				}),
-			).toEqual({ ok: false, reason });
-			expect(store.getWorkflowExecutionBinding(executionId)).toBeUndefined();
-			expect(store.getWorkflowExecutionRuntime(executionId)).toBeUndefined();
-			expect(store.countWorkflowClaims(runId)).toBe(beforeClaims);
-			expect(store.listWorkflowSideEffects(runId)).toEqual(beforeEffects);
+			).toMatchObject({ ok: true });
+			expect(store.getWorkflowExecutionBinding(executionId)).toMatchObject({
+				run_id: runId,
+				node_id: nodeId,
+			});
+			expect(store.getWorkflowExecutionRuntime(executionId)).toBeDefined();
 			store.close();
 		},
 	);
@@ -1543,23 +1542,9 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
-	it("admits only the start node under the full flag combination and pins immutable runtime", async () => {
+	it("ignores retired dispatch zero while admitting only the start node", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
-		expect(
-			store.admitGeneralizedWorkflowExecution({
-				runId: "run-1",
-				nodeId: "execute",
-				executionId: "exec-1",
-				attempt: 1,
-				expiresAt: "2026-07-15T00:05:00.000Z",
-				absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
-				now: "2026-07-15T00:00:00.000Z",
-				env: {},
-			}),
-		).toMatchObject({ ok: false, reason: "template_dispatch_disabled" });
-		expect(store.getWorkflowExecutionBinding("exec-1")).toBeUndefined();
-
 		const admitted = store.admitGeneralizedWorkflowExecution({
 			runId: "run-1",
 			nodeId: "execute",
@@ -1568,7 +1553,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			expiresAt: "2026-07-15T00:05:00.000Z",
 			absoluteDeadlineAt: "2026-07-15T01:00:00.000Z",
 			now: "2026-07-15T00:00:00.000Z",
-			env: enabled,
+			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0" },
 		});
 		expect(admitted).toMatchObject({ ok: true, outputCredential: undefined });
 		expect(store.getWorkflowExecutionBinding("exec-1")).toMatchObject({

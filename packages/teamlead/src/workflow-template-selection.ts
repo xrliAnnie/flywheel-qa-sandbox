@@ -19,11 +19,6 @@ import {
 	validateWorkflowManifest,
 	type WorkflowTemplateOverride,
 } from "./workflow-template.js";
-import {
-	isWorkflowTemplateDispatchEnabled,
-	workflowTemplateDispatchBlockMessage,
-	workflowTemplateDispatchBlockReason,
-} from "./workflow-template-dispatch.js";
 
 export type WorkflowRequestAuthKind = "master" | "scoped" | "tokenless";
 
@@ -158,7 +153,6 @@ export async function resolveWorkflowTemplateSelection(
 		 * dispatch entry — pinned atomically in the materialize transaction.
 		 */
 		entryKind?: "pipeline_dag_v1" | "workflow_v2";
-		env?: Record<string, string | undefined>;
 		idFactory?: () => string;
 		now?: string;
 		probeRunExecutionLiveness?: RunExecutionLivenessProbe;
@@ -180,14 +174,6 @@ export async function resolveWorkflowTemplateSelection(
 	}
 	if (!candidate) return null;
 	const { category, binding, templateId, revision, schemaVersion } = candidate;
-	const env = input.env ?? process.env;
-	// The primary dispatch flag remains the fleet-wide rollback lever. When it is
-	// off, this function must not materialize an engine run.
-	if (!isWorkflowTemplateDispatchEnabled(env)) {
-		return null;
-	}
-	const blocked = workflowTemplateDispatchBlockReason(schemaVersion, env);
-	if (blocked) throw new Error(workflowTemplateDispatchBlockMessage(blocked));
 	// Schema-v1 snapshots remain readable for recovery, but new dispatches have
 	// exactly one materialization path: the current schema-v2 DAG.
 	if (schemaVersion === 1) return null;
@@ -426,7 +412,6 @@ export async function resolveWorkflowTemplateSelection(
 			selectionSource,
 			selectionDigest,
 		},
-		env: input.env,
 	});
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot!);
 	const node = snapshot.resolved.nodes.find(

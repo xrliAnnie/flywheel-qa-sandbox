@@ -5,7 +5,6 @@ import { getModelConfigSnapshot } from "./model-config.js";
 import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
-	FOUNDER_UX_GATE_MODES,
 	ROLE_EFFORT_LEVELS,
 	SUPPORTED_MILESTONE_KINDS_V1,
 	XIAOHONGSHU_CADENCES,
@@ -449,52 +448,6 @@ export class ConfigLoader {
 					"[ConfigLoader] pipeline.work_kind must be a boolean — dropping only work_kind; other pipeline settings remain active",
 				);
 				delete pipeline.work_kind;
-			}
-		}
-
-		// founder_ux_gate (optional — FLY-598 / FLY-869). Absent → resolved to
-		// `enforce` downstream by resolveEffectiveFounderUxConfig (NOT this
-		// loader — ConfigLoader only validates the raw YAML shape whenever
-		// PRESENT so a malformed config fails loudly instead of silently
-		// no-op-ing the gate). Kept separate from FLY-175 founderConsent so this
-		// gate can never toggle reserved-action consent.
-		const founderUxGate = c.founder_ux_gate as
-			| Record<string, unknown>
-			| undefined;
-		if (founderUxGate != null) {
-			if (typeof founderUxGate !== "object" || Array.isArray(founderUxGate)) {
-				throw new Error(
-					"founder_ux_gate must be a YAML mapping (object), not an array or scalar",
-				);
-			}
-			if (
-				typeof founderUxGate.mode !== "string" ||
-				!FOUNDER_UX_GATE_MODES.includes(
-					founderUxGate.mode as (typeof FOUNDER_UX_GATE_MODES)[number],
-				)
-			) {
-				throw new Error(
-					`founder_ux_gate.mode must be one of ${FOUNDER_UX_GATE_MODES.join(" | ")}, got "${String(founderUxGate.mode)}"`,
-				);
-			}
-			// FLY-869: exempt_labels — issues carrying one of these labels skip the
-			// now-default-on gate. Optional; resolveEffectiveFounderUxConfig
-			// supplies ["brainstorm-exempt"] when absent. Normalize to lowercase
-			// here (same contract as issue labels, which the Bridge lowercases at
-			// the boundary — runs-route.ts) so a case-mismatched project config
-			// never silently fails to exempt an issue.
-			if (founderUxGate.exempt_labels != null) {
-				if (
-					!Array.isArray(founderUxGate.exempt_labels) ||
-					founderUxGate.exempt_labels.some((l) => typeof l !== "string")
-				) {
-					throw new Error(
-						"founder_ux_gate.exempt_labels must be an array of strings",
-					);
-				}
-				founderUxGate.exempt_labels = (
-					founderUxGate.exempt_labels as string[]
-				).map((l) => l.toLowerCase());
 			}
 		}
 

@@ -47,11 +47,11 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		const autoQa = FLAGS.find((f) => f.name === "auto_qa_killswitch");
 		if (!autoQa) throw new Error("missing");
 		expect(effectLabel(autoQa)).toBe("热生效");
-		const runnerAutocontinue = FLAGS.find(
-			(f) => f.name === "runner_autocontinue",
+		const bootCaptured = FLAGS.find(
+			(f) => f.name === "voice_qa_presence_override",
 		);
-		if (!runnerAutocontinue) throw new Error("missing");
-		expect(effectLabel(runnerAutocontinue)).toBe("需重启");
+		if (!bootCaptured) throw new Error("missing");
+		expect(effectLabel(bootCaptured)).toBe("需重启");
 		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
 		if (!qaAuto) throw new Error("missing");
 		expect(effectLabel(qaAuto)).toBe("新 run 生效");
@@ -149,9 +149,7 @@ describe("renderFlagReport (phone, read-only)", () => {
 	it("includes all flags", () => {
 		expect(html).toContain("FLYWHEEL_AUTO_QA");
 		expect(html).toContain("doc_flow.enabled");
-		expect(html).toContain("DAG 控制");
-		expect(html).toContain("v1 dispatch");
-		expect(html).toContain("ship reader");
+		expect(html).not.toContain("DAG 控制");
 	});
 });
 
@@ -175,14 +173,10 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 		expect(html).toContain('id="ffCopyBtn"');
 	});
 
-	it("exposes state-aware fail-stop DAG presets through the same local copy surface", () => {
-		expect(html).toContain("开 DAG v2 · 第一阶段");
-		expect(html).toContain("data-dag-copy");
-		expect(html).toContain(" &amp;&amp; ");
-		expect(html).toContain("&amp;&amp; flywheel-comm feature-flags report");
-		expect(html).toContain("命令末尾自动重发本报告");
-		expect(html).not.toContain("完成后打开新链接");
-		expect(html).not.toContain("第二阶段需打开新报告确认 claims reader");
+	it("does not expose presets for retired workflow rollout flags", () => {
+		expect(html).not.toContain("开 DAG v2 · 第一阶段");
+		expect(html).not.toContain("data-dag-copy");
+		expect(html).not.toContain("workflow_claims_read");
 	});
 
 	it("only lists direct-toggleable flags as controls", () => {

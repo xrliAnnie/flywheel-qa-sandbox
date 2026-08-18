@@ -1312,14 +1312,6 @@ async function handleRetry(
 				// snapshot. Persisted on the new session row below so the
 				// event-route stage_changed handler picks it up at design_review.
 				codexSkip: retryCodexSkip,
-				// FLY-1372 §2.5 (Codex code R1 #3): the predecessor's trusted
-				// founder-facing-ux snapshot — a generalized retry's session row is
-				// created WITH the behavior fields via the durable emitStarted seam,
-				// so a founder-facing DAG retry never fails open on the DB default.
-				founderFacingUx:
-					session.founder_facing_ux === undefined
-						? undefined
-						: !!session.founder_facing_ux,
 				// FLY-137 v1.27.2: thread stored Lead override (if any) so a
 				// previously-overridden Runner stays on the same agent across
 				// retries.

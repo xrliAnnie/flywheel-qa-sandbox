@@ -131,7 +131,6 @@ async function runBlueprint(opts: RunOpts = {}): Promise<{
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
-		undefined, // founderUxGateConfig
 		undefined, // ponytailConfig
 		undefined, // ponytailReadiness (default)
 		undefined, // participation reader (absent ⇒ participate)

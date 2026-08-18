@@ -7,7 +7,7 @@
  *  - OFF sentinel: absent OR mode:"off" → byte-identical prompt with ZERO
  *    founder-UX content (Codex R2-#6 byte-compat; the deliberate prompt change
  *    only happens in audit_only/enforce).
- *  - founderUxGateConfig is the LAST constructor param (after docFlowConfig).
+ *  - the retired env no longer changes prompt construction.
  */
 
 import type {
@@ -60,9 +60,7 @@ function makeMockAdapter(): IAdapter {
 	};
 }
 
-async function buildPrompt(founderUxGateConfig?: {
-	mode: "off" | "audit_only" | "enforce";
-}): Promise<string> {
+async function buildPrompt(): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
 		makeHydrator(),
@@ -79,7 +77,6 @@ async function buildPrompt(founderUxGateConfig?: {
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
-		founderUxGateConfig, // FLY-598: LAST param
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -101,10 +98,7 @@ async function buildPrompt(founderUxGateConfig?: {
 	return call.appendSystemPrompt ?? "";
 }
 
-describe("FOUNDER-UX GATE injection (FLY-598)", () => {
-	// FLY-900: the gate is retired fleet-wide by default; the injection now also
-	// requires the kill-switch to be explicitly re-enabled. These ON-path cases
-	// run with it enabled so they still assert the original enforce behavior.
+describe("FLY-1808 retired founder-UX gate", () => {
 	beforeEach(() => {
 		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "1");
 	});
@@ -112,38 +106,11 @@ describe("FOUNDER-UX GATE injection (FLY-598)", () => {
 		vi.unstubAllEnvs();
 	});
 
-	it("enforce: injects the gate instruction + self-declare + ux-file stage", async () => {
-		const prompt = await buildPrompt({ mode: "enforce" });
-		expect(prompt).toContain("FOUNDER-UX GATE");
-		expect(prompt).toContain("await-founder-ux-gate --ux-file");
-		expect(prompt).toContain("declare-founder-ux");
-		expect(prompt).toContain("stage set implement --ux-file");
-	});
-
-	it("audit_only: same deliberate injection present", async () => {
-		const prompt = await buildPrompt({ mode: "audit_only" });
-		expect(prompt).toContain("FOUNDER-UX GATE");
-		expect(prompt).toContain("await-founder-ux-gate --ux-file");
-	});
-
-	it("OFF sentinel: absent and mode:off produce byte-identical prompts with zero founder-UX content", async () => {
-		const absent = await buildPrompt(undefined);
-		const off = await buildPrompt({ mode: "off" });
-		expect(off).toBe(absent); // byte-identical
-		expect(absent).not.toContain("FOUNDER-UX GATE");
-		expect(absent).not.toContain("await-founder-ux-gate");
-	});
-
-	// FLY-900: with the kill-switch disabled (default), even an enforce/audit_only
-	// project injects ZERO founder-UX content — byte-identical to the off prompt.
-	it("FLY-900 kill-switch OFF: enforce injects NOTHING (byte-identical to off/absent)", async () => {
-		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0"); // override beforeEach "1"
-		const enforceDisabled = await buildPrompt({ mode: "enforce" });
-		const auditDisabled = await buildPrompt({ mode: "audit_only" });
-		const off = await buildPrompt({ mode: "off" });
-		expect(enforceDisabled).toBe(off); // byte-identical — gate fully suppressed
-		expect(auditDisabled).toBe(off);
-		expect(enforceDisabled).not.toContain("FOUNDER-UX GATE");
-		expect(enforceDisabled).not.toContain("await-founder-ux-gate");
+	it("legacy enable env no longer injects a founder-UX gate", async () => {
+		const prompt = await buildPrompt();
+		expect(prompt).not.toContain("FOUNDER-UX GATE");
+		expect(prompt).not.toContain("await-founder-ux-gate --ux-file");
+		expect(prompt).not.toContain("declare-founder-ux");
+		expect(prompt).not.toContain("stage set implement --ux-file");
 	});
 });

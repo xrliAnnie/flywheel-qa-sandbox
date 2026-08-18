@@ -85,16 +85,16 @@ const WORKFLOW_ON = {
 
 describe("StateStore workflow templates", () => {
 	it.each([
-		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", /dispatch.*disabled/i],
-		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims.*write/i],
-		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims.*read/i],
-		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH", /dispatch.*disabled/i],
-		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims.*write/i],
-		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims.*read/i],
-		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", /generalized.*disabled/i],
+		[1, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		[1, "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		[2, "FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		[2, "FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		[2, "FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
 	] as const)(
-		"schema v%s materialization rejects without side effects when %s is removed",
-		async (schemaVersion, missing, expected) => {
+		"schema v%s materialization ignores retired %s=0",
+		async (schemaVersion, retired) => {
 			const store = await StateStore.create(":memory:");
 			const root = mkdtempSync(join(tmpdir(), "flywheel-materialize-flags-"));
 			cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -117,35 +117,31 @@ describe("StateStore workflow templates", () => {
 				updatedBy: "test",
 			});
 			const env = { ...WORKFLOW_ON };
-			delete env[missing];
-			const runId = `matrix-${schemaVersion}-${missing}`;
+			env[retired] = "0";
+			const runId = `matrix-${schemaVersion}-${retired}`;
 			const reservationKey = `start-${runId}`;
-			expect(() =>
-				store.materializeWorkflowRun({
-					runId,
-					issueId: `FLY-MATRIX-${schemaVersion}`,
-					projectName: "flywheel",
-					taskCategory: "matrix",
-					claimsReadEnrolled: true,
-					actor: "test",
-					canonicalRoot: root,
-					env,
-					...(schemaVersion === 1
-						? {
-								startReservation: {
-									idempotencyKey: reservationKey,
-									selectionDigest: "selection",
-									nodeId: "design",
-									attempt: 1 as const,
-									executionId: "design-matrix",
-									createdAt: "2026-07-16T00:00:00.000Z",
-								},
-							}
-						: {}),
-				}),
-			).toThrow(expected);
-			expect(store.getWorkflowRun(runId)).toBeUndefined();
-			expect(store.getWorkflowStartReservation(reservationKey)).toBeUndefined();
+			const run = store.materializeWorkflowRun({
+				runId,
+				issueId: `FLY-MATRIX-${schemaVersion}`,
+				projectName: "flywheel",
+				taskCategory: "matrix",
+				claimsReadEnrolled: true,
+				actor: "test",
+				canonicalRoot: root,
+				env,
+				startReservation: {
+					idempotencyKey: reservationKey,
+					selectionDigest: "selection",
+					nodeId: schemaVersion === 1 ? "design" : "execute",
+					attempt: 1 as const,
+					executionId: `start-${schemaVersion}`,
+					createdAt: "2026-07-16T00:00:00.000Z",
+				},
+			});
+			expect(store.getWorkflowRun(runId)?.run_id).toBe(run.run_id);
+			expect(store.getWorkflowStartReservation(reservationKey)?.run_id).toBe(
+				runId,
+			);
 			expect(store.countWorkflowClaims(runId)).toBe(0);
 			expect(store.listWorkflowSideEffects(runId)).toEqual([]);
 			store.close();
@@ -204,14 +200,14 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
-	it("freezes the gate carrier flag per run so a live toggle affects only the next materialization", async () => {
+	it("keeps historical epoch 0 while retired gate-carrier zero cannot disable new engine runs", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		)!;
 		store.importWorkflowTemplateSeed(seed);
 
-		const materialize = (runId: string, issueId: string, enabled: "0" | "1") =>
+		const materialize = (runId: string, issueId: string) =>
 			store.materializeWorkflowRun({
 				runId,
 				issueId,
@@ -219,12 +215,7 @@ describe("StateStore workflow templates", () => {
 				templateId: seed.templateId,
 				claimsReadEnrolled: true,
 				actor: "lead",
-				env: {
-					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-					FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_WORKFLOW_GATE_CARRIER: enabled,
-				},
+				env: { FLYWHEEL_WORKFLOW_GATE_CARRIER: "0" },
 				startReservation: {
 					idempotencyKey: `start-${runId}`,
 					selectionDigest: `selection-${runId}`,
@@ -235,8 +226,15 @@ describe("StateStore workflow templates", () => {
 				},
 			});
 
-		const legacy = materialize("run-gate-epoch-0", "FLY-EPOCH-0", "0");
-		const carrier = materialize("run-gate-epoch-1", "FLY-EPOCH-1", "1");
+		const legacy = store.materializeWorkflowRun({
+			runId: "run-gate-epoch-0",
+			issueId: "FLY-EPOCH-0",
+			projectName: "flywheel",
+			templateId: seed.templateId,
+			claimsReadEnrolled: false,
+			actor: "lead",
+		});
+		const carrier = materialize("run-gate-epoch-1", "FLY-EPOCH-1");
 
 		expect(legacy.gate_carrier_epoch).toBe(0);
 		expect(carrier.gate_carrier_epoch).toBe(1);
@@ -245,7 +243,7 @@ describe("StateStore workflow templates", () => {
 		store.close();
 	});
 
-	it("gates all schema-v2 mutation seams independently and requires the dispatch predicate before materialization", async () => {
+	it("ignores retired zeros across schema-v2 authoring, publish, and materialization", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-v2-agent-"));
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
@@ -260,40 +258,20 @@ describe("StateStore workflow templates", () => {
 			revision: 1,
 		});
 
-		expect(() =>
-			store.createWorkflowTemplateRevision({
-				templateId: seed.templateId,
-				manifest: seed.manifest,
-				schemaVersion: 2,
-				createdBy: "founder",
-			}),
-		).toThrow(/generalized.*disabled|flag/i);
 		const revision2 = store.createWorkflowTemplateRevision({
 			templateId: seed.templateId,
 			manifest: seed.manifest,
 			schemaVersion: 2,
 			createdBy: "founder",
-			env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1" },
+			env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "0" },
 		});
-		expect(() =>
-			store.publishWorkflowTemplate({
-				templateId: seed.templateId,
-				revision: revision2,
-				expectedRevision: 1,
-				publishedBy: "founder",
-			}),
-		).toThrow(/generalized.*disabled|flag/i);
 		expect(
 			store.publishWorkflowTemplate({
 				templateId: seed.templateId,
 				revision: revision2,
 				expectedRevision: 1,
 				publishedBy: "founder",
-				env: {
-					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-				},
+				env: { FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "0" },
 			}),
 		).toMatchObject({ status: "published", revision: revision2 });
 		store.bindWorkflowCategory({
@@ -302,25 +280,8 @@ describe("StateStore workflow templates", () => {
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
-		expect(() =>
-			store.materializeWorkflowRun({
-				runId: "v2-claims-off",
-				issueId: "FLY-X",
-				projectName: "flywheel",
-				taskCategory: "ops",
-				claimsReadEnrolled: false,
-				actor: "lead",
-				canonicalRoot: root,
-				env: {
-					FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-				},
-			}),
-		).toThrow(/claims.*write/i);
-		expect(store.getWorkflowRun("v2-claims-off")).toBeUndefined();
 		const run = store.materializeWorkflowRun({
-			runId: "v2-enabled",
+			runId: "v2-claims-off",
 			issueId: "FLY-X",
 			projectName: "flywheel",
 			taskCategory: "ops",
@@ -330,7 +291,7 @@ describe("StateStore workflow templates", () => {
 			env: {
 				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-				FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+				FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "0",
 				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 			},
 		});

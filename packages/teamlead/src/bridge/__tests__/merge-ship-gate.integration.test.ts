@@ -189,6 +189,13 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				createdAt: "2026-07-16T00:00:00.000Z",
 			},
 		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = 'engine-run'",
+		);
 		store.upsertWorkflowRunNode({
 			runId: "engine-run",
 			nodeId: "design",
@@ -488,7 +495,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		).toMatchObject({
 			eligible: false,
 			workflowClaimsOk: false,
-			workflowClaimsReason: "claims_read_disabled",
+			workflowClaimsReason: "founder_approved:no_claim",
 		});
 		const env = {
 			...off,
@@ -769,6 +776,15 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const product = productWithReviewPredicate("design_review_approved");
 		expect(product.ok).toBe(true);
 		if (!product.ok) throw new Error(product.reason);
+		// This test isolates materialized-head recovery for a pre-carrier run.
+		// Newly materialized runs are covered as epoch 1 elsewhere.
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET gate_carrier_epoch = 0 WHERE run_id = 'product-run'",
+		);
 		const session = store.getSession(product.executionId)!;
 		parkMergeBlock(store, session, HEAD, {
 			eligible: false,
@@ -777,6 +793,22 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			mergeReason: "head_authority_unavailable",
 			qaReason: "head_authority_unavailable_failclosed",
 		});
+		const materializedHeadAuthority = {
+			resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
+		};
+		expect(
+			await computeAuthoritativeShipDecision(
+				store,
+				store.getSession(product.executionId)!,
+				HEAD,
+				{
+					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
+					FLYWHEEL_QA_DONE_GATE: "0",
+					FLYWHEEL_CODEX_HARD_GATE: "0",
+				} as NodeJS.ProcessEnv,
+				materializedHeadAuthority,
+			),
+		).toMatchObject({ eligible: true });
 
 		const completed = await finalizeRecoveredMerge(
 			store,
@@ -792,9 +824,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			} as NodeJS.ProcessEnv,
 			undefined,
 			undefined,
-			{
-				resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
-			},
+			materializedHeadAuthority,
 		);
 
 		expect(completed).toBe(true);

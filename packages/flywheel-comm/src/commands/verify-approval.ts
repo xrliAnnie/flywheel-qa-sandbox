@@ -16,8 +16,8 @@
  *      no "latest by timestamp" tie-break games at SQLite's 1s resolution).
  *   2. THAT question has a response row. Writes to it are FLY-175-gated
  *      (`respond.ts` refuses direct writes; only the Bridge founder-consent
- *      wrapper / `approveExecution` / the loud-audited emergency bypass can
- *      write it) and the Bridge rejects answers to non-current questions.
+ *      wrapper / `approveExecution` can write it) and the Bridge rejects
+ *      answers to non-current questions.
  *   3. The response parses as structured JSON with `approved === true`
  *      (the exact shape `approveExecution` writes). Plain-text or malformed
  *      responses are NOT authority (fail-closed).
@@ -131,7 +131,6 @@ export interface VerifyApprovalWithBridgeHeadArgs extends VerifyApprovalArgs {
 	bridgeUrl: string;
 	/** Test seam. */
 	fetchImpl?: typeof fetch;
-	workflowDotenvPath?: string;
 }
 
 /**
@@ -143,23 +142,6 @@ export async function verifyApprovalWithBridgeHead(
 	args: VerifyApprovalWithBridgeHeadArgs,
 ): Promise<VerifyApprovalResult> {
 	const env = args.env ?? process.env;
-	const readPath =
-		args.workflowDotenvPath ?? join(homedir(), ".flywheel", ".env");
-	let claimsReadOn: boolean;
-	if (args.env && "FLYWHEEL_WORKFLOW_CLAIMS_READ" in args.env) {
-		claimsReadOn = args.env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
-	} else {
-		try {
-			claimsReadOn =
-				readEnvValueFromContent(
-					readFileSync(readPath, "utf8"),
-					"FLYWHEEL_WORKFLOW_CLAIMS_READ",
-				) === "1";
-		} catch {
-			claimsReadOn = env.FLYWHEEL_WORKFLOW_CLAIMS_READ === "1";
-		}
-	}
-	if (!claimsReadOn) return verifyApproval(args);
 	const callerHead = args.prHead.trim().toLowerCase();
 	if (!FULL_SHA_RE.test(callerHead)) {
 		return {

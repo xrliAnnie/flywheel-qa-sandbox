@@ -174,12 +174,12 @@ describe("workflow template selection", () => {
 	});
 
 	it.each([
-		["FLYWHEEL_WORKFLOW_CLAIMS_WRITE", /claims write/i],
-		["FLYWHEEL_WORKFLOW_CLAIMS_READ", /claims read/i],
-		["FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES", /generalized.*disabled/i],
+		["FLYWHEEL_WORKFLOW_CLAIMS_WRITE"],
+		["FLYWHEEL_WORKFLOW_CLAIMS_READ"],
+		["FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES"],
 	] as const)(
-		"fails closed for a v2 candidate when %s is missing",
-		async (missing, expected) => {
+		"selects a v2 candidate despite retired %s=0",
+		async (retired) => {
 			const store = await StateStore.create(":memory:");
 			const root = setupRoot();
 			const seed = v2Seed();
@@ -190,62 +190,51 @@ describe("workflow template selection", () => {
 				templateId: seed.templateId,
 				updatedBy: "lead",
 			});
-			const env = { ...enabled };
-			delete env[missing];
-			await expect(
-				resolveWorkflowTemplateSelection(store, {
-					project: "flywheel",
-					issueId: `FLY-V2-${missing}`,
-					taskCategory: "research",
-					selectedBy: "research-lead",
-					actor: "master",
-					authKind: "master",
-					canonicalRoot: root,
-					idempotencyKey: `v2-${missing}`,
-					env,
-				}),
-			).rejects.toThrow(expected);
+			const env = { ...enabled, [retired]: "0" };
+			const selection = await resolveWorkflowTemplateSelection(store, {
+				project: "flywheel",
+				issueId: `FLY-V2-${retired}`,
+				taskCategory: "research",
+				selectedBy: "research-lead",
+				actor: "master",
+				authKind: "master",
+				canonicalRoot: root,
+				idempotencyKey: `v2-${retired}`,
+				env,
+			});
+			expect(selection).toMatchObject({ nodeId: "research" });
 			expect(
-				store.getActiveWorkflowRunForIssue(`FLY-V2-${missing}`),
-			).toBeUndefined();
-			expect(
-				store.getWorkflowStartReservation(`v2-${missing}`),
-			).toBeUndefined();
-			expect(store.countWorkflowClaims(`FLY-V2-${missing}`)).toBe(0);
-			expect(store.listWorkflowSideEffects(`FLY-V2-${missing}`)).toEqual([]);
+				store.getActiveWorkflowRunForIssue(`FLY-V2-${retired}`)?.run_id,
+			).toBe(selection?.runId);
 			store.close();
 		},
 	);
 
-	it("returns null for a v2 candidate when the primary dispatch flag is off", async () => {
+	it("selects a v2 candidate despite retired template-dispatch zero", async () => {
 		const store = await StateStore.create(":memory:");
 		const seed = v2Seed();
 		store.importWorkflowTemplateSeed(seed, enabled);
 		store.bindWorkflowCategory({
 			project: "flywheel",
-			taskCategory: "generic",
+			taskCategory: "research",
 			templateId: seed.templateId,
 			updatedBy: "lead",
 		});
-		expect(
-			await resolveWorkflowTemplateSelection(store, {
-				project: "flywheel",
-				issueId: "FLY-V2-DISPATCH-OFF",
-				taskCategory: "research",
-				selectedBy: "research-lead",
-				actor: "master",
-				authKind: "master",
-				canonicalRoot: setupRoot(),
-				idempotencyKey: "v2-dispatch-off",
-				env: {
-					...enabled,
-					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0",
-				},
-			}),
-		).toBeNull();
-		expect(
-			store.getActiveWorkflowRunForIssue("FLY-V2-DISPATCH-OFF"),
-		).toBeUndefined();
+		const selection = await resolveWorkflowTemplateSelection(store, {
+			project: "flywheel",
+			issueId: "FLY-V2-DISPATCH-OFF",
+			taskCategory: "research",
+			selectedBy: "research-lead",
+			actor: "master",
+			authKind: "master",
+			canonicalRoot: setupRoot(),
+			idempotencyKey: "v2-dispatch-off",
+			env: {
+				...enabled,
+				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0",
+			},
+		});
+		expect(selection).toMatchObject({ nodeId: "research" });
 		store.close();
 	});
 
@@ -255,7 +244,7 @@ describe("workflow template selection", () => {
 		["binding", false],
 		["direct", false],
 	] as const)(
-		"keeps installed v2 %s selection dormant=%s until the generalized flag is enabled",
+		"selects installed v2 %s with retired generalized raw on=%s",
 		async (selection, flagOn) => {
 			const store = await StateStore.create(":memory:");
 			const seed = v2Seed();
@@ -293,19 +282,10 @@ describe("workflow template selection", () => {
 					env,
 					idFactory: () => ids.shift()!,
 				});
-			if (flagOn) {
-				await expect(resolve()).resolves.toMatchObject({
-					selectionSource: selection === "binding" ? "binding" : "lead",
-					nodeId: "research",
-				});
-			} else {
-				await expect(resolve()).rejects.toThrow(/generalized.*disabled/i);
-				expect(
-					store.getActiveWorkflowRunForIssue(
-						`FLY-V2-${selection}-${flagOn ? "ON" : "OFF"}`,
-					),
-				).toBeUndefined();
-			}
+			await expect(resolve()).resolves.toMatchObject({
+				selectionSource: selection === "binding" ? "binding" : "lead",
+				nodeId: "research",
+			});
 			store.close();
 		},
 	);

@@ -328,7 +328,6 @@ export const ALERT_EVENT_TYPES = [
 	"lead_backend_drift",
 	// FLY-1364: shell-side cmux display convergence and tmux rescue telemetry.
 	"cmux_cleanup",
-	"cmux_flag_state",
 	"tmux_rescue_hold",
 	// FLY-1781: engineering-only weekly flag-governance health notices. These
 	// are informational (no ticket/ARC/founder DM lifecycle).
@@ -353,7 +352,6 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"quota_switch_confirmation",
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
-	"cmux_flag_state",
 	"flag_scan_failed",
 	"flag_scan_no_clock",
 ]);

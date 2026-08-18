@@ -867,7 +867,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(h.calls).toHaveLength(1);
 	});
 
-	it("holds an active v2 run when dispatch is disabled and rejects non-master recovery", async () => {
+	it("ignores retired dispatch zero while preserving master-only active v2 recovery", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
@@ -877,10 +877,10 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		const scoped = await post(h.url, {}, SCOPED);
 		expect(scoped.status).toBe(409);
 		expect(scoped.json.code).toBe("WORKFLOW_RUN_ACTIVE");
-		delete process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
-		const held = await post(h.url, {});
-		expect(held.status).toBe(409);
-		expect(held.json.code).toBe("ACTIVE_WORKFLOW_RUN_RECOVERY_HELD");
+		process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH = "0";
+		const recovered = await post(h.url, {});
+		expect(recovered.status).toBe(200);
+		expect(recovered.json.generalized).toBe(true);
 		expect(h.calls).toHaveLength(1);
 	});
 });
@@ -1021,7 +1021,7 @@ describe("FLY-1407 work-kind entry gate", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
-	it("fails closed when the dispatch flag flips after v2 entry classification", async () => {
+	it("ignores retired dispatch zero after v2 entry classification", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
 			bindingCategory: "generic",
@@ -1032,16 +1032,16 @@ describe("FLY-1407 work-kind entry gate", () => {
 		h.store.getWorkflowCategoryBinding = ((project, category) => {
 			const result = original(project, category);
 			reads += 1;
-			if (reads === 1) delete process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
+			if (reads === 1) process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH = "0";
 			return result;
 		}) as typeof h.store.getWorkflowCategoryBinding;
 		const { status, json } = await post(h.url, {
 			taskCategory: "generic",
 		});
-		expect(status).toBe(409);
-		expect(json.code).toBe("WORK_KIND_ENTRY_NOT_MATERIALIZED");
-		expect(h.calls).toHaveLength(0);
-		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+		expect(status).toBe(200);
+		expect(json.generalized).toBe(true);
+		expect(h.calls).toHaveLength(1);
+		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeDefined();
 	});
 
 	it("rebuilds the same work-kind 200 after launch committed but response cache was lost", async () => {
@@ -1240,17 +1240,16 @@ describe("FLY-1407 work-kind entry gate", () => {
 		]);
 	});
 
-	it("keeps malformed taskCategory byte-compatible when the main flag is off", async () => {
+	it("does not let retired dispatch zero bypass work-kind validation", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: undefined },
+			env: { FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "0" },
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: true\n`,
 		});
 		const { status, json } = await post(h.url, { taskCategory: 42 });
-		expect(status).toBe(200);
-		expect(json.generalized).toBeUndefined();
-		expect(json.workKind).toBeUndefined();
-		expect(h.calls).toHaveLength(1);
+		expect(status).toBe(400);
+		expect(json.code).toBe("INVALID_TASK_CATEGORY");
+		expect(h.calls).toHaveLength(0);
 	});
 
 	it("fails loudly on malformed work_kind only while the main flag is on", async () => {

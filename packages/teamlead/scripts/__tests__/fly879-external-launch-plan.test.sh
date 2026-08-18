@@ -116,7 +116,7 @@ _rule_count=$(printf '%s\n' "$_rules" | grep -c . )
 [ "$(printf '%s' "$_rules")" = "external-agent-contract.md" ] && ok "T1 the one rule IS the contract" || bad "T1 the one rule is not the contract (got '$_rules')"
 # Negative: none of the internal/eng/cross-dept/reply/screencap/founder rules.
 for forbidden in department-lead-rules.md cos-lead-rules.md founder-only-authority.md \
-  founder-html-delivery.md founder-ux-rules.md cross-dept-channel-rules.md \
+  founder-html-delivery.md cross-dept-channel-rules.md \
   discord-reply-contract.md screencapture-l3-skill.md inbox-ack-rule.md \
   common-rules.md companion-safety-contract.md executor-routing.md \
   runner-messaging-rules.md doc-flow-rules.md; do

@@ -79,7 +79,6 @@ import {
 } from "./workflow-ship-ready.js";
 import {
 	applyWorkflowOverride,
-	isGeneralizedTemplatesEnabled,
 	isWorkflowManifestLand,
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
@@ -88,11 +87,6 @@ import {
 	workflowSeedContentHash,
 	workflowTerminalNode,
 } from "./workflow-template.js";
-import {
-	isWorkflowGateCarrierEnabled,
-	workflowTemplateDispatchBlockMessage,
-	workflowTemplateDispatchBlockReason,
-} from "./workflow-template-dispatch.js";
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -918,12 +912,6 @@ export interface SessionUpsert {
 	chat_thread_role?: string;
 	/** FLY-1281: server-derived node id for an explicitly enrolled v2 workflow. */
 	workflow_node_id?: string;
-	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare), 0|1. */
-	founder_facing_ux?: number;
-	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
-	founder_ux_signoff_json?: string;
-	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
-	founder_ux_gate_mode?: string;
 	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, absent=never-evaluated). */
 	qa_required?: number;
 	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
@@ -1012,12 +1000,6 @@ export interface Session {
 	chat_thread_role?: string;
 	/** FLY-1281: server-derived node id for an explicitly enrolled v2 workflow. */
 	workflow_node_id?: string;
-	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare). */
-	founder_facing_ux?: boolean;
-	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
-	founder_ux_signoff_json?: string;
-	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
-	founder_ux_gate_mode?: string;
 	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, undefined=never-evaluated). */
 	qa_required?: number;
 	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
@@ -6031,15 +6013,6 @@ export class StateStore {
 					[session.codex_skip ? 1 : 0, session.execution_id],
 				);
 			}
-			if (session.founder_facing_ux !== undefined) {
-				// Keep-high: a Runner self-declaration (founder_facing_ux=1) must
-				// never be downgraded by a repeated started upsert carrying the
-				// stale computed value.
-				this.db.run(
-					"UPDATE sessions SET founder_facing_ux = MAX(founder_facing_ux, ?) WHERE execution_id = ?",
-					[session.founder_facing_ux ? 1 : 0, session.execution_id],
-				);
-			}
 			this.applyTerminalTimestamp(
 				session.execution_id,
 				existing?.status,
@@ -6475,10 +6448,6 @@ export class StateStore {
 			issue_url: "issue_url",
 			// FLY-793 (Step 11): persisted chat-thread role (set at start).
 			chat_thread_role: "chat_thread_role",
-			// FLY-598: founder-facing UX gate flag + sign-off record + mode snapshot
-			founder_facing_ux: "founder_facing_ux",
-			founder_ux_signoff_json: "founder_ux_signoff_json",
-			founder_ux_gate_mode: "founder_ux_gate_mode",
 			// FLY-869: QA-required snapshot + merge_block park marker + codex-hold anchor
 			qa_required: "qa_required",
 			qa_required_reason: "qa_required_reason",
@@ -11481,13 +11450,6 @@ export class StateStore {
 			// snapshot) to 'main' too, so every reader can trust it.
 			chat_thread_role: (row.chat_thread_role as string) ?? "main",
 			workflow_node_id: (row.workflow_node_id as string) ?? undefined,
-			// FLY-598: founder-facing UX gate flag + sign-off record
-			founder_facing_ux: row.founder_facing_ux
-				? !!(row.founder_facing_ux as number)
-				: undefined,
-			founder_ux_signoff_json:
-				(row.founder_ux_signoff_json as string) ?? undefined,
-			founder_ux_gate_mode: (row.founder_ux_gate_mode as string) ?? undefined,
 			// FLY-869 A-1: QA-required snapshot (numeric 0/1; undefined = never evaluated).
 			qa_required:
 				typeof row.qa_required === "number"
@@ -19402,15 +19364,8 @@ export class StateStore {
 		manifestDigest?: string;
 		schemaVersion: number;
 		createdBy: string;
-		env?: Record<string, string | undefined>;
 	}): number {
 		const manifest = validateWorkflowManifest(input.manifest);
-		if (
-			manifest.schema_version === 2 &&
-			!isGeneralizedTemplatesEnabled(input.env ?? process.env)
-		) {
-			throw new Error("generalized workflow templates are disabled by flag");
-		}
 		if (input.schemaVersion !== manifest.schema_version) {
 			throw new Error("workflow template schema version mismatch");
 		}
@@ -19585,7 +19540,6 @@ export class StateStore {
 		revision: number;
 		expectedRevision: number | null;
 		publishedBy: string;
-		env?: Record<string, string | undefined>;
 	}): WorkflowTemplatePublishResult {
 		const targetRevision = this.getWorkflowTemplateRevision(
 			input.templateId,
@@ -19593,12 +19547,6 @@ export class StateStore {
 		);
 		if (!targetRevision) {
 			return { status: "not_found" };
-		}
-		if (
-			targetRevision.schema_version === 2 &&
-			!isGeneralizedTemplatesEnabled(input.env ?? process.env)
-		) {
-			throw new Error("generalized workflow templates are disabled by flag");
 		}
 		const conflict = Symbol("workflow_template_publish_conflict");
 		try {
@@ -20406,7 +20354,6 @@ export class StateStore {
 			evidence: RunQuiescenceEvidence[];
 			now: string;
 		};
-		env?: Record<string, string | undefined>;
 	}): WorkflowRunRow {
 		const binding = input.templateId
 			? undefined
@@ -20438,18 +20385,6 @@ export class StateStore {
 		);
 		if (!revision)
 			throw new Error("published workflow template revision not found");
-		if (
-			revision.schema_version === 2 ||
-			(revision.schema_version === 1 && input.startReservation)
-		) {
-			const env = input.env ?? process.env;
-			const blocked = workflowTemplateDispatchBlockReason(
-				revision.schema_version,
-				env,
-			);
-			if (blocked)
-				throw new Error(workflowTemplateDispatchBlockMessage(blocked));
-		}
 		const base = validateWorkflowManifest(JSON.parse(revision.manifest));
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override)
@@ -20694,10 +20629,7 @@ export class StateStore {
 					input.categorySource ? (input.taskCategory ?? null) : null,
 					input.categorySource ?? null,
 					input.tier ?? null,
-					input.startReservation &&
-					isWorkflowGateCarrierEnabled(input.env ?? process.env)
-						? 1
-						: 0,
+					input.startReservation ? 1 : 0,
 				],
 			);
 			if (input.startReservation) {
@@ -27744,7 +27676,6 @@ export class StateStore {
 		expiresAt: string;
 		absoluteDeadlineAt: string;
 		now?: string;
-		env?: Record<string, string | undefined>;
 		idempotencyKey?: string;
 		dispatchResolution?: {
 			dispatch: {
@@ -27756,7 +27687,6 @@ export class StateStore {
 			audit: boolean;
 		};
 	}): GeneralizedWorkflowAdmissionResult {
-		const env = input.env ?? process.env;
 		const now = input.now ?? new Date().toISOString();
 		const activationId =
 			input.activationId ??
@@ -27789,11 +27719,6 @@ export class StateStore {
 		} catch {
 			return { ok: false, reason: "invalid_snapshot" };
 		}
-		const blocked = workflowTemplateDispatchBlockReason(
-			snapshot.schema_version,
-			env,
-		);
-		if (blocked) return { ok: false, reason: blocked };
 		if (snapshot.schema_version === 1 && run.engine_owned !== 1) {
 			return { ok: false, reason: "engine_ownership_required" };
 		}
@@ -40049,9 +39974,8 @@ export class StateStore {
 	}
 
 	// ── FLY-1232 module ②: shadow-run composite transaction + dispatch outbox ──
-	// The shadow ledger observes the production pipeline (write path behind
-	// FLYWHEEL_WORKFLOW_CLAIMS_WRITE); it is NOT authoritative — gates keep
-	// reading their legacy sources until sub-issue B flips the read path.
+	// The shadow ledger observes the production pipeline; enrollment remains the
+	// typed per-run authority boundary for claims-backed gates.
 
 	private migrateWorkflowLedger(): void {
 		// §2.4b dispatch outbox: the durable history of each PHYSICAL launch of a
@@ -51393,10 +51317,6 @@ export type GeneralizedWorkflowAdmissionResult =
 	| {
 			ok: false;
 			reason:
-				| "template_dispatch_disabled"
-				| "generalized_disabled"
-				| "claims_write_disabled"
-				| "claims_read_disabled"
 				| "invalid_expiry"
 				| "run_not_found"
 				| "invalid_snapshot"

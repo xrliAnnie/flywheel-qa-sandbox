@@ -9,6 +9,8 @@
  * combination WITHOUT a new questionId stays on the FLY-208 5a evidence-gap
  * completion (byte-compat).
  */
+
+import { execFileSync } from "node:child_process";
 import type http from "node:http";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,7 +34,9 @@ vi.mock("../bridge/post-ship-finalization.js", async () => {
 });
 
 const H1 = "a".repeat(40);
-const H2 = "b".repeat(40);
+const H2 = execFileSync("git", ["rev-parse", "HEAD"], {
+	encoding: "utf8",
+}).trim();
 const Q1 = "11111111-1111-1111-1111-111111111111";
 const Q2 = "22222222-2222-2222-2222-222222222222";
 
@@ -80,7 +84,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	beforeEach(async () => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_QA_DONE_GATE = "0";
-		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
+		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		runPostShipSpy.mockClear();
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
@@ -111,15 +115,27 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	});
 
 	async function postEvent(body: Record<string, unknown>) {
-		return fetch(`${baseUrl}/events`, {
+		const response = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: ingestHeaders,
 			body: JSON.stringify(body),
 		});
+		if (body.event_type === "session_started") {
+			const executionId = String(body.execution_id);
+			const session = store.getSession(executionId);
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: session?.issue_id ?? String(body.issue_id),
+				project_name: session?.project_name ?? String(body.project_name),
+				status: session?.status ?? "running",
+				worktree_path: process.cwd(),
+			});
+		}
+		return response;
 	}
 
 	/** running → awaiting_review(Q1,H1) → approved_to_ship. */
-	async function driveToApproved(execId: string) {
+	async function driveToApproved(execId: string, head = H1) {
 		await postEvent({
 			event_id: `${execId}-start`,
 			execution_id: execId,
@@ -136,13 +152,13 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 			event_type: "session_completed",
 			payload: {
 				decision: { route: "needs_review" },
-				evidence: { headSha: H1 },
+				evidence: { headSha: head },
 				reviewQuestionId: Q1,
 			},
 		});
 		expect(store.getSession(execId)?.status).toBe("awaiting_review");
 		expect(store.getSession(execId)?.review_question_id).toBe(Q1);
-		expect(store.getSession(execId)?.pr_head_sha).toBe(H1);
+		expect(store.getSession(execId)?.pr_head_sha).toBe(head);
 		const approved = applyTransition(
 			transitionOpts,
 			execId,
@@ -241,7 +257,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 
 	it("NEW questionId but MERGED landing → completed (ship wins; not a recovery lap)", async () => {
 		const execId = "exec-merged";
-		await driveToApproved(execId);
+		await driveToApproved(execId, H2);
 
 		await postEvent({
 			event_id: `${execId}-review2`,

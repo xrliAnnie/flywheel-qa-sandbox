@@ -108,22 +108,3 @@ export function generateCapabilityToken(): string {
 export function hashCapabilityToken(token: string): string {
 	return createHash("sha256").update(token).digest("hex");
 }
-
-// ── Rollout flags (plan §3.2) ────────────────────────────────────────────────
-// Two independent DEFAULT-OFF switches: write and read. Enrollment is a per-run
-// typed marker — never inferred from these flags or from table contents.
-
-const WORKFLOW_CLAIMS_WRITE_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_WRITE";
-const WORKFLOW_CLAIMS_READ_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_READ";
-
-type EnvLike = Record<string, string | undefined>;
-
-/** Dual-write producers may write the claims ledger. Default OFF. */
-export function isWorkflowClaimsWriteEnabled(env: EnvLike): boolean {
-	return env[WORKFLOW_CLAIMS_WRITE_KEY] === "1";
-}
-
-/** Enrolled runs may READ gates from the claims ledger. Default OFF. */
-export function isWorkflowClaimsReadEnabled(env: EnvLike): boolean {
-	return env[WORKFLOW_CLAIMS_READ_KEY] === "1";
-}

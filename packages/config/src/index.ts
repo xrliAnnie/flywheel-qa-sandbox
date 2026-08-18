@@ -74,14 +74,6 @@ export {
 	founderOffsetMinutes,
 	resolveFounderTimezone,
 } from "./founder-timezone.js";
-// FLY-869: founder-UX gate resolution choke point (absent config → enforce).
-// FLY-900: fleet-wide kill-switch helper (isFounderUxGateEnabled) — default OFF.
-export type { EffectiveFounderUxGateConfig } from "./founder-ux-config.js";
-export {
-	DEFAULT_FOUNDER_UX_EXEMPT_LABELS,
-	isFounderUxGateEnabled,
-	resolveEffectiveFounderUxConfig,
-} from "./founder-ux-config.js";
 export type {
 	LeadLaunchSelection,
 	ModelConfigSnapshot,
@@ -321,8 +313,6 @@ export type {
 	ExecutorBackend,
 	FlywheelConfig,
 	FounderMilestoneReportConfig,
-	FounderUxGateConfig,
-	FounderUxGateMode,
 	MilestoneKind,
 	OrchestratorConfig,
 	ParallelConfig,
@@ -346,8 +336,6 @@ export type {
 } from "./types.js";
 export {
 	EXECUTOR_BACKENDS,
-	FOUNDER_UX_GATE_DEFAULT_MODE,
-	FOUNDER_UX_GATE_MODES,
 	ROLE_EFFORT_LEVELS,
 	ROLE_NAMES,
 	SUPPORTED_MILESTONE_KINDS_V1,

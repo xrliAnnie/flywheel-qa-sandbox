@@ -15,10 +15,6 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import { normalizeOptionalBearer } from "flywheel-config";
-import { computeUxHash } from "./founder-ux.js";
-
-/** FLY-598: the Bridge stage guard's block code; `stage set implement` fail-closes on it. */
-const FOUNDER_UX_SIGNOFF_REQUIRED = "FOUNDER_UX_SIGNOFF_REQUIRED";
 
 interface LandingStatus {
 	status?: string;
@@ -123,10 +119,6 @@ export async function stage(opts: {
 	subcommand: string;
 	stageName: string;
 	planPath?: string;
-	/** FLY-598: canonical UX-brief path (implement only) — hashed into ux_hash. */
-	uxFile?: string;
-	/** FLY-598: pre-computed ux_hash (implement only) — alternative to uxFile. */
-	uxHash?: string;
 }): Promise<void> {
 	if (opts.subcommand !== "set") {
 		console.error(`Unknown stage subcommand: ${opts.subcommand}`);
@@ -152,19 +144,6 @@ export async function stage(opts: {
 	if (opts.planPath !== undefined && opts.stageName !== "design_review") {
 		console.error(
 			`--plan flag is only valid for stage=design_review (got stage=${opts.stageName})`,
-		);
-		process.exit(1);
-	}
-
-	// FLY-598: `--ux-file` / `--ux-hash` are only meaningful for implement (they
-	// carry the current UX-brief hash so the Bridge guard can verify a
-	// current-brief sign-off). Reject elsewhere to surface Runner mistakes.
-	if (
-		(opts.uxFile !== undefined || opts.uxHash !== undefined) &&
-		opts.stageName !== "implement"
-	) {
-		console.error(
-			`--ux-file/--ux-hash are only valid for stage=implement (got stage=${opts.stageName})`,
 		);
 		process.exit(1);
 	}
@@ -203,7 +182,6 @@ export async function stage(opts: {
 		stage: string;
 		landing_status?: LandingStatus;
 		plan_path?: string;
-		ux_hash?: string;
 	} = {
 		stage: opts.stageName,
 	};
@@ -216,16 +194,6 @@ export async function stage(opts: {
 	if (opts.stageName === "design_review" && opts.planPath !== undefined) {
 		payload.plan_path = validatePlanPath(opts.planPath, process.cwd());
 	}
-	// FLY-598: attach the current UX-brief hash on entry into implement so the
-	// Bridge guard can verify a sign-off bound to THIS brief (not a stale one).
-	if (opts.stageName === "implement") {
-		if (opts.uxFile !== undefined) {
-			payload.ux_hash = computeUxHash(opts.uxFile);
-		} else if (opts.uxHash !== undefined) {
-			payload.ux_hash = opts.uxHash;
-		}
-	}
-
 	const body = {
 		event_id: randomUUID(),
 		execution_id: execId,
@@ -245,25 +213,6 @@ export async function stage(opts: {
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-	// FLY-598: `stage set implement` is the ONE stage that can fail-closed. Two
-	// distinct fail-closed conditions, both detected inside the try with the exits
-	// run AFTER the try/catch (so the fetch catch can never swallow them):
-	//
-	//  (1) The Bridge's explicit FOUNDER_UX_SIGNOFF_REQUIRED block (409) — applies
-	//      to ANY `stage set implement`. The Bridge only emits it for a
-	//      founder-facing run lacking a current-brief sign-off (incl. an implement
-	//      sent with NO ux_hash), so with the gate off it never fires (byte-compat).
-	//  (2) A "gated implement" — one carrying a ux_hash, i.e. the Runner is
-	//      asserting a founder-facing implement — that cannot get a 2xx
-	//      confirmation (ANY other non-2xx OR a transport error / Bridge-down).
-	//      Without a confirmed pass the gate is unverifiable, so we must NOT enter
-	//      implement (Codex R1 HIGH — Bridge-down must not let a founder-facing
-	//      implement slip through). A NON-gated implement (no ux_hash) and every
-	//      other stage stay fail-open exactly as before (byte-compat).
-	const isImplement = opts.stageName === "implement";
-	const gatedImplement = isImplement && payload.ux_hash !== undefined;
-	let gateBlocked = false;
-	let gateUnverified = false;
 	try {
 		const response = await fetch(`${bridgeUrl}/events`, {
 			method: "POST",
@@ -274,63 +223,17 @@ export async function stage(opts: {
 		clearTimeout(timeout);
 
 		if (!response.ok) {
-			if (isImplement) {
-				try {
-					const parsed = JSON.parse(await response.text()) as {
-						error?: string;
-					};
-					gateBlocked = parsed.error === FOUNDER_UX_SIGNOFF_REQUIRED;
-				} catch {
-					/* non-JSON body → not the explicit gate code */
-				}
-			}
-			if (!gateBlocked && gatedImplement) {
-				// Gated implement with a non-2xx we could NOT confirm as a pass is
-				// unverifiable → fail-closed (do not enter implement). gateBlocked
-				// (the explicit 409) is handled by the post-try fail-closed exit.
-				gateUnverified = true;
-				console.error(
-					`[flywheel-comm stage] Bridge returned ${response.status} — could not verify the founder-UX gate`,
-				);
-			} else if (!gateBlocked) {
-				console.error(
-					`[flywheel-comm stage] Warning: Bridge returned ${response.status} — stage not recorded`,
-				);
-			}
+			console.error(
+				`[flywheel-comm stage] Warning: Bridge returned ${response.status} — stage not recorded`,
+			);
 		} else {
 			console.log(`Stage: ${opts.stageName}`);
 		}
 	} catch (err) {
 		clearTimeout(timeout);
 		const message = err instanceof Error ? err.message : String(err);
-		// A gated implement that cannot reach the Bridge cannot be verified →
-		// fail-closed. Any other stage stays fail-open (best-effort reporting).
-		if (gatedImplement) {
-			gateUnverified = true;
-			console.error(
-				`[flywheel-comm stage] ${message} — could not reach the Bridge to verify the founder-UX gate`,
-			);
-		} else {
-			console.error(
-				`[flywheel-comm stage] Warning: ${message} — stage not recorded`,
-			);
-		}
-	}
-
-	if (gateBlocked) {
 		console.error(
-			"[flywheel-comm stage] BLOCKED: founder-facing UX requires Annie's UX sign-off before implement. " +
-				"Brainstorm the UX with Annie, have your Lead record her approval " +
-				"(record-founder-ux-signoff), then await-founder-ux-gate. Not entering implement.",
+			`[flywheel-comm stage] Warning: ${message} — stage not recorded`,
 		);
-		process.exit(1);
-	}
-	if (gateUnverified) {
-		console.error(
-			"[flywheel-comm stage] BLOCKED: could not confirm the founder-UX gate with the Bridge. " +
-				"A founder-facing implement may not proceed without a verified sign-off. " +
-				"Resolve Bridge connectivity and retry; do NOT enter implement.",
-		);
-		process.exit(1);
 	}
 }

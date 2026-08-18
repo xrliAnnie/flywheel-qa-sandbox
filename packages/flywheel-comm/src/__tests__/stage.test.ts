@@ -374,94 +374,11 @@ describe("stage command", () => {
 		});
 	});
 
-	// FLY-598: founder-UX gate — ux_hash on implement + fail-closed on the block code.
-	describe("FLY-598 founder-ux gate", () => {
-		let tmp: string;
-		beforeEach(() => {
-			tmp = join(tmpdir(), `stage-ux-${Date.now()}-${Math.random()}`);
-			mkdirSync(tmp, { recursive: true });
-		});
-		afterEach(() => rmSync(tmp, { recursive: true, force: true }));
-
-		it("attaches ux_hash to the implement payload from --ux-file", async () => {
-			const brief = join(tmp, "ux-brief.md");
-			writeFileSync(brief, "show a toast, not an alert\n");
-			await stage({ subcommand: "set", stageName: "implement", uxFile: brief });
-			const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
-			expect(body.payload.ux_hash).toMatch(/^[0-9a-f]{64}$/);
-		});
-
-		it("rejects --ux-file on a non-implement stage", async () => {
-			await expect(
-				stage({ subcommand: "set", stageName: "test", uxFile: "/x.md" }),
-			).rejects.toThrow("process.exit(1)");
-			expect(mockFetch).not.toHaveBeenCalled();
-		});
-
-		it("FAIL-CLOSES (exit 1) on implement when the Bridge returns FOUNDER_UX_SIGNOFF_REQUIRED", async () => {
-			mockFetch.mockResolvedValue({
-				ok: false,
-				status: 409,
-				text: async () =>
-					JSON.stringify({ error: "FOUNDER_UX_SIGNOFF_REQUIRED" }),
-			});
-			await expect(
-				stage({ subcommand: "set", stageName: "implement" }),
-			).rejects.toThrow("process.exit(1)");
-		});
-
-		it("stays fail-open (exit 0) on implement for an unrelated non-2xx", async () => {
-			mockFetch.mockResolvedValue({
-				ok: false,
-				status: 500,
-				text: async () => "upstream hiccup",
-			});
-			// resolves (no throw) — generic stage reporting is fail-open
-			await stage({ subcommand: "set", stageName: "implement" });
-		});
-
-		it("stays fail-open on a non-implement stage even with the gate code (only implement fail-closes)", async () => {
-			mockFetch.mockResolvedValue({
-				ok: false,
-				status: 409,
-				text: async () =>
-					JSON.stringify({ error: "FOUNDER_UX_SIGNOFF_REQUIRED" }),
-			});
-			await stage({ subcommand: "set", stageName: "test" }); // no throw
-		});
-
-		// Codex R1 HIGH: a GATED implement (carries a ux_hash) MUST fail-closed when
-		// the gate cannot be confirmed — Bridge-down or any non-2xx — so a
-		// founder-facing implement can't slip through while the Bridge is unreachable.
-		it("FAIL-CLOSES (exit 1) on a gated implement when the Bridge is unreachable (transport error)", async () => {
-			const brief = join(tmp, "ux-brief.md");
-			writeFileSync(brief, "show a toast, not an alert\n");
-			mockFetch.mockRejectedValue(new Error("ECONNREFUSED"));
-			await expect(
-				stage({ subcommand: "set", stageName: "implement", uxFile: brief }),
-			).rejects.toThrow("process.exit(1)");
-		});
-
-		it("FAIL-CLOSES (exit 1) on a gated implement for an unrelated non-2xx (cannot confirm the gate)", async () => {
-			const brief = join(tmp, "ux-brief.md");
-			writeFileSync(brief, "show a toast, not an alert\n");
-			mockFetch.mockResolvedValue({
-				ok: false,
-				status: 500,
-				text: async () => "upstream hiccup",
-			});
-			await expect(
-				stage({ subcommand: "set", stageName: "implement", uxFile: brief }),
-			).rejects.toThrow("process.exit(1)");
-		});
-
-		it("enters implement (exit 0) on a gated implement when the Bridge confirms 2xx", async () => {
-			const brief = join(tmp, "ux-brief.md");
-			writeFileSync(brief, "show a toast, not an alert\n");
-			mockFetch.mockResolvedValue({ ok: true, status: 200 });
-			await stage({ subcommand: "set", stageName: "implement", uxFile: brief }); // no throw
-			const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
-			expect(body.payload.ux_hash).toMatch(/^[0-9a-f]{64}$/);
-		});
+	it("FLY-1808 keeps stage reporting fail-open for the retired gate's old 409", async () => {
+		mockFetch.mockResolvedValue({ ok: false, status: 409 });
+		await stage({ subcommand: "set", stageName: "implement" });
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("stage not recorded"),
+		);
 	});
 });

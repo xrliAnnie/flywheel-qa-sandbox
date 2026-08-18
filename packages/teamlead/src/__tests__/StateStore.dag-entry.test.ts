@@ -6,11 +6,9 @@
  * - `workflow_run.entry_kind` — durable entry provenance written atomically in
  *   the materialize transaction; ONLY the pipeline.dag entry sets it, so the
  *   recovery domain can never intercept existing v2 / explicit-v1 runs.
- * - `upsertSession()` behavior-field contract (Codex design R4-1): the four
+ * - `upsertSession()` behavior-field contract (Codex design R4-1): the three
  *   behavior fields land in the SAME transaction as row creation; undefined
- *   never touches an existing value; explicit false stays representable;
- *   a Runner-raised `founder_facing_ux=1` is never downgraded by a repeated
- *   started upsert (keep-high).
+ *   never touches an existing value; explicit false stays representable.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -119,7 +117,6 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 		store: StateStore;
 		rawSession: (executionId: string) => {
 			codex_skip: number;
-			founder_facing_ux: number;
 			doc_tier: string | null;
 			issue_url: string | null;
 		};
@@ -134,7 +131,7 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 			try {
 				return reader
 					.prepare(
-						`SELECT codex_skip, founder_facing_ux, doc_tier, issue_url
+						`SELECT codex_skip, doc_tier, issue_url
 						   FROM sessions WHERE execution_id = ?`,
 					)
 					.get(executionId) as ReturnType<
@@ -153,7 +150,7 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 		status: "running",
 	} as const;
 
-	it("#15 fresh insert lands all four behavior fields in the same transaction", async () => {
+	it("#15 fresh insert lands all three behavior fields in the same transaction", async () => {
 		const { store, rawSession } = await fileStore();
 		store.upsertSession({
 			execution_id: "meta-1",
@@ -161,11 +158,9 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 			doc_tier: "full",
 			issue_url: "https://linear.app/x/FLY-META",
 			codex_skip: true,
-			founder_facing_ux: true,
 		});
 		expect(rawSession("meta-1")).toEqual({
 			codex_skip: 1,
-			founder_facing_ux: 1,
 			doc_tier: "full",
 			issue_url: "https://linear.app/x/FLY-META",
 		});
@@ -177,11 +172,9 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 			execution_id: "meta-false",
 			...base,
 			codex_skip: false,
-			founder_facing_ux: false,
 		});
 		const row = rawSession("meta-false");
 		expect(row.codex_skip).toBe(0);
-		expect(row.founder_facing_ux).toBe(0);
 	});
 
 	it("#15b conflict upsert with undefined inputs leaves existing values untouched", async () => {
@@ -192,36 +185,14 @@ describe("FLY-1372 upsertSession behavior-field contract (R4-1)", () => {
 			doc_tier: "plan_only",
 			issue_url: "https://linear.app/x/FLY-META",
 			codex_skip: true,
-			founder_facing_ux: true,
 		});
 		// Repeated started upsert without the fields (e.g. a legacy-shaped
 		// writer) must not reset them to the NOT NULL DEFAULT 0.
 		store.upsertSession({ execution_id: "meta-2", ...base });
 		expect(rawSession("meta-2")).toEqual({
 			codex_skip: 1,
-			founder_facing_ux: 1,
 			doc_tier: "plan_only",
 			issue_url: "https://linear.app/x/FLY-META",
 		});
-	});
-
-	it("#15c founder self-declared founder_facing_ux=1 is never downgraded by a repeated upsert (keep-high)", async () => {
-		const { store, rawSession } = await fileStore();
-		store.upsertSession({
-			execution_id: "meta-3",
-			...base,
-			founder_facing_ux: false,
-		});
-		// Runner self-declares mid-run (existing declare path raises the column).
-		store.patchSessionMetadata("meta-3", { founder_facing_ux: 1 });
-		expect(rawSession("meta-3").founder_facing_ux).toBe(1);
-		// A repeated started upsert carrying the (stale) computed false must not
-		// downgrade the self-declaration.
-		store.upsertSession({
-			execution_id: "meta-3",
-			...base,
-			founder_facing_ux: false,
-		});
-		expect(rawSession("meta-3").founder_facing_ux).toBe(1);
 	});
 });

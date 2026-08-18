@@ -37,7 +37,6 @@ const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
 const QA_DONE_GATE_KEY = "FLYWHEEL_QA_DONE_GATE";
-const WORKFLOW_CLAIMS_READ_KEY = "FLYWHEEL_WORKFLOW_CLAIMS_READ";
 
 /**
  * Resolve a DEFAULT-ON gate flag with the FLY-827 live-`.env` semantics:
@@ -64,40 +63,6 @@ function resolveDefaultOnGate(
 	} catch {
 		return args.processEnv[key] !== "0";
 	}
-}
-
-/** Same live-`.env` precedence as the default-on gates, but absent means OFF. */
-function resolveDefaultOffGate(
-	key: string,
-	args: {
-		argsEnv?: NodeJS.ProcessEnv;
-		processEnv: NodeJS.ProcessEnv;
-		dotenvPath?: string;
-	},
-): boolean {
-	if (args.argsEnv && key in args.argsEnv) {
-		return args.argsEnv[key] === "1";
-	}
-	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
-	try {
-		const content = readFileSync(path, "utf-8");
-		return readEnvValueFromContent(content, key) === "1";
-	} catch {
-		return args.processEnv[key] === "1";
-	}
-}
-
-/** Default-off, live-.env claims-read switch shared with Bridge ship seams. */
-export function resolveWorkflowClaimsReadEnabled(args?: {
-	env?: NodeJS.ProcessEnv;
-	dotenvPath?: string;
-}): boolean {
-	const env = args?.env ?? process.env;
-	return resolveDefaultOffGate(WORKFLOW_CLAIMS_READ_KEY, {
-		argsEnv: args?.env,
-		processEnv: env,
-		dotenvPath: args?.dotenvPath,
-	});
 }
 
 export type QaShipReason =
@@ -295,17 +260,6 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 			const durableQa =
 				row.session_role === "qa" && row.chat_thread_role === "qa";
 			if (durableQa) {
-				if (
-					!resolveWorkflowClaimsReadEnabled({
-						env: args.env,
-						dotenvPath: args.qaDotenvPath,
-					})
-				) {
-					return {
-						passed: false,
-						reason: "qa_claim_gate_unenrolled_failclosed",
-					};
-				}
 				return resolveEnrolledQaClaim(db, args.execId, prHead, Date.now());
 			}
 			// A missing column (pre-migration DB) or missing table must fail-closed,
