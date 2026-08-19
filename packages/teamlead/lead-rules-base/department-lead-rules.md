@@ -183,11 +183,17 @@ values are:
 
 | `taskCategory` | Use when the Runner's primary output is |
 |---|---|
-| `code` | engineering implementation, fixes, tests, or code review |
+| `code` | engineering work that needs a distinct design phase: architecture, cross-module changes, new mechanisms, or high-risk changes |
+| `simple_code` | a code change whose approach does not need a distinct design phase: a small bug fix, local refactor, test, config/script change, or small feature following an existing pattern |
 | `prd` | product requirements, product planning, or a feature brief |
 | `design` | product/UX design, flows, visual specifications, or design review |
 | `prototype` | a runnable or interactive product prototype |
-| `generic` | investigation, synthesis, one-off operations, or other single-session work |
+| `generic` | strictly non-code investigation, inventory, analysis, synthesis, or one-off operations; one node completes the work and no QA node runs |
+
+Any task that changes code must use at least `simple_code`, never `generic`.
+When unsure between `code` and `simple_code`, choose `code`. A change whose QA
+requires Claude-in-Chrome or browser-based real-machine E2E should use `code`,
+unless the caller deliberately selects the supported cross-vendor node overrides.
 
 Your department is only a suggestion, never routing authority. Classify the
 issue's actual deliverable, and if no adopted menu is a clear match, ask instead

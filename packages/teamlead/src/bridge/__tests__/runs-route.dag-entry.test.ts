@@ -250,7 +250,7 @@ async function startHarness(options: {
 		);
 		writeFileSync(
 			join(projectRoot, ".flywheel", "menus", "adoption.yaml"),
-			"flywheel-eng-lead: [code, generic]\n",
+			"flywheel-eng-lead: [code, simple_code, generic]\n",
 		);
 	}
 	writeFileSync(
@@ -1438,6 +1438,61 @@ describe("FLY-1407 work-kind entry gate", () => {
 });
 
 describe("FLY-1436 menu start contract", () => {
+	it("starts simple_code at root implement on the parent issue with no predecessor", async () => {
+		const h = await startHarness({
+			menuMode: true,
+			bindingCategory: "simple_code",
+			bindingTemplateId: "tpl_simple_code",
+		});
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "simple_code",
+		});
+
+		expect(status).toBe(200);
+		expect(json).toMatchObject({
+			success: true,
+			generalized: true,
+			workflowNodeId: "implement",
+			resolved: {
+				nodeModels: {
+					implement: expect.objectContaining({
+						model: "opus (= claude-opus-5)",
+					}),
+					qa: expect.objectContaining({ model: "codex (= gpt-5.6-sol)" }),
+				},
+			},
+		});
+		expect(h.calls).toHaveLength(1);
+		expect(h.calls[0]).toMatchObject({
+			issueId: "FLY-802",
+			sessionRole: "implement",
+			shareParentBranch: true,
+		});
+		expect(h.calls[0]?.startPoint).toBeUndefined();
+	});
+
+	it("rejects a same-vendor simple_code override before dispatch", async () => {
+		const h = await startHarness({
+			menuMode: true,
+			bindingCategory: "simple_code",
+			bindingTemplateId: "tpl_simple_code",
+		});
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "simple_code",
+			overrides: { qa: { model: "opus" } },
+		});
+
+		expect(status).toBe(400);
+		expect(json).toMatchObject({
+			success: false,
+			code: "SAME_VENDOR_REVIEW_COMBINATION",
+			legal: ["implement:codex", "qa:codex"],
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("applies a valid node model/effort override and returns alias/version receipts", async () => {
 		const h = await startHarness({ menuMode: true });
 		const { status, json } = await post(h.url, {
@@ -1519,7 +1574,7 @@ describe("FLY-1436 menu start contract", () => {
 		expect(json).toMatchObject({
 			success: false,
 			code: "TASK_CATEGORY_REQUIRED",
-			legal: ["code", "generic"],
+			legal: ["code", "simple_code", "generic"],
 		});
 		expect(h.calls).toHaveLength(0);
 	});
@@ -1534,7 +1589,7 @@ describe("FLY-1436 menu start contract", () => {
 		expect(json).toMatchObject({
 			success: false,
 			code: "MENU_NOT_ADOPTED_FOR_LEAD",
-			legal: ["code", "generic"],
+			legal: ["code", "simple_code", "generic"],
 		});
 		expect(h.calls).toHaveLength(0);
 	});

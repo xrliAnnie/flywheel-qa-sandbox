@@ -1345,8 +1345,8 @@ export class Blueprint {
 			const takeover =
 				!ctx.workflowResume &&
 				ctx.shareParentBranch === true &&
-				(ctx.sessionRole === "implement" ||
-					ctx.sessionRole === "qa" ||
+				(((ctx.sessionRole === "implement" || ctx.sessionRole === "qa") &&
+					ctx.startPoint !== undefined) ||
 					(ctx.sessionRole === "design" &&
 						ctx.startPoint !== undefined &&
 						ctx.continuityInherit === undefined)) &&

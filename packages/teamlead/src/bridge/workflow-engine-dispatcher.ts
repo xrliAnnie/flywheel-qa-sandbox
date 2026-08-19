@@ -2397,8 +2397,8 @@ export class WorkflowEngineDispatcher {
 		const startReservation = store.getWorkflowStartReservationForRun(
 			intent.run_id,
 		);
-		const isRootDesignFirstAttempt =
-			node.type === "design" &&
+		const isRootPhaseFirstAttempt =
+			isWorkflowPhaseRole(node.type) &&
 			intent.attempt === 1 &&
 			!snapshot.manifest.edges.some((edge) => edge.to === node.id);
 		const startRetryExecutionId =
@@ -2458,7 +2458,7 @@ export class WorkflowEngineDispatcher {
 			if (replacementContext) {
 				startPoint = replacementContext.startPoint;
 			} else if (
-				!isRootDesignFirstAttempt &&
+				!isRootPhaseFirstAttempt &&
 				(!predecessorExecutionId || !predecessor)
 			) {
 				throw new Error("engine_predecessor_unavailable");

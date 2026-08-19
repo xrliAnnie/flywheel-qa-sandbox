@@ -1,0 +1,49 @@
+shape: simple_code
+nodes:
+  - id: implement
+    role: implement
+    defaultModel: opus
+    models:
+      - model: opus
+        allowedEfforts: [low, medium, high, max]
+        defaultEffort: high
+      - model: fable
+        allowedEfforts: [low, medium, high, xhigh, max]
+        defaultEffort: xhigh
+      - model: codex
+        allowedEfforts: [low, medium, high, xhigh, max]
+        defaultEffort: xhigh
+  - id: qa
+    role: qa
+    defaultModel: codex
+    models:
+      - model: codex
+        allowedEfforts: [low, medium, high, xhigh, max]
+        defaultEffort: xhigh
+      - model: opus
+        allowedEfforts: [low, medium, high, max]
+        defaultEffort: high
+  - id: founder_gate
+    type: gate
+edges:
+  - id: implement_done
+    from: implement
+    to: qa
+    condition: implement_done
+  - id: qa_pass
+    from: qa
+    to: founder_gate
+    condition: qa_pass
+loops:
+  - id: qa_retry
+    from: qa
+    to: implement
+    loopWhen: qa_fail
+    exitWhen: qa_pass
+    maxIterations: 3
+    onLimit: escalate
+  - id: founder_rework
+    from: founder_gate
+    to: implement
+    loopWhen: founder_feedback_kickback
+    exitWhen: founder_approved

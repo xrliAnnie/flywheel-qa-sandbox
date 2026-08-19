@@ -46,9 +46,9 @@ async function canonicalBindings() {
 		);
 	}
 	const bindings = config.WORKFLOW_MENU_BINDINGS;
-	if (!Array.isArray(bindings) || bindings.length !== 5) {
+	if (!Array.isArray(bindings) || bindings.length !== 6) {
 		throw new Error(
-			"built WORKFLOW_MENU_BINDINGS must contain exactly five rows",
+			"built WORKFLOW_MENU_BINDINGS must contain exactly six rows",
 		);
 	}
 	return { config, bindings };

@@ -520,6 +520,30 @@ export class AutoQaCoordinator {
 			);
 		}
 
+		if (
+			this.deps.store.isWorkflowEngineOwnedExecution(session.execution_id) &&
+			!this.deps.store.getLatestAutoQaRecordByParent(session.execution_id)
+		) {
+			if (session.qa_required === 1) {
+				await this.deps.effects.alertLeadPipelineError({
+					session,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					reason: `engine-owned workflow carrier ${session.issue_id} has immutable qa_required=1 but no auto-QA record; separate auto-QA is disabled for engine workflows, so this session needs one-time recovery.`,
+				});
+			} else {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: "engine_owned_workflow_run",
+				});
+			}
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — engine-owned workflow run owns its QA topology`,
+			);
+			return;
+		}
+
 		const policy = this.deps.resolveQaPolicy(session);
 		if (!policy.enabled && !manualEnrollment) {
 			// FLY-869 A-1: auto-QA is not applicable for this session (no-qa label /
@@ -1932,6 +1956,17 @@ export class AutoQaCoordinator {
 					executionId: session.execution_id,
 					required: 1,
 					reason: `backfill:record_${rec.status}`,
+				});
+				continue;
+			}
+
+			if (
+				this.deps.store.isWorkflowEngineOwnedExecution(session.execution_id)
+			) {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: "backfill:exempt:engine_owned",
 				});
 				continue;
 			}

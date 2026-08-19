@@ -43,6 +43,7 @@ function fixtureDb(path, { missingTemplate = false } = {}) {
 	`);
 	const ids = [
 		"tpl_code",
+		"tpl_simple_code",
 		"tpl_prd",
 		"tpl_design",
 		"tpl_prototype",
@@ -62,7 +63,7 @@ function run(...args) {
 	});
 }
 
-test("binding seed derives the five canonical mappings and is a no-op on replay", () => {
+test("binding seed derives the six canonical mappings and is a no-op on replay", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-binding-"));
 	try {
 		const path = join(dir, "teamlead.db");
@@ -87,7 +88,7 @@ test("binding seed derives the five canonical mappings and is a no-op on replay"
 			)
 			.all();
 		db.close();
-		assert.equal(firstRows.length, 5);
+		assert.equal(firstRows.length, 6);
 		assert.deepEqual(
 			firstRows.map((row) => [row.task_category, row.template_id]),
 			[
@@ -96,9 +97,10 @@ test("binding seed derives the five canonical mappings and is a no-op on replay"
 				["generic", "tpl_generic_menu"],
 				["prd", "tpl_prd"],
 				["prototype", "tpl_prototype"],
+				["simple_code", "tpl_simple_code"],
 			],
 		);
-		assert.equal(firstAudit.length, 5);
+		assert.equal(firstAudit.length, 6);
 
 		const second = run(
 			"seed-bindings",

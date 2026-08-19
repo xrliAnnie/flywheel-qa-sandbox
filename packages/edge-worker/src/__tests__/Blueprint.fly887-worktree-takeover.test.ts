@@ -295,6 +295,25 @@ describe("FLY-887 worktree in-place takeover", () => {
 		expect(wt.create).toHaveBeenCalled();
 	});
 
+	it("fresh root implement without startPoint uses the legacy create path", async () => {
+		const path = makeRealWorktree();
+		created.push(path);
+		const wt = makeWtManager({ registered: true, path });
+		const { result } = await run(
+			wt,
+			makeGitChecker({ clean: true, head: HEAD }),
+			{
+				sessionRole: "implement",
+				shareParentBranch: true,
+			},
+		);
+		expect(result.success).toBe(true);
+		expect(wt.removeIfExists).toHaveBeenCalled();
+		expect(wt.create).toHaveBeenCalledWith(
+			expect.objectContaining({ startPoint: undefined }),
+		);
+	});
+
 	it("FLY-1718 continuity startPoint does not turn a design dispatch into a phase takeover", async () => {
 		const path = makeRealWorktree();
 		created.push(path);

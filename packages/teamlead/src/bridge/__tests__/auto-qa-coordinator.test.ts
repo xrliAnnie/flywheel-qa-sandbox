@@ -336,6 +336,40 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(s2.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
 	});
 
+	it("exempts an engine-owned main carrier instead of creating a separate QA issue", async () => {
+		const ensureShipRelevantDiff = vi.fn(async () => {});
+		const s2 = await setup({ ensureShipRelevantDiff });
+		vi.spyOn(s2.store, "isWorkflowEngineOwnedExecution").mockReturnValue(true);
+		const main = awaitingMain(s2.store);
+
+		await s2.coord.onMainAwaitingReview(main);
+
+		expect(ensureShipRelevantDiff).toHaveBeenCalledOnce();
+		expect(s2.createCalls).toEqual([]);
+		expect(s2.start).not.toHaveBeenCalled();
+		expect(s2.store.getSession("main-1")?.qa_required).toBe(0);
+		expect(s2.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+	});
+
+	it("alerts when an immutable required snapshot already wedged an engine-owned carrier", async () => {
+		const main = awaitingMain(s.store);
+		vi.spyOn(s.store, "isWorkflowEngineOwnedExecution").mockReturnValue(true);
+		s.store.setQaRequiredSnapshot({
+			executionId: "main-1",
+			required: 1,
+			reason: "backfill:code_pr_no_record",
+		});
+
+		await s.coord.onMainAwaitingReview(main);
+
+		expect(s.createCalls).toEqual([]);
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(1);
+		expect(s.alerts).toEqual([
+			expect.stringMatching(/engine-owned.*qa_required=1.*no auto-QA record/i),
+		]);
+	});
+
 	it("ignores a non-main session role", async () => {
 		const qa = awaitingMain(s.store, { id: "qa-x", role: "qa" });
 		await s.coord.onMainAwaitingReview(qa);
@@ -1062,6 +1096,34 @@ describe("AutoQaCoordinator.reconcileOnStartup — FLY-869 A-1b qa_required back
 		const s = await setup();
 		awaitingMain(s.store); // default: bound qid + pr 42 = review evidence
 		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(1);
+	});
+
+	it("engine-owned awaiting_review + NO record → required=0 and no orphan auto-QA", async () => {
+		const s = await setup();
+		vi.spyOn(s.store, "isWorkflowEngineOwnedExecution").mockReturnValue(true);
+		awaitingMain(s.store);
+
+		await s.coord.reconcileOnStartup();
+
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.createCalls).toEqual([]);
+	});
+
+	it("an existing auto-QA record remains required even if the parent is engine-owned", async () => {
+		const s = await setup();
+		vi.spyOn(s.store, "isWorkflowEngineOwnedExecution").mockReturnValue(true);
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+
+		await s.coord.reconcileOnStartup();
+
 		expect(s.store.getSession("main-1")?.qa_required).toBe(1);
 	});
 
