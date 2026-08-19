@@ -36,10 +36,10 @@ DB_PATH="$TMP/template/comm.db" node --input-type=module -e \
 
 make_case() {
   local dir="$1"
-  mkdir -p "$dir/comm/flywheel" "$dir/comm/tidal-echo" "$dir/state" "$dir/bin" "$dir/home"
+  mkdir -p "$dir/comm/flywheel" "$dir/state/comm/tidal-echo" "$dir/bin" "$dir/home"
   cp "$TMP/template/teamlead.db" "$dir/teamlead.db"
   cp "$TMP/template/comm.db" "$dir/comm/flywheel/comm.db"
-  cp "$TMP/template/comm.db" "$dir/comm/tidal-echo/comm.db"
+  cp "$TMP/template/comm.db" "$dir/state/comm/tidal-echo/comm.db"
   cat > "$dir/state/projects.json" <<'JSON'
 [
   {
@@ -260,7 +260,7 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,stat
  ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
 SQL
-sqlite3 "$PANES/comm/tidal-echo/comm.db" <<'SQL'
+sqlite3 "$PANES/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
  ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
 SQL
@@ -307,7 +307,7 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,stat
  ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
  ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
 SQL
-sqlite3 "$PANE_FAIL/comm/tidal-echo/comm.db" <<'SQL'
+sqlite3 "$PANE_FAIL/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
  ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
 SQL
@@ -318,6 +318,39 @@ contains "$PANE_FAIL_OUT" "pane_count=5" "capture failure does not hide declared
 count_is "$PANE_FAIL_OUT" "PANE_EVIDENCE " 5 "capture failure still emits one row per pane"
 contains "$PANE_FAIL_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "failed pane keeps identity evidence"
 contains "$PANE_FAIL_OUT" "findings=CAPTURE_FAILED action=REQUIRED result=UNSET" "failed pane requires explicit disposition"
+
+INDEX_FAIL="$TMP/index-fail"
+make_case "$INDEX_FAIL"
+cp "$PANES/bin/tmux" "$INDEX_FAIL/bin/tmux"
+sqlite3 "$INDEX_FAIL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
+SQL
+sqlite3 "$INDEX_FAIL/state/comm/tidal-echo/comm.db" 'DROP TABLE sessions;'
+INDEX_FAIL_OUT="$INDEX_FAIL/out.txt"
+TMUX_CALL_LOG="$INDEX_FAIL/tmux-calls.log" run_snapshot "$INDEX_FAIL" "$INDEX_FAIL_OUT" || fail "owner-index failure still publishes report"
+contains "$INDEX_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomplete)" "owner-index schema failure is UNAVAILABLE"
+contains "$INDEX_FAIL_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=unknown" "incomplete owner index keeps the affected pane visible"
+contains "$INDEX_FAIL_OUT" "findings=OWNER_INDEX_INCOMPLETE action=REQUIRED result=UNSET" "incomplete index never becomes a false orphan finding"
+not_contains "$INDEX_FAIL_OUT" "no such table" "raw owner-index error is not persisted"
+
+DUPLICATE="$TMP/duplicate-owner"
+make_case "$DUPLICATE"
+cp "$PANES/bin/tmux" "$DUPLICATE/bin/tmux"
+sqlite3 "$DUPLICATE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude');
+SQL
+sqlite3 "$DUPLICATE/state/comm/tidal-echo/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-duplicate','runner-flywheel:@1','tidal-echo','TE-999','tidal-echo-content-lead','running','claude');
+SQL
+DUPLICATE_OUT="$DUPLICATE/out.txt"
+TMUX_CALL_LOG="$DUPLICATE/tmux-calls.log" run_snapshot "$DUPLICATE" "$DUPLICATE_OUT" || fail "duplicate owner target still publishes report"
+contains "$DUPLICATE_OUT" "STEP 2: UNAVAILABLE(structural: session_target_ambiguous)" "duplicate machine owner is fail-visible"
+contains "$DUPLICATE_OUT" "pane=%1 target=runner-flywheel:@1 owner=unknown" "ambiguous pane remains individually attributable"
+contains "$DUPLICATE_OUT" "findings=SESSION_TARGET_AMBIGUOUS action=REQUIRED result=UNSET" "ambiguous target requires disposition"
 
 EMPTY="$TMP/empty"
 make_case "$EMPTY"

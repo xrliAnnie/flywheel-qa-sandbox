@@ -260,14 +260,19 @@ symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot) ret
 # snapshot shares the strict mechanics but is a generic managed executable,
 # not part of the cmux alert chain (FLY-1855).
 strict_alert() { # <name> <title> <body> <signature>
-  local strict_name="$1" title="$2" body="$3" signature="$4" generic_title
+  local strict_name="$1" title="$2" body="$3" signature="$4" generic_title generic_body
   if [ "$strict_name" = "meta-alert.sh" ]; then
     alert "$title" "$body" "$signature"
   else
     generic_title="${title//alert-chain/managed executable}"
-    alert "$generic_title" \
-      "Managed executable $strict_name at ${link:-<unknown>} must resolve to the sane executable source ${src:-<unknown>}. Converge event: $generic_title. Inspect the path/source and re-run converge (FLY-1855)." \
-      "$signature"
+    # Preserve the caller's path, source, state transition, and remediation
+    # detail. Only translate the legacy cmux-specific class labels; reading
+    # caller locals such as link/src here previously discarded that evidence.
+    generic_body="${body//alert-chain/managed executable}"
+    generic_body="${generic_body//cmux watcher's fail-closed launch path/managed executable path}"
+    generic_body="${generic_body//the 'restart brake unavailable' report/its failure report}"
+    generic_body="${generic_body//cmux watcher's failure-reporting chain/managed executable delivery path}"
+    alert "$generic_title" "$generic_body" "$signature"
   fi
 }
 

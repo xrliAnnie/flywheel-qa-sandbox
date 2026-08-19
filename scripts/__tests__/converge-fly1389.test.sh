@@ -127,6 +127,7 @@ if env ALERT_LOG="$SB/alerts.log" HOME="$GH3" FLYWHEEL_STATE_DIR="$GH3/.flywheel
    && cmp -s "$GH3/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$TRUSTED/scripts/flywheel-lead-wrapper-v2.sh" \
    && [[ "$(readlink "$GH3/.flywheel/bin/flywheel-patrol-snapshot")" == "$TRUSTED/scripts/lead-patrol-snapshot.sh" ]] \
    && grep -q 'managed executable.*flywheel-patrol-snapshot' "$SB/alerts.log" \
+   && grep -q "flywheel-patrol-snapshot created to this checkout's .*lead-patrol-snapshot.sh" "$SB/alerts.log" \
    && ! grep -q 'alert-chain.*flywheel-patrol-snapshot' "$SB/alerts.log"; then
   pass "G3: trusted (.git dir) repo converges the effective-global bin normally"
 else

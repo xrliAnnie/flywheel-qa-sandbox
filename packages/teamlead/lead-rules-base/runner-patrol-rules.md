@@ -12,8 +12,11 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
 
 ## 0. `patrol_tick` — scheduled independent patrol (FLY-1687)
 
-**范围合同**:检测范围 = **整机**(全部 Runner 窗口 + 当前项目主仓的外部真相);
-处置权限 = **只覆盖你名下 Runner**。tick 名册只是 Bridge 对「你名下」的
+**范围合同**:检测范围 = **整机**(默认共享 socket 的全部 canonical Runner pane +
+当前项目主仓的外部真相);处置权限 = **只覆盖你名下 Runner**。canonical Runner
+pane 的唯一口径是:session name 以 `runner-` 开头且 window name 以 Linear
+identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径尚待 founder 追认,
+但不得按 Lead、项目或前 N 个抽样。tick 名册只是 Bridge 对「你名下」的
 **待核声明**,不是巡检边界也不是结论。别家 Lead 的 Runner、无主窗口、全仓
 停摆都记入报告并在第 6 步上报,不得越权处置。
 
@@ -22,28 +25,59 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
 落下含六段的候选骨架并在最后打印 `REPORT_PATH=<absolute path>`。骨架里的
 `LEAD-JUDGMENT-REQUIRED` / `*-CANDIDATE` 不是完成;每一行都定稿为
 `OK | FINDING | UNAVAILABLE(<稳定原因>)` 才算巡完。「全部健康」也必须六行
-齐全。自动骨架本身不是巡检完成证据。
+齐全。第 2 步还必须无条件含 `pane_count=N` 和恰好 N 行 `PANE_EVIDENCE`;
+零 pane 或 tmux unavailable 也写 `pane_count=0`。自动骨架本身不是巡检完成证据。
 
 **UNAVAILABLE 出口**:命令失败、对象不存在、或无法理解要求时,该步必须写
 `UNAVAILABLE(transient|structural: <稳定 token>)`;禁止静默跳过。structural
 首次出现就走第 6 步建工程单;`sqlite_busy` 等 transient 连续两个 tick 才建。
 
 `[patrol_tick]` 仍是**纯闹钟**。本巡检用以下**独立信源**,不采信 Bridge
-单方转述。先 run:
+单方转述。第 0 步必须先读上一报告,再启动新快照,run:
+`PATROL_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/patrol-reports/${LEAD_ID:?LEAD_ID required}"; PREVIOUS_REPORT="$(find "$PATROL_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"; test -z "$PREVIOUS_REPORT" || sed -n '1,260p' "$PREVIOUS_REPORT"`。
+若上一份有未建单 UNAVAILABLE,先在第 6 步补账。然后 run:
 `SNAPSHOT_OUTPUT="$(~/.flywheel/bin/flywheel-patrol-snapshot --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")"; SNAPSHOT_RC=$?; printf '%s\n' "$SNAPSHOT_OUTPUT"; test "$SNAPSHOT_RC" -eq 0 || exit "$SNAPSHOT_RC"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。
-后续六步共用这一个 `REPORT_PATH`,不得重跑快照制造第二份报告。运行前先打开
-自己上一份报告;若有未建单的 UNAVAILABLE,先在第 6 步补账。
+后续六步共用这一个 `REPORT_PATH`,不得重跑快照制造第二份报告。
 
 1. **名册核对(ground truth)** — run:
    `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
-   快照段来自 `TMUX= tmux list-windows -a`;与 tick 名册对账。Window 前缀是
-   Linear identifier,多了少了都是 finding。忽略正常 `zsh` scaffolds、
-   `cmux-*` 镜像、Codex Lead TUI;Claude Lead 在私有 socket。若第 2 步的
+   快照段来自 `TMUX= tmux list-windows -a` 与
+   `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`;
+   与 tick 名册对账。脚本对每个 `runner-*` session + Linear identifier window
+   生成一条 canonical Runner pane;多了少了都是 finding。忽略正常 `zsh`
+   scaffolds、`cmux-*` 镜像、Codex Lead TUI;Claude Lead 在私有 socket。若第 2 步的
    live pane 与快照不一致,run: `TMUX= tmux list-windows -a`,并在报告注明采用
    快照时刻还是复核时刻读数。
-2. **pane 实况** — 对你名下每个 Runner run:
-   `TMUX= tmux capture-pane -p -t <window> | tail -40`。Alive 不等于推进;区分
-   TURN waiting、interactive menu、error loop。别家窗口只检测/上报,不驱动。
+2. **pane 实况** — run:
+   `awk '/^## STEP 2$/{show=1; next} /^## STEP 3$/{show=0} show' "$REPORT_PATH"`。
+   快照对第 1 步的**每一个** canonical Runner pane 用 5s 有界
+   `TMUX= tmux capture-pane -p -S - -t <pane_id>` 读完整 scrollback;零抽样、零
+   `tail -40`。原文可能含 secret,所以报告只存 SHA-256/行数/字节数/最后非空状态行
+   SHA-256,并逐 pane 写:
+   `PANE_EVIDENCE ... owner=owned|cross-boundary|foreign-registry|unknown exec=<id|none> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
+   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` index;正常
+   cross-boundary / foreign-registry 本身不是 finding。index 不完整必须
+   `UNAVAILABLE(transient|structural: owner_index_incomplete)`,不得铸 unknown;
+   registered target 首次无 owner 记 `result=session_terminated`,连续两 tick 才标
+   `ORPHANED`。
+
+   对每行执行这些唯一判据/动作:
+   - 全 scrollback grep `You've hit your session limit` / `You've hit your usage limit`
+     / `Claude usage limit reached`(排除 `not your usage limit`)。live 区命中为
+     `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
+     `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
+     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`;跨界只上报。
+   - 同 target 最后状态行逐字 hash 未变就继承上一报告 `last_change_epoch`;连续
+     ≥3600 秒标 `STALLED_60M`。名下 run:
+     `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
+     跨界只上报。
+   - live 区命中 `Press Enter to confirm` / `Press Enter to continue` / 已知 resume
+     menu 时标 `INTERACTIVE_MENU`;只有名下且手册明确允许 Enter 才 run:
+     `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
+     写 `UNAVAILABLE(structural: menu_unrecognized)`,禁止盲按。
+   clear 行由脚本封口 `action=none result=clear`;任何 finding/capture failure 初始
+   `action=REQUIRED result=UNSET`,Lead 必须改成实际 action/result 并留证。
+   **“大概没问题”不是证据。**
 3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
    StateStore `workflow_run_node`) — run:
    `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`。
@@ -58,8 +92,8 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
    allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
 5. **外部真相(整仓维度)** — run:
    `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
-   快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`
-   与 REST actions runs 投影整仓时刻;不得用 GraphQL。单个 PR 再 run:
+   周期快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`
+   与 REST actions runs 投影整仓时刻;周期巡检面不得用 GraphQL。单个 PR 人工下钻可 run:
    `gh pr view <n> --repo <projectRepo> --json state,mergeable,headRefOid,statusCheckRollup`。
    Discord 最多检查 tick 名册最近活动的 2 个 identifier。先 run:
    `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; CHAT_CHANNEL_ID="$(jq -er --arg project "$PROJECT_NAME" --arg lead "$LEAD_ID" 'first(.[] | select(.projectName == $project) | .leads[] | select(.agentId == $lead) | .chatChannel)' "$PROJECTS_FILE")"`。
@@ -68,20 +102,22 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
    最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
    archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
 6. **处置 + 完成报告** — 打开 `"$REPORT_PATH"`,逐行定稿并写证据。名下
-   finding 按对应 emergency procedure 有界修复;跨界 finding 先 run:
-   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; TADASHI_BOT_ID="$(jq -er 'first(.[] | select(.projectName == "flywheel") | .leads[] | select(.agentId == "flywheel-eng-lead") | .botUserId)' "$PROJECTS_FILE")"`,
+   finding 按上面的唯一命令或对应 emergency procedure 有界修复。同一 tick 的
+   跨界 finding 聚合成一条,先 run:
+   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; TADASHI_BOT_ID="$(jq -er 'first(.[] | select(.projectName == "flywheel") | .leads[] | select(.agentId == "flywheel-eng-lead") | .botUserId)' "$PROJECTS_FILE")"; ROUNDTABLE_FILE="${FLYWHEEL_ROUNDTABLE_CONFIG_FILE:-$HOME/.flywheel/roundtable.json}"; ROUNDTABLE_CHANNEL_ID="${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-}"; test -n "$ROUNDTABLE_CHANNEL_ID" || ROUNDTABLE_CHANNEL_ID="$(jq -er '.channelId | select(type == "string" and length > 0)' "$ROUNDTABLE_FILE")"; test -n "$ROUNDTABLE_CHANNEL_ID"`,
    再用 Discord MCP
-   `reply(chat_id="1512578695468941333", message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <finding>; report: $REPORT_PATH")`。
+   `reply(chat_id=$ROUNDTABLE_CHANNEL_ID, message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <findings>; report: $REPORT_PATH")`。
+   地址解不出就写 `UNAVAILABLE(structural: roundtable_channel_unresolved)`,禁止猜数字。
    UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
-   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
-   若 `DEDUP_RC != 0`、`PARSE_RC != 0` 或 `TRUNCATED == true`,报告记
+   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=triage,backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
+   若 `DEDUP_RC != 0`、`PARSE_RC != 0`、`TRUNCATED` 不是 `true|false` 或为 `true`,报告记
    `UNAVAILABLE(transient: dedupe_unverified)`并**禁止建单**。否则 run:
    `EXISTING="$(printf '%s' "$DEDUP_JSON" | jq -r --arg title "$TITLE" '.issues[] | select(.title == $title) | .identifier' | head -1)"`;
    非空则把 identifier 写进报告且禁止重复建单。只有空且满足 structural 首现或
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
    最后 run(完成门):
-   `test "$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")" -eq 6 && ! grep -Eq '^STEP [1-6]: (LEAD-JUDGMENT-REQUIRED|.*-CANDIDATE)$' "$REPORT_PATH"`。
+   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && ! grep -Eq 'LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
    失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one

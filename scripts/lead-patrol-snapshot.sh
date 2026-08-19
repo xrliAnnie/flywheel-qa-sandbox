@@ -5,6 +5,8 @@
 
 set -uo pipefail
 umask 077
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BOUNDED_RUN="$SCRIPT_DIR/lib/bounded-run.sh"
 
 usage() {
   echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>]" >&2
@@ -71,6 +73,8 @@ fi
 STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-$STATE_DIR/projects.json}"
+REPORT_DIR="$STATE_DIR/patrol-reports/$LEAD_ID"
+PREVIOUS_REPORT="$(find "$REPORT_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"
 DEFAULT_COMM_DB="$STATE_DIR/comm/$PROJECT_NAME/comm.db"
 COMM_DB="$DEFAULT_COMM_DB"
 if [ -n "${FLYWHEEL_COMM_DB:-}" ] \
@@ -104,6 +108,7 @@ COMM_DB_URI="$(readonly_sqlite_uri "$COMM_DB")"
 
 PROJECT_REPO=""
 PROJECTS_OK=0
+PROJECT_NAMES=""
 if command -v jq >/dev/null 2>&1 && [ -f "$PROJECTS_FILE" ]; then
   PROJECT_REPO="$(jq -er --arg project "$PROJECT_NAME" \
     'first(.[] | select(.projectName == $project) | .projectRepo)' \
@@ -113,6 +118,7 @@ if command -v jq >/dev/null 2>&1 && [ -f "$PROJECTS_FILE" ]; then
   else
     PROJECT_REPO=""
   fi
+  PROJECT_NAMES="$(jq -r '.[].projectName // empty' "$PROJECTS_FILE" 2>/dev/null || true)"
 fi
 
 SQL_ERROR_TOKEN="structural: sqlite_unavailable"
@@ -159,20 +165,240 @@ SQL
   return 1
 }
 
+sha256_text() {
+  printf '%s' "$1" | shasum -a 256 2>/dev/null | awk '{print $1}'
+}
+
+field_from_evidence() { # <line> <field>
+  local line="$1" name="$2" word
+  for word in $line; do
+    case "$word" in
+      "$name"=*) printf '%s' "${word#*=}"; return 0 ;;
+    esac
+  done
+  return 1
+}
+
+append_finding() { # <current> <finding>
+  if [ -z "$1" ] || [ "$1" = none ]; then
+    printf '%s' "$2"
+  else
+    printf '%s,%s' "$1" "$2"
+  fi
+}
+
+COMM_INDEX_ERROR_TOKEN="structural: owner_index_incomplete"
+run_comm_index() { # <output-var> <db>
+  local out_var="$1" db="$2" attempt output rc err_file err_text uri
+  if [ ! -f "$db" ]; then
+    printf -v "$out_var" '%s' ""
+    return 2
+  fi
+  if ! safe_sqlite_path "$db" || ! command -v sqlite3 >/dev/null 2>&1; then
+    COMM_INDEX_ERROR_TOKEN="structural: owner_index_incomplete"
+    printf -v "$out_var" '%s' ""
+    return 1
+  fi
+  uri="$(readonly_sqlite_uri "$db")"
+  for attempt in 1 2; do
+    err_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-patrol-index.XXXXXX")" || {
+      COMM_INDEX_ERROR_TOKEN="structural: owner_index_incomplete"
+      printf -v "$out_var" '%s' ""
+      return 1
+    }
+    output="$(sqlite3 "$uri" 2>"$err_file" <<'SQL'
+.bail on
+.timeout 3000
+.mode tabs
+SELECT tmux_window, project_name, execution_id, coalesce(lead_id,'')
+FROM sessions
+WHERE status = 'running'
+ORDER BY tmux_window, execution_id
+LIMIT 2000;
+SQL
+)"
+    rc=$?
+    err_text="$(tr '[:upper:]' '[:lower:]' < "$err_file" 2>/dev/null || true)"
+    rm -f "$err_file"
+    if [ "$rc" -eq 0 ]; then
+      printf -v "$out_var" '%s' "$output"
+      return 0
+    fi
+  done
+  case "$err_text" in
+    *locked*|*busy*) COMM_INDEX_ERROR_TOKEN="transient: owner_index_incomplete" ;;
+    *) COMM_INDEX_ERROR_TOKEN="structural: owner_index_incomplete" ;;
+  esac
+  printf -v "$out_var" '%s' ""
+  return 1
+}
+
 STEP1_STATUS="LEAD-JUDGMENT-REQUIRED"
 STEP1_FACTS=""
+RUNNER_PANES=""
+PANE_LIST_RC=1
 if command -v tmux >/dev/null 2>&1; then
   STEP1_FACTS="$(TMUX= tmux list-windows -a 2>/dev/null)"
   if [ "$?" -ne 0 ]; then
     STEP1_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
     STEP1_FACTS=""
+  else
+    PANE_LIST_RAW="$(TMUX= tmux list-panes -a -F $'#{pane_id}\t#{session_name}\t#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_command}\t#{pane_dead}' 2>/dev/null)"
+    PANE_LIST_RC=$?
+    if [ "$PANE_LIST_RC" -eq 0 ]; then
+      RUNNER_PANES="$(printf '%s\n' "$PANE_LIST_RAW" | awk -F '\t' '
+        $2 ~ /^runner-/ && $4 ~ /^[A-Z][A-Z0-9]*-[0-9]+($|[-_:])/ { print }
+      ')"
+    else
+      STEP1_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
+    fi
   fi
 else
   STEP1_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
 fi
+if [ -n "$RUNNER_PANES" ]; then
+  STEP1_FACTS="${STEP1_FACTS:-(none)}
+RUNNER_PANES:
+$RUNNER_PANES"
+else
+  STEP1_FACTS="${STEP1_FACTS:-(none)}
+RUNNER_PANES: (none)"
+fi
 
-STEP2_STATUS="LEAD-JUDGMENT-REQUIRED"
-STEP2_FACTS='Run TMUX= tmux capture-pane -p -t <window> | tail -40 for each owned runner.'
+PANE_COUNT="$(printf '%s\n' "$RUNNER_PANES" | awk 'NF {n++} END {print n+0}')"
+STEP2_STATUS="OK-CANDIDATE"
+STEP2_FACTS=""
+OWNER_INDEX=""
+INCOMPLETE_SESSIONS=""
+
+if [ "$PANE_LIST_RC" -ne 0 ]; then
+  STEP2_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
+elif command -v jq >/dev/null 2>&1; then
+  while IFS= read -r index_project; do
+    [ -n "$index_project" ] || continue
+    if ! safe_key "$index_project"; then
+      INCOMPLETE_SESSIONS="${INCOMPLETE_SESSIONS} runner-$index_project"
+      continue
+    fi
+    index_db="$STATE_DIR/comm/$index_project/comm.db"
+    if [ "$index_project" = "$PROJECT_NAME" ]; then index_db="$COMM_DB"; fi
+    INDEX_ROWS=""
+    run_comm_index INDEX_ROWS "$index_db"
+    index_rc=$?
+    case "$index_rc" in
+      0)
+        if [ -n "$INDEX_ROWS" ]; then
+          OWNER_INDEX="${OWNER_INDEX}${OWNER_INDEX:+$'\n'}$INDEX_ROWS"
+        fi
+        ;;
+      2)
+        if printf '%s\n' "$RUNNER_PANES" | awk -F '\t' -v session="runner-$index_project" '$2 == session {found=1} END {exit !found}'; then
+          INCOMPLETE_SESSIONS="${INCOMPLETE_SESSIONS} runner-$index_project"
+        fi
+        ;;
+      *) INCOMPLETE_SESSIONS="${INCOMPLETE_SESSIONS} runner-$index_project" ;;
+    esac
+  done <<< "$PROJECT_NAMES"
+else
+  STEP2_STATUS="UNAVAILABLE(structural: owner_index_incomplete)"
+fi
+
+NOW_EPOCH="$(date +%s)"
+while IFS=$'\t' read -r pane_id session_name target window_name pane_command pane_dead; do
+  [ -n "$pane_id" ] || continue
+  owner="unknown"
+  execution_id="none"
+  findings="none"
+  action="none"
+  result="clear"
+
+  index_matches="$(printf '%s\n' "$OWNER_INDEX" | awk -F '\t' -v target="$target" '$1 == target {print}')"
+  match_count="$(printf '%s\n' "$index_matches" | awk 'NF {n++} END {print n+0}')"
+  if [ "$match_count" -eq 1 ]; then
+    IFS=$'\t' read -r _match_target match_project execution_id match_lead <<< "$index_matches"
+    if [ "$match_lead" = "$LEAD_ID" ]; then owner="owned"; else owner="cross-boundary"; fi
+  elif [ "$match_count" -gt 1 ]; then
+    findings="SESSION_TARGET_AMBIGUOUS"
+    STEP2_STATUS="UNAVAILABLE(structural: session_target_ambiguous)"
+  else
+    session_project="${session_name#runner-}"
+    if ! printf '%s\n' "$PROJECT_NAMES" | grep -Fxq -- "$session_project"; then
+      owner="foreign-registry"
+      result="foreign_registry_clear"
+    elif case " $INCOMPLETE_SESSIONS " in *" $session_name "*) true;; *) false;; esac; then
+      findings="OWNER_INDEX_INCOMPLETE"
+      STEP2_STATUS="UNAVAILABLE($COMM_INDEX_ERROR_TOKEN)"
+    else
+      previous_line=""
+      if [ -n "$PREVIOUS_REPORT" ] && [ -f "$PREVIOUS_REPORT" ]; then
+        previous_line="$(grep -F "target=$target " "$PREVIOUS_REPORT" 2>/dev/null | tail -1)"
+      fi
+      previous_result="$(field_from_evidence "$previous_line" result 2>/dev/null || true)"
+      if [ "$previous_result" = session_terminated ] || [ "$previous_result" = UNSET ]; then
+        findings="ORPHANED"
+      else
+        result="session_terminated"
+      fi
+    fi
+  fi
+
+  capture_hash="unavailable"
+  line_count=0
+  byte_count=0
+  state_hash="unavailable"
+  last_change_epoch="$NOW_EPOCH"
+  capture_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-patrol-pane.XXXXXX")" || true
+  if [ -z "$capture_file" ] || [ ! -x "$BOUNDED_RUN" ] \
+    || ! "$BOUNDED_RUN" 5 env TMUX= tmux capture-pane -p -S - -t "$pane_id" > "$capture_file" 2>/dev/null; then
+    findings="$(append_finding "$findings" CAPTURE_FAILED)"
+    STEP2_STATUS="UNAVAILABLE(structural: pane_capture_incomplete)"
+  else
+    capture_hash="$(shasum -a 256 "$capture_file" 2>/dev/null | awk '{print $1}')"
+    line_count="$(awk 'END {print NR+0}' "$capture_file")"
+    byte_count="$(wc -c < "$capture_file" | tr -d ' ')"
+    last_state="$(awk 'NF {line=$0} END {printf "%s", line}' "$capture_file")"
+    state_hash="$(sha256_text "$last_state")"
+    previous_line=""
+    if [ -n "$PREVIOUS_REPORT" ] && [ -f "$PREVIOUS_REPORT" ]; then
+      previous_line="$(grep -F "target=$target " "$PREVIOUS_REPORT" 2>/dev/null | tail -1)"
+    fi
+    previous_state="$(field_from_evidence "$previous_line" state_sha256 2>/dev/null || true)"
+    previous_change="$(field_from_evidence "$previous_line" last_change_epoch 2>/dev/null || true)"
+    if [ "$previous_state" = "$state_hash" ]; then
+      case "$previous_change" in
+        ''|*[!0-9]*) ;;
+        *) last_change_epoch="$previous_change" ;;
+      esac
+    fi
+    if [ $((NOW_EPOCH - last_change_epoch)) -ge 3600 ]; then
+      findings="$(append_finding "$findings" STALLED_60M)"
+    fi
+    filtered_capture="$(grep -Eiv 'not your (session|usage) limit' "$capture_file" 2>/dev/null || true)"
+    recent_capture="$(printf '%s\n' "$filtered_capture" | tail -80)"
+    if printf '%s\n' "$recent_capture" | grep -Eiq "You've hit your (session|usage) limit|Claude usage limit reached"; then
+      findings="$(append_finding "$findings" LIMIT_LIVE)"
+    elif printf '%s\n' "$filtered_capture" | grep -Eiq "You've hit your (session|usage) limit|Claude usage limit reached"; then
+      findings="$(append_finding "$findings" LIMIT_HISTORY)"
+    fi
+    if printf '%s\n' "$recent_capture" | grep -Eiq 'Press Enter to (confirm|continue)|resume menu'; then
+      findings="$(append_finding "$findings" INTERACTIVE_MENU)"
+    fi
+  fi
+  rm -f "$capture_file" 2>/dev/null || true
+
+  if [ "$findings" != none ]; then
+    action="REQUIRED"
+    result="UNSET"
+    case "$STEP2_STATUS" in
+      UNAVAILABLE*) ;;
+      *) STEP2_STATUS="FINDING-CANDIDATE" ;;
+    esac
+  fi
+  evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result"
+  STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}$evidence"
+done <<< "$RUNNER_PANES"
+
+STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
 
 STEP3_FACTS=""
 STEP3_SQL=$(cat <<SQL

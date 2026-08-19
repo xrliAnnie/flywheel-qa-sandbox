@@ -1937,6 +1937,12 @@ _launch_claude() {
   if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
+  # FLY-1855: QA slots pin a slot-local StateStore DB. The Lead body runs
+  # behind env -i, so without this explicit pass the patrol snapshot would
+  # silently fall back to the production $HOME/.flywheel/teamlead.db.
+  if [ -n "${TEAMLEAD_DB_PATH:-}" ]; then
+    env_args+=(-e "TEAMLEAD_DB_PATH=${TEAMLEAD_DB_PATH}")
+  fi
   env_args+=(
     -e "FLYWHEEL_LEAD_LAUNCH_GEN=${FLYWHEEL_LEAD_LAUNCH_GEN:-}"
     -e "FLYWHEEL_SESSION_ID_FILE=${FLYWHEEL_SESSION_ID_FILE:-}"
