@@ -4,13 +4,13 @@ Issue: FLY-1887 (https://linear.app/geoforge3d/issue/FLY-1887/宿主机卡死善
 日期: 2026-08-18
 基于: 无
 
-> **修订状态**:v3。经两轮独立上下文 Claude 跨家族设计评审(评审 A 7 项 + 评审 B 6 项,均 `CHANGES REQUESTED`)+ 作者自查 5 项后重写。评审记录见 §11 —— v1 的两条覆盖前提被推翻,v2 新增的族 B 落点又被 v3 反转(方向相反),P0 因此两次重新设计。
+> **修订状态**:v4。v3 经 Codex 设计门禁返回 `CHANGES_REQUESTED`;v4 删除不带进程身份的 broker PID 回收,淘汰 Bash 3.2 下不安全的 `set --` 字段拆分,补齐实测超时默认值、稳定 vendoring、same-SHA 收敛与完整日志扫描边界。评审记录见 §11。
 
 ---
 
 ## 0. 一句话
 
-三件事:给一次性 codex 调用加**有预算的硬超时 + 只认注册表的清道夫**(P0)、给 flywheel 自己写的日志加**轮转**(P1-a)、把 cmux watcher 每天 5.7 GiB 的写盘量**降到接近零**(P1-b);P2 两条(并发上限、重启编排)只摆数据不做决定,留给 Annie。
+三件事:给一次性 codex 调用加**有预算的硬超时 + 只认带启动身份注册表的清道夫**(P0)、给 flywheel 自己按次打开并追加的日志加**轮转**(P1-a)、把 cmux watcher 每天 5.7 GiB 的写盘量**降到接近零**(P1-b);P2 两条(并发上限、重启编排)只摆数据不做决定,留给 Annie。
 
 ---
 
@@ -91,8 +91,9 @@ A 排除「仪器瞎了」,D 排除「循环本身」,B 说明那 5.7 GiB 是 wa
 |------|--------|--------|------|
 | `while …; done <<< "$v"`(现状) | 8,192,000 B | 32,804,864 B | — |
 | `while …; done < <(printf '%s\n' "$v")` | **0 B** | **0 B** | ✅ 循环留在当前 shell |
-| `IFS='|'; set -- $line`(纯 builtin) | **0 B** | **0 B** | ✅ 零 fork 零写盘 |
 | `printf … \| while read` | — | — | ❌ **禁用**:循环进子 shell,累加的变量静默丢失 |
+
+v3 曾把 `IFS='|'; set -- $line` 当作零 fork 优化。设计门禁在 Bash 3.2 上证实它会吞掉末尾空字段、展开 glob,并覆盖调用方 `$@`;在 `set -u` 下随后访问缺失字段还会直接退出。v4 **全量禁用 `set --` 拆数据**,包括顶层单次 `read`:一律用 `< <(printf '%s\n' "$value")`。
 
 **关键陷阱**:最直觉的替换(改成管道)会把循环体推进子 shell,循环里累加的状态在循环结束后消失 —— 这类改动测试可能仍然全绿(状态在循环内是对的),但生产行为错。
 
@@ -104,15 +105,15 @@ A 排除「仪器瞎了」,D 排除「循环本身」,B 说明那 5.7 GiB 是 wa
 
 ## 3. P0 — 给一次性 codex 调用加硬超时
 
-### 3.1 覆盖三个族,不再宣称「唯一收口」
+### 3.1 只覆盖能证明身份的族,不拿 PID 猜进程
 
 > **v2 → v3 的反转(必须先说)**:v2 把族 B 定为「超时的首要落点」。**这是错的,而且会造成生产事故** —— 族 B 承载的是天级存活的 Codex runner daemon,给它加 3600 秒的一次性超时 = 每个 daemon 执行到一半被 SIGTERM。作者与评审 A 都误以为族 B 是「一次性 cycle 载体」,评审 B 往下多查了一层调用链(`CodexTmuxAdapter.ts:497` → `codex-daemon-runtime.ts:256`)才发现真相。v3 据此反转:**族 B 明确列为禁止加超时的边界**。
 
 | 族 | 做法 |
 |----|------|
-| **A**(全局 wrapper) | **唯一的超时落点**。超时 + 注册表做成可 source 的 lib(`scripts/lib/codex-guard.sh`),`~/.local/bin/codex-with-fallback` 改为薄 shim 引用它。它的调用面**全是一次性 `exec`**(`/codex-code-review`、`/codex-design-review`、`peer-review`、`codex-relogin`、`codex-image/generate.sh`),无一常驻。部署合同见 §3.5。 |
+| **A**(全局 wrapper) | **唯一的超时落点**。超时 + 注册表做成可 source 的 lib(`scripts/lib/codex-guard.sh`),repo-owned wrapper 与 lib 一起部署到稳定的版本目录,`~/.local/bin/codex-with-fallback` 只引用稳定部署物,绝不 source 活 checkout。它的调用面**全是一次性 `exec`**(`/codex-code-review`、`/codex-design-review`、`peer-review`、`codex-relogin`、`codex-image/generate.sh`),无一常驻。部署合同见 §3.5。 |
 | **B**(仓库 twin) | 🚫 **DO-NOT-TOUCH 边界:绝不加一次性超时。** 它是 daemon 载体。只做两件事:(1) 去 tee(§3.6),(2) 加一条**哨兵测试**断言 daemon spawn 路径字节不变、且该文件不含超时逻辑。**并且禁止把 `FLYWHEEL_CODEX_BIN` 指向新 guard** —— 这条要写进文件顶部注释,因为「把两个几乎一样的 wrapper 合并掉」正是本团队「删的比加的多」的直觉会做的事,而那个动作会静默杀掉所有 daemon。 |
-| **C**(companion→broker) | **不改插件代码**(`~/.claude/plugins/cache/` 是 vendored 缓存,`claude plugin update` 会覆盖)。改为让清道夫**认领 broker 自己的 pidfile**:broker 由插件写 `<sessionDir>/broker.pid`(`broker-lifecycle.mjs:134`),这是插件自身权威的正向识别源,对超龄且 endpoint 不可达的条目执行同一套回收。**不按进程名匹配。** |
+| **C**(companion→broker) | **明确作为残余,不发任何信号。** 插件的 durable JSON / `broker.pid` 只有 pid,没有启动时间或等价 incarnation;本机 225 个 durable 记录中已有 2 个 PID 复用到 `com.apple.dock.extra` 与 `tzlinkd`,且都满足 `pgid == pid`。endpoint 不可达只能证明旧 broker 死了,不能证明当前 PID 仍是它。插件 readiness 失败时还会走无 pidfile 的 brokerless `spawn("codex", ["app-server"])`。因此 v3 的族 C reaper 整体删除;不改 vendored 插件,也不声称覆盖。 |
 | **D**(QA harness) | 点名归类,不改(手工 QA,非无人值守)。 |
 
 **为什么 lib 落在本仓库**:(a) `~/.flywheel/bin` 的安装/部署机械在本仓库已存在且每次重启都在跑;(b) 清道夫需要「哪些是 Flywheel 长生命周期 Lead / daemon」的知识,这份知识在本仓库;(c) 两仓时序有前科(FLY-880 的 13 个 vendored skill 至今未落地)。
@@ -123,13 +124,15 @@ A 排除「仪器瞎了」,D 排除「循环本身」,B 说明那 5.7 GiB 是 wa
 
 v2 写的理由是「Lead 走 `codex app-server` / `codex resume` 直接 spawn,不经过 wrapper」。**这个理由对 Lead 成立、对 runner daemon 不成立** —— 而 v2 把两者混为一谈,是它把族 B 选错成落点的根源。分开说:
 
-**生产 Codex Lead(Mufasa / infra-bot)**:两个 TUI launcher 把 `FLYWHEEL_CODEX_BIN` 钉死在**裸 standalone 二进制**(`packages/teamlead/scripts/run-codex-infra-bot-tui.sh:73`、`run-codex-lead-mufasa-tui-fullaccess.sh:67`),`codex-lead-runtime.ts:522→1223` 直接 spawn 它。实测活进程也确认:两个生产 app-server 直接从 `~/.codex-infra-bot/…` 与 `~/.codex-mufasa/…` 起,**没有 bash shim 父进程**。→ 两个 wrapper 都不经过。
+**生产 Codex Lead(Mufasa / infra-bot)**:两个 TUI launcher 用 `${FLYWHEEL_CODEX_BIN:-<standalone>}` 软默认到**裸 standalone 二进制**(`packages/teamlead/scripts/run-codex-infra-bot-tui.sh:73`、`run-codex-lead-mufasa-tui-fullaccess.sh:67`),`codex-lead-runtime.ts:522→1223` 直接 spawn 它。实测活进程也确认:两个生产 app-server 直接从 `~/.codex-infra-bot/…` 与 `~/.codex-mufasa/…` 起,**没有 bash shim 父进程**。安装器与 restart convergence 都不得 export / 改写共享的 `FLYWHEEL_CODEX_BIN`;测试钉住这条边界。
 
 **Codex Runner daemon**:**经过族 B**(见 §3.1 表)。所以它的保护不能靠「不经过 wrapper」,只能靠 §3.1 的 DO-NOT-TOUCH 边界 + 哨兵测试。
 
-**最终的结构性保证**(两类都覆盖):清道夫**只对出现在正向注册表里的 pid 动手** —— 我们自己的注册表(只有族 A 的一次性调用会登记)或 broker 自己的 pidfile。Lead 与 runner daemon 的 pid **不在任何一个注册表里**,所以不是候选。这不是「判断得准」,是候选集里根本没有它们。
+**最终的结构性保证**:清道夫**只对族 A 自己写入且带启动身份的注册表动手**。Lead、runner daemon 与 broker 的 pid 都不会进入这个注册表,所以不是候选。这不是「判断得准」,是候选集里根本没有它们。
 
 ### 3.3 三条硬要求
+
+**(0) 默认预算是 issue 指定且有实测依据的 1800 秒。** 对 companion state 中 3,048 个 `status=completed` 且起止时间完整的历史任务重新计算:中位数 284s、p95 884s、p99 1,172s;3,043 个(**99.84%**)在 1,800s 内完成,5 个超过。族 A 默认总预算 `FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=1800`,默认单次上限 `FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=1800`;每次实际预算仍取 `min(单次上限,总剩余)`。有明确长任务可逐次覆盖。两个 env 只接受正整数;非法值打印固定配置错误并退出 125,绝不退化成无界执行。
 
 **(1) 预算是总的,不是每次的。** 现状 wrapper 最多轮转 5 个 profile;若每次都给满额,最坏 5 倍。设计:启动时算一次总截止时间,每次尝试拿 `min(单次上限, 剩余预算)`,预算耗尽即停止轮转。
 
@@ -143,7 +146,7 @@ v2 写的理由是「Lead 走 `codex app-server` / `codex resume` 直接 spawn,�
 - 每次**新的** codex 调用先做一次机会式清扫(**不新增任何 launchd job / timer** —— 卡死堆积的前提本来就是调用在持续发生)。
 - **PID 复用围栏**:核对进程真实启动时间与登记值一致,不一致就删条目、**不杀**。
 - **任何不在注册表里的进程一律不碰。**
-- 族 C 用同一逻辑,注册表换成插件自己的 `broker.pid`。
+- 族 C 的 pid-only 记录永不进入这套逻辑;见 §3.1 的显式残余。
 
 **(3b) 进程组归属陷阱 —— 按组杀会杀掉调用它的 Claude Lead。**(评审 B 在本机实测)
 
@@ -181,15 +184,17 @@ v2 写的理由是「Lead 走 `codex app-server` / `codex resume` 直接 spawn,�
 
 改写 `~/.local/bin/codex-with-fallback` 不属于任何现有安装流程(不在 `~/.flywheel/bin`、不在 chezmoi、不在 restart-services 的 install 集)。shim 换坏 = 全机所有 codex exec 调用瞬间断。合同:
 
-- **幂等 install 步**:内容校验(已是新 shim 就 no-op)+ 原子替换(写临时文件再 `mv`)+ `.bak` **只写一次**(不覆盖已有备份)。
-- **挂载点**:随 restart-services 的 build 段执行,并提供独立 runbook 供手工执行。
+- **稳定 vendoring**:repo 中的 wrapper + `codex-guard.sh` 一起复制到 `~/.flywheel/libexec/codex-guard/releases/<content-hash>/`;完整写入、chmod 与自检通过后,才用原子 rename 切换 `current` symlink。`~/.local/bin/codex-with-fallback` 是固定薄 shim,只 exec `~/.flywheel/libexec/codex-guard/current/codex-with-fallback`,**绝不 source 活 git checkout**。
+- **fail-closed 缺件合同**:stable wrapper/lib 缺失、不可读或自检失败时,shim 打固定错误并退出 125;绝不为「可用性」偷偷运行无界 codex。
+- **幂等 install 步**:内容校验(已是同一 hash 就 no-op)+ 原子切换 + `.bak` **只写一次**(不覆盖已有备份)。失败时 `current` 与全局 shim 都保持旧版本。
+- **无条件挂载点**:install 函数接到 `scripts/lib/converge-nonlead-daemons.sh` 的 convergence seam,而不是 restart-services 的 build-only 分支。这样同 SHA、build 被跳过时仍会修复丢失/漂移的部署物。提供独立 runbook 供手工执行。
 - **规避已知事故形态**:本仓库有「自部署跑的是旧脚本字节,脚本内的一次性迁移必被跳过」的前科 —— install 步必须能被**独立于重启**地手工跑一次,并有幂等重跑保证。
 - **验证命令**:改写后实证走的是新链路(而非只看文件内容),并确认超时确实生效。
 - **回滚**:`.bak` 恢复一条命令,写进 runbook。
 
 ### 3.6 顺带修掉 tee(含行为变化说明)
 
-关机快照里 tee 数量最多(30 个),来自进程替换 —— 那两个 tee 不是 `timeout` 的子进程,杀 codex 不保证收走它们。改为把输出落到临时文件再读取。
+关机快照里 tee 数量最多(30 个),来自进程替换 —— 那两个 tee 不是 `timeout` 的子进程,杀 codex 不保证收走它们。两个 wrapper 都改为把 stdout/stderr 分别落到临时文件、执行结束后再读取;族 A 每次 attempt 都通过 guard,族 B 保持无限生命周期且只改变输出捕获。
 
 **这是一处行为变化,必须写明**:现状经 tee **实时透传** stdout;改后调用方在运行期间看不到增量输出。族 A 的调用面不止 Flywheel(还有 `summarize --cli codex` 等)。若实测有调用方依赖流式输出,改用单一管道 + `${PIPESTATUS[0]}` 保留退出码,而不是落文件。
 
@@ -197,23 +202,24 @@ v2 写的理由是「Lead 走 `codex app-server` / `codex resume` 直接 spawn,�
 
 ## 4. P1-a — 日志轮转
 
-### 4.1 写入点(v1 表有 4 处遗漏 + 1 行是死文件,已更正)
+### 4.1 写入点(v4 扩大到 shell、Python 与 TypeScript 的全仓扫描)
 
-扫描口径:shell 的 `>>` / `exec >>` 重定向 **与** TypeScript 的 `appendFileSync`,目标在 `$HOME` 下且无上限。
+扫描口径:shell 的 `>>` / `exec >>` 重定向、Python append **与** TypeScript 的 `appendFileSync`,目标在 `$HOME` 或 stateDir 下且无上限。
 
 | 文件 | 写入点 | 状态 |
 |------|--------|------|
 | `~/.flywheel/logs/tmux-rescue-audit.log` | `scripts/lib/tmux-server-rescue.sh`(`_tmux_rescue_audit`) | **曾达 350 MB**,已手动截断 |
-| `~/.flywheel/logs/restart-guard.log` | `scripts/hooks/flywheel-restart-guard.py` | **533 KB,今天仍在写**(v1 漏) |
-| `~/.flywheel/logs/runner-stop-notify.log` | `scripts/hooks/runner-stop-notify.sh`(`exec >>`,每次 Runner turn-end) | 今天仍在写(v1 漏) |
-| `~/.flywheel/logs/lead-lease-audit.log` | `packages/flywheel-comm/src/lead-lease.ts`(appendFileSync JSONL) | 无上限(v1 漏) |
-| `<stateDir>/lead-actions-audit.jsonl` 及同族 | `packages/teamlead/src/lead-backends/codex/lead-actions/lead-actions-main.ts`、`discord-send-core.ts`、`gateway/gateway-main.ts`、`bridge/publish-broker/wire.ts` | JSONL append,**与 tmux-rescue 长到 350 MB 的同一形态**(v1 漏) |
-| `~/.flywheel/logs/quota-monitor.log` | `scripts/flywheel-quota-monitor-wrapper.sh` | 16 K |
-| `~/Library/Logs/flywheel/codex-log-guard.log` | `scripts/codex-log-guard.sh` | — |
-| `~/.flywheel/logs/lead-*-startup.log` | `packages/teamlead/scripts/claude-lead.sh` | 45 K |
-| ~~`~/.flywheel/logs/cmux-sync-watch.log`~~ | ~~cmux-sync 自身~~ | **删除此行**:全仓 grep `cmux-sync-watch` 零命中,mtime 停在 Jul 20,是死文件;现役 watcher 日志走 `/tmp/flywheel-cmux-watcher.log`(见 §4.3,在排除区) |
+| `~/.flywheel/logs/restart-guard.log` | `scripts/hooks/flywheel-restart-guard.py` | **533 KB,今天仍在写** |
+| `~/.flywheel/logs/runner-stop-notify.log` | `scripts/hooks/runner-stop-notify.sh`(`exec >>`,每次 Runner turn-end) | 今天仍在写 |
+| `~/.flywheel/logs/lead-lease-audit.log` | `packages/flywheel-comm/src/lead-lease.ts` | append-only JSONL |
+| `<stateDir>/lead-actions-audit.jsonl` 及同族 | `lead-actions-main.ts`、`discord-send-core.ts`、`gateway-main.ts`、`publish-broker/wire.ts` | append-only JSONL |
+| `<geminiAuditDir>/sessions.jsonl` | `packages/gemini-agent/src/audit.ts` | 跨 session 的单一 append-only 索引(v3 漏) |
+| `~/.flywheel/bridge-loop-guard.log` | `packages/teamlead/src/bridge/BridgeEventLoopGuard.ts` worker | 单一全局 append-only 日志(v3 漏) |
+| `~/Library/Logs/flywheel/codex-log-guard.log` | `scripts/codex-log-guard.sh` | 每轮 monitor append |
+| `~/.flywheel/logs/lead-*-startup.log` | `packages/teamlead/scripts/claude-lead.sh` | 每次 startup 事件 append |
+| ~~`~/.flywheel/logs/cmux-sync-watch.log`~~ | ~~cmux-sync 自身~~ | 全仓零写入方,mtime 停在 Jul 20;现役 watcher 日志在 §4.3 排除区 |
 
-行号:v1 写的行号有小幅漂移(文件级正确)。实现时一律用 `git log -S` 重定位,不照抄。
+行号会漂移,实现时按 symbol / string 重定位,不照抄旧行号。
 
 ### 4.2 设计
 
@@ -222,12 +228,16 @@ v2 写的理由是「Lead 走 `codex app-server` / `codex resume` 直接 spawn,�
 - **fail-open**:轮转出任何问题都不能让调用方失败(审计日志是尽力而为的旁路,现有代码已是 `|| true` 语义,必须保持)。
 - **并发**:多进程同时 append;轮转用 `mkdir` 原子锁(macOS bash 3.2 没有 `flock` 二进制),拿不到锁就跳过轮转直接 append。
 - **不丢行**:用 rename,不用 truncate。
-- **TS 侧**:`appendFileSync` 那几处需要等价的轮转封装(同上限、同 fail-open),不能只修 shell 侧。
-- 已核实:全仓无任何 tail/cat/grep 消费这些日志 → rename 式轮转不会打断消费方。
+- **TS 侧**:在相关 package 都已依赖的 `flywheel-config` 新增 `rotateLogIfNeeded` / `appendRotatedLogSync` 公共 seam(同上限、同 fail-open)。Gemini 的 per-session 文件继续直接写,只有跨 session 的 `sessions.jsonl` 走 helper;Bridge loop guard 由 parent 每次启动 worker 前轮转,不把 import 塞进 worker source string。
+- **消费方口径**:无生产 tail/cat/grep 消费这些日志;但 `tmux-server-rescue.test.sh` 与 instrumentation tests 会 grep audit 内容。测试要验证 active file / `.1` 的证据连续性,不能再写「无任何消费者」。
 
-### 4.3 明确不做:`/tmp/flywheel-*.log`
+### 4.3 明确不做:持有长生命周期 fd 与 per-session 文件
 
-那些是 launchd 的 `StandardOutPath`,**fd 由 launchd 持有**。对活进程正在写的文件做截断会留下 NUL 空洞、证据作废 —— 本仓库已踩过。且 `/tmp` 重启即清空。同理排除 `sync-gbrain-docs.sh`、`xiaohongshu-learning-tick.sh`(后者自带 1 MB 截断)、restart-services 的 detach_log。**这是边界,不是遗漏。**
+- `/tmp/flywheel-*.log` 与 `~/.flywheel/logs/quota-monitor.log` 是 launchd `StandardOutPath` / `StandardErrorPath`,**fd 由 launchd 持有**。rename 后 writer 仍写旧 inode,truncate 会留下 NUL 空洞;本单不伪装成安全轮转。`quota-monitor.log` 当前 16 KiB,先保留为显式残余。
+- `packages/voice-bridge/src/eleven/wiring.ts` 的 transcript 与 Gemini `session-<sid>.jsonl` 是每 session 独立文件,生命周期本身分片;不把它们误归成单一无限增长文件。
+- 同理排除 `sync-gbrain-docs.sh`、`xiaohongshu-learning-tick.sh`(后者自带 1 MB 截断)、restart-services detach log。
+
+这些是明确边界,不是「扫描完整」的遗漏;若未来要 cap launchd stdio,应单独引入能主动 reopen 的 logger/daemon 协议。
 
 ---
 
@@ -244,12 +254,13 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 替换形式:
 
 - `while …; done <<< "$v"` → `while …; done < <(printf '%s\n' "$v")`
-- 纯字段切分且不想 fork → `oldifs=$IFS; IFS='|'; set -- $line; IFS=$oldifs`
+- 顶层单次 `read` / 字段切分 → `IFS='|' read -r a b c < <(printf '%s\n' "$line")`
 - **禁用** `printf … | while read`(§2.4 的作用域陷阱)
+- **禁用** `IFS=…; set -- $line`(末尾空字段、glob、`$@` 与 `set -u` 四重陷阱)
 
 逐点改 + 逐点测,**不许 sed 批量替换**。
 
-### 5.1b 三类**不能**机械替换的站点(评审 B 实测,含行号)
+### 5.1b 四类**不能**机械替换的站点(评审 B + Codex 门禁实测)
 
 **(1) `done <<< "$(cmd)"` 不能简化成 `done < <(cmd)`** —— 命令输出为空时,前者跑 **1 次**空迭代,后者跑 **0 次**(实测)。受影响:`:832`(`$(awk …)`)、`:6390`(`$(printf … | tr ',' '\n')`)、`:4458`(嵌 `head -1`,同类)。正确做法:保留命令替换,写成 `< <(printf '%s\n' "$(cmd)")`;或逐站点证明「0 次迭代」也安全(`:832` 恰好有 `[[ -n "$subject" ]] || continue` 兜着,但那是巧合,必须逐点证明而不是假定)。
 
@@ -257,12 +268,15 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 
 **(3) 错误返回路径上的 rc 语义要逐字保留** —— 例如 `:685` 在 `derive_lead_roster` 的 `|| { …; return 1; }` 链里。这条支持了「不许 sed」的规定,但计划必须点名「EOF 处 rc=1」这个具体陷阱,否则实现者不会知道要防什么。
 
+**(4) `set --` 不是合法的字段解析替代。** `IFS='|' read -r a b c < <(printf '%s\n' "$line")` 才保留 read 的末尾字段合同,也不会对 `*` / `?` / `[…]` 做 pathname expansion,不会覆盖函数原有 `$@`。新增 RED parity cases:末尾空字段(`a|b|`)与 cwd 中确实能命中的 glob literal(`*.json`)必须逐字保留;在 `/bin/bash` 3.2 + `set -u` 下也不得 abort。
+
 **评审 B 同时实测确认成立的**:watcher 跑的确实是 `/bin/bash` 3.2(plist + 活进程双证);`flywheel-cmux-autostart.sh` 里 0 个 `<<<`,改对了文件;130 处的计数属实;在 3.2 + `set -euo pipefail` 下,指定形式**保住了外层变量赋值**(`:845-897` 的循环真的在改 `current_missing` / `current_config` / `legacy_expected` —— 禁用管道这条是**承重的**)与**空串 → 1 次迭代**的语义(实测 1);`:286`/`:296` 的 `grep -q` 站点安全(printf 的 SIGPIPE 状态在 `if` 里不被观察)。
 
 ### 5.2 验收判据是**实测速率**,不是站点计数
 
 - 用同一套仪器在真机测改前 / 改后的 watcher 写盘速率,各 ≥5 分钟,**同时带对照组**(其他长期 bash 应仍为 0)
 - 目标:逻辑写从 69 KB/s 降到 **< 2 KB/s**(< 170 MiB/天,远低于 2 GiB 配额);剩余应约等于 §2.2 的真实状态/日志写入(约 9 MB/天)
+- 同一窗口同时记录 watcher CPU time 与子进程创建/存活数量;process substitution 虽然在本机 `/dev/fd` 路径为 0 写盘,仍增加 `printf` fork,不得用「写盘下降」掩盖明显的 CPU / 进程数回归
 - `proc_pid_rusage` 是 macOS-only,CI(Ubuntu)测不了 → 这条判据路由到 §7.4 真机独立 QA;CI 侧只跑 `grep -c '<<<' == 0` 的静态守卫 + 逐点行为测试
 - 现有 `test-cmux-sync.sh` 全套保持全绿(改前先跑一遍拿基线,避免把既有失败算到本单头上)
 
@@ -294,12 +308,14 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 - 注册表:启动写入、正常退出清除、异常退出的残条目被下次清扫收走
 - **清道夫阳性对照**:同时起一个**未登记**的、名字含 `codex` 的长寿进程 → 清扫后必须**仍然活着**(防误杀 Lead 的那条断言)
 - PID 复用围栏:伪造 pid 相同但启动时间不符的条目 → 只删条目,不杀进程
-- 族 C:伪造一个超龄 + endpoint 不可达的 `broker.pid` → 被收走;一个健康的 → 不动
+- 族 C 安全哨兵:生产代码不得从 pid-only `broker.pid` / durable job JSON 发信号;测试夹具中的 recycled PID 即使 endpoint 不可达也必须仍然活着
 - `timeout` 缺失 / 存在但跑不起来(`-x` 为真但 exec 失败)→ 降级路径生效,且**仍然有界**
-- 部署合同:install 步幂等(重跑 diff 为空)、`.bak` 不被二次覆盖
+- 默认值合同:总预算与单次上限均为 1,800s;非法 env → rc=125 且绝不调用 fake codex
+- 部署合同:install 步幂等(重跑 diff 为空)、`.bak` 不被二次覆盖、stable release 同时含 wrapper + lib、缺件 fail-closed、同 SHA / build-skip 仍通过 unconditional convergence 修复漂移
 - **进程组归属**(§3.3(3b)):纯 bash 路径起的子进程 pgid **必须等于自己的 pid**;伪造一条 `pgid != pid` 的条目 → 清道夫**只杀 pid、拒绝按组杀**
 - **`exec codex -m gpt-5.5` 逃逸**:最后一档 fallback 也必须在预算内(反例测试:让前 N 个 profile 全报 not-supported,断言最后那发仍被超时收住)
 - **daemon 边界哨兵**:断言 `packages/claude-runner/bin/flywheel-codex-with-fallback` 不含超时逻辑、且 daemon spawn 路径(`CodexTmuxAdapter.ts` → `codexBin`)未被改指向 guard
+- launcher / installer 哨兵:不得 export、写入或全局设置 `FLYWHEEL_CODEX_BIN`
 - 围栏数据源钉 `LC_ALL=C`:locale 变化下登记/清扫两侧比较结果一致
 - state 目录不可写 → fail-open(codex 照跑且有界,只是未登记)
 
@@ -309,19 +325,20 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 - 并发 append 不丢行
 - 目录不可写 → fail-open,调用方不失败
 - 轮转用 rename 而非 truncate(断言旧内容完整存在于 `.1`)
-- TS 侧 `appendFileSync` 封装的等价测试
+- `flywheel-config` TS helper 的等价测试;Gemini `sessions.jsonl` 与 Bridge guard parent 接线测试
+- tmux audit 消费测试在 active / `.1` 两代都能找到预期证据
 
 ### 7.3 cmux
 
 - 现有 `test-cmux-sync.sh` 全绿(先拿基线)
 - 静态守卫:`grep -c '<<<' == 0`
-- 逐点行为测试:空串、含反斜杠、含分隔符的输入,改前改后输出逐字相同
+- 逐点行为测试:空串、末尾空字段、cwd 可命中的 glob literal、含反斜杠、含分隔符的输入,改前改后输出逐字相同;顶层 read 仍 rc=0
 
 ### 7.4 真机 QA(交独立 QA 节点)
 
-- watcher 写盘速率改前 / 改后对比(含对照组),≥5 分钟
+- watcher 写盘速率改前 / 改后对比(含对照组),≥5 分钟;同窗记录 CPU time 与子进程数量
 - 注入一个真的挂死 codex(假二进制 sleep 4 小时)→ 被清道夫收走,且同机 Codex Lead(Mufasa / infra-bot)**未受影响**(前后 PID 与 thread 连续性)
-- 族 C:真跑一次 review 产生 broker,验证健康 broker 不被误收
+- 族 C 只做观察:真跑一次 review 记录 broker 生命周期与 brokerless fallback 残余,确认本单从未对它发信号
 - 往审计日志灌 20 MB → 轮转发生,tmux rescue 功能不受影响
 - 全局 shim 部署后的实证验证(§3.5)
 
@@ -331,8 +348,9 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 
 | 风险 | 处理 |
 |------|------|
-| 超时误杀合法长 review | 兜底语义(目标是消灭 4.66 天的僵尸,不是给正常时长立规矩);族 B 服务 Runner 工作周期,给很宽的兜底,族 A 的 review 路径给较紧的值;均可 env 覆盖。现有 `CodexTmuxAdapter.ts` 已有 24h active budget 作参照 |
+| 超时误杀合法长 review | 只对族 A 使用明确的 1,800s 默认值;历史成功任务 99.84% 在窗口内,p99=1,172s。明确长任务逐次覆盖两个正整数 env;族 B 永不加此超时 |
 | 清道夫误杀 Codex Lead | 结构性排除:只认正向注册表,不在表里一律不碰 |
+| pid-only broker 记录误杀复用 PID | 删除族 C reaper;endpoint dead 也不发信号,把未覆盖 broker / brokerless fallback 诚实列为残余 |
 | **给族 B 加超时 = 杀掉所有 Codex runner daemon** | §3.1 的 DO-NOT-TOUCH 边界 + 文件顶部注释 + 哨兵测试;特别防「合并两个重复 wrapper」这个看似正确的清理动作 |
 | **按组杀误杀调用方(Lead 的 pane)** | §3.3(3b):`set -m` 自有组 + 仅当 `pgid == pid` 才按组杀 + 发信号前重验围栏 |
 | **`%s` 少个 `\n` 让 watcher 当场挂掉** | §5.1b(2):强制 `%s\n` + 断言 rc=0 的单测 |
@@ -341,13 +359,14 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 | `timeout` 二进制不可用 | 三级解析 + **真跑一次**验证(不用 `-x`),纯 bash 兜底 |
 | 全局 shim 换坏 = 全机 codex 断 | §3.5 部署合同:幂等 + 原子替换 + `.bak` + 实证验证 + 一条命令回滚 |
 | 去 tee 改变流式输出 | §3.6 写明;若有调用方依赖流式,改单一管道而非落文件 |
-| 轮转破坏日志消费方 | 已核实无消费方;rename 而非 truncate;launchd 持有 fd 的 `/tmp` 明确不动 |
+| 轮转破坏日志消费方 | 无生产消费方,但有 tmux audit 测试消费者;rename 而非 truncate并补 active/`.1` 测试。launchd 持有 fd 的 `/tmp` 与 quota-monitor 明确不动 |
 
 **被否决的备选**:
 
 - **就地改 `~/.local/bin/codex-with-fallback` 而不进仓库**:没有仓库、测试、review —— 正是这次事故的同类形态。
-- **逐个 skill / command 加 timeout**:调用方分散,族 C 绕过它们。
+- **逐个 skill / command 加 timeout**:调用方分散;族 C 绕过且本单没有安全身份可回收。
 - **按进程名 + 存活时长清理**:见 §1.2,会杀 Lead。
+- **从 broker.pid / durable job JSON 清理**:只有 pid 无 incarnation;本机已有记录复用到系统进程,即使 endpoint dead 也不能 signal。
 - **给 `<<<` 换成管道**:见 §2.4,静默改变作用域。
 - **改插件代码给 broker 加 TTL**:`~/.claude/plugins/cache/` 是 vendored 缓存,`claude plugin update` 会覆盖 —— 改了留不住。
 - **放到 flywheel-skills 仓库**:两仓时序有前科,且清道夫需要本仓库的 Lead 生命周期知识。
@@ -359,22 +378,27 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 
 - 不改 Codex Lead 的启动路径(`codex app-server` / `codex resume` 一行不动)
 - 不改 Codex 插件代码(vendored 缓存,改了会被覆盖)
+- 不从插件的 pid-only broker 记录或 brokerless fallback 猜身份、发信号;族 C 是已知残余
 - 不动 `~/.codex/config.toml`、不碰 codex 的 SQLite 库(上游 bug,本机版本已含修复;复发按交接文档 §4 处理)
 - 不恢复 myco 任何一环
 - 不删归档目录(`~/.codex/_cleanup-*`、`~/LaunchAgents-backup-*`)—— 唯一回滚路径
 - 不决定并发上限、不决定重启频率(P2 归 Annie)
-- 不轮转 launchd 持有 fd 的 `/tmp/flywheel-*.log`(§4.3)
+- 不轮转 launchd 持有 fd 的 `/tmp/flywheel-*.log` / `quota-monitor.log`,也不轮转 per-session transcript(§4.3)
 - 不承诺 CPU 诊断报告消失(只承诺写盘量,§5.3)
 - 不改族 D 的 QA harness 裸调用(手工 QA,非无人值守)
 
 ---
 
-## 10. 交付顺序与 PR 拆分
+## 10. 交付顺序与单 PR 裁定
 
-1. **PR-1**:P1-a 日志轮转 + P0 codex 超时/清道夫/部署合同
-2. **PR-2**:P1-b cmux 写盘(130 处热路径重写,验收在真机)
+本节点用**一个 PR 交付整单**。Tadashi 对 question `92e7e088-86c9-42f4-9217-948eac449f08` 的裁定是:P0 硬超时、P1-a 轮转与 P1-b cmux 审计共享同一套 full-repo / founder QA 验收,拆 PR 会让批准与 QA 重跑两遍。实现 commit 仍保持可分离:
 
-**为什么拆两个 PR**(v1 说「三块共一个 PR、每块独立可回退」—— 与本仓库现实冲突):本仓库是 **squash merge**,squash 后 PR 是单 commit,`git revert` 粒度就是整个 PR,「每块独立可回退」做不到。P1-b 的风险形态(130 个调用点重写 + 真机验收)与另两块差异最大,拆开可独立回退。同 issue 多 PR 在本仓库有先例(FLY-208 的 PR-1/PR-2、FLY-175 的 #204/#205)。
+1. TDD + P0 guard / stable deployment / 去 tee(族 B 只去 tee)
+2. TDD + P1-a 日志轮转
+3. TDD + P1-b cmux 130 处重写
+4. full-repo gates + 真机证据 + 单 PR
+
+PR body 按三片分别列验收证据,并显式注明「已按 Lead 裁定由原计划两 PR 合并为单 PR」。这是对 v3 §10 的正式替代,不再保留相互矛盾的两 PR 指令。
 
 ---
 
@@ -412,3 +436,21 @@ v1 说只换「实际会执行到的」`<<<`,守卫是「热路径函数内不�
 评审 B 同时**逐项核实并确认成立**的声称:生产 Codex Lead 确实两个 wrapper 都不经过(TUI launcher 把 `FLYWHEEL_CODEX_BIN` 钉在裸二进制 + 活进程无 bash shim 父进程 双证);`scripts/` 下确实零调用点;watcher 确实是 bash 3.2;130 处计数属实;外层变量赋值与空串语义在指定形式下确实保住(禁用管道是承重的)。
 
 **两轮评审的净效果**:v1 的两条覆盖前提(族 C 绕过、族 B 存在)被评审 A 推翻;v2 据此新增的族 B 落点又被评审 B 推翻(方向刚好相反 —— 族 B 不是要加超时,是要明确禁止加)。**作者与评审 A 都在族 B 上判断错了同一件事,评审 B 多查一层调用链才发现。** 这条记录留着,是因为下一个读计划的人很可能会重犯:两个 wrapper 长得几乎一样,而「合并重复代码」的直觉恰好是最危险的动作。
+
+**评审 C(Codex 设计门禁,question `123a2ab4-7548-4a63-b9f4-e757a8fc9a5d`)—— 结论 `CHANGES_REQUESTED`,2 项 HIGH + 9 项 advisory;v4 处置如下。** 上面 A/B 表是历史决策轨迹,其中「族 C 用 broker.pid 回收」已被本轮证据推翻,不再是现行方案。
+
+| 严重度 | 发现 | v4 处置 |
+|--------|------|---------|
+| HIGH | Bash 3.2 的 `IFS=…; set -- $line` 会吞末尾空字段、展开 glob、覆盖 `$@`,并在 `set -u` 下 abort | §2.4 / §5.1 / §5.1b 全量删除 sanctioned form;统一 process substitution,补 trailing-empty + glob RED tests |
+| HIGH | broker durable 记录只有 pid;225 个记录里已有 2 个复用到 macOS 系统进程,旧方案会误杀 | 删除族 C reaper 与所有 signal 测试;§3.1/§9 诚实列为残余 |
+| MEDIUM | §8 仍暗示族 B 有宽超时 | 删除 stale clause;族 B 只有去 tee + DO-NOT-TIMEOUT sentinel |
+| MEDIUM | 缺少 timeout 默认值 / env 合同 | §3.3 写死总预算与单次默认 1,800s;记录 3,048 个成功任务的 p50/p95/p99 与覆盖率 |
+| MEDIUM | build-only install 在 same-SHA 会被跳过 | §3.5 改挂 unconditional `converge_nonlead_daemons` seam,补 same-SHA test |
+| MEDIUM | global shim source 活 checkout | §3.5 改成 versioned stable vendoring + atomic `current`;缺件 rc=125 fail-closed |
+| MEDIUM | brokerless direct spawn 无 pidfile | §3.1/§7.4 列入族 C 未覆盖残余,不夸大覆盖 |
+| MEDIUM | 日志扫描漏 Gemini sessions、voice transcript、Bridge loop guard | §4.1 补前两类 global append;§4.3 对 per-session transcript 做有理由排除 |
+| LOW | 「无任何日志消费者」不实 | §4.2 更正为无生产消费者、存在 tmux audit 测试消费者 |
+| LOW | launcher 被描述成 hard pin | §3.2 更正为 env soft default,并加 installer 不得设置 `FLYWHEEL_CODEX_BIN` 哨兵 |
+| LOW | process substitution fork 成本未测 | §5.2/§7.4 同窗记录 CPU time 与子进程数量 |
+
+另有 Lead 裁定:本节点不按 v3 的两 PR 拆分,改为单 PR 完整交付;§10 已同步,PR body 必须复述该裁定。
