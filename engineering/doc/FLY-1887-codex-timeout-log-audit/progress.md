@@ -1,13 +1,13 @@
 ---
 issue: FLY-1887
-phase: implement
-phaseCursor: 3/3
-updated: 2026-08-19T08:51:52.321Z
-nextStep: resolve mandatory code review, then open the single PR
+phase: design
+phaseCursor: 6/6
+updated: 2026-08-19T16:46:16.743Z
+nextStep: await v5 design review R2; then resume implement verification and code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1887 progress
-**phase**: implement (3/3)
-**next**: resolve mandatory code review, then open the single PR
+**phase**: design (6/6)
+**next**: await v5 design review R2; then resume implement verification and code review
