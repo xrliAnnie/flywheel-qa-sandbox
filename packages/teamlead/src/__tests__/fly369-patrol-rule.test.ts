@@ -56,6 +56,48 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
 	});
 
+	it("FLY-1855: patrol_tick has an executable fleet scope, six-step artifact, and explicit UNAVAILABLE exit", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"范围合同",
+			"检测范围",
+			"整机",
+			"处置权限",
+			"产出物合同",
+			"UNAVAILABLE",
+			"flywheel-patrol-snapshot",
+			"REPORT_PATH",
+			"three_stage_turn",
+			"workflow_run_node",
+			"turn_wake_outbox",
+			"dead_letter_alerts",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		for (let step = 1; step <= 6; step += 1) {
+			expect(section0).toMatch(new RegExp(`(?:^|\\n)${step}\\.\\s+\\*\\*`));
+		}
+		expect(section0.match(/run:/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+		expect(section0).toMatch(/跳过.*不留痕.*违约|禁止静默跳过/);
+	});
+
+	it("FLY-1855: Discord truth and cross-boundary disposition have exact addresses", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		expect(section0).toContain("/api/chat-threads?issueId=");
+		expect(section0).toContain("fetch_messages");
+		expect(section0).toContain("1512578695468941333");
+		expect(section0).toContain("flywheel-eng-lead");
+		expect(section0).toContain("reply(chat_id=");
+		expect(section0).toContain("--config -");
+		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
+	});
+
 	it("RC-1: every lifecycle event MUST relay to the [FLY-XX] thread via /api/chat-threads/send", () => {
 		expect(patrol).toContain("/api/chat-threads/send");
 		for (const ev of [
