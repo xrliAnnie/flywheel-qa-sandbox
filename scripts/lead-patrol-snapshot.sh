@@ -87,7 +87,6 @@ STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-$STATE_DIR/projects.json}"
 REPORT_DIR="$STATE_DIR/patrol-reports/$LEAD_ID"
-PREVIOUS_REPORT="$(find "$REPORT_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"
 CONTINUITY_DIR="$STATE_DIR/patrol-continuity/$LEAD_ID"
 CONTINUITY_FILE="$CONTINUITY_DIR/$PROJECT_NAME.tsv"
 DEFAULT_COMM_DB="$STATE_DIR/comm/$PROJECT_NAME/comm.db"
@@ -197,14 +196,8 @@ sha256_text() {
   printf '%s' "$1" | shasum -a 256 2>/dev/null | awk '{print $1}'
 }
 
-field_from_evidence() { # <line> <field>
-  local line="$1" name="$2" word
-  for word in $line; do
-    case "$word" in
-      "$name"=*) printf '%s' "${word#*=}"; return 0 ;;
-    esac
-  done
-  return 1
+is_sha256() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{64}$'
 }
 
 append_finding() { # <current> <finding>
@@ -240,7 +233,7 @@ run_comm_index() { # <output-var> <db>
 .mode tabs
 SELECT tmux_window, project_name, execution_id, coalesce(lead_id,'')
 FROM sessions
-WHERE status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
+WHERE status IN ('running','blocked')
 ORDER BY tmux_window, execution_id
 LIMIT 2000;
 SQL
@@ -353,6 +346,16 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   findings="none"
   action="none"
   result="clear"
+  current_unclaimed=0
+  previous_state=""
+  previous_change=""
+  previous_unclaimed=0
+  previous_continuity=""
+  if [ -f "$CONTINUITY_FILE" ]; then
+    previous_continuity="$(awk -F '\t' -v target="$target" '$1 == target {print; exit}' "$CONTINUITY_FILE" 2>/dev/null || true)"
+    IFS=$'\t' read -r _continuity_target previous_state previous_change previous_unclaimed <<< "$previous_continuity"
+    case "$previous_unclaimed" in ''|*[!0-9]*) previous_unclaimed=0 ;; esac
+  fi
   if [ "$pane_dead" = 1 ]; then
     findings="$(append_finding "$findings" PANE_DEAD)"
   fi
@@ -377,12 +380,8 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
       findings="OWNER_INDEX_INCOMPLETE"
       STEP2_STATUS="UNAVAILABLE($COMM_INDEX_ERROR_TOKEN)"
     else
-      previous_line=""
-      if [ -n "$PREVIOUS_REPORT" ] && [ -f "$PREVIOUS_REPORT" ]; then
-        previous_line="$(grep -F "target=$target " "$PREVIOUS_REPORT" 2>/dev/null | tail -1)"
-      fi
-      previous_result="$(field_from_evidence "$previous_line" result 2>/dev/null || true)"
-      if [ "$previous_result" = session_terminated ] || [ "$previous_result" = UNSET ]; then
+      current_unclaimed=$((previous_unclaimed + 1))
+      if [ "$current_unclaimed" -ge 2 ]; then
         findings="ORPHANED"
       else
         result="session_terminated"
@@ -406,20 +405,31 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     byte_count="$(wc -c < "$capture_file" | tr -d ' ')"
     last_state="$(awk 'NF {line=$0} END {printf "%s", line}' "$capture_file")"
     state_hash="$(sha256_text "$last_state")"
-    previous_state=""
-    previous_change=""
-    if [ -f "$CONTINUITY_FILE" ]; then
-      previous_continuity="$(awk -F '\t' -v target="$target" '$1 == target {print; exit}' "$CONTINUITY_FILE" 2>/dev/null || true)"
-      IFS=$'\t' read -r _continuity_target previous_state previous_change <<< "$previous_continuity"
-    fi
-    if [ "$previous_state" = "$state_hash" ]; then
-      case "$previous_change" in
-        ''|*[!0-9]*) ;;
-        *) last_change_epoch="$previous_change" ;;
-      esac
-    fi
-    if [ $((NOW_EPOCH - last_change_epoch)) -ge 3600 ]; then
-      findings="$(append_finding "$findings" STALLED_60M)"
+    if ! is_sha256 "$capture_hash" || ! is_sha256 "$state_hash"; then
+      capture_hash="unavailable"
+      state_hash="unavailable"
+      findings="$(append_finding "$findings" HASH_UNAVAILABLE)"
+      STEP2_STATUS="UNAVAILABLE(structural: hash_unavailable)"
+    else
+      if [ "$previous_state" = "$state_hash" ]; then
+        case "$previous_change" in
+          ''|*[!0-9]*)
+            findings="$(append_finding "$findings" CONTINUITY_STATE_INVALID)"
+            STEP2_STATUS="UNAVAILABLE(structural: continuity_state_invalid)"
+            ;;
+          *)
+            if [ "$previous_change" -le "$NOW_EPOCH" ]; then
+              last_change_epoch="$previous_change"
+            else
+              findings="$(append_finding "$findings" CONTINUITY_STATE_INVALID)"
+              STEP2_STATUS="UNAVAILABLE(structural: continuity_state_invalid)"
+            fi
+            ;;
+        esac
+      fi
+      if [ $((NOW_EPOCH - last_change_epoch)) -ge 3600 ]; then
+        findings="$(append_finding "$findings" STALLED_60M)"
+      fi
     fi
     filtered_capture="$(grep -Eiv 'not your (session|usage) limit' "$capture_file" 2>/dev/null || true)"
     recent_capture="$(printf '%s\n' "$filtered_capture" | tail -80)"
@@ -431,9 +441,9 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     if printf '%s\n' "$recent_capture" | grep -Eiq 'Press Enter to (confirm|continue)|resume menu'; then
       findings="$(append_finding "$findings" INTERACTIVE_MENU)"
     fi
-    CONTINUITY_CONTENT="${CONTINUITY_CONTENT}${CONTINUITY_CONTENT:+$'\n'}${target}"$'\t'"${state_hash}"$'\t'"${last_change_epoch}"
   fi
   rm -f "$capture_file" 2>/dev/null || true
+  CONTINUITY_CONTENT="${CONTINUITY_CONTENT}${CONTINUITY_CONTENT:+$'\n'}${target}"$'\t'"${state_hash}"$'\t'"${last_change_epoch}"$'\t'"${current_unclaimed}"
 
   if [ "$findings" != none ]; then
     action="REQUIRED"

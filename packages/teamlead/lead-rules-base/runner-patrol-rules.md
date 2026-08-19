@@ -55,11 +55,14 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    `tail -40`。原文可能含 secret,所以报告只存 SHA-256/行数/字节数/最后非空状态行
    SHA-256,并逐 pane 写:
    `PANE_EVIDENCE ... owner=owned|cross-boundary|foreign-registry|unknown exec=<id|none> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
-   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` index;正常
+   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` index,其中
+   CommDB 可达的 owning status 是 `running|blocked`;正常
    cross-boundary / foreign-registry 本身不是 finding。index 不完整必须
    `UNAVAILABLE(transient|structural: owner_index_incomplete)`,不得铸 unknown;
    registered target 首次无 owner 记 `result=session_terminated`,连续两 tick 才标
    `ORPHANED`。
+   `shasum` 缺失/失败必须标 `HASH_UNAVAILABLE` 且 STEP 2 为
+   `UNAVAILABLE(structural: hash_unavailable)`,禁止留下空 hash 或自动报 clear。
 
    对每行执行这些唯一判据/动作:
    - 全 scrollback grep `You've hit your session limit` / `You've hit your usage limit`
@@ -68,8 +71,9 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
      reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`;跨界只上报。
    - 同 target 最后状态行逐字 hash 未变就继承脚本维护的 0600 machine-owned
-     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`;Lead 不编辑该
-     sidecar,报告重排也不得重置连续性。连续
+     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`;同一 sidecar
+     也保存 registered target 连续无 owner 的 observation count。Lead 不编辑该
+     sidecar,报告重排或修改 result 也不得重置停滞/orphan 连续性。连续
      ≥3600 秒标 `STALLED_60M`。名下 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
      跨界只上报。
