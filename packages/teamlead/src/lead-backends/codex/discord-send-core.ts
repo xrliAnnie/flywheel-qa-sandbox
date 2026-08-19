@@ -19,7 +19,7 @@
  * the core is unit-testable without a live Discord or wall clock.
  */
 
-import { appendFileSync } from "node:fs";
+import { appendRotatedLogSync } from "flywheel-config";
 import { postDiscordMessageToChannel } from "../../bridge/discord-utils.js";
 import {
 	AliasResolutionError,
@@ -77,7 +77,7 @@ function defaultAppendAudit(
 	row: Record<string, unknown>,
 ): void {
 	try {
-		appendFileSync(auditPath, `${JSON.stringify(row)}\n`);
+		appendRotatedLogSync(auditPath, `${JSON.stringify(row)}\n`);
 	} catch {
 		// best-effort — never fail a send because the audit append failed.
 	}

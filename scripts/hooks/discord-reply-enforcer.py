@@ -130,6 +130,39 @@ _PARAM_RE = re.compile(
 )
 
 
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_RETENTION = 3
+
+
+def rotate_log_if_needed(path: Path) -> None:
+    """Best-effort rename rotation for a log opened separately per append."""
+    lock = path.with_name(path.name + ".rotate.lock")
+    try:
+        stat_result = path.lstat()
+        if path.is_symlink() or not path.is_file() or stat_result.st_size < LOG_MAX_BYTES:
+            return
+        lock.mkdir()
+    except Exception:
+        return
+    try:
+        stat_result = path.lstat()
+        if path.is_symlink() or not path.is_file() or stat_result.st_size < LOG_MAX_BYTES:
+            return
+        path.with_name(f"{path.name}.{LOG_RETENTION}").unlink(missing_ok=True)
+        for generation in range(LOG_RETENTION, 1, -1):
+            prior = path.with_name(f"{path.name}.{generation - 1}")
+            if prior.exists() and not prior.is_symlink():
+                os.replace(prior, path.with_name(f"{path.name}.{generation}"))
+        os.replace(path, path.with_name(f"{path.name}.1"))
+    except Exception:
+        pass
+    finally:
+        try:
+            lock.rmdir()
+        except Exception:
+            pass
+
+
 def log_path() -> Path:
     override = os.environ.get("FLYWHEEL_REPLY_ENFORCER_LOG")
     if override:
@@ -141,6 +174,7 @@ def log(msg: str) -> None:
     try:
         p = log_path()
         p.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log_if_needed(p)
         with p.open("a") as f:
             f.write(msg + "\n")
     except Exception:
@@ -662,6 +696,7 @@ def audit(rec: dict) -> None:
     try:
         p = log_path().parent / "discord-reply-enforcer-audit.jsonl"
         p.parent.mkdir(parents=True, exist_ok=True)
+        rotate_log_if_needed(p)
         with p.open("a") as f:
             f.write(json.dumps(rec) + "\n")
     except Exception:

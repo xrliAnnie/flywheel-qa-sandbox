@@ -49,6 +49,7 @@ scripts/lib/supervisor.sh
 scripts/lib/bridge-port.sh
 scripts/lib/lead-restart-lifecycle.sh
 scripts/lib/lead-body-sweep.sh
+scripts/lib/flywheel-log.sh
 scripts/lib/tmux-server-rescue.sh
 scripts/lib/self-ship-queue.sh
 scripts/lib/lead-body-evidence.sh

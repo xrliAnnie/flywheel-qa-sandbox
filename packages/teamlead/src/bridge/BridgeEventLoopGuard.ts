@@ -30,6 +30,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { Worker } from "node:worker_threads";
+import { rotateLogIfNeeded } from "flywheel-config";
 
 const DEFAULT_HEARTBEAT_MS = 1000;
 const DEFAULT_STALL_THRESHOLD_MS = 60_000;
@@ -163,6 +164,8 @@ export interface BridgeEventLoopGuardOptions {
 	) => WorkerLike;
 	/** Injectable parent-dir ensure (testing); defaults to fs.mkdirSync. */
 	ensureDir?: (path: string) => void;
+	/** Parent-side rotation seam; never imported into the eval worker string. */
+	rotateLog?: (path: string) => boolean;
 	bootTs?: number;
 	pid?: number;
 	syncOpMarkerPath?: string;
@@ -180,6 +183,7 @@ export class BridgeEventLoopGuard {
 		BridgeEventLoopGuardOptions["createWorker"]
 	>;
 	private readonly ensureDir: (path: string) => void;
+	private readonly rotateLog: (path: string) => boolean;
 	private readonly bootTs: number;
 	private readonly pid: number;
 	private readonly syncOpMarkerPath: string;
@@ -217,6 +221,7 @@ export class BridgeEventLoopGuard {
 			((path) => {
 				mkdirSync(dirname(path), { recursive: true });
 			});
+		this.rotateLog = options.rotateLog ?? rotateLogIfNeeded;
 		this.bootTs = options.bootTs ?? Date.now();
 		this.pid = options.pid ?? process.pid;
 		this.syncOpMarkerPath = options.syncOpMarkerPath ?? "";
@@ -240,6 +245,7 @@ export class BridgeEventLoopGuard {
 		if (this.logPath) {
 			try {
 				this.ensureDir(this.logPath);
+				this.rotateLog(this.logPath);
 			} catch {
 				// best-effort; the worker's appendFileSync is itself guarded.
 			}

@@ -101,7 +101,7 @@ run_guard() {
     CODEX_LOG_DB="$db" \
     CODEX_LOG_GUARD_META_ALERT="$FAKE_ALERT" \
     CODEX_LOG_GUARD_LOG="${ROOT}/monitor.log" \
-    "${RUN_ENV[@]}" \
+    ${RUN_ENV[@]+"${RUN_ENV[@]}"} \
     bash "$GUARD" "$@"
 }
 RUN_ENV=()

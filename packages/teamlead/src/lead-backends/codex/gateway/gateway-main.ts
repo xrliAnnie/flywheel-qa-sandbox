@@ -23,7 +23,6 @@
  */
 
 import {
-	appendFileSync,
 	existsSync,
 	mkdirSync,
 	realpathSync as nodeRealpathSync,
@@ -32,6 +31,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
 import { verifyLifecycleConsent } from "flywheel-comm/verify-lifecycle-consent";
+import { appendRotatedLogSync } from "flywheel-config";
 import { markAutomatedDiscordText } from "../../../bridge/automated-message.js";
 import {
 	getActionClassMeta,
@@ -743,7 +743,7 @@ export async function gatewayMain(
 	const appendGitPushAudit = (row: Record<string, unknown>): void => {
 		try {
 			mkdirSync(cfg.stateDir, { recursive: true });
-			appendFileSync(pushAuditPath, `${JSON.stringify(row)}\n`);
+			appendRotatedLogSync(pushAuditPath, `${JSON.stringify(row)}\n`);
 		} catch {
 			// best-effort
 		}

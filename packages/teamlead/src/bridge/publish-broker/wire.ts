@@ -14,8 +14,9 @@
  * present in ~/.flywheel/.env (runbook red line).
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
+import { appendRotatedLogSync } from "flywheel-config";
 import type { ReactionFetcher } from "../../lead-backends/codex/gateway/founder-confirmation.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
 import { markAutomatedDiscordText } from "../automated-message.js";
@@ -122,7 +123,7 @@ export async function wirePublishBroker(
 				),
 		},
 		audit: (entry) => {
-			appendFileSync(auditPath, `${JSON.stringify(entry)}\n`);
+			appendRotatedLogSync(auditPath, `${JSON.stringify(entry)}\n`);
 		},
 		card,
 		log,

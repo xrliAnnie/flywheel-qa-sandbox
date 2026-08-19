@@ -74,6 +74,13 @@ export {
 	founderOffsetMinutes,
 	resolveFounderTimezone,
 } from "./founder-timezone.js";
+export type { RotateLogOptions } from "./log-rotate.js";
+export {
+	appendRotatedLogSync,
+	DEFAULT_LOG_MAX_BYTES,
+	DEFAULT_LOG_RETENTION,
+	rotateLogIfNeeded,
+} from "./log-rotate.js";
 export type {
 	LeadLaunchSelection,
 	ModelConfigSnapshot,

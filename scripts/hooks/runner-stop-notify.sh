@@ -4,9 +4,25 @@
 # reporter leg finishes. Claude Stop/StopFailure remain reporter-only.
 set -u
 
+runner_stop_log_lib="${FLYWHEEL_LOG_LIB:-}"
+if [ -z "$runner_stop_log_lib" ] && [ -n "${FLYWHEEL_DIR:-}" ]; then
+  runner_stop_log_lib="$FLYWHEEL_DIR/scripts/lib/flywheel-log.sh"
+fi
+if [ -z "$runner_stop_log_lib" ] && [ -n "${FLYWHEEL_COMM_CLI:-}" ]; then
+  runner_stop_log_lib="$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." 2>/dev/null && pwd)/scripts/lib/flywheel-log.sh"
+fi
+if [ -n "$runner_stop_log_lib" ] && [ -r "$runner_stop_log_lib" ]; then
+  # shellcheck source=scripts/lib/flywheel-log.sh
+  source "$runner_stop_log_lib"
+else
+  flywheel_log_rotate_if_needed() { return 0; }
+fi
+
 log_dir="${HOME:-/tmp}/.flywheel/logs"
 log_file="${log_dir}/runner-stop-notify.log"
 if mkdir -p "$log_dir" 2>/dev/null && touch "$log_file" 2>/dev/null; then
+  flywheel_log_rotate_if_needed "$log_file"
+  touch "$log_file" 2>/dev/null || true
   exec >>"$log_file" 2>&1
 else
   exec >/dev/null 2>&1

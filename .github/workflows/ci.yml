@@ -622,6 +622,11 @@ jobs:
       - name: Test — FLY-1887 one-shot Codex hard timeout
         run: bash scripts/__tests__/codex-guard.test.sh
 
+      # FLY-1887: bounded rename rotation for Flywheel-owned logs that open per
+      # append. Includes concurrency, retention, fail-open, and wiring guards.
+      - name: Test — FLY-1887 bounded Flywheel logs
+        run: bash scripts/__tests__/flywheel-log-rotate.test.sh
+
       # FLY-1018: gemini-agent static guard. Pure grep assertions over
       # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
       # imports, zero privileged credentials, exactly 6 tool declarations.

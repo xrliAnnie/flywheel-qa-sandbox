@@ -133,6 +133,25 @@ describe("JsonlAuditLog", () => {
 		expect(summary.stats.steps).toBe(2);
 	});
 
+	it("routes only the cross-session summary through the rotated append seam", () => {
+		const fake = fakeFs();
+		const rotated: Array<{ path: string; data: string }> = [];
+		const log = new JsonlAuditLog({
+			dir: "/audit",
+			sessionId: "sid-1234",
+			fsLike: fake.fs,
+			now: () => "2026-07-08T00:00:00.000Z",
+			appendIndex: (path, data) => rotated.push({ path, data }),
+		});
+		log.terminal("completed", STATS);
+		expect(rotated).toHaveLength(1);
+		expect(rotated[0]?.path).toBe("/audit/sessions.jsonl");
+		expect(JSON.parse(rotated[0]?.data ?? "{}").type).toBe("terminal");
+		expect(fake.files.get("/audit/session-sid-1234.jsonl")).toContain(
+			'"type":"terminal"',
+		);
+	});
+
 	it("persists + restores lastInteractionId via the state file (resume)", () => {
 		const fake = fakeFs();
 		const { log } = makeLog(fake);
