@@ -3,38 +3,15 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SUBJECT="$ROOT/scripts/ci-classify.sh"
-VECTORS="$ROOT/scripts/ci-status-vectors.json"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 REPO="$TMP/repo"
-MOCK_BIN="$TMP/bin"
-mkdir -p "$REPO" "$MOCK_BIN"
+mkdir -p "$REPO"
 
 PASSED=0
 FAILED=0
 pass() { PASSED=$((PASSED + 1)); printf '[TEST] ✓ %s\n' "$1"; }
 fail() { FAILED=$((FAILED + 1)); printf '[TEST] ✗ %s\n' "$1" >&2; }
-
-cat >"$MOCK_BIN/gh" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "${MOCK_GH_FAIL:-0}" != "1" ]] || exit 1
-[[ "${1:-} ${2:-}" == "api repos/xrliAnnie/flywheel/actions/workflows/ci.yml/runs" ]] || {
-  printf 'unexpected gh argv: %s\n' "$*" >&2
-  exit 2
-}
-page=1
-for argument in "$@"; do
-  [[ "$argument" != page=* ]] || page="${argument#page=}"
-done
-[[ -z "${MOCK_GH_CALLS_FILE:-}" ]] || printf '%s\n' "$page" >>"$MOCK_GH_CALLS_FILE"
-if [[ -n "${MOCK_RUNS_DIR:-}" ]]; then
-  cat "$MOCK_RUNS_DIR/page-$page.json"
-else
-  cat "$MOCK_RUNS_FILE"
-fi
-SH
-chmod +x "$MOCK_BIN/gh"
 
 git -C "$REPO" init -q
 git -C "$REPO" config user.email ci@example.test
@@ -43,18 +20,6 @@ printf 'base\n' >"$REPO/README.md"
 git -C "$REPO" add README.md
 git -C "$REPO" commit -qm base
 BASE="$(git -C "$REPO" rev-parse HEAD)"
-git -C "$REPO" checkout -qb pr
-mkdir -p "$REPO/src"
-printf 'export const value = 1;\n' >"$REPO/src/code.ts"
-git -C "$REPO" add src/code.ts
-git -C "$REPO" commit -qm green-code
-GREEN="$(git -C "$REPO" rev-parse HEAD)"
-mkdir -p "$REPO/engineering/doc/example"
-printf 'ledger\n' >"$REPO/engineering/doc/example/progress.md"
-printf 'static image fixture\n' >"$REPO/engineering/doc/example/proof.png"
-git -C "$REPO" add engineering/doc/example/progress.md engineering/doc/example/proof.png
-git -C "$REPO" commit -qm docs-only
-DOC_HEAD="$(git -C "$REPO" rev-parse HEAD)"
 
 preview_checkout() {
   local head="$1" base="$2" tree preview
@@ -63,72 +28,30 @@ preview_checkout() {
   git -C "$REPO" checkout -q --detach "$preview"
 }
 
-write_runs() {
-  local file="$1" status="$2" conclusion="$3" head="$4" base="$5" created="${6:-2026-08-18T00:00:00Z}" id="${7:-1}"
-  jq -cn \
-    --arg status "$status" --arg conclusion "$conclusion" --arg head "$head" \
-    --arg base "$base" --arg created "$created" --argjson id "$id" '
-      {workflow_runs:[{id:$id,status:$status,conclusion:(if $conclusion == "" then null else $conclusion end),head_sha:$head,created_at:$created,pull_requests:[{number:871,base:{sha:$base}}]}]}
-    ' >"$file"
-}
-
-append_run() {
-  local file="$1" status="$2" conclusion="$3" head="$4" base="$5" created="$6" id="$7"
-  jq \
-    --arg status "$status" --arg conclusion "$conclusion" --arg head "$head" \
-    --arg base "$base" --arg created "$created" --argjson id "$id" '
-      .workflow_runs += [{id:$id,status:$status,conclusion:(if $conclusion == "" then null else $conclusion end),head_sha:$head,created_at:$created,pull_requests:[{number:871,base:{sha:$base}}]}]
-    ' "$file" >"$file.next"
-  mv "$file.next" "$file"
-}
-
-write_filler_page() {
-  local file="$1" count="$2" page="$3"
-  jq -cn --argjson count "$count" --argjson page "$page" '
-    {
-      workflow_runs: [
-        range(0; $count) as $index
-        | {
-            id: ($page * 1000 + $index),
-            status: "completed",
-            conclusion: "success",
-            head_sha: "0000000000000000000000000000000000000000",
-            created_at: "2026-08-17T00:00:00Z",
-            pull_requests: []
-          }
-      ]
-    }
-  ' >"$file"
-}
-
 run_classifier() {
-  local head="$1" base="$2" runs="$3" gh_fail="${4:-0}" pr_number="${5:-871}" runs_dir="${6:-}"
-  local output="$TMP/github-output" calls="$TMP/gh-calls"
+  local head="$1" base="$2"
+  local output="$TMP/github-output"
   : >"$output"
-  : >"$calls"
   set +e
   (
     cd "$REPO"
-    PATH="$MOCK_BIN:/usr/bin:/bin" \
-      GITHUB_OUTPUT="$output" GITHUB_REPOSITORY=xrliAnnie/flywheel \
-      PR_NUMBER="$pr_number" HEAD_SHA="$head" BASE_SHA="$base" GH_TOKEN=test \
-      MOCK_RUNS_FILE="$runs" MOCK_RUNS_DIR="$runs_dir" MOCK_GH_FAIL="$gh_fail" \
-      MOCK_GH_CALLS_FILE="$calls" \
+    PATH="/usr/bin:/bin" \
+      GITHUB_OUTPUT="$output" HEAD_SHA="$head" BASE_SHA="$base" \
       bash "$SUBJECT"
   ) >"$TMP/stdout" 2>"$TMP/stderr"
   CLASSIFY_RC=$?
   set -e
   CLASSIFY_VALUE="$(sed -n 's/^no_code=//p' "$output" | tail -1)"
+  CLASSIFY_OUTPUT_LINES="$(wc -l <"$output" | tr -d '[:space:]')"
   CLASSIFY_STDERR="$(cat "$TMP/stderr")"
-  CLASSIFY_GH_CALLS="$(cat "$calls")"
 }
 
-assert_value() {
+assert_result() {
   local name="$1" expected="$2"
-  if [[ "$CLASSIFY_RC" -eq 0 && "$CLASSIFY_VALUE" == "$expected" ]]; then
+  if [[ "$CLASSIFY_RC" -eq 0 && "$CLASSIFY_VALUE" == "$expected" && "$CLASSIFY_OUTPUT_LINES" -eq 1 ]]; then
     pass "$name"
   else
-    fail "$name (rc=$CLASSIFY_RC no_code=${CLASSIFY_VALUE:-missing})"
+    fail "$name (rc=$CLASSIFY_RC no_code=${CLASSIFY_VALUE:-missing} output_lines=$CLASSIFY_OUTPUT_LINES stderr=${CLASSIFY_STDERR:-empty})"
   fi
 }
 
@@ -141,18 +64,35 @@ assert_reason() {
   fi
 }
 
+commit_file_from() {
+  local branch="$1" start="$2" path="$3" content="${4:-changed}"
+  git -C "$REPO" checkout -q -B "$branch" "$start"
+  mkdir -p "$REPO/$(dirname "$path")"
+  printf '%s\n' "$content" >"$REPO/$path"
+  git -C "$REPO" add "$path"
+  git -C "$REPO" commit -qm "$branch"
+  git -C "$REPO" rev-parse HEAD
+}
+
 if [[ ! -f "$SUBJECT" ]]; then
   fail "ci-classify.sh exists"
 else
-  RUNS="$TMP/runs.json"
-  write_runs "$RUNS" completed success "$GREEN" "$BASE"
-  preview_checkout "$DOC_HEAD" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "docs-only cumulative diff passes from a green baseline under merge-preview checkout" true
+  allowed_prefixes=(doc product/doc engineering/doc content/doc)
+  allowed_suffixes=(md markdown mmd html htm svg png jpg jpeg gif webp avif pdf)
+  DOC_HEAD=""
+  for index in "${!allowed_suffixes[@]}"; do
+    prefix="${allowed_prefixes[$((index % ${#allowed_prefixes[@]}))]}"
+    suffix="${allowed_suffixes[$index]}"
+    head="$(commit_file_from "docs-$index" "$BASE" "$prefix/fixture-$index.$suffix")"
+    [[ -n "$DOC_HEAD" ]] || DOC_HEAD="$head"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "allowlisted docs path passes: $prefix/*.$suffix" true
+  done
 
-  preview_checkout "$GREEN" "$BASE"
-  run_classifier "$GREEN" "$BASE" "$RUNS"
-  assert_value "empty cumulative diff is no-code" true
+  git -C "$REPO" checkout -q --detach "$BASE"
+  run_classifier "$BASE" "$BASE"
+  assert_result "empty diff is docs-only" true
 
   git -C "$REPO" checkout -q -B base-moved "$BASE"
   mkdir -p "$REPO/src"
@@ -161,117 +101,166 @@ else
   git -C "$REPO" commit -qm base-moved
   BASE_MOVED="$(git -C "$REPO" rev-parse HEAD)"
   preview_checkout "$DOC_HEAD" "$BASE_MOVED"
-  run_classifier "$DOC_HEAD" "$BASE_MOVED" "$RUNS"
-  assert_value "base SHA movement invalidates the old green baseline" false
-  assert_reason "base SHA movement explains its fail-closed decision" baseline_base_sha_mismatch
+  run_classifier "$DOC_HEAD" "$BASE_MOVED"
+  assert_result "docs-only branch still skips after the base branch moves" true
 
-  git -C "$REPO" checkout -q -B rename-case "$GREEN"
+  UPPER_HEAD="$(printf '%s' "$DOC_HEAD" | tr '[:lower:]' '[:upper:]')"
+  UPPER_BASE="$(printf '%s' "$BASE" | tr '[:lower:]' '[:upper:]')"
+  run_classifier "$UPPER_HEAD" "$UPPER_BASE"
+  assert_result "uppercase commit ids are normalized" true
+
+  DOC_BASE="$(commit_file_from delete-base "$BASE" doc/deleted.md before)"
+  git -C "$REPO" checkout -q -B delete-doc "$DOC_BASE"
+  git -C "$REPO" rm -q doc/deleted.md
+  git -C "$REPO" commit -qm delete-doc
+  DELETE_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$DELETE_HEAD" "$DOC_BASE"
+  run_classifier "$DELETE_HEAD" "$DOC_BASE"
+  assert_result "deleting an allowlisted regular document skips" true
+
+  CODE_HEAD="$(commit_file_from code-only "$BASE" src/code.ts 'export const value = 1;')"
+  preview_checkout "$CODE_HEAD" "$BASE"
+  run_classifier "$CODE_HEAD" "$BASE"
+  assert_result "code-only diff runs the full suite" false
+  assert_reason "code-only diff explains its fail-closed decision" diff_not_inert
+
+  git -C "$REPO" checkout -q -B mixed "$BASE"
+  mkdir -p "$REPO/doc" "$REPO/src"
+  printf 'notes\n' >"$REPO/doc/notes.md"
+  printf 'export const mixed = true;\n' >"$REPO/src/mixed.ts"
+  git -C "$REPO" add doc/notes.md src/mixed.ts
+  git -C "$REPO" commit -qm mixed
+  MIXED_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$MIXED_HEAD" "$BASE"
+  run_classifier "$MIXED_HEAD" "$BASE"
+  assert_result "docs plus code runs the full suite" false
+  assert_reason "mixed diff explains its fail-closed decision" diff_not_inert
+
+  non_inert_paths=(
+    packages/x/progress.md
+    .github/workflows/extra.yml
+    scripts/ci-classify.sh
+    packages/teamlead/prompts/runtime.md
+    doc/VERSION
+    product/doc/example/evidence/admit.mjs
+  )
+  for index in "${!non_inert_paths[@]}"; do
+    path="${non_inert_paths[$index]}"
+    head="$(commit_file_from "non-inert-$index" "$BASE" "$path")"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "non-inert path runs the full suite: $path" false
+    assert_reason "non-inert path supplies a reason: $path" diff_not_inert
+  done
+
+  CODE_BASE="$(commit_file_from rename-base "$BASE" src/rename.ts 'export const rename = true;')"
+  git -C "$REPO" checkout -q -B rename-code-to-doc "$CODE_BASE"
   mkdir -p "$REPO/engineering/doc/rename"
-  git -C "$REPO" mv src/code.ts engineering/doc/rename/code.ts
-  git -C "$REPO" commit -qm rename-code-to-docs
+  git -C "$REPO" mv src/rename.ts engineering/doc/rename/rename.md
+  git -C "$REPO" commit -qm rename-code-to-doc
   RENAME_HEAD="$(git -C "$REPO" rev-parse HEAD)"
-  preview_checkout "$RENAME_HEAD" "$BASE"
-  run_classifier "$RENAME_HEAD" "$BASE" "$RUNS"
-  assert_value "code-to-doc rename remains code-relevant under no-renames diff" false
-  assert_reason "code-to-doc rename explains its fail-closed decision" diff_not_inert
+  preview_checkout "$RENAME_HEAD" "$CODE_BASE"
+  run_classifier "$RENAME_HEAD" "$CODE_BASE"
+  assert_result "code-to-doc rename runs the full suite under no-renames diff" false
+  assert_reason "code-to-doc rename supplies a reason" diff_not_inert
 
-  git -C "$REPO" checkout -q -B symlink-case "$GREEN"
+  git -C "$REPO" checkout -q -B symlink "$BASE"
   mkdir -p "$REPO/engineering/doc/symlink"
   ln -s ../../outside "$REPO/engineering/doc/symlink/link.md"
   git -C "$REPO" add engineering/doc/symlink/link.md
-  git -C "$REPO" commit -qm docs-symlink
+  git -C "$REPO" commit -qm symlink
   SYMLINK_HEAD="$(git -C "$REPO" rev-parse HEAD)"
   preview_checkout "$SYMLINK_HEAD" "$BASE"
-  run_classifier "$SYMLINK_HEAD" "$BASE" "$RUNS"
-  assert_value "allowlisted symlinks fail closed" false
-  assert_reason "allowlisted symlink mode explains its fail-closed decision" diff_not_inert
+  run_classifier "$SYMLINK_HEAD" "$BASE"
+  assert_result "allowlisted symlink runs the full suite" false
+  assert_reason "allowlisted symlink mode supplies a reason" diff_not_inert
 
-  for path in \
-    packages/x/progress.md \
-    .github/workflows/extra.yml \
-    scripts/ci-classify.sh \
-    packages/teamlead/prompts/runtime.md \
-    doc/VERSION \
-    product/doc/example/evidence/admit.mjs; do
-    git -C "$REPO" checkout -q -B "path-case-${RANDOM}" "$GREEN"
-    mkdir -p "$REPO/$(dirname "$path")"
-    printf 'changed\n' >"$REPO/$path"
-    git -C "$REPO" add "$path"
-    git -C "$REPO" commit -qm "path-case-$path"
-    PATH_HEAD="$(git -C "$REPO" rev-parse HEAD)"
-    preview_checkout "$PATH_HEAD" "$BASE"
-    run_classifier "$PATH_HEAD" "$BASE" "$RUNS"
-    assert_value "non-inert path fails closed: $path" false
-  done
+  git -C "$REPO" checkout -q -B gitlink "$BASE"
+  mkdir -p "$REPO/engineering/doc/gitlink"
+  git -C "$REPO" update-index --add --cacheinfo "160000,$BASE,engineering/doc/gitlink/repo.md"
+  git -C "$REPO" commit -qm gitlink
+  GITLINK_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$GITLINK_HEAD" "$BASE"
+  run_classifier "$GITLINK_HEAD" "$BASE"
+  assert_result "allowlisted gitlink runs the full suite" false
+  assert_reason "allowlisted gitlink mode supplies a reason" diff_not_inert
 
-  write_runs "$RUNS" completed success "$GREEN" "$BASE" 2026-08-18T00:00:00Z 1
-  for conclusion in failure timed_out skipped; do
-    append_run "$RUNS" completed "$conclusion" "$GREEN" "$BASE" 2026-08-18T00:01:00Z 2
-    preview_checkout "$DOC_HEAD" "$BASE"
-    run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-    assert_value "newer completed $conclusion invalidates an older success" false
-    assert_reason "newer completed $conclusion explains its fail-closed decision" latest_completed_run_not_success
-    write_runs "$RUNS" completed success "$GREEN" "$BASE" 2026-08-18T00:00:00Z 1
-  done
+  run_classifier not-a-sha "$BASE"
+  assert_result "invalid head input fails closed" false
+  assert_reason "invalid head input supplies a reason" invalid_input
 
-  printf '%s\n' '{"workflow_runs":[]}' >"$RUNS"
-  preview_checkout "$DOC_HEAD" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "missing green baseline fails closed" false
-  assert_reason "missing green baseline explains its fail-closed decision" no_completed_pr_baseline
+  run_classifier "$DOC_HEAD" not-a-sha
+  assert_result "invalid base input fails closed" false
+  assert_reason "invalid base input supplies a reason" invalid_input
 
-  write_runs "$RUNS" completed success "$BASE_MOVED" "$BASE"
-  preview_checkout "$DOC_HEAD" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "non-ancestor green head fails closed" false
-  assert_reason "non-ancestor green head explains its fail-closed decision" baseline_not_ancestor
+  run_classifier aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$BASE"
+  assert_result "missing head commit fails closed" false
+  assert_reason "missing head commit supplies a reason" head_commit_missing
 
-  write_runs "$RUNS" completed success "$GREEN" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS" 1
-  assert_value "GitHub query failure fails closed without failing the job" false
-  assert_reason "GitHub query failure identifies the failed page" runs_api_failed:page=1
+  run_classifier "$DOC_HEAD" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  assert_result "missing base commit fails closed" false
+  assert_reason "missing base commit supplies a reason" base_commit_missing
 
-  printf '%s\n' '{' >"$RUNS"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "invalid GitHub response fails closed without failing the job" false
-  assert_reason "invalid GitHub response identifies the failed page" runs_page_invalid:page=1
+  EMPTY_TREE="$(git -C "$REPO" mktree </dev/null)"
+  ORPHAN="$(printf 'orphan\n' | git -C "$REPO" commit-tree "$EMPTY_TREE")"
+  run_classifier "$DOC_HEAD" "$ORPHAN"
+  assert_result "unrelated histories fail closed" false
+  assert_reason "unrelated histories supply a reason" merge_base_unresolvable
 
-  write_runs "$RUNS" completed success "$GREEN" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS" 0 0
-  assert_value "invalid classifier input fails closed without querying GitHub" false
-  assert_reason "invalid classifier input explains its fail-closed decision" invalid_input
-
-  write_runs "$RUNS" completed success not-a-sha "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "invalid baseline head fails closed" false
-  assert_reason "invalid baseline head explains its fail-closed decision" baseline_head_invalid
-
-  write_runs "$RUNS" completed success bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-  assert_value "missing baseline commit fails closed" false
-  assert_reason "missing baseline commit explains its fail-closed decision" baseline_commit_missing
-
-  write_runs "$RUNS" completed success "$GREEN" "$BASE"
-  run_classifier aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "$BASE" "$RUNS"
-  assert_value "missing current head commit fails closed" false
-  assert_reason "missing current head commit explains its fail-closed decision" head_commit_missing
-
-  PAGED_RUNS="$TMP/paged-runs"
-  mkdir -p "$PAGED_RUNS"
-  for page in $(seq 1 11); do
-    write_filler_page "$PAGED_RUNS/page-$page.json" 100 "$page"
-  done
-  write_filler_page "$PAGED_RUNS/page-12.json" 99 12
-  append_run "$PAGED_RUNS/page-12.json" completed success "$GREEN" "$BASE" 2026-08-18T00:00:00Z 12001
-  write_runs "$PAGED_RUNS/page-13.json" completed failure "$GREEN" "$BASE" 2026-08-18T00:01:00Z 13001
-  preview_checkout "$DOC_HEAD" "$BASE"
-  run_classifier "$DOC_HEAD" "$BASE" "$RUNS" 0 871 "$PAGED_RUNS"
-  assert_value "green baseline lookup reaches page 12 but never consumes page 13" true
-  EXPECTED_CALLS="$(seq 1 12)"
-  if [[ "$CLASSIFY_GH_CALLS" == "$EXPECTED_CALLS" ]]; then
-    pass "green baseline lookup is capped at exactly 12 pages"
+  CRISS_A1="$(commit_file_from criss-a "$BASE" src/criss.ts 'export const criss = true;')"
+  CRISS_B1="$(commit_file_from criss-b "$BASE" doc/criss.md docs)"
+  git -C "$REPO" checkout -q -B criss-union "$CRISS_A1"
+  git -C "$REPO" checkout "$CRISS_B1" -- doc/criss.md
+  git -C "$REPO" commit -qm criss-union-tree
+  CRISS_TREE="$(git -C "$REPO" rev-parse 'HEAD^{tree}')"
+  CRISS_A2="$(printf 'criss merge A\n' | git -C "$REPO" commit-tree "$CRISS_TREE" -p "$CRISS_A1" -p "$CRISS_B1")"
+  CRISS_B2="$(printf 'criss merge B\n' | git -C "$REPO" commit-tree "$CRISS_TREE" -p "$CRISS_B1" -p "$CRISS_A1")"
+  CRISS_BASE_COUNT="$(git -C "$REPO" merge-base --all "$CRISS_A2" "$CRISS_B2" | wc -l | tr -d ' ')"
+  if [[ "$CRISS_BASE_COUNT" -eq 2 ]]; then
+    pass "positive control: criss-cross fixture has two merge bases"
   else
-    fail "green baseline lookup is capped at exactly 12 pages (pages=${CLASSIFY_GH_CALLS:-none})"
+    fail "positive control: criss-cross fixture has two merge bases (got $CRISS_BASE_COUNT)"
+  fi
+  preview_checkout "$CRISS_A2" "$CRISS_B2"
+  run_classifier "$CRISS_A2" "$CRISS_B2"
+  assert_result "ambiguous merge bases fail closed" false
+  assert_reason "ambiguous merge bases supply a reason" merge_base_ambiguous
+
+  git -C "$REPO" checkout -q -B rebased-main "$BASE"
+  mkdir -p "$REPO/src"
+  printf 'main moved\n' >"$REPO/src/rebased-base.ts"
+  git -C "$REPO" add src/rebased-base.ts
+  git -C "$REPO" commit -qm rebased-main
+  REBASED_BASE="$(git -C "$REPO" rev-parse HEAD)"
+  REBASED_HEAD="$(commit_file_from rebased-docs "$REBASED_BASE" doc/rebased.md docs)"
+  preview_checkout "$REBASED_HEAD" "$BASE"
+  run_classifier "$REBASED_HEAD" "$BASE"
+  assert_result "stale base input plus rebased head runs the full suite" false
+  assert_reason "stale base plus rebased head supplies a reason" diff_not_inert
+
+  runs_api_pattern='gh[[:space:]]+api|workflows/ci\.yml/runs'
+  if grep -Eq "$runs_api_pattern" "$SUBJECT"; then
+    fail "classifier contains no runs API call"
+  else
+    pass "classifier contains no runs API call"
+  fi
+  runs_api_positive_control='gh api repos/example/project/actions/workflows/ci.yml/runs'
+  if grep -Eq "$runs_api_pattern" <<<"$runs_api_positive_control"; then
+    pass "positive control: runs API residue ruler fires"
+  else
+    fail "positive control: runs API residue ruler fires"
+  fi
+
+  command_pattern='(^|[;&|[:space:]])(gh|jq)([;&|[:space:]]|$)'
+  if grep -Eq "$command_pattern" "$SUBJECT"; then
+    fail "classifier invokes neither gh nor jq"
+  else
+    pass "classifier invokes neither gh nor jq"
+  fi
+  if grep -Eq "$command_pattern" <<<'jq -r .status'; then
+    pass "positive control: gh/jq command ruler fires"
+  else
+    fail "positive control: gh/jq command ruler fires"
   fi
 
   if grep -Eq 'fail_closed([[:space:]]*;)?[[:space:]]*$' "$SUBJECT"; then
@@ -279,19 +268,6 @@ else
   else
     pass "every fail_closed call supplies a diagnostic reason"
   fi
-
-  vector_failures_before="$FAILED"
-  while IFS=$'\t' read -r status conclusion baseline; do
-    write_runs "$RUNS" "$status" "$conclusion" "$GREEN" "$BASE"
-    preview_checkout "$DOC_HEAD" "$BASE"
-    run_classifier "$DOC_HEAD" "$BASE" "$RUNS"
-    expected=false
-    [[ "$baseline" == true ]] && expected=true
-    if [[ "$CLASSIFY_RC" -ne 0 || "$CLASSIFY_VALUE" != "$expected" ]]; then
-      fail "shared baseline vector status=$status conclusion=${conclusion:-null} expected=$expected"
-    fi
-  done < <(jq -r '.[] | [.status, (.conclusion // ""), (.baseline | tostring)] | @tsv' "$VECTORS")
-  [[ "$FAILED" -ne "$vector_failures_before" ]] || pass "classifier consumes every shared status vector"
 fi
 
 printf '\nPassed: %s  Failed: %s\n' "$PASSED" "$FAILED"

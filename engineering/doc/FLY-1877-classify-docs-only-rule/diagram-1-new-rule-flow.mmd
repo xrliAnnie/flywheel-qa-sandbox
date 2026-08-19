@@ -1,0 +1,14 @@
+flowchart TD
+    A["PR 推送 / 更新<br/>CI 被触发"] --> B["classify 步骤<br/>(几十行 shell 脚本)"]
+    B --> C{"输入合法?<br/>(两个 commit 编号<br/>格式正确且存在)"}
+    C -- "不合法 / 判不出" --> RUN
+    C -- "合法" --> D{"分叉点唯一?<br/>(git merge-base --all<br/>恰好一个结果)"}
+    D -- "零个或多个" --> RUN
+    D -- "唯一" --> E{"从分叉点到 PR 头<br/>的全部改动,是否<br/>只落在文档白名单内?"}
+    E -- "有任何一个文件出界<br/>(代码 / 配置 / doc/VERSION<br/>/ 改名 / 软链接…)" --> RUN
+    E -- "全部是纯文档" --> SKIP
+    RUN["全跑<br/>五个重测试任务全部执行<br/>(~30 分钟)"]
+    SKIP["跳过重任务<br/>只跑 Quick Gate 基础检查<br/>(~3 分钟)"]
+    style SKIP fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+    style RUN fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style B fill:#eef4ff,stroke:#007aff

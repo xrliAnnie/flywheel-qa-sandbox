@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph OLD["旧机制(FLY-1861,整套删除)"]
+        direction TB
+        O1["调 GitHub 接口翻查<br/>CI 历史记录<br/>(最多 12 页)"] --> O2["挑出本 PR 最近<br/>一次跑完的 CI"]
+        O2 --> O3["验它是绿的<br/>(success)"]
+        O3 --> O4["验主干没有<br/>在这期间前进"]
+        O4 --> O5["验那次绿 CI 是<br/>当前提交的祖先"]
+        O5 --> O6["对比两个版本<br/>之间的文件改动"]
+    end
+    subgraph NEW["新规则(FLY-1877,一条)"]
+        direction TB
+        N1["找 PR 与主干的分叉点"] --> N2["看 PR 全部改动<br/>是否只碰文档"]
+    end
+    OLD -. "替换为" .-> NEW
+    style OLD fill:#fff5f5,stroke:#ff3b30,stroke-dasharray: 5 5
+    style NEW fill:#e8f7ee,stroke:#34c759,stroke-width:2px

@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1877 · CI 简化:一条规则替换整套历史机制</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    padding: 24px 16px 48px;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  header.page { margin-bottom: 20px; }
+  .kicker { color: #86868b; font-size: 13px; letter-spacing: .04em; }
+  h1 { font-size: 26px; margin: 4px 0 6px; color: #1a365d; }
+  .meta { color: #86868b; font-size: 13px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; margin-right: 6px; vertical-align: 1px; }
+  .badge.design { background: #eef4ff; color: #007aff; }
+  .badge.simplify { background: #f3e8ff; color: #af52de; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 16px 20px; margin: 10px 0;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06); border-left: 4px solid #d2d2d7;
+  }
+  .card.blue { border-left-color: #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  h2 { font-size: 18px; color: #1a365d; margin-bottom: 10px; }
+  h3 { font-size: 15px; color: #1a365d; margin: 14px 0 6px; }
+  p, li { font-size: 14.5px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin: 4px 0; }
+  .rule-box {
+    background: #f0f7f2; border: 1px solid #cce8d5; border-radius: 10px;
+    padding: 14px 18px; margin: 10px 0; font-size: 15px; font-weight: 600; color: #1d5c34;
+  }
+  .rule-box .else { color: #a05a00; }
+  code, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 12.5px; background: #f2f2f4; border-radius: 4px; padding: 1px 5px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 5px 9px; text-align: left; vertical-align: top; }
+  th { background: #fafafa; color: #1a365d; font-weight: 600; }
+  .diagram { margin: 12px 0; overflow-x: auto; background: #fff; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .term { border-bottom: 1px dotted #86868b; }
+  .note { color: #86868b; font-size: 13px; }
+  .good { color: #1d7a3d; }
+  .bad { color: #c0392b; }
+  .comment-block { margin-top: 10px; padding-top: 8px; border-top: 1px dashed #e5e5ea; }
+  .comment-block label { display: block; font-size: 12.5px; color: #86868b; margin-bottom: 6px; }
+  .comment-block textarea {
+    width: 100%; min-height: 42px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-block textarea:focus { outline: none; border-color: #007aff; }
+  #comment-summary {
+    white-space: pre-wrap; background: #fbfbfd; border: 1px solid #e5e5ea;
+    border-radius: 8px; padding: 12px 14px; font-size: 13.5px; min-height: 48px;
+  }
+  #copy-all {
+    margin-top: 10px; background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  #copy-all:active { opacity: .8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <div class="kicker">Flywheel · 设计方案 · 2026-08-18</div>
+  <h1>FLY-1877 · CI 简化:一条规则替换整套历史机制</h1>
+  <div class="meta">
+    <span class="badge design">设计阶段</span><span class="badge simplify">净删除</span>
+    工程 Runner 产出 · 依据你 08-18 的直令「就把这个东西简单化,不要把东西复杂化」
+  </div>
+</header>
+
+<!-- §1 一句话 -->
+<section class="card blue" data-section-title="§1 一句话总结">
+  <h2>1 · 一句话总结</h2>
+  <p>把「docs PR 要不要跳过重测试」的判定,从一套要翻查 CI 历史记录的机制(六步),换成<strong>一条不看历史的规则</strong>:</p>
+  <div class="rule-box">
+    整个 PR 的全部改动只碰文档目录 → 什么重活都不跑(约 3 分钟出绿)<br>
+    <span class="else">其余任何情况(包括判不出)→ 全跑(约 30 分钟,和现在一样)</span>
+  </div>
+  <p class="note">PR = 一次待合入的代码/文档提交包;CI = 每个 PR 自动跑的检查流水线。这单是<strong>简化单,不是省钱单</strong>:钱上净省约 $6/月,真正的收益是删掉一整套会出毛病的机制(见 §3)。</p>
+  <div class="comment-block">
+    <label>对这一节的批注(自动保存在你本机):</label>
+    <textarea data-section="§1 一句话总结" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §2 新规则流程图 -->
+<section class="card green" data-section-title="§2 新规则怎么判">
+  <h2>2 · 新规则怎么判</h2>
+  <p>每次 PR 推送,CI 里有个叫 <span class="term">classify</span>(分类器,一个几十行的小脚本)的步骤先跑。它只做一件事:找到这个 PR 和主干代码的<span class="term">分叉点</span>(git 术语叫 merge-base,即两条开发线最后一个共同版本),看从分叉点到 PR 最新提交之间,改过的<strong>每一个文件</strong>是不是都落在文档白名单里。</p>
+  <div class="diagram"><!--SVG1--></div>
+  <p>所有「判不出」的情况(输入不合法、分叉点找不到或不唯一、改动清单读不出来)一律走<span class="term">全跑</span>——这个「拿不准就全跑」的原则叫 <span class="term">fail-closed</span>(宁可多跑不可漏跑),和现在一样,一条不放松。</p>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§2 新规则怎么判" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §3 删掉了什么 -->
+<section class="card red" data-section-title="§3 删掉了什么">
+  <h2>3 · 删掉了什么(净删除)</h2>
+  <p>旧机制(FLY-1861 上周落地)要先去 GitHub 翻这个 PR 的 CI 历史,找到「最近一次跑绿的记录」,再做四道校验,才敢对比文件。整套<strong>全部删除</strong>,脚本从 145 行缩到约 70 行:</p>
+  <div class="diagram"><!--SVG2--></div>
+  <p>随它一起消失的问题(这才是本单真正买到的东西):</p>
+  <ul>
+    <li><strong>不再依赖 CI 历史</strong> —— 旧机制在「新提交把旧 CI 顶掉」时会退化成全跑(我们的流水线恰恰经常这样);新规则不看历史,不存在退化。</li>
+    <li>「历史查不全」「哪次算最新」「重跑后顺序乱了」「主干悄悄前进了」这一族问题<strong>整体蒸发</strong>——不是修好了,是没有了。</li>
+    <li>不再调用 GitHub 查询接口(旧机制最多翻 12 页记录)——省下的接口额度和排查成本一并归零。</li>
+    <li>后来的维护者不用再学那套六步机制,也不用再重演 08-18 晚上那轮诊断。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§3 删掉了什么" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §4 判定明细 -->
+<section class="card blue" data-section-title="§4 判定明细(结构模型)">
+  <h2>4 · 判定明细(结构模型)</h2>
+  <h3>文档白名单(沿用现行,一字未改)</h3>
+  <table>
+    <tr><th>维度</th><th>内容</th></tr>
+    <tr><td>目录前缀(四个)</td><td class="mono">doc/ · product/doc/ · engineering/doc/ · content/doc/</td></tr>
+    <tr><td>文件后缀(13 种)</td><td class="mono">.md .markdown .mmd .html .htm .svg .png .jpg .jpeg .gif .webp .avif .pdf</td></tr>
+    <tr><td>永远算「非文档」</td><td>机器要读的文件:<span class="mono">doc/VERSION</span>(无后缀)、<span class="mono">doc/**/*.mjs</span>(脚本)——碰了就全跑;改名、软链接、子仓库指针也一律全跑</td></tr>
+  </table>
+  <h3>每个判不出的分支都有名字(排查时一眼见因)</h3>
+  <table>
+    <tr><th>诊断名</th><th>什么情况</th><th>结果</th></tr>
+    <tr><td class="mono">invalid_input</td><td>输入的版本号格式不对(比如主干直推场景)</td><td>全跑</td></tr>
+    <tr><td class="mono">head_commit_missing / base_commit_missing</td><td>对应版本在本地仓库里找不到</td><td>全跑</td></tr>
+    <tr><td class="mono">merge_base_unresolvable</td><td>找不到分叉点</td><td>全跑</td></tr>
+    <tr><td class="mono">merge_base_ambiguous</td><td>分叉点不唯一(两条线互相合并过会出现;任选一个可能漏看代码改动——设计评审抓出的真漏洞,已堵上)</td><td>全跑</td></tr>
+    <tr><td class="mono">diff_not_inert</td><td>任何一个文件出了白名单</td><td>全跑</td></tr>
+    <tr><td>(无)</td><td>全部改动都在白名单内</td><td class="good"><strong>跳过重活</strong></td></tr>
+  </table>
+  <p class="note">跳过 ≠ 裸奔:Quick Gate(编译 + 类型检查 + 代码规范 + 一批守卫测试)任何情况下都全量跑,不受这个开关影响。</p>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§4 判定明细" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §5 取舍与被否方案 -->
+<section class="card purple" data-section-title="§5 关键取舍与被否方案">
+  <h2>5 · 关键取舍与被否方案</h2>
+  <table>
+    <tr><th>方案</th><th>结论</th><th>为什么</th></tr>
+    <tr><td>两套机制并存(历史 + 新规则)</td><td class="bad">你已否</td><td>复杂度翻倍,和「简单化」直令相反;删旧机制正是这个决定的直接结果</td></tr>
+    <tr><td>更聪明的「按改动猜要跑哪些测试」</td><td class="bad">明令禁止</td><td>猜错就是漏测;「不猜耦合、不做分析」写进了规则本身</td></tr>
+    <tr><td>一条不看历史的规则(本方案)</td><td class="good">采纳</td><td>判定只依赖 PR 自己,结果可复现、可解释、不会被历史状态坑</td></tr>
+  </table>
+  <h3>新旧规则判法不同的地方(全部是有意为之)</h3>
+  <ul>
+    <li>纯文档 PR 首次推送/主干已前进/上次 CI 被顶掉 —— 旧机制全跑,<strong>新规则跳过</strong>(这就是跳过轮数从 64 涨到 101 的来源)。安全底:文档合入不带任何可执行内容;主干自己的改动由主干自己的 CI 跑。</li>
+    <li>PR 里先改过代码、后来全是文档 —— 新规则看<strong>累计</strong>改动,含代码就全跑(比旧机制更保守的一侧)。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§5 关键取舍" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §6 诚实边界 -->
+<section class="card amber" data-section-title="§6 诚实边界">
+  <h2>6 · 诚实边界</h2>
+  <h3>这个设计做什么</h3>
+  <ul>
+    <li>重写那个分类脚本(145 → 约 70 行)+ 换掉整套测试向量(两侧都测,含「故意造个坏的看它响不响」的阳性对照);</li>
+    <li>顺手清掉三处会误导后来人的残留:CI 配置里描述旧机制的注释、共享测试数据里没人再用的一列、脚本里已无用的三个环境变量。</li>
+  </ul>
+  <h3>这个设计不做什么</h3>
+  <ul>
+    <li>不碰 CI 的任务图、依赖关系、汇总门 —— 三处守卫测试零改动(这是你在 FLY-1861 已拍过的门,不需要重新拍);</li>
+    <li>不碰合入/发布(ship)那一侧的任何逻辑;</li>
+    <li>不加任何开关或配置项 —— 规则无条件生效,拿不准就全跑。</li>
+  </ul>
+  <h3>要诚实说的两点</h3>
+  <ul>
+    <li><strong>钱:净省约 $6/月,不是 $59。</strong>旧机制本来就在跳一部分(≈$53/月),新规则跳得更多(≈$59/月),差额才是增量。写这么细是防止日后有人按「才 $6」判定不值、想把历史机制加回来 —— 价值在删机制,不在省钱。</li>
+    <li><strong>一个无害残留:</strong>分类步骤保留一个已用不上的只读权限(actions: read),因为守卫测试把它钉死了,收窄它就得改守卫 —— 超出本单授权,留给未来某次合法守卫修订顺手做。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§6 诚实边界" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- §7 评审状态 -->
+<section class="card green" data-section-title="§7 设计评审状态">
+  <h2>7 · 设计评审状态</h2>
+  <ul>
+    <li><strong>第 1 轮(Codex):3 条意见,全部采纳。</strong>最有价值的一条是抓出「分叉点不唯一时可能漏看代码改动」的真漏洞(§4 表里的 merge_base_ambiguous),评审者用构造的仓库实证了它,已按其方案堵上。</li>
+    <li><strong>第 2 轮(独立 Claude 交叉评审,Tadashi 裁决的替身通道):PASS,零阻塞发现。</strong>背景:当晚 Codex 全账号额度打满,Tadashi 裁决改用独立上下文的 Claude 做交叉评审并以其为准。评审者逐字核对了第 1 轮 3 条意见的落实情况(全部忠实),并把方案里的关键脚本片段放进真实 git 仓库跑了 6 个场景(含两个刻意构造的坑)全部符合预期;顺手纠了一个数字笔误(后缀 14→13)。两轮评审报告全文都存档在设计文件夹里。</li>
+    <li>实现与验收(构造真 PR 验证 3 分钟绿灯全链路)在下一个节点,不在本设计单内。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的批注:</label>
+    <textarea data-section="§7 评审状态" placeholder="写下想法…"></textarea>
+  </div>
+</section>
+
+<!-- 批注汇总 -->
+<section class="card blue" data-section-title="批注汇总">
+  <h2>你的批注汇总</h2>
+  <div id="comment-summary"></div>
+  <button id="copy-all" type="button">复制全部批注</button>
+  <p class="note" style="margin-top:8px;">批注只存在你这台设备的浏览器里,复制后发给 Tadashi 即可。</p>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX;
+  try { PREFIX = "fly1877-comments:" + location.pathname + ":"; }
+  catch (e) { PREFIX = "fly1877-comments:unknown:"; }
+  function lsGet(key) {
+    try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; }
+  }
+  function lsSet(key, value) {
+    try { localStorage.setItem(PREFIX + key, value); } catch (e) {}
+  }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-section]"));
+  var summaryBox = document.getElementById("comment-summary");
+  function refreshSummary() {
+    var parts = [];
+    areas.forEach(function (t) {
+      var v = t.value.trim();
+      if (v) parts.push("【" + t.getAttribute("data-section") + "】\n" + v);
+    });
+    var text = parts.join("\n\n");
+    summaryBox.textContent = text || "(还没有批注 —— 在任意小节下方的输入框写下想法,会自动保存并汇总到这里)";
+    return text;
+  }
+  areas.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-section"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-section"), t.value);
+      refreshSummary();
+    });
+  });
+  refreshSummary();
+  var btn = document.getElementById("copy-all");
+  function resetBtn() { btn.textContent = "复制全部批注"; }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  btn.addEventListener("click", function () {
+    var text = refreshSummary();
+    if (!text) { btn.textContent = "还没有批注可复制"; setTimeout(resetBtn, 1800); return; }
+    function done(ok) {
+      btn.textContent = ok ? "已复制 ✓" : "复制失败 —— 请手动全选上方汇总文字";
+      setTimeout(resetBtn, 2600);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { done(true); },
+        function () { done(fallbackCopy(text)); }
+      );
+    } else {
+      done(fallbackCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>
