@@ -66,7 +66,7 @@ describe("founder-approved workflow menu source", () => {
 		expect(FLY1436_TARGET_BINDINGS).toBe(WORKFLOW_MENU_BINDINGS);
 	});
 
-	it("pins the Simple Code DAG to Opus implement then cross-vendor Codex QA", () => {
+	it("pins the Simple Code DAG to GPT-5.6 implement then cross-vendor Opus 5 QA", () => {
 		const menu = loadWorkflowMenuLibrary().find(
 			(candidate) => candidate.shape === "simple_code",
 		)!;
@@ -77,8 +77,8 @@ describe("founder-approved workflow menu source", () => {
 				defaultModel: node.defaultModel,
 			})),
 		).toEqual([
-			{ id: "implement", role: "implement", defaultModel: "opus" },
-			{ id: "qa", role: "qa", defaultModel: "codex" },
+			{ id: "implement", role: "implement", defaultModel: "codex" },
+			{ id: "qa", role: "qa", defaultModel: "opus" },
 			{ id: "founder_gate", role: undefined, defaultModel: undefined },
 		]);
 		expect(menu.edges).toEqual([
@@ -127,9 +127,15 @@ describe("founder-approved workflow menu source", () => {
 				expect.objectContaining({
 					id: "implement",
 					type: "implement",
-					vendor: "claude",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
 				}),
-				expect.objectContaining({ id: "qa", type: "qa", vendor: "codex" }),
+				expect.objectContaining({
+					id: "qa",
+					type: "qa",
+					vendor: "claude",
+					model: "claude-opus-5",
+				}),
 				expect.objectContaining({ type: "land", execution: "engine" }),
 			]),
 		);
@@ -759,13 +765,13 @@ describe("workflow menu override validation", () => {
 			(menu) => menu.shape === "simple_code",
 		)!;
 		try {
-			resolveMenuOverrides(simple, { qa: { model: "opus" } });
+			resolveMenuOverrides(simple, { qa: { model: "codex" } });
 			throw new Error("expected same-vendor validation failure");
 		} catch (error) {
 			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
 			expect(error).toMatchObject({
 				code: "SAME_VENDOR_REVIEW_COMBINATION",
-				legal: ["implement:codex", "qa:codex"],
+				legal: ["implement:opus", "implement:fable", "qa:opus"],
 			});
 		}
 	});
@@ -774,7 +780,7 @@ describe("workflow menu override validation", () => {
 		const simple = structuredClone(
 			loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,
 		);
-		simple.nodes.find((node) => node.id === "qa")!.defaultModel = "opus";
+		simple.nodes.find((node) => node.id === "qa")!.defaultModel = "codex";
 		expect(() => compileWorkflowMenuSeed(simple)).toThrow(
 			/simple_code.*qa.*same vendor.*implement/i,
 		);

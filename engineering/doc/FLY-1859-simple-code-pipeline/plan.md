@@ -5,7 +5,7 @@ Issue: FLY-1859 (https://linear.app/geoforge3d/issue/FLY-1859/流程dag-新增�
 
 ## 0. 一句话
 
-新增 menu shape `simple_code`(两个可执行节点 implement → qa,implement 默认 Opus),让改代码的小活在**一张 issue、一张 ship 卡**里由 DAG 自己完成 QA;同时把 engine-owned run 从 FLY-579 auto-QA(另开 QA·issue)的触发面上摘掉,使 `generic` 回归纯非代码工作 —— **单节点做完即止,不再产生 QA 单**。
+新增 menu shape `simple_code`(两个可执行节点 implement → qa,implement 默认 GPT-5.6、qa 默认 Opus 5),让改代码的小活在**一张 issue、一张 ship 卡**里由 DAG 自己完成 QA;同时把 engine-owned run 从 FLY-579 auto-QA(另开 QA·issue)的触发面上摘掉,使 `generic` 回归纯非代码工作 —— **单节点做完即止,不再产生 QA 单**。
 
 ## 1. 背景
 
@@ -14,6 +14,8 @@ Annie 2026-08-18 直令(FLY-1830 thread):
 > 「generic 是不是不需要开一个独立的 QA 呀?不然还需要你在中间做协调,我觉得怪麻烦的。」
 > 「我们还需要一个新的 DAG flow,可能是那种比较简单的 coding……把 design 和 coding 压缩在一条线上,然后可以用 Opus 去做,另外再加一个 QA 节点。」
 > 「以后 generic issue 只跑真的那种可能不涉及到代码改动的流程……它也没有必要去跑 QA,真的一个节点做完就行了。」
+
+2026-08-19 ship report 反馈最终订正模型针脚:`simple_code` 的 design + implement 合并节点使用 Codex GPT-5.6,qa 节点使用 Claude Opus 5。此订正取代下文评审阶段曾采用的 Opus → Codex 临时组合,但不改变跨 vendor 不变量。
 
 今晚实例:FLY-1830 / FLY-1852 / FLY-1853 三张改代码小活都跑在 `generic` 上,QA 段全靠 Lead 人工衔接(回灌判据、盯凭据、代投报告),卡与账本分散在两个 issue 上。
 
@@ -47,7 +49,7 @@ Annie 2026-08-18 直令(FLY-1830 thread):
 ```mermaid
 graph LR
     subgraph tpl_simple_code["tpl_simple_code(新,两段式)"]
-        I[implement<br/>role=implement<br/>默认 Opus] -->|implement_done| Q[qa<br/>role=qa<br/>默认 Codex 跨 vendor]
+        I[implement<br/>role=implement<br/>默认 GPT-5.6] -->|implement_done| Q[qa<br/>role=qa<br/>默认 Opus 5 跨 vendor]
         Q -->|qa_pass| G[founder_gate]
         G -->|founder_approved| L[land<br/>engine]
         Q -.qa_fail ×3 escalate.-> I
@@ -85,7 +87,7 @@ shape: simple_code
 nodes:
   - id: implement
     role: implement
-    defaultModel: opus          # Annie 直令:简单代码用 Opus
+    defaultModel: codex         # Annie 2026-08-19 最终直令:design + implement 合并节点用 GPT-5.6
     models:
       - model: opus
         allowedEfforts: [low, medium, high, max]
@@ -98,12 +100,12 @@ nodes:
         defaultEffort: xhigh
   - id: qa
     role: qa
-    defaultModel: codex         # F17 硬不变量:QA 必须与 implement 跨 vendor(默认 opus→codex ✓)
+    defaultModel: opus          # Annie 2026-08-19 最终直令:QA 用 Opus 5;默认 codex→opus 跨 vendor ✓
     models:
       - model: codex
         allowedEfforts: [low, medium, high, xhigh, max]
         defaultEffort: xhigh
-      - model: opus             # 镜像组合:implement=codex + qa=opus(如 QA 需 Claude 工具面时)
+      - model: opus
         allowedEfforts: [low, medium, high, max]
         defaultEffort: high
   - id: founder_gate
@@ -132,7 +134,7 @@ loops:
     exitWhen: founder_approved
 ```
 
-**模型组合(F17 的解 = guarded flexibility)**:默认 opus→codex 跨 vendor;可选集放开到 implement `[opus, fable, codex]` × qa `[codex, opus]`,坏组合(同 vendor)由 Fix 2b/2c 双守卫在编译期/派发期 fail-loud 拒掉。放开的收益是**镜像组合**(implement=codex + qa=opus,例如 QA 需要 Claude-in-Chrome 工具面时)。**诚实边界**:跨 vendor 不变量是 vendor 级、生产 workflow 只有 claude/codex 两家 —— **codex 整体不可用时,任何带 qa 节点的 shape(含 tpl_code)都不存在合法组合**,这是 F17 的既有代价,不是本单新增的单点;simple_code 与 tpl_code 同命。另:qa=codex 是**生产首例** codex 节点作 verdict 提交者(经 FLY-1643 的 submission credential 通道,`4857d999e` 已在 HEAD 且带 fail-loud 能力断言),验收须真机踩过(§7)。
+**模型组合(F17 的解 = guarded flexibility)**:默认 codex→opus 跨 vendor;可选集保持 implement `[opus, fable, codex]` × qa `[codex, opus]`,坏组合(同 vendor)由 Fix 2b/2c 双守卫在编译期/派发期 fail-loud 拒掉。需要反向组合时,Claude implement(`opus`/`fable`)必须配 Codex qa。**诚实边界**:跨 vendor 不变量是 vendor 级、生产 workflow 只有 claude/codex 两家 —— **codex 整体不可用时,任何带 qa 节点的 shape(含 tpl_code)都不存在合法组合**,这是 F17 的既有代价,不是本单新增的单点;simple_code 与 tpl_code 同命。
 
 编译期自动获得:land 终态节点 + `founder_gate → land (founder_approved)` 边(implement 带 `creates_pr`,`hasPrProducer` 命中,F2/F5);FLY-1772 打回一轮一张新卡、FLY-1655 terminal land 全部复用,零新机制。
 
@@ -210,7 +212,7 @@ const isRootPhaseFirstAttempt =
 | `simple_code` | 改代码但方案无需独立设计:小 bug 修复、局部重构、补测试、配置/脚本改动、按既有模式加小功能。implement 直接 TDD,QA 节点独立验证 |
 | `generic` | **纯非代码**:调研/盘点/分析/一次性运维。单节点做完即止,不跑 QA |
 
-边界规则(写进同文档):**改代码的活永远不走 generic**(再小也至少 simple_code);code vs simple_code 拿不准 → 取 code(宁重勿漏);QA 需要浏览器/Claude-in-Chrome 真机 E2E 的改动 → 取 code(其 qa=opus 带 Chrome 工具面),或 simple_code 用镜像组合 override(implement=codex + qa=opus)。
+边界规则(写进同文档):**改代码的活永远不走 generic**(再小也至少 simple_code);code vs simple_code 拿不准 → 取 code(宁重勿漏)。simple_code 的 qa 默认就是 Opus 5,可使用 Claude 工具面;是否升级三段式只由复杂度、风险与独立设计需求决定。
 
 2. `.flywheel/menus/adoption.yaml`:`flywheel-eng-lead: [code, simple_code, generic]`。
 3. `.lead/flywheel-eng-lead/identity.md` 派工示例处同步一句 simple_code 提示。
@@ -239,7 +241,7 @@ const isRootPhaseFirstAttempt =
 | 层 | 测什么 |
 |---|---|
 | workflow-menu.test.ts | simple_code 解析(合法形状过、错节点数/错 loop/缺 qa 角色拒);编译产物快照(land 附加、`ship_claims=["qa_passed","founder_approved"]`);Fix 4 对现有 5 shape 的 ship_claims 逐一回归等价;**Fix 2b 静态断言(同 vendor 默认组合 → menu 加载 throw;code.yaml 通过)**;**Fix 2c override 守卫(同 vendor 组合 400 + legal set;跨 vendor 组合照常)**;既有 pinned-count 断言(如 `workflow-menu.test.ts:636` `opusNodes` 计数)逐条**审读语义后**更新,不盲改数 |
-| **qa admission 集成测试** | **真跑到 qa 节点 admission**(不能只测 parse/compile):simple_code 默认组合(opus→codex)admission 通过;人为构造同 vendor snapshot → `same_vendor_review` 拒(锚 F17 双层) |
+| **qa admission 集成测试** | **真跑到 qa 节点 admission**(不能只测 parse/compile):simple_code 默认组合(codex→opus)admission 通过;人为构造同 vendor snapshot → `same_vendor_review` 拒(锚 F17 双层) |
 | dispatcher / 起跑路径 | ① runs-route fresh:implement 作根起跑(role=implement、无 startPoint);② dispatcher 恢复:implement 根 attempt-1 重派不抛 `engine_predecessor_unavailable`;③ attempt 2(qa_fail 回环)仍要求 predecessor fail-close;④ root design 两条路径逐字回归;⑤ **Fix 5b:残留已注册 worktree + implement 根无 startPoint → 落 removeIfExists+create 干净重建(不 takeover 硬死);tpl_code 中段 implement/qa 带 startPoint 的 takeover 行为字节不变** |
 | binding reconcile 测试 | 缺行补、已有行(FLY-1436 owner / custom owner)绝不覆盖、模板未发布时 fail-loud 不 crash boot |
 | auto-QA 测试 | engine-owned main 会话:不建 QA·issue、写 `qa_required=0` 快照、founder gate 不被卡;**A-1b backfill 对 engine-owned 会话回填 0 而非 1(crash 窗口回归;放「有记录→1」分支之后)**;A-3 sweep 重驱后同样豁免;**楔死态 fail-loud:`qa_required=1` 且无记录的 engine 会话 → `alertLeadPipelineError`,不静默**;非-engine main 会话逐字回归(现 suite);codex gate 顺序不变 |
@@ -249,7 +251,7 @@ const isRootPhaseFirstAttempt =
 
 ## 7. 验收(镜像 issue)
 
-1. 一张真「改代码小活」以 `taskCategory=simple_code` 端到端:**一张 issue、一张 ship 卡、QA 由 qa 节点完成、Lead 零人工衔接**(真机验收属本 DAG 的 QA 节点,不在 design 节点)。其中必须显式覆盖:**codex qa 节点经 submission credential 真机提交 qa_pass/qa_fail verdict —— 这是生产首例 codex verdict 提交者路径**(FLY-1643 代码已在 HEAD,真机闭环当时留给了下游)。
+1. 一张真「改代码小活」以 `taskCategory=simple_code` 端到端:**一张 issue、一张 ship 卡、QA 由 qa 节点完成、Lead 零人工衔接**(真机验收属本 DAG 的 QA 节点,不在 design 节点)。运行快照必须显式证明 implement=`gpt-5.6-sol`、qa=`claude-opus-5`,且 Opus qa 节点经 submission credential 提交 qa_pass/qa_fail verdict。
 2. 一张纯调研 issue 走 `generic`:**不产生 QA·issue、不产生 QA 节点**,单节点完成 → founder gate。
 3. 一张重活走 `code`:三段式行为逐字不变。
 
@@ -261,7 +263,7 @@ const isRootPhaseFirstAttempt =
 ## 9. 假设与开放问题(review 重点)
 
 - **A1** 命名沿用 issue 暂名 `simple_code` / `tpl_simple_code`。
-- **A2** implement 默认 opus/high,可选 fable/codex;qa 默认 codex/xhigh,可选 opus(镜像组合)——坏组合由 Fix 2b/2c 双守卫拒,见 Fix 2「guarded flexibility」。effort 面订正:生产 `opus` 绑 OPUS_5,workflow 面**支持全五档含 xhigh**(此前「opus 无 xhigh」说法有误);opus 行仍保守用 `[low, medium, high, max]` 子集 —— 理由是与 code.yaml qa 行对齐、且对未来 opus 改绑 4.6(无 xhigh)保持 boot 加载健壮(menu 校验是 registry 子集校验,超集会让 Bridge boot 报错)。Annie 直令只约束 coding 节点默认用 Opus,不约束 QA。
+- **A2(已被 founder 2026-08-19 最终裁决取代)** implement 默认 codex/xhigh(解析为 `gpt-5.6-sol`),可选 fable/opus;qa 默认 opus/high(解析为 `claude-opus-5`),可选 codex。坏组合由 Fix 2b/2c 双守卫拒,见 Fix 2「guarded flexibility」。opus 行仍保守用 `[low, medium, high, max]` 子集,与 code.yaml qa 行对齐并保持未来 Opus 4.6 绑定兼容。
 - **A3** engine-owned auto-QA 豁免覆盖 prd/design/prototype(见 §5)。
 - **A4** 绑定 seeding 走 boot reconcile(Fix 6)而非 operator 手术 —— 机制化换未来零手工。
 - **A5** founder 打回(FLY-1772)对 simple_code 的合法目标 = implement/qa(无 design 节点);打回路由按既有「按实际节点解析」行为,不另加码;负例测试(指定 "design" → fail-loud)已列入 §6。
@@ -273,5 +275,7 @@ const isRootPhaseFirstAttempt =
 | 轮次 | 评审者 | 结论 | 要点 |
 |---|---|---|---|
 | R1 | Antigravity(agy 1.0.12,真 auth) | APPROVED | 无 blocking;确认 A3 机制与 Fix 5/6/7 定位(注:未发现 F17,见下) |
-| R1 | Claude 独立上下文交叉评审 | CHANGES REQUESTED | **1 HIGH**(F17 same_vendor_review 双层不变量,默认 opus→opus 必楔死)+ 4 MED(Blueprint takeover 不对称 / F9 双路径 / FLY-1436 restore 腿 / 部署窗口楔死态)+ 5 LOW。10 条全采纳,关键声称经本 Runner 亲手复核原文属实 |
+| R1 | Claude 独立上下文交叉评审 | CHANGES REQUESTED | **1 HIGH**(F17 same_vendor_review 双层不变量,当时的默认 opus→opus 必楔死)+ 4 MED(Blueprint takeover 不对称 / F9 双路径 / FLY-1436 restore 腿 / 部署窗口楔死态)+ 5 LOW。10 条全采纳,关键声称经本 Runner 亲手复核原文属实 |
 | R2 | Claude 独立上下文交叉评审 | **APPROVED** | R1 全部闭合经代码级复核确认(含主动追验 `resolveNodeDispatchAtLaunch` 两条 dispatch 解析源均在守卫覆盖内、Fix 5b 三个到达面枚举、FLY-1643 `4857d999e` 在 HEAD);新增 1 MED(codex 韧性/首例 verdict 提交者,已按 guarded-flexibility 折入 Fix 2 + §7 验收点名)+ 4 LOW 文档修正(已全部折入);明示无需 R3 |
+
+R2 后的 founder ship feedback 将默认针脚由评审时的 Opus → Codex 对调为最终的 GPT-5.6 → Opus 5;双守卫与跨 vendor 结论继续成立。

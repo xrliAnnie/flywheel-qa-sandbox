@@ -1457,9 +1457,9 @@ describe("FLY-1436 menu start contract", () => {
 			resolved: {
 				nodeModels: {
 					implement: expect.objectContaining({
-						model: "opus (= claude-opus-5)",
+						model: "codex (= gpt-5.6-sol)",
 					}),
-					qa: expect.objectContaining({ model: "codex (= gpt-5.6-sol)" }),
+					qa: expect.objectContaining({ model: "opus (= claude-opus-5)" }),
 				},
 			},
 		});
@@ -1481,14 +1481,14 @@ describe("FLY-1436 menu start contract", () => {
 		const { status, json } = await post(h.url, {
 			leadId: "flywheel-eng-lead",
 			taskCategory: "simple_code",
-			overrides: { qa: { model: "opus" } },
+			overrides: { qa: { model: "codex" } },
 		});
 
 		expect(status).toBe(400);
 		expect(json).toMatchObject({
 			success: false,
 			code: "SAME_VENDOR_REVIEW_COMBINATION",
-			legal: ["implement:codex", "qa:codex"],
+			legal: ["implement:opus", "implement:fable", "qa:opus"],
 		});
 		expect(h.calls).toHaveLength(0);
 	});

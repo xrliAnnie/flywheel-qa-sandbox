@@ -2,7 +2,7 @@ shape: simple_code
 nodes:
   - id: implement
     role: implement
-    defaultModel: opus
+    defaultModel: codex
     models:
       - model: opus
         allowedEfforts: [low, medium, high, max]
@@ -15,7 +15,7 @@ nodes:
         defaultEffort: xhigh
   - id: qa
     role: qa
-    defaultModel: codex
+    defaultModel: opus
     models:
       - model: codex
         allowedEfforts: [low, medium, high, xhigh, max]
