@@ -1,0 +1,16 @@
+flowchart LR
+    TICK["Bridge 定时闹钟<br/>patrol_tick(改措辞:<br/>范围=整机,名册≠边界)"] --> LEAD["Lead 收到"]
+    LEAD --> S0["第0步 自检:<br/>看上一份报告有没有欠账"]
+    S0 --> SNAP["跑一条命令:<br/>flywheel-patrol-snapshot<br/>(只读,自动收步1/3/4/5的事实)"]
+    SNAP --> F1["步1 名册核对<br/>tmux 真实窗口 vs 名册"]
+    SNAP --> F3["步3 交接账<br/>引擎节点表 vs TURN 交接带"]
+    SNAP --> F4["步4 投递账<br/>超时未送达的消息/死信"]
+    SNAP --> F5["步5 外部真相<br/>GitHub 整仓活动 + Discord 实况"]
+    LEAD --> F2["步2 逐个看 runner 屏幕<br/>(活着≠在推进)"]
+    F1 --> S6["步6 处置:<br/>名下的自己修;<br/>别家的/整机的上报"]
+    F2 --> S6
+    F3 --> S6
+    F4 --> S6
+    F5 --> S6
+    S6 --> RPT["产出报告文件(必做)<br/>~/.flywheel/patrol-reports/…<br/>六行 OK/FINDING/执行不了"]
+    RPT -->|"任一步执行不了(首次)"| Q["自动建工程 issue<br/>[patrol-unavailable]<br/>→ 缺陷冒出来,不是消失"]
