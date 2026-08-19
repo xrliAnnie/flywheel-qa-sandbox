@@ -1,0 +1,32 @@
+flowchart LR
+    subgraph before["现在"]
+        direction TB
+        S1["Runner / skill / 插件"] --> S2["codex-with-fallback<br/>(宿主机上的裸脚本<br/>无仓库 无测试 无 review)"]
+        S2 --> S3["codex<br/>没有任何时间上限"]
+        S3 --> S4["卡住 → 永远卡着"]
+    end
+
+    subgraph after["改后"]
+        direction TB
+        T1["Runner / skill / 插件"] --> T2["codex-oneshot.sh<br/>(仓库内 有测试 有 review)"]
+        T2 --> T3{"总预算还够吗"}
+        T3 -->|"够"| T4["带硬超时地跑 codex<br/>单次 60 分钟上限"]
+        T3 -->|"不够"| T5["停止重试<br/>报明确的超时错误"]
+        T4 --> T6["登记到注册表<br/>pid + 启动时间 + 截止时间"]
+        T6 --> T7["正常结束 → 删除登记"]
+        T4 -.->|"超时"| T8["杀掉整个进程组<br/>不轮转账号 不重试"]
+    end
+
+    subgraph reaper["清道夫（每次新调用时顺手扫一遍）"]
+        direction TB
+        R1["只读注册表里的条目"] --> R2{"进程启动时间<br/>和登记的一致吗"}
+        R2 -->|"不一致<br/>(PID 被复用了)"| R3["只删条目 不杀进程"]
+        R2 -->|"一致且已超时"| R4["杀掉"]
+        R5["不在注册表里的进程<br/>一律不碰"] --> R6["生产 Codex Lead<br/>结构上不可能被误杀"]
+    end
+
+    style S2 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style S4 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style T2 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
+    style R6 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
+    style R5 fill:#eef4ff,stroke:#007aff,stroke-width:2px
