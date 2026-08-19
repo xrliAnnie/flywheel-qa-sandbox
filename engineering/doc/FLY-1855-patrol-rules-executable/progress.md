@@ -1,13 +1,13 @@
 ---
 issue: FLY-1855
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-19T18:58:39.203Z
-nextStep: run full lint/build, push, and request exact-head code review round 3
+phaseCursor: 4/4
+updated: 2026-08-19T19:09:54.537Z
+nextStep: open pull request and complete needs_review route
 chunks: []
 pointers: {}
 ---
 
 # FLY-1855 progress
-**phase**: implement (3/4)
-**next**: run full lint/build, push, and request exact-head code review round 3
+**phase**: implement (4/4)
+**next**: open pull request and complete needs_review route
