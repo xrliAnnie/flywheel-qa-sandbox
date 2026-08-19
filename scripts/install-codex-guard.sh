@@ -16,8 +16,25 @@ CURRENT_LINK="$LIBEXEC_DIR/current"
 GLOBAL_SHIM="$GLOBAL_BIN_DIR/codex-with-fallback"
 BACKUP="$GLOBAL_SHIM.bak"
 DISABLE_SENTINEL="$LIBEXEC_DIR/DISABLED"
+MANAGED_SHIM_SENTINEL="# FLYWHEEL_CODEX_GUARD_MANAGED_SHIM=1"
 
 die() { printf '[install-codex-guard] ERROR: %s\n' "$*" >&2; exit 1; }
+
+shim_file_is_managed() {
+  local candidate="$1"
+  [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+  grep -Fxq "$MANAGED_SHIM_SENTINEL" "$candidate" 2>/dev/null && return 0
+  # Recognize the unmarked shim emitted by the pre-fix installer too. This
+  # keeps a host that already ran those bytes from preserving the guard as its
+  # own "legacy" rollback on the first fixed convergence.
+  # shellcheck disable=SC2016
+  grep -Fq '[codex-guard] INSTALL_ERROR stable wrapper is missing' "$candidate" 2>/dev/null \
+    && grep -Fq 'exec "$target" "$@"' "$candidate" 2>/dev/null
+}
+
+global_shim_is_managed() {
+  shim_file_is_managed "$GLOBAL_SHIM"
+}
 
 publish_current_symlink() {
   local staged="$1" target="$2"
@@ -40,15 +57,25 @@ if [[ -e "$DISABLE_SENTINEL" || -L "$DISABLE_SENTINEL" ]]; then
     || die "disable sentinel is not a regular file: $DISABLE_SENTINEL"
   mkdir -p "$GLOBAL_BIN_DIR" || die "cannot create global bin directory"
   disabled_tmp="$GLOBAL_BIN_DIR/.codex-with-fallback.disabled.$$"
-  if [[ -f "$BACKUP" && ! -L "$BACKUP" ]]; then
+  publish_passthrough=0
+  if [[ -f "$BACKUP" && ! -L "$BACKUP" ]] \
+    && ! shim_file_is_managed "$BACKUP"; then
     cp -p "$BACKUP" "$disabled_tmp" \
       || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot stage disabled wrapper"; }
     disabled_source="$BACKUP"
+  elif [[ -f "$BACKUP" && ! -L "$BACKUP" ]]; then
+    publish_passthrough=1
+    disabled_source="direct codex passthrough (managed backup ignored)"
   elif [[ -e "$BACKUP" || -L "$BACKUP" ]]; then
     die "guard backup exists but is not a regular file: $BACKUP"
   else
+    publish_passthrough=1
+    disabled_source="direct codex passthrough (no legacy backup existed)"
+  fi
+  if [[ "$publish_passthrough" == "1" ]]; then
     {
       printf '#!/usr/bin/env bash\n'
+      printf '%s\n' "$MANAGED_SHIM_SENTINEL"
       printf 'set -u\n'
       # shellcheck disable=SC2016
       printf '%s\n' 'exec codex "$@"'
@@ -56,7 +83,6 @@ if [[ -e "$DISABLE_SENTINEL" || -L "$DISABLE_SENTINEL" ]]; then
       || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot stage disabled passthrough"; }
     chmod 555 "$disabled_tmp" \
       || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot lock disabled passthrough mode"; }
-    disabled_source="direct codex passthrough (no legacy backup existed)"
   fi
   mv -f "$disabled_tmp" "$GLOBAL_SHIM" \
     || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot publish disabled wrapper"; }
@@ -106,13 +132,16 @@ ln -s "releases/$content_hash" "$link_tmp" || die "cannot stage current symlink"
 publish_current_symlink "$link_tmp" "$CURRENT_LINK" \
   || { rm -f "$link_tmp" 2>/dev/null || true; die "cannot publish current symlink"; }
 
-if [[ ! -e "$BACKUP" && ! -L "$BACKUP" && ( -e "$GLOBAL_SHIM" || -L "$GLOBAL_SHIM" ) ]]; then
+if [[ ! -e "$BACKUP" && ! -L "$BACKUP" \
+  && ( -e "$GLOBAL_SHIM" || -L "$GLOBAL_SHIM" ) ]] \
+  && ! global_shim_is_managed; then
   cp -p "$GLOBAL_SHIM" "$BACKUP" || die "cannot preserve original wrapper backup"
 fi
 
 shim_tmp="$GLOBAL_BIN_DIR/.codex-with-fallback.tmp.$$"
 {
   printf '#!/usr/bin/env bash\n'
+  printf '%s\n' "$MANAGED_SHIM_SENTINEL"
   printf 'set -u\n'
   # Resolve once at install time. A generic ambient FLYWHEEL_STATE_DIR has a
   # different meaning in other packages and must never redirect this machine-

@@ -9,6 +9,7 @@ codex_guard_state_dir() {
 }
 
 CODEX_GUARD_ACTIVE_ENTRY=""
+CODEX_GUARD_LAST_RUN_TIMED_OUT=0
 
 _codex_guard_safe_label() {
   local value
@@ -104,10 +105,9 @@ codex_guard_sweep() {
     pgid="$(_codex_guard_json_number "$raw" pgid)"
     start="$(_codex_guard_json_string "$raw" start)"
     deadline="$(_codex_guard_json_number "$raw" deadline)"
-    case "$pid:$pgid:$deadline" in
-      *[!0-9:]*) rm -f "$entry" 2>/dev/null || true; continue ;;
-      ::|:*|*:) rm -f "$entry" 2>/dev/null || true; continue ;;
-    esac
+    case "$pid" in ''|0|*[!0-9]*) rm -f "$entry" 2>/dev/null || true; continue ;; esac
+    case "$pgid" in ''|0|*[!0-9]*) rm -f "$entry" 2>/dev/null || true; continue ;; esac
+    case "$deadline" in ''|*[!0-9]*) rm -f "$entry" 2>/dev/null || true; continue ;; esac
     [[ -n "$start" ]] || { rm -f "$entry" 2>/dev/null || true; continue; }
     (( deadline <= now )) || continue
 
@@ -166,7 +166,7 @@ _codex_guard_run_bash() {
   shift 2
   local marker child_pid watchdog_pid status deadline pre_entry child_entry
   marker="$(mktemp "${TMPDIR:-/tmp}/codex-guard-timeout.XXXXXX")" || return 125
-  rm -f "$marker"
+  CODEX_GUARD_LAST_RUN_TIMED_OUT=0
 
   deadline=$(( $(date +%s) + timeout_seconds ))
   pre_entry="$(_codex_guard_register_pid "${BASHPID:-$$}" "$deadline" "$label" 2>/dev/null || true)"
@@ -192,7 +192,7 @@ _codex_guard_run_bash() {
     fi
     sleep "$timeout_seconds"
     if kill -0 "$child_pid" 2>/dev/null; then
-      : > "$marker"
+      printf 'timeout\n' >> "$marker"
       kill -TERM -- "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
       sleep 1
       kill -KILL -- "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
@@ -207,8 +207,9 @@ _codex_guard_run_bash() {
   set +m
   codex_guard_forget_active
 
-  if [[ -e "$marker" ]]; then
+  if [[ -f "$marker" && ! -L "$marker" && -s "$marker" ]]; then
     rm -f "$marker"
+    CODEX_GUARD_LAST_RUN_TIMED_OUT=1
     printf '%s label=%s budget_seconds=%s\n' "$CODEX_GUARD_TIMEOUT_MARKER" "$label" "$timeout_seconds" >&2
     return 124
   fi
@@ -219,15 +220,40 @@ _codex_guard_run_bash() {
 _codex_guard_run_external() {
   local timeout_bin="$1" timeout_seconds="$2" label="$3"
   shift 3
-  local deadline pre_entry child_entry child_pid status
+  local deadline pre_entry child_entry child_pid status completion_marker
+  CODEX_GUARD_LAST_RUN_TIMED_OUT=0
+  completion_marker="$(mktemp "${TMPDIR:-/tmp}/codex-guard-complete.XXXXXX")" \
+    || return 125
   deadline=$(( $(date +%s) + timeout_seconds ))
   pre_entry="$(_codex_guard_register_pid "${BASHPID:-$$}" "$deadline" "$label" 2>/dev/null || true)"
   CODEX_GUARD_ACTIVE_ENTRY="$pre_entry"
   set -m
   if [[ "${CODEX_GUARD_CLOSE_WRAPPER_FDS:-0}" == "1" ]]; then
-    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" "$@" 8>&- 9>&- &
+    # shellcheck disable=SC2016
+    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" \
+      /bin/bash -c '
+        completion_marker="$1"
+        shift
+        "$@"
+        status=$?
+        if [[ -f "$completion_marker" && ! -L "$completion_marker" ]]; then
+          printf "%s\n" "$status" >> "$completion_marker"
+        fi
+        exit "$status"
+      ' codex-guard-external "$completion_marker" "$@" 8>&- 9>&- &
   else
-    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" "$@" &
+    # shellcheck disable=SC2016
+    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" \
+      /bin/bash -c '
+        completion_marker="$1"
+        shift
+        "$@"
+        status=$?
+        if [[ -f "$completion_marker" && ! -L "$completion_marker" ]]; then
+          printf "%s\n" "$status" >> "$completion_marker"
+        fi
+        exit "$status"
+      ' codex-guard-external "$completion_marker" "$@" &
   fi
   child_pid=$!
   child_entry="$(_codex_guard_register_pid "$child_pid" "$deadline" "$label" 2>/dev/null || true)"
@@ -239,6 +265,11 @@ _codex_guard_run_external() {
   status=$?
   set +m
   codex_guard_forget_active
+  if [[ ! -s "$completion_marker" \
+    && ( "$status" -eq 124 || "$status" -eq 137 ) ]]; then
+    CODEX_GUARD_LAST_RUN_TIMED_OUT=1
+  fi
+  rm -f "$completion_marker" 2>/dev/null || true
   return "$status"
 }
 
@@ -255,7 +286,7 @@ codex_guard_run() {
   if [[ -n "$timeout_bin" ]]; then
     _codex_guard_run_external "$timeout_bin" "$timeout_seconds" "$label" "$@"
     status=$?
-    if [[ "$status" -eq 124 || "$status" -eq 137 ]]; then
+    if [[ "$CODEX_GUARD_LAST_RUN_TIMED_OUT" == "1" ]]; then
       printf '%s label=%s budget_seconds=%s\n' "$CODEX_GUARD_TIMEOUT_MARKER" "$label" "$timeout_seconds" >&2
       return 124
     fi

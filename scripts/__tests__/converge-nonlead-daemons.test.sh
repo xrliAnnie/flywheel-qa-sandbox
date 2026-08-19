@@ -19,6 +19,20 @@ fi
 # shellcheck source=../lib/converge-nonlead-daemons.sh
 source "$LIB"
 
+# This suite exercises launchd reconciliation, not machine-global Codex guard
+# installation. Keep both layers hermetic: explicit roots are a fail-safe if
+# the seam is accidentally removed, while the stub avoids repeating a real
+# install for every launchd fixture. The guard's real same-SHA convergence is
+# covered by codex-guard.test.sh against its own temporary HOME.
+export HOME="$ROOT/home"
+export FLYWHEEL_CODEX_GLOBAL_BIN_DIR="$ROOT/codex-global-bin"
+export FLYWHEEL_CODEX_GUARD_INSTALL_ROOT="$ROOT/codex-guard-install"
+mkdir -p "$HOME"
+CODEX_GUARD_CONVERGE_CALLS=0
+_cnd_converge_codex_guard() {
+  CODEX_GUARD_CONVERGE_CALLS=$((CODEX_GUARD_CONVERGE_CALLS + 1))
+}
+
 DOMAIN_FILE="$ROOT/domain"
 DISABLED_FILE="$ROOT/disabled"
 BOOTSTRAP_LOG="$ROOT/bootstrap.log"
@@ -124,11 +138,12 @@ plist com.flywheel.quota-monitor
 enabled com.flywheel.quota-monitor
 converge_nonlead_daemons >/dev/null 2>&1
 if bootstrapped com.flywheel.quota-monitor \
+  && [[ "$CODEX_GUARD_CONVERGE_CALLS" == "1" ]] \
   && [[ "$NONLEAD_DAEMON_CONVERGE_STATE" == "healthy" ]] \
   && grep -Fxq com.flywheel.quota-monitor "$DOMAIN_FILE"; then
-  pass "an enabled non-Lead daemon that fell out of the domain is bootstrapped back"
+  pass "an enabled non-Lead daemon is bootstrapped and the isolated guard seam runs once"
 else
-  fail "quota-monitor shape not converged (state=$NONLEAD_DAEMON_CONVERGE_STATE)"
+  fail "quota-monitor shape not converged (state=$NONLEAD_DAEMON_CONVERGE_STATE guard_calls=$CODEX_GUARD_CONVERGE_CALLS)"
 fi
 
 echo "Test: a label with no override entry at all counts as enabled (launchd's default)"

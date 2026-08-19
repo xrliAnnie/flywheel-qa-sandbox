@@ -28,6 +28,7 @@ import os  # noqa: E402
 import stat  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "flywheel-restart-guard.py"
@@ -725,6 +726,30 @@ def t9_log_rotation():
         else:
             active = log.read_text() if log.exists() else "missing"
             bad("T9 audit rotation", f"wrote={wrote} active={active}")
+
+        log.write_text("stale-lock-evidence\n")
+        lock = log.with_name("restart-guard.log.rotate.lock")
+        lock.mkdir()
+        old_lock_time = time.time() - 10 * 60
+        os.utime(lock, (old_lock_time, old_lock_time))
+        prior = os.environ.get("FLYWHEEL_RESTART_GUARD_LOG")
+        os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = str(log)
+        old_max = mod.LOG_MAX_BYTES
+        try:
+            mod.LOG_MAX_BYTES = 8
+            recovered = mod.audit_write({"event": "after-stale-lock"})
+        finally:
+            mod.LOG_MAX_BYTES = old_max
+            if prior is None:
+                os.environ.pop("FLYWHEEL_RESTART_GUARD_LOG", None)
+            else:
+                os.environ["FLYWHEEL_RESTART_GUARD_LOG"] = prior
+        if recovered and archive.read_text() == "stale-lock-evidence\n" \
+                and "after-stale-lock" in log.read_text() and not lock.exists():
+            ok("T9 stale crash-residue lock is recovered before append")
+        else:
+            active = log.read_text() if log.exists() else "missing"
+            bad("T9 stale lock recovery", f"recovered={recovered} active={active}")
 
 
 def main() -> int:

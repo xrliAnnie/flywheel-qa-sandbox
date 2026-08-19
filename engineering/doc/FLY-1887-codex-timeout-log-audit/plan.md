@@ -492,3 +492,16 @@ PR body 按三片分别列验收证据,并显式注明「已按 Lead 裁定由�
 | 旧 release 可能遗留 `.current-*` 临时 symlink | retention 在确认 release 只含两个精确的 regular script 与 `.current-*` symlink 后清理;其他未知项仍 fail-closed;新增 fixture 验证 |
 | fresh host 无 `.bak` 时 passthrough 丢失 legacy 429 profile rotation | 在 §3.5 明确该 rollback 只保证 direct `codex` passthrough,限流时直接失败,不虚报 legacy fallback 语义 |
 | 应急步骤需靠近安装入口 | `install-codex-guard.sh` 顶部注释已列出 disable / re-enable / verify 步骤 |
+
+**评审 G(Codex 代码评审 R1,question `c9e99aef-7927-4bfe-93e6-f7ba8f208125`) —— 结论 `CHANGES_REQUESTED`,2 项 HIGH + 2 项 MEDIUM + 4 项 LOW;R2 前全部收口。**
+
+| 严重度 | 发现 | 处置 |
+|--------|------|------|
+| HIGH | `converge-nonlead-daemons.test.sh` 每个 fixture 都会执行真实 machine-global guard install | 单测同时导出临时 HOME/install roots 作 fail-safe,并 stub `_cnd_converge_codex_guard`;首个 fixture 断言 seam 精确执行一次。真 same-SHA install 仍由 `codex-guard.test.sh` 在隔离 HOME 内验证 |
+| HIGH | fresh host 第二次 install 把第一次生成的 shim 备份成 `.bak`,导致 `DISABLED` 假回滚 | 生成 shim/passthrough 带 managed sentinel,并兼容识别旧未打标 shim;不再备份 managed bytes。`DISABLED` 若遇已污染 managed `.bak` 也忽略它、强制发布 direct-codex passthrough;覆盖 fresh 双 install 与历史污染迁移两条 RED→GREEN |
+| MEDIUM | model fallback 断言把两次 attempt 塞进 2s 总预算,高负载下拖动 | 总预算放宽至 10s,单 attempt 仍 2s,只测“最后一档仍受限”而不测调度器时延 |
+| MEDIUM | 两个 Python hook 的日志 lock 无 stale recovery | `flywheel-restart-guard.py` 与 `discord-reply-enforcer.py` 补与 shell/TS 同形的 300s + `(device,inode,mtime_ns)` quarantine/recheck;真 `audit_write` / `log()` append seam 分别 RED→GREEN |
+| LOW | external `timeout` 把子进程自身 124/137 误报为 guard timeout | external helper 保持自有 completion marker;只有 timeout 返回 124/137 且 helper 未留完成证据时才打 `TIMEOUT`,子进程 124/137 原样返回 |
+| LOW | registry 组合校验接受 middle-empty `pgid` | `pid` / `pgid` / `deadline` 分别校验;缺 `pgid` 的阳性对照证明记录被删除且零信号 |
+| LOW | pure-Bash watchdog 先 unlink marker,留出 symlink 重建窗口 | 保留 `mktemp` regular file 至结束,watchdog 只 append timeout evidence,父进程校验 regular/non-symlink/non-empty 后清理;运行中所有权有可观测断言 |
+| LOW | TS quarantine restore 可覆盖已抢到 lock 的新 owner | restore 只在 `lstat(lock)` 明确 `ENOENT` 时尝试;确定性竞态 fixture 钉住新 owner `(device,inode)` 不变 |

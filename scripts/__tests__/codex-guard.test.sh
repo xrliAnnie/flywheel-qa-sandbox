@@ -76,6 +76,76 @@ else
   for pid in "${survivors[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
 fi
 
+echo "== pure-Bash watchdog retains ownership of its timeout marker =="
+MARKER_TMP="$ROOT/marker-tmp"
+mkdir -p "$MARKER_TMP"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+: > "$ROOT/marker-child-ready"
+exec /bin/sleep 300
+EOF
+chmod +x "$ROOT/bin/codex"
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  TMPDIR="$MARKER_TMP" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/marker.stdout" 2>"$ROOT/marker.stderr" &
+marker_wrapper_pid=$!
+for _ in $(seq 1 60); do
+  [[ -e "$ROOT/marker-child-ready" ]] && break
+  sleep 0.05
+done
+owned_marker="$(find "$MARKER_TMP" -maxdepth 1 -name 'codex-guard-timeout.*' \
+  -type f -print -quit 2>/dev/null)"
+wait "$marker_wrapper_pid" 2>/dev/null || true
+if [[ -n "$owned_marker" && ! -L "$owned_marker" && ! -e "$owned_marker" ]]; then
+  pass "the watchdog keeps an owned regular marker until cleanup"
+else
+  fail "the watchdog keeps an owned regular marker until cleanup" \
+    "observed=${owned_marker:-missing} remains=$([[ -n "$owned_marker" && -e "$owned_marker" ]] && echo yes || echo no)"
+fi
+
+echo "== external timeout requires timeout evidence, not a child exit code =="
+cat > "$ROOT/bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "1" ]]; then
+  shift
+  exec "$@"
+fi
+while [[ "${1:-}" == --* ]]; do shift; done
+shift # duration
+exec "$@"
+EOF
+chmod +x "$ROOT/bin/timeout"
+external_status_ok=1
+for child_status in 124 137; do
+  external_rc=0
+  (
+    source "$REPO_ROOT/scripts/lib/codex-guard.sh"
+    PATH="$ROOT/bin:/usr/bin:/bin" \
+      FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+      FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+      codex_guard_run 5 "external-exit-$child_status" \
+        /bin/bash -c "exit $child_status"
+  ) >"$ROOT/external-$child_status.stdout" \
+    2>"$ROOT/external-$child_status.stderr" || external_rc=$?
+  if [[ "$external_rc" != "$child_status" ]] \
+    || grep -q '^\[codex-guard\] TIMEOUT ' "$ROOT/external-$child_status.stderr"; then
+    external_status_ok=0
+  fi
+done
+rm -f "$ROOT/bin/timeout"
+if [[ "$external_status_ok" == "1" ]]; then
+  pass "external timeout preserves evidenced child exits 124/137 without a false timeout marker"
+else
+  fail "external timeout preserves evidenced child exits 124/137 without a false timeout marker" \
+    "rc124=$(tail -1 "$ROOT/external-124.stderr" 2>/dev/null) rc137=$(tail -1 "$ROOT/external-137.stderr" 2>/dev/null)"
+fi
+
 echo "== cleanup is registry-positive and identity-fenced =="
 cat > "$ROOT/bin/codex" <<'EOF'
 #!/usr/bin/env bash
@@ -247,6 +317,25 @@ else
     "child_alive=$(kill -0 "$interrupted_codex_pid" 2>/dev/null && echo yes || echo no) entry=$([[ -e "$interrupted_entry" ]] && echo yes || echo no)"
   [[ -z "$interrupted_codex_pid" ]] || kill -KILL "$interrupted_codex_pid" 2>/dev/null || true
 fi
+
+echo "== malformed registry fields are rejected before signaling =="
+rm -f "$ROOT/state"/*.json "$ROOT/malformed-signals"
+malformed_pid=424242
+printf '{"pid":%s,"start":"Mon Jan  1 00:00:00 2024","deadline":0,"label":"truncated"}\n' \
+  "$malformed_pid" > "$ROOT/state/$malformed_pid.json"
+(
+  source "$REPO_ROOT/scripts/lib/codex-guard.sh"
+  kill() { printf '%s\n' "$*" >> "$ROOT/malformed-signals"; return 0; }
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+    FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" codex_guard_sweep
+)
+if [[ ! -e "$ROOT/state/$malformed_pid.json" && ! -e "$ROOT/malformed-signals" ]]; then
+  pass "a registry entry with an empty pgid is discarded without signaling"
+else
+  fail "a registry entry with an empty pgid is discarded without signaling" \
+    "entry=$([[ -e "$ROOT/state/$malformed_pid.json" ]] && echo yes || echo no) signals=$(cat "$ROOT/malformed-signals" 2>/dev/null || echo none)"
+fi
+
 echo "== invalid configuration fails closed before Codex starts =="
 rm -f "$ROOT/codex.invoked"
 cat > "$ROOT/bin/codex" <<EOF
@@ -414,7 +503,7 @@ rc=0
 env -i \
   HOME="$ROOT/home" \
   PATH="$ROOT/bin:/usr/bin:/bin" \
-  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
   FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
   FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
   FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
@@ -625,6 +714,11 @@ fi
 FRESH_DISABLE_HOME="$ROOT/fresh-disable-home"
 HOME="$FRESH_DISABLE_HOME" /bin/bash "$INSTALLER" \
   >"$ROOT/fresh-disable-install.stdout" 2>"$ROOT/fresh-disable-install.stderr"
+# A fresh host has no legacy wrapper. The unconditional same-SHA convergence
+# runs this installer repeatedly before an operator may need DISABLED; a
+# generated managed shim must never become its own emergency backup.
+HOME="$FRESH_DISABLE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/fresh-disable-reinstall.stdout" 2>"$ROOT/fresh-disable-reinstall.stderr"
 fresh_disable_sentinel="$FRESH_DISABLE_HOME/.flywheel/libexec/codex-guard/DISABLED"
 touch "$fresh_disable_sentinel"
 fresh_disable_rc=0
@@ -638,6 +732,25 @@ if [[ "$fresh_disable_rc" == "0" && "$fresh_disable_exec" == "fixed-target-ok" \
 else
   fail "disable sentinel publishes a passthrough when no legacy backup exists" \
     "rc=$fresh_disable_rc exec=$fresh_disable_exec stderr=$(cat "$ROOT/fresh-disable.stderr" 2>/dev/null)"
+fi
+
+CONTAMINATED_DISABLE_HOME="$ROOT/contaminated-disable-home"
+HOME="$CONTAMINATED_DISABLE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/contaminated-install.stdout" 2>"$ROOT/contaminated-install.stderr"
+cp "$CONTAMINATED_DISABLE_HOME/.local/bin/codex-with-fallback" \
+  "$CONTAMINATED_DISABLE_HOME/.local/bin/codex-with-fallback.bak"
+touch "$CONTAMINATED_DISABLE_HOME/.flywheel/libexec/codex-guard/DISABLED"
+contaminated_disable_rc=0
+HOME="$CONTAMINATED_DISABLE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/contaminated-disable.stdout" 2>"$ROOT/contaminated-disable.stderr" \
+  || contaminated_disable_rc=$?
+if [[ "$contaminated_disable_rc" == "0" ]] \
+  && grep -Fq 'exec codex "$@"' \
+    "$CONTAMINATED_DISABLE_HOME/.local/bin/codex-with-fallback"; then
+  pass "disable ignores a contaminated managed-shim backup from an older installer"
+else
+  fail "disable ignores a contaminated managed-shim backup from an older installer" \
+    "rc=$contaminated_disable_rc shim=$(cat "$CONTAMINATED_DISABLE_HOME/.local/bin/codex-with-fallback" 2>/dev/null || echo missing)"
 fi
 
 installed_wrapper="$current/codex-with-fallback.sh"

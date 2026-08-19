@@ -51,6 +51,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import time
 import urllib.error
@@ -132,6 +133,60 @@ _PARAM_RE = re.compile(
 
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_RETENTION = 3
+LOG_LOCK_STALE_SECONDS = 5 * 60
+
+
+def _rotation_lock_identity(path: Path) -> tuple[int, int, int]:
+    observed = path.lstat()
+    return observed.st_dev, observed.st_ino, observed.st_mtime_ns
+
+
+def _acquire_rotation_lock(lock: Path) -> bool:
+    try:
+        lock.mkdir()
+        return True
+    except Exception:
+        pass
+    try:
+        observed_stat = lock.lstat()
+        if not stat.S_ISDIR(observed_stat.st_mode) or lock.is_symlink():
+            return False
+        age_ns = time.time_ns() - observed_stat.st_mtime_ns
+        if age_ns < LOG_LOCK_STALE_SECONDS * 1_000_000_000:
+            return False
+        observed = (
+            observed_stat.st_dev,
+            observed_stat.st_ino,
+            observed_stat.st_mtime_ns,
+        )
+    except Exception:
+        return False
+
+    quarantine = lock.with_name(
+        f"{lock.name}.stale.{os.getpid()}.{time.time_ns()}"
+    )
+    moved = False
+    try:
+        os.replace(lock, quarantine)
+        moved = True
+        if _rotation_lock_identity(quarantine) != observed:
+            if not os.path.lexists(lock):
+                os.replace(quarantine, lock)
+                moved = False
+            return False
+        lock.mkdir()
+        try:
+            quarantine.rmdir()
+        except Exception:
+            pass
+        return True
+    except Exception:
+        if moved and not os.path.lexists(lock):
+            try:
+                os.replace(quarantine, lock)
+            except Exception:
+                pass
+        return False
 
 
 def rotate_log_if_needed(path: Path) -> None:
@@ -141,8 +196,9 @@ def rotate_log_if_needed(path: Path) -> None:
         stat_result = path.lstat()
         if path.is_symlink() or not path.is_file() or stat_result.st_size < LOG_MAX_BYTES:
             return
-        lock.mkdir()
     except Exception:
+        return
+    if not _acquire_rotation_lock(lock):
         return
     try:
         stat_result = path.lstat()

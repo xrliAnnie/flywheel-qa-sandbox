@@ -23,6 +23,31 @@ function positiveInteger(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
 }
 
+function restoreQuarantinedLockIfUnclaimed(
+	quarantine: string,
+	lock: string,
+): boolean {
+	try {
+		lstatSync(lock);
+		return false;
+	} catch (error) {
+		if (
+			typeof error !== "object" ||
+			error === null ||
+			!("code" in error) ||
+			error.code !== "ENOENT"
+		) {
+			return false;
+		}
+	}
+	try {
+		renameSync(quarantine, lock);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function acquireRotationLock(lock: string, staleMs: number): boolean {
 	try {
 		mkdirSync(lock);
@@ -60,11 +85,8 @@ function acquireRotationLock(lock: string, staleMs: number): boolean {
 		) {
 			// A new owner replaced the stale directory between inspection and
 			// rename. Restore its exact inode and abandon recovery.
-			try {
-				renameSync(quarantine, lock);
+			if (restoreQuarantinedLockIfUnclaimed(quarantine, lock)) {
 				moved = false;
-			} catch {
-				// Another contender filled the path; never disturb that owner.
 			}
 			return false;
 		}
@@ -73,11 +95,7 @@ function acquireRotationLock(lock: string, staleMs: number): boolean {
 		return true;
 	} catch {
 		if (moved) {
-			try {
-				renameSync(quarantine, lock);
-			} catch {
-				// Another contender won; leave its lock authoritative.
-			}
+			restoreQuarantinedLockIfUnclaimed(quarantine, lock);
 		}
 		return false;
 	}

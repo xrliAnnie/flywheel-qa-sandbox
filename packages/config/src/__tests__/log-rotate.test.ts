@@ -125,6 +125,62 @@ describe("rotated log helpers", () => {
 		}
 	});
 
+	it("does not clobber a new owner while abandoning quarantined stale state", async () => {
+		const log = join(tempRoot(), "audit.log");
+		const lock = `${log}.rotate.lock`;
+		writeFileSync(log, "new-owner-evidence\n");
+		mkdirSync(lock);
+		const old = new Date(Date.now() - 10 * 60 * 1000);
+		utimesSync(lock, old, old);
+		let replacementIdentity: {
+			dev: number | bigint;
+			ino: number | bigint;
+		} | null = null;
+		let injected = false;
+
+		vi.resetModules();
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				lstatSync(path: Parameters<typeof actual.lstatSync>[0]) {
+					if (
+						typeof path === "string" &&
+						path.startsWith(`${lock}.stale.`) &&
+						!injected
+					) {
+						injected = true;
+						mkdirSync(lock);
+						const replacement = actual.lstatSync(lock);
+						replacementIdentity = {
+							dev: replacement.dev,
+							ino: replacement.ino,
+						};
+					}
+					return actual.lstatSync(path);
+				},
+			};
+		});
+		try {
+			const raced = await import("../log-rotate.js");
+			expect(
+				raced.rotateLogIfNeeded(log, {
+					maxBytes: 1,
+					keep: 3,
+					lockStaleMs: 5 * 60 * 1000,
+				}),
+			).toBe(false);
+			const surviving = lstatSync(lock);
+			expect({ dev: surviving.dev, ino: surviving.ino }).toEqual(
+				replacementIdentity,
+			);
+			expect(readFileSync(log, "utf8")).toBe("new-owner-evidence\n");
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
 	it("keeps append failures visible after a fail-open rotation attempt", () => {
 		const root = tempRoot();
 		const parentFile = join(root, "not-a-directory");
