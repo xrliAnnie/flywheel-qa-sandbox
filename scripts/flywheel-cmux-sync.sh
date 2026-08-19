@@ -283,7 +283,7 @@ cmux_health_check() {
   # Match against combined stdout + stderr: cmux may write the access-denied
   # message to either stream depending on protocol stage.
   local combined="${out}${err_text}"
-  if grep -q "Access denied" <<<"$combined"; then
+  if printf '%s\n' "$combined" | grep -q "Access denied"; then
     log "ERROR: cmux IPC rejected by app — caller is not a cmux descendant and socketControlMode != allowAll"
     log "ERROR: stderr: ${err_text:-<empty>}"
     log "ERROR: To fix: defaults write com.cmuxterm.app socketControlMode -string allowAll && quit cmux app + relaunch"
@@ -293,7 +293,7 @@ cmux_health_check() {
   # can't open() it (wrong owner / mode 0600 by another user / SIP / etc.).
   # No amount of retrying will fix this — surface as fatal so the lock
   # releases instead of looping forever.
-  if grep -qE "Permission denied|Operation not permitted" <<<"$combined"; then
+  if printf '%s\n' "$combined" | grep -qE "Permission denied|Operation not permitted"; then
     log "ERROR: cmux socket present at $socket but kernel denied open()"
     log "ERROR: stderr: ${err_text:-<empty>}"
     log "ERROR: Likely cause: socket owned by a different user, or socketControlMode=cmuxOnly with file mode 0600"
@@ -587,7 +587,7 @@ get_tmux_agent_windows() {
       if [[ -n "$rwindows" ]]; then
         all_windows+=$'\n'"$rwindows"
       fi
-    done <<< "$runner_sessions"
+    done < <(printf '%s\n' "$runner_sessions")
   fi
 
   # Filter out default shell windows
@@ -682,7 +682,7 @@ derive_lead_roster() {
       LEAD_ROSTER_REASONS="roster-authority-unavailable: invalid manifest $slug"
       return 1
     }
-    IFS='|' read -r project lead backend socket <<< "$fields"
+    IFS='|' read -r project lead backend socket < <(printf '%s\n' "$fields")
     title="${project}-${lead}"
     # The launchd label and manifest identity must describe the same slot.
     [[ "$slug" == "$title" ]] || {
@@ -730,7 +730,7 @@ read_roster_tmux_inventory() {
     case "$session" in
       flywheel|runner-*) relevant+="${relevant:+$'\n'}${session}" ;;
     esac
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
   if [[ -z "$relevant" ]]; then
     ROSTER_TMUX_STATE="ok_empty"
     return 0
@@ -759,8 +759,8 @@ read_roster_tmux_inventory() {
       printf '%s|%s|%s\n' "$observed_session" "$wid" "$title" >> "$tmp" || {
         rm -f "$tmp"; return 1;
       }
-    done <<< "$rows"
-  done <<< "$relevant"
+    done < <(printf '%s\n' "$rows")
+  done < <(printf '%s\n' "$relevant")
   ROSTER_TMUX_WINDOWS=$(cat "$tmp") || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
   [[ -n "$ROSTER_TMUX_WINDOWS" ]] \
@@ -829,7 +829,7 @@ roster_rearm_absent_subjects() {
     [[ -n "$subject" ]] || continue
     printf '%s\n' "$current" | grep -qxF "$subject" \
       || roster_mark_healthy "$kind" "$subject"
-  done <<< "$(awk -F'|' -v k="$kind" 'NF == 4 && $1 == k { print $2 }' "$ROSTER_EPISODE_STATE")"
+  done < <(printf '%s\n' "$(awk -F'|' -v k="$kind" 'NF == 4 && $1 == k { print $2 }' "$ROSTER_EPISODE_STATE")")
 }
 
 reconcile_lead_roster() {
@@ -851,7 +851,7 @@ reconcile_lead_roster() {
     else
       roster_mark_healthy config-drift "$label"
     fi
-  done <<< "$LEAD_ROSTER_ROWS"
+  done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
   roster_rearm_absent_subjects config-drift "$current_config"
 
   while IFS='|' read -r carrier label title socket; do
@@ -869,7 +869,7 @@ reconcile_lead_roster() {
     if [[ "$carrier" == "claude-tmux" || "$carrier" == "codex-tui-cmux" ]]; then
       legacy_expected=1
     fi
-  done <<< "$LEAD_ROSTER_ROWS"
+  done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
 
   if [[ "$legacy_expected" == "1" ]]; then
     if ! read_roster_tmux_inventory \
@@ -894,7 +894,7 @@ reconcile_lead_roster() {
         "cmux Lead window missing" \
         "Loaded Lead $label expects flywheel:=$title, but the conclusive tmux inventory contains no such window. The watcher will not silently infer a tab from titles."
     fi
-  done <<< "$LEAD_ROSTER_ROWS"
+  done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
   roster_rearm_absent_subjects lead-window-missing "$current_missing"
 }
 
@@ -1071,11 +1071,11 @@ reconcile_runner_roster() {
         "$short"
       continue
     fi
-    IFS='|' read -r _ state _ids <<< "$row"
+    IFS='|' read -r _ state _ids < <(printf '%s\n' "$row")
     [[ "$state" == "present" ]] && roster_mark_healthy runner-orphan "$exec_id"
     # A multi-window execution identity is itself indeterminate. Preserve the
     # prior subject state; title or session aliases are never used to guess.
-  done <<< "$RUNNER_EXPECTED_EXEC_IDS"
+  done < <(printf '%s\n' "$RUNNER_EXPECTED_EXEC_IDS")
   roster_rearm_absent_subjects runner-orphan "$current"
 }
 
@@ -1443,7 +1443,7 @@ stock_topology_fingerprint() {
     current=$(tmux list-windows -t "=$sess" \
       -F '#{session_name}|#{window_id}|#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
     [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
   if printf '%s\n' "$rows" | awk -F'|' -v t="$title" '$3 == t { found=1 } END { exit(found ? 0 : 1) }'; then
     return 1
   fi
@@ -1457,7 +1457,7 @@ stock_topology_fingerprint() {
     return 0
   fi
   snapshot=$(_view_session_snapshot "${VIEW_PREFIX}${title}") || return 2
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   # A markerless grouped session has no immutable Flywheel ownership evidence.
   # Group name, title, and pane-dead are mutable topology, so they can preserve
   # a candidate but can never mint the first close receipt. Already-receipted
@@ -1476,7 +1476,7 @@ stock_topology_fingerprint() {
   fi
   observed=$(tmux display-message -p -t "=${VIEW_PREFIX}${title}:${active}" \
     '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
-  IFS='|' read -r current dead <<< "$observed"
+  IFS='|' read -r current dead < <(printf '%s\n' "$observed")
   if [[ "$current" != "$title" ]]; then
     printf 'foreign-view:%s\n' "$(_cmux_alert_hash "$snapshot|observed=$observed")"
     return 3
@@ -1622,7 +1622,7 @@ reap_unledgered_stock_workspaces() {
       # Drop the old fingerprint; a future conclusive pass starts a new grace.
       continue
     fi
-  done <<< "$records"
+  done < <(printf '%s\n' "$records")
 
   if ! printf '%s' "$keep" > "$tmp" 2>/dev/null || ! mv "$tmp" "$ADOPTION_STATE" 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null || true
@@ -1649,7 +1649,7 @@ collect_agent_window_names_strict() {
     esac
     w=$(tmux list-windows -t "$sess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null) || return 2
     [[ -n "$w" ]] && out+="$w"$'\n'
-  done <<< "$snapshot"
+  done < <(printf '%s\n' "$snapshot")
   printf '%s' "$out" | grep -v '|zsh$' | grep -v '|bash$' | grep -v '^$' | cut -d'|' -f3 || true
   return 0
 }
@@ -1697,7 +1697,7 @@ for w in d.get("workspaces", []):
     if printf '%s\n' "$agent_names" | grep -qxF "$title"; then continue; fi
     if printf '%s\n' "$sessions" | grep -qxF "cmux-${title}"; then continue; fi
     printf '%s\t%s\n' "$ref" "$title"
-  done <<< "$pairs"
+  done < <(printf '%s\n' "$pairs")
   return 0
 }
 
@@ -1813,7 +1813,7 @@ reap_orphan_workspace_pins() {
     else
       keep+="${ref}|${first}|${tb64}"$'\n'          # still within grace → keep original ts
     fi
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
   # Codex R1 (code) MED-2: fail-closed on an unwritable state path. A bare
   # `printf > "$ORPHAN_PIN_STATE"` on an unwritable path (e.g. broken /tmp) exits
   # the watcher under `set -e`. This automatic path must degrade to "grace not
@@ -1873,7 +1873,7 @@ list_orphan_pins() {
   while IFS=$'\t' read -r ref title; do
     [[ -z "$ref" ]] && continue
     printf '  %s\t%s\n' "$ref" "$title"
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
   return 0
 }
 
@@ -1899,7 +1899,7 @@ reap_orphan_pins_oneshot() {
       closed_any=1
       echo "reaped orphan pin: $ref ($title)"
     fi
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
   if [[ "$closed_any" == "1" ]]; then
     cmux_call refresh-surfaces || true
   fi
@@ -2002,7 +2002,7 @@ _drain_close_requests() {
         requeue=1   # final-gate uncertainty (JSON/tmux flap during revalidation)
       fi
       # crc=1 (predicate skip: restarted / not-orphan / gone) → drop; FLY-293 backstops.
-    done <<< "$refs"
+    done < <(printf '%s\n' "$refs")
     watcher_mutation_latch_clear || inner_interrupted=1
     if [[ "$inner_interrupted" -eq 1 ]]; then
       interrupted=1
@@ -2077,14 +2077,14 @@ is_pane_alive() {
     current=$(tmux list-windows -t "$sess" \
       -F '#{session_name}|#{window_id}|#{window_name}' 2>/dev/null) || return 2
     [[ -n "$current" ]] && rows+="${rows:+$'\n'}${current}"
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
 
   while IFS='|' read -r sess wid name; do
     [[ -z "$sess" || -z "$name" ]] && continue
     [[ "$name" == "$wname" ]] || continue
     dead=$(tmux display-message -p -t "=${sess}:${wid}" "#{pane_dead}" 2>/dev/null) || return 2
     case "$dead" in 0) return 0 ;; 1) ;; *) return 2 ;; esac
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
 
   # R6 view-lifetime rule: in strict A0B1 the independent cmux view may be the
   # window's only remaining reference after the runner's spawning session is
@@ -2586,7 +2586,7 @@ _v2_lead_cleanup_duplicates() {
       log "WARN: duplicate v2 Lead workspace cleanup deferred title=$title ref=$loser_ref"
       return 1
     fi
-  done <<< "$candidates"
+  done < <(printf '%s\n' "$candidates")
   return 0
 }
 
@@ -2601,7 +2601,7 @@ ensure_v2_lead_workspace() {
   count=$(printf '%s\n' "$candidates" | grep -c . || true)
   if (( count > 0 )); then
     keeper=$(select_title_keeper "$generation" "$title" "$candidates") || return 1
-    IFS='|' read -r kind ref <<< "$keeper"
+    IFS='|' read -r kind ref < <(printf '%s\n' "$keeper")
     state=$(ledger_candidate_receipt_state "$generation" "$ref" "$title") || return 1
     # A named, unreceipted row may be a founder workspace. Exact raw helper
     # syntax is the only stock form strong enough to mint ownership.
@@ -2654,7 +2654,7 @@ reconcile_v2_lead_workspaces() {
     watcher_mutation_latch_clear || return 0
     ensure_v2_lead_workspace "$title" "$socket" \
       || log "WARN: v2 Lead workspace reconcile deferred title=$title"
-  done <<< "$LEAD_ROSTER_ROWS"
+  done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
   return 0
 }
 
@@ -2917,7 +2917,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   while IFS='|' read -r _s _wid wname; do
     [[ -z "$wname" ]] && continue
     echo "$titles" | grep -qx -- "$wname" || echo "$wname"
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
   return 0
 }
 
@@ -3230,7 +3230,7 @@ self_heal_one_workspace() {
       2) break ;;    # client appeared mid-loop → stop sending
       *) log "WARN: unexpected self-heal rc=$hr for $wname ref=$ref" ;;
     esac
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
 
   if [[ "$healed" -eq 1 ]]; then
     # FLY-280: re-point by LIVE window_id (not =name, which could land on a stale
@@ -3253,7 +3253,7 @@ strict_view_heal_titles() {
     title="${session#"${VIEW_PREFIX}"}"
     is_managed_runner_title "$title" || continue
     snapshot=$(_view_session_snapshot "$session") || continue
-    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
     case "$owner" in flywheel|runner-*) ;; *) continue ;; esac
     [[ -n "$sid" && "$grouped" == "0" && -n "$active" \
         && "$marker" == "0" && "$members" == "$active" ]] || continue
@@ -3261,7 +3261,7 @@ strict_view_heal_titles() {
     dead=$(tmux display-message -p -t "=${session}:${active}" '#{pane_dead}' 2>/dev/null) || continue
     [[ "$observed" == "$title" && "$dead" == "0" ]] || continue
     printf '%s\n' "$title"
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
 }
 
 # Bounded sweep of ALL agent windows plus conclusive strict sole-holder views
@@ -3300,7 +3300,7 @@ self_heal_sweep_all() {
   while IFS= read -r wname; do
     [[ -z "$wname" ]] && continue
     self_heal_one_workspace "$wname"
-  done <<< "$heal_names"
+  done < <(printf '%s\n' "$heal_names")
 
   # FLY-254: single cleanup epilogue — the focus restore decision. Restore the
   # original tab ONLY when (a) we actually moved focus, (b) the user never
@@ -3361,7 +3361,7 @@ self_heal_sweep_session() {
   local s _wid wname
   while IFS='|' read -r s _wid wname; do
     [[ "$s" == "$target" && -n "$wname" ]] && self_heal_one_workspace "$wname"
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
   # FLY-177 (churn root cause): explicit success. The loop body's final
   # statement is `[[ cond ]] && self_heal_one_workspace`; whenever the LAST
   # agent window does NOT belong to $target, the `[[ ]]` is false and the
@@ -3405,7 +3405,7 @@ cmux_wal_keeper_blocked() {
   while IFS='|' read -r view source wid; do
     [[ -n "$view" && "$source" == "$owner" ]] || continue
     case ",$members," in *",$wid,"*) return 0 ;; esac
-  done <<< "$CMUX_WAL_BLOCKED_VIEWS"
+  done < <(printf '%s\n' "$CMUX_WAL_BLOCKED_VIEWS")
   return 1
 }
 
@@ -3535,7 +3535,7 @@ _tmux_view_build_guard() {
   observed=$(tmux display-message -p \
     -t "=$_GUARD_VIEW_BUILD_SOURCE:$_GUARD_VIEW_BUILD_WINDOW_ID" \
     '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
-  IFS='|' read -r source_name source_dead <<< "$observed"
+  IFS='|' read -r source_name source_dead < <(printf '%s\n' "$observed")
   [[ "$source_name" == "$_GUARD_VIEW_BUILD_WINDOW_NAME" && "$source_dead" == "0" ]] || return 1
   if [[ -n "$_GUARD_VIEW_BUILD_STAGE" ]]; then
     observed=$(_view_session_snapshot "$_GUARD_VIEW_BUILD_STAGE") || return 1
@@ -3562,7 +3562,7 @@ _view_shell_owned_for_title() {
   local saw_source=0 matched_source=0
   OWNED_VIEW_SNAPSHOT=""
   snapshot=$(_view_session_snapshot "$session") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ -n "$sid" && -n "$active" ]] || return 1
 
   if [[ "$grouped" == "0" ]]; then
@@ -3570,7 +3570,7 @@ _view_shell_owned_for_title() {
     [[ "$marker" == "0" && "$members" == "$active" ]] || return 1
     observed=$(tmux display-message -p -t "=${session}:${active}" \
       '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
-    IFS='|' read -r current dead <<< "$observed"
+    IFS='|' read -r current dead < <(printf '%s\n' "$observed")
     [[ "$current" == "$title" ]] || return 1
     case "$dead" in 0|1) ;; *) return 1 ;; esac
     [[ "$require_live" != "1" || "$dead" == "0" ]] || return 1
@@ -3593,7 +3593,7 @@ _view_shell_owned_for_title() {
         '#{pane_dead}' 2>/dev/null) || return 1
       [[ "$source_dead" == "0" ]] || return 1
       matched_source=1
-    done <<< "$source_rows"
+    done < <(printf '%s\n' "$source_rows")
     [[ "$saw_source" == "0" || "$matched_source" == "1" ]] || return 1
   fi
 
@@ -3610,7 +3610,7 @@ _linked_view_matches() {
     [[ "$current" == "$expected_generation" ]] || return 1
   fi
   snapshot=$(_view_session_snapshot "$session") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$grouped" == "0" && "$active" == "$expected_wid" \
      && "$owner" == "$expected_owner" && "$marker" == "0" \
      && "$members" == "$expected_wid" ]] || return 1
@@ -3618,7 +3618,7 @@ _linked_view_matches() {
   if [[ -n "$expected_title" ]]; then
     observed=$(tmux display-message -p -t "=${session}:${expected_wid}" \
       '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
-    IFS='|' read -r title dead <<< "$observed"
+    IFS='|' read -r title dead < <(printf '%s\n' "$observed")
     [[ "$title" == "$expected_title" ]] || return 1
     case "$dead" in 0|1) ;; *) return 1 ;; esac
   fi
@@ -3647,7 +3647,7 @@ _retire_owned_stage() {
   local snapshot sid grouped active observed_owner marker members source_id
   linked_session_exists "$stage" || return 0
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active observed_owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active observed_owner marker members < <(printf '%s\n' "$snapshot")
   [[ -n "$expected_sid" && "$sid" == "$expected_sid" && "$grouped" == "0" \
      && "$observed_owner" == "$owner" ]] || return 1
   case ",$members," in
@@ -3671,7 +3671,7 @@ _retire_owned_stage() {
   esac
   linked_session_exists "$stage" || return 0
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active observed_owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active observed_owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$sid" == "$expected_sid" && "$grouped" == "0" \
      && "$observed_owner" == "$owner" && "$marker" == "1" \
      && "$members" == "$placeholder" ]] || return 1
@@ -3695,7 +3695,7 @@ _retire_create_intent_stage() {
   local snapshot sid grouped active owner marker members name
   linked_session_exists "$stage" || return 0
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ -n "$sid" && "$grouped" == "0" && "$members" == "$active" ]] || return 1
   name=$(tmux display-message -p -t "=${stage}:${active}" '#{window_name}' 2>/dev/null) || return 1
   [[ "$name" == "__flywheel_placeholder__" ]] || return 1
@@ -3726,14 +3726,14 @@ recover_view_construction() {
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
   case "$fields" in
     9)
-      IFS='|' read -r version generation state nonce view source wid stage_sid placeholder <<< "$line"
+      IFS='|' read -r version generation state nonce view source wid stage_sid placeholder < <(printf '%s\n' "$line")
       ;;
     11)
       # Production tmux generations are the historical socket|pid|started
       # tuple. Test seams use an opaque one-field generation, so recovery must
       # accept both durable shapes without rewriting either one.
       IFS='|' read -r version generation_socket generation_pid generation_started \
-        state nonce view source wid stage_sid placeholder <<< "$line"
+        state nonce view source wid stage_sid placeholder < <(printf '%s\n' "$line")
       generation="${generation_socket}|${generation_pid}|${generation_started}"
       ;;
     *) log "WARN: malformed view WAL fields: $wal"; return 1 ;;
@@ -4082,7 +4082,7 @@ END { if (NR > 0) emit() }
     [[ -n "$generation" && -n "$title" && -n "$refs" ]] || continue
     CMUX_LEDGER_DUPLICATE_TITLES+="${CMUX_LEDGER_DUPLICATE_TITLES:+$'\n'}${generation}|${title}"
     _alert_ledger_title_conflict "$generation" "$title" "$refs"
-  done <<< "$groups"
+  done < <(printf '%s\n' "$groups")
 
   all_subjects=$(awk -F'|' \
     'NF == 4 && ($1 == "prepared" || $1 == "committed") { print $2 "|" $4 }' \
@@ -4091,7 +4091,7 @@ END { if (NR > 0) emit() }
     [[ -n "$generation" && -n "$title" ]] || continue
     _ledger_title_duplicate_blocked "$generation" "$title" \
       || _ledger_title_conflict_healthy "$generation" "$title"
-  done <<< "$all_subjects"
+  done < <(printf '%s\n' "$all_subjects")
   return 0
 }
 
@@ -4278,7 +4278,7 @@ _restored_ledger_cas() {
     }
     END { print committed+0 "|" prepared+0 "|" other+0 }
   ' "$VIEW_LEDGER") || { _ledger_release_inner_lock "$lock"; return 1; }
-  IFS='|' read -r committed prepared other <<< "$summary"
+  IFS='|' read -r committed prepared other < <(printf '%s\n' "$summary")
   if [[ "$action" == "delete" ]]; then
     if [[ "$committed" == "0" && "$prepared" == "0" && "$other" == "0" ]]; then
       _ledger_release_inner_lock "$lock"
@@ -4400,8 +4400,8 @@ strict_agent_window_snapshot() {
       case "$dead" in 0|1) ;; *) return 2 ;; esac
       case "$title" in ''|zsh|bash) continue ;; *'|'*|*$'\t'*|*$'\n'*) return 2 ;; esac
       out+="${out:+$'\n'}${observed_session}|${wid}|${title}|${dead}"
-    done <<< "$rows"
-  done <<< "$sessions"
+    done < <(printf '%s\n' "$rows")
+  done < <(printf '%s\n' "$sessions")
   printf '%s\n' "$out" | grep -v '^$' || true
   return 0
 }
@@ -4436,7 +4436,7 @@ _restored_candidate_probe() {
   candidates=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 2
   candidate_count=$(printf '%s\n' "$candidates" | grep -c . || true)
   [[ "$candidate_count" == "1" ]] || return 1
-  IFS='|' read -r candidate_kind candidate_ref pinned selected number <<< "$candidates"
+  IFS='|' read -r candidate_kind candidate_ref pinned selected number < <(printf '%s\n' "$candidates")
   [[ "$candidate_ref" == "$ref" ]] || return 1
   case "$candidate_kind" in
     named) raw_title="$title" ;;
@@ -4455,7 +4455,7 @@ _restored_candidate_probe() {
   case "$kind" in
     W1|W1p)
       [[ "$live_count" == "1" ]] || return 1
-      IFS='|' read -r RESTORED_PROBE_SOURCE RESTORED_PROBE_WID _ _ <<< "$(printf '%s\n' "$live_rows" | head -1)"
+      IFS='|' read -r RESTORED_PROBE_SOURCE RESTORED_PROBE_WID _ _ < <(printf '%s\n' "$(printf '%s\n' "$live_rows" | head -1)")
       ;;
     W1dead)
       [[ "$any_count" == "0" ]] || return 1
@@ -4663,7 +4663,7 @@ recover_restored_transactions() {
     fi
     decision=$(_restored_recovery_decision "$relation" "$kind" "$state" "$presence" \
       "$flag" "$evidence" "$readiness") || return 2
-    IFS='|' read -r row action <<< "$decision"
+    IFS='|' read -r row action < <(printf '%s\n' "$decision")
     case "$action" in
       wait|gc-wait) continue ;;
       quarantine)
@@ -4739,7 +4739,7 @@ recover_restored_transactions() {
         fi
         _restored_recovery_cap_clear
     fi
-  done <<< "$records"
+  done < <(printf '%s\n' "$records")
   return 0
 }
 
@@ -4769,7 +4769,7 @@ adopt_restored_workspaces() {
         if is_managed_runner_title "$title"; then
           candidate_titles+="${candidate_titles:+$'\n'}${title}"
         fi
-      done <<< "$snapshot"
+      done < <(printf '%s\n' "$snapshot")
       if derive_lead_roster && [[ "$LEAD_ROSTER_STATE" == "ok" ]]; then
         while IFS='|' read -r roster_adapter roster_label roster_title _roster_socket; do
           [[ -n "$roster_adapter$roster_label$roster_title" && -n "$roster_title" ]] || continue
@@ -4778,7 +4778,7 @@ adopt_restored_workspaces() {
               '$3 == t && $4 == "0" { found=1 } END { exit(found ? 0 : 1) }'; then
             candidate_titles+="${candidate_titles:+$'\n'}${roster_title}"
           fi
-        done <<< "$LEAD_ROSTER_ROWS"
+        done < <(printf '%s\n' "$LEAD_ROSTER_ROWS")
       fi
       candidate_titles=$(printf '%s\n' "$candidate_titles" | sed '/^$/d' | sort -u)
       ;;
@@ -4800,7 +4800,7 @@ adopt_restored_workspaces() {
     candidates=$(workspace_title_candidates "$raw" "$title" "$canonical") || return 2
     candidate_count=$(printf '%s\n' "$candidates" | grep -c . || true)
     [[ "$candidate_count" == "1" ]] || continue
-    IFS='|' read -r candidate_kind ref pinned selected number <<< "$candidates"
+    IFS='|' read -r candidate_kind ref pinned selected number < <(printf '%s\n' "$candidates")
     case "$candidate_kind" in
       named) ;;
       raw) continue ;;
@@ -4822,7 +4822,7 @@ adopt_restored_workspaces() {
     [[ "$probe_rc" -eq 0 ]] || continue
     _restored_marker_upsert "$kind" "$generation" "$ref" "$title" "$state" \
       "$RESTORED_PROBE_FINGERPRINT" || return 1
-  done <<< "$candidate_titles"
+  done < <(printf '%s\n' "$candidate_titles")
   return 0
 }
 
@@ -5173,7 +5173,7 @@ title_source_authorized() {
   fi
 
   snapshot=$(_view_session_snapshot "$view") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$grouped" == "1" ]] || return 1
   case ",$members," in *,"$wid",*) ;; *) return 1 ;; esac
   group=$(tmux display-message -p -t "=${view}:" '#{session_group}' 2>/dev/null) || return 1
@@ -5182,7 +5182,7 @@ title_source_authorized() {
   [[ -z "$marker" || "$marker" == "0" ]] || return 1
   observed=$(tmux display-message -p -t "=${view}:${wid}" \
     '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
-  IFS='|' read -r name dead <<< "$observed"
+  IFS='|' read -r name dead < <(printf '%s\n' "$observed")
   [[ "$name" == "$title" && "$dead" == "0" ]]
 }
 
@@ -5325,7 +5325,7 @@ select_title_keeper() {
       best_kind="$kind"; best_ref="$ref"; best_receipt=$receipt_rank
       best_pinned=$pinned; best_selected=$selected; best_number=$number
     fi
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
   [[ -n "$best_ref" ]] || return 1
   printf '%s|%s\n' "$best_kind" "$best_ref"
 }
@@ -5392,7 +5392,7 @@ reconcile_workspace_titles() {
     else
       keeper=$(select_title_keeper "$generation" "$title" "$raw_rows") || continue
     fi
-    IFS='|' read -r keeper_kind keeper_ref <<< "$keeper"
+    IFS='|' read -r keeper_kind keeper_ref < <(printf '%s\n' "$keeper")
     state=$(ledger_candidate_receipt_state "$generation" "$keeper_ref" "$title") || continue
     rc=0
     restored_inflight_state "$generation" "$keeper_ref" "$title" || rc=$?
@@ -5462,8 +5462,8 @@ reconcile_workspace_titles() {
       else
         log "WARN: guarded raw duplicate close deferred ref=$extra_ref title=$title"
       fi
-    done <<< "$extra_rows"
-  done <<< "$tmux_windows"
+    done < <(printf '%s\n' "$extra_rows")
+  done < <(printf '%s\n' "$tmux_windows")
   CMUX_TITLE_TOPOLOGY_REFUSED_KEYS="$current_refusals"
   return 0
 }
@@ -5574,7 +5574,7 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
           log "WARN: prepared ledger title drift ref=$ref expected=$title observed=$observed; preserving"
           ;;
       esac
-    done <<< "$rows"
+    done < <(printf '%s\n' "$rows")
   fi
 
   # Refresh only when current-generation prepared reconciliation may have
@@ -5606,7 +5606,7 @@ else:
       _ledger_remove "$generation" "$ref" || return 1
       log "GC committed ledger ref=$ref expected=$title observed=$observed"
     fi
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
 
   # Stale generations are hygiene-only, never authority migration. A ref that
   # is conclusively absent can be collected; any present ref (same title,
@@ -5644,7 +5644,7 @@ else:
         "A stale cmux receipt still resolves and was preserved without rename or migration: state=$state old_generation=$old_generation current_generation=$generation ref=$ref title=$title observed=$observed." \
         "cmux_cleanup|stale-generation|old=$old_generation|current=$generation|ref=$ref|observed=$observed"
     fi
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
   return 0
 }
 
@@ -5795,7 +5795,7 @@ reconcile_keeper_inventory() {
       log "WARN: malformed keeper inventory row preserved"
       continue
     fi
-    IFS='|' read -r row_generation sid exact owner members state _epoch <<< "$line"
+    IFS='|' read -r row_generation sid exact owner members state _epoch < <(printf '%s\n' "$line")
     case "$state" in prepared|committed) ;; *) log "WARN: invalid keeper inventory state preserved: $state"; continue ;; esac
     [[ "$row_generation" == "$generation" ]] || continue
     if cmux_wal_keeper_blocked "$owner" "$members"; then
@@ -5804,7 +5804,7 @@ reconcile_keeper_inventory() {
     fi
     if printf '%s\n' "$sessions" | grep -qxF "$exact"; then
       snapshot=$(_view_session_snapshot "$exact") || return 1
-      IFS='|' read -r observed_sid grouped active observed_owner marker observed_members <<< "$snapshot"
+      IFS='|' read -r observed_sid grouped active observed_owner marker observed_members < <(printf '%s\n' "$snapshot")
       if [[ "$observed_sid" == "$sid" && "$observed_owner" == "$owner" \
           && "$observed_members" == "$members" ]]; then
         [[ "$state" == "committed" ]] || _inventory_upsert "$generation" "$sid" "$exact" "$owner" "$members" committed || return 1
@@ -5824,7 +5824,7 @@ reconcile_keeper_inventory() {
         [[ "$observed_sid" == "$sid" ]] || log "WARN: prepared keeper source identity drift for $original"
       fi
     fi
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
 
   # A crash can rename the session before the prepared inventory write is
   # observed. Reconstruct only live fwkeeper sessions with a non-empty source
@@ -5832,7 +5832,7 @@ reconcile_keeper_inventory() {
   while IFS= read -r exact; do
     [[ "$exact" == fwkeeper-* ]] || continue
     snapshot=$(_view_session_snapshot "$exact") || return 1
-    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
     [[ -n "$sid" && -n "$owner" && -n "$members" ]] || continue
     cmux_wal_keeper_blocked "$owner" "$members" && continue
     if ! awk -F'|' -v g="$generation" -v s="$sid" \
@@ -5841,7 +5841,7 @@ reconcile_keeper_inventory() {
       _inventory_upsert "$generation" "$sid" "$exact" "$owner" "$members" committed || return 1
       log "Rebuilt missing keeper inventory row for $exact"
     fi
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
   return 0
 }
 
@@ -6023,7 +6023,7 @@ log_cmux_episode() {
     log "$message"
     return 0
   fi
-  IFS='|' read -r previous_hash last suppressed <<< "$previous"
+  IFS='|' read -r previous_hash last suppressed < <(printf '%s\n' "$previous")
   if [[ "$previous_hash" != "$evidence" ]]; then
     _cmux_log_episode_commit "$kind" "$title" "$evidence" "$now" 0 || true
     log "$message"
@@ -6127,7 +6127,7 @@ escrow_view_session() {
   [[ "$current" == "$generation" ]] || {
     _escrow_fail "$session" preflight generation-changed; return 1;
   }
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ -z "$expected_sid" || "$sid" == "$expected_sid" ]] || {
     _escrow_fail "$session" preflight expected-session-id-mismatch; return 1;
   }
@@ -6157,7 +6157,7 @@ escrow_view_session() {
     snapshot=$(_view_session_snapshot "$session") || {
       _escrow_fail "$session" owner-publication snapshot-readback-failed; return 1;
     }
-    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
     [[ "$grouped" == "1" && "$owner" == "$group" ]] || {
       _escrow_fail "$session" owner-publication topology-readback-mismatch; return 1;
     }
@@ -6180,7 +6180,7 @@ escrow_view_session() {
   post=$(_view_session_snapshot "$keeper") || {
     _escrow_fail "$session" rename keeper-readback-failed; return 1;
   }
-  IFS='|' read -r post _ <<< "$post"
+  IFS='|' read -r post _ < <(printf '%s\n' "$post")
   [[ "$post" == "$sid" ]] || { _escrow_fail "$session" rename session-id-readback-mismatch; return 1; }
   current=$(tmux_server_generation) || {
     _escrow_fail "$session" inventory-commit generation-recheck-unavailable; return 1;
@@ -6252,7 +6252,7 @@ dismantle_view_display() {
         return 1
         ;;
     esac
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
   if [[ -z "$refs" ]]; then
     if ! raw=$(get_cmux_workspaces_json); then
       log "WARN: unledgered cleanup refused generation=$generation title=$title reason=workspace-json-unavailable"
@@ -6288,7 +6288,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
         view_exists=1
         snapshot=$(_view_session_snapshot "$view" 2>/dev/null || true)
         if [[ -n "$snapshot" ]]; then
-          IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+          IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
           [[ -n "$owner" ]] || owner="none"
         fi
       fi
@@ -6328,7 +6328,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
       return 1
     fi
     snapshot="$OWNED_VIEW_SNAPSHOT"
-    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
     if [[ "$grouped" == "1" ]]; then
       tmux_started=1
       if ! escrow_view_session "$view" >/dev/null; then
@@ -6350,7 +6350,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
           fi
           return 1
         fi
-        IFS='|' read -r guard_sid guard_grouped guard_active guard_owner guard_marker guard_members <<< "$guard_snapshot"
+        IFS='|' read -r guard_sid guard_grouped guard_active guard_owner guard_marker guard_members < <(printf '%s\n' "$guard_snapshot")
         if [[ "$guard_sid" != "$sid" || "$guard_grouped" != "0" \
             || "$guard_owner" != "$owner" || "$guard_marker" != "0" ]]; then
           if [[ "$tmux_started" == "1" ]]; then
@@ -6387,7 +6387,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
           break
         fi
         linked_session_exists "$view" || break
-      done <<< "$(printf '%s' "$members" | tr ',' '\n')"
+      done < <(printf '%s\n' "$(printf '%s' "$members" | tr ',' '\n')")
       if linked_session_exists "$view"; then
         _dismantle_fail tmux-partial-recoverable tmux-shell-still-present "$title" "$trigger_reason"
         return 1
@@ -6401,7 +6401,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
       _dismantle_fail tmux-complete-cmux-pending "cmux-close-failed:$ref" "$title" "$trigger_reason"
       return 1
     fi
-  done <<< "$refs"
+  done < <(printf '%s\n' "$refs")
   DISMANTLE_OUTCOME="complete"
   DISMANTLE_REASON=""
   log "[audit] view dismantle complete title=$title trigger=$trigger_reason"
@@ -6426,7 +6426,7 @@ create_or_replace_view_session() {
   source_snapshot=$(_view_session_snapshot "$source_session") || return 1
   observed=$(tmux display-message -p -t "=${source_session}:${window_id}" \
     '#{window_name}|#{pane_dead}' 2>/dev/null) || return 1
-  IFS='|' read -r source_name source_dead <<< "$observed"
+  IFS='|' read -r source_name source_dead < <(printf '%s\n' "$observed")
   [[ "$source_name" == "$window_name" && "$source_dead" == "0" ]] || return 1
   nonce=$(_new_view_nonce)
   case "$nonce" in ''|*[!A-Za-z0-9_.-]*) log "WARN: invalid view nonce"; return 1 ;; esac
@@ -6455,7 +6455,7 @@ create_or_replace_view_session() {
     return 1
   fi
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r stage_sid grouped placeholder_id owner marker members <<< "$snapshot"
+  IFS='|' read -r stage_sid grouped placeholder_id owner marker members < <(printf '%s\n' "$snapshot")
   [[ -n "$stage_sid" && "$grouped" == "0" && -n "$placeholder_id" \
       && -z "$owner" && -z "$marker" && "$members" == "$placeholder_id" ]] || return 1
   observed=$(tmux display-message -p -t "=${stage}:${placeholder_id}" \
@@ -6467,14 +6467,14 @@ create_or_replace_view_session() {
   tmux_call_guarded _tmux_view_build_guard \
     set-option -t "=$stage:" @flywheel_cmux_owner "$source_session" 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
       && -z "$marker" && "$members" == "$placeholder_id" ]] || return 1
   _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
   tmux_call_guarded _tmux_view_build_guard \
     set-option -t "=$stage:" @flywheel_cmux_placeholder 1 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
       && "$marker" == "1" && "$members" == "$placeholder_id" ]] || return 1
   _write_view_wal "$wal" "$generation" created "$nonce" "$view_session" \
@@ -6486,7 +6486,7 @@ create_or_replace_view_session() {
   tmux_call_guarded _tmux_view_build_guard \
     link-window -s "=${source_session}:${window_id}" -t "=${stage}:" 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   if [[ "$sid" != "$stage_sid" || "$grouped" != "0" || "$owner" != "$source_session" \
      || "$marker" != "1" || "$members" != "$placeholder_id,$window_id" && "$members" != "$window_id,$placeholder_id" ]]; then
     log "WARN: staging topology mismatch for $view_session; leaving WAL for recovery"
@@ -6500,14 +6500,14 @@ create_or_replace_view_session() {
   tmux_call_guarded _tmux_view_build_guard \
     kill-window -t "=${stage}:${placeholder_id}" 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$owner" == "$source_session" \
       && "$marker" == "1" && "$members" == "$window_id" ]] || return 1
   _GUARD_VIEW_BUILD_STAGE_SNAPSHOT="$snapshot"
   tmux_call_guarded _tmux_view_build_guard \
     select-window -t "=${stage}:${window_id}" 2>/dev/null || return 1
   snapshot=$(_view_session_snapshot "$stage") || return 1
-  IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+  IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
   [[ "$sid" == "$stage_sid" && "$grouped" == "0" && "$active" == "$window_id" \
       && "$owner" == "$source_session" && "$marker" == "1" \
       && "$members" == "$window_id" ]] || return 1
@@ -6826,7 +6826,7 @@ cleanup_stale_workspaces() {
     elif [[ "$pane_rc" != "0" ]]; then
       log "WARN: liveness unavailable for $agent_name; stale cleanup deferred"
     fi
-  done <<< "$linked_sessions"
+  done < <(printf '%s\n' "$linked_sessions")
 }
 
 repair_view_invariants() {
@@ -6846,7 +6846,7 @@ repair_view_invariants() {
       return 1
     }
     [[ -n "$rows" ]] && source_rows="${source_rows}${source_rows:+$'\n'}${rows}"
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
   [[ -z "$source_rows" ]] && return 0
   winners=$(printf '%s\n' "$source_rows" | awk -F'|' '
 $4 == "0" && $3 != "zsh" && $3 != "bash" {
@@ -6870,7 +6870,7 @@ END { for (name in row) print row[name] }
     else
       printf '%s\t%s\t%s\tabsent\n' "$source" "$wid" "$title" >> "$plan"
     fi
-  done <<< "$winners"
+  done < <(printf '%s\n' "$winners")
 
   local sid grouped active owner marker members cmux_generation current_refs mismatch_signature active_titles
   while IFS=$'\t' read -r source wid title snapshot; do
@@ -6882,7 +6882,7 @@ END { for (name in row) print row[name] }
       clear_cmux_log_episodes_for_title "$title" || true
       continue
     fi
-    IFS='|' read -r sid grouped active owner marker members <<< "$snapshot"
+    IFS='|' read -r sid grouped active owner marker members < <(printf '%s\n' "$snapshot")
     if [[ "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$source" \
          && "$marker" == "0" && "$members" == "$wid" ]]; then
       clear_view_mismatch_latch "$title" || { rm -f "$plan"; return 1; }
@@ -6984,7 +6984,7 @@ reconcile_existing_workspaces() {
     # Exact-ref ledger authority closes only the Flywheel-owned broken tab;
     # unledgered same-title workspaces remain visible for manual resolution.
     dismantle_view_display "$wname" "reconcile-${wname}-view-dead" || true
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
 }
 
 # ── FLY-102: Event-Signaled Polling ──
@@ -7033,10 +7033,10 @@ register_session_hooks() {
   # and emit ONE log line per recovery, not per tick.
   local current_hooks have_create=0 have_exited=0
   current_hooks=$(tmux show-hooks -t "$session" 2>/dev/null || true)
-  if grep -q '^after-new-window\[500\]' <<<"$current_hooks"; then
+  if printf '%s\n' "$current_hooks" | grep -q '^after-new-window\[500\]'; then
     have_create=1
   fi
-  if grep -q '^pane-exited\[500\]' <<<"$current_hooks"; then
+  if printf '%s\n' "$current_hooks" | grep -q '^pane-exited\[500\]'; then
     have_exited=1
   fi
   if (( have_create == 1 && have_exited == 1 )); then
@@ -7122,7 +7122,7 @@ register_hooks_on_new_sessions() {
     case "$sess" in
       flywheel|runner-*) register_session_hooks "$sess" ;;
     esac
-  done <<< "$sessions"
+  done < <(printf '%s\n' "$sessions")
 }
 
 mark_for_cleanup() {
@@ -7172,7 +7172,7 @@ process_pending_cleanups() {
       continue
     fi
     local wname ts
-    IFS='|' read -r wname ts <<< "$raw"
+    IFS='|' read -r wname ts < <(printf '%s\n' "$raw")
     [[ -z "$wname" || -z "$ts" ]] && continue
     # Pane alive again → cancel cleanup. Uses #{pane_dead} (not window existence)
     # because `remain-on-exit on` means window lingers after pane dies.
@@ -7276,7 +7276,7 @@ _drain_file() {
       continue
     fi
     local etype arg1 arg2 arg3
-    IFS='|' read -r etype arg1 arg2 arg3 <<< "$raw"
+    IFS='|' read -r etype arg1 arg2 arg3 < <(printf '%s\n' "$raw")
     case "$etype" in
       create)
         local session="$arg1" wid="$arg2" wname="$arg3"
@@ -7396,7 +7396,7 @@ cleanup_stale_conservative() {
     else
       log "WARN: liveness unavailable for $agent_name; conservative cleanup state preserved"
     fi
-  done <<< "$linked_sessions"
+  done < <(printf '%s\n' "$linked_sessions")
 }
 
 sync_additive_bootstrap() {
@@ -7452,7 +7452,7 @@ sync_additive_bootstrap() {
     if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
   watcher_mutation_latch_clear || return 0
 
   # 4. (FLY-169) One-shot attach self-heal sweep — covers watcher startup /
@@ -7535,7 +7535,7 @@ sync_additive() {
     if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
   watcher_mutation_latch_clear || return 0
 
   # FLY-1364 R6: recover killed/exited attach clients even when no create or
@@ -7704,7 +7704,7 @@ $keeper_evidence"
       _verify_sidebar_inconclusive "target-authority-unavailable: invalid manifest $title"
       return 2
     }
-    IFS='|' read -r project lead backend socket <<< "$fields"
+    IFS='|' read -r project lead backend socket < <(printf '%s\n' "$fields")
     [[ "${project}-${lead}" == "$title" ]] || {
       _verify_sidebar_inconclusive "target-authority-unavailable: manifest identity mismatch $title"
       return 2
@@ -7726,7 +7726,7 @@ $keeper_evidence"
     manifest_hash=$(shasum -a 256 "$manifest" | awk '{print $1}') || return 2
     rows+="${rows:+$'\n'}${carrier}|${label}|${title}|${socket}"
     authority+="${authority:+$'\n'}lead|${label}|${title}|${wrapper}|${fields}|${plist_hash}|${manifest_hash}"
-  done <<< "$targets"
+  done < <(printf '%s\n' "$targets")
   SIDEBAR_TARGET_ROSTER_ROWS=$(printf '%s\n' "$rows" | sed '/^$/d' | sort)
   SIDEBAR_TARGET_AUTHORITY=$(printf '%s\n' "$authority" | sed '/^$/d' | sort)
 }
@@ -7813,7 +7813,7 @@ resolve_rebuild_targets() {
     [[ -n "$title" ]] || continue
     printf '%s\n' "$known" | grep -qxF "$title" || return 1
     roster_row=$(printf '%s\n' "$LEAD_ROSTER_ROWS" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
-    IFS='|' read -r roster_carrier _ _ roster_socket <<< "$roster_row"
+    IFS='|' read -r roster_carrier _ _ roster_socket < <(printf '%s\n' "$roster_row")
     if [[ "$roster_carrier" == "claude-private" ]]; then
       canonical=$(build_lead_attach_command "$roster_socket") || return 2
       row_info=$(printf '%s' "$raw" | python3 -c '
@@ -7828,7 +7828,7 @@ elif not matches: print("0|")
 elif requested and matches[0] != requested: print("mismatch|" + matches[0])
 else: print("1|" + matches[0])
 ' "$title" "$canonical" "$requested") || return 2
-      IFS='|' read -r mapped_count observed_ref <<< "$row_info"
+      IFS='|' read -r mapped_count observed_ref < <(printf '%s\n' "$row_info")
       case "$mapped_count" in ambiguous|mismatch) return 1 ;; 0|1) ;; *) return 2 ;; esac
       [[ -z "$requested" || "$mapped_count" == 1 ]] || return 1
       resolved+="${resolved:+$'\n'}${title}|${requested}|private|${roster_socket}|${observed_ref}|V2|${generation}"
@@ -7840,7 +7840,7 @@ else: print("1|" + matches[0])
     (( live_count <= 1 && any_count <= 1 )) || return 1
     source="absent"; wid="absent"
     if [[ "$live_count" == 1 ]]; then
-      IFS='|' read -r source wid _ _ <<< "$(printf '%s\n' "$source_rows" | head -1)"
+      IFS='|' read -r source wid _ _ < <(printf '%s\n' "$(printf '%s\n' "$source_rows" | head -1)")
     fi
     canonical=$(build_attach_command "${VIEW_PREFIX}${title}") || return 2
     row_info=$(printf '%s' "$raw" | python3 -c '
@@ -7867,7 +7867,7 @@ elif requested and matches[0] != requested:
 else:
     print("1|" + matches[0])
 ' "$title" "$canonical" "$requested") || return 2
-    IFS='|' read -r mapped_count observed_ref <<< "$row_info"
+    IFS='|' read -r mapped_count observed_ref < <(printf '%s\n' "$row_info")
     case "$mapped_count" in ambiguous|mismatch) return 1 ;; 0|1) ;; *) return 2 ;; esac
     [[ -z "$requested" || "$mapped_count" == 1 ]] || return 1
     class=""
@@ -7900,7 +7900,7 @@ else:
     roster_count=$(printf '%s\n' "$roster_titles" | grep -cxF "$title" || true)
     [[ "$class" != W1dead || "$roster_count" == 1 ]] || return 1
     resolved+="${resolved:+$'\n'}${title}|${requested}|${source}|${wid}|${observed_ref}|${class}|${generation}"
-  done <<< "$specs"
+  done < <(printf '%s\n' "$specs")
   [[ -n "$resolved" ]] || return 1
   OPS_REBUILD_RESOLVED=$(printf '%s\n' "$resolved" | sort)
 }
@@ -7909,7 +7909,7 @@ ops_rebuild_authorizes_create() {
   local source="$1" wid="$2" title="$3" active_title active_source active_wid
   [[ "$MUTATOR_LEASE_MODE" == "ops_rebuild" ]] || return 1
   mutator_lease_owned_by_self || return 1
-  IFS='|' read -r active_title _ active_source active_wid _ <<< "$OPS_REBUILD_ACTIVE_TARGET"
+  IFS='|' read -r active_title _ active_source active_wid _ < <(printf '%s\n' "$OPS_REBUILD_ACTIVE_TARGET")
   [[ "$active_title" == "$title" && "$active_source" == "$source" && "$active_wid" == "$wid" ]] || return 1
   printf '%s\n' "$OPS_REBUILD_TARGETS" | awk -F'|' -v t="$title" -v s="$source" -v w="$wid" \
     '$1 == t && $3 == s && $4 == w { found=1 } END { exit(found ? 0 : 1) }'
@@ -7971,7 +7971,7 @@ print(json.dumps(data, sort_keys=True, separators=(",", ":")))
     title_failures_before=$failures
     roster_count=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { n++ } END { print n+0 }')
     roster_row=$(printf '%s\n' "$roster_snapshot" | awk -F'|' -v t="$title" '$3 == t { print; exit }')
-    IFS='|' read -r roster_carrier _ _ roster_socket <<< "$roster_row"
+    IFS='|' read -r roster_carrier _ _ roster_socket < <(printf '%s\n' "$roster_row")
     if [[ "$roster_carrier" == "claude-private" ]]; then
       canonical_raw=$(build_lead_attach_command "$roster_socket") || return 2
       row_shape=$(printf '%s' "$canonical_json" | python3 -c '
@@ -7987,7 +7987,7 @@ for w in d.get("workspaces", []):
     elif observed == raw: mapped.append(w.get("ref", ""))
 print("%d|%d|%s" % (len(named), len(mapped), named[0] if len(named)==1 else ""))
 ' "$title" "$canonical_raw") || return 2
-      IFS='|' read -r named_count mapped_count ref <<< "$row_shape"
+      IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
       if [[ "$named_count" != "1" || "$mapped_count" != "1" || "$ref" != workspace:* ]]; then
         report+="${report:+$'\n'}FAIL $title rule=v2-row expected=one-named observed=named:$named_count,mapped:$mapped_count"
         failures=$((failures + 1))
@@ -8063,10 +8063,10 @@ for w in d.get("workspaces", []):
         mapped.append(w.get("ref", ""))
 print("%d|%d|%s" % (len(named), len(mapped), named[0] if len(named)==1 else ""))
 ' "$title" "$canonical_raw") || return 2
-    IFS='|' read -r named_count mapped_count ref <<< "$row_shape"
+    IFS='|' read -r named_count mapped_count ref < <(printf '%s\n' "$row_shape")
     view="${VIEW_PREFIX}${title}"
     if [[ "$live_count" == "1" ]]; then
-      IFS='|' read -r source wid _ _ <<< "$(printf '%s\n' "$source_rows" | head -1)"
+      IFS='|' read -r source wid _ _ < <(printf '%s\n' "$(printf '%s\n' "$source_rows" | head -1)")
       if [[ "$named_count" != "1" || "$mapped_count" != "1" \
           || "$ref" != workspace:* ]]; then
         report+="${report:+$'\n'}FAIL $title rule=row-live expected=one-named observed=named:$named_count,mapped:$mapped_count"
@@ -8081,12 +8081,12 @@ print("%d|%d|%s" % (len(named), len(mapped), named[0] if len(named)==1 else ""))
       fi
       pane_source=$(tmux display-message -p -t "=${source}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
       source_pid=$(tmux display-message -p -t "=${source}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
-      IFS='|' read -r source_name source_dead <<< "$pane_source"
+      IFS='|' read -r source_name source_dead < <(printf '%s\n' "$pane_source")
       pane_view="unavailable"; view_name=""; view_dead=""; view_pid=""; clients="not-measured"
       if [[ "$view_matches" == 1 ]]; then
         pane_view=$(tmux display-message -p -t "=${view}:${wid}" '#{window_name}|#{pane_dead}' 2>/dev/null) || return 2
         view_pid=$(tmux display-message -p -t "=${view}:${wid}" '#{pane_pid}' 2>/dev/null) || return 2
-        IFS='|' read -r view_name view_dead <<< "$pane_view"
+        IFS='|' read -r view_name view_dead < <(printf '%s\n' "$pane_view")
         clients=$(view_session_client_count "$view") || return 2
       fi
       if [[ "$source_name" != "$title" || "$source_dead" != "0" || -z "$source_pid" \
@@ -8167,7 +8167,7 @@ print("%d|%d|%s" % (len(named), len(mapped), named[0] if len(named)==1 else ""))
       failures=$((failures + 1))
       evidence+="${evidence:+$'\n'}$title|ambiguous-source|$live_count|$row_shape"
     fi
-  done <<< "$targets"
+  done < <(printf '%s\n' "$targets")
   current_cmux=$(cmux_socket_identity) || return 2
   current_tmux=$(tmux_server_generation) || return 2
   [[ "$current_cmux" == "$cmux_generation" && "$current_tmux" == "$tmux_generation" ]] || return 2
@@ -8261,7 +8261,7 @@ execute_ops_rebuild_targets() {
   OPS_REBUILD_TARGETS="$targets"
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
-    IFS='|' read -r title requested source wid ref class generation <<< "$line"
+    IFS='|' read -r title requested source wid ref class generation < <(printf '%s\n' "$line")
     OPS_REBUILD_ACTIVE_TARGET="$line"
     action="$class"
     log "[audit] ops rebuild title start title=$title class=$class ref=${ref:-none} source=$source wid=$wid"
@@ -8286,7 +8286,7 @@ execute_ops_rebuild_targets() {
           refreshed=$(_ops_refresh_resolved_line "$title") || rc=$?
         fi
         if [[ "$rc" -eq 0 ]]; then
-          IFS='|' read -r title requested source wid ref class generation <<< "$refreshed"
+          IFS='|' read -r title requested source wid ref class generation < <(printf '%s\n' "$refreshed")
           OPS_REBUILD_ACTIVE_TARGET="$refreshed"
           case "$class" in
             healthy) action=recovered-healthy ;;
@@ -8330,7 +8330,7 @@ execute_ops_rebuild_targets() {
       OPS_REBUILD_ACTIVE_TARGET=""
       return "$rc"
     fi
-  done <<< "$targets"
+  done < <(printf '%s\n' "$targets")
   OPS_REBUILD_ACTIVE_TARGET=""
   return 0
 }
@@ -8452,11 +8452,11 @@ run_verify_sidebar() {
     if [[ "$rc" -eq 2 ]]; then
       while IFS= read -r reason; do
         [[ -n "$reason" ]] && printf 'INCONCLUSIVE %s\n' "$reason"
-      done <<< "$VERIFY_SIDEBAR_REASONS"
+      done < <(printf '%s\n' "$VERIFY_SIDEBAR_REASONS")
     fi
     while IFS= read -r caveat; do
       [[ -n "$caveat" ]] && printf 'CAVEAT %s\n' "$caveat"
-    done <<< "$VERIFY_SIDEBAR_CAVEATS"
+    done < <(printf '%s\n' "$VERIFY_SIDEBAR_CAVEATS")
   fi
   return "$rc"
 }
@@ -8711,7 +8711,7 @@ sync_once() {
     if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
-  done <<< "$tmux_windows"
+  done < <(printf '%s\n' "$tmux_windows")
 
   # 4. Cleanup stale (dead windows → close workspace + kill linked session)
   cleanup_stale_workspaces
@@ -8755,7 +8755,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
         if ref:
             print(ref)
 ' "$wname"
-  done <<< "$windows"
+  done < <(printf '%s\n' "$windows")
 }
 
 # FLY-129 Phase 1: watcher lock acquire/release.
@@ -8817,7 +8817,7 @@ _read_mutator_owner() {
   line=$(cat "$file" 2>/dev/null) || return 2
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
   [[ "$fields" == "4" ]] || return 2
-  IFS='|' read -r MUTATOR_OWNER_PID MUTATOR_OWNER_INCARNATION MUTATOR_OWNER_MODE MUTATOR_OWNER_NONCE <<< "$line"
+  IFS='|' read -r MUTATOR_OWNER_PID MUTATOR_OWNER_INCARNATION MUTATOR_OWNER_MODE MUTATOR_OWNER_NONCE < <(printf '%s\n' "$line")
   case "$MUTATOR_OWNER_PID" in ''|*[!0-9]*) return 2 ;; esac
   case "$MUTATOR_OWNER_MODE" in watch|bootstrap|once|refresh|reaper|qa_teardown|ops_rebuild) ;; *) return 2 ;; esac
   case "$MUTATOR_OWNER_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
@@ -8848,7 +8848,7 @@ _read_qa_teardown_claim() {
   line=$(cat "$file" 2>/dev/null) || return 2
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
   [[ "$fields" == "4" ]] || return 2
-  IFS='|' read -r QA_CLAIM_PID QA_CLAIM_INCARNATION QA_CLAIM_MODE QA_CLAIM_NONCE <<< "$line"
+  IFS='|' read -r QA_CLAIM_PID QA_CLAIM_INCARNATION QA_CLAIM_MODE QA_CLAIM_NONCE < <(printf '%s\n' "$line")
   case "$QA_CLAIM_PID" in ''|*[!0-9]*) return 2 ;; esac
   [[ "$QA_CLAIM_MODE" == "qa_teardown" ]] || return 2
   case "$QA_CLAIM_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
@@ -8877,7 +8877,7 @@ _read_ops_rebuild_claim() {
   line=$(cat "$file" 2>/dev/null) || return 2
   fields=$(printf '%s\n' "$line" | awk -F'|' '{print NF}')
   [[ "$fields" == "4" ]] || return 2
-  IFS='|' read -r OPS_CLAIM_PID OPS_CLAIM_INCARNATION OPS_CLAIM_MODE OPS_CLAIM_NONCE <<< "$line"
+  IFS='|' read -r OPS_CLAIM_PID OPS_CLAIM_INCARNATION OPS_CLAIM_MODE OPS_CLAIM_NONCE < <(printf '%s\n' "$line")
   case "$OPS_CLAIM_PID" in ''|*[!0-9]*) return 2 ;; esac
   [[ "$OPS_CLAIM_MODE" == "ops_rebuild" ]] || return 2
   case "$OPS_CLAIM_NONCE" in ''|*[!A-Za-z0-9_.-]*) return 2 ;; esac
@@ -8942,14 +8942,14 @@ _snapshot_live_mutator_processes() {
         own_tree+="$pid "
         changed=1
       fi
-    done <<< "$rows"
+    done < <(printf '%s\n' "$rows")
   done
   while read -r pid ppid command; do
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     [[ "$own_tree" == *" $pid "* ]] && continue
     _mutator_command_matches "$command" || continue
     matches+="${pid}|${command}"$'\n'
-  done <<< "$rows"
+  done < <(printf '%s\n' "$rows")
   printf '%s' "$matches" | sort -n
 }
 

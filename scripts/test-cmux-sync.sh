@@ -10363,6 +10363,61 @@ echo "═══ FLY-1482: authority-loss review regressions ═══"
 test_fly1482_authority_latch_stops_inner_batch_loops
 test_fly1482_claim_reap_errors_are_not_mislabelled_malformed
 
+echo ""
+echo "═══ FLY-1887: diskless read parity ═══"
+
+cmux_source="$SCRIPT_DIR/flywheel-cmux-sync.sh"
+here_string_count=$(grep -c '<<<' "$cmux_source" || true)
+if [[ "$here_string_count" == "0" ]]; then
+  pass "production watcher contains no disk-writing Bash here-strings"
+else
+  fail "production watcher still contains $here_string_count Bash here-string(s)"
+fi
+
+read_a=""; read_b=""; read_c=""; read_rc=1
+IFS='|' read -r read_a read_b read_c < <(printf '%s\n' 'a|b|')
+read_rc=$?
+if [[ "$read_rc" == "0" && "$read_a" == "a" && "$read_b" == "b" && -z "$read_c" ]]; then
+  pass "process substitution preserves top-level read rc=0 and a trailing empty field"
+else
+  fail "top-level read parity drifted rc=$read_rc fields=[$read_a][$read_b][$read_c]"
+fi
+
+empty_iterations=0
+while IFS= read -r read_row; do
+  empty_iterations=$((empty_iterations + 1))
+done < <(printf '%s\n' "")
+if [[ "$empty_iterations" == "1" ]]; then
+  pass "an empty command-substitution payload still produces one loop iteration"
+else
+  fail "empty payload produced $empty_iterations loop iterations"
+fi
+
+touch "$TMPDIR_ROOT/matching.json"
+saved_pwd="$PWD"
+cd "$TMPDIR_ROOT" || exit 1
+IFS= read -r glob_literal < <(printf '%s\n' '*.json')
+cd "$saved_pwd" || exit 1
+if [[ "$glob_literal" == '*.json' ]]; then
+  pass "a cwd-matching glob remains literal"
+else
+  fail "glob literal expanded or changed: [$glob_literal]"
+fi
+
+IFS= read -r backslash_literal < <(printf '%s\n' 'path\with\backslashes')
+if [[ "$backslash_literal" == 'path\with\backslashes' ]]; then
+  pass "read -r preserves backslashes byte-for-byte"
+else
+  fail "backslash input changed: [$backslash_literal]"
+fi
+
+IFS='|' read -r delim_a delim_b delim_rest < <(printf '%s\n' 'left|middle|right|tail')
+if [[ "$delim_a" == "left" && "$delim_b" == "middle" && "$delim_rest" == 'right|tail' ]]; then
+  pass "the final read field preserves remaining delimiters"
+else
+  fail "delimiter parsing drifted: [$delim_a][$delim_b][$delim_rest]"
+fi
+
 set +e   # restore lenient mode for the summary
 
 # ════════════════════════════════════════════════════════════════
