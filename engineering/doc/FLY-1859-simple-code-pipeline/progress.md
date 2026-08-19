@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: implement
-phaseCursor: 2/4
-updated: 2026-08-19T23:26:45.322Z
-nextStep: Run affected-surface tests, lint, build, and package regression gates
+phaseCursor: 3/4
+updated: 2026-08-19T23:39:58.565Z
+nextStep: commit and push the corrected model pins, then request exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: implement (2/4)
-**next**: Run affected-surface tests, lint, build, and package regression gates
+**phase**: implement (3/4)
+**next**: commit and push the corrected model pins, then request exact-head code review
