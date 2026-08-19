@@ -2,12 +2,12 @@
 issue: FLY-1887
 phase: implement
 phaseCursor: 3/3
-updated: 2026-08-19T18:34:35.929Z
-nextStep: verify code-review R1 fixes; commit/push exact head; request code review R2
+updated: 2026-08-19T19:14:27.261Z
+nextStep: "QA node: reading diff, running suites, real-machine verification"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1887 progress
 **phase**: implement (3/3)
-**next**: verify code-review R1 fixes; commit/push exact head; request code review R2
+**next**: QA node: reading diff, running suites, real-machine verification
