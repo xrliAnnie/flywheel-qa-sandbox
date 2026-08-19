@@ -17,9 +17,9 @@ Annie 2026-08-17 发现:Honey Lemon 的 patrol_tick 巡检六步只做了前两�
 | # | 缺陷 | 本计划的修法 |
 |---|------|------------|
 | ① | 抽象名词无法解析成动作(「TURN belt」「engine node table」在库里找不到同名对象) | 每步落到唯一精确命令;账本类查询收口进一个 CI 测试的只读快照脚本(§4) |
-| ② | 范围冲突:tick 措辞「你名下」与规矩第 5 步的全局语义相反 | 范围合同写死:**检测=整机,处置=名下**;tick 模板同步修订(§5) |
+| ② | 范围冲突:tick 措辞「你名下」与规矩第 5 步的全局语义相反 | 范围合同写死:**检测=整机,处置=名下**;本 PR 按 Lead 裁定保留 tick v1, v2 只作未来独立提案(§5) |
 | ③ | 无产出物 ⇒ 做 2 步和做 6 步从外部看一样 | 产出物合同:每 tick 一份六步报告文件,逐步 `OK/FINDING/UNAVAILABLE`(§6) |
-| ④ | 「读不懂」只能静默跳过 | UNAVAILABLE 出口:报告留痕 + 首次出现即建 `[patrol-unavailable]` Linear issue 进工程队列(§7) |
+| ④ | 「读不懂」只能静默跳过 | UNAVAILABLE 出口:报告留痕;structural 首现建单,transient 连续 2 tick 才建单(§7) |
 
 **实测代价锚点**:2026-08-17 全仓 GitHub 1h49m 零活动(21:21→23:10 UTC,四条 PR 全停),落在「名下」框之外,六步巡检没发现,最终 founder 本人发现——巡检存在的目的正是「founder 不该当人肉看门狗」。
 
@@ -43,7 +43,7 @@ Annie 2026-08-17 发现:Honey Lemon 的 patrol_tick 巡检六步只做了前两�
 ```mermaid
 flowchart LR
     subgraph Bridge
-        T["patrol_tick 模板 v2<br/>(范围声明修正,仍零预判)"]
+        T["patrol_tick 模板 v1<br/>(本 PR 逐字节不改)"]
     end
     subgraph Lead 侧
         R["runner-patrol-rules.md §0 重写<br/>六步=六条精确命令<br/>+范围合同+产出物合同+UNAVAILABLE出口"]
@@ -54,7 +54,7 @@ flowchart LR
     T --> R
     R --> S
     S --> P
-    R -->|"任一步 UNAVAILABLE 首现"| Q
+    R -->|"structural 首现 / transient 连续 2 tick"| Q
 ```
 
 改动面共四块,全部在本仓:
@@ -80,7 +80,7 @@ flowchart LR
 - 步 4(全部带时间窗 + 活性范围):`mailbox` 只投影仍在 `sessions.status='running'` 集合里的 runner 收件——`QUEUED` 超 30min,或 `LEASED` 已过 claim 且 `created_at` 在最近 24h;已终结 execution 的陈年 lease 不再每 tick 重报。`turn_wake_outbox` 只看 active execution 的 `pending/sent` 超 15min未 ack;`dead_letter_alerts` 看最近 24h(此表全局,不过滤 project,发现按归属路由)。保留现行「Runner reports/PRs vs verdict claims」半步:对 active run 的 `workflow_node_pr_binding.head_sha` 与有效 git-head `workflow_claims.subject_digest`(`codex_approved`/`qa_passed`/`founder_approved`)做一致性候选检查。2026-08-18 PDT 修订 predicate 的生产 count-only 校准:live mailbox old queued=0、live recent expired lease=0、active unacked wake >15m=1、recent deadletters=4、active bound-node head/claim mismatch=0;候选量从裸 expired lease 约 302 条降至 5 条。**时间戳格式逐表标注**(R1 LOW-11):`mailbox.*`/`dead_letter_alerts.*` 为 TEXT ISO、`turn_wake_outbox.*` 为 INTEGER 毫秒——窗口过滤按各自格式写,混用会静默空转;CI fixture 两种格式都要覆盖,并断言陈年 expired lease 不出现。
 - **报告列 allowlist(正式 Codex review R1 MEDIUM)**:任何查询都禁止 `SELECT *`。`mailbox` 只输出截断后的 `id/to_agent` + `state/created_at/claim_expires_at`;`turn_wake_outbox` 只输出截断后的 `wake_id/execution_id` + `issue_id/state/created_at`;`dead_letter_alerts` 只输出截断后的 `id/recipient` + `source_kind/lead_id/project_name/dead_count/state/created_at`;verdict 对账只输出 issue/node/attempt/predicate 与 head digest 的前 8 位。永不读取/输出 `content`、`delivery_content`、`envelope_json`、`summary`、`claim_token`、capability/token/evidence 原文。CI 向每张表灌 sentinel secret,断言报告里零命中。
 - 步 5(GitHub 半自动,**一律 REST**,R1 LOW-7:`gh pr list` 走 GraphQL,不用):`GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'` + 同样带 `GH_REPO` 的 `gh api 'repos/{owner}/{repo}/actions/runs?per_page=5'`,只投影 PR number/draft/head8/updated_at 与 run id/status/created_at,打印**整仓最近活动时刻**。`gh api` **没有 `-R` flag**;这里用官方支持的 `GH_REPO` placeholder 解析,不依赖 cwd。Discord 部分不进脚本(MCP 工具只在 Lead 会话里),骨架里留占位行指到 `fetch_messages`,并给**可判定的选取规则**(R1 LOW-10):按 tick 名册的 identifier,取其 `[FLY-XX]` issue thread,最多 2 个、按最近活动排序(tick 只在名册非空时发出,故名册恒非空)。
-- 输出与落盘:先在报告目录同级临时文件生成 markdown 骨架,含逐步机器可读状态行 `STEP <n>: OK-CANDIDATE | FINDING-CANDIDATE | UNAVAILABLE(<原因>) | LEAD-JUDGMENT-REQUIRED`(步 2/6 恒为最后者),再 `mv` 原子发布为本次报告路径;stdout 回显同一骨架并打印 `REPORT_PATH=<绝对路径>`。因此只要命令启动成功,即使 Lead 后续少做,也留下六行候选/未判定状态,不会无产出地消失。
+- 输出与落盘:先在报告目录同级临时文件生成 markdown 骨架,含逐步机器可读状态行 `STEP <n>: OK-CANDIDATE | FINDING-CANDIDATE | UNAVAILABLE(<原因>) | LEAD-JUDGMENT-REQUIRED`,再 `mv` 原子发布为本次报告路径;stdout 回显同一骨架并打印 `REPORT_PATH=<绝对路径>`。步 1(名册对账)、2(pane 判读)、5(Discord + 「账面应有活动」判断)、6(处置)初始一律为 `LEAD-JUDGMENT-REQUIRED`;只有步 3/4 可根据有界 predicate 预填 candidate。因此只要命令启动成功,即使 Lead 后续少做,也留下六行候选/未判定状态,不会把「有事实」误写成「已健康」。
 - **fail-visible 不 fail-silent + 瞬态/结构分类**(R1 MEDIUM-5):sqlite 打开即设 `.timeout 3000`,失败做一次有界重试;仍失败 → 该步输出 `UNAVAILABLE(transient: <稳定token>)`(如 `sqlite_busy`;R2 LOW-1:原因必须归一为稳定 token 而非原始错误文本,否则「连续 2 tick」比对与 Linear 标题搜重会在易变字符串上碎裂,CI 断言 token 集)或 `UNAVAILABLE(structural: <原因>)`(表/列不存在、库打不开、gh 报错),继续收其余步。事实源故障仍以 0 退出并产报告;**用法错误或报告目录/临时文件/原子发布失败必须非零退出**,因为此时连 UNAVAILABLE 都无法形成持久产物,不得谎报成功。§7 的建单出口只对 structural 首现触发;transient 连续 2 个 tick 复现才升格建单——避免自愈性抖动铸工程 issue(告警噪音纪律)。
 - 只读纪律:sqlite 一律 `file:...?mode=ro` URI + 有界 `LIMIT`;gh 固定两条 REST 调用(60min 节拍 × Lead 数,配额可忽略;不碰 FLY-1624 管的 Bridge GraphQL 预算)。
 - 多仓项目 v1 只查项目主仓;从 projects.json 的真实字段 `projectRepo` 取 `owner/repo` slug(`projectRoot` 只用于本地仓路径),用 `GH_REPO=<projectRepo>` 解析 REST placeholders,不依赖 Lead 当前 cwd;见 §9。
@@ -113,13 +113,13 @@ v2 独立草案(改两句话 + 首行带 tick 序号,仍零预判零指令;deny-
 ## 6. 产出物合同(块 A 核心之一,治缺陷③)
 
 - 每条 tick 必产一份报告:`~/.flywheel/patrol-reports/<leadId>/<UTC 时间戳>-tickNA.md`;当前 v1 正文无 seq,故以文件名 UTC 时间戳 ↔ tick `scheduled_at` 的时间窗锚定。future v2 获认可后才切换为 `-tick<seq>.md` 直接 join。
-- 格式:六行 `STEP <n>: OK | FINDING | UNAVAILABLE(<原因>)`,每行后跟一行证据/判断;「全部健康」也要写全六行。快照脚本在采集结束时原子落盘候选骨架;Lead 打开 `REPORT_PATH` 定稿步 2/6 与全部 candidate,不得删掉任一步。
+- 格式:六行 `STEP <n>: OK | FINDING | UNAVAILABLE(<原因>)`,每行后跟一行证据/判断;「全部健康」也要写全六行。快照脚本在采集结束时原子落盘候选骨架;Lead 打开 stdout 最后一行指向的 `REPORT_PATH`,定稿步 1/2/5/6 与步 3/4 的 candidate,不得删掉任一步。
 - 报告的意义:**做 2 步和做 6 步从此在文件系统上可区分、可事后取证**。默认不发 Discord;有 FINDING 或 UNAVAILABLE 时按现行 reporting rules 上报(全部健康只留档,不制造告警噪音——FLY-1612/1687 的噪音纪律)。
 - 报告锚定 tick:当前为 UTC 时间窗近似配对;future v2 后可升级成 seq 直接 join。Bridge 机器核「每条已结算 tick 是否有对应报告文件且含六行 STEP」是 follow-up(§9),不在本单,不得把当前 v1 说成已有 1:1 key。
 
 ## 7. UNAVAILABLE 出口(治缺陷④)
 
-- 任一步无法执行(命令报错 / 对象不存在 / 无法解析该步要求什么):报告记 `UNAVAILABLE(<原因>)`。建单口径分两类(R1 MEDIUM-5):**structural 首次出现**当场建 Linear issue;**transient**(SQLITE_BUSY/锁类,脚本已重试仍失败)只记报告,连续 2 个 tick 复现才升格建单。issue 标题 `[patrol-unavailable] step <n>: <原因>`,team FLY + label `Flywheel`(自动进 Tadashi 队列,FLY-270 gap-1 机制)。建前先按标题前缀搜重,有同因 open issue 则评论追加。**跳过而不留痕 = 违反合同**(写进规矩原文)。
+- 任一步无法执行(命令报错 / 对象不存在 / 无法解析该步要求什么):报告记 `UNAVAILABLE(<原因>)`。建单口径分两类(R1 MEDIUM-5):**structural 首次出现**当场建 Linear issue;**transient**(SQLITE_BUSY/锁类,脚本已重试仍失败)只记报告,连续 2 个 tick 复现才升格建单。issue 精确标题 `[patrol-unavailable] step <n>: <稳定原因>`,以 `team=FLY + project=Flywheel + label=Flywheel` 自动进 Tadashi 队列。当前生产 projects registry 的 `flywheel.linear` 为 null,故不得用只在带 binding fixture 中成功的 `projectName=flywheel`。建前必须用 `GET /api/linear/issues?project=Flywheel&labels=Flywheel` 拉取非 terminal issues 并在本地 `jq` 做**精确标题**搜重;route 本身没有 `search`/`team` query。已有同标题 open issue 则在报告记录其 identifier 并禁止重复建单。**跳过而不留痕 = 违反合同**(写进规矩原文)。
 - 新增第 0 步(自检):打开自己上一份报告;若上次有 UNAVAILABLE 而没建 issue,先补。这把「规矩只在事后生效永远发现不了它没生效」的缺陷类闭掉一半(另一半靠 follow-up 机器核)。
 
 ## 8. `runner-patrol-rules.md` §0 重写全文草案(块 A,核心交付;实现时可微调措辞,合同条款不可减)
@@ -132,14 +132,14 @@ v2 独立草案(改两句话 + 首行带 tick 序号,仍零预判零指令;deny-
 >
 > `[patrol_tick]` 仍是**纯闹钟**;Bridge roster 是**待核声明**。所有判断必须来自下列**独立信源**,不采信 Bridge 单方转述。
 >
-> **第 0 步(自检)**:打开上一份报告,补欠账(未建的 `[patrol-unavailable]` issue)。
+> **第 0 步(自检)**:run: `PATROL_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/patrol-reports/${LEAD_ID:?LEAD_ID required}"; PREVIOUS_REPORT="$(find "$PATROL_DIR" -maxdepth 1 -type f -name '*-tickNA.md' -print 2>/dev/null | sort | tail -1)"; test -z "$PREVIOUS_REPORT" || sed -n '1,220p' "$PREVIOUS_REPORT"`;若上一份有 UNAVAILABLE 欠单,按步 6 补。然后 run: `SNAPSHOT_OUTPUT="$(~/.flywheel/bin/flywheel-patrol-snapshot --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")" && printf '%s\n' "$SNAPSHOT_OUTPUT"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。后续步骤共用这一份 `REPORT_PATH`,不得重复启动快照制造多份报告。
 >
-> 1. **名册核对(ground truth)** — run: `TMUX= tmux list-windows -a`。与 tick 名册对账,窗口前缀是 Linear identifier;**整机维度**,多了少了都是 finding,不在你名下的异常记入报告并走步 6。忽略正常非 runner 窗口(`zsh` scaffolds、`cmux-*` 镜像、Codex Lead TUI;Claude Lead 自身在私有 socket)。
+> 1. **名册核对(ground truth)** — run: `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。该段由快照内部的 `TMUX= tmux list-windows -a` 生成;与 tick 名册对账,窗口前缀是 Linear identifier;**整机维度**,多了少了都是 finding,不在你名下的异常记入报告并走步 6。忽略正常非 runner 窗口(`zsh` scaffolds、`cmux-*` 镜像、Codex Lead TUI;Claude Lead 自身在私有 socket)。
 > 2. **pane 实况** — 对你名下每个 runner: `TMUX= tmux capture-pane -p -t <window> | tail -40`。活着≠推进:区分 TURN waiting / interactive menu / error loop。
-> 3. **交接账(TURN belt = comm.db `three_stage_turn`;engine node table = teamlead.db `workflow_run_node`)** — run: `~/.flywheel/bin/flywheel-patrol-snapshot --project <project>` 的 STEP 3 段(只读联查,按本项目 + active run/live session 过滤)。active running node 无 TURN 行 / active issue 的 TURN holder 不在 live execution 集 / active execution no_turn_streak 异常 → finding;历史 terminal 行不得重报。
-> 4. **投递账 + verdict/receipt 一致性** — 同一次快照 STEP 4 段(live runner 的 `mailbox` 超窗未结算、active `turn_wake_outbox` 未 ack、近 24h `dead_letter_alerts`,以及 active PR binding head 与有效 verdict claim subject 是否一致)。只输出 allowlist 元数据,不得输出消息正文、envelope、summary、token 或 evidence 原文。有行 = 可能有没送到的唤醒/死信或 verdict 漂移,对照步 2/5 判。
-> 5. **外部真相(整仓维度)** — 同一次快照 STEP 5 段(REST:`GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'` + 同样带 `GH_REPO` 的 `gh api 'repos/{owner}/{repo}/actions/runs?per_page=5'`),看**整仓最近活动时刻**;全部 open PR 长时间零活动(如 >60min 且账面应有活动)是 finding(2026-08-17 全仓 1h49m 停摆类)。单个可疑 PR 再 `gh pr view <n> --repo <projectRepo> --json state,mergeable,headRefOid,statusCheckRollup`。Discord:用 Discord MCP 的 `fetch_messages`,**选取规则写死**:按 tick 名册 identifier 对应的 `[FLY-XX]` issue thread,最多 2 个、最近活动优先;核最新消息/archive 状态,不采信 Bridge `chat_threads` 转述。
-> 6. **处置** — run(报告):打开快照 stdout 的 `REPORT_PATH`,将六行候选逐项定稿为 `OK | FINDING | UNAVAILABLE(<稳定原因>)`;名下 finding 按对应 emergency procedure 有界修复并留证。run(跨界):用 Discord reply tool 发到 `#leads-roundtable` 并 @对应 Lead 或 @Tadashi。run(结构性 UNAVAILABLE):先通过 `GET /api/linear/issues?team=FLY&search=%5Bpatrol-unavailable%5D` 搜重,再以 `POST /api/linear/create-issue` 建/补 `[patrol-unavailable] step <n>: <稳定原因>`(team FLY + project Flywheel + label Flywheel)。全仓停摆按现行 issue-bound/cross-dept reporting command 上报。**报告六行全部定稿才算这条 tick 巡完;无法理解这里任一命令本身也必须记 UNAVAILABLE,禁止静默跳过。**
+> 3. **交接账(TURN belt = comm.db `three_stage_turn`;engine node table = teamlead.db `workflow_run_node`)** — run: `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`(只读联查,按本项目 + active run/live session 过滤)。active running node 无 TURN 行 / active issue 的 TURN holder 不在 live execution 集 / active execution no_turn_streak 异常 → finding;历史 terminal 行不得重报。
+> 4. **投递账 + verdict/receipt 一致性** — run: `awk '/^## STEP 4$/{show=1; next} /^## STEP 5$/{show=0} show' "$REPORT_PATH"`。该段只看 live runner 的 `mailbox` 超窗未结算、active `turn_wake_outbox` 未 ack、近 24h `dead_letter_alerts`,以及 active PR binding head 与有效 verdict claim subject 是否一致;只输出 allowlist 元数据,不得输出消息正文、envelope、summary、token 或 evidence 原文。有行 = 可能有没送到的唤醒/死信或 verdict 漂移,对照步 2/5 判。
+> 5. **外部真相(整仓维度)** — run: `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。该段由 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'` 和 `.../actions/runs?per_page=5` 的 REST 投影生成;看**整仓最近活动时刻**;全部 open PR 长时间零活动(如 >60min 且账面应有活动)是 finding(2026-08-17 全仓 1h49m 停摆类)。单个可疑 PR 再 run: `gh pr view <n> --repo <projectRepo> --json state,mergeable,headRefOid,statusCheckRollup`。Discord run: Discord MCP `fetch_messages(chat_id=<tick 名册 identifier 对应的 [FLY-XX] issue thread>, limit=20)`;**选取规则写死**:最多 2 个 thread、最近活动优先,核最新消息/archive 状态,不采信 Bridge `chat_threads` 转述。
+> 6. **处置** — run(报告):打开 `"$REPORT_PATH"`,将六行候选逐项定稿为 `OK | FINDING | UNAVAILABLE(<稳定原因>)` 并写下证据;名下 finding 按对应 emergency procedure 有界修复并留证。run(跨界):用 Discord reply tool 发到 `#leads-roundtable` 并 @对应 Lead 或 @Tadashi。run(UNAVAILABLE 搜重): `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; EXISTING="$(curl -fsS -H "Authorization: Bearer ${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=backlog,unstarted,started&limit=250&slim=true" | jq -r --arg title "$TITLE" '.issues[] | select(.title == $title) | .identifier' | head -1)"`。若 `EXISTING` 非空,把 identifier 记入报告且禁止重复建单;否则只在 structural 首现或 transient 连续 2 tick 时 run(建单): `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; curl -fsS -X POST -H "Authorization: Bearer ${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。全仓停摆按现行 issue-bound/cross-dept reporting command 上报。**报告六行全部定稿才算这条 tick 巡完;无法理解这里任一命令本身也必须记 UNAVAILABLE,禁止静默跳过。**
 
 (§0 现有尾注「`runner_terminal_list` 只是内部起点、不采信 Bridge 单方转述、Lead 不得自建 timer」保留。)
 
@@ -184,10 +184,11 @@ v2 独立草案(改两句话 + 首行带 tick 序号,仍零预判零指令;deny-
 
 ## 13. 设计评审记录
 
-Codex 通道 2026-08-18 晚全号额度打满(至 8/19 23:24Z),Gemini 免费层停服(FLY-1869 实测)。按 Tadashi 轮级裁定([lead-instruction 56e8a7ce] + sanctioned skip.json):本单设计评审以**独立上下文 Claude 交叉评审**收口,不记 Codex pending。
+2026-08-18 的独立上下文 Claude 交叉评审是早期质量输入,不替代当前 Runner Contract 要求的正式 Codex design gate。
 
 - **Round 1**(`claude-design-review-round1.md`):CHANGES REQUESTED — 1 HIGH(跨库 join 缺 project 过滤,生产实测 tidal-echo Lead 会每 tick 铸 124 条假 finding)+ 5 MEDIUM(FLY-1687 守卫锚点清算、CI 接线、installer 接线、SQLITE_BUSY 瞬态分类、报告↔tick join key)+ 5 LOW。11 条全部采纳并折入本计划(§4/§5/§6/§7/§8/§9/§11/§12)。设计判断 (a)–(e) 全 AGREE(带条件,条件已折入)。
 - **Round 2**(`claude-design-review-round2.md`):**APPROVED**。R1 全部 11 条确认折入(reviewer 逐条独立复核,含代码级验证:`StuckEscalationEnvelopeLike.seq` 在 envelope 上「零新数据」为真;`[patrol_tick #<seq>]` 无消费者破坏;`turn_wake_outbox.created_at` 毫秒标注正确)。附 3 条非阻塞 LOW 建议,已折入 §4(transient 稳定 token、installer 同 PR 落地、删不可达 n/a 分支)。设计判断 (a)–(e) 全 AGREE。
 
 - **实现节点授权裁定**(Lead reply `0e86df21-300c-4ce0-9cd8-dec4ff38a312`,2026-08-18 PDT):founder 尚未认可 v2,本 PR 必须保留 v1 正文;只落规矩侧范围合同、快照脚本、tickNA/时间窗报告与 UNAVAILABLE 出口。v2 作为独立提案等 founder 点头后再启用。
 - **正式 Codex Round 1**(request `2f27d93b-1165-49d2-8d4d-2ab1257230cf`):CHANGES REQUESTED。2 HIGH 指出 active/liveness 未界定会在生产每 tick 铸约 188 条假 candidate,且 founder HTML v2 漏 `#<seq>` 与 plan 不一致;另有 step4 陈年 lease、secret projection、CI exact inventory、verdict crosscheck、Codex 写边界等 finding。全部按本轮实测收敛进 §4–§13;v2 HIGH 通过「HTML 补齐未来逐字提案 + 当前 PR 明确 v1-only」闭合。修订后必须开新 design gate/request 复审。
+- **正式 Codex 复审通道**(gate `4ad779fc-fc8d-4f06-91db-cf72e104bc6f`):2026-08-19 两个 request 因 reviewer 账号 weekly limit 非零失败,未产生 verdict;故设计门仍是 pending,不得将上述 Claude APPROVED 当成当前授权。等 Lead 给出可用的交叉 reviewer 路由后,对本版本开**新** gate/request,APPROVED 前不实现。
