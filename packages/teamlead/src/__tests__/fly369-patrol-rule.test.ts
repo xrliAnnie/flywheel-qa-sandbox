@@ -92,11 +92,47 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		);
 		expect(section0).toContain("/api/chat-threads?issueId=");
 		expect(section0).toContain("fetch_messages");
-		expect(section0).toContain("1512578695468941333");
+		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
+		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
+		expect(section0).toContain("roundtable.json");
+		expect(section0).not.toContain('reply(chat_id="1512578695468941333"');
 		expect(section0).toContain("flywheel-eng-lead");
 		expect(section0).toContain("reply(chat_id=");
 		expect(section0).toContain("--config -");
 		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
+	});
+
+	it("FLY-1855 founder increment: every canonical Runner pane has full-scrollback evidence and a closed action", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"list-panes -a",
+			"session_name",
+			"runner-",
+			"capture-pane -p -S -",
+			"PANE_EVIDENCE",
+			"pane_count",
+			"LIMIT_LIVE",
+			"STALLED_60M",
+			"INTERACTIVE_MENU",
+			"action=REQUIRED",
+			"result=UNSET",
+			"foreign-registry",
+			"owner_index_incomplete",
+			"comm.sessions",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(section0).toContain("You've hit your session limit");
+		expect(section0).toContain("You've hit your usage limit");
+		expect(section0).toContain("Press Enter to confirm");
+		expect(section0).toContain("flywheel-comm send");
+		expect(section0).toContain("tmux send-keys");
+		expect(section0).toMatch(/action=REQUIRED.*result=UNSET/s);
+		expect(section0).toMatch(/PANE_COUNT.*EVIDENCE_COUNT/s);
+		expect(section0).toMatch(/-CANDIDATE\$/);
 	});
 
 	it("FLY-1855: the documented completion gate accepts finalized UNAVAILABLE rows", () => {

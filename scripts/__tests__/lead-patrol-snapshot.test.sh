@@ -16,6 +16,11 @@ pass() { printf 'PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
 fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
 contains() { grep -Fq -- "$2" "$1" && pass "$3" || fail "$3 (missing: $2)"; }
 not_contains() { ! grep -Fq -- "$2" "$1" && pass "$3" || fail "$3 (unexpected: $2)"; }
+count_is() {
+  local file="$1" needle="$2" expected="$3" label="$4" actual
+  actual="$(grep -Fc -- "$needle" "$file" || true)"
+  [ "$actual" -eq "$expected" ] && pass "$label" || fail "$label (expected $expected, got $actual: $needle)"
+}
 
 if [ ! -f "$ROOT/packages/teamlead/dist/StateStore.js" ] \
   || [ ! -f "$ROOT/packages/flywheel-comm/dist/lib.js" ]; then
@@ -31,9 +36,10 @@ DB_PATH="$TMP/template/comm.db" node --input-type=module -e \
 
 make_case() {
   local dir="$1"
-  mkdir -p "$dir/comm/flywheel" "$dir/state" "$dir/bin" "$dir/home"
+  mkdir -p "$dir/comm/flywheel" "$dir/comm/tidal-echo" "$dir/state" "$dir/bin" "$dir/home"
   cp "$TMP/template/teamlead.db" "$dir/teamlead.db"
   cp "$TMP/template/comm.db" "$dir/comm/flywheel/comm.db"
+  cp "$TMP/template/comm.db" "$dir/comm/tidal-echo/comm.db"
   cat > "$dir/state/projects.json" <<'JSON'
 [
   {
@@ -50,6 +56,9 @@ JSON
 #!/bin/bash
 if [ "${1:-}" = list-windows ]; then
   printf '%s\n' 'FLY-100' 'FLY-101' 'FLY-102' 'cmux-FLY-999' 'zsh'
+  exit 0
+fi
+if [ "${1:-}" = list-panes ]; then
   exit 0
 fi
 exit 2
@@ -98,6 +107,8 @@ run_snapshot() {
   GH_FAIL="${GH_FAIL:-0}" \
   GH_SCHEMA="${GH_SCHEMA:-0}" \
   GH_EMPTY="${GH_EMPTY:-0}" \
+  TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
+  TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
     bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead > "$out" 2>&1
 }
 
@@ -202,6 +213,111 @@ if ! find "$MAIN/state/patrol-reports" -name '*.tmp.*' -print | grep -q .; then
 else
   fail "atomic publication leaves no temp residue"
 fi
+
+# Founder increment: canonical Runner panes are all captured in full, while a
+# cmux mirror of the same window is excluded. Ownership spans project CommDBs.
+PANES="$TMP/panes"
+make_case "$PANES"
+cat > "$PANES/bin/tmux" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "${TMUX_CALL_LOG:?}"
+case "${1:-}" in
+  list-windows)
+    printf '%s\n' 'runner-flywheel: FLY-200 FLY-201 FLY-202' 'runner-tidal-echo: TE-300' 'runner-test-slot-2: TEST-1' 'cmux-FLY-200: FLY-200'
+    ;;
+  list-panes)
+    printf '%%1\trunner-flywheel\trunner-flywheel:@1\tFLY-200\tclaude\t0\n'
+    printf '%%2\trunner-flywheel\trunner-flywheel:@2\tFLY-201\tclaude\t0\n'
+    printf '%%3\trunner-tidal-echo\trunner-tidal-echo:@3\tTE-300\tclaude\t0\n'
+    printf '%%4\tcmux-FLY-200\tcmux-FLY-200:@4\tFLY-200\tclaude\t0\n'
+    printf '%%5\trunner-test-slot-2\trunner-test-slot-2:@5\tTEST-1\tclaude\t0\n'
+    printf '%%6\trunner-flywheel\trunner-flywheel:@6\tFLY-202\tclaude\t0\n'
+    ;;
+  capture-pane)
+    target=""
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = -t ]; then target="${2:-}"; break; fi
+      shift
+    done
+    if [ -n "${TMUX_CAPTURE_FAIL:-}" ] && [ "$target" = "$TMUX_CAPTURE_FAIL" ]; then
+      exit 1
+    fi
+    case "$target" in
+      %1) printf '%s\n' 'SECRET_PANE_TRANSCRIPT' 'Awaiting review' ;;
+      %2) printf '%s\n' "You've hit your usage limit" 'Press Enter to confirm' ;;
+      %3) printf '%s\n' 'Working on another project' ;;
+      %5) printf '%s\n' 'QA slot is healthy' ;;
+      %6) printf '%s\n' 'Runner cleanup pending' ;;
+      *) exit 2 ;;
+    esac
+    ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 0755 "$PANES/bin/tmux"
+sqlite3 "$PANES/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
+SQL
+sqlite3 "$PANES/comm/tidal-echo/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
+SQL
+mkdir -p "$PANES/state/patrol-reports/flywheel-eng-lead"
+PANE_STATE_HASH="$(printf '%s' 'Awaiting review' | shasum -a 256 | awk '{print $1}')"
+cat > "$PANES/state/patrol-reports/flywheel-eng-lead/20260819T000000Z-tickNA.md" <<EOF
+pane_count=1
+PANE_EVIDENCE pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1 capture_sha256=old lines=2 bytes=20 state_sha256=$PANE_STATE_HASH last_change_epoch=$(($(date +%s) - 3700)) findings=none action=none result=clear
+EOF
+PANES_OUT="$PANES/out.txt"
+TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
+contains "$PANES_OUT" "pane_count=5" "canonical Runner pane count excludes cmux mirror"
+count_is "$PANES_OUT" "PANE_EVIDENCE " 5 "every canonical Runner pane has one evidence row"
+for pane in %1 %2 %3 %5 %6; do
+  contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t $pane" "pane $pane uses full scrollback capture"
+done
+not_contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t %4" "cmux mirror is not captured twice"
+not_contains "$PANES_OUT" "SECRET_PANE_TRANSCRIPT" "raw pane transcript is never persisted"
+contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned" "owned pane is mapped from current CommDB"
+contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1" "owned evidence includes execution id"
+contains "$PANES_OUT" "findings=STALLED_60M action=REQUIRED result=UNSET" "unchanged state for one hour is a required finding"
+contains "$PANES_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "second owned pane is mapped"
+contains "$PANES_OUT" "findings=LIMIT_LIVE,INTERACTIVE_MENU action=REQUIRED result=UNSET" "live limit and menu are explicit findings"
+contains "$PANES_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=cross-boundary" "other-project pane uses machine-wide owner index"
+contains "$PANES_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=cross-boundary exec=exec-pane-3" "cross-boundary evidence preserves the mapped execution"
+contains "$PANES_OUT" "findings=none action=none result=clear" "healthy cross-boundary pane is not a finding"
+contains "$PANES_OUT" "pane=%5 target=runner-test-slot-2:@5 owner=foreign-registry" "QA-only session is classified without false orphan alert"
+contains "$PANES_OUT" "result=foreign_registry_clear" "healthy foreign-registry pane auto-closes"
+contains "$PANES_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "unclaimed registered pane remains visible"
+contains "$PANES_OUT" "result=session_terminated" "first unclaimed observation gets teardown grace"
+
+# The published first report is now prior evidence. A second observation of the
+# same registered unclaimed target must become a real orphan finding.
+PANES_SECOND_OUT="$PANES/second.txt"
+TMUX_CALL_LOG="$PANES/tmux-calls-second.log" run_snapshot "$PANES" "$PANES_SECOND_OUT" || fail "second pane snapshot exits zero"
+contains "$PANES_SECOND_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "persistent orphan stays attributed to its target"
+contains "$PANES_SECOND_OUT" "findings=ORPHANED action=REQUIRED result=UNSET" "second unclaimed observation becomes a finding"
+
+PANE_FAIL="$TMP/pane-fail"
+make_case "$PANE_FAIL"
+cp "$PANES/bin/tmux" "$PANE_FAIL/bin/tmux"
+sqlite3 "$PANE_FAIL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
+SQL
+sqlite3 "$PANE_FAIL/comm/tidal-echo/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
+SQL
+PANE_FAIL_OUT="$PANE_FAIL/out.txt"
+TMUX_CALL_LOG="$PANE_FAIL/tmux-calls.log" TMUX_CAPTURE_FAIL=%2 run_snapshot "$PANE_FAIL" "$PANE_FAIL_OUT" || fail "capture failure still publishes report"
+contains "$PANE_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: pane_capture_incomplete)" "one failed capture makes partial patrol visible"
+contains "$PANE_FAIL_OUT" "pane_count=5" "capture failure does not hide declared pane count"
+count_is "$PANE_FAIL_OUT" "PANE_EVIDENCE " 5 "capture failure still emits one row per pane"
+contains "$PANE_FAIL_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "failed pane keeps identity evidence"
+contains "$PANE_FAIL_OUT" "findings=CAPTURE_FAILED action=REQUIRED result=UNSET" "failed pane requires explicit disposition"
 
 EMPTY="$TMP/empty"
 make_case "$EMPTY"
