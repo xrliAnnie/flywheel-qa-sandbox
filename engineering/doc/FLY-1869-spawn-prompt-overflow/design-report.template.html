@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1869 设计方案 — Runner 起不来:任务说明太长撞了 tmux 上限</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    max-width: 960px; margin: 0 auto; padding: 24px 16px 48px;
+    line-height: 1.65;
+  }
+  h1 { font-size: 24px; color: #1a365d; margin-bottom: 6px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 22px; margin-bottom: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #007aff;
+  }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 17px; font-weight: 700; color: #1a365d; margin-bottom: 10px; }
+  .section-title .num { color: #007aff; margin-right: 6px; }
+  p { margin-bottom: 10px; font-size: 14.5px; }
+  .term { color: #af52de; font-weight: 600; }
+  .mono { font-family: 'SF Mono', ui-monospace, monospace; font-size: 12.5px; background: #f0f0f2; border-radius: 4px; padding: 1px 5px; }
+  .big-point { font-size: 15.5px; font-weight: 600; }
+  .diagram { overflow-x: auto; margin: 12px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 12px; font-size: 13.5px; }
+  th { text-align: left; color: #86868b; font-weight: 600; padding: 6px 10px; border-bottom: 2px solid #e5e5ea; }
+  td { padding: 7px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
+  .ok { color: #34c759; font-weight: 700; }
+  .bad { color: #ff3b30; font-weight: 700; }
+  ul { margin: 0 0 10px 20px; font-size: 14.5px; }
+  li { margin-bottom: 6px; }
+  .evidence {
+    background: #f9f9fb; border: 1px solid #e5e5ea; border-radius: 8px;
+    padding: 10px 14px; font-family: 'SF Mono', ui-monospace, monospace;
+    font-size: 12px; color: #515154; margin: 8px 0 12px; overflow-x: auto; white-space: pre;
+  }
+  .comment-box { margin-top: 14px; border-top: 1px dashed #e5e5ea; padding-top: 10px; }
+  .comment-box label { font-size: 12px; color: #86868b; display: block; margin-bottom: 5px; }
+  .comment-box textarea {
+    width: 100%; min-height: 44px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-box textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #comment-summary-list { font-size: 13.5px; }
+  #comment-summary-list .csec { margin-bottom: 10px; }
+  #comment-summary-list .csec-title { font-weight: 700; color: #1a365d; font-size: 13px; }
+  #comment-summary-list .csec-body { white-space: pre-wrap; color: #1d1d1f; }
+  #copy-all-btn {
+    background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 10px;
+  }
+  #copy-all-btn:active { opacity: .8; }
+  #copy-status { font-size: 12.5px; color: #86868b; margin-left: 10px; }
+  .empty-hint { color: #86868b; font-style: italic; }
+</style>
+</head>
+<body>
+
+<h1>FLY-1869 · Runner 起不来:任务说明太长,撞了 tmux 的命令上限</h1>
+<div class="subtitle">设计方案 · 2026-08-18 · 工程执行节点 → Tadashi → Annie</div>
+
+<!-- ══════ 1. 一句话总结 ══════ -->
+<div class="card green" data-sec="一句话总结">
+  <div class="section-title"><span class="num">1</span>一句话总结</div>
+  <p class="big-point">给每个 AI 工程师(runner)开工时,系统把整份任务说明原文塞进了一条启动命令里;说明一长(约 16KB 以上)命令就被拒收,工程师根本没法上岗 —— 修法是把任务说明先存成文件、命令里只递一张"文件地址条",并加一道在撞墙前就大声报警的检查。</p>
+  <p>这个 bug 有个恶性反转:我们习惯把复盘、分析都追加进任务说明,于是<b>一张单被分析得越透,它的 runner 越必然起不来</b> —— 最重要、最难的单最先失去执行能力。8/18 凌晨挡住所有 PR 的 P0 单 FLY-1863 正是第一个撞线的。</p>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="一句话总结" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 2. 出了什么事 ══════ -->
+<div class="card red" data-sec="出了什么事">
+  <div class="section-title"><span class="num">2</span>出了什么事(实测证据)</div>
+  <p>先解释两个词:<span class="term">tmux</span>(一个在服务器上开很多虚拟终端窗口的工具,每个 AI 工程师就住在一个这样的窗口里干活)、<span class="term">runner</span>(领一张任务单独立干活的 AI 工程师会话)。</p>
+  <p>开工命令的结构是:"打开一个新 tmux 窗口,在里面启动 Claude,并把<b>任务说明全文</b>作为启动参数一起带上"。tmux 自己有一条内部限制:一条命令太长就直接拒绝。实测边界:</p>
+  <table>
+    <tr><th>命令长度</th><th>结果</th></tr>
+    <tr><td>2,000 / 4,000 / 8,000 / 16,000 字节</td><td class="ok">✅ 成功</td></tr>
+    <tr><td>20,000 / 24,000 / 32,000 / 65,000 字节</td><td class="bad">❌ command too long(拒绝执行)</td></tr>
+  </table>
+  <p>FLY-1863 的 QA 环节 05:52 就这样起不来;06:07 有人手工压缩了任务说明,06:34 重试才成功。更糟的是这条错误在系统表里静躺了 40 分钟,<b>没有任何人被通知</b>,最后是 Annie 用嘴报的障。</p>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="出了什么事" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 3. 修法核心流程 ══════ -->
+<div class="card" data-sec="修法核心流程">
+  <div class="section-title"><span class="num">3</span>修法:任务说明改走文件,命令里只递地址条</div>
+  <div class="diagram">__SVG_D1__</div>
+  <p>关键点:窗口里有一个本来就存在的启动小脚本(它原来的职责是等系统确认"这次启动已记账"再放行),现在让它多做一步 —— 把文件内容原样读回来交给 Claude。所以 <b>Claude 收到的任务原文一个字都不变</b>,变的只是"怎么送到它手上"。</p>
+  <p>这不是新发明:系统里另外三种 AI 工程师后端(Codex / Antigravity / Kimi)早已各自绕开了这面墙,<b>只有生产默认的 Claude 通道还在裸奔</b>;而且 Claude 通道自己在 FLY-154 时就撞过一次同一面墙(当时只修了另一个参数,没修任务说明本体)。本单是把欠的那一半补上。</p>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="修法核心流程" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 4. 结构模型 + 防线 ══════ -->
+<div class="card amber" data-sec="第二道防线">
+  <div class="section-title"><span class="num">4</span>数据去向 + 第二道防线:撞墙前大声报警</div>
+  <p>修复后,一条启动命令里各部分的去向:</p>
+  <table>
+    <tr><th>内容</th><th>今天</th><th>修复后</th><th>大小</th></tr>
+    <tr><td>任务说明全文(prompt)</td><td class="bad">命令行内联</td><td class="ok">0600 权限私有文件</td><td>可到 120KB</td></tr>
+    <tr><td>系统提示词(system prompt)</td><td class="ok">已是文件(FLY-154)</td><td class="ok">不变</td><td>—</td></tr>
+    <tr><td>环境变量、启动开关、各类路径</td><td>命令行</td><td>命令行(不变)</td><td>~3-5KB,恒定</td></tr>
+  </table>
+  <p>即便如此,还要防"未来有人又往命令里塞新的大块内容"。所以在真正调用 tmux <b>之前</b>加一道双重检查:</p>
+  <div class="diagram">__SVG_D2__</div>
+  <p>超限时<b>不悄悄截断、不静默降级</b> —— 直接抛一个写明"实测多长、超了哪条预算、最大的三块是什么"的具名错误,顺着既有的失败上报链路走,Lead 会被告知。这正对应验收标准第 3 条:"必须有一条会失败的检查"。</p>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="第二道防线" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 5. 关键取舍 ══════ -->
+<div class="card purple" data-sec="关键取舍">
+  <div class="section-title"><span class="num">5</span>关键取舍与被否掉的方案</div>
+  <table>
+    <tr><th>方案</th><th>判定</th><th>理由</th></tr>
+    <tr><td><b>A. 文件 + 窗口内读回</b>(选定)</td><td class="ok">✅ 采用</td><td>Claude 收到的内容逐字不变(零行为风险);命令长度与任务说明彻底解耦;改动只集中在一个文件</td></tr>
+    <tr><td>B. 学 Kimi:只递"请先读某文件"的短指令</td><td class="bad">❌ 否</td><td>会改变 AI 的第一步行为(先去读文件),对生产默认通道是无必要的行为回归风险;A 用零变化达成同一目标</td></tr>
+    <tr><td>C. 太长就截断 + 告警</td><td class="bad">❌ 否</td><td>丢信息,且正面违背本单动机 —— "分析越透越必须起得来"</td></tr>
+    <tr><td>D. 改用环境变量传递</td><td class="bad">❌ 否</td><td>环境变量走的是同一条 tmux 命令通道,一样撞墙,不解决问题</td></tr>
+  </table>
+  <p>预算取值:命令总长红线 12KB(实测成功下限 16KB 再留 25% 余量);任务文件红线 120KB —— 取<b>所有平台都能兑现承诺</b>的最小上限(Linux 对单个启动参数有 128KB 硬限制,生产 Mac 虽能到更大,但红线必须在测试环境也为真),验收要求的 100KB 之上留 20% 余量。这个数字是独立交叉评审揪出来改的:原稿写 512KB,在 Linux 上会出现"检查放行、执行时黑箱死"的假合同 —— 恰是本单要消灭的失败类。</p>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="关键取舍" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 6. 诚实边界 ══════ -->
+<div class="card gray" data-sec="诚实边界">
+  <div class="section-title"><span class="num">6</span>诚实边界:这个设计不做什么</div>
+  <ul>
+    <li><b>不修"起不来变成永拒重试"的次生 bug</b>(rollback 悬挂指针)—— Tadashi 已另立单;本单保证 spawn 这一步要么成功、要么大声具名失败。</li>
+    <li><b>不新建告警通道</b> —— "有人被告知"复用既有两条失败上报链路;本单的贡献是让错误变得具名、自述、且发生在撞 tmux 之前。</li>
+    <li><b>任务说明超过 120KB 依然会失败</b>(但是大声的失败,不是静默的)—— 红线取自跨平台都能兑现的操作系统限制;真出现更大的需求时另立单换形态。</li>
+    <li><b>其他三种后端(Codex/Antigravity/Kimi)行为字节不变</b>,用回归测试钉死。</li>
+    <li>已知微小变化:文件读回会剥掉任务说明<b>末尾的连续空行</b>(shell 的固有行为),语义无害,已在测试口径中声明。</li>
+    <li>验收口径:QA 判断 runner 活着必须用进程探测(ps),<b>不得</b>用 sessions 表的 tmux_session 字段(活 runner 该字段也可能为空 —— issue 里点名的坑)。</li>
+  </ul>
+  <div class="comment-box"><label>对这一节的批注(自动保存在本机)</label><textarea class="comment-input" data-sec="诚实边界" placeholder="写下你的想法…"></textarea></div>
+</div>
+
+<!-- ══════ 批注汇总 ══════ -->
+<div class="card" data-sec="__summary__" id="summary-card">
+  <div class="section-title">📋 批注汇总(实时聚合本页所有非空批注)</div>
+  <div id="comment-summary-list"><span class="empty-hint">暂无批注 —— 在任意小节下方的输入框写字,这里会实时汇总。</span></div>
+  <button id="copy-all-btn" type="button">一键复制全部批注</button><span id="copy-status"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1869-comments:" + location.pathname + ":";
+  var inputs = Array.prototype.slice.call(document.querySelectorAll(".comment-input"));
+  var listEl = document.getElementById("comment-summary-list");
+  var copyBtn = document.getElementById("copy-all-btn");
+  var statusEl = document.getElementById("copy-status");
+
+  function loadSaved(sec) {
+    try { return localStorage.getItem(PREFIX + sec) || ""; } catch (e) { return ""; }
+  }
+  function save(sec, val) {
+    try { localStorage.setItem(PREFIX + sec, val); } catch (e) { /* storage unavailable */ }
+  }
+  function collect() {
+    var out = [];
+    inputs.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) out.push({ sec: ta.getAttribute("data-sec") || "(未命名小节)", text: v });
+    });
+    return out;
+  }
+  function renderSummary() {
+    var items = collect();
+    while (listEl.firstChild) listEl.removeChild(listEl.firstChild);
+    if (!items.length) {
+      var hint = document.createElement("span");
+      hint.className = "empty-hint";
+      hint.textContent = "暂无批注 —— 在任意小节下方的输入框写字,这里会实时汇总。";
+      listEl.appendChild(hint);
+      return;
+    }
+    items.forEach(function (it) {
+      var wrap = document.createElement("div"); wrap.className = "csec";
+      var t = document.createElement("div"); t.className = "csec-title";
+      t.textContent = "【" + it.sec + "】";
+      var b = document.createElement("div"); b.className = "csec-body";
+      b.textContent = it.text;
+      wrap.appendChild(t); wrap.appendChild(b); listEl.appendChild(wrap);
+    });
+  }
+  function buildCopyText() {
+    return collect().map(function (it) { return "【" + it.sec + "】\n" + it.text; }).join("\n\n");
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    setTimeout(function () { statusEl.textContent = ""; }, 4000);
+  }
+  inputs.forEach(function (ta) {
+    var sec = ta.getAttribute("data-sec") || "";
+    ta.value = loadSaved(sec);
+    ta.addEventListener("input", function () {
+      save(sec, ta.value);
+      renderSummary();
+    });
+  });
+  copyBtn.addEventListener("click", function () {
+    var text = buildCopyText();
+    if (!text) { setStatus("没有可复制的批注"); return; }
+    var done = function (ok) { setStatus(ok ? "✅ 已复制到剪贴板" : "❌ 复制失败 —— 请手动全选汇总区文字复制"); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  });
+  renderSummary();
+})();
+</script>
+</body>
+</html>

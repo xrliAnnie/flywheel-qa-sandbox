@@ -256,7 +256,7 @@ export class KimiTmuxAdapter extends TmuxAdapter {
 	protected override buildCliArgs(
 		ctx: AdapterExecutionContext,
 		_sessionId: string,
-	): string[] {
+	): { args: string[] } {
 		const args: string[] = [];
 		if (ctx.model) args.push("--model", ctx.model);
 
@@ -277,6 +277,6 @@ export class KimiTmuxAdapter extends TmuxAdapter {
 			"-p",
 			`Read the instructions in ${promptPath} and follow them exactly. Begin now.`,
 		);
-		return args;
+		return { args };
 	}
 }

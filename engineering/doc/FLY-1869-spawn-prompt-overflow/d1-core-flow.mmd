@@ -1,0 +1,14 @@
+flowchart TB
+    A["Linear issue 的 description<br/>(任务说明全文,分析越多越长,可到 100KB+)"]
+    A --> B["修复前:全文直接塞进<br/>tmux 的启动命令"]
+    B -->|"命令超过 ~16KB"| C["tmux 报 command too long<br/>拒绝执行,runner 起不来"]
+    A --> D["修复后:全文先写进一个<br/>只有本机自己能读的临时文件"]
+    D --> E["启动命令里只放文件路径<br/>命令长度恒定在 ~3-5KB"]
+    E --> F["新窗口里的启动小脚本<br/>把文件内容原样读回来"]
+    F --> G["Claude 收到的任务原文<br/>与修复前逐字一致(零语义变化)"]
+    style C fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+    style G fill:#e6f9ec,stroke:#34c759,stroke-width:2px
+    style B fill:#fff4e5,stroke:#ff9500
+    style D fill:#e8f1ff,stroke:#007aff
+    style E fill:#e8f1ff,stroke:#007aff
+    style F fill:#e8f1ff,stroke:#007aff

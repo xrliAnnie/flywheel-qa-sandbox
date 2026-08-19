@@ -419,6 +419,11 @@ export interface TerminalFailureInfo {
 /** FLY-1638: machine-readable failure before the workflow launch fence commits. */
 export type LaunchPrecommitFailure =
 	| {
+			code: "LAUNCH_COMMAND_OVERSIZE";
+			reason: "tmux_command_budget" | "prompt_size_budget";
+			physicalEvidence: "absent";
+	  }
+	| {
 			code: "LAUNCH_TMUX_SESSION_HELD";
 			reason:
 				| "saturated"

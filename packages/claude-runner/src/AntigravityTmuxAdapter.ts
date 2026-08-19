@@ -98,7 +98,7 @@ export class AntigravityTmuxAdapter extends TmuxAdapter {
 	protected override buildCliArgs(
 		ctx: AdapterExecutionContext,
 		_sessionId: string,
-	): string[] {
+	): { args: string[] } {
 		const args: string[] = [];
 		if (ctx.model) args.push("--model", ctx.model);
 		// Parity with the unattended claude tmux runner (auto-approve in tmux).
@@ -121,6 +121,6 @@ export class AntigravityTmuxAdapter extends TmuxAdapter {
 			"-i",
 			`Read the instructions in ${promptPath} and follow them exactly. Begin now.`,
 		);
-		return args;
+		return { args };
 	}
 }

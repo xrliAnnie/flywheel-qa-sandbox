@@ -81,6 +81,85 @@ export interface AmbientSafeWindowCommandOptions {
 	gateFile?: string;
 	launchToken?: string;
 	cleanup?: "keep" | "unlink";
+	promptFile?: string;
+}
+
+export interface BuiltCliArgs {
+	args: string[];
+	windowPromptFile?: string;
+}
+
+// FLY-1869: keep the complete tmux command below its observed 16–20KB parser
+// ceiling, and keep the eventual single prompt argv below Linux MAX_ARG_STRLEN.
+export const TMUX_COMMAND_BUDGET_BYTES = 12_288;
+export const WINDOW_PROMPT_BUDGET_BYTES = 120_000;
+
+export type LaunchCommandOversizeReason =
+	| "tmux_command_budget"
+	| "prompt_size_budget";
+
+export class LaunchCommandOversizeError extends Error {
+	readonly name = "LaunchCommandOversizeError";
+	readonly code = "LAUNCH_COMMAND_OVERSIZE";
+
+	constructor(
+		readonly reason: LaunchCommandOversizeReason,
+		readonly actualBytes: number,
+		readonly budgetBytes: number,
+		message: string,
+	) {
+		super(message);
+	}
+}
+
+function tmuxCommandBytes(args: string[]): number {
+	return ["tmux", ...args].reduce(
+		(total, arg) => total + Buffer.byteLength(arg, "utf8") + 1,
+		0,
+	);
+}
+
+function largestArgSummary(args: string[]): string {
+	return args
+		.map((arg, index) => ({
+			index,
+			bytes: Buffer.byteLength(arg, "utf8"),
+			label:
+				index > 0 && args[index - 1]?.startsWith("-")
+					? `${args[index - 1]} value`
+					: `argv[${index}]`,
+		}))
+		.sort((a, b) => b.bytes - a.bytes)
+		.slice(0, 3)
+		.map(({ label, bytes }) => `${label}=${bytes}B`)
+		.join(", ");
+}
+
+export function assertLaunchCommandBudgets(
+	tmuxArgs: string[],
+	windowPromptFile?: string,
+): void {
+	if (windowPromptFile) {
+		const promptBytes = readFileSync(windowPromptFile).byteLength;
+		if (promptBytes > WINDOW_PROMPT_BUDGET_BYTES) {
+			throw new LaunchCommandOversizeError(
+				"prompt_size_budget",
+				promptBytes,
+				WINDOW_PROMPT_BUDGET_BYTES,
+				`[TmuxAdapter] LAUNCH_COMMAND_OVERSIZE prompt_size_budget: prompt file is ${promptBytes} bytes; budget is ${WINDOW_PROMPT_BUDGET_BYTES} bytes (${windowPromptFile})`,
+			);
+		}
+	}
+
+	const commandBytes = tmuxCommandBytes(tmuxArgs);
+	if (commandBytes > TMUX_COMMAND_BUDGET_BYTES) {
+		throw new LaunchCommandOversizeError(
+			"tmux_command_budget",
+			commandBytes,
+			TMUX_COMMAND_BUDGET_BYTES,
+			`[TmuxAdapter] LAUNCH_COMMAND_OVERSIZE tmux_command_budget: tmux command is ${commandBytes} bytes; budget is ${TMUX_COMMAND_BUDGET_BYTES} bytes; largest args: ${largestArgSummary(tmuxArgs)}`,
+		);
+	}
 }
 
 /**
@@ -102,6 +181,9 @@ export function buildAmbientSafeWindowCommand(
 	];
 
 	const hasGate = opts.gateFile !== undefined || opts.launchToken !== undefined;
+	if (opts.promptFile && !hasGate) {
+		throw new Error("ambient-safe prompt file requires a gated launch");
+	}
 	if (!hasGate) return safeRunnerCommand;
 	if (!opts.gateFile || !opts.launchToken) {
 		throw new Error(
@@ -113,12 +195,14 @@ export function buildAmbientSafeWindowCommand(
 		"sh",
 		"-c",
 		// $0 = commit file; $1 = this launch token; $2 = cleanup policy;
+		// $3 = optional prompt file;
 		// after shift, "$@" is the complete ambient-safe argv. Neither project
 		// identity nor the binary name is interpolated into shell source.
-		'cf="$0"; tok="$1"; cleanup="$2"; shift 2; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; exec "$@"',
+		'cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift 3; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; exec "$@" "$p"; else exec "$@"; fi',
 		opts.gateFile,
 		opts.launchToken,
 		opts.cleanup ?? "keep",
+		opts.promptFile ?? "",
 		...safeRunnerCommand,
 	];
 }
@@ -391,14 +475,29 @@ export class TmuxAdapter implements IAdapter {
 		// isn't wired OR ctx lacks agentName/teamName/vendor → backward-
 		// compatible spawn (skipped wiring).
 		const transportSpawnConfig = this.tryBuildTransportSpawnConfig(ctx);
+		const commitFile = ctx.launchCommitPath;
+		const generationGated = this.type === "claude-tmux";
+		const launchToken =
+			generationGated || commitFile
+				? (ctx.launchGateToken ?? randomUUID())
+				: undefined;
+		const directGateFile =
+			generationGated && !commitFile && launchToken
+				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
+				: undefined;
+		const gateFile = commitFile ?? directGateFile;
 
 		// Build CLI args (interactive mode — NO --print, NO --output-format).
-		// FLY-493: `buildCliArgs` is an overridable seam; the claude default
-		// delegates to `buildClaudeArgs` (byte-identical).
-		const claudeArgs = this.buildCliArgs(ctx, claudeSessionId);
+		// FLY-493: `buildCliArgs` is an overridable seam; the Claude default
+		// delegates to `buildClaudeArgs` and may return a file-backed task prompt.
+		const { args: claudeArgs, windowPromptFile } = this.buildCliArgs(
+			ctx,
+			claudeSessionId,
+			launchToken,
+		);
 
-		// Prepend transport-supplied identity flags BEFORE standard claudeArgs
-		// so the prompt (last positional) stays last.
+		// Prepend transport-supplied identity flags before the standard CLI args.
+		// The gated shell appends a file-backed task prompt only at exec time.
 		if (transportSpawnConfig) {
 			claudeArgs.unshift(...transportSpawnConfig.args);
 		}
@@ -653,21 +752,11 @@ export class TmuxAdapter implements IAdapter {
 		//     replay sees no commit → re-drives (writes a fresh token);
 		//   - commit written → only THIS launch's shell `exec`s Claude; a replay
 		//     sees the file exists → adopts → exactly one started Runner.
-		const commitFile = ctx.launchCommitPath;
-		const generationGated = this.type === "claude-tmux";
-		const launchToken =
-			generationGated || commitFile
-				? (ctx.launchGateToken ?? randomUUID())
-				: undefined;
-		const directGateFile =
-			generationGated && !commitFile && launchToken
-				? join(tmpdir(), "flywheel-launch-gates", `launch-${launchToken}`)
-				: undefined;
-		const gateFile = commitFile ?? directGateFile;
 		const windowCommand = buildAmbientSafeWindowCommand({
 			binaryName: this.binaryName,
 			binaryArgs: claudeArgs,
 			projectName: ctx.projectName,
+			...(windowPromptFile ? { promptFile: windowPromptFile } : {}),
 			...(gateFile && launchToken
 				? {
 						gateFile,
@@ -679,7 +768,7 @@ export class TmuxAdapter implements IAdapter {
 
 		// Launch the tmux window WITH cwd (Claude directly on the fleet path; the
 		// gated waiting shell on the gateway-retry path).
-		const launchResult = this.execFileFn("tmux", [
+		const tmuxLaunchArgs = [
 			"new-window",
 			"-P",
 			"-F",
@@ -692,7 +781,26 @@ export class TmuxAdapter implements IAdapter {
 			"-c",
 			ctx.cwd,
 			...windowCommand,
-		]);
+		];
+		try {
+			assertLaunchCommandBudgets(tmuxLaunchArgs, windowPromptFile);
+		} catch (error) {
+			if (
+				error instanceof LaunchCommandOversizeError &&
+				ctx.commitWorkflowLaunch
+			) {
+				throw new LaunchPrecommitError(
+					{
+						code: "LAUNCH_COMMAND_OVERSIZE",
+						reason: error.reason,
+						physicalEvidence: "absent",
+					},
+					error.message,
+				);
+			}
+			throw error;
+		}
+		const launchResult = this.execFileFn("tmux", tmuxLaunchArgs);
 		// Both capture and later probe use tmux's raw `#{start_time}` decimal
 		// POSIX epoch seconds. Do not format it through Date/local timezone.
 		const launchFields = launchResult.stdout.trim().split("|");
@@ -1006,21 +1114,23 @@ export class TmuxAdapter implements IAdapter {
 
 	/**
 	 * FLY-493: overridable CLI-arg seam. The claude default delegates to
-	 * `buildClaudeArgs` (byte-identical). AntigravityTmuxAdapter overrides this
+	 * `buildClaudeArgs`. AntigravityTmuxAdapter overrides this
 	 * to emit `agy` flags (which lack `--session-id`, `--permission-mode`,
 	 * `--append-system-prompt-file`, `--allowed-tools`, `--name`).
 	 */
 	protected buildCliArgs(
 		ctx: AdapterExecutionContext,
 		sessionId: string,
-	): string[] {
-		return this.buildClaudeArgs(ctx, sessionId);
+		launchToken?: string,
+	): BuiltCliArgs {
+		return this.buildClaudeArgs(ctx, sessionId, launchToken);
 	}
 
 	private buildClaudeArgs(
 		ctx: AdapterExecutionContext,
 		sessionId: string,
-	): string[] {
+		launchToken?: string,
+	): BuiltCliArgs {
 		// CLI syntax: claude [options] [prompt] — options MUST come before prompt
 		const args: string[] = [];
 		args.push("--session-id", sessionId);
@@ -1111,9 +1221,33 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
 		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
-		// Prompt as last CLI arg — Claude starts processing immediately on launch
-		args.push(ctx.prompt);
-		return args;
+		// Blank prompts must stay inline: shell command substitution strips trailing
+		// newlines, so externalizing whitespace-only input would turn it into an
+		// empty file-backed prompt and fail the launch gate.
+		if (ctx.prompt.trim() === "") {
+			args.push(ctx.prompt);
+			return { args };
+		}
+		if (!launchToken) {
+			throw new Error("claude prompt externalization requires a launch token");
+		}
+		// FLY-1869: tmux carries only this owner-readable path. The gated pane
+		// shell reads it after the generation fence and appends the content to the
+		// Claude argv, keeping issue-description size out of `tmux new-window`.
+		const promptDir = join(
+			tmpdir(),
+			"flywheel-runner-prompts",
+			ctx.executionId,
+		);
+		mkdirSync(promptDir, { recursive: true, mode: 0o700 });
+		chmodSync(promptDir, 0o700);
+		const windowPromptFile = join(promptDir, `prompt-${launchToken}.md`);
+		writeFileSync(windowPromptFile, ctx.prompt, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		chmodSync(windowPromptFile, 0o600);
+		return { args, windowPromptFile };
 	}
 
 	/**

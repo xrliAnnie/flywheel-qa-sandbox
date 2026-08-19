@@ -1,0 +1,10 @@
+flowchart LR
+    S["组装 tmux 启动命令"] --> G1{"命令总长<br/>≤ 12KB?"}
+    G1 -->|"否"| E1["我们自己的具名报错<br/>LAUNCH_COMMAND_OVERSIZE<br/>写明实测长度和超限原因"]
+    G1 -->|"是"| G2{"任务文件<br/>≤ 120KB?"}
+    G2 -->|"否"| E1
+    G2 -->|"是"| T["调用 tmux<br/>正常拉起 runner"]
+    E1 --> N["错误走既有告警链路<br/>Lead 会被告知,不再静躺"]
+    style E1 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style N fill:#ffe5e3,stroke:#ff3b30
+    style T fill:#e6f9ec,stroke:#34c759,stroke-width:2px
