@@ -1,14 +1,13 @@
 ---
 issue: FLY-1855
 phase: implement
-phaseCursor: 1/4
-updated: 2026-08-19T17:53:37.908Z
-nextStep: Implement canonical full-pane collector, owner index, rules, and QA
-  env isolation
+phaseCursor: 2/4
+updated: 2026-08-19T18:04:03.330Z
+nextStep: Run production read-only smoke and full repository gates; then code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1855 progress
-**phase**: implement (1/4)
-**next**: Implement canonical full-pane collector, owner index, rules, and QA env isolation
+**phase**: implement (2/4)
+**next**: Run production read-only smoke and full repository gates; then code review
