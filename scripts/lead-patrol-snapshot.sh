@@ -35,13 +35,25 @@ done
 
 safe_key() {
   case "$1" in
-    ""|*[!A-Za-z0-9._-]* ) return 1 ;;
+    ""|.|..|*[!A-Za-z0-9._-]* ) return 1 ;;
   esac
   [ "${#1}" -le 64 ]
 }
 
+safe_repo_slug() {
+  local slug="$1" owner repo
+  case "$slug" in
+    ""|/*|*/|*/*/*|*[!A-Za-z0-9._/-]*) return 1 ;;
+  esac
+  owner="${slug%%/*}"
+  repo="${slug#*/}"
+  case "$owner" in .|..) return 1 ;; esac
+  case "$repo" in .|..) return 1 ;; esac
+  [ "${#owner}" -le 64 ] && [ "${#repo}" -le 100 ]
+}
+
 if ! safe_key "$PROJECT_NAME" || ! safe_key "$LEAD_ID"; then
-  echo "[patrol-snapshot] ERROR: project and lead must match [A-Za-z0-9._-]{1,64}" >&2
+  echo "[patrol-snapshot] ERROR: project and lead must match [A-Za-z0-9._-]{1,64} and not be . or .." >&2
   exit 2
 fi
 case "$TICK_SEQ" in
@@ -96,10 +108,11 @@ if command -v jq >/dev/null 2>&1 && [ -f "$PROJECTS_FILE" ]; then
   PROJECT_REPO="$(jq -er --arg project "$PROJECT_NAME" \
     'first(.[] | select(.projectName == $project) | .projectRepo)' \
     "$PROJECTS_FILE" 2>/dev/null || true)"
-  case "$PROJECT_REPO" in
-    [A-Za-z0-9._-]*/[A-Za-z0-9._-]*) PROJECTS_OK=1 ;;
-    *) PROJECT_REPO="" ;;
-  esac
+  if safe_repo_slug "$PROJECT_REPO"; then
+    PROJECTS_OK=1
+  else
+    PROJECT_REPO=""
+  fi
 fi
 
 SQL_ERROR_TOKEN="structural: sqlite_unavailable"

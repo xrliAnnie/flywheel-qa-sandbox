@@ -302,6 +302,36 @@ else
 fi
 not_contains "$BAD_OUT" "REPORT_PATH=" "unsafe input creates no report"
 
+for unsafe_key_case in 'project:..' 'lead:..' 'project:.' 'lead:.'; do
+  unsafe_kind="${unsafe_key_case%%:*}"
+  unsafe_value="${unsafe_key_case#*:}"
+  UNSAFE_KEY_OUT="$TMP/unsafe-${unsafe_kind}-${unsafe_value//./dot}.txt"
+  if [ "$unsafe_kind" = "project" ]; then
+    unsafe_project="$unsafe_value"
+    unsafe_lead="flywheel-eng-lead"
+  else
+    unsafe_project="flywheel"
+    unsafe_lead="$unsafe_value"
+  fi
+  if HOME="$EMPTY/home" PATH="$EMPTY/bin:$PATH" FLYWHEEL_STATE_DIR="$EMPTY/state" \
+    bash "$SCRIPT" --project "$unsafe_project" --lead "$unsafe_lead" > "$UNSAFE_KEY_OUT" 2>&1; then
+    fail "path-segment $unsafe_kind $unsafe_value fails closed"
+  else
+    pass "path-segment $unsafe_kind $unsafe_value fails closed"
+  fi
+  not_contains "$UNSAFE_KEY_OUT" "REPORT_PATH=" "path-segment $unsafe_kind $unsafe_value creates no report"
+done
+
+BAD_REPO="$TMP/bad-repo"
+make_case "$BAD_REPO"
+jq 'map(if .projectName == "flywheel" then .projectRepo = "owner/../../SECRET_REPO" else . end)' \
+  "$BAD_REPO/state/projects.json" > "$BAD_REPO/state/projects.invalid.json"
+mv "$BAD_REPO/state/projects.invalid.json" "$BAD_REPO/state/projects.json"
+BAD_REPO_OUT="$BAD_REPO/out.txt"
+run_snapshot "$BAD_REPO" "$BAD_REPO_OUT" || fail "invalid project repo remains report-producing"
+contains "$BAD_REPO_OUT" "STEP 5: UNAVAILABLE(structural: gh_unavailable)" "invalid project repo disables external projection"
+not_contains "$BAD_REPO_OUT" "SECRET_REPO" "invalid project repo is not persisted"
+
 PUBLISH="$TMP/publish-failure"
 make_case "$PUBLISH"
 printf 'not a directory\n' > "$PUBLISH/state-file"
