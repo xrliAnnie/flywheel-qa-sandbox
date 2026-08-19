@@ -17,6 +17,7 @@ describe("work-kind vocabulary", () => {
 	it("exports the single contract vocabularies", () => {
 		expect(WORK_KIND_CATEGORIES).toEqual([
 			"code",
+			"simple_code",
 			"prd",
 			"design",
 			"prototype",
