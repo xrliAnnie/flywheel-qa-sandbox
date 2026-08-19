@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: design
-phaseCursor: 1/4
-updated: 2026-08-19T04:25:02.917Z
-nextStep: codex-design-review loop until APPROVED
+phaseCursor: 2/4
+updated: 2026-08-19T04:38:08.112Z
+nextStep: fold Claude cross-review findings; build founder HTML
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: design (1/4)
-**next**: codex-design-review loop until APPROVED
+**phase**: design (2/4)
+**next**: fold Claude cross-review findings; build founder HTML
