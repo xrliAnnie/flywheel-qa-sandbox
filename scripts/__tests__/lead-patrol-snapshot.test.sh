@@ -307,7 +307,7 @@ contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner
 
 # The published first report is now prior evidence. A second observation of the
 # same registered unclaimed target must become a real orphan finding.
-awk '!/target=runner-flywheel:@1 /' "$REPORT_PATH" > "$PANES/reflowed-report" \
+awk '!/target=runner-flywheel:@1 / && !/target=runner-flywheel:@6 /' "$REPORT_PATH" > "$PANES/reflowed-report" \
   && mv "$PANES/reflowed-report" "$REPORT_PATH"
 PANES_SECOND_OUT="$PANES/second.txt"
 TMUX_CALL_LOG="$PANES/tmux-calls-second.log" run_snapshot "$PANES" "$PANES_SECOND_OUT" || fail "second pane snapshot exits zero"
@@ -335,6 +335,22 @@ contains "$PANE_FAIL_OUT" "pane_count=5" "capture failure does not hide declared
 count_is "$PANE_FAIL_OUT" "PANE_EVIDENCE " 5 "capture failure still emits one row per pane"
 contains "$PANE_FAIL_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "failed pane keeps identity evidence"
 contains "$PANE_FAIL_OUT" "findings=CAPTURE_FAILED action=REQUIRED result=UNSET" "failed pane requires explicit disposition"
+
+HASH_FAIL="$TMP/hash-fail"
+make_case "$HASH_FAIL"
+cp "$PANES/bin/tmux" "$HASH_FAIL/bin/tmux"
+cat > "$HASH_FAIL/bin/shasum" <<'SH'
+#!/bin/bash
+exit 127
+SH
+chmod 0755 "$HASH_FAIL/bin/shasum"
+HASH_FAIL_OUT="$HASH_FAIL/out.txt"
+TMUX_CALL_LOG="$HASH_FAIL/tmux-calls.log" run_snapshot "$HASH_FAIL" "$HASH_FAIL_OUT" || fail "hash failure still publishes report"
+contains "$HASH_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: hash_unavailable)" "hash failure is fail-closed"
+contains "$HASH_FAIL_OUT" "findings=HASH_UNAVAILABLE action=REQUIRED result=UNSET" "hash failure requires explicit disposition"
+contains "$HASH_FAIL_OUT" "capture_sha256=unavailable" "hash failure preserves a well-formed capture evidence field"
+contains "$HASH_FAIL_OUT" "state_sha256=unavailable" "hash failure preserves a well-formed state evidence field"
+not_contains "$HASH_FAIL/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" $'\t\t' "hash failure writes no empty continuity field"
 
 INDEX_FAIL="$TMP/index-fail"
 make_case "$INDEX_FAIL"
