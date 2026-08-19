@@ -2,13 +2,12 @@
 issue: FLY-1887
 phase: design
 phaseCursor: 6/6
-updated: 2026-08-19T06:19:52.668Z
-nextStep: poll design review 123a2ab4-7548-4a63-b9f4-e757a8fc9a5d; then begin
-  TDD implementation
+updated: 2026-08-19T06:39:30.078Z
+nextStep: request fresh design review for plan v4; implement only after APPROVED
 chunks: []
 pointers: {}
 ---
 
 # FLY-1887 progress
 **phase**: design (6/6)
-**next**: poll design review 123a2ab4-7548-4a63-b9f4-e757a8fc9a5d; then begin TDD implementation
+**next**: request fresh design review for plan v4; implement only after APPROVED
