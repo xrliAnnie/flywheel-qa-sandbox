@@ -12,26 +12,77 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
 
 ## 0. `patrol_tick` — scheduled independent patrol (FLY-1687)
 
-`[patrol_tick]` is a **纯闹钟**. Bridge knows only that the time arrived and
-which Runners its own ledger currently names. The roster is a **待核声明**, not
-fact and not a verdict. This patrol exists to backstop Bridge, so every judgment
-must come from an **独立信源** rather than trusting Bridge's retelling.
+**范围合同**:检测范围 = **整机**(全部 Runner 窗口 + 当前项目主仓的外部真相);
+处置权限 = **只覆盖你名下 Runner**。tick 名册只是 Bridge 对「你名下」的
+**待核声明**,不是巡检边界也不是结论。别家 Lead 的 Runner、无主窗口、全仓
+停摆都记入报告并在第 6 步上报,不得越权处置。
 
-1. **Roster cross-check (ground truth)**: compare the tick roster with
-   `TMUX= tmux list-windows -a`. Window prefixes are Linear identifiers. 多了少了都是 finding.
-   Ignore normal non-Runner windows (`zsh` scaffolds, `cmux-*`
-   mirrors, and Codex Lead TUI windows); Claude Lead itself uses a private socket.
-2. **Pane reality**: use `capture-pane` for every Runner. Alive is not progress:
-   distinguish TURN waiting, an interactive menu, and an error loop.
-3. **Handoff ledgers**: cross-check the engine node table against the `TURN belt`.
-4. **Delivery ledgers**: cross-check Runner reports/PRs against verdict claims and
-   durable ledger receipts.
-5. **External truth**: ask GitHub directly with `gh pr view` for PR head/draft/
-   state, and inspect Discord itself for thread/archive state. Do not accept an
-   internal ledger's paraphrase of either external system.
-6. **Disposition**: apply the established emergency procedure for bounded fixes
-   and leave evidence; create a follow-up issue for systemic faults. Report the
-   patrol result (including “all healthy”) under the current reporting rules.
+**产出物合同**:每条 tick 必产一份六步报告:
+`~/.flywheel/patrol-reports/<leadId>/<UTC>-tickNA.md`。先运行快照;它会原子
+落下含六段的候选骨架并在最后打印 `REPORT_PATH=<absolute path>`。骨架里的
+`LEAD-JUDGMENT-REQUIRED` / `*-CANDIDATE` 不是完成;每一行都定稿为
+`OK | FINDING | UNAVAILABLE(<稳定原因>)` 才算巡完。「全部健康」也必须六行
+齐全。自动骨架本身不是巡检完成证据。
+
+**UNAVAILABLE 出口**:命令失败、对象不存在、或无法理解要求时,该步必须写
+`UNAVAILABLE(transient|structural: <稳定 token>)`;禁止静默跳过。structural
+首次出现就走第 6 步建工程单;`sqlite_busy` 等 transient 连续两个 tick 才建。
+
+`[patrol_tick]` 仍是**纯闹钟**。本巡检用以下**独立信源**,不采信 Bridge
+单方转述。先 run:
+`SNAPSHOT_OUTPUT="$(~/.flywheel/bin/flywheel-patrol-snapshot --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")"; SNAPSHOT_RC=$?; printf '%s\n' "$SNAPSHOT_OUTPUT"; test "$SNAPSHOT_RC" -eq 0 || exit "$SNAPSHOT_RC"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。
+后续六步共用这一个 `REPORT_PATH`,不得重跑快照制造第二份报告。运行前先打开
+自己上一份报告;若有未建单的 UNAVAILABLE,先在第 6 步补账。
+
+1. **名册核对(ground truth)** — run:
+   `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
+   快照段来自 `TMUX= tmux list-windows -a`;与 tick 名册对账。Window 前缀是
+   Linear identifier,多了少了都是 finding。忽略正常 `zsh` scaffolds、
+   `cmux-*` 镜像、Codex Lead TUI;Claude Lead 在私有 socket。若第 2 步的
+   live pane 与快照不一致,run: `TMUX= tmux list-windows -a`,并在报告注明采用
+   快照时刻还是复核时刻读数。
+2. **pane 实况** — 对你名下每个 Runner run:
+   `TMUX= tmux capture-pane -p -t <window> | tail -40`。Alive 不等于推进;区分
+   TURN waiting、interactive menu、error loop。别家窗口只检测/上报,不驱动。
+3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
+   StateStore `workflow_run_node`) — run:
+   `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`。
+   快照已按当前 project + active workflow + live session 只读联查;active issue
+   无 TURN、holder 不在同 issue live execution、`no_turn_streak >= 3`、或 active
+   node 无 live session都是 finding;历史 terminal 行不得重报。
+4. **投递账 + verdict/receipt 一致性** — run:
+   `awk '/^## STEP 4$/{show=1; next} /^## STEP 5$/{show=0} show' "$REPORT_PATH"`。
+   只看 live Runner 的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
+   且 `state='pending'` 的 `dead_letter_alerts`、以及 active PR binding head 与
+   有效 git-head verdict claim。`accepted` dead letter 禁止重报。输出只含
+   allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
+5. **外部真相(整仓维度)** — run:
+   `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
+   快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`
+   与 REST actions runs 投影整仓时刻;不得用 GraphQL。单个 PR 再 run:
+   `gh pr view <n> --repo <projectRepo> --json state,mergeable,headRefOid,statusCheckRollup`。
+   Discord 最多检查 tick 名册最近活动的 2 个 identifier。先 run:
+   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; CHAT_CHANNEL_ID="$(jq -er --arg project "$PROJECT_NAME" --arg lead "$LEAD_ID" 'first(.[] | select(.projectName == $project) | .leads[] | select(.agentId == $lead) | .chatChannel)' "$PROJECTS_FILE")"`。
+   每个 identifier run(Bridge 只解地址,secret header 只走 stdin):
+   `IDENTIFIER='<FLY-XX>'; THREAD_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "${BRIDGE_URL:?BRIDGE_URL required}/api/chat-threads?issueId=$IDENTIFIER&channelId=$CHAT_CHANNEL_ID")"; THREAD_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.threadId // empty')"; test -n "$THREAD_ID"`;
+   最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
+   archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
+6. **处置 + 完成报告** — 打开 `"$REPORT_PATH"`,逐行定稿并写证据。名下
+   finding 按对应 emergency procedure 有界修复;跨界 finding 先 run:
+   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; TADASHI_BOT_ID="$(jq -er 'first(.[] | select(.projectName == "flywheel") | .leads[] | select(.agentId == "flywheel-eng-lead") | .botUserId)' "$PROJECTS_FILE")"`,
+   再用 Discord MCP
+   `reply(chat_id="1512578695468941333", message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <finding>; report: $REPORT_PATH")`。
+   UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
+   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -er '.truncated // false')"; PARSE_RC=$?`。
+   若 `DEDUP_RC != 0`、`PARSE_RC != 0` 或 `TRUNCATED == true`,报告记
+   `UNAVAILABLE(transient: dedupe_unverified)`并**禁止建单**。否则 run:
+   `EXISTING="$(printf '%s' "$DEDUP_JSON" | jq -r --arg title "$TITLE" '.issues[] | select(.title == $title) | .identifier' | head -1)"`;
+   非空则把 identifier 写进报告且禁止重复建单。只有空且满足 structural 首现或
+   transient 连续 2 tick 时 run:
+   `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
+   最后 run(完成门):
+   `test "$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\\((transient|structural): [A-Za-z0-9._-]+\\))$' "$REPORT_PATH")" -eq 6 && ! grep -Eq '^STEP [1-6]: (LEAD-JUDGMENT-REQUIRED|.*-CANDIDATE)$' "$REPORT_PATH"`。
+   失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one
 system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick

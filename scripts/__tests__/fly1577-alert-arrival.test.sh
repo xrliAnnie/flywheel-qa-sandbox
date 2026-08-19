@@ -45,10 +45,12 @@ pad() { local i=1; while [ "$i" -le 60 ]; do echo "$1 line $i padding text >/dev
 # ── trusted fake repo carrying the REAL alerter ─────────────────────────────
 FR="$RSB/repo"; mkdir -p "$FR/scripts/lib" "$FR/.git"
 for f in lib/script-sanity.sh lib/path-hygiene.sh lib/bounded-run.sh \
-         meta-alert.sh lead-alert.sh converge-flywheel-bin.sh; do
+         meta-alert.sh lead-alert.sh lead-patrol-snapshot.sh \
+         converge-flywheel-bin.sh; do
   cp "$REAL_REPO_ROOT/scripts/$f" "$FR/scripts/$f"
 done
-chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh"
+chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
+  "$FR/scripts/lead-patrol-snapshot.sh"
 for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
          flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
@@ -190,6 +192,7 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"
+  ln -sfn "$FR/scripts/lead-patrol-snapshot.sh" "$st/bin/flywheel-patrol-snapshot"
 }
 
 deliveries_in_state() {  # <state> → count

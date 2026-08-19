@@ -80,7 +80,7 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
   mkdir -p "$fr/scripts/lib" "$fr/packages/agent-team-transport/dist/bin"
   for f in lib/script-sanity.sh lib/path-hygiene.sh lib/tmux-server-rescue.sh \
            lib/bounded-run.sh meta-alert.sh converge-flywheel-bin.sh \
-           flywheel-cmux-autostart.sh; do
+           flywheel-cmux-autostart.sh lead-patrol-snapshot.sh; do
     cp "$REAL_REPO_ROOT/scripts/$f" "$fr/scripts/$f"
   done
   { echo "#!/usr/bin/env node"; pad "console.log('cli'); //"; } \
@@ -138,6 +138,7 @@ seed_copy_state() {  # <state-dir> <repo> — converged copy lane, mode 555
     [ -e "$st/bin/$f" ] && chmod u+w "$st/bin/$f" 2>/dev/null
     cp "$repo/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"
   done
+  ln -sfn "$repo/scripts/lead-patrol-snapshot.sh" "$st/bin/flywheel-patrol-snapshot"
 }
 
 new_state() {  # <name> <repo> → echoes a fresh state dir seeded to copy steady state

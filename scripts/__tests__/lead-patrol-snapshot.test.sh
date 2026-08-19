@@ -60,6 +60,20 @@ if [ "${GH_FAIL:-0}" = 1 ]; then
   echo 'temporary gh failure' >&2
   exit 1
 fi
+if [ "${GH_SCHEMA:-0}" = 1 ]; then
+  case "$*" in
+    *'/pulls?state=open&per_page=50'*) printf '%s\n' '[{"number":"SECRET_BAD_SCHEMA"}]' ;;
+    *'/actions/runs?per_page=5'*) printf '%s\n' '{"workflow_runs":[{}]}' ;;
+  esac
+  exit 0
+fi
+if [ "${GH_EMPTY:-0}" = 1 ]; then
+  case "$*" in
+    *'/pulls?state=open&per_page=50'*) printf '%s\n' '[]' ;;
+    *'/actions/runs?per_page=5'*) printf '%s\n' '{"workflow_runs":[]}' ;;
+  esac
+  exit 0
+fi
 case "$*" in
   *'/pulls?state=open&per_page=50'*)
     printf '%s\n' '[{"number":12,"draft":false,"head":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"updated_at":"2026-08-19T06:30:00Z"}]'
@@ -82,6 +96,8 @@ run_snapshot() {
   FLYWHEEL_PROJECTS_FILE="$dir/state/projects.json" \
   FLYWHEEL_COMM_DB="$dir/comm/flywheel/comm.db" \
   GH_FAIL="${GH_FAIL:-0}" \
+  GH_SCHEMA="${GH_SCHEMA:-0}" \
+  GH_EMPTY="${GH_EMPTY:-0}" \
     bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead > "$out" 2>&1
 }
 
@@ -195,6 +211,33 @@ contains "$EMPTY_OUT" "STEP 3: OK-CANDIDATE" "empty step 3 is an OK candidate"
 contains "$EMPTY_OUT" "STEP 4: OK-CANDIDATE" "empty step 4 is an OK candidate"
 contains "$EMPTY_OUT" "STEP 1: LEAD-JUDGMENT-REQUIRED" "judgment step never auto-green"
 
+ENV_LEAD_OUT="$EMPTY/env-lead.txt"
+if HOME="$EMPTY/home" PATH="$EMPTY/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$EMPTY/state" \
+  FLYWHEEL_STATE_DB_PATH="$EMPTY/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$EMPTY/state/projects.json" \
+  FLYWHEEL_COMM_DB="$EMPTY/comm/flywheel/comm.db" \
+  FLYWHEEL_LEAD_ID="flywheel-eng-lead" \
+  bash "$SCRIPT" --project flywheel --tick-seq 42 > "$ENV_LEAD_OUT" 2>&1; then
+  pass "lead env fallback and explicit tick sequence exit zero"
+else
+  fail "lead env fallback and explicit tick sequence exit zero"
+fi
+contains "$ENV_LEAD_OUT" "lead: flywheel-eng-lead" "FLYWHEEL_LEAD_ID supplies omitted --lead"
+contains "$ENV_LEAD_OUT" "-tick42.md" "tick sequence is reflected in the artifact name"
+
+MISSING_VALUE_OUT="$EMPTY/missing-value.txt"
+HOME="$EMPTY/home" PATH="$EMPTY/bin:$PATH" \
+  bash "$ROOT/scripts/lib/bounded-run.sh" 2 bash "$SCRIPT" --project \
+  > "$MISSING_VALUE_OUT" 2>&1
+MISSING_VALUE_RC=$?
+if [ "$MISSING_VALUE_RC" -eq 2 ]; then
+  pass "missing option value fails promptly with usage status"
+else
+  fail "missing option value must return 2, got $MISSING_VALUE_RC"
+fi
+not_contains "$MISSING_VALUE_OUT" "REPORT_PATH=" "missing option value creates no report"
+
 BROKEN="$TMP/broken"
 make_case "$BROKEN"
 sqlite3 "$BROKEN/comm/flywheel/comm.db" 'DROP TABLE three_stage_turn;'
@@ -217,6 +260,20 @@ else
 fi
 contains "$GH_OUT" "STEP 5: UNAVAILABLE(structural: gh_unavailable)" "gh failure is explicit"
 not_contains "$GH_OUT" "temporary gh failure" "raw changing gh error is not persisted"
+
+GH_SCHEMA_DIR="$TMP/gh-schema"
+make_case "$GH_SCHEMA_DIR"
+GH_SCHEMA_OUT="$GH_SCHEMA_DIR/out.txt"
+GH_SCHEMA=1 run_snapshot "$GH_SCHEMA_DIR" "$GH_SCHEMA_OUT" || fail "gh schema failure exits zero"
+contains "$GH_SCHEMA_OUT" "STEP 5: UNAVAILABLE(structural: gh_schema)" "malformed gh JSON is explicit"
+not_contains "$GH_SCHEMA_OUT" "SECRET_BAD_SCHEMA" "malformed gh payload is not persisted"
+
+GH_EMPTY_DIR="$TMP/gh-empty"
+make_case "$GH_EMPTY_DIR"
+GH_EMPTY_OUT="$GH_EMPTY_DIR/out.txt"
+GH_EMPTY=1 run_snapshot "$GH_EMPTY_DIR" "$GH_EMPTY_OUT" || fail "empty gh snapshot exits zero"
+contains "$GH_EMPTY_OUT" "PR none" "empty open PR collection remains a valid fact"
+contains "$GH_EMPTY_OUT" "RUN none" "empty action-run collection remains a valid fact"
 
 DEFAULT="$TMP/default-path"
 make_case "$DEFAULT"
