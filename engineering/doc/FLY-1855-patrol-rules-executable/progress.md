@@ -1,14 +1,14 @@
 ---
 issue: FLY-1855
 phase: design
-phaseCursor: 2/5
-updated: 2026-08-19T04:26:44.755Z
-nextStep: design review in flight (Claude stopgap, codex quota-blocked until
-  8/19 23:24; reported to Tadashi q=0b5e0ef2); then founder HTML
+phaseCursor: 3/5
+updated: 2026-08-19T04:30:26.882Z
+nextStep: await Claude cross-review verdict; fold blocking findings into plan;
+  finalize+publish founder HTML; complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1855 progress
-**phase**: design (2/5)
-**next**: design review in flight (Claude stopgap, codex quota-blocked until 8/19 23:24; reported to Tadashi q=0b5e0ef2); then founder HTML
+**phase**: design (3/5)
+**next**: await Claude cross-review verdict; fold blocking findings into plan; finalize+publish founder HTML; complete phase_design_complete
