@@ -308,10 +308,11 @@ export function flywheelCodexBin(env: NodeJS.ProcessEnv = process.env): string {
 /**
  * QA · FLY-1188 — the RAW codex binary, for anything that must RENDER a TUI.
  *
- * The rotation shim above pipes codex's stdout through `tee` (it has to read
- * the output to sniff a 429 and rotate accounts), so a process launched through
- * it never gets a TTY on stdout. `codex app-server` does not care — it speaks
- * JSON-RPC over a socket, so the DAEMON keeps the shim (and its rotation).
+ * The rotation shim above redirects codex's stdout to a capture file (it has
+ * to read the output to sniff a 429 and rotate accounts), so a process launched
+ * through it never gets a TTY on stdout. `codex app-server` does not care — it
+ * speaks JSON-RPC over a socket, so the DAEMON keeps the shim (and its
+ * rotation).
  * `codex resume --remote` is a full-screen TUI: with a piped stdout it prints
  * `Error: stdout is not a terminal` and exits 1. That is exactly why the
  * founder's cmux tab was empty — real-machine QA capture in the FLY-1188 doc

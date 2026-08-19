@@ -1,0 +1,607 @@
+#!/usr/bin/env bash
+# FLY-1887: hermetic contract tests for the repo-owned one-shot Codex wrapper.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+WRAPPER="$REPO_ROOT/scripts/codex-with-fallback.sh"
+ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1887-codex-guard.XXXXXX")"
+trap 'rm -rf "$ROOT"' EXIT
+
+PASSED=0
+FAILED=0
+pass() { PASSED=$((PASSED + 1)); printf '[TEST] ✓ %s\n' "$1"; }
+fail() { FAILED=$((FAILED + 1)); printf '[TEST] ✗ %s — %s\n' "$1" "$2"; }
+
+mkdir -p "$ROOT/home/.codex/profiles/only" "$ROOT/bin" "$ROOT/state"
+
+cat > "$ROOT/bin/codex-profile" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  status) printf 'Active profile: only\n' ;;
+  next|use) exit 0 ;;
+  *) exit 2 ;;
+esac
+EOF
+
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" > "$ROOT/codex.pid"
+sleep 300 &
+printf '%s\n' "\$!" > "$ROOT/descendant.pid"
+wait
+EOF
+chmod +x "$ROOT/bin/codex" "$ROOT/bin/codex-profile"
+
+echo "== one-shot timeout is terminal and typed =="
+start="$(date +%s)"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/stdout" 2>"$ROOT/stderr" || rc=$?
+elapsed=$(( $(date +%s) - start ))
+
+if [[ "$rc" == "124" ]]; then
+  pass "timeout returns rc=124"
+else
+  fail "timeout returns rc=124" "rc=$rc stderr=$(cat "$ROOT/stderr" 2>/dev/null)"
+fi
+if grep -q '^\[codex-guard\] TIMEOUT ' "$ROOT/stderr"; then
+  pass "timeout emits the fixed marker"
+else
+  fail "timeout emits the fixed marker" "stderr=$(cat "$ROOT/stderr" 2>/dev/null)"
+fi
+if [[ -s "$ROOT/codex.pid" && "$elapsed" -lt 10 ]]; then
+  pass "the fake Codex started and was bounded (${elapsed}s)"
+else
+  fail "the fake Codex started and was bounded" "started=$([[ -s "$ROOT/codex.pid" ]] && echo yes || echo no) elapsed=${elapsed}s"
+fi
+
+sleep 1
+survivors=()
+for pid_file in "$ROOT/codex.pid" "$ROOT/descendant.pid"; do
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    survivors+=("$pid")
+  fi
+done
+if [[ "${#survivors[@]}" -eq 0 ]]; then
+  pass "timeout leaves no fake Codex process behind"
+else
+  fail "timeout leaves no fake Codex process behind" "survivors=${survivors[*]}"
+  for pid in "${survivors[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
+fi
+
+echo "== cleanup is registry-positive and identity-fenced =="
+cat > "$ROOT/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'ok\n'
+exit 0
+EOF
+cat > "$ROOT/bin/ps" <<'EOF'
+#!/usr/bin/env bash
+format=""
+pid=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    -o) format="$2"; shift 2 ;;
+    -p) pid="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$format" in
+  lstart=) printf 'Mon Jan  1 00:00:00 2024\n' ;;
+  pgid=) printf '999999\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$ROOT/bin/codex" "$ROOT/bin/ps"
+
+/bin/sleep 300 &
+registered_pid=$!
+/bin/sleep 300 &
+unregistered_pid=$!
+printf '{"pid":%s,"pgid":999999,"start":"Mon Jan  1 00:00:00 2024","deadline":0,"label":"fixture"}\n' \
+  "$registered_pid" > "$ROOT/state/$registered_pid.json"
+
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/sweep.stdout" 2>"$ROOT/sweep.stderr" || rc=$?
+
+if [[ "$rc" == "0" ]] && ! kill -0 "$registered_pid" 2>/dev/null \
+  && [[ ! -e "$ROOT/state/$registered_pid.json" ]]; then
+  pass "a stale matching registry entry is reaped and removed"
+else
+  fail "a stale matching registry entry is reaped and removed" \
+    "rc=$rc alive=$(kill -0 "$registered_pid" 2>/dev/null && echo yes || echo no) entry=$([[ -e "$ROOT/state/$registered_pid.json" ]] && echo yes || echo no)"
+fi
+if kill -0 "$unregistered_pid" 2>/dev/null; then
+  pass "an unregistered process is never a cleanup candidate"
+else
+  fail "an unregistered process is never a cleanup candidate" "pid=$unregistered_pid was killed"
+fi
+kill -KILL "$registered_pid" "$unregistered_pid" 2>/dev/null || true
+wait "$registered_pid" "$unregistered_pid" 2>/dev/null || true
+
+echo "== active calls publish identity and normal exit clears it =="
+rm -f "$ROOT/state"/*.json "$ROOT/active.ready"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+printf 'ready\n' > "$ROOT/active.ready"
+sleep 2
+printf 'done\n'
+EOF
+chmod +x "$ROOT/bin/codex"
+
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/active.stdout" 2>"$ROOT/active.stderr" &
+wrapper_pid=$!
+
+active_entry=""
+for _ in $(seq 1 60); do
+  active_entry="$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f -print -quit 2>/dev/null)"
+  [[ -n "$active_entry" ]] && break
+  sleep 0.05
+done
+if [[ -n "$active_entry" ]] \
+  && grep -Eq '^\{"pid":[0-9]+,"pgid":[0-9]+,"start":"[^"]+","deadline":[0-9]+,"label":"[^"]+"\}$' "$active_entry"; then
+  pass "an active invocation has a complete identity record"
+else
+  fail "an active invocation has a complete identity record" "entry=${active_entry:-missing}"
+fi
+
+wait "$wrapper_pid"
+active_rc=$?
+if [[ "$active_rc" == "0" && "$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f | wc -l | tr -d ' ')" == "0" ]]; then
+  pass "normal completion removes the identity record"
+else
+  fail "normal completion removes the identity record" "rc=$active_rc entries=$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f | wc -l | tr -d ' ')"
+fi
+
+echo "== interrupted wrapper leaves an identity-fenced cleanup record =="
+rm -f "$ROOT/state"/*.json "$ROOT/interrupted-codex.pid"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$\$" > "$ROOT/interrupted-codex.pid"
+exec /bin/sleep 300
+EOF
+chmod +x "$ROOT/bin/codex"
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=300 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=300 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/interrupted.stdout" 2>"$ROOT/interrupted.stderr" &
+interrupted_wrapper_pid=$!
+interrupted_entry=""
+for _ in $(seq 1 60); do
+  interrupted_entry="$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f -print -quit 2>/dev/null)"
+  [[ -n "$interrupted_entry" && -s "$ROOT/interrupted-codex.pid" ]] && break
+  sleep 0.05
+done
+kill -TERM "$interrupted_wrapper_pid" 2>/dev/null || true
+for _ in $(seq 1 60); do
+  kill -0 "$interrupted_wrapper_pid" 2>/dev/null || break
+  sleep 0.05
+done
+interrupted_codex_pid="$(cat "$ROOT/interrupted-codex.pid" 2>/dev/null || true)"
+if [[ -n "$interrupted_entry" && -f "$interrupted_entry" \
+  && -n "$interrupted_codex_pid" ]] && kill -0 "$interrupted_codex_pid" 2>/dev/null; then
+  pass "signal exit preserves the registered child identity"
+else
+  fail "signal exit preserves the registered child identity" \
+    "entry=${interrupted_entry:-missing} present=$([[ -n "$interrupted_entry" && -f "$interrupted_entry" ]] && echo yes || echo no) child=${interrupted_codex_pid:-missing}"
+fi
+if [[ -n "$interrupted_entry" && -n "$interrupted_codex_pid" ]]; then
+  printf '{"pid":%s,"pgid":999999,"start":"Mon Jan  1 00:00:00 2024","deadline":0,"label":"interrupted"}\n' \
+    "$interrupted_codex_pid" > "$interrupted_entry"
+fi
+source "$REPO_ROOT/scripts/lib/codex-guard.sh"
+FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" codex_guard_sweep
+if [[ -n "$interrupted_codex_pid" ]] && ! kill -0 "$interrupted_codex_pid" 2>/dev/null \
+  && [[ ! -e "$interrupted_entry" ]]; then
+  pass "next invocation sweep reaps the interrupted child"
+else
+  fail "next invocation sweep reaps the interrupted child" \
+    "child_alive=$(kill -0 "$interrupted_codex_pid" 2>/dev/null && echo yes || echo no) entry=$([[ -e "$interrupted_entry" ]] && echo yes || echo no)"
+  [[ -z "$interrupted_codex_pid" ]] || kill -KILL "$interrupted_codex_pid" 2>/dev/null || true
+fi
+wait "$interrupted_wrapper_pid" 2>/dev/null || true
+
+echo "== invalid configuration fails closed before Codex starts =="
+rm -f "$ROOT/codex.invoked"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+: > "$ROOT/codex.invoked"
+exit 0
+EOF
+chmod +x "$ROOT/bin/codex"
+
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=invalid \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=1800 \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/config.stdout" 2>"$ROOT/config.stderr" || rc=$?
+if [[ "$rc" == "125" && ! -e "$ROOT/codex.invoked" ]] \
+  && grep -Fq "TOTAL_TIMEOUT_SECONDS=\"\${FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS:-1800}\"" "$WRAPPER" \
+  && grep -Fq "ATTEMPT_TIMEOUT_SECONDS=\"\${FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS:-1800}\"" "$WRAPPER"; then
+  pass "invalid timeout config is rc=125 and defaults remain 1800s"
+else
+  fail "invalid timeout config is rc=125 and defaults remain 1800s" \
+    "rc=$rc invoked=$([[ -e "$ROOT/codex.invoked" ]] && echo yes || echo no)"
+fi
+
+echo "== broken coreutils and unwritable state still produce a hard bound =="
+mkdir -p "$ROOT/home/.codex/profiles/second"
+printf 'not-a-directory\n' > "$ROOT/unwritable-state"
+cat > "$ROOT/bin/timeout" <<'EOF'
+#!/definitely/missing/interpreter
+exit 99
+EOF
+cat > "$ROOT/bin/codex-profile" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in
+  status) printf 'Active profile: only\n' ;;
+  next|use) printf '%s\n' "\$1" >> "$ROOT/profile-actions" ;;
+  *) exit 2 ;;
+esac
+EOF
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+printf '429 rate limit before hang\n' >&2
+printf '%s\n' "\$\$" > "$ROOT/broken-timeout-codex.pid"
+/bin/sleep 300 &
+printf '%s\n' "\$!" > "$ROOT/broken-timeout-descendant.pid"
+wait
+EOF
+chmod +x "$ROOT/bin/timeout" "$ROOT/bin/codex-profile" "$ROOT/bin/codex"
+rm -f "$ROOT/profile-actions" "$ROOT/broken-timeout-codex.pid" "$ROOT/broken-timeout-descendant.pid"
+
+start="$(date +%s)"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/unwritable-state" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/broken-timeout.stdout" 2>"$ROOT/broken-timeout.stderr" || rc=$?
+elapsed=$(( $(date +%s) - start ))
+sleep 1
+survivors=()
+for pid_file in "$ROOT/broken-timeout-codex.pid" "$ROOT/broken-timeout-descendant.pid"; do
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then survivors+=("$pid"); fi
+done
+if [[ "$rc" == "124" && "$elapsed" -lt 10 && "${#survivors[@]}" -eq 0 ]] \
+  && [[ ! -e "$ROOT/profile-actions" ]]; then
+  pass "broken timeout falls back; unwritable state fails open; timeout never rotates"
+else
+  fail "broken timeout falls back; unwritable state fails open; timeout never rotates" \
+    "rc=$rc elapsed=${elapsed}s survivors=${survivors[*]:-none} rotations=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
+  for pid in "${survivors[@]}"; do kill -KILL "$pid" 2>/dev/null || true; done
+fi
+rm -f "$ROOT/bin/timeout"
+
+echo "== ordinary rate limit rotates and succeeds =="
+rm -f "$ROOT/rate-limit-calls" "$ROOT/profile-actions"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$ROOT/rate-limit-calls" ]] || count=\$(cat "$ROOT/rate-limit-calls")
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$ROOT/rate-limit-calls"
+if [[ "\$count" -eq 1 ]]; then
+  printf '429 rate limit\n' >&2
+  exit 7
+fi
+printf 'ok\n'
+EOF
+chmod +x "$ROOT/bin/codex"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/rate-limit.stdout" 2>"$ROOT/rate-limit.stderr" || rc=$?
+if [[ "$rc" == "0" && "$(cat "$ROOT/rate-limit-calls" 2>/dev/null)" == "2" ]] \
+  && grep -q '^next$' "$ROOT/profile-actions"; then
+  pass "rate limit is distinct from timeout and rotates once"
+else
+  fail "rate limit is distinct from timeout and rotates once" \
+    "rc=$rc calls=$(cat "$ROOT/rate-limit-calls" 2>/dev/null || echo missing) actions=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
+fi
+
+echo "== total budget spans every profile attempt =="
+mkdir -p "$ROOT/home/.codex/profiles/third"
+rm -f "$ROOT/total-budget-calls" "$ROOT/profile-actions"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$ROOT/total-budget-calls" ]] || count=\$(cat "$ROOT/total-budget-calls")
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$ROOT/total-budget-calls"
+/bin/sleep 1.2
+printf '429 rate limit\n' >&2
+exit 7
+EOF
+chmod +x "$ROOT/bin/codex"
+start="$(date +%s)"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=3 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/total-budget.stdout" 2>"$ROOT/total-budget.stderr" || rc=$?
+elapsed=$(( $(date +%s) - start ))
+if [[ "$rc" == "124" && "$elapsed" -lt 7 ]] \
+  && grep -q '^\[codex-guard\] TIMEOUT ' "$ROOT/total-budget.stderr"; then
+  pass "profile retries share one total budget (${elapsed}s)"
+else
+  fail "profile retries share one total budget" \
+    "rc=$rc elapsed=${elapsed}s calls=$(cat "$ROOT/total-budget-calls" 2>/dev/null || echo missing)"
+fi
+
+echo "== final model fallback remains guarded =="
+rm -rf "$ROOT/home/.codex/profiles/second" "$ROOT/home/.codex/profiles/third"
+rm -f "$ROOT/model-fallback-calls" "$ROOT/model-fallback-args"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$ROOT/model-fallback-calls" ]] || count=\$(cat "$ROOT/model-fallback-calls")
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$ROOT/model-fallback-calls"
+printf '%s\n' "\$*" >> "$ROOT/model-fallback-args"
+if [[ "\$count" -eq 1 ]]; then
+  printf 'model is not supported when using Codex\n' >&2
+  exit 8
+fi
+/bin/sleep 300
+EOF
+chmod +x "$ROOT/bin/codex"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=2 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json -m gpt-5.6 \
+  >"$ROOT/model-fallback.stdout" 2>"$ROOT/model-fallback.stderr" || rc=$?
+if [[ "$rc" == "124" && "$(cat "$ROOT/model-fallback-calls" 2>/dev/null)" == "2" ]] \
+  && tail -1 "$ROOT/model-fallback-args" | grep -q -- '-m gpt-5.5'; then
+  pass "gpt-5.5 fallback cannot escape the total timeout"
+else
+  fail "gpt-5.5 fallback cannot escape the total timeout" \
+    "rc=$rc calls=$(cat "$ROOT/model-fallback-calls" 2>/dev/null || echo missing) args=$(cat "$ROOT/model-fallback-args" 2>/dev/null || echo missing)"
+fi
+
+echo "== stale identity is deleted without signaling the recycled pid =="
+rm -f "$ROOT/state"/*.json
+/bin/sleep 300 &
+recycled_pid=$!
+printf '{"pid":%s,"pgid":%s,"start":"different incarnation","deadline":0,"label":"fixture"}\n' \
+  "$recycled_pid" "$recycled_pid" > "$ROOT/state/$recycled_pid.json"
+source "$REPO_ROOT/scripts/lib/codex-guard.sh"
+FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" codex_guard_sweep
+if kill -0 "$recycled_pid" 2>/dev/null && [[ ! -e "$ROOT/state/$recycled_pid.json" ]]; then
+  pass "PID reuse fence removes only the stale registry record"
+else
+  fail "PID reuse fence removes only the stale registry record" "pid=$recycled_pid alive=$(kill -0 "$recycled_pid" 2>/dev/null && echo yes || echo no)"
+fi
+kill -KILL "$recycled_pid" 2>/dev/null || true
+wait "$recycled_pid" 2>/dev/null || true
+
+echo "== non-owned process groups are never signaled as a group =="
+rm -f "$ROOT/state"/*.json "$ROOT/pgid-child.pid" "$ROOT/locale-seen"
+set -m
+(
+  trap '' TERM HUP
+  /bin/sleep 300 &
+  printf '%s\n' "$!" > "$ROOT/pgid-child.pid"
+  wait
+) >/dev/null 2>&1 &
+group_leader_pid=$!
+set +m
+for _ in $(seq 1 60); do
+  [[ -s "$ROOT/pgid-child.pid" ]] && break
+  sleep 0.05
+done
+group_child_pid="$(cat "$ROOT/pgid-child.pid" 2>/dev/null || true)"
+cat > "$ROOT/bin/ps-locale" <<EOF
+#!/usr/bin/env bash
+[[ "\${LC_ALL:-}" == "C" ]] || exit 9
+printf '%s\n' "\$LC_ALL" >> "$ROOT/locale-seen"
+format=""
+while [[ "\$#" -gt 0 ]]; do
+  case "\$1" in
+    -o) format="\$2"; shift 2 ;;
+    -p) shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "\$format" in
+  lstart=) printf 'Mon Jan  1 00:00:00 2024\n' ;;
+  pgid=) printf '999999\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$ROOT/bin/ps-locale"
+printf '{"pid":%s,"pgid":999999,"start":"Mon Jan  1 00:00:00 2024","deadline":0,"label":"group-fence"}\n' \
+  "$group_leader_pid" > "$ROOT/state/$group_leader_pid.json"
+FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps-locale" codex_guard_sweep
+if ! kill -0 "$group_leader_pid" 2>/dev/null \
+  && [[ -n "$group_child_pid" ]] && kill -0 "$group_child_pid" 2>/dev/null \
+  && [[ ! -e "$ROOT/state/$group_leader_pid.json" ]] \
+  && [[ "$(sort -u "$ROOT/locale-seen" 2>/dev/null)" == "C" ]]; then
+  pass "pgid mismatch signals only pid and both ps identity reads pin LC_ALL=C"
+else
+  fail "pgid mismatch signals only pid and both ps identity reads pin LC_ALL=C" \
+    "leader_alive=$(kill -0 "$group_leader_pid" 2>/dev/null && echo yes || echo no) child_alive=$(kill -0 "$group_child_pid" 2>/dev/null && echo yes || echo no) locale=$(cat "$ROOT/locale-seen" 2>/dev/null || echo missing)"
+fi
+kill -KILL "$group_leader_pid" "$group_child_pid" 2>/dev/null || true
+wait "$group_leader_pid" 2>/dev/null || true
+
+echo "== pid-only broker and shared launcher boundaries stay outside the guard =="
+if ! grep -Eq 'broker\.pid|codex-code-mode-host|pkill|killall' \
+  "$REPO_ROOT/scripts/lib/codex-guard.sh" "$WRAPPER" "$REPO_ROOT/scripts/install-codex-guard.sh"; then
+  pass "guard has no pid-only broker or process-name reaper"
+else
+  fail "guard has no pid-only broker or process-name reaper" "unsafe broker/process-name token found"
+fi
+if ! grep -Eq '(^|[[:space:]])(export[[:space:]]+)?FLYWHEEL_CODEX_BIN=' \
+  "$REPO_ROOT/scripts/install-codex-guard.sh" "$REPO_ROOT/scripts/lib/converge-nonlead-daemons.sh"; then
+  pass "installer and convergence never mutate shared FLYWHEEL_CODEX_BIN"
+else
+  fail "installer and convergence never mutate shared FLYWHEEL_CODEX_BIN" "shared launcher mutation found"
+fi
+
+echo "== installer publishes a stable, idempotent release =="
+INSTALLER="$REPO_ROOT/scripts/install-codex-guard.sh"
+INSTALL_HOME="$ROOT/install-home"
+mkdir -p "$INSTALL_HOME/.local/bin"
+printf 'legacy-wrapper\n' > "$INSTALL_HOME/.local/bin/codex-with-fallback"
+install_rc=0
+HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install.stdout" 2>"$ROOT/install.stderr" || install_rc=$?
+current="$INSTALL_HOME/.flywheel/libexec/codex-guard/current"
+if [[ "$install_rc" == "0" && -L "$current" \
+  && -x "$current/codex-with-fallback.sh" && -r "$current/codex-guard.sh" \
+  && -x "$INSTALL_HOME/.local/bin/codex-with-fallback" ]]; then
+  pass "installer publishes the stable release and global shim"
+else
+  fail "installer publishes the stable release and global shim" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
+fi
+if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null)" == "legacy-wrapper" ]]; then
+  pass "installer preserves the original wrapper once"
+else
+  fail "installer preserves the original wrapper once" "backup=$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null || echo missing)"
+fi
+
+first_target="$(readlink "$current" 2>/dev/null || true)"
+first_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null | awk '{print $1}')"
+HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install2.stdout" 2>"$ROOT/install2.stderr"
+second_target="$(readlink "$current" 2>/dev/null || true)"
+second_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null | awk '{print $1}')"
+if [[ -n "$first_target" && "$first_target" == "$second_target" \
+  && "$first_backup_hash" == "$second_backup_hash" ]]; then
+  pass "installer rerun is idempotent and never overwrites backup"
+else
+  fail "installer rerun is idempotent and never overwrites backup" "targets=$first_target/$second_target backups=$first_backup_hash/$second_backup_hash"
+fi
+
+installed_wrapper="$current/codex-with-fallback.sh"
+mv "$installed_wrapper" "$installed_wrapper.missing"
+rm -f "$ROOT/codex.invoked"
+rc=0
+env -i HOME="$INSTALL_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+  "$INSTALL_HOME/.local/bin/codex-with-fallback" exec --json - \
+  >"$ROOT/missing-install.stdout" 2>"$ROOT/missing-install.stderr" || rc=$?
+mv "$installed_wrapper.missing" "$installed_wrapper"
+if [[ "$rc" == "125" && ! -e "$ROOT/codex.invoked" ]] \
+  && grep -q '^\[codex-guard\] INSTALL_ERROR ' "$ROOT/missing-install.stderr"; then
+  pass "stable shim fails closed when its release is incomplete"
+else
+  fail "stable shim fails closed when its release is incomplete" \
+    "rc=$rc invoked=$([[ -e "$ROOT/codex.invoked" ]] && echo yes || echo no)"
+fi
+
+current_release="$INSTALL_HOME/.flywheel/libexec/codex-guard/$first_target"
+touch -t 202001010000 "$current_release"
+for fixture_hash in \
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+  dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd; do
+  fixture_release="$INSTALL_HOME/.flywheel/libexec/codex-guard/releases/$fixture_hash"
+  mkdir "$fixture_release"
+  printf 'fixture\n' > "$fixture_release/codex-with-fallback.sh"
+  printf 'fixture\n' > "$fixture_release/codex-guard.sh"
+done
+HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install-retention.stdout" 2>"$ROOT/install-retention.stderr"
+release_count="$(find "$INSTALL_HOME/.flywheel/libexec/codex-guard/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+if [[ -x "$current/codex-with-fallback.sh" && "$release_count" == "3" ]]; then
+  pass "retention preserves current plus two previous releases"
+else
+  fail "retention preserves current plus two previous releases" \
+    "current_ok=$([[ -x "$current/codex-with-fallback.sh" ]] && echo yes || echo no) releases=$release_count"
+fi
+
+echo "== unconditional daemon convergence repairs same-SHA install drift =="
+CONVERGE_HOME="$ROOT/converge-home"
+mkdir -p "$CONVERGE_HOME"
+converge_rc=0
+HOME="$CONVERGE_HOME" FLYWHEEL_DIR="$REPO_ROOT" /bin/bash -c '
+  source "$FLYWHEEL_DIR/scripts/lib/converge-nonlead-daemons.sh"
+  converge_nonlead_daemons
+' >"$ROOT/converge.stdout" 2>"$ROOT/converge.stderr" || converge_rc=$?
+if [[ "$converge_rc" == "0" \
+  && -x "$CONVERGE_HOME/.local/bin/codex-with-fallback" \
+  && -L "$CONVERGE_HOME/.flywheel/libexec/codex-guard/current" ]]; then
+  pass "unconditional convergence installs the guard without a build"
+else
+  fail "unconditional convergence installs the guard without a build" "rc=$converge_rc stderr=$(cat "$ROOT/converge.stderr" 2>/dev/null)"
+fi
+
+rm -f "$CONVERGE_HOME/.local/bin/codex-with-fallback"
+HOME="$CONVERGE_HOME" FLYWHEEL_DIR="$REPO_ROOT" /bin/bash -c '
+  source "$FLYWHEEL_DIR/scripts/lib/converge-nonlead-daemons.sh"
+  converge_nonlead_daemons
+' >/dev/null 2>"$ROOT/converge2.stderr"
+if [[ -x "$CONVERGE_HOME/.local/bin/codex-with-fallback" ]]; then
+  pass "same-SHA convergence repairs a deleted global shim"
+else
+  fail "same-SHA convergence repairs a deleted global shim" "stderr=$(cat "$ROOT/converge2.stderr" 2>/dev/null)"
+fi
+
+echo "== long-lived runner daemon loses tee without gaining a timeout =="
+DAEMON_WRAPPER="$REPO_ROOT/packages/claude-runner/bin/flywheel-codex-with-fallback"
+ADAPTER="$REPO_ROOT/packages/claude-runner/src/CodexTmuxAdapter.ts"
+if ! grep -qE '> *>*\(tee|\btee\b' "$DAEMON_WRAPPER"; then
+  pass "daemon wrapper spawns no tee process"
+else
+  fail "daemon wrapper spawns no tee process" "tee remains"
+fi
+if grep -q 'FLY-1887 DO-NOT-TIMEOUT' "$DAEMON_WRAPPER" \
+  && ! grep -qE 'codex_guard_run|FLYWHEEL_CODEX_(TOTAL|ATTEMPT)_TIMEOUT_SECONDS' "$DAEMON_WRAPPER" \
+  && grep -q 'codexBin: flywheelCodexBin()' "$ADAPTER"; then
+  pass "daemon path remains explicitly outside the one-shot timeout"
+else
+  fail "daemon path remains explicitly outside the one-shot timeout" "sentinel or adapter boundary missing"
+fi
+
+printf '\n[codex-guard] passed=%s failed=%s\n' "$PASSED" "$FAILED"
+[[ "$FAILED" -eq 0 ]]

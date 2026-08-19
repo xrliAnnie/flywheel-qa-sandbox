@@ -616,6 +616,12 @@ jobs:
       - name: Test — FLY-1330 log janitor
         run: bash scripts/__tests__/flywheel-log-janitor.test.sh
 
+      # FLY-1887: hard deadline + identity-fenced cleanup for global one-shot
+      # Codex calls. Hermetic fake HOME/PATH/process fixtures; never installs to
+      # or signals anything in the runner's real host state.
+      - name: Test — FLY-1887 one-shot Codex hard timeout
+        run: bash scripts/__tests__/codex-guard.test.sh
+
       # FLY-1018: gemini-agent static guard. Pure grep assertions over
       # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
       # imports, zero privileged credentials, exactly 6 tool declarations.
