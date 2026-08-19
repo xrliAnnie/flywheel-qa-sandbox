@@ -731,5 +731,30 @@ require(
     "matrix.cmd execution step must not swallow failures",
 )
 
+stub_hygiene_steps = [
+    step
+    for step in unit_steps
+    if isinstance(step, dict) and step.get("name") == "FLY-1883 stub-hygiene pairing"
+]
+require(
+    len(stub_hygiene_steps) == 1,
+    "unit-tests must contain exactly one FLY-1883 stub-hygiene pairing step",
+)
+stub_hygiene_step = stub_hygiene_steps[0]
+require(
+    str(stub_hygiene_step.get("if", "")).strip()
+    == "matrix.name == 'teamlead 1 of 3'",
+    "FLY-1883 stub-hygiene pairing must run only in teamlead shard 1",
+)
+require(
+    str(stub_hygiene_step.get("run", "")).strip()
+    == "pnpm --filter flywheel-teamlead test:stub-hygiene",
+    "FLY-1883 stub-hygiene pairing command drifted",
+)
+require(
+    "continue-on-error" not in stub_hygiene_step,
+    "FLY-1883 stub-hygiene pairing must not swallow failures",
+)
+
 print("PASS: FLY-1338 CI structure contract")
 PY

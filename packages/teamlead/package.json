@@ -44,6 +44,7 @@
 		"build": "tsc && node -e \"require('fs').writeFileSync('dist/build-identity.json', JSON.stringify({artifactBuildSha:require('child_process').execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim()})+'\\n')\" && rm -f dist/__tests__/StateStore.fly939-stranded-implement.test.* dist/__tests__/StateStore.three-stage-qa.test.* dist/__tests__/actions-fly1050-terminate-qa-loss.test.* dist/__tests__/event-route-fly859-three-stage-qa.test.* dist/__tests__/phase-orchestrator.fly921-adversarial.test.* dist/__tests__/three-stage-dedup.test.* dist/bridge/__tests__/phase-orchestrator*.test.* dist/bridge/__tests__/retest-head-delta.test.* dist/bridge/__tests__/run-dispatcher.fly887-label-bypass.test.* dist/bridge/__tests__/runs-route.dag-recovery.test.* dist/bridge/__tests__/three-stage-policy.test.* dist/bridge/__tests__/workflow-b11-freshspawn.test.* dist/bridge/__tests__/workflow-shadow-wiring.test.* dist/bridge/__tests__/workflow-shadow-writer.test.* dist/bridge/phase-orchestrator.* dist/bridge/retest-head-delta.* dist/bridge/three-stage-policy.* dist/bridge/workflow-shadow-writer.* && rm -rf dist/static dist/workflow-seeds && cp -r static dist/static",
 		"dev": "tsc --watch",
 		"test": "vitest run",
+		"test:stub-hygiene": "vitest run --config vitest.stub-hygiene.config.ts --no-cache src/__tests__/post-ship-finalization.test.ts src/bridge/__tests__/lifecycle-routes.test.ts",
 		"test:watch": "vitest --watch",
 		"test:run": "vitest run",
 		"typecheck": "tsc --noEmit"

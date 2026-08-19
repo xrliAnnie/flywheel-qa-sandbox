@@ -5,6 +5,7 @@ export default defineConfig({
 	test: {
 		watch: false,
 		globals: true,
+		unstubGlobals: true,
 		environment: "node",
 		env: {
 			// Tests pin the built-in model policy. Production intentionally hot-reads

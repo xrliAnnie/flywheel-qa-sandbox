@@ -1,0 +1,15 @@
+flowchart TD
+    FA["Fix A · 点修<br/>肇事文件补 afterEach:<br/>每个测试跑完立即归还真 fetch"]
+    FB["Fix B · 类修<br/>测试配置开 unstubGlobals:<br/>每个测试开跑前自动归还所有全局替身"]
+    M["前置迁移:3 个在文件顶层<br/>装替身的文件改为每测试前安装<br/>(实测不迁移会红 64 个测试)"]
+    FC["Fix C · 固化<br/>CI 流水线永久加一步:<br/>强制同进程连跑 文件A→文件B 必须绿"]
+    G["目标:假替身再也串不了场<br/>验收配对 56/56 绿(已实测)"]
+    FA --> G
+    FB --> G
+    M -.必须先做.-> FB
+    FC --> G
+    style FA fill:#eaf4ff,stroke:#007aff,stroke-width:2px
+    style FB fill:#eaf4ff,stroke:#007aff,stroke-width:2px
+    style FC fill:#eaf4ff,stroke:#007aff,stroke-width:2px
+    style M fill:#fff8e6,stroke:#ff9500,stroke-width:2px
+    style G fill:#eafbef,stroke:#34c759,stroke-width:2px

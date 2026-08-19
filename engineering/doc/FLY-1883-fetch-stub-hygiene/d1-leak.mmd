@@ -1,0 +1,15 @@
+flowchart TD
+    subgraph W["同一个测试进程被连续复用的场景"]
+        direction TB
+        A1["文件 A:post-ship-finalization.test.ts<br/>每个测试前把全局 fetch 换成假替身"]
+        A2["文件 A 的 56 个测试全部通过<br/>(假替身固定返回 200)"]
+        A3["文件 A 跑完:没有归还步骤<br/>假替身留在全局"]
+        B1["文件 B:lifecycle-routes.test.ts<br/>用 fetch 访问自己刚启动的本地服务"]
+        B2["拿到的是文件 A 留下的假替身<br/>返回 undefined → 15/15 全红"]
+        A1 --> A2 --> A3 --> B1 --> B2
+    end
+    style A3 fill:#fff1f0,stroke:#ff3b30,stroke-width:2px
+    style B2 fill:#fff1f0,stroke:#ff3b30,stroke-width:2px
+    style A1 fill:#f5f5f7,stroke:#86868b
+    style A2 fill:#f5f5f7,stroke:#86868b
+    style B1 fill:#f5f5f7,stroke:#86868b

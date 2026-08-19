@@ -7,7 +7,9 @@ import { StateStore } from "../StateStore.js";
 // is unit-tested there (fly892-phase-tag.test.ts).
 
 const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
+beforeEach(() => {
+	vi.stubGlobal("fetch", mockFetch);
+});
 
 describe("FLY-91: ChatThreadCreator", () => {
 	let store: StateStore;

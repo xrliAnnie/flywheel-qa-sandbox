@@ -9,7 +9,9 @@ import type { PinResult } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
 
 const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
+beforeEach(() => {
+	vi.stubGlobal("fetch", mockFetch);
+});
 
 const CH = "ch-1";
 const ISSUE = "issue-uuid";

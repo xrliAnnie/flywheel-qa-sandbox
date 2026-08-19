@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>FLY-1883 假 fetch 串场修复</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #ffffff; --text: #1d1d1f; --dim: #86868b;
+    --navy: #1a365d; --blue: #007aff; --red: #ff3b30; --amber: #ff9500;
+    --green: #34c759; --purple: #af52de;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    line-height: 1.65; padding: 24px 16px 60px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: var(--navy); margin: 8px 0 4px; }
+  .sub { color: var(--dim); font-size: 14px; margin-bottom: 20px; }
+  .sub code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
+  .card {
+    background: var(--card); border-radius: 12px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 18px;
+    border-left: 4px solid var(--blue);
+  }
+  .card.red { border-left-color: var(--red); }
+  .card.amber { border-left-color: var(--amber); }
+  .card.green { border-left-color: var(--green); }
+  .card.purple { border-left-color: var(--purple); }
+  .card.gray { border-left-color: var(--dim); }
+  h2 { font-size: 18px; color: var(--navy); margin-bottom: 10px; }
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 0 0 10px 22px; }
+  li { margin-bottom: 6px; }
+  .term { color: var(--dim); font-size: 0.92em; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e8e8ed; border-radius: 10px; padding: 12px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 10px 0; }
+  th, td { border: 1px solid #e8e8ed; padding: 7px 10px; text-align: left; }
+  th { background: #fafafa; color: var(--navy); }
+  td code, li code, p code { font-family: "SF Mono", Menlo, monospace; font-size: 12px; background: #f0f0f2; padding: 1px 5px; border-radius: 4px; }
+  .tbl-scroll { overflow-x: auto; }
+  .ok { color: var(--green); font-weight: 600; }
+  .bad { color: var(--red); font-weight: 600; }
+  .warn { color: var(--amber); font-weight: 600; }
+  .callout { background: #fff8e6; border: 1px solid #ffe1a8; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 14px; }
+  .comment-block { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e0e0e4; }
+  .comment-block label { font-size: 12px; color: var(--dim); display: block; margin-bottom: 6px; }
+  .comment-block textarea {
+    width: 100%; min-height: 52px; border: 1px solid #d8d8dc; border-radius: 8px;
+    padding: 8px 10px; font: 14px/1.5 -apple-system, system-ui, "PingFang SC", sans-serif;
+    resize: vertical; background: #fbfbfd; color: var(--text);
+  }
+  .comment-block textarea:focus { outline: 2px solid var(--blue); border-color: transparent; }
+  #summary-list { font-size: 14px; }
+  #summary-list .s-item { margin-bottom: 10px; padding: 8px 12px; background: #f7f7f9; border-radius: 8px; white-space: pre-wrap; }
+  #summary-list .s-title { font-weight: 600; color: var(--navy); display: block; }
+  #copy-all {
+    background: var(--blue); color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; cursor: pointer; margin-top: 8px;
+  }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { font-size: 13px; margin-left: 10px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <h1>FLY-1883 · 修一个会「串场」的假 fetch</h1>
+  <div class="sub">设计节点交付 · 2026-08-18 · 来源:FLY-1833 QA 检查时的附带发现 · 文档:<code>engineering/doc/FLY-1883-fetch-stub-hygiene/</code></div>
+
+  <!-- S1 -->
+  <div class="card green" id="sec-1">
+    <h2>1 · 一句话</h2>
+    <p>有一个测试文件为了不真发网络请求,把全局的 <code>fetch</code><span class="term">(程序发网络请求用的标准函数)</span>换成了一个假替身<span class="term">(测试里把真部件换成受控假部件的做法)</span>,但用完<strong>从不归还</strong>——在特定运行模式下,这个假替身会留给下一个测试文件,让后者 15 个测试全部误红。修法是三层:肇事文件补一行「用完归还」;测试配置开一个「每个测试开跑前自动归还」的总开关;再把这次的翻车现场固化成流水线里的永久回归检查。</p>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="1 · 一句话" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S2 -->
+  <div class="card red" id="sec-2">
+    <h2>2 · 问题怎么发生</h2>
+    <p>跑测试时,每个测试文件通常由一个 worker<span class="term">(执行测试的独立进程)</span>负责。当多个文件<strong>复用同一个进程</strong>连续跑时,前一个文件对全局环境做的改动会留给后一个文件:</p>
+    <div class="diagram"><svg id="fly-1883-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 346px; background-color: white;" viewBox="0 0 346 949" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1883-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1883-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1883-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1883-d1 .error-icon{fill:#552222;}#fly-1883-d1 .error-text{fill:#552222;stroke:#552222;}#fly-1883-d1 .edge-thickness-normal{stroke-width:1px;}#fly-1883-d1 .edge-thickness-thick{stroke-width:3.5px;}#fly-1883-d1 .edge-pattern-solid{stroke-dasharray:0;}#fly-1883-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1883-d1 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1883-d1 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1883-d1 .marker{fill:#333333;stroke:#333333;}#fly-1883-d1 .marker.cross{stroke:#333333;}#fly-1883-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1883-d1 p{margin:0;}#fly-1883-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1883-d1 .cluster-label text{fill:#333;}#fly-1883-d1 .cluster-label span{color:#333;}#fly-1883-d1 .cluster-label span p{background-color:transparent;}#fly-1883-d1 .label text,#fly-1883-d1 span{fill:#333;color:#333;}#fly-1883-d1 .node rect,#fly-1883-d1 .node circle,#fly-1883-d1 .node ellipse,#fly-1883-d1 .node polygon,#fly-1883-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1883-d1 .rough-node .label text,#fly-1883-d1 .node .label text,#fly-1883-d1 .image-shape .label,#fly-1883-d1 .icon-shape .label{text-anchor:middle;}#fly-1883-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1883-d1 .rough-node .label,#fly-1883-d1 .node .label,#fly-1883-d1 .image-shape .label,#fly-1883-d1 .icon-shape .label{text-align:center;}#fly-1883-d1 .node.clickable{cursor:pointer;}#fly-1883-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1883-d1 .arrowheadPath{fill:#333333;}#fly-1883-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1883-d1 .flowchart-link{stroke:#333333;fill:none;}#fly-1883-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1883-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1883-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1883-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1883-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1883-d1 .cluster text{fill:#333;}#fly-1883-d1 .cluster span{color:#333;}#fly-1883-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1883-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1883-d1 rect.text{fill:none;stroke-width:0;}#fly-1883-d1 .icon-shape,#fly-1883-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1883-d1 .icon-shape p,#fly-1883-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1883-d1 .icon-shape rect,#fly-1883-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1883-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1883-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1883-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1883-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"/><g class="edgeLabels"/><g class="nodes"><g class="root" transform="translate(0, 0)"><g class="clusters"><g class="cluster" id="W" data-look="classic"><rect style="" x="8" y="8" width="330" height="933"/><g class="cluster-label" transform="translate(73, 8)"><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>同一个测试进程被连续复用的场景</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M173,171.5L173,177.75C173,184,173,196.5,173,208.333C173,220.167,173,231.333,173,236.917L173,242.5" id="L_A1_A2_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A1_A2_0" data-points="W3sieCI6MTczLCJ5IjoxNzEuNX0seyJ4IjoxNzMsInkiOjIwOX0seyJ4IjoxNzMsInkiOjI0Ni41fV0=" marker-end="url(#fly-1883-d1_flowchart-v2-pointEnd)"/><path d="M173,348.5L173,354.75C173,361,173,373.5,173,385.333C173,397.167,173,408.333,173,413.917L173,419.5" id="L_A2_A3_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A2_A3_0" data-points="W3sieCI6MTczLCJ5IjozNDguNX0seyJ4IjoxNzMsInkiOjM4Nn0seyJ4IjoxNzMsInkiOjQyMy41fV0=" marker-end="url(#fly-1883-d1_flowchart-v2-pointEnd)"/><path d="M173,501.5L173,507.75C173,514,173,526.5,173,538.333C173,550.167,173,561.333,173,566.917L173,572.5" id="L_A3_B1_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A3_B1_0" data-points="W3sieCI6MTczLCJ5Ijo1MDEuNX0seyJ4IjoxNzMsInkiOjUzOX0seyJ4IjoxNzMsInkiOjU3Ni41fV0=" marker-end="url(#fly-1883-d1_flowchart-v2-pointEnd)"/><path d="M173,702.5L173,708.75C173,715,173,727.5,173,739.333C173,751.167,173,762.333,173,767.917L173,773.5" id="L_B1_B2_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B1_B2_0" data-points="W3sieCI6MTczLCJ5Ijo3MDIuNX0seyJ4IjoxNzMsInkiOjc0MH0seyJ4IjoxNzMsInkiOjc3Ny41fV0=" marker-end="url(#fly-1883-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A1_A2_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_A2_A3_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_A3_B1_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B1_B2_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A1-0" transform="translate(173, 108.5)"><rect class="basic label-container" style="fill:#f5f5f7 !important;stroke:#86868b !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>文件 A:post-ship-finalization.test.ts<br />每个测试前把全局 fetch 换成假替身</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-A2-1" transform="translate(173, 297.5)"><rect class="basic label-container" style="fill:#f5f5f7 !important;stroke:#86868b !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>文件 A 的 56 个测试全部通过<br />(假替身固定返回 200)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-A3-2" transform="translate(173, 462.5)"><rect class="basic label-container" style="fill:#fff1f0 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-122.0390625" y="-39" width="244.078125" height="78"/><g class="label" style="" transform="translate(-92.0390625, -24)"><rect/><foreignObject width="184.078125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>文件 A 跑完:没有归还步骤<br />假替身留在全局</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B1-3" transform="translate(173, 639.5)"><rect class="basic label-container" style="fill:#f5f5f7 !important;stroke:#86868b !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>文件 B:lifecycle-routes.test.ts<br />用 fetch 访问自己刚启动的本地服务</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B2-4" transform="translate(173, 840.5)"><rect class="basic label-container" style="fill:#fff1f0 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>拿到的是文件 A 留下的假替身<br />返回 undefined → 15/15 全红</p></span></div></foreignObject></g></g></g></g></g></g></g></svg></div>
+    <p>我们没有只听转述——在真文件上把这条链完整复现了:两个文件各自单独跑都是绿的;强制它们共用一个进程连跑,后一个文件立刻 15/15 全红,错误全是「fetch 返回了 undefined」。</p>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="2 · 问题怎么发生" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S3 -->
+  <div class="card amber" id="sec-3">
+    <h2>3 · 摸底:同类问题一共 5 处,以及一个诚实修正</h2>
+    <p>把整个 teamlead 包里所有「换假 fetch」的位置查了一遍(共 7 个文件 8 处),结果:<span class="bad">5 个文件在泄漏</span>,只有 2 个文件用了正确的「用完归还」写法:</p>
+    <div class="tbl-scroll">
+      <table>
+        <tr><th>测试文件</th><th>替身装在哪</th><th>有归还吗</th><th>泄漏?</th></tr>
+        <tr><td><code>post-ship-finalization</code>(本单主角)</td><td>每个测试前</td><td>无</td><td class="bad">是</td></tr>
+        <tr><td><code>ChatThreadCreator</code></td><td>文件加载时(仅一次)</td><td>无</td><td class="bad">是</td></tr>
+        <tr><td><code>ChatThreadCreator.attach-pin</code></td><td>文件加载时(仅一次)</td><td>无</td><td class="bad">是</td></tr>
+        <tr><td><code>thread-validator</code></td><td>文件加载时(仅一次)</td><td>无</td><td class="bad">是</td></tr>
+        <tr><td><code>fly892-pipeline-header</code></td><td>每个测试前</td><td>无</td><td class="bad">是</td></tr>
+        <tr><td><code>management-console-dom</code></td><td>每个测试前</td><td>每个测试后归还</td><td class="ok">否</td></tr>
+        <tr><td><code>vercel-deploy</code></td><td>每个测试前</td><td>每个测试后归还</td><td class="ok">否</td></tr>
+      </table>
+    </div>
+    <div class="callout"><strong>诚实修正:</strong>原 issue 写「CI<span class="term">(每次提交自动跑全部测试的流水线)</span>现在是绿的纯靠分片顺序侥幸」。实测下来这句话<strong>不成立</strong>:我们用的测试运行器 vitest 默认给每个文件一个全新进程(隔离开关默认开着),所以 CI 目前是被结构性保护的,顺序怎么排都不会炸。真正会踩雷的是:① 本地或 AI agent 为了提速用「关隔离」模式跑测试(很常用);② 将来为了给 15 分钟逼近上限的 CI 提速而关掉隔离——那一刻这颗雷必炸。<strong>问题真实、潜伏、值得修;只是「CI 随时会红」的紧迫度说法要纠正。</strong></div>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="3 · 摸底与诚实修正" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S4 -->
+  <div class="card" id="sec-4">
+    <h2>4 · 修法:三层,各自实测过</h2>
+    <div class="diagram"><svg id="fly-1883-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 896px; background-color: white;" viewBox="0 0 896 470" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1883-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1883-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1883-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1883-d2 .error-icon{fill:#552222;}#fly-1883-d2 .error-text{fill:#552222;stroke:#552222;}#fly-1883-d2 .edge-thickness-normal{stroke-width:1px;}#fly-1883-d2 .edge-thickness-thick{stroke-width:3.5px;}#fly-1883-d2 .edge-pattern-solid{stroke-dasharray:0;}#fly-1883-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1883-d2 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1883-d2 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1883-d2 .marker{fill:#333333;stroke:#333333;}#fly-1883-d2 .marker.cross{stroke:#333333;}#fly-1883-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1883-d2 p{margin:0;}#fly-1883-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1883-d2 .cluster-label text{fill:#333;}#fly-1883-d2 .cluster-label span{color:#333;}#fly-1883-d2 .cluster-label span p{background-color:transparent;}#fly-1883-d2 .label text,#fly-1883-d2 span{fill:#333;color:#333;}#fly-1883-d2 .node rect,#fly-1883-d2 .node circle,#fly-1883-d2 .node ellipse,#fly-1883-d2 .node polygon,#fly-1883-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1883-d2 .rough-node .label text,#fly-1883-d2 .node .label text,#fly-1883-d2 .image-shape .label,#fly-1883-d2 .icon-shape .label{text-anchor:middle;}#fly-1883-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1883-d2 .rough-node .label,#fly-1883-d2 .node .label,#fly-1883-d2 .image-shape .label,#fly-1883-d2 .icon-shape .label{text-align:center;}#fly-1883-d2 .node.clickable{cursor:pointer;}#fly-1883-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1883-d2 .arrowheadPath{fill:#333333;}#fly-1883-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1883-d2 .flowchart-link{stroke:#333333;fill:none;}#fly-1883-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1883-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1883-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1883-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1883-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1883-d2 .cluster text{fill:#333;}#fly-1883-d2 .cluster span{color:#333;}#fly-1883-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1883-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1883-d2 rect.text{fill:none;stroke-width:0;}#fly-1883-d2 .icon-shape,#fly-1883-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1883-d2 .icon-shape p,#fly-1883-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1883-d2 .icon-shape rect,#fly-1883-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1883-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1883-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1883-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1883-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1883-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M138,334L138,338.167C138,342.333,138,350.667,168.068,361.041C198.137,371.415,258.274,383.831,288.342,390.038L318.411,396.246" id="L_FA_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FA_G_0" data-points="W3sieCI6MTM4LCJ5IjozMzR9LHsieCI6MTM4LCJ5IjozNTl9LHsieCI6MzIyLjMyODEyNSwieSI6Mzk3LjA1NDgzODcwOTY3NzR9XQ==" marker-end="url(#fly-1883-d2_flowchart-v2-pointEnd)"/><path d="M448,334L448,338.167C448,342.333,448,350.667,448,358.333C448,366,448,373,448,376.5L448,380" id="L_FB_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FB_G_0" data-points="W3sieCI6NDQ4LCJ5IjozMzR9LHsieCI6NDQ4LCJ5IjozNTl9LHsieCI6NDQ4LCJ5IjozODR9XQ==" marker-end="url(#fly-1883-d2_flowchart-v2-pointEnd)"/><path d="M448,134L448,140.167C448,146.333,448,158.667,448,170.333C448,182,448,193,448,198.5L448,204" id="L_M_FB_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_M_FB_0" data-points="W3sieCI6NDQ4LCJ5IjoxMzR9LHsieCI6NDQ4LCJ5IjoxNzF9LHsieCI6NDQ4LCJ5IjoyMDh9XQ==" marker-end="url(#fly-1883-d2_flowchart-v2-pointEnd)"/><path d="M758,334L758,338.167C758,342.333,758,350.667,727.932,361.041C697.863,371.415,637.726,383.831,607.658,390.038L577.589,396.246" id="L_FC_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FC_G_0" data-points="W3sieCI6NzU4LCJ5IjozMzR9LHsieCI6NzU4LCJ5IjozNTl9LHsieCI6NTczLjY3MTg3NSwieSI6Mzk3LjA1NDgzODcwOTY3NzR9XQ==" marker-end="url(#fly-1883-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_FA_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_FB_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(448, 171)"><g class="label" data-id="L_M_FB_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>必须先做</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_FC_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-FA-0" transform="translate(138, 271)"><rect class="basic label-container" style="fill:#eaf4ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Fix A · 点修<br />肇事文件补 afterEach:<br />每个测试跑完立即归还真 fetch</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-FB-1" transform="translate(448, 271)"><rect class="basic label-container" style="fill:#eaf4ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Fix B · 类修<br />测试配置开 unstubGlobals:<br />每个测试开跑前自动归还所有全局替身</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-M-2" transform="translate(448, 71)"><rect class="basic label-container" style="fill:#fff8e6 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>前置迁移:3 个在文件顶层<br />装替身的文件改为每测试前安装<br />(实测不迁移会红 64 个测试)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-FC-3" transform="translate(758, 271)"><rect class="basic label-container" style="fill:#eaf4ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Fix C · 固化<br />CI 流水线永久加一步:<br />强制同进程连跑 文件A→文件B 必须绿</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-4" transform="translate(448, 423)"><rect class="basic label-container" style="fill:#eafbef !important;stroke:#34c759 !important;stroke-width:2px !important" x="-125.671875" y="-39" width="251.34375" height="78"/><g class="label" style="" transform="translate(-95.671875, -24)"><rect/><foreignObject width="191.34375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>目标:假替身再也串不了场<br />验收配对 56/56 绿(已实测)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul>
+      <li><strong>Fix A · 点修</strong>:肇事文件补一段「每个测试跑完立即归还真 fetch」——和包里已有的两个正确文件用同一种写法。单独验证:配对转绿(56/56)。</li>
+      <li><strong>Fix B · 类修</strong>:在 teamlead 的测试配置里打开 <code>unstubGlobals</code> 开关——运行器在<strong>每个测试开跑前</strong>自动归还所有被替换过的全局对象。这一层把「忘了归还」整类错误从根上封死,以后新写的测试文件不需要靠自觉。单独验证:配对同样转绿。<span class="warn">前提</span>:有 3 个文件把替身装在「文件加载时」而不是「每个测试前」,开了总开关会被误伤(实测 64 个测试红)——所以要先把这 3 个文件的安装位置挪一下(机械改动,已实测挪完全绿)。</li>
+      <li><strong>Fix C · 固化</strong>:流水线永久加一步,强制这两个文件共用一个进程、<strong>按钉死的顺序</strong>连跑、必须绿——把这次的翻车现场原样变成回归检查,同时防住以后有人误删上面任何一层。「钉死顺序」不是多余动作:独立评审抓出测试运行器会自作聪明地重排文件顺序,不钉住的话这条检查会静默失效(详见第 7 节)。本地实测这步只要 8-9 秒。</li>
+    </ul>
+    <p>三层是冗余设计:A 和 B 任何一层单独在位,配对都绿;C 守住 A、B 不被悄悄删掉。最终形态全部叠加后,所有相关文件 166/166 全绿(已实测)。</p>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="4 · 修法" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S5 -->
+  <div class="card purple" id="sec-5">
+    <h2>5 · 取舍与否决掉的做法</h2>
+    <ul>
+      <li><strong>只补一行、不开总开关</strong>(否决):摸底发现还有 4 处同类泄漏在漏,而且以后新文件没人管。</li>
+      <li><strong>只开总开关、不挪那 3 个文件</strong>(否决):实测立刻误伤 64 个测试。</li>
+      <li><strong>用文本扫描当守卫</strong>(比如「凡是装替身的文件必须出现归还字样」,否决):文本长得对不代表行为对——注释、字符串都能骗过它;真跑一遍配对才是事实。</li>
+      <li><strong>把回归检查放进 shell 脚本测试区</strong>(否决):那个区没有编译产物保障,测试会死在依赖解析;放进已有编译产物的单测任务里最省事。</li>
+      <li><strong>整个仓库所有包都开总开关</strong>(超出本单范围,不做):其他包没摸底,留给后续单独评估。</li>
+    </ul>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="5 · 取舍" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S6 -->
+  <div class="card gray" id="sec-6">
+    <h2>6 · 诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><span class="ok">做</span>:治好 teamlead 包里「假 fetch 串场」这一整类问题;把翻车现场固化成永久回归检查;实现方案的每一步都在真文件上预演并测过(红→绿证据齐全)。</li>
+      <li><span class="bad">不做</span>:fetch 之外的其他共享状态泄漏(环境变量、内存单例等)不在本单;其他包的同类摸底不在本单;也<strong>没有</strong>做全套件的「关隔离」大扫描——如果将来真要为 CI 提速关隔离,需要专项扫描,本单不为那次变更背书。</li>
+      <li>CI 当前不受此问题影响(实测证据在第 3 节)——本修的现实价值是:本地/agent 提速运行的正确性、未来提速改造的提前排雷、以及测试卫生基线。</li>
+    </ul>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="6 · 诚实边界" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- S7 -->
+  <div class="card amber" id="sec-7">
+    <h2>7 · 独立评审:抓出一条真问题,已修</h2>
+    <p>Codex 评审通道当晚额度打满(Lead 批准跳过),按 Lead 硬要求改用<strong>独立上下文的 Claude 交叉评审</strong>(评审人与设计作者零共享记忆,对着真实代码逐条核查并亲自跑测试取证)。第一轮结论:<strong>打回修改</strong>,一条拦路问题 + 四条小建议:</p>
+    <ul>
+      <li><span class="bad">拦路问题</span>:原验收命令看似「让两个文件按顺序连跑」,但测试运行器其实会<strong>自作聪明地重排顺序</strong>——上次失败的文件下次优先跑。评审实测:同一条检查命令第一次红、第二次就绿了(受害文件被翻到污染源前面,污染无处可测)。也就是说,这条回归检查会从第二次运行起<strong>静默失效</strong>,而且没有任何报警。<strong>修法</strong>:用一个专用小配置把「污染源先跑、受害者后跑」钉死,并关掉结果缓存;所有关键证据(修前必红、修后必绿)都在钉死顺序后重新取过,每项连跑两次防侥幸。</li>
+      <li>四条小建议(计数写法、流水线守卫的精确接线、给未来测试作者的一行警示、新步骤的插入位置)也全部采纳进设计文档。</li>
+    </ul>
+    <p class="term">这一轮评审本身就是本设计价值的现场演示:「看起来在测的检查」和「真的在测的检查」是两回事,必须拿事实验证。</p>
+    <div class="comment-block">
+      <label>对这一节的批注(自动保存在你本机)</label>
+      <textarea class="comment-input" data-section="7 · 独立评审" placeholder="写点什么…"></textarea>
+    </div>
+  </div>
+
+  <!-- Summary -->
+  <div class="card green" id="sec-summary">
+    <h2>批注汇总</h2>
+    <p class="term" id="summary-empty">还没有批注。在上面任何一节写字,这里会实时汇总。</p>
+    <div id="summary-list"></div>
+    <button id="copy-all" type="button">复制全部批注</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1883-comments:" + location.pathname + ":";
+  var inputs = Array.prototype.slice.call(document.querySelectorAll(".comment-input"));
+  var summaryList = document.getElementById("summary-list");
+  var summaryEmpty = document.getElementById("summary-empty");
+  var copyBtn = document.getElementById("copy-all");
+  var copyStatus = document.getElementById("copy-status");
+
+  function loadSaved(key) {
+    try { return window.localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; }
+  }
+  function save(key, value) {
+    try {
+      if (value) window.localStorage.setItem(PREFIX + key, value);
+      else window.localStorage.removeItem(PREFIX + key);
+    } catch (e) { /* storage unavailable: comments stay in-page only */ }
+  }
+
+  function collect() {
+    var items = [];
+    inputs.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) items.push({ section: ta.getAttribute("data-section") || "(未命名)", text: v });
+    });
+    return items;
+  }
+
+  function renderSummary() {
+    var items = collect();
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    summaryEmpty.style.display = items.length ? "none" : "";
+    items.forEach(function (item) {
+      var box = document.createElement("div");
+      box.className = "s-item";
+      var t = document.createElement("span");
+      t.className = "s-title";
+      t.textContent = "[" + item.section + "]";
+      var body = document.createElement("span");
+      body.textContent = item.text;
+      box.appendChild(t);
+      box.appendChild(body);
+      summaryList.appendChild(box);
+    });
+  }
+
+  inputs.forEach(function (ta) {
+    var key = ta.getAttribute("data-section") || "";
+    ta.value = loadSaved(key);
+    ta.addEventListener("input", function () {
+      save(key, ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function setStatus(text, ok) {
+    copyStatus.textContent = text;
+    copyStatus.style.color = ok ? "#34c759" : "#ff3b30";
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  copyBtn.addEventListener("click", function () {
+    var items = collect();
+    if (!items.length) { setStatus("没有可复制的批注", false); return; }
+    var text = items.map(function (i) { return "[" + i.section + "]\n" + i.text; }).join("\n\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus("已复制 " + items.length + " 条", true); },
+        function () {
+          if (legacyCopy(text)) setStatus("已复制 " + items.length + " 条", true);
+          else setStatus("复制失败,请手动全选上方汇总", false);
+        }
+      );
+    } else if (legacyCopy(text)) {
+      setStatus("已复制 " + items.length + " 条", true);
+    } else {
+      setStatus("复制失败,请手动全选上方汇总", false);
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
@@ -433,6 +433,10 @@ describe("runPostShipFinalization", () => {
 				return new Response("{}", { status: 200 });
 			});
 		vi.stubGlobal("fetch", fetchImpl);
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
 	});
 
 	it("derives the land seed lease from the clock (FLY-1863)", async () => {
