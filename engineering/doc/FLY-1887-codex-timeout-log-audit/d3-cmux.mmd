@@ -1,43 +1,27 @@
-flowchart TD
-    subgraph measure["实测（宿主机，带对照组）"]
-        M1["cmux watcher 进程<br/>每天写盘 5,704 MiB"]
-        M2["同机另外 4 个长期 bash<br/>每天写盘 0 MiB"]
-        M1 --- M2
-        M3["macOS 给后台进程的配额<br/>每天 2,048 MiB"]
-        M1 --> M4["约 8.6 小时就打满"]
+flowchart TB
+    subgraph m["① 实测（带对照组）"]
+        direction LR
+        M1["cmux 后台进程<br/>每天写盘 5,704 MiB"] --> M2["同机另外 4 个<br/>长期运行的同类进程<br/>每天写盘 0 MiB"] --> M3["系统给后台进程的配额<br/>是每天 2,048 MiB<br/>约 8.6 小时就打满"]
     end
-
-    subgraph hunt["找去向"]
-        H1["把所有状态文件和日志<br/>盯了 50 秒"] --> H2["只涨了 5 KB<br/>约占实测量的 0.2%"]
-        H2 --> H3["剩下 99.8% 没有落在<br/>任何看得见的文件上"]
+    subgraph h["② 找去向"]
+        direction LR
+        H1["把所有状态文件<br/>和日志盯了 50 秒"] --> H2["只涨了 5 KB<br/>约占实测量的 0.2%"] --> H3["剩下 99.8%<br/>没落在任何<br/>看得见的文件上"]
     end
-
-    subgraph cause["根因：bash 的 here-string"]
-        C1["每用一次 here-string<br/>bash 就偷偷建一个临时文件<br/>写进去、然后立刻删掉"]
-        C2["代价固定 4 KiB<br/>和字符串多短无关"]
-        C3["文件建了就删<br/>所以按文件大小怎么查都查不到"]
-        C1 --> C2 --> C3
+    subgraph c["③ 根因"]
+        direction LR
+        C1["脚本里有个写法<br/>每用一次<br/>就偷偷建一个临时文件"] --> C2["写进去、然后立刻删掉<br/>固定 4 KiB<br/>和内容多短无关"] --> C3["建了就删<br/>所以按文件大小<br/>怎么查都查不到"]
     end
-
-    subgraph proof["2x2 对照矩阵"]
-        P1["A 自己写 8 MiB → 看得见<br/>证明尺子没坏"]
-        P2["B 子进程写 8 MiB → 看不见<br/>所以是 watcher 自己写的"]
-        P3["C 2000 次 here-string → 8.2 MB"]
-        P4["D 同样循环去掉它 → 0<br/>证明不是循环的锅"]
+    subgraph p["④ 2×2 对照矩阵"]
+        direction LR
+        P1["自己写 8 MiB → 看得见<br/>证明尺子没坏"] --> P2["子进程写 8 MiB → 看不见<br/>所以是它自己写的"] --> P3["用 2000 次 → 8.2 MB<br/>同样循环去掉它 → 0<br/>证明不是循环的锅"]
     end
-
-    subgraph fix["解法（替换方案也已实测）"]
-        F1["现状：用 here-string 喂循环"] -->|"改成"| F2["改用进程替换<br/>实测 0 字节"]
-        F3["禁用管道写法<br/>它会让循环里的变量静默丢失"]
+    subgraph f["⑤ 解法（替换方案也已实测）"]
+        direction LR
+        F1["换成另一种等价写法<br/>实测 0 字节"] --> F2["但禁用最直觉的那种改法<br/>它会让循环里的变量<br/>静默丢失"]
     end
-
-    measure --> hunt
-    hunt --> cause
-    cause --> proof
-    proof --> fix
 
     style M1 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
     style M2 fill:#eef4ff,stroke:#007aff,stroke-width:2px
     style C3 fill:#fff4e0,stroke:#ff9500,stroke-width:2px
-    style F2 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
-    style F3 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style F1 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
+    style F2 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px

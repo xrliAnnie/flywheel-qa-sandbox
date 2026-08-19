@@ -1,14 +1,11 @@
-flowchart TB
-    subgraph row1["① 埋下的雷（8 天前）"]
-        A["一个检查只看文件权限位<br/>没看能不能真的跑"] --> B["它指向的程序<br/>其实早就坏了"] --> C["每启动一个 codex 就拉起它<br/>毫秒级崩溃、立刻重来<br/>8 天 188 份崩溃报告"]
-    end
-    subgraph row2["② 引爆（8/18 当天）"]
-        D["00:00 全舰重启<br/>16 个 Lead 同时冷启动"] --> E["00:10 进程风暴<br/>23 秒里冒出约 17,400 个进程"] --> F["应用全打不开<br/>16:34 关机时<br/>134 个进程拒绝退出"]
-    end
-    subgraph row3["③ 为什么一直没人发现"]
-        G["最老的那个僵尸<br/>已经空转了 4.66 天"] --> H["launchd 全程认为一切正常<br/>它只看进程在不在<br/>不看它到底干不干活"]
-    end
+flowchart LR
+    A["一个检查<br/>只看文件权限位<br/>没看能不能真的跑"] --> B["它指向的程序<br/>其实早就坏了"]
+    B --> C["每启动一个 codex 就拉起它<br/>毫秒级崩溃、立刻重来<br/>8 天 188 份崩溃报告"]
+    C --> D["8/18 00:00 全舰重启<br/>16 个 Lead 同时冷启动"]
+    D --> E["00:10 进程风暴<br/>23 秒里冒出约 17,400 个进程"]
+    E --> F["应用全打不开<br/>16:34 关机时<br/>134 个进程拒绝退出"]
+    F --> G["最老的那个僵尸<br/>已经空转了 4.66 天<br/>而 launchd 全程认为一切正常"]
 
     style A fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
     style F fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
-    style H fill:#fff4e0,stroke:#ff9500,stroke-width:2px
+    style G fill:#fff4e0,stroke:#ff9500,stroke-width:2px
