@@ -70,7 +70,9 @@ FLY-202-d3-doc-model.mmd
 FLY-202-d3-doc-model.svg
 FLY-202-design.html
 design.md
+plan.md
 progress.md
+workflow-output.json
 
 doc//architecture:
 archive
@@ -96,6 +98,4 @@ qa
 research
 
 doc//engineer/deep-research:
-001-decision-layer-gemini.md
-002-decision-layer-chatgpt.md
 ```
