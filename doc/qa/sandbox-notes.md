@@ -48,6 +48,7 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 Command: `ls -R doc/ | head -50`
 
 ```text
+FLY-202-generalized-e2e
 FLY-202-qa-sandbox-fixture
 VERSION
 architecture
@@ -57,7 +58,10 @@ qa
 reference
 retro
 
-doc/FLY-202-qa-sandbox-fixture:
+doc//FLY-202-generalized-e2e:
+design.html
+
+doc//FLY-202-qa-sandbox-fixture:
 FLY-202-d1-e2e-chain.mmd
 FLY-202-d1-e2e-chain.svg
 FLY-202-d2-five-steps.mmd
@@ -68,7 +72,7 @@ FLY-202-design.html
 design.md
 progress.md
 
-doc/architecture:
+doc//architecture:
 archive
 capability-matrix.md
 flywheel-agent-architecture-diagram.html
@@ -79,10 +83,10 @@ product-experience-spec.md
 v0.2-architecture.md
 v2.0-product-vision.md
 
-doc/architecture/archive:
+doc//architecture/archive:
 v0.1.0-flywheel-orchestrator.md
 
-doc/engineer:
+doc//engineer:
 deep-research
 exploration
 implementation
@@ -91,11 +95,7 @@ plan
 qa
 research
 
-doc/engineer/deep-research:
+doc//engineer/deep-research:
 001-decision-layer-gemini.md
 002-decision-layer-chatgpt.md
-003-stripe-minions-part1.md
-004-stripe-minions-part2.md
-005-cloudflare-code-mode.md
-006-boris-cherny-claude-code-future.md
 ```
