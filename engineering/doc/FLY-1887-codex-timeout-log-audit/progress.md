@@ -1,14 +1,13 @@
 ---
 issue: FLY-1887
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-19T17:15:25.292Z
-nextStep: await v6 design review R3; then resume implementation verification and
-  code review
+phase: implement
+phaseCursor: 3/3
+updated: 2026-08-19T17:29:58.906Z
+nextStep: commit and push exact head; request Codex code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-1887 progress
-**phase**: design (6/6)
-**next**: await v6 design review R3; then resume implementation verification and code review
+**phase**: implement (3/3)
+**next**: commit and push exact head; request Codex code review
