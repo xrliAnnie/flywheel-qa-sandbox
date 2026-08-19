@@ -274,11 +274,14 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,stat
  ('exec-pane-3','runner-tidal-echo:@3','tidal-echo','TE-300','tidal-echo-content-lead','running','claude');
 SQL
 mkdir -p "$PANES/state/patrol-reports/flywheel-eng-lead"
+mkdir -p "$PANES/state/patrol-continuity/flywheel-eng-lead"
 PANE_STATE_HASH="$(printf '%s' 'Awaiting review' | shasum -a 256 | awk '{print $1}')"
 cat > "$PANES/state/patrol-reports/flywheel-eng-lead/20260819T000000Z-tickNA.md" <<EOF
 pane_count=1
 PANE_EVIDENCE pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1 capture_sha256=old lines=2 bytes=20 state_sha256=$PANE_STATE_HASH last_change_epoch=$(($(date +%s) - 3700)) findings=none action=none result=clear
 EOF
+printf 'runner-flywheel:@1\t%s\t%s\n' "$PANE_STATE_HASH" "$(($(date +%s) - 3700))" \
+  > "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv"
 PANES_OUT="$PANES/out.txt"
 TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
 contains "$PANES_OUT" "pane_count=5" "canonical Runner pane count excludes cmux mirror"
@@ -300,11 +303,16 @@ contains "$PANES_OUT" "pane=%5 target=runner-test-slot-2:@5 owner=foreign-regist
 contains "$PANES_OUT" "result=foreign_registry_clear" "healthy foreign-registry pane auto-closes"
 contains "$PANES_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "unclaimed registered pane remains visible"
 contains "$PANES_OUT" "result=session_terminated" "first unclaimed observation gets teardown grace"
+contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@1" "stall continuity is persisted outside the Lead-editable report"
 
 # The published first report is now prior evidence. A second observation of the
 # same registered unclaimed target must become a real orphan finding.
+awk '!/target=runner-flywheel:@1 /' "$REPORT_PATH" > "$PANES/reflowed-report" \
+  && mv "$PANES/reflowed-report" "$REPORT_PATH"
 PANES_SECOND_OUT="$PANES/second.txt"
 TMUX_CALL_LOG="$PANES/tmux-calls-second.log" run_snapshot "$PANES" "$PANES_SECOND_OUT" || fail "second pane snapshot exits zero"
+contains "$PANES_SECOND_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned" "report reflow does not erase machine-owned pane continuity"
+contains "$PANES_SECOND_OUT" "findings=STALLED_60M action=REQUIRED result=UNSET" "report reflow cannot disable stall detection"
 contains "$PANES_SECOND_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "persistent orphan stays attributed to its target"
 contains "$PANES_SECOND_OUT" "findings=ORPHANED action=REQUIRED result=UNSET" "second unclaimed observation becomes a finding"
 
@@ -371,6 +379,40 @@ TMUX_CALL_LOG="$DUPLICATE/tmux-calls.log" run_snapshot "$DUPLICATE" "$DUPLICATE_
 contains "$DUPLICATE_OUT" "STEP 2: UNAVAILABLE(structural: session_target_ambiguous)" "duplicate machine owner is fail-visible"
 contains "$DUPLICATE_OUT" "pane=%1 target=runner-flywheel:@1 owner=unknown" "ambiguous pane remains individually attributable"
 contains "$DUPLICATE_OUT" "findings=SESSION_TARGET_AMBIGUOUS action=REQUIRED result=UNSET" "ambiguous target requires disposition"
+
+DEAD_PANE="$TMP/dead-pane"
+make_case "$DEAD_PANE"
+cat > "$DEAD_PANE/bin/tmux" <<'SH'
+#!/bin/bash
+case "${1:-}" in
+  list-windows) printf '%s\n' 'runner-flywheel: FLY-210' ;;
+  list-panes) printf '%%9\trunner-flywheel\trunner-flywheel:@9\tFLY-210\tclaude\t1\n' ;;
+  capture-pane) printf '%s\n' 'process exited' ;;
+  *) exit 2 ;;
+esac
+SH
+chmod 0755 "$DEAD_PANE/bin/tmux"
+sqlite3 "$DEAD_PANE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-dead-pane','runner-flywheel:@9','flywheel','FLY-210','flywheel-eng-lead','running','claude');
+SQL
+DEAD_PANE_OUT="$DEAD_PANE/out.txt"
+run_snapshot "$DEAD_PANE" "$DEAD_PANE_OUT" || fail "dead pane snapshot exits zero"
+contains "$DEAD_PANE_OUT" "pane=%9 target=runner-flywheel:@9 owner=owned" "dead pane keeps canonical identity"
+contains "$DEAD_PANE_OUT" "findings=PANE_DEAD action=REQUIRED result=UNSET" "tmux pane_dead is an immediate finding"
+
+NO_SERVER="$TMP/no-server"
+make_case "$NO_SERVER"
+cat > "$NO_SERVER/bin/tmux" <<'SH'
+#!/bin/bash
+echo 'no server running on /tmp/tmux-501/default' >&2
+exit 1
+SH
+chmod 0755 "$NO_SERVER/bin/tmux"
+NO_SERVER_OUT="$NO_SERVER/out.txt"
+run_snapshot "$NO_SERVER" "$NO_SERVER_OUT" || fail "absent tmux server still publishes report"
+contains "$NO_SERVER_OUT" "STEP 1: UNAVAILABLE(transient: tmux_server_absent)" "absent tmux server is not mislabeled structural"
+contains "$NO_SERVER_OUT" "STEP 2: UNAVAILABLE(transient: tmux_server_absent)" "pane step carries the accurate tmux absence token"
 
 EMPTY="$TMP/empty"
 make_case "$EMPTY"

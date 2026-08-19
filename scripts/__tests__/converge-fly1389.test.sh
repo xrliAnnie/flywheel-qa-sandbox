@@ -134,6 +134,23 @@ else
   fail "G3: trusted root wrongly refused" "$(cat "$SB/out.log")"
 fi
 
+# ── G3b: generic strict failures never blame the cmux watcher. ──
+G3B_BACKUP="$SB/lead-patrol-snapshot.sh.backup"
+cp "$TRUSTED/scripts/lead-patrol-snapshot.sh" "$G3B_BACKUP"
+printf 'not-a-sane-script\n' > "$TRUSTED/scripts/lead-patrol-snapshot.sh"
+: > "$SB/alerts.log"
+if env ALERT_LOG="$SB/alerts.log" HOME="$GH3" FLYWHEEL_STATE_DIR="$GH3/.flywheel" \
+    FLYWHEEL_CONVERGE_ALERT_BIN="$ALERT" \
+    bash "$TRUSTED/scripts/converge-flywheel-bin.sh" >"$SB/out.log" 2>&1; then
+  fail "G3b: an unready patrol source must fail convergence"
+elif grep -q 'managed executable' "$SB/alerts.log" \
+  && ! grep -q 'cmux watcher' "$SB/alerts.log"; then
+  pass "G3b: patrol strict-source failure uses generic managed-executable wording"
+else
+  fail "G3b: patrol strict-source alert leaked cmux wording" "$(cat "$SB/alerts.log")"
+fi
+mv "$G3B_BACKUP" "$TRUSTED/scripts/lead-patrol-snapshot.sh"
+
 # ── S1: broken symlink → repaired to this repo's source + ONE alert, rc=0 ──
 ST="$SB/state-s1"; seed_wrappers "$ST" "$TRUSTED"
 ln -s "$SB/gone/agent-team-transport-cli.js" "$ST/bin/agent-team-transport"

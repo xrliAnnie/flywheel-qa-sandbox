@@ -7,6 +7,19 @@ set -uo pipefail
 umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOUNDED_RUN="$SCRIPT_DIR/lib/bounded-run.sh"
+WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/flywheel-patrol.XXXXXX")" || {
+  echo "[patrol-snapshot] ERROR: temp_directory_unavailable" >&2
+  exit 1
+}
+CONTINUITY_TMP=""
+cleanup_work_tmp() {
+  rm -rf "$WORK_TMP"
+  [ -z "$CONTINUITY_TMP" ] || rm -f "$CONTINUITY_TMP"
+}
+trap cleanup_work_tmp EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 usage() {
   echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>]" >&2
@@ -75,6 +88,8 @@ STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-$STATE_DIR/projects.json}"
 REPORT_DIR="$STATE_DIR/patrol-reports/$LEAD_ID"
 PREVIOUS_REPORT="$(find "$REPORT_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"
+CONTINUITY_DIR="$STATE_DIR/patrol-continuity/$LEAD_ID"
+CONTINUITY_FILE="$CONTINUITY_DIR/$PROJECT_NAME.tsv"
 DEFAULT_COMM_DB="$STATE_DIR/comm/$PROJECT_NAME/comm.db"
 COMM_DB="$DEFAULT_COMM_DB"
 if [ -n "${FLYWHEEL_COMM_DB:-}" ] \
@@ -108,17 +123,30 @@ COMM_DB_URI="$(readonly_sqlite_uri "$COMM_DB")"
 
 PROJECT_REPO=""
 PROJECTS_OK=0
+PROJECT_REGISTRY_OK=0
 PROJECT_NAMES=""
 if command -v jq >/dev/null 2>&1 && [ -f "$PROJECTS_FILE" ]; then
-  PROJECT_REPO="$(jq -er --arg project "$PROJECT_NAME" \
-    'first(.[] | select(.projectName == $project) | .projectRepo)' \
-    "$PROJECTS_FILE" 2>/dev/null || true)"
-  if safe_repo_slug "$PROJECT_REPO"; then
-    PROJECTS_OK=1
+  if PROJECT_NAMES="$(jq -er '
+      if type == "array" and length > 0 and
+        all(.[]; (.projectName | type == "string") and
+          (.projectName | test("^[A-Za-z0-9._-]{1,64}$")) and
+          .projectName != "." and .projectName != "..")
+      then [.[].projectName] | unique[]
+      else error("invalid project registry") end' \
+      "$PROJECTS_FILE" 2>/dev/null)" \
+    && printf '%s\n' "$PROJECT_NAMES" | grep -Fxq -- "$PROJECT_NAME"; then
+    PROJECT_REGISTRY_OK=1
+    PROJECT_REPO="$(jq -er --arg project "$PROJECT_NAME" \
+      'first(.[] | select(.projectName == $project) | .projectRepo)' \
+      "$PROJECTS_FILE" 2>/dev/null || true)"
+    if safe_repo_slug "$PROJECT_REPO"; then
+      PROJECTS_OK=1
+    else
+      PROJECT_REPO=""
+    fi
   else
-    PROJECT_REPO=""
+    PROJECT_NAMES=""
   fi
-  PROJECT_NAMES="$(jq -r '.[].projectName // empty' "$PROJECTS_FILE" 2>/dev/null || true)"
 fi
 
 SQL_ERROR_TOKEN="structural: sqlite_unavailable"
@@ -139,7 +167,7 @@ run_sql() { # <output-var> <sql>
     return 1
   fi
   for attempt in 1 2; do
-    err_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-patrol-sql.XXXXXX")" || {
+    err_file="$(mktemp "$WORK_TMP/sql.XXXXXX")" || {
       SQL_ERROR_TOKEN="structural: temp_unavailable"
       printf -v "$out_var" '%s' ""
       return 1
@@ -201,7 +229,7 @@ run_comm_index() { # <output-var> <db>
   fi
   uri="$(readonly_sqlite_uri "$db")"
   for attempt in 1 2; do
-    err_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-patrol-index.XXXXXX")" || {
+    err_file="$(mktemp "$WORK_TMP/index.XXXXXX")" || {
       COMM_INDEX_ERROR_TOKEN="structural: owner_index_incomplete"
       printf -v "$out_var" '%s' ""
       return 1
@@ -212,7 +240,7 @@ run_comm_index() { # <output-var> <db>
 .mode tabs
 SELECT tmux_window, project_name, execution_id, coalesce(lead_id,'')
 FROM sessions
-WHERE status = 'running'
+WHERE status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
 ORDER BY tmux_window, execution_id
 LIMIT 2000;
 SQL
@@ -237,10 +265,18 @@ STEP1_STATUS="LEAD-JUDGMENT-REQUIRED"
 STEP1_FACTS=""
 RUNNER_PANES=""
 PANE_LIST_RC=1
+TMUX_ERROR_TOKEN="structural: tmux_unavailable"
 if command -v tmux >/dev/null 2>&1; then
-  STEP1_FACTS="$(TMUX= tmux list-windows -a 2>/dev/null)"
+  TMUX_ERR_FILE="$WORK_TMP/tmux-list.err"
+  STEP1_FACTS="$(TMUX= tmux list-windows -a 2>"$TMUX_ERR_FILE")"
   if [ "$?" -ne 0 ]; then
-    STEP1_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
+    TMUX_ERR_TEXT="$(tr '[:upper:]' '[:lower:]' < "$TMUX_ERR_FILE" 2>/dev/null || true)"
+    case "$TMUX_ERR_TEXT" in
+      *"no server running"*|*"failed to connect to server"*)
+        TMUX_ERROR_TOKEN="transient: tmux_server_absent"
+        ;;
+    esac
+    STEP1_STATUS="UNAVAILABLE($TMUX_ERROR_TOKEN)"
     STEP1_FACTS=""
   else
     PANE_LIST_RAW="$(TMUX= tmux list-panes -a -F $'#{pane_id}\t#{session_name}\t#{session_name}:#{window_id}\t#{window_name}\t#{pane_current_command}\t#{pane_dead}' 2>/dev/null)"
@@ -250,7 +286,7 @@ if command -v tmux >/dev/null 2>&1; then
         $2 ~ /^runner-/ && $4 ~ /^[A-Z][A-Z0-9]*-[0-9]+($|[-_:])/ { print }
       ')"
     else
-      STEP1_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
+      STEP1_STATUS="UNAVAILABLE($TMUX_ERROR_TOKEN)"
     fi
   fi
 else
@@ -272,8 +308,8 @@ OWNER_INDEX=""
 INCOMPLETE_SESSIONS=""
 
 if [ "$PANE_LIST_RC" -ne 0 ]; then
-  STEP2_STATUS="UNAVAILABLE(structural: tmux_unavailable)"
-elif command -v jq >/dev/null 2>&1; then
+  STEP2_STATUS="UNAVAILABLE($TMUX_ERROR_TOKEN)"
+elif [ "$PROJECT_REGISTRY_OK" -eq 1 ]; then
   while IFS= read -r index_project; do
     [ -n "$index_project" ] || continue
     if ! safe_key "$index_project"; then
@@ -304,6 +340,12 @@ else
 fi
 
 NOW_EPOCH="$(date +%s)"
+CONTINUITY_CONTENT=""
+CONTINUITY_WRITE_READY=1
+if ! mkdir -p "$CONTINUITY_DIR" 2>/dev/null; then
+  CONTINUITY_WRITE_READY=0
+  STEP2_STATUS="UNAVAILABLE(structural: continuity_state_unavailable)"
+fi
 while IFS=$'\t' read -r pane_id session_name target window_name pane_command pane_dead; do
   [ -n "$pane_id" ] || continue
   owner="unknown"
@@ -311,6 +353,9 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   findings="none"
   action="none"
   result="clear"
+  if [ "$pane_dead" = 1 ]; then
+    findings="$(append_finding "$findings" PANE_DEAD)"
+  fi
 
   index_matches="$(printf '%s\n' "$OWNER_INDEX" | awk -F '\t' -v target="$target" '$1 == target {print}')"
   match_count="$(printf '%s\n' "$index_matches" | awk 'NF {n++} END {print n+0}')"
@@ -322,7 +367,10 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     STEP2_STATUS="UNAVAILABLE(structural: session_target_ambiguous)"
   else
     session_project="${session_name#runner-}"
-    if ! printf '%s\n' "$PROJECT_NAMES" | grep -Fxq -- "$session_project"; then
+    if [ "$PROJECT_REGISTRY_OK" -ne 1 ]; then
+      findings="$(append_finding "$findings" OWNER_INDEX_INCOMPLETE)"
+      STEP2_STATUS="UNAVAILABLE(structural: owner_index_incomplete)"
+    elif ! printf '%s\n' "$PROJECT_NAMES" | grep -Fxq -- "$session_project"; then
       owner="foreign-registry"
       result="foreign_registry_clear"
     elif case " $INCOMPLETE_SESSIONS " in *" $session_name "*) true;; *) false;; esac; then
@@ -347,7 +395,7 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   byte_count=0
   state_hash="unavailable"
   last_change_epoch="$NOW_EPOCH"
-  capture_file="$(mktemp "${TMPDIR:-/tmp}/flywheel-patrol-pane.XXXXXX")" || true
+  capture_file="$(mktemp "$WORK_TMP/pane.XXXXXX")" || true
   if [ -z "$capture_file" ] || [ ! -x "$BOUNDED_RUN" ] \
     || ! "$BOUNDED_RUN" 5 env TMUX= tmux capture-pane -p -S - -t "$pane_id" > "$capture_file" 2>/dev/null; then
     findings="$(append_finding "$findings" CAPTURE_FAILED)"
@@ -358,12 +406,12 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     byte_count="$(wc -c < "$capture_file" | tr -d ' ')"
     last_state="$(awk 'NF {line=$0} END {printf "%s", line}' "$capture_file")"
     state_hash="$(sha256_text "$last_state")"
-    previous_line=""
-    if [ -n "$PREVIOUS_REPORT" ] && [ -f "$PREVIOUS_REPORT" ]; then
-      previous_line="$(grep -F "target=$target " "$PREVIOUS_REPORT" 2>/dev/null | tail -1)"
+    previous_state=""
+    previous_change=""
+    if [ -f "$CONTINUITY_FILE" ]; then
+      previous_continuity="$(awk -F '\t' -v target="$target" '$1 == target {print; exit}' "$CONTINUITY_FILE" 2>/dev/null || true)"
+      IFS=$'\t' read -r _continuity_target previous_state previous_change <<< "$previous_continuity"
     fi
-    previous_state="$(field_from_evidence "$previous_line" state_sha256 2>/dev/null || true)"
-    previous_change="$(field_from_evidence "$previous_line" last_change_epoch 2>/dev/null || true)"
     if [ "$previous_state" = "$state_hash" ]; then
       case "$previous_change" in
         ''|*[!0-9]*) ;;
@@ -383,6 +431,7 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
     if printf '%s\n' "$recent_capture" | grep -Eiq 'Press Enter to (confirm|continue)|resume menu'; then
       findings="$(append_finding "$findings" INTERACTIVE_MENU)"
     fi
+    CONTINUITY_CONTENT="${CONTINUITY_CONTENT}${CONTINUITY_CONTENT:+$'\n'}${target}"$'\t'"${state_hash}"$'\t'"${last_change_epoch}"
   fi
   rm -f "$capture_file" 2>/dev/null || true
 
@@ -397,6 +446,18 @@ while IFS=$'\t' read -r pane_id session_name target window_name pane_command pan
   evidence="PANE_EVIDENCE pane=$pane_id target=$target owner=$owner exec=$execution_id capture_sha256=$capture_hash lines=$line_count bytes=$byte_count state_sha256=$state_hash last_change_epoch=$last_change_epoch findings=$findings action=$action result=$result"
   STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}$evidence"
 done <<< "$RUNNER_PANES"
+
+if [ "$PANE_LIST_RC" -eq 0 ] && [ "$CONTINUITY_WRITE_READY" -eq 1 ]; then
+  CONTINUITY_TMP="$CONTINUITY_DIR/.$PROJECT_NAME.tsv.tmp.$$"
+  if ! printf '%s%s' "$CONTINUITY_CONTENT" "${CONTINUITY_CONTENT:+$'\n'}" > "$CONTINUITY_TMP" \
+    || ! chmod 0600 "$CONTINUITY_TMP" 2>/dev/null \
+    || ! mv -f "$CONTINUITY_TMP" "$CONTINUITY_FILE"; then
+    rm -f "$CONTINUITY_TMP" 2>/dev/null || true
+    STEP2_STATUS="UNAVAILABLE(structural: continuity_state_unavailable)"
+    STEP2_FACTS="${STEP2_FACTS}${STEP2_FACTS:+$'\n'}CONTINUITY_STATE_WRITE_FAILED"
+  fi
+  CONTINUITY_TMP=""
+fi
 
 STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
 
@@ -422,24 +483,25 @@ WHERE NOT EXISTS (
   SELECT 1 FROM sessions s
   WHERE s.issue_id = a.issue_id
     AND s.project_name = '$PROJECT_NAME'
-    AND s.status = 'running'
+    AND s.status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
     AND s.execution_id = t.holder_exec_id
 )
 UNION ALL
 SELECT 'NO_TURN_STREAK issue=' || a.issue_id || ' exec=' || substr(a.execution_id,1,8) || ' streak=' || w.no_turn_streak
 FROM active a
 JOIN sessions s ON s.execution_id = a.execution_id
-  AND s.project_name = '$PROJECT_NAME' AND s.status = 'running'
+  AND s.project_name = '$PROJECT_NAME'
+  AND s.status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
 JOIN comm.turn_wait_ledger w ON w.execution_id = a.execution_id
 WHERE w.no_turn_streak >= 3
 UNION ALL
-SELECT 'NODE_SESSION_NOT_LIVE issue=' || a.issue_id || ' exec=' || substr(a.execution_id,1,8)
+SELECT 'NODE_SESSION_NOT_LIVE issue=' || a.issue_id || ' exec=' || coalesce(substr(a.execution_id,1,8),'none')
 FROM active a
 WHERE a.execution_id IS NULL OR NOT EXISTS (
   SELECT 1 FROM sessions s
   WHERE s.execution_id = a.execution_id
     AND s.project_name = '$PROJECT_NAME'
-    AND s.status = 'running'
+    AND s.status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
 )
 ORDER BY 1
 LIMIT 500;
@@ -458,7 +520,8 @@ SELECT 'MAILBOX_STALE id=' || substr(m.id,1,12) || ' to=' || substr(m.to_agent,1
        ' claim_expires=' || coalesce(m.claim_expires_at,'-')
 FROM comm.mailbox m
 JOIN sessions s ON s.execution_id = m.to_agent
-  AND s.project_name = '$PROJECT_NAME' AND s.status = 'running'
+  AND s.project_name = '$PROJECT_NAME'
+  AND s.status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
 WHERE m.recipient_kind = 'runner'
   AND (
     (m.state = 'QUEUED' AND julianday(m.created_at) <= julianday('now','-30 minutes'))

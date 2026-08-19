@@ -272,6 +272,7 @@ strict_alert() { # <name> <title> <body> <signature>
     generic_body="${generic_body//cmux watcher's fail-closed launch path/managed executable path}"
     generic_body="${generic_body//the 'restart brake unavailable' report/its failure report}"
     generic_body="${generic_body//cmux watcher's failure-reporting chain/managed executable delivery path}"
+    generic_body="${generic_body//cmux watcher/managed executable}"
     alert "$generic_title" "$generic_body" "$signature"
   fi
 }

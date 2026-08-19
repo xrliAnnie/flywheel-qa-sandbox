@@ -122,6 +122,9 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"foreign-registry",
 			"owner_index_incomplete",
 			"comm.sessions",
+			"patrol-continuity",
+			"ship_parked",
+			"WELL_FORMED_EVIDENCE",
 		]) {
 			expect(section0).toContain(anchor);
 		}

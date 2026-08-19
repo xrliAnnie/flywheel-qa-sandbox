@@ -36,7 +36,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 单方转述。第 0 步必须先读上一报告,再启动新快照,run:
 `PATROL_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/patrol-reports/${LEAD_ID:?LEAD_ID required}"; PREVIOUS_REPORT="$(find "$PATROL_DIR" -maxdepth 1 -type f -name '*-tick*.md' -print 2>/dev/null | sort | tail -1)"; test -z "$PREVIOUS_REPORT" || sed -n '1,260p' "$PREVIOUS_REPORT"`。
 若上一份有未建单 UNAVAILABLE,先在第 6 步补账。然后 run:
-`SNAPSHOT_OUTPUT="$(~/.flywheel/bin/flywheel-patrol-snapshot --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")"; SNAPSHOT_RC=$?; printf '%s\n' "$SNAPSHOT_OUTPUT"; test "$SNAPSHOT_RC" -eq 0 || exit "$SNAPSHOT_RC"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。
+`SNAPSHOT_BIN="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/bin/flywheel-patrol-snapshot"; SNAPSHOT_OUTPUT="$("$SNAPSHOT_BIN" --project "${PROJECT_NAME:?PROJECT_NAME required}" --lead "${LEAD_ID:?LEAD_ID required}")"; SNAPSHOT_RC=$?; printf '%s\n' "$SNAPSHOT_OUTPUT"; test "$SNAPSHOT_RC" -eq 0 || exit "$SNAPSHOT_RC"; REPORT_PATH="$(printf '%s\n' "$SNAPSHOT_OUTPUT" | sed -n 's/^REPORT_PATH=//p' | tail -1)"; test -n "$REPORT_PATH" && test -f "$REPORT_PATH"`。
 后续六步共用这一个 `REPORT_PATH`,不得重跑快照制造第二份报告。
 
 1. **名册核对(ground truth)** — run:
@@ -67,7 +67,9 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
      reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`;跨界只上报。
-   - 同 target 最后状态行逐字 hash 未变就继承上一报告 `last_change_epoch`;连续
+   - 同 target 最后状态行逐字 hash 未变就继承脚本维护的 0600 machine-owned
+     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`;Lead 不编辑该
+     sidecar,报告重排也不得重置连续性。连续
      ≥3600 秒标 `STALLED_60M`。名下 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
      跨界只上报。
@@ -76,7 +78,8 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
      写 `UNAVAILABLE(structural: menu_unrecognized)`,禁止盲按。
    clear 行由脚本封口 `action=none result=clear`;任何 finding/capture failure 初始
-   `action=REQUIRED result=UNSET`,Lead 必须改成实际 action/result 并留证。
+   `action=REQUIRED result=UNSET`,Lead 只能原位修改 `action=` / `result=` 值并留证,
+   不得删除、改名或重排 `PANE_EVIDENCE` 的机器字段。
    **“大概没问题”不是证据。**
 3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
    StateStore `workflow_run_node`) — run:
@@ -86,7 +89,9 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    node 无 live session都是 finding;历史 terminal 行不得重报。
 4. **投递账 + verdict/receipt 一致性** — run:
    `awk '/^## STEP 4$/{show=1; next} /^## STEP 5$/{show=0} show' "$REPORT_PATH"`。
-   只看 live Runner 的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
+   live Runner 明确定义为 StateStore status
+   `running|ship_parked|awaiting_review|design_done|approved_to_ship`;只看这些 Runner
+   的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
    且 `state='pending'` 的 `dead_letter_alerts`、以及 active PR binding head 与
    有效 git-head verdict claim。`accepted` dead letter 禁止重报。输出只含
    allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
@@ -117,7 +122,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
    最后 run(完成门):
-   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && ! grep -Eq 'LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
+   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq 'LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
    失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one
