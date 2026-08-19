@@ -1,13 +1,13 @@
 ---
 issue: FLY-1887
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-19T04:13:58.080Z
-nextStep: audit complete; write plan.md
+phaseCursor: 2/6
+updated: 2026-08-19T04:26:59.561Z
+nextStep: "verify P0 real scope: which codex call sites are one-shot vs long-lived"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1887 progress
-**phase**: design (1/6)
-**next**: audit complete; write plan.md
+**phase**: design (2/6)
+**next**: verify P0 real scope: which codex call sites are one-shot vs long-lived
