@@ -1,14 +1,15 @@
 ---
 issue: FLY-1855
 phase: design
-phaseCursor: 3/5
-updated: 2026-08-19T04:30:26.882Z
-nextStep: await Claude cross-review verdict; fold blocking findings into plan;
-  finalize+publish founder HTML; complete phase_design_complete
+phaseCursor: 4/5
+updated: 2026-08-19T04:38:46.920Z
+nextStep: await R2 verdict; then finalize founder HTML (inject SVGs + review
+  summary), commit+push, publish-report --publish-only, DONE report to Tadashi,
+  complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-1855 progress
-**phase**: design (3/5)
-**next**: await Claude cross-review verdict; fold blocking findings into plan; finalize+publish founder HTML; complete phase_design_complete
+**phase**: design (4/5)
+**next**: await R2 verdict; then finalize founder HTML (inject SVGs + review summary), commit+push, publish-report --publish-only, DONE report to Tadashi, complete phase_design_complete
