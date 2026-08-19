@@ -6,6 +6,7 @@
  * strip the parts the FLY-369 acceptance criteria depend on.
  */
 
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -96,6 +97,46 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toContain("reply(chat_id=");
 		expect(section0).toContain("--config -");
 		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
+	});
+
+	it("FLY-1855: the documented completion gate accepts finalized UNAVAILABLE rows", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const pattern = section0.match(/grep -Ec '([^']+)' "\$REPORT_PATH"/)?.[1];
+		expect(pattern).toBeDefined();
+		const report = [
+			"STEP 1: OK",
+			"STEP 2: FINDING",
+			"STEP 3: UNAVAILABLE(structural: schema_missing)",
+			"STEP 4: UNAVAILABLE(transient: sqlite_busy)",
+			"STEP 5: OK",
+			"STEP 6: FINDING",
+		].join("\n");
+		const result = spawnSync("grep", ["-Ec", pattern ?? ""], {
+			input: `${report}\n`,
+			encoding: "utf8",
+		});
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe("6");
+	});
+
+	it("FLY-1855: the documented dedupe parser accepts a healthy non-truncated response", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const parser = section0.match(
+			/TRUNCATED=.*?jq\s+(-[A-Za-z]+)\s+'([^']+)'/s,
+		);
+		expect(parser).not.toBeNull();
+		const result = spawnSync("jq", [parser?.[1] ?? "", parser?.[2] ?? ""], {
+			input: '{"issues":[],"truncated":false}\n',
+			encoding: "utf8",
+		});
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe("false");
 	});
 
 	it("RC-1: every lifecycle event MUST relay to the [FLY-XX] thread via /api/chat-threads/send", () => {

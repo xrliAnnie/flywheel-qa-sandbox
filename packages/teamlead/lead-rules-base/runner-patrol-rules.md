@@ -73,7 +73,7 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
    再用 Discord MCP
    `reply(chat_id="1512578695468941333", message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <finding>; report: $REPORT_PATH")`。
    UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
-   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -er '.truncated // false')"; PARSE_RC=$?`。
+   `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
    若 `DEDUP_RC != 0`、`PARSE_RC != 0` 或 `TRUNCATED == true`,报告记
    `UNAVAILABLE(transient: dedupe_unverified)`并**禁止建单**。否则 run:
    `EXISTING="$(printf '%s' "$DEDUP_JSON" | jq -r --arg title "$TITLE" '.issues[] | select(.title == $title) | .identifier' | head -1)"`;
@@ -81,7 +81,7 @@ unified alerting) belongs to **FLY-271** and **FLY-368**, NOT here.
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
    最后 run(完成门):
-   `test "$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\\((transient|structural): [A-Za-z0-9._-]+\\))$' "$REPORT_PATH")" -eq 6 && ! grep -Eq '^STEP [1-6]: (LEAD-JUDGMENT-REQUIRED|.*-CANDIDATE)$' "$REPORT_PATH"`。
+   `test "$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")" -eq 6 && ! grep -Eq '^STEP [1-6]: (LEAD-JUDGMENT-REQUIRED|.*-CANDIDATE)$' "$REPORT_PATH"`。
    失败就没有完成;无法理解本段也必须记 UNAVAILABLE,禁止静默跳过。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one
