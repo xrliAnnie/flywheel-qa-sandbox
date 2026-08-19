@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: implement
-phaseCursor: 1/4
-updated: 2026-08-19T23:21:00.819Z
-nextStep: Update model-pin assertions first, prove RED, then swap simple_code defaults
+phaseCursor: 2/4
+updated: 2026-08-19T23:26:45.322Z
+nextStep: Run affected-surface tests, lint, build, and package regression gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: implement (1/4)
-**next**: Update model-pin assertions first, prove RED, then swap simple_code defaults
+**phase**: implement (2/4)
+**next**: Run affected-surface tests, lint, build, and package regression gates
