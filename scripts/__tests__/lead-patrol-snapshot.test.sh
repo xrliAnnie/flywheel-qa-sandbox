@@ -122,6 +122,7 @@ INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
  ('run-103','FLY-103','flywheel','active',datetime('now')),
  ('run-104','FLY-104','flywheel','active',datetime('now')),
  ('run-105','FLY-105','flywheel','active',datetime('now')),
+ ('run-106','FLY-106','flywheel','active',datetime('now')),
  ('run-108','FLY-108','flywheel','terminated',datetime('now')),
  ('run-999','TE-999','tidal-echo','active',datetime('now'));
 INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
@@ -131,6 +132,7 @@ INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_
  ('run-103','implement',1,'running','exec-mail',datetime('now')),
  ('run-104','implement',1,'running','exec-wake',datetime('now')),
  ('run-105','implement',1,'running','exec-claim',datetime('now')),
+ ('run-106','implement',1,'running',NULL,datetime('now')),
  ('run-108','implement',1,'running','exec-old',datetime('now')),
  ('run-999','implement',1,'running','exec-other',datetime('now'));
 INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
@@ -140,6 +142,8 @@ INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_
  ('exec-mail','FLY-103','FLY-103','mail','flywheel','running'),
  ('exec-wake','FLY-104','FLY-104','wake','flywheel','running'),
  ('exec-claim','FLY-105','FLY-105','claim','flywheel','running'),
+ ('exec-null-holder','FLY-106','FLY-106','null node exec','flywheel','running'),
+ ('exec-mail-parked','FLY-107','FLY-107','parked mail','flywheel','ship_parked'),
  ('exec-old','FLY-108','FLY-108','terminal','flywheel','terminated'),
  ('exec-other','TE-999','TE-999','other','tidal-echo','running');
 INSERT INTO dead_letter_alerts(id,source_kind,recipient,through_dead_seq,lead_id,project_name,dead_count,summary,state,created_at) VALUES
@@ -157,6 +161,7 @@ INSERT INTO three_stage_turn(issue_id,holder_exec_id,phase,epoch,granted_at) VAL
  ('FLY-103','exec-mail','implement',1,unixepoch()*1000),
  ('FLY-104','exec-wake','implement',1,unixepoch()*1000),
  ('FLY-105','exec-claim','implement',1,unixepoch()*1000),
+ ('FLY-106','exec-null-holder','implement',1,unixepoch()*1000),
  ('FLY-108','exec-old','implement',1,unixepoch()*1000);
 INSERT INTO turn_wait_ledger(execution_id,holder_exec_id,epoch,first_seen_at,no_turn_streak,last_no_turn_at) VALUES
  ('exec-wait','exec-wait',1,(unixepoch()-300)*1000,3,(unixepoch()-10)*1000),
@@ -165,12 +170,14 @@ INSERT INTO mailbox_identity(id,delivery_id,insert_projection_hash) VALUES
  ('mail-live-queued','delivery-live-queued','hash-1'),
  ('mail-live-lease','delivery-live-lease','hash-2'),
  ('mail-old-lease','delivery-old-lease','hash-3'),
- ('mail-dead-runner','delivery-dead-runner','hash-4');
+ ('mail-dead-runner','delivery-dead-runner','hash-4'),
+ ('mail-parked-queued','delivery-parked-queued','hash-5');
 INSERT INTO mailbox(id,delivery_id,from_agent,to_agent,recipient_kind,type,msg_class,content,created_at,state,claim_expires_at,relay_state) VALUES
  ('mail-live-queued','delivery-live-queued','lead','exec-mail','runner','instruction','model','SECRET_MAILBOX_CONTENT',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed'),
  ('mail-live-lease','delivery-live-lease','lead','exec-mail','runner','instruction','model','SECRET_LIVE_LEASE',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes'),'LEASED',strftime('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes'),'terminal_disposed'),
  ('mail-old-lease','delivery-old-lease','lead','exec-mail','runner','instruction','model','SECRET_OLD_LEASE',strftime('%Y-%m-%dT%H:%M:%fZ','now','-25 hours'),'LEASED',strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours'),'terminal_disposed'),
- ('mail-dead-runner','delivery-dead-runner','lead','exec-old','runner','instruction','model','SECRET_DEAD_RUNNER',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed');
+ ('mail-dead-runner','delivery-dead-runner','lead','exec-old','runner','instruction','model','SECRET_DEAD_RUNNER',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed'),
+ ('mail-parked-queued','delivery-parked-queued','lead','exec-mail-parked','runner','instruction','model','SECRET_PARKED_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed');
 INSERT INTO turn_wake_outbox(wake_id,execution_id,issue_id,epoch,purpose,envelope_json,backend,state,episode_id,created_at) VALUES
  ('wake-active','exec-wake','FLY-104',1,'turn','{"secret":"SECRET_WAKE_ENVELOPE"}','mailbox','pending','episode-active',(unixepoch()-1200)*1000),
  ('wake-terminal','exec-old','FLY-108',1,'turn','{"secret":"SECRET_WAKE_TERMINAL"}','mailbox','pending','episode-terminal',(unixepoch()-1200)*1000);
@@ -185,10 +192,12 @@ fi
 contains "$MAIN_OUT" "TURN_MISSING issue=FLY-100" "active issue without TURN is visible"
 contains "$MAIN_OUT" "TURN_HOLDER_NOT_LIVE issue=FLY-101" "dead TURN holder is visible"
 contains "$MAIN_OUT" "NO_TURN_STREAK issue=FLY-102" "live no-turn streak is visible"
+contains "$MAIN_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-106 exec=none" "NULL node execution id is a visible divergence"
 not_contains "$MAIN_OUT" "issue=TE-999" "other project active run is filtered"
 not_contains "$MAIN_OUT" "issue=FLY-108" "terminal run is filtered from active ledgers"
 contains "$MAIN_OUT" "MAILBOX_STALE id=mail-live-qu" "old live-runner queued mail is visible"
 contains "$MAIN_OUT" "MAILBOX_STALE id=mail-live-le" "recent expired live-runner lease is visible"
+contains "$MAIN_OUT" "MAILBOX_STALE id=mail-parked-" "old parked-runner queued mail is visible"
 not_contains "$MAIN_OUT" "mail-old-lea" "ancient expired lease is filtered"
 not_contains "$MAIN_OUT" "mail-dead-ru" "terminal runner mailbox is filtered"
 contains "$MAIN_OUT" "WAKE_UNACKED wake=wake-active" "active integer-ms wake window is visible"
@@ -196,7 +205,7 @@ not_contains "$MAIN_OUT" "wake-terminal" "terminal wake is filtered"
 contains "$MAIN_OUT" "DEAD_LETTER_PENDING id=dead-pending" "recent pending dead letter is visible"
 not_contains "$MAIN_OUT" "dead-accepted" "accepted dead letter receipt is filtered"
 contains "$MAIN_OUT" "VERDICT_HEAD_MISMATCH issue=FLY-105" "active binding/claim mismatch is visible"
-for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE; do
+for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE; do
   not_contains "$MAIN_OUT" "$secret" "secret projection excludes $secret"
 done
 for step in 1 2 3 4 5 6; do
@@ -334,6 +343,17 @@ contains "$INDEX_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomple
 contains "$INDEX_FAIL_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=unknown" "incomplete owner index keeps the affected pane visible"
 contains "$INDEX_FAIL_OUT" "findings=OWNER_INDEX_INCOMPLETE action=REQUIRED result=UNSET" "incomplete index never becomes a false orphan finding"
 not_contains "$INDEX_FAIL_OUT" "no such table" "raw owner-index error is not persisted"
+
+REGISTRY_FAIL="$TMP/registry-fail"
+make_case "$REGISTRY_FAIL"
+cp "$PANES/bin/tmux" "$REGISTRY_FAIL/bin/tmux"
+rm -f "$REGISTRY_FAIL/state/projects.json"
+REGISTRY_FAIL_OUT="$REGISTRY_FAIL/out.txt"
+TMUX_CALL_LOG="$REGISTRY_FAIL/tmux-calls.log" run_snapshot "$REGISTRY_FAIL" "$REGISTRY_FAIL_OUT" || fail "missing registry still publishes report"
+contains "$REGISTRY_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomplete)" "missing owner registry is fail-closed"
+contains "$REGISTRY_FAIL_OUT" "pane=%1 target=runner-flywheel:@1 owner=unknown" "missing registry does not misclassify owned panes as foreign"
+contains "$REGISTRY_FAIL_OUT" "findings=OWNER_INDEX_INCOMPLETE action=REQUIRED result=UNSET" "missing registry requires explicit pane disposition"
+not_contains "$REGISTRY_FAIL_OUT" "result=foreign_registry_clear" "missing registry never auto-clears panes as foreign"
 
 DUPLICATE="$TMP/duplicate-owner"
 make_case "$DUPLICATE"
