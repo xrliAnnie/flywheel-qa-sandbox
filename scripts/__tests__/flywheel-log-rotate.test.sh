@@ -60,6 +60,51 @@ else
   fail "a concurrent rotation lock skips without changing the active log" "rc=$rc active=$(cat "$LOG" 2>/dev/null || echo missing)"
 fi
 rmdir "$LOG.rotate.lock"
+
+printf 'stale-lock-evidence\n' > "$LOG"
+mkdir "$LOG.rotate.lock"
+touch -t 202001010000 "$LOG.rotate.lock"
+rc=0
+flywheel_log_rotate_if_needed "$LOG" 1 3 || rc=$?
+if [[ "$rc" == "0" && "$(cat "$LOG.1" 2>/dev/null)" == "stale-lock-evidence" \
+  && ! -e "$LOG.rotate.lock" ]]; then
+  pass "a stale crash residue cannot permanently disable shell log rotation"
+else
+  fail "a stale crash residue cannot permanently disable shell log rotation" \
+    "rc=$rc active=$(cat "$LOG" 2>/dev/null || echo missing) prior=$(cat "$LOG.1" 2>/dev/null || echo missing)"
+fi
+
+echo "== stale recovery never steals a replacement lock =="
+RACE_LOCK="$ROOT/race.rotate.lock"
+if (
+  mkdir "$RACE_LOCK"
+  touch -t 202001010000 "$RACE_LOCK"
+  race_observed_identity="$(_flywheel_log_lock_identity "$RACE_LOCK")"
+  race_injected=""
+  _flywheel_log_lock_identity() {
+    local path="$1" value
+    if [[ "$path" == "$RACE_LOCK" && -z "$race_injected" ]]; then
+      race_injected=1
+      mv "$RACE_LOCK" "$RACE_LOCK.observed"
+      mkdir "$RACE_LOCK"
+      touch "$RACE_LOCK"
+      printf '%s\n' "$race_observed_identity"
+      return 0
+    fi
+    value="$(stat -c '%d:%i:%Y' "$path" 2>/dev/null)" \
+      || value="$(stat -f '%d:%i:%m' "$path" 2>/dev/null)" \
+      || return 1
+    printf '%s\n' "$value"
+  }
+  ! _flywheel_log_acquire_rotation_lock "$RACE_LOCK" 300 \
+    && [[ -d "$RACE_LOCK" && ! -L "$RACE_LOCK" ]]
+); then
+  pass "stale recovery abandons a lock whose identity changed after inspection"
+else
+  fail "stale recovery abandons a lock whose identity changed after inspection" \
+    "replacement lock was stolen"
+fi
+
 printf 'not-a-directory\n' > "$ROOT/no-dir"
 rc=0
 flywheel_log_rotate_if_needed "$ROOT/no-dir/audit.log" 1 3 || rc=$?

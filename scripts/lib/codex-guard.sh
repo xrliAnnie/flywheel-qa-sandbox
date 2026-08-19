@@ -175,7 +175,11 @@ _codex_guard_run_bash() {
   # Each background job leads its own process group. The timeout may therefore
   # signal the command tree without touching the caller's shell/pane group.
   set -m
-  "$@" &
+  if [[ "${CODEX_GUARD_CLOSE_WRAPPER_FDS:-0}" == "1" ]]; then
+    "$@" 8>&- 9>&- &
+  else
+    "$@" &
+  fi
   child_pid=$!
   child_entry="$(_codex_guard_register_pid "$child_pid" "$deadline" "$label" 2>/dev/null || true)"
   if [[ -n "$child_entry" ]]; then
@@ -183,6 +187,9 @@ _codex_guard_run_bash() {
     CODEX_GUARD_ACTIVE_ENTRY="$child_entry"
   fi
   (
+    if [[ "${CODEX_GUARD_CLOSE_WRAPPER_FDS:-0}" == "1" ]]; then
+      exec 8>&- 9>&-
+    fi
     sleep "$timeout_seconds"
     if kill -0 "$child_pid" 2>/dev/null; then
       : > "$marker"
@@ -217,7 +224,11 @@ _codex_guard_run_external() {
   pre_entry="$(_codex_guard_register_pid "${BASHPID:-$$}" "$deadline" "$label" 2>/dev/null || true)"
   CODEX_GUARD_ACTIVE_ENTRY="$pre_entry"
   set -m
-  "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" "$@" &
+  if [[ "${CODEX_GUARD_CLOSE_WRAPPER_FDS:-0}" == "1" ]]; then
+    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" "$@" 8>&- 9>&- &
+  else
+    "$timeout_bin" --signal=TERM --kill-after=1 "$timeout_seconds" "$@" &
+  fi
   child_pid=$!
   child_entry="$(_codex_guard_register_pid "$child_pid" "$deadline" "$label" 2>/dev/null || true)"
   if [[ -n "$child_entry" ]]; then

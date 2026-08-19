@@ -11,14 +11,76 @@ import { dirname as pathDirname } from "node:path";
 
 export const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_LOG_RETENTION = 3;
+export const DEFAULT_LOG_LOCK_STALE_MS = 5 * 60 * 1000;
 
 export interface RotateLogOptions {
 	maxBytes?: number;
 	keep?: number;
+	lockStaleMs?: number;
 }
 
 function positiveInteger(value: number): boolean {
 	return Number.isSafeInteger(value) && value > 0;
+}
+
+function acquireRotationLock(lock: string, staleMs: number): boolean {
+	try {
+		mkdirSync(lock);
+		return true;
+	} catch {
+		// Contention is fail-open, but a process crash must not leave rotation
+		// disabled forever. Rotation is a synchronous, millisecond-scale section;
+		// only an aged directory is eligible for quarantine and replacement.
+	}
+
+	let lockStats: Stats;
+	try {
+		lockStats = lstatSync(lock);
+		if (
+			!lockStats.isDirectory() ||
+			lockStats.isSymbolicLink() ||
+			Date.now() - lockStats.mtimeMs < staleMs
+		) {
+			return false;
+		}
+	} catch {
+		return false;
+	}
+
+	const quarantine = `${lock}.stale.${process.pid}.${Date.now()}`;
+	let moved = false;
+	try {
+		renameSync(lock, quarantine);
+		moved = true;
+		const movedStats = lstatSync(quarantine);
+		if (
+			movedStats.dev !== lockStats.dev ||
+			movedStats.ino !== lockStats.ino ||
+			movedStats.mtimeMs !== lockStats.mtimeMs
+		) {
+			// A new owner replaced the stale directory between inspection and
+			// rename. Restore its exact inode and abandon recovery.
+			try {
+				renameSync(quarantine, lock);
+				moved = false;
+			} catch {
+				// Another contender filled the path; never disturb that owner.
+			}
+			return false;
+		}
+		mkdirSync(lock);
+		rmSync(quarantine, { recursive: true, force: true });
+		return true;
+	} catch {
+		if (moved) {
+			try {
+				renameSync(quarantine, lock);
+			} catch {
+				// Another contender won; leave its lock authoritative.
+			}
+		}
+		return false;
+	}
 }
 
 /**
@@ -34,7 +96,14 @@ export function rotateLogIfNeeded(
 ): boolean {
 	const maxBytes = options.maxBytes ?? DEFAULT_LOG_MAX_BYTES;
 	const keep = options.keep ?? DEFAULT_LOG_RETENTION;
-	if (!positiveInteger(maxBytes) || !positiveInteger(keep)) return false;
+	const lockStaleMs = options.lockStaleMs ?? DEFAULT_LOG_LOCK_STALE_MS;
+	if (
+		!positiveInteger(maxBytes) ||
+		!positiveInteger(keep) ||
+		!positiveInteger(lockStaleMs)
+	) {
+		return false;
+	}
 
 	let initial: Stats;
 	try {
@@ -51,11 +120,7 @@ export function rotateLogIfNeeded(
 	}
 
 	const lock = `${path}.rotate.lock`;
-	try {
-		mkdirSync(lock);
-	} catch {
-		return false;
-	}
+	if (!acquireRotationLock(lock, lockStaleMs)) return false;
 
 	try {
 		const current = lstatSync(path);

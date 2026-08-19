@@ -181,6 +181,8 @@ rm -f "$ROOT/state"/*.json "$ROOT/interrupted-codex.pid"
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$\$" > "$ROOT/interrupted-codex.pid"
+printf 'partial-stdout-before-interrupt\n'
+printf 'partial-stderr-before-interrupt\n' >&2
 exec /bin/sleep 300
 EOF
 chmod +x "$ROOT/bin/codex"
@@ -196,15 +198,33 @@ env -i \
 interrupted_wrapper_pid=$!
 interrupted_entry=""
 for _ in $(seq 1 60); do
-  interrupted_entry="$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f -print -quit 2>/dev/null)"
-  [[ -n "$interrupted_entry" && -s "$ROOT/interrupted-codex.pid" ]] && break
+  interrupted_codex_candidate="$(cat "$ROOT/interrupted-codex.pid" 2>/dev/null || true)"
+  if [[ -n "$interrupted_codex_candidate" \
+    && -f "$ROOT/state/$interrupted_codex_candidate.json" ]]; then
+    interrupted_entry="$ROOT/state/$interrupted_codex_candidate.json"
+    break
+  fi
   sleep 0.05
 done
-kill -TERM "$interrupted_wrapper_pid" 2>/dev/null || true
+interrupt_kill_rc=0
+kill -TERM "$interrupted_wrapper_pid" 2>/dev/null || interrupt_kill_rc=$?
 for _ in $(seq 1 60); do
   kill -0 "$interrupted_wrapper_pid" 2>/dev/null || break
   sleep 0.05
 done
+interrupt_stuck=0
+if kill -0 "$interrupted_wrapper_pid" 2>/dev/null; then
+  interrupt_stuck=1
+  kill -KILL "$interrupted_wrapper_pid" 2>/dev/null || true
+fi
+wait "$interrupted_wrapper_pid" 2>/dev/null || true
+if grep -q '^partial-stdout-before-interrupt$' "$ROOT/interrupted.stdout" \
+  && grep -q '^partial-stderr-before-interrupt$' "$ROOT/interrupted.stderr"; then
+  pass "signal exit publishes buffered partial stdout and stderr before cleanup"
+else
+  fail "signal exit publishes buffered partial stdout and stderr before cleanup" \
+    "kill_rc=$interrupt_kill_rc stuck=$interrupt_stuck stdout=$(cat "$ROOT/interrupted.stdout" 2>/dev/null) stderr=$(tail -80 "$ROOT/interrupted.stderr" 2>/dev/null)"
+fi
 interrupted_codex_pid="$(cat "$ROOT/interrupted-codex.pid" 2>/dev/null || true)"
 if [[ -n "$interrupted_entry" && -f "$interrupted_entry" \
   && -n "$interrupted_codex_pid" ]] && kill -0 "$interrupted_codex_pid" 2>/dev/null; then
@@ -227,8 +247,6 @@ else
     "child_alive=$(kill -0 "$interrupted_codex_pid" 2>/dev/null && echo yes || echo no) entry=$([[ -e "$interrupted_entry" ]] && echo yes || echo no)"
   [[ -z "$interrupted_codex_pid" ]] || kill -KILL "$interrupted_codex_pid" 2>/dev/null || true
 fi
-wait "$interrupted_wrapper_pid" 2>/dev/null || true
-
 echo "== invalid configuration fails closed before Codex starts =="
 rm -f "$ROOT/codex.invoked"
 cat > "$ROOT/bin/codex" <<EOF
@@ -523,6 +541,105 @@ else
   fail "installer rerun is idempotent and never overwrites backup" "targets=$first_target/$second_target backups=$first_backup_hash/$second_backup_hash"
 fi
 
+echo "== installer advances current when the vendored bytes change =="
+UPGRADE_REPO="$ROOT/upgrade-repo"
+UPGRADE_HOME="$ROOT/upgrade-home"
+mkdir -p "$UPGRADE_REPO/scripts/lib" "$UPGRADE_HOME"
+cp "$INSTALLER" "$UPGRADE_REPO/scripts/install-codex-guard.sh"
+cp "$REPO_ROOT/scripts/codex-with-fallback.sh" "$UPGRADE_REPO/scripts/codex-with-fallback.sh"
+cp "$REPO_ROOT/scripts/lib/codex-guard.sh" "$UPGRADE_REPO/scripts/lib/codex-guard.sh"
+HOME="$UPGRADE_HOME" /bin/bash "$UPGRADE_REPO/scripts/install-codex-guard.sh" \
+  >"$ROOT/upgrade-v1.stdout" 2>"$ROOT/upgrade-v1.stderr"
+upgrade_current="$UPGRADE_HOME/.flywheel/libexec/codex-guard/current"
+upgrade_v1_target="$(readlink "$upgrade_current" 2>/dev/null || true)"
+cat > "$UPGRADE_REPO/scripts/codex-with-fallback.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'upgrade-v2\n'
+EOF
+chmod +x "$UPGRADE_REPO/scripts/codex-with-fallback.sh"
+upgrade_rc=0
+HOME="$UPGRADE_HOME" /bin/bash "$UPGRADE_REPO/scripts/install-codex-guard.sh" \
+  >"$ROOT/upgrade-v2.stdout" 2>"$ROOT/upgrade-v2.stderr" || upgrade_rc=$?
+upgrade_v2_target="$(readlink "$upgrade_current" 2>/dev/null || true)"
+upgrade_exec="$(HOME="$UPGRADE_HOME" "$UPGRADE_HOME/.local/bin/codex-with-fallback" 2>/dev/null || true)"
+upgrade_residue="$(find "$UPGRADE_HOME/.flywheel/libexec/codex-guard/releases" \
+  -mindepth 2 -maxdepth 2 -name '.current-*' -print -quit 2>/dev/null)"
+if [[ "$upgrade_rc" == "0" && -n "$upgrade_v1_target" && -n "$upgrade_v2_target" \
+  && "$upgrade_v1_target" != "$upgrade_v2_target" && "$upgrade_exec" == "upgrade-v2" \
+  && -z "$upgrade_residue" ]]; then
+  pass "a second install atomically advances current and executes the new release"
+else
+  fail "a second install atomically advances current and executes the new release" \
+    "rc=$upgrade_rc targets=$upgrade_v1_target/$upgrade_v2_target exec=$upgrade_exec residue=${upgrade_residue:-none} stderr=$(cat "$ROOT/upgrade-v2.stderr" 2>/dev/null)"
+fi
+
+mkdir -p "$INSTALL_HOME/.codex/profiles/only"
+cat > "$ROOT/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'fixed-target-ok\n'
+EOF
+cat > "$ROOT/bin/codex-profile" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  status) printf 'Active profile: only\n' ;;
+  next|use) exit 0 ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$ROOT/bin/codex" "$ROOT/bin/codex-profile"
+rc=0
+env -i HOME="$INSTALL_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$ROOT/conflicting-general-state" \
+  "$INSTALL_HOME/.local/bin/codex-with-fallback" exec --json - \
+  >"$ROOT/fixed-target.stdout" 2>"$ROOT/fixed-target.stderr" || rc=$?
+if [[ "$rc" == "0" && "$(cat "$ROOT/fixed-target.stdout" 2>/dev/null)" == "fixed-target-ok" ]]; then
+  pass "global shim keeps its install-time absolute target despite ambient FLYWHEEL_STATE_DIR"
+else
+  fail "global shim keeps its install-time absolute target despite ambient FLYWHEEL_STATE_DIR" \
+    "rc=$rc stderr=$(cat "$ROOT/fixed-target.stderr" 2>/dev/null)"
+fi
+
+disable_sentinel="$INSTALL_HOME/.flywheel/libexec/codex-guard/DISABLED"
+touch "$disable_sentinel"
+HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install-disabled.stdout" 2>"$ROOT/install-disabled.stderr"
+HOME="$INSTALL_HOME" FLYWHEEL_DIR="$REPO_ROOT" /bin/bash -c '
+  source "$FLYWHEEL_DIR/scripts/lib/converge-nonlead-daemons.sh"
+  converge_nonlead_daemons
+' >"$ROOT/converge-disabled.stdout" 2>"$ROOT/converge-disabled.stderr"
+if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback" 2>/dev/null)" == "legacy-wrapper" \
+  && -e "$disable_sentinel" ]]; then
+  pass "persistent disable sentinel restores backup and survives unconditional convergence"
+else
+  fail "persistent disable sentinel restores backup and survives unconditional convergence" \
+    "shim=$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback" 2>/dev/null || echo missing)"
+fi
+rm -f "$disable_sentinel"
+HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install-reenabled.stdout" 2>"$ROOT/install-reenabled.stderr"
+if [[ -x "$INSTALL_HOME/.local/bin/codex-with-fallback" ]] \
+  && grep -q 'stable wrapper is missing' "$INSTALL_HOME/.local/bin/codex-with-fallback"; then
+  pass "removing the disable sentinel explicitly re-enables the managed shim"
+else
+  fail "removing the disable sentinel explicitly re-enables the managed shim" "managed shim was not restored"
+fi
+
+FRESH_DISABLE_HOME="$ROOT/fresh-disable-home"
+HOME="$FRESH_DISABLE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/fresh-disable-install.stdout" 2>"$ROOT/fresh-disable-install.stderr"
+fresh_disable_sentinel="$FRESH_DISABLE_HOME/.flywheel/libexec/codex-guard/DISABLED"
+touch "$fresh_disable_sentinel"
+fresh_disable_rc=0
+HOME="$FRESH_DISABLE_HOME" /bin/bash "$INSTALLER" \
+  >"$ROOT/fresh-disable.stdout" 2>"$ROOT/fresh-disable.stderr" || fresh_disable_rc=$?
+fresh_disable_exec="$(env -i HOME="$FRESH_DISABLE_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+  "$FRESH_DISABLE_HOME/.local/bin/codex-with-fallback" exec --json - 2>/dev/null || true)"
+if [[ "$fresh_disable_rc" == "0" && "$fresh_disable_exec" == "fixed-target-ok" \
+  && ! -e "$FRESH_DISABLE_HOME/.local/bin/codex-with-fallback.bak" ]]; then
+  pass "disable sentinel publishes a passthrough when no legacy backup exists"
+else
+  fail "disable sentinel publishes a passthrough when no legacy backup exists" \
+    "rc=$fresh_disable_rc exec=$fresh_disable_exec stderr=$(cat "$ROOT/fresh-disable.stderr" 2>/dev/null)"
+fi
+
 installed_wrapper="$current/codex-with-fallback.sh"
 mv "$installed_wrapper" "$installed_wrapper.missing"
 rm -f "$ROOT/codex.invoked"
@@ -551,13 +668,17 @@ for fixture_hash in \
   printf 'fixture\n' > "$fixture_release/codex-with-fallback.sh"
   printf 'fixture\n' > "$fixture_release/codex-guard.sh"
 done
+legacy_residue_release="$INSTALL_HOME/.flywheel/libexec/codex-guard/releases/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ln -s 'releases/obsolete' "$legacy_residue_release/.current-legacy"
+touch -t 201901010000 "$legacy_residue_release"
 HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install-retention.stdout" 2>"$ROOT/install-retention.stderr"
 release_count="$(find "$INSTALL_HOME/.flywheel/libexec/codex-guard/releases" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
-if [[ -x "$current/codex-with-fallback.sh" && "$release_count" == "3" ]]; then
-  pass "retention preserves current plus two previous releases"
+if [[ -x "$current/codex-with-fallback.sh" && "$release_count" == "3" \
+  && ! -e "$legacy_residue_release" ]]; then
+  pass "retention preserves current plus two previous releases and cleans legacy current-link residue"
 else
-  fail "retention preserves current plus two previous releases" \
-    "current_ok=$([[ -x "$current/codex-with-fallback.sh" ]] && echo yes || echo no) releases=$release_count"
+  fail "retention preserves current plus two previous releases and cleans legacy current-link residue" \
+    "current_ok=$([[ -x "$current/codex-with-fallback.sh" ]] && echo yes || echo no) releases=$release_count residue=$([[ -e "$legacy_residue_release" ]] && echo yes || echo no)"
 fi
 
 echo "== unconditional daemon convergence repairs same-SHA install drift =="

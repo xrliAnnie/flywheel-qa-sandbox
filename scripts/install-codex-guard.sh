@@ -1,20 +1,68 @@
 #!/usr/bin/env bash
 # FLY-1887: atomically vendor the one-shot Codex wrapper + guard into stable
 # host state, then converge ~/.local/bin/codex-with-fallback to a thin shim.
+# Emergency disable: touch ~/.flywheel/libexec/codex-guard/DISABLED, rerun this
+# installer, and smoke-test the wrapper. Re-enable only by removing that exact
+# sentinel, rerunning this installer, and verifying `readlink .../current`.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_WRAPPER="$SCRIPT_DIR/codex-with-fallback.sh"
 SOURCE_GUARD="$SCRIPT_DIR/lib/codex-guard.sh"
-STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
 GLOBAL_BIN_DIR="${FLYWHEEL_CODEX_GLOBAL_BIN_DIR:-$HOME/.local/bin}"
-LIBEXEC_DIR="$STATE_DIR/libexec/codex-guard"
+LIBEXEC_DIR="${FLYWHEEL_CODEX_GUARD_INSTALL_ROOT:-$HOME/.flywheel/libexec/codex-guard}"
 RELEASES_DIR="$LIBEXEC_DIR/releases"
 CURRENT_LINK="$LIBEXEC_DIR/current"
 GLOBAL_SHIM="$GLOBAL_BIN_DIR/codex-with-fallback"
 BACKUP="$GLOBAL_SHIM.bak"
+DISABLE_SENTINEL="$LIBEXEC_DIR/DISABLED"
 
 die() { printf '[install-codex-guard] ERROR: %s\n' "$*" >&2; exit 1; }
+
+publish_current_symlink() {
+  local staged="$1" target="$2"
+  [[ ! -e "$target" || -L "$target" ]] \
+    || die "current target is not a symlink: $target"
+
+  # GNU mv needs -T to replace a destination symlink instead of treating its
+  # referent as a directory. BSD/macOS mv spells the same no-follow contract
+  # -h. Both forms call rename(2), so current never has an unlink gap.
+  /bin/mv -fT "$staged" "$target" 2>/dev/null && return 0
+  /bin/mv -fh "$staged" "$target" 2>/dev/null && return 0
+  return 1
+}
+
+# Persistent rollback: restoring .bak by hand is not enough because this
+# installer runs on every same-SHA convergence wave. The sentinel makes the
+# rollback durable until an operator explicitly removes it and reruns install.
+if [[ -e "$DISABLE_SENTINEL" || -L "$DISABLE_SENTINEL" ]]; then
+  [[ -f "$DISABLE_SENTINEL" && ! -L "$DISABLE_SENTINEL" ]] \
+    || die "disable sentinel is not a regular file: $DISABLE_SENTINEL"
+  mkdir -p "$GLOBAL_BIN_DIR" || die "cannot create global bin directory"
+  disabled_tmp="$GLOBAL_BIN_DIR/.codex-with-fallback.disabled.$$"
+  if [[ -f "$BACKUP" && ! -L "$BACKUP" ]]; then
+    cp -p "$BACKUP" "$disabled_tmp" \
+      || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot stage disabled wrapper"; }
+    disabled_source="$BACKUP"
+  elif [[ -e "$BACKUP" || -L "$BACKUP" ]]; then
+    die "guard backup exists but is not a regular file: $BACKUP"
+  else
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'set -u\n'
+      # shellcheck disable=SC2016
+      printf '%s\n' 'exec codex "$@"'
+    } > "$disabled_tmp" \
+      || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot stage disabled passthrough"; }
+    chmod 555 "$disabled_tmp" \
+      || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot lock disabled passthrough mode"; }
+    disabled_source="direct codex passthrough (no legacy backup existed)"
+  fi
+  mv -f "$disabled_tmp" "$GLOBAL_SHIM" \
+    || { rm -f "$disabled_tmp" 2>/dev/null || true; die "cannot publish disabled wrapper"; }
+  printf '[install-codex-guard] disabled; published %s\n' "$disabled_source"
+  exit 0
+fi
 
 [[ -f "$SOURCE_WRAPPER" && -f "$SOURCE_GUARD" ]] \
   || die "repo source wrapper/guard is missing"
@@ -55,24 +103,29 @@ fi
 link_tmp="$LIBEXEC_DIR/.current-$$"
 rm -f "$link_tmp" 2>/dev/null || true
 ln -s "releases/$content_hash" "$link_tmp" || die "cannot stage current symlink"
-mv -f "$link_tmp" "$CURRENT_LINK" || { rm -f "$link_tmp" 2>/dev/null || true; die "cannot publish current symlink"; }
+publish_current_symlink "$link_tmp" "$CURRENT_LINK" \
+  || { rm -f "$link_tmp" 2>/dev/null || true; die "cannot publish current symlink"; }
 
 if [[ ! -e "$BACKUP" && ! -L "$BACKUP" && ( -e "$GLOBAL_SHIM" || -L "$GLOBAL_SHIM" ) ]]; then
   cp -p "$GLOBAL_SHIM" "$BACKUP" || die "cannot preserve original wrapper backup"
 fi
 
 shim_tmp="$GLOBAL_BIN_DIR/.codex-with-fallback.tmp.$$"
-cat > "$shim_tmp" <<'EOF'
-#!/usr/bin/env bash
-set -u
-state_dir="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
-target="$state_dir/libexec/codex-guard/current/codex-with-fallback.sh"
-if [[ ! -x "$target" ]]; then
-  printf '[codex-guard] INSTALL_ERROR stable wrapper is missing\n' >&2
-  exit 125
-fi
-exec "$target" "$@"
-EOF
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'set -u\n'
+  # Resolve once at install time. A generic ambient FLYWHEEL_STATE_DIR has a
+  # different meaning in other packages and must never redirect this machine-
+  # global executable.
+  printf 'target=%q\n' "$CURRENT_LINK/codex-with-fallback.sh"
+  # shellcheck disable=SC2016
+  printf '%s\n' 'if [[ ! -x "$target" ]]; then'
+  printf '%s\n' "  printf '[codex-guard] INSTALL_ERROR stable wrapper is missing\\n' >&2"
+  printf '%s\n' '  exit 125'
+  printf '%s\n' 'fi'
+  # shellcheck disable=SC2016
+  printf '%s\n' 'exec "$target" "$@"'
+} > "$shim_tmp" || { rm -f "$shim_tmp" 2>/dev/null || true; die "cannot stage global shim"; }
 chmod 555 "$shim_tmp" || { rm -f "$shim_tmp"; die "cannot lock global shim mode"; }
 mv -f "$shim_tmp" "$GLOBAL_SHIM" || { rm -f "$shim_tmp"; die "cannot publish global shim"; }
 
@@ -103,9 +156,19 @@ for old_release in "$RELEASES_DIR"/*; do
   [[ "$old_release" != "$current_release" \
     && "$old_release" != "$newest_prior" \
     && "$old_release" != "$second_prior" ]] || continue
-  [[ -f "$old_release/codex-with-fallback.sh" && -f "$old_release/codex-guard.sh" ]] || continue
-  [[ "$(find "$old_release" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ')" == "2" ]] || continue
+  [[ -f "$old_release/codex-with-fallback.sh" \
+    && ! -L "$old_release/codex-with-fallback.sh" \
+    && -f "$old_release/codex-guard.sh" \
+    && ! -L "$old_release/codex-guard.sh" ]] || continue
+  entry_count="$(find "$old_release" -mindepth 1 -maxdepth 1 | wc -l | tr -d ' ')"
+  residue_count="$(find "$old_release" -mindepth 1 -maxdepth 1 \
+    -type l -name '.current-*' | wc -l | tr -d ' ')"
+  [[ "$entry_count" == "$(( 2 + residue_count ))" ]] || continue
   rm -f "$old_release/codex-with-fallback.sh" "$old_release/codex-guard.sh" 2>/dev/null || continue
+  for current_residue in "$old_release"/.current-*; do
+    [[ -L "$current_residue" ]] || continue
+    rm -f "$current_residue" 2>/dev/null || true
+  done
   rmdir "$old_release" 2>/dev/null || true
 done
 

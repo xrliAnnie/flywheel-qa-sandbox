@@ -3,6 +3,12 @@
 # at a stable vendored copy of this file; long-lived runner daemons never do.
 set -uo pipefail
 
+# Preserve the caller's streams while an attempt temporarily redirects fd 1/2
+# into capture files. Signal traps run inside that redirected function scope;
+# publishing through fd 1/2 there would append a file to itself forever.
+exec 8>&1 9>&2
+CODEX_GUARD_CLOSE_WRAPPER_FDS=1
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD_LIB="${FLYWHEEL_CODEX_GUARD_LIB:-$SCRIPT_DIR/lib/codex-guard.sh}"
 [[ -r "$GUARD_LIB" ]] || GUARD_LIB="$SCRIPT_DIR/codex-guard.sh"
@@ -31,11 +37,24 @@ attempts=0
 max_attempts="$num_profiles"
 
 cleanup_files=()
+ACTIVE_STDOUT_FILE=""
+ACTIVE_STDERR_FILE=""
 # Invoked through EXIT/signal traps below.
 # shellcheck disable=SC2329
 cleanup_temp_files() {
   local file
   for file in "${cleanup_files[@]}"; do rm -f "$file" 2>/dev/null || true; done
+}
+# shellcheck disable=SC2329
+publish_active_output() {
+  if [[ -n "$ACTIVE_STDOUT_FILE" && -f "$ACTIVE_STDOUT_FILE" ]]; then
+    cat "$ACTIVE_STDOUT_FILE" >&8 2>/dev/null || true
+  fi
+  if [[ -n "$ACTIVE_STDERR_FILE" && -f "$ACTIVE_STDERR_FILE" ]]; then
+    cat "$ACTIVE_STDERR_FILE" >&9 2>/dev/null || true
+  fi
+  ACTIVE_STDOUT_FILE=""
+  ACTIVE_STDERR_FILE=""
 }
 # shellcheck disable=SC2329
 cleanup_normal_exit() {
@@ -48,6 +67,7 @@ cleanup_signal_exit() {
   # The child is in its own process group. If this wrapper is interrupted it
   # may outlive us, so preserve its identity record for the next guarded call.
   trap - EXIT HUP INT TERM
+  publish_active_output
   cleanup_temp_files
   exit "$status"
 }
@@ -78,11 +98,12 @@ run_codex_attempt() {
   stdout_file="$(mktemp "${TMPDIR:-/tmp}/codex-with-fallback.out.XXXXXX")" || return 125
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/codex-with-fallback.err.XXXXXX")" || { rm -f "$stdout_file"; return 125; }
   cleanup_files+=("$stdout_file" "$stderr_file")
+  ACTIVE_STDOUT_FILE="$stdout_file"
+  ACTIVE_STDERR_FILE="$stderr_file"
 
   codex_guard_run "$budget" "$label" codex "$@" >"$stdout_file" 2>"$stderr_file"
   status=$?
-  cat "$stdout_file"
-  cat "$stderr_file" >&2
+  publish_active_output
   CODEX_ATTEMPT_OUTPUT="$(cat "$stdout_file" "$stderr_file")"
   return "$status"
 }

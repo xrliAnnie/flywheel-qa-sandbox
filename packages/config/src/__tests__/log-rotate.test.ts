@@ -1,15 +1,18 @@
 import {
 	appendFileSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	renameSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	appendRotatedLogSync,
 	DEFAULT_LOG_MAX_BYTES,
@@ -63,6 +66,63 @@ describe("rotated log helpers", () => {
 		appendRotatedLogSync(log, "new-evidence\n", { maxBytes: 1, keep: 3 });
 		expect(readFileSync(log, "utf8")).toBe("old-evidence\nnew-evidence\n");
 		expect(existsSync(`${log}.1`)).toBe(false);
+	});
+
+	it("recovers a stale crash-residue lock before rotating", () => {
+		const log = join(tempRoot(), "audit.log");
+		const lock = `${log}.rotate.lock`;
+		writeFileSync(log, "stale-lock-evidence\n");
+		mkdirSync(lock);
+		const old = new Date(Date.now() - 10 * 60 * 1000);
+		utimesSync(lock, old, old);
+
+		expect(rotateLogIfNeeded(log, { maxBytes: 1, keep: 3 })).toBe(true);
+		expect(readFileSync(`${log}.1`, "utf8")).toBe("stale-lock-evidence\n");
+		expect(existsSync(lock)).toBe(false);
+	});
+
+	it("does not steal a replacement lock installed after stale inspection", async () => {
+		const log = join(tempRoot(), "audit.log");
+		const lock = `${log}.rotate.lock`;
+		const observed = `${lock}.observed`;
+		writeFileSync(log, "replacement-lock-evidence\n");
+		mkdirSync(lock);
+		const old = new Date(Date.now() - 10 * 60 * 1000);
+		utimesSync(lock, old, old);
+		const staleStats = lstatSync(lock);
+		let injected = false;
+
+		vi.resetModules();
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				lstatSync(path: Parameters<typeof actual.lstatSync>[0]) {
+					if (path === lock && !injected) {
+						injected = true;
+						renameSync(lock, observed);
+						mkdirSync(lock);
+						return staleStats;
+					}
+					return actual.lstatSync(path);
+				},
+			};
+		});
+		try {
+			const raced = await import("../log-rotate.js");
+			expect(
+				raced.rotateLogIfNeeded(log, {
+					maxBytes: 1,
+					keep: 3,
+					lockStaleMs: 5 * 60 * 1000,
+				}),
+			).toBe(false);
+			expect(readFileSync(log, "utf8")).toBe("replacement-lock-evidence\n");
+			expect(existsSync(lock)).toBe(true);
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
 	});
 
 	it("keeps append failures visible after a fail-open rotation attempt", () => {
