@@ -186,8 +186,8 @@ v2 独立草案(改两句话 + 首行带 tick 序号,仍零预判零指令;deny-
 
 2026-08-18 的独立上下文 Claude 交叉评审是早期质量输入,不替代当前 Runner Contract 要求的正式 Codex design gate。
 
-- **Round 1**(`claude-design-review-round1.md`):CHANGES REQUESTED — 1 HIGH(跨库 join 缺 project 过滤,生产实测 tidal-echo Lead 会每 tick 铸 124 条假 finding)+ 5 MEDIUM(FLY-1687 守卫锚点清算、CI 接线、installer 接线、SQLITE_BUSY 瞬态分类、报告↔tick join key)+ 5 LOW。11 条全部采纳并折入本计划(§4/§5/§6/§7/§8/§9/§11/§12)。设计判断 (a)–(e) 全 AGREE(带条件,条件已折入)。
-- **Round 2**(`claude-design-review-round2.md`):**APPROVED**。R1 全部 11 条确认折入(reviewer 逐条独立复核,含代码级验证:`StuckEscalationEnvelopeLike.seq` 在 envelope 上「零新数据」为真;`[patrol_tick #<seq>]` 无消费者破坏;`turn_wake_outbox.created_at` 毫秒标注正确)。附 3 条非阻塞 LOW 建议,已折入 §4(transient 稳定 token、installer 同 PR 落地、删不可达 n/a 分支)。设计判断 (a)–(e) 全 AGREE。
+- **Round 1**:CHANGES REQUESTED — 1 HIGH(跨库 join 缺 project 过滤,生产实测 tidal-echo Lead 会每 tick 铸 124 条假 finding)+ 5 MEDIUM(FLY-1687 守卫锚点清算、CI 接线、installer 接线、SQLITE_BUSY 瞬态分类、报告↔tick join key)+ 5 LOW。11 条全部采纳并折入本计划(§4/§5/§6/§7/§8/§9/§11/§12)。设计判断 (a)–(e) 全 AGREE(带条件,条件已折入)。
+- **Round 2**:**APPROVED**。R1 全部 11 条确认折入(reviewer 逐条独立复核,含代码级验证:`StuckEscalationEnvelopeLike.seq` 在 envelope 上「零新数据」为真;`[patrol_tick #<seq>]` 无消费者破坏;`turn_wake_outbox.created_at` 毫秒标注正确)。附 3 条非阻塞 LOW 建议,已折入 §4(transient 稳定 token、installer 同 PR 落地、删不可达 n/a 分支)。设计判断 (a)–(e) 全 AGREE。
 
 - **实现节点授权裁定**(Lead reply `0e86df21-300c-4ce0-9cd8-dec4ff38a312`,2026-08-18 PDT):founder 尚未认可 v2,本 PR 必须保留 v1 正文;只落规矩侧范围合同、快照脚本、tickNA/时间窗报告与 UNAVAILABLE 出口。v2 作为独立提案等 founder 点头后再启用。
 - **正式 Codex Round 1**(request `2f27d93b-1165-49d2-8d4d-2ab1257230cf`):CHANGES REQUESTED。2 HIGH 指出 active/liveness 未界定会在生产每 tick 铸约 188 条假 candidate,且 founder HTML v2 漏 `#<seq>` 与 plan 不一致;另有 step4 陈年 lease、secret projection、CI exact inventory、verdict crosscheck、Codex 写边界等 finding。全部按本轮实测收敛进 §4–§13;v2 HIGH 通过「HTML 补齐未来逐字提案 + 当前 PR 明确 v1-only」闭合。修订后必须开新 design gate/request 复审。
