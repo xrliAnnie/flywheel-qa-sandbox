@@ -39,6 +39,7 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 | materialize-lead-manifests.sh | 无非注释命中 | included(零改动) | gate④ |
 | lib/host-config.sh | `:104/:147 FLYWHEEL_DIR` 解析(FLY-650 seam);`xrliAnnie/flywheel-skills` 默认值 | included(零改动)— flywheelDir=current 正是本设计的接入点;skills 默认值 = gate④ 注册行(customer path 不 fetch) | host-config 既有测试 + provision-prebuilt.test.sh(拷贝态解析 current) |
 | lib/supervisor.sh | `:235` darwin 叙述文案(flywheel-daemon.sh 字样) | **included-and-patched**(FLY-1062 已落):`FLYWHEEL_SUPERVISOR_DARWIN_INSTALL=1` opt-in 真 darwin 安装;默认 darwin 路径逐字保留 no-op(byte-compat) | packaged-seams.test.sh S11/S11b/S12 |
+| lib/flywheel-log.sh(FLY-1887) | source-only 的按次 append 日志 rename 轮转库;不持有 launchd `StandardOutPath` / `StandardErrorPath` 文件描述符 | **included runtime closure** — packaged Lead/Bridge hooks 与 tmux rescue 共用 10 MiB + 3 代有界轮转;缺失时调用方只降级为不轮转,不阻断服务 | flywheel-log-rotate.test.sh(9/9,含 packaged allowlist 合同)+ package-onboard-smoke.test.sh(产物闭包) |
 | lib/bridge-port.sh / lib/self-ship-queue.sh / lib/lead-body-evidence.sh / lib/fleet-sanitize.sh / lib/platform-deps.sh / lib/script-sanity.sh / lib/tmux-server-rescue.sh | 仅注释/自身逻辑命中；lead-body-evidence 是 claude-lead.sh 的 guarded 观测闭包(缺失只降级 unknown) | included(FLY-1671 增加 body provenance 观测库) | gate④ + package-onboard-smoke.test.sh(tmux 恢复与 body 观测依赖闭包) |
 | packaged/create-compat-mirror.sh | `packages/` 命中 = 镜像自身逻辑 | included(FLY-1062 新增件) | package-onboard-smoke.test.sh |
 | packaged/bootstrap-services.sh | 无非注释命中 | included(FLY-1062 新增件,P2-5) | provision-prebuilt.test.sh(temp-HOME 装四类服务) |
