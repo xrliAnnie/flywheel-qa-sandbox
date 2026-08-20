@@ -141,10 +141,11 @@ jobs:
 
       # FLY-1759: edge-worker teardown E2E uses the real cwd census, and the
       # real-tmux reap case spawns an actual tmux server bound to the worktree
-      # cwd. Missing lsof/tmux is a hard test failure, never a silent
-      # skip/fallback — the suite fails closed on CI when either is absent.
-      - name: Install lsof/tmux for worktree process-reap tests
-        run: sudo apt-get update && sudo apt-get install -y lsof tmux
+      # cwd. FLY-1905 verifies both tools before skipping installation; a
+      # missing, broken, or below-floor tool enters the bounded repair path.
+      - name: Ensure lsof/tmux (FLY-1905 hardened, normally zero-network)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof
 
       - name: Install better-sqlite3 prebuilt binary
         run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
@@ -170,7 +171,8 @@ jobs:
     # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
     # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1572=12, 1764=2,
     # 1327=1, cmux-hooks=10, 1364=312, 183=11, 1402=4, 1496=10,
-    # 1663=97, 1678=78 (test total ~542s).
+    # 1663=97, 1678=78 (test total ~542s). Dependency preflight is ~0s when
+    # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -199,15 +201,11 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
-      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). ripgrep is
-      # needed by the shell suites that assert on production source anchors
-      # (test-lead-identity-preflight, restart-self-detach) — it is NOT preinstalled
-      # on the runner, and a missing `rg` makes those assertions fail as if the
-      # production seam were gone. Installing them here in one apt-get avoids
-      # repeating `apt-get update` for the same effect.
-      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
-        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
 
       - name: Test — FLY-1707 incident replay
         run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh
@@ -366,8 +364,9 @@ jobs:
     # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
     # 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
-    # 1081=2, 1338-structure=0, 1674=0, 1338-parity=2, tripwire-test~1
-    # (test total ~512s).
+    # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, tripwire-test~1
+    # (test total ~537s). Dependency preflight is ~0s when tools verify; the rg
+    # fast-install path is normally ~5-15s and is bounded below the job ceiling.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -396,10 +395,15 @@ jobs:
       - name: Build
         run: pnpm build
 
-      # FLY-889: keep one dependency install per independent shard. ripgrep is
-      # required by source-anchor suites and is not preinstalled on the runner.
-      - name: Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts
-        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3 ripgrep
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      - name: Test — FLY-1905 CI apt-install helper
+        timeout-minutes: 10
+        run: bash scripts/__tests__/ci-apt-install.test.sh
 
       # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
       # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at

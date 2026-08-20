@@ -1,0 +1,14 @@
+flowchart TD
+    A["一次 CI 触发<br/>(每个 PR push 都会跑)"] --> B["7 台测试机并行开工<br/>(5 台单元测试 + 2 台脚本测试)"]
+    B --> C["每台都先跑『装软件』步骤<br/>sudo apt-get update && install"]
+    C --> D["apt-get update =<br/>向 Azure 的 Ubuntu 软件源<br/>拉取 4 份索引清单"]
+    D -- "软件源正常(平时)" --> E["30~60 秒装完,继续跑测试 ✅"]
+    D -- "软件源故障窗(8/19 两波)" --> F["连接半死不活:<br/>不断线、也不给数据"]
+    F --> G["apt 静默等待 14~18 分钟<br/>零输出、不自己退出"]
+    G --> H["撞上 job 的 15/20 分钟上限<br/>被强制杀掉 ❌"]
+    H --> I["当天合计:11 个 job 被杀<br/>≈187 分钟机器时间白烧<br/>4 个 CI 全要人工重跑"]
+    style F fill:#ffe5e2,stroke:#ff3b30
+    style G fill:#ffe5e2,stroke:#ff3b30
+    style H fill:#ffe5e2,stroke:#ff3b30
+    style I fill:#fff3e0,stroke:#ff9500
+    style E fill:#e8f7ee,stroke:#34c759

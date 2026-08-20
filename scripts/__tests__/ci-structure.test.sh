@@ -324,7 +324,7 @@ expected_setup = [
     "Install dependencies",
     "Install better-sqlite3 prebuilt binary",
     "Build",
-    "Install tmux/lsof/sqlite3/ripgrep for hermetic test scripts",
+    "Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)",
 ]
 expected_shard_tests = {
     "script-tests": [
@@ -345,6 +345,7 @@ expected_shard_tests = {
         "Test — FLY-1678 statusline model-scoped bar + installer",
     ],
     "script-tests-2": [
+        "Test — FLY-1905 CI apt-install helper",
         "Test — FLY-519 fleet provisioning + zero-secret gate",
         "Test — FLY-1356 skill-framework vendor + variant contracts",
         "Test — FLY-1609 four-arm analysis contract",
@@ -651,23 +652,71 @@ require(
     "FLY-1364 live E2E wrapper must pin tmux to its private socket",
 )
 
+helper_steps = []
 for job_id, (_, steps) in script_shards.items():
-    apt_steps = [
+    job_helper_steps = [
         step
         for step in steps
         if isinstance(step, dict)
-        and re.search(r"apt-get\s+update", str(step.get("run", "")))
+        and re.search(
+            r"\bbash scripts/ci-apt-install\.sh(?:\s|$)",
+            str(step.get("run", "")),
+        )
     ]
     require(
-        len(apt_steps) == 1,
-        f"{job_id} must have exactly one apt-get update step, got {len(apt_steps)}",
+        len(job_helper_steps) == 1,
+        f"{job_id} must have exactly one ci-apt-install helper step, got {len(job_helper_steps)}",
     )
-    apt_run = str(apt_steps[0].get("run", ""))
-    for package in ("tmux", "lsof", "sqlite3"):
+    helper_step = job_helper_steps[0]
+    helper_run = str(helper_step.get("run", ""))
+    for package in ("tmux", "lsof", "sqlite3", "ripgrep"):
         require(
-            re.search(rf"\b{re.escape(package)}\b", apt_run) is not None,
-            f"{job_id} apt step must install {package}",
+            re.search(rf"\b{re.escape(package)}\b", helper_run) is not None,
+            f"{job_id} helper step must ensure {package}",
         )
+    helper_steps.append((job_id, helper_step))
+
+unit_steps = unit_tests.get("steps")
+require(isinstance(unit_steps, list), "unit-tests.steps must be a list")
+unit_helper_steps = [
+    step
+    for step in unit_steps
+    if isinstance(step, dict)
+    and re.search(
+        r"\bbash scripts/ci-apt-install\.sh(?:\s|$)",
+        str(step.get("run", "")),
+    )
+]
+require(
+    len(unit_helper_steps) == 1,
+    f"unit-tests must have exactly one ci-apt-install helper step, got {len(unit_helper_steps)}",
+)
+unit_helper_run = str(unit_helper_steps[0].get("run", ""))
+for package in ("tmux", "lsof"):
+    require(
+        re.search(rf"\b{re.escape(package)}\b", unit_helper_run) is not None,
+        f"unit-tests helper step must ensure {package}",
+    )
+helper_steps.append(("unit-tests", unit_helper_steps[0]))
+
+for job_id, helper_step in helper_steps:
+    helper_timeout = helper_step.get("timeout-minutes")
+    require(
+        isinstance(helper_timeout, int) and 0 < helper_timeout <= 8,
+        f"{job_id} ci-apt-install helper step timeout-minutes must be in 1..8",
+    )
+
+all_run_text = [
+    str(step.get("run", ""))
+    for job in jobs.values()
+    if isinstance(job, dict)
+    for step in (job.get("steps") or [])
+    if isinstance(step, dict)
+]
+require(
+    all("apt-get" not in run for run in all_run_text),
+    "ci.yml step run text must not contain bare apt-get; dependency setup must use ci-apt-install.sh",
+)
 
 script_runs = [
     str(step.get("run", ""))
@@ -701,8 +750,6 @@ for required_command in (
         f"script shards must run exactly once: {required_command}",
     )
 
-unit_steps = unit_tests.get("steps")
-require(isinstance(unit_steps, list), "unit-tests.steps must be a list")
 test_home_steps = [
     step
     for step in unit_steps

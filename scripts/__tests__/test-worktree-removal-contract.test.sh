@@ -62,10 +62,10 @@ fi
 
 ci="$ROOT/.github/workflows/ci.yml"
 unit_section=$(sed -n '/^  unit-tests:/,/^  script-tests:/p' "$ci")
-if grep -q 'apt-get install -y lsof' <<< "$unit_section" \
+if grep -q 'bash scripts/ci-apt-install.sh tmux lsof' <<< "$unit_section" \
     && [[ "$(rg -n 'bash scripts/__tests__/test-reap-worktree-lib.test.sh' "$ci" | wc -l | tr -d ' ')" -eq 1 ]] \
     && [[ "$(rg -n 'bash scripts/__tests__/test-worktree-removal-contract.test.sh' "$ci" | wc -l | tr -d ' ')" -eq 1 ]]; then
-  pass "Ubuntu unit/script jobs explicitly run every FLY-1759 dependency and suite"
+  pass "Ubuntu unit/script jobs explicitly verify every FLY-1759 dependency and suite"
 else
   fail "CI is missing lsof or an explicit FLY-1759 shell-suite invocation"
 fi

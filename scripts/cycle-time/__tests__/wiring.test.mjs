@@ -16,7 +16,11 @@ test("root package and CI expose the explicit cycle-time test glob after sqlite 
 	);
 	const preflight = ci.indexOf("sqlite3 --version");
 	const testStep = ci.indexOf("pnpm test:cycle-time");
-	assert.ok(preflight > ci.indexOf("Install tmux/lsof/sqlite3"));
+	const dependencyStep = ci.indexOf(
+		"bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep",
+	);
+	assert.ok(dependencyStep >= 0);
+	assert.ok(preflight > dependencyStep);
 	assert.ok(testStep > preflight);
 });
 
