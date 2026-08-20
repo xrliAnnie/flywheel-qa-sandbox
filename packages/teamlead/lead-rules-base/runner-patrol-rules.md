@@ -158,8 +158,19 @@ that work is accepted.
 | Class | What it means | Your move |
 |---|---|---|
 | `running` | actively working | inspect current process/session facts; do not infer failure from unchanged pane text |
-| `parked-alive` | finished a unit, idle at prompt, **re-engageable** | re-engage (see `runner-reengage-rules.md`) for the next unit, or wrap up + close — **never leave it sitting silently** |
-| `dead` / done-lingering | terminal / tmux gone | wrap up + close (`done-running-reconciler` FLY-324 + the close-driven archive, FLY-369 RC-5) |
+| `parked-alive` | finished a unit, idle at prompt, **re-engageable** | re-engage (see `runner-reengage-rules.md`) for the next unit, or wrap up and report readiness — **never leave it sitting silently**. ⚠️ **Do not ask for a close here**: this classifier does not read the Bridge FSM, so `parked-alive` can overlap `completed` / `awaiting_review` / `approved_to_ship`, where R2's post-completion rule says do **not** suggest closing and to wait for the founder's direction |
+| `dead` / done-lingering | terminal / tmux gone | wrap up and **report readiness**; then **wait for the founder's direction**. ⚠️ **Do not ask for a close here either** — this classifier cannot see the Bridge FSM, so this row covers `FSM=completed + CommDB terminal + tmux gone`, which is squarely R2's post-completion case (*do not suggest closing*). **A dead process is not a close authorization, and it is not a reason to request one.** The close-driven archive (`done-running-reconciler` FLY-324 + FLY-369 RC-5) follows whatever the founder decides |
+
+⚠️ **Closing a Runner is reserved under R2 of `founder-only-authority.md`.**
+You need an authorization bound to that **exact execution / session**. Done, a QA
+PASS, founder acceptance of the work, and a process that already exited are
+**none of them** a close authorization on their own — see AUTH-CANON in R5. This
+applies to any path that ends, replaces, finalizes or deletes a Runner's
+identity, context or worktree, including indirectly.
+
+(Engine-owned cleanup, unreachable from any Lead-facing surface — the post-ship chain, reclaim
+after a QA verdict, the periodic reaper — is outside the Lead contract and not
+yours to trigger or to imitate. If you can reach it, it is yours to route.)
 
 **Cross-check before any close / reopen / Linear status change**: never act on
 `runner_terminal_list` alone. Before closing a Runner or moving a Linear issue's

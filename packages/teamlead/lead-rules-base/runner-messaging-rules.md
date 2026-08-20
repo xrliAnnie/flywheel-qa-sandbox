@@ -36,8 +36,17 @@ flywheel-comm respond --db <DB-path> --bridge-url $BRIDGE_URL \
   --lead <your-id> <question-id> "<your-reply>"
 ```
 - **Why**: the CLI routes the response through the Bridge founder-consent
-  evaluator, which verifies the founder authorized this ship in the issue's
-  chat thread before the CommDB response is written.
+  evaluator, which **may** check the issue's chat thread before the CommDB
+  response is written.
+  ⚠️ **This is not proof of authorization.** The evaluator has three modes and
+  they differ:
+  **off** — no check and **no audit record** at all; the call passes straight
+  through. **audit-only** — it checks and records, but **does not block**.
+  **enforcing** — it may block. It also only sees the endpoints wired into it.
+  Which mode is live is an operational fact to check at the time, never to
+  assume. A response that went through, an ALLOW verdict, or the absence of a
+  `403`, are **none of them** evidence the founder authorized anything — see
+  AUTH-CANON in R5 of `founder-only-authority.md` for what actually counts.
 - **Fail-closed**: if you omit `--bridge-url` (and `BRIDGE_URL` is unset) for an
   `approve_to_ship` gate, the CLI **refuses** to write and exits non-zero. You
   cannot resolve this gate directly. Always copy-paste the exact command from
@@ -83,7 +92,7 @@ Runner forward.
 | "Status update — Annie wants ETA" | `SendMessage` |
 | Approving `approve_to_ship` gate | `flywheel-comm respond` |
 | Answering a `clarify_question` gate | `flywheel-comm respond` |
-| Asking the Runner to abort | `SendMessage` (Runner cooperatively stops) |
+| Asking the Runner to abort | `SendMessage` (Runner cooperatively stops). ⚠️ Ending a Runner's work is reserved under **R2** whichever words you use — a cooperative stop is not a way around it |
 
 ## Sentinel safety net
 

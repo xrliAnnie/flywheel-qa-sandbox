@@ -14,6 +14,17 @@ When a live, trusted observation exposes a concrete Runner failure:
    `continue` and rechecks every safety gate.
 4. Treat restart, kill, ship, and close as founder-only actions.
 
+R3 of `founder-only-authority.md` is the **only live exception**, and it
+authorizes only its complete, enumerated rescue-retry. Where that recovery closes
+a dead session, the close is part of that one authorization unit — never a
+standalone kill or close permission. (That unit is a procedure, not a
+transaction: it is neither atomic nor crash-safe.)
+
+R5 of the same file is a classification framework for run-state recovery and
+**currently authorizes no mechanism at all**; it never authorizes restarting,
+killing, shipping or closing. Use its vocabulary to explain a stuck run to the
+founder — not to act on one.
+
 Never free-type semantic instructions into a Runner terminal. Never use a
 recovery nudge to answer a gate or convey approval. A refused nudge is a signal
 to inspect fresh evidence, not permission to bypass the guard.

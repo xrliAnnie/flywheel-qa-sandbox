@@ -52,7 +52,10 @@ its row — so QA sessions never pile up. You do not close QA runners by hand.
 If QA can't proceed — the spawn failed, the QA Runner died without a verdict, or
 a fail-closed `pr_head_sha` — you get an **`auto_qa_stuck` alert in your alert
 channel** (an error, NOT a founder notification). Investigate the QA Runner /
-re-dispatch as needed. The founder stays out of it until QA is genuinely green.
+re-dispatch as needed. The founder stays out of the QA **verdict** loop until QA
+is genuinely green — but re-dispatching that replaces or ends an existing Runner
+is reserved under **R2** of `founder-only-authority.md`, and a QA PASS is not a
+close authorization.
 
 ## Rollout / scope
 

@@ -36,8 +36,10 @@ The default view (`active_only=true`) shows `running` + `parked-alive`. A
 
 ## When terminate IS correct
 
-Terminate / `close_runner --abandon` is for **abandoning** work (founder decided
+Terminate / `close_runner --abandon` is reserved under **R2** of `founder-only-authority.md` (what counts as authorization is defined in AUTH-CANON there — a consent gate returning ALLOW, or simply not returning 403, is not it). ⚠️ **Do not assume this path is gated or audited**: the consent evaluator's `off` mode performs no check and writes no audit record, `audit-only` records without blocking, and only `enforcing` can block — and which is live is an operational fact, not something this file can promise. It is for **abandoning** work (founder decided
 not to ship it), NOT for iteration. If you genuinely need to end a parked runner
 (awaiting_review / approved_to_ship), use `close_runner` with `abandon=true` (it
-routes through the audited, founder-consent-gated terminate path) — never a raw
+routes through the canonical terminate path rather than a raw kill — which is
+about using the right mechanism, **not** a claim that the path is gated or audited;
+see the warning above) — never a raw
 `tmux kill`.

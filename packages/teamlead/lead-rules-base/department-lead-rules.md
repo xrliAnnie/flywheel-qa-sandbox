@@ -495,7 +495,11 @@ Archiving a chat thread is driven by the **close action**, NOT by Linear flippin
 
 **When you close a done issue**, just:
 1. post your wrap-up message to the thread (via `POST /api/chat-threads/send`) and confirm it landed,
-2. close the Runner the normal way (`close-runner` — terminates the Runner + removes its worktree).
+2. **report that it is ready and wait for the founder's direction.** Do **not**
+   ask for a close: `close-runner` terminates the Runner and removes its
+   worktree, it is reserved under R2 of `founder-only-authority.md`, and R2's
+   post-completion rule says explicitly *do not suggest closing*. The issue being
+   Done is neither an authorization to call it nor a reason to request it.
 
 The Bridge then auto-archives the issue's chat thread **iff** (a) this was a done-cleanup close (the session was `completed` — not a terminate/abandon/reject) **and** (b) the issue has no other active Runner. A mid-flight terminate/abandon does **not** archive. The ship path still archives on ship. The Bridge holds the bot token and performs the archive — never PATCH Discord directly.
 
