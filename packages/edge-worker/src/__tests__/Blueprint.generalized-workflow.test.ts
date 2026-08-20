@@ -127,7 +127,12 @@ describe("Blueprint generalized workflow capability contract", () => {
 		expect(prompt).toContain("FOUNDER REVIEW ROUND (BLOCKING, REPEATABLE)");
 		expect(prompt).toContain("gate founder_review");
 		expect(prompt).toContain("--publish-only");
-		expect(prompt).toContain("do not automatically reach the runner");
+		expect(prompt).toContain("【页面意见汇总】FLY-1281");
+		expect(prompt).toContain(
+			"Questions, page-summary pastes, and all other thread speech go to Lead",
+		);
+		expect(prompt).toContain("写完点复制贴回，我才收得到");
+		expect(prompt).not.toContain("Any reply other than an exact pass phrase");
 		expect(prompt).toContain("Do not run complete");
 		expect(prompt).not.toContain("BRAINSTORM GATE");
 		expect(call.workflowOutputCredential).toBe("output-ticket");

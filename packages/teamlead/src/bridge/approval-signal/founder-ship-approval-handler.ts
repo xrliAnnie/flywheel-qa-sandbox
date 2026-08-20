@@ -215,6 +215,12 @@ export async function tryFounderShipApproval(
 ): Promise<ShipApprovalOutcome | null> {
 	// Identity: only the canonical founder's own message can attribute approval.
 	if (args.msg.authorId !== deps.canonicalFounderId) return null;
+	// FLY-1847: machine verdicts require an immutable card anchor. Ordinary
+	// thread speech belongs to the Lead discussion lane and cannot close a gate.
+	if (args.replyToCard !== true) {
+		deps.auditSink?.("card_anchor_missing", {});
+		return null;
+	}
 
 	// A-2: narrow to gates whose session is awaiting_review AND whose current
 	// review question is exactly this gate. Require EXACTLY ONE (Codex R1 #2).
@@ -662,6 +668,7 @@ export async function tryFounderShipApproval(
 			founderId: deps.canonicalFounderId,
 			founderMessage: args.founderMessage,
 			founderRework,
+			...(signal.kind === "reject" ? { intent: "kickback" as const } : {}),
 			answer,
 			expectedCurrentReviewQuestionId: session.review_question_id ?? undefined,
 			holdReasonFor: deps.deferral

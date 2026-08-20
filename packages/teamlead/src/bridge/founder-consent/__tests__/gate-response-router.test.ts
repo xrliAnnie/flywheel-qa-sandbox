@@ -151,7 +151,7 @@ describe("gate-response-router (Surface B)", () => {
 		},
 	);
 
-	it("ALLOW: writes the CommDB response", async () => {
+	it("ALLOW: writes an explicit kickback response", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow"));
 		const res = await request(
@@ -160,13 +160,60 @@ describe("gate-response-router (Surface B)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "changes requested",
+				answer: "design: changes requested",
 				executionId: "exec-1",
 			},
 		);
 		expect(res.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.content).toBe("changes requested");
+		expect(db.getResponse(qid)?.content).toBe("design: changes requested");
+		db.close();
+	});
+
+	it("keeps a neutral Lead relay open instead of writing a rejection", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("allow"));
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "OK, what is next?",
+				executionId: "exec-1",
+			},
+		);
+
+		expect(res.status).toBe(409);
+		expect(res.body).toMatchObject({
+			error: "neutral_not_written",
+			detail: expect.stringContaining("--kickback"),
+		});
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
+	});
+
+	it("writes a Lead-confirmed kickback even when its text is not self-explicit", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("allow"));
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "Please revisit the proposed flow.",
+				kickback: true,
+				executionId: "exec-1",
+			},
+		);
+
+		expect(res.status).toBe(200);
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.content).toBe(
+			"Please revisit the proposed flow.",
+		);
 		db.close();
 	});
 
@@ -180,6 +227,7 @@ describe("gate-response-router (Surface B)", () => {
 				questionId: qid,
 				leadId: "lead-x",
 				answer: "changes requested",
+				kickback: true,
 				executionId: "exec-1",
 			},
 		);
@@ -199,6 +247,7 @@ describe("gate-response-router (Surface B)", () => {
 				questionId: qid,
 				leadId: "lead-x",
 				answer: "changes requested",
+				kickback: true,
 				executionId: "exec-1",
 			},
 		);
@@ -217,6 +266,7 @@ describe("gate-response-router (Surface B)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: JSON.stringify({ approved: false }),
+			kickback: true,
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -231,6 +281,7 @@ describe("gate-response-router (Surface B)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: JSON.stringify({ approved: false }),
+			kickback: true,
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -251,6 +302,7 @@ describe("gate-response-router (Surface B)", () => {
 				questionId: qid,
 				leadId: "lead-x",
 				answer: JSON.stringify({ approved: false }),
+				kickback: true,
 				executionId: "exec-1",
 			},
 		);
@@ -267,6 +319,7 @@ describe("gate-response-router (Surface B)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: JSON.stringify({ approved: false }),
+			kickback: true,
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
@@ -474,7 +527,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 		expect((res.body as { error?: string }).error).toBe("lead_ack_rejected");
 	});
 
-	it("pass-through + ordinary feedback text → NO warning", async () => {
+	it("pass-through + explicit feedback prefix → NO warning", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkPassthroughServer();
 		const res = await request(
@@ -483,7 +536,7 @@ describe("gate-response-router — Lead approval rejection (FLY-1373)", () => {
 			{
 				questionId: qid,
 				leadId: "lead-x",
-				answer: "needs more tests before ship",
+				answer: "qa: needs more tests before ship",
 				executionId: "exec-1",
 			},
 		);

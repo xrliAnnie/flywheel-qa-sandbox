@@ -138,6 +138,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -162,6 +163,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -177,6 +179,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(403);
@@ -198,6 +201,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: staleQ,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(409);
@@ -225,6 +229,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);
@@ -242,6 +247,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		};
 		const r1 = await request("/api/founder-consent/runner-gate-response", body);
@@ -267,12 +273,14 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: "changes requested: fix the tests",
+			kickback: true,
 			executionId: "exec-1",
 		});
 		const r2 = await request("/api/founder-consent/runner-gate-response", {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: "changes requested: use the other implementation",
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(r2.status).toBe(200);
@@ -293,6 +301,7 @@ describe("gate-response post-write hook (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: "lead-x",
 			answer: FEEDBACK,
+			kickback: true,
 			executionId: "exec-1",
 		});
 		expect(res.status).toBe(200);

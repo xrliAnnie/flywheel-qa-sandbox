@@ -123,6 +123,9 @@ describe("Blueprint DAG workflow prompt (FLY-793)", () => {
 		expect(p).toContain("navigator.clipboard.writeText");
 		expect(p).toContain("unavailable OR its promise rejects");
 		expect(p).toContain("execCommand('copy')");
+		expect(p).toContain("【页面意见汇总】FLY-793");
+		expect(p).toContain("about 1800 characters");
+		expect(p).toContain("repeat the marker on every chunk");
 		expect(p).toContain("DIAGRAMS AND LANGUAGE (MANDATORY");
 		expect(p).toContain("mmdc");
 		expect(p).toContain("inline that SVG");

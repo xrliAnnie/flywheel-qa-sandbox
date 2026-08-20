@@ -133,6 +133,30 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
+	it("approve_to_ship + --kickback sends the explicit Lead confirmation", async () => {
+		const qid = seed("approve_to_ship");
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true }),
+		})) as unknown as typeof fetch;
+		await respond({
+			questionId: qid,
+			fromAgent: "lead-x",
+			answer: "Please revisit the proposed flow.",
+			kickback: true,
+			dbPath,
+			projectName: "Proj",
+			bridgeUrl: "http://localhost:9999",
+			env: { TEAMLEAD_API_TOKEN: "tok" },
+			fetchImpl,
+		});
+
+		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+		expect(JSON.parse(String(init?.body))).toMatchObject({ kickback: true });
+		expect(hasResponse(qid)).toBe(false);
+	});
+
 	it("source-thread routes an ordinary response through Bridge with typed scope guards", async () => {
 		const qid = seed();
 		const fetchImpl = vi.fn(async () => ({

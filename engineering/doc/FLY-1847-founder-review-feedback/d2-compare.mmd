@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph OLD["现在(出事的机制)"]
+        direction TB
+        O1["她说的任何话"] --> O2{"逐字等于<br/>5 个通过词之一?"}
+        O2 -->|是| O3["记为通过"]
+        O2 -->|"否(包括提问、同意的其它说法、空消息)"| O4["⚠️ 一律记为打回<br/>并立刻关门"]
+        O4 --> O5["她不知道被记成了什么<br/>纠正要她再操作一次"]
+    end
+    subgraph NEW["改后(默认不动,打回要显式)"]
+        direction TB
+        N1["她说的任何话"] --> N2{"命中 5 个显式信号<br/>之一吗?"}
+        N2 -->|"通过信号(✅ / 白名单)"| N3["记为通过 + 回执"]
+        N2 -->|"打回信号(❌ / 「打回」/ 汇总粘贴)"| N4["记为打回 + 回执"]
+        N2 -->|没命中| N5["什么都不写<br/>转 Lead + 解释回执<br/>这一轮保持开放"]
+    end
+    style O4 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style O5 fill:#ffe9e7,stroke:#ff3b30
+    style N5 fill:#eef4ff,stroke:#007aff,stroke-width:2px
+    style N3 fill:#e8f8ee,stroke:#34c759
+    style N4 fill:#fff4e6,stroke:#ff9500

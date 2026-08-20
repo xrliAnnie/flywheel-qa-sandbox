@@ -79,8 +79,18 @@ function founderReviewStore(
 		digest?: string;
 	}>,
 ): FounderReplyDeliverDeps["store"] {
+	const eventIds = new Set<string>();
 	return {
-		insertEvent: vi.fn(() => true),
+		insertEvent: vi.fn((event: { event_id: string }) => {
+			if (eventIds.has(event.event_id)) return false;
+			eventIds.add(event.event_id);
+			return true;
+		}),
+		getSession: vi.fn(() => ({
+			issue_id: "11111111-2222-3333-4444-555555555555",
+			issue_identifier: "FLY-1392",
+			pr_head_sha: "b".repeat(40),
+		})),
 		getWorkflowExecutionBinding: vi.fn((executionId: string) => ({
 			execution_id: executionId,
 			run_id:
@@ -205,9 +215,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 		);
 
 		expect(outcome.result).toBe("advanced");
-		expect(ensureDecisionConvergence).toHaveBeenCalledOnce();
-		const convergence = ensureDecisionConvergence.mock.calls[0]?.[0];
-		expect(convergence.deadlineAtMs - convergence.disposedAtMs).toBe(180_000);
+		expect(ensureDecisionConvergence).not.toHaveBeenCalled();
 		expect(handoff).toHaveBeenCalledOnce();
 		expect(handoff.mock.calls[0]?.[1]).toEqual({
 			issueId: "FLY-1392",
@@ -433,21 +441,288 @@ describe("FLY-1392 v2 founder ingress", () => {
 		expect(handoff).not.toHaveBeenCalled();
 	});
 
-	it.each([
-		["通过", true, undefined],
-		["这里的定位还不对，请按页面批注修改", false, "这里的定位还不对"],
-	] as const)(
-		"writes a trusted founder_review decision for the sole current round: %s",
-		async (content, passed, feedbackExcerpt) => {
+	it("keeps founder review discussion open and relays it to Lead", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const msg: RawMsg = {
+			id: snowflakeAt(Date.now() - 10_000),
+			content: "ok what's next",
+			author: { id: OWNER },
+		};
+		const handoff = vi.fn(async () => true);
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				fetchImpl: discordGet([msg]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledOnce();
+		const verify = new CommDB(dbPath);
+		expect(verify.getFounderReviewFamily(questionId)?.response).toBeUndefined();
+		verify.close();
+	});
+
+	it("keeps plain text out of ship handling while multiple review rounds are pending", async () => {
+		const db = new CommDB(dbPath);
+		const firstReviewId = insertFounderReviewQuestion(db, "review-1", 1);
+		const secondReviewId = insertFounderReviewQuestion(db, "review-2", 2);
+		const shipQuestionId = db.insertQuestion(
+			"exec-ship",
+			"test-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const tryFounderShipApproval = vi.fn(async () => ({
+			bound: [{ questionId: shipQuestionId, decision: "approve" as const }],
+			deferred: [],
+			retry: false,
+		}));
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: firstReviewId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+				{
+					questionId: secondReviewId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-2",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+				{
+					questionId: shipQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([
+					{ questionId: firstReviewId, messageId: "review-card-1" },
+					{ questionId: secondReviewId, messageId: "review-card-2" },
+				]),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "可以",
+						author: { id: OWNER },
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledOnce();
+		expect(tryFounderShipApproval).not.toHaveBeenCalled();
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(firstReviewId)).toBeUndefined();
+		expect(verify.getResponse(secondReviewId)).toBeUndefined();
+		expect(verify.getResponse(shipQuestionId)).toBeUndefined();
+		verify.close();
+	});
+
+	it("still routes an explicit reply to the current ship card during a review round", async () => {
+		const db = new CommDB(dbPath);
+		const reviewQuestionId = insertFounderReviewQuestion(db, "review-1", 1);
+		const shipQuestionId = db.insertQuestion(
+			"exec-ship",
+			"test-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const tryFounderShipApproval = vi.fn(async () => ({
+			bound: [{ questionId: shipQuestionId, decision: "approve" as const }],
+			deferred: [],
+			retry: false,
+		}));
+		const readCurrentBinding = vi.fn(() => ({
+			questionId: shipQuestionId,
+			executionId: "exec-ship",
+			issueId: "FLY-1392",
+			prHeadSha: "b".repeat(40),
+			threadId: THREAD,
+			gateMessageId: "ship-card",
+			checkpoint: "approve_to_ship",
+			postedAt: new Date().toISOString(),
+		}));
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: reviewQuestionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+				{
+					questionId: shipQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([
+					{ questionId: reviewQuestionId, messageId: "review-card" },
+				]),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "approve",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "ship-card",
+							channel_id: THREAD,
+						},
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval,
+				readCurrentBinding,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(tryFounderShipApproval).toHaveBeenCalledOnce();
+		expect(tryFounderShipApproval.mock.calls[0]?.[0]).toMatchObject({
+			shipGates: [{ questionId: shipQuestionId }],
+			replyToCard: true,
+		});
+		expect(handoff).not.toHaveBeenCalled();
+	});
+
+	it("never sends free thread speech through the ship verdict classifier", async () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-ship",
+			"runner",
+			"flywheel",
+			"FLY-1392",
+			"test-lead",
+		);
+		const shipQuestionId = db.insertQuestion(
+			"exec-ship",
+			"test-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const tryFounderShipApproval = vi.fn(async () => ({
+			bound: [{ questionId: shipQuestionId, decision: "approve" as const }],
+			deferred: [],
+			retry: false,
+		}));
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: shipQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: store(),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "approve",
+						author: { id: OWNER },
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(tryFounderShipApproval).not.toHaveBeenCalled();
+		expect(handoff).toHaveBeenCalledOnce();
+	});
+
+	it("keeps legacy approval words and page summaries in free thread speech", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const firstId = snowflakeAt(Date.now() - 20_000);
+		const secondId = snowflakeAt(Date.now() - 10_000);
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				fetchImpl: discordGet([
+					{
+						id: secondId,
+						content: "【页面意见汇总】FLY-1392\n\n这里要改",
+						author: { id: OWNER },
+					},
+					{ id: firstId, content: "通过", author: { id: OWNER } },
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledTimes(2);
+		const verify = new CommDB(dbPath);
+		expect(verify.getFounderReviewFamily(questionId)?.response).toBeUndefined();
+		verify.close();
+	});
+
+	it.each(["approve", "look good to me"])(
+		"binds fixed text %j only when it replies to the review card",
+		async (content) => {
 			const db = new CommDB(dbPath);
 			const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 			db.close();
-			const msg: RawMsg = {
-				id: snowflakeAt(Date.now() - 10_000),
-				content,
-				author: { id: OWNER },
-			};
-			const handoff = vi.fn(async () => true);
+			const messageId = snowflakeAt(Date.now() - 10_000);
+			const reactToFounderMessage = vi.fn(async () => true);
+
 			const outcome = await emitFounderReplyDeliveryForThread(
 				ctx(dbPath),
 				[
@@ -460,25 +735,237 @@ describe("FLY-1392 v2 founder ingress", () => {
 				],
 				{
 					store: founderReviewStore([{ questionId, messageId: "card-1" }]),
-					fetchImpl: discordGet([msg]),
+					fetchImpl: discordGet([
+						{
+							id: messageId,
+							content,
+							author: { id: OWNER },
+							type: 19,
+							message_reference: {
+								type: 0,
+								message_id: "card-1",
+								channel_id: THREAD,
+							},
+						},
+					]),
 					cursorStore: cursor,
-					deliverAmbiguousToLead: handoff,
+					deliverAmbiguousToLead: vi.fn(async () => true),
+					reactToFounderMessage,
 				},
 			);
+
 			expect(outcome.result).toBe("advanced");
-			expect(handoff).not.toHaveBeenCalled();
+			expect(reactToFounderMessage).toHaveBeenCalledWith(messageId);
 			const verify = new CommDB(dbPath);
-			const family = verify.getFounderReviewFamily(questionId)!;
-			expect(family.response).toBeDefined();
-			expect(JSON.parse(family.response!.content)).toMatchObject({
-				passed,
-				...(feedbackExcerpt
-					? { feedback: expect.stringContaining(feedbackExcerpt) }
-					: {}),
-			});
+			expect(
+				JSON.parse(verify.getResponse(questionId)?.content ?? "{}"),
+			).toMatchObject({ passed: true });
 			verify.close();
 		},
 	);
+
+	it("explains a neither verdict at most once per review round", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const postThreadReply = vi.fn(async () => true);
+		const firstId = snowflakeAt(Date.now() - 20_000);
+		const secondId = snowflakeAt(Date.now() - 10_000);
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				fetchImpl: discordGet([
+					{
+						id: secondId,
+						content: "还有什么需要我决定的？",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "card-1",
+							channel_id: THREAD,
+						},
+					},
+					{
+						id: firstId,
+						content: "ok what's next",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "card-1",
+							channel_id: THREAD,
+						},
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				postThreadReply,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledTimes(2);
+		expect(postThreadReply).toHaveBeenCalledOnce();
+		expect(postThreadReply.mock.calls[0]?.[0]).toContain("没有写入 verdict");
+	});
+
+	it("warns when an explicit kickback closes without page feedback", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const postThreadReply = vi.fn(async () => true);
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "打回",
+						author: { id: OWNER },
+						type: 19,
+						message_reference: {
+							type: 0,
+							message_id: "card-1",
+							channel_id: THREAD,
+						},
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: vi.fn(async () => true),
+				postThreadReply,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(postThreadReply).toHaveBeenCalledOnce();
+		expect(postThreadReply.mock.calls[0]?.[0]).toContain("互动页面写过留言");
+		const verify = new CommDB(dbPath);
+		expect(JSON.parse(verify.getResponse(questionId)?.content ?? "{}")).toEqual(
+			{
+				version: 1,
+				passed: false,
+				artifactDigest: "a".repeat(64),
+			},
+		);
+		verify.close();
+	});
+
+	it("does not bind a page summary marker for a different issue", async () => {
+		const db = new CommDB(dbPath);
+		const questionId = insertFounderReviewQuestion(db, "review-1", 1);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId,
+					checkpoint: "founder_review",
+					executionId: "exec-review-1",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: founderReviewStore([{ questionId, messageId: "card-1" }]),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "【页面意见汇总】FLY-9999\n\n这不是当前单的意见",
+						author: { id: OWNER },
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledOnce();
+		const verify = new CommDB(dbPath);
+		expect(verify.getFounderReviewFamily(questionId)?.response).toBeUndefined();
+		verify.close();
+	});
+
+	it("keeps a late page summary out of an open ship gate", async () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-ship",
+			"runner",
+			"flywheel",
+			"FLY-1392",
+			"test-lead",
+		);
+		const shipQuestionId = db.insertQuestion(
+			"exec-ship",
+			"test-lead",
+			"ship?",
+			{ checkpoint: "approve_to_ship" },
+		);
+		db.close();
+		const handoff = vi.fn(async () => true);
+		const postThreadReply = vi.fn(async () => true);
+		const tryFounderShipApproval = vi.fn(async () => ({
+			bound: [{ questionId: shipQuestionId, decision: "reject" as const }],
+			deferred: [],
+			retry: false,
+		}));
+
+		const outcome = await emitFounderReplyDeliveryForThread(
+			ctx(dbPath),
+			[
+				{
+					questionId: shipQuestionId,
+					checkpoint: "approve_to_ship",
+					executionId: "exec-ship",
+					createdAtMs: Date.now() - 60 * 60_000,
+				},
+			],
+			{
+				store: store(),
+				fetchImpl: discordGet([
+					{
+						id: snowflakeAt(Date.now() - 10_000),
+						content: "【页面意见汇总】FLY-1392\n\n迟到的页面意见",
+						author: { id: OWNER },
+					},
+				]),
+				cursorStore: cursor,
+				deliverAmbiguousToLead: handoff,
+				tryFounderShipApproval,
+				postThreadReply,
+			},
+		);
+
+		expect(outcome.result).toBe("advanced");
+		expect(handoff).toHaveBeenCalledOnce();
+		expect(tryFounderShipApproval).not.toHaveBeenCalled();
+		expect(postThreadReply).not.toHaveBeenCalled();
+		const verify = new CommDB(dbPath);
+		expect(verify.getResponse(shipQuestionId)).toBeUndefined();
+		verify.close();
+	});
 
 	it("does not let a reply to an older founder_review card decide the newer round", async () => {
 		const db = new CommDB(dbPath);

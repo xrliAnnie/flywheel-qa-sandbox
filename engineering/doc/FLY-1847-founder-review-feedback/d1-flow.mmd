@@ -1,0 +1,12 @@
+flowchart TB
+    A["Annie 在 review 卡的 thread 里说话<br/>(或在卡上点表情)"] --> C{"这句话是哪一类?"}
+    C -->|"点 ✅ 或逐字回<br/>「都可以了 / 可以了 / 通过 / LGTM / approved」"| P["✅ 记为通过<br/>runner 收工推进"]
+    C -->|"点 ❌ / 逐字回「打回」/<br/>贴回带【页面意见汇总】开头的留言"| K["❌ 记为打回<br/>意见全文交给 runner 返工"]
+    C -->|"其余一切:提问、闲聊、<br/>「ok what's next」、只发图"| N["💬 第三态:什么都不改<br/>转给 Lead 回答,这一轮保持开放"]
+    P --> RP["回执:bot 在她的消息上点 ✅"]
+    K --> RK["回执:一行确认<br/>没带意见时提醒:<br/>「页面留言可能还没送出来,记得复制贴回」"]
+    N --> RN["回执(每轮最多一次):<br/>「这条不算通过也不算打回,已转 Lead;<br/>要通过点 ✅,要打回点 ❌」"]
+    style P fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style K fill:#fff4e6,stroke:#ff9500,stroke-width:2px
+    style N fill:#eef4ff,stroke:#007aff,stroke-width:2px
+    style A fill:#f5f5f7,stroke:#86868b

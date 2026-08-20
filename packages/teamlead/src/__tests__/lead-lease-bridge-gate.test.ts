@@ -196,6 +196,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			questionId,
 			leadId: LEAD_ID,
 			answer: JSON.stringify({ approved: false, feedback: "lease test" }),
+			kickback: true,
 			executionId: "exec-1",
 			leaseClaim: { leaseKey: LEAD_KEY, generation: 1 },
 			identityDigest: currentIdentityDigest,

@@ -643,6 +643,7 @@ async function rebindOne(
 			actor: founderId,
 			founderId,
 			founderRework: row.founder_rework,
+			...(row.decision === "reject" ? { intent: "kickback" as const } : {}),
 			answer,
 			expectedCurrentReviewQuestionId: row.question_id,
 			holdReasonFor: deps.holdReasonFor,

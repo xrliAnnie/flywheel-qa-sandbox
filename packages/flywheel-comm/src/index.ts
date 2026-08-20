@@ -185,11 +185,14 @@ respond options:
 	<question-id> <answer> --lead <lead> [--db <path> | --project <name>]
 	[--expect-owner <execution-id>]
 	[--expect-checkpoint <checkpoint> | --expect-no-checkpoint]
-	[--source-thread <discord-thread-id>] [--bridge-url <url>]
+	[--source-thread <discord-thread-id>] [--bridge-url <url>] [--kickback]
   --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
                       founder-consent wrapper (FLY-175). Required for the
                       approve_to_ship checkpoint unless BRIDGE_URL env is set;
                       omitting it for that gate is fail-closed (refuses to write).
+  --kickback          Explicitly confirm a non-approval answer as a kickback.
+                      Without this flag or a recognized kickback prefix, neutral
+                      discussion is relayed but no verdict is written.
 
 Environment:
   FLYWHEEL_COMM_DB           DB path (overridden by --db)
@@ -589,6 +592,7 @@ async function runRespond(args: string[]): Promise<void> {
 			"expect-owner": { type: "string" },
 			"expect-checkpoint": { type: "string" },
 			"expect-no-checkpoint": { type: "boolean", default: false },
+			kickback: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
 		allowPositionals: true,
@@ -626,6 +630,7 @@ async function runRespond(args: string[]): Promise<void> {
 		expectedCheckpoint: values["expect-no-checkpoint"]
 			? null
 			: values["expect-checkpoint"],
+		kickback: values.kickback,
 	});
 
 	if (values.json) {

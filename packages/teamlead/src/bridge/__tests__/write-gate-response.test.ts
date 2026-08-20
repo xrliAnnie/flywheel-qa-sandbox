@@ -132,6 +132,83 @@ describe("writeGateResponseAndRunPostWrite — happy path", () => {
 });
 
 describe("writeGateResponseAndRunPostWrite — guards (no write)", () => {
+	it.each([
+		"OK, now what is left for me to decide?",
+		"【页面意见汇总】FLY-1847\nPlease change this section.",
+	])("does not write a neutral non-approval answer: %s", async (feedback) => {
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
+		};
+		const onResponseWritten = vi.fn();
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			founderId: "founder-discord",
+			founderSource: {
+				project: "flywheel",
+				runId: "run-1",
+				issueId: "FLY-1847",
+				approvedHead: "a".repeat(40),
+				classification: "founder_direct_signal",
+				authorityId: "Q-1",
+			},
+			answer: JSON.stringify({ approved: false, feedback }),
+			onResponseWritten,
+		});
+
+		expect(r).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "neutral_not_written",
+			reason: "explicit_kickback_required",
+		});
+		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();
+		expect(db.insertResponse).not.toHaveBeenCalled();
+		expect(onResponseWritten).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["exact 打回", { answer: '{"approved":false,"feedback":"打回"}' }],
+		[
+			"打回 with trailing punctuation",
+			{ answer: '{"approved":false,"feedback":"打回。"}' },
+		],
+		[
+			"English prefix",
+			{ answer: '{"approved":false,"feedback":"design: revise the flow"}' },
+		],
+		[
+			"English prefix with full-width colon",
+			{
+				answer: '{"approved":false,"feedback":"implement：revise the flow！"}',
+			},
+		],
+		[
+			"Chinese prefix",
+			{ answer: '{"approved":false,"feedback":"测试: add a regression"}' },
+		],
+		[
+			"upstream kickback intent",
+			{
+				answer: '{"approved":false,"feedback":"This needs another pass."}',
+				intent: "kickback" as const,
+			},
+		],
+	])("writes an explicit non-approval signal: %s", async (_name, input) => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			...input,
+		});
+
+		expect(r).toMatchObject({ written: true, disposition: "written" });
+		expect(db.insertResponse).toHaveBeenCalledOnce();
+	});
+
 	it("rejects a non approve_to_ship checkpoint", async () => {
 		const db = fakeDb({ checkpoint: "brainstorm", from_agent: "E-1" });
 		const r = await writeGateResponseAndRunPostWrite({
@@ -179,6 +256,30 @@ describe("writeGateResponseAndRunPostWrite — guards (no write)", () => {
 });
 
 describe("writeGateResponseAndRunPostWrite — idempotency (Codex R2 HIGH-2)", () => {
+	it("recovers the hook for a legacy identical neutral response without rewriting", async () => {
+		const feedback = '{"approved":false,"feedback":"What happens next?"}';
+		const db = fakeDb(
+			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
+			{ content: feedback, from_agent: "founder-discord" },
+		);
+		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: store("awaiting_review"),
+			answer: feedback,
+			onResponseWritten,
+		});
+
+		expect(r).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "already_applied",
+		});
+		expect(db.insertResponse).not.toHaveBeenCalled();
+		expect(onResponseWritten).toHaveBeenCalledOnce();
+	});
+
 	it("prior identical approval → re-runs hook, does NOT double-write", async () => {
 		const db = fakeDb(
 			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
@@ -410,6 +511,7 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		const r = await writeGateResponseAndRunPostWrite({
 			...baseArgs,
 			answer: feedback,
+			intent: "kickback",
 			actor: "founder-discord",
 			db,
 			store: store(),
@@ -548,6 +650,7 @@ describe("writeGateResponseAndRunPostWrite — FLY-1244 founder boundary", () =>
 		await writeGateResponseAndRunPostWrite({
 			...baseArgs,
 			answer: '{"approved":false,"feedback":"please redo design"}',
+			intent: "kickback",
 			actor: "lead",
 			db,
 			store: store("awaiting_review"),

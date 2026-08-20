@@ -131,9 +131,15 @@ describe("trusted founder_review response primitive", () => {
 	it("accepts founder ✅ only on the latest immutable review card", async () => {
 		open("q-1", 1, true);
 		open("q-2", 2, true);
-		const reactionFetcher = async ({ messageId }: { messageId: string }) => ({
+		const reactionFetcher = async ({
+			messageId,
+			emoji,
+		}: {
+			messageId: string;
+			emoji: string;
+		}) => ({
 			status: 200,
-			body: [{ id: FOUNDER, source: messageId }],
+			body: emoji === "✅" ? [{ id: FOUNDER, source: messageId }] : [],
 		});
 		expect(
 			await tryFounderReviewReactionResponse({
@@ -165,15 +171,44 @@ describe("trusted founder_review response primitive", () => {
 		});
 	});
 
-	it.each([
-		["都可以了", true],
-		["可以了。", true],
-		["通过", true],
-		["LGTM", true],
-		["approved!", true],
-		["整体可以，但第二节要改", false],
-		["", false],
-	] as const)("classifies exact reply %j conservatively", (text, passed) => {
-		expect(classifyFounderReviewReply(text).passed).toBe(passed);
+	it.each(["整体可以，但第二节要改", "approve?", "打回？", ""])(
+		"keeps non-protocol card reply %j neutral",
+		(text) => {
+			expect(classifyFounderReviewReply(text).kind).toBe("neither");
+		},
+	);
+
+	it("keeps conversational text out of the founder review verdict", () => {
+		expect(classifyFounderReviewReply("ok what's next")).toEqual({
+			kind: "neither",
+		});
+	});
+
+	it.each(["approve", "APPROVE", "look good to me", "Look good to me!"])(
+		"accepts only the fixed reply-to-card approval protocol: %j",
+		(text) => {
+			expect(classifyFounderReviewReply(text)).toEqual({ kind: "pass" });
+		},
+	);
+
+	it.each(["都可以了", "可以了", "通过", "LGTM", "approved"])(
+		"does not retain the old approval-word list: %j",
+		(text) => {
+			expect(classifyFounderReviewReply(text)).toEqual({ kind: "neither" });
+		},
+	);
+
+	it.each(["打回", "打回。"])(
+		"classifies explicit kickback %j without requiring feedback",
+		(text) => {
+			expect(classifyFounderReviewReply(text)).toEqual({ kind: "kickback" });
+		},
+	);
+
+	it("keeps a page summary marker out of verdict classification", () => {
+		const summary = "【页面意见汇总】FLY-1847\n\n## 第二节\n这里要补一张图 🖼️";
+		expect(classifyFounderReviewReply(summary)).toEqual({
+			kind: "neither",
+		});
 	});
 });

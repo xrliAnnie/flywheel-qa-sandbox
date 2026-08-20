@@ -10,6 +10,10 @@ import {
 	type ReactionFetcher,
 } from "../lead-backends/codex/gateway/founder-confirmation.js";
 import type { StateStore } from "../StateStore.js";
+import {
+	isExplicitFounderKickback,
+	isFixedFounderCardApproval,
+} from "../workflow-rework-hint.js";
 
 export type FounderReviewResponseWriteResult =
 	| { written: true }
@@ -23,26 +27,21 @@ export type FounderReviewResponseWriteResult =
 				| "gate_not_open";
 	  };
 
-export function classifyFounderReviewReply(text: string): {
-	passed: boolean;
-	feedback?: string;
-} {
-	const normalized = text
-		.normalize("NFKC")
-		.trim()
-		.toLowerCase()
-		.replace(/[。.!！]+$/u, "")
-		.trim();
-	const passed = new Set([
-		"都可以了",
-		"可以了",
-		"通过",
-		"lgtm",
-		"approved",
-	]).has(normalized);
-	return passed
-		? { passed: true }
-		: { passed: false, ...(text.trim() ? { feedback: text } : {}) };
+export type FounderReviewReplyDecision =
+	| { kind: "pass" }
+	| { kind: "kickback"; feedback?: string }
+	| { kind: "neither" };
+
+export function classifyFounderReviewReply(
+	text: string,
+): FounderReviewReplyDecision {
+	if (isFixedFounderCardApproval(text)) return { kind: "pass" };
+	if (isExplicitFounderKickback(text)) {
+		return /^\s*打回[。.!！?？]*\s*$/u.test(text)
+			? { kind: "kickback" }
+			: { kind: "kickback", feedback: text };
+	}
+	return { kind: "neither" };
 }
 
 /** One founder-only write seam shared by text replies and reaction approval. */

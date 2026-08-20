@@ -188,7 +188,7 @@ export async function materializeWorkflowGateHolder(
 		};
 	}
 	const now = deps.now ?? (() => new Date().toISOString());
-	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.\n打回:直接回复意见即可;可用 design: / implement: / qa:(或 设计:/实现:/测试:)起头指定返工对象,不写默认给 implement。前缀只指定返工对象,不代表单独打回;请说清楚要改什么。`;
+	const content = `🚀 ${run.issue_id} is ready to ship\nHead: ${holder.head_sha}\nApprove only this exact head.\nApproval is recognized only from the founder's ✅ reaction on this card or an exact reply-to-card: approve / look good to me.\n打回:请 reply-to 本卡回复「打回」,或用 design: / implement: / qa:(也认全角冒号,或 设计:/实现:/测试:)起头指定返工对象;请说清楚要改什么。\n提问、讨论和其它 thread 自由发言只转给 Lead,不会写入 verdict,本轮保持开放。`;
 
 	if (
 		STAGE_ORDER[holder.materialization_stage] < STAGE_ORDER.question_written

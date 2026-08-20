@@ -24,7 +24,10 @@ export interface ApprovalAttributionEvidence {
 		| "tier3_approve"
 		| "tier3_reject"
 		| "tier3_unclear"
-		| "tier3_runner_failed";
+		| "tier3_runner_failed"
+		| "card_reply_approve"
+		| "card_reply_reject"
+		| "card_reply_neither";
 	reason?: string;
 }
 

@@ -1,0 +1,10 @@
+flowchart TB
+    R1["第 N 轮 review 开门<br/>(runner 发布互动页 + 出卡)"] --> W{"有人写入 verdict 吗?"}
+    W -->|"写入(通过或打回)"| CLOSE["这一轮立刻关门<br/>之后再点 ✅ 再回话都写不进去"]
+    W -->|"第三态:不写入"| STAY["这一轮保持开放<br/>她随时还能 ✅ 或 ❌<br/>不用任何人重新出卡"]
+    CLOSE --> FIX["记错了怎么办?<br/>只能 runner 开第 N+1 轮 = 她再操作一次"]
+    STAY --> OK["机器拿不准就不写<br/>= 误记的恢复成本从『她再来一次』<br/>降为『零』"]
+    style CLOSE fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style FIX fill:#ffe9e7,stroke:#ff3b30
+    style STAY fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style OK fill:#e8f8ee,stroke:#34c759

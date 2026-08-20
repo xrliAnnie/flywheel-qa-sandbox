@@ -27,7 +27,10 @@ import {
 	type LeadWriteAuthorizationDeps,
 	type MessageProvenance,
 } from "flywheel-comm/lead-lease";
-import type { FounderReworkHint } from "../../workflow-rework-hint.js";
+import {
+	type FounderReworkHint,
+	isExplicitFounderKickback,
+} from "../../workflow-rework-hint.js";
 import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
@@ -139,6 +142,8 @@ export interface WriteGateResponseArgs {
 	holdReasonFor?: (executionId: string) => ReviewHoldReason | null;
 	/** Fixed by each production caller; every founder-write route is explicit. */
 	source: FounderApprovalRouteSource;
+	/** Server-confirmed non-approval intent; required when text is not self-explicit. */
+	intent?: "kickback";
 	/** Reaction routes identify the exact card message being acted on. */
 	targetMessageId?: string;
 	/** Optional downstream authority seam. Absence preserves FLY-1244 behavior. */
@@ -227,7 +232,12 @@ function requestWriterProvenance(
 export interface WriteGateResponseResult {
 	written: boolean;
 	retrySafe: boolean;
-	disposition?: "written" | "already_applied" | "defer" | "reject";
+	disposition?:
+		| "written"
+		| "already_applied"
+		| "defer"
+		| "reject"
+		| "neutral_not_written";
 	reason?: string;
 }
 
@@ -246,6 +256,11 @@ function founderFeedbackVerbatim(answer: string): string {
 	} catch {
 		return answer;
 	}
+}
+
+function hasExplicitKickback(args: WriteGateResponseArgs): boolean {
+	if (args.intent === "kickback") return true;
+	return isExplicitFounderKickback(founderFeedbackVerbatim(args.answer));
 }
 
 function founderReworkPayload(args: WriteGateResponseArgs, approved: boolean) {
@@ -398,6 +413,15 @@ export async function writeGateResponseAndRunPostWrite(
 			retrySafe: ok,
 			disposition: "already_applied",
 			reason: "already_answered",
+		};
+	}
+
+	if (!isApproval(args.answer) && !hasExplicitKickback(args)) {
+		return {
+			written: false,
+			retrySafe: true,
+			disposition: "neutral_not_written",
+			reason: "explicit_kickback_required",
 		};
 	}
 

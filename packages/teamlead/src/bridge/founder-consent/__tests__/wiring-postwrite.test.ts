@@ -196,6 +196,7 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			questionId: qid,
 			leadId: LEAD,
 			answer: "changes requested: please add tests for the edge case",
+			kickback: true,
 			executionId: EXEC,
 		});
 		expect(res.status).toBe(200);
@@ -214,15 +215,21 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		expect(entries[0]?.text).toContain(qid);
 	});
 
-	it("structured {approved:false} is treated as feedback, not approval", async () => {
+	it("structured {approved:false} without explicit kickback stays neutral", async () => {
 		const qid = seedQuestion();
-		await post({
+		const res = await post({
 			questionId: qid,
 			leadId: LEAD,
 			answer: JSON.stringify({ approved: false, feedback: "fix CI" }),
 			executionId: EXEC,
 		});
+		expect(res.status).toBe(409);
+		expect((res.body as { error?: string }).error).toBe("neutral_not_written");
 		expect(store.getSession(EXEC)?.status).toBe("awaiting_review");
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)).toBeUndefined();
+		db.close();
+		expect(existsSync(inboxPath())).toBe(false);
 	});
 
 	it("approval retries remain rejected with zero durable response or wake", async () => {

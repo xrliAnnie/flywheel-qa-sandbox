@@ -15,7 +15,9 @@ import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import type { InboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../StateStore.js";
+import { reactToFounderMessage as addFounderReaction } from "./approval-signal/founder-ack.js";
 import type { GateMessageBinding } from "./approval-signal/gate-message-binding.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	msToSnowflakeLowerBound,
 	snowflakeToMs,
@@ -226,6 +228,42 @@ export interface FounderReplyDeliverDeps {
 	classifyDecisionConvergence?: (
 		input: Parameters<StateStore["classifyFounderDecisionConvergence"]>[0],
 	) => void;
+	/** Best-effort founder-visible receipt in the current issue thread. */
+	postThreadReply?: (content: string) => Promise<boolean>;
+	/** Best-effort ✅ acknowledgement on the founder's exact message. */
+	reactToFounderMessage?: (messageId: string) => Promise<boolean>;
+}
+
+export async function postFounderReviewThreadReply(
+	threadId: string,
+	botToken: string,
+	content: string,
+	fetchImpl: typeof fetch,
+): Promise<boolean> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), GET_TIMEOUT_MS);
+	try {
+		const response = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(content),
+					allowed_mentions: { parse: [] },
+				}),
+				signal: controller.signal,
+			},
+		);
+		return response.ok;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 function audit(
@@ -446,6 +484,27 @@ export async function emitFounderReplyDeliveryForThread(
 					readCurrentBinding: deps.readCurrentBinding,
 					ensureDecisionConvergence: deps.ensureDecisionConvergence,
 					classifyDecisionConvergence: deps.classifyDecisionConvergence,
+					postThreadReply:
+						deps.postThreadReply ??
+						((content) =>
+							postFounderReviewThreadReply(
+								ctx.threadId,
+								ctx.botToken,
+								content,
+								fetchImpl,
+							)),
+					reactToFounderMessage:
+						deps.reactToFounderMessage ??
+						(async (messageId) =>
+							(
+								await addFounderReaction({
+									botToken: ctx.botToken,
+									channelId: ctx.threadId,
+									messageId,
+									emoji: "✅",
+									fetchImpl,
+								})
+							).ok),
 				});
 			} catch (err) {
 				outcome = {
@@ -539,6 +598,8 @@ async function processFounderMessage(
 		readCurrentBinding?: FounderReplyDeliverDeps["readCurrentBinding"];
 		ensureDecisionConvergence?: FounderReplyDeliverDeps["ensureDecisionConvergence"];
 		classifyDecisionConvergence?: FounderReplyDeliverDeps["classifyDecisionConvergence"];
+		postThreadReply?: FounderReplyDeliverDeps["postThreadReply"];
+		reactToFounderMessage?: FounderReplyDeliverDeps["reactToFounderMessage"];
 	},
 ): Promise<ProcessOutcome> {
 	const { db } = deps;
@@ -582,48 +643,7 @@ async function processFounderMessage(
 			return { ok: true };
 		}
 	}
-	let founderReviewGate: PendingQuestionForThread | undefined;
-	if (isCardReply) {
-		const binding = deps.store.getFounderReviewCardBindingByMessage(
-			msg.message_reference!.message_id!,
-		);
-		founderReviewGate = founderReviewGates.find(
-			(gate) => gate.questionId === binding?.question_id,
-		);
-	} else if (founderReviewGates.length === 1) {
-		// The review page's one-click summary is pasted as a plain thread message.
-		// It may target the sole current review round, but ambiguity stays with Lead.
-		founderReviewGate = founderReviewGates[0];
-	}
-	if (founderReviewGate) {
-		const decision = classifyFounderReviewReply(rawAnswer);
-		const written = writeTrustedFounderReviewResponse({
-			store: deps.store,
-			db,
-			questionId: founderReviewGate.questionId,
-			executionId: founderReviewGate.executionId,
-			fromAgent: "bridge",
-			founderId: ctx.ownerUserId,
-			passed: decision.passed,
-			...(decision.feedback !== undefined
-				? { feedback: decision.feedback }
-				: {}),
-		});
-		if (written.written) return { ok: true };
-	}
-	for (const gate of shipGates) {
-		deps.ensureDecisionConvergence?.({
-			threadId: ctx.threadId,
-			msgId: msg.id,
-			questionId: gate.questionId,
-			projectName: ctx.projectName,
-			leadId: ctx.leadId,
-			executionId: gate.executionId,
-			disposedAtMs: nowDate.getTime(),
-			deadlineAtMs: nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
-		});
-	}
-	let cardGate: PendingQuestionForThread | undefined;
+	let shipCardGate: PendingQuestionForThread | undefined;
 	if (
 		deps.readCurrentBinding &&
 		shipGates.length > 0 &&
@@ -639,67 +659,140 @@ async function processFounderMessage(
 				head,
 			);
 			if (binding?.gateMessageId === msg.message_reference.message_id) {
-				cardGate = gate;
+				shipCardGate = gate;
 				break;
 			}
 		}
 	}
-	const messageGate =
-		cardGate ?? (shipGates.length === 1 ? shipGates[0] : undefined);
-	if (deps.tryFounderShipApproval && messageGate) {
-		const handled = await deps.tryFounderShipApproval({
-			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
-			shipGates: cardGate ? [cardGate] : shipGates,
-			ctx,
-			db,
-			replyToCard: cardGate !== undefined,
-			founderMessage: {
-				msgId: msg.id,
-				now,
-			},
-			recordDecisionClassification: deps.classifyDecisionConvergence
-				? (decision) =>
-						deps.classifyDecisionConvergence?.({
-							threadId: ctx.threadId,
-							msgId: msg.id,
-							questionId: messageGate.questionId,
-							classification: decision,
-							cardReferenceValid: cardGate !== undefined,
-						})
-				: undefined,
-		});
-		if (handled?.deadLetter) {
-			const deadLettered = deps.retryLedger?.deadLetterNow({
-				ctx,
-				msgId: msg.id,
-				executionId: messageGate.executionId,
-				stage: handled.deadLetter.stage,
-				reason: handled.deadLetter.reason,
-				contentExcerpt: truncate(msg.content ?? "", 200),
+	let founderReviewGate: PendingQuestionForThread | undefined;
+	if (isCardReply) {
+		const binding = deps.store.getFounderReviewCardBindingByMessage(
+			msg.message_reference!.message_id!,
+		);
+		founderReviewGate = founderReviewGates.find(
+			(gate) => gate.questionId === binding?.question_id,
+		);
+	}
+	const founderReviewContextGate = founderReviewGate;
+	if (founderReviewGate) {
+		const decision = classifyFounderReviewReply(rawAnswer);
+		if (decision.kind !== "neither") {
+			const written = writeTrustedFounderReviewResponse({
+				store: deps.store,
+				db,
+				questionId: founderReviewGate.questionId,
+				executionId: founderReviewGate.executionId,
+				fromAgent: "bridge",
+				founderId: ctx.ownerUserId,
+				passed: decision.kind === "pass",
+				...(decision.kind === "kickback" && decision.feedback !== undefined
+					? { feedback: decision.feedback }
+					: {}),
 			});
-			if (!deadLettered?.deadLettered) {
-				return {
-					ok: false,
-					stage: handled.deadLetter.stage,
-					reason: handled.deadLetter.reason,
-				};
+			if (written.written) {
+				if (decision.kind === "pass" && deps.reactToFounderMessage) {
+					const acknowledged = await deps.reactToFounderMessage(msg.id);
+					if (!acknowledged) {
+						audit(
+							deps.store,
+							ctx,
+							founderReviewGate.executionId,
+							"founder_ack_failed",
+							{
+								questionId: founderReviewGate.questionId,
+								kind: "pass",
+							},
+						);
+					}
+				}
+				if (decision.kind === "kickback" && deps.postThreadReply) {
+					const receipt = decision.feedback
+						? `已收到 ${[...decision.feedback].length} 字，记为打回交给 runner；如果你分了多条发，其余会经 Lead 转达。`
+						: "已记为打回（未附意见）。如果你在互动页面写过留言，它们还没送出来——打开页面点「一键汇总复制」贴回本 thread，我会转给 Lead 并入返工。";
+					const posted = await deps.postThreadReply(receipt);
+					if (!posted) {
+						audit(
+							deps.store,
+							ctx,
+							founderReviewGate.executionId,
+							"founder_review_receipt_failed",
+							{
+								questionId: founderReviewGate.questionId,
+								kind: "kickback",
+							},
+						);
+					}
+				}
+				return { ok: true };
 			}
 		}
-		if (
-			handled &&
-			(handled.bound.length > 0 ||
-				handled.deferred.length > 0 ||
-				(handled.suppressed?.length ?? 0) > 0 ||
-				handled.deadLetter !== undefined)
-		) {
-			return { ok: true };
-		}
-		if (handled?.retry) {
-			return {
-				ok: false,
-				stage: handled.stage ?? "ship_attribution_retry",
-				reason: handled.reason ?? "transient ship-attribution failure",
-			};
+	}
+	if (shipCardGate) {
+		deps.ensureDecisionConvergence?.({
+			threadId: ctx.threadId,
+			msgId: msg.id,
+			questionId: shipCardGate.questionId,
+			projectName: ctx.projectName,
+			leadId: ctx.leadId,
+			executionId: shipCardGate.executionId,
+			disposedAtMs: nowDate.getTime(),
+			deadlineAtMs: nowDate.getTime() + DEFAULT_FOUNDER_DECISION_DEADLINE_MS,
+		});
+		if (deps.tryFounderShipApproval) {
+			const handled = await deps.tryFounderShipApproval({
+				msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
+				shipGates: [shipCardGate],
+				ctx,
+				db,
+				replyToCard: true,
+				founderMessage: {
+					msgId: msg.id,
+					now,
+				},
+				recordDecisionClassification: deps.classifyDecisionConvergence
+					? (decision) =>
+							deps.classifyDecisionConvergence?.({
+								threadId: ctx.threadId,
+								msgId: msg.id,
+								questionId: shipCardGate.questionId,
+								classification: decision,
+								cardReferenceValid: true,
+							})
+					: undefined,
+			});
+			if (handled?.deadLetter) {
+				const deadLettered = deps.retryLedger?.deadLetterNow({
+					ctx,
+					msgId: msg.id,
+					executionId: shipCardGate.executionId,
+					stage: handled.deadLetter.stage,
+					reason: handled.deadLetter.reason,
+					contentExcerpt: truncate(msg.content ?? "", 200),
+				});
+				if (!deadLettered?.deadLettered) {
+					return {
+						ok: false,
+						stage: handled.deadLetter.stage,
+						reason: handled.deadLetter.reason,
+					};
+				}
+			}
+			if (
+				handled &&
+				(handled.bound.length > 0 ||
+					handled.deferred.length > 0 ||
+					(handled.suppressed?.length ?? 0) > 0 ||
+					handled.deadLetter !== undefined)
+			) {
+				return { ok: true };
+			}
+			if (handled?.retry) {
+				return {
+					ok: false,
+					stage: handled.stage ?? "ship_attribution_retry",
+					reason: handled.reason ?? "transient ship-attribution failure",
+				};
+			}
 		}
 	}
 	// Founder control-plane messages follow the Claude agent-team topology:
@@ -729,6 +822,35 @@ async function processFounderMessage(
 			stage: "lead_handoff_failed",
 			reason: "founder reply was not delivered to Lead",
 		};
+	}
+	if (founderReviewContextGate && deps.postThreadReply) {
+		const explainerEventId = `fr_neither_explainer:${founderReviewContextGate.questionId}`;
+		const claimed = deps.store.insertEvent({
+			event_id: explainerEventId,
+			execution_id: founderReviewContextGate.executionId,
+			issue_id: ctx.issueId,
+			project_name: ctx.projectName,
+			event_type: "founder_review_neither_explainer_claimed",
+			source: "bridge.founder-reply-deliverer",
+			payload: { questionId: founderReviewContextGate.questionId },
+		});
+		if (claimed) {
+			const posted = await deps.postThreadReply(
+				"这条没有写入 verdict，已转给 Lead，本轮仍开放。要批准请在这张卡点 ✅，或 reply-to 这张卡只回「approve」/「look good to me」；要打回请 reply-to 这张卡回复「打回」或用 design: / implement: / qa: 前缀说明。",
+			);
+			if (!posted) {
+				audit(
+					deps.store,
+					ctx,
+					founderReviewContextGate.executionId,
+					"founder_review_receipt_failed",
+					{
+						questionId: founderReviewContextGate.questionId,
+						kind: "neither",
+					},
+				);
+			}
+		}
 	}
 	return { ok: true };
 }

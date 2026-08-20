@@ -77,6 +77,35 @@ export function parseFounderReworkPrefix(
 	return target ? { target, prefix } : undefined;
 }
 
+/**
+ * Fixed founder card protocol. Free thread speech never calls these helpers;
+ * they are only for a Discord action already anchored to the current card.
+ */
+export function normalizeFounderCardProtocolText(content: string): string {
+	return (
+		content
+			.normalize("NFKC")
+			.trim()
+			.toLowerCase()
+			// A question mark preserves the message as a question, never a verdict.
+			.replace(/[。.!！]+$/u, "")
+			.trim()
+	);
+}
+
+export function isFixedFounderCardApproval(content: string): boolean {
+	return new Set(["approve", "look good to me"]).has(
+		normalizeFounderCardProtocolText(content),
+	);
+}
+
+export function isExplicitFounderKickback(content: string): boolean {
+	return (
+		normalizeFounderCardProtocolText(content) === "打回" ||
+		parseFounderReworkPrefix(content) !== undefined
+	);
+}
+
 export function isFounderReworkTarget(
 	value: unknown,
 ): value is FounderReworkTarget {

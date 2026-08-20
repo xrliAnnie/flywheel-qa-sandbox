@@ -194,6 +194,9 @@ async function gateInner(
 			contentRef,
 			contentType: useRef ? "ref" : "text",
 			...(args.deadlineAt ? { deadlineAt: args.deadlineAt } : {}),
+			...(args.checkpoint === FOUNDER_REVIEW_CHECKPOINT
+				? { ttlSeconds: 7 * 24 * 60 * 60 }
+				: {}),
 		});
 		for (const previous of priorFounderReviewQuestions) {
 			db.retireQuestionGuarded(previous.id, {

@@ -1,14 +1,4 @@
-/**
- * FLY-799 Part A — TextSource (RED first).
- *
- * Composes identity + Tier-2 exact allowlist + Tier-3 classifier into a bound
- * `ApprovalSignal`. Only the canonical founder's message produces a signal
- * (non-founder → null). Tier-2 exact approvals bypass the classifier (zero AI);
- * everything else falls to the injected classifier, whose verdict maps straight
- * through. The text signal always binds to the founder's OWN message id.
- */
-
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { evaluateTextSource } from "../approval-signal/text-approval-source.js";
 import type { GateBinding } from "../approval-signal/types.js";
 
@@ -16,9 +6,9 @@ const GATE: Omit<GateBinding, "targetMessageId"> = {
 	questionId: "Q-1",
 	executionId: "EXEC-1",
 	issueId: "issue-uuid",
-	issueIdentifier: "FLY-799",
+	issueIdentifier: "FLY-1847",
 	prHeadSha: "a".repeat(40),
-	prNumber: 799,
+	prNumber: 888,
 	threadId: "T-1",
 	canonicalFounderId: "FOUNDER-1",
 };
@@ -29,256 +19,101 @@ const msg = (content: string, authorId = "FOUNDER-1") => ({
 	authorId,
 });
 
-describe("evaluateTextSource — identity", () => {
-	it("returns null for a non-founder author (never classifies)", async () => {
-		const classifyImpl = vi.fn();
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("ship", "SOMEONE-ELSE") },
-			{ classifyImpl },
-		);
-		expect(sig).toBeNull();
-		expect(classifyImpl).not.toHaveBeenCalled();
+describe("evaluateTextSource — card-anchored founder protocol", () => {
+	it("ignores non-founder messages", async () => {
+		await expect(
+			evaluateTextSource({
+				gate: GATE,
+				message: msg("approve", "SOMEONE-ELSE"),
+				replyToCard: true,
+			}),
+		).resolves.toBeNull();
 	});
-});
 
-describe("evaluateTextSource — Tier-2 fast path (zero AI)", () => {
-	it("bare 'ship' → approve WITHOUT calling the classifier", async () => {
-		const classifyImpl = vi.fn();
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("ship") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({
-			source: "text",
+	it.each([
+		"approve",
+		"APPROVE",
+		"approve。",
+		"look good to me",
+		"Look good to me!",
+	])("accepts fixed card approval %j", async (content) => {
+		const signal = await evaluateTextSource({
+			gate: GATE,
+			message: msg(content),
+			replyToCard: true,
+		});
+		expect(signal).toMatchObject({
 			kind: "approve",
-			questionId: "Q-1",
-			prHeadSha: GATE.prHeadSha,
-			messageId: "MSG-1",
-			authorUserId: "FOUNDER-1",
-		});
-		expect(classifyImpl).not.toHaveBeenCalled();
-	});
-});
-
-describe("evaluateTextSource — Tier-3 fallback", () => {
-	it("ambiguous text → classifier approve (evidence bound) → approve", async () => {
-		const classifyImpl = vi
-			.fn()
-			.mockResolvedValue({ kind: "approve", evidenceMessageId: "MSG-1" });
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("yeah alright then, fine by me") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({
 			source: "text",
-			kind: "approve",
 			messageId: "MSG-1",
-		});
-		expect(classifyImpl).toHaveBeenCalledOnce();
-	});
-
-	it("ambiguous text → classifier reject → reject", async () => {
-		const classifyImpl = vi
-			.fn()
-			.mockResolvedValue({ kind: "reject", reason: "x" });
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("hmm not like this") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({ source: "text", kind: "reject" });
-		expect(sig).not.toHaveProperty("founderRework");
-	});
-
-	it("classifier-selected QA route is preserved on the reject signal", async () => {
-		const classifyImpl = vi.fn().mockResolvedValue({
-			kind: "reject",
-			reason: "tests need correction",
-			reworkTarget: "qa",
-		});
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("the test evidence is wrong") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({
-			kind: "reject",
-			founderRework: {
-				target: "qa",
-				invalidationScope: ["qa"],
-				verificationPolicy: ["qa_retest", "founder_gate"],
-				interpretedBy: "founder-ship-approval-classifier",
-			},
+			evidence: { stage: "card_reply_approve" },
 		});
 	});
 
 	it.each([
-		["design: redo the architecture", "design"],
-		["IMPLEMENT：fix the handler", "implement"],
-		["测试: 重做验收", "qa"],
-	])(
-		"explicit prefix %s overrides the classifier route",
+		["打回。", undefined],
+		["design: revise the flow.", "design"],
+		["implement：fix the handler！", "implement"],
+		["qa: rerun this case。", "qa"],
+	] as const)(
+		"accepts explicit card kickback %j with route %j",
 		async (content, target) => {
-			const classifyImpl = vi.fn().mockResolvedValue({
-				kind: "reject",
-				reason: "changes requested",
-				reworkTarget: target === "qa" ? "design" : "qa",
+			const signal = await evaluateTextSource({
+				gate: GATE,
+				message: msg(content),
+				replyToCard: true,
 			});
-			const sig = await evaluateTextSource(
-				{ gate: GATE, message: msg(content) },
-				{ classifyImpl },
-			);
-			expect(sig).toMatchObject({
+			expect(signal).toMatchObject({
 				kind: "reject",
-				founderRework: { target, interpretedBy: "founder-reply-prefix" },
+				evidence: { stage: "card_reply_reject" },
 			});
+			if (target) {
+				expect(signal).toMatchObject({ founderRework: { target } });
+			}
 		},
 	);
 
-	it("a prefix alone does not turn an unclear message into a rejection", async () => {
-		const classifyImpl = vi.fn().mockResolvedValue({ kind: "unclear" });
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("qa:") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({ kind: "unclear" });
-		expect(sig).not.toHaveProperty("founderRework");
-	});
-
-	it("ambiguous text → classifier unclear → unclear", async () => {
-		const classifyImpl = vi.fn().mockResolvedValue({ kind: "unclear" });
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("how's it going") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({ source: "text", kind: "unclear" });
-	});
-
-	it("passes the founder's own message id as expectedMessageId to the classifier", async () => {
-		const classifyImpl = vi.fn().mockResolvedValue({ kind: "unclear" });
-		await evaluateTextSource(
-			{ gate: GATE, message: msg("maybe") },
-			{ classifyImpl },
-		);
-		const [input] = classifyImpl.mock.calls[0] as [
-			{ expectedMessageId: string },
-		];
-		expect(input.expectedMessageId).toBe("MSG-1");
-	});
-});
-
-describe("evaluateTextSource — explicit wrong-target fail-closed (Codex R1 HIGH-3)", () => {
-	it("'ship FLY-756' in the FLY-799 gate → unclear, NEVER calls the classifier", async () => {
-		const classifyImpl = vi.fn();
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("ship FLY-756") },
-			{ classifyImpl },
-		);
-		expect(sig?.kind).toBe("unclear");
-		expect(classifyImpl).not.toHaveBeenCalled();
-	});
-
-	it("wrong PR '#123' → unclear, no classify", async () => {
-		const classifyImpl = vi.fn();
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("approve #123") },
-			{ classifyImpl },
-		);
-		expect(sig?.kind).toBe("unclear");
-		expect(classifyImpl).not.toHaveBeenCalled();
-	});
-
-	it("ambiguous text with an incidental bare number still reaches Tier-3", async () => {
-		const classifyImpl = vi
-			.fn()
-			.mockResolvedValue({ kind: "approve", evidence_message_id: "MSG-1" });
-		await evaluateTextSource(
-			{ gate: GATE, message: msg("yeah lets do it, fixes 500 errors") },
-			{ classifyImpl },
-		);
-		expect(classifyImpl).toHaveBeenCalledOnce();
-	});
-});
-
-describe("evaluateTextSource — tier2 prefix normalization wiring (FLY-1041 Fix C)", () => {
-	it("default ON: '嗯ship' hits Tier-2 deterministically (no classifier call)", async () => {
-		const classifyImpl = vi.fn();
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("嗯ship") },
-			{ classifyImpl },
-		);
-		expect(sig?.kind).toBe("approve");
-		expect(classifyImpl).not.toHaveBeenCalled();
-	});
-});
-
-describe("evaluateTextSource — attribution evidence (FLY-1041 Chunk 4)", () => {
-	it("tier2 hit carries evidence.stage=tier2_approve", async () => {
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("ship") },
-			{ classifyImpl: vi.fn() },
-		);
-		expect(sig).toMatchObject({
-			kind: "approve",
-			evidence: { stage: "tier2_approve" },
+	it.each([
+		"ship",
+		"都可以了",
+		"ok what's next",
+		"approve?",
+		"打回？",
+		"还有什么要我决定的？",
+		"[founder-review-summary:v1] issue=FLY-1847",
+	])("keeps other card reply %j neutral", async (content) => {
+		const signal = await evaluateTextSource({
+			gate: GATE,
+			message: msg(content),
+			replyToCard: true,
 		});
-	});
-
-	it("explicit mismatched reference carries tier2_downgrade evidence", async () => {
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("ship FLY-756") },
-			{ classifyImpl: vi.fn() },
-		);
-		expect(sig).toMatchObject({
+		expect(signal).toMatchObject({
 			kind: "unclear",
-			evidence: {
-				stage: "tier2_downgrade",
-				reason: "explicit_mismatched_reference",
-			},
+			evidence: { stage: "card_reply_neither" },
 		});
 	});
 
-	it("tier3 runner failure surfaces as tier3_runner_failed with the runner reason", async () => {
-		const classifyImpl = vi.fn().mockResolvedValue({
-			kind: "unclear",
-			runnerFailed: true,
-			reason: "spawn ENOENT",
-		});
-		const sig = await evaluateTextSource(
-			{ gate: GATE, message: msg("maybe later then") },
-			{ classifyImpl },
-		);
-		expect(sig).toMatchObject({
-			kind: "unclear",
-			evidence: { stage: "tier3_runner_failed", reason: "spawn ENOENT" },
-		});
-	});
-
-	it("tier3 model verdicts map to tier3_approve / tier3_reject / tier3_unclear", async () => {
-		const approve = await evaluateTextSource(
-			{ gate: GATE, message: msg("sure why not") },
-			{
-				classifyImpl: vi
-					.fn()
-					.mockResolvedValue({ kind: "approve", evidenceMessageId: "MSG-1" }),
-			},
-		);
-		expect(approve).toMatchObject({ evidence: { stage: "tier3_approve" } });
-
-		const reject = await evaluateTextSource(
-			{ gate: GATE, message: msg("hold on there") },
-			{
-				classifyImpl: vi
-					.fn()
-					.mockResolvedValue({ kind: "reject", reason: "not yet" }),
-			},
-		);
-		expect(reject).toMatchObject({
-			evidence: { stage: "tier3_reject", reason: "not yet" },
-		});
-
-		const unclear = await evaluateTextSource(
-			{ gate: GATE, message: msg("how is it going") },
-			{ classifyImpl: vi.fn().mockResolvedValue({ kind: "unclear" }) },
-		);
-		expect(unclear).toMatchObject({ evidence: { stage: "tier3_unclear" } });
-	});
+	it.each([
+		"approve",
+		"ship",
+		"都可以了",
+		"打回。",
+		"design: change this",
+		"还有什么要我决定的？",
+	])(
+		"never turns ordinary thread speech %j into a verdict",
+		async (content) => {
+			const signal = await evaluateTextSource({
+				gate: GATE,
+				message: msg(content),
+			});
+			expect(signal).toMatchObject({
+				kind: "unclear",
+				evidence: {
+					stage: "card_reply_neither",
+					reason: "card_anchor_missing",
+				},
+			});
+		},
+	);
 });

@@ -175,6 +175,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			carrierClaim?: unknown;
 			identityDigest?: unknown;
 			provenance?: MessageProvenance;
+			kickback?: unknown;
 		};
 		const { questionId, leadId, answer, executionId, projectName } = body;
 
@@ -309,6 +310,7 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					gateAuthorityView: deps.gateAuthorityView,
 					actor,
 					answer,
+					...(body.kickback === true ? { intent: "kickback" as const } : {}),
 					expectedCurrentReviewQuestionId: currentReviewId,
 					holdReasonFor: deps.holdReasonFor,
 					founderId: deps.founderId,
@@ -351,6 +353,14 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			): boolean => {
 				if (result.written || result.disposition === "already_applied") {
 					return false;
+				}
+				if (result.disposition === "neutral_not_written") {
+					res.status(409).json({
+						error: "neutral_not_written",
+						detail:
+							"No verdict was written because this text is not an explicit kickback. Keep discussion in the thread; to confirm a rejection, rerun flywheel-comm respond with --kickback or use an explicit 打回 / design: / implement: / qa: prefix.",
+					});
+					return true;
 				}
 				res.status(409).json({
 					error: result.reason?.startsWith("lead_lease_")

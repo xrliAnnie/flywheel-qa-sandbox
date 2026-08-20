@@ -57,12 +57,13 @@ describe("workflow gate materializer", () => {
 		).toMatchObject({ ok: true, idempotentReplay: true });
 		expect(posts).toBe(1);
 		expect(cardContent).toContain(
-			"Approval is recognized only from the founder's ✅ reaction on this card or the founder's direct reply in this card's thread.",
+			"Approval is recognized only from the founder's ✅ reaction on this card or an exact reply-to-card: approve / look good to me.",
 		);
 		expect(cardContent).toContain(
-			"打回:直接回复意见即可;可用 design: / implement: / qa:",
+			"打回:请 reply-to 本卡回复「打回」,或用 design: / implement: / qa:",
 		);
-		expect(cardContent).toContain("前缀只指定返工对象,不代表单独打回");
+		expect(cardContent).toContain("也认全角冒号");
+		expect(cardContent).toContain("thread 自由发言只转给 Lead");
 		const comm = CommDB.openReadonly(commPath);
 		try {
 			expect(comm.getPendingQuestions("flywheel-eng-lead")).toMatchObject([

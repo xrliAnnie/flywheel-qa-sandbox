@@ -27,6 +27,7 @@ export interface RespondArgs {
 	sourceThread?: string;
 	expectedOwner?: string;
 	expectedCheckpoint?: string | null;
+	kickback?: boolean;
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 	authorizationDeps?: LeadWriteAuthorizationDeps;
@@ -75,6 +76,7 @@ export async function respond(args: RespondArgs): Promise<void> {
 					answer: args.answer,
 					executionId: question.from_agent,
 					projectName: args.projectName,
+					kickback: args.kickback,
 					authorization,
 					env,
 					fetchImpl: args.fetchImpl,
@@ -218,6 +220,7 @@ async function routeThroughBridge(opts: {
 	answer: string;
 	executionId?: string;
 	projectName?: string;
+	kickback?: boolean;
 	authorization: LeadWriteAuthorization;
 	env: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
@@ -235,6 +238,7 @@ async function routeThroughBridge(opts: {
 		answer: opts.answer,
 		executionId: opts.executionId,
 		projectName: opts.projectName,
+		...(opts.kickback === true ? { kickback: true } : {}),
 		leaseClaim: opts.authorization.leaseClaim,
 		identityDigest: opts.authorization.identityDigest,
 		provenance: opts.authorization.provenance,

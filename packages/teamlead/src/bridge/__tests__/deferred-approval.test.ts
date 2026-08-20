@@ -327,7 +327,7 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 		await runDeferredApprovalRebindPass(deps as never);
 
 		expect(writeImpl).toHaveBeenCalledWith(
-			expect.objectContaining({ founderRework }),
+			expect.objectContaining({ founderRework, intent: "kickback" }),
 		);
 	});
 

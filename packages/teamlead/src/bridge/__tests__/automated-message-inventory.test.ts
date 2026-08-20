@@ -134,6 +134,8 @@ describe("automated Discord sender inventory", () => {
 			"bridge/discord-utils.ts",
 			// FLY-1282 Part D: disposition-receipt delivery (bounded, marked).
 			"bridge/disposition-receipt.ts",
+			// FLY-1847: founder-review verdict receipts and discussion guidance.
+			"bridge/founder-reply-deliverer.ts",
 			"bridge/founder-thread-notifier.ts",
 			"bridge/legacy-phase-thread-sweep.ts",
 			"bridge/publish-broker/wire.ts",

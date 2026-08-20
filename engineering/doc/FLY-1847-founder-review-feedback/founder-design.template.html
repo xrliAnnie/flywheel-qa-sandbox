@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1847 · review 意见回传修复设计</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system, system-ui, "PingFang SC", sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .meta { color:#86868b; font-size:14px; margin-bottom:22px; }
+  .meta code { font-family:'SF Mono', monospace; font-size:13px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:19px; color:#1a365d; margin-bottom:10px; }
+  .card p { margin-bottom:10px; }
+  .card p:last-child { margin-bottom:0; }
+  .lede { font-size:17px; }
+  .dim { color:#86868b; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; font-size:14.5px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:8px 10px; border-bottom:2px solid #e8e8ed; white-space:nowrap; }
+  td { padding:9px 10px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  tr:last-child td { border-bottom:none; }
+  .sig { font-family:'SF Mono', monospace; font-size:13px; background:#f5f5f7; border-radius:6px; padding:2px 7px; white-space:nowrap; }
+  .tag { display:inline-block; font-size:12px; font-weight:600; border-radius:6px; padding:2px 8px; margin-right:4px; }
+  .tag.pass { background:#e8f8ee; color:#1d804d; }
+  .tag.kick { background:#fff4e6; color:#b36200; }
+  .tag.hold { background:#eef4ff; color:#0a5bc4; }
+  .tag.no { background:#ffe9e7; color:#c22619; }
+  .diagram { margin:14px 0 6px; overflow-x:auto; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cmt { margin-top:16px; border-top:1px dashed #e8e8ed; padding-top:12px; }
+  .cmt label { display:block; font-size:13px; color:#86868b; margin-bottom:6px; }
+  .cmt textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:10px 12px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cmt textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #sum-list { font-size:14px; white-space:pre-wrap; background:#f5f5f7; border-radius:8px; padding:12px 14px; min-height:40px; font-family:inherit; }
+  .btn { display:inline-block; margin-top:12px; background:#007aff; color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:15px; font-weight:600; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:14px; color:#34c759; }
+  #copy-status.fail { color:#ff3b30; }
+  #copy-fallback { display:none; width:100%; min-height:120px; margin-top:10px; border:1px solid #ff9500; border-radius:8px; padding:10px; font-size:13px; font-family:'SF Mono', monospace; }
+  .note { background:#fff8ec; border:1px solid #ffd9a0; border-radius:8px; padding:10px 14px; font-size:14px; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>review 意见回传,不再靠运气</h1>
+  <div class="meta">FLY-1847 · 设计方案(给 Annie 的版本) · 2026-08-18</div>
+
+  <div class="card green" data-sec="① 一句话总结">
+    <h2>① 一句话总结</h2>
+    <p class="lede">以后你在 review 卡下面说的话,<strong>只有明确的「通过」或「打回」动作才会改变状态</strong>;提问、闲聊、换个说法的同意,统统<strong>不会再被误记成打回</strong> —— 而且你说的每一句,系统都会当场回执告诉你它被记成了什么。</p>
+    <p class="dim">背景:两天里发生了 7 次 —— 你写的整轮意见没送到、你的「ok what's next」被记成否决、你的提问被当成打回指令。根子只有一个:现在的规则是「不逐字等于那 5 个通过词,就一律记打回」,而且记完立刻关门,纠错都要你再来一次。</p>
+    <div class="cmt"><label>对这一节有想法?写在这里(自动保存在你浏览器里)</label><textarea data-key="s1" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="② 改后的流程">
+    <h2>② 改后的流程:说话默认安全,动状态要显式</h2>
+    <p>你在卡的 <span class="term" title="Discord 里这张卡下面的讨论串">thread</span>(卡片下面的讨论串)里说的每句话,先分三类:</p>
+    <div class="diagram">{{SVG_D1}}</div>
+    <p>只有下面 <strong>5 个显式信号</strong>会写入结论,其余一切都是「第三态」—— 什么都不改,转给 Lead(管这个活的 AI 主管)替你处理:</p>
+    <table>
+      <tr><th>你做的动作</th><th>记成什么</th><th>你会收到的回执</th></tr>
+      <tr><td>卡上点 <span class="sig">✅</span> 或逐字回 <span class="sig">都可以了 / 可以了 / 通过 / LGTM / approved</span></td><td><span class="tag pass">通过</span></td><td>bot 在你的消息上点 ✅</td></tr>
+      <tr><td>卡上点 <span class="sig">❌</span> 或逐字回 <span class="sig">打回</span></td><td><span class="tag kick">打回(不带意见)</span></td><td>一行确认 + 提醒:「如果你在页面写过留言,它们还没送出来,记得点复制贴回来」</td></tr>
+      <tr><td>把页面的「一键汇总复制」结果贴回来(开头带 <span class="sig">【页面意见汇总】</span>)</td><td><span class="tag kick">打回(带全部意见)</span></td><td>一行确认:「意见已交给 runner」</td></tr>
+      <tr><td>其余一切:提问、讨论、「ok what's next」、只发图</td><td><span class="tag hold">不记录,转 Lead</span></td><td>每轮最多提醒一次:「这条不算通过也不算打回」+ 怎么做才算</td></tr>
+    </table>
+    <div class="cmt"><label>对这一节有想法?</label><textarea data-key="s2" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="③ 为什么误记从此不费你的事">
+    <h2>③ 为什么误记从此不费你的事</h2>
+    <p>现在的机制是「写入即关门」:一轮 review 只要被记了结论(不管对错),这一轮就锁死,纠错只能重开一轮 = 你再操作一次。改后,机器<strong>拿不准就不写</strong>,门一直开着:</p>
+    <div class="diagram">{{SVG_D3}}</div>
+    <div class="cmt"><label>对这一节有想法?</label><textarea data-key="s3" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="④ 改前 vs 改后">
+    <h2>④ 改前 vs 改后</h2>
+    <div class="diagram">{{SVG_D2}}</div>
+    <p>同样的守卫也会加到 <strong>ship 卡</strong>(上线批准卡)那条线上:你在 ship 卡下提问,不会再被当成「打回返工」的指令。卡片自己的说明文字也会重写 —— 现在那张卡一边教你「把汇总贴回来」、一边又规定「直接回复 = 打回」,自相矛盾,这次一起修掉。</p>
+    <div class="cmt"><label>对这一节有想法?</label><textarea data-key="s4" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="⑤ 关键取舍与被否掉的方案">
+    <h2>⑤ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>候选方案</th><th>结论</th><th>为什么</th></tr>
+      <tr><td>页面留言<strong>自动</strong>传回 runner(不用复制粘贴)</td><td><span class="tag no">这次不做</span></td><td>报告页是纯静态托管 + 安全策略禁止对外发请求,要自动回传得新建一整套接收服务。先用「显式动作 + 当场回执」把丢失变成当场可见;若之后还丢,再单独立项做自动回传。</td></tr>
+      <tr><td>用 AI 模型来理解你每句话的意图</td><td><span class="tag no">这次不做</span></td><td>显式信号 + 拿不准就不写,已经把误记率结构性归零;模型会引入延迟和新的猜错方式。拿不准的交给 Lead(人/AI 主管)判,更稳。</td></tr>
+      <tr><td>放宽「通过」的识别(比如「ok」也算通过)</td><td><span class="tag no">不做</span></td><td>方向危险:放宽通过会把「带意见的回复」误判成通过,比误判成打回更糟。通过保持逐字白名单 + ✅。</td></tr>
+      <tr><td>强制你必须写意见才能打回</td><td><span class="tag no">不做</span></td><td>空白打回是你的合法动作。点一下 ❌ 就是打回,不附意见完全可以。</td></tr>
+    </table>
+    <div class="cmt"><label>对这一节有想法?</label><textarea data-key="s5" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="⑥ 诚实边界">
+    <h2>⑥ 诚实边界:这个设计不做什么</h2>
+    <p>• 页面留言<strong>仍然</strong>需要你点「一键汇总复制」贴回 thread 才能送达 —— 本设计不消灭这一步,但让「漏了这一步」在你给结论的当下就被看见、被提醒,而不是静默丢失。</p>
+    <p>• 已经被误记的历史轮次不回溯修复(纠错仍走重开一轮的老路)。</p>
+    <p>• 你手写的大段意见(不经复制按钮)不会自动记为打回 —— 会转 Lead 转达给 runner。多一步人转,但不会丢、不会错记。</p>
+    <p>• 通过词白名单不放宽;Lead 不能替你写结论 —— 这两条安全语义保持原样。</p>
+    <div class="cmt"><label>对这一节有想法?</label><textarea data-key="s6" placeholder="留言…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="留言汇总">
+    <h2>你的留言汇总</h2>
+    <p class="dim">下面自动汇集你在各节写的留言。写完点「一键汇总复制」,把结果贴回 Discord 的这张卡 thread 里,我就能收到。</p>
+    <div id="sum-list">(还没有留言)</div>
+    <button class="btn" id="copy-all">一键汇总复制</button><span id="copy-status"></span>
+    <textarea id="copy-fallback" readonly></textarea>
+    <div class="note">如果你就是<strong>通过、没有别的意见</strong>:别点上面的复制按钮,直接在 thread 里点 ✅ 或回「都可以了」就行。</div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(() => {
+  let prefix = "fly1847-design:";
+  try { prefix = "fly1847-design:" + location.pathname + ":"; } catch (e) {}
+  const cards = Array.from(document.querySelectorAll(".card[data-sec]"));
+  const sumList = document.getElementById("sum-list");
+  const areas = [];
+  for (const card of cards) {
+    const ta = card.querySelector("textarea[data-key]");
+    if (!ta) continue;
+    const key = prefix + ta.dataset.key;
+    try { const saved = localStorage.getItem(key); if (saved) ta.value = saved; } catch (e) {}
+    areas.push({ ta, sec: card.dataset.sec, key });
+    ta.addEventListener("input", () => {
+      try { localStorage.setItem(key, ta.value); } catch (e) {}
+      render();
+    });
+  }
+  function collect() {
+    const lines = ["【页面意见汇总】FLY-1847 review 意见回传修复设计 · 我的回答", ""];
+    let n = 0;
+    for (const { ta, sec } of areas) {
+      const v = ta.value.trim();
+      if (!v) continue;
+      n++;
+      lines.push("【" + sec + "】");
+      lines.push(v);
+      lines.push("");
+    }
+    return { text: lines.join("\n").trim(), n };
+  }
+  function render() {
+    const { text, n } = collect();
+    sumList.textContent = n === 0 ? "(还没有留言)" : text;
+  }
+  render();
+  const status = document.getElementById("copy-status");
+  const fallback = document.getElementById("copy-fallback");
+  document.getElementById("copy-all").addEventListener("click", async () => {
+    const { text, n } = collect();
+    if (n === 0) { status.className = "fail"; status.textContent = "还没有留言可复制"; return; }
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }
+    } catch (e) { copied = false; }
+    if (copied) {
+      fallback.style.display = "none";
+      status.className = "";
+      status.textContent = "已复制,去 Discord 贴回这张卡的 thread";
+    } else {
+      fallback.value = text;
+      fallback.style.display = "block";
+      fallback.focus();
+      fallback.select();
+      let manual = false;
+      try { manual = document.execCommand("copy"); } catch (e) { manual = false; }
+      if (manual) {
+        status.className = "";
+        status.textContent = "已复制。若粘贴出来是空的:下方文本已选中,按 ⌘C 再粘";
+      } else {
+        status.className = "fail";
+        status.textContent = "浏览器不允许自动复制 —— 下方文本已选中,请按 ⌘C 再去粘贴";
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { tryFounderShipApproval } from "../approval-signal/founder-ship-approval-handler.js";
+import { tryFounderShipApproval as tryFounderShipApprovalImpl } from "../approval-signal/founder-ship-approval-handler.js";
 
 const CTX = {
 	issueId: "issue-uuid",
@@ -44,6 +44,18 @@ const oneShipGate = [
 		createdAtMs: 1,
 	},
 ];
+
+// Existing handler scenarios model messages already narrowed to the current
+// ship card. Keep that premise explicit while a dedicated regression test
+// exercises the new FLY-1847 card-anchor guard below.
+const tryFounderShipApproval = (
+	args: Parameters<typeof tryFounderShipApprovalImpl>[0],
+	deps: Parameters<typeof tryFounderShipApprovalImpl>[1],
+) =>
+	tryFounderShipApprovalImpl(
+		{ ...args, replyToCard: args.replyToCard ?? true },
+		deps,
+	);
 
 /**
  * FLY-1099 (Codex R2 #1): the fixture models the PRODUCTION postcondition —
@@ -167,6 +179,20 @@ describe("tryFounderShipApproval — approve path", () => {
 });
 
 describe("tryFounderShipApproval — fail-closed (returns null → WAKE-only)", () => {
+	it("rejects ordinary thread speech before gate narrowing or classification", async () => {
+		const auditSink = vi.fn();
+		const d = deps({ auditSink });
+		const result = await tryFounderShipApprovalImpl(
+			{ msg: founderMsg, shipGates: oneShipGate, ctx: CTX },
+			d,
+		);
+
+		expect(result).toBeNull();
+		expect(d.evaluateTextImpl).not.toHaveBeenCalled();
+		expect(d.writeGateResponseImpl).not.toHaveBeenCalled();
+		expect(auditSink).toHaveBeenCalledWith("card_anchor_missing", {});
+	});
+
 	it("non-founder author → null (never evaluates)", async () => {
 		const d = deps();
 		const r = await tryFounderShipApproval(
@@ -291,6 +317,7 @@ describe("tryFounderShipApproval — reject path", () => {
 		});
 		const [writeArgs] = d.writeGateResponseImpl.mock.calls[0];
 		expect(JSON.parse(writeArgs.answer).approved).not.toBe(true);
+		expect(writeArgs.intent).toBe("kickback");
 		expect(writeArgs.founderRework).toEqual(founderRework);
 	});
 });

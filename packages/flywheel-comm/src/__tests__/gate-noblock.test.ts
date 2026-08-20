@@ -151,6 +151,30 @@ describe("gate --no-block (FLY-191 Phase 2)", () => {
 		}
 	});
 
+	it("keeps a founder_review round open for seven days", async () => {
+		const result = await gate(
+			args({
+				checkpoint: "founder_review",
+				founderReviewEvidence: {
+					runId: "run-1758",
+					founderId: "123456789012345678",
+					hostedUrl: "https://reports.example/FLY-1758/prd-v1",
+					artifacts: [{ path: "review.html", blobSha: "a".repeat(40) }],
+				},
+			}),
+		);
+		const db = new CommDB(dbPath);
+		try {
+			const question = db.getMessageById(result.questionId as string);
+			const lifetimeMs =
+				Date.parse(question?.expires_at ?? "") -
+				Date.parse(question?.created_at ?? "");
+			expect(lifetimeMs).toBe(7 * 24 * 60 * 60 * 1000);
+		} finally {
+			db.close();
+		}
+	});
+
 	it.each([
 		["missing all evidence", undefined],
 		[
