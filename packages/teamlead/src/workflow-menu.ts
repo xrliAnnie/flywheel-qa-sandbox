@@ -333,6 +333,38 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 				`${source} code must have three executable nodes plus a max-3 QA loop and an unbounded founder-rework loop`,
 			);
 		}
+	} else if (shape === "simple_code") {
+		const executable = nodes.filter((node) => node.type !== "gate");
+		const implement = executable.find((node) => node.role === "implement");
+		const qa = executable.find((node) => node.role === "qa");
+		const qaLoop = loops.find(
+			(loop) =>
+				loop.from === qa?.id &&
+				loop.to === implement?.id &&
+				loop.loopWhen === "qa_fail" &&
+				loop.exitWhen === "qa_pass",
+		);
+		const founderLoop = loops.find(
+			(loop) =>
+				loop.from === gates[0]?.id &&
+				loop.to === implement?.id &&
+				loop.loopWhen === "founder_feedback_kickback" &&
+				loop.exitWhen === "founder_approved",
+		);
+		if (
+			executableCount !== 2 ||
+			!implement ||
+			!qa ||
+			loops.length !== 2 ||
+			qaLoop?.maxIterations !== 10 ||
+			qaLoop?.onLimit !== "escalate" ||
+			founderLoop?.maxIterations !== undefined ||
+			founderLoop?.onLimit !== undefined
+		) {
+			throw new Error(
+				`${source} simple_code must have implement and QA executable nodes plus a max-10 QA loop and an unbounded founder-rework loop`,
+			);
+		}
 	} else if (executableCount !== 1 || loops.length !== 0) {
 		throw new Error(
 			`${source} single-session shape must have one executable node and no loops`,
@@ -387,9 +419,40 @@ function resolveAlias(alias: string): {
 	return { vendor: entry.runtimeVendor, model: entry.id };
 }
 
+function menuReviewPairs(menu: WorkflowMenuShape): Array<{
+	qa: WorkflowMenuNode;
+	producer: WorkflowMenuNode;
+}> {
+	return menu.nodes
+		.filter((node) => node.role === "qa")
+		.map((qa) => {
+			const producers = menu.edges
+				.filter((edge) => edge.to === qa.id)
+				.map((edge) => menu.nodes.find((node) => node.id === edge.from))
+				.filter(
+					(node): node is WorkflowMenuNode => !!node && node.type !== "gate",
+				);
+			if (producers.length !== 1) {
+				throw new Error(
+					`menu ${menu.shape} QA node ${qa.id} must have exactly one executable producer`,
+				);
+			}
+			return { qa, producer: producers[0]! };
+		});
+}
+
 export function compileWorkflowMenuSeed(
 	menu: WorkflowMenuShape,
 ): LoadedWorkflowSeed {
+	for (const { qa, producer } of menuReviewPairs(menu)) {
+		const qaVendor = resolveAlias(qa.defaultModel!).vendor;
+		const producerVendor = resolveAlias(producer.defaultModel!).vendor;
+		if (qaVendor === producerVendor) {
+			throw new Error(
+				`menu ${menu.shape} QA node ${qa.id} uses the same vendor as producer ${producer.id}`,
+			);
+		}
+	}
 	const approvalGate = menu.nodes.find((node) => node.type === "gate")!;
 	const hasPrProducer = menu.nodes.some(
 		(node) =>
@@ -464,10 +527,9 @@ export function compileWorkflowMenuSeed(
 						predicate: "founder_approved",
 					},
 				}),
-		ship_claims:
-			menu.shape === "code"
-				? ["qa_passed", "founder_approved"]
-				: ["founder_approved"],
+		ship_claims: menu.nodes.some((node) => node.role === "qa")
+			? ["qa_passed", "founder_approved"]
+			: ["founder_approved"],
 	});
 	const seed = {
 		templateId: workflowMenuTemplateId(menu.shape),
@@ -489,6 +551,55 @@ export function importWorkflowMenuSeeds(
 	for (const seed of loadWorkflowMenuSeeds()) {
 		store.importWorkflowTemplateSeed(seed, env);
 	}
+}
+
+export function reconcileMenuCategoryBindings(
+	store: Pick<
+		StateStore,
+		"getWorkflowCategoryBindingExact" | "bindWorkflowCategory"
+	>,
+	projects: readonly { projectName: string; projectRoot: string }[],
+	log: (message: string) => void = console.warn,
+): { bound: number; existing: number; errors: string[] } {
+	let bound = 0;
+	let existing = 0;
+	const errors: string[] = [];
+	for (const project of projects) {
+		if (!hasProjectMenuConfig(project.projectRoot)) continue;
+		let adopted: Set<WorkflowMenuShapeId>;
+		try {
+			adopted = new Set(
+				Object.values(
+					loadProjectMenuConfig(project.projectRoot).adoption,
+				).flat(),
+			);
+		} catch (error) {
+			const detail = `${project.projectName}:config:${error instanceof Error ? error.message : String(error)}`;
+			errors.push(detail);
+			log(`[workflow-menu] binding reconcile failed: ${detail}`);
+			continue;
+		}
+		for (const shape of adopted) {
+			if (store.getWorkflowCategoryBindingExact(project.projectName, shape)) {
+				existing += 1;
+				continue;
+			}
+			try {
+				store.bindWorkflowCategory({
+					project: project.projectName,
+					taskCategory: shape,
+					templateId: workflowMenuTemplateId(shape),
+					updatedBy: "system:menu-binding-reconcile",
+				});
+				bound += 1;
+			} catch (error) {
+				const detail = `${project.projectName}:${shape}:${error instanceof Error ? error.message : String(error)}`;
+				errors.push(detail);
+				log(`[workflow-menu] binding reconcile failed: ${detail}`);
+			}
+		}
+	}
+	return { bound, existing, errors };
 }
 
 export function loadProjectMenuConfig(projectRoot: string): ProjectMenuConfig {
@@ -624,6 +735,10 @@ export function resolveMenuOverrides(
 		string,
 		{ model: string; effort: WorkflowEffort; overridden: boolean }
 	> = {};
+	const selected = new Map<
+		string,
+		{ alias: string; vendor: "claude" | "codex" }
+	>();
 	for (const node of executable) {
 		const rawOverride = overrides[node.id];
 		const override =
@@ -662,6 +777,10 @@ export function resolveMenuOverrides(
 			);
 		}
 		const resolved = resolveAlias(requestedModel);
+		selected.set(node.id, {
+			alias: requestedModel,
+			vendor: resolved.vendor,
+		});
 		if (override) {
 			nodes[node.id] = {
 				vendor: resolved.vendor,
@@ -674,6 +793,30 @@ export function resolveMenuOverrides(
 			effort: effort as WorkflowEffort,
 			overridden: override !== undefined,
 		};
+	}
+	for (const { qa, producer } of menuReviewPairs(menu)) {
+		const qaSelection = selected.get(qa.id)!;
+		const producerSelection = selected.get(producer.id)!;
+		if (qaSelection.vendor === producerSelection.vendor) {
+			const legal = [
+				...producer
+					.models!.filter(
+						(model) => resolveAlias(model.model).vendor !== qaSelection.vendor,
+					)
+					.map((model) => `${producer.id}:${model.model}`),
+				...qa
+					.models!.filter(
+						(model) =>
+							resolveAlias(model.model).vendor !== producerSelection.vendor,
+					)
+					.map((model) => `${qa.id}:${model.model}`),
+			];
+			throw new WorkflowMenuValidationError(
+				"SAME_VENDOR_REVIEW_COMBINATION",
+				`menu ${menu.shape} QA node ${qa.id} and producer ${producer.id} both resolve to ${qaSelection.vendor}`,
+				legal,
+			);
+		}
 	}
 	return {
 		templateOverride: {

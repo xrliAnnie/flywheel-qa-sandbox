@@ -105,7 +105,7 @@ husks="$(find "$PKG_ROOT/node_modules" -mindepth 1 -maxdepth 2 -type d -empty 2>
   && pass "③ agents/ runtime prompts at PKG_ROOT (run-infra sentinel resolvable)" \
   || fail "③ agents/ prompts missing from PKG_ROOT"
 menus_ok=1
-for menu in code prd design prototype generic; do
+for menu in code prd design prototype generic simple_code; do
   [ -f "$PKG_ROOT/menus/shapes/$menu.yaml" ] || menus_ok=0
 done
 [ "$menus_ok" -eq 1 ] \

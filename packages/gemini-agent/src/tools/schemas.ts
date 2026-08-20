@@ -85,7 +85,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					type: "string",
 					enum: [...WORKFLOW_MENU_SHAPES],
 					description:
-						"Required canonical menu: code for engineering delivery, prd for product definition, design for visual/UX design, prototype for feasibility prototypes, or generic for a one-session general task. It changes routing only for projects with menu/work-kind dispatch enabled.",
+						"Required canonical menu: code for engineering work needing a distinct design phase, simple_code for a bounded code change followed by QA, prd for product definition, design for visual/UX design, prototype for feasibility prototypes, or generic for a non-code one-session task. It changes routing only for projects with menu/work-kind dispatch enabled.",
 				},
 				agentName: {
 					type: "string",

@@ -7,14 +7,20 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
+import {
+	compileWorkflowMenuSeed,
+	loadWorkflowMenuLibrary,
+} from "../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const cleanups: string[] = [];
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 afterEach(() => {
 	for (const root of cleanups.splice(0))
 		rmSync(root, { recursive: true, force: true });
@@ -373,6 +379,72 @@ describe("generalized execution admission and terminal contracts", () => {
 				env: enabled,
 			}),
 		).toEqual({ ok: false, reason: "same_vendor_review" });
+		store.close();
+	});
+
+	it("admits the compiled simple_code QA after its cross-vendor implement producer", async () => {
+		const store = await StateStore.create(":memory:");
+		const menu = loadWorkflowMenuLibrary().find(
+			(candidate) => candidate.shape === "simple_code",
+		)!;
+		const seed = compileWorkflowMenuSeed(menu);
+		store.importWorkflowTemplateSeed(seed, enabled);
+		store.materializeWorkflowRun({
+			runId: "simple-code-run",
+			issueId: "FLY-1859",
+			projectName: "flywheel",
+			taskCategory: "simple_code",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			canonicalRoot: REPO_ROOT,
+			env: enabled,
+			entryKind: "workflow_v2",
+			startReservation: {
+				idempotencyKey: "simple-code-start",
+				selectionDigest: "selection",
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "simple-implement",
+				createdAt: "2026-08-19T00:00:00.000Z",
+			},
+		});
+
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "simple-code-run",
+				nodeId: "implement",
+				executionId: "simple-implement",
+				attempt: 1,
+				now: "2026-08-19T00:01:00.000Z",
+				expiresAt: "2026-08-19T01:01:00.000Z",
+				absoluteDeadlineAt: "2026-08-20T00:01:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.commitWorkflowTransitionTx({
+				runId: "simple-code-run",
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "simple-implement",
+				outcome: "implement_done",
+				successorExecutionId: "simple-qa",
+				now: "2026-08-19T00:05:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "simple-code-run",
+				nodeId: "qa",
+				executionId: "simple-qa",
+				attempt: 1,
+				now: "2026-08-19T00:06:00.000Z",
+				expiresAt: "2026-08-19T01:06:00.000Z",
+				absoluteDeadlineAt: "2026-08-20T00:06:00.000Z",
+				env: enabled,
+			}),
+		).toMatchObject({ ok: true, submissionCredential: expect.any(String) });
 		store.close();
 	});
 

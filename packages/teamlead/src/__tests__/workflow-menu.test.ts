@@ -21,6 +21,7 @@ import {
 	importWorkflowMenuSeeds,
 	loadProjectMenuConfig,
 	loadWorkflowMenuLibrary,
+	reconcileMenuCategoryBindings,
 	resolveLeadMenus,
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
@@ -37,10 +38,11 @@ const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const OPUS_EFFORTS = ["low", "medium", "high", "max"];
 
 describe("founder-approved workflow menu source", () => {
-	it("loads exactly five shapes and removes research", () => {
+	it("loads exactly six shapes and removes research", () => {
 		const menus = loadWorkflowMenuLibrary();
 		expect(menus.map((menu) => menu.shape)).toEqual([
 			"code",
+			"simple_code",
 			"prd",
 			"design",
 			"prototype",
@@ -55,12 +57,110 @@ describe("founder-approved workflow menu source", () => {
 	it("uses one category-to-template table for validation, compilation, and cutover projection", () => {
 		expect(WORKFLOW_MENU_BINDINGS).toEqual([
 			{ taskCategory: "code", templateId: "tpl_code" },
+			{ taskCategory: "simple_code", templateId: "tpl_simple_code" },
 			{ taskCategory: "prd", templateId: "tpl_prd" },
 			{ taskCategory: "design", templateId: "tpl_design" },
 			{ taskCategory: "prototype", templateId: "tpl_prototype" },
 			{ taskCategory: "generic", templateId: "tpl_generic_menu" },
 		]);
 		expect(FLY1436_TARGET_BINDINGS).toBe(WORKFLOW_MENU_BINDINGS);
+	});
+
+	it("pins the Simple Code DAG to GPT-5.6 implement then cross-vendor Opus 5 QA", () => {
+		const menu = loadWorkflowMenuLibrary().find(
+			(candidate) => candidate.shape === "simple_code",
+		)!;
+		expect(
+			menu.nodes.map((node) => ({
+				id: node.id,
+				role: node.role,
+				defaultModel: node.defaultModel,
+			})),
+		).toEqual([
+			{ id: "implement", role: "implement", defaultModel: "codex" },
+			{ id: "qa", role: "qa", defaultModel: "opus" },
+			{ id: "founder_gate", role: undefined, defaultModel: undefined },
+		]);
+		expect(menu.edges).toEqual([
+			{
+				id: "implement_done",
+				from: "implement",
+				to: "qa",
+				condition: "implement_done",
+			},
+			{
+				id: "qa_pass",
+				from: "qa",
+				to: "founder_gate",
+				condition: "qa_pass",
+			},
+		]);
+		expect(menu.loops).toEqual([
+			{
+				id: "qa_retry",
+				from: "qa",
+				to: "implement",
+				loopWhen: "qa_fail",
+				exitWhen: "qa_pass",
+				maxIterations: 10,
+				onLimit: "escalate",
+			},
+			{
+				id: "founder_rework",
+				from: "founder_gate",
+				to: "implement",
+				loopWhen: "founder_feedback_kickback",
+				exitWhen: "founder_approved",
+			},
+		]);
+
+		const seed = compileWorkflowMenuSeed(menu);
+		expect(seed).toMatchObject({
+			templateId: "tpl_simple_code",
+			manifest: {
+				ship_claims: ["qa_passed", "founder_approved"],
+				approval_gate: { node: "founder_gate" },
+			},
+		});
+		expect(seed.manifest.nodes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "implement",
+					type: "implement",
+					vendor: "codex",
+					model: "gpt-5.6-sol",
+				}),
+				expect.objectContaining({
+					id: "qa",
+					type: "qa",
+					vendor: "claude",
+					model: "claude-opus-5",
+				}),
+				expect.objectContaining({ type: "land", execution: "engine" }),
+			]),
+		);
+	});
+
+	it.each([
+		["a QA role", "    role: qa", "    role: implement"],
+		["the max-10 QA loop", "    maxIterations: 10", "    maxIterations: 2"],
+	] as const)("rejects simple_code without %s", (_case, before, after) => {
+		const shapes = mkdtempSync(join(tmpdir(), "fly1859-invalid-simple-code-"));
+		try {
+			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
+			const filename = join(shapes, "simple_code.yaml");
+			writeFileSync(
+				filename,
+				readFileSync(filename, "utf8").replace(before, after),
+			);
+			expect(() =>
+				loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
+			).toThrow(
+				/simple_code must have implement and QA executable nodes.*max-10 QA loop/i,
+			);
+		} finally {
+			rmSync(shapes, { recursive: true, force: true });
+		}
 	});
 
 	it("pins the Code DAG, retry loop, exact models, defaults, and nested efforts", () => {
@@ -138,7 +238,7 @@ describe("founder-approved workflow menu source", () => {
 			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
 			const codePath = join(shapes, "code.yaml");
 			const code = readFileSync(codePath, "utf8").replace(
-				/    maxIterations: 3\n    onLimit: escalate\n$/,
+				/ {4}maxIterations: 3\n {4}onLimit: escalate\n$/,
 				"",
 			);
 			writeFileSync(codePath, code);
@@ -172,7 +272,7 @@ describe("founder-approved workflow menu source", () => {
 
 	it("keeps every single-session menu to one executable node plus founder gate, defaulting to Opus high", () => {
 		const menus = loadWorkflowMenuLibrary().filter(
-			(menu) => menu.shape !== "code",
+			(menu) => menu.shape !== "code" && menu.shape !== "simple_code",
 		);
 		expect(
 			menus.map((menu) => ({
@@ -261,7 +361,7 @@ describe("founder-approved workflow menu source", () => {
 			generic: ".flywheel/agents/general-executor.md",
 		});
 		expect(config.adoption).toEqual({
-			"flywheel-eng-lead": ["code", "generic"],
+			"flywheel-eng-lead": ["code", "simple_code", "generic"],
 			"flywheel-product-lead": ["prd", "design", "prototype"],
 		});
 		expect(
@@ -269,7 +369,7 @@ describe("founder-approved workflow menu source", () => {
 				projectRoot: REPO_ROOT,
 				leadId: "flywheel-eng-lead",
 			}).map((menu) => menu.shape),
-		).toEqual(["code", "generic"]);
+		).toEqual(["code", "simple_code", "generic"]);
 		expect(
 			resolveLeadMenus({
 				projectRoot: REPO_ROOT,
@@ -392,7 +492,7 @@ describe("founder-approved workflow menu source", () => {
 		}
 	});
 
-	it("imports the five compiled identities into the SQLite registry", async () => {
+	it("imports the six compiled identities into the SQLite registry", async () => {
 		const store = await StateStore.create(":memory:");
 		importWorkflowMenuSeeds(store);
 		for (const binding of WORKFLOW_MENU_BINDINGS) {
@@ -406,6 +506,69 @@ describe("founder-approved workflow menu source", () => {
 					?.schema_version,
 			).toBe(2);
 		}
+		store.close();
+	});
+
+	it("reconciles missing adopted bindings without overwriting an existing owner", async () => {
+		const store = await StateStore.create(":memory:");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "custom-owner",
+		});
+
+		const result = reconcileMenuCategoryBindings(store, [
+			{ projectName: "flywheel", projectRoot: REPO_ROOT },
+		]);
+
+		expect(result).toEqual({ bound: 5, existing: 1, errors: [] });
+		expect(
+			store.getWorkflowCategoryBindingExact("flywheel", "code"),
+		).toMatchObject({ template_id: "tpl_code", updated_by: "custom-owner" });
+		expect(
+			store.getWorkflowCategoryBindingExact("flywheel", "simple_code"),
+		).toMatchObject({
+			template_id: "tpl_simple_code",
+			updated_by: "system:menu-binding-reconcile",
+		});
+		expect(
+			store.getWorkflowCategoryBindingExact("flywheel", "generic"),
+		).toMatchObject({
+			template_id: "tpl_generic_menu",
+			updated_by: "system:menu-binding-reconcile",
+		});
+		store.close();
+	});
+
+	it("reports an unavailable adopted template without aborting binding reconcile", async () => {
+		const store = await StateStore.create(":memory:");
+		importWorkflowMenuSeeds(store);
+		expect(
+			store.retireWorkflowTemplate({
+				templateId: "tpl_simple_code",
+				actor: "test",
+				reason: "exercise fail-loud reconcile",
+			}),
+		).toMatchObject({ status: "retired" });
+		const logs: string[] = [];
+
+		const result = reconcileMenuCategoryBindings(
+			store,
+			[{ projectName: "flywheel", projectRoot: REPO_ROOT }],
+			(message) => logs.push(message),
+		);
+
+		expect(result).toMatchObject({ bound: 5, existing: 0 });
+		expect(result.errors).toEqual([
+			expect.stringMatching(
+				/flywheel:simple_code:.*published and not retired/i,
+			),
+		]);
+		expect(logs).toEqual([
+			expect.stringMatching(/binding reconcile failed: flywheel:simple_code/i),
+		]);
 		store.close();
 	});
 
@@ -596,6 +759,32 @@ describe("workflow menu override validation", () => {
 			}
 		},
 	);
+
+	it("fails loud when an override would make producer and QA use one vendor", () => {
+		const simple = loadWorkflowMenuLibrary().find(
+			(menu) => menu.shape === "simple_code",
+		)!;
+		try {
+			resolveMenuOverrides(simple, { qa: { model: "codex" } });
+			throw new Error("expected same-vendor validation failure");
+		} catch (error) {
+			expect(error).toBeInstanceOf(WorkflowMenuValidationError);
+			expect(error).toMatchObject({
+				code: "SAME_VENDOR_REVIEW_COMBINATION",
+				legal: ["implement:opus", "implement:fable", "qa:opus"],
+			});
+		}
+	});
+
+	it("rejects a same-vendor default combination at compile time", () => {
+		const simple = structuredClone(
+			loadWorkflowMenuLibrary().find((menu) => menu.shape === "simple_code")!,
+		);
+		simple.nodes.find((node) => node.id === "qa")!.defaultModel = "codex";
+		expect(() => compileWorkflowMenuSeed(simple)).toThrow(
+			/simple_code.*qa.*same vendor.*implement/i,
+		);
+	});
 });
 
 describe("Opus 4.6 menu compatibility", () => {
@@ -626,14 +815,14 @@ describe("Opus 4.6 menu compatibility", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("compiles all five Opus nodes at high without xhigh", () => {
+	it("compiles all six default-Opus nodes at high without xhigh", () => {
 		const opusNodes = loadWorkflowMenuLibrary().flatMap((menu) =>
 			menu.nodes
 				.filter((node) => node.defaultModel === "opus")
 				.map((node) => ({ menu, node })),
 		);
 
-		expect(opusNodes).toHaveLength(5);
+		expect(opusNodes).toHaveLength(6);
 		for (const { menu, node } of opusNodes) {
 			const policy = node.models?.find((model) => model.model === "opus");
 			expect(policy?.allowedEfforts, menu.shape).toEqual([
@@ -656,7 +845,14 @@ describe("Opus 4.6 menu compatibility", () => {
 	});
 
 	it("still rejects an effort the bound model cannot run", () => {
-		for (const shape of ["code", "prd", "design", "prototype", "generic"]) {
+		for (const shape of [
+			"code",
+			"simple_code",
+			"prd",
+			"design",
+			"prototype",
+			"generic",
+		]) {
 			cpSync(
 				join(REPO_ROOT, "menus", "shapes", `${shape}.yaml`),
 				join(root, `${shape}.yaml`),

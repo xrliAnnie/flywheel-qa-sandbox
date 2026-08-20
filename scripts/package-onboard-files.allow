@@ -16,6 +16,7 @@ menus/shapes/prd.yaml
 menus/shapes/design.yaml
 menus/shapes/prototype.yaml
 menus/shapes/generic.yaml
+menus/shapes/simple_code.yaml
 # ── curated scripts (per-file; keep in sync with PO_SCRIPT_FILES + audit) ──
 scripts/flywheel-onboard.sh
 scripts/flywheel-buddy.sh

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { executeLandOperation } from "../bridge/land-executor.js";
@@ -19,6 +20,10 @@ import {
 	StateStore,
 	type WorkflowDeadExecutionWatchRow,
 } from "../StateStore.js";
+import {
+	compileWorkflowMenuSeed,
+	loadWorkflowMenuLibrary,
+} from "../workflow-menu.js";
 import { buildWorkflowRunSnapshotV1 } from "../workflow-run-snapshot.js";
 import type {
 	ShipReadyHandledOutcome,
@@ -47,6 +52,7 @@ vi.mock("../bridge/generalized-launch-recovery.js", async (importOriginal) => {
 });
 
 const HEAD = "a".repeat(40);
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
@@ -228,6 +234,36 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 			now: "2026-07-16T00:10:00.000Z",
 		});
 	}
+	return store;
+}
+
+async function storeWithRootImplementIntent() {
+	const store = await StateStore.create(":memory:");
+	const menu = loadWorkflowMenuLibrary().find(
+		(candidate) => candidate.shape === "simple_code",
+	)!;
+	const seed = compileWorkflowMenuSeed(menu);
+	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+	store.materializeWorkflowRun({
+		runId: "simple-run",
+		issueId: "FLY-1859",
+		projectName: "flywheel",
+		taskCategory: "simple_code",
+		templateId: seed.templateId,
+		claimsReadEnrolled: true,
+		actor: "lead",
+		canonicalRoot: REPO_ROOT,
+		env: WORKFLOW_ON,
+		entryKind: "workflow_v2",
+		startReservation: {
+			idempotencyKey: "simple-start",
+			selectionDigest: "simple-selection",
+			nodeId: "implement",
+			attempt: 1,
+			executionId: "simple-implement-1",
+			createdAt: "2026-08-19T00:00:00.000Z",
+		},
+	});
 	return store;
 }
 
@@ -843,6 +879,36 @@ describe("WorkflowEngineDispatcher", () => {
 				uid: "issue_input_baseline:run-1",
 			},
 		});
+		store.close();
+	});
+
+	it("launches an attempt-1 root implement without inventing a predecessor", async () => {
+		const store = await storeWithRootImplementIntent();
+		const fake = fakeStartDispatcher(store, {
+			prepareIssueDelivery: "authoritative",
+		});
+		const resolvePredecessorHead = vi.fn(async () => HEAD);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-19T00:01:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1859-root-implement-")),
+			resolvePredecessorHead,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.requests).toHaveLength(1);
+		expect(fake.requests[0]).toMatchObject({
+			sessionRole: "implement",
+			generalizedExecution: {
+				executionId: "simple-implement-1",
+				nodeId: "implement",
+				attempt: 1,
+			},
+		});
+		expect(fake.requests[0]?.startPoint).toBeUndefined();
+		expect(resolvePredecessorHead).not.toHaveBeenCalled();
 		store.close();
 	});
 

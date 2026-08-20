@@ -82,6 +82,7 @@ describe("GET /api/workflow/menus", () => {
 		});
 		expect(body.menus.map((menu: { item: string }) => menu.item)).toEqual([
 			"code",
+			"simple_code",
 			"generic",
 		]);
 		expect(body.menus[0]).toMatchObject({

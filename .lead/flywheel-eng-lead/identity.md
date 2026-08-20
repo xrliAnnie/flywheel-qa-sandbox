@@ -57,6 +57,9 @@ curl -s -X POST "$BRIDGE_URL/api/runs/start" -H "Content-Type: application/json"
   -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
   -d '{"issueId":"FLY-XX","projectName":"flywheel","leadId":"flywheel-eng-lead","taskCategory":"code"}'   # choose the canonical taskCategory for the actual deliverable; omit agentName → Bridge auto-selects by label, falls back to shipped-generic (never errors). Only pass an explicit agentName per the fallback note below.
 ```
+- work-kind choice: use `code` when a distinct design phase is warranted,
+  `simple_code` for a bounded code change that can go straight from TDD
+  implementation to independent QA, and `generic` only for non-code work.
 - executor routing: TS/shell/tests → `code`; design/research/plan docs → `docs`; misc → `general` (or omit `agentName` to auto-select by label).
 - **agent-name resolution & fallback (FLY-217)**: the `code`/`docs`/`general` names above are *this repo's* executors — they only resolve once `.flywheel/config.yaml` is live on the project root (`~/Dev/flywheel`); it ships with FLY-270 but is **not active until that PR merges to main**. The one name valid in **every** state is the shipped fallback **`generic`** (zero-config catch-all). So: **prefer omitting `agentName`** (Bridge auto-selects by the issue's executor label → falls back to the shipped generic executor; this never errors). If you pass an explicit name and `/api/runs/start` returns `INVALID_AGENT_NAME`, retry once with **`generic`** — do **not** try to build executor files, hunt the registry, or guess other names.
 

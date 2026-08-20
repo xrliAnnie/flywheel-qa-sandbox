@@ -79,14 +79,21 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"utf8",
 		);
 		expect(rules).toContain("FLY-1436 menu dispatch contract");
-		for (const category of ["code", "prd", "design", "prototype", "generic"]) {
+		for (const category of [
+			"code",
+			"simple_code",
+			"prd",
+			"design",
+			"prototype",
+			"generic",
+		]) {
 			expect(rules).toContain(`\`${category}\``);
 		}
 		expect(rules).toContain('"issueId":"<issue_id>"');
 		expect(rules).toContain('"projectName":"<project_name>"');
 		expect(rules).toContain('"leadId":"<lead_id>"');
 		expect(rules).toContain('"taskCategory":"<task_category>"');
-		expect(rules).toContain("other single-session work");
+		expect(rules).toContain("strictly non-code");
 		expect(rules).toContain("fail loud with HTTP 400");
 
 		const syntheticFutureLead = runBundle(

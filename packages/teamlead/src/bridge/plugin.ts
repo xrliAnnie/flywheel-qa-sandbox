@@ -118,7 +118,10 @@ import {
 	type WorkflowEngineAlertIdentity,
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
-import { importWorkflowMenuSeeds } from "../workflow-menu.js";
+import {
+	importWorkflowMenuSeeds,
+	reconcileMenuCategoryBindings,
+} from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import {
 	isWorkflowManifestLand,
@@ -4311,6 +4314,10 @@ export async function startBridge(
 	const retirement = retireLegacyWorkflowTemplates(store);
 	console.warn(
 		`[workflow-template] FLY-1693 retirement reconcile: unbound=${retirement.unbound} retired=${retirement.retired} blocked=${JSON.stringify(retirement.blocked)} errors=${JSON.stringify(retirement.errors)}`,
+	);
+	const menuBindings = reconcileMenuCategoryBindings(store, projects);
+	console.warn(
+		`[workflow-menu] binding reconcile: bound=${menuBindings.bound} existing=${menuBindings.existing} errors=${JSON.stringify(menuBindings.errors)}`,
 	);
 	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
 	if (strandedGeneralized.length > 0) {

@@ -7,6 +7,7 @@
  */
 export const WORKFLOW_MENU_BINDINGS = [
 	{ taskCategory: "code", templateId: "tpl_code" },
+	{ taskCategory: "simple_code", templateId: "tpl_simple_code" },
 	{ taskCategory: "prd", templateId: "tpl_prd" },
 	{ taskCategory: "design", templateId: "tpl_design" },
 	{ taskCategory: "prototype", templateId: "tpl_prototype" },

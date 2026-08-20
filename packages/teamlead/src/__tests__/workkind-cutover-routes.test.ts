@@ -165,7 +165,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
 				}
 				if (path.endsWith("schemas.js")) {
-					return 'taskCategory code prd design prototype generic required: ["issueId", "taskCategory"]';
+					return 'taskCategory code simple_code prd design prototype generic required: ["issueId", "taskCategory"]';
 				}
 				throw new Error(`unexpected path ${path}`);
 			},
@@ -182,7 +182,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			deployedSha: "a".repeat(40),
 		});
 		expect(evidence.assetsDigest).toMatch(/^[0-9a-f]{64}$/);
-		expect(paths).toHaveLength(9);
+		expect(paths).toHaveLength(10);
 		expect(paths.every((path) => path.startsWith("/canonical/flywheel/"))).toBe(
 			true,
 		);
@@ -209,7 +209,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
 				}
 				if (path.endsWith("schemas.js")) {
-					return 'taskCategory code prd design prototype generic required: ["issueId", "taskCategory"]';
+					return 'taskCategory code simple_code prd design prototype generic required: ["issueId", "taskCategory"]';
 				}
 				throw new Error(`unexpected path ${path}`);
 			},
@@ -410,7 +410,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			"replayed",
 		]);
 		expect(deps.store.listWorkflowTemplateAudit()).toHaveLength(
-			auditBefore + 6,
+			auditBefore + FLY1436_TARGET_BINDINGS.length + 1,
 		);
 	});
 

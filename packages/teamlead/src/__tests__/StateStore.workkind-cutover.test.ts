@@ -57,7 +57,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 		store.close();
 	});
 
-	it("commits all five bindings, row audits, and the durable receipt in one transaction", async () => {
+	it("commits all six bindings, row audits, and the durable receipt in one transaction", async () => {
 		const store = await seededStore();
 		const auditBefore = store.listWorkflowTemplateAudit().length;
 
@@ -72,7 +72,7 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 				snapshotHash: "snapshot-hash",
 				before: BASELINE,
 				after: TARGET_SORTED,
-				auditCount: 6,
+				auditCount: TARGET.length + 1,
 			},
 		});
 		expect(store.listWorkflowCategoryBindings("flywheel")).toMatchObject(
@@ -81,7 +81,9 @@ describe("StateStore FLY-1436 work-kind cutover", () => {
 				template_id: binding.templateId,
 			})),
 		);
-		expect(store.listWorkflowTemplateAudit()).toHaveLength(auditBefore + 6);
+		expect(store.listWorkflowTemplateAudit()).toHaveLength(
+			auditBefore + TARGET.length + 1,
+		);
 		expect(
 			store.getWorkflowBindingCutoverClaim("fly-1436-activate-1"),
 		).toMatchObject({

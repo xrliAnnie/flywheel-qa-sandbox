@@ -139,7 +139,8 @@ PO_MENU_FILES=${PO_MENU_FILES:-"shapes/code.yaml
 shapes/prd.yaml
 shapes/design.yaml
 shapes/prototype.yaml
-shapes/generic.yaml"}
+shapes/generic.yaml
+shapes/simple_code.yaml"}
 
 PO_PAYLOAD_NAME=${PO_PAYLOAD_NAME:-flywheel-onboard-payload}
 
