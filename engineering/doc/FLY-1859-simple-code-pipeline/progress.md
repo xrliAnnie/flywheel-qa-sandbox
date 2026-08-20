@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: implement
-phaseCursor: 1/4
-updated: 2026-08-20T06:43:53.025Z
-nextStep: change only simple_code maxIterations and parser guard from 3 to 10
+phaseCursor: 2/4
+updated: 2026-08-20T06:44:45.943Z
+nextStep: run affected and full repository verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: implement (1/4)
-**next**: change only simple_code maxIterations and parser guard from 3 to 10
+**phase**: implement (2/4)
+**next**: run affected and full repository verification
