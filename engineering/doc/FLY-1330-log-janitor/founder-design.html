@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1330 日志管家(log janitor)设计方案</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,"PingFang SC",sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.65; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:18px; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.navy { border-left:4px solid #1a365d; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:10px; }
+  p { margin-bottom:10px; font-size:15px; }
+  .hl { background:#fff8e1; padding:1px 5px; border-radius:4px; }
+  .term { color:#007aff; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:14px; margin:10px 0; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:6px 8px; border-bottom:2px solid #e5e5ea; white-space:nowrap; }
+  td { padding:7px 8px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .num { font-family:'SF Mono',Menlo,monospace; white-space:nowrap; }
+  .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; }
+  .tag.del { background:#ffe5e0; color:#c0392b; }
+  .tag.keep { background:#e8f5e9; color:#1e8449; }
+  .diagram { overflow-x:auto; background:#fff; border-radius:8px; margin:8px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  ul { margin:6px 0 10px 20px; }
+  li { margin-bottom:6px; font-size:15px; }
+  .comment-box { margin-top:14px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12px; color:#86868b; display:block; margin-bottom:4px; }
+  .comment-box textarea { width:100%; min-height:52px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:14px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-card { border-left:4px solid #1a365d; }
+  #summary-list { font-size:14px; }
+  #summary-list .sum-item { margin-bottom:10px; padding:8px 10px; background:#f5f5f7; border-radius:8px; }
+  #summary-list .sum-sec { font-weight:600; color:#1a365d; font-size:13px; margin-bottom:2px; }
+  #copy-all { margin-top:10px; background:#007aff; color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  #copy-all:active { opacity:.7; }
+  #copy-status { margin-left:10px; font-size:13px; color:#34c759; }
+  .empty-hint { color:#86868b; font-size:14px; }
+  .small { font-size:13px; color:#86868b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🧹 FLY-1330 日志管家(log janitor)设计方案</h1>
+  <div class="sub">设计评审稿 · 2026-08-18 · 每个板块下方都可以留评论,页面底部一键汇总复制</div>
+
+  <!-- S1 一句话 -->
+  <div class="card blue" data-sec="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p>给机器装一个<span class="term">日志管家</span>:每天凌晨自动把「超过 30 天、已经收尾、没人在用」的 AI 历史对话记录和过期文件清掉,<span class="hl">首轮预计腾出约 12–13GB</span>,以后不再无限积攒——而且每删一个文件都记账,活跃对话绝对不碰。</p>
+    <p class="small">背景:你 7 月问过「日志积攒可以定时清理吗?」;8-18 宿主机宕机的事故链里,正好有一个涨到 1.5GB、从没人清理的 Codex 日志库——这单就是把这件事永久治好。</p>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s1" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S2 现状 -->
+  <div class="card amber" data-sec="现状:钱都堆在哪">
+    <h2>2 · 现状实测:空间都堆在哪(今天刚量的)</h2>
+    <table>
+      <tr><th>位置</th><th>大小</th><th>大头是什么</th></tr>
+      <tr><td>Codex 主目录<div class="small">(Codex = OpenAI 的编程 AI,团队里跑代码任务用)</div></td><td class="num">7.2G</td><td>历史对话记录 3.6G(其中 3.3G 超 30 天)+ 事故抢修留的回滚备份 1.5G(暂不能动)</td></tr>
+      <tr><td>Mufasa 的 Codex 目录</td><td class="num">5.1G</td><td><b>4.4G 是 Codex 软件自动升级留下的 17 个旧版本安装包</b>——纯粹的过期货</td></tr>
+      <tr><td>Infra Bot 的 Codex 目录</td><td class="num">6.0G</td><td>同样:5.3G 是 20 个旧版本安装包</td></tr>
+      <tr><td>Claude 历史对话</td><td class="num">7.0G</td><td>大头是<b>正在活跃的</b> Lead 长对话(比如 Tadashi 当前会话一个文件 1.5GB)——这不是垃圾,不该清也清不了</td></tr>
+    </table>
+    <p>两个和直觉不一样的发现:① 最大的可清理项不是日志,而是 <span class="hl">Codex 自动升级攒下的旧版本安装包(约 9.7G)</span>——删旧版本零风险;② Claude 其实<b>自带 30 天自动清理</b>而且一直在正常工作,所以 Claude 侧几乎不需要我们动手,只需补一个它漏掉的死角。</p>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s2" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S3 核心流程 -->
+  <div class="card green" data-sec="怎么清:三道防线">
+    <h2>3 · 怎么清:每个文件过三道防线,过不了就不删</h2>
+    <p>管家由 <span class="term">launchd</span>(macOS 自带的系统定时任务管家)每天凌晨 4:15 唤醒。每个候选文件必须<b>连过三道防线</b>才会被删;任何一道判断不了(比如账本读不到),一律按「保留」处理——宁可少删,绝不误删:</p>
+    <div class="diagram"><svg id="fly-1330-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1331.95px; background-color: white;" viewBox="0 0 1331.953125 290.828125" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1330-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1330-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1330-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1330-d1 .error-icon{fill:#552222;}#fly-1330-d1 .error-text{fill:#552222;stroke:#552222;}#fly-1330-d1 .edge-thickness-normal{stroke-width:1px;}#fly-1330-d1 .edge-thickness-thick{stroke-width:3.5px;}#fly-1330-d1 .edge-pattern-solid{stroke-dasharray:0;}#fly-1330-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1330-d1 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1330-d1 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1330-d1 .marker{fill:#333333;stroke:#333333;}#fly-1330-d1 .marker.cross{stroke:#333333;}#fly-1330-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1330-d1 p{margin:0;}#fly-1330-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1330-d1 .cluster-label text{fill:#333;}#fly-1330-d1 .cluster-label span{color:#333;}#fly-1330-d1 .cluster-label span p{background-color:transparent;}#fly-1330-d1 .label text,#fly-1330-d1 span{fill:#333;color:#333;}#fly-1330-d1 .node rect,#fly-1330-d1 .node circle,#fly-1330-d1 .node ellipse,#fly-1330-d1 .node polygon,#fly-1330-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1330-d1 .rough-node .label text,#fly-1330-d1 .node .label text,#fly-1330-d1 .image-shape .label,#fly-1330-d1 .icon-shape .label{text-anchor:middle;}#fly-1330-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1330-d1 .rough-node .label,#fly-1330-d1 .node .label,#fly-1330-d1 .image-shape .label,#fly-1330-d1 .icon-shape .label{text-align:center;}#fly-1330-d1 .node.clickable{cursor:pointer;}#fly-1330-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1330-d1 .arrowheadPath{fill:#333333;}#fly-1330-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1330-d1 .flowchart-link{stroke:#333333;fill:none;}#fly-1330-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1330-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1330-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1330-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1330-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1330-d1 .cluster text{fill:#333;}#fly-1330-d1 .cluster span{color:#333;}#fly-1330-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1330-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1330-d1 rect.text{fill:none;stroke-width:0;}#fly-1330-d1 .icon-shape,#fly-1330-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1330-d1 .icon-shape p,#fly-1330-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1330-d1 .icon-shape rect,#fly-1330-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1330-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1330-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1330-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1330-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M207.75,145.414L211.917,145.414C216.083,145.414,224.417,145.414,232.083,145.414C239.75,145.414,246.75,145.414,250.25,145.414L253.75,145.414" id="L_T_S_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_T_S_0" data-points="W3sieCI6MjA3Ljc1LCJ5IjoxNDUuNDE0MDYyNX0seyJ4IjoyMzIuNzUsInkiOjE0NS40MTQwNjI1fSx7IngiOjI1Ny43NSwieSI6MTQ1LjQxNDA2MjV9XQ==" marker-end="url(#fly-1330-d1_flowchart-v2-pointEnd)"/><path d="M425.5,145.414L429.667,145.414C433.833,145.414,442.167,145.414,449.833,145.414C457.5,145.414,464.5,145.414,468,145.414L471.5,145.414" id="L_S_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S_G_0" data-points="W3sieCI6NDI1LjUsInkiOjE0NS40MTQwNjI1fSx7IngiOjQ1MC41LCJ5IjoxNDUuNDE0MDYyNX0seyJ4Ijo0NzUuNSwieSI6MTQ1LjQxNDA2MjV9XQ==" marker-end="url(#fly-1330-d1_flowchart-v2-pointEnd)"/><path d="M723.098,118.184L739.803,114.056C756.508,109.927,789.918,101.671,818.123,97.542C846.328,93.414,869.328,93.414,880.828,93.414L892.328,93.414" id="L_G_K_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_G_K_0" data-points="W3sieCI6NzIzLjA5ODEzODk5MjY3NjEsInkiOjExOC4xODQwNzY0OTI2NzYxN30seyJ4Ijo4MjMuMzI4MTI1LCJ5Ijo5My40MTQwNjI1fSx7IngiOjg5Ni4zMjgxMjUsInkiOjkzLjQxNDA2MjV9XQ==" marker-end="url(#fly-1330-d1_flowchart-v2-pointEnd)"/><path d="M723.098,172.644L739.803,176.772C756.508,180.901,789.918,189.157,820.79,193.286C851.661,197.414,879.995,197.414,894.161,197.414L908.328,197.414" id="L_G_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_G_D_0" data-points="W3sieCI6NzIzLjA5ODEzODk5MjY3NjEsInkiOjE3Mi42NDQwNDg1MDczMjM4Mn0seyJ4Ijo4MjMuMzI4MTI1LCJ5IjoxOTcuNDE0MDYyNX0seyJ4Ijo5MTIuMzI4MTI1LCJ5IjoxOTcuNDE0MDYyNX1d" marker-end="url(#fly-1330-d1_flowchart-v2-pointEnd)"/><path d="M1004.328,197.414L1011.161,197.414C1017.995,197.414,1031.661,197.414,1041.995,197.414C1052.328,197.414,1059.328,197.414,1062.828,197.414L1066.328,197.414" id="L_D_A_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_A_0" data-points="W3sieCI6MTAwNC4zMjgxMjUsInkiOjE5Ny40MTQwNjI1fSx7IngiOjEwNDUuMzI4MTI1LCJ5IjoxOTcuNDE0MDYyNX0seyJ4IjoxMDcwLjMyODEyNSwieSI6MTk3LjQxNDA2MjV9XQ==" marker-end="url(#fly-1330-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_T_S_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_S_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(823.328125, 93.4140625)"><g class="label" data-id="L_G_K_0" transform="translate(-48, -24)"><foreignObject width="96" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>任何一道不过<br />或判断不了</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(823.328125, 197.4140625)"><g class="label" data-id="L_G_D_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>三道全过</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_A_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-T-0" transform="translate(107.875, 145.4140625)"><rect class="basic label-container" style="" x="-99.875" y="-51" width="199.75" height="102"/><g class="label" style="" transform="translate(-69.875, -36)"><rect/><foreignObject width="139.75" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>⏰ 每天凌晨 4:15<br />自动唤醒<br />(同一时刻只跑一份)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S-1" transform="translate(341.625, 145.4140625)"><rect class="basic label-container" style="" x="-83.875" y="-39" width="167.75" height="78"/><g class="label" style="" transform="translate(-53.875, -24)"><rect/><foreignObject width="107.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>扫描候选文件<br />(五个清理模块)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-3" transform="translate(612.9140625, 145.4140625)"><polygon points="137.4140625,0 274.828125,-137.4140625 137.4140625,-274.828125 0,-137.4140625" class="label-container" transform="translate(-136.9140625, 137.4140625)"/><g class="label" style="" transform="translate(-74.4140625, -48)"><rect/><foreignObject width="148.828125" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>三道防线逐一核验<br />① 超过 30 天没动过<br />② 没有程序正在使用<br />③ 工作账本上已收尾</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-K-5" transform="translate(958.328125, 93.4140625)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important" x="-62" y="-27" width="124" height="54"/><g class="label" style="" transform="translate(-32, -12)"><rect/><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>保留不动</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-7" transform="translate(958.328125, 197.4140625)"><rect class="basic label-container" style="fill:#ffe5e0 !important;stroke:#ff3b30 !important" x="-46" y="-27" width="92" height="54"/><g class="label" style="" transform="translate(-16, -12)"><rect/><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>删除</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-A-9" transform="translate(1197.140625, 197.4140625)"><rect class="basic label-container" style="fill:#e3f2fd !important;stroke:#007aff !important" x="-126.8125" y="-39" width="253.625" height="78"/><g class="label" style="" transform="translate(-96.8125, -24)"><rect/><foreignObject width="193.625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>记一笔审计账<br />(删了什么、多少,永远可查)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul>
+      <li><b>防线一 · 年龄</b>:文件超过 30 天没有任何改动(可配置,你说了算)。</li>
+      <li><b>防线二 · 在用检测</b>:问操作系统「现在有没有程序开着这个文件」,有就不碰。实测验证过:Mufasa 的记忆对话文件虽然躺在 6 月的目录里,但正被它的常驻进程握着——这道防线能保住它。</li>
+      <li><b>防线三 · 账本核对</b>:拿文件对应的任务去查 Flywheel 的工作账本(记录每个任务状态的数据库),任务还在进行中/暂停待命(park)的,即使文件很老也不删。</li>
+      <li><b>记账</b>:每删一个文件写一行审计日志(时间、路径、大小、原因),永远可以回查「那天清了什么」。</li>
+    </ul>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s3" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S4 清理版图 -->
+  <div class="card navy" data-sec="清什么/不碰什么">
+    <h2>4 · 清理版图:清什么、不碰什么(硬边界)</h2>
+    <table>
+      <tr><th>对象</th><th>处置</th><th>为什么</th></tr>
+      <tr><td>Codex 旧版本安装包(~9.7G)</td><td><span class="tag del">清</span></td><td>只保留正在用的 + 最近一个备用版,其余是纯过期货</td></tr>
+      <tr><td>Codex 主目录 30 天前的历史对话(~3.3G)</td><td><span class="tag del">清</span></td><td>过三道防线才删</td></tr>
+      <tr><td>Codex 生成的图片、已归档对话(~0.9G)</td><td><span class="tag del">清</span></td><td>30 天以上的纯产物</td></tr>
+      <tr><td>Codex 日志库(logs_2.sqlite,SQLite = 单文件小数据库)</td><td><span class="tag del">接上已有工具</span></td><td>去年 FLY-697 已经做好了专治工具(挡住垃圾写入 + 给数据库瘦身),<b>但一直没装上</b>——这次真正接上,不重造</td></tr>
+      <tr><td>Claude 历史对话</td><td><span class="tag keep">交给自带清理</span></td><td>Claude 自带 30 天清理已在工作;管家只把这个设置写死固定 + 清它漏掉的孤儿小文件</td></tr>
+      <tr><td>Mufasa / Infra Bot 的对话记录</td><td><span class="tag keep">绝不碰</span></td><td>Mufasa 的记忆对话在这里;总共才 0.2G,收益太小、风险太大,整体划为禁区</td></tr>
+      <tr><td>Flywheel 运行数据(~/.flywheel)、Discord 收件箱、账号配置、事故回滚备份</td><td><span class="tag keep">绝不碰</span></td><td>全是活数据;回滚备份等系统确认稳定后由事故单(FLY-1887)善后</td></tr>
+    </table>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s4" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S5 安装完整性 -->
+  <div class="card purple" data-sec="不再交付了没装上">
+    <h2>5 · 不再「交付了没装上」:掉出会被自动接回</h2>
+    <p>你在捞回这单时特别叮嘱:定时器安装要走安装完整性通道。查证结果:8 月已合入的 FLY-1830 给所有非 Lead 的 Flywheel 定时任务加了「<b>每次部署自动巡检、掉了就接回来</b>」的机制——管家的定时器起名就落在这个机制的管辖范围内,<span class="hl">不用新造任何东西,天然享受自愈</span>。此外首次安装的顺序是硬约定:<b>先试跑(dry-run:只列清单不真删)→ 人工过目清单 → 真删 → 才装定时器</b>。</p>
+    <div class="diagram"><svg id="fly-1330-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 993.562px; background-color: white;" viewBox="0 0 993.5625 131.98638153076172" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1330-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1330-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1330-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1330-d2 .error-icon{fill:#552222;}#fly-1330-d2 .error-text{fill:#552222;stroke:#552222;}#fly-1330-d2 .edge-thickness-normal{stroke-width:1px;}#fly-1330-d2 .edge-thickness-thick{stroke-width:3.5px;}#fly-1330-d2 .edge-pattern-solid{stroke-dasharray:0;}#fly-1330-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1330-d2 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1330-d2 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1330-d2 .marker{fill:#333333;stroke:#333333;}#fly-1330-d2 .marker.cross{stroke:#333333;}#fly-1330-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1330-d2 p{margin:0;}#fly-1330-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1330-d2 .cluster-label text{fill:#333;}#fly-1330-d2 .cluster-label span{color:#333;}#fly-1330-d2 .cluster-label span p{background-color:transparent;}#fly-1330-d2 .label text,#fly-1330-d2 span{fill:#333;color:#333;}#fly-1330-d2 .node rect,#fly-1330-d2 .node circle,#fly-1330-d2 .node ellipse,#fly-1330-d2 .node polygon,#fly-1330-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1330-d2 .rough-node .label text,#fly-1330-d2 .node .label text,#fly-1330-d2 .image-shape .label,#fly-1330-d2 .icon-shape .label{text-anchor:middle;}#fly-1330-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1330-d2 .rough-node .label,#fly-1330-d2 .node .label,#fly-1330-d2 .image-shape .label,#fly-1330-d2 .icon-shape .label{text-align:center;}#fly-1330-d2 .node.clickable{cursor:pointer;}#fly-1330-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1330-d2 .arrowheadPath{fill:#333333;}#fly-1330-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1330-d2 .flowchart-link{stroke:#333333;fill:none;}#fly-1330-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1330-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1330-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1330-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1330-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1330-d2 .cluster text{fill:#333;}#fly-1330-d2 .cluster span{color:#333;}#fly-1330-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1330-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1330-d2 rect.text{fill:none;stroke-width:0;}#fly-1330-d2 .icon-shape,#fly-1330-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1330-d2 .icon-shape p,#fly-1330-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1330-d2 .icon-shape rect,#fly-1330-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1330-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1330-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1330-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1330-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1330-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M245.625,66L249.792,66C253.958,66,262.292,66,269.958,66C277.625,66,284.625,66,288.125,66L291.625,66" id="L_I_P_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_I_P_0" data-points="W3sieCI6MjQ1LjYyNSwieSI6NjZ9LHsieCI6MjcwLjYyNSwieSI6NjZ9LHsieCI6Mjk1LjYyNSwieSI6NjZ9XQ==" marker-end="url(#fly-1330-d2_flowchart-v2-pointEnd)"/><path d="M534.453,49.234L554.91,46.361C575.367,43.489,616.281,37.745,656.536,37.857C696.791,37.969,736.387,43.937,756.184,46.922L775.982,49.906" id="L_P_X_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_P_X_0" data-points="W3sieCI6NTM0LjQ1MzEyNSwieSI6NDkuMjMzNjQzMDUwNzE2MjI1fSx7IngiOjY1Ny4xOTUzMTI1LCJ5IjozMn0seyJ4Ijo3NzkuOTM3NSwieSI6NTAuNTAyMDk1NTI4Mzg0ODg1fV0=" marker-end="url(#fly-1330-d2_flowchart-v2-pointEnd)"/><path d="M779.938,81.498L759.48,84.582C739.023,87.665,698.109,93.833,657.856,94.137C617.602,94.441,578.008,88.882,558.211,86.102L538.414,83.323" id="L_X_P_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_X_P_0" data-points="W3sieCI6Nzc5LjkzNzUsInkiOjgxLjQ5NzkwNDQ3MTYxNTEyfSx7IngiOjY1Ny4xOTUzMTI1LCJ5IjoxMDB9LHsieCI6NTM0LjQ1MzEyNSwieSI6ODIuNzY2MzU2OTQ5MjgzNzh9XQ==" marker-end="url(#fly-1330-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_I_P_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(657.1953125, 32)"><g class="label" data-id="L_P_X_0" transform="translate(-49.015625, -24)"><foreignObject width="98.03125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>事故 / 误操作<br />把它踢出系统</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(657.28565, 99.98638)"><g class="label" data-id="L_X_P_0" transform="translate(-97.7421875, -24)"><foreignObject width="195.484375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>每次部署自动巡检<br />(FLY-1830 已有机制,不新造)</p></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-I-0" transform="translate(126.8125, 66)"><rect class="basic label-container" style="" x="-118.8125" y="-39" width="237.625" height="78"/><g class="label" style="" transform="translate(-88.8125, -24)"><rect/><foreignObject width="177.625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>第一次人工安装<br />(先试跑过目,再装定时器)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-P-1" transform="translate(415.0390625, 66)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important" x="-119.4140625" y="-39" width="238.828125" height="78"/><g class="label" style="" transform="translate(-89.4140625, -24)"><rect/><foreignObject width="178.828125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>系统定时器<br />com.flywheel.log-janitor</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-X-3" transform="translate(882.75, 66)"><rect class="basic label-container" style="fill:#fff3e0 !important;stroke:#ff9500 !important" x="-102.8125" y="-39" width="205.625" height="78"/><g class="label" style="" transform="translate(-72.8125, -24)"><rect/><foreignObject width="145.625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>掉出状态<br />(以前:永远没人发现)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s5" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S6 取舍 -->
+  <div class="card red" data-sec="关键取舍">
+    <h2>6 · 关键取舍(和放弃了什么)</h2>
+    <ul>
+      <li><b>放弃清 Mufasa/Infra Bot 的对话</b>:能省 0.2G,但 Mufasa 的记忆文件实测已 4 天没写入——按「年龄」判断迟早会误伤它。0.2G 换这个风险不值。</li>
+      <li><b>放弃自己写 Claude 清理逻辑</b>:自带清理已工作、被长期信任;两套清理器并存会互相踩。我们只补它的死角。</li>
+      <li><b>放弃把 Claude 保留期从 30 天缩到 14 天</b>:能多省 2.7G,但会缩短「翻旧对话继续聊」的窗口——这是一行配置的事,留给你拍板,方案不替你决定。</li>
+      <li><b>放弃「先挪进回收站、七天后真删」的两段式</b>:30 天保守期 + 三道防线 + 首轮人工过目已经足够稳;按你定过的简单性原则,不加不必要的机关。</li>
+      <li><b>放弃动正在被 Mufasa/Infra Bot 占用的日志库</b>:数据库瘦身需要独占访问,活库上动手有损坏风险——工具会自动拒绝(它查得出「有人在用」),只在停机窗口人工执行;平时只监控大小、超标报警。</li>
+    </ul>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s6" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- S7 诚实边界 -->
+  <div class="card amber" data-sec="诚实边界">
+    <h2>7 · 诚实边界:这个设计不解决什么</h2>
+    <ul>
+      <li><b>数字对齐</b>:issue 标题写 22GB,那是 7 月的口径。今天实测能安全清掉的是 <b>约 12–13G</b>:事故抢修已搬走 1.5G;Claude 的 7G 大头是活跃对话,本来就不该清。</li>
+      <li><b>Lead 长对话越来越大</b>(单文件 1.5GB 那种)不归这单——那由 Lead 会话的换代节律决定,是另一个课题。</li>
+      <li><b>~/.flywheel 自己的日志轮转、写盘降频</b>归事故善后单 FLY-1887。</li>
+      <li><b>「发现所有掉出系统的定时任务」的全局巡检</b>归 FLY-1814(正在另行设计);这单只保证自己不成为下一个失踪者。</li>
+      <li>清掉的文件<b>不可恢复</b>——所以才有 30 天保守期、三道防线、首轮人工过目、全程记账四层保护。</li>
+    </ul>
+    <div class="comment-box"><label>💬 对这个板块的评论(自动保存)</label><textarea data-key="s7" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 汇总卡 -->
+  <div class="card" id="summary-card" data-sec="__summary__">
+    <h2>📋 你的全部评论(实时汇总)</h2>
+    <div id="summary-list"><p class="empty-hint">上面任何板块写了评论,都会自动汇总到这里。</p></div>
+    <button id="copy-all">复制全部评论</button><span id="copy-status"></span>
+  </div>
+
+  <div class="small" style="text-align:center;margin:8px 0 20px;">FLY-1330 · 设计评审稿 · 图均为本地预渲染,页面零外部依赖</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX = 'fly1330:' + location.pathname + ':';
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  function secTitle(ta) {
+    var card = ta.closest('.card');
+    var h = card ? card.querySelector('h2') : null;
+    return h ? h.textContent : '未命名板块';
+  }
+
+  function renderSummary() {
+    var list = document.getElementById('summary-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (!v) return;
+      any = true;
+      var item = document.createElement('div');
+      item.className = 'sum-item';
+      var sec = document.createElement('div');
+      sec.className = 'sum-sec';
+      sec.textContent = secTitle(ta);
+      var body = document.createElement('div');
+      body.textContent = v;
+      item.appendChild(sec);
+      item.appendChild(body);
+      list.appendChild(item);
+    });
+    if (!any) {
+      var hint = document.createElement('p');
+      hint.className = 'empty-hint';
+      hint.textContent = '上面任何板块写了评论,都会自动汇总到这里。';
+      list.appendChild(hint);
+    }
+  }
+
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      lsSet(ta.getAttribute('data-key'), ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function buildCopyText() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('【' + secTitle(ta) + '】\n' + v);
+    });
+    return parts.join('\n\n');
+  }
+
+  function legacyCopy(text, status) {
+    var ok = false;
+    try {
+      var tmp = document.createElement('textarea');
+      tmp.value = text;
+      tmp.setAttribute('readonly', '');
+      tmp.style.position = 'fixed';
+      tmp.style.left = '-9999px';
+      document.body.appendChild(tmp);
+      tmp.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(tmp);
+    } catch (e) { ok = false; }
+    status.textContent = ok ? '✅ 已复制' : '❌ 复制失败,请手动全选上方文字';
+    status.style.color = ok ? '#34c759' : '#ff3b30';
+  }
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var status = document.getElementById('copy-status');
+    var text = buildCopyText();
+    if (!text) { status.textContent = '还没有评论'; status.style.color = '#86868b'; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        status.textContent = '✅ 已复制';
+        status.style.color = '#34c759';
+      }, function () { legacyCopy(text, status); });
+    } else {
+      legacyCopy(text, status);
+    }
+  });
+})();
+</script>
+</body>
+</html>

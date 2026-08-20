@@ -398,6 +398,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: external quota-monitor LaunchAgent plist path (FLY-1182)",
 	FLYWHEEL_QUOTA_LAUNCHCTL_BIN:
 		"plumbing: launchctl executable override for hermetic pool-rebuild QA (FLY-1182)",
+	FLYWHEEL_JANITOR_LAUNCHCTL:
+		"plumbing: launchctl executable override for hermetic log-janitor installer QA (FLY-1330)",
+	FLYWHEEL_JANITOR_REPORT_CHANNEL:
+		"config value: tri-state log-janitor Discord destination (unset inherits FLYWHEEL_NOTIFY_CHANNEL, empty disables, non-empty overrides) for FLY-1330, not a persistent on/off rollout gate",
 	FLYWHEEL_QUOTA_STATUSLINE_CACHE:
 		"plumbing: statusline usage cache output path (FLY-1256)",
 	FLYWHEEL_QUOTA_TMUX_SOCKET:

@@ -1,0 +1,6 @@
+flowchart LR
+    I["第一次人工安装<br/>(先试跑过目,再装定时器)"] --> P["系统定时器<br/>com.flywheel.log-janitor"]
+    P -- "事故 / 误操作<br/>把它踢出系统" --> X["掉出状态<br/>(以前:永远没人发现)"]
+    X -- "每次部署自动巡检<br/>(FLY-1830 已有机制,不新造)" --> P
+    style X fill:#fff3e0,stroke:#ff9500
+    style P fill:#e8f5e9,stroke:#34c759

@@ -364,6 +364,7 @@ expected_shard_tests = {
         "Test — FLY-882 Discord bot token pool",
         "Test — FLY-513 global-codex repoint apply-path",
         "Test — FLY-697 codex-log-guard",
+        "Test — FLY-1330 log janitor",
         "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-1787 CoS identity contract",

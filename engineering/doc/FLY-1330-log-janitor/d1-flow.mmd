@@ -1,0 +1,9 @@
+flowchart LR
+    T["⏰ 每天凌晨 4:15<br/>自动唤醒<br/>(同一时刻只跑一份)"] --> S["扫描候选文件<br/>(五个清理模块)"]
+    S --> G{"三道防线逐一核验<br/>① 超过 30 天没动过<br/>② 没有程序正在使用<br/>③ 工作账本上已收尾"}
+    G -- "任何一道不过<br/>或判断不了" --> K["保留不动"]
+    G -- "三道全过" --> D["删除"]
+    D --> A["记一笔审计账<br/>(删了什么、多少,永远可查)"]
+    style D fill:#ffe5e0,stroke:#ff3b30
+    style K fill:#e8f5e9,stroke:#34c759
+    style A fill:#e3f2fd,stroke:#007aff
