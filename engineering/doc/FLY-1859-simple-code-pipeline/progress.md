@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: implement
-phaseCursor: 4/4
-updated: 2026-08-20T00:21:00.229Z
-nextStep: "handoff PR #886 to DAG QA for delta verification and a fresh ship card"
+phaseCursor: 1/4
+updated: 2026-08-20T06:43:53.025Z
+nextStep: change only simple_code maxIterations and parser guard from 3 to 10
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: implement (4/4)
-**next**: handoff PR #886 to DAG QA for delta verification and a fresh ship card
+**phase**: implement (1/4)
+**next**: change only simple_code maxIterations and parser guard from 3 to 10
