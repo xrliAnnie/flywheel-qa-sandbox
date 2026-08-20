@@ -1,0 +1,11 @@
+sequenceDiagram
+    participant F as founder 频道
+    participant P as Discord 插件 0.0.5(fork PR #35;23)
+    participant M as mailbox(chat-ingest)
+    participant L as Lead
+    F->>P: founder 消息
+    P->>M: chat-ingest(durable intent,可重试)
+    M-->>L: mailbox 批次投递
+    L->>P: reply(reply_to)
+    P->>F: 回复送达 ✅(零 settle、零 chat-receipt 调用)
+    Note over P: ingest 故障 → stderr 日志(只记一次)<br/>物理上没有向频道发内部告警的通路

@@ -1,0 +1,15 @@
+sequenceDiagram
+    participant F as founder 频道
+    participant P as Discord 插件 0.0.4(旧)
+    participant C as flywheel-comm CLI(#35;808 之后)
+    F->>P: founder 消息
+    P->>F: Lead 回复送达 ✅(功能无损)
+    P->>C: chat-receipt settle(老合同)
+    C-->>P: Unknown command ❌ exit 1
+    P->>P: settle intent 落 spool
+    loop 每 3-4 分钟,永不成功
+        P->>C: 重试 settle
+        C-->>P: Unknown command ❌
+    end
+    Note over P,F: attempts > 5 后
+    P->>F: ⚠️ settlement recovery has failed N times(纯噪音)

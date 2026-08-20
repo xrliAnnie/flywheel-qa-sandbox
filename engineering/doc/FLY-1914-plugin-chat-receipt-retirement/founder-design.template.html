@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1914 设计:让 Discord 插件停止调用已删除的命令</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    line-height: 1.65; padding: 24px 16px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 24px; color: #1a365d; margin-bottom: 6px; }
+  .subtitle { color: #86868b; font-size: 14px; margin-bottom: 20px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 18px;
+    border-left: 4px solid #007aff;
+  }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 18px; color: #1a365d; margin-bottom: 10px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p, li { font-size: 14px; margin-bottom: 8px; }
+  ul, ol { padding-left: 22px; margin-bottom: 8px; }
+  .lede { font-size: 15px; }
+  .term { color: #86868b; font-size: 13px; }
+  code, .mono { font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px; background: #f0f0f2; padding: 1px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #fafafa; color: #1a365d; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 10px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-right: 6px; }
+  .badge.done { background: #e6f7eb; color: #34c759; }
+  .badge.noise { background: #fdeaea; color: #ff3b30; }
+  .badge.wait { background: #fff3e0; color: #ff9500; }
+  .stat { display: inline-block; background: #fafafa; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 14px; margin: 4px 6px 4px 0; }
+  .stat b { font-size: 18px; color: #1a365d; display: block; }
+  .stat span { font-size: 12px; color: #86868b; }
+  .comment-block { margin-top: 14px; border-top: 1px dashed #e5e5ea; padding-top: 10px; }
+  .comment-block label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 5px; }
+  .comment-block textarea {
+    width: 100%; min-height: 54px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-block textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #comment-summary-list { font-size: 13.5px; }
+  #comment-summary-list .cmt { background: #fafafa; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; white-space: pre-wrap; }
+  #comment-summary-list .cmt b { color: #1a365d; display: block; margin-bottom: 3px; }
+  #copy-all-btn {
+    background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 9px 18px; font-size: 14px; cursor: pointer; margin-top: 8px;
+  }
+  #copy-all-btn:active { opacity: .8; }
+  #copy-status { font-size: 12.5px; color: #34c759; margin-left: 10px; }
+  .footer { color: #86868b; font-size: 12px; text-align: center; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1914 · 让 Discord 插件停止调用已删除的命令</h1>
+  <div class="subtitle">设计文档(founder 版) · 2026-08-19 · Issue FLY-1914 · 每个卡片下方都可以留批注,最底部一键汇总复制</div>
+
+  <div class="card" data-section="一句话">
+    <h2>一句话</h2>
+    <p class="lede">告警噪音的修复<b>早已写好、审过、独立测过</b>(FLY-1730 留下的插件 PR #23),只是没走完最后一步;本单就是把它<b>推过终点线</b>:核对没过期 → 你批准合入 → 按既有受管流程装进生产 → 真机验证告警归零——外加把「删命令必须先查谁在用」写成一条永久规矩。</p>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s1" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="现在发生着什么">
+    <h2>1 · 现在发生着什么</h2>
+    <p>你在 #flywheel-engineer 反复看到的 <code>⚠️ Chat receipt settlement recovery has failed N times…</code>,机制是:</p>
+    <p>8 月 12 日主仓 PR #808 按设计删掉了命令行工具里的 <code>chat-receipt</code> 子命令<span class="term">(子命令 = 命令行工具的一个功能开关,比如 git 的 push/pull)</span>——「回执记账」这件事已经改由新的 mailbox 队列<span class="term">(消息的持久化收发账本)</span>负责。但生产上的 Discord 插件还是旧版 0.0.4,每次 Lead 回复你的消息后,它仍按老习惯去调那个已经不存在的命令 → 永远失败 → 失败记录堆进 spool<span class="term">(重试等待区,一个存放待办文件的目录)</span> → 每 3-4 分钟重试一次、永远不会成功 → 失败超过 5 次就往频道发一条 ⚠️ 告警。</p>
+    <div class="stat"><b>43 + 4 条</b><span>今晚仍在堆积的失败记录(两个 Lead)</span></div>
+    <div class="stat"><b>26 次</b><span>单条最高重试次数</span></div>
+    <div class="stat"><b>0</b><span>功能损失——每条回复本体都真实送达了</span></div>
+    <p style="margin-top:8px;"><span class="badge noise">纯噪音</span>坏的只是「记账」这个已被判死刑的动作,消息收发完全正常。你 8-19 归档的 14 条之后,新的又堆了 43 条——不修它就永远刷下去。</p>
+    <div class="diagram">{{SVG_D1}}</div>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s2" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="为什么又是它">
+    <h2>2 · 为什么又是它——修复其实已经存在</h2>
+    <p>这不是新问题。8 月 12 日你亲撞过同一批告警(当时还 ×6 连发),立的单是 FLY-1730,它走完了完整流程:</p>
+    <table>
+      <tr><th>时间</th><th>发生了什么</th><th>状态</th></tr>
+      <tr><td>08-12</td><td>FLY-1730 立案,设计过 3 轮独立评审</td><td><span class="badge done">完成</span></td></tr>
+      <tr><td>08-12</td><td>插件修复 PR #23 写好:删掉整套过时的记账代码 + 删掉它向频道发内部告警的全部通路</td><td><span class="badge done">已过代码评审 + 独立真机 QA</span></td></tr>
+      <tr><td>08-13</td><td>主仓配套(部署校验器兼容新旧插件)合入上线</td><td><span class="badge done">完成</span></td></tr>
+      <tr><td>08-18</td><td>你拍板关单:插件半没做完(执行的 runner 死了),症状还在就开新单</td><td><span class="badge wait">→ FLY-1914 就是那张新单</span></td></tr>
+    </table>
+    <p><b>本次设计节点逐项复核过(2026-08-20 当晚实测)</b>:那个 PR #23 至今干净可合(代码零冲突、内容零漂移,和当时 QA 通过的版本逐字一致),它要的版本号 0.0.5 也没被别人占。所以本单<b>不需要写任何新修复代码</b>——需要的是把它送到终点。</p>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s3" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="修好之后">
+    <h2>3 · 修好之后长什么样</h2>
+    <p>插件升到 0.0.5 后:回复照常送达;「记账」动作物理上不存在了(不是关掉,是删掉);就算消息接收环节真出故障,插件也只会往自己的日志里记一条<span class="term">(stderr 日志 = 只有工程师排查时才看的后台记录)</span>,<b>它没有任何代码路径可以再往你的频道发内部告警</b>。</p>
+    <div class="diagram">{{SVG_D2}}</div>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s4" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="怎么交付">
+    <h2>4 · 怎么交付(部署才算完,合入不算)</h2>
+    <p>沿用 FLY-1730 已批准的受管部署流程,但本次审计发现一个<b>没人做过的前置步骤</b>:8-13 合入的部署校验器<span class="term">(checker = 每次重启前自动核对插件是否完好的脚本)</span>只更新了代码仓库,<b>生产机器上的那份副本从没同步过</b>——它还在按旧规则查验。不先补这一步,新插件一装、整个重启流程会被它拦下。所以顺序被设计评审(3 轮,APPROVED)钉死为:<b>先</b>同步校验器、<b>再</b>合入插件;合入前一刻还要重跑一遍核对,并把两个代码仓库临时「冻结」<span class="term">(冻结 = 窗口期内除本单外任何改动不得合入,防止别的改动搭车溜进生产)</span>,验收通过才解冻。</p>
+    <div class="diagram">{{SVG_D3}}</div>
+    <p>验收标准(独立 QA,真机):你的频道连发两条消息各获回复,15 分钟观察窗内<b>零 ⚠️、spool 零新增</b>;并用今晚的 43 条活失败记录做对照组——同样操作,旧代码必产失败记录,新代码零产。</p>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s5" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="关键取舍">
+    <h2>5 · 关键取舍与被拒绝的方案</h2>
+    <table>
+      <tr><th>方案</th><th>判定</th><th>为什么</th></tr>
+      <tr><td><b>① 删掉插件里的过时记账代码(采纳,即 PR #23)</b></td><td><span class="badge done">采纳</span></td><td>记账机器已判死刑,插件不该假装它还活着;成品已过评审和真机 QA,零新代码、零新机制</td></tr>
+      <tr><td>② 插件启动时先探测命令还在不在,不在就静默停用</td><td><span class="badge noise">拒绝</span></td><td>给死代码续命,还新增一个「探测」故障面(探测误判会静默丢事或复活告警);且要新写新审新测,反而更贵</td></tr>
+      <tr><td>③ 只删告警、留着重试</td><td><span class="badge noise">拒绝</span></td><td>失败记录永久堆积 + 永续空转重试,「永败重试」本身就是 issue 点名不允许的现状</td></tr>
+      <tr><td>规矩用「写进 CLAUDE.md 的过程规矩」而非「通用自动检查器」</td><td><span class="badge done">采纳前者</span></td><td>规矩内容:今后凡删除/改名 CLI 子命令的 PR,必须附「谁在用它」的排查证据(插件源码 + 生产插件缓存 + 主仓脚本)。自动检查器无法预知未来会删什么命令,通用化必然误报或漏报;针对具体命令族的自动门(receipt 那套)已经存在</td></tr>
+    </table>
+    <p>本次已按新规矩做了一遍全量排查:插件总共调用 4 个子命令,<b>只有 <code>chat-receipt</code> 一个是断掉的</b>,不存在第二处同类问题。</p>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s6" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="诚实边界">
+    <h2>6 · 诚实边界</h2>
+    <h3>本单做</h3>
+    <ul>
+      <li>复核并采纳 PR #23(若窗口期内插件仓库动了,走「重测重审重 QA」路径,绝不带着失效的 QA 结论合入)</li>
+      <li>主仓一个纯文档 PR:CLAUDE.md 新增「删命令先查消费者」规矩 + 本设计文档</li>
+      <li>受管部署(先补校验器同步这块砖)+ 真机验收 + 最终把残留失败记录归档(沿用你已建立的归档先例)</li>
+    </ul>
+    <h3>本单不做(各有各的单)</h3>
+    <ul>
+      <li>「同一告警 ×6 连发」的寄生进程问题 → FLY-1715(在途;部署时的进程清点会兜住旧进程)</li>
+      <li>「内部告警不该直发 founder 频道」的通道治理 → FLY-1612 家族</li>
+      <li>合入与部署动作本身:全部 founder-gated,等你批准,绝不自合</li>
+    </ul>
+    <p>一个已知取舍(FLY-1730 设计时你已认过):消息接收环节的故障从此不再出现在频道里,表征变为「Lead 不回话」,频道级可见性由 FLY-1612 接管。</p>
+    <div class="comment-block"><label>对这部分的批注(自动保存)</label><textarea data-key="s7" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="批注汇总">
+    <h2>你的批注汇总</h2>
+    <p class="term">下面实时汇总你在各卡片留下的批注;「复制全部」可一键带走。</p>
+    <div id="comment-summary-list"><p class="term" id="no-comments-hint">(还没有批注)</p></div>
+    <button id="copy-all-btn" type="button">复制全部批注</button><span id="copy-status"></span>
+  </div>
+
+  <div class="footer">FLY-1914 · engineering/doc/FLY-1914-plugin-chat-receipt-retirement/ · 图均为本地渲染,零外部依赖</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var PREFIX;
+  try { PREFIX = 'fly1914-design:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly1914-design:unknown:'; }
+
+  function lsGet(key) { try { return localStorage.getItem(PREFIX + key) || ''; } catch (e) { return ''; } }
+  function lsSet(key, val) { try { localStorage.setItem(PREFIX + key, val); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || area.getAttribute('data-key');
+  }
+
+  function renderSummary() {
+    var list = document.getElementById('comment-summary-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (area) {
+      var val = area.value.trim();
+      if (!val) return;
+      any = true;
+      var div = document.createElement('div');
+      div.className = 'cmt';
+      var b = document.createElement('b');
+      b.textContent = sectionTitleFor(area);
+      var span = document.createElement('span');
+      span.textContent = val;
+      div.appendChild(b);
+      div.appendChild(span);
+      list.appendChild(div);
+    });
+    if (!any) {
+      var hint = document.createElement('p');
+      hint.className = 'term';
+      hint.textContent = '(还没有批注)';
+      list.appendChild(hint);
+    }
+  }
+
+  areas.forEach(function (area) {
+    area.value = lsGet(area.getAttribute('data-key'));
+    area.addEventListener('input', function () {
+      lsSet(area.getAttribute('data-key'), area.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function collectAll() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var val = area.value.trim();
+      if (val) parts.push('【' + sectionTitleFor(area) + '】\n' + val);
+    });
+    return parts.join('\n\n');
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function showStatus(msg) {
+    var el = document.getElementById('copy-status');
+    el.textContent = msg;
+    setTimeout(function () { el.textContent = ''; }, 2500);
+  }
+
+  document.getElementById('copy-all-btn').addEventListener('click', function () {
+    var text = collectAll();
+    if (!text) { showStatus('没有可复制的批注'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus('已复制 ✓'); },
+        function () { showStatus(legacyCopy(text) ? '已复制 ✓' : '复制失败,请手动选择'); }
+      );
+    } else {
+      showStatus(legacyCopy(text) ? '已复制 ✓' : '复制失败,请手动选择');
+    }
+  });
+})();
+</script>
+</body>
+</html>
