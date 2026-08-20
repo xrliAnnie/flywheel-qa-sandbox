@@ -1,0 +1,45 @@
+flowchart TB
+    subgraph P0["P0 · 根因 — 把时间还回去(唯一的代码腿)"]
+        A1["别在它关完浏览器之前就强杀它"]
+        A2["改成:发停止信号 → 一直看着<br/>→ 它一消失就继续<br/>→ 真赖着不走才强杀"]
+        A1 --> A2
+        A3["典型情况比现在还快<br/>(现在是死等 3 秒)"]
+        A2 --> A3
+    end
+
+    subgraph P1["P1 · 止血 — 让窗口不再出现"]
+        B1["把浏览器默认改成不画窗口"]
+        B2["落在 Claude 的配置里<br/>= runner / Lead / 你自己的终端<br/>三类都覆盖到"]
+        B1 --> B2
+        B3["撤回 = 改回配置<br/>不动任何代码"]
+        B2 --> B3
+    end
+
+    subgraph P2["P2 · 先量,不收(这版收窄的地方)"]
+        C1["只数孤儿、只记账本<br/>不杀进程、不发任何告警"]
+        C2["现在漏出来的那几个<br/>由人看着、手动关一次"]
+        C1 --> C2
+        C3["P0 上线后看两周账本<br/>数据说需要,再单开一单做自动回收"]
+        C2 --> C3
+    end
+
+    subgraph P3["P3 · 清掉已经堆下的 631 MB(一次性)"]
+        D1["只动能逐条证明是垃圾的<br/>(清单由人逐条复核后提交)"]
+        D2["先改名隔离 → 改完再确认没人在用<br/>→ 观察 7 天 → 才真删"]
+        D1 --> D2
+    end
+
+    P0 ==> DONE["机器可信"]
+    P1 ==> DONE
+    P2 ==> DONE
+    P3 ==> DONE
+
+    NOTE["P0 与 P1 可以并行<br/>P1 最快解除你桌面上的干扰"]
+    P1 -.-> NOTE
+
+    style P0 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style P1 fill:#e5f9e9,stroke:#34c759,stroke-width:2px
+    style P2 fill:#e8f2ff,stroke:#007aff,stroke-width:2px
+    style P3 fill:#f5ecff,stroke:#af52de,stroke-width:2px
+    style DONE fill:#fff9e5,stroke:#ff9500,stroke-width:2px
+    style NOTE fill:#ffffff,stroke:#86868b,stroke-dasharray: 4 4

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FLY-1867 · playwright-mcp Chrome 泄漏 — 设计评审</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+    --line:#e8e8ed;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"Helvetica Neue",Arial,sans-serif;
+    line-height:1.55; font-size:15px; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:26px 20px 40px}
+  header{margin:4px 0 20px}
+  .eyebrow{
+    font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; letter-spacing:.06em;
+    color:var(--dim); text-transform:uppercase; margin-bottom:8px;
+  }
+  h1{font-size:28px; line-height:1.22; margin:0 0 11px; letter-spacing:-.02em}
+  .lede{font-size:16.5px; color:#3a3a3c; margin:0; max-width:74ch}
+  .card{
+    background:var(--card); border-radius:12px; padding:17px 22px; margin:0 0 14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--blue);
+  }
+  .card.amber{border-left-color:var(--amber)}
+  .card.green{border-left-color:var(--green)}
+  .card.gray{border-left-color:var(--dim)}
+  .card.summary{border-left-color:var(--purple)}
+  h2{font-size:18.5px; margin:0 0 11px; letter-spacing:-.01em}
+  h3{font-size:15px; margin:15px 0 5px; color:var(--navy)}
+  p{margin:0 0 9px; max-width:78ch}
+  em{color:#3a3a3c}
+  .term{
+    font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:.92em;
+    background:#f0f0f2; padding:1px 5px; border-radius:4px;
+  }
+  .note{
+    background:#f8f8fa; border-left:3px solid var(--dim); border-radius:0 6px 6px 0;
+    padding:9px 13px; margin:11px 0 3px; font-size:14px; color:#3a3a3c;
+  }
+  .note.red-note{background:#fff5f4; border-left-color:var(--red)}
+  .two{display:grid; grid-template-columns:1fr 1fr; gap:11px; margin:11px 0}
+  @media (max-width:620px){ .two{grid-template-columns:1fr} }
+  .mini{background:#f8f8fa; border-radius:8px; padding:11px 14px; border-left:3px solid var(--dim)}
+  .mini.red{border-left-color:var(--red); background:#fff5f4}
+  .mini-h{font-weight:600; margin-bottom:5px; font-size:14px}
+  .mini p{margin:0; font-size:14px; color:#3a3a3c}
+  .figure{
+    margin:12px 0 4px; padding:11px; background:#fbfbfd; border:1px solid var(--line);
+    border-radius:10px; overflow-x:auto;
+  }
+  .figure svg{display:block; margin:0 auto; max-width:100%; height:auto}
+  .flow{display:grid;gap:8px;margin:3px auto;max-width:760px}
+  .flow-node{padding:10px 13px;border-radius:9px;text-align:center;border:2px solid var(--blue);background:#f2f8ff;font-size:14px}
+  .flow-node.start{border-color:var(--amber);background:#fff7eb;font-weight:600}
+  .flow-node.off{border-color:var(--green);background:#f2fbf4;font-weight:600}
+  .flow-split{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .flow-arrow{text-align:center;color:var(--dim);line-height:1;font-size:18px}
+  @media (max-width:620px){.flow-split{grid-template-columns:1fr}}
+  table{border-collapse:collapse; width:100%; margin:10px 0; font-size:14px; display:block; overflow-x:auto}
+  th,td{border-bottom:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top}
+  th{color:var(--dim); font-weight:600; font-size:12.5px; letter-spacing:.03em; text-transform:uppercase; white-space:nowrap}
+  td.ok{color:#1d7a3e} td.bad{color:#c1281f} td.warn{color:#9a5a00}
+  table.data td:nth-child(2){font-family:"SF Mono",ui-monospace,Menlo,monospace; white-space:nowrap}
+  .legs{display:grid; gap:11px; margin:12px 0 4px}
+  .leg{border-radius:9px; padding:12px 15px; border-left:4px solid var(--dim); background:#f8f8fa}
+  .leg.p1{border-left-color:var(--green); background:#f2fbf4}
+  .leg.p2{border-left-color:var(--blue); background:#f2f8ff}
+  .leg.p3{border-left-color:var(--purple); background:#faf5ff}
+  .leg-h{font-weight:600; margin-bottom:7px; font-size:15px}
+  .leg p{margin:0 0 6px; font-size:14px}
+  .leg-note{color:#3a3a3c; font-size:13.5px !important}
+  .tag{
+    font-size:11px; font-weight:600; background:var(--green); color:#fff;
+    padding:2px 7px; border-radius:20px; margin-left:6px; letter-spacing:.02em;
+  }
+  ul.honest{margin:8px 0 4px; padding-left:20px}
+  ul.honest li{margin-bottom:7px; max-width:78ch}
+  .cmt{margin-top:12px; padding-top:10px; border-top:1px dashed var(--line)}
+  .cmt label{display:block; font-size:12px; color:var(--dim); margin-bottom:5px; letter-spacing:.02em}
+  textarea{
+    width:100%; font:inherit; font-size:14px; padding:9px 11px; border:1px solid #d8d8dd;
+    border-radius:7px; resize:vertical; background:#fdfdfe; color:var(--ink);
+  }
+  textarea:focus{outline:2px solid var(--blue); outline-offset:-1px; border-color:transparent}
+  .summary{background:#fdfaff}
+  .small{font-size:13px; color:var(--dim)}
+  .sum-item{background:#fff; border-radius:7px; padding:9px 12px; margin-bottom:8px; border-left:3px solid var(--purple)}
+  .sum-sec{font-size:11.5px; color:var(--purple); font-weight:600; margin-bottom:4px; letter-spacing:.03em}
+  .sum-item div:last-child{white-space:pre-wrap; font-size:14px}
+  .empty-hint{color:var(--dim); font-size:14px; margin:4px 0}
+  .copy-row{margin-top:13px; display:flex; align-items:center; gap:11px; flex-wrap:wrap}
+  button{
+    font:inherit; font-size:14px; font-weight:500; background:var(--blue); color:#fff; border:0;
+    padding:8px 17px; border-radius:8px; cursor:pointer;
+  }
+  button:hover{background:#0066d6}
+  #copy-status{font-size:13.5px; color:var(--dim)}
+  footer{text-align:center; color:var(--dim); font-size:12.5px; margin-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">FLY-1867 · Founder 二次校准版 · 取代 1746bf0d 旧版</div>
+  <h1>目标是零白起浏览器,不是禁 Playwright</h1>
+  <p class="lede"><strong>你的原话:</strong>「思考的不是说开了之后怎么关,而是我们为什么需要开它?如果不需要开的话,一开始就不应该打开呀。」</p>
+  <p class="lede" style="margin-top:9px">
+    二次审计确认:Chrome 本来就等第一次 browser tool 才启动,所以 19 个空挂 server 不是可见窗口根因。
+    真正要修的是<strong>用过一次后不回收</strong>(P0);普通会话默认不带 MCP(P-1)同时消掉空挂 server,但不再冒充主因。
+  </p>
+</header>
+
+<div class="card green" id="s1">
+  <h2>1 · 答案先说:不调用就 0 Chrome;调用过就必须能关</h2>
+  <div class="two">
+    <div class="mini red">
+      <div class="mini-h">现在</div>
+      <p>全机 Playwright 插件是开启的。每个 Runner、Lead、你自己开的 Claude 会话都先起一个 playwright-mcp server,不管用不用。</p>
+    </div>
+    <div class="mini" style="border-left-color:#34c759;background:#f2fbf4">
+      <div class="mini-h">修正后</div>
+      <p>普通会话默认不启动。只有 QA、带 <span class="term">playwright</span> / <span class="term">full-mcp</span> 标签的任务,或人明确要求的会话才打开。</p>
+    </div>
+  </div>
+  <p class="note">
+    这不是把 browser 能力删掉。Chrome 的 first-tool lazy 保留;P0 给 teardown 足够时间关掉已经启动的 Chrome。默认不带 MCP 另行减少 19 个空挂 server 与误触入口。
+  </p>
+  <div class="cmt"><label for="c1">这一节的评论</label><textarea id="c1" data-key="s1" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card amber" id="s2">
+  <h2>2 · 为什么它一直无差别启动:正确设计写了,但现机没执行</h2>
+  <table>
+    <thead><tr><th>证据</th><th>读到的事实</th></tr></thead>
+    <tbody>
+      <tr><td>当前机器配置</td><td class="bad"><span class="term">playwright@claude-plugins-official = true</span></td></tr>
+      <tr><td>切换脚本留下的 backup</td><td class="bad">0 份 —— 说明从没跑过</td></tr>
+      <tr><td>仓库里已有的默认策略</td><td class="ok">machine default-off</td></tr>
+      <tr><td>仓库里已有的打开入口</td><td class="ok">QA / playwright label / full-mcp label</td></tr>
+      <tr><td>新机 provisioning</td><td class="ok">已经接了 default-off 脚本</td></tr>
+      <tr><td>现场 server census</td><td><strong>23 个</strong>:15 Lead + 6 Runner + reviewer + 你的 Terminal</td></tr>
+      <tr><td>从未启动 Chrome</td><td><strong>21 / 23</strong> —— server 常驻不等于 browser 正在用</td></tr>
+      <tr><td>严格 14 天 Playwright</td><td>全部 98 次;Lead 只有 <strong>32 次 / 4 个短 QA sessions / 2 个身份</strong></td></tr>
+      <tr><td>严格 14 天 Claude-in-Chrome</td><td><strong>2335 次</strong>;它是独立工具,不再混进 Playwright 白名单</td></tr>
+    </tbody>
+  </table>
+  <p>
+    第一次「4 个 Lead 真用户」结论作废:它按文件 mtime 选样本却没按每条事件 timestamp 过滤,也混入了另一套 browser。
+    重审计只认实际 Playwright tool name;Lead 只有 Eng 与 Flywheel Product 的四次短 HTML/report QA。
+  </p>
+  <h3>浏览器本身其实已经是懒启动</h3>
+  <p>
+    我重新读了本机实际运行的 <span class="term">@playwright/mcp@0.0.79</span>:server 会随 enabled plugin 先启动;
+    但 Chrome 要等<strong>第一次 browser tool 调用</strong>才创建。也就是说,不用再造一层 supervisor 或 lazy launcher;
+    应该在更前面把「不需要的 server」挡掉,需要时沿用上游已有的 first-tool lazy。
+  </p>
+  <p class="note">
+    当前 0.0.79 <strong>没有 idle-close</strong>:可信关闭边界只有手动 close 与会话结束。resident Lead 一次低频调用后也可能长期留住 Chrome,
+    所以不建立常驻 Lead 白名单。
+  </p>
+  <div class="cmt"><label for="c2">这一节的评论</label><textarea id="c2" data-key="s2" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card" id="s3">
+  <h2>3 · 修正后的整条链:P-1 先决定要不要开</h2>
+  <div class="figure">
+    <div class="flow">
+      <div class="flow-node start">P-1 · 普通会话为什么要启动 playwright-mcp?</div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-node off">machine default-off · 普通 Runner / 普通 Lead / Terminal = 0 server,0 Chrome</div>
+      <div class="flow-arrow">↓ 明确需要吗?</div>
+      <div class="flow-split">
+        <div class="flow-node off">否 → 到此结束<br/>没有生命周期问题</div>
+        <div class="flow-node">是 → QA / labeled Runner / Terminal 单次命令<br/>第一次 browser tool 才启动 Chrome</div>
+      </div>
+      <div class="flow-arrow">↓ opt-in 残余场景</div>
+      <div class="flow-split">
+        <div class="flow-node">P0 · 给完整 graceful window<br/>P2 · 只量残量</div>
+        <div class="flow-node">P1 · headless 无窗口<br/>P3 · 旧 profile 一次性隔离</div>
+      </div>
+    </div>
+  </div>
+  <p class="note">
+    Playwright MCP 与 Claude-in-Chrome 是两套独立能力。这一单只关掉普通会话里的 playwright-mcp,不顺手改另一套 browser 的全舰合同。
+  </p>
+  <div class="cmt"><label for="c3">这一节的评论</label><textarea id="c3" data-key="s3" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card green" id="s3b">
+  <h2>4 · 当前 Lead allowlist 为空,日常 browser 继续走 CiC</h2>
+  <p>
+    严格窗口里只有 Eng 与 Flywheel Product 在四个短 QA sessions 调过 Playwright;CoS 与 Tidal Content 是 0。
+    四次短任务不值得让 resident Lead 永久持有插件与没有 idle-close 的 Chrome。当前 production 与 example 的
+    <span class="term">playwrightMcp: true</span> 名单都是空集。
+  </p>
+  <p class="note">
+    Lead 平常的 browser 路径是 Claude-in-Chrome。Playwright visual QA 改走 QA / labeled Runner 或一次性会话;未来有明确持续需求时,才用精确身份字段 opt-in。
+  </p>
+  <h3>你的 Terminal 会发生什么</h3>
+  <p>
+    默认也会关掉 Playwright MCP。切换前我们会先在现有 thread 告诉你;临时需要时明确运行
+    <span class="term">claude --settings '{"enabledPlugins":{"playwright@claude-plugins-official":true}}'</span>。
+    它只影响这一次 Claude 会话,不会恢复全机常开。
+  </p>
+  <div class="cmt"><label for="c3b">这一节的评论</label><textarea id="c3b" data-key="s3b" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card" id="s4">
+  <h2>5 · 为什么 P0–P3 还保留:它们只管真需要开的残余场景</h2>
+  <div class="legs">
+    <div class="leg p1">
+      <div class="leg-h">P0 · 需要开时,给它完整的关机时间</div>
+      <p>Flywheel 现在 3 秒就强杀,而上游给 graceful close 最多 15 秒。改成轮询:一消失就继续,真顽固才强杀。</p>
+    </div>
+    <div class="leg p1">
+      <div class="leg-h">P1 · 需要开时,也不画窗口</div>
+      <p>同一个安全 writer 写 default-off 与 <span class="term">HEADLESS=true</span>;回滚有 receipt,不覆盖别人后来加的 hooks / plugins。</p>
+    </div>
+    <div class="leg p2">
+      <div class="leg-h">P2 · 只量残量,不杀、不告警</div>
+      <p>P-1 + P0 上线后看两周。只有读数持续满足数字门,才单开 follow-up 讨论自动回收。</p>
+    </div>
+    <div class="leg p3">
+      <div class="leg-h">P3 · cutover 前的旧 profile 一次性隔离</div>
+      <p>人工复核清单 → 只改名搬进 quarantine → 观察至少 7 天 → 人再下命令真删。归因不到的一律不动。</p>
+    </div>
+  </div>
+  <p class="note">
+    原来砍掉的 supervisor、受管插件 fork、Chrome 启动 shim、六相 activation 与自动 kill 一个都不恢复。P-1 让它们更没必要,不是把旧大方案换个名字装回来。
+  </p>
+  <div class="cmt"><label for="c4">这一节的评论</label><textarea id="c4" data-key="s4" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card gray" id="s5">
+  <h2>6 · 这次怎么证明不是又写了一条「以后会执行」的规则</h2>
+  <table>
+    <thead><tr><th>验收</th><th>必须看到的事实</th></tr></thead>
+    <tbody>
+      <tr><td>普通新会话</td><td>playwright-mcp server = 0,不是「有 server 但 Chrome=0」</td></tr>
+      <tr><td>Lead allowlist</td><td>production 与 example 均为空;fixture 只证明未来 exact-identity opt-in 不会越界</td></tr>
+      <tr><td>明确 opt-in 会话</td><td>server 存在;第一次 tool 前 Chrome=0;第一次 tool 后 Chrome 才出现</td></tr>
+      <tr><td>桌面</td><td>目标 Chrome 的 on-screen window = 0,同时用你自己的 Chrome 做阳性对照</td></tr>
+      <tr><td>功能</td><td>GPU/WebGL 截图走预注册阈值与独立 validation shots,不看完结果再放宽</td></tr>
+      <tr><td>存量收敛</td><td>Runner / Lead 受控重启,你的 Terminal 由你重开;不能拿「配置文件改了」冒充进程已经换代</td></tr>
+      <tr><td>泄漏根因</td><td>close 前后按 pid + lstart + profile 精确身份证明 MCP 与 Chrome 都消失</td></tr>
+    </tbody>
+  </table>
+  <h3>诚实边界</h3>
+  <ul class="honest">
+    <li>Typeless / DiskImageMounter 被挂起与这单没有已证实因果,仍不写进验收。</li>
+    <li>当前 host 的设置、上游 0.0.79 的 lazy 行为、各 Lead 的 config root 都会漂;实现文档已逐条写重核方式。</li>
+    <li>这次是 R18 之后的 founder correction,会走一次<strong>增量 design review</strong>,不拿此前 18 轮批准替新方向背书。</li>
+  </ul>
+  <div class="cmt"><label for="c5">这一节的评论</label><textarea id="c5" data-key="s5" rows="2" placeholder="写点什么…"></textarea></div>
+</div>
+
+<div class="card summary" id="sum">
+  <h2>📋 你的评论汇总</h2>
+  <p class="small">上面任何一节写了字都会自动汇总到这里,并保存在这个浏览器里。</p>
+  <div id="summary-list"></div>
+  <div class="copy-row">
+    <button id="copy-all" type="button">复制全部评论</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<footer>FLY-1867 · Founder 二次校准版 · 页面零外部依赖</footer>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var PREFIX = 'fly1867:' + location.pathname + ':';
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  function secTitle(ta) {
+    var card = ta.closest('.card');
+    var h = card ? card.querySelector('h2') : null;
+    return h ? h.textContent : '未命名板块';
+  }
+
+  function renderSummary() {
+    var list = document.getElementById('summary-list');
+    while (list.firstChild) list.removeChild(list.firstChild);
+    var any = false;
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (!v) return;
+      any = true;
+      var item = document.createElement('div');
+      item.className = 'sum-item';
+      var sec = document.createElement('div');
+      sec.className = 'sum-sec';
+      sec.textContent = secTitle(ta);
+      var body = document.createElement('div');
+      body.textContent = v;
+      item.appendChild(sec);
+      item.appendChild(body);
+      list.appendChild(item);
+    });
+    if (!any) {
+      var hint = document.createElement('p');
+      hint.className = 'empty-hint';
+      hint.textContent = '上面任何板块写了评论,都会自动汇总到这里。';
+      list.appendChild(hint);
+    }
+  }
+
+  areas.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      lsSet(ta.getAttribute('data-key'), ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  function buildCopyText() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('【' + secTitle(ta) + '】\n' + v);
+    });
+    return parts.join('\n\n');
+  }
+
+  function legacyCopy(text, status) {
+    var ok = false;
+    try {
+      var tmp = document.createElement('textarea');
+      tmp.value = text;
+      tmp.setAttribute('readonly', '');
+      tmp.style.position = 'fixed';
+      tmp.style.left = '-9999px';
+      document.body.appendChild(tmp);
+      tmp.select();
+      ok = document.execCommand('copy');
+      document.body.removeChild(tmp);
+    } catch (e) { ok = false; }
+    status.textContent = ok ? '✅ 已复制' : '❌ 复制失败,请手动全选上方文字';
+    status.style.color = ok ? '#34c759' : '#ff3b30';
+  }
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var status = document.getElementById('copy-status');
+    var text = buildCopyText();
+    if (!text) { status.textContent = '还没有评论'; status.style.color = '#86868b'; return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        status.textContent = '✅ 已复制';
+        status.style.color = '#34c759';
+      }, function () { legacyCopy(text, status); });
+    } else {
+      legacyCopy(text, status);
+    }
+  });
+})();
+</script>
+</body>
+</html>

@@ -117,6 +117,13 @@ export interface LeadConfig {
 	 */
 	model?: string;
 	/**
+	 * FLY-1867: identity-bound opt-in for the official Playwright MCP plugin.
+	 * Machine settings keep the plugin disabled by default; `claude-lead.sh`
+	 * adds a per-launch `--settings` override only when this exact project+Lead
+	 * entry declares `true`. Absent / false stays off. Claude-code only.
+	 */
+	playwrightMcp?: boolean;
+	/**
 	 * FLY-247: per-Lead backend (vendor) — `"claude-code" | "codex-app-server"`
 	 * (the Lead seam from FLY-224, NOT the Runner's `claude-tmux`).
 	 *
@@ -649,6 +656,14 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					);
 				}
 			}
+			if (
+				lead.playwrightMcp !== undefined &&
+				typeof lead.playwrightMcp !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].playwrightMcp: must be a boolean, got ${JSON.stringify(lead.playwrightMcp)}`,
+				);
+			}
 			if (lead.backend !== undefined) {
 				if (
 					lead.backend !== "claude-code" &&
@@ -658,6 +673,11 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
 					);
 				}
+			}
+			if (lead.playwrightMcp === true && lead.backend === "codex-app-server") {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].playwrightMcp: is only supported by the "claude-code" Lead launcher; codex-app-server cannot consume Claude plugin settings`,
+				);
 			}
 			if (lead.carrier !== undefined) {
 				if (lead.carrier !== "v2") {

@@ -106,6 +106,21 @@ export interface ChromeReapResult {
 	errors: string[];
 }
 
+export type ChromeSweepSensor<T> =
+	| { status: "ok"; rows: ReadonlyMap<number, T> }
+	| { status: "unknown"; error: string };
+
+/**
+ * One three-pass process sample shared by the legacy reaper and the FLY-1867
+ * audit-only census. The maps are not an atomic OS snapshot; each sensor keeps
+ * its own health so the census cannot collapse a failed pass into clean-empty.
+ */
+export interface ChromeSweepSample {
+	comm: ChromeSweepSensor<string>;
+	command: ChromeSweepSensor<{ ppid: number; command: string }>;
+	age: ChromeSweepSensor<{ ageMs: number; lstart: string }>;
+}
+
 export interface ReapChromeDeps {
 	store: StateStore;
 	/** = store.getDbPath(); this Bridge's actual opened db path (ownership truth). */
@@ -124,6 +139,8 @@ export interface ReapChromeDeps {
 	listCommByPid?: () => Promise<Map<number, string>>;
 	listCmdByPid?: () => Promise<Map<number, { ppid: number; command: string }>>;
 	listAgeByPid?: () => Promise<Map<number, { ageMs: number; lstart: string }>>;
+	/** Reuse an already-collected three-pass sample (FLY-1867). */
+	sweepSample?: ChromeSweepSample;
 	readOwnerMarker?: (markerPath: string) => Promise<OwnerMarker | null>;
 	statMtimeMs?: (path: string) => Promise<number | null>;
 	revalidatePid?: (pid: number) => Promise<ParsedChrome | null>;
@@ -266,6 +283,43 @@ async function defaultListAgeByPid(): Promise<
 	return map;
 }
 
+export interface CollectChromeSweepSampleDeps {
+	listCommByPid?: () => Promise<Map<number, string>>;
+	listCmdByPid?: () => Promise<Map<number, { ppid: number; command: string }>>;
+	listAgeByPid?: () => Promise<Map<number, { ageMs: number; lstart: string }>>;
+}
+
+function sensorFromSettled<T>(
+	result: PromiseSettledResult<Map<number, T>>,
+): ChromeSweepSensor<T> {
+	if (result.status === "fulfilled") {
+		return { status: "ok", rows: result.value };
+	}
+	return {
+		status: "unknown",
+		error:
+			result.reason instanceof Error
+				? result.reason.message
+				: String(result.reason),
+	};
+}
+
+/** Collect the three established ps passes once, preserving per-pass health. */
+export async function collectChromeSweepSample(
+	deps: CollectChromeSweepSampleDeps = {},
+): Promise<ChromeSweepSample> {
+	const [comm, command, age] = await Promise.allSettled([
+		(deps.listCommByPid ?? defaultListCommByPid)(),
+		(deps.listCmdByPid ?? defaultListCmdByPid)(),
+		(deps.listAgeByPid ?? defaultListAgeByPid)(),
+	]);
+	return {
+		comm: sensorFromSettled(comm),
+		command: sensorFromSettled(command),
+		age: sensorFromSettled(age),
+	};
+}
+
 async function defaultReadOwnerMarker(
 	markerPath: string,
 ): Promise<OwnerMarker | null> {
@@ -376,7 +430,7 @@ function isChromeForTestingComm(comm: string): boolean {
 	return comm.includes(AGENT_BROWSER_BROWSERS_SEG);
 }
 
-function isChromeFamilyComm(comm: string): boolean {
+export function isChromeFamilyComm(comm: string): boolean {
 	if (!comm) return false;
 	if ((CHROME_FAMILY_COMMS as readonly string[]).includes(basename(comm))) {
 		return true;
@@ -460,9 +514,6 @@ export async function reapChromeSessions(
 	deps: ReapChromeDeps,
 ): Promise<ChromeReapResult> {
 	const log = deps.log ?? ((m: string) => console.log(m));
-	const listCommByPid = deps.listCommByPid ?? defaultListCommByPid;
-	const listCmdByPid = deps.listCmdByPid ?? defaultListCmdByPid;
-	const listAgeByPid = deps.listAgeByPid ?? defaultListAgeByPid;
 	const readOwnerMarker = deps.readOwnerMarker ?? defaultReadOwnerMarker;
 	const statMtimeMs = deps.statMtimeMs ?? defaultStatMtimeMs;
 	const revalidatePid = deps.revalidatePid ?? defaultRevalidatePid;
@@ -489,22 +540,28 @@ export async function reapChromeSessions(
 		errors: [],
 	};
 
-	let commByPid: Map<number, string>;
-	let cmdByPid: Map<number, { ppid: number; command: string }>;
-	try {
-		[commByPid, cmdByPid] = await Promise.all([
-			listCommByPid(),
-			listCmdByPid(),
-		]);
-	} catch {
-		// ps unavailable → nothing to reap.
+	const sweepSample =
+		deps.sweepSample ??
+		(await collectChromeSweepSample({
+			listCommByPid: deps.listCommByPid,
+			listCmdByPid: deps.listCmdByPid,
+			listAgeByPid: deps.listAgeByPid,
+		}));
+	if (
+		sweepSample.comm.status === "unknown" ||
+		sweepSample.command.status === "unknown"
+	) {
+		// Preserve the established reaper behavior: a primary sensor failure is a
+		// best-effort empty pass. The census consumes the same health and records
+		// unknown rather than treating this as clean.
 		return result;
 	}
-	let ageByPid: Map<number, { ageMs: number; lstart: string }> | null = null;
-	try {
-		ageByPid = await listAgeByPid();
-	} catch (error) {
-		result.errors.push(`headless-shot age sensor: ${(error as Error).message}`);
+	const commByPid = sweepSample.comm.rows;
+	const cmdByPid = sweepSample.command.rows;
+	const ageByPid =
+		sweepSample.age.status === "ok" ? sweepSample.age.rows : null;
+	if (sweepSample.age.status === "unknown") {
+		result.errors.push(`headless-shot age sensor: ${sweepSample.age.error}`);
 	}
 
 	for (const [pid, { ppid, command }] of cmdByPid) {

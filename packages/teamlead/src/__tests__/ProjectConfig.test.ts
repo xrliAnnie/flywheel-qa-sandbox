@@ -52,6 +52,16 @@ describe("LeadConfig type", () => {
 		expect(lead.botUserId).toBe("12345678901234567");
 		expect(lead.discordStateDir).toBe("/tmp/discord-eng-lead");
 	});
+
+	it("LeadConfig exposes an identity-bound Playwright MCP opt-in", () => {
+		const lead: LeadConfig = {
+			agentId: "eng-lead",
+			chatChannel: "012",
+			match: { labels: ["Engineering"] },
+			playwrightMcp: true,
+		};
+		expect(lead.playwrightMcp).toBe(true);
+	});
 });
 
 describe("FLY-1726 identity schema boundary", () => {
@@ -259,6 +269,45 @@ describe("loadProjects validation", () => {
 			},
 		]);
 		expect(() => loadProjects()).toThrow(/labels/);
+	});
+
+	it("rejects a non-boolean playwrightMcp Lead capability", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "eng-lead",
+						chatChannel: "456",
+						match: { labels: ["Engineering"] },
+						playwrightMcp: "yes",
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/playwrightMcp.*boolean/);
+	});
+
+	it("rejects a Playwright MCP opt-in on the Codex Lead backend", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "codex-lead",
+						chatChannel: "456",
+						match: { labels: ["Engineering"] },
+						canSpawnRunners: false,
+						codexProfile: "companion",
+						backend: "codex-app-server",
+						playwrightMcp: true,
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/playwrightMcp.*claude-code/);
 	});
 
 	it("throws on duplicate projectName", () => {

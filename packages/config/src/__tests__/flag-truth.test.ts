@@ -134,6 +134,19 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
+	it("registers FLY-1867 policy writer timing controls as non-flag test tuning", () => {
+		for (const envVar of [
+			"FLY1867_POLICY_PRE_CAS_PAUSE_MS",
+			"FLY1867_POLICY_LOCK_TIMEOUT_SECONDS",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/test.*tuning/i);
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+	});
+
 	it("FLY-1456 tombstones CHECKPOINT_WATCHDOG instead of registering it", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_EXEC_ID).toMatch(/execution id/);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_WATCHDOG).toBeUndefined();

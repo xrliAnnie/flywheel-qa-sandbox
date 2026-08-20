@@ -69,8 +69,12 @@ export async function reapRunnerMcp(
 			return {
 				matched: 0,
 				terminated: 0,
-				killed: 0,
+				killSent: 0,
+				confirmedGone: 0,
+				survivors: 0,
 				identityMismatchSkipped: 0,
+				classifierBlocked: 0,
+				probeUnknown: 0,
 				skippedReason: "no_pane_pid",
 			};
 		}
@@ -84,8 +88,13 @@ export async function reapRunnerMcp(
 		return {
 			matched: 0,
 			terminated: 0,
-			killed: 0,
+			killSent: 0,
+			confirmedGone: 0,
+			survivors: 0,
 			identityMismatchSkipped: 0,
+			classifierBlocked: 0,
+			probeUnknown: 1,
+			incompleteReason: "process_probe_unknown",
 		};
 	}
 }

@@ -475,6 +475,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: chrome-reaper sweep interval ms (FLY-766)",
 	FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED:
 		"internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)",
+	FLY1867_POLICY_PRE_CAS_PAUSE_MS:
+		"test-only tuning: bounded pre-CAS pause for deterministic policy-writer race coverage (FLY-1867)",
+	FLY1867_POLICY_LOCK_TIMEOUT_SECONDS:
+		"test and operator tuning: bounded policy-writer lock acquisition deadline (FLY-1867)",
 	// tuning knobs (numeric)
 	// FLY-1560: the out-of-process liveness probe's four numeric knobs. They were
 	// renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* with the /health key; the

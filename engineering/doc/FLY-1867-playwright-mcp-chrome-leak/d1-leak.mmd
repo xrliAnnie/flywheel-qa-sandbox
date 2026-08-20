@@ -1,0 +1,19 @@
+flowchart LR
+    A["Agent 用一次<br/>浏览器工具"] --> B["playwright-mcp<br/>启动 Chrome"]
+
+    B --> C["macOS 默认画窗口<br/>(源码:只有无显示器的<br/>Linux 才不画)"]
+    C --> D["🪟 抢焦点<br/>盖住 founder 桌面<br/>点击落空"]
+
+    B --> E["建 profile 目录<br/>名字 = 一段路径哈希"]
+    E --> F["worktree 做完被删<br/>目录留着没人管"]
+    F --> G["📀 73 个目录<br/>631 MB · 只增不减"]
+
+    B --> H{"Chrome 以 detached 启动<br/>= 自立门户,不跟着一起被杀"}
+    H --> I["关 runner 时给它<br/>3 秒优雅退出"]
+    I --> J["★ 但上游关浏览器<br/>需要最多 15 秒"]
+    J --> K["🧟 我们在它关完前就强杀了它<br/>Chrome 活下来变孤儿<br/>窗口永久留在桌面"]
+
+    style D fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px
+    style G fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px
+    style K fill:#ffe5e5,stroke:#ff3b30,stroke-width:3px
+    style J fill:#fff4e5,stroke:#ff9500,stroke-width:2px

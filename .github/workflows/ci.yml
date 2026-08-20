@@ -169,7 +169,7 @@ jobs:
     # serial lane into two independent shards; this cmux/session shard measured
     # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
     # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
-    # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1572=12, 1764=2,
+    # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
     # 1327=1, cmux-hooks=10, 1364=312, 183=11, 1402=4, 1496=10,
     # 1663=97, 1678=78 (test total ~542s). Dependency preflight is ~0s when
     # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
@@ -227,6 +227,14 @@ jobs:
         run: |
           bash scripts/__tests__/test-reap-worktree-lib.test.sh
           bash scripts/__tests__/test-worktree-removal-contract.test.sh
+
+      # FLY-1867: these hermetic suites guard the read-only orphan census and
+      # the exact-manifest quarantine/delete safety gates. The quarantine suite
+      # uses the real lsof installed above against only its private temp tree.
+      - name: Test — FLY-1867 Playwright MCP lifecycle tools
+        run: |
+          bash scripts/__tests__/fly-1867-playwright-orphan-census.test.sh
+          bash scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh
 
       - name: Test — FLY-1572 mailbox migration CLI
         run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh

@@ -1,0 +1,16 @@
+flowchart LR
+    A1["回收器 A · FLY-1185<br/>只认:开浏览器的那个程序<br/>且 它的父进程已死"]
+    B1["回收器 B · FLY-766<br/>只认:另一种来源的浏览器<br/>(目录前缀 + 归属标记)"]
+
+    L1["🧟 孤儿 Chrome<br/>目录在 ms-playwright-mcp/<br/>无归属标记"]
+    L2["📀 631 MB 目录"]
+
+    A1 -.->|"❌ 实测泄漏数=0<br/>永远空转"| L1
+    B1 -.->|"❌ 前缀不对<br/>没有标记"| L1
+    A1 -.->|"❌ 不管磁盘"| L2
+    B1 -.->|"❌ 不管磁盘"| L2
+
+    style L1 fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px
+    style L2 fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px
+    style A1 fill:#f0f0f2,stroke:#86868b
+    style B1 fill:#f0f0f2,stroke:#86868b

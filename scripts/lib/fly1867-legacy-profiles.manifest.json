@@ -1,0 +1,379 @@
+{
+	"version": 1,
+	"issue": "FLY-1867",
+	"reviewed_at": "2026-08-20T16:41:24.488Z",
+	"entries": [
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-01b1237",
+			"profile_token": "01b1237",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1859",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-02dda7e",
+			"profile_token": "02dda7e",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-922",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-0506937",
+			"profile_token": "0506937",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1455",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-1069476",
+			"profile_token": "1069476",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1596",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-130ec6c",
+			"profile_token": "130ec6c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1038",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-131f15f",
+			"profile_token": "131f15f",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1905",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-1400e3e",
+			"profile_token": "1400e3e",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1764",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-1724813",
+			"profile_token": "1724813",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1751",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-21fe65f",
+			"profile_token": "21fe65f",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1663",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-2a89e56",
+			"profile_token": "2a89e56",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1847",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-2af6fc0",
+			"profile_token": "2af6fc0",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1863",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-2bb7cc7",
+			"profile_token": "2bb7cc7",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1354",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-2c148b7",
+			"profile_token": "2c148b7",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1870",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-32f74ab",
+			"profile_token": "32f74ab",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1854",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-34c9d55",
+			"profile_token": "34c9d55",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1866",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-35c9907",
+			"profile_token": "35c9907",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1294",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-36105de",
+			"profile_token": "36105de",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1648",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-3bf58c9",
+			"profile_token": "3bf58c9",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1828",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-3c3b5fd",
+			"profile_token": "3c3b5fd",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1834",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-3f44aa6",
+			"profile_token": "3f44aa6",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1136",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-44340af",
+			"profile_token": "44340af",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1792",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-44d0f1b",
+			"profile_token": "44d0f1b",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1659",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-45abb67",
+			"profile_token": "45abb67",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1855",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-491731e",
+			"profile_token": "491731e",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1640",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-4dc4954",
+			"profile_token": "4dc4954",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1773",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-591320c",
+			"profile_token": "591320c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-914",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-5b70045",
+			"profile_token": "5b70045",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1260",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-5c5493f",
+			"profile_token": "5c5493f",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1772",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-607f179",
+			"profile_token": "607f179",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1781",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-60c9a91",
+			"profile_token": "60c9a91",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1410",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-61cd934",
+			"profile_token": "61cd934",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1716",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-6ad4c58",
+			"profile_token": "6ad4c58",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1758",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-6ee6490",
+			"profile_token": "6ee6490",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1814",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-70d466d",
+			"profile_token": "70d466d",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1861",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-735381d",
+			"profile_token": "735381d",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1560",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-7ba9b98",
+			"profile_token": "7ba9b98",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1140",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-840cf11",
+			"profile_token": "840cf11",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1262",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-871c392",
+			"profile_token": "871c392",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1808",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-885e9db",
+			"profile_token": "885e9db",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1602",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-89f2411",
+			"profile_token": "89f2411",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1877",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-94d13c1",
+			"profile_token": "94d13c1",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1883",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-9621dc0",
+			"profile_token": "9621dc0",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1869",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-98ee2d7",
+			"profile_token": "98ee2d7",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1671",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-99a6f7c",
+			"profile_token": "99a6f7c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1759",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-9a4a86c",
+			"profile_token": "9a4a86c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1770",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-9cb045c",
+			"profile_token": "9cb045c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1178",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-ab9b051",
+			"profile_token": "ab9b051",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1330",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-b497ab9",
+			"profile_token": "b497ab9",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1750",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-b7abf22",
+			"profile_token": "b7abf22",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1199",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-bd35179",
+			"profile_token": "bd35179",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1833",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-c4fc5e6",
+			"profile_token": "c4fc5e6",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1639",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-ceb1edd",
+			"profile_token": "ceb1edd",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1318",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-d26f43c",
+			"profile_token": "d26f43c",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1604",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-da5d5b8",
+			"profile_token": "da5d5b8",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1832",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-e086e46",
+			"profile_token": "e086e46",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1657",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-e09fc21",
+			"profile_token": "e09fc21",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1914",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-e37631a",
+			"profile_token": "e37631a",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1612",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-e5c027b",
+			"profile_token": "e5c027b",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-709",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-eafda84",
+			"profile_token": "eafda84",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1631",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-efdcd98",
+			"profile_token": "efdcd98",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1605",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-f226e79",
+			"profile_token": "f226e79",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1512",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		},
+		{
+			"profile_path": "/Users/xiaorongli/Library/Caches/ms-playwright-mcp/mcp-chrome-f909470",
+			"profile_token": "f909470",
+			"inferred_root": "/Users/xiaorongli/Dev/flywheel-FLY-1826",
+			"provenance": "2026-08-20 manual review: sha256(inferred_root).slice(0,7) matched profile_token; inferred_root absent; existing and unmatched roots excluded"
+		}
+	]
+}

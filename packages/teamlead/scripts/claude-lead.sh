@@ -531,6 +531,41 @@ if [ "$IS_COMPANION_ROLE" != true ]; then
   esac
 fi
 
+# ── FLY-1867: identity-bound Playwright MCP positive opt-in ────────────────
+# The machine setting is deliberately false. Only the exact project+Lead entry
+# may turn the official plugin back on for this launch. Keep this registry query
+# beside the existing companion/external identity queries and before any
+# launch-argv assembly; no environment variable may widen the allowlist.
+_playwright_mcp_query() {
+  node -e "
+    import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+      let projects;
+      try { projects = loadProjects(); } catch { process.stdout.write('disabled'); return; }
+      const p = projects.find(e => e.projectName === process.argv[1]);
+      if (!p) { process.stdout.write('disabled'); return; }
+      const lead = (p.leads || []).find(l => l.agentId === process.argv[2]);
+      if (!lead) { process.stdout.write('disabled'); return; }
+      process.stdout.write(lead.playwrightMcp === true ? 'enabled' : 'disabled');
+    }).catch(() => { process.stdout.write('disabled'); });
+  " "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null
+}
+
+PLAYWRIGHT_MCP_STATE="$(_playwright_mcp_query)"
+case "$PLAYWRIGHT_MCP_STATE" in
+  enabled)
+    log "Playwright MCP: enabled for exact projects.json identity ${PROJECT_NAME}/${LEAD_ID}"
+    ;;
+  disabled)
+    log "Playwright MCP: machine default-off (identity has no positive opt-in)"
+    ;;
+  *)
+    # This optional capability is machine-default-off. A malformed query result
+    # must not turn an empty allowlist into a fleet-wide Lead launch fail-stop.
+    PLAYWRIGHT_MCP_STATE="disabled"
+    log "WARNING: Playwright MCP capability query inconclusive; defaulting disabled for ${PROJECT_NAME}/${LEAD_ID}"
+    ;;
+esac
+
 # GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
 # e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
@@ -2315,6 +2350,15 @@ CLAUDE_ARGS=(
   --agent "$LEAD_ID"
   --permission-mode bypassPermissions
 )
+
+if [ "$PLAYWRIGHT_MCP_STATE" = "enabled" ]; then
+  # One narrow, per-launch override. Machine default-off and HEADLESS=true stay
+  # intact; this only opens the official plugin for the declared Lead identity.
+  CLAUDE_ARGS+=(
+    --settings
+    '{"enabledPlugins":{"playwright@claude-plugins-official":true}}'
+  )
+fi
 
 # FLY-1496/FLY-1716: model and effort are deliberately absent from this static
 # launch array. The physical-launch path resolves both from projects.json after

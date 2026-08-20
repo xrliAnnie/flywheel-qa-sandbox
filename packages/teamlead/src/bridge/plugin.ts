@@ -7033,13 +7033,40 @@ export async function startBridge(
 		const chromeMigrateUnattributed =
 			process.env.FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED === "1";
 		let chromeReaperRunning = false;
+		let playwrightCensusRecorder:
+			| {
+					run(input: {
+						sample: import("./chrome-session-reaper.js").ChromeSweepSample;
+						mode: "boot" | "periodic";
+						orphanGraceMinutes: number;
+					}): Promise<string>;
+			  }
+			| undefined;
 		const runChromeReap = async (mode: "boot" | "periodic"): Promise<void> => {
 			if (chromeReaperRunning) return; // single-flight (shared boot + periodic)
 			chromeReaperRunning = true;
 			try {
-				const { reapChromeSessions } = await import(
-					"./chrome-session-reaper.js"
-				);
+				const [
+					{ collectChromeSweepSample, reapChromeSessions },
+					{ createPlaywrightOrphanCensusRecorder },
+				] = await Promise.all([
+					import("./chrome-session-reaper.js"),
+					import("./playwright-orphan-census.js"),
+				]);
+				const chromeSweepSample = await collectChromeSweepSample();
+				playwrightCensusRecorder ??= createPlaywrightOrphanCensusRecorder();
+				try {
+					const summary = await playwrightCensusRecorder.run({
+						sample: chromeSweepSample,
+						mode,
+						orphanGraceMinutes: chromeGraceMin,
+					});
+					if (!summary.endsWith("recorded=no")) console.log(summary);
+				} catch (error) {
+					console.warn(
+						`[playwright-orphan-census] ledger failed: ${(error as Error).message}`,
+					);
+				}
 				const r = await reapChromeSessions({
 					store,
 					ownStateDbPath: store.getDbPath(),
@@ -7047,6 +7074,7 @@ export async function startBridge(
 					migrateUnattributed: chromeMigrateUnattributed,
 					unattributedIdleGraceMinutes: chromeGraceMin,
 					nowMs: Date.now(),
+					sweepSample: chromeSweepSample,
 				});
 				if (
 					r.scanned > 0 ||

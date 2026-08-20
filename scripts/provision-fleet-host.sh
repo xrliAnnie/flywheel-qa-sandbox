@@ -383,13 +383,13 @@ phase_flywheel_home() {
   # first Claude login creates it and the operator re-runs this script then.
   if [ -f "$HOME_DIR/.claude/settings.json" ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
-      plan "setup-mcp-on-demand.sh $HOME_DIR/.claude/settings.json (playwright default-off)"
+      plan "setup-mcp-on-demand.sh apply $HOME_DIR/.claude/settings.json (playwright default-off + opt-in headless)"
     else
-      run bash "$REPO_ROOT/scripts/setup-mcp-on-demand.sh" "$HOME_DIR/.claude/settings.json" \
+      run bash "$REPO_ROOT/scripts/setup-mcp-on-demand.sh" apply "$HOME_DIR/.claude/settings.json" \
         || die "setup-mcp-on-demand failed (settings untouched — fix and re-run)"
     fi
   else
-    log "no $HOME_DIR/.claude/settings.json yet — run scripts/setup-mcp-on-demand.sh after first Claude login"
+    log "no $HOME_DIR/.claude/settings.json yet — run scripts/setup-mcp-on-demand.sh apply after first Claude login"
   fi
 }
 
