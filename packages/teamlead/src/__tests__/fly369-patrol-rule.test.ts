@@ -6,6 +6,7 @@
  * strip the parts the FLY-369 acceptance criteria depend on.
  */
 
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -54,6 +55,127 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/多了少了.*finding/i);
 		expect(patrol).toMatch(/纯闹钟/);
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
+	});
+
+	it("FLY-1855: patrol_tick has an executable fleet scope, six-step artifact, and explicit UNAVAILABLE exit", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"范围合同",
+			"检测范围",
+			"整机",
+			"处置权限",
+			"产出物合同",
+			"UNAVAILABLE",
+			"flywheel-patrol-snapshot",
+			"REPORT_PATH",
+			"three_stage_turn",
+			"workflow_run_node",
+			"turn_wake_outbox",
+			"dead_letter_alerts",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		for (let step = 1; step <= 6; step += 1) {
+			expect(section0).toMatch(new RegExp(`(?:^|\\n)${step}\\.\\s+\\*\\*`));
+		}
+		expect(section0.match(/run:/g)?.length ?? 0).toBeGreaterThanOrEqual(6);
+		expect(section0).toMatch(/跳过.*不留痕.*违约|禁止静默跳过/);
+	});
+
+	it("FLY-1855: Discord truth and cross-boundary disposition have exact addresses", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		expect(section0).toContain("/api/chat-threads?issueId=");
+		expect(section0).toContain("fetch_messages");
+		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
+		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
+		expect(section0).toContain("roundtable.json");
+		expect(section0).not.toContain('reply(chat_id="1512578695468941333"');
+		expect(section0).toContain("flywheel-eng-lead");
+		expect(section0).toContain("reply(chat_id=");
+		expect(section0).toContain("--config -");
+		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
+	});
+
+	it("FLY-1855 founder increment: every canonical Runner pane has full-scrollback evidence and a closed action", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"list-panes -a",
+			"session_name",
+			"runner-",
+			"capture-pane -p -S -",
+			"PANE_EVIDENCE",
+			"pane_count",
+			"LIMIT_LIVE",
+			"STALLED_60M",
+			"INTERACTIVE_MENU",
+			"action=REQUIRED",
+			"result=UNSET",
+			"foreign-registry",
+			"owner_index_incomplete",
+			"comm.sessions",
+			"patrol-continuity",
+			"ship_parked",
+			"WELL_FORMED_EVIDENCE",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(section0).toContain("You've hit your session limit");
+		expect(section0).toContain("You've hit your usage limit");
+		expect(section0).toContain("Press Enter to confirm");
+		expect(section0).toContain("flywheel-comm send");
+		expect(section0).toContain("tmux send-keys");
+		expect(section0).toMatch(/action=REQUIRED.*result=UNSET/s);
+		expect(section0).toMatch(/PANE_COUNT.*EVIDENCE_COUNT/s);
+		expect(section0).toMatch(/-CANDIDATE\$/);
+	});
+
+	it("FLY-1855: the documented completion gate accepts finalized UNAVAILABLE rows", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const pattern = section0.match(/grep -Ec '([^']+)' "\$REPORT_PATH"/)?.[1];
+		expect(pattern).toBeDefined();
+		const report = [
+			"STEP 1: OK",
+			"STEP 2: FINDING",
+			"STEP 3: UNAVAILABLE(structural: schema_missing)",
+			"STEP 4: UNAVAILABLE(transient: sqlite_busy)",
+			"STEP 5: OK",
+			"STEP 6: FINDING",
+		].join("\n");
+		const result = spawnSync("grep", ["-Ec", pattern ?? ""], {
+			input: `${report}\n`,
+			encoding: "utf8",
+		});
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe("6");
+	});
+
+	it("FLY-1855: the documented dedupe parser accepts a healthy non-truncated response", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const parser = section0.match(
+			/TRUNCATED=.*?jq\s+(-[A-Za-z]+)\s+'([^']+)'/s,
+		);
+		expect(parser).not.toBeNull();
+		const result = spawnSync("jq", [parser?.[1] ?? "", parser?.[2] ?? ""], {
+			input: '{"issues":[],"truncated":false}\n',
+			encoding: "utf8",
+		});
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toBe("false");
 	});
 
 	it("RC-1: every lifecycle event MUST relay to the [FLY-XX] thread via /api/chat-threads/send", () => {

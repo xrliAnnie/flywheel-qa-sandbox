@@ -1386,6 +1386,8 @@ qa_slot_start_lead() {
     "AGENT_SOURCE=${identity}" \
     "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}" \
     "FLYWHEEL_PROJECTS_FILE=${projects}" \
+    "TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db" \
+    "FLYWHEEL_STATE_DIR=${state}" \
     "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}" \
     "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
     "LEAD_WORKSPACE=${workspace}" \

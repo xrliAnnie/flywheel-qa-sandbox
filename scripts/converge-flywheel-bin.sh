@@ -133,7 +133,7 @@ strict_discard() {  # <path> → 0 proven gone, 1 not proven gone
 }
 strict_residue_alert() {  # <name> <path> <what>
   echo "[converge-bin] ERROR: could not prove removal of $2 for $1" >&2
-  alert "bin alert-chain cleanup unproven: $1" \
+  strict_alert "$1" "bin alert-chain cleanup unproven: $1" \
     "$2 is $3 and its removal could not be proven, so it may still be in the bin directory. Nothing was published; inspect that path manually and re-run converge (FLY-1577)." \
     "$1|strict-discard-failed"
 }
@@ -233,6 +233,7 @@ symlink_source_for() {
     flywheel-cmux-sync) echo "$REPO_ROOT/scripts/flywheel-cmux-sync.sh" ;;
     flywheel-cmux-autostart) echo "$REPO_ROOT/scripts/flywheel-cmux-autostart.sh" ;;
     meta-alert.sh) echo "$REPO_ROOT/scripts/meta-alert.sh" ;;
+    flywheel-patrol-snapshot) echo "$REPO_ROOT/scripts/lead-patrol-snapshot.sh" ;;
     *) echo "" ;;
   esac
 }
@@ -253,7 +254,28 @@ symlink_source_for() {
 # verbatim (absence is the installer's business, and their rc contract is
 # unchanged) — widening the regime to them is a far larger blast radius than
 # this incident justifies.
-symlink_strict_name() { case "$1" in meta-alert.sh) return 0 ;; *) return 1 ;; esac; }
+symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot) return 0 ;; *) return 1 ;; esac; }
+
+# Keep every existing meta-alert.sh title/body byte-for-byte. The patrol
+# snapshot shares the strict mechanics but is a generic managed executable,
+# not part of the cmux alert chain (FLY-1855).
+strict_alert() { # <name> <title> <body> <signature>
+  local strict_name="$1" title="$2" body="$3" signature="$4" generic_title generic_body
+  if [ "$strict_name" = "meta-alert.sh" ]; then
+    alert "$title" "$body" "$signature"
+  else
+    generic_title="${title//alert-chain/managed executable}"
+    # Preserve the caller's path, source, state transition, and remediation
+    # detail. Only translate the legacy cmux-specific class labels; reading
+    # caller locals such as link/src here previously discarded that evidence.
+    generic_body="${body//alert-chain/managed executable}"
+    generic_body="${generic_body//cmux watcher's fail-closed launch path/managed executable path}"
+    generic_body="${generic_body//the 'restart brake unavailable' report/its failure report}"
+    generic_body="${generic_body//cmux watcher's failure-reporting chain/managed executable delivery path}"
+    generic_body="${generic_body//cmux watcher/managed executable}"
+    alert "$generic_title" "$generic_body" "$signature"
+  fi
+}
 
 # strict_publish_link <name> <src> <link> <what> — atomic create/replace.
 # On failure the canonical path is left exactly as it was and the process's own
@@ -265,14 +287,14 @@ strict_publish_link() {
   if ln -s "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$link"; then
     sha_src="$(sha "$src")"
     echo "[converge-bin] strict link ${what}: $name -> $src" >&2
-    alert "bin alert-chain link ${what}: $name" \
+    strict_alert "$name" "bin alert-chain link ${what}: $name" \
       "$link ${what} to this checkout's $src (sha ${sha_src:0:12}). $name is on the cmux watcher's fail-closed launch path — without it the 'restart brake unavailable' report is silently dropped (FLY-1577)." \
       "$name|strict-${what}"
     return 0
   fi
   rm -f "$tmp" 2>/dev/null || true
   echo "[converge-bin] ERROR: strict link publish FAILED for $name" >&2
-  alert "bin alert-chain publish FAILED: $name" \
+  strict_alert "$name" "bin alert-chain publish FAILED: $name" \
     "Could not publish $link -> $src. The path was left unchanged; the cmux watcher's failure-reporting chain stays broken until this is repaired (FLY-1577)." \
     "$name|strict-publish-failed"
   return 1
@@ -303,7 +325,7 @@ case "$converge_cmux_symlink" in
 esac
 
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
-  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh; do
+  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot; do
     link="$BIN_DIR/$name"
     src="$(symlink_source_for "$name")"
 
@@ -397,7 +419,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
           strict_publish_link "$name" "$src" "$link" created || rc=1
         else
           echo "[converge-bin] ERROR: $name is absent and this checkout has no sane executable source at ${src:-<none>}" >&2
-          alert "bin alert-chain unhealthy: $name absent, no sane source" \
+          strict_alert "$name" "bin alert-chain unhealthy: $name absent, no sane source" \
             "$link is missing and this checkout has no sane executable ${src:-<none>} to link (missing, failed FLY-954 source sanity, no shebang, or un-chmod-able). The cmux watcher cannot report a failed launch until this is repaired (FLY-1577)." \
             "$name|strict-nosource"
           rc=1
@@ -410,7 +432,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
         # reach here.
         if ! symlink_source_ready "$src"; then
           echo "[converge-bin] WARNING: $name is a regular-file copy but this checkout has no sane executable source at ${src:-<none>}" >&2
-          alert "bin alert-chain copy unhealthy: $name (no sane source)" \
+          strict_alert "$name" "bin alert-chain copy unhealthy: $name (no sane source)" \
             "$link is a regular-file deployment copy and this checkout has no sane executable ${src:-<none>} to link. The deployed copy was preserved; repair the checkout first (FLY-1577)." \
             "$name|strict-copy-nosource"
           rc=1
@@ -504,7 +526,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
               if ! strict_discard "$archive"; then
                 strict_residue_alert "$name" "$archive" "an artifact whose identity could not be established"
               fi
-              alert "bin alert-chain identity unmeasurable: $name" \
+              strict_alert "$name" "bin alert-chain identity unmeasurable: $name" \
                 "Could not read the identity of ${src} and/or its archive, so it is not provable that the retained artifact differs from the trusted source — or that the source still exists. Nothing was published; $link was left as it was (FLY-1577)." \
                 "$name|strict-identity-unmeasurable"
               rc=1; publish_blocked=1
@@ -527,14 +549,14 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
               log "strict shape: $name already converged by a concurrent run"
             else
               echo "[converge-bin] ERROR: $name changed shape mid-repair and is not the canonical link" >&2
-              alert "bin alert-chain shape race unresolved: $name" \
+              strict_alert "$name" "bin alert-chain shape race unresolved: $name" \
                 "$link stopped being a regular-file copy while it was being repaired, but it is not the canonical link to $src either. Nothing was published; re-run converge and investigate the writer (FLY-1577)." \
                 "$name|strict-shape-race"
               rc=1
             fi
           elif [ "$archive_ok" != "1" ]; then
             echo "[converge-bin] ERROR: strict archive FAILED for $name — canonical copy preserved" >&2
-            alert "bin alert-chain archive FAILED: $name" \
+            strict_alert "$name" "bin alert-chain archive FAILED: $name" \
               "Could not preserve $link before replacing its regular-file deployment shape. The canonical path was left untouched; fix bin-directory permissions/storage and re-run converge (FLY-1577)." \
               "$name|strict-archive-failed"
             rc=1
@@ -544,7 +566,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
         fi
       else
         echo "[converge-bin] ERROR: $name has an unsupported shape at $link — NOT replacing" >&2
-        alert "bin alert-chain shape unsupported: $name" \
+        strict_alert "$name" "bin alert-chain shape unsupported: $name" \
           "$link exists but is neither the required symlink nor an archivable regular file. NOT auto-repaired; inspect the path manually (FLY-1577)." \
           "$name|strict-shape-unsupported"
         rc=1
@@ -570,7 +592,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
         # must never fall through into the repair path below, because that
         # would mean publishing a target we could not verify.
         echo "[converge-bin] ERROR: cannot canonicalize the expected source for $name (${src:-<none>})" >&2
-        alert "bin alert-chain identity unprovable: $name" \
+        strict_alert "$name" "bin alert-chain identity unprovable: $name" \
           "The expected source ${src:-<none>} for $link could not be canonicalized, so the link's identity cannot be verified and nothing was published (FLY-1577)." \
           "$name|strict-identity-unprovable"
         rc=1; continue
@@ -588,7 +610,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
       # rebuilding the link.
       if symlink_strict_name "$name" && ! symlink_source_ready "$src"; then
         echo "[converge-bin] ERROR: $name links to ${src} but that source is not usable" >&2
-        alert "bin alert-chain source unusable: $name" \
+        strict_alert "$name" "bin alert-chain source unusable: $name" \
           "$link points at the canonical ${src}, but that source failed FLY-954 sanity / has no shebang / could not be made executable. The link was left untouched. The cmux watcher's failure report cannot be delivered until the source is repaired (FLY-1577)." \
           "$name|strict-source-unready"
         rc=1

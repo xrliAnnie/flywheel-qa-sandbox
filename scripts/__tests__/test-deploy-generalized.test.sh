@@ -33,6 +33,14 @@ source "$ROOT/scripts/lib/qa-multilead.sh"
 # shellcheck source=../lib/qa-generalized.sh
 source "$ROOT/scripts/lib/qa-generalized.sh"
 
+test_deploy_source="$(<"$ROOT/scripts/test-deploy.sh")"
+assert_contains "$test_deploy_source" \
+	'"TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db"' \
+	'QA Lead manifest pins the slot-local StateStore DB'
+assert_contains "$test_deploy_source" \
+	'"FLYWHEEL_STATE_DIR=${state}"' \
+	'QA Lead manifest pins the slot-local state directory'
+
 codex_stub_kill_log="$TMP_ROOT/codex-stub-kill.log"
 slot_for_reap="$TMP_ROOT/flywheel-test-slot-2"
 mkdir -p "$slot_for_reap/stub-state"

@@ -78,6 +78,16 @@ for var in DISCORD_BOT_TOKEN FLYWHEEL_LEAD_ID FLYWHEEL_COMM_DB PATH HOME; do
   fi
 done
 
+# FLY-1855: QA slots inject a slot-local StateStore path in the launch
+# manifest. It must cross the explicit env -i boundary or the patrol snapshot
+# silently falls back to the production $HOME/.flywheel/teamlead.db.
+log_test "_launch_claude conditionally forwards TEAMLEAD_DB_PATH"
+if grep -Fq 'env_args+=(-e "TEAMLEAD_DB_PATH=${TEAMLEAD_DB_PATH}")' "$LAUNCHER"; then
+  log_pass "TEAMLEAD_DB_PATH crosses the child env boundary when set"
+else
+  log_fail "TEAMLEAD_DB_PATH is not conditionally forwarded through env -i"
+fi
+
 # FLY-1426: the Discord plugin and the Lead pane must read the same rollout
 # priority windows. The plugin runs after the env -i boundary, so
 # inherited launcher-shell values are not sufficient.
