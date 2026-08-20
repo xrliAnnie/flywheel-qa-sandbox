@@ -40,7 +40,7 @@ loops:
     to: implement
     loopWhen: qa_fail
     exitWhen: qa_pass
-    maxIterations: 3
+    maxIterations: 10
     onLimit: escalate
   - id: founder_rework
     from: founder_gate

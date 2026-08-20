@@ -356,13 +356,13 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 			!implement ||
 			!qa ||
 			loops.length !== 2 ||
-			qaLoop?.maxIterations !== 3 ||
+			qaLoop?.maxIterations !== 10 ||
 			qaLoop?.onLimit !== "escalate" ||
 			founderLoop?.maxIterations !== undefined ||
 			founderLoop?.onLimit !== undefined
 		) {
 			throw new Error(
-				`${source} simple_code must have implement and QA executable nodes plus a max-3 QA loop and an unbounded founder-rework loop`,
+				`${source} simple_code must have implement and QA executable nodes plus a max-10 QA loop and an unbounded founder-rework loop`,
 			);
 		}
 	} else if (executableCount !== 1 || loops.length !== 0) {

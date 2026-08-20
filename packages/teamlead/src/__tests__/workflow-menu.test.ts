@@ -102,7 +102,7 @@ describe("founder-approved workflow menu source", () => {
 				to: "implement",
 				loopWhen: "qa_fail",
 				exitWhen: "qa_pass",
-				maxIterations: 3,
+				maxIterations: 10,
 				onLimit: "escalate",
 			},
 			{
@@ -143,7 +143,7 @@ describe("founder-approved workflow menu source", () => {
 
 	it.each([
 		["a QA role", "    role: qa", "    role: implement"],
-		["the max-3 QA loop", "    maxIterations: 3", "    maxIterations: 2"],
+		["the max-10 QA loop", "    maxIterations: 10", "    maxIterations: 2"],
 	] as const)("rejects simple_code without %s", (_case, before, after) => {
 		const shapes = mkdtempSync(join(tmpdir(), "fly1859-invalid-simple-code-"));
 		try {
@@ -156,7 +156,7 @@ describe("founder-approved workflow menu source", () => {
 			expect(() =>
 				loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
 			).toThrow(
-				/simple_code must have implement and QA executable nodes.*max-3 QA loop/i,
+				/simple_code must have implement and QA executable nodes.*max-10 QA loop/i,
 			);
 		} finally {
 			rmSync(shapes, { recursive: true, force: true });
