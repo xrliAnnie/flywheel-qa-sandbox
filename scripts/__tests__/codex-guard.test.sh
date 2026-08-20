@@ -79,12 +79,19 @@ fi
 echo "== pure-Bash watchdog retains ownership of its timeout marker =="
 MARKER_TMP="$ROOT/marker-tmp"
 mkdir -p "$MARKER_TMP"
+# Linux runners normally provide coreutils timeout. Shadow it with an
+# executable that cannot launch so this cross-platform test exercises the
+# pure-Bash fallback named by the contract; the external path is tested below.
+cat > "$ROOT/bin/timeout" <<'EOF'
+#!/definitely/missing/interpreter
+exit 99
+EOF
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
 : > "$ROOT/marker-child-ready"
 exec /bin/sleep 300
 EOF
-chmod +x "$ROOT/bin/codex"
+chmod +x "$ROOT/bin/timeout" "$ROOT/bin/codex"
 env -i \
   HOME="$ROOT/home" \
   PATH="$ROOT/bin:/usr/bin:/bin" \
@@ -248,6 +255,13 @@ fi
 
 echo "== interrupted wrapper leaves an identity-fenced cleanup record =="
 rm -f "$ROOT/state"/*.json "$ROOT/interrupted-codex.pid"
+# Keep this lifecycle assertion on the direct-child pure-Bash seam on every
+# host. In the external-timeout seam the registered PID is the timeout wrapper,
+# not the nested fake Codex PID written by this fixture.
+cat > "$ROOT/bin/timeout" <<'EOF'
+#!/definitely/missing/interpreter
+exit 99
+EOF
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$\$" > "$ROOT/interrupted-codex.pid"
@@ -255,7 +269,7 @@ printf 'partial-stdout-before-interrupt\n'
 printf 'partial-stderr-before-interrupt\n' >&2
 exec /bin/sleep 300
 EOF
-chmod +x "$ROOT/bin/codex"
+chmod +x "$ROOT/bin/timeout" "$ROOT/bin/codex"
 env -i \
   HOME="$ROOT/home" \
   PATH="$ROOT/bin:/usr/bin:/bin" \
@@ -317,6 +331,7 @@ else
     "child_alive=$(kill -0 "$interrupted_codex_pid" 2>/dev/null && echo yes || echo no) entry=$([[ -e "$interrupted_entry" ]] && echo yes || echo no)"
   [[ -z "$interrupted_codex_pid" ]] || kill -KILL "$interrupted_codex_pid" 2>/dev/null || true
 fi
+rm -f "$ROOT/bin/timeout"
 
 echo "== malformed registry fields are rejected before signaling =="
 rm -f "$ROOT/state"/*.json "$ROOT/malformed-signals"
