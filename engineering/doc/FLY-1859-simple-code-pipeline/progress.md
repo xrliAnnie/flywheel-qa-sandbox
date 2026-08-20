@@ -1,13 +1,13 @@
 ---
 issue: FLY-1859
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-19T23:39:58.565Z
-nextStep: commit and push the corrected model pins, then request exact-head code review
+phaseCursor: 4/4
+updated: 2026-08-20T00:21:00.229Z
+nextStep: "handoff PR #886 to DAG QA for delta verification and a fresh ship card"
 chunks: []
 pointers: {}
 ---
 
 # FLY-1859 progress
-**phase**: implement (3/4)
-**next**: commit and push the corrected model pins, then request exact-head code review
+**phase**: implement (4/4)
+**next**: handoff PR #886 to DAG QA for delta verification and a fresh ship card
