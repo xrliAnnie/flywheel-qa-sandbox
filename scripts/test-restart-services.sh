@@ -365,6 +365,8 @@ rn_skip_result=$(bash -c '
   record_lead_restart_detail() { :; }
   register_restart_transient_file() { :; }
   record_successful_lead_body_observation() { :; }
+  record_successful_lead_verify_timing() { :; }
+  _dral_sleep() { :; }
   restart_lead() { printf "%s\n" "$1" >> "$calls"; }
   lead_restart_collect_candidates() {
     printf "test-slot-flywheel-test-1\ttest-slot\tflywheel-test-1\t-\tskip-test\tmanifest\n" > "$4"
@@ -375,9 +377,11 @@ rn_skip_result=$(bash -c '
   TMPDIR="$root"
   LEAD_RESTART_NAMES_FILE="$root/names"
   LEAD_BODY_OBSERVATIONS_FILE=""
+  LEAD_VERIFY_TIMINGS_FILE=""
   VERIFIED_LEAD_PID=""
   VERIFIED_LEAD_START=""
-  do_restart_all_leads
+  VERIFIED_LEAD_ELAPSED_SECONDS=""
+  do_restart_all_leads stagger
 ' _ "$rn_restart_all_func" "$rn_skip_root" "$rn_skip_manifest" "$rn_skip_calls")
 if [[ "$rn_skip_result" == "skipped:0 failed:0 total:1" ]] \
   && [[ "$(wc -l < "$rn_skip_calls" | tr -d ' ')" == "1" ]] \
@@ -385,6 +389,281 @@ if [[ "$rn_skip_result" == "skipped:0 failed:0 total:1" ]] \
     pass "FLY-1603 skip-test is skipped without counting; only the production Lead enters N/M"
 else
     fail "FLY-1603 skip-test count contract mismatch: result='$rn_skip_result' restarts='$(cat "$rn_skip_calls")'"
+fi
+
+echo "Test: FLY-1814 Lead restart modes batch only restart mutations"
+rn_run_batch_case() {
+    local mode="$1" count="$2" layout="${3:-plain}"
+    local case_root="$TMPDIR_ROOT/batch-${mode}-${count}-${layout}"
+    local events="$case_root/events" output="$case_root/output" errors="$case_root/errors"
+    mkdir -p "$case_root"
+    : > "$events"
+    set +e
+    bash -c '
+      set -uo pipefail
+      source "$1"
+      root="$2"; events="$3"; mode="$4"; count="$5"; layout="$6"
+      bash() { return 0; }
+      log() { :; }
+      alert_warning() { :; }
+      record_lead_restart_detail() { :; }
+      register_restart_transient_file() { :; }
+      record_successful_lead_body_observation() { :; }
+      record_successful_lead_verify_timing() { :; }
+      _dral_sleep() { printf "sleep:%s\n" "$1" >> "$events"; }
+      restart_lead() {
+        printf "restart:%s\n" "${1##*/}" >> "$events"
+        VERIFIED_LEAD_PID=123
+        VERIFIED_LEAD_START=start
+        VERIFIED_LEAD_ELAPSED_SECONDS=1
+        return 0
+      }
+      lead_restart_collect_candidates() {
+        local output_file="$4" i mf
+        : > "$output_file"
+        for (( i=1; i<=count; i++ )); do
+          mf="$root/lead-${i}.json"
+          printf "{}\n" > "$mf"
+          printf "project-lead-%s\tproject\tlead-%s\t%s\trestart\tmanifest\n" \
+            "$i" "$i" "$mf" >> "$output_file"
+          if [[ "$layout" == "mixed" && "$i" == "2" ]]; then
+            printf "qa-slot\tqa\ttest\t-\tskip-test\tmanifest\n" >> "$output_file"
+            printf "manifestless-slot\tproject\tmissing\t-\tmanifestless\tplist\n" >> "$output_file"
+          fi
+        done
+      }
+      HOME="$root/home"
+      FLYWHEEL_DIR="$root/repo"
+      TMPDIR="$root"
+      LEAD_RESTART_NAMES_FILE="$root/names"
+      LEAD_BODY_OBSERVATIONS_FILE=""
+      LEAD_VERIFY_TIMINGS_FILE=""
+      VERIFIED_LEAD_PID=""
+      VERIFIED_LEAD_START=""
+      VERIFIED_LEAD_ELAPSED_SECONDS=""
+      do_restart_all_leads "$mode"
+    ' _ "$rn_restart_all_func" "$case_root" "$events" "$mode" "$count" "$layout" \
+      > "$output" 2> "$errors"
+    RN_BATCH_RC=$?
+    set -e
+    RN_BATCH_OUTPUT="$(cat "$output")"
+    RN_BATCH_EVENTS="$(cat "$events")"
+}
+
+rn_run_batch_case stagger 4
+if (( RN_BATCH_RC == 0 )) \
+  && [[ "$RN_BATCH_OUTPUT" == "skipped:0 failed:0 total:4" ]] \
+  && [[ "$(grep -c '^restart:' <<< "$RN_BATCH_EVENTS")" == "4" ]] \
+  && ! grep -q '^sleep:' <<< "$RN_BATCH_EVENTS"; then
+    pass "FLY-1814 exactly four staggered candidates have no trailing sleep and exact stdout"
+else
+    fail "FLY-1814 four-candidate stagger mismatch: rc=$RN_BATCH_RC out='$RN_BATCH_OUTPUT' events='$RN_BATCH_EVENTS'"
+fi
+
+rn_run_batch_case stagger 5
+rn_expected_five=$'restart:lead-1.json\nrestart:lead-2.json\nrestart:lead-3.json\nrestart:lead-4.json\nsleep:60\nrestart:lead-5.json'
+if (( RN_BATCH_RC == 0 )) \
+  && [[ "$RN_BATCH_OUTPUT" == "skipped:0 failed:0 total:5" ]] \
+  && [[ "$RN_BATCH_EVENTS" == "$rn_expected_five" ]]; then
+    pass "FLY-1814 stagger sleeps once before the fifth restart candidate"
+else
+    fail "FLY-1814 five-candidate stagger order mismatch: rc=$RN_BATCH_RC out='$RN_BATCH_OUTPUT' events='$RN_BATCH_EVENTS'"
+fi
+
+rn_run_batch_case stagger 9
+rn_nine_sleeps="$(grep -c '^sleep:60$' <<< "$RN_BATCH_EVENTS" || true)"
+rn_run_batch_case stagger 16
+rn_sixteen_sleeps="$(grep -c '^sleep:60$' <<< "$RN_BATCH_EVENTS" || true)"
+if [[ "$rn_nine_sleeps" == "2" && "$rn_sixteen_sleeps" == "3" ]]; then
+    pass "FLY-1814 9/16 restart candidates produce exactly 2/3 batch pauses"
+else
+    fail "FLY-1814 batch pause counts mismatch: nine=$rn_nine_sleeps sixteen=$rn_sixteen_sleeps"
+fi
+
+rn_run_batch_case stagger 5 mixed
+if [[ "$RN_BATCH_OUTPUT" == "skipped:1 failed:0 total:6" ]] \
+  && [[ "$(grep -c '^sleep:60$' <<< "$RN_BATCH_EVENTS")" == "1" ]] \
+  && [[ "$(grep -n '^sleep:60$' <<< "$RN_BATCH_EVENTS" | cut -d: -f1)" == "5" ]]; then
+    pass "FLY-1814 skip-test and manifestless candidates do not consume batch slots"
+else
+    fail "FLY-1814 non-restart candidate batching mismatch: out='$RN_BATCH_OUTPUT' events='$RN_BATCH_EVENTS'"
+fi
+
+rn_run_batch_case immediate 9
+if (( RN_BATCH_RC == 0 )) \
+  && [[ "$RN_BATCH_OUTPUT" == "skipped:0 failed:0 total:9" ]] \
+  && ! grep -q '^sleep:' <<< "$RN_BATCH_EVENTS"; then
+    pass "FLY-1814 immediate mode preserves exact stdout with zero batch sleep"
+else
+    fail "FLY-1814 immediate mode mismatch: rc=$RN_BATCH_RC out='$RN_BATCH_OUTPUT' events='$RN_BATCH_EVENTS'"
+fi
+
+rn_run_invalid_mode_case() {
+    local mode_case="$1"
+    local case_root="$TMPDIR_ROOT/batch-invalid-${mode_case}"
+    local events="$case_root/events" output="$case_root/output" errors="$case_root/errors"
+    mkdir -p "$case_root"
+    : > "$events"
+    set +e
+    bash -c '
+      set -uo pipefail
+      source "$1"
+      events="$2"; mode_case="$3"; root="$4"
+      bash() { return 0; }
+      log() { :; }
+      alert_warning() { :; }
+      record_lead_restart_detail() { :; }
+      register_restart_transient_file() { :; }
+      record_successful_lead_body_observation() { :; }
+      record_successful_lead_verify_timing() { :; }
+      _dral_sleep() { printf "sleep:%s\n" "$1" >> "$events"; }
+      restart_lead() { printf "restart\n" >> "$events"; }
+      lead_restart_collect_candidates() { printf "collect\n" >> "$events"; : > "$4"; }
+      HOME="$root/home" FLYWHEEL_DIR="$root/repo" TMPDIR="$root"
+      LEAD_RESTART_NAMES_FILE="$root/names"
+      LEAD_BODY_OBSERVATIONS_FILE=""
+      LEAD_VERIFY_TIMINGS_FILE=""
+      VERIFIED_LEAD_PID="" VERIFIED_LEAD_START="" VERIFIED_LEAD_ELAPSED_SECONDS=""
+      if [[ "$mode_case" == "missing" ]]; then
+        do_restart_all_leads
+      else
+        do_restart_all_leads invalid
+      fi
+    ' _ "$rn_restart_all_func" "$events" "$mode_case" "$case_root" \
+      > "$output" 2> "$errors"
+    RN_INVALID_RC=$?
+    set -e
+    RN_INVALID_OUTPUT="$(cat "$output")"
+    RN_INVALID_ERRORS="$(cat "$errors")"
+    RN_INVALID_EVENTS="$(cat "$events")"
+}
+
+rn_run_invalid_mode_case missing
+rn_missing_ok=false
+if (( RN_INVALID_RC != 0 )) && [[ -z "$RN_INVALID_OUTPUT" && -z "$RN_INVALID_EVENTS" ]] \
+  && [[ "$RN_INVALID_ERRORS" == *"mode"* ]]; then
+    rn_missing_ok=true
+fi
+rn_run_invalid_mode_case invalid
+if [[ "$rn_missing_ok" == "true" ]] \
+  && (( RN_INVALID_RC != 0 )) && [[ -z "$RN_INVALID_OUTPUT" && -z "$RN_INVALID_EVENTS" ]] \
+  && [[ "$RN_INVALID_ERRORS" == *"mode"* ]]; then
+    pass "FLY-1814 missing and invalid modes fail closed before candidate mutation"
+else
+    fail "FLY-1814 invalid mode fail-close mismatch: missing=$rn_missing_ok rc=$RN_INVALID_RC out='$RN_INVALID_OUTPUT' err='$RN_INVALID_ERRORS' events='$RN_INVALID_EVENTS'"
+fi
+
+if grep -qF 'rb_lead_result=$(do_restart_all_leads immediate)' "$SCRIPT_DIR/restart-services.sh" \
+  && grep -qF 'lead_result=$(do_restart_all_leads stagger)' "$SCRIPT_DIR/restart-services.sh"; then
+    pass "FLY-1814 rollback is immediate and normal deploy is staggered"
+else
+    fail "FLY-1814 production Lead restart callers do not pass the required explicit modes"
+fi
+
+rn_timing_outcome_root="$TMPDIR_ROOT/timing-success-only"
+rn_timing_outcome_file="$rn_timing_outcome_root/timings"
+rn_timing_body_file="$rn_timing_outcome_root/bodies"
+mkdir -p "$rn_timing_outcome_root"
+: > "$rn_timing_outcome_file"
+: > "$rn_timing_body_file"
+rn_timing_outcome_result=$(bash -c '
+  set -uo pipefail
+  source "$1"
+  root="$2"; timing_file="$3"; body_file="$4"
+  bash() { return 0; }
+  log() { :; }
+  alert_warning() { :; }
+  record_lead_restart_detail() { :; }
+  register_restart_transient_file() { :; }
+  _dral_sleep() { :; }
+  record_successful_lead_body_observation() {
+    printf "%s\t%s\t%s\t%s\t%s\n" "$@" >> "$body_file"
+  }
+  record_successful_lead_verify_timing() {
+    printf "%s\t%s\n" "$1" "$2" >> "$timing_file"
+  }
+  restart_lead() {
+    local number="${1##*-}"; number="${number%.json}"
+    VERIFIED_LEAD_PID="$((100 + number))"
+    VERIFIED_LEAD_START="start-${number}"
+    VERIFIED_LEAD_ELAPSED_SECONDS="$number"
+    [[ "$number" != "2" ]]
+  }
+  lead_restart_collect_candidates() {
+    local output_file="$4" i mf
+    : > "$output_file"
+    for i in 1 2 3; do
+      mf="$root/lead-${i}.json"
+      printf "{}\n" > "$mf"
+      printf "project-lead-%s\tproject\tlead-%s\t%s\trestart\tmanifest\n" \
+        "$i" "$i" "$mf" >> "$output_file"
+    done
+  }
+  HOME="$root/home" FLYWHEEL_DIR="$root/repo" TMPDIR="$root"
+  LEAD_RESTART_NAMES_FILE="$root/names"
+  LEAD_BODY_OBSERVATIONS_FILE="$body_file"
+  LEAD_VERIFY_TIMINGS_FILE="$timing_file"
+  VERIFIED_LEAD_PID="" VERIFIED_LEAD_START="" VERIFIED_LEAD_ELAPSED_SECONDS=""
+  do_restart_all_leads immediate
+' _ "$rn_restart_all_func" "$rn_timing_outcome_root" "$rn_timing_outcome_file" "$rn_timing_body_file")
+if [[ "$rn_timing_outcome_result" == "skipped:0 failed:1 total:3" ]] \
+  && [[ "$(cut -f1 "$rn_timing_outcome_file" | paste -sd, -)" == "project-lead-1,project-lead-3" ]] \
+  && [[ "$(awk -F '\t' 'NF != 2 { bad=1 } END { print bad+0 }' "$rn_timing_outcome_file")" == "0" ]] \
+  && [[ "$(awk -F '\t' 'NF != 5 { bad=1 } END { print bad+0 }' "$rn_timing_body_file")" == "0" ]]; then
+    pass "FLY-1814 only successfully verified Leads enter the independent timing sidecar"
+else
+    fail "FLY-1814 successful-only timing capture mismatch: result='$rn_timing_outcome_result' timing='$(cat "$rn_timing_outcome_file")' body='$(cat "$rn_timing_body_file")'"
+fi
+
+echo "Test: FLY-1814 successful Lead verification timing is independent and deterministic"
+rn_timing_funcs="$TMPDIR_ROOT/restart-timing-functions.sh"
+awk '
+  /^record_successful_lead_body_observation\(\)/,/^}/ { print; next }
+  /^record_successful_lead_verify_timing\(\)/,/^}/ { print; next }
+  /^summarize_lead_verify_timings\(\)/,/^}/ { print; next }
+' "$SCRIPT_DIR/restart-services.sh" > "$rn_timing_funcs"
+if grep -q '^record_successful_lead_verify_timing()' "$rn_timing_funcs" \
+  && grep -q '^summarize_lead_verify_timings()' "$rn_timing_funcs"; then
+    # shellcheck source=/dev/null
+    source "$rn_timing_funcs"
+    rn_body_file="$TMPDIR_ROOT/body-contract.tsv"
+    rn_timing_file="$TMPDIR_ROOT/verify-timing.tsv"
+    : > "$rn_body_file"
+    : > "$rn_timing_file"
+    LEAD_BODY_OBSERVATIONS_FILE="$rn_body_file"
+    LEAD_VERIFY_TIMINGS_FILE="$rn_timing_file"
+    record_successful_lead_body_observation demo-a demo a 101 start-a
+    record_successful_lead_verify_timing demo-a 9
+    record_successful_lead_verify_timing demo-b 1
+    record_successful_lead_verify_timing demo-c 5
+    record_successful_lead_verify_timing demo-d 2
+    record_successful_lead_verify_timing demo-e 100
+    rn_timing_summary="$(summarize_lead_verify_timings "$rn_timing_file")"
+    rn_empty_summary="$(summarize_lead_verify_timings "$TMPDIR_ROOT/missing-timing.tsv")"
+    if [[ "$(awk -F '\t' 'NF != 5 { bad=1 } END { print bad+0 }' "$rn_body_file")" == "0" ]] \
+      && [[ "$(awk -F '\t' 'NF != 2 { bad=1 } END { print bad+0 }' "$rn_timing_file")" == "0" ]] \
+      && [[ "$rn_timing_summary" == "Lead verify timing: samples=5 p50=5s p95=100s max=100s; failed Leads excluded" ]] \
+      && [[ "$rn_empty_summary" == "Lead verify timing: samples=0 p50=unknown p95=unknown max=unknown; failed Leads excluded" ]]; then
+        pass "FLY-1814 timing sidecar preserves body rows and renders deterministic/empty summaries"
+    else
+        fail "FLY-1814 timing summary contract mismatch: summary='$rn_timing_summary' empty='$rn_empty_summary' body='$(cat "$rn_body_file")' timing='$(cat "$rn_timing_file")'"
+    fi
+else
+    fail "FLY-1814 independent Lead verification timing helpers are missing"
+fi
+
+rn_renderer_line="$(grep -n 'completion_msg=$(rn_render_completion_message' "$SCRIPT_DIR/restart-services.sh" | tail -1 | cut -d: -f1 || true)"
+rn_timing_summary_line="$(grep -n 'lead_timing_line=$(summarize_lead_verify_timings' "$SCRIPT_DIR/restart-services.sh" | tail -1 | cut -d: -f1 || true)"
+rn_timing_append_line="$(grep -n 'completion_msg=.*lead_timing_line' "$SCRIPT_DIR/restart-services.sh" | tail -1 | cut -d: -f1 || true)"
+rn_notify_line="$(grep -n 'notify_routine "\$completion_msg"' "$SCRIPT_DIR/restart-services.sh" | tail -1 | cut -d: -f1 || true)"
+if [[ "$rn_renderer_line" =~ ^[0-9]+$ && "$rn_timing_summary_line" =~ ^[0-9]+$ \
+  && "$rn_timing_append_line" =~ ^[0-9]+$ && "$rn_notify_line" =~ ^[0-9]+$ ]] \
+  && (( rn_renderer_line < rn_timing_summary_line \
+    && rn_timing_summary_line < rn_timing_append_line \
+    && rn_timing_append_line < rn_notify_line )); then
+    pass "FLY-1814 founder completion appends timing evidence after the normal renderer"
+else
+    fail "FLY-1814 completion timing line is not appended between renderer and notification"
 fi
 
 # ════════════════════════════════════════════════════════════════
@@ -1730,6 +2009,7 @@ BO_CALLS="$TMPDIR_ROOT/bridge-only-calls"
 BO_LAUNCH_STATE="$BO_CALLS/lead.state"
 mkdir -p \
   "$BO_FLYWHEEL/scripts/lib" \
+  "$BO_FLYWHEEL/scripts/launchd" \
   "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
   "$BO_FLYWHEEL/packages/teamlead/dist" \
   "$BO_FLYWHEEL/packages/flywheel-comm/dist" \
@@ -1740,6 +2020,11 @@ mkdir -p \
 printf '%s\n' '// hermetic canonical identity CLI target; node shim handles execution' \
   > "$BO_FLYWHEEL/packages/flywheel-comm/dist/index.js"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
+cp "$REAL_REPO_ROOT/scripts/launchd-census.sh" "$BO_FLYWHEEL/scripts/"
+cat > "$BO_FLYWHEEL/scripts/launchd/units.manifest" <<'EOF'
+# host-prefix: /fixture/repo/
+# census-scope: com.flywheel.
+EOF
 cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/bridge-process-tree.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \

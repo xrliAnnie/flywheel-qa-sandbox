@@ -124,6 +124,7 @@ rn_render_completion_message() {
     local watcher_state="${14:-healthy}"
     local watcher_detail="${15:-}"
     local body_new="${16:-}" body_adopted="${17:-}" body_unknown="${18:-}"
+    local launchd_summary="${19:-}"
     local old_display="" new_display="" first_line="" lead_line="" body_line="" bridge_line="" watcher_line=""
     local lead_success=0 clean_leads=false
 
@@ -235,6 +236,9 @@ rn_render_completion_message() {
 
     printf '%s\n版本: %s → %s\n%s\n%s\n%s\n%s\n总耗时: %s' \
         "$first_line" "$old_display" "$new_display" "$lead_line" "$body_line" "$bridge_line" "$watcher_line" "$duration_str"
+    if [[ -n "$launchd_summary" ]]; then
+        printf '\nlaunchd: %s' "$launchd_summary"
+    fi
     if [[ "$first_line" == *"degraded"* ]]; then
         printf '\n详情见 <#1518793447165661254>'
     fi

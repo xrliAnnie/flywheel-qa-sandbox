@@ -1,12 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  FLY-614 — daily token-usage report (launchd template).
-  Install:
-    cp scripts/com.flywheel.token-usage-daily.plist ~/Library/LaunchAgents/
-    # edit the path / Hour / Minute / channel below to match this machine, then:
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.token-usage-daily.plist
-  Channel is supplied via FLYWHEEL_TOKEN_USAGE_CHANNEL (set below or in ~/.flywheel/.env).
+  FLY-614 — daily token-usage report. This repo-owned plist is registered as
+  policy=copy in scripts/launchd/units.manifest; its declared host prefix and
+  checked-in bytes are authoritative, so do not hand-edit an installed copy.
+  The channel is supplied via FLYWHEEL_TOKEN_USAGE_CHANNEL in ~/.flywheel/.env.
 -->
 <plist version="1.0">
 <dict>
@@ -23,7 +21,7 @@
 		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>FLYWHEEL_REPO</key>
 		<string>/Users/xiaorongli/Dev/flywheel</string>
-		<!-- <key>FLYWHEEL_TOKEN_USAGE_CHANNEL</key><string>REPLACE_WITH_CHANNEL_ID</string> -->
+		<!-- FLYWHEEL_TOKEN_USAGE_CHANNEL comes from ~/.flywheel/.env. -->
 	</dict>
 	<!--
 	  FLY-713: fire at 00:30 (just past midnight) so the report — which renders

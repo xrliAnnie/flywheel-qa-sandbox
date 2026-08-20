@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  FLY-697 — Codex TRACE-log SSD-wear monitor (launchd template).
+  FLY-697 — Codex TRACE-log SSD-wear monitor.
 
   Runs `codex-log-guard.sh monitor` once a day (READ-ONLY): appends the
   ~/.codex/logs_2.sqlite size to a rolling log and fires a debounced meta-alert
@@ -9,10 +9,9 @@
   DB — the actual TRACE-trigger install + VACUUM are operator-run while Codex is
   quit (see doc/engineer/implementation/codex-log-bloat-guard.md).
 
-  Install:
-    cp scripts/launchd/com.flywheel.codex-log-guard.plist ~/Library/LaunchAgents/
-    # edit the script path / Hour / Minute below to match this machine, then:
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.codex-log-guard.plist
+  This repo-owned plist is the explicitly approved never-installed→copy
+  exception in scripts/launchd/units.manifest. Its declared host prefix and
+  checked-in bytes are authoritative, so do not hand-edit an installed copy.
 -->
 <plist version="1.0">
 <dict>

@@ -76,7 +76,7 @@ the artifact. For deliberate empty-data diagnostics only, `--allow-empty` or
 
 ## Daily automation
 
-`scripts/token-usage-daily.sh` + `scripts/com.flywheel.token-usage-daily.plist` (launchd):
+`scripts/token-usage-daily.sh` + `scripts/launchd/com.flywheel.token-usage-daily.plist` (launchd):
 aggregate → render → `flywheel-comm publish-report` to the dedicated **cost-dashboard**
 Discord channel (`FLYWHEEL_TOKEN_USAGE_CHANNEL`). Single-writer via an atomic lock; loads
 creds from `~/.flywheel/.env`.

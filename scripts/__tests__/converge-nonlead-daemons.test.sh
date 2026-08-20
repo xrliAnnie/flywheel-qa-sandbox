@@ -28,6 +28,11 @@ BOOTSTRAP_LANDS=1
 PRINT_ERROR_LABEL=""
 PRINT_FOREIGN_NOTFOUND=""
 DISABLED_RAW_OVERRIDE=""
+LEGACY_MANIFEST="$ROOT/legacy-empty.manifest"
+LEGACY_REPO_LAUNCHD="$ROOT/repo-launchd"
+
+_cnd_units_manifest() { printf '%s\n' "$LEGACY_MANIFEST"; }
+_cnd_repo_launchd_dir() { printf '%s\n' "$LEGACY_REPO_LAUNCHD"; }
 
 # Scripted launchd domain. Only this seam is faked; every predicate under test
 # runs the real production code path.
@@ -83,7 +88,12 @@ _cnd_domain() { printf '%s\n' "gui/501"; }
 
 reset_world() {
   rm -rf "$AGENTS"
-  mkdir -p "$AGENTS"
+  rm -rf "$LEGACY_REPO_LAUNCHD"
+  mkdir -p "$AGENTS" "$LEGACY_REPO_LAUNCHD"
+  cat > "$LEGACY_MANIFEST" <<'EOF'
+# host-prefix: /fixture/repo/
+# census-scope: com.flywheel.
+EOF
   : > "$DOMAIN_FILE"
   : > "$BOOTSTRAP_LOG"
   DISABLED_RC=0
@@ -414,17 +424,18 @@ RS="$REPO_ROOT/scripts/restart-services.sh"
 watcher_line=$(grep -n '^[[:space:]]*restart_cmux_watcher$' "$RS" | head -1 | cut -d: -f1)
 converge_line=$(grep -n '^[[:space:]]*converge_nonlead_daemons$' "$RS" | head -1 | cut -d: -f1)
 sha_line=$(grep -n '^[[:space:]]*echo "\$CURRENT_HEAD" > "\$DEPLOYED_SHA_FILE"$' "$RS" | head -1 | cut -d: -f1)
-warn_line=$(grep -n 'nonlead-daemons-\${nonlead_state}' "$RS" | head -1 | cut -d: -f1)
+report_line=$(grep -n '^[[:space:]]*restart_report_launchd_census \\' "$RS" | head -1 | cut -d: -f1)
+legacy_alert_line=$(grep -n 'nonlead-daemons-\${nonlead_state}' "$RS" | head -1 | cut -d: -f1)
 if grep -q 'lib/converge-nonlead-daemons.sh' "$RS" \
   && [[ "$watcher_line" =~ ^[0-9]+$ && "$converge_line" =~ ^[0-9]+$ \
-     && "$sha_line" =~ ^[0-9]+$ && "$warn_line" =~ ^[0-9]+$ ]] \
+     && "$sha_line" =~ ^[0-9]+$ && "$report_line" =~ ^[0-9]+$ ]] \
   && (( watcher_line < converge_line )) \
   && (( sha_line < converge_line )) \
-  && (( converge_line < warn_line )) \
-  && [[ "$(cat "$RS")" == *'非-Lead daemon 收敛=${nonlead_state}: ${nonlead_detail}'* ]]; then
-  pass "convergence runs after the deploy is committed and still feeds the warning"
+  && (( converge_line < report_line )) \
+  && [[ -z "$legacy_alert_line" ]]; then
+  pass "convergence runs after deploy and logs degradation without a duplicate legacy alert"
 else
-  fail "wiring/order incomplete (watcher=$watcher_line sha=$sha_line converge=$converge_line warn=$warn_line)"
+  fail "wiring/order incomplete (watcher=$watcher_line sha=$sha_line converge=$converge_line report=$report_line legacy=$legacy_alert_line)"
 fi
 
 echo "Test: the restart wave must not be aborted by a degraded convergence"

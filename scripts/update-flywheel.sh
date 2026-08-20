@@ -47,6 +47,9 @@ source "${SCRIPT_DIR}/lib/self-ship-queue.sh"
 # shellcheck source=lib/discord-pointer-guard.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/discord-pointer-guard.sh"
+LAUNCHD_CENSUS_SOURCED=1
+# shellcheck source=launchd-census.sh
+source "${SCRIPT_DIR}/launchd-census.sh"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 
@@ -99,6 +102,43 @@ default_deploy() {
 SELF_SHIP_DEPLOY_CMD="${SELF_SHIP_DEPLOY_CMD:-default_deploy}"
 
 deployed_sha() { cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo ""; }
+
+# FLY-1814: the updater's existing calendar/manual fallback is the 12-hour
+# launchd convergence floor. It observes the restart transaction lock but never
+# owns or removes it; fetch/dirty checkout results must not suppress this pass.
+updater_launchd_pass() {
+  if [[ -d "${HOME}/.flywheel/restart.lock.d" ]]; then
+    log "launchd convergence/census skipped: restart transaction is active"
+    return 0
+  fi
+
+  converge_nonlead_daemons || true
+  log "launchd convergence: ${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable} ${NONLEAD_DAEMON_CONVERGE_DETAIL:-unavailable}"
+  census_launchd_fleet || true
+  log "launchd census: ${LAUNCHD_CENSUS_STATE:-unverifiable} ${LAUNCHD_CENSUS_SUMMARY:-unavailable}"
+  if [[ "${LAUNCHD_CENSUS_DETAIL:-healthy}" != healthy ]]; then
+    log "launchd census detail: ${LAUNCHD_CENSUS_DETAIL}"
+  fi
+  local launchd_alert_detail="${LAUNCHD_CENSUS_DETAIL:-unavailable}"
+  local launchd_alert_key="${LAUNCHD_CENSUS_ALERT_KEY:-}"
+  if [[ "${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}" != healthy ]]; then
+    launchd_alert_detail="${launchd_alert_detail}${launchd_alert_detail:+; }convergence=${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}: ${NONLEAD_DAEMON_CONVERGE_DETAIL:-unavailable}"
+    [[ -n "$launchd_alert_key" ]] \
+      || launchd_alert_key="convergence:${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}"
+  fi
+  [[ -n "$launchd_alert_key" ]] \
+    || launchd_alert_key="census-state:${LAUNCHD_CENSUS_STATE:-unverifiable}"
+  if [[ "${LAUNCHD_CENSUS_ANOMALY:-1}" == 1 \
+    || "${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}" != healthy ]]; then
+    if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" == 1 ]]; then
+      log "sourced test path: launchd census alert suppressed"
+    else
+      census_alert "${LAUNCHD_CENSUS_SUMMARY:-unavailable}" \
+        "$launchd_alert_detail" "$launchd_alert_key"
+    fi
+  fi
+  return 0
+}
 
 # ── Process one marker-driven deploy cycle ──────────────────────────────────
 # Runs a deploy, then acks every due marker the deploy satisfied; markers that
@@ -199,6 +239,7 @@ process_due_markers() {
 
 # ── Calendar/manual fallback: deploy if remote is ahead, no markers needed ──
 fallback_sweep() {
+  updater_launchd_pass
   git -C "$FLYWHEEL_DIR" fetch origin main --quiet 2>/dev/null || { log "fallback fetch failed"; return 0; }
   local head remote
   head="$(git -C "$FLYWHEEL_DIR" rev-parse HEAD 2>/dev/null)"

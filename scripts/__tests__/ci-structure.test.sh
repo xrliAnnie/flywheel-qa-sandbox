@@ -342,6 +342,7 @@ expected_shard_tests = {
         "Test — FLY-1496 model resolution + Lead derivation",
         "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-1830 non-Lead daemon convergence",
+        "Test — FLY-1814 launchd fleet contracts",
         "Test — FLY-1678 statusline model-scoped bar + installer",
     ],
     "script-tests-2": [
@@ -586,6 +587,42 @@ fly1830_commands = [
 require(
     fly1830_commands == ["bash scripts/__tests__/converge-nonlead-daemons.test.sh"],
     f"FLY-1830 CI command set/order drifted: {fly1830_commands}",
+)
+
+# FLY-1814: the manifest, census, wiring, and explicit operator tools are one
+# launchd-fleet contract. Keep this separate from FLY-1830 so its existing
+# single-suite convergence guard cannot be weakened by future edits.
+fly1814_steps = [
+    step
+    for step in script_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Test — FLY-1814 launchd fleet contracts"
+]
+require(
+    len(fly1814_steps) == 1,
+    "script-tests must contain exactly one FLY-1814 launchd fleet contracts step",
+)
+fly1814_step = fly1814_steps[0]
+require("if" not in fly1814_step, "FLY-1814 launchd suites must not be conditional")
+require(
+    "continue-on-error" not in fly1814_step,
+    "FLY-1814 launchd suites must fail the PR gate",
+)
+fly1814_commands = [
+    line.strip()
+    for line in str(fly1814_step.get("run", "")).splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+]
+expected_fly1814_commands = [
+    "bash scripts/__tests__/launchd-units-manifest.test.sh",
+    "bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh",
+    "bash scripts/__tests__/launchd-census.test.sh",
+    "bash scripts/__tests__/launchd-census-wiring.test.sh",
+    "bash scripts/__tests__/fly1814-operator-tools.test.sh",
+]
+require(
+    fly1814_commands == expected_fly1814_commands,
+    f"FLY-1814 CI command set/order drifted: {fly1814_commands}",
 )
 
 with open(os.environ["DISCORD_E2E"], encoding="utf-8") as handle:

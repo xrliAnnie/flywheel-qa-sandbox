@@ -1,0 +1,24 @@
+# FLY-1814 launchd unit authority. TSV columns:
+# label	plist_source	policy	allowed_exit_codes	note
+# host-prefix: /Users/xiaorongli/Dev/flywheel/
+# census-scope: com.flywheel.
+# census-scope: com.xiaohongshu
+# census-scope: com.codex.xiaohongshu
+com.flywheel.updater	com.flywheel.updater.plist	copy	0	repo plist is byte authority
+com.flywheel.daily-standup	com.flywheel.daily-standup.plist	copy	0,1	exit 1 is the documented restart-lock skip
+com.flywheel.token-usage-daily	com.flywheel.token-usage-daily.plist	copy	0	repo plist is byte authority
+com.flywheel.bridge-liveness-probe	com.flywheel.bridge-liveness-probe.plist	copy	0	repo plist is byte authority
+com.flywheel.codex-log-guard	com.flywheel.codex-log-guard.plist	copy	0	approved never-installed-copy-exception
+com.flywheel.daily-digest	com.flywheel.daily-digest.plist	hold	0	pending-founder-optin
+com.flywheel.xiaohongshu-learning	com.flywheel.xiaohongshu-learning.plist	hold	0	founder-gated-pilot
+com.flywheel.bridge	com.flywheel.bridge.plist	setup	0	installed through bridge setup
+com.flywheel.quota-monitor	-	setup	0	installed through quota-monitor setup
+com.flywheel.cmux-watcher	-	setup	0	installed through cmux watcher setup
+com.flywheel.growth-improve	-	external	*	informational-only external unit
+com.flywheel.growth-learn	-	external	*	informational-only external unit
+com.flywheel.growth-report	-	external	*	informational-only external unit
+com.flywheel.growth-retro	-	external	*	informational-only external unit
+com.flywheel.sub-create-nightly	-	external	*	informational-only external unit
+com.flywheel.sub-daily-loop	-	external	*	informational-only external unit
+com.flywheel.skills-update	-	external	*	informational-only external unit
+com.flywheel.voice-bridge	com.flywheel.voice-bridge.plist	managed	0	must never be launched by convergence

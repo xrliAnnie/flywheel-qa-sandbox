@@ -535,7 +535,7 @@ r4_validate_updater_plist() {
 }
 
 r4_restore_updater() {
-    local source="$R4_REPO/scripts/com.flywheel.updater.plist"
+    local source="$R4_REPO/scripts/launchd/com.flywheel.updater.plist"
     local target="${HOME}/Library/LaunchAgents/com.flywheel.updater.plist"
     local stage mode uid queued
     r4_validate_updater_plist "$source" || return 1

@@ -99,8 +99,6 @@ converge-flywheel-bin.sh
 check-global-path-hygiene.sh
 linux-preflight.sh
 materialize-lead-manifests.sh
-com.flywheel.daily-standup.plist
-com.flywheel.updater.plist
 lib/buddy-escalate.sh
 lib/buddy-captain-preview.sh
 lib/buddy-connect.sh

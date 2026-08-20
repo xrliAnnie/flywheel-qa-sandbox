@@ -1327,6 +1327,32 @@ converge_flywheel_bin() {
     log "WARNING: flywheel-bin convergence left unhealthy state (non-fatal; alert sent via lead-alert)"
   fi
 }
+
+# FLY-1814: a Lead birth is the launchd census anchor that does not depend on
+# the updater. It is a child process because the convergence library is
+# source-only; the entrypoint is read-only and alerts non-fatally.
+run_launchd_census_on_lead_start() {
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: skipping launchd census"
+    return 0
+  fi
+  case "${LEAD_ID:-}" in
+    flywheel-test-*)
+      log "QA Lead identity: skipping production launchd census"
+      return 0
+      ;;
+  esac
+
+  local census="${FLYWHEEL_ROOT}/scripts/launchd-census.sh"
+  if [ ! -x "$census" ]; then
+    log "WARNING: launchd census entrypoint not found: $census"
+    return 0
+  fi
+  if ! "$census"; then
+    log "WARNING: launchd census failed (non-fatal)"
+  fi
+  return 0
+}
 # FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
 # want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
 # in ~/.claude/settings.json and may already be installed by other Leads — the
@@ -1365,6 +1391,7 @@ fi
 # machine invariant (installed copy == repo source), same rationale as the
 # restart guard above.
 converge_flywheel_bin
+run_launchd_census_on_lead_start
 
 # ── Lead env exports ────────────────────────────────────────
 export FLYWHEEL_LEAD_ID="$LEAD_ID"

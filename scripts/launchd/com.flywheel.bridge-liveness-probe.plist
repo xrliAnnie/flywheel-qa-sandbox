@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  FLY-1082 (Task 3.3) — OUT-OF-PROCESS Bridge liveness probe (launchd template).
+  FLY-1082 (Task 3.3) — OUT-OF-PROCESS Bridge liveness probe.
 
   Runs scripts/bridge-liveness-probe.sh every minute: curls the Bridge /health,
   counts consecutive down minutes in a state file, and pages @Annie over
@@ -9,17 +9,12 @@
   (default 5) minutes — the "Bridge died and never came back" backstop the
   2026-07-09 incident exposed (every in-Bridge detector died with the Bridge).
 
-  DEPLOYMENT IS FLY-1071's ENABLE WINDOW — this file is a TEMPLATE. It belongs
-  in the CODEX Infra Bot's launchd domain ("nobody rescues their own side"):
-  the probe posts with the Codex bot's token, so it works while the whole
-  Claude/Bridge side is down.
-
-  Install (operator, during the FLY-1071 window):
-    cp scripts/launchd/com.flywheel.bridge-liveness-probe.plist ~/Library/LaunchAgents/
-    # fill in the EnvironmentVariables below (channel id / founder id; the bot
-    # token must come from a wrapper that sources ~/.flywheel/.env — NEVER
-    # paste a token into this plist), then:
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.bridge-liveness-probe.plist
+  This repo-owned plist is registered as policy=copy in
+  scripts/launchd/units.manifest; its declared host prefix and checked-in bytes
+  are authoritative. It belongs in the CODEX Infra Bot's launchd domain
+  ("nobody rescues their own side"). The probe posts with the Codex bot's token,
+  loaded from ~/.flywheel/.env rather than pasted here, so it works while the
+  whole Claude/Bridge side is down.
 -->
 <plist version="1.0">
 <dict>
@@ -37,13 +32,11 @@
 	<dict>
 		<key>PATH</key>
 		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-		<!-- Required for paging (also resolvable from ~/.flywheel/.env):
-		<key>FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID</key><string>...</string>
-		<key>FLYWHEEL_FOUNDER_DISCORD_USER_ID</key><string>...</string>
-		Optional overrides (defaults shown):
-		<key>BRIDGE_URL</key><string>http://localhost:9876</string>
-		<key>FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN</key><string>5</string>
-		<key>FLYWHEEL_PROBE_BOT_TOKEN_ENV</key><string>CODEX_INFRA_BOT_TOKEN</string>
+		<!-- Paging values are resolved from ~/.flywheel/.env. Required names:
+		FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID and FLYWHEEL_FOUNDER_DISCORD_USER_ID.
+		Optional names: BRIDGE_URL (default http://localhost:9876),
+		FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN (default 5), and
+		FLYWHEEL_PROBE_BOT_TOKEN_ENV (default CODEX_INFRA_BOT_TOKEN).
 		-->
 	</dict>
 	<key>StartInterval</key>

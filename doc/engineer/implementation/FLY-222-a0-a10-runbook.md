@@ -135,4 +135,4 @@ Codex option-A 复核 non-blocking #2 + qa-fly-222 F2:lease 非 fencing token �
 ## 收口
 - 全 A1-A10 + #2 fencing PASS → 报 team-lead(不自报 ship);Annie ship 令前不 merge(founder-only)。
 - 真机证据(截图/命令输出/state json/Linear sandbox issue 链接)留到 Annie 验收完(feedback_qa_evidence_survives_until_annie)。
-- 装 launchd:验过后 `cp scripts/com.flywheel.xiaohongshu-learning.plist ~/Library/LaunchAgents/` + `launchctl bootstrap`(在此 runbook 之前**不装**)。
+- 装 launchd:验过后 `cp scripts/launchd/com.flywheel.xiaohongshu-learning.plist ~/Library/LaunchAgents/` + `launchctl bootstrap`(在此 runbook 之前**不装**)。

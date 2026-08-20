@@ -335,6 +335,19 @@ jobs:
         run: |
           bash scripts/__tests__/converge-nonlead-daemons.test.sh
 
+      # FLY-1814: explicit launchd fleet authority, bidirectional census, and
+      # operator-only repair/retirement paths. Every suite is hermetic: plist,
+      # TTY, launchctl, filesystem, and alert boundaries use fixtures/seams.
+      # Keep this separate from FLY-1830's existing single-suite contract.
+      # Step seconds: ~15 locally; comfortably inside the shard budget.
+      - name: Test — FLY-1814 launchd fleet contracts
+        run: |
+          bash scripts/__tests__/launchd-units-manifest.test.sh
+          bash scripts/__tests__/launchd-units-manifest-fail-closed.test.sh
+          bash scripts/__tests__/launchd-census.test.sh
+          bash scripts/__tests__/launchd-census-wiring.test.sh
+          bash scripts/__tests__/fly1814-operator-tools.test.sh
+
       # FLY-1678: the statusline renders on every Lead and Runner pane and is
       # re-read every frame, so a bad edit blanks the whole fleet at once. Both
       # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because

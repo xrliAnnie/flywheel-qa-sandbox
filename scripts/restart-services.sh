@@ -50,6 +50,9 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 # shellcheck source=lib/converge-nonlead-daemons.sh
 source "${FLYWHEEL_DIR}/scripts/lib/converge-nonlead-daemons.sh"
+LAUNCHD_CENSUS_SOURCED=1
+# shellcheck source=launchd-census.sh
+source "${FLYWHEEL_DIR}/scripts/launchd-census.sh"
 # shellcheck source=lib/deploy-build-identity.sh
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
 # shellcheck source=lib/mailbox-queue-deploy-barrier.sh
@@ -374,6 +377,28 @@ alert_warning() {
     "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead deploy \
         --kind deploy_degraded --severity warning --title "$2" --body "$3" \
         --signature "$1-$(date -u +%Y%m%d%H%M)" 1>&2 || true
+}
+
+# Launchd convergence and census share one alert surface. Even when both report
+# overlapping failures, restart emits only census_alert's UTC-day plus anomaly
+# set signature; the legacy minute-level deploy warning remains for non-launchd
+# restart degradation below.
+restart_report_launchd_census() {
+    local census_state="$1" summary="$2" census_detail="$3" census_anomaly="$4"
+    local nonlead_state="$5" nonlead_detail="$6" alert_detail="$census_detail"
+    local alert_key="${LAUNCHD_CENSUS_ALERT_KEY:-}"
+    log "launchd census: ${census_state} ${summary}"
+    if [[ "$nonlead_state" != healthy ]]; then
+        log "WARNING: non-Lead daemon convergence=${nonlead_state}: ${nonlead_detail}"
+        alert_detail="${alert_detail}${alert_detail:+; }convergence=${nonlead_state}: ${nonlead_detail}"
+        [[ -n "$alert_key" ]] || alert_key="convergence:${nonlead_state}"
+    fi
+    [[ -n "$alert_key" ]] || alert_key="census-state:${census_state}"
+    if [[ "$census_anomaly" == 1 || "$nonlead_state" != healthy ]]; then
+        log "WARNING: launchd census anomaly — ${alert_detail}"
+        census_alert "$summary" "$alert_detail" "$alert_key"
+    fi
+    return 0
 }
 
 alert_severe() {
@@ -1064,6 +1089,7 @@ update_project_shas() {
 PROJECT_SHA_UPDATES_FILE=""
 LEAD_RESTART_NAMES_FILE=""
 LEAD_BODY_OBSERVATIONS_FILE=""
+LEAD_VERIFY_TIMINGS_FILE=""
 RESTART_TRANSIENT_FILES=""
 
 register_restart_transient_file() {
@@ -1117,6 +1143,61 @@ record_successful_lead_body_observation() {
     { printf '%s\t%s\t%s\t%s\t%s\n' \
         "$key" "$project" "$lead" "$carrier_pid" "$carrier_start" \
         >> "$LEAD_BODY_OBSERVATIONS_FILE"; } 2>/dev/null || true
+    return 0
+}
+
+# Successful verification timing is intentionally independent of the stable
+# five-field body-observation contract above. Format: <daemon-key> TAB <seconds>.
+record_successful_lead_verify_timing() {
+    local key="${1:-}" elapsed_seconds="${2:-}"
+    [[ -n "${LEAD_VERIFY_TIMINGS_FILE:-}" ]] || return 0
+    [[ -n "$key" && "$elapsed_seconds" =~ ^[0-9]+$ ]] || return 0
+    case "$key" in *$'\t'*|*$'\n'*) return 0 ;; esac
+    { printf '%s\t%s\n' "$key" "$elapsed_seconds" \
+        >> "$LEAD_VERIFY_TIMINGS_FILE"; } 2>/dev/null || true
+    return 0
+}
+
+_lead_verify_now() {
+    local now=""
+    now="$(date +%s 2>/dev/null)" || return 1
+    [[ "$now" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$now"
+}
+
+capture_successful_lead_verify_elapsed() {
+    local started_at="${1:-}" finished_at=""
+    VERIFIED_LEAD_ELAPSED_SECONDS=""
+    [[ "$started_at" =~ ^[0-9]+$ ]] || return 0
+    finished_at="$(_lead_verify_now 2>/dev/null)" || return 0
+    [[ "$finished_at" =~ ^[0-9]+$ ]] || return 0
+    (( finished_at >= started_at )) || return 0
+    VERIFIED_LEAD_ELAPSED_SECONDS="$((finished_at - started_at))"
+    return 0
+}
+
+summarize_lead_verify_timings() {
+    local timings="${1:-}" summary=""
+    if [[ -r "$timings" ]]; then
+        summary="$(LC_ALL=C awk -F '\t' '
+          NF == 2 && $1 != "" && $2 ~ /^[0-9]+$/ { print $2 }
+        ' "$timings" 2>/dev/null \
+          | LC_ALL=C sort -n \
+          | LC_ALL=C awk '
+              { values[++count] = $1 }
+              END {
+                if (count == 0) exit
+                p50 = int((count * 50 + 99) / 100)
+                p95 = int((count * 95 + 99) / 100)
+                printf "Lead verify timing: samples=%d p50=%ss p95=%ss max=%ss; failed Leads excluded", \
+                  count, values[p50], values[p95], values[count]
+              }
+            ' 2>/dev/null)" || summary=""
+    fi
+    if [[ -z "$summary" ]]; then
+        summary="Lead verify timing: samples=0 p50=unknown p95=unknown max=unknown; failed Leads excluded"
+    fi
+    printf '%s\n' "$summary"
     return 0
 }
 
@@ -1385,6 +1466,12 @@ if LEAD_BODY_OBSERVATIONS_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-bodies-XX
 else
     log "ERROR: cannot allocate Lead body observation sidecar; body provenance will be unknown"
     LEAD_BODY_OBSERVATIONS_FILE=""
+fi
+if LEAD_VERIFY_TIMINGS_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-verify-timings-XXXXXX"); then
+    register_restart_transient_file "$LEAD_VERIFY_TIMINGS_FILE"
+else
+    log "ERROR: cannot allocate Lead verification timing sidecar; timing evidence will be unknown"
+    LEAD_VERIFY_TIMINGS_FILE=""
 fi
 
 preflight_pull_latest_main || exit 1
@@ -1834,9 +1921,11 @@ restart_lead() {
 
     VERIFIED_LEAD_PID=""
     VERIFIED_LEAD_START=""
+    VERIFIED_LEAD_ELAPSED_SECONDS=""
 
     local lead_id project_dir project_name projects_file canonical_identity bot_token_env
     local legacy_bot_token_env legacy_backend canonical_backend
+    local lead_verify_started_at=""
     lead_id=$(jq -er '.leadId | select(type == "string" and length > 0)' "$manifest") || return 1
     project_dir=$(jq -er '.projectDir | select(type == "string" and length > 0)' "$manifest") || return 1
     project_name=$(jq -er '.projectName | select(type == "string" and length > 0)' "$manifest") || return 1
@@ -1970,12 +2059,14 @@ restart_lead() {
             [[ "$v2_old_pid" =~ ^[1-9][0-9]*$ ]] || return 1
             v2_old_start="$(lead_restart_process_start_identity "$v2_old_pid")" || return 1
             [[ -n "$v2_old_start" ]] || return 1
+            lead_verify_started_at="$(_lead_verify_now 2>/dev/null)" || lead_verify_started_at=""
             if ! launchctl kickstart -k "$daemon_target" >/dev/null 2>&1; then
                 log "ERROR: native launchd kickstart failed for Claude Lead $lead_id"
                 return 1
             fi
             for (( v2_attempt=1; v2_attempt<=LEAD_VERIFY_ATTEMPTS; v2_attempt++ )); do
                 if launchd_lead_outcome_ready "$daemon_target" "$v2_old_pid" "$v2_old_start"; then
+                    capture_successful_lead_verify_elapsed "$lead_verify_started_at"
                     log "Lead $lead_id restarted via native launchd carrier v2 (PID $VERIFIED_LEAD_PID)"
                     return 0
                 fi
@@ -2059,6 +2150,7 @@ restart_lead() {
                 "Lead $lead_id 在 bootout 后 manifest/projects/plist 发生漂移，已拒绝 bootstrap，等待人工处理。"
             return 1
         fi
+        lead_verify_started_at="$(_lead_verify_now 2>/dev/null)" || lead_verify_started_at=""
         if ! restart_lead_bootstrap_job "$plist" "$lead_id"; then
             log "ERROR: launchctl bootstrap failed twice for $lead_id"
             alert_severe "lead-restart-bootstrap-failed-${lead_id}" "Lead restart bootstrap failed" \
@@ -2073,6 +2165,7 @@ restart_lead() {
         local attempt
         for (( attempt=1; attempt<=LEAD_VERIFY_ATTEMPTS; attempt++ )); do
             if launchd_lead_outcome_ready "$daemon_target" "$old_pid" "$old_start"; then
+                capture_successful_lead_verify_elapsed "$lead_verify_started_at"
                 log "Lead $lead_id restarted via launchd (supervisor $VERIFIED_LEAD_PID born $VERIFIED_LEAD_START)"
                 log "DEBUG: Lead $lead_id body observation: $(lead_body_debug_observation "$project_name" "$lead_id")"
                 if ! lead_restart_remove_marker "$replacement_marker" "$replacement_attempt"; then
@@ -2144,17 +2237,38 @@ trigger_cmux_refresh() {
     log "cmux refresh-surfaces scheduled (background, 10s delay)"
 }
 
-# Restart all Leads. Outputs "skipped:N failed:M total:K" to stdout.
+# Single batching delay seam. It intentionally emits no stdout so callers keep
+# receiving only the machine-readable Lead result contract.
+_dral_sleep() {
+    sleep "$1"
+}
+
+# Restart all Leads in explicit stagger|immediate mode.
+# Outputs "skipped:N failed:M total:K" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
 do_restart_all_leads() {
+    local mode="${1:-}"
+    local batch_size=4 pause_secs=60
     local skipped=0
     local failed=0
     local eligible=0
+    local restart_attempts=0
+    case "$mode" in
+        stagger|immediate) ;;
+        *)
+            printf 'ERROR: do_restart_all_leads requires mode stagger|immediate (got %s)\n' \
+                "${mode:-missing}" >&2
+            return 64
+            ;;
+    esac
     if [[ -n "${LEAD_RESTART_NAMES_FILE:-}" ]]; then
         { : > "$LEAD_RESTART_NAMES_FILE"; } 2>/dev/null || true
     fi
     if [[ -n "${LEAD_BODY_OBSERVATIONS_FILE:-}" ]]; then
         { : > "$LEAD_BODY_OBSERVATIONS_FILE"; } 2>/dev/null || true
+    fi
+    if [[ -n "${LEAD_VERIFY_TIMINGS_FILE:-}" ]]; then
+        { : > "$LEAD_VERIFY_TIMINGS_FILE"; } 2>/dev/null || true
     fi
 
     # FLY-954: converge <state>/bin BEFORE kickstarting any Lead — kickstarting
@@ -2164,7 +2278,7 @@ do_restart_all_leads() {
     # through the existing skipped/failed stdout contract; code deployment
     # truth still advances while Lead health is recorded degraded).
     # Codex code R1 MEDIUM: report the refusal through the stdout contract and
-    # return 0 — all three call sites capture this function via $( ) under
+    # return 0 — both production call sites capture this function via $( ) under
     # `set -e`, so a non-zero return would kill the whole script at the
     # assignment, skipping the existing failed>0 handling (deploy-failure
     # notification + degraded Lead-status evidence + plugin-only retry marker).
@@ -2245,12 +2359,19 @@ do_restart_all_leads() {
                     record_lead_restart_detail failed "$key"
                     continue
                 fi
+                if [[ "$mode" == "stagger" && "$restart_attempts" -gt 0 ]] \
+                  && (( restart_attempts % batch_size == 0 )); then
+                    _dral_sleep "$pause_secs" >&2
+                fi
+                restart_attempts=$((restart_attempts + 1))
                 rc=0
                 restart_lead "$mf" >&2 || rc=$?
                 if (( rc != 0 )); then
                     failed=$((failed + 1))
                     record_lead_restart_detail failed "$key"
                 else
+                    record_successful_lead_verify_timing \
+                      "$key" "$VERIFIED_LEAD_ELAPSED_SECONDS"
                     record_successful_lead_body_observation \
                       "$key" "$pn" "$lid" "$VERIFIED_LEAD_PID" "$VERIFIED_LEAD_START"
                 fi
@@ -2377,7 +2498,7 @@ rollback_and_restart() {
             # it. A rolled-back-but-NOT-recovered Eng Lead must be surfaced as a
             # severe alert, never conflated with "code rolled back" success.
             local rb_lead_result
-            rb_lead_result=$(do_restart_all_leads)
+            rb_lead_result=$(do_restart_all_leads immediate)
             rb_leads_failed=$(rn_parse_count failed "$rb_lead_result")
             if [[ "$rb_leads_failed" == "invalid" ]]; then
                 alert_severe "rollback-lead-result-unreadable" "Flywheel deploy failed" \
@@ -2611,7 +2732,7 @@ deploy_and_verify() {
     local watcher_detail="watcher restart not attempted"
     if [[ "$restart_all_leads" == "true" ]]; then
         local lead_result parsed_skipped parsed_failed parsed_total
-        lead_result=$(do_restart_all_leads)
+        lead_result=$(do_restart_all_leads stagger)
         parsed_skipped=$(rn_parse_count skipped "$lead_result")
         parsed_failed=$(rn_parse_count failed "$lead_result")
         parsed_total=$(rn_parse_count total "$lead_result")
@@ -2716,6 +2837,13 @@ deploy_and_verify() {
     converge_nonlead_daemons
     local nonlead_state="$NONLEAD_DAEMON_CONVERGE_STATE"
     local nonlead_detail="$NONLEAD_DAEMON_CONVERGE_DETAIL"
+    census_launchd_fleet
+    local launchd_census_state="$LAUNCHD_CENSUS_STATE"
+    local launchd_summary="$LAUNCHD_CENSUS_SUMMARY"
+    local launchd_census_detail="$LAUNCHD_CENSUS_DETAIL"
+    restart_report_launchd_census \
+        "$launchd_census_state" "$launchd_summary" "$launchd_census_detail" \
+        "${LAUNCHD_CENSUS_ANOMALY:-1}" "$nonlead_state" "$nonlead_detail"
 
     if [[ "$lead_counts_known" == "true" ]]; then
         local leads_status="healthy"
@@ -2773,6 +2901,7 @@ deploy_and_verify() {
         "$failed_names" "$skipped_names" "$lead_result_state" "$lead_result_detail" \
         "$bridge_state" "$bridge_ms" "$duration_str" "$watcher_state" "$watcher_detail" \
         "$body_new" "$body_adopted" "$body_unknown" \
+        "$launchd_summary" \
         2>/dev/null) || completion_msg=""
     if [[ -z "$completion_msg" ]]; then
         completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。cmux watcher: ${watcher_state}。总耗时: ${duration_str}。"
@@ -2780,6 +2909,12 @@ deploy_and_verify() {
         fire_meta_alert "completion_render_failed" "Flywheel completion render failed" \
             "Code deployed to ${CURRENT_HEAD:0:7}, but the restart completion payload could not be rendered."
     fi
+    local lead_timing_line=""
+    lead_timing_line=$(summarize_lead_verify_timings "${LEAD_VERIFY_TIMINGS_FILE:-}") || lead_timing_line=""
+    if [[ -z "$lead_timing_line" ]]; then
+        lead_timing_line="Lead verify timing: samples=0 p50=unknown p95=unknown max=unknown; failed Leads excluded"
+    fi
+    completion_msg="${completion_msg}"$'\n'"${lead_timing_line}"
 
     log "$completion_msg"
     notify_routine "$completion_msg"
@@ -2824,17 +2959,6 @@ deploy_and_verify() {
         tail_log_subject="full restart result"
         [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
         tail_detail="${tail_detail}cmux watcher=${watcher_state}: ${watcher_detail}"
-    fi
-    # FLY-1830: a daemon this wave could not put back must not pass silently —
-    # silence is exactly how quota-monitor stayed gone for eleven days.
-    if [[ "$nonlead_state" != "healthy" ]]; then
-        if [[ -z "$tail_signature" ]]; then
-            tail_signature="nonlead-daemons-${nonlead_state}"
-        fi
-        tail_title="Flywheel restart degraded"
-        tail_log_subject="full restart result"
-        [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
-        tail_detail="${tail_detail}非-Lead daemon 收敛=${nonlead_state}: ${nonlead_detail}"
     fi
     if [[ -n "$tail_signature" ]]; then
         log "WARNING: code deployed; ${tail_log_subject} is degraded — $tail_detail"

@@ -47,7 +47,7 @@ pass "both production MCP entries advertise their batch ACK tools"
 RESTART="$ROOT/scripts/restart-services.sh"
 begin_line=$(grep -n 'mqb_begin "\$CURRENT_HEAD"' "$RESTART" | cut -d: -f1)
 bridge_line=$(grep -n '^        start_bridge$' "$RESTART" | tail -1 | cut -d: -f1)
-lead_line=$(grep -n 'lead_result=$(do_restart_all_leads)' "$RESTART" | tail -1 | cut -d: -f1)
+lead_line=$(grep -n 'lead_result=$(do_restart_all_leads stagger)' "$RESTART" | tail -1 | cut -d: -f1)
 release_line=$(grep -n 'mqb_release_via_bridge "\$CURRENT_HEAD"' "$RESTART" | cut -d: -f1)
 deployed_line=$(grep -n 'echo "\$CURRENT_HEAD" > "\$DEPLOYED_SHA_FILE"' "$RESTART" | tail -1 | cut -d: -f1)
 [[ "$begin_line" -lt "$bridge_line" && "$bridge_line" -lt "$lead_line" \

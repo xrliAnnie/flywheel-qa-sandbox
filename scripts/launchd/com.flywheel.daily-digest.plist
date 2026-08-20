@@ -1,12 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  FLY-727 — daily fleet-wide completion digest (launchd template).
-  Install:
-    cp scripts/com.flywheel.daily-digest.plist ~/Library/LaunchAgents/
-    # set FLYWHEEL_DIGEST_CHANNEL below (or in ~/.flywheel/.env) to the SAME channel
-    # id as FLYWHEEL_TOKEN_USAGE_CHANNEL (the cost→dashboard channel), then:
-    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.daily-digest.plist
+  FLY-727 — daily fleet-wide completion digest. This repo-owned plist remains
+  policy=hold with pending-founder-optin in scripts/launchd/units.manifest: do
+  not install or bootstrap it until that founder decision changes.
+  Before opt-in, configure FLYWHEEL_DIGEST_CHANNEL in ~/.flywheel/.env to the
+  SAME channel id as FLYWHEEL_TOKEN_USAGE_CHANNEL (the cost→dashboard channel).
   FLYWHEEL_DIGEST_CHANNEL is REQUIRED — unset means the digest is disabled (the
   Bridge also refuses to mount /api/digest when it is unset). There is NO silent
   fallback to FLYWHEEL_TOKEN_USAGE_CHANNEL.
@@ -26,7 +25,7 @@
 		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 		<key>FLYWHEEL_REPO</key>
 		<string>/Users/xiaorongli/Dev/flywheel</string>
-		<!-- <key>FLYWHEEL_DIGEST_CHANNEL</key><string>REPLACE_WITH_DASHBOARD_CHANNEL_ID</string> -->
+		<!-- FLYWHEEL_DIGEST_CHANNEL comes from ~/.flywheel/.env. -->
 	</dict>
 	<!--
 	  Fire at 00:35 — 5 min after the 00:30 token report (which shares the

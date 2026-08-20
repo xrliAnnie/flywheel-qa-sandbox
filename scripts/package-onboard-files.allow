@@ -34,8 +34,6 @@ scripts/converge-flywheel-bin.sh
 scripts/check-global-path-hygiene.sh
 scripts/linux-preflight.sh
 scripts/materialize-lead-manifests.sh
-scripts/com.flywheel.daily-standup.plist
-scripts/com.flywheel.updater.plist
 scripts/lib/buddy-escalate.sh
 scripts/lib/buddy-captain-preview.sh
 scripts/lib/buddy-connect.sh
