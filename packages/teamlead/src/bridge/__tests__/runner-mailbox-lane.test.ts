@@ -10,6 +10,7 @@ import { DEFAULT_MAILBOX_QUEUE_CONFIG } from "../mailbox-queue-config.js";
 import {
 	ProductionRunnerMailboxDeliveryAdapter,
 	RunnerMailboxLane,
+	renderRunnerMailboxBatchEnvelope,
 	renderRunnerMailboxEnvelope,
 } from "../runner-mailbox-lane.js";
 
@@ -42,7 +43,11 @@ describe("RunnerMailboxLane", () => {
 				"codex",
 			);
 			db.close();
-			vi.mocked(wakeRunnerMailbox).mockResolvedValue({ ok: true });
+			vi.mocked(wakeRunnerMailbox).mockResolvedValue({
+				ok: true,
+				backend: "codex",
+				settlement: "on_consume",
+			});
 			const adapter = new ProductionRunnerMailboxDeliveryAdapter(dbPath);
 			const envelope = {
 				mailboxId: "instruction-1",
@@ -56,10 +61,65 @@ describe("RunnerMailboxLane", () => {
 			};
 			await expect(adapter.deliver(envelope)).resolves.toEqual({
 				status: "delivered",
+				backend: "codex",
+				settlement: "on_consume",
 			});
 			expect(wakeRunnerMailbox).toHaveBeenCalledWith(
 				expect.objectContaining({ execId: "exec-1", backend: "codex" }),
 			);
+			adapter.close();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("uses the adapter-selected settlement when a legacy session has no vendor", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1795-null-vendor-"));
+		const dbPath = join(dir, "comm.db");
+		try {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"exec-legacy",
+				"session:legacy",
+				"project-a",
+				"FLY-1795",
+				"lead-a",
+			);
+			db.close();
+			vi.mocked(wakeRunnerMailbox)
+				.mockResolvedValueOnce({
+					ok: true,
+					backend: "claude-code",
+					settlement: "on_delivery",
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					backend: "codex",
+					settlement: "on_consume",
+				});
+			const adapter = new ProductionRunnerMailboxDeliveryAdapter(dbPath);
+			const envelope = {
+				mailboxId: "instruction-legacy",
+				executionId: "exec-legacy",
+				fromAgent: "lead-a",
+				type: "instruction",
+				kind: "instruction" as const,
+				content: "continue",
+				metadata: { flywheelId: "instruction-legacy" },
+				intentKey: "instruction:instruction-legacy",
+			};
+
+			await expect(adapter.deliver(envelope)).resolves.toMatchObject({
+				backend: "claude-code",
+				settlement: "on_delivery",
+			});
+			await expect(adapter.deliver(envelope)).resolves.toMatchObject({
+				backend: "codex",
+				settlement: "on_consume",
+			});
+			for (const [input] of vi.mocked(wakeRunnerMailbox).mock.calls.slice(-2)) {
+				expect(input).not.toHaveProperty("backend");
+			}
 			adapter.close();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -125,6 +185,47 @@ describe("RunnerMailboxLane", () => {
 		}
 	});
 
+	it("labels durable batch ages as one static packaging-time snapshot", () => {
+		const q = queue();
+		try {
+			for (const [id, createdAt] of [
+				["oldest", "2026-08-05T11:40:00.000Z"],
+				["newest", "2026-08-05T11:50:00.000Z"],
+			] as const) {
+				q.enqueue({
+					id,
+					fromAgent: "lead-a",
+					toAgent: "exec-age",
+					recipientKind: "runner",
+					type: "instruction",
+					content: `content-${id}`,
+					createdAt,
+					senderRef: encodeSenderRef(),
+				});
+			}
+			const batch = q.claimRunnerBatch({
+				ownerEpoch: "owner-1",
+				now: NOW,
+				transportClaimTtlMs: 30_000,
+				batchWindowMs: 60 * 60_000,
+				batchMaxSize: 5,
+				inflightMaxBatches: 3,
+			});
+			expect(batch).toHaveLength(2);
+
+			const envelope = renderRunnerMailboxBatchEnvelope(batch!, new Date(NOW));
+			expect(envelope.content).toContain(
+				"created_at 2026-08-05T11:40:00.000Z | age at batch packaging: 20 minutes",
+			);
+			expect(envelope.content).toContain(
+				"created_at 2026-08-05T11:50:00.000Z | age at batch packaging: 10 minutes",
+			);
+			expect(envelope.content).not.toContain("age at pull");
+		} finally {
+			q.close();
+		}
+	});
+
 	it("uses full execution ids and never redelivers a successful doorbell", async () => {
 		const q = queue();
 		try {
@@ -143,7 +244,11 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "codex" as const,
+				settlement: "on_consume" as const,
+			}));
 			const lane = new RunnerMailboxLane({
 				queue: q,
 				ownerEpoch: "owner-1",
@@ -228,7 +333,11 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "claude-code" as const,
+				settlement: "on_delivery" as const,
+			}));
 			const lane = new RunnerMailboxLane({
 				queue: q,
 				ownerEpoch: "owner-1",
@@ -242,15 +351,56 @@ describe("RunnerMailboxLane", () => {
 			const envelope = deliver.mock.calls[0]?.[0];
 			expect(envelope?.metadata.flywheelId).toMatch(/#r0$/);
 			expect(envelope?.content).toContain("| 3 messages | from lead-a");
+			expect(envelope?.content).not.toContain("You must ack this batch");
 			for (let index = 0; index < 3; index += 1) {
 				expect(envelope?.content).toContain(
 					`[lead-instruction instruction-${index}]`,
 				);
 				expect(q.getById(`instruction-${index}`)).toMatchObject({
-					state: "LEASED",
+					state: "ACKED",
+					acked_at: NOW,
 					delivered_at: NOW,
+					claimed_by: null,
+					claim_expires_at: null,
 				});
 			}
+		} finally {
+			q.close();
+		}
+	});
+
+	it("keeps an on-consume runner batch leased for the existing pull path", async () => {
+		const q = queue();
+		try {
+			q.enqueue({
+				id: "codex-on-consume",
+				fromAgent: "lead-a",
+				toAgent: "exec-codex",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "continue",
+				createdAt: NOW,
+				senderRef: encodeSenderRef(),
+			});
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver: vi.fn(async () => ({
+					status: "delivered" as const,
+					backend: "codex" as const,
+					settlement: "on_consume" as const,
+				})),
+				now: () => new Date(NOW),
+				queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
+				recipientState: () => "alive",
+			});
+
+			expect(await lane.tick()).toMatchObject({ delivered: 1, failed: 0 });
+			expect(q.getById("codex-on-consume")).toMatchObject({
+				state: "LEASED",
+				delivered_at: NOW,
+				acked_at: null,
+			});
 		} finally {
 			q.close();
 		}
@@ -276,7 +426,11 @@ describe("RunnerMailboxLane", () => {
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
 				enabled,
 			}));
-			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "codex" as const,
+				settlement: "on_consume" as const,
+			}));
 			const lane = new RunnerMailboxLane({
 				queue: q,
 				ownerEpoch: "owner-1",
@@ -315,7 +469,11 @@ describe("RunnerMailboxLane", () => {
 	it("runs 600 empty active ticks with zero outbound messages", async () => {
 		const q = queue();
 		try {
-			const deliver = vi.fn(async () => ({ status: "delivered" as const }));
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "codex" as const,
+				settlement: "on_consume" as const,
+			}));
 			const lane = new RunnerMailboxLane({
 				queue: q,
 				ownerEpoch: "owner-1",
@@ -364,7 +522,11 @@ describe("RunnerMailboxLane", () => {
 			const lane = new RunnerMailboxLane({
 				queue: q,
 				ownerEpoch: "owner-1",
-				deliver: vi.fn(async () => ({ status: "delivered" as const })),
+				deliver: vi.fn(async () => ({
+					status: "delivered" as const,
+					backend: "codex" as const,
+					settlement: "on_consume" as const,
+				})),
 				now: () => new Date(NOW),
 				maxPerTick: 2,
 				queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,

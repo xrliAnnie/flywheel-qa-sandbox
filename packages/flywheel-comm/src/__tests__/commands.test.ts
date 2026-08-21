@@ -7,7 +7,7 @@ import { ask } from "../commands/ask.js";
 import { capture } from "../commands/capture.js";
 import { check } from "../commands/check.js";
 import { cleanupMessages } from "../commands/cleanup-messages.js";
-import { inbox } from "../commands/inbox.js";
+import { inbox, renderInboxInstruction } from "../commands/inbox.js";
 import { pending } from "../commands/pending.js";
 import {
 	type RespondArgs,
@@ -253,6 +253,27 @@ describe("send/inbox round-trip", () => {
 		// Second inbox call should return empty
 		const second = inbox({ execId: "exec-123", dbPath });
 		expect(second.instructions).toHaveLength(0);
+	});
+
+	it("renders absolute creation time with a dynamic age at pull", async () => {
+		await send({
+			fromAgent: "product-lead",
+			toAgent: "exec-age",
+			content: "Time-sensitive instruction",
+			dbPath,
+		});
+		const instruction = inbox({ execId: "exec-age", dbPath }).instructions[0]!;
+		const createdAtMs = Date.parse(instruction.created_at);
+
+		const firstPull = renderInboxInstruction(instruction, createdAtMs + 60_000);
+		const laterPull = renderInboxInstruction(
+			instruction,
+			createdAtMs + 11 * 60_000,
+		);
+		expect(firstPull).toContain(`created_at ${instruction.created_at}`);
+		expect(firstPull).toContain("age at pull: 1 minute");
+		expect(laterPull).toContain("age at pull: 11 minutes");
+		expect(laterPull).toContain("Time-sensitive instruction");
 	});
 
 	it("should isolate instructions per runner", async () => {

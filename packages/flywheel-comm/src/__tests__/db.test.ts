@@ -1254,6 +1254,35 @@ describe("CommDB", () => {
 			expect(db.getUnreadInstructions("exec-1").map((row) => row.id)).toEqual([
 				unrelated,
 			]);
+			const settled = (db as any).db
+				.prepare("SELECT state, delivered_at FROM mailbox WHERE id = ?")
+				.get(bound) as { state: string; delivered_at: string | null };
+			expect(settled).toMatchObject({ state: "ACKED" });
+			expect(settled.delivered_at).not.toBeNull();
+		});
+
+		it("preserves an earlier delivery stamp when a bound send is queued", () => {
+			const bound = db.insertInstruction("lead", "exec-1", "already emitted");
+			const earlier = "2026-08-20T01:02:03.004Z";
+			(db as any).db
+				.prepare("UPDATE mailbox SET delivered_at = ? WHERE id = ?")
+				.run(earlier, bound);
+
+			db.enqueueRunnerPhaseWake(
+				"exec-1",
+				{
+					id: "vendor-send-preserve",
+					to: "runner-agent",
+					content: "already emitted",
+					metadata: { flywheelId: bound, execId: "exec-1" },
+				},
+				2_001,
+			);
+
+			const settled = (db as any).db
+				.prepare("SELECT state, delivered_at FROM mailbox WHERE id = ?")
+				.get(bound) as { state: string; delivered_at: string | null };
+			expect(settled).toEqual({ state: "ACKED", delivered_at: earlier });
 		});
 
 		it("dedupes different vendor ids bound to the same instruction source", () => {

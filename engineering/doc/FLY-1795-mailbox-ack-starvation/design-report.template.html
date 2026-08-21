@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1795 设计:消息回执卡死修复</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 18px; margin-bottom: 10px; color: #1a365d; }
+  h3 { font-size: 15px; margin: 14px 0 6px; }
+  p, li { font-size: 14.5px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin-bottom: 5px; }
+  .term { color: #1a365d; font-weight: 600; }
+  .plain { color: #6e6e73; }
+  .diagram { overflow-x: auto; margin: 12px 0; background: #fff; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; vertical-align: 1px; }
+  .badge.fix { background: #e9f7ef; color: #1e7e34; }
+  .badge.risk { background: #fff4e5; color: #b25e00; }
+  .badge.no { background: #f2f2f7; color: #6e6e73; }
+  .comment-box { margin-top: 14px; border-top: 1px dashed #e5e5ea; padding-top: 10px; }
+  .comment-box label { font-size: 12px; color: #86868b; display: block; margin-bottom: 5px; }
+  .comment-box textarea { width: 100%; min-height: 52px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical; background: #fbfbfd; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-list { font-size: 13.5px; white-space: pre-wrap; font-family: 'SF Mono', monospace; background: #f5f5f7; border-radius: 8px; padding: 12px; min-height: 40px; }
+  #copy-all { margin-top: 10px; background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1795 消息回执卡死 — 修复设计</h1>
+  <div class="meta">Issue: FLY-1795 · 设计节点 · 2026-08-19 · 完整技术方案见 <code>engineering/doc/FLY-1795-mailbox-ack-starvation/plan.md</code></div>
+
+  <div class="card" data-sec="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>Runner(干活的 AI 工人)收到指令、也照做了,但<strong>「收到了」这个回执永远没交回去</strong>,导致给它发消息的 3 个在途名额被占死、后续指令排队半小时才漏进一条——本设计把回执从「靠 AI 自觉」改成「系统自动交」,并补上护栏、日志与告警,让同类问题 10 分钟内自动暴露。</p>
+    <p class="plain" style="margin-top:8px">名词解释:<span class="term">ACK</span>(acknowledge,回执)= 收件方告诉系统「这条我收到了,可以销账」;<span class="term">in-flight 槽</span> = 同时允许「已送出、还没回执」的消息份数(每个工人 3 份),用来防止消息洪水;<span class="term">租约(lease)</span> = 每份占槽消息的计时器,到期没回执就收回重发。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="出了什么事">
+    <h2>② 出了什么事(核心流程图)</h2>
+    <p>8-15 晚 Honey Lemon 的一个 runner:指令送到了、活也干了,但回执一直没落账。3 个在途名额全被占死,Lead 18:31 发的关键新指令预计一小时后才能到,期间 runner 在旧任务里空转——你亲眼看到它停着。逐行审计代码后确认,<strong>两条通道是两种病</strong>:</p>
+    <div class="diagram">__SVG1__</div>
+    <ul>
+      <li><strong>Runner 通道(占死,不自愈)</strong>:回执的唯一来源是 runner「自觉」跑一条命令——消息内容是系统塞进它脑子的,但回执要它自己想起来交。实测它约 4 次里只想起 1 次。忘了就永远占着槽。</li>
+      <li><strong>Lead 通道(延迟,能自愈)</strong>:Lead 每次都交回执,但回执走的是异步路——晚到几秒,消息刚好过期回了队,回执就被<strong>静默扔掉</strong>;好在 Lead 收到重发还会再交,几分钟后总有一次赶上。</li>
+      <li><strong>共同点:全程零错误日志。</strong>状态变化日志 8-12 起就黑了(上一次大扫除误伤),只能人肉数队列才发现。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="怎么修">
+    <h2>③ 怎么修(修复流程图)</h2>
+    <div class="diagram">__SVG2__</div>
+    <ul>
+      <li><span class="badge fix">修法 A</span><strong>回执机械化</strong>:runner 每结束一轮工作,系统的收尾钩子(<span class="term">Stop hook</span><span class="plain">,每轮工作结束时自动运行的小脚本,已存在</span>)自动替它交回执。不再依赖 AI 自觉。</li>
+      <li><span class="badge fix">修法 B</span><strong>晚到的回执也承认</strong>:消息过期回队后,晚到的回执不再被扔——工人确认过收到,就是有效凭证,照样销账。</li>
+      <li><span class="badge fix">投递章</span><strong>每条销账都自带投递证据</strong>:8-19 那「5 条指令 7 毫秒被销账、内容凭空消失」经三方复核裁定是<strong>误读</strong>——内容其实经「主动来取」通道真实到了 runner 手里,只是投递字段只记「推送」不记「来取」,账面上像丢了。修法:来取也盖投递章(章义明写=「送出那一刻」),每笔销账记录经手渠道;真正无凭据的销账只可能是程序 bug,拒绝并留案底。</li>
+      <li><span class="badge fix">召回</span><strong>取走即销、丢了能找回</strong>:现状是消息一次取走多条、取走即销,runner 中途丢了正文就再也拿不回。加一条只读召回命令(inbox --replay),丢了随时重印——正文本来就在库里存着,缺的只是再取通道。</li>
+      <li><span class="badge fix">日志</span><strong>重建状态变化日志</strong>(新表 mailbox_transitions):每次占槽/投递/回队/销账/死信都记一笔「谁、何时、经哪个渠道」,取证从「读屏幕猜」变成「一条查询出答案」。</li>
+      <li><span class="badge fix">告警</span><strong>占槽超 10 分钟自动报警</strong>给管这个工人的 Lead——不用再人肉数队列。报警一个事故只响一次,恢复后自动复位。</li>
+      <li><span class="badge fix">安全</span><strong>「别做 X」类禁令消息死信时立刻大声上报</strong>:这类消息静默失效的代价不是延迟,是动作照做(8-19 真发生过一条 Chrome 禁用令静默死掉)。发送时显式标记,死信即刻升级。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="数据模型">
+    <h2>④ 数据与结构模型</h2>
+    <p>消息生命周期状态机(<span class="plain">QUEUED=排队 → LEASED=占槽在途 → ACKED=已销账 / DEAD=死信</span>),标「新」的是本设计新增:</p>
+    <div class="diagram">__SVG3__</div>
+    <table>
+      <tr><th>新增</th><th>作用</th></tr>
+      <tr><td><code>last_batch_id</code> 列</td><td>消息回队后仍记得它上一批的批号,晚到的回执靠它找到行(修法 B 的地基)</td></tr>
+      <tr><td><code>first_delivered_at</code> 列</td><td>第一次送达时刻,永不被重发抹掉——8-19 取证时唯一能判「送没送过」的字段被重发擦掉了,以后不会</td></tr>
+      <tr><td><code>acked_via</code> 列</td><td>销账渠道(CLI 拉取 / 收尾钩子 / Lead 工具 / …)——「这是谁销的账」从此一查便知</td></tr>
+      <tr><td><code>inhibition</code> 列</td><td>发送时标记「安全禁令类」,死信触发即刻升级</td></tr>
+      <tr><td><code>mailbox_transitions</code> 表</td><td>状态迁移流水账,保留 14 天自动清理;不复活已被你判死的旧回执台账机器</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="取舍与否决">
+    <h2>⑤ 关键取舍与被否决的方案</h2>
+    <table>
+      <tr><th>被否决</th><th>理由</th></tr>
+      <tr><td>投递成功就自动销账</td><td>会抹掉「送到了但工人已经死了没看」的区分,丢掉重发保护(这层区分是 FLY-1773 刚建立的)</td></tr>
+      <tr><td>加强提示词让 AI 记得交回执</td><td>实测命中率 1/4 就是这条路的上限;自觉不是机制</td></tr>
+      <tr><td>提高回执处理优先级(issue 修法②)</td><td>审计发现它已经排在每轮最前;正确性问题在「晚到被扔」,不在快慢</td></tr>
+      <tr><td>复活旧回执台账机器</td><td>FLY-1645 你已判死;本设计只要一张窄目的流水账</td></tr>
+      <tr><td>用内容猜「是不是安全禁令」</td><td>猜错的代价是禁令失效;必须发送方显式标记</td></tr>
+      <tr><td>手工放槽工具化</td><td>8-19 已实证手工放槽有连带风险,已禁用为常规手段</td></tr>
+      <tr><td>禁止对排队中消息销账(拦-QUEUED)</td><td>三方复核后作废:「主动来取」对排队消息的签收是合法投递,拦了会砍掉正常路径;正确修法是来取也盖投递章</td></tr>
+      <tr><td>取消息改两步确认(取一次、确认一次)</td><td>把「第二步」重新压回 AI 自觉——正是本案根病;只读召回 + 机械回执以更少机制覆盖同一风险</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-sec="诚实边界">
+    <h2>⑥ 诚实边界 — 本设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>断开「回执靠自觉」的死环(Claude 型 runner);Lead 通道晚到回执承认;销账护栏;迁移日志;占槽告警;禁令类死信升级。</li>
+      <li>回归测试含「构造一个永不交回执的消费者 → 告警必须响、队列不许静默饿死」。</li>
+    </ul>
+    <h3>不做(边界)</h3>
+    <ul>
+      <li><strong>过期指令重放的毒性问题</strong>(FLY-1792 撤回/新鲜度):你已判需先重设计,另单处理;本单只在运维手册保留「放槽前先杀毒」的顺序。</li>
+      <li><strong>Codex 型 runner 的机械回执</strong>:它的收件方式天然「拉取即销账」,不存在这个脱钩;它「从不来拉」的风险由占槽告警兜底。</li>
+      <li><strong>吞吐参数不动</strong>(3 个在途槽、租约时长、攒批节奏都保持 FLY-1751 的定值):修的是「槽还不回来」,不是「槽不够」。</li>
+      <li><strong>残余风险如实说</strong>:若消息已送达但 runner 会话在下一轮开始前就死了,内容会躺在会话记录里没人读——那属于「工人死亡检测」(FLY-1628)的领域,重发给死工人同样无效,换新工人才是解。</li>
+      <li>回执晚到但行已成死信的,不复活(死信通知已发过),只记流水账供取证。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="sec6" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="批注汇总">
+    <h2>你的批注汇总</h2>
+    <div id="summary-list">(暂无批注)</div>
+    <button id="copy-all">复制全部批注</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1795-comments:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box textarea"));
+  var summaryEl = document.getElementById("summary-list");
+  function sectionTitle(ta) {
+    var card = ta.closest ? ta.closest(".card") : null;
+    return (card && card.getAttribute("data-sec")) || ta.getAttribute("data-key") || "未命名";
+  }
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push("【" + sectionTitle(ta) + "】\n" + v);
+    });
+    return parts;
+  }
+  function renderSummary() {
+    var parts = collect();
+    summaryEl.textContent = parts.length ? parts.join("\n\n") : "(暂无批注)";
+  }
+  boxes.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () {
+      lsSet(ta.getAttribute("data-key"), ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  var btn = document.getElementById("copy-all");
+  var status = document.getElementById("copy-status");
+  function showStatus(msg, ok) {
+    status.textContent = msg;
+    status.style.color = ok ? "#34c759" : "#ff3b30";
+    setTimeout(function () { status.textContent = ""; }, 3000);
+  }
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  btn.addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { showStatus("没有可复制的批注", false); return; }
+    var text = parts.join("\n\n");
+    function fallbackFlow() {
+      var ok = legacyCopy(text);
+      showStatus(ok ? "已复制 ✓" : "复制失败,请手动选择上方汇总文本", ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus("已复制 ✓", true); },
+        fallbackFlow
+      );
+    } else {
+      fallbackFlow();
+    }
+  });
+})();
+</script>
+</body>
+</html>

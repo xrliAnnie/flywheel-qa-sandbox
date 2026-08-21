@@ -35,6 +35,7 @@ CREATE TABLE mailbox (
   ref_id TEXT,
   state TEXT NOT NULL DEFAULT 'QUEUED',
   acked_at TEXT,
+  delivered_at TEXT,
   claimed_by TEXT,
   claim_expires_at TEXT,
   next_retry_at TEXT,
@@ -107,6 +108,12 @@ if echo "$OUTPUT" | jq -r '.hookSpecificOutput.additionalContext' | grep -q "rep
 else
   fail "Missing instruction content" "$OUTPUT"
 fi
+DELIVERED_4=$(sqlite3 "$DB4" "SELECT COUNT(*) FROM mailbox WHERE id IN ('msg-1','msg-2') AND delivered_at IS NOT NULL;")
+if [ "$DELIVERED_4" = "2" ]; then
+  pass "Retrieved instructions receive raw delivery stamps"
+else
+  fail "Retrieved instructions should be delivery-stamped" "stamped=$DELIVERED_4"
+fi
 
 # Test 5: Only marks retrieved IDs as read (not blanket)
 echo ""
@@ -116,6 +123,7 @@ create_mailbox_db "$DB5"
 sqlite3 "$DB5" "
 INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-a', 'lead', 'exec-99', 'instruction', 'First instruction');
+UPDATE mailbox SET delivered_at='2026-08-20T01:02:03.004Z' WHERE id='msg-a';
 INSERT INTO mailbox (id, from_agent, to_agent, type, content)
   VALUES ('msg-b', 'lead', 'other-exec', 'instruction', 'For different runner');
 "
@@ -127,6 +135,12 @@ if [ "$READ_A" = "1" ]; then
   pass "msg-a (target) marked as read"
 else
   fail "msg-a should be read" "read_at=$READ_A"
+fi
+DELIVERED_A=$(sqlite3 "$DB5" "SELECT delivered_at FROM mailbox WHERE id='msg-a';")
+if [ "$DELIVERED_A" = "2026-08-20T01:02:03.004Z" ]; then
+  pass "msg-a preserves its earlier delivery stamp"
+else
+  fail "msg-a delivery stamp should be preserved" "delivered_at=$DELIVERED_A"
 fi
 
 # msg-b should still be unread (different exec-id)

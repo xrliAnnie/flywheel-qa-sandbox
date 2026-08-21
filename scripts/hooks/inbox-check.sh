@@ -83,7 +83,7 @@ fi
 
 # Mark retrieved IDs as read BEFORE outputting additionalContext.
 # If marking fails (SQLITE_BUSY), do NOT output — prevents repeated injection.
-if ! sq "UPDATE mailbox SET state='ACKED', acked_at=COALESCE(acked_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')), claimed_by=NULL, claim_expires_at=NULL, next_retry_at=NULL WHERE id IN (${IDS}) AND state IN ('QUEUED','LEASED');"; then
+if ! sq "UPDATE mailbox SET state='ACKED', acked_at=COALESCE(acked_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')), delivered_at=COALESCE(delivered_at,strftime('%Y-%m-%dT%H:%M:%fZ','now')), claimed_by=NULL, claim_expires_at=NULL, next_retry_at=NULL WHERE id IN (${IDS}) AND state IN ('QUEUED','LEASED');"; then
   exit 0
 fi
 

@@ -28,6 +28,7 @@ import {
 	ensureMailboxQueueSchema,
 	MailboxQueue,
 	type MailboxRow,
+	type MailboxSettlement,
 } from "./mailbox-queue.js";
 import {
 	dropReceiptLedgerSchema,
@@ -902,6 +903,12 @@ export function openMailboxMaintenanceDatabase(
 
 export class CommDB {
 	private db: Database.Database;
+
+	inspectMailboxDeliveryState(idOrDeliveryId: string): MailboxSettlement {
+		return new MailboxQueue(this.db, { readOnly: true }).inspectDeliveryState(
+			idOrDeliveryId,
+		);
+	}
 
 	ingestDiscordChat(
 		input: Omit<IngestDiscordChatArgs, "dbPath">,
@@ -2895,7 +2902,8 @@ export class CommDB {
 				this.db
 					.prepare(
 						`UPDATE mailbox SET state = 'ACKED',
-						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+						   delivered_at = COALESCE(delivered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 						 WHERE id = ? AND to_agent = ? AND type = 'instruction'
 						   AND state IN ('QUEUED','LEASED','ACKED')`,
 					)

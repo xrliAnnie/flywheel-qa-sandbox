@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph before["现状(出事的机制)"]
+        direction TB
+        B1["消息排队"] --> B2["占槽,送进 runner 会话<br/>(内容必达)"]
+        B2 --> B3["行停在『等回执』<br/>等 runner 自愿跑一条命令"]
+        B3 -.->|"它常常不跑<br/>(实测 4 次只跑 1 次)"| B4["槽被占死<br/>后面的指令<br/>每 10-30 分钟漏一条"]
+    end
+    subgraph after["改后(两处小改)"]
+        direction TB
+        A1["消息排队"] --> A2["占槽,送进 runner 会话<br/>(内容必达)"]
+        A2 --> A3["投递成功的同一笔更新<br/>直接销账 ✓"]
+        A3 --> A4["『等回执』状态不存在了<br/>楔死这个类别整个消失"]
+        A5["runner 主动来取(另一条路)"] --> A6["取走即销账<br/>并顺手记下『送出过』✓"]
+    end
+    style B3 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style B4 fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style A3 fill:#e9f7ef,stroke:#34c759,stroke-width:2px
+    style A4 fill:#e9f7ef,stroke:#34c759,stroke-width:2px
+    style A6 fill:#e9f7ef,stroke:#34c759,stroke-width:2px

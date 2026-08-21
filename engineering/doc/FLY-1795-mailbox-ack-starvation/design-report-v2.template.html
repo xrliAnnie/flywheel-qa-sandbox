@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1795 极简方案:两条 SQL 治楔死</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 60px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 18px; margin-bottom: 10px; color: #1a365d; }
+  h3 { font-size: 15px; margin: 14px 0 6px; }
+  p, li { font-size: 14.5px; }
+  ul, ol { padding-left: 22px; margin: 8px 0; }
+  li { margin-bottom: 5px; }
+  .term { color: #1a365d; font-weight: 600; }
+  .plain { color: #6e6e73; }
+  .diagram { overflow-x: auto; margin: 12px 0; background: #fff; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  .comment-box { margin-top: 14px; border-top: 1px dashed #e5e5ea; padding-top: 10px; }
+  .comment-box label { font-size: 12px; color: #86868b; display: block; margin-bottom: 5px; }
+  .comment-box textarea { width: 100%; min-height: 52px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical; background: #fbfbfd; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-list { font-size: 13.5px; white-space: pre-wrap; font-family: 'SF Mono', monospace; background: #f5f5f7; border-radius: 8px; padding: 12px; min-height: 40px; }
+  #copy-all { margin-top: 10px; background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; cursor: pointer; }
+  #copy-all:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1795 极简方案:两条 SQL 治楔死</h1>
+  <div class="meta">Issue: FLY-1795 · 重设计 v2(净删除)· 2026-08-20 · 前版复杂设计已整层作废</div>
+
+  <div class="card" data-sec="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>给 runner(干活的 AI 工人)发的消息投递成功、活也干了,但销账要等它<strong>自己想起来</strong>跑一条命令——不跑,3 个在途名额被占死,后面的指令每 10-30 分钟才漏一条。修法是<strong>删掉「等回执」这个状态本身</strong>:投递成功的那一笔更新直接销账。两处小改,各一条 SQL,其余全部不做。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="最小改动">
+    <h2>② 最小改动(两处)与流程对比</h2>
+    <div class="diagram">__SVG4__</div>
+    <ul>
+      <li><strong>改动 1:投递成功即销账。</strong>消息内容写进 runner 的对话是一次可靠投递(内容必达,下一轮工作必然出现在它眼前)。现在这笔更新之后行还要停着等自愿回执;改后这同一笔更新直接把行销账。「等回执」状态从系统里删除——楔死这个类别<strong>不是被守住了,是没了</strong>。</li>
+      <li><strong>改动 2:主动来取也记账。</strong>runner 自己来取消息(另一条合法投递路,今晚已有物证)时的销账,同一条 SQL 顺手记下「送出时刻」。此前这条路不记账,账上和「消息被吞」长得一模一样,是今晚三个 Lead 反复取证的根源。</li>
+    </ul>
+    <p class="plain">名词解释:<span class="term">销账(ACK)</span>= 告诉系统「这条处理完了,名额可以释放」;<span class="term">在途名额</span> = 同时允许「已送出、未销账」的消息份数(每工人 3 份)。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="read信号之问">
+    <h2>③ 你的问题:不需要 AI 销账的话,怎么知道它读没读?</h2>
+    <p><strong>直接回答:旧机制也从来不知道——「读没读」这个信号在旧设计里就不存在,旧销账是个假证人。</strong>今晚的两份物证正好是它的双向反例:</p>
+    <ul>
+      <li>账上「已销」但从没被读:5 条消息被自动拉取后调用方把正文弄丢,runner 从没看到内容——账上却是已销账。</li>
+      <li>真读了但账上「未销」:runner 逐字引用消息编号交了完工报告(= 铁证读过),那几行却挂着未销账好几个小时——就是这次楔死本身。</li>
+    </ul>
+    <p>所以这次改动<strong>没有放弃任何真实存在过的「读回执」</strong>,它把账本上那个名不副实的字段换成了两个诚实的东西:</p>
+    <ul>
+      <li><strong>「送到了」有了更实的定义</strong>:正文已写进 runner 的对话,下一轮工作必然渲染在它眼前——这比「等它自愿跑一条命令」离「读」更近一层,而且不依赖它的自觉。</li>
+      <li><strong>「真读了」的判据不变、也不动</strong>:唯一硬证据从来都是<strong>远端产物</strong>——runner 的完工报告逐字引用消息编号,和账对得上。这个对账判据我们已经在用,新设计原样保留。</li>
+    </ul>
+    <h3>真实的取舍是什么</h3>
+    <p>放弃的是「没销账就自动重发」。而重发对「没在看」<strong>实测无效</strong>:今晚 22 分钟到 176 分钟的硬卡里,同样的内容一遍遍重发,没有一次唤起阅读——对没在看的人重发 N 次等于 0。真正解卡的从来是换工人或人工介入,那条救济路本来就有、继续在。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="新设计的赌注">
+    <h2>④ 新设计的赌注(如实说)</h2>
+    <p>这个方案把一切押在<strong>「投递成功」那一笔的严格性</strong>上:它的定义必须是「正文确实进了 runner 的会话」,不能有一点松动。如果投递路径谎报成功(说送到了其实没送到),新设计会把那条消息销账——它就真丢了。</p>
+    <ul>
+      <li>所以那一笔写入要有测试钉死:投递返回「成功」的语义测试(成功 = 正文已 durable 写入会话,不是「发出去了」),以及「假报成功」的负向测试。</li>
+      <li>剩余边界:消息送到后 runner 会话恰好死了、没来得及读——旧机制的重发同样救不了死会话(重发给死人还是死人),救济一直是换新工人,这点新旧无差,只是账面从「死信」变「已销」。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="状态模型">
+    <h2>⑤ 改后的消息生命周期</h2>
+    <div class="diagram">__SVG5__</div>
+    <p class="plain">正文永不因销账消失:消息本体在库里存活 72 小时,归档后仍完整保留——runner 取走后自己把正文弄丢的场景,内容随时找得回(要不要加一条只读找回命令,单独小题另议,不捆绑本修)。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-sec="不做什么">
+    <h2>⑥ 不做什么(净删除清单)</h2>
+    <table>
+      <tr><th>砍掉</th><th>为什么</th></tr>
+      <tr><td>自动收尾钩子替 runner 销账</td><td>你点名的错签风险;而且改动 1 之后它没有存在理由——没有「等回执」就没有要替签的账</td></tr>
+      <tr><td>整个告警层(占槽超时告警等)</td><td>watchdog 洪水的教训;且「占槽超时」这个告警对象在改后不复存在</td></tr>
+      <tr><td>迁移日志新表 / 告警管道 / 状态机 / 新列</td><td>前版复杂度的主体,全部不做</td></tr>
+      <tr><td>Lead 收件通道的改动</td><td>Lead 的销账在用且约 3 分钟自愈,是小烦恼不是事故,另日再议</td></tr>
+      <tr><td>租约 / 攒批 / 名额参数</td><td>一概不动</td></tr>
+    </table>
+    <p style="margin-top:8px"><strong>验收(三条)</strong>:构造一个永不主动销账的工人连发多批 → 全部按投递节奏销账,零楔死零饿死;Lead 通道与 Codex 工人行为逐字节不变;任一销账行,账上一条查询讲清经哪条路送出。</p>
+    <div class="comment-box"><label>对这一节的批注(自动保存)</label><textarea data-key="v2sec6" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="批注汇总">
+    <h2>你的批注汇总</h2>
+    <div id="summary-list">(暂无批注)</div>
+    <button id="copy-all">复制全部批注</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly1795v2-comments:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box textarea"));
+  var summaryEl = document.getElementById("summary-list");
+  function sectionTitle(ta) {
+    var card = ta.closest ? ta.closest(".card") : null;
+    return (card && card.getAttribute("data-sec")) || ta.getAttribute("data-key") || "未命名";
+  }
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push("【" + sectionTitle(ta) + "】\n" + v);
+    });
+    return parts;
+  }
+  function renderSummary() {
+    var parts = collect();
+    summaryEl.textContent = parts.length ? parts.join("\n\n") : "(暂无批注)";
+  }
+  boxes.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () {
+      lsSet(ta.getAttribute("data-key"), ta.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+  var btn = document.getElementById("copy-all");
+  var status = document.getElementById("copy-status");
+  function showStatus(msg, ok) {
+    status.textContent = msg;
+    status.style.color = ok ? "#34c759" : "#ff3b30";
+    setTimeout(function () { status.textContent = ""; }, 3000);
+  }
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  btn.addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { showStatus("没有可复制的批注", false); return; }
+    var text = parts.join("\n\n");
+    function fallbackFlow() {
+      var ok = legacyCopy(text);
+      showStatus(ok ? "已复制 ✓" : "复制失败,请手动选择上方汇总文本", ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus("已复制 ✓", true); },
+        fallbackFlow
+      );
+    } else {
+      fallbackFlow();
+    }
+  });
+})();
+</script>
+</body>
+</html>

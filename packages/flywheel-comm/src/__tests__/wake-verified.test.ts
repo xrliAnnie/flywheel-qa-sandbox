@@ -43,7 +43,11 @@ describe("FLY-1392 verified receipt wake", () => {
 				verified: true,
 				transportFactory: () => ({ write, verifyLastWrite }),
 			}),
-		).resolves.toEqual({ ok: true });
+		).resolves.toEqual({
+			ok: true,
+			backend: "codex",
+			settlement: "on_consume",
+		});
 		expect(verifyLastWrite).toHaveBeenCalledOnce();
 	});
 
@@ -98,7 +102,11 @@ describe("FLY-1392 verified receipt wake", () => {
 		db = new CommDB(join(tmpDir, "comm.db"));
 		await expect(
 			deliverDurableTurnWake({ ...wake, db, nowMs: 1_700_000_060_000 }),
-		).resolves.toEqual({ ok: true });
+		).resolves.toEqual({
+			ok: true,
+			backend: "codex",
+			settlement: "on_consume",
+		});
 		expect(db.getTurnWake("turn-wake-1")).toMatchObject({
 			push_count: 2,
 			last_push_result: "ok",

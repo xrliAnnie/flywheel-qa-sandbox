@@ -28,9 +28,10 @@ import {
 import { runFeatureFlags } from "./commands/feature-flags.js";
 import { founderTime } from "./commands/founder-time.js";
 import { gate } from "./commands/gate.js";
-import { inbox } from "./commands/inbox.js";
+import { inbox, renderInboxInstruction } from "./commands/inbox.js";
 import { runLeadIdentityCommand } from "./commands/lead-identity.js";
 import { runLeadLeaseCommand } from "./commands/lead-lease.js";
+import { messageStatus } from "./commands/message-status.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
 import { progress } from "./commands/progress.js";
@@ -107,6 +108,7 @@ Commands:
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
+  message-status  Read one mailbox message's live/archive delivery evidence by exact id
   adopt-inflight  Requeue this recipient identity's in-flight inbox batches (Lead birth use)
   sessions           List runner sessions
   sessions register  Register a runner session in CommDB
@@ -245,6 +247,9 @@ async function main(): Promise<void> {
 			break;
 		case "inbox":
 			runInbox(commandArgs);
+			break;
+		case "message-status":
+			process.exitCode = messageStatus(commandArgs);
 			break;
 		case "adopt-inflight":
 			process.exitCode = adoptInflight(commandArgs);
@@ -814,8 +819,9 @@ function runInbox(args: string[]): void {
 	} else if (result.instructions.length === 0) {
 		console.log("No instructions.");
 	} else {
+		const renderedAtMs = Date.now();
 		for (const inst of result.instructions) {
-			console.log(`[${inst.id}] from ${inst.from_agent}: ${inst.content}`);
+			console.log(renderInboxInstruction(inst, renderedAtMs));
 		}
 	}
 }

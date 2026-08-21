@@ -20,7 +20,12 @@ export interface RunnerMailboxEnvelope {
 }
 
 export type RunnerMailboxDeliveryResult =
-	| { status: "delivered" | "no_transport" }
+	| {
+			status: "delivered";
+			backend: "claude-code" | "codex";
+			settlement: "on_delivery" | "on_consume";
+	  }
+	| { status: "no_transport" }
 	| { status: "failed"; error: string };
 
 export interface RunnerMailboxTickResult {
@@ -66,7 +71,13 @@ export class ProductionRunnerMailboxDeliveryAdapter
 				: {}),
 			...(vendor === null || vendor === undefined ? {} : { backend: vendor }),
 		});
-		if (result.ok) return { status: "delivered" };
+		if (result.ok) {
+			return {
+				status: "delivered",
+				backend: result.backend,
+				settlement: result.settlement,
+			};
+		}
 		if (result.skippedReason === "backend_commdb") {
 			return { status: "no_transport" };
 		}
@@ -154,6 +165,7 @@ export interface RunnerMailboxLaneOptions {
 
 export function renderRunnerMailboxBatchEnvelope(
 	rows: readonly MailboxRow[],
+	packagedAt: Date,
 	resolveQuestion?: (questionId: string) => RunnerQuestion | undefined,
 ): RunnerMailboxEnvelope {
 	const first = rows[0];
@@ -170,18 +182,28 @@ export function renderRunnerMailboxBatchEnvelope(
 			row.ref_id ? resolveQuestion?.(row.ref_id) : undefined,
 		),
 	);
+	const packagedAtMs = packagedAt.getTime();
+	const renderedBodies = rendered.map(({ content }, index) => {
+		const row = rows[index]!;
+		const createdAtMs = Date.parse(row.created_at);
+		const ageMinutes =
+			Number.isFinite(createdAtMs) && Number.isFinite(packagedAtMs)
+				? Math.max(0, Math.floor((packagedAtMs - createdAtMs) / 60_000))
+				: "unknown";
+		const age =
+			typeof ageMinutes === "number"
+				? `${ageMinutes} ${ageMinutes === 1 ? "minute" : "minutes"}`
+				: ageMinutes;
+		return `[created_at ${row.created_at} | age at batch packaging: ${age}]\n${content}`;
+	});
 	const transportBatchId = `${first.batch_id}#r${attempt}`;
-	const ackInstruction =
-		first.type === "response"
-			? `run 'flywheel-comm check ${first.ref_id}'`
-			: `run 'flywheel-comm inbox --exec-id ${first.to_agent}'`;
 	return {
 		mailboxId: first.batch_id,
 		executionId: first.to_agent,
 		fromAgent: first.from_agent,
 		type: first.type,
 		kind: rendered[0]!.kind,
-		content: `[mailbox-batch ${first.batch_id} | ${rows.length} messages | from ${first.from_agent}]\nYou must ack this batch (${ackInstruction}); once 3 batches are unacked, no further batch will be delivered.\n\n${rendered.map(({ content }) => content).join("\n\n")}`,
+		content: `[mailbox-batch ${first.batch_id} | ${rows.length} messages | from ${first.from_agent}]\n\n${renderedBodies.join("\n\n")}`,
 		metadata: {
 			flywheelId: transportBatchId,
 			durableBatchId: first.batch_id,
@@ -287,7 +309,11 @@ export class RunnerMailboxLane {
 			const row = batch[0]!;
 			try {
 				const envelope = queueConfig.enabled
-					? renderRunnerMailboxBatchEnvelope(batch, this.opts.resolveQuestion)
+					? renderRunnerMailboxBatchEnvelope(
+							batch,
+							this.now(),
+							this.opts.resolveQuestion,
+						)
 					: renderRunnerMailboxEnvelope(
 							row,
 							row.ref_id ? this.opts.resolveQuestion?.(row.ref_id) : undefined,
@@ -301,6 +327,10 @@ export class RunnerMailboxLane {
 							ownerEpoch: this.opts.ownerEpoch,
 							now: this.now().toISOString(),
 							ackLeaseTtlMs: queueConfig.ackLeaseMs,
+							settlement:
+								delivered.status === "delivered"
+									? delivered.settlement
+									: "on_consume",
 						}) === "lost_race"
 					) {
 						throw new Error("runner claim fence lost after delivery");

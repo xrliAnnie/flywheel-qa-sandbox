@@ -774,6 +774,51 @@ globalThis.fetch = async () => {
 		});
 	});
 
+	describe("message-status", () => {
+		it("queries live evidence by exact id and exits 1 for an absent id", () => {
+			const id = runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"exec-status",
+				"--db",
+				dbPath,
+				"Inspect me",
+			]);
+			const live = JSON.parse(
+				runCli(["message-status", id, "--db", dbPath, "--json"]),
+			);
+			expect(live).toMatchObject({
+				location: "live",
+				message_id: id,
+				state: "QUEUED",
+				dead_reason: null,
+				last_error: null,
+				stamps: {
+					created_at: expect.any(String),
+					delivered_at: null,
+					notified_at: null,
+					settled_at: null,
+				},
+			});
+
+			const absent = runCliSafe([
+				"message-status",
+				"missing",
+				"--db",
+				dbPath,
+				"--json",
+			]);
+			expect(absent.exitCode).toBe(1);
+			expect(JSON.parse(absent.stdout)).toMatchObject({
+				location: "absent",
+				message_id: "missing",
+				state: null,
+			});
+		});
+	});
+
 	describe("sessions", () => {
 		it("should list sessions", () => {
 			// Seed session data via CommDB

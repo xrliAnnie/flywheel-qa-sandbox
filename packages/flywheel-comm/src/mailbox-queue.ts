@@ -19,18 +19,25 @@ import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
 export type MailboxState = "QUEUED" | "LEASED" | "ACKED" | "DEAD";
+export interface MailboxDeliveryEvidence {
+	deadReason: string | null;
+	lastError: string | null;
+	createdAt: string | null;
+	deliveredAt: string | null;
+	notifiedAt: string | null;
+}
 export type MailboxSettlement =
 	| { kind: "absent_identity" }
-	| {
+	| ({
 			kind: "live";
 			state: MailboxState;
 			settledAt: string | null;
-	  }
-	| {
+	  } & MailboxDeliveryEvidence)
+	| ({
 			kind: "archived_terminal";
 			state: "ACKED" | "DEAD";
 			settledAt: string;
-	  };
+	  } & MailboxDeliveryEvidence);
 export type MailboxRecipientKind = "lead" | "runner" | "bridge";
 export type MailboxMessageClass = "protocol" | "model";
 export type MailboxPriority = 0 | 1 | 2 | 3;
@@ -39,6 +46,7 @@ export type MailboxBatchDeliveryResult =
 	| "applied"
 	| "already_settled"
 	| "lost_race";
+export type RunnerMailboxSettlement = "on_delivery" | "on_consume";
 export interface MailboxBatchFailureResult {
 	outcome: "applied" | "already_settled" | "lost_race";
 	deadLettered: boolean;
@@ -70,6 +78,29 @@ export interface DeadLetterAlertCandidate {
 
 export const CHAT_DELIVERY_UNCONFIRMED_REASON =
 	"chat_delivery_unconfirmed" as const;
+export const FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON =
+	"delivery_unconfirmed_exhausted" as const;
+const FROZEN_DELIVERY_MARKER = /^delivery_unconfirmed:([1-9][0-9]*)$/;
+
+function frozenDeliveryMarkerCount(value: string | null): number | null {
+	if (value === null) return null;
+	const match = FROZEN_DELIVERY_MARKER.exec(value);
+	if (!match) return null;
+	const count = Number(match[1]);
+	return Number.isSafeInteger(count) && count > 0 ? count : null;
+}
+
+function deliveryEvidence(row: Partial<MailboxRow>): MailboxDeliveryEvidence {
+	const textOrNull = (value: unknown): string | null =>
+		typeof value === "string" ? value : null;
+	return {
+		deadReason: textOrNull(row.dead_reason),
+		lastError: textOrNull(row.last_error),
+		createdAt: textOrNull(row.created_at),
+		deliveredAt: textOrNull(row.delivered_at),
+		notifiedAt: textOrNull(row.notified_at),
+	};
+}
 
 /**
  * FLY-1646: every `dead_reason` that means "quarantined for visibility", which
@@ -368,11 +399,23 @@ export class MailboxQueue {
 		toAgent: string;
 	};
 
-	constructor(dbPathOrConnection: string | Database.Database) {
+	constructor(
+		dbPathOrConnection: string | Database.Database,
+		options: { readOnly?: boolean } = {},
+	) {
 		if (typeof dbPathOrConnection !== "string") {
 			this.db = dbPathOrConnection;
 			this.ownsConnection = false;
-			ensureMailboxQueueSchema(this.db);
+			if (!options.readOnly) ensureMailboxQueueSchema(this.db);
+			return;
+		}
+		if (options.readOnly) {
+			this.db = new Database(dbPathOrConnection, {
+				readonly: true,
+				fileMustExist: true,
+			});
+			this.ownsConnection = true;
+			this.db.pragma("busy_timeout = 5000");
 			return;
 		}
 		if (dbPathOrConnection !== ":memory:") {
@@ -579,6 +622,7 @@ export class MailboxQueue {
 						: live.state === "DEAD"
 							? live.dead_at
 							: null,
+				...deliveryEvidence(live),
 			};
 		}
 		const identity = this.db
@@ -613,6 +657,7 @@ export class MailboxQueue {
 				kind: "archived_terminal",
 				state: "ACKED",
 				settledAt: snapshot.acked_at,
+				...deliveryEvidence(snapshot),
 			};
 		}
 		if (snapshot.state === "DEAD" && snapshot.dead_at) {
@@ -620,6 +665,7 @@ export class MailboxQueue {
 				kind: "archived_terminal",
 				state: "DEAD",
 				settledAt: snapshot.dead_at,
+				...deliveryEvidence(snapshot),
 			};
 		}
 		throw new Error(
@@ -1067,7 +1113,7 @@ export class MailboxQueue {
 					if (remaining.length === 0) return [];
 					const result = this.db
 						.prepare(
-							`UPDATE mailbox SET claimed_by = ?, claim_expires_at = ?, last_error = NULL
+							`UPDATE mailbox SET claimed_by = ?, claim_expires_at = ?
 							  WHERE id IN (${placeholders(remaining.length)}) AND state = 'LEASED'
 							    AND COALESCE(notified_at, delivered_at) IS NULL
 							    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at <= ?)`,
@@ -1446,7 +1492,56 @@ export class MailboxQueue {
 		ownerEpoch: string;
 		now: string;
 		ackLeaseTtlMs: number;
+		settlement: RunnerMailboxSettlement;
 	}): MailboxBatchDeliveryResult {
+		if (input.settlement === "on_delivery") {
+			return this.db
+				.transaction(() => {
+					if (!this.isCurrentOwner(input.ownerEpoch, input.now)) {
+						return "lost_race";
+					}
+					const rows = this.db
+						.prepare(
+							"SELECT state, claimed_by FROM mailbox WHERE batch_id = ? AND recipient_kind = 'runner' ORDER BY priority, seq",
+						)
+						.all(input.batchId) as Array<{
+						state: MailboxState;
+						claimed_by: string | null;
+					}>;
+					if (rows.length === 0) return "lost_race";
+					const leased = rows.filter(({ state }) => state === "LEASED");
+					if (leased.length === 0) {
+						return rows.every(({ state }) => state === "ACKED")
+							? "already_settled"
+							: "lost_race";
+					}
+					if (
+						leased.some(({ claimed_by }) => claimed_by !== input.ownerEpoch)
+					) {
+						return "lost_race";
+					}
+					const updated = this.db
+						.prepare(
+							`UPDATE mailbox SET state = 'ACKED',
+							   acked_at = COALESCE(acked_at, ?),
+							   notified_at = COALESCE(notified_at, ?),
+							   delivered_at = COALESCE(delivered_at, ?),
+							   last_error = NULL, claimed_by = NULL,
+							   claim_expires_at = NULL, next_retry_at = NULL
+							 WHERE batch_id = ? AND recipient_kind = 'runner'
+							   AND state = 'LEASED' AND claimed_by = ?`,
+						)
+						.run(
+							input.now,
+							input.now,
+							input.now,
+							input.batchId,
+							input.ownerEpoch,
+						);
+					return updated.changes === leased.length ? "applied" : "lost_race";
+				})
+				.immediate();
+		}
 		return this.recordBatchDelivered({ ...input, recipientKind: "runner" });
 	}
 
@@ -1662,7 +1757,7 @@ export class MailboxQueue {
 					}
 					const members = this.db
 						.prepare(
-							`SELECT id, notified_at, delivered_at, lease_retry_count FROM mailbox
+							`SELECT id, notified_at, delivered_at, lease_retry_count, last_error FROM mailbox
 							  WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?
 							  ORDER BY priority, seq`,
 						)
@@ -1671,6 +1766,7 @@ export class MailboxQueue {
 						notified_at: string | null;
 						delivered_at: string | null;
 						lease_retry_count: number;
+						last_error: string | null;
 					}>;
 					if (members.length === 0) continue;
 					if (recipientState === "terminal_or_missing") {
@@ -1692,12 +1788,40 @@ export class MailboxQueue {
 								notified_at === null && delivered_at === null,
 						)
 					) {
+						const counts = members.map(({ last_error }) =>
+							frozenDeliveryMarkerCount(last_error),
+						);
+						const firstCount = counts[0] ?? null;
+						const completedExpiries =
+							firstCount !== null &&
+							counts.every((count) => count === firstCount)
+								? firstCount
+								: 0;
+						if (completedExpiries >= input.leaseRetryMax) {
+							const changed = this.db
+								.prepare(
+									`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
+									   dead_reason = '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}',
+									   last_error = '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}',
+									   claimed_by = NULL, claim_expires_at = NULL,
+									   next_retry_at = NULL, batch_id = NULL
+									 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
+								)
+								.run(input.now, batch.batch_id, input.now).changes;
+							result.dead += changed;
+							continue;
+						}
 						this.db
 							.prepare(
-								`UPDATE mailbox SET claimed_by = NULL
+								`UPDATE mailbox SET claimed_by = NULL, claim_expires_at = NULL,
+								   last_error = ?
 								 WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?`,
 							)
-							.run(batch.batch_id, input.now);
+							.run(
+								`delivery_unconfirmed:${completedExpiries + 1}`,
+								batch.batch_id,
+								input.now,
+							);
 						result.frozenResend.push(batch.batch_id);
 						continue;
 					}
@@ -1790,6 +1914,7 @@ export class MailboxQueue {
 					.prepare(
 						`SELECT to_agent FROM mailbox
 						  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
+						    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 						    AND to_agent > ?
 						  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
 					)
@@ -1801,6 +1926,7 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT to_agent FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
+							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							    AND to_agent <= ?
 							  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
 						)
@@ -1833,7 +1959,8 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
-							    AND state = 'DEAD' AND to_agent = ? AND seq > ?`,
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
+							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'`,
 						)
 						.get(recipient, cursor) as {
 						count: number;
@@ -1860,6 +1987,7 @@ export class MailboxQueue {
 							`SELECT type, from_agent, content FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
+							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							  ORDER BY seq LIMIT ?`,
 						)
 						.all(recipient, cursor, input.maxDeadRowsPerRecipient) as Array<{
@@ -1949,6 +2077,7 @@ export class MailboxQueue {
 					.prepare(
 						`SELECT recipient_kind, to_agent FROM mailbox
 						 WHERE carrier = 'inbox' AND state = 'DEAD'
+						   AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 						   AND recipient_kind IN ('lead','runner')
 						   AND (recipient_kind > ? OR (recipient_kind = ? AND to_agent > ?))
 						 GROUP BY recipient_kind, to_agent
@@ -1970,6 +2099,7 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT recipient_kind, to_agent FROM mailbox
 							 WHERE carrier = 'inbox' AND state = 'DEAD'
+							   AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							   AND recipient_kind IN ('lead','runner')
 							   AND (recipient_kind < ? OR (recipient_kind = ? AND to_agent <= ?))
 							 GROUP BY recipient_kind, to_agent
@@ -1988,6 +2118,7 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT recipient_kind, to_agent FROM mailbox
 							 WHERE carrier = 'inbox' AND state = 'DEAD'
+							   AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							   AND recipient_kind IN ('lead','runner')
 							 GROUP BY recipient_kind, to_agent
 							 ORDER BY recipient_kind, to_agent LIMIT ?`,
@@ -2017,6 +2148,7 @@ export class MailboxQueue {
 				.prepare(
 					`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
 					 WHERE carrier = 'inbox' AND state = 'DEAD'
+					   AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 					   AND recipient_kind = ? AND to_agent = ? AND seq > ?`,
 				)
 				.get(row.recipient_kind, row.to_agent, cursor) as {
@@ -2028,6 +2160,7 @@ export class MailboxQueue {
 				.prepare(
 					`SELECT type, from_agent, content FROM mailbox
 					 WHERE carrier = 'inbox' AND state = 'DEAD'
+					   AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 					   AND recipient_kind = ? AND to_agent = ? AND seq > ?
 					 ORDER BY seq LIMIT ?`,
 				)
@@ -2307,10 +2440,11 @@ export class MailboxQueue {
 		const result = this.db
 			.prepare(
 				`UPDATE mailbox SET state = 'ACKED', acked_at = COALESCE(acked_at, ?),
+				   delivered_at = COALESCE(delivered_at, ?),
 				   claimed_by = NULL, claim_expires_at = NULL, next_retry_at = NULL
 				 WHERE (id = ? OR delivery_id = ?) AND state IN ('QUEUED','LEASED')`,
 			)
-			.run(now, idOrDeliveryId, idOrDeliveryId);
+			.run(now, now, idOrDeliveryId, idOrDeliveryId);
 		if (result.changes === 1) return true;
 		return this.getById(idOrDeliveryId)?.state === "ACKED";
 	}

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 import { MailboxQueue } from "../mailbox-queue.js";
@@ -162,6 +163,76 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
+	it("keeps delivery-unconfirmed exhaustion query-only without hiding ordinary dead letters", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "lead-ordinary", { toAgent: "lead-dead" });
+			enqueue(queue, "lead-excluded", {
+				toAgent: "lead-dead",
+				createdAt: at(1),
+			});
+			enqueue(queue, "runner-excluded-routable", {
+				toAgent: "exec-owned",
+				recipientKind: "runner",
+			});
+			enqueue(queue, "runner-excluded-unroutable", {
+				toAgent: "exec-orphan",
+				recipientKind: "runner",
+			});
+			queue.markDead("lead-ordinary", at(2), "recipient_terminal");
+			for (const id of [
+				"lead-excluded",
+				"runner-excluded-routable",
+				"runner-excluded-unroutable",
+			]) {
+				queue.markDead(id, at(3), "delivery_unconfirmed_exhausted");
+			}
+
+			const notices = queue.scanAndInsertDeadLetterNotices({
+				ownerEpoch: OWNER,
+				now: at(10),
+				windowMs: 1_800_000,
+				maxRecipients: 10,
+				maxDeadRowsPerRecipient: 10,
+				maxSummaryBytes: 2_000,
+				resolveOwningLead: (recipient) =>
+					recipient === "exec-owned" ? "lead-owner" : undefined,
+			});
+			expect(notices.inserted).toHaveLength(0);
+
+			const candidates = queue.listUncoveredLeadDeadLetters({
+				sinceCursor: [],
+				limit: 10,
+				maxRowsPerRecipient: 10,
+				maxSummaryBytes: 2_000,
+				resolveOwningLead: (recipient) =>
+					recipient === "exec-owned" ? "lead-owner" : undefined,
+			});
+			expect(candidates).toEqual([
+				expect.objectContaining({
+					sourceKind: "lead_unacked",
+					recipient: "lead-dead",
+					deadCount: 1,
+					throughDeadSeq: queue.getById("lead-ordinary")!.seq,
+				}),
+			]);
+			expect(candidates[0]?.summary).toContain("lead-ordinary");
+			expect(candidates[0]?.summary).not.toContain("lead-excluded");
+			expect(
+				(
+					db
+						.prepare(
+							"SELECT COUNT(*) AS n FROM mailbox WHERE type = 'dead_letter_notice'",
+						)
+						.get() as { n: number }
+				).n,
+			).toBe(0);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
 	it("batches same-source rows in the head's one-sided window without folding rows", () => {
 		const { db, queue } = fixture();
 		try {
@@ -292,7 +363,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("preserves Flow 1 runner delivery stamps while adding transport evidence", () => {
+	it("keeps on-consume runner delivery leased while stamping transport evidence", () => {
 		const { db, queue } = fixture();
 		try {
 			enqueue(queue, "runner-receipt", {
@@ -314,11 +385,53 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 					ownerEpoch: OWNER,
 					now: at(1),
 					ackLeaseTtlMs: 30_000,
+					settlement: "on_consume",
 				}),
 			).toBe("applied");
 			expect(queue.getById("runner-receipt")).toMatchObject({
+				state: "LEASED",
 				notified_at: at(1),
 				delivered_at: at(1),
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("terminally settles an on-delivery runner batch behind the owner fence", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "runner-terminal", {
+				toAgent: "exec-a",
+				recipientKind: "runner",
+			});
+			const batch = queue.claimRunnerBatch({
+				ownerEpoch: OWNER,
+				now: T0,
+				transportClaimTtlMs: 30_000,
+				batchWindowMs: 60_000,
+				batchMaxSize: 10,
+				inflightMaxBatches: 3,
+			});
+			expect(
+				queue.recordRunnerBatchDelivered({
+					batchId: batch![0]!.batch_id!,
+					ownerEpoch: OWNER,
+					now: at(1),
+					ackLeaseTtlMs: 30_000,
+					settlement: "on_delivery",
+				}),
+			).toBe("applied");
+			expect(queue.getById("runner-terminal")).toMatchObject({
+				state: "ACKED",
+				acked_at: at(1),
+				notified_at: at(1),
+				delivered_at: at(1),
+				claimed_by: null,
+				claim_expires_at: null,
+				next_retry_at: null,
+				last_error: null,
 			});
 		} finally {
 			queue.close();
@@ -787,6 +900,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 				ownerEpoch: OWNER,
 				now: T0,
 				ackLeaseTtlMs: 30_000,
+				settlement: "on_consume",
 			});
 
 			queue.reconcileExpiredLeases({
@@ -895,7 +1009,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("keeps an expired undelivered orphan frozen on the same batch and attempt", () => {
+	it("advances a frozen marker once per new lease, not once per reconciler tick", () => {
 		const { db, queue } = fixture();
 		try {
 			enqueue(queue, "q1");
@@ -914,12 +1028,405 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 			expect(queue.getById("q1")).toMatchObject({
 				state: "LEASED",
 				batch_id: "batch-frozen",
+				retry_count: 0,
 				lease_retry_count: 0,
 				delivered_at: null,
+				claimed_by: null,
+				claim_expires_at: null,
+				last_error: "delivery_unconfirmed:1",
 			});
+			for (let tick = 32; tick < 40; tick += 1) {
+				queue.reconcileExpiredLeases({
+					ownerEpoch: OWNER,
+					now: at(tick),
+					recipientKind: "lead",
+					toAgent: "lead-a",
+					leaseRetryMax: 3,
+					recipientState: () => "alive",
+					maxBatches: 10,
+					maxTerminalRows: 10,
+				});
+			}
+			expect(queue.getById("q1")?.last_error).toBe("delivery_unconfirmed:1");
 			expect(claimLead(queue, "ignored", at(31)).map((row) => row.id)).toEqual([
 				"q1",
 			]);
+			expect(queue.getById("q1")).toMatchObject({
+				last_error: "delivery_unconfirmed:1",
+				claim_expires_at: at(61),
+			});
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(62),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(queue.getById("q1")).toMatchObject({
+				last_error: "delivery_unconfirmed:2",
+				retry_count: 0,
+				lease_retry_count: 0,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("does not advance unreclaimed siblings and exits only after four new-lease expiries", () => {
+		const { db, queue } = fixture();
+		try {
+			for (let index = 0; index < 3; index += 1) {
+				enqueue(queue, `frozen-${index}`, {
+					fromAgent: `runner-${index}`,
+					createdAt: at(index),
+				});
+				db.prepare(
+					`UPDATE mailbox SET state = 'LEASED', batch_id = ?, claimed_by = ?,
+					   claim_expires_at = ? WHERE id = ?`,
+				).run(`batch-${index}`, OWNER, at(30), `frozen-${index}`);
+			}
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			for (let tick = 32; tick < 50; tick += 1) {
+				queue.reconcileExpiredLeases({
+					ownerEpoch: OWNER,
+					now: at(tick),
+					recipientKind: "lead",
+					toAgent: "lead-a",
+					leaseRetryMax: 3,
+					recipientState: () => "alive",
+					maxBatches: 10,
+					maxTerminalRows: 10,
+				});
+			}
+			for (let index = 0; index < 3; index += 1) {
+				expect(queue.getById(`frozen-${index}`)).toMatchObject({
+					state: "LEASED",
+					last_error: "delivery_unconfirmed:1",
+					claim_expires_at: null,
+				});
+			}
+
+			for (const [claimAt, expireAt, expected] of [
+				[50, 81, "delivery_unconfirmed:2"],
+				[82, 113, "delivery_unconfirmed:3"],
+				[114, 145, "delivery_unconfirmed_exhausted"],
+			] as const) {
+				claimLead(queue, "ignored", at(claimAt));
+				queue.reconcileExpiredLeases({
+					ownerEpoch: OWNER,
+					now: at(expireAt),
+					recipientKind: "lead",
+					toAgent: "lead-a",
+					leaseRetryMax: 3,
+					recipientState: () => "alive",
+					maxBatches: 1,
+					maxTerminalRows: 10,
+				});
+				expect(queue.getById("frozen-0")?.last_error).toBe(expected);
+			}
+			expect(queue.getById("frozen-0")).toMatchObject({
+				state: "DEAD",
+				dead_reason: "delivery_unconfirmed_exhausted",
+				batch_id: null,
+				claimed_by: null,
+				claim_expires_at: null,
+				retry_count: 0,
+				lease_retry_count: 0,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("resets the frozen streak after a real delivery failure instead of sharing retry_count", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "mixed-budget");
+			claimLead(queue, "batch-mixed");
+			db.prepare(
+				`UPDATE mailbox SET retry_count = 4, last_error = 'lead restarting'
+				 WHERE id = 'mixed-budget'`,
+			).run();
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(result.dead).toBe(0);
+			expect(queue.getById("mixed-budget")).toMatchObject({
+				state: "LEASED",
+				retry_count: 4,
+				lease_retry_count: 0,
+				last_error: "delivery_unconfirmed:1",
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("treats malformed or inconsistent frozen markers as a fail-open first expiry", () => {
+		const { db, queue } = fixture();
+		try {
+			const invalid = [
+				"delivery_unconfirmed:0",
+				" delivery_unconfirmed:1",
+				"delivery_unconfirmed:1 ",
+				"delivery_unconfirmed:1suffix",
+				"Delivery_unconfirmed:1",
+				"delivery_unconfirmed:9007199254740992",
+			];
+			invalid.forEach((marker, index) => {
+				const id = `invalid-marker-${index}`;
+				enqueue(queue, id, { fromAgent: `runner-${index}` });
+				db.prepare(
+					`UPDATE mailbox SET state = 'LEASED', batch_id = ?, claimed_by = ?,
+					   claim_expires_at = ?, last_error = ? WHERE id = ?`,
+				).run(`batch-invalid-${index}`, OWNER, at(30), marker, id);
+			});
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 20,
+				maxTerminalRows: 20,
+			});
+			invalid.forEach((_, index) => {
+				expect(queue.getById(`invalid-marker-${index}`)?.last_error).toBe(
+					"delivery_unconfirmed:1",
+				);
+			});
+
+			enqueue(queue, "mixed-marker-a");
+			enqueue(queue, "mixed-marker-b", { createdAt: at(1) });
+			db.prepare(
+				`UPDATE mailbox SET state = 'LEASED', batch_id = 'batch-mixed-marker',
+				   claimed_by = ?, claim_expires_at = ?,
+				   last_error = CASE id WHEN 'mixed-marker-a'
+				     THEN 'delivery_unconfirmed:1' ELSE 'delivery_unconfirmed:2' END
+				 WHERE id IN ('mixed-marker-a','mixed-marker-b')`,
+			).run(OWNER, at(30));
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 20,
+				maxTerminalRows: 20,
+			});
+			expect(queue.getById("mixed-marker-a")?.last_error).toBe(
+				"delivery_unconfirmed:1",
+			);
+			expect(queue.getById("mixed-marker-b")?.last_error).toBe(
+				"delivery_unconfirmed:1",
+			);
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("clears the marker fail-open across queue ON to legacy OFF to ON", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "toggle-marker");
+			claimLead(queue, "batch-toggle");
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(queue.getById("toggle-marker")?.last_error).toBe(
+				"delivery_unconfirmed:1",
+			);
+
+			queue.claimLeadBatch({
+				toAgent: "lead-a",
+				msgClass: "model",
+				ownerEpoch: OWNER,
+				batchId: "ignored",
+				now: at(31),
+				claimTtlMs: 30_000,
+			});
+			expect(queue.getById("toggle-marker")?.last_error).toBeNull();
+
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(62),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(queue.getById("toggle-marker")).toMatchObject({
+				state: "LEASED",
+				last_error: "delivery_unconfirmed:1",
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("dead-letters a frozen runner batch immediately at a zero retry budget", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "runner-zero-budget", {
+				toAgent: "exec-zero-budget",
+				recipientKind: "runner",
+			});
+			const batch = queue.claimRunnerBatch({
+				ownerEpoch: OWNER,
+				now: T0,
+				transportClaimTtlMs: 30_000,
+				batchWindowMs: 60_000,
+				batchMaxSize: 5,
+				inflightMaxBatches: 3,
+			});
+			expect(batch).toHaveLength(1);
+
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "runner",
+				leaseRetryMax: 0,
+				recipientState: () => "alive",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(result).toMatchObject({ dead: 1, frozenResend: [] });
+			expect(queue.getById("runner-zero-budget")).toMatchObject({
+				state: "DEAD",
+				dead_reason: "delivery_unconfirmed_exhausted",
+				last_error: "delivery_unconfirmed_exhausted",
+				batch_id: null,
+				claimed_by: null,
+				claim_expires_at: null,
+				next_retry_at: null,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("leaves a frozen batch untouched while recipient liveness is unknown", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "frozen-unknown");
+			claimLead(queue, "batch-frozen-unknown");
+			const result = queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(31),
+				recipientKind: "lead",
+				toAgent: "lead-a",
+				leaseRetryMax: 3,
+				recipientState: () => "unknown",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+			expect(result).toMatchObject({
+				dead: 0,
+				frozenResend: [],
+				skippedUnknown: 1,
+			});
+			expect(queue.getById("frozen-unknown")).toMatchObject({
+				state: "LEASED",
+				claimed_by: OWNER,
+				claim_expires_at: at(30),
+				last_error: null,
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
+	it("guards every dead-letter eligibility query with the frozen reason exclusion", () => {
+		const source = readFileSync(
+			new URL("../mailbox-queue.ts", import.meta.url),
+			"utf8",
+		);
+		const scanStart = source.indexOf("\tscanAndInsertDeadLetterNotices(");
+		const listStart = source.indexOf("\tlistUncoveredLeadDeadLetters(");
+		const listEnd = source.indexOf("\n\tclaimBridgeProtocol(", listStart);
+		expect(scanStart).toBeGreaterThan(-1);
+		expect(listStart).toBeGreaterThan(scanStart);
+		expect(listEnd).toBeGreaterThan(listStart);
+
+		const deadEligibilityQueries = (methodSource: string) =>
+			[...methodSource.matchAll(/`SELECT[\s\S]*?`/g)]
+				.map(([query]) => query)
+				.filter((query) => /state\s*=\s*'DEAD'/.test(query));
+		const frozenReasonInterpolation =
+			"${" + "FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}";
+		const exclusion = `dead_reason IS NOT '${frozenReasonInterpolation}'`;
+		const scanQueries = deadEligibilityQueries(
+			source.slice(scanStart, listStart),
+		);
+		const listQueries = deadEligibilityQueries(
+			source.slice(listStart, listEnd),
+		);
+		expect(scanQueries).toHaveLength(4);
+		expect(listQueries).toHaveLength(5);
+		expect([...scanQueries, ...listQueries]).toSatisfy((queries: string[]) =>
+			queries.every((query) => query.includes(exclusion)),
+		);
+	});
+
+	it("stamps raw delivery on ack and preserves an earlier emission stamp", () => {
+		const { db, queue } = fixture();
+		try {
+			enqueue(queue, "ack-stamps-delivery");
+			expect(queue.ack("ack-stamps-delivery", at(1))).toBe(true);
+			expect(queue.getById("ack-stamps-delivery")).toMatchObject({
+				state: "ACKED",
+				acked_at: at(1),
+				delivered_at: at(1),
+			});
+
+			enqueue(queue, "ack-preserves-delivery");
+			db.prepare("UPDATE mailbox SET delivered_at = ? WHERE id = ?").run(
+				T0,
+				"ack-preserves-delivery",
+			);
+			expect(queue.ack("ack-preserves-delivery", at(2))).toBe(true);
+			expect(queue.getById("ack-preserves-delivery")).toMatchObject({
+				state: "ACKED",
+				acked_at: at(2),
+				delivered_at: T0,
+			});
 		} finally {
 			queue.close();
 			db.close();

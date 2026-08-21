@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph runnerlane["Runner 收件通道(本次事故)"]
+        direction TB
+        L1["Lead 发指令"] --> Q1["排队 QUEUED"]
+        Q1 --> LS1["占槽 LEASED<br/>(3 个在途槽之一)"]
+        LS1 --> DV1["投递成功<br/>内容注入 runner 会话"]
+        DV1 --> EX1["runner 照做了<br/>(执行 ✓)"]
+        EX1 -.->|"ACK 要靠 runner 自觉<br/>跑一条命令 —— 它没跑"| X1["永远 LEASED<br/>槽还不回来 ✗"]
+        X1 --> ST1["3 槽占死<br/>新指令每 10-30 分钟<br/>才漏进一条"]
+    end
+    subgraph leadlane["Lead 收件通道(对照)"]
+        direction TB
+        L2["Bridge 发消息"] --> LS2["占槽 LEASED"]
+        LS2 --> DV2["投递成功"]
+        DV2 --> AK2["Lead 真的调了 ACK 工具"]
+        AK2 -.->|"ACK 走异步二跳<br/>晚到时行已过期回队<br/>被静默作废"| X2["ack_late_noop<br/>本次 ACK 丢弃"]
+        X2 -->|"Lead 收到重投会再 ACK<br/>终有一次赶上窗口"| OK2["延迟结算<br/>(能自愈,~3 分钟)"]
+    end
+    style X1 fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style ST1 fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style X2 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+    style OK2 fill:#e9f7ef,stroke:#34c759
+    style EX1 fill:#e9f7ef,stroke:#34c759

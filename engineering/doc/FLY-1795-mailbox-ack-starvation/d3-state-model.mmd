@@ -1,0 +1,20 @@
+stateDiagram-v2
+    direction LR
+    [*] --> QUEUED: 发送入队
+    QUEUED --> LEASED: 占槽攒批<br/>(记 last_batch_id · 新)
+    LEASED --> LEASED: 投递成功<br/>stamp delivered_at +<br/>first_delivered_at(新,永不抹)
+    LEASED --> ACKED: 正常 ACK<br/>(记 acked_via 渠道 · 新)
+    LEASED --> QUEUED: 租约到期回队<br/>(重投窗口)
+    QUEUED --> ACKED: 晚到 ACK 承认(新)<br/>或 CLI 拉取即投递即 ACK
+    LEASED --> DEAD: 重试 3 次耗尽
+    DEAD --> DEAD: 安全禁令类 DEAD<br/>立即 severe 告警(新)
+    ACKED --> [*]: 72h 后归档
+    note right of QUEUED
+        投递章(新):push 与 pull(主动来取)
+        都盖章,章义=「送出那一刻」;
+        无凭据裸销账=bug,拒绝留案底
+    end note
+    note right of LEASED
+        告警(新):LEASED 停留 > 10 分钟
+        自动通知 owning Lead
+    end note

@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph fixa["修法 A:ACK 机械化(runner 侧根治)"]
+        T1["runner 每结束一轮成功工作<br/>系统自动触发收尾钩子"] --> T2["钩子经身份校验后<br/>自动替 runner 交回执<br/>(只认本轮开始前已送达的)"]
+        T2 --> T3["把『已投递且仍占槽』的行<br/>全部机械 ACK"]
+        T3 --> T4["槽位立刻归还<br/>不再依赖模型自觉 ✓"]
+    end
+    subgraph fixb["修法 B:晚到的 ACK 也承认(Lead 侧根治)"]
+        U1["ACK 晚到,行已过期回队"] --> U2["靠新列 last_batch_id<br/>仍能找到这批行"]
+        U2 --> U3["QUEUED 状态照样落账 ACKED<br/>消费者确认过 = 有效同意 ✓"]
+    end
+    subgraph fixcd["护栏 + 观测"]
+        V1["每笔销账自带投递章+经手渠道<br/>『主动来取』也盖章<br/>无凭据销账=bug,拒绝留案底"]
+        V4["inbox --replay 只读召回<br/>取走即销但丢了能重印"]
+        V2["每次状态变化写<br/>mailbox_transitions 日志<br/>(谁、何时、经哪个渠道)"]
+        V3["LEASED 停留超 10 分钟<br/>自动给 Lead 发告警<br/>(不用人肉数队列)"]
+    end
+    T4 --> W["结果:占死槽的死环断开<br/>出问题 10 分钟内有人知道"]
+    U3 --> W
+    V1 --> W
+    V2 --> W
+    V3 --> W
+    V4 --> W
+    style T4 fill:#e9f7ef,stroke:#34c759,stroke-width:2px
+    style U3 fill:#e9f7ef,stroke:#34c759,stroke-width:2px
+    style W fill:#eef4ff,stroke:#007aff,stroke-width:2px

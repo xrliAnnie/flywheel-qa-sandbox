@@ -21,4 +21,4 @@ if grep -Eni "$FORBIDDEN" "${FILES[@]}"; then
   exit 1
 fi
 
-echo "PASS: FLY-1773 QA delivery semantics retain ACK-only delivered_at"
+echo "PASS: FLY-1773 QA delivery semantics retain projection delivered_at"

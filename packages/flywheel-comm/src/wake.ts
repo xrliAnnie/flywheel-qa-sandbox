@@ -19,12 +19,28 @@ import {
 import { resolveCommBackend } from "flywheel-config";
 import type { CommDB } from "./db.js";
 
-export interface WakeResult {
-	ok: boolean;
-	/** Set when the wake was intentionally skipped (not an error). */
-	skippedReason?: "backend_commdb" | "no_session_lead";
-	/** Set when the transport write failed (best-effort — caller already has the durable CommDB record). */
-	error?: string;
+export type RunnerWakeBackend = "claude-code" | "codex";
+export type RunnerWakeSettlement = "on_delivery" | "on_consume";
+export type WakeResult =
+	| {
+			ok: true;
+			backend: RunnerWakeBackend;
+			settlement: RunnerWakeSettlement;
+	  }
+	| {
+			ok: false;
+			/** Set when the wake was intentionally skipped (not an error). */
+			skippedReason?: "backend_commdb" | "no_session_lead";
+			/** Set when the transport write failed (best-effort — caller already has the durable CommDB record). */
+			error?: string;
+	  };
+
+function successfulWake(backend: RunnerWakeBackend): WakeResult {
+	return {
+		ok: true,
+		backend,
+		settlement: backend === "claude-code" ? "on_delivery" : "on_consume",
+	};
 }
 
 export interface WakeRunnerArgs {
@@ -108,6 +124,7 @@ export async function wakeRunnerMailbox(
 					"verifyLastWrite"
 				>
 			>;
+		let actualBackend: RunnerWakeBackend;
 		if (args.backend !== undefined) {
 			if (args.backend !== "claude-code" && args.backend !== "codex") {
 				return {
@@ -118,8 +135,18 @@ export async function wakeRunnerMailbox(
 			transport = (
 				args.transportFactory ?? AgentTeamTransportFactory.forBackend
 			)(args.backend);
+			actualBackend = args.backend;
 		} else {
-			transport = AgentTeamTransportFactory.fromEnv();
+			const selected = AgentTeamTransportFactory.fromEnv();
+			const vendor = selected.vendorId();
+			if (vendor !== "claude-code" && vendor !== "codex") {
+				return {
+					ok: false,
+					error: `unsupported wake transport backend "${vendor}" (expected "claude-code" | "codex")`,
+				};
+			}
+			transport = selected;
+			actualBackend = vendor;
 		}
 		const payload = {
 			from: args.fromAgent,
@@ -148,7 +175,7 @@ export async function wakeRunnerMailbox(
 				expected: payload,
 			});
 		}
-		return { ok: true };
+		return successfulWake(actualBackend);
 	} catch (err) {
 		return { ok: false, error: (err as Error).message };
 	}
@@ -188,7 +215,10 @@ export async function deliverDurableTurnWake(
 	if (!claim) {
 		const row = args.db.getTurnWake(args.wakeId);
 		if (row?.state === "acked" || row?.last_push_result === "ok") {
-			return { ok: true };
+			if (row.backend === "claude-code" || row.backend === "codex") {
+				return successfulWake(row.backend);
+			}
+			return { ok: false, error: `unsupported wake backend:${row.backend}` };
 		}
 		return {
 			ok: false,

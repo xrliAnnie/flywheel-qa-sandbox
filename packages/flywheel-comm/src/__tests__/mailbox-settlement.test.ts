@@ -30,12 +30,22 @@ describe("FLY-1687 MailboxQueue settlement reader", () => {
 			expect(queue.inspectDeliveryState("delivery:tick-1")).toMatchObject({
 				kind: "live",
 				state: "QUEUED",
+				deadReason: null,
+				lastError: null,
+				createdAt: "2026-08-01T00:00:00.000Z",
+				deliveredAt: null,
+				notifiedAt: null,
 			});
 			queue.ack("tick-1", "2026-08-01T01:00:00.000Z");
 			expect(queue.inspectDeliveryState("tick-1")).toEqual({
 				kind: "live",
 				state: "ACKED",
 				settledAt: "2026-08-01T01:00:00.000Z",
+				deadReason: null,
+				lastError: null,
+				createdAt: "2026-08-01T00:00:00.000Z",
+				deliveredAt: "2026-08-01T01:00:00.000Z",
+				notifiedAt: null,
 			});
 		} finally {
 			queue.close();
@@ -61,11 +71,21 @@ describe("FLY-1687 MailboxQueue settlement reader", () => {
 				kind: "archived_terminal",
 				state: "ACKED",
 				settledAt: "2026-08-01T00:00:00.000Z",
+				deadReason: null,
+				lastError: null,
+				createdAt: "2026-08-01T00:00:00.000Z",
+				deliveredAt: "2026-08-01T00:00:00.000Z",
+				notifiedAt: null,
 			});
 			expect(queue.inspectDeliveryState("dead")).toEqual({
 				kind: "archived_terminal",
 				state: "DEAD",
 				settledAt: "2026-08-01T02:00:00.000Z",
+				deadReason: "test",
+				lastError: "test",
+				createdAt: "2026-08-01T00:00:00.000Z",
+				deliveredAt: null,
+				notifiedAt: null,
 			});
 		} finally {
 			queue.close();
