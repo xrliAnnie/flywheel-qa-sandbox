@@ -74,7 +74,7 @@ sequenceDiagram
 - "Anyone with link"：URL 路径含 128-bit 随机 token，不可猜（等价 signed URL 强度）；域名带随机后缀
 - 根路径/错误 token 404，无目录列表；`robots.txt` Disallow all + `noindex` meta 注入
 - CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`）—— 防报告内意外 `<script>`/外链跑起来
-- Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 10MB 滚动上限,谁先到谁生效
+- Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 8.5 MiB 滚动上限,谁先到谁生效
 
 ## 注意
 

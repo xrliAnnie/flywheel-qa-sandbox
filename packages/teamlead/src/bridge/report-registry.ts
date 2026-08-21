@@ -39,7 +39,8 @@ import {
 import { join } from "node:path";
 
 export const DEFAULT_RETENTION_MAX = 100;
-export const DEFAULT_RETENTION_BYTES = 10 * 1024 * 1024; // 10 MB
+// Leave headroom for the JSON envelope beneath Vercel's 10 MB body cap.
+export const DEFAULT_RETENTION_BYTES = 8.5 * 1024 * 1024; // 8.5 MiB
 /** Founder requirement (2026-06-04): report links expire after 7 days. */
 export const DEFAULT_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
