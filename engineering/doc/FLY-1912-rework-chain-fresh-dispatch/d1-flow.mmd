@@ -1,0 +1,16 @@
+flowchart LR
+  A["implement 做完<br/>交棒给引擎"] --> B{"验证链下一站是 qa<br/>qa 以前有人跑过吗？"}
+  B -- "跑过" --> C["唤醒上一任 QA<br/>继续复测<br/>（原有做法，不变）"]
+  B -- "没跑过<br/>（修复前）" --> D["引擎报错<br/>HTTP 500"]
+  D --> E["runner 重试 4 次全败<br/>落盘 marker"]
+  E --> F["Bridge 重启回放 marker<br/>又撞同一个错"]
+  F --> E
+  B -- "没跑过<br/>（修复后）" --> G["像第一次一样<br/>派一个新的 QA"]
+  G --> H["验证链原地<br/>前进到 qa"]
+  H --> I["QA 通过<br/>→ founder 审批卡"]
+  classDef bad fill:#ffe9e7,stroke:#ff3b30,color:#1d1d1f;
+  classDef good fill:#e7f6ec,stroke:#34c759,color:#1d1d1f;
+  classDef keep fill:#eef4ff,stroke:#007aff,color:#1d1d1f;
+  class D,E,F bad;
+  class G,H,I good;
+  class C keep;

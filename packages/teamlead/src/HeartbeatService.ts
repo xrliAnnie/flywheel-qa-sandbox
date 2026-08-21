@@ -11,6 +11,7 @@ import type {
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import {
 	applyQuarantineFallback,
+	type CompleteMarkerHeldAlert,
 	type MarkerReconcilerDeps,
 	type ReconcileOutcome,
 	tryReconcileComplete,
@@ -318,6 +319,7 @@ export interface MonitorReconcileConfig {
 		projectName: string,
 	) => void;
 	alertShipAttemptFailed?: (session: Session, reason: string) => void;
+	alertCompleteMarkerHeld?: (args: CompleteMarkerHeldAlert) => Promise<void>;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 }
 
@@ -676,6 +678,7 @@ export class HeartbeatService implements ReconnectController {
 			onTerminalStatusPersisted:
 				this.monitorReconcile.onTerminalStatusPersisted,
 			alertShipAttemptFailed: this.monitorReconcile.alertShipAttemptFailed,
+			alertCompleteMarkerHeld: this.monitorReconcile.alertCompleteMarkerHeld,
 		};
 	}
 
@@ -784,7 +787,10 @@ export class HeartbeatService implements ReconnectController {
 			this.zombieDeadStreak.delete(execId);
 			return;
 		}
-		if (outcome.kind === "transient_failed") {
+		if (
+			outcome.kind === "transient_failed" ||
+			outcome.kind === "held_for_lead"
+		) {
 			this.markerRetryPending.add(execId);
 			return;
 		}

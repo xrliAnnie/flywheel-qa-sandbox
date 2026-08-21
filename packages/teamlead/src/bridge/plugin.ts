@@ -6653,6 +6653,12 @@ export async function startBridge(
 					reason,
 				);
 			},
+			alertCompleteMarkerHeld: (args) => {
+				const coordinator = autoQaCoordinatorHolder.current;
+				return coordinator
+					? coordinator.alertCompleteMarkerHeld(args)
+					: Promise.reject(new Error("complete-marker alert sink unavailable"));
+			},
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		undefined,
@@ -8936,6 +8942,12 @@ export async function startBridge(
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
 			alertShipAttemptFailed: (session, reason) => {
 				return autoQaEffects.alertShipAttemptFailed({ session, reason });
+			},
+			alertCompleteMarkerHeld: (args) => {
+				const coordinator = autoQaCoordinatorHolder.current;
+				return coordinator
+					? coordinator.alertCompleteMarkerHeld(args)
+					: Promise.reject(new Error("complete-marker alert sink unavailable"));
 			},
 		});
 	} catch (err) {

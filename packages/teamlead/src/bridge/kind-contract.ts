@@ -118,6 +118,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
+	complete_marker_held: { owner: "claude", arc: "human_by_design" },
 	runner_stuck_unhandled: {
 		owner: "claude",
 		arc: "human_by_design",

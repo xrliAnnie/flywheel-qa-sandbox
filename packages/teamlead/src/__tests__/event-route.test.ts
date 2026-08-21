@@ -555,6 +555,50 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("returns named engine invariant refusals as diagnostic 409 responses", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commit = vi.spyOn(store, "commitEnrolledCompletion").mockReturnValue({
+			ok: false,
+			reason: "transition_refused",
+			detail: {
+				transitionReason:
+					"engine_invariant:workflow_rework_verification_advance_cas_failed",
+				alertPending: true,
+			},
+		});
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "engine-invariant-completion",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: { decision: { route: "needs_review" } },
+				}),
+			),
+		});
+
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			error: "workflow_completion_rejected",
+			reason: "transition_refused",
+			detail: {
+				transitionReason:
+					"engine_invariant:workflow_rework_verification_advance_cas_failed",
+				alertPending: true,
+			},
+		});
+		expect(commit.mock.calls[0]?.[0].alertIdentity).toMatchObject({
+			leadId: "product-lead",
+			projectName: "geoforge3d",
+		});
+	});
+
 	it("rejects invalid PR evidence for generalized nodes without founder review", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const res = await fetch(`${baseUrl}/events`, {

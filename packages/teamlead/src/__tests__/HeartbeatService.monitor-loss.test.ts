@@ -229,6 +229,23 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(mockedAlive).not.toHaveBeenCalled();
 	});
 
+	it("held marker suppresses liveness probing and orphan reaping", async () => {
+		mockedTry.mockResolvedValue({
+			kind: "held_for_lead",
+			invariant: "workflow_rework_verification_advance_cas_failed",
+			alertState: "accepted",
+		});
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+		await service.reapOrphans();
+
+		expect(mockedAlive).not.toHaveBeenCalled();
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+	});
+
 	it("quarantined + tmux alive → re-adopt + reapOrphans skips (FLY-172 R1 HIGH parity)", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "quarantined",

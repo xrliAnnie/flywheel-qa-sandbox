@@ -294,7 +294,12 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 			log: () => {},
 		});
 
-		expect(result).toEqual({ scanned: 1, reconciled: 1, quarantined: 0 });
+		expect(result).toEqual({
+			scanned: 1,
+			reconciled: 1,
+			quarantined: 0,
+			held: 0,
+		});
 		expect(store.getSession("execSlot")?.status).toBe("awaiting_review");
 		expect(readdirSync(productionMarkerDir)).toEqual(beforeMarkers);
 		expect(readdirSync(productionQuarantineDir)).toEqual(beforeQuarantine);

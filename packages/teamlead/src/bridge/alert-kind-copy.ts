@@ -56,6 +56,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Runner pane/body ownership lost";
 		case "ship_attempt_failed":
 			return "Founder-approved ship attempt failed";
+		case "complete_marker_held":
+			return "Workflow completion marker held";
 		// FLY-195: never routed through this table (the stuck-runner detector owns
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
@@ -313,6 +315,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A runner's recorded tmux body is missing. Follow the issue-thread recovery proposal; Flywheel does not automatically redispatch this session.";
 		case "ship_attempt_failed":
 			return "A founder-approved ship attempt failed or could not be tracked to completion. The approval remains valid; inspect the workflow and explicitly wake the runner before retrying.";
+		case "complete_marker_held":
+			return "A durable completion marker is retained while the Bridge retries with bounded backoff. Repair the named workflow invariant if present; do not delete the marker.";
 		// FLY-195: never routed through this table (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";

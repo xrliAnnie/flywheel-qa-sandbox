@@ -1,0 +1,14 @@
+flowchart LR
+  M["runner 落盘 marker<br/>（交棒失败的存根）"] --> P{"Bridge 回放<br/>结果？"}
+  P -- "成功（2xx）" --> OK["已清除<br/>marker 删除"]
+  P -- "未知 500" --> BO["退避中<br/>下次探针 1m→2m→4m…→1h 封顶<br/>第 3 次：告警 Lead 一次"]
+  BO -- "到期再探" --> P
+  P -- "409 引擎明确拒绝" --> HD["持有<br/>每小时慢探 1 次<br/>不隔离、不删、不再告警"]
+  HD -- "到期再探" --> P
+  P -- "其它 4xx" --> Q["隔离<br/>（原有做法，不变）"]
+  R0["规则 0：上次告警还没确认送达时<br/>这一轮只重发告警，不回放、不结清"] -.-> P
+  classDef good fill:#e7f6ec,stroke:#34c759,color:#1d1d1f;
+  classDef warn fill:#fff4e0,stroke:#ff9500,color:#1d1d1f;
+  classDef keep fill:#eef4ff,stroke:#007aff,color:#1d1d1f;
+  classDef note fill:#fff9ec,stroke:#ffe2ad,color:#1d1d1f;
+  class OK good; class BO,HD warn; class Q keep; class R0 note;

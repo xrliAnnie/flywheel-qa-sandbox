@@ -45,6 +45,7 @@ import {
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
+import type { CompleteMarkerHeldAlert } from "./complete-marker-reconciler.js";
 import type { QaContext, StartRequest } from "./retry-dispatcher.js";
 
 /**
@@ -136,6 +137,8 @@ export interface AutoQaSideEffects {
 		session: Session;
 		reason: string;
 	}): Promise<void> | void;
+	/** FLY-1912: durable marker circuit-breaker alert; failures must propagate. */
+	alertCompleteMarkerHeld?(args: CompleteMarkerHeldAlert): Promise<void> | void;
 	/**
 	 * FLY-630 ②: stamp the PARENT issue's `[FLY-XX]` chat-thread title badge to
 	 * reflect the issue's CURRENT pipeline stage during the independent-QA phase.
@@ -813,6 +816,13 @@ export class AutoQaCoordinator {
 				`alertShipAttemptFailed failed for ${session.issue_id}: ${asErr(err)}`,
 			);
 		}
+	}
+
+	async alertCompleteMarkerHeld(args: CompleteMarkerHeldAlert): Promise<void> {
+		if (!this.deps.effects.alertCompleteMarkerHeld) {
+			throw new Error("complete-marker alert sink unavailable");
+		}
+		await this.deps.effects.alertCompleteMarkerHeld(args);
 	}
 
 	/**

@@ -30,6 +30,7 @@ import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { closeRunner } from "./close-runner.js";
 import { queueCodexCodeReviewInstructionResult } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import type { CompleteMarkerHeldAlert } from "./complete-marker-reconciler.js";
 import {
 	editDiscordMessageInChannel,
 	postDiscordMessageToChannel,
@@ -523,6 +524,42 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		if (!durableAlertAccepted(result)) {
 			throw new Error(
 				`ship attempt alert not accepted: ${JSON.stringify(result)}`,
+			);
+		}
+	}
+
+	/** FLY-1912: severe Lead-only marker hold, deduped by the ledger event id. */
+	async alertCompleteMarkerHeld(args: CompleteMarkerHeldAlert): Promise<void> {
+		if (!this.deps.leadAlertNotifier) {
+			throw new Error("complete-marker alert: no alert sink");
+		}
+		let leadId: string | undefined;
+		try {
+			leadId = resolveLeadForIssue(
+				this.deps.projects,
+				args.projectName,
+				args.session ? parseLabels(args.session.issue_labels) : [],
+			).lead.agentId;
+		} catch {
+			// Fail closed below: the ledger remains pending for a later retry.
+		}
+		if (!leadId) throw new Error("complete-marker alert: no lead");
+		const result = await this.deps.leadAlertNotifier.alert({
+			leadId,
+			projectName: args.projectName,
+			eventId: args.eventId,
+			eventType: "complete_marker_held",
+			title:
+				args.kind === "engine_invariant"
+					? `Workflow completion held — ${args.session?.issue_identifier ?? args.issueId}`
+					: `Workflow completion replay degraded — ${args.session?.issue_identifier ?? args.issueId}`,
+			body: args.reason,
+			severity: "severe",
+			sessionKey: args.session ? buildSessionKey(args.session) : undefined,
+		});
+		if (!durableAlertAccepted(result)) {
+			throw new Error(
+				`complete-marker alert not accepted: ${JSON.stringify(result)}`,
 			);
 		}
 	}

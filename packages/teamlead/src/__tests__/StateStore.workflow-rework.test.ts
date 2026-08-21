@@ -331,6 +331,598 @@ async function createPendingHeavyRework(): Promise<{
 	return { store, requestId: failed.reworkRequestId };
 }
 
+async function createActiveOperatorRework(): Promise<{
+	store: StateStore;
+	requestId: string;
+}> {
+	const store = await createHeavyEngineRun();
+	advanceHeavy(store, {
+		nodeId: "design",
+		attempt: 1,
+		executionId: "design-exec",
+		outcome: "design_done",
+		successorExecutionId: "implement-exec",
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-heavy",
+		nodeId: "implement",
+		attempt: 1,
+		state: "done",
+		executionId: "implement-exec",
+		endedAt: "2026-07-23T00:09:00.000Z",
+	});
+	const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+	raw
+		.prepare("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?")
+		.run("run-heavy");
+	bindActorHead(store, "implement-exec", "implement", "b".repeat(40));
+	const opened = store.openOperatorRework({
+		runId: "run-heavy",
+		targetNodeId: "implement",
+		feedback: "rework the implementation",
+		clientRequestId: "fly1912-operator-rework",
+		principal: "master",
+		evidence: store
+			.listRunAttributedExecutions("run-heavy")
+			.map((executionId) => ({
+				executionId,
+				sessionStatus: null,
+				lifecycleRevision: null,
+				liveness: "dead" as const,
+				observedAt: "2026-07-23T00:10:00.000Z",
+			})),
+		now: "2026-07-23T00:10:00.000Z",
+	});
+	if (!opened.ok) throw new Error(opened.reason);
+	return { store, requestId: opened.requestId };
+}
+
+function deliverOperatorRework(store: StateStore, requestId: string): void {
+	const claimed = store.claimWorkflowReworkDelivery({
+		requestId,
+		ownerId: "fly1912-coordinator",
+		now: "2026-07-23T00:11:00.000Z",
+		leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!claimed.ok) throw new Error(claimed.reason);
+	const admitted = store.admitGeneralizedWorkflowExecution({
+		runId: "run-heavy",
+		nodeId: "implement",
+		executionId: "implement-exec",
+		attempt: 2,
+		activationId: "activation-fly1912-implement-2",
+		activationMode: "wake",
+		reworkRequestId: requestId,
+		expiresAt: "2026-07-23T02:00:00.000Z",
+		absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+		now: "2026-07-23T00:11:01.000Z",
+		env: enabled,
+	});
+	if (!admitted.ok) throw new Error(admitted.reason);
+	for (const [from, to] of [
+		["pending", "turn_granted"],
+		["turn_granted", "wake_delivered"],
+	] as const) {
+		const advanced = store.advanceWorkflowReworkDelivery({
+			requestId,
+			ownerId: "fly1912-coordinator",
+			generation: claimed.generation,
+			from,
+			to,
+			now: "2026-07-23T00:12:00.000Z",
+			...(to === "wake_delivered"
+				? {
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved" as const,
+						},
+						releaseOwner: true,
+					}
+				: {}),
+		});
+		if (!advanced.ok) throw new Error(advanced.reason);
+	}
+}
+
+async function freshDispatchOperatorRework(): Promise<{
+	store: StateStore;
+	requestId: string;
+	successorExecutionId: string;
+}> {
+	const { store, requestId } = await createActiveOperatorRework();
+	deliverOperatorRework(store, requestId);
+	const completed = advanceHeavy(store, {
+		nodeId: "implement",
+		attempt: 2,
+		executionId: "implement-exec",
+		outcome: "implement_done",
+	});
+	if (!completed.ok || !completed.successorExecutionId) {
+		store.close();
+		throw new Error("fresh dispatch missing successor");
+	}
+	return {
+		store,
+		requestId,
+		successorExecutionId: completed.successorExecutionId,
+	};
+}
+
+describe("FLY-1912 verification chain fresh dispatch", () => {
+	it("fresh-dispatches a verification node that has no actor history", async () => {
+		const { store, requestId, successorExecutionId } =
+			await freshDispatchOperatorRework();
+		try {
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			expect(successorExecutionId).toMatch(
+				/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+			);
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 1)).toMatchObject({
+				state: "pending",
+				execution_id: successorExecutionId,
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) =>
+						["node_dispatched", "rework_verification_fresh_dispatch"].includes(
+							event.kind,
+						),
+					),
+			).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						kind: "node_dispatched",
+						execution_id: successorExecutionId,
+						payload: expect.objectContaining({ via: "engine_intent" }),
+					}),
+					expect.objectContaining({
+						kind: "rework_verification_fresh_dispatch",
+						execution_id: successorExecutionId,
+						payload: expect.objectContaining({
+							requestId,
+							reason: "target_actor_history_missing",
+						}),
+					}),
+				]),
+			);
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "active",
+				current_node_id: "qa",
+				current_attempt: 1,
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "wake_delivered",
+			});
+			expect(store.getLatestWorkflowReworkRoute(requestId)).toMatchObject({
+				target_node_id: "implement",
+			});
+			expect(
+				(
+					raw
+						.prepare("SELECT COUNT(*) AS n FROM workflow_rework_request")
+						.get() as { n: number }
+				).n,
+			).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("completes the original verification path after the fresh QA passes", async () => {
+		const { store, requestId, successorExecutionId } =
+			await freshDispatchOperatorRework();
+		try {
+			const admitted = store.admitGeneralizedWorkflowExecution({
+				runId: "run-heavy",
+				nodeId: "qa",
+				executionId: successorExecutionId,
+				attempt: 1,
+				activationId: "activation-fly1912-qa-1",
+				activationMode: "spawn",
+				expiresAt: "2026-07-23T02:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+				now: "2026-07-23T00:13:00.000Z",
+				env: enabled,
+			});
+			if (!admitted.ok || !admitted.submissionCredential) {
+				throw new Error("fresh QA admission failed");
+			}
+			expect(
+				store.submitWorkflowDecisionByCredential({
+					credential: admitted.submissionCredential,
+					clientRequestId: "fly1912-qa-pass",
+					predicate: "qa_passed",
+					subjectDigest: "c".repeat(40),
+					issuerVendor: "claude",
+					issuerModel: "claude-opus-4-8",
+					subjectProducerExecutionId: "implement-exec",
+					subjectProducerVendor: "codex",
+					claimExpiresAt: "2026-07-23T02:00:00.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+					now: "2026-07-23T00:14:00.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "completed",
+				current_node_id: "founder_gate",
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "completed",
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.some((event) => event.kind === "rework_verification_completed"),
+			).toBe(true);
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			expect(
+				(
+					raw
+						.prepare(
+							"SELECT COUNT(*) AS n FROM workflow_gate_holder WHERE run_id = ?",
+						)
+						.get("run-heavy") as { n: number }
+				).n,
+			).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps QA-fail supersession on the historical implementation actor", async () => {
+		const { store, requestId, successorExecutionId } =
+			await freshDispatchOperatorRework();
+		try {
+			const failed = advanceHeavy(store, {
+				nodeId: "qa",
+				attempt: 1,
+				executionId: successorExecutionId,
+				outcome: "qa_fail",
+				subjectDigest: "c".repeat(40),
+			});
+			expect(failed).toMatchObject({
+				ok: true,
+				targetNodeId: "implement",
+				targetAttempt: 3,
+				reworkRequestId: expect.stringMatching(/^rework:/),
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail missing rework request");
+			}
+			expect(store.getWorkflowReworkVerificationPath(requestId)).toMatchObject({
+				state: "completed",
+			});
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "completed",
+			});
+			expect(
+				store.getLatestWorkflowReworkRoute(failed.reworkRequestId),
+			).toMatchObject({
+				target_node_id: "implement",
+				target_attempt: 3,
+				preferred_actor_execution_id: "implement-exec",
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.some((event) => event.kind === "rework_verification_superseded"),
+			).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("refuses a second operator rework while the fresh QA is in flight", async () => {
+		const { store } = await freshDispatchOperatorRework();
+		try {
+			expect(
+				store.openOperatorRework({
+					runId: "run-heavy",
+					targetNodeId: "implement",
+					feedback: "another rework",
+					clientRequestId: "fly1912-overlap",
+					principal: "master",
+					evidence: store
+						.listRunAttributedExecutions("run-heavy")
+						.map((executionId) => ({
+							executionId,
+							sessionStatus: null,
+							lifecycleRevision: null,
+							liveness: "dead" as const,
+							observedAt: "2026-07-23T00:13:00.000Z",
+						})),
+					now: "2026-07-23T00:13:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "rework_already_open" });
+		} finally {
+			store.close();
+		}
+	});
+
+	it("replays the fresh transition without allocating another successor", async () => {
+		const { store, successorExecutionId } = await freshDispatchOperatorRework();
+		try {
+			expect(
+				advanceHeavy(store, {
+					nodeId: "implement",
+					attempt: 2,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+				}),
+			).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				successorExecutionId,
+			});
+			expect(store.listWorkflowRunNodes("run-heavy", "qa")).toHaveLength(1);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter((event) => event.kind === "node_dispatched"),
+			).toHaveLength(2);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps chained rework when the verification node has actor history", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				state: "done",
+				executionId: "qa-exec",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					"UPDATE workflow_run SET status = 'completed' WHERE run_id = ?",
+				)
+				.run("run-heavy");
+			bindActorHead(store, "implement-exec", "implement", "b".repeat(40));
+			bindActorHead(store, "qa-exec", "qa", "c".repeat(40));
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "rework with QA history",
+				clientRequestId: "fly1912-history",
+				principal: "master",
+				evidence: store
+					.listRunAttributedExecutions("run-heavy")
+					.map((executionId) => ({
+						executionId,
+						sessionStatus: null,
+						lifecycleRevision: null,
+						liveness: "dead" as const,
+						observedAt: "2026-07-23T00:10:00.000Z",
+					})),
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			deliverOperatorRework(store, opened.requestId);
+
+			const completed = advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+			});
+			expect(completed).toMatchObject({
+				ok: true,
+				targetNodeId: "qa",
+				targetAttempt: 2,
+				reworkRequestId: expect.stringMatching(/^rework:/),
+			});
+			if (!completed.ok || !completed.reworkRequestId) {
+				throw new Error("chained rework missing request");
+			}
+			expect(
+				store.getLatestWorkflowReworkRoute(completed.reworkRequestId),
+			).toMatchObject({
+				target_node_id: "qa",
+				target_attempt: 2,
+				preferred_actor_execution_id: "qa-exec",
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+				state: "pending",
+				execution_id: "qa-exec",
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.some((event) => event.kind === "rework_verification_chained"),
+			).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("fresh-dispatches each consecutive verification node without history", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const root = mkdtempSync(join(tmpdir(), "fly1912-chain-"));
+			roots.push(root);
+			mkdirSync(join(root, "agents"));
+			writeFileSync(join(root, "agents", "generic.md"), "Execute safely.\n");
+			const genericNode = (id: string) => ({
+				id,
+				type: "generic" as const,
+				vendor: "codex",
+				model: "gpt-5.6-sol",
+				effort: "low" as const,
+				agent_file: "agents/generic.md",
+			});
+			const snapshot = buildWorkflowRunSnapshotV2({
+				template: { id: "tpl-fly1912-chain", revision: 1 },
+				canonicalRoot: root,
+				manifest: {
+					schema_version: 2,
+					nodes: [
+						genericNode("implement"),
+						genericNode("review"),
+						genericNode("qa"),
+						{ id: "founder_gate", type: "gate" },
+					],
+					edges: [
+						{
+							id: "implement_done",
+							from: "implement",
+							to: "review",
+							condition: "node_done",
+						},
+						{
+							id: "review_pass",
+							from: "review",
+							to: "qa",
+							condition: "node_done",
+						},
+						{
+							id: "qa_pass",
+							from: "qa",
+							to: "founder_gate",
+							condition: "node_done",
+						},
+					],
+					loops: [],
+					terminal_gate: {
+						node: "founder_gate",
+						predicate: "founder_approved",
+					},
+					ship_claims: ["founder_approved"],
+				},
+			});
+			store.createWorkflowRun({
+				runId: "run-heavy",
+				issueId: "FLY-1912",
+				projectName: "flywheel",
+				snapshotJson: JSON.stringify(snapshot),
+				claimsReadEnrolled: true,
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "implement",
+				attempt: 1,
+				state: "done",
+				executionId: "implement-exec",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					"UPDATE workflow_run SET engine_owned = 1, status = 'completed', current_node_id = 'implement' WHERE run_id = ?",
+				)
+				.run("run-heavy");
+			bindActorHead(
+				store,
+				"implement-exec",
+				"implement",
+				"b".repeat(40),
+				"FLY-1912",
+			);
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "implement",
+				feedback: "verify every downstream node",
+				clientRequestId: "fly1912-multi-fresh",
+				principal: "master",
+				evidence: [
+					{
+						executionId: "implement-exec",
+						sessionStatus: "completed",
+						lifecycleRevision: null,
+						liveness: "dead",
+						observedAt: "2026-07-23T00:10:00.000Z",
+					},
+				],
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(
+				store.getLatestWorkflowReworkRoute(opened.requestId),
+			).toMatchObject({ invalidation_scope: ["implement", "review", "qa"] });
+			deliverOperatorRework(store, opened.requestId);
+
+			const review = advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "implement-exec",
+				outcome: "node_done",
+			});
+			expect(review).toMatchObject({
+				ok: true,
+				targetNodeId: "review",
+				targetAttempt: 1,
+				successorExecutionId: expect.any(String),
+			});
+			if (!review.ok || !review.successorExecutionId) {
+				throw new Error("review fresh dispatch missing");
+			}
+			const qa = advanceHeavy(store, {
+				nodeId: "review",
+				attempt: 1,
+				executionId: review.successorExecutionId,
+				outcome: "node_done",
+			});
+			expect(qa).toMatchObject({
+				ok: true,
+				targetNodeId: "qa",
+				targetAttempt: 1,
+				successorExecutionId: expect.any(String),
+			});
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.filter(
+						(event) => event.kind === "rework_verification_fresh_dispatch",
+					),
+			).toHaveLength(2);
+			expect(
+				store.getWorkflowReworkVerificationPath(opened.requestId),
+			).toMatchObject({
+				state: "active",
+				current_node_id: "qa",
+				current_attempt: 1,
+			});
+			expect(
+				(
+					raw
+						.prepare("SELECT COUNT(*) AS n FROM workflow_rework_request")
+						.get() as { n: number }
+				).n,
+			).toBe(1);
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("FLY-1423 stable workflow actor activations", () => {
 	it("admits attempt 2 on the same execution as a distinct exact activation", async () => {
 		const store = await StateStore.create(":memory:");

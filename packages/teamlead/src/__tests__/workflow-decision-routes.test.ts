@@ -321,6 +321,11 @@ async function fixture() {
 	});
 	if (!admission.ok) throw new Error(admission.reason);
 	let serverNow = T0;
+	const alertIdentity = {
+		leadId: "flywheel-eng-lead",
+		projectName: "flywheel",
+		leadResolution: "resolved" as const,
+	};
 	const app = express();
 	app.use(express.json());
 	app.use(
@@ -328,6 +333,7 @@ async function fixture() {
 		createWorkflowDecisionRouter({
 			store,
 			now: () => serverNow,
+			resolveAlertIdentity: () => alertIdentity,
 		}),
 	);
 	const server = app.listen(0, "127.0.0.1");
@@ -338,6 +344,7 @@ async function fixture() {
 		store,
 		worktree,
 		credential: admission.credential,
+		alertIdentity,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
 		setServerNow: (value: string) => {
 			serverNow = value;
@@ -394,6 +401,46 @@ describe("schema-v1 workflow recovery decision routes", () => {
 				claimId: accepted.claimId,
 			});
 			expect(f.store.countWorkflowClaims("run-1")).toBe(1);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("returns named engine invariant refusals as diagnostic 409 responses", async () => {
+		const f = await fixture();
+		try {
+			const submit = vi
+				.spyOn(f.store, "submitWorkflowDecisionByCredential")
+				.mockReturnValue({
+					ok: false,
+					reason: "transition_refused",
+					detail: {
+						transitionReason:
+							"engine_invariant:workflow_rework_delivery_complete_cas_failed",
+						alertPending: true,
+					},
+				});
+			const response = await fetch(`${f.baseUrl}/decision`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					credential: f.credential,
+					client_request_id: "engine-invariant-decision",
+					status: "pass",
+				}),
+			});
+
+			expect(response.status).toBe(409);
+			expect(await response.json()).toMatchObject({
+				ok: false,
+				reason: "transition_refused",
+				detail: {
+					transitionReason:
+						"engine_invariant:workflow_rework_delivery_complete_cas_failed",
+					alertPending: true,
+				},
+			});
+			expect(submit.mock.calls[0]?.[0].alertIdentity).toEqual(f.alertIdentity);
 		} finally {
 			await f.close();
 		}

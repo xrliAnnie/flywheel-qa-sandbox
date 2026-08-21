@@ -66,6 +66,9 @@ function fakeEffects(opts?: {
 		alertShipAttemptFailed: ({ reason }) => {
 			alerts.push(reason);
 		},
+		alertCompleteMarkerHeld: ({ reason }) => {
+			alerts.push(reason);
+		},
 		stampIssueStage: ({ session, stage }) => {
 			stamps.push({ issueId: session.issue_id, stage });
 		},
@@ -1822,5 +1825,21 @@ describe("FLY-1505 alertShipAttemptFailed", () => {
 		expect(s.alerts).toContain(
 			"blocked completion deflected; approval preserved",
 		);
+	});
+});
+
+describe("FLY-1912 alertCompleteMarkerHeld", () => {
+	it("passes the durable marker alert through without swallowing failures", async () => {
+		const s = await setup();
+		await s.coord.alertCompleteMarkerHeld({
+			eventId: "engine_invariant:run-1:qa:1:test",
+			kind: "engine_invariant",
+			execId: "main-1",
+			issueId: "parent-uuid",
+			projectName: "proj",
+			markerPath: "/state/complete-failed/main-1.json",
+			reason: "completion marker held for Lead repair",
+		});
+		expect(s.alerts).toContain("completion marker held for Lead repair");
 	});
 });

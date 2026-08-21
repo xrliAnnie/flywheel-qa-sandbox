@@ -34,6 +34,7 @@
  * so we never split-brain liveness decisions across the heartbeat loop.
  */
 
+import { randomUUID } from "node:crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -41,6 +42,7 @@ import {
 	readFileSync,
 	renameSync,
 	unlinkSync,
+	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +57,7 @@ import type {
 	StateStore,
 	WorkflowCompletionActivationContext,
 } from "../StateStore.js";
+import { ENGINE_INVARIANT_REASON_PREFIX } from "../workflow-engine-invariant.js";
 import { validateDesignHtmlCompletion } from "./design-html-admission.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
 import {
@@ -145,6 +148,11 @@ export type ReconcileOutcome =
 			kind: "settled_ship_attempt_failed";
 			settle: ShipAttemptSettle["outcome"];
 	  }
+	| {
+			kind: "held_for_lead";
+			invariant: string;
+			alertState: "accepted" | "pending";
+	  }
 	| { kind: "transient_failed"; error: string }
 	| {
 			kind: "quarantined";
@@ -189,6 +197,21 @@ export interface MarkerReconcilerDeps {
 	) => void;
 	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+	/** FLY-1912: durable, event-id-deduplicated alert sink. */
+	alertCompleteMarkerHeld?: (args: CompleteMarkerHeldAlert) => Promise<void>;
+}
+
+export interface CompleteMarkerHeldAlert {
+	eventId: string;
+	kind: "engine_invariant" | "unknown_5xx_episode";
+	execId: string;
+	issueId: string;
+	projectName: string;
+	session?: Session;
+	markerPath: string;
+	reason: string;
+	httpStatus?: number;
+	binding?: { runId: string; nodeId: string; attempt: number };
 }
 
 /**
@@ -200,6 +223,19 @@ export function buildLoopbackBaseUrl(host: string, port: number): string {
 	const h = host.includes(":") ? `[${host}]` : host;
 	return `http://${h}:${port}`;
 }
+
+type ReplayLedger = {
+	v: 1;
+	mode: "backoff" | "held";
+	streak: number;
+	episode_started_at: string;
+	last_status: number;
+	last_at: string;
+	next_probe_at: string;
+	invariant?: string;
+	alert_event_id?: string;
+	alert_state?: "pending" | "accepted";
+};
 
 type MarkerBody = {
 	event_id: string;
@@ -221,6 +257,7 @@ type MarkerBody = {
 		workflowActivation?: WorkflowCompletionActivationContext;
 		[k: string]: unknown;
 	};
+	replay_ledger?: unknown;
 };
 
 function markerWorkflowActivation(
@@ -364,6 +401,146 @@ function parseMarker(raw: string): MarkerBody | null {
 	return m as MarkerBody;
 }
 
+function parseReplayLedger(
+	value: unknown,
+	log: (message: string) => void,
+): ReplayLedger | undefined {
+	if (value === undefined) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		log("[complete-reconciler] malformed replay ledger ignored");
+		return undefined;
+	}
+	const row = value as Record<string, unknown>;
+	const validTimestamp = (candidate: unknown) =>
+		typeof candidate === "string" && Number.isFinite(Date.parse(candidate));
+	const validAlertState =
+		row.alert_state === undefined ||
+		(row.alert_event_id !== undefined &&
+			typeof row.alert_event_id === "string" &&
+			(row.alert_state === "pending" || row.alert_state === "accepted"));
+	if (
+		row.v !== 1 ||
+		(row.mode !== "backoff" && row.mode !== "held") ||
+		!Number.isInteger(row.streak) ||
+		Number(row.streak) < (row.mode === "backoff" ? 1 : 0) ||
+		!Number.isInteger(row.last_status) ||
+		!validTimestamp(row.episode_started_at) ||
+		!validTimestamp(row.last_at) ||
+		!validTimestamp(row.next_probe_at) ||
+		(row.mode === "held" &&
+			(typeof row.invariant !== "string" || !row.invariant)) ||
+		!validAlertState
+	) {
+		log("[complete-reconciler] malformed replay ledger ignored");
+		return undefined;
+	}
+	return row as ReplayLedger;
+}
+
+function persistReplayLedger(
+	body: MarkerBody,
+	markerPath: string,
+	ledger: ReplayLedger,
+	log: (message: string) => void,
+): boolean {
+	const tempPath = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
+	try {
+		writeFileSync(
+			tempPath,
+			JSON.stringify({ ...body, replay_ledger: ledger }),
+			"utf8",
+		);
+		renameSync(tempPath, markerPath);
+		body.replay_ledger = ledger;
+		return true;
+	} catch (error) {
+		try {
+			if (existsSync(tempPath)) unlinkSync(tempPath);
+		} catch {
+			// Best effort: the unique temp file is never a scan candidate.
+		}
+		log(
+			`[complete-reconciler] replay ledger write failed ${markerPath}: ${(error as Error).message}`,
+		);
+		return false;
+	}
+}
+
+function replayDelayMs(ledger: ReplayLedger): number {
+	return ledger.mode === "held"
+		? 60 * 60_000
+		: Math.min(60_000 * 2 ** (ledger.streak - 1), 60 * 60_000);
+}
+
+function markerBinding(
+	body: MarkerBody,
+): { runId: string; nodeId: string; attempt: number } | undefined {
+	const activation = markerWorkflowActivation(body.payload?.workflowActivation);
+	return activation
+		? {
+				runId: activation.runId,
+				nodeId: activation.nodeId,
+				attempt: activation.attempt,
+			}
+		: undefined;
+}
+
+async function retryPendingReplayAlert(input: {
+	body: MarkerBody;
+	ledger: ReplayLedger;
+	markerPath: string;
+	session?: Session;
+	deps: MarkerReconcilerDeps;
+	log: (message: string) => void;
+}): Promise<ReconcileOutcome> {
+	const { body, ledger, markerPath, session, deps, log } = input;
+	if (!ledger.alert_event_id || ledger.alert_state !== "pending") {
+		return { kind: "transient_failed", error: "invalid pending alert ledger" };
+	}
+	if (!deps.alertCompleteMarkerHeld) {
+		return {
+			kind: "transient_failed",
+			error: "complete-marker durable alert sink unavailable",
+		};
+	}
+	try {
+		await deps.alertCompleteMarkerHeld({
+			eventId: ledger.alert_event_id,
+			kind: ledger.mode === "held" ? "engine_invariant" : "unknown_5xx_episode",
+			execId: body.execution_id,
+			issueId: body.issue_id,
+			projectName: body.project_name,
+			session,
+			markerPath,
+			reason:
+				ledger.mode === "held"
+					? `Workflow completion is held by engine invariant ${ledger.invariant}; repair the workflow state and keep the marker for the hourly probe.`
+					: `Workflow completion replay returned Bridge ${ledger.last_status} ${ledger.streak} consecutive times; the marker is retained with bounded retry.`,
+			httpStatus: ledger.last_status,
+			binding: markerBinding(body),
+		});
+	} catch (error) {
+		return {
+			kind: "transient_failed",
+			error: error instanceof Error ? error.message : String(error),
+		};
+	}
+	const accepted: ReplayLedger = { ...ledger, alert_state: "accepted" };
+	if (!persistReplayLedger(body, markerPath, accepted, log)) {
+		return {
+			kind: "transient_failed",
+			error: "replay ledger alert acceptance write failed",
+		};
+	}
+	return ledger.mode === "held"
+		? {
+				kind: "held_for_lead",
+				invariant: ledger.invariant ?? "unknown",
+				alertState: "accepted",
+			}
+		: { kind: "transient_failed", error: `Bridge ${ledger.last_status}` };
+}
+
 /** Path-traversal guard for execId-derived filenames. */
 function safeExecId(execId: string): boolean {
 	return !/[/\\]|\.\./.test(execId) && execId.length > 0;
@@ -394,7 +571,27 @@ function moveToQuarantine(
  * quarantine paths — returns the outcome so the caller applies a fallback with
  * its own tmux-liveness knowledge.
  */
+const completeReconcileInFlight = new Map<string, Promise<ReconcileOutcome>>();
+
 export async function tryReconcileComplete(
+	execId: string,
+	deps: MarkerReconcilerDeps,
+): Promise<ReconcileOutcome> {
+	if (!safeExecId(execId)) return { kind: "absent" };
+	const markerDir = deps.markerDir ?? defaultMarkerDir();
+	const markerPath = join(markerDir, `${execId}.json`);
+	const existing = completeReconcileInFlight.get(markerPath);
+	if (existing) return existing;
+	const reconcile = tryReconcileCompleteOnce(execId, deps).finally(() => {
+		if (completeReconcileInFlight.get(markerPath) === reconcile) {
+			completeReconcileInFlight.delete(markerPath);
+		}
+	});
+	completeReconcileInFlight.set(markerPath, reconcile);
+	return reconcile;
+}
+
+async function tryReconcileCompleteOnce(
 	execId: string,
 	deps: MarkerReconcilerDeps,
 ): Promise<ReconcileOutcome> {
@@ -436,6 +633,17 @@ export async function tryReconcileComplete(
 
 	const currentSession = deps.store.getSession(execId);
 	const currentStatus = currentSession?.status;
+	const replayLedger = parseReplayLedger(body.replay_ledger, log);
+	if (replayLedger?.alert_state === "pending") {
+		return retryPendingReplayAlert({
+			body,
+			ledger: replayLedger,
+			markerPath,
+			session: currentSession,
+			deps,
+			log,
+		});
+	}
 	const currentIdentifier = currentSession?.issue_identifier;
 	const authoritativeIssueIdentifier =
 		typeof currentIdentifier === "string" &&
@@ -695,6 +903,19 @@ export async function tryReconcileComplete(
 		safeUnlink(markerPath, log);
 		return { kind: "duplicate_terminal", status: expectedStatus };
 	}
+	const replayNowMs = Date.now();
+	if (replayLedger && replayNowMs < Date.parse(replayLedger.next_probe_at)) {
+		return replayLedger.mode === "held"
+			? {
+					kind: "held_for_lead",
+					invariant: replayLedger.invariant ?? "unknown",
+					alertState: replayLedger.alert_state ?? "accepted",
+				}
+			: {
+					kind: "transient_failed",
+					error: `Bridge ${replayLedger.last_status}; next probe ${replayLedger.next_probe_at}`,
+				};
+	}
 
 	// Replay via loopback self-POST.
 	const fetchFn = deps.fetchFn ?? fetch;
@@ -720,42 +941,174 @@ export async function tryReconcileComplete(
 				reason?: string;
 				retryable?: boolean;
 				settled?: string;
+				detail?: {
+					transitionReason?: string;
+					alertPending?: boolean;
+				};
 		  }
 		| undefined;
+	let response: Response;
 	try {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), 5000);
-		const res = await fetchFn(`${deps.bridgeBaseUrl}/events`, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(replayBody),
-			signal: controller.signal,
-		});
-		clearTimeout(timer);
-		if (res.status >= 500 || res.status === 429) {
-			return {
-				kind: "transient_failed",
-				error: `Bridge ${res.status}`,
-			};
+		try {
+			response = await fetchFn(`${deps.bridgeBaseUrl}/events`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(replayBody),
+				signal: controller.signal,
+			});
+		} finally {
+			clearTimeout(timer);
 		}
 		try {
-			json = (await res.json()) as typeof json;
+			json = (await response.json()) as typeof json;
 		} catch {
 			json = undefined;
 		}
-		if (!res.ok) {
+		if (response.status === 429) {
+			if (replayLedger) {
+				const pushed: ReplayLedger = {
+					...replayLedger,
+					last_status: response.status,
+					last_at: new Date(replayNowMs).toISOString(),
+					next_probe_at: new Date(
+						replayNowMs + replayDelayMs(replayLedger),
+					).toISOString(),
+				};
+				if (!persistReplayLedger(body, markerPath, pushed, log)) {
+					return {
+						kind: "transient_failed",
+						error: "replay ledger probe deferral write failed",
+					};
+				}
+			}
+			return { kind: "transient_failed", error: "Bridge 429" };
+		}
+		if (response.status >= 500) {
+			const streak =
+				replayLedger?.mode === "backoff" ? replayLedger.streak + 1 : 1;
+			const episodeStartedAt =
+				replayLedger?.mode === "backoff"
+					? replayLedger.episode_started_at
+					: new Date(replayNowMs).toISOString();
+			const backoff: ReplayLedger = {
+				v: 1,
+				mode: "backoff",
+				streak,
+				episode_started_at: episodeStartedAt,
+				last_status: response.status,
+				last_at: new Date(replayNowMs).toISOString(),
+				next_probe_at: new Date(
+					replayNowMs + Math.min(60_000 * 2 ** (streak - 1), 60 * 60_000),
+				).toISOString(),
+				...(replayLedger?.mode === "backoff" && replayLedger.alert_event_id
+					? {
+							alert_event_id: replayLedger.alert_event_id,
+							alert_state: replayLedger.alert_state,
+						}
+					: {}),
+				...(streak === 3
+					? {
+							alert_event_id: `complete-marker-5xx:${execId}:${episodeStartedAt}`,
+							alert_state: "pending" as const,
+						}
+					: {}),
+			};
+			if (!persistReplayLedger(body, markerPath, backoff, log)) {
+				return {
+					kind: "transient_failed",
+					error: "replay ledger backoff write failed",
+				};
+			}
+			if (backoff.alert_state === "pending") {
+				return retryPendingReplayAlert({
+					body,
+					ledger: backoff,
+					markerPath,
+					session: currentSession,
+					deps,
+					log,
+				});
+			}
+			return {
+				kind: "transient_failed",
+				error: `Bridge ${response.status}`,
+			};
+		}
+		if (!response.ok) {
 			if (
 				generalizedBinding &&
-				res.status === 409 &&
+				response.status === 409 &&
 				json?.reason === "missing_output" &&
 				json.retryable === true
 			) {
 				return { kind: "transient_failed", error: "missing_output" };
 			}
+			const transitionReason = json?.detail?.transitionReason;
+			if (
+				response.status === 409 &&
+				transitionReason?.startsWith(ENGINE_INVARIANT_REASON_PREFIX)
+			) {
+				const invariant = transitionReason.slice(
+					ENGINE_INVARIANT_REASON_PREFIX.length,
+				);
+				const binding = generalizedBinding
+					? {
+							runId: generalizedBinding.run_id,
+							nodeId: generalizedBinding.node_id,
+							attempt: generalizedBinding.attempt,
+						}
+					: markerBinding(body);
+				const alertEventId = binding
+					? `engine_invariant:${binding.runId}:${binding.nodeId}:${binding.attempt}:${invariant}`
+					: `engine_invariant:${execId}:${invariant}`;
+				const priorHeld =
+					replayLedger?.mode === "held" && replayLedger.invariant === invariant
+						? replayLedger
+						: undefined;
+				const held: ReplayLedger = {
+					v: 1,
+					mode: "held",
+					streak: 0,
+					episode_started_at:
+						priorHeld?.episode_started_at ??
+						new Date(replayNowMs).toISOString(),
+					last_status: response.status,
+					last_at: new Date(replayNowMs).toISOString(),
+					next_probe_at: new Date(replayNowMs + 60 * 60_000).toISOString(),
+					invariant,
+					alert_event_id: priorHeld?.alert_event_id ?? alertEventId,
+					alert_state:
+						priorHeld?.alert_state ??
+						(json?.detail?.alertPending ? "pending" : "accepted"),
+				};
+				if (!persistReplayLedger(body, markerPath, held, log)) {
+					return {
+						kind: "transient_failed",
+						error: "replay ledger held write failed",
+					};
+				}
+				if (held.alert_state === "pending") {
+					return retryPendingReplayAlert({
+						body,
+						ledger: held,
+						markerPath,
+						session: currentSession,
+						deps,
+						log,
+					});
+				}
+				return {
+					kind: "held_for_lead",
+					invariant,
+					alertState: "accepted",
+				};
+			}
 			// 4xx (non-429) — malformed request, won't succeed on retry.
 			const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
 			log(
-				`[complete-reconciler] replay 4xx (${res.status}) quarantined ${execId}: ${qp}`,
+				`[complete-reconciler] replay 4xx (${response.status}) quarantined ${execId}: ${qp}`,
 			);
 			return {
 				kind: "quarantined",
@@ -766,6 +1119,21 @@ export async function tryReconcileComplete(
 		}
 	} catch (err) {
 		// Network error / abort — Bridge unreachable. Keep marker, retry later.
+		if (replayLedger) {
+			const pushed: ReplayLedger = {
+				...replayLedger,
+				last_at: new Date(replayNowMs).toISOString(),
+				next_probe_at: new Date(
+					replayNowMs + replayDelayMs(replayLedger),
+				).toISOString(),
+			};
+			if (!persistReplayLedger(body, markerPath, pushed, log)) {
+				return {
+					kind: "transient_failed",
+					error: "replay ledger probe deferral write failed",
+				};
+			}
+		}
 		return { kind: "transient_failed", error: (err as Error).message };
 	}
 
@@ -1005,10 +1373,15 @@ export async function reconcileCompleteFailedMarkers(
 			projectName: string,
 		) => { tmuxWindow: string } | undefined;
 	},
-): Promise<{ scanned: number; reconciled: number; quarantined: number }> {
+): Promise<{
+	scanned: number;
+	reconciled: number;
+	quarantined: number;
+	held: number;
+}> {
 	const log = deps.log ?? ((m: string) => console.log(m));
 	const markerDir = deps.markerDir ?? defaultMarkerDir();
-	const result = { scanned: 0, reconciled: 0, quarantined: 0 };
+	const result = { scanned: 0, reconciled: 0, quarantined: 0, held: 0 };
 
 	if (!existsSync(markerDir)) return result;
 
@@ -1037,6 +1410,8 @@ export async function reconcileCompleteFailedMarkers(
 			outcome.kind === "settled_ship_attempt_failed"
 		) {
 			result.reconciled += 1;
+		} else if (outcome.kind === "held_for_lead") {
+			result.held += 1;
 		} else if (outcome.kind === "quarantined") {
 			result.quarantined += 1;
 			// Boot fallback: probe tmux to choose a definite terminal status.
@@ -1074,7 +1449,7 @@ export async function reconcileCompleteFailedMarkers(
 
 	if (result.scanned > 0) {
 		log(
-			`[complete-reconciler] boot drain: scanned=${result.scanned} reconciled=${result.reconciled} quarantined=${result.quarantined}`,
+			`[complete-reconciler] boot drain: scanned=${result.scanned} reconciled=${result.reconciled} quarantined=${result.quarantined} held=${result.held}`,
 		);
 	}
 	return result;

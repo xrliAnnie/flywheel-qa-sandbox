@@ -199,6 +199,74 @@ describe("AutoQaEffects.alertShipAttemptFailed (FLY-1505)", () => {
 	});
 });
 
+describe("AutoQaEffects.alertCompleteMarkerHeld (FLY-1912)", () => {
+	it("emits the caller-owned event id through the durable severe alert sink", async () => {
+		const alert = vi.fn(async () => ({ sent: true }));
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [
+				{
+					projectName: "proj",
+					projectRoot: "/x",
+					leads: [{ agentId: "lead-1", match: { labels: ["engineer"] } }],
+				} as ProjectEntry,
+			],
+			config: {} as never,
+			leadAlertNotifier: { alert: alert as never },
+		});
+
+		await effects.alertCompleteMarkerHeld({
+			eventId: "complete-marker-5xx:main-1:episode",
+			kind: "unknown_5xx_episode",
+			execId: "main-1",
+			issueId: "parent-uuid",
+			projectName: "proj",
+			session: parentSession({ issue_labels: JSON.stringify(["engineer"]) }),
+			markerPath: "/state/complete-failed/main-1.json",
+			reason: "Bridge returned 500 three times; marker retained",
+			httpStatus: 500,
+		});
+
+		expect(alert).toHaveBeenCalledWith(
+			expect.objectContaining({
+				eventId: "complete-marker-5xx:main-1:episode",
+				eventType: "complete_marker_held",
+				severity: "severe",
+				body: expect.stringContaining("marker retained"),
+			}),
+		);
+	});
+
+	it.each([{ skipped: "no-channel" as const }, { deadLettered: true }])(
+		"rejects a non-durable notifier result",
+		async (result) => {
+			const effects = new AutoQaEffects({
+				store: {} as never,
+				projects: [
+					{
+						projectName: "proj",
+						projectRoot: "/x",
+						leads: [{ agentId: "lead-1", match: { labels: [] } }],
+					} as ProjectEntry,
+				],
+				config: {} as never,
+				leadAlertNotifier: { alert: vi.fn(async () => result) },
+			});
+			await expect(
+				effects.alertCompleteMarkerHeld({
+					eventId: "engine_invariant:run-1:qa:1:test",
+					kind: "engine_invariant",
+					execId: "main-1",
+					issueId: "parent-uuid",
+					projectName: "proj",
+					markerPath: "/state/complete-failed/main-1.json",
+					reason: "held",
+				}),
+			).rejects.toThrow("not accepted");
+		},
+	);
+});
+
 describe("buildQaIssueContent (FLY-643)", () => {
 	it("titles QA · <parent> — <title> and embeds parent link / PR / commit", () => {
 		const { title, description } = buildQaIssueContent({

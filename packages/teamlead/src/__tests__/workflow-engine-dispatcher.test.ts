@@ -786,7 +786,169 @@ async function storeWithQaFailKickback() {
 	return store;
 }
 
+async function storeWithFreshVerificationIntent(): Promise<{
+	store: StateStore;
+	requestId: string;
+	successorExecutionId: string;
+}> {
+	const store = await storeWithIntent("implement");
+	store.upsertWorkflowRunNode({
+		runId: "run-1",
+		nodeId: "implement",
+		attempt: 1,
+		state: "done",
+		executionId: "implement-1",
+		endedAt: "2026-07-16T00:06:00.000Z",
+	});
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "completed",
+		session_role: "implement",
+		issue_identifier: "FLY-1307",
+		issue_title: "DAG template engine",
+		design_backend: "claude",
+		doc_tier: "full",
+		issue_url: "https://linear.app/flywheel/FLY-1307",
+		worktree_path: "/unused/implement",
+		pr_head_sha: HEAD,
+	});
+	store.patchSessionMetadata("implement-1", { pr_head_sha: HEAD });
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	db.run("UPDATE workflow_run SET status = 'completed' WHERE run_id = 'run-1'");
+	const opened = store.openOperatorRework({
+		runId: "run-1",
+		targetNodeId: "implement",
+		feedback: "rework before QA has ever run",
+		clientRequestId: "fly1912-dispatcher",
+		principal: "master",
+		evidence: store.listRunAttributedExecutions("run-1").map((executionId) => ({
+			executionId,
+			sessionStatus: null,
+			lifecycleRevision: null,
+			liveness: "dead" as const,
+			observedAt: "2026-07-16T00:07:00.000Z",
+		})),
+		now: "2026-07-16T00:07:00.000Z",
+	});
+	if (!opened.ok) throw new Error(opened.reason);
+	const claimed = store.claimWorkflowReworkDelivery({
+		requestId: opened.requestId,
+		ownerId: "fly1912-coordinator",
+		now: "2026-07-16T00:08:00.000Z",
+		leaseExpiresAt: "2026-07-16T00:08:30.000Z",
+	});
+	if (!claimed.ok) throw new Error(claimed.reason);
+	const admitted = store.admitGeneralizedWorkflowExecution({
+		runId: "run-1",
+		nodeId: "implement",
+		executionId: "implement-1",
+		attempt: 2,
+		activationId: "activation-fly1912-implement-2",
+		activationMode: "wake",
+		reworkRequestId: opened.requestId,
+		expiresAt: "2026-07-16T02:00:00.000Z",
+		absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+		now: "2026-07-16T00:08:01.000Z",
+		env: WORKFLOW_ON,
+	});
+	if (!admitted.ok) throw new Error(admitted.reason);
+	for (const [from, to] of [
+		["pending", "turn_granted"],
+		["turn_granted", "wake_delivered"],
+	] as const) {
+		const advanced = store.advanceWorkflowReworkDelivery({
+			requestId: opened.requestId,
+			ownerId: "fly1912-coordinator",
+			generation: claimed.generation,
+			from,
+			to,
+			now: "2026-07-16T00:09:00.000Z",
+			...(to === "wake_delivered"
+				? {
+						alertIdentity: {
+							leadId: "flywheel-eng-lead",
+							projectName: "flywheel",
+							leadResolution: "resolved" as const,
+						},
+						releaseOwner: true,
+					}
+				: {}),
+		});
+		if (!advanced.ok) throw new Error(advanced.reason);
+	}
+	const completed = store.commitWorkflowTransitionTx({
+		runId: "run-1",
+		nodeId: "implement",
+		attempt: 2,
+		executionId: "implement-1",
+		outcome: "implement_done",
+		now: "2026-07-16T00:10:00.000Z",
+	});
+	if (!completed.ok || !completed.successorExecutionId) {
+		throw new Error("fresh verification dispatch missing");
+	}
+	return {
+		store,
+		requestId: opened.requestId,
+		successorExecutionId: completed.successorExecutionId,
+	};
+}
+
 describe("WorkflowEngineDispatcher", () => {
+	it("dispatches a fresh verification successor through the ordinary spawn path", async () => {
+		const { store, requestId, successorExecutionId } =
+			await storeWithFreshVerificationIntent();
+		const fake = fakeStartDispatcher(store);
+		const resolvePredecessorHead = vi.fn(async () => HEAD);
+		const recoverLaunch = vi.spyOn(store, "recoverOrAcquireWorkflowLaunch");
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-07-16T00:11:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly1912-fresh-dispatch-")),
+			resolvePredecessorHead,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 2, held: 0 });
+		expect(fake.requests).toHaveLength(1);
+		expect(fake.requests[0]).toMatchObject({
+			successorExecutionId,
+			sessionRole: "qa",
+			startPoint: HEAD,
+			generalizedExecution: {
+				executionId: successorExecutionId,
+				nodeId: "qa",
+				attempt: 1,
+			},
+		});
+		expect(resolvePredecessorHead).toHaveBeenCalledWith(
+			"implement-1",
+			"flywheel",
+		);
+		expect(store.listWorkflowActivationsForActor(successorExecutionId)).toEqual(
+			[
+				expect.objectContaining({
+					mode: "spawn",
+					rework_request_id: null,
+				}),
+			],
+		);
+		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+			state: "wake_delivered",
+		});
+		expect(recoverLaunch).toHaveBeenCalledWith(
+			expect.objectContaining({ executionId: successorExecutionId }),
+		);
+		store.close();
+	});
+
 	it.each(["design", "qa"] as const)(
 		"dispatches a real %s founder-rework replacement from base_revision with verbatim feedback",
 		async (target) => {

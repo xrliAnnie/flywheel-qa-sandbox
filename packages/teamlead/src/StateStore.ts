@@ -87,6 +87,11 @@ import {
 	workflowSeedContentHash,
 	workflowTerminalNode,
 } from "./workflow-template.js";
+import {
+	ENGINE_INVARIANT_REASON_PREFIX,
+	engineInvariantFromReason,
+	WorkflowEngineInvariantError,
+} from "./workflow-engine-invariant.js";
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -34690,6 +34695,68 @@ export class StateStore {
 		this.save();
 	}
 
+	private recordEngineInvariantRefusal(input: {
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		refusalEventUid: string;
+		refusalKind: string;
+		refusalPayload: Record<string, unknown>;
+		invariant: string;
+		alertIdentity?: WorkflowEngineAlertIdentity;
+		now: string;
+	}): { alertDurable: boolean } {
+		const escalationUid = `engine_invariant:${input.runId}:${input.nodeId}:${input.attempt}:${input.invariant}`;
+		this.db.transaction(() => {
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: input.refusalEventUid,
+				kind: input.refusalKind,
+				nodeId: input.nodeId,
+				executionId: input.executionId,
+				payload: input.refusalPayload,
+			});
+			if (!input.alertIdentity) return;
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid,
+				runId: input.runId,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: escalationUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${input.runId}`,
+					title: `${input.issueId} 交棒被引擎不变量拒绝: ${input.invariant}`,
+					body: `Run ${input.runId} 的 ${input.nodeId} attempt ${input.attempt} 因 ${input.invariant} 回滚,completion marker 会保留并慢速重试;请核对 workflow run 与 rework verification/delivery 状态后修复,不要删除 marker。`,
+					metadata: {
+						workflowEngine: {
+							runId: input.runId,
+							issueId: input.issueId,
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							disposition: "engine_invariant_refusal",
+							attempt: input.attempt,
+							reason: input.invariant,
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			this.appendWorkflowRunEventCheckedTx({
+				runId: input.runId,
+				eventUid: `alert_enqueued:${escalationUid}`,
+				kind: "workflow_engine_alert_enqueued",
+				payload: { escalationUid },
+			});
+		});
+		this.save();
+		return { alertDurable: input.alertIdentity !== undefined };
+	}
+
 	commitEnrolledCompletion(input: {
 		executionId: string;
 		route: string;
@@ -35326,22 +35393,45 @@ export class StateStore {
 					sourceEventId: input.sourceEventId,
 					transitionReason: transitionRefusal,
 				});
-				this.appendWorkflowRunEventChecked({
-					runId: context.binding.run_id,
-					eventUid: `completion_transition_refused:${refusalDigest}`,
-					kind: "completion_transition_refused",
-					nodeId: context.binding.node_id,
-					executionId: context.binding.execution_id,
-					payload: {
-						attempt: context.binding.attempt,
-						sourceEventId: input.sourceEventId,
-						transitionReason: transitionRefusal,
-					},
-				});
+				const refusalEventUid = `completion_transition_refused:${refusalDigest}`;
+				const refusalPayload = {
+					attempt: context.binding.attempt,
+					sourceEventId: input.sourceEventId,
+					transitionReason: transitionRefusal,
+				};
+				const invariant = engineInvariantFromReason(transitionRefusal);
+				const alertPending = invariant
+					? !this.recordEngineInvariantRefusal({
+							runId: context.binding.run_id,
+							issueId: context.run.issue_id,
+							nodeId: context.binding.node_id,
+							attempt: context.binding.attempt,
+							executionId: context.binding.execution_id,
+							refusalEventUid,
+							refusalKind: "completion_transition_refused",
+							refusalPayload,
+							invariant,
+							alertIdentity: input.alertIdentity,
+							now,
+						}).alertDurable
+					: false;
+				if (!invariant) {
+					this.appendWorkflowRunEventChecked({
+						runId: context.binding.run_id,
+						eventUid: refusalEventUid,
+						kind: "completion_transition_refused",
+						nodeId: context.binding.node_id,
+						executionId: context.binding.execution_id,
+						payload: refusalPayload,
+					});
+				}
 				return {
 					ok: false,
 					reason: "transition_refused",
-					detail: { transitionReason: transitionRefusal },
+					detail: {
+						transitionReason: transitionRefusal,
+						...(alertPending ? { alertPending: true as const } : {}),
+					},
 				};
 			}
 			throw error;
@@ -35826,26 +35916,52 @@ export class StateStore {
 					return { ok: false, reason: "land_head_unavailable" };
 				}
 				const refusalDigest = canonicalSubmissionDigest({
-					runId: String(
-						this.getWorkflowSubmissionCredentialByToken(input.credential)
-							?.run_id ?? "unknown",
-					),
+					runId: String(credential?.run_id ?? "unknown"),
 					clientRequestId: input.clientRequestId,
 					transitionReason: transitionRefusal,
 				});
 				if (credential) {
-					this.appendWorkflowRunEventChecked({
-						runId: credential.run_id,
-						eventUid: `decision_transition_refused:${refusalDigest}`,
-						kind: "decision_transition_refused",
-						nodeId: credential.node_id,
-						executionId: credential.execution_id,
-						payload: {
-							attempt: credential.attempt,
-							clientRequestId: input.clientRequestId,
+					const refusalEventUid = `decision_transition_refused:${refusalDigest}`;
+					const refusalPayload = {
+						attempt: credential.attempt,
+						clientRequestId: input.clientRequestId,
+						transitionReason: transitionRefusal,
+					};
+					const invariant = engineInvariantFromReason(transitionRefusal);
+					const alertPending = invariant
+						? !this.recordEngineInvariantRefusal({
+								runId: credential.run_id,
+								issueId:
+									this.getWorkflowRun(credential.run_id)?.issue_id ?? "unknown",
+								nodeId: credential.node_id,
+								attempt: credential.attempt,
+								executionId: credential.execution_id,
+								refusalEventUid,
+								refusalKind: "decision_transition_refused",
+								refusalPayload,
+								invariant,
+								alertIdentity: input.alertIdentity,
+								now: nowIso,
+							}).alertDurable
+						: false;
+					if (!invariant) {
+						this.appendWorkflowRunEventChecked({
+							runId: credential.run_id,
+							eventUid: refusalEventUid,
+							kind: "decision_transition_refused",
+							nodeId: credential.node_id,
+							executionId: credential.execution_id,
+							payload: refusalPayload,
+						});
+					}
+					return {
+						ok: false,
+						reason: "transition_refused",
+						detail: {
 							transitionReason: transitionRefusal,
+							...(alertPending ? { alertPending: true as const } : {}),
 						},
-					});
+					};
 				}
 				return {
 					ok: false,
@@ -36146,7 +36262,7 @@ export class StateStore {
 			ok: false,
 			reason: "transition_not_committed",
 		};
-		this.db.transaction(() => {
+		const commitTransition = () => {
 			const prior = this.workflowSelectAll(
 				"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
 				[transitionUid],
@@ -36407,10 +36523,17 @@ export class StateStore {
 			const supersedingRework = Boolean(
 				activePath && activeRoute && activeRequest && authorityKickback,
 			);
+			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
+			const chainHistoryActorExecutionId = targetAttempts
+				.filter((candidate) => candidate.execution_id)
+				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			const chainedFreshDispatch =
+				chainedRework && !chainHistoryActorExecutionId;
 			const reworkAuthority =
 				authorityKickback ??
-				(chainedRework ? activeRequest?.authority : undefined);
-			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
+				(chainedRework && !chainedFreshDispatch
+					? activeRequest?.authority
+					: undefined);
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -36531,7 +36654,9 @@ export class StateStore {
 					[input.runId],
 				);
 				if (this.db.getRowsModified() !== 1) {
-					throw new Error("workflow_rework_idle_spin_run_cas_failed");
+					throw new WorkflowEngineInvariantError(
+						"workflow_rework_idle_spin_run_cas_failed",
+					);
 				}
 				const receipt = {
 					edgeId: selectedId,
@@ -36695,7 +36820,9 @@ export class StateStore {
 					.sort((left, right) => right.attempt - left.attempt)[0]
 					?.execution_id as string | undefined;
 				if (!preferredActorExecutionId) {
-					throw new Error("workflow_rework_preferred_actor_missing");
+					throw new WorkflowEngineInvariantError(
+						"workflow_rework_preferred_actor_missing",
+					);
 				}
 				this.db.run(
 					`INSERT OR IGNORE INTO workflow_actor
@@ -36935,7 +37062,9 @@ export class StateStore {
 					});
 				} else if (isWorkflowManifestLand(snapshot.manifest)) {
 					if (!/^[0-9a-f]{40}$/i.test(input.subjectDigest ?? "")) {
-						throw new Error("land_gate_holder_requires_head");
+						throw new WorkflowEngineInvariantError(
+							"land_gate_holder_requires_head",
+						);
 					}
 					const head = input.subjectDigest!.toLowerCase();
 					const questionId = `workflow-gate:${canonicalSubmissionDigest({
@@ -37042,7 +37171,9 @@ export class StateStore {
 						],
 					);
 					if (this.db.getRowsModified() !== 1) {
-						throw new Error("workflow_rework_verification_complete_cas_failed");
+						throw new WorkflowEngineInvariantError(
+							"workflow_rework_verification_complete_cas_failed",
+						);
 					}
 					this.db.run(
 						`UPDATE workflow_rework_delivery
@@ -37051,7 +37182,9 @@ export class StateStore {
 						[now, activePath.request_id],
 					);
 					if (this.db.getRowsModified() !== 1) {
-						throw new Error("workflow_rework_delivery_complete_cas_failed");
+						throw new WorkflowEngineInvariantError(
+							"workflow_rework_delivery_complete_cas_failed",
+						);
 					}
 					this.appendWorkflowRunEventCheckedTx({
 						runId: input.runId,
@@ -37062,6 +37195,42 @@ export class StateStore {
 						payload: {
 							requestId: activePath.request_id,
 							gateAttempt: targetAttempt,
+						},
+					});
+				} else if (chainedFreshDispatch) {
+					this.db.run(
+						`UPDATE workflow_rework_verification_path
+						    SET current_node_id = ?, current_attempt = ?, updated_at = ?
+						  WHERE request_id = ? AND state = 'active'
+						    AND current_node_id = ? AND current_attempt = ?`,
+						[
+							target.id,
+							targetAttempt,
+							now,
+							activePath.request_id,
+							input.nodeId,
+							input.attempt,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new WorkflowEngineInvariantError(
+							"workflow_rework_verification_advance_cas_failed",
+						);
+					}
+					this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: `rework_verification_fresh_dispatch:${activePath.request_id}:${target.id}:${targetAttempt}`,
+						kind: "rework_verification_fresh_dispatch",
+						nodeId: target.id,
+						executionId: successorExecutionId,
+						payload: {
+							requestId: activePath.request_id,
+							sourceNodeId: input.nodeId,
+							sourceAttempt: input.attempt,
+							targetNodeId: target.id,
+							targetAttempt,
+							successorExecutionId,
+							reason: "target_actor_history_missing",
 						},
 					});
 				} else if (chainedRework || supersedingRework) {
@@ -37081,7 +37250,9 @@ export class StateStore {
 						],
 					);
 					if (this.db.getRowsModified() !== 1) {
-						throw new Error("workflow_rework_verification_chain_cas_failed");
+						throw new WorkflowEngineInvariantError(
+							"workflow_rework_verification_chain_cas_failed",
+						);
 					}
 					this.db.run(
 						`UPDATE workflow_rework_delivery
@@ -37090,7 +37261,9 @@ export class StateStore {
 						[now, activePath.request_id],
 					);
 					if (this.db.getRowsModified() !== 1) {
-						throw new Error("workflow_rework_delivery_chain_cas_failed");
+						throw new WorkflowEngineInvariantError(
+							"workflow_rework_delivery_chain_cas_failed",
+						);
 					}
 					this.appendWorkflowRunEventCheckedTx({
 						runId: input.runId,
@@ -37112,7 +37285,9 @@ export class StateStore {
 						},
 					});
 				} else {
-					throw new Error("workflow_rework_verification_step_missing_chain");
+					throw new WorkflowEngineInvariantError(
+						"workflow_rework_verification_step_missing_chain",
+					);
 				}
 			}
 			const sourceAttachment = this.listWorkflowResumeAttachments({
@@ -37204,7 +37379,19 @@ export class StateStore {
 				...(loopIteration ? { loopIteration } : {}),
 				...(target.type === "gate" ? { gateOpened: true } : {}),
 			};
-		});
+		};
+		try {
+			this.db.transaction(commitTransition);
+		} catch (error) {
+			if (error instanceof WorkflowEngineInvariantError) {
+				result = {
+					ok: false,
+					reason: `${ENGINE_INVARIANT_REASON_PREFIX}${error.invariant}`,
+				};
+			} else {
+				throw error;
+			}
+		}
 		if (!input.deferSave) this.save();
 		return result;
 	}
@@ -51473,7 +51660,7 @@ export type WorkflowCompletionResult =
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"
 				| "transition_refused";
-			detail?: { transitionReason: string };
+			detail?: { transitionReason: string; alertPending?: true };
 	  };
 
 export interface RunQuiescenceEvidence {
@@ -51737,6 +51924,7 @@ export interface WorkflowEngineAlertPayload {
 				| "founder_rework_round_high"
 				| "voided_card_input"
 				| "land_head_unavailable"
+				| "engine_invariant_refusal"
 				| "runner_ship_merged_before_approval"
 				| "runner_ship_merged_head_mismatch"
 				| "runner_ship_completion_failure"
@@ -51860,7 +52048,7 @@ export type WorkflowCredentialSubmissionResult =
 				| "run_not_found"
 				| "land_head_unavailable"
 				| "transition_refused";
-			detail?: { transitionReason: string };
+			detail?: { transitionReason: string; alertPending?: true };
 	  };
 
 export interface WorkflowRunEventRow {

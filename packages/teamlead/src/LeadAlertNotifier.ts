@@ -317,6 +317,9 @@ export const ALERT_EVENT_TYPES = [
 	// could no longer be tracked. The approval stays live; a Lead diagnoses the
 	// workflow before explicitly waking the runner for another attempt.
 	"ship_attempt_failed",
+	// FLY-1912: complete-failed marker held by an engine invariant or bounded
+	// unknown-5xx replay episode.
+	"complete_marker_held",
 	// FLY-1309: Lead identity uniqueness, lease control, and carrier drift.
 	"lead_dual_active",
 	"lead_dual_active_sensor_degraded",
@@ -403,6 +406,7 @@ export interface AlertMetadata {
 			| "founder_rework_round_high"
 			| "voided_card_input"
 			| "land_head_unavailable"
+			| "engine_invariant_refusal"
 			| "runner_ship_merged_before_approval"
 			| "runner_ship_merged_head_mismatch"
 			| "runner_ship_completion_failure"

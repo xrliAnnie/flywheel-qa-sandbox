@@ -1,0 +1,20 @@
+flowchart TB
+  R["runner 调用<br/>flywheel-comm complete"] --> L1
+  subgraph L1["① 引擎"]
+    direction LR
+    A1["验证链下一站没有上一任 actor"] --> A2["全新派发 + 验证链前进<br/>（不再 throw）"]
+  end
+  L1 --> L2
+  subgraph L2["② 边界"]
+    direction LR
+    B1["其余不变量违反<br/>（CAS 失败等）"] --> B2["结构化拒绝<br/>engine_invariant:&lt;名字&gt;"]
+    B2 --> B3["HTTP 409 + 原因码<br/>拒绝事件与 Lead 告警<br/>同一事务落盘"]
+  end
+  L2 --> L3
+  subgraph L3["③ 回放"]
+    direction LR
+    C1["409 明确拒绝"] --> C2["持有：每小时慢探 1 次<br/>不隔离、不删、不重复告警"]
+    C3["未知 500"] --> C4["退避：1m→2m→…→1h 封顶<br/>第 3 次告警 Lead 一次"]
+  end
+  classDef fix fill:#e7f6ec,stroke:#34c759,color:#1d1d1f;
+  class A2,B2,B3,C2,C4 fix;

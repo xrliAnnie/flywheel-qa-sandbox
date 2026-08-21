@@ -1,8 +1,10 @@
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -120,6 +122,7 @@ describe("complete marker default directories (FLY-1608)", () => {
 	const originalMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
 
 	afterEach(() => {
+		vi.useRealTimers();
 		if (originalHome === undefined) delete process.env.HOME;
 		else process.env.HOME = originalHome;
 		if (originalMarkerDir === undefined) {
@@ -761,6 +764,447 @@ describe("tryReconcileComplete", () => {
 		);
 		expect(r.kind).toBe("transient_failed");
 		expect(readdirSync(markerDir)).toContain("exec3b.json");
+	});
+
+	describe("FLY-1912 replay circuit breaker", () => {
+		const setNow = (value: string) => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date(value));
+		};
+		const ledger = (execId: string) =>
+			(JSON.parse(readFileSync(join(markerDir, `${execId}.json`), "utf8"))
+				.replay_ledger ?? {}) as Record<string, unknown>;
+		const internalError = () =>
+			new Response(JSON.stringify({ error: "internal error" }), {
+				status: 500,
+				headers: { "content-type": "application/json" },
+			});
+
+		it("persists exponential 5xx backoff and alerts once on the third failure", async () => {
+			writeMarker(markerDir, "exec-backoff");
+			const store = makeStore({ "exec-backoff": { status: "running" } });
+			const fetchFn = vi.fn(async () => internalError());
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			const deps = {
+				...baseDeps(store, fetchFn as never),
+				alertCompleteMarkerHeld,
+			};
+
+			for (const [now, streak, next] of [
+				["2026-08-20T00:00:00.000Z", 1, "2026-08-20T00:01:00.000Z"],
+				["2026-08-20T00:01:00.000Z", 2, "2026-08-20T00:03:00.000Z"],
+				["2026-08-20T00:03:00.000Z", 3, "2026-08-20T00:07:00.000Z"],
+			] as const) {
+				setNow(now);
+				expect(await tryReconcileComplete("exec-backoff", deps)).toMatchObject({
+					kind: "transient_failed",
+				});
+				expect(ledger("exec-backoff")).toMatchObject({
+					v: 1,
+					mode: "backoff",
+					streak,
+					next_probe_at: next,
+				});
+			}
+			expect(alertCompleteMarkerHeld).toHaveBeenCalledOnce();
+			expect(alertCompleteMarkerHeld.mock.calls[0]?.[0]).toMatchObject({
+				eventId: "complete-marker-5xx:exec-backoff:2026-08-20T00:00:00.000Z",
+				kind: "unknown_5xx_episode",
+				httpStatus: 500,
+			});
+			expect(ledger("exec-backoff")).toMatchObject({
+				alert_state: "accepted",
+			});
+		});
+
+		it("does not POST before backoff expires and reconciles after recovery", async () => {
+			writeMarker(markerDir, "exec-recover");
+			const store = makeStore({ "exec-recover": { status: "running" } });
+			const fetchFn = vi
+				.fn()
+				.mockResolvedValueOnce(internalError())
+				.mockImplementationOnce(async () => {
+					store.sessions.set("exec-recover", { status: "awaiting_review" });
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				});
+			setNow("2026-08-20T01:00:00.000Z");
+			const deps = baseDeps(store, fetchFn as never);
+			await tryReconcileComplete("exec-recover", deps);
+
+			setNow("2026-08-20T01:00:59.999Z");
+			expect(await tryReconcileComplete("exec-recover", deps)).toMatchObject({
+				kind: "transient_failed",
+			});
+			expect(fetchFn).toHaveBeenCalledTimes(1);
+
+			setNow("2026-08-20T01:01:00.000Z");
+			expect(await tryReconcileComplete("exec-recover", deps)).toEqual({
+				kind: "reconciled",
+				status: "awaiting_review",
+			});
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+			expect(existsSync(join(markerDir, "exec-recover.json"))).toBe(false);
+		});
+
+		it("caps repeated 5xx probes at one hour without repeating the alert", async () => {
+			writeMarker(markerDir, "exec-cap");
+			const store = makeStore({ "exec-cap": { status: "running" } });
+			const fetchFn = vi.fn(async () => internalError());
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			const deps = {
+				...baseDeps(store, fetchFn as never),
+				alertCompleteMarkerHeld,
+			};
+			setNow("2026-08-20T02:00:00.000Z");
+			for (let attempt = 0; attempt < 10; attempt += 1) {
+				await tryReconcileComplete("exec-cap", deps);
+				if (attempt < 9) setNow(String(ledger("exec-cap").next_probe_at));
+			}
+			expect(
+				Date.parse(String(ledger("exec-cap").next_probe_at)) - Date.now(),
+			).toBe(60 * 60_000);
+			expect(alertCompleteMarkerHeld).toHaveBeenCalledOnce();
+		});
+
+		it.each(["network", "429"])(
+			"keeps legacy %s failures ledger-free",
+			async (failure) => {
+				writeMarker(markerDir, `exec-${failure}`);
+				const store = makeStore({ [`exec-${failure}`]: { status: "running" } });
+				const fetchFn = vi.fn(async () => {
+					if (failure === "network") throw new Error("ECONNREFUSED");
+					return new Response("busy", { status: 429 });
+				});
+				for (let attempt = 0; attempt < 5; attempt += 1) {
+					expect(
+						await tryReconcileComplete(
+							`exec-${failure}`,
+							baseDeps(store, fetchFn as never),
+						),
+					).toMatchObject({ kind: "transient_failed" });
+				}
+				expect(ledger(`exec-${failure}`).v).toBeUndefined();
+			},
+		);
+
+		it("pushes an existing backoff probe after network or 429 without increasing streak", async () => {
+			writeMarker(markerDir, "exec-probe");
+			const store = makeStore({ "exec-probe": { status: "running" } });
+			const fetchFn = vi
+				.fn()
+				.mockResolvedValueOnce(internalError())
+				.mockRejectedValueOnce(new Error("ECONNRESET"))
+				.mockResolvedValueOnce(new Response("busy", { status: 429 }));
+			const deps = baseDeps(store, fetchFn as never);
+			setNow("2026-08-20T03:00:00.000Z");
+			await tryReconcileComplete("exec-probe", deps);
+			setNow("2026-08-20T03:01:00.000Z");
+			await tryReconcileComplete("exec-probe", deps);
+			expect(ledger("exec-probe")).toMatchObject({
+				streak: 1,
+				next_probe_at: "2026-08-20T03:02:00.000Z",
+			});
+			setNow("2026-08-20T03:02:00.000Z");
+			await tryReconcileComplete("exec-probe", deps);
+			expect(ledger("exec-probe")).toMatchObject({
+				streak: 1,
+				next_probe_at: "2026-08-20T03:03:00.000Z",
+			});
+		});
+
+		it("holds a typed 409 immediately, skips quarantine, and probes hourly", async () => {
+			writeMarker(markerDir, "exec-held");
+			const store = makeStore({ "exec-held": { status: "running" } });
+			const invariantResponse = () =>
+				new Response(
+					JSON.stringify({
+						ok: false,
+						reason: "transition_refused",
+						detail: {
+							transitionReason:
+								"engine_invariant:workflow_rework_verification_advance_cas_failed",
+						},
+					}),
+					{ status: 409, headers: { "content-type": "application/json" } },
+				);
+			const fetchFn = vi
+				.fn()
+				.mockImplementationOnce(async () => invariantResponse())
+				.mockImplementationOnce(async () => invariantResponse())
+				.mockImplementationOnce(async () => {
+					store.sessions.set("exec-held", { status: "awaiting_review" });
+					return new Response(JSON.stringify({ ok: true }), { status: 200 });
+				});
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			const deps = {
+				...baseDeps(store, fetchFn as never),
+				alertCompleteMarkerHeld,
+			};
+
+			setNow("2026-08-20T04:00:00.000Z");
+			expect(await tryReconcileComplete("exec-held", deps)).toMatchObject({
+				kind: "held_for_lead",
+				invariant: "workflow_rework_verification_advance_cas_failed",
+				alertState: "accepted",
+			});
+			expect(alertCompleteMarkerHeld).not.toHaveBeenCalled();
+			expect(existsSync(quarantineDir)).toBe(false);
+
+			setNow("2026-08-20T04:59:59.999Z");
+			await tryReconcileComplete("exec-held", deps);
+			expect(fetchFn).toHaveBeenCalledTimes(1);
+			setNow("2026-08-20T05:00:00.000Z");
+			await tryReconcileComplete("exec-held", deps);
+			expect(fetchFn).toHaveBeenCalledTimes(2);
+			expect(ledger("exec-held").next_probe_at).toBe(
+				"2026-08-20T06:00:00.000Z",
+			);
+			setNow("2026-08-20T06:00:00.000Z");
+			expect(await tryReconcileComplete("exec-held", deps)).toEqual({
+				kind: "reconciled",
+				status: "awaiting_review",
+			});
+			expect(alertCompleteMarkerHeld).not.toHaveBeenCalled();
+		});
+
+		it("writes alertPending before delivery and retries only the durable alert", async () => {
+			writeMarker(markerDir, "exec-alert-retry", {
+				payload: {
+					decision: { route: "needs_review" },
+					workflowActivation: {
+						activationId: "activation-1",
+						runId: "run-1",
+						nodeId: "implement",
+						attempt: 2,
+						turnEpoch: 1,
+					},
+				},
+			});
+			const store = makeStore({
+				"exec-alert-retry": { status: "running" },
+			});
+			const fetchFn = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							reason: "transition_refused",
+							detail: {
+								transitionReason: "engine_invariant:test_invariant",
+								alertPending: true,
+							},
+						}),
+						{ status: 409 },
+					),
+			);
+			const alertCompleteMarkerHeld = vi
+				.fn()
+				.mockRejectedValueOnce(new Error("notifier unavailable"))
+				.mockResolvedValueOnce(undefined);
+			const deps = {
+				...baseDeps(store, fetchFn as never),
+				alertCompleteMarkerHeld,
+			};
+			setNow("2026-08-20T06:30:00.000Z");
+
+			expect(await tryReconcileComplete("exec-alert-retry", deps)).toEqual({
+				kind: "transient_failed",
+				error: "notifier unavailable",
+			});
+			expect(ledger("exec-alert-retry")).toMatchObject({
+				mode: "held",
+				alert_state: "pending",
+				alert_event_id: "engine_invariant:run-1:implement:2:test_invariant",
+			});
+			expect(
+				await tryReconcileComplete("exec-alert-retry", deps),
+			).toMatchObject({
+				kind: "held_for_lead",
+				alertState: "accepted",
+			});
+			expect(fetchFn).toHaveBeenCalledOnce();
+			expect(alertCompleteMarkerHeld).toHaveBeenCalledTimes(2);
+			expect(alertCompleteMarkerHeld.mock.calls[1]?.[0]).toMatchObject({
+				eventId: "engine_invariant:run-1:implement:2:test_invariant",
+				binding: { runId: "run-1", nodeId: "implement", attempt: 2 },
+			});
+		});
+
+		it("durably retries a pending invariant alert before any POST or terminal settlement", async () => {
+			writeMarker(markerDir, "exec-pending", {
+				replay_ledger: {
+					v: 1,
+					mode: "held",
+					streak: 0,
+					episode_started_at: "2026-08-20T06:00:00.000Z",
+					last_status: 409,
+					last_at: "2026-08-20T06:00:00.000Z",
+					next_probe_at: "2026-08-20T06:00:00.000Z",
+					invariant: "workflow_rework_verification_advance_cas_failed",
+					alert_event_id:
+						"engine_invariant:run-1:implement:2:workflow_rework_verification_advance_cas_failed",
+					alert_state: "pending",
+				},
+			});
+			const store = makeStore({
+				"exec-pending": { status: "awaiting_review" },
+			});
+			const fetchFn = vi.fn();
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			setNow("2026-08-20T07:00:00.000Z");
+			const deps = {
+				...baseDeps(store, fetchFn as never),
+				alertCompleteMarkerHeld,
+			};
+
+			expect(await tryReconcileComplete("exec-pending", deps)).toMatchObject({
+				kind: "held_for_lead",
+				alertState: "accepted",
+			});
+			expect(fetchFn).not.toHaveBeenCalled();
+			expect(existsSync(join(markerDir, "exec-pending.json"))).toBe(true);
+			expect(ledger("exec-pending").alert_state).toBe("accepted");
+			expect(await tryReconcileComplete("exec-pending", deps)).toEqual({
+				kind: "duplicate_terminal",
+				status: "awaiting_review",
+			});
+			expect(fetchFn).not.toHaveBeenCalled();
+		});
+
+		it("keeps pending alerts retryable when the sink is unavailable", async () => {
+			writeMarker(markerDir, "exec-no-sink", {
+				replay_ledger: {
+					v: 1,
+					mode: "held",
+					streak: 0,
+					episode_started_at: "2026-08-20T08:00:00.000Z",
+					last_status: 409,
+					last_at: "2026-08-20T08:00:00.000Z",
+					next_probe_at: "2026-08-20T08:00:00.000Z",
+					invariant: "workflow_rework_verification_advance_cas_failed",
+					alert_event_id: "engine_invariant:run-1:implement:2:test",
+					alert_state: "pending",
+				},
+			});
+			const store = makeStore({ "exec-no-sink": { status: "running" } });
+			const fetchFn = vi.fn();
+			expect(
+				await tryReconcileComplete(
+					"exec-no-sink",
+					baseDeps(store, fetchFn as never),
+				),
+			).toMatchObject({ kind: "transient_failed" });
+			expect(fetchFn).not.toHaveBeenCalled();
+			expect(ledger("exec-no-sink").alert_state).toBe("pending");
+		});
+
+		it("keeps a pending ledger when the accepted rewrite fails", async () => {
+			writeMarker(markerDir, "exec-accept-fail", {
+				replay_ledger: {
+					v: 1,
+					mode: "held",
+					streak: 0,
+					episode_started_at: "2026-08-20T08:00:00.000Z",
+					last_status: 409,
+					last_at: "2026-08-20T08:00:00.000Z",
+					next_probe_at: "2026-08-20T09:00:00.000Z",
+					invariant: "test",
+					alert_event_id: "engine_invariant:run-1:implement:2:test",
+					alert_state: "pending",
+				},
+			});
+			const store = makeStore({ "exec-accept-fail": { status: "running" } });
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			chmodSync(markerDir, 0o500);
+			try {
+				expect(
+					await tryReconcileComplete("exec-accept-fail", {
+						...baseDeps(store, vi.fn() as never),
+						alertCompleteMarkerHeld,
+					}),
+				).toMatchObject({ kind: "transient_failed" });
+			} finally {
+				chmodSync(markerDir, 0o700);
+			}
+			expect(ledger("exec-accept-fail").alert_state).toBe("pending");
+		});
+
+		it("treats malformed ledgers as absent and replaces them after a 5xx", async () => {
+			writeMarker(markerDir, "exec-malformed", { replay_ledger: "broken" });
+			const store = makeStore({ "exec-malformed": { status: "running" } });
+			setNow("2026-08-20T09:00:00.000Z");
+			await tryReconcileComplete(
+				"exec-malformed",
+				baseDeps(store, vi.fn(async () => internalError()) as never),
+			);
+			expect(ledger("exec-malformed")).toMatchObject({
+				v: 1,
+				mode: "backoff",
+				streak: 1,
+			});
+		});
+
+		it("single-flights concurrent boot and heartbeat replay", async () => {
+			writeMarker(markerDir, "exec-singleflight");
+			const store = makeStore({
+				"exec-singleflight": { status: "running" },
+			});
+			let release: (() => void) | undefined;
+			const waiting = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const fetchFn = vi.fn(async () => {
+				await waiting;
+				return internalError();
+			});
+			setNow("2026-08-20T10:00:00.000Z");
+			const deps = baseDeps(store, fetchFn as never);
+			const boot = tryReconcileComplete("exec-singleflight", deps);
+			const heartbeat = tryReconcileComplete("exec-singleflight", deps);
+			release?.();
+			await expect(Promise.all([boot, heartbeat])).resolves.toEqual([
+				expect.objectContaining({ kind: "transient_failed" }),
+				expect.objectContaining({ kind: "transient_failed" }),
+			]);
+			expect(fetchFn).toHaveBeenCalledOnce();
+			expect(ledger("exec-singleflight").streak).toBe(1);
+			expect(
+				readdirSync(markerDir).filter((name) => name.includes(".tmp")),
+			).toHaveLength(0);
+		});
+
+		it("does not alert when the durable ledger write fails", async () => {
+			writeMarker(markerDir, "exec-write-fail");
+			const store = makeStore({ "exec-write-fail": { status: "running" } });
+			const alertCompleteMarkerHeld = vi.fn(async () => {});
+			chmodSync(markerDir, 0o500);
+			try {
+				expect(
+					await tryReconcileComplete("exec-write-fail", {
+						...baseDeps(
+							store,
+							vi.fn(
+								async () =>
+									new Response(
+										JSON.stringify({
+											reason: "transition_refused",
+											detail: {
+												transitionReason: "engine_invariant:test",
+												alertPending: true,
+											},
+										}),
+										{ status: 409 },
+									),
+							) as never,
+						),
+						alertCompleteMarkerHeld,
+					}),
+				).toMatchObject({ kind: "transient_failed" });
+			} finally {
+				chmodSync(markerDir, 0o700);
+			}
+			expect(alertCompleteMarkerHeld).not.toHaveBeenCalled();
+			expect(ledger("exec-write-fail").v).toBeUndefined();
+		});
 	});
 
 	it("generalized missing-output replay stays retryable and keeps the marker", async () => {
@@ -1528,7 +1972,46 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			quarantineDir,
 			log: () => {},
 		});
-		expect(r).toEqual({ scanned: 0, reconciled: 0, quarantined: 0 });
+		expect(r).toEqual({
+			scanned: 0,
+			reconciled: 0,
+			quarantined: 0,
+			held: 0,
+		});
+	});
+
+	it("counts a typed engine invariant marker as held without fallback", async () => {
+		writeMarker(markerDir, "held");
+		const store = makeStore({
+			held: { status: "running", project_name: "geoforge3d" },
+		});
+		const result = await reconcileCompleteFailedMarkers({
+			store: store as never,
+			bridgeBaseUrl: "http://127.0.0.1:9876",
+			markerDir,
+			quarantineDir,
+			fetchFn: vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							reason: "transition_refused",
+							detail: { transitionReason: "engine_invariant:test" },
+						}),
+						{ status: 409 },
+					),
+			) as never,
+			log: () => {},
+		});
+
+		expect(result).toEqual({
+			scanned: 1,
+			reconciled: 0,
+			quarantined: 0,
+			held: 1,
+		});
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		expect(store.sessions.get("held")?.status).toBe("running");
+		expect(existsSync(join(markerDir, "held.json"))).toBe(true);
 	});
 
 	it("counts a settled blocked-after-approval marker as reconciled, never quarantined", async () => {
@@ -1554,7 +2037,12 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 			alertShipAttemptFailed: vi.fn(),
 			log: () => {},
 		});
-		expect(result).toEqual({ scanned: 1, reconciled: 1, quarantined: 0 });
+		expect(result).toEqual({
+			scanned: 1,
+			reconciled: 1,
+			quarantined: 0,
+			held: 0,
+		});
 		expect(existsSync(join(markerDir, "ship-attempt.json"))).toBe(false);
 	});
 
