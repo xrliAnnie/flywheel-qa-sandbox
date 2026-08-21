@@ -68,6 +68,13 @@
   }
   #copy-all:active { opacity: 0.8; }
   #copy-status { margin-left: 10px; font-size: 13px; color: #34c759; }
+  #summary-chunks { margin-top: 12px; }
+  #summary-chunks .chunk-copy {
+    margin: 0 8px 8px 0; padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border: 1px solid #007aff; background: #fff; color: #007aff;
+    border-radius: 8px; cursor: pointer;
+  }
+  #summary-chunks .chunk-copy:active { opacity: 0.8; }
   .footer-note { color: #86868b; font-size: 12px; margin-top: 26px; text-align: center; }
 </style>
 </head>
@@ -205,6 +212,7 @@
   <div class="section-title"><span class="dot" style="color:#1a365d;">●</span>你的评论汇总</div>
   <div id="summary-list"></div>
   <div id="summary-empty">还没有评论 — 在上面任意小节的输入框写下想法,这里会实时汇总。</div>
+  <div id="summary-chunks"></div>
   <button id="copy-all" type="button">复制全部评论</button><span id="copy-status"></span>
 </div>
 
@@ -241,6 +249,7 @@
       list.appendChild(item);
     });
     empty.style.display = count ? "none" : "block";
+    renderChunks();
   }
 
   areas.forEach(function (ta) {
@@ -252,14 +261,65 @@
   });
   renderSummary();
 
-  function collectAll() {
+  var MARKER = "【页面意见汇总】FLY-202";
+  var CHUNK_LIMIT = 1800;
+
+  function collectParts() {
     var parts = [];
     areas.forEach(function (ta) {
       var val = ta.value.trim();
       if (!val) return;
       parts.push("【" + ta.getAttribute("data-title") + "】\n" + val);
     });
-    return parts.join("\n\n");
+    return parts;
+  }
+
+  function splitOversize(part) {
+    var slices = [];
+    var budget = CHUNK_LIMIT - MARKER.length - 2;
+    for (var i = 0; i < part.length; i += budget) slices.push(part.slice(i, i + budget));
+    return slices;
+  }
+
+  function buildChunks() {
+    var parts = collectParts();
+    if (!parts.length) return [];
+    var pieces = [];
+    parts.forEach(function (p) {
+      if (MARKER.length + 2 + p.length > CHUNK_LIMIT) {
+        splitOversize(p).forEach(function (s) { pieces.push(s); });
+      } else {
+        pieces.push(p);
+      }
+    });
+    var chunks = [];
+    var cur = MARKER;
+    pieces.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  function renderChunks() {
+    var box = document.getElementById("summary-chunks");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var chunks = buildChunks();
+    if (chunks.length < 2) return;
+    chunks.forEach(function (chunk, i) {
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chunk-copy";
+      btn.textContent = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+      btn.addEventListener("click", function () { copyText(chunk); });
+      box.appendChild(btn);
+    });
   }
 
   function setStatus(msg) {
@@ -282,9 +342,7 @@
     setStatus(ok ? "已复制 ✓" : "复制失败 — 请手动全选汇总内容");
   }
 
-  document.getElementById("copy-all").addEventListener("click", function () {
-    var text = collectAll();
-    if (!text) { setStatus("没有可复制的评论"); return; }
+  function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(
         function () { setStatus("已复制 ✓"); },
@@ -293,6 +351,12 @@
     } else {
       legacyCopy(text);
     }
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var chunks = buildChunks();
+    if (!chunks.length) { setStatus("没有可复制的评论"); return; }
+    copyText(chunks.join("\n\n"));
   });
 })();
 </script>
