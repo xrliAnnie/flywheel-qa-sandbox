@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-21T20:43:33.058Z
-nextStep: Record verification evidence and prepare final commit/PR handoff
+phaseCursor: 4/4
+updated: 2026-08-21T20:43:48.263Z
+nextStep: Commit fixture refresh, push branch, verify PR head, and submit
+  needs_review handoff
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: Record verification evidence and prepare final commit/PR handoff
+**phase**: implement (4/4)
+**next**: Commit fixture refresh, push branch, verify PR head, and submit needs_review handoff
