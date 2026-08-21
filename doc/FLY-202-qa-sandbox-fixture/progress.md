@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
 phase: design
-phaseCursor: 1/2
-updated: 2026-08-21T19:48:16.767Z
-nextStep: publish design HTML + report to Lead + complete phase_design_complete
+phaseCursor: 2/2
+updated: 2026-08-21T19:48:55.086Z
+nextStep: phase_design_complete emitted; DAG engine owns graph advancement
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: design (1/2)
-**next**: publish design HTML + report to Lead + complete phase_design_complete
+**phase**: design (2/2)
+**next**: phase_design_complete emitted; DAG engine owns graph advancement
