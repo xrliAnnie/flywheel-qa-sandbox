@@ -112,6 +112,7 @@ lib/supervisor.sh
 lib/bridge-port.sh
 lib/lead-restart-lifecycle.sh
 lib/lead-body-sweep.sh
+lib/flywheel-log.sh
 lib/tmux-server-rescue.sh
 lib/self-ship-queue.sh
 lib/lead-body-evidence.sh

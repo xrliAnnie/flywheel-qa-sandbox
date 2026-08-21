@@ -79,6 +79,23 @@ _cnd_set_outcome() {
   NONLEAD_DAEMON_CONVERGE_DETAIL="$2"
 }
 
+# FLY-1887: this function is already on the unconditional full-restart path,
+# including same-SHA waves where build/install is skipped. Keep the global
+# one-shot Codex guard converged here so drift cannot survive until a new SHA.
+_cnd_converge_codex_guard() {
+  local repo_root installer
+  repo_root="${FLYWHEEL_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+  installer="$repo_root/scripts/install-codex-guard.sh"
+  if [[ ! -f "$installer" ]]; then
+    _cnd_log "WARNING: codex guard installer missing: $installer"
+    return 0
+  fi
+  if ! /bin/bash "$installer" >/dev/null; then
+    _cnd_log "ERROR: codex guard convergence failed; existing install left in place"
+  fi
+  return 0
+}
+
 # The Lead family is out of scope for this convergence (see header).
 nonlead_daemon_is_lead_label() {
   case "$1" in
@@ -917,6 +934,7 @@ converge_nonlead_daemons() {
   local converged_names="" failed_names="" disabled_names="" hold_names=""
   local setup_names="" managed_names="" drift_names="" processed_labels=""
 
+  _cnd_converge_codex_guard
   _cnd_set_outcome unverifiable "convergence did not run"
   domain=$(_cnd_domain)
   agents_dir=$(_cnd_launch_agents_dir)

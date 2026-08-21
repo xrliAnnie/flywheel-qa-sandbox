@@ -40,6 +40,12 @@ set -uo pipefail
 TRIGGER_NAME="codex_log_guard_block"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -r "$SCRIPT_DIR/lib/flywheel-log.sh" ]]; then
+  # shellcheck source=lib/flywheel-log.sh
+  source "$SCRIPT_DIR/lib/flywheel-log.sh"
+else
+  flywheel_log_rotate_if_needed() { return 0; }
+fi
 DB="${CODEX_LOG_DB:-${CODEX_HOME:-$HOME/.codex}/logs_2.sqlite}"
 LEVELS="${CODEX_LOG_GUARD_LEVELS:-TRACE}"
 THRESHOLD_BYTES="${CODEX_LOG_GUARD_THRESHOLD_BYTES:-268435456}"
@@ -189,6 +195,7 @@ cmd_monitor() {
   trig="no"; { db_exists && trigger_installed && trig="yes"; }
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   # Size-only line — never any log body.
+  flywheel_log_rotate_if_needed "$MONITOR_LOG"
   echo "$stamp db=$DB size_total_bytes=$size trigger_installed=$trig threshold_bytes=$THRESHOLD_BYTES" >> "$MONITOR_LOG" 2>/dev/null || true
 
   if db_exists && [ "$size" -ge "$THRESHOLD_BYTES" ]; then

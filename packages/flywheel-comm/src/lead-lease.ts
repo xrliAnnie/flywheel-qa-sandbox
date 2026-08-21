@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import {
-	appendFileSync,
 	closeSync,
 	existsSync,
 	fsyncSync,
@@ -17,6 +16,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
+import { appendRotatedLogSync } from "flywheel-config";
 import {
 	effectiveLeadBackend,
 	readCanonicalLeadCatalog,
@@ -2408,10 +2408,7 @@ function emitIndependentLeaseAlert(
 	}
 	try {
 		mkdirSync(dirname(logPath), { recursive: true });
-		appendFileSync(logPath, `${JSON.stringify(payload)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
+		appendRotatedLogSync(logPath, `${JSON.stringify(payload)}\n`);
 	} catch (error) {
 		process.stderr.write(
 			`[flywheel-comm] failed to append ${eventType} audit: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -2495,10 +2492,9 @@ function ensureRecurringLeaseAlert(
 				env.FLYWHEEL_LEAD_LEASE_AUDIT_LOG ??
 				join(homedir(), ".flywheel", "logs", "lead-lease-audit.log");
 			mkdirSync(dirname(logPath), { recursive: true, mode: 0o700 });
-			appendFileSync(
+			appendRotatedLogSync(
 				logPath,
 				`${JSON.stringify({ eventType, episodeId: result.episodeId, sourceFingerprint: result.sourceFingerprint, ...detail })}\n`,
-				{ encoding: "utf8", mode: 0o600 },
 			);
 		}
 	} catch (error) {

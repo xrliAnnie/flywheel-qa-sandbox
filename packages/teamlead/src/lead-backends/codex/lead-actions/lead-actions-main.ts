@@ -18,9 +18,10 @@
  * §10 real-machine QA (config gate / non-allowlist send).
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { appendRotatedLogSync } from "flywheel-config";
 import { runDiscordSend } from "../discord-send-core.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
@@ -92,7 +93,7 @@ export async function leadActionsMain(
 	// (a restart-window duplicate is acceptable for a chat companion, same trade-off
 	// as direct reactive outbound).
 	mkdirSync(cfg.stateDir, { recursive: true });
-	appendFileSync(
+	appendRotatedLogSync(
 		auditPath,
 		`${JSON.stringify({ ts: Date.now(), leadId: cfg.leadId, project: cfg.projectName, outcome: "audit_probe" })}\n`,
 	);

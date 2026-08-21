@@ -655,9 +655,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	// ── QA · FLY-1188 (real-machine E2E, 2026-07-13) ────────────────────────
 	// The founder TUI never rendered on a real machine: the pane died instantly
 	// with `Error: stdout is not a terminal` (exit 1). The adapter hands the TUI
-	// `flywheelCodexBin()` — the fallback shim — which pipes codex's stdout
-	// through `tee` to sniff 429s for account rotation. A piped stdout is not a
-	// TTY, and the `codex resume --remote` TUI refuses to run without one.
+	// `flywheelCodexBin()` — the fallback shim — which redirects codex's stdout
+	// to sniff 429s for account rotation. Redirected stdout is not a TTY, and the
+	// `codex resume --remote` TUI refuses to run without one.
 	//
 	// The DAEMON may keep the shim (`app-server` needs no TTY, and it wants the
 	// rotation); the founder-facing TUI must get a TTY-capable binary — exactly

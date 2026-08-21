@@ -83,6 +83,7 @@ ok=1
 [ -f "$PKG_ROOT/scripts/lib/lead-restart-lifecycle.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-body-sweep.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-body-evidence.sh" ] || ok=0
+[ -f "$PKG_ROOT/scripts/lib/flywheel-log.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/tmux-server-rescue.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/flywheel-comm/dist/index.js" ] || ok=0
 [ "$ok" -eq 1 ] && pass "②b monorepo path contracts hold through the mirror" \

@@ -3,6 +3,12 @@
 # Sourceable by launchers and executable as a small runtime CLI.
 
 _TMUX_RESCUE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -r "$_TMUX_RESCUE_LIB_DIR/flywheel-log.sh" ]; then
+  # shellcheck source=flywheel-log.sh
+  source "$_TMUX_RESCUE_LIB_DIR/flywheel-log.sh"
+else
+  flywheel_log_rotate_if_needed() { return 0; }
+fi
 if [ -x "$_TMUX_RESCUE_LIB_DIR/../lead-alert.sh" ]; then
   _TMUX_RESCUE_DEFAULT_ALERT_BIN="$_TMUX_RESCUE_LIB_DIR/../lead-alert.sh"
 else
@@ -940,6 +946,7 @@ _tmux_rescue_release_now() {
 _tmux_rescue_audit() {
   local log_dir="${HOME}/.flywheel/logs"
   mkdir -p "$log_dir" 2>/dev/null || return 0
+  flywheel_log_rotate_if_needed "$log_dir/tmux-rescue-audit.log"
   printf '%s %s\n' "$(_tmux_rescue_now 2>/dev/null || date +%s)" "$*" \
     >> "$log_dir/tmux-rescue-audit.log" 2>/dev/null || true
   return 0

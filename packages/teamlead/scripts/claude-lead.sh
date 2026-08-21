@@ -257,6 +257,12 @@ mkdir -p "$SESSION_DIR"
 # GEO-286: $3 is project-name IF it doesn't start with "--".
 # Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -r "$SCRIPT_DIR/../../../scripts/lib/flywheel-log.sh" ]; then
+  # shellcheck source=scripts/lib/flywheel-log.sh
+  source "$SCRIPT_DIR/../../../scripts/lib/flywheel-log.sh"
+else
+  flywheel_log_rotate_if_needed() { return 0; }
+fi
 # FLY-83: FLYWHEEL_ROOT for locating scripts/lead-alert.sh (independent alert path).
 # SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
 FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -1485,6 +1491,7 @@ mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
 FLYWHEEL_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
 FLYWHEEL_STARTUP_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
 _log_startup() {
+  flywheel_log_rotate_if_needed "$FLYWHEEL_STARTUP_LOG"
   echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
 }
 # FLY-1679: v2 dev-channels dialog detection runs inside the private tmux server.

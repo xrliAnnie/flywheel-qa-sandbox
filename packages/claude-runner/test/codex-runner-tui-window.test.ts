@@ -834,9 +834,9 @@ describe("killRunnerTuiWindow", () => {
 //     TUI EXITED WITH CODE=1
 //
 // Root cause: the TUI was launched through `flywheel-codex-with-fallback`, which
-// pipes codex's stdout through `tee` (to sniff 429s for account rotation). That
-// makes stdout a PIPE, and a TUI refuses to render without a real TTY. The
-// daemon may keep using the shim (`app-server` needs no TTY); the TUI may not.
+// redirects codex's stdout to sniff 429s for account rotation. That removes the
+// TTY, and a TUI refuses to render without one. The daemon may keep using the
+// shim (`app-server` needs no TTY); the TUI may not.
 describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
 	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", async () => {
 		// tmux accepts every command and the purge/verify pass, but the window never

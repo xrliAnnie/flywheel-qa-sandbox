@@ -23,6 +23,7 @@ import json  # noqa: E402
 import os  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import time  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 HOOK = Path(__file__).resolve().parent / "discord-reply-enforcer.py"
@@ -169,6 +170,35 @@ DIAGNOSTIC_QUOTE = (
 
 def main() -> int:
     mod = load_hook_module()
+
+    print("Unit: stale reply-enforcer log lock recovery")
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "reply-enforcer.log"
+        lock = Path(f"{log}.rotate.lock")
+        log.write_text("stale-lock-evidence\n")
+        lock.mkdir()
+        old_lock_time = time.time() - 10 * 60
+        os.utime(lock, (old_lock_time, old_lock_time))
+        prior = os.environ.get("FLYWHEEL_REPLY_ENFORCER_LOG")
+        os.environ["FLYWHEEL_REPLY_ENFORCER_LOG"] = str(log)
+        old_max = mod.LOG_MAX_BYTES
+        try:
+            mod.LOG_MAX_BYTES = 8
+            mod.log("after-stale-lock")
+        finally:
+            mod.LOG_MAX_BYTES = old_max
+            if prior is None:
+                os.environ.pop("FLYWHEEL_REPLY_ENFORCER_LOG", None)
+            else:
+                os.environ["FLYWHEEL_REPLY_ENFORCER_LOG"] = prior
+        archive = Path(f"{log}.1")
+        assert_unit(
+            "stale crash-residue lock is recovered before reply-enforcer append",
+            archive.exists()
+            and archive.read_text() == "stale-lock-evidence\n"
+            and "after-stale-lock" in log.read_text()
+            and not lock.exists(),
+        )
 
     # ───────────────────────── UNIT: LEAK_RE ────────────────────────────────
     print("Unit: LEAK_RE")

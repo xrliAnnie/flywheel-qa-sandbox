@@ -121,6 +121,31 @@ describe("BridgeEventLoopGuard (main-side mechanics, injected worker)", () => {
 		expect(wd._peekHeartbeat()).toBeNull();
 	});
 
+	it("rotates the forensic log in the parent before spawning the worker", () => {
+		const order: string[] = [];
+		const wd = new BridgeEventLoopGuard({
+			enabled: true,
+			logPath: "/tmp/bridge-loop-guard.test.log",
+			now: () => 1,
+			ensureDir: () => order.push("ensure"),
+			rotateLog: (path) => {
+				order.push(`rotate:${path}`);
+				return true;
+			},
+			createWorker: () => {
+				order.push("worker");
+				return stubWorker();
+			},
+		});
+		wd.start();
+		expect(order).toEqual([
+			"ensure",
+			"rotate:/tmp/bridge-loop-guard.test.log",
+			"worker",
+		]);
+		wd.stop();
+	});
+
 	it("enabled:false → no worker spawned, no heartbeat", () => {
 		const create = vi.fn(() => stubWorker());
 		const wd = new BridgeEventLoopGuard({

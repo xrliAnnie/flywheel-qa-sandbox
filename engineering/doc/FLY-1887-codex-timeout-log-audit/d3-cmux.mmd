@@ -1,0 +1,27 @@
+flowchart TB
+    subgraph m["① 实测（带对照组）"]
+        direction LR
+        M1["cmux 后台进程<br/>每天写盘 5,704 MiB"] --> M2["同机另外 4 个<br/>长期运行的同类进程<br/>每天写盘 0 MiB"] --> M3["系统给后台进程的配额<br/>是每天 2,048 MiB<br/>约 8.6 小时就打满"]
+    end
+    subgraph h["② 找去向"]
+        direction LR
+        H1["把所有状态文件<br/>和日志盯了 50 秒"] --> H2["只涨了 5 KB<br/>约占实测量的 0.2%"] --> H3["剩下 99.8%<br/>没落在任何<br/>看得见的文件上"]
+    end
+    subgraph c["③ 根因"]
+        direction LR
+        C1["脚本里有个写法<br/>每用一次<br/>就偷偷建一个临时文件"] --> C2["写进去、然后立刻删掉<br/>固定 4 KiB<br/>和内容多短无关"] --> C3["建了就删<br/>所以按文件大小<br/>怎么查都查不到"]
+    end
+    subgraph p["④ 2×2 对照矩阵"]
+        direction LR
+        P1["自己写 8 MiB → 看得见<br/>证明尺子没坏"] --> P2["子进程写 8 MiB → 看不见<br/>所以是它自己写的"] --> P3["用 2000 次 → 8.2 MB<br/>同样循环去掉它 → 0<br/>证明不是循环的锅"]
+    end
+    subgraph f["⑤ 解法（替换方案也已实测）"]
+        direction LR
+        F1["换成另一种等价写法<br/>实测 0 字节"] --> F2["但禁用最直觉的那种改法<br/>它会让循环里的变量<br/>静默丢失"]
+    end
+
+    style M1 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style M2 fill:#eef4ff,stroke:#007aff,stroke-width:2px
+    style C3 fill:#fff4e0,stroke:#ff9500,stroke-width:2px
+    style F1 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
+    style F2 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px

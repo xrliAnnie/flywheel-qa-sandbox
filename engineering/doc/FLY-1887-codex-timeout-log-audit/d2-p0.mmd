@@ -1,0 +1,22 @@
+flowchart TB
+    subgraph now["现在的样子"]
+        direction LR
+        S1["一次性的 codex 调用<br/>（比如每轮代码评审）"] --> S2["没有任何时间上限"]
+        S2 --> S3["一旦卡住<br/>就永远卡着"]
+        S3 --> S4["最老的一个<br/>空转了 4.66 天"]
+    end
+    subgraph fix["改后：两层保护"]
+        direction LR
+        T1["① 硬超时<br/>单次有上限<br/>整轮还有总预算"] --> T2["超时是终局<br/>不重试、不换账号<br/>（否则一次卡死变五次）"]
+        T2 --> T3["② 清道夫<br/>每次新调用时<br/>顺手扫一遍"]
+    end
+    subgraph safe["为什么不会误杀"]
+        direction LR
+        R1["只有登记过的<br/>一次性调用<br/>才进候选名单"] --> R2["长期运行的 Lead<br/>和后台服务<br/>不在任何名单里"]
+        R2 --> R3["所以不是<br/>『我们判断得准』<br/>而是它根本不在候选里"]
+    end
+
+    style S3 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style S4 fill:#ffe9e7,stroke:#ff3b30,stroke-width:2px
+    style T1 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
+    style R3 fill:#e7f6ec,stroke:#34c759,stroke-width:2px
