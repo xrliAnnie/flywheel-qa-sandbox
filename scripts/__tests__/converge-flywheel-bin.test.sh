@@ -30,7 +30,8 @@ cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
 for f in flywheel-lead-wrapper-v2.sh \
-    flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh \
+    flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+    flywheel-bridge-wrapper.sh restart-services.sh \
     lib/bounded-run.sh lib/lead-address.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
@@ -48,7 +49,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do

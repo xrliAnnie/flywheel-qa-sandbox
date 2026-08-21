@@ -80,7 +80,8 @@ fi
 rm -f "$ROSTER_EPISODE_STATE"
 read_roster_tmux_inventory() { return 1; }
 tmux() {
-  [[ "$1" == "-S" && "$2" == "$socket" && "$3" == "has-session" ]]
+  [[ "$1" == "-S" && "$2" == "$socket" ]] || return 1
+  case "$3" in has-session|list-clients) return 0 ;; *) return 1 ;; esac
 }
 reconcile_lead_roster
 if ! grep -qE '^(roster-blind|lead-window-missing)\|' "$ROSTER_EPISODE_STATE" 2>/dev/null; then
@@ -139,6 +140,7 @@ get_cmux_workspaces_json() {
   printf '%s\n' '{"workspaces":[{"ref":"workspace:9","title":"demo-ops-lead"}]}'
 }
 ledger_candidate_receipt_state() { printf '%s\n' committed; }
+printf '%s\n' 'committed|gen-1|workspace:9|demo-ops-lead' > "$VIEW_LEDGER"
 workspace_terminal_surface_ref() { printf '%s\n' surface:3; }
 surface_looks_like_bare_shell() { return 0; }
 if ensure_v2_lead_workspace demo-ops-lead "$socket" \

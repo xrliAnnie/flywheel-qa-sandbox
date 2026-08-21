@@ -298,6 +298,30 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: loaded-without-owner startup grace in seconds (FLY-1944)",
 	FLYWHEEL_TMUX_3_7C_BIN:
 		"plumbing: exact tmux 3.7c binary path required by the no-skip compatibility gate (FLY-1944)",
+	FLYWHEEL_CMUX_VIEW_HELPER_BIN:
+		"plumbing: absolute runner-view reconnect helper path (FLY-1884)",
+	FLYWHEEL_CMUX_ATTACH_TMUX_BIN:
+		"plumbing: absolute tmux executable pinned into persisted cmux commands (FLY-1884)",
+	FLYWHEEL_CMUX_ATTACH_HEAL_STATE:
+		"plumbing: durable bounded attach-recovery state path (FLY-1884)",
+	FLYWHEEL_CMUX_ATTACH_RETRIES:
+		"tuning knob: attach sends reserved before one native pane rebuild (FLY-1884)",
+	FLYWHEEL_CMUX_NODE_STATUS_BIN:
+		"plumbing: absolute windowless-node status helper path (FLY-1884)",
+	FLYWHEEL_CMUX_NODE_STATUS_DIR:
+		"plumbing: atomic status-file directory for windowless node surfaces (FLY-1884)",
+	FLYWHEEL_CMUX_NODE_RECENT_HOURS:
+		"tuning knob: recent operational-terminal roster lookback hours (FLY-1884)",
+	FLYWHEEL_CMUX_NODE_SUMMARY_TTL_HOURS:
+		"tuning knob: founder-visible terminal node summary retention (FLY-1884)",
+	FLYWHEEL_CMUX_NODE_TABS_MAX:
+		"tuning knob: terminal-summary-only cmux node tab cap (FLY-1884)",
+	FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES:
+		"tuning knob: determinate absent passes before stale prepared receipt GC (FLY-1884)",
+	FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES:
+		"tuning knob: determinate drift passes before stale prepared receipt release (FLY-1884)",
+	FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS:
+		"tuning knob: minimum prepared receipt age before recovery counters advance (FLY-1884)",
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",

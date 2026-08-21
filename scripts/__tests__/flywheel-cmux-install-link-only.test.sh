@@ -19,6 +19,8 @@ for path in \
   scripts/lead-alert.sh \
   scripts/meta-alert.sh \
   scripts/flywheel-lead-attach.sh \
+  scripts/flywheel-view-attach.sh \
+  scripts/flywheel-node-status.sh \
   scripts/lib/cmux-mutator-process-census.sh \
   scripts/lib/flywheel-alert-lib.sh \
   scripts/lib/path-hygiene.sh; do
@@ -52,5 +54,7 @@ assert_link flywheel-alert-lib.sh scripts/lib/flywheel-alert-lib.sh
 assert_link lead-alert.sh scripts/lead-alert.sh
 assert_link meta-alert.sh scripts/meta-alert.sh
 assert_link flywheel-lead-attach.sh scripts/flywheel-lead-attach.sh
+assert_link flywheel-view-attach.sh scripts/flywheel-view-attach.sh
+assert_link flywheel-node-status.sh scripts/flywheel-node-status.sh
 
 echo "flywheel-cmux-install --link-only: ok"

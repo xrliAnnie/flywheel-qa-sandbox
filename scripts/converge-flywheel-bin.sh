@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -89,7 +89,7 @@ FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapp
 # in package-onboard.sh's PO_SCRIPT_FILES whitelist and packaged-seams.test.sh
 # S0 asserts the closure is executable there — so they stay in both branches.)
 if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
 fi
 
 log() { echo "[converge-bin] $*"; }

@@ -1,8 +1,13 @@
 import type http from "node:http";
+import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { CaptureSessionFn } from "../bridge/tools.js";
 import type { BridgeConfig } from "../bridge/types.js";
+import {
+	CMUX_LIVE_SESSION_STATUSES,
+	OPERATIONAL_TERMINAL_STATUSES,
+} from "../operational-terminal-status.js";
 import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -78,6 +83,104 @@ describe("Query tools", () => {
 		expect(body.sessions.map((s: any) => s.execution_id).sort()).toEqual([
 			"e1",
 			"e2",
+		]);
+	});
+
+	it("GET /api/sessions?mode=live returns every cmux-visible live status", async () => {
+		for (const status of CMUX_LIVE_SESSION_STATUSES) {
+			store.upsertSession({
+				execution_id: status,
+				issue_id: status,
+				project_name: "p",
+				status,
+			});
+		}
+		store.upsertSession({
+			execution_id: "completed",
+			issue_id: "completed",
+			project_name: "p",
+			status: "completed",
+		});
+
+		const body = await (
+			await fetch(`${baseUrl}/api/sessions?mode=live`)
+		).json();
+		expect(body.sessions.map((s: any) => s.status).sort()).toEqual(
+			[...CMUX_LIVE_SESSION_STATUSES].sort(),
+		);
+	});
+
+	it("classifies every workflow status as live or terminal for cmux", () => {
+		const classified = new Set([
+			...CMUX_LIVE_SESSION_STATUSES,
+			...OPERATIONAL_TERMINAL_STATUSES,
+		]);
+		expect(
+			Object.keys(WORKFLOW_TRANSITIONS).filter(
+				(status) => !classified.has(status),
+			),
+		).toEqual([]);
+	});
+
+	it("GET /api/sessions?mode=recent_terminal returns only recent operational terminals", async () => {
+		const hoursAgo = (hours: number) =>
+			toSqlite(new Date(Date.now() - hours * 60 * 60_000));
+		for (const [execution_id, status, hours] of [
+			["completed", "completed", 1],
+			["failed", "failed", 47],
+			["parked", "approved_to_ship", 1],
+			["running", "running", 1],
+			["old", "terminated", 49],
+		] as const) {
+			store.upsertSession({
+				execution_id,
+				issue_id: execution_id,
+				project_name: "p",
+				status,
+				last_activity_at: hoursAgo(hours),
+			});
+		}
+
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=recent_terminal&hours=48`,
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.sessions.map((s: any) => s.execution_id).sort()).toEqual([
+			"completed",
+			"failed",
+		]);
+	});
+
+	it("recent_terminal defaults invalid hours to 48 and caps the window at 168", async () => {
+		const hoursAgo = (hours: number) =>
+			toSqlite(new Date(Date.now() - hours * 60 * 60_000));
+		for (const [execution_id, hours] of [
+			["recent", 1],
+			["within-cap", 100],
+			["beyond-cap", 170],
+		] as const) {
+			store.upsertSession({
+				execution_id,
+				issue_id: execution_id,
+				project_name: "p",
+				status: "completed",
+				last_activity_at: hoursAgo(hours),
+			});
+		}
+
+		const invalid = await (
+			await fetch(`${baseUrl}/api/sessions?mode=recent_terminal&hours=nope`)
+		).json();
+		expect(invalid.sessions.map((s: any) => s.execution_id)).toEqual([
+			"recent",
+		]);
+		const capped = await (
+			await fetch(`${baseUrl}/api/sessions?mode=recent_terminal&hours=999`)
+		).json();
+		expect(capped.sessions.map((s: any) => s.execution_id).sort()).toEqual([
+			"recent",
+			"within-cap",
 		]);
 	});
 

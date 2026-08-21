@@ -52,7 +52,8 @@ fi
 
 closure_ok=1
 for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh \
-  flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh lib/lead-address.sh; do
+  flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh \
+  flywheel-node-status.sh lib/lead-address.sh; do
   [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
 done
 if [ "$closure_ok" -eq 1 ]; then
@@ -75,7 +76,8 @@ mk_tree() {
   fi
   for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh daily-standup.sh \
            update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
-           launchd-census.sh restart-storm-gate.py meta-alert.sh lead-alert.sh; do
+           launchd-census.sh restart-storm-gate.py meta-alert.sh lead-alert.sh \
+           flywheel-view-attach.sh flywheel-node-status.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
   for f in lib/script-sanity.sh lib/host-config.sh lib/supervisor.sh \
@@ -264,7 +266,8 @@ echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # so steady state now has to include them or this case counts their repairs.
 mkdir -p "$H/.flywheel/bin/lib"
 for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
-  flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
+  flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh \
+  restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?

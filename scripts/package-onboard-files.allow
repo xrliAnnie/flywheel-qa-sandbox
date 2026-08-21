@@ -27,6 +27,8 @@ scripts/daily-standup.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-lead-wrapper-v2.sh
 scripts/flywheel-lead-attach.sh
+scripts/flywheel-view-attach.sh
+scripts/flywheel-node-status.sh
 scripts/restart-storm-gate.py
 scripts/lead-alert.sh
 scripts/meta-alert.sh

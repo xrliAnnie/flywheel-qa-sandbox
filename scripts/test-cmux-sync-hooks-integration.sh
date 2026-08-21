@@ -538,6 +538,7 @@ export FLY293_OPS_FILE
 cmux() {
   [[ "${1:-}" == "--socket" ]] && shift 2
   [[ "${1:-}" == "--json" ]] && shift
+  [[ "${1:-}" == "--id-format" && "${2:-}" == "both" ]] && shift 2
   case "${1:-}" in
     list-workspaces)
       cat <<'FLY293JSON'

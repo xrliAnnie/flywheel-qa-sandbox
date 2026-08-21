@@ -31,6 +31,10 @@ set -uo pipefail  # not -e: we want to keep going on test failures
 PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+export FLYWHEEL_CMUX_VIEW_HELPER_BIN="$SCRIPT_DIR/flywheel-view-attach.sh"
+# Existing regression sections assert the pre-FLY-1884 cleanup byte shape.
+# Dedicated FLY-1884 sections opt the node layer in explicitly.
+export FLYWHEEL_CMUX_NODE_PRESENCE=0
 
 pass() { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
@@ -53,6 +57,7 @@ export EVENT_FILE="$TMPDIR_ROOT/events"
 export CLEANUP_PENDING="$TMPDIR_ROOT/cleanup-pending"
 export STALE_STATE="$TMPDIR_ROOT/stale.state"
 export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
+export ATTACH_HEAL_STATE="$TMPDIR_ROOT/attach-heal.state"  # FLY-1884
 export CREATE_STATE="$TMPDIR_ROOT/create.state"  # FLY-825
 export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
@@ -70,6 +75,8 @@ export FLYWHEEL_CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"  # F
 export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
 export CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"  # FLY-1596
+export PREPARED_STALL_STATE="$TMPDIR_ROOT/prepared-stall.state"  # FLY-1884
+export CMUX_ADDITIVE_ROUND_STATE="$TMPDIR_ROOT/cmux-additive-round.state"  # FLY-1884
 export FLYWHEEL_CMUX_TMUX_GENERATION="tmux-test-generation"  # FLY-1272
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
@@ -111,6 +118,8 @@ MOCK_PS_MODE=""             # FLY-1605: hermetic timezone-sensitive lstart seam
 MOCK_TMUX_SERVER_PID="4242"
 MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
 MOCK_PRIVATE_TMUX_SOCKET=""
+MOCK_PRIVATE_TMUX_SESSION="1"
+MOCK_PRIVATE_TMUX_CLIENTS="1"
 
 # FLY-1272 P0: opt-in, file-backed tmux topology model. The linked-view
 # state machine performs tmux reads inside command substitutions, so ordinary
@@ -505,8 +514,15 @@ tmux() {
     shift 2
     [[ "$private_socket" == "$MOCK_PRIVATE_TMUX_SOCKET" ]] || return 1
     case "${1:-}" in
+      has-session) [[ "$MOCK_PRIVATE_TMUX_SESSION" == 1 ]] ;;
       list-panes) printf '%%0|main|0|4242\n' ;;
-      list-clients) printf '4243\n' ;;
+      list-clients)
+        local private_i=1
+        while [[ "$private_i" -le "${MOCK_PRIVATE_TMUX_CLIENTS:-0}" ]]; do
+          printf 'private-client-%s\n' "$private_i"
+          private_i=$((private_i + 1))
+        done
+        ;;
       *) return 1 ;;
     esac
     return 0
@@ -773,6 +789,13 @@ cmux() {
     json_mode=1
     shift
   fi
+  # FLY-1884: production identity reads request refs + immutable workspace
+  # UUIDs in one snapshot. The mock payload already carries both fields; only
+  # consume the global CLI option here so the command dispatch stays faithful.
+  if [[ "${1:-}" == "--id-format" ]]; then
+    [[ "${2:-}" == "both" ]] || return 1
+    shift 2
+  fi
   case "${1:-}" in
     list-workspaces)
       if (( json_mode == 1 )); then
@@ -804,6 +827,13 @@ cmux() {
           wj_n=$((wj_n + 1)); echo "$wj_n" > "$wj_file"
           (( wj_n > MOCK_CMUX_JSON_SEQ_N )) && wj_n=$MOCK_CMUX_JSON_SEQ_N
           cat "$TMPDIR_ROOT/wsjson.$wj_n"
+        elif [[ -f "$TMPDIR_ROOT/fly1884-uuid.override" ]]; then
+          printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+d["workspaces"][0]["id"]=open(sys.argv[1]).read()
+print(json.dumps(d))
+' "$TMPDIR_ROOT/fly1884-uuid.override"
         else
           echo "$MOCK_CMUX_WORKSPACES_JSON"
         fi
@@ -839,7 +869,7 @@ print(json.dumps(d))' "$close_ref")
     new-workspace)
       MOCK_CMUX_OPS+="$*"$'\n'
       if [[ "${MOCK_CMUX_MUTATE_JSON:-0}" == "1" ]]; then
-        local next_n next_ref new_json create_command="" create_title="__NULL__"
+        local next_n next_ref next_uuid new_json create_command="" create_title="__NULL__"
         shift
         while [[ $# -gt 0 ]]; do
           case "$1" in
@@ -852,17 +882,20 @@ print(json.dumps(d))' "$close_ref")
         fi
         next_n=$(cat "$TMPDIR_ROOT/cmux.next-ref" 2>/dev/null || echo 100)
         next_ref="workspace:${next_n}"
+        next_uuid="${MOCK_CMUX_NEXT_UUID:-00000000-0000-4000-8000-$(printf '%012d' "$next_n")}"
         echo $((next_n + 1)) > "$TMPDIR_ROOT/cmux.next-ref"
         new_json=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
 import json,sys
 d=json.load(sys.stdin)
 title=None if sys.argv[2] == "__NULL__" else sys.argv[2]
-d.setdefault("workspaces",[]).append({"ref":sys.argv[1],"title":title})
-print(json.dumps(d))' "$next_ref" "$create_title")
+d.setdefault("workspaces",[]).append({"ref":sys.argv[1],"title":title,"id":sys.argv[3]})
+print(json.dumps(d))' "$next_ref" "$create_title" "$next_uuid")
         MOCK_CMUX_WORKSPACES_JSON="$new_json"
-        if [[ "${MOCK_CMUX_MUTATE_SURFACES:-0}" == "1" ]]; then
-          MOCK_CMUX_SURFACES+="${MOCK_CMUX_SURFACES:+$'\n'}${next_ref};;surface:${next_n};;terminal;;true;;${create_command}"
-        fi
+        # A successful terminal workspace create always has one terminal
+        # surface. Keep that new object mutation-faithful automatically;
+        # manually seeded surface fixtures remain opt-in below.
+        MOCK_CMUX_MUTATE_SURFACES=1
+        MOCK_CMUX_SURFACES+="${MOCK_CMUX_SURFACES:+$'\n'}${next_ref};;surface:${next_n};;terminal;;true;;${create_command}"
       fi
       ;;
     rename-workspace)
@@ -904,7 +937,7 @@ print(json.dumps(d))' "$rename_ref" "$rename_title")
         rm -f "$tab_tmp"
       fi
       ;;
-    send|send-key|refresh-surfaces)
+    send|send-key|respawn-pane|set-status|clear-status|refresh-surfaces)
       # FLY-169: capture send / send-key / refresh-surfaces too (with their
       # --surface args) so tests can assert surface-scoped self-heal sends.
       MOCK_CMUX_OPS+="$*"$'\n'
@@ -1067,6 +1100,8 @@ reset_mocks() {
   CMUX_WAL_BLOCKED_VIEWS=""
   CMUX_TITLE_TOPOLOGY_REFUSED_KEYS=""
   FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
+  FLYWHEEL_CMUX_VIEW_HELPER=1
+  FLYWHEEL_CMUX_VIEW_HELPER_BIN="$SCRIPT_DIR/flywheel-view-attach.sh"
   topo_reset
   MOCK_TMUX_WINDOWS=""
   MOCK_PANE_DEAD=""
@@ -1091,10 +1126,13 @@ reset_mocks() {
   MOCK_CMUX_MUTATE_JSON="0"
   MOCK_CMUX_MUTATE_SURFACES="0"
   MOCK_CMUX_NEW_WORKSPACE_TITLE_FROM_COMMAND="0"
+  MOCK_CMUX_NEXT_UUID=""
   MOCK_PS_MODE=""
   MOCK_TMUX_SERVER_PID="4242"
   MOCK_TMUX_SOCKET_PATH="$TMPDIR_ROOT/mock-tmux.sock"
   MOCK_PRIVATE_TMUX_SOCKET=""
+  MOCK_PRIVATE_TMUX_SESSION="1"
+  MOCK_PRIVATE_TMUX_CLIENTS="1"
   rm -f "$TMPDIR_ROOT/ps.calls"
   # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
   MOCK_TMUX_LIST_FAIL="0"        # 1 = tmux list-sessions fails (server down)
@@ -1139,6 +1177,8 @@ reset_mocks() {
   MOCK_SLEEP_ARGS=""            # sleep-mock recorded durations
   MOCK_SLEEP_HOOK=""            # eval'd on each mocked sleep (flip state mid-wait)
   HEAL_RENDER_ESCALATE=0
+  ATTACH_HEAL_STATE="$TMPDIR_ROOT/attach-heal.state"
+  FLYWHEEL_CMUX_ATTACH_RETRIES=""
   REOPEN_CONSUMED_THIS_TICK=0
   REOPEN_CACHE_IDENT=""         # FLY-254 CR-M6 in-process cache
   REOPEN_CACHE_STATE=""
@@ -1155,7 +1195,7 @@ reset_mocks() {
   rm -f "$TMPDIR_ROOT/mutator-census.n" 2>/dev/null
   # FLY-129 Phase 3: reset JSON transition state so per-test logging is clean.
   CMUX_JSON_LAST_STATE="unknown"
-  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE" "$CREATE_STATE"
+  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE" "$ATTACH_HEAL_STATE" "$CREATE_STATE"
   # FLY-825
   FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS=""
   MOCK_PGREP_PIDS=""            # pgrep mock: space-separated PID list to echo
@@ -1166,7 +1206,7 @@ reset_mocks() {
   MOCK_KILL_INTERCEPT="0"       # 0 (default) = kill() delegates to the REAL builtin
                                  # (byte-compat with every pre-existing real-process test);
                                  # 1 = wait_for_watcher_exit tests opt in to recording-only mode
-  rm -f "$TMPDIR_ROOT"/clients.*.n
+  rm -f "$TMPDIR_ROOT"/clients.*.n "$TMPDIR_ROOT"/fly1884-uuid.override
   rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
   rm -f "$TMPDIR_ROOT/cmux.next-ref"
   rm -f "$TMPDIR_ROOT/fixed-topology.seeded" "$TMPDIR_ROOT/fixed-receipts.seeded"
@@ -1181,6 +1221,13 @@ reset_mocks() {
   rm -f "$ROSTER_EPISODE_STATE"
   CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"
   rm -f "$CMUX_LOG_EPISODE_STATE"
+  PREPARED_STALL_STATE="$TMPDIR_ROOT/prepared-stall.state"
+  CMUX_ADDITIVE_ROUND_STATE="$TMPDIR_ROOT/cmux-additive-round.state"
+  CMUX_ADDITIVE_ROUND_ID=""
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=""
+  FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=""
+  FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=""
+  rm -f "$PREPARED_STALL_STATE" "$CMUX_ADDITIVE_ROUND_STATE"
   rm -f "$TMPDIR_ROOT/fly1364-alert-args"
   CMUX_CLEANUP_ALERT_LATCH=""
   CMUX_CLEANUP_ALERT_LATCH_COUNT=0
@@ -2884,10 +2931,10 @@ FLYWHEEL_CMUX_ATTACH_TMUX_BIN="$TMPDIR_ROOT/invalid'wrapper"
 invalid_attach_rc=0
 build_attach_command "cmux-lead-a" >/dev/null 2>&1 || invalid_attach_rc=$?
 unset FLYWHEEL_CMUX_ATTACH_TMUX_BIN
-if [[ "$default_attach" == "env -u TMUX tmux attach -t '=cmux-lead-a'" ]] \
-    && [[ "$isolated_attach" == "env -u TMUX '$attach_wrapper' attach -t '=cmux-lead-a'" ]] \
+if [[ "$default_attach" == "env -u TMUX '$FLYWHEEL_CMUX_VIEW_HELPER_BIN' 'cmux-lead-a'" ]] \
+    && [[ "$isolated_attach" == "env -u TMUX FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$attach_wrapper' '$FLYWHEEL_CMUX_VIEW_HELPER_BIN' 'cmux-lead-a'" ]] \
     && [[ "$invalid_attach_rc" != "0" ]]; then
-  pass "attach command keeps the production default and validates the isolated-server seam"
+  pass "attach command uses the reconnect helper and validates the isolated-server seam"
 else
   fail "attach command seam mismatch default=[$default_attach] isolated=[$isolated_attach] invalid_rc=$invalid_attach_rc"
 fi
@@ -2896,7 +2943,8 @@ fi
 # selected terminal surface, NO separate send-key, + select-window + refresh
 fly169_setup_one 0
 self_heal_one_workspace "lead-a"
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1 env -u TMUX tmux attach -t '=cmux-lead-a'"; then
+expected_attach=$(build_attach_command "cmux-lead-a")
+if echo "$MOCK_CMUX_OPS" | grep -qF "send --workspace workspace:1 --surface surface:1 $expected_attach"; then
   pass "0-client: atomic send scoped to --workspace + selected --surface with attach cmd (FLY-756: env -u TMUX)"
 else
   fail "expected surface-scoped attach send; got: $MOCK_CMUX_OPS"
@@ -2964,7 +3012,8 @@ fi
 fly169_setup_one 0
 MOCK_CMUX_SURFACES=$'workspace:1;;surface:9;;terminal;;\nworkspace:1;;surface:7;;terminal;;true'
 self_heal_one_workspace "lead-a"
-if echo "$MOCK_CMUX_OPS" | grep -q -- "--surface surface:7 env -u TMUX tmux attach"; then
+expected_attach=$(build_attach_command "cmux-lead-a")
+if echo "$MOCK_CMUX_OPS" | grep -qF -- "--surface surface:7 $expected_attach"; then
   pass "multi-surface: send targets the SELECTED terminal surface:7 (not surface:9)"
 else
   fail "wrong surface targeted; got: $MOCK_CMUX_OPS"
@@ -3028,10 +3077,10 @@ MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
 MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:2"}]}'
 MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:2;;surface:2;;terminal;;true'
-# FLY-756: plain heal now runs a per-ref final 0-client guard between GATE1 and
-# the send, so ref1 consumes an extra list-clients read. Sequence right-shifts:
-# outer=0, ref1 GATE1=0, ref1 FINAL-GUARD=0 (atomic send), ref2 GATE1=2 (break).
-MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,0,2"
+# FLY-1884: the guarded mutation repeats authority probes after read-screen,
+# then makes its second client count the final tmux proof before send. Sequence:
+# outer=0, ref1 GATE1=0, guard pre-screen=0, guard final=0 (send), ref2 GATE1=2.
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,0,0,2"
 self_heal_one_workspace "lead-a"
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1"; then pass "mid-loop: first ref sent"; else fail "first ref should send"; fi
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2"; then fail "second ref must NOT send after client appears"; else pass "mid-loop: loop breaks before second ref"; fi
@@ -3066,6 +3115,31 @@ else
   fail "expected 1 send + 0 send-key; got send=$SEND_N send-key=$SENDKEY_N. Ops: $MOCK_CMUX_OPS"
 fi
 
+# FLY-1884: a pane that remains a bare shell cannot receive unbounded attach
+# injection. Three reserved sends are followed by one native pane rebuild.
+fly169_setup_one 0
+for _fly1884_attempt in 1 2 3 4 5; do self_heal_one_workspace "lead-a"; done
+SEND_N=$(grep -c '^send --workspace workspace:1' <<< "$MOCK_CMUX_OPS" || true)
+RESPAWN_N=$(grep -c '^respawn-pane --workspace workspace:1' <<< "$MOCK_CMUX_OPS" || true)
+if [[ "$SEND_N" == 3 && "$RESPAWN_N" == 1 ]]; then
+  pass "FLY-1884 ordinary attach recovery is bounded at three sends plus one rebuild"
+else
+  fail "FLY-1884 ordinary recovery budget drifted send=$SEND_N respawn=$RESPAWN_N ops=[$MOCK_CMUX_OPS]"
+fi
+
+# Exact cmux no-PTY failure is stronger than a shell prompt and skips directly
+# to a single rebuild; a subsequent pass observes durable rebuilt state.
+fly169_setup_one 0
+MOCK_CMUX_READSCREEN='open terminal failed: not a terminal'
+self_heal_one_workspace "lead-a"
+self_heal_one_workspace "lead-a"
+if [[ "$(grep -c '^respawn-pane --workspace workspace:1' <<< "$MOCK_CMUX_OPS" || true)" == 1 \
+    && "$(grep -c '^send --workspace workspace:1' <<< "$MOCK_CMUX_OPS" || true)" == 0 ]]; then
+  pass "FLY-1884 exact no-PTY failure rebuilds once without attach injection"
+else
+  fail "FLY-1884 no-PTY classification drifted ops=[$MOCK_CMUX_OPS]"
+fi
+
 # Test 9 / 17: linked session dead → skip (reconcile's job, not self-heal's)
 fly169_setup_one 0
 MOCK_TMUX_SESSIONS="flywheel"   # no cmux-lead-a → linked session dead
@@ -3074,6 +3148,11 @@ if echo "$MOCK_CMUX_OPS" | grep -qE "send|close-workspace|new-workspace"; then
   fail "self-heal must not send/close/create on linked-dead (reconcile's job)"
 else
   pass "linked-dead: self-heal no-ops (deferred to reconcile)"
+fi
+if echo "$MOCK_CMUX_OPS" | grep -qF '底层 session 不存在 · 等待重建'; then
+  pass "linked-dead: founder-visible status names the missing tmux authority"
+else
+  fail "linked-dead: missing explicit founder-visible invalid state ops=[$MOCK_CMUX_OPS]"
 fi
 
 # Test 10: workspace_refs_for rc=2 (cmux JSON unavailable) → skip
@@ -3683,7 +3762,8 @@ HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
 if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:7"; then
   pass "escalation focuses the broken workspace (select-workspace ws7)"
 else fail "expected select-workspace ws7; ops: $MOCK_CMUX_OPS"; fi
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7 --surface surface:7 env -u TMUX tmux attach"; then
+expected_attach=$(build_attach_command "cmux-lead-a")
+if echo "$MOCK_CMUX_OPS" | grep -qF "send --workspace workspace:7 --surface surface:7 $expected_attach"; then
   pass "atomic send fired after render + full gate re-run"
 else fail "expected attach send to ws7; ops: $MOCK_CMUX_OPS"; fi
 if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
@@ -3836,9 +3916,9 @@ else fail "expected done|2; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
 if grep -q "resuming pending re-attach sweep" "$TMPDIR_ROOT/t254.log"; then
   pass "resume logged"
 else fail "expected resume log"; fi
-if echo "$MOCK_CMUX_OPS" | grep -q "workspace:8"; then
-  fail "resume touched the already-attached workspace (ws8): $MOCK_CMUX_OPS"
-else pass "resume no-ops the already-attached workspace (residue only)"; fi
+if echo "$MOCK_CMUX_OPS" | grep -E "^(select-workspace|send|respawn-pane).*workspace:8" >/dev/null; then
+  fail "resume pane-mutated the already-attached workspace (ws8): $MOCK_CMUX_OPS"
+else pass "resume only clears recovery status on the already-attached workspace"; fi
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
   pass "resume healed the residual broken workspace (ws7)"
 else fail "expected ws7 heal on resume; ops: $MOCK_CMUX_OPS"; fi
@@ -4358,11 +4438,12 @@ echo "Test: FLY-254 CR-R3-HIGH-1 — identity flip DURING the epilogue selected-
 setup_escalation_scenario
 MOCK_SOCK_IDENT="A:1:1"
 echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
-# JSON call #7 is the epilogue current_selected_ref (5-6 = render-loop reads).
+# JSON call #8 is the epilogue current_selected_ref (5-7 = render-loop reads,
+# including the post-read-screen exact-title revalidation).
 # The heal completes on A; the flip lands during the epilogue read; the
 # pre-restore re-stat must skip the restore — generation B keeps its focus.
 MOCK_JSON_FLIP_IDENT="B:2:2"
-MOCK_JSON_FLIP_AT=7
+MOCK_JSON_FLIP_AT=8
 consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
   pass "heal completed on generation A before the flip"
@@ -5807,7 +5888,7 @@ test_fly1272_p3_create_uses_isolated_view_by_default() {
   ledger_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
   if [[ "$grouped" == "0" && "$active" == "@42" && "$members" == "@42 " ]] \
       && grep -q "new-workspace --command .*cmux-FLY-1272-implement" <<< "$MOCK_CMUX_OPS" \
-      && [[ "$ledger_row" == "committed|cmux-generation-1|workspace:100|FLY-1272-implement" ]]; then
+      && [[ "$ledger_row" == "committed|cmux-generation-1|workspace:100|FLY-1272-implement|00000000-0000-4000-8000-000000000100" ]]; then
     pass "workspace attach target is isolated and its exact renamed ref is ledger-committed"
   else
     fail "create topology/ledger mismatch (grouped=$grouped active=$active members=[$members] ledger=[$ledger_row] ops=[$MOCK_CMUX_OPS])"
@@ -6020,6 +6101,519 @@ print(json.dumps({"workspaces":[{"ref":"workspace:100","title":sys.argv[1]}]}))
   fi
 }
 
+test_fly1884_prepared_default_title_recovers_with_uuid_receipt() {
+  echo "Test: FLY-1884 B1 — UUID-bound prepared Terminal title recovers and commits"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  local uuid="11111111-1111-4111-8111-111111111111" title="FLY-1884-implement"
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"}]}))
+' "$uuid")
+  MOCK_CMUX_SURFACES="workspace:100;;surface:100;;terminal;;true;;Terminal 7"
+  printf 'prepared|generation-fly1884|workspace:100|%s|%s\n' "$title" "$uuid" > "$VIEW_LEDGER"
+  test_ensure_mutator_lease
+
+  local rc=0 row workspace_title surface_title
+  reconcile_prepared_ledger >/dev/null 2>&1 || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  workspace_title=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import json,sys
+print(json.load(sys.stdin)["workspaces"][0]["title"])
+')
+  surface_title=$(printf '%s\n' "$MOCK_CMUX_SURFACES" | awk -F';;' '$1=="workspace:100" { print $5 }')
+  if [[ "$rc" -eq 0 \
+      && "$row" == "committed|generation-fly1884|workspace:100|$title|$uuid" \
+      && "$workspace_title" == "$title" && "$surface_title" == "$title" \
+      && "$(grep -c '^rename-workspace --workspace workspace:100 FLY-1884-implement$' <<< "$MOCK_CMUX_OPS" || true)" == "1" \
+      && "$(grep -c '^rename-tab --workspace workspace:100 FLY-1884-implement$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]]; then
+    pass "UUID receipt re-drives both founder-visible titles and preserves UUID through commit"
+  else
+    fail "UUID default recovery mismatch rc=$rc row=[$row] workspace=[$workspace_title] surface=[$surface_title] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_legacy_default_title_never_gains_rename_authority() {
+  echo "Test: FLY-1884 B1 — legacy four-field Terminal title remains read-only"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"11111111-1111-4111-8111-111111111111","ref":"workspace:100","title":"Terminal 7"}]}'
+  printf '%s\n' 'prepared|generation-fly1884|workspace:100|FLY-1884-implement' > "$VIEW_LEDGER"
+
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ "$(cat "$VIEW_LEDGER")" == 'prepared|generation-fly1884|workspace:100|FLY-1884-implement' \
+      && ! "$MOCK_CMUX_OPS" == *"rename-workspace"* \
+      && ! "$MOCK_CMUX_OPS" == *"rename-tab"* ]]; then
+    pass "legacy prepared authority cannot rename a default-title workspace"
+  else
+    fail "legacy default row mutated ledger=[$(cat "$VIEW_LEDGER")] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_uuid_mismatch_and_ref_reuse_block_prepared_rename() {
+  echo "Test: FLY-1884 B1 — UUID mismatch and ref reuse are zero-mutation"
+  local expected="11111111-1111-4111-8111-111111111111"
+  local replacement="22222222-2222-4222-8222-222222222222"
+  local fixture label ok=1
+  for label in same-ref-new-uuid same-uuid-other-ref canonical-new-uuid; do
+    reset_mocks
+    FLYWHEEL_CMUX_LINKED_VIEW=1
+    MOCK_CMUX_MUTATE_JSON=1
+    MOCK_SOCK_IDENT="generation-fly1884"
+    case "$label" in
+      same-ref-new-uuid)
+        fixture=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"}]}))
+' "$replacement")
+        ;;
+      same-uuid-other-ref)
+        fixture=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[
+  {"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"},
+  {"id":sys.argv[2],"ref":"workspace:101","title":"Terminal 8"}
+]}))
+' "$replacement" "$expected")
+        ;;
+      canonical-new-uuid)
+        fixture=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"FLY-1884-implement"}]}))
+' "$replacement")
+        MOCK_CMUX_SURFACES='workspace:100;;surface:100;;terminal;;true;;FLY-1884-implement'
+        ;;
+    esac
+    MOCK_CMUX_WORKSPACES_JSON="$fixture"
+    printf 'prepared|generation-fly1884|workspace:100|FLY-1884-implement|%s\n' "$expected" > "$VIEW_LEDGER"
+    test_ensure_mutator_lease
+    reconcile_prepared_ledger >/dev/null 2>&1 || true
+    if [[ "$(cat "$VIEW_LEDGER")" != "prepared|generation-fly1884|workspace:100|FLY-1884-implement|$expected" \
+        || "$MOCK_CMUX_OPS" == *"rename-workspace"* \
+        || "$MOCK_CMUX_OPS" == *"rename-tab"* ]]; then
+      fail "$label crossed UUID/ref authority ledger=[$(cat "$VIEW_LEDGER")] ops=[$MOCK_CMUX_OPS]"
+      ok=0
+    fi
+  done
+  [[ "$ok" == "1" ]] && pass "ref/UUID replacement cannot authorize rename or receipt promotion"
+}
+
+test_fly1884_authority_mismatch_releases_receipt_without_blocking_next_row() {
+  echo "Test: FLY-1884 B3 — persistent UUID mismatch releases its slot and continues the batch"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=1
+  FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=5
+  CMUX_ADDITIVE_ROUND_ID="100-5"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"22222222-2222-4222-8222-222222222222","ref":"workspace:100","title":"Terminal 7"},{"id":"33333333-3333-4333-8333-333333333333","ref":"workspace:101","title":"Terminal 8"}]}'
+  MOCK_CMUX_SURFACES=$'workspace:100;;surface:100;;terminal;;true;;Terminal 7\nworkspace:101;;surface:101;;terminal;;true;;Terminal 8'
+  printf '%s\n' \
+    'prepared|generation-fly1884|workspace:100|FLY-1884-implement|11111111-1111-4111-8111-111111111111' \
+    'prepared|generation-fly1884|workspace:101|FLY-1884-qa|33333333-3333-4333-8333-333333333333' > "$VIEW_LEDGER"
+  printf '%s\n' 'authority|generation-fly1884|workspace:100|FLY-1884-implement|4|1|100-4' > "$PREPARED_STALL_STATE"
+  local stub="$TMPDIR_ROOT/fly1884-authority-alert" args="$TMPDIR_ROOT/fly1884-authority-alert-args"
+  printf '%s\n' '#!/bin/bash' 'printf "%s\\n" "$@" > "$FLYWHEEL_TEST_ALERT_ARGS"' > "$stub"
+  chmod +x "$stub"
+  FLYWHEEL_ALERT_BIN="$stub"
+  FLYWHEEL_TEST_ALERT_ARGS="$args"
+  export FLYWHEEL_ALERT_BIN FLYWHEEL_TEST_ALERT_ARGS
+  test_ensure_mutator_lease
+
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" == 'committed|generation-fly1884|workspace:101|FLY-1884-qa|33333333-3333-4333-8333-333333333333' \
+      && "$MOCK_CMUX_OPS" != *'workspace:100'* \
+      && "$MOCK_CMUX_OPS" == *'rename-workspace --workspace workspace:101 FLY-1884-qa'* \
+      && "$(cat "$args" 2>/dev/null || true)" == *'prepared-authority-mismatch-released'* ]]; then
+    pass "conclusive mismatch releases only its receipt and a later row still commits"
+  else
+    fail "authority mismatch batch handling drifted ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] ops=[$MOCK_CMUX_OPS] alert=[$(cat "$args" 2>/dev/null)]"
+  fi
+  unset FLYWHEEL_ALERT_BIN FLYWHEEL_TEST_ALERT_ARGS
+}
+
+test_fly1884_private_v2_no_pty_rebuilds_with_socket_command() {
+  echo "Test: FLY-1884 attach — private-v2 no-PTY surface rebuilds with its socket helper"
+  reset_mocks
+  local title="growth-rafiki-lead" socket="$TMPDIR_ROOT/growth-rafiki.sock" canonical saved_derive
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_PRIVATE_TMUX_SOCKET="$socket"
+  MOCK_PRIVATE_TMUX_CLIENTS=0
+  MOCK_CMUX_READSCREEN='open terminal failed: not a terminal'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"33333333-3333-4333-8333-333333333333","ref":"workspace:105","title":"growth-rafiki-lead"}]}'
+  MOCK_CMUX_SURFACES='workspace:105;;surface:105;;terminal;;true;;shell'
+  printf '%s\n' 'committed|generation-fly1884|workspace:105|growth-rafiki-lead|33333333-3333-4333-8333-333333333333' > "$VIEW_LEDGER"
+  canonical=$(build_lead_attach_command "$socket")
+  saved_derive=$(declare -f derive_lead_roster)
+  derive_lead_roster() {
+    LEAD_ROSTER_STATE=ok
+    LEAD_ROSTER_ROWS="claude-private|growth/rafiki-lead|growth-rafiki-lead|$socket"
+  }
+
+  _v2_lead_heal_surface "generation-fly1884" "workspace:105" "$title" "$socket" "$canonical" || true
+  eval "$saved_derive"
+  if [[ "$MOCK_CMUX_OPS" == *"respawn-pane --workspace workspace:105 --surface surface:105 --command $canonical"* \
+      && "$MOCK_CMUX_OPS" != *'send --workspace workspace:105'* ]]; then
+    pass "private-v2 recovery uses its exact private socket command and skips send"
+  else
+    fail "private-v2 no-PTY recovery drifted ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_committed_uuid_mismatch_blocks_close() {
+  echo "Test: FLY-1884 B1 — committed receipt cannot close a reused ref with a new UUID"
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"22222222-2222-4222-8222-222222222222","ref":"workspace:100","title":"FLY-1884-implement"}]}'
+  printf '%s\n' 'committed|generation-fly1884|workspace:100|FLY-1884-implement|11111111-1111-4111-8111-111111111111' > "$VIEW_LEDGER"
+  test_ensure_mutator_lease
+
+  close_ledger_workspace_ref "generation-fly1884" "workspace:100" \
+    "FLY-1884-implement" "fly1884-uuid-mismatch" >/dev/null 2>&1 || true
+  if [[ "$(cat "$VIEW_LEDGER")" == 'committed|generation-fly1884|workspace:100|FLY-1884-implement|11111111-1111-4111-8111-111111111111' \
+      && ! "$MOCK_CMUX_OPS" == *"close-workspace"* ]]; then
+    pass "destructive close re-reads immutable identity and preserves a replacement workspace"
+  else
+    fail "committed UUID mismatch crossed close authority ledger=[$(cat "$VIEW_LEDGER")] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_uuid_is_rechecked_before_tab_rename() {
+  echo "Test: FLY-1884 B1 — UUID replacement between workspace and tab rename blocks tab mutation"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  local expected="11111111-1111-4111-8111-111111111111"
+  local title="FLY-1884-implement"
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"}]}))
+' "$expected")
+  MOCK_CMUX_SURFACES="workspace:100;;surface:100;;terminal;;true;;Terminal 7"
+  printf 'prepared|generation-fly1884|workspace:100|%s|%s\n' "$title" "$expected" > "$VIEW_LEDGER"
+  test_ensure_mutator_lease
+  MOCK_MKTEMP_HOOK='n_file="$TMPDIR_ROOT/fly1884-guard.n"; n=0; [[ -f "$n_file" ]] && n=$(cat "$n_file"); n=$((n+1)); printf "%s" "$n" > "$n_file"; if [[ "$n" -eq 2 ]]; then printf "%s" "22222222-2222-4222-8222-222222222222" > "$TMPDIR_ROOT/fly1884-uuid.override"; fi'
+
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ "$(cat "$VIEW_LEDGER")" == "prepared|generation-fly1884|workspace:100|$title|$expected" \
+      && "$(grep -c '^rename-workspace --workspace workspace:100 FLY-1884-implement$' <<< "$MOCK_CMUX_OPS" || true)" == "1" \
+      && "$(grep -c '^rename-tab ' <<< "$MOCK_CMUX_OPS" || true)" == "0" ]]; then
+    pass "tab rename re-reads immutable identity and preserves prepared recovery on replacement"
+  else
+    fail "tab mutation was not UUID-fenced ledger=[$(cat "$VIEW_LEDGER")] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_unreceipted_default_rollback_requires_exact_uuid() {
+  echo "Test: FLY-1884 B1 — unreceipted Terminal rollback requires exact UUID"
+  local expected="11111111-1111-4111-8111-111111111111"
+  local replacement="22222222-2222-4222-8222-222222222222"
+  local rc=0 ok=1
+
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"}]}))
+' "$expected")
+  rollback_unreceipted_workspace "generation-fly1884" "workspace:100" "provisional" "$expected" || rc=$?
+  [[ "$rc" -eq 0 && "$MOCK_CMUX_OPS" == *"close-workspace --workspace workspace:100"* ]] || ok=0
+
+  reset_mocks
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c '
+import json,sys
+print(json.dumps({"workspaces":[{"id":sys.argv[1],"ref":"workspace:100","title":"Terminal 7"}]}))
+' "$replacement")
+  rc=0
+  rollback_unreceipted_workspace "generation-fly1884" "workspace:100" "provisional" "$expected" || rc=$?
+  [[ "$rc" -ne 0 && ! "$MOCK_CMUX_OPS" == *"close-workspace"* ]] || ok=0
+
+  if [[ "$ok" == "1" ]]; then
+    pass "rollback closes only the self-created UUID and preserves a reused ref"
+  else
+    fail "rollback UUID fence mismatch rc=$rc ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_managed_view_command_variants_are_upgrade_safe() {
+  echo "Test: FLY-1884 P0-B — old/new and isolated-tmux command variants share one parser"
+  reset_mocks
+  local view="cmux-FLY-1884-qa" helper="$SCRIPT_DIR/flywheel-view-attach.sh"
+  local wrapper="$TMPDIR_ROOT/fly1884-isolated-tmux" current legacy current_qa legacy_qa parsed ok=1
+  printf '%s\n' '#!/bin/bash' 'exit 0' > "$wrapper"
+  chmod +x "$wrapper"
+
+  current=$(build_attach_command "$view" 2>/dev/null || true)
+  FLYWHEEL_CMUX_VIEW_HELPER=0
+  legacy=$(build_attach_command "$view" 2>/dev/null || true)
+  FLYWHEEL_CMUX_VIEW_HELPER=1
+  FLYWHEEL_CMUX_ATTACH_TMUX_BIN="$wrapper"
+  current_qa=$(build_attach_command "$view" 2>/dev/null || true)
+  FLYWHEEL_CMUX_VIEW_HELPER=0
+  legacy_qa=$(build_attach_command "$view" 2>/dev/null || true)
+  FLYWHEEL_CMUX_VIEW_HELPER=1
+
+  [[ "$current" == "env -u TMUX '$helper' '$view'" ]] || ok=0
+  [[ "$legacy" == "env -u TMUX tmux attach -t '=$view'" ]] || ok=0
+  [[ "$current_qa" == "env -u TMUX FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$wrapper' '$helper' '$view'" ]] || ok=0
+  [[ "$legacy_qa" == "env -u TMUX '$wrapper' attach -t '=$view'" ]] || ok=0
+  for parsed in "$current" "$legacy" "$current_qa" "$legacy_qa"; do
+    [[ "$(managed_view_command_parse "$parsed" 2>/dev/null || true)" == "$view" ]] || ok=0
+  done
+  [[ "$(managed_view_command_variants "$view" 2>/dev/null | grep -c . || true)" == "4" ]] || ok=0
+  managed_view_command_parse "$current extra" >/dev/null 2>&1 && ok=0
+  unset FLYWHEEL_CMUX_ATTACH_TMUX_BIN
+  if [[ "$ok" == "1" ]]; then
+    pass "one exact parser recognizes both deployment generations and rejects trailing shell syntax"
+  else
+    fail "command migration mismatch current=[$current] legacy=[$legacy] current_qa=[$current_qa] legacy_qa=[$legacy_qa]"
+  fi
+}
+
+test_fly1884_missing_view_helper_defers_create_without_receipt() {
+  echo "Test: FLY-1884 P0-B — missing reconnect helper fails closed before create authority"
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  FLYWHEEL_CMUX_VIEW_HELPER_BIN="$TMPDIR_ROOT/missing-view-helper"
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_TOPOLOGY_MODE=1
+  topo_add_session runner-flywheel '$1884'
+  topo_add_window runner-flywheel @1884 FLY-1884-qa 1 0
+  topo_add_session cmux-FLY-1884-qa '$2884' "" runner-flywheel 0
+  topo_add_window cmux-FLY-1884-qa @1884 FLY-1884-qa 1 0
+  test_ensure_mutator_lease
+
+  create_workspace_for_window runner-flywheel @1884 FLY-1884-qa >/dev/null 2>&1 || true
+  if [[ ! "$MOCK_CMUX_OPS" == *"new-workspace"* && ! -e "$VIEW_LEDGER" ]]; then
+    pass "helper absence creates neither a broken tab nor prepared authority"
+  else
+    fail "missing helper crossed create boundary ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1884_upgrade_windows_accept_legacy_attach_surfaces() {
+  echo "Test: FLY-1884 P0-B — legacy raw/workspace/surface crash windows converge after upgrade"
+  local title="FLY-1884-qa" view="cmux-FLY-1884-qa"
+  local old="env -u TMUX tmux attach -t '=cmux-FLY-1884-qa'" rc=0 ok=1
+
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1; MOCK_TOPOLOGY_MODE=1
+  topo_add_session runner-flywheel '$1884'; topo_add_window runner-flywheel @1884 "$title" 1 0
+  topo_add_session "$view" '$2884' "" runner-flywheel 0; topo_add_window "$view" @1884 "$title" 1 0
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c 'import json,sys; print(json.dumps({"workspaces":[{"ref":"workspace:1884","title":sys.argv[1]}]}))' "$old")
+  MOCK_CMUX_SURFACES="workspace:1884;;surface:1884;;terminal;;true;;$old"
+  test_ensure_mutator_lease
+  reconcile_workspace_titles "runner-flywheel|@1884|$title" >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 0 && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|generation-fly1884|workspace:1884|$title" ]] || ok=0
+
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"ref\":\"workspace:1884\",\"title\":\"$title\"}]}"
+  MOCK_CMUX_SURFACES="workspace:1884;;surface:1884;;terminal;;true;;$old"
+  test_ledger_upsert prepared generation-fly1884 workspace:1884 "$title"
+  rc=0
+  complete_title_migration workspace:1884 "$title" generation-fly1884 \
+    "$(managed_view_command_variants "$view" 2>/dev/null || true)" >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 0 && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|generation-fly1884|workspace:1884|$title" ]] || ok=0
+
+  reset_mocks
+  FLYWHEEL_CMUX_LINKED_VIEW=1; MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_MUTATE_JSON=1; MOCK_CMUX_MUTATE_SURFACES=1
+  MOCK_CMUX_WORKSPACES_JSON=$(python3 -c 'import json,sys; print(json.dumps({"workspaces":[{"ref":"workspace:1884","title":sys.argv[1]}]}))' "$old")
+  MOCK_CMUX_SURFACES="workspace:1884;;surface:1884;;terminal;;true;;$old"
+  test_ledger_upsert prepared generation-fly1884 workspace:1884 "$title"
+  rc=0
+  reconcile_prepared_ledger >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 0 && "$(cat "$VIEW_LEDGER" 2>/dev/null)" == "committed|generation-fly1884|workspace:1884|$title" ]] || ok=0
+
+  if [[ "$ok" == "1" ]]; then
+    pass "old raw workspace, old surface, and old prepared receipt all converge under the new producer"
+  else
+    fail "upgrade crash window failed rc=$rc ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_additive_round_ids_persist_and_advance() {
+  echo "Test: FLY-1884 B2/B3 — additive round IDs persist and advance within one epoch"
+  reset_mocks
+  test_ensure_mutator_lease
+  local first second persisted
+  begin_cmux_additive_round || true
+  first="$CMUX_ADDITIVE_ROUND_ID"
+  CMUX_ADDITIVE_ROUND_ID=""
+  begin_cmux_additive_round || true
+  second="$CMUX_ADDITIVE_ROUND_ID"
+  persisted=$(tr '|' '-' < "$CMUX_ADDITIVE_ROUND_STATE" 2>/dev/null || true)
+  if [[ "$first" == [0-9]*-[0-9]* && "$second" == [0-9]*-[0-9]* \
+      && "$first" != "$second" && "$persisted" == "$second" ]]; then
+    pass "the durable epoch/sequence pair gives every additive pass a distinct ID"
+  else
+    fail "round IDs did not advance first=[$first] second=[$second] state=[$persisted]"
+  fi
+}
+
+test_fly1884_prepared_absent_requires_distinct_aged_rounds() {
+  echo "Test: FLY-1884 B2 — absent prepared receipt needs aged, distinct additive rounds"
+  reset_mocks
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=1
+  FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=3
+  printf '%s\n' 'prepared|generation-fly1884|workspace:52|FLY-1884-qa' > "$VIEW_LEDGER"
+  printf '%s\n' 'absent|generation-fly1884|workspace:52|FLY-1884-qa|1|1|100-1' > "$PREPARED_STALL_STATE"
+  test_ensure_mutator_lease
+
+  CMUX_ADDITIVE_ROUND_ID="100-1"
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  local same_round next_round final_round
+  same_round=$(cat "$PREPARED_STALL_STATE" 2>/dev/null || true)
+  CMUX_ADDITIVE_ROUND_ID="100-2"
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  next_round=$(cat "$PREPARED_STALL_STATE" 2>/dev/null || true)
+  CMUX_ADDITIVE_ROUND_ID="100-3"
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  final_round=$(cat "$PREPARED_STALL_STATE" 2>/dev/null || true)
+
+  if [[ "$same_round" == 'absent|generation-fly1884|workspace:52|FLY-1884-qa|1|1|100-1' \
+      && "$next_round" == 'absent|generation-fly1884|workspace:52|FLY-1884-qa|2|1|100-2' \
+      && -z "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" && -z "$final_round" \
+      && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "same-round retries dedup; the third aged observation releases only the receipt"
+  else
+    fail "absent round contract drifted same=[$same_round] next=[$next_round] final=[$final_round] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_prepared_absent_min_age_and_reappearance_reset() {
+  echo "Test: FLY-1884 B2 — minimum age blocks release and ref reappearance clears absent evidence"
+  reset_mocks
+  MOCK_SOCK_IDENT="generation-fly1884"
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=120
+  FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=3
+  printf '%s\n' 'prepared|generation-fly1884|workspace:52|FLY-1884-qa' > "$VIEW_LEDGER"
+  local now
+  now=$(date +%s)
+  printf 'absent|generation-fly1884|workspace:52|FLY-1884-qa|2|%s|100-1\n' "$now" > "$PREPARED_STALL_STATE"
+  CMUX_ADDITIVE_ROUND_ID="100-2"
+  test_ensure_mutator_lease
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  local too_young
+  too_young=$(cat "$PREPARED_STALL_STATE" 2>/dev/null || true)
+
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"11111111-1111-4111-8111-111111111111","ref":"workspace:52","title":"founder-shell"}]}'
+  CMUX_ADDITIVE_ROUND_ID="100-3"
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ "$too_young" == "absent|generation-fly1884|workspace:52|FLY-1884-qa|2|$now|100-2" \
+      && "$(grep -c '^absent|' "$PREPARED_STALL_STATE" 2>/dev/null || true)" == "0" \
+      && -n "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" ]]; then
+    pass "age is an independent gate and any exact-ref reappearance resets absent evidence"
+  else
+    fail "absent age/reset drifted young=[$too_young] sidecar=[$(cat "$PREPARED_STALL_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly1884_prepared_stall_identity_includes_title() {
+  echo "Test: FLY-1884 B2/B3 — same ref with a new title never inherits a round count"
+  reset_mocks
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=120
+  CMUX_ADDITIVE_ROUND_ID="100-1"
+  test_ensure_mutator_lease
+  _prepared_stall_observe absent generation-fly1884 workspace:52 FLY-1884-qa >/dev/null 2>&1 || true
+  _prepared_stall_observe absent generation-fly1884 workspace:52 FLY-1884-design >/dev/null 2>&1 || true
+  if [[ "$(grep -c '^absent|generation-fly1884|workspace:52|' "$PREPARED_STALL_STATE" 2>/dev/null || true)" == "2" \
+      && "$(grep -c '|0|[0-9][0-9]*|100-1$' "$PREPARED_STALL_STATE" 2>/dev/null || true)" == "2" ]]; then
+    pass "stall identity is the full kind/generation/ref/title tuple"
+  else
+    fail "stall tuples aliased sidecar=[$(cat "$PREPARED_STALL_STATE" 2>/dev/null)]"
+  fi
+}
+
+test_fly1884_prepared_drift_release_preserves_workspace_and_alerts() {
+  echo "Test: FLY-1884 B3 — persistent drift releases only the receipt and emits one episode alert"
+  reset_mocks
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"11111111-1111-4111-8111-111111111111","ref":"workspace:59","title":"founder-shell"}]}'
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=1
+  FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=5
+  CMUX_ADDITIVE_ROUND_ID="100-5"
+  printf '%s\n' 'prepared|generation-fly1884|workspace:59|FLY-1884-implement' > "$VIEW_LEDGER"
+  printf '%s\n' 'drift|generation-fly1884|workspace:59|FLY-1884-implement|4|1|100-4' > "$PREPARED_STALL_STATE"
+  local stub="$TMPDIR_ROOT/fly1884-alert-stub" args="$TMPDIR_ROOT/fly1884-alert-args"
+  printf '%s\n' '#!/bin/bash' 'printf "%s\\n" "$@" > "$FLYWHEEL_TEST_ALERT_ARGS"' > "$stub"
+  chmod +x "$stub"
+  FLYWHEEL_ALERT_BIN="$stub"
+  FLYWHEEL_TEST_ALERT_ARGS="$args"
+  export FLYWHEEL_ALERT_BIN FLYWHEEL_TEST_ALERT_ARGS
+  test_ensure_mutator_lease
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+
+  if [[ -z "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" \
+      && -z "$(cat "$PREPARED_STALL_STATE" 2>/dev/null || true)" \
+      && -z "$MOCK_CMUX_OPS" \
+      && "$(cat "$args" 2>/dev/null || true)" == *"prepared-drift-released"* ]]; then
+    pass "drift release preserves the foreign workspace and makes the terminal disposition visible"
+  else
+    fail "drift release mismatch ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] sidecar=[$(cat "$PREPARED_STALL_STATE" 2>/dev/null)] ops=[$MOCK_CMUX_OPS] alert=[$(cat "$args" 2>/dev/null)]"
+  fi
+  unset FLYWHEEL_ALERT_BIN FLYWHEEL_TEST_ALERT_ARGS
+}
+
+test_fly1884_legacy_default_title_ages_without_mutation() {
+  echo "Test: FLY-1884 B3 — legacy Terminal title ages out without gaining rename authority"
+  reset_mocks
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"id":"11111111-1111-4111-8111-111111111111","ref":"workspace:92","title":"Terminal 37"}]}'
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=1
+  FLYWHEEL_CMUX_PREPARED_DRIFT_PASSES=1
+  CMUX_ADDITIVE_ROUND_ID="100-1"
+  printf '%s\n' 'prepared|generation-fly1884|workspace:92|FLY-1884-qa' > "$VIEW_LEDGER"
+  printf '%s\n' 'drift|generation-fly1884|workspace:92|FLY-1884-qa|0|1|100-0' > "$PREPARED_STALL_STATE"
+  test_ensure_mutator_lease
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ -z "$(cat "$VIEW_LEDGER" 2>/dev/null || true)" && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "legacy default-name deadlock releases its logical slot without touching the tab"
+  else
+    fail "legacy default acquired mutation authority ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly1884_corrupt_prepared_stall_state_is_fail_safe() {
+  echo "Test: FLY-1884 B2/B3 — corrupt stall state freezes receipt release"
+  reset_mocks
+  MOCK_SOCK_IDENT="generation-fly1884"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS=1
+  FLYWHEEL_CMUX_PREPARED_ABSENT_PASSES=1
+  CMUX_ADDITIVE_ROUND_ID="100-1"
+  printf '%s\n' 'prepared|generation-fly1884|workspace:52|FLY-1884-qa' > "$VIEW_LEDGER"
+  printf '%s\n' 'not-a-valid-row' > "$PREPARED_STALL_STATE"
+  test_ensure_mutator_lease
+  reconcile_prepared_ledger >/dev/null 2>&1 || true
+  if [[ "$(cat "$VIEW_LEDGER")" == 'prepared|generation-fly1884|workspace:52|FLY-1884-qa' \
+      && "$(cat "$PREPARED_STALL_STATE")" == 'not-a-valid-row' && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "malformed observation state cannot authorize GC or workspace mutation"
+  else
+    fail "corrupt sidecar failed open ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] sidecar=[$(cat "$PREPARED_STALL_STATE" 2>/dev/null)] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
 test_fly1272_p3_ghost_reaper_never_closes_unledgered_ref() {
   echo "Test: FLY-1272 P3 — new-mode ghost reaper leaves unledgered refs untouched"
   reset_mocks
@@ -6050,7 +6644,7 @@ test_fly1272_p3_orphan_client_attach_failure_alerts_exact_ref() {
   local log_file="$TMPDIR_ROOT/attachment-orphan.log" row
   create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement" 2>"$log_file"
   row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
-  if [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement' ]] \
+  if [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement|00000000-0000-4000-8000-000000000100' ]] \
       && grep -q 'attachment_unverified generation=cmux-generation-1 ref=workspace:100 title=FLY-1272-implement reason=client-baseline-ambiguous' "$log_file"; then
     pass "orphan-client ambiguity retains exact authority and emits the keyed binding alert"
   else
@@ -6069,7 +6663,7 @@ test_fly1272_p3_post_create_client_read_failure_variants() {
     log_file="$TMPDIR_ROOT/attachment-post-${pre}.log"
     create_workspace_for_window "runner-flywheel" "@42" "FLY-1272-implement" 2>"$log_file"
     row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
-    [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement' ]] || ok=0
+    [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1272-implement|00000000-0000-4000-8000-000000000100' ]] || ok=0
     grep -q 'attachment_unverified generation=cmux-generation-1 ref=workspace:100 title=FLY-1272-implement reason=client-baseline-ambiguous' "$log_file" || ok=0
   done
   [[ "$ok" == "1" ]] \
@@ -6120,7 +6714,7 @@ test_fly1272_p5_bootstrap_converges_once_then_is_quiet() {
   sync_additive_bootstrap || rc=$?
   third_mutations=$(grep -Ec '^(new-session|link-window|unlink-window|rename-session|kill-session|kill-window)' "$TOPO_JOURNAL" || true)
   if [[ "$rc" -eq 0 && "$active" == "@42" && "$members" == "@42 " \
-      && "$row" == "committed|cmux-generation-1|workspace:101|FLY-1272-implement" \
+      && "$row" == "committed|cmux-generation-1|workspace:101|FLY-1272-implement|00000000-0000-4000-8000-000000000101" \
       && "$first_new_count" == "1" && "$third_mutations" == "0" ]] \
       && ! grep -q '^new-workspace' <<< "$MOCK_CMUX_OPS"; then
     pass "bootstrap reaches exact topology/ref authority on pass two; pass three emits no mutation"
@@ -7771,7 +8365,7 @@ test_fly1446_rename_lag_retry_never_creates_second_workspace() {
   create_workspace_for_window "runner-flywheel" "@42" "FLY-1364-implement"
   second_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
   second_creates=$(grep -c '^new-workspace ' <<< "$MOCK_CMUX_OPS" || true)
-  if [[ "$first_row" == 'prepared|cmux-generation-1|workspace:100|FLY-1364-implement' \
+  if [[ "$first_row" == 'prepared|cmux-generation-1|workspace:100|FLY-1364-implement|00000000-0000-4000-8000-000000000100' \
       && "$second_row" == "$first_row" && "$first_creates" == "1" && "$second_creates" == "1" ]]; then
     pass "a hidden/provisional first workspace remains the sole create while reconcile owns its rename"
   else
@@ -7905,7 +8499,7 @@ test_fly1364_a0b1_create_records_prepared_then_committed_receipt() {
       && "$(sed -n '1p' "$trace" 2>/dev/null)" == "prepared|cmux-generation-1|workspace:100|FLY-1364-implement" \
       && "$(sed -n '2p' "$trace" 2>/dev/null)" == "committed|cmux-generation-1|workspace:100|FLY-1364-implement" \
       && "$(wc -l < "$trace" 2>/dev/null | tr -d ' ')" == "2" \
-      && "$row" == "committed|cmux-generation-1|workspace:100|FLY-1364-implement" ]]; then
+      && "$row" == "committed|cmux-generation-1|workspace:100|FLY-1364-implement|00000000-0000-4000-8000-000000000100" ]]; then
     pass "A0B1 create transitions exact ref from prepared to one committed row"
   else
     fail "A0B1 receipt sequence mismatch rc=$rc trace=[$(tr '\n' ';' < "$trace" 2>/dev/null)] row=[$row]"
@@ -7923,7 +8517,7 @@ test_fly1364_a0b1_create_accepts_exact_provisional_attach_title() {
 import json,sys
 print(json.load(sys.stdin)["workspaces"][0]["title"])
 ')
-  if [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1364-implement' \
+  if [[ "$row" == 'committed|cmux-generation-1|workspace:100|FLY-1364-implement|00000000-0000-4000-8000-000000000100' \
       && "$title" == 'FLY-1364-implement' \
       && "$(grep -c '^rename-workspace --workspace workspace:100 FLY-1364-implement$' <<< "$MOCK_CMUX_OPS" || true)" == "1" ]]; then
     pass "the byte-exact launch command may transition its prepared ref to the managed title"
@@ -7966,7 +8560,7 @@ PY
   ledger_row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
   if [[ "$deadline" == "60" && "$grouped" == "0" && "$active" == "$wid" && "$owner" == "$session" \
       && "$members" == "$wid " \
-      && "$ledger_row" == "committed|cmux-generation-1|workspace:100|$title" ]]; then
+      && "$ledger_row" == "committed|cmux-generation-1|workspace:100|$title|00000000-0000-4000-8000-000000000100" ]]; then
     pass "1393 fixture drives redispatch creation, exact receipt, and strict view expectation"
   else
     fail "1393 fixture mismatch deadline=$deadline grouped=$grouped active=$active owner=[$owner] members=[$members] ledger=[$ledger_row]"
@@ -9678,6 +10272,24 @@ test_fly1364_first_receipt_failure_rolls_back_exact_unnamed_ref
 test_fly1482_midpass_authority_loss_preserves_unreceipted_workspace
 test_fly1364_prepared_recovery_repins_generation_at_rename
 test_fly1364_prepared_recovery_accepts_exact_provisional_attach_title
+test_fly1884_prepared_default_title_recovers_with_uuid_receipt
+test_fly1884_legacy_default_title_never_gains_rename_authority
+test_fly1884_uuid_mismatch_and_ref_reuse_block_prepared_rename
+test_fly1884_authority_mismatch_releases_receipt_without_blocking_next_row
+test_fly1884_private_v2_no_pty_rebuilds_with_socket_command
+test_fly1884_committed_uuid_mismatch_blocks_close
+test_fly1884_uuid_is_rechecked_before_tab_rename
+test_fly1884_unreceipted_default_rollback_requires_exact_uuid
+test_fly1884_managed_view_command_variants_are_upgrade_safe
+test_fly1884_missing_view_helper_defers_create_without_receipt
+test_fly1884_upgrade_windows_accept_legacy_attach_surfaces
+test_fly1884_additive_round_ids_persist_and_advance
+test_fly1884_prepared_absent_requires_distinct_aged_rounds
+test_fly1884_prepared_absent_min_age_and_reappearance_reset
+test_fly1884_prepared_stall_identity_includes_title
+test_fly1884_prepared_drift_release_preserves_workspace_and_alerts
+test_fly1884_legacy_default_title_ages_without_mutation
+test_fly1884_corrupt_prepared_stall_state_is_fail_safe
 test_fly1364_create_snapshot_is_generation_bound_before_ref_diff
 test_fly1364_rollback_guard_repins_after_inventory_probe
 test_fly1364_ledger_crash_windows_recover_under_next_lease_holder
@@ -9774,9 +10386,9 @@ test_fly1550_tab_rename_is_recoverable_state() {
 test_fly1550_attach_command_grammar_holds() {
   echo "Test: FLY-1550 — the canonical attach grammar accepts a managed window title"
   reset_mocks
-  local cmd rc=0
-  cmd=$(build_attach_command "cmux-FLY-1550-runner-claude-Fable-runner-lead-config") || rc=$?
-  if [[ "$rc" -eq 0 && "$cmd" == "env -u TMUX tmux attach -t '=cmux-FLY-1550-runner-claude-Fable-runner-lead-config'" ]]; then
+  local cmd rc=0 view="cmux-FLY-1550-runner-claude-Fable-runner-lead-config"
+  cmd=$(build_attach_command "$view") || rc=$?
+  if [[ "$rc" -eq 0 && "$(managed_view_command_parse "$cmd" 2>/dev/null || true)" == "$view" ]]; then
     pass "attach command stays byte-canonical around the managed title"
   else
     fail "attach grammar broke for the managed title rc=$rc cmd=[$cmd]"

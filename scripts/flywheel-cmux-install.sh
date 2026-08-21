@@ -45,6 +45,8 @@ ln -sf "$REPO_DIR/scripts/lib/flywheel-alert-lib.sh" "$INSTALL_DIR/flywheel-aler
 ln -sf "$REPO_DIR/scripts/lead-alert.sh" "$INSTALL_DIR/lead-alert.sh"
 ln -sf "$REPO_DIR/scripts/meta-alert.sh" "$INSTALL_DIR/meta-alert.sh"
 ln -sf "$REPO_DIR/scripts/flywheel-lead-attach.sh" "$INSTALL_DIR/flywheel-lead-attach.sh"
+ln -sf "$REPO_DIR/scripts/flywheel-view-attach.sh" "$INSTALL_DIR/flywheel-view-attach.sh"
+ln -sf "$REPO_DIR/scripts/flywheel-node-status.sh" "$INSTALL_DIR/flywheel-node-status.sh"
 
 if [[ "$LINK_ONLY" == "1" ]]; then
   echo "[install] Link-only convergence complete (watcher and shell config untouched)."

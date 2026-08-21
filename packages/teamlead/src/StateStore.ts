@@ -41,6 +41,7 @@ import type {
 } from "./bridge/patrol-loop-ledger.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
+	CMUX_LIVE_SESSION_STATUSES,
 	isOperationalTerminalStatus,
 	OPERATIONAL_TERMINAL_STATUSES,
 } from "./operational-terminal-status.js";
@@ -6730,6 +6731,22 @@ export class StateStore {
 		return rows;
 	}
 
+	getLiveSessions(): Session[] {
+		const statuses = [...CMUX_LIVE_SESSION_STATUSES];
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions WHERE status IN (${statuses.map(() => "?").join(", ")})`,
+		);
+		stmt.bind(statuses);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/** FLY-1687: Bridge-declared patrol roster, scoped in SQL before Lead routing. */
 	getPatrolRosterSessions(projectName: string): Session[] {
 		const stmt = this.db.prepare(
@@ -7590,6 +7607,26 @@ export class StateStore {
 			 ORDER BY last_activity_at DESC`,
 		);
 		stmt.bind([...OUTCOME_STATUSES, sinceTs]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getOperationalTerminalSessionsSince(sinceTs: string): Session[] {
+		const statuses = [...OPERATIONAL_TERMINAL_STATUSES];
+		const placeholders = statuses.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE status IN (${placeholders})
+			 AND last_activity_at >= ?
+			 ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([...statuses, sinceTs]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(

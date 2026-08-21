@@ -145,6 +145,21 @@ export function createQueryRouter(
 			case "active":
 				sessions = store.getActiveSessions();
 				break;
+			case "live":
+				sessions = store.getLiveSessions();
+				break;
+			case "recent_terminal": {
+				const rawHours = parseInt((req.query.hours as string) ?? "48", 10);
+				const hours = Number.isFinite(rawHours)
+					? Math.min(Math.max(rawHours, 1), 168)
+					: 48;
+				const since = new Date(Date.now() - hours * 60 * 60_000)
+					.toISOString()
+					.replace("T", " ")
+					.replace(/\.\d+Z$/, "");
+				sessions = store.getOperationalTerminalSessionsSince(since);
+				break;
+			}
 			case "recent":
 				sessions = store.getRecentSessions(limit);
 				break;

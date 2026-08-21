@@ -549,6 +549,9 @@ fly1364_commands = [
 ]
 expected_fly1364_commands = [
     "bash scripts/test-cmux-sync.sh",
+    "bash scripts/__tests__/fly1884-view-attach.test.sh",
+    "bash scripts/__tests__/fly1884-attach-recovery.test.sh",
+    "bash scripts/__tests__/fly1884-node-presence.test.sh",
     "bash scripts/__tests__/tmux-server-rescue.test.sh",
     "bash scripts/__tests__/tmux-server-rescue-lock.test.sh",
     "bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",

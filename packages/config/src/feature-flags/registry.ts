@@ -293,6 +293,50 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "owner=converge CLI；每个 Lead 启动、scheduled updater、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
 	},
 	{
+		name: "cmux_view_helper",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_VIEW_HELPER",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1884: keep runner mirror tabs attached across exact tmux view-session rebuilds; =0 restores the legacy one-shot attach command.",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"view_helper_enabled",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "The resident watcher reads the shared env on each command build; disabling affects new/repaired view commands and preserves existing tabs.",
+	},
+	{
+		name: "cmux_node_presence",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_NODE_PRESENCE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1884: render Bridge-rostered windowless and recent-terminal executions as node: cmux surfaces, with cleanup freshness fencing; =0 freezes existing node surfaces and restores P0 cleanup behavior.",
+		readSites: [
+			envSite(
+				"scripts/flywheel-cmux-sync.sh",
+				"cmux_node_presence",
+				"cli_invocation",
+				"dynamic",
+			),
+		],
+		toggleable: "conversational",
+		note: "Default-on founder visibility contract. OFF performs no node mutations and intentionally leaves existing node: workspaces untouched.",
+	},
+	{
 		name: "voice_qa_presence_override",
 		category: "feature",
 		source: "env",

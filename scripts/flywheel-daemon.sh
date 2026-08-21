@@ -206,12 +206,20 @@ install_wrapper() {
   local address_dst="${FLYWHEEL_BIN}/lib/lead-address.sh"
   local attach_src="${FLYWHEEL_DIR}/scripts/flywheel-lead-attach.sh"
   local attach_dst="${FLYWHEEL_BIN}/flywheel-lead-attach.sh"
+  local view_attach_src="${FLYWHEEL_DIR}/scripts/flywheel-view-attach.sh"
+  local view_attach_dst="${FLYWHEEL_BIN}/flywheel-view-attach.sh"
+  local node_status_src="${FLYWHEEL_DIR}/scripts/flywheel-node-status.sh"
+  local node_status_dst="${FLYWHEEL_BIN}/flywheel-node-status.sh"
   [ -f "$v2_src" ] || error "Wrapper v2 source not found: ${v2_src}"
   [ -f "$address_src" ] || error "Lead address helper not found: ${address_src}"
   [ -f "$attach_src" ] || error "Lead attach helper not found: ${attach_src}"
+  [ -f "$view_attach_src" ] || error "View attach helper not found: ${view_attach_src}"
+  [ -f "$node_status_src" ] || error "Node status helper not found: ${node_status_src}"
   mkdir -p "${FLYWHEEL_BIN}/lib"
   if ! install_script_atomic "$address_src" "$address_dst" \
     || ! install_script_atomic "$attach_src" "$attach_dst" \
+    || ! install_script_atomic "$view_attach_src" "$view_attach_dst" \
+    || ! install_script_atomic "$node_status_src" "$node_status_dst" \
     || ! install_script_atomic "$v2_src" "$v2_dst"; then
     error "v2 wrapper closure failed sanity/atomic install"
   fi

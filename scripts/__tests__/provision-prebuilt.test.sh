@@ -59,7 +59,8 @@ mk_root() {
   local rr="$1" prebuilt="${2:-}"
   mkdir -p "$rr/scripts/lib" "$rr/scripts/packaged"
   for f in flywheel-lead-wrapper-v2.sh \
-           flywheel-lead-attach.sh flywheel-bridge-wrapper.sh daily-standup.sh \
+           flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
+           flywheel-bridge-wrapper.sh daily-standup.sh \
            materialize-lead-manifests.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$rr/scripts/$f"
   done

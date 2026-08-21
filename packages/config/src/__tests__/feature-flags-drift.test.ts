@@ -275,6 +275,8 @@ describe("feature-flag drift guard", () => {
 		).toEqual([
 			"mailbox_queue:resolveLiveMailboxQueueEnabled",
 			"converge_cmux_symlink:converge_cmux_symlink",
+			"cmux_view_helper:view_helper_enabled",
+			"cmux_node_presence:cmux_node_presence",
 			"merge_approval_gate_killswitch:resolveDefaultOnGate",
 			"qa_done_gate_killswitch:resolveDefaultOnGate",
 		]);

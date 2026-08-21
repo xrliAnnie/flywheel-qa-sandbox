@@ -1,0 +1,59 @@
+{
+  "captured_at": "2026-08-19T23:35:22-0700",
+  "cmux_version": "cmux 0.61.0 (73) [8caa5e9c9]",
+  "purpose": "FLY-1884 P0-A hard gate: determine whether cmux exposes stable create-command identity at the workspace mutation boundary",
+  "cases": [
+    {
+      "name": "long_lived_committed_managed_view",
+      "workspace": {
+        "ref": "workspace:87",
+        "title": "FLY-1884-design-claude-Fable-cmux-session-cmux-tab"
+      },
+      "surface": {
+        "ref": "surface:87",
+        "type": "terminal",
+        "selected": true,
+        "title": "FLY-1884-design-claude-Fable-cmux-session-cmux-tab",
+        "returned_fields": ["id", "index", "ref", "selected", "title", "type"]
+      },
+      "observation": "title reflects the live foreground tmux/window title; no command or launch argv field exists"
+    },
+    {
+      "name": "existing_prepared_default_title_dead_surface",
+      "ledger": "prepared|16777234:557270560:1787108044|workspace:92|FLY-1884-implement-codex-G-cmux-session-cmux-tab",
+      "workspace": {
+        "ref": "workspace:92",
+        "title": "Terminal 37"
+      },
+      "surface": {
+        "ref": "surface:92",
+        "type": "terminal",
+        "selected": true,
+        "title": "Terminal 37",
+        "in_window": false,
+        "returned_fields": ["id", "index", "ref", "selected", "title", "type"]
+      },
+      "observation": "the exact production failure shape carries no surface evidence that distinguishes a managed attach from a founder shell"
+    },
+    {
+      "name": "fresh_self_owned_default_title_fixture",
+      "new_workspace_output": "OK BE52B82E-E9D4-49E0-B2A2-F8F0A0C1A625",
+      "workspace": {
+        "id": "BE52B82E-E9D4-49E0-B2A2-F8F0A0C1A625",
+        "ref": "workspace:93",
+        "title": "Terminal 38"
+      },
+      "surface": {
+        "ref": "surface:93",
+        "type": "terminal",
+        "selected": true,
+        "title": "Terminal 38",
+        "in_window": false,
+        "returned_fields": ["id", "index", "ref", "selected", "title", "type"]
+      },
+      "cleanup": "cmux close-workspace --workspace workspace:93 returned OK workspace:93",
+      "observation": "surface launch identity is unavailable, while native workspace UUID is returned and can be re-read with ref/title via list-workspaces --id-format both"
+    }
+  ],
+  "conclusion": "surface-command proof is impossible on cmux 0.61.0 for the prepared-abort shape; use immutable workspace UUID plus generation/ref/title re-read instead"
+}

@@ -12,6 +12,15 @@ export const OPERATIONAL_TERMINAL_STATUSES = new Set([
 	"approved",
 ]);
 
+export const CMUX_LIVE_SESSION_STATUSES = new Set([
+	"pending",
+	"running",
+	"ship_parked",
+	"awaiting_review",
+	"design_done",
+	"approved_to_ship",
+]);
+
 /**
  * Receipt-wake settlement authority is intentionally narrower than the
  * operational terminal bucket. Approval/rejection/defer/shelve are workflow

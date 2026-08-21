@@ -52,6 +52,7 @@ done
 chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
   "$FR/scripts/lead-patrol-snapshot.sh"
 for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+         flywheel-view-attach.sh flywheel-node-status.sh \
          flywheel-bridge-wrapper.sh restart-services.sh; do
   { echo '#!/bin/bash'; pad "echo r-$f"; } > "$FR/scripts/$f"
 done
@@ -187,6 +188,7 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   local st="$1" f
   rm -rf "$st"; mkdir -p "$st/bin/lib"
   for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+           flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py \
            lib/bounded-run.sh lib/lead-address.sh; do
     cp "$FR/scripts/$f" "$st/bin/$f"; chmod 555 "$st/bin/$f"

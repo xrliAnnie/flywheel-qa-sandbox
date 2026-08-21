@@ -91,6 +91,8 @@ daily-standup.sh
 flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper-v2.sh
 flywheel-lead-attach.sh
+flywheel-view-attach.sh
+flywheel-node-status.sh
 restart-storm-gate.py
 lead-alert.sh
 meta-alert.sh
