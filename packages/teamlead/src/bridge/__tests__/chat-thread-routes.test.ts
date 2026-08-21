@@ -449,7 +449,10 @@ describe("chat-thread routes (tools.ts)", () => {
 		it("returns 502 when ChatThreadCreator returns error", async () => {
 			const creator = createFakeCreator(async () => ({
 				created: false,
-				error: "Discord 500: Internal Server Error",
+				threadId: "root-gone",
+				rootMessageId: "root-gone",
+				errorCode: "canonical_root_gone",
+				error: "Canonical root is gone",
 			}));
 			createTestServer({
 				chatThreadsEnabled: true,
@@ -465,7 +468,12 @@ describe("chat-thread routes (tools.ts)", () => {
 				projectName: "TestProject",
 			});
 			expect(res.status).toBe(502);
-			expect((res.body as { error: string }).error).toContain("Discord 500");
+			expect(res.body).toEqual({
+				error: "Canonical root is gone",
+				errorCode: "canonical_root_gone",
+				rootMessageId: "root-gone",
+				threadId: "root-gone",
+			});
 		});
 
 		it("returns 502 when ChatThreadCreator throws", async () => {
@@ -1015,6 +1023,98 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(typeof body.remainingText).toBe("string");
 			expect((body.remainingText as string).length).toBeGreaterThan(0);
 			// Fail-fast — only 2 fetches issued
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+		});
+
+		it("returns a typed loud failure when the registered canonical channel is missing", async () => {
+			store.upsertChatThread(
+				"root-gone",
+				"ch-100",
+				"uuid-fly-162",
+				"lead-alpha",
+			);
+			mockFetch.mockResolvedValueOnce({
+				ok: false,
+				status: 404,
+				text: () => Promise.resolve("Unknown Channel"),
+			});
+			const creator = createFakeCreator(async () => ({
+				created: false,
+				threadId: "root-gone",
+				rootMessageId: "root-gone",
+				errorCode: "canonical_root_gone",
+				error: "canonical root is gone",
+			}));
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+
+			expect(res.status).toBe(502);
+			expect(res.body).toMatchObject({
+				threadId: "root-gone",
+				rootMessageId: "root-gone",
+				errorCode: "canonical_root_gone",
+			});
+		});
+
+		it("re-enters same-root recovery and retries the message when a canonical claim is not a thread yet", async () => {
+			store.upsertChatThread(
+				"root-pending",
+				"ch-100",
+				"uuid-fly-162",
+				"lead-alpha",
+			);
+			const ensureCalls: ChatThreadContext[] = [];
+			const creator = createFakeCreator(async (ctx) => {
+				ensureCalls.push(ctx);
+				return { created: false, threadId: "root-pending" };
+			});
+			mockFetch
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 404,
+					text: () => Promise.resolve("Unknown Channel"),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ id: "msg-recovered" }),
+				});
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello after claim",
+			});
+
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "root-pending",
+				messageIds: ["msg-recovered"],
+				created: false,
+			});
+			expect(ensureCalls).toHaveLength(1);
 			expect(mockFetch).toHaveBeenCalledTimes(2);
 		});
 	});

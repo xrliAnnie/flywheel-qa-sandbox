@@ -1,0 +1,31 @@
+erDiagram
+    ISSUE_CHANNEL ||--o| CHAT_THREADS : "最多一个登记正主"
+    ISSUE_CHANNEL ||--o| PENDING_CHAT_THREAD_CREATIONS : "最多一个待确认锚点"
+    PENDING_CHAT_THREAD_CREATIONS ||--|| DISCORD_ROOT_MESSAGE : "指向根消息"
+    DISCORD_ROOT_MESSAGE ||--o| DISCORD_THREAD : "编号恒等且最多一个"
+
+    ISSUE_CHANNEL {
+        string issue_id PK "例如 FLY-1927"
+        string channel_id PK "Lead 所在频道"
+    }
+    CHAT_THREADS {
+        string issue_id FK "正主所属 issue"
+        string channel_id FK "正主所属频道"
+        string thread_id "Founder 与事件共同落点"
+        string lead_id "负责的 Lead 身份"
+    }
+    PENDING_CHAT_THREAD_CREATIONS {
+        string issue_id FK "与正主使用同一键"
+        string channel_id FK "与正主使用同一键"
+        string root_message_id "超时后恢复钥匙"
+        string lead_id "胜者身份随锚点保存"
+        string project_name "胜者所属项目"
+        datetime last_attempt_at "最近一次尝试"
+        string last_error "最近一次明确错误"
+    }
+    DISCORD_ROOT_MESSAGE {
+        string id PK "根消息编号 p"
+    }
+    DISCORD_THREAD {
+        string id PK "同一个编号 p"
+    }

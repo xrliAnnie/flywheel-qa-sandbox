@@ -1,0 +1,37 @@
+sequenceDiagram
+    autonumber
+    participant E as 开工事件或 Lead 通报
+    participant B as Bridge 协调器
+    participant D as Discord
+    participant S as 本地登记库
+
+    E->>B: 确保这个 issue 有唯一工作 thread
+    B->>D: 第一步：发根消息
+    D-->>B: 返回消息编号 p
+    B->>S: 先保存待确认锚点 p
+    B->>D: 第二步：从消息 p 开 thread
+
+    alt 第二步明确成功
+        D-->>B: thread 编号也是 p
+        B->>S: 事务提升 p 为登记正主
+        B-->>E: 返回唯一正主 p
+    else 超时或网络结果未知
+        B-->>E: 明确报“待恢复”，锚点 p 保留
+    end
+
+    Note over B,S: 下一次调用只认锚点 p，绝不另发一条根消息
+    E->>B: 后续事件、Founder 对话或 Lead 通报
+    B->>D: 探测 thread p 的真实状态
+
+    alt 已确认存在
+        D-->>B: thread p 存在
+        B->>S: 提升同一个 p 为登记正主
+        B-->>E: 全部消息继续落到 p
+    else 明确尚未创建且根消息仍在
+        B->>D: 仍从同一条消息 p 重试
+    else 根消息已被人手工删掉
+        B->>S: 把这个登记正主标记为“已失踪”，锚点 p 保留
+        B-->>E: 明确报错，等人确认放弃后才会重建
+    else 暂时无法判断或无权限
+        B-->>E: 响亮失败并保留 p，稍后再恢复
+    end

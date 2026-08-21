@@ -648,7 +648,14 @@ export function createQueryRouter(
 		}
 
 		if (result.error) {
-			res.status(502).json({ error: result.error });
+			res.status(502).json({
+				error: result.error,
+				...(result.errorCode ? { errorCode: result.errorCode } : {}),
+				...(result.rootMessageId
+					? { rootMessageId: result.rootMessageId }
+					: {}),
+				...(result.threadId ? { threadId: result.threadId } : {}),
+			});
 			return;
 		}
 
@@ -834,6 +841,15 @@ export function createQueryRouter(
 			res.status(503).json({ error: "No Discord bot token available" });
 			return;
 		}
+		const threadContext = {
+			chatChannelId: channelId,
+			issueId: resolvedIssueId,
+			issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+			issueTitle: resolvedTitle,
+			botToken,
+			leadId,
+			ownerUserId: opts.discordOwnerUserId,
+		};
 
 		// Lookup-first: only call ensureChatThread on row miss (AC1 + AC2)
 		let threadId: string;
@@ -843,15 +859,7 @@ export function createQueryRouter(
 			threadId = existing.thread_id;
 			if (opts?.chatThreadCreator) {
 				await opts.chatThreadCreator.backfillThreadName(
-					{
-						chatChannelId: channelId,
-						issueId: resolvedIssueId,
-						issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
-						issueTitle: resolvedTitle,
-						botToken,
-						leadId,
-						ownerUserId: opts.discordOwnerUserId,
-					},
+					threadContext,
 					threadId,
 				);
 			}
@@ -862,15 +870,8 @@ export function createQueryRouter(
 			}
 			let ensureResult: ChatThreadResult;
 			try {
-				ensureResult = await opts.chatThreadCreator.ensureChatThread({
-					chatChannelId: channelId,
-					issueId: resolvedIssueId,
-					issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
-					issueTitle: resolvedTitle,
-					botToken,
-					leadId,
-					ownerUserId: opts.discordOwnerUserId,
-				});
+				ensureResult =
+					await opts.chatThreadCreator.ensureChatThread(threadContext);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				res.status(502).json({ error: `Thread creation failed: ${msg}` });
@@ -879,6 +880,13 @@ export function createQueryRouter(
 			if (ensureResult.error || !ensureResult.threadId) {
 				res.status(502).json({
 					error: ensureResult.error ?? "ChatThreadCreator returned no threadId",
+					...(ensureResult.errorCode
+						? { errorCode: ensureResult.errorCode }
+						: {}),
+					...(ensureResult.rootMessageId
+						? { rootMessageId: ensureResult.rootMessageId }
+						: {}),
+					...(ensureResult.threadId ? { threadId: ensureResult.threadId } : {}),
 				});
 				return;
 			}
@@ -888,7 +896,7 @@ export function createQueryRouter(
 
 		// Sequential POST via helper (handles split + allowed_mentions)
 		const { postDiscordMessageToChannel } = await import("./discord-utils.js");
-		const postResult = await postDiscordMessageToChannel(
+		let postResult = await postDiscordMessageToChannel(
 			threadId,
 			text,
 			botToken,
@@ -896,9 +904,60 @@ export function createQueryRouter(
 			opts?.discordFetch,
 		);
 
+		// FLY-1927: a canonical row can be claimed just before Discord turns its
+		// root message into a thread. A first-chunk 404 is therefore recoverable:
+		// re-enter the creator, which probes/replays ONLY this exact root, then
+		// retry the message once. Never retry after a partial multi-chunk send.
+		if (
+			!postResult.ok &&
+			postResult.error.startsWith("Discord 404") &&
+			postResult.chunksSent === 0 &&
+			opts?.chatThreadCreator
+		) {
+			let recovery: ChatThreadResult;
+			try {
+				recovery = await opts.chatThreadCreator.ensureChatThread(threadContext);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				res.status(502).json({
+					error: `Thread recovery failed: ${msg}`,
+					errorCode: "canonical_thread_unavailable",
+					rootMessageId: threadId,
+					threadId,
+				});
+				return;
+			}
+			if (recovery.error || !recovery.threadId) {
+				res.status(502).json({
+					error: recovery.error ?? "ChatThreadCreator returned no threadId",
+					...(recovery.errorCode
+						? { errorCode: recovery.errorCode }
+						: { errorCode: "canonical_thread_unavailable" }),
+					rootMessageId: recovery.rootMessageId ?? threadId,
+					threadId: recovery.threadId ?? threadId,
+				});
+				return;
+			}
+			threadId = recovery.threadId;
+			created = created || recovery.created;
+			postResult = await postDiscordMessageToChannel(
+				threadId,
+				text,
+				botToken,
+				{ origin: "lead_authored", ...(replyTo ? { replyTo } : {}) },
+				opts.discordFetch,
+			);
+		}
+
 		if (!postResult.ok) {
 			res.status(502).json({
 				error: postResult.error,
+				...(postResult.error.startsWith("Discord 404")
+					? {
+							errorCode: "canonical_thread_unavailable",
+							rootMessageId: threadId,
+						}
+					: {}),
 				threadId,
 				messageIds: postResult.messageIds,
 				chunksSent: postResult.chunksSent,

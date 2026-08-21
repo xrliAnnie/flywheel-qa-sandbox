@@ -38,3 +38,80 @@ export async function validateThreadExists(
 		clearTimeout(timeout);
 	}
 }
+
+export type DiscordExistence =
+	| { state: "confirmed" }
+	| { state: "absent" }
+	| { state: "transient"; status?: number }
+	| { state: "denied"; status: 401 | 403 };
+
+export interface DiscordExistenceDeps {
+	fetchImpl?: typeof fetch;
+	timeoutMs?: number;
+}
+
+/** Side-effect-free exact probe used by FLY-1927's same-root replay path. */
+export async function classifyThreadExistence(
+	threadId: string,
+	expectedParentId: string,
+	botToken: string,
+	deps: DiscordExistenceDeps = {},
+): Promise<DiscordExistence> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5_000);
+	try {
+		const res = await (deps.fetchImpl ?? fetch)(
+			`${DISCORD_API}/channels/${threadId}`,
+			{
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: controller.signal,
+			},
+		);
+		if (res.status === 404) return { state: "absent" };
+		if (res.status === 401 || res.status === 403) {
+			return { state: "denied", status: res.status };
+		}
+		if (!res.ok) return { state: "transient", status: res.status };
+		const data = (await res.json()) as { type?: number; parent_id?: string };
+		const isThread = data.type === 10 || data.type === 11 || data.type === 12;
+		return isThread && data.parent_id === expectedParentId
+			? { state: "confirmed" }
+			: { state: "absent" };
+	} catch {
+		return { state: "transient" };
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+/** Side-effect-free root-message probe paired with classifyThreadExistence. */
+export async function classifyRootMessageExistence(
+	channelId: string,
+	rootMessageId: string,
+	botToken: string,
+	deps: DiscordExistenceDeps = {},
+): Promise<
+	Exclude<DiscordExistence, { state: "confirmed" }> | { state: "confirmed" }
+> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), deps.timeoutMs ?? 5_000);
+	try {
+		const res = await (deps.fetchImpl ?? fetch)(
+			`${DISCORD_API}/channels/${channelId}/messages/${rootMessageId}`,
+			{
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: controller.signal,
+			},
+		);
+		if (res.status === 404) return { state: "absent" };
+		if (res.status === 401 || res.status === 403) {
+			return { state: "denied", status: res.status };
+		}
+		if (!res.ok) return { state: "transient", status: res.status };
+		return { state: "confirmed" };
+	} catch {
+		return { state: "transient" };
+	} finally {
+		clearTimeout(timeout);
+	}
+}

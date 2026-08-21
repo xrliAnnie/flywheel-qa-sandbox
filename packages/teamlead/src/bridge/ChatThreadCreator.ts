@@ -8,11 +8,13 @@ import type { StateStore } from "../StateStore.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
 import {
 	addThreadMember,
-	createChatThread,
 	parseRetryAfterMs,
 	pinThreadMessage,
+	postThreadRootMessage,
 	removeUserFromChatThread,
+	startThreadFromMessage,
 } from "./chat-thread-utils.js";
+import { deleteDiscordMessageInChannel } from "./discord-utils.js";
 import {
 	type DisplayWriteResult,
 	PHASE_DISPLAY_GLYPHS,
@@ -25,7 +27,10 @@ import {
 	stageBadge,
 	stripModelMarker,
 } from "./stage-utils.js";
-import { validateThreadExists } from "./thread-validator.js";
+import {
+	classifyRootMessageExistence,
+	classifyThreadExistence,
+} from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const CREATE_TIMEOUT_MS = 5_000;
@@ -152,6 +157,8 @@ export interface ChatThreadResult {
 	created: boolean;
 	threadId?: string;
 	error?: string;
+	errorCode?: string;
+	rootMessageId?: string;
 }
 
 function effectiveIssueKey(
@@ -333,37 +340,14 @@ export class ChatThreadCreator {
 	}
 
 	private async _doEnsure(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		// 1. Check existing mapping (FLY-892: the single (issue, channel) thread).
+		// 1. The existing canonical row is also FLY-1927's recovery anchor. A 404
+		// no longer tombstones and auto-rebuilds: we first retry start on this exact
+		// root, or fail loudly if the root itself is gone.
 		const existing = this.store.getChatThreadByIssue(
 			ctx.issueId,
 			ctx.chatChannelId,
 		);
-		if (existing) {
-			const valid = await validateThreadExists(
-				existing.thread_id,
-				ctx.botToken,
-				{
-					markDiscordMissing: (id) => this.store.markChatThreadMissing(id),
-				},
-			);
-			if (valid) {
-				await this.maybeBackfillThreadName(ctx, existing.thread_id);
-				// FLY-91: Even when reusing existing thread, post a notification
-				// in the main channel so Annie sees the issue is active.
-				await this.postChannelNotification(ctx, existing.thread_id);
-				// FLY-91: Re-add owner as thread member (idempotent) — ensures
-				// sidebar visibility even if they previously left/were removed.
-				if (ctx.ownerUserId) {
-					await addThreadMember(
-						existing.thread_id,
-						ctx.ownerUserId,
-						ctx.botToken,
-					);
-				}
-				return { created: false, threadId: existing.thread_id };
-			}
-			// Thread gone in Discord — fall through to create new
-		}
+		if (existing) return this.reuseOrRecoverCanonical(ctx, existing.thread_id);
 
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
@@ -385,39 +369,235 @@ export class ChatThreadCreator {
 			? `${ctx.routeSummary}\n${issueMessage}`
 			: issueMessage;
 
-		// FLY-1544 ③: the two-step REST flow lives in chat-thread-utils
-		// (createChatThread) so the v2 Discord messenger shares ONE implementation.
+		// FLY-1927: post the root first, then claim its future thread id in the
+		// existing canonical table BEFORE start-from-message. This closes the crash /
+		// timeout window without a second recovery-ticket table.
 		console.log(
 			`[ChatThreadCreator] create thread channel=${ctx.chatChannelId} name="${threadName.slice(0, 60)}" content="${messageContent.slice(0, 80)}"`,
 		);
-		const created = await createChatThread(
+		const root = await postThreadRootMessage(
 			{
 				channelId: ctx.chatChannelId,
-				threadName,
 				messageContent: markAutomatedDiscordText(messageContent),
 				botToken: ctx.botToken,
 			},
 			{ timeoutMs: CREATE_TIMEOUT_MS },
 		);
-		if (!created.created) {
-			console.warn(`[ChatThreadCreator] create FAILED: ${created.error}`);
-			return { created: false, error: created.error };
+		if (!root.posted) {
+			console.warn(`[ChatThreadCreator] root POST FAILED: ${root.error}`);
+			return { created: false, error: root.error };
 		}
 
-		// 3. Store mapping (FLY-892: the single (issue, channel) thread).
-		this.store.upsertChatThread(
-			created.threadId,
+		let claim: ReturnType<StateStore["registerChatThreadConditional"]>;
+		try {
+			claim = this.store.registerChatThreadConditional(
+				root.rootMessageId,
+				ctx.chatChannelId,
+				ctx.issueId,
+				ctx.leadId,
+			);
+		} catch (err) {
+			await this.cleanupFreshRoot(ctx, root.rootMessageId);
+			const message = err instanceof Error ? err.message : String(err);
+			return {
+				created: false,
+				rootMessageId: root.rootMessageId,
+				errorCode: "canonical_claim_failed",
+				error: `Could not claim canonical root ${root.rootMessageId}: ${message}`,
+			};
+		}
+		if (claim.status !== "registered") {
+			await this.cleanupFreshRoot(ctx, root.rootMessageId);
+			if (claim.status === "canonical_exists") {
+				return { created: false, threadId: claim.threadId };
+			}
+			return {
+				created: false,
+				rootMessageId: root.rootMessageId,
+				errorCode: "root_id_conflict",
+				error: `Fresh root ${root.rootMessageId} was already mapped to issue ${claim.issueId}`,
+			};
+		}
+
+		return this.startCanonicalRoot(ctx, root.rootMessageId, threadName, true);
+	}
+
+	private async cleanupFreshRoot(
+		ctx: ChatThreadContext,
+		rootMessageId: string,
+	): Promise<void> {
+		const cleanup = await deleteDiscordMessageInChannel(
 			ctx.chatChannelId,
-			ctx.issueId,
-			ctx.leadId,
+			rootMessageId,
+			ctx.botToken,
+			fetch,
+			CREATE_TIMEOUT_MS,
 		);
+		if (!cleanup.ok) {
+			console.warn(
+				`[ChatThreadCreator] unclaimed root cleanup failed root=${rootMessageId}: ${cleanup.error}`,
+			);
+		}
+	}
 
-		// 4. Auto-add owner as thread member (sidebar visibility + notifications)
-		if (ctx.ownerUserId) {
-			await addThreadMember(created.threadId, ctx.ownerUserId, ctx.botToken);
+	private async reuseOrRecoverCanonical(
+		ctx: ChatThreadContext,
+		threadId: string,
+	): Promise<ChatThreadResult> {
+		const thread = await classifyThreadExistence(
+			threadId,
+			ctx.chatChannelId,
+			ctx.botToken,
+		);
+		if (thread.state !== "absent") {
+			// Preserve the historical fail-open behavior for rate limits, permission
+			// errors and timeouts. None of these cases may create another root.
+			await this.maybeBackfillThreadName(ctx, threadId);
+			await this.postChannelNotification(ctx, threadId);
+			if (ctx.ownerUserId) {
+				await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+			}
+			return { created: false, threadId };
 		}
 
-		return { created: true, threadId: created.threadId };
+		const root = await classifyRootMessageExistence(
+			ctx.chatChannelId,
+			threadId,
+			ctx.botToken,
+		);
+		if (root.state === "confirmed") {
+			return this.startCanonicalRoot(
+				ctx,
+				threadId,
+				composeThreadTitle("", buildIssueThreadName(ctx), ctx.modelMarker),
+				false,
+			);
+		}
+		if (root.state === "absent") {
+			return {
+				created: false,
+				threadId,
+				rootMessageId: threadId,
+				errorCode: "canonical_root_gone",
+				error: `Canonical thread ${threadId} and its root message are missing; manual abandon is required before rebuilding`,
+			};
+		}
+		return {
+			created: false,
+			threadId,
+			rootMessageId: threadId,
+			errorCode: "canonical_recovery_uncertain",
+			error: `Could not verify canonical root ${threadId}; refusing to create a replacement`,
+		};
+	}
+
+	private async startCanonicalRoot(
+		ctx: ChatThreadContext,
+		rootMessageId: string,
+		threadName: string,
+		createdByThisCall: boolean,
+	): Promise<ChatThreadResult> {
+		let attempt = await startThreadFromMessage(
+			{
+				channelId: ctx.chatChannelId,
+				rootMessageId,
+				threadName,
+				botToken: ctx.botToken,
+			},
+			{ timeoutMs: CREATE_TIMEOUT_MS },
+		);
+		if (attempt.created) {
+			await this.addOwnerAfterCreate(ctx, rootMessageId);
+			return { created: createdByThisCall, threadId: rootMessageId };
+		}
+
+		let thread = await classifyThreadExistence(
+			rootMessageId,
+			ctx.chatChannelId,
+			ctx.botToken,
+		);
+		if (thread.state === "confirmed") {
+			await this.addOwnerAfterCreate(ctx, rootMessageId);
+			return { created: createdByThisCall, threadId: rootMessageId };
+		}
+		if (thread.state !== "absent") {
+			return this.uncertainStartResult(rootMessageId, attempt.error);
+		}
+
+		const root = await classifyRootMessageExistence(
+			ctx.chatChannelId,
+			rootMessageId,
+			ctx.botToken,
+		);
+		if (root.state === "absent") {
+			return {
+				created: false,
+				threadId: rootMessageId,
+				rootMessageId,
+				errorCode: "canonical_root_gone",
+				error: `Canonical root ${rootMessageId} disappeared while starting the thread; manual abandon is required`,
+			};
+		}
+		if (root.state !== "confirmed") {
+			return this.uncertainStartResult(rootMessageId, attempt.error);
+		}
+
+		// One bounded replay, always against the SAME root. A source message can
+		// have at most one Discord thread, so this cannot create a duplicate.
+		attempt = await startThreadFromMessage(
+			{
+				channelId: ctx.chatChannelId,
+				rootMessageId,
+				threadName,
+				botToken: ctx.botToken,
+			},
+			{ timeoutMs: CREATE_TIMEOUT_MS },
+		);
+		if (attempt.created) {
+			await this.addOwnerAfterCreate(ctx, rootMessageId);
+			return { created: createdByThisCall, threadId: rootMessageId };
+		}
+		thread = await classifyThreadExistence(
+			rootMessageId,
+			ctx.chatChannelId,
+			ctx.botToken,
+		);
+		if (thread.state === "confirmed") {
+			await this.addOwnerAfterCreate(ctx, rootMessageId);
+			return { created: createdByThisCall, threadId: rootMessageId };
+		}
+		if (thread.state !== "absent") {
+			return this.uncertainStartResult(rootMessageId, attempt.error);
+		}
+		return {
+			created: false,
+			threadId: rootMessageId,
+			rootMessageId,
+			errorCode: "thread_start_failed",
+			error: `Discord did not create canonical thread ${rootMessageId}: ${attempt.error}`,
+		};
+	}
+
+	private uncertainStartResult(
+		rootMessageId: string,
+		attemptError: string,
+	): ChatThreadResult {
+		return {
+			created: false,
+			threadId: rootMessageId,
+			rootMessageId,
+			errorCode: "thread_start_uncertain",
+			error: `Canonical thread ${rootMessageId} could not be verified after start failure (${attemptError}); refusing to create a replacement`,
+		};
+	}
+
+	private async addOwnerAfterCreate(
+		ctx: ChatThreadContext,
+		threadId: string,
+	): Promise<void> {
+		if (ctx.ownerUserId) {
+			await addThreadMember(threadId, ctx.ownerUserId, ctx.botToken);
+		}
 	}
 
 	/**

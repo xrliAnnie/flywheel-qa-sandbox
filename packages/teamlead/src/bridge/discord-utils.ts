@@ -249,19 +249,28 @@ export async function deleteDiscordMessageInChannel(
 	messageId: string,
 	botToken: string,
 	fetchImpl: typeof fetch = fetch,
+	timeoutMs?: number,
 ): Promise<EditDiscordResult> {
 	let res: Response;
+	const controller =
+		timeoutMs === undefined ? undefined : new AbortController();
+	const timer = controller
+		? setTimeout(() => controller.abort(), timeoutMs)
+		: undefined;
 	try {
 		res = await fetchImpl(
 			`${DISCORD_API}/channels/${threadId}/messages/${messageId}`,
 			{
 				method: "DELETE",
 				headers: { Authorization: `Bot ${botToken}` },
+				...(controller ? { signal: controller.signal } : {}),
 			},
 		);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		return { ok: false, error: `Discord DELETE failed: ${msg}` };
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 	}
 	if (res.ok || res.status === 404) return { ok: true };
 	const detail = await res.text().catch(() => "");

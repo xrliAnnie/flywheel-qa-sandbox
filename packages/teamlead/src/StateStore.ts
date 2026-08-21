@@ -754,6 +754,11 @@ export type FounderDecisionClassification =
 	| "unclear"
 	| "none";
 
+export type RegisterChatThreadConditionalResult =
+	| { status: "registered"; threadId: string }
+	| { status: "canonical_exists"; threadId: string }
+	| { status: "thread_mapped"; threadId: string; issueId: string };
+
 const FOUNDER_DECISION_ALERT_CLAIM_TTL_MS = 5 * 60_000;
 
 export interface FounderDecisionConvergenceRow {
@@ -7654,6 +7659,83 @@ export class StateStore {
 	// channel concept gone.
 
 	// --- FLY-91: Chat thread CRUD (per-issue threads in chatChannel) ---
+
+	/**
+	 * FLY-1927: first-writer-wins registration for both thread creation and the
+	 * async /register route. The Discord root message id is also the future
+	 * thread id, so the creator claims the existing canonical table immediately
+	 * after the root POST and before start-from-message. No side-table ticket.
+	 */
+	registerChatThreadConditional(
+		threadId: string,
+		channelId: string,
+		issueId: string,
+		leadId?: string,
+	): RegisterChatThreadConditionalResult {
+		let result: RegisterChatThreadConditionalResult | undefined;
+		let changed = false;
+		this.db.transaction(() => {
+			const mappedStmt = this.db.prepare(
+				`SELECT issue_id, channel_id FROM chat_threads
+				  WHERE thread_id = ? AND discord_missing_at IS NULL`,
+			);
+			mappedStmt.bind([threadId]);
+			if (mappedStmt.step()) {
+				const mapped = mappedStmt.getAsObject();
+				const mappedIssueId = mapped.issue_id as string;
+				const mappedChannelId = mapped.channel_id as string;
+				mappedStmt.free();
+				if (mappedIssueId !== issueId || mappedChannelId !== channelId) {
+					result = { status: "thread_mapped", threadId, issueId: mappedIssueId };
+					return;
+				}
+			} else {
+				mappedStmt.free();
+			}
+
+			const canonicalStmt = this.db.prepare(
+				`SELECT thread_id FROM chat_threads
+				  WHERE issue_id = ? AND channel_id = ?
+				    AND discord_missing_at IS NULL`,
+			);
+			canonicalStmt.bind([issueId, channelId]);
+			if (canonicalStmt.step()) {
+				const canonicalId = canonicalStmt.getAsObject().thread_id as string;
+				canonicalStmt.free();
+				if (canonicalId !== threadId) {
+					result = { status: "canonical_exists", threadId: canonicalId };
+					return;
+				}
+				this.db.run(
+					"UPDATE chat_threads SET lead_id = ? WHERE thread_id = ?",
+					[leadId ?? null, threadId],
+				);
+				changed = this.db.getRowsModified() > 0;
+				result = { status: "registered", threadId };
+				return;
+			}
+			canonicalStmt.free();
+
+			// An explicit, fenced manual abandon marks the old row missing. Only
+			// then may a later ensure replace that exact canonical slot.
+			this.db.run(
+				`DELETE FROM chat_threads
+				  WHERE discord_missing_at IS NOT NULL
+				    AND ((issue_id = ? AND channel_id = ?) OR thread_id = ?)`,
+				[issueId, channelId, threadId],
+			);
+			this.db.run(
+				`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
+				 VALUES (?, ?, ?, ?)`,
+				[threadId, channelId, issueId, leadId ?? null],
+			);
+			changed = true;
+			result = { status: "registered", threadId };
+		});
+		if (changed) this.save();
+		if (!result) throw new Error("conditional chat-thread registration failed");
+		return result;
+	}
 
 	/**
 	 * Delete-first upsert (same pattern as upsertThread for Forum).

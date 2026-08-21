@@ -35,7 +35,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-abc" }),
+				json: () => Promise.resolve({ id: "msg-123" }),
 			});
 
 		const result = await creator.ensureChatThread({
@@ -49,7 +49,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		});
 
 		expect(result.created).toBe(true);
-		expect(result.threadId).toBe("thread-abc");
+		expect(result.threadId).toBe("msg-123");
 
 		// Verify Step 1: POST message to channel
 		const [msgUrl, msgOpts] = mockFetch.mock.calls[0]!;
@@ -78,7 +78,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		// Verify stored mapping (FLY-369: getChatThreadByIssue also returns lead_id + archived_at)
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
 		expect(stored).toEqual({
-			thread_id: "thread-abc",
+			thread_id: "msg-123",
 			channel_id: "ch-123",
 			lead_id: null,
 			archived_at: null,
@@ -93,7 +93,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-title" }),
+				json: () => Promise.resolve({ id: "msg-title" }),
 			});
 
 		const longTitle = "Fix Bridge thread names ".repeat(8);
@@ -124,7 +124,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-fallback" }),
+				json: () => Promise.resolve({ id: "msg-fallback" }),
 			});
 
 		await creator.ensureChatThread({
@@ -280,22 +280,13 @@ describe("FLY-91: ChatThreadCreator", () => {
 		).toBe(false);
 	});
 
-	it("recreates thread when existing one returns 404", async () => {
+	it("fails loudly instead of recreating when the canonical thread and root are gone", async () => {
 		store.upsertChatThread("thread-dead", "ch-123", "issue-1");
 
-		// Call 1: validate → 404
-		// Call 2: POST message → success
-		// Call 3: POST thread from message → success
+		// Exact thread probe and exact root-message probe both return 404.
 		mockFetch
 			.mockResolvedValueOnce({ ok: false, status: 404 })
-			.mockResolvedValueOnce({
-				ok: true,
-				json: () => Promise.resolve({ id: "msg-456" }),
-			})
-			.mockResolvedValueOnce({
-				ok: true,
-				json: () => Promise.resolve({ id: "thread-new" }),
-			});
+			.mockResolvedValueOnce({ ok: false, status: 404 });
 
 		const result = await creator.ensureChatThread({
 			chatChannelId: "ch-123",
@@ -304,13 +295,16 @@ describe("FLY-91: ChatThreadCreator", () => {
 			botToken: "bot-token",
 		});
 
-		expect(result.created).toBe(true);
-		expect(result.threadId).toBe("thread-new");
-
-		// Old thread should be marked missing
-		const old = store.getChatThreadByIssue("issue-1", "ch-123");
-		// Should now return the new thread
-		expect(old?.thread_id).toBe("thread-new");
+		expect(result).toMatchObject({
+			created: false,
+			threadId: "thread-dead",
+			rootMessageId: "thread-dead",
+			errorCode: "canonical_root_gone",
+		});
+		expect(store.getChatThreadByIssue("issue-1", "ch-123")?.thread_id).toBe(
+			"thread-dead",
+		);
+		expect(mockFetch).toHaveBeenCalledTimes(2);
 	});
 
 	it("returns error when message post fails", async () => {
@@ -383,7 +377,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-long" }),
+				json: () => Promise.resolve({ id: "msg-long" }),
 			});
 
 		const longTitle = "A".repeat(200);
@@ -407,7 +401,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-lead" }),
+				json: () => Promise.resolve({ id: "msg-lead" }),
 			});
 
 		await creator.ensureChatThread({
@@ -418,7 +412,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 		});
 
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
-		expect(stored?.thread_id).toBe("thread-lead");
+		expect(stored?.thread_id).toBe("msg-lead");
 	});
 
 	// FLY-162 Codex R3 issue #2: Every Discord message POST out of
@@ -435,7 +429,7 @@ describe("FLY-91: ChatThreadCreator", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-am-1" }),
+				json: () => Promise.resolve({ id: "msg-am-1" }),
 			});
 
 		await creator.ensureChatThread({
@@ -1533,7 +1527,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-755" }),
+				json: () => Promise.resolve({ id: "msg-755" }),
 			});
 
 		await creator.ensureChatThread({
@@ -1557,7 +1551,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-1255" }),
+				json: () => Promise.resolve({ id: "msg-1255" }),
 			});
 
 		await creator.ensureChatThread({
@@ -1581,7 +1575,7 @@ describe("FLY-755: creation + backfill carry the front model marker", () => {
 			})
 			.mockResolvedValueOnce({
 				ok: true,
-				json: () => Promise.resolve({ id: "thread-kl" }),
+				json: () => Promise.resolve({ id: "msg-kl" }),
 			});
 
 		await creator.ensureChatThread({

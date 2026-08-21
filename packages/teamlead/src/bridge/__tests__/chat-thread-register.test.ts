@@ -204,6 +204,31 @@ describe("validateAndRegisterChatThread", () => {
 		expect(result).toEqual({ ok: true });
 	});
 
+	it("does not overwrite an existing canonical thread for the same issue", async () => {
+		store.upsertChatThread("t-canonical", "ch-100", "issue-1", "lead-alpha");
+
+		const result = await validateAndRegisterChatThread(
+			{
+				threadId: "t-late-register",
+				channelId: "ch-100",
+				issueId: "issue-1",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			},
+			store,
+			projects,
+		);
+
+		expect(result).toEqual({
+			ok: false,
+			status: 409,
+			error: "Issue issue-1 already has canonical thread t-canonical",
+		});
+		expect(store.getChatThreadByIssue("issue-1", "ch-100")?.thread_id).toBe(
+			"t-canonical",
+		);
+	});
+
 	it("allows different leads to register threads in their own channels", async () => {
 		const r1 = await validateAndRegisterChatThread(
 			{

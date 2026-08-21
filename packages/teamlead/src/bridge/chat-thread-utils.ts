@@ -563,21 +563,85 @@ export async function removeUserFromChatThread(
 export interface CreateChatThreadDeps {
 	/** Test seam for Discord HTTP. */
 	fetchImpl?: typeof fetch;
-	/** Abort timeout covering both steps. Default 5000ms. */
+	/** Abort timeout for EACH Discord request. Default 5000ms. */
 	timeoutMs?: number;
 }
 
 export type CreateChatThreadResult =
 	| { created: true; threadId: string; rootMessageId: string }
-	| { created: false; error: string };
+	| { created: false; error: string; rootMessageId?: string; status?: number };
 
-export async function createChatThread(
+export type PostThreadRootMessageResult =
+	| { posted: true; rootMessageId: string }
+	| { posted: false; error: string; status?: number };
+
+/**
+ * FLY-1927: step 1 of issue-thread creation. Its response is the durable
+ * identity of the future thread, so callers must receive it before attempting
+ * start-from-message. This request owns its timeout; step 2 gets a fresh one.
+ */
+export async function postThreadRootMessage(
 	input: {
 		channelId: string;
-		threadName: string;
 		messageContent: string;
 		botToken: string;
-		/** Discord auto_archive_duration in minutes. Default 4320 (3 days). */
+	},
+	deps: CreateChatThreadDeps = {},
+): Promise<PostThreadRootMessageResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(),
+		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+	);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${input.channelId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${input.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(input.messageContent),
+					allowed_mentions: { parse: [] },
+				}),
+				signal: controller.signal,
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			return {
+				posted: false,
+				status: res.status,
+				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
+			};
+		}
+		const data = (await res.json()) as { id?: string };
+		if (!data.id) return { posted: false, error: "no message ID in response" };
+		return { posted: true, rootMessageId: data.id };
+	} catch (err) {
+		if ((err as Error).name === "AbortError") {
+			return { posted: false, error: "timeout" };
+		}
+		return { posted: false, error: (err as Error).message };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/**
+ * FLY-1927: step 2 always targets a caller-supplied, already-known root. Discord
+ * guarantees the created thread id equals that root message id. Failures retain
+ * the root id so the owner can probe/replay this exact operation.
+ */
+export async function startThreadFromMessage(
+	input: {
+		channelId: string;
+		rootMessageId: string;
+		threadName: string;
+		botToken: string;
 		autoArchiveMinutes?: number;
 	},
 	deps: CreateChatThreadDeps = {},
@@ -589,38 +653,8 @@ export async function createChatThread(
 		deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 	);
 	try {
-		const msgRes = await fetchImpl(
-			`${DISCORD_API}/channels/${input.channelId}/messages`,
-			{
-				method: "POST",
-				headers: {
-					Authorization: `Bot ${input.botToken}`,
-					"Content-Type": "application/json",
-				},
-				// FLY-162 Codex R3 #2: never let generated text trigger
-				// @everyone/@here/role pings. Marking is applied HERE (idempotent)
-				// so this shared sender satisfies the automated-message inventory
-				// guard regardless of caller discipline.
-				body: JSON.stringify({
-					content: markAutomatedDiscordText(input.messageContent),
-					allowed_mentions: { parse: [] },
-				}),
-				signal: controller.signal,
-			},
-		);
-		if (!msgRes.ok) {
-			const body = await msgRes.text().catch(() => "");
-			return {
-				created: false,
-				error: `Discord ${msgRes.status}: ${body.slice(0, 200)}`,
-			};
-		}
-		const msgData = (await msgRes.json()) as { id?: string };
-		if (!msgData.id) {
-			return { created: false, error: "no message ID in response" };
-		}
 		const res = await fetchImpl(
-			`${DISCORD_API}/channels/${input.channelId}/messages/${msgData.id}/threads`,
+			`${DISCORD_API}/channels/${input.channelId}/messages/${input.rootMessageId}/threads`,
 			{
 				method: "POST",
 				headers: {
@@ -638,20 +672,73 @@ export async function createChatThread(
 			const body = await res.text().catch(() => "");
 			return {
 				created: false,
+				status: res.status,
+				rootMessageId: input.rootMessageId,
 				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
 			};
 		}
 		const data = (await res.json()) as { id?: string };
-		if (!data.id) return { created: false, error: "no thread ID in response" };
-		return { created: true, threadId: data.id, rootMessageId: msgData.id };
-	} catch (err) {
-		if ((err as Error).name === "AbortError") {
-			return { created: false, error: "timeout" };
+		if (!data.id) {
+			return {
+				created: false,
+				rootMessageId: input.rootMessageId,
+				error: "no thread ID in response",
+			};
 		}
-		return { created: false, error: (err as Error).message };
+		if (data.id !== input.rootMessageId) {
+			return {
+				created: false,
+				rootMessageId: input.rootMessageId,
+				error: `Discord thread ID ${data.id} did not match root message ID ${input.rootMessageId}`,
+			};
+		}
+		return {
+			created: true,
+			threadId: input.rootMessageId,
+			rootMessageId: input.rootMessageId,
+		};
+	} catch (err) {
+		return {
+			created: false,
+			rootMessageId: input.rootMessageId,
+			error:
+				(err as Error).name === "AbortError"
+					? "timeout"
+					: (err as Error).message,
+		};
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+/**
+ * Compatibility/test helper. Production creation uses the two primitives
+ * directly so it can claim the root between them. `timeoutMs` is a per-step
+ * budget (root POST, then start-from-message), not one shared total deadline.
+ */
+export async function createChatThread(
+	input: {
+		channelId: string;
+		threadName: string;
+		messageContent: string;
+		botToken: string;
+		/** Discord auto_archive_duration in minutes. Default 4320 (3 days). */
+		autoArchiveMinutes?: number;
+	},
+	deps: CreateChatThreadDeps = {},
+): Promise<CreateChatThreadResult> {
+	const root = await postThreadRootMessage(input, deps);
+	if (!root.posted) {
+		return {
+			created: false,
+			error: root.error,
+			...(root.status === undefined ? {} : { status: root.status }),
+		};
+	}
+	return startThreadFromMessage(
+		{ ...input, rootMessageId: root.rootMessageId },
+		deps,
+	);
 }
 
 /**
