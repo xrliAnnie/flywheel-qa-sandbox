@@ -446,7 +446,7 @@ phase_skills() {
 _fleet_linux_specs() {
   local fw="$FLYWHEEL_DIR" st="$FLYWHEEL_STATE_DIR"
   jq -nc --arg fw "$fw" '{name:"flywheel-bridge",kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-bridge-wrapper.sh"),keepAlive:true,stdout:"/tmp/flywheel-bridge.log"}'
-  jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-pending.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
+  jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-urgent.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
   jq -nc --arg fw "$fw" '{name:"flywheel-daily-standup",kind:"timer",exec:("/bin/bash "+$fw+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
   local m project_name lead_id backend
   for m in "$FW/manifests"/*.json; do

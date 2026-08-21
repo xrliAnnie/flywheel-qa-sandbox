@@ -380,37 +380,28 @@ For each PR the user approves to ship:
    - Wait for merge to complete: `gh pr view {PR_NUMBER} --json state --jq '.state'` until `MERGED`
    - **Do NOT use `gh pr merge` directly** — all ships must go through the `:cool:` flow for audit trail and CI gating
 
-   **B2. Trigger deploy after merge (MANDATORY) — FLY-270 self-hosting ship (Method B)**
+   **B2. Finish Flywheel merge without deploy/restart (MANDATORY) — FLY-1959**
 
    > ⚠️ **Explicit Flywheel-only guard — derive from the ACTUAL orchestrated repo,
    > not a hardcoded path** (code-review R2 HIGH-3). A hardcoded `MAIN_REPO=.../flywheel`
-   > self-check is tautological (always passes) and would let this branch fire while
-   > orchestrating a geoforge3d/sub/joycon PR — enqueuing a foreign SHA into the
-   > Flywheel updater. Resolve the main repo of the worktree being orchestrated and
-   > require it to BE the flywheel repo; otherwise skip BEFORE `gh pr view`, worktree
-   > removal, or handoff:
+   > self-check is tautological (always passes) and would let this branch clean up
+   > a geoforge3d/sub/joycon worktree under Flywheel-specific rules. Resolve the main
+   > repo of the worktree being orchestrated and require it to BE the flywheel repo:
    ```bash
    # main repo of the worktree currently being orchestrated (NOT a hardcoded path)
    MAIN_REPO="$(git -C "$WORKTREE_PATH" rev-parse --git-common-dir 2>/dev/null | sed 's#/\.git$##' | xargs -I{} dirname {} 2>/dev/null || true)"
    [[ -z "$MAIN_REPO" || ! -d "$MAIN_REPO" ]] && MAIN_REPO="$(cd "$WORKTREE_PATH" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
    if [[ "$(basename "${MAIN_REPO:-}")" != "flywheel" ]]; then
-       echo "[orchestrator] B2 self-ship is Flywheel-only; orchestrated repo is '${MAIN_REPO:-unknown}' — skipping (use the generic restart path)." ; exit 0
+       echo "[orchestrator] B2 Flywheel cleanup does not apply to '${MAIN_REPO:-unknown}' — use generic cleanup." ; exit 0
    fi
    ```
    <!-- FLY-1759 reap-first: every removal described below calls the sibling reaper. -->
-   - **Do NOT run `restart-services.sh` inline** (it would deadlock on this still-active
-     session's idle-wait and tear down the coordinating Eng Lead). Instead, hand the
-     merged ship to the detached launchd updater via the durable queue. **Worktree
-     cleanup + clean-checkout preflight MUST happen BEFORE the handoff** (code-review R1
-     HIGH-3 / §2.3): `git worktree remove` mutates the shared `.git/worktrees` state and
-     must be the last git operation before the updater takes over (else it races the
-     updater's pull). Exact order (mirrors spin.md Step 3.4):
+   - A Flywheel merge **never** starts the updater and never restarts services. Normal
+     deployment waits for the local 00:00/12:00 shuttle; only a separately authorized
+     founder emergency may call `scripts/request-restart.sh`. The merge path performs
+     worktree cleanup and a clean-checkout preflight, then reports completion:
      ```bash
-     set -a && source ~/.flywheel/.env && set +a
-     # (1) canonical squash-merge SHA (NOT feature HEAD)
-     MERGE_SHA="$(gh pr view {PR_NUMBER} --json mergeCommit -q '.mergeCommit.oid')"
-     [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "[orchestrator] FATAL: no canonical merge SHA" >&2; exit 1; }
-     # (2) worktree cleanup — LAST git op before handoff
+     # Worktree cleanup — final post-merge git operation.
      # FLY-1759 reap-first: reap non-protected cwd-rooted process trees while
      # the live worktree path still provides reliable attribution.
      REAP_LIB="$WORKTREE_PATH/.claude/orchestrator/lib/reap-worktree.sh"
@@ -423,22 +414,13 @@ For each PR the user approves to ship:
      fi
      cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
      git branch -D "$BRANCH" 2>/dev/null || true
-     # (3) clean-checkout preflight (single-writer; updater pull + rollback need it)
-     [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty — refusing handoff" >&2; exit 1; }
-     # (4) durable handoff (fail-close: no success session_completed if this fails)
-     bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID} \
-       || { echo "[orchestrator] FATAL: self-ship handoff failed — do not report success" >&2; exit 1; }
+     # Clean-checkout preflight preserves the scheduled updater's single-writer invariant.
+     [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty after cleanup" >&2; exit 1; }
+     # Intentionally no updater kick, restart ticket, or inline restart here.
      ```
-   - The detached updater pulls main + runs `restart-services.sh`, restarting only
-     affected services (Bridge / Lead config / Discord plugin); Bridge + Eng Lead
-     self-recover via launchd KeepAlive + resume.
-   - QueueDirectories + the 12h launchd cron are durability/fallback — this post-merge
-     handoff is the primary trigger.
-   - **Bootstrap exception:** FLY-270's own first rollout uses the old controlled deploy
-     (plan Bootstrap Phase 0); this contract takes effect for ships AFTER that.
 
-   **C. Clean up worktree** — **for the Flywheel self-ship path this already happened in
-   B2 step (2), before the handoff** (do NOT remove it again here). For non-Flywheel repos:
+   **C. Clean up worktree** — **for Flywheel this already happened in B2**
+   (do NOT remove it again here). For non-Flywheel repos:
    ```bash
    cd "$MAIN_REPO"
    # FLY-1759 reap-first: cleanup-agent's sibling library applies the same

@@ -6,7 +6,7 @@
 # the nightly deploy kickstart then took all 13 Leads down). Single source
 # of truth for that convergence; mounted at three points:
 #   • claude-lead.sh          — every Lead start           (non-fatal)
-#   • update-flywheel.sh      — daily sweep + self-ship    (non-fatal; the ONLY
+#   • update-flywheel.sh      — scheduled + founder urgent (non-fatal; the ONLY
 #                               self-heal path that does not depend on a
 #                               possibly-broken lead wrapper: its plist execs
 #                               the repo script directly)

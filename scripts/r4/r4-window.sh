@@ -157,16 +157,25 @@ r4_assert_all_manifest_leads_loaded() {
     (( count > 0 ))
 }
 
+r4_prepare_urgent_dir() {
+    local dir="${HOME}/.flywheel/self-ship-urgent.d" mode uid
+    mkdir -p "$dir" || return 1
+    chmod 0700 "$dir" || return 1
+    mode="$(stat -c %a "$dir" 2>/dev/null || stat -f %Lp "$dir")" || return 1
+    uid="$(stat -c %u "$dir" 2>/dev/null || stat -f %u "$dir")" || return 1
+    [[ "$mode" == 700 && "$uid" == "$(id -u)" ]]
+}
+
 r4_assert_updater_quiet() {
-    local queued
+    local urgent
     [[ "$(r4_launch_state com.flywheel.updater)" == unloaded ]] || {
         r4_log "ERROR: updater must be unloaded throughout Q-S-M-B-C"
         return 1
     }
-    mkdir -p "${HOME}/.flywheel/self-ship-pending.d" || return 1
-    queued="$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
-    [[ -z "$queued" ]] || {
-        r4_log "ERROR: self-ship queue is not empty"
+    r4_prepare_urgent_dir || return 1
+    urgent="$(find "${HOME}/.flywheel/self-ship-urgent.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
+    [[ -z "$urgent" ]] || {
+        r4_log "ERROR: founder urgent directory is not empty"
         return 1
     }
 }
@@ -529,15 +538,16 @@ r4_validate_updater_plist() {
     local plist="$1"
     plutil -lint "$plist" >/dev/null || return 1
     plutil -convert json -o - "$plist" | jq -e '
-        .QueueDirectories == [($ENV.HOME + "/.flywheel/self-ship-pending.d")] and
-        ([.StartCalendarInterval[] | [.Hour, .Minute]] | sort) == [[0,0],[12,0]]
+        .QueueDirectories == [($ENV.HOME + "/.flywheel/self-ship-urgent.d")] and
+        ([.StartCalendarInterval[] | [.Hour, .Minute]] | sort) == [[0,0],[12,0]] and
+        .ThrottleInterval == 60
     ' >/dev/null || return 1
 }
 
 r4_restore_updater() {
     local source="$R4_REPO/scripts/launchd/com.flywheel.updater.plist"
     local target="${HOME}/Library/LaunchAgents/com.flywheel.updater.plist"
-    local stage mode uid queued
+    local stage mode uid urgent
     r4_validate_updater_plist "$source" || return 1
     stage="$(mktemp "$(dirname "$target")/.com.flywheel.updater.plist.r4.XXXXXX")" || return 1
     cp "$source" "$stage" || return 1
@@ -548,9 +558,10 @@ r4_restore_updater() {
     r4_validate_updater_plist "$stage" || return 1
     mv "$stage" "$target" || return 1
     r4_validate_updater_plist "$target" || return 1
-    queued="$(find "${HOME}/.flywheel/self-ship-pending.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
-    [[ -z "$queued" ]] || {
-        r4_log "ERROR: updater queue became nonempty immediately before bootstrap"
+    r4_prepare_urgent_dir || return 1
+    urgent="$(find "${HOME}/.flywheel/self-ship-urgent.d" -mindepth 1 -maxdepth 1 -print -quit)" || return 1
+    [[ -z "$urgent" ]] || {
+        r4_log "ERROR: founder urgent directory became nonempty immediately before bootstrap"
         return 1
     }
     launchctl bootstrap "gui/$(id -u)" "$target" || return 1

@@ -98,14 +98,15 @@ else
   fail "cannot verify entrypoint alert policy"
 fi
 
-echo "Test: updater fallback launchd pass precedes fetch and respects restart.lock.d"
-launchd_line="$(grep -n '^[[:space:]]*updater_launchd_pass$' "$UPDATER" | head -1 | cut -d: -f1)"
-fetch_line="$(grep -n 'git -C "\$FLYWHEEL_DIR" fetch origin main' "$UPDATER" | tail -1 | cut -d: -f1)"
-if [[ "$launchd_line" =~ ^[0-9]+$ && "$fetch_line" =~ ^[0-9]+$ ]] \
-  && (( launchd_line < fetch_line )); then
-  pass "fallback_sweep invokes launchd convergence+census before fetch/early exits"
+echo "Test: updater launchd pass precedes the two-source cycle and respects restart.lock.d"
+cycle_wrapper="$(sed -n '/^updater_run_launchd_then_cycle()/,/^}/p' "$UPDATER")"
+launchd_line="$(grep -n '^[[:space:]]*updater_launchd_pass' <<< "$cycle_wrapper" | head -1 | cut -d: -f1)"
+cycle_line="$(grep -n '^[[:space:]]*updater_run_cycle$' <<< "$cycle_wrapper" | head -1 | cut -d: -f1)"
+if [[ "$launchd_line" =~ ^[0-9]+$ && "$cycle_line" =~ ^[0-9]+$ ]] \
+  && (( launchd_line < cycle_line )); then
+  pass "cycle wrapper invokes launchd convergence+census before updater fetch/early exits"
 else
-  fail "fallback_sweep ordering missing (launchd=$launchd_line fetch=$fetch_line)"
+  fail "cycle wrapper ordering missing (launchd=$launchd_line cycle=$cycle_line)"
 fi
 if grep -q '\[\[ -d "\${HOME}/\.flywheel/restart\.lock\.d" \]\]' "$UPDATER" \
   && ! sed -n '/^updater_launchd_pass()/,/^}/p' "$UPDATER" | grep -Eq 'mkdir|rmdir|rm '; then
@@ -114,7 +115,7 @@ else
   fail "updater restart-lock skip is missing or mutating"
 fi
 UPDATER_FUNCS="$ROOT/updater-funcs.sh"
-awk '/^updater_launchd_pass\(\)/,/^}/ { print } /^fallback_sweep\(\)/,/^}/ { print }' \
+awk '/^updater_launchd_pass\(\)/,/^}/ { print } /^updater_run_launchd_then_cycle\(\)/,/^}/ { print }' \
   "$UPDATER" > "$UPDATER_FUNCS"
 UPDATER_CALLS="$ROOT/updater-calls"; : > "$UPDATER_CALLS"
 (
@@ -198,19 +199,18 @@ if [[ "$(grep -c '^converge_only|' "$UPDATER_ALERT_MATRIX" 2>/dev/null || true)"
 else
   fail "updater merged alert matrix mismatch: $(cat "$UPDATER_ALERT_MATRIX" 2>/dev/null)"
 fi
-FALLBACK_CALLS="$ROOT/fallback-calls"; : > "$FALLBACK_CALLS"
+CYCLE_CALLS="$ROOT/cycle-calls"; : > "$CYCLE_CALLS"
 (
   source "$UPDATER_FUNCS"
   log() { :; }
-  updater_launchd_pass() { printf 'launchd\n' >> "$FALLBACK_CALLS"; }
-  git() { printf 'git\n' >> "$FALLBACK_CALLS"; return 1; }
-  FLYWHEEL_DIR="$ROOT/no-network"
-  fallback_sweep
+  updater_launchd_pass() { printf 'launchd\n' >> "$CYCLE_CALLS"; }
+  updater_run_cycle() { printf 'cycle\n' >> "$CYCLE_CALLS"; return 2; }
+  updater_run_launchd_then_cycle || [[ "$?" -eq 2 ]]
 ) >/dev/null 2>&1
-if [[ "$(cat "$FALLBACK_CALLS")" == $'launchd\ngit' ]]; then
-  pass "dynamic fallback control proves launchd precedes a failed fetch without network"
+if [[ "$(cat "$CYCLE_CALLS")" == $'launchd\ncycle' ]]; then
+  pass "dynamic cycle control proves launchd precedes a failed updater cycle"
 else
-  fail "dynamic fallback order mismatch: $(cat "$FALLBACK_CALLS")"
+  fail "dynamic cycle order mismatch: $(cat "$CYCLE_CALLS")"
 fi
 
 echo "Test: Lead anchor guards dry-run/test identities before child execution"

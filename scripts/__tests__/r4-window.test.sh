@@ -515,4 +515,56 @@ R4_SNAPSHOT_COMM_ROOT="$SNAP_COMM" R4_SNAPSHOT_OUTPUT="$SNAP_OUT" \
 }
 echo "r4-window: snapshot/rollback manifest parity PASS"
 
+# FLY-1959: R4 may bootstrap updater only after preparing the sole watched
+# founder-urgent directory. This stays shell-only; plist structure is covered
+# portably by updater-trigger-policy.test.sh.
+R4_URGENT_HOME="$TMP_ROOT/r4-urgent-home"
+if ! (
+    HOME="$R4_URGENT_HOME"
+    r4_launch_state() { printf 'unloaded\n'; }
+    r4_assert_updater_quiet
+); then
+    echo "FAIL: updater quiet preflight rejected an empty urgent directory" >&2
+    exit 1
+fi
+urgent_dir="$R4_URGENT_HOME/.flywheel/self-ship-urgent.d"
+urgent_mode="$(stat -c %a "$urgent_dir" 2>/dev/null || stat -f %Lp "$urgent_dir")"
+[[ -d "$urgent_dir" && "$urgent_mode" == 700 ]] || {
+    echo "FAIL: updater quiet preflight did not create mode-0700 urgent dir" >&2
+    exit 1
+}
+printf '{}\n' > "$urgent_dir/blocked.urgent.json"
+if (
+    HOME="$R4_URGENT_HOME"
+    r4_launch_state() { printf 'unloaded\n'; }
+    r4_assert_updater_quiet
+) >/dev/null 2>&1; then
+    echo "FAIL: updater quiet preflight accepted a nonempty urgent dir" >&2
+    exit 1
+fi
+
+R4_RESTORE_HOME="$TMP_ROOT/r4-restore-home"
+mkdir -p "$R4_RESTORE_HOME/Library/LaunchAgents"
+if ! (
+    HOME="$R4_RESTORE_HOME"
+    R4_REPO="$REPO_ROOT"
+    r4_validate_updater_plist() { :; }
+    r4_launch_state() { printf 'loaded\n'; }
+    launchctl() {
+        [[ "$1" == bootstrap ]] || return 90
+        local dir="$HOME/.flywheel/self-ship-urgent.d" mode
+        mode="$(stat -c %a "$dir" 2>/dev/null || stat -f %Lp "$dir")" || return 91
+        [[ -d "$dir" && "$mode" == 700 ]]
+    }
+    r4_restore_updater
+); then
+    echo "FAIL: updater restore did not prepare urgent dir before bootstrap" >&2
+    exit 1
+fi
+if [[ "$(declare -f r4_validate_updater_plist)" != *'.ThrottleInterval == 60'* ]]; then
+    echo "FAIL: R4 updater validator does not enforce ThrottleInterval=60" >&2
+    exit 1
+fi
+echo "r4-window: urgent-only updater quiet/restore contract PASS"
+
 echo "r4-window: PASS"

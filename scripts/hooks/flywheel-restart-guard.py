@@ -6,11 +6,10 @@ Manual launchd mutation / kill+relaunch of the Bridge or a Lead daemon
 skips `pnpm build` (old code keeps running), skips the core-channel deploy
 broadcast (the founder's deploy audit trail breaks), and has no health-check
 rollback. Verbal promises and agent memory do not enforce behavior — this hook
-does, physically, at the Bash boundary. The default legitimate path is
-`scripts/request-restart.sh`, which enqueues the standalone updater; the
+does, physically, at the Bash boundary. The founder emergency path is
+`scripts/request-restart.sh`, which tickets the standalone updater; the
 updater's internal `restart-services.sh` / launchctl calls run in a child
-process the hook never sees. Direct `restart-services.sh` remains an explicit
-emergency path.
+process the hook never sees. Ordinary merges wait for the 00:00/12:00 shuttle.
 
 Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
 
@@ -84,7 +83,7 @@ MUTATING_LAUNCHCTL = (
 P1_RE = re.compile(rf"\blaunchctl\b(?:\s+-\S+)*\s+(?:{MUTATING_LAUNCHCTL})\b", re.I)
 FLYWHEEL_LABEL_RE = re.compile(r"com\.flywheel\.", re.I)
 RESTART_SCRIPT_RE = re.compile(
-    r"restart-services|self-ship-restart|update-flywheel", re.I
+    r"restart-services|update-flywheel", re.I
 )
 
 KILL_RE = re.compile(r"\b(?:pkill|killall|kill)\b", re.I)
@@ -130,13 +129,11 @@ DENY_REASON = (
     "launchctl submit 退出即重拉;crontab 周期重跑;自装 plist 可被配置成重拉 —— "
     "2026-08-14 就是 submit 造成 66 连发重启风暴。\n"
     "正确做法:\n"
-    "  • founder 拍板后的统一重启:bash ~/Dev/flywheel/scripts/request-restart.sh"
-    "(入队给独立 com.flywheel.updater;发起 Lead 也会换本体)\n"
+    "  • founder 紧急票:bash ~/Dev/flywheel/scripts/request-restart.sh"
+    "(投给独立 com.flywheel.updater;发起 Lead 也会换本体)\n"
     "  • 纯 env 改动(无代码 delta)要重启 Bridge:"
     "仍走 request-restart.sh;先确保目标 main 已含配置(FLY-1434)\n"
-    "  • self-ship:走既有 ship flow(flywheel-land / :cool: 部署),不要手动 kickstart。\n"
-    "  • 紧急兜底:仅在 updater/队列入口故障且 Lead/founder 明确知情时,"
-    "直跑 restart-services.sh 或由人工在裸终端处理。"
+    "  • 普通 merge 永不即时重启:等待本地 00:00/12:00 班车,不要手动 kickstart。"
 )
 
 BYPASS_FAIL_REASON = (

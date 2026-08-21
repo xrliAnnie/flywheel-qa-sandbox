@@ -1,111 +1,192 @@
 #!/usr/bin/env bash
-# FLY-270 (was FLY-20): launchd-driven Flywheel updater.
+# FLY-1959: launchd-driven Flywheel updater with exactly two trigger sources:
+#   1. local 00:00 / 12:00 schedule, deploying only when deployed-sha is behind;
+#   2. founder-only urgent tokens, each claimed once before one restart attempt.
 #
-# Two trigger sources:
-#   • QueueDirectories on ~/.flywheel/self-ship-pending.d  → self-hosting ship
-#     handoff (Method B): a flywheel-repo Runner merged a PR and enqueued a
-#     durable marker; this updater pulls + deploys + acknowledges the marker.
-#   • StartCalendarInterval (00:00 / 12:00)                → fallback sweep:
-#     pull origin/main if the deployed-sha is behind, even with no markers.
-#
-# Durability + at-least-once come from QueueDirectories (launchd keeps/re-launches
-# this job while the watched dir is non-empty) PLUS a singleton lock that covers
-# the git phase and survives crashes. See scripts/lib/self-ship-queue.sh and
-# doc/engineer/plan/new/v1.47.0-FLY-270-self-onboard.md §2.2/§2.3.
-#
-# Sourceable for tests via UPDATE_FLYWHEEL_SOURCED=1. The deploy step is injectable
-# via SELF_SHIP_DEPLOY_CMD so the queue loop is testable without real git/restart.
+# QueueDirectories watches only the urgent directory. There is no per-merge
+# marker, acknowledgement, retry receipt, blocked queue, or in-process loop.
 set -uo pipefail
 
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# FLY-1062: a PACKAGED install (tree root carries .flywheel-prebuilt) has no
-# git checkout — this git-pull updater is the monorepo self-ship path and must
-# not run there. Honest plain-words refusal + pointer at the packaged update
-# command. Monorepo trees carry no sentinel, so everything below is verbatim
-# unchanged (reverse-compat sentinel: packaged-seams.test.sh). The sourced-test
-# seam (UPDATE_FLYWHEEL_SOURCED=1) is exempt so hermetic tests keep working.
-if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != "1" ]] && [[ -f "$SCRIPT_DIR/../.flywheel-prebuilt" ]]; then
+# FLY-1062: packaged installs do not have the monorepo git-pull deployment path.
+if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != 1 ]] && [[ -f "$SCRIPT_DIR/../.flywheel-prebuilt" ]]; then
   echo "这台机器上的 Flywheel 是安装包形态,不能用这个老的更新方式。" >&2
   echo "要更新的话,运行你当初安装时用的那条命令,在后面加上 update 就可以了。" >&2
   exit 3
 fi
-# Overridable so a sourced test (UPDATE_FLYWHEEL_SOURCED=1) can point it at
-# /dev/null and never pull the real bot/sender tokens into the test shell
-# (else severe_alert→lead-alert.sh would POST to the production alert channel
-# on a configured dev machine — FLY-218/220 spam zone; qa-fly-270 finding).
+
 ENV_FILE="${ENV_FILE:-${HOME}/.flywheel/.env}"
 DEPLOYED_SHA_FILE="${DEPLOYED_SHA_FILE:-${HOME}/.flywheel/deployed-sha}"
-
-# shellcheck source=/dev/null
+_UPDATER_LAUNCH_HOME="$HOME"
 [[ -f "$ENV_FILE" ]] && { set -a; source "$ENV_FILE"; set +a; }
 
-export SELF_SHIP_QUEUE_SOURCED=1
-# shellcheck source=lib/self-ship-queue.sh
-source "${SCRIPT_DIR}/lib/self-ship-queue.sh"
+# These defaults used to arrive through the deleted queue library. Keep them
+# explicit in the surviving consumer. Production must match the plist and the
+# founder producer exactly; overrides belong only to sourced harnesses.
+updater_configure_runtime_paths() {
+  if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" == 1 ]]; then
+    : "${FLYWHEEL_HOME:=${HOME}/.flywheel}"
+    SELF_SHIP_URGENT_DIR="${SELF_SHIP_URGENT_DIR:-${FLYWHEEL_HOME}/self-ship-urgent.d}"
+    SELF_SHIP_LOCK_DIR="${SELF_SHIP_LOCK_DIR:-${FLYWHEEL_HOME}/self-ship-updater.lock.d}"
+    return
+  fi
+  HOME="$_UPDATER_LAUNCH_HOME"
+  FLYWHEEL_HOME="${HOME}/.flywheel"
+  SELF_SHIP_URGENT_DIR="${FLYWHEEL_HOME}/self-ship-urgent.d"
+  SELF_SHIP_LOCK_DIR="${FLYWHEEL_HOME}/self-ship-updater.lock.d"
+}
+UPDATER_GIT="${UPDATER_GIT:-git}"
+UPDATER_BOUNDED_RUN="${UPDATER_BOUNDED_RUN:-${SCRIPT_DIR}/lib/bounded-run.sh}"
+# Deliberately shorter than restart-services' one-shot 120s fetch: this periodic
+# updater gets three 20s noninteractive attempts before consuming urgent intent.
+# Worktree mutation is local and unbounded by this network timeout.
+UPDATER_FETCH_TIMEOUT_SECONDS="${UPDATER_FETCH_TIMEOUT_SECONDS:-20}"
+
 # shellcheck source=lib/discord-pointer-guard.sh
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/lib/discord-pointer-guard.sh"
 LAUNCHD_CENSUS_SOURCED=1
 # shellcheck source=launchd-census.sh
+# shellcheck disable=SC1091
 source "${SCRIPT_DIR}/launchd-census.sh"
+# launchd-census is a shared entrypoint and sources .env for standalone use.
+# Re-pin afterward so no direct path override can diverge this consumer from
+# the plist and founder producer in production.
+updater_configure_runtime_paths
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
+updater_now() { printf '%s\n' "${UPDATER_NOW:-$(date +%s)}"; }
+updater_is_sha40() { [[ "${1:-}" =~ ^[0-9a-fA-F]{40}$ ]]; }
+updater_utc_day() {
+  if [[ -n "${UPDATER_UTC_DAY:-}" ]]; then printf '%s\n' "$UPDATER_UTC_DAY"; else date -u +%Y%m%d; fi
+}
+updater_urgent_signature() { printf 'urgent-%s-%s\n' "$1" "$2"; }
+updater_scheduled_signature() { printf '%s-scheduled-%s\n' "$1" "$(updater_utc_day)"; }
 
-# FLY-1081 (FLY-915 pain #3): 🚨 self-ship failures route via lead-alert.sh
-# (system identity --lead updater, kind deploy_failed) — the FLY-927 sender
-# seam (FLYWHEEL_ALERT_SENDER_TOKEN_ENV), claims dedup and queue/dead-letter
-# fail-loud all come for free. The old Simba/bot-token direct-curl
-# fallback is deliberately GONE: an unresolvable sender dead-letters +
-# meta-alerts inside lead-alert.sh instead of posting as the wrong identity.
-# Founder ping (gate-approved hard requirement): FLYWHEEL_FOUNDER_USER_ID
-# unset → stderr WARNING + send WITHOUT the @ (degraded, never silent).
-# 1>&2 + || true: a failed notification never wedges the self-ship queue loop
-# and never pollutes stdout.
-severe_alert() { # $1 = signature slug, $2 = body
-  log "SEVERE: $2"
+# lead-alert.sh owns durable dedup. Callers choose bounded identities: urgent
+# alerts are token-specific; unattended schedule alerts repeat once per UTC day.
+severe_alert() { # $1=complete signature, $2=body
+  local signature="$1" body="$2"
+  local alert_args=(
+    --project flywheel --lead updater
+    --kind deploy_failed --severity severe
+    --title "Flywheel deploy failed" --body "$body"
+    --signature "$signature"
+  )
+  log "SEVERE: $body"
   if [[ -z "${FLYWHEEL_FOUNDER_USER_ID:-}" ]]; then
     log "WARNING: FLYWHEEL_FOUNDER_USER_ID not set — deploy_failed alert will NOT @-mention the founder" >&2
+  else
+    alert_args+=(--mention-user "$FLYWHEEL_FOUNDER_USER_ID")
   fi
-  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" --project flywheel --lead updater \
-    --kind deploy_failed --severity severe \
-    --title "Flywheel deploy failed" --body "$2" \
-    --signature "$1-$(date -u +%Y%m%d%H%M)" \
-    ${FLYWHEEL_FOUNDER_USER_ID:+--mention-user "$FLYWHEEL_FOUNDER_USER_ID"} 1>&2 || true
+  "${FLYWHEEL_DIR}/scripts/lead-alert.sh" "${alert_args[@]}" 1>&2 || true
 }
 
-# ── Deploy step (injectable) ────────────────────────────────────────────────
-# Pull main to origin/main and run the real restart-services.sh. Returns:
-#   0  deploy succeeded (deployed-sha advanced by restart-services.sh)
-#   2  transient failure (fetch/pull/network)
-#   3  deterministic failure (dirty checkout, build/health/lead-restart failure)
+updater_alert_urgent() { # $1=class $2=basename $3=body
+  severe_alert "$(updater_urgent_signature "$1" "$2")" "$3"
+}
+updater_alert_scheduled() { # $1=class $2=body
+  severe_alert "$(updater_scheduled_signature "$1")" "$2"
+}
+
+# A token has already left QueueDirectories when this helper is called. Expose
+# it to signal cleanup until the primary alert returns so a catchable
+# interruption cannot silently lose founder intent.
+updater_alert_consumed_no_deploy() { # $1=class $2=basename $3=body
+  local class="$1" base="$2" body="$3"
+  local previous_claimed="$UPDATER_CLAIMED"
+  local previous_completed="$UPDATER_COMPLETED"
+  local previous_alerted="$UPDATER_ALERTED"
+  local previous_basenames=()
+  previous_basenames=(${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"})
+  UPDATER_CLAIMED=1
+  UPDATER_COMPLETED=0
+  UPDATER_ALERTED=0
+  UPDATER_CLAIMED_BASENAMES=("$base")
+  updater_alert_urgent "$class" "$base" "$body"
+  UPDATER_ALERTED=1
+  UPDATER_CLAIMED="$previous_claimed"
+  UPDATER_COMPLETED="$previous_completed"
+  UPDATER_ALERTED="$previous_alerted"
+  UPDATER_CLAIMED_BASENAMES=(${previous_basenames[@]+"${previous_basenames[@]}"})
+}
+
+# Pull main and perform the existing full restart. The return classes remain
+# useful for diagnosis even though FLY-1959 deliberately does not auto-retry.
 default_deploy() {
-  # Clean-checkout preflight (single-writer; rollback also requires it).
-  if [[ -n "$(git -C "$FLYWHEEL_DIR" status --porcelain 2>/dev/null)" ]]; then
-    log "main checkout dirty — refusing deploy (single-writer preflight)"; return 3
+  local remote_rc=0
+  if [[ -n "$("$UPDATER_GIT" -C "$FLYWHEEL_DIR" status --porcelain 2>/dev/null)" ]]; then
+    log "main checkout dirty — refusing deploy (single-writer preflight)"
+    return 3
   fi
-  if ! git -C "$FLYWHEEL_DIR" fetch origin main --quiet 2>/dev/null; then
-    log "git fetch failed (transient)"; return 2
+  updater_fetch_origin
+  remote_rc=$?
+  if (( remote_rc != 0 )); then
+    if (( remote_rc == 127 )); then
+      log "bounded runner is unavailable at $UPDATER_BOUNDED_RUN"
+      return 127
+    fi
+    log "git fetch failed (transient)"
+    return 2
   fi
   if discord_pointer_cutover_required; then
     log "origin/main selects discord@flywheel-plugins but the live checker is still legacy — refusing to pull before the guarded FLY-1676 cutover"
     return 3
   fi
-  if ! git -C "$FLYWHEEL_DIR" pull origin main --ff-only --quiet 2>/dev/null; then
-    log "git pull --ff-only failed (transient: untracked collision / non-ff)"; return 2
+  updater_merge_remote
+  remote_rc=$?
+  if (( remote_rc != 0 )); then
+    log "local git merge --ff-only failed (untracked collision / non-ff)"
+    return 2
   fi
-  if FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater; then return 0; else
-    log "restart-services.sh failed (deterministic)"; return 3
+  if updater_restart_services; then
+    return 0
   fi
+  log "restart-services.sh failed (deterministic)"
+  return 3
 }
 SELF_SHIP_DEPLOY_CMD="${SELF_SHIP_DEPLOY_CMD:-default_deploy}"
 
 deployed_sha() { cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo ""; }
+updater_git_bounded() {
+  [[ -x "$UPDATER_BOUNDED_RUN" ]] || return 127
+  GIT_TERMINAL_PROMPT=0 "$UPDATER_BOUNDED_RUN" "$UPDATER_FETCH_TIMEOUT_SECONDS" \
+    "$UPDATER_GIT" -C "$FLYWHEEL_DIR" "$@" 2>/dev/null
+}
+updater_fetch_origin_once() {
+  updater_git_bounded fetch origin main --quiet
+}
+updater_retry_sleep() { sleep 1; }
+updater_fetch_origin() {
+  local attempt=1 rc=0
+  while (( attempt <= 3 )); do
+    updater_fetch_origin_once
+    rc=$?
+    (( rc == 0 )) && return 0
+    (( rc == 127 )) && return 127
+    (( attempt == 3 )) && return 1
+    log "origin/main fetch attempt $attempt/3 failed; retrying in-process"
+    updater_retry_sleep
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+updater_restart_services() {
+  FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
+}
+updater_remote_sha() { git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null; }
+updater_merge_remote() {
+  local target=""
+  target="$(updater_remote_sha)" || return 2
+  updater_is_sha40 "$target" || return 2
+  GIT_TERMINAL_PROMPT=0 "$UPDATER_GIT" -C "$FLYWHEEL_DIR" \
+    merge --ff-only "$target" --quiet
+}
+updater_converge_bin() { bash "${SCRIPT_DIR}/converge-flywheel-bin.sh" >/dev/null 2>&1; }
 
-# FLY-1814: the updater's existing calendar/manual fallback is the 12-hour
-# launchd convergence floor. It observes the restart transaction lock but never
-# owns or removes it; fetch/dirty checkout results must not suppress this pass.
+# FLY-1814: keep the updater's existing daemon convergence/census floor.
 updater_launchd_pass() {
   if [[ -d "${HOME}/.flywheel/restart.lock.d" ]]; then
     log "launchd convergence/census skipped: restart transaction is active"
@@ -119,181 +200,360 @@ updater_launchd_pass() {
   if [[ "${LAUNCHD_CENSUS_DETAIL:-healthy}" != healthy ]]; then
     log "launchd census detail: ${LAUNCHD_CENSUS_DETAIL}"
   fi
-  local launchd_alert_detail="${LAUNCHD_CENSUS_DETAIL:-unavailable}"
-  local launchd_alert_key="${LAUNCHD_CENSUS_ALERT_KEY:-}"
+  local detail="${LAUNCHD_CENSUS_DETAIL:-unavailable}"
+  local key="${LAUNCHD_CENSUS_ALERT_KEY:-}"
   if [[ "${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}" != healthy ]]; then
-    launchd_alert_detail="${launchd_alert_detail}${launchd_alert_detail:+; }convergence=${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}: ${NONLEAD_DAEMON_CONVERGE_DETAIL:-unavailable}"
-    [[ -n "$launchd_alert_key" ]] \
-      || launchd_alert_key="convergence:${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}"
+    detail="${detail}${detail:+; }convergence=${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}: ${NONLEAD_DAEMON_CONVERGE_DETAIL:-unavailable}"
+    [[ -n "$key" ]] || key="convergence:${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}"
   fi
-  [[ -n "$launchd_alert_key" ]] \
-    || launchd_alert_key="census-state:${LAUNCHD_CENSUS_STATE:-unverifiable}"
+  [[ -n "$key" ]] || key="census-state:${LAUNCHD_CENSUS_STATE:-unverifiable}"
   if [[ "${LAUNCHD_CENSUS_ANOMALY:-1}" == 1 \
     || "${NONLEAD_DAEMON_CONVERGE_STATE:-unverifiable}" != healthy ]]; then
     if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" == 1 ]]; then
       log "sourced test path: launchd census alert suppressed"
     else
-      census_alert "${LAUNCHD_CENSUS_SUMMARY:-unavailable}" \
-        "$launchd_alert_detail" "$launchd_alert_key"
+      census_alert "${LAUNCHD_CENSUS_SUMMARY:-unavailable}" "$detail" "$key"
     fi
   fi
-  return 0
 }
 
-# ── Process one marker-driven deploy cycle ──────────────────────────────────
-# Runs a deploy, then acks every due marker the deploy satisfied; markers that
-# don't ack record a failure (classified) and back off / block.
-# FLY-727: report ONE deployment event via `flywheel-comm report-deployed`
-# (thin HTTP client → Bridge /api/deployments/report; spools if Bridge down).
-# Returns 0 when the event is durable (posted OR spooled), non-zero otherwise.
-# The return value is ADVISORY only: the caller (process_due_markers) acks a
-# satisfied marker regardless — the report is a best-effort side-effect and must
-# never wedge the self-ship deploy (QA FLY-739). A non-zero return just gets logged.
-# $1=issueIdentifier(optional) $2=prNumber $3=merge_sha $4=deployed_sha
-report_deployment() {
-  local issue="$1" pr="$2" merge="$3" deployed="$4"
-  local comm="${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
-  # A missing/unbuilt CLI is an environment problem, NOT a reason to wedge the
-  # deploy forever (marker never clears). Log loudly and let the ack proceed —
-  # deploy availability wins over one lost digest event.
-  [[ -f "$comm" ]] || { log "report_deployment: flywheel-comm not built at $comm — skipping deployment report (ack proceeds)"; return 0; }
-  local args=(--project flywheel --source self-ship --deploy-batch-id "$deployed")
-  ssq_is_sha40 "$merge" 2>/dev/null && args+=(--merge-sha "$merge")
-  ssq_is_sha40 "$deployed" 2>/dev/null && args+=(--deployed-sha "$deployed")
-  [[ -n "$issue" ]] && args+=(--issue "$issue")
-  [[ -n "$pr" ]] && args+=(--pr "$pr")
-  # FLY-727 (QA FLY-739): the launchd updater env carries no bridge URL (only PATH;
-  # ~/.flywheel/.env has TEAMLEAD_API_TOKEN but no FLYWHEEL_BRIDGE_URL/BRIDGE_URL).
-  # Pass an explicit local default so report-deployed can POST (or spool) instead of
-  # exiting 2. An operator-set FLYWHEEL_BRIDGE_URL / BRIDGE_URL still wins.
-  local bridge_url="${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}"
-  FLYWHEEL_BRIDGE_URL="$bridge_url" node "$comm" report-deployed "${args[@]}"
-  local rc=$?
-  # 0=posted, 1=spooled (both durable). Any other code is a best-effort miss — the
-  # caller acks the marker regardless (deploy availability wins; see process_due_markers).
-  (( rc == 0 || rc == 1 ))
+updater_init_dirs() {
+  mkdir -p "$FLYWHEEL_HOME" "$SELF_SHIP_URGENT_DIR" || return 1
+  chmod 700 "$FLYWHEEL_HOME" "$SELF_SHIP_URGENT_DIR" || return 1
 }
 
-process_due_markers() {
-  local rc class
-  "$SELF_SHIP_DEPLOY_CMD"; rc=$?
-  local deployed; deployed="$(deployed_sha)"
-  local f rec
-  while IFS= read -r f; do
-    [[ -z "$f" ]] && continue
-    if (( rc == 0 )) && ssq_is_satisfied "$f" "$deployed" "$FLYWHEEL_DIR"; then
-      # FLY-727 (QA FLY-739): the deployment-event report is a SECONDARY, best-effort
-      # side-effect of a self-ship deploy and must NEVER gate or alert on the PRIMARY
-      # concern (the deploy happened → clear the marker). report-deployed is itself
-      # durable — it POSTs to the local Bridge or SPOOLs for a later drain — so a
-      # satisfied marker is ALWAYS acked. The earlier "report before ack, keep the
-      # marker on a non-durable report" design turned an env gap (no bridge URL) into
-      # a marker block + severe_alert to Annie on every deploy, a regression that
-      # violated AC5 ("zero prod change when default-off"). Report, log, then ack.
-      local mtarget mpr missue
-      mtarget="$(ssq_marker_field "$f" targetSha)"
-      mpr="$(ssq_marker_field "$f" prNumber)"
-      missue="$(ssq_marker_field "$f" issueIdentifier)"
-      if [[ -z "$missue" && -z "$mpr" ]]; then
-        log "marker $(basename "$f") has no PR/issue identity — restart-only marker, skipping deployment event; acking"
-      elif ! report_deployment "$missue" "$mpr" "$mtarget" "$deployed"; then
-        log "marker $(basename "$f") satisfied; deployment-event report not durable (best-effort — digest event may be delayed/lost). Acking anyway; self-ship deploy must not wedge."
-      fi
-      ssq_delete_ack "$f"
-      log "acked + cleared marker $(basename "$f") (deployed ${deployed:0:7})"
+updater_pid_alive() { kill -0 "$1" 2>/dev/null; }
+updater_pid_command() { ps -o command= -p "$1" 2>/dev/null; }
+
+_updater_lock_write_owner() {
+  printf '%s\n' "$$" > "${SELF_SHIP_LOCK_DIR}/pid" || return 1
+  printf '%s\n' "${1:-update-flywheel}" > "${SELF_SHIP_LOCK_DIR}/ident" || return 1
+  updater_now > "${SELF_SHIP_LOCK_DIR}/created" || return 1
+}
+
+_updater_lock_clear() {
+  rm -f "${SELF_SHIP_LOCK_DIR}/pid" "${SELF_SHIP_LOCK_DIR}/ident" \
+    "${SELF_SHIP_LOCK_DIR}/created" 2>/dev/null || true
+  rmdir "$SELF_SHIP_LOCK_DIR" 2>/dev/null
+}
+
+updater_lock_acquire() {
+  local ident="${1:-update-flywheel}" owner="" cmd="" stale=0
+  if mkdir "$SELF_SHIP_LOCK_DIR" 2>/dev/null; then
+    _updater_lock_write_owner "$ident"
+    return $?
+  fi
+  owner="$(cat "${SELF_SHIP_LOCK_DIR}/pid" 2>/dev/null || echo "")"
+  if [[ -z "$owner" ]] || ! updater_pid_alive "$owner"; then
+    stale=1
+  else
+    cmd="$(updater_pid_command "$owner" 2>/dev/null || echo "")"
+    # A live uninspectable owner is never evicted. Only an inspectable identity
+    # mismatch proves PID reuse; a matching command is the active updater.
+    if [[ -n "$cmd" && "$cmd" != *"$ident"* ]]; then stale=1; fi
+  fi
+  if (( stale == 1 )); then
+    log "reclaiming stale updater lock (owner='${owner}')"
+    _updater_lock_clear || return 75
+    if mkdir "$SELF_SHIP_LOCK_DIR" 2>/dev/null; then
+      _updater_lock_write_owner "$ident"
+      return $?
+    fi
+  fi
+  return 75
+}
+
+updater_lock_release() {
+  local owner=""
+  owner="$(cat "${SELF_SHIP_LOCK_DIR}/pid" 2>/dev/null || echo "")"
+  [[ "$owner" == "$$" ]] && _updater_lock_clear || true
+}
+
+updater_token_shape_valid() {
+  local path="$1" base="" target=""
+  base="$(basename "$path")"
+  [[ "$base" =~ ^[A-Za-z0-9._-]+\.urgent\.json$ ]] || return 1
+  jq -e '
+    .schemaVersion == 1 and
+    .kind == "founder-urgent-restart" and
+    (.targetSha | type == "string" and test("^[0-9a-fA-F]{40}$")) and
+    (.createdAt | type == "number" and . == floor) and
+    (keys | sort) == ["createdAt","kind","schemaVersion","targetSha"]
+  ' "$path" >/dev/null 2>&1 || return 1
+  target="$(jq -r .targetSha "$path" 2>/dev/null)"
+  updater_is_sha40 "$target"
+}
+
+updater_token_target() { jq -r .targetSha "$1" 2>/dev/null; }
+
+# Prints valid, invalid, or indeterminate after a successful origin/main fetch.
+updater_token_target_state() {
+  local path="$1" target="" rc=0
+  target="$(updater_token_target "$path")" || { printf 'indeterminate\n'; return; }
+  if ! git -C "$FLYWHEEL_DIR" cat-file -e "${target}^{commit}" 2>/dev/null; then
+    printf 'invalid\n'
+    return
+  fi
+  git -C "$FLYWHEEL_DIR" merge-base --is-ancestor "$target" origin/main 2>/dev/null
+  rc=$?
+  case "$rc" in
+    0) printf 'valid\n' ;;
+    1) printf 'invalid\n' ;;
+    *) printf 'indeterminate\n' ;;
+  esac
+}
+
+updater_claim_token() { # $1=watched path $2=claim directory
+  local path="$1" claim_dir="$2" base=""
+  base="$(basename "$path")"
+  mv "$path" "${claim_dir}/${base}"
+}
+
+UPDATER_CLAIM_DIR=""
+UPDATER_CLAIMED=0
+UPDATER_COMPLETED=0
+UPDATER_ALERTED=0
+UPDATER_CLEANUP_DONE=0
+UPDATER_CLAIMED_BASENAMES=()
+
+updater_cleanup() {
+  (( UPDATER_CLEANUP_DONE == 0 )) || return 0
+  UPDATER_CLEANUP_DONE=1
+  if (( UPDATER_CLAIMED == 1 && UPDATER_COMPLETED == 0 && UPDATER_ALERTED == 0 )); then
+    local base
+    for base in ${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"}; do
+      updater_alert_urgent interrupted "$base" \
+        "Founder urgent restart token $base was claimed but this updater invocation ended before deploy completion. Re-submit only after checking updater logs."
+    done
+  fi
+  case "$UPDATER_CLAIM_DIR" in
+    "${FLYWHEEL_HOME}"/.urgent-claim.*)
+      rm -rf -- "$UPDATER_CLAIM_DIR" 2>/dev/null || true
+      ;;
+  esac
+  updater_lock_release
+}
+
+updater_signal_cleanup() {
+  updater_cleanup
+  exit 130
+}
+
+updater_snapshot_tokens() {
+  UPDATER_SNAPSHOT=()
+  local had_nullglob=0 had_dotglob=0
+  shopt -q nullglob && had_nullglob=1
+  shopt -q dotglob && had_dotglob=1
+  shopt -s nullglob dotglob
+  UPDATER_SNAPSHOT=("${SELF_SHIP_URGENT_DIR}"/*)
+  (( had_nullglob == 1 )) || shopt -u nullglob
+  (( had_dotglob == 1 )) || shopt -u dotglob
+}
+
+updater_run_cycle() {
+  local path="" base="" state="" remote="" rc=0 fetch_rc=0
+  local had_invalid=0 had_indeterminate=0
+  local had_consumed_indeterminate=0
+  local shape_valid=() valid=()
+
+  updater_snapshot_tokens
+  UPDATER_CLAIM_DIR="$(mktemp -d "${FLYWHEEL_HOME}/.urgent-claim.XXXXXX")" || {
+    updater_alert_scheduled claim-dir-failed "Updater could not create its same-filesystem claim directory. No restart was attempted."
+    return 1
+  }
+
+  # Schema-invalid files are provably not founder intent and do not require git.
+  for path in ${UPDATER_SNAPSHOT[@]+"${UPDATER_SNAPSHOT[@]}"}; do
+    base="$(basename "$path")"
+    if updater_token_shape_valid "$path"; then
+      shape_valid+=("$path")
       continue
     fi
-    # Not acked. Distinguish the failure class:
-    if (( rc == 0 )); then
-      # Deploy SUCCEEDED but the target didn't ack.
-      if ! ssq_target_on_origin "$f" "$FLYWHEEL_DIR"; then
-        # Target isn't even on origin/main → bad/foreign SHA that will NEVER ack
-        # → block NOW (don't retry — code-review R1 / §2.3#8).
-        ssq_block "$f" "target-not-on-origin-main"
-        # FLY-1081 (Codex R1#6): the slug carries the marker basename so two
-        # DIFFERENT markers blocked in the same minute are not claims-deduped
-        # into one alert (eventId embeds the signature).
-        severe_alert "marker-not-on-origin-$(basename "$f")" \
-          "Flywheel self-ship marker $(basename "$f") has a target SHA that is NOT on origin/main after a successful deploy — bad/foreign SHA, will never acknowledge. Blocked; needs manual attention."
-        continue
-      fi
-      # Target IS on origin/main but deployed-sha did NOT advance to include it
-      # (e.g. restart-services returned 0 on a Lead-SKIP path without advancing
-      # deployed-sha — code-review R1 MED-5). This is a real deploy problem, not a
-      # network blip → classify DETERMINISTIC so it backs off and BLOCKS+alerts
-      # after the threshold instead of retrying forever as transient.
-      class="deterministic"
-    elif (( rc == 2 )); then
-      class="transient"          # fetch/pull flake → retry
+    if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+      had_invalid=1
+      updater_alert_consumed_no_deploy invalid "$base" \
+        "Ignored invalid founder urgent token $base (bad basename/schema/kind). It was removed from the watched directory without restarting."
     else
-      class="deterministic"      # dirty checkout / build / health / lead-restart failure
+      had_indeterminate=1
+      updater_alert_urgent claim-failed "$base" \
+        "Could not move invalid urgent entry $base out of the watched directory; no restart was attempted."
     fi
-    ssq_record_failure "$f" "$class"; rec=$?
-    if (( rec == 10 )); then
-      ssq_block "$f" "deterministic-threshold"
-      severe_alert "marker-det-threshold-$(basename "$f")" \
-        "Flywheel self-ship marker $(basename "$f") blocked after repeated deterministic failures (last class=$class). Old code still deployed; needs manual attention."
-    fi
-  done < <(ssq_due_markers)
-}
+  done
 
-# ── Calendar/manual fallback: deploy if remote is ahead, no markers needed ──
-fallback_sweep() {
-  updater_launchd_pass
-  git -C "$FLYWHEEL_DIR" fetch origin main --quiet 2>/dev/null || { log "fallback fetch failed"; return 0; }
-  local head remote
-  head="$(git -C "$FLYWHEEL_DIR" rev-parse HEAD 2>/dev/null)"
-  remote="$(git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null)"
-  if [[ "$head" != "$remote" || "$(deployed_sha)" != "$head" ]]; then
-    log "fallback: remote/deployed drift (head ${head:0:7} remote ${remote:0:7}) — deploying"
-    "$SELF_SHIP_DEPLOY_CMD" || log "fallback deploy returned non-zero"
-  else
-    log "fallback: nothing to do"
+  updater_fetch_origin
+  fetch_rc=$?
+  if (( fetch_rc != 0 )); then
+    if (( ${#shape_valid[@]} == 0 )); then
+      if (( fetch_rc == 127 )); then
+        updater_alert_scheduled fetch-runtime-missing \
+          "Scheduled updater cannot execute its bounded runner at $UPDATER_BOUNDED_RUN; no restart was attempted."
+      else
+        updater_alert_scheduled fetch-failed "Scheduled updater could not fetch origin/main; no restart was attempted."
+      fi
+    else
+      for path in ${shape_valid[@]+"${shape_valid[@]}"}; do
+        base="$(basename "$path")"
+        [[ -e "$path" ]] || continue
+        if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+          had_consumed_indeterminate=1
+          if (( fetch_rc == 127 )); then
+            updater_alert_consumed_no_deploy probe-runtime-missing "$base" \
+              "Cannot execute the updater bounded runner at $UPDATER_BOUNDED_RUN while validating urgent token $base. The ticket was consumed without restarting."
+          else
+            updater_alert_consumed_no_deploy probe-indeterminate "$base" \
+              "Could not fetch origin/main while validating urgent token $base. The ticket was consumed without restarting and will not auto-retry."
+          fi
+        else
+          updater_alert_urgent claim-failed "$base" \
+            "Could not consume indeterminate urgent token $base after fetch failure; no restart was attempted."
+        fi
+      done
+    fi
+    (( fetch_rc == 127 )) && return 127
+    return 2
   fi
-}
 
-# ── Main loop ───────────────────────────────────────────────────────────────
-update_main() {
-  ssq_init_dirs
-  if ! ssq_lock_acquire "update-flywheel"; then
-    log "another live updater holds the singleton lock — exiting (it will process the queue)"
+  for path in ${shape_valid[@]+"${shape_valid[@]}"}; do
+    [[ -e "$path" ]] || continue
+    base="$(basename "$path")"
+    state="$(updater_token_target_state "$path")"
+    case "$state" in
+      valid) valid+=("$path") ;;
+      invalid)
+        if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+          had_invalid=1
+          updater_alert_consumed_no_deploy invalid "$base" \
+            "Ignored founder urgent token $base because its target is provably outside origin/main. No restart was attempted."
+        else
+          had_indeterminate=1
+          updater_alert_urgent claim-failed "$base" \
+            "Could not claim invalid urgent token $base; no restart was attempted."
+        fi
+        ;;
+      *)
+        if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+          had_consumed_indeterminate=1
+          updater_alert_consumed_no_deploy probe-indeterminate "$base" \
+            "Git could not determine whether urgent token $base belongs to origin/main. The ticket was consumed without restarting and will not auto-retry."
+        else
+          had_indeterminate=1
+          updater_alert_urgent claim-failed "$base" \
+            "Could not consume indeterminate urgent token $base; no restart was attempted."
+        fi
+        ;;
+    esac
+  done
+
+  # Only an entry that could not be atomically moved remains watched. Do not
+  # execute a valid subset while that filesystem failure still re-arms launchd.
+  (( had_indeterminate == 0 )) || return 2
+
+  if (( ${#valid[@]} > 0 )); then
+    for path in ${valid[@]+"${valid[@]}"}; do
+      base="$(basename "$path")"
+      if updater_claim_token "$path" "$UPDATER_CLAIM_DIR"; then
+        UPDATER_CLAIMED=1
+        UPDATER_CLAIMED_BASENAMES+=("$base")
+      else
+        updater_alert_urgent claim-failed "$base" \
+          "Could not claim founder urgent token $base; no restart was attempted."
+        return 1
+      fi
+    done
+    "$SELF_SHIP_DEPLOY_CMD"
+    rc=$?
+    if (( rc == 0 )); then
+      UPDATER_COMPLETED=1
+      return 0
+    fi
+    for base in ${UPDATER_CLAIMED_BASENAMES[@]+"${UPDATER_CLAIMED_BASENAMES[@]}"}; do
+      updater_alert_urgent deploy-failed "$base" \
+        "Founder urgent restart token $base was claimed, but the single deploy attempt failed (rc=$rc). It will not auto-retry; inspect logs before submitting a new ticket."
+    done
+    UPDATER_ALERTED=1
+    return "$rc"
+  fi
+
+  (( had_invalid == 0 )) || return 1
+  (( had_consumed_indeterminate == 0 )) || return 2
+  remote="$(updater_remote_sha)" || {
+    updater_alert_scheduled probe-failed "Scheduled updater fetched origin/main but could not resolve its SHA; no restart was attempted."
+    return 2
+  }
+  if [[ "$(deployed_sha)" == "$remote" ]]; then
+    log "scheduled shuttle: deployed-sha already matches origin/main (${remote:0:7})"
     return 0
   fi
-  trap 'ssq_lock_release' EXIT INT TERM
-
-  # FLY-954: converge <state>/bin BEFORE any deploy decision. This job's plist
-  # execs the repo script directly, so it is the ONLY self-heal path that does
-  # not depend on a possibly-broken lead wrapper (a stub wrapper exits 0
-  # instantly — Lead-start convergence never runs). Non-fatal: deploy
-  # availability wins (FLY-739 principle); drift alerts via lead-alert.sh.
-  if ! bash "${SCRIPT_DIR}/converge-flywheel-bin.sh" >/dev/null 2>&1; then
-    log "converge-flywheel-bin reported unhealthy state (non-fatal; continuing)"
+  log "scheduled shuttle: deployed-sha is behind origin/main (${remote:0:7}) — deploying once"
+  "$SELF_SHIP_DEPLOY_CMD"
+  rc=$?
+  if (( rc != 0 )); then
+    updater_alert_scheduled deploy-failed \
+      "Scheduled Flywheel deploy failed (rc=$rc, target=${remote:0:12}). The next daily alert/shuttle remains available."
   fi
-
-  local guard=0
-  while :; do
-    guard=$((guard + 1)); (( guard > 1000 )) && { log "loop guard tripped"; break; }
-    # Quarantine any invalid/corrupt entries FIRST so a junk-only watched dir is
-    # emptied (else QueueDirectories hot-loops the job — code-review R2 HIGH-1).
-    ssq_sweep_invalid
-    local pending; pending="$(ssq_pending_count)"
-    if (( pending == 0 )); then
-      fallback_sweep
-      break
-    fi
-    local due; due="$(ssq_due_markers | grep -c . || true)"
-    if (( due == 0 )); then
-      log "pending=${pending} but none due — sleeping until earliest nextAttemptAt"
-      ssq_sleep_until_due
-      continue
-    fi
-    process_due_markers
-  done
-  ssq_lock_release
-  trap - EXIT INT TERM
+  return "$rc"
 }
 
-if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != "1" ]]; then
+# Preserve the FLY-1814 launchd convergence/census floor ahead of either
+# surviving updater source. Fetch/probe/deploy failures in the cycle must not
+# suppress that independent health pass.
+updater_run_launchd_then_cycle() {
+  updater_launchd_pass || true
+  updater_run_cycle
+}
+
+update_main() {
+  local lock_rc=0
+  if ! updater_init_dirs; then
+    log "could not initialize updater state directories"
+    updater_alert_scheduled init-failed \
+      "Updater could not create or secure its state and urgent directories. No restart was attempted."
+    return 1
+  fi
+  updater_lock_acquire update-flywheel
+  lock_rc=$?
+  case "$lock_rc" in
+    0) ;;
+    75)
+      log "another live updater holds the singleton lock — exiting without consuming tokens"
+      return 0
+      ;;
+    *)
+      log "could not persist singleton lock owner (rc=$lock_rc) — refusing to consume tokens"
+      updater_alert_scheduled lock-state-failed \
+        "Updater could not persist its singleton lock owner (rc=$lock_rc). No restart was attempted."
+      _updater_lock_clear || true
+      return "$lock_rc"
+      ;;
+  esac
+
+  UPDATER_CLAIM_DIR=""
+  UPDATER_CLAIMED=0
+  UPDATER_COMPLETED=0
+  UPDATER_ALERTED=0
+  UPDATER_CLEANUP_DONE=0
+  UPDATER_CLAIMED_BASENAMES=()
+  local previous_exit previous_int previous_term rc=0
+  previous_exit="$(trap -p EXIT)"
+  previous_int="$(trap -p INT)"
+  previous_term="$(trap -p TERM)"
+  trap 'updater_cleanup' EXIT
+  trap 'updater_signal_cleanup' INT TERM
+
+  if ! updater_converge_bin; then
+    log "converge-flywheel-bin reported unhealthy state (non-fatal; continuing)"
+  fi
+  updater_run_launchd_then_cycle
+  rc=$?
+  updater_cleanup
+
+  if [[ -n "$previous_exit" ]]; then eval "$previous_exit"; else trap - EXIT; fi
+  if [[ -n "$previous_int" ]]; then eval "$previous_int"; else trap - INT; fi
+  if [[ -n "$previous_term" ]]; then eval "$previous_term"; else trap - TERM; fi
+  return "$rc"
+}
+
+if [[ "${UPDATE_FLYWHEEL_SOURCED:-0}" != 1 ]]; then
   update_main
   exit $?
 fi

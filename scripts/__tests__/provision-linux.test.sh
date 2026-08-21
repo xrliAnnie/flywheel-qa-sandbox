@@ -134,8 +134,9 @@ if [ "$MAT_OK" -eq 1 ] \
    && grep -q "enable --now flywheel-bridge.service" "$CALLS" \
    && grep -q "enable --now flywheel-lead-flywheel-flywheel-cos-lead.service" "$CALLS" \
    && [ -f "$UNIT_DIR/flywheel-bridge.service" ] \
+   && grep -q "DirectoryNotEmpty=$H/.flywheel/self-ship-urgent.d" "$UNIT_DIR/flywheel-updater.path" \
    && grep -q "enable-linger" "$CALLS"; then
-  pass "L6 --apply launchd materializes + supervisor_install (bridge + lead + linger)"
+  pass "L6 --apply launchd materializes bridge/lead + urgent-only updater + linger"
 else
   fail "L6 actual install: mat=$MAT_OK units=$(ls "$UNIT_DIR" 2>/dev/null) calls=$(grep -E 'enable|linger' "$CALLS")"
 fi

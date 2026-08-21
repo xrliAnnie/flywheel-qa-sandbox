@@ -7,9 +7,9 @@ Issue: FLY-913
 ## 是什么
 
 全局 PreToolUse hook(matcher: Bash)`flywheel-restart-guard.py`:任何 Claude session 里
-匹配「手动重启/杀 Flywheel 服务」的 Bash 命令被**硬 deny**,报错直接给出正确命令
-(`scripts/request-restart.sh`)。该入口只负责向 FLY-270 既有队列写 marker 并 nudge
-独立的 `com.flywheel.updater`;真正的全量重启由 updater 发起,发起 Lead 因而也在
+匹配「手动重启/杀 Flywheel 服务」的 Bash 命令被**硬 deny**,报错给出 founder 紧急入口
+(`scripts/request-restart.sh`)。该入口只负责向 `self-ship-urgent.d` 原子写 token 并 nudge
+独立的 `com.flywheel.updater`;正常变更则只等本地 00:00/12:00 班车。真正的全量重启由 updater 发起,发起 Lead 因而也在
 被重启集合里。根因:手动 `launchctl kickstart` / kill+重拉会漏
 pnpm build(跑旧代码)、漏 core 频道部署播报、无健康检查回滚(2026-07-06 事故,
 一天 4 次)。口头承诺和 agent memory 都不强制行为,只有结构护栏强制。
@@ -22,14 +22,14 @@ pnpm build(跑旧代码)、漏 core 频道部署播报、无健康检查回滚(2
 | P2 | kill 族 + flywheel 进程标识 | `pgrep -f run-bridge \| xargs kill -9`、`pkill -f claude-lead.sh` |
 | P3 | 段首执行器直启 run-bridge(含 `bash -c "…"` 递归一层) | `nohup npx tsx scripts/run-bridge.ts &` |
 
-**默认入口**:`request-restart.sh`。`restart-services.sh`(仓库/部署副本两个路径)
-仍不会命中 hook,但只作为 updater 内部实现与明确的紧急兜底,不再是 Lead 日常统一
-重启入口。`update-flywheel.sh`、`launchctl print/list`、裸 `pgrep`、grep/rg/sed/cat
+**唯一即时入口**:`request-restart.sh`,且每次都要 founder 单独授权;merge 永不即时重启。
+`restart-services.sh`(仓库/部署副本两个路径)仍不会命中 hook,但只作为 updater 内部实现,
+不是 Lead 兜底入口。`update-flywheel.sh`、`launchctl print/list`、裸 `pgrep`、grep/rg/sed/cat
 读源码、QA slot 的 worktree 直跑进程操作(不带 com.flywheel 标签)、无关 kill 也放行。
 
 ## Bypass(唯一成文处 — 别处不宣传)
 
-真急救(如 updater/队列入口和 restart-services.sh 都不可用、Bridge 已死需要非常规操作)时,在命令前
+真急救(如 updater/紧急票入口都不可用、Bridge 已死需要非常规操作)时,经 founder 单独拍板后在命令前
 加**行首 env 赋值**:
 
 ```
@@ -50,7 +50,7 @@ FLYWHEEL_RESTART_GUARD_BYPASS="<非空理由>" <你的命令>
 
 ### Lead 救援(FLY-1602)
 
-Lead 禁止用 `launchctl kickstart -k`、`flywheel-daemon.sh restart` 或直接强杀做救援；这些路径绕过 replacement intent、body sweep、identity lease 与 storm gate，可能留下「body 活着但 supervisor 已死」的孤儿态。日常统一重启入口是 `scripts/request-restart.sh` → `com.flywheel.updater`;`scripts/restart-services.sh` 只供 updater 调用或在队列/updater 故障时作明确的紧急兜底。直接从 Lead 运行兜底可能让该 Lead 的旧 body 被新 carrier adoption,本体统计会如实显示为「被接管(未换)」。
+Lead 禁止用 `launchctl kickstart -k`、`flywheel-daemon.sh restart` 或直接强杀做救援；这些路径绕过 replacement intent、body sweep、identity lease 与 storm gate，可能留下「body 活着但 supervisor 已死」的孤儿态。正常部署等 updater 班车;即时重启只有 founder 单独授权的 `scripts/request-restart.sh` → `com.flywheel.updater` 紧急票。`scripts/restart-services.sh` 只供 updater 调用,不得作为 Lead 兜底第三路。
 
 v2 scheduler 只会对精确 Lead launchd target 发 bounded `SIGTERM`，让 supervisor 自己 cleanup 后由 KeepAlive 重生；它和 `restart-services.sh` 通过 global/subordinate restart mutex 排他。SIGTERM 无响应时 scheduler 只 backoff，不升级 `SIGKILL`。此时等待当前 deploy wave 收敛,或请 founder 拍板后运行 `scripts/request-restart.sh`,由 updater 走 bootout → body sweep → controlled arm → bootstrap。若上轮留下 replacement marker，下一轮会先 reconcile；不需要也不应手工 `resume` lease。
 

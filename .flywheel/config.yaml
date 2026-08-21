@@ -3,9 +3,9 @@
 # packages/teamlead/src/bridge/run-infra.ts (checkpoints/agents/skills only).
 #
 # This onboards the flywheel repo ITSELF as a Flywheel project as a two-layer Flywheel team
-# (CoS Aunt Cass triages/routes + Eng Lead Tadashi spawns Runners) that drives FLY issues → Runner → auto PR. The self-hosting ship/restart
-# safety boundary lives in scripts/self-ship-restart.sh + update-flywheel.sh
-# (Method B durable queue), NOT here. See doc/engineer/plan/new/v1.47.0-FLY-270-self-onboard.md.
+# (CoS Aunt Cass triages/routes + Eng Lead Tadashi spawns Runners) that drives FLY issues → Runner → auto PR. Merge never starts a restart.
+# Deployment has two sources in update-flywheel.sh: the local 00:00/12:00 shuttle
+# and a founder-authorized scripts/request-restart.sh emergency ticket. This file does not configure either source.
 
 project: flywheel
 

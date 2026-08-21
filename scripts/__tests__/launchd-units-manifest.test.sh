@@ -191,7 +191,7 @@ def validate_repo_manifest(text):
     by_label = {row["label"]: row for row in rows}
 
     expected = {
-        "com.flywheel.updater": ("com.flywheel.updater.plist", "copy", "0", None),
+        "com.flywheel.updater": ("com.flywheel.updater.plist", "copy", "0,1,2,3,127,130", None),
         "com.flywheel.daily-standup": ("com.flywheel.daily-standup.plist", "copy", "0,1", None),
         "com.flywheel.token-usage-daily": ("com.flywheel.token-usage-daily.plist", "copy", "0", None),
         "com.flywheel.bridge-liveness-probe": ("com.flywheel.bridge-liveness-probe.plist", "copy", "0", None),

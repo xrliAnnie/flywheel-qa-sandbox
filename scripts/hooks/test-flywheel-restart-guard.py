@@ -384,8 +384,12 @@ def t3_deny_schema():
         else:
             bad("T3 schema", json.dumps(hso)[:200])
         reason = hso.get("permissionDecisionReason", "")
-        if "request-restart.sh" in reason and "紧急兜底" in reason:
-            ok("T3 reason points at request-restart.sh and labels the emergency path")
+        if (
+            "request-restart.sh" in reason
+            and "founder 紧急票" in reason
+            and "self-ship" not in reason
+        ):
+            ok("T3 reason names the sole founder emergency ticket path")
         else:
             bad("T3 reason", f"missing correct-command pointer: {reason[:200]}")
         if "FLYWHEEL_RESTART_GUARD_BYPASS" not in reason:

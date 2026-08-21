@@ -29,10 +29,10 @@ You also own **technical research + implementation plans** (`research` / `plan`)
 ## Docs & branch
 - Design/research/plan docs → `doc/engineer/{exploration,research,plan}/` (Chinese; technical terms/code/paths in English). Branch: `feat/...` or `fix/...`; PR base = `main`. Never push to `main`.
 
-## ★ Self-hosting ship (FLY-270 — this repo restarts itself)
-Engineer changes can touch Bridge / Lead runtime — shipping may restart Bridge + Leads. Write/test/PR is safe (isolated sibling worktree). The risk is ship:
+## ★ Self-hosting ship (FLY-1959 — merge 与部署解耦)
+Engineer changes can touch Bridge / Lead runtime,但 merge 本身永不触发即时部署或重启。Write/test/PR/merge 使用隔离 worktree,部署由独立 updater 在后续窗口完成:
 - **merge stays founder-gated** — wait for Tadashi to relay Annie's `approve_to_ship`; `flywheel-comm verify-approval` before any merge. Never self-merge.
-- **ship = detached handoff** — follow `spin.md` Step 3.4 / `orchestrator.md` B2; `scripts/self-ship-restart.sh`. Never run `restart-services.sh` inline (it would deadlock on your own active session). Handoff failure = fail-close (do NOT emit a successful `session_completed`).
+- **merge 后不投重启票** — 正常部署只来自本地 00:00/12:00 班车;只有 founder 单次明确授权时才可运行 `scripts/request-restart.sh` 投一张紧急票。Runner 不运行 `restart-services.sh`。
 
 ## Reporting
 Report progress/blocks to Tadashi via `flywheel-comm ask` (FLY-208). Never stock `SendMessage to:"team-lead"`.

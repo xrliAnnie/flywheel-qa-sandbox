@@ -11,7 +11,6 @@ trap 'rm -rf "$TMP"' EXIT
 FILES=(
   "$ROOT/scripts/restart-services.sh"
   "$ROOT/scripts/request-restart.sh"
-  "$ROOT/scripts/self-ship-restart.sh"
   "$ROOT/scripts/update-flywheel.sh"
 )
 FORBIDDEN='\bsetsid\b|launchctl[[:space:]]+submit'

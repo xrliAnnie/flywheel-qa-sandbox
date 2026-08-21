@@ -17,19 +17,15 @@
     <dict>
         <key>PATH</key><string>/Users/xiaorongli/.local/bin:/Users/xiaorongli/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
-    <!-- FLY-270: durable self-hosting ship queue. launchd keeps/re-launches this
-         job whenever the watched dir is NON-EMPTY, which bridges the window
-         between a Runner enqueueing a marker and the updater's final convergence
-         check + process exit (root-cures the single-marker lost-wakeup). The
-         updater removes a marker only after its target merge SHA is deployed;
-         blocked/corrupt markers move to a SEPARATE, unwatched dir so a stuck
-         marker can never hot-loop the job. Absolute path required (no '~'). -->
+    <!-- FLY-1959: only founder-authorized emergency tokens trigger this job.
+         Ordinary merges publish nothing and never start updater. A token that
+         arrives during a running invocation remains for the next instance.
+         Absolute host-pinned path required (no '~'). -->
     <key>QueueDirectories</key>
     <array>
-        <string>/Users/xiaorongli/.flywheel/self-ship-pending.d</string>
+        <string>/Users/xiaorongli/.flywheel/self-ship-urgent.d</string>
     </array>
-    <!-- Fallback sweep: pull origin/main if deployed-sha is behind, even with
-         no pending markers (covers a missed/failed handoff). -->
+    <!-- Scheduled shuttle: deploy once when deployed-sha trails origin/main. -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
@@ -41,6 +37,8 @@
             <key>Minute</key><integer>0</integer>
         </dict>
     </array>
+    <!-- Bound distinct emergency launches to at most one per minute. -->
+    <key>ThrottleInterval</key><integer>60</integer>
     <key>StandardOutPath</key><string>/tmp/flywheel-updater.log</string>
     <key>StandardErrorPath</key><string>/tmp/flywheel-updater.log</string>
 </dict>

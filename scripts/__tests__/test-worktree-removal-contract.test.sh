@@ -47,7 +47,7 @@ else
 fi
 
 orchestrator="$ROOT/.claude/commands/orchestrator.md"
-if anchored_occurrences "$orchestrator" 'git worktree remove' 8; then
+if anchored_occurrences "$orchestrator" 'git worktree remove' 7; then
   pass "orchestrator teardown references are reap-first or domain-allowlisted"
 else
   fail "orchestrator teardown reference count/anchor drifted"

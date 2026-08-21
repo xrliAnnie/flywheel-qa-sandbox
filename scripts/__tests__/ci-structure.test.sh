@@ -362,7 +362,7 @@ expected_shard_tests = {
         "Test — NPM packaging pipeline + packaged-mode seams",
         "Test — FLY-1501 restart brake + heartbeat guard contracts",
         "Test — FLY-1634 restart net-deletion contracts",
-        "Test — FLY-1671 updater trigger + body provenance contracts",
+        "Test — FLY-1959 updater sources + body provenance contracts",
         "Test — payload real-install smoke",
         "Test — onboard-shell public install chain",
         "Test — FLY-882 Discord bot token pool",

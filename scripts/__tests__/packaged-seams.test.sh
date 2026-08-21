@@ -75,11 +75,12 @@ mk_tree() {
   fi
   for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh daily-standup.sh \
            update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
-           restart-storm-gate.py meta-alert.sh lead-alert.sh; do
+           launchd-census.sh restart-storm-gate.py meta-alert.sh lead-alert.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
-  for f in lib/script-sanity.sh lib/host-config.sh lib/self-ship-queue.sh \
-           lib/supervisor.sh lib/bounded-run.sh; do
+  for f in lib/script-sanity.sh lib/host-config.sh lib/supervisor.sh \
+           lib/bounded-run.sh lib/discord-pointer-guard.sh \
+           lib/converge-nonlead-daemons.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
   return 0
@@ -217,12 +218,13 @@ fi
 
 T="$SANDBOX/s6-tree"; H="$SANDBOX/s6-home"
 mk_tree "$T"; mk_home "$H"
-# monorepo side: empty self-ship queue → fallback sweep → stubbed fetch fails →
-# clean exit 0. The refusal must NOT fire and git MUST be exercised (proves the
-# script ran past the sentinel check into the verbatim updater flow).
+# monorepo side: no urgent token → scheduled sweep → stubbed fetch fails with
+# the new indeterminate rc=2. The refusal must NOT fire and git MUST be exercised
+# (proves the script ran past the sentinel check into the updater flow).
+mkdir -p "$H/.flywheel/restart.lock.d"
 stub "$H" git 'exit 1'; stub "$H" curl 'exit 0'
 run_update "$T" "$H"; rc=$?
-if [ "$rc" -eq 0 ] && ! grep -q "安装包形态" "$H/out.log" \
+if [ "$rc" -eq 2 ] && ! grep -q "安装包形态" "$H/out.log" \
    && grep -q "^git " <(calls "$H"); then
   pass "S6 update-flywheel monorepo sentinel: no refusal, updater flow runs"
 else

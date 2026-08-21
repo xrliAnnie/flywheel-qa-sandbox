@@ -398,18 +398,22 @@ is empty today, so today the answer is always "needs the founder").
 
 ---
 
-## R4 — Fleet Restart Discipline (FLY-1783, 2026-08-14 incident)
+## R4 — Fleet Restart Discipline (FLY-1959, superseding FLY-1783)
 
-Detached / survive-your-own-replacement full restarts have **EXACTLY ONE**
-sanctioned path:
+The standalone `com.flywheel.updater` is the only component that deploys and
+restarts the fleet. It recognizes exactly two sources:
 
-```bash
-bash ~/Dev/flywheel/scripts/request-restart.sh
-```
+1. the local 00:00/12:00 scheduled shuttle, which deploys once only when the
+   deployed SHA is behind `origin/main`; and
+2. one founder-authorized emergency ticket written by:
 
-It enqueues the standalone `com.flywheel.updater` outside the Lead fleet. The
-initiating Lead is itself replaced by the wave. That is the point: the Lead
-does not need to outlive the restart; the updater does.
+   ```bash
+   bash ~/Dev/flywheel/scripts/request-restart.sh
+   ```
+
+The updater sits outside the Lead fleet, so the initiating Lead may be replaced
+by the wave without needing to outlive it. Merge is not a third source: merging
+any PR never writes a ticket, nudges the updater, deploys, or restarts.
 
 Hard red lines — no judgment calls:
 
@@ -421,10 +425,9 @@ Hard red lines — no judgment calls:
   `nohup setsid …`, and do not invent a replacement when a detach attempt
   fails. Failed detach means **STOP and report**, never silently switch
   mechanisms.
-- Emergency direct `restart-services.sh` use is only for a broken updater /
-  queue with the Lead and founder explicitly aware. Run it as a plain
-  synchronous child in your shell; the script detaches itself. Never wrap it
-  in a scheduler.
+- **NEVER** turn a merge, ship completion, fallback, or repair into an implicit
+  restart. A direct `restart-services.sh` invocation is not a sanctioned third
+  route. Stop and ask the founder to decide how to recover a broken updater.
 
 Enforcement is layered: the FLY-913 PreToolUse guard hard-blocks scheduler
 shapes at the Bash boundary for Claude sessions, and `restart-services.sh`
@@ -433,27 +436,11 @@ behavioral layer and also binds Leads with no hook layer, including Codex.
 
 ### R4 governs the transport, not the right to initiate
 
-**A Lead may not decide, on its own, that the fleet should restart.** This
-section says *which channel* a restart must travel through once it has been
-authorized; it grants no permission to start one. Both the normal and the
-emergency path require a per-instance founder authorization — see AUTH-CANON in
-R5. The founder being **aware**, having been **notified**, or the script having
-**succeeded**, are none of them approval.
-
-⚠️ The runtime guard's own wording is currently **wider** than this contract
-(its emergency branch asks only that the Lead or founder be "explicitly aware").
-Tightening it is tracked in FLY-1895; until then, **this contract is the
-stricter one and it governs your behaviour.**
-
-**Exemption — the post-ship chain.** The automatic restart that follows a ship
-is **not** a Lead-initiated restart: its authority comes from the founder
-approving that ship. It is a built-in consequence of that exact R1 action, not a
-third source of authority, and it qualifies only when all three hold — the
-**provenance** is the canonical Runner post-merge self-ship handoff, the
-**target** is the canonical merge commit of that authorized ship, and the
-**causality** is the product's own automatic follow-on. A Lead invoking the same
-script by hand, re-running it, repairing it, or taking a fallback or emergency
-path inherits none of this and is back under the paragraph above.
+**A Lead may not decide, on its own, that the fleet should restart.** The
+scheduled shuttle is autonomous and does not inherit authority from individual
+merges. Every emergency ticket requires a fresh per-instance founder
+authorization — see AUTH-CANON in R5. Merge approval, awareness, notification,
+or a previous ticket are none of them approval for an emergency restart.
 
 ---
 

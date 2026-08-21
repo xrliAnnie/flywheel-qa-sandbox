@@ -4,7 +4,7 @@
 # census-scope: com.flywheel.
 # census-scope: com.xiaohongshu
 # census-scope: com.codex.xiaohongshu
-com.flywheel.updater	com.flywheel.updater.plist	copy	0	repo plist is byte authority
+com.flywheel.updater	com.flywheel.updater.plist	copy	0,1,2,3,127,130	handled updater outcomes alert independently; signal cleanup exits 130
 com.flywheel.daily-standup	com.flywheel.daily-standup.plist	copy	0,1	exit 1 is the documented restart-lock skip
 com.flywheel.token-usage-daily	com.flywheel.token-usage-daily.plist	copy	0	repo plist is byte authority
 com.flywheel.bridge-liveness-probe	com.flywheel.bridge-liveness-probe.plist	copy	0	repo plist is byte authority

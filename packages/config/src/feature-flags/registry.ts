@@ -290,7 +290,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "conversational",
-		note: "owner=converge CLI；每个 Lead 启动、daily update/self-ship、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
+		note: "owner=converge CLI；每个 Lead 启动、scheduled updater、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
 	},
 	{
 		name: "voice_qa_presence_override",

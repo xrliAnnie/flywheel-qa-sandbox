@@ -32,7 +32,6 @@ scripts/__tests__/platform-deps.test.sh
 scripts/__tests__/quota-monitor-wrapper.test.sh
 scripts/__tests__/restart-discord-plugin.test.sh
 scripts/__tests__/restart-services-admission-pause.test.sh
-scripts/__tests__/restart-stabilization.test.sh
 scripts/__tests__/restart-stop-bridge-portfree.test.sh
 scripts/__tests__/supervisor.test.sh
 scripts/__tests__/test-auto-approve-identity.test.sh
@@ -54,8 +53,6 @@ scripts/__tests__/flywheel-fleet-recover.test.sh
 scripts/__tests__/flywheel-fleet-report.test.sh
 scripts/__tests__/flywheel-fleet.test.sh
 scripts/__tests__/mailbox-queue-deploy-barrier.test.sh
-scripts/__tests__/self-ship-queue.test.sh
-scripts/__tests__/self-ship-restart.test.sh
 
 # Static/local contract suites retained outside the required Linux lane.
 scripts/__tests__/fly1272-doc-contract.test.sh

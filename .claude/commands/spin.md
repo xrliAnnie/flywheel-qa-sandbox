@@ -341,13 +341,13 @@ If all 3 attempts fail, report to Lead/Annie with the last failure details.
 > ⚠️ **FLY-270 — branch by repo FIRST (before any main-checkout pull / tracked bookkeeping).**
 > The **flywheel** repo is single-writer post-merge: its tracked bookkeeping (CLAUDE.md milestone
 > + `git mv` doc archive) ships **inside the PR** (the PR's last commit), and the main checkout must
-> stay clean so the detached updater's `git pull --ff-only` + rollback work. So for flywheel, **do NOT**
+> stay clean so the scheduled updater's `git pull --ff-only` + rollback work. So for flywheel, **do NOT**
 > run the generic `git checkout main && git pull` / CLAUDE.md edit / docs-commit steps below — go
-> straight to repo-external bookkeeping (MEMORY/Linear) + Step 3.4 (self-ship handoff).
+> straight to repo-external bookkeeping (MEMORY/Linear) + Step 3.4 (cleanup only).
 > ```bash
 > MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
 > if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
->     echo "[spin] flywheel self-ship: skip generic main-checkout pull + tracked bookkeeping (1, parts of 2, 6); do MEMORY/Linear (3) + Step 3.4 handoff."
+>     echo "[spin] flywheel: skip generic main-checkout pull + tracked bookkeeping (1, parts of 2, 6); do MEMORY/Linear (3) + Step 3.4 cleanup."
 > fi
 > ```
 
@@ -359,16 +359,12 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed **(flywheel: in the PR, skip here)**
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done **(repo-external — both paths)**
 3. Update Linear issue status to "Done" **(both paths)**
-4. **Restart / deploy (Flywheel repo only) — FLY-270 self-hosting ship (Method B):**
+4. **Flywheel post-merge cleanup — no deploy or restart (FLY-1959):**
 
-   > For the **flywheel** repo, a Runner's ship can restart the Bridge + the very
-   > Eng Lead coordinating it. Running `restart-services.sh` INLINE would deadlock
-   > on this still-active session and tear down the coordinator mid-report. So the
-   > flywheel path hands the merged ship to the **detached launchd updater** via a
-   > **durable queue** instead. This path has a STRICT order (single-writer main
-   > checkout + git-ops-before-handoff + handoff fail-close) that differs from the
-   > generic steps above — for flywheel, follow THIS instead of generic steps
-   > 1/2/4-as-restart:
+   > A Flywheel merge never starts the updater and never restarts Bridge or any
+   > Lead. Normal deployment waits for the local 00:00/12:00 shuttle; only a
+   > separately authorized founder emergency may create a ticket with
+   > `scripts/request-restart.sh`. Post-merge work is cleanup and reporting only:
    >
    > - **Bookkeeping is in the PR, not post-merge**: the CLAUDE.md milestone +
    >   `git mv` doc archive were the PR's last commit (`feedback_archive_docs_in_main_pr`),
@@ -378,16 +374,7 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
-       # (a) Capture the CANONICAL squash-merge commit SHA — NOT `git rev-parse HEAD`
-       #     of the feature worktree (a squash merge is not a descendant of it, so it
-       #     would never acknowledge). Source: gh pr view mergeCommit / landing signal.
-       MERGE_SHA="$(gh pr view {PR_NUMBER} --json mergeCommit -q '.mergeCommit.oid')"
-       if [[ ! "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-           echo "[spin] FATAL: could not resolve canonical merge SHA — aborting self-ship handoff." >&2
-           exit 1   # fail-close: do NOT emit a successful session_completed below
-       fi
-       # (b) Worktree cleanup is the LAST git operation, BEFORE handoff (it mutates
-       #     .git/worktrees; doing it after handoff would race the updater's pull).
+       # Worktree cleanup is the final post-merge git operation.
        # FLY-1759 reap-first: kill every non-protected process rooted in the live
        # worktree before git erases cwd attribution. The current Runner ancestry is
        # protected and converges through close-runner + the next lifecycle sweep.
@@ -401,25 +388,15 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
        fi
        # FLY-1759 reap-first: the attempt above completed before this mutation.
        cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
-       # (c) Clean-checkout preflight (single-writer; updater pull + rollback need it).
+       # Clean-checkout preflight preserves the scheduled updater's single-writer invariant.
        if [[ -n "$(git -C "$MAIN_REPO" status --porcelain)" ]]; then
-           echo "[spin] FATAL: main checkout dirty — refusing self-ship handoff. Report Annie." >&2
+           echo "[spin] FATAL: main checkout dirty after cleanup. Report Annie." >&2
            exit 1   # fail-close
        fi
-       # (d) Durable handoff to the detached updater (NO inline restart-services.sh).
-       if ! bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID}; then
-           echo "[spin] FATAL: self-ship handoff failed — NOT emitting success session_completed." >&2
-           exit 1   # fail-close: a merged-but-not-reliably-queued ship must not report completed
-       fi
-       # Only on handoff success does the flow continue to emit session_completed.
-       # The detached updater pulls main + runs restart-services.sh; Bridge + Eng
-       # Lead restart and self-recover via launchd KeepAlive + resume.
+       # Intentionally no updater kick, restart ticket, or inline restart here.
    fi
    ```
-   > **Bootstrap exception (first rollout of this contract):** the Runner shipping
-   > FLY-270 itself is running the OLD spin.md and must NOT execute this path — see
-   > the plan's Bootstrap Phase 0 (halt before old Step 3; Annie deploys by hand).
-5. Clean up worktree — **(flywheel self-ship: already removed in step 4(b), before the handoff; skip here)**:
+5. Clean up worktree — **(Flywheel: already removed in step 4; skip here)**:
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    # FLY-1759 reap-first: best-effort for non-self process trees; the current
@@ -441,7 +418,7 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    # MUST be the LAST sync step. `runPostShipFinalization` (tmux kill +
    # chat-thread archive + sidebar cleanup) fires as soon as Bridge receives
    # this event — so all prior bookkeeping (docs archive, MEMORY/Linear
-   # update, restart-services, worktree remove, docs commit+push) must be
+   # update, worktree remove, docs commit+push) must be
    # done. 4 retries with exponential backoff; on all-fail, writes a marker
    # file to `${FLYWHEEL_COMPLETE_MARKER_DIR:-$HOME/.flywheel/state/complete-failed}/${FLYWHEEL_EXEC_ID}.json`
    # and exits 1 (fail-close — stale patrol reconciles later).

@@ -1332,8 +1332,8 @@ fi
 if _rs_is_direct_launchd_invocation "$PPID" "${FLYWHEEL_RESTART_FOREGROUND:-0}"; then
     log "ERROR: started DIRECTLY by launchd (ppid 1) — refusing before any mutation (FLY-1783)."
     log "A submit-style job relaunches on every exit — the 2026-08-14 66-spawn storm shape."
-    log "Detached restarts have exactly one sanctioned path:"
-    log "    bash ~/Dev/flywheel/scripts/request-restart.sh"
+    log "Fleet deployment has only two updater sources: the local 00:00/12:00 shuttle"
+    log "and a founder-authorized emergency ticket from scripts/request-restart.sh."
     alert_launchd_refusal \
         "refused direct launchd invocation of restart-services.sh (ppid 1); see FLY-1783 / incident 2026-08-14"
     exit 78
@@ -1646,35 +1646,10 @@ fi
 # Idle wait
 # ════════════════════════════════════════════════════════════════
 
-# FLY-270: self-ship stabilization window. When this deploy was triggered by a
-# self-hosting ship handoff (markers present in self-ship-pending.d), requiring a
-# SINGLE count==0 sample is unsafe: the shipping Runner emits session_completed
-# and Bridge's runPostShipFinalization (tmux cleanup / thread archive) runs
-# fire-and-forget AFTER the session leaves the active set — so count can read 0
-# while finalization is still in flight. We therefore require TWO consecutive 0
-# samples (any non-zero resets) before stopping Bridge — a stabilization window,
-# NOT a completion barrier (it lowers the probability of interrupting
-# finalization, it does not prove completion). This is self-ship-ONLY so ordinary
-# Bridge deploys for other projects keep the single-0 fast path.
-_self_ship_active() {
-    local d="${SELF_SHIP_PENDING_DIR:-${HOME}/.flywheel/self-ship-pending.d}"
-    local f
-    shopt -s nullglob
-    for f in "$d"/*.json; do shopt -u nullglob; return 0; done
-    shopt -u nullglob
-    return 1
-}
-
 wait_for_idle() {
     local elapsed=0
     local consecutive_failures=0
     local max_consecutive_failures=3
-    local zero_streak=0
-    local required_zeros=1
-    if _self_ship_active; then
-        required_zeros=2
-        log "self-ship pending → stabilization window: requiring ${required_zeros} consecutive idle samples"
-    fi
     while (( elapsed < MAX_WAIT_SECONDS )); do
         local count
         local health_ok=true
@@ -1686,14 +1661,11 @@ wait_for_idle() {
                 return 0
             fi
             log "Health check failed (${consecutive_failures}/${max_consecutive_failures}), retrying..."
-            zero_streak=0
         else
             consecutive_failures=0
             if (( count == 0 )); then
-                zero_streak=$((zero_streak + 1))
-                if (( zero_streak >= required_zeros )); then return 0; fi
+                return 0
             else
-                zero_streak=0   # any active session resets the stabilization streak
                 if (( elapsed == 0 || elapsed % 300 == 0 )); then
                     RESTART_NOTICE_STARTED=true
                     notify_routine "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"

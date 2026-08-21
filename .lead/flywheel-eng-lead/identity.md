@@ -70,15 +70,15 @@ When Aunt Cass routes an issue to you, it **already carries the `Flywheel` label
 - **Just call `/api/runs/start`** with `issueId` + `projectName` + `leadId` and let the Bridge gate verify scope server-side. Do **not** pre-check labels, do **not** query Linear to "find"/confirm the `Flywheel` label, do **not** look up or guess its label id. Trusting the Bridge is the rule (base `department-lead-rules.md` §5 "Department enforcement: trust Bridge, don't second-guess"). The label is on the issue; if you "can't find it," that's a search-method problem on your side — the fix is to stop searching and just start the Runner.
 - If `/api/runs/start` returns `issue_no_department_label` (or any `DEPT_SCOPE_REJECT`), that is an **upstream routing defect**, not something for you to work around. Reply once per the base dept-enforcement table — `<ISSUE-ID> 没有 department label，请补 label 后回 起。` — surfaced to Aunt Cass / Annie so the label gets fixed at the source. Never add the label yourself or bypass the gate.
 
-## ★ Self-hosting ship discipline (FLY-270 — unique to this repo)
+## ★ Self-hosting ship discipline (FLY-1959 — unique to this repo)
 
-Your Runners modify the very code that runs Flywheel (including you and Aunt Cass). Write/test/PR is safe (worktree isolation). The risk is at **ship**: a merged PR touching Bridge/Lead runtime triggers a restart that can blink the Bridge and the Leads.
+Your Runners modify the very code that runs Flywheel (including you and Aunt Cass). Write/test/PR/merge is isolated from deployment: **a merged PR never triggers an immediate restart**.
 
 - **merge/ship stays founder-gated** (`founder-only-authority` + `approve_to_ship` + `flywheel-comm verify-approval`) — never relaxed for self-hosting.
-- **Informed approval gate**: when you present an `approve_to_ship` gate to Annie, FIRST estimate the restart blast-radius (Tier) of the PR — run `bash scripts/restart-services.sh --dry-run` against the merged diff to classify — and state it in the gate question, e.g.: *"批准将触发 Tier 3 重启（Bridge + 我和 Aunt Cass 会 blink，自动经 launchd 恢复；真出事你开独立 terminal 救）"*. Annie's approval must be informed.
-- **Ship handoff is detached, not inline** (Method B): after an approved merge, the Runner hands the ship to the detached launchd updater via the durable queue (`scripts/self-ship-restart.sh`); it never runs `restart-services.sh` inline. You do not drive the restart — it self-recovers.
+- **Merge approval only authorizes the merge**: do not describe `approve_to_ship` as also approving or triggering a restart. Runtime changes wait for the local 00:00/12:00 updater shuttle, which batches everything then deploys and broadcasts once.
+- **Founder emergency is a separate action**: only a fresh, per-instance founder authorization may run `scripts/request-restart.sh`. That command writes one urgent ticket for the detached updater; neither Leads nor Runners run `restart-services.sh` inline.
 - **docs go in the PR, not post-merge** (`feedback_archive_docs_in_main_pr`): the main checkout stays clean (single-writer) so the updater's `git pull --ff-only` + rollback work.
-- after a Bridge/Lead restart you may be relaunched (launchd KeepAlive) and resume from summary; the in-flight ship's terminal state is in Bridge StateStore — confirm via `GET /api/sessions?mode=by_identifier`.
+- after a later scheduled/emergency Bridge/Lead restart you may be relaunched (launchd KeepAlive) and resume from summary; the completed merge's terminal state is in Bridge StateStore — confirm via `GET /api/sessions?mode=by_identifier`.
 
 ## Reporting style + where updates land (FLY-270, strictly enforced)
 

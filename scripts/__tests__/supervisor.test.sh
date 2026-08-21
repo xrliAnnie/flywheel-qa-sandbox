@@ -85,11 +85,11 @@ fi
 
 # ── S4: linux render path ──
 : > "$CALLS"; rm -rf "$UNIT_DIR"
-SPEC='{"name":"updater","kind":"path","exec":"/bin/bash /opt/fw/scripts/update-flywheel.sh","watch":["/opt/state/self-ship-pending.d"]}'
+SPEC='{"name":"updater","kind":"path","exec":"/bin/bash /opt/fw/scripts/update-flywheel.sh","watch":["/opt/state/self-ship-urgent.d"]}'
 sup systemd-user supervisor_install "$SPEC" >/dev/null 2>&1
 SVC="$UNIT_DIR/updater.service"; PTH="$UNIT_DIR/updater.path"
 if [ -f "$SVC" ] && [ -f "$PTH" ] \
-   && grep -q "DirectoryNotEmpty=/opt/state/self-ship-pending.d" "$PTH" \
+   && grep -q "DirectoryNotEmpty=/opt/state/self-ship-urgent.d" "$PTH" \
    && grep -q "enable --now updater.path" "$CALLS"; then
   pass "S4 linux path unit (.service + .path DirectoryNotEmpty)"
 else

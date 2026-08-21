@@ -596,14 +596,15 @@ jobs:
           bash scripts/__tests__/restart-self-detach.test.sh
           bash scripts/__tests__/fly1783-restart-detach-contract.test.sh
 
-      # FLY-1671: manual restarts enter through the standalone updater, and
-      # restart reporting distinguishes a newly launched Lead body from an
-      # adopted pre-existing one without changing the restart verdict.
-      - name: Test — FLY-1671 updater trigger + body provenance contracts
+      # FLY-1959: merge never triggers updater; only the scheduled shuttle and
+      # founder emergency tickets remain. Restart reporting still distinguishes
+      # a newly launched Lead body from an adopted pre-existing one.
+      - name: Test — FLY-1959 updater sources + body provenance contracts
         run: |
           bash scripts/__tests__/lead-body-evidence.test.sh
           bash scripts/__tests__/lead-body-provenance.test.sh
           bash scripts/__tests__/request-restart.test.sh
+          bash scripts/__tests__/updater-trigger-policy.test.sh
 
       # FLY-1062: the REAL npm full chain on the real repo — pack (gated) →
       # npm install --prefix (registry fetch for the dependency union) →
@@ -785,13 +786,13 @@ jobs:
       # routine path fail-louds instead of falling back, and a grep-zero
       # sentinel blocks Simba-token / fallback-chain re-introduction. Hermetic —
       # extracted real functions + fake lead-alert/curl/meta-alert, sandboxed
-      # dirs, no network. update-flywheel-queue.test.sh predates this issue but
-      # was never wired into CI — adopted here (same dep set: jq/sqlite3/git).
+      # dirs and fake transport, no network. FLY-1959's two-source updater suite
+      # replaces the deleted per-merge queue harness.
       - name: Test — FLY-1081 notify-path migration
         run: |
           bash scripts/__tests__/restart-notify-routine.test.sh
           bash scripts/__tests__/restart-services-notify.test.sh
-          bash scripts/__tests__/update-flywheel-queue.test.sh
+          bash scripts/__tests__/update-flywheel-sources.test.sh
           bash scripts/__tests__/simba-grep-zero.test.sh
           # QA alert: drives the REAL lead-alert.sh in the production
           # --lead deploy call form — infra identity used, no Simba fallback.
