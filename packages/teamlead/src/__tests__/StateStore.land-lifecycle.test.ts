@@ -284,6 +284,16 @@ function activateFounderRework(
 		}),
 	).toMatchObject({ ok: true });
 	expect(
+		store.recordWorkflowActivationTurn({
+			activationId: `activation:${input.requestId}`,
+			issueId: store.getWorkflowRun(input.runId)!.issue_id,
+			executionId: input.executionId,
+			epoch: input.attempt,
+			sourceEventId: `turn:${input.requestId}:${input.attempt}`,
+			grantedAt: "2026-07-21T20:02:00.000Z",
+		}),
+	).toMatchObject({ ok: true });
+	expect(
 		store.claimWorkflowReworkDelivery({
 			requestId: input.requestId,
 			ownerId: "coordinator",
@@ -300,23 +310,31 @@ function activateFounderRework(
 			to: "turn_granted",
 			now: "2026-07-21T20:02:02.000Z",
 		}),
-	).toEqual({ ok: true });
+	).toMatchObject({ ok: true });
 	expect(
 		store.advanceWorkflowReworkDelivery({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: 1,
 			from: "turn_granted",
-			to: "wake_delivered",
+			to: "awaiting_receipt",
 			now: "2026-07-21T20:02:03.000Z",
 			releaseOwner: true,
+		}),
+	).toEqual({ ok: true });
+	expect(
+		store.recordWorkflowReworkWakeReceipt({
+			activationId: `activation:${input.requestId}`,
+			executionId: input.executionId,
+			epoch: input.attempt,
+			ackedAt: "2026-07-21T20:02:04.000Z",
 			alertIdentity: {
 				leadId: "flywheel-eng-lead",
 				projectName: "flywheel",
 				leadResolution: "resolved",
 			},
 		}),
-	).toEqual({ ok: true });
+	).toMatchObject({ ok: true });
 }
 
 describe("StateStore land lifecycle ledger", () => {
@@ -731,6 +749,16 @@ describe("StateStore land lifecycle ledger", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(
+			store.recordWorkflowActivationTurn({
+				activationId: "activation-design-correction",
+				issueId: store.getWorkflowRun("run-design-only")!.issue_id,
+				executionId: "design-exec",
+				epoch: 2,
+				sourceEventId: "turn:design-correction:2",
+				grantedAt: "2026-07-21T20:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
 			store.claimWorkflowReworkDelivery({
 				requestId: requestId!,
 				ownerId: "coordinator",
@@ -747,23 +775,31 @@ describe("StateStore land lifecycle ledger", () => {
 				to: "turn_granted",
 				now: "2026-07-21T20:02:02.000Z",
 			}),
-		).toEqual({ ok: true });
+		).toMatchObject({ ok: true });
 		expect(
 			store.advanceWorkflowReworkDelivery({
 				requestId: requestId!,
 				ownerId: "coordinator",
 				generation: 1,
 				from: "turn_granted",
-				to: "wake_delivered",
+				to: "awaiting_receipt",
 				now: "2026-07-21T20:02:03.000Z",
 				releaseOwner: true,
+			}),
+		).toEqual({ ok: true });
+		expect(
+			store.recordWorkflowReworkWakeReceipt({
+				activationId: "activation-design-correction",
+				executionId: "design-exec",
+				epoch: 2,
+				ackedAt: "2026-07-21T20:02:04.000Z",
 				alertIdentity: {
 					leadId: "flywheel-eng-lead",
 					projectName: "flywheel",
 					leadResolution: "resolved",
 				},
 			}),
-		).toEqual({ ok: true });
+		).toMatchObject({ ok: true });
 
 		const correctedHead = "b".repeat(40);
 		bindPr(store, {

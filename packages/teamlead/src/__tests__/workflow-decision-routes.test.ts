@@ -124,6 +124,13 @@ async function reviewFixture(options: {
 	if (!researchAdmission.ok) {
 		throw new Error(`research admission failed: ${researchAdmission.reason}`);
 	}
+	store.upsertSession({
+		execution_id: "research-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "research",
+	});
 	const researchCompletion = store.commitEnrolledCompletion({
 		executionId: "research-1",
 		route: "no_code",

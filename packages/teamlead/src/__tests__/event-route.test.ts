@@ -179,6 +179,12 @@ function bindGeneralizedExecution(
 		},
 	});
 	expect(admission).toMatchObject({ ok: true });
+	store.upsertSession({
+		execution_id: executionId,
+		issue_id: "issue-1",
+		project_name: "geoforge3d",
+		status: "running",
+	});
 }
 
 function bindGeneralizedDesignExecution(
@@ -819,7 +825,7 @@ describe("Event route", () => {
 		}
 	});
 
-	it("books re-entry completion against the explicit activation and TURN epoch", async () => {
+	it("books replacement completion against the explicit activation and TURN epoch", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		expect(
 			store.commitEnrolledCompletion({
@@ -834,13 +840,13 @@ describe("Event route", () => {
 			nodeId: "execute",
 			attempt: 2,
 			state: "pending",
-			executionId: "exec-1",
+			executionId: "exec-2",
 		});
 		expect(
 			store.admitGeneralizedWorkflowExecution({
 				runId: "run-exec-1",
 				nodeId: "execute",
-				executionId: "exec-1",
+				executionId: "exec-2",
 				attempt: 2,
 				activationId: "activation-2",
 				activationMode: "wake",
@@ -856,10 +862,17 @@ describe("Event route", () => {
 				},
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-2",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			workflow_node_id: "execute",
+		});
 		expect(
 			store.recordWorkflowActivationTurn({
 				activationId: "activation-2",
-				executionId: "exec-1",
+				executionId: "exec-2",
 				issueId: "issue-1",
 				epoch: 2,
 				sourceEventId: "turn:activation-2:epoch-2",
@@ -875,6 +888,7 @@ describe("Event route", () => {
 			},
 			body: JSON.stringify(
 				makeEvent({
+					execution_id: "exec-2",
 					event_id: "explicit-complete-attempt-2",
 					event_type: "session_completed",
 					source: "flywheel-comm",
@@ -903,7 +917,7 @@ describe("Event route", () => {
 			store.getWorkflowNodeCompletion("run-exec-1", "execute", 2),
 		).toMatchObject({
 			activation_id: "activation-2",
-			execution_id: "exec-1",
+			execution_id: "exec-2",
 		});
 	});
 

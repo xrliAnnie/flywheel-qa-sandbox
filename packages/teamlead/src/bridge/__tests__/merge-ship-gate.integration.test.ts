@@ -238,6 +238,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		if (!admission.ok || !admission.submissionCredential) {
 			throw new Error("engine QA admission failed");
 		}
+		upsert("running", undefined, EXEC);
 		const qa = store.submitWorkflowDecisionByCredential({
 			credential: admission.submissionCredential,
 			clientRequestId: "engine-qa-pass",
@@ -379,6 +380,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		if (!review.ok || !review.submissionCredential) {
 			throw new Error("product review admission failed");
 		}
+		upsert("running", undefined, reviewExecution);
 		const submitted = store.submitWorkflowDecisionByCredential({
 			credential: review.submissionCredential,
 			clientRequestId: "product-review-predicate",

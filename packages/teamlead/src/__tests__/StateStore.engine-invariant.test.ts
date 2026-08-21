@@ -84,7 +84,7 @@ async function createActiveOperatorRework(): Promise<{
 		execution_id: "implement-exec",
 		issue_id: "FLY-1912",
 		project_name: "flywheel",
-		status: "completed",
+		status: "ship_parked",
 		workflow_node_id: "implement",
 	});
 	store.patchSessionMetadata("implement-exec", { pr_head_sha: HEAD });
@@ -141,7 +141,7 @@ async function createActiveOperatorRework(): Promise<{
 	if (!turnRecorded.ok) throw new Error(turnRecorded.reason);
 	for (const [from, to] of [
 		["pending", "turn_granted"],
-		["turn_granted", "wake_delivered"],
+		["turn_granted", "awaiting_receipt"],
 	] as const) {
 		const advanced = store.advanceWorkflowReworkDelivery({
 			requestId: opened.requestId,
@@ -150,12 +150,18 @@ async function createActiveOperatorRework(): Promise<{
 			from,
 			to,
 			now: "2026-08-20T00:05:00.000Z",
-			...(to === "wake_delivered"
-				? { alertIdentity: ALERT_IDENTITY, releaseOwner: true }
-				: {}),
+			...(to === "awaiting_receipt" ? { releaseOwner: true } : {}),
 		});
 		if (!advanced.ok) throw new Error(advanced.reason);
 	}
+	const receipt = store.recordWorkflowReworkWakeReceipt({
+		activationId: admitted.activationId,
+		executionId: "implement-exec",
+		epoch: 1,
+		ackedAt: "2026-08-20T00:05:01.000Z",
+		alertIdentity: ALERT_IDENTITY,
+	});
+	if (!receipt.ok) throw new Error(receipt.reason);
 	const turn = store.getWorkflowActivationTurn(admitted.activationId);
 	if (!turn) throw new Error("rework activation turn missing");
 	return {
@@ -201,6 +207,13 @@ async function createFreshQa(): Promise<{
 		fixture.store.close();
 		throw new Error("fresh QA admission failed");
 	}
+	fixture.store.upsertSession({
+		execution_id: completed.successorExecutionId,
+		issue_id: "FLY-1912",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "qa",
+	});
 	fixture.store.upsertWorkflowRunNode({
 		runId: "run-heavy",
 		nodeId: "qa",

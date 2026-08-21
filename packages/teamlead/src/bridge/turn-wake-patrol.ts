@@ -1,5 +1,8 @@
 import { CommDB, type TurnWakeOutboxRow } from "flywheel-comm/db";
-import { wakeRunnerMailbox } from "flywheel-comm/wake";
+import {
+	TURN_WAKE_RETRY_AFTER_MS,
+	wakeRunnerMailbox,
+} from "flywheel-comm/wake";
 
 interface PersistedWakeEnvelope {
 	fromAgent: string;
@@ -19,12 +22,16 @@ export async function drainTurnWakeOutbox(input: {
 	onReceipt?: (
 		row: TurnWakeOutboxRow,
 	) => Promise<"projected" | "not_applicable" | "retry">;
+	onSecondPushUnacked?: (
+		row: TurnWakeOutboxRow,
+		projectName: string,
+	) => Promise<{ ok: true } | { ok: false; error: string }>;
 	canDeliver?: (
 		row: TurnWakeOutboxRow,
 	) => Promise<{ disposition: "deliver" | "cancel" | "wait"; reason?: string }>;
 }): Promise<{ pushed: number; alerts: number; cancelled: number }> {
 	const nowMs = input.nowMs ?? Date.now();
-	const retryAfterMs = input.retryAfterMs ?? 3 * 60_000;
+	const retryAfterMs = input.retryAfterMs ?? TURN_WAKE_RETRY_AFTER_MS;
 	const alertAfterMs = input.alertAfterMs ?? 20 * 60_000;
 	const leaseMs = input.leaseMs ?? 30_000;
 	const maxPerProject = input.maxPerProject ?? 20;
@@ -37,6 +44,7 @@ export async function drainTurnWakeOutbox(input: {
 		const db = new CommDB(input.commDbPathForProject(projectName));
 		try {
 			const deferredWakeIds = new Set<string>();
+			const failedPointerWakeIds = new Set<string>();
 			for (let index = 0; index < maxPerProject; index += 1) {
 				const claim = db.claimDueTurnWake({
 					nowMs,
@@ -93,11 +101,35 @@ export async function drainTurnWakeOutbox(input: {
 						: `error:${outcome.error ?? outcome.skippedReason ?? "wake_failed"}`,
 				});
 				pushed += 1;
+				if (claim.push_count === 1 && input.onSecondPushUnacked) {
+					const current = db.getTurnWake(claim.wake_id);
+					if (current?.state !== "acked") {
+						try {
+							const pointer = await input.onSecondPushUnacked(
+								current ?? claim,
+								projectName,
+							);
+							if (!pointer.ok) failedPointerWakeIds.add(claim.wake_id);
+						} catch (error) {
+							console.warn(
+								`[turn-wake] second-push pointer failed for ${claim.wake_id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							failedPointerWakeIds.add(claim.wake_id);
+						}
+					}
+				}
 			}
 			alerts += db.materializeTurnWakeNoReceiptAlerts({
 				nowMs,
 				alertAfterMs,
 			}).length;
+			if (failedPointerWakeIds.size > 0) {
+				alerts += db.materializeTurnWakeNoReceiptAlerts({
+					nowMs,
+					alertAfterMs: 0,
+					wakeIds: [...failedPointerWakeIds],
+				}).length;
+			}
 			if (input.onReceipt) {
 				for (const receipt of db.listUnprojectedTurnWakeReceipts(
 					maxPerProject,

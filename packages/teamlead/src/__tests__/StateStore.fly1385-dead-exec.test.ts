@@ -105,7 +105,7 @@ async function engineRunWithDeadQa(): Promise<{
 	store: StateStore;
 	submissionCredential: string;
 }> {
-	const store = await engineRunWithImplement();
+	const store = await engineRunWithImplement("running");
 	expect(
 		store.commitWorkflowTransitionTx({
 			runId: "run-1",
@@ -790,6 +790,13 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		if (!retryAdmission.ok || !retryAdmission.outputCredential) {
 			throw new Error("replacement output admission failed");
 		}
+		store.upsertSession({
+			execution_id: "produce-retry-1",
+			issue_id: "FLY-1335",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "produce",
+		});
 		store.applyWorkflowLedgerBatch({
 			projectName: "flywheel",
 			issueId: "FLY-1335",

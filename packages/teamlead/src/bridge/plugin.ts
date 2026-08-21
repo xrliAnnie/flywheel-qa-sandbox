@@ -185,10 +185,14 @@ import {
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
 import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
+import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
-import { probeDeclaredStateFromCommDb } from "./commdb-probes.js";
+import {
+	hasPendingGateFromCommDb,
+	probeDeclaredStateFromCommDb,
+} from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -413,7 +417,9 @@ import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-auth
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { createMergedGateGuard } from "./merged-gate-guard.js";
+import { sweepOrphanFounderReviewGates } from "./orphan-founder-review-monitor.js";
 import { isTransientThrottlePane } from "./pane-blocked-classifier.js";
+import { fingerprintOutput } from "./pane-fingerprint.js";
 import {
 	isAutoMigratableClaudeTmux,
 	type PaneLossNotificationClass,
@@ -481,6 +487,7 @@ import {
 	makeRunnerQuotaScan,
 	makeRunnerQuotaScanPass,
 } from "./runner-quota-scan.js";
+import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
 	handleRunnerStage,
@@ -552,6 +559,7 @@ import {
 	probeTmuxServerStartTime,
 	probeTmuxWindowLiveness,
 	sendEnterToWindow,
+	sendKeysToWindow,
 } from "./tmux-lookup.js";
 import { createTmuxRescueClient } from "./tmux-rescue-client.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
@@ -603,13 +611,13 @@ import {
 	reconcileWorkflowTurnLedgers,
 	workflowTurnDivergenceAlertsEnabled,
 } from "./workflow-turn-ledger-validator.js";
+import { assertWorkflowWorktreeReady } from "./workflow-worktree-readiness.js";
 import {
 	createWorkKindCutoverRouter,
 	type Fly1436ActivationEvidence,
 	readFly1436ActivationEvidence,
 } from "./workkind-cutover.js";
 import {
-	gitWorktreeClean,
 	makeBridgeWorktreeCleanup,
 	worktreeAutocleanEnabled,
 } from "./worktree-cleanup.js";
@@ -2716,6 +2724,7 @@ export function createBridgeApp(
 				}
 			}
 
+			await reapCodexDaemonForSession(store, session, "bridge.close-tmux");
 			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
 				res.json({ closed: false, reason: "No tmux target found" });
@@ -4255,6 +4264,7 @@ export async function startBridge(
 		);
 	}
 	const bridgeBootTs = Date.now();
+	let turnPointerAuditSeq = 0;
 	const livenessTrackers = {
 		liveness: new LivenessCheckTracker({
 			cadenceMs: config.stuckCheckIntervalMs,
@@ -7761,6 +7771,38 @@ export async function startBridge(
 			}
 		}
 	};
+	const orphanFounderReviewMonitorTick = (): void => {
+		for (const project of projects) {
+			let db: CommDB | undefined;
+			try {
+				db = new CommDB(commDbPathForProject(project.projectName));
+				sweepOrphanFounderReviewGates({
+					projectName: project.projectName,
+					db,
+					store,
+					resolveAlertIdentity: (run) =>
+						resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							projectName: run.project_name,
+							issueId: run.issue_id,
+							runId: run.run_id,
+							log: (message) =>
+								console.warn(`[founder-review-orphan] ${message}`),
+						}),
+					env: process.env,
+					log: (message) => console.warn(message),
+				});
+			} catch (error) {
+				console.warn(
+					`[founder-review-orphan] project sweep failed for ${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			} finally {
+				db?.close();
+			}
+		}
+	};
 	let workflowGateMaterializationRunning = false;
 	const workflowGateMaterializeTick = async (): Promise<void> => {
 		if (workflowGateMaterializationRunning) return;
@@ -8448,6 +8490,91 @@ export async function startBridge(
 			await drainTurnWakeOutbox({
 				projectNames: projects.map((project) => project.projectName),
 				commDbPathForProject,
+				onSecondPushUnacked: async (wake, projectName) => {
+					// Codex mailbox delivery alone cannot revive a goal-achieved TUI.
+					// After the one verified retry, type a bounded pointer whose only
+					// authority is the exact durable TURN tuple re-checked at send time.
+					if (wake.backend !== "codex") return { ok: true };
+					const session = store.getSession(wake.execution_id);
+					if (!session || session.project_name !== projectName) {
+						return { ok: false, error: "turn_pointer_session_missing" };
+					}
+					let leadId: string;
+					try {
+						leadId = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							parseJsonStringArray(session.issue_labels),
+						).lead.agentId;
+					} catch (error) {
+						return {
+							ok: false,
+							error: `turn_pointer_lead_unresolved:${(error as Error).message}`,
+						};
+					}
+					const capture = await defaultCaptureSession(
+						wake.execution_id,
+						session.project_name,
+						100,
+					);
+					if (isCaptureError(capture)) {
+						return {
+							ok: false,
+							error: `turn_pointer_capture_failed:${capture.error}`,
+						};
+					}
+					const outcome = await attemptRunnerRecoveryNudge(
+						{
+							mode: "turn_pointer",
+							actor: "turn-wake-patrol",
+							executionId: wake.execution_id,
+							leadId,
+							fingerprint: fingerprintOutput(capture.output),
+							turnWakeId: wake.wake_id,
+						},
+						{
+							store,
+							projects,
+							captureSessionFn: defaultCaptureSession,
+							hasPendingGate: hasPendingGateFromCommDb,
+							isTurnWakeBindingLive: (executionId, projectName, wakeId) => {
+								if (
+									executionId !== wake.execution_id ||
+									projectName !== session.project_name ||
+									wakeId !== wake.wake_id
+								) {
+									return false;
+								}
+								const db = new CommDB(commDbPathForProject(projectName));
+								try {
+									if (db.getTurnWake(wakeId)?.state === "acked") return false;
+								} finally {
+									db.close();
+								}
+								return (
+									store.inspectWorkflowTurnWakeRetry({
+										wakeId,
+										executionId,
+										...(wake.activation_id
+											? { activationId: wake.activation_id }
+											: {}),
+										epoch: wake.epoch,
+									}).disposition === "deliver"
+								);
+							},
+							sendKeys: sendKeysToWindow,
+							getTmuxTarget: getTmuxTargetFromCommDb,
+							now: () => Date.now(),
+							nextAuditSeq: () => ++turnPointerAuditSeq,
+						},
+					);
+					return outcome.body.nudged
+						? { ok: true }
+						: {
+								ok: false,
+								error: outcome.body.error ?? "turn_pointer_refused",
+							};
+				},
 				canDeliver: async (wake) =>
 					store.inspectWorkflowTurnWakeRetry({
 						wakeId: wake.wake_id,
@@ -8456,11 +8583,39 @@ export async function startBridge(
 						epoch: wake.epoch,
 					}),
 				onReceipt: async (receipt) => {
-					if (
-						receipt.purpose !== "workflow_ship_carrier" ||
-						!receipt.activation_id ||
-						receipt.acked_at === null
-					) {
+					if (!receipt.activation_id || receipt.acked_at === null) {
+						return "not_applicable";
+					}
+					if (receipt.purpose === "workflow_rework") {
+						const activation = store.getWorkflowActivation(
+							receipt.activation_id,
+						);
+						const run = activation
+							? store.getWorkflowRun(activation.run_id)
+							: undefined;
+						if (!activation || !run) return "retry";
+						const projected = store.recordWorkflowReworkWakeReceipt({
+							activationId: receipt.activation_id,
+							executionId: receipt.execution_id,
+							epoch: receipt.epoch,
+							ackedAt: new Date(receipt.acked_at).toISOString(),
+							alertIdentity: resolveWorkflowRunAlertIdentity({
+								store,
+								projects,
+								defaultLeadAgentId: config.defaultLeadAgentId,
+								projectName: run.project_name,
+								issueId: run.issue_id,
+								runId: run.run_id,
+								log: (message) => console.warn(`[turn-wake] ${message}`),
+							}),
+						});
+						if (projected.ok) return "projected";
+						console.warn(
+							`[turn-wake] rework receipt projection held for ${receipt.wake_id}: ${projected.reason}`,
+						);
+						return "retry";
+					}
+					if (receipt.purpose !== "workflow_ship_carrier") {
 						return "not_applicable";
 					}
 					const projected = store.recordWorkflowCarrierWakeReceipt({
@@ -8498,6 +8653,7 @@ export async function startBridge(
 				commDbPathForProject,
 			});
 			await terminalGateRetirement.pass();
+			orphanFounderReviewMonitorTick();
 			// Destructive mailbox hygiene is last and isolated: a config/SQLite
 			// failure must not skip the ship-critical reconcile work above.
 			try {
@@ -9400,6 +9556,16 @@ export async function startBridge(
 			logger: { warn: (message) => console.warn(`[turn-belt] ${message}`) },
 		});
 
+		const assertWorkflowActorWorktreeReady = async (
+			session: WorkflowActorSession,
+			expectedHeadSha: string,
+		) => {
+			const worktree = store.getSession(session.execution_id)?.worktree_path;
+			if (!worktree)
+				return { ok: false as const, reason: "worktree_path_missing" };
+			return assertWorkflowWorktreeReady(worktree, expectedHeadSha);
+		};
+
 		workflowReworkCoordinatorHolder.current = new WorkflowReworkCoordinator({
 			store,
 			ownerId: `bridge:${process.pid}`,
@@ -9430,44 +9596,7 @@ export async function startBridge(
 					return probeRunnerProcessLiveness(session.tmux_session);
 				},
 				hasHostProcess: hasHostProcessByExecutionId,
-				assertWorktreeReady: async (session, expectedHeadSha) => {
-					const worktree = store.getSession(
-						session.execution_id,
-					)?.worktree_path;
-					if (!worktree) return { ok: false, reason: "worktree_path_missing" };
-					if (!ffExistsSync(worktree)) {
-						return { ok: false, reason: `worktree_missing:${worktree}` };
-					}
-					const clean = await gitWorktreeClean(worktree);
-					if (clean !== true) {
-						return {
-							ok: false,
-							reason:
-								clean === false ? "worktree_dirty" : "worktree_unverifiable",
-						};
-					}
-					try {
-						const { stdout } = await execFileP("git", [
-							"-C",
-							worktree,
-							"rev-parse",
-							"HEAD",
-						]);
-						const actual = stdout.trim().toLowerCase();
-						if (actual !== expectedHeadSha.trim().toLowerCase()) {
-							return {
-								ok: false,
-								reason: `head_mismatch:${actual}:${expectedHeadSha}`,
-							};
-						}
-					} catch (error) {
-						return {
-							ok: false,
-							reason: `head_probe_failed:${(error as Error).message}`,
-						};
-					}
-					return { ok: true };
-				},
+				assertWorktreeReady: assertWorkflowActorWorktreeReady,
 				activateActorForWake: (session) =>
 					activateWakeHolder(session, "workflow_rework"),
 				closeActorForReworkSupersession: async ({
@@ -9584,49 +9713,7 @@ export async function startBridge(
 				effects: {
 					getActorSession: (executionId) =>
 						store.getSession(executionId) as WorkflowActorSession | undefined,
-					assertWorktreeReady: async (session, expectedHeadSha) => {
-						const worktree = store.getSession(
-							session.execution_id,
-						)?.worktree_path;
-						if (!worktree) {
-							return { ok: false, reason: "worktree_path_missing" };
-						}
-						if (!ffExistsSync(worktree)) {
-							return {
-								ok: false,
-								reason: `worktree_missing:${worktree}`,
-							};
-						}
-						const clean = await gitWorktreeClean(worktree);
-						if (clean !== true) {
-							return {
-								ok: false,
-								reason:
-									clean === false ? "worktree_dirty" : "worktree_unverifiable",
-							};
-						}
-						try {
-							const { stdout } = await execFileP("git", [
-								"-C",
-								worktree,
-								"rev-parse",
-								"HEAD",
-							]);
-							const actual = stdout.trim().toLowerCase();
-							if (actual !== expectedHeadSha.trim().toLowerCase()) {
-								return {
-									ok: false,
-									reason: `head_mismatch:${actual}:${expectedHeadSha}`,
-								};
-							}
-						} catch (error) {
-							return {
-								ok: false,
-								reason: `head_probe_failed:${(error as Error).message}`,
-							};
-						}
-						return { ok: true };
-					},
+					assertWorktreeReady: assertWorkflowActorWorktreeReady,
 					activateActorForWake: (session) =>
 						activateWakeHolder(session, "workflow_rework"),
 					grantTurn: async (input) => {

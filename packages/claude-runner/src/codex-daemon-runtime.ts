@@ -27,6 +27,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	openSync,
+	readFileSync,
 	readSync,
 	rmSync,
 	statSync,
@@ -71,6 +72,224 @@ export function resolveDaemonSocketPath(
 		.digest("hex")
 		.slice(0, 16);
 	return join(daemonSocketDir(env), `${short}.sock`);
+}
+
+/** Durable per-execution ownership state shared by the adapter, liveness
+ * probe, and teardown reaper. Keeping the path primitive here prevents Bridge
+ * callers from reimplementing weaker ownership lookup. */
+export function codexSessionStateDir(
+	executionId: string,
+	env: NodeJS.ProcessEnv = process.env,
+): string {
+	const base =
+		env.FLYWHEEL_CODEX_SESSION_DIR?.trim() ||
+		join(homedir(), ".flywheel", "state", "codex-sessions");
+	return join(base, executionId);
+}
+
+export type CodexDaemonLiveness = "alive" | "absent" | "unknown";
+export type ProcessGroupState = "alive" | "absent" | "unknown";
+
+export interface CodexDaemonOwnershipDeps {
+	env?: NodeJS.ProcessEnv;
+	isSocketLive?: (socketPath: string) => Promise<boolean>;
+	socketHolderPids?: (socketPath: string) => number[];
+	processGroupOf?: (pid: number) => number | undefined;
+	processGroupState?: (pgid: number) => ProcessGroupState;
+	killGroup?: (pgid: number, signal: NodeJS.Signals) => void;
+	now?: () => number;
+	sleep?: (ms: number) => Promise<void>;
+	exitWaitMs?: number;
+	logger?: (message: string) => void;
+}
+
+export interface CodexDaemonReapResult {
+	outcome: "reaped" | "absent" | "residual" | "unverifiable";
+	pgid?: number;
+	socketPath: string;
+}
+
+function readPersistedDaemonPgid(
+	executionId: string,
+	env: NodeJS.ProcessEnv,
+): number | undefined {
+	try {
+		const raw = JSON.parse(
+			readFileSync(
+				join(codexSessionStateDir(executionId, env), "session.json"),
+				"utf8",
+			),
+		) as { daemonPgid?: unknown; daemonPid?: unknown };
+		// daemonPid is a read-only migration fallback for pre-FLY-1940 state. New
+		// writes use daemonPgid exclusively.
+		const candidate = raw.daemonPgid ?? raw.daemonPid;
+		return typeof candidate === "number" &&
+			Number.isSafeInteger(candidate) &&
+			candidate > 1
+			? candidate
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function defaultProcessGroupState(pgid: number): ProcessGroupState {
+	try {
+		process.kill(-pgid, 0);
+		return "alive";
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ESRCH") return "absent";
+		if (code === "EPERM") return "alive";
+		return "unknown";
+	}
+}
+
+async function inspectCodexDaemonOwnership(
+	executionId: string,
+	deps: CodexDaemonOwnershipDeps,
+): Promise<{
+	liveness: CodexDaemonLiveness;
+	pgid?: number;
+	socketPath: string;
+	socketLive: boolean;
+	groupState: ProcessGroupState;
+}> {
+	const env = deps.env ?? process.env;
+	const socketPath = resolveDaemonSocketPath(executionId, env);
+	const pgid = readPersistedDaemonPgid(executionId, env);
+	if (pgid === undefined) {
+		return {
+			liveness: "unknown",
+			socketPath,
+			socketLive: await (deps.isSocketLive ?? defaultIsSocketLive)(socketPath),
+			groupState: "unknown",
+		};
+	}
+	const isSocketLive = deps.isSocketLive ?? defaultIsSocketLive;
+	const socketLive = await isSocketLive(socketPath);
+	const processGroupState = deps.processGroupState ?? defaultProcessGroupState;
+	const groupState = processGroupState(pgid);
+	if (!socketLive) {
+		return {
+			liveness: groupState === "absent" ? "absent" : "unknown",
+			pgid,
+			socketPath,
+			socketLive,
+			groupState,
+		};
+	}
+	if (groupState !== "alive") {
+		return {
+			liveness: "unknown",
+			pgid,
+			socketPath,
+			socketLive,
+			groupState,
+		};
+	}
+	const holders = (deps.socketHolderPids ?? defaultSocketHolderPids)(
+		socketPath,
+	);
+	const processGroupOf = deps.processGroupOf ?? defaultProcessGroupOf;
+	const proven = holders
+		.slice(0, 10)
+		.some((holder) => processGroupOf(holder) === pgid);
+	return {
+		liveness: proven ? "alive" : "unknown",
+		pgid,
+		socketPath,
+		socketLive,
+		groupState,
+	};
+}
+
+/** Non-destructive daemon evidence used by workflow quiescence. `absent`
+ * requires BOTH a dead socket and an absent persisted group. */
+export async function probeCodexDaemonLiveness(
+	executionId: string,
+	deps: CodexDaemonOwnershipDeps = {},
+): Promise<CodexDaemonLiveness> {
+	return (await inspectCodexDaemonOwnership(executionId, deps)).liveness;
+}
+
+/** Reap the detached daemon owned by one execution. Destructive signalling is
+ * authorized only when a live socket holder belongs to the persisted group.
+ * The persisted PGID alone is never authority: session state can outlive the
+ * daemon long enough for the OS to recycle that group id. */
+export async function reapCodexDaemonForExecution(
+	executionId: string,
+	deps: CodexDaemonOwnershipDeps = {},
+): Promise<CodexDaemonReapResult> {
+	const initial = await inspectCodexDaemonOwnership(executionId, deps);
+	if (initial.liveness === "absent") {
+		return {
+			outcome: "absent",
+			...(initial.pgid !== undefined ? { pgid: initial.pgid } : {}),
+			socketPath: initial.socketPath,
+		};
+	}
+	if (
+		initial.pgid === undefined ||
+		initial.groupState !== "alive" ||
+		initial.liveness !== "alive"
+	) {
+		return {
+			outcome: "unverifiable",
+			...(initial.pgid !== undefined ? { pgid: initial.pgid } : {}),
+			socketPath: initial.socketPath,
+		};
+	}
+	const processGroupOf = deps.processGroupOf ?? defaultProcessGroupOf;
+	const killGroup =
+		deps.killGroup ??
+		createDefaultKillGroup({
+			processGroupOf,
+			logger: deps.logger,
+		});
+	const now = deps.now ?? Date.now;
+	const sleep =
+		deps.sleep ??
+		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const waitMs = deps.exitWaitMs ?? codexDaemonExitWaitMs(deps.env);
+	const waitForAbsent = async (): Promise<boolean> => {
+		const deadline = now() + waitMs;
+		for (;;) {
+			if (
+				(await inspectCodexDaemonOwnership(executionId, deps)).liveness ===
+				"absent"
+			) {
+				return true;
+			}
+			if (now() >= deadline) return false;
+			await sleep(Math.min(100, Math.max(1, deadline - now())));
+		}
+	};
+	try {
+		killGroup(initial.pgid, "SIGTERM");
+	} catch {
+		// Continue to the proof. A raced-away group is success only if the shared
+		// probe proves both group and socket absent.
+	}
+	if (await waitForAbsent()) {
+		return {
+			outcome: "reaped",
+			pgid: initial.pgid,
+			socketPath: initial.socketPath,
+		};
+	}
+	try {
+		killGroup(initial.pgid, "SIGKILL");
+	} catch {
+		// proof below decides the result
+	}
+	return (await waitForAbsent())
+		? { outcome: "reaped", pgid: initial.pgid, socketPath: initial.socketPath }
+		: {
+				outcome: "residual",
+				pgid: initial.pgid,
+				socketPath: initial.socketPath,
+			};
 }
 
 /** Fail closed if a socket path cannot bind (SUN_LEN) — a clear error beats a
@@ -272,6 +491,13 @@ export interface SpawnCodexDaemonOptions {
 	 * (ps missing, process gone, unparseable) = no proof → do not kill.
 	 */
 	processGroupOf?: (pid: number) => number | undefined;
+	/**
+	 * FLY-1940: synchronously persist the detached daemon's process-group
+	 * identity immediately after spawn and before any socket wait. A throw is
+	 * fail-close: the just-spawned group is killed and proven gone before spawn
+	 * rejects, so Bridge crash recovery never inherits an unowned daemon.
+	 */
+	onSpawnIdentity?: (pgid: number) => void;
 	spawnFn?: DaemonSpawnFn;
 	/** Socket-appeared probe (default: fs statSync). */
 	socketExists?: (p: string) => boolean;
@@ -624,7 +850,7 @@ export async function spawnCodexDaemon(
 		// the bound (a daemon somehow surviving SIGKILL), we KEEP the lock held
 		// and LEAVE the socket, failing loud rather than clobbering a
 		// possibly-live daemon.
-		const cleanupAndThrow = async (msg: string): Promise<never> => {
+		const cleanupAndThrow = async (error: string | Error): Promise<never> => {
 			// The whole TREE (QA · FLY-1188 HIGH-2) — a failed spawn that reaped only
 			// the shim would leak the app-server exactly like a successful one did.
 			killTree("SIGKILL");
@@ -651,8 +877,24 @@ export async function spawnCodexDaemon(
 					`WARNING: codex daemon could not be CONFIRMED dead after SIGKILL within ${childExitWaitMs}ms (socket still listening=${stillListening}) — holding lock + leaving socket ${opts.socketPath} to avoid clobbering a possibly-live daemon`,
 				);
 			}
-			throw new Error(msg);
+			throw typeof error === "string" ? new Error(error) : error;
 		};
+
+		if (opts.onSpawnIdentity) {
+			const pgid = child.pid;
+			if (!Number.isInteger(pgid) || (pgid ?? 0) <= 1) {
+				return await cleanupAndThrow(
+					"codex daemon spawn did not expose a safe process-group identity",
+				);
+			}
+			try {
+				opts.onSpawnIdentity(pgid as number);
+			} catch (error) {
+				return await cleanupAndThrow(
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
+		}
 
 		const deadline = now() + timeoutMs;
 		while (true) {

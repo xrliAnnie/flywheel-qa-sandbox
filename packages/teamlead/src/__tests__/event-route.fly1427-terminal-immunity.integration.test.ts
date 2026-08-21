@@ -149,7 +149,7 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 		});
 	}
 
-	it("settles flywheel-comm completion with 200 and no receipt or engine advance", async () => {
+	it("rejects a terminal session's flywheel-comm completion without advancing the engine", async () => {
 		const response = await postEvent({
 			event_id: "event-fly1427-comm",
 			execution_id: "exec-fly1427-event-route",
@@ -160,11 +160,13 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 			payload: { decision: { route: "needs_review" }, evidence: {} },
 		});
 
-		expect(response.status).toBe(200);
+		expect(response.status).toBe(409);
 		expect(await response.json()).toMatchObject({
-			ok: true,
-			generalized: true,
-			settled: "terminal_status_immune",
+			error: "workflow_completion_rejected",
+			reason: "transition_refused",
+			detail: {
+				transitionReason: "engine_invariant:writer_session_terminal",
+			},
 		});
 		expect(store.getSession("exec-fly1427-event-route")?.status).toBe(
 			"terminated",
@@ -205,11 +207,12 @@ describe("FLY-1427 /events generalized terminal immunity", () => {
 		});
 
 		expect(result).toEqual({
-			kind: "reconciled",
-			status: "terminal_status_immune",
+			kind: "held_for_lead",
+			invariant: "writer_session_terminal",
+			alertState: "accepted",
 		});
 		expect(existsSync(join(markerDir, "exec-fly1427-event-route.json"))).toBe(
-			false,
+			true,
 		);
 		expect(store.getSession("exec-fly1427-event-route")?.status).toBe(
 			"terminated",

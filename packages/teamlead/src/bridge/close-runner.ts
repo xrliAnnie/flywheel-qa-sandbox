@@ -28,6 +28,7 @@ import {
 } from "../applyTransition.js";
 import type { StateStore } from "../StateStore.js";
 import { requestCmuxPinClose } from "./cmux-close-request.js";
+import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import {
 	isResidentCodexPhase,
 	prepareCodexPhaseShutdown,
@@ -574,6 +575,7 @@ async function closeRunnerInner(
 			if (postShutdownLost) {
 				return abortAuthorityLost("post_phase_shutdown", postShutdownLost);
 			}
+			await reapCodexDaemonForSession(store, session, "bridge.close-runner");
 			store.insertEvent({
 				event_id: `close-runner-${auditKey}`,
 				execution_id: opts.executionId,
@@ -612,6 +614,10 @@ async function closeRunnerInner(
 			};
 		}
 	}
+
+	// FLY-1940: Codex owns a detached process group outside tmux. Reap it
+	// before any path can finalize/delete the CommDB session.
+	await reapCodexDaemonForSession(store, session, "bridge.close-runner");
 
 	// FLY-1048 PR-C (C5): detection episodes flip to CLEARING only on the two
 	// SUCCESS paths below (already-gone / killed) — a refused close or a failed

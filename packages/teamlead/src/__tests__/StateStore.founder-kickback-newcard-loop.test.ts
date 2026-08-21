@@ -170,6 +170,13 @@ function passQa(
 	if (!admitted.ok || !admitted.submissionCredential) {
 		throw new Error(`${input.nodeId} admission failed`);
 	}
+	store.upsertSession({
+		execution_id: effect.execution_id,
+		issue_id: "FLY-1772",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: input.nodeId,
+	});
 	return submitQa(store, {
 		nodeId: input.nodeId,
 		attempt: input.attempt,
@@ -280,23 +287,31 @@ function deliverFounderRework(
 			to: "turn_granted",
 			now: input.now,
 		}),
-	).toEqual({ ok: true });
+	).toMatchObject({ ok: true });
 	expect(
 		store.advanceWorkflowReworkDelivery({
 			requestId: input.requestId,
 			ownerId: "coordinator",
 			generation: claim.generation,
 			from: "turn_granted",
-			to: "wake_delivered",
+			to: "awaiting_receipt",
 			now: input.now,
 			releaseOwner: true,
+		}),
+	).toEqual({ ok: true });
+	expect(
+		store.recordWorkflowReworkWakeReceipt({
+			activationId,
+			executionId: input.executionId,
+			epoch: input.attempt,
+			ackedAt: input.now,
 			alertIdentity: {
 				leadId: "flywheel-eng-lead",
 				projectName: "flywheel",
 				leadResolution: "resolved",
 			},
 		}),
-	).toEqual({ ok: true });
+	).toMatchObject({ ok: true });
 	return { activationId, admission };
 }
 
@@ -569,23 +584,31 @@ describe("founder kickback new-card loop", () => {
 					to: "turn_granted",
 					now: "2026-08-14T03:00:02.000Z",
 				}),
-			).toEqual({ ok: true });
+			).toMatchObject({ ok: true });
 			expect(
 				store.advanceWorkflowReworkDelivery({
 					requestId: delivery.request_id,
 					ownerId: "coordinator",
 					generation: claim.generation,
 					from: "turn_granted",
-					to: "wake_delivered",
+					to: "awaiting_receipt",
 					now: "2026-08-14T03:00:03.000Z",
 					releaseOwner: true,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId,
+					executionId: "implement-1",
+					epoch: 2,
+					ackedAt: "2026-08-14T03:00:04.000Z",
 					alertIdentity: {
 						leadId: "flywheel-eng-lead",
 						projectName: "flywheel",
 						leadResolution: "resolved",
 					},
 				}),
-			).toEqual({ ok: true });
+			).toMatchObject({ ok: true });
 			const reworkedCompletion = completeImplement(store, {
 				attempt: 2,
 				head: head2,
@@ -681,16 +704,24 @@ describe("founder kickback new-card loop", () => {
 					ownerId: "coordinator",
 					generation: qaClaim.generation,
 					from: "turn_granted",
-					to: "wake_delivered",
+					to: "awaiting_receipt",
 					now: "2026-08-14T03:10:03.000Z",
 					releaseOwner: true,
+				}),
+			).toEqual({ ok: true });
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: qaActivationId,
+					executionId: qaRoute.preferred_actor_execution_id,
+					epoch: 2,
+					ackedAt: "2026-08-14T03:10:04.000Z",
 					alertIdentity: {
 						leadId: "flywheel-eng-lead",
 						projectName: "flywheel",
 						leadResolution: "resolved",
 					},
 				}),
-			).toEqual({ ok: true });
+			).toMatchObject({ ok: true });
 			store.upsertSession({
 				execution_id: qaRoute.preferred_actor_execution_id,
 				issue_id: "FLY-1772",

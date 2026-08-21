@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	deliverDesignReviewManifest,
+	isCurrentDesignReviewManifestInstruction,
 	reconcileDesignReviewInstructions,
 	snapshotDesignReviewPlan,
 } from "../bridge/design-review-manifest.js";
@@ -146,8 +147,9 @@ describe("FLY-1718 design review manifest delivery", () => {
 		expect(deliverDesignReviewManifest(store, first)).toEqual({
 			queued: true,
 			deduped: false,
+			consumed: false,
 		});
-		expect(store.listUndeliveredDesignReviewManifests()).toEqual([]);
+		expect(store.listUndeliveredDesignReviewManifests()).toEqual([first]);
 
 		const second = store.advanceDesignReviewManifest({
 			executionId: "exec-1",
@@ -159,11 +161,11 @@ describe("FLY-1718 design review manifest delivery", () => {
 		expect(second.delivered_at).toBeUndefined();
 		expect(reconcileDesignReviewInstructions(store)).toEqual({
 			attempted: 1,
-			delivered: 1,
+			delivered: 0,
 			failed: 0,
 		});
 		expect(reconcileDesignReviewInstructions(store)).toEqual({
-			attempted: 0,
+			attempted: 1,
 			delivered: 0,
 			failed: 0,
 		});
@@ -178,8 +180,21 @@ describe("FLY-1718 design review manifest delivery", () => {
 			]);
 			expect(instructions[1]!.content).toContain(second.request_id);
 			expect(instructions[1]!.content).toContain(snapshot.blobSha);
+			expect(
+				isCurrentDesignReviewManifestInstruction(store, {
+					id: instructions[1]!.id,
+					to_agent: instructions[1]!.to_agent,
+				}),
+			).toBe(true);
+			db.markInstructionRead(instructions[1]!.id);
 		} finally {
 			db.close();
 		}
+		expect(reconcileDesignReviewInstructions(store)).toEqual({
+			attempted: 1,
+			delivered: 1,
+			failed: 0,
+		});
+		expect(store.listUndeliveredDesignReviewManifests()).toEqual([]);
 	});
 });

@@ -1596,6 +1596,13 @@ export class MailboxQueue {
 		toAgent?: string;
 		leaseRetryMax: number;
 		recipientState: (toAgent: string) => MailboxRecipientState;
+		/**
+		 * A terminal session is not authoritative when a live protocol obligation
+		 * still requires that runner to consume this exact row. The callback is for
+		 * cross-store obligations (for example the current design-review manifest);
+		 * gate-response obligations are derived locally from the parent question.
+		 */
+		isTerminalDeliveryObligation?: (row: MailboxRow) => boolean;
 		maxBatches: number;
 		maxTerminalRows: number;
 	}): ReconcileExpiredLeasesResult {
@@ -1604,6 +1611,32 @@ export class MailboxQueue {
 		}
 		return this.db
 			.transaction(() => {
+				const isTerminalDeliveryObligation = (row: MailboxRow): boolean => {
+					if (
+						row.recipient_kind === "runner" &&
+						row.type === "response" &&
+						row.ref_id
+					) {
+						const gate = this.db
+							.prepare(
+								`SELECT 1 FROM mailbox
+								  WHERE id = ? AND type = 'question' AND checkpoint IS NOT NULL
+								    AND superseded_at IS NULL LIMIT 1`,
+							)
+							.get(row.ref_id);
+						if (gate !== undefined) return true;
+					}
+					try {
+						return input.isTerminalDeliveryObligation?.(row) === true;
+					} catch (error) {
+						// Destructive terminal settlement must fail closed when the
+						// cross-store obligation probe itself is unavailable.
+						console.warn(
+							`[mailbox] terminal delivery-obligation probe failed for ${row.id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+						return true;
+					}
+				};
 				const result: ReconcileExpiredLeasesResult = {
 					requeued: 0,
 					dead: 0,
@@ -1618,27 +1651,22 @@ export class MailboxQueue {
 
 				let terminalScanAtLimit = false;
 				if (input.recipientKind === "runner" && input.maxTerminalRows > 0) {
-					type TerminalScanRow = {
-						id: string;
-						to_agent: string;
-						seq: number;
-					};
-					let queued: TerminalScanRow[];
+					let queued: MailboxRow[];
 					if (input.toAgent) {
 						queued = this.db
 							.prepare(
-								`SELECT id, to_agent, seq FROM mailbox
+								`SELECT * FROM mailbox
 								  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 								    AND state = 'QUEUED' AND to_agent = ?
 								  ORDER BY seq LIMIT ?`,
 							)
-							.all(input.toAgent, input.maxTerminalRows) as TerminalScanRow[];
+							.all(input.toAgent, input.maxTerminalRows) as MailboxRow[];
 					} else {
 						const cursor = this.runnerTerminalScanCursor;
 						queued = cursor
 							? (this.db
 									.prepare(
-										`SELECT id, to_agent, seq FROM mailbox
+										`SELECT * FROM mailbox
 										  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 										    AND state = 'QUEUED'
 										    AND (to_agent > ? OR (to_agent = ? AND seq > ?))
@@ -1649,14 +1677,14 @@ export class MailboxQueue {
 										cursor.toAgent,
 										cursor.seq,
 										input.maxTerminalRows,
-									) as TerminalScanRow[])
+									) as MailboxRow[])
 							: [];
 						if (queued.length < input.maxTerminalRows) {
 							const remaining = input.maxTerminalRows - queued.length;
 							const wrapped = cursor
 								? (this.db
 										.prepare(
-											`SELECT id, to_agent, seq FROM mailbox
+											`SELECT * FROM mailbox
 											  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 											    AND state = 'QUEUED'
 											    AND (to_agent < ? OR (to_agent = ? AND seq <= ?))
@@ -1667,15 +1695,15 @@ export class MailboxQueue {
 											cursor.toAgent,
 											cursor.seq,
 											remaining,
-										) as TerminalScanRow[])
+										) as MailboxRow[])
 								: (this.db
 										.prepare(
-											`SELECT id, to_agent, seq FROM mailbox
+											`SELECT * FROM mailbox
 											  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 											    AND state = 'QUEUED'
 											  ORDER BY to_agent, seq LIMIT ?`,
 										)
-										.all(remaining) as TerminalScanRow[]);
+										.all(remaining) as MailboxRow[]);
 							queued.push(...wrapped);
 						}
 						const last = queued.at(-1);
@@ -1694,6 +1722,7 @@ export class MailboxQueue {
 							continue;
 						}
 						if (state !== "terminal_or_missing") continue;
+						if (isTerminalDeliveryObligation(row)) continue;
 						const changed = this.db
 							.prepare(
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
@@ -1757,19 +1786,16 @@ export class MailboxQueue {
 					}
 					const members = this.db
 						.prepare(
-							`SELECT id, notified_at, delivered_at, lease_retry_count, last_error FROM mailbox
+							`SELECT * FROM mailbox
 							  WHERE batch_id = ? AND state = 'LEASED' AND claim_expires_at <= ?
 							  ORDER BY priority, seq`,
 						)
-						.all(batch.batch_id, input.now) as Array<{
-						id: string;
-						notified_at: string | null;
-						delivered_at: string | null;
-						lease_retry_count: number;
-						last_error: string | null;
-					}>;
+						.all(batch.batch_id, input.now) as MailboxRow[];
 					if (members.length === 0) continue;
-					if (recipientState === "terminal_or_missing") {
+					if (
+						recipientState === "terminal_or_missing" &&
+						!members.some(isTerminalDeliveryObligation)
+					) {
 						const changed = this.db
 							.prepare(
 								`UPDATE mailbox SET state = 'DEAD', dead_at = ?,
@@ -1914,7 +1940,6 @@ export class MailboxQueue {
 					.prepare(
 						`SELECT to_agent FROM mailbox
 						  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
-						    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 						    AND to_agent > ?
 						  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
 					)
@@ -1926,7 +1951,6 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT to_agent FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox' AND state = 'DEAD'
-							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							    AND to_agent <= ?
 							  GROUP BY to_agent ORDER BY to_agent LIMIT ?`,
 						)
@@ -1959,8 +1983,7 @@ export class MailboxQueue {
 						.prepare(
 							`SELECT COUNT(*) AS count, MAX(seq) AS through_seq FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
-							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
-							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'`,
+							    AND state = 'DEAD' AND to_agent = ? AND seq > ?`,
 						)
 						.get(recipient, cursor) as {
 						count: number;
@@ -1987,7 +2010,6 @@ export class MailboxQueue {
 							`SELECT type, from_agent, content FROM mailbox
 							  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
 							    AND state = 'DEAD' AND to_agent = ? AND seq > ?
-							    AND dead_reason IS NOT '${FROZEN_DELIVERY_UNCONFIRMED_EXHAUSTED_REASON}'
 							  ORDER BY seq LIMIT ?`,
 						)
 						.all(recipient, cursor, input.maxDeadRowsPerRecipient) as Array<{

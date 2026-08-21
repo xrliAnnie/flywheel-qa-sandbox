@@ -804,7 +804,7 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		execution_id: "implement-1",
 		issue_id: "FLY-1307",
 		project_name: "flywheel",
-		status: "completed",
+		status: "ship_parked",
 		session_role: "implement",
 		issue_identifier: "FLY-1307",
 		issue_title: "DAG template engine",
@@ -858,9 +858,18 @@ async function storeWithFreshVerificationIntent(): Promise<{
 		env: WORKFLOW_ON,
 	});
 	if (!admitted.ok) throw new Error(admitted.reason);
+	const turn = store.recordWorkflowActivationTurn({
+		activationId: admitted.activationId,
+		issueId: "FLY-1307",
+		executionId: "implement-1",
+		epoch: 2,
+		sourceEventId: "fly1912-dispatcher-turn",
+		grantedAt: "2026-07-16T00:08:30.000Z",
+	});
+	if (!turn.ok) throw new Error(turn.reason);
 	for (const [from, to] of [
 		["pending", "turn_granted"],
-		["turn_granted", "wake_delivered"],
+		["turn_granted", "awaiting_receipt"],
 	] as const) {
 		const advanced = store.advanceWorkflowReworkDelivery({
 			requestId: opened.requestId,
@@ -869,19 +878,26 @@ async function storeWithFreshVerificationIntent(): Promise<{
 			from,
 			to,
 			now: "2026-07-16T00:09:00.000Z",
-			...(to === "wake_delivered"
+			...(to === "awaiting_receipt"
 				? {
-						alertIdentity: {
-							leadId: "flywheel-eng-lead",
-							projectName: "flywheel",
-							leadResolution: "resolved" as const,
-						},
 						releaseOwner: true,
 					}
 				: {}),
 		});
 		if (!advanced.ok) throw new Error(advanced.reason);
 	}
+	const receipt = store.recordWorkflowReworkWakeReceipt({
+		activationId: admitted.activationId,
+		executionId: "implement-1",
+		epoch: 2,
+		ackedAt: "2026-07-16T00:09:01.000Z",
+		alertIdentity: {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		},
+	});
+	if (!receipt.ok) throw new Error(receipt.reason);
 	const completed = store.commitWorkflowTransitionTx({
 		runId: "run-1",
 		nodeId: "implement",
@@ -1985,6 +2001,7 @@ describe("WorkflowEngineDispatcher", () => {
 
 	it("hands QA rework to the coordinator without closing or spawning the healthy actor", async () => {
 		const store = await storeWithQaFailKickback();
+		const scan = vi.spyOn(store, "listWorkflowReworkDeliveries");
 		const fake = fakeStartDispatcher(store);
 		const reconcileWorkflowRework = vi.fn(async () => ({
 			kind: "wake_delivered" as const,
@@ -2005,6 +2022,16 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(reconcileWorkflowRework).toHaveBeenCalledWith(
 			expect.stringMatching(/^rework:/),
 		);
+		expect(scan).toHaveBeenCalledWith({
+			states: [
+				"pending",
+				"turn_granted",
+				"awaiting_receipt",
+				"wake_delivered",
+				"held",
+			],
+			now: expect.any(String),
+		});
 		expect(fake.start).not.toHaveBeenCalled();
 		expect(
 			store
@@ -2220,6 +2247,7 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(reconcileWorkflowRework.mock.calls[0]?.[0]).toBe(requestId);
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 			state: "wake_delivered",
+			next_retry_at: "2026-07-16T00:19:00.000Z",
 		});
 		store.close();
 	});
@@ -2289,7 +2317,7 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 			state: "wake_delivered",
 			hold_count: 0,
-			next_retry_at: null,
+			next_retry_at: "2026-07-16T00:33:00.000Z",
 		});
 		expect(
 			store
@@ -2587,6 +2615,68 @@ describe("WorkflowEngineDispatcher", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "rework_activation_stalled_held"),
 		).toHaveLength(1);
+		store.close();
+	});
+
+	it("keeps a post-ACK wake_delivered delivery under the durable stall owner", async () => {
+		const store = await storeWithQaFailKickback();
+		const delivery = store.listWorkflowReworkDeliveries()[0];
+		if (!delivery) throw new Error("rework delivery missing");
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			`UPDATE workflow_rework_delivery
+			    SET state = 'wake_delivered', generation = 2,
+			        next_retry_at = '2026-07-16T01:00:00.000Z',
+			        updated_at = '2026-07-16T00:12:00.000Z'
+			  WHERE request_id = ?`,
+			[delivery.request_id],
+		);
+		db.run(
+			`UPDATE workflow_run_node SET state = 'running'
+			  WHERE run_id = 'run-1' AND node_id = 'implement' AND attempt = 2`,
+		);
+		db.run(
+			"UPDATE sessions SET status = 'running' WHERE execution_id = 'implement-1'",
+		);
+		const reconcileWorkflowRework = vi.fn(async () => ({
+			kind: "receipt_pending" as const,
+			state: "wake_delivered" as const,
+			executionId: "implement-1",
+		}));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fakeStartDispatcher(store).dispatcher,
+			env: {
+				...WORKFLOW_ON,
+				FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "3600000",
+			},
+			now: () => new Date("2026-07-16T00:20:00.000Z"),
+			reconcileWorkflowRework,
+			resolveRunAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+		// Delivery pacing is in the future, so the delivery coordinator does not
+		// probe yet; the independent stall owner must still observe it.
+		expect(reconcileWorkflowRework).not.toHaveBeenCalled();
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
+		).toHaveLength(1);
+		expect(store.getWorkflowReworkDelivery(delivery.request_id)).toMatchObject({
+			state: "wake_delivered",
+			updated_at: "2026-07-16T00:12:00.000Z",
+		});
 		store.close();
 	});
 

@@ -14,13 +14,113 @@ import {
 	buildDaemonEffortArgs,
 	buildDaemonSandboxArgs,
 	codexDaemonExitWaitMs,
+	codexSessionStateDir,
 	createDefaultKillGroup,
 	type DaemonChild,
 	daemonSocketDir,
+	probeCodexDaemonLiveness,
+	reapCodexDaemonForExecution,
 	resolveDaemonSocketPath,
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
 } from "../src/codex-daemon-runtime.js";
+
+describe("FLY-1940 codex daemon execution ownership", () => {
+	function ownershipFixture() {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-codex-owner-"));
+		const env = {
+			FLYWHEEL_CODEX_SESSION_DIR: join(root, "sessions"),
+			FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT: join(root, "sockets"),
+		};
+		const executionId = "exec-owned";
+		mkdirSync(codexSessionStateDir(executionId, env), { recursive: true });
+		writeFileSync(
+			join(codexSessionStateDir(executionId, env), "session.json"),
+			JSON.stringify({ executionId, daemonPgid: 4321 }),
+		);
+		return { root, env, executionId };
+	}
+
+	it("classifies alive only when the socket holder belongs to the persisted group", async () => {
+		const f = ownershipFixture();
+		try {
+			await expect(
+				probeCodexDaemonLiveness(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => true,
+					socketHolderPids: () => [7654],
+					processGroupOf: () => 4321,
+					processGroupState: () => "alive",
+				}),
+			).resolves.toBe("alive");
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("requires both socket and process-group absence before classifying absent", async () => {
+		const f = ownershipFixture();
+		try {
+			await expect(
+				probeCodexDaemonLiveness(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => false,
+					processGroupState: () => "absent",
+				}),
+			).resolves.toBe("absent");
+			await expect(
+				probeCodexDaemonLiveness(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => false,
+					processGroupState: () => "alive",
+				}),
+			).resolves.toBe("unknown");
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses to reap a persisted group when no live socket proves ownership", async () => {
+		const f = ownershipFixture();
+		const signals: NodeJS.Signals[] = [];
+		try {
+			await expect(
+				reapCodexDaemonForExecution(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => false,
+					processGroupState: () => "alive",
+					killGroup: (_pgid, signal) => {
+						signals.push(signal);
+					},
+					sleep: async () => {},
+				}),
+			).resolves.toMatchObject({ outcome: "unverifiable", pgid: 4321 });
+			expect(signals).toEqual([]);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses to reap when a live socket holder is not in the persisted group", async () => {
+		const f = ownershipFixture();
+		const killGroup = vi.fn();
+		try {
+			await expect(
+				reapCodexDaemonForExecution(f.executionId, {
+					env: f.env,
+					isSocketLive: async () => true,
+					socketHolderPids: () => [7654],
+					processGroupOf: () => 9999,
+					processGroupState: () => "alive",
+					killGroup,
+				}),
+			).resolves.toMatchObject({ outcome: "unverifiable", pgid: 4321 });
+			expect(killGroup).not.toHaveBeenCalled();
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("daemon group-kill safety", () => {
 	it("refuses the Bridge's actual process group and caches the lookup", () => {
@@ -287,6 +387,53 @@ describe("spawnCodexDaemon", () => {
 			"unix:///tmp/fw-codex-sock/abc.sock",
 		]);
 		expect(spawnedEnv.CODEX_HOME).toBe("/home/x/.flywheel/codex-homes/exec-1");
+	});
+
+	it("FLY-1940: persists the daemon process-group identity before the first socket probe", async () => {
+		const child = new FakeChild();
+		const order: string[] = [];
+		let spawned = false;
+		await spawnCodexDaemon({
+			...baseOpts(child),
+			spawnFn: () => {
+				spawned = true;
+				return child;
+			},
+			onSpawnIdentity: (pgid) => {
+				order.push(`identity:${pgid}`);
+			},
+			socketExists: () => {
+				if (spawned) order.push("socket-probe");
+				return spawned;
+			},
+		});
+
+		expect(order).toEqual([`identity:${child.pid}`, "socket-probe"]);
+	});
+
+	it("FLY-1940: a spawn-identity persistence failure kills the whole group and rejects", async () => {
+		const child = new FakeChild();
+		child.exitCode = 1;
+		const groupSignals: NodeJS.Signals[] = [];
+		let spawned = false;
+		await expect(
+			spawnCodexDaemon({
+				...baseOpts(child),
+				spawnFn: () => {
+					spawned = true;
+					return child;
+				},
+				onSpawnIdentity: () => {
+					throw new Error("session identity persist failed");
+				},
+				killGroup: (_pgid, signal) => groupSignals.push(signal),
+				socketExists: () => {
+					if (!spawned) return false;
+					throw new Error("socket probe must not run");
+				},
+			}),
+		).rejects.toThrow("session identity persist failed");
+		expect(groupSignals).toEqual(["SIGKILL"]);
 	});
 
 	it("FLY-1643: delivers workflow capabilities to the spawned codex process", async () => {

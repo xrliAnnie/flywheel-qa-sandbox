@@ -7,6 +7,7 @@ import type {
 	WorkflowRunRow,
 	WorkflowWakeSendClaimResult,
 } from "../StateStore.js";
+import { workflowDeliveryReceiptNextRetryAt } from "../StateStore.js";
 import type { WorkflowActorSession } from "./workflow-actor-session.js";
 
 export interface WorkflowShipCarrierTurnInput {
@@ -102,6 +103,14 @@ export interface WorkflowShipCarrierDeliveryStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		nextRetryAt?: string;
+	}): { ok: true } | { ok: false; reason: string };
+	scheduleWorkflowCarrierReceiptProbe(input: {
+		questionId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
 	}): { ok: true } | { ok: false; reason: string };
 	recordWorkflowCarrierActivationTurn(input: {
 		questionId: string;
@@ -129,6 +138,7 @@ export interface WorkflowShipCarrierDeliveryStore {
 					| "pending"
 					| "grant_started"
 					| "turn_granted"
+					| "awaiting_receipt"
 					| "completed"
 					| "held"
 					| "needs_lead";
@@ -180,7 +190,7 @@ export interface WorkflowShipCarrierDeliveryEffects {
 
 export type WorkflowShipCarrierDeliveryOutcome =
 	| {
-			kind: "wake_delivered";
+			kind: "awaiting_receipt";
 			executionId: string;
 			activationId: string;
 			epoch: number;
@@ -206,11 +216,11 @@ export async function drainWorkflowShipCarrierDeliveries(input: {
 	let delivered = 0;
 	let held = 0;
 	for (const delivery of input.store.listWorkflowCarrierDeliveries({
-		states: ["pending", "grant_started", "turn_granted"],
+		states: ["pending", "grant_started", "turn_granted", "awaiting_receipt"],
 		now: input.now,
 	})) {
 		const outcome = await input.reconcile(delivery.question_id);
-		if (outcome.kind === "wake_delivered") delivered += 1;
+		if (outcome.kind === "awaiting_receipt") delivered += 1;
 		else if (outcome.kind !== "busy" && outcome.kind !== "settled") held += 1;
 	}
 	return { delivered, held };
@@ -345,6 +355,33 @@ export class WorkflowShipCarrierDeliveryHandler {
 				reason: `worktree_not_ready:${ready.reason ?? "unknown"}`,
 			});
 		}
+		if (delivery.state === "awaiting_receipt") {
+			if (!Number.isSafeInteger(delivery.turn_epoch)) {
+				return this.retry({
+					questionId,
+					generation: claim.generation,
+					run,
+					reason: "carrier_receipt_identity_missing",
+				});
+			}
+			const scheduled = this.deps.store.scheduleWorkflowCarrierReceiptProbe({
+				questionId,
+				ownerId: this.deps.ownerId,
+				generation: claim.generation,
+				nextRetryAt: workflowDeliveryReceiptNextRetryAt(
+					this.now().toISOString(),
+				),
+				reason: "receipt_not_observed",
+			});
+			return scheduled.ok
+				? {
+						kind: "awaiting_receipt",
+						executionId: delivery.source_execution_id,
+						activationId: delivery.carrier_activation_id,
+						epoch: delivery.turn_epoch!,
+					}
+				: { kind: "retryable", reason: scheduled.reason };
+		}
 		const activated = await this.deps.effects.activateActorForWake?.(actor);
 		if (activated && !activated.ok) {
 			return this.retry({
@@ -434,23 +471,26 @@ export class WorkflowShipCarrierDeliveryHandler {
 		});
 		if (!wakeClaim.ok) {
 			if (wakeClaim.reason === "wake_already_sent") {
-				const delivered = this.deps.store.advanceWorkflowCarrierDelivery({
+				const awaitingReceipt = this.deps.store.advanceWorkflowCarrierDelivery({
 					questionId,
 					ownerId: this.deps.ownerId,
 					generation: claim.generation,
 					from: "turn_granted",
-					to: "wake_delivered",
+					to: "awaiting_receipt",
 					now: this.now().toISOString(),
+					nextRetryAt: workflowDeliveryReceiptNextRetryAt(
+						this.now().toISOString(),
+					),
 					releaseOwner: true,
 				});
-				return delivered.ok
+				return awaitingReceipt.ok
 					? {
-							kind: "wake_delivered",
+							kind: "awaiting_receipt",
 							executionId: delivery.source_execution_id,
 							activationId: delivery.carrier_activation_id,
 							epoch: turn.epoch,
 						}
-					: { kind: "retryable", reason: delivered.reason };
+					: { kind: "retryable", reason: awaitingReceipt.reason };
 			}
 			return this.retry({
 				questionId,
@@ -491,18 +531,21 @@ export class WorkflowShipCarrierDeliveryHandler {
 			result: "sent",
 		});
 		if (!sent.ok) return { kind: "retryable", reason: sent.reason };
-		const delivered = this.deps.store.advanceWorkflowCarrierDelivery({
+		const awaitingReceipt = this.deps.store.advanceWorkflowCarrierDelivery({
 			questionId,
 			ownerId: this.deps.ownerId,
 			generation: claim.generation,
 			from: "turn_granted",
-			to: "wake_delivered",
+			to: "awaiting_receipt",
 			now: this.now().toISOString(),
+			nextRetryAt: workflowDeliveryReceiptNextRetryAt(this.now().toISOString()),
 			releaseOwner: true,
 		});
-		if (!delivered.ok) return { kind: "retryable", reason: delivered.reason };
+		if (!awaitingReceipt.ok) {
+			return { kind: "retryable", reason: awaitingReceipt.reason };
+		}
 		return {
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			executionId: delivery.source_execution_id,
 			activationId: delivery.carrier_activation_id,
 			epoch: turn.epoch,

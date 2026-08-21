@@ -25,7 +25,7 @@ async function storeWithRun(): Promise<StateStore> {
 }
 
 function admit(store: StateStore, overrides: Record<string, unknown> = {}) {
-	return store.admitWorkflowExecution({
+	const result = store.admitWorkflowExecution({
 		runId: "run-1",
 		nodeId: "qa",
 		executionId: "qa-exec-1",
@@ -36,6 +36,16 @@ function admit(store: StateStore, overrides: Record<string, unknown> = {}) {
 		now: T0,
 		...overrides,
 	});
+	if (result.ok) {
+		store.upsertSession({
+			execution_id: String(overrides.executionId ?? "qa-exec-1"),
+			issue_id: "FLY-1244",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: String(overrides.nodeId ?? "qa"),
+		});
+	}
+	return result;
 }
 
 describe("workflow claims admission — fail-closed enrollment + immutable binding", () => {

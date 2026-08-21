@@ -408,7 +408,7 @@ export function createRunsRouter(
 					: await collectRunQuiescenceEvidence(
 							store,
 							runId,
-							auth?.probeRunLiveness ?? probeGeneralizedLaunchLiveness,
+							auth?.probeRunLiveness,
 						);
 				const now = new Date().toISOString();
 				const run = store.getWorkflowRun(runId)!;
@@ -597,11 +597,7 @@ export function createRunsRouter(
 			return;
 		}
 		try {
-			const evidence = await collectRunQuiescenceEvidence(
-				store,
-				runId,
-				probeGeneralizedLaunchLiveness,
-			);
+			const evidence = await collectRunQuiescenceEvidence(store, runId);
 			const result = store.getWorkflowRunDiagnostic({
 				runId,
 				evidence,
@@ -919,11 +915,7 @@ export function createRunsRouter(
 				});
 				return;
 			}
-			const evidence = await collectRunQuiescenceEvidence(
-				store,
-				runId,
-				probeGeneralizedLaunchLiveness,
-			);
+			const evidence = await collectRunQuiescenceEvidence(store, runId);
 			const result = store.openOperatorRework({
 				runId,
 				targetNodeId: targetNodeId.trim(),

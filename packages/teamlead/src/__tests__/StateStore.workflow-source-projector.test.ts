@@ -605,6 +605,13 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		if (!review.ok || !review.submissionCredential) {
 			throw new Error("review admission failed");
 		}
+		store.upsertSession({
+			execution_id: reviewExecution,
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "review",
+		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
 				credential: review.submissionCredential,

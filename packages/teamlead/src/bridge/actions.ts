@@ -46,6 +46,7 @@ import {
 	closeRunner,
 	type RunCloseAuthority,
 } from "./close-runner.js";
+import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { finalizeCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
@@ -1631,13 +1632,15 @@ export async function handleTerminate(
 		);
 	}
 
-	// 2) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
+	// 2) Cleanup (OBSERVABLE partial-failure): reap the detached Codex group,
+	// then kill tmux via CommDB (source of
 	// truth, not StateStore.tmux_session — see tmux-lookup.ts) + close viewer.
 	// Codex code-review MED-3: a CommDB read error (corruption/lock) is NOT the
 	// same as "already gone" — we can't verify tmux liveness, so it must surface
 	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
 	let physicalGone = false;
+	await reapCodexDaemonForSession(store, session, "bridge.terminate");
 	const lookup = session.project_name
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);

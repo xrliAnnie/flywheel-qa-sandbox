@@ -102,6 +102,14 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 	if (!admission.ok || !admission.submissionCredential) {
 		throw new Error("QA admission failed");
 	}
+	store.upsertSession({
+		execution_id: `qa-${runId}`,
+		issue_id: "issue-1424",
+		issue_identifier: "FLY-1424",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "qa",
+	});
 	const submitted = store.submitWorkflowDecisionByCredential({
 		credential: admission.submissionCredential,
 		clientRequestId: `qa-pass-${runId}`,

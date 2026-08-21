@@ -9,7 +9,10 @@ import type {
 	WorkflowRunNodeRow,
 	WorkflowRunRow,
 } from "../StateStore.js";
-import { isStateStoreIrreversibleTerminalForZombie } from "../StateStore.js";
+import {
+	isStateStoreIrreversibleTerminalForZombie,
+	workflowDeliveryReceiptNextRetryAt,
+} from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
 import { credentialWindowForNode } from "../workflow-submission-expiry.js";
 import {
@@ -147,7 +150,15 @@ export interface WorkflowReworkCoordinatorStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		nextRetryAt?: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
+	}): { ok: true } | { ok: false; reason: string };
+	scheduleWorkflowReworkReceiptProbe(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
 	}): { ok: true } | { ok: false; reason: string };
 	admitGeneralizedWorkflowExecution(input: {
 		runId: string;
@@ -206,10 +217,15 @@ export interface WorkflowReworkCoordinatorEffects {
 
 export type WorkflowReworkCoordinatorOutcome =
 	| {
-			kind: "wake_delivered";
+			kind: "awaiting_receipt";
 			executionId: string;
 			activationId: string;
 			epoch: number;
+	  }
+	| {
+			kind: "receipt_pending";
+			state: "awaiting_receipt" | "wake_delivered";
+			executionId: string;
 	  }
 	| { kind: "replacement_pending"; executionId: string; reason: string }
 	| { kind: "disabled"; reason: "rework_reentry_disabled" }
@@ -284,6 +300,29 @@ export class WorkflowReworkCoordinator {
 		return { kind: "retryable", reason: input.reason };
 	}
 
+	private deferReceiptProbe(input: {
+		requestId: string;
+		generation: number;
+		state: "awaiting_receipt" | "wake_delivered";
+		executionId: string;
+		reason: string;
+	}): WorkflowReworkCoordinatorOutcome {
+		const scheduled = this.deps.store.scheduleWorkflowReworkReceiptProbe({
+			requestId: input.requestId,
+			ownerId: this.deps.ownerId,
+			generation: input.generation,
+			nextRetryAt: workflowDeliveryReceiptNextRetryAt(this.now().toISOString()),
+			reason: input.reason,
+		});
+		return scheduled.ok
+			? {
+					kind: "receipt_pending",
+					state: input.state,
+					executionId: input.executionId,
+				}
+			: { kind: "retryable", reason: scheduled.reason };
+	}
+
 	async reconcile(
 		requestId: string,
 	): Promise<WorkflowReworkCoordinatorOutcome> {
@@ -325,6 +364,9 @@ export class WorkflowReworkCoordinator {
 				reason: "rework_context_unavailable",
 			});
 		}
+		const observingReceipt =
+			delivery.state === "awaiting_receipt" ||
+			delivery.state === "wake_delivered";
 		const target = this.deps.store.getWorkflowRunNode(
 			request.run_id,
 			route.target_node_id,
@@ -333,7 +375,16 @@ export class WorkflowReworkCoordinator {
 		if (
 			!target ||
 			target.execution_id !== route.preferred_actor_execution_id ||
-			!(target.state === "pending" || target.state === "admitted")
+			!(
+				(observingReceipt &&
+					delivery.state === "wake_delivered" &&
+					target.state === "running") ||
+				(observingReceipt &&
+					delivery.state === "awaiting_receipt" &&
+					target.state === "admitted") ||
+				(!observingReceipt &&
+					(target.state === "pending" || target.state === "admitted"))
+			)
 		) {
 			return this.releaseRetryable({
 				requestId,
@@ -345,6 +396,15 @@ export class WorkflowReworkCoordinator {
 			route.preferred_actor_execution_id,
 		);
 		if (!actor) {
+			if (observingReceipt) {
+				return this.deferReceiptProbe({
+					requestId,
+					generation: claim.generation,
+					state: delivery.state as "awaiting_receipt" | "wake_delivered",
+					executionId: route.preferred_actor_execution_id,
+					reason: "actor_session_missing",
+				});
+			}
 			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
@@ -358,6 +418,15 @@ export class WorkflowReworkCoordinator {
 			hasHostProcess: this.deps.effects.hasHostProcess,
 		});
 		if (reentry.kind === "hold") {
+			if (observingReceipt) {
+				return this.deferReceiptProbe({
+					requestId,
+					generation: claim.generation,
+					state: delivery.state as "awaiting_receipt" | "wake_delivered",
+					executionId: actor.execution_id,
+					reason: reentry.reason,
+				});
+			}
 			return this.releaseRetryable({
 				requestId,
 				generation: claim.generation,
@@ -386,6 +455,18 @@ export class WorkflowReworkCoordinator {
 				executionId: actor.execution_id,
 				reason: reentry.reason,
 			};
+		}
+		if (observingReceipt) {
+			return this.deferReceiptProbe({
+				requestId,
+				generation: claim.generation,
+				state: delivery.state as "awaiting_receipt" | "wake_delivered",
+				executionId: actor.execution_id,
+				reason:
+					delivery.state === "awaiting_receipt"
+						? "receipt_not_observed"
+						: "actor_alive_after_receipt",
+			});
 		}
 
 		const ready = await this.deps.effects.assertWorktreeReady(
@@ -581,21 +662,21 @@ export class WorkflowReworkCoordinator {
 				reason: `wake_failed:${woke.error ?? "unknown"}`,
 			});
 		}
-		const delivered = this.deps.store.advanceWorkflowReworkDelivery({
+		const awaitingReceipt = this.deps.store.advanceWorkflowReworkDelivery({
 			requestId,
 			ownerId: this.deps.ownerId,
 			generation: claim.generation,
 			from: "turn_granted",
-			to: "wake_delivered",
+			to: "awaiting_receipt",
 			now: this.now().toISOString(),
+			nextRetryAt: workflowDeliveryReceiptNextRetryAt(this.now().toISOString()),
 			releaseOwner: true,
-			alertIdentity: this.deps.resolveAlertIdentity(run),
 		});
-		if (!delivered.ok) {
-			return { kind: "retryable", reason: delivered.reason };
+		if (!awaitingReceipt.ok) {
+			return { kind: "retryable", reason: awaitingReceipt.reason };
 		}
 		return {
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			executionId: actor.execution_id,
 			activationId,
 			epoch: turn.epoch,

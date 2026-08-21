@@ -1,7 +1,9 @@
 import type { CommDB, GateSupersedeRow } from "flywheel-comm/db";
+import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 
 interface IssueGateSupersedeStore {
 	getSession(executionId: string): { issue_id?: string } | undefined;
+	getWorkflowRun?(runId: string): { issue_id?: string } | undefined;
 	getCodexReviewJobByQuestionId(
 		questionId: string,
 	): { execution_id: string; issue_id?: string } | null;
@@ -38,6 +40,17 @@ function issueFor(
 	db: CommDB,
 	store: IssueGateSupersedeStore,
 ): string | undefined {
+	if (row.checkpoint === "founder_review") {
+		const family = db.getFounderReviewFamily(row.id);
+		const content = family?.question.content;
+		const runId = content
+			? parseFounderReviewQuestionContent(content)?.runId
+			: undefined;
+		const workflowIssue = runId
+			? store.getWorkflowRun?.(runId)?.issue_id?.trim()
+			: undefined;
+		return workflowIssue || undefined;
+	}
 	const stateIssue = store.getSession(row.from_agent)?.issue_id?.trim();
 	if (stateIssue) return stateIssue;
 	const commIssue = db.getSession(row.from_agent)?.issue_id?.trim();
@@ -50,12 +63,18 @@ function issueFor(
 }
 
 function auditEventType(row: GateSupersedeRow): string {
+	if (row.checkpoint === "founder_review") {
+		return "founder_review_gate_superseded";
+	}
 	return row.checkpoint === "approve_to_ship"
 		? "ship_gate_superseded"
 		: "review_gate_superseded";
 }
 
 function auditEventId(row: GateSupersedeRow): string {
+	if (row.checkpoint === "founder_review") {
+		return `founder-review-gate-superseded-${row.id}`;
+	}
 	return row.checkpoint === "approve_to_ship"
 		? `ship-gate-superseded-${row.id}`
 		: `review-gate-superseded-${row.id}`;

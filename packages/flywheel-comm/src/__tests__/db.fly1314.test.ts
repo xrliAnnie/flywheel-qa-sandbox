@@ -80,6 +80,39 @@ describe("FLY-1314 durable gate supersession", () => {
 		expect(db.getMessageById(oldGate)?.superseded_at).toBeTruthy();
 	});
 
+	it("includes founder review in the explicit supersede family", () => {
+		const oldGate = db.insertQuestion(
+			"exec-old",
+			"lead",
+			"old founder review",
+			{
+				checkpoint: "founder_review",
+			},
+		);
+		const newGate = db.insertQuestion(
+			"exec-new",
+			"lead",
+			"new founder review",
+			{
+				checkpoint: "founder_review",
+			},
+		);
+
+		expect(db.getGatesForSupersede().map((gate) => gate.id)).toEqual([
+			oldGate,
+			newGate,
+		]);
+		expect(db.canSupersedeGate(oldGate, newGate)).toBe(true);
+		expect(
+			db.retireQuestionGuarded(oldGate, {
+				expectedFromAgent: "exec-old",
+				requireUnanswered: true,
+				supersededBy: newGate,
+			}),
+		).toBe(true);
+		expect(db.getSupersededGates().map((gate) => gate.id)).toContain(oldGate);
+	});
+
 	it("a superseded gate rejects the atomic founder-source writer without an outbox event", () => {
 		const oldGate = db.insertQuestion("exec-old", "lead", "old ship gate", {
 			checkpoint: "approve_to_ship",

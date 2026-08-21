@@ -205,7 +205,14 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 				completionSubmission: { decision: { route: "needs_review" } },
 				now: "2026-07-22T00:02:00.000Z",
 			}),
-		).toEqual({ ok: false, reason: "terminal_status_immune" });
+		).toEqual({
+			ok: false,
+			reason: "transition_refused",
+			detail: {
+				transitionReason: "engine_invariant:writer_session_terminal",
+				alertPending: true,
+			},
+		});
 		expect(
 			store.getWorkflowNodeCompletion(runId, "execute", 1),
 		).toBeUndefined();

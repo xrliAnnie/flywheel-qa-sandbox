@@ -98,6 +98,7 @@ function makeHarness(input: {
 	wakeResults?: Array<{ ok: boolean; error?: string }>;
 	failTurnProjectionOnce?: boolean;
 	reentryEnabled?: boolean;
+	initialState?: WorkflowReworkDeliveryRow["state"];
 }) {
 	const request: WorkflowReworkRequestRow = {
 		request_id: "rework-1",
@@ -133,14 +134,14 @@ function makeHarness(input: {
 		generation: 0,
 		lease_expires_at: null,
 		route_revision: 1,
-		state: "pending",
+		state: input.initialState ?? "pending",
 		hold_count: 0,
 		next_retry_at: null,
 		grant_started_at: null,
 		last_error: null,
 		updated_at: NOW,
 	};
-	let activationAdmitted = false;
+	let activationAdmitted = delivery.state !== "pending";
 	let projected = false;
 	let failProjection = input.failTurnProjectionOnce ?? false;
 
@@ -158,7 +159,12 @@ function makeHarness(input: {
 			run_id: "run-1",
 			node_id: "implement",
 			attempt: 2,
-			state: activationAdmitted ? "admitted" : "pending",
+			state:
+				delivery.state === "wake_delivered"
+					? "running"
+					: activationAdmitted
+						? "admitted"
+						: "pending",
 			execution_id: "implement-exec",
 		})),
 		claimWorkflowReworkDelivery: vi.fn((claim) => {
@@ -227,6 +233,25 @@ function makeHarness(input: {
 			delivery = { ...delivery, grant_started_at: grant.now };
 			return { ok: true as const };
 		}),
+		scheduleWorkflowReworkReceiptProbe: vi.fn((probe) => {
+			if (
+				delivery.owner_id !== probe.ownerId ||
+				delivery.generation !== probe.generation ||
+				!(
+					delivery.state === "awaiting_receipt" ||
+					delivery.state === "wake_delivered"
+				)
+			) {
+				return { ok: false as const, reason: "stale_delivery_owner" };
+			}
+			delivery = {
+				...delivery,
+				owner_id: null,
+				lease_expires_at: null,
+				next_retry_at: probe.nextRetryAt,
+			};
+			return { ok: true as const };
+		}),
 		advanceWorkflowReworkDelivery: vi.fn((advance) => {
 			if (
 				delivery.owner_id !== advance.ownerId ||
@@ -243,6 +268,7 @@ function makeHarness(input: {
 					? null
 					: delivery.lease_expires_at,
 				last_error: advance.error ?? null,
+				next_retry_at: advance.nextRetryAt ?? delivery.next_retry_at,
 			};
 			return { ok: true as const };
 		}),
@@ -359,7 +385,7 @@ describe("WorkflowReworkCoordinator", () => {
 
 		h.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY = "1";
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 		});
 		expect(h.store.claimWorkflowReworkDelivery).toHaveBeenCalledOnce();
 	});
@@ -367,7 +393,7 @@ describe("WorkflowReworkCoordinator", () => {
 	it("admits a same-exec activation, grants a new epoch, and wakes the original actor", async () => {
 		const h = makeHarness({ registered: "alive" });
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			executionId: "implement-exec",
 			activationId: "activation:rework-1",
 			epoch: 4,
@@ -395,7 +421,76 @@ describe("WorkflowReworkCoordinator", () => {
 				wakeId: "rework-wake:rework-1:activation:rework-1:epoch:4",
 			}),
 		);
-		expect(h.getDelivery().state).toBe("wake_delivered");
+		expect(h.getDelivery().state).toBe("awaiting_receipt");
+		expect(h.getDelivery().next_retry_at).toBe("2026-07-23T00:03:00.000Z");
+	});
+
+	it("reprobes an unacked actor on the durable cadence without granting or waking again", async () => {
+		const h = makeHarness({
+			registered: "alive",
+			initialState: "awaiting_receipt",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "receipt_pending",
+			state: "awaiting_receipt",
+			executionId: "implement-exec",
+		});
+		expect(h.effects.probeRegistered).toHaveBeenCalledOnce();
+		expect(h.store.scheduleWorkflowReworkReceiptProbe).toHaveBeenCalledWith({
+			requestId: "rework-1",
+			ownerId: "coordinator-a",
+			generation: 1,
+			nextRetryAt: "2026-07-23T00:03:00.000Z",
+			reason: "receipt_not_observed",
+		});
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("moves an unacked delivery to replacement when its actor proves dead", async () => {
+		const h = makeHarness({
+			registered: "dead_pin",
+			initialState: "awaiting_receipt",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_pending",
+			executionId: "implement-exec",
+		});
+		expect(h.getDelivery().state).toBe("replacement_pending");
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("owns post-ACK liveness without replaying TURN or wake", async () => {
+		const h = makeHarness({
+			registered: "alive",
+			initialState: "wake_delivered",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toEqual({
+			kind: "receipt_pending",
+			state: "wake_delivered",
+			executionId: "implement-exec",
+		});
+		expect(h.store.scheduleWorkflowReworkReceiptProbe).toHaveBeenCalledWith(
+			expect.objectContaining({
+				nextRetryAt: "2026-07-23T00:03:00.000Z",
+				reason: "actor_alive_after_receipt",
+			}),
+		);
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
+	});
+
+	it("replaces a post-ACK actor that subsequently proves dead", async () => {
+		const h = makeHarness({
+			registered: "dead_pin",
+			initialState: "wake_delivered",
+		});
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_pending",
+			executionId: "implement-exec",
+		});
+		expect(h.getDelivery().state).toBe("replacement_pending");
 	});
 
 	it("backs off uncertain or dirty actors without granting TURN", async () => {
@@ -629,7 +724,7 @@ describe("WorkflowReworkCoordinator", () => {
 			reason: "turn_projection_failed:projection_crash",
 		});
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			activationId: "activation:rework-1",
 			epoch: 4,
 		});
@@ -649,7 +744,7 @@ describe("WorkflowReworkCoordinator", () => {
 			reason: "wake_failed:mailbox unavailable",
 		});
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 		});
 		expect(h.effects.wakeActor).toHaveBeenCalledTimes(2);
 		expect(h.effects.wakeActor.mock.calls[0]?.[0]).toEqual(

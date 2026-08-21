@@ -23,6 +23,160 @@ afterEach(() => {
 });
 
 describe("terminal gate retirement", () => {
+	it("keeps an expired-but-answerable founder review for a terminal source", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-founder-gate-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		store.upsertSession({
+			execution_id: "founder-exec",
+			issue_id: "FLY-1940",
+			project_name: "flywheel",
+			status: "completed",
+		});
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"founder-exec",
+			"session",
+			"flywheel",
+			"FLY-1940",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const questionId = comm.insertQuestion(
+			"founder-exec",
+			"flywheel-eng-lead",
+			"founder review",
+			{ checkpoint: "founder_review" },
+		);
+		(comm as unknown as { db: import("better-sqlite3").Database }).db
+			.prepare(
+				"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+			)
+			.run(questionId);
+		comm.close();
+
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		const result = CommDB.openReadonly(commPath);
+		expect(result.getMessageById(questionId)).toMatchObject({
+			relay_state: "open",
+			resolved_at: null,
+		});
+		result.close();
+		store.close();
+	});
+
+	it("keeps founder review answerable when its run is active after the producer ends", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-live-founder-gate-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		store.createWorkflowRun({
+			runId: "run-live",
+			issueId: "FLY-1940",
+			projectName: "flywheel",
+			snapshotJson: "{}",
+			claimsReadEnrolled: true,
+		});
+		store.upsertSession({
+			execution_id: "founder-exec",
+			issue_id: "FLY-1940",
+			project_name: "flywheel",
+			status: "blocked",
+		});
+		const comm = new CommDB(commPath);
+		comm.registerSession(
+			"founder-exec",
+			"session",
+			"flywheel",
+			"FLY-1940",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		const questionId = comm.insertQuestion(
+			"founder-exec",
+			"flywheel-eng-lead",
+			JSON.stringify({
+				version: 1,
+				round: 1,
+				runId: "run-live",
+				artifactDigest: "a".repeat(64),
+				hostedUrl: "https://example.test/review",
+				paths: ["report.html"],
+			}),
+			{ checkpoint: "founder_review" },
+		);
+		comm.close();
+
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).pass();
+
+		const result = CommDB.openReadonly(commPath);
+		expect(result.getMessageById(questionId)).toMatchObject({
+			relay_state: "open",
+			resolved_at: null,
+		});
+		result.close();
+		store.close();
+	});
+
+	it("retires founder review from immutable run identity after source pruning", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-pruned-founder-gate-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(join(root, "state.db"));
+		store.createWorkflowRun({
+			runId: "run-pruned",
+			issueId: "FLY-1758",
+			projectName: "flywheel",
+			snapshotJson: "{}",
+			claimsReadEnrolled: true,
+		});
+		const comm = new CommDB(commPath);
+		const questionId = comm.insertQuestion(
+			"pruned-exec",
+			"flywheel-eng-lead",
+			JSON.stringify({
+				version: 1,
+				round: 1,
+				runId: "run-pruned",
+				artifactDigest: "a".repeat(64),
+				hostedUrl: "https://example.test/review",
+				paths: ["report.html"],
+			}),
+			{ checkpoint: "founder_review" },
+		);
+		comm.close();
+
+		await new TerminalGateRetirement({
+			store,
+			projectNames: ["flywheel"],
+			commDbPathForProject: () => commPath,
+		}).retireIssueDone({
+			projectName: "flywheel",
+			canonicalIssueId: "FLY-1758",
+			issueAliases: [],
+			authorityCredential: "linear-current-state",
+			revalidate: async () => "authorized",
+		});
+
+		const result = CommDB.openReadonly(commPath);
+		expect(result.getMessageById(questionId)).toMatchObject({
+			relay_state: "terminal_disposed",
+			resolved_via: "superseded_issue_done",
+		});
+		result.close();
+		store.close();
+	});
+
 	it("bounds and rotates terminal-session scans while reusing one project database", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-terminal-gate-cap-"));
 		roots.push(root);

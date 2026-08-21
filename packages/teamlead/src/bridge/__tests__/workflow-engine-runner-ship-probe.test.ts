@@ -81,6 +81,13 @@ async function openRunnerShipGate(store: StateStore) {
 			env: engineFlags,
 		}),
 	).toMatchObject({ ok: true });
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1624",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "implement",
+	});
 	expect(
 		store.commitEnrolledCompletion({
 			executionId: "implement-1",
@@ -107,6 +114,13 @@ async function openRunnerShipGate(store: StateStore) {
 	if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
 		throw new Error("QA admission failed");
 	}
+	store.upsertSession({
+		execution_id: qaIntent.execution_id,
+		issue_id: "FLY-1624",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "qa",
+	});
 	expect(
 		store.submitWorkflowDecisionByCredential({
 			credential: qaAdmission.submissionCredential,

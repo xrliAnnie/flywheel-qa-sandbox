@@ -407,6 +407,8 @@ export interface AlertMetadata {
 			| "card_void_stuck"
 			| "founder_input_deadletter"
 			| "founder_rework_round_high"
+			| "founder_review_delivery_missing"
+			| "founder_review_unanswered"
 			| "voided_card_input"
 			| "land_head_unavailable"
 			| "engine_invariant_refusal"

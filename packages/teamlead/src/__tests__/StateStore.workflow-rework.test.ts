@@ -35,12 +35,13 @@ function bindActorHead(
 	nodeId: string,
 	head: string,
 	issueId = "FLY-1423",
+	status: "completed" | "ship_parked" = "completed",
 ) {
 	store.upsertSession({
 		execution_id: executionId,
 		issue_id: issueId,
 		project_name: "flywheel",
-		status: "completed",
+		status,
 		workflow_node_id: nodeId,
 	});
 	store.patchSessionMetadata(executionId, { pr_head_sha: head });
@@ -355,7 +356,14 @@ async function createActiveOperatorRework(): Promise<{
 	raw
 		.prepare("UPDATE workflow_run SET status = 'completed' WHERE run_id = ?")
 		.run("run-heavy");
-	bindActorHead(store, "implement-exec", "implement", "b".repeat(40));
+	bindActorHead(
+		store,
+		"implement-exec",
+		"implement",
+		"b".repeat(40),
+		"FLY-1423",
+		"ship_parked",
+	);
 	const opened = store.openOperatorRework({
 		runId: "run-heavy",
 		targetNodeId: "implement",
@@ -378,6 +386,12 @@ async function createActiveOperatorRework(): Promise<{
 }
 
 function deliverOperatorRework(store: StateStore, requestId: string): void {
+	const route = store.getLatestWorkflowReworkRoute(requestId);
+	if (!route) throw new Error("operator rework route missing");
+	const request = store.getWorkflowReworkRequest(requestId);
+	const run = request ? store.getWorkflowRun(request.run_id) : undefined;
+	if (!request || !run) throw new Error("operator rework run missing");
+	const activationId = `activation:${requestId}`;
 	const claimed = store.claimWorkflowReworkDelivery({
 		requestId,
 		ownerId: "fly1912-coordinator",
@@ -387,10 +401,10 @@ function deliverOperatorRework(store: StateStore, requestId: string): void {
 	if (!claimed.ok) throw new Error(claimed.reason);
 	const admitted = store.admitGeneralizedWorkflowExecution({
 		runId: "run-heavy",
-		nodeId: "implement",
-		executionId: "implement-exec",
-		attempt: 2,
-		activationId: "activation-fly1912-implement-2",
+		nodeId: route.target_node_id,
+		executionId: route.preferred_actor_execution_id,
+		attempt: route.target_attempt,
+		activationId,
 		activationMode: "wake",
 		reworkRequestId: requestId,
 		expiresAt: "2026-07-23T02:00:00.000Z",
@@ -399,9 +413,18 @@ function deliverOperatorRework(store: StateStore, requestId: string): void {
 		env: enabled,
 	});
 	if (!admitted.ok) throw new Error(admitted.reason);
+	const projected = store.recordWorkflowActivationTurn({
+		activationId,
+		issueId: run.issue_id,
+		executionId: route.preferred_actor_execution_id,
+		epoch: 4,
+		sourceEventId: `rework-turn:${requestId}:${activationId}`,
+		grantedAt: "2026-07-23T00:11:30.000Z",
+	});
+	if (!projected.ok) throw new Error(projected.reason);
 	for (const [from, to] of [
 		["pending", "turn_granted"],
-		["turn_granted", "wake_delivered"],
+		["turn_granted", "awaiting_receipt"],
 	] as const) {
 		const advanced = store.advanceWorkflowReworkDelivery({
 			requestId,
@@ -410,19 +433,26 @@ function deliverOperatorRework(store: StateStore, requestId: string): void {
 			from,
 			to,
 			now: "2026-07-23T00:12:00.000Z",
-			...(to === "wake_delivered"
+			...(to === "awaiting_receipt"
 				? {
-						alertIdentity: {
-							leadId: "flywheel-eng-lead",
-							projectName: "flywheel",
-							leadResolution: "resolved" as const,
-						},
 						releaseOwner: true,
 					}
 				: {}),
 		});
 		if (!advanced.ok) throw new Error(advanced.reason);
 	}
+	const receipt = store.recordWorkflowReworkWakeReceipt({
+		activationId,
+		executionId: route.preferred_actor_execution_id,
+		epoch: 4,
+		ackedAt: "2026-07-23T00:12:01.000Z",
+		alertIdentity: {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		},
+	});
+	if (!receipt.ok) throw new Error(receipt.reason);
 }
 
 async function freshDispatchOperatorRework(): Promise<{
@@ -530,12 +560,19 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			if (!admitted.ok || !admitted.submissionCredential) {
 				throw new Error("fresh QA admission failed");
 			}
+			store.upsertSession({
+				execution_id: successorExecutionId,
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "qa",
+			});
 			expect(
 				store.submitWorkflowDecisionByCredential({
 					credential: admitted.submissionCredential,
 					clientRequestId: "fly1912-qa-pass",
 					predicate: "qa_passed",
-					subjectDigest: "c".repeat(40),
+					subjectDigest: "b".repeat(40),
 					issuerVendor: "claude",
 					issuerModel: "claude-opus-4-8",
 					subjectProducerExecutionId: "implement-exec",
@@ -705,8 +742,22 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 					"UPDATE workflow_run SET status = 'completed' WHERE run_id = ?",
 				)
 				.run("run-heavy");
-			bindActorHead(store, "implement-exec", "implement", "b".repeat(40));
-			bindActorHead(store, "qa-exec", "qa", "c".repeat(40));
+			bindActorHead(
+				store,
+				"implement-exec",
+				"implement",
+				"b".repeat(40),
+				"FLY-1423",
+				"ship_parked",
+			);
+			bindActorHead(
+				store,
+				"qa-exec",
+				"qa",
+				"c".repeat(40),
+				"FLY-1423",
+				"ship_parked",
+			);
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
@@ -845,6 +896,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				"implement",
 				"b".repeat(40),
 				"FLY-1912",
+				"ship_parked",
 			);
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
@@ -1343,6 +1395,221 @@ describe("FLY-1423 durable unified rework request", () => {
 				.raw;
 			expect(db.pragma("foreign_key_check")).toEqual([]);
 			migrated.close();
+		}
+	});
+
+	it("migrates the carrier delivery schema to receipt-backed waiting exactly once", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1940-carrier-receipt-schema-"));
+		roots.push(dir);
+		const dbPath = join(dir, "teamlead.db");
+		const initial = await StateStore.create(dbPath);
+		initial.close();
+
+		const raw = new Database(dbPath);
+		const currentSql = (
+			raw
+				.prepare(
+					"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_carrier_delivery'",
+				)
+				.get() as { sql: string }
+		).sql;
+		raw.pragma("foreign_keys = OFF");
+		raw.exec("DROP TABLE workflow_carrier_delivery");
+		raw.exec(currentSql.replace("'awaiting_receipt',", ""));
+		raw.exec(`
+			INSERT INTO workflow_run
+			  (run_id, issue_id, project_name, current_node_id, status,
+			   claims_read_enrolled, engine_owned, created_at)
+			VALUES
+			  ('legacy-carrier-run', 'FLY-1940', 'flywheel', 'founder_gate',
+			   'active', 1, 1, '2026-08-21T00:00:00.000Z');
+			INSERT INTO workflow_gate_holder
+			  (run_id, gate_node_id, attempt, head_sha, source_execution_id,
+			   question_id, authority_mode, subject_kind, carrier_binding_state,
+			   state, materialization_stage, created_at, updated_at)
+			VALUES
+			  ('legacy-carrier-run', 'founder_gate', 1, '${"a".repeat(40)}',
+			   'legacy-carrier-exec', 'legacy-carrier-question', 'runner_ship',
+			   'git_head', 'bound', 'approved', 'completed',
+			   '2026-08-21T00:00:00.000Z', '2026-08-21T00:00:00.000Z');
+			INSERT INTO workflow_carrier_delivery
+			  (question_id, run_id, gate_node_id, gate_attempt, approved_head,
+			   source_execution_id, carrier_activation_id, owner_id, generation,
+			   lease_expires_at, state, hold_count, redrive_generation,
+			   next_retry_at, turn_epoch, turn_source_event_id, turn_granted_at,
+			   last_error, created_at, updated_at)
+			VALUES
+			  ('legacy-carrier-question', 'legacy-carrier-run', 'founder_gate', 1,
+			   '${"a".repeat(40)}', 'legacy-carrier-exec',
+			   'legacy-carrier-activation', 'legacy-owner', 4,
+			   '2026-08-21T00:05:00.000Z', 'wake_delivered', 0, 0, NULL, 7,
+			   'legacy-turn-source', '2026-08-21T00:00:10.000Z', NULL,
+			   '2026-08-21T00:00:00.000Z', '2026-08-21T00:00:20.000Z');
+		`);
+		raw.close();
+
+		for (let boot = 0; boot < 2; boot += 1) {
+			const migrated = await StateStore.create(dbPath);
+			const db = (migrated as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			const sql = (
+				db
+					.prepare(
+						"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_carrier_delivery'",
+					)
+					.get() as { sql: string }
+			).sql;
+			expect(sql).toContain("awaiting_receipt");
+			expect(
+				migrated.getWorkflowCarrierDelivery("legacy-carrier-question"),
+			).toMatchObject({
+				state: "awaiting_receipt",
+				owner_id: null,
+				lease_expires_at: null,
+				next_retry_at: "2026-08-21T00:00:20.000Z",
+				generation: 4,
+			});
+			expect(db.pragma("foreign_key_check")).toEqual([]);
+			migrated.close();
+		}
+
+		const migrated = await StateStore.create(dbPath);
+		try {
+			expect(
+				migrated.claimWorkflowCarrierDelivery({
+					questionId: "legacy-carrier-question",
+					ownerId: "receipt-probe-owner",
+					now: "2026-08-21T00:00:20.000Z",
+					leaseExpiresAt: "2026-08-21T00:00:50.000Z",
+				}),
+			).toMatchObject({ ok: true, generation: 5 });
+		} finally {
+			migrated.close();
+		}
+	});
+
+	it("paces unacked and post-ACK rework probes without resetting the stall clock", async () => {
+		const { store, requestId } = await createPendingHeavyRework();
+		try {
+			const claim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-a",
+				now: "2026-07-23T00:11:00.000Z",
+				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
+			});
+			if (!claim.ok) throw new Error(claim.reason);
+			expect(
+				store.admitGeneralizedWorkflowExecution({
+					runId: "run-heavy",
+					nodeId: "implement",
+					executionId: "implement-exec",
+					attempt: 2,
+					activationId: "activation-paced-rework",
+					activationMode: "wake",
+					reworkRequestId: requestId,
+					expiresAt: "2026-07-23T02:00:00.000Z",
+					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
+					now: "2026-07-23T00:11:01.000Z",
+					env: enabled,
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator-a",
+					generation: claim.generation,
+					from: "pending",
+					to: "turn_granted",
+					now: "2026-07-23T00:11:02.000Z",
+				}),
+			).toEqual({ ok: true });
+			expect(
+				store.recordWorkflowActivationTurn({
+					activationId: "activation-paced-rework",
+					issueId: "FLY-1423",
+					executionId: "implement-exec",
+					epoch: 4,
+					sourceEventId: `paced-turn:${requestId}`,
+					grantedAt: "2026-07-23T00:11:02.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
+				store.advanceWorkflowReworkDelivery({
+					requestId,
+					ownerId: "coordinator-a",
+					generation: claim.generation,
+					from: "turn_granted",
+					to: "awaiting_receipt",
+					now: "2026-07-23T00:11:03.000Z",
+					nextRetryAt: "2026-07-23T00:14:03.000Z",
+					releaseOwner: true,
+				}),
+			).toEqual({ ok: true });
+
+			expect(
+				store.listWorkflowReworkDeliveries({
+					states: ["awaiting_receipt"],
+					now: "2026-07-23T00:14:02.999Z",
+				}),
+			).toEqual([]);
+			expect(
+				store.listWorkflowReworkDeliveries({
+					states: ["awaiting_receipt"],
+					now: "2026-07-23T00:14:03.000Z",
+				}),
+			).toHaveLength(1);
+			const probeClaim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-b",
+				now: "2026-07-23T00:14:03.000Z",
+				leaseExpiresAt: "2026-07-23T00:14:33.000Z",
+			});
+			if (!probeClaim.ok) throw new Error(probeClaim.reason);
+			expect(store.getWorkflowReworkDelivery(requestId)?.updated_at).toBe(
+				"2026-07-23T00:11:03.000Z",
+			);
+			expect(
+				store.scheduleWorkflowReworkReceiptProbe({
+					requestId,
+					ownerId: "coordinator-b",
+					generation: probeClaim.generation,
+					nextRetryAt: "2026-07-23T00:17:03.000Z",
+					reason: "receipt_not_observed",
+				}),
+			).toEqual({ ok: true });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "awaiting_receipt",
+				owner_id: null,
+				next_retry_at: "2026-07-23T00:17:03.000Z",
+				updated_at: "2026-07-23T00:11:03.000Z",
+			});
+
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-paced-rework",
+					executionId: "implement-exec",
+					epoch: 4,
+					ackedAt: "2026-07-23T00:14:04.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "wake_delivered",
+				next_retry_at: "2026-07-23T00:17:04.000Z",
+				updated_at: "2026-07-23T00:14:04.000Z",
+			});
+			expect(
+				store.listWorkflowReworkDeliveries({
+					states: ["wake_delivered"],
+					now: "2026-07-23T00:17:04.000Z",
+				}),
+			).toHaveLength(1);
+		} finally {
+			store.close();
 		}
 	});
 
@@ -2003,17 +2270,35 @@ describe("FLY-1423 durable unified rework request", () => {
 				}),
 			).toEqual({ ok: true });
 			expect(
+				store.recordWorkflowActivationTurn({
+					activationId: "activation-recovered-original",
+					issueId: "FLY-1423",
+					executionId: "implement-exec",
+					epoch: 7,
+					sourceEventId: `rework-turn:${requestId}:activation-recovered-original`,
+					grantedAt: "2026-07-23T00:41:01.000Z",
+				}),
+			).toMatchObject({ ok: true });
+			expect(
 				store.advanceWorkflowReworkDelivery({
 					requestId,
 					ownerId: "coordinator",
 					generation: claim.generation,
 					from: "turn_granted",
-					to: "wake_delivered",
+					to: "awaiting_receipt",
 					now: "2026-07-23T00:42:00.000Z",
 					releaseOwner: true,
-					alertIdentity: identity,
 				}),
 			).toEqual({ ok: true });
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-original",
+					executionId: "implement-exec",
+					epoch: 7,
+					ackedAt: "2026-07-23T00:42:01.000Z",
+					alertIdentity: identity,
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
 
 			const recovered = store
 				.listWorkflowAlertOutbox()
@@ -2030,17 +2315,14 @@ describe("FLY-1423 durable unified rework request", () => {
 			});
 			expect(recovered[0]?.payload.body).toContain("37 minutes");
 			expect(
-				store.advanceWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					generation: claim.generation,
-					from: "turn_granted",
-					to: "wake_delivered",
-					now: "2026-07-23T00:43:00.000Z",
-					releaseOwner: true,
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-original",
+					executionId: "implement-exec",
+					epoch: 7,
+					ackedAt: "2026-07-23T00:43:00.000Z",
 					alertIdentity: identity,
 				}),
-			).toEqual({ ok: false, reason: "stale_delivery_owner" });
+			).toEqual({ ok: true, idempotentReplay: true });
 			expect(
 				store
 					.listWorkflowAlertOutbox()
@@ -2080,9 +2362,19 @@ describe("FLY-1423 durable unified rework request", () => {
 					env: enabled,
 				}),
 			).toMatchObject({ ok: true });
+			expect(
+				store.recordWorkflowActivationTurn({
+					activationId: "activation-recovered-silent",
+					issueId: "FLY-1423",
+					executionId: "implement-exec",
+					epoch: 8,
+					sourceEventId: `rework-turn:${requestId}:activation-recovered-silent`,
+					grantedAt: "2026-07-23T00:11:30.000Z",
+				}),
+			).toMatchObject({ ok: true });
 			for (const [from, to] of [
 				["pending", "turn_granted"],
-				["turn_granted", "wake_delivered"],
+				["turn_granted", "awaiting_receipt"],
 			] as const) {
 				expect(
 					store.advanceWorkflowReworkDelivery({
@@ -2092,26 +2384,60 @@ describe("FLY-1423 durable unified rework request", () => {
 						from,
 						to,
 						now: "2026-07-23T00:12:00.000Z",
-						...(to === "wake_delivered"
+						...(to === "awaiting_receipt"
 							? {
-									alertIdentity: {
-										leadId: "fallback-lead",
-										projectName: "flywheel",
-										leadResolution: "fallback" as const,
-									},
 									releaseOwner: true,
 								}
 							: {}),
 					}),
 				).toEqual({ ok: true });
 			}
+			store.upsertSession({
+				execution_id: "implement-exec",
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "completed",
+			});
+			expect(store.getSession("implement-exec")?.status).toBe("completed");
+			expect(
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId: "rework-wake:recovered-silent",
+					executionId: "implement-exec",
+					activationId: "activation-recovered-silent",
+					epoch: 8,
+				}),
+			).toEqual({ disposition: "deliver" });
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-silent",
+					executionId: "implement-exec",
+					epoch: 8,
+					ackedAt: "2026-07-23T00:12:01.000Z",
+					alertIdentity: {
+						leadId: "fallback-lead",
+						projectName: "flywheel",
+						leadResolution: "fallback",
+					},
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
+			expect(
+				store.inspectWorkflowTurnWakeRetry({
+					wakeId: "rework-wake:recovered-silent",
+					executionId: "implement-exec",
+					activationId: "activation-recovered-silent",
+					epoch: 8,
+				}),
+			).toEqual({
+				disposition: "cancel",
+				reason: "rework_obligation_settled",
+			});
 			expect(store.listWorkflowAlertOutbox()).toEqual([]);
 		} finally {
 			store.close();
 		}
 	});
 
-	it("fails closed before wake_delivered when alert identity is missing or invalid", async () => {
+	it("fails closed before receipt-backed wake delivery when alert identity is missing or invalid", async () => {
 		const { store, requestId } = await createPendingHeavyRework();
 		try {
 			const claim = store.claimWorkflowReworkDelivery({
@@ -2146,30 +2472,41 @@ describe("FLY-1423 durable unified rework request", () => {
 					now: "2026-07-23T00:11:02.000Z",
 				}),
 			).toEqual({ ok: true });
-			const before = store.getWorkflowReworkDelivery(requestId);
-			const base = {
+			const awaiting = {
 				requestId,
 				ownerId: "coordinator",
 				generation: claim.generation,
 				from: "turn_granted" as const,
-				to: "wake_delivered" as const,
+				to: "awaiting_receipt" as const,
 				now: "2026-07-23T00:12:00.000Z",
 				releaseOwner: true,
 			};
-			expect(store.advanceWorkflowReworkDelivery(base)).toEqual({
-				ok: false,
-				reason: "invalid_delivery_transition",
+			expect(store.advanceWorkflowReworkDelivery(awaiting)).toEqual({
+				ok: true,
 			});
+			const before = store.getWorkflowReworkDelivery(requestId);
 			expect(
-				store.advanceWorkflowReworkDelivery({
-					...base,
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-identity",
+					executionId: "implement-exec",
+					epoch: 9,
+					ackedAt: "2026-07-23T00:12:01.000Z",
+					alertIdentity: undefined,
+				} as never),
+			).toEqual({ ok: false, reason: "invalid_rework_wake_receipt" });
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-identity",
+					executionId: "implement-exec",
+					epoch: 9,
+					ackedAt: "2026-07-23T00:12:01.000Z",
 					alertIdentity: {
 						leadId: "",
 						projectName: "flywheel",
 						leadResolution: "resolved",
 					},
 				}),
-			).toEqual({ ok: false, reason: "invalid_delivery_transition" });
+			).toEqual({ ok: false, reason: "invalid_rework_wake_receipt" });
 			expect(store.getWorkflowReworkDelivery(requestId)).toEqual(before);
 			expect(store.listWorkflowAlertOutbox()).toEqual([]);
 			expect(
@@ -2229,6 +2566,23 @@ describe("FLY-1423 durable unified rework request", () => {
 				to: "turn_granted",
 				now: "2026-07-23T00:41:01.000Z",
 			});
+			store.recordWorkflowActivationTurn({
+				activationId: "activation-recovered-conflict",
+				issueId: "FLY-1423",
+				executionId: "implement-exec",
+				epoch: 10,
+				sourceEventId: `rework-turn:${requestId}:activation-recovered-conflict`,
+				grantedAt: "2026-07-23T00:41:01.000Z",
+			});
+			store.advanceWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator",
+				generation: claim.generation,
+				from: "turn_granted",
+				to: "awaiting_receipt",
+				now: "2026-07-23T00:41:02.000Z",
+				releaseOwner: true,
+			});
 			store.appendWorkflowRunEventChecked({
 				runId: "run-heavy",
 				eventUid: `rework_stall_recovered:${requestId}`,
@@ -2236,20 +2590,17 @@ describe("FLY-1423 durable unified rework request", () => {
 			});
 
 			expect(() =>
-				store.advanceWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					generation: claim.generation,
-					from: "turn_granted",
-					to: "wake_delivered",
-					now: "2026-07-23T00:42:00.000Z",
-					releaseOwner: true,
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: "activation-recovered-conflict",
+					executionId: "implement-exec",
+					epoch: 10,
+					ackedAt: "2026-07-23T00:42:00.000Z",
 					alertIdentity: identity,
 				}),
 			).toThrow("rework_stall_recovered_receipt_conflict");
 			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-				state: "turn_granted",
-				owner_id: "coordinator",
+				state: "awaiting_receipt",
+				owner_id: null,
 			});
 			expect(
 				store.getWorkflowRunNode("run-heavy", "implement", 2),

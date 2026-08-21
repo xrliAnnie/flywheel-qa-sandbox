@@ -307,8 +307,9 @@ describe("CodexDaemonGoalRuntime", () => {
 		rt.stop();
 	});
 
-	it("HIGH-3: threads reapOrphanPid to the FIRST spawn only + reports each daemon pid via onDaemonPid", async () => {
+	it("FLY-1940: threads reapOrphanPid to the first spawn and hard ownership persistence to every spawn", async () => {
 		const seenReap: Array<number | undefined> = [];
+		const persistedGroups: number[] = [];
 		const h = makeHarness({
 			// death then complete → forces one account-rotation restart (2nd spawn)
 			runGoalScript: [
@@ -320,20 +321,20 @@ describe("CodexDaemonGoalRuntime", () => {
 			...h.opts,
 			spawnDaemon: async (o) => {
 				seenReap.push(o.reapOrphanPid);
+				o.onSpawnIdentity?.(1);
 				return fakeHandle(() => {});
 			},
 		});
-		const pids: Array<number | undefined> = [];
 		await rt.runGoal({
 			objective: "x",
 			reapOrphanPid: 4321,
-			onDaemonPid: (p) => pids.push(p),
+			onSpawnIdentity: (pgid) => persistedGroups.push(pgid),
 		});
 		// first spawn reaps a prior orphan; the within-run restart tears down its
 		// own daemon first, so there is NO orphan → reapOrphanPid omitted.
 		expect(seenReap).toEqual([4321, undefined]);
-		// each spawn reports its live pid (fakeHandle pid = 1)
-		expect(pids).toEqual([1, 1]);
+		// each spawn persists its live detached group before it can proceed
+		expect(persistedGroups).toEqual([1, 1]);
 		rt.stop();
 	});
 

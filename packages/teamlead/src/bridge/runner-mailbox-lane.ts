@@ -159,6 +159,7 @@ export interface RunnerMailboxLaneOptions {
 	recipientState?: (
 		executionId: string,
 	) => "alive" | "terminal_or_missing" | "unknown";
+	isTerminalDeliveryObligation?: (row: MailboxRow) => boolean;
 	resolveOwningLead?: (executionId: string) => string | undefined;
 	probeFactsByRecipient?: () => ReadonlyMap<string, string>;
 }
@@ -260,6 +261,7 @@ export class RunnerMailboxLane {
 				recipientKind: "runner",
 				leaseRetryMax: queueConfig.leaseRetryMax,
 				recipientState,
+				isTerminalDeliveryObligation: this.opts.isTerminalDeliveryObligation,
 				maxBatches: this.maxPerTick,
 				maxTerminalRows: this.maxPerTick,
 			});

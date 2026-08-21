@@ -161,4 +161,135 @@ describe("drainTurnWakeOutbox", () => {
 		expect(db.getTurnWake("wake-ready")).toMatchObject({ push_count: 1 });
 		db.close();
 	});
+
+	it("at T+180s performs the one verified retry, one Codex pointer, and alerts immediately when the pointer fails", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1940-turn-pointer-"));
+		dirs.push(dir);
+		const path = join(dir, "comm.db");
+		const t0 = 1_700_000_000_000;
+		const seed = new CommDB(path);
+		seed.registerSession(
+			"exec-codex",
+			"window",
+			"flywheel",
+			"FLY-1940",
+			"flywheel-eng-lead",
+		);
+		seed.enqueueTurnWake({
+			wakeId: "rework-wake:req-1940",
+			executionId: "exec-codex",
+			issueId: "FLY-1940",
+			epoch: 11,
+			activationId: "activation:req-1940",
+			purpose: "workflow_rework",
+			envelope: { fromAgent: "bridge", content: "TURN ready" },
+			backend: "codex",
+			createdAtMs: t0,
+		});
+		seed.close();
+		const wake = vi.fn(async () => ({ ok: true }));
+		const onSecondPushUnacked = vi.fn(async () => ({
+			ok: false as const,
+			error: "no idle input box",
+		}));
+		const run = (nowMs: number) =>
+			drainTurnWakeOutbox({
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => path,
+				wake,
+				nowMs,
+				onSecondPushUnacked,
+			});
+
+		await expect(run(t0)).resolves.toEqual({
+			pushed: 1,
+			alerts: 0,
+			cancelled: 0,
+		});
+		await expect(run(t0 + 179_999)).resolves.toEqual({
+			pushed: 0,
+			alerts: 0,
+			cancelled: 0,
+		});
+		await expect(run(t0 + 180_000)).resolves.toEqual({
+			pushed: 1,
+			alerts: 1,
+			cancelled: 0,
+		});
+		expect(wake).toHaveBeenCalledTimes(2);
+		expect(onSecondPushUnacked).toHaveBeenCalledTimes(1);
+		expect(onSecondPushUnacked).toHaveBeenCalledWith(
+			expect.objectContaining({
+				wake_id: "rework-wake:req-1940",
+				push_count: 2,
+			}),
+			"flywheel",
+		);
+		const db = new CommDB(path);
+		expect(db.getTurnWake("rework-wake:req-1940")).toMatchObject({
+			push_count: 2,
+			alert_question_id: "turn-wake-alert:rework-wake:req-1940",
+		});
+		db.close();
+	});
+
+	it("projects an ACK observed before T+180s without a retry or pointer", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly1940-turn-receipt-"));
+		dirs.push(dir);
+		const path = join(dir, "comm.db");
+		const t0 = 1_700_000_000_000;
+		const seed = new CommDB(path);
+		seed.enqueueTurnWake({
+			wakeId: "carrier-wake:q-1940",
+			executionId: "exec-codex",
+			issueId: "FLY-1940",
+			epoch: 12,
+			activationId: "carrier:q-1940",
+			purpose: "workflow_ship_carrier",
+			envelope: { fromAgent: "bridge", content: "TURN ready" },
+			backend: "codex",
+			createdAtMs: t0,
+		});
+		const first = seed.claimDueTurnWake({
+			nowMs: t0,
+			retryAfterMs: 180_000,
+			leaseMs: 30_000,
+		})!;
+		seed.finishTurnWakePush({
+			wakeId: first.wake_id,
+			claimToken: first.claim_token!,
+			pushedAtMs: t0,
+			result: "ok",
+		});
+		seed.ackTurnWakes({
+			executionId: "exec-codex",
+			epoch: 12,
+			activationId: "carrier:q-1940",
+			ackedAtMs: t0 + 179_999,
+		});
+		seed.close();
+		const wake = vi.fn(async () => ({ ok: true }));
+		const pointer = vi.fn(async () => ({ ok: true as const }));
+		const receipt = vi.fn(async () => "projected" as const);
+
+		await expect(
+			drainTurnWakeOutbox({
+				projectNames: ["flywheel"],
+				commDbPathForProject: () => path,
+				wake,
+				nowMs: t0 + 180_000,
+				onSecondPushUnacked: pointer,
+				onReceipt: receipt,
+			}),
+		).resolves.toEqual({ pushed: 0, alerts: 0, cancelled: 0 });
+		expect(wake).not.toHaveBeenCalled();
+		expect(pointer).not.toHaveBeenCalled();
+		expect(receipt).toHaveBeenCalledOnce();
+		const db = new CommDB(path);
+		expect(db.getTurnWake("carrier-wake:q-1940")).toMatchObject({
+			push_count: 1,
+			receipt_projected_at: t0 + 180_000,
+		});
+		db.close();
+	});
 });

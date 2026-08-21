@@ -804,7 +804,13 @@ export class WorkflowEngineDispatcher {
 		>;
 		try {
 			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				states: ["pending", "turn_granted", "held"],
+				states: [
+					"pending",
+					"turn_granted",
+					"awaiting_receipt",
+					"wake_delivered",
+					"held",
+				],
 				now: this.now().toISOString(),
 			});
 		} catch (error) {
@@ -1115,7 +1121,9 @@ export class WorkflowEngineDispatcher {
 			typeof this.options.store.listWorkflowReworkDeliveries
 		>;
 		try {
-			deliveries = this.options.store.listWorkflowReworkDeliveries();
+			deliveries = this.options.store.listWorkflowReworkDeliveries({
+				includeDeferred: true,
+			});
 		} catch (error) {
 			this.log(
 				`workflow rework stall scan held: ${error instanceof Error ? error.message : String(error)}`,

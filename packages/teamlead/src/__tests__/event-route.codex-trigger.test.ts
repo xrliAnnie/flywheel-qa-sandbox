@@ -210,7 +210,9 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		const manifest = store.getCurrentDesignReviewManifest(execId);
 		expect(manifest?.expected_plan_path).toBe(committedPlanPath);
 		expect(manifest?.expected_blob_sha).toMatch(/^[a-f0-9]{40}$/);
-		expect(manifest?.delivered_at).toBeTruthy();
+		// Queue insertion is not delivery; the manifest is stamped only after
+		// the runner ACKs/reads this exact current revision.
+		expect(manifest?.delivered_at).toBeUndefined();
 		expect(instructions[0]!.content).toContain(manifest!.request_id);
 		expect(instructions[0]!.content).toContain(manifest!.expected_blob_sha);
 

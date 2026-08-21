@@ -458,7 +458,11 @@ export interface GateSupersedeRow {
 	row_id: number;
 	id: string;
 	from_agent: string;
-	checkpoint: "approve_to_ship" | "review_design" | "review_code";
+	checkpoint:
+		| "approve_to_ship"
+		| "review_design"
+		| "review_code"
+		| "founder_review";
 	created_at: string;
 	superseded_at: string | null;
 	superseded_by: string | null;
@@ -1460,7 +1464,11 @@ export class CommDB {
 							resolved_via: string | null;
 					  }
 					| undefined;
-				if (!question || question.checkpoint !== "approve_to_ship") {
+				if (
+					!question ||
+					(question.checkpoint !== "approve_to_ship" &&
+						question.checkpoint !== "founder_review")
+				) {
 					return { kind: "missing" as const };
 				}
 				if (
@@ -1489,7 +1497,7 @@ export class CommDB {
 						   relay_state = 'terminal_disposed', resolved_via = ?,
 						   superseded_at = COALESCE(superseded_at, ?)
 						 WHERE id = ? AND type = 'question'
-						   AND checkpoint = 'approve_to_ship'
+						   AND checkpoint IN ('approve_to_ship','founder_review')
 						   AND relay_state != 'terminal_disposed'
 						   AND NOT EXISTS (
 						     SELECT 1 FROM mailbox response
@@ -1616,7 +1624,7 @@ export class CommDB {
 				        ) THEN 1 ELSE 0 END AS pending
 				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
-				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code','founder_review')
 				    AND q.superseded_at IS NULL
 				  ORDER BY q.created_at, q.rowid`,
 			)
@@ -1636,7 +1644,7 @@ export class CommDB {
 				        0 AS pending
 				   FROM mailbox_message_projection q
 				  WHERE q.type = 'question'
-				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND q.checkpoint IN ('approve_to_ship','review_design','review_code','founder_review')
 				    AND q.superseded_at IS NOT NULL
 				  ORDER BY q.created_at, q.rowid`,
 			)
@@ -1659,7 +1667,7 @@ export class CommDB {
 				  WHERE old.id = ?
 				    AND old.type = 'question' AND newer.type = 'question'
 				    AND old.checkpoint = newer.checkpoint
-				    AND old.checkpoint IN ('approve_to_ship','review_design','review_code')
+				    AND old.checkpoint IN ('approve_to_ship','review_design','review_code','founder_review')
 				    AND old.superseded_at IS NULL
 				    AND newer.superseded_at IS NULL
 				    AND ${answerable}
@@ -2434,6 +2442,27 @@ export class CommDB {
 			.all(checkpoint) as Message[];
 	}
 
+	/**
+	 * Canonical open-gate enumeration for lifecycle patrols. Deliberately ignores
+	 * expires_at: relay-open, unanswered authority remains answerable under H2
+	 * retention even after its cleanup TTL elapsed.
+	 */
+	getOpenGatesByCheckpoint(checkpoint: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT q.* FROM mailbox_message_projection q
+				 WHERE q.type = 'question' AND q.checkpoint = ?
+				   AND q.relay_state != 'terminal_disposed'
+				   AND q.superseded_at IS NULL
+				   AND NOT EXISTS (
+				     SELECT 1 FROM mailbox_message_projection response
+				      WHERE response.parent_id = q.id AND response.type = 'response'
+				   )
+				 ORDER BY q.created_at ASC, q.id ASC`,
+			)
+			.all(checkpoint) as Message[];
+	}
+
 	/** Exact live-or-archived family read; archived lookup is index-bound by subject_id. */
 	getFounderReviewFamily(
 		questionId: string,
@@ -2615,6 +2644,24 @@ export class CommDB {
          )
          AND datetime(q.expires_at) > datetime('now')
          ORDER BY q.created_at ASC`,
+			)
+			.all(runnerId) as Message[];
+	}
+
+	/** Canonical lifecycle form of getPendingGatesByRunner (no TTL cutoff). */
+	getOpenGatesByRunner(runnerId: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT q.* FROM mailbox_message_projection q
+				 WHERE q.from_agent = ? AND q.type = 'question'
+				   AND q.checkpoint IS NOT NULL
+				   AND q.relay_state != 'terminal_disposed'
+				   AND q.superseded_at IS NULL
+				   AND NOT EXISTS (
+				     SELECT 1 FROM mailbox_message_projection response
+				      WHERE response.parent_id = q.id AND response.type = 'response'
+				   )
+				 ORDER BY q.created_at ASC, q.id ASC`,
 			)
 			.all(runnerId) as Message[];
 	}
@@ -5543,6 +5590,7 @@ export class CommDB {
 	materializeTurnWakeNoReceiptAlerts(input: {
 		nowMs: number;
 		alertAfterMs: number;
+		wakeIds?: string[];
 	}): string[] {
 		if (
 			!Number.isSafeInteger(input.nowMs) ||
@@ -5552,6 +5600,14 @@ export class CommDB {
 		) {
 			throw new Error("invalid TURN wake alert window");
 		}
+		const wakeIds = [
+			...new Set(
+				(input.wakeIds ?? []).map((wakeId) => wakeId.trim()).filter(Boolean),
+			),
+		];
+		const wakeFilter = wakeIds.length
+			? `AND w.wake_id IN (${wakeIds.map(() => "?").join(",")})`
+			: "";
 		const created: string[] = [];
 		this.db
 			.transaction(() => {
@@ -5564,9 +5620,10 @@ export class CommDB {
 					  WHERE w.state = 'sent' AND w.acked_at IS NULL
 					    AND w.alerted_at IS NULL AND w.first_push_at IS NOT NULL
 					    AND w.first_push_at <= ?
+					    ${wakeFilter}
 					  ORDER BY w.first_push_at, w.wake_id`,
 					)
-					.all(input.nowMs - input.alertAfterMs) as Array<
+					.all(input.nowMs - input.alertAfterMs, ...wakeIds) as Array<
 					TurnWakeOutboxRow & { lead_id: string | null }
 				>;
 				for (const row of due) {

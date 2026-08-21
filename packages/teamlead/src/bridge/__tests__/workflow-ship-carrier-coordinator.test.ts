@@ -17,6 +17,7 @@ function harness(input?: {
 	heldBeforeWake?: boolean;
 	terminalBeforeWake?: boolean;
 	redriveGeneration?: number;
+	initialState?: WorkflowCarrierDeliveryRow["state"];
 }) {
 	let delivery: WorkflowCarrierDeliveryRow = {
 		question_id: "approve-1",
@@ -29,13 +30,14 @@ function harness(input?: {
 		owner_id: null,
 		generation: 0,
 		lease_expires_at: null,
-		state: "pending",
+		state: input?.initialState ?? "pending",
 		hold_count: 0,
 		redrive_generation: input?.redriveGeneration ?? 0,
 		next_retry_at: null,
-		turn_epoch: null,
-		turn_source_event_id: null,
-		turn_granted_at: null,
+		turn_epoch: input?.initialState === "awaiting_receipt" ? 8 : null,
+		turn_source_event_id:
+			input?.initialState === "awaiting_receipt" ? "ship-turn:approve-1" : null,
+		turn_granted_at: input?.initialState === "awaiting_receipt" ? NOW : null,
 		last_error: null,
 		created_at: NOW,
 		updated_at: NOW,
@@ -87,8 +89,25 @@ function harness(input?: {
 					? null
 					: delivery.lease_expires_at,
 				last_error: advance.error ?? null,
+				next_retry_at: advance.nextRetryAt ?? delivery.next_retry_at,
 			};
 			return { ok: true };
+		}),
+		scheduleWorkflowCarrierReceiptProbe: vi.fn((probe) => {
+			if (
+				delivery.owner_id !== probe.ownerId ||
+				delivery.generation !== probe.generation ||
+				delivery.state !== "awaiting_receipt"
+			) {
+				return { ok: false as const, reason: "stale_delivery_owner" };
+			}
+			delivery = {
+				...delivery,
+				owner_id: null,
+				lease_expires_at: null,
+				next_retry_at: probe.nextRetryAt,
+			};
+			return { ok: true as const };
 		}),
 		recordWorkflowCarrierActivationTurn: vi.fn((projection) => {
 			if (failProjection) {
@@ -174,7 +193,9 @@ function harness(input?: {
 
 describe("WorkflowShipCarrierDeliveryHandler", () => {
 	it("drains every due delivery from the engine reconcile tick", async () => {
-		const reconcile = vi.fn(async () => ({ kind: "wake_delivered" as const }));
+		const reconcile = vi.fn(async () => ({
+			kind: "awaiting_receipt" as const,
+		}));
 		const store = {
 			listWorkflowCarrierDeliveries: vi.fn(() => [
 				{ question_id: "approve-1" },
@@ -189,7 +210,7 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 			}),
 		).resolves.toEqual({ delivered: 2, held: 0 });
 		expect(store.listWorkflowCarrierDeliveries).toHaveBeenCalledWith({
-			states: ["pending", "grant_started", "turn_granted"],
+			states: ["pending", "grant_started", "turn_granted", "awaiting_receipt"],
 			now: NOW,
 		});
 		expect(reconcile.mock.calls.map(([id]) => id)).toEqual([
@@ -201,7 +222,7 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 	it("grants the approved carrier bundle, projects the epoch, and wakes it", async () => {
 		const h = harness();
 		await expect(h.handler.reconcile("approve-1")).resolves.toEqual({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			executionId: "implement-1",
 			activationId: "carrier:run-1:founder_gate:1:approve-1",
 			epoch: 8,
@@ -220,7 +241,27 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 		);
 		expect(h.store.recordWorkflowCarrierActivationTurn).toHaveBeenCalled();
 		expect(h.effects.wakeActor).toHaveBeenCalledOnce();
-		expect(h.getDelivery().state).toBe("wake_delivered");
+		expect(h.getDelivery().state).toBe("awaiting_receipt");
+		expect(h.getDelivery().next_retry_at).toBe("2026-08-11T08:03:00.000Z");
+	});
+
+	it("reprobes an unacked carrier without replaying its TURN or wake", async () => {
+		const h = harness({ initialState: "awaiting_receipt" });
+		await expect(h.handler.reconcile("approve-1")).resolves.toEqual({
+			kind: "awaiting_receipt",
+			executionId: "implement-1",
+			activationId: "carrier:run-1:founder_gate:1:approve-1",
+			epoch: 8,
+		});
+		expect(h.store.scheduleWorkflowCarrierReceiptProbe).toHaveBeenCalledWith({
+			questionId: "approve-1",
+			ownerId: "carrier-handler-a",
+			generation: 1,
+			nextRetryAt: "2026-08-11T08:03:00.000Z",
+			reason: "receipt_not_observed",
+		});
+		expect(h.effects.grantTurn).not.toHaveBeenCalled();
+		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
 	it("replays the immutable source grant after a projection crash", async () => {
@@ -230,7 +271,7 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 			reason: "turn_projection_failed:projection_crash",
 		});
 		await expect(h.handler.reconcile("approve-1")).resolves.toMatchObject({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 			epoch: 8,
 		});
 		expect(h.effects.grantTurn).toHaveBeenCalledTimes(2);
@@ -242,7 +283,7 @@ describe("WorkflowShipCarrierDeliveryHandler", () => {
 	it("uses a fresh sourced grant identity for an operator redrive", async () => {
 		const h = harness({ redriveGeneration: 2 });
 		await expect(h.handler.reconcile("approve-1")).resolves.toMatchObject({
-			kind: "wake_delivered",
+			kind: "awaiting_receipt",
 		});
 		expect(h.effects.grantTurn).toHaveBeenCalledWith(
 			expect.objectContaining({

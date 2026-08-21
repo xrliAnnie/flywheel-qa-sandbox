@@ -264,4 +264,55 @@ describe("attemptRunnerRecoveryNudge (FLY-368 shared audited op)", () => {
 		expect(out.status).toBe(409);
 		expect(sendKeys).not.toHaveBeenCalled();
 	});
+
+	it("turn_pointer mode doorbells a goal-achieved Codex pane with the exact TURN command", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-1",
+			project_name: "geo",
+			status: "completed",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		const isTurnWakeBindingLive = vi.fn(() => true);
+
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "turn_pointer",
+				actor: "turn-wake-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+				turnWakeId: "rework-wake:req-1",
+			},
+			deps({ isTurnWakeBindingLive }),
+		);
+
+		expect(out.status).toBe(200);
+		expect(isTurnWakeBindingLive).toHaveBeenCalledWith(
+			"exec-1",
+			"geo",
+			"rework-wake:req-1",
+		);
+		expect(sendKeys).toHaveBeenCalledWith(
+			"geo:@1",
+			"TURN pending: run flywheel-comm turn --exec-id exec-1",
+		);
+	});
+
+	it("turn_pointer mode fails closed after its exact TURN obligation settles", async () => {
+		const out = await attemptRunnerRecoveryNudge(
+			{
+				mode: "turn_pointer",
+				actor: "turn-wake-patrol",
+				executionId: "exec-1",
+				leadId: "product-lead",
+				fingerprint: STUCK_FP,
+				turnWakeId: "carrier-wake:q-1",
+			},
+			deps({ isTurnWakeBindingLive: () => false }),
+		);
+
+		expect(out.status).toBe(409);
+		expect(sendKeys).not.toHaveBeenCalled();
+	});
 });

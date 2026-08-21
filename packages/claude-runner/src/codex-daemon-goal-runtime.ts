@@ -156,13 +156,12 @@ export interface RunGoalInput {
 	 */
 	reapOrphanPid?: number;
 	/**
-	 * FLY-1188 HIGH-3: fired with the LIVE daemon's pid right after each spawn
-	 * (and on every account-rotation restart). The caller persists it so a later
-	 * resuming redrive can reap this daemon if the Bridge dies without killing it.
-	 * `undefined` when the spawn seam did not surface a pid. A throwing handler is
-	 * swallowed (it must never break the run).
+	 * FLY-1940: synchronously persist the LIVE detached daemon's process-group
+	 * identity on every spawn/restart, before the first socket await. A throwing
+	 * handler aborts spawn after killing and verifying the just-created group;
+	 * ownership persistence is therefore a hard precondition, not telemetry.
 	 */
-	onDaemonPid?: (pid: number | undefined) => void;
+	onSpawnIdentity?: (pgid: number) => void;
 }
 
 export interface RunGoalOutcome {
@@ -215,11 +214,6 @@ export class CodexDaemonGoalRuntime {
 	/** The in-flight runGoal's completion marker (resolves, never rejects, once
 	 * the run has fully settled + done its own daemon cleanup); null when idle. */
 	private inflight: Promise<void> | null = null;
-	/** HIGH-3: per-run callback fired with each spawned daemon's pid so the
-	 * caller can persist it for post-crash orphan reaping. Set in runGoal,
-	 * cleared in its finally. */
-	private onDaemonPidCb?: (pid: number | undefined) => void;
-
 	constructor(opts: CodexDaemonGoalRuntimeOptions) {
 		if (opts.codexHomes.length === 0) {
 			throw new Error("CodexDaemonGoalRuntime requires at least one codexHome");
@@ -276,7 +270,10 @@ export class CodexDaemonGoalRuntime {
 	 * still-dying daemon on the same socket, and a stop() that raced startup
 	 * leaves no live daemon.
 	 */
-	private async startSession(reapOrphanPid?: number): Promise<DaemonSession> {
+	private async startSession(
+		reapOrphanPid?: number,
+		onSpawnIdentity?: (pgid: number) => void,
+	): Promise<DaemonSession> {
 		const codexHome = this.nextCodexHome();
 		const handle = await this.spawnDaemon({
 			codexBin: this.opts.codexBin,
@@ -293,18 +290,9 @@ export class CodexDaemonGoalRuntime {
 			// HIGH-3: reap a prior orphaned daemon of THIS execution (if any) so
 			// the resuming redrive can reclaim the socket instead of blocking.
 			...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
+			...(onSpawnIdentity ? { onSpawnIdentity } : {}),
 			logger: this.log,
 		});
-		// HIGH-3: surface the live daemon pid so the caller can persist it — a
-		// later resuming redrive uses it to reap this daemon if the Bridge dies
-		// without killing it. Swallow a throwing handler (must never break spawn).
-		try {
-			this.onDaemonPidCb?.(handle.child.pid ?? undefined);
-		} catch (err) {
-			this.safeLog(
-				`onDaemonPid handler threw (ignored): ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
 		const exited = this.makeExitPromise(handle);
 		const dying: DyingDaemon = { handle, exited };
 		// Close the given resources, then SIGTERM the daemon and WAIT for it to
@@ -450,10 +438,9 @@ export class CodexDaemonGoalRuntime {
 			const maxRestarts = this.opts.maxRestarts ?? 5;
 			let threadId = input.resumeThreadId;
 			let restarts = 0;
-			// HIGH-3: persist the live daemon pid on every spawn; reap a prior
-			// orphan only on the FIRST spawn of this run (a within-run restart
-			// tears down its own session first, so there is no orphan to reap).
-			this.onDaemonPidCb = input.onDaemonPid;
+			// HIGH-3/FLY-1940: reap a prior orphan only on the FIRST spawn of this
+			// run. Every new spawn persists its group before the socket wait through
+			// the hard onSpawnIdentity contract.
 			let reapPid = input.reapOrphanPid;
 			// MED-7 R2 (Codex full-PR review): arm the RUN's start ONCE. Every
 			// restart's runGoalToTerminal gets this SAME anchor, so the active +
@@ -471,7 +458,9 @@ export class CodexDaemonGoalRuntime {
 
 			while (true) {
 				try {
-					const session = this.session ?? (await this.startSession(reapPid));
+					const session =
+						this.session ??
+						(await this.startSession(reapPid, input.onSpawnIdentity));
 					reapPid = undefined; // reap applies only to the first spawn
 					threadId = await this.ensureThread(session, threadId);
 					// AUTHORITATIVE own-thread signal (FLY-1188 M4d): the thread is
@@ -575,7 +564,6 @@ export class CodexDaemonGoalRuntime {
 			}
 		} finally {
 			this.running = false;
-			this.onDaemonPidCb = undefined;
 			// SUCCESS OR FAILURE: if stop() ran during this call, wait for its
 			// session-drain so this run never returns/throws ahead of the daemon's
 			// exit (M4a's terminal-before-close can let runGoalFn succeed after a

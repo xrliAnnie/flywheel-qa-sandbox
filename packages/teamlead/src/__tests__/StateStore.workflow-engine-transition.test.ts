@@ -74,6 +74,13 @@ async function engineRun(
 		state: "running",
 		executionId: "design-1",
 	});
+	store.upsertSession({
+		execution_id: "design-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "design",
+	});
 	return store;
 }
 
@@ -110,6 +117,13 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 		attempt: 1,
 		state: "running",
 		executionId: "design-1",
+	});
+	store.upsertSession({
+		execution_id: "design-1",
+		issue_id: "FLY-1765",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "design",
 	});
 	return store;
 }
@@ -184,9 +198,13 @@ async function openRunnerShipGate(
 		forceUnbound?: boolean;
 		delayCarrier?: boolean;
 		gateEntryHead?: string;
+		runnerHead?: string;
+		omitGateEntryBinding?: boolean;
+		expectedTransitionRefusal?: string;
 	} = {},
 ) {
 	const gateEntryHead = options.gateEntryHead ?? "a".repeat(40);
+	const runnerHead = options.runnerHead ?? "a".repeat(40);
 	advance(store, {
 		nodeId: "design",
 		attempt: 1,
@@ -218,13 +236,13 @@ async function openRunnerShipGate(
 			route: "needs_review",
 			sourceEventId: "complete-implement-for-helper",
 			completionSubmission: { decision: { route: "needs_review" } },
-			subjectDigest: "a".repeat(40),
+			subjectDigest: runnerHead,
 			...(options.forceUnbound
 				? {}
 				: {
 						prBinding: {
 							prNumber: 1624,
-							headSha: "a".repeat(40),
+							headSha: runnerHead,
 							targetRepoIdentity: "__main__",
 							probeRepoSlug: "xrliAnnie/flywheel",
 							targetRepoPath: "/tmp/flywheel",
@@ -250,6 +268,13 @@ async function openRunnerShipGate(
 	if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
 		throw new Error("QA admission failed");
 	}
+	store.upsertSession({
+		execution_id: qaIntent!.execution_id,
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "qa",
+	});
 	if (options.forceUnbound) {
 		store.upsertSession({
 			execution_id: "implement-1",
@@ -267,39 +292,46 @@ async function openRunnerShipGate(
 			pr_head_sha: "a".repeat(40),
 		});
 	}
-	expect(
-		store.submitWorkflowDecisionByCredential({
-			credential: qaAdmission.submissionCredential,
-			clientRequestId: "qa-pass-helper",
-			predicate: "qa_passed",
-			subjectDigest: gateEntryHead,
-			issuerVendor: "claude",
-			issuerModel: "claude-opus-4-8",
-			subjectProducerExecutionId: "implement-1",
-			subjectProducerVendor: "codex",
-			claimExpiresAt: "2026-07-16T02:00:00.000Z",
-			...(options.forceUnbound
-				? {}
-				: {
-						gateEntryBinding: {
-							kind: "worktree" as const,
-							prNumber: 1624,
-							headSha: gateEntryHead,
-							targetRepoIdentity: "__main__",
-							probeRepoSlug: "xrliAnnie/flywheel",
-							targetRepoPath: "/tmp/flywheel",
-							worktreeBindingGeneration: "generation-1",
-							expectedProducerMirrorHead: "a".repeat(40),
-						},
-					}),
-			alertIdentity: {
-				leadId: "flywheel-eng-lead",
-				projectName: "flywheel",
-				leadResolution: "resolved",
-			},
-			now: "2026-07-16T01:15:00.000Z",
-		}),
-	).toMatchObject({ ok: true });
+	const submission = store.submitWorkflowDecisionByCredential({
+		credential: qaAdmission.submissionCredential,
+		clientRequestId: "qa-pass-helper",
+		predicate: "qa_passed",
+		subjectDigest: gateEntryHead,
+		issuerVendor: "claude",
+		issuerModel: "claude-opus-4-8",
+		subjectProducerExecutionId: "implement-1",
+		subjectProducerVendor: "codex",
+		claimExpiresAt: "2026-07-16T02:00:00.000Z",
+		...(options.forceUnbound || options.omitGateEntryBinding
+			? {}
+			: {
+					gateEntryBinding: {
+						kind: "worktree" as const,
+						prNumber: 1624,
+						headSha: gateEntryHead,
+						targetRepoIdentity: "__main__",
+						probeRepoSlug: "xrliAnnie/flywheel",
+						targetRepoPath: "/tmp/flywheel",
+						worktreeBindingGeneration: "generation-1",
+						expectedProducerMirrorHead: runnerHead,
+					},
+				}),
+		alertIdentity: {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		},
+		now: "2026-07-16T01:15:00.000Z",
+	});
+	if (options.expectedTransitionRefusal) {
+		expect(submission).toMatchObject({
+			ok: false,
+			reason: "transition_refused",
+			detail: { transitionReason: options.expectedTransitionRefusal },
+		});
+		return store.getCurrentWorkflowGateHolder("run-1", "founder_gate")!;
+	}
+	expect(submission).toMatchObject({ ok: true });
 	return store.getCurrentWorkflowGateHolder("run-1", "founder_gate")!;
 }
 
@@ -864,6 +896,13 @@ describe("engine-owned snapshot transition transaction", () => {
 				env: engineFlags,
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "implement",
+		});
 
 		expect(
 			store.commitEnrolledCompletion({
@@ -969,6 +1008,13 @@ describe("engine-owned snapshot transition transaction", () => {
 		if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
 			throw new Error("QA admission failed");
 		}
+		store.upsertSession({
+			execution_id: qaExecutionId,
+			issue_id: "FLY-1765",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "qa",
+		});
 		const passed = store.submitWorkflowDecisionByCredential({
 			credential: qaAdmission.submissionCredential,
 			clientRequestId: "qa-pass-land-authority",
@@ -1412,6 +1458,13 @@ describe("engine-owned snapshot transition transaction", () => {
 		if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
 			throw new Error("QA admission failed");
 		}
+		store.upsertSession({
+			execution_id: qaIntent!.execution_id,
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "qa",
+		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
 				credential: qaAdmission.submissionCredential,
@@ -1703,6 +1756,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				result: "sent",
 			}),
 		).toEqual({ ok: true });
+		store.setSessionParams("implement-1", { status: "completed" });
 		expect(
 			store.inspectWorkflowTurnWakeRetry({
 				wakeId: "carrier-wake:receipt-test",
@@ -1717,7 +1771,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				ownerId: "receipt-test",
 				generation: carrierClaim.generation,
 				from: "turn_granted",
-				to: "wake_delivered",
+				to: "awaiting_receipt",
 				now: "2026-07-16T01:17:03.000Z",
 				releaseOwner: true,
 			}),
@@ -1733,6 +1787,17 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.getWorkflowCarrierDelivery(holder!.question_id)?.state).toBe(
 			"receipt_started",
 		);
+		expect(
+			store.inspectWorkflowTurnWakeRetry({
+				wakeId: "carrier-wake:receipt-test",
+				executionId: "implement-1",
+				activationId: carrier.carrier_activation_id,
+				epoch: 7,
+			}),
+		).toEqual({
+			disposition: "cancel",
+			reason: "carrier_obligation_settled",
+		});
 		const turnExpectation = store
 			.listWorkflowTurnExpectations()
 			.find((item) => item.source === "carrier")!;
@@ -1845,6 +1910,280 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.getSession("implement-1")?.status).toBe("completed");
 		expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
 		store.close();
+	});
+
+	it("rejects a runner-ship gate when QA proof is for an older head", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const oldQaHead = "a".repeat(40);
+		const revivedRunnerHead = "b".repeat(40);
+
+		await openRunnerShipGate(store, {
+			gateEntryHead: oldQaHead,
+			runnerHead: revivedRunnerHead,
+			omitGateEntryBinding: true,
+			expectedTransitionRefusal: "engine_invariant:runner_ship_qa_head_stale",
+		});
+
+		expect(store.getWorkflowRun("run-1")).toMatchObject({
+			status: "active",
+			current_node_id: "qa",
+		});
+		expect(
+			store.getCurrentWorkflowGateHolder("run-1", "founder_gate"),
+		).toBeUndefined();
+		expect(
+			store
+				.listWorkflowAlertOutbox()
+				.filter((alert) =>
+					alert.escalation_uid.endsWith(":runner_ship_qa_head_stale"),
+				),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("revokes an older QA PASS as soon as a newer producer head is bound", async () => {
+		const store = await engineRun({ gateCarrier: true });
+		const oldHead = "a".repeat(40);
+		const newHead = "b".repeat(40);
+		await openRunnerShipGate(store, { runnerHead: oldHead });
+
+		expect(
+			store.resolveWorkflowDecisionClaim({
+				runId: "run-1",
+				nodeId: "qa",
+				decisionKind: "qa_verdict",
+				predicate: "qa_passed",
+				requiredAttempt: 1,
+				subjectKind: "git_head",
+				subjectDigest: oldHead,
+				now: "2026-07-16T01:16:00.000Z",
+			}),
+		).toMatchObject({ valid: true });
+
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run SET current_node_id = 'implement' WHERE run_id = 'run-1'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 2,
+			state: "pending",
+			executionId: "implement-2",
+		});
+		expect(
+			store.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				executionId: "implement-2",
+				attempt: 2,
+				expiresAt: "2026-07-16T03:00:00.000Z",
+				absoluteDeadlineAt: "2026-07-17T00:00:00.000Z",
+				now: "2026-07-16T01:17:00.000Z",
+				env: menuEngineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "implement-2",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "implement",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "implement-2",
+				route: "needs_review",
+				sourceEventId: "complete-implement-new-head",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: newHead,
+				prBinding: {
+					prNumber: 1624,
+					headSha: newHead,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-2",
+				},
+				now: "2026-07-16T01:18:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		expect(
+			store.resolveWorkflowDecisionClaim({
+				runId: "run-1",
+				nodeId: "qa",
+				decisionKind: "qa_verdict",
+				predicate: "qa_passed",
+				requiredAttempt: 1,
+				subjectKind: "git_head",
+				subjectDigest: oldHead,
+				now: "2026-07-16T01:19:00.000Z",
+			}),
+		).toEqual({ valid: false, reason: "revoked" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "claim_revoked"),
+		).toContainEqual(
+			expect.objectContaining({
+				payload: expect.objectContaining({
+					reason: "materialized_head_superseded",
+					actor: "workflow_head_binding",
+				}),
+			}),
+		);
+		store.close();
+	});
+
+	it("rejects a terminal session's new completion/claim but preserves exact replay", async () => {
+		const store = await compiledCodeEngineRun();
+		const first = completeCompiledCodeImplement(store);
+		expect(first.completion).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1765",
+			project_name: "flywheel",
+			status: "completed",
+			workflow_node_id: "implement",
+		});
+
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "implement-1",
+				route: "needs_review",
+				sourceEventId: "complete-implement-1",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: "a".repeat(40),
+				prBinding: {
+					prNumber: 1765,
+					headSha: "a".repeat(40),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel-FLY-1765",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-08-14T01:11:00.000Z",
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		store.close();
+
+		const revived = await compiledCodeEngineRun();
+		advance(revived, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-1",
+			outcome: "design_done",
+			successorExecutionId: "implement-1",
+		});
+		expect(
+			revived.admitGeneralizedWorkflowExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				executionId: "implement-1",
+				attempt: 1,
+				expiresAt: "2026-08-14T02:00:00.000Z",
+				absoluteDeadlineAt: "2026-08-15T00:00:00.000Z",
+				now: "2026-08-14T01:05:00.000Z",
+				env: menuEngineFlags,
+			}),
+		).toMatchObject({ ok: true });
+		revived.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1765",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+		expect(
+			revived.commitEnrolledCompletion({
+				executionId: "implement-1",
+				route: "needs_review",
+				sourceEventId: "revived-completion",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: "b".repeat(40),
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-08-14T01:10:00.000Z",
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "transition_refused",
+			detail: { transitionReason: "engine_invariant:writer_session_terminal" },
+		});
+		expect(revived.getWorkflowRun("run-1")?.current_node_id).toBe("implement");
+		expect(
+			revived.getWorkflowNodeCompletion("run-1", "implement", 1),
+		).toBeUndefined();
+		expect(
+			revived
+				.listWorkflowAlertOutbox()
+				.filter((alert) =>
+					alert.escalation_uid.endsWith(":writer_session_terminal"),
+				),
+		).toHaveLength(1);
+		revived.close();
+
+		const claimStore = await engineRun();
+		advance(claimStore, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-1",
+			outcome: "design_done",
+			successorExecutionId: "implement-1",
+		});
+		advance(claimStore, {
+			nodeId: "implement",
+			attempt: 1,
+			executionId: "implement-1",
+			outcome: "implement_done",
+			successorExecutionId: "qa-1",
+		});
+		const qaAdmission = claimStore.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "qa",
+			executionId: "qa-1",
+			attempt: 1,
+			expiresAt: "2026-07-16T02:00:00.000Z",
+			absoluteDeadlineAt: "2026-07-16T03:00:00.000Z",
+			now: "2026-07-16T01:00:00.000Z",
+			env: engineFlags,
+		});
+		if (!qaAdmission.ok || !qaAdmission.submissionCredential) {
+			throw new Error("QA admission failed");
+		}
+		claimStore.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "qa",
+		});
+		expect(
+			claimStore.submitWorkflowDecisionByCredential({
+				credential: qaAdmission.submissionCredential,
+				clientRequestId: "revived-qa-claim",
+				predicate: "qa_failed",
+				subjectDigest: "a".repeat(40),
+				issuerVendor: "claude",
+				issuerModel: "claude-opus-4-8",
+				subjectProducerExecutionId: "implement-1",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: "2026-07-16T02:00:00.000Z",
+				alertIdentity: carrierAlertIdentity,
+				now: "2026-07-16T01:05:00.000Z",
+			}),
+		).toMatchObject({
+			ok: false,
+			reason: "credential_revoked",
+		});
+		expect(claimStore.countWorkflowClaims("run-1")).toBe(0);
+		claimStore.close();
 	});
 
 	it("removes runner review authority before founder feedback rework wakes", async () => {
@@ -4072,6 +4411,13 @@ describe("engine-owned snapshot transition transaction", () => {
 				env: engineFlags,
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "implement",
+		});
 		advance(store, {
 			nodeId: "implement",
 			attempt: 1,
@@ -4091,6 +4437,13 @@ describe("engine-owned snapshot transition transaction", () => {
 				env: engineFlags,
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "qa",
+		});
 
 		const canonical = store.resolveWorkflowLoopReentryCanonical(
 			"qa-1",
@@ -4181,6 +4534,13 @@ describe("engine-owned snapshot transition transaction", () => {
 		if (!admission.ok || !admission.submissionCredential) {
 			throw new Error("QA admission failed");
 		}
+		store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "qa",
+		});
 		const submission = {
 			credential: admission.submissionCredential,
 			clientRequestId: "qa-result-1",

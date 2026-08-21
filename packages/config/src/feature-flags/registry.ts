@@ -187,6 +187,31 @@ function envSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	// ─── FLY-1940: unanswered founder-review lifecycle monitor ───
+	{
+		name: "founder_review_orphan_monitor",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1940: monitor live, open, unsuperseded, unanswered founder_review gates and surface missing card delivery or aged unanswered rounds to the Lead",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/orphan-founder-review-monitor.ts",
+				"sweepOrphanFounderReviewGates",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/orphan-founder-review-monitor.test.ts: kill switch live-observe",
+		note: "=0 pauses only new monitor alerts; it does not reopen, retire, answer, or mutate any gate.",
+	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
 		name: "flag_retirement_scan",

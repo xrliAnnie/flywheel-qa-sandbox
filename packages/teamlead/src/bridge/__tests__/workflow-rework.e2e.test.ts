@@ -504,7 +504,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 
 			expect(await coordinator.reconcile(failed.reworkRequestId)).toMatchObject(
 				{
-					kind: "wake_delivered",
+					kind: "awaiting_receipt",
 					executionId: "implement-exec",
 					epoch: 4,
 				},
@@ -525,6 +525,19 @@ describe("FLY-1423 capability-level rework flow", () => {
 					invalidationScope: ["implement", "qa"],
 				},
 			});
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: implementActivation!.activation_id,
+					executionId: "implement-exec",
+					epoch: implementActivation!.epoch,
+					ackedAt: "2026-07-23T00:20:01.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
 			expect(
 				store.getWorkflowReworkVerificationPath(failed.reworkRequestId),
 			).toMatchObject({
@@ -599,7 +612,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			});
 
 			expect(await coordinator.reconcile(qaRequestId)).toMatchObject({
-				kind: "wake_delivered",
+				kind: "awaiting_receipt",
 				executionId: "qa-exec",
 				epoch: 5,
 			});
@@ -611,6 +624,19 @@ describe("FLY-1423 capability-level rework flow", () => {
 				epoch: 5,
 			});
 			expect(qaActivation?.submission_credential).toEqual(expect.any(String));
+			expect(
+				store.recordWorkflowReworkWakeReceipt({
+					activationId: qaActivation!.activation_id,
+					executionId: "qa-exec",
+					epoch: qaActivation!.epoch,
+					ackedAt: "2026-07-23T00:24:01.000Z",
+					alertIdentity: {
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					},
+				}),
+			).toEqual({ ok: true, idempotentReplay: false });
 			expect(
 				store.getWorkflowSubmissionCredentialByToken(
 					qaActivation!.submission_credential!,

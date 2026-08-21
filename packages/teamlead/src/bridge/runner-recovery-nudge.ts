@@ -37,6 +37,8 @@ import type { CaptureSessionFn } from "./tools.js";
 /** The ONLY phrases the recovery nudge may type. Exact match. */
 export const NUDGE_ALLOWLIST: readonly string[] = ["continue"];
 export const WAKE_POINTER_PHRASE = "你有 pending wake,跑 flywheel-comm inbox";
+export const turnPointerPhrase = (executionId: string): string =>
+	`TURN pending: run flywheel-comm turn --exec-id ${executionId}`;
 
 /** Episode fingerprints are 16 lowercase hex chars (see fingerprintOutput). */
 const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
@@ -53,6 +55,11 @@ export interface RunnerNudgeDeps {
 		questionId: string,
 	) => boolean;
 	isWakeBindingLive?: (executionId: string, projectName: string) => boolean;
+	isTurnWakeBindingLive?: (
+		executionId: string,
+		projectName: string,
+		wakeId: string,
+	) => boolean;
 	isDeclaredParked?: (executionId: string, projectName: string) => boolean;
 	isEngineParked?: (executionId: string, projectName: string) => boolean;
 	sendKeys: (
@@ -69,7 +76,7 @@ export interface RunnerNudgeDeps {
 }
 
 export interface RunnerNudgeInput {
-	mode?: "recovery" | "wake_pointer";
+	mode?: "recovery" | "wake_pointer" | "turn_pointer";
 	/** Who initiated: "lead" (HTTP route) or "auto-repair-bot". Audited. */
 	actor: string;
 	executionId: string;
@@ -77,6 +84,7 @@ export interface RunnerNudgeInput {
 	fingerprint?: string;
 	phrase?: string;
 	causalQuestionId?: string;
+	turnWakeId?: string;
 }
 
 export interface RunnerNudgeOutcome {
@@ -108,9 +116,11 @@ export async function attemptRunnerRecoveryNudge(
 	const phrase =
 		mode === "wake_pointer"
 			? WAKE_POINTER_PHRASE
-			: typeof input.phrase === "string"
-				? input.phrase
-				: "continue";
+			: mode === "turn_pointer"
+				? turnPointerPhrase(executionId)
+				: typeof input.phrase === "string"
+					? input.phrase
+					: "continue";
 
 	const audit = (
 		result: "attempt" | "sent" | "refused",
@@ -250,6 +260,29 @@ export async function attemptRunnerRecoveryNudge(
 			);
 		}
 	}
+	if (mode === "turn_pointer") {
+		const wakeId = input.turnWakeId?.trim();
+		if (!wakeId) {
+			return refuse(400, "turnWakeId is required for a TURN pointer", session);
+		}
+		try {
+			if (
+				!deps.isTurnWakeBindingLive?.(executionId, session.project_name, wakeId)
+			) {
+				return refuse(
+					409,
+					"runner TURN wake binding is no longer live",
+					session,
+				);
+			}
+		} catch (err) {
+			return refuse(
+				503,
+				`TURN-pointer binding probe failed (${(err as Error).message}) — refusing fail-closed`,
+				session,
+			);
+		}
+	}
 	// Gate 3: pending CommDB gate question. Fail CLOSED on probe error.
 	try {
 		if (deps.hasPendingGate(executionId, session.project_name)) {
@@ -348,7 +381,7 @@ export async function attemptRunnerRecoveryNudge(
 	// rolled back with the DB transaction, so the boundary is HONESTLY
 	// non-atomic: nudged:true + dispositionPersisted:false + loud log
 	// (FLY-1282 Part D, Codex R18 #1 recovery contract).
-	if (mode === "wake_pointer") {
+	if (mode === "wake_pointer" || mode === "turn_pointer") {
 		audit("sent", `wake pointer sent to ${target.tmuxWindow}`, session);
 		return {
 			status: 200,

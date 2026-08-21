@@ -1755,11 +1755,11 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	});
 
 	it.each(["latch-first", "session-first"] as const)(
-		"FLY-1257: atomic session writers preserve gateHold + threadId + daemonPid (%s)",
+		"FLY-1940: atomic session writers preserve gateHold + threadId + daemonPgid (%s)",
 		async (order) => {
 			runtime = new FakeRuntime(async (input) => {
 				if (order === "latch-first") input.writeGateHoldLatch?.(true);
-				input.onDaemonPid?.(4321);
+				input.onSpawnIdentity?.(4321);
 				input.onThreadReady?.(THREAD_ID, 0);
 				if (order === "session-first") input.writeGateHoldLatch?.(true);
 				return complete();
@@ -1773,7 +1773,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(state).toMatchObject({
 				gateHold: true,
 				threadId: THREAD_ID,
-				daemonPid: 4321,
+				daemonPgid: 4321,
 			});
 			expect(readdirSync(stateDir)).toEqual(["session.json"]);
 		},
@@ -1787,7 +1787,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			JSON.stringify({
 				executionId: execId,
 				threadId: "persisted-thread",
-				daemonPid: 4321,
+				daemonPgid: 4321,
 				gateHold: true,
 				unknownFutureField: "preserve-me",
 			}),
@@ -1808,7 +1808,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(state).toMatchObject({
 			gateHold: false,
 			threadId: "persisted-thread",
-			daemonPid: 4321,
+			daemonPgid: 4321,
 			unknownFutureField: "preserve-me",
 		});
 	});
@@ -1961,7 +1961,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			return () => {};
 		};
 		runtime = new FakeRuntime(async (input) => {
-			input.onDaemonPid?.(4321);
+			input.onSpawnIdentity?.(4321);
 			input.onThreadReady?.(THREAD_ID, 0);
 			const pendingDb = new CommDB(dbPath);
 			try {
@@ -1980,7 +1980,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			);
 			expect(pendingState).toMatchObject({
 				threadId: THREAD_ID,
-				daemonPid: 4321,
+				daemonPgid: 4321,
 				cwd: dir,
 			});
 			expect(pendingState).not.toHaveProperty("tmuxWindow");
@@ -2017,11 +2017,11 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 	});
 
-	it("HIGH-3: persists the live daemon pid, and a resuming re-execute threads it as reapOrphanPid", async () => {
+	it("FLY-1940: persists the live daemon group before thread-ready, then reaps it on resume", async () => {
 		// Run 1: the daemon reports its pid, then OUR thread becomes ready →
-		// persistSessionState writes {threadId, daemonPid} to session.json.
+		// onSpawnIdentity writes daemonPgid before thread-ready adds threadId.
 		runtime = new FakeRuntime(async (input) => {
-			input.onDaemonPid?.(4321);
+			input.onSpawnIdentity?.(4321);
 			input.onThreadReady?.(THREAD_ID, 0);
 			return complete();
 		});

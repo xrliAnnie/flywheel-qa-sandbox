@@ -1682,6 +1682,13 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(admitted.ok).toBe(true);
 		if (!admitted.ok) throw new Error("admission failed");
 		expect(admitted.outputCredential).toBeTypeOf("string");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
 
 		expect(
 			store.commitEnrolledCompletion({
@@ -2029,14 +2036,15 @@ describe("generalized execution admission and terminal contracts", () => {
 				env: enabled,
 			}),
 		).toMatchObject({ ok: true });
+		const headSha = "a".repeat(40);
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "FLY-X",
 			project_name: "flywheel",
 			status: "running",
 			workflow_node_id: "execute",
+			pr_head_sha: headSha,
 		});
-		const headSha = "a".repeat(40);
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
@@ -2102,13 +2110,16 @@ describe("generalized execution admission and terminal contracts", () => {
 		db.run(
 			"UPDATE workflow_run SET gate_carrier_epoch = 1 WHERE run_id = 'run-1'",
 		);
+		const headSha = "a".repeat(40);
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "FLY-X",
 			project_name: "flywheel",
 			status: "running",
 			workflow_node_id: "execute",
+			pr_head_sha: headSha,
 		});
+		store.patchSessionMetadata("exec-1", { pr_head_sha: headSha });
 		expect(admitted.outputCredential).toBeTypeOf("string");
 		expect(
 			store.submitWorkflowNodeOutput({
@@ -2119,7 +2130,6 @@ describe("generalized execution admission and terminal contracts", () => {
 			}),
 		).toMatchObject({ ok: true });
 
-		const headSha = "a".repeat(40);
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
@@ -2374,6 +2384,13 @@ describe("generalized execution admission and terminal contracts", () => {
 				env: enabled,
 			}),
 		).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
 		expect(
 			store.recordWorkflowActivationTurn({
 				activationId: "activation-1",
@@ -2509,7 +2526,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		store.close();
 	});
 
-	it("completes two attempts on one actor only with exact activation epochs", async () => {
+	it("refuses a terminal actor's later attempt even with the exact activation epoch", async () => {
 		const store = await StateStore.create(":memory:");
 		createRun(store);
 		const firstAdmission = store.admitGeneralizedWorkflowExecution({
@@ -2524,6 +2541,13 @@ describe("generalized execution admission and terminal contracts", () => {
 			env: enabled,
 		});
 		expect(firstAdmission).toMatchObject({ ok: true });
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-X",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
 		expect(
 			store.commitEnrolledCompletion({
 				executionId: "exec-1",
@@ -2603,42 +2627,22 @@ describe("generalized execution admission and terminal contracts", () => {
 			decision: { route: "needs_review" },
 			round: 2,
 		};
-		expect(
-			store.commitEnrolledCompletion({
-				executionId: "exec-1",
-				route: "needs_review",
-				sourceEventId: "complete-2",
-				completionSubmission: secondSubmission,
-				workflowActivation: activation2,
-				now: "2026-07-15T00:03:00.000Z",
-			}),
-		).toMatchObject({ ok: true, idempotentReplay: false });
-		expect(
-			store.getWorkflowNodeCompletion("run-1", "execute", 2),
-		).toMatchObject({
-			activation_id: "activation-2",
-			execution_id: "exec-1",
+		const refused = store.commitEnrolledCompletion({
+			executionId: "exec-1",
+			route: "needs_review",
+			sourceEventId: "complete-2",
+			completionSubmission: secondSubmission,
+			workflowActivation: activation2,
+			now: "2026-07-15T00:03:00.000Z",
+		});
+		expect(refused).toMatchObject({
+			ok: false,
+			reason: "transition_refused",
+			detail: { transitionReason: "engine_invariant:writer_session_terminal" },
 		});
 		expect(
-			store.commitEnrolledCompletion({
-				executionId: "exec-1",
-				route: "needs_review",
-				sourceEventId: "complete-2-replay",
-				completionSubmission: secondSubmission,
-				workflowActivation: activation2,
-				now: "2026-07-15T00:04:00.000Z",
-			}),
-		).toMatchObject({ ok: true, idempotentReplay: true });
-		expect(
-			store.commitEnrolledCompletion({
-				executionId: "exec-1",
-				route: "needs_review",
-				sourceEventId: "complete-2-conflict",
-				completionSubmission: { ...secondSubmission, changed: true },
-				workflowActivation: activation2,
-				now: "2026-07-15T00:05:00.000Z",
-			}),
-		).toEqual({ ok: false, reason: "completion_conflict" });
+			store.getWorkflowNodeCompletion("run-1", "execute", 2),
+		).toBeUndefined();
 		store.close();
 	});
 
@@ -2662,6 +2666,13 @@ describe("generalized execution admission and terminal contracts", () => {
 					env: enabled,
 				}),
 			).toMatchObject({ ok: true });
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "FLY-X",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "execute",
+			});
 			expect(
 				store.commitEnrolledCompletion({
 					executionId: "exec-1",

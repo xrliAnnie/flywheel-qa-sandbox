@@ -79,6 +79,48 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 		]);
 	});
 
+	it("supersedes founder review after its source session was pruned", () => {
+		const founderContent = (round: number) =>
+			JSON.stringify({
+				version: 1,
+				round,
+				runId: "run-founder",
+				artifactDigest: "a".repeat(64),
+				hostedUrl: "https://example.test/founder-review",
+				paths: ["report.html"],
+			});
+		const oldGate = db.insertQuestion(
+			"pruned-exec-old",
+			"lead",
+			founderContent(1),
+			{ checkpoint: "founder_review" },
+		);
+		const newGate = db.insertQuestion(
+			"pruned-exec-new",
+			"lead",
+			founderContent(2),
+			{ checkpoint: "founder_review" },
+		);
+
+		const result = sweepIssueGatesForProject({
+			projectName: "flywheel",
+			db,
+			store: {
+				getSession: () => undefined,
+				getWorkflowRun: (runId: string) =>
+					runId === "run-founder" ? { issue_id: "FLY-1911" } : undefined,
+				getCodexReviewJobByQuestionId: () => null,
+				insertEvent: () => true,
+			},
+			env: {},
+		});
+
+		expect(result).toMatchObject({ candidates: 1, retired: 1, unmapped: 0 });
+		expect(db.getMessageById(oldGate)).toMatchObject({
+			superseded_by: newGate,
+		});
+	});
+
 	it("heals an audit-write crash without rewriting the original supersededBy cause", () => {
 		const q1 = db.insertQuestion("exec-1", "lead", "review 1", {
 			checkpoint: "review_code",

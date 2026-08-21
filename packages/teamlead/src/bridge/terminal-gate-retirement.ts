@@ -1,4 +1,5 @@
 import { CommDB } from "flywheel-comm/db";
+import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import { isOperationalTerminalStatus } from "../operational-terminal-status.js";
 import type { Session, StateStore } from "../StateStore.js";
 
@@ -31,7 +32,7 @@ export interface TerminalGateRetirementOptions {
 }
 
 /**
- * Retires stale approve-to-ship gates from current terminal authority. There
+ * Retires stale founder-authority gates from current terminal authority. There
  * is no durable cross-database intent: every patrol derives the remaining work
  * again, and revalidates authority immediately before each irreversible CAS.
  */
@@ -125,11 +126,16 @@ export class TerminalGateRetirement {
 	): number {
 		let attempted = 0;
 		try {
-			for (const question of db.getPendingGatesByRunner(
-				snapshot.execution_id,
-			)) {
+			for (const question of db.getOpenGatesByRunner(snapshot.execution_id)) {
 				if (attempted >= limit) break;
-				if (question.checkpoint !== "approve_to_ship") continue;
+				// A founder-review question belongs to the live workflow run, not to
+				// the lifespan of the runner that happened to materialize it. A
+				// terminal producer alone is never sufficient retirement authority;
+				// newer-family supersede or freshly revalidated external authority
+				// converges those gates through their dedicated paths.
+				if (question.checkpoint !== "approve_to_ship") {
+					continue;
+				}
 				const current = this.options.store.getSession(snapshot.execution_id);
 				if (
 					!current ||
@@ -168,37 +174,60 @@ export class TerminalGateRetirement {
 	): Promise<void> {
 		if (!this.options.projectNames.includes(input.projectName)) return;
 		const aliases = new Set([input.canonicalIssueId, ...input.issueAliases]);
-		for (const session of this.options.store.getProjectSessions(
-			input.projectName,
-		)) {
-			if (!session.issue_id || !aliases.has(session.issue_id)) continue;
-			let db: CommDB | undefined;
-			try {
-				db = this.openDb(this.options.commDbPathForProject(input.projectName));
-				for (const question of db.getPendingGatesByRunner(
-					session.execution_id,
-				)) {
-					if (question.checkpoint !== "approve_to_ship") continue;
-					let verdict: Awaited<ReturnType<TerminalAuthorityRevalidation>>;
-					try {
-						verdict = await input.revalidate();
-					} catch {
-						verdict = "unknown";
-					}
-					if (verdict !== "authorized") break;
-					db.retireGateForTerminalAuthority({
-						questionId: question.id,
-						reason,
-						now: new Date((this.options.now ?? Date.now)()).toISOString(),
-					});
+		let db: CommDB | undefined;
+		try {
+			db = this.openDb(this.options.commDbPathForProject(input.projectName));
+			const questions = [
+				...db.getOpenGatesByCheckpoint("approve_to_ship"),
+				...db.getOpenGatesByCheckpoint("founder_review"),
+			].sort(
+				(left, right) =>
+					left.created_at.localeCompare(right.created_at) ||
+					left.from_agent.localeCompare(right.from_agent) ||
+					left.id.localeCompare(right.id),
+			);
+			for (const question of questions) {
+				const issueId = this.issueForQuestion(db, question);
+				if (!issueId || !aliases.has(issueId)) continue;
+				let verdict: Awaited<ReturnType<TerminalAuthorityRevalidation>>;
+				try {
+					verdict = await input.revalidate();
+				} catch {
+					verdict = "unknown";
 				}
-			} catch (error) {
-				this.logger(
-					`${session.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			} finally {
-				db?.close();
+				if (verdict !== "authorized") continue;
+				db.retireGateForTerminalAuthority({
+					questionId: question.id,
+					reason,
+					now: new Date((this.options.now ?? Date.now)()).toISOString(),
+				});
 			}
+		} catch (error) {
+			this.logger(
+				`${input.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		} finally {
+			db?.close();
 		}
+	}
+
+	private issueForQuestion(
+		db: CommDB,
+		question: ReturnType<CommDB["getOpenGatesByCheckpoint"]>[number],
+	): string | undefined {
+		if (question.checkpoint === "founder_review") {
+			const family = db.getFounderReviewFamily(question.id);
+			const parsed = family
+				? parseFounderReviewQuestionContent(family.question.content)
+				: undefined;
+			return parsed
+				? this.options.store.getWorkflowRun(parsed.runId)?.issue_id
+				: undefined;
+		}
+		return (
+			this.options.store.getSession(question.from_agent)?.issue_id ??
+			db.getSession(question.from_agent)?.issue_id ??
+			undefined
+		);
 	}
 }

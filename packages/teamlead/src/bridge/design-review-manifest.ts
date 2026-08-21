@@ -175,6 +175,33 @@ export function snapshotDesignReviewPlan(
 export interface DesignManifestDeliveryResult {
 	queued: true;
 	deduped: boolean;
+	/** Durable runner consumption, not merely a successful CommDB insert. */
+	consumed: boolean;
+}
+
+const DESIGN_MANIFEST_ID = /^design-review-manifest:(.+):([1-9][0-9]*)$/;
+
+/**
+ * Terminal session state cannot retire the current design-review obligation.
+ * The manifest revision is authoritative; older revisions become ordinary
+ * stale instructions as soon as StateStore advances the current row.
+ */
+export function isCurrentDesignReviewManifestInstruction(
+	store: Pick<StateStore, "getCurrentDesignReviewManifest">,
+	row: Pick<
+		import("flywheel-comm/mailbox-queue").MailboxRow,
+		"id" | "to_agent"
+	>,
+): boolean {
+	const match = DESIGN_MANIFEST_ID.exec(row.id);
+	if (!match || match[1] !== row.to_agent) return false;
+	const revision = Number(match[2]);
+	const current = store.getCurrentDesignReviewManifest(row.to_agent);
+	return (
+		current !== null &&
+		current.revision === revision &&
+		current.delivered_at === undefined
+	);
 }
 
 /** Stable-id CommDB delivery followed by the StateStore delivery receipt. */
@@ -196,9 +223,11 @@ export function deliverDesignReviewManifest(
 	mkdirSync(dirname(dbPath), { recursive: true });
 	const commDb = new CommDB(dbPath);
 	let inserted: boolean;
+	let consumed = false;
 	try {
+		const instructionId = `design-review-manifest:${manifest.execution_id}:${manifest.revision}`;
 		inserted = commDb.insertInstructionWithId(
-			`design-review-manifest:${manifest.execution_id}:${manifest.revision}`,
+			instructionId,
 			"bridge",
 			manifest.execution_id,
 			buildCodexInstruction(
@@ -211,14 +240,17 @@ export function deliverDesignReviewManifest(
 				},
 			),
 		);
+		consumed = commDb.getMessageById(instructionId)?.read_at !== null;
 	} finally {
 		commDb.close();
 	}
-	store.markDesignReviewManifestDelivered(
-		manifest.execution_id,
-		manifest.revision,
-	);
-	return { queued: true, deduped: !inserted };
+	if (consumed) {
+		store.markDesignReviewManifestDelivered(
+			manifest.execution_id,
+			manifest.revision,
+		);
+	}
+	return { queued: true, deduped: !inserted, consumed };
 }
 
 export function reconcileDesignReviewInstructions(
@@ -231,9 +263,9 @@ export function reconcileDesignReviewInstructions(
 	for (const manifest of manifests) {
 		try {
 			const result = deliverDesignReviewManifest(store, manifest);
-			delivered++;
+			if (result.consumed) delivered++;
 			logger.log(
-				`[design-review-manifest] ${result.deduped ? "reconciled" : "delivered"} ${manifest.execution_id}/${manifest.revision}`,
+				`[design-review-manifest] ${result.consumed ? "consumed" : result.deduped ? "awaiting consumption" : "queued"} ${manifest.execution_id}/${manifest.revision}`,
 			);
 		} catch (error) {
 			failed++;

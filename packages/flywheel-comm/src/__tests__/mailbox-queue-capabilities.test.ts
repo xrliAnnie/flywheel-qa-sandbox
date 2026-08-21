@@ -163,7 +163,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("keeps delivery-unconfirmed exhaustion query-only without hiding ordinary dead letters", () => {
+	it("surfaces delivery-unconfirmed exhaustion through the ordinary dead-letter notice lane", () => {
 		const { db, queue } = fixture();
 		try {
 			enqueue(queue, "lead-ordinary", { toAgent: "lead-dead" });
@@ -198,7 +198,11 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 				resolveOwningLead: (recipient) =>
 					recipient === "exec-owned" ? "lead-owner" : undefined,
 			});
-			expect(notices.inserted).toHaveLength(0);
+			expect(notices.inserted).toHaveLength(1);
+			expect(notices.inserted[0]).toMatch(/^dead_letter:exec-owned:/);
+			expect(queue.getById(notices.inserted[0]!)?.content).toContain(
+				"runner-excluded-routable",
+			);
 
 			const candidates = queue.listUncoveredLeadDeadLetters({
 				sinceCursor: [],
@@ -226,7 +230,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 						)
 						.get() as { n: number }
 				).n,
-			).toBe(0);
+			).toBe(1);
 		} finally {
 			queue.close();
 			db.close();
@@ -1341,6 +1345,70 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
+	it("keeps gate and current-manifest obligations reachable when the runner session is terminal", () => {
+		const { db, queue } = fixture();
+		try {
+			queue.enqueue({
+				id: "review-gate",
+				fromAgent: "exec-completed",
+				toAgent: "lead-a",
+				recipientKind: "lead",
+				type: "question",
+				checkpoint: "review_design",
+				content: "review this plan",
+				createdAt: T0,
+				senderRef: SENDER_REF,
+			});
+			queue.enqueue({
+				id: "review-gate-response",
+				fromAgent: "lead-a",
+				toAgent: "exec-completed",
+				recipientKind: "runner",
+				type: "response",
+				refId: "review-gate",
+				content: "approved",
+				createdAt: at(1),
+				senderRef: SENDER_REF,
+			});
+			enqueue(queue, "design-review-manifest:exec-completed:2", {
+				toAgent: "exec-completed",
+				recipientKind: "runner",
+				type: "instruction",
+				createdAt: at(2),
+			});
+			enqueue(queue, "ordinary-terminal-instruction", {
+				toAgent: "exec-completed",
+				recipientKind: "runner",
+				type: "instruction",
+				createdAt: at(3),
+			});
+
+			queue.reconcileExpiredLeases({
+				ownerEpoch: OWNER,
+				now: at(4),
+				recipientKind: "runner",
+				leaseRetryMax: 3,
+				recipientState: () => "terminal_or_missing",
+				isTerminalDeliveryObligation: (row) =>
+					row.id === "design-review-manifest:exec-completed:2",
+				maxBatches: 10,
+				maxTerminalRows: 10,
+			});
+
+			expect(queue.getById("review-gate-response")?.state).toBe("QUEUED");
+			expect(
+				queue.getById("design-review-manifest:exec-completed:2")?.state,
+			).toBe("QUEUED");
+			expect(queue.getById("ordinary-terminal-instruction")).toMatchObject({
+				state: "DEAD",
+				dead_reason: "recipient_terminal",
+			});
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
 	it("leaves a frozen batch untouched while recipient liveness is unknown", () => {
 		const { db, queue } = fixture();
 		try {
@@ -1373,7 +1441,7 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
-	it("guards every dead-letter eligibility query with the frozen reason exclusion", () => {
+	it("keeps frozen exhaustion out of fallback audit queries after the notice lane surfaces it", () => {
 		const source = readFileSync(
 			new URL("../mailbox-queue.ts", import.meta.url),
 			"utf8",
@@ -1400,9 +1468,8 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		);
 		expect(scanQueries).toHaveLength(4);
 		expect(listQueries).toHaveLength(5);
-		expect([...scanQueries, ...listQueries]).toSatisfy((queries: string[]) =>
-			queries.every((query) => query.includes(exclusion)),
-		);
+		expect(scanQueries.every((query) => !query.includes(exclusion))).toBe(true);
+		expect(listQueries.every((query) => query.includes(exclusion))).toBe(true);
 	});
 
 	it("stamps raw delivery on ack and preserves an earlier emission stamp", () => {

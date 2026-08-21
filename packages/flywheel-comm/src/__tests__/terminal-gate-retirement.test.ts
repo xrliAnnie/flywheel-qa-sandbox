@@ -139,4 +139,22 @@ describe("terminal gate retirement", () => {
 			}),
 		).toEqual({ kind: "missing" });
 	});
+
+	it("retires founder review through the same response-wins primitive", () => {
+		const questionId = db.insertQuestion("exec-1", LEAD_ID, "founder review?", {
+			checkpoint: "founder_review",
+		});
+		expect(
+			db.retireGateForTerminalAuthority({
+				questionId,
+				reason: "superseded_issue_done",
+				now: NOW,
+			}),
+		).toEqual({ kind: "retired" });
+		expect(db.getMessageById(questionId)).toMatchObject({
+			relay_state: "terminal_disposed",
+			resolved_via: "superseded_issue_done",
+			superseded_at: NOW,
+		});
+	});
 });

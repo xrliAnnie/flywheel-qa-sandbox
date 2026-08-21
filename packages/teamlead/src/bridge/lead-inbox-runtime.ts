@@ -25,6 +25,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { isCurrentDesignReviewManifestInstruction } from "./design-review-manifest.js";
 import { formatInfraAlertMailboxContent } from "./infra-alert-mailbox.js";
 import {
 	ClaudeLeadDeliveryAdapter,
@@ -251,6 +252,8 @@ export class LeadInboxRuntime {
 				queueConfig: resolveMailboxQueueConfig,
 				recipientState: (executionId) =>
 					opts.store.resolveRunnerRecipientState(executionId).state,
+				isTerminalDeliveryObligation: (row) =>
+					isCurrentDesignReviewManifestInstruction(opts.store, row),
 				resolveOwningLead,
 				probeFactsByRecipient: () => this.runnerProbeFacts(project.projectName),
 			});

@@ -77,6 +77,7 @@ import type {
 import { CodexDaemonGoalRuntime } from "./codex-daemon-goal-runtime.js";
 import {
 	assertSocketPathFitsSunLen,
+	codexSessionStateDir,
 	resolveDaemonSocketPath,
 } from "./codex-daemon-runtime.js";
 import {
@@ -211,16 +212,6 @@ export interface CodexDaemonAdapterDeps {
 	/** FLY-1269: credential retirement seam used to prove scrub precedes the
 	 * request-bound success acknowledgement. */
 	scrubCredential?: (executionId: string) => void;
-}
-
-export function codexSessionStateDir(
-	executionId: string,
-	env: NodeJS.ProcessEnv = process.env,
-): string {
-	const base =
-		env.FLYWHEEL_CODEX_SESSION_DIR?.trim() ||
-		join(homedir(), ".flywheel", "state", "codex-sessions");
-	return join(base, executionId);
 }
 
 export class CodexTmuxAdapter implements IAdapter {
@@ -865,13 +856,9 @@ export class CodexTmuxAdapter implements IAdapter {
 			// persist the resume handle (HIGH-4) + (re)open the founder window. On a
 			// daemon RESTART (restarts > 0) the old remote TUI may have exited when
 			// its socket closed — re-open if the pane is dead (Codex R2 MEDIUM).
-			// HIGH-3: track the live daemon pid (updated on every spawn/restart via
-			// onDaemonPid) so persistSessionState records the CURRENT daemon — a
-			// resuming redrive reaps it if a Bridge crash orphaned it.
-			let latestDaemonPid: number | undefined;
 			const onThreadReady = (threadId: string, restarts: number): void => {
 				threadReadySeen = true; // authoritative hook fired → the fallback is not needed
-				this.persistSessionState(ctx, threadId, latestDaemonPid);
+				this.persistSessionState(ctx, threadId);
 				if (restarts > 0 && tuiOpened && !this.isWindowAlive(windowName)) {
 					tuiOpened = false; // pane died with the old socket — reopen below
 					tuiTerminalReported = false;
@@ -947,11 +934,9 @@ export class CodexTmuxAdapter implements IAdapter {
 					...(resumeThreadId ? { resumeThreadId } : {}),
 					...(reapOrphanPid !== undefined ? { reapOrphanPid } : {}),
 					onThreadReady,
-					// HIGH-3: capture each spawned daemon's pid so onThreadReady
-					// persists the CURRENT daemon for post-crash orphan reaping.
-					onDaemonPid: (pid) => {
-						latestDaemonPid = pid;
-					},
+					// FLY-1940: this hard callback runs synchronously before socket
+					// polling. Any persistence failure throws and forces spawn cleanup.
+					onSpawnIdentity: (pgid) => this.persistSpawnIdentity(ctx, pgid),
 					onGoalActive,
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 				},
@@ -1302,12 +1287,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			const p = join(codexSessionStateDir(executionId), "session.json");
 			if (!existsSync(p)) return undefined;
 			const state = JSON.parse(readFileSync(p, "utf-8")) as {
+				daemonPgid?: unknown;
 				daemonPid?: unknown;
 			};
-			return typeof state.daemonPid === "number" &&
-				Number.isInteger(state.daemonPid) &&
-				state.daemonPid > 0
-				? state.daemonPid
+			const pgid = state.daemonPgid ?? state.daemonPid;
+			return typeof pgid === "number" && Number.isInteger(pgid) && pgid > 0
+				? pgid
 				: undefined;
 		} catch {
 			return undefined;
@@ -1349,7 +1334,6 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
-		daemonPid: number | undefined,
 	): void {
 		try {
 			this.mergeSessionState(ctx.executionId, {
@@ -1358,10 +1342,6 @@ export class CodexTmuxAdapter implements IAdapter {
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
-				// HIGH-3: the live daemon's pid, so a resuming redrive can reap
-				// this daemon if a Bridge crash orphaned it (detached:false does
-				// NOT kill the child on parent death). Omitted when unknown.
-				...(daemonPid !== undefined ? { daemonPid } : {}),
 			});
 		} catch (err) {
 			console.warn(
@@ -1413,6 +1393,21 @@ export class CodexTmuxAdapter implements IAdapter {
 				`[CodexTmuxAdapter] TUI episode persist failed: ${(error as Error).message}`,
 			);
 		}
+	}
+
+	/** FLY-1940: the spawn ownership write is fail-close and deliberately does
+	 * not catch. spawnCodexDaemon kills the new process group if this throws. */
+	private persistSpawnIdentity(
+		ctx: AdapterExecutionContext,
+		daemonPgid: number,
+	): void {
+		this.mergeSessionState(ctx.executionId, {
+			executionId: ctx.executionId,
+			issueId: ctx.issueId,
+			cwd: ctx.cwd,
+			vendor: "codex",
+			daemonPgid,
+		});
 	}
 
 	/**

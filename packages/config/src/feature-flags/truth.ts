@@ -569,6 +569,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: milestone patrol lookback (FLY-725)",
 	FLYWHEEL_FOUNDER_MILESTONE_GRACE_MS:
 		"tuning knob: milestone notify grace window (FLY-725)",
+	FLYWHEEL_FOUNDER_REVIEW_ORPHAN_STALE_HOURS:
+		"numeric tuning: unanswered founder_review age threshold in hours (FLY-1940)",
+	FLYWHEEL_FOUNDER_REVIEW_ORPHAN_DELIVERY_GRACE_MINUTES:
+		"numeric tuning: missing founder card grace period with a 10-minute minimum (FLY-1940)",
 	FLYWHEEL_CRON_STALE_TTL_MIN:
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
 	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:

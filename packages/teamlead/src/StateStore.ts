@@ -140,6 +140,14 @@ export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_SOFT_LEASE_MS = 5 * 60_000;
 export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
+/** One durable cadence shared by rework and ship-carrier receipt probes. */
+export const WORKFLOW_DELIVERY_RECEIPT_REPROBE_MS = 3 * 60_000;
+
+export function workflowDeliveryReceiptNextRetryAt(now: string): string {
+	return new Date(
+		Date.parse(now) + WORKFLOW_DELIVERY_RECEIPT_REPROBE_MS,
+	).toISOString();
+}
 
 type StoredWorkflowLaunchWindow =
 	| { status: "none" }
@@ -2145,7 +2153,8 @@ export class StateStore {
 			columns.has("hold_count") &&
 			columns.has("next_retry_at") &&
 			columns.has("grant_started_at") &&
-			table.sql.includes("needs_lead")
+			table.sql.includes("needs_lead") &&
+			table.sql.includes("awaiting_receipt")
 		) {
 			return;
 		}
@@ -2169,7 +2178,7 @@ export class StateStore {
 						lease_expires_at TEXT,
 						route_revision INTEGER NOT NULL CHECK (route_revision > 0),
 						state TEXT NOT NULL CHECK (state IN
-						 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held','needs_lead')),
+						 ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending','completed','held','needs_lead')),
 						hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
 						next_retry_at TEXT,
 						grant_started_at TEXT,
@@ -2186,6 +2195,76 @@ export class StateStore {
 					  FROM workflow_rework_delivery;
 					DROP TABLE workflow_rework_delivery;
 					ALTER TABLE workflow_rework_delivery_next RENAME TO workflow_rework_delivery;
+				`);
+			})();
+		} finally {
+			if (foreignKeys === 1) this.db.raw.pragma("foreign_keys = ON");
+		}
+	}
+
+	private migrateWorkflowCarrierDeliveryReceiptWait(): void {
+		const table = this.db.raw
+			.prepare(
+				"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflow_carrier_delivery'",
+			)
+			.get() as { sql?: string } | undefined;
+		if (!table?.sql || table.sql.includes("awaiting_receipt")) return;
+		const foreignKeys = Number(
+			this.db.raw.pragma("foreign_keys", { simple: true }),
+		);
+		this.db.raw.pragma("foreign_keys = OFF");
+		try {
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS workflow_carrier_delivery_next;
+					CREATE TABLE workflow_carrier_delivery_next (
+						question_id TEXT PRIMARY KEY,
+						run_id TEXT NOT NULL,
+						gate_node_id TEXT NOT NULL,
+						gate_attempt INTEGER NOT NULL CHECK (gate_attempt > 0),
+						approved_head TEXT NOT NULL,
+						source_execution_id TEXT NOT NULL,
+						carrier_activation_id TEXT NOT NULL UNIQUE,
+						owner_id TEXT,
+						generation INTEGER NOT NULL DEFAULT 0 CHECK (generation >= 0),
+						lease_expires_at TEXT,
+						state TEXT NOT NULL DEFAULT 'pending'
+						  CHECK (state IN ('pending','grant_started','turn_granted',
+						                   'awaiting_receipt','wake_delivered','receipt_started',
+						                   'completed','held','needs_lead')),
+						hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
+						redrive_generation INTEGER NOT NULL DEFAULT 0 CHECK (redrive_generation >= 0),
+						next_retry_at TEXT,
+						turn_epoch INTEGER CHECK (turn_epoch > 0),
+						turn_source_event_id TEXT UNIQUE,
+						turn_granted_at TEXT,
+						last_error TEXT,
+						created_at TEXT NOT NULL,
+						updated_at TEXT NOT NULL,
+						FOREIGN KEY (question_id) REFERENCES workflow_gate_holder(question_id),
+						FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+					);
+					INSERT INTO workflow_carrier_delivery_next
+						(question_id, run_id, gate_node_id, gate_attempt, approved_head,
+						 source_execution_id, carrier_activation_id, owner_id, generation,
+						 lease_expires_at, state, hold_count, redrive_generation, next_retry_at,
+						 turn_epoch, turn_source_event_id, turn_granted_at, last_error,
+						 created_at, updated_at)
+					SELECT question_id, run_id, gate_node_id, gate_attempt, approved_head,
+					       source_execution_id, carrier_activation_id,
+					       CASE WHEN state = 'wake_delivered' THEN NULL ELSE owner_id END,
+					       generation,
+					       CASE WHEN state = 'wake_delivered' THEN NULL ELSE lease_expires_at END,
+					       CASE WHEN state = 'wake_delivered'
+					            THEN 'awaiting_receipt' ELSE state END,
+					       hold_count, redrive_generation,
+					       CASE WHEN state = 'wake_delivered'
+					            THEN COALESCE(next_retry_at, updated_at) ELSE next_retry_at END,
+					       turn_epoch, turn_source_event_id, turn_granted_at, last_error,
+					       created_at, updated_at
+					  FROM workflow_carrier_delivery;
+					DROP TABLE workflow_carrier_delivery;
+					ALTER TABLE workflow_carrier_delivery_next RENAME TO workflow_carrier_delivery;
 				`);
 			})();
 		} finally {
@@ -17903,7 +17982,7 @@ export class StateStore {
 				lease_expires_at TEXT,
 				state TEXT NOT NULL DEFAULT 'pending'
 				  CHECK (state IN ('pending','grant_started','turn_granted',
-				                   'wake_delivered','receipt_started','completed',
+				                   'awaiting_receipt','wake_delivered','receipt_started','completed',
 				                   'held','needs_lead')),
 				hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
 				redrive_generation INTEGER NOT NULL DEFAULT 0 CHECK (redrive_generation >= 0),
@@ -17925,6 +18004,7 @@ export class StateStore {
 		} catch {
 			/* column already exists */
 		}
+		this.migrateWorkflowCarrierDeliveryReceiptWait();
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS workflow_wake_send_claim (
 				wake_id TEXT PRIMARY KEY,
@@ -18683,7 +18763,7 @@ export class StateStore {
 				lease_expires_at TEXT,
 				route_revision INTEGER NOT NULL CHECK (route_revision > 0),
 				state TEXT NOT NULL CHECK (state IN
-				 ('pending','turn_granted','wake_delivered','replacement_pending','completed','held','needs_lead')),
+				 ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending','completed','held','needs_lead')),
 				hold_count INTEGER NOT NULL DEFAULT 0 CHECK (hold_count >= 0),
 				next_retry_at TEXT,
 				grant_started_at TEXT,
@@ -23981,6 +24061,8 @@ export class StateStore {
 				!(
 					delivery.state === "pending" ||
 					delivery.state === "turn_granted" ||
+					delivery.state === "awaiting_receipt" ||
+					delivery.state === "wake_delivered" ||
 					delivery.state === "replacement_pending"
 				)
 			) {
@@ -24023,7 +24105,7 @@ export class StateStore {
 					    SET state = 'held', owner_id = NULL, lease_expires_at = NULL,
 					        last_error = ?, updated_at = ?
 					  WHERE request_id = ? AND generation = ?
-					    AND state IN ('pending','turn_granted','replacement_pending')`,
+					    AND state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')`,
 					[input.reason, input.now, input.requestId, input.generation],
 				);
 				if (this.db.getRowsModified() !== 1) {
@@ -25919,6 +26001,148 @@ export class StateStore {
 		return result;
 	}
 
+	recordWorkflowReworkWakeReceipt(input: {
+		activationId: string;
+		executionId: string;
+		epoch: number;
+		ackedAt: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.activationId ||
+			!input.executionId ||
+			!Number.isSafeInteger(input.epoch) ||
+			input.epoch < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.ackedAt) ||
+			!StateStore.workflowAlertIdentityValid(input.alertIdentity)
+		) {
+			return { ok: false, reason: "invalid_rework_wake_receipt" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "rework_wake_receipt_not_found",
+		};
+		this.db.transaction(() => {
+			const binding = this.getWorkflowActivation(input.activationId);
+			const turn = this.getWorkflowActivationTurn(input.activationId);
+			const requestId = binding?.rework_request_id;
+			const request = requestId
+				? this.getWorkflowReworkRequest(requestId)
+				: undefined;
+			const route = requestId
+				? this.getLatestWorkflowReworkRoute(requestId)
+				: undefined;
+			const delivery = requestId
+				? this.getWorkflowReworkDelivery(requestId)
+				: undefined;
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!binding ||
+				!turn ||
+				!requestId ||
+				!request ||
+				!route ||
+				!delivery ||
+				!run
+			) {
+				return;
+			}
+			if (
+				binding.execution_id !== input.executionId ||
+				turn.execution_id !== input.executionId ||
+				turn.epoch !== input.epoch ||
+				delivery.route_revision !== route.revision ||
+				route.preferred_actor_execution_id !== input.executionId
+			) {
+				result = { ok: false, reason: "rework_wake_receipt_identity_conflict" };
+				return;
+			}
+			if (delivery.state === "wake_delivered" || delivery.state === "completed") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (delivery.state !== "awaiting_receipt") {
+				result = { ok: false, reason: "rework_wake_receipt_not_ready" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'wake_delivered', owner_id = NULL,
+				        lease_expires_at = NULL, next_retry_at = ?,
+				        last_error = NULL, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state = 'awaiting_receipt'`,
+				[
+					workflowDeliveryReceiptNextRetryAt(input.ackedAt),
+					input.ackedAt,
+					requestId,
+					route.revision,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = { ok: false, reason: "rework_wake_receipt_race" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_run_node SET state = 'running'
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND state = 'admitted'`,
+				[
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_activation_not_admitted_on_receipt");
+			}
+			const path = this.getWorkflowReworkVerificationPath(requestId);
+			if (path) {
+				this.db.run(
+					`UPDATE workflow_rework_verification_path
+					    SET state = 'active', updated_at = ?
+					  WHERE request_id = ? AND route_revision = ? AND state = 'pending'`,
+					[input.ackedAt, requestId, route.revision],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error(
+						"workflow_rework_verification_activation_cas_failed_on_receipt",
+					);
+				}
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_wake_receipt:${input.activationId}:${input.epoch}`,
+				kind: "rework_delivery_wake_delivered",
+				nodeId: route.target_node_id,
+				executionId: input.executionId,
+				payload: {
+					requestId,
+					activationId: input.activationId,
+					epoch: input.epoch,
+					ackedAt: input.ackedAt,
+				},
+			});
+			this.enqueueReworkRecoveredIfAlertedTx({
+				requestId,
+				runId: request.run_id,
+				issueId: run.issue_id,
+				nodeId: route.target_node_id,
+				executionId: input.executionId,
+				alertIdentity: input.alertIdentity,
+				now: input.ackedAt,
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	getLatestWorkflowReworkRoute(
 		requestId: string,
 	): WorkflowReworkRouteRevisionRow | undefined {
@@ -26024,10 +26248,13 @@ export class StateStore {
 	listWorkflowReworkDeliveries(input?: {
 		states?: WorkflowReworkDeliveryRow["state"][];
 		now?: string;
+		includeDeferred?: boolean;
 	}): WorkflowReworkDeliveryRow[] {
 		const states = input?.states ?? [
 			"pending",
 			"turn_granted",
+			"awaiting_receipt",
+			"wake_delivered",
 			"replacement_pending",
 		];
 		if (states.length === 0) return [];
@@ -26036,9 +26263,9 @@ export class StateStore {
 		return this.workflowSelectAll(
 			`SELECT request_id FROM workflow_rework_delivery
 			  WHERE state IN (${placeholders})
-			    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+			    AND (? = 1 OR next_retry_at IS NULL OR next_retry_at <= ?)
 			  ORDER BY updated_at, request_id`,
-			[...states, now],
+			[...states, input?.includeDeferred ? 1 : 0, now],
 		)
 			.map((row) => this.getWorkflowReworkDelivery(row.request_id as string))
 			.filter((row): row is WorkflowReworkDeliveryRow => row !== undefined);
@@ -26151,7 +26378,11 @@ export class StateStore {
 			);
 			if (
 				!target ||
-				!(target.state === "pending" || target.state === "admitted") ||
+				!(
+					target.state === "pending" ||
+					target.state === "admitted" ||
+					target.state === "running"
+				) ||
 				target.execution_id !== input.deadExecutionId
 			) {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
@@ -26609,14 +26840,20 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_delivery_changed" };
 				return;
 			}
-			this.db.run(
-				`UPDATE workflow_rework_delivery
-				    SET state = 'wake_delivered', owner_id = NULL,
-				        lease_expires_at = NULL, last_error = NULL, updated_at = ?
-				  WHERE request_id = ? AND route_revision = ?
-				    AND state = 'replacement_pending'`,
-				[input.now, requestId, route.revision],
-			);
+				this.db.run(
+					`UPDATE workflow_rework_delivery
+					    SET state = 'wake_delivered', owner_id = NULL,
+					        lease_expires_at = NULL, next_retry_at = ?,
+					        last_error = NULL, updated_at = ?
+					  WHERE request_id = ? AND route_revision = ?
+					    AND state = 'replacement_pending'`,
+					[
+						workflowDeliveryReceiptNextRetryAt(input.now),
+						input.now,
+						requestId,
+						route.revision,
+					],
+				);
 			if (this.db.getRowsModified() !== 1) {
 				result = { ok: false, reason: "rework_replacement_launch_race" };
 				return;
@@ -26701,9 +26938,14 @@ export class StateStore {
 			const delivery = this.getWorkflowReworkDelivery(input.requestId);
 			if (!delivery) return;
 			if (
-				!(["pending", "turn_granted"] as const).includes(
-					delivery.state as never,
-				)
+				!(
+					[
+						"pending",
+						"turn_granted",
+						"awaiting_receipt",
+						"wake_delivered",
+					] as const
+				).includes(delivery.state as never)
 			) {
 				result = {
 					ok: false,
@@ -26742,7 +26984,10 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_rework_delivery
 				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
-				        next_retry_at = NULL, last_error = NULL, updated_at = ?
+				        next_retry_at = NULL, last_error = NULL,
+				        updated_at = CASE
+				          WHEN state IN ('awaiting_receipt','wake_delivered')
+				          THEN updated_at ELSE ? END
 				  WHERE request_id = ? AND generation = ? AND state = ?`,
 				[
 					input.ownerId,
@@ -26775,6 +27020,42 @@ export class StateStore {
 		});
 		if (result.ok) this.save();
 		return result;
+	}
+
+	scheduleWorkflowReworkReceiptProbe(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.nextRetryAt) ||
+			!input.reason.trim()
+		) {
+			return { ok: false, reason: "invalid_receipt_probe_schedule" };
+		}
+		this.db.run(
+			`UPDATE workflow_rework_delivery
+			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?
+			  WHERE request_id = ? AND owner_id = ? AND generation = ?
+			    AND state IN ('awaiting_receipt','wake_delivered')`,
+			[
+				input.nextRetryAt,
+				input.requestId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		this.save();
+		return { ok: true };
 	}
 
 	releaseWorkflowReworkDelivery(input: {
@@ -27402,18 +27683,28 @@ export class StateStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		nextRetryAt?: string;
 		alertIdentity?: WorkflowEngineAlertIdentity;
 	}): { ok: true } | { ok: false; reason: string } {
+		const nextRetryAt =
+			input.to === "awaiting_receipt"
+				? (input.nextRetryAt ?? workflowDeliveryReceiptNextRetryAt(input.now))
+				: null;
 		const allowed =
 			(input.from === "pending" &&
 				(["turn_granted", "replacement_pending", "held"] as const).includes(
 					input.to as never,
 				)) ||
 			(input.from === "turn_granted" &&
-				(["wake_delivered", "replacement_pending", "held"] as const).includes(
+				(["awaiting_receipt", "replacement_pending", "held"] as const).includes(
 					input.to as never,
 				)) ||
-			(input.from === "wake_delivered" && input.to === "completed") ||
+			(input.from === "awaiting_receipt" &&
+				(["replacement_pending", "held"] as const).includes(input.to as never)) ||
+			(input.from === "wake_delivered" &&
+				(["replacement_pending", "completed", "held"] as const).includes(
+					input.to as never,
+				)) ||
 			(input.from === "replacement_pending" && input.to === "completed");
 		if (
 			!input.requestId ||
@@ -27421,6 +27712,9 @@ export class StateStore {
 			!Number.isInteger(input.generation) ||
 			input.generation < 1 ||
 			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.to === "awaiting_receipt" &&
+				(!StateStore.workflowFiniteTimestamp(nextRetryAt!) ||
+					Date.parse(nextRetryAt!) <= Date.parse(input.now))) ||
 			(input.to === "wake_delivered" &&
 				!StateStore.workflowAlertIdentityValid(input.alertIdentity)) ||
 			!allowed
@@ -27431,7 +27725,7 @@ export class StateStore {
 		this.db.transaction(() => {
 			this.db.run(
 				`UPDATE workflow_rework_delivery
-				    SET state = ?, last_error = ?, updated_at = ?,
+				    SET state = ?, last_error = ?, updated_at = ?, next_retry_at = ?,
 				        owner_id = CASE WHEN ? THEN NULL ELSE owner_id END,
 				        lease_expires_at = CASE WHEN ? THEN NULL ELSE lease_expires_at END
 				  WHERE request_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
@@ -27439,6 +27733,7 @@ export class StateStore {
 					input.to,
 					input.error ?? null,
 					input.now,
+					nextRetryAt,
 					input.releaseOwner ? 1 : 0,
 					input.releaseOwner ? 1 : 0,
 					input.requestId,
@@ -29313,7 +29608,7 @@ export class StateStore {
 					   FROM workflow_rework_delivery d
 					   JOIN workflow_rework_request r ON r.request_id = d.request_id
 					  WHERE r.run_id = ?
-					    AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+					    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
 					  LIMIT 1`,
 					[runId],
 				).length > 0
@@ -30331,7 +30626,7 @@ export class StateStore {
 				`SELECT d.request_id FROM workflow_rework_delivery d
 				  JOIN workflow_rework_request r ON r.request_id = d.request_id
 				 WHERE r.run_id = ?
-				   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+				   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
 				 LIMIT 1`,
 				[input.runId],
 			)[0];
@@ -30870,7 +31165,7 @@ export class StateStore {
 				`SELECT d.request_id FROM workflow_rework_delivery d
 				  JOIN workflow_rework_request r ON r.request_id = d.request_id
 				 WHERE r.run_id = ?
-				   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+				   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
 				 LIMIT 1`,
 				[input.runId],
 			)[0];
@@ -32924,14 +33219,22 @@ export class StateStore {
 		return status === "active" || status === "held";
 	}
 
-	private assertCurrentWorkflowWriterTx(input: {
+	private classifyCurrentWorkflowWriterTx(input: {
 		runId: string;
 		nodeId: string;
 		attempt: number;
 		executionId: string;
 		activationId: string;
-	}): boolean {
-		return Boolean(
+	}):
+		| { ok: true }
+		| {
+				ok: false;
+				reason:
+					| "writer_session_missing"
+					| "writer_session_terminal"
+					| "writer_binding_stale";
+		  } {
+		const current = Boolean(
 			this.workflowSelectAll(
 				`SELECT 1 AS present
 				   FROM workflow_run_node node
@@ -32974,6 +33277,27 @@ export class StateStore {
 				],
 			)[0],
 		);
+		if (!current) return { ok: false, reason: "writer_binding_stale" };
+		const session = this.getSession(input.executionId);
+		if (!session) return { ok: false, reason: "writer_session_missing" };
+		if (OPERATIONAL_TERMINAL_STATUSES.has(session.status)) {
+			return { ok: false, reason: "writer_session_terminal" };
+		}
+		return { ok: true };
+	}
+
+	private assertCurrentWorkflowWriterTx(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		executionId: string;
+		activationId: string;
+	}): boolean {
+		const writer = this.classifyCurrentWorkflowWriterTx(input);
+		// Internal launch/admission writers can legitimately run before the session
+		// projection exists. Runner-authored completion/decision boundaries call the
+		// structured classifier directly and fail closed on a missing row.
+		return writer.ok || writer.reason === "writer_session_missing";
 	}
 
 	private assertCurrentWorkflowGateAuthorityTx(input: {
@@ -34292,6 +34616,39 @@ export class StateStore {
 		return rows.length === 1 ? (rows[0]!.run_id as string) : undefined;
 	}
 
+	private revokeWorkflowQaProofForHeadChangeTx(input: {
+		runId: string;
+		producerNodeId: string;
+		headSha: string;
+	}): void {
+		const stale = this.workflowSelectAll(
+			`SELECT DISTINCT claim.id, claim.node_id
+			   FROM workflow_claims claim
+			   JOIN workflow_execution_binding producer
+			     ON producer.execution_id = claim.subject_producer_execution_id
+			    AND producer.run_id = claim.workflow_run_id
+			  WHERE claim.workflow_run_id = ?
+			    AND producer.node_id = ?
+			    AND claim.predicate = 'qa_passed'
+			    AND claim.subject_kind = 'git_head'
+			    AND lower(claim.subject_digest) <> ?
+			    AND NOT EXISTS (
+			      SELECT 1 FROM workflow_claim_revocation rev
+			       WHERE rev.claim_id = claim.id
+			    )`,
+			[input.runId, input.producerNodeId, input.headSha.toLowerCase()],
+		);
+		for (const claim of stale) {
+			this.revokeWorkflowClaimTx({
+				claimId: Number(claim.id),
+				reason: "materialized_head_superseded",
+				actor: "workflow_head_binding",
+				runId: input.runId,
+				nodeId: (claim.node_id as string | null) ?? undefined,
+			});
+		}
+	}
+
 	private recordWorkflowNodePrBindingTx(input: {
 		runId: string;
 		nodeId: string;
@@ -34395,10 +34752,17 @@ export class StateStore {
 			  WHERE execution_id = ?`,
 			[input.prNumber, normalized.headSha, input.executionId],
 		);
+		this.revokeWorkflowQaProofForHeadChangeTx({
+			runId: input.runId,
+			producerNodeId: input.nodeId,
+			headSha: normalized.headSha,
+		});
 		return true;
 	}
 
 	private mirrorSessionPrEvidenceTx(input: {
+		runId: string;
+		nodeId: string;
 		executionId: string;
 		prNumber: number;
 		headSha: string;
@@ -34415,7 +34779,13 @@ export class StateStore {
 			  WHERE execution_id = ?`,
 			[input.prNumber, input.headSha.toLowerCase(), input.executionId],
 		);
-		return this.db.getRowsModified() === 1;
+		if (this.db.getRowsModified() !== 1) return false;
+		this.revokeWorkflowQaProofForHeadChangeTx({
+			runId: input.runId,
+			producerNodeId: input.nodeId,
+			headSha: input.headSha,
+		});
+		return true;
 	}
 
 	private workflowOutcomeEntersApprovalGate(input: {
@@ -35294,15 +35664,52 @@ export class StateStore {
 				...(completionDisposition ? { completionDisposition } : {}),
 			};
 		}
-		if (
-			!this.assertCurrentWorkflowWriterTx({
-				runId: context.binding.run_id,
-				nodeId: context.binding.node_id,
-				attempt: context.binding.attempt,
-				executionId: context.binding.execution_id,
-				activationId: context.binding.activation_id,
-			})
-		) {
+		const writer = this.classifyCurrentWorkflowWriterTx({
+			runId: context.binding.run_id,
+			nodeId: context.binding.node_id,
+			attempt: context.binding.attempt,
+			executionId: context.binding.execution_id,
+			activationId: context.binding.activation_id,
+		});
+		if (!writer.ok) {
+			if (
+				writer.reason === "writer_session_missing" ||
+				writer.reason === "writer_session_terminal"
+			) {
+				const transitionReason = `${ENGINE_INVARIANT_REASON_PREFIX}${writer.reason}`;
+				const refusalDigest = canonicalSubmissionDigest({
+					runId: context.binding.run_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+					sourceEventId: input.sourceEventId,
+					transitionReason,
+				});
+				const alertPending = !this.recordEngineInvariantRefusal({
+					runId: context.binding.run_id,
+					issueId: context.run.issue_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+					executionId: context.binding.execution_id,
+					refusalEventUid: `completion_transition_refused:${refusalDigest}`,
+					refusalKind: "completion_transition_refused",
+					refusalPayload: {
+						attempt: context.binding.attempt,
+						sourceEventId: input.sourceEventId,
+						transitionReason,
+					},
+					invariant: writer.reason,
+					alertIdentity: input.alertIdentity,
+					now,
+				}).alertDurable;
+				return {
+					ok: false,
+					reason: "transition_refused",
+					detail: {
+						transitionReason,
+						...(alertPending ? { alertPending: true as const } : {}),
+					},
+				};
+			}
 			return { ok: false, reason: "stale_execution_superseded" };
 		}
 		if (context.node.capabilities.produces_output && !genericNoCodeExit) {
@@ -35348,16 +35755,18 @@ export class StateStore {
 		let transitionGateOpened = false;
 		try {
 			this.db.transaction(() => {
-				if (
-					!this.assertCurrentWorkflowWriterTx({
-						runId: context.binding.run_id,
-						nodeId: context.binding.node_id,
-						attempt: context.binding.attempt,
-						executionId: context.binding.execution_id,
-						activationId: context.binding.activation_id,
-					})
-				) {
-					transitionRefusal = "stale_execution_superseded";
+				const currentWriter = this.classifyCurrentWorkflowWriterTx({
+					runId: context.binding.run_id,
+					nodeId: context.binding.node_id,
+					attempt: context.binding.attempt,
+					executionId: context.binding.execution_id,
+					activationId: context.binding.activation_id,
+				});
+				if (!currentWriter.ok) {
+					transitionRefusal =
+						currentWriter.reason === "writer_binding_stale"
+							? "stale_execution_superseded"
+							: `${ENGINE_INVARIANT_REASON_PREFIX}${currentWriter.reason}`;
 					throw new Error("engine_completion_transition_refused");
 				}
 				const sessionStatus = this.getSession(input.executionId)?.status;
@@ -35424,6 +35833,8 @@ export class StateStore {
 						}
 					} else if (
 						!this.mirrorSessionPrEvidenceTx({
+							runId: context.binding.run_id,
+							nodeId: context.binding.node_id,
 							executionId: context.binding.execution_id,
 							prNumber: input.prBinding.prNumber,
 							headSha: input.prBinding.headSha,
@@ -35884,16 +36295,22 @@ export class StateStore {
 						credential.attempt,
 					],
 				)[0];
-				if (
-					!binding ||
-					!this.assertCurrentWorkflowWriterTx({
-						runId: credential.run_id as string,
-						nodeId: credential.node_id as string,
-						attempt: Number(credential.attempt),
-						executionId: credential.execution_id as string,
-						activationId: credential.activation_id as string,
-					})
-				) {
+				const writer = this.classifyCurrentWorkflowWriterTx({
+					runId: credential.run_id as string,
+					nodeId: credential.node_id as string,
+					attempt: Number(credential.attempt),
+					executionId: credential.execution_id as string,
+					activationId: credential.activation_id as string,
+				});
+				if (!binding || !writer.ok) {
+					if (
+						!writer.ok &&
+						(writer.reason === "writer_session_missing" ||
+							writer.reason === "writer_session_terminal")
+					) {
+						transitionRefusal = `${ENGINE_INVARIANT_REASON_PREFIX}${writer.reason}`;
+						throw new Error("engine_decision_transition_refused");
+					}
 					result = { ok: false, reason: "binding_not_current" };
 					return;
 				}
@@ -37235,14 +37652,22 @@ export class StateStore {
 					},
 				});
 				if (run.gate_carrier_epoch === 1) {
+					const gateAuthority = resolveWorkflowGateAuthority(snapshot);
+					const runnerShipHeadSha =
+						gateAuthority.mode === "runner_ship"
+							? this.resolveRunnerShipCurrentHeadTx({
+									runId: input.runId,
+									snapshot,
+								})
+							: input.subjectDigest;
 					this.createWorkflowGateHolderTx({
 						runId: input.runId,
 						gateNodeId: target.id,
 						attempt: targetAttempt,
 						sourceExecutionId: input.executionId,
 						snapshot,
-						...(input.subjectDigest
-							? { runnerShipHeadSha: input.subjectDigest }
+						...(runnerShipHeadSha
+							? { runnerShipHeadSha }
 							: {}),
 						alertIdentity: input.alertIdentity,
 						now,
@@ -38381,7 +38806,7 @@ export class StateStore {
 			`SELECT d.request_id FROM workflow_rework_delivery d
 			  JOIN workflow_rework_request r ON r.request_id = d.request_id
 			 WHERE r.run_id = ?
-			   AND d.state IN ('pending','turn_granted','wake_delivered','replacement_pending')
+			   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
 			 LIMIT 1`,
 			[input.run.run_id],
 		)[0];
@@ -39838,6 +40263,27 @@ export class StateStore {
 		};
 	}
 
+	private resolveRunnerShipCurrentHeadTx(input: {
+		runId: string;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	}): string | undefined {
+		const authority = resolveWorkflowGateAuthority(input.snapshot);
+		if (authority.mode !== "runner_ship") return undefined;
+		const currentBindings = this.currentWorkflowPrBindingRows(input.runId);
+		if (currentBindings.length === 1) {
+			return currentBindings[0]!.head_sha.toLowerCase();
+		}
+		if (!authority.carrierNodeId) return undefined;
+		const carrier = this.listWorkflowRunNodes(
+			input.runId,
+			authority.carrierNodeId,
+		).at(-1);
+		const sessionHead = carrier?.execution_id
+			? this.getSession(carrier.execution_id)?.pr_head_sha?.trim().toLowerCase()
+			: undefined;
+		return /^[0-9a-f]{40}$/.test(sessionHead ?? "") ? sessionHead : undefined;
+	}
+
 	/** Gate-entry authority creation. Caller owns the surrounding transition tx. */
 	private createWorkflowGateHolderTx(input: {
 		runId: string;
@@ -39850,6 +40296,14 @@ export class StateStore {
 		now: string;
 	}): WorkflowGateHolderRow {
 		const authority = resolveWorkflowGateAuthority(input.snapshot);
+		if (authority.mode === "runner_ship") {
+			const runnerHead = input.runnerShipHeadSha?.trim().toLowerCase();
+			if (!runnerHead || !/^[0-9a-f]{40}$/.test(runnerHead)) {
+				throw new WorkflowEngineInvariantError(
+					"runner_ship_head_unavailable",
+				);
+			}
+		}
 		const proof = this.resolveWorkflowGateEvidenceTx({
 			runId: input.runId,
 			snapshot: input.snapshot,
@@ -39860,6 +40314,12 @@ export class StateStore {
 		});
 		if (proof.subjectKind !== authority.subjectKind) {
 			throw new Error("workflow_gate_subject_contract_conflict");
+		}
+		if (authority.mode === "runner_ship") {
+			const runnerHead = input.runnerShipHeadSha!.trim().toLowerCase();
+			if (proof.subjectDigest.toLowerCase() !== runnerHead) {
+				throw new WorkflowEngineInvariantError("runner_ship_qa_head_stale");
+			}
 		}
 		const questionId = `workflow-gate:${canonicalSubmissionDigest({
 			runId: input.runId,
@@ -42937,6 +43397,7 @@ export class StateStore {
 			"pending",
 			"grant_started",
 			"turn_granted",
+			"awaiting_receipt",
 		];
 		if (states.length === 0) return [];
 		const placeholders = states.map(() => "?").join(", ");
@@ -42975,9 +43436,14 @@ export class StateStore {
 			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
 			if (!delivery) return;
 			if (
-				!(["pending", "grant_started", "turn_granted"] as const).includes(
-					delivery.state as never,
-				)
+				!(
+					[
+						"pending",
+						"grant_started",
+						"turn_granted",
+						"awaiting_receipt",
+					] as const
+				).includes(delivery.state as never)
 			) {
 				result = {
 					ok: false,
@@ -43016,7 +43482,9 @@ export class StateStore {
 			this.db.run(
 				`UPDATE workflow_carrier_delivery
 				    SET owner_id = ?, generation = ?, lease_expires_at = ?,
-				        next_retry_at = NULL, last_error = NULL, updated_at = ?
+				        next_retry_at = NULL, last_error = NULL,
+				        updated_at = CASE WHEN state = 'awaiting_receipt'
+				          THEN updated_at ELSE ? END
 				  WHERE question_id = ? AND generation = ? AND state = ?`,
 				[
 					input.ownerId,
@@ -43046,6 +43514,42 @@ export class StateStore {
 		return result;
 	}
 
+	scheduleWorkflowCarrierReceiptProbe(input: {
+		questionId: string;
+		ownerId: string;
+		generation: number;
+		nextRetryAt: string;
+		reason: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.ownerId ||
+			!Number.isSafeInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.nextRetryAt) ||
+			!input.reason.trim()
+		) {
+			return { ok: false, reason: "invalid_receipt_probe_schedule" };
+		}
+		this.db.run(
+			`UPDATE workflow_carrier_delivery
+			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?
+			  WHERE question_id = ? AND owner_id = ? AND generation = ?
+			    AND state = 'awaiting_receipt'`,
+			[
+				input.nextRetryAt,
+				input.questionId,
+				input.ownerId,
+				input.generation,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "stale_delivery_owner" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
 	advanceWorkflowCarrierDelivery(input: {
 		questionId: string;
 		ownerId: string;
@@ -43055,20 +43559,32 @@ export class StateStore {
 		now: string;
 		error?: string;
 		releaseOwner?: boolean;
+		nextRetryAt?: string;
 	}): { ok: true } | { ok: false; reason: string } {
+		const nextRetryAt =
+			input.to === "awaiting_receipt"
+				? (input.nextRetryAt ?? workflowDeliveryReceiptNextRetryAt(input.now))
+				: null;
+		const allowed =
+			(input.from === "pending" && input.to === "grant_started") ||
+			(input.from === "turn_granted" && input.to === "awaiting_receipt");
 		if (
 			!input.questionId ||
 			!input.ownerId ||
 			!Number.isSafeInteger(input.generation) ||
 			input.generation < 1 ||
-			!StateStore.workflowFiniteTimestamp(input.now)
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			(input.to === "awaiting_receipt" &&
+				(!StateStore.workflowFiniteTimestamp(nextRetryAt!) ||
+					Date.parse(nextRetryAt!) <= Date.parse(input.now))) ||
+			!allowed
 		) {
 			return { ok: false, reason: "invalid_carrier_delivery_advance" };
 		}
 		this.db.run(
 			`UPDATE workflow_carrier_delivery
 			    SET state = ?, owner_id = ?, lease_expires_at = ?,
-			        last_error = ?, updated_at = ?
+			        next_retry_at = ?, last_error = ?, updated_at = ?
 			  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
 			[
 				input.to,
@@ -43077,6 +43593,7 @@ export class StateStore {
 					? null
 					: (this.getWorkflowCarrierDelivery(input.questionId)
 							?.lease_expires_at ?? null),
+				nextRetryAt,
 				input.error ?? null,
 				input.now,
 				input.questionId,
@@ -43237,14 +43754,15 @@ export class StateStore {
 				result = { ok: true, idempotentReplay: true };
 				return;
 			}
-			if (row.state !== "wake_delivered") {
+			if (row.state !== "awaiting_receipt") {
 				result = { ok: false, reason: "carrier_wake_receipt_not_ready" };
 				return;
 			}
 			this.db.run(
 				`UPDATE workflow_carrier_delivery
-				    SET state = 'receipt_started', updated_at = ?
-				  WHERE question_id = ? AND state = 'wake_delivered'
+				    SET state = 'receipt_started', owner_id = NULL,
+				        lease_expires_at = NULL, next_retry_at = NULL, updated_at = ?
+				  WHERE question_id = ? AND state = 'awaiting_receipt'
 				    AND carrier_activation_id = ? AND source_execution_id = ?
 				    AND turn_epoch = ?`,
 				[
@@ -43317,6 +43835,7 @@ export class StateStore {
 			const openRework =
 				row.rework_request_id != null &&
 				(row.rework_delivery_state === "turn_granted" ||
+					row.rework_delivery_state === "awaiting_receipt" ||
 					row.rework_delivery_state === "wake_delivered");
 			if (!phaseNode && !openRework) continue;
 			expectations.push({
@@ -43338,7 +43857,7 @@ export class StateStore {
 			   JOIN workflow_run r ON r.run_id = d.run_id
 			  WHERE r.engine_owned = 1 AND r.status = 'active'
 			    AND r.current_node_id = d.gate_node_id
-			    AND d.state IN ('turn_granted','wake_delivered','receipt_started')
+			    AND d.state IN ('turn_granted','awaiting_receipt','wake_delivered','receipt_started')
 			    AND d.turn_epoch IS NOT NULL AND d.turn_granted_at IS NOT NULL`,
 			[],
 		)) {
@@ -43605,6 +44124,7 @@ export class StateStore {
 					| "pending"
 					| "grant_started"
 					| "turn_granted"
+					| "awaiting_receipt"
 					| "completed"
 					| "held"
 					| "needs_lead";
@@ -43629,6 +44149,7 @@ export class StateStore {
 						| "pending"
 						| "grant_started"
 						| "turn_granted"
+						| "awaiting_receipt"
 						| "completed"
 						| "held"
 						| "needs_lead";
@@ -43648,9 +44169,14 @@ export class StateStore {
 			if (
 				delivery.owner_id !== input.ownerId ||
 				delivery.generation !== input.generation ||
-				!(["pending", "grant_started", "turn_granted"] as const).includes(
-					delivery.state as never,
-				)
+				!(
+					[
+						"pending",
+						"grant_started",
+						"turn_granted",
+						"awaiting_receipt",
+					] as const
+				).includes(delivery.state as never)
 			) {
 				result = { ok: false, reason: "stale_delivery_owner" };
 				return;
@@ -43750,9 +44276,14 @@ export class StateStore {
 				| "pending"
 				| "grant_started"
 				| "turn_granted"
+				| "awaiting_receipt"
 				| "needs_lead" = exhausted
 				? "needs_lead"
-				: (delivery.state as "pending" | "grant_started" | "turn_granted");
+				: (delivery.state as
+						| "pending"
+						| "grant_started"
+						| "turn_granted"
+						| "awaiting_receipt");
 			this.db.run(
 				`UPDATE workflow_carrier_delivery
 				    SET state = ?, owner_id = NULL, lease_expires_at = NULL,
@@ -44034,13 +44565,12 @@ export class StateStore {
 			return { disposition: "cancel", reason: "invalid_wake_identity" };
 		}
 		const session = this.getSession(input.executionId);
-		if (
-			session &&
-			isStateStoreIrreversibleTerminalForZombie(String(session.status))
-		) {
-			return { disposition: "cancel", reason: "session_terminal" };
+		if (!input.activationId) {
+			return session &&
+				isStateStoreIrreversibleTerminalForZombie(String(session.status))
+				? { disposition: "cancel", reason: "session_terminal" }
+				: { disposition: "deliver" };
 		}
-		if (!input.activationId) return { disposition: "deliver" };
 
 		const carrier = this.workflowSelectAll(
 			`SELECT d.*, r.status AS run_status, r.current_node_id,
@@ -44070,6 +44600,12 @@ export class StateStore {
 			) {
 				return { disposition: "cancel", reason: "carrier_target_terminal" };
 			}
+			if (
+				carrier.state !== "turn_granted" &&
+				carrier.state !== "awaiting_receipt"
+			) {
+				return { disposition: "cancel", reason: "carrier_obligation_settled" };
+			}
 			if (carrier.claim_state === "cancelled") {
 				return { disposition: "cancel", reason: "carrier_send_cancelled" };
 			}
@@ -44086,6 +44622,12 @@ export class StateStore {
 		if (!binding || binding.execution_id !== input.executionId) {
 			return { disposition: "cancel", reason: "activation_not_current" };
 		}
+		const reworkDelivery = binding.rework_request_id
+			? this.getWorkflowReworkDelivery(binding.rework_request_id)
+			: undefined;
+		const activeReworkObligation =
+			reworkDelivery?.state === "turn_granted" ||
+			reworkDelivery?.state === "awaiting_receipt";
 		const run = this.getWorkflowRun(binding.run_id);
 		const node = this.getWorkflowRunNode(
 			binding.run_id,
@@ -44101,6 +44643,16 @@ export class StateStore {
 			new Set(["done", "failed", "superseded", "completed"]).has(node.state)
 		) {
 			return { disposition: "cancel", reason: "activation_target_terminal" };
+		}
+		if (binding.rework_request_id && !activeReworkObligation) {
+			return { disposition: "cancel", reason: "rework_obligation_settled" };
+		}
+		if (
+			session &&
+			isStateStoreIrreversibleTerminalForZombie(String(session.status)) &&
+			!activeReworkObligation
+		) {
+			return { disposition: "cancel", reason: "session_terminal" };
 		}
 		return { disposition: "deliver" };
 	}
@@ -51475,6 +52027,7 @@ export interface WorkflowReworkDeliveryRow {
 	state:
 		| "pending"
 		| "turn_granted"
+		| "awaiting_receipt"
 		| "wake_delivered"
 		| "replacement_pending"
 		| "completed"
@@ -51502,6 +52055,7 @@ export interface WorkflowCarrierDeliveryRow {
 		| "pending"
 		| "grant_started"
 		| "turn_granted"
+		| "awaiting_receipt"
 		| "wake_delivered"
 		| "receipt_started"
 		| "completed"
@@ -52102,6 +52656,8 @@ export interface WorkflowEngineAlertPayload {
 				| "card_void_stuck"
 				| "founder_input_deadletter"
 				| "founder_rework_round_high"
+				| "founder_review_delivery_missing"
+				| "founder_review_unanswered"
 				| "voided_card_input"
 				| "land_head_unavailable"
 				| "engine_invariant_refusal"

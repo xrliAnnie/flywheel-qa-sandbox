@@ -21,6 +21,8 @@ import type { CommDB } from "./db.js";
 
 export type RunnerWakeBackend = "claude-code" | "codex";
 export type RunnerWakeSettlement = "on_delivery" | "on_consume";
+/** One verified retry at T+3m; shared with the Bridge outbox patrol. */
+export const TURN_WAKE_RETRY_AFTER_MS = 3 * 60_000;
 export type WakeResult =
 	| {
 			ok: true;
@@ -189,7 +191,7 @@ export async function deliverDurableTurnWake(
 	args: DurableTurnWakeArgs,
 ): Promise<WakeResult> {
 	const nowMs = args.nowMs ?? Date.now();
-	const retryAfterMs = args.retryAfterMs ?? 3 * 60_000;
+	const retryAfterMs = args.retryAfterMs ?? TURN_WAKE_RETRY_AFTER_MS;
 	const leaseMs = args.leaseMs ?? 30_000;
 	args.db.enqueueTurnWake({
 		wakeId: args.wakeId,
