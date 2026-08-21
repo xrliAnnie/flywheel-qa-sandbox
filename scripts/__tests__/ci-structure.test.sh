@@ -344,6 +344,7 @@ expected_shard_tests = {
         "Test — FLY-1663 launchd-native Lead lifecycle",
         "Test — FLY-1830 non-Lead daemon convergence",
         "Test — FLY-1814 launchd fleet contracts",
+        "Test — FLY-1929 voucher watch contracts",
         "Test — FLY-1678 statusline model-scoped bar + installer",
     ],
     "script-tests-2": [

@@ -246,6 +246,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Weekly flag scan has no trustworthy clock";
 		case "tmux_rescue_hold":
 			return "tmux rescue lock held too long";
+		case "host_voucher_incident":
+			return "Host IPC-voucher incident (kernel panic risk)";
 	}
 }
 
@@ -479,5 +481,10 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "One or more flags lack two trustworthy effective-value samples. The scan withheld them from Annie rather than guessing; repair the named read or keep-binding gap.";
 		case "tmux_rescue_hold":
 			return "A tmux rescue operation held its per-socket kernel lock beyond the warning threshold. Inspect the supplied socket, verb, caller, and acquisition audit evidence.";
+		// FLY-1929: the shell voucher guard builds the real body (it carries the
+		// measured zone counts and the episode identity); this keeps the shared
+		// kind switch exhaustive.
+		case "host_voucher_incident":
+			return "Host IPC-voucher occupancy climbed toward IVAC_ENTRIES_MAX, or a new voucher kernel-panic report appeared. The known holder is macOS ecosystemanalyticsd, not a Flywheel process; the containment action is root- and founder-gated. See the FLY-1929 runbook.";
 	}
 }

@@ -307,6 +307,15 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// Informational routing bypasses owner/ARC; keep an exhaustive inert contract.
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },
 	flag_scan_no_clock: { owner: "claude", arc: "human_by_design" },
+	// FLY-1929: host IPC-voucher pressure / kernel-panic recurrence. There is NO
+	// executable remediation today — the containment action (restarting an Apple
+	// LaunchDaemon) is root- and founder-gated, so this is honestly human_by_design
+	// rather than a pending "auto".
+	host_voucher_incident: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef: "FLY-1929",
+	},
 };
 
 /**

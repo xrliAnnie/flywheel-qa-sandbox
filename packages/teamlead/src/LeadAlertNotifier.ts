@@ -333,6 +333,7 @@ export const ALERT_EVENT_TYPES = [
 	// are informational (no ticket/ARC/founder DM lifecycle).
 	"flag_scan_failed",
 	"flag_scan_no_clock",
+	"host_voucher_incident",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
 	 * skipped it. A REAL notification is being held back, so someone has to be

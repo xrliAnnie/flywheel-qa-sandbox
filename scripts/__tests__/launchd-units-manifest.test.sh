@@ -196,6 +196,10 @@ def validate_repo_manifest(text):
         "com.flywheel.token-usage-daily": ("com.flywheel.token-usage-daily.plist", "copy", "0", None),
         "com.flywheel.bridge-liveness-probe": ("com.flywheel.bridge-liveness-probe.plist", "copy", "0", None),
         "com.flywheel.codex-log-guard": ("com.flywheel.codex-log-guard.plist", "copy", "0", "never-installed-copy-exception"),
+        # FLY-1929: IPC-voucher watcher (panic recurrence + remediation health).
+        # policy=copy so the checked-in bytes stay authoritative and the existing
+        # non-Lead convergence path installs/bootstraps it — no second installer.
+        "com.flywheel.voucher-watch": ("com.flywheel.voucher-watch.plist", "copy", "0", "repo plist is byte authority"),
         "com.flywheel.daily-digest": ("com.flywheel.daily-digest.plist", "hold", "0", "pending-founder-optin"),
         "com.flywheel.xiaohongshu-learning": ("com.flywheel.xiaohongshu-learning.plist", "hold", "0", "founder-gated-pilot"),
         "com.flywheel.bridge": ("com.flywheel.bridge.plist", "setup", "0", None),

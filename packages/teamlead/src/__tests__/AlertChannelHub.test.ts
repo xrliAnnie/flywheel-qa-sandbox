@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	AlertChannelHub,
+	correlationKeyFor,
 	createDiscordOps,
 	type DiscordOps,
 } from "../bridge/AlertChannelHub.js";
@@ -809,5 +810,38 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
 		).mock.calls[0]!;
 		expect(JSON.parse(String(init.body)).auto_archive_duration).toBe(60);
+	});
+});
+
+// FLY-1929: the voucher guard deliberately ships ONE kind (host_voucher_incident)
+// carrying two sources (occupancy pressure + kernel-panic recurrence), because
+// neither has an executable remediation and a second kind would make
+// KIND_CONTRACTS claim an ARC difference that does not exist.
+//
+// This test pins the CONSEQUENCE of that choice so it is a recorded decision
+// rather than a surprise: queued warn/severe/panic events share one correlation
+// key, so the newest voucher event replaces the previous voucher ticket thread.
+// Root-channel alerts stay distinct because their event ids differ (severity and
+// source are encoded in the signature + body).
+describe("FLY-1929 single-kind correlation consequence", () => {
+	it("queued voucher events share one correlation key (latest replaces the prior thread)", () => {
+		const base = {
+			projectName: "flywheel",
+			leadId: "system",
+			eventType: "host_voucher_incident",
+		};
+		const warnKey = correlationKeyFor(base);
+		const severeKey = correlationKeyFor(base);
+		const panicKey = correlationKeyFor(base);
+
+		// Shell-emitted queue records carry no sessionKey, so all three collapse.
+		expect(warnKey).toBe(severeKey);
+		expect(severeKey).toBe(panicKey);
+		expect(warnKey).toBe("flywheel|system|host_voucher_incident|");
+
+		// A different kind must NOT collide with it.
+		expect(
+			correlationKeyFor({ ...base, eventType: "swap_pressure_high" }),
+		).not.toBe(warnKey);
 	});
 });

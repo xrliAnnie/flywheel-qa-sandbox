@@ -21,4 +21,5 @@ com.flywheel.growth-retro	-	external	*	informational-only external unit
 com.flywheel.sub-create-nightly	-	external	*	informational-only external unit
 com.flywheel.sub-daily-loop	-	external	*	informational-only external unit
 com.flywheel.skills-update	-	external	*	informational-only external unit
+com.flywheel.voucher-watch	com.flywheel.voucher-watch.plist	copy	0	repo plist is byte authority
 com.flywheel.voice-bridge	com.flywheel.voice-bridge.plist	managed	0	must never be launched by convergence

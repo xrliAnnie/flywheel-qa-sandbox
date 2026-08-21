@@ -17,6 +17,7 @@ import {
 	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
 import { QUOTA_MONITOR_MANUAL_TICKET_KINDS } from "../AlertChannelHub.js";
+import { bodyFor, titleFor } from "../alert-kind-copy.js";
 import {
 	escalatesAtEnqueue,
 	KIND_CONTRACTS,
@@ -395,6 +396,30 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 				`FLY-1364 kind "${kind}" missing from shell allowlist`,
 			).toBe(true);
 		}
+	});
+
+	// FLY-1929: the generic guard above only asserts shell -> TS union, so a kind
+	// added to the union but FORGOTTEN in lead-alert.sh compiles, ships, and then
+	// dies at runtime with `unknown --kind`. Verified by mutation: deleting the
+	// shell arm leaves every other assertion in this file green. Hence an explicit
+	// both-faces assertion, in the same style as the FLY-1309/FLY-1364 families.
+	it("FLY-1929 host_voucher_incident exists on both faces with an honest no-ARC contract", () => {
+		const allow = shellAllowlist();
+		expect(ALERT_EVENT_TYPES).toContain("host_voucher_incident");
+		expect(
+			allow.has("host_voucher_incident"),
+			'FLY-1929 kind "host_voucher_incident" missing from lead-alert.sh allowlist',
+		).toBe(true);
+		const contract = KIND_CONTRACTS.host_voucher_incident;
+		expect(contract.owner).toBe("claude");
+		// There is no executable remediation: the containment action restarts an
+		// Apple LaunchDaemon and is root- plus founder-gated. Marking it "auto"
+		// would make this table lie.
+		expect(contract.arc).toBe("human_by_design");
+		// One kind carries BOTH sources (pressure + panic); they are distinguished
+		// in the body and the dedup signature, not by a second kind.
+		expect(titleFor("host_voucher_incident")).toMatch(/voucher/i);
+		expect(bodyFor("host_voucher_incident", "")).toMatch(/ecosystemanalyticsd/);
 	});
 
 	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {

@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-1929 — IPC-voucher watcher (panic recurrence + remediation health).
+
+  Runs scripts/flywheel-voucher-watch.sh once a minute. Each tick is a bounded
+  one-shot that, in a single process:
+    1. checks whether the REMEDIATION daemon is still installed;
+    2. samples bank_task and pages when it climbs well past the level at which
+       that daemon should already have acted;
+    3. scans DiagnosticReports for a NEW voucher kernel-panic report;
+    4. appends raw telemetry, so the next incident has a "before" baseline.
+
+  WHAT THIS UNIT IS NOT
+    It never remediates. The remediation already exists in production and is not
+    ours: the root LaunchDaemon com.annie.voucher-guard restarts
+    ecosystemanalyticsd once bank_task passes 200000. This unit's whole job is
+    to notice when THAT stops working — see the FLY-1929 runbook.
+
+  It also keeps no cross-tick state of its own. Alert de-duplication is
+  lead-alert.sh's claims.db, which already provides permanent receipts, a spill
+  queue, dead-lettering and a drain. Re-implementing that here is exactly the
+  mistake this file was rewritten to remove.
+
+  Deliberately NO EnvironmentVariables and no ".env" sourcing: lead-alert.sh's
+  system-identity branch reads ~/.flywheel/.env itself, in an isolated subshell,
+  taking only the channel id and the sender-token selector. Sourcing the whole
+  file here would push every unrelated secret into this watcher and all of its
+  children for no benefit.
+
+  Shape follows com.flywheel.bridge-liveness-probe.plist: a StartInterval=60
+  one-shot. RunAtLoad is true so the first check happens immediately after
+  bootstrap rather than a minute later. It is NOT modelled on
+  com.flywheel.codex-log-guard.plist, which is a daily StartCalendarInterval job.
+
+  This repo-owned plist is registered as policy=copy in
+  scripts/launchd/units.manifest; its declared host prefix and checked-in bytes
+  are authoritative, so do not hand-edit an installed copy.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flywheel.voucher-watch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/xiaorongli/Dev/flywheel/scripts/flywheel-voucher-watch.sh</string>
+		<string>tick</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<!-- PATH only, never secrets. Verified: zprint, python3, launchctl and
+		     the coreutils this script uses all resolve on launchd's default
+		     PATH alone, and a full tick was exercised under `env -i` with that
+		     PATH. The homebrew prefixes are listed first purely for
+		     determinism if a newer tool is installed there later. -->
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/tmp/flywheel-voucher-watch.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/flywheel-voucher-watch.err</string>
+</dict>
+</plist>

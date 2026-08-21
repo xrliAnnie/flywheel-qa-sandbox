@@ -356,6 +356,16 @@ jobs:
           bash scripts/__tests__/launchd-census-wiring.test.sh
           bash scripts/__tests__/fly1814-operator-tools.test.sh
 
+      # FLY-1929: IPC-voucher watcher. Hermetic — injected clock, fake zprint,
+      # fake DiagnosticReports dir, and a fake alert script that MIRRORS the real
+      # permanent-receipt dedup (a forgetful fake would let the re-arm case pass
+      # while production silently never re-posts). Drives real sequential
+      # invocations rather than one batch fixture, because a batch fixture hides
+      # warm-up behaviour. Step seconds: ~230 locally on a loaded host.
+      - name: Test — FLY-1929 voucher watch contracts
+        run: |
+          bash scripts/__tests__/voucher-watch.test.sh
+
       # FLY-1678: the statusline renders on every Lead and Runner pane and is
       # re-read every frame, so a bad edit blanks the whole fleet at once. Both
       # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
