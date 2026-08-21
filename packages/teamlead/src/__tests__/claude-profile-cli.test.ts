@@ -6,7 +6,7 @@
  */
 
 import { EventEmitter } from "node:events";
-import { existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
@@ -15,6 +15,8 @@ import {
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
+	KeychainPreimageConflictError,
+	LiveIdentityUnavailableError,
 	TargetIdentityMismatchError,
 	TargetIdentityRolledBackError,
 	TargetIdentityUnverifiableError,
@@ -208,6 +210,72 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		});
 	});
 
+	it("returns a verified freshening fact without identity checkpoints", async () => {
+		const freshened = {
+			name: "personal",
+			identityProof: { email: "annie@example.com", uuid: "uuid-personal" },
+		};
+		const execFile = vi.fn(async (_file, _args, options) => {
+			writeFileSync(
+				String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE),
+				JSON.stringify({ identityChecks: [], freshened }),
+				{ mode: 0o600 },
+			);
+			return { stdout: "Switched", stderr: "" };
+		});
+
+		await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
+			identitySynced: true,
+			identityChecks: [],
+			freshened,
+		});
+	});
+
+	it("target-stale carries a verified outgoing-account freshening fact", async () => {
+		const report: ApplyProfileReport = {
+			identityChecks: [],
+			freshened: {
+				name: "personal",
+				identityProof: { email: "annie@example.com", uuid: "uuid-personal" },
+			},
+		};
+		const execFile = vi.fn(async (_file, _args, options) => {
+			writeFileSync(
+				String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE),
+				JSON.stringify(report),
+				{ mode: 0o600 },
+			);
+			throw Object.assign(new Error("stale"), {
+				code: 30,
+				stderr: "FLYWHEEL_TARGET_STALE school",
+			});
+		});
+
+		await expect(deps(execFile).applyProfile("school")).rejects.toMatchObject({
+			name: "TargetStaleError",
+			report,
+		});
+	});
+
+	it.each([
+		{
+			marker: "FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE probe_unavailable",
+			ErrorType: LiveIdentityUnavailableError,
+		},
+		{
+			marker: "FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT",
+			ErrorType: KeychainPreimageConflictError,
+		},
+	])("maps $marker to $ErrorType.name", async ({ marker, ErrorType }) => {
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error(marker), { code: 88, stderr: marker });
+		});
+
+		await expect(deps(execFile).applyProfile("school")).rejects.toBeInstanceOf(
+			ErrorType,
+		);
+	});
+
 	it.each(["missing", "malformed"])(
 		"a $s apply report is treated as no facts",
 		async (mode) => {
@@ -228,6 +296,20 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			});
 		},
 	);
+
+	it("rejects a valid-looking report that is not owner-only", async () => {
+		const execFile = vi.fn(async (_file, _args, options) => {
+			const path = String(options?.env?.FLYWHEEL_APPLY_REPORT_FILE);
+			writeFileSync(path, JSON.stringify(REPORT), { mode: 0o600 });
+			chmodSync(path, 0o644);
+			return { stdout: "Switched", stderr: "" };
+		});
+
+		await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
+			identitySynced: true,
+			identityChecks: [],
+		});
+	});
 
 	it("production apply starts a detached process group and passes the lease proof", async () => {
 		const child = new EventEmitter() as EventEmitter & {

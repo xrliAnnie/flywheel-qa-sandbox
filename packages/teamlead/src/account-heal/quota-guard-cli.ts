@@ -19,6 +19,7 @@ import {
 	readStoreStrict,
 	recordObservationInStore,
 	syncActiveAccountInStore,
+	syncFreshenedActiveAccountInStore,
 	writeStore,
 } from "./account-store.js";
 import { type AccountsLock, withAccountsLock } from "./accounts-lock.js";
@@ -93,6 +94,56 @@ function parseArgs(argv: string[]): GuardArgs {
 		}
 	}
 	return out;
+}
+
+function parseStrictActiveSyncArgs(
+	argv: string[],
+): { name: string; store?: string } | null {
+	let name: string | undefined;
+	let store: string | undefined;
+	let freshened = false;
+	const seen = new Set<string>();
+	for (let index = 1; index < argv.length; index++) {
+		const flag = argv[index] as string;
+		if (seen.has(flag)) return null;
+		seen.add(flag);
+		if (flag === "--freshened") {
+			freshened = true;
+			continue;
+		}
+		if (flag !== "--name" && flag !== "--store") return null;
+		const value = argv[++index];
+		if (!value || value.startsWith("--")) return null;
+		if (flag === "--name") name = value;
+		else store = value;
+	}
+	return name && freshened ? { name, ...(store ? { store } : {}) } : null;
+}
+
+function readFreshenedIdentityProof(
+	deps: QuotaGuardCliDeps,
+): { email: string; uuid?: string } | null {
+	const raw = (deps.readStdin ?? (() => readFileSync(0, "utf8")))();
+	if (Buffer.byteLength(raw) > 4096) return null;
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		const keys = Object.keys(parsed).sort();
+		if (
+			keys.some((key) => key !== "email" && key !== "uuid") ||
+			typeof parsed.email !== "string"
+		) {
+			return null;
+		}
+		const email = validEmail(parsed.email);
+		const uuid =
+			typeof parsed.uuid === "string"
+				? parsed.uuid.trim().toLowerCase()
+				: undefined;
+		if (email === null || (parsed.uuid !== undefined && !uuid)) return null;
+		return { email, ...(uuid ? { uuid } : {}) };
+	} catch {
+		return null;
+	}
 }
 
 function defaultAccountsLockPath(): string {
@@ -539,6 +590,26 @@ export async function runQuotaGuardCli(
 	if (argv[0] === "identity-alert-flush") {
 		return runIdentityAlertFlush(deps, log);
 	}
+	if (argv[0] === "active-sync-strict") {
+		const args = parseStrictActiveSyncArgs(argv);
+		const proof = args ? readFreshenedIdentityProof(deps) : null;
+		if (!args || !proof) {
+			log("quota guard active-sync-strict: invalid input");
+			return 47;
+		}
+		const fence = leaseFenceFromEnv();
+		if (fence && !fence()) {
+			log("FLYWHEEL_LOCK_LEASE_LOST active-sync-strict fenced");
+			return 39;
+		}
+		const result = syncFreshenedActiveAccountInStore(
+			args.store ?? defaultStorePath(),
+			args.name,
+			proof,
+		);
+		log(`quota guard active-sync-strict: result=${result}; name=${args.name}`);
+		return result === "synced" || result === "noop" ? 0 : 47;
+	}
 	if (argv[0] === "active-sync") {
 		const { name, store } = parseArgs(argv);
 		const fence = leaseFenceFromEnv();
@@ -559,7 +630,7 @@ export async function runQuotaGuardCli(
 	}
 	if (argv[0] !== "check") {
 		log(
-			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>] | identity-verify --name <target> [--store <path>] | identity-set --name <target> --email <email> [--uuid <uuid>] [--store <path>] | identity-audit [--mark] --pool <dir> [--store <path>] | identity-alert-flush",
+			"usage: quota-guard check --name <target> --pool <dir> [--store <path>] | active-sync --name <active> [--store <path>] | active-sync-strict --name <active> [--store <path>] --freshened | identity-verify --name <target> [--store <path>] | identity-set --name <target> --email <email> [--uuid <uuid>] [--store <path>] | identity-audit [--mark] --pool <dir> [--store <path>] | identity-alert-flush",
 		);
 		return 33;
 	}

@@ -35,6 +35,7 @@ import {
 	selectNextAccount,
 	summarizeModelBenchPool,
 	syncActiveAccountInStore,
+	syncFreshenedActiveAccountInStore,
 	writeStore,
 } from "../account-heal/account-store.js";
 
@@ -751,6 +752,88 @@ describe("syncActiveAccountInStore", () => {
 		writeStore(store([acct("personal"), acct("school")], "personal"), path);
 		mkdirSync(`${path}.tmp.${process.pid}`);
 		expect(syncActiveAccountInStore(path, "school")).toBe("write_failed");
+	});
+});
+
+describe("syncFreshenedActiveAccountInStore", () => {
+	let dir: string;
+	let path: string;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly1756-active-sync-strict-"));
+		path = join(dir, "claude-accounts.json");
+	});
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	it("clears auth-family flags and a matching identity mismatch in one generation", () => {
+		writeStore(
+			store(
+				[
+					acct("personal", {
+						authExpired: true,
+						refreshTokenInvalid: true,
+						profileVerifyFailed: true,
+						identity: {
+							email: "xrliannie@gmail.com",
+							uuid: "uuid-personal",
+							setAt: "2026-08-01T00:00:00.000Z",
+						},
+						identityMismatch: {
+							actualDigest: "a".repeat(64),
+							markedBy: "executor",
+							markedAt: "2026-08-01T00:00:00.000Z",
+						},
+					}),
+				],
+				"personal",
+			),
+			path,
+		);
+
+		expect(
+			syncFreshenedActiveAccountInStore(path, "personal", {
+				email: "xrliannie@gmail.com",
+				uuid: "uuid-personal",
+			}),
+		).toBe("synced");
+		const after = readStore(path);
+		expect(after.generation).toBe(2);
+		expect(after.accounts[0]).not.toHaveProperty("authExpired");
+		expect(after.accounts[0]).not.toHaveProperty("refreshTokenInvalid");
+		expect(after.accounts[0]).not.toHaveProperty("profileVerifyFailed");
+		expect(after.accounts[0]).not.toHaveProperty("identityMismatch");
+	});
+
+	it("preserves identityMismatch when the trusted identity does not match the proof", () => {
+		const mismatch = {
+			actualDigest: "b".repeat(64),
+			markedBy: "audit" as const,
+			markedAt: "2026-08-01T00:00:00.000Z",
+		};
+		writeStore(
+			store(
+				[
+					acct("personal", {
+						authExpired: true,
+						identity: {
+							email: "different@example.com",
+							setAt: "2026-08-01T00:00:00.000Z",
+						},
+						identityMismatch: mismatch,
+					}),
+				],
+				"personal",
+			),
+			path,
+		);
+
+		expect(
+			syncFreshenedActiveAccountInStore(path, "personal", {
+				email: "xrliannie@gmail.com",
+				uuid: "uuid-personal",
+			}),
+		).toBe("synced");
+		expect(readStore(path).accounts[0]?.identityMismatch).toEqual(mismatch);
 	});
 });
 

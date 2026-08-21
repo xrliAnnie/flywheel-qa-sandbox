@@ -19,6 +19,8 @@ import {
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
+	KeychainPreimageConflictError,
+	LiveIdentityUnavailableError,
 	type SwitchDeps,
 	switchAccount,
 	TargetIdentityMismatchError,
@@ -427,6 +429,127 @@ describe("switchAccount", () => {
 			true,
 		);
 		expect(after.activeAccount).toBe("school");
+	});
+
+	it("a stale target still commits the delegated proof that the outgoing account was freshened", async () => {
+		const store = threeAccountStore();
+		store.accounts[0] = {
+			...store.accounts[0],
+			authExpired: true,
+			refreshTokenInvalid: true,
+			profileVerifyFailed: true,
+			identity: {
+				email: "annie@example.com",
+				uuid: "uuid-personal",
+				setAt: NOW.toISOString(),
+			},
+			identityMismatch: {
+				actualDigest: "a".repeat(64),
+				markedBy: "executor",
+				markedAt: NOW.toISOString(),
+			},
+		};
+		seed(store);
+		const report: ApplyProfileReport = {
+			identityChecks: [],
+			freshened: {
+				name: "personal",
+				identityProof: { email: "annie@example.com", uuid: "uuid-personal" },
+			},
+		};
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetStaleError(name, report);
+			return { identitySynced: true, identityChecks: [] };
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			to: "school",
+			applyReports: [report],
+		});
+		const after = readStore(storePath);
+		const personal = after.accounts.find(
+			(account) => account.name === "personal",
+		);
+		expect(personal?.authExpired).toBeUndefined();
+		expect(personal?.refreshTokenInvalid).toBeUndefined();
+		expect(personal?.profileVerifyFailed).toBeUndefined();
+		expect(personal?.identityMismatch).toBeUndefined();
+		expect(
+			after.accounts.find((account) => account.name === "business")
+				?.authExpired,
+		).toBe(true);
+	});
+
+	it("does not clear flags when a child freshening fact is not for the locked active account", async () => {
+		const store = threeAccountStore();
+		store.accounts[1] = { ...store.accounts[1], authExpired: true };
+		seed(store);
+		const report: ApplyProfileReport = {
+			identityChecks: [],
+			freshened: {
+				name: "school",
+				identityProof: { email: "school@example.com", uuid: "uuid-school" },
+			},
+		};
+		const applyProfile = vi.fn(async () => {
+			throw new FreshnessUnavailableError("offline", report);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "freshness_unavailable",
+			applyReports: [report],
+		});
+		expect(readStore(storePath).accounts[1]?.authExpired).toBe(true);
+	});
+
+	it("a Keychain preimage conflict is terminal and suppresses the earlier freshening fact", async () => {
+		const store = threeAccountStore();
+		store.accounts[0] = { ...store.accounts[0], authExpired: true };
+		seed(store);
+		const report: ApplyProfileReport = {
+			identityChecks: [],
+			freshened: {
+				name: "personal",
+				identityProof: { email: "annie@example.com", uuid: "uuid-personal" },
+			},
+		};
+		const applyProfile = vi.fn(async () => {
+			throw new KeychainPreimageConflictError("concurrent login", report);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "keychain_preimage_conflict",
+		});
+		expect(result).not.toHaveProperty("applyReports");
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		expect(readStore(storePath).accounts[0]?.authExpired).toBe(true);
+	});
+
+	it("an unavailable live identity is terminal without poisoning a candidate", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {
+			throw new LiveIdentityUnavailableError("probe unavailable");
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "live_identity_unavailable",
+		});
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		expect(
+			readStore(storePath).accounts.every((account) => !account.authExpired),
+		).toBe(true);
 	});
 
 	it("two consecutive stale targets → third candidate succeeds", async () => {

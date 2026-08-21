@@ -612,6 +612,87 @@ describe("runQuotaGuardCli", () => {
 		]);
 	});
 
+	it("active-sync-strict clears verified freshening flags", async () => {
+		const current = readStore(storePath);
+		const personal = current.accounts.find(
+			(entry) => entry.name === "personal",
+		);
+		if (!personal) throw new Error("fixture missing personal");
+		personal.refreshTokenInvalid = true;
+		personal.profileVerifyFailed = true;
+		personal.identity = {
+			email: "xrliannie@gmail.com",
+			uuid: "uuid-personal",
+			setAt: "2026-08-01T00:00:00.000Z",
+		};
+		personal.identityMismatch = {
+			actualDigest: "a".repeat(64),
+			markedBy: "executor",
+			markedAt: "2026-08-01T00:00:00.000Z",
+		};
+		writeStore(current, storePath);
+
+		const code = await runQuotaGuardCli(
+			[
+				"active-sync-strict",
+				"--name",
+				"personal",
+				"--store",
+				storePath,
+				"--freshened",
+			],
+			{
+				readStdin: () =>
+					JSON.stringify({
+						email: "xrliannie@gmail.com",
+						uuid: "uuid-personal",
+					}),
+				log: (message) => output.push(message),
+			},
+		);
+
+		expect(code).toBe(0);
+		const after = readStore(storePath);
+		expect(after.generation).toBe(current.generation + 1);
+		expect(after.activeAccount).toBe("personal");
+		expect(
+			after.accounts.find((entry) => entry.name === "personal"),
+		).not.toMatchObject({
+			authExpired: true,
+			refreshTokenInvalid: true,
+			profileVerifyFailed: true,
+			identityMismatch: expect.anything(),
+		});
+	});
+
+	it.each([
+		["unknown flag", ["active-sync-strict", "--wat"]],
+		[
+			"duplicate flag",
+			[
+				"active-sync-strict",
+				"--name",
+				"personal",
+				"--name",
+				"business",
+				"--store",
+				storePath,
+				"--freshened",
+			],
+		],
+	] as const)(
+		"active-sync-strict rejects %s without mutation",
+		async (_label, argv) => {
+			const before = readFileSync(storePath, "utf8");
+			const code = await runQuotaGuardCli([...argv], {
+				readStdin: () => JSON.stringify({ email: "xrliannie@gmail.com" }),
+				log: (message) => output.push(message),
+			});
+			expect(code).toBe(47);
+			expect(readFileSync(storePath, "utf8")).toBe(before);
+		},
+	);
+
 	it("returns 0 for two healthy windows and records the real observation", async () => {
 		const code = await run(usage(84, 17));
 

@@ -50,7 +50,7 @@ TRAMPOLINE_NODE="${FLYWHEEL_NODE_BIN:-node}"
 # forwards terminal cancellation to the whole mutation tree. The automatic
 # adapter already starts this script detached and sets delegated-lock metadata.
 case "$COMMAND" in
-  use|next|capture)
+  use|next|capture|reconcile)
     if [[ -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && "${FLYWHEEL_PROFILE_GROUP_LEADER:-}" != "1" ]]; then
       export FLYWHEEL_PROFILE_GROUP_LEADER=1
       exec "$TRAMPOLINE_NODE" --input-type=module -e '
@@ -115,6 +115,7 @@ Commands:
   use <name>      Swap the machine Keychain to pool profile <name>
   next            Rotate to the next pool profile (sorted round-robin)
   capture <name>  Save the CURRENT Keychain credential into pool/<name>/
+  reconcile       Verify the live Keychain identity and repair its pool slot
   anchor <name> --migrate|--replace [--evidence /absolute/identity-map.json]
                   Create or explicitly replace a slot identity anchor
   verify <name> --source keychain|pool
@@ -1083,6 +1084,69 @@ active_sync_store() {
   return 0
 }
 
+active_sync_store_strict() {
+  local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0 proof=""
+  [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
+  [[ -n "$bin" && -x "$bin" ]] || return 47
+  proof=$("$NODE_BIN" -e 'process.stdout.write(JSON.stringify({email:process.argv[1],uuid:process.argv[2]}))' "$LIVE_IDENTITY_EMAIL" "$LIVE_IDENTITY_UUID") || return 47
+  lease_fence_or_fail
+  printf '%s' "$proof" | "$bin" active-sync-strict --name "$name" --store "$ACCOUNTS_STORE" --freshened || rc=$?
+  [[ "$rc" -eq 39 ]] && return 39
+  [[ "$rc" -eq 0 ]] || return 47
+  read_store_generation_for_active "$name" >/dev/null || return 47
+}
+
+emit_apply_freshened_report() { # <slot>
+  local name="$1" path="${FLYWHEEL_APPLY_REPORT_FILE:-}"
+  [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && -n "$path" ]] || return 0
+  "$NODE_BIN" --input-type=module - "$path" "$name" "$LIVE_IDENTITY_EMAIL" "$LIVE_IDENTITY_UUID" <<'NODE'
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
+import { randomUUID } from "node:crypto";
+
+const [path, name, email, uuid] = process.argv.slice(2);
+const uid = process.getuid?.();
+if (uid === undefined || !isAbsolute(path)) throw new Error("unsafe apply report path");
+const dir = dirname(path);
+const dirStat = lstatSync(dir);
+if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || dirStat.uid !== uid || (dirStat.mode & 0o077) !== 0)
+  throw new Error("unsafe apply report directory");
+if (existsSync(path)) {
+  const stat = lstatSync(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600)
+    throw new Error("unsafe existing apply report");
+}
+const tmp = join(dir, `.apply-report-${randomUUID()}.tmp`);
+let fd;
+try {
+  fd = openSync(tmp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0), 0o600);
+  const opened = fstatSync(fd);
+  if (!opened.isFile() || opened.uid !== uid || (opened.mode & 0o777) !== 0o600)
+    throw new Error("unsafe apply report temp file");
+  const body = JSON.stringify({ identityChecks: [], freshened: { name, identityProof: { email, uuid } } });
+  if (writeSync(fd, body) !== Buffer.byteLength(body)) throw new Error("short apply report write");
+  fsyncSync(fd);
+  closeSync(fd);
+  fd = undefined;
+  renameSync(tmp, path);
+} finally {
+  if (fd !== undefined) closeSync(fd);
+  try { unlinkSync(tmp); } catch {}
+}
+NODE
+}
+
 # capture_back <active> <value>: FLY-871 R1/C1 — before we overwrite the Keychain,
 # snapshot the CURRENT value (the OLD active account's live token, which claude
 # may have refreshed since capture) into its pool slot, so a later switch BACK to
@@ -1182,9 +1246,13 @@ lease_token_from_proof() {
 }
 
 write_transition_journal() { # <old-label> <target-label> <old-value> <target-value> -> opId
-  local old_label="$1" target_label="$2" old_digest target_digest writer_pgid leader_start lease_token op_id
+  local old_label="$1" target_label="$2" old_digest target_digest old_state writer_pgid leader_start lease_token op_id
   old_digest=$(digest_value "$3")
   target_digest=$(digest_value "$4")
+  case "$LIVE_PREIMAGE_STATE" in
+    absent) old_state="absent" ;;
+    *) old_state="present" ;;
+  esac
 
   # Detached mutation leaders have pgid==pid. Sandboxed test runners may forbid
   # ps(1), so fall back to that construction; production also verifies group
@@ -1197,12 +1265,12 @@ write_transition_journal() { # <old-label> <target-label> <old-value> <target-va
   lease_token=$(lease_token_from_proof) || fail_code 39 "cannot read lease token before transition"
   op_id="$(date +%s).$$.$RANDOM"
   lease_fence_or_fail
-  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$op_id" "$(id -u)" "$writer_pgid" "$$" "$leader_start" "$lease_token" "$old_label" "$target_label" "$old_digest" "$target_digest" <<'NODE'
+  "$NODE_BIN" --input-type=module - "$TRANSITION_JOURNAL" "$op_id" "$(id -u)" "$writer_pgid" "$$" "$leader_start" "$lease_token" "$old_label" "$target_label" "$old_state" "$old_digest" "$target_digest" <<'NODE'
 import { closeSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, writeSync } from "node:fs";
 import { dirname } from "node:path";
-const [path,opId,writerUid,writerPgid,leaderPid,leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldDigest,targetDigest]=process.argv.slice(2);
+const [path,opId,writerUid,writerPgid,leaderPid,leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldState,oldDigest,targetDigest]=process.argv.slice(2);
 try { if (lstatSync(path).isSymbolicLink()) throw new Error("journal is symlink"); } catch (e) { if (e?.code !== "ENOENT") throw e; }
-const body=JSON.stringify({opId,writerUid:Number(writerUid),writerPgid:Number(writerPgid),leaderPid:Number(leaderPid),leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldDigest,targetDigest,startedAt:new Date().toISOString()})+"\n";
+const body=JSON.stringify({opId,writerUid:Number(writerUid),writerPgid:Number(writerPgid),leaderPid:Number(leaderPid),leaderStartTime,writerLeaseToken,oldLabel,targetLabel,oldState,oldDigest,targetDigest,startedAt:new Date().toISOString()})+"\n";
 mkdirSync(dirname(path),{recursive:true,mode:0o700});
 const tmp=`${path}.tmp.${process.pid}`;
 const fd=openSync(tmp,"wx",0o600);
@@ -1334,21 +1402,29 @@ try {
   const st=lstatSync(path); if(st.isSymbolicLink()||!st.isFile()) process.exit(1);
   const j=JSON.parse(readFileSync(path,"utf8"));
   const label=/^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/; const digest=/^[a-f0-9]{64}$/;
-  if(typeof j.opId!=="string"||!Number.isInteger(j.writerUid)||!Number.isInteger(j.writerPgid)||j.writerPgid<=0||!Number.isInteger(j.leaderPid)||j.leaderPid<=0||typeof j.leaderStartTime!=="string"||typeof j.writerLeaseToken!=="string"||typeof j.oldLabel!=="string"||!label.test(j.targetLabel)||!digest.test(j.oldDigest)||!digest.test(j.targetDigest)||typeof j.startedAt!=="string") process.exit(1);
-  process.stdout.write([j.opId,j.writerUid,j.writerPgid,j.leaderPid,j.leaderStartTime,j.oldLabel,j.targetLabel,j.oldDigest,j.targetDigest].join("\t"));
+  const emptyDigest="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const oldState=j.oldState === undefined ? (j.oldDigest === emptyDigest ? "absent" : "present") : j.oldState;
+  if(typeof j.opId!=="string"||!Number.isInteger(j.writerUid)||!Number.isInteger(j.writerPgid)||j.writerPgid<=0||!Number.isInteger(j.leaderPid)||j.leaderPid<=0||typeof j.leaderStartTime!=="string"||typeof j.writerLeaseToken!=="string"||typeof j.oldLabel!=="string"||!label.test(j.targetLabel)||(oldState!=="present"&&oldState!=="absent")||!digest.test(j.oldDigest)||!digest.test(j.targetDigest)||typeof j.startedAt!=="string") process.exit(1);
+  process.stdout.write([j.opId,j.writerUid,j.writerPgid,j.leaderPid,j.leaderStartTime,j.oldLabel,j.targetLabel,oldState,j.oldDigest,j.targetDigest].join("\t"));
 } catch { process.exit(1); }
 NODE
   ) || rc=$?
   if [[ "$rc" -ne 0 || -z "$fields" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
-  local op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_digest target_digest
-  IFS=$'\t' read -r op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_digest target_digest <<<"$fields"
+  local op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest
+  IFS=$'\t' read -r op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest <<<"$fields"
   if [[ "$writer_uid" != "$(id -u)" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
   if process_group_alive "$writer_pgid"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
   [[ "$rc" -eq 1 ]] || { echo '{"outcome":"writer_alive"}'; return 0; }
-  local current current_digest generation marker_write_rc=0
-  current=$(kc_read 2>/dev/null) || { echo '{"outcome":"conflict","reason":"keychain_unreadable"}'; return 0; }
+  local current="" current_rc=0 current_digest generation marker_write_rc=0
+  current=$(kc_read 2>/dev/null) || current_rc=$?
+  if [[ "$current_rc" -eq 44 && "$old_state" == "absent" ]]; then
+    clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
+    echo '{"outcome":"cleared"}'
+    return 0
+  fi
+  [[ "$current_rc" -eq 0 ]] || { echo '{"outcome":"conflict","reason":"keychain_unreadable"}'; return 0; }
   current_digest=$(digest_value "$current")
-  if [[ "$current_digest" == "$old_digest" ]]; then
+  if [[ "$old_state" == "present" && "$current_digest" == "$old_digest" ]]; then
     clear_transition_journal "$op_id" || { echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; }
     echo '{"outcome":"cleared"}'
     return 0
@@ -1572,26 +1648,32 @@ sync_identity() {
   # the RHS would read the caller's dynamically-scoped `name`, not this one.
   local name="$1" rc=0 email="" email_file=""
   local src="$POOL_DIR/$name/oauthAccount.json"
+  DISPLAY_SYNCED=true
   # `; rc=$?` would let set -e abort on a non-zero return before capturing it.
   require_identity_entry "$src" || rc=$?
   if [[ $rc -eq 2 ]]; then
+    DISPLAY_SYNCED=false
     echo "Warning: profile '$name' has no captured display identity (oauthAccount.json). The machine Keychain token was switched, but ~/.claude.json display identity was NOT updated — a new claude '/status' may show a stale account. To fix: log into '$name' once, then run: flywheel-claude-profile capture $name" >&2
     return 0
   fi
   if [[ $rc -ne 0 ]]; then
+    DISPLAY_SYNCED=false
     echo "Warning: display identity for '$name' NOT applied (token switched OK)." >&2
     return 0
   fi
   if [[ ! -f "$CLAUDE_JSON" ]]; then
+    DISPLAY_SYNCED=false
     echo "Warning: $CLAUDE_JSON not found — display identity NOT updated for '$name' (token switched OK)." >&2
     return 0
   fi
   if ! acquire_claude_json_lock; then
+    DISPLAY_SYNCED=false
     echo "Warning: could not acquire $CLAUDE_JSON_LOCK within ${CLAUDE_LOCK_WAIT_S}s — display identity NOT updated for '$name' (token switched OK)." >&2
     return 0
   fi
   lease_fence_or_fail
   email_file=$(mktemp "${CLAUDE_JSON}.fly865.email.XXXXXX") || {
+    DISPLAY_SYNCED=false
     release_claude_json_lock
     echo "Warning: could not create display identity result file for '$name' (token switched OK)." >&2
     return 0
@@ -1605,6 +1687,7 @@ sync_identity() {
     release_claude_json_lock
     echo "Updated ~/.claude.json display identity to '$name' (email: ${email:-unknown})" >&2
   else
+    DISPLAY_SYNCED=false
     rm -f "$email_file"
     ACTIVE_TEMP_FILE=""
     release_claude_json_lock
@@ -1615,6 +1698,58 @@ sync_identity() {
 
 # ------------------------------------------------ stale .active reconciliation (FLY-1201)
 RECONCILED_ACTIVE=""
+LIVE_PREIMAGE_STATE="unknown"
+LIVE_PREIMAGE_VALUE=""
+LIVE_IDENTITY_UUID=""
+LIVE_IDENTITY_EMAIL=""
+DISPLAY_SYNCED=true
+RECONCILE_MODE=0
+
+fail_live_identity() {
+  local detail="$1" reason="${2:-probe_unavailable}"
+  AUDIT_SUMMARY="live_identity_unavailable"
+  if [[ "$RECONCILE_MODE" -eq 1 ]]; then
+    printf '{"outcome":"unresolvable","reason":"%s"}\n' "$reason"
+    exit 20
+  fi
+  echo "FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE" >&2
+  fail_code 88 "$detail"
+}
+
+keychain_matches_live_preimage() {
+  local current="" rc=0
+  current=$(kc_read 2>/dev/null) || rc=$?
+  case "$LIVE_PREIMAGE_STATE" in
+    present) [[ "$rc" -eq 0 && "$current" == "$LIVE_PREIMAGE_VALUE" ]] ;;
+    absent) [[ "$rc" -eq 44 ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+keychain_preimage_conflict() {
+  AUDIT_SUMMARY="keychain_preimage_conflict"
+  echo "FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT" >&2
+  echo "Error: live Keychain credential changed during account switching; refusing to overwrite or roll it back" >&2
+  return 88
+}
+
+keychain_endpoint_state() { # <target>; stdout = target|preimage|conflict
+  local target="$1" current="" rc=0
+  current=$(kc_read 2>/dev/null) || rc=$?
+  if [[ "$rc" -eq 0 && "$current" == "$target" ]]; then
+    printf 'target'
+    return 0
+  fi
+  case "$LIVE_PREIMAGE_STATE" in
+    present)
+      [[ "$rc" -eq 0 && "$current" == "$LIVE_PREIMAGE_VALUE" ]] && { printf 'preimage'; return 0; }
+      ;;
+    absent)
+      [[ "$rc" -eq 44 ]] && { printf 'preimage'; return 0; }
+      ;;
+  esac
+  printf 'conflict'
+}
 
 fail_stale_active() { # <46|47> <active|absent> <detail> [uncertain]
   local code="$1" active="${2:-absent}" detail="$3" state="${4:-}"
@@ -1687,24 +1822,29 @@ reconcile_absent_marker_locked() {
   [[ "$IDENTITY_BYPASS" -eq 1 ]] && return 0
   current=$(kc_read 2>/dev/null) || current_rc=$?
   case "$current_rc" in
-    44) return 0 ;; # the sole proven blank-machine bootstrap
+    44) LIVE_PREIMAGE_STATE="absent"; LIVE_PREIMAGE_VALUE=""; return 0 ;; # the sole proven blank-machine bootstrap
     0) : ;;
-    *) fail_stale_active 46 "absent" "active marker is absent and the current Keychain credential is unreadable (exit $current_rc)" ;;
+    *) fail_live_identity "active marker is absent and the current Keychain credential is unreadable (exit $current_rc)" keychain_unreadable ;;
   esac
   credential_value_ok "$current" ||
-    fail_stale_active 46 "absent" "active marker is absent and the current Keychain credential is empty or unsafe"
+    fail_live_identity "active marker is absent and the current Keychain credential is empty or unsafe" keychain_unreadable
+  LIVE_PREIMAGE_STATE="present"
+  LIVE_PREIMAGE_VALUE="$current"
   observed=$(identity_probe "$current" 2>/dev/null) ||
-    fail_stale_active 46 "absent" "active marker is absent and the live account identity cannot be verified"
+    fail_live_identity "active marker is absent and the live account identity cannot be verified" probe_unavailable
   IFS=$'\t' read -r o_uuid o_email <<<"$observed"
+  LIVE_IDENTITY_UUID="$o_uuid"
+  LIVE_IDENTITY_EMAIL="$o_email"
   true_active=$(find_anchor_slot_by_identity "$o_uuid" "$o_email") ||
-    fail_stale_active 46 "absent" "active marker is absent and the machine identity matches no unique verified pool slot"
+    fail_live_identity "active marker is absent and the machine identity matches no unique verified pool slot" anchor_ambiguous
   if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
     fail_stale_active 46 "absent" "active marker is absent; delegated switching performs no repair"
   fi
+  keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
   capture_live_credential_strict "$true_active" "$current" || capture_rc=$?
   [[ "$capture_rc" -eq 39 ]] && exit 39
   [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "absent" "live credential capture into '$true_active' did not commit"
-  active_sync_store "$true_active" force || sync_rc=$?
+  active_sync_store_strict "$true_active" || sync_rc=$?
   [[ "$sync_rc" -eq 39 ]] && exit 39
   [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "absent" "account store sync failed"
   read_store_generation_for_active "$true_active" >/dev/null ||
@@ -1722,8 +1862,8 @@ reconcile_absent_marker_locked() {
 }
 
 reconcile_stale_active_locked() { # <strict-reader-rc> <active>; sets RECONCILED_ACTIVE
-  local marker_rc="$1" active="$2" anchor="" display="" a_uuid="" a_email=""
-  local d_uuid="" d_email="" current="" current_rc=0 observed="" o_uuid="" o_email=""
+  local marker_rc="$1" active="$2" anchor="" a_uuid="" a_email=""
+  local current="" current_rc=0 observed="" o_uuid="" o_email=""
   local true_active="" sync_rc=0 marker_write_rc=0 capture_rc=0
   RECONCILED_ACTIVE="$active"
   case "$marker_rc" in
@@ -1733,39 +1873,54 @@ reconcile_stale_active_locked() { # <strict-reader-rc> <active>; sets RECONCILED
   esac
   profile_slot_dir_safe "$active" || fail_stale_active 46 "$active" "active marker points to an unsafe or missing pool slot"
   [[ "$IDENTITY_BYPASS" -eq 1 ]] && return 0
+  current=$(kc_read 2>/dev/null) || current_rc=$?
+  case "$current_rc" in
+    44)
+      LIVE_PREIMAGE_STATE="absent"
+      LIVE_PREIMAGE_VALUE=""
+      RECONCILED_ACTIVE=""
+      return 0
+      ;;
+    0) : ;;
+    *) fail_live_identity "no readable Keychain credential is available for live identity verification" keychain_unreadable ;;
+  esac
+  credential_value_ok "$current" || fail_live_identity "Keychain credential is not safely representable" keychain_unreadable
+  LIVE_PREIMAGE_STATE="present"
+  LIVE_PREIMAGE_VALUE="$current"
   anchor=$(read_identity_anchor "$active" 2>/dev/null) || fail_stale_active 46 "$active" "active slot has no valid identity anchor"
   IFS=$'\t' read -r a_uuid a_email <<<"$anchor"
-  if display=$(read_display_identity 2>/dev/null); then
-    IFS=$'\t' read -r d_uuid d_email <<<"$display"
-    if [[ "$d_uuid" == "$a_uuid" && "$d_email" == "$a_email" ]]; then return 0; fi
-  fi
-
-  echo "FLYWHEEL_STALE_ACTIVE_MARKER $active" >&2
-  current=$(kc_read 2>/dev/null) || current_rc=$?
-  [[ "$current_rc" -eq 0 ]] || fail_stale_active 46 "$active" "no readable Keychain credential is available for reconciliation"
-  credential_value_ok "$current" || fail_stale_active 46 "$active" "Keychain credential is not safely representable"
-  observed=$(identity_probe "$current" 2>/dev/null) || fail_stale_active 46 "$active" "identity probe unavailable; current account cannot be verified"
+  observed=$(identity_probe "$current" 2>/dev/null) || fail_live_identity "identity probe unavailable; current account cannot be verified" probe_unavailable
   IFS=$'\t' read -r o_uuid o_email <<<"$observed"
+  LIVE_IDENTITY_UUID="$o_uuid"
+  LIVE_IDENTITY_EMAIL="$o_email"
 
   if [[ "$o_uuid" == "$a_uuid" && "$o_email" == "$a_email" ]]; then
+    keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
     capture_live_credential_strict "$active" "$current" || capture_rc=$?
     [[ "$capture_rc" -eq 39 ]] && exit 39
     [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "$active" "live credential capture into '$active' did not commit"
+    if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]]; then
+      active_sync_store_strict "$active" || sync_rc=$?
+      [[ "$sync_rc" -eq 39 ]] && exit 39
+      [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "$active" "strict account store freshening failed"
+    else
+      emit_apply_freshened_report "$active" || fail_stale_active 47 "$active" "delegated freshening report did not commit"
+    fi
     sync_identity "$active" || true
-    audit_append stale_active_reconcile null pool_freshened_display_resync_attempted >/dev/null 2>&1 ||
-      echo "Warning: stale-active audit append failed" >&2
     return 0
   fi
 
+  echo "FLYWHEEL_STALE_ACTIVE_MARKER $active" >&2
   if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
     fail_stale_active 46 "$active" "active marker is stale; delegated switching performs no repair"
   fi
   true_active=$(find_anchor_slot_by_identity "$o_uuid" "$o_email") ||
-    fail_stale_active 46 "$active" "machine identity matches no unique verified pool slot"
+    fail_live_identity "machine identity matches no unique verified pool slot" anchor_ambiguous
+  keychain_matches_live_preimage || keychain_preimage_conflict || exit $?
   capture_live_credential_strict "$true_active" "$current" || capture_rc=$?
   [[ "$capture_rc" -eq 39 ]] && exit 39
   [[ "$capture_rc" -eq 0 ]] || fail_stale_active 47 "$active" "live credential capture into '$true_active' did not commit"
-  active_sync_store "$true_active" force || sync_rc=$?
+  active_sync_store_strict "$true_active" || sync_rc=$?
   [[ "$sync_rc" -eq 39 ]] && exit 39
   [[ "$sync_rc" -eq 0 ]] || fail_stale_active 47 "$active" "account store sync failed"
   read_store_generation_for_active "$true_active" >/dev/null ||
@@ -1932,7 +2087,7 @@ prepare_profile_locked() { # <name> <active>; returns 0/30/31/32/33/39
 # rotated the pooled credential.
 commit_profile_locked() { # <name> <active>
   local name="$1" active="$2"
-  local new backup="" backup_present=0 backup_rc=0 got rollback_got="" journal_op sync_rc=0 active_tmp=""
+  local new backup="" backup_present=0 backup_rc=0 got journal_op sync_rc=0 active_tmp="" endpoint=""
   require_pool_entry "$name"
   new=$(cat "$POOL_DIR/$name/.credentials.json")
   require_credential_value "$new"
@@ -1952,6 +2107,18 @@ commit_profile_locked() { # <name> <active>
   # failure can never strand an un-restorable replacement in Keychain.
   if [[ "$backup_present" -eq 1 ]]; then
     require_credential_value "$backup"
+  fi
+  if [[ "$LIVE_PREIMAGE_STATE" == "unknown" ]]; then
+    if [[ "$backup_present" -eq 1 ]]; then
+      LIVE_PREIMAGE_STATE="present"
+      LIVE_PREIMAGE_VALUE="$backup"
+    else
+      LIVE_PREIMAGE_STATE="absent"
+      LIVE_PREIMAGE_VALUE=""
+    fi
+  elif ! keychain_matches_live_preimage; then
+    keychain_preimage_conflict
+    return 88
   fi
 
   # FLY-1182 assertion B: capture-back is allowed ONLY when the current
@@ -1976,6 +2143,13 @@ commit_profile_locked() { # <name> <active>
     fi
   fi
 
+  # The identity/freshness probes above are network work. Re-check the tagged
+  # preimage before journaling so a concurrent claude login is never overwritten.
+  if ! keychain_matches_live_preimage; then
+    keychain_preimage_conflict
+    return 88
+  fi
+
   # Pre-create the non-secret marker temp before touching Keychain. This turns
   # unwritable/path failures into a zero-Keychain-mutation failure. The rename
   # itself is still checked below and rolls Keychain back if it fails.
@@ -1988,44 +2162,84 @@ commit_profile_locked() { # <name> <active>
     : > "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.ready"
     while [[ ! -e "${FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL}.continue" ]]; do sleep 0.01; done
   fi
+  if ! keychain_matches_live_preimage; then
+    clear_transition_journal "$journal_op" || true
+    keychain_preimage_conflict
+    return 88
+  fi
   lease_fence_or_fail
   local write_rc=0
   kc_write "$new" || write_rc=$?
   if [[ "$write_rc" -ne 0 ]]; then
-    if restore_keychain_preimage "$backup" "$backup_present"; then
-      fail "Keychain write failed (exit $write_rc) — rolled back and verified the previous Keychain state; .active unchanged"
-    fi
-    fail "Keychain write failed (exit $write_rc) AND rollback could not be verified — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+    endpoint=$(keychain_endpoint_state "$new")
+    case "$endpoint" in
+      target)
+        if restore_keychain_preimage "$backup" "$backup_present"; then
+          fail "Keychain write failed (exit $write_rc) — rolled back and verified the previous Keychain state; .active unchanged"
+        fi
+        fail "Keychain write failed (exit $write_rc) AND rollback could not be verified — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+        ;;
+      preimage)
+        clear_transition_journal "$journal_op" || true
+        fail "Keychain write failed (exit $write_rc); previous Keychain state is still present and .active is unchanged"
+        ;;
+      *)
+        keychain_preimage_conflict
+        return 88
+        ;;
+    esac
   fi
 
   lease_fence_or_fail
   got=$(kc_read 2>/dev/null || true)
   if [[ "$got" != "$new" ]]; then
-    if [[ -n "$backup" ]]; then
-      if kc_write "$backup" 2>/dev/null; then
-        lease_fence_or_fail
-        rollback_got=$(kc_read 2>/dev/null || true)
-        if [[ "$rollback_got" == "$backup" ]]; then
+    endpoint=$(keychain_endpoint_state "$new")
+    case "$endpoint" in
+      target)
+        if restore_keychain_preimage "$backup" "$backup_present"; then
           clear_transition_journal "$journal_op"
           echo "FLYWHEEL_IDENTITY_ROLLED_BACK $name" >&2
           echo "Error: verify-before-commit failed (read-back mismatch) — rolled back and verified the previous credential; .active unchanged" >&2
           return 36
         fi
-      fi
-    fi
-    echo "FLYWHEEL_IDENTITY_ROLLBACK_FAILED $name" >&2
-    echo "Error: verify-before-commit failed AND verified rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required" >&2
-    return 37
+        echo "FLYWHEEL_IDENTITY_ROLLBACK_FAILED $name" >&2
+        echo "Error: verify-before-commit failed AND verified rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required" >&2
+        return 37
+        ;;
+      preimage)
+        clear_transition_journal "$journal_op" || true
+        echo "FLYWHEEL_IDENTITY_ROLLED_BACK $name" >&2
+        echo "Error: verify-before-commit failed; previous credential is already present and .active is unchanged" >&2
+        return 36
+        ;;
+      *)
+        keychain_preimage_conflict
+        return 88
+        ;;
+    esac
   fi
 
   lease_fence_or_fail
   if ! mv "$active_tmp" "$ACTIVE_FILE"; then
     rm -f "$active_tmp" 2>/dev/null || true
     ACTIVE_TEMP_FILE=""
-    if restore_keychain_preimage "$backup" "$backup_present"; then
-      fail "active marker commit failed — rolled back and verified the previous Keychain state"
-    fi
-    fail "active marker commit failed AND Keychain rollback could not be verified; manual check required"
+    endpoint=$(keychain_endpoint_state "$new")
+    case "$endpoint" in
+      target)
+        if restore_keychain_preimage "$backup" "$backup_present"; then
+          fail "active marker commit failed — rolled back and verified the previous Keychain state"
+        fi
+        fail "active marker commit failed AND Keychain rollback could not be verified; manual check required"
+        ;;
+      preimage)
+        clear_transition_journal "$journal_op" || true
+        fail "active marker commit failed; previous Keychain state is already present"
+        ;;
+      *)
+        keychain_preimage_conflict
+        return 88
+        ;;
+    esac
   fi
   ACTIVE_TEMP_FILE=""
   active_sync_store "$name" || sync_rc=$?
@@ -2056,6 +2270,13 @@ use_profile() {
   active=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
   reconcile_stale_active_locked "$marker_rc" "$active"
   active="$RECONCILED_ACTIVE"
+  if [[ "$IDENTITY_BYPASS" -eq 0 && "$name" == "$active" ]]; then
+    AUDIT_SUMMARY="match"
+    sync_identity "$name"
+    echo "FLYWHEEL_USE_NOOP $name" >&2
+    echo "Machine Claude account is already profile '$name'; refreshed its pool snapshot without rewriting Keychain"
+    return 0
+  fi
   switch_profile_locked "$name" "$active" || rc=$?
   [[ "$rc" -eq 0 ]] || exit "$rc"
 }
@@ -2204,6 +2425,34 @@ reconcile_journal_command() {
   reconcile_transition_journal
 }
 
+reconcile_profile() {
+  local active="" marker_rc=0 original="" outcome="already_consistent"
+  [[ -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]] || fail_code 46 "reconcile cannot run with delegated lock authority"
+  [[ "${FLYWHEEL_PROFILE_IDENTITY_BYPASS:-}" != "1" ]] || fail_code 46 "reconcile cannot bypass live identity verification"
+  acquire_lock
+  active_marker_structural_gate
+  reconcile_after_acquire
+  configure_identity_bypass
+  mkdir -p "$POOL_DIR"
+  chmod 700 "$POOL_DIR" 2>/dev/null || true
+  active=$(read_active_marker_strict 2>/dev/null) || marker_rc=$?
+  original="$active"
+  RECONCILE_MODE=1
+  reconcile_stale_active_locked "$marker_rc" "$active"
+  if [[ "$LIVE_PREIMAGE_STATE" == "absent" ]]; then
+    printf '{"outcome":"no_credential"}\n'
+    return 10
+  fi
+  active="$RECONCILED_ACTIVE"
+  [[ "$active" == "$original" && "$marker_rc" -eq 0 ]] || outcome="repaired"
+  sync_identity "$active"
+  if [[ "$outcome" == "repaired" ]]; then
+    printf '{"outcome":"repaired","from":"%s","to":"%s","displaySynced":%s}\n' "${original:-absent}" "$active" "$DISPLAY_SYNCED"
+  else
+    printf '{"outcome":"already_consistent","freshened":true,"displaySynced":%s}\n' "$DISPLAY_SYNCED"
+  fi
+}
+
 # Arm the lock cleanup GLOBALLY, before any command can acquire a lock. This
 # covers the FLY-852 delegated path (acquire_lock returns early without setting
 # a trap) AND abnormal exits: on bash 3.2/5 the EXIT trap fires on a set -e
@@ -2231,6 +2480,11 @@ case "${1:-}" in
     [[ -n "${2:-}" ]] || usage
     begin_audit capture "$2" identity_check_pending
     capture_profile "$2"
+    ;;
+  reconcile)
+    [[ -z "${2:-}" ]] || usage
+    begin_audit reconcile "" identity_check_pending
+    reconcile_profile
     ;;
   anchor)
     [[ -n "${2:-}" && -n "${3:-}" ]] || usage

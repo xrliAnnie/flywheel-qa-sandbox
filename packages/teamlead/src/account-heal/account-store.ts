@@ -112,6 +112,11 @@ export type SyncActiveAccountResult =
 	| "invalid_store"
 	| "write_failed";
 
+export interface FreshenedIdentityProof {
+	email: string;
+	uuid?: string;
+}
+
 const VALID_ACCOUNT_NAME = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
 
 export function isAuthUnusable(a: AccountEntry): boolean {
@@ -519,6 +524,55 @@ export function syncActiveAccountInStore(
 				...store,
 				activeAccount: name,
 				generation: store.generation + 1,
+			},
+			storePath,
+		);
+		return "synced";
+	} catch {
+		return "write_failed";
+	}
+}
+
+/**
+ * Commit a live, identity-verified capture into the ledger. Unlike the legacy
+ * best-effort active projection, every invalid state is surfaced to the caller.
+ */
+export function syncFreshenedActiveAccountInStore(
+	storePath: string,
+	name: string,
+	proof: FreshenedIdentityProof,
+): SyncActiveAccountResult {
+	if (!VALID_ACCOUNT_NAME.test(name)) return "invalid_name";
+	const store = readStoreStrict(storePath);
+	if (store === null) return "invalid_store";
+	const matches = store.accounts.filter((entry) => entry.name === name);
+	if (matches.length !== 1) return "missing_account";
+	const account = matches[0] as AccountEntry;
+	const updated = { ...account };
+	delete updated.authExpired;
+	delete updated.refreshTokenInvalid;
+	delete updated.profileVerifyFailed;
+	if (
+		account.identity &&
+		account.identity.email.toLowerCase() === proof.email.toLowerCase() &&
+		(account.identity.uuid === undefined ||
+			account.identity.uuid.toLowerCase() === proof.uuid?.toLowerCase())
+	) {
+		delete updated.identityMismatch;
+	}
+	const changed =
+		store.activeAccount !== name ||
+		JSON.stringify(updated) !== JSON.stringify(account);
+	if (!changed) return "noop";
+	try {
+		writeStore(
+			{
+				...store,
+				activeAccount: name,
+				generation: store.generation + 1,
+				accounts: store.accounts.map((entry) =>
+					entry.name === name ? updated : entry,
+				),
 			},
 			storePath,
 		);

@@ -41,6 +41,8 @@ import {
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
+	KeychainPreimageConflictError,
+	LiveIdentityUnavailableError,
 	LockLeaseLostError,
 	type SwitchDeps,
 	TargetIdentityMismatchError,
@@ -75,9 +77,18 @@ const IDENTITY_VERDICTS = new Set([
 	"profile_unauthorized",
 ]);
 
+function hasControlCharacter(value: string): boolean {
+	return Array.from(value, (character) => character.charCodeAt(0)).some(
+		(code) => code < 32 || code === 127,
+	);
+}
+
 function parseApplyProfileReport(raw: string): ApplyProfileReport | undefined {
 	try {
-		const parsed = JSON.parse(raw) as { identityChecks?: unknown };
+		const parsed = JSON.parse(raw) as {
+			identityChecks?: unknown;
+			freshened?: unknown;
+		};
 		if (
 			!Array.isArray(parsed.identityChecks) ||
 			parsed.identityChecks.length > 32
@@ -116,7 +127,39 @@ function parseApplyProfileReport(raw: string): ApplyProfileReport | undefined {
 					: {}),
 			});
 		}
-		return { identityChecks };
+		let freshened: ApplyProfileReport["freshened"];
+		if (parsed.freshened !== undefined) {
+			if (typeof parsed.freshened !== "object" || parsed.freshened === null) {
+				return undefined;
+			}
+			const fact = parsed.freshened as Record<string, unknown>;
+			if (
+				typeof fact.name !== "string" ||
+				!PROFILE_LABEL.test(fact.name) ||
+				typeof fact.identityProof !== "object" ||
+				fact.identityProof === null
+			) {
+				return undefined;
+			}
+			const proof = fact.identityProof as Record<string, unknown>;
+			if (
+				typeof proof.email !== "string" ||
+				proof.email.length === 0 ||
+				proof.email.length > 320 ||
+				hasControlCharacter(proof.email) ||
+				typeof proof.uuid !== "string" ||
+				proof.uuid.length === 0 ||
+				proof.uuid.length > 256 ||
+				hasControlCharacter(proof.uuid)
+			) {
+				return undefined;
+			}
+			freshened = {
+				name: fact.name,
+				identityProof: { email: proof.email, uuid: proof.uuid },
+			};
+		}
+		return { identityChecks, ...(freshened ? { freshened } : {}) };
 	} catch {
 		return undefined;
 	}
@@ -125,7 +168,13 @@ function parseApplyProfileReport(raw: string): ApplyProfileReport | undefined {
 function readApplyProfileReport(path: string): ApplyProfileReport | undefined {
 	try {
 		const stat = lstatSync(path);
-		if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) {
+		if (
+			!stat.isFile() ||
+			stat.isSymbolicLink() ||
+			stat.uid !== process.getuid?.() ||
+			(stat.mode & 0o777) !== 0o600 ||
+			stat.size > 64 * 1024
+		) {
 			return undefined;
 		}
 		return parseApplyProfileReport(readFileSync(path, "utf8"));
@@ -249,6 +298,12 @@ export function makeClaudeProfileSwitchDeps(
 				// failure rethrows unchanged (existing fail-closed behavior).
 				const e = err as { code?: number | string; stderr?: string };
 				const errText = String(e.stderr ?? "");
+				if (/FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT/.test(errText)) {
+					throw new KeychainPreimageConflictError(errText.trim(), report);
+				}
+				if (/FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE/.test(errText)) {
+					throw new LiveIdentityUnavailableError(errText.trim(), report);
+				}
 				// FLY-1201: classify active-marker reconciliation before the older
 				// account-specific identity markers. Strict capture may emit an inner
 				// target-identity marker before the outer repair failure; that must not
@@ -293,13 +348,16 @@ export function makeClaudeProfileSwitchDeps(
 					throw new TargetIdentityUnverifiableError(name, report);
 				}
 				if (e.code === 32 || /FLYWHEEL_TARGET_QUOTA_EXHAUSTED/.test(errText)) {
-					throw new TargetQuotaExhaustedError(name);
+					throw new TargetQuotaExhaustedError(name, report);
 				}
 				if (e.code === 30 || /FLYWHEEL_TARGET_STALE/.test(errText)) {
-					throw new TargetStaleError(name);
+					throw new TargetStaleError(name, report);
 				}
 				if (e.code === 31 || /FLYWHEEL_FRESHNESS_UNAVAILABLE/.test(errText)) {
-					throw new FreshnessUnavailableError(errText.trim() || undefined);
+					throw new FreshnessUnavailableError(
+						errText.trim() || undefined,
+						report,
+					);
 				}
 				if (e.code === 39 || /FLYWHEEL_LOCK_LEASE_LOST/.test(errText)) {
 					throw new LockLeaseLostError(errText.trim() || undefined);
@@ -324,6 +382,7 @@ export function makeClaudeProfileSwitchDeps(
 			return {
 				identitySynced: !/display identity/i.test(warning),
 				identityChecks: report?.identityChecks ?? [],
+				...(report?.freshened ? { freshened: report.freshened } : {}),
 			};
 		},
 		async readActiveProfile(): Promise<string | null> {

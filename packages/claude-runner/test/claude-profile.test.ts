@@ -427,7 +427,24 @@ esac
 	);
 	writeFileSync(
 		quotaBin,
-		'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$QUOTA_ARGV_LOG"\nexit 0\n',
+		`#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"
+cmd="\${1:-}"
+name=""; store=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name) name="$2"; shift 2 ;;
+    --store) store="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [[ "$cmd" == "active-sync-strict" ]]; then
+  cat >/dev/null
+  node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const s=JSON.parse(fs.readFileSync(path,"utf8")); const a=s.accounts.find((v)=>v.name===name); if(!a) process.exit(47); delete a.authExpired; delete a.refreshTokenInvalid; delete a.profileVerifyFailed; s.activeAccount=name; s.generation+=1; fs.writeFileSync(path,JSON.stringify(s));' "$store" "$name"
+fi
+exit 0
+`,
 		{ mode: 0o755 },
 	);
 	writeFileSync(quotaLog, "");
@@ -439,7 +456,14 @@ esac
 	writeFileSync(alertLog, "");
 	writeFileSync(
 		accountsStore,
-		JSON.stringify({ generation: 0, activeAccount: null, accounts: {} }),
+		JSON.stringify({
+			generation: 0,
+			activeAccount: null,
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		}),
 	);
 	mkdirSync(pool, { recursive: true });
 	seedProfile("personal", SECRET_A);
@@ -517,16 +541,17 @@ exec "$REAL_MKTEMP" "$@"
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
 	});
 
-	it("RED LINE: verify-fail rolls back to the previous credential, .active untouched", () => {
+	it("RED LINE: an unknown post-write value is never blindly deleted", () => {
 		// First write corrupts (stub corrupt mode ON) → read-back mismatch. The
 		// With a proven-absent preimage, a corrupt write must fail closed and the
 		// rollback must remove the newly created item again.
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FAKE_SEC_CORRUPT: "1",
 		});
-		expect(status).toBe(37);
-		expect(stderr).toContain("verify-before-commit failed");
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT");
 		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(existsSync(transitionJournal)).toBe(true);
 	});
 
 	it("RED LINE: a failed Keychain write still restores and verifies the previous credential", () => {
@@ -566,6 +591,45 @@ esac
 		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 
+	it("RED LINE: a failed Keychain write never restores over a concurrent login", () => {
+		seedCoherentActive("personal");
+		const partialWriteStub = join(tmp, "fake-security-partial-write-race");
+		const marker = join(tmp, "fail-write-once-race");
+		writeFileSync(
+			partialWriteStub,
+			`#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  find-generic-password) [[ -f "$FAKE_SEC_STATE" ]] || exit 44; cat "$FAKE_SEC_STATE" ;;
+  -i)
+    cmd=$(cat)
+    val=$(printf '%s' "$cmd" | sed -n 's/.* -w \\([^ ]*\\).*/\\1/p')
+    if [[ -f "${marker}" ]]; then
+      rm -f "${marker}"
+      printf '%s' "$val" > "$FAKE_SEC_STATE"
+      printf '%s' '${SECRET_SHOPPING_LIVE}' > "$FAKE_SEC_STATE"
+      exit 9
+    fi
+    printf '%s' "$val" > "$FAKE_SEC_STATE"
+    ;;
+  *) exit 2 ;;
+esac
+`,
+			{ mode: 0o755 },
+		);
+		writeFileSync(marker, "");
+
+		const { status, stderr } = runExpectFail(["use", "school"], {
+			FLYWHEEL_CLAUDE_SECURITY_BIN: partialWriteStub,
+		});
+
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT");
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+		expect(existsSync(transitionJournal)).toBe(true);
+	});
+
 	it("RED LINE: an unreadable Keychain preimage aborts before write or delete", () => {
 		seedCoherentActive("personal");
 		const unreadableStub = join(tmp, "fake-security-unreadable");
@@ -587,8 +651,8 @@ esac
 		const { status, stderr } = runExpectFail(["use", "school"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: unreadableStub,
 		});
-		expect(status).not.toBe(0);
-		expect(stderr).toContain("cannot read the current Keychain credential");
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_A);
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(
 			/^-i$|^delete-generic-password/m,
@@ -604,8 +668,8 @@ esac
 
 		const { status, stderr } = runExpectFail(["use", "school"]);
 
-		expect(status).not.toBe(0);
-		expect(stderr).toContain("whitespace");
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf8")).toBe(pretty);
 		expect(readFileSync(argvLog, "utf8")).not.toMatch(
 			/^-i$|^delete-generic-password/m,
@@ -613,7 +677,7 @@ esac
 		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 	});
 
-	it("RED LINE: an absent preimage with a corrupt read-back fails closed (37), .active untouched", () => {
+	it("RED LINE: an absent preimage never deletes an unknown corrupt read-back", () => {
 		const absentStub = join(tmp, "fake-security-absent-preimage");
 		const corruptOnce = join(tmp, "corrupt-once-absent");
 		rmSync(stateFile, { force: true });
@@ -641,12 +705,14 @@ esac
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: absentStub,
 		});
-		expect(status).toBe(37);
-		expect(stderr).toContain("verify-before-commit failed");
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT");
 		expect(existsSync(join(pool, ".active"))).toBe(false);
+		expect(readFileSync(stateFile, "utf8")).toBe("CORRUPTED");
+		expect(existsSync(transitionJournal)).toBe(true);
 	});
 
-	it("verify-fail with a WORKING rollback restores the previous credential", () => {
+	it("a transformed write is treated as an external-value conflict", () => {
 		seedCoherentActive("school");
 		// Corrupt exactly the first -i write: the stub corrupts while the marker
 		// file exists (then deletes it) — the rollback write goes through clean.
@@ -673,11 +739,11 @@ esac
 		const { status, stderr } = runExpectFail(["use", "personal"], {
 			FLYWHEEL_CLAUDE_SECURITY_BIN: oneShotStub,
 		});
-		expect(status).toBe(36);
-		expect(stderr).toContain("rolled back");
-		// the machine credential is back to what it was — login never broken
-		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(status).toBe(88);
+		expect(stderr).toContain("FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT");
+		expect(readFileSync(stateFile, "utf-8")).toBe("CORRUPTED");
 		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("school");
+		expect(existsSync(transitionJournal)).toBe(true);
 	});
 
 	it("`use` refuses a missing profile", () => {
@@ -922,6 +988,27 @@ fi
 			expect(readFileSync(stateFile, "utf8")).toBe(SECRET_CUR);
 		});
 
+		it("recovers an explicitly absent preimage and only the unambiguous legacy encoding", () => {
+			rmSync(stateFile, { force: true });
+			seedTransitionJournal({ oldState: "absent", oldDigest: digest("") });
+			expect(JSON.parse(run(["reconcile-journal"]).trim())).toEqual({
+				outcome: "cleared",
+			});
+			expect(existsSync(transitionJournal)).toBe(false);
+
+			seedTransitionJournal({ oldDigest: digest("") });
+			expect(JSON.parse(run(["reconcile-journal"]).trim())).toEqual({
+				outcome: "cleared",
+			});
+
+			seedTransitionJournal({ oldDigest: digest(SECRET_CUR) });
+			expect(JSON.parse(run(["reconcile-journal"]).trim())).toEqual({
+				outcome: "conflict",
+				reason: "keychain_unreadable",
+			});
+			expect(existsSync(transitionJournal)).toBe(true);
+		});
+
 		it("completes .active + store when Keychain has the target digest", () => {
 			writeFileSync(stateFile, SECRET_A);
 			writeFileSync(join(pool, ".active"), "school");
@@ -1042,6 +1129,42 @@ esac
 				expect(existsSync(transitionJournal)).toBe(false);
 			} finally {
 				if (caller.exitCode === null) caller.kill("SIGKILL");
+			}
+		}, 15_000);
+
+		it("fences a concurrent login after journal creation before Keychain write", async () => {
+			seedCoherentActive("personal");
+			const pause = join(tmp, "journal-race-pause");
+			const child = spawn("bash", [PROFILE_BIN, "use", "school"], {
+				env: env({ FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL: pause }),
+				stdio: ["ignore", "pipe", "pipe"],
+			});
+			let stderr = "";
+			child.stderr?.setEncoding("utf8");
+			child.stderr?.on("data", (chunk) => {
+				stderr += chunk;
+			});
+			const waitFor = async (condition: () => boolean) => {
+				for (let i = 0; i < 500; i++) {
+					if (condition()) return true;
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+				return false;
+			};
+			try {
+				expect(await waitFor(() => existsSync(`${pause}.ready`))).toBe(true);
+				writeFileSync(stateFile, SECRET_SHOPPING_LIVE);
+				writeFileSync(`${pause}.continue`, "go");
+				const exitCode = await new Promise<number | null>((resolve) =>
+					child.once("exit", resolve),
+				);
+				expect(exitCode).toBe(88);
+				expect(stderr).toContain("FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT");
+				expect(readFileSync(stateFile, "utf8")).toBe(SECRET_SHOPPING_LIVE);
+				expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+				expect(existsSync(transitionJournal)).toBe(false);
+			} finally {
+				if (child.exitCode === null) child.kill("SIGKILL");
 			}
 		}, 15_000);
 
@@ -1177,10 +1300,8 @@ describe("flywheel-claude-profile — identity proof (FLY-1182)", () => {
 		writeFileSync(stateFile, SECRET_DRIFT);
 		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
 		let refused = runExpectFail(["use", "school"]);
-		expect(refused.status).toBe(46);
-		expect(refused.stderr).toContain(
-			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
-		);
+		expect(refused.status).toBe(88);
+		expect(refused.stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_DRIFT);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 		expect(
@@ -1215,8 +1336,8 @@ describe("flywheel-claude-profile — identity proof (FLY-1182)", () => {
 		refused = runExpectFail(["use", "school"], {
 			FLYWHEEL_PROFILE_CURL_BIN: unavailable,
 		});
-		expect(refused.status).toBe(46);
-		expect(refused.stderr).toContain("current account cannot be verified");
+		expect(refused.status).toBe(88);
+		expect(refused.stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 	});
@@ -1839,7 +1960,8 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
-if [[ "$cmd" == "active-sync" ]]; then
+if [[ "$cmd" == "active-sync" || "$cmd" == "active-sync-strict" ]]; then
+  [[ "$cmd" == "active-sync-strict" ]] && cat >/dev/null
   node -e 'const fs=require("fs"); const [path,name]=process.argv.slice(1); const value=JSON.parse(fs.readFileSync(path,"utf8")); value.activeAccount=name; value.generation+=1; fs.writeFileSync(path,JSON.stringify(value));' "$store" "$name"
 fi
 exit 0
@@ -1878,6 +2000,96 @@ exit 0
 			}),
 		);
 	}
+
+	describe("reconcile command (FLY-1756)", () => {
+		it("freshens an already-consistent live slot without rewriting Keychain", () => {
+			seedCoherentActive("personal");
+			writeFileSync(argvLog, "");
+
+			const result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+				env: env(),
+				encoding: "utf8",
+			});
+
+			expect(result.status).toBe(0);
+			expect(JSON.parse(String(result.stdout).trim())).toEqual({
+				outcome: "already_consistent",
+				freshened: true,
+				displaySynced: true,
+			});
+			expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
+		});
+
+		it("repairs a lying marker from the live identity without rewriting Keychain", () => {
+			seedShoppingMachine("business");
+			writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
+			writeFileSync(argvLog, "");
+
+			const result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+				env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+				encoding: "utf8",
+			});
+
+			expect(result.status).toBe(0);
+			expect(JSON.parse(String(result.stdout).trim())).toMatchObject({
+				outcome: "repaired",
+				from: "business",
+				to: "shopping",
+			});
+			expect(readFileSync(stateFile, "utf8")).toBe(SECRET_SHOPPING_LIVE);
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("shopping");
+			expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
+		});
+
+		it("returns typed JSON for an empty machine and an unresolvable identity", () => {
+			let result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+				env: env(),
+				encoding: "utf8",
+			});
+			expect(result.status).toBe(10);
+			expect(String(result.stdout)).toBe('{"outcome":"no_credential"}\n');
+
+			writeFileSync(join(pool, ".active"), "personal", { mode: 0o600 });
+			writeFileSync(stateFile, SECRET_DRIFT);
+			result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+				env: env(),
+				encoding: "utf8",
+			});
+			expect(result.status).toBe(20);
+			expect(JSON.parse(String(result.stdout).trim())).toEqual({
+				outcome: "unresolvable",
+				reason: "anchor_ambiguous",
+			});
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+		});
+
+		it("reports no_credential when Keychain is empty but the active marker remains", () => {
+			seedCoherentActive("personal");
+			rmSync(stateFile);
+
+			const result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+				env: env(),
+				encoding: "utf8",
+			});
+
+			expect(result.status).toBe(10);
+			expect(String(result.stdout)).toBe('{"outcome":"no_credential"}\n');
+			expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
+		});
+
+		it("rejects delegated or identity-bypass invocation", () => {
+			for (const extra of [
+				{ FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid) },
+				{ FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1" },
+			]) {
+				const result = spawnSync("/bin/bash", [PROFILE_BIN, "reconcile"], {
+					env: env(extra),
+					encoding: "utf8",
+				});
+				expect(result.status).toBe(46);
+			}
+		});
+	});
 
 	it("preserves the live credential and refresh-checks the requested stale-marker profile", () => {
 		seedShoppingMachine("business");
@@ -1941,7 +2153,35 @@ exit 0
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 	});
 
-	it("fails closed with 46 when an absent marker is paired with an unreadable Keychain", () => {
+	it("bootstraps from the pool when Keychain is empty but the active marker remains", () => {
+		seedCoherentActive("personal");
+		rmSync(stateFile);
+
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env(),
+			encoding: "utf-8",
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+	});
+
+	it("does not treat the active marker as a live-identity no-op under manual bypass", () => {
+		seedCoherentActive("personal");
+		writeFileSync(stateFile, SECRET_DRIFT);
+
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "personal"], {
+			env: env({ FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1" }),
+			encoding: "utf-8",
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+		expect(String(result.stderr)).not.toContain("FLYWHEEL_USE_NOOP");
+	});
+
+	it("fails closed with live-identity-unavailable when an absent marker is paired with an unreadable Keychain", () => {
 		const unreadableSecurity = join(tmp, "fake-security-unreadable");
 		writeFileSync(
 			unreadableSecurity,
@@ -1955,9 +2195,9 @@ exit 0
 			env: env({ FLYWHEEL_CLAUDE_SECURITY_BIN: unreadableSecurity }),
 			encoding: "utf-8",
 		});
-		expect(result.status).toBe(46);
+		expect(result.status).toBe(88);
 		expect(String(result.stderr)).toContain(
-			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE absent",
+			"FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE",
 		);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(readFileSync(join(pool, "personal", ".credentials.json"))).toEqual(
@@ -1974,6 +2214,9 @@ exit 0
 			encoding: "utf-8",
 		});
 		expect(result.status).toBe(46);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE",
+		);
 		expect(readFileSync(stateFile)).toEqual(beforeCredential);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business\n");
 	});
@@ -2007,6 +2250,7 @@ exit 0
 
 	it("re-selecting the live account after reconciliation is a safe real no-op", () => {
 		seedShoppingMachine("business");
+		writeFileSync(argvLog, "");
 		const result = spawnSync("/bin/bash", [PROFILE_BIN, "use", "shopping"], {
 			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
 			encoding: "utf-8",
@@ -2017,6 +2261,26 @@ exit 0
 		expect(
 			readFileSync(join(pool, "shopping", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
+	});
+
+	it("ignores a coherent-but-stale display marker and no-ops on the live target", () => {
+		seedShoppingMachine("business");
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
+		writeFileSync(argvLog, "");
+
+		const result = spawnSync("/bin/bash", [PROFILE_BIN, "use", "shopping"], {
+			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
+			encoding: "utf-8",
+		});
+
+		expect(result.status).toBe(0);
+		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("shopping");
+		expect(
+			readFileSync(join(pool, "shopping", ".credentials.json"), "utf8"),
+		).toBe(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(argvLog, "utf8")).not.toMatch(/^-i$/m);
 	});
 
 	it("uses the reconciled account for capture-back when switching to a third account", () => {
@@ -2079,7 +2343,10 @@ exit 0
 			env: env({ FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub() }),
 			encoding: "utf-8",
 		});
-		expect(result.status).toBe(46);
+		expect(result.status).toBe(88);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE",
+		);
 		expect(readFileSync(stateFile)).toEqual(before);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
 	});
@@ -2109,6 +2376,40 @@ exit 0
 			beforePool,
 		);
 		expect(readFileSync(accountsStore)).toEqual(beforeStore);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("delegated capture reports a verified freshened slot even when the target is stale", () => {
+		seedCoherentActive("personal");
+		const reportDir = join(tmp, "apply-report");
+		const reportPath = join(reportDir, "report.json");
+		mkdirSync(reportDir, { mode: 0o700 });
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const result = spawnSync("bash", [PROFILE_BIN, "use", "school"], {
+			env: env({
+				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+				FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleFreshnessStub(),
+				FLYWHEEL_APPLY_REPORT_FILE: reportPath,
+			}),
+			encoding: "utf8",
+		});
+
+		expect(result.status).toBe(30);
+		expect(JSON.parse(readFileSync(reportPath, "utf8"))).toEqual({
+			identityChecks: [],
+			freshened: {
+				name: "personal",
+				identityProof: {
+					email: EMAILS.personal,
+					uuid: "uuid-personal",
+				},
+			},
+		});
+		expect(statSync(reportPath).mode & 0o777).toBe(0o600);
 		rmSync(lockDir, { recursive: true, force: true });
 	});
 
@@ -2358,11 +2659,11 @@ exit 0
 		writeFileSync(stateFile, SECRET_DRIFT);
 		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
 		const { status, stderr } = runExpectFail(["use", "school"]);
-		expect(status).toBe(46);
+		expect(status).toBe(88);
 		expect(
 			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
 		).toBe(SECRET_A);
-		expect(stderr).toContain("FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal");
+		expect(stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_DRIFT);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
 	});
@@ -2432,7 +2733,16 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		const p = join(tmp, `fake-quota-${code}-${Math.random()}`);
 		writeFileSync(
 			p,
-			`#!/usr/bin/env bash\nset -u\nprintf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"\n${body}\nexit ${code}\n`,
+			`#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$QUOTA_ARGV_LOG"
+if [[ "\${1:-}" == "active-sync-strict" ]]; then
+  cat >/dev/null
+  exit 0
+fi
+${body}
+exit ${code}
+`,
 			{ mode: 0o755 },
 		);
 		return p;
@@ -2444,6 +2754,14 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		writeFileSync(join(pool, ".active"), "business", { mode: 0o600 });
 		writeFileSync(stateFile, SECRET_CUR);
 		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_CURRENT));
+		const store = JSON.parse(readFileSync(accountsStore, "utf8"));
+		store.activeAccount = "business";
+		store.accounts.push({
+			name: "business",
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+		});
+		writeFileSync(accountsStore, JSON.stringify(store));
 	}
 
 	it("`use` invokes freshness/check exactly once and active-sync after committing", () => {
@@ -2588,10 +2906,11 @@ describe("flywheel-claude-profile — live quota guard (FLY-1252)", () => {
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
 		const quotaCalls = readFileSync(quotaLog, "utf-8").trim().split("\n");
 		const freshnessCalls = readFileSync(freshLog, "utf-8").trim().split("\n");
-		expect(quotaCalls).toHaveLength(3);
-		expect(quotaCalls[0]).toContain("--name personal");
-		expect(quotaCalls[1]).toContain("--name school");
-		expect(quotaCalls[2]).toBe(
+		expect(quotaCalls).toHaveLength(4);
+		expect(quotaCalls[0]).toContain("active-sync-strict --name business");
+		expect(quotaCalls[1]).toContain("--name personal");
+		expect(quotaCalls[2]).toContain("--name school");
+		expect(quotaCalls[3]).toBe(
 			`active-sync --name school --store ${accountsStore}`,
 		);
 		expect(freshnessCalls).toHaveLength(2);
@@ -2644,9 +2963,13 @@ exit 0
 			FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleBin,
 		});
 		expect(stale.status).toBe(30);
-		expect(readFileSync(quotaLog, "utf-8")).toBe("");
+		expect(readFileSync(quotaLog, "utf-8")).toContain(
+			"active-sync-strict --name business",
+		);
+		expect(readFileSync(quotaLog, "utf-8")).not.toContain("check --name");
 
 		writeFileSync(freshLog, "");
+		writeFileSync(quotaLog, "");
 		const unavailable = runExpectFail(["next"], {
 			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: quotaStub(33),
 		});
@@ -2685,10 +3008,8 @@ describe("flywheel-claude-profile — account identity policy (FLY-1252 P7)", ()
 
 		const refused = runExpectFail(["use", "school"]);
 
-		expect(refused.status).toBe(46);
-		expect(refused.stderr).toContain(
-			"FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
-		);
+		expect(refused.status).toBe(88);
+		expect(refused.stderr).toContain("FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE");
 		expect(readFileSync(stateFile, "utf8")).toBe(SECRET_DRIFT);
 		expect(readFileSync(join(pool, ".active"), "utf8")).toBe("personal");
 		// the drifted outgoing token was NOT written back into its pool slot

@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph M["Annie 的手工操作"]
+        A1["她自己登录了账号 A<br/>(Keychain 换成 A 的新钥匙,<br/>池和标记都不知道)"]
+    end
+    subgraph D["后台守护进程(每 10-20 分钟一轮)"]
+        B1["对账:Keychain 指纹 vs<br/>池里 active 位的指纹"]
+        B2["不一致 → 调 reconcile 命令:<br/>问清活钥匙是谁 → 存回正确池位<br/>→ 纠正标记和台账"]
+        B3["一致 → 什么都不做"]
+    end
+    subgraph L["之后 Lead 代切"]
+        C1["use B → use A 都能成功<br/>(池是新鲜的,标记是对的)"]
+    end
+    A1 --> B1
+    B1 -->|"发现漂移"| B2
+    B1 -->|"没漂移"| B3
+    B2 --> C1

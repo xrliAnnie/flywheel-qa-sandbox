@@ -99,6 +99,10 @@ export interface ApplyProfileIdentityCheck {
 
 export interface ApplyProfileReport {
 	identityChecks: ApplyProfileIdentityCheck[];
+	freshened?: {
+		name: string;
+		identityProof: { email: string; uuid: string };
+	};
 }
 
 type SwitchOutcome =
@@ -127,6 +131,8 @@ type SwitchOutcome =
 			reasonCode:
 				| "freshness_unavailable"
 				| "active_marker_drift"
+				| "live_identity_unavailable"
+				| "keychain_preimage_conflict"
 				| "apply_failed"
 				| "machine_account_conflict"
 				| "invalid_model_trigger"
@@ -156,7 +162,10 @@ export class LockLeaseLostError extends Error {
  * catches this, flags the account `authExpired`, and rotates to the next candidate.
  */
 export class TargetStaleError extends Error {
-	constructor(public readonly account: string) {
+	constructor(
+		public readonly account: string,
+		public readonly report?: ApplyProfileReport,
+	) {
 		super(
 			`target account '${account}' has a stale pooled credential (freshness refresh refused)`,
 		);
@@ -171,7 +180,10 @@ export class TargetStaleError extends Error {
  * closed WITHOUT flagging any account and WITHOUT trying candidates.
  */
 export class FreshnessUnavailableError extends Error {
-	constructor(detail?: string) {
+	constructor(
+		detail?: string,
+		public readonly report?: ApplyProfileReport,
+	) {
 		super(
 			`token freshness helper unavailable — refusing to switch (fail-closed)${
 				detail ? `: ${detail}` : ""
@@ -198,14 +210,81 @@ export class ActiveMarkerDriftError extends Error {
 }
 
 export class TargetQuotaExhaustedError extends Error {
-	constructor(public readonly account: string) {
+	constructor(
+		public readonly account: string,
+		public readonly report?: ApplyProfileReport,
+	) {
 		super(`target account '${account}' has exhausted Claude quota`);
 		this.name = "TargetQuotaExhaustedError";
 	}
 }
 
+export class LiveIdentityUnavailableError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		detail?: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(`live Claude identity is unavailable${detail ? `: ${detail}` : ""}`);
+		this.name = "LiveIdentityUnavailableError";
+	}
+}
+
+export class KeychainPreimageConflictError
+	extends Error
+	implements ApplyProfileReportedError
+{
+	constructor(
+		detail?: string,
+		public readonly report?: ApplyProfileReport,
+	) {
+		super(
+			`live Keychain credential changed concurrently${detail ? `: ${detail}` : ""}`,
+		);
+		this.name = "KeychainPreimageConflictError";
+	}
+}
+
 interface ApplyProfileReportedError {
 	report?: ApplyProfileReport;
+}
+
+function freshenVerifiedAccount(
+	store: AccountStore,
+	fact: NonNullable<ApplyProfileReport["freshened"]>,
+	expectedGeneration: number,
+	expectedActiveAccount: string,
+): AccountStore {
+	if (
+		store.generation !== expectedGeneration ||
+		store.activeAccount !== expectedActiveAccount ||
+		fact.name !== expectedActiveAccount ||
+		store.accounts.filter((account) => account.name === fact.name).length !== 1
+	) {
+		return store;
+	}
+	return {
+		...store,
+		accounts: store.accounts.map((account) => {
+			if (account.name !== fact.name) return account;
+			const updated = { ...account };
+			delete updated.authExpired;
+			delete updated.refreshTokenInvalid;
+			delete updated.profileVerifyFailed;
+			if (
+				account.identity?.email.toLowerCase() ===
+					fact.identityProof.email.toLowerCase() &&
+				(account.identity.uuid === undefined ||
+					account.identity.uuid.toLowerCase() ===
+						fact.identityProof.uuid.toLowerCase())
+			) {
+				delete updated.identityMismatch;
+			}
+			return updated;
+		}),
+	};
 }
 
 export class TargetIdentityMismatchError
@@ -308,7 +387,9 @@ function appendReport(
 			: value && "report" in value
 				? value.report
 				: undefined;
-	if (report && report.identityChecks.length > 0) reports.push(report);
+	if (report && (report.identityChecks.length > 0 || report.freshened)) {
+		reports.push(report);
+	}
 }
 
 function withReports<T extends SwitchOutcome>(
@@ -498,6 +579,36 @@ export async function switchAccount(
 		// account is left untouched (never a half-switched pool). Bounded by pool
 		// size as a backstop.
 		let working = store;
+		const consumeReport = (
+			// biome-ignore lint/suspicious/noConfusingVoidType: preserve compatibility with void apply mocks.
+			value: ApplyProfileReport | void | ApplyProfileReportedError | Error,
+			suppressFreshened = false,
+		): void => {
+			const report =
+				value && "identityChecks" in value
+					? value
+					: value && "report" in value
+						? value.report
+						: undefined;
+			if (!report) return;
+			appendReport(
+				applyReports,
+				suppressFreshened ? { identityChecks: report.identityChecks } : report,
+			);
+			if (suppressFreshened || !report.freshened) return;
+			const latest = readStore(storePath);
+			const updated = freshenVerifiedAccount(
+				latest,
+				report.freshened,
+				input.observedGeneration,
+				input.observedAccount,
+			);
+			if (JSON.stringify(updated) !== JSON.stringify(latest)) {
+				if (!fence()) throw new LockLeaseLostError(lockPath);
+				writeStore(updated, storePath);
+			}
+			working = updated;
+		};
 		let applied: string | null = null;
 		let identitySynced = true;
 		let targetStaleSeen = false;
@@ -551,7 +662,7 @@ export async function switchAccount(
 			try {
 				const applyResult = await applyWithHeartbeat(next);
 				identitySynced = applyResult?.identitySynced ?? true;
-				appendReport(applyReports, applyResult);
+				consumeReport(applyResult);
 				// The child may settle in the gap before the next heartbeat. Re-proof
 				// after the entire process group has exited and before any parent write.
 				if (!fence()) return leaseLost();
@@ -559,7 +670,28 @@ export async function switchAccount(
 				break;
 			} catch (err) {
 				if (err instanceof LockLeaseLostError || !fence()) return leaseLost();
-				if (err instanceof Error) appendReport(applyReports, err);
+				if (err instanceof KeychainPreimageConflictError) {
+					consumeReport(err, true);
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "keychain_preimage_conflict",
+						},
+						applyReports,
+					);
+				}
+				if (err instanceof Error) consumeReport(err);
+				if (err instanceof LiveIdentityUnavailableError) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "live_identity_unavailable",
+						},
+						applyReports,
+					);
+				}
 				if (err instanceof TargetQuotaExhaustedError) {
 					targetQuotaSeen = true;
 					working = readStore(storePath);
