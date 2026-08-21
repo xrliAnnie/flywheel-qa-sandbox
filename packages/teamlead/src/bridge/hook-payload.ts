@@ -4,6 +4,8 @@ import {
 	truncateCodePointsFromEnd,
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
+import { WORKFLOW_RUN_NODE_STATES } from "../workflow-ledger-states.js";
+import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
 
 export interface HookPayload {
 	event_type: string;
@@ -23,6 +25,8 @@ export interface HookPayload {
 	issue_labels?: string[];
 	/** FLY-1687: Bridge ledger declaration only; Lead independently verifies it. */
 	roster?: PatrolRosterEntry[];
+	/** FLY-1925: issue-scoped loop ledger projection; absent on legacy replays. */
+	loops?: PatrolLoopEntry[];
 	generated_at?: string;
 	/** FLY-1771: patrol_tick's scheduled per-Lead wall-clock phase. Drift is
 	 * `generated_at - scheduled_at`; journal-only, never rendered to the Lead. */
@@ -175,6 +179,7 @@ export interface HookPayload {
 
 export interface PatrolRosterEntry {
 	identifier: string;
+	issueId?: string;
 	sessionRole: string;
 	status: string;
 	executionId8: string;
@@ -228,6 +233,7 @@ export interface StuckEscalationEnvelopeLike {
 }
 
 const PATROL_TOKEN_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;
+const PATROL_STEP_GRAMMAR = /^[A-Za-z0-9._:-]{1,64}$/;
 const PATROL_DIRECTIVE_WORDS = /check|verify|suggest|inspect|建议|怀疑|该查/iu;
 const PATROL_STATUSES = new Set([
 	"running",
@@ -236,6 +242,48 @@ const PATROL_STATUSES = new Set([
 	"approved_to_ship",
 	"pending",
 	"design_done",
+]);
+const PATROL_LOOP_STATES = new Set([
+	...WORKFLOW_RUN_NODE_STATES,
+	"active",
+	"held",
+	"turn_granted",
+	"wake_delivered",
+	"replacement_pending",
+	"needs_lead",
+	"intent",
+	"partial",
+	"materializing",
+	"awaiting_review",
+	"approved",
+	"grant_started",
+	"receipt_started",
+	"pending",
+	"sent",
+	"stale",
+	"exhausted",
+]);
+const PATROL_LOOP_KINDS = new Set([
+	"rework",
+	"land",
+	"wake",
+	"gate",
+	"carrier",
+]);
+const PATROL_UNKNOWN_REASONS = new Set([
+	"ambiguous_runs",
+	"turn_tuple_moved",
+	"ledger_unreadable:comm_db",
+	"ledger_unreadable:collector",
+	"ledger_unreadable:three_stage_turn",
+	"ledger_unreadable:turn_wait_ledger",
+	"ledger_unreadable:turn_wake_outbox",
+	"ledger_unreadable:workflow_run",
+	"ledger_unreadable:workflow_run_node",
+	"ledger_unreadable:workflow_rework_delivery",
+	"ledger_unreadable:land_operation",
+	"ledger_unreadable:workflow_gate_holder",
+	"ledger_unreadable:sessions",
 ]);
 
 function canonicalPatrolToken(value: unknown): string {
@@ -246,17 +294,57 @@ function canonicalPatrolToken(value: unknown): string {
 	return `unsafe-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
 }
 
-/** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
-export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
-	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
-	const roster = rawRoster.map((item) => ({
-		identifier: canonicalPatrolToken(item?.identifier),
-		sessionRole: canonicalPatrolToken(item?.sessionRole),
-		status: PATROL_STATUSES.has(item?.status)
-			? item.status
-			: canonicalPatrolToken(item?.status),
-		executionId8: canonicalPatrolToken(item?.executionId8),
-	}));
+function canonicalPatrolStep(value: unknown): string {
+	const text = typeof value === "string" ? value : String(value ?? "");
+	if (PATROL_STEP_GRAMMAR.test(text) && !PATROL_DIRECTIVE_WORDS.test(text)) {
+		return text;
+	}
+	return `unsafe-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
+}
+
+function canonicalPatrolState(value: unknown): string {
+	return PATROL_LOOP_STATES.has(String(value))
+		? String(value)
+		: canonicalPatrolToken(value);
+}
+
+function canonicalUnknownReason(value: unknown): string {
+	const text = String(value);
+	if (PATROL_UNKNOWN_REASONS.has(text)) return text;
+	const livenessMatch = /^process_liveness_unknown:(.*)$/.exec(text);
+	if (livenessMatch) {
+		return `process_liveness_unknown:${canonicalPatrolToken(livenessMatch[1])}`;
+	}
+	return canonicalPatrolToken(value);
+}
+
+function safePatrolInteger(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+		? value
+		: undefined;
+}
+
+function canonicalPatrolTarget(value: unknown): string {
+	if (typeof value === "string") {
+		const match = /^(.*)@(\d+)$/.exec(value);
+		if (match) {
+			const attempt = safePatrolInteger(Number(match[2]));
+			if (attempt !== undefined) {
+				return `${canonicalPatrolToken(match[1])}@${attempt}`;
+			}
+		}
+	}
+	return canonicalPatrolToken(value);
+}
+
+function legacyPatrolBody(
+	roster: Array<{
+		identifier: string;
+		sessionRole: string;
+		status: string;
+		executionId8: string;
+	}>,
+): string {
 	return [
 		"[patrol_tick] 巡检时间到。",
 		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
@@ -264,6 +352,267 @@ export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 			(item) =>
 				`- ${item.identifier} [${item.executionId8}] (${item.sessionRole}, ${item.status})`,
 		),
+	].join("\n");
+}
+
+function renderOpenLoop(loop: PatrolLoopEntry["openLoops"][number]): string {
+	const kind = PATROL_LOOP_KINDS.has(String(loop.kind))
+		? String(loop.kind)
+		: canonicalPatrolToken(loop.kind);
+	const state = canonicalPatrolState(loop.state);
+	const target = loop.target ? canonicalPatrolTarget(loop.target) : undefined;
+	const step = loop.step ? canonicalPatrolStep(loop.step) : undefined;
+	if (kind === "rework" || kind === "wake") {
+		return `${kind}:${state}${target ? `→${target}` : ""}`;
+	}
+	if (kind === "land") return `${kind}:${state}${step ? `@${step}` : ""}`;
+	return `${kind}:${state}`;
+}
+
+function renderLoopGroup(
+	loop: PatrolLoopEntry,
+	roster: Array<{
+		sessionRole: string;
+		status: string;
+		executionId8: string;
+	}>,
+): string[] {
+	const openLoops = Array.isArray(loop.openLoops) ? loop.openLoops : [];
+	const identifier = canonicalPatrolToken(loop.identifier);
+	const runId = loop.runId8 ? canonicalPatrolToken(loop.runId8) : undefined;
+	const runStatus = loop.runStatus
+		? canonicalPatrolState(loop.runStatus)
+		: undefined;
+	const currentNode = loop.currentNode
+		? canonicalPatrolToken(loop.currentNode)
+		: undefined;
+	const currentAttempt = safePatrolInteger(loop.currentAttempt);
+	const currentState = loop.currentAttemptState
+		? canonicalPatrolState(loop.currentAttemptState)
+		: undefined;
+	const turnHolder = loop.turnHolderExecId8
+		? canonicalPatrolToken(loop.turnHolderExecId8)
+		: undefined;
+	const turnPhase = loop.turnPhase
+		? canonicalPatrolToken(loop.turnPhase)
+		: undefined;
+	const turnEpoch = safePatrolInteger(loop.turnEpoch);
+	const processes = Array.isArray(loop.processes)
+		? loop.processes.filter(
+				(process) =>
+					process != null &&
+					(process.state === "alive" ||
+						process.state === "dead" ||
+						process.state === "unknown"),
+			)
+		: [];
+	const processStateFor = (executionId8: string): string | undefined =>
+		processes.find(
+			(process) => canonicalPatrolToken(process.executionId8) === executionId8,
+		)?.state;
+	const header: string[] = [identifier];
+	if (runId && runStatus) {
+		let runText = `run=${runId}(${runStatus})`;
+		if (currentNode && currentAttempt !== undefined && currentState) {
+			runText += ` node=${currentNode}@${currentAttempt}(${currentState})`;
+		}
+		header.push(runText);
+	}
+	if (turnHolder && turnPhase && turnEpoch !== undefined) {
+		header.push(`棒=${turnHolder}/${turnPhase}/e${turnEpoch}`);
+		const holderLiveness = processStateFor(turnHolder);
+		if (holderLiveness) header.push(`现场=${holderLiveness}`);
+	}
+	if (loop.light === "unknown") {
+		header.push(
+			`圈=⚠️ 账面不可读(${canonicalUnknownReason(loop.unknownReason)})`,
+		);
+	} else if (openLoops.length === 0) {
+		header.push("圈=无");
+	} else {
+		const rendered = openLoops.slice(0, 3).map(renderOpenLoop);
+		const more = openLoops.length - rendered.length;
+		header.push(`圈=${rendered.join(",")}${more > 0 ? ` +${more} more` : ""}`);
+	}
+	header.push(
+		loop.light === "red" ? "🔴" : loop.light === "unknown" ? "⚠️" : "—",
+	);
+	const warnings = Array.isArray(loop.displayWarnings)
+		? loop.displayWarnings.filter((warning) => warning === "parked_unavailable")
+		: [];
+	if (warnings.length > 0) header.push("(parked 显示不可用)");
+
+	const waiters = Array.isArray(loop.waiters) ? loop.waiters : [];
+	const sessionLines = roster.map((session) => {
+		const suffixes: string[] = [];
+		const processState = processStateFor(session.executionId8);
+		if (processState) suffixes.push(`现场=${processState}`);
+		for (const waiter of waiters) {
+			if (canonicalPatrolToken(waiter.executionId8) !== session.executionId8) {
+				continue;
+			}
+			if (waiter.kind === "turn-poll") {
+				const age = safePatrolInteger(waiter.waitedMinutes);
+				suffixes.push(
+					age === undefined
+						? "等待账=turn-poll"
+						: `等待账=turn-poll(账龄${age}m)`,
+				);
+			} else if (waiter.kind === "turn-poll-stale") {
+				suffixes.push("等待账=turn-poll-stale");
+			} else if (waiter.kind === "parked") {
+				suffixes.push("声明=parked");
+			}
+		}
+		return `  - [${session.executionId8}] (${session.sessionRole}, ${session.status})${suffixes.length > 0 ? ` ${suffixes.join(" ")}` : ""}`;
+	});
+	return [header.join(" | "), ...sessionLines];
+}
+
+/** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
+export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
+	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
+	const roster = rawRoster.map((item) => ({
+		issueId: typeof item?.issueId === "string" ? item.issueId : undefined,
+		identifier: canonicalPatrolToken(item?.identifier),
+		sessionRole: canonicalPatrolToken(item?.sessionRole),
+		status: PATROL_STATUSES.has(item?.status)
+			? item.status
+			: canonicalPatrolToken(item?.status),
+		executionId8: canonicalPatrolToken(item?.executionId8),
+	}));
+	const loops = Array.isArray(env.event.loops)
+		? env.event.loops.filter(
+				(loop): loop is PatrolLoopEntry =>
+					loop != null && typeof loop === "object",
+			)
+		: [];
+	const loopsByIssue = new Map(loops.map((loop) => [loop.issueId, loop]));
+	if (
+		loops.length === 0 ||
+		roster.some(
+			(session) => !session.issueId || !loopsByIssue.has(session.issueId),
+		)
+	) {
+		return legacyPatrolBody(roster);
+	}
+
+	const redLoops = loops.filter((loop) => loop.light === "red");
+	type RedEvidence = { kind: "holder" | "waiter"; line: string };
+	const redEvidence = redLoops.flatMap<RedEvidence>((loop) => {
+		const holder = loop.turnHolderExecId8
+			? canonicalPatrolToken(loop.turnHolderExecId8)
+			: "—";
+		const runStatus =
+			loop.runStatus === "active" || loop.runStatus === "held"
+				? loop.runStatus
+				: undefined;
+		if (loop.redCause && runStatus && loop.turnHolderExecId8) {
+			if (loop.redCause.kind === "holder_process_dead") {
+				return [
+					{
+						kind: "holder" as const,
+						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的现场探针=dead,run 仍 ${runStatus}`,
+					},
+				];
+			}
+			if (loop.redCause.kind === "holder_terminal_attempt") {
+				const attempt = safePatrolInteger(loop.redCause.attempt);
+				if (attempt === undefined) return [];
+				return [
+					{
+						kind: "holder" as const,
+						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的当前 attempt ${canonicalPatrolToken(loop.redCause.nodeId)}@${attempt} 已终态(${canonicalPatrolState(loop.redCause.state)}),run 仍 ${runStatus}`,
+					},
+				];
+			}
+			if (loop.redCause.kind === "holder_terminal_session") {
+				return [
+					{
+						kind: "holder" as const,
+						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 的 session 已终态(${canonicalPatrolToken(loop.redCause.status)}),run 仍 ${runStatus}`,
+					},
+				];
+			}
+			if (loop.redCause.kind === "holder_parked") {
+				return [
+					{
+						kind: "holder" as const,
+						line: `- ${canonicalPatrolToken(loop.identifier)}: 棒持有者 ${holder} 在册且声明=parked,run 仍 ${runStatus}`,
+					},
+				];
+			}
+		}
+		const waiter = (Array.isArray(loop.waiters) ? loop.waiters : [])
+			.filter((candidate) => {
+				return (
+					candidate.kind === "turn-poll" &&
+					candidate.redQualified === true &&
+					safePatrolInteger(candidate.waitedMinutes) !== undefined &&
+					canonicalPatrolToken(candidate.executionId8) !== holder
+				);
+			})
+			.sort(
+				(left, right) =>
+					(safePatrolInteger(right.waitedMinutes) ?? 0) -
+					(safePatrolInteger(left.waitedMinutes) ?? 0),
+			)[0];
+		if (!waiter) return [];
+		const phase = loop.turnPhase ? canonicalPatrolToken(loop.turnPhase) : "—";
+		const epoch = safePatrolInteger(loop.turnEpoch);
+		return [
+			{
+				kind: "waiter" as const,
+				line: `- ${canonicalPatrolToken(loop.identifier)}: ${canonicalPatrolToken(waiter.executionId8)} TURN 等待账记录账龄 ${safePatrolInteger(waiter.waitedMinutes)} 分钟(棒=${holder}/${phase}/e${epoch ?? "—"}),账上没有任何可证在推进、会向它发棒的 attempt/返工/land/wake/gate`,
+			},
+		];
+	});
+	const redEvidenceLines = redEvidence.map((evidence) => evidence.line);
+	const hasHolderEvidence = redEvidence.some(
+		(evidence) => evidence.kind === "holder",
+	);
+	const hasWaiterEvidence = redEvidence.some(
+		(evidence) => evidence.kind === "waiter",
+	);
+	const redHeadline =
+		hasHolderEvidence && hasWaiterEvidence
+			? "棒持有者不在干活 / 有人在等不存在的圈"
+			: hasHolderEvidence
+				? "棒持有者不在干活"
+				: "有人在等不存在的圈";
+	const redLines = redEvidenceLines.slice(0, 5);
+	const summary =
+		redEvidenceLines.length === 0
+			? []
+			: [
+					`🔴 按账面有 ${redEvidenceLines.length} 个 issue「${redHeadline}」(账面自检,非结论,仍需独立核验):`,
+					...redLines,
+					...(redEvidenceLines.length > 5
+						? [`(+${redEvidenceLines.length - 5} more 🔴)`]
+						: []),
+				];
+	const issueOrder = [
+		...new Set(roster.map((session) => session.issueId).filter(Boolean)),
+	] as string[];
+	const groupLines = issueOrder.flatMap((issueId) => {
+		const loop = loopsByIssue.get(issueId);
+		if (!loop) return [];
+		return renderLoopGroup(
+			loop,
+			roster
+				.filter((session) => session.issueId === issueId)
+				.map(({ sessionRole, status, executionId8 }) => ({
+					sessionRole,
+					status,
+					executionId8,
+				})),
+		);
+	});
+	return [
+		"[patrol_tick] 巡检时间到。",
+		...summary,
+		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
+		...groupLines,
 	].join("\n");
 }
 

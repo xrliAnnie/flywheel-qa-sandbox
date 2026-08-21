@@ -874,7 +874,7 @@ fi
 
 printf '[TEST] Case: shell terminal statuses stay in parity with StateStore\n'
 ts_statuses="$(sed -n '/export const ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES = \[/,/] as const;/p' \
-  "$REPO_ROOT/packages/teamlead/src/StateStore.ts" \
+  "$REPO_ROOT/packages/teamlead/src/workflow-ledger-states.ts" \
   | grep -Eo '"[a-z_]+"' | tr -d '"' | paste -sd '|' -)"
 shell_statuses="$(sed -n '/terminal_session_status()/,/^}/p' "$JANITOR" \
   | sed -n 's/^[[:space:]]*\([^)]*\)) return 0.*/\1/p')"

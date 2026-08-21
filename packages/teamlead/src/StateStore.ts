@@ -32,6 +32,13 @@ import {
 	type LandRetryClassification,
 	nextLandRetry,
 } from "./bridge/land-retry-policy.js";
+import type {
+	PatrolLoopAttempt,
+	PatrolLoopGateAuthority,
+	PatrolLoopLandOperation,
+	PatrolLoopReworkDelivery,
+	PatrolLoopRun,
+} from "./bridge/patrol-loop-ledger.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
 	isOperationalTerminalStatus,
@@ -60,6 +67,10 @@ import {
 	type FounderReworkHint,
 	parseFounderReworkHint,
 } from "./workflow-rework-hint.js";
+import {
+	type WorkflowRunNodeState,
+	ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES,
+} from "./workflow-ledger-states.js";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
@@ -414,15 +425,7 @@ TERMINAL_STATUSES.delete("approved_to_ship");
  *   - approved_to_ship — runner still ships (its gate is answered anyway).
  *   - approved — legacy v1.0 auto-approve status; ambiguous → conservative skip.
  */
-export const ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES = [
-	"completed",
-	"failed",
-	"terminated",
-	"blocked",
-	"rejected",
-	"deferred",
-	"shelved",
-] as const;
+export { ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES } from "./workflow-ledger-states.js";
 
 // FLY-1427: the bounded production incident set. These five DAG executions
 // were correctly terminated by the FSM and then overwritten to completed by
@@ -6744,6 +6747,138 @@ export class StateStore {
 		}
 		stmt.free();
 		return rows;
+	}
+
+	/** FLY-1925: all non-terminal workflow-run candidates for one scoped issue. */
+	getPatrolWorkflowRuns(
+		projectName: string,
+		issueId: string,
+	): PatrolLoopRun[] {
+		return this.workflowSelectAll(
+			`SELECT run_id, status, current_node_id
+			   FROM workflow_run
+			  WHERE project_name = ? AND issue_id = ?
+			    AND status IN ('active','held')
+			  ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, rowid`,
+			[projectName, issueId],
+		).map((row) => ({
+			runId: String(row.run_id),
+			status: row.status as PatrolLoopRun["status"],
+			currentNodeId:
+				typeof row.current_node_id === "string" ? row.current_node_id : null,
+		}));
+	}
+
+	/** FLY-1925: active attempt/reservation rows for the selected run. */
+	listActiveNodeAttempts(runId: string): PatrolLoopAttempt[] {
+		return this.workflowSelectAll(
+			`SELECT run_id, node_id, attempt, state, execution_id
+			   FROM workflow_run_node
+			  WHERE run_id = ?
+			    AND state IN ('pending','admitted','running','review')
+			  ORDER BY node_id, attempt`,
+			[runId],
+		).map((row) => ({
+			runId: String(row.run_id),
+			nodeId: String(row.node_id),
+			attempt: Number(row.attempt),
+			state: String(row.state),
+			executionId:
+				typeof row.execution_id === "string" ? row.execution_id : null,
+		}));
+	}
+
+	/** FLY-1925: newest attempt for the selected run/node, including terminal. */
+	getLatestNodeAttempt(
+		runId: string,
+		nodeId: string,
+	): PatrolLoopAttempt | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT run_id, node_id, attempt, state, execution_id
+			   FROM workflow_run_node
+			  WHERE run_id = ? AND node_id = ?
+			  ORDER BY attempt DESC LIMIT 1`,
+			[runId, nodeId],
+		)[0];
+		return row
+			? {
+					runId: String(row.run_id),
+					nodeId: String(row.node_id),
+					attempt: Number(row.attempt),
+					state: String(row.state),
+					executionId:
+						typeof row.execution_id === "string" ? row.execution_id : null,
+				}
+			: undefined;
+	}
+
+	/** FLY-1925: every open delivery for a run, joined to its own route revision. */
+	listOpenReworkDeliveries(runId: string): PatrolLoopReworkDelivery[] {
+		return this.workflowSelectAll(
+			`SELECT r.run_id, d.state, d.route_revision, rr.target_node_id,
+			        rr.target_attempt, rr.preferred_actor_execution_id
+			   FROM workflow_rework_delivery d
+			   JOIN workflow_rework_request r ON r.request_id = d.request_id
+			   LEFT JOIN workflow_rework_route_revision rr
+			     ON rr.request_id = d.request_id AND rr.revision = d.route_revision
+			  WHERE r.run_id = ? AND d.state != 'completed'
+			  ORDER BY d.request_id`,
+			[runId],
+		).map((row) => ({
+			runId: String(row.run_id),
+			state: String(row.state),
+			targetNodeId:
+				row.target_node_id == null ? null : String(row.target_node_id),
+			targetAttempt:
+				row.target_attempt == null ? null : Number(row.target_attempt),
+			preferredActorExecutionId:
+				row.preferred_actor_execution_id == null
+					? null
+					: String(row.preferred_actor_execution_id),
+			// Preserve the delivery's own route identity for audit/debug projection;
+			// v1 rendering consumes only the nullable target fields above.
+			routeRevision: Number(row.route_revision),
+		}));
+	}
+
+	/** FLY-1925: current, non-completed land authorities for one scoped issue. */
+	listOpenLandOperations(
+		projectName: string,
+		issueId: string,
+	): PatrolLoopLandOperation[] {
+		return this.workflowSelectAll(
+			`SELECT state, current_step, superseded_at
+			   FROM land_operation
+			  WHERE project_name = ? AND issue_id = ?
+			    AND state != 'completed' AND superseded_at IS NULL
+			  ORDER BY operation_id`,
+			[projectName, issueId],
+		).map((row) => ({
+			state: String(row.state),
+			currentStep:
+				typeof row.current_step === "string" ? row.current_step : null,
+			supersededAt:
+				typeof row.superseded_at === "string" ? row.superseded_at : null,
+		}));
+	}
+
+	/** FLY-1925: gate history plus open carrier authorities for the selected run. */
+	listOpenGateAuthorities(runId: string): PatrolLoopGateAuthority[] {
+		return this.workflowSelectAll(
+			`SELECT run_id, 'gate' AS kind, state, 0 AS kind_order, question_id AS tie
+			   FROM workflow_gate_holder
+			  WHERE run_id = ? AND state != 'superseded'
+			  UNION ALL
+			 SELECT run_id, 'carrier' AS kind, state, 1 AS kind_order, question_id AS tie
+			   FROM workflow_carrier_delivery
+			  WHERE run_id = ? AND state != 'completed'
+			  ORDER BY kind_order, tie`,
+			[runId, runId],
+		).map((row) => ({
+			runId: String(row.run_id),
+			kind: row.kind as PatrolLoopGateAuthority["kind"],
+			state: String(row.state),
+		}));
 	}
 
 	getActivePhaseSessionForIssue(issueId: string): Session | undefined {
@@ -50087,17 +50222,10 @@ export class StateStore {
 
 // ── FLY-1707: workflow resume contracts ───────────────────────────────────
 
-export const WORKFLOW_RUN_NODE_STATES = [
-	"pending",
-	"admitted",
-	"running",
-	"review",
-	"done",
-	"failed",
-	"completed",
-	"superseded",
-] as const;
-export type WorkflowRunNodeState = (typeof WORKFLOW_RUN_NODE_STATES)[number];
+export {
+	WORKFLOW_RUN_NODE_STATES,
+	type WorkflowRunNodeState,
+} from "./workflow-ledger-states.js";
 
 export const WORKFLOW_RESUME_REASON_CODES = [
 	"target_moved",

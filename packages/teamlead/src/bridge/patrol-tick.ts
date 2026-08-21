@@ -13,6 +13,12 @@ import type { HookPayload, PatrolRosterEntry } from "./hook-payload.js";
 import { canonicalLeadEventDeliveryId } from "./lead-event-queue.js";
 import { parseSessionLabels } from "./lead-scope.js";
 import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
+import {
+	collectPatrolLoopEntries,
+	type PatrolCommReader,
+	type PatrolLoopProcessLiveness,
+	unavailablePatrolLoopEntries,
+} from "./patrol-loop-ledger.js";
 import type { DurableQueueReceipt } from "./runtime-registry.js";
 
 export interface PatrolTickDeps {
@@ -23,7 +29,19 @@ export interface PatrolTickDeps {
 		| "getLatestPatrolTickEvent"
 		| "appendLeadEvent"
 		| "getLeadEventBySeq"
+		| "getPatrolWorkflowRuns"
+		| "listActiveNodeAttempts"
+		| "getLatestNodeAttempt"
+		| "listOpenReworkDeliveries"
+		| "listOpenLandOperations"
+		| "listOpenGateAuthorities"
+		| "getSession"
 	>;
+	openCommReadonly?: (projectName: string) => PatrolCommReader | null;
+	probeProcessLiveness?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<PatrolLoopProcessLiveness["state"]>;
 	inspectDeliveryState(
 		projectName: string,
 		deliveryId: string,
@@ -92,6 +110,7 @@ function scheduledAtOrBefore(
 function rosterEntry(session: Session): PatrolRosterEntry {
 	return {
 		identifier: session.issue_identifier ?? session.execution_id.slice(0, 8),
+		issueId: session.issue_id,
 		sessionRole: session.session_role ?? "main",
 		status: session.status,
 		executionId8: session.execution_id.slice(0, 8),
@@ -273,6 +292,44 @@ async function runLeadPatrolTickPass(
 					}
 				}
 
+				const loopRoster = roster.map((session) => ({
+					issueId: session.issue_id,
+					identifier:
+						session.issue_identifier ?? session.execution_id.slice(0, 8),
+					executionId: session.execution_id,
+					status: session.status,
+				}));
+				let loops: HookPayload["loops"];
+				if (deps.openCommReadonly) {
+					let reader: PatrolCommReader | null = null;
+					try {
+						reader = deps.openCommReadonly(project.projectName);
+						loops = await collectPatrolLoopEntries({
+							projectName: project.projectName,
+							roster: loopRoster,
+							nowMs,
+							store: deps.store,
+							reader,
+							probeProcessLiveness: deps.probeProcessLiveness,
+						});
+					} catch {
+						loops = await unavailablePatrolLoopEntries({
+							projectName: project.projectName,
+							roster: loopRoster,
+							nowMs,
+							source: "collector",
+						});
+					} finally {
+						try {
+							reader?.close();
+						} catch (error) {
+							deps.log?.(
+								`[patrol_tick] project=${project.projectName} loop reader close: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					}
+				}
+
 				const eventId = `patrol_tick:${project.projectName}:${lead.agentId}:after-${previous?.seq ?? "genesis"}`;
 				const payload: HookPayload = {
 					event_type: "patrol_tick",
@@ -280,6 +337,7 @@ async function runLeadPatrolTickPass(
 					issue_id: "",
 					project_name: project.projectName,
 					roster: roster.map(rosterEntry),
+					...(loops ? { loops } : {}),
 					generated_at: new Date(nowMs).toISOString(),
 					scheduled_at: new Date(currentScheduledAt).toISOString(),
 				};

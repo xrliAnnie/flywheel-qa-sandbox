@@ -1,0 +1,19 @@
+flowchart TD
+    A["某 issue 有 runner 在等棒<br/>(turn-poll 账本有记录)"] --> B{"等的是当前这根棒?<br/>(持有者+代数 精确一致)"}
+    B -->|"不一致(棒刚换手)"| N1["不判红<br/>标 stale 仅显示"]
+    B -->|一致| C{"已等满 30 分钟?"}
+    C -->|"没有(刚开始等)"| N2["不判红<br/>(正常交接窗口)"]
+    C -->|是| D{"账上存在任何发棒源?<br/>五问逐一查"}
+    D -->|"S1 有活在册(别人在干)"| N3["不判红"]
+    D -->|"S2 返工圈开着"| N3
+    D -->|"S3 收尾圈开着"| N3
+    D -->|"S4 有可投递的在途唤醒"| N3
+    D -->|"S5 审批圈开着(等 founder)"| N3
+    D -->|五问全空| E{"所有账都读到了?<br/>且读账期间账没变?"}
+    E -->|"读失败 / 账变了"| U["⚠️ 不判<br/>(账面不可读 / 不判红也不判绿)"]
+    E -->|是| R["🔴 waiting-for-nonexistent-loop<br/>置顶列出,附等待时长与棒位置"]
+    style R fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+    style U fill:#fff8e1,stroke:#ff9500
+    style N1 fill:#f5f5f7,stroke:#86868b
+    style N2 fill:#f5f5f7,stroke:#86868b
+    style N3 fill:#f5f5f7,stroke:#86868b

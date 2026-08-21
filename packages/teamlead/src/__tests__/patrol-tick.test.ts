@@ -1,3 +1,7 @@
+import {
+	type PatrolTurnJudgmentSnapshot,
+	patrolJudgmentFingerprint,
+} from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { describe, expect, it, vi } from "vitest";
 import { formatPatrolTick, type HookPayload } from "../bridge/hook-payload.js";
@@ -784,5 +788,226 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		expect(h.alerts).toHaveLength(2);
 		expect(broken).toHaveBeenCalled();
 		expect(deliveryId).toContain("eng-lead");
+	});
+
+	it("collects one Lead loop snapshot only on the branch that mints a tick", async () => {
+		const h = harness();
+		const firstSeenAt = Date.parse("2026-08-13T11:29:00.000Z");
+		const judgment: PatrolTurnJudgmentSnapshot = {
+			available: true,
+			turns: new Map([
+				[
+					"issue-1",
+					{
+						issueId: "issue-1",
+						holderExecId: "holder-exec",
+						phase: "qa",
+						epoch: 3,
+						targetRunId: "run-1",
+						targetNodeId: "qa",
+						targetAttempt: 1,
+						activationId: "activation-holder",
+					},
+				],
+			]),
+			waits: new Map([
+				[
+					"12345678-aaaa-bbbb-cccc-123456789012",
+					[
+						{
+							executionId: "12345678-aaaa-bbbb-cccc-123456789012",
+							holderExecId: "holder-exec",
+							epoch: 3,
+							firstSeenAt,
+						},
+					],
+				],
+			]),
+			wakes: new Map(),
+		};
+		const close = vi.fn();
+		const reader = {
+			readPatrolTurnSnapshot: vi.fn(() => ({
+				judgment,
+				display: { available: true as const, declared: new Map() },
+			})),
+			rereadJudgmentFingerprint: vi.fn(
+				(issueId: string, executionIds: string[]) => ({
+					available: true as const,
+					fingerprint: patrolJudgmentFingerprint(
+						judgment,
+						issueId,
+						executionIds,
+					),
+				}),
+			),
+			close,
+		};
+		const openCommReadonly = vi.fn(() => reader);
+		const probeProcessLiveness = vi.fn(async (executionId: string) =>
+			executionId === "holder-exec" ? ("dead" as const) : ("alive" as const),
+		);
+		Object.assign(h.deps, { openCommReadonly, probeProcessLiveness });
+		Object.assign(h.deps.store, {
+			getPatrolWorkflowRuns: vi.fn(() => [
+				{
+					runId: "run-1",
+					status: "active",
+					currentNodeId: "implement",
+				},
+			]),
+			listActiveNodeAttempts: vi.fn(() => []),
+			getLatestNodeAttempt: vi.fn(() => ({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 2,
+				state: "done",
+				executionId: "12345678-aaaa-bbbb-cccc-123456789012",
+			})),
+			listOpenReworkDeliveries: vi.fn(() => []),
+			listOpenLandOperations: vi.fn(() => []),
+			listOpenGateAuthorities: vi.fn(() => []),
+			getSession: vi.fn(() => undefined),
+		});
+		const pass = createLeadPatrolTickPass(h.deps);
+
+		await pass();
+		expect(openCommReadonly).toHaveBeenCalledTimes(1);
+		expect(reader.readPatrolTurnSnapshot).toHaveBeenCalledWith({
+			issueIds: ["issue-1"],
+			executionIds: ["12345678-aaaa-bbbb-cccc-123456789012"],
+			nowMs: Date.parse("2026-08-13T12:00:00.000Z"),
+		});
+		expect(payload(h.rows[0]!).loops).toEqual([
+			expect.objectContaining({
+				issueId: "issue-1",
+				identifier: "FLY-1",
+				currentNode: "implement",
+				currentAttempt: 2,
+				turnHolderExecId8: "holder-e",
+				light: "red",
+				redCause: { kind: "holder_process_dead" },
+			}),
+		]);
+		expect(probeProcessLiveness).toHaveBeenCalledWith(
+			"12345678-aaaa-bbbb-cccc-123456789012",
+			"foo_bar",
+		);
+		expect(probeProcessLiveness).toHaveBeenCalledWith("holder-exec", "foo_bar");
+		expect(close).toHaveBeenCalledTimes(1);
+
+		await pass();
+		expect(openCommReadonly).toHaveBeenCalledTimes(1);
+	});
+
+	it("scopes each minted snapshot to that Lead's roster", async () => {
+		const h = harness({
+			roster: [
+				session(),
+				session({
+					execution_id: "87654321-bbbb",
+					issue_id: "issue-2",
+					issue_identifier: "FLY-2",
+					issue_labels: '["Operations"]',
+				}),
+			],
+		});
+		h.deps.projects = [
+			{
+				...project,
+				leads: [
+					...project.leads,
+					{
+						agentId: "ops-lead",
+						chatChannel: "ops",
+						match: { labels: ["Operations"] },
+					},
+				],
+			},
+		];
+		const snapshotInputs: Array<{
+			issueIds: string[];
+			executionIds: string[];
+			nowMs: number;
+		}> = [];
+		const emptyJudgment: PatrolTurnJudgmentSnapshot = {
+			available: true,
+			turns: new Map(),
+			waits: new Map(),
+			wakes: new Map(),
+		};
+		Object.assign(h.deps, {
+			openCommReadonly: () => ({
+				readPatrolTurnSnapshot: (input: (typeof snapshotInputs)[number]) => {
+					snapshotInputs.push(input);
+					return {
+						judgment: emptyJudgment,
+						display: { available: true as const, declared: new Map() },
+					};
+				},
+				rereadJudgmentFingerprint: (
+					issueId: string,
+					executionIds: string[],
+				) => ({
+					available: true as const,
+					fingerprint: patrolJudgmentFingerprint(
+						emptyJudgment,
+						issueId,
+						executionIds,
+					),
+				}),
+				close: () => undefined,
+			}),
+		});
+		Object.assign(h.deps.store, {
+			getPatrolWorkflowRuns: () => [],
+			listActiveNodeAttempts: () => [],
+			getLatestNodeAttempt: () => undefined,
+			listOpenReworkDeliveries: () => [],
+			listOpenLandOperations: () => [],
+			listOpenGateAuthorities: () => [],
+			getSession: () => undefined,
+		});
+
+		await createLeadPatrolTickPass(h.deps)();
+		expect(snapshotInputs).toEqual([
+			{
+				issueIds: ["issue-1"],
+				executionIds: ["12345678-aaaa-bbbb-cccc-123456789012"],
+				nowMs: Date.parse("2026-08-13T12:00:00.000Z"),
+			},
+			{
+				issueIds: ["issue-2"],
+				executionIds: ["87654321-bbbb"],
+				nowMs: Date.parse("2026-08-13T12:00:00.000Z"),
+			},
+		]);
+	});
+
+	it.each([
+		{
+			name: "an unavailable comm database",
+			open: () => null,
+			reason: "ledger_unreadable:comm_db",
+		},
+		{
+			name: "an unexpected collector failure",
+			open: () => {
+				throw new Error("broken reader");
+			},
+			reason: "ledger_unreadable:collector",
+		},
+	])("keeps the roster minting through $name", async ({ open, reason }) => {
+		const h = harness();
+		Object.assign(h.deps, { openCommReadonly: open });
+		await createLeadPatrolTickPass(h.deps)();
+		expect(payload(h.rows[0]!).roster).toHaveLength(1);
+		expect(payload(h.rows[0]!).loops).toEqual([
+			expect.objectContaining({
+				issueId: "issue-1",
+				light: "unknown",
+				unknownReason: reason,
+			}),
+		]);
 	});
 });

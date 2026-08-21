@@ -1,0 +1,15 @@
+flowchart LR
+    subgraph NOW["现状:巡检名册(每 60 分钟)"]
+        A["Bridge 读 runner 名册<br/>(谁在跑、什么状态)"] --> B["发给 Lead:<br/>4 列名册"]
+    end
+    subgraph NEW["本设计新增(纯读账本,发之前多看两本账)"]
+        C["comm.db 棒账<br/>棒在谁手 / 谁在等棒"] --> E
+        D["teamlead.db 圈账<br/>返工圈 / 收尾圈 / 审批圈 / 在途唤醒"] --> E
+        E["红灯自检(纯函数)<br/>「有人在等,但账上没有<br/>任何圈会把棒发给它」?"]
+    end
+    B -.-> F
+    E --> F["新名册:圈维度 4 列<br/>+ 🔴 置顶红灯区"]
+    F --> G["Lead 收到 tick<br/>独立核验(合同不变)"]
+    style NOW fill:#f5f5f7,stroke:#86868b
+    style NEW fill:#eaf3ff,stroke:#007aff
+    style F fill:#fff4e5,stroke:#ff9500

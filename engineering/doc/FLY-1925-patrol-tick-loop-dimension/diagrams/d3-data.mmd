@@ -1,0 +1,25 @@
+flowchart TB
+    subgraph COMM["comm.db(每项目一个;runner 的通信账)"]
+        T1["three_stage_turn<br/>棒:每 issue 一行<br/>持有者 / 阶段 / 代数"]
+        T2["turn_wait_ledger<br/>等棒账:谁在等哪根棒<br/>从几点开始等"]
+        T3["turn_wake_outbox<br/>在途唤醒:发出去还没送达的棒"]
+        T4["runner_declared_states<br/>停驻声明(parked,仅显示)"]
+    end
+    subgraph TL["teamlead.db(Bridge 的工作流账)"]
+        W1["workflow_run / run_node<br/>当前节点 + 第几轮 + 状态"]
+        W2["workflow_rework_delivery<br/>返工圈(打回重做的投递状态)"]
+        W3["land_operation<br/>收尾圈(合库/归档步骤)"]
+        W4["workflow_gate_holder +<br/>carrier_delivery<br/>审批圈(founder 批准卡及其执行)"]
+    end
+    J["红灯自检 judgeLoopLight<br/>(只读两库,拼进 tick)"]
+    T1 --> J
+    T2 --> J
+    T3 --> J
+    T4 -.仅显示.-> J
+    W1 --> J
+    W2 --> J
+    W3 --> J
+    W4 --> J
+    style COMM fill:#eaf3ff,stroke:#007aff
+    style TL fill:#f0faf1,stroke:#34c759
+    style J fill:#fff4e5,stroke:#ff9500,stroke-width:2px

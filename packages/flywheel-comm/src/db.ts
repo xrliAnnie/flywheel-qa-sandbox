@@ -370,6 +370,89 @@ export interface TurnWakeOutboxRow {
 	created_at: number;
 }
 
+export interface PatrolTurnRow {
+	issueId: string;
+	holderExecId: string;
+	phase: string;
+	epoch: number;
+	targetRunId: string | null;
+	targetNodeId: string | null;
+	targetAttempt: number | null;
+	activationId: string | null;
+}
+
+export interface PatrolTurnWaitRow {
+	executionId: string;
+	holderExecId: string;
+	epoch: number;
+	firstSeenAt: number;
+}
+
+export interface PatrolTurnWakeRow {
+	issueId: string;
+	state: "pending" | "sent";
+	pushCount: number;
+	executionId: string;
+	epoch: number;
+	activationId: string | null;
+}
+
+export interface PatrolTurnJudgmentSnapshot {
+	available: true;
+	turns: Map<string, PatrolTurnRow>;
+	waits: Map<string, PatrolTurnWaitRow[]>;
+	wakes: Map<string, PatrolTurnWakeRow[]>;
+}
+
+export type PatrolTurnSnapshot = {
+	judgment:
+		| PatrolTurnJudgmentSnapshot
+		| { available: false; missingSources: string[] };
+	display:
+		| { available: true; declared: Map<string, "parked" | "long_task"> }
+		| { available: false };
+};
+
+export type PatrolJudgmentFingerprintRead =
+	| { available: true; fingerprint: string }
+	| { available: false; missingSources: string[] };
+
+function uniqueNonempty(values: string[]): string[] {
+	return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+export function patrolJudgmentFingerprint(
+	judgment: PatrolTurnJudgmentSnapshot,
+	issueId: string,
+	executionIds: string[],
+): string {
+	const turn = judgment.turns.get(issueId) ?? null;
+	const scopedExecutionIds = uniqueNonempty([
+		...executionIds,
+		...(turn ? [turn.holderExecId] : []),
+	]).sort();
+	const waits = scopedExecutionIds
+		.flatMap((executionId) => judgment.waits.get(executionId) ?? [])
+		.sort(
+			(left, right) =>
+				left.executionId.localeCompare(right.executionId) ||
+				left.epoch - right.epoch ||
+				left.holderExecId.localeCompare(right.holderExecId) ||
+				left.firstSeenAt - right.firstSeenAt,
+		);
+	const wakes = [...(judgment.wakes.get(issueId) ?? [])].sort(
+		(left, right) =>
+			left.executionId.localeCompare(right.executionId) ||
+			left.epoch - right.epoch ||
+			String(left.activationId).localeCompare(String(right.activationId)) ||
+			left.state.localeCompare(right.state) ||
+			left.pushCount - right.pushCount,
+	);
+	return createHash("sha256")
+		.update(canonicalJsonString({ turn, waits, wakes }))
+		.digest("hex");
+}
+
 /** Lightweight indexed row used by the Bridge issue-gate supersede patrol. */
 export interface GateSupersedeRow {
 	row_id: number;
@@ -4671,6 +4754,214 @@ export class CommDB {
 			throw err;
 		}
 		return row ?? null;
+	}
+
+	/** FLY-1925: one read transaction over the patrol-critical TURN ledgers. */
+	readPatrolTurnSnapshot(input: {
+		issueIds: string[];
+		executionIds: string[];
+		nowMs: number;
+	}): PatrolTurnSnapshot {
+		const issueIds = uniqueNonempty(input.issueIds);
+		const rosterExecutionIds = uniqueNonempty(input.executionIds);
+		const requiredColumns = {
+			three_stage_turn: [
+				"issue_id",
+				"holder_exec_id",
+				"phase",
+				"epoch",
+				"target_run_id",
+				"target_node_id",
+				"target_attempt",
+				"activation_id",
+			],
+			turn_wait_ledger: [
+				"execution_id",
+				"holder_exec_id",
+				"epoch",
+				"first_seen_at",
+			],
+			turn_wake_outbox: [
+				"issue_id",
+				"state",
+				"push_count",
+				"execution_id",
+				"epoch",
+				"activation_id",
+			],
+		} as const;
+		return this.db.transaction((): PatrolTurnSnapshot => {
+			const columnsFor = (table: string): Set<string> =>
+				new Set(
+					(
+						this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+							name: string;
+						}>
+					).map((row) => row.name),
+				);
+			const missingSources = Object.entries(requiredColumns)
+				.filter(([table, columns]) => {
+					const present = columnsFor(table);
+					return columns.some((column) => !present.has(column));
+				})
+				.map(([table]) => table);
+			const displayColumns = columnsFor("runner_declared_states");
+			const displayAvailable = ["execution_id", "kind", "expires_at"].every(
+				(column) => displayColumns.has(column),
+			);
+			const display: PatrolTurnSnapshot["display"] = displayAvailable
+				? {
+						available: true,
+						declared: new Map(
+							rosterExecutionIds.length === 0
+								? []
+								: (
+										this.db
+											.prepare(
+												`SELECT execution_id, kind
+												   FROM runner_declared_states
+												  WHERE execution_id IN (${rosterExecutionIds.map(() => "?").join(",")})
+												    AND (expires_at IS NULL OR expires_at > ?)
+												  ORDER BY execution_id`,
+											)
+											.all(...rosterExecutionIds, input.nowMs) as Array<{
+											execution_id: string;
+											kind: "parked" | "long_task";
+										}>
+									).map((row) => [row.execution_id, row.kind]),
+						),
+					}
+				: { available: false };
+			if (missingSources.length > 0) {
+				return {
+					judgment: { available: false, missingSources },
+					display,
+				};
+			}
+
+			const turnRows =
+				issueIds.length === 0
+					? []
+					: (this.db
+							.prepare(
+								`SELECT issue_id, holder_exec_id, phase, epoch, target_run_id,
+								        target_node_id, target_attempt, activation_id
+								   FROM three_stage_turn
+								  WHERE issue_id IN (${issueIds.map(() => "?").join(",")})
+								  ORDER BY issue_id`,
+							)
+							.all(...issueIds) as Array<{
+							issue_id: string;
+							holder_exec_id: string;
+							phase: string;
+							epoch: number;
+							target_run_id: string | null;
+							target_node_id: string | null;
+							target_attempt: number | null;
+							activation_id: string | null;
+						}>);
+			const turns = new Map<string, PatrolTurnRow>();
+			for (const row of turnRows) {
+				turns.set(row.issue_id, {
+					issueId: row.issue_id,
+					holderExecId: row.holder_exec_id,
+					phase: row.phase,
+					epoch: row.epoch,
+					targetRunId: row.target_run_id,
+					targetNodeId: row.target_node_id,
+					targetAttempt: row.target_attempt,
+					activationId: row.activation_id,
+				});
+			}
+			const waitExecutionIds = uniqueNonempty([
+				...rosterExecutionIds,
+				...turnRows.map((row) => row.holder_exec_id),
+			]);
+			const waitRows =
+				waitExecutionIds.length === 0
+					? []
+					: (this.db
+							.prepare(
+								`SELECT execution_id, holder_exec_id, epoch, first_seen_at
+								   FROM turn_wait_ledger
+								  WHERE execution_id IN (${waitExecutionIds.map(() => "?").join(",")})
+								  ORDER BY execution_id, epoch, holder_exec_id, first_seen_at`,
+							)
+							.all(...waitExecutionIds) as Array<{
+							execution_id: string;
+							holder_exec_id: string;
+							epoch: number;
+							first_seen_at: number;
+						}>);
+			const waits = new Map<string, PatrolTurnWaitRow[]>();
+			for (const row of waitRows) {
+				const list = waits.get(row.execution_id) ?? [];
+				list.push({
+					executionId: row.execution_id,
+					holderExecId: row.holder_exec_id,
+					epoch: row.epoch,
+					firstSeenAt: row.first_seen_at,
+				});
+				waits.set(row.execution_id, list);
+			}
+			const wakeRows =
+				issueIds.length === 0
+					? []
+					: (this.db
+							.prepare(
+								`SELECT issue_id, state, push_count, execution_id, epoch,
+								        activation_id
+								   FROM turn_wake_outbox
+								  WHERE issue_id IN (${issueIds.map(() => "?").join(",")})
+								    AND state IN ('pending','sent')
+								  ORDER BY issue_id, execution_id, epoch, activation_id, wake_id`,
+							)
+							.all(...issueIds) as Array<{
+							issue_id: string;
+							state: "pending" | "sent";
+							push_count: number;
+							execution_id: string;
+							epoch: number;
+							activation_id: string | null;
+						}>);
+			const wakes = new Map<string, PatrolTurnWakeRow[]>();
+			for (const row of wakeRows) {
+				const list = wakes.get(row.issue_id) ?? [];
+				list.push({
+					issueId: row.issue_id,
+					state: row.state,
+					pushCount: row.push_count,
+					executionId: row.execution_id,
+					epoch: row.epoch,
+					activationId: row.activation_id,
+				});
+				wakes.set(row.issue_id, list);
+			}
+			return {
+				judgment: { available: true, turns, waits, wakes },
+				display,
+			};
+		})();
+	}
+
+	rereadJudgmentFingerprint(
+		issueId: string,
+		executionIds: string[],
+	): PatrolJudgmentFingerprintRead {
+		const snapshot = this.readPatrolTurnSnapshot({
+			issueIds: [issueId],
+			executionIds,
+			nowMs: Date.now(),
+		});
+		if (!snapshot.judgment.available) return snapshot.judgment;
+		return {
+			available: true,
+			fingerprint: patrolJudgmentFingerprint(
+				snapshot.judgment,
+				issueId,
+				executionIds,
+			),
+		};
 	}
 
 	/**

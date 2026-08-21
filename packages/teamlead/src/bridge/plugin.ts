@@ -8208,9 +8208,20 @@ export async function startBridge(
 	const { createLeadPatrolTickPass, patrolSessionKey } = await import(
 		"./patrol-tick.js"
 	);
+	const { probePatrolProcessLiveness } = await import(
+		"./patrol-process-liveness.js"
+	);
 	const leadPatrolTickPass = createLeadPatrolTickPass({
 		projects,
 		store,
+		openCommReadonly: (projectName) => {
+			try {
+				return CommDB.openReadonly(commDbPathForProject(projectName));
+			} catch {
+				return null;
+			}
+		},
+		probeProcessLiveness: probePatrolProcessLiveness,
 		inspectDeliveryState: (projectName, deliveryId) =>
 			leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
 		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
