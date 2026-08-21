@@ -1,13 +1,13 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 3/3
-updated: 2026-08-14T16:41:06.182Z
-nextStep: push PR 106 and return implement attempt 2 to QA retest
+phase: design
+phaseCursor: 1/2
+updated: 2026-08-21T19:48:16.767Z
+nextStep: publish design HTML + report to Lead + complete phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/3)
-**next**: push PR 106 and return implement attempt 2 to QA retest
+**phase**: design (1/2)
+**next**: publish design HTML + report to Lead + complete phase_design_complete
