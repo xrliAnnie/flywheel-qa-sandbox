@@ -38,6 +38,7 @@ import type {
 	BlueprintContext,
 	BlueprintResult,
 } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
 import type { ProgressResumeInfo } from "./progress-resume.js";
@@ -632,6 +633,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		 * session must not leave this process-local dedup lane poisoned forever.
 		 */
 		protected inflightSessionTerminal?: InflightSessionTerminalProbe,
+		/** FLY-1944: closes the pause-check → durable-claim visibility gap. */
+		protected admissionCrossingBarrier?: AdmissionCrossingBarrier,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -768,6 +771,15 @@ export class RetryDispatcher implements IRetryDispatcher {
 	}
 
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
+		const release = this.admissionCrossingBarrier?.enter("dispatch");
+		try {
+			return await this.dispatchInsideBarrier(req);
+		} finally {
+			release?.();
+		}
+	}
+
+	private async dispatchInsideBarrier(req: RetryRequest): Promise<RetryResult> {
 		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
@@ -1376,6 +1388,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		doaBackoffAdmission?: DoaBackoffAdmissionFn,
 		/** FLY-1775: durable session terminality for process-local inflight repair. */
 		inflightSessionTerminal?: InflightSessionTerminalProbe,
+		admissionCrossingBarrier?: AdmissionCrossingBarrier,
 	) {
 		super(
 			blueprintsByProject,
@@ -1391,6 +1404,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			tmuxWindowAuthority,
 			doaBackoffAdmission,
 			inflightSessionTerminal,
+			admissionCrossingBarrier,
 		);
 	}
 
@@ -1440,6 +1454,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	}
 
 	async start(req: StartRequest): Promise<StartResult> {
+		const release = this.admissionCrossingBarrier?.enter("start");
+		try {
+			return await this.startInsideBarrier(req);
+		} finally {
+			release?.();
+		}
+	}
+
+	private async startInsideBarrier(req: StartRequest): Promise<StartResult> {
 		this.assertRunnerAdmission();
 		if (!this.accepting) {
 			throw new Error("RunDispatcher is shutting down");

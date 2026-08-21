@@ -65,6 +65,7 @@ export KEEPER_INVENTORY="$TMPDIR_ROOT/keeper-inventory"  # FLY-1272
 export RESTORED_STATE="$TMPDIR_ROOT/restored-adoption"  # FLY-1596
 export VIEW_ABSENT_STATE="$TMPDIR_ROOT/view-absent.state"  # FLY-1272
 export FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/cmux-maintenance"  # FLY-1272
+export FLYWHEEL_CMUX_WATCHER_HEARTBEAT="$TMPDIR_ROOT/cmux-watcher-heartbeat"  # FLY-1944
 export FLYWHEEL_CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"  # FLY-1596
 export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
@@ -78,6 +79,11 @@ export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$TMPDIR_ROOT/watcher.lock"
 # Never let unit fixtures reach the resident alert channel. Individual alert
 # tests override FLYWHEEL_ALERT_BIN with their own capture executable.
 export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
+# Production resolves cmux as an executable. The broad legacy harness uses a
+# shell function whose in-process mutation trace is itself under assertion;
+# keep that explicit seam synchronous. FLY-1944 timeout coverage below unsets
+# the function and exercises a real fixture process group.
+export FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=1
 
 # ════════════════════════════════════════════════════════════════
 # Mocks for tmux and cmux
@@ -2044,6 +2050,76 @@ test_cmux_call_stderr_logged_not_in_stdout() {
   fi
 }
 
+test_fly1944_bounded_cmux_preserves_stdout_and_rc() {
+  echo "▶ test_fly1944_bounded_cmux_preserves_stdout_and_rc"
+  if ! declare -F _cmux_bounded_spawn >/dev/null 2>&1; then
+    fail "FLY-1944 bounded cmux primitive is missing"
+    return 0
+  fi
+  _save_cmux_mock
+  cmux() {
+    echo "bounded-stdout"
+    echo "bounded-stderr" >&2
+    return 23
+  }
+  local marker="$TMPDIR_ROOT/fly1944-bounded.rc.timeout"
+  local err="$TMPDIR_ROOT/fly1944-bounded.rc.err"
+  local out rc=0
+  : > "$marker"
+  out=$(_cmux_bounded_spawn 5 "$marker" ping 2>"$err") || rc=$?
+  _restore_cmux_mock
+  if [[ $rc -eq 23 && "$out" == "bounded-stdout" ]] \
+     && grep -q "bounded-stderr" "$err" \
+     && [[ ! -s "$marker" ]]; then
+    pass "bounded cmux preserves stdout, stderr, and the native exit code"
+  else
+    fail "bounded cmux changed result: rc=$rc out='$out' err='$(cat "$err" 2>/dev/null)' marker='$(cat "$marker" 2>/dev/null)'"
+  fi
+}
+
+test_fly1944_bounded_cmux_timeout_reaps_process_group() {
+  echo "▶ test_fly1944_bounded_cmux_timeout_reaps_process_group"
+  if ! declare -F _cmux_bounded_spawn >/dev/null 2>&1; then
+    fail "FLY-1944 bounded cmux primitive is missing"
+    return 0
+  fi
+  _save_cmux_mock
+  local descendant_file="$TMPDIR_ROOT/fly1944-bounded.descendant"
+  local fake_bin="$TMPDIR_ROOT/fly1944-bounded-bin"
+  local original_path="$PATH"
+  rm -f "$descendant_file"
+  mkdir -p "$fake_bin"
+  printf '%s\n' \
+    '#!/bin/bash' \
+    'sleep 30 &' \
+    'descendant=$!' \
+    'printf '\''%s\n'\'' "$descendant" > "$FLYWHEEL_CMUX_TEST_DESCENDANT_FILE"' \
+    'wait "$descendant"' > "$fake_bin/cmux"
+  chmod +x "$fake_bin/cmux"
+  unset -f cmux
+  export FLYWHEEL_CMUX_TEST_DESCENDANT_FILE="$descendant_file"
+  PATH="$fake_bin:$PATH"
+  local marker="$TMPDIR_ROOT/fly1944-bounded.timeout"
+  local rc=0 descendant="" attempt=0
+  : > "$marker"
+  FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=0 \
+    _cmux_bounded_spawn 1 "$marker" ping >/dev/null 2>&1 || rc=$?
+  PATH="$original_path"
+  unset FLYWHEEL_CMUX_TEST_DESCENDANT_FILE
+  _restore_cmux_mock
+  [[ -s "$descendant_file" ]] && descendant=$(cat "$descendant_file")
+  while [[ -n "$descendant" ]] && kill -0 "$descendant" 2>/dev/null && (( attempt < 20 )); do
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  if [[ $rc -eq 124 && -s "$marker" ]] \
+     && { [[ -z "$descendant" ]] || ! kill -0 "$descendant" 2>/dev/null; }; then
+    pass "timeout returns 124 and reaps the cmux process group"
+  else
+    fail "bounded timeout cleanup failed: rc=$rc marker='$(cat "$marker" 2>/dev/null)' descendant=${descendant:-missing}"
+  fi
+}
+
 echo ""
 echo "═══ FLY-129: cmux IPC health check + cmux_call ═══"
 test_health_check_no_socket
@@ -2052,6 +2128,8 @@ test_health_check_healthy
 test_health_check_transient_error
 test_cmux_call_stdout_passthrough
 test_cmux_call_stderr_logged_not_in_stdout
+test_fly1944_bounded_cmux_preserves_stdout_and_rc
+test_fly1944_bounded_cmux_timeout_reaps_process_group
 
 # ════════════════════════════════════════════════════════════════
 # FLY-129 Phase 1: watcher lock + sync_once watcher detection
@@ -3854,13 +3932,72 @@ if [[ "$MOCK_SLEEPS" -eq 2 ]]; then
   pass "rc=3: woke on identity change after 2 slices (stale-socket blind spot closed)"
 else fail "rc=3: expected 2 slices, got $MOCK_SLEEPS"; fi
 
-echo "Test: FLY-254 healthy sleep stays a single plain sleep"
+echo "Test: FLY-1944 healthy sleep is sliced to the <=3s event SLA"
 reset_mocks
 CMUX_HEALTH_LAST_RC=0
 reopen_aware_sleep 15 2>/dev/null
-if [[ "$MOCK_SLEEPS" -eq 1 ]]; then
-  pass "rc=0: one plain sleep (byte-identical cadence)"
-else fail "rc=0: expected 1 sleep, got $MOCK_SLEEPS"; fi
+if [[ "$MOCK_SLEEPS" -eq 5 && "$MOCK_SLEEP_ARGS" == "3 3 3 3 3 " ]]; then
+  pass "rc=0: 15s cadence is five pure 3s event probes"
+else fail "rc=0: expected five 3s slices, got sleeps=$MOCK_SLEEPS args='$MOCK_SLEEP_ARGS'"; fi
+
+echo "Test: FLY-1944 event arrival wakes the healthy watcher before the next 15s scan"
+reset_mocks
+CMUX_HEALTH_LAST_RC=0
+: > "$EVENT_FILE"
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 2 ]] && printf "%s\n" "create|runner-new|@42|new-pane" > "$EVENT_FILE"'
+reopen_aware_sleep 15 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 2 ]]; then
+  pass "healthy watcher wakes on a new event after 6s (well inside 1 minute)"
+else fail "healthy event wake expected 2 slices, got $MOCK_SLEEPS"; fi
+
+echo "Test: FLY-1944 unhealthy event backlog never shortens a backoff it cannot drain"
+reset_mocks
+CMUX_HEALTH_LAST_RC=1
+printf '%s\n' 'create|runner-new|@42|new-pane' > "$EVENT_FILE"
+reopen_aware_sleep 15 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 5 && "$MOCK_SLEEP_ARGS" == "3 3 3 3 3 " ]]; then
+  pass "unhealthy watcher preserves the full backoff despite a pending event"
+else fail "unhealthy backlog shortened sleep: sleeps=$MOCK_SLEEPS args='$MOCK_SLEEP_ARGS'"; fi
+
+echo "Test: FLY-1944 socket recovery escapes the outer unhealthy backoff"
+reset_mocks
+CMUX_HEALTH_LAST_RC=1
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 2 ]] && MOCK_SOCK_PRESENT=1'
+watcher_backoff_sleep 30 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 2 ]]; then
+  pass "socket recovery returns to the scan after two slices"
+else fail "socket recovery stayed inside the outer backoff: sleeps=$MOCK_SLEEPS"; fi
+
+echo "Test: FLY-1944 long unhealthy backoff refreshes the heartbeat every 15s"
+reset_mocks
+CMUX_HEALTH_LAST_RC=1
+HEARTBEAT_WRITES=0
+eval "$(declare -f watcher_write_heartbeat | sed '1s/watcher_write_heartbeat/watcher_write_heartbeat_real/')"
+watcher_write_heartbeat() { HEARTBEAT_WRITES=$((HEARTBEAT_WRITES + 1)); }
+watcher_backoff_sleep 30 2>/dev/null
+eval "$(declare -f watcher_write_heartbeat_real | sed '1s/watcher_write_heartbeat_real/watcher_write_heartbeat/')"
+unset -f watcher_write_heartbeat_real
+if [[ "$HEARTBEAT_WRITES" -eq 2 ]]; then
+  pass "30s unhealthy backoff publishes two liveness heartbeats"
+else fail "expected two backoff heartbeats, got $HEARTBEAT_WRITES"; fi
+
+echo "Test: FLY-1944 heartbeat updates on scans and every 15 maintenance polls"
+reset_mocks
+rm -f "$WATCHER_HEARTBEAT_FILE"
+watcher_write_heartbeat 7 scan
+SCAN_HEARTBEAT=$(cat "$WATCHER_HEARTBEAT_FILE" 2>/dev/null || true)
+rm -f "$WATCHER_HEARTBEAT_FILE"
+WATCHER_MAINTENANCE_HEARTBEAT_POLLS=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14; do
+  watcher_maintenance_heartbeat_tick
+done
+BEFORE_FIFTEEN=$([[ -e "$WATCHER_HEARTBEAT_FILE" ]] && echo present || echo absent)
+watcher_maintenance_heartbeat_tick
+MAINT_HEARTBEAT=$(cat "$WATCHER_HEARTBEAT_FILE" 2>/dev/null || true)
+if [[ "$SCAN_HEARTBEAT" == "$$|7|scan" && "$BEFORE_FIFTEEN" == "absent" \
+    && "$MAINT_HEARTBEAT" == "$$|maintenance|park" ]]; then
+  pass "heartbeat is scan-driven and maintenance-rate-limited to 15 polls"
+else fail "heartbeat mismatch scan='$SCAN_HEARTBEAT' before=$BEFORE_FIFTEEN maintenance='$MAINT_HEARTBEAT'"; fi
 
 echo "Test: FLY-254 kill switch — FLYWHEEL_CMUX_REOPEN_SWEEP=0 reverts to FLY-169 status quo"
 setup_escalation_scenario
@@ -3878,9 +4015,9 @@ else pass "off: consume is a no-op"; fi
 CMUX_HEALTH_LAST_RC=1
 MOCK_SLEEPS=0
 reopen_aware_sleep 30 2>/dev/null
-if [[ "$MOCK_SLEEPS" -eq 1 ]]; then
-  pass "off: unhealthy sleep is one plain sleep (no slicing)"
-else fail "off: expected 1 sleep, got $MOCK_SLEEPS"; fi
+if [[ "$MOCK_SLEEPS" -eq 10 ]]; then
+  pass "off: reopen detection is inert while the independent 3s event SLA remains"
+else fail "off: expected 10 event-probe sleeps, got $MOCK_SLEEPS"; fi
 # Regression sentinel: escalation never fires from a plain (FLY-169) sweep,
 # and the event-path heal stays fail-closed on read-screen failure.
 setup_escalation_scenario
@@ -4107,8 +4244,8 @@ reset_mocks
 CMUX_HEALTH_LAST_RC=1
 export FLYWHEEL_CMUX_SOCKET_PROBE_SLICE=60
 reopen_aware_sleep 15 2>/dev/null
-if [[ "$MOCK_SLEEP_ARGS" == "15 " ]]; then
-  pass "single min(slice,total) step of 15s (requested total honored)"
+if [[ "$MOCK_SLEEP_ARGS" == "3 3 3 3 3 " ]]; then
+  pass "event SLA caps a larger reopen slice at five 3s steps without oversleep"
 else fail "oversleep: slept '$MOCK_SLEEP_ARGS' for a 15s request"; fi
 export FLYWHEEL_CMUX_SOCKET_PROBE_SLICE=3
 

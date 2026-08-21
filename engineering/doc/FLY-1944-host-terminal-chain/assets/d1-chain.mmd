@@ -1,0 +1,24 @@
+flowchart LR
+    subgraph host["宿主机(你的 Mac)"]
+        brew["Homebrew<br/>(软件安装器,两套并存)"]
+        tmuxbin["tmux 程序文件<br/>(终端多路器,开会话的引擎)"]
+        servers["tmux server ×17<br/>(每个 Lead 一个 + runner 共用)"]
+        watcher["cmux-sync watcher<br/>(镜像搬运工,15 秒一轮)"]
+        cmux["cmux 侧栏<br/>(你看到的那排 tab)"]
+    end
+    annie(("Annie<br/>👀"))
+    brew -->|"安装/升级"| tmuxbin
+    tmuxbin -->|"启动"| servers
+    servers -->|"窗口清单"| watcher
+    watcher -->|"建镜像 tab"| cmux
+    cmux --> annie
+    W3["🛡️ 三:brew 护栏<br/>runner 不许动宿主工具"] -.拦截.- brew
+    W2["🔧 二:tmux 统一升 3.7c<br/>两套版本对齐"] -.修复.- tmuxbin
+    W4["🪟 四:Codex 开窗补开<br/>抢锁失败不再静默放弃"] -.修复.- servers
+    W1["❤️ 一:watcher 心跳+守护<br/>卡死自动重启"] -.修复.- watcher
+    W5["🙈 五:playwright 不弹窗<br/>浏览器改无头+按需"] -.修复.- host
+    style W1 fill:#fff3e0,stroke:#ff9500
+    style W2 fill:#e3f2fd,stroke:#007aff
+    style W3 fill:#ffebee,stroke:#ff3b30
+    style W4 fill:#f3e5f5,stroke:#af52de
+    style W5 fill:#e8f5e9,stroke:#34c759

@@ -307,6 +307,29 @@ describe("FLY-1185 R11#1 launch claims", () => {
 		expect(store.listOpenLaunchClaims("root-1")).toEqual([]);
 	});
 
+	it("counts every open launch claim across lifecycle roots for host quiescence", async () => {
+		const store = await freshStore();
+		store.insertLaunchClaim({
+			executionId: "e1",
+			rootUuid: "root-1",
+			project: "p",
+		});
+		store.insertLaunchClaim({
+			executionId: "e2",
+			rootUuid: "root-2",
+			project: "p",
+		});
+		store.setLaunchClaimState("e2", "active");
+		store.insertLaunchClaim({
+			executionId: "e3",
+			rootUuid: "root-3",
+			project: "p",
+		});
+		store.setLaunchClaimState("e3", "closed");
+
+		expect(store.countOpenLaunchClaims()).toBe(2);
+	});
+
 	it("stale starting claims surface for maintenance convergence", async () => {
 		const store = await freshStore();
 		store.insertLaunchClaim({ executionId: "e2", rootUuid: "r", project: "p" });

@@ -35,6 +35,10 @@ Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
     P4  a non-list crontab invocation + either a restart-script identifier or
         `com.flywheel.` in the raw command string. `crontab -l`, including a
         pipe into grep/rg, never matches.
+    P5  a Homebrew invocation from a Runner (`FLYWHEEL_EXEC_ID` is present)
+        unless it matches the explicit read-only allowlist below. Unknown and
+        externally-defined subcommands fail closed. Lead/founder sessions have
+        no execution id, so their brew mutations are allowed with an audit row.
 
   hit → the ONLY exits are: deny, or a bypass whose accounting FULLY succeeds.
     bypass = the command starts (anchored prefix, a real shell env assignment,
@@ -58,6 +62,7 @@ Env:  FLYWHEEL_RESTART_GUARD_LOG        — audit log override (tests);
       FLYWHEEL_ROOT                     — repo root for lead-alert.sh
                                           (default ~/Dev/flywheel)
       PROJECT_NAME / FLYWHEEL_PROJECT_NAME / FLYWHEEL_LEAD_ID — alert identity
+      FLYWHEEL_EXEC_ID                  — Runner-context marker for P5
 Deployed to: ~/.flywheel/bin/flywheel-restart-guard.py
              (scripts/hooks/install-restart-guard.sh + claude-lead.sh converge)
 """
@@ -108,6 +113,14 @@ EXECUTORS = {
 SHELLS = {"bash", "sh", "zsh"}
 RUN_BRIDGE_RE = re.compile(r"run-bridge", re.I)
 
+BREW_READ_SUBCOMMANDS = {
+    "list", "ls", "info", "abv", "deps", "outdated", "doctor", "config",
+    "help", "search", "desc", "home", "leaves", "uses", "missing",
+    "options", "log", "tap-info", "shellenv",
+}
+BREW_OPTION_ONLY_NO_VALUE = {"--version", "-v", "--caskroom", "--repository"}
+BREW_OPTION_ONLY_OPTIONAL_FORMULA = {"--prefix", "--cellar"}
+
 SEG_SPLIT_RE = re.compile(r";|&&|\|\||\|")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -142,6 +155,13 @@ BYPASS_FAIL_REASON = (
     "本次未全部满足(告警通道或日志路径故障)。\n"
     "请改用 bash ~/Dev/flywheel/scripts/request-restart.sh,"
     "或先修复告警通道后重试;若仍被拦,报告 Lead/founder 人工处理。"
+)
+
+BREW_DENY_REASON = (
+    "🚫 Flywheel 宿主工具链护栏(FLY-1944):Runner 中的 brew 变更命令已硬拦。\n"
+    "tmux/git/node/Homebrew link 等宿主工具是全舰单点;在用版本被无声替换会让所有 "
+    "Runner 与 cmux 同时断连。\n"
+    "正确做法:用 flywheel-comm ask 报告 Lead,由 Lead/founder 在宿主终端执行并安排验证窗口。"
 )
 
 
@@ -284,6 +304,173 @@ def _p4_hit(cmd: str) -> bool:
     return False
 
 
+def _brew_args_are_read_only(args: list[str]) -> bool:
+    """Recognize only the bounded read grammar approved for Runner sessions."""
+    if len(args) == 1 and args[0] in BREW_OPTION_ONLY_NO_VALUE:
+        return True
+    if (
+        1 <= len(args) <= 2
+        and args[0] in BREW_OPTION_ONLY_OPTIONAL_FORMULA
+        and (len(args) == 1 or not args[1].startswith("-"))
+    ):
+        return True
+
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 1
+    if i >= len(args):
+        return False
+    subcommand = args[i]
+    subcommand_args = args[i + 1 :]
+    if subcommand == "analytics":
+        return subcommand_args == ["state"]
+    return subcommand in BREW_READ_SUBCOMMANDS
+
+
+def _brew_mutation_hit(cmd: str, depth: int = 0) -> bool:
+    """Return True when any shell segment invokes non-read-only Homebrew."""
+    if depth > 1:
+        return False
+    for tokens in _shell_segments(cmd):
+        split = _wrapper_split_string_payload(tokens)
+        if split is not None:
+            split_payload, remainder = split
+            if _brew_mutation_hit(split_payload, depth + 1):
+                return True
+            # `env -S FOO=1 brew install tmux` splits only FOO=1; brew and
+            # its arguments remain ordinary env operands. The old `continue`
+            # discarded them and silently allowed the mutation.
+            tokens = remainder
+            if not tokens:
+                continue
+        command, args = _brew_effective_command(tokens)
+        if command in SHELLS:
+            payload = _extract_c_payload(args)
+            if payload is not None and _brew_mutation_hit(payload, depth + 1):
+                return True
+            continue
+        if command == "brew" and not _brew_args_are_read_only(args):
+            return True
+    return False
+
+
+def _wrapper_split_string_payload(
+    tokens: list[str],
+) -> tuple[str, list[str]] | None:
+    """Extract an env -S payload and preserve the unconsumed command tail."""
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if ENV_ASSIGN_RE.match(token):
+            i += 1
+            continue
+        base = os.path.basename(token)
+        if base not in _WRAPPERS:
+            return None
+        wrapper = base
+        i += 1
+        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
+            flag = tokens[i]
+            if flag == "--split-string":
+                return (tokens[i + 1], tokens[i + 2 :]) if i + 1 < len(tokens) else None
+            if flag.startswith("--split-string="):
+                return flag.split("=", 1)[1], tokens[i + 1 :]
+            if not flag.startswith("--") and "S" in flag:
+                rest = flag[flag.index("S") + 1 :]
+                if rest:
+                    return rest, tokens[i + 1 :]
+                return (tokens[i + 1], tokens[i + 2 :]) if i + 1 < len(tokens) else None
+            flag_name = flag.split("=", 1)[0]
+            if (
+                "=" not in flag
+                and flag_name in _BREW_WRAPPER_VALUE_FLAGS.get(wrapper, set())
+            ):
+                i += 2
+            else:
+                i += 1
+        if wrapper == "timeout" and i < len(tokens):
+            i += 1
+        elif wrapper in {"nice", "chrt"} and i < len(tokens):
+            if re.fullmatch(r"[+-]?\d+", tokens[i]):
+                i += 1
+        while i < len(tokens) and ENV_ASSIGN_RE.match(tokens[i]):
+            i += 1
+    return None
+
+
+_BREW_WRAPPER_VALUE_FLAGS = {
+    "sudo": {"-u", "--user", "-g", "--group", "-C", "--chdir", "-p", "--prompt"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-P"},
+    "nice": {"-n", "--adjustment"},
+    "caffeinate": {"-t", "-w"},
+    "timeout": {"-k", "--kill-after", "-s", "--signal"},
+    "stdbuf": {"-i", "-o", "-e"},
+    "ionice": {
+        "-c", "--class", "-n", "--classdata", "-p", "--pid",
+        "-P", "--pgid", "-u", "--uid",
+    },
+}
+
+
+def _brew_effective_command(tokens: list[str]) -> tuple[str | None, list[str]]:
+    """Strip the complete transparent-wrapper table for P5.
+
+    `_segment_command` is deliberately narrow because it proves conservative
+    read exemptions. P5 has the opposite safety posture: after any known
+    transparent wrapper, a brew executable must still be found and judged.
+    The bounded wrapper backstop closes unknown/value-bearing flag shapes in
+    the same way as P3 without treating an unwrapped `echo brew ...` as code.
+    """
+    i = 0
+    saw_wrapper = False
+    wrapper_tail_start: int | None = None
+    while i < len(tokens):
+        while i < len(tokens) and ENV_ASSIGN_RE.match(tokens[i]):
+            i += 1
+        if i >= len(tokens):
+            return None, []
+        base = os.path.basename(tokens[i])
+        if base not in _WRAPPERS:
+            break
+        saw_wrapper = True
+        wrapper = base
+        i += 1
+        if wrapper_tail_start is None:
+            wrapper_tail_start = i
+        while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
+            flag = tokens[i]
+            flag_name = flag.split("=", 1)[0]
+            if (
+                "=" not in flag
+                and flag_name in _BREW_WRAPPER_VALUE_FLAGS.get(wrapper, set())
+            ):
+                i += 2
+            else:
+                i += 1
+        while i < len(tokens) and ENV_ASSIGN_RE.match(tokens[i]):
+            i += 1
+        # These wrappers have a required positional control operand before the
+        # command. Values are not interpreted; the later wrapper backstop still
+        # finds brew if a platform-specific option shape was not enumerated.
+        if wrapper == "timeout" and i < len(tokens):
+            i += 1  # duration
+        elif wrapper in {"nice", "chrt"} and i < len(tokens):
+            if re.fullmatch(r"[+-]?\d+", tokens[i]):
+                i += 1  # adjustment / scheduling priority
+
+    if i < len(tokens) and os.path.basename(tokens[i]) == "brew":
+        return "brew", tokens[i + 1 :]
+    if i < len(tokens) and os.path.basename(tokens[i]) in SHELLS:
+        return os.path.basename(tokens[i]), tokens[i + 1 :]
+    if saw_wrapper and wrapper_tail_start is not None:
+        for brew_index in range(wrapper_tail_start, len(tokens)):
+            if os.path.basename(tokens[brew_index]) == "brew":
+                return "brew", tokens[brew_index + 1 :]
+    if i < len(tokens):
+        return os.path.basename(tokens[i]), tokens[i + 1 :]
+    return None, []
+
+
 def _p3_hit(cmd: str, depth: int) -> bool:
     for seg in SEG_SPLIT_RE.split(cmd):
         seg = seg.strip()
@@ -339,7 +526,7 @@ def _p3_hit(cmd: str, depth: int) -> bool:
                         i += 2
                     else:
                         i += 1
-                    if payload is not None and scan_block(payload, depth + 1):
+                    if payload is not None and _restart_block(payload, depth + 1):
                         return True
                 continue
             break
@@ -348,7 +535,7 @@ def _p3_hit(cmd: str, depth: int) -> bool:
         first = os.path.basename(tokens[i])
         if first in SHELLS:
             payload = _extract_c_payload(tokens[i + 1 :])
-            if payload is not None and scan_block(payload, depth + 1):
+            if payload is not None and _restart_block(payload, depth + 1):
                 return True
             continue
         # Executor first token, OR a nohup-fronted direct script (`nohup
@@ -369,9 +556,8 @@ def _p3_hit(cmd: str, depth: int) -> bool:
     return False
 
 
-def scan_block(cmd: str, depth: int = 0):
-    """Return the matched pattern name (P1/P2/P3/P4) or None. One level of
-    shell -c recursion only (depth > 1 stops)."""
+def _restart_block(cmd: str, depth: int = 0):
+    """Return a restart/scheduler pattern P1-P4, excluding brew policy."""
     if depth > 1:
         return None
     non_read_cmd = _non_read_segments(cmd)
@@ -385,6 +571,18 @@ def scan_block(cmd: str, depth: int = 0):
         return "P3"
     if _p4_hit(cmd):
         return "P4"
+    return None
+
+
+def scan_block(cmd: str, depth: int = 0):
+    """Return the matched pattern name (P1/P2/P3/P4/P5) or None. One level of
+    shell -c recursion only (depth > 1 stops). Restart authority always wins
+    over the narrower Lead/founder Homebrew exemption."""
+    block = _restart_block(cmd, depth)
+    if block is not None:
+        return block
+    if _brew_mutation_hit(cmd, depth):
+        return "P5"
     return None
 
 
@@ -610,6 +808,10 @@ def main() -> int:
         "pattern": pattern,
         "command": cmd[:COMMAND_AUDIT_CAP],
     }
+    if pattern == "P5" and "FLYWHEEL_EXEC_ID" not in os.environ:
+        audit_write({**base_rec, "decision": "allow", "note": "lead_or_founder"})
+        return 0
+
     reason = bypass_reason(cmd)
     if reason is not None:
         # Precondition ① audit line, THEN ② strict alert. Both fail-closed.
@@ -624,7 +826,7 @@ def main() -> int:
 
     # Plain deny: audit is best-effort — its failure never flips the decision.
     audit_write({**base_rec, "decision": "deny"})
-    deny(DENY_REASON)
+    deny(BREW_DENY_REASON if pattern == "P5" else DENY_REASON)
     return 0
 
 

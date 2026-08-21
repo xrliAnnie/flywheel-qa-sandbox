@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { renderRunnerModelDisplay } from "flywheel-config";
 import { buildWindowLabel } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
 import {
 	launchCommitPath,
 	type ProjectRuntime,
@@ -19,6 +20,7 @@ import {
 } from "../bridge/run-dispatcher.js";
 import * as runInfraModule from "../bridge/run-infra.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
+import { StateStore } from "../StateStore.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {
@@ -171,6 +173,46 @@ function cleanupDispatcherWithTerminalProbe(
 }
 
 describe("RunDispatcher", () => {
+	it("keeps both entry lanes visible while pre-claim admission awaits", async () => {
+		const store = await StateStore.create(":memory:");
+		const barrier = new AdmissionCrossingBarrier();
+		const resolvers: Array<
+			(value: { admitted: boolean; reason?: string }) => void
+		> = [];
+		const dispatcher = runInfraModule.createRunInfraDispatcher({
+			store,
+			projectRuntimes: new Map([makeRuntime("TestProject")]),
+			cleanupHandles: [],
+			dispatcherClass: CleanupObservingRunDispatcher,
+			admissionCrossingBarrier: barrier,
+			doaBackoffAdmission: () =>
+				new Promise((resolve) => {
+					resolvers.push(resolve);
+				}),
+		});
+
+		const start = dispatcher.start({
+			issueId: "FLY-1944-start",
+			projectName: "TestProject",
+		});
+		expect(barrier.snapshot()).toEqual({ start: 1, dispatch: 0, total: 1 });
+		resolvers.shift()?.({ admitted: false, reason: "test-hold" });
+		await expect(start).rejects.toThrow("test-hold");
+		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 0, total: 0 });
+
+		const retry = dispatcher.dispatch({
+			oldExecutionId: "old",
+			issueId: "FLY-1944-retry",
+			projectName: "TestProject",
+			runAttempt: 2,
+		});
+		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 1, total: 1 });
+		resolvers.shift()?.({ admitted: false, reason: "test-hold" });
+		await expect(retry).rejects.toThrow("test-hold");
+		expect(barrier.snapshot()).toEqual({ start: 0, dispatch: 0, total: 0 });
+		store.close();
+	});
+
 	it("does not delete another launch's inflight entry during a pre-launch abort", () => {
 		const dispatcher = new CleanupObservingRunDispatcher(
 			new Map([makeRuntime("TestProject")]),

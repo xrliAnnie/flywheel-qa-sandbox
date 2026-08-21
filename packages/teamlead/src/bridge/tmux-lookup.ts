@@ -18,6 +18,11 @@ import { CommDB } from "flywheel-comm/db";
 
 const execFileAsync = promisify(execFile);
 const TMUX_TIMEOUT = 5000;
+// Keep identity records on one tmux round trip while avoiding control-character
+// separators: some tmux invocation layers sanitize literal TAB bytes. A
+// printable separator is preserved by tmux 3.5a and 3.7c; a collision in a
+// user-visible name fails closed through the existing field-count checks.
+const TMUX_IDENTITY_SEPARATOR = "|";
 
 export interface TmuxTarget {
 	/** Full CommDB tmux_window value (e.g. "GEO-208:@0") */
@@ -37,22 +42,40 @@ export interface TmuxTarget {
  *    (cmux not running / probe indeterminate) — attach the shared base session
  *    and `select-window` to the exact window id.
  */
-export interface AttachTarget {
-	kind: "cmux" | "base";
-	/** Session name to attach to (cmux linked session, or base session). */
-	session: string;
-	/** Full `base:@id` window target — only set/used for the base fallback. */
-	tmuxWindow?: string;
-	/**
-	 * FLY-907 (Step 3): the live `#{window_name}` read during resolution, when
-	 * available (undefined when display-message failed). Callers use it to
-	 * verify the window actually belongs to the issue being rendered
-	 * (`buildWindowLabel` = `<identifier>-<runner>-<title>`, FLY-272) before
-	 * rendering the attach command — a cross-wired CommDB row (FLY-543/923)
-	 * must degrade, never render a link into another issue's window.
-	 */
-	windowName?: string;
-}
+export type AttachResolutionFailure =
+	| "invalid-target"
+	| "pending-target"
+	| "probe-failed"
+	| "malformed-identity"
+	| "session-mismatch"
+	| "window-id-mismatch"
+	| "window-name-mismatch"
+	| "execution-mismatch";
+
+export type AttachTarget =
+	| {
+			kind: "cmux" | "base";
+			/** Session name to attach to (cmux linked session, or base session). */
+			session: string;
+			/** Full `base:@id` window target — only set/used for the base fallback. */
+			tmuxWindow?: string;
+			/**
+			 * FLY-907 (Step 3): the live `#{window_name}` read during resolution, when
+			 * available (undefined when display-message failed). Callers use it to
+			 * verify the window actually belongs to the issue being rendered
+			 * (`buildWindowLabel` = `<identifier>-<runner>-<title>`, FLY-272) before
+			 * rendering the attach command — a cross-wired CommDB row (FLY-543/923)
+			 * must degrade, never render a link into another issue's window.
+			 */
+			windowName?: string;
+	  }
+	| {
+			kind: "unresolved";
+			tmuxWindow: string;
+			reason: AttachResolutionFailure;
+			windowName?: undefined;
+			session?: undefined;
+	  };
 
 /** Test seam: run a tmux subcommand and return its stdout. */
 export type TmuxRunner = (args: string[]) => Promise<{ stdout: string }>;
@@ -86,7 +109,7 @@ export async function discoverTmuxTargetByExecutionId(
 			"list-windows",
 			"-a",
 			"-F",
-			"#{session_name}\t#{window_id}\t#{@flywheel_exec_id}",
+			`#{session_name}${TMUX_IDENTITY_SEPARATOR}#{window_id}${TMUX_IDENTITY_SEPARATOR}#{@flywheel_exec_id}`,
 		]));
 	} catch {
 		return { kind: "indeterminate" };
@@ -94,7 +117,9 @@ export async function discoverTmuxTargetByExecutionId(
 
 	const sessionsByWindow = new Map<string, Set<string>>();
 	for (const line of stdout.split("\n")) {
-		const [sessionName, windowId, marker, ...extra] = line.split("\t");
+		const [sessionName, windowId, marker, ...extra] = line.split(
+			TMUX_IDENTITY_SEPARATOR,
+		);
 		if (marker !== executionId) continue;
 		if (
 			extra.length > 0 ||
@@ -128,41 +153,97 @@ export async function discoverTmuxTargetByExecutionId(
  * window. Reads the live tmux server: get the window's `window_name`, build the
  * cmux linked-session name `cmux-<window_name>`, and verify it exists with an
  * EXACT (`=`) match (cmux-sync's own convention — avoids prefix-match attaching
- * to the wrong session). Any failure (display-message error, cmux session
- * absent, probe timeout) degrades to the base-session fallback, which always
- * works. Never throws.
+ * to the wrong session).
+ *
+ * tmux's `display-message -t` may exit 0 for an invalid window selector and
+ * silently report the session's current window. Therefore success is not proof:
+ * the returned session + window id/name tuple is compared with the requested
+ * target, and the execution marker is compared when the caller supplies one.
+ * An unprovable identity is explicit `unresolved`; only a proven window may use
+ * the base-session fallback when its cmux linked session is absent. Never throws.
  */
+export interface ResolveCmuxAttachTargetOptions {
+	runTmux?: TmuxRunner;
+	expectedExecutionId?: string;
+}
+
 export async function resolveCmuxAttachTarget(
 	tmuxWindow: string,
-	runTmux: TmuxRunner = defaultTmuxRunner,
+	runTmuxOrOptions: TmuxRunner | ResolveCmuxAttachTargetOptions = {},
 ): Promise<AttachTarget> {
 	const colonIdx = tmuxWindow.indexOf(":");
-	const baseSession =
-		colonIdx >= 0 ? tmuxWindow.slice(0, colonIdx) : tmuxWindow;
+	if (colonIdx <= 0 || colonIdx === tmuxWindow.length - 1) {
+		return { kind: "unresolved", tmuxWindow, reason: "invalid-target" };
+	}
+	const baseSession = tmuxWindow.slice(0, colonIdx);
+	const requestedWindow = tmuxWindow.slice(colonIdx + 1);
+	if (requestedWindow === "pending") {
+		return { kind: "unresolved", tmuxWindow, reason: "pending-target" };
+	}
+	if (
+		/[\t\r\n]/.test(baseSession) ||
+		/[\t\r\n]/.test(requestedWindow) ||
+		(requestedWindow.startsWith("@") && !/^@\d+$/.test(requestedWindow))
+	) {
+		return { kind: "unresolved", tmuxWindow, reason: "invalid-target" };
+	}
+	const options =
+		typeof runTmuxOrOptions === "function"
+			? { runTmux: runTmuxOrOptions }
+			: runTmuxOrOptions;
+	const runTmux = options.runTmux ?? defaultTmuxRunner;
 	try {
 		const { stdout } = await runTmux([
 			"display-message",
 			"-p",
 			"-t",
 			tmuxWindow,
-			"#{window_name}",
+			`#{session_name}${TMUX_IDENTITY_SEPARATOR}#{window_id}${TMUX_IDENTITY_SEPARATOR}#{window_name}${TMUX_IDENTITY_SEPARATOR}#{@flywheel_exec_id}`,
 		]);
-		const windowName = stdout.trim();
-		if (windowName) {
-			const cmuxSession = `cmux-${windowName}`;
-			try {
-				// Exact-match probe — `=` prevents fnmatch/prefix resolution.
-				await runTmux(["has-session", "-t", `=${cmuxSession}`]);
-				return { kind: "cmux", session: cmuxSession, windowName };
-			} catch {
-				// cmux session absent or probe failed — fall through to base.
-			}
-			return { kind: "base", session: baseSession, tmuxWindow, windowName };
+		const [
+			actualSession,
+			actualWindowId,
+			windowName,
+			actualExecutionId,
+			...extra
+		] = stdout.trim().split(TMUX_IDENTITY_SEPARATOR);
+		if (
+			extra.length > 0 ||
+			!actualSession ||
+			!/^@\d+$/.test(actualWindowId ?? "") ||
+			!windowName
+		) {
+			return { kind: "unresolved", tmuxWindow, reason: "malformed-identity" };
 		}
+		if (actualSession !== baseSession) {
+			return { kind: "unresolved", tmuxWindow, reason: "session-mismatch" };
+		}
+		if (requestedWindow.startsWith("@")) {
+			if (actualWindowId !== requestedWindow) {
+				return { kind: "unresolved", tmuxWindow, reason: "window-id-mismatch" };
+			}
+		} else if (windowName !== requestedWindow) {
+			return { kind: "unresolved", tmuxWindow, reason: "window-name-mismatch" };
+		}
+		if (
+			options.expectedExecutionId !== undefined &&
+			actualExecutionId !== options.expectedExecutionId
+		) {
+			return { kind: "unresolved", tmuxWindow, reason: "execution-mismatch" };
+		}
+
+		const cmuxSession = `cmux-${windowName}`;
+		try {
+			// Exact-match probe — `=` prevents fnmatch/prefix resolution.
+			await runTmux(["has-session", "-t", `=${cmuxSession}`]);
+			return { kind: "cmux", session: cmuxSession, windowName };
+		} catch {
+			// A proven base window is still safe when only the linked view is absent.
+		}
+		return { kind: "base", session: baseSession, tmuxWindow, windowName };
 	} catch {
-		// display-message failed (window gone / tmux missing) — base fallback.
+		return { kind: "unresolved", tmuxWindow, reason: "probe-failed" };
 	}
-	return { kind: "base", session: baseSession, tmuxWindow };
 }
 
 /** FLY-560 Feature C: options for rendering the attach command. */
@@ -187,6 +268,11 @@ export function buildAttachCommand(
 	target: AttachTarget,
 	opts: AttachCommandOpts = {},
 ): string {
+	if (target.kind === "unresolved") {
+		throw new Error(
+			`refusing to build attach command for unresolved target ${target.tmuxWindow}: ${target.reason}`,
+		);
+	}
 	let cmd: string;
 	// FLY-756: prefix `env -u TMUX` so this rescue command attaches cleanly even
 	// when pasted into a shell that has `$TMUX` set — exactly the cmux dead
@@ -492,6 +578,7 @@ export type TmuxWindowProbe = "alive" | "dead" | "indeterminate";
 export async function probeTmuxWindowLiveness(
 	tmuxWindow: string,
 ): Promise<TmuxWindowProbe> {
+	if (tmuxWindow.endsWith(":pending")) return "indeterminate";
 	try {
 		await execFileAsync("tmux", ["list-panes", "-t", tmuxWindow], {
 			timeout: TMUX_TIMEOUT,
@@ -523,6 +610,7 @@ export async function probeTmuxWindowLiveness(
  * use `probeTmuxWindowLiveness` instead.
  */
 export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
+	if (tmuxWindow.endsWith(":pending")) return false;
 	try {
 		await execFileAsync("tmux", ["list-panes", "-t", tmuxWindow], {
 			timeout: TMUX_TIMEOUT,
@@ -634,6 +722,9 @@ export async function sendKeysToWindow(
 	tmuxWindow: string,
 	text: string,
 ): Promise<{ sent: boolean; error?: string }> {
+	if (tmuxWindow.endsWith(":pending")) {
+		return { sent: false, error: "tmux window identity is still pending" };
+	}
 	try {
 		await execFileAsync(
 			"tmux",
@@ -722,6 +813,9 @@ export async function sendEnterToWindow(
 export async function killTmuxWindow(
 	tmuxWindow: string,
 ): Promise<{ killed: boolean; error?: string }> {
+	if (tmuxWindow.endsWith(":pending")) {
+		return { killed: false, error: "tmux window identity is still pending" };
+	}
 	try {
 		await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
 			timeout: TMUX_TIMEOUT,

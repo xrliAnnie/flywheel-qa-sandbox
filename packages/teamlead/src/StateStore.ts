@@ -16532,6 +16532,21 @@ export class StateStore {
 		return rows;
 	}
 
+	/** Fleet-wide starting/active claims for the host terminal cutover brake. */
+	countOpenLaunchClaims(): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS count FROM lifecycle_launch_claims WHERE state IN ('starting','active')",
+		);
+		let count = 0;
+		if (stmt.step()) {
+			count = Number(
+				(stmt.getAsObject() as Record<string, unknown>).count ?? 0,
+			);
+		}
+		stmt.free();
+		return count;
+	}
+
 	/** All stale `starting` claims (maintenance convergence, R12 nit). */
 	listStaleStartingClaims(olderThanMinutes: number): Array<{
 		executionId: string;

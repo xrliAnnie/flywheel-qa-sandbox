@@ -300,6 +300,13 @@ export async function attemptRunnerRecoveryNudge(
 	if (!target) {
 		return refuse(409, "no tmux target found for this execution", session);
 	}
+	if (target.tmuxWindow.endsWith(":pending")) {
+		return refuse(
+			409,
+			"tmux window identity is still pending — refusing an ambiguous keystroke",
+			session,
+		);
+	}
 	if (
 		mode === "wake_pointer" &&
 		session.status === "running" &&

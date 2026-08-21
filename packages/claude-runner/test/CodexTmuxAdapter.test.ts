@@ -31,6 +31,7 @@ import type {
 } from "../src/CodexTmuxAdapter.js";
 import {
 	CodexTmuxAdapter,
+	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
 import { GoalRunError } from "../src/codex-daemon-client.js";
@@ -203,7 +204,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 		ensureWindowCalls = [];
 		killWindowCalls = [];
-		ensureWindowSeq = [{ created: true }];
+		ensureWindowSeq = [{ created: true, windowId: WINDOW_ID }];
 		// synchronous-immediate: the reopen chain runs to completion inside the call
 		// that scheduled it — deterministic for policy tests (the ordering test
 		// overrides this with a queued scheduler).
@@ -1088,11 +1089,164 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 	// ── FLY-1239: bounded, non-blocking founder-window retry (rollout race) ─────
 	describe("FLY-1239: bounded founder-window retry on the rollout race", () => {
+		it("uses the 5s/15s retry ladder across typed hold and IPC failures", async () => {
+			const queue: Array<() => void> = [];
+			const delays: number[] = [];
+			reopenScheduler = (fn, ms) => {
+				delays.push(ms);
+				queue.push(fn);
+				return () => {};
+			};
+			ensureWindowSeq = [
+				{
+					created: false,
+					category: "retryable-hold",
+					reason: "hold_lock_unavailable",
+				},
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "new_window_failed",
+				},
+				{ created: true, windowId: WINDOW_ID },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				for (let i = 0; i < 3; i++) {
+					queue.shift()?.();
+					await Promise.resolve();
+				}
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(delays).toEqual([0, 5_000, 15_000]);
+			expect(ensureWindowCalls).toHaveLength(3);
+		});
+
+		it("hard deadline aborts an in-flight attempt with cause=deadline and reports once after exit", async () => {
+			let deadline!: () => void;
+			let observedAbortReason: unknown;
+			const lost = vi.fn();
+			const deps = makeDeps();
+			deps.scheduleTuiDeadline = (fn) => {
+				deadline = fn;
+				return () => {};
+			};
+			deps.onTuiWindowLost = lost;
+			deps.ensureWindow = (async (_spec, windowDeps) =>
+				new Promise<RunnerTuiWindowOutcome>((resolve) => {
+					windowDeps.signal?.addEventListener(
+						"abort",
+						() => {
+							observedAbortReason = windowDeps.signal?.reason;
+							resolve({
+								created: false,
+								category: "cancellation",
+								reason: "aborted",
+								abortCause: "deadline",
+							});
+						},
+						{ once: true },
+					);
+				})) as CodexDaemonAdapterDeps["ensureWindow"];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				await Promise.resolve();
+				deadline();
+				await Promise.resolve();
+				await Promise.resolve();
+				return complete();
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+			await adapter.execute(ctx());
+			expect(observedAbortReason).toBe("deadline");
+			expect(lost).toHaveBeenCalledOnce();
+			expect(lost.mock.calls[0]?.[0]).toMatchObject({
+				trigger: "deadline-exhausted",
+				attempts: 1,
+				lastFailure: { category: "cancellation", abortCause: "deadline" },
+			});
+		});
+
+		it("preserves the original episode deadline across an adapter restart", async () => {
+			const episodeStartedAt = 10_000;
+			const elapsed = 7 * 60_000;
+			const sessionDir = join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId);
+			mkdirSync(sessionDir, { recursive: true });
+			writeFileSync(
+				join(sessionDir, "session.json"),
+				JSON.stringify({ tuiWindowEpisodeStartedAt: episodeStartedAt }),
+			);
+			let scheduledFor = -1;
+			const deps = makeDeps();
+			deps.now = () => episodeStartedAt + elapsed;
+			deps.scheduleTuiDeadline = (_fn, ms) => {
+				scheduledFor = ms;
+				return () => {};
+			};
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+
+			await adapter.execute(ctx());
+
+			expect(scheduledFor).toBe(TUI_OPEN_DEADLINE_MS - elapsed);
+		});
+
+		it("deduplicates permanent and run-ended terminal triggers", async () => {
+			const lost = vi.fn();
+			const deps = makeDeps();
+			deps.onTuiWindowLost = lost;
+			deps.ensureWindow = (async () => ({
+				created: false,
+				category: "permanent",
+				reason: "tmux_absent",
+			})) as CodexDaemonAdapterDeps["ensureWindow"];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			const adapter = new CodexTmuxAdapter(
+				"testsess",
+				fake.exec,
+				25,
+				60_000,
+				undefined,
+				undefined,
+				deps,
+			);
+			await adapter.execute(ctx());
+			expect(lost).toHaveBeenCalledOnce();
+			expect(lost.mock.calls[0]?.[0]).toMatchObject({ trigger: "permanent" });
+		});
+
 		it("retries a `died` outcome and latches once it finally opens", async () => {
 			ensureWindowSeq = [
-				{ created: false, reason: "died" },
-				{ created: false, reason: "died" },
-				{ created: true },
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{ created: true, windowId: WINDOW_ID },
 			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
@@ -1105,7 +1259,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 
 		it("stops at exactly TUI_OPEN_MAX_ATTEMPTS when every attempt dies (fail-loud, not infinite)", async () => {
-			ensureWindowSeq = [{ created: false, reason: "died" }]; // sticky: always dies
+			ensureWindowSeq = [
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+			]; // sticky: always dies
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
 				await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -1117,24 +1277,31 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(ensureWindowCalls.length).toBe(TUI_OPEN_MAX_ATTEMPTS);
 		});
 
-		it("does NOT retry a non-retryable outcome (tmux-absent / create-failed) — exactly one attempt", async () => {
-			for (const reason of ["tmux-absent", "create-failed"] as const) {
-				ensureWindowCalls = [];
-				ensureWindowSeq = [{ created: false, reason }];
-				runtime = new FakeRuntime(async (input) => {
-					input.onThreadReady?.(THREAD_ID, 0);
-					return complete();
-				});
-				await makeAdapter().execute(ctx());
-				expect(ensureWindowCalls.length).toBe(1);
-			}
+		it("does NOT retry a permanent tmux-absent outcome", async () => {
+			ensureWindowSeq = [
+				{ created: false, category: "permanent", reason: "tmux_absent" },
+			];
+			runtime = new FakeRuntime(async (input) => {
+				input.onThreadReady?.(THREAD_ID, 0);
+				return complete();
+			});
+			await makeAdapter().execute(ctx());
+			expect(ensureWindowCalls.length).toBe(1);
 		});
 
 		it("every attempt targets the SAME windowName (so the module's same-name purge keeps ≤1 window)", async () => {
 			ensureWindowSeq = [
-				{ created: false, reason: "died" },
-				{ created: false, reason: "died" },
-				{ created: true },
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{ created: true, windowId: WINDOW_ID },
 			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
@@ -1148,7 +1315,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		it("the outcome fallback fires ONLY when onThreadReady never fired (threadReadySeen)", async () => {
 			// hook DID fire but the window never opened (create-failed) → NO fallback
-			ensureWindowSeq = [{ created: false, reason: "create-failed" }];
+			ensureWindowSeq = [
+				{ created: false, category: "permanent", reason: "tmux_absent" },
+			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
 				return complete();
@@ -1158,7 +1327,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 
 		it("Codex R2 MED-2: a THROWING fallback (hook never fired) is fail-open — the run still succeeds", async () => {
-			ensureWindowSeq = [{ created: true }];
+			ensureWindowSeq = [{ created: true, windowId: WINDOW_ID }];
 			// make the injected ensureWindow throw on the fallback path
 			const throwingDeps = makeDeps();
 			throwingDeps.ensureWindow = (() => {
@@ -1271,7 +1440,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			const result = await adapter.execute(ctx());
 			expect(result.success).toBe(true);
 			expect(events).toEqual(["ensure-start", "terminal-kill"]);
-			releaseEnsure({ created: true });
+			releaseEnsure({ created: true, windowId: WINDOW_ID });
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			expect(events).toEqual([
 				"ensure-start",
@@ -1345,7 +1514,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			);
 			expect(result.success).toBe(true);
 			expect(events).toEqual(["ensure-start", "terminal-kill"]);
-			releaseEnsure({ created: true });
+			releaseEnsure({ created: true, windowId: WINDOW_ID });
 			await new Promise<void>((resolve) => setTimeout(resolve, 0));
 			expect(events).toEqual([
 				"ensure-start",
@@ -1370,9 +1539,17 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				await Promise.resolve();
 			};
 			ensureWindowSeq = [
-				{ created: false, reason: "died" },
-				{ created: false, reason: "died" },
-				{ created: true },
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{ created: true, windowId: WINDOW_ID },
 			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0); // queues attempt 1 (not yet run)
@@ -1393,7 +1570,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				queue.push(fn);
 				return () => {};
 			};
-			ensureWindowSeq = [{ created: false, reason: "died" }]; // sticky
+			ensureWindowSeq = [
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+			]; // sticky
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0);
 				// drain the whole queue (each died re-queues the next until the cap)
@@ -1408,7 +1591,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(ensureWindowCalls.length).toBe(TUI_OPEN_MAX_ATTEMPTS);
 			const logs = vi.mocked(console.log).mock.calls.map((c) => String(c[0]));
 			const exhaustion = logs.filter((l) =>
-				/exited immediately on every attempt/.test(l),
+				/terminal visibility loss.*deadline-exhausted/.test(l),
 			);
 			expect(exhaustion).toHaveLength(1); // exactly one fail-loud line
 			expect(exhaustion[0]).toContain(String(TUI_OPEN_MAX_ATTEMPTS)); // reports the attempt count
@@ -1420,7 +1603,14 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				queue.push(fn);
 				return () => {};
 			};
-			ensureWindowSeq = [{ created: false, reason: "died" }, { created: true }];
+			ensureWindowSeq = [
+				{
+					created: false,
+					category: "retryable-transient-ipc",
+					reason: "window_died",
+				},
+				{ created: true, windowId: WINDOW_ID },
+			];
 			runtime = new FakeRuntime(async (input) => {
 				input.onThreadReady?.(THREAD_ID, 0); // chain starts; attempt 1 queued (not run)
 				input.onThreadReady?.(THREAD_ID, 1); // restart WHILE opening — must NOT queue a 2nd chain
@@ -1762,6 +1952,56 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		const sess = db.getSession(execId);
 		db.close();
 		expect(sess?.vendor).toBe("codex");
+	});
+
+	it("keeps CommDB and session.json pending until an immutable window id commits", async () => {
+		const queue: Array<() => void> = [];
+		reopenScheduler = (fn) => {
+			queue.push(fn);
+			return () => {};
+		};
+		runtime = new FakeRuntime(async (input) => {
+			input.onDaemonPid?.(4321);
+			input.onThreadReady?.(THREAD_ID, 0);
+			const pendingDb = new CommDB(dbPath);
+			try {
+				expect(pendingDb.getSession(execId)).toMatchObject({
+					tmux_window: "testsess:pending",
+					vendor: "codex",
+				});
+			} finally {
+				pendingDb.close();
+			}
+			const pendingState = JSON.parse(
+				readFileSync(
+					join(dir, "codex-sessions", execId, "session.json"),
+					"utf8",
+				),
+			);
+			expect(pendingState).toMatchObject({
+				threadId: THREAD_ID,
+				daemonPid: 4321,
+				cwd: dir,
+			});
+			expect(pendingState).not.toHaveProperty("tmuxWindow");
+			queue.shift()?.();
+			await Promise.resolve();
+			return complete();
+		});
+		const result = await makeAdapter().execute(ctx());
+		expect(result.tmuxWindow).toBe(`testsess:${WINDOW_ID}`);
+		const committedDb = new CommDB(dbPath);
+		try {
+			expect(committedDb.getSession(execId)?.tmux_window).toBe(
+				`testsess:${WINDOW_ID}`,
+			);
+		} finally {
+			committedDb.close();
+		}
+		const committedState = JSON.parse(
+			readFileSync(join(dir, "codex-sessions", execId, "session.json"), "utf8"),
+		);
+		expect(committedState.tmuxWindow).toBe(`testsess:${WINDOW_ID}`);
 	});
 
 	it("pins CommDB registration and teardown to the immutable founder window id", async () => {

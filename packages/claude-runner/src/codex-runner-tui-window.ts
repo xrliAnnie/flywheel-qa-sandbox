@@ -49,9 +49,33 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
  * headless box (`tmux-absent`) or a tmux-level failure (`create-failed`) stops
  * after one attempt.
  */
+export type RunnerTuiAbortCause = "run-ended" | "caller-cancel" | "deadline";
+
+export type RunnerTuiWindowFailureCategory =
+	| "retryable-hold"
+	| "retryable-transient-ipc"
+	| "permanent"
+	| "cancellation";
+
+export interface RunnerTuiWindowFailureEvidence {
+	category: RunnerTuiWindowFailureCategory;
+	reason:
+		| "hold_lock_unavailable"
+		| "stale_window_unproven"
+		| "new_window_failed"
+		| "window_id_unproven"
+		| "window_died"
+		| "tmux_absent"
+		| "config_invalid"
+		| "ipc_exception"
+		| "aborted";
+	abortCause?: RunnerTuiAbortCause;
+	detail?: string;
+}
+
 export type RunnerTuiWindowOutcome =
-	| { created: true }
-	| { created: false; reason: "tmux-absent" | "create-failed" | "died" };
+	| { created: true; windowId: string }
+	| ({ created: false } & RunnerTuiWindowFailureEvidence);
 
 export interface RunnerTuiWindowSpec {
 	/** cmux/tmux session the runner's windows live in. */
@@ -128,7 +152,7 @@ export interface RunnerTuiWindowDeps {
 		cmd: string,
 		args: string[],
 		options?: { timeoutMs?: number; signal?: AbortSignal },
-	) => Promise<{ ok: boolean }>;
+	) => Promise<{ ok: boolean; stdout?: string }>;
 	execOutAsync?: (
 		cmd: string,
 		args: string[],
@@ -456,7 +480,7 @@ async function defaultExecAsync(
 	cmd: string,
 	args: string[],
 	options: { timeoutMs?: number; signal?: AbortSignal } = {},
-): Promise<{ ok: boolean }> {
+): Promise<{ ok: boolean; stdout?: string }> {
 	try {
 		const effectiveArgs =
 			cmd === "tmux" && process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE
@@ -468,7 +492,12 @@ async function defaultExecAsync(
 			timeout: options.timeoutMs ?? 10_000,
 			...(options.signal ? { signal: options.signal } : {}),
 		});
-		return { ok: result.status === 0 };
+		return {
+			ok: result.status === 0,
+			...(result.status === 0
+				? { stdout: result.stdout?.toString().trim() }
+				: {}),
+		};
 	} catch {
 		return { ok: false };
 	}
@@ -561,7 +590,7 @@ type AsyncWindowExecDeps = {
 		cmd: string,
 		args: string[],
 		options?: { timeoutMs?: number; signal?: AbortSignal },
-	) => Promise<{ ok: boolean }>;
+	) => Promise<{ ok: boolean; stdout?: string }>;
 	execOut: (
 		cmd: string,
 		args: string[],
@@ -578,6 +607,21 @@ function parseWindowList(out: string): Array<{ id: string; name: string }> {
 			? { id: line, name: "" }
 			: { id: line.slice(0, sp), name: line.slice(sp + 1) };
 	});
+}
+
+function abortCause(signal: AbortSignal | undefined): RunnerTuiAbortCause {
+	const reason = signal?.reason;
+	return reason === "deadline" || reason === "run-ended"
+		? reason
+		: "caller-cancel";
+}
+
+function tuiFailure(
+	category: RunnerTuiWindowFailureCategory,
+	reason: RunnerTuiWindowFailureEvidence["reason"],
+	options: Pick<RunnerTuiWindowFailureEvidence, "abortCause" | "detail"> = {},
+): RunnerTuiWindowOutcome {
+	return { created: false, category, reason, ...options };
 }
 
 /** Terminal-only cleanup. Unlike the creation-time purge it never ensures a
@@ -685,7 +729,7 @@ async function ensureRunnerTuiWindowAsync(
 	spec: RunnerTuiWindowSpec,
 	deps: RunnerTuiWindowDeps,
 ): Promise<RunnerTuiWindowOutcome> {
-	const exec =
+	const exec: AsyncWindowExecDeps["exec"] =
 		deps.execAsync ??
 		(deps.exec
 			? async (cmd: string, args: string[]) => deps.exec!(cmd, args)
@@ -711,8 +755,12 @@ async function ensureRunnerTuiWindowAsync(
 						defaultEnsureSessionAsync(session, deps.log, signal));
 	const signal = deps.signal;
 	try {
+		if (signal?.aborted) {
+			return tuiFailure("cancellation", "aborted", {
+				abortCause: abortCause(signal),
+			});
+		}
 		if (
-			signal?.aborted ||
 			!(
 				await exec("tmux", ["-V"], {
 					timeoutMs: 10_000,
@@ -724,14 +772,19 @@ async function ensureRunnerTuiWindowAsync(
 				deps.log,
 				`runner-tui-window: tmux unavailable — skipping (${spec.windowName})`,
 			);
-			return { created: false, reason: "tmux-absent" };
+			return tuiFailure("permanent", "tmux_absent");
 		}
 		if (!(await ensureSession(spec.tmuxSession, signal))) {
 			safeLog(
 				deps.log,
 				`runner-tui-window: guarded tmux session ensure held — skipping (${spec.windowName})`,
 			);
-			return { created: false, reason: "create-failed" };
+			if (signal?.aborted) {
+				return tuiFailure("cancellation", "aborted", {
+					abortCause: abortCause(signal),
+				});
+			}
+			return tuiFailure("retryable-hold", "hold_lock_unavailable");
 		}
 		// FLY-1239: prove no stale/duplicate same-named window remains before create.
 		if (
@@ -746,9 +799,18 @@ async function ensureRunnerTuiWindowAsync(
 				deps.log,
 				`runner-tui-window: could not prove the session is free of stale '${spec.windowName}' windows — skipping create this attempt (non-fatal, run unaffected)`,
 			);
-			return { created: false, reason: "create-failed" };
+			if (signal?.aborted) {
+				return tuiFailure("cancellation", "aborted", {
+					abortCause: abortCause(signal),
+				});
+			}
+			return tuiFailure("retryable-transient-ipc", "stale_window_unproven");
 		}
-		if (signal?.aborted) return { created: false, reason: "create-failed" };
+		if (signal?.aborted) {
+			return tuiFailure("cancellation", "aborted", {
+				abortCause: abortCause(signal),
+			});
+		}
 		const created = await exec(
 			"tmux",
 			[
@@ -756,6 +818,9 @@ async function ensureRunnerTuiWindowAsync(
 				"-d",
 				"-t",
 				`=${spec.tmuxSession}`,
+				"-P",
+				"-F",
+				"#{window_id}",
 				"-n",
 				spec.windowName,
 				buildRunnerTuiCommand(spec),
@@ -770,7 +835,15 @@ async function ensureRunnerTuiWindowAsync(
 				deps.log,
 				`runner-tui-window: create failed (non-fatal, run unaffected): ${spec.windowName}`,
 			);
-			return { created: false, reason: "create-failed" };
+			return tuiFailure("retryable-transient-ipc", "new_window_failed");
+		}
+		const windowId = created.stdout?.trim();
+		if (!windowId || !SAFE_WINDOW_ID.test(windowId)) {
+			safeLog(
+				deps.log,
+				`runner-tui-window: create returned no immutable window id (${spec.windowName})`,
+			);
+			return tuiFailure("retryable-transient-ipc", "window_id_unproven");
 		}
 		// QA · FLY-1188 — PROVE it. `tmux new-window` reports success as soon as it
 		// forks the shell, so it says "ok" even for a command that dies 200ms later
@@ -790,32 +863,51 @@ async function ensureRunnerTuiWindowAsync(
 					"display-message",
 					"-p",
 					"-t",
-					`=${spec.tmuxSession}:=${spec.windowName}`,
-					"#{window_name} #{pane_dead}",
+					`=${spec.tmuxSession}:${windowId}`,
+					"#{window_id} #{window_name} #{pane_dead}",
 				],
 				{
 					timeoutMs: 5_000,
 					...(signal ? { signal } : {}),
 				},
-			)) !== `${spec.windowName} 0`
+			)) !== `${windowId} ${spec.windowName} 0`
 		) {
 			safeLog(
 				deps.log,
 				`runner-tui-window: founder TUI DIED immediately (${spec.windowName}) — the pane is gone right after tmux reported success (most likely the FLY-1239 rollout-landing race: 'no rollout found'). The run continues (the machine client drives the goal) but the founder CANNOT WATCH it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
 			);
-			return { created: false, reason: "died" };
+			if (signal?.aborted) {
+				return tuiFailure("cancellation", "aborted", {
+					abortCause: abortCause(signal),
+				});
+			}
+			return tuiFailure("retryable-transient-ipc", "window_died");
 		}
 		safeLog(
 			deps.log,
 			`runner-tui-window: founder TUI up (${spec.windowName}, thread ${spec.threadId})`,
 		);
-		return { created: true };
+		return { created: true, windowId };
 	} catch (err) {
 		safeLog(
 			deps.log,
 			`runner-tui-window: ensure failed (non-fatal): ${errMessage(err)}`,
 		);
-		return { created: false, reason: "create-failed" };
+		if (signal?.aborted) {
+			return tuiFailure("cancellation", "aborted", {
+				abortCause: abortCause(signal),
+			});
+		}
+		const detail = errMessage(err).slice(0, 500);
+		return tuiFailure(
+			detail.startsWith("runner-tui-window:")
+				? "permanent"
+				: "retryable-transient-ipc",
+			detail.startsWith("runner-tui-window:")
+				? "config_invalid"
+				: "ipc_exception",
+			{ detail },
+		);
 	}
 }
 

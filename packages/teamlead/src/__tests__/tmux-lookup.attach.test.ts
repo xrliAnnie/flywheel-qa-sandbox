@@ -18,12 +18,17 @@ describe("resolveCmuxAttachTarget", () => {
 		const runner: TmuxRunner = async (args) => {
 			calls.push(args);
 			if (args[0] === "display-message") {
-				return { stdout: "FLY-560-claude-some-title\n" };
+				return {
+					stdout: "runner-flywheel|@46|FLY-560-claude-some-title|exec-560\n",
+				};
 			}
 			// has-session resolves (exists)
 			return { stdout: "" };
 		};
-		const target = await resolveCmuxAttachTarget("runner-flywheel:@46", runner);
+		const target = await resolveCmuxAttachTarget("runner-flywheel:@46", {
+			runTmux: runner,
+			expectedExecutionId: "exec-560",
+		});
 		expect(target).toEqual({
 			kind: "cmux",
 			session: "cmux-FLY-560-claude-some-title",
@@ -43,18 +48,53 @@ describe("resolveCmuxAttachTarget", () => {
 			"-p",
 			"-t",
 			"runner-flywheel:@46",
-			"#{window_name}",
+			"#{session_name}|#{window_id}|#{window_name}|#{@flywheel_exec_id}",
 		]);
+	});
+
+	it("resolves identity when tmux sanitizes control-character separators", async () => {
+		const runner: TmuxRunner = async (args) => {
+			if (args[0] === "display-message") {
+				const format = args.at(-1) ?? "";
+				const separator = format.includes("|") ? "|" : "_";
+				return {
+					stdout: [
+						"runner-flywheel",
+						"@46",
+						"FLY-560-claude-some-title",
+						"exec-560",
+					].join(separator),
+				};
+			}
+			throw new Error("linked session absent");
+		};
+
+		await expect(
+			resolveCmuxAttachTarget("runner-flywheel:@46", {
+				runTmux: runner,
+				expectedExecutionId: "exec-560",
+			}),
+		).resolves.toEqual({
+			kind: "base",
+			session: "runner-flywheel",
+			tmuxWindow: "runner-flywheel:@46",
+			windowName: "FLY-560-claude-some-title",
+		});
 	});
 
 	it("falls back to base when the cmux session is absent (has-session rejects)", async () => {
 		const runner: TmuxRunner = async (args) => {
 			if (args[0] === "display-message") {
-				return { stdout: "FLY-560-claude-some-title" };
+				return {
+					stdout: "runner-flywheel|@46|FLY-560-claude-some-title|exec-560",
+				};
 			}
 			throw new Error("can't find session: cmux-FLY-560-claude-some-title");
 		};
-		const target = await resolveCmuxAttachTarget("runner-flywheel:@46", runner);
+		const target = await resolveCmuxAttachTarget("runner-flywheel:@46", {
+			runTmux: runner,
+			expectedExecutionId: "exec-560",
+		});
 		expect(target).toEqual({
 			kind: "base",
 			session: "runner-flywheel",
@@ -65,38 +105,119 @@ describe("resolveCmuxAttachTarget", () => {
 		});
 	});
 
-	it("falls back to base when display-message fails (window gone / indeterminate)", async () => {
+	it("fails loud when display-message fails (window gone / indeterminate)", async () => {
 		const runner: TmuxRunner = async () => {
 			throw new Error("can't find window");
 		};
-		const target = await resolveCmuxAttachTarget("retry-geoforge3d:@9", runner);
+		const target = await resolveCmuxAttachTarget("retry-geoforge3d:@9", {
+			runTmux: runner,
+			expectedExecutionId: "exec-9",
+		});
 		expect(target).toEqual({
-			kind: "base",
-			session: "retry-geoforge3d",
+			kind: "unresolved",
 			tmuxWindow: "retry-geoforge3d:@9",
+			reason: "probe-failed",
 		});
 	});
 
-	it("falls back to base when window_name is empty", async () => {
+	it("fails loud when the returned identity is malformed", async () => {
 		const runner: TmuxRunner = async () => ({ stdout: "   \n" });
-		const target = await resolveCmuxAttachTarget("base:@1", runner);
-		expect(target.kind).toBe("base");
+		const target = await resolveCmuxAttachTarget("base:@1", {
+			runTmux: runner,
+			expectedExecutionId: "exec-1",
+		});
+		expect(target).toEqual({
+			kind: "unresolved",
+			tmuxWindow: "base:@1",
+			reason: "malformed-identity",
+		});
 	});
 
-	it("handles a tmux_window with no colon (degenerate)", async () => {
+	it("fails loud for a tmux_window with no window selector", async () => {
 		const runner: TmuxRunner = vi.fn(async () => {
 			throw new Error("nope");
 		});
-		const target = await resolveCmuxAttachTarget("loneSession", runner);
+		const target = await resolveCmuxAttachTarget("loneSession", {
+			runTmux: runner,
+			expectedExecutionId: "exec-lone",
+		});
 		expect(target).toEqual({
-			kind: "base",
-			session: "loneSession",
+			kind: "unresolved",
 			tmuxWindow: "loneSession",
+			reason: "invalid-target",
+		});
+		expect(runner).not.toHaveBeenCalled();
+	});
+
+	it("withholds the pending sentinel without asking tmux to resolve it", async () => {
+		const runner: TmuxRunner = vi.fn(async () => ({
+			stdout: "runner-flywheel|@12|pending|exec-implement",
+		}));
+		const target = await resolveCmuxAttachTarget("runner-flywheel:pending", {
+			runTmux: runner,
+			expectedExecutionId: "exec-implement",
+		});
+		expect(target).toEqual({
+			kind: "unresolved",
+			tmuxWindow: "runner-flywheel:pending",
+			reason: "pending-target",
+		});
+		expect(runner).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["runner-flywheel:stale-window-name", "window-name-mismatch"],
+		["runner-flywheel:@999", "window-id-mismatch"],
+	] as const)(
+		"withholds the founder attach when %s silently resolves to the current design tab",
+		async (tmuxWindow, reason) => {
+			const calls: string[][] = [];
+			const runner: TmuxRunner = async (args) => {
+				calls.push(args);
+				// This is the real tmux failure mode: an invalid target exits 0 and
+				// prints the current window. It belongs to another execution.
+				return {
+					stdout: "runner-flywheel|@12|FLY-1944-design-codex-other|exec-design",
+				};
+			};
+
+			const target = await resolveCmuxAttachTarget(tmuxWindow, {
+				runTmux: runner,
+				expectedExecutionId: "exec-implement",
+			});
+
+			expect(target).toEqual({ kind: "unresolved", tmuxWindow, reason });
+			expect(calls).toHaveLength(1);
+		},
+	);
+
+	it("withholds a valid-looking target owned by a different execution", async () => {
+		const runner: TmuxRunner = async () => ({
+			stdout: "runner-flywheel|@46|FLY-1944-implement-codex|exec-other",
+		});
+		const target = await resolveCmuxAttachTarget("runner-flywheel:@46", {
+			runTmux: runner,
+			expectedExecutionId: "exec-implement",
+		});
+		expect(target).toEqual({
+			kind: "unresolved",
+			tmuxWindow: "runner-flywheel:@46",
+			reason: "execution-mismatch",
 		});
 	});
 });
 
 describe("buildAttachCommand", () => {
+	it("refuses to render any command for an unresolved identity", () => {
+		expect(() =>
+			buildAttachCommand({
+				kind: "unresolved",
+				tmuxWindow: "runner-flywheel:@999",
+				reason: "window-id-mismatch",
+			}),
+		).toThrow(/refusing to build attach command.*window-id-mismatch/);
+	});
+
 	it("renders an exact-match cmux attach (single machine)", () => {
 		const cmd = buildAttachCommand({
 			kind: "cmux",

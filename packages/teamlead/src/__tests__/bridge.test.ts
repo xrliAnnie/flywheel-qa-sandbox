@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -95,6 +96,77 @@ describe("Bridge scaffold", () => {
 			ok: true,
 			admissionPause: { active: false, remainingSeconds: 0 },
 		});
+		store.close();
+	});
+
+	it("reports every authoritative host-quiescence component under an active pause", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertLaunchClaim({
+			executionId: "launch-1",
+			rootUuid: "root-1",
+			project: "flywheel",
+		});
+		const barrier = new AdmissionCrossingBarrier();
+		const release = barrier.enter("start");
+		let inflight = 2;
+		const startDispatcher = {
+			start: async () => ({ executionId: "unused", issueId: "FLY-1944" }),
+			getInflightCount: () => inflight,
+			validateAgentName: () => ({ ok: true as const }),
+		};
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({ apiToken: "master-secret" }),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			startDispatcher,
+			undefined,
+			undefined,
+			{ admissionCrossingBarrier: barrier },
+		);
+		const base = await startAndGetUrl(app, "/api/admission/pause");
+		const auth = { Authorization: "Bearer master-secret" };
+		await fetch(base, {
+			method: "POST",
+			headers: { ...auth, "content-type": "application/json" },
+			body: JSON.stringify({ durationSeconds: 1_800 }),
+		});
+
+		const active = await (
+			await fetch(new URL("/api/admission/quiescence", base), {
+				headers: auth,
+			})
+		).json();
+		expect(active).toMatchObject({
+			ok: true,
+			quiescent: false,
+			total: 4,
+			components: {
+				readoptCandidateSessions: 0,
+				dispatcherInflight: 2,
+				durableLaunchClaims: 1,
+				admissionCrossing: { start: 1, dispatch: 0, total: 1 },
+			},
+		});
+
+		release();
+		inflight = 0;
+		store.setLaunchClaimState("launch-1", "closed");
+		const quiet = await (
+			await fetch(new URL("/api/admission/quiescence", base), {
+				headers: auth,
+			})
+		).json();
+		expect(quiet).toMatchObject({ ok: true, quiescent: true, total: 0 });
 		store.close();
 	});
 

@@ -97,6 +97,8 @@ import {
 	ensureRunnerTuiWindow,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
+	type RunnerTuiAbortCause,
+	type RunnerTuiWindowFailureEvidence,
 	errMessage as safeErr,
 	scanAndKillSameNameWindows,
 } from "./codex-runner-tui-window.js";
@@ -111,8 +113,24 @@ import {
  * send `setGoal` (which lands the rollout) concurrently. Bounded + fail-loud:
  * after the cap we log once and the run continues without a visible pane.
  */
-export const TUI_OPEN_MAX_ATTEMPTS = 8; // per open-chain (includes the first attempt)
-export const TUI_OPEN_RETRY_GAP_MS = 900;
+export const TUI_OPEN_MAX_ATTEMPTS = 10;
+export const TUI_OPEN_DEADLINE_MS = 30 * 60_000;
+export const TUI_OPEN_RETRY_DELAYS_MS = [
+	5_000, 15_000, 60_000, 300_000,
+] as const;
+/** @deprecated Use the deadline-aware ladder. Retained for package API parity. */
+export const TUI_OPEN_RETRY_GAP_MS = TUI_OPEN_RETRY_DELAYS_MS[0];
+
+export interface RunnerTuiWindowLostEvidence {
+	executionId: string;
+	issueId: string;
+	projectName: string;
+	leadId: string;
+	trigger: "deadline-exhausted" | "permanent" | "run-ended";
+	episodeStartedAt: number;
+	attempts: number;
+	lastFailure?: RunnerTuiWindowFailureEvidence;
+}
 
 import { withSyncOpMarker } from "./sync-op-marker.js";
 import type { ExecFileFn } from "./TmuxAdapter.js";
@@ -175,6 +193,14 @@ export interface CodexDaemonAdapterDeps {
 	 * retry). Returns a cancel handle. Default: an unref'd `setTimeout`. Injected
 	 * in tests to drive the retry chain deterministically. */
 	scheduleReopen?: (fn: () => void, ms: number) => () => void;
+	/** Independent hard-deadline timer. Kept separate from retry scheduling so
+	 * cancelling one delayed attempt cannot accidentally disarm the 30m fence. */
+	scheduleTuiDeadline?: (fn: () => void, ms: number) => () => void;
+	now?: () => number;
+	onTuiWindowLost?: (
+		evidence: RunnerTuiWindowLostEvidence,
+	) => void | Promise<void>;
+	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
 	/** Build the adapter-owned DAG workflow lifecycle controller. */
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
@@ -210,6 +236,17 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly tuiJoinTimeoutMs: number;
 	private readonly windowAliveFn: (windowName: string) => boolean;
 	private readonly scheduleReopen: (fn: () => void, ms: number) => () => void;
+	private readonly scheduleTuiDeadline: (
+		fn: () => void,
+		ms: number,
+	) => () => void;
+	private readonly now: () => number;
+	private readonly onTuiWindowLost?: NonNullable<
+		CodexDaemonAdapterDeps["onTuiWindowLost"]
+	>;
+	private readonly onTuiWindowRestored?: NonNullable<
+		CodexDaemonAdapterDeps["onTuiWindowRestored"]
+	>;
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
 	>;
@@ -254,6 +291,16 @@ export class CodexTmuxAdapter implements IAdapter {
 				(t as { unref?: () => void }).unref?.();
 				return () => clearTimeout(t);
 			});
+		this.scheduleTuiDeadline =
+			deps.scheduleTuiDeadline ??
+			((fn, ms) => {
+				const t = setTimeout(fn, ms);
+				(t as { unref?: () => void }).unref?.();
+				return () => clearTimeout(t);
+			});
+		this.now = deps.now ?? Date.now;
+		this.onTuiWindowLost = deps.onTuiWindowLost;
+		this.onTuiWindowRestored = deps.onTuiWindowRestored;
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
@@ -425,7 +472,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		const windowName = sanitizeTmuxName(
 			ctx.label ?? `codex-${ctx.executionId.slice(0, 8)}`,
 		);
-		let tmuxWindow = `${this.sessionName}:${windowName}`;
+		let tmuxWindow: string | undefined;
 		let founderWindowId: string | undefined;
 
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
@@ -439,8 +486,15 @@ export class CodexTmuxAdapter implements IAdapter {
 		let threadReadySeen = false; // did the authoritative onThreadReady hook ever fire?
 		let runEnded = false; // set in `finally` — stops any pending reopen from spawning
 		let cancelReopen: (() => void) | undefined; // cancel the latest scheduled reopen
+		let cancelTuiDeadline: (() => void) | undefined;
 		let activeTuiAttempt: Promise<void> | undefined;
 		let activeTuiAbort: AbortController | undefined;
+		let tuiEpisodeStartedAt: number | undefined;
+		let tuiAttemptCount = 0;
+		let lastTuiFailure: RunnerTuiWindowFailureEvidence | undefined;
+		let tuiTerminalReported = false;
+		let emitTuiLost: (trigger: RunnerTuiWindowLostEvidence["trigger"]) => void =
+			() => {};
 		let outcome: RunGoalOutcome | undefined;
 		let caughtError: unknown;
 		let teardownError: unknown;
@@ -460,7 +514,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			assertSocketPathFitsSunLen(socketPath);
 
 			// CommDB session registration (vendor=codex → send routing).
-			registeredSession = this.registerCommDbSession(ctx, windowName);
+			registeredSession = this.registerCommDbSession(ctx);
 			ctx.onHeartbeat?.(ctx.executionId);
 
 			const writableRoots = buildDaemonSandboxWritableRoots({
@@ -564,23 +618,69 @@ export class CodexTmuxAdapter implements IAdapter {
 
 			// Latch the founder window ON SUCCESS (MEDIUM-1: only on success) +
 			// publish the window id.
-			const wireCreated = (): void => {
-				tuiOpened = true;
-				const windowId = this.resolveWindowId(windowName);
-				if (windowId) {
-					founderWindowId = windowId;
-					tmuxWindow = `${this.sessionName}:${windowId}`;
-					this.publishWindowExecutionIdentity(
-						ctx.executionId,
-						`=${tmuxWindow}`,
+			emitTuiLost = (trigger: RunnerTuiWindowLostEvidence["trigger"]): void => {
+				if (tuiOpened || tuiTerminalReported) return;
+				tuiTerminalReported = true;
+				this.log(
+					`runner-tui-window: terminal visibility loss trigger=${trigger} attempts=${tuiAttemptCount} reason=${lastTuiFailure?.reason ?? "unknown"}`,
+				);
+				if (!this.onTuiWindowLost) return;
+				const evidence: RunnerTuiWindowLostEvidence = {
+					executionId: ctx.executionId,
+					issueId: ctx.issueId,
+					projectName: ctx.projectName ?? "unknown",
+					leadId: ctx.leadId ?? "flywheel-eng-lead",
+					trigger,
+					episodeStartedAt: tuiEpisodeStartedAt ?? this.now(),
+					attempts: tuiAttemptCount,
+					...(lastTuiFailure ? { lastFailure: lastTuiFailure } : {}),
+				};
+				try {
+					void Promise.resolve(this.onTuiWindowLost(evidence)).catch((error) =>
+						this.log(
+							`runner-tui-window: lost callback rejected (ignored): ${safeErr(error)}`,
+						),
 					);
-					this.pinCommDbSessionWindow(ctx, tmuxWindow);
+				} catch (error) {
+					this.log(
+						`runner-tui-window: lost callback threw (ignored): ${safeErr(error)}`,
+					);
+				}
+			};
+
+			const wireCreated = (created: { windowId?: string }): boolean => {
+				const windowId = created.windowId ?? this.resolveWindowId(windowName);
+				if (!windowId || !/^@[0-9]+$/.test(windowId)) return false;
+				tuiOpened = true;
+				tuiOpening = false;
+				founderWindowId = windowId;
+				tmuxWindow = `${this.sessionName}:${windowId}`;
+				cancelTuiDeadline?.();
+				this.publishWindowExecutionIdentity(ctx.executionId, `=${tmuxWindow}`);
+				this.pinCommDbSessionWindow(ctx, tmuxWindow);
+				this.persistSessionWindowState(ctx.executionId, tmuxWindow);
+				this.persistTuiEpisode(ctx.executionId, undefined);
+				tuiEpisodeStartedAt = undefined;
+				if (this.onTuiWindowRestored) {
+					try {
+						void Promise.resolve(
+							this.onTuiWindowRestored(ctx.executionId),
+						).catch((error) =>
+							this.log(
+								`runner-tui-window: restored callback rejected (ignored): ${safeErr(error)}`,
+							),
+						);
+					} catch (error) {
+						this.log(
+							`runner-tui-window: restored callback threw (ignored): ${safeErr(error)}`,
+						);
+					}
 				}
 				if (ctx.onTmuxWindowCreated) {
 					try {
 						ctx.onTmuxWindowCreated({
 							baseSessionName: this.sessionName,
-							windowId: windowId ?? windowName,
+							windowId,
 						});
 					} catch (err) {
 						console.warn(
@@ -588,6 +688,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						);
 					}
 				}
+				return true;
 			};
 
 			// FLY-1239: one bounded reopen attempt. ONLY a `died` outcome (a TUI that
@@ -597,6 +698,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			// and lands the rollout between attempts. Wrapped in a no-throw boundary:
 			// an async retry callback that threw would be an uncaught exception and
 			// could crash the process — window failure must never break the run.
+			const retryDelay = (attempt: number): number =>
+				TUI_OPEN_RETRY_DELAYS_MS[
+					Math.min(attempt - 1, TUI_OPEN_RETRY_DELAYS_MS.length - 1)
+				] ?? 300_000;
+
 			const attemptOpen = async (
 				threadId: string,
 				n: number,
@@ -607,44 +713,72 @@ export class CodexTmuxAdapter implements IAdapter {
 						tuiOpening = false;
 						return;
 					}
+					tuiAttemptCount = Math.max(tuiAttemptCount, n);
 					const result = await this.ensureWindow(buildSpec(threadId), {
 						log: (m) => this.log(m),
 						signal,
 					});
-					if (runEnded || signal.aborted) {
+					if (runEnded) {
 						tuiOpening = false;
 						return;
 					}
 					if (result.created) {
-						wireCreated();
+						if (wireCreated(result)) return;
+						lastTuiFailure = {
+							category: "retryable-transient-ipc",
+							reason: "window_id_unproven",
+						};
+					} else {
+						lastTuiFailure = result;
+					}
+					if (signal.aborted) {
+						if (signal.reason === "deadline") emitTuiLost("deadline-exhausted");
 						tuiOpening = false;
 						return;
 					}
-					if (
-						result.reason === "died" &&
-						n < TUI_OPEN_MAX_ATTEMPTS &&
-						!runEnded
-					) {
+					if (lastTuiFailure?.category === "permanent") {
+						emitTuiLost("permanent");
+						tuiOpening = false;
+						return;
+					}
+					const startedAt = tuiEpisodeStartedAt ?? this.now();
+					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
+					if (n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0 && !runEnded) {
+						const delay = Math.min(retryDelay(n), remaining);
 						cancelReopen = this.scheduleReopen(() => {
 							launchAttempt(threadId, n + 1);
-						}, TUI_OPEN_RETRY_GAP_MS);
+						}, delay);
 						return; // still opening — chain continues on the next tick
 					}
-					if (result.reason === "died") {
-						// fail-loud (bounded, not silent, not infinite). `died` proves an
-						// immediate exit, NOT specifically "no rollout found", so keep the
-						// cause soft and point at the detailed per-attempt log above.
-						this.log(
-							`runner-tui-window: founder TUI exited immediately on every attempt (${n}) — most likely the FLY-1239 rollout-landing race, but could be an auth/binary/TTY bootstrap failure; see the preceding runner-tui-window log for the exact command. The run continues (the machine client drives the goal); the founder cannot watch the pane.`,
-						);
-					}
-					// died-exhausted / tmux-absent / create-failed → stop this chain.
+					emitTuiLost("deadline-exhausted");
 					tuiOpening = false;
 				} catch (err) {
+					lastTuiFailure = {
+						category: "retryable-transient-ipc",
+						reason: "ipc_exception",
+						detail: safeErr(err).slice(0, 500),
+					};
 					this.log(
 						`runner-tui-window: reopen attempt threw (non-fatal, fail-open): ${safeErr(err)}`,
 					);
-					tuiOpening = false; // stop this chain; window failure never breaks the run
+					if (signal.aborted) {
+						if (signal.reason === "deadline") {
+							emitTuiLost("deadline-exhausted");
+						}
+						tuiOpening = false;
+						return;
+					}
+					const startedAt = tuiEpisodeStartedAt ?? this.now();
+					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
+					if (!runEnded && n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0) {
+						cancelReopen = this.scheduleReopen(
+							() => launchAttempt(threadId, n + 1),
+							Math.min(retryDelay(n), remaining),
+						);
+					} else {
+						emitTuiLost(runEnded ? "run-ended" : "deadline-exhausted");
+						tuiOpening = false;
+					}
 				}
 			};
 
@@ -672,7 +806,26 @@ export class CodexTmuxAdapter implements IAdapter {
 			const startOpenChain = (threadId: string): void => {
 				if (tuiOpened || tuiOpening || runEnded) return;
 				tuiOpening = true;
+				tuiEpisodeStartedAt =
+					this.readPersistedTuiEpisode(ctx.executionId) ?? this.now();
+				this.persistTuiEpisode(ctx.executionId, tuiEpisodeStartedAt);
+				tuiTerminalReported = false;
 				try {
+					const remainingDeadline = Math.max(
+						0,
+						TUI_OPEN_DEADLINE_MS - (this.now() - tuiEpisodeStartedAt),
+					);
+					cancelTuiDeadline = this.scheduleTuiDeadline(() => {
+						if (tuiOpened || runEnded) return;
+						activeTuiAbort?.abort("deadline" satisfies RunnerTuiAbortCause);
+						const pending = activeTuiAttempt;
+						const report = (): void => {
+							tuiOpening = false;
+							emitTuiLost("deadline-exhausted");
+						};
+						if (pending) void pending.then(report, report);
+						else report();
+					}, remainingDeadline);
 					cancelReopen = this.scheduleReopen(
 						() => launchAttempt(threadId, 1),
 						0,
@@ -718,9 +871,10 @@ export class CodexTmuxAdapter implements IAdapter {
 			let latestDaemonPid: number | undefined;
 			const onThreadReady = (threadId: string, restarts: number): void => {
 				threadReadySeen = true; // authoritative hook fired → the fallback is not needed
-				this.persistSessionState(ctx, threadId, windowName, latestDaemonPid);
+				this.persistSessionState(ctx, threadId, latestDaemonPid);
 				if (restarts > 0 && tuiOpened && !this.isWindowAlive(windowName)) {
 					tuiOpened = false; // pane died with the old socket — reopen below
+					tuiTerminalReported = false;
 				}
 				startOpenChain(threadId);
 			};
@@ -844,7 +998,16 @@ export class CodexTmuxAdapter implements IAdapter {
 					const o = await this.ensureWindow(buildSpec(outcome.threadId), {
 						log: (m) => this.log(m),
 					});
-					if (o.created) wireCreated();
+					if (o.created) {
+						if (!wireCreated(o)) {
+							lastTuiFailure = {
+								category: "retryable-transient-ipc",
+								reason: "window_id_unproven",
+							};
+						}
+					} else {
+						lastTuiFailure = o;
+					}
 				} catch (err) {
 					this.log(
 						`runner-tui-window: fallback open threw (non-fatal, fail-open): ${safeErr(err)}`,
@@ -862,13 +1025,23 @@ export class CodexTmuxAdapter implements IAdapter {
 			// — a visibility-only failure staying fail-open is the whole contract.
 			runEnded = true;
 			try {
+				cancelTuiDeadline?.();
+			} catch (err) {
+				this.log(
+					`runner-tui-window: deadline cancel threw (non-fatal): ${safeErr(err)}`,
+				);
+			}
+			try {
 				cancelReopen?.();
 			} catch (err) {
 				this.log(
 					`runner-tui-window: reopen cancel threw (non-fatal, teardown continues): ${safeErr(err)}`,
 				);
 			}
-			activeTuiAbort?.abort();
+			activeTuiAbort?.abort("run-ended" satisfies RunnerTuiAbortCause);
+			if (!tuiOpened && (threadReadySeen || outcome?.threadId)) {
+				emitTuiLost("run-ended");
+			}
 			const attemptAtTeardown = activeTuiAttempt;
 			if (attemptAtTeardown) {
 				let settledBeforeJoin = false;
@@ -1176,14 +1349,12 @@ export class CodexTmuxAdapter implements IAdapter {
 	private persistSessionState(
 		ctx: AdapterExecutionContext,
 		threadId: string,
-		windowName: string,
 		daemonPid: number | undefined,
 	): void {
 		try {
 			this.mergeSessionState(ctx.executionId, {
 				executionId: ctx.executionId,
 				issueId: ctx.issueId,
-				tmuxWindow: `${this.sessionName}:${windowName}`,
 				cwd: ctx.cwd,
 				vendor: "codex",
 				threadId,
@@ -1195,6 +1366,51 @@ export class CodexTmuxAdapter implements IAdapter {
 		} catch (err) {
 			console.warn(
 				`[CodexTmuxAdapter] session state persist failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	/** Window identity is a separate commit: a name is never durable evidence. */
+	private persistSessionWindowState(
+		executionId: string,
+		tmuxWindow: string,
+	): void {
+		try {
+			this.mergeSessionState(executionId, { tmuxWindow });
+		} catch (err) {
+			console.warn(
+				`[CodexTmuxAdapter] session window persist failed: ${(err as Error).message}`,
+			);
+		}
+	}
+
+	private readPersistedTuiEpisode(executionId: string): number | undefined {
+		try {
+			const path = join(codexSessionStateDir(executionId), "session.json");
+			if (!existsSync(path)) return undefined;
+			const state = JSON.parse(readFileSync(path, "utf8")) as {
+				tuiWindowEpisodeStartedAt?: unknown;
+			};
+			return typeof state.tuiWindowEpisodeStartedAt === "number" &&
+				Number.isFinite(state.tuiWindowEpisodeStartedAt)
+				? state.tuiWindowEpisodeStartedAt
+				: undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private persistTuiEpisode(
+		executionId: string,
+		startedAt: number | undefined,
+	): void {
+		try {
+			this.mergeSessionState(executionId, {
+				tuiWindowEpisodeStartedAt: startedAt ?? null,
+			});
+		} catch (error) {
+			console.warn(
+				`[CodexTmuxAdapter] TUI episode persist failed: ${(error as Error).message}`,
 			);
 		}
 	}
@@ -1522,10 +1738,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * first threadId). Ordinary registration remains best-effort. A resident
 	 * phase consumer is fail-loud because its doorbell fence depends on this row.
 	 */
-	private registerCommDbSession(
-		ctx: AdapterExecutionContext,
-		windowName: string,
-	): boolean {
+	private registerCommDbSession(ctx: AdapterExecutionContext): boolean {
 		if (!ctx.commDbPath) {
 			if (ctx.phaseKeepAlive) {
 				throw new Error(
@@ -1539,7 +1752,7 @@ export class CodexTmuxAdapter implements IAdapter {
 			commDb = new CommDB(ctx.commDbPath);
 			commDb.registerSession(
 				ctx.executionId,
-				`${this.sessionName}:${windowName}`,
+				`${this.sessionName}:pending`,
 				ctx.projectName ?? "unknown",
 				ctx.issueId,
 				ctx.leadId,

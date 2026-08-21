@@ -304,6 +304,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// FLY-1364: observations of fail-closed shell safety paths. A human decides
 	// whether a foreign cmux ref or prolonged rescue hold is safe to resolve.
 	cmux_cleanup: { owner: "claude", arc: "human_by_design" },
+	cmux_watcher_stalled: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	tmux_rescue_hold: { owner: "claude", arc: "human_by_design" },
 	// Informational routing bypasses owner/ARC; keep an exhaustive inert contract.
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },

@@ -1,0 +1,19 @@
+flowchart TD
+    prep["窗口前准备(不影响生产)<br/>清点全部 17 个 server 身份<br/>+ 备好 3.5a 完整回滚包并实演<br/>+ 预下载 3.7c 安装包(含依赖)"]
+    brake["拉闸:暂停接新任务<br/>(闸门必须确认真的合上,<br/>预算算好:任何时刻都留足<br/>15 分钟的回滚时间)"]
+    zero["证明:零个在飞 runner<br/>(连刚获准还没登记的也算)"]
+    stopold["先用【旧版 tmux】关掉<br/>全部旧 server,逐个核对消失<br/>(绝不让新旧版本互碰——<br/>那正是上次事故的死法)"]
+    upgrade["两套 Homebrew 都升 3.7c<br/>(只从缓存装,300 秒预算)"]
+    reborn["一次性重生:Bridge 先起<br/>→ 续期闸门 → 各 Lead/watcher<br/>(所有窗口齐消齐现,预期内)"]
+    verify["逐个 server 验明正身:<br/>新进程 + 新程序文件 + 版本 3.7c<br/>cmux 全部 tab 自动验收"]
+    resume["开闸恢复接任务<br/>→ 之后你再视觉确认"]
+    rollback["任一步失败:<br/>用实演过的回滚包<br/>原路退回 3.5a"]
+    prep --> brake --> zero --> stopold --> upgrade --> reborn --> verify --> resume
+    stopold -.失败.-> rollback
+    upgrade -.失败.-> rollback
+    reborn -.失败.-> rollback
+    verify -.失败.-> rollback
+    style brake fill:#fff3e0,stroke:#ff9500
+    style stopold fill:#ffebee,stroke:#ff3b30
+    style resume fill:#e8f5e9,stroke:#34c759
+    style rollback fill:#f5f5f7,stroke:#86868b

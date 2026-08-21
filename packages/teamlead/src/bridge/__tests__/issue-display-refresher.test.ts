@@ -21,6 +21,7 @@ import {
 	attachTargetMatchesIssue,
 	computeSessionsFingerprint,
 	IssueDisplayRefresher,
+	type IssueDisplayRefresherDeps,
 	parseWorkflowRouteSummary,
 } from "../issue-display-refresher.js";
 import type { BridgeConfig } from "../types.js";
@@ -158,6 +159,7 @@ interface HarnessOpts {
 	tmux?: Record<string, string>;
 	/** tmux window → resolved live window_name. */
 	windowNames?: Record<string, string>;
+	resolveAttach?: IssueDisplayRefresherDeps["resolveAttach"];
 	results?: Partial<
 		Record<"title" | "header" | "attachPin" | "all", DisplayWriteResult>
 	>;
@@ -192,11 +194,13 @@ function makeRefresher(store: StateStore, opts: HarnessOpts = {}) {
 			const w = opts.tmux?.[execId];
 			return w ? { tmuxWindow: w, sessionName: w.split(":")[0]! } : undefined;
 		},
-		resolveAttach: async (tmuxWindow) => ({
-			kind: "cmux",
-			session: `cmux-${opts.windowNames?.[tmuxWindow] ?? "unknown"}`,
-			windowName: opts.windowNames?.[tmuxWindow],
-		}),
+		resolveAttach:
+			opts.resolveAttach ??
+			(async (tmuxWindow) => ({
+				kind: "cmux",
+				session: `cmux-${opts.windowNames?.[tmuxWindow] ?? "unknown"}`,
+				windowName: opts.windowNames?.[tmuxWindow],
+			})),
 	});
 	return { refresher, log };
 }
@@ -817,6 +821,34 @@ describe("IssueDisplayRefresher — lifecycle matrix (plan Step 5)", () => {
 		expect(log.attachPin).toEqual([]);
 	});
 
+	it("passes the execution identity into founder attach resolution and renders unresolved instead of another phase", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		seedSession(store, {
+			exec: "e-main",
+			role: "main",
+			status: "running",
+			stage: "implement",
+		});
+		const resolved: Array<[string, string]> = [];
+		const { refresher, log } = makeRefresher(store, {
+			tmux: { "e-main": "runner-proj:@999" },
+			resolveAttach: async (tmuxWindow, expectedExecutionId) => {
+				resolved.push([tmuxWindow, expectedExecutionId]);
+				return {
+					kind: "unresolved",
+					tmuxWindow,
+					reason: "window-id-mismatch",
+				};
+			},
+		});
+
+		await refresher.refresh(ISSUE);
+
+		expect(resolved).toEqual([["runner-proj:@999", "e-main"]]);
+		expect(log.unresolved).toBe(1);
+		expect(log.attachPin).toEqual([]);
+	});
+
 	it("single-runner sentinel: a running main session renders its persisted session_stage badge + the legacy attach command (byte-compat at the stage_changed moment)", async () => {
 		seedSession(store, {
 			exec: "e-main",
@@ -1210,7 +1242,7 @@ describe("applyTransition onTransition hook (FLY-907 Step 4.1)", () => {
 });
 
 describe("attachTargetMatchesIssue (Step 3 anchor)", () => {
-	it("verifies the buildWindowLabel identifier prefix; missing anchor → no new false kills", () => {
+	it("verifies the buildWindowLabel identifier prefix and fails closed without a resolved window", () => {
 		expect(attachTargetMatchesIssue("FLY-907", "FLY-907-runner-x-title")).toBe(
 			true,
 		);
@@ -1220,6 +1252,6 @@ describe("attachTargetMatchesIssue (Step 3 anchor)", () => {
 		// FLY-90 must not prefix-match FLY-907's window… and vice versa.
 		expect(attachTargetMatchesIssue("FLY-90", "FLY-907-runner-x")).toBe(false);
 		expect(attachTargetMatchesIssue(undefined, "FLY-907-runner-x")).toBe(true);
-		expect(attachTargetMatchesIssue("FLY-907", undefined)).toBe(true);
+		expect(attachTargetMatchesIssue("FLY-907", undefined)).toBe(false);
 	});
 });

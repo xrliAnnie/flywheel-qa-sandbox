@@ -170,8 +170,8 @@ jobs:
     # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
     # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
     # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
-    # 1327=1, cmux-hooks=10, 1364=312, 183=11, 1402=4, 1496=10,
-    # 1663=97, 1678=78 (test total ~542s). Dependency preflight is ~0s when
+    # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
+    # 1663=97, 1678=78 (test total ~544s). Dependency preflight is ~0s when
     # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
     timeout-minutes: 20
     steps:
@@ -287,6 +287,13 @@ jobs:
           bash scripts/__tests__/test-teardown-lease-contract.test.sh
           bash scripts/__tests__/qa-teardown-finalize.test.sh
           bash scripts/__tests__/restart-cmux-watcher.test.sh
+
+      # FLY-1944: the founder-gated host cutover is hermetic here: all Homebrew,
+      # tmux, process-census, Bridge HTTP, receipt, and clock inputs use private
+      # fixtures or injected seams. Keep it in the required lane so admission
+      # budget/quiescence and exact-version preflight cannot drift unobserved.
+      - name: Test — FLY-1944 host terminal cutover brake
+        run: bash scripts/__tests__/host-terminal-cutover.test.sh
 
       # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
       # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned

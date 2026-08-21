@@ -331,6 +331,9 @@ export const ALERT_EVENT_TYPES = [
 	"lead_backend_drift",
 	// FLY-1364: shell-side cmux display convergence and tmux rescue telemetry.
 	"cmux_cleanup",
+	// FLY-1944: GatePoller proved the resident watcher unhealthy; only the
+	// fully-verified stale branch attempts tuple-bound recovery.
+	"cmux_watcher_stalled",
 	"tmux_rescue_hold",
 	// FLY-1781: engineering-only weekly flag-governance health notices. These
 	// are informational (no ticket/ARC/founder DM lifecycle).

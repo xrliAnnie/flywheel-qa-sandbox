@@ -2095,6 +2095,7 @@ elif [[ "\${1:-}" == "bootstrap" && "\$*" == *"com.flywheel.cmux-watcher.plist" 
   mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
   echo 334 > "$BO_CALLS/watcher.pids"
   echo '334|watcher-new|watch|watcher-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
+  echo '334|1|scan' > "$BO_HOME/.flywheel/state/cmux-watcher-heartbeat"
 elif [[ "\${1:-}" == "bootstrap" ]]; then
   echo loaded > "$BO_LAUNCH_STATE"
   if [[ "\${FAKE_SUPERVISOR_STALE:-0}" == "1" ]]; then

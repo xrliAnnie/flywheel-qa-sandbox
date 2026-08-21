@@ -1,0 +1,22 @@
+flowchart TD
+    watcher["cmux-sync watcher<br/>每轮工作前用零成本方式<br/>写一次『心跳』文件"]
+    hb[("心跳文件<br/>(最后活动时间)")]
+    rider["Bridge 巡检骑手<br/>(挂在既有 60 秒巡检上,<br/>不新增任何定时器)"]
+    judge{"心跳超过 5 分钟没跳?<br/>或事件积压没人消费?"}
+    park{"是运维故意<br/>暂停的吗?<br/>(有暂停标记)"}
+    recover["走唯一的安全重启通道<br/>(每次动手前重新核对<br/>进程身份,防止杀错)"]
+    launchd["launchd 自动重新拉起<br/>(macOS 系统级保活)"]
+    alert["经现有告警管道<br/>通知一次(不刷屏)"]
+    watcher -->|"每 15 秒"| hb
+    rider -->|"只读检查"| hb
+    rider --> judge
+    judge -->|"否"| ok["健康,什么都不做"]
+    judge -->|"是"| park
+    park -->|"是,且超 30 分钟"| alert
+    park -->|"不是 = 真卡死"| recover
+    recover --> launchd
+    recover --> alert
+    launchd -.->|"新 watcher 上线"| watcher
+    style recover fill:#ffebee,stroke:#ff3b30
+    style alert fill:#fff3e0,stroke:#ff9500
+    style ok fill:#e8f5e9,stroke:#34c759

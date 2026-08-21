@@ -65,6 +65,17 @@ describe("FLY-513 GatePoller onHealthTick piggyback", () => {
 	});
 });
 
+describe("FLY-1944 GatePoller cmux watcher rider", () => {
+	it("shares the existing 60s rider cadence and contains failures", async () => {
+		const onCmuxWatcherPatrolTick = vi
+			.fn()
+			.mockRejectedValue(new Error("watcher patrol boom"));
+		const poller = makePoller({ onCmuxWatcherPatrolTick });
+		await expect(tick(poller, 21)).resolves.toBeUndefined();
+		expect(onCmuxWatcherPatrolTick).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("FLY-1314 GatePoller issue-gate supersede piggyback", () => {
 	it("runs on every existing poll tick without adding a timer", async () => {
 		const onIssueGateSupersedeTick = vi.fn();

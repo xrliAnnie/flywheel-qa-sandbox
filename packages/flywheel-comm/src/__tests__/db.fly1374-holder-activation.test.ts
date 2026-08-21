@@ -75,6 +75,34 @@ describe("FLY-1374 CommDB holder activation", () => {
 		expect(db.isQuestionPending(questionId)).toBe(true);
 	});
 
+	it("replaces an explicitly pending target with the proven immutable identity", () => {
+		db.registerSession(
+			"exec-1",
+			"flywheel:pending",
+			"flywheel",
+			"FLY-1944",
+			"flywheel-eng-lead",
+			"codex",
+		);
+		db.updateSessionStatus("exec-1", "completed");
+
+		expect(
+			db.activateSessionForWake({
+				executionId: "exec-1",
+				tmuxWindow: "flywheel:@42",
+				projectName: "flywheel",
+				issueId: "FLY-1944",
+				leadId: "flywheel-eng-lead",
+				vendor: "codex",
+			}),
+		).toEqual({
+			ok: true,
+			inserted: false,
+			previousStatus: "completed",
+		});
+		expect(db.getSession("exec-1")?.tmux_window).toBe("flywheel:@42");
+	});
+
 	it("rejects incomplete identity instead of synthesizing a session", () => {
 		expect(
 			db.activateSessionForWake({

@@ -108,6 +108,18 @@ describe("reapCrashedRunners (FLY-720)", () => {
 		);
 	});
 
+	it("suppresses :pending metadata without probing or reaping it", async () => {
+		seedRunning("pending-window", 120);
+		const deps = baseDeps({
+			lookupTmuxTarget: () => FOUND("geo:pending"),
+		});
+		const res = await reapCrashedRunners(deps);
+		expect(res.reaped).toBe(0);
+		expect(res.indeterminateSuppressed).toBe(1);
+		expect(deps.probeLiveness).not.toHaveBeenCalled();
+		expect(deps.killTmuxWindow).not.toHaveBeenCalled();
+	});
+
 	it("FLY-1238: a CommDB finalization failure remains cleanup-pending and never archives", async () => {
 		seedRunning("z1", 120);
 		const deps = baseDeps({

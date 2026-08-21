@@ -30,6 +30,7 @@
 #   T8  apply calls launchctl bootout with the per-user gui/<uid>/<label> target
 #   T9  missing start.sh: apply does not fail; verify still PASSES
 #   T10 the fail-close start.sh stub exits without launching claude + prints pointer
+#   T13 an unset TMUX_BIN follows PATH instead of preferring a stale Intel path
 
 set -uo pipefail
 
@@ -247,6 +248,28 @@ if LAUNCHCTL_BIN="$LC_STUB" TMUX_BIN="$BROKEN_TMUX" bash "$SCRIPT" \
   log_fail "T12 verify PASSED while the tmux probe could not run (fail-open)"
 else
   log_pass "T12 verify correctly failed-closed on an unrunnable tmux probe"
+fi
+
+# ── T13: default tmux selection follows PATH ────────────────────────────────
+log_test "T13 unset TMUX_BIN follows PATH"
+PATH_BIN="$TMP_DIR/path-bin"; mkdir -p "$PATH_BIN"
+PATH_TMUX_LOG="$TMP_DIR/path-tmux.args"
+cat > "$PATH_BIN/tmux" <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "$PATH_TMUX_LOG"
+case "\$*" in
+  *has-session*) exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$PATH_BIN/tmux"
+if env -u TMUX_BIN PATH="$PATH_BIN:$PATH" LAUNCHCTL_BIN="$LC_STUB" \
+  bash "$SCRIPT" --label "$LABEL" --plist "$PLIST" --start-sh "$START_SH" \
+  --tmux-socket "$SOCKET" --verify >/dev/null 2>&1 \
+  && grep -q "has-session" "$PATH_TMUX_LOG" 2>/dev/null; then
+  log_pass "T13 PATH-selected tmux handled the verification probe"
+else
+  log_fail "T13 script bypassed the PATH-selected tmux"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────

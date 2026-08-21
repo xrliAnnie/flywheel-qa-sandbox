@@ -99,6 +99,7 @@ VIEW_LEDGER="${VIEW_LEDGER:-$HOME/.flywheel/state/cmux-view-ledger}"
 KEEPER_INVENTORY="${KEEPER_INVENTORY:-$HOME/.flywheel/state/cmux-keeper-inventory}"
 VIEW_ABSENT_STATE="${VIEW_ABSENT_STATE:-$HOME/.flywheel/state/cmux-view-absent}"
 CMUX_MAINTENANCE_MARKER="${FLYWHEEL_CMUX_MAINTENANCE_MARKER:-$HOME/.flywheel/state/cmux-maintenance}"
+WATCHER_HEARTBEAT_FILE="${FLYWHEEL_CMUX_WATCHER_HEARTBEAT:-$HOME/.flywheel/state/cmux-watcher-heartbeat}"
 CMUX_QA_TEARDOWN_CLAIM="${CMUX_MAINTENANCE_MARKER}.qa-teardown"
 CMUX_OPS_REBUILD_CLAIM="${CMUX_MAINTENANCE_MARKER}.ops-rebuild"
 CMUX_REBUILD_REPORT_DIR="${FLYWHEEL_CMUX_REBUILD_REPORT_DIR:-$HOME/.flywheel/state/cmux-rebuild-reports}"
@@ -258,6 +259,62 @@ _alert_malformed_mutator_lease() {
 # Path of cmux IPC socket. Override via $CMUX_SOCKET_PATH env (cmux's own convention).
 CMUX_SOCKET_PATH_DEFAULT="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
 
+# FLY-1944: every watcher-side cmux IPC has a hard wall-clock bound. A cmux
+# client can remain alive while its IPC loop is wedged; without a bound, one
+# call pins the only resident scan loop forever and no later event can be
+# observed. macOS ships Bash 3.2, so use job-control process groups instead of
+# GNU timeout(1). The marker disambiguates our timeout from a native cmux 124.
+CMUX_PING_TIMEOUT_SECONDS="${FLYWHEEL_CMUX_PING_TIMEOUT:-10}"
+CMUX_CALL_TIMEOUT_SECONDS="${FLYWHEEL_CMUX_CALL_TIMEOUT:-20}"
+CMUX_TIMEOUT_KILL_GRACE_SECONDS="${FLYWHEEL_CMUX_TIMEOUT_KILL_GRACE:-1}"
+case "$CMUX_PING_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_PING_TIMEOUT_SECONDS=10 ;; esac
+case "$CMUX_CALL_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_CALL_TIMEOUT_SECONDS=20 ;; esac
+case "$CMUX_TIMEOUT_KILL_GRACE_SECONDS" in ''|*[!0-9]*|0) CMUX_TIMEOUT_KILL_GRACE_SECONDS=1 ;; esac
+
+# Usage: _cmux_bounded_spawn <timeout-seconds> <timeout-marker> <cmux args...>
+# The caller MUST create/truncate timeout-marker before entering this helper.
+# Stdout/stderr are intentionally untouched, and a native exit status passes
+# through. On deadline, the complete cmux process group receives TERM then
+# KILL and rc=124 is returned. Keep `cmux ... &` as the first external spawn:
+# cmux_call_guarded relies on its guard being the genuine final operation
+# before the mutation process starts.
+_cmux_bounded_spawn() {
+  local timeout_seconds="$1" timeout_marker="$2"
+  shift 2
+  local command_pid watchdog_pid rc=0 monitor_was_enabled=0
+  # The legacy behavioral harness models cmux as a shell function and asserts
+  # its in-process mutation trace. Production always resolves an executable;
+  # this explicit test seam preserves those assertions while timeout coverage
+  # below the seam uses a real fixture process tree.
+  if [[ "${FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS:-0}" == "1" ]] \
+     && declare -F cmux >/dev/null 2>&1; then
+    cmux "$@"
+    return $?
+  fi
+  case "$-" in *m*) monitor_was_enabled=1 ;; esac
+  set -m
+  cmux "$@" &
+  command_pid=$!
+  (
+    sleep "$timeout_seconds"
+    if kill -0 "$command_pid" 2>/dev/null; then
+      printf 'timeout\n' > "$timeout_marker"
+      kill -TERM -- "-$command_pid" 2>/dev/null || true
+      sleep "$CMUX_TIMEOUT_KILL_GRACE_SECONDS"
+      kill -KILL -- "-$command_pid" 2>/dev/null || true
+    fi
+  ) >/dev/null 2>&1 &
+  watchdog_pid=$!
+
+  wait "$command_pid" || rc=$?
+  kill -TERM -- "-$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  [[ $monitor_was_enabled -eq 1 ]] || set +m
+
+  [[ -s "$timeout_marker" ]] && return 124
+  return "$rc"
+}
+
 # FLY-129: Health-check cmux IPC. Distinguish:
 #   rc=0  healthy (PONG)
 #   rc=1  cmux not running (socket missing — recoverable, just wait)
@@ -270,13 +327,15 @@ cmux_health_check() {
   if [[ ! -S "$socket" ]]; then
     return 1
   fi
-  local err_file out rc=0
+  local err_file timeout_marker out rc=0
   err_file=$(mktemp)
+  timeout_marker="${err_file}.timeout"
+  : > "$timeout_marker"
   # Pass --socket explicitly so override env actually reaches cmux CLI.
-  out=$(cmux --socket "$socket" ping 2>"$err_file") || rc=$?
+  out=$(_cmux_bounded_spawn "$CMUX_PING_TIMEOUT_SECONDS" "$timeout_marker" --socket "$socket" ping 2>"$err_file") || rc=$?
   local err_text
   err_text=$(cat "$err_file" 2>/dev/null || true)
-  rm -f "$err_file"
+  rm -f "$err_file" "$timeout_marker"
   if [[ $rc -eq 0 && "$out" == *PONG* ]]; then
     return 0
   fi
@@ -383,15 +442,17 @@ next_sleep_seconds() {
 # same socket.
 cmux_call() {
   local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
-  local err_file rc=0
+  local err_file timeout_marker rc=0
   err_file=$(mktemp)
-  cmux --socket "$socket" "$@" 2>"$err_file" || rc=$?
+  timeout_marker="${err_file}.timeout"
+  : > "$timeout_marker"
+  _cmux_bounded_spawn "$CMUX_CALL_TIMEOUT_SECONDS" "$timeout_marker" --socket "$socket" "$@" 2>"$err_file" || rc=$?
   if [[ $rc -ne 0 ]]; then
     local err_text
     err_text=$(cat "$err_file" 2>/dev/null || true)
     log "WARN: cmux $1 failed (rc=$rc): ${err_text:-<empty>}"
   fi
-  rm -f "$err_file"
+  rm -f "$err_file" "$timeout_marker"
   return $rc
 }
 
@@ -414,22 +475,24 @@ GUARD_WAS_BLOCKED=0
 cmux_call_guarded() {
   local guard_fn="$1"; shift
   local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
-  local err_file rc=0 guard_rc=0
+  local err_file timeout_marker rc=0 guard_rc=0
   GUARD_WAS_BLOCKED=0
   err_file=$(mktemp) || return 1
+  timeout_marker="${err_file}.timeout"
+  : > "$timeout_marker"
   "$guard_fn" || guard_rc=$?
   if [[ $guard_rc -ne 0 ]]; then
-    rm -f "$err_file"
+    rm -f "$err_file" "$timeout_marker"
     GUARD_WAS_BLOCKED=1
     return 1
   fi
-  cmux --socket "$socket" "$@" 2>"$err_file" || rc=$?
+  _cmux_bounded_spawn "$CMUX_CALL_TIMEOUT_SECONDS" "$timeout_marker" --socket "$socket" "$@" 2>"$err_file" || rc=$?
   if [[ $rc -ne 0 ]]; then
     local err_text
     err_text=$(cat "$err_file" 2>/dev/null || true)
     log "WARN: cmux $1 failed (rc=$rc): ${err_text:-<empty>}"
   fi
-  rm -f "$err_file"
+  rm -f "$err_file" "$timeout_marker"
   return $rc
 }
 
@@ -1160,12 +1223,14 @@ get_cmux_workspaces_json() {
   # transition-only logging to keep the watcher quiet during sustained
   # cmux-down windows.
   local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
-  local err_file raw rc=0
+  local err_file timeout_marker raw rc=0
   err_file=$(mktemp)
-  raw=$(cmux --socket "$socket" --json list-workspaces 2>"$err_file") || rc=$?
+  timeout_marker="${err_file}.timeout"
+  : > "$timeout_marker"
+  raw=$(_cmux_bounded_spawn "$CMUX_CALL_TIMEOUT_SECONDS" "$timeout_marker" --socket "$socket" --json list-workspaces 2>"$err_file") || rc=$?
   local err_text
   err_text=$(cat "$err_file" 2>/dev/null || true)
-  rm -f "$err_file"
+  rm -f "$err_file" "$timeout_marker"
 
   if [[ $rc -ne 0 ]]; then
     if [[ "$CMUX_JSON_LAST_STATE" != "fail" ]]; then
@@ -2262,7 +2327,13 @@ surface_looks_like_bare_shell() {
   local ref="$1" surface_ref="$2" quiet="${3:-0}" screen last
   if [[ "$quiet" == "1" ]]; then
     local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
-    screen=$(cmux --socket "$socket" read-screen --workspace "$ref" --surface "$surface_ref" 2>/dev/null) || return 2
+    local timeout_marker
+    timeout_marker=$(mktemp) || return 2
+    : > "$timeout_marker"
+    local read_rc=0
+    screen=$(_cmux_bounded_spawn "$CMUX_CALL_TIMEOUT_SECONDS" "$timeout_marker" --socket "$socket" read-screen --workspace "$ref" --surface "$surface_ref" 2>/dev/null) || read_rc=$?
+    rm -f "$timeout_marker"
+    [[ $read_rc -eq 0 ]] || return 2
   else
     screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref") || return 2
   fi
@@ -8462,24 +8533,30 @@ run_verify_sidebar() {
 }
 
 # FLY-254 (gap a): unhealthy-state sleep with app-open edge detection.
-# rc=0 (healthy) or feature off → plain sleep, BYTE-IDENTICAL cadence.
+# FLY-1944: a healthy watcher also probes the event marker in <=3s slices so a
+# newly created tmux window reaches a cmux mirror well inside the one-minute
+# SLA. An unhealthy watcher cannot drain events, so event backlog must not
+# collapse its recovery backoff.
 # rc=1 (socket missing): sleep in slices; wake early when the socket appears.
 # rc=3 (socket present but ping failing — the stale socket a quit cmux app can
 # leave behind, observed live in Codex R2): wake early when the socket's
 # filesystem identity changes (a new app instance bound the path).
-# Both probes are pure stat — zero IPC; total sleep duration is unchanged, so
-# the backoff load curve is identical; nothing new runs while cmux is healthy.
+# Both probes are pure shell/file tests — zero IPC; total sleep duration is
+# unchanged when no edge arrives.
+REOPEN_SLEEP_EDGE=""
 reopen_aware_sleep() {
   local total="$1"
-  if ! reopen_sweep_enabled \
-     || [[ "$CMUX_HEALTH_LAST_RC" != "1" && "$CMUX_HEALTH_LAST_RC" != "3" ]]; then
-    sleep "$total"
-    return 0
+  local slice reopen_probe=0 reopen_slice
+  REOPEN_SLEEP_EDGE=""
+  slice=$(validated_int_env FLYWHEEL_CMUX_EVENT_PROBE_SLICE "${FLYWHEEL_CMUX_EVENT_PROBE_SLICE:-3}" 3 3)
+  if reopen_sweep_enabled \
+     && [[ "$CMUX_HEALTH_LAST_RC" == "1" || "$CMUX_HEALTH_LAST_RC" == "3" ]]; then
+    reopen_probe=1
+    reopen_slice=$(validated_int_env FLYWHEEL_CMUX_SOCKET_PROBE_SLICE "${FLYWHEEL_CMUX_SOCKET_PROBE_SLICE:-3}" 3 60)
+    (( reopen_slice < slice )) && slice=$reopen_slice
   fi
-  local slice
-  slice=$(validated_int_env FLYWHEEL_CMUX_SOCKET_PROBE_SLICE "${FLYWHEEL_CMUX_SOCKET_PROBE_SLICE:-3}" 3 60)
   local ref_ident=""
-  if [[ "$CMUX_HEALTH_LAST_RC" == "3" ]]; then
+  if [[ "$reopen_probe" == "1" && "$CMUX_HEALTH_LAST_RC" == "3" ]]; then
     # Reference identity for change detection: the persisted generation if
     # readable, else the identity observed right now (sleep start).
     if read_generation_state; then ref_ident="$REOPEN_GEN_IDENT"; fi
@@ -8494,18 +8571,30 @@ reopen_aware_sleep() {
     (( step > remain )) && step=$remain
     sleep "$step"
     elapsed=$((elapsed + step))
+    if [[ "$CMUX_HEALTH_LAST_RC" == "0" && "${WATCHER_AUTHORITY_LOST:-0}" != "1" \
+       && -s "$EVENT_FILE" ]]; then
+      REOPEN_SLEEP_EDGE="event"
+      return 0
+    fi
+    [[ "$reopen_probe" == "1" ]] || continue
     if [[ "$CMUX_HEALTH_LAST_RC" == "1" ]]; then
-      if cmux_socket_present; then return 0; fi
+      if cmux_socket_present; then
+        REOPEN_SLEEP_EDGE="socket"
+        return 0
+      fi
     else
       now_ident=$(cmux_socket_identity)
-      if [[ -n "$now_ident" && "$now_ident" != "$ref_ident" ]]; then return 0; fi
+      if [[ -n "$now_ident" && "$now_ident" != "$ref_ident" ]]; then
+        REOPEN_SLEEP_EDGE="socket"
+        return 0
+      fi
     fi
   done
   return 0
 }
 
 watcher_backoff_sleep() {
-  local total="$1" elapsed=0 step=5 remain
+  local total="$1" elapsed=0 step=5 remain next_heartbeat=15
   if (( total <= 15 )) \
       || [[ "$CMUX_HEALTH_LAST_RC" != "1" && "$CMUX_HEALTH_LAST_RC" != "3" ]]; then
     reopen_aware_sleep "$total"
@@ -8516,6 +8605,11 @@ watcher_backoff_sleep() {
     (( step > remain )) && step=$remain
     reopen_aware_sleep "$step"
     elapsed=$((elapsed + step))
+    [[ "$REOPEN_SLEEP_EDGE" == "socket" ]] && return 0
+    if (( elapsed >= next_heartbeat )); then
+      watcher_write_heartbeat backoff sleep
+      next_heartbeat=$((next_heartbeat + 15))
+    fi
     maintenance_requested && return 0
   done
 }
@@ -8528,9 +8622,13 @@ watch_loop() {
   while true; do
     # FLY-254 (gap a): unhealthy sleeps are sliced with a pure-stat app-open
     # edge probe so a reopen is noticed in seconds instead of a full backoff
-    # window (up to 300s). Healthy sleeps are byte-identical plain sleeps.
+    # window (up to 300s). Healthy sleeps are event-aware 3s slices so a hook
+    # delivery cannot wait behind the ordinary 15s cadence.
     watcher_backoff_sleep "$sleep_seconds"
     tick=$((tick + 1))
+    # Heartbeat means a scan tick actually began; the watchdog therefore does
+    # not confuse a live-but-stuck loop with ordinary process liveness.
+    watcher_write_heartbeat "$tick" scan
 
     watcher_maintenance_checkpoint
     if [[ "$WATCHER_RESYNC_REQUIRED" == "1" ]]; then
@@ -8595,6 +8693,9 @@ watch_loop() {
 # without falling foul of the case-statement scope.
 watch_main() {
   log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
+  # Publish new-generation evidence immediately so restart/recovery can prove
+  # the bootstrapped owner is scanning without waiting through the first 15s.
+  watcher_write_heartbeat bootstrap scan
   # Advisory: warn if cmux app preference is the broken default. This catches
   # the case where the watcher will work today (we're inside cmux pane) but
   # will fail post-reparent.
@@ -9520,6 +9621,23 @@ _maintenance_poll_seconds() {
   printf '%s\n' "$value"
 }
 
+# FLY-1944 watcher liveness evidence. Keep the hot-path write to Bash builtins
+# only (printf + redirection): no fork tax is added to every scan. The rider
+# uses file mtime for age and content only for operator diagnostics.
+WATCHER_MAINTENANCE_HEARTBEAT_POLLS=0
+watcher_write_heartbeat() {
+  local sequence="${1:-unknown}" state="${2:-scan}"
+  printf '%s|%s|%s\n' "$$" "$sequence" "$state" > "$WATCHER_HEARTBEAT_FILE" 2>/dev/null || true
+}
+
+watcher_maintenance_heartbeat_tick() {
+  WATCHER_MAINTENANCE_HEARTBEAT_POLLS=$((WATCHER_MAINTENANCE_HEARTBEAT_POLLS + 1))
+  if (( WATCHER_MAINTENANCE_HEARTBEAT_POLLS >= 15 )); then
+    WATCHER_MAINTENANCE_HEARTBEAT_POLLS=0
+    watcher_write_heartbeat maintenance park
+  fi
+}
+
 maintenance_entry_allowed() {
   local mode="$1" logged=0 wait_s claim_rc=0
   wait_s=$(_maintenance_poll_seconds)
@@ -9564,6 +9682,7 @@ watcher_maintenance_checkpoint() {
   local poll_s release_logged=0
   poll_s=$(_maintenance_poll_seconds)
   while maintenance_requested; do
+    watcher_maintenance_heartbeat_tick
     if mutator_lease_owned_by_self; then
       [[ "$release_logged" == "1" ]] || log "maintenance requested; watcher yielding mutator lease"
       release_logged=1

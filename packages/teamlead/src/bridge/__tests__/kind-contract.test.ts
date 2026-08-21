@@ -88,7 +88,11 @@ const LEAD_IDENTITY_KINDS = [
 	"lead_backend_drift",
 ] as const;
 
-const CMUX_SYNC_KINDS = ["cmux_cleanup", "tmux_rescue_hold"] as const;
+const CMUX_SYNC_KINDS = [
+	"cmux_cleanup",
+	"cmux_watcher_stalled",
+	"tmux_rescue_hold",
+] as const;
 
 const DISCORD_PLUGIN_KINDS = ["discord_plugin_integrity_failed"] as const;
 

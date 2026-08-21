@@ -20,7 +20,10 @@ export {
 	CodexTmuxAdapter,
 	type CodexWakeWatcher,
 	codexSessionStateDir,
+	type RunnerTuiWindowLostEvidence,
+	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS, // FLY-1239
+	TUI_OPEN_RETRY_DELAYS_MS,
 	TUI_OPEN_RETRY_GAP_MS, // FLY-1239
 } from "./CodexTmuxAdapter.js";
 export {

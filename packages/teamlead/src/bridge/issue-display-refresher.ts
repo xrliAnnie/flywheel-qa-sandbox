@@ -147,14 +147,16 @@ export function issueStatusWordEnabled(): boolean {
 /**
  * FLY-907 (Step 3): does the resolved tmux window belong to this issue? The
  * window-name anchor is `buildWindowLabel` = `<identifier>-<runner>-<title>`
- * (core/tmux-naming.ts, FLY-272 identifier-first). Identifier or windowName
- * missing → no anchor to verify → treat as belonging (no new false kills).
+ * (core/tmux-naming.ts, FLY-272 identifier-first). A missing issue identifier
+ * has no comparison anchor. A known issue with no resolved window name fails
+ * closed: founder-facing attach must never guess.
  */
 export function attachTargetMatchesIssue(
 	issueIdentifier: string | undefined,
 	windowName: string | undefined,
 ): boolean {
-	if (!issueIdentifier || !windowName) return true;
+	if (!issueIdentifier) return true;
+	if (!windowName) return false;
 	return windowName.startsWith(`${issueIdentifier}-`);
 }
 
@@ -162,10 +164,11 @@ function warnAttachCrossWire(
 	executionId: string,
 	issueIdentifier: string | undefined,
 	windowName: string | undefined,
+	resolutionFailure?: string,
 ): void {
 	// Loud, structured — this is the FLY-923 registration-side evidence trail.
 	console.warn(
-		`[issue-display] attach cross-wire for exec ${executionId}: expected window prefix "${issueIdentifier}-", actual window_name "${windowName}" — withholding attach command (FLY-923 evidence)`,
+		`[issue-display] attach cross-wire for exec ${executionId}: expected window prefix "${issueIdentifier}-", actual window_name "${windowName}"${resolutionFailure ? `, resolution_failure "${resolutionFailure}"` : ""} — withholding attach command (FLY-923 evidence)`,
 	);
 }
 
@@ -301,15 +304,19 @@ export function pinRunnerAttachForSession(
 					session.project_name,
 				);
 				if (!target) return; // tmux_window not registered yet — next stage reconciles
-				const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+				const attach = await resolveCmuxAttachTarget(target.tmuxWindow, {
+					expectedExecutionId: session.execution_id,
+				});
 				// FLY-907 (Step 3): never render a link into another issue's window.
 				if (
+					attach.kind === "unresolved" ||
 					!attachTargetMatchesIssue(session.issue_identifier, attach.windowName)
 				) {
 					warnAttachCrossWire(
 						session.execution_id,
 						session.issue_identifier,
 						attach.windowName,
+						attach.kind === "unresolved" ? attach.reason : undefined,
 					);
 					await deps.chatThreadCreator.ensureRunnerAttachUnresolvedResult(
 						ctx,
@@ -356,15 +363,19 @@ export function pinRunnerAttachForSession(
 					ps.project_name,
 				);
 				if (target) {
-					const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+					const attach = await resolveCmuxAttachTarget(target.tmuxWindow, {
+						expectedExecutionId: ps.execution_id,
+					});
 					// FLY-907 (Step 3): identifier-prefix guard on every header row.
 					if (
+						attach.kind === "unresolved" ||
 						!attachTargetMatchesIssue(ps.issue_identifier, attach.windowName)
 					) {
 						warnAttachCrossWire(
 							ps.execution_id,
 							ps.issue_identifier,
 							attach.windowName,
+							attach.kind === "unresolved" ? attach.reason : undefined,
 						);
 						row.attachUnresolved = true;
 					} else {
@@ -510,7 +521,10 @@ export interface IssueDisplayRefresherDeps {
 		execId: string,
 		projectName: string,
 	) => TmuxTarget | undefined;
-	resolveAttach?: (tmuxWindow: string) => Promise<AttachTarget>;
+	resolveAttach?: (
+		tmuxWindow: string,
+		expectedExecutionId: string,
+	) => Promise<AttachTarget>;
 	/**
 	 * Lead directive 17ab4f53 cleanup seam: delete a legacy scattered
 	 * status-line message (defaults to the real Discord DELETE).
@@ -850,13 +864,17 @@ export class IssueDisplayRefresher {
 						ps.project_name,
 					);
 					if (target) {
-						const attach = await (
-							this.deps.resolveAttach ?? resolveCmuxAttachTarget
-						)(target.tmuxWindow);
-						const matches = attachTargetMatchesIssue(
-							ps.issue_identifier,
-							attach.windowName,
-						);
+						const attach = this.deps.resolveAttach
+							? await this.deps.resolveAttach(
+									target.tmuxWindow,
+									ps.execution_id,
+								)
+							: await resolveCmuxAttachTarget(target.tmuxWindow, {
+									expectedExecutionId: ps.execution_id,
+								});
+						const matches =
+							attach.kind !== "unresolved" &&
+							attachTargetMatchesIssue(ps.issue_identifier, attach.windowName);
 						commComponent[ps.execution_id] = {
 							w: target.tmuxWindow,
 							n: attach.windowName ?? null,
@@ -867,6 +885,7 @@ export class IssueDisplayRefresher {
 								ps.execution_id,
 								ps.issue_identifier,
 								attach.windowName,
+								attach.kind === "unresolved" ? attach.reason : undefined,
 							);
 							row.attachUnresolved = true;
 						} else {
@@ -901,13 +920,20 @@ export class IssueDisplayRefresher {
 					commComponent[anySession.execution_id] = { w: null };
 					resultB = "deferred";
 				} else {
-					const attach = await (
-						this.deps.resolveAttach ?? resolveCmuxAttachTarget
-					)(target.tmuxWindow);
-					const matches = attachTargetMatchesIssue(
-						anySession.issue_identifier,
-						attach.windowName,
-					);
+					const attach = this.deps.resolveAttach
+						? await this.deps.resolveAttach(
+								target.tmuxWindow,
+								anySession.execution_id,
+							)
+						: await resolveCmuxAttachTarget(target.tmuxWindow, {
+								expectedExecutionId: anySession.execution_id,
+							});
+					const matches =
+						attach.kind !== "unresolved" &&
+						attachTargetMatchesIssue(
+							anySession.issue_identifier,
+							attach.windowName,
+						);
 					commComponent[anySession.execution_id] = {
 						w: target.tmuxWindow,
 						n: attach.windowName ?? null,
@@ -918,6 +944,7 @@ export class IssueDisplayRefresher {
 							anySession.execution_id,
 							anySession.issue_identifier,
 							attach.windowName,
+							attach.kind === "unresolved" ? attach.reason : undefined,
 						);
 						resultB =
 							await chatThreadCreator.ensureRunnerAttachUnresolvedResult(

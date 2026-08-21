@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
 import {
+	type RunnerTuiWindowLostEvidence,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
 } from "flywheel-claude-runner";
@@ -135,6 +136,7 @@ import {
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { createAccountSwitchRouter } from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
+import { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 // FLY-368: unified alert channel + per-error threading + conservative auto-repair.
 import {
 	buildRepairChain,
@@ -182,6 +184,7 @@ import {
 	closeRunner,
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
+import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
@@ -1303,6 +1306,8 @@ export interface BridgeAppOptions {
 	 * Undefined ⇒ the route returns 409 needs_human (self-heal off = byte-compat).
 	 */
 	rescueRoute?: { current?: RescueRouteRuntime };
+	/** FLY-1944: synchronous pre-claim dispatch visibility for host quiescence. */
+	admissionCrossingBarrier?: AdmissionCrossingBarrier;
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -1441,6 +1446,20 @@ export function createBridgeApp(
 	// No master token means fail closed rather than inheriting tokenAuth's legacy
 	// tokenless pass-through behavior.
 	if (config.apiToken) {
+		app.get(
+			"/api/admission/pause",
+			tokenAuthMiddleware(config.apiToken),
+			(_req, res) => {
+				const pause = store.getAdmissionPause();
+				res.json({
+					ok: true,
+					admissionPause: {
+						active: pause?.active === true,
+						remainingSeconds: pause?.remainingSeconds ?? 0,
+					},
+				});
+			},
+		);
 		app.post(
 			"/api/admission/pause",
 			tokenAuthMiddleware(config.apiToken),
@@ -1484,6 +1503,61 @@ export function createBridgeApp(
 					ok: true,
 					admissionPause: { active: false, remainingSeconds: 0 },
 				});
+			},
+		);
+		app.get(
+			"/api/admission/quiescence",
+			tokenAuthMiddleware(config.apiToken),
+			(_req, res) => {
+				try {
+					const pause = store.getAdmissionPause();
+					if (!pause?.active) {
+						res.status(409).json({
+							ok: false,
+							error:
+								"admission pause must be active before quiescence can be proven",
+						});
+						return;
+					}
+					if (!startDispatcher || !opts?.admissionCrossingBarrier) {
+						res.status(503).json({
+							ok: false,
+							error: "authoritative quiescence dependencies are unavailable",
+						});
+						return;
+					}
+					const crossing = opts.admissionCrossingBarrier.snapshot();
+					const components = {
+						readoptCandidateSessions:
+							store.getReadoptCandidateSessions().length,
+						dispatcherInflight: startDispatcher.getInflightCount(),
+						durableLaunchClaims: store.countOpenLaunchClaims(),
+						admissionCrossing: crossing,
+					};
+					const total =
+						components.readoptCandidateSessions +
+						components.dispatcherInflight +
+						components.durableLaunchClaims +
+						components.admissionCrossing.total;
+					res.json({
+						ok: true,
+						admissionPause: {
+							active: true,
+							remainingSeconds: pause.remainingSeconds,
+						},
+						components,
+						total,
+						quiescent: total === 0,
+					});
+				} catch (error) {
+					console.warn(
+						`[host-terminal-quiescence] snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					res.status(503).json({
+						ok: false,
+						error: "authoritative quiescence snapshot failed",
+					});
+				}
 			},
 		);
 	} else {
@@ -4288,6 +4362,11 @@ export async function startBridge(
 			  ) => Promise<boolean>)
 			| null;
 	} = { current: null };
+	const tuiWindowAlertHolder: {
+		lost?: (evidence: RunnerTuiWindowLostEvidence) => void | Promise<void>;
+		restored?: (executionId: string) => void | Promise<void>;
+	} = {};
+	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
@@ -5789,6 +5868,10 @@ export async function startBridge(
 					// upsertSession writes bypass the applyTransition hook).
 					issueDisplayRefresh: issueDisplayRefreshHolder,
 					terminalCommDbSync,
+					admissionCrossingBarrier,
+					onTuiWindowLost: (evidence) => tuiWindowAlertHolder.lost?.(evidence),
+					onTuiWindowRestored: (executionId) =>
+						tuiWindowAlertHolder.restored?.(executionId),
 				},
 			);
 			startDispatcher = dispatcher;
@@ -6226,6 +6309,7 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			admissionCrossingBarrier,
 			residueHarvester,
 			terminalCommDbSync,
 			// FLY-1185: ship-entry bundle + shared repo lock for createBridgeApp's
@@ -8164,6 +8248,56 @@ export async function startBridge(
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});
+	const cmuxWatcherAlertRoute = (() => {
+		const project = projects.find(
+			(candidate) => candidate.projectName === "flywheel",
+		);
+		const lead = project?.leads[0];
+		return project && lead
+			? { projectName: project.projectName, leadId: lead.agentId }
+			: null;
+	})();
+	const cmuxWatcherProjectRoot = projects.find(
+		(candidate) => candidate.projectName === "flywheel",
+	)?.projectRoot;
+	const cmuxWatcherPatrol =
+		cmuxWatcherProjectRoot && cmuxWatcherAlertRoute
+			? createHostCmuxWatcherPatrol({
+					homeDir: homedir(),
+					projectRoot: cmuxWatcherProjectRoot,
+					execFile: async (file, args, options) => {
+						const result = await execFileP(file, [...args], {
+							...options,
+							encoding: "utf8",
+						});
+						return {
+							stdout: String(result.stdout),
+						};
+					},
+					alert: async (verdict, recovery) => {
+						const sink = leadPendingAlertHolder.current;
+						if (!sink) {
+							throw new Error("cmux watcher alert sink is not ready");
+						}
+						const episode = createHash("sha256")
+							.update(verdict.episodeKey ?? verdict.branch)
+							.digest("hex")
+							.slice(0, 24);
+						await sink.alert({
+							...cmuxWatcherAlertRoute,
+							eventId: `cmux_watcher_stalled:${verdict.branch}:${episode}`,
+							eventType: "cmux_watcher_stalled",
+							title: `cmux watcher unhealthy (${verdict.branch})`,
+							body: `${verdict.detail}; recovery=${
+								recovery
+									? `${recovery.ok ? "healthy" : "failed"}: ${recovery.detail}`
+									: "not attempted (safety matrix)"
+							}`,
+							severity: "severe",
+						});
+					},
+				})
+			: null;
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -8175,6 +8309,9 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onLeadPatrolTick: leadPatrolTickPass,
+		...(cmuxWatcherPatrol
+			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
+			: {}),
 		onReconcilePatrolTick: async () => {
 			// First rollout window: inventory historical terminal-run residue but do
 			// not create a collection receipt or tear anything down. Explicit
@@ -8606,6 +8743,25 @@ export async function startBridge(
 	// option instead of being swallowed by attempt-only claims after a crash.
 	flagScanAlertHolder.current = (payload, attempt) =>
 		leadAlertNotifier.alert(payload, attempt);
+	tuiWindowAlertHolder.lost = async (evidence) => {
+		const reason = evidence.lastFailure
+			? `${evidence.lastFailure.category}/${evidence.lastFailure.reason}`
+			: "unknown";
+		await (routedAlertSinkHolder.current ?? leadAlertNotifier).alert({
+			leadId: evidence.leadId,
+			projectName: evidence.projectName,
+			eventId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
+			eventType: "tui_window_lost",
+			title: `Codex runner TUI not visible (${evidence.issueId})`,
+			body: `The founder-facing Codex pane never acquired an immutable tmux window id. trigger=${evidence.trigger}; attempts=${evidence.attempts}; last=${reason}. The resident run continued; inspect execution ${evidence.executionId}.`,
+			severity: "warning",
+			sessionKey: evidence.executionId,
+			episodeId: `tui-window-lost:${evidence.executionId}:${evidence.episodeStartedAt}`,
+		});
+	};
+	tuiWindowAlertHolder.restored = (executionId) => {
+		console.log(`[runner-tui-window] restored execution=${executionId}`);
+	};
 	// FLY-1718 P4: startup + periodic crash convergence. A durable binding can
 	// re-drive activation/settlement; pending fifth-strike alerts retain their
 	// StateStore row until the notifier has durably sent/queued/dead-lettered it.

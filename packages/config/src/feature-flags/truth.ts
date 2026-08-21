@@ -280,6 +280,24 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_GATE_MARKER_DIR: "plumbing: gate marker dir",
 	FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:
 		"plumbing: cmux close-request marker file path (FLY-685)",
+	FLYWHEEL_CMUX_MAINTENANCE_MARKER:
+		"plumbing: cmux watcher maintenance marker path override for isolated recovery QA (FLY-1944)",
+	FLYWHEEL_CMUX_TIMEOUT_KILL_GRACE:
+		"numeric tuning: bounded cmux process-tree TERM-to-KILL grace in seconds (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_EVENT_STALE_SECONDS:
+		"numeric tuning: cmux watcher event-backlog stale threshold in seconds (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_HEARTBEAT:
+		"plumbing: cmux watcher heartbeat file path override for isolated recovery QA (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_HEARTBEAT_STALE_SECONDS:
+		"numeric tuning: cmux watcher heartbeat stale threshold in seconds (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_LOCK_DIR:
+		"plumbing: cmux watcher owner-lock directory override for isolated recovery QA (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_PARK_TTL_SECONDS:
+		"numeric tuning: cmux watcher maintenance-park alert threshold in seconds (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_STARTUP_GRACE_SECONDS:
+		"numeric tuning: loaded-without-owner startup grace in seconds (FLY-1944)",
+	FLYWHEEL_TMUX_3_7C_BIN:
+		"plumbing: exact tmux 3.7c binary path required by the no-skip compatibility gate (FLY-1944)",
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",

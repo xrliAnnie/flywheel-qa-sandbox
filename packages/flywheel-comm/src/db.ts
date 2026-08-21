@@ -5596,7 +5596,11 @@ export class CommDB {
 				.prepare(
 					`UPDATE sessions
 					    SET status = 'running', ended_at = NULL,
-					        project_name = ?, issue_id = ?, lead_id = ?, vendor = ?
+					        project_name = ?, issue_id = ?, lead_id = ?, vendor = ?,
+					        tmux_window = CASE
+					          WHEN tmux_window LIKE '%:pending' THEN ?
+					          ELSE tmux_window
+					        END
 					  WHERE execution_id = ?`,
 				)
 				.run(
@@ -5604,6 +5608,7 @@ export class CommDB {
 					input.issueId,
 					input.leadId,
 					input.vendor,
+					input.tmuxWindow,
 					input.executionId,
 				);
 			this.upsertSessionReceiptLineage({

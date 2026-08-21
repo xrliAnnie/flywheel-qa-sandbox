@@ -22,6 +22,7 @@ vi.mock("../bridge/tmux-lookup.js", async (importActual) => {
 		resolveCmuxAttachTarget: vi.fn(async () => ({
 			kind: "cmux" as const,
 			session: "cmux-FLY-560-claude-x",
+			windowName: "FLY-560-claude-x",
 		})),
 		// buildAttachCommand: real (from actual) — renders the asserted command.
 	};

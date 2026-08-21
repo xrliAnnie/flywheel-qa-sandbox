@@ -38,11 +38,10 @@ CANONICAL="belle-lead (com.flywheel.lead.personal-assistant-belle-lead → claud
 MODE="dry-run"   # dry-run | apply | verify
 
 LAUNCHCTL_BIN="${LAUNCHCTL_BIN:-launchctl}"
-# Prefer an absolute tmux if present (launchd PATH is bare), else fall back.
+# Follow the caller's PATH so every host entry point resolves the same upgraded
+# tmux.  An explicit TMUX_BIN remains available for launchd and tests.
 if [ -z "${TMUX_BIN:-}" ]; then
-  if [ -x /usr/local/bin/tmux ]; then TMUX_BIN=/usr/local/bin/tmux
-  elif [ -x /opt/homebrew/bin/tmux ]; then TMUX_BIN=/opt/homebrew/bin/tmux
-  else TMUX_BIN=tmux; fi
+  TMUX_BIN="$(command -v tmux || printf '%s\n' tmux)"
 fi
 
 usage() {

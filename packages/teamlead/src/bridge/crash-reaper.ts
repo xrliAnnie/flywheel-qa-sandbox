@@ -192,6 +192,12 @@ export async function reapCrashedRunners(
 		if (lookup.kind === "gone") continue;
 
 		const tmuxWindow = lookup.target.tmuxWindow;
+		// A Codex self-registration stays `:pending` until an immutable @id is
+		// committed. It is routing metadata, never liveness or reap authority.
+		if (tmuxWindow.endsWith(":pending")) {
+			result.indeterminateSuppressed++;
+			continue;
+		}
 		let liveness: RunnerLiveness;
 		try {
 			liveness = await deps.probeLiveness(tmuxWindow);

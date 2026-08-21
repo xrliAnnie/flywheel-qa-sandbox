@@ -338,9 +338,10 @@ function fakeTmux(
 				createdOverResidual = true;
 			}
 			if (!sessionExists) sessionExists = true;
-			windows.set(newId(), name);
+			const id = newId();
+			windows.set(id, name);
 			if (sameNameCount() > maxSameName) maxSameName = sameNameCount();
-			return { ok: true };
+			return { ok: true, stdout: id };
 		}
 		return { ok: true };
 	};
@@ -355,8 +356,12 @@ function fakeTmux(
 			return [...windows].map(([id, name]) => `${id} ${name}`).join("\n");
 		}
 		if (args.includes("display-message")) {
-			const present = [...windows.values()].includes(WINDOW);
-			return present && (opts.paneAlive ?? true) ? `${WINDOW} 0` : undefined;
+			const target = args[args.indexOf("-t") + 1];
+			const id = target?.split(":").at(-1);
+			const name = id ? windows.get(id) : undefined;
+			return name === WINDOW && (opts.paneAlive ?? true)
+				? `${id} ${WINDOW} 0`
+				: undefined;
 		}
 		return undefined;
 	};
@@ -385,6 +390,37 @@ function fakeTmux(
 }
 
 describe("ensureRunnerTuiWindow", () => {
+	it.each(["run-ended", "caller-cancel", "deadline"] as const)(
+		"preserves typed abort cause %s",
+		async (cause) => {
+			const controller = new AbortController();
+			controller.abort(cause);
+			await expect(
+				ensureRunnerTuiWindow(spec, { signal: controller.signal }),
+			).resolves.toEqual({
+				created: false,
+				category: "cancellation",
+				reason: "aborted",
+				abortCause: cause,
+			});
+		},
+	);
+
+	it("classifies an unavailable guarded session as retryable hold", async () => {
+		const t = fakeTmux();
+		await expect(
+			ensureRunnerTuiWindow(spec, {
+				exec: t.exec,
+				execOut: t.execOut,
+				ensureSession: () => false,
+			}),
+		).resolves.toEqual({
+			created: false,
+			category: "retryable-hold",
+			reason: "hold_lock_unavailable",
+		});
+	});
+
 	it("uses async collaborators so a slow tmux attempt does not block timers", async () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] });
 		let timerFired = false;
@@ -405,7 +441,10 @@ describe("ensureRunnerTuiWindow", () => {
 		});
 
 		const outcome = await outcomePromise;
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		expect(timerFired).toBe(true);
 	});
 
@@ -421,7 +460,10 @@ describe("ensureRunnerTuiWindow", () => {
 				return true;
 			},
 		});
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		expect(ensures).toBe(2);
 		expect(t.verbs()).not.toContain("new-session");
 	});
@@ -433,7 +475,10 @@ describe("ensureRunnerTuiWindow", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		// No stale same-named window → no kill; the verb sequence is
 		// probe → ensure → re-ensure → create (list-windows go through execOut).
 		expect(t.verbs()).toEqual([
@@ -453,7 +498,11 @@ describe("ensureRunnerTuiWindow", () => {
 		const t = fakeTmux({ tmuxAvailable: false });
 		await expect(
 			ensureRunnerTuiWindow(spec, { exec: t.exec, execOut: t.execOut }),
-		).resolves.toEqual({ created: false, reason: "tmux-absent" });
+		).resolves.toEqual({
+			created: false,
+			category: "permanent",
+			reason: "tmux_absent",
+		});
 		expect(t.execCalls).toHaveLength(1); // only the -V probe
 		expect(t.newWindowCalled()).toBe(false);
 	});
@@ -469,7 +518,11 @@ describe("ensureRunnerTuiWindow", () => {
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).resolves.toEqual({ created: false, reason: "create-failed" });
+		).resolves.toEqual({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "new_window_failed",
+		});
 	});
 
 	it("returns died when the pane dies during settle (the rollout-landing race)", async () => {
@@ -483,7 +536,11 @@ describe("ensureRunnerTuiWindow", () => {
 				execOut: t.execOut,
 				sleep: t.sleep,
 			}),
-		).resolves.toEqual({ created: false, reason: "died" });
+		).resolves.toEqual({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "window_died",
+		});
 	});
 
 	it("rejects a shell-unsafe session/window name up front", () => {
@@ -548,7 +605,10 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		// killed by IMMUTABLE id (@1), not by ambiguous name
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
 		expect(t.pileUp).toBe(false);
@@ -569,7 +629,10 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@1"]);
 		expect(t.execCalls).toContainEqual(["tmux", "kill-window", "-t", "@2"]);
 		expect(t.pileUp).toBe(false);
@@ -587,7 +650,10 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 		});
 		// killing @1 destroys the session; the re-ensure recreates it → verify finds
 		// zero FLY-1188 → create succeeds (would be a false create-failed without it).
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		expect(t.pileUp).toBe(false);
 		expect(t.maxSameName).toBeLessThanOrEqual(1);
 	});
@@ -605,7 +671,11 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(outcome).toMatchObject({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "stale_window_unproven",
+		});
 		// the crucial no-pile-up guarantee: NEVER new-window while a same-name remains
 		expect(t.newWindowCalled()).toBe(false);
 		expect(t.createdOverResidual).toBe(false);
@@ -626,7 +696,11 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			sleep: () => {},
 		});
 
-		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(outcome).toMatchObject({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "stale_window_unproven",
+		});
 		expect(calls.some((call) => call.includes("kill-window"))).toBe(false);
 		expect(calls.some((call) => call.includes("new-window"))).toBe(false);
 	});
@@ -638,7 +712,11 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(outcome).toMatchObject({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "stale_window_unproven",
+		});
 		expect(t.newWindowCalled()).toBe(false);
 	});
 
@@ -655,7 +733,11 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: false, reason: "create-failed" });
+		expect(outcome).toMatchObject({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "stale_window_unproven",
+		});
 		// cannot PROVE clean → never create
 		expect(t.newWindowCalled()).toBe(false);
 	});
@@ -674,7 +756,10 @@ describe("FLY-1239: provable stale purge (≤1 same-named window)", () => {
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		expect(outcome).toEqual({ created: true });
+		expect(outcome).toMatchObject({
+			created: true,
+			windowId: expect.any(String),
+		});
 		const killed = t.execCalls
 			.filter((c) => c[1] === "kill-window")
 			.map((c) => c[c.indexOf("-t") + 1]);
@@ -852,6 +937,10 @@ describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawne
 			sleep: t.sleep,
 		});
 		// must NOT claim "founder TUI up" for a dead pane; must classify as retryable died
-		expect(outcome).toEqual({ created: false, reason: "died" });
+		expect(outcome).toEqual({
+			created: false,
+			category: "retryable-transient-ipc",
+			reason: "window_died",
+		});
 	});
 });

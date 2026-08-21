@@ -532,7 +532,9 @@ tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/de
 
 # Mock cmux (no real cmux binary in CI): controlled workspace JSON referencing
 # the real tmux state, and capture close-workspace / refresh-surfaces.
-FLY293_OPS=""
+FLY293_OPS_FILE="$TMPDIR_ROOT/fly293-ops"
+: > "$FLY293_OPS_FILE"
+export FLY293_OPS_FILE
 cmux() {
   [[ "${1:-}" == "--socket" ]] && shift 2
   [[ "${1:-}" == "--json" ]] && shift
@@ -547,7 +549,7 @@ cmux() {
 ]}
 FLY293JSON
       ;;
-    close-workspace|refresh-surfaces) FLY293_OPS+="$*"$'\n' ;;
+    close-workspace|refresh-surfaces) printf '%s\n' "$*" >> "$FLY293_OPS_FILE" ;;
   esac
   return 0
 }
@@ -568,10 +570,11 @@ else
   fail "Scenario E: orphan_pin_refs wrong. out=[$d293_out]"
 fi
 
-FLY293_OPS=""
+: > "$FLY293_OPS_FILE"
 reap_orphan_pins_oneshot >/dev/null 2>&1
-if echo "$FLY293_OPS" | grep -q "close-workspace --workspace workspace:2" \
-   && ! echo "$FLY293_OPS" | grep -q "workspace:1"; then
+FLY293_OPS=$(cat "$FLY293_OPS_FILE")
+if grep -q "close-workspace --workspace workspace:2" "$FLY293_OPS_FILE" \
+   && ! grep -q "workspace:1" "$FLY293_OPS_FILE"; then
   pass "Scenario E: one-shot reaped orphan (workspace:2), never touched live runner (workspace:1)"
 else
   fail "Scenario E: reap wrong. ops=[$FLY293_OPS]"

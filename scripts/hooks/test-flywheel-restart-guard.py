@@ -57,7 +57,7 @@ def load_hook_module():
 
 
 # ── End-to-end runner: feed stdin JSON, capture stdout/exit ──────────────────
-def run_hook(stdin_data, env_extra=None) -> tuple[int, str]:
+def run_hook(stdin_data, env_extra=None, env_remove=()) -> tuple[int, str]:
     env = dict(os.environ)
     # Default isolation: audit log to a throwaway temp file unless the test
     # overrides it; alert cmd to /usr/bin/false so an unexpected bypass path
@@ -67,6 +67,8 @@ def run_hook(stdin_data, env_extra=None) -> tuple[int, str]:
     env.setdefault("FLYWHEEL_RESTART_GUARD_ALERT_CMD", "/usr/bin/false")
     if env_extra:
         env.update(env_extra)
+    for key in env_remove:
+        env.pop(key, None)
     if isinstance(stdin_data, (dict, list)):
         stdin_data = json.dumps(stdin_data)
     p = subprocess.run(
@@ -756,6 +758,182 @@ def t9_log_rotation():
             bad("T9 stale lock recovery", f"recovered={recovered} active={active}")
 
 
+# ── T10: FLY-1944 host-toolchain brew guard ──────────────────────────────────
+BREW_MUTATIONS = [
+    ("brew install tmux", "install"),
+    ("brew --debug install tmux", "global flag before mutation"),
+    ("/opt/homebrew/bin/brew reinstall tmux", "absolute-path reinstall"),
+    ("sudo -E /usr/local/bin/brew upgrade tmux", "wrapped absolute-path upgrade"),
+    ("env FOO=1 brew install tmux", "env wrapper"),
+    ("nohup brew install tmux", "nohup wrapper"),
+    ("command brew install tmux", "command wrapper"),
+    ("exec brew install tmux", "exec wrapper"),
+    ("time -p brew install tmux", "time wrapper"),
+    ("nice -n 5 brew install tmux", "nice wrapper with value flag"),
+    ("arch -x86_64 /usr/local/bin/brew install tmux", "arch wrapper"),
+    ("caffeinate brew install tmux", "caffeinate wrapper"),
+    ("timeout 60 brew install tmux", "timeout wrapper with duration"),
+    ("stdbuf -o0 brew install tmux", "stdbuf wrapper"),
+    ("setsid brew install tmux", "setsid wrapper"),
+    ("ionice -c 3 brew install tmux", "ionice wrapper with value flag"),
+    ("chrt -o 0 brew install tmux", "chrt wrapper with priority"),
+    ("corepack brew install tmux", "corepack wrapper"),
+    ("bash -lc 'brew unlink tmux'", "shell payload unlink"),
+    ("brew list && brew link tmux", "read then mutation"),
+    ("brew bundle", "bundle is fail-closed"),
+    ("brew services restart postgresql", "services is fail-closed"),
+    ("brew analytics on", "analytics on"),
+    ("brew analytics off", "analytics off"),
+    ("brew analytics regenerate-uuid", "analytics regenerate-uuid"),
+    ("brew gist-logs tmux", "gist-logs creates an external Gist"),
+    ("brew future-read-command tmux", "unknown future subcommand"),
+    (
+        "env --split-string='brew install tmux'",
+        "env split-string payload is scanned fail-closed",
+    ),
+    (
+        "env -S FOO=1 brew install tmux",
+        "env split-string assignment preserves and scans remaining command",
+    ),
+    (
+        "nice -n 5 env -S 'brew install tmux'",
+        "stacked value wrapper preserves env split-string payload",
+    ),
+    (
+        "timeout 60 env -S FOO=1 brew upgrade tmux",
+        "stacked positional wrapper preserves env split-string command tail",
+    ),
+    (
+        "env FLYWHEEL_EXEC_ID= brew install tmux",
+        "command-local empty EXEC_ID cannot impersonate a Lead",
+    ),
+]
+
+BREW_READS = [
+    ("brew list", "list"),
+    ("brew ls --versions tmux", "ls"),
+    ("brew info tmux", "info"),
+    ("brew deps tmux", "deps"),
+    ("brew outdated", "outdated"),
+    ("brew doctor", "doctor"),
+    ("brew config", "config"),
+    ("brew search tmux", "search"),
+    ("brew analytics state", "analytics state"),
+    ("brew --version", "option-only version"),
+    ("brew -v", "option-only short version"),
+    ("brew --prefix", "option-only prefix"),
+    ("brew --prefix tmux", "option-only prefix formula"),
+    ("/opt/homebrew/bin/brew --cellar tmux", "absolute-path cellar formula"),
+    ("brew --caskroom", "option-only caskroom"),
+    ("brew --repository", "option-only repository"),
+]
+
+
+def t10_brew_guard():
+    print("T10: FLY-1944 runner brew allowlist + Lead audit")
+    runner_env = {"FLYWHEEL_EXEC_ID": "fly-1944-test-exec"}
+    for cmd, name in BREW_MUTATIONS:
+        code, out = run_hook(bash_event(cmd), env_extra=runner_env)
+        if code == 0 and decision_of(out) == "deny" and "brew" in deny_reason(out):
+            ok(f"T10 runner mutation denied: {name}")
+        else:
+            bad(
+                f"T10 runner mutation: {name}",
+                f"exit={code} decision={decision_of(out)} reason={deny_reason(out)[:100]}",
+            )
+
+    for cmd, name in BREW_READS:
+        code, out = run_hook(bash_event(cmd), env_extra=runner_env)
+        if code == 0 and decision_of(out) == "allow":
+            ok(f"T10 runner read allowed: {name}")
+        else:
+            bad(f"T10 runner read: {name}", f"exit={code} decision={decision_of(out)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "guard.log"
+        code, out = run_hook(
+            bash_event("brew install tmux"),
+            env_extra={"FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+            env_remove=("FLYWHEEL_EXEC_ID",),
+        )
+        records = (
+            [json.loads(line) for line in log.read_text().splitlines()]
+            if log.exists()
+            else []
+        )
+        lead_allows = [
+            rec for rec in records
+            if rec.get("pattern") == "P5" and rec.get("decision") == "allow"
+        ]
+        if code == 0 and decision_of(out) == "allow" and len(lead_allows) == 1:
+            ok("T10 Lead/founder context allows mutation and writes one audit record")
+        else:
+            bad(
+                "T10 Lead/founder allow audit",
+                f"exit={code} decision={decision_of(out)} records={records}",
+            )
+
+    for cmd, expected_pattern, name in (
+        (
+            "brew install tmux && pnpm tsx scripts/run-bridge.ts",
+            "P3",
+            "Lead brew prefix cannot mask direct Bridge relaunch",
+        ),
+        (
+            'brew upgrade tmux; echo "* * * * * ~/Dev/flywheel/scripts/restart-services.sh" | crontab -',
+            "P4",
+            "Lead brew prefix cannot mask restart crontab write",
+        ),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(cmd),
+                env_extra={"FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            records = (
+                [json.loads(line) for line in log.read_text().splitlines()]
+                if log.exists()
+                else []
+            )
+            denied = [rec for rec in records if rec.get("decision") == "deny"]
+            if (
+                code == 0
+                and decision_of(out) == "deny"
+                and len(denied) == 1
+                and denied[0].get("pattern") == expected_pattern
+            ):
+                ok(f"T10 {name}")
+            else:
+                bad(
+                    f"T10 {name}",
+                    f"exit={code} decision={decision_of(out)} records={records}",
+                )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        args_file = os.path.join(tmp, "args.txt")
+        fake = make_fake_alert(tmp, "sent", args_file)
+        log = os.path.join(tmp, "guard.log")
+        cmd = (
+            'FLYWHEEL_RESTART_GUARD_BYPASS="founder-approved tmux cutover" '
+            "brew install tmux"
+        )
+        code, out = run_hook(
+            bash_event(cmd),
+            env_extra={
+                **runner_env,
+                "FLYWHEEL_RESTART_GUARD_LOG": log,
+                "FLYWHEEL_RESTART_GUARD_ALERT_CMD": fake,
+            },
+        )
+        alert_args = Path(args_file).read_text() if Path(args_file).exists() else ""
+        if code == 0 and decision_of(out) == "allow" and "--strict-delivery" in alert_args:
+            ok("T10 runner bypass reuses audit + strict-alert preconditions")
+        else:
+            bad("T10 runner bypass", f"exit={code} decision={decision_of(out)}")
+
+
 def main() -> int:
     if not HOOK.exists():
         print(f"FAIL: hook not found at {HOOK}")
@@ -771,6 +949,7 @@ def main() -> int:
     t7_unit()
     t8_real_lead_alert_integration()
     t9_log_rotation()
+    t10_brew_guard()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

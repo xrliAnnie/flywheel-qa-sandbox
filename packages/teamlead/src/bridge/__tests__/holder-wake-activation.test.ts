@@ -113,6 +113,32 @@ describe("FLY-1374 holder wake activation", () => {
 		read.close();
 	});
 
+	it("repairs a :pending CommDB row from discovered immutable identity before wake", async () => {
+		const session = seed("design_done");
+		const comm = new CommDB(commDbPath);
+		comm.registerSession(
+			"exec-1",
+			"flywheel:pending",
+			"flywheel",
+			"FLY-1374",
+			"flywheel-eng-lead",
+			"codex",
+			true,
+		);
+		comm.updateSessionStatus("exec-1", "completed");
+		comm.close();
+		const h = deps();
+
+		await expect(
+			activateHolderForWake(h.input, { session, cause: "workflow_rework" }),
+		).resolves.toEqual({ ok: true });
+		expect(h.input.discoverTmuxTarget).toHaveBeenCalledWith("exec-1");
+		expect(h.input.probeDiscoveredTarget).toHaveBeenCalledWith("flywheel:@42");
+		const read = new CommDB(commDbPath);
+		expect(read.getSession("exec-1")?.tmux_window).toBe("flywheel:@42");
+		read.close();
+	});
+
 	it.each(["missing", "ambiguous", "indeterminate"] as const)(
 		"holds a %s discovered target without status writes",
 		async (kind) => {

@@ -15,6 +15,7 @@ import {
 	AntigravityTmuxAdapter,
 	CodexTmuxAdapter,
 	KimiTmuxAdapter,
+	type RunnerTuiWindowLostEvidence,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
 } from "flywheel-claude-runner";
@@ -55,6 +56,7 @@ import {
 	isStateStoreIrreversibleTerminalForZombie,
 	type StateStore,
 } from "../StateStore.js";
+import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { ContinuityAudit } from "./continuity-audit.js";
@@ -320,6 +322,10 @@ async function createRunBlueprint(
 	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
 	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
+	onTuiWindowLost?: (
+		evidence: RunnerTuiWindowLostEvidence,
+	) => void | Promise<void>,
+	onTuiWindowRestored?: (executionId: string) => void | Promise<void>,
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -497,6 +503,10 @@ async function createRunBlueprint(
 					// package; IAgentTeamTransport satisfies it at runtime but the
 					// mailbox-message param variance needs the assert.
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
+					{
+						...(onTuiWindowLost ? { onTuiWindowLost } : {}),
+						...(onTuiWindowRestored ? { onTuiWindowRestored } : {}),
+					},
 				),
 		);
 		// FLY-493: Antigravity (`agy`) executor backend — v1 transport=none, so
@@ -668,6 +678,13 @@ export interface RunInfraOptions {
 	lifecycleLaunchGuard?: LifecycleLaunchGuard;
 	/** FLY-1718 P4: canonical predecessor admission before branch continuity. */
 	doaBackoffAdmission?: DoaBackoffAdmissionFn;
+	/** FLY-1944: typed terminal runner-window visibility evidence. */
+	onTuiWindowLost?: (
+		evidence: RunnerTuiWindowLostEvidence,
+	) => void | Promise<void>;
+	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
+	/** FLY-1944: process-local pre-claim quiescence evidence. */
+	admissionCrossingBarrier?: AdmissionCrossingBarrier;
 }
 
 export function resolveWorkflowTmuxWindowAuthority(
@@ -744,6 +761,7 @@ export function createRunInfraDispatcher(input: {
 	phaseRetryStartPointComputer?: PhaseRetryStartPointComputer;
 	continuityComputer?: ContinuityComputer;
 	freshStartAudit?: FreshStartAuditRecorder;
+	admissionCrossingBarrier?: AdmissionCrossingBarrier;
 	/** Test-only subclass seam for suppressing external CommDB registration. */
 	dispatcherClass?: typeof RunDispatcher;
 }): RunDispatcher {
@@ -775,6 +793,7 @@ export function createRunInfraDispatcher(input: {
 			isStateStoreIrreversibleTerminalForZombie(
 				input.store.getSession(executionId)?.status,
 			),
+		input.admissionCrossingBarrier,
 	);
 }
 
@@ -1057,6 +1076,8 @@ export async function setupRunInfrastructure(
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
 				skillFrameworkParticipation, // FLY-1356
+				runInfraOpts?.onTuiWindowLost,
+				runInfraOpts?.onTuiWindowRestored,
 			);
 
 			projectRuntimes.set(project.projectName, {
@@ -1251,6 +1272,7 @@ export async function setupRunInfrastructure(
 		phaseRetryStartPointComputer, // FLY-1257: branch B tip before retry TURN/launch
 		continuityComputer,
 		freshStartAudit: (record) => continuityAudit.recordFreshStart(record),
+		admissionCrossingBarrier: runInfraOpts?.admissionCrossingBarrier,
 	});
 }
 

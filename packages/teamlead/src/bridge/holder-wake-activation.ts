@@ -61,7 +61,7 @@ export async function activateHolderForWake(
 		db = deps.openCommDb(fresh.project_name);
 		const registered = db.getSession(fresh.execution_id);
 		let tmuxWindow = registered?.tmux_window?.trim();
-		if (!tmuxWindow) {
+		if (!tmuxWindow || tmuxWindow.endsWith(":pending")) {
 			const discovered = await deps.discoverTmuxTarget(fresh.execution_id);
 			if (discovered.kind !== "found") {
 				return {
