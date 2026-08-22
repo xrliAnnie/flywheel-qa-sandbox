@@ -83,7 +83,9 @@ beforeEach(() => {
 		},
 		storePath,
 	);
-	writeQuotaMonitorState(emptyQuotaMonitorState(4), statePath);
+	const state = emptyQuotaMonitorState(4);
+	state.lastCandidateSweepAt = NOW;
+	writeQuotaMonitorState(state, statePath);
 });
 
 afterEach(() => {
@@ -107,7 +109,145 @@ function writeConfig(trigger5hPct: number): void {
 	);
 }
 
+const noMachineDrift = async (): Promise<boolean> => true;
+
 describe("makeQuotaMonitorRuntime", () => {
+	it("skips healthy reconcile and throttles repeated attempts for one drift witness", async () => {
+		writeConfig(99);
+		let accessToken = "active-secret";
+		const reconcileMachine = vi.fn(async () => false);
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+			},
+			reconcileMachine,
+			readKeychainCredential: async () => ({
+				accessToken,
+				expiresAt: NOW + 3_600_000,
+			}),
+			fetchUsage: async () => usageResult(20, 20),
+			fetchIdentity: async () => ({
+				email: "shopping@example.com",
+				uuid: "uuid-shopping",
+			}),
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+		});
+
+		await runtime.tick();
+		expect(reconcileMachine).not.toHaveBeenCalled();
+
+		accessToken = "manual-login-secret";
+		await runtime.tick();
+		await runtime.tick();
+
+		expect(reconcileMachine).toHaveBeenCalledTimes(1);
+	});
+
+	it("captures manual login drift before refreshing every non-active slot", async () => {
+		writeConfig(99);
+		for (const [name, uuid] of [
+			["shopping", "uuid-shopping"],
+			["school", "uuid-school"],
+		] as const) {
+			writeFileSync(
+				join(poolDir, name, "identity-anchor.json"),
+				JSON.stringify({
+					accountUuid: uuid,
+					anchoredAt: "2026-08-13T12:45:00.000Z",
+					anchoredBy: "founder",
+					confirmedBy: "oauth-profile",
+					email: `${name}@example.com`,
+				}),
+				{ mode: 0o600 },
+			);
+		}
+		const due = emptyQuotaMonitorState(4);
+		due.lastCandidateSweepAt = 0;
+		writeQuotaMonitorState(due, statePath);
+		const order: string[] = [];
+		const verifyCandidate = vi.fn(async () => ({
+			fresh: "refreshed" as const,
+			expiresAt: NOW + 3_600_000,
+		}));
+		const runtime = makeQuotaMonitorRuntime({
+			now: () => NOW,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+			},
+			reconcileMachine: async () => {
+				order.push("reconcile");
+				writeFileSync(join(poolDir, ".active"), "school\n", { mode: 0o600 });
+				writeFileSync(
+					claudeJsonPath,
+					JSON.stringify({
+						oauthAccount: { emailAddress: "school@example.com" },
+					}),
+					{ mode: 0o600 },
+				);
+				writeStore(
+					{
+						generation: 5,
+						activeAccount: "school",
+						accounts: [{ name: "shopping" }, { name: "school" }],
+					},
+					storePath,
+				);
+				return true;
+			},
+			readKeychainCredential: async () => {
+				order.push("keychain");
+				return {
+					accessToken: "manual-school",
+					expiresAt: NOW + 3_600_000,
+				};
+			},
+			fetchIdentity: async () => ({
+				email: "school@example.com",
+				uuid: "uuid-school",
+			}),
+			fetchUsage: async () => usageResult(20, 20),
+			verifyCandidate,
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true }),
+			},
+			alert: async () => ({ primary: "sent" }),
+		});
+
+		await expect(runtime.tick()).resolves.toMatchObject({
+			outcome: "observed",
+		});
+		expect(order.slice(0, 2)).toEqual(["keychain", "reconcile"]);
+		expect(verifyCandidate).toHaveBeenCalledWith("shopping", "school");
+		expect(verifyCandidate).not.toHaveBeenCalledWith(
+			"school",
+			expect.anything(),
+		);
+		expect(JSON.parse(readFileSync(statePath, "utf8"))).toMatchObject({
+			lastCandidateSweepAt: NOW,
+			observedGeneration: 5,
+		});
+	});
+
 	it("captures each pane once for model detection, switch, revive, and delayed confirmation", async () => {
 		writeFileSync(
 			configPath,
@@ -191,6 +331,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		});
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => clock,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -278,6 +419,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		);
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => NOW,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -333,6 +475,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		const alerts: unknown[] = [];
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => clock,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -407,6 +550,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		const alerts: unknown[] = [];
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => NOW,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -495,6 +639,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		const fetchUsage = vi.fn(async () => usageResult(5, 5));
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => NOW,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -540,6 +685,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		);
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => clock,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,
@@ -590,6 +736,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		writeConfig(99);
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => NOW,
+			reconcileMachine: noMachineDrift,
 			paths: {
 				poolDir,
 				configPath,

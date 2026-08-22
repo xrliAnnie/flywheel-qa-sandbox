@@ -28,6 +28,7 @@ import {
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
+	reconcileClaudeProfile,
 } from "./claude-profile-cli.js";
 import {
 	verifyPoolCredential as defaultVerifyPoolCredential,
@@ -60,6 +61,8 @@ import {
 	listPoolAccounts,
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
+	readPoolMonitorCredentialSnapshot,
+	resolvePoolProfileIdentity,
 } from "./quota-monitor-credentials.js";
 import {
 	type DurableAlertIntent,
@@ -86,6 +89,8 @@ import {
 	type SwitchResult,
 } from "./switch-executor.js";
 
+const RECONCILE_RETRY_MS = 20 * 60_000;
+
 export interface QuotaMonitorPaths {
 	poolDir: string;
 	configPath: string;
@@ -106,6 +111,7 @@ export interface TmuxReviveDeps {
 export interface QuotaMonitorRuntimeOptions {
 	now?: () => number;
 	paths?: Partial<QuotaMonitorPaths>;
+	reconcileMachine?: () => Promise<boolean>;
 	readKeychainCredential?: () => Promise<MonitorCredential | null>;
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
 	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
@@ -177,6 +183,21 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 } {
 	const now = opts.now ?? Date.now;
 	const paths = resolvePaths(opts.paths);
+	const reconcileMachine =
+		opts.reconcileMachine ??
+		(() =>
+			reconcileClaudeProfile({
+				binPath: claudeProfileBinPath(),
+				env: {
+					FLYWHEEL_CLAUDE_PROFILES_DIR: paths.poolDir,
+					FLYWHEEL_CLAUDE_ACCOUNTS_PATH: paths.storePath,
+					FLYWHEEL_CLAUDE_ACCOUNTS_LOCK: paths.lockPath,
+					FLYWHEEL_CLAUDE_JSON: paths.claudeJsonPath,
+					FLYWHEEL_CLAUDE_TRANSITION_JOURNAL:
+						process.env.FLYWHEEL_CLAUDE_TRANSITION_JOURNAL ??
+						join(dirname(paths.storePath), "claude-account-transition.json"),
+				},
+			}));
 	const emitAlert = async (alert: QuotaMonitorAlert): Promise<DeliveryReport> =>
 		(await opts.alert(alert)) ?? { primary: "sent" };
 	const runAccountsLock = <T>(fn: () => Promise<T>) =>
@@ -235,6 +256,12 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 		});
 	const tmuxSocket = process.env.FLYWHEEL_QUOTA_TMUX_SOCKET ?? "default";
 	let projectionFailureStreak = 0;
+	let lastReconcileAttempt: {
+		authority: string;
+		live: string;
+		pooled: string | null;
+		at: number;
+	} | null = null;
 	const recordObservation = async (
 		name: string,
 		observation: AccountQuotaObservation,
@@ -278,6 +305,59 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	return {
 		async tick(): Promise<PollOnceResult> {
 			const config = loadQuotaMonitorConfig(paths.configPath);
+			const machineWitness = await runAccountsLock(async () => {
+				const store = readStore(paths.storePath);
+				const authority = resolveMachineAccount({
+					poolDir: paths.poolDir,
+					claudeJsonPath: paths.claudeJsonPath,
+					store,
+				});
+				const live = await readKeychain();
+				if (live === null) return null;
+				const pooled =
+					authority.kind === "resolved"
+						? readPoolMonitorCredentialSnapshot(paths.poolDir, authority.name)
+						: null;
+				return {
+					authority:
+						authority.kind === "resolved"
+							? `resolved:${authority.name}`
+							: authority.kind,
+					live: live.rawDigest ?? live.accessToken,
+					pooled: pooled?.rawDigest ?? pooled?.accessToken ?? null,
+					needsReconcile:
+						authority.kind !== "resolved" ||
+						pooled === null ||
+						(live.rawDigest !== undefined && pooled.rawDigest !== undefined
+							? live.rawDigest !== pooled.rawDigest
+							: live.accessToken !== pooled.accessToken),
+				};
+			});
+			if (machineWitness.kind === "ok" && machineWitness.value !== null) {
+				const witness = machineWitness.value;
+				if (!witness.needsReconcile) {
+					lastReconcileAttempt = null;
+				} else if (
+					lastReconcileAttempt === null ||
+					lastReconcileAttempt.authority !== witness.authority ||
+					lastReconcileAttempt.live !== witness.live ||
+					lastReconcileAttempt.pooled !== witness.pooled ||
+					now() - lastReconcileAttempt.at >= RECONCILE_RETRY_MS
+				) {
+					lastReconcileAttempt = { ...witness, at: now() };
+					try {
+						if (!(await reconcileMachine())) {
+							(opts.log ?? (() => undefined))(
+								"quota monitor could not reconcile the live Claude identity",
+							);
+						}
+					} catch (error) {
+						(opts.log ?? (() => undefined))(
+							`quota monitor live identity reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
+			}
 			const initialLock = await runAccountsLock(async () =>
 				readStore(paths.storePath),
 			);
@@ -433,6 +513,8 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				verifyCandidate,
 				fetchUsage,
 				fetchIdentity,
+				resolveIdentityName: async (identity) =>
+					resolvePoolProfileIdentity(paths.poolDir, identity),
 				recordObservation,
 				writeStatuslineCache: async (raw) =>
 					writeStatuslineCache(raw, paths.cachePath),

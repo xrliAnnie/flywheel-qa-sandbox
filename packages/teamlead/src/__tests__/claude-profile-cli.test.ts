@@ -9,7 +9,10 @@ import { EventEmitter } from "node:events";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
+import {
+	makeClaudeProfileSwitchDeps,
+	reconcileClaudeProfile,
+} from "../account-heal/claude-profile-cli.js";
 import {
 	ActiveMarkerDriftError,
 	type ApplyProfileReport,
@@ -47,6 +50,75 @@ function deps(
 		quotaPreverified,
 	});
 }
+
+describe("reconcileClaudeProfile", () => {
+	it("runs the existing reconcile command without inherited trust bypasses", async () => {
+		const execFile = vi.fn(async () => ({
+			stdout: JSON.stringify({
+				outcome: "repaired",
+				from: "personal1",
+				to: "personal",
+				displaySynced: true,
+			}),
+			stderr: "",
+		}));
+
+		await expect(
+			reconcileClaudeProfile({
+				binPath: BIN,
+				execFile: execFile as never,
+				env: {
+					FLYWHEEL_CLAUDE_LOCK_DELEGATED: "123",
+					FLYWHEEL_PROFILE_IDENTITY_BYPASS: "1",
+					FLYWHEEL_CLAUDE_FRESHNESS_BYPASS: "1",
+				},
+			}),
+		).resolves.toBe(true);
+		expect(execFile).toHaveBeenCalledWith(
+			BIN,
+			["reconcile"],
+			expect.objectContaining({
+				timeout: 60_000,
+				maxBuffer: 65_536,
+			}),
+		);
+		const childEnv = execFile.mock.calls[0][2].env as NodeJS.ProcessEnv;
+		expect(childEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED).toBeUndefined();
+		expect(childEnv.FLYWHEEL_PROFILE_IDENTITY_BYPASS).toBeUndefined();
+		expect(childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS).toBeUndefined();
+		expect(childEnv.FLYWHEEL_PROFILE_GROUP_LEADER).toBe("1");
+		expect(childEnv.FLYWHEEL_NODE_BIN).toBe(process.execPath);
+	});
+
+	it("accepts an already-consistent live identity", async () => {
+		const execFile = vi.fn(async () => ({
+			stdout: JSON.stringify({
+				outcome: "already_consistent",
+				freshened: true,
+				displaySynced: true,
+			}),
+			stderr: "",
+		}));
+
+		await expect(
+			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
+		).resolves.toBe(true);
+	});
+
+	it("fails closed when reconcile cannot prove a unique live identity", async () => {
+		const execFile = vi.fn(async () => ({
+			stdout: JSON.stringify({
+				outcome: "unresolvable",
+				reason: "anchor_ambiguous",
+			}),
+			stderr: "",
+		}));
+
+		await expect(
+			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
+		).resolves.toBe(false);
+	});
+});
 
 describe("makeClaudeProfileSwitchDeps", () => {
 	const DIGEST = "a".repeat(64);

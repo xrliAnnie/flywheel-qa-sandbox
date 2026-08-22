@@ -13,6 +13,7 @@ import {
 	readActiveProfileName,
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
+	resolvePoolProfileIdentity,
 } from "../account-heal/quota-monitor-credentials.js";
 
 const SECRET = "sk-ant-oat01-do-not-log";
@@ -38,7 +39,7 @@ function credential(accessToken = SECRET): string {
 }
 
 describe("quota monitor credential readers", () => {
-	it("reads only accessToken+expiresAt from Keychain and never puts the secret in argv", async () => {
+	it("reads token metadata plus a non-secret witness digest and never puts the secret in argv", async () => {
 		const execFile = vi.fn(async () => ({ stdout: credential(), stderr: "" }));
 		const result = await readKeychainMonitorCredential({
 			securityBin: "/usr/bin/security",
@@ -47,7 +48,11 @@ describe("quota monitor credential readers", () => {
 			keychain: "/tmp/scratch.keychain-db",
 			execFile,
 		});
-		expect(result).toEqual({ accessToken: SECRET, expiresAt: 1234 });
+		expect(result).toEqual({
+			accessToken: SECRET,
+			expiresAt: 1234,
+			rawDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+		});
 		expect(JSON.stringify(execFile.mock.calls)).not.toContain(SECRET);
 		expect(execFile).toHaveBeenCalledWith("/usr/bin/security", [
 			"find-generic-password",
@@ -122,5 +127,91 @@ describe("quota monitor credential readers", () => {
 		mkdirSync(outside);
 		symlinkSync(outside, join(poolDir, "business"));
 		expect(listPoolAccounts(poolDir)).toEqual(["school", "shopping"]);
+	});
+
+	it("resolves a probed oauth/profile identity through one strict pool anchor", () => {
+		for (const [name, uuid, email] of [
+			["shopping", "uuid-shopping", "shopping@example.com"],
+			["school", "uuid-school", "school@example.com"],
+		] as const) {
+			mkdirSync(join(poolDir, name));
+			writeFileSync(
+				join(poolDir, name, "identity-anchor.json"),
+				JSON.stringify({
+					accountUuid: uuid,
+					email,
+					anchoredAt: "2026-08-21T00:00:00.000Z",
+					anchoredBy: "test",
+					confirmedBy: "test",
+				}),
+				{ mode: 0o600 },
+			);
+		}
+
+		expect(
+			resolvePoolProfileIdentity(poolDir, {
+				email: "school@example.com",
+				uuid: "uuid-school",
+			}),
+		).toBe("school");
+	});
+
+	it("returns null for duplicate, malformed, or symlinked identity anchors", () => {
+		for (const name of ["school", "shopping"]) {
+			mkdirSync(join(poolDir, name));
+			writeFileSync(
+				join(poolDir, name, "identity-anchor.json"),
+				JSON.stringify({
+					accountUuid: "uuid-shared",
+					email: "shared@example.com",
+					anchoredAt: "2026-08-21T00:00:00.000Z",
+					anchoredBy: "test",
+					confirmedBy: "test",
+				}),
+				{ mode: 0o600 },
+			);
+		}
+		expect(
+			resolvePoolProfileIdentity(poolDir, {
+				email: "shared@example.com",
+				uuid: "uuid-shared",
+			}),
+		).toBeNull();
+
+		writeFileSync(join(poolDir, "shopping", "identity-anchor.json"), "{}", {
+			mode: 0o600,
+		});
+		rmSync(join(poolDir, "school", "identity-anchor.json"));
+		const outside = join(dir, "outside-anchor.json");
+		writeFileSync(outside, "{}", { mode: 0o600 });
+		symlinkSync(outside, join(poolDir, "school", "identity-anchor.json"));
+		expect(
+			resolvePoolProfileIdentity(poolDir, {
+				email: "shared@example.com",
+				uuid: "uuid-shared",
+			}),
+		).toBeNull();
+	});
+
+	it("rejects anchor fields containing control characters", () => {
+		mkdirSync(join(poolDir, "school"));
+		writeFileSync(
+			join(poolDir, "school", "identity-anchor.json"),
+			JSON.stringify({
+				accountUuid: "uuid-school\n",
+				email: "school@example.com",
+				anchoredAt: "2026-08-21T00:00:00.000Z",
+				anchoredBy: "test",
+				confirmedBy: "test",
+			}),
+			{ mode: 0o600 },
+		);
+
+		expect(
+			resolvePoolProfileIdentity(poolDir, {
+				email: "school@example.com",
+				uuid: "uuid-school",
+			}),
+		).toBeNull();
 	});
 });

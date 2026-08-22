@@ -57,7 +57,11 @@ const execFileAsync = promisify(nodeExecFile);
 type ExecFileFn = (
 	file: string,
 	args: string[],
-	options?: { env?: NodeJS.ProcessEnv },
+	options?: {
+		env?: NodeJS.ProcessEnv;
+		timeout?: number;
+		maxBuffer?: number;
+	},
 ) => Promise<{ stdout: string; stderr: string }>;
 
 type SpawnFn = typeof nodeSpawn;
@@ -211,6 +215,37 @@ export function claudeProfileBinPath(): string {
 	return (
 		process.env.FLYWHEEL_CLAUDE_PROFILE_BIN ?? "flywheel-claude-profile" // resolved on PATH as a last resort
 	);
+}
+
+export async function reconcileClaudeProfile(
+	deps: Pick<ClaudeProfileCliDeps, "binPath" | "execFile"> & {
+		env?: NodeJS.ProcessEnv;
+	},
+): Promise<boolean> {
+	const childEnv: NodeJS.ProcessEnv = {
+		...process.env,
+		...deps.env,
+		FLYWHEEL_NODE_BIN: process.execPath,
+		FLYWHEEL_PROFILE_GROUP_LEADER: "1",
+	};
+	delete childEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED;
+	delete childEnv.FLYWHEEL_LEASE_PROOF;
+	delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+	delete childEnv.FLYWHEEL_PROFILE_IDENTITY_BYPASS;
+	delete childEnv.FLYWHEEL_CLAUDE_QUOTA_BYPASS;
+	delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
+	try {
+		const { stdout } = await (deps.execFile ?? (execFileAsync as ExecFileFn))(
+			deps.binPath,
+			["reconcile"],
+			{ env: childEnv, timeout: 60_000, maxBuffer: 65_536 },
+		);
+		const outcome = (JSON.parse(stdout.trim()) as { outcome?: unknown })
+			.outcome;
+		return outcome === "already_consistent" || outcome === "repaired";
+	} catch {
+		return false;
+	}
 }
 
 export function makeClaudeProfileSwitchDeps(

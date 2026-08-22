@@ -1,4 +1,7 @@
-import type { ProfileIdentityResult } from "./account-identity.js";
+import type {
+	ProfileIdentity,
+	ProfileIdentityResult,
+} from "./account-identity.js";
 import {
 	type AccountEntry,
 	type AccountQuotaObservation,
@@ -40,6 +43,8 @@ const MODEL_PANE_SUPPRESSION_MAX_UNSEEN_MS = 24 * 60 * 60_000;
 export interface MonitorCredential {
 	accessToken: string;
 	expiresAt: number;
+	/** SHA-256 of the source credential JSON when available. */
+	rawDigest?: string;
 }
 
 export interface AccountSnapshot {
@@ -118,6 +123,8 @@ export interface QuotaMonitorDeps {
 	fetchUsage: (accessToken: string) => Promise<AccountUsageResult>;
 	/** Live profile lookup; always called after the account lock is released. */
 	fetchIdentity: (accessToken: string) => Promise<ProfileIdentityResult>;
+	/** Resolve a probed OAuth identity through the pool's immutable anchors. */
+	resolveIdentityName: (identity: ProfileIdentity) => Promise<string | null>;
 	recordObservation: (
 		name: string,
 		observation: AccountQuotaObservation,
@@ -285,16 +292,31 @@ async function commitSuccessfulObservation(
 
 async function readCandidateCredential(
 	deps: QuotaMonitorDeps,
+	snapshot: AccountSnapshot,
 	name: string,
 	refresh: boolean,
 ): Promise<{ credential: MonitorCredential | null; reason?: string }> {
 	return deps.withAccountsLock(async () => {
-		const identity = await deps.readIdentity();
-		if (identity.activeName === name) {
+		const witness = await deps.readSnapshot();
+		if (
+			snapshot.activeName === null ||
+			witness.activeName === null ||
+			witness.activeName !== snapshot.activeName ||
+			witness.store.generation !== snapshot.store.generation ||
+			(witness.activeCredential?.rawDigest !== undefined &&
+			snapshot.activeCredential?.rawDigest !== undefined
+				? witness.activeCredential.rawDigest !==
+					snapshot.activeCredential.rawDigest
+				: witness.activeCredential?.accessToken !==
+					snapshot.activeCredential?.accessToken)
+		) {
+			return { credential: null, reason: "active_witness_changed" };
+		}
+		if (witness.activeName === name) {
 			return { credential: null, reason: "became_active" };
 		}
 		if (refresh) {
-			const verdict = await deps.verifyCandidate(name, identity.activeName);
+			const verdict = await deps.verifyCandidate(name, witness.activeName);
 			if (verdict.fresh === "stale") {
 				// Keep the refusal reason: a bare "freshness_stale" told an operator
 				// nothing about whether the token family was dead or the probe failed.
@@ -318,14 +340,38 @@ async function sweepCandidates(
 	attemptedIdentityLabels: Set<string>,
 ): Promise<void> {
 	const now = deps.now();
-	for (const name of deps.config.config.order) {
+	state.lastCandidateSweepAt = now;
+	await deps.persistState(state);
+	if (snapshot.activeCredential === null || snapshot.activeName === null)
+		return;
+	const liveIdentity = await deps.fetchIdentity(
+		snapshot.activeCredential.accessToken,
+	);
+	if ("error" in liveIdentity) return;
+	const liveName = await deps.resolveIdentityName(liveIdentity);
+	if (liveName !== snapshot.activeName) return;
+	const witness = await deps.withAccountsLock(() => deps.readSnapshot());
+	if (
+		witness.activeName !== snapshot.activeName ||
+		witness.store.generation !== snapshot.store.generation ||
+		witness.activeCredential?.accessToken !==
+			snapshot.activeCredential.accessToken
+	) {
+		return;
+	}
+
+	const names = [
+		...new Set([...deps.config.config.order, ...snapshot.poolAccounts]),
+	];
+	for (const name of names) {
 		if (name === snapshot.activeName) continue;
 		const entry = snapshot.store.accounts.find(
 			(account) => account.name === name,
 		);
 		if (!entry || !snapshot.poolAccounts.includes(name)) continue;
-		if (isAuthUnusable(entry) || !isQuotaUsable(entry, now)) continue;
-		const { credential } = await readCandidateCredential(deps, name, false);
+		const checked = await readCandidateCredential(deps, snapshot, name, true);
+		if (checked.reason === "active_witness_changed") return;
+		const { credential } = checked;
 		if (credential === null || credential.expiresAt <= now) continue;
 		const candidateUsage = await deps.fetchUsage(credential.accessToken);
 		if ("ok" in candidateUsage) {
@@ -338,7 +384,6 @@ async function sweepCandidates(
 		}
 	}
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
-	state.lastCandidateSweepAt = now;
 	await deps.persistState(state);
 }
 
@@ -486,7 +531,7 @@ export async function verifyAndRankCandidates(
 			});
 			continue;
 		}
-		const checked = await readCandidateCredential(deps, name, true);
+		const checked = await readCandidateCredential(deps, snapshot, name, true);
 		if (checked.credential === null) {
 			panorama.push({
 				name,
@@ -1468,11 +1513,15 @@ export async function pollOnce(
 		await deps.persistState(state);
 	}
 	const sweepDue =
-		state.tier === "accelerated" &&
-		(state.lastCandidateSweepAt === null ||
-			now - state.lastCandidateSweepAt >=
-				deps.config.config.candidateSweepMinutes * 60_000);
-	if (scope === null && modelDetection === null && sweepDue) {
+		state.lastCandidateSweepAt === null ||
+		now - state.lastCandidateSweepAt >=
+			deps.config.config.candidateSweepMinutes * 60_000;
+	if (
+		!deps.config.monitorOnly &&
+		scope === null &&
+		modelDetection === null &&
+		sweepDue
+	) {
 		await sweepCandidates(deps, snapshot, state, attemptedIdentityLabels);
 	}
 	if (scope === null && modelDetection === null) {

@@ -146,6 +146,10 @@ function harness() {
 			return { email: `${label}@example.com`, uuid: `uuid-${label}` };
 		},
 	);
+	const resolveIdentityName = vi.fn(
+		async (identity: Exclude<ProfileIdentityResult, { error: string }>) =>
+			identity.email.split("@")[0] ?? null,
+	);
 	const verifyCandidate = vi.fn(async (name: string) => {
 		expect(lockDepth).toBe(1);
 		events.push(`verify:${name}`);
@@ -204,6 +208,15 @@ function harness() {
 			generation,
 		}),
 	);
+	const readSnapshot = vi.fn(async () => {
+		expect(lockDepth).toBe(1);
+		return {
+			activeName,
+			store: structuredClone(accountStore),
+			activeCredential: credentials[activeName] ?? null,
+			poolAccounts: Object.keys(credentials),
+		};
+	});
 
 	const deps: QuotaMonitorDeps = {
 		now: () => now,
@@ -221,15 +234,7 @@ function harness() {
 				lockDepth--;
 			}
 		},
-		readSnapshot: async () => {
-			expect(lockDepth).toBe(1);
-			return {
-				activeName,
-				store: structuredClone(accountStore),
-				activeCredential: credentials[activeName] ?? null,
-				poolAccounts: Object.keys(credentials),
-			};
-		},
+		readSnapshot,
 		readIdentity: async () => {
 			expect(lockDepth).toBe(1);
 			return { activeName, storeGeneration: generation };
@@ -241,6 +246,7 @@ function harness() {
 		verifyCandidate,
 		fetchUsage,
 		fetchIdentity,
+		resolveIdentityName,
 		recordObservation,
 		writeStatuslineCache: async (raw) => {
 			expect(lockDepth).toBe(1);
@@ -275,6 +281,8 @@ function harness() {
 		usages,
 		fetchUsage,
 		fetchIdentity,
+		resolveIdentityName,
+		readSnapshot,
 		verifyCandidate,
 		recordObservation,
 		switchImpl,
@@ -570,6 +578,7 @@ describe("pollOnce", () => {
 	});
 
 	it("observes active usage outside the lock, then revalidates and commits cache+state in one lock", async () => {
+		h.deps.state.lastCandidateSweepAt = NOW;
 		const result = await pollOnce(h.deps);
 
 		expect(result.outcome).toBe("observed");
@@ -1083,9 +1092,8 @@ describe("pollOnce", () => {
 		expect(h.fetchUsage).not.toHaveBeenCalled();
 	});
 
-	it("accelerates above the configured watermark and sweeps candidates without probe-refresh", async () => {
+	it("periodically proves the live identity and probe-refreshes every non-active pool slot", async () => {
 		h.usages.set("secret-shopping", usage(71, 20));
-		h.credentials.business.expiresAt = NOW - 1;
 
 		const result = await pollOnce(h.deps);
 
@@ -1094,15 +1102,93 @@ describe("pollOnce", () => {
 			NOW + h.deps.config.config.acceleratedPollMinutes * 60_000,
 		);
 		expect(result.state.lastCandidateSweepAt).toBe(NOW);
-		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-shopping");
+		expect(h.resolveIdentityName).toHaveBeenCalledWith({
+			email: "shopping@example.com",
+			uuid: "uuid-shopping",
+		});
+		expect(h.verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+			"business",
+		]);
 		expect(h.fetchUsage.mock.calls.map(([token]) => token)).toEqual([
 			"secret-shopping",
 			"secret-school",
+			"secret-business",
 		]);
 		expect(h.observations.map(({ name }) => name)).toEqual([
 			"shopping",
 			"school",
+			"business",
 		]);
+	});
+
+	it("runs the freshness sweep in the base tier and skips it when oauth/profile cannot prove the active anchor", async () => {
+		let result = await pollOnce(h.deps);
+		expect(result.state.tier).toBe("base");
+		expect(h.verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
+			"school",
+			"business",
+		]);
+
+		h = harness();
+		h.fetchIdentity.mockResolvedValueOnce({
+			email: "school@example.com",
+			uuid: "uuid-school",
+		});
+		result = await pollOnce(h.deps);
+		expect(h.fetchIdentity).toHaveBeenCalledWith("secret-shopping");
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(result.state.lastCandidateSweepAt).toBe(NOW);
+	});
+
+	it("abandons a due sweep when the active Keychain witness changes after oauth/profile proof", async () => {
+		h.fetchIdentity.mockImplementationOnce(async () => {
+			h.setIdentity("school", 5);
+			return {
+				email: "shopping@example.com",
+				uuid: "uuid-shopping",
+			};
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(h.resolveIdentityName).toHaveBeenCalled();
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+		expect(result.state.lastCandidateSweepAt).toBe(NOW);
+	});
+
+	it("aborts a sweep when the live Keychain witness changes before candidate refresh", async () => {
+		const snapshot = {
+			activeName: "shopping",
+			store: store(),
+			activeCredential: h.credentials.shopping,
+			poolAccounts: Object.keys(h.credentials),
+		};
+		h.readSnapshot
+			.mockResolvedValueOnce(snapshot)
+			.mockResolvedValueOnce(snapshot)
+			.mockResolvedValueOnce({
+				...snapshot,
+				activeName: null,
+				activeCredential: h.credentials.school,
+			});
+
+		await pollOnce(h.deps);
+
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
+	});
+
+	it("does not mutate pooled credentials in monitor-only mode", async () => {
+		h.deps.config = {
+			...h.deps.config,
+			monitorOnly: true,
+			config: { ...h.deps.config.config, order: [] },
+		};
+
+		await pollOnce(h.deps);
+
+		expect(h.verifyCandidate).not.toHaveBeenCalled();
 	});
 
 	it("weekly exhaustion triggers even when 5h is below its proactive threshold and ranks verified targets by 7d reset", async () => {
@@ -1375,7 +1461,7 @@ describe("pollOnce", () => {
 		expect(selected).toEqual(["business"]);
 	});
 
-	it("does not project failed candidate fetches and preserves sweep cooldown prefilter", async () => {
+	it("does not project failed candidate fetches and keeps quota-exhausted slots fresh", async () => {
 		h.usages.set("secret-shopping", usage(71, 20));
 		h.usages.set("secret-school", { error: "network" });
 		const nextStore = store();
@@ -1389,8 +1475,12 @@ describe("pollOnce", () => {
 		expect(h.fetchUsage.mock.calls.map(([token]) => token)).toEqual([
 			"secret-shopping",
 			"secret-school",
+			"secret-business",
 		]);
-		expect(h.observations.map(({ name }) => name)).toEqual(["shopping"]);
+		expect(h.observations.map(({ name }) => name)).toEqual([
+			"shopping",
+			"business",
+		]);
 	});
 
 	it("monitor-only and persisted switch cooldown stop before candidate freshness or switching", async () => {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { ProfileIdentity } from "./account-identity.js";
 import type { MonitorCredential } from "./quota-monitor.js";
 
 const execFileAsync = promisify(nodeExecFile);
@@ -73,7 +74,14 @@ export async function readKeychainMonitorCredential(
 				"security",
 			args,
 		);
-		return parseMonitorCredential(stdout.trim());
+		const raw = stdout.trim();
+		const credential = parseMonitorCredential(raw);
+		return credential === null
+			? null
+			: {
+					...credential,
+					rawDigest: createHash("sha256").update(raw).digest("hex"),
+				};
 	} catch {
 		return null;
 	}
@@ -137,4 +145,58 @@ export function listPoolAccounts(poolDir: string): string[] {
 	} catch {
 		return [];
 	}
+}
+
+export function resolvePoolProfileIdentity(
+	poolDir: string,
+	identity: ProfileIdentity,
+): string | null {
+	const matches = listPoolAccounts(poolDir).filter((name) => {
+		const path = join(poolDir, name, "identity-anchor.json");
+		try {
+			const stat = lstatSync(path);
+			if (
+				!stat.isFile() ||
+				stat.isSymbolicLink() ||
+				![0o400, 0o600].includes(stat.mode & 0o777) ||
+				(process.getuid !== undefined && stat.uid !== process.getuid())
+			) {
+				return false;
+			}
+			const value = JSON.parse(readFileSync(path, "utf8")) as Record<
+				string,
+				unknown
+			>;
+			const keys = Object.keys(value).sort();
+			const expected = [
+				"accountUuid",
+				"anchoredAt",
+				"anchoredBy",
+				"confirmedBy",
+				"email",
+			].sort();
+			if (
+				keys.length !== expected.length ||
+				keys.some((key, index) => key !== expected[index]) ||
+				Object.values(value).some(
+					(item) =>
+						typeof item !== "string" ||
+						item.length === 0 ||
+						Array.from(item).some((character) => {
+							const code = character.charCodeAt(0);
+							return code < 32 || code === 127;
+						}),
+				)
+			) {
+				return false;
+			}
+			return (
+				String(value.accountUuid).trim().toLowerCase() === identity.uuid &&
+				String(value.email).trim().toLowerCase() === identity.email
+			);
+		} catch {
+			return false;
+		}
+	});
+	return matches.length === 1 ? matches[0]! : null;
 }
