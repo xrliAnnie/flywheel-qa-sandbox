@@ -7,6 +7,16 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); printf '[TEST] ✓ %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '[TEST] ✗ %s\n' "$1" >&2; }
 
+make_socket_fixture_root() {
+  local prefix="$1" parent created
+  parent="$(cd /private/tmp 2>/dev/null && pwd -P)" \
+    || parent="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P)" \
+    || return 1
+  created="$(mktemp -d "$parent/$prefix.XXXXXX")" || return 1
+  [[ -n "$created" && -d "$created" ]] || return 1
+  printf '%s\n' "$created"
+}
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 JANITOR="$REPO_ROOT/scripts/flywheel-log-janitor.sh"
 INSTALLER="$REPO_ROOT/scripts/install-log-janitor.sh"
@@ -22,7 +32,7 @@ fi
 
 FAKE_BIN="$ROOT/bin"
 mkdir -p "$FAKE_BIN"
-for tool in bash date dirname du find grep id jq mkdir mktemp mv readlink rm rmdir sed shasum sort sqlite3 stat tail timeout tr; do
+for tool in bash date dirname du find grep id jq mkdir mktemp mv python3 readlink rm rmdir sed shasum sort sqlite3 stat tail timeout tr; do
   resolved="$(command -v "$tool" 2>/dev/null || true)"
   [[ -n "$resolved" ]] && ln -s "$resolved" "$FAKE_BIN/$tool"
 done
@@ -37,6 +47,7 @@ LEAD_HOME="$ROOT/codex-lead"
 INFRA_HOME="$ROOT/codex-infra"
 STATE_DIR="$ROOT/state"
 CLAUDE_HOME="$ROOT/home"
+DEFAULT_SOCKET_ROOT="$ROOT/tmux-sockets-default"
 mkdir -p \
   "$MAIN_HOME/archived_sessions" \
   "$MAIN_HOME/generated_images" \
@@ -44,7 +55,9 @@ mkdir -p \
   "$LEAD_HOME/generated_images" \
   "$INFRA_HOME/generated_images" \
   "$STATE_DIR" \
+  "$DEFAULT_SOCKET_ROOT" \
   "$CLAUDE_HOME/.claude/projects"
+chmod 700 "$DEFAULT_SOCKET_ROOT"
 
 OLD_MAIN_ARCHIVE="$MAIN_HOME/archived_sessions/old.jsonl"
 OLD_MAIN_IMAGE="$MAIN_HOME/generated_images/old.png"
@@ -60,6 +73,7 @@ run_janitor() {
   local -a extra_env=()
   local shell_bin="${JANITOR_TEST_SHELL:-bash}"
   extra_env+=("FLYWHEEL_JANITOR_REPORT_CHANNEL=${JANITOR_TEST_REPORT_CHANNEL:-}")
+  extra_env+=("FLYWHEEL_JANITOR_TMUX_SOCKET_ROOT=${JANITOR_TEST_SOCKET_ROOT:-$DEFAULT_SOCKET_ROOT}")
   if [[ -n "${JANITOR_TEST_LSOF_BIN+x}" ]]; then
     extra_env+=("LSOF_BIN=$JANITOR_TEST_LSOF_BIN")
   fi
@@ -83,6 +97,15 @@ run_janitor() {
   fi
   if [[ -n "${JANITOR_TEST_PUBLISH_TIMEOUT+x}" ]]; then
     extra_env+=("FLYWHEEL_JANITOR_PUBLISH_TIMEOUT_SECONDS=$JANITOR_TEST_PUBLISH_TIMEOUT")
+  fi
+  if [[ -n "${JANITOR_TEST_SOCKET_MIN_AGE+x}" ]]; then
+    extra_env+=("FLYWHEEL_JANITOR_TMUX_SOCKET_MIN_AGE_SECONDS=$JANITOR_TEST_SOCKET_MIN_AGE")
+  fi
+  if [[ -n "${JANITOR_TEST_SOCKET_PROBE_TIMEOUT+x}" ]]; then
+    extra_env+=("FLYWHEEL_JANITOR_TMUX_SOCKET_PROBE_TIMEOUT_SECONDS=$JANITOR_TEST_SOCKET_PROBE_TIMEOUT")
+  fi
+  if [[ -n "${JANITOR_TEST_SOCKET_DELETE_CAP+x}" ]]; then
+    extra_env+=("FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP=$JANITOR_TEST_SOCKET_DELETE_CAP")
   fi
   env -i \
     HOME="$CLAUDE_HOME" \
@@ -477,6 +500,14 @@ gate_preserved=0
 [[ -e "$gate_file" ]] || gate_preserved=1
 full_dry_out="$(run_janitor --dry-run 2>&1)"
 full_dry_rc=$?
+socket_scope_ok="$(jq -r --arg root "$DEFAULT_SOCKET_ROOT" '
+  .scope
+  | (.tmux_socket_root == $root
+    and .tmux_socket_uid >= 0
+    and .tmux_socket_min_age_seconds == 3600
+    and .tmux_socket_probe_timeout_seconds == 5
+    and .tmux_socket_allowlist == "default,atlas"
+    and .tmux_socket_delete_cap == 25)' "$STATE_DIR/full-dry-run-ok" 2>/dev/null || true)"
 mismatch_file="$MAIN_HOME/generated_images/mismatched-scope-old.png"
 printf 'mismatch\n' > "$mismatch_file"
 touch -t 202001010000 "$mismatch_file"
@@ -502,6 +533,7 @@ if [[ "$module_dry_rc" -eq 0 \
   && "$gate_rc" -ne 0 \
   && "$gate_preserved" -eq 0 \
   && "$full_dry_rc" -eq 0 \
+  && "$socket_scope_ok" == "true" \
   && "$mismatch_rc" -ne 0 \
   && "$mismatch_out" == *"matching full-scope dry-run"* \
   && "$rotated_apply_rc" -eq 0 \
@@ -516,7 +548,7 @@ if [[ "$module_dry_rc" -eq 0 \
   && "$gate_out" == *"full-scope dry-run"* ]]; then
   pass "runtime gate rejects module-only previews, survives audit rotation, and keeps force escape"
 else
-  fail "dry-run runtime gate failed (module_dry=$module_dry_rc gate=$gate_rc full_dry=$full_dry_rc mismatch=$mismatch_rc rotated=$rotated_apply_rc force=$force_rc full_apply=$full_apply_rc module_out=$module_dry_out gate_out=$gate_out full_out=$full_dry_out mismatch_out=$mismatch_out rotated_out=$rotated_apply_out force_out=$force_out final_out=$full_apply_out)"
+  fail "dry-run runtime gate failed (module_dry=$module_dry_rc gate=$gate_rc full_dry=$full_dry_rc socket_scope=$socket_scope_ok mismatch=$mismatch_rc rotated=$rotated_apply_rc force=$force_rc full_apply=$full_apply_rc module_out=$module_dry_out gate_out=$gate_out full_out=$full_dry_out mismatch_out=$mismatch_out rotated_out=$rotated_apply_out force_out=$force_out final_out=$full_apply_out)"
 fi
 STATE_DIR="$ORIGINAL_STATE_DIR"
 
@@ -756,6 +788,161 @@ if [[ "$report_failure_rc" -ne 0 \
 else
   fail "report retry contract failed (failure_rc=$report_failure_rc blocked_rc=$report_blocked_rc retry_rc=$report_retry_rc failure=$report_failure_out blocked=$report_blocked_out retry=$report_retry_out)"
 fi
+
+printf '[TEST] Case: tmux socket janitor deletes only conclusively dead, old, safe sockets\n'
+if ! SOCKET_ROOT="$(make_socket_fixture_root f44sock)"; then
+  fail "cannot create a canonical tmux socket fixture root"
+  exit 1
+fi
+chmod 700 "$SOCKET_ROOT"
+python3 - "$SOCKET_ROOT" <<'PY'
+import os
+import socket
+import sys
+
+root = sys.argv[1]
+for name in (
+    "dead-a.sock",
+    "dead-b.sock",
+    "dead-c.sock",
+    "live.sock",
+    "held.sock",
+    "lsof-error.sock",
+    "probe-timeout.sock",
+    "permission.sock",
+    "recent.sock",
+    "default",
+    "atlas",
+):
+    path = os.path.join(root, name)
+    sock = socket.socket(socket.AF_UNIX)
+    sock.bind(path)
+    sock.close()
+with open(os.path.join(root, "regular-file"), "w", encoding="utf-8") as handle:
+    handle.write("not a socket\n")
+os.symlink(os.path.join(root, "dead-a.sock"), os.path.join(root, "socket-link"))
+PY
+touch -t 202001010000 \
+  "$SOCKET_ROOT/dead-a.sock" \
+  "$SOCKET_ROOT/dead-b.sock" \
+  "$SOCKET_ROOT/dead-c.sock" \
+  "$SOCKET_ROOT/live.sock" \
+  "$SOCKET_ROOT/held.sock" \
+  "$SOCKET_ROOT/lsof-error.sock" \
+  "$SOCKET_ROOT/probe-timeout.sock" \
+  "$SOCKET_ROOT/permission.sock" \
+  "$SOCKET_ROOT/default" \
+  "$SOCKET_ROOT/atlas" \
+  "$SOCKET_ROOT/regular-file"
+
+cat > "$FAKE_BIN/tmux" <<'EOF'
+#!/usr/bin/env bash
+socket_path=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -S) shift; socket_path="${1:-}" ;;
+  esac
+  shift
+done
+case "${socket_path##*/}" in
+  live.sock) exit 0 ;;
+  probe-timeout.sock) sleep 5; exit 0 ;;
+  permission.sock) printf 'Permission denied\n' >&2; exit 1 ;;
+  *) printf 'no server running on %s\n' "$socket_path" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/tmux"
+cat > "$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *held.sock*) printf 'p123\n'; exit 0 ;;
+  *lsof-error.sock*) exit 2 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/lsof"
+
+JANITOR_TEST_SOCKET_ROOT="$SOCKET_ROOT"
+JANITOR_TEST_SOCKET_MIN_AGE=60
+JANITOR_TEST_SOCKET_PROBE_TIMEOUT=1
+JANITOR_TEST_SOCKET_DELETE_CAP=2
+socket_dry_out="$(run_janitor --dry-run --module tmux_dead_sockets 2>&1)"
+socket_dry_rc=$?
+if [[ "$socket_dry_rc" -eq 0 \
+  && -S "$SOCKET_ROOT/dead-a.sock" \
+  && "$socket_dry_out" == *"dead-a.sock"* \
+  && "$socket_dry_out" == *"would-delete"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/live.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/held.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/lsof-error.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/probe-timeout.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/permission.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/recent.sock"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/default"* \
+  && "$socket_dry_out" != *"would-delete $SOCKET_ROOT/atlas"* \
+  && -f "$SOCKET_ROOT/regular-file" \
+  && -L "$SOCKET_ROOT/socket-link" ]]; then
+  pass "dry-run identifies only dead, old, unheld sockets and never mutates the root"
+else
+  fail "tmux socket dry-run safety matrix failed (rc=$socket_dry_rc output=$socket_dry_out)"
+fi
+
+socket_apply_out="$(run_janitor --apply --force --module tmux_dead_sockets 2>&1)"
+socket_apply_rc=$?
+dead_remaining="$(find "$SOCKET_ROOT" -maxdepth 1 -type s -name 'dead-*.sock' | wc -l | tr -d ' ')"
+if [[ "$socket_apply_rc" -eq 0 \
+  && "$dead_remaining" -eq 1 \
+  && -S "$SOCKET_ROOT/live.sock" \
+  && -S "$SOCKET_ROOT/held.sock" \
+  && -S "$SOCKET_ROOT/lsof-error.sock" \
+  && -S "$SOCKET_ROOT/probe-timeout.sock" \
+  && -S "$SOCKET_ROOT/permission.sock" \
+  && -S "$SOCKET_ROOT/recent.sock" \
+  && -S "$SOCKET_ROOT/default" \
+  && -S "$SOCKET_ROOT/atlas" \
+  && -f "$SOCKET_ROOT/regular-file" \
+  && -L "$SOCKET_ROOT/socket-link" \
+  && "$(grep -c 'tmux-socket-delete-cap-deferred' "$STATE_DIR/audit.jsonl")" -ge 1 ]]; then
+  pass "apply deletes at most the configured dead-socket cap and preserves every unsafe or inconclusive case"
+else
+  fail "tmux socket apply safety/cap failed (rc=$socket_apply_rc remaining=$dead_remaining output=$socket_apply_out)"
+fi
+
+if ! UNSAFE_SOCKET_ROOT="$(make_socket_fixture_root f44unsafe)"; then
+  fail "cannot create the unsafe tmux socket fixture root"
+  rm -rf "$SOCKET_ROOT"
+  exit 1
+fi
+python3 - "$UNSAFE_SOCKET_ROOT/dead.sock" <<'PY'
+import socket
+import sys
+value = socket.socket(socket.AF_UNIX)
+value.bind(sys.argv[1])
+value.close()
+PY
+touch -t 202001010000 "$UNSAFE_SOCKET_ROOT/dead.sock"
+chmod 770 "$UNSAFE_SOCKET_ROOT"
+JANITOR_TEST_SOCKET_ROOT="$UNSAFE_SOCKET_ROOT"
+unsafe_socket_out="$(run_janitor --dry-run --module tmux_dead_sockets 2>&1)"
+unsafe_socket_rc=$?
+if [[ "$unsafe_socket_rc" -eq 0 \
+  && -S "$UNSAFE_SOCKET_ROOT/dead.sock" \
+  && "$unsafe_socket_out" != *"would-delete"* \
+  && "$(grep -c 'socket-root-owner-or-mode-unsafe' "$STATE_DIR/audit.jsonl")" -ge 1 ]]; then
+  pass "a group-writable socket root freezes the complete module"
+else
+  fail "unsafe tmux socket root was not fail-closed (rc=$unsafe_socket_rc output=$unsafe_socket_out)"
+fi
+rm -rf "$UNSAFE_SOCKET_ROOT"
+unset JANITOR_TEST_SOCKET_ROOT JANITOR_TEST_SOCKET_MIN_AGE \
+  JANITOR_TEST_SOCKET_PROBE_TIMEOUT JANITOR_TEST_SOCKET_DELETE_CAP
+rm -rf "$SOCKET_ROOT"
+rm -f "$FAKE_BIN/tmux"
+cat > "$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKE_BIN/lsof"
 
 printf '[TEST] Case: audit rotates at 10MB and summary includes per-module counts\n'
 dd if=/dev/zero of="$STATE_DIR/audit.jsonl" bs=1048576 count=11 >/dev/null 2>&1

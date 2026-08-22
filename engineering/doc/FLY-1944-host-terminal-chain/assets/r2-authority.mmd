@@ -1,0 +1,13 @@
+flowchart TD
+    R["身份收据(账本一行)<br/>记录:代号 + tab 编号 + 标题 + workspace 唯一 ID"]
+    J["现场三方核对(每次动手前重做)<br/>① cmux 现在的 tab/surface 清单<br/>② cmux 自己的持久状态文件里这块画面正在跑什么命令<br/>③ Lead 名册里它应该连到哪个会话"]
+    G["修复闸门(最后一道)<br/>0 个观看者 + 画面确认已死<br/>+ 连续两轮结论一致 + 预算未用完"]
+    A["才允许动手修<br/>(一次只修一个,全程留痕)"]
+    X["任何一项对不上 →<br/>只记录,绝不动手"]
+
+    R --> J --> G --> A
+    J -->|"对不上"| X
+    G -->|"不满足"| X
+
+    style A fill:#e6f9ec,stroke:#34c759
+    style X fill:#fdeceb,stroke:#ff3b30

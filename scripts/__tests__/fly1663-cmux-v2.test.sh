@@ -96,6 +96,7 @@ counter="$TMP/json-counter"
 printf '0\n' > "$counter"
 workspace_title=""
 surface_title=""
+send_payload=""
 cmux_socket_identity() { printf '%s\n' gen-1; }
 get_cmux_workspaces_json() {
   local n
@@ -116,11 +117,18 @@ _ledger_upsert() { printf 'ledger:%s:%s\n' "$1" "$3" >> "$calls"; return 0; }
 cmux_call_guarded() {
   local guard="$1" op="$2"
   shift 2
+  local command="" previous=""
   GUARD_WAS_BLOCKED=0
   "$guard" || { GUARD_WAS_BLOCKED=1; return 1; }
   printf 'cmux:%s\n' "$op" >> "$calls"
+  for argument in "$@"; do
+    if [[ "$previous" == "--command" ]]; then command="$argument"; break; fi
+    [[ "$op" == send ]] && command="$argument"
+    previous="$argument"
+  done
+  [[ "$op" == send ]] && send_payload="$command"
   case "$op" in
-    new-workspace) workspace_title="$expected"; surface_title="$expected" ;;
+    new-workspace) workspace_title="$command"; surface_title="$command" ;;
     rename-workspace) workspace_title="demo-ops-lead" ;;
     rename-tab) surface_title="demo-ops-lead" ;;
   esac
@@ -145,22 +153,31 @@ workspace_terminal_surface_ref() { printf '%s\n' surface:3; }
 surface_looks_like_bare_shell() { return 0; }
 if ensure_v2_lead_workspace demo-ops-lead "$socket" \
     && grep -qxF 'cmux:send' "$calls" \
+    && managed_attach_token_valid "$(managed_view_command_parse "${send_payload%$'\n'}" token 2>/dev/null)" \
     && ! grep -qxF 'cmux:new-workspace' "$calls"; then
-  pass "v1-to-v2 cutover keeps the receipted workspace ref and injects direct reconnect only into a bare shell"
+  pass "v1-to-v2 cutover keeps the ref and rotates a v2 token for bare-shell reconnect"
 else
   fail "same-ref reconnect transaction: [$(tr '\n' ',' < "$calls")]"
 fi
 
 : > "$calls"
+duplicate_token="fwtok1-fedcba9876543210fedcba9876543210"
+duplicate_raw=$(build_lead_attach_command "$socket" "$duplicate_token")
 get_cmux_workspaces_json() {
-  printf '%s\n' '{"workspaces":[{"ref":"workspace:9","title":"demo-ops-lead"},{"ref":"workspace:10","title":"'"$expected"'"}]}'
+  printf '%s\n' '{"workspaces":[{"ref":"workspace:9","title":"demo-ops-lead"},{"ref":"workspace:10","title":"'"$duplicate_raw"'"}]}'
+}
+workspace_title_for_ref() {
+  [[ "$1" == "workspace:9" ]] && printf '%s\n' demo-ops-lead || printf '%s\n' "$duplicate_raw"
 }
 ledger_candidate_receipt_state() {
   [[ "$2" == "workspace:9" ]] && printf '%s\n' committed || printf '%s\n' none
 }
+workspace_attach_liveness() {
+  [[ "$1" == "workspace:9" ]] && printf '%s\n' live || printf '%s\n' dead
+}
 if _v2_lead_cleanup_duplicates gen-1 workspace:9 demo-ops-lead "$socket" "$expected" \
-    && [[ "$(tr '\n' ',' < "$calls")" == "cmux:close-workspace," ]]; then
-  pass "committed v2 keeper safely removes only an exact raw duplicate"
+    && [[ ! -s "$calls" ]]; then
+  pass "single-sample v2 duplicate cleanup is report-only"
 else
   fail "v2 duplicate cleanup: [$(tr '\n' ',' < "$calls")]"
 fi

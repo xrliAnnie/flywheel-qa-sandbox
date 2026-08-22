@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph HOST["宿主机(tmux 侧)"]
+        TW["tmux 会话/窗口<br/>(runner 窗 + 14 个 Lead 私有会话)"]
+    end
+    subgraph CMUX["cmux 应用(founder 看的终端窗口)"]
+        SURF["surface(每个 tab 里的终端画面)<br/>跑一个 attach helper 小脚本"]
+        TAB["tab(侧栏里的一行)"]
+    end
+    EYE(["founder 的眼睛"])
+    TW -->|"helper 连接进来"| SURF --> TAB --> EYE
+
+    W["watcher 巡逻脚本<br/>(每 15-60 秒看一圈)"]
+    W -.->|"① 收编:给无收据的存量 tab<br/>补一张身份收据"| TAB
+    W -.->|"② 修复:画面死了就重启<br/>这块 surface(证据齐才动手)"| SURF
+    W -.->|"③ 回收:tab 关掉后把<br/>残留小进程清干净"| SURF
+
+    style EYE fill:#e8f0fe,stroke:#007aff
+    style W fill:#fff8e6,stroke:#ff9500

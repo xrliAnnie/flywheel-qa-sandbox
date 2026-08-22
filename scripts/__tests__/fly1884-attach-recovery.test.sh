@@ -28,7 +28,10 @@ cmux_call_guarded() {
   "$guard" || { GUARD_WAS_BLOCKED=1; return 1; }
   CMUX_OPS+="${CMUX_OPS:+$'\n'}$*"
 }
-_alert_cmux_cleanup() { ALERTS+="${ALERTS:+$'\n'}$3"; }
+_alert_cmux_cleanup() {
+  printf '%s\n' "$ALERTS" | grep -qxF "$3" \
+    || ALERTS+="${ALERTS:+$'\n'}$3"
+}
 
 ordinary_cmd="$(build_attach_command cmux-FLY-1884-qa)"
 i=1
@@ -38,9 +41,9 @@ while [[ "$i" -le 5 ]]; do
   i=$((i + 1))
 done
 if [[ "$(grep -c '^send ' <<< "$CMUX_OPS" || true)" == 3 \
-    && "$(grep -c '^respawn-pane ' <<< "$CMUX_OPS" || true)" == 1 \
-    && "$(awk -F'|' '{print $6}' "$ATTACH_HEAL_STATE")" == rebuilt ]]; then
-  ok "bare-shell recovery sends N times, then rebuilds exactly once"
+    && "$CMUX_OPS" != *respawn-pane* \
+    && "$(awk -F'|' '{print $6}' "$ATTACH_HEAL_STATE")" == dead ]]; then
+  ok "bare-shell recovery sends N times, then fails visible without destructive rebuild"
 else
   bad "ordinary retry budget drifted ops=[$CMUX_OPS] state=[$(cat "$ATTACH_HEAL_STATE" 2>/dev/null)]"
 fi
@@ -58,16 +61,23 @@ else
   bad "duplicate-title retries overwrote another ref state=[$(cat "$ATTACH_HEAL_STATE" 2>/dev/null)]"
 fi
 
-: > "$ATTACH_HEAL_STATE"; CMUX_OPS=""
+: > "$ATTACH_HEAL_STATE"; CMUX_OPS=""; ALERTS=""
+first=$(( $(date +%s) - 2 ))
+printf 'generation-a|workspace:2|FLY-1884-implement|view|1|observing-no-pty|%s|%s|100-1\n' \
+  "$first" "$first" > "$ATTACH_HEAL_STATE"
+CMUX_ADDITIVE_ROUND_ID=100-2
 recover_attach_surface view generation-a workspace:2 FLY-1884-implement surface:2 \
   "$ordinary_cmd" cmux-FLY-1884-implement no-pty
 recover_attach_surface view generation-a workspace:2 FLY-1884-implement surface:2 \
   "$ordinary_cmd" cmux-FLY-1884-implement no-pty
-if [[ "$(grep -c '^respawn-pane ' <<< "$CMUX_OPS" || true)" == 1 \
-    && "$(grep -c '^send ' <<< "$CMUX_OPS" || true)" == 0 ]]; then
-  ok "no-PTY diagnostic rebuilds immediately and idempotently"
+if [[ "$CMUX_OPS" != *respawn-pane* && "$CMUX_OPS" != *send* \
+    && "$CMUX_OPS" != *new-workspace* && "$CMUX_OPS" != *close-workspace* \
+    && "$(grep -c '连接失效 · no-pty · 仅上报' <<< "$CMUX_OPS" || true)" == 1 \
+    && "$(grep -c 'class=no-pty' <<< "$ALERTS" || true)" == 1 \
+    && "$(awk -F'|' '{print $5 "|" $6}' "$ATTACH_HEAL_STATE")" == '2|dead-no-pty' ]]; then
+  ok "no-PTY diagnostic is durably tagged and reported once without replacement"
 else
-  bad "no-PTY recovery mutated more than once ops=[$CMUX_OPS]"
+  bad "no-PTY report-only contract drifted ops=[$CMUX_OPS] state=[$(cat "$ATTACH_HEAL_STATE")] alerts=[$ALERTS]"
 fi
 
 : > "$ATTACH_HEAL_STATE"; CMUX_OPS=""
@@ -140,15 +150,21 @@ else
   bad "corrupt state was silent or mutated the pane ops=[$CMUX_OPS]"
 fi
 
-: > "$ATTACH_HEAL_STATE"; CMUX_OPS=""
+: > "$ATTACH_HEAL_STATE"; CMUX_OPS=""; ALERTS=""
 socket="$SB/private.sock"
 lead_cmd="$(build_lead_attach_command "$socket")"
+first=$(( $(date +%s) - 2 ))
+printf 'generation-a|workspace:5|growth-rafiki-lead|v2|1|observing-no-pty|%s|%s|200-1\n' \
+  "$first" "$first" > "$ATTACH_HEAL_STATE"
+CMUX_ADDITIVE_ROUND_ID=200-2
 recover_attach_surface v2 generation-a workspace:5 growth-rafiki-lead surface:5 \
   "$lead_cmd" "$socket" no-pty
-if [[ "$CMUX_OPS" == *"respawn-pane --workspace workspace:5 --surface surface:5 --command $lead_cmd"* ]]; then
-  ok "private-v2 rebuild uses the private-socket command producer"
+if [[ "$CMUX_OPS" != *respawn-pane* && "$CMUX_OPS" != *new-workspace* \
+    && "$CMUX_OPS" != *close-workspace* && "$CMUX_OPS" == *'连接失效 · no-pty · 仅上报'* \
+    && "$ALERTS" == *'title=growth-rafiki-lead|class=no-pty'* ]]; then
+  ok "private-v2 no-PTY recovery is tagged and reported without replacement"
 else
-  bad "private-v2 rebuild command drifted ops=[$CMUX_OPS]"
+  bad "private-v2 report-only contract drifted ops=[$CMUX_OPS] alerts=[$ALERTS]"
 fi
 
 printf '\nFLY-1884 attach recovery: %s passed, %s failed\n' "$pass" "$fail"

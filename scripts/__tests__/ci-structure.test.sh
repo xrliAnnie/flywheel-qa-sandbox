@@ -551,6 +551,10 @@ fly1364_commands = [
 ]
 expected_fly1364_commands = [
     "bash scripts/test-cmux-sync.sh",
+    "bash scripts/__tests__/fly1944-attach-protocol.test.sh",
+    "bash scripts/__tests__/fly1944-birth-adoption.test.sh",
+    "bash scripts/__tests__/fly1944-dead-view-rebuild.test.sh",
+    "bash scripts/__tests__/fly1944-helper-reap.test.sh",
     "bash scripts/__tests__/fly1884-view-attach.test.sh",
     "bash scripts/__tests__/fly1884-attach-recovery.test.sh",
     "bash scripts/__tests__/fly1884-node-presence.test.sh",

@@ -1,0 +1,9 @@
+flowchart LR
+    P0["合入 + 班车部署<br/>(收编阀门固定为<br/>每轮只动 1 个)"] --> C1["单个 tab 试点<br/>盯着它收编+体检全绿"]
+    C1 --> P1["放量收编全部 Lead tab<br/>(约 5-13 分钟收敛)<br/>全面体检绿"]
+    P1 --> WAVE["下一次平常班车重启<br/>= 第一场真考试<br/>5 分钟内全部 tab 自动恢复?"]
+    WAVE -->|"绿"| W2["才允许开 tmux 升级窗口<br/>(founder 拍板的 W2)"]
+    WAVE -->|"不绿"| STOP(["停:排查/回滚<br/>绝不拿升级窗口当实验"])
+
+    style W2 fill:#e6f9ec,stroke:#34c759
+    style STOP fill:#fdeceb,stroke:#ff3b30

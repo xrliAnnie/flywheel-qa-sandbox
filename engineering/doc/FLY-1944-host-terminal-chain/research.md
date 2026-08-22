@@ -1,132 +1,149 @@
-# FLY-1944 宿主终端链收口 — 调研
+# FLY-1944 宿主终端链收口 · 第二轮 — 调研
 
 Issue: FLY-1944 (https://linear.app/geoforge3d/issue/FLY-1944/宿主终端链-tmux-统一升级-brew-护栏-cmux-守护看门狗并-19501951)
 日期: 2026-08-21
-基于: exploration.md
+基于: exploration.md(第二轮)
 
-> 方法:四路并行代码审计(watcher / TUI 锁 / tmux 路径与 brew 面 / playwright)+ 本 runner 宿主只读实测。所有断言带 文件:行号 或标注 [实测 2026-08-21]。
+> 方法:三路并行只读审计(#912/#907 已合入面 / cmux app 控制面 / 在飞撞车面)+ 本 runner 宿主只读实测与事故窗日志取证。承重断言均带 文件:行号 或 [实测 2026-08-21];审计 agent 的两条关键断言经本人复核后**一条被推翻**(见 §5.1),引用时以本文为准。
+> 行号基线 = `d97bd1173`(main,含 #912+#907)。`flywheel-cmux-sync.sh` 在 #907 中 +2278 行,任何早于它的行号引用已作废。
 
 ## 0. 会过期的结论表(续接者先读)
 
 | 结论 | as-of | 重核命令 |
 |---|---|---|
-| Intel brew tmux 3.5a linked / ARM 3.7c unlinked | 2026-08-21 | `ls /usr/local/Cellar/tmux /opt/homebrew/Cellar/tmux; which -a tmux` |
-| Intel 侧可升 3.7c(bottle 556KB + 6 依赖) | 2026-08-21 | `HOMEBREW_NO_AUTO_UPDATE=1 /usr/local/bin/brew upgrade --dry-run tmux` |
-| runner pane 继承 `FLYWHEEL_LEAD_ID`、有 `FLYWHEEL_EXEC_ID` | 2026-08-21 本 runner env | 在任一 runner pane `env \| grep -E "FLYWHEEL_(LEAD|EXEC)_ID"` |
-| runner shell `proc_translated=1`(Rosetta) | 2026-08-21 | `sysctl -n sysctl.proc_translated` |
-| `~/.claude/settings.json` playwright=true、无 HEADLESS env、无 receipt | 2026-08-21(转引 FLY-1867 plan.md:49 + 审计复核) | `python3 -c "import json;d=json.load(open('$HOME/.claude/settings.json'));print(d.get('enabledPlugins',{}).get('playwright@claude-plugins-official'),d.get('env',{}).get('PLAYWRIGHT_MCP_HEADLESS'))"` |
-| 生产 Bridge buildSha=f4d789396=main HEAD;dist 与 src 的 ensure 日志模板一致(无 `/2` 分母) | 2026-08-21 | `curl -s localhost:9876/health \| jq .buildSha` + grep dist |
-| 宿主有两个 `--watch` 进程(79610 持锁,20795 supervised 等待) | 2026-08-21 | `pgrep -fl "flywheel-cmux-sync"; cat /tmp/flywheel-cmux-watcher.lock/owner` |
-| 行号引用基于分支 `flywheel-FLY-1944`(fork 自 main f4d789396) | 2026-08-21 | 行号漂移用 `git log -S "<锚文本>"` 重定位 |
+| **13 个存量 v2 Lead workspace 每 pass 被 `unreceipted same-title workspace preserved` 挡回,heal 不可达**(仅 workspace:107 flywheel-eng-lead 有 committed receipt) | 2026-08-21 15:20 PT 日志仍在刷 | `tail -400 /tmp/flywheel-cmux-watcher.log \| grep unreceipted`;`cat ~/.flywheel/state/cmux-view-ledger \| grep lead` |
+| **growth-mufasa-lead / flywheel-codex-infra-bot-lead(codex 载体)在 cmux 无任何 tab**;12:05 PT 窗曾被 stale prepared 行(`Terminal 34/38` drift)占槽拒建,cmux generation 更替后 rename-lag 消息停了,但 tab 仍未出现 | 2026-08-21 15:2x PT | `cmux --json list-workspaces \| grep -E "mufasa\|codex-infra"`;`grep Rename-lag /tmp/flywheel-cmux-watcher.log \| tail` |
+| 12 个 `flywheel-view-attach.sh cmux-FLY-202-*` 孤儿 helper 空转(cmux 中 FLY-202 workspace=0;几小时内 9→12 增长) | 2026-08-21 22:2xZ | `ps -axo command \| grep flywheel-view-attach \| grep -c FLY-202` |
+| `/private/tmp/tmux-501/`:103 socket 文件,101 死;活 server 仅 `default`/`atlas`。宿主 `pgrep -x tmux` 总数 52(14 Lead 私有 + default + atlas = 16 可解释,~36 未归属) | 2026-08-21 22:0xZ | exploration.md §1 同行 |
+| `respawn-pane` 在 cmux 0.61.0 (73) `--help` 存在(tmux compat),`capabilities` 139 method 无 `*.respawn`;FLY-1884 全程无真机生效实录 | 2026-08-21 | `cmux --help \| grep respawn; cmux capabilities \| grep -ic respawn` |
+| deployed-sha=`d97bd1173`;watcher pid 6799(12:05:54 PT 起)心跳新鲜 | 2026-08-21 22:07Z | exploration.md §1 同行 |
+| 在飞撞车面仅 #911(FLY-1940,Codex daemon 进程组/socket 收割);#772/#248 为僵尸 PR 勿当在飞 | 2026-08-21 | `gh pr list --state open --limit 60` |
 
-## 1. W1:cmux-sync watcher
+## 1. 现状拓扑(founder 眼睛到 tmux 的完整链)
 
-主体:`scripts/flywheel-cmux-sync.sh`(9837 行)。守护:launchd `com.flywheel.cmux-watcher`,KeepAlive=true,ThrottleInterval=30(`scripts/com.flywheel.cmux-watcher.plist.template:21-23`),入口 `scripts/flywheel-cmux-autostart.sh`(supervised 分支 `exec` 掉自己 :61 → launchd 直管真 watcher)。
+### 1.1 四层进程树(每个 cmux workspace surface)
 
-### 1.1 主循环与节拍
+```
+cmux.app (pid 96759, 原生 macOS app, socket /tmp/cmux.sock)
+ └─ /usr/bin/login
+     └─ -/bin/zsh
+         └─ helper:
+              runner 镜像: /bin/bash ~/.flywheel/bin/flywheel-view-attach.sh cmux-<窗名>
+              v2 Lead:     env -u TMUX ~/.flywheel/bin/flywheel-lead-attach.sh ~/.flywheel/sock/fw-*.sock
+             └─ tmux attach-session(仅当目标 session 活着)
+```
 
-- `watch_loop()` sync.sh:8523-8592。健康 tick=15s(:8527),睡眠在循环开头(:8532)。退化 backoff:≤1 失败 15s / ≤5→30s / ≤10→60s / >10→300s(`next_sleep_seconds` :366-377)。
-- 健康态睡眠是**一整条 `sleep`**(`reopen_aware_sleep` :8476),不可中断;unhealthy 态才按 `FLYWHEEL_CMUX_SOCKET_PROBE_SLICE`(默认 3s,:8480)切片、纯 `stat` 探 socket 提前醒。→ D1d 的 event 切片有现成形态可抄。
-- 每 tick:maintenance checkpoint(:8535)→ begin_pass lease 自检(:8544)→ `cmux_health_check_or_die`(:8557)→ reopen 探测(:8563)→ `drain_events`(:8579)→ pending cleanups / close requests(:8580-8582)→ **tick%4==0 时 `sync_additive`**(60s 全量对账,:8583-8585)→ finish_pass(:8590)。
+- helper 是 #907 引入的**常驻 2s 重连循环**(session 消失时显示「等待重建后自动重连…」),对 session 重建免疫——也因此对「workspace 已关」免疫:**无退出条件,孤儿全靠外部回收(现在没有)**。
+- **存量并存三代载体**:①最老的一次性裸 `tmux attach -t '=cmux-…'`(workspace:93/94/103 标题仍是命令原文);②`env -u TMUX tmux -S <sock> attach` 一次性 Lead 形态(13 个存量 Lead tab);③helper 化(#907 后新建的)。#907 只改了**新建**路径的命令构造(`build_attach_command:3572` / `build_lead_attach_command:3610`),存量不迁移。
 
-### 1.2 三大卡死路径(均不触发任何现有退出条件)
+### 1.2 账本与 roster(「应该存在什么」的四个权威,无单一 registry)
 
-1. **裸 maintenance marker 永久停车**:`maintenance_requested()` :8897-8901 对三个 marker 任一存在即真(`~/.flywheel/state/cmux-maintenance{,.qa-teardown,.ops-rebuild}`,:101-103);checkpoint 循环 :9560-9600 只 reap 后两个 claim(需死主两次观测),**裸 marker 无人清**;`release_logged` latch(:9568-9569)让"yielding"只打印一次 → 此后完全静默 1s 空转。仓库内**无裸 marker 写入方**(grep 全仓只有读取与拒绝检查)= 运维手工暂停开关,忘删即永久盲。
-2. **cmux IPC 全部无 timeout**:`cmux ping` :276、`cmux_call` :388、`cmux_call_guarded` :426、`list-workspaces` :1165、裸 `read-screen` :2265。Electron 半开 socket → 永久阻塞在每 tick 第一个 ping,连 backoff 日志都不会有。仓库已有 `scripts/lib/bounded-run.sh`,但主循环一处未用(仅 autostart.sh:48 的 meta-alert 用了)。
-3. **tmux 调用 173 处无 timeout**;`scripts/lib/tmux-server-rescue.sh` 未被 sync.sh source(:157-198 只 source census/lead-address/alert-lib)。
+| 权威 | 位置 | 管什么 |
+|---|---|---|
+| view-ledger | `~/.flywheel/state/cmux-view-ledger`(`flywheel-cmux-sync.sh:99`) | 窗镜像 workspace 收据,行 = `prepared\|committed \| generation \| ref \| title`。实测 22 committed + 1 prepared |
+| node-registry/ledger | `cmux-node-registry` / `cmux-node-ledger`(`:117-118`) | FLY-1884 node 占位 tab(仅 runner execution,不含 Lead) |
+| Lead roster | launchd `com.flywheel.lead.*.plist` → `derive_lead_roster()`(`:617`) | v2 Lead 应有集,行 = `carrier\|label\|expected-title\|socket` |
+| runner roster | Bridge `GET /api/sessions?mode=live`(`bridge/tools.ts:148-160`) | 活 runner 节点(六态投影,FLY-1884 修正过 `mode=active` 漏 `pending/design_done` 的坑) |
 
-现有退出条件穷举(sync.sh:9484-9501 连续 3 轮失权 fail-loud exit 1;:316-324 cmux 鉴权拒 exit 1;启动期锁占用/畸形/marker 存在 exit 0;SIGINT/TERM)——**没有 stall 检测**。KeepAlive 只救"死了",不救"活着不动"。
+cmux 自己的唯一持久态:`~/Library/Application Support/cmux/session-com.cmuxterm.app.json`(schema 含每 workspace 的 `processTitle` = **surface 启动 argv 全文**;实测 40 行与 `list-workspaces` 一致,mtime 新鲜)。**这推翻了 FLY-1884 research.md:120-129「无法证明 surface ownership」的 hard-gate 结论**——写盘时机未知,不能当实时源,但可当 ownership 佐证。app 不落地任何本地日志(全盘搜索空;遥测走 Sentry/PostHog 远端);可 tail 的只有 `/tmp/flywheel-cmux-watcher.log`(transition-only,静默是常态)。
 
-### 1.3 日志与心跳
+## 2. 事故取证(第二轮立单的三个现场,全部有日志/进程证据)
 
-- 日志 `/tmp/flywheel-cmux-watcher.log`(plist:24-25 与 autostart:10,61 双指向);transition-only 设计静默(:303-306、:348-358),**mtime 不能当心跳**。
-- 可用副作用心跳及失真前提:`~/.flywheel/state/cmux-roster-episodes`(60s 相位无条件 touch,:783;maintenance 期冻结)/ `/tmp/flywheel-cmux-stale.state`(:7371 每 60s pass 末 touch;**空舰队时提前 return 冻结** :7366-7367)。
-- **反向探针**:`/tmp/flywheel-cmux-events`(:46)存在且 mtime 超龄 = drain 死了(健康 watcher ≤15s 清空)。
-- lease:目录锁 `/tmp/flywheel-cmux-watcher.lock`,owner 文件 `pid|incarnation|mode|nonce`(:9059-9087 只在获取时写一次,mtime 恒旧);owner 判活 `kill -0` + `ps -o lstart=`(TZ=UTC,:8829-8834);解析器现成:`scripts/lib/restart-cmux-watcher.sh:38-54`。
-- [实测] 当前健康:roster-episodes 27s 前刷新;**两个 `--watch` 进程共存**(79610 持锁 + 20795 supervised 等待,:9730-9738 的 FLY-177 语义)→ watchdog kill 目标必须锚定 lease owner。
+### 2.1 19:1xZ Lead tab 空白 — 根因链已定位:**preserve 守卫把全部存量 Lead 锁在 heal 之外**
 
-### 1.4 新窗口镜像延迟
+`ensure_v2_lead_workspace`(`flywheel-cmux-sync.sh:3765`)对已存在的同 title workspace:
 
-- hook(`after-new-window[500]` per-session :7047-7048;`session-created` global :7063-7064 等)写 event 文件 ≈0 延迟 → **drain 等待 = 最多一个 tick(健康 0-15s,均值 ~7.5s)** → `create_workspace_for_window` 1-4s(:6549-6803,尾部最多 3×sleep1 verify :6796-6801)。
-- 兜底:hook 丢失 → 60s additive 补建(:7531-7538);unhealthy → backoff 至 300s;maintenance park → 无上限。
-- **没有亚秒路径;pane-died/window-unlinked 只用于清理,create 侧只有 after-new-window。**
+```
+state=$(ledger_candidate_receipt_state ...)        # 存量 stock 无 receipt → "none"
+if [[ "$kind" == "named" && "$state" == "none" ]]; then
+  log "WARN: unreceipted same-title workspace preserved for v2 Lead $title"
+  return 0                                          # ← 在 _v2_lead_heal_surface 之前返回
+fi
+```
 
-### 1.5 fork 开销(D② 依据)
+- 注释写明设计意图:「named 且无收据的行可能是 founder 自己的 workspace,只有 exact raw helper 语法才够格 mint ownership」——但存量 13 个 Lead tab 是 pre-#907 的一次性 `env -u TMUX tmux -S <sock> attach` 形态,**不匹配 helper 语法 → 永远 preserve**。
+- 事故窗(12:05-12:06 PT)与此刻(15:20 PT)日志均在刷全部 13 个 Lead 的 WARN,~90s 一轮 [实测]。
+- `_v2_lead_heal_surface`(`:3688`)本身是完整的五分类(healthy / missing / bare / no-pty / unclassified)+ `recover_attach_surface v2` 修复;判空信号 = `tmux -S <sock> has-session` + `_private_session_client_count`+`surface_looks_like_bare_shell`。**代码在,可达性为零。**
+- 结论:19:1xZ「workspace 在册、surface 在、连接死」的 Lead tab,watcher 每 90 秒看一眼、每次都说「可能是 founder 的,不动」。founder 手工重建的新 tab(workspace:107 flywheel-eng-lead)反而拿到了 committed receipt,成为唯一受 heal 保护的 Lead tab [实测:view-ledger 仅此一条 lead 行]。
 
-- 静态:`tmux ` 173 处、`cmux_call` 45 处、`python3` 48 处、`get_cmux_workspaces_json` **40 个调用点**(每次 = mktemp+cmux+cat+rm,:1164-1168)。
-- 空闲 tick ≈25-30 fork,其中 `mutator_lease_owned_by_self` 每 tick 被调**两次**(:9589 与 :9477)各 ~9 fork(wc/cat/awk/sed/ps 解析一个 4 字段单行文件,纯 bash 可 0 fork)。
-- 60s pass ≈ `300 + 40×W + 15×L` fork(W=窗口数,L=Lead 数);10 窗 3 Lead ≈ **750 fork/min**。`get_tmux_agent_windows` 每 pass 重复 4 次(:7485/:6976/:3272/:3359)。单次 create ≈60-80 fork。
-- 已有的唯一复用优化:create 内 snapshot 复用(:6551-6554);唯一进程内缓存:REOPEN_CACHE(:1135-1138,只盖 generation 文件)。
-- **FLY-1929 存档裁决**(verification-and-scope.md §2-3):cmux-sync 占全机 churn 22.8%(独立归因实测),砍半只降总量 ~11%,不改变 panic 与否(voucher-guard 已兜);15s 节拍写进契约(sync.sh:7262 "events drain within 15s of firing");建议单独 QA(test-cmux-sync 570 例隔离 socket)。
-- **Rosetta 放大器**[实测]:`/usr/local/bin/tmux` x86_64,本 runner shell `proc_translated=1`;Claude/node 是 arm64-only 不受影响,受影响的正是 fork 出的 universal 系统工具(bash/awk/grep/ps)。→ server 换 ARM 是单一最大杠杆。
+### 2.2 次级现场:stale prepared 行占槽,codex 载体 Lead 无 tab
 
-## 2. W2:tmux 路径与版本
+12:05 PT 窗:`WARN: prepared ledger title drift ref=workspace:52/53/54 expected=<真名> observed=Terminal 38; preserving` + `Rename-lag receipt already owns logical slot; create deferred`(`growth-mufasa-lead` / `flywheel-codex-infra-bot-lead` / 三个 runner 名)[日志 7169-7176]。cmux generation 更替(app 重启)后 rename-lag 消息停止,但 **mufasa / codex-infra-bot 至今在 cmux 无任何 tab** [实测 list-workspaces]。#907 修的是新建路径的 `Terminal N` 异步命名竞态;**陈旧 prepared 行的老化/清算没有出口**(prepared 行只在同 generation 内被处理,drift 即 preserving,永不转移永不放槽)。FLY-1884 research 早记过同形态(workspace:52「每 90 秒刷一次 preserving,Mufasa 至今没有 tab」),跨两轮未愈。
 
-### 2.1 宿主实况 [实测 2026-08-21]
+### 2.3 helper 孤儿泄漏(A5)与 socket 残骸(A6)
 
-- `which -a tmux` → 仅 `/usr/local/bin/tmux`,x86_64,3.5a。ARM Cellar 有 3.7c 未 link;Intel Cellar 3.5a。
-- macOS 26.6.2;Intel brew `upgrade --dry-run tmux` → `tmux 3.5a -> 3.7c (556.6KB)` + 6 依赖(ca-certificates/openssl@3/libevent/ncurses/utf8proc/jemalloc)。
-- 生产 server 形态:15 个 per-Lead 私有 socket(`-D -S ~/.flywheel/sock/fw-*.sock`,绝对路径 `/usr/local/bin/tmux`)、default server(裸 `tmux new-session -Ad -s flywheel`)、`-L atlas`、QA slot socket。
+- close 路径唯一 chokepoint `close_workspace_by_ref`(`:2019`):关前重重设防(guarded IPC/generation pin/freshness fence),**关后只看 rc 且默认模式恒返 0**(真 rc 在全局 `LAST_WORKSPACE_CLOSE_RC`);零 post-close 复验、零进程回收。
+- 实测:12 个 `flywheel-view-attach.sh cmux-FLY-202-*` 孤儿(QA sandbox fixture 持续铸造),4 层树上三层幸存,2s 空转;宿主共 23 view + 15 lead helper,cmux 只有 40 workspace。
+- census 库 `scripts/lib/cmux-mutator-process-census.sh`(FLY-1482)有三态纪律(rc=0 argv 已验证 / 1 消失 / 2 进程表不可信 fail-closed),**但谓词只认 watcher 自身**,不认 attach helper;仓库无任何 helper 回收逻辑 [grep 全仓]。
+- socket:`/private/tmp/tmux-501/` 103 文件 101 死;log-janitor(FLY-1330)模块清单不含 socket;`restart-services.sh:270 audit_tmux_qa_residue_read_only` 只读审计并明写「不清理」,allowlist=`default`+`atlas`;52 个活 tmux server 中 ~36 个未归属(可能持有已删 socket 的僵尸 server)。cutover 工装 `inventory_tmux_servers`(`host-terminal-cutover.sh:326`)已有 ps lstart + lsof -U + file 三证 census 可复用。
 
-### 2.2 路径解析全景
+## 3. #912/#907 已合入机制审计(round-2 依赖面)
 
-- **唯一代码写死旧路径**:`packages/teamlead/scripts/decommission-legacy-companion-daemon.sh:42-45`(`/usr/local/bin/tmux` 优先探测)。issue 说法字面成立。
-- **系统性旧路径优先**:8 处 wrapper/plist PATH `/usr/local/bin` 在 `/opt/homebrew/bin` 前 —— `scripts/flywheel-bridge-wrapper.sh:54`(Bridge 主进程;bridge.plist 无 EnvironmentVariables,PATH 全由 wrapper 定)、`scripts/flywheel-lead-wrapper-v2.sh:74`、mufasa TUI 模板 :37、`scripts/restart-services.sh:33`、voice/quota wrapper、`com.flywheel.updater.plist:18`、`scripts/lib/qa-launchd-lead.sh:64`。**另一派 homebrew 优先**:5 个 launchd plist + `flywheel-cmux-autostart.sh:27` + xiaohongshu tick。两派并存。
-- TS 全线裸 `tmux` 靠 PATH(TmuxAdapter 21 处、codex-runner-tui-window 4 处、tmux-lookup 5 处、terminal-mcp `tmux-exec.ts:53`);唯一绝对路径解析:`packages/core/src/tmux-viewer.ts:137-146`(`which tmux`,AppleScript 场景)。shell 侧 rescue 完全裸 tmux;lead wrapper v2 `TMUX_BIN="${FLYWHEEL_LEAD_V2_TMUX_BIN:-tmux}"` + `command -v` 解析(:227-235)。
-- [实测] 双 prefix 同名二进制 **373 个** → 通用 PATH 翻转爆炸半径过大,排除。
-- [实测] 本 runner pane PATH **无 `/opt/homebrew/bin`**(`~/.local/bin:/usr/local/bin:系统路径`)→ 若只删 Intel tmux 不留兼容 symlink,交互/runner shell 的裸 `tmux` 会 command-not-found。
+### 3.1 #912(第一轮 W1/W3/W4 + W2 工装)——全部 SHIPPED,生产已生效
 
-### 2.3 3.5a 行为假设(升级风险面)
+| 件 | 机制要点 | 位置 |
+|---|---|---|
+| watcher 心跳 | 纯 bash `printf > heartbeat`,写点:bootstrap/每 tick/backoff/park 限频 | `flywheel-cmux-sync.sh:11124` 等 |
+| cmux IPC 硬墙钟 | `_cmux_bounded_spawn`(进程组 TERM→KILL,ping 10s/call 20s) | `:293` |
+| 事件切片睡眠 | 健康态 3s 切片探 `$EVENT_FILE`(零 fork) | `:10034` |
+| rider 看门狗 | GatePoller 60s 拍,`classifyCmuxWatcher` 8 分支安全矩阵,仅 `stalled`(心跳>300s+owner exact 验证)敢 recover;recover = tuple-bound TERM→launchd KeepAlive 重生 | `bridge/cmux-watcher-patrol.ts:96/378/565`、`plugin.ts:8274-8311`、`scripts/lib/restart-cmux-watcher.sh:126` |
+| 镜像补开(A4) | `sync_additive`(`:9020`)每 4 tick(60s)全量状态对账,孤儿 `runner-*` 窗会被补开(非纯 event-driven);边界:只扫默认 server、上游 inconclusive 整轮 defer、`get_tmux_agent_windows` 读失败折空列表(`:551`,PR-1b 待改) | `:9020-9095` |
+| W4 TUI 重试 | 10 attempts/5s-15s-60s-300s/30min episode(跨重启续算 `session.json.tuiWindowEpisodeStartedAt`);终局 `tui_window_lost` warning,run 不中断;**侧栏无降级标记**(node tab 不消费该事件) | `CodexTmuxAdapter.ts:107-122/621`、`plugin.ts:8759-8774` |
+| W3 brew 护栏 | restart-guard P5(PreToolUse hook),runner(有 `FLYWHEEL_EXEC_ID`)deny、Lead/founder 放行+audit;QA 返工后 19 变形全 deny;边界:Codex runner 不走 Claude hook(沙箱 writable-roots 兜) | `scripts/hooks/flywheel-restart-guard.py:307-415/811` |
+| W2 工装 | cutover 9 步 runbook + 双时钟预算闸 + 两次稳定零 quiescence + 回滚闭包实演;mutation 全部 operator 手打;无生产代码硬编码旧 tmux 路径 | `scripts/host-terminal-cutover.sh` |
 
-- `TmuxAdapter.ts:1704-1726`:scaffold window 自动改名竞态 workaround("verified on tmux 3.5a")——手动 rename 方案对 3.7c 仍成立,但需回归确认。
-- `scripts/test-cmux-sync-hooks-integration.sh:8-40`:3.5a 实测 `pane-exited` 注册但不触发;`remain-on-exit` 下 `pane-died`/`pane-exited` 都不触发。3.6 changelog:hooks 改为 **array options 存储**、新增多种 hook;3.7:hooks 内部改 event 机制。→ `register_session_hooks`(sync.sh:7035-7041,grep `show-hooks` 输出做幂等)是**最高风险点**:`show-hooks` 输出形态若变,幂等判断失效 → 重复注册或漏注册。
-- `tmux-lookup.ts:131,163`(display-message 失败回落)与 FLY-1672 的 `window_id|pane_dead` 身份校验:身份校验对版本变化免疫(这正是 FLY-1672 的修法),回归覆盖即可。
-- **`tmux -V` 从不被 parse**:所有版本适配是硬编码假设,升级无自动告警。测试为门:`scripts/test-cmux-sync.sh`(570 例,隔离 socket)、TmuxAdapter 79 例、hooks integration、FLY-1672 回归。
-- 协议:同版本跨 arch(x86_64 client ↔ arm64 server)兼容(同为 little-endian 64-bit,imsg 结构一致);**跨版本**(3.5a↔3.7c)不兼容 = 事故日实锤。
+### 3.2 #907(FLY-1884)——round-2 直接建在其上的机制
 
-## 3. W3:护栏面
+| 机制 | 要点 | 位置 |
+|---|---|---|
+| surface 自愈状态机 | `recover_attach_surface`:A 类 bare(注 attach)/ B 类 no-pty(`not a terminal` → dead-letter + `respawn-pane --command <canonical>`)/ C 类 unclassified(零 mutation 观察,连续两次 determinate + min-age 才转红「连接失效 · 点击重连」);持久重试表 `_attach_state_*` | `flywheel-cmux-sync.sh:3369` 族 |
+| v2 Lead heal | `_v2_lead_heal_surface` 五分类 → `recover_attach_surface v2`;**被 §2.1 preserve 守卫挡在存量之外** | `:3688` |
+| view-attach helper | 常驻 2s 重连,`has-session -t '=name'` exact 名;声明绝不 create/rename/destroy 权威 session | `scripts/flywheel-view-attach.sh` |
+| node 占位 tab | `reconcile_node_presence`(`:1674`):runner execution 的 `node:<alias>·<hash>` tab,连续 2 轮同向证据才翻态;TTL 24h/cap 30 只管 summary 类;**只覆盖 runner,不含 Lead** | `:1674-1736` |
+| create 事务 | UUID 授权(`--id-format both`)、`_prepared_rename_guard` 接受集修过 `Terminal N` 竞态;**遗留缺陷自记**:「`new-workspace` rc=0 不当活 pane 成功」= create 无活体验证(FLY-1884 plan.md:185);stale prepared 行无老化出口(§2.2) | `:4939` 族 |
+| close 清洁度栅栏 | `node_cleanup_freshness_allows` mutation-boundary 三态 fence;**验收口径已写死**:单 tab 关闭 = 该 surface helper 的 per-PID census,全局零残留只作全量 teardown 断言(FLY-1884 plan.md:160)——**口径在,实现不在** | `:1319/:2896` |
 
-### 3.1 现成范式(FLY-913 restart-guard)
+## 4. 判空/修复信号可信度表
 
-- Hook 安装:`claude-lead.sh:1188-1206` → `scripts/hooks/install-restart-guard.sh`,装进 `~/.claude/settings.json` PreToolUse(matcher:"Bash"),**同时覆盖 Lead + 全部 Claude runner**(runner 由 TmuxAdapter 裸 `claude` 起,继承同一 `~/.claude`,`packages/claude-runner/src`、`packages/edge-worker/src` 零处注入 `CLAUDE_CONFIG_DIR`)。每次 Lead 启动收敛(anti-drift)。
-- 判定:`scripts/hooks/flywheel-restart-guard.py:574-587` — JSON `hookSpecificOutput.permissionDecision:"deny"` + 恒 exit 0;放行 = 零输出。fail-open 只盖判断路径,命中后唯一出口 deny 或记账成功的 bypass(:590-630)。
-- bypass:`FLYWHEEL_RESTART_GUARD_BYPASS=<reason> <cmd>` 锚定前缀(:117-122);放行双前置 = audit 写成功(:506-518)+ `lead-alert.sh --strict-delivery` 末行 `sent|queued_transient`(:529-570)。
-- 安装器细节:jq 细粒度 merge 保兄弟 hook(:60-74);jq1.6 输出非空判定陷阱(:48-56);测试 `scripts/hooks/test-restart-guard-install.sh` + `test-flywheel-restart-guard.py`(35.8KB)。
+| 信号 | 等级 | 依据 |
+|---|---|---|
+| `tmux -S <sock> list-clients` 计数(v2)/ `view_session_client_count`(v1) | **PROVEN** | verify-sidebar `rule=v2-client-count`(`:9564`)/`rule=client-count`;fail-closed on rc≠0 |
+| `#{pane_dead}|#{pane_pid}` pane 身份 | **PROVEN** | `rule=v2-pane`(`:9553`)/`rule=pane-identity`(`:9647`) |
+| `read-screen` 末行 bare 判定 | **PROVEN** | `surface_looks_like_bare_shell:3040`;盲区:全空屏/死画面→非 bare 非 no-pty→unclassified |
+| 标题 `^Terminal [0-9]+$` / `~` | **PROVEN** | B1 默认名识别(#907);一次 `list-workspaces` 可判,最廉价外部信号 |
+| view-ledger receipt 状态 | **PROVEN** | `rule=receipt`/`rule=v2-receipt` |
+| `respawn-pane` 修复原语 | **存在未证** | `--help` 有(tmux compat);`capabilities` 无 `*.respawn`;无实录。fallback 候选:`close-surface`+`new-surface`(均在 `--help`,保 workspace ref) |
+| `surface-health` | **陷阱** | `in_window` 只对当前选中 workspace 为 true(39/40 健康 workspace 均 false);不带 `--workspace` 只返回当前 1 行 [实测] |
+| `sidebar-state` / `identify` / `list-windows` / `wait-for` / `log`/`notify`/`set-progress` | SPECULATIVE | cmux `--help` 有、仓库零引用;机会点非依赖 |
+| `session-*.json` `processTitle` ownership | SPECULATIVE | §1.2;写盘时机未知 |
+| helper 进程 argv census | SPECULATIVE→本轮落地 | census 库三态纪律现成,加谓词即可 |
 
-### 3.2 判别信号 [实测关键]
+**判官复用**:`--verify-sidebar`(FLY-1596,#778 已合,`:9184-9730`)= 12 规则双快照只读判官,v1/v2 全覆盖。round-2 一切「修好了没有」以它为验收面,不造第二个 verifier。
 
-- runner pane env:`FLYWHEEL_EXEC_ID=7416f51f-…` **存在**;`FLYWHEEL_LEAD_ID=flywheel-eng-lead` **也存在**(泄漏——`TmuxAdapter.ts:677-680` 只清 `LEAD_ID`/`DISCORD_*`);`LEAD_ID` 已清。
-- → 判别用 `FLYWHEEL_EXEC_ID`(Lead 会话无);`FLYWHEEL_LEAD_ID` 不可用。泄漏本身是既有归因 bug(restart-guard :551-552 用它做 bypass 归因,runner bypass 会记成 Lead 名)——记 follow-up,本单不动(需先核 `flywheel-comm` CLI 是否依赖该 env 做默认 lead 路由)。
-- 权限模型:Lead 与 runner 同为 `bypassPermissions`(claude-lead.sh:2358-2361 / Blueprint.ts:2839)——权限差异不由 permissionMode 表达,hook 是唯一现实拦截面。
-- 非 Claude 面:Codex runner = workspace-write 沙箱(天然拦 /usr/local 写);Codex full-access Lead = Lead(白名单侧);agy/kimi runner 无 Claude hook(诚实边界)。
+## 5. 审计更正与撞车面
 
-## 4. W4:Codex TUI 开窗
+### 5.1 对审计 agent 断言的两条复核更正(引用以本文为准)
 
-### 4.1 锁与预算
+1. ~~「respawn-pane 不在 cmux --help 中,疑似幻影命令」~~ → **实测存在**(`cmux --help` 三行:`new-surface`/`close-surface`/`respawn-pane`;`cmux respawn-pane --help` 返回 tmux compatibility 说明)。风险降级为「存在但无生效实录」,设计仍按「先探测再依赖 + fallback」处理。
+2. ~~「Lead workspace 完全没有 surface 修复代码」~~ → 代码**有**(`_v2_lead_heal_surface:3688`),但被 preserve 守卫挡在全部存量之外(§2.1),生产行为等效于无。修向从「新建 heal 路径」变为「**打通可达性(存量收编/adoption)**」——改动面小一个量级。
 
-- 锁:per-socket 文件锁 `~/.flywheel/locks/tmux-<hash>.lockf`(`tmux-server-rescue.sh:1628-1636`),flock/lockf/python 三后端(:1581-1617)。
-- 等待方单次 acquire = 5s × load factor(≤4)= 5-20s(:184-207,:71-77);超时 → `{"action":"hold_lock_unavailable","evidence":{"reason":"acquire_timeout"…}}` + exit 5(:1684-1686)。
-- 持有方软预算 60s(:63-69);临界区 inspect 6s×factor、command 5s×factor、recover 最多 20×0.25s 轮询(:661-816,:829-911)→ **33.8s 持有在设计预算内**。持有超 5s 释放后自发 `tmux_rescue_hold` 告警(:1447-1454)——指向持有者,与被挡 runner 无关联键;**等待方零告警**(:1417-1420 只记 audit)。
-- Node 侧重试:deadline 驱动 —— `FLYWHEEL_TMUX_ENSURE_DEADLINE_MS` 默认 210s、`FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS` 单次 spawn cap 90s、间隔 min(1s, remaining)(codex-runner-tui-window.ts:428-453,:264-319)。
-- [实测] 生产 dist 与 src 日志模板一致(`attempt ${attempt}` 无分母)→ "attempt 1/2" 是转述;高负载下单 attempt 被 90s cap 顶满,210s 恰容 2 次完整 attempt,与"两次尝试超时"吻合,**无 build 不一致**。
+### 5.2 撞车面(与 exploration §6 一致,补充证据)
 
-### 4.2 失败路径与账面
+- **#911(FLY-1940,在飞)**:Codex daemon 进程组收割 + IPC socket 生死(`reapCodexDaemonForExecution` 等);其评审明确否决过「复制较弱 ownership 逻辑」——S2 的 helper 谓词(argv=attach helper 脚本)与其(argv=codex daemon)天然不相交,零接触。
+- FLY-1596(#778)/FLY-1482(#768)/FLY-1605(#763)/FLY-1672(#800)均已合;CLAUDE.md 里程碑对 1482/1596 的「⏳ PR pending」为陈旧文案。FLY-1672 plan 明示 `select_live_view_window` / `refresh_linked_sessions` 的同类 stale-window race「留给后续单」= 本轮合法接管;其 QA 遗留两洞:201 条 event 排空 95s(>60s additive 周期)、真实 restart-services 后 5 分钟恢复未验证。
+- FLY-1929 D② = 第一轮 plan 的 PR-1b(D1e),规格在 `plan.md`(第一轮)§6,三项目标改动逐一验证均未落地;#912 的 bounded-spawn watchdog fork 已计入其基线口径。
 
-- ensure 全败 → `{created:false, reason:"create-failed"}`(:729-735,一行 log)→ `CodexTmuxAdapter.attemptOpen` :600-648:**只有 `died` 重试**(TUI_OPEN_MAX_ATTEMPTS=8×900ms,:114-115,:620-633);`create-failed`/`tmux-absent` 静默 fallthrough(:646)。Claude 侧对照:同 rescue 失败会 `throw TmuxSessionHoldError`(TmuxAdapter.ts:1743-1788,:1858-1968)——**Codex 路径是唯一吞掉该信号的分支**。
-- 收尾兜底开窗(:836-851)条件 `!threadReadySeen`——锁竞争场景 onThreadReady 已 fire → 兜底不执行。锁挡场景落在**所有**补救之外。
-- CommDB 时序:Bridge 预登记 `${tmuxSession}:pending`(run-dispatcher.ts:1236-1243)→ adapter 在窗口创建**前**写名字型 `${session}:${windowName}`(CodexTmuxAdapter.ts:461-464 → :1539-1548,ON CONFLICT 覆盖 pending)→ 建成后 pin `@id`(:569-578)。下游只把 `:pending` 判为 pending_only(started-evidence.ts:68-72、generalized-launch-recovery.ts:77-90、plugin.ts:6102)→ 名字型死 target 被误判 `tmux_dead` 而非"从未创建"。
-- `delivered`:`onGoalActive` 由 setGoal 成功驱动(CodexTmuxAdapter.ts:733-745;StateStore.ts:25207-25212),与开窗解耦;窗口层契约 fail-open(codex-runner-tui-window.ts:17-19 "a window failure costs VISIBILITY, never the run")。
-- 现有告警资产:`tui_window_lost` kind + episode-latch guard(`teamlead/src/lead-backends/codex/tui-window-alert.ts:47,50,288`),**只在 Lead 侧 opt-in**(run-codex-infra-bot-tui.sh:54),runner 侧从未实例化。
+## 6. 缺口 → 工作面映射(设计输入终表)
 
-## 5. W5:playwright
-
-- 配置链:plugin `playwright@claude-plugins-official`,注入 = per-launch `--settings` enabledPlugins(`packages/config/src/runner-mcp-profile.ts:56,70-72,104,115-118` → run-dispatcher.ts:1817/:1082 → Blueprint.ts:2871-2886 → TmuxAdapter.ts:1199-1219)。普通 runner 不写 playwright 键 → 继承 machine 值;QA(`sessionRole==="qa"`)结构性强制 true(:108,:116-118);Lead 走 projects.json `playwrightMcp` allowlist(claude-lead.sh:540-574,当前**全空**)。
-- 启动命令:`npx @playwright/mcp@latest` **零 flag**(plugin cache `.mcp.json`);实跑 0.0.79。**两级启动**:MCP server 随 enabled plugin eager 起;**Chrome first-tool lazy**(FLY-1867 plan.md:47)。可见窗口 = 首调时默认 **headed** persistent context(profile 在 `~/Library/Caches/ms-playwright-mcp`,不看 TMPDIR,TmuxAdapter 的 TMPDIR 重定向无效)。
-- FLY-1867 (PR #904) 已 ship:P0 reaper 修根因(旧 reaper TERM→sleep3→KILL 亲手造孤儿;新 `mcp-descendant-reaper.ts` 轮询等待+身份栅栏+unknown 不 KILL)、P2 census audit-only、P3 存量 quarantine、**P-1/P1 policy writer 已造未 apply**(`scripts/setup-mcp-on-demand.sh`:machine default-off + `PLAYWRIGHT_MCP_HEADLESS=true`,receipt/preimage-SHA/flock/原子写/rollback 齐备)。
-- [实测复核] 宿主 `~/.claude/settings.json`:playwright=true、无 HEADLESS、无 receipt → **cutover 从未执行**(与 FLY-1867 plan.md:49 一致)。host census(plan.md:50):23 server 中 21 无 Chrome → 真实浪费 = 19 个空挂 node server,不是"启动即开浏览器"。
-- kill-switch 缺口:`FLYWHEEL_RUNNER_SLIM_MCP=0` → legacy null profile,QA 的 opt-in 也失效(runner-mcp-profile.ts:100-104)→ cutover preflight 必核未设或 ≠0。
-- 上游未钉版本(`@latest`):headless env 名、ppid==1 安全垫、config merge 优先级都是"对 0.0.79 成立"(FLY-1867 research.md:298)。
-
-## 6. 结论移交 plan
-
-五块的机制、行号、预算、现成资产与边界全部就位;设计选择与弃选理由见 exploration.md §4;实施切分、runbook、测试与验收映射见 plan.md。
+| 缺口(exploration §3 编号) | 根因(本文) | 工作面 |
+|---|---|---|
+| A1 Lead tab 重启波不恢复 | §2.1 preserve 守卫锁死存量 + 存量载体是一次性 attach | S1a/S1b(存量收编 + heal 可达)|
+| A2 app 存活期 surface 空掉 | unclassified 盲区(全空屏/死画面)+ respawn-pane 未证 | S1c(0-client 决定性信号入分类 + 原语能力探测)|
+| A3 新生空壳 | create 无活体验证 + stale prepared 占槽无老化 | S1d + S1e(prepared 清算)|
+| A4 复活体无镜像 | 已覆盖(sync_additive),旧字节事故 | 回归测试钉住即可 |
+| A5 close 后进程残留 | 零 post-close 回收 + helper 无退出条件 | S2 |
+| A6 孤儿 socket | 无 janitor | S3 |
+| A7 启动宽限 | 已覆盖(C 类 min-age) | 红线约束继承 |
+| A8 TUI-lost 侧栏标记 | node tab 不消费 episode | S4(小件可砍)|
+| 19:19Z 考题 | 上述总和 + FLY-1672 遗留 race | S5(验收面 + race 接管)|
+| B1 PR-1b | 未发货,规格现成 | 不并入本 PR,显式登记(开放问题①)|

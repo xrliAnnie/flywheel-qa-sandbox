@@ -19,6 +19,10 @@
 #   FLYWHEEL_JANITOR_ENV_FILE                         Bridge credentials/config
 #   FLYWHEEL_JANITOR_COMM_CLI                         absolute flywheel-comm entrypoint
 #   FLYWHEEL_JANITOR_PUBLISH_TIMEOUT_SECONDS          default 120
+#   FLYWHEEL_JANITOR_TMUX_SOCKET_ROOT                 default /private/tmp/tmux-<uid>
+#   FLYWHEEL_JANITOR_TMUX_SOCKET_MIN_AGE_SECONDS      default 3600
+#   FLYWHEEL_JANITOR_TMUX_SOCKET_PROBE_TIMEOUT_SECONDS default 5
+#   FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP           default 25 per apply
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,6 +55,12 @@ REPORT_PENDING_DIR="$STATE_DIR/pending-reports"
 REPORT_ENV_FILE="${FLYWHEEL_JANITOR_ENV_FILE:-$HOME/.flywheel/.env}"
 COMM_CLI="${FLYWHEEL_JANITOR_COMM_CLI:-$SCRIPT_DIR/../packages/flywheel-comm/dist/index.js}"
 PUBLISH_TIMEOUT_SECONDS="${FLYWHEEL_JANITOR_PUBLISH_TIMEOUT_SECONDS:-120}"
+CURRENT_UID="$(id -u)"
+TMUX_SOCKET_ROOT="${FLYWHEEL_JANITOR_TMUX_SOCKET_ROOT:-/private/tmp/tmux-$CURRENT_UID}"
+TMUX_SOCKET_MIN_AGE_SECONDS="${FLYWHEEL_JANITOR_TMUX_SOCKET_MIN_AGE_SECONDS:-3600}"
+TMUX_SOCKET_PROBE_TIMEOUT_SECONDS="${FLYWHEEL_JANITOR_TMUX_SOCKET_PROBE_TIMEOUT_SECONDS:-5}"
+TMUX_SOCKET_DELETE_CAP="${FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP:-25}"
+TMUX_SOCKET_ALLOWLIST="${FLYWHEEL_JANITOR_TMUX_SOCKET_ALLOWLIST:-default,atlas}"
 REPORT_DRAIN_LIMIT=7
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 LOCK_OWNED=0
@@ -77,7 +87,7 @@ die() { log "ERROR: $*"; exit 2; }
 usage() {
   cat >&2 <<'EOF'
 flywheel-log-janitor.sh --dry-run|--apply [--force] [--module NAME]
-Modules: codex_releases codex_sessions codex_artifacts codex_logs_db claude_orphans
+Modules: codex_releases codex_sessions codex_artifacts codex_logs_db claude_orphans tmux_dead_sockets
 EOF
 }
 
@@ -99,7 +109,7 @@ parse_args() {
   done
   [[ -n "$MODE" ]] || { usage; die "--dry-run or --apply is required"; }
   case "$ONLY_MODULE" in
-    ""|codex_releases|codex_sessions|codex_artifacts|codex_logs_db|claude_orphans) ;;
+    ""|codex_releases|codex_sessions|codex_artifacts|codex_logs_db|claude_orphans|tmux_dead_sockets) ;;
     *) die "unknown module: $ONLY_MODULE" ;;
   esac
 }
@@ -107,6 +117,22 @@ parse_args() {
 validate_uint() {
   local name="$1" value="$2"
   [[ "$value" =~ ^[0-9]+$ ]] || die "$name must be a non-negative integer"
+}
+
+validate_tmux_socket_allowlist() {
+  local item seen="," count=0
+  local -a items=()
+  IFS=',' read -ra items <<< "$TMUX_SOCKET_ALLOWLIST"
+  for item in "${items[@]}"; do
+    [[ "$item" =~ ^[A-Za-z0-9._-]+$ && "$item" != "." && "$item" != ".." ]] \
+      || die "FLYWHEEL_JANITOR_TMUX_SOCKET_ALLOWLIST contains an unsafe basename"
+    case "$seen" in
+      *,"$item",*) die "FLYWHEEL_JANITOR_TMUX_SOCKET_ALLOWLIST contains a duplicate basename" ;;
+    esac
+    seen+="$item,"
+    count=$((count + 1))
+  done
+  [[ "$count" -gt 0 ]] || die "FLYWHEEL_JANITOR_TMUX_SOCKET_ALLOWLIST must not be empty"
 }
 
 file_size() {
@@ -991,6 +1017,225 @@ run_codex_logs_db() {
   done
 }
 
+tmux_socket_lstat() {
+  local path="$1"
+  python3 - "$path" <<'PY' 2>/dev/null
+import os
+import stat
+import sys
+
+try:
+    value = os.lstat(sys.argv[1])
+except OSError:
+    raise SystemExit(1)
+if stat.S_ISLNK(value.st_mode):
+    kind = "symlink"
+elif stat.S_ISDIR(value.st_mode):
+    kind = "directory"
+elif stat.S_ISSOCK(value.st_mode):
+    kind = "socket"
+else:
+    kind = "other"
+print("%s|%d|%d|%d|%d|%d" % (
+    kind,
+    value.st_uid,
+    stat.S_IMODE(value.st_mode),
+    value.st_dev,
+    value.st_ino,
+    int(value.st_mtime),
+))
+PY
+}
+
+tmux_socket_entries() {
+  local root="$1"
+  python3 - "$root" <<'PY' 2>/dev/null
+import os
+import sys
+
+try:
+    names = sorted(os.listdir(os.fsencode(sys.argv[1])))
+except OSError:
+    raise SystemExit(1)
+root = os.fsencode(sys.argv[1])
+for name in names:
+    sys.stdout.buffer.write(os.path.join(root, name) + b"\0")
+PY
+}
+
+tmux_socket_allowlisted() {
+  local name="$1"
+  case ",$TMUX_SOCKET_ALLOWLIST," in
+    *,"$name",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+tmux_socket_probe_dead() {
+  # rc=0 conclusively dead, rc=1 live, rc=2 inconclusive.
+  local path="$1" timeout_bin output rc
+  timeout_bin="$(resolve_timeout)"
+  [[ -n "$timeout_bin" ]] || return 2
+  output="$("$timeout_bin" --signal=TERM --kill-after=1s \
+    "${TMUX_SOCKET_PROBE_TIMEOUT_SECONDS}s" \
+    tmux -S "$path" list-sessions 2>&1)"
+  rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    return 1
+  fi
+  case "$rc" in 124|137) return 2 ;; esac
+  if [[ "$rc" -eq 1 ]] \
+    && printf '%s\n' "$output" | grep -Eq \
+      'no server running on|error connecting to .*\((No such file or directory|Connection refused)\)'; then
+    return 0
+  fi
+  return 2
+}
+
+tmux_socket_unheld() {
+  # rc=0 conclusively no holder, rc=1 held, rc=2 inconclusive.
+  local path="$1" lsof_bin output rc
+  lsof_bin="$(resolve_lsof)"
+  [[ -n "$lsof_bin" ]] || return 2
+  output="$("$lsof_bin" -t -- "$path" 2>/dev/null)"
+  rc=$?
+  case "$rc" in
+    0) [[ -n "$output" ]] && return 1; return 2 ;;
+    1) [[ -z "$output" ]] && return 0; return 2 ;;
+    *) return 2 ;;
+  esac
+}
+
+run_tmux_dead_sockets() {
+  local module="tmux_dead_sockets" root="$TMUX_SOCKET_ROOT" root_meta
+  local kind owner mode _device _inode mtime now path name meta verify_meta bytes action probe_rc holder_rc
+  local deleted_this_run=0 entries_file
+  if ! command -v python3 >/dev/null 2>&1; then
+    audit_event "$module" skip "$root" 0 "python3-unavailable"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  fi
+  case "$root" in
+    /*) ;;
+    *) audit_event "$module" skip "$root" 0 "socket-root-not-absolute"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); return 0 ;;
+  esac
+  case "$root" in *$'\n'*|*$'\r'*) audit_event "$module" skip "$root" 0 "socket-root-unsafe"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); return 0 ;; esac
+  root_meta="$(tmux_socket_lstat "$root")" || {
+    audit_event "$module" skip "$root" 0 "socket-root-unreadable"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  }
+  IFS='|' read -r kind owner mode _device _inode mtime <<< "$root_meta"
+  if [[ "$kind" != "directory" || "$owner" != "$CURRENT_UID" ]] \
+    || (( 10#$mode & 18 )); then
+    audit_event "$module" skip "$root" 0 "socket-root-owner-or-mode-unsafe"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  fi
+  [[ "$(physical_dir "$root")" == "$root" ]] || {
+    audit_event "$module" skip "$root" 0 "socket-root-canonicalization-failed"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  }
+  now="$(date +%s)"
+  entries_file="$(mktemp "$STATE_DIR/.tmux-socket-entries.XXXXXX")" || {
+    audit_event "$module" skip "$root" 0 "tmux-socket-enumeration-temp-failed"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  }
+  if ! tmux_socket_entries "$root" > "$entries_file"; then
+    rm -f "$entries_file"
+    audit_event "$module" skip "$root" 0 "tmux-socket-enumeration-failed"
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    return 0
+  fi
+  while IFS= read -r -d '' path; do
+    name="${path##*/}"
+    case "$name" in ""|.|..|*$'\n'*|*$'\r'*|*'|'*)
+      audit_event "$module" skip "$path" 0 "socket-name-unsafe"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+      ;;
+    esac
+    if tmux_socket_allowlisted "$name"; then
+      audit_event "$module" skip "$path" 0 "tmux-socket-allowlisted"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    fi
+    meta="$(tmux_socket_lstat "$path")" || {
+      audit_event "$module" skip "$path" 0 "tmux-socket-lstat-failed"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    }
+    IFS='|' read -r kind owner mode _device _inode mtime <<< "$meta"
+    if [[ "$kind" != "socket" || "$owner" != "$CURRENT_UID" ]]; then
+      audit_event "$module" skip "$path" 0 "tmux-socket-type-or-owner-unsafe"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    fi
+    if (( 10#$mtime > 10#$now \
+      || 10#$now - 10#$mtime <= 10#$TMUX_SOCKET_MIN_AGE_SECONDS )); then
+      audit_event "$module" skip "$path" 0 "tmux-socket-too-recent"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    fi
+    probe_rc=0
+    tmux_socket_probe_dead "$path" || probe_rc=$?
+    case "$probe_rc" in
+      0) ;;
+      1) audit_event "$module" skip "$path" 0 "tmux-socket-server-live"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); continue ;;
+      *) audit_event "$module" skip "$path" 0 "tmux-socket-probe-inconclusive"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); continue ;;
+    esac
+    holder_rc=0
+    tmux_socket_unheld "$path" || holder_rc=$?
+    case "$holder_rc" in
+      0) ;;
+      1) audit_event "$module" skip "$path" 0 "tmux-socket-held"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); continue ;;
+      *) audit_event "$module" skip "$path" 0 "tmux-socket-lsof-inconclusive"; SKIPPED_COUNT=$((SKIPPED_COUNT + 1)); continue ;;
+    esac
+    verify_meta="$(tmux_socket_lstat "$path")" || verify_meta=""
+    if [[ "$verify_meta" != "$meta" ]]; then
+      audit_event "$module" skip "$path" 0 "tmux-socket-identity-drift"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    fi
+    bytes="$(file_size "$path")"
+    if [[ "$MODE" == "dry-run" ]]; then
+      action="would-delete"
+    elif (( deleted_this_run >= TMUX_SOCKET_DELETE_CAP )); then
+      audit_event "$module" skip "$path" "$bytes" "tmux-socket-delete-cap-deferred"
+      SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+      continue
+    else
+      action="delete"
+      audit_event "$module" delete-intent "$path" "$bytes" "dead-tmux-socket"
+      verify_meta="$(tmux_socket_lstat "$path")" || verify_meta=""
+      if [[ "$verify_meta" != "$meta" ]]; then
+        audit_event "$module" skip "$path" "$bytes" "tmux-socket-identity-drift"
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        continue
+      fi
+      if ! rm -f -- "$path" || [[ -e "$path" || -L "$path" ]]; then
+        audit_event "$module" skip "$path" "$bytes" "tmux-socket-delete-failed"
+        SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+        continue
+      fi
+      deleted_this_run=$((deleted_this_run + 1))
+      note_deleted_mtime "$mtime"
+    fi
+    audit_event "$module" "$action" "$path" "$bytes" "dead-tmux-socket"
+    printf '[log-janitor] %s %s (%s bytes)\n' "$action" "$path" "$bytes"
+    CANDIDATE_COUNT=$((CANDIDATE_COUNT + 1))
+    CANDIDATE_BYTES=$((CANDIDATE_BYTES + bytes))
+    if [[ "$MODE" == "apply" ]]; then
+      DELETED_COUNT=$((DELETED_COUNT + 1))
+      DELETED_FILE_COUNT=$((DELETED_FILE_COUNT + 1))
+      FREED_BYTES=$((FREED_BYTES + bytes))
+    fi
+  done < "$entries_file"
+  rm -f "$entries_file"
+}
+
 write_marker() {
   local path="$1" stem="$2" marker_tmp
   [[ ! -L "$path" ]] || die "$stem marker is a symlink"
@@ -1022,12 +1267,18 @@ dry_run_scope_json() {
     --arg report_project "$REPORT_PROJECT" \
     --arg report_env_file "$REPORT_ENV_FILE" \
     --arg report_comm_cli "$COMM_CLI" \
+    --arg tmux_socket_root "$TMUX_SOCKET_ROOT" \
+    --argjson tmux_socket_uid "$CURRENT_UID" \
+    --argjson tmux_socket_min_age_seconds "$TMUX_SOCKET_MIN_AGE_SECONDS" \
+    --argjson tmux_socket_probe_timeout_seconds "$TMUX_SOCKET_PROBE_TIMEOUT_SECONDS" \
+    --arg tmux_socket_allowlist "$TMUX_SOCKET_ALLOWLIST" \
+    --argjson tmux_socket_delete_cap "$TMUX_SOCKET_DELETE_CAP" \
     --argjson publish_timeout_seconds "$PUBLISH_TIMEOUT_SECONDS" \
     --argjson codex_sessions_days "$RETENTION_CODEX_SESSIONS" \
     --argjson codex_artifacts_days "$RETENTION_CODEX_ARTIFACTS" \
     --argjson claude_orphans_days "$RETENTION_CLAUDE_ORPHANS" \
     --argjson keep_releases "$KEEP_RELEASES" \
-    '{script_sha256:$script_sha256,codex_homes:$codex_homes,claude_projects:$claude_projects,teamlead_db:$teamlead_db,disabled_modules:$disabled_modules,report_channel:$report_channel,report_project:$report_project,report_env_file:$report_env_file,report_comm_cli:$report_comm_cli,publish_timeout_seconds:$publish_timeout_seconds,codex_sessions_days:$codex_sessions_days,codex_artifacts_days:$codex_artifacts_days,claude_orphans_days:$claude_orphans_days,keep_releases:$keep_releases}' \
+    '{script_sha256:$script_sha256,codex_homes:$codex_homes,claude_projects:$claude_projects,teamlead_db:$teamlead_db,disabled_modules:$disabled_modules,report_channel:$report_channel,report_project:$report_project,report_env_file:$report_env_file,report_comm_cli:$report_comm_cli,tmux_socket_root:$tmux_socket_root,tmux_socket_uid:$tmux_socket_uid,tmux_socket_min_age_seconds:$tmux_socket_min_age_seconds,tmux_socket_probe_timeout_seconds:$tmux_socket_probe_timeout_seconds,tmux_socket_allowlist:$tmux_socket_allowlist,tmux_socket_delete_cap:$tmux_socket_delete_cap,publish_timeout_seconds:$publish_timeout_seconds,codex_sessions_days:$codex_sessions_days,codex_artifacts_days:$codex_artifacts_days,claude_orphans_days:$claude_orphans_days,keep_releases:$keep_releases}' \
     2>/dev/null || die "cannot encode dry-run scope"
 }
 
@@ -1066,8 +1317,19 @@ main() {
   validate_uint FLYWHEEL_JANITOR_RETENTION_CLAUDE_ORPHANS_DAYS "$RETENTION_CLAUDE_ORPHANS"
   validate_uint FLYWHEEL_JANITOR_KEEP_RELEASES "$KEEP_RELEASES"
   validate_uint FLYWHEEL_JANITOR_PUBLISH_TIMEOUT_SECONDS "$PUBLISH_TIMEOUT_SECONDS"
+  validate_uint FLYWHEEL_JANITOR_TMUX_SOCKET_MIN_AGE_SECONDS "$TMUX_SOCKET_MIN_AGE_SECONDS"
+  validate_uint FLYWHEEL_JANITOR_TMUX_SOCKET_PROBE_TIMEOUT_SECONDS "$TMUX_SOCKET_PROBE_TIMEOUT_SECONDS"
+  validate_uint FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP "$TMUX_SOCKET_DELETE_CAP"
   [[ "$KEEP_RELEASES" -ge 1 ]] || die "FLYWHEEL_JANITOR_KEEP_RELEASES must be at least 1"
   [[ "$PUBLISH_TIMEOUT_SECONDS" -ge 1 ]] || die "FLYWHEEL_JANITOR_PUBLISH_TIMEOUT_SECONDS must be at least 1"
+  [[ "$TMUX_SOCKET_MIN_AGE_SECONDS" -ge 1 ]] || die "FLYWHEEL_JANITOR_TMUX_SOCKET_MIN_AGE_SECONDS must be at least 1"
+  [[ "$TMUX_SOCKET_PROBE_TIMEOUT_SECONDS" -ge 1 \
+    && "$TMUX_SOCKET_PROBE_TIMEOUT_SECONDS" -le 30 ]] \
+    || die "FLYWHEEL_JANITOR_TMUX_SOCKET_PROBE_TIMEOUT_SECONDS must be in [1,30]"
+  [[ "$TMUX_SOCKET_DELETE_CAP" -ge 1 && "$TMUX_SOCKET_DELETE_CAP" -le 100 ]] \
+    || die "FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP must be in [1,100]"
+  [[ "$CURRENT_UID" =~ ^[0-9]+$ ]] || die "current uid is unavailable"
+  validate_tmux_socket_allowlist
   command -v jq >/dev/null 2>&1 || die "jq is required for mandatory audit logging"
   [[ "$STATE_DIR" == /* && ! -L "$STATE_DIR" ]] || die "unsafe state directory"
   mkdir -p "$STATE_DIR" || die "cannot create state directory"
@@ -1109,6 +1371,7 @@ main() {
   module_enabled codex_artifacts && run_codex_artifacts
   module_enabled codex_logs_db && run_codex_logs_db
   module_enabled claude_orphans && run_claude_orphans
+  module_enabled tmux_dead_sockets && run_tmux_dead_sockets
   audit_summary
   if [[ "$MODE" == "dry-run" && -z "$ONLY_MODULE" ]]; then
     write_full_dry_run_marker

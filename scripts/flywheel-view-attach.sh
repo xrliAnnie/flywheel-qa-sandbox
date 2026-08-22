@@ -14,13 +14,18 @@
 # the persisted cmux command remains independent of the launching shell's PATH.
 set -u
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: flywheel-view-attach <view-session-name>" >&2
+if [[ $# -ne 1 && $# -ne 2 ]]; then
+  echo "Usage: flywheel-view-attach <view-session-name> [fwtok1-<32hex>]" >&2
   exit 64
 fi
 SESSION="$1"
+TOKEN="${2:-}"
 case "$SESSION" in cmux-*) ;; *) echo "[view-attach] refusing non-view session" >&2; exit 64 ;; esac
 case "$SESSION" in *"'"*|*$'\n'*|*$'\r'*) echo "[view-attach] unsafe session name" >&2; exit 64 ;; esac
+if [[ -n "$TOKEN" && ! "$TOKEN" =~ ^fwtok1-[0-9a-f]{32}$ ]]; then
+  echo "[view-attach] invalid instance token" >&2
+  exit 64
+fi
 
 TMUX_BIN="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-tmux}"
 unset TMUX TMUX_PANE
