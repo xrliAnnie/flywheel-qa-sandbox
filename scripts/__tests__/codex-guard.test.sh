@@ -233,16 +233,24 @@ env -i \
 wrapper_pid=$!
 
 active_entry=""
+last_active_candidate=""
 for _ in $(seq 1 60); do
-  active_entry="$(find "$ROOT/state" -maxdepth 1 -name '*.json' -type f -print -quit 2>/dev/null)"
-  [[ -n "$active_entry" ]] && break
+  for candidate in "$ROOT/state"/*.json; do
+    [[ -f "$candidate" && ! -L "$candidate" ]] || continue
+    last_active_candidate="$candidate"
+    if grep -Eq '^\{"pid":[0-9]+,"pgid":[0-9]+,"start":"[^"]+","deadline":[0-9]+,"label":"[^"]+"\}$' \
+      "$candidate" 2>/dev/null; then
+      active_entry="$candidate"
+      break 2
+    fi
+  done
   sleep 0.05
 done
-if [[ -n "$active_entry" ]] \
-  && grep -Eq '^\{"pid":[0-9]+,"pgid":[0-9]+,"start":"[^"]+","deadline":[0-9]+,"label":"[^"]+"\}$' "$active_entry"; then
+if [[ -n "$active_entry" ]]; then
   pass "an active invocation has a complete identity record"
 else
-  fail "an active invocation has a complete identity record" "entry=${active_entry:-missing}"
+  fail "an active invocation has a complete identity record" \
+    "last_candidate=${last_active_candidate:-missing}"
 fi
 
 wait "$wrapper_pid"
