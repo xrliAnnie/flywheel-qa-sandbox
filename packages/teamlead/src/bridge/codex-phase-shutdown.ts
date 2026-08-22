@@ -10,9 +10,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { CommDB, type RunnerShutdownControl } from "flywheel-comm/db";
+import { CommDB } from "flywheel-comm/db";
 import type { Session } from "../StateStore.js";
 import { resolveCommDbPath } from "./commdb-session-prune.js";
+import {
+	DEFAULT_ACK_TIMEOUT_MS,
+	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
+	isFreshControllerHeartbeat,
+	isWorkflowPhaseSession,
+	type RunnerShutdownDb,
+} from "./runner-shutdown-evidence.js";
 import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
@@ -20,20 +27,15 @@ import {
 	type TmuxTargetLookup,
 } from "./tmux-lookup.js";
 
-const PHASE_ROLES = new Set(["design", "implement", "qa"]);
-const DEFAULT_ACK_TIMEOUT_MS = 30_000;
-const DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS = 60_000;
-const DEFAULT_POLL_INTERVAL_MS = 250;
+export {
+	DEFAULT_ACK_TIMEOUT_MS,
+	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
+	isFreshControllerHeartbeat,
+	parseControllerHeartbeatMs,
+	type RunnerShutdownDb,
+} from "./runner-shutdown-evidence.js";
 
-export interface RunnerShutdownDb {
-	getRunnerShutdown(executionId: string): RunnerShutdownControl | null;
-	requestRunnerShutdown(
-		executionId: string,
-		requestId: string,
-		nowMs: number,
-	): RunnerShutdownControl;
-	close(): void;
-}
+const DEFAULT_POLL_INTERVAL_MS = 250;
 
 export interface CodexPhaseShutdownInput {
 	executionId: string;
@@ -79,30 +81,7 @@ export type CodexPhaseShutdownDecision =
 
 export function isResidentCodexPhase(session: Session | undefined): boolean {
 	return (
-		session?.adapter_type === "codex-tmux" &&
-		PHASE_ROLES.has(session.chat_thread_role ?? "")
-	);
-}
-
-function heartbeatMs(value: string | undefined): number | undefined {
-	if (!value) return undefined;
-	const normalized = value.includes("T")
-		? value.endsWith("Z")
-			? value
-			: `${value}Z`
-		: `${value.replace(" ", "T")}Z`;
-	const parsed = Date.parse(normalized);
-	return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function isFreshHeartbeat(
-	value: string | undefined,
-	nowMs: number,
-	maxAgeMs: number,
-): boolean {
-	const parsed = heartbeatMs(value);
-	return (
-		parsed !== undefined && nowMs - parsed >= 0 && nowMs - parsed <= maxAgeMs
+		session?.adapter_type === "codex-tmux" && isWorkflowPhaseSession(session)
 	);
 }
 
@@ -200,7 +179,7 @@ export async function prepareCodexPhaseShutdown(
 
 	const startedAt = now();
 	const initialHeartbeat = initialSession?.heartbeat_at;
-	if (!isFreshHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
+	if (!isFreshControllerHeartbeat(initialHeartbeat, startedAt, leaseMaxAgeMs)) {
 		// FLY-1269: every not-alive liveness returned above, so the pane is
 		// provably LIVE here. A stale lease then means "the controller stopped
 		// beating" OR "we cannot read its beat" — never "provably absent", which

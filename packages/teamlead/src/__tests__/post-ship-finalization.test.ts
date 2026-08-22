@@ -17,6 +17,8 @@ const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
+	lookupTmuxTarget: () => ({ kind: "gone" as const }),
+	probeRunnerProcessLiveness: () => Promise.resolve("absent" as const),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxSession(...args),
 	killCmuxLinkedSession: (...args: unknown[]) =>
 		mockKillCmuxLinkedSession(...args),
@@ -32,6 +34,7 @@ const mockFinalizeCommDbSession = vi.fn(() => ({
 vi.mock("../bridge/commdb-session-prune.js", () => ({
 	finalizeCommDbSession: (...args: unknown[]) =>
 		mockFinalizeCommDbSession(...args),
+	resolveCommDbPath: () => undefined,
 }));
 
 // Capture ordering of Discord-side calls via a shared spy list.
@@ -902,6 +905,75 @@ describe("runPostShipFinalization", () => {
 		]);
 	});
 
+	it("runs shipped-husk escalation before cleanup and preserves its bounded cause", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const forceHusks = vi.fn(async () => {
+			callOrder.push("husk:force");
+			return {
+				cleared: [],
+				cause: "node_process_residual" as const,
+				affectedExecutionIds: ["implement-1"],
+			};
+		});
+
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				forceShippedHusks: forceHusks,
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+			},
+		);
+
+		expect(forceHusks).toHaveBeenCalledOnce();
+		expect(callOrder.indexOf("husk:force")).toBeLessThan(
+			callOrder.indexOf("tmux:lookup"),
+		);
+		expect(result).toMatchObject({
+			complete: false,
+			outcome: "partial",
+			reason: "issue_closeout_incomplete:cause=node_process_residual",
+			cause: {
+				token: "node_process_residual",
+				executionIds: ["implement-1"],
+			},
+		});
+	});
+
+	it("does not invent a husk failure when optional escalation bookkeeping throws", async () => {
+		const landOperation = seedLandOperationClaim(store);
+		const archiveFn = vi.fn();
+		const markIssueDone = vi.fn();
+		const result = await runResumablePostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				landOperation,
+			},
+			{
+				store,
+				projects: PROJECTS,
+				forceShippedHusks: vi.fn().mockRejectedValue(new Error("ps failed")),
+				issueCloseout: vi.fn().mockResolvedValue({ outcome: "completed" }),
+				archiveFn,
+				markIssueDone,
+			},
+		);
+
+		expect(result).not.toMatchObject({
+			reason: "issue_closeout_incomplete:cause=node_process_unverifiable",
+		});
+	});
+
 	it("does not send the terminal message, archive, or mark Linear Done until worktree cleanup succeeds", async () => {
 		const landOperation = seedLandOperationClaim(store);
 		const archiveFn = vi.fn();
@@ -937,7 +1009,8 @@ describe("runPostShipFinalization", () => {
 		expect(result).toMatchObject({
 			complete: false,
 			outcome: "partial",
-			reason: "land_postconditions_incomplete:worktree,thread_archive",
+			reason: "issue_closeout_incomplete:cause=worktree_branch_mismatch",
+			cause: { token: "worktree_branch_mismatch" },
 		});
 		expect(archiveFn).not.toHaveBeenCalled();
 		expect(markIssueDone).not.toHaveBeenCalled();

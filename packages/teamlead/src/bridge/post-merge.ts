@@ -18,7 +18,7 @@
  */
 
 import { closeRunnerTerminalView } from "flywheel-core";
-import type { StateStore } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 import {
 	isResidentCodexPhase,
 	prepareCodexPhaseShutdown,
@@ -30,6 +30,9 @@ import {
 	getTmuxTargetFromCommDb,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	probeRunnerProcessLiveness,
+	resolveCmuxAttachTarget,
+	type TmuxTarget,
 } from "./tmux-lookup.js";
 
 // ── Types ───────────────────────────────────────────────
@@ -45,6 +48,134 @@ export interface PostMergeResult {
 	commDbFinalized: boolean;
 	retiredGateCount: number;
 	errors: string[];
+}
+
+export interface CleanupTmuxTargetInput {
+	target: TmuxTarget;
+	session: Session | undefined;
+	strict?: {
+		expectedExecutionId: string;
+		authorityCheck: () => Promise<boolean>;
+	};
+}
+
+export interface CleanupTmuxTargetResult {
+	tmuxClosed: boolean;
+	physicalGone: boolean;
+	errors: string[];
+	strictFailure?: "window_identity_mismatch" | "authority_lost";
+}
+
+export interface CleanupTmuxTargetDeps {
+	resolveIdentity?: typeof resolveCmuxAttachTarget;
+	probe?: typeof probeRunnerProcessLiveness;
+	reapMcp?: (
+		tmuxWindow: string,
+		deps?: { authorityCheck?: () => Promise<boolean> },
+	) => Promise<{ authorityLost?: boolean }>;
+	killLinked?: typeof killCmuxLinkedSession;
+	killWindow?: typeof killTmuxWindow;
+	closeTerminal?: typeof closeRunnerTerminalView;
+}
+
+export async function cleanupTmuxTarget(
+	input: CleanupTmuxTargetInput,
+	deps: CleanupTmuxTargetDeps = {},
+): Promise<CleanupTmuxTargetResult> {
+	const errors: string[] = [];
+	const reapMcp = deps.reapMcp ?? reapRunnerMcp;
+	const killLinked = deps.killLinked ?? killCmuxLinkedSession;
+	const killWindow = deps.killWindow ?? killTmuxWindow;
+	const closeTerminal = deps.closeTerminal ?? closeRunnerTerminalView;
+
+	const strictState = async (): Promise<"proven" | "gone" | "mismatch"> => {
+		if (!input.strict) return "proven";
+		const resolveIdentity = deps.resolveIdentity ?? resolveCmuxAttachTarget;
+		const probe = deps.probe ?? probeRunnerProcessLiveness;
+		const identity = await resolveIdentity(input.target.tmuxWindow, {
+			expectedExecutionId: input.strict.expectedExecutionId,
+		});
+		if (identity.kind !== "unresolved") return "proven";
+		try {
+			const liveness = await probe(input.target.tmuxWindow);
+			if (liveness === "absent" || liveness === "dead_pin") return "gone";
+		} catch {
+			// A failed probe is uncertainty, never authority for a destructive effect.
+		}
+		return "mismatch";
+	};
+	const refuse = (
+		strictFailure: "window_identity_mismatch" | "authority_lost",
+	): CleanupTmuxTargetResult => ({
+		tmuxClosed: false,
+		physicalGone: false,
+		errors: [...errors, strictFailure],
+		strictFailure,
+	});
+	const gone = (): CleanupTmuxTargetResult => ({
+		tmuxClosed: true,
+		physicalGone: true,
+		errors,
+	});
+
+	if (input.strict) {
+		const state = await strictState();
+		if (state === "gone") return gone();
+		if (state === "mismatch") return refuse("window_identity_mismatch");
+		if (!(await input.strict.authorityCheck())) return refuse("authority_lost");
+	}
+
+	const mcp = await reapMcp(
+		input.target.tmuxWindow,
+		input.strict ? { authorityCheck: input.strict.authorityCheck } : undefined,
+	).catch((): { authorityLost?: boolean } => ({}));
+	if (mcp.authorityLost) return refuse("authority_lost");
+
+	if (input.strict) {
+		const state = await strictState();
+		if (state === "gone") return gone();
+		if (state === "mismatch") return refuse("window_identity_mismatch");
+		if (!(await input.strict.authorityCheck())) return refuse("authority_lost");
+	}
+
+	await killLinked(input.target.tmuxWindow).catch((error: Error) =>
+		errors.push(`cmux: ${error.message}`),
+	);
+
+	if (input.strict) {
+		const state = await strictState();
+		if (state === "gone") return gone();
+		if (state === "mismatch") return refuse("window_identity_mismatch");
+		if (!(await input.strict.authorityCheck())) return refuse("authority_lost");
+	}
+
+	const killResult = await killWindow(input.target.tmuxWindow);
+	if (killResult.error) errors.push(`tmux: ${killResult.error}`);
+	if (input.session && killResult.killed) {
+		const identity = resolveTerminalViewIdentity(input.session, input.target);
+		if (identity) {
+			const closeRes = await closeTerminal({
+				baseSessionName: identity.sessionName,
+				projectName: identity.projectName,
+				executionId: identity.executionId,
+				windowId: identity.windowId,
+				sessionRole: identity.sessionRole,
+			}).catch(
+				(error: Error) =>
+					({
+						closedTab: false,
+						killedViewerSession: false,
+						error: error.message,
+					}) as const,
+			);
+			if (closeRes.error) errors.push(`terminal: ${closeRes.error}`);
+		}
+	}
+	return {
+		tmuxClosed: killResult.killed,
+		physicalGone: killResult.killed,
+		errors,
+	};
 }
 
 // ── Main entry point ────────────────────────────────────
@@ -96,43 +227,10 @@ export async function postMergeTmuxCleanup(
 				opts.projectName,
 			);
 			if (target) {
-				// FLY-1185 §2.5: reap MCP-family descendants BEFORE any kill (pane
-				// pid only resolvable while the window lives). Reap-only, best-effort.
-				await reapRunnerMcp(target.tmuxWindow).catch(() => undefined);
-				// FLY-638: tear down the per-runner cmux LINKED session BEFORE the
-				// window kill (display-message needs the window alive). Best-effort.
-				await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>
-					result.errors.push(`cmux: ${e.message}`),
-				);
-				const killResult = await killTmuxWindow(target.tmuxWindow);
-				result.tmuxClosed = killResult.killed;
-				physicalGone = killResult.killed;
-				if (killResult.error) {
-					result.errors.push(`tmux: ${killResult.error}`);
-				}
-				// FLY-116: close per-runner Terminal viewer tab + linked viewer session
-				if (session && killResult.killed) {
-					const identity = resolveTerminalViewIdentity(session, target);
-					if (identity) {
-						const closeRes = await closeRunnerTerminalView({
-							baseSessionName: identity.sessionName,
-							projectName: identity.projectName,
-							executionId: identity.executionId,
-							windowId: identity.windowId,
-							sessionRole: identity.sessionRole,
-						}).catch(
-							(e: Error) =>
-								({
-									closedTab: false,
-									killedViewerSession: false,
-									error: e.message,
-								}) as const,
-						);
-						if (closeRes.error) {
-							result.errors.push(`terminal: ${closeRes.error}`);
-						}
-					}
-				}
+				const direct = await cleanupTmuxTarget({ target, session });
+				result.tmuxClosed = direct.tmuxClosed;
+				physicalGone = direct.physicalGone;
+				result.errors.push(...direct.errors);
 			} else {
 				physicalGone = true;
 			}

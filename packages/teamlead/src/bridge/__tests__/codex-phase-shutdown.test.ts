@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../../StateStore.js";
 import {
+	DEFAULT_ACK_TIMEOUT_MS,
+	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
+	isFreshControllerHeartbeat,
+	parseControllerHeartbeatMs,
 	prepareCodexPhaseShutdown,
 	type RunnerShutdownDb,
 } from "../codex-phase-shutdown.js";
@@ -88,6 +92,25 @@ function harness(args: {
 }
 
 describe("prepareCodexPhaseShutdown", () => {
+	it("exports the exact heartbeat ruler used by the shutdown decision", () => {
+		const now = Date.parse("2026-07-14T12:00:10Z");
+		expect(DEFAULT_ACK_TIMEOUT_MS).toBe(30_000);
+		expect(DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS).toBe(60_000);
+		expect(parseControllerHeartbeatMs("2026-07-14 12:00:00")).toBe(
+			Date.parse("2026-07-14T12:00:00Z"),
+		);
+		expect(parseControllerHeartbeatMs("malformed")).toBeUndefined();
+		expect(isFreshControllerHeartbeat("2026-07-14 12:00:00", now, 60_000)).toBe(
+			true,
+		);
+		expect(isFreshControllerHeartbeat("2026-07-14 11:58:00", now, 60_000)).toBe(
+			false,
+		);
+		expect(isFreshControllerHeartbeat("2026-07-14 12:00:11", now, 60_000)).toBe(
+			false,
+		);
+	});
+
 	it.each([
 		phaseSession({ adapter_type: "claude-tmux" }),
 		phaseSession({ chat_thread_role: "main" }),

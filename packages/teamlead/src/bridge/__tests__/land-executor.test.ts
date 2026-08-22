@@ -1834,7 +1834,7 @@ describe("land executor", () => {
 			"2026-07-21T22:00:00.000Z",
 			"2026-07-22T00:00:00.000Z",
 		];
-		let attempt = 0;
+		let observedAt = attempts[0]!;
 		const deps = {
 			store,
 			mergeDriver: {
@@ -1849,12 +1849,15 @@ describe("land executor", () => {
 				retryable: true,
 			}),
 			ownerId: "worker",
-			now: () => new Date(attempts[attempt++]!),
+			now: () => new Date(observedAt),
 		};
 
 		for (let index = 0; index < attempts.length; index += 1) {
+			observedAt = attempts[index]!;
 			const result = await executeLandOperation(operation.operation_id, deps);
-			expect(result.status).toBe(index === 8 ? "held" : "partial");
+			expect(result.status, `attempt ${index + 1}`).toBe(
+				index === 8 ? "held" : "partial",
+			);
 		}
 		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
 			state: "held",
@@ -1863,6 +1866,77 @@ describe("land executor", () => {
 			next_attempt_at: null,
 			last_error: "retry_exhausted:linear_lookup_failed_retryable",
 		});
+		store.close();
+	});
+
+	it("posts one terminal held explanation when closeout retries are exhausted", async () => {
+		const { store, operation } = await fixture();
+		const attempts = [
+			"2026-07-21T20:00:00.000Z",
+			"2026-07-21T20:01:00.000Z",
+			"2026-07-21T20:03:00.000Z",
+			"2026-07-21T20:07:00.000Z",
+			"2026-07-21T20:15:00.000Z",
+			"2026-07-21T20:30:00.000Z",
+			"2026-07-21T21:00:00.000Z",
+			"2026-07-21T22:00:00.000Z",
+			"2026-07-22T00:00:00.000Z",
+		];
+		let observedAt = attempts[0]!;
+		const notify = vi.fn().mockResolvedValue({ disposition: "posted" });
+		const deps = {
+			store,
+			mergeDriver: {
+				inspectPr: vi.fn().mockResolvedValue({
+					state: "MERGED" as const,
+					headSha: HEAD,
+					mergeSha: MERGE,
+				}),
+				triggerCool: vi.fn(),
+				inspectTriggeredWorkflow: vi.fn(),
+			} satisfies LandMergeDriver,
+			finalize: vi.fn().mockResolvedValue({
+				complete: false,
+				outcome: "partial" as const,
+				reason: "issue_closeout_incomplete:cause=husk_lease_stale",
+			}),
+			notify,
+			authorize: () => ({ ok: true as const }),
+			ownerId: "worker",
+			now: () => new Date(observedAt),
+		};
+
+		for (let index = 0; index < attempts.length; index += 1) {
+			observedAt = attempts[index]!;
+			const result = await executeLandOperation(operation.operation_id, deps);
+			expect(
+				result.status,
+				`closeout attempt ${index + 1}: ${JSON.stringify(result)}`,
+			).toBe(index === 8 ? "held" : "partial");
+		}
+		expect(
+			notify.mock.calls.filter(([, stage]) => stage === "finalization_partial"),
+		).toHaveLength(1);
+		expect(
+			notify.mock.calls.filter(([, stage]) => stage === "finalization_held"),
+		).toHaveLength(1);
+		expect(notify).toHaveBeenCalledWith(
+			expect.objectContaining({ operation_id: operation.operation_id }),
+			"finalization_held",
+			expect.objectContaining({
+				reason:
+					"retry_exhausted:issue_closeout_incomplete:cause=husk_lease_stale",
+			}),
+		);
+		expect(store.getLandOperation(operation.operation_id)).toMatchObject({
+			state: "held",
+			retry_count: 9,
+		});
+		expect(
+			store
+				.listLandOperationSteps(operation.operation_id)
+				.filter((step) => step.step.startsWith("aux:notification:land_held:")),
+		).toHaveLength(1);
 		store.close();
 	});
 });

@@ -1421,10 +1421,15 @@ describe("WorkflowEngineDispatcher", () => {
 				.listWorkflowRunEvents("run-land")
 				.find((event) => event.kind === "land_partial");
 			expect(partial).toBeDefined();
-			expect(store.getWorkflowAlertOutbox(partial!.event_uid)).toMatchObject({
+			const alert = store.getWorkflowAlertOutbox(partial!.event_uid);
+			expect(alert).toMatchObject({
 				state: "pending",
 				run_id: "run-land",
 			});
+			expect(alert?.payload.body).toContain(
+				"The durable operation will keep retrying",
+			);
+			expect(alert?.payload.body).not.toContain("retries at most 9 times");
 			store.close();
 		},
 	);

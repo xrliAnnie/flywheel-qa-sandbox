@@ -1,0 +1,13 @@
+flowchart TD
+    A["PR 合入成功(六单都到这里)"] --> B["land 收尾:关 runner、清工作副本、归档 thread"]
+    B --> C{"关停 Codex 实现容器时:<br/>它的终端窗口还在吗?"}
+    C -- "窗口已不在<br/>1757 / 1955 / 1961" --> D["直接收尾,30秒~3分钟<br/>✅ thread 自动归档 + Linear Done"]
+    C -- "窗口活着,但内部服务已<br/>停跳心跳 5 分钟以上<br/>1831 / 1975 / 1944" --> F["安全规则拒绝强关:<br/>『不能证明它死了,就不动它』<br/>—— 且没有任何后续升级手段"]
+    F --> G["按 1/2/4/8/15/30/60/120 分钟重试 9 次<br/>每次撞同一堵墙(状态永远不会自己变好)"]
+    G --> I["❌ 转『搁置』,机器彻底放手<br/>归档/置 Done 一并悬空"]
+    I --> J["唯一出路 = Lead 人工拆窗口 + 平账 + 恢复<br/>1831 等了 8 小时;founder 追问后才发生"]
+
+    style D fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style F fill:#ffeceb,stroke:#ff3b30
+    style I fill:#ffeceb,stroke:#ff3b30,stroke-width:2px
+    style J fill:#fff7e6,stroke:#ff9500

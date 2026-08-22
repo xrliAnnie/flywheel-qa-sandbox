@@ -251,6 +251,31 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/orphan-founder-review-monitor.test.ts: kill switch live-observe",
 		note: "=0 pauses only new monitor alerts; it does not reopen, retire, answer, or mutate any gate.",
 	},
+	// ─── FLY-1992: shipped workflow-node husk convergence ───
+	{
+		name: "shipped_husk_force",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIPPED_HUSK_FORCE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1992: after one failed post-merge closeout, force-reap an evidence-proven stale workflow-node husk before thread archive; =0 restores cooperative-only shutdown",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/shipped-husk-escalation.ts",
+				"shippedHuskForceEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/shipped-husk-escalation.test.ts: observes the default-on kill switch at call time",
+		note: "Only disables new forced teardown intents; strict land-lease and tmux execution-identity fences remain mandatory when enabled.",
+	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
 	{
 		name: "flag_retirement_scan",

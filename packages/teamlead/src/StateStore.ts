@@ -37,6 +37,10 @@ import {
 	type LandRetryClassification,
 	nextLandRetry,
 } from "./bridge/land-retry-policy.js";
+import {
+	describeLandCloseoutCause,
+	landCloseoutCauseFromReason,
+} from "./bridge/land-closeout-cause.js";
 import type {
 	PatrolLoopAttempt,
 	PatrolLoopGateAuthority,
@@ -32141,6 +32145,10 @@ export class StateStore {
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
 		const partial = input.disposition === "partial";
+		const closeout = input.reason.includes("issue_closeout_incomplete:cause=");
+		const closeoutExplanation = closeout
+			? describeLandCloseoutCause(landCloseoutCauseFromReason(input.reason))
+			: undefined;
 		return {
 			leadId: input.identity.leadId,
 			projectName: input.identity.projectName,
@@ -32152,8 +32160,12 @@ export class StateStore {
 				? `Workflow land cleanup needs attention for ${input.issueId}`
 				: `Workflow run held for ${input.issueId}`,
 			body: partial
-				? `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
-				: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
+				? closeout
+					? `Run ${input.runId} land node ${input.nodeId} merged but cleanup is incomplete: ${closeoutExplanation} (${input.reason}). The durable operation retries at most 9 times over roughly 4 hours, then stops in held state. Inspect GET /api/lifecycle/land/<operation-id>.`
+					: `Run ${input.runId} land node ${input.nodeId} could not finish cleanup after merge. Reason: ${input.reason}. The durable operation will keep retrying; inspect GET /api/lifecycle/land/<operation-id>.`
+				: closeout
+					? `Run ${input.runId} node ${input.nodeId} is held and automatic retries have stopped after execution ${input.executionId}: ${closeoutExplanation} (${input.reason}).${input.operationId ? ` Prove the execution-attributed host processes and Runner window quiescent, repair teardown, then POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`
+					: `Run ${input.runId} node ${input.nodeId} was held after execution ${input.executionId}. Reason: ${input.reason}.${input.operationId ? ` Recover after inspecting the PR with POST /api/lifecycle/land/${input.operationId}/resume.` : ` Recover with POST /api/runs/${input.runId}/hold or /terminate after proving quiescence.`}`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -50548,15 +50560,18 @@ export class StateStore {
 				],
 			);
 			const completed = input.step === "finalization_completed";
+			const auxiliary = input.step.startsWith("aux:");
 			this.db.run(
 				`UPDATE land_operation
-				    SET current_step = ?, updated_at = ?,
+				    SET current_step = CASE WHEN ? = 1 THEN current_step ELSE ? END,
+				        updated_at = ?,
 				        merge_confirmed_at = CASE WHEN ? = 'merge_confirmed' THEN COALESCE(merge_confirmed_at, ?) ELSE merge_confirmed_at END,
 				        finalization_completed_at = CASE WHEN ? = 'finalization_completed' THEN COALESCE(finalization_completed_at, ?) ELSE finalization_completed_at END,
 				        state = CASE WHEN ? = 1 THEN 'completed' ELSE state END
 				  WHERE operation_id = ? AND superseded_at IS NULL
 				    AND owner_id = ? AND generation = ?`,
 				[
+					auxiliary ? 1 : 0,
 					input.step,
 					input.now,
 					input.step,
@@ -50603,6 +50618,25 @@ export class StateStore {
 			generation: Number(row.generation),
 			completed_at: row.completed_at as string,
 		}));
+	}
+
+	getLandOperationRetryEpoch(operationId: string):
+		| { stepCount: number; currentStep: string; epochKey: string }
+		| undefined {
+		const operation = this.getLandOperation(operationId);
+		if (!operation) return undefined;
+		const row = this.workflowSelectAll(
+			`SELECT COUNT(*) AS step_count FROM land_operation_step
+			  WHERE operation_id = ? AND step NOT LIKE 'aux:%'`,
+			[operationId],
+		)[0];
+		const stepCount = Number(row?.step_count ?? 0);
+		const currentStep = String(operation.current_step ?? "start");
+		return {
+			stepCount,
+			currentStep,
+			epochKey: `${stepCount}:${currentStep}`,
+		};
 	}
 
 	private landAlertOutboxRow(
@@ -50838,14 +50872,56 @@ export class StateStore {
 		return updated;
 	}
 
-	releaseLandOperationWithRetryAccounting(input: {
-		operationId: string;
-		ownerId: string;
-		generation: number;
-		class: LandRetryClassification;
-		reason: string;
-		now: string;
-	}): LandOperationRetryRelease | undefined {
+	private landOperationRetryDecision(
+		operation: Record<string, unknown>,
+		input: LandOperationRetryReleaseInput,
+	): LandOperationRetryRelease {
+		const shipFailure = input.reason.startsWith("ship_workflow_failed:");
+		const epochKey = shipFailure
+			? `ship:${Number(operation.pr_number)}:${String(operation.approved_head)}:budget=${Number(operation.resume_generation ?? 0)}`
+			: (this.getLandOperationRetryEpoch(input.operationId)?.epochKey ??
+				"0:start");
+		const decision = nextLandRetry({
+			classification: input.class,
+			reason: input.reason,
+			now: input.now,
+			epochKey,
+			priorRetryCount: Number(operation.retry_count ?? 0),
+			priorRetryEpochKey:
+				(operation.retry_epoch_key as string | null | undefined) ?? null,
+		});
+		return {
+			state: decision.state,
+			retryCount: decision.retryCount,
+			retryEpochKey: decision.retryEpochKey,
+			nextAttemptAt: decision.nextAttemptAt,
+			lastError: decision.lastError,
+		};
+	}
+
+	previewLandOperationRetryRelease(
+		input: LandOperationRetryReleaseInput,
+	): LandOperationRetryRelease | undefined {
+		if (!StateStore.workflowFiniteTimestamp(input.now)) return undefined;
+		const operation = this.workflowSelectAll(
+			"SELECT * FROM land_operation WHERE operation_id = ?",
+			[input.operationId],
+		)[0];
+		if (
+			!operation ||
+			operation.superseded_at ||
+			operation.state !== "running" ||
+			operation.owner_id !== input.ownerId ||
+			Number(operation.generation) !== input.generation
+		) {
+			return undefined;
+		}
+		return this.landOperationRetryDecision(operation, input);
+	}
+
+	releaseLandOperationWithRetryAccounting(
+		input: LandOperationRetryReleaseInput,
+	): LandOperationRetryRelease | undefined {
 		if (!StateStore.workflowFiniteTimestamp(input.now)) return undefined;
 		let result: LandOperationRetryRelease | undefined;
 		this.db.transaction(() => {
@@ -50862,25 +50938,8 @@ export class StateStore {
 			) {
 				return;
 			}
-			const stepCount = Number(
-				this.workflowSelectAll(
-					"SELECT COUNT(*) AS count FROM land_operation_step WHERE operation_id = ?",
-					[input.operationId],
-				)[0]?.count ?? 0,
-			);
 			const shipFailure = input.reason.startsWith("ship_workflow_failed:");
-			const epochKey = shipFailure
-				? `ship:${Number(operation.pr_number)}:${String(operation.approved_head)}:budget=${Number(operation.resume_generation ?? 0)}`
-				: `${stepCount}:${String(operation.current_step ?? "start")}`;
-			const decision = nextLandRetry({
-				classification: input.class,
-				reason: input.reason,
-				now: input.now,
-				epochKey,
-				priorRetryCount: Number(operation.retry_count ?? 0),
-				priorRetryEpochKey:
-					(operation.retry_epoch_key as string | null | undefined) ?? null,
-			});
+			const decision = this.landOperationRetryDecision(operation, input);
 			this.db.run(
 				`UPDATE land_operation
 				    SET state = ?, last_error = ?, retry_count = ?, retry_epoch_key = ?,
@@ -51998,6 +52057,15 @@ export interface LandOperationClaim {
 	operationId: string;
 	ownerId: string;
 	generation: number;
+}
+
+export interface LandOperationRetryReleaseInput {
+	operationId: string;
+	ownerId: string;
+	generation: number;
+	class: LandRetryClassification;
+	reason: string;
+	now: string;
 }
 
 export interface LandOperationRetryRelease {

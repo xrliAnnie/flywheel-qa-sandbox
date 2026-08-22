@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { postMergeTmuxCleanup } from "../bridge/post-merge.js";
+import {
+	cleanupTmuxTarget,
+	postMergeTmuxCleanup,
+} from "../bridge/post-merge.js";
 import { StateStore } from "../StateStore.js";
 
 // ── Mock tmux-lookup ────────────────────────────────────
@@ -284,5 +287,125 @@ describe("postMergeTmuxCleanup", () => {
 		const events = store.getEventsByExecution("exec-1");
 		const pmEvent = events.find((e) => e.event_type === "post_merge_partial");
 		expect(pmEvent).toBeDefined();
+	});
+});
+
+describe("cleanupTmuxTarget strict mode", () => {
+	const target = {
+		tmuxWindow: "GEO-280:@0",
+		sessionName: "GEO-280",
+	};
+	const session = {
+		execution_id: "exec-1",
+		issue_id: "GEO-280",
+		project_name: "geoforge3d",
+		status: "completed",
+	};
+
+	it("proves the execution marker before any target-scoped signal", async () => {
+		const reapMcp = vi.fn();
+		const killLinked = vi.fn();
+		const killWindow = vi.fn();
+		const result = await cleanupTmuxTarget(
+			{
+				target,
+				session,
+				strict: {
+					expectedExecutionId: "exec-1",
+					authorityCheck: async () => true,
+				},
+			},
+			{
+				resolveIdentity: async () => ({
+					kind: "unresolved" as const,
+					tmuxWindow: target.tmuxWindow,
+					reason: "execution-mismatch" as const,
+				}),
+				probe: async () => "alive",
+				reapMcp,
+				killLinked,
+				killWindow,
+			},
+		);
+
+		expect(result).toMatchObject({
+			physicalGone: false,
+			strictFailure: "window_identity_mismatch",
+		});
+		expect(reapMcp).not.toHaveBeenCalled();
+		expect(killLinked).not.toHaveBeenCalled();
+		expect(killWindow).not.toHaveBeenCalled();
+	});
+
+	it("stops after MCP authority loss without killing cmux or the window", async () => {
+		const killLinked = vi.fn();
+		const killWindow = vi.fn();
+		const result = await cleanupTmuxTarget(
+			{
+				target,
+				session,
+				strict: {
+					expectedExecutionId: "exec-1",
+					authorityCheck: async () => true,
+				},
+			},
+			{
+				resolveIdentity: async () => ({
+					kind: "base" as const,
+					session: "GEO-280",
+					tmuxWindow: target.tmuxWindow,
+					windowName: "runner",
+				}),
+				probe: async () => "alive",
+				reapMcp: async () => ({ authorityLost: true }),
+				killLinked,
+				killWindow,
+			},
+		);
+
+		expect(result.strictFailure).toBe("authority_lost");
+		expect(killLinked).not.toHaveBeenCalled();
+		expect(killWindow).not.toHaveBeenCalled();
+	});
+
+	it("treats a window disappearing after MCP reap as a successful absence", async () => {
+		let identityChecks = 0;
+		const killLinked = vi.fn();
+		const killWindow = vi.fn();
+		const result = await cleanupTmuxTarget(
+			{
+				target,
+				session,
+				strict: {
+					expectedExecutionId: "exec-1",
+					authorityCheck: async () => true,
+				},
+			},
+			{
+				resolveIdentity: async () => {
+					identityChecks += 1;
+					return identityChecks === 1
+						? {
+								kind: "base" as const,
+								session: "GEO-280",
+								tmuxWindow: target.tmuxWindow,
+								windowName: "runner",
+							}
+						: {
+								kind: "unresolved" as const,
+								tmuxWindow: target.tmuxWindow,
+								reason: "probe-failed" as const,
+							};
+				},
+				probe: async () => (identityChecks > 1 ? "absent" : "alive"),
+				reapMcp: async () => ({}),
+				killLinked,
+				killWindow,
+			},
+		);
+
+		expect(result).toMatchObject({ physicalGone: true, tmuxClosed: true });
+		expect(killLinked).not.toHaveBeenCalled();
+		expect(killWindow).not.toHaveBeenCalled();
 	});
 });

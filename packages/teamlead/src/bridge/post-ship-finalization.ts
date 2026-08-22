@@ -33,6 +33,11 @@ import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { archiveThreadAndRecord } from "./done-thread-archiver.js";
 import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
+import {
+	inferLandCloseoutCause,
+	type LandCloseoutCause,
+	landCloseoutReason,
+} from "./land-closeout-cause.js";
 import { normalizeLandLinearDoneReason } from "./land-retry-policy.js";
 import {
 	type LinearDoneFinalizer,
@@ -41,6 +46,10 @@ import {
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
+import {
+	type ForceShippedHusksResult,
+	forceShippedHusks,
+} from "./shipped-husk-escalation.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 /** No-op policy outcomes that deliberately discharge finalization's archive duty. */
@@ -435,6 +444,8 @@ export interface PostShipDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
+	/** FLY-1992: evidence-gated cleanup for shipped workflow-node husks. */
+	forceShippedHusks?: typeof forceShippedHusks;
 }
 
 /**
@@ -576,6 +587,7 @@ export interface ResumablePostShipFinalizationReport {
 	complete: boolean;
 	outcome: "completed" | "partial" | "held";
 	reason?: string;
+	cause?: { token: LandCloseoutCause; executionIds?: string[] };
 	details: {
 		tmuxClosed?: boolean;
 		commDbFinalized?: boolean;
@@ -840,6 +852,30 @@ async function runPostShipFinalizationInner(
 	// FIRST — before any teardown. It now runs LAST (step 3.5 below), after the
 	// closeout confirmed every node gone, matching the plan's "Linear item runs
 	// last" DAG edge, and it is skipped entirely when the closeout is blocked.)
+	let huskForce: ForceShippedHusksResult | undefined;
+	if (landManaged) {
+		const context = opts.landOperation!;
+		huskForce = await (deps.forceShippedHusks ?? forceShippedHusks)(
+			{
+				issueId: opts.issueId,
+				projectName: opts.projectName,
+				operationId: context.operationId,
+				claim: {
+					operationId: context.operationId,
+					ownerId: context.ownerId,
+					generation: context.generation,
+				},
+			},
+			store,
+		).catch((error) => {
+			console.error(
+				"[post-ship] shipped husk escalation failed:",
+				(error as Error).message,
+			);
+			return { cleared: [] };
+		});
+	}
+
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(
 		{
@@ -948,8 +984,14 @@ async function runPostShipFinalizationInner(
 	// (some node not confirmed gone, or a canceled-vs-shipped conflict) must
 	// NOT be followed by thread archive or the Linear Done write. The sweep /
 	// next finalization pass is the eventual repair.
-	let closeoutBlocked = !cleanup.commDbFinalized;
+	let closeoutCause: LandCloseoutCause | undefined = huskForce?.cause
+		? huskForce.cause === "authority_lost"
+			? "lifecycle_conflict"
+			: huskForce.cause
+		: undefined;
+	let closeoutBlocked = Boolean(huskForce?.cause) || !cleanup.commDbFinalized;
 	if (closeoutBlocked) {
+		closeoutCause ??= inferLandCloseoutCause(cleanup.errors);
 		console.warn(
 			`[post-ship] CommDB finalization incomplete for ${opts.executionId} — thread archive + Linear Done deferred`,
 		);
@@ -976,6 +1018,7 @@ async function runPostShipFinalizationInner(
 			(closeoutRes.outcome === "blocked" || closeoutRes.outcome === "conflict")
 		) {
 			closeoutBlocked = true;
+			closeoutCause ??= "lifecycle_conflict";
 			console.warn(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
 			);
@@ -1267,17 +1310,25 @@ async function runPostShipFinalizationInner(
 		}
 	}
 	if (closeoutBlocked) {
+		const cause = closeoutCause ?? "unknown";
+		const reason = landCloseoutReason(cause);
 		if (declaredFinalization && opts.runId) {
 			store.setWorkflowPrFinalizationOutcome({
 				runId: opts.runId,
 				completed: false,
-				error: "issue_closeout_incomplete",
+				error: reason,
 			});
 		}
 		return {
 			complete: false,
 			outcome: "partial",
-			reason: "issue_closeout_incomplete",
+			reason,
+			cause: {
+				token: cause,
+				...(huskForce?.affectedExecutionIds?.length
+					? { executionIds: huskForce.affectedExecutionIds }
+					: {}),
+			},
 			details: {
 				tmuxClosed: cleanup.tmuxClosed,
 				commDbFinalized: cleanup.commDbFinalized,
@@ -1306,11 +1357,10 @@ async function runPostShipFinalizationInner(
 		};
 	}
 	if (resumable && (!worktreeRemoved || !threadArchived)) {
-		const incomplete = [
-			!worktreeRemoved ? "worktree" : undefined,
-			!threadArchived ? "thread_archive" : undefined,
-		].filter((value): value is string => !!value);
-		const reason = `land_postconditions_incomplete:${incomplete.join(",")}`;
+		const postconditionCause: LandCloseoutCause = !worktreeRemoved
+			? "worktree_branch_mismatch"
+			: "archive_failed";
+		const reason = landCloseoutReason(postconditionCause);
 		if (declaredFinalization && opts.runId) {
 			store.setWorkflowPrFinalizationOutcome({
 				runId: opts.runId,
@@ -1322,6 +1372,7 @@ async function runPostShipFinalizationInner(
 			complete: false,
 			outcome: "partial",
 			reason,
+			cause: { token: postconditionCause },
 			details: {
 				tmuxClosed: cleanup.tmuxClosed,
 				commDbFinalized: cleanup.commDbFinalized,

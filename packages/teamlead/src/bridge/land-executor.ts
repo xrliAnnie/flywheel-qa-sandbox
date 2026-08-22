@@ -1828,25 +1828,61 @@ export async function executeLandOperation(
 		);
 		if (rejectedAfterFinalize) return rejectedAfterFinalize;
 		if (!closure.complete) {
+			const reason = closure.reason ?? `finalization_${closure.outcome}`;
+			const releaseState = closure.outcome === "held" ? "held" : "partial";
 			await announce(
 				deps,
 				operation,
 				claim,
 				"finalization_partial",
 				{
-					reason: closure.reason ?? closure.outcome,
+					reason,
 					...(closure.details ?? {}),
 				},
 				now,
 			);
-			return release(
-				deps,
-				operation,
-				claim,
-				closure.outcome === "held" ? "held" : "partial",
-				closure.reason ?? `finalization_${closure.outcome}`,
+			const preview = deps.store.previewLandOperationRetryRelease({
+				operationId: operation.operation_id,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				class:
+					releaseState === "held"
+						? "terminal"
+						: classifyLandRetryReason(reason),
+				reason,
 				now,
-			);
+			});
+			if (preview?.state === "held" && deps.notify) {
+				const receiptStep = `aux:notification:land_held:${operation.resume_generation}`;
+				if (!stepReceipt(deps.store, operation.operation_id, receiptStep)) {
+					try {
+						const notified = await deps.notify(operation, "finalization_held", {
+							reason: preview.lastError,
+							originalReason: reason,
+							retryCount: preview.retryCount,
+							...(closure.details ?? {}),
+						});
+						const disposition = notified?.disposition ?? "posted";
+						recordStep(
+							deps,
+							operation,
+							claim,
+							receiptStep,
+							{
+								delivered: disposition === "posted",
+								disposition,
+								stage: "finalization_held",
+							},
+							now,
+						);
+					} catch (error) {
+						console.warn(
+							`[land] held notification failed for ${operation.operation_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
+			}
+			return release(deps, operation, claim, releaseState, reason, now);
 		}
 		await announce(deps, operation, claim, "completed", {}, now);
 		if (!stepReceipt(deps.store, operationId, "finalization_completed")) {

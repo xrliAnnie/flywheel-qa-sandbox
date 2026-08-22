@@ -334,6 +334,10 @@ import { sweepIssueGatesForProject } from "./issue-gate-supersede.js";
 import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import {
+	landCloseoutReason,
+	renderLandThreadNotification,
+} from "./land-closeout-cause.js";
+import {
 	executeLandOperation,
 	GhCliLandMergeDriver,
 	landThreadNotificationPreflight,
@@ -5977,7 +5981,7 @@ export async function startBridge(
 					return {
 						complete: false,
 						outcome: "partial" as const,
-						reason: "land_source_session_unavailable",
+						reason: landCloseoutReason("source_session_unavailable"),
 					};
 				}
 				return runResumablePostShipFinalization(
@@ -6136,7 +6140,11 @@ export async function startBridge(
 						issueIdentifier: session?.issue_identifier,
 						projectName: operation.project_name,
 						kind: `land_${stage}`,
-						content: `🏁 land ${stage} — PR #${operation.pr_number}\n${JSON.stringify(detail)}`,
+						content: renderLandThreadNotification(
+							stage,
+							operation.pr_number,
+							detail,
+						),
 						thread,
 						botToken: lead.botToken ?? config.discordBotToken,
 						onUndeliverable: (reason) =>
