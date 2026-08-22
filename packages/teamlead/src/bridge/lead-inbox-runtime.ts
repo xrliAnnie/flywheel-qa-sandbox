@@ -6,7 +6,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
-import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
+import {
+	type CanonicalLeadIdentity,
+	compileLeadIdentityRegistry,
+} from "flywheel-comm/lead-identity";
 import {
 	LeadLeaseStore,
 	type ProcessTupleState,
@@ -14,6 +17,7 @@ import {
 } from "flywheel-comm/lead-lease";
 import {
 	MailboxQueue,
+	type MailboxRecipientState,
 	type MailboxSettlement,
 } from "flywheel-comm/mailbox-queue";
 import { encodeSenderRef } from "flywheel-comm/sender-ref";
@@ -164,6 +168,7 @@ export class LeadInboxRuntime {
 	private readonly admissions: QuestionAdmission[] = [];
 	private readonly runnerAdapters: RunnerMailboxDeliveryAdapter[] = [];
 	private readonly projectByLead = new Map<string, ProjectEntry>();
+	private readonly identityByLead = new Map<string, CanonicalLeadIdentity>();
 	private readonly ownerEpoch: string;
 	private readonly leadLeaseReader: LeadLeaseReader;
 	private readonly processLeadTupleState: (
@@ -176,8 +181,12 @@ export class LeadInboxRuntime {
 
 	constructor(private readonly opts: LeadInboxRuntimeOptions) {
 		this.ownerEpoch = opts.ownerEpoch ?? randomUUID();
-		const identityByLead = new Map(
-			compileLeadIdentityRegistry(opts.projects).map((identity) => [
+		const identities = compileLeadIdentityRegistry(opts.projects);
+		for (const identity of identities) {
+			this.identityByLead.set(identity.leadId, identity);
+		}
+		const identityByProjectLead = new Map(
+			identities.map((identity) => [
 				this.key(identity.projectName, identity.leadId),
 				identity,
 			]),
@@ -262,7 +271,7 @@ export class LeadInboxRuntime {
 					throw new Error(`duplicate Lead id across projects: ${lead.agentId}`);
 				}
 				this.projectByLead.set(lead.agentId, project);
-				const identity = identityByLead.get(
+				const identity = identityByProjectLead.get(
 					this.key(project.projectName, lead.agentId),
 				);
 				if (!identity) {
@@ -512,6 +521,16 @@ export class LeadInboxRuntime {
 		const queue = this.queues.get(projectName);
 		if (!queue) throw new Error(`queue closed for project: ${projectName}`);
 		return queue.inspectDeliveryState(deliveryId);
+	}
+
+	getLeadRecipientState(leadId: string): MailboxRecipientState {
+		const identity = this.identityByLead.get(leadId);
+		if (!identity) return "unknown";
+		return readLeadRecipientState({
+			leadKey: identity.leadKey,
+			leaseReader: this.leadLeaseReader,
+			processTupleState: this.processLeadTupleState,
+		});
 	}
 
 	nudge(leadId: string, projectName?: string): boolean {

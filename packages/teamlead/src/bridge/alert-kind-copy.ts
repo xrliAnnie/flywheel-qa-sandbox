@@ -246,6 +246,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux watcher is stalled or unsupervised";
 		case "flag_scan_failed":
 			return "Weekly flag scan failed closed";
+		case "flag_scan_handoff":
+			return "Weekly flag scan founder handoff";
 		case "flag_scan_no_clock":
 			return "Weekly flag scan has no trustworthy clock";
 		case "tmux_rescue_hold":
@@ -486,6 +488,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The resident cmux watcher failed its launchd, owner, heartbeat, or event-backlog health contract. Review the supplied branch and canonical recovery outcome; uncertainty branches intentionally did not signal a process.";
 		case "flag_scan_failed":
 			return "The weekly flag scan failed closed before publishing governance output. Repair the named source or provenance failure; no flag was deleted.";
+		case "flag_scan_handoff":
+			return "The weekly flag scan report is ready in the Flywheel core Discord thread. Answer founder questions there and record any cleanup verdict through the guarded verdict + preflight path.";
 		case "flag_scan_no_clock":
 			return "One or more flags lack two trustworthy effective-value samples. The scan withheld them from Annie rather than guessing; repair the named read or keep-binding gap.";
 		case "tmux_rescue_hold":

@@ -712,7 +712,6 @@ mkdir -p "${SLOT_DIR}/discord-state"
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 GENERALIZED_READINESS_PENDING=0
 GENERALIZED_CHILD_TMPDIR="${TMPDIR:-/tmp}"
-GENERALIZED_ENV_ATTESTATION=""
 GENERALIZED_API_TOKEN_PATH=""
 GENERALIZED_ROOM_INFO=""
 # FLY-1775 pit 9 intentionally extends the ordinary reply-by-issue opt-in:
@@ -730,7 +729,6 @@ if [[ "$GENERALIZED" == "1" ]]; then
   if [[ "$GENERALIZED_CHILD_TMPDIR" != "${TMPDIR:-/tmp}" ]]; then
     log "generalized preflight: TMPDIR socket path is too long; child processes use TMPDIR=/tmp (sun_path safety)"
   fi
-  GENERALIZED_ENV_ATTESTATION="${SLOT_DIR}/state/generalized-env-attestation.json"
   GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
 fi
 
@@ -756,11 +754,6 @@ LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
 if [[ "$GENERALIZED" == "1" ]]; then
-  while IFS= read -r _generalized_env; do
-    [[ -n "$_generalized_env" ]] || continue
-    BRIDGE_EXTRA_ENV+=("$_generalized_env")
-    LEAD_EXTRA_ENV+=("$_generalized_env")
-  done < <(qa_generalized_feature_env)
   BRIDGE_EXTRA_ENV+=("BRIDGE_DEPT_SCOPE_REJECT=${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}")
   LEAD_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
   # launchd manifests are explicit env maps rather than `env -u`; empty values
@@ -1747,7 +1740,6 @@ if [[ "$GENERALIZED" == "1" ]]; then
     ${GENERALIZED_REPLY_ENV[@]+"${GENERALIZED_REPLY_ENV[@]}"} \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     bash "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
-      "$GENERALIZED_ENV_ATTESTATION" \
       npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
     > "${SLOT_DIR}/bridge.log" 2>&1 &
 elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
@@ -1861,14 +1853,6 @@ if [[ "$GENERALIZED" == "1" ]]; then
     log "ERROR: generalized health identity mismatch; expected built ${SCRIPT_REPO_HEAD}, got $(jq -c '{ok,buildMode,buildSha,artifactBuildSha}' <<<"$GENERALIZED_HEALTH_JSON" 2>/dev/null || echo invalid-json)"
     exit 1
   fi
-  if ! jq -e '
-    .schemaVersion == 1 and
-    (.flags | length == 5) and
-    ([.flags[]] | all(. == "1"))
-  ' "$GENERALIZED_ENV_ATTESTATION" >/dev/null; then
-    log "ERROR: generalized Bridge env attestation is missing or incomplete"
-    exit 1
-  fi
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized workflow_category_binding seed failed"; exit 1; }
@@ -1907,18 +1891,17 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
     --arg flywheelRepo "$REPO_ROOT" \
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
-    --arg envAttestationPath "$GENERALIZED_ENV_ATTESTATION" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
     '{schemaVersion:1,slot:$slot,port:$port,projectName:$projectName,agentId:$agentId,
       mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
       flywheelProjectsFile:$flywheelProjectsFile,
-      apiTokenPath:$apiTokenPath,envAttestationPath:$envAttestationPath,
+      apiTokenPath:$apiTokenPath,
       bridgeLog:$bridgeLog}' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }
   chmod 600 "$_room_tmp"
   mv "$_room_tmp" "$GENERALIZED_ROOM_INFO"
-  log "generalized readiness: flags 5/5 · bindings 5/5 · pipeline+work_kind on · menu on"
+  log "generalized readiness: bindings 5/5 · pipeline+work_kind on · menu on"
 fi
 
 # ── Bridge confirmed up → NOW finalize campaign locks + disarm the failure trap ──
@@ -1982,7 +1965,6 @@ if [[ "$GENERALIZED" == "1" ]]; then
   "runnerMode": "${GENERALIZED_RUNNER_MODE}",
   "buildSha": "${SCRIPT_REPO_HEAD}",
   "apiTokenPath": "${GENERALIZED_API_TOKEN_PATH}",
-  "envAttestationPath": "${GENERALIZED_ENV_ATTESTATION}",
   "roomInfo": "${GENERALIZED_ROOM_INFO}"
 EOF
 )

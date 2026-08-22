@@ -17,8 +17,7 @@
  *
  * The classification is a PURE function; the routed sink wrapper
  * (`createInfraAlertSink`) is what plugin.ts installs in front of the raw
- * notifier/Hub. Everything is gated on FLYWHEEL_ALERT_ROUTING=1 — unset means
- * a pure passthrough (byte-compat, resolver never even consulted).
+ * notifier/Hub. FLY-1831 welded this shipped routing path on.
  */
 
 import {
@@ -140,7 +139,7 @@ export interface InfraAlertSinkDeps {
 	ticketSink?: AlertSinkLike;
 	/** Optional observation copy. Default-off; the primary mailbox result wins. */
 	copyTicketToChannel?: () => boolean;
-	/** Read at CALL time (env may change). Default: FLYWHEEL_ALERT_ROUTING === "1". */
+	/** Test seam; production routing is welded on by default. */
 	routingEnabled?: () => boolean;
 	/**
 	 * sessions → issue → chat_threads resolution, injected by plugin.ts. Only
@@ -158,13 +157,11 @@ export interface InfraAlertSinkDeps {
 }
 
 /**
- * Wrap the raw alert sink with D1 routing. Unset env → pure passthrough
- * (byte-compat). Every failure path inside routing falls back to the raw sink
- * — an alert is NEVER lost to a routing bug.
+ * Wrap the raw alert sink with D1 routing. Every failure path inside routing
+ * falls back to the raw sink — an alert is NEVER lost to a routing bug.
  */
 export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
-	const routingEnabled =
-		deps.routingEnabled ?? (() => process.env.FLYWHEEL_ALERT_ROUTING === "1");
+	const routingEnabled = deps.routingEnabled ?? (() => true);
 	const logger =
 		deps.logger ?? ((m) => console.log(`[infra-alert-router] ${m}`));
 	const ticketSink = deps.ticketSink ?? deps.rawSink;

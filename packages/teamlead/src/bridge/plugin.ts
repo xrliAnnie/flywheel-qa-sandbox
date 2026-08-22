@@ -88,7 +88,6 @@ import {
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
 import {
-	type AlertAttemptOptions,
 	type AlertPayload,
 	type AlertResult,
 	FLEET_ALERT_PROJECT,
@@ -245,7 +244,9 @@ import { renderFlagReport } from "./feature-flag-report-html.js";
 import { buildFlagProvenance } from "./flag-provenance.js";
 import {
 	createProductionFlagScanEffects,
-	resolveFlagScanOwner,
+	deliverFlagScanMailboxAlert,
+	reportFlagScanOwnerResolution,
+	resolveFlagScanOwnerStatus,
 } from "./flag-retirement-production.js";
 import {
 	createFlagRetirementScanner,
@@ -7321,32 +7322,89 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
-	const flagScanAlertHolder: {
-		current?: (
-			payload: AlertPayload,
-			attempt?: AlertAttemptOptions,
-		) => Promise<AlertResult>;
-	} = {};
 	// FLY-927 (Task 1.1): late-bound ROUTED alert sink — the single funnel every
 	// emission source calls, so the D1 Router sees every infra event. Populated
 	// right after the raw alertSink below; emitters constructed earlier read
 	// `.current` at fire time and fall back to the raw notifier during the
-	// synchronous boot window (identical behavior — routing only matters at
-	// runtime, and FLYWHEEL_ALERT_ROUTING unset keeps it a pure passthrough).
+	// synchronous boot window; production routing is welded on after assembly.
 	const routedAlertSinkHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
 
-	const flagScanOwner = (() => {
-		try {
-			return resolveFlagScanOwner(projects);
-		} catch (error) {
-			console.warn(
-				`[flag-scan] owner resolution unavailable: ${(error as Error).message}`,
-			);
-			return undefined;
+	const flagScanOwnerStatus = resolveFlagScanOwnerStatus(projects);
+	const flagScanOwner =
+		flagScanOwnerStatus.kind === "ready"
+			? flagScanOwnerStatus.owner
+			: undefined;
+	if (flagScanOwnerStatus.kind === "invalid") {
+		console.warn(
+			`[flag-scan] owner resolution unavailable: ${flagScanOwnerStatus.message}`,
+		);
+	}
+	const flagScanFailureMessages = new Map<string, string>();
+	const recoverFlagScanFailureAlerts = (): void => {
+		if (!flagScanOwner) return;
+		const now = Date.now();
+		const leaseOwner = `bridge:${process.pid}`;
+		for (const intent of store.listFlagScanFailureAlertIntents()) {
+			if (intent.state === "done") continue;
+			if (
+				!store.claimFlagScanFailureAlertIntent({
+					intentId: intent.intentId,
+					leaseOwner,
+					now,
+					leaseMs: 2 * 60_000,
+				})
+			) {
+				continue;
+			}
+			try {
+				const message =
+					flagScanFailureMessages.get(intent.eventId) ??
+					`Weekly flag scan ${intent.failureClass} failure at baseline run ${intent.baselineRunId}; inspect the scanner before retrying.`;
+				const delivered = deliverFlagScanMailboxAlert({
+					primaryLeadId: flagScanOwner.leadId,
+					fallbackLeadId: flagScanOwner.senderLeadId,
+					projectName: flagScanOwner.project.projectName,
+					payloadFor: (recipient) => ({
+						leadId: recipient,
+						projectName: flagScanOwner.project.projectName,
+						eventId: intent.eventId,
+						eventType: "flag_scan_failed",
+						title: `Weekly flag scan failed closed (${intent.milestone})`,
+						body: `${message}\nThe scan remains fail-closed; inspect the referenced run before retrying.`,
+						severity: "warning",
+					}),
+					enqueueLeadInbox: (leadId, payload) =>
+						leadInboxRuntime.enqueueInfraAlert(leadId, payload),
+					inspectLeadInbox: (projectName, deliveryId) =>
+						leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
+					leadRecipientState: (leadId) =>
+						leadInboxRuntime.getLeadRecipientState(leadId),
+				});
+				if (
+					delivered.done &&
+					store.settleFlagScanFailureMailboxIntent({
+						intentId: intent.intentId,
+						leaseOwner,
+					})
+				) {
+					continue;
+				}
+				store.markFlagScanFailureAlertIntentAmbiguous({
+					intentId: intent.intentId,
+					leaseOwner,
+					error: "Lead mailbox ACK pending",
+				});
+			} catch (error) {
+				store.markFlagScanFailureAlertIntentAmbiguous({
+					intentId: intent.intentId,
+					leaseOwner,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
 		}
-	})();
+	};
 	const flagRetirementScanner =
 		flagScanSourceLoader && flagScanRepoRoot && flagScanOwner
 			? createFlagRetirementScanner({
@@ -7388,12 +7446,13 @@ export async function startBridge(
 						projects,
 						reportBaseUrl: loopbackBaseUrl,
 						reportToken: config.apiToken,
-						discordBotToken:
-							flagScanOwner.project.announcerBotToken ?? config.discordBotToken,
 						store,
-						alert: (payload, attempt) =>
-							flagScanAlertHolder.current?.(payload, attempt) ??
-							Promise.resolve({ skipped: "unknown-lead" }),
+						enqueueLeadInbox: (leadId, payload) =>
+							leadInboxRuntime.enqueueInfraAlert(leadId, payload),
+						inspectLeadInbox: (projectName, deliveryId) =>
+							leadInboxRuntime.getLeadEventSettlement(projectName, deliveryId),
+						leadRecipientState: (leadId) =>
+							leadInboxRuntime.getLeadRecipientState(leadId),
 					}),
 					alertFailure: async (message) => {
 						const baselineRunId = store.getLatestFlagScanRun()?.runId ?? 0;
@@ -7410,75 +7469,20 @@ export async function startBridge(
 							eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:initial`,
 							now,
 						});
+						flagScanFailureMessages.set(initial.eventId, message);
 						if (now - initial.createdAt >= 24 * 60 * 60_000) {
-							store.ensureFlagScanFailureAlertIntent({
+							const reminder = store.ensureFlagScanFailureAlertIntent({
 								baselineRunId,
 								failureClass,
 								milestone: "24h",
 								eventId: `flag-scan-failed:${baselineRunId}:${failureClass}:24h`,
 								now,
 							});
+							flagScanFailureMessages.set(reminder.eventId, message);
 						}
-						for (const intent of store.listFlagScanFailureAlertIntents({
-							baselineRunId,
-							failureClass,
-						})) {
-							if (intent.state === "done") continue;
-							if (
-								store.getAlertDeliveryReceipt(intent.eventId) &&
-								store.claimFlagScanFailureAlertIntent({
-									intentId: intent.intentId,
-									leaseOwner: `bridge:${process.pid}`,
-									now,
-									leaseMs: 2 * 60_000,
-								})
-							) {
-								store.settleFlagScanFailureAlertIntent({
-									intentId: intent.intentId,
-									leaseOwner: `bridge:${process.pid}`,
-								});
-								continue;
-							}
-							if (
-								!store.claimFlagScanFailureAlertIntent({
-									intentId: intent.intentId,
-									leaseOwner: `bridge:${process.pid}`,
-									now,
-									leaseMs: 2 * 60_000,
-								})
-							) {
-								continue;
-							}
-							const result = await flagScanAlertHolder.current?.(
-								{
-									leadId: flagScanOwner.leadId,
-									projectName: flagScanOwner.project.projectName,
-									eventId: intent.eventId,
-									eventType: "flag_scan_failed",
-									title: `Weekly flag scan failed closed (${intent.milestone})`,
-									body: `${message}\nThe scan remains fail-closed; inspect the referenced run before retrying.`,
-									severity: "warning",
-								},
-								{ replayAfterAmbiguousAttempt: true },
-							);
-							if (
-								result &&
-								store.settleFlagScanFailureAlertIntent({
-									intentId: intent.intentId,
-									leaseOwner: `bridge:${process.pid}`,
-								})
-							) {
-								continue;
-							}
-							store.markFlagScanFailureAlertIntentAmbiguous({
-								intentId: intent.intentId,
-								leaseOwner: `bridge:${process.pid}`,
-								error: result
-									? "delivery receipt missing"
-									: "alert sink unavailable",
-							});
-						}
+						recoverFlagScanFailureAlerts();
 					},
+					recoverFailureAlerts: recoverFlagScanFailureAlerts,
 					now: () => Date.now(),
 					newRunToken: () =>
 						`${new Date().toISOString().slice(0, 10)}-${randomBytes(8).toString("hex")}`,
@@ -8922,11 +8926,6 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
-	// FLY-1781: the scan's own SQLite outboxes provide the ambiguity fence and
-	// exclusive lease, so their retries may use the notifier's fenced replay
-	// option instead of being swallowed by attempt-only claims after a crash.
-	flagScanAlertHolder.current = (payload, attempt) =>
-		leadAlertNotifier.alert(payload, attempt);
 	tuiWindowAlertHolder.lost = async (evidence) => {
 		const reason = evidence.lastFailure
 			? `${evidence.lastFailure.category}/${evidence.lastFailure.reason}`
@@ -10000,10 +9999,7 @@ export async function startBridge(
 			const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
 			return id && /^\d{17,20}$/.test(id) ? id : undefined;
 		};
-		const rescueDetectionAiClassify =
-			process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
-				? undefined
-				: makeSubscriptionDetectionClassifier({});
+		const rescueDetectionAiClassify = makeSubscriptionDetectionClassifier({});
 		rescueRuntime = buildRescueRuntime({
 			listPendingAlerts: () => store.listActiveAlertThreads(),
 			kickstart: makeKickstart({ log: (m) => console.warn(m) }),
@@ -10367,8 +10363,7 @@ export async function startBridge(
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
 
-	// FLY-927 (W1): wrap the raw sink with the D1 Router. FLYWHEEL_ALERT_ROUTING
-	// unset ⇒ pure passthrough (the resolver is never even consulted). An
+	// FLY-927 (W1): wrap the raw sink with the welded-on D1 Router. An
 	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
 	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
 	// to the raw sink (ticket queue) — never silent, never recursive.
@@ -10398,6 +10393,7 @@ export async function startBridge(
 		},
 	};
 	routedAlertSinkHolder.current = routedAlertSink;
+	await reportFlagScanOwnerResolution(flagScanOwnerStatus, routedAlertSink);
 	workflowEngineAlertHolder.current = routedAlertSink;
 	paneLossNotifyHolder.current = async (
 		session,
@@ -10776,10 +10772,7 @@ export async function startBridge(
 					lastVerifiedAt: new Date().toISOString(),
 					reason: "runner login_expired",
 				}),
-			aiClassify:
-				process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
-					? undefined
-					: makeSubscriptionDetectionClassifier({}),
+			aiClassify: makeSubscriptionDetectionClassifier({}),
 		});
 		runnerQuotaScanPassHolder.current = makeRunnerQuotaScanPass({
 			store,

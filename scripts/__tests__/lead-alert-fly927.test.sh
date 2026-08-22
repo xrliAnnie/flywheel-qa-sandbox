@@ -94,7 +94,6 @@ run_alert() {
     LEGACY_BOT_TOKEN="$LEGACY" \
     FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="" \
     FLYWHEEL_ALERT_SENDER_TOKEN_ENV="" \
-    FLYWHEEL_ALERT_TICKETS="" \
     FLYWHEEL_ALERT_RATE_PER_MIN="" \
     ${envs[@]+"${envs[@]}"} \
     bash "$LEAD_ALERT" \
@@ -110,8 +109,7 @@ run_alert() {
 RESULT=$(run_alert u1 rate_limit bridge \
   FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="999888777666555444" \
   FLYWHEEL_ALERT_SENDER_TOKEN_ENV="INFRA_TOKEN" \
-  INFRA_TOKEN="$CANARY" \
-  FLYWHEEL_ALERT_TICKETS="1")
+  INFRA_TOKEN="$CANARY")
 [ "$RESULT" = "sent" ] && ok "unified+sender: sent for a NO-projects.json lead (--lead bridge)" || bad "unified+sender: expected sent, got '$RESULT'"
 grep -q "channels/999888777666555444/messages" "$TMP/curl-u1" \
   && ok "unified channel env wins channel resolution" || bad "POST did not target the unified channel"
@@ -126,13 +124,15 @@ grep -q '🎫 flywheel · 首见' "$TMP/curl-u1" \
 grep -q 'owner — · 状态 NEW' "$TMP/curl-u1" \
   && ok "shell 🎫 line fixed at owner — · 状态 NEW" || bad "🎫 owner/status wrong"
 
-# ── 7b: tickets OFF → no 🎫 even in unified mode ──
+# ── 7b: retired tickets env is ignored; unified mode still renders 🎫 ──
 run_alert u2 rate_limit bridge \
-  FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="999888777666555444" \
-  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="INFRA_TOKEN" \
-  INFRA_TOKEN="$CANARY" >/dev/null
+	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="999888777666555444" \
+	FLYWHEEL_ALERT_SENDER_TOKEN_ENV="INFRA_TOKEN" \
+	FLYWHEEL_ALERT_TICKETS="0" \
+	INFRA_TOKEN="$CANARY" >/dev/null
 grep -q '🎫' "$TMP/curl-u2" \
-  && bad "🎫 rendered with tickets OFF" || ok "no 🎫 when FLYWHEEL_ALERT_TICKETS unset"
+	&& ok "🎫 remains welded on when retired FLYWHEEL_ALERT_TICKETS=0 is injected" \
+	|| bad "retired FLYWHEEL_ALERT_TICKETS still disabled 🎫 rendering"
 
 # ── 3: sender env set but UNRESOLVABLE → dead-letter, no per-lead fallback ──
 RESULT=$(run_alert u3 rate_limit test-lead \
@@ -213,7 +213,6 @@ run_alert m3 deploy_failed deploy \
   FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="999888777666555444" \
   FLYWHEEL_ALERT_SENDER_TOKEN_ENV="INFRA_TOKEN" \
   INFRA_TOKEN="$CANARY" \
-  FLYWHEEL_ALERT_TICKETS="1" \
   --mention-user "$MID" >/dev/null
 grep -q "\"content\": \"<@${MID}> ⚠️" "$TMP/curl-m3" \
   && ok "content prefixed with <@id> (tickets form)" || bad "content prefix missing (tickets form)"

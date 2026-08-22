@@ -50,7 +50,7 @@ export interface InfraAlertRoutingDeps {
 	copyTicketToChannel?: () => boolean;
 	/** Test seams. */
 	routingEnabled?: () => boolean;
-	/** FLY-927 (Task 2.3): 🎫 owner enrichment gate; default FLYWHEEL_ALERT_TICKETS. */
+	/** Test seam; production ticket enrichment is welded on by default. */
 	ticketsEnabled?: () => boolean;
 	fetchImpl?: typeof fetch;
 	sleepFn?: (ms: number) => Promise<void>;
@@ -60,7 +60,7 @@ export interface InfraAlertRoutingDeps {
 
 /**
  * The routed alert sink plugin.ts installs in front of every emission source.
- * FLYWHEEL_ALERT_ROUTING unset ⇒ pure passthrough to `rawSink`.
+ * Production routing is welded on; injected test seams may still isolate paths.
  */
 export function buildInfraAlertRouting(
 	deps: InfraAlertRoutingDeps,
@@ -179,8 +179,7 @@ export function buildInfraAlertRouting(
 	// HERE, before the sink. Ticket-queue kinds only; issue-progress kinds never
 	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
 	// (owner —), never blocks the alert.
-	const ticketsEnabled =
-		deps.ticketsEnabled ?? (() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
+	const ticketsEnabled = deps.ticketsEnabled ?? (() => true);
 	const now = deps.now ?? (() => Date.now());
 	const enrich = (payload: AlertPayload): AlertPayload => {
 		if (!ticketsEnabled() || payload.ticket) return payload;

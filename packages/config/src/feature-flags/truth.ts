@@ -351,8 +351,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: publish-approval Discord channel id (FLY-1062)",
 	FLYWHEEL_FLEET_SANITIZE:
 		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
-	FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT:
-		"plumbing: deliberate operator override of the FLY-1389 global-bin write-time guard (temp/worktree repoRoot refusal in syncFlywheelCliBin) — an escape hatch, not a rollout gate",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
@@ -389,8 +387,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: account-ledger json path override (FLY-871)",
 	FLYWHEEL_INFRA_BOT_USER_ID:
 		"context: Codex Infra Bot discord user id, for @-mention on account-switch assignment posts (FLY-871)",
-	FLYWHEEL_DETECTION_AI_CLASSIFY:
-		"internal ops lever: kill-switch for the Layer-2 AI-assisted pane classify step, default-on (FLY-871)",
 	FLYWHEEL_BRIDGE_LOOP_GUARD_LOG: "plumbing: event-loop guard log path",
 	FLYWHEEL_BRIDGE_LOOP_GUARD_HEARTBEAT_MS:
 		"tuning knob: event-loop guard heartbeat cadence",
@@ -454,8 +450,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: durable quota-switch confirmation evidence directory (FLY-1182)",
 	FLYWHEEL_QUOTA_API_BASE:
 		"config value: OAuth usage API base URL override (FLY-1256; local mock in QA)",
-	FLYWHEEL_QUOTA_QA_INJECTION:
-		"internal QA-only safety lever: explicit env=1 plus an isolated-pane marker enables deterministic fault injection (FLY-1182)",
 	FLYWHEEL_QA_STALL_INBOX_LOOP_LEAD:
 		"internal QA-only fault seam: Lead id whose inbox loop stalls only when the effective FLYWHEEL_COMM_ROOT/FLYWHEEL_COMM_DIR is below the OS temp root and outside ~/.flywheel (FLY-1393)",
 	FLYWHEEL_QUOTA_ALERT_MENTION_USER:
@@ -515,8 +509,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: chrome-reaper orphan idle grace minutes (FLY-766)",
 	FLYWHEEL_CHROME_REAPER_INTERVAL_MS:
 		"tuning knob: chrome-reaper sweep interval ms (FLY-766)",
-	FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED:
-		"internal ops lever: opt-in reap of unattributed Chrome, default off (FLY-766)",
 	FLY1867_POLICY_PRE_CAS_PAUSE_MS:
 		"test-only tuning: bounded pre-CAS pause for deterministic policy-writer race coverage (FLY-1867)",
 	FLY1867_POLICY_LOCK_TIMEOUT_SECONDS:
@@ -593,15 +585,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: P2 Lead-inbox receipt deadline in minutes (FLY-1426)",
 	FLYWHEEL_RECEIPT_WINDOW_P3_MIN:
 		"tuning knob: P3 Lead-inbox receipt deadline in minutes (FLY-1426)",
-	// FLY-927 infra-alert ticket-queue rollout levers (all default-off = current
-	// behavior; ops-flipped in ~/.flywheel/.env + Bridge restart, NOT founder
-	// dashboard toggles yet — same class as the internal ops levers above). When
-	// FLY-928 deploys them, consider promoting the three boolean gates to
-	// registered founder flags like FLY-368's alert_threads / auto_repair.
-	FLYWHEEL_ALERT_ROUTING:
-		"internal ops lever: D1 responder-based alert routing + /send gating, default-off (FLY-927)",
-	FLYWHEEL_ALERT_TICKETS:
-		"internal ops lever: 🎫 ticket schema header + owner @-target + lifecycle/T2, default-off (FLY-927)",
 	FLYWHEEL_ALERT_COPY_TO_CHANNEL:
 		"internal ops lever: optional Discord observation copy for owner-mailbox infra alerts, default-off (FLY-1764)",
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV:
@@ -833,6 +816,9 @@ export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_WORKFLOW_CLAIMS_WRITE", retiredBy: "FLY-1808" },
 	{ envVar: "FLYWHEEL_WORKFLOW_CLAIMS_READ", retiredBy: "FLY-1808" },
 	{ envVar: "FLYWHEEL_WORKFLOW_GATE_CARRIER", retiredBy: "FLY-1808" },
+	{ envVar: "FLYWHEEL_ALERT_ROUTING", retiredBy: "FLY-1831" },
+	{ envVar: "FLYWHEEL_ALERT_TICKETS", retiredBy: "FLY-1831" },
+	{ envVar: "FLYWHEEL_DETECTION_AI_CLASSIFY", retiredBy: "FLY-1831" },
 ] as const;
 
 export interface FlagTruthValidation {

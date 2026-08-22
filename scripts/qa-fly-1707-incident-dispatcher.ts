@@ -311,12 +311,6 @@ const logs: string[] = [];
 const dispatcher = new WorkflowEngineDispatcher({
 	store,
 	startDispatcher: startDispatcher as never,
-	env: {
-		FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-		FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
-		FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-	},
 	stateRoot: mkdtempSync(join(tmpdir(), "fly1707-dispatch-replay-")),
 	now: () => new Date("2026-08-11T14:32:00.000Z"),
 	log: (message) => logs.push(message),

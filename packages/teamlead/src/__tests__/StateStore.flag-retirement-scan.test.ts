@@ -228,7 +228,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		expect(store.listFlagScanRuns()).toHaveLength(1);
 	});
 
-	it("deduplicates failure alert milestones and settles only from a delivery receipt", () => {
+	it("deduplicates failure alert milestones and ignores legacy alert receipts", () => {
 		const initial = store.ensureFlagScanFailureAlertIntent({
 			baselineRunId: 0,
 			failureClass: "provenance",
@@ -253,20 +253,43 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 				leaseMs: 10,
 			}),
 		).toBe(true);
+		store.recordAlertDeliveryReceipt(initial.eventId, "sent", "2026-08-16");
+		expect(store.listFlagScanFailureAlertIntents()[0]?.state).toBe("claimed");
 		expect(
-			store.settleFlagScanFailureAlertIntent({
+			store.markFlagScanFailureAlertIntentAmbiguous({
 				intentId: initial.intentId,
 				leaseOwner: "worker",
+				error: "Lead mailbox ACK pending",
 			}),
-		).toBe(false);
-		store.recordAlertDeliveryReceipt(initial.eventId, "sent", "2026-08-16");
+		).toBe(true);
+		expect(store.listFlagScanFailureAlertIntents()[0]?.state).toBe("ambiguous");
+	});
+
+	it("settles a failure intent from the dedicated Lead mailbox ACK path without forging an alert receipt", () => {
+		const intent = store.ensureFlagScanFailureAlertIntent({
+			baselineRunId: 0,
+			failureClass: "source",
+			milestone: "initial",
+			eventId: "flag-scan-failed:0:source:initial",
+			now: 100,
+		});
 		expect(
-			store.settleFlagScanFailureAlertIntent({
-				intentId: initial.intentId,
+			store.claimFlagScanFailureAlertIntent({
+				intentId: intent.intentId,
+				leaseOwner: "worker",
+				now: 100,
+				leaseMs: 10,
+			}),
+		).toBe(true);
+		expect(store.getAlertDeliveryReceipt(intent.eventId)).toBeUndefined();
+		expect(
+			store.settleFlagScanFailureMailboxIntent({
+				intentId: intent.intentId,
 				leaseOwner: "worker",
 			}),
 		).toBe(true);
 		expect(store.listFlagScanFailureAlertIntents()[0]?.state).toBe("done");
+		expect(store.getAlertDeliveryReceipt(intent.eventId)).toBeUndefined();
 	});
 
 	it("commits registry departures atomically with state/anchor/provenance cleanup", () => {

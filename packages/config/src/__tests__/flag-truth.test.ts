@@ -59,6 +59,79 @@ const FLY_1806_RETIRED_FLAGS = [
 ] as const;
 
 describe("FLY-1393 flag truth", () => {
+	it("FLY-1831 closes the eight direct-env residues with the exact 3+3+2 disposition", () => {
+		const disposition = {
+			deleted: [
+				"FLYWHEEL_ALERT_ROUTING",
+				"FLYWHEEL_ALERT_TICKETS",
+				"FLYWHEEL_DETECTION_AI_CLASSIFY",
+			],
+			exempt: [
+				"FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
+				"FLYWHEEL_QUOTA_QA_INJECTION",
+				"FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT",
+			],
+			registered: [
+				"FLYWHEEL_DESIGN_HTML_GATE",
+				"FLYWHEEL_INSTRUCTION_PATH_CHECK",
+			],
+		} as const;
+		expect(Object.values(disposition).map((names) => names.length)).toEqual([
+			3, 3, 2,
+		]);
+		expect(new Set(Object.values(disposition).flat()).size).toBe(8);
+
+		for (const envVar of disposition.deleted) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+			expect(
+				FLAG_EXEMPTIONS.some((entry) => entry.name === envVar),
+				envVar,
+			).toBe(false);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+			expect(
+				RETIRED_FLAGS.find((entry) => entry.envVar === envVar),
+				envVar,
+			).toEqual({ envVar, retiredBy: "FLY-1831" });
+		}
+		for (const envVar of disposition.exempt) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+			expect(
+				FLAG_EXEMPTIONS.find((entry) => entry.name === envVar),
+				envVar,
+			).toMatchObject({
+				kind: "env",
+				persistentEnvAllowed: false,
+				issue: "FLY-1831",
+			});
+			expect(
+				RETIRED_FLAGS.some((entry) => entry.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+		for (const envVar of disposition.registered) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(true);
+			expect(
+				FLAG_EXEMPTIONS.some((entry) => entry.name === envVar),
+				envVar,
+			).toBe(false);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+			expect(
+				RETIRED_FLAGS.some((entry) => entry.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+	});
+
 	it("accepts only FLY-1455 exemptions allowed in persistent environments", () => {
 		for (const exemption of FLAG_EXEMPTIONS.filter(
 			(entry) => entry.kind === "env" && entry.persistentEnvAllowed,

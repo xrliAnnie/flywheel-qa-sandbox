@@ -85,6 +85,19 @@ export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
 		owner: "flywheel-eng-lead",
 		issue: "FLY-1808",
 	},
+	...[
+		"FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
+		"FLYWHEEL_QUOTA_QA_INJECTION",
+		"FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT",
+	].map((name) => ({
+		name,
+		kind: "env" as const,
+		persistentEnvAllowed: false,
+		reason:
+			"bounded safety/QA invocation seam; accepted only for the explicit process invocation and forbidden in persistent runtime environments",
+		owner: "flywheel-eng-lead",
+		issue: "FLY-1831",
+	})),
 	...QA_AND_INVOCATION_SEAMS.map((name) => ({
 		name,
 		kind: "env" as const,

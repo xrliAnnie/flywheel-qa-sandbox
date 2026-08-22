@@ -49,7 +49,11 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		expect(TICKET_KINDS.has("ship_attempt_failed")).toBe(true);
 	});
 
-	it.each(["flag_scan_failed", "flag_scan_no_clock"] as const)(
+	it.each([
+		"flag_scan_failed",
+		"flag_scan_handoff",
+		"flag_scan_no_clock",
+	] as const)(
 		"routes %s as engineering-only notify with no ticket/thread lifecycle",
 		(kind) => {
 			expect(INFORMATIONAL_KINDS.has(kind)).toBe(true);

@@ -2,15 +2,6 @@
 # FLY-1775: pure/sourceable helpers for generalized 529 rooms.
 # Callers own logging and cleanup; this file performs no work when sourced.
 
-qa_generalized_feature_env() {
-	printf '%s\n' \
-		'FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES=1' \
-		'FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH=1' \
-		'FLYWHEEL_WORKFLOW_CLAIMS_READ=1' \
-		'FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1' \
-		'FLYWHEEL_WORKFLOW_GATE_CARRIER=1'
-}
-
 # Generalized slot rooms are deliberately not roundtable rooms. Keep the full
 # ambient coordinate family in one list so the Bridge exec boundary and the
 # launchd-v2 Lead manifest cannot drift apart when production .env grows a new
@@ -86,32 +77,6 @@ qa_generalized_safe_tmpdir() {
 	else
 		printf '%s\n' "$candidate"
 	fi
-}
-
-qa_generalized_write_env_attestation() {
-	local output="${1:?attestation path required}" tmp name value flags='{}'
-	for name in \
-		FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES \
-		FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH \
-		FLYWHEEL_WORKFLOW_CLAIMS_READ \
-		FLYWHEEL_WORKFLOW_CLAIMS_WRITE \
-		FLYWHEEL_WORKFLOW_GATE_CARRIER; do
-		value="${!name:-}"
-		[[ "$value" == "1" ]] || {
-			echo "[qa-generalized] ${name}=1 missing at Bridge exec boundary" >&2
-			return 1
-		}
-		flags=$(jq -c --arg name "$name" --arg value "$value" \
-			'. + {($name): $value}' <<<"$flags") || return 1
-	done
-	mkdir -p "$(dirname "$output")" || return 1
-	tmp="${output}.tmp.$$"
-	jq -n --argjson flags "$flags" --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-		--argjson wrapperPid "$$" \
-		'{schemaVersion:1,recordedAt:$recordedAt,wrapperPid:$wrapperPid,flags:$flags}' \
-		> "$tmp" || { rm -f "$tmp"; return 1; }
-	chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
-	mv "$tmp" "$output"
 }
 
 qa_generalized_install_stub() {

@@ -164,15 +164,42 @@ generalized="$(qa_multilead_config_yaml test-slot-1 generalized)"
 assert_contains "$generalized" $'pipeline:\n  dag: true\n  work_kind: true' \
 	'generalized config enables DAG and work-kind together'
 
-mapfile_compat=()
-while IFS= read -r line; do
-	[[ -n "$line" ]] && mapfile_compat+=("$line")
-done < <(qa_generalized_feature_env)
-assert_eq "${#mapfile_compat[@]}" '5' 'exactly five generalized workflow flags'
-assert_eq "$(printf '%s\n' "${mapfile_compat[@]}" | sort -u | wc -l | tr -d ' ')" \
-	'5' 'generalized workflow flags are unique'
-assert_contains "$(printf '%s\n' "${mapfile_compat[@]}")" \
-	'FLYWHEEL_WORKFLOW_GATE_CARRIER=1' 'gate-carrier flag is present'
+retired_workflow_env_names=(
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH
+	FLYWHEEL_WORKFLOW_CLAIMS_READ
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE
+	FLYWHEEL_WORKFLOW_GATE_CARRIER
+)
+for retired_name in "${retired_workflow_env_names[@]}"; do
+	for retired_surface in \
+		"$ROOT/scripts/lib/qa-generalized.sh" \
+		"$ROOT/scripts/lib/qa-generalized-bridge-wrapper.sh" \
+		"$ROOT/scripts/test-deploy.sh" \
+		"$ROOT/scripts/qa-fly-1707-incident-dispatcher.ts"; do
+		if rg -q --fixed-strings "$retired_name" "$retired_surface"; then
+			echo "FAIL: retired ${retired_name} remains in ${retired_surface#$ROOT/}" >&2
+			failures=$((failures + 1))
+		else
+			echo "PASS: retired ${retired_name} absent from ${retired_surface#$ROOT/}"
+		fi
+	done
+done
+for retired_contract in \
+	qa_generalized_feature_env \
+	qa_generalized_write_env_attestation \
+	generalized-env-attestation \
+	envAttestationPath; do
+	if rg -q --fixed-strings "$retired_contract" \
+		"$ROOT/scripts/lib/qa-generalized.sh" \
+		"$ROOT/scripts/lib/qa-generalized-bridge-wrapper.sh" \
+		"$ROOT/scripts/test-deploy.sh"; then
+		echo "FAIL: retired generalized contract remains: ${retired_contract}" >&2
+		failures=$((failures + 1))
+	else
+		echo "PASS: retired generalized contract absent: ${retired_contract}"
+	fi
+done
 
 scrub_names=()
 while IFS= read -r name; do
@@ -214,17 +241,10 @@ assert_eq "$scrubbed" 'unset|unset|unset' \
 	'generalized scrub removes ambient cross-dept, alert-sender, and roundtable values'
 
 wrapper="$ROOT/scripts/lib/qa-generalized-bridge-wrapper.sh"
-wrapper_flags=(
-	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES=1
-	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH=1
-	FLYWHEEL_WORKFLOW_CLAIMS_READ=1
-	FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1
-	FLYWHEEL_WORKFLOW_GATE_CARRIER=1
-)
 wrapper_err="$TMP_ROOT/wrapper.err"
-if env "${scrub_args[@]}" "${wrapper_flags[@]}" \
+if env "${scrub_args[@]}" \
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID=prod-roundtable \
-	bash "$wrapper" "$TMP_ROOT/rejected-attestation.json" /usr/bin/true \
+	bash "$wrapper" /usr/bin/true \
 	>/dev/null 2>"$wrapper_err"; then
 	echo 'FAIL: Bridge wrapper accepted an ambient roundtable coordinate' >&2
 	failures=$((failures + 1))
@@ -233,10 +253,8 @@ else
 fi
 assert_contains "$(<"$wrapper_err")" 'FLYWHEEL_ROUNDTABLE_CHANNEL_ID' \
 	'Bridge wrapper names the surviving ambient coordinate'
-env "${scrub_args[@]}" "${wrapper_flags[@]}" \
-	bash "$wrapper" "$TMP_ROOT/wrapper-attestation.json" /usr/bin/true
-assert_eq "$(jq -r '.flags | length' "$TMP_ROOT/wrapper-attestation.json")" '5' \
-	'Bridge wrapper accepts a clean generalized exec boundary'
+env "${scrub_args[@]}" bash "$wrapper" /usr/bin/true
+echo 'PASS: Bridge wrapper accepts a clean generalized exec boundary without retired flag attestation'
 
 short_tmp="$(qa_generalized_safe_tmpdir '/tmp' 501)"
 assert_eq "$short_tmp" '/tmp' 'short TMPDIR is preserved'
@@ -253,26 +271,6 @@ if qa_generalized_validate_expected_head "$head_sha" \
 	failures=$((failures + 1))
 else
 	echo 'PASS: mismatched --expect-head fails before mutation'
-fi
-
-attestation="$TMP_ROOT/attestation.json"
-(
-	export FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES=1
-	export FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH=1
-	export FLYWHEEL_WORKFLOW_CLAIMS_READ=1
-	export FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1
-	export FLYWHEEL_WORKFLOW_GATE_CARRIER=1
-	qa_generalized_write_env_attestation "$attestation"
-)
-assert_eq "$(jq -r '.flags | length' "$attestation")" '5' \
-	'attestation records all five flags'
-assert_eq "$(qa_generalized_file_mode "$attestation")" \
-	'600' 'attestation is secret-safe mode 0600'
-if rg -q 'TOKEN|SECRET|API' "$attestation"; then
-	echo 'FAIL: attestation contains a secret-shaped field' >&2
-	failures=$((failures + 1))
-else
-	echo 'PASS: attestation contains no secret-shaped field'
 fi
 
 stub_bin="$TMP_ROOT/stub-bin"

@@ -14,11 +14,12 @@ scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202
 第一条命令只有在以下 readiness 全部成立后才发布 mode `0600` 的 `/tmp/flywheel-test-slot-2/room-info.json`：
 
 - `/health` 同时报 `ok=true`、`buildMode=built`，且 `buildSha` / `artifactBuildSha` 等于被测 worktree HEAD；
-- Bridge exec boundary 的 5 个 generalized flag 全为 `1`；
 - `.flywheel/config.yaml` 同时有 `pipeline.dag: true` 与 `pipeline.work_kind: true`；
 - `workflow_category_binding` 的 5 个 canonical mapping 全部存在且模板为 published、未 retired；
 - menu 端点能解析 `code` / `generic`，`code` 含 design、implement、qa；
-- slot master token 与 env attestation 均为 mode `0600`。
+- slot master token 为 mode `0600`。
+
+FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本不再注入、断言或 attestation；generalized authority 只读 config、engine schema 与 category bindings。
 
 第二条命令把每一步证据原子写入 `/tmp/flywheel-test-slot-2/e2e-evidence/<runId>-<timestamp>/step-N.json`。它的退出语义是：
 
@@ -66,15 +67,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 
 ### 3.1 字节与 exec boundary
 
-`scripts/test-deploy.sh` 本身必须从被测 worktree 运行。generalized 模式把以下 5 项同时注入 Bridge 与 Runner 所需的启动边界，并把实际值写进不含 secret 的 attestation：
-
-```text
-FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES=1
-FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH=1
-FLYWHEEL_WORKFLOW_CLAIMS_READ=1
-FLYWHEEL_WORKFLOW_CLAIMS_WRITE=1
-FLYWHEEL_WORKFLOW_GATE_CARRIER=1
-```
+`scripts/test-deploy.sh` 本身必须从被测 worktree 运行。generalized 模式依赖 `pipeline.dag=true`、`pipeline.work_kind=true`、schema-v2 engine authority 与 category bindings；FLY-1808 已退役的 workflow env flags 不再注入或 attestation。
 
 不要为了临时验收去改生产 `.env`。flag 归属 exec boundary；`.env` 热改既不能证明 slot 用的是同一值，还可能污染生产服务的下一次 restart。
 

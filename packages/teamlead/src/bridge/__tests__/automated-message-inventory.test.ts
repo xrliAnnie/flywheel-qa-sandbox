@@ -66,7 +66,6 @@ describe("automated Discord sender inventory", () => {
 
 		expect(refs.sort()).toEqual([
 			"bridge/auto-qa-effects.ts",
-			"bridge/flag-retirement-production.ts",
 			"bridge/gate-poller.ts",
 			"bridge/infra-notify.ts",
 			"bridge/reports-route.ts",

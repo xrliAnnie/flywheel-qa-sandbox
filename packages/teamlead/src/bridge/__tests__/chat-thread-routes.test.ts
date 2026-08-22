@@ -1485,10 +1485,7 @@ describe("chat-thread routes (tools.ts)", () => {
 	describe("FLY-927 alert-channel gating (ticket queue)", () => {
 		const saved: Record<string, string | undefined> = {};
 		beforeEach(() => {
-			for (const k of [
-				"FLYWHEEL_ALERT_ROUTING",
-				"FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID",
-			]) {
+			for (const k of ["FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID"]) {
 				saved[k] = process.env[k];
 			}
 		});
@@ -1508,7 +1505,6 @@ describe("chat-thread routes (tools.ts)", () => {
 		}
 
 		it("REFUSES /send targeting the unified alert channel when gating is on", async () => {
-			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1523,7 +1519,6 @@ describe("chat-thread routes (tools.ts)", () => {
 		});
 
 		it("REFUSES /create targeting the unified alert channel when gating is on", async () => {
-			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/create", {
@@ -1537,7 +1532,6 @@ describe("chat-thread routes (tools.ts)", () => {
 		});
 
 		it("ALLOWS a different channel while gating is on (proceeds past the gate)", async () => {
-			process.env.FLYWHEEL_ALERT_ROUTING = "1";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-alert-999";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1550,8 +1544,8 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(res.status).not.toBe(403); // gate not tripped (downstream may fail otherwise)
 		});
 
-		it("SENTINEL: env unset → alert-channel sends are NOT gated (byte-compat)", async () => {
-			delete process.env.FLYWHEEL_ALERT_ROUTING;
+		it("ignores the retired routing env and still gates the alert channel", async () => {
+			process.env.FLYWHEEL_ALERT_ROUTING = "0";
 			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "ch-100";
 			serverOn();
 			const res = await request(server, "POST", "/api/chat-threads/send", {
@@ -1561,7 +1555,8 @@ describe("chat-thread routes (tools.ts)", () => {
 				projectName: "TestProject",
 				text: "hello",
 			});
-			expect(res.status).not.toBe(403);
+			expect(res.status).toBe(403);
+			delete process.env.FLYWHEEL_ALERT_ROUTING;
 		});
 	});
 });

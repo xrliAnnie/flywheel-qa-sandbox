@@ -65,8 +65,7 @@ const tmp = mkdtempSync(join(tmpdir(), "qa-fly1082-"));
 process.env.FLYWHEEL_ALERT_QUEUE_DIR = join(tmp, "queue");
 process.env.FLYWHEEL_ALERT_DEADLETTER_DIR = join(tmp, "dl");
 process.env.FLYWHEEL_CLAIMS_DB = join(tmp, "claims.db");
-// tickets ON so owner enrichment + the (b)-type ESCALATED-at-enqueue path run:
-process.env.FLYWHEEL_ALERT_TICKETS = "1";
+// Ticket enrichment is welded on; configure only the sender identity here.
 process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = TOKEN_ENV;
 // fake owner snowflakes (cross-assignment target; never a real ping in the test ch):
 process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "100000000000000001";

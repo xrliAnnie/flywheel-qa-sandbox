@@ -339,6 +339,7 @@ export const ALERT_EVENT_TYPES = [
 	// are informational (no ticket/ARC/founder DM lifecycle).
 	"flag_scan_failed",
 	"flag_scan_no_clock",
+	"flag_scan_handoff",
 	"host_voucher_incident",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
@@ -361,6 +362,7 @@ export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
 	"flag_scan_no_clock",
+	"flag_scan_handoff",
 ]);
 
 export function isInformationalKind(kind: AlertEventType): boolean {
@@ -665,9 +667,8 @@ export interface LeadAlertNotifierConfig {
 	/** FLY-368: when set, ALL alerts route to one unified channel. */
 	unifiedAlert?: UnifiedAlertConfig;
 	/**
-	 * FLY-927: ticket schema header (🎫 line) enable — read at CALL time so a
-	 * live env flip applies. Default: FLYWHEEL_ALERT_TICKETS === "1". Only
-	 * effective in unified mode; the legacy per-lead path never renders it.
+	 * Test seam for ticket schema enrichment. Production is welded on; only
+	 * unified mode renders it, while the legacy per-lead path never does.
 	 */
 	ticketsEnabled?: () => boolean;
 	/**
@@ -787,9 +788,7 @@ export class LeadAlertNotifier {
 		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
 		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
 		this.unifiedAlert = config.unifiedAlert;
-		this.ticketsEnabled =
-			config.ticketsEnabled ??
-			(() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
+		this.ticketsEnabled = config.ticketsEnabled ?? (() => true);
 		this.rateLimiter = config.rateLimiter;
 		this.replayFreshnessProbe = config.replayFreshnessProbe;
 		const replayFreshnessRaw =
@@ -1856,8 +1855,8 @@ function ticketHHMM(ms: number): string {
  * FLY-927 (Task 1.2): the 🎫 ticket header — appended AFTER the existing first
  * line so the `ALERT_ECHO_START` anchor on `(<leadId> / <kind>)`
  * keeps matching (append-only = minimum echo-regression radius, FLY-220).
- * Rendered ONLY when the caller enables it (unified mode + FLYWHEEL_ALERT_TICKETS=1);
- * legacy output stays byte-identical.
+ * Rendered when the caller enables it in unified mode; legacy output stays
+ * byte-identical.
  */
 function formatContent(
 	payload: AlertPayload,

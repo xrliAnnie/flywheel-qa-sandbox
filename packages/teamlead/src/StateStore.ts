@@ -4932,37 +4932,14 @@ export class StateStore {
 		return this.db.getRowsModified() === 1;
 	}
 
-	settleFlagScanFailureAlertIntent(input: {
+	settleFlagScanFailureMailboxIntent(input: {
 		intentId: string;
 		leaseOwner: string;
 	}): boolean {
 		this.db.run(
 			`UPDATE flag_scan_failure_alert_intents SET state = 'done'
-			  WHERE intent_id = ? AND state = 'claimed' AND lease_owner = ?
-			    AND EXISTS (
-			      SELECT 1 FROM alert_delivery_receipts
-			       WHERE event_id = flag_scan_failure_alert_intents.event_id
-			    )`,
+			  WHERE intent_id = ? AND state = 'claimed' AND lease_owner = ?`,
 			[input.intentId, input.leaseOwner],
-		);
-		return this.db.getRowsModified() === 1;
-	}
-
-	voidFlagScanFailureAlertIntent(input: {
-		intentId: string;
-		now: number;
-		leaseMs: number;
-		reason: string;
-	}): boolean {
-		this.db.run(
-			`UPDATE flag_scan_failure_alert_intents
-			    SET state = 'done', claimed_at = NULL, lease_owner = NULL, last_error = ?
-			  WHERE intent_id = ? AND state != 'done'
-			    AND (
-			      state IN ('pending','ambiguous')
-			      OR (state = 'claimed' AND claimed_at IS NOT NULL AND claimed_at + ? <= ?)
-			    )`,
-			[input.reason, input.intentId, input.leaseMs, input.now],
 		);
 		return this.db.getRowsModified() === 1;
 	}
@@ -5317,18 +5294,21 @@ export class StateStore {
 		leaseOwner: string;
 		now: number;
 		reconcileNotBefore: number;
+		evidence?: string;
 	}): boolean {
 		if (input.reconcileNotBefore <= input.now) {
 			throw new Error("flag scan ambiguity fence must be in the future");
 		}
 		this.db.run(
 			`UPDATE flag_scan_run_legs
-			    SET status = 'ambiguous', ambiguous_at = ?, reconcile_not_before = ?
+			    SET status = 'ambiguous', ambiguous_at = ?, reconcile_not_before = ?,
+			        evidence = COALESCE(?, evidence)
 			  WHERE run_id = ? AND leg = ? AND status = 'claimed'
 			    AND lease_owner = ?`,
 			[
 				input.now,
 				input.reconcileNotBefore,
+				input.evidence ?? null,
 				input.runId,
 				input.leg,
 				input.leaseOwner,
@@ -5351,6 +5331,32 @@ export class StateStore {
 		const changed = this.db.getRowsModified() === 1;
 		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
 		return changed;
+	}
+
+	deferAmbiguousFlagScanLeg(input: {
+		runId: number;
+		leg: "linear" | "discord";
+		now: number;
+		reconcileNotBefore: number;
+		evidence: string;
+	}): boolean {
+		if (input.reconcileNotBefore <= input.now) {
+			throw new Error("flag scan ambiguity fence must be in the future");
+		}
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET evidence = ?, reconcile_not_before = ?
+			  WHERE run_id = ? AND leg = ? AND status = 'ambiguous'
+			    AND reconcile_not_before <= ?`,
+			[
+				input.evidence,
+				input.reconcileNotBefore,
+				input.runId,
+				input.leg,
+				input.now,
+			],
+		);
+		return this.db.getRowsModified() === 1;
 	}
 
 	requeueAmbiguousFlagScanLeg(input: {
@@ -5413,6 +5419,115 @@ export class StateStore {
 			[input.now, input.reconcileNotBefore, input.runId, input.leg, input.now],
 		);
 		return this.db.getRowsModified() === 1;
+	}
+
+	/**
+	 * FLY-1831: bound one stuck weekly run without erasing per-leg truth. The
+	 * run-level `published` value is the legacy settled marker; callers must read
+	 * leg evidence to distinguish delivered from degraded.
+	 */
+	settleStalledFlagScanRun(input: {
+		runId: number;
+		settledAt: number;
+		reason: string;
+	}): {
+		settled: boolean;
+		degradedLegs: FlagScanLeg[];
+		founderSurfaceDelivered: boolean;
+		askCountRolledBack: number;
+	} {
+		if (!Number.isSafeInteger(input.settledAt) || input.settledAt < 0) {
+			throw new Error("flag scan stalled settlement time must be non-negative");
+		}
+		if (!input.reason.trim()) {
+			throw new Error("flag scan stalled settlement reason is required");
+		}
+		this.db.raw.exec("BEGIN IMMEDIATE");
+		try {
+			const run = this.workflowSelectAll(
+				"SELECT status FROM flag_scan_runs WHERE run_id = ?",
+				[input.runId],
+			)[0];
+			if (!run || run.status !== "committed") {
+				this.db.raw.exec("ROLLBACK");
+				return {
+					settled: false,
+					degradedLegs: [],
+					founderSurfaceDelivered: false,
+					askCountRolledBack: 0,
+				};
+			}
+			const legs = this.getFlagScanRunLegs(input.runId);
+			const discord = legs.find((leg) => leg.leg === "discord");
+			let partialEvidence: Record<string, unknown> | null = null;
+			if (discord?.evidence) {
+				try {
+					partialEvidence = JSON.parse(discord.evidence) as Record<
+						string,
+						unknown
+					>;
+				} catch {
+					partialEvidence = null;
+				}
+			}
+			const founderSurfaceDelivered =
+				discord?.status === "done" ||
+				(typeof partialEvidence?.rootMessageId === "string" &&
+					typeof partialEvidence?.threadId === "string");
+			const degradedLegs: FlagScanLeg[] = [];
+			for (const leg of legs) {
+				if (leg.status === "done" || leg.status === "degraded") continue;
+				const evidence = JSON.stringify({
+					kind: "stalled_settlement",
+					reason: input.reason,
+					settledAt: input.settledAt,
+					previousStatus: leg.status,
+					previousEvidence: leg.evidence,
+				});
+				this.db.run(
+					`UPDATE flag_scan_run_legs
+					    SET status = 'degraded', evidence = ?, lease_owner = NULL,
+					        claimed_at = NULL, lease_expires_at = NULL,
+					        ambiguous_at = NULL, reconcile_not_before = NULL
+					  WHERE run_id = ? AND leg = ?
+					    AND status NOT IN ('done','degraded')`,
+					[evidence, input.runId, leg.leg],
+				);
+				if (this.db.getRowsModified() === 1) degradedLegs.push(leg.leg);
+			}
+			let askCountRolledBack = 0;
+			if (!founderSurfaceDelivered) {
+				this.db.run(
+					`UPDATE flag_scan_state
+					    SET ask_count = CASE WHEN ask_count > 0 THEN ask_count - 1 ELSE 0 END,
+					        last_asked_run_id = NULL
+					  WHERE last_asked_run_id = ?
+					    AND flag_name IN (
+					      SELECT flag_name FROM flag_scan_run_items
+					       WHERE run_id = ? AND bucket IN ('candidate','orphan_candidate')
+					    )`,
+					[input.runId, input.runId],
+				);
+				askCountRolledBack = this.db.getRowsModified();
+			}
+			this.db.run(
+				"UPDATE flag_scan_runs SET status = 'published' WHERE run_id = ? AND status = 'committed'",
+				[input.runId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("stalled flag scan run lost its settlement CAS");
+			}
+			this.db.raw.exec("COMMIT");
+			return {
+				settled: true,
+				degradedLegs,
+				founderSurfaceDelivered,
+				askCountRolledBack,
+			};
+		} catch (error) {
+			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	finalizeFlagScanRunIfSettled(runId: number): boolean {

@@ -66,6 +66,7 @@ const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"quota_blocked_recovered",
 	"workflow_route_input_rejected",
 	"flag_scan_failed",
+	"flag_scan_handoff",
 	"flag_scan_no_clock",
 ]);
 const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;

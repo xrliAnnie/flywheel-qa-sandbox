@@ -92,7 +92,6 @@ run_case() {
     FLYWHEEL_STATE_DIR="${home}/state" \
     FLYWHEEL_PROJECTS_FILE="${home}/projects.json" \
     FLYWHEEL_ALERT_QUEUE_DIR="${home}/queue" \
-    FLYWHEEL_ALERT_TICKETS=1 \
     FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=123 \
     FLYWHEEL_TEST_CURL_BODY="${home}/curl-body.json" \
     FLYWHEEL_FOUNDER_TZ="$founder_tz" \

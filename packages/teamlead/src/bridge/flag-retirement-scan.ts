@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import {
 	computeFlagScan,
 	type FeatureFlagSpec,
-	FLAG_SCAN_INTERVAL_MS,
 	type FlagView,
 	type ProposedFlagScan,
 	type ResolvedFlagKeepBinding,
@@ -18,6 +17,145 @@ import type {
 export const FLAG_SCAN_LEASE_MS = 2 * 60_000;
 export const FLAG_SCAN_VISIBILITY_FENCE_MS = 5 * 60_000;
 export const FLAG_SCAN_REMOTE_CLOCK_SKEW_MS = 30 * 60_000;
+export const FLAG_SCAN_MAX_PENDING_AGE_MS = 24 * 60 * 60_000;
+export const FLAG_SCAN_TIME_ZONE = "America/Los_Angeles";
+export const FLAG_SCAN_LOCAL_HOUR = 8;
+
+const DAY_MS = 24 * 60 * 60_000;
+const FLAG_SCAN_LOCAL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+	timeZone: FLAG_SCAN_TIME_ZONE,
+	year: "numeric",
+	month: "2-digit",
+	day: "2-digit",
+	weekday: "short",
+	hour: "2-digit",
+	minute: "2-digit",
+	second: "2-digit",
+	hourCycle: "h23",
+});
+
+interface ZonedDateParts {
+	year: number;
+	month: number;
+	day: number;
+	weekday: string;
+	hour: number;
+	minute: number;
+	second: number;
+}
+
+function zonedDateParts(epochMs: number): ZonedDateParts {
+	const values = new Map<string, string>(
+		FLAG_SCAN_LOCAL_FORMATTER.formatToParts(epochMs).map((part) => [
+			part.type,
+			part.value,
+		]),
+	);
+	const numberPart = (name: string): number => {
+		const value = Number(values.get(name));
+		if (!Number.isInteger(value)) {
+			throw new Error(`flag scan timezone formatter omitted ${name}`);
+		}
+		return value;
+	};
+	return {
+		year: numberPart("year"),
+		month: numberPart("month"),
+		day: numberPart("day"),
+		weekday: values.get("weekday") ?? "",
+		hour: numberPart("hour"),
+		minute: numberPart("minute"),
+		second: numberPart("second"),
+	};
+}
+
+function epochForFlagScanLocalTime(input: {
+	year: number;
+	month: number;
+	day: number;
+	hour: number;
+}): number {
+	const desiredAsUtc = Date.UTC(
+		input.year,
+		input.month - 1,
+		input.day,
+		input.hour,
+	);
+	let candidate = desiredAsUtc;
+	for (let iteration = 0; iteration < 4; iteration++) {
+		const actual = zonedDateParts(candidate);
+		const actualAsUtc = Date.UTC(
+			actual.year,
+			actual.month - 1,
+			actual.day,
+			actual.hour,
+			actual.minute,
+			actual.second,
+		);
+		const adjusted = candidate + desiredAsUtc - actualAsUtc;
+		if (adjusted === candidate) return candidate;
+		candidate = adjusted;
+	}
+	const resolved = zonedDateParts(candidate);
+	if (
+		resolved.year !== input.year ||
+		resolved.month !== input.month ||
+		resolved.day !== input.day ||
+		resolved.hour !== input.hour ||
+		resolved.minute !== 0 ||
+		resolved.second !== 0
+	) {
+		throw new Error("could not resolve the fixed flag scan local slot");
+	}
+	return candidate;
+}
+
+/** Latest Sunday 08:00 America/Los_Angeles slot at or before `nowMs`. */
+export function latestFlagScanSlotAtOrBefore(nowMs: number): number {
+	if (!Number.isFinite(nowMs)) throw new Error("flag scan time must be finite");
+	const local = zonedDateParts(nowMs);
+	const weekdayIndex = [
+		"Sun",
+		"Mon",
+		"Tue",
+		"Wed",
+		"Thu",
+		"Fri",
+		"Sat",
+	].indexOf(local.weekday);
+	if (weekdayIndex < 0) {
+		throw new Error(`unexpected flag scan weekday: ${local.weekday}`);
+	}
+	const localDateUtc = Date.UTC(local.year, local.month - 1, local.day);
+	const sunday = new Date(localDateUtc - weekdayIndex * DAY_MS);
+	let slot = epochForFlagScanLocalTime({
+		year: sunday.getUTCFullYear(),
+		month: sunday.getUTCMonth() + 1,
+		day: sunday.getUTCDate(),
+		hour: FLAG_SCAN_LOCAL_HOUR,
+	});
+	if (slot > nowMs) {
+		const previousSunday = new Date(localDateUtc - (weekdayIndex + 7) * DAY_MS);
+		slot = epochForFlagScanLocalTime({
+			year: previousSunday.getUTCFullYear(),
+			month: previousSunday.getUTCMonth() + 1,
+			day: previousSunday.getUTCDate(),
+			hour: FLAG_SCAN_LOCAL_HOUR,
+		});
+	}
+	return slot;
+}
+
+export function flagScanIsDue(
+	nowMs: number,
+	latestCommittedAt?: number | null,
+): boolean {
+	return (
+		latestCommittedAt === undefined ||
+		latestCommittedAt === null ||
+		latestCommittedAt < latestFlagScanSlotAtOrBefore(nowMs)
+	);
+}
 
 export function flagRetirementScanEnabled(
 	env: Record<string, string | undefined> = process.env,
@@ -27,11 +165,12 @@ export function flagRetirementScanEnabled(
 
 export type FlagScanEffectResult =
 	| { status: "done"; evidence: string }
-	| { status: "ambiguous" }
+	| { status: "ambiguous"; evidence?: string }
 	| { status: "degraded"; evidence: string };
 
 export type FlagScanReconcileResult =
 	| { status: "found"; evidence: string }
+	| { status: "pending"; evidence: string }
 	| { status: "missing" };
 
 export interface FlagRetirementScanEffects {
@@ -81,6 +220,8 @@ export interface FlagRetirementScannerDependencies {
 	newRunToken(): string;
 	leaseOwner: string;
 	enabled?: () => boolean;
+	/** Reconcile durable failure-mailbox intents before doing new scan work. */
+	recoverFailureAlerts?: () => void;
 }
 
 export type FlagScanOutcome =
@@ -265,10 +406,10 @@ function renderDiscordBody(input: {
 }): string {
 	return [
 		`flag 周扫描 · ${input.run.candidateCount} 个候选待逐条裁决（留/清）`,
-		`Linear: ${input.linearEvidence}`,
 		input.reportStatus === "done"
 			? `报告: ${input.reportEvidence}`
 			: `报告发布失败，见 Linear 单（${input.reportEvidence}）`,
+		`Linear: ${input.linearEvidence}`,
 		`\`flywheel:flag-governance run=${input.run.runToken}\``,
 	].join("\n");
 }
@@ -397,21 +538,15 @@ function buildFrozenItems(
 }
 
 function owedLegs(items: FlagScanRunItemInput[]): FlagScanLeg[] {
-	const candidates = items.some(
-		(item) => item.bucket === "candidate" || item.bucket === "orphan_candidate",
-	);
 	const leadDebt = items.some(
 		(item) => item.bucket === "no_clock" || item.bucket === "keep_unbound",
 	);
-	if (candidates) {
-		return [
-			"linear",
-			"report",
-			...(leadDebt ? (["lead_notify"] as const) : []),
-			"discord",
-		];
-	}
-	return leadDebt ? ["lead_notify"] : [];
+	return [
+		"linear",
+		"report",
+		...(leadDebt ? (["lead_notify"] as const) : []),
+		"discord",
+	];
 }
 
 export function createFlagRetirementScanner(
@@ -429,34 +564,8 @@ export function createFlagRetirementScanner(
 		return { status: "failed", error: message };
 	}
 
-	function settleFailureAlertIntentsAtTickEntry(): void {
-		const now = deps.now();
-		const settlementOwner = `${deps.leaseOwner}:failure-intent-settlement`;
-		for (const intent of deps.store.listFlagScanFailureAlertIntents()) {
-			if (intent.state === "done") continue;
-			if (deps.store.getAlertDeliveryReceipt(intent.eventId)) {
-				if (
-					deps.store.claimFlagScanFailureAlertIntent({
-						intentId: intent.intentId,
-						leaseOwner: settlementOwner,
-						now,
-						leaseMs: FLAG_SCAN_LEASE_MS,
-					})
-				) {
-					deps.store.settleFlagScanFailureAlertIntent({
-						intentId: intent.intentId,
-						leaseOwner: settlementOwner,
-					});
-				}
-				continue;
-			}
-			deps.store.voidFlagScanFailureAlertIntent({
-				intentId: intent.intentId,
-				now,
-				leaseMs: FLAG_SCAN_LEASE_MS,
-				reason: `voided_at_tick_entry:${now}:no_delivery_receipt`,
-			});
-		}
+	function recoverFailureAlertsAtTickEntry(): void {
+		deps.recoverFailureAlerts?.();
 	}
 
 	function failedOutcome(error: unknown): FlagScanOutcome {
@@ -572,6 +681,14 @@ export function createFlagRetirementScanner(
 			deps.store.adoptAmbiguousFlagScanLeg({
 				runId: run.runId,
 				leg,
+				evidence: result.evidence,
+			});
+		} else if (result.status === "pending") {
+			deps.store.deferAmbiguousFlagScanLeg({
+				runId: run.runId,
+				leg,
+				now: deps.now(),
+				reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
 				evidence: result.evidence,
 			});
 		} else {
@@ -734,6 +851,7 @@ export function createFlagRetirementScanner(
 					leaseOwner: deps.leaseOwner,
 					now: deps.now(),
 					reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
+					evidence: result.evidence,
 				});
 			}
 		} catch {
@@ -782,19 +900,50 @@ export function createFlagRetirementScanner(
 
 	async function recoverPending(): Promise<FlagScanOutcome> {
 		if (!enabled()) return { status: "disabled" };
-		settleFailureAlertIntentsAtTickEntry();
+		recoverFailureAlertsAtTickEntry();
 		const pending = deps.store.getPendingFlagScanRun();
-		return pending ? processPending(pending) : { status: "not_due" };
+		if (!pending) return { status: "not_due" };
+		const settled = await settleStalledPendingRun(pending);
+		return settled ?? processPending(pending);
+	}
+
+	async function settleStalledPendingRun(
+		run: FlagScanRunRow,
+	): Promise<FlagScanOutcome | null> {
+		const now = deps.now();
+		const ageMs = now - run.committedAt;
+		const crossedSlot =
+			latestFlagScanSlotAtOrBefore(now) >
+			latestFlagScanSlotAtOrBefore(run.committedAt);
+		if (ageMs < FLAG_SCAN_MAX_PENDING_AGE_MS && !crossedSlot) return null;
+		const reason = crossedSlot
+			? "crossed into a newer Sunday slot"
+			: "stalled for 24h";
+		try {
+			await deps.alertFailure(
+				`flag weekly scan run ${run.runToken} ${reason}; unsettled legs are being settled degraded so future slots remain runnable`,
+			);
+		} catch {}
+		deps.store.settleStalledFlagScanRun({
+			runId: run.runId,
+			settledAt: now,
+			reason,
+		});
+		return { status: "published", runId: run.runId };
 	}
 
 	return {
 		async scanIfDue(): Promise<FlagScanOutcome> {
 			if (!enabled()) return { status: "disabled" };
-			settleFailureAlertIntentsAtTickEntry();
+			recoverFailureAlertsAtTickEntry();
 			const pending = deps.store.getPendingFlagScanRun();
-			if (pending) return processPending(pending);
+			if (pending) {
+				const settled = await settleStalledPendingRun(pending);
+				if (!settled) return processPending(pending);
+				if (!flagScanIsDue(deps.now(), pending.committedAt)) return settled;
+			}
 			const latest = deps.store.getLatestFlagScanRun();
-			if (latest && deps.now() - latest.committedAt < FLAG_SCAN_INTERVAL_MS) {
+			if (!flagScanIsDue(deps.now(), latest?.committedAt)) {
 				return { status: "not_due" };
 			}
 			return compute(false);

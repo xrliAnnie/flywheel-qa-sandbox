@@ -4,11 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type FlagProvenanceInput, StateStore } from "../../StateStore.js";
 import {
 	createFlagRetirementScanner,
+	FLAG_SCAN_MAX_PENDING_AGE_MS,
 	FLAG_SCAN_VISIBILITY_FENCE_MS,
 	type FlagRetirementScanEffects,
 	flagRetirementScanEnabled,
+	flagScanIsDue,
+	latestFlagScanSlotAtOrBefore,
 	renderLeadAlertChunks,
 } from "../flag-retirement-scan.js";
+
+const SUNDAY_0800_PDT = Date.parse("2026-08-16T15:00:00.000Z");
 
 function spec(overrides: Partial<FeatureFlagSpec> = {}): FeatureFlagSpec {
 	return {
@@ -118,7 +123,7 @@ describe("FlagRetirementScanner", () => {
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		now = 1_000;
+		now = SUNDAY_0800_PDT;
 	});
 
 	afterEach(() => store.close());
@@ -130,6 +135,7 @@ describe("FlagRetirementScanner", () => {
 			effectSet?: ReturnType<typeof effects>;
 			loadProvenance?: () => Promise<FlagProvenanceInput[]>;
 			alertFailure?: (message: string) => Promise<void>;
+			recoverFailureAlerts?: () => void;
 			tokenPrefix?: string;
 			enabled?: () => boolean;
 		} = {},
@@ -149,6 +155,7 @@ describe("FlagRetirementScanner", () => {
 					input.loadProvenance ?? (async () => [provenance(flag.name)]),
 				effects: effectSet.value,
 				alertFailure: input.alertFailure ?? (async () => undefined),
+				recoverFailureAlerts: input.recoverFailureAlerts,
 				now: () => now,
 				newRunToken: () => `${input.tokenPrefix ?? "run"}-${++token}`,
 				leaseOwner: `${input.tokenPrefix ?? "worker"}-owner`,
@@ -157,12 +164,38 @@ describe("FlagRetirementScanner", () => {
 		};
 	}
 
-	it("runs immediately on an empty DB, then waits a fixed seven days", async () => {
+	it("anchors the schedule to Sunday 08:00 America/Los_Angeles across PST and PDT", () => {
+		expect(
+			latestFlagScanSlotAtOrBefore(Date.parse("2026-01-11T15:59:59.999Z")),
+		).toBe(Date.parse("2026-01-04T16:00:00.000Z"));
+		expect(
+			latestFlagScanSlotAtOrBefore(Date.parse("2026-01-11T16:00:00.000Z")),
+		).toBe(Date.parse("2026-01-11T16:00:00.000Z"));
+		expect(
+			latestFlagScanSlotAtOrBefore(Date.parse("2026-08-16T14:59:59.999Z")),
+		).toBe(Date.parse("2026-08-09T15:00:00.000Z"));
+		expect(latestFlagScanSlotAtOrBefore(SUNDAY_0800_PDT)).toBe(SUNDAY_0800_PDT);
+		expect(flagScanIsDue(SUNDAY_0800_PDT, SUNDAY_0800_PDT - 1)).toBe(true);
+		expect(flagScanIsDue(SUNDAY_0800_PDT, SUNDAY_0800_PDT)).toBe(false);
+	});
+
+	it("runs immediately on an empty DB, publishes a zero-candidate report, then waits for the next Sunday slot", async () => {
 		const run = scanner();
 		expect(await run.value.scanIfDue()).toMatchObject({ status: "published" });
 		expect(store.listFlagScanRuns()).toHaveLength(1);
 		expect(store.getFlagScanState()[0]).toMatchObject({ streakSamples: 1 });
-		expect(run.effectSet.linearBodies).toEqual([]);
+		expect(run.effectSet.linearBodies).toHaveLength(1);
+		expect(run.effectSet.reports[0]).toContain("本轮没有候选");
+		expect(run.effectSet.discordBodies[0]).toContain("0 个候选");
+		expect(
+			run.effectSet.discordBodies[0].indexOf(
+				"报告: https://reports.invalid/weekly",
+			),
+		).toBeLessThan(
+			run.effectSet.discordBodies[0].indexOf(
+				"Linear: https://linear.app/flywheel/issue/FLY-999/batch",
+			),
+		);
 
 		now += FLAG_SCAN_INTERVAL_MS - 1;
 		expect(await run.value.scanIfDue()).toEqual({ status: "not_due" });
@@ -177,23 +210,23 @@ describe("FlagRetirementScanner", () => {
 		const second = scanner({ effectSet: sharedEffects, tokenPrefix: "second" });
 		await Promise.all([first.value.scanIfDue(), second.value.scanIfDue()]);
 		expect(store.listFlagScanRuns()).toHaveLength(2);
-		expect(sharedEffects.value.createLinearBatch).toHaveBeenCalledTimes(1);
-		expect(sharedEffects.value.publishReport).toHaveBeenCalledTimes(1);
-		expect(sharedEffects.value.postDiscord).toHaveBeenCalledTimes(1);
-		expect(sharedEffects.linearBodies[0]).toContain(
+		expect(sharedEffects.value.createLinearBatch).toHaveBeenCalledTimes(2);
+		expect(sharedEffects.value.publishReport).toHaveBeenCalledTimes(2);
+		expect(sharedEffects.value.postDiscord).toHaveBeenCalledTimes(2);
+		expect(sharedEffects.linearBodies[1]).toContain(
 			"<!-- flywheel:flag-governance run=",
 		);
-		expect(sharedEffects.linearBodies[0]).toContain("不进派工");
-		expect(sharedEffects.linearBodies[0]).toContain(
+		expect(sharedEffects.linearBodies[1]).toContain("不进派工");
+		expect(sharedEffects.linearBodies[1]).toContain(
 			"删除动作由人点头后另行执行",
 		);
-		expect(sharedEffects.reports[0]).toContain("复制全部");
-		expect(sharedEffects.reports[0]).toContain("贴回 Discord");
-		expect(sharedEffects.reports[0]).toContain(
+		expect(sharedEffects.reports[1]).toContain("复制全部");
+		expect(sharedEffects.reports[1]).toContain("贴回 Discord");
+		expect(sharedEffects.reports[1]).toContain(
 			'<script nonce="__CSP_NONCE__">',
 		);
-		expect(sharedEffects.discordBodies[0]).not.toContain("<!--");
-		expect(sharedEffects.discordBodies[0]).toContain(
+		expect(sharedEffects.discordBodies[1]).not.toContain("<!--");
+		expect(sharedEffects.discordBodies[1]).toContain(
 			"`flywheel:flag-governance run=",
 		);
 	});
@@ -211,44 +244,62 @@ describe("FlagRetirementScanner", () => {
 		now += FLAG_SCAN_INTERVAL_MS;
 		await run.value.scanIfDue();
 
-		expect(run.effectSet.linearBodies[0]).toContain(
+		expect(run.effectSet.linearBodies[1]).toContain(
 			"人话说明: Chooses which issue-gate implementation wins.",
 		);
-		expect(run.effectSet.linearBodies[0]).toContain('当前值: `"superpowers"`');
-		expect(run.effectSet.linearBodies[0]).toContain("稳定时长: 7 天");
-		expect(run.effectSet.reports[0]).toContain(
+		expect(run.effectSet.linearBodies[1]).toContain('当前值: `"superpowers"`');
+		expect(run.effectSet.linearBodies[1]).toContain("稳定时长: 7 天");
+		expect(run.effectSet.reports[1]).toContain(
 			"<dt>人话说明</dt><dd>Chooses which issue-gate implementation wins.</dd>",
 		);
-		expect(run.effectSet.reports[0]).toContain(
+		expect(run.effectSet.reports[1]).toContain(
 			"<dt>当前值</dt><dd><code>&quot;superpowers&quot;</code></dd>",
 		);
-		expect(run.effectSet.reports[0]).toContain(
+		expect(run.effectSet.reports[1]).toContain(
 			"<dt>稳定时长</dt><dd>7 天</dd>",
 		);
-		expect(run.effectSet.reports[0]).toContain(
+		expect(run.effectSet.reports[1]).toContain(
 			'data-digest="d06521a37b86b643b498019b11be0b5eb275b94eb339afb475937c93d9f3b6c7"',
 		);
-		expect(run.effectSet.reports[0]).toContain('" | canonicalDigest: "+digest');
+		expect(run.effectSet.reports[1]).toContain('" | canonicalDigest: "+digest');
 	});
 
 	it.each(["scanIfDue", "recoverPending"] as const)(
-		"settles a crash-left failure alert intent at the %s tick entry",
+		"reconciles a crash-left failure mailbox intent at the %s tick entry",
 		async (entrypoint) => {
-			store.ensureFlagScanFailureAlertIntent({
+			const intent = store.ensureFlagScanFailureAlertIntent({
 				baselineRunId: 0,
 				failureClass: "provenance",
 				milestone: "initial",
 				eventId: "flag-scan-failed:0:provenance:initial",
 				now: 500,
 			});
-			const run = scanner();
+			const recoverFailureAlerts = vi.fn(() => {
+				expect(
+					store.claimFlagScanFailureAlertIntent({
+						intentId: intent.intentId,
+						leaseOwner: "mailbox-recovery",
+						now,
+						leaseMs: 1,
+					}),
+				).toBe(true);
+				expect(
+					store.settleFlagScanFailureMailboxIntent({
+						intentId: intent.intentId,
+						leaseOwner: "mailbox-recovery",
+					}),
+				).toBe(true);
+			});
+			const run = scanner({ recoverFailureAlerts });
 
 			await run.value[entrypoint]();
 
+			expect(recoverFailureAlerts).toHaveBeenCalledTimes(1);
+			expect(store.getAlertDeliveryReceipt(intent.eventId)).toBeUndefined();
 			expect(store.listFlagScanFailureAlertIntents()).toMatchObject([
 				{
 					state: "done",
-					lastError: expect.stringContaining("voided_at_tick_entry"),
+					lastError: null,
 				},
 			]);
 		},
@@ -324,7 +375,7 @@ describe("FlagRetirementScanner", () => {
 		expect(store.listFlagScanRuns()).toEqual([]);
 	});
 
-	it("routes no-clock debt only to the engineering Lead, never founder governance output", async () => {
+	it("routes no-clock debt to the engineering Lead while still publishing the zero-candidate founder report", async () => {
 		const flag = spec();
 		const run = scanner({
 			flag,
@@ -336,9 +387,120 @@ describe("FlagRetirementScanner", () => {
 		await run.value.scanIfDue();
 		expect(run.effectSet.leadBodies).toHaveLength(1);
 		expect(run.effectSet.leadBodies[0]).toContain("判据不可用");
-		expect(run.effectSet.linearBodies).toEqual([]);
-		expect(run.effectSet.reports).toEqual([]);
-		expect(run.effectSet.discordBodies).toEqual([]);
+		expect(run.effectSet.linearBodies).toHaveLength(1);
+		expect(run.effectSet.reports[0]).toContain("本轮没有候选");
+		expect(run.effectSet.discordBodies).toHaveLength(1);
+	});
+
+	it("settles a permanently ambiguous run after 24h, rolls back an undelivered ask, and releases the next slot", async () => {
+		const alertFailure = vi.fn(async () => undefined);
+		const effectSet = effects();
+		const run = scanner({ effectSet, alertFailure });
+		await run.value.scanIfDue();
+
+		now += FLAG_SCAN_INTERVAL_MS;
+		effectSet.value.createLinearBatch = vi.fn(async () => ({
+			status: "ambiguous" as const,
+		}));
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "pending" });
+		expect(store.getFlagScanState()[0]).toMatchObject({ askCount: 1 });
+
+		now += FLAG_SCAN_MAX_PENDING_AGE_MS;
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "published" });
+		expect(store.getFlagScanState()[0]).toMatchObject({ askCount: 0 });
+		expect(store.getFlagScanRunLegs(2)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ leg: "linear", status: "degraded" }),
+				expect.objectContaining({ leg: "discord", status: "degraded" }),
+			]),
+		);
+		expect(alertFailure).toHaveBeenCalledWith(
+			expect.stringMatching(/stalled.*24h.*settled degraded/i),
+		);
+
+		now = Date.parse("2026-08-30T15:00:00.000Z");
+		effectSet.value.createLinearBatch = vi.fn(async () => ({
+			status: "done" as const,
+			evidence: "https://linear.app/flywheel/issue/FLY-1000/batch",
+		}));
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "published" });
+		expect(store.listFlagScanRuns()).toHaveLength(3);
+	});
+
+	it("keeps askCount when root and thread reached the founder even if Lead inbox ACK is still pending", async () => {
+		const effectSet = effects();
+		const run = scanner({ effectSet });
+		await run.value.scanIfDue();
+
+		now += FLAG_SCAN_INTERVAL_MS;
+		effectSet.value.postDiscord = vi.fn(async () => ({
+			status: "ambiguous" as const,
+			evidence: JSON.stringify({
+				rootMessageId: "root-2",
+				threadId: "root-2",
+				handoffMessageId: "handoff-2",
+				inboxDeliveryId:
+					"infra_alert:flywheel-eng-lead:flag_scan_handoff:run-2",
+			}),
+		}));
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "pending" });
+		expect(store.getFlagScanState()[0]).toMatchObject({ askCount: 1 });
+
+		now += FLAG_SCAN_MAX_PENDING_AGE_MS;
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "published" });
+		expect(store.getFlagScanState()[0]).toMatchObject({ askCount: 1 });
+		expect(store.getFlagScanRunLegs(2)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					leg: "discord",
+					status: "degraded",
+					evidence: expect.stringContaining("root-2"),
+				}),
+			]),
+		);
+	});
+
+	it("keeps reconciling a visible Discord delivery without posting a duplicate root while mailbox ACK is pending", async () => {
+		const effectSet = effects();
+		const run = scanner({ effectSet });
+		await run.value.scanIfDue();
+
+		now += FLAG_SCAN_INTERVAL_MS;
+		effectSet.value.postDiscord = vi.fn(async () => ({
+			status: "ambiguous" as const,
+			evidence: JSON.stringify({
+				rootMessageId: "root-2",
+				threadId: "root-2",
+				inboxDeliveryId: "primary-1",
+			}),
+		}));
+		effectSet.value.reconcileDiscord = vi.fn(async () => ({
+			status: "pending" as const,
+			evidence: JSON.stringify({
+				rootMessageId: "root-2",
+				threadId: "root-2",
+				handoffMessageId: "handoff-2",
+				inboxDeliveryId: "primary-1",
+			}),
+		}));
+		expect(await run.value.scanIfDue()).toMatchObject({ status: "pending" });
+
+		now += FLAG_SCAN_VISIBILITY_FENCE_MS;
+		expect(await run.value.recoverPending()).toMatchObject({
+			status: "pending",
+		});
+		expect(effectSet.value.reconcileDiscord).toHaveBeenCalledTimes(1);
+		expect(effectSet.value.postDiscord).toHaveBeenCalledTimes(1);
+		expect(store.getFlagScanRunLegs(2)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					leg: "discord",
+					status: "ambiguous",
+					evidence: expect.stringContaining("handoff-2"),
+					reconcileNotBefore: expect.any(Number),
+				}),
+			]),
+		);
 	});
 
 	it("lets the report leg degrade without losing the Linear link or lying in Discord", async () => {
@@ -351,16 +513,19 @@ describe("FlagRetirementScanner", () => {
 		await run.value.scanIfDue();
 		now += FLAG_SCAN_INTERVAL_MS;
 		await run.value.scanIfDue();
-		expect(effectSet.discordBodies).toHaveLength(1);
-		expect(effectSet.discordBodies[0]).toContain(
+		expect(effectSet.discordBodies).toHaveLength(2);
+		expect(effectSet.discordBodies[1]).toContain(
 			"https://linear.app/flywheel/issue/FLY-999/batch",
 		);
-		expect(effectSet.discordBodies[0]).toContain("报告发布失败");
+		expect(effectSet.discordBodies[1]).toContain("报告发布失败");
 	});
 
 	it("recovers a pending run before considering a new due scan", async () => {
 		const effectSet = effects();
 		let release: (() => void) | undefined;
+		const run = scanner({ effectSet });
+		await run.value.scanIfDue();
+		now += FLAG_SCAN_INTERVAL_MS;
 		effectSet.value.createLinearBatch = vi.fn(
 			async () =>
 				new Promise((resolve) => {
@@ -371,9 +536,6 @@ describe("FlagRetirementScanner", () => {
 						});
 				}),
 		);
-		const run = scanner({ effectSet });
-		await run.value.scanIfDue();
-		now += FLAG_SCAN_INTERVAL_MS;
 		const publishing = run.value.scanIfDue();
 		await vi.waitFor(() => expect(store.getPendingFlagScanRun()).toBeDefined());
 		const recovery = await run.value.scanIfDue();

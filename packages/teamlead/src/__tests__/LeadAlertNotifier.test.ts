@@ -1507,7 +1507,6 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 			"TEST_COS_BOT_TOKEN",
 			"CASS_BOT_TOKEN",
 			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
-			"FLYWHEEL_ALERT_TICKETS",
 		]) {
 			saved[k] = process.env[k];
 		}
@@ -1515,7 +1514,6 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 		process.env.CASS_BOT_TOKEN = "cass-tok";
 		// Hermetic against a dev shell that carries the production sender env.
 		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
-		delete process.env.FLYWHEEL_ALERT_TICKETS;
 	});
 	afterEach(() => {
 		rmSync(queueDir, { recursive: true, force: true });

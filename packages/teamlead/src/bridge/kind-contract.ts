@@ -311,6 +311,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	tmux_rescue_hold: { owner: "claude", arc: "human_by_design" },
 	// Informational routing bypasses owner/ARC; keep an exhaustive inert contract.
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },
+	flag_scan_handoff: { owner: "claude", arc: "human_by_design" },
 	flag_scan_no_clock: { owner: "claude", arc: "human_by_design" },
 	// FLY-1929: host IPC-voucher pressure / kernel-panic recurrence. There is NO
 	// executable remediation today — the containment action (restarting an Apple

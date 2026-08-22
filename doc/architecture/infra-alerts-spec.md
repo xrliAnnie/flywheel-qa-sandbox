@@ -61,7 +61,7 @@ owner 由 `resolveTicketOwner(kind, provider, registry)` 决定(`ticket-owner-ma
 
 ## 4. 消息 schema(逐字段)
 
-统一频道模式 + `FLYWHEEL_ALERT_TICKETS=1` 下,每条工单 root 消息:
+统一频道模式下(路由与工单 schema 已由 FLY-1831 welded on),每条工单 root 消息:
 
 ```
 ${sev} **${title}** (${leadId} / ${eventType})
@@ -100,14 +100,14 @@ stateDiagram-v2
 - **T2(已锁)**:修不掉判定 = **重试 2 次 或 距 first-seen 5 分钟超时**;无人认领兜底 = 5min 未 ACK(owner 已配置时)。
 - **幂等**:同一问题不重复开工单(claims.db + episode-latch + `alert_threads` active-mapping 复用)。
 - **行为变更(Annie 早报确认项)**:`runner_stuck_unhandled` 的 founder page 从「立即页」改为
-  「T2 修不掉才页」(`FLYWHEEL_ALERT_TICKETS` 未设 = 立即页现状)。
+  「T2 修不掉才页」;FLY-1831 后这是固定生产合同,不再受运行时 flag 控制。
 
 ## 6. 发送方门禁(三层)
 
 | 层 | 机制 | 位置 |
 |---|---|---|
 | Discord 权限(硬边界) | 告警频道只给 infra bot + 发送身份 Send(ops,写进 FLY-928 部署 runbook) | Discord server 设置 |
-| Bridge 代码 | `/api/chat-threads/send`、`/api/chat-threads/create` 目标 = 统一告警频道 → `403 alert_channel_gated`(挂 `FLYWHEEL_ALERT_ROUTING=1`) | `bridge/tools.ts` |
+| Bridge 代码 | `/api/chat-threads/send`、`/api/chat-threads/create` 目标 = 统一告警频道 → `403 alert_channel_gated`(FLY-1831 后 welded on) | `bridge/tools.ts` |
 | shell 兜底(D3,与 FLY-954 对齐) | `lead-alert.sh` 认 `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID` + `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` + 分钟级速率近似(超限落 queue 由 Bridge 代发);token 不进 argv;`allowed_mentions: {parse:[]}` | `scripts/lead-alert.sh` |
 
 **单一发送身份(D2)**:`FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 设了 → root/DM/drain/Hub thread 操作全部坍缩为该身份;
@@ -134,12 +134,12 @@ bridge-wrapper 死机 🚨(D4)优先经 `lead-alert.sh`(kind=`bridge_wrapper_fai
 - **文案模板(真话)**:`[FLY-XXX] [Runner] 停在<真实stage>已<N>h,球在<party>,owner=<Lead>,下一步=<…>`
   —— approve 停等的告警必须含「待你拍板/等你 ship」、**绝不**写「code review 卡住」(FLY-912 回归测试)。
 
-## 9. env 开关一览(全部 default-off = 现状逐字节)
+## 9. env 管道与墓碑
 
 | env | 作用 | 生产值 |
 |---|---|---|
-| `FLYWHEEL_ALERT_ROUTING` | D1 Router + `/send` 门禁 | `1` |
-| `FLYWHEEL_ALERT_TICKETS` | 🎫 schema 头 + owner @ + 生命周期/T2 | `1` |
+| `FLYWHEEL_ALERT_ROUTING` | **已退役(FLY-1831)**:D1 Router + `/send` 门禁已 welded on | 不得设置;从生产 `.env` 删除 |
+| `FLYWHEEL_ALERT_TICKETS` | **已退役(FLY-1831)**:🎫 schema 头 + owner @ + 生命周期/T2 已 welded on | 不得设置;从生产 `.env` 删除 |
 | `FLYWHEEL_ALERT_RATE_PER_MIN` | T1 令牌桶 | `20` |
 | `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` | D2 单一发送身份(存 env 名) | `FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN`(专用 dispatcher,作者≠owner —— FLY-1049 修正,CASS 过渡态已裁掉) |
 | `FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID` | Claude bot owner @(T3/FLY-928 后填) | 待 FLY-928 |

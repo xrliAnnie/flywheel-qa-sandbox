@@ -64,7 +64,6 @@ mkdir -p "$HOME/.flywheel/state" "$QA_ROOT/queue" "$QA_ROOT/deadletter" "$QA_ROO
 export FLYWHEEL_CMUX_ALERT_BIN="$ROOT/scripts/lead-alert.sh"
 export FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="$CHANNEL_ID"
 export FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$TOKEN_ENV"
-export FLYWHEEL_ALERT_TICKETS=1
 export FLYWHEEL_ALERT_QUEUE_DIR="$QA_ROOT/queue"
 export FLYWHEEL_ALERT_DEADLETTER_DIR="$QA_ROOT/deadletter"
 export FLYWHEEL_CLAIMS_DB="$QA_ROOT/alerts/claims.db"

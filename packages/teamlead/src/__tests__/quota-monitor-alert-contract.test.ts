@@ -66,7 +66,6 @@ describe("FLY-1256 shell alert rendering", () => {
 					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "quota-channel",
 					FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "QUOTA_TEST_TOKEN",
 					QUOTA_TEST_TOKEN: "not-a-real-token",
-					FLYWHEEL_ALERT_TICKETS: "1",
 					FLYWHEEL_CLAIMS_DB: join(root, "claims.db"),
 					FLYWHEEL_ALERT_QUEUE_DIR: join(root, "queue"),
 					FLYWHEEL_ALERT_DEADLETTER_DIR: join(root, "deadletter"),

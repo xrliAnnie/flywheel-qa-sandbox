@@ -106,12 +106,10 @@ function isLinearUuid(s: string): boolean {
 
 /**
  * FLY-927 (Task 1.6): true iff a chat-threads write targets the unified alert
- * channel WHILE the ticket-queue gating is on. The alert channel is a bot
- * ticket queue — only the infra alert pipeline may write there. Both envs are
- * read at CALL time (live flips apply); either unset ⇒ no gating (byte-compat).
+ * channel. The alert channel is a bot ticket queue — only the infra alert
+ * pipeline may write there. FLY-1831 welded this safety boundary on.
  */
 function isGatedAlertChannel(channelId: string): boolean {
-	if (process.env.FLYWHEEL_ALERT_ROUTING !== "1") return false;
 	const alertChannel = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
 	return !!alertChannel && channelId === alertChannel;
 }
@@ -552,7 +550,6 @@ export function createQueryRouter(
 		// FLY-927 (Task 1.6): sender gating — the unified alert channel is a bot
 		// TICKET QUEUE; generic Lead sends are refused so nothing but the infra
 		// alert pipeline (LeadAlertNotifier / lead-alert.sh) can write there.
-		// Same switch as the Router (FLYWHEEL_ALERT_ROUTING); unset = no gating.
 		if (isGatedAlertChannel(channelId)) {
 			res.status(403).json({
 				error: "alert_channel_gated",
