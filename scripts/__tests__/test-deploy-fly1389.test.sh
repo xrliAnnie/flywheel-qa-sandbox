@@ -74,6 +74,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
+  "${SCRIPT_DIR}/lib/runner-workspace-trust.sh" \
   "$FR/scripts/lib/"
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"

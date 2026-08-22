@@ -24,6 +24,8 @@ source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 # shellcheck source=lib/qa-generalized.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-generalized.sh"
+# shellcheck source=lib/runner-workspace-trust.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/runner-workspace-trust.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
 if [[ ! -r "$_CMUX_PROCESS_CENSUS_LIB" ]]; then
   log "ERROR: required cmux process census library unavailable"
@@ -576,43 +578,19 @@ wal_authorizes_stage_for_slot() {
   return 1
 }
 
-# FLY-115 fix: mkdir(2)-based mutex matches inject-linear-issue.sh's locking
-# so teardown's prune doesn't race with a concurrent inject in another slot.
-# Parallel slot operations previously could drop in-flight trust keys. Stale
-# lock (>CLAUDE_LOCK_STALE_S seconds) is stolen — covers crashes mid-RMW.
-: "${CLAUDE_LOCK_STALE_S:=60}"
-: "${CLAUDE_LOCK_WAIT_S:=30}"
+# FLY-1961: use the same env-aware lock resolver + stale bare-lock protocol as
+# every production/test writer. This keeps scratch FLYWHEEL_CLAUDE_JSON paths
+# off the founder's real HOME and preserves cross-process exclusion.
 acquire_claude_lock() {
-  local lock="${HOME}/.claude.json.lock"
-  local waited_ms=0 step_ms=100 max_ms=$((CLAUDE_LOCK_WAIT_S * 1000))
-  while ! mkdir "$lock" 2>/dev/null; do
-    if [[ -d "$lock" ]]; then
-      local mtime now age
-      mtime=$(stat -f %m "$lock" 2>/dev/null \
-              || stat -c %Y "$lock" 2>/dev/null \
-              || echo "")
-      now=$(date +%s)
-      if [[ -n "$mtime" ]]; then
-        age=$(( now - mtime ))
-        if (( age > CLAUDE_LOCK_STALE_S )); then
-          log "WARN: stealing stale trust lock (age ${age}s)"
-          rmdir "$lock" 2>/dev/null || true
-          continue
-        fi
-      fi
-    fi
-    if (( waited_ms >= max_ms )); then
-      log "WARN: timed out waiting for ${lock} after ${CLAUDE_LOCK_WAIT_S}s"
-      return 1
-    fi
-    sleep 0.1
-    waited_ms=$(( waited_ms + step_ms ))
-  done
-  return 0
+  local claude_json="${FLYWHEEL_CLAUDE_JSON:-${HOME}/.claude.json}"
+  local lock="${FLYWHEEL_CLAUDE_JSON_LOCK:-${claude_json}.lock}"
+  runner_workspace_trust_acquire_lock "$lock" "Claude JSON"
 }
 
 release_claude_lock() {
-  rmdir "${HOME}/.claude.json.lock" 2>/dev/null || true
+  local claude_json="${FLYWHEEL_CLAUDE_JSON:-${HOME}/.claude.json}"
+  local lock="${FLYWHEEL_CLAUDE_JSON_LOCK:-${claude_json}.lock}"
+  runner_workspace_trust_release_lock "$lock" || true
 }
 
 # FLY-115 fix: Remove ~/.claude.json trust entries whose keys live under the
@@ -620,7 +598,7 @@ release_claude_lock() {
 # via same-dir tempfile (POSIX rename(2) atomicity) so no partial JSON on crash.
 prune_trust_entries() {
   local PREFIX="$1"
-  local CLAUDE_JSON="${HOME}/.claude.json"
+  local CLAUDE_JSON="${FLYWHEEL_CLAUDE_JSON:-${HOME}/.claude.json}"
   [[ -f "$CLAUDE_JSON" ]] || return 0
   [[ -n "$PREFIX" ]] || return 0
 
@@ -651,16 +629,18 @@ prune_trust_entries() {
 
   # Create tempfile in the SAME directory as ~/.claude.json so the final mv
   # is an atomic rename(2) (same filesystem guarantee).
-  local TMP
+  local TMP MODE
   if ! TMP=$(mktemp "${CLAUDE_JSON}.XXXXXX"); then
     release_claude_lock
     return 0
   fi
+  MODE=$(runner_workspace_trust_file_mode "$CLAUDE_JSON" 600) || MODE=600
 
   if jq --arg prefix "$CANON" \
     '.projects = ((.projects // {}) | with_entries(select((.key | startswith($prefix)) | not)))' \
     "$CLAUDE_JSON" > "$TMP" 2>/dev/null \
     && jq -e . "$TMP" >/dev/null 2>&1; then
+    chmod "$MODE" "$TMP" 2>/dev/null || true
     mv "$TMP" "$CLAUDE_JSON" 2>/dev/null || rm -f "$TMP"
     log "Pruned trust entries under ${CANON}"
   else
@@ -1048,6 +1028,9 @@ teardown_slot() {
   # inject-linear-issue.sh so they don't accumulate and don't cause the
   # race-window jq write corruption seen in qa-fly-108.
   prune_trust_entries "/tmp/flywheel-test-slot-${SLOT}"
+  if ! prune_codex_workspace_trust_prefix "/tmp/flywheel-test-slot-${SLOT}"; then
+    log "WARN: Codex trust prune failed; managed entries retained for inspection"
+  fi
 
   local COMMDB_DIR="${HOME}/.flywheel/comm/${PROJECT_NAME}"
   if [[ -d "$COMMDB_DIR" ]]; then

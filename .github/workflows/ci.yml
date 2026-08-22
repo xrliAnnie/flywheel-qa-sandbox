@@ -678,6 +678,9 @@ jobs:
       - name: Test — FLY-1887 bounded Flywheel logs
         run: bash scripts/__tests__/flywheel-log-rotate.test.sh
 
+      - name: Test — FLY-1961 dual-vendor workspace trust
+        run: bash scripts/__tests__/test-runner-workspace-trust.sh
+
       # FLY-1018: gemini-agent static guard. Pure grep assertions over
       # packages/gemini-agent/src — zero reserved endpoints, zero forbidden
       # imports, zero privileged credentials, exactly 6 tool declarations.

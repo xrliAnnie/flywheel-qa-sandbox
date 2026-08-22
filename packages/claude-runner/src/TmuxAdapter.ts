@@ -6,6 +6,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	unlinkSync,
 	watch,
 	writeFileSync,
@@ -30,6 +31,7 @@ import type {
 	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
+import { pretrustClaudeWorkspace } from "./workspace-trust.js";
 
 /**
  * FLY-494: optional per-call exec options.
@@ -423,6 +425,9 @@ export class TmuxAdapter implements IAdapter {
 		if (!this.preflightDone) {
 			this.runPreflight();
 			this.preflightDone = true;
+		}
+		if (this.type === "claude-tmux" && ctx.pretrustWorkspace === true) {
+			await pretrustClaudeWorkspace(realpathSync(ctx.cwd));
 		}
 
 		let windowName = this.sanitizeWindowName(

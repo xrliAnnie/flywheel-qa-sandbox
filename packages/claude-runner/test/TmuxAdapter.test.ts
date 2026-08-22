@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -376,6 +377,56 @@ describe("TmuxAdapter", () => {
 		const { fn } = makeMockExec();
 		const adapter = new TmuxAdapter("flywheel", fn);
 		expect(adapter.type).toBe("claude-tmux");
+	});
+
+	it("FLY-1961 writes Claude trust before the first tmux launch", async () => {
+		const trustDir = mkdtempSync(join(tmpdir(), "fly1961-tmux-trust-"));
+		const claudeJson = join(trustDir, ".claude.json");
+		const workspace = join(trustDir, "worktree");
+		mkdirSync(workspace);
+		vi.stubEnv("FLYWHEEL_CLAUDE_JSON", claudeJson);
+		vi.stubEnv("FLYWHEEL_CLAUDE_JSON_LOCK", `${claudeJson}.lock`);
+		vi.stubEnv("CLAUDE_LOCK_WAIT_S", "0");
+		const base = makeMockExec({ paneDead: true });
+		let trustedAtLaunch = false;
+		const fn: ExecFileFn = (cmd, args, options) => {
+			if (cmd === "tmux" && args[0] === "new-window") {
+				const state = JSON.parse(readFileSync(claudeJson, "utf8")) as Record<
+					string,
+					Record<string, Record<string, unknown>>
+				>;
+				trustedAtLaunch =
+					state.projects[realpathSync(workspace)]?.hasTrustDialogAccepted ===
+					true;
+			}
+			return base.fn(cmd, args, options);
+		};
+
+		try {
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ cwd: workspace, pretrustWorkspace: true }),
+			);
+			expect(trustedAtLaunch).toBe(true);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(trustDir, { recursive: true, force: true });
+		}
+	});
+
+	it("FLY-1961 leaves Claude state untouched without the explicit signal", async () => {
+		const trustDir = mkdtempSync(join(tmpdir(), "fly1961-tmux-optin-"));
+		const claudeJson = join(trustDir, ".claude.json");
+		vi.stubEnv("FLYWHEEL_CLAUDE_JSON", claudeJson);
+		vi.stubEnv("FLYWHEEL_CLAUDE_JSON_LOCK", `${claudeJson}.lock`);
+		const { fn } = makeMockExec({ paneDead: true });
+
+		try {
+			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+			expect(existsSync(claudeJson)).toBe(false);
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(trustDir, { recursive: true, force: true });
+		}
 	});
 
 	// ─── Preflight ──────────────────────────────────

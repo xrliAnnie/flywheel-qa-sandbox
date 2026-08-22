@@ -442,6 +442,9 @@ export class CodexTmuxAdapter implements IAdapter {
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
+			...(ctx.pretrustWorkspace === true && {
+				trustedProjectPath: sandboxCwd,
+			}),
 			notifyProgramPath: join(
 				homedir(),
 				".flywheel",

@@ -8,6 +8,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	statSync,
 	writeFileSync,
@@ -663,6 +664,14 @@ async function runDrill(context) {
 	} = context;
 	const convergence = await convergePriorRun(context);
 	process.stdout.write(`[qa529] replay pre-action: ${convergence.kind}\n`);
+	let pretrustedWorktree;
+	if (context.runnerMode === "real") {
+		pretrustedWorktree = command("bash", [
+			resolve(room.flywheelRepo, "scripts/lib/runner-workspace-trust.sh"),
+			"pretrust-dual",
+			`${room.hostRepo}-${issue}`,
+		]);
+	}
 
 	const idempotencyKey = `qa529-${issue.toLowerCase()}-${Date.now()}`;
 	const request = buildGeneralizedStartRequest({
@@ -697,6 +706,36 @@ async function runDrill(context) {
 	};
 	writeJsonAtomic(ownerPath, owner);
 	const writeStep = stepWriter(evidenceDir, runId);
+	if (pretrustedWorktree) {
+		const session = await waitFor(
+			"pretrusted worktree binding",
+			() => {
+				const row = one(
+					db,
+					"SELECT execution_id, worktree_path FROM sessions WHERE execution_id = ?",
+					start.executionId,
+				);
+				return row?.worktree_path ? row : false;
+			},
+			timeoutMs,
+		);
+		const actualWorktree = realpathSync(session.worktree_path);
+		if (actualWorktree !== pretrustedWorktree) {
+			writeStep(0, "pretrusted worktree binding mismatch", {
+				expected: pretrustedWorktree,
+				actual: actualWorktree,
+				executionId: start.executionId,
+			});
+			throw new Error(
+				`pretrusted worktree mismatch: expected ${pretrustedWorktree}, got ${actualWorktree}`,
+			);
+		}
+		writeStep(0, "pretrusted worktree binding verified", {
+			expected: pretrustedWorktree,
+			actual: actualWorktree,
+			executionId: start.executionId,
+		});
+	}
 
 	const run = await waitFor(
 		"step 1 generalized run authority",

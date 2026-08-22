@@ -113,6 +113,7 @@ for consumer in sync restart teardown; do
       cp "$REPO_ROOT/scripts/lib/qa-multilead.sh" "$consumer_root/lib/qa-multilead.sh"
       cp "$REPO_ROOT/scripts/lib/qa-launchd-lead.sh" "$consumer_root/lib/qa-launchd-lead.sh"
       cp "$REPO_ROOT/scripts/lib/qa-generalized.sh" "$consumer_root/lib/qa-generalized.sh"
+      cp "$REPO_ROOT/scripts/lib/runner-workspace-trust.sh" "$consumer_root/lib/runner-workspace-trust.sh"
       /bin/bash "$consumer_root/test-teardown.sh" 99 \
         >/dev/null 2>"$consumer_err" || consumer_rc=$?
       ;;

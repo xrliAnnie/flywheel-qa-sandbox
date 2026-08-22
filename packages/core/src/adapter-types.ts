@@ -144,6 +144,8 @@ export interface AdapterExecutionContext {
 	prompt: string;
 	/** Working directory for the agent session */
 	cwd: string;
+	/** FLY-1961: seed this real worktree in the selected vendor trust store. */
+	pretrustWorkspace?: boolean;
 	/** AI model to use (e.g., "opus", "sonnet") */
 	model?: string;
 	/**

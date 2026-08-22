@@ -162,3 +162,4 @@ export type {
 	SDKSystemMessage,
 	SDKUserMessage,
 } from "./types.js";
+export { pretrustClaudeWorkspace } from "./workspace-trust.js";

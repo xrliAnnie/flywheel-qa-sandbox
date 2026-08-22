@@ -219,6 +219,110 @@ describe("renderCodexHomeConfig (WS-C delivery)", () => {
 	});
 });
 
+describe("renderCodexHomeConfig — FLY-1961 workspace trust", () => {
+	const trustedProjectPath = '/Users/x/Dev/flywheel-"quoted"\\repo';
+
+	it("adds an escaped trusted project without changing existing projects", () => {
+		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
+			trustedProjectPath,
+		});
+		const parsed = parseToml(out) as Record<
+			string,
+			Record<string, Record<string, unknown>>
+		>;
+
+		expect(parsed.projects[trustedProjectPath].trust_level).toBe("trusted");
+		expect(parsed.projects["/Users/x/Dev/flywheel"].trust_level).toBe(
+			"trusted",
+		);
+		expect(parsed.shell_environment_policy.set.GH_TOKEN).toBe(TOKEN);
+		expect(out).toContain("flywheel-managed workspace trust (FLY-1961)");
+	});
+
+	it("does not drop trust on the pure-passthrough path and is idempotent", () => {
+		const once = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
+			trustedProjectPath: "/tmp/new-worktree",
+		});
+		const twice = renderCodexHomeConfig(once, undefined, {
+			trustedProjectPath: "/tmp/new-worktree",
+		});
+
+		expect(
+			(
+				parseToml(once) as Record<
+					string,
+					Record<string, Record<string, unknown>>
+				>
+			).projects["/tmp/new-worktree"].trust_level,
+		).toBe("trusted");
+		expect(twice).toBe(once);
+		expect(twice.match(/flywheel-managed workspace trust/g)).toHaveLength(2);
+	});
+
+	it("does not add a managed block when the exact target is already trusted", () => {
+		const out = renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
+			trustedProjectPath: "/Users/x/Dev/flywheel",
+		});
+
+		expect(out).toBe(`${GLOBAL_CONFIG.trimEnd()}\n`);
+		expect(out).not.toContain("flywheel-managed workspace trust");
+	});
+
+	it.each([
+		[
+			"untrusted target",
+			`[projects."/tmp/new-worktree"]\ntrust_level = "untrusted"\n`,
+			/trust_level.*trusted/,
+		],
+		[
+			"empty target",
+			`[projects."/tmp/new-worktree"]\n`,
+			/trust_level.*trusted/,
+		],
+		["non-table projects", "projects = []\n", /projects.*table/],
+		[
+			"non-table target",
+			`projects."/tmp/new-worktree" = "bad"\n`,
+			/project entry.*table/,
+		],
+	])("fails loudly for %s", (_name, base, message) => {
+		expect(() =>
+			renderCodexHomeConfig(base, undefined, {
+				trustedProjectPath: "/tmp/new-worktree",
+			}),
+		).toThrow(message);
+	});
+
+	it.each(["relative/worktree", "/tmp/bad\0worktree"])(
+		"rejects unsafe trustedProjectPath %j",
+		(path) => {
+			expect(() =>
+				renderCodexHomeConfig(GLOBAL_CONFIG, undefined, {
+					trustedProjectPath: path,
+				}),
+			).toThrow(/trustedProjectPath must be.*absolute.*NUL-free/);
+		},
+	);
+
+	it("coexists with notify, skill disables, and credential injection", () => {
+		const notifyProgramPath = join(tmp, "hooks", "runner-stop-notify.sh");
+		const out = renderCodexHomeConfig(GLOBAL_CONFIG, TOKEN, {
+			trustedProjectPath: "/tmp/coexist",
+			notifyProgramPath,
+			skillDisableNames: ["superpowers:brainstorming"],
+		});
+		const parsed = parseToml(out) as Record<string, any>;
+
+		expect(parsed.projects["/tmp/coexist"].trust_level).toBe("trusted");
+		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
+		expect(parsed.shell_environment_policy.set.GH_TOKEN).toBe(TOKEN);
+		expect(parsed.skills.config).toContainEqual({
+			name: "superpowers:brainstorming",
+			enabled: false,
+		});
+	});
+});
+
 describe("renderCodexHomeConfig — FLY-1571 managed notify", () => {
 	const notifyProgramPath = '/Users/x/Flywheel Hooks/runner-"stop"\\notify.sh';
 	const opts = { notifyProgramPath };
@@ -575,6 +679,21 @@ describe("provisionCodexHome (WS-A)", () => {
 			readFileSync(join(home, "config.toml"), "utf8"),
 		) as Record<string, unknown>;
 		expect(parsed.notify).toEqual([notifyProgramPath, "--codex"]);
+	});
+
+	it("FLY-1961 provisions trust into the execution-scoped CODEX_HOME", () => {
+		const trustedProjectPath = join(tmp, "new-worktree");
+		const home = provisionCodexHome({
+			executionId: "exec-trust",
+			env,
+			trustedProjectPath,
+		});
+		const parsed = parseToml(
+			readFileSync(join(home, "config.toml"), "utf8"),
+		) as Record<string, Record<string, Record<string, unknown>>>;
+
+		expect(parsed.projects[trustedProjectPath].trust_level).toBe("trusted");
+		expect(home).toBe(join(tmp, "homes", "exec-trust"));
 	});
 
 	it("creates the home, seeds auth.json (0600) and config.toml (0600) with the token", () => {

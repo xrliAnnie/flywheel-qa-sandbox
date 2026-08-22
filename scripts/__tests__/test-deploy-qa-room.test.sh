@@ -157,6 +157,30 @@ else
   fail "launchd teardown authority missing" "test-teardown must bootout the slot registry"
 fi
 
+# FLY-1961: real 529 and legacy inject must both pretrust both vendors before
+# POST, while stub mode stays host-state-free. Teardown removes only managed
+# Codex marker blocks in addition to its existing Claude prefix prune.
+QA529_SRC="${SCRIPT_DIR}/../qa-529-generalized-e2e.mjs"
+INJECT_SRC="${SCRIPT_DIR}/../inject-linear-issue.sh"
+if grep -qF 'context.runnerMode === "real"' "$QA529_SRC" \
+  && grep -qF 'scripts/lib/runner-workspace-trust.sh' "$QA529_SRC" \
+  && grep -qF 'pretrusted worktree binding verified' "$QA529_SRC"; then
+  pass "FLY-1961: generalized real driver dual-pretrusts and verifies the actual worktree binding"
+else
+  fail "FLY-1961 generalized pretrust wiring" "real gate/helper/binding evidence missing"
+fi
+if grep -qF 'source "${SCRIPT_DIR}/lib/runner-workspace-trust.sh"' "$INJECT_SRC" \
+  && grep -qF 'pretrust_workspace_dual "$RUNNER_WORKTREE"' "$INJECT_SRC"; then
+  pass "FLY-1961: legacy injector uses the shared dual-vendor helper"
+else
+  fail "FLY-1961 legacy injector wiring" "shared helper call missing"
+fi
+if grep -qF 'prune_codex_workspace_trust_prefix "/tmp/flywheel-test-slot-${SLOT}"' "$TEARDOWN_SRC"; then
+  pass "FLY-1961: teardown prunes helper-owned Codex slot markers"
+else
+  fail "FLY-1961 Codex teardown wiring" "managed prune call missing"
+fi
+
 # ── roundtable wiring: host slot gets manager env; non-host gets none ────────
 RT_CH=$(jq -r '.roundtableChannel.channelId' "${ROOT}/slots.json")
 RT_HOST=$(jq -r '.roundtableChannel.hostSlot' "${ROOT}/slots.json")

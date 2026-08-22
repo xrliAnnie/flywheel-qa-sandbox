@@ -24,6 +24,7 @@ import {
 	writeGateMarker,
 } from "flywheel-comm/gate-marker";
 import type { AdapterExecutionContext } from "flywheel-core";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	CodexDaemonAdapterDeps,
@@ -248,6 +249,24 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			...overrides,
 		};
 	}
+
+	it("FLY-1961 trusts the real cwd in this execution's CODEX_HOME", async () => {
+		await makeAdapter().execute(ctx({ pretrustWorkspace: true }));
+
+		const config = parseToml(
+			readFileSync(join(homesRoot, execId, "config.toml"), "utf8"),
+		) as Record<string, Record<string, Record<string, unknown>>>;
+		expect(config.projects[realpathSync(dir)].trust_level).toBe("trusted");
+	});
+
+	it("FLY-1961 does not add workspace trust without the signal", async () => {
+		await makeAdapter().execute(ctx());
+
+		const config = parseToml(
+			readFileSync(join(homesRoot, execId, "config.toml"), "utf8"),
+		) as Record<string, unknown>;
+		expect(config.projects).toBeUndefined();
+	});
 
 	it("type + no streaming", () => {
 		expect(makeAdapter().type).toBe("codex-tmux");

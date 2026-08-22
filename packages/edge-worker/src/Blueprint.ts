@@ -2835,6 +2835,11 @@ export class Blueprint {
 				issueId: hydrated.issueId,
 				prompt,
 				cwd,
+				...(worktreeInfo &&
+				((ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" ||
+					isCodexRunner)
+					? { pretrustWorkspace: true }
+					: {}),
 				label: buildWindowLabel(displayId, ctx.runnerName, hydrated.issueTitle),
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,

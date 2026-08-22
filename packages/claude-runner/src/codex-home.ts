@@ -56,6 +56,10 @@ const MANAGED_SKILLS_END = "# <<< flywheel-managed skills (FLY-1395) <<<";
 const MANAGED_NOTIFY_BEGIN =
 	"# >>> flywheel-managed notify (FLY-1571) — do not edit >>>";
 const MANAGED_NOTIFY_END = "# <<< flywheel-managed notify (FLY-1571) <<<";
+const MANAGED_TRUST_BEGIN =
+	"# >>> flywheel-managed workspace trust (FLY-1961) — do not edit >>>";
+const MANAGED_TRUST_END =
+	"# <<< flywheel-managed workspace trust (FLY-1961) <<<";
 const CODEX_SKILL_NAME_RE = /^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$/;
 const MATT_CODEX_SKILL_DIRS = [
 	"code-review",
@@ -384,10 +388,20 @@ function stripManagedNotifyBlock(toml: string): string {
 	return toml.replace(re, "\n").replace(/^\n+/, "");
 }
 
+function stripManagedTrustBlock(toml: string): string {
+	const re = new RegExp(
+		`\\n*${escapeRegExp(MANAGED_TRUST_BEGIN)}[\\s\\S]*?${escapeRegExp(MANAGED_TRUST_END)}\\n?`,
+		"g",
+	);
+	return toml.replace(re, "\n");
+}
+
 export interface RenderCodexHomeConfigOptions {
 	skillDisableNames?: string[];
 	/** Absolute deployed hook path used by Codex's root-scope notify setting. */
 	notifyProgramPath?: string;
+	/** Canonical worktree Codex must trust before its TUI starts. */
+	trustedProjectPath?: string;
 }
 
 /** FLY-1604: fixed placeholder used during structural validation. Lexically
@@ -456,6 +470,7 @@ export function renderCodexHomeConfig(
 	opts: RenderCodexHomeConfigOptions = {},
 ): string {
 	const hasNotify = opts.notifyProgramPath !== undefined;
+	const hasTrust = opts.trustedProjectPath !== undefined;
 	if (
 		hasNotify &&
 		(!opts.notifyProgramPath ||
@@ -466,8 +481,26 @@ export function renderCodexHomeConfig(
 			"renderCodexHomeConfig: notifyProgramPath must be a non-empty absolute path without NUL bytes",
 		);
 	}
+	if (
+		hasTrust &&
+		(!opts.trustedProjectPath ||
+			!isAbsolute(opts.trustedProjectPath) ||
+			opts.trustedProjectPath.includes("\0"))
+	) {
+		throw new Error(
+			"renderCodexHomeConfig: trustedProjectPath must be a non-empty absolute and NUL-free path",
+		);
+	}
 	const base = stripManagedSkillsBlock(
-		stripManagedBlock(hasNotify ? stripManagedNotifyBlock(baseToml) : baseToml),
+		stripManagedBlock(
+			hasTrust
+				? stripManagedTrustBlock(
+						hasNotify ? stripManagedNotifyBlock(baseToml) : baseToml,
+					)
+				: hasNotify
+					? stripManagedNotifyBlock(baseToml)
+					: baseToml,
+		),
 	).trimEnd();
 	const skillDisableNames = [...new Set(opts.skillDisableNames ?? [])].sort();
 	for (const name of skillDisableNames) {
@@ -487,7 +520,7 @@ export function renderCodexHomeConfig(
 			"renderCodexHomeConfig: ghToken must match ^[A-Za-z0-9_-]{1,255}$",
 		);
 	}
-	if (!hasToken && skillDisableNames.length === 0 && !hasNotify) {
+	if (!hasToken && skillDisableNames.length === 0 && !hasNotify && !hasTrust) {
 		// Pure passthrough — nothing injected, no parse, no new failure surface.
 		return base ? `${base}\n` : "";
 	}
@@ -516,6 +549,28 @@ export function renderCodexHomeConfig(
 		}
 	}
 	const parsedBase = parseTomlSanitized(base, "base");
+	let addManagedTrust = false;
+	if (hasTrust) {
+		const projects = parsedBase.projects;
+		if (projects !== undefined && !isPlainTable(projects)) {
+			throw new Error(
+				"renderCodexHomeConfig: base config.toml projects must be a table",
+			);
+		}
+		const target =
+			projects === undefined ? undefined : projects[opts.trustedProjectPath!];
+		if (target !== undefined && !isPlainTable(target)) {
+			throw new Error(
+				"renderCodexHomeConfig: target project entry must be a table",
+			);
+		}
+		if (target !== undefined && target.trust_level !== "trusted") {
+			throw new Error(
+				"renderCodexHomeConfig: target project trust_level must already be trusted or absent",
+			);
+		}
+		addManagedTrust = target === undefined;
+	}
 	let notifyAnchor: RegExpMatchArray | undefined;
 	if (hasNotify) {
 		const parsedNotify = parsedBase.notify;
@@ -665,6 +720,16 @@ export function renderCodexHomeConfig(
 				`${MANAGED_SKILLS_BEGIN}\n${entries.join("\n\n")}\n${MANAGED_SKILLS_END}`,
 			);
 		}
+		if (addManagedTrust) {
+			const serialized = stringifyToml({
+				projects: {
+					[opts.trustedProjectPath!]: { trust_level: "trusted" },
+				},
+			}).trim();
+			blocks.push(
+				`${MANAGED_TRUST_BEGIN}\n${serialized}\n${MANAGED_TRUST_END}`,
+			);
+		}
 		if (blocks.length === 0) return body ? `${body}\n` : "";
 		const managed = blocks.join("\n\n");
 		return body ? `${body}\n\n${managed}\n` : `${managed}\n`;
@@ -705,6 +770,10 @@ export function renderCodexHomeConfig(
 		if (skillDisableNames.length > 0) {
 			if (parsedBase.skills === undefined) delete outWithoutNotify.skills;
 			else outWithoutNotify.skills = parsedBase.skills;
+		}
+		if (hasTrust) {
+			if (parsedBase.projects === undefined) delete outWithoutNotify.projects;
+			else outWithoutNotify.projects = parsedBase.projects;
 		}
 		if (!isDeepStrictEqual(outWithoutNotify, baseWithoutNotify)) {
 			throw new Error(
@@ -755,6 +824,29 @@ export function renderCodexHomeConfig(
 			);
 		}
 	}
+	if (hasTrust) {
+		const outProjects = parsedOut.projects;
+		const outTarget =
+			isPlainTable(outProjects) && opts.trustedProjectPath
+				? outProjects[opts.trustedProjectPath]
+				: undefined;
+		if (!isPlainTable(outTarget) || outTarget.trust_level !== "trusted") {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — rendered config does not trust the target project",
+			);
+		}
+		const outRest = { ...(outProjects as Record<string, unknown>) };
+		delete outRest[opts.trustedProjectPath!];
+		const baseProjects = isPlainTable(parsedBase.projects)
+			? { ...parsedBase.projects }
+			: {};
+		delete baseProjects[opts.trustedProjectPath!];
+		if (!isDeepStrictEqual(outRest, baseProjects)) {
+			throw new Error(
+				"renderCodexHomeConfig: internal invariant violated — workspace trust merge altered unrelated projects",
+			);
+		}
+	}
 	return buildRendered(ghToken, opts.notifyProgramPath);
 }
 
@@ -773,6 +865,8 @@ export interface ProvisionCodexHomeOptions {
 	codexMattSkillsSourceDir?: string;
 	/** Stable deployed hook path installed by setup-flywheel-hooks. */
 	notifyProgramPath?: string;
+	/** Canonical worktree written into this execution-scoped config.toml. */
+	trustedProjectPath?: string;
 }
 
 /**
@@ -854,6 +948,7 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			renderCodexHomeConfig(baseToml, opts.ghToken, {
 				skillDisableNames: opts.codexSkillDisableNames,
 				notifyProgramPath: opts.notifyProgramPath,
+				trustedProjectPath: opts.trustedProjectPath,
 			}),
 			{
 				encoding: "utf-8",

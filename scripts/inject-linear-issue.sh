@@ -10,11 +10,10 @@
 #   scripts/inject-linear-issue.sh 2 FLY-108
 #
 # SIDE EFFECTS:
-#   Modifies ~/.claude.json to pre-accept the workspace trust prompt for the
-#   Runner worktree path derived from SLOT + ISSUE_ID + ROLE. This avoids the
-#   silent hang when Claude CLI launches in a fresh worktree — the prompt is
-#   non-interactive under headless spawn and blocks the whole run.
-#   A teardown call (`scripts/test-teardown.sh <slot>`) prunes these entries.
+#   Pre-accepts the derived Runner worktree in both vendor stores:
+#   ~/.claude.json and the host/source ~/.codex/config.toml. This avoids either
+#   headless CLI blocking on an interactive trust prompt. test-teardown prunes
+#   the slot's Claude entries and helper-owned Codex marker blocks.
 #
 # FLY-153: Refuses mirror-mode slots by default. Mirror mode is intended for
 # reply-discipline cascade testing only; spawning a real Runner under mirror
@@ -87,6 +86,8 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/runner-workspace-trust.sh
+source "${SCRIPT_DIR}/lib/runner-workspace-trust.sh"
 SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
 [[ -f "$SLOTS_FILE" ]] || { echo "ERROR: ${SLOTS_FILE} missing — deploy slot first" >&2; exit 1; }
 
@@ -144,124 +145,9 @@ else
 fi
 RUNNER_WORKTREE="${HOST_REPO}-${WORKTREE_ISSUE_ID}"
 
-# FLY-115 fix: mkdir(2) is atomic on all POSIX filesystems, so we use a lock
-# directory as a portable mutex (macOS has no `flock`). Parallel slot injects
-# previously raced on ~/.claude.json — the later writer's snapshot missed the
-# earlier writer's trust key, silently dropping it and re-introducing the
-# headless trust-prompt hang. Callers MUST pair acquire/release.
-#
-# Stale-lock detection steals a lock older than CLAUDE_LOCK_STALE_S seconds
-# (covers the case where a previous holder crashed before release). Value is
-# overridable via env for tests.
-: "${CLAUDE_LOCK_STALE_S:=60}"
-: "${CLAUDE_LOCK_WAIT_S:=30}"
-acquire_claude_lock() {
-  local lock="${HOME}/.claude.json.lock"
-  local waited_ms=0 step_ms=100 max_ms=$((CLAUDE_LOCK_WAIT_S * 1000))
-  while ! mkdir "$lock" 2>/dev/null; do
-    # Stale-lock sweep: if the lockdir is older than the threshold, assume
-    # the previous holder crashed and steal it. `stat -f %m` (BSD/macOS) vs
-    # `stat -c %Y` (GNU); fall back to "now" on failure so we don't steal
-    # prematurely.
-    if [[ -d "$lock" ]]; then
-      local mtime now age
-      mtime=$(stat -f %m "$lock" 2>/dev/null \
-              || stat -c %Y "$lock" 2>/dev/null \
-              || echo "")
-      now=$(date +%s)
-      if [[ -n "$mtime" ]]; then
-        age=$(( now - mtime ))
-        if (( age > CLAUDE_LOCK_STALE_S )); then
-          echo "[inject] WARN: stealing stale trust lock (age ${age}s)" >&2
-          rmdir "$lock" 2>/dev/null || true
-          continue
-        fi
-      fi
-    fi
-    if (( waited_ms >= max_ms )); then
-      echo "[inject] ERROR: timed out waiting for ${lock} after ${CLAUDE_LOCK_WAIT_S}s" >&2
-      return 1
-    fi
-    sleep 0.1
-    waited_ms=$(( waited_ms + step_ms ))
-  done
-  return 0
-}
-
-release_claude_lock() {
-  rmdir "${HOME}/.claude.json.lock" 2>/dev/null || true
-}
-
-# Atomically merge one trust entry into ~/.claude.json. Returns non-zero on any
-# failure; caller MUST propagate to avoid running into the hang bug.
-write_trust_entry() {
-  local target="$1"
-  local CLAUDE_JSON="$HOME/.claude.json"
-
-  # Canonicalize via parent directory (target itself doesn't exist yet — Bridge
-  # will create the Runner worktree shortly after we return).
-  local parent basename canonical_parent CANONICAL
-  parent="$(dirname "$target")"
-  basename="$(basename "$target")"
-  if [[ ! -d "$parent" ]]; then
-    echo "[inject] ERROR: parent ${parent} missing — cannot resolve canonical path for ${target}" >&2
-    return 1
-  fi
-  canonical_parent="$(cd "$parent" && pwd -P)" || return 1
-  CANONICAL="${canonical_parent}/${basename}"
-
-  # FLY-115 fix: serialize the entire read→merge→write with a mkdir mutex so
-  # parallel slot injects don't stomp each other's trust keys.
-  acquire_claude_lock || return 1
-
-  # If ~/.claude.json already exists, refuse to overwrite on parse error —
-  # silently stomping on user state is worse than hanging loudly.
-  local input_source=""
-  if [[ -s "$CLAUDE_JSON" ]]; then
-    if jq -e . "$CLAUDE_JSON" >/dev/null 2>&1; then
-      input_source="$CLAUDE_JSON"
-    else
-      echo "[inject] ERROR: ${CLAUDE_JSON} exists but is not valid JSON — refusing to overwrite user state" >&2
-      release_claude_lock
-      return 1
-    fi
-  fi
-
-  # Same-filesystem tempfile so the final `mv` is an atomic rename(2).
-  local tmp_json
-  tmp_json="$(mktemp "${CLAUDE_JSON}.XXXXXX")" \
-    || { echo "[inject] ERROR: mktemp failed near ${CLAUDE_JSON}" >&2; release_claude_lock; return 1; }
-
-  # File-based input (avoids ARG_MAX if ~/.claude.json ever grows huge).
-  if [[ -z "$input_source" ]]; then
-    echo '{}' > "${tmp_json}.2" \
-      || { rm -f "$tmp_json" "${tmp_json}.2"; release_claude_lock; return 1; }
-    input_source="${tmp_json}.2"
-  fi
-
-  if ! jq --arg p "$CANONICAL" \
-        '.projects = ((.projects // {}) | .[$p] |= ((. // {}) + {hasTrustDialogAccepted: true}))' \
-        "$input_source" > "$tmp_json"; then
-    rm -f "$tmp_json" "${tmp_json}.2"
-    echo "[inject] ERROR: jq filter failed for ${CANONICAL}" >&2
-    release_claude_lock
-    return 1
-  fi
-
-  if ! mv "$tmp_json" "$CLAUDE_JSON"; then
-    rm -f "$tmp_json" "${tmp_json}.2"
-    echo "[inject] ERROR: mv failed replacing ${CLAUDE_JSON}" >&2
-    release_claude_lock
-    return 1
-  fi
-  rm -f "${tmp_json}.2"
-  release_claude_lock
-  echo "[inject] trust accepted: ${CANONICAL}" >&2
-  return 0
-}
-
-write_trust_entry "$RUNNER_WORKTREE" \
-  || { echo "[inject] FATAL: trust write failed — refusing to POST /api/runs/start (would hang on trust prompt)" >&2; exit 7; }
+pretrust_workspace_dual "$RUNNER_WORKTREE" \
+  || { echo "[inject] FATAL: dual-vendor trust write failed — refusing to POST /api/runs/start" >&2; exit 7; }
+echo "[inject] Claude + Codex trust accepted: ${RUNNER_WORKSPACE_TRUST_CANONICAL}" >&2
 
 # Per-invocation temp file so parallel slot injects don't clobber each other.
 RESP_FILE="$(mktemp -t flywheel-inject.XXXXXX)"
