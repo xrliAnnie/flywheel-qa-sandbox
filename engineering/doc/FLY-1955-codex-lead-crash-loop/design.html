@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1955 设计:Codex Lead 81 秒崩溃循环的根因与修复</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; line-height:1.65; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:#1a365d; margin-bottom:6px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin-bottom:14px; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.gray { border-left-color:#86868b; }
+  h2 { font-size:18px; color:#1a365d; margin-bottom:10px; }
+  p { margin-bottom:10px; font-size:15px; }
+  .lede { font-size:16px; font-weight:600; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:14px; }
+  th,td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+  .term { color:#007aff; font-weight:600; }
+  .expl { color:#86868b; font-size:13.5px; }
+  .diagram { overflow-x:auto; margin:12px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .pill { display:inline-block; font-size:12px; font-weight:600; padding:2px 10px; border-radius:10px; margin-right:6px; }
+  .pill.red { background:#ffe5e3; color:#ff3b30; }
+  .pill.green { background:#e8f8ed; color:#248a3d; }
+  .pill.amber { background:#fff4e5; color:#c93400; }
+  ul,ol { margin:0 0 10px 22px; font-size:15px; }
+  li { margin-bottom:5px; }
+  .cbox { margin-top:14px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { font-size:13px; color:#86868b; display:block; margin-bottom:5px; }
+  .cbox textarea { width:100%; min-height:56px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:2px solid #007aff33; border-color:#007aff; }
+  #summaryCard { border-left-color:#af52de; }
+  #summaryBody { white-space:pre-wrap; font-size:13.5px; background:#f5f5f7; border-radius:8px; padding:12px; max-height:280px; overflow-y:auto; margin-bottom:10px; }
+  .btn { background:#007aff; color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  .btn.ok { background:#34c759; }
+  .btn.fail { background:#ff3b30; }
+  .chunkbtns .btn { margin:4px 6px 4px 0; }
+  .hint { font-size:12.5px; color:#86868b; margin-top:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1955 · 两个 Codex Lead 每 81 秒崩溃循环 — 设计方案</h1>
+  <div class="sub">设计节点交付 · 2026-08-21 · 根因已 100% 实验复现 · 设计已过 Codex 评审 4 轮 APPROVED</div>
+
+  <!-- §1 一句话 + 现状 -->
+  <div class="card red" data-sec="s1" data-title="一句话与现状">
+    <h2>1 · 一句话</h2>
+    <p class="lede">Codex 自带的自动升级器升级到新版时,把后台服务搞死并留下一个「僵尸进程」;此后每次 Lead 启动都被这个僵尸骗过——以为服务还活着、于是不再重新拉起——就这样每 81 秒失败重来,重启整个舰队也无济于事。修法:确认证据后清掉僵尸的「家长」,系统会自动收尸,下一轮启动即恢复;并把这套确认-清理逻辑写进启动脚本,让以后同类故障 3 分钟内自愈。</p>
+    <table>
+      <tr><th>事实</th><th>数字</th></tr>
+      <tr><td>持续时长</td><td>2026-08-20 14:29:59 起 ≥23.5 小时,精确每 81 秒一圈,累计 800+ 次</td></tr>
+      <tr><td>影响面</td><td>2/16 个 Lead(infra-bot、mufasa,均为 Codex 载体);其余 14 个稳定</td></tr>
+      <tr><td>全舰重启</td><td>跨越两次(8-20 22:41、8-21 12:06)均未自愈——「重启试试」已被证伪</td></tr>
+      <tr><td>放大器</td><td>全局 codex 命令曾指进故障 Lead 的私有目录(FLY-513),已由 Aunt Cass 于 8-21 14:02 换轴止血</td></tr>
+    </table>
+    <div class="cbox"><label>对这一节的意见(自动保存在你的浏览器里)</label><textarea data-key="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §2 根因 -->
+  <div class="card amber" data-sec="s2" data-title="根因(已实验复现)">
+    <h2>2 · 根因 — 不是猜测,是拿真程序 100% 复现过的</h2>
+    <p>几个名词,先用白话说清:<span class="term">daemon(后台服务)</span><span class="expl">= Codex 的常驻服务进程,Lead 靠它干活</span>;<span class="term">僵尸进程</span><span class="expl">= 已经死了、但还在系统进程名单上占位子的进程——要它的「家长进程」出面确认(收尸)才会真正消失</span>;<span class="term">接口文件(socket)</span><span class="expl">= 进程之间通话用的一个特殊文件,服务活着它才存在</span>;<span class="term">升级器(updater)</span><span class="expl">= Codex 自带的后台自动更新程序,长期驻留</span>。</p>
+    <div class="diagram"><svg id="FLY-1955-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 560.195px; background-color: white;" viewBox="0 0 560.1953125 974" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1955-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1955-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1955-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1955-d1 .error-icon{fill:#552222;}#FLY-1955-d1 .error-text{fill:#552222;stroke:#552222;}#FLY-1955-d1 .edge-thickness-normal{stroke-width:1px;}#FLY-1955-d1 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1955-d1 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1955-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1955-d1 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1955-d1 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1955-d1 .marker{fill:#333333;stroke:#333333;}#FLY-1955-d1 .marker.cross{stroke:#333333;}#FLY-1955-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1955-d1 p{margin:0;}#FLY-1955-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1955-d1 .cluster-label text{fill:#333;}#FLY-1955-d1 .cluster-label span{color:#333;}#FLY-1955-d1 .cluster-label span p{background-color:transparent;}#FLY-1955-d1 .label text,#FLY-1955-d1 span{fill:#333;color:#333;}#FLY-1955-d1 .node rect,#FLY-1955-d1 .node circle,#FLY-1955-d1 .node ellipse,#FLY-1955-d1 .node polygon,#FLY-1955-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1955-d1 .rough-node .label text,#FLY-1955-d1 .node .label text,#FLY-1955-d1 .image-shape .label,#FLY-1955-d1 .icon-shape .label{text-anchor:middle;}#FLY-1955-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1955-d1 .rough-node .label,#FLY-1955-d1 .node .label,#FLY-1955-d1 .image-shape .label,#FLY-1955-d1 .icon-shape .label{text-align:center;}#FLY-1955-d1 .node.clickable{cursor:pointer;}#FLY-1955-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1955-d1 .arrowheadPath{fill:#333333;}#FLY-1955-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1955-d1 .flowchart-link{stroke:#333333;fill:none;}#FLY-1955-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1955-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1955-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1955-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1955-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1955-d1 .cluster text{fill:#333;}#FLY-1955-d1 .cluster span{color:#333;}#FLY-1955-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1955-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1955-d1 rect.text{fill:none;stroke-width:0;}#FLY-1955-d1 .icon-shape,#FLY-1955-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1955-d1 .icon-shape p,#FLY-1955-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1955-d1 .icon-shape rect,#FLY-1955-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1955-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1955-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1955-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1955-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M126.32,110L126.32,114.167C126.32,118.333,126.32,126.667,126.32,138.333C126.32,150,126.32,165,126.32,172.5L126.32,180" id="L_A_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A_B_0" data-points="W3sieCI6MTI2LjMyMDMxMjUsInkiOjExMH0seyJ4IjoxMjYuMzIwMzEyNSwieSI6MTM1fSx7IngiOjEyNi4zMjAzMTI1LCJ5IjoxODR9XQ==" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M126.32,262L126.32,270.167C126.32,278.333,126.32,294.667,131.954,306.628C137.587,318.588,148.853,326.177,154.487,329.971L160.12,333.765" id="L_B_C_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_C_0" data-points="W3sieCI6MTI2LjMyMDMxMjUsInkiOjI2Mn0seyJ4IjoxMjYuMzIwMzEyNSwieSI6MzExfSx7IngiOjE2My40Mzc1LCJ5IjozMzZ9XQ==" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M274.789,486L274.789,490.167C274.789,494.333,274.789,502.667,274.789,510.333C274.789,518,274.789,525,274.789,528.5L274.789,532" id="L_C_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_D_0" data-points="W3sieCI6Mjc0Ljc4OTA2MjUsInkiOjQ4Nn0seyJ4IjoyNzQuNzg5MDYyNSwieSI6NTExfSx7IngiOjI3NC43ODkwNjI1LCJ5Ijo1MzZ9XQ==" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M225.749,662L222.506,666.167C219.263,670.333,212.776,678.667,209.532,686.333C206.289,694,206.289,701,206.289,704.5L206.289,708" id="L_D_E_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_E_0" data-points="W3sieCI6MjI1Ljc0OTI4OTc3MjcyNzI4LCJ5Ijo2NjJ9LHsieCI6MjA2LjI4OTA2MjUsInkiOjY4N30seyJ4IjoyMDYuMjg5MDYyNSwieSI6NzEyfV0=" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M206.289,814L206.289,818.167C206.289,822.333,206.289,830.667,209.598,838.505C212.907,846.343,219.526,853.686,222.835,857.357L226.144,861.029" id="L_E_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_F_0" data-points="W3sieCI6MjA2LjI4OTA2MjUsInkiOjgxNH0seyJ4IjoyMDYuMjg5MDYyNSwieSI6ODM5fSx7IngiOjIyOC44MjE5NTcyMzY4NDIxLCJ5Ijo4NjR9XQ==" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M320.756,864L324.512,859.833C328.267,855.667,335.778,847.333,339.534,830.5C343.289,813.667,343.289,788.333,343.289,763C343.289,737.667,343.289,712.333,340.455,696.026C337.621,679.719,331.954,672.438,329.12,668.797L326.286,665.156" id="L_F_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_F_D_0" data-points="W3sieCI6MzIwLjc1NjE2Nzc2MzE1NzksInkiOjg2NH0seyJ4IjozNDMuMjg5MDYyNSwieSI6ODM5fSx7IngiOjM0My4yODkwNjI1LCJ5Ijo3NjN9LHsieCI6MzQzLjI4OTA2MjUsInkiOjY4N30seyJ4IjozMjMuODI4ODM1MjI3MjcyNzUsInkiOjY2Mn1d" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/><path d="M423.258,286L423.258,290.167C423.258,294.333,423.258,302.667,417.625,310.628C411.991,318.588,400.725,326.177,395.092,329.971L389.458,333.765" id="L_G_C_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_G_C_0" data-points="W3sieCI6NDIzLjI1NzgxMjUsInkiOjI4Nn0seyJ4Ijo0MjMuMjU3ODEyNSwieSI6MzExfSx7IngiOjM4Ni4xNDA2MjUsInkiOjMzNn1d" marker-end="url(#FLY-1955-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B_C_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_C_D_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_E_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_E_F_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_F_D_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_G_C_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A-0" transform="translate(126.3203125, 59)"><rect class="basic label-container" style="fill:#fff4e5 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-118.3203125" y="-51" width="236.640625" height="102"/><g class="label" style="" transform="translate(-88.3203125, -36)"><rect/><foreignObject width="176.640625" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>8-20 14:14<br />Codex 自带的自动升级器<br />下载安装新版 0.149.0</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-1" transform="translate(126.3203125, 223)"><rect class="basic label-container" style="" x="-118" y="-39" width="236" height="78"/><g class="label" style="" transform="translate(-88, -24)"><rect/><foreignObject width="176" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>升级器重启后台服务<br />新服务进程一启动就死了</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-C-3" transform="translate(274.7890625, 411)"><rect class="basic label-container" style="fill:#ffe5e3 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-130" y="-75" width="260" height="150"/><g class="label" style="" transform="translate(-100, -60)"><rect/><foreignObject width="200" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>死掉的进程变成『僵尸』<br />(已死但仍占着进程名单的位子)<br />因为升级器这个家长从不收尸</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-5" transform="translate(274.7890625, 599)"><rect class="basic label-container" style="fill:#ffe5e3 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Lead 每次启动都会问:<br />『后台服务还活着吗?』<br />检查方法被僵尸骗过 → 以为活着</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-E-7" transform="translate(206.2890625, 763)"><rect class="basic label-container" style="" x="-102" y="-51" width="204" height="102"/><g class="label" style="" transform="translate(-72, -36)"><rect/><foreignObject width="144" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>于是不重新拉起服务<br />直接去连接口文件<br />→ 文件不存在,报错</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-F-9" transform="translate(274.7890625, 915)"><rect class="basic label-container" style="fill:#ffe5e3 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-120.5625" y="-51" width="241.125" height="102"/><g class="label" style="" transform="translate(-90.5625, -36)"><rect/><foreignObject width="181.125" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Lead 启动失败退出<br />系统守护 30 秒后重拉<br />→ 每 81 秒一圈,无限循环</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-12" transform="translate(423.2578125, 223)"><rect class="basic label-container" style="fill:#f0f0f5 !important;stroke:#86868b !important;stroke-width:1px !important" x="-128.9375" y="-63" width="257.875" height="126"/><g class="label" style="" transform="translate(-98.9375, -48)"><rect/><foreignObject width="197.875" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>两次全舰重启为什么救不了:<br />升级器不归舰队管理清单管<br />→ 重启碰不到它<br />→ 僵尸一直在 → 循环继续</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <p><b>为什么说是铁证:</b>在隔离沙盒里用同一个新版程序做了四组对照实验——干净环境 ✓ 正常启动;记录指向「彻底死透」的进程 ✓ 能自我修复;<b>唯独记录指向「僵尸」时,输出与生产环境逐字节相同的报错,且永不自愈</b>。同一台机器上,用另一种方式启动的同版本服务(各 runner 的代码评审通道)全部健康——问题只在这条「后台服务管理」路径上。</p>
+    <p class="expl">仍未定案的一点(如实交代):8-20 14:15 那次升级换代时,新服务进程为什么一启动就死——现场没留下任何日志,系统日志也已滚动覆盖。但这不影响修复:我们修的是「死了之后卡死不能自愈」这个机制,无论它当初为什么死、以后因为什么死,都管用。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §3 修复设计 -->
+  <div class="card green" data-sec="s3" data-title="修复设计">
+    <h2>3 · 修复设计 — 一个脚本文件,证据不齐绝不动手</h2>
+    <p>改动只落在一个启动脚本里(Lead 每次启动都会现读它,所以合并代码后<b>不用重启任何服务</b>,正在循环的 Lead 下一圈自动吃到修复)。逻辑:第一次启动失败后,逐条取证确认「确实是僵尸卡死」,证据齐了才温和清理,然后只再试一次。</p>
+    <div class="diagram"><svg id="FLY-1955-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 687.113px; background-color: white;" viewBox="0 0 687.11328125 1150" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1955-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1955-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1955-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1955-d2 .error-icon{fill:#552222;}#FLY-1955-d2 .error-text{fill:#552222;stroke:#552222;}#FLY-1955-d2 .edge-thickness-normal{stroke-width:1px;}#FLY-1955-d2 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1955-d2 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1955-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1955-d2 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1955-d2 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1955-d2 .marker{fill:#333333;stroke:#333333;}#FLY-1955-d2 .marker.cross{stroke:#333333;}#FLY-1955-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1955-d2 p{margin:0;}#FLY-1955-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1955-d2 .cluster-label text{fill:#333;}#FLY-1955-d2 .cluster-label span{color:#333;}#FLY-1955-d2 .cluster-label span p{background-color:transparent;}#FLY-1955-d2 .label text,#FLY-1955-d2 span{fill:#333;color:#333;}#FLY-1955-d2 .node rect,#FLY-1955-d2 .node circle,#FLY-1955-d2 .node ellipse,#FLY-1955-d2 .node polygon,#FLY-1955-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1955-d2 .rough-node .label text,#FLY-1955-d2 .node .label text,#FLY-1955-d2 .image-shape .label,#FLY-1955-d2 .icon-shape .label{text-anchor:middle;}#FLY-1955-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1955-d2 .rough-node .label,#FLY-1955-d2 .node .label,#FLY-1955-d2 .image-shape .label,#FLY-1955-d2 .icon-shape .label{text-align:center;}#FLY-1955-d2 .node.clickable{cursor:pointer;}#FLY-1955-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1955-d2 .arrowheadPath{fill:#333333;}#FLY-1955-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1955-d2 .flowchart-link{stroke:#333333;fill:none;}#FLY-1955-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1955-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1955-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1955-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1955-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1955-d2 .cluster text{fill:#333;}#FLY-1955-d2 .cluster span{color:#333;}#FLY-1955-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1955-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1955-d2 rect.text{fill:none;stroke-width:0;}#FLY-1955-d2 .icon-shape,#FLY-1955-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1955-d2 .icon-shape p,#FLY-1955-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1955-d2 .icon-shape rect,#FLY-1955-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1955-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1955-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1955-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1955-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1955-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M220.227,62L220.227,66.167C220.227,70.333,220.227,78.667,220.227,86.333C220.227,94,220.227,101,220.227,104.5L220.227,108" id="L_S_T_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S_T_0" data-points="W3sieCI6MjIwLjIyNjU2MjUsInkiOjYyfSx7IngiOjIyMC4yMjY1NjI1LCJ5Ijo4N30seyJ4IjoyMjAuMjI2NTYyNSwieSI6MTEyfV0=" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M178.367,228.14L163.553,241.283C148.739,254.427,119.112,280.713,104.298,313.357C89.484,346,89.484,385,89.484,404.5L89.484,424" id="L_T_OK_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_T_OK_0" data-points="W3sieCI6MTc4LjM2NjU0Mjg2OTE4NTk2LCJ5IjoyMjguMTM5OTgwMzY5MTg1OTZ9LHsieCI6ODkuNDg0Mzc1LCJ5IjozMDd9LHsieCI6ODkuNDg0Mzc1LCJ5Ijo0Mjh9XQ==" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M262.087,228.14L276.9,241.283C291.714,254.427,321.341,280.713,336.155,299.357C350.969,318,350.969,329,350.969,334.5L350.969,340" id="L_T_P_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_T_P_0" data-points="W3sieCI6MjYyLjA4NjU4MjEzMDgxNDA3LCJ5IjoyMjguMTM5OTgwMzY5MTg1OTZ9LHsieCI6MzUwLjk2ODc1LCJ5IjozMDd9LHsieCI6MzUwLjk2ODc1LCJ5IjozNDR9XQ==" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M268.627,590L263.16,598.167C257.693,606.333,246.758,622.667,241.291,638.333C235.824,654,235.824,669,235.824,676.5L235.824,684" id="L_P_DIE_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_P_DIE_0" data-points="W3sieCI6MjY4LjYyNzAyMTI1NzI2NzQsInkiOjU5MH0seyJ4IjoyMzUuODI0MjE4NzUsInkiOjYzOX0seyJ4IjoyMzUuODI0MjE4NzUsInkiOjY4OH1d" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M433.31,590L438.778,598.167C444.245,606.333,455.179,622.667,460.646,638.333C466.113,654,466.113,669,466.113,676.5L466.113,684" id="L_P_K_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_P_K_0" data-points="W3sieCI6NDMzLjMxMDQ3ODc0MjczMjYsInkiOjU5MH0seyJ4Ijo0NjYuMTEzMjgxMjUsInkiOjYzOX0seyJ4Ijo0NjYuMTEzMjgxMjUsInkiOjY4OH1d" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M466.113,766L466.113,770.167C466.113,774.333,466.113,782.667,466.113,790.333C466.113,798,466.113,805,466.113,808.5L466.113,812" id="L_K_R_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_K_R_0" data-points="W3sieCI6NDY2LjExMzI4MTI1LCJ5Ijo3NjZ9LHsieCI6NDY2LjExMzI4MTI1LCJ5Ijo3OTF9LHsieCI6NDY2LjExMzI4MTI1LCJ5Ijo4MTZ9XQ==" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M423.508,947.395L410.776,960.663C398.043,973.93,372.578,1000.465,359.846,1019.233C347.113,1038,347.113,1049,347.113,1054.5L347.113,1060" id="L_R_AL1_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R_AL1_0" data-points="W3sieCI6NDIzLjUwODM0Mjk3ODM5NTA0LCJ5Ijo5NDcuMzk1MDYxNzI4Mzk1fSx7IngiOjM0Ny4xMTMyODEyNSwieSI6MTAyN30seyJ4IjozNDcuMTEzMjgxMjUsInkiOjEwNjR9XQ==" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/><path d="M508.718,947.395L521.451,960.663C534.183,973.93,559.648,1000.465,572.381,1019.233C585.113,1038,585.113,1049,585.113,1054.5L585.113,1060" id="L_R_AL2_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R_AL2_0" data-points="W3sieCI6NTA4LjcxODIxOTUyMTYwNDk2LCJ5Ijo5NDcuMzk1MDYxNzI4Mzk1fSx7IngiOjU4NS4xMTMyODEyNSwieSI6MTAyN30seyJ4Ijo1ODUuMTEzMjgxMjUsInkiOjEwNjR9XQ==" marker-end="url(#FLY-1955-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_S_T_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(89.484375, 307)"><g class="label" data-id="L_T_OK_0" transform="translate(-80.8125, -12)"><foreignObject width="161.625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>成功(健康路径,零改动)</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(350.96875, 307)"><g class="label" data-id="L_T_P_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>失败</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(235.82421875, 639)"><g class="label" data-id="L_P_DIE_0" transform="translate(-77.3515625, -24)"><foreignObject width="154.703125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>任一证据不满足<br />→ 不动手,报错等下轮</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(466.11328125, 639)"><g class="label" data-id="L_P_K_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>证据齐全</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_K_R_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(347.11328125, 1027)"><g class="label" data-id="L_R_AL1_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>成功</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(585.11328125, 1027)"><g class="label" data-id="L_R_AL2_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>失败</p></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-S-0" transform="translate(220.2265625, 35)"><rect class="basic label-container" style="" x="-116.421875" y="-27" width="232.84375" height="54"/><g class="label" style="" transform="translate(-86.421875, -12)"><rect/><foreignObject width="172.84375" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Lead 启动:拉起后台服务</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-T-1" transform="translate(220.2265625, 191)"><polygon points="79,0 158,-79 79,-158 0,-79" class="label-container" transform="translate(-78.5, 79)"/><g class="label" style="" transform="translate(-40, -24)"><rect/><foreignObject width="80" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>第一次启动<br />成功?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-OK-3" transform="translate(89.484375, 467)"><rect class="basic label-container" style="fill:#e8f8ed !important;stroke:#34c759 !important;stroke-width:2px !important" x="-81.484375" y="-39" width="162.96875" height="78"/><g class="label" style="" transform="translate(-51.484375, -24)"><rect/><foreignObject width="102.96875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>接口文件就绪<br />Lead 正常上线</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-P-5" transform="translate(350.96875, 467)"><rect class="basic label-container" style="fill:#fff4e5 !important;stroke:#ff9500 !important;stroke-width:2px !important" x="-130" y="-123" width="260" height="246"/><g class="label" style="" transform="translate(-100, -108)"><rect/><foreignObject width="200" height="216"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>逐条取证(六道证据):<br />① 记录文件完整可读<br />② 接口文件确实缺失<br />③ 记录的进程确是僵尸<br />④ 出生时间逐字吻合<br />⑤ 家长确是本 Lead 的升级器<br />⑥ 快照身份,动手前再核一遍</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DIE-7" transform="translate(235.82421875, 727)"><rect class="basic label-container" style="fill:#f0f0f5 !important;stroke:#86868b !important;stroke-width:1px !important" x="-67.875" y="-39" width="135.75" height="78"/><g class="label" style="" transform="translate(-37.875, -24)"><rect/><foreignObject width="75.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>保持现状<br />(绝不误杀)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-K-9" transform="translate(466.11328125, 727)"><rect class="basic label-container" style="" x="-112.4140625" y="-39" width="224.828125" height="78"/><g class="label" style="" transform="translate(-82.4140625, -24)"><rect/><foreignObject width="164.828125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>温和终止升级器<br />→ 僵尸被系统自动收走</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-R-11" transform="translate(466.11328125, 903)"><polygon points="87,0 174,-87 87,-174 0,-87" class="label-container" transform="translate(-86.5, 87)"/><g class="label" style="" transform="translate(-48, -24)"><rect/><foreignObject width="96" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>再试一次启动<br />(仅此一次)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-AL1-13" transform="translate(347.11328125, 1103)"><rect class="basic label-container" style="fill:#e8f8ed !important;stroke:#34c759 !important;stroke-width:2px !important" x="-94" y="-39" width="188" height="78"/><g class="label" style="" transform="translate(-64, -24)"><rect/><foreignObject width="128" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>发『已自愈』通知<br />Lead 上线</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-AL2-15" transform="translate(585.11328125, 1103)"><rect class="basic label-container" style="fill:#ffe5e3 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-94" y="-39" width="188" height="78"/><g class="label" style="" transform="translate(-64, -24)"><rect/><foreignObject width="128" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>发『卡住了』警报<br />报错等人来</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul>
+      <li><span class="pill green">安全第一</span>六道证据全过才动手;差一条就保持现状报错——宁可继续循环,也不冒险误杀别的进程(僵尸的家长必须是「本 Lead 目录下的升级器」,路径逐字核对,动手前再核一遍身份防止张冠李戴)。</li>
+      <li><span class="pill green">杀家长是安全的</span>实验证实:升级器被清掉后,下一次服务启动会自动把它重新带起来——不是永久去功能,是让它重生。</li>
+      <li><span class="pill amber">结果才报喜</span>只有服务真起来、接口文件真存在,才发「已自愈」通知;任何中途卡住都发「卡住了」警报。之前这个故障静默烧了 23.5 小时没人知道——修完后同类事件会主动出声。</li>
+      <li><span class="pill amber">立即止血</span>不用等代码合并:运维现在就可以按手册(逐条取证同款)手工清掉两个僵尸的家长,两个 Lead 约 3 分钟内恢复。</li>
+    </ul>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §4 取舍 -->
+  <div class="card" data-sec="s4" data-title="关键取舍与被否方案">
+    <h2>4 · 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>备选方案</th><th>为什么不选</th></tr>
+      <tr><td>等 Codex 官方修(他们的存活判定认不出僵尸,确是他们的 bug)</td><td>该报会报,但不能等——生产每 81 秒在烧。我们在自己可控的一层修,官方将来修好也不冲突。</td></tr>
+      <tr><td>把升级器纳入全舰重启清单,重启时顺手清理</td><td>治标:只有重启才清,循环期间照样卡死;而且为两个 Lead 的私有进程给全舰重启加步骤,越权。</td></tr>
+      <tr><td>加一个常驻巡逻进程盯着僵尸</td><td>违背舰队「拆掉追人型看门狗」的既定方向;把检查挂在每次启动失败的天然重试点上,零新增常驻负担,效果一样。</td></tr>
+      <tr><td>禁用 Codex 的自动升级(这次事故的引信就是一次无预告升级)</td><td>找遍命令面和配置没有找到禁用开关。修复不依赖它:就算升级再闯祸,现在也能 3 分钟自愈。「钉住版本」列为后续课题。</td></tr>
+    </table>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §5 部署 -->
+  <div class="card" data-sec="s5" data-title="部署顺序与验收">
+    <h2>5 · 部署顺序与验收</h2>
+    <ol>
+      <li><b>阶段 0 · 止血(现在就能做)</b>:运维按手册逐条取证后清理两个僵尸家长 → 两个 Lead 各约 3 分钟恢复。验收:接口文件回来了、Lead 连续 5 分钟(超过 3 个循环周期)不再翻重启、Discord 里 @ 它有回话。</li>
+      <li><b>阶段 1-2 · 代码</b>:测试先行(含「误杀防线」的全套反例)→ Codex 代码评审 → PR → 合并后随常规班车部署,Lead 下一圈自动生效。</li>
+      <li><b>阶段 3 · 收尾</b>:全局 codex 指向的固化用既有的专用工具走(带演练模式和回滚);顺带验证 FLY-1892(infra-bot 收发消息双向不通)是否被同时治好——好了就并单,没好就把新证据还给那张单。</li>
+      <li><b>阶段 4 · 上游</b>:把「僵尸骗过存活判定」和复现配方报给 Codex 官方。</li>
+    </ol>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §6 边界 -->
+  <div class="card gray" data-sec="s6" data-title="诚实边界">
+    <h2>6 · 诚实边界 — 这个设计做什么、不做什么</h2>
+    <p><b>做:</b>本次僵尸卡死的止血与根治;同类故障(不管服务将来因何而死)一轮内自愈;卡死/自愈的主动告警;全局 codex 指向的固化收尾。</p>
+    <p><b>不做:</b>① 不修 Codex 官方的判定 bug(报上游);② 不禁自动升级(没找到开关,列后续);③ 不做通用的「Lead 崩溃循环」监控(那属于舰队巡检体系的职责,另有专单);④ 8-21 早上另有两段 30 秒周期的短循环,失败形态不同,<b>不是同一个病</b>,本单不覆盖;⑤ 新服务进程当初「为什么一启动就死」没有日志可考,如实存疑——但修复对任何死因都有效,若再发生,这次会当场自愈并留下告警痕迹供取证。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- 汇总卡 -->
+  <div class="card" id="summaryCard">
+    <h2>页面意见汇总</h2>
+    <div id="summaryBody">(暂无意见——在上面任意小节写下意见后,这里会实时汇总)</div>
+    <div id="copyArea"><button class="btn" id="copyAllBtn" type="button">复制全部意见</button></div>
+    <div class="hint" id="copyHint">复制后整段发给 Tadashi 或贴回 Linear 即可;首行自带「【页面意见汇总】FLY-1955」标记。</div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-1955";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly1955-comment:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly1955-comment:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var summaryBody = document.getElementById("summaryBody");
+  var copyArea = document.getElementById("copyArea");
+  var copyHint = document.getElementById("copyHint");
+
+  function sectionTitle(ta) {
+    var card = ta.closest ? ta.closest(".card") : null;
+    return card && card.getAttribute("data-title") ? card.getAttribute("data-title") : ta.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    for (var i = 0; i < areas.length; i++) {
+      var v = areas[i].value.trim();
+      if (v) parts.push("【" + sectionTitle(areas[i]) + "】\n" + v);
+    }
+    return parts;
+  }
+
+  function fullText() {
+    var parts = collect();
+    if (!parts.length) return "";
+    return MARKER + "\n" + parts.join("\n\n");
+  }
+
+  function chunkText(text) {
+    if (text.length <= CHUNK_LIMIT) return [text];
+    var body = text.slice(MARKER.length + 1);
+    var chunks = [];
+    var per = CHUNK_LIMIT - MARKER.length - 24;
+    var n = Math.ceil(body.length / per);
+    for (var i = 0; i < n; i++) {
+      chunks.push(MARKER + "(第" + (i + 1) + "/" + n + "段)\n" + body.slice(i * per, (i + 1) * per));
+    }
+    return chunks;
+  }
+
+  function renderSummary() {
+    var parts = collect();
+    if (!parts.length) {
+      summaryBody.textContent = "(暂无意见——在上面任意小节写下意见后,这里会实时汇总)";
+    } else {
+      summaryBody.textContent = fullText();
+    }
+    renderCopyButtons();
+  }
+
+  function copyToClipboard(text, btn) {
+    function ok() { btn.classList.remove("fail"); btn.classList.add("ok"); btn.textContent = "已复制 ✓"; setTimeout(function(){ btn.classList.remove("ok"); resetLabel(btn); }, 2000); }
+    function legacy() {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", "");
+      ta.style.position = "fixed"; ta.style.left = "-9999px";
+      document.body.appendChild(ta); ta.select();
+      var done = false;
+      try { done = document.execCommand("copy"); } catch (e) { done = false; }
+      document.body.removeChild(ta);
+      if (done) { ok(); }
+      else { btn.classList.add("fail"); btn.textContent = "复制失败 — 请手动全选上方文本"; copyHint.textContent = "自动复制在这个浏览器里不可用:请用鼠标全选上方汇总文本,手动 Cmd+C。"; }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(ok, legacy);
+    } else { legacy(); }
+  }
+
+  function resetLabel(btn) {
+    btn.textContent = btn.getAttribute("data-label") || "复制全部意见";
+  }
+
+  function renderCopyButtons() {
+    var text = fullText();
+    var chunks = text ? chunkText(text) : [];
+    while (copyArea.firstChild) copyArea.removeChild(copyArea.firstChild);
+    if (chunks.length <= 1) {
+      var b = document.createElement("button");
+      b.className = "btn"; b.type = "button";
+      b.textContent = "复制全部意见"; b.setAttribute("data-label", "复制全部意见");
+      b.addEventListener("click", function () {
+        var t = fullText();
+        if (!t) { b.classList.add("fail"); b.textContent = "还没有意见可复制"; setTimeout(function(){ b.classList.remove("fail"); resetLabel(b); }, 1600); return; }
+        copyToClipboard(chunkText(t)[0], b);
+      });
+      copyArea.appendChild(b);
+    } else {
+      var wrap = document.createElement("div");
+      wrap.className = "chunkbtns";
+      chunks.forEach(function (c, i) {
+        var b = document.createElement("button");
+        b.className = "btn"; b.type = "button";
+        var label = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+        b.textContent = label; b.setAttribute("data-label", label);
+        b.addEventListener("click", function () { copyToClipboard(c, b); });
+        wrap.appendChild(b);
+      });
+      copyArea.appendChild(wrap);
+    }
+  }
+
+  areas.forEach(function (ta) {
+    var k = ta.getAttribute("data-key");
+    var saved = lsGet(k);
+    if (saved) ta.value = saved;
+    ta.addEventListener("input", function () { lsSet(k, ta.value); renderSummary(); });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

@@ -39,7 +39,7 @@ set -euo pipefail
 # re-exec under a modern bash (>=4), which has no such defect and is therefore immune
 # to ANY future byte-layout shift. Self-contained (no launcher / PATH dependency);
 # idempotent via the sentinel; a host with no modern bash warns loudly and proceeds.
-if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+if [ "${BASH_SOURCE[0]}" = "$0" ] && [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
   # Candidates are TRUSTED ABSOLUTE system paths only — never a PATH-resolved `bash`:
   # the production wrapper prepends user-writable dirs (~/.local/bin) to PATH, and even
   # the version probe below EXECUTES the candidate, so a PATH lookup could run a
@@ -126,9 +126,73 @@ roundtable_autocontinue_effective() {
 }
 
 HOME_DIR="${FLYWHEEL_CODEX_TUI_HOME:-}"
-[ -n "$HOME_DIR" ] || die "FLYWHEEL_CODEX_TUI_HOME is required"
-
 CONFIG="$HOME_DIR/config.toml"
+
+# FLY-1955: absolute process primitives are wrapped only to give the hermetic
+# harness deterministic fault-injection seams. Production still invokes the
+# same system tools directly and adds no dependency or resident process.
+fly1955_ps() { /bin/ps "$@"; }
+fly1955_kill() { /bin/kill "$@"; }
+fly1955_sleep() { /bin/sleep "$@"; }
+
+resolve_lead_alert_sh() {
+  if [ -n "${FLYWHEEL_LEAD_ALERT_SH:-}" ]; then
+    printf '%s' "$FLYWHEEL_LEAD_ALERT_SH"
+    return
+  fi
+  local repo_root
+  repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+  printf '%s/scripts/lead-alert.sh' "$repo_root"
+}
+
+emit_lead_alert() {
+  local kind="$1" severity="$2" signature="$3" title="$4" body="$5"
+  if [ -z "${FLYWHEEL_LEAD_ID:-}" ] || [ -z "${FLYWHEEL_PROJECT_NAME:-}" ]; then
+    log "alert skipped: FLYWHEEL_LEAD_ID/FLYWHEEL_PROJECT_NAME unavailable"
+    return 0
+  fi
+  local alert_sh
+  alert_sh="$(resolve_lead_alert_sh)"
+  "$alert_sh" \
+    --lead "$FLYWHEEL_LEAD_ID" \
+    --project "$FLYWHEEL_PROJECT_NAME" \
+    --kind "$kind" \
+    --severity "$severity" \
+    --title "$title" \
+    --body "$body" \
+    --signature "$signature" \
+    || log "alert emit failed (non-fatal): kind=$kind signature=$signature"
+}
+
+emit_zombie_alert() {
+  local outcome="$1" detail="${2:-}"
+  local day
+  day="$(LC_ALL=C date -u +%Y%m%d)"
+  case "$outcome" in
+    recovered)
+      emit_lead_alert \
+        crash_loop warning "fly1955-zombie-recovered|$day" \
+        "Codex daemon zombie recovered" \
+        "FLY-1955 recovered a stale zombie daemon for $HOME_DIR. $detail"
+      ;;
+    stuck)
+      emit_lead_alert \
+        crash_loop severe "fly1955-zombie-stuck|$day" \
+        "Codex daemon zombie recovery stuck" \
+        "FLY-1955 could not safely recover a stale zombie daemon for $HOME_DIR. $detail"
+      ;;
+    *) die "internal error: unknown zombie alert outcome '$outcome'" ;;
+  esac
+}
+
+emit_global_codex_alert() {
+  local global_real="$1" day
+  day="$(LC_ALL=C date -u +%Y%m%d)"
+  emit_lead_alert \
+    bin_integrity_drift warning "fly513-global-codex|$day" \
+    "Global Codex points into a Lead home" \
+    "FLY-513: global codex resolves into $HOME_DIR ($global_real); use the neutral pinned Flywheel Codex install."
+}
 
 # FLY-398 — FULL-ACCESS (= Claude-equal) config: workspace-write + network ON + the
 # project root as the single writable root. The daemon
@@ -287,7 +351,7 @@ ensure_home() {
   # 2. standalone install required for the daemon backend — fail-loud, no auto-install.
   local standalone="$HOME_DIR/packages/standalone/current/codex"
   if [ ! -x "$standalone" ]; then
-    die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME=$HOME_DIR sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes AND restore the neutral global ~/.local/bin/codex symlink — see FLY-259 spike notes + FLY-513)"
+    die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME='$HOME_DIR' CODEX_INSTALL_DIR='$HOME_DIR/.local/bin' sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes; the home-scoped install target must not touch global ~/.local/bin/codex — see FLY-259 spike notes + FLY-513)"
   fi
 
   # FLY-513: warn (non-fatal) if the GLOBAL `codex` on PATH was hijacked INTO this
@@ -306,6 +370,7 @@ ensure_home() {
         log "WARNING (FLY-513): global codex $global_codex resolves INTO this Lead home: $global_real"
         log "  → the standalone updater / Lead flips will churn it and transiently break EVERY runner's codex review gate."
         log "  → restore a neutral pinned global, e.g.: ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex $global_codex"
+        emit_global_codex_alert "$global_real"
         ;;
     esac
   fi
@@ -402,6 +467,249 @@ EOF
   log "home OK: $HOME_DIR"
 }
 
+# FLY-1955 — `codex remote-control start` treats a zombie recorded in
+# app-server.pid as alive, then waits for a control socket that can never exist.
+# These helpers prove that exact shape and authorize one bounded updater reap.
+PID_RECORD_PID=""
+PID_RECORD_START=""
+PROBE_VALUE=""
+IDENTITY_STATE=""
+REAP_OUTCOME="not_proven"
+REAP_OLD_UPDATER_PID=""
+REAP_OLD_UPDATER_LSTART=""
+REAP_OLD_UPDATER_COMMAND=""
+
+read_daemon_pid_record() {
+  local pid_file="$HOME_DIR/app-server-daemon/app-server.pid" parsed
+  [ -f "$pid_file" ] || return 1
+  if ! parsed="$(python3 - "$pid_file" <<'PY' 2>/dev/null
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        value = json.load(f)
+except Exception:
+    sys.exit(1)
+pid = value.get("pid") if isinstance(value, dict) else None
+started = value.get("processStartTime") if isinstance(value, dict) else None
+if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1
+        or not isinstance(started, str) or not started
+        or any(c in started for c in "\r\n\t")):
+    sys.exit(1)
+print(f"{pid}\t{started}")
+PY
+)"; then
+    return 1
+  fi
+  IFS=$'\t' read -r PID_RECORD_PID PID_RECORD_START <<< "$parsed"
+  [ -n "$PID_RECORD_PID" ] && [ -n "$PID_RECORD_START" ]
+}
+
+# Return 0=present, 1=absent, 2=probe error; value is in PROBE_VALUE.
+probe_ps_field() {
+  local pid="$1" field="$2" rc
+  PROBE_VALUE=""
+  if PROBE_VALUE="$(LC_ALL=C fly1955_ps -o "${field}=" -p "$pid" 2>/dev/null)"; then
+    [ -n "$PROBE_VALUE" ] && return 0
+    return 2
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] && [ -z "$PROBE_VALUE" ] && return 1
+  return 2
+}
+
+probe_ps_command() {
+  local pid="$1" rc
+  PROBE_VALUE=""
+  if PROBE_VALUE="$(LC_ALL=C fly1955_ps -ww -o command= -p "$pid" 2>/dev/null)"; then
+    [ -n "$PROBE_VALUE" ] && return 0
+    return 2
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] && [ -z "$PROBE_VALUE" ] && return 1
+  return 2
+}
+
+home_updater_command_matches() {
+  local command="$1"
+  local suffix=" app-server daemon pid-update-loop" executable
+  case "$command" in
+    *"$suffix") executable="${command%"$suffix"}" ;;
+    *) return 1 ;;
+  esac
+  case "$executable" in *[[:space:]]*) return 1 ;; esac
+  case "$executable" in "$HOME_DIR/packages/standalone/"*) return 0 ;; esac
+  return 1
+}
+
+# State for the snapshotted updater: same|absent|changed|error.
+updater_identity_state() {
+  local pid="$1" expected_lstart="$2" expected_command="$3" rc lstart command
+  if probe_ps_field "$pid" lstart; then
+    lstart="$(trim "$PROBE_VALUE")"
+  else
+    rc=$?
+    [ "$rc" -eq 1 ] && IDENTITY_STATE=absent || IDENTITY_STATE=error
+    return 0
+  fi
+  if probe_ps_command "$pid"; then
+    command="$PROBE_VALUE"
+  else
+    rc=$?
+    [ "$rc" -eq 1 ] && IDENTITY_STATE=absent || IDENTITY_STATE=error
+    return 0
+  fi
+  if [ "$lstart" = "$expected_lstart" ] && [ "$command" = "$expected_command" ]; then
+    IDENTITY_STATE=same
+  else
+    IDENTITY_STATE=changed
+  fi
+}
+
+updater_and_child_state() {
+  local updater_pid="$1" updater_lstart="$2" updater_command="$3" daemon_pid="$4" rc ppid
+  updater_identity_state "$updater_pid" "$updater_lstart" "$updater_command"
+  [ "$IDENTITY_STATE" = same ] || return 0
+  if probe_ps_field "$daemon_pid" ppid; then
+    ppid="$(trim "$PROBE_VALUE")"
+    [ "$ppid" = "$updater_pid" ] || IDENTITY_STATE=changed
+  else
+    rc=$?
+    [ "$rc" -eq 1 ] && IDENTITY_STATE=changed || IDENTITY_STATE=error
+  fi
+}
+
+current_zombie_proof_matches() {
+  local daemon_pid="$1" daemon_start="$2" updater_pid="$3" updater_lstart="$4" updater_command="$5"
+  local state lstart ppid
+  [ ! -S "$HOME_DIR/app-server-control/app-server-control.sock" ] || return 1
+  read_daemon_pid_record || return 1
+  [ "$PID_RECORD_PID" = "$daemon_pid" ] && [ "$PID_RECORD_START" = "$daemon_start" ] || return 1
+  if probe_ps_field "$daemon_pid" state; then state="$(trim "$PROBE_VALUE")"; else return 1; fi
+  case "$state" in Z*) ;; *) return 1 ;; esac
+  if probe_ps_field "$daemon_pid" lstart; then lstart="$(trim "$PROBE_VALUE")"; else return 1; fi
+  [ "$lstart" = "$daemon_start" ] || return 1
+  if probe_ps_field "$daemon_pid" ppid; then ppid="$(trim "$PROBE_VALUE")"; else return 1; fi
+  [ "$ppid" = "$updater_pid" ] || return 1
+  updater_identity_state "$updater_pid" "$updater_lstart" "$updater_command"
+  [ "$IDENTITY_STATE" = same ]
+}
+
+reap_zombie_daemon_if_proven() {
+  local sock="$HOME_DIR/app-server-control/app-server-control.sock"
+  local daemon_pid daemon_start state lstart updater_pid updater_lstart updater_command rc i
+  local term_sent=0 updater_gone=0
+  REAP_OUTCOME=not_proven
+  REAP_OLD_UPDATER_PID=""
+  REAP_OLD_UPDATER_LSTART=""
+  REAP_OLD_UPDATER_COMMAND=""
+
+  [ ! -S "$sock" ] || { REAP_OUTCOME=race_self_healed; return 0; }
+  read_daemon_pid_record || return 0
+  daemon_pid="$PID_RECORD_PID"
+  daemon_start="$PID_RECORD_START"
+
+  if probe_ps_field "$daemon_pid" state; then state="$(trim "$PROBE_VALUE")"; else return 0; fi
+  case "$state" in Z*) ;; *) return 0 ;; esac
+  if probe_ps_field "$daemon_pid" lstart; then lstart="$(trim "$PROBE_VALUE")"; else return 0; fi
+  [ "$lstart" = "$daemon_start" ] || return 0
+  if probe_ps_field "$daemon_pid" ppid; then updater_pid="$(trim "$PROBE_VALUE")"; else return 0; fi
+  [[ "$updater_pid" =~ ^[0-9]+$ ]] && [ "$updater_pid" -gt 1 ] || return 0
+  if probe_ps_field "$updater_pid" lstart; then updater_lstart="$(trim "$PROBE_VALUE")"; else return 0; fi
+  if probe_ps_command "$updater_pid"; then updater_command="$PROBE_VALUE"; else return 0; fi
+  home_updater_command_matches "$updater_command" || return 0
+
+  REAP_OLD_UPDATER_PID="$updater_pid"
+  REAP_OLD_UPDATER_LSTART="$updater_lstart"
+  REAP_OLD_UPDATER_COMMAND="$updater_command"
+
+  # Final fresh proof immediately before the first signal. Any drift before
+  # action is a quiet not_proven; after action, uncertainty is action_stuck.
+  current_zombie_proof_matches \
+    "$daemon_pid" "$daemon_start" "$updater_pid" "$updater_lstart" "$updater_command" \
+    || return 0
+
+  if fly1955_kill -TERM "$updater_pid" 2>/dev/null; then
+    term_sent=1
+  else
+    updater_and_child_state "$updater_pid" "$updater_lstart" "$updater_command" "$daemon_pid"
+    if [ "$IDENTITY_STATE" = absent ]; then
+      updater_gone=1
+    else
+      REAP_OUTCOME=action_stuck
+      return 0
+    fi
+  fi
+
+  if [ "$term_sent" -eq 1 ]; then
+    for ((i = 0; i < 10; i++)); do
+      updater_and_child_state "$updater_pid" "$updater_lstart" "$updater_command" "$daemon_pid"
+      case "$IDENTITY_STATE" in
+        absent) updater_gone=1; break ;;
+        same) fly1955_sleep 0.2 ;;
+        changed|error) REAP_OUTCOME=action_stuck; return 0 ;;
+      esac
+    done
+  fi
+
+  if [ "$updater_gone" -eq 0 ]; then
+    updater_and_child_state "$updater_pid" "$updater_lstart" "$updater_command" "$daemon_pid"
+    [ "$IDENTITY_STATE" = same ] || { REAP_OUTCOME=action_stuck; return 0; }
+    if ! fly1955_kill -KILL "$updater_pid" 2>/dev/null; then
+      updater_identity_state "$updater_pid" "$updater_lstart" "$updater_command"
+      [ "$IDENTITY_STATE" = absent ] || { REAP_OUTCOME=action_stuck; return 0; }
+    fi
+  fi
+
+  for ((i = 0; i < 50; i++)); do
+    if probe_ps_field "$daemon_pid" state; then
+      fly1955_sleep 0.2
+    else
+      rc=$?
+      if [ "$rc" -eq 1 ]; then
+        REAP_OUTCOME=reaped
+        return 0
+      fi
+      REAP_OUTCOME=action_stuck
+      return 0
+    fi
+  done
+  REAP_OUTCOME=action_stuck
+}
+
+HOME_UPDATER_COUNT=0
+count_home_updaters() {
+  local output line command
+  HOME_UPDATER_COUNT=0
+  if ! output="$(LC_ALL=C fly1955_ps -ww -axo pid=,command= 2>/dev/null)"; then
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*([0-9]+)[[:space:]]+(.*)$ ]]; then
+      command="${BASH_REMATCH[2]}"
+      if home_updater_command_matches "$command"; then
+        HOME_UPDATER_COUNT=$((HOME_UPDATER_COUNT + 1))
+      fi
+    fi
+  done <<< "$output"
+}
+
+assert_recovery_shape() {
+  local state lstart
+  [ -S "$HOME_DIR/app-server-control/app-server-control.sock" ] || return 1
+  updater_identity_state \
+    "$REAP_OLD_UPDATER_PID" "$REAP_OLD_UPDATER_LSTART" "$REAP_OLD_UPDATER_COMMAND"
+  [ "$IDENTITY_STATE" != same ] && [ "$IDENTITY_STATE" != error ] || return 1
+  read_daemon_pid_record || return 1
+  if probe_ps_field "$PID_RECORD_PID" state; then state="$(trim "$PROBE_VALUE")"; else return 1; fi
+  case "$state" in Z*) return 1 ;; esac
+  if probe_ps_field "$PID_RECORD_PID" lstart; then lstart="$(trim "$PROBE_VALUE")"; else return 1; fi
+  [ "$lstart" = "$PID_RECORD_START" ] || return 1
+  count_home_updaters || return 1
+  [ "$HOME_UPDATER_COUNT" -eq 1 ]
+}
+
 ensure_daemon() {
   # Code review R1 MED-6: default to the STANDALONE binary inside this home —
   # the daemon requires it, and a PATH `codex` (npm install) would fail forever
@@ -417,15 +725,62 @@ ensure_daemon() {
   fi
   # `remote-control start` is idempotent (spike-verified: already-running →
   # status connected). Fail-loud otherwise — the supervisor retries with backoff.
-  CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control start --json \
-    || die "remote-control start failed (home: $HOME_DIR)"
   local sock="$HOME_DIR/app-server-control/app-server-control.sock"
-  [ -S "$sock" ] || die "daemon reported started but control socket missing: $sock"
-  log "daemon OK: $sock"
+  # Codex's updater runs install.sh, whose default BIN_DIR is the real
+  # $HOME/.local/bin. Keep its visible command inside this Lead home so a Lead
+  # update (or an isolated experiment) can never rewrite the global Codex axis.
+  if CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" CODEX_HOME="$HOME_DIR" \
+    "$codex_bin" remote-control start --json; then
+    [ -S "$sock" ] || die "daemon reported started but control socket missing: $sock"
+    log "daemon OK: $sock"
+    return 0
+  fi
+
+  reap_zombie_daemon_if_proven
+  case "$REAP_OUTCOME" in
+    not_proven)
+      die "remote-control start failed (home: $HOME_DIR) (stale-daemon evidence incomplete)"
+      ;;
+    action_stuck)
+      emit_zombie_alert stuck "Updater identity changed, a signal failed, or the zombie was not reaped within 10s."
+      die "remote-control start failed (home: $HOME_DIR) (stale-daemon recovery stuck)"
+      ;;
+    race_self_healed|reaped)
+      # The bounded state machine authorizes exactly one retry. Exit 0 from the
+      # CLI is insufficient: the socket must still exist after the command.
+      if ! CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" CODEX_HOME="$HOME_DIR" \
+        "$codex_bin" remote-control start --json; then
+        [ "$REAP_OUTCOME" = reaped ] \
+          && emit_zombie_alert stuck "The one authorized remote-control retry failed."
+        die "remote-control start failed after stale-daemon recovery (home: $HOME_DIR)"
+      fi
+      if [ ! -S "$sock" ]; then
+        [ "$REAP_OUTCOME" = reaped ] \
+          && emit_zombie_alert stuck "The retry exited 0 but the control socket is absent."
+        die "daemon reported started after stale-daemon recovery but control socket missing: $sock"
+      fi
+      if [ "$REAP_OUTCOME" = reaped ]; then
+        if assert_recovery_shape; then
+          emit_zombie_alert recovered "Control socket, live daemon, and exactly one home-scoped updater verified."
+        else
+          # The Lead can run because the socket is present; preserve service and
+          # page the incomplete postcondition rather than converting recovery
+          # into another crash loop.
+          emit_zombie_alert stuck "The control socket recovered, but updater/daemon postconditions are incomplete."
+        fi
+      fi
+      log "daemon OK: $sock"
+      return 0
+      ;;
+    *) die "internal error: unknown stale-daemon recovery outcome '$REAP_OUTCOME'" ;;
+  esac
 }
 
-case "${1:-}" in
-  ensure-home)   ensure_home ;;
-  ensure-daemon) ensure_daemon ;;
-  *) die "usage: $0 ensure-home|ensure-daemon" ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  [ -n "$HOME_DIR" ] || die "FLYWHEEL_CODEX_TUI_HOME is required"
+  case "${1:-}" in
+    ensure-home)   ensure_home ;;
+    ensure-daemon) ensure_daemon ;;
+    *) die "usage: $0 ensure-home|ensure-daemon" ;;
+  esac
+fi

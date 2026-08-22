@@ -368,6 +368,7 @@ expected_shard_tests = {
         "Test — onboard-shell public install chain",
         "Test — FLY-882 Discord bot token pool",
         "Test — FLY-513 global-codex repoint apply-path",
+        "Test — FLY-1955 Codex daemon zombie recovery",
         "Test — FLY-697 codex-log-guard",
         "Test — FLY-1330 log janitor",
         "Test — FLY-1887 one-shot Codex hard timeout",

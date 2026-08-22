@@ -130,6 +130,8 @@ export function parseCodexLeadTuiRuntimeConfig(
  *     allowlist), so without re-pinning it the home script's `ensure_daemon` would
  *     NOT do stop-before-start and a stale
  *     read-only daemon could survive the flip (pin ⑤ — Codex R1 HIGH-1). Non-secret.
+ *     The governed alert route reuses that same generic bot-token name, so no
+ *     additional secret crosses the runtime→home boundary.
  *   - companion → raw env (byte-compat; no action secrets in play).
  *
  * Every branch sets `FLYWHEEL_CODEX_TUI_HOME` (the home script reads it for CODEX_HOME).
@@ -154,8 +156,15 @@ export function buildTuiDaemonEnv(opts: {
 			}
 		: {};
 	if (profile === "full-access") {
+		const alertChannel = env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID?.trim();
 		return {
 			...buildFullAccessEnv(env),
+			...(alertChannel
+				? {
+						FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: alertChannel,
+						FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "DISCORD_BOT_TOKEN",
+					}
+				: {}),
 			DISCORD_BOT_TOKEN: botToken,
 			FLYWHEEL_CODEX_TUI_HOME: codexHome,
 			// Re-pin the daemon-control flags buildFullAccessEnv strips, so the home
@@ -166,6 +175,14 @@ export function buildTuiDaemonEnv(opts: {
 		};
 	}
 	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome, ...carrierEnv };
+}
+
+export function reportSuccessfulDaemonEnsure(
+	stderr: string | Buffer,
+	log: (message: string) => void,
+): void {
+	const output = String(stderr).trimEnd();
+	if (output) log(output);
 }
 
 // ── demuxed process facade (pure glue — unit-tested) ───────────────────────
@@ -941,17 +958,22 @@ export async function main(
 		);
 	}
 	const ensureDaemon = async () => {
-		await execFileP("/bin/bash", [homeScript, "ensure-daemon"], {
-			env: buildTuiDaemonEnv({
-				profile: config.codexProfile,
-				env,
-				codexHome: config.codexHome,
-				botToken: config.botToken,
-				carrierInstanceId,
-				leadId: config.leadId,
-				projectName: config.projectName,
-			}),
-		});
+		const { stderr } = await execFileP(
+			"/bin/bash",
+			[homeScript, "ensure-daemon"],
+			{
+				env: buildTuiDaemonEnv({
+					profile: config.codexProfile,
+					env,
+					codexHome: config.codexHome,
+					botToken: config.botToken,
+					carrierInstanceId,
+					leadId: config.leadId,
+					projectName: config.projectName,
+				}),
+			},
+		);
+		reportSuccessfulDaemonEnsure(stderr, console.warn);
 	};
 	const supervisor = new DaemonConnectionSupervisor({
 		buildGeneration: buildTuiGeneration(carrierConfig, console),

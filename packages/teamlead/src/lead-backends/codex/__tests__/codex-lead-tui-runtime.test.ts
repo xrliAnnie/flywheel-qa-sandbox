@@ -13,6 +13,7 @@ import {
 	buildTuiDaemonEnv,
 	isTurnlessRolloutError,
 	parseCodexLeadTuiRuntimeConfig,
+	reportSuccessfulDaemonEnsure,
 	requirePersona,
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
@@ -23,6 +24,7 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 			HOME: "/Users/x",
 			PATH: "/bin",
 			DISCORD_BOT_TOKEN: "tok-from-env",
+			FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "alerts-channel",
 			TEAMLEAD_API_TOKEN: "api-tok",
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access", // present in source env
 			SOME_RANDOM_SECRET: "leak-me",
@@ -44,6 +46,18 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
 		// allowlisted Claude-pane env survives.
 		expect(e.TEAMLEAD_API_TOKEN).toBe("api-tok");
+		expect(e.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID).toBe("alerts-channel");
+		expect(e.FLYWHEEL_ALERT_SENDER_TOKEN_ENV).toBe("DISCORD_BOT_TOKEN");
+	});
+
+	it("full-access: stays available when the optional alert route is absent", () => {
+		const e = buildTuiDaemonEnv({
+			...base,
+			profile: "full-access",
+			env: { ...base.env, FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: undefined },
+		});
+		expect(e.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID).toBeUndefined();
+		expect(e.FLYWHEEL_ALERT_SENDER_TOKEN_ENV).toBeUndefined();
 	});
 
 	it("companion: raw env (byte-compat) + home pin", () => {
@@ -67,6 +81,25 @@ describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Code
 				FLYWHEEL_PROJECT_NAME: "growth",
 			});
 		}
+	});
+});
+
+describe("reportSuccessfulDaemonEnsure", () => {
+	it("keeps successful self-heal output in the Lead log", () => {
+		const log = vi.fn();
+		reportSuccessfulDaemonEnsure(
+			Buffer.from("[codex-lead-tui-home] daemon OK: /tmp/control.sock\n"),
+			log,
+		);
+		expect(log).toHaveBeenCalledWith(
+			"[codex-lead-tui-home] daemon OK: /tmp/control.sock",
+		);
+	});
+
+	it("does not add an empty log line", () => {
+		const log = vi.fn();
+		reportSuccessfulDaemonEnsure("", log);
+		expect(log).not.toHaveBeenCalled();
 	});
 });
 
