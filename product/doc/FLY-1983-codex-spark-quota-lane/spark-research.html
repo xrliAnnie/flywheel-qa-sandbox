@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex Spark 那条空着的额度线 — FLY-1983(第二版)</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;
+margin-right:6px;vertical-align:2px}
+.t-a{background:#e3f7e8;color:#1a7f37}
+.t-b{background:#e5f0ff;color:#0a53c4}
+.t-c{background:#fff2e0;color:#9a5b00}
+.no{color:var(--red);font-weight:700}
+.yes{color:var(--green);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -84px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 84px}h1{font-size:23px}.lead{font-size:17px}
+.bar{margin:20px -13px -84px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Codex Spark:那条空着的额度线</h1>
+
+<p class="sub">FLY-1983 · <b>这一版比你上次看的那页多了三块</b>:① 你问的 prototype 那格的判决 ② 「不支持多模态」核查结果 ③ 结论被降级成「一半已立、一半待定」—— 上一版那句话说得比证据硬,已更正</p>
+
+<div class="card red">
+<p class="kicker">先说结论</p>
+<p class="lead">当<u>决策者</u>不行 —— 这半句<b>立得住</b>。<br>当<u>执行器</u>可以 —— 这半句<b>还没立</b>,而且它卡在第 03 段那道闸上。</p>
+<p><b>⚠️ 这里我要先自曝一处,因为它正好是我这份研究里最想提醒你的那件事。</b>我原本把结论压成一句好记的话:「它当执行器可以,当决策者不行」。Honey Lemon 指出这句话有洞 —— <b>他是对的</b>:</p>
+<div class="scroll"><table>
+<tr><th>半句</th><th>成色</th><th>靠什么撑</th></tr>
+<tr><td><b>「当决策者不行」</b></td><td class="yes">✅ 已立</td><td>多路证据 + 我们自己的流程拆解</td></tr>
+<tr><td><b>「当执行器可以」</b></td><td style="color:var(--amber);font-weight:700">⚠️ 待定</td><td>只有<b>一条</b>网上单个用户的说法</td></tr>
+</table></div>
+<p>更要命的是:第 03 段那条待核报告说的失败(<b>给了计划还不照做、中途停下、跳过测试</b>)—— <b>全都发生在「执行」那一半</b>。也就是说,<b>唯一直接打脸「当执行器可以」的那条,被我那句话收进了它自己的安全区。</b></p>
+<p class="quote"><b>所以正确的说法是:「当决策者不行」现在就能说;「当执行器可以」要等第 03 段那道闸开了才能说。<br>那道闸和这句结论,是同一个未知的两面。</b></p>
+<p><b>⭐ 而这件事本身值得你记一条</b>(它比 Spark 活得久):<b>一句好记的结论,是最容易被引用、也最容易在压缩中丢掉成色的那种句子。</b>我在同一份报告里刚写过「压缩时最先掉的是限定词」,然后<b>当场就在自己的标题上犯了一次</b>。</p>
+<p>另外一层结论不受这个洞影响,因为它靠的是立得住的那半句:<b>我们买不到「只要执行那一步」</b> —— 它擅长的是「一个环节里的某一步」,而我们绑模型的粒度是「整个环节」,<b>每个环节都把执行和决策打包在同一个模型上</b>。<b>QA 是纯决策岗</b>(产出物就是一个「过/不过」的判决)⇒ 最不合适。逐格证据在第 05 段。</p>
+<p><b>而且「空着」本身也要打折:</b>那张截图说的是<b>余量</b>,不说<b>这桶能撑多久</b> —— <b>空着的可能不是一桶油,是一杯</b>(第 02 段,没人量过)。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="结论 · 两半成色不同" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">01 · 核你的第一条印象</p>
+<h2>「它好像不支持多模态」——<span class="yes">你是对的</span></h2>
+<p>而且我拿到的是一手来源,OpenAI 官方开发者账号原话:</p>
+<p class="quote">Codex-Spark is <b>currently text-only</b> with a 128k context window. We'll introduce more capabilities — including larger models, longer context lengths, and <b>multimodal input</b> — as we learn from our first production deployment.</p>
+<p>三件事要一起说,少一件都会误导:</p><ul>
+<li><b>今天成立。</b>我另外查的 8 月各来源仍然说纯文本,没有任何来源说它已经能看图了。</li>
+<li>⭐ <b>但这条限制有保质期</b> —— 多模态是 OpenAI <b>明说要加</b>的三件事之一。所以「不能看图」是<b>它当前的状态</b>,不是永久属性,全文一律标「按 8 月的状态」。</li>
+<li>⚠️ <b>墙在模型,不在我们的工具。</b>我查了本机:我们的 Codex 命令行<b>自己是有「附图片」这个入口的</b>。也就是说递图给它这条路是通的 —— 那么问题就变成:<b>递过去之后它是报错,还是<u>假装没看见</u>?</b></li>
+</ul>
+<p><b>这个问题我没测。</b>在自动流水线里差别是决定性的:报错是响的,假装没看见是哑的 —— 哑的那种会让下游以为「它已经看过截图了」。⛔ 测出来之前不许假设它会报错。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="01 多模态(你的印象成立)" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">02 · 这条线靠不靠得住</p>
+<h2>「空着」值多少?—— 四件事,第一件打的是前提</h2>
+<ul>
+<li><b>🔴 ① 它可能烧得很快 —— 这一条打的是这张单的立项前提。</b>你给的材料评论区有一手用户说「这个额度<b>消耗飞快</b>」;它每秒 1000+ 字符块。那张截图说的是<b>余量</b>,不说<b>能撑多久</b> ⇒ <b>「空着」不等于「经得起用」</b>。这不是补细节,<b>它反驳的是「这里有一条闲置产能可以拿来减压」这个前提本身</b>。⚠️ <b>没人量过,我也没量。</b><span class="tag t-c">社区</span></li>
+<li><b>② 官方书面保留随时收窄它的权利。</b>原话是「由一条单独的额度线管理 —— <b>这条线会按需求变动</b>」。它现在宽,不是因为被承诺宽,是因为现在没人抢。<span class="tag t-b">官方</span></li>
+<li><b>③ 有报告说主线烧完时它会被一起挡住。</b>用户看到主线 0% 剩余、Spark 还剩 55%,界面照样锁死。<b>而我们的「实现」环节已经在重度烧主线</b>(近 60 天 414 场)—— 主线烧完在我们这儿是常态,恰好是它也躺下的时刻。<span class="tag t-c">社区</span></li>
+
+<li><b>④ 能碰它的号只有两个。</b>我解开五个 Codex 账号看了:实际是 2 个 Pro + 1 个 ProLite + 2 个同邮箱的过期快照,<b>不是规则文件里写的 3 Plus + 2 Free</b>。Spark 只有 Pro 能用 ⇒ 我们「撞限就换号」的保护对它<b>不生效</b>。<span class="tag t-a">我实测的</span></li>
+</ul>
+<div class="cmt"><label>这段的意见</label><textarea data-s="02 这条线靠不靠得住" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">03 · 你给的材料翻出来的</p>
+<h2>🔴 一条<u>待核的报告</u>(不是结论):有人报告它跳过了写给它的规矩</h2>
+<p>你给我的三份材料里,有一份是别人用了 7 天、每天 5 小时以上的体验报告。里面有两句话,是这整份研究里对我们<b>最要命</b>的:</p>
+<p class="quote">「<b>经常跳过 test:我在 agents.md 里写了 TDD,结果它还是爱写完就跑。</b>」<br>「给过详细规格和计划,但<b>服从性一般,中途还会停止</b>。」</p>
+<p><b>为什么这一条比「它推理弱」严重得多:</b></p>
+<p>我们<b>整套 Runner 的行为约束,就是靠给它一份写好规矩的文档、逐字塞进它的系统提示词</b>。QA 要跑真的端到端测试、没跑的要点名说没跑、通过之前要重新拉一次代码;实现要先写测试 —— <b>这些规矩全都只写在那份文档里,运行时没有任何东西在强制执行,全靠模型自己遵守。</b></p>
+<p class="lead" style="margin-top:10px"><b>如果</b>一个模型系统性不遵守这类规矩,那在我们这儿就不是「做得差一点」,是<u>那份规矩对它整体失效</u> —— 它会跑完、会报成功,而那些纪律一条都没生效,<b>从外面看不出来</b>。</p>
+<p style="margin-top:8px"><b>而且不止是干活的纪律。</b>我们对任何模型的<b>全部</b>控制手段都是<b>写进去的文字</b> —— 角色契约、规则包、文档流程指令、以及那份「只有你能批准」的合同,<b>全是</b>。⇒ 所以这件事一旦成立,<b>就不是质量问题,是治理问题</b>。</p>
+<p class="note"><b>成色说清楚:</b>这是单个用户的说法、2 月的版本,<b>我没有复现</b>。但它和另一份材料评论区<b>最高赞</b>的那条独立对上了:「输出的东西一堆 bug,<b>耗费更多的高级模型去修 bug</b>」—— 也就是<b>净负收益</b>。<br>(同一条下面,笔记作者回了个相反的实测:「让强模型定方案、Spark 执行还不错,30 多轮没问题」。<b>两边我都摆出来,不替你选。</b>不过注意作者那个用法是<b>人定方案、它只执行</b>,不是让它自己跑。)</p>
+<div class="note" style="margin-top:8px"><b>🔴 但请注意这一格的性质 —— 它是一道【开工闸】,不是一条【关于 Spark 的结论】。</b><br>
+现在的证据是:<b>单个用户、2 月的版本、我没有复现</b>。它撑得起「<b>先别建</b>」,撑不起「<b>它就是这样</b>」。<br>
+这两句话长得很像,<b>而只有后者会被下一个人当成事实去引用</b> —— 所以我全文没有写成后者。<br>
+⇒ 要让它变硬,需要的是<b>我们自己跑一次</b>(协议已经写死冻结了);<b>再找第三条同类的网上说法不会让它变硬,只会让它看起来变硬。</b>⛔ 现在还不能跑 —— 它和今晚另一件事共用同一条 Codex 通道,时机 Honey Lemon 去清。</div>
+<div class="cmt"><label>这段的意见(尤其:这条要不要先去核)</label><textarea data-s="03 待核:有人报告它跳过规矩" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">04 · 你点名要的那一条</p>
+<h2>🔴 它做不好什么</h2>
+<div class="scroll"><table>
+<tr><th>做不好的形态</th><th>具体表现</th></tr>
+<tr><td><b>(待核)有人报告它跳过写给它的规矩</b></td><td>见上一段 —— <b>若成立</b>,在我们这儿是形态级问题。<b>未复现</b></td></tr>
+<tr><td>改动横跨多个文件、多个步骤</td><td>推理深度明显弱于完整版和 Claude</td></tr>
+<tr><td>安全相关的代码</td><td>登录流程、加密、输入校验上有<b>明确的质量回退</b></td></tr>
+<tr><td>架构判断</td><td>划系统边界、重构有状态的东西</td></tr>
+<tr><td>指挥工具 / 开浏览器 / 操作电脑</td><td>路由指南直接写:这类活<b>换别的模型</b></td></tr>
+<tr><td>长时间自己跑</td><td>「它不是设计来开沙箱、跑测试、迭代、自己把改动交出去的」</td></tr>
+<tr><td>按格式输出</td><td>复杂任务下会<b>把调用格式写错</b></td></tr>
+<tr><td>要看很多东西才能判断</td><td>128k 上限,而且不能看图</td></tr>
+</table></div>
+<p>其中三行不是「差一点」,是<b>形态上不兼容</b>:</p>
+<ul>
+<li><b>(待核)跳过写给它的规矩</b> —— 若成立,失效的是我们约束它的整个手段,不是它某一次的输出质量。</li>
+<li><b>把调用格式写错</b> —— 在一条靠工具调用推进的流水线里,失败方式是<b>卡住或跑偏</b>,不是「答得差一点」。</li>
+<li><b>不能看图</b> —— 任何要看截图、看渲染结果的活,它<b>物理上做不了</b>(按 8 月的状态)。</li>
+</ul>
+<div class="cmt"><label>这段的意见</label><textarea data-s="04 它做不好什么" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">05 · 检验你的两个假设</p>
+<h2>QA:<span class="no">不成立</span> &nbsp;·&nbsp; prototype:<span style="color:var(--amber);font-weight:700">对了一半</span></h2>
+
+<p><b>先更正一个我在 issue 里看到的前提:</b></p>
+<p class="note">你写的那个 <code>models.json</code> 里的 QA 设置,<b>全仓没有任何代码在读它</b>(源码、脚本、连线上跑的构建产物我都扫了,零命中)。改它不会有任何效果。真正决定 QA 用什么模型的地方在别处,而且写的是 <b>Opus 5</b>。</p>
+
+<h2 style="margin-top:14px">① QA —— 不成立</h2>
+<p>生产数据(近 60 天,<span class="tag t-a">我实测的</span>):约 <b>447 场</b> QA,平均 <b>6–10 小时</b>;<b>34%</b> 用的是 1M 那一档。合同里还写死要开真浏览器截证据、起隔离房、跑真 Discord、产出一页给你看的报告。</p>
+<div class="scroll"><table>
+<tr><th>它明确做不好的</th><th>QA 恰好必须做的</th></tr>
+<tr><td>指挥工具 / 开浏览器</td><td>开真浏览器做你那侧的操作、截证据</td></tr>
+<tr><td>长时间自己跑</td><td>起隔离房、驱动真 Runner、跨小时多轮</td></tr>
+<tr><td>格式会写错</td><td>整条流水线靠结构化调用推进</td></tr>
+<tr><td>不能看图</td><td>截图证据 / 渲染面验收</td></tr>
+<tr><td>128k</td><td>34% 的场次要 1M</td></tr>
+<tr><td>安全代码质量回退</td><td>QA 正是最后一道拦安全问题的关</td></tr>
+</table></div>
+<p><b>六条,条条对撞。</b>而且 <b>QA 是我们抓「别的环节做错了」的那道网</b> —— 换成更小的模型,失败方式不是变慢,是<b>它漏放东西过去,而且没人会知道</b>。</p>
+<p><b>但你的直觉里有对的一半:</b>你说「QA 比较清楚」,指的是<b>判据清楚</b> —— 这本身是对的。被挑错的是另一个属性:<b>判据清楚 ≠ 工作简单</b>。恰恰相反,判据清楚、工作又难,正是我们把最强模型放在这儿的原因。</p>
+
+<h2 style="margin-top:18px">② prototype —— 拆开之后,两半的答案是相反的</h2>
+<p>我查了它实际长什么样(定假设 → 搭最便宜的原型 → 给你体验并<b>等你回话</b> → 你说哪不对就改 → 判「做不做得成」),逐步判:</p>
+<div class="scroll"><table>
+<tr><th>这个环节内部</th><th>形态</th><th>它行不行</th></tr>
+<tr><td>定假设 + 定成功判据</td><td>想清楚要验什么</td><td class="no">❌ 全流程最需要推理的一步</td></tr>
+<tr><td><b>搭最便宜的原型(手跑一次 / 一次性脚本)</b></td><td><b>短、硬编码、丑无所谓、写完就扔</b></td><td class="yes">✅ 正是它的形状</td></tr>
+<tr><td>搭静态假界面</td><td>视觉产物</td><td>⚠️ 码写得出,但<b>它看不见自己做出来什么样</b></td></tr>
+<tr><td>给你体验 + 开门等你</td><td>出图 + 工具链 + 长时间等待</td><td class="no">❌</td></tr>
+<tr><td>你指着说「这儿不对」→ 改</td><td>你若贴截图</td><td class="no">❌ 读不了图</td></tr>
+<tr><td>判「做不做得成」</td><td>判断 + 建单</td><td class="no">❌ 见下</td></tr>
+</table></div>
+<p><b>⭐ 你这次的直觉比 QA 那次准得多,而且准在两个真的地方:</b></p>
+<ul>
+<li>「搭最便宜的原型」<b>看起来</b>正是它的形状 —— 你给的材料里那份路由笔记的<b>优先清单第 3 条就是「小工具和原型」</b>,你、我、材料三方一致。<br>⚠️ 但这一半<b>待定</b> —— 见本页最上面那张成色表。</li>
+<li>prototype <b>判错的代价确实低</b>,而且失败是<b>响</b>的 —— 判官是你本人,你当场就在看。这和 QA 完全不同。</li>
+</ul>
+<p class="lead" style="margin-top:12px">🔴 但这个环节真正的产出物不是那段码,是一个「<u>这条路走不走得通</u>」的判决。</p>
+<p>原型写错当场看得见;<b>但「走得通」判错不会当场响</b> —— 它一路传到工程,投进一整轮才发现。而做那个判断要的恰恰是它最弱的。<br><b>⇒ 诚实答案:</b>「判走不走得通」= <b>确定</b>不该给它;「写那段扔掉的码」= 看起来最贴合,但<b>这一半还没立</b>(第 03 段那道闸,而那条报告说的正是它执行时不照做)。<b>而这两件今天是同一个环节、同一个模型。</b></p>
+<div class="cmt"><label>这段的意见(尤其:两个判决你同不同意)</label><textarea data-s="05 QA 与 prototype 两个假设" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">06 · 你给的三份材料</p>
+<h2>它们改了什么</h2>
+<p class="note">⚠️ 顺带:一度以为你这几条链接取不到、要请你补截图。<b>不用了 —— 三条正文我都取到了</b>(重验过两次)。<b>别为这个花时间。</b></p>
+<p><b>印证了</b>四条我独立查到的(「人在环的高速执行器」·优先清单含「小工具和原型」·不建议清单含「视觉还原」「最终代码审查」·路由四条件)。<b>提出了我原本没有的两个角度</b>,都<b>未核</b>、只当成必须回答的问题:它可能<b>跳过规矩</b>(第 03 段)· 它<b>烧得快</b>(第 02 段)。还有一条<b>削弱我自己</b>论据的也照录了:「用速度换上下文反复扫大目录」⇒「128k 太小」只在「一次要吃下全部上下文」时成立。</p>
+<p><b>⚠️ 正反都要看。</b>评论区最高赞是负面的(「一堆 bug,耗费更多的高级模型去修」),但<b>笔记作者本人有一条相反的实测</b>:「让 sol 做方案、<b>spark 执行</b>还不错,30 多轮对话没出问题」。<br><b>读法:</b>负面全集中在「<b>让它自己做决定 / 自己跑完</b>」,唯一那条正面用法恰好是「<b>人定方案、它只执行</b>」⇒ <b>正反指向同一条线,不是五五开。</b></p>
+<p style="font-size:13.5px;color:#4a4a4f">逐条「材料说什么 / 我核到什么」和全部六条评论原文在 <code>research.md</code> 第 F 节 —— <b>那是给查我工作的人看的,你不用读。</b>⛔ 这份研究没有任何一条结论是只靠这三份材料成立的。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="06 你给的三份材料" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">07 · 它对你真正有用的地方</p>
+<h2>你自己用,今天就能用</h2>
+<p><b>你自己开着 Codex 改东西的时候用它。</b>不用改 Flywheel 一个字节,不用任何人拍板,不用排期 —— 你在场、反馈以秒计、错了当场看见、当场能换回大模型。<b>这条额度线目前唯一确定划算的用法就是这个。</b></p>
+<p style="margin-top:8px">流水线里的用法全卡在<b>粒度</b>上:买模型的最小单位是「一整个环节」。造那个接口是新工程不是接线 —— <b>而且第 03 段那道闸没开之前不该动</b>:那种接口也是靠规矩约束的,而「它执行得好」这半句本身就等着那道闸。</p>
+<p style="margin-top:10px"><b>⭐ 顺带留下两条比这件事活得久的规矩,以后都用得上:</b></p>
+<ul style="margin-bottom:4px">
+<li><b>判断某个环节能不能换便宜模型,看那个环节的失败会不会【当场响】。会响的可以试;不响的,省下来的钱由下游赔。</b></li>
+<li><b>任何来自厂商路线图的限制都要带日期</b>(比如「不能看图」= 按 2026-08 的状态),否则半年后它会被当成永久属性引用。</li>
+</ul>
+<div class="cmt"><label>这段的意见</label><textarea data-s="07 真正有用的地方 + 两条通则" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">08 · 需要你拍的</p>
+<h2>四个决定,我不替你定</h2>
+<div class="scroll"><table>
+<tr><th>#</th><th>决定</th><th>我的建议</th><th>为什么要你拍</th></tr>
+<tr><td>D1</td><td>QA 环节换不换 Spark</td><td class="no">不换</td><td>QA 用什么模型是<b>你定过的策略</b>,不是配置项</td></tr>
+<tr><td>D1b</td><td>prototype 环节换不换</td><td class="no">整个环节不换</td><td>你直觉里对的那一半(写扔掉的原型码)<b>今天买不到</b> —— 要不要为它造接口是投资决定</td></tr>
+<tr><td>D2</td><td>这个方向就此结案吗</td><td><b>暂时结案</b>,留两个待核</td><td>要不要继续投研究时间,是你的优先级</td></tr>
+<tr><td>D3</td><td>将来若要混用,接受「按环节固定绑模型」这个形态吗</td><td class="yes">接受</td><td>长期形态选择。好消息:我们基建已经是这个形态</td></tr>
+</table></div>
+<p style="margin-top:12px"><b>两个待核(都很便宜,不用专门排期):</b></p>
+<ul>
+<li>🔴 <b>先核那条报告(开工闸)</b> —— 给它一份带一条<b>机械可判</b>规矩的真任务(例:任何情况下先写测试),数它服从没服从。⛔ 只问它「你知道要先写测试吗」<b>不算核</b> —— <b>知道和做到是两次不同的测量</b>,必须造一个<b>它想违反的处境</b>。判据已经写死冻结,免得跑完再挑一个好看的判据。⛔ 现在不跑(和今晚另一件事撞同一条通道)。</li>
+<li><b>再核「主线烧完它是否也被挡」</b> —— 下次主线烧到 0 时顺手试一次。时机会自然出现,不用制造。若也被挡 ⇒ 这条线在我们负载下零减压价值,方向可以彻底结案。</li>
+</ul>
+<div class="cmt"><label>这段的意见 / 你的决定</label><textarea data-s="08 四个决定" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card">
+<p class="kicker">09 · 诚实边界</p>
+<h2>我没做到 / 没验证的</h2>
+<p>⚠️ <b>第二轮之后这个清单变长了,不是变短了</b> —— 你给的材料提出了两个我原本没有的角度。</p>
+<div class="scroll"><table>
+<tr><th>项</th><th>状态</th></tr>
+<tr><td><b>它遵不遵守写给它的规矩</b></td><td>单个用户的说法、2 月版本,<b>我没复现</b>。但它是全文最要命的一条 ⇒ 待核第一优先</td></tr>
+<tr><td>主线烧完它是否也被挡</td><td>社区报告,<b>没在我们机器上复现</b></td></tr>
+<tr><td>递一张图给它是报错还是假装没看见</td><td><b>没测。</b>假装没看见会造成「它已经看过截图了」的假象</td></tr>
+<tr><td>那条 5 小时线按我们的负载能撑多久</td><td><b>没人量过,我也没量。</b></td></tr>
+<tr><td>我们哪个号真能调用它</td><td><b>只从账号等级标签推的,没实调。</b>7 月有过「标签和实际权限不符」的先例</td></tr>
+<tr><td>Spark 实际跑我们的活表现如何</td><td><b>没测过。</b>全文关于「它做我们的活会怎样」都是<b>推</b>的</td></tr>
+</table></div>
+<p style="margin-top:8px">这六条我<b>一条都没跑</b> —— 都要真跑一次 Spark、会碰共享的 Codex 状态,不在我这一轮的范围里。<b>点名列出来,不是悄悄略过。</b></p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="09 诚实边界" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="note" style="margin-top:20px">
+<b>怎么回我 —— 通过的话,下面三种任选一种,系统只认这三种:</b>
+<ul style="margin:8px 0 8px">
+<li>在卡片上点 <b>✅</b></li>
+<li>回复卡片,内容<b>逐字</b>是 <code>approve</code></li>
+<li>回复卡片,内容<b>逐字</b>是 <code>look good to me</code></li>
+</ul>
+⛔ <b>别用下面那个复制按钮来表示通过</b> —— 它会自动加一行前缀,系统会把带前缀的回复判成「打回」,而不是通过。<br>
+<b>如果有意见</b>:在上面各段写完 → 点下面的按钮复制 → 粘回 issue。<b>页面上的字不会自己传给我,必须粘回来我才收得到。</b>
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空</button>
+<span class="status" id="st">还没写意见</span>
+</div>
+<textarea id="dump" readonly aria-label="复制失败时的手动复制区"></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1983";
+var LIMIT = 1800;
+var KEY = "fly1983-spark-notes-v2";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写，没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制（共 " + cs.length + " 段，每段都要贴）"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制（共 " + cs.length + " 段，都要贴回 issue）"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    })["catch"](function(){ showManual(text, manualMsg); });
+    return;
+  }
+  showManual(text, manualMsg);
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>
