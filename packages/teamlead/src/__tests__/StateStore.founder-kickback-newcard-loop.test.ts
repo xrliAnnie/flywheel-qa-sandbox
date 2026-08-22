@@ -228,6 +228,7 @@ async function materializeCard(
 			commDbPath,
 			leadId: "flywheel-eng-lead",
 			threadId: "thread-1",
+			preflight: async () => ({ ok: true }),
 			postCard: async () => ({ messageId }),
 			now: () => "2026-08-14T02:10:00.000Z",
 		},

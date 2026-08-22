@@ -404,6 +404,7 @@ export interface AlertMetadata {
 			| "ship_ready_delivery_failed"
 			| "gate_carrier_unbound"
 			| "gate_materialization_stuck"
+			| "workflow_gate_origin_preflight_terminal"
 			| "card_void_stuck"
 			| "founder_input_deadletter"
 			| "founder_rework_round_high"

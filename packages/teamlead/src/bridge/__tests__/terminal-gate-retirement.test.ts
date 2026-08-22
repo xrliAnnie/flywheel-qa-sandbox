@@ -413,6 +413,7 @@ describe("terminal gate retirement", () => {
 					commDbPath: commPath,
 					leadId: "flywheel-eng-lead",
 					threadId: "thread-1",
+					preflight: async () => ({ ok: true }),
 					postCard: async () => ({ messageId: "card-1" }),
 					now: () => "2026-08-10T04:48:36.000Z",
 				},

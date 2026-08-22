@@ -14,6 +14,115 @@ afterEach(() => {
 });
 
 describe("workflow gate materializer", () => {
+	it("fails before CommDB question and POST intent until origin preflight passes", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-land-gate-origin-"));
+		roots.push(root);
+		const commPath = join(root, "comm.db");
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-origin",
+			issueId: "FLY-1757",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		store.ensureWorkflowGateHolder({
+			runId: "run-origin",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: "9".repeat(40),
+			sourceExecutionId: "qa-origin",
+			questionId: "workflow-gate-origin",
+			now: "2026-08-21T20:00:00.000Z",
+		});
+		const preflight = vi
+			.fn()
+			.mockResolvedValueOnce({
+				ok: false,
+				reason: "workflow_gate_origin_probe_head_mismatch",
+			})
+			.mockResolvedValue({ ok: true });
+		const postCard = vi.fn(async () => ({ messageId: "origin-card" }));
+		const deps = {
+			store,
+			commDbPath: commPath,
+			leadId: "flywheel-eng-lead",
+			threadId: "discord-thread-1",
+			preflight,
+			postCard,
+			now: () => "2026-08-21T20:01:00.000Z",
+		};
+
+		await expect(
+			materializeWorkflowGateHolder(deps, "workflow-gate-origin"),
+		).resolves.toEqual({
+			ok: false,
+			reason: "workflow_gate_origin_probe_head_mismatch",
+		});
+		expect(postCard).not.toHaveBeenCalled();
+		expect(
+			store.getCurrentWorkflowGateHolderByQuestionId("workflow-gate-origin"),
+		).toMatchObject({
+			materialization_stage: "question_intent",
+			card_post_intent_seq: 0,
+		});
+		expect(
+			await materializeWorkflowGateHolder(deps, "workflow-gate-origin"),
+		).toMatchObject({ ok: true, cardMessageId: "origin-card" });
+		expect(
+			await materializeWorkflowGateHolder(deps, "workflow-gate-origin"),
+		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(preflight).toHaveBeenCalledTimes(2);
+		expect(postCard).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it("does not preflight a card that was already posted", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-land-gate-posted-"));
+		roots.push(root);
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-posted",
+			issueId: "FLY-1757",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		store.ensureWorkflowGateHolder({
+			runId: "run-posted",
+			gateNodeId: "founder_gate",
+			attempt: 1,
+			headSha: "8".repeat(40),
+			sourceExecutionId: "qa-posted",
+			questionId: "workflow-gate-posted",
+			now: "2026-08-21T20:00:00.000Z",
+		});
+		store.advanceWorkflowGateHolderMaterialization({
+			questionId: "workflow-gate-posted",
+			stage: "card_posted",
+			cardMessageId: "existing-card",
+			now: "2026-08-21T20:01:00.000Z",
+		});
+		const preflight = vi.fn(async () => ({
+			ok: false as const,
+			reason: "must_not_run",
+		}));
+
+		await materializeWorkflowGateHolder(
+			{
+				store,
+				commDbPath: join(root, "comm.db"),
+				leadId: "flywheel-eng-lead",
+				threadId: "discord-thread-1",
+				preflight,
+				postCard: vi.fn(),
+				now: () => "2026-08-21T20:02:00.000Z",
+			},
+			"workflow-gate-posted",
+		);
+
+		expect(preflight).not.toHaveBeenCalled();
+		store.close();
+	});
+
 	it("converges a deterministic question and one current founder card", async () => {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-land-gate-"));
 		roots.push(root);
@@ -41,6 +150,7 @@ describe("workflow gate materializer", () => {
 			commDbPath: commPath,
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
+			preflight: vi.fn(async () => ({ ok: true as const })),
 			postCard: async (input: { content: string }) => {
 				posts += 1;
 				cardContent = input.content;
@@ -140,6 +250,7 @@ describe("workflow gate materializer", () => {
 			commDbPath: join(root, "comm.db"),
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
+			preflight: vi.fn(async () => ({ ok: true as const })),
 			postCard,
 			scanCard,
 			reconcileNotBeforeMs: 0,
@@ -158,6 +269,7 @@ describe("workflow gate materializer", () => {
 			cardMessageId: "discord-reconciled-1",
 		});
 		expect(postCard).toHaveBeenCalledTimes(1);
+		expect(deps.preflight).toHaveBeenCalledTimes(1);
 		expect(scanCard).toHaveBeenCalledTimes(1);
 		expect(
 			store
@@ -201,6 +313,7 @@ describe("workflow gate materializer", () => {
 			commDbPath: join(root, "comm.db"),
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
+			preflight: vi.fn(async () => ({ ok: true as const })),
 			postCard,
 			scanCard,
 			reconcileNotBeforeMs: 0,
@@ -304,6 +417,7 @@ describe("workflow gate materializer", () => {
 			commDbPath: join(root, "comm.db"),
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
+			preflight: vi.fn(async () => ({ ok: true as const })),
 			postCard,
 			scanCard,
 			reconcileNotBeforeMs: 0,
@@ -327,6 +441,7 @@ describe("workflow gate materializer", () => {
 			await materializeWorkflowGateHolder(deps, "workflow-gate-no-effect"),
 		).toMatchObject({ ok: true, cardMessageId: "card-retry" });
 		expect(postCard).toHaveBeenCalledTimes(2);
+		expect(deps.preflight).toHaveBeenCalledTimes(2);
 		expect(scanCard).toHaveBeenCalledTimes(2);
 		store.close();
 	});
@@ -375,6 +490,7 @@ describe("workflow gate materializer", () => {
 			commDbPath: join(root, "comm.db"),
 			leadId: "flywheel-eng-lead",
 			threadId: "discord-thread-1",
+			preflight: vi.fn(async () => ({ ok: true as const })),
 			postCard,
 			scanCard,
 			reconcileNotBeforeMs: 0,
@@ -395,6 +511,8 @@ describe("workflow gate materializer", () => {
 	});
 
 	it("caps durable POST intents at three", async () => {
+		const root = mkdtempSync(join(tmpdir(), "flywheel-land-gate-budget-"));
+		roots.push(root);
 		const store = await StateStore.create(":memory:");
 		store.createWorkflowRun({
 			runId: "run-budget",
@@ -438,6 +556,24 @@ describe("workflow gate materializer", () => {
 			ok: false,
 			reason: "workflow_gate_card_post_budget_exhausted",
 		});
+		const preflight = vi.fn(async () => ({ ok: true as const }));
+		expect(
+			await materializeWorkflowGateHolder(
+				{
+					store,
+					commDbPath: join(root, "comm.db"),
+					leadId: "flywheel-eng-lead",
+					threadId: "discord-thread-1",
+					preflight,
+					postCard: vi.fn(async () => ({ kind: "no_effect" as const })),
+				},
+				"workflow-gate-budget",
+			),
+		).toEqual({
+			ok: false,
+			reason: "workflow_gate_card_post_budget_exhausted",
+		});
+		expect(preflight).not.toHaveBeenCalled();
 		store.close();
 	});
 
@@ -484,6 +620,7 @@ describe("workflow gate materializer", () => {
 					commDbPath: join(root, "comm.db"),
 					leadId: "flywheel-eng-lead",
 					threadId: "discord-thread-1",
+					preflight: vi.fn(async () => ({ ok: true as const })),
 					postCard: vi.fn(async () => {
 						throw new Error("must_not_post");
 					}),

@@ -1746,6 +1746,10 @@ export class StateStore {
 				"authority_mode",
 				"subject_kind",
 				"carrier_binding_state",
+				"origin_probe_attempts",
+				"origin_probe_next_at",
+				"origin_probe_last_reason",
+				"origin_probe_verified_at",
 				"created_at",
 			],
 			workflow_gate_holder_evidence: [
@@ -17869,6 +17873,11 @@ export class StateStore {
 				card_post_first_zero_frontier TEXT,
 				card_post_legacy_unknown INTEGER NOT NULL DEFAULT 0
 				  CHECK (card_post_legacy_unknown IN (0,1)),
+				origin_probe_attempts INTEGER NOT NULL DEFAULT 0
+				  CHECK (origin_probe_attempts >= 0),
+				origin_probe_next_at TEXT,
+				origin_probe_last_reason TEXT,
+				origin_probe_verified_at TEXT,
 				state TEXT NOT NULL DEFAULT 'materializing'
 				  CHECK (state IN ('materializing','awaiting_review','approved','superseded')),
 				materialization_stage TEXT NOT NULL DEFAULT 'question_intent'
@@ -17916,6 +17925,10 @@ export class StateStore {
 			"card_post_first_zero_at TEXT",
 			"card_post_first_zero_frontier TEXT",
 			"card_post_legacy_unknown INTEGER NOT NULL DEFAULT 0 CHECK (card_post_legacy_unknown IN (0,1))",
+			"origin_probe_attempts INTEGER NOT NULL DEFAULT 0 CHECK (origin_probe_attempts >= 0)",
+			"origin_probe_next_at TEXT",
+			"origin_probe_last_reason TEXT",
+			"origin_probe_verified_at TEXT",
 			"approval_origin TEXT CHECK (approval_origin IS NULL OR approval_origin = 'engine_equivalence_carryover')",
 		]) {
 			try {
@@ -42590,6 +42603,226 @@ export class StateStore {
 		return { ok: true, idempotentReplay: false, state };
 	}
 
+	deferWorkflowGateOriginProbe(input: {
+		questionId: string;
+		reason: string;
+		now: string;
+		delayMs: number;
+	}):
+		| { ok: true; attempts: number; nextAt: string }
+		| { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now) ||
+			!Number.isFinite(input.delayMs) ||
+			input.delayMs < 1
+		) {
+			return { ok: false, reason: "invalid_workflow_gate_origin_probe_defer" };
+		}
+		const row = this.getCurrentWorkflowGateHolderByQuestionId(input.questionId);
+		if (!row) return { ok: false, reason: "workflow_gate_holder_not_found" };
+		const attempts = row.origin_probe_attempts + 1;
+		const nextAt = new Date(Date.parse(input.now) + input.delayMs).toISOString();
+		// Probe bookkeeping is not materialization progress. Do not move updated_at:
+		// the existing fail-loud window is anchored there.
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET origin_probe_attempts = ?, origin_probe_next_at = ?,
+			        origin_probe_last_reason = ?
+			  WHERE question_id = ? AND state IN ('materializing','awaiting_review')
+			    AND origin_probe_attempts = ?`,
+			[
+				attempts,
+				nextAt,
+				input.reason.slice(0, 500),
+				input.questionId,
+				row.origin_probe_attempts,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_origin_probe_defer_raced" };
+		}
+		this.save();
+		return { ok: true, attempts, nextAt };
+	}
+
+	markWorkflowGateOriginProbeVerified(input: {
+		questionId: string;
+		now: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (!input.questionId || !StateStore.workflowFiniteTimestamp(input.now)) {
+			return { ok: false, reason: "invalid_workflow_gate_origin_probe_verify" };
+		}
+		// Same invariant as deferWorkflowGateOriginProbe: updated_at remains the
+		// materialization fail-loud anchor.
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET origin_probe_attempts = 0, origin_probe_next_at = NULL,
+			        origin_probe_last_reason = NULL,
+			        origin_probe_verified_at = ?
+			  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+			[input.now, input.questionId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_origin_probe_verify_raced" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	stopWorkflowGateOriginProbe(input: {
+		questionId: string;
+		reason: string;
+	}): { ok: true } | { ok: false; reason: string } {
+		if (!input.questionId || !input.reason.trim()) {
+			return { ok: false, reason: "invalid_workflow_gate_origin_probe_stop" };
+		}
+		this.db.run(
+			`UPDATE workflow_gate_holder
+			    SET origin_probe_next_at = NULL, origin_probe_last_reason = ?
+			  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+			[input.reason.slice(0, 500), input.questionId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "workflow_gate_origin_probe_stop_raced" };
+		}
+		this.save();
+		return { ok: true };
+	}
+
+	holdWorkflowGateOriginProbeTerminal(input: {
+		questionId: string;
+		reason: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}):
+		| { ok: true; idempotentReplay: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.questionId ||
+			!input.reason.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_workflow_gate_origin_probe_hold" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "workflow_gate_origin_probe_hold_failed",
+		};
+		this.db.transaction(() => {
+			const holder = this.getCurrentWorkflowGateHolderByQuestionId(
+				input.questionId,
+			);
+			if (!holder) {
+				result = { ok: false, reason: "workflow_gate_holder_not_found" };
+				return;
+			}
+			const run = this.getWorkflowRun(holder.run_id);
+			if (!run) {
+				result = { ok: false, reason: "workflow_gate_run_not_found" };
+				return;
+			}
+			const eventUid = `workflow_gate_origin_preflight_terminal:${input.questionId}`;
+			const payload = {
+				questionId: input.questionId,
+				headSha: holder.head_sha,
+				reason: input.reason,
+			};
+			const prior = this.listWorkflowRunEvents(run.run_id).some(
+				(event) => event.event_uid === eventUid,
+			);
+			if (prior) {
+				if (run.status === "active") {
+					this.db.run(
+						"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+						[run.run_id],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new Error("workflow_gate_origin_probe_run_raced");
+					}
+				} else if (run.status !== "held") {
+					result = {
+						ok: false,
+						reason: "workflow_gate_origin_probe_run_not_active",
+					};
+					return;
+				}
+				this.db.run(
+					`UPDATE workflow_gate_holder
+					    SET origin_probe_next_at = NULL, origin_probe_last_reason = ?
+					  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+					[input.reason.slice(0, 500), input.questionId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error("workflow_gate_origin_probe_holder_raced");
+				}
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			this.db.run(
+				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+				[run.run_id],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				result = {
+					ok: false,
+					reason: "workflow_gate_origin_probe_run_not_active",
+				};
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET origin_probe_next_at = NULL, origin_probe_last_reason = ?
+				  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+				[input.reason.slice(0, 500), input.questionId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_gate_origin_probe_holder_raced");
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: run.run_id,
+				eventUid,
+				kind: "workflow_gate_origin_preflight_terminal",
+				nodeId: holder.gate_node_id,
+				executionId: holder.source_execution_id,
+				payload,
+			});
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: eventUid,
+				runId: run.run_id,
+				now: input.now,
+				payload: {
+					leadId: input.alertIdentity.leadId,
+					projectName: input.alertIdentity.projectName,
+					eventId: eventUid,
+					eventType: "workflow_engine_escalation",
+					severity: "severe",
+					sessionKey: `wf:${run.run_id}`,
+					title: `Ship card origin preflight held ${run.issue_id}`,
+					body: `Run ${run.run_id} gate ${holder.gate_node_id} cannot safely materialize a ship card for head ${holder.head_sha}: ${input.reason}. The run is held for Lead inspection.`,
+					metadata: {
+						workflowEngine: {
+							runId: run.run_id,
+							issueId: run.issue_id,
+							nodeId: holder.gate_node_id,
+							executionId: holder.source_execution_id,
+							disposition:
+								"workflow_gate_origin_preflight_terminal",
+							questionId: input.questionId,
+							leadResolution: input.alertIdentity.leadResolution,
+						},
+					},
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	claimWorkflowGateCardPostIntent(input: {
 		questionId: string;
 		correlationMarker: string;
@@ -47535,6 +47768,18 @@ export class StateStore {
 			      OR h.authority_mode <> 'runner_ship'
 			      OR h.carrier_binding_state = 'bound'
 			    )
+			    AND (
+			      h.card_post_outcome IN ('pending','ambiguous')
+			      OR h.card_post_legacy_unknown = 1
+			      OR (
+			        (h.origin_probe_last_reason IS NULL
+			          OR h.origin_probe_last_reason <> 'workflow_gate_origin_probe_merge_blocked')
+			        AND (
+			          h.origin_probe_next_at IS NULL
+			          OR datetime(h.origin_probe_next_at) <= datetime('now')
+			        )
+			      )
+			    )
 			  ORDER BY h.created_at ASC, h.question_id ASC
 			  LIMIT ?`,
 			[boundedLimit],
@@ -51100,6 +51345,10 @@ export interface WorkflowGateHolderRow {
 	card_post_first_zero_at: string | null;
 	card_post_first_zero_frontier: string | null;
 	card_post_legacy_unknown: 0 | 1;
+	origin_probe_attempts: number;
+	origin_probe_next_at: string | null;
+	origin_probe_last_reason: string | null;
+	origin_probe_verified_at: string | null;
 	state: WorkflowGateHolderState;
 	materialization_stage: WorkflowGateMaterializationStage;
 	superseded_reason: string | null;
@@ -52653,6 +52902,7 @@ export interface WorkflowEngineAlertPayload {
 				| "ship_ready_delivery_failed"
 				| "gate_carrier_unbound"
 				| "gate_materialization_stuck"
+				| "workflow_gate_origin_preflight_terminal"
 				| "card_void_stuck"
 				| "founder_input_deadletter"
 				| "founder_rework_round_high"

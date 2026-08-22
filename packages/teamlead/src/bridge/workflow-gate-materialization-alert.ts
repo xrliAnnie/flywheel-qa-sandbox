@@ -22,6 +22,7 @@ function materializationAlertPayload(input: {
 	holder: WorkflowGateHolderRow;
 	issueId: string;
 	identity: WorkflowEngineAlertIdentity;
+	failureReason: string;
 }) {
 	const escalationUid = `gate_materialization_stuck:${input.holder.question_id}`;
 	return {
@@ -32,7 +33,7 @@ function materializationAlertPayload(input: {
 		severity: "severe" as const,
 		sessionKey: `wf:${input.holder.run_id}`,
 		title: `【需人工】${input.issueId} 的 ship 卡发不出来(卡在 materializing)`,
-		body: `${input.issueId} 的 ship gate ${input.holder.gate_node_id} 无法 materialize。question_id=${input.holder.question_id}, head=${input.holder.head_sha.slice(0, 8)}。请检查 Discord thread/card binding 与 materializer 日志,修复后引擎会自动重试。`,
+		body: `${input.issueId} 的 ship gate ${input.holder.gate_node_id} 无法 materialize。question_id=${input.holder.question_id}, head=${input.holder.head_sha.slice(0, 8)}, failure_reason=${input.failureReason}。请检查 Discord thread/card binding 与 materializer 日志,修复后引擎会自动重试。`,
 		metadata: {
 			workflowEngine: {
 				runId: input.holder.run_id,
@@ -105,6 +106,7 @@ export async function materializeWorkflowGateWithFailLoud(
 				holder: current,
 				issueId: run.issue_id,
 				identity: deps.alertIdentity,
+				failureReason,
 			}),
 			now,
 		});

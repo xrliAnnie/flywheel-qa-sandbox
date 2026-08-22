@@ -7803,6 +7803,22 @@ export async function startBridge(
 			}
 		}
 	};
+	const { createWorkflowGateOriginPreflight } = await import(
+		"./gate-origin-preflight.js"
+	);
+	const workflowGateOriginPreflight = createWorkflowGateOriginPreflight({
+		store,
+		alertIdentity: ({ runId, projectName, issueId }) =>
+			resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: config.defaultLeadAgentId,
+				projectName,
+				issueId,
+				runId,
+				log: (message) => console.warn(`[workflow-gate] ${message}`),
+			}),
+	});
 	let workflowGateMaterializationRunning = false;
 	const workflowGateMaterializeTick = async (): Promise<void> => {
 		if (workflowGateMaterializationRunning) return;
@@ -7894,6 +7910,7 @@ export async function startBridge(
 									commDbPath: commDbPathForProject(run.project_name),
 									leadId: lead.agentId,
 									threadId: thread.thread_id,
+									preflight: workflowGateOriginPreflight,
 									postCard: async (input) => {
 										const result = await emitFounderThreadNotification(
 											{
