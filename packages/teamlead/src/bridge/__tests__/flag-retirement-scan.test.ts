@@ -7,7 +7,6 @@ import {
 	FLAG_SCAN_MAX_PENDING_AGE_MS,
 	FLAG_SCAN_VISIBILITY_FENCE_MS,
 	type FlagRetirementScanEffects,
-	flagRetirementScanEnabled,
 	flagScanIsDue,
 	latestFlagScanSlotAtOrBefore,
 	renderLeadAlertChunks,
@@ -106,17 +105,6 @@ function effects() {
 	return { value, linearBodies, reports, discordBodies, leadBodies };
 }
 
-describe("flagRetirementScanEnabled", () => {
-	it("is default-on and observes every call-time env change", () => {
-		const env: Record<string, string | undefined> = {};
-		expect(flagRetirementScanEnabled(env)).toBe(true);
-		env.FLYWHEEL_FLAG_RETIREMENT_SCAN = "0";
-		expect(flagRetirementScanEnabled(env)).toBe(false);
-		env.FLYWHEEL_FLAG_RETIREMENT_SCAN = "1";
-		expect(flagRetirementScanEnabled(env)).toBe(true);
-	});
-});
-
 describe("FlagRetirementScanner", () => {
 	let store: StateStore;
 	let now: number;
@@ -159,7 +147,7 @@ describe("FlagRetirementScanner", () => {
 				now: () => now,
 				newRunToken: () => `${input.tokenPrefix ?? "run"}-${++token}`,
 				leaseOwner: `${input.tokenPrefix ?? "worker"}-owner`,
-				enabled: input.enabled,
+				enabled: input.enabled ?? (() => true),
 			}),
 		};
 	}

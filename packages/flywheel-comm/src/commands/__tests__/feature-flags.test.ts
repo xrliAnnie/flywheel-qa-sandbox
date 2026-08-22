@@ -112,6 +112,33 @@ describe("flywheel-comm feature-flags apply", () => {
 		).rejects.toThrow("exit 1");
 	});
 
+	it("requires --reason only for store-managed flags", async () => {
+		const httpJson = httpMock(
+			{
+				ok: true,
+				status: 200,
+				body: { canonical: { kind: "flag" }, confirmToken: "t1" },
+			},
+			{ ok: true, status: 200, body: { ok: true } },
+		);
+		const deps = baseDeps({ httpJson });
+		await expect(
+			runFeatureFlags(
+				["apply", "--name", "workflow_resume", "--to", "on"],
+				deps,
+			),
+		).rejects.toThrow("exit 1");
+
+		await runFeatureFlags(
+			["apply", "--name", "auto_qa_killswitch", "--to", "off"],
+			deps,
+		);
+		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
+			name: "auto_qa_killswitch",
+			to: false,
+		});
+	});
+
 	it("happy: stage → apply, logs the apply body", async () => {
 		const httpJson = httpMock(
 			{
@@ -123,12 +150,25 @@ describe("flywheel-comm feature-flags apply", () => {
 		);
 		const deps = baseDeps({ httpJson });
 		await runFeatureFlags(
-			["apply", "--name", "auto_qa_killswitch", "--to", "off"],
+			[
+				"apply",
+				"--name",
+				"auto_qa_killswitch",
+				"--to",
+				"off",
+				"--reason",
+				"operator test",
+			],
 			deps,
 		);
 		expect(httpJson).toHaveBeenCalledTimes(2);
 		// stage POST carries the sparse {name, to}; apply POST carries {canonical, confirmToken}
 		expect(httpJson.mock.calls[0]?.[0]).toContain("/api/fleet/flag/stage");
+		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
+			name: "auto_qa_killswitch",
+			to: false,
+			reason: "operator test",
+		});
 		expect(httpJson.mock.calls[1]?.[0]).toContain("/api/fleet/flag/apply");
 		expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('"ok":true'));
 	});
@@ -140,7 +180,10 @@ describe("flywheel-comm feature-flags apply", () => {
 		);
 		const deps = baseDeps({ httpJson });
 		await expect(
-			runFeatureFlags(["apply", "--name", "x", "--to", "off"], deps),
+			runFeatureFlags(
+				["apply", "--name", "x", "--to", "off", "--reason", "test"],
+				deps,
+			),
 		).rejects.toThrow("exit 1");
 		expect(httpJson).toHaveBeenCalledTimes(1); // stage only
 	});
@@ -152,7 +195,10 @@ describe("flywheel-comm feature-flags apply", () => {
 		);
 		const deps = baseDeps({ httpJson });
 		await expect(
-			runFeatureFlags(["apply", "--name", "x", "--to", "off"], deps),
+			runFeatureFlags(
+				["apply", "--name", "x", "--to", "off", "--reason", "test"],
+				deps,
+			),
 		).rejects.toThrow("exit 1");
 	});
 });

@@ -66,6 +66,8 @@ import {
 interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
+	workflowReworkReentryEnabled?: () => boolean;
+	workflowResumeEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
 	stateRoot?: string;
 	log?: (message: string) => void;
@@ -138,6 +140,8 @@ const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
  */
 export class WorkflowEngineDispatcher {
 	private readonly env: Record<string, string | undefined>;
+	private readonly workflowReworkReentryEnabled: () => boolean;
+	private readonly workflowResumeEnabled: () => boolean;
 	private readonly stateRoot: string;
 	private readonly log: (message: string) => void;
 	private readonly now: () => Date;
@@ -216,6 +220,9 @@ export class WorkflowEngineDispatcher {
 
 	constructor(private readonly options: WorkflowEngineDispatcherOptions) {
 		this.env = options.env ?? process.env;
+		this.workflowReworkReentryEnabled =
+			options.workflowReworkReentryEnabled ?? (() => true);
+		this.workflowResumeEnabled = options.workflowResumeEnabled ?? (() => false);
 		this.stateRoot =
 			options.stateRoot ??
 			join(homedir(), ".flywheel", "state", "launch-commits");
@@ -929,7 +936,7 @@ export class WorkflowEngineDispatcher {
 			) {
 				continue;
 			}
-			if (this.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY !== "0") {
+			if (this.workflowReworkReentryEnabled()) {
 				const resumed = this.options.store.transitionWorkflowReworkPause({
 					requestId: delivery.request_id,
 					generation: delivery.generation,
@@ -1106,7 +1113,7 @@ export class WorkflowEngineDispatcher {
 	}
 
 	private reconcileWorkflowReworkStalls(): void {
-		const reentryPaused = this.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY === "0";
+		const reentryPaused = !this.workflowReworkReentryEnabled();
 		const now = this.now();
 		const nowMs = now.getTime();
 		const alertMs = this.reworkThresholdMs(
@@ -1760,7 +1767,7 @@ export class WorkflowEngineDispatcher {
 		attempt: number;
 		executionId: string;
 	}): boolean {
-		if (this.env.FLYWHEEL_WORKFLOW_RESUME !== "1") return false;
+		if (!this.workflowResumeEnabled()) return false;
 		const delivery = this.options.store
 			.listWorkflowRunEvents(input.runId)
 			.filter(
@@ -1865,7 +1872,7 @@ export class WorkflowEngineDispatcher {
 						continue;
 					}
 					if (session?.status === "completed") {
-						if (this.env.FLYWHEEL_WORKFLOW_RESUME === "1") {
+						if (this.workflowResumeEnabled()) {
 							let liveness: GeneralizedLaunchLiveness;
 							try {
 								liveness = await this.probeTerminalLaunchLiveness(

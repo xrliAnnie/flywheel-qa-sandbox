@@ -27,6 +27,7 @@ import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
 	isDirectToggleMetadata,
+	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import {
 	applyEnvChange,
@@ -101,6 +102,13 @@ export function applyFlagToggle(
 			ok: false,
 			code: 400,
 			reason: `${change.name} is not an env flag`,
+		};
+	}
+	if (STORE_MANAGED_FLAGS.has(spec.name)) {
+		return {
+			ok: false,
+			code: 409,
+			reason: `${change.name} is managed by the SQLite flag store`,
 		};
 	}
 	if (!isDirectToggleable(spec)) {

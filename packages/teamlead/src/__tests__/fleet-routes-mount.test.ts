@@ -1,9 +1,21 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveAllFlags } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runFeatureFlags } from "../../../flywheel-comm/src/commands/feature-flags.js";
+import {
+	type FlagStoreRuntime,
+	initializeFlagStore,
+	storeWorkflowTurnDivergenceAlertsEnabled,
+} from "../bridge/flag-store-runtime.js";
 import type { CanonicalRequest } from "../bridge/fleet-admin.js";
 import { FleetConsole } from "../bridge/fleet-console.js";
 import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
@@ -85,6 +97,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 	let baseUrl: string;
 	let dir: string;
 	let console_: FleetConsole;
+	let flagStore: FlagStoreRuntime;
 	let manualSpawnQa: ReturnType<typeof vi.fn>;
 
 	beforeEach(async () => {
@@ -179,6 +192,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			}),
 		);
 		store = await StateStore.create(":memory:");
+		flagStore = initializeFlagStore(store, {}, 100);
 		manualSpawnQa = vi.fn(async () => ({
 			status: "spawned" as const,
 			qaExecutionId: "qa-server-owned",
@@ -201,6 +215,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			undefined,
 			undefined,
 			{
+				flagStore,
 				fleetConsole: console_,
 				autoQaCoordinator: {
 					current: { manualSpawnQa } as never,
@@ -346,6 +361,75 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			body: JSON.stringify({}),
 		});
 		expect(badApply.status).toBe(400);
+	});
+
+	it("FLY-1778: CLI flips a managed flag through the live Bridge without restart or git", async () => {
+		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(false);
+		const sentinel = join(dir, "git-invoked");
+		const bin = join(dir, "bin");
+		mkdirSync(bin);
+		writeFileSync(
+			join(bin, "git"),
+			`#!/bin/sh\nprintf invoked > ${JSON.stringify(sentinel)}\nexit 99\n`,
+			{ mode: 0o755 },
+		);
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${bin}:${originalPath ?? ""}`;
+		let batchId = "";
+		try {
+			await runFeatureFlags(
+				[
+					"apply",
+					"--name",
+					"workflow_turn_divergence_alerts",
+					"--to",
+					"on",
+					"--reason",
+					"Bridge E2E proof",
+					"--bridge-url",
+					baseUrl,
+				],
+				{
+					log: vi.fn(),
+					errorLog: vi.fn(),
+					exit: (code) => {
+						throw new Error(`unexpected exit ${code}`);
+					},
+					httpJson: async (url, init) => {
+						const response = await fetch(url, init);
+						const body = await response.json();
+						if (url.endsWith("/stage")) {
+							batchId = String(
+								(body as { canonical?: { batchId?: string } }).canonical
+									?.batchId ?? "",
+							);
+						}
+						return {
+							ok: response.ok,
+							status: response.status,
+							json: async () => body,
+						};
+					},
+				},
+			);
+		} finally {
+			process.env.PATH = originalPath;
+		}
+
+		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(true);
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
+			lastEffective: "true",
+			updatedBy: "bridge-local-operator",
+			valueLastChanged: expect.any(Number),
+		});
+		expect(console_.audit.forBatch(batchId).map((row) => row.event)).toEqual([
+			"staged",
+			"apply-requested",
+			"apply-result",
+		]);
+		expect(existsSync(sentinel)).toBe(false);
 	});
 
 	it("FLY-1251: manual QA stage→spawn is same-origin, token-bound, and rejects executor injection", async () => {

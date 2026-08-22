@@ -330,6 +330,7 @@ function makeHarness(input: {
 			).toISOString(),
 		}),
 		env,
+		reentryEnabled: () => env.FLYWHEEL_WORKFLOW_REWORK_REENTRY !== "0",
 	});
 	return { coordinator, store, effects, env, getDelivery: () => delivery };
 }

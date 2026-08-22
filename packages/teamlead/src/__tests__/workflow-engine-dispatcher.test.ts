@@ -2066,6 +2066,8 @@ describe("WorkflowEngineDispatcher", () => {
 			store,
 			startDispatcher: fake.dispatcher,
 			env,
+			workflowReworkReentryEnabled: () =>
+				env.FLYWHEEL_WORKFLOW_REWORK_REENTRY !== "0",
 			now: () => now,
 			reconcileWorkflowRework,
 			resolveRunAlertIdentity: () => ({
@@ -2173,6 +2175,8 @@ describe("WorkflowEngineDispatcher", () => {
 			const dispatcher = new WorkflowEngineDispatcher({
 				store,
 				startDispatcher: fake.dispatcher,
+				workflowReworkReentryEnabled: () =>
+					process.env.FLYWHEEL_WORKFLOW_REWORK_REENTRY !== "0",
 				now: () => new Date("2026-07-16T00:11:00.000Z"),
 				reconcileWorkflowRework,
 				resolveRunAlertIdentity: () => ({
@@ -3409,6 +3413,7 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: initial.dispatcher,
 				env,
+				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date("2026-07-16T00:01:00.000Z"),
 				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-start-")),
 			}).reconcile(),
@@ -3448,6 +3453,7 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
+				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base),
 				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-open-")),
 				resolvePredecessorHead: async () => HEAD,
@@ -3474,6 +3480,7 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
+				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base + 9 * 60_000),
 				stateRoot: mkdtempSync(
 					join(tmpdir(), "fly1707-resume-window-restart-"),
@@ -3501,6 +3508,7 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
+				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base + 10 * 60_000),
 				stateRoot: mkdtempSync(
 					join(tmpdir(), "fly1707-resume-window-expired-"),

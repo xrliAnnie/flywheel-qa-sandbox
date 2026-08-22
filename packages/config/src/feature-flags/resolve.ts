@@ -92,6 +92,18 @@ export interface FlagView {
 	error?: string;
 	note?: string;
 	retiring?: string;
+	/** FLY-1778: true when SQLite, rather than legacy env/config, owns the value. */
+	storeManaged?: boolean;
+	/** Current effective value read from the owning SQLite row or boot bypass. */
+	storeEffective?: boolean | string;
+	/** Epoch milliseconds when the canonical effective value last changed. */
+	valueLastChanged?: number | null;
+	/** Whether the persistent value clock is safe for downstream consumers. */
+	clockReadiness?:
+		| "ready"
+		| "no_clock:bypass"
+		| "no_clock:degraded"
+		| "no_clock:unmanaged";
 }
 
 /** Navigate a schema path, expanding Record (`*`) and array (`[]`) segments. */

@@ -253,6 +253,7 @@ export class WorkflowReworkCoordinator {
 				now: Date,
 			) => { expiresAt: string; absoluteDeadlineAt: string };
 			env?: Record<string, string | undefined>;
+			reentryEnabled?: () => boolean;
 		},
 	) {
 		this.leaseMs = deps.leaseMs ?? 30_000;
@@ -326,7 +327,7 @@ export class WorkflowReworkCoordinator {
 	async reconcile(
 		requestId: string,
 	): Promise<WorkflowReworkCoordinatorOutcome> {
-		if (this.deps.env?.FLYWHEEL_WORKFLOW_REWORK_REENTRY === "0") {
+		if (this.deps.reentryEnabled?.() === false) {
 			return { kind: "disabled", reason: "rework_reentry_disabled" };
 		}
 		const now = this.now();

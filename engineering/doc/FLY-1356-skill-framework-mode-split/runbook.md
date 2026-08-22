@@ -6,7 +6,7 @@ Issue: FLY-1356 (URL 不可得,只写 issue 号)
 
 > 本手册给 ops(Tadashi / infra bot / Annie)。三臂:A=`superpowers`(现状,默认)/
 > B=`matt`(mattpocock/skills 冻结子集)/ C=`bare`(裸奔)。flag =
-> `FLYWHEEL_SKILL_FRAMEWORK_MODE`(env,call_time 读,direct-toggle,不重启)。
+> `skill_framework_mode`(SQLite flag store,call_time 读,不重启)。
 > **任何默认模式切换(含开 `split`)只认 Annie 明示(plan v2.2②)。**
 
 ## 0. 前置(开 `split` 之前必须全绿)
@@ -31,7 +31,7 @@ Issue: FLY-1356 (URL 不可得,只写 issue 号)
 Console(Fleet 控制台 flag 面板下拉)或 CLI:
 
 ```
-flywheel-comm feature-flags apply --name skill_framework_mode --to split
+flywheel-comm feature-flags apply --name skill_framework_mode --to split --reason "start split rollout"
 ```
 
 - 生效 = **下一次 dispatch**(call_time 读,秒级,不重启 Bridge)。
@@ -42,11 +42,11 @@ flywheel-comm feature-flags apply --name skill_framework_mode --to split
 ## 2. Kill(秒级钉回 A,不重启)
 
 ```
-flywheel-comm feature-flags apply --name skill_framework_mode --to superpowers
+flywheel-comm feature-flags apply --name skill_framework_mode --to superpowers --reason "kill split rollout"
 ```
 
-- enum kill 写的是**显式值**(`FLYWHEEL_SKILL_FRAMEWORK_MODE=superpowers` 留在
-  .env 里作审计痕迹,不删键)。
+- enum kill 写的是 SQLite 中的**显式值**;审计由 flag store changelog 记录。
+  `.env` 同名行在正常 store 模式不再参与解析。
 - 下一次 dispatch 起全部解析为 A(via=`forced`);successor 带旧 override 撞上
   kill 不报错、照常 spawn 为 A(resolver total 语义,R1#1)。
 - **诚实边界:存量 in-flight B/C session 不追改**(spawn 时的插件状态持续到该
@@ -67,8 +67,10 @@ skill_framework:
 
 ## 4. 529 排雷用法(阶段一)
 
-- 隔离 Bridge 的 env 置 `FLYWHEEL_SKILL_FRAMEWORK_MODE=split`
-  (529 房照常必设 `FLYWHEEL_DELIVERY_SECRET_PATH` 等隔离 env)。
+- 隔离 Bridge 启动后,对它的 `--bridge-url` 运行 §1 的 CLI 翻转
+  (529 房照常必设 `FLYWHEEL_DELIVERY_SECRET_PATH` 等隔离 env)。只有专门验证
+  boot 旁路时才在启动前同时设置 `FLYWHEEL_FLAG_STORE=0` 与
+  `FLYWHEEL_SKILL_FRAMEWORK_MODE=split`。
 - 强臂:`POST /api/runs/start` body 带 `skillFrameworkMode: "matt"|"bare"|"superpowers"`
   (flag ≠ split 时该参数 400 —— kill 优先;非法值 400)。
 - override 粘性 = 一次强臂全程有效(session 行 via=`override`,phase successor /

@@ -282,6 +282,31 @@ describe("existing management writer adapters", () => {
 		).toMatchObject({ writable: false });
 	});
 
+	it("projects store-managed flags as read-only even when registry metadata is direct", () => {
+		const view = resolveAllFlags({ env: {} }).find(
+			(flag) => flag.name === "workflow_resume",
+		);
+		if (!view) throw new Error("missing workflow_resume");
+		const value = createManagementFlagProvider({
+			views: () => [
+				{
+					...view,
+					storeManaged: true,
+					storeEffective: false,
+					clockReadiness: "ready",
+				},
+			],
+			revision: () => "store:1",
+			projectNames: () => ["flywheel"],
+		}).read().fragment.flags?.[0]?.global;
+		expect(value?.current).toBe(false);
+		expect(value?.writeCapability).toMatchObject({
+			writable: false,
+			consequence: "governance-readonly",
+		});
+		expect(value?.writeCapability.reason).toContain("SQLite flag store");
+	});
+
 	it("management flag values use displayEffective and disable writes on source divergence", () => {
 		const flagProvider = createManagementFlagProvider({
 			views: () =>
@@ -392,6 +417,30 @@ describe("existing management writer adapters", () => {
 		]);
 		const globalOnlyTarget = await flag.resolve(globalOnlyOverride);
 		expect(globalOnlyTarget?.writeCapability.reason).toMatch(/global/i);
+	});
+
+	it("writer preflight independently refuses a store-managed flag", async () => {
+		const { flag } = createExistingManagementWriters({
+			projects,
+			projectsRevision: () => PROJECTS_REVISION,
+			projectConfigs: configs,
+			readProjectConfig: () => CONFIG,
+			readEnvFile: () => "",
+			envPath: "/server/.flywheel/.env",
+			env: {},
+			flagViews: () => resolveAllFlags({ env: {} }),
+			applyLeadCanonical: async () => ({ status: "applied" }),
+		});
+		const target = await flag.resolve(
+			buildTargetId("flag", ["workflow_resume", "global"]),
+		);
+		expect(
+			await flag.preflight(target!, true, target!.sourceRevision),
+		).toMatchObject({
+			ok: false,
+			code: "readonly_registry_policy",
+			reason: expect.stringContaining("SQLite flag store"),
+		});
 	});
 
 	it("direct flag rejects an out-of-band .env edit that lands after apply revalidation", async () => {

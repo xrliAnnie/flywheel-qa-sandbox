@@ -186,7 +186,46 @@ function envSite(
 	return { file, symbol, pattern, timing };
 }
 
+function flagStoreSite(
+	file:
+		| "packages/teamlead/src/bridge/plugin.ts"
+		| "packages/teamlead/src/bridge/run-infra.ts",
+	symbol: string,
+	resolverSymbol: string,
+): FlagReadSite {
+	return {
+		file,
+		symbol,
+		pattern: "delegated",
+		timing: "call_time",
+		resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+		resolverSymbol,
+	};
+}
+
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	{
+		name: "flag_store",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FLAG_STORE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1778: Bridge SQLite flag store；=0 在下次 Bridge 启动时旁路到 legacy .env",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/flag-store-runtime.ts",
+				"initializeFlagStore",
+				"bridge_boot",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "逃生开关只在 Bridge 启动时读取，永不由 flag store 自身管理。",
+	},
 	// ─── FLY-1940: unanswered founder-review lifecycle monitor ───
 	{
 		name: "founder_review_orphan_monitor",
@@ -225,11 +264,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"每周日 08:00 America/Los_Angeles 扫描解析后生效值稳定满 7 天的 flag，生成一批留/清候选；扫描本身永不删除 flag",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/flag-retirement-scan.ts",
-				"flagRetirementScanEnabled",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"flag scan enabled injection",
+				"storeFlagRetirementScanEnabled",
 			),
 		],
 		toggleable: "direct",
@@ -658,23 +696,15 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/workflow-rework-coordinator.ts",
-				"reconcile",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"WorkflowReworkCoordinator reentry injection",
+				"storeWorkflowReworkReentryEnabled",
 			),
-			envSite(
-				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				"reconcileWorkflowReworks",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
-				"reconcileWorkflowReworkStalls",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"WorkflowEngineDispatcher reentry injection",
+				"storeWorkflowReworkReentryEnabled",
 			),
 		],
 		toggleable: "direct",
@@ -1095,11 +1125,20 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1356/1609: Runner skill 框架四臂（superpowers=A / matt=B / bare=C / bare-ponytail=D / split=按 issue 稳定哈希分流）。kill = 设回 superpowers，秒级生效不重启；存量 in-flight session 不追改",
 		readSites: [
-			envSite(
-				"packages/config/src/skill-framework-mode.ts",
-				"resolveSkillFrameworkMode",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"runs route skill mode injection",
+				"storeSkillFrameworkModeControl",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"Blueprint skill mode injection",
+				"storeSkillFrameworkModeControl",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"RunDispatcher sticky mode injection",
+				"storeSkillFrameworkModeControl",
 			),
 		],
 		toggleable: "direct",
@@ -1275,11 +1314,15 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1707: admit same-run workflow resume requests from durable checkpoints; default off preserves the existing /runs/start path.",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/runs-route.ts",
-				"isWorkflowResumeEnabled",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"runs route resume injection",
+				"storeWorkflowResumeEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"WorkflowEngineDispatcher resume injection",
+				"storeWorkflowResumeEnabled",
 			),
 		],
 		toggleable: "direct",
@@ -1299,11 +1342,10 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1614: emit severe Lead alerts for durable engine/CommDB TURN divergence. Default off keeps detection and episode recording in shadow mode.",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/workflow-turn-ledger-validator.ts",
-				"workflowTurnDivergenceAlertsEnabled",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflow TURN divergence alert injection",
+				"storeWorkflowTurnDivergenceAlertsEnabled",
 			),
 		],
 		toggleable: "direct",

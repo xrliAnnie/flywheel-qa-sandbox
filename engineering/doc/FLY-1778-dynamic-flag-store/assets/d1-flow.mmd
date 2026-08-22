@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph OP["操作者(Annie / Lead)"]
+        CLI["CLI 命令<br/>feature-flags apply<br/>--reason 必填"]
+    end
+    subgraph BRIDGE["Bridge 进程"]
+        STAGE["stage<br/>算 canonical + 发确认令牌"]
+        AUDIT1["审计账 staged<br/>写失败 = 不发令牌"]
+        APPLY["apply<br/>验令牌 + CAS 版本号"]
+        TXN["SQLite 单事务<br/>写值 + 比较新旧生效值<br/>值变才拨 value_last_changed<br/>+ 同事务写 changelog"]
+        READ["读点 wrapper<br/>每次使用现读 DB<br/>(read-on-use)"]
+        BEH["行为立即生效<br/>零重启 · 零 git"]
+    end
+    CLI --> STAGE --> AUDIT1 --> APPLY --> TXN --> READ --> BEH
+    subgraph LEGACY["安全关键 flag(白名单)"]
+        ENV[".env 老路完全不变<br/>kill switch / 治理门"]
+    end
+    TXN -.拒绝写入.-> ENV

@@ -286,6 +286,11 @@ export type CodexSkillAssemblyProbe = (
 	args: CodexSkillAssemblyProbeArgs,
 ) => CodexSkillAssemblyProbeResult;
 
+export interface SkillFrameworkModeControl {
+	hasOverride: boolean;
+	raw: string | null;
+}
+
 function skillFrontmatterName(content: string): string | undefined {
 	const lines = content.split(/\r?\n/);
 	if (lines[0]?.trim() !== "---") return undefined;
@@ -992,6 +997,12 @@ export class Blueprint {
 		// FLY-1395 — one-shot Codex assembly probe. Its returned list is carried
 		// unchanged to the adapter so attribution and application share evidence.
 		private codexSkillAssemblyProbe: CodexSkillAssemblyProbe = defaultCodexSkillAssemblyProbe,
+		// FLY-1778 — injected Bridge-global raw control. The Bridge composition
+		// point reads SQLite on each call; Blueprint retains issue-aware resolution.
+		private skillFrameworkModeControl: () => SkillFrameworkModeControl = () => ({
+			hasOverride: false,
+			raw: null,
+		}),
 	) {}
 
 	async run(
@@ -1182,12 +1193,16 @@ export class Blueprint {
 		ctx: BlueprintContext,
 		hydrated: HydratedContext,
 	): ResolvedSkillFrameworkForRun | undefined {
+		const control = this.skillFrameworkModeControl();
+		const modeEnv = control.hasOverride
+			? { [SKILL_FRAMEWORK_MODE_ENV]: control.raw ?? undefined }
+			: {};
 		// Participation is only meaningful under `split`; skip the config read
 		// entirely otherwise (default path stays zero-IO). The env read here is
-		// FLYWHEEL_SKILL_FRAMEWORK_MODE at call time (direct-toggle live).
+		// the injected Bridge-global control at call time (direct-toggle live).
 		let participation: boolean | undefined;
 		if (
-			process.env[SKILL_FRAMEWORK_MODE_ENV] === SKILL_FRAMEWORK_SPLIT &&
+			modeEnv[SKILL_FRAMEWORK_MODE_ENV] === SKILL_FRAMEWORK_SPLIT &&
 			this.skillFrameworkParticipation
 		) {
 			try {
@@ -1211,7 +1226,7 @@ export class Blueprint {
 			hydrated.issueIdentifier?.trim() ||
 			hydrated.issueId;
 		const resolved = resolveSkillFrameworkMode({
-			env: process.env,
+			env: modeEnv,
 			issueIdentifier: identifier,
 			override: ctx.skillFrameworkModeOverride,
 			priorStamp: ctx.skillFrameworkModePrior,

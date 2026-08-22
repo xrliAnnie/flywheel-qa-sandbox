@@ -1,7 +1,11 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FEATURE_FLAGS, resolveFlag } from "flywheel-config";
+import {
+	FEATURE_FLAGS,
+	resolveFlag,
+	STORE_MANAGED_FLAGS,
+} from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { computeEnvSha } from "../bridge/env-file-writer.js";
 import {
@@ -59,10 +63,12 @@ describe("isDirectToggleable", () => {
 
 describe("applyFlagToggle", () => {
 	it("a successful apply heals a pre-existing live/file divergence", () => {
-		const spec = FEATURE_FLAGS.find((flag) => flag.name === "workflow_resume")!;
-		let file = "FLYWHEEL_WORKFLOW_RESUME=0\n";
+		const spec = FEATURE_FLAGS.find(
+			(flag) => flag.name === "auto_qa_killswitch",
+		)!;
+		let file = "FLYWHEEL_AUTO_QA=0\n";
 		const d = deps({
-			env: { FLYWHEEL_WORKFLOW_RESUME: "1" },
+			env: { FLYWHEEL_AUTO_QA: "1" },
 			readFile: () => file,
 			writeFile: vi.fn((_path: string, content: string) => {
 				file = content;
@@ -88,6 +94,21 @@ describe("applyFlagToggle", () => {
 		});
 		expect(after.divergence).toBeUndefined();
 		expect(after.displayEffective).toBe(false);
+	});
+
+	it("refuses a store-managed flag even when its registry metadata is direct", () => {
+		expect(
+			applyFlagToggle(deps(), {
+				name: "workflow_resume",
+				rawFrom: null,
+				rawTo: "1",
+				fileSha: SHA,
+			}),
+		).toMatchObject({
+			ok: false,
+			code: 409,
+			reason: "workflow_resume is managed by the SQLite flag store",
+		});
 	});
 
 	it("happy path: turns a direct flag off — persists then mutates process.env", () => {
@@ -196,7 +217,10 @@ describe("applyFlagToggle", () => {
 describe("applyFlagToggle — real .env lock + interleaving", () => {
 	function twoDirectFlags() {
 		const directs = FEATURE_FLAGS.filter(
-			(f) => f.toggleable === "direct" && f.envVar,
+			(f) =>
+				f.toggleable === "direct" &&
+				f.envVar &&
+				!STORE_MANAGED_FLAGS.has(f.name),
 		);
 		if (directs.length < 2)
 			throw new Error("need ≥2 direct flags for the test");

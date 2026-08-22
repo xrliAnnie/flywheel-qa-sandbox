@@ -43,6 +43,16 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).toContain('type="checkbox"');
 	});
 
+	it("suppresses controls for a store-managed flag on console and phone", () => {
+		const managed = FLAGS.find((flag) => flag.name === "workflow_resume");
+		if (!managed) throw new Error("missing workflow_resume");
+		for (const mode of ["console", "phone"] as const) {
+			const html = renderFlagCard({ ...managed, storeManaged: true }, mode);
+			expect(html).not.toContain("data-ff-apply");
+			expect(html).not.toContain("data-ff-toggle");
+		}
+	});
+
 	it("effect label maps timing → 生效路径", () => {
 		const autoQa = FLAGS.find((f) => f.name === "auto_qa_killswitch");
 		if (!autoQa) throw new Error("missing");
@@ -160,6 +170,7 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 		expect(html).toContain('<script nonce="__CSP_NONCE__">');
 		expect(html).toContain("data-ff-toggle");
 		expect(html).toContain("flywheel-comm feature-flags apply --name ");
+		expect(html).toContain("--reason phone-report");
 	});
 
 	it("makes NO network callback (CSP default-src none blocks it anyway)", () => {

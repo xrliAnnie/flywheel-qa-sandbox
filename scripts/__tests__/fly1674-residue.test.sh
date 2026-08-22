@@ -22,6 +22,7 @@ allowed_hits=(
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_THREE_STAGE_QA_RESPAWN'
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_THREE_STAGE_CODEX_IMPLEMENT'
   'packages/config/src/feature-flags/truth.ts|FLYWHEEL_THREE_STAGE_CODEX_DESIGN'
+  'packages/teamlead/src/__tests__/StateStore.flag-value-store.test.ts|three_stage'
   'packages/config/package.json|three-stage-phases'
   'packages/teamlead/package.json|three-stage-qa'
   'packages/teamlead/package.json|three-stage-dedup'

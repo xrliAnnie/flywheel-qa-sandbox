@@ -111,7 +111,7 @@ export function categoryClass(cat: FlagView["category"]): string {
  * server re-checks on stage/apply — this is only which cards show a control.
  */
 export function isFlagViewDirectToggleable(flag: FlagView): boolean {
-	return isDirectToggleMetadata(flag);
+	return !flag.storeManaged && isDirectToggleMetadata(flag);
 }
 
 function boolBadge(on: boolean): string {

@@ -11,6 +11,7 @@ import {
 	type RunnerDefaultsChange,
 	readEnvFileSource,
 	resolveAllFlags,
+	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -258,6 +259,7 @@ export function createManagementRunnerProvider(
 }
 
 function registryPolicyReason(view: FlagView): string {
+	if (view.storeManaged) return "flag value is owned by the SQLite flag store";
 	if (view.dormant) return "flag registry: dormant runtime path";
 	if (view.category === "governance_gate") {
 		return "flag registry: governance flag is readonly";
@@ -282,7 +284,9 @@ function flagManagedValue(input: {
 	const spec = FEATURE_FLAGS.find(
 		(candidate) => candidate.name === input.view.name,
 	);
-	const direct = Boolean(spec && isDirectToggleable(spec));
+	const direct = Boolean(
+		spec && !input.view.storeManaged && isDirectToggleable(spec),
+	);
 	const writable = direct && !input.scopeMismatch && !input.error;
 	return {
 		targetId: input.targetId,
@@ -315,7 +319,7 @@ function buildFlagView(
 		view,
 		current:
 			view.scope === "bridge_global"
-				? (view.displayEffective ?? null)
+				? (view.storeEffective ?? view.displayEffective ?? null)
 				: view.default,
 		targetId: buildTargetId("flag", [view.name, "global"]),
 		revision,
@@ -796,6 +800,13 @@ function createFlagWriter(
 		preflight: (target, desiredValue, observedRevision) => {
 			if (observedRevision !== target.sourceRevision) {
 				return rejectedPreflight("stale_source", ".env changed since view");
+			}
+			const managedName = directFlagName(target.targetId);
+			if (managedName && STORE_MANAGED_FLAGS.has(managedName)) {
+				return rejectedPreflight(
+					"readonly_registry_policy",
+					"flag value is owned by the SQLite flag store",
+				);
 			}
 			if (!target.writeCapability.writable) {
 				return rejectedPreflight(

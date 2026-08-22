@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type {
+	FlagStoreRawValue,
 	RoleBackendMap,
 	RoleEffort,
 	RunnerModelDisplay,
@@ -24,7 +25,6 @@ import {
 	isWorkflowPhaseRole,
 	renderRunnerModelDisplay,
 	resolveRunnerMcpProfile,
-	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_SPLIT,
 } from "flywheel-config";
 import {
@@ -635,6 +635,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 		protected inflightSessionTerminal?: InflightSessionTerminalProbe,
 		/** FLY-1944: closes the pause-check → durable-claim visibility gap. */
 		protected admissionCrossingBarrier?: AdmissionCrossingBarrier,
+		protected skillFrameworkModeControl: () => FlagStoreRawValue = () => ({
+			hasOverride: false,
+			raw: null,
+		}),
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -660,7 +664,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 	protected skillFrameworkPrior(
 		issueId: string,
 	): { stamp: SkillFrameworkMode } | { readFailed: true } | undefined {
-		if (process.env[SKILL_FRAMEWORK_MODE_ENV] !== SKILL_FRAMEWORK_SPLIT) {
+		if (this.skillFrameworkModeControl().raw !== SKILL_FRAMEWORK_SPLIT) {
 			return undefined;
 		}
 		try {
@@ -1389,6 +1393,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		/** FLY-1775: durable session terminality for process-local inflight repair. */
 		inflightSessionTerminal?: InflightSessionTerminalProbe,
 		admissionCrossingBarrier?: AdmissionCrossingBarrier,
+		skillFrameworkModeControl?: () => FlagStoreRawValue,
 	) {
 		super(
 			blueprintsByProject,
@@ -1405,6 +1410,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			doaBackoffAdmission,
 			inflightSessionTerminal,
 			admissionCrossingBarrier,
+			skillFrameworkModeControl,
 		);
 	}
 

@@ -13,6 +13,7 @@
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { STORE_MANAGED_FLAGS } from "flywheel-config";
 import { publishReport } from "./publish-report.js";
 
 export interface PublishInput {
@@ -92,12 +93,13 @@ export async function runFeatureFlags(
 	if (sub === "apply") {
 		const name = flagVal(rest, "--name");
 		const toStr = flagVal(rest, "--to");
+		const reason = flagVal(rest, "--reason")?.trim();
 		// FLY-1356: bool flags keep on|off; enum flags (skill_framework_mode)
 		// take the target value itself (e.g. --to split). The server validates
 		// enum membership and 400s unknown values — the CLI only shapes the type.
-		if (!name || !toStr) {
+		if (!name || !toStr || (STORE_MANAGED_FLAGS.has(name) && !reason)) {
 			errorLog(
-				"usage: flywheel-comm feature-flags apply --name <flag> --to on|off|<enum-value> [--bridge-url <url>]",
+				"usage: flywheel-comm feature-flags apply --name <flag> --to on|off|<enum-value> [--reason <required-for-managed-flags>] [--bridge-url <url>]",
 			);
 			return exit(1);
 		}
@@ -118,7 +120,7 @@ export async function runFeatureFlags(
 			const sres = await httpJson(`${bridgeUrl}/api/fleet/flag/stage`, {
 				method: "POST",
 				headers: hdr,
-				body: JSON.stringify({ name, to: toValue }),
+				body: JSON.stringify({ name, to: toValue, reason }),
 			});
 			if (!sres.ok) {
 				errorLog(`feature-flags apply: stage failed (${sres.status})`);

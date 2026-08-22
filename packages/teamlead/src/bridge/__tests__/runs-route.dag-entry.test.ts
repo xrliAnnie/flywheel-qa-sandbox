@@ -358,6 +358,11 @@ async function startHarness(options: {
 				scopedToken: SCOPED,
 				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
 			},
+			() => process.env.FLYWHEEL_WORKFLOW_RESUME === "1",
+			() => ({
+				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
+				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
+			}),
 		),
 	);
 	server = createServer(app);

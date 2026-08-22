@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	reconcileWorkflowTurnLedgers,
 	type WorkflowTurnExpectation,
-	workflowTurnDivergenceAlertsEnabled,
 } from "../workflow-turn-ledger-validator.js";
 
 const dirs: string[] = [];
@@ -16,20 +15,6 @@ afterEach(() => {
 });
 
 describe("reconcileWorkflowTurnLedgers", () => {
-	it("keeps severe alerts shadowed unless the rollout flag is explicitly on", () => {
-		expect(workflowTurnDivergenceAlertsEnabled({})).toBe(false);
-		expect(
-			workflowTurnDivergenceAlertsEnabled({
-				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
-			}),
-		).toBe(true);
-		expect(
-			workflowTurnDivergenceAlertsEnabled({
-				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "0",
-			}),
-		).toBe(false);
-	});
-
 	it("re-reads both ledgers, opens one durable divergence, then closes it on recovery", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1614-ledger-validator-"));
 		dirs.push(dir);

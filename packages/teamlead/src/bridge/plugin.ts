@@ -251,14 +251,23 @@ import {
 import {
 	createFlagRetirementScanner,
 	type FlagScanSourceSnapshot,
-	flagRetirementScanEnabled,
 } from "./flag-retirement-scan.js";
 import {
-	type FlagCanonical,
+	type AnyFlagCanonical,
 	type FlagRouteDeps,
 	handleFlagApply,
 	handleFlagStage,
 } from "./flag-routes.js";
+import {
+	enrichFlagViewsWithStore,
+	type FlagStoreRuntime,
+	initializeFlagStore,
+	storeFlagRetirementScanEnabled,
+	storeSkillFrameworkModeControl,
+	storeWorkflowResumeEnabled,
+	storeWorkflowReworkReentryEnabled,
+	storeWorkflowTurnDivergenceAlertsEnabled,
+} from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	defaultFleetConsoleOptions,
@@ -608,10 +617,7 @@ import {
 	enrichPrHeadViaGh,
 } from "./workflow-ship-ready-arm.js";
 import { createWorkflowTemplateRouter } from "./workflow-template-routes.js";
-import {
-	reconcileWorkflowTurnLedgers,
-	workflowTurnDivergenceAlertsEnabled,
-} from "./workflow-turn-ledger-validator.js";
+import { reconcileWorkflowTurnLedgers } from "./workflow-turn-ledger-validator.js";
 import { assertWorkflowWorktreeReady } from "./workflow-worktree-readiness.js";
 import {
 	createWorkKindCutoverRouter,
@@ -1211,6 +1217,8 @@ export class SseBroadcaster {
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
+	flagStore?: FlagStoreRuntime;
 	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
 	manualQaTokens?: ConfirmTokenStore;
 	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
@@ -1428,6 +1436,7 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const flagStore = opts?.flagStore;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -2286,6 +2295,7 @@ export function createBridgeApp(
 			readFile: (p) => ffReadFileSync(p, "utf-8"),
 			tokens: fleetConsole.tokens,
 			audit: fleetConsole.audit,
+			flagStore,
 		};
 		app.post("/api/fleet/flag/stage", (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -2311,7 +2321,7 @@ export function createBridgeApp(
 				return;
 			}
 			const { canonical, confirmToken } = (req.body ?? {}) as {
-				canonical?: FlagCanonical;
+				canonical?: AnyFlagCanonical;
 				confirmToken?: string;
 			};
 			if (!canonical || !confirmToken) {
@@ -4058,6 +4068,8 @@ export function createBridgeApp(
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
 			},
+			flagStore ? () => storeWorkflowResumeEnabled(flagStore) : undefined,
+			flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 		);
 		if (config.apiToken) {
 			app.use(
@@ -4380,6 +4392,7 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	const flagStore = initializeFlagStore(store, process.env);
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
 	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
@@ -4669,6 +4682,14 @@ export async function startBridge(
 				readEnvFileSource(managementEnvPath, (path) =>
 					ffReadFileSync(path, "utf-8"),
 				);
+			const currentFlagViews = () => {
+				const views = resolveAllFlags({
+					env: process.env,
+					envFile: managementEnvSource(),
+					projectConfigs: ffConfigCache.current(),
+				});
+				return flagStore ? enrichFlagViewsWithStore(views, flagStore) : views;
+			};
 			const managementLaunchAgentsDir = join(
 				homedir(),
 				"Library",
@@ -4692,11 +4713,7 @@ export async function startBridge(
 						`[flag-scan] project source refresh unavailable; project-scoped flags have no clock this round: ${(error as Error).message}`,
 					);
 				}
-				const resolvedViews = resolveAllFlags({
-					env: process.env,
-					envFile: managementEnvSource(),
-					projectConfigs: ffConfigCache.current(),
-				});
+				const resolvedViews = currentFlagViews();
 				const views = projectSourcesReadable
 					? resolvedViews
 					: resolvedViews.map((view) =>
@@ -4763,12 +4780,7 @@ export async function startBridge(
 							projectConfigs: () => ffConfigCache.current(),
 						}),
 						createManagementFlagProvider({
-							views: () =>
-								resolveAllFlags({
-									env: process.env,
-									envFile: managementEnvSource(),
-									projectConfigs: ffConfigCache.current(),
-								}),
+							views: currentFlagViews,
 							revision: () => {
 								const source = managementEnvSource();
 								return source.status === "readable"
@@ -4788,12 +4800,7 @@ export async function startBridge(
 						}),
 					],
 					// FLY-709: resolved feature-flag views (env fresh + cached configs).
-					featureFlags: () =>
-						resolveAllFlags({
-							env: process.env,
-							envFile: managementEnvSource(),
-							projectConfigs: ffConfigCache.current(),
-						}),
+					featureFlags: currentFlagViews,
 					// FLY-709 ② (b): per-project runner default model, derived from the
 					// SAME cached configs (no extra config.yaml IO).
 					projectRunnerDefaults: () =>
@@ -4847,12 +4854,7 @@ export async function startBridge(
 				envPath: managementEnvPath,
 				readEnvFile: (path) => ffReadFileSync(path, "utf-8"),
 				env: process.env,
-				flagViews: () =>
-					resolveAllFlags({
-						env: process.env,
-						envFile: managementEnvSource(),
-						projectConfigs: ffConfigCache.current(),
-					}),
+				flagViews: currentFlagViews,
 			});
 			const managementCoordinator = new ManagementChangeCoordinator({
 				registry: new ManagementWriterRegistry([
@@ -5785,6 +5787,7 @@ export async function startBridge(
 				projects,
 				registry,
 				{
+					flagStore,
 					chatThreadCreator,
 					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
@@ -6209,6 +6212,9 @@ export async function startBridge(
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				workflowReworkReentryEnabled: () =>
+					storeWorkflowReworkReentryEnabled(flagStore),
+				workflowResumeEnabled: () => storeWorkflowResumeEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				env: process.env,
 				resolveLeadId: (executionId) => {
@@ -6320,6 +6326,7 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			flagStore,
 			admissionCrossingBarrier,
 			residueHarvester,
 			terminalCommDbSync,
@@ -7487,7 +7494,7 @@ export async function startBridge(
 					newRunToken: () =>
 						`${new Date().toISOString().slice(0, 10)}-${randomBytes(8).toString("hex")}`,
 					leaseOwner: `bridge:${process.pid}:${randomUUID()}`,
-					enabled: () => flagRetirementScanEnabled(process.env),
+					enabled: () => storeFlagRetirementScanEnabled(flagStore),
 				})
 			: undefined;
 
@@ -8655,7 +8662,7 @@ export async function startBridge(
 			await reconcileWorkflowTurnLedgers({
 				store,
 				commDbPathForProject,
-				alertEnabled: workflowTurnDivergenceAlertsEnabled(),
+				alertEnabled: storeWorkflowTurnDivergenceAlertsEnabled(flagStore),
 				resolveAlertIdentity: (expectation) =>
 					resolveWorkflowRunAlertIdentity({
 						store,
@@ -9586,6 +9593,7 @@ export async function startBridge(
 			store,
 			ownerId: `bridge:${process.pid}`,
 			env: process.env,
+			reentryEnabled: () => storeWorkflowReworkReentryEnabled(flagStore),
 			resolveAlertIdentity: (run) =>
 				resolveWorkflowRunAlertIdentity({
 					store,

@@ -157,12 +157,6 @@ export function flagScanIsDue(
 	);
 }
 
-export function flagRetirementScanEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_FLAG_RETIREMENT_SCAN !== "0";
-}
-
 export type FlagScanEffectResult =
 	| { status: "done"; evidence: string }
 	| { status: "ambiguous"; evidence?: string }
@@ -219,7 +213,7 @@ export interface FlagRetirementScannerDependencies {
 	now(): number;
 	newRunToken(): string;
 	leaseOwner: string;
-	enabled?: () => boolean;
+	enabled: () => boolean;
 	/** Reconcile durable failure-mailbox intents before doing new scan work. */
 	recoverFailureAlerts?: () => void;
 }
@@ -556,7 +550,7 @@ export function createFlagRetirementScanner(
 	dryRun(): Promise<FlagScanOutcome>;
 	recoverPending(): Promise<FlagScanOutcome>;
 } {
-	const enabled = deps.enabled ?? (() => flagRetirementScanEnabled());
+	const enabled = deps.enabled;
 
 	async function fail(error: unknown): Promise<FlagScanOutcome> {
 		const message = error instanceof Error ? error.message : String(error);

@@ -1,0 +1,24 @@
+erDiagram
+    flag_values {
+        text flag_name PK "flag 名(唯一)"
+        int has_override "有无显式覆盖值"
+        text raw_value "覆盖值原文"
+        text last_effective "当前生效值"
+        int value_last_changed "值上次变更时刻(可空=没变过)"
+        int revision "版本号(每写必增,防并发覆盖)"
+        text updated_by "谁改的"
+    }
+    flag_value_changelog {
+        int id PK
+        text action "seed / set / clear / default_shift / bypass_recovery"
+        text from_effective "变更前生效值"
+        text to_effective "变更后生效值"
+        text changed_by "谁"
+        text reason "为什么(必填)"
+        int changed_at "何时"
+    }
+    flag_store_meta {
+        text key "固定 = bypass_seen"
+        int value "0 或 1"
+    }
+    flag_values ||--o{ flag_value_changelog : "每次变更留一行账"

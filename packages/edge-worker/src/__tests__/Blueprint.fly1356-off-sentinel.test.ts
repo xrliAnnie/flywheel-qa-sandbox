@@ -16,7 +16,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { SKILL_FRAMEWORK_MODE_ENV } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -39,12 +38,8 @@ async function runOnce(opts: {
 	envValue?: string;
 	projectRoot?: string;
 	agentDispatcher?: AgentDispatcher;
+	participation?: (projectName: string | undefined) => boolean;
 }): Promise<{ envelope: EventEnvelope; execArgs: AdapterExecutionContext }> {
-	if (opts.envValue === undefined) {
-		delete process.env[SKILL_FRAMEWORK_MODE_ENV];
-	} else {
-		process.env[SKILL_FRAMEWORK_MODE_ENV] = opts.envValue;
-	}
 	const envelopes: EventEnvelope[] = [];
 	const adapter: IAdapter = {
 		type: "mock",
@@ -95,8 +90,13 @@ async function runOnce(opts: {
 		undefined, // docFlowConfig
 		undefined, // ponytailConfig
 		undefined, // ponytailReadiness
-		undefined, // skillFrameworkParticipation
+		opts.participation,
 		() => true, // matt readiness stub (irrelevant at default)
+		undefined, // codexSkillAssemblyProbe
+		() => ({
+			hasOverride: opts.envValue !== undefined,
+			raw: opts.envValue ?? null,
+		}),
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -116,9 +116,7 @@ async function runOnce(opts: {
 	};
 }
 
-afterEach(() => {
-	delete process.env[SKILL_FRAMEWORK_MODE_ENV];
-});
+afterEach(() => vi.restoreAllMocks());
 
 const NEW_ENVELOPE_KEYS = ["skillFrameworkMode", "skillFrameworkModeVia"];
 const NEW_EXEC_KEYS = ["disabledPlugins", "enabledPluginsExtra"];
@@ -164,6 +162,19 @@ describe("FLY-1356 OFF sentinel — default env is byte-compatible", () => {
 		const { envelope } = await runOnce({ envValue: "split" });
 		expect(envelope.skillFrameworkMode).toBeDefined();
 		expect(envelope.skillFrameworkModeVia).toBe("hash");
+	});
+
+	it("the injected split control gates participation before issue-aware resolution", async () => {
+		const participation = vi.fn(() => false);
+		const { envelope } = await runOnce({
+			envValue: "split",
+			participation,
+		});
+		expect(participation).toHaveBeenCalledWith("testproj");
+		expect(envelope).toMatchObject({
+			skillFrameworkMode: "superpowers",
+			skillFrameworkModeVia: "project_opt_out",
+		});
 	});
 
 	it("mutation: env=bare makes the adapter args gain disabledPlugins (ruler works)", async () => {

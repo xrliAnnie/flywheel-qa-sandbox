@@ -1,0 +1,17 @@
+stateDiagram-v2
+    direction LR
+    [*] --> Normal : 正常启动
+    Normal : 正常模式
+    Normal : 播种/对账通过才就绪
+    Normal : 读写全走 SQLite
+    Bypass : 旁路模式(应急逃生口)
+    Bypass : 读回退 .env 老语义
+    Bypass : 禁止翻转(值冻结)
+    Bypass : 时钟标记为不可信
+    Recovery : 恢复对账(单事务)
+    Recovery : 每个 flag 保守拨钟一次
+    Recovery : 全成才清围栏
+    Normal --> Bypass : 改 .env + 重启<br/>(落 durable 围栏)
+    Bypass --> Recovery : 关闭旁路 + 重启
+    Recovery --> Normal : 事务提交 = 就绪
+    Recovery --> Bypass : 中途失败全回滚<br/>围栏保持

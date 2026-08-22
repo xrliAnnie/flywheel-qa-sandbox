@@ -16,14 +16,19 @@ import {
 	type DesignBackend,
 	type FlagKeepAnchor,
 	type FlagScanState,
+	FEATURE_FLAGS,
+	getFlagStoreCodec,
 	getNodeTypeRegistryEntry,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
+	PROTECTED_LEGACY_FLAG_NAMES,
+	RETIRED_FLAGS,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
+	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
@@ -1554,6 +1559,45 @@ export type CommitFlagScanResult =
 	| {
 			committed: false;
 			reason: "pending_exists" | "cas_mismatch";
+	  };
+
+export interface FlagValueRow {
+	flagName: string;
+	hasOverride: boolean;
+	raw: string | null;
+	lastEffective: string;
+	valueLastChanged: number | null;
+	revision: number;
+	updatedAt: number;
+	updatedBy: string;
+}
+
+export interface FlagValueChangeRow {
+	id: number;
+	flagName: string;
+	action: "seed" | "set" | "clear" | "default_shift" | "bypass_recovery";
+	fromPresent: boolean | null;
+	fromRaw: string | null;
+	toPresent: boolean;
+	toRaw: string | null;
+	fromEffective: string | null;
+	toEffective: string;
+	changedBy: string;
+	changedAt: number;
+	reason: string;
+}
+
+export type ApplyFlagValueChangeResult =
+	| { ok: true; valueChanged: boolean; row: FlagValueRow }
+	| {
+			ok: false;
+			reason:
+				| "protected_legacy"
+				| "retired_flag"
+				| "not_store_managed"
+				| "missing_row"
+				| "stale_revision";
+			currentRevision?: number;
 	  };
 
 export class StateStore {
@@ -4514,8 +4558,362 @@ export class StateStore {
 		this.migrateChatThreadsDisplayFingerprintColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
+		this.migrateFlagValueStore();
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
+	}
+
+	/** FLY-1778: one current-value row plus an append-only operator audit. */
+	private migrateFlagValueStore(): void {
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_values (
+				flag_name TEXT PRIMARY KEY,
+				has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
+				raw_value TEXT,
+				last_effective TEXT NOT NULL,
+				value_last_changed INTEGER,
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				updated_at INTEGER NOT NULL,
+				updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
+				CHECK (
+					(has_override = 1 AND raw_value IS NOT NULL) OR
+					(has_override = 0 AND raw_value IS NULL)
+				)
+			);
+			CREATE TABLE IF NOT EXISTS flag_value_changelog (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				flag_name TEXT NOT NULL,
+				action TEXT NOT NULL CHECK (
+					action IN ('seed','set','clear','default_shift','bypass_recovery')
+				),
+				from_present INTEGER CHECK (from_present IS NULL OR from_present IN (0, 1)),
+				from_raw TEXT,
+				to_present INTEGER NOT NULL CHECK (to_present IN (0, 1)),
+				to_raw TEXT,
+				from_effective TEXT,
+				to_effective TEXT NOT NULL,
+				changed_by TEXT NOT NULL CHECK (length(changed_by) > 0),
+				changed_at INTEGER NOT NULL,
+				reason TEXT NOT NULL CHECK (length(reason) > 0),
+				CHECK (
+					(to_present = 1 AND to_raw IS NOT NULL) OR
+					(to_present = 0 AND to_raw IS NULL)
+				)
+			);
+			CREATE INDEX IF NOT EXISTS idx_flag_value_changelog_flag
+				ON flag_value_changelog(flag_name, id);
+			CREATE TABLE IF NOT EXISTS flag_store_meta (
+				key TEXT PRIMARY KEY CHECK (key = 'bypass_seen'),
+				value INTEGER NOT NULL CHECK (value IN (0, 1)),
+				updated_at INTEGER NOT NULL
+			);
+		`);
+	}
+
+	getFlagValueRow(name: string): FlagValueRow | undefined {
+		const row = this.db.raw
+			.prepare(
+				`SELECT flag_name, has_override, raw_value, last_effective,
+					value_last_changed, revision, updated_at, updated_by
+				 FROM flag_values WHERE flag_name = ?`,
+			)
+			.get(name) as
+			| {
+					flag_name: string;
+					has_override: number;
+					raw_value: string | null;
+					last_effective: string;
+					value_last_changed: number | null;
+					revision: number;
+					updated_at: number;
+					updated_by: string;
+			  }
+			| undefined;
+		return row
+			? {
+					flagName: row.flag_name,
+					hasOverride: row.has_override === 1,
+					raw: row.raw_value,
+					lastEffective: row.last_effective,
+					valueLastChanged: row.value_last_changed,
+					revision: row.revision,
+					updatedAt: row.updated_at,
+					updatedBy: row.updated_by,
+				}
+			: undefined;
+	}
+
+	listFlagValueChanges(name: string): FlagValueChangeRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT id, flag_name, action, from_present, from_raw, to_present,
+						to_raw, from_effective, to_effective, changed_by, changed_at, reason
+					 FROM flag_value_changelog WHERE flag_name = ? ORDER BY id`,
+				)
+				.all(name) as Array<Record<string, unknown>>
+		).map((row) => ({
+			id: Number(row.id),
+			flagName: String(row.flag_name),
+			action: row.action as FlagValueChangeRow["action"],
+			fromPresent:
+				row.from_present === null ? null : Number(row.from_present) === 1,
+			fromRaw: (row.from_raw as string | null) ?? null,
+			toPresent: Number(row.to_present) === 1,
+			toRaw: (row.to_raw as string | null) ?? null,
+			fromEffective: (row.from_effective as string | null) ?? null,
+			toEffective: String(row.to_effective),
+			changedBy: String(row.changed_by),
+			changedAt: Number(row.changed_at),
+			reason: String(row.reason),
+		}));
+	}
+
+	markFlagStoreBypassSeen(now: number = Date.now()): void {
+		this.db.raw
+			.prepare(
+				`INSERT INTO flag_store_meta(key, value, updated_at)
+				 VALUES ('bypass_seen', 1, ?)
+				 ON CONFLICT(key) DO UPDATE SET value = 1, updated_at = excluded.updated_at`,
+			)
+			.run(now);
+	}
+
+	isFlagStoreBypassSeen(): boolean {
+		return (
+			(
+				this.db.raw
+					.prepare("SELECT value FROM flag_store_meta WHERE key = 'bypass_seen'")
+					.get() as { value: number } | undefined
+			)?.value === 1
+		);
+	}
+
+	ensureFlagValueRows(args: {
+		env: Record<string, string | undefined>;
+		now?: number;
+	}): void {
+		const now = args.now ?? Date.now();
+		this.db.raw.transaction(() => {
+			const recovering = this.isFlagStoreBypassSeen();
+			for (const { flag_name } of this.db.raw
+				.prepare("SELECT flag_name FROM flag_values")
+				.all() as Array<{ flag_name: string }>) {
+				if (!STORE_MANAGED_FLAGS.has(flag_name)) {
+					throw new Error(`invalid flag_values identity: ${flag_name}`);
+				}
+			}
+
+			for (const name of STORE_MANAGED_FLAGS) {
+				const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+				const codec = getFlagStoreCodec(name);
+				if (!spec?.envVar || !codec) {
+					throw new Error(`missing flag store policy: ${name}`);
+				}
+				const existing = this.getFlagValueRow(name);
+				if (recovering) {
+					const raw = args.env[spec.envVar] ?? null;
+					const hasOverride = args.env[spec.envVar] !== undefined;
+					const effective = codec.canonicalEffective(
+						codec.parse({ hasOverride, raw }),
+					);
+					if (existing) {
+						this.db.raw
+							.prepare(
+								`UPDATE flag_values SET has_override = ?, raw_value = ?,
+									last_effective = ?, value_last_changed = ?, revision = revision + 1,
+									updated_at = ?, updated_by = 'flag-store-recovery'
+								 WHERE flag_name = ?`,
+							)
+							.run(hasOverride ? 1 : 0, raw, effective, now, now, name);
+					} else {
+						this.db.raw
+							.prepare(
+								`INSERT INTO flag_values (
+									flag_name, has_override, raw_value, last_effective,
+									value_last_changed, revision, updated_at, updated_by
+								) VALUES (?, ?, ?, ?, ?, 1, ?, 'flag-store-recovery')`,
+							)
+							.run(name, hasOverride ? 1 : 0, raw, effective, now, now);
+					}
+					this.db.raw
+						.prepare(
+							`INSERT INTO flag_value_changelog (
+								flag_name, action, from_present, from_raw, to_present, to_raw,
+								from_effective, to_effective, changed_by, changed_at, reason
+							) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
+								'flag-store-recovery', ?, 'restore authority after boot bypass')`,
+						)
+						.run(
+							name,
+							existing ? (existing.hasOverride ? 1 : 0) : null,
+							existing?.raw ?? null,
+							hasOverride ? 1 : 0,
+							raw,
+							existing?.lastEffective ?? null,
+							effective,
+							now,
+						);
+					continue;
+				}
+				if (!existing) {
+					const raw = args.env[spec.envVar] ?? null;
+					const hasOverride = args.env[spec.envVar] !== undefined;
+					const effective = codec.canonicalEffective(
+						codec.parse({ hasOverride, raw }),
+					);
+					this.db.raw
+						.prepare(
+							`INSERT INTO flag_values (
+								flag_name, has_override, raw_value, last_effective,
+								value_last_changed, revision, updated_at, updated_by
+							) VALUES (?, ?, ?, ?, NULL, 1, ?, 'flag-store-bootstrap')`,
+						)
+						.run(name, hasOverride ? 1 : 0, raw, effective, now);
+					this.db.raw
+						.prepare(
+							`INSERT INTO flag_value_changelog (
+								flag_name, action, from_present, from_raw, to_present, to_raw,
+								from_effective, to_effective, changed_by, changed_at, reason
+							) VALUES (?, 'seed', NULL, NULL, ?, ?, NULL, ?,
+								'flag-store-bootstrap', ?, 'initial registry seed')`,
+						)
+						.run(name, hasOverride ? 1 : 0, raw, effective, now);
+					continue;
+				}
+
+				const effective = codec.canonicalEffective(
+					codec.parse({
+						hasOverride: existing.hasOverride,
+						raw: existing.raw,
+					}),
+				);
+				if (effective === existing.lastEffective) continue;
+				this.db.raw
+					.prepare(
+						`UPDATE flag_values SET last_effective = ?, value_last_changed = ?,
+							revision = revision + 1, updated_at = ?, updated_by = 'flag-store-bootstrap'
+						 WHERE flag_name = ?`,
+					)
+					.run(effective, now, now, name);
+				this.db.raw
+					.prepare(
+						`INSERT INTO flag_value_changelog (
+							flag_name, action, from_present, from_raw, to_present, to_raw,
+							from_effective, to_effective, changed_by, changed_at, reason
+						) VALUES (?, 'default_shift', ?, ?, ?, ?, ?, ?,
+							'flag-store-bootstrap', ?, 'effective default or codec changed')`,
+					)
+					.run(
+						name,
+						existing.hasOverride ? 1 : 0,
+						existing.raw,
+						existing.hasOverride ? 1 : 0,
+						existing.raw,
+						existing.lastEffective,
+						effective,
+						now,
+					);
+			}
+			if (recovering) {
+				this.db.raw
+					.prepare(
+						"UPDATE flag_store_meta SET value = 0, updated_at = ? WHERE key = 'bypass_seen'",
+					)
+					.run(now);
+			}
+		})();
+	}
+
+	applyFlagValueChange(args: {
+		name: string;
+		rawTo: string | null;
+		expectedRevision: number;
+		actor: string;
+		reason: string;
+		now?: number;
+	}): ApplyFlagValueChangeResult {
+		if (
+			RETIRED_FLAGS.some(
+				({ envVar }) =>
+					envVar.replace(/^FLYWHEEL_/, "").toLowerCase() === args.name,
+			)
+		) {
+			return { ok: false, reason: "retired_flag" };
+		}
+		if (PROTECTED_LEGACY_FLAG_NAMES.has(args.name)) {
+			return { ok: false, reason: "protected_legacy" };
+		}
+		if (!STORE_MANAGED_FLAGS.has(args.name)) {
+			return { ok: false, reason: "not_store_managed" };
+		}
+		if (!args.actor.trim() || !args.reason.trim()) {
+			throw new Error("flag value changes require actor and reason");
+		}
+
+		let result: ApplyFlagValueChangeResult = {
+			ok: false,
+			reason: "missing_row",
+		};
+		this.db.raw.transaction(() => {
+			const current = this.getFlagValueRow(args.name);
+			if (!current) return;
+			if (current.revision !== args.expectedRevision) {
+				result = {
+					ok: false,
+					reason: "stale_revision",
+					currentRevision: current.revision,
+				};
+				return;
+			}
+			const codec = getFlagStoreCodec(args.name);
+			if (!codec) throw new Error(`missing flag store codec: ${args.name}`);
+			const hasOverride = args.rawTo !== null;
+			const effective = codec.canonicalEffective(
+				codec.parse({ hasOverride, raw: args.rawTo }),
+			);
+			const valueChanged = effective !== current.lastEffective;
+			const now = args.now ?? Date.now();
+			this.db.raw
+				.prepare(
+					`UPDATE flag_values SET has_override = ?, raw_value = ?,
+						last_effective = ?, value_last_changed = ?, revision = revision + 1,
+						updated_at = ?, updated_by = ? WHERE flag_name = ?`,
+				)
+				.run(
+					hasOverride ? 1 : 0,
+					args.rawTo,
+					effective,
+					valueChanged ? now : current.valueLastChanged,
+					now,
+					args.actor,
+					args.name,
+				);
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_value_changelog (
+						flag_name, action, from_present, from_raw, to_present, to_raw,
+						from_effective, to_effective, changed_by, changed_at, reason
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					args.name,
+					hasOverride ? "set" : "clear",
+					current.hasOverride ? 1 : 0,
+					current.raw,
+					hasOverride ? 1 : 0,
+					args.rawTo,
+					current.lastEffective,
+					effective,
+					args.actor,
+					now,
+					args.reason,
+				);
+			const row = this.getFlagValueRow(args.name);
+			if (!row) throw new Error(`flag value disappeared: ${args.name}`);
+			result = { ok: true, valueChanged, row };
+		})();
+		return result;
 	}
 
 	/** FLY-1781: durable weekly flag-retirement scan + side-effect outbox. */

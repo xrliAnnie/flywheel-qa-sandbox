@@ -174,6 +174,10 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		opts.participation, // FLY-1356 participation reader
 		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
 		opts.codexProbe,
+		() => ({
+			hasOverride: opts.envValue !== undefined,
+			raw: opts.envValue ?? null,
+		}),
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",

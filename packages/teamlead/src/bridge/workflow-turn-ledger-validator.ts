@@ -39,12 +39,6 @@ interface WorkflowTurnLedgerValidatorStore {
 	}): boolean;
 }
 
-export function workflowTurnDivergenceAlertsEnabled(
-	env: NodeJS.ProcessEnv = process.env,
-): boolean {
-	return env.FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS === "1";
-}
-
 function exactMatch(
 	expectation: WorkflowTurnExpectation,
 	turn: ReturnType<CommDB["getTurn"]>,

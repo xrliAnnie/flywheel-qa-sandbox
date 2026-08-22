@@ -27,7 +27,6 @@ import {
 	getModelConfigSnapshot,
 	isSkillFrameworkMode,
 	isWorkflowPhaseRole,
-	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
 	workflowMenuTemplateId,
@@ -290,12 +289,6 @@ function isDeptScopeRejectEnabled(): boolean {
 	return lower !== "off" && lower !== "false" && lower !== "0";
 }
 
-export function isWorkflowResumeEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_WORKFLOW_RESUME === "1";
-}
-
 export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
 	store: StateStore,
@@ -348,6 +341,11 @@ export function createRunsRouter(
 			receiptKey: string,
 		) => Promise<WorkflowRunCollectReceiptRow>;
 	},
+	workflowResumeEnabled: () => boolean = () => false,
+	skillFrameworkModeControl: () => {
+		hasOverride: boolean;
+		raw: string | null;
+	} = () => ({ hasOverride: false, raw: null }),
 ): Router {
 	const router = Router();
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
@@ -1093,8 +1091,7 @@ export function createRunsRouter(
 		// downstream code reads `req.body.projectName` directly. Unknown projects
 		// pass through unchanged and still reject normally below.
 		const projectName = resolveCanonicalProjectName(projects, rawProjectName);
-		const resumeRequested =
-			isWorkflowResumeEnabled(process.env) && req.body.resume === true;
+		const resumeRequested = workflowResumeEnabled() && req.body.resume === true;
 		const requestedResumeAttachment = resumeRequested
 			? typeof req.body.attachmentId === "string"
 				? req.body.attachmentId.trim()
@@ -1208,9 +1205,7 @@ export function createRunsRouter(
 				silent: false,
 			});
 			return;
-		} else if (
-			process.env[SKILL_FRAMEWORK_MODE_ENV] !== SKILL_FRAMEWORK_SPLIT
-		) {
+		} else if (skillFrameworkModeControl().raw !== SKILL_FRAMEWORK_SPLIT) {
 			res.status(400).json({
 				success: false,
 				code: "SKILL_FRAMEWORK_MODE_NOT_APPLICABLE",

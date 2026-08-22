@@ -135,6 +135,11 @@ async function runBlueprint(opts: RunOpts = {}): Promise<{
 		undefined, // ponytailReadiness (default)
 		undefined, // participation reader (absent ⇒ participate)
 		opts.readiness ?? (() => true), // matt readiness
+		undefined, // codexSkillAssemblyProbe
+		() => ({
+			hasOverride: opts.envValue !== undefined,
+			raw: opts.envValue ?? null,
+		}),
 	);
 	const node: DagNode = { id, blockedBy: [] };
 	const ctx: BlueprintContext = {

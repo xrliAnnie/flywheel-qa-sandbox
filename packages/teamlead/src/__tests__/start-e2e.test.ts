@@ -5,6 +5,7 @@
 
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initializeFlagStore } from "../bridge/flag-store-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
 import {
@@ -116,12 +117,16 @@ describe("Start API E2E", () => {
 	let baseUrl: string;
 	let mockDispatcher: ReturnType<typeof createMockStartDispatcher>;
 	let savedLinearKey: string | undefined;
+	let savedSkillFlag: string | undefined;
 
 	beforeEach(async () => {
 		// Hermetic: ensure LINEAR_API_KEY is set for non-503 tests
 		savedLinearKey = process.env.LINEAR_API_KEY;
 		process.env.LINEAR_API_KEY = savedLinearKey ?? "test-key";
+		savedSkillFlag = process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
+		delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
 		store = await StateStore.create(":memory:");
+		const flagStore = initializeFlagStore(store, process.env);
 		mockDispatcher = createMockStartDispatcher(store);
 		const app = createBridgeApp(
 			store,
@@ -138,6 +143,9 @@ describe("Start API E2E", () => {
 			undefined, // memoryService
 			undefined, // captureSessionFn
 			mockDispatcher, // startDispatcher
+			undefined, // standupService
+			undefined, // standupProjectName
+			{ flagStore },
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -152,6 +160,11 @@ describe("Start API E2E", () => {
 			process.env.LINEAR_API_KEY = savedLinearKey;
 		} else {
 			delete process.env.LINEAR_API_KEY;
+		}
+		if (savedSkillFlag !== undefined) {
+			process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = savedSkillFlag;
+		} else {
+			delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
 		}
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -899,20 +912,18 @@ describe("Start API E2E", () => {
 	// boundary mirrors designBackend: validated synchronously, fail-loud, and
 	// ONLY accepted while the Bridge flag is `split` (kill-switch precedence).
 	describe("FLY-1356 — per-dispatch skillFrameworkMode", () => {
-		let savedFlag: string | undefined;
-
-		beforeEach(() => {
-			savedFlag = process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-			delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-		});
-
-		afterEach(() => {
-			if (savedFlag === undefined) {
-				delete process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE;
-			} else {
-				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = savedFlag;
-			}
-		});
+		function setSkillFrameworkControl(raw: string | null): void {
+			const revision = store.getFlagValueRow("skill_framework_mode")!.revision;
+			expect(
+				store.applyFlagValueChange({
+					name: "skill_framework_mode",
+					rawTo: raw,
+					expectedRevision: revision,
+					actor: "test-local-operator",
+					reason: "exercise runs route",
+				}),
+			).toMatchObject({ ok: true });
+		}
 
 		async function postArm(skillFrameworkMode: unknown): Promise<Response> {
 			return fetch(`${baseUrl}/api/runs/start`, {
@@ -929,7 +940,7 @@ describe("Start API E2E", () => {
 		it.each([42, true, "split", "SUPERPOWERS", "garbage", ""])(
 			"rejects invalid arm %# before dispatch (split is env-only, not a per-dispatch arm)",
 			async (arm) => {
-				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+				setSkillFrameworkControl("split");
 				const res = await postArm(arm);
 				expect(res.status).toBe(400);
 				expect(await res.json()).toEqual({
@@ -960,7 +971,7 @@ describe("Start API E2E", () => {
 		it.each(["bare", "bare-ponytail"])(
 			"valid arm %s under split → dispatched with skillFrameworkMode",
 			async (arm) => {
-				process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "split";
+				setSkillFrameworkControl("split");
 				const res = await postArm(arm);
 				expect(res.status).toBe(200);
 				expect(mockDispatcher.start).toHaveBeenCalledWith(

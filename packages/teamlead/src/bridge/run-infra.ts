@@ -66,6 +66,10 @@ import {
 	type OpenPullRequest,
 } from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
+import {
+	type FlagStoreRuntime,
+	storeSkillFrameworkModeControl,
+} from "./flag-store-runtime.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { MaterializedHeadAuthority } from "./materialized-head-authority.js";
@@ -322,6 +326,10 @@ async function createRunBlueprint(
 	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
 	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
+	skillFrameworkModeControl?: () => {
+		hasOverride: boolean;
+		raw: string | null;
+	}, // FLY-1778: call-time SQLite raw control; Blueprint keeps issue-aware resolution
 	onTuiWindowLost?: (
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>,
@@ -576,6 +584,9 @@ async function createRunBlueprint(
 			ponytailConfig, // FLY-615: per-project ponytail rollout layer
 			undefined, // ponytailReadiness — use Blueprint's default probe
 			skillFrameworkParticipation, // FLY-1356: split-participation reader
+			undefined, // skillFrameworkReadiness — use Blueprint default
+			undefined, // codexSkillAssemblyProbe — use Blueprint default
+			skillFrameworkModeControl,
 		);
 
 		const cleanup = async () => {
@@ -611,6 +622,8 @@ async function createRunBlueprint(
  */
 /** FLY-91 Round 3 + FLY-137 v1.27.2: Optional external dependencies for run infrastructure. */
 export interface RunInfraOptions {
+	/** FLY-1778: boot-snapshotted authority; values remain read-on-use. */
+	flagStore?: FlagStoreRuntime;
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
 	/** FLY-1718: shared structural repo lock used by fetch + worktree mutation. */
@@ -762,10 +775,12 @@ export function createRunInfraDispatcher(input: {
 	continuityComputer?: ContinuityComputer;
 	freshStartAudit?: FreshStartAuditRecorder;
 	admissionCrossingBarrier?: AdmissionCrossingBarrier;
+	flagStore?: FlagStoreRuntime;
 	/** Test-only subclass seam for suppressing external CommDB registration. */
 	dispatcherClass?: typeof RunDispatcher;
 }): RunDispatcher {
 	const Dispatcher = input.dispatcherClass ?? RunDispatcher;
+	const flagStore = input.flagStore;
 	return new Dispatcher(
 		input.projectRuntimes,
 		input.cleanupHandles,
@@ -794,6 +809,7 @@ export function createRunInfraDispatcher(input: {
 				input.store.getSession(executionId)?.status,
 			),
 		input.admissionCrossingBarrier,
+		flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 	);
 }
 
@@ -1061,6 +1077,10 @@ export async function setupRunInfrastructure(
 			// key → participate (default true).
 			const skillFrameworkParticipation =
 				makeSkillFrameworkParticipationReader(configPath);
+			const flagStore = runInfraOpts?.flagStore;
+			const skillFrameworkModeControl = flagStore
+				? () => storeSkillFrameworkModeControl(flagStore)
+				: undefined;
 
 			const { blueprint, cleanup } = await createRunBlueprint(
 				tmuxSessionName,
@@ -1076,6 +1096,7 @@ export async function setupRunInfrastructure(
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
 				skillFrameworkParticipation, // FLY-1356
+				skillFrameworkModeControl, // FLY-1778
 				runInfraOpts?.onTuiWindowLost,
 				runInfraOpts?.onTuiWindowRestored,
 			);
@@ -1273,6 +1294,7 @@ export async function setupRunInfrastructure(
 		continuityComputer,
 		freshStartAudit: (record) => continuityAudit.recordFreshStart(record),
 		admissionCrossingBarrier: runInfraOpts?.admissionCrossingBarrier,
+		flagStore: runInfraOpts?.flagStore,
 	});
 }
 

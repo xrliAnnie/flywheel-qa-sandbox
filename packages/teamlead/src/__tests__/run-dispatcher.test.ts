@@ -1631,6 +1631,17 @@ describe("FLY-1356 — sticky-stamp lookup failure surfaces readFailed", () => {
 			undefined,
 			undefined,
 			lookup,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			() => ({
+				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
+				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
+			}),
 		);
 		await dispatcher.start({
 			issueId: "FLY-1356",

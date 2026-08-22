@@ -26,8 +26,8 @@ describe("feature-flag registry invariants", () => {
 		});
 		expect(flag?.readSites).toEqual([
 			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/flag-retirement-scan.ts",
-				symbol: "flagRetirementScanEnabled",
+				file: "packages/teamlead/src/bridge/plugin.ts",
+				resolverSymbol: "storeFlagRetirementScanEnabled",
 				timing: "call_time",
 			}),
 		]);
@@ -342,9 +342,8 @@ describe("feature-flag registry invariants", () => {
 			toggleable: "direct",
 		});
 		expect(flag?.readSites.map((site) => site.symbol)).toEqual([
-			"reconcile",
-			"reconcileWorkflowReworks",
-			"reconcileWorkflowReworkStalls",
+			"WorkflowReworkCoordinator reentry injection",
+			"WorkflowEngineDispatcher reentry injection",
 		]);
 		expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
 		expect(

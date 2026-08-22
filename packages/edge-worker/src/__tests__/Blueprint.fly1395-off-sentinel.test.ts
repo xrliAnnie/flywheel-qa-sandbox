@@ -115,6 +115,10 @@ async function runCodex(envValue?: string): Promise<{
 		undefined, // skillFrameworkParticipation
 		() => true, // skillFrameworkReadiness
 		() => ({ disableNames: ["superpowers:fixture"] }),
+		() => ({
+			hasOverride: envValue !== undefined,
+			raw: envValue ?? null,
+		}),
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",

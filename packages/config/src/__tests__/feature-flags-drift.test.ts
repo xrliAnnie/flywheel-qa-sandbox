@@ -254,6 +254,17 @@ describe("feature-flag drift guard", () => {
 			),
 		).toEqual([
 			{
+				name: "flag_retirement_scan",
+				site: {
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "flag scan enabled injection",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeFlagRetirementScanEnabled",
+				},
+			},
+			{
 				name: "codex_hard_gate_killswitch",
 				site: {
 					file: "packages/teamlead/src/bridge/auto-qa-held.ts",
@@ -264,6 +275,66 @@ describe("feature-flag drift guard", () => {
 					resolverSymbol: "codexHardGateEnabled",
 				},
 			},
+			...[
+				[
+					"workflow_rework_reentry",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"WorkflowReworkCoordinator reentry injection",
+					"storeWorkflowReworkReentryEnabled",
+				],
+				[
+					"workflow_rework_reentry",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"WorkflowEngineDispatcher reentry injection",
+					"storeWorkflowReworkReentryEnabled",
+				],
+				[
+					"skill_framework_mode",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"runs route skill mode injection",
+					"storeSkillFrameworkModeControl",
+				],
+				[
+					"skill_framework_mode",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"Blueprint skill mode injection",
+					"storeSkillFrameworkModeControl",
+				],
+				[
+					"skill_framework_mode",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"RunDispatcher sticky mode injection",
+					"storeSkillFrameworkModeControl",
+				],
+				[
+					"workflow_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"runs route resume injection",
+					"storeWorkflowResumeEnabled",
+				],
+				[
+					"workflow_resume",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"WorkflowEngineDispatcher resume injection",
+					"storeWorkflowResumeEnabled",
+				],
+				[
+					"workflow_turn_divergence_alerts",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflow TURN divergence alert injection",
+					"storeWorkflowTurnDivergenceAlertsEnabled",
+				],
+			].map(([name, file, symbol, resolverSymbol]) => ({
+				name,
+				site: {
+					file,
+					symbol,
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol,
+				},
+			})),
 		]);
 
 		expect(

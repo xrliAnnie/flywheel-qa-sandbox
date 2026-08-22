@@ -38,6 +38,16 @@ export {
 	computeFlagScan,
 	FLAG_SCAN_INTERVAL_MS,
 } from "./scan.js";
+export type {
+	FlagStoreCodec,
+	FlagStoreRawValue,
+} from "./store-policy.js";
+export {
+	getFlagStoreCodec,
+	getStoreEligibility,
+	PROTECTED_LEGACY_FLAG_NAMES,
+	STORE_MANAGED_FLAGS,
+} from "./store-policy.js";
 export {
 	NON_FLAG_ALLOWLIST,
 	RETIRED_FLAGS,
