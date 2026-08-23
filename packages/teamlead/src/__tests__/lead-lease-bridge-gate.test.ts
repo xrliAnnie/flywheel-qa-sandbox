@@ -224,7 +224,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		db.close();
 	});
 
-	it("validates the preserved requester before attribution rewrite and stores authoritative provenance", async () => {
+	it("validates and preserves the requester while storing authoritative provenance", async () => {
 		bindLease();
 		const questionId = seedQuestion();
 		start();
@@ -233,7 +233,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		expect(result.status).toBe(200);
 		const db = new CommDB(commDbPath, false);
 		expect(db.getResponse(questionId)).toMatchObject({
-			from_agent: "bridge-founder-consent",
+			from_agent: LEAD_ID,
 			sender_lease_key: LEAD_KEY,
 			sender_generation: 1,
 			sender_holder_pid: 222,
@@ -241,8 +241,8 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			writer_pid: 999,
 			writer_start: "cli-writer-start",
 		});
-		// Feedback is not a founder approval source event; this test only proves
-		// the preserved Lead requester was authorized before attribution rewrite.
+		// Feedback is not a founder approval source event; this test proves the
+		// preserved Lead requester was authorized without minting founder authority.
 		expect(db.listWorkflowSourceEvents()).toEqual([]);
 		db.close();
 	});

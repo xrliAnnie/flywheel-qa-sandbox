@@ -25,13 +25,17 @@ cat > "${ROOT}/slots.json" <<'EOF'
  "alertChannel":{"channelId":"AL","repairBotTokenEnv":"TEST_BOT_TOKEN_1"}}
 EOF
 
-# ── default: MODE=slot, ALERTS=0 → only complete-marker isolation ────────────
+# ── default: MODE=slot, ALERTS=0 → always-on state isolation ────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-1"
 LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
-BRIDGE_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
-if [[ ${#LEAD_EXTRA_ENV[@]} -eq 1 && ${#BRIDGE_EXTRA_ENV[@]} -eq 1 ]] \
-  && [[ "${LEAD_EXTRA_ENV[0]}" == "${BRIDGE_EXTRA_ENV[0]}" ]]; then
-  pass "default: slot mode injects only the shared complete-marker isolation path"
+BRIDGE_EXTRA_ENV=(
+  "FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed"
+  "FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db"
+)
+if [[ ${#LEAD_EXTRA_ENV[@]} -eq 1 && ${#BRIDGE_EXTRA_ENV[@]} -eq 2 ]] \
+  && [[ "${LEAD_EXTRA_ENV[0]}" == "${BRIDGE_EXTRA_ENV[0]}" ]] \
+  && [[ "${BRIDGE_EXTRA_ENV[1]}" == "FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db" ]]; then
+  pass "default: slot mode isolates shared complete markers and Bridge consent audits"
 else
   fail "byte-compat default" "lead=${#LEAD_EXTRA_ENV[@]} bridge=${#BRIDGE_EXTRA_ENV[@]}"
 fi
@@ -112,6 +116,19 @@ fi
 # slot Bridge env. Asserted against the script SOURCE (not a mirror) so a
 # refactor that drops or conditionalizes the line fails here.
 TD_SRC="${SCRIPT_DIR}/../test-deploy.sh"
+OWNER_FORWARD='DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}"'
+OWNER_FORWARD_COUNT=$(grep -cF "$OWNER_FORWARD" "$TD_SRC" || true)
+if [[ "$OWNER_FORWARD_COUNT" -eq 3 ]]; then
+  pass "founder consent: all three Bridge launch branches forward the canonical owner id"
+else
+  fail "founder owner forwarding incomplete" "found ${OWNER_FORWARD_COUNT}/3 launch branches"
+fi
+CONSENT_AUDIT_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")'
+if grep -qF "$CONSENT_AUDIT_LINE" "$TD_SRC"; then
+  pass "founder consent: every slot Bridge writes calibration evidence to its slot-local audit DB"
+else
+  fail "founder consent audit isolation missing" "$CONSENT_AUDIT_LINE"
+fi
 RECON_LINE='BRIDGE_EXTRA_ENV+=("FLYWHEEL_DONE_THREAD_RECONCILE=${FLYWHEEL_DONE_THREAD_RECONCILE:-0}")'
 if grep -qF "$RECON_LINE" "$TD_SRC"; then
   pass "reconcile isolation: test-deploy injects FLYWHEEL_DONE_THREAD_RECONCILE (default 0) into every slot Bridge env"

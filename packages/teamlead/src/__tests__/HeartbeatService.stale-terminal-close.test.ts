@@ -38,7 +38,6 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	let store: {
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
-		listAutoQaRecordsByQaExec: ReturnType<typeof vi.fn>;
 		getSession: ReturnType<typeof vi.fn>;
 	};
 	let notifier: { onSessionStale: ReturnType<typeof vi.fn> };
@@ -66,7 +65,6 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 	beforeEach(() => {
 		store = {
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
-			listAutoQaRecordsByQaExec: vi.fn().mockReturnValue([]),
 			getSession: vi.fn().mockReturnValue(undefined),
 		};
 		notifier = { onSessionStale: vi.fn().mockResolvedValue(undefined) };
@@ -123,132 +121,6 @@ describe("FLY-867 stale-terminal close (checkStaleCompleted upgrade)", () => {
 		await service.checkStaleCompleted();
 
 		expect(notifier.onSessionStale).not.toHaveBeenCalled();
-	});
-
-	it("FLY-752 boundary: an active awaiting_retest owner record protects the QA (notify only)", async () => {
-		const qa = makeSession({ execution_id: "qa-exec-1", status: "failed" });
-		store.getStaleCompletedSessions.mockReturnValue([qa]);
-		store.listAutoQaRecordsByQaExec.mockReturnValue([
-			{
-				parent_execution_id: "parent-1",
-				target_pr_head_sha: "abc123",
-				qa_execution_id: "qa-exec-1",
-				status: "awaiting_retest",
-			},
-		]);
-		store.getSession.mockImplementation((id: string) =>
-			id === "parent-1"
-				? makeSession({
-						execution_id: "parent-1",
-						status: "awaiting_review",
-						pr_head_sha: "ABC123", // case-insensitive match
-					})
-				: undefined,
-		);
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).not.toHaveBeenCalled();
-		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
-	});
-
-	it("running owner record also protects (in-flight QA with terminal CommDB anomaly)", async () => {
-		const qa = makeSession({ execution_id: "qa-exec-1" });
-		store.getStaleCompletedSessions.mockReturnValue([qa]);
-		store.listAutoQaRecordsByQaExec.mockReturnValue([
-			{
-				parent_execution_id: "parent-1",
-				target_pr_head_sha: "abc123",
-				qa_execution_id: "qa-exec-1",
-				status: "running",
-			},
-		]);
-		store.getSession.mockReturnValue(
-			makeSession({
-				execution_id: "parent-1",
-				status: "awaiting_review",
-				pr_head_sha: "abc123",
-			}),
-		);
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).not.toHaveBeenCalled();
-	});
-
-	it("historical duplicate qa_execution_id rows: ANY active row protects", async () => {
-		const qa = makeSession({ execution_id: "qa-exec-1" });
-		store.getStaleCompletedSessions.mockReturnValue([qa]);
-		store.listAutoQaRecordsByQaExec.mockReturnValue([
-			// stale superseded row first — the single-row accessor trap
-			{
-				parent_execution_id: "old-parent",
-				target_pr_head_sha: "old000",
-				qa_execution_id: "qa-exec-1",
-				status: "superseded",
-			},
-			{
-				parent_execution_id: "parent-1",
-				target_pr_head_sha: "abc123",
-				qa_execution_id: "qa-exec-1",
-				status: "awaiting_retest",
-			},
-		]);
-		store.getSession.mockImplementation((id: string) =>
-			id === "parent-1"
-				? makeSession({
-						execution_id: "parent-1",
-						status: "awaiting_review",
-						pr_head_sha: "abc123",
-					})
-				: undefined,
-		);
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).not.toHaveBeenCalled();
-	});
-
-	it("parent head drift breaks protection → close proceeds", async () => {
-		const qa = makeSession({ execution_id: "qa-exec-1" });
-		store.getStaleCompletedSessions.mockReturnValue([qa]);
-		store.listAutoQaRecordsByQaExec.mockReturnValue([
-			{
-				parent_execution_id: "parent-1",
-				target_pr_head_sha: "abc123",
-				qa_execution_id: "qa-exec-1",
-				status: "awaiting_retest",
-			},
-		]);
-		store.getSession.mockReturnValue(
-			makeSession({
-				execution_id: "parent-1",
-				status: "awaiting_review",
-				pr_head_sha: "fff999", // drifted — record is stale, no protection
-			}),
-		);
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).toHaveBeenCalledOnce();
-	});
-
-	it("store read throw → fail-closed protected (never kill on uncertainty)", async () => {
-		const qa = makeSession({ execution_id: "qa-exec-1" });
-		store.getStaleCompletedSessions.mockReturnValue([qa]);
-		store.listAutoQaRecordsByQaExec.mockImplementation(() => {
-			throw new Error("sqlite exploded");
-		});
-		const service = makeService(staleCfg);
-
-		await service.checkStaleCompleted();
-
-		expect(closeStale).not.toHaveBeenCalled();
-		expect(notifier.onSessionStale).toHaveBeenCalledOnce();
 	});
 
 	it("unwired (no 14th constructor arg) → pre-FLY-867 notify-only", async () => {

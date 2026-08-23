@@ -7,7 +7,6 @@ import type {
 import {
 	evaluateShippedHuskEvidence,
 	forceShippedHusks,
-	shippedHuskForceEnabled,
 } from "../shipped-husk-escalation.js";
 
 const NOW = Date.parse("2026-08-22T18:00:00.000Z");
@@ -174,16 +173,6 @@ describe("shipped husk evidence", () => {
 				control: { ...oldPending.control, state: "acked" },
 			}).eligible,
 		).toBe(false);
-	});
-
-	it("observes the default-on kill switch at call time", () => {
-		expect(shippedHuskForceEnabled({})).toBe(true);
-		expect(shippedHuskForceEnabled({ FLYWHEEL_SHIPPED_HUSK_FORCE: "0" })).toBe(
-			false,
-		);
-		expect(shippedHuskForceEnabled({ FLYWHEEL_SHIPPED_HUSK_FORCE: "1" })).toBe(
-			true,
-		);
 	});
 });
 

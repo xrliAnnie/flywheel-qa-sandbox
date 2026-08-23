@@ -9,12 +9,6 @@ export type ShipCiGuardResult =
 			mergeStateStatus: string;
 			checks: string[];
 	  }
-	| {
-			green: true;
-			reason: "ci_guard_disabled";
-			mergeStateStatus: "BYPASSED";
-			checks: [];
-	  }
 	| { green: false; reason: "ci_not_green"; detail: string };
 
 export type ShipCiCommandRunner = (
@@ -42,16 +36,7 @@ export function probeShipCiGreen(args: {
 	prNumber?: number;
 	expectedHead?: string;
 	run?: ShipCiCommandRunner;
-	env?: NodeJS.ProcessEnv;
 }): ShipCiGuardResult {
-	if ((args.env ?? process.env).FLYWHEEL_SHIP_CI_GUARD === "0") {
-		return {
-			green: true,
-			reason: "ci_guard_disabled",
-			mergeStateStatus: "BYPASSED",
-			checks: [],
-		};
-	}
 	const cwd = args.cwd.trim();
 	if (!cwd) {
 		return {

@@ -17,11 +17,11 @@ import {
 	WorkflowAdmissionClassificationError,
 } from "../StateStore.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
-import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { reviewHoldReason } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 
 const ACTIVE_GATE_SESSION_STATUSES = new Set([

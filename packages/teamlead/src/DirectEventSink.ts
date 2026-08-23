@@ -21,10 +21,9 @@ import type {
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
-import type { AutoQaCoordinator } from "./bridge/auto-qa-coordinator.js";
-import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
+import type { CodexReviewHoldCoordinator } from "./bridge/codex-review-hold.js";
 import {
 	archiveEpochInterval,
 	reactivateChatThreadForStartedSession,
@@ -52,6 +51,8 @@ import {
 	getProofShotParams,
 	patchSessionParams,
 } from "./bridge/proofshot-session.js";
+import type { ReviewAuthorizationAlerts } from "./bridge/review-authorization-alerts.js";
+import { isReviewHeld } from "./bridge/review-hold.js";
 import {
 	dispatchLeadEventCompat,
 	type RuntimeRegistry,
@@ -80,16 +81,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	/** FLY-1185: ship-entry lifecycle bundle (remote CAS + closeout + sweep). */
 	public lifecycleInfra?: import("./bridge/post-ship-finalization.js").LifecycleShipInfra;
 
-	/**
-	 * FLY-579 (Codex R1 HIGH-1): late-bound auto-QA coordinator holder, set by
-	 * the composition root after construction (the coordinator is built later, in
-	 * startBridge). This in-process completed path is a production / dual-sink
-	 * emitter, so it MUST drive auto-QA + suppress the founder review-required
-	 * delivery exactly like the HTTP /events route — otherwise a held founder
-	 * gate leaks here. Absent / `.current` undefined → byte-compatible (isQaHeld
-	 * is always false with no held record).
-	 */
-	public autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	/** Neutral exact-head Codex review hold, independent of auto-QA lifecycle. */
+	public codexReviewHold?: {
+		current: CodexReviewHoldCoordinator | undefined;
+	};
+	/** Neutral review/ship authorization alerts, independent of auto-QA. */
+	public reviewAuthorizationAlerts?: {
+		current: ReviewAuthorizationAlerts | undefined;
+	};
 	/** Late-bound TURN recovery shared by generalized workflow actors. */
 	public turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 
@@ -526,18 +525,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// FLY-1404: this in-process carrier has no field that can hold the
 		// CLI-minted, git-proven designHtmlEvidence attestation. Never fabricate a
 		// positive state here: design-node completion must arrive through the HTTP
-		// or marker carrier. The operational escape hatch is deliberately loud.
+		// or marker carrier.
 		const route: string | undefined = result.decision?.route;
 		if (route === "phase_design_complete") {
-			if (process.env.FLYWHEEL_DESIGN_HTML_GATE !== "0") {
-				console.warn(
-					`[DirectEventSink] founder design HTML evidence unavailable for ${env.executionId}; refusing design-node completion (use the flywheel-comm HTTP/marker path)`,
-				);
-				return;
-			}
 			console.warn(
-				"[DirectEventSink] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
+				`[DirectEventSink] founder design HTML evidence unavailable for ${env.executionId}; refusing design-node completion (use the flywheel-comm HTTP/marker path)`,
 			);
+			return;
 		}
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
@@ -658,9 +652,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const desPrHead =
 			preExistingSession?.pr_head_sha?.trim() ||
 			(result.evidence?.headSha as string | undefined)?.trim();
-		// Always route through the shared predicate (it uniformly honors the
-		// independent kill-switches). A missing/empty head → verifyApproval
-		// fail-closes when the gate is ON, and the kill-switch still bypasses when OFF.
+		// Always route through the shared ship predicate. A missing/empty head fails
+		// closed while FLYWHEEL_MERGE_APPROVAL_GATE is armed; disabling that
+		// higher-level gate still bypasses verifyApproval (FLY-1981 leaves it intact).
 		const desDecision = desMergedLanding
 			? await computeAuthoritativeShipDecision(
 					this.store,
@@ -700,7 +694,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					);
 					// FLY-869 决定③: one loud Discord alert (once per head — the
 					// in-process twin of the event-route path).
-					void this.autoQaCoordinator?.current?.alertMergeWithoutApproval(
+					void this.reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
 						preExistingSession,
 						`⛔ Runner ${env.executionId}（${preExistingSession.issue_id}）自行 merge 但未获批准 —— merged head ${desPrHead ?? "(none)"} 未通过 ship 闸（merge=${desDecision?.mergeReason ?? "no_head"} qa=${desDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 					);
@@ -790,7 +784,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						settle.outcome === "marked"
 							? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
 							: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
-					void this.autoQaCoordinator?.current?.alertShipAttemptFailed(
+					void this.reviewAuthorizationAlerts?.current?.alertShipAttemptFailedBestEffort(
 						preExistingSession,
 						`⚠️ Runner ${env.executionId}（${preExistingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${preExistingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
 					);
@@ -1052,15 +1046,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// FLY-579 (Codex R1 HIGH-1): this in-process completed path is a
-		// production / dual-sink emitter — it must drive auto-QA and suppress the
-		// founder review-required delivery exactly like the HTTP /events route, or
-		// a held founder gate leaks here. onMainAwaitingReview is idempotent
-		// (atomic record claim) so a concurrent event-route claim is a no-op.
+		// Neutral exact-head Codex evidence gate. Both production ingest paths run
+		// this before any founder-facing review delivery.
 		if (
 			status === "awaiting_review" &&
-			(env.sessionRole ?? "main") === "main" &&
-			this.autoQaCoordinator?.current
+			(env.sessionRole ?? "main") === "main"
 		) {
 			const mainSession = this.store.getSession(env.executionId);
 			// FLY-869 B: a merged-but-unapproved parked session sits in awaiting_review
@@ -1068,17 +1058,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// suppressor). Recovery (same-head approval) clears the marker + finalizes.
 			if (mainSession && !isMergeBlocked(mainSession)) {
 				try {
-					await this.autoQaCoordinator.current.onMainAwaitingReview(
+					await this.codexReviewHold?.current?.onSessionAwaitingReview(
 						mainSession,
-						{
-							// FLY-752: fresh review-pass (prior status wasn't
-							// awaiting_review) vs re-emitted / parked-for-founder.
-							freshTransition: preExistingSession?.status !== "awaiting_review",
-						},
 					);
 				} catch (err) {
 					console.error(
-						`[DirectEventSink] onMainAwaitingReview threw for ${env.executionId}: ${(err as Error).message}`,
+						`[DirectEventSink] Codex review hold threw for ${env.executionId}: ${(err as Error).message}`,
 					);
 				}
 			}
@@ -1091,9 +1076,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 		// FLY-579 + FLY-827: hold the founder while review-held — suppress the
 		// review-required delivery (the 🧪 / ship-ready posts reach the thread via the
-		// coordinator's ThreadPoster, not this sink). isReviewHeld is false with no
-		// held record AND codex satisfied, so this is byte-compatible when auto-QA is
-		// off and the hard gate is off. FLY-827 (R4-HIGH-1): DirectEventSink is the
+		// coordinator's ThreadPoster, not this sink). isReviewHeld releases only when
+		// the exact-head Codex predicate and the applicable QA evidence are satisfied.
+		// FLY-827 (R4-HIGH-1): DirectEventSink is the
 		// FOURTH founder-surface path — without isReviewHeld a Codex-held session
 		// (no auto_qa_record → isQaHeld false) would leak the review-required push.
 		if (
@@ -1280,14 +1265,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			terminalStatus,
 			env.projectName,
 		);
-		try {
-			await this.autoQaCoordinator?.current?.onQaSessionFailed(env.executionId);
-		} catch (err) {
-			console.error(
-				`[DirectEventSink] auto-QA failure hook threw for ${env.executionId}: ${(err as Error).message}`,
-			);
-		}
-
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
 		{
 			const session = this.store.getSession(env.executionId);

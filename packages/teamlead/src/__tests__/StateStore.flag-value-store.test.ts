@@ -1,3 +1,4 @@
+import { STORE_MANAGED_FLAGS } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
@@ -54,8 +55,7 @@ describe("StateStore FLY-1778 flag value store", () => {
 				FLYWHEEL_FLAG_RETIREMENT_SCAN: "",
 				FLYWHEEL_WORKFLOW_REWORK_REENTRY: "0",
 				FLYWHEEL_SKILL_FRAMEWORK_MODE: "invalid",
-				FLYWHEEL_WORKFLOW_RESUME: undefined,
-				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
+				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: undefined,
 			},
 			now: 100,
 		});
@@ -66,7 +66,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 			valueLastChanged: null,
 			revision: 1,
 		});
-		expect(store.getFlagValueRow("workflow_resume")).toMatchObject({
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
 			hasOverride: false,
 			raw: null,
 			lastEffective: "false",
@@ -81,6 +83,24 @@ describe("StateStore FLY-1778 flag value store", () => {
 				toEffective: "superpowers",
 			}),
 		]);
+	});
+
+	it("seeds every store-managed registry flag and its audit origin", () => {
+		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
+		store.ensureFlagValueRows({ env: {}, now: 100 });
+
+		for (const name of STORE_MANAGED_FLAGS) {
+			expect(store.getFlagValueRow(name), name).toMatchObject({
+				flagName: name,
+				revision: 1,
+			});
+			expect(store.listFlagValueChanges(name), name).toEqual([
+				expect.objectContaining({
+					flagName: name,
+					action: "seed",
+				}),
+			]);
+		}
 	});
 
 	it("advances revision on every write but the value clock only on effective change", () => {
@@ -133,12 +153,12 @@ describe("StateStore FLY-1778 flag value store", () => {
 
 	it("clear preserves the row and CAS rejects a stale reviewed revision", () => {
 		store.ensureFlagValueRows({
-			env: { FLYWHEEL_WORKFLOW_RESUME: "1" },
+			env: { FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1" },
 			now: 100,
 		});
 		expect(
 			store.applyFlagValueChange({
-				name: "workflow_resume",
+				name: "workflow_turn_divergence_alerts",
 				rawTo: null,
 				expectedRevision: 1,
 				actor: "bridge-local-operator",
@@ -146,14 +166,16 @@ describe("StateStore FLY-1778 flag value store", () => {
 				now: 200,
 			}),
 		).toMatchObject({ ok: true, valueChanged: true });
-		expect(store.getFlagValueRow("workflow_resume")).toMatchObject({
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
 			hasOverride: false,
 			raw: null,
 			revision: 2,
 		});
 		expect(
 			store.applyFlagValueChange({
-				name: "workflow_resume",
+				name: "workflow_turn_divergence_alerts",
 				rawTo: "1",
 				expectedRevision: 1,
 				actor: "bridge-local-operator",
@@ -186,8 +208,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 	it("mutator independently rejects protected, unlisted, and retired identities", () => {
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 		for (const [name, reason] of [
-			["codex_hard_gate_killswitch", "protected_legacy"],
+			["mailbox_queue", "protected_legacy"],
 			["voice_qa_presence_override", "not_store_managed"],
+			["workflow_resume", "retired_flag"],
 			["three_stage", "retired_flag"],
 		] as const) {
 			expect(
@@ -212,7 +235,7 @@ describe("StateStore FLY-1778 flag value store", () => {
 		`);
 		expect(() =>
 			store.applyFlagValueChange({
-				name: "workflow_resume",
+				name: "workflow_turn_divergence_alerts",
 				rawTo: "1",
 				expectedRevision: 1,
 				actor: "bridge-local-operator",
@@ -220,7 +243,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 				now: 200,
 			}),
 		).toThrow(/forced changelog failure/);
-		expect(store.getFlagValueRow("workflow_resume")).toMatchObject({
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
 			hasOverride: false,
 			lastEffective: "false",
 			valueLastChanged: null,

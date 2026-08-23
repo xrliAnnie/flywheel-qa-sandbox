@@ -263,27 +263,6 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		expect(continuityComputer).not.toHaveBeenCalled();
 	});
 
-	it("exempts Auto-QA and honors the emergency DOA kill switch", async () => {
-		const doaBackoffAdmission = vi.fn(async () => ({
-			admitted: false,
-			status: "needs_lead" as const,
-		}));
-		const dispatcher = makeDispatcher({ doaBackoffAdmission });
-		await dispatcher.start({
-			issueId: "issue-uuid",
-			projectName: "proj",
-			sessionRole: "qa",
-			qaContext: {
-				parentExecutionId: "parent",
-				prNumber: 1,
-				prUrl: "https://github.test/pull/1",
-				prHeadSha: "b".repeat(40),
-			},
-		});
-		await dispatcher.drain();
-		expect(doaBackoffAdmission).not.toHaveBeenCalled();
-	});
-
 	it("releases a reserved lane when continuity fails before lifecycle admission", async () => {
 		const onSpawnFailed = vi.fn();
 		const dispatcher = makeDispatcher({
@@ -316,28 +295,14 @@ describe("RunDispatcher restart-resume wiring (FLY-795)", () => {
 		expect(captured?.continuityInherit).toBeUndefined();
 	});
 
-	it.each([
-		["caller startPoint", { startPoint: "caller" }],
-		[
-			"auto-QA",
-			{
-				sessionRole: "qa",
-				qaContext: {
-					parentExecutionId: "parent",
-					prNumber: 1,
-					prUrl: "https://github.test/pull/1",
-					prHeadSha: "b".repeat(40),
-				},
-			},
-		],
-	] as const)("skips continuity for %s", async (_label, extra) => {
+	it("skips continuity for a caller startPoint", async () => {
 		const continuityComputer = vi.fn<ContinuityComputer>();
 		const dispatcher = makeDispatcher({ continuityComputer });
 		await dispatcher.start({
 			issueId: "issue-uuid",
 			projectName: "proj",
-			...extra,
-		} as Parameters<RunDispatcher["start"]>[0]);
+			startPoint: "caller",
+		});
 		await dispatcher.drain();
 		expect(continuityComputer).not.toHaveBeenCalled();
 	});

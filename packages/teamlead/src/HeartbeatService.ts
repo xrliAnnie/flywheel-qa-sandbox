@@ -318,7 +318,8 @@ export interface MonitorReconcileConfig {
 		status: "failed" | "blocked",
 		projectName: string,
 	) => void;
-	alertShipAttemptFailed?: (session: Session, reason: string) => void;
+	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
+	alertShipAttemptFailed?: (session: Session, reason: string) => Promise<void>;
 	alertCompleteMarkerHeld?: (args: CompleteMarkerHeldAlert) => Promise<void>;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 }
@@ -685,6 +686,8 @@ export class HeartbeatService implements ReconnectController {
 				this.monitorReconcile.materializedHeadAuthority,
 			onTerminalStatusPersisted:
 				this.monitorReconcile.onTerminalStatusPersisted,
+			alertMergeWithoutApproval:
+				this.monitorReconcile.alertMergeWithoutApproval,
 			alertShipAttemptFailed: this.monitorReconcile.alertShipAttemptFailed,
 			alertCompleteMarkerHeld: this.monitorReconcile.alertCompleteMarkerHeld,
 		};
@@ -1442,15 +1445,13 @@ export class HeartbeatService implements ReconnectController {
 				const alive = await isTmuxWindowAlive(target.tmuxWindow);
 				if (!alive) continue;
 
-				// FLY-867: close the leak through the injected closeRunner
+				// Close the leak through the injected closeRunner
 				// chokepoint — BEFORE the notify dedup gate, so a failed close is
 				// retried every stale cycle (the dedup only suppresses repeat
-				// notifications, never a close retry). Guarded by the FLY-752
-				// retest-protection predicate: a parked QA in an active fix-loop
-				// must stay alive. Only a CONFIRMED teardown skips the stale
-				// notification; a failed/ineligible close falls through to the
-				// existing notify path (operator visibility preserved).
-				if (closeEnabled && !this.isRetestProtected(session)) {
+				// notifications, never a close retry). Only a CONFIRMED teardown
+				// skips the stale notification; a failed/ineligible close falls
+				// through to the existing notify path.
+				if (closeEnabled) {
 					const res = await this.staleTerminalClose?.closeStale(session);
 					if (res && (res.closed || res.alreadyGone)) {
 						this.notifiedStale.delete(session.execution_id);
@@ -1856,45 +1857,6 @@ export class HeartbeatService implements ReconnectController {
 	 */
 	private staleCloseEnabled(): boolean {
 		return this.staleTerminalClose !== undefined;
-	}
-
-	/**
-	 * FLY-867 (FLY-752 boundary): NEVER close a QA runner an active fix-loop
-	 * still references. Owner-record semantics: the session is protected iff
-	 * ANY auto_qa_record has qa_execution_id === session, an active status
-	 * (running — an in-flight QA with a terminal CommDB anomaly is spared —
-	 * or awaiting_retest — parked for the next head), AND its parent is still
-	 * awaiting_review at that record's target head. `qa_execution_id` is not
-	 * unique (historical rows), so ALL rows are scanned — any match protects.
-	 * Any store read failure → protected (fail-closed: never kill on
-	 * uncertainty).
-	 */
-	private isRetestProtected(session: Session): boolean {
-		try {
-			const records = this.store.listAutoQaRecordsByQaExec(
-				session.execution_id,
-			);
-			for (const rec of records) {
-				if (rec.status !== "running" && rec.status !== "awaiting_retest") {
-					continue;
-				}
-				const parent = this.store.getSession(rec.parent_execution_id);
-				if (
-					parent &&
-					parent.status === "awaiting_review" &&
-					(parent.pr_head_sha ?? "").toLowerCase() ===
-						rec.target_pr_head_sha.toLowerCase()
-				) {
-					return true;
-				}
-			}
-			return false;
-		} catch (err) {
-			console.warn(
-				`[HeartbeatService] FLY-867 retest-protection read failed for ${session.execution_id} — treating as protected: ${(err as Error).message}`,
-			);
-			return true;
-		}
 	}
 
 	/** Suppress reaping while a live detached runner is being re-adopted. */

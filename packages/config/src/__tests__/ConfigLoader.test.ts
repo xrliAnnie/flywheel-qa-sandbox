@@ -1404,31 +1404,31 @@ ponytail: "on"
 		);
 	});
 
-	describe("founder_milestone_report validation (FLY-725)", () => {
+	describe("FLY-1981 retired config blocks", () => {
 		const withFmr = (fmrYaml: string) => `
 ${MINIMAL_CONFIG_YAML}
 ${fmrYaml}
 `;
 
-		it("accepts absent founder_milestone_report (feature off, backward compatible)", async () => {
+		it("accepts configs with both retired blocks absent", async () => {
 			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_milestone_report).toBeUndefined();
+			expect(config.project).toBe("test-project");
 		});
 
-		it("accepts enabled with default milestones (milestones omitted)", async () => {
+		it("rejects founder_milestone_report even with the former valid shape", async () => {
 			readFile.mockResolvedValue(
 				withFmr(`
 founder_milestone_report:
   enabled: true
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_milestone_report?.enabled).toBe(true);
-			expect(config.founder_milestone_report?.milestones).toBeUndefined();
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report is retired by FLY-1981/,
+			);
 		});
 
-		it("accepts a supported milestones subset", async () => {
+		it("rejects founder_milestone_report alternate children", async () => {
 			readFile.mockResolvedValue(
 				withFmr(`
 founder_milestone_report:
@@ -1436,11 +1436,9 @@ founder_milestone_report:
   milestones: [failed, blocked]
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.founder_milestone_report?.milestones).toEqual([
-				"failed",
-				"blocked",
-			]);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report is retired by FLY-1981/,
+			);
 		});
 
 		it("rejects ship_ready in v1 (covered by FLY-605, not 725 — must fail loudly)", async () => {
@@ -1452,7 +1450,7 @@ founder_milestone_report:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/ship_ready.*not supported in v1/,
+				/founder_milestone_report is retired by FLY-1981/,
 			);
 		});
 
@@ -1465,7 +1463,7 @@ founder_milestone_report:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/completed.*not supported in v1/,
+				/founder_milestone_report is retired by FLY-1981/,
 			);
 		});
 
@@ -1478,7 +1476,7 @@ founder_milestone_report:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/"merged" is not supported in v1/,
+				/founder_milestone_report is retired by FLY-1981/,
 			);
 		});
 
@@ -1490,7 +1488,7 @@ founder_milestone_report:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_milestone_report\.enabled must be a boolean/,
+				/founder_milestone_report is retired by FLY-1981/,
 			);
 		});
 
@@ -1501,7 +1499,7 @@ founder_milestone_report: "on"
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_milestone_report must be a YAML mapping/,
+				/founder_milestone_report is retired by FLY-1981/,
 			);
 		});
 
@@ -1514,7 +1512,18 @@ founder_milestone_report:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/founder_milestone_report\.milestones must be an array/,
+				/founder_milestone_report is retired by FLY-1981/,
+			);
+		});
+
+		it.each([
+			"qa:\n  auto: true",
+			"qa:\n  future_child: false",
+			'qa: "legacy scalar"',
+		])("rejects any stale qa block shape: %s", async (qaYaml) => {
+			readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\n${qaYaml}\n`);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/qa is retired by FLY-1981/,
 			);
 		});
 	});
@@ -1529,10 +1538,10 @@ describe("ConfigLoader — pipeline DAG routing", () => {
 		loader = new ConfigLoader(readFile);
 	});
 
-	it("leaves pipeline undefined when absent (byte-compat)", async () => {
+	it("defaults pipeline.dag on when the pipeline block is absent", async () => {
 		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline).toBeUndefined();
+		expect(config.pipeline?.dag).toBe(true);
 	});
 
 	it("throws when pipeline is a scalar, not a mapping", async () => {
@@ -1559,12 +1568,12 @@ describe("ConfigLoader — pipeline DAG routing", () => {
 		expect(config.pipeline?.dag).toBe(false);
 	});
 
-	it("leaves pipeline.dag undefined when absent (byte-compat, DAG entry off)", async () => {
+	it("defaults pipeline.dag on when another pipeline key is present", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  work_kind: false\n`,
 		);
 		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.dag).toBeUndefined();
+		expect(config.pipeline?.dag).toBe(true);
 	});
 
 	it("throws when pipeline.dag is not a boolean", async () => {

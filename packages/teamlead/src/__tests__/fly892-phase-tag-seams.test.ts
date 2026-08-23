@@ -5,13 +5,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AutoQaEffects } from "../bridge/auto-qa-effects.js";
 import { AUTOMATED_MESSAGE_PREFIX } from "../bridge/automated-message.js";
 import {
-	emitFounderMilestoneNotification,
 	emitFounderStuckNotification,
 	emitFounderThreadNotification,
 } from "../bridge/founder-thread-notifier.js";
+import { ReviewThreadEffect } from "../bridge/review-thread-effect.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 
@@ -89,25 +88,6 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 		expect(posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}🧠`)).toBe(true);
 	});
 
-	it("milestone notification: phase session tags the header", async () => {
-		await emitFounderMilestoneNotification(
-			{
-				executionId: "e-qa",
-				issueId: "FLY-892",
-				projectName: "flywheel",
-				milestone: "completed",
-				thread,
-				botToken: "bot",
-				ownerUserId: OWNER,
-				phasePrefix: "[QA·Sonnet] ",
-			},
-			{ store, fetchImpl },
-		);
-		expect(
-			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[QA·Sonnet] `),
-		).toBe(true);
-	});
-
 	it("stuck notification: phase session tags the header", async () => {
 		await emitFounderStuckNotification(
 			{
@@ -129,7 +109,7 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 	});
 });
 
-describe("FLY-892 Step 3: AutoQaEffects.postThread phase prefix", () => {
+describe("FLY-892 Step 3: ReviewThreadEffect phase prefix", () => {
 	let store: StateStore;
 	let posted: string[];
 	let fetchImpl: ReturnType<typeof vi.fn>;
@@ -161,7 +141,7 @@ describe("FLY-892 Step 3: AutoQaEffects.postThread phase prefix", () => {
 	] as never;
 
 	function makeEffects() {
-		return new AutoQaEffects({
+		return new ReviewThreadEffect({
 			store,
 			projects,
 			config: { discordBotToken: "bot" },

@@ -178,17 +178,14 @@ export interface MarkerReconcilerDeps {
 	 * restart-replay is the first to park a merged-but-unapproved marker (the live
 	 * sinks fire it in-band; this covers a Bridge that died in the exact window
 	 * before the live sink processed the completion). Best-effort; wired to the
-	 * AutoQaCoordinator's alert channel in plugin.ts. Absent → marker + log only.
+	 * ReviewAuthorizationAlerts in plugin.ts. Absent → marker + log only.
 	 */
 	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
 	/**
 	 * FLY-1505: durable ship-attempt alert. A rejected Promise keeps the
 	 * complete-failed marker retryable instead of deleting the only alert receipt.
 	 */
-	alertShipAttemptFailed?: (
-		session: Session,
-		reason: string,
-	) => void | Promise<void>;
+	alertShipAttemptFailed?: (session: Session, reason: string) => Promise<void>;
 	/** FLY-1066: direct forceStatus fallback bypasses applyTransition. */
 	onTerminalStatusPersisted?: (
 		executionId: string,
@@ -656,7 +653,6 @@ async function tryReconcileCompleteOnce(
 		route: body.payload?.decision?.route,
 		payload: body.payload,
 		authoritativeIssueIdentifier,
-		gateDisabled: process.env.FLYWHEEL_DESIGN_HTML_GATE === "0",
 	});
 	if (!designHtmlAdmission.ok) {
 		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
@@ -664,11 +660,6 @@ async function tryReconcileCompleteOnce(
 			`[complete-reconciler] founder design HTML evidence rejected for ${execId}: ${designHtmlAdmission.reason}; quarantined: ${qp}`,
 		);
 		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
-	}
-	if (designHtmlAdmission.disabled) {
-		log(
-			"[complete-reconciler] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
-		);
 	}
 	const rawWorkflowActivation = body.payload?.workflowActivation;
 	const workflowActivation = markerWorkflowActivation(rawWorkflowActivation);
@@ -830,8 +821,9 @@ async function tryReconcileCompleteOnce(
 		const prHead =
 			currentSession.pr_head_sha?.trim() ||
 			body.payload?.evidence?.headSha?.trim();
-		// Always route through the shared predicate so the kill-switches are honored
-		// uniformly (a missing head fail-closes only when the gate is ON).
+		// Always route through the shared predicate so the always-armed QA/review
+		// checks and the remaining merge-approval switch stay uniform. A missing
+		// head fail-closes whenever merge approval is armed.
 		const decision = await computeAuthoritativeShipDecision(
 			deps.store,
 			currentSession,

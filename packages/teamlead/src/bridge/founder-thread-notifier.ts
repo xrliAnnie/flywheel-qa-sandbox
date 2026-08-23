@@ -14,13 +14,11 @@
 
 import { randomUUID } from "node:crypto";
 import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
-import type { MilestoneKind } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
 import { extractGateMessageId } from "./approval-signal/gate-message-binding.js";
 import { markAutomatedDiscordText } from "./automated-message.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
-import { milestoneLabel } from "./milestone-report-policy.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const POST_TIMEOUT_MS = 5_000;
@@ -297,7 +295,7 @@ export async function emitFounderThreadNotification(
 }
 
 /**
- * FLY-725: shared POST + classify core for founder-thread pushes (gate + milestone).
+ * FLY-725: shared POST + classify core for founder-thread pushes.
  * Does the Discord POST (with the founder-only mention) and classifies the
  * response into posted / transient / permanent — WITHOUT auditing (each caller
  * owns its own audit event names). Extracted verbatim from the old inline block
@@ -320,7 +318,7 @@ async function postFounderThreadCore(
 	body: string,
 	botToken: string,
 	// FLY-927: null ⇒ suppress ALL mentions (parse:[]) — the infra-notification
-	// leg posts without a ping. The gate/milestone/stuck callers always pass the
+	// leg posts without a ping. The gate/stuck callers always pass the
 	// validated founder id, so their POST bodies are unchanged.
 	ownerUserId: string | null,
 	fetchImpl: typeof fetch,
@@ -513,94 +511,6 @@ export async function scanFounderThreadForGateCard(input: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// FLY-725: milestone report — Bridge-primary @founder-pinged push when a Runner
-// reaches a terminal milestone (completed / failed / blocked). Reuses the shared
-// POST/classify core; distinct audit event names so the two paths are separable.
-// ─────────────────────────────────────────────────────────────────────────
-
-export interface FounderMilestoneNotifyOpts {
-	executionId: string;
-	issueId: string;
-	issueIdentifier?: string;
-	issueTitle?: string;
-	projectName: string;
-	milestone: MilestoneKind;
-	/** DecisionLayer route (needs_review / blocked / pr_handoff / merged / …). */
-	route?: string;
-	/** PR number when known (for the result line). */
-	prNumber?: number;
-	/** Short session summary (completed). */
-	summary?: string;
-	/** Last error (failed). */
-	lastError?: string;
-	/**
-	 * DecisionLayer reasoning (blocked). `complete --route blocked --summary "…"`
-	 * puts the real reason in `summary` / `decision_reasoning`, NOT `last_error`
-	 * (Codex code R1), so the blocked report reads the best-available reason from
-	 * lastError → summary → decisionReasoning.
-	 */
-	decisionReasoning?: string;
-	/** Pre-resolved via getChatThreadByIssue. */
-	thread?: ChatThreadRef;
-	/** lead.botToken ?? config.discordBotToken. */
-	botToken?: string;
-	/** config.discordOwnerUserId (for @mention + ping). */
-	ownerUserId?: string;
-	/** FLY-892 (Step 3): message-level phase tag; "" for main (byte-compat). */
-	phasePrefix?: string;
-}
-
-function buildMilestoneBody(opts: FounderMilestoneNotifyOpts): string {
-	const identifier = opts.issueIdentifier ?? opts.issueId;
-	const owner = `<@${opts.ownerUserId}>`;
-	const { emoji, zh } = milestoneLabel(opts.milestone);
-	const title = opts.issueTitle ? ` ${truncate(opts.issueTitle, 80)}` : "";
-	const prefix = opts.phasePrefix ?? "";
-	const header = `${prefix}${emoji} **${identifier}${title} — Runner ${zh}**`;
-
-	const detail: string[] = [];
-	if (opts.milestone === "failed" || opts.milestone === "blocked") {
-		// Best-available real reason: failures carry `last_error`; a blocked runner
-		// (`complete --route blocked --summary "…"`) carries the reason in
-		// `summary` / `decision_reasoning` (Codex code R1). Show whichever is set.
-		const reason = (
-			opts.lastError?.trim() ||
-			opts.summary?.trim() ||
-			opts.decisionReasoning?.trim() ||
-			""
-		).trim();
-		if (reason) detail.push(`原因：${truncate(reason, SUMMARY_MAX)}`);
-	} else {
-		// completed
-		if (opts.prNumber) detail.push(`PR #${opts.prNumber}`);
-		if (opts.route === "pr_handoff") detail.push("待你手动 ship");
-		else if (opts.route) detail.push(`route=${opts.route}`);
-		if (opts.summary) detail.push(truncate(opts.summary, SUMMARY_MAX));
-	}
-	const resultLine = detail.length > 0 ? `结果：${detail.join("｜")}` : "";
-	return resultLine
-		? [header, owner, "", resultLine].join("\n")
-		: [header, owner].join("\n");
-}
-
-function auditMilestone(
-	store: StateStore,
-	opts: FounderMilestoneNotifyOpts,
-	eventType: string,
-	payload: Record<string, unknown>,
-): void {
-	store.insertEvent({
-		event_id: `${eventType}-${randomUUID()}`,
-		execution_id: opts.executionId,
-		issue_id: opts.issueId,
-		project_name: opts.projectName,
-		event_type: eventType,
-		source: "bridge.founder-thread-notifier",
-		payload: { milestone: opts.milestone, ...payload },
-	});
-}
-
-// ─────────────────────────────────────────────────────────────────────────
 // FLY-818 M3: runner-stuck founder page — a genuinely-stuck runner
 // (`runner_stuck_unhandled` = the FLY-195 Q7 fallback past the Lead-first grace,
 // which the Lead never disposed) posts an @founder-pinged message into the stuck
@@ -663,7 +573,7 @@ function auditStuck(
  * Returns `posted` ONLY on a confirmed 2xx (the caller — the stuck alerter — maps
  * that to `founderPaged` and the durable ledger converge). `no_chat_thread` is
  * TRANSIENT (the thread may not exist yet) → the caller returns not-paged so the
- * StuckDetector retries (at-least-once). Mirrors the milestone/gate paths exactly.
+ * StuckDetector retries (at-least-once). Mirrors the founder-gate path exactly.
  */
 export async function emitFounderStuckNotification(
 	opts: FounderStuckNotifyOpts,
@@ -671,7 +581,7 @@ export async function emitFounderStuckNotification(
 ): Promise<FounderThreadNotifyResult> {
 	const { store, fetchImpl = fetch } = deps;
 
-	// ── (A) VALIDATE (mirrors the gate/milestone paths) ──
+	// ── (A) VALIDATE (mirrors the founder-gate path) ──
 	if (!opts.thread?.thread_id) {
 		auditStuck(store, opts, "founder_stuck_notify_skipped", {
 			reason: "no_chat_thread",
@@ -746,9 +656,9 @@ export async function emitFounderStuckNotification(
 // ─────────────────────────────────────────────────────────────────────────
 // FLY-927 (Task 1.5): generic issue-thread INFRA notification — the Router's
 // "issue_thread" delivery leg. An issue-progress alert (three_stage_stuck /
-// founder_milestone_undelivered / runner_lead_pending_unhandled) lands in the
+// founder_gate_delivery_failed / runner_lead_pending_unhandled) lands in the
 // issue's OWN [FLY-XX] thread where the responsible party has context, instead
-// of the alert channel. Same skeleton as the gate/milestone/stuck entries
+// of the alert channel. Same skeleton as the founder-gate/stuck entries
 // (validate → POST via the shared core → classify + audit), plus:
 //  - a BOUNDED transient retry budget inside the call (alerts are one-shot —
 //    there is no GatePoller retry loop behind this leg), and
@@ -954,82 +864,4 @@ export async function emitIssueThreadInfraNotification(
 	return undeliverable(`${lastTransient ?? "transient"}-budget-exhausted`, {
 		kind: "transient_failed",
 	});
-}
-
-export async function emitFounderMilestoneNotification(
-	opts: FounderMilestoneNotifyOpts,
-	deps: FounderThreadNotifyDeps,
-): Promise<FounderThreadNotifyResult> {
-	const { store, fetchImpl = fetch } = deps;
-
-	// ── (A) VALIDATE (mirrors the gate path) ──
-	if (!opts.thread?.thread_id) {
-		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
-			reason: "no_chat_thread",
-		});
-		return { kind: "skipped", skipReason: "no_chat_thread" };
-	}
-	if (!opts.botToken) {
-		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
-			reason: "no_bot_token",
-		});
-		return { kind: "skipped", skipReason: "no_bot_token" };
-	}
-	if (!opts.ownerUserId) {
-		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
-			reason: "no_owner",
-		});
-		return { kind: "skipped", skipReason: "no_owner" };
-	}
-	if (!isDiscordSnowflake(opts.ownerUserId)) {
-		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
-			reason: "bad_owner_id",
-		});
-		return { kind: "skipped", skipReason: "bad_owner_id" };
-	}
-
-	// ── (B) COMPOSE + POST + (C) CLASSIFY (shared core) ──
-	const body = buildMilestoneBody(opts);
-	const outcome = await postFounderThreadCore(
-		opts.thread.thread_id,
-		body,
-		opts.botToken,
-		opts.ownerUserId,
-		fetchImpl,
-	);
-	if (outcome.kind === "posted" || outcome.kind === "posted_ambiguous") {
-		auditMilestone(store, opts, "founder_milestone_notified", {
-			threadId: opts.thread.thread_id,
-			status: outcome.status,
-		});
-		return { kind: "posted" };
-	}
-	if (outcome.kind === "transient_failed") {
-		if (outcome.status === 429) {
-			auditMilestone(store, opts, "founder_milestone_notify_failed", {
-				severity: "transient",
-				status: 429,
-				retryAfterMs: outcome.retryAfterMs,
-			});
-			return { kind: "transient_failed", retryAfterMs: outcome.retryAfterMs };
-		}
-		if (outcome.status !== undefined) {
-			auditMilestone(store, opts, "founder_milestone_notify_failed", {
-				severity: "transient",
-				status: outcome.status,
-			});
-			return { kind: "transient_failed" };
-		}
-		auditMilestone(store, opts, "founder_milestone_notify_failed", {
-			severity: "transient",
-			error: outcome.error,
-		});
-		return { kind: "transient_failed" };
-	}
-	auditMilestone(store, opts, "founder_milestone_notify_failed", {
-		severity: "permanent",
-		status: outcome.status,
-		body: outcome.body,
-	});
-	return { kind: "permanent_failed" };
 }

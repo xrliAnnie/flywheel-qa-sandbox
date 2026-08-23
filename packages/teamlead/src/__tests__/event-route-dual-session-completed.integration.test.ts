@@ -17,7 +17,10 @@
  *   count without wiring Discord/fetch stubs.
  * - transitionOpts is wired so FSM transitions happen; post-ship gate runs.
  */
+import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -27,6 +30,7 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 // Mock post-ship-finalization. Keep isPostApproveShipComplete real so the
 // gate logic matches production; only runPostShipFinalization is spied.
@@ -77,6 +81,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let transitionOpts: ApplyTransitionOpts;
+	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -84,13 +89,13 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	};
 
 	beforeEach(async () => {
-		// FLY-869: these FSM-mapping tests bypass the new merge/QA ship gates (the
-		// approval gate is covered by ship-eligibility + dedicated integration tests).
+		// FLY-869: these FSM-mapping tests bypass merge approval. Their sessions
+		// carry a durable QA exemption instead of relying on a process switch.
 		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
-		vi.stubEnv("FLYWHEEL_QA_DONE_GATE", "0");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0"); // retired input is ignored
 		runPostShipSpy.mockClear();
-		store = await StateStore.create(":memory:");
+		stateRoot = mkdtempSync(join(tmpdir(), "fly108-dual-"));
+		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		transitionOpts = { store, fsm, executor };
@@ -114,6 +119,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	async function postEvent(body: Record<string, unknown>) {
@@ -131,6 +137,11 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 				project_name: session?.project_name ?? String(body.project_name),
 				status: session?.status ?? "running",
 				worktree_path: process.cwd(),
+			});
+			setHistoricalQaRequiredSnapshot(store, {
+				executionId,
+				required: 0,
+				reason: "FSM mapping fixture",
 			});
 		}
 		return res;

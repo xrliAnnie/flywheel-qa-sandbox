@@ -8,6 +8,7 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
+import { insertHistoricalAutoQaRecord } from "../../__tests__/helpers/historical-qa.js";
 import { StateStore } from "../../StateStore.js";
 import {
 	collectRelatedNodes,
@@ -31,13 +32,13 @@ describe("collectRelatedNodes", () => {
 	});
 
 	it("includes the QA runner from auto_qa_record", () => {
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "root",
 			targetPrHeadSha: "a".repeat(40),
 			issueId: "root-issue",
 			projectName: "proj",
+			qaExecutionId: "qa-exec",
 		});
-		store.setAutoQaQaExecutionId("root", "a".repeat(40), "qa-exec");
 
 		const nodes = collectRelatedNodes(store, {
 			rootExecutionId: "root",

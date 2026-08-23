@@ -144,7 +144,7 @@ export interface HookPayload {
 	escalation_kind?: string;
 	/** Kind-specific one-sentence summary (no pane content). */
 	escalation_reason?: string;
-	/** Truthful next step for the Lead (formatParkAlert wording family). */
+	/** Truthful next step for the Lead's parked-runner alert. */
 	escalation_next_step?: string;
 
 	// GEO-151: ProofShot artifact delivery fields. Only populated when

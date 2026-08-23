@@ -22,7 +22,7 @@ import type {
 import type { DagNode } from "flywheel-dag-resolver";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import { Blueprint, buildQaModeSystemPromptLines } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
@@ -204,6 +204,9 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).not.toContain("Attempt the `onboard` skill");
 		// report channel honesty
 		expect(prompt).toContain("NO teammate-messaging tool");
+		expect(prompt).not.toContain("fresh QA PASS verdict");
+		expect(prompt).not.toContain("Bridge then auto-rebinds the ship gate");
+		expect(prompt).toContain("recovery is a fresh review lap");
 	});
 
 	it("codex DAG workflow implement phase (keep-alive): park wording carries no banned tokens", async () => {
@@ -263,53 +266,6 @@ describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references",
 		expect(prompt).toContain("message is context; TURN is authority");
 		expect(prompt).toContain("5-fb.");
 		expect(prompt).toContain("FEEDBACK = KICKBACK");
-	});
-});
-
-describe("FLY-1188 M2 — auto-QA prompt lines (buildQaModeSystemPromptLines)", () => {
-	const qaContext = {
-		parentExecutionId: "parent-exec",
-		prHeadSha: "deadbeef",
-		prNumber: 42,
-		branch: "feat/x",
-	};
-
-	it("codex variant: capability-honest, no banned tokens, coverage-gap reporting", () => {
-		const lines = buildQaModeSystemPromptLines(
-			qaContext,
-			"FLY-1188",
-			"/cli",
-			"exec-1",
-			true,
-		).join("\n");
-		for (const banned of BANNED_IN_CODEX_PROMPT) {
-			expect(lines).not.toContain(banned);
-		}
-		expect(lines).toContain("NO browser automation");
-		expect(lines).toContain("coverage gap");
-		expect(lines).toContain("END YOUR TURN");
-		// Codex M2 review R4 HIGH-1: no park/wake/same-session promises until
-		// the adapter loop milestone lands.
-		expect(lines).not.toContain("park");
-		expect(lines).not.toContain("re-woken");
-		expect(lines).not.toContain("SAME QA session");
-	});
-
-	it("claude variant (default param): byte-identical to pre-FLY-1188 wording", () => {
-		const lines = buildQaModeSystemPromptLines(
-			qaContext,
-			"FLY-1188",
-			"/cli",
-			"exec-1",
-		).join("\n");
-		expect(lines).toContain(
-			"Claude-in-Chrome for browser surfaces, NOT Playwright",
-		);
-		expect(lines).toContain("close all Claude-in-Chrome tabs");
-		expect(lines).toContain("if your context is large, `/compact`");
-		expect(lines).toContain(
-			'Never use the stock SendMessage to:"team-lead" channel.',
-		);
 	});
 });
 

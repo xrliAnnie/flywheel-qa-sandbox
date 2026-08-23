@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { LeadConfig } from "../../ProjectConfig.js";
 import type { Session } from "../../StateStore.js";
-import type { ReviewHoldReason } from "../auto-qa-held.js";
 import { GatePoller, type GatePollerConfig } from "../gate-poller.js";
+import type { ReviewHoldReason } from "../review-hold.js";
 
 const HEAD = "a".repeat(40);
 
@@ -63,10 +63,10 @@ describe("GatePoller FLY-1251 ship-readiness hold discovery", () => {
 			);
 			expect(second.eventId).toBe(first.eventId);
 			expect(first.eventType).toBe("auto_qa_stuck");
-			expect(first.body).toContain("/api/qa/manual-spawn/stage");
-			expect(first.body).toContain("/api/qa/manual-spawn");
-			expect(first.body).toContain("x-flywheel-confirm-token");
-			expect(first.body).toContain("Origin: http://127.0.0.1:<port>");
+			expect(first.body).toContain("cancel");
+			expect(first.body).toContain("DAG");
+			expect(first.body).toContain("redispatch");
+			expect(first.body).not.toContain("/api/qa/");
 		},
 	);
 

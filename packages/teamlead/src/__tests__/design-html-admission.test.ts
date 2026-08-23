@@ -23,7 +23,7 @@ describe("design HTML completion admission", () => {
 				payload: validPayload,
 				authoritativeIssueIdentifier: "FLY-1404",
 			}),
-		).toEqual({ ok: true, required: true, disabled: false });
+		).toEqual({ ok: true, required: true });
 	});
 
 	it.each([
@@ -78,17 +78,17 @@ describe("design HTML completion admission", () => {
 				payload: {},
 				authoritativeIssueIdentifier: "FLY-1404",
 			}),
-		).toEqual({ ok: true, required: false, disabled: false });
+		).toEqual({ ok: true, required: false });
 	});
 
-	it("supports the explicit operational escape hatch", () => {
+	it("FLY-1981 has no internal missing-attestation escape hatch", () => {
 		expect(
 			validateDesignHtmlCompletion({
 				route: "phase_design_complete",
 				payload: {},
 				authoritativeIssueIdentifier: "FLY-1404",
 				gateDisabled: true,
-			}),
-		).toEqual({ ok: true, required: true, disabled: true });
+			} as Parameters<typeof validateDesignHtmlCompletion>[0]),
+		).toMatchObject({ ok: false, code: DESIGN_HTML_EVIDENCE_ERROR });
 	});
 });

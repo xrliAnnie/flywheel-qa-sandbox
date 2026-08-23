@@ -2,11 +2,23 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
-import { FEATURE_FLAGS } from "../feature-flags/registry.js";
+import {
+	FLAG_EXEMPTIONS,
+	type FlagExemption,
+} from "../feature-flags/exemptions.js";
+import {
+	FEATURE_FLAGS,
+	type FeatureFlagSpec,
+} from "../feature-flags/registry.js";
+import {
+	getFlagStoreCodec,
+	STORE_MANAGED_FLAGS,
+	validateFlagAuthoringPolicy,
+} from "../feature-flags/store-policy.js";
 import {
 	NON_FLAG_ALLOWLIST,
 	NON_FLAG_CONFIG_KEYS,
+	RETIRED_CONFIG_PATHS,
 	RETIRED_FLAGS,
 } from "../feature-flags/truth.js";
 import {
@@ -88,7 +100,6 @@ describe("feature-flag drift guard", () => {
 
 	it("finds known direct, helper, MJS, and shell gates", () => {
 		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
-		expect(found.has("FLYWHEEL_DESIGN_HTML_GATE")).toBe(true);
 		expect(found.has("FLYWHEEL_MERGE_APPROVAL_GATE")).toBe(true);
 		expect(found.has("FLYWHEEL_CONVERGE_CMUX_SYMLINK")).toBe(true);
 	});
@@ -156,6 +167,136 @@ describe("feature-flag drift guard", () => {
 		expect(work.siteChecks).toBe(declaredSites);
 	});
 
+	it("rejects a plausible delegated wrapper name unless production imports and calls it", () => {
+		const template = FEATURE_FLAGS.find(
+			(flag) => flag.name === "flag_retirement_scan",
+		) as FeatureFlagSpec;
+		const injected: FeatureFlagSpec = {
+			...template,
+			name: "future_dynamic_flag",
+			envVar: "FLYWHEEL_FUTURE_DYNAMIC_FLAG",
+			readSites: [
+				{
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "futureFlagInjection",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol: "storeFutureDynamicFlagEnabled",
+				},
+			],
+		};
+		expect(
+			validateDeclaredReadSites({ flags: [injected], sourceByFile }).join("\n"),
+		).toMatch(/future_dynamic_flag.*consumer anchor.*not found/i);
+	});
+
+	it("binds a delegated store resolver body to the exact managed flag identity", () => {
+		const template = FEATURE_FLAGS.find(
+			(flag) => flag.name === "flag_retirement_scan",
+		) as FeatureFlagSpec;
+		const borrowed: FeatureFlagSpec = {
+			...template,
+			name: "future_dynamic_flag",
+			envVar: "FLYWHEEL_FUTURE_DYNAMIC_FLAG",
+		};
+		expect(
+			validateDeclaredReadSites({ flags: [borrowed], sourceByFile }).join("\n"),
+		).toMatch(
+			/future_dynamic_flag.*resolver.*does not read.*future_dynamic_flag/i,
+		);
+
+		const consumerFile = "packages/example/src/future-consumer.ts";
+		const resolverFile = "packages/teamlead/src/bridge/flag-store-runtime.ts";
+		const fakeAnchor: FeatureFlagSpec = {
+			...borrowed,
+			readSites: [
+				{
+					file: consumerFile,
+					symbol: "futureConsumer",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: resolverFile,
+					resolverSymbol: "storeFutureDynamicFlagEnabled",
+				},
+			],
+		};
+		const syntheticSources = new Map(sourceByFile);
+		syntheticSources.set(
+			consumerFile,
+			[
+				'import { storeFutureDynamicFlagEnabled } from "../../teamlead/src/bridge/flag-store-runtime.js";',
+				"function futureConsumer(): boolean {",
+				"  return storeFutureDynamicFlagEnabled(runtime);",
+				"}",
+			].join("\n"),
+		);
+		syntheticSources.set(
+			resolverFile,
+			[
+				"function readBoolean(runtime: unknown, name: string): boolean { return Boolean(runtime && name); }",
+				"export function storeFutureDynamicFlagEnabled(runtime: unknown): boolean {",
+				'  const featureAnchor = "future_dynamic_flag";',
+				'  return readBoolean(runtime, "flag_retirement_scan") && Boolean(featureAnchor);',
+				"}",
+			].join("\n"),
+		);
+		expect(
+			validateDeclaredReadSites({
+				flags: [fakeAnchor],
+				sourceByFile: syntheticSources,
+			}).join("\n"),
+		).toMatch(
+			/future_dynamic_flag.*resolver.*does not read.*future_dynamic_flag/i,
+		);
+	});
+
+	it("binds a delegated resolver call to the declared consumer AST anchor", () => {
+		const template = FEATURE_FLAGS.find(
+			(flag) => flag.name === "flag_retirement_scan",
+		) as FeatureFlagSpec;
+		const consumerFile = "packages/example/src/future-consumer.ts";
+		const resolverFile = "packages/teamlead/src/bridge/flag-store-runtime.ts";
+		const injected: FeatureFlagSpec = {
+			...template,
+			name: "future_dynamic_flag",
+			envVar: "FLYWHEEL_FUTURE_DYNAMIC_FLAG",
+			readSites: [
+				{
+					file: consumerFile,
+					symbol: "nonexistentFeatureAnchor",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: resolverFile,
+					resolverSymbol: "storeFutureDynamicFlagEnabled",
+				},
+			],
+		};
+		const syntheticSources = new Map(sourceByFile);
+		syntheticSources.set(
+			consumerFile,
+			[
+				'import { storeFutureDynamicFlagEnabled } from "../../teamlead/src/bridge/flag-store-runtime.js";',
+				"storeFutureDynamicFlagEnabled(runtime);",
+			].join("\n"),
+		);
+		syntheticSources.set(
+			resolverFile,
+			[
+				"function readBoolean(runtime: unknown, name: string): boolean { return Boolean(runtime && name); }",
+				"export function storeFutureDynamicFlagEnabled(runtime: unknown): boolean {",
+				'  return readBoolean(runtime, "future_dynamic_flag");',
+				"}",
+			].join("\n"),
+		);
+		expect(
+			validateDeclaredReadSites({
+				flags: [injected],
+				sourceByFile: syntheticSources,
+			}).join("\n"),
+		).toMatch(/nonexistentFeatureAnchor.*not found|declared consumer.*anchor/i);
+	});
+
 	it("pins migrated config, delegated, and dynamic readSite identities", () => {
 		expect(
 			FEATURE_FLAGS.find((flag) => flag.name === "checkpoint_enabled")
@@ -169,7 +310,6 @@ describe("feature-flag drift guard", () => {
 		});
 
 		const configFlags = new Set([
-			"qa_auto",
 			"doc_flow",
 			"skill_framework_split_participation",
 			"proofshot",
@@ -184,16 +324,6 @@ describe("feature-flag drift guard", () => {
 				}),
 			),
 		).toEqual([
-			{
-				name: "qa_auto",
-				site: {
-					file: "packages/teamlead/src/bridge/auto-qa-policy.ts",
-					symbol: "resolveAutoQaPolicy",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "cfg.auto",
-				},
-			},
 			{
 				name: "doc_flow",
 				site: {
@@ -253,75 +383,66 @@ describe("feature-flag drift guard", () => {
 					.map((site) => ({ name: flag.name, site })),
 			),
 		).toEqual([
+			...[
+				["loop_profiler", "storeLoopProfilerEnabled"],
+				["shipped_husk_force", "storeShippedHuskForceEnabled"],
+			].map(([name, resolverSymbol]) => ({
+				name,
+				site: {
+					file: "packages/teamlead/src/bridge/plugin.ts",
+					symbol: "startBridge",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol,
+				},
+			})),
 			{
 				name: "flag_retirement_scan",
 				site: {
 					file: "packages/teamlead/src/bridge/plugin.ts",
-					symbol: "flag scan enabled injection",
+					symbol: "flagRetirementScanner",
 					pattern: "delegated",
 					timing: "call_time",
 					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
 					resolverSymbol: "storeFlagRetirementScanEnabled",
 				},
 			},
-			{
-				name: "codex_hard_gate_killswitch",
-				site: {
-					file: "packages/teamlead/src/bridge/auto-qa-held.ts",
-					symbol: "codexHardGateEnabled",
-					pattern: "delegated",
-					timing: "call_time",
-					resolverModule: "packages/teamlead/src/bridge/codex-gate.ts",
-					resolverSymbol: "codexHardGateEnabled",
-				},
-			},
 			...[
 				[
 					"workflow_rework_reentry",
 					"packages/teamlead/src/bridge/plugin.ts",
-					"WorkflowReworkCoordinator reentry injection",
+					"workflowReworkCoordinatorHolder.current",
 					"storeWorkflowReworkReentryEnabled",
 				],
 				[
 					"workflow_rework_reentry",
 					"packages/teamlead/src/bridge/plugin.ts",
-					"WorkflowEngineDispatcher reentry injection",
+					"workflowEngineDispatcher",
 					"storeWorkflowReworkReentryEnabled",
 				],
 				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/plugin.ts",
-					"runs route skill mode injection",
+					"runsRouter",
 					"storeSkillFrameworkModeControl",
 				],
 				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/run-infra.ts",
-					"Blueprint skill mode injection",
+					"skillFrameworkModeControl",
 					"storeSkillFrameworkModeControl",
 				],
 				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/run-infra.ts",
-					"RunDispatcher sticky mode injection",
+					"createRunInfraDispatcher",
 					"storeSkillFrameworkModeControl",
-				],
-				[
-					"workflow_resume",
-					"packages/teamlead/src/bridge/plugin.ts",
-					"runs route resume injection",
-					"storeWorkflowResumeEnabled",
-				],
-				[
-					"workflow_resume",
-					"packages/teamlead/src/bridge/plugin.ts",
-					"WorkflowEngineDispatcher resume injection",
-					"storeWorkflowResumeEnabled",
 				],
 				[
 					"workflow_turn_divergence_alerts",
 					"packages/teamlead/src/bridge/plugin.ts",
-					"workflow TURN divergence alert injection",
+					"gatePoller",
 					"storeWorkflowTurnDivergenceAlertsEnabled",
 				],
 			].map(([name, file, symbol, resolverSymbol]) => ({
@@ -349,11 +470,15 @@ describe("feature-flag drift guard", () => {
 			"cmux_view_helper:view_helper_enabled",
 			"cmux_node_presence:cmux_node_presence",
 			"merge_approval_gate_killswitch:resolveDefaultOnGate",
-			"qa_done_gate_killswitch:resolveDefaultOnGate",
 		]);
 	});
 
 	it("enforces registry-or-reasoned-accounting for every env/config boolean", () => {
+		const storeManagedEnvVars = new Set(
+			FEATURE_FLAGS.filter((spec) =>
+				STORE_MANAGED_FLAGS.has(spec.name),
+			).flatMap((spec) => (spec.envVar ? [spec.envVar] : [])),
+		);
 		const issues = auditFlagAccounts({
 			rawCodeHits: scan.rawCodeHits,
 			configPaths,
@@ -363,9 +488,193 @@ describe("feature-flag drift guard", () => {
 			nonFlagConfigKeys: NON_FLAG_CONFIG_KEYS,
 			exemptions: FLAG_EXEMPTIONS,
 			retiredEnvVars: new Set(RETIRED_FLAGS.map((flag) => flag.envVar)),
+			retiredConfigPaths: new Set(
+				RETIRED_CONFIG_PATHS.map((entry) => entry.path),
+			),
+			storeManagedEnvVars,
 		});
+		const skillModeCompatibilityReads = scan.rawCodeHits.filter(
+			(hit) =>
+				hit.name === "FLYWHEEL_SKILL_FRAMEWORK_MODE" &&
+				hit.file === "packages/config/src/skill-framework-mode.ts" &&
+				hit.code === "args.env[SKILL_FRAMEWORK_MODE_ENV]" &&
+				hit.anchorSymbol === "resolveSkillFrameworkMode" &&
+				typeof hit.anchorStart === "number" &&
+				typeof hit.anchorEnd === "number" &&
+				hit.anchorStart <= hit.start &&
+				hit.end <= hit.anchorEnd,
+		);
+		expect(
+			skillModeCompatibilityReads,
+			"the sole store-fed synthetic env compatibility read must be exercised",
+		).toHaveLength(1);
 		expect(issues, `flag accounting violations:\n${issues.join("\n")}`).toEqual(
 			[],
+		);
+	});
+
+	it("rejects undeclared raw env reads for a store-managed registry spec", () => {
+		const template = FEATURE_FLAGS.find(
+			(spec) => spec.name === "flag_retirement_scan",
+		) as FeatureFlagSpec;
+		const consumerFile = "packages/teamlead/src/bridge/future-flag-consumer.ts";
+		const resolverFile = "packages/teamlead/src/bridge/flag-store-runtime.ts";
+		const futureSpec: FeatureFlagSpec = {
+			...template,
+			name: "future_dynamic_flag",
+			envVar: "FLYWHEEL_FUTURE_DYNAMIC_FLAG",
+			readSites: [
+				{
+					file: consumerFile,
+					symbol: "futureFeatureAnchor",
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: resolverFile,
+					resolverSymbol: "storeFutureDynamicFlagEnabled",
+				},
+			],
+		};
+		const flags = [...FEATURE_FLAGS, futureSpec];
+		const storeManagedFlags = new Set([
+			...STORE_MANAGED_FLAGS,
+			futureSpec.name,
+		]);
+		expect(
+			validateFlagAuthoringPolicy({
+				flags,
+				storeManagedFlags,
+				codecForName: (name) =>
+					name === futureSpec.name
+						? {
+								parse: ({ hasOverride, raw }) => !hasOverride || raw !== "0",
+								canonicalEffective: String,
+							}
+						: getFlagStoreCodec(name),
+			}),
+		).toEqual([]);
+		const compliantSources = new Map(sourceByFile);
+		compliantSources.set(
+			consumerFile,
+			[
+				'import { storeFutureDynamicFlagEnabled } from "./flag-store-runtime.js";',
+				"export function futureFeatureAnchor(): boolean {",
+				"  return storeFutureDynamicFlagEnabled(runtime);",
+				"}",
+			].join("\n"),
+		);
+		compliantSources.set(
+			resolverFile,
+			`${sourceByFile.get(resolverFile) ?? ""}\nexport function storeFutureDynamicFlagEnabled(runtime: FlagStoreRuntime): boolean { return readBoolean(runtime, "future_dynamic_flag"); }`,
+		);
+		expect(
+			validateDeclaredReadSites({
+				flags: [futureSpec],
+				sourceByFile: compliantSources,
+			}),
+		).toEqual([]);
+		const injectedRead = scanSources([
+			{
+				file: "packages/example/src/raw-future-flag.ts",
+				text: "const enabled = process.env.FLYWHEEL_FUTURE_DYNAMIC_FLAG === '1';",
+			},
+		]);
+		const issues = auditFlagAccounts({
+			rawCodeHits: injectedRead.rawCodeHits,
+			configPaths: [],
+			registeredEnvVars: new Set(
+				flags.flatMap((spec) => (spec.envVar ? [spec.envVar] : [])),
+			),
+			registeredConfigKeys: new Set(),
+			nonFlagEnv: {},
+			nonFlagConfigKeys: {},
+			exemptions: [],
+			retiredEnvVars: new Set(),
+			retiredConfigPaths: new Set(),
+			storeManagedEnvVars: new Set(
+				flags
+					.filter((spec) => storeManagedFlags.has(spec.name))
+					.flatMap((spec) => (spec.envVar ? [spec.envVar] : [])),
+			),
+		});
+		expect(issues.join("\n")).toMatch(
+			/FLYWHEEL_FUTURE_DYNAMIC_FLAG.*store-managed.*raw/i,
+		);
+	});
+
+	it("allows only one skill-mode compatibility read inside its named resolver", () => {
+		const duplicateRead = scanSources([
+			{
+				file: "packages/config/src/skill-framework-mode.ts",
+				text: [
+					'const SKILL_FRAMEWORK_MODE_ENV = "FLYWHEEL_SKILL_FRAMEWORK_MODE";',
+					"function resolveSkillFrameworkMode(args: { env: Record<string, string | undefined> }) {",
+					"  const first = args.env[SKILL_FRAMEWORK_MODE_ENV];",
+					"  const duplicate = args.env[SKILL_FRAMEWORK_MODE_ENV];",
+					"  return first ?? duplicate;",
+					"}",
+				].join("\n"),
+			},
+		]);
+		expect(duplicateRead.rawCodeHits).toHaveLength(2);
+		const issues = auditFlagAccounts({
+			rawCodeHits: duplicateRead.rawCodeHits,
+			configPaths: [],
+			registeredEnvVars: new Set(["FLYWHEEL_SKILL_FRAMEWORK_MODE"]),
+			registeredConfigKeys: new Set(),
+			nonFlagEnv: {},
+			nonFlagConfigKeys: {},
+			exemptions: [],
+			retiredEnvVars: new Set(),
+			retiredConfigPaths: new Set(),
+			storeManagedEnvVars: new Set(["FLYWHEEL_SKILL_FRAMEWORK_MODE"]),
+		});
+		expect(issues.join("\n")).toMatch(
+			/FLYWHEEL_SKILL_FRAMEWORK_MODE.*(?:single|cardinality|raw)/i,
+		);
+	});
+
+	it("freezes exemptions even when the old audit sees a legal entry and real read", () => {
+		const injectedExemption: FlagExemption = {
+			name: "FLYWHEEL_FUTURE_INVOCATION_SEAM",
+			kind: "env",
+			persistentEnvAllowed: false,
+			reason: "synthetic one-invocation seam for the bypass control",
+			owner: "flywheel-eng-lead",
+			issue: "FLY-1981",
+		};
+		const injectedRead = scanSources([
+			{
+				file: "packages/synthetic/src/future.ts",
+				text: `export const enabled = process.env.${injectedExemption.name} === "1";`,
+			},
+		]);
+		expect(injectedRead.rawCodeHits.map((hit) => hit.name)).toContain(
+			injectedExemption.name,
+		);
+		const exemptions = [...FLAG_EXEMPTIONS, injectedExemption];
+		expect(
+			auditFlagAccounts({
+				rawCodeHits: [...scan.rawCodeHits, ...injectedRead.rawCodeHits],
+				configPaths,
+				registeredEnvVars,
+				registeredConfigKeys,
+				nonFlagEnv: NON_FLAG_ALLOWLIST,
+				nonFlagConfigKeys: NON_FLAG_CONFIG_KEYS,
+				exemptions,
+				retiredEnvVars: new Set(RETIRED_FLAGS.map((flag) => flag.envVar)),
+				retiredConfigPaths: new Set(
+					RETIRED_CONFIG_PATHS.map((entry) => entry.path),
+				),
+				storeManagedEnvVars: new Set(
+					FEATURE_FLAGS.filter((spec) =>
+						STORE_MANAGED_FLAGS.has(spec.name),
+					).flatMap((spec) => (spec.envVar ? [spec.envVar] : [])),
+				),
+			}),
+		).toEqual([]);
+		const policyIssues = validateFlagAuthoringPolicy({ exemptions });
+		expect(policyIssues.join("\n")).toMatch(
+			/FLAG_EXEMPTIONS is frozen.*flag-authoring-runbook\.md/i,
 		);
 	});
 

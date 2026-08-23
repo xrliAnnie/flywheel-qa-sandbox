@@ -522,7 +522,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		)!.dispatch;
 		const cron = project.crons[0]!.schedule;
 		const flag = before.flags.find(
-			(item) => item.name === "auto_qa_killswitch",
+			(item) => item.name === "founder_review_orphan_monitor",
 		)!.global;
 		const desiredSchedule = {
 			days: [1, 3],
@@ -602,7 +602,9 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(appliedResponse.status).toBe(200);
 		expect(await appliedResponse.json()).toMatchObject({ status: "applied" });
 		expect(readFileSync(configPath, "utf8")).toContain("model: claude-fable-5");
-		expect(readFileSync(envPath, "utf8")).toContain("FLYWHEEL_AUTO_QA=0");
+		expect(readFileSync(envPath, "utf8")).toContain(
+			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0",
+		);
 		expect(
 			store.getWorkflowTemplate("tpl_eng_heavy")?.current_published_revision,
 		).toBe(2);
@@ -648,7 +650,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 
 		const partialSnapshot = await snapshot();
 		const partialFlag = partialSnapshot.flags.find(
-			(item) => item.name === "codex_hard_gate_killswitch",
+			(item) => item.name === "mailbox_queue",
 		)!.global;
 		const failureField = partialSnapshot.extensions[0]!.fields[0]!.value;
 		const partialStage = await post("/api/fleet/changes/stage", {

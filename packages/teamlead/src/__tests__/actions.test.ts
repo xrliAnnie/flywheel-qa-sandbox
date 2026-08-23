@@ -246,26 +246,15 @@ describe("Action tools", () => {
 		const questionId = seedApproveGate("e-held-codex");
 		store.setReviewBinding("e-held-codex", { questionId, prHeadSha: head });
 
-		const previousHardGate = process.env.FLYWHEEL_CODEX_HARD_GATE;
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "1";
-		let result: Awaited<ReturnType<typeof approveExecution>>;
-		try {
-			result = await approveExecution(
-				store,
-				testProjects,
-				"e-held-codex",
-				"GEO-HELD-CODEX",
-				mockExec,
-				undefined,
-				makeConfig(),
-			);
-		} finally {
-			if (previousHardGate === undefined) {
-				delete process.env.FLYWHEEL_CODEX_HARD_GATE;
-			} else {
-				process.env.FLYWHEEL_CODEX_HARD_GATE = previousHardGate;
-			}
-		}
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e-held-codex",
+			"GEO-HELD-CODEX",
+			mockExec,
+			undefined,
+			makeConfig(),
+		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("held_codex_pending");
 

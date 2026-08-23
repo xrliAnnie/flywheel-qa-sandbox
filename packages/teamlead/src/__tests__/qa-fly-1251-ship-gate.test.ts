@@ -22,9 +22,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	founderApprovalHoldGuard,
 	reviewHoldReason,
-} from "../bridge/auto-qa-held.js";
+} from "../bridge/review-hold.js";
 import { SHIP_RELEVANT_CLASSIFIER_VERSION } from "../bridge/ship-relevant-diff.js";
 import { StateStore } from "../StateStore.js";
+import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 const HEAD = "a".repeat(40);
 const BASE = "b".repeat(40);
@@ -127,20 +128,20 @@ describe("QA FLY-1251 · legacy DB upgrade (the path every real deploy takes)", 
 		});
 	});
 
-	it("claims a NEW record on an upgraded DB (would throw if the ALTER were missing)", async () => {
+	it("reads a historical manual record on an upgraded DB", async () => {
 		const path = dbFile();
 		seedLegacyDb(path);
 		const store = await StateStore.create(path);
 
-		expect(
-			store.claimAutoQaRecord({
-				parentExecutionId: "exec-new",
-				targetPrHeadSha: HEAD,
-				issueId: "FLY-1",
-				projectName: "flywheel",
-				enrollmentSource: "manual",
-			}),
-		).toBe(true);
+		(
+			store as unknown as { db: { run(sql: string, params: unknown[]): void } }
+		).db.run(
+			`INSERT INTO auto_qa_record
+			 (parent_execution_id, target_pr_head_sha, issue_id, project_name,
+			  enrollment_source, status, started_at)
+			 VALUES (?, ?, ?, ?, 'manual', 'running', datetime('now'))`,
+			["exec-new", HEAD, "FLY-1", "flywheel"],
+		);
 		expect(store.getAutoQaRecord("exec-new", HEAD)?.enrollment_source).toBe(
 			"manual",
 		);
@@ -188,17 +189,23 @@ describe("QA FLY-1251 · E1 accident replay against the real StateStore", () => 
 	it("releases a code PR once real QA evidence passes for the same head", async () => {
 		const store = await accidentShapeStore();
 		codeBearingSnapshot(store, 1);
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "exec-1251",
 			targetPrHeadSha: HEAD,
 			issueId: "issue-1",
 			projectName: "flywheel",
+			status: "running",
 		});
 		expect(reviewHoldReason(store, store.getSession("exec-1251"))).toBe(
 			"qa_not_green",
 		);
 
-		store.setAutoQaStatus("exec-1251", HEAD, "passed", {});
+		(
+			store as unknown as { db: { run(sql: string, params: unknown[]): void } }
+		).db.run(
+			"UPDATE auto_qa_record SET status = 'passed' WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
+			["exec-1251", HEAD],
+		);
 		expect(reviewHoldReason(store, store.getSession("exec-1251"))).toBeNull();
 	});
 

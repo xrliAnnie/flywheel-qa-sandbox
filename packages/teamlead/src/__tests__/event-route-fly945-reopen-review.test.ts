@@ -11,7 +11,10 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -21,6 +24,7 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const runPostShipSpy = vi.fn(async () => {});
 vi.mock("../bridge/post-ship-finalization.js", async () => {
@@ -75,6 +79,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	let server: http.Server;
 	let baseUrl: string;
 	let transitionOpts: ApplyTransitionOpts;
+	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -83,10 +88,10 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 
 	beforeEach(async () => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		runPostShipSpy.mockClear();
-		store = await StateStore.create(":memory:");
+		stateRoot = mkdtempSync(join(tmpdir(), "fly945-reopen-"));
+		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		transitionOpts = { store, fsm, executor };
@@ -106,12 +111,12 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	async function postEvent(body: Record<string, unknown>) {
@@ -129,6 +134,11 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 				project_name: session?.project_name ?? String(body.project_name),
 				status: session?.status ?? "running",
 				worktree_path: process.cwd(),
+			});
+			setHistoricalQaRequiredSnapshot(store, {
+				executionId,
+				required: 0,
+				reason: "re-open review fixture",
 			});
 		}
 		return response;

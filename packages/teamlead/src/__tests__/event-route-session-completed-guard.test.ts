@@ -9,7 +9,10 @@
  * - FSM reject logs at error level with pre-state + target + route
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -18,6 +21,7 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -56,6 +60,7 @@ describe("session_completed route guard (FLY-108)", () => {
 	let baseUrl: string;
 	let warnSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
+	let stateRoot: string;
 
 	const ingestHeaders = {
 		"Content-Type": "application/json",
@@ -84,6 +89,11 @@ describe("session_completed route guard (FLY-108)", () => {
 			status: session?.status ?? "running",
 			worktree_path: process.cwd(),
 		});
+		setHistoricalQaRequiredSnapshot(store, {
+			executionId,
+			required: 0,
+			reason: "route guard fixture",
+		});
 	}
 
 	async function postCompleted(body: Record<string, unknown>) {
@@ -96,9 +106,9 @@ describe("session_completed route guard (FLY-108)", () => {
 
 	beforeEach(async () => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
-		store = await StateStore.create(":memory:");
+		stateRoot = mkdtempSync(join(tmpdir(), "fly108-guard-"));
+		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
@@ -121,12 +131,12 @@ describe("session_completed route guard (FLY-108)", () => {
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(stateRoot, { recursive: true, force: true });
 		warnSpy.mockRestore();
 		errorSpy.mockRestore();
 	});

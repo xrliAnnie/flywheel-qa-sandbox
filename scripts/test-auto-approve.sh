@@ -1,43 +1,17 @@
 #!/usr/bin/env bash
-# FLY-115 v1.24.4 (replaces v1.24.2 implementation):
-#   Unblock a sandbox Runner stuck at the flywheel-comm `approve_to_ship`
-#   gate by writing the gate response directly into CommDB — the same path
-#   the production Lead runtime uses today (see Codex architectural review
-#   for FLY-115 v1.24.4 + qa-fly-108 Round 4 deadlock report).
+# FLY-1981: approve an exact legacy QA execution through the existing Bridge
+# founder action. The request carries no Lead identity; Bridge writes the
+# founder-attributed response, advances the legacy FSM, and wakes the Runner.
 #
 # Usage:
 #   scripts/test-auto-approve.sh <slot> <execution-id> [--timeout 60] [--poll-interval 2]
 #
 # Exit codes:
-#   0 — gate response inserted (Runner can proceed)
-#   2 — Bridge /health unreachable (slot not deployed)
-#   3 — timeout: no pending approve_to_ship gate within --timeout seconds
-#   4 — flywheel-comm respond failed (CLI missing, DB write error, etc.)
-#   5 — usage / arg error
-#
-# ── Why this script no longer POSTs /api/actions/approve ──
-# v1.24.2 used `POST /api/actions/approve` to drive Bridge's `approveExecution`,
-# which strictly requires `session.status == "awaiting_review"`. But the FSM
-# only flips to awaiting_review when a `session_completed` event arrives, and
-# `session_completed` is only emitted by Blueprint when the Runner exits.
-# When the Runner is correctly blocked on the `gate approve_to_ship` CLI
-# (the whole point of the gate), Blueprint cannot fire session_completed, so
-# the FSM stays at "running", `approveExecution` rejects with HTTP 400, and
-# the auto-approve script times out forever. qa-fly-108 hit this dead-lock in
-# Round 4 (timeline: 02:32:37 session_started → 02:33:24 Runner posted gate
-# → 11+ min stuck on `Cannot approve …: status is "running", expected
-# "awaiting_review"`).
-#
-# Production never hits this knot because the Lead runtime doesn't call the
-# action endpoint either — when Annie posts ":cool:" the Lead runs:
-#     flywheel-comm respond --lead <leadName> --db <comm-db> <question_id> "<answer>"
-# which inserts the response row directly into CommDB, unblocks the Runner's
-# polling loop, and lets the Runner reach session_completed naturally on its
-# own exit. Codex's v1.24.4 architectural review confirmed this is the prod
-# path and that aligning the test framework with it is a fidelity improvement,
-# not a workaround. (Suspected production-side breakage of `/api/actions/approve`
-# under the same gate is being tracked separately as a follow-up FLY issue —
-# v1.24.4 deliberately stays scoped to the test framework.)
+#   0 — exact Bridge response + approved_to_ship reconciled durably
+#   2 — Bridge /health unreachable
+#   3 — timeout waiting for an answerable, fully-bound awaiting_review session
+#   4 — approve endpoint failed without durable success, or durable proof invalid
+#   5 — usage / argument error
 set -euo pipefail
 
 usage() {
@@ -50,17 +24,11 @@ SLOT="$1"
 EXECUTION_ID="$2"
 shift 2
 
-# FLY-115 v1.24.2: Slot must be a positive integer — same defense-in-depth as
-# test-teardown.sh so a negative jq index (`.slots[-1]` → last slot) can't be
-# triggered by a typo on the CLI.
 if ! [[ "$SLOT" =~ ^[1-9][0-9]*$ ]]; then
   echo "ERROR: invalid slot '${SLOT}' — must be a positive integer" >&2
   exit 5
 fi
-if [[ -z "$EXECUTION_ID" ]]; then
-  echo "ERROR: execution-id is required" >&2
-  usage
-fi
+[[ -n "$EXECUTION_ID" ]] || usage
 
 TIMEOUT=60
 POLL=2
@@ -81,161 +49,156 @@ if ! [[ "$POLL" =~ ^[0-9]+$ ]] || (( POLL <= 0 )); then
   exit 5
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
 SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
 [[ -f "$SLOTS_FILE" ]] || { echo "ERROR: $SLOTS_FILE missing" >&2; exit 5; }
 
 SLOT_IDX=$((SLOT - 1))
 PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort // empty" "$SLOTS_FILE")
-BOT_NAME=$(jq -r ".slots[${SLOT_IDX}].botName // empty" "$SLOTS_FILE")
-[[ -n "$PORT" && -n "$BOT_NAME" ]] || {
-  echo "ERROR: slot $SLOT not present in $SLOTS_FILE (need .bridgePort + .botName)" >&2
+[[ -n "$PORT" ]] || {
+  echo "ERROR: slot $SLOT not present in $SLOTS_FILE (need .bridgePort)" >&2
   exit 5
 }
 
 API="http://localhost:${PORT}"
 PROJECT_NAME="test-slot-${SLOT}"
+SLOT_ROOT="${TEST_AUTO_APPROVE_SLOT_ROOT:-/tmp}"
+if [[ "$SLOT_ROOT" != /* ]]; then
+  echo "ERROR: TEST_AUTO_APPROVE_SLOT_ROOT must be an absolute path" >&2
+  exit 5
+fi
+SLOT_DIR="${SLOT_ROOT%/}/flywheel-test-slot-${SLOT}"
+STATE_DB="${SLOT_DIR}/teamlead.db"
 COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
-PROJECTS_FILE="/tmp/flywheel-test-slot-${SLOT}/flywheel-projects.json"
-
-# flywheel-comm CLI lives at packages/flywheel-comm/dist/index.js after
-# `pnpm -r --filter flywheel-comm build` (which test-deploy.sh's pre-flight
-# already runs). Resolved relative to the script so worktree / sandbox runs
-# both find it.
-COMM_CLI="${REPO_ROOT}/packages/flywheel-comm/dist/index.js"
+API_TOKEN_PATH="${SLOT_DIR}/state/api-token"
+SQL_EXECUTION_ID=${EXECUTION_ID//\'/\'\'}
 
 log() { echo "[test-auto-approve] $(date +%H:%M:%S) $*" >&2; }
 
-if [[ ! -f "$COMM_CLI" ]]; then
-  log "ERROR: flywheel-comm CLI not found at ${COMM_CLI}. Run 'pnpm -r --filter flywheel-comm build' (or rerun scripts/test-deploy.sh which builds it pre-flight)."
-  exit 4
-fi
-if [[ ! -f "$PROJECTS_FILE" ]]; then
-  log "ERROR: canonical slot projects file not found at ${PROJECTS_FILE}"
-  exit 4
-fi
+[[ -f "$STATE_DB" ]] || { log "ERROR: StateStore missing at ${STATE_DB}"; exit 4; }
+[[ -f "$COMM_DB" ]] || { log "ERROR: CommDB missing at ${COMM_DB}"; exit 4; }
 
-# This helper runs outside the Lead pane, so it cannot inherit trusted runtime
-# identity. Resolve the exact QA registry row and project the complete
-# non-secret comparison tuple into the one write process instead.
-if ! IDENTITY_JSON=$(node "$COMM_CLI" lead-identity resolve \
-    --projects-file "$PROJECTS_FILE" \
-    --project "$PROJECT_NAME" \
-    --lead "$BOT_NAME" \
-    --format json); then
-  log "ERROR: canonical Lead identity resolution failed for ${PROJECT_NAME}/${BOT_NAME}"
-  exit 4
-fi
-IDENTITY_LEAD_ID=$(jq -er '.leadId' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_PROJECT_NAME=$(jq -er '.projectName' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_LEAD_KEY=$(jq -er '.leadKey' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_ROLE=$(jq -er '.role' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_BACKEND=$(jq -er '.backend' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_STATE_DIR=$(jq -er '.discordStateDir' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_BOT_USER_ID=$(jq -er '.botUserId // ""' <<<"$IDENTITY_JSON") || exit 4
-IDENTITY_DIGEST=$(jq -er '.identityDigest' <<<"$IDENTITY_JSON") || exit 4
-PROJECTS_DIGEST=$(jq -er '.projectsDigest' <<<"$IDENTITY_JSON") || exit 4
-
-# ── Phase 1: Bridge /health preflight ────────────────────────
-# Sanity-check that the slot is actually deployed. We do not depend on Bridge
-# for the approve write itself (that goes via flywheel-comm → CommDB), but a
-# missing Bridge means GatePoller isn't running, so the Lead would never see
-# the gate in production either — failing fast here matches prod expectation.
-# /health (not /api/health) matches scripts/test-deploy.sh:488 wait loop.
 if ! curl -fsS --max-time 5 "${API}/health" >/dev/null 2>&1; then
   log "Bridge unreachable at ${API}/health — is slot ${SLOT} deployed?"
   exit 2
 fi
 
-# ── Phase 2: poll until a pending approve_to_ship gate exists in CommDB ──
-#
-# We no longer gate on `session.status == awaiting_review` — that flag only
-# flips on `session_completed` events, which Blueprint can't emit while the
-# Runner is correctly blocked inside the gate's polling loop (see header
-# comment for the Round 4 deadlock).
-#
-# Schema mirror (packages/flywheel-comm/src/mailbox-schema.ts):
-#   mailbox(id, from_agent, to_agent, type, content, ref_id,
-#            checkpoint, content_ref, content_type, expires_at, ...);
-#   pending = from_agent=runner-execution-id, type='question',
-#             checkpoint='approve_to_ship', no response child, not expired.
-#
-# We additionally fetch `id` (the question_id) because flywheel-comm respond
-# requires it as the parent_id for the new response row.
+# Read only the exact execution row. A legacy approval is safe to submit only
+# after complete --route needs_review persisted both the exact question and
+# the reviewed head. `unbound` is an explicit refusal sentinel.
 DEADLINE=$(( $(date +%s) + TIMEOUT ))
 QUESTION_ID=""
+PR_HEAD=""
 while [[ $(date +%s) -lt $DEADLINE ]]; do
-  if [[ -f "$COMM_DB" ]]; then
-    # `.timeout 2000` keeps the read short if the Runner-writer is mid-WAL.
-    # Single-row LIMIT keeps shell-side parsing trivial — we want the most
-    # recently created pending gate, which under normal Runner behaviour is
-    # also the only one (gates are 1:1 with execution).
-    QUESTION_ID=$(sqlite3 -batch -cmd ".timeout 2000" "$COMM_DB" "
-      SELECT q.id FROM mailbox q
-      WHERE q.from_agent = '${EXECUTION_ID}'
-        AND q.type = 'question'
-        AND q.checkpoint = 'approve_to_ship'
-        AND NOT EXISTS (
-          SELECT 1 FROM mailbox r
-          WHERE r.ref_id = q.id AND r.type = 'response'
-        )
-        AND datetime(q.expires_at) > datetime('now')
-      ORDER BY q.created_at DESC
-      LIMIT 1;
-    " 2>/dev/null || echo "")
-    if [[ -n "$QUESTION_ID" ]]; then
-      log "pending approve_to_ship gate present (question_id=${QUESTION_ID}); responding"
+  STATE_ROW=$(sqlite3 -batch -cmd ".timeout 2000" -separator '|' "$STATE_DB" "
+    SELECT status, COALESCE(review_question_id, ''), COALESCE(pr_head_sha, '')
+      FROM sessions
+     WHERE execution_id = '${SQL_EXECUTION_ID}'
+     LIMIT 1;
+  " 2>/dev/null || true)
+  IFS='|' read -r STATUS QUESTION_ID PR_HEAD <<<"$STATE_ROW"
+
+  if [[ "$STATUS" == "awaiting_review" \
+        && -n "$QUESTION_ID" \
+        && "$QUESTION_ID" != "unbound" \
+        && "$PR_HEAD" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    SQL_QUESTION_ID=${QUESTION_ID//\'/\'\'}
+    OPEN_GATE=$(sqlite3 -batch -cmd ".timeout 2000" -separator '|' "$COMM_DB" "
+      SELECT q.id, q.from_agent, q.checkpoint
+        FROM mailbox_message_projection q
+       WHERE q.id = '${SQL_QUESTION_ID}'
+         AND q.from_agent = '${SQL_EXECUTION_ID}'
+         AND q.type = 'question'
+         AND q.checkpoint = 'approve_to_ship'
+         AND q.resolved_at IS NULL
+         AND q.superseded_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM mailbox_message_projection response
+            WHERE response.parent_id = q.id AND response.type = 'response'
+         )
+       LIMIT 1;
+    " 2>/dev/null || true)
+    if [[ "$OPEN_GATE" == "${QUESTION_ID}|${EXECUTION_ID}|approve_to_ship" ]]; then
+      log "answerable review bound (question_id=${QUESTION_ID}, head=${PR_HEAD}); submitting founder action"
       break
     fi
   fi
+
+  QUESTION_ID=""
+  PR_HEAD=""
   sleep "$POLL"
 done
 
-if [[ -z "$QUESTION_ID" ]]; then
-  log "timeout after ${TIMEOUT}s waiting for pending approve_to_ship gate from execution_id=${EXECUTION_ID}"
+if [[ -z "$QUESTION_ID" || -z "$PR_HEAD" ]]; then
+  log "timeout after ${TIMEOUT}s waiting for exact awaiting_review + question/head binding for execution_id=${EXECUTION_ID}"
   exit 3
 fi
 
-# ── Phase 3: insert gate response via flywheel-comm respond ──
-#
-# This is the production path: Lead runtime today shells out to the same CLI
-# (`flywheel-comm respond --lead <leadName> --db <comm-db> <question_id> "<answer>"`
-# — see Lead identity prompts and packages/flywheel-comm/src/index.ts:203-235)
-# whenever Annie says ":cool:" in Discord. We use the slot's bot name as
-# `--lead` to mirror that wire format precisely.
-#
-# Response content is the structured `{"approved":true}` JSON that
-# packages/flywheel-comm/src/commands/gate.ts:128-138 parses to populate
-# GateResult.approved=true, so the Runner sees a typed "approved" gate result
-# rather than a free-text reply.
-RESPONSE_CONTENT='{"approved":true}'
+reconcile_durable_approval() {
+  local state_row status bound_question bound_head response_row
+  state_row=$(sqlite3 -batch -cmd ".timeout 2000" -separator '|' "$STATE_DB" "
+    SELECT status, COALESCE(review_question_id, ''), COALESCE(pr_head_sha, '')
+      FROM sessions
+     WHERE execution_id = '${SQL_EXECUTION_ID}'
+     LIMIT 1;
+  " 2>/dev/null || true)
+  IFS='|' read -r status bound_question bound_head <<<"$state_row"
+  response_row=$(sqlite3 -batch -cmd ".timeout 2000" -separator '|' "$COMM_DB" "
+    SELECT r.from_agent, r.content
+      FROM mailbox_message_projection r
+     WHERE r.parent_id = '${SQL_QUESTION_ID}'
+       AND r.type = 'response'
+     ORDER BY r.created_at DESC
+     LIMIT 1;
+  " 2>/dev/null || true)
+  [[ "$status" == "approved_to_ship" \
+     && "$bound_question" == "$QUESTION_ID" \
+     && "$bound_head" == "$PR_HEAD" \
+     && "$response_row" == 'bridge|{"approved":true}' ]]
+}
 
-if ! env \
-      FLYWHEEL_PROJECTS_FILE="$PROJECTS_FILE" \
-      FLYWHEEL_PROJECT_NAME="$IDENTITY_PROJECT_NAME" \
-      PROJECT_NAME="$IDENTITY_PROJECT_NAME" \
-      FLYWHEEL_LEAD_ID="$IDENTITY_LEAD_ID" \
-      LEAD_ID="$IDENTITY_LEAD_ID" \
-      FLYWHEEL_LEAD_KEY="$IDENTITY_LEAD_KEY" \
-      FLYWHEEL_LEAD_ROLE="$IDENTITY_ROLE" \
-      FLYWHEEL_LEAD_BACKEND="$IDENTITY_BACKEND" \
-      DISCORD_STATE_DIR="$IDENTITY_STATE_DIR" \
-      DISCORD_EXPECTED_BOT_USER_ID="$IDENTITY_BOT_USER_ID" \
-      DISCORD_IDENTITY_MODE=managed \
-      FLYWHEEL_LEAD_IDENTITY_DIGEST="$IDENTITY_DIGEST" \
-      FLYWHEEL_LEAD_PROJECTS_DIGEST="$PROJECTS_DIGEST" \
-      FLYWHEEL_LEAD_LEASE_MODE=off \
-      node "$COMM_CLI" respond \
-      --lead "$IDENTITY_LEAD_ID" \
-      --db "$COMM_DB" \
-      "$QUESTION_ID" \
-      "$RESPONSE_CONTENT" \
-      >/dev/null; then
-  log "flywheel-comm respond failed for question_id=${QUESTION_ID}"
-  exit 4
+REQUEST_BODY=$(jq -cn --arg execution_id "$EXECUTION_ID" '{execution_id:$execution_id}')
+HTTP_BODY=$(mktemp "${TMPDIR:-/tmp}/fly1981-approve-response.XXXXXX")
+cleanup_http_body() { rm -f "$HTTP_BODY"; }
+trap cleanup_http_body EXIT
+
+CURL_ARGS=(
+  --silent --show-error --max-time 15
+  --request POST
+  --header "Content-Type: application/json"
+  --data-binary "$REQUEST_BODY"
+  --output "$HTTP_BODY"
+  --write-out '%{http_code}'
+)
+if [[ -s "$API_TOKEN_PATH" ]]; then
+  API_TOKEN=$(tr -d '\r\n' < "$API_TOKEN_PATH")
+  [[ -n "$API_TOKEN" ]] && CURL_ARGS+=(--header "Authorization: Bearer ${API_TOKEN}")
 fi
 
-log "approved: execution_id=${EXECUTION_ID} question_id=${QUESTION_ID} (via flywheel-comm respond, prod path)"
-echo "approved ${EXECUTION_ID}"
+set +e
+HTTP_STATUS=$(curl "${CURL_ARGS[@]}" "${API}/api/actions/approve")
+CURL_RC=$?
+set -e
+
+HTTP_SUCCESS=0
+if [[ "$CURL_RC" -eq 0 && "$HTTP_STATUS" =~ ^2[0-9][0-9]$ ]] \
+  && jq -e '.success == true' "$HTTP_BODY" >/dev/null 2>&1; then
+  HTTP_SUCCESS=1
+fi
+
+if reconcile_durable_approval; then
+  if [[ "$HTTP_SUCCESS" -eq 0 ]]; then
+    log "reconciled durable approval after ambiguous HTTP result (curl=${CURL_RC}, status=${HTTP_STATUS:-none})"
+  else
+    log "approved durably via POST /api/actions/approve"
+  fi
+  echo "approved ${EXECUTION_ID}"
+  exit 0
+fi
+
+if [[ "$HTTP_SUCCESS" -eq 1 ]]; then
+  log "approve endpoint returned success without exact durable Bridge response + approved_to_ship"
+else
+  RESPONSE=$(tr '\n' ' ' < "$HTTP_BODY")
+  log "approve endpoint failed (curl=${CURL_RC}, status=${HTTP_STATUS:-none}, body=${RESPONSE:-empty})"
+fi
+exit 4

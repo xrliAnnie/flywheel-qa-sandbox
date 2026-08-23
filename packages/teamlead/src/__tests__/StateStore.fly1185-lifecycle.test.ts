@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
+import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 async function freshStore(): Promise<StateStore> {
 	return StateStore.create(":memory:");
@@ -341,16 +342,14 @@ describe("FLY-1185 R11#1 launch claims", () => {
 describe("FLY-1185 auto-QA record lookups (lifecycle-root fold inputs)", () => {
 	it("findAutoQaRecordsByQaIssueKeys / ByParentIssueKeys", async () => {
 		const store = await freshStore();
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "pe",
 			targetPrHeadSha: "sha1",
 			issueId: "parent-uuid",
 			projectName: "p",
-		});
-		store.setAutoQaQaExecutionId("pe", "sha1", "qe");
-		store.setAutoQaIssue("pe", "sha1", {
-			issueId: "qa-uuid",
-			issueIdentifier: "FLY-2000",
+			qaExecutionId: "qe",
+			qaIssueId: "qa-uuid",
+			qaIssueIdentifier: "FLY-2000",
 		});
 		expect(
 			store.findAutoQaRecordsByQaIssueKeys(["qa-uuid"]).map((r) => r.issue_id),

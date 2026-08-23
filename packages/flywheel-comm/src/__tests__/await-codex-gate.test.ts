@@ -201,6 +201,7 @@ describe("awaitCodexGate", () => {
 				env: {
 					FLYWHEEL_BRIDGE_URL: "http://bridge.invalid",
 					FLYWHEEL_INGEST_TOKEN: "token",
+					FLYWHEEL_INSTRUCTION_PATH_CHECK: "0",
 				},
 				fetchImpl: vi.fn(
 					async () =>
@@ -220,7 +221,7 @@ describe("awaitCodexGate", () => {
 		);
 	});
 
-	it("kill switch restores the legacy local design gate without a Bridge call", async () => {
+	it("FLY-1981 rejects the legacy local design result when the retired env is 0", async () => {
 		const fetchImpl = vi.fn();
 		writeFileSync(
 			join(codexDir, "design-review.json"),
@@ -241,7 +242,8 @@ describe("awaitCodexGate", () => {
 				env: { FLYWHEEL_INSTRUCTION_PATH_CHECK: "0" },
 				fetchImpl,
 			}),
-		).rejects.toThrow("process.exit(0)");
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("requestId"));
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 

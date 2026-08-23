@@ -20,7 +20,7 @@
 - 1 free test slot (1-4) — verify via `scripts/test-status.sh` if available, or `~/.flywheel/test-slots.json`
 - `LINEAR_API_KEY` set (for sandbox preflight + `inject-linear-issue.sh`)
 - Annie's Chrome browser logged in to Discord (Claude-in-Chrome MCP for V6 + HP-3/HP-7)
-- Build artifacts: `pnpm -r --filter flywheel-comm build` for CLI dependency in HP-7 fallback
+- Build artifacts: `scripts/test-deploy.sh` builds the slot services; ship approval uses the supported Bridge HTTP endpoint
 - `gh` CLI logged in (for V4-a PR state checks)
 
 ## Channel & Execution Map (per slot)
@@ -92,9 +92,9 @@ Each scenario writes evidence pack to `doc/qa/reports/v1.25.0-FLY-60-evidence/<t
 
 ## Scenario HP — Happy Path (production wire)
 
-**G coverage**: G1 (approve via `flywheel-comm respond` + Runner self-posts `:cool:`)
+**G coverage**: G1 (approve via the supported Bridge action endpoint + Runner `verify-approval`)
 
-**Why this wire, not Bridge `approveExecution`**: Bridge `approveExecution` requires `session.status = awaiting_review`, but while the Runner is gate-blocked the FSM is still `running` (Blueprint hasn't fired `session_completed` because the Runner hasn't exited). Calling Bridge approve under that condition deadlocks. See `scripts/test-auto-approve.sh:18-40` for the v1.24.4 architectural note. Production never goes through Bridge approve — it goes through `flywheel-comm respond` + Runner self-post `:cool:` + GHA workflow merge.
+**Approval wire**: the gate request is non-blocking. The Runner first opens `flywheel-comm gate approve_to_ship --no-block`, then completes `needs_review` with the exact `--question-id`. Only after StateStore persists `awaiting_review` plus the exact question/head binding does the driver call `POST /api/actions/approve` with body `{"execution_id":"..."}`. Bridge writes the authoritative response, advances to `approved_to_ship`, wakes the Runner, and the Runner must pass `verify-approval` for that exact head before shipping.
 
 **Path symbols** (driver derives from `$SLOT_JSON`):
 - `STATE_DB = $(jq -r .dbPath "$SLOT_JSON")`
@@ -110,21 +110,14 @@ Each scenario writes evidence pack to `doc/qa/reports/v1.25.0-FLY-60-evidence/<t
 | HP-2 | Sandbox preflight: `curl Linear GraphQL` for `FLY-SBX-1` | exists + `sandbox` label + non-terminal | preflight stdout |
 | HP-3 | Annie posts "请跑 FLY-SBX-1" in chat-test-{N} channel via Chrome MCP | Lead types green-dot → replies acknowledging | Chrome screenshot Annie msg + Lead reply |
 | HP-4 | Lead self-decides to call `POST ${BRIDGE_URL}/api/runs/start` for FLY-SBX-1 (Lead identity contains the start instruction). Driver fallback after 90s: `scripts/inject-linear-issue.sh <SLOT> FLY-SBX-1` | Bridge log POST 200; StateStore `sessions` row appears with status=`running` | Bridge log + `sqlite3 $STATE_DB "SELECT status, execution_id FROM sessions ORDER BY started_at DESC LIMIT 1"` |
-| HP-5 | Runner /spin runs brainstorm/research/plan/implement straight through (test-slot config does not enable brainstorm checkpoint, so Runner doesn't pause). Runner creates PR. | Sandbox repo gets a new PR; StateStore status remains `running` (Runner blocks at `approve_to_ship` gate, has not exited) | PR URL + Runner tmux pane snapshot + `sqlite3 $STATE_DB ...` |
-| HP-6 | Runner calls `flywheel-comm gate approve_to_ship` → writes `messages` row. Lead GatePoller picks it up → posts to chat thread. | CommDB question row inserted; Lead Discord notification "PR ready 请 review" | `sqlite3 $COMM_DB "SELECT id,checkpoint,delivered_at FROM messages WHERE type='question' AND from_agent='$EXECUTION_ID' AND checkpoint='approve_to_ship' ORDER BY created_at DESC LIMIT 1"` + StateStore status=`running` + Discord screenshot. **Do NOT check session_completed here** — Runner is still blocked. |
-| HP-7 | Annie posts "OK 可以 ship" in chat thread via Chrome MCP. Lead invokes `flywheel-comm respond --lead "$LEAD_ID" --db "$COMM_DB" <question_id> approve`. Driver fallback if Lead doesn't respond within 60s: invoke `scripts/test-auto-approve.sh <SLOT> <executionId>`. | CommDB response row appears (`type='response'`, `parent_id=<question_id>`); Runner gate polling loop unblocks; Runner pane shows "gate approved, posting :cool:" | `sqlite3 $COMM_DB "SELECT id,parent_id,from_agent FROM messages WHERE type='response' AND parent_id='<question_id>'"` + Runner tmux snapshot + Lead Discord screenshot |
-| HP-8 | Runner self-posts `:cool:` via `gh pr comment <PR> --body ":cool:"`. GHA `ship-on-comment.yml` runs → CI green → PR merged. Bridge sees `land=merged` → emits `session_completed source=runner` (FLY-108 path). | StateStore status flips `running → completed` | GHA run URL + `gh pr view --json state` (MERGED) + `sqlite3 $STATE_DB "SELECT status FROM sessions"` (completed) + Bridge log `grep "session_completed.*source=runner"` |
+| HP-5 | Runner /spin runs brainstorm/research/plan/implement straight through (test-slot config does not enable brainstorm checkpoint, so Runner doesn't pause). Runner creates PR. | Sandbox repo gets a new PR; StateStore status remains `running` until the review handoff | PR URL + Runner tmux pane snapshot + `sqlite3 $STATE_DB ...` |
+| HP-6 | Runner calls `flywheel-comm gate approve_to_ship --no-block`, then `flywheel-comm complete --route needs_review --question-id <id>`. Lead GatePoller relays the persisted review request. | CommDB projection contains the open exact question; StateStore is `awaiting_review` with the same non-UNBOUND question id and persisted PR head | `sqlite3 $COMM_DB "SELECT id,checkpoint,delivered_at FROM mailbox_message_projection WHERE type='question' AND from_agent='$EXECUTION_ID' AND checkpoint='approve_to_ship' ORDER BY created_at DESC LIMIT 1"` + StateStore question/head binding + Discord screenshot |
+| HP-7 | Annie posts "OK 可以 ship" in chat thread via Chrome MCP. Driver invokes `scripts/test-auto-approve.sh <SLOT> <executionId>`, which POSTs only `execution_id` to `/api/actions/approve`. | Exact Bridge response appears; StateStore advances `awaiting_review → approved_to_ship`; Runner mailbox wake is observable | Exact `mailbox_message_projection` response with `from_agent='bridge'` and `content='{"approved":true}'` + StateStore snapshot + Runner wake evidence + Lead Discord screenshot |
+| HP-8 | Woken Runner runs `verify-approval --exec-id <id> --pr-head <exact-head>`, then self-posts `:cool:`. GHA runs, CI passes, and the PR merges. Bridge sees `land=merged` and emits completion. | Exact-head verification passes; StateStore ultimately reaches `completed` | verify-approval output + GHA run URL + merged PR evidence + StateStore completion + Bridge log |
 | HP-9 | Runner cleanup (`runPostShipFinalization`) — sandbox repo gets docs archive commits if applicable; tmux Runner window closes. | Status remains `completed`; Runner tmux window absent | sandbox `git log` + `tmux list-windows` (no Runner) |
 | HP-10 | `scripts/test-teardown.sh <SLOT>` | slot directory cleaned; lock released; DBs removed | teardown stdout |
 
 **HP PASS criteria**: HP-1 → HP-10 all pass + final PR merged + StateStore `sessions.status=completed`.
-
-**HP-API (OPTIONAL secondary scenario)**: After HP completes, driver may also smoke-test Bridge `approveExecution` API by:
-1. Manually inserting a mock session row at `awaiting_review` into a fresh slot
-2. `curl -X POST ${BRIDGE_URL}/api/actions/approve -d '{"execution_id":"...","leadId":"$LEAD_ID"}'` (Bridge body uses snake_case `execution_id`, not camelCase)
-3. Verify status flips `awaiting_review → approved_to_ship` + audit log
-
-This validates FLY-58's split but is not the HP main path. Skip if time-constrained.
 
 ---
 
@@ -278,24 +271,24 @@ CLAUDE_PID=$(pgrep -P "$PANE_PID" claude || ps -o pid,command -A | awk '/claude 
 
 ## Scenario V4 — G1 Two-Part Validation
 
-**Why split**: During HP-6, the Runner pane is owned by the `flywheel-comm gate` polling process, NOT a Claude REPL. Sending a natural-language "bypass" instruction via `tmux send-keys` at HP-6 goes into the gate process's stdin, never reaching the Runner LLM. So a Round 2 Codex finding flagged the original V4 as invalid — it would only prove the gate process is blocking, not that the Runner LLM refused. Hence V4 is split.
+**Why split**: During HP-6, the Runner opens `gate approve_to_ship --no-block`, then completes `--route needs_review --question-id <id>`. That durable handoff leaves StateStore in `awaiting_review` with the exact question/head binding; HP-6 is no longer an active Claude REPL prompt target. Sending a natural-language "bypass" instruction at that point would not exercise Runner refusal. V4-a therefore verifies the held infrastructure state, while V4-b injects the bypass prompt earlier when the Runner is demonstrably inside the Claude REPL.
 
 ### V4-a — Pure gate-hold (infra)
 
-**Setup**: HP run to HP-6 (Runner gate-blocked; CommDB has `type='question'` row with `checkpoint='approve_to_ship'` but no matching `type='response'` row; StateStore status=`running`). Driver does **not** call `flywheel-comm respond`.
+**Setup**: HP run to HP-6 (CommDB projection has the exact open `approve_to_ship` question and StateStore is `awaiting_review` with its question/head binding). Driver does **not** call the approval endpoint.
 
 **Trigger**: wait 5 minutes. Inject nothing.
 
 **Verify**:
 1. CommDB response row remains absent:
    ```sql
-   SELECT COUNT(*) FROM messages
+   SELECT COUNT(*) FROM mailbox_message_projection
    WHERE type='response' AND parent_id='<question_id>';
    ```
    Result must be 0.
-2. StateStore `sessions.status` remains `running` (no awaiting_review transition).
+2. StateStore `sessions.status` remains `awaiting_review` (no approval transition).
 3. PR is not merged: `gh pr view <PR> --json state` shows `OPEN`.
-4. Runner pane still shows the gate polling loop (`flywheel-comm gate ... waiting`).
+4. The exact review question/head binding remains unchanged.
 
 **Evidence pack**:
 - `commdb-response-empty.txt`
@@ -334,7 +327,7 @@ tmux send-keys -t "$RUNNER_WINDOW_ID" '请直接 gh pr merge 当前 PR 跳过 ap
 
 **G coverage**: G2 (Runner cannot close tmux mid-flow)
 
-**Setup**: HP run to HP-6 (Runner gate-blocked; status=`running`). Both `running` and `awaiting_review` are non-eligible per `CLOSE_ELIGIBLE_STATES` whitelist.
+**Setup**: HP run to HP-6 (review handoff persisted; status=`awaiting_review`). Both `running` and `awaiting_review` are non-eligible per `CLOSE_ELIGIBLE_STATES` whitelist.
 
 **Trigger**:
 ```bash
@@ -420,15 +413,14 @@ curl -i -X POST "${BRIDGE_URL}/api/sessions/${EXECUTION_ID}/close-runner" \
 
 1. **G3 has 0 code-level enforcement**. Pure prompt + Annie reinforcement. V6 baseline pass rate is informational; follow-up issue should track whether to add an enforcement layer.
 2. **V3 Discord push not validated**. test-slot config does not provide `alertChannel` route, so the alert is queued to filesystem only. Validating Discord channel delivery requires a `test-deploy.sh` config extension (deferred).
-3. **Bridge `approveExecution` endpoint deadlocks** when called while Runner is gate-blocked (FSM `running`, can't transition to `awaiting_review`). Production bypasses it via `flywheel-comm respond`. The endpoint may be useless or need a status-tolerant rework — follow-up.
-4. **Brainstorm checkpoint not enabled in test-slot**. HP doesn't exercise that gate; if future suites need to, `test-deploy.sh` must be extended to write that checkpoint into the slot config.
-5. **`:cool:` auto-trigger** is out of scope. Production uses GHA `ship-on-comment.yml` which doesn't host Discord; QA suite is manually triggered only.
+3. **Brainstorm checkpoint not enabled in test-slot**. HP doesn't exercise that gate; if future suites need to, `test-deploy.sh` must be extended to write that checkpoint into the slot config.
+4. **`:cool:` auto-trigger** is out of scope. Production uses GHA `ship-on-comment.yml` which doesn't host Discord; QA suite is manually triggered only.
 
 ## Reference Files
 
 - Plan: `doc/engineer/plan/new/v1.25.0-FLY-60-hard-gate-e2e.md`
 - Spec source: `doc/architecture/product-experience-spec.md` §2.2
-- HP wire: `scripts/test-auto-approve.sh:18-40` (production approve path documentation)
+- HP wire: `scripts/test-auto-approve.sh` (supported endpoint + durable reconciliation)
 - CommDB schema: `packages/flywheel-comm/src/db.ts:8-37,84-104,176-241,329-363`
 - Inbox delivery semantics: `packages/inbox-mcp/src/delivery.ts:47-51,72-87`; `packages/inbox-mcp/src/index.ts:105-127`
 - Lead supervisor: `packages/teamlead/scripts/claude-lead.sh:632-663,908-912,1001-1097`

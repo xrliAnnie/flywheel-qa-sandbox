@@ -12,9 +12,9 @@ const FLAGS = resolveAllFlags({ env: {} });
 describe("feature-flag renderer (Apple cards, read-only)", () => {
 	it("renders every flag as cards, grouped by category", () => {
 		const html = renderFeatureFlagsHtml(FLAGS);
-		expect(html).toContain("FLYWHEEL_AUTO_QA");
-		expect(html).toContain("FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE");
-		expect(html).toContain("qa.auto");
+		expect(html).toContain("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR");
+		expect(html).not.toContain("FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE");
+		expect(html).toContain("doc_flow.enabled");
 		// card structure with left-border category classes (html-report-style)
 		expect(html).toContain('class="ffc');
 		expect(html).toContain("ff-grid");
@@ -29,23 +29,25 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 
 	it("console mode gives direct flags a toggle button (never governance/project)", () => {
 		const html = renderFeatureFlagsHtml(FLAGS, "console");
-		expect(html).toContain('data-ff-name="auto_qa_killswitch"');
+		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
 		expect(html).toContain("data-ff-apply");
 		// governance gate + project flag never get a control
 		expect(html).not.toContain('data-ff-name="founder_consent_decision_mode"');
-		expect(html).not.toContain('data-ff-name="qa_auto"');
+		expect(html).not.toContain('data-ff-name="doc_flow"');
 	});
 
 	it("phone mode gives direct flags a checkbox (for the copy-paste command)", () => {
 		const html = renderFeatureFlagsHtml(FLAGS, "phone");
-		expect(html).toContain('data-ff-name="auto_qa_killswitch"');
+		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
 		expect(html).toContain("data-ff-toggle");
 		expect(html).toContain('type="checkbox"');
 	});
 
 	it("suppresses controls for a store-managed flag on console and phone", () => {
-		const managed = FLAGS.find((flag) => flag.name === "workflow_resume");
-		if (!managed) throw new Error("missing workflow_resume");
+		const managed = FLAGS.find(
+			(flag) => flag.name === "workflow_turn_divergence_alerts",
+		);
+		if (!managed) throw new Error("missing workflow_turn_divergence_alerts");
 		for (const mode of ["console", "phone"] as const) {
 			const html = renderFlagCard({ ...managed, storeManaged: true }, mode);
 			expect(html).not.toContain("data-ff-apply");
@@ -54,19 +56,21 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 	});
 
 	it("effect label maps timing → 生效路径", () => {
-		const autoQa = FLAGS.find((f) => f.name === "auto_qa_killswitch");
-		if (!autoQa) throw new Error("missing");
-		expect(effectLabel(autoQa)).toBe("热生效");
+		const direct = FLAGS.find(
+			(f) => f.name === "founder_review_orphan_monitor",
+		);
+		if (!direct) throw new Error("missing");
+		expect(effectLabel(direct)).toBe("热生效");
 		const bootCaptured = FLAGS.find(
 			(f) => f.name === "voice_qa_presence_override",
 		);
 		if (!bootCaptured) throw new Error("missing");
 		expect(effectLabel(bootCaptured)).toBe("需重启");
-		const qaAuto = FLAGS.find((f) => f.name === "qa_auto");
-		if (!qaAuto) throw new Error("missing");
-		expect(effectLabel(qaAuto)).toBe("新 run 生效");
+		const docFlow = FLAGS.find((f) => f.name === "doc_flow");
+		if (!docFlow) throw new Error("missing");
+		expect(effectLabel(docFlow)).toBe("新 run 生效");
 		expect(
-			effectLabel({ ...autoQa, readTimings: ["call_time", "dotenv_live"] }),
+			effectLabel({ ...direct, readTimings: ["call_time", "dotenv_live"] }),
 		).toBe("热生效");
 	});
 
@@ -79,7 +83,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		"renders %s explicitly with both observations and no directional control",
 		(divergence, message) => {
 			const flag = FLAGS.find(
-				(candidate) => candidate.name === "auto_qa_killswitch",
+				(candidate) => candidate.name === "founder_review_orphan_monitor",
 			);
 			if (!flag) throw new Error("missing flag");
 			const html = renderFlagCard(
@@ -123,17 +127,17 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 
 	it("renders a bridge-global malformed value as a visible error, not blank", () => {
 		const html = renderFlagCard({
-			name: "founder_consent_decision_mode",
+			name: "issue_gate_supersede_mode",
 			category: "governance_gate",
-			description: "founder-consent 硬门",
+			description: "issue gate supersede mode",
 			toggleable: "readonly",
 			valueKind: "enum",
 			scope: "bridge_global",
 			source: "env",
-			envVar: "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
+			envVar: "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
 			readTimings: ["call_time"],
-			default: "off",
-			error: "invalid FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: bogus",
+			default: "enforce",
+			error: "invalid FLYWHEEL_ISSUE_GATE_SUPERSEDE: bogus",
 		});
 		expect(html).toContain("ff-err");
 		expect(html).toContain("bogus");
@@ -157,7 +161,7 @@ describe("renderFlagReport (phone, read-only)", () => {
 	});
 
 	it("includes all flags", () => {
-		expect(html).toContain("FLYWHEEL_AUTO_QA");
+		expect(html).toContain("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR");
 		expect(html).toContain("doc_flow.enabled");
 		expect(html).not.toContain("DAG 控制");
 	});
@@ -191,9 +195,9 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 	});
 
 	it("only lists direct-toggleable flags as controls", () => {
-		expect(html).toContain('data-ff-name="auto_qa_killswitch"');
+		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
 		expect(html).not.toContain('data-ff-name="founder_consent_decision_mode"');
-		expect(html).not.toContain('data-ff-name="qa_auto"');
+		expect(html).not.toContain('data-ff-name="doc_flow"');
 	});
 });
 

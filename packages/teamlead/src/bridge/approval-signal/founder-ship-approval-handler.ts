@@ -23,15 +23,15 @@
  */
 
 import type { FounderReworkHint } from "../../workflow-rework-hint.js";
-import {
-	isDeferrableReviewHoldReason,
-	type ReviewHoldReason,
-} from "../auto-qa-held.js";
 import type { ShipApprovalOutcome } from "../founder-reply-deliverer.js";
 import type {
 	MergedGateGuard,
 	MergedGateGuardResult,
 } from "../merged-gate-guard.js";
+import {
+	isDeferrableReviewHoldReason,
+	type ReviewHoldReason,
+} from "../review-hold.js";
 import type { GateAuthorityView } from "./gate-authority-view.js";
 import {
 	makeGuardedOnResponseWritten,

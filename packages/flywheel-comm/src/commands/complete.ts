@@ -580,12 +580,6 @@ function collectDesignHtmlEvidence(args: {
 	issueIdentifier: string | undefined;
 	evidence: Evidence;
 }): DesignHtmlEvidence | undefined {
-	if (process.env.FLYWHEEL_DESIGN_HTML_GATE === "0") {
-		console.error(
-			"[complete] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation; the Bridge process must also have FLYWHEEL_DESIGN_HTML_GATE=0 or it will reject this attestation-less completion",
-		);
-		return undefined;
-	}
 	const issueIdentifier = args.issueIdentifier;
 	if (!issueIdentifier) {
 		failDesignHtmlCompletion(
@@ -641,7 +635,7 @@ function failDesignHtmlCompletion(
 			`  node "$FLYWHEEL_COMM_CLI" publish-report --html <absolute-html-path> --project ${project} --publish-only\n` +
 			"Report the hosted URL to the Lead (or publish-failed plus repo path):\n" +
 			`  node "$FLYWHEEL_COMM_CLI" ask --lead ${lead} --exec-id ${execId} --report \"DESIGN-HTML ready: <hosted-url> | repo: <repo-path> | issue: ${issue}\"\n` +
-			'Then re-run `node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete`. Emergency operator escape only: FLYWHEEL_DESIGN_HTML_GATE=0.',
+			'Then re-run `node "$FLYWHEEL_COMM_CLI" complete --route phase_design_complete`.',
 	);
 	process.exit(1);
 }

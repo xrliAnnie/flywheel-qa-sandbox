@@ -157,19 +157,6 @@ describe("FLY-1269 adapter phase keep-alive identity", () => {
 		},
 	);
 
-	it("Auto-QA remains outside the shared-DAG workflow lifetime", async () => {
-		const call = await buildExecutionContext({
-			runnerBackend: "codex-tmux",
-			sessionRole: "qa",
-			shareParentBranch: true,
-			qaContext: {
-				parentExecutionId: "parent-exec",
-				prHeadSha: "deadbeef",
-			},
-		});
-		expect(call.phaseKeepAlive).toBeUndefined();
-	});
-
 	it("single-session Codex receives no phase lifetime", async () => {
 		const call = await buildExecutionContext({ runnerBackend: "codex-tmux" });
 		expect(call.phaseKeepAlive).toBeUndefined();

@@ -90,7 +90,7 @@ export class EventLoopAttribution {
 	constructor(
 		private readonly options: {
 			diagnosticsDir: string;
-			profilerEnabled: boolean;
+			profilerEnabled: boolean | (() => boolean);
 			createInspectorSession?: () => InspectorSession;
 		},
 	) {
@@ -124,10 +124,21 @@ export class EventLoopAttribution {
 			return;
 		}
 
-		if (!this.options.profilerEnabled) {
+		if (!this.profilerEnabled()) {
 			this.state = "disabled";
 			return;
 		}
+		await this.startProfiler();
+	}
+
+	private profilerEnabled(): boolean {
+		return typeof this.options.profilerEnabled === "function"
+			? this.options.profilerEnabled()
+			: this.options.profilerEnabled;
+	}
+
+	private async startProfiler(): Promise<void> {
+		if (this.profilerRunning) return;
 		try {
 			this.inspectorSession = this.createInspectorSession();
 			this.inspectorSession.connect();
@@ -136,8 +147,27 @@ export class EventLoopAttribution {
 			await this.post("Profiler.start");
 			this.profilerRunning = true;
 			this.state = "running";
+			this.error = null;
 		} catch (error) {
 			this.markDegraded(error);
+			this.disconnectInspector();
+		}
+	}
+
+	private async disableProfiler(): Promise<void> {
+		if (!this.inspectorSession) {
+			this.profilerRunning = false;
+			this.state = "disabled";
+			return;
+		}
+		try {
+			if (this.profilerRunning) await this.post("Profiler.stop");
+			await this.post("Profiler.disable");
+			this.state = "disabled";
+			this.error = null;
+		} catch (error) {
+			this.markDegraded(error);
+		} finally {
 			this.disconnectInspector();
 		}
 	}
@@ -148,15 +178,7 @@ export class EventLoopAttribution {
 		if (this.timer) clearInterval(this.timer);
 		this.timer = null;
 		if (this.rolling) await this.rolling;
-		if (this.inspectorSession) {
-			try {
-				if (this.profilerRunning) await this.post("Profiler.stop");
-				await this.post("Profiler.disable");
-			} catch {
-				// Shutdown remains best-effort; the process is already leaving.
-			}
-		}
-		this.disconnectInspector();
+		if (this.inspectorSession) await this.disableProfiler();
 		this.delay.disable();
 		this.state = "stopped";
 	}
@@ -230,19 +252,32 @@ export class EventLoopAttribution {
 			episodes: this.episodeCount,
 		};
 
+		const profilerControlEnabled = this.profilerEnabled();
 		let profile: object | null = null;
 		let profilerGapMs: number | null = null;
 		if (this.profilerRunning) {
 			try {
 				const stoppedAt = Date.now();
 				const result = await this.post<{ profile: object }>("Profiler.stop");
-				await this.post("Profiler.start");
+				this.profilerRunning = false;
+				if (profilerControlEnabled) {
+					await this.post("Profiler.start");
+					this.profilerRunning = true;
+					this.state = "running";
+				} else {
+					await this.disableProfiler();
+				}
 				profilerGapMs = Date.now() - stoppedAt;
 				profile = result.profile;
 			} catch (error) {
 				this.profilerRunning = false;
 				this.markDegraded(error);
+				this.disconnectInspector();
 			}
+		} else if (profilerControlEnabled) {
+			await this.startProfiler();
+		} else if (this.inspectorSession) {
+			await this.disableProfiler();
 		}
 		this.windows.push({
 			window_start_ts: new Date(windowStartedAt).toISOString(),

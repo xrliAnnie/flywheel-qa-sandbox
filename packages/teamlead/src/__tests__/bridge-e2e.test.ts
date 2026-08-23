@@ -10,6 +10,7 @@ import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -161,13 +162,12 @@ describe("Bridge E2E lifecycle", () => {
 			pr_number: 95,
 			codex_skip: 1,
 		});
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "exec-e2e",
 			targetPrHeadSha: head,
 			issueId: "issue-e2e",
 			projectName: "geoforge3d",
-		});
-		store.setAutoQaStatus("exec-e2e", head, "passed", {
+			status: "passed",
 			verdictEventId: "qa-pass-e2e",
 		});
 

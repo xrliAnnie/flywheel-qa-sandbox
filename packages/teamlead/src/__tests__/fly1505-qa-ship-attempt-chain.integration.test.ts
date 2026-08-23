@@ -129,7 +129,6 @@ describe("FLY-1505 QA: a stalled ship attempt must not spend the founder approva
 			prHead: HEAD,
 			dbPath: commDbPath,
 			stateDbPath,
-			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 			codexDotenvPath: join(tmp, "missing.env"),
 			ciProbe: () => ({ green: true, reason: "ci_green" }),
 		});
@@ -137,9 +136,8 @@ describe("FLY-1505 QA: a stalled ship attempt must not spend the founder approva
 
 	beforeEach(async () => {
 		// Same gate stubs the sibling FLY-108 integration suite uses: these are
-		// legacy-session FSM paths, not the merge/QA gates under test here.
+		// legacy-session FSM paths, not the merge-approval gate under test here.
 		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
-		vi.stubEnv("FLYWHEEL_QA_DONE_GATE", "0");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0");
 
 		tmp = mkdtempSync(join(tmpdir(), "fly1505-qa-"));
@@ -167,6 +165,18 @@ describe("FLY-1505 QA: a stalled ship attempt must not spend the founder approva
 			pr_number: PR,
 		});
 		store.setReviewBinding(EXEC, { questionId, prHeadSha: HEAD });
+		store.recordCodexReviewApproved({
+			executionId: EXEC,
+			targetPrHeadSha: HEAD,
+			issueId: ISSUE,
+			projectName: "flywheel",
+			authorFamily: "claude",
+			reviewerFamily: "codex",
+		});
+		expect(store.getCodexReviewRecord(EXEC, HEAD)).toMatchObject({
+			author_family: "claude",
+			reviewer_family: "codex",
+		});
 		store.persistTransition(EXEC, "approved_to_ship", {
 			issue_id: ISSUE,
 			project_name: "flywheel",

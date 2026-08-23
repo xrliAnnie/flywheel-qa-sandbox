@@ -37,7 +37,6 @@ import {
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
-import { isQaHeld } from "./auto-qa-held.js";
 import {
 	buildPipelineHeaderContent,
 	type ChatThreadContext,
@@ -53,6 +52,7 @@ import {
 	type ParkProbe,
 	type PhaseDisplayState,
 } from "./issue-display.js";
+import { isQaHeld } from "./review-hold.js";
 import { sessionModelDisplay } from "./runner-model-display.js";
 import { BLOCKED_EMOJI, BLOCKED_WORD } from "./stage-utils.js";
 import {

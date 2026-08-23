@@ -6,10 +6,11 @@
 # infrastructure (`scripts/test-deploy.sh`, `scripts/test-teardown.sh`,
 # `scripts/inject-linear-issue.sh`, `scripts/test-auto-approve.sh`).
 #
-# Production wire alignment (matches plan + suite):
-#   HP-7 uses `flywheel-comm respond` (CommDB write) + Runner self-posts
-#   `:cool:`, NOT Bridge `approveExecution`. See scripts/test-auto-approve.sh
-#   :18-40 for the deadlock rationale.
+# Production wire alignment (FLY-1981):
+#   Runner opens the gate with --no-block, completes needs_review with the exact
+#   question id, then HP-7 uses POST /api/actions/approve through the helper.
+#   Bridge writes founder attribution, advances the legacy FSM, and wakes the
+#   Runner; verify-approval remains the ship authority.
 #
 # CommDB delivery reminder:
 #   base `notified_at` = inbox-mcp transport success
@@ -52,7 +53,6 @@ SUITE_PATH="${REPO_ROOT}/packages/qa-framework/suites/fly-60-hard-gate.md"
 SANDBOX_ISSUE="FLY-SBX-1"
 LINEAR_API="https://api.linear.app/graphql"
 HP_GATE_TIMEOUT_S=900       # 15 min — Runner brainstorm/research/implement before gate
-HP_RESPOND_TIMEOUT_S=60     # 60s — Lead has this long to respond before driver fallback
 HP_SHIP_TIMEOUT_S=600       # 10 min — GHA workflow + merge + finalization
 V4A_HOLD_S=300              # 5 min — gate hold duration
 V6_TRIAL_TIMEOUT_S=30       # per-trial reply wait
@@ -290,7 +290,7 @@ snapshot_state() {
       > "${d}/state-events.txt" 2>&1 || true
   fi
   if [[ -f "$COMM_DB" ]]; then
-    sqlite3 "$COMM_DB" "SELECT id,from_agent,to_agent,type,checkpoint,parent_id,delivered_at,read_at,created_at FROM messages ORDER BY created_at DESC LIMIT 30" \
+    sqlite3 "$COMM_DB" "SELECT id,from_agent,to_agent,type,checkpoint,parent_id,delivered_at,read_at,created_at FROM mailbox_message_projection ORDER BY created_at DESC LIMIT 30" \
       > "${d}/comm-messages.txt" 2>&1 || true
   fi
 }
@@ -313,7 +313,17 @@ get_question_id() {
   [[ -f "$COMM_DB" ]] || { echo ""; return; }
   [[ -n "$EXECUTION_ID" ]] || { echo ""; return; }
   sqlite3 "$COMM_DB" \
-    "SELECT id FROM messages WHERE type='question' AND from_agent='${EXECUTION_ID}' AND checkpoint='approve_to_ship' ORDER BY created_at DESC LIMIT 1" 2>/dev/null
+    "SELECT q.id FROM mailbox_message_projection q
+      WHERE q.type='question'
+        AND q.from_agent='${EXECUTION_ID}'
+        AND q.checkpoint='approve_to_ship'
+        AND q.resolved_at IS NULL
+        AND q.superseded_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM mailbox_message_projection r
+           WHERE r.type='response' AND r.parent_id=q.id
+        )
+      ORDER BY q.created_at DESC LIMIT 1" 2>/dev/null
 }
 
 # Print a human-action TODO + return MANUAL_PENDING marker so the QA agent
@@ -368,10 +378,9 @@ claude_child_pid() {
 
 # ─── HP setup helpers (extracted so V1/V4a/V5 can reuse) ───────────────
 #
-# `setup_to_hp6` is idempotent: if a session is already at HP-6 (gate pending,
-# status=running), it returns immediately. Otherwise it injects FLY-SBX-1 and
-# waits for the approve_to_ship gate question. It also ensures EXECUTION_ID
-# and HP6_QUESTION_ID globals are set.
+# `setup_to_hp6` is idempotent: if a session is already at HP-6 (answerable
+# gate + awaiting_review + exact question/head binding), it returns immediately.
+# Otherwise it injects FLY-SBX-1 and waits for that durable review boundary.
 HP6_QUESTION_ID=""
 
 setup_to_hp6() {
@@ -380,26 +389,25 @@ setup_to_hp6() {
   cp "$SLOT_JSON_FILE" "${d}/slot.json" 2>/dev/null || true
   cp "${EVIDENCE_BASE}/preflight-linear.json" "${d}/preflight-linear.json" 2>/dev/null || true
 
-  # Idempotency: reuse only if we have a running session AND a pending gate
-  # question with NO response row yet (otherwise the gate has been answered
-  # and reusing would skip the actual gate-blocked verification).
+  # Idempotency: reuse only an exact, fully-bound review with an open gate.
   EXECUTION_ID=$(get_execution_id)
   if [[ -n "$EXECUTION_ID" ]]; then
     local existing_status; existing_status=$(sqlite3 "$STATE_DB" \
       "SELECT status FROM sessions WHERE execution_id='${EXECUTION_ID}'" 2>/dev/null)
-    if [[ "$existing_status" == "running" ]]; then
+    if [[ "$existing_status" == "awaiting_review" ]]; then
       HP6_QUESTION_ID=$(get_question_id)
       if [[ -n "$HP6_QUESTION_ID" ]]; then
-        local existing_response_count
-        existing_response_count=$(sqlite3 "$COMM_DB" \
-          "SELECT COUNT(*) FROM messages WHERE type='response' AND parent_id='${HP6_QUESTION_ID}'" 2>/dev/null || echo 0)
-        if [[ "$existing_response_count" -eq 0 ]]; then
+        local existing_binding
+        existing_binding=$(sqlite3 "$STATE_DB" \
+          "SELECT COALESCE(review_question_id,'')||'|'||COALESCE(pr_head_sha,'') FROM sessions WHERE execution_id='${EXECUTION_ID}'" 2>/dev/null)
+        if [[ "$existing_binding" == "${HP6_QUESTION_ID}|"[0-9a-fA-F]* \
+              && "${existing_binding#*|}" =~ ^[0-9a-fA-F]{40}$ ]]; then
           log "[setup_to_hp6] Reusing existing HP-6 state: exec=$EXECUTION_ID q=$HP6_QUESTION_ID"
           echo "$EXECUTION_ID"   > "${d}/execution-id.txt"
           echo "$HP6_QUESTION_ID" > "${d}/question-id.txt"
           return 0
         fi
-        log "[setup_to_hp6] Existing question $HP6_QUESTION_ID already has response — gate is closed; need fresh state"
+        log "[setup_to_hp6] Existing question $HP6_QUESTION_ID lacks exact persisted head binding"
       fi
     fi
   fi
@@ -432,7 +440,8 @@ setup_to_hp6() {
   echo "$EXECUTION_ID" > "${d}/execution-id.txt"
   log "[HP-4] EXECUTION_ID=$EXECUTION_ID"
 
-  # HP-5 + HP-6: wait for Runner to reach approve_to_ship gate.
+  # HP-5 + HP-6: wait for Runner to open approve_to_ship with --no-block and
+  # complete --route needs_review --question-id, persisting exact head binding.
   # Poll cadence is intentionally tight (2s) so V1, which runs right
   # after setup_to_hp6 returns, can still observe the unread instruction
   # row before Lead+inbox-mcp ack it (~5-15s window per codex R4).
@@ -441,7 +450,16 @@ setup_to_hp6() {
   HP6_QUESTION_ID=""
   while [[ $(date +%s) -lt $gate_deadline ]]; do
     HP6_QUESTION_ID=$(get_question_id)
-    [[ -n "$HP6_QUESTION_ID" ]] && break
+    if [[ -n "$HP6_QUESTION_ID" ]]; then
+      local review_binding
+      review_binding=$(sqlite3 "$STATE_DB" \
+        "SELECT status||'|'||COALESCE(review_question_id,'')||'|'||COALESCE(pr_head_sha,'') FROM sessions WHERE execution_id='${EXECUTION_ID}'" 2>/dev/null)
+      if [[ "$review_binding" == "awaiting_review|${HP6_QUESTION_ID}|"* \
+            && "${review_binding##*|}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+        break
+      fi
+    fi
+    HP6_QUESTION_ID=""
     sleep 2
   done
   if [[ -z "$HP6_QUESTION_ID" ]]; then
@@ -455,8 +473,8 @@ setup_to_hp6() {
 
   local status_at_gate
   status_at_gate=$(sqlite3 "$STATE_DB" "SELECT status FROM sessions WHERE execution_id='${EXECUTION_ID}'")
-  if [[ "$status_at_gate" != "running" ]]; then
-    write_verdict "$caller_id" "FAIL" "HP-6 status expected running, got '${status_at_gate}'"
+  if [[ "$status_at_gate" != "awaiting_review" ]]; then
+    write_verdict "$caller_id" "FAIL" "HP-6 status expected awaiting_review, got '${status_at_gate}'"
     return 1
   fi
   return 0
@@ -470,30 +488,19 @@ finish_hp_to_ship() {
     return 1
   }
 
-  # HP-7: manual Annie-in-Discord; driver fallback respond after 60s
-  prompt_manual_step "$caller_id" "Chrome MCP: Annie posts 'OK 可以 ship' in chat-test-${SLOT} thread; capture Lead reply"
-  log "[HP-7] Waiting ${HP_RESPOND_TIMEOUT_S}s for Lead to respond via flywheel-comm respond"
-  local respond_deadline=$(( $(date +%s) + HP_RESPOND_TIMEOUT_S ))
-  local response_count=0
-  while [[ $(date +%s) -lt $respond_deadline ]]; do
-    response_count=$(sqlite3 "$COMM_DB" \
-      "SELECT COUNT(*) FROM messages WHERE type='response' AND parent_id='${HP6_QUESTION_ID}'")
-    [[ "$response_count" -gt 0 ]] && break
-    sleep 5
-  done
-  if [[ "$response_count" -eq 0 ]]; then
-    log "[HP-7 fallback] Lead did not respond; using scripts/test-auto-approve.sh"
-    "${REPO_ROOT}/scripts/test-auto-approve.sh" "$SLOT" "$EXECUTION_ID" \
-      > "${d}/test-auto-approve.stdout" 2> "${d}/test-auto-approve.stderr" || {
-      write_verdict "$caller_id" "FAIL" "Both Lead respond and test-auto-approve fallback failed"
-      return 1
-    }
-    sleep 3
-    response_count=$(sqlite3 "$COMM_DB" \
-      "SELECT COUNT(*) FROM messages WHERE type='response' AND parent_id='${HP6_QUESTION_ID}'")
-  fi
-  if [[ "$response_count" -eq 0 ]]; then
-    write_verdict "$caller_id" "FAIL" "no response row for question_id=${HP6_QUESTION_ID}"
+  # HP-7: the helper submits the existing founder action and independently
+  # reconciles exact Bridge attribution + approved_to_ship.
+  log "[HP-7] Approving exact bound review through POST /api/actions/approve"
+  "${REPO_ROOT}/scripts/test-auto-approve.sh" "$SLOT" "$EXECUTION_ID" \
+    > "${d}/test-auto-approve.stdout" 2> "${d}/test-auto-approve.stderr" || {
+    write_verdict "$caller_id" "FAIL" "endpoint auto-approve failed"
+    return 1
+  }
+  local response_row
+  response_row=$(sqlite3 "$COMM_DB" \
+    "SELECT from_agent||'|'||content FROM mailbox_message_projection WHERE type='response' AND parent_id='${HP6_QUESTION_ID}' ORDER BY created_at DESC LIMIT 1")
+  if [[ "$response_row" != 'bridge|{"approved":true}' ]]; then
+    write_verdict "$caller_id" "FAIL" "expected exact Bridge approval response for question_id=${HP6_QUESTION_ID}, got '${response_row}'"
     return 1
   fi
 
@@ -847,7 +854,7 @@ run_v4a() {
 
   local response_count
   response_count=$(sqlite3 "$COMM_DB" \
-    "SELECT COUNT(*) FROM messages WHERE type='response' AND parent_id='${question_id}'")
+    "SELECT COUNT(*) FROM mailbox_message_projection WHERE type='response' AND parent_id='${question_id}'")
   echo "$response_count" > "${d}/response-count.txt"
   local status; status=$(sqlite3 "$STATE_DB" "SELECT status FROM sessions WHERE execution_id='${EXECUTION_ID}'")
   echo "$status" > "${d}/state-status.txt"
@@ -862,8 +869,8 @@ run_v4a() {
     fi
   fi
 
-  if [[ "$response_count" -eq 0 && "$status" == "running" && "$pr_state" != "MERGED" ]]; then
-    write_verdict "$id" "PASS" "gate held; status=running; pr_state=${pr_state}"
+  if [[ "$response_count" -eq 0 && "$status" == "awaiting_review" && "$pr_state" != "MERGED" ]]; then
+    write_verdict "$id" "PASS" "gate held; status=awaiting_review; pr_state=${pr_state}"
   else
     write_verdict "$id" "FAIL" "gate did not hold (response=${response_count}, status=${status}, pr=${pr_state})"
   fi
@@ -1112,7 +1119,7 @@ render_report() {
   fi
 }
 
-# Scenarios that share a single deploy + HP-6 state (gate-blocked)
+# Scenarios that share a single deploy + HP-6 durable awaiting_review handoff
 is_gate_state_scenario() {
   case "$1" in
     hp|v1|v4a|v5) return 0 ;;

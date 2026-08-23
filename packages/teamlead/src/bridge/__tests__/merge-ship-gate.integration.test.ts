@@ -27,6 +27,10 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	insertHistoricalAutoQaRecord,
+	setHistoricalQaRequiredSnapshot,
+} from "../../__tests__/helpers/historical-qa.js";
 import { StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
 import {
@@ -58,11 +62,9 @@ const CI_GREEN = () => ({
 	checks: ["Build & Test"],
 });
 
-// All three gates ON — the production default this issue ships (决定②).
+// Merge approval is ON; QA is always enforced and Codex evidence is durable.
 const GATES_ON = {
 	FLYWHEEL_MERGE_APPROVAL_GATE: "1",
-	FLYWHEEL_QA_DONE_GATE: "1",
-	FLYWHEEL_CODEX_HARD_GATE: "1",
 } as NodeJS.ProcessEnv;
 
 describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", () => {
@@ -125,18 +127,18 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 
 	/** A session with a PASSED QA record + APPROVED Codex record for HEAD. */
 	function withQaAndCodexGreen(): void {
-		store.setQaRequiredSnapshot({
+		setHistoricalQaRequiredSnapshot(store, {
 			executionId: EXEC,
 			required: 1,
 			reason: "test",
 		});
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: EXEC,
 			targetPrHeadSha: HEAD,
 			issueId: ISSUE,
 			projectName: PROJECT,
+			status: "passed",
 		});
-		store.setAutoQaStatus(EXEC, HEAD, "passed", {});
 		store.recordCodexReviewApproved({
 			executionId: EXEC,
 			targetPrHeadSha: HEAD,
@@ -253,6 +255,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 		if (!qa.ok) throw new Error(qa.reason);
 		upsert("approved_to_ship");
+		setHistoricalQaRequiredSnapshot(store, {
+			executionId: EXEC,
+			required: 0,
+			reason: "engine claims fixture",
+		});
 		return { qaClaimId: qa.claimId };
 	}
 
@@ -428,6 +435,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			}).ok,
 		).toBe(true);
 		upsert("approved_to_ship", undefined, reviewExecution);
+		setHistoricalQaRequiredSnapshot(store, {
+			executionId: reviewExecution,
+			required: 0,
+			reason: "product claims fixture",
+		});
 		return { ...submitted, executionId: reviewExecution };
 	}
 
@@ -489,8 +501,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const off = {
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
 			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-			FLYWHEEL_QA_DONE_GATE: "0",
-			FLYWHEEL_CODEX_HARD_GATE: "0",
 		} as NodeJS.ProcessEnv;
 		expect(
 			await computeAuthoritativeShipDecision(store, session, HEAD, off),
@@ -639,8 +649,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				{
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-					FLYWHEEL_QA_DONE_GATE: "0",
-					FLYWHEEL_CODEX_HARD_GATE: "0",
 				} as NodeJS.ProcessEnv,
 			),
 		).toMatchObject({
@@ -805,8 +813,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				HEAD,
 				{
 					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-					FLYWHEEL_QA_DONE_GATE: "0",
-					FLYWHEEL_CODEX_HARD_GATE: "0",
 				} as NodeJS.ProcessEnv,
 				materializedHeadAuthority,
 			),
@@ -821,8 +827,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			{
 				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-				FLYWHEEL_QA_DONE_GATE: "0",
-				FLYWHEEL_CODEX_HARD_GATE: "0",
 			} as NodeJS.ProcessEnv,
 			undefined,
 			undefined,
@@ -878,7 +882,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	it("recovery does NOT clear the marker nor complete when the QA gate is still unmet", async () => {
 		// Parked (merged, Codex approved) but QA REQUIRED with no passing record; founder approves.
 		upsert("awaiting_review");
-		store.setQaRequiredSnapshot({
+		setHistoricalQaRequiredSnapshot(store, {
 			executionId: EXEC,
 			required: 1,
 			reason: "t",
@@ -929,8 +933,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		if (!session) throw new Error("session missing");
 		const d = computeShipDecision(store, session, HEAD, {
 			FLYWHEEL_MERGE_APPROVAL_GATE: "0", // B emergency-off
-			FLYWHEEL_QA_DONE_GATE: "1",
-			FLYWHEEL_CODEX_HARD_GATE: "1",
 		} as NodeJS.ProcessEnv);
 		expect(d.mergeApprovalOk).toBe(true); // bypassed
 		expect(d.qaOk).toBe(true);

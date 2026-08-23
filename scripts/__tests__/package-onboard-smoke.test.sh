@@ -150,6 +150,7 @@ env -i HOME="$SMOKE_HOME" PATH="$PATH" \
   FLYWHEEL_STATE_DIR="$SMOKE_HOME/.flywheel" \
   TEAMLEAD_PORT="$PORT" TEAMLEAD_API_TOKEN="stub-token-for-smoke" \
   TEAMLEAD_DEFAULT_LEAD_AGENT="smoke-lead" SMOKE_BOT_TOKEN="stub-bot-token" \
+  DISCORD_OWNER_USER_ID="98765432109876543" \
   LINEAR_API_KEY="stub" \
   FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":false}]}]" \
   node "$PKG_ROOT/dist/run-bridge.js" > "$SANDBOX/bridge.log" 2>&1 &

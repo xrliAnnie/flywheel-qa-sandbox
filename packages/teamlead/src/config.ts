@@ -186,9 +186,9 @@ export function loadConfig(): BridgeConfig {
 		// prefixes. Validation (must have apiToken) happens above.
 		replyGuardEnabled,
 		issuePrefixes,
-		// FLY-175 Track 2: founder-consent hard gate. Parsed from
-		// FLYWHEEL_FOUNDER_CONSENT_* env. decisionMode defaults to "off" so a
-		// boot without explicit opt-in is byte-compatible with pre-Track-2.
+		// FLY-175 Track 2: mandatory production founder-consent policy. Identity
+		// resolves from canonical DISCORD_OWNER_USER_ID (with a compatibility
+		// fallback), and the decision mode is permanently audit_only.
 		founderConsent: parseFounderConsentConfig(process.env),
 		// FLY-1018 M4: scoped gemini-agent token (validated above; undefined
 		// when unset, invalid-without-master, or blank — byte-compatible).

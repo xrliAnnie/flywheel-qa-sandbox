@@ -3,7 +3,7 @@
  * code-review inbox writer. Extracted from event-route so the SAME instruction
  * text + write path is reused by:
  *   - event-route `handleCodexAutoTrigger` (pr_created / design_review trigger)
- *   - AutoQaCoordinator codex-hold re-queue (FLY-827: a runner that never ran /
+ *   - neutral Codex review-hold re-queue (FLY-827: a runner that never ran /
  *     never reported Codex gets the instruction re-sent — D3 loop closure).
  */
 
@@ -79,7 +79,7 @@ export function buildCodexInstruction(
 	}
 	return [
 		`[FLY-827] Codex code review is a HARD GATE for exec=${executionId} —`,
-		`auto-QA will NOT start and merge will be BLOCKED until it passes for the`,
+		`founder review and merge will be BLOCKED until it passes for the`,
 		`current PR head. Run: /codex-code-review`,
 		`Iterate on findings until Codex returns APPROVED. Write the approved`,
 		`result to .flywheel/runs/${executionId}/codex/code-review.json with`,

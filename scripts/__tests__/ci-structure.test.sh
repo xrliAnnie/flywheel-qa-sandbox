@@ -379,6 +379,7 @@ expected_shard_tests = {
         "Test — FLY-1787 CoS identity contract",
         "Test — FLY-1461 QA executor 529 N-to-N contract",
         "Test — FLY-1463 QA executor ship-report contract",
+        "Test — FLY-1981 runtime role auto-QA retirement",
         "Test — FLY-913 restart-guard hook + install + strict-delivery",
         "Test — FLY-1434 unified restart + quota caller",
         "Test — FLY-1715 runner boundary shell contracts",

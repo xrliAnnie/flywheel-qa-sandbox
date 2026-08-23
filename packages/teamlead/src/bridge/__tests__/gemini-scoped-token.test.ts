@@ -163,6 +163,8 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 
 	beforeEach(() => {
 		process.env.TEAMLEAD_DEFAULT_LEAD_AGENT = "product-lead";
+		process.env.DISCORD_OWNER_USER_ID = "founder-owner";
+		delete process.env.FLYWHEEL_FOUNDER_USER_ID;
 		delete process.env.TEAMLEAD_API_TOKEN;
 		delete process.env.TEAMLEAD_INGEST_TOKEN;
 		delete process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;

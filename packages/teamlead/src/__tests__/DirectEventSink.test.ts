@@ -12,7 +12,8 @@
 import type { EventEnvelope } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AutoQaCoordinator } from "../bridge/auto-qa-coordinator.js";
+import type { CodexReviewHoldCoordinator } from "../bridge/codex-review-hold.js";
+import type { ReviewAuthorizationAlerts } from "../bridge/review-authorization-alerts.js";
 import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
@@ -439,70 +440,6 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 		expect(s?.decision_route).toBe("needs_review");
 		expect(s?.commit_count).toBe(1);
 	});
-
-	it("FLY-846 gate ⓪: the straggler must not spawn auto-QA either — the ROW is approved_to_ship even though the sink's local status says awaiting_review", async () => {
-		store.upsertSession({
-			execution_id: "exec-1",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-		});
-		store.setReviewBinding("exec-1", {
-			questionId: "11111111-1111-1111-1111-111111111111",
-			prHeadSha: HEAD_A,
-		});
-		store.persistTransition("exec-1", "approved_to_ship", {
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-		});
-
-		// Wire a REAL coordinator — the sink's LOCAL `status` for this emission is
-		// awaiting_review, so it DOES reach the coordinator; the row's old real
-		// qid defeats the evidence gate, so gate ⓪ (row status re-check) is the
-		// line that must stop the spawn.
-		const start = vi.fn(async () => ({
-			executionId: "qa-x",
-			issueId: "qa-issue",
-		}));
-		const coord = new AutoQaCoordinator({
-			store,
-			startDispatcher: { start },
-			resolveQaPolicy: () => ({ enabled: true }),
-			effects: {
-				postThread: () => {},
-				createQaIssue: () => ({ issueId: "qa-issue" }),
-				notifyShipReady: () => {},
-				feedbackWakeMain: () => {},
-				alertLeadPipelineError: () => {},
-				stampIssueStage: () => {},
-				retestWakeQa: () => ({ ok: true }),
-				closeQaRunner: () => {},
-			},
-		});
-		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		sink.autoQaCoordinator = { current: coord };
-
-		await sink.emitCompleted(makeEnvelope(), {
-			success: true,
-			decision: { route: "needs_review", reasoning: "straggler" },
-			evidence: {
-				commitCount: 1,
-				filesChangedCount: 1,
-				commitMessages: ["feat: x"],
-				changedFilePaths: ["a.ts"],
-				linesAdded: 1,
-				linesRemoved: 0,
-				diffSummary: "1 file changed",
-				headSha: HEAD_B,
-				partial: false,
-				durationMs: 10,
-			},
-		} as unknown as BlueprintResult);
-
-		expect(start).not.toHaveBeenCalled();
-		expect(store.getAutoQaRecord("exec-1", HEAD_A)).toBeUndefined();
-		expect(store.getAutoQaRecord("exec-1", HEAD_B)).toBeUndefined();
-	});
 });
 
 describe("DirectEventSink — FLY-1505 blocked-after-approval deflection", () => {
@@ -562,10 +499,10 @@ describe("DirectEventSink — FLY-1505 blocked-after-approval deflection", () =>
 
 	function makeSink(alertShipAttemptFailed = vi.fn()) {
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);
-		sink.autoQaCoordinator = {
+		sink.reviewAuthorizationAlerts = {
 			current: {
-				alertShipAttemptFailed,
-			} as unknown as AutoQaCoordinator,
+				alertShipAttemptFailedBestEffort: alertShipAttemptFailed,
+			} as unknown as ReviewAuthorizationAlerts,
 		};
 		return { sink, alertShipAttemptFailed };
 	}
@@ -1072,7 +1009,7 @@ describe("DirectEventSink — FLY-1404 design HTML admission", () => {
 		warn.mockRestore();
 	});
 
-	it("honors the explicit operational escape hatch loudly", async () => {
+	it("FLY-1981 refuses missing attestation when the retired env is 0", async () => {
 		process.env.FLYWHEEL_DESIGN_HTML_GATE = "0";
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const sink = new DirectEventSink(store, makeConfig(), testProjects);
@@ -1084,9 +1021,9 @@ describe("DirectEventSink — FLY-1404 design HTML admission", () => {
 			evidence: { headSha: "a".repeat(40) },
 		} as unknown as BlueprintResult);
 
-		expect(store.getSession("exec-1")?.status).toBe("design_done");
+		expect(store.getSession("exec-1")?.status).toBe("running");
 		expect(warn).toHaveBeenCalledWith(
-			expect.stringMatching(/gate DISABLED.*FLYWHEEL_DESIGN_HTML_GATE=0/),
+			expect.stringMatching(/founder design HTML.*refus/i),
 		);
 		warn.mockRestore();
 	});
@@ -1171,50 +1108,77 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		);
 		await sink.emitStarted(makeEnvelope());
 		// A held record exists for (exec-1, reviewed head) → founder must stay out.
-		store.claimAutoQaRecord({
-			parentExecutionId: "exec-1",
-			targetPrHeadSha: SHA,
-			issueId: "issue-1",
-			projectName: "geoforge3d",
-		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			`INSERT INTO auto_qa_record
+			 (parent_execution_id, target_pr_head_sha, issue_id, project_name, status, started_at)
+			 VALUES (?, ?, ?, ?, 'running', datetime('now'))`,
+			["exec-1", SHA, "issue-1", "geoforge3d"],
+		);
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
 		expect(delivered).not.toContain("session_completed");
 	});
 
+	it("runs the neutral Codex hold on awaiting-review completion", async () => {
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		const order: string[] = [];
+		sink.codexReviewHold = {
+			current: {
+				onSessionAwaitingReview: async () => {
+					order.push("codex");
+					return "ready" as const;
+				},
+			} as CodexReviewHoldCoordinator,
+		};
+		await sink.emitStarted(makeEnvelope());
+		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+
+		expect(order).toEqual(["codex"]);
+	});
+
 	it("a server-classified docs-only PR releases the review-required delivery", async () => {
-		// FLY-1251: disabling the code-review gate does not waive QA evidence. The
-		// only no-QA release is a server-owned docs-only classification for the
-		// exact PR head.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		try {
-			const { registry, delivered } = captureRegistry();
-			const sink = new DirectEventSink(
-				store,
-				makeConfig(),
-				testProjects,
-				undefined,
-				registry,
-			);
-			await sink.emitStarted(makeEnvelope());
-			store.patchSessionMetadata("exec-1", { pr_number: 42 });
-			store.putShipRelevantDiffSnapshot({
-				execution_id: "exec-1",
-				pr_head_sha: SHA,
-				repo: "xrliAnnie/GeoForge3D",
-				pr_number: 42,
-				base_ref: "main",
-				base_oid: "b".repeat(40),
-				classifier_version: 1,
-				ship_relevant: 0,
-				file_count: 1,
-				sample_paths: ["engineering/doc/GEO-100/plan.md"],
-			});
-			await sink.emitCompleted(makeEnvelope(), needsReviewResult());
-			expect(delivered).toContain("session_completed");
-		} finally {
-			delete process.env.FLYWHEEL_CODEX_HARD_GATE;
-		}
+		// FLY-1251: the only no-QA release is a server-owned docs-only
+		// classification for the exact reviewed PR head.
+		const { registry, delivered } = captureRegistry();
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			registry,
+		);
+		await sink.emitStarted(makeEnvelope());
+		store.patchSessionMetadata("exec-1", { pr_number: 42 });
+		store.recordCodexReviewApproved({
+			executionId: "exec-1",
+			targetPrHeadSha: SHA,
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+			authorFamily: "claude",
+			reviewerFamily: "codex",
+		});
+		expect(store.getCodexReviewRecord("exec-1", SHA)).toMatchObject({
+			author_family: "claude",
+			reviewer_family: "codex",
+		});
+		store.putShipRelevantDiffSnapshot({
+			execution_id: "exec-1",
+			pr_head_sha: SHA,
+			repo: "xrliAnnie/GeoForge3D",
+			pr_number: 42,
+			base_ref: "main",
+			base_oid: "b".repeat(40),
+			classifier_version: 1,
+			ship_relevant: 0,
+			file_count: 1,
+			sample_paths: ["engineering/doc/GEO-100/plan.md"],
+		});
+		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+		expect(delivered).toContain("session_completed");
 	});
 });
 

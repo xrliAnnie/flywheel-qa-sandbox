@@ -409,7 +409,7 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		// The founder was not pinged → alert-channel escalation fired.
 		expect(alert).toHaveBeenCalledTimes(1);
 		expect((alert.mock.calls[0]?.[0] as { eventType: string }).eventType).toBe(
-			"founder_milestone_undelivered",
+			"founder_gate_delivery_failed",
 		);
 		// Terminal marker still written (a 4xx won't fix itself).
 		expect(events.some((e) => e.event_id === "founder-thread-notify-q1")).toBe(

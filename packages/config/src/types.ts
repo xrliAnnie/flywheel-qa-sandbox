@@ -239,43 +239,11 @@ export interface SkillFrameworkConfig {
 }
 
 /**
- * FLY-579 / FLY-752: auto-QA pipeline policy (per project). The Bridge loads this
- * from the project's CANONICAL / mainline root only (never an implementation PR's
- * worktree) so a runner cannot edit its own config to skip its QA.
- *
- * FLY-752 flipped auto-QA to **opt-out** (fleet-wide default-on): an absent config
- * / an absent `qa` block / a `qa` block with no `auto` key all mean auto-QA is ON.
- * A project opts OUT by explicitly setting `auto: false` (or the `no-qa` label /
- * the `FLYWHEEL_AUTO_QA=0` kill-switch). A MALFORMED config fails CLOSED (off),
- * never on — see the policy resolver.
- */
-/**
  * FLY-1185: lifecycle cleanup policy block (`cleanup:` in .flywheel/config.yaml).
  */
 export interface CleanupConfig {
 	/** Exact branch names or trailing-`*` prefixes never auto-deleted. */
 	protected_branches?: string[];
-}
-
-export interface QaConfig {
-	/**
-	 * Auto-spawn an independent QA Runner after code review passes, hold the
-	 * founder until QA is green. **Optional (FLY-752):** absent → ON (opt-out
-	 * default). Set `false` to opt out. The global env `FLYWHEEL_AUTO_QA=0` is a
-	 * hard kill-switch on top of this.
-	 */
-	auto?: boolean;
-	/**
-	 * Issue labels that skip auto-QA even when `auto` is true (e.g. docs, chore).
-	 * Lowercased at load. A per-issue Linear `no-qa` label also skips.
-	 */
-	skip_labels?: string[];
-	/**
-	 * Reserved QA agent name the coordinator spawns with. Default "qa"
-	 * (AgentDispatcher resolves a project `agents.qa` override, else the shipped
-	 * `agents/qa-executor.md`).
-	 */
-	agent?: string;
 }
 
 /** Project-level DAG routing controls. */
@@ -294,51 +262,6 @@ export interface PipelineConfig {
 	 * own strict reader to fail loudly when the main flag is on.
 	 */
 	work_kind?: boolean;
-}
-
-/**
- * FLY-725: founder milestone-report kinds. When a Runner reaches one of these
- * terminal milestones the Bridge pushes an @founder-pinged report to the issue's
- * chat thread (see gate-poller milestone patrol).
- *
- * v1 scope (Annie 2026-07-01, plan §B) is the two **zero-signal** terminal
- * states — `failed` / `blocked` — the ones the founder gets NO push for today:
- * - `completed` is deliberately NOT real-time here: routine completions are noise
- *   and move to the FLY-727 daily digest.
- * - `ship_ready` is already an @founder ping via the FLY-605 `approve_to_ship`
- *   gate fallback (posted from the real gate event), so 725 does NOT duplicate it.
- * Both remain forward-compat union members but are NOT accepted by v1 config.
- */
-export type MilestoneKind = "completed" | "failed" | "blocked" | "ship_ready";
-
-/**
- * FLY-725: the milestones v1 actually implements + accepts in config. ConfigLoader
- * rejects any `milestones` value outside this set (incl. `completed` → FLY-727 and
- * `ship_ready` → FLY-605) so an operator can never silently opt into an
- * unimplemented / out-of-scope milestone.
- */
-export const SUPPORTED_MILESTONE_KINDS_V1: readonly MilestoneKind[] = [
-	"failed",
-	"blocked",
-];
-
-/**
- * FLY-725: per-project founder milestone-report policy. Absent or `enabled:false`
- * ⇒ feature OFF (opt-in; byte-compatible — the Bridge milestone patrol no-ops).
- * Loaded from the project's CANONICAL root only (never a runner's
- * PR worktree) so a runner cannot edit its own config to change founder
- * notifications.
- */
-export interface FounderMilestoneReportConfig {
-	/** Turn the milestone → founder push on for this project. */
-	enabled: boolean;
-	/**
-	 * Which milestones to push. Absent ⇒ all of SUPPORTED_MILESTONE_KINDS_V1.
-	 * Every value must be ∈ SUPPORTED_MILESTONE_KINDS_V1 (ConfigLoader rejects
-	 * `ship_ready`/unknown). A subset lets the founder later move `completed` to a
-	 * digest (FLY-727) without a code change.
-	 */
-	milestones?: MilestoneKind[];
 }
 
 /**
@@ -582,14 +505,10 @@ export interface FlywheelConfig {
 	doc_flow?: DocFlowConfig;
 	/** FLY-1356: split participation opt-out lever. Absent = participate. */
 	skill_framework?: SkillFrameworkConfig;
-	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
-	qa?: QaConfig;
 	/** Project-level DAG routing controls. */
 	pipeline?: PipelineConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
-	/** FLY-725: founder milestone-report push. Absent or enabled:false = off (byte-compatible). */
-	founder_milestone_report?: FounderMilestoneReportConfig;
 	/**
 	 * FLY-1185: lifecycle-closeout cleanup policy. Config, NOT a feature flag —
 	 * absent / empty list = today's behavior. `protected_branches` entries are

@@ -10,6 +10,7 @@ import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { LEGACY_ROUTING_OVERRIDE_LABEL } from "../work-kind.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
 
 const waitMocks = vi.hoisted(() => ({
@@ -375,6 +376,23 @@ describe("FLY-1336 generalized launch accepted-pending route", () => {
 	});
 
 	it("keeps classic pre-session ghosts on the existing 500 contract", async () => {
+		const { LinearClient } = await import("@linear/sdk");
+		vi.mocked(LinearClient).mockImplementationOnce(
+			() =>
+				({
+					issue: vi.fn().mockResolvedValue({
+						title: "Pending launch test",
+						identifier: "FLY-PENDING",
+						url: "https://linear.app/test/issue/FLY-PENDING",
+						labels: vi.fn().mockResolvedValue({
+							nodes: [
+								{ name: "Product" },
+								{ name: LEGACY_ROUTING_OVERRIDE_LABEL },
+							],
+						}),
+					}),
+				}) as never,
+		);
 		const response = await postStart(
 			"FLY-CLASSIC-GHOST",
 			"unused-key",

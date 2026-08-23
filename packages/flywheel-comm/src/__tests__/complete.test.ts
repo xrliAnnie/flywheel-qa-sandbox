@@ -760,15 +760,15 @@ describe("complete command", () => {
 		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
-	it("FLY-1404: operator escape skips validation loudly and emits no attestation", async () => {
+	it("FLY-1981: retired env cannot bypass missing design HTML attestation", async () => {
 		process.env.FLYWHEEL_DESIGN_HTML_GATE = "0";
-		await complete({ route: "phase_design_complete", merged: false });
-
-		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
-		expect(body.payload.designHtmlEvidence).toBeUndefined();
+		await expect(
+			complete({ route: "phase_design_complete", merged: false }),
+		).rejects.toThrow("process.exit(1)");
 		expect(errorSpy).toHaveBeenCalledWith(
-			expect.stringContaining("design-HTML gate DISABLED"),
+			expect.stringContaining("founder design HTML"),
 		);
+		expect(mockFetch).not.toHaveBeenCalled();
 	});
 
 	it("FLY-1404: git object existence distinguishes empty-success from failure", () => {

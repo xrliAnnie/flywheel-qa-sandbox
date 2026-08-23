@@ -62,10 +62,10 @@ export function titleFor(kind: AlertEventType): string {
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
 			return "Runner stuck unhandled";
-		// FLY-579: never routed through this table (AutoQaEffects builds its own
+		// FLY-579: retained historical kind with dedicated caller copy
 		// title); case exists for switch exhaustiveness.
 		case "auto_qa_stuck":
-			return "Auto-QA pipeline stuck";
+			return "Review or ship authorization held";
 		// FLY-793: never routed through this table (the workflow engine builds its
 		// own title); case exists for switch exhaustiveness.
 		case "three_stage_stuck":
@@ -80,11 +80,11 @@ export function titleFor(kind: AlertEventType): string {
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_lead_pending_unhandled":
 			return "Runner waiting — Lead unresponsive";
-		// FLY-725: never routed through this table (the milestone patrol builds its
-		// own title); case exists for switch exhaustiveness.
-		case "founder_milestone_undelivered":
-			return "Milestone ping undelivered";
-		// FLY-827: never routed through this table (AutoQaEffects builds its own
+		// The founder-gate fallback builds its own title; this case keeps the shared
+		// switch exhaustive for other delivery surfaces.
+		case "founder_gate_delivery_failed":
+			return "Founder gate ping undelivered";
+		// FLY-827: never routed through this table (CodexReviewEffects builds its own
 		// title); case exists for switch exhaustiveness.
 		case "codex_gate_blocked":
 			return "Codex code review not passed";
@@ -325,9 +325,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-195: never routed through this table (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
-		// FLY-579: never routed through this table (AutoQaEffects builds its own body).
+		// FLY-579: retained historical kind with dedicated caller copy.
 		case "auto_qa_stuck":
-			return "The auto-QA pipeline could not proceed (spawn failed, no verdict, or a fail-closed pr_head_sha). The founder was NOT surfaced; investigate the QA Runner.";
+			return "A review or ship authorization invariant prevented unsafe progress. Inspect the alert body, cancel unsafe state if needed, then use the DAG recovery and redispatch path.";
 		// FLY-793: never routed through this table (the workflow engine builds its own body).
 		case "three_stage_stuck":
 			return "A DAG workflow handoff (Design→Implement→QA) could not proceed (head-SHA capture failed, the previous phase runner would not close, or the next phase dispatch threw). The next phase was NOT started; investigate the phase Runner.";
@@ -340,12 +340,12 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-637-ext: never routed through this table (the lead-pending escalation builds its own body).
 		case "runner_lead_pending_unhandled":
 			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";
-		// FLY-725: never routed through this table (the milestone / founder-thread patrol builds its own body).
-		case "founder_milestone_undelivered":
-			return "The Bridge could not deliver a founder milestone / ship-ready ping to its issue thread. The founder was NOT pinged; check the thread / bot token / owner config.";
-		// FLY-827: never routed through this table (AutoQaEffects builds its own body).
+		// FLY-725: never routed through this table (the founder-thread delivery path builds its own body).
+		case "founder_gate_delivery_failed":
+			return "The Bridge could not deliver a founder gate ping to its issue thread. The founder was NOT pinged; check the thread / bot token / owner config.";
+		// FLY-827: never routed through this table (CodexReviewEffects builds its own body).
 		case "codex_gate_blocked":
-			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked auto-QA + merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
+			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
 		// FLY-1278: never routed through this table (the review coordinator builds
 		// request/ruling-specific bodies and deterministic event ids).
 		case "review_advisory_pass":

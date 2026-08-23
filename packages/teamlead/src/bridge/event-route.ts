@@ -36,14 +36,14 @@ import {
 } from "../StateStore.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
-import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
-import { isReviewHeld } from "./auto-qa-held.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
 	buildMissingDesignPlanInstruction,
 	codexReviewTypeFor,
 } from "./codex-instruction.js";
+import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
+import type { CodexReviewIngest } from "./codex-review-ingest.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	DESIGN_HTML_EVIDENCE_ERROR,
@@ -91,6 +91,8 @@ import {
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import { resolveBoundRepositoryAuthority } from "./repository-authority.js";
+import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
+import { isReviewHeld } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
@@ -449,10 +451,7 @@ function handleCodexAutoTrigger(
 	// FLY-1718 P3: default-on exact plan binding. The manifest write precedes
 	// CommDB delivery; a stable instruction id plus boot/periodic reconciliation
 	// closes the crash window between those two durable stores.
-	if (
-		reviewType === "design" &&
-		process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK !== "0"
-	) {
+	if (reviewType === "design") {
 		if (!refreshedSession || !persistedPlanPath) return;
 		const snapshot = snapshotDesignReviewPlan(
 			refreshedSession,
@@ -539,13 +538,11 @@ export function createEventRouter(
 	// again, so it leaves the reconnecting state (resumes normal monitoring +
 	// clears the "⚠️重连中" title). Absent / kill-switch → no-op.
 	reconnectHolder?: { current: ReconnectController | null },
-	// FLY-579: auto-QA pipeline coordinator, passed as a late-bound holder (same
-	// pattern as reconnectHolder) because it is built AFTER createBridgeApp returns
-	// (it needs the LeadAlertNotifier, constructed later in startBridge). A main
-	// session entering awaiting_review spawns independent QA + holds the founder;
-	// qa_result events drive the verdict. Holder absent / .current undefined →
-	// existing behaviour byte-for-byte (no held records exist, isQaHeld is false).
-	autoQaCoordinator?: { current: AutoQaCoordinator | undefined },
+	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined },
+	codexReviewIngest?: { current: CodexReviewIngest | undefined },
+	reviewAuthorizationAlerts?: {
+		current: ReviewAuthorizationAlerts | undefined;
+	},
 	turnBeltReconciler?: { current: TurnBeltReconciler | undefined },
 	// FLY-696 M1/④: late-bound Alerts-post for `account_rotation` events. Built in
 	// startBridge (needs the unified-channel DiscordOps, constructed after this
@@ -714,7 +711,6 @@ export function createEventRouter(
 				route,
 				payload: event.payload,
 				authoritativeIssueIdentifier,
-				gateDisabled: process.env.FLYWHEEL_DESIGN_HTML_GATE === "0",
 			});
 			if (!designHtmlAdmission.ok) {
 				res.status(409).json({
@@ -723,11 +719,6 @@ export function createEventRouter(
 					remediation: designHtmlAdmission.remediation,
 				});
 				return;
-			}
-			if (designHtmlAdmission.disabled) {
-				console.warn(
-					"[event-route] design-HTML gate DISABLED via FLYWHEEL_DESIGN_HTML_GATE=0 — skipping founder design HTML validation",
-				);
 			}
 		}
 
@@ -1148,15 +1139,9 @@ export function createEventRouter(
 			}
 		}
 
-		// FLY-1425: generalized workflow verdicts are capability-backed engine
-		// decisions. Accepting one through the legacy event endpoint would return
-		// 200 without consuming the credential or advancing the DAG. Reject before
-		// idempotency storage so a misroute can never look successful or pollute the
-		// legacy QA paths. Shadow/legacy runs remain byte-compatible.
-		if (
-			event.event_type === "qa_result" &&
-			store.isWorkflowEngineOwnedExecution(event.execution_id)
-		) {
+		// DAG verdicts are capability-backed engine decisions. The retired legacy
+		// event route must never acknowledge or persist a fresh qa_result.
+		if (event.event_type === "qa_result") {
 			res.status(409).json({
 				ok: false,
 				reason: "workflow_submission_required",
@@ -1181,32 +1166,13 @@ export function createEventRouter(
 			return;
 		}
 
-		// FLY-579: a QA verdict is not a session-lifecycle transition (the QA
-		// session's own completion is separate). Drive the coordinator's PASS/FAIL
-		// branch and return. Idempotency is enforced by insertEvent dedup (above)
-		// AND the coordinator's record-status check (defence in depth).
-		//
-		if (event.event_type === "qa_result") {
-			if (autoQaCoordinator?.current) {
-				try {
-					await autoQaCoordinator.current.onQaResult(event);
-				} catch (err) {
-					console.error(
-						`[event-route] onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
-					);
-				}
-			}
-			res.json({ ok: true });
-			return;
-		}
-
 		// FLY-827: a Codex CODE review verdict (from `await-codex-gate code`). Record
-		// the durable approval + (race closure) re-drive QA if the parent already
-		// reached awaiting_review. Not a session-lifecycle transition — return early.
+		// durable exact-head evidence through the neutral ingest. This is not a
+		// session-lifecycle transition, so return early.
 		if (event.event_type === "codex_review_result") {
-			if (autoQaCoordinator?.current) {
+			if (codexReviewIngest?.current) {
 				try {
-					await autoQaCoordinator.current.onCodexReviewResult(event);
+					await codexReviewIngest.current.onCodexReviewResult(event);
 				} catch (err) {
 					console.error(
 						`[event-route] onCodexReviewResult threw for ${event.execution_id}: ${(err as Error).message}`,
@@ -1241,12 +1207,6 @@ export function createEventRouter(
 		// is structurally excluded (post-ship owner).
 		let terminalArchiveExcluded = false;
 		let fly324Completed = false;
-		// FLY-752: capture the PRE-transition status so the auto-QA coordinator can
-		// tell a genuine FRESH review-pass (running/other → awaiting_review) from a
-		// re-emitted / parked-waiting-for-founder awaiting_review (never auto-QA the
-		// latter). Read BEFORE any status write below.
-		const autoQaPriorStatus = store.getSession(event.execution_id)?.status;
-
 		try {
 			const ctx = {
 				executionId: event.execution_id,
@@ -1625,11 +1585,10 @@ export function createEventRouter(
 				const erPrHead =
 					existingSession?.pr_head_sha?.trim() ||
 					asString(evidence?.headSha)?.toLowerCase();
-				// Always route through the shared predicate (uniform kill-switch handling).
-				// A missing prior session row → verifyApproval reads no approval and
-				// fail-closes when the gate is ON (correct for a no-context merge), and
-				// the kill-switch still bypasses when OFF. Use the event identity so the
-				// gate is consulted even for a first-seen session_completed.
+				// Always route through the shared predicate: QA remains armed while the
+				// independent merge-approval gate keeps its existing switch. A missing
+				// prior row therefore fails closed whenever merge approval is armed. Use
+				// the event identity even for a first-seen session_completed.
 				const erDecision = erMergedLanding
 					? await computeAuthoritativeShipDecision(
 							store,
@@ -1670,7 +1629,7 @@ export function createEventRouter(
 							// FLY-869 决定③: fire the ONE loud Discord alert (once per head —
 							// gated by the parkMergeBlock claim above). Not auto-reverted, not
 							// marked Done, issue stays open → a human must resolve it.
-							void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+							void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
 								existingSession,
 								`⛔ Runner ${event.execution_id}（${existingSession.issue_id}）自行 merge 但未获批准 —— merged head ${erPrHead ?? "(none)"} 未通过 ship 闸（merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 							);
@@ -1749,7 +1708,7 @@ export function createEventRouter(
 								settle.outcome === "marked"
 									? "同 head 的自动重唤醒已暂停，请由 Lead 显式唤醒。"
 									: "本次完成未携带可验证的 head；自动重唤醒仍开启（fail-open）。";
-							void autoQaCoordinator?.current?.alertShipAttemptFailed(
+							void reviewAuthorizationAlerts?.current?.alertShipAttemptFailedBestEffort(
 								existingSession,
 								`⚠️ Runner ${event.execution_id}（${existingSession.issue_id}）报告 ship attempt 失败/停滞；会话保持 approved_to_ship，founder 批准仍有效。请检查 PR #${existingSession.pr_number ?? "unknown"} 的 ship workflow；诊断后重试前先重新运行 verify-approval。${retryPosture}`,
 							);
@@ -2563,7 +2522,7 @@ export function createEventRouter(
 										`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
 								);
 								// FLY-869 决定③: one loud Discord alert (once per head).
-								void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+								void reviewAuthorizationAlerts?.current?.alertMergeWithoutApproval(
 									sessionAtStage,
 									`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
 								);
@@ -2903,24 +2862,10 @@ export function createEventRouter(
 				terminalFailure.failureReason,
 			);
 		}
-		if (event.event_type === "session_failed" && autoQaCoordinator?.current) {
-			try {
-				await autoQaCoordinator.current.onQaSessionFailed(event.execution_id);
-			} catch (err) {
-				console.error(
-					`[event-route] auto-QA failure hook threw for ${event.execution_id}: ${(err as Error).message}`,
-				);
-			}
-		}
-
-		// FLY-579: a main session that just entered awaiting_review (code review
-		// passed, approve gate opened) → drive the auto-QA pipeline. This runs
-		// BEFORE the always-deliver block below so the held record exists by the
-		// time the QA-held suppression check is evaluated (held-first ordering,
-		// plan §7.1). Coordinator absent / not-main / not-awaiting_review → no-op.
+		// Neutral exact-head Codex evidence gate. Run before founder-facing review
+		// delivery on the HTTP ingest path, matching DirectEventSink.
 		if (
 			event.event_type === "session_completed" &&
-			autoQaCoordinator?.current &&
 			session &&
 			(session.session_role ?? "main") === "main" &&
 			session.status === "awaiting_review" &&
@@ -2930,14 +2875,10 @@ export function createEventRouter(
 			!isMergeBlocked(session)
 		) {
 			try {
-				await autoQaCoordinator.current.onMainAwaitingReview(session, {
-					// FLY-752: a genuine fresh review-pass transitioned INTO
-					// awaiting_review; a re-emitted / parked-for-founder one did not.
-					freshTransition: autoQaPriorStatus !== "awaiting_review",
-				});
+				await codexReviewHold?.current?.onSessionAwaitingReview(session);
 			} catch (err) {
 				console.error(
-					`[event-route] onMainAwaitingReview threw for ${event.execution_id}: ${(err as Error).message}`,
+					`[event-route] Codex review hold threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
 			}
 		}

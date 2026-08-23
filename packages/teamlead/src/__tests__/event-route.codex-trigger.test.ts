@@ -261,6 +261,7 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 			join(tmpWorktree, committedPlanPath),
 			"# changed after review\n",
 		);
+		process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK = "0";
 		const denied = await fetch(`${baseUrl}/design-review-validation`, {
 			method: "POST",
 			headers: {
@@ -300,7 +301,7 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		);
 	});
 
-	it("kill switch restores the pre-manifest design instruction", async () => {
+	it("FLY-1981 rejects an unsafe plan path when the retired env is 0", async () => {
 		process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK = "0";
 		const legacyPath = "doc/engineer/plan/draft/not-on-this-branch.md";
 		const res = await postEvent({
@@ -315,8 +316,7 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		expect(store.getCurrentDesignReviewManifest(execId)).toBeNull();
 		const instructions = readCommDbInstructions();
 		expect(instructions).toHaveLength(1);
-		expect(instructions[0]!.content).toContain(legacyPath);
-		expect(instructions[0]!.content).not.toContain("reviewedPlanBlobSha");
+		expect(instructions[0]!.content).toContain("Commit plan current contents");
 	});
 
 	it("fails closed with 503 when the Bridge has no ingest token", async () => {

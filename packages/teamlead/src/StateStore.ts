@@ -25,6 +25,7 @@ import {
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROTECTED_LEGACY_FLAG_NAMES,
+	RETIRED_FLAG_STORE_ROWS,
 	RETIRED_FLAGS,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
@@ -1237,7 +1238,7 @@ export interface ShipRelevantDiffSnapshot {
  *
  * The gate (auto-QA spawn / founder hold / verify-approval merge) is satisfied
  * iff there is an approved OR skipped row for the session's current head (or the
- * session carries `codex_skip`, or the hard gate is off) — see
+ * session carries `codex_skip`) — see
  * `isCodexGateSatisfied` (Bridge) / verify-approval (CLI mirror).
  */
 export interface CodexReviewRecord {
@@ -3099,12 +3100,10 @@ export class StateStore {
 			/* exists */
 		}
 
-		// FLY-869 A-1: immutable QA-required snapshot, captured when auto-qa-policy
-		// first evaluates this session (Bridge-side, where the trusted signals live).
-		// `qa_required` = 1 when QA applies (must pass before ship/Done), 0 when
-		// exempt (no-code / pure-docs / no-qa label / qa.auto:false), NULL = never
-		// evaluated (the "该起没起" case → the ship gate treats a code PR fail-closed,
-		// a no-code/no-PR route as exempt). config/label changes NEVER rewrite it.
+		// FLY-869 A-1: frozen legacy QA-required snapshot. Historical rows retain
+		// their 1=required / 0=exempt values for read compatibility; fresh rows stay
+		// NULL. The ship gate treats a fresh code PR fail-closed, while completion
+		// recovery cancels that legacy session and requests a unique DAG redispatch.
 		try {
 			this.db.run("ALTER TABLE sessions ADD COLUMN qa_required INTEGER");
 		} catch {
@@ -4612,6 +4611,15 @@ export class StateStore {
 				updated_at INTEGER NOT NULL
 			);
 		`);
+
+		// FLY-1981: retire only explicitly ledgered current-value rows from prior
+		// releases. The append-only changelog intentionally remains untouched.
+		const deleteRetiredCurrentRow = this.db.raw.prepare(
+			"DELETE FROM flag_values WHERE flag_name = ?",
+		);
+		for (const name of RETIRED_FLAG_STORE_ROWS) {
+			deleteRetiredCurrentRow.run(name);
+		}
 	}
 
 	getFlagValueRow(name: string): FlagValueRow | undefined {
@@ -8329,39 +8337,6 @@ export class StateStore {
 		return rows;
 	}
 
-	/**
-	 * FLY-725: main-session ZERO-SIGNAL terminal milestones (failed/blocked) for ONE
-	 * project that recently reached that state — the milestone-report patrol
-	 * candidate set. `completed` is intentionally excluded (routine completions go
-	 * to the FLY-727 digest, not a real-time ping; Annie 2026-07-01 plan §B).
-	 * `project_name` is filtered at the SQL boundary (Codex R1 #2: `matchesLead`
-	 * alone is not a project boundary — two projects can reuse a lead id). QA runners
-	 * (`session_role != 'main'`) are excluded — they produce no founder-facing
-	 * milestone. `lookbackHours` bounds the scan window so the patrol does not walk
-	 * the entire session history each tick.
-	 */
-	getRecentTerminalSessionsForNotify(
-		projectName: string,
-		lookbackHours: number,
-	): Session[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM sessions
-			  WHERE project_name = ?
-			    AND status IN ('failed', 'blocked')
-			    AND (session_role IS NULL OR session_role = 'main')
-			    AND last_activity_at > datetime('now', ?)`,
-		);
-		stmt.bind([projectName, `-${lookbackHours} hours`]);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
 	/** Retrieve parsed session_params for a given execution. */
 	getSessionParams(executionId: string): Record<string, unknown> | undefined {
 		const stmt = this.db.prepare(
@@ -8580,48 +8555,6 @@ export class StateStore {
 	}
 
 	/**
-	 * Atomically claim a QA record for (parent, head). Returns true if a NEW
-	 * record was inserted (caller should spawn QA), false if one already exists
-	 * (dedup — QA already claimed/running/done for this exact head). INSERT OR
-	 * IGNORE makes the claim race-safe against concurrent awaiting_review events.
-	 */
-	claimAutoQaRecord(input: {
-		parentExecutionId: string;
-		targetPrHeadSha: string;
-		issueId: string;
-		projectName: string;
-		enrollmentSource?: "auto" | "manual";
-	}): boolean {
-		this.db.run(
-			`INSERT OR IGNORE INTO auto_qa_record
-			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, enrollment_source, status, started_at)
-			 VALUES (?, ?, ?, ?, ?, 'running', datetime('now'))`,
-			[
-				input.parentExecutionId,
-				input.targetPrHeadSha,
-				input.issueId,
-				input.projectName,
-				input.enrollmentSource ?? "auto",
-			],
-		);
-		const inserted = this.db.getRowsModified() > 0;
-		this.save();
-		return inserted;
-	}
-
-	setAutoQaQaExecutionId(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		qaExecutionId: string,
-	): void {
-		this.db.run(
-			"UPDATE auto_qa_record SET qa_execution_id = ? WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
-			[qaExecutionId, parentExecutionId, targetPrHeadSha],
-		);
-		this.save();
-	}
-
-	/**
 	 * FLY-1279 B2: ownership is broader than the recovery CAS. The same QA exec
 	 * may appear on historical rows, so prefer a hold-active owner and use a
 	 * deterministic newest-row tiebreak. Callers use this only to decide whether
@@ -8646,197 +8579,6 @@ export class StateStore {
 		}
 		stmt.free();
 		return rec;
-	}
-
-	/**
-	 * Claim a dead running QA exactly once. The first death enters retry_pending;
-	 * a replacement death after the one-shot budget is consumed becomes stuck.
-	 */
-	markDeadAutoQaExecution(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		deadQaExecutionId: string,
-	): "retry_pending" | "exhausted" | "noop" {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = CASE WHEN auto_retry_count = 0
-			                      THEN 'retry_pending' ELSE 'stuck' END,
-			        auto_retry_count = CASE WHEN auto_retry_count = 0
-			                                THEN 1 ELSE auto_retry_count END,
-			        retry_intent_at = CASE WHEN auto_retry_count = 0
-			                               THEN datetime('now') ELSE retry_intent_at END,
-			        completed_at = CASE WHEN auto_retry_count = 0
-			                            THEN NULL ELSE datetime('now') END
-			  WHERE parent_execution_id = ?
-			    AND target_pr_head_sha = ?
-			    AND qa_execution_id = ?
-			    AND status = 'running'`,
-			[parentExecutionId, targetPrHeadSha, deadQaExecutionId],
-		);
-		const changed = this.db.getRowsModified() > 0;
-		this.save();
-		if (!changed) return "noop";
-		return this.getAutoQaRecord(parentExecutionId, targetPrHeadSha)?.status ===
-			"retry_pending"
-			? "retry_pending"
-			: "exhausted";
-	}
-
-	/** Initial dispatcher.start() failed before a QA execution id was bound. */
-	claimAutoQaRetryAfterSpawnFailure(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'retry_pending', auto_retry_count = 1,
-			        retry_intent_at = datetime('now'), completed_at = NULL
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status = 'running' AND qa_execution_id IS NULL
-			    AND auto_retry_count = 0`,
-			[parentExecutionId, targetPrHeadSha],
-		);
-		const claimed = this.db.getRowsModified() > 0;
-		this.save();
-		return claimed;
-	}
-
-	/** Persist the pre-bound successor id before the first async launch effect. */
-	claimAutoQaRetryLaunch(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		retryAttemptId: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'retry_starting', retry_attempt_id = ?
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status = 'retry_pending'`,
-			[retryAttemptId, parentExecutionId, targetPrHeadSha],
-		);
-		const claimed = this.db.getRowsModified() > 0;
-		this.save();
-		return claimed;
-	}
-
-	/** Bind the launched successor only when the durable attempt still owns it. */
-	completeAutoQaRetryLaunch(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		retryAttemptId: string,
-		qaExecutionId: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'running', qa_execution_id = ?, completed_at = NULL,
-			        retest_wake_pending_at = NULL
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status = 'retry_starting' AND retry_attempt_id = ?`,
-			[qaExecutionId, parentExecutionId, targetPrHeadSha, retryAttemptId],
-		);
-		const completed = this.db.getRowsModified() > 0;
-		this.save();
-		return completed;
-	}
-
-	/** Definite dispatcher failure exhausts the recovery episode fail-closed. */
-	failAutoQaRetryLaunch(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		retryAttemptId: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'stuck', completed_at = datetime('now')
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status = 'retry_starting' AND retry_attempt_id = ?`,
-			[parentExecutionId, targetPrHeadSha, retryAttemptId],
-		);
-		const failed = this.db.getRowsModified() > 0;
-		this.save();
-		return failed;
-	}
-
-	/**
-	 * FLY-643: persist the SEPARATE QA Linear issue this record's QA runs on.
-	 * Written immediately after the Linear issue is created and BEFORE the QA
-	 * runner spawns, so a crash mid-spawn lets reconcile re-use this QA issue
-	 * (re-spawn the runner) instead of creating a duplicate.
-	 */
-	setAutoQaIssue(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		qaIssue: {
-			issueId: string;
-			issueIdentifier?: string;
-			issueTitle?: string;
-			issueUrl?: string;
-		},
-	): void {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET qa_issue_id = ?,
-			        qa_issue_identifier = ?,
-			        qa_issue_title = ?,
-			        qa_issue_url = ?
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
-			[
-				qaIssue.issueId,
-				qaIssue.issueIdentifier ?? null,
-				qaIssue.issueTitle ?? null,
-				qaIssue.issueUrl ?? null,
-				parentExecutionId,
-				targetPrHeadSha,
-			],
-		);
-		this.save();
-	}
-
-	/**
-	 * Transition a record's status. Terminal states (passed/failed/stuck) stamp
-	 * completed_at. `notifiedAt: true` stamps notified_at (PASS founder
-	 * ship-ready notification sent — release dedup). verdictEventId is the
-	 * qa_result event id (idempotency anchor against duplicate verdicts).
-	 */
-	setAutoQaStatus(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-		status: AutoQaRecord["status"],
-		opts: { verdictEventId?: string; notifiedAt?: boolean },
-	): void {
-		const terminal =
-			status === "passed" || status === "failed" || status === "stuck";
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = ?,
-			        verdict_event_id = COALESCE(?, verdict_event_id),
-			        completed_at = CASE WHEN ? THEN datetime('now') ELSE completed_at END,
-			        notified_at = CASE WHEN ? THEN datetime('now') ELSE notified_at END
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
-			[
-				status,
-				opts.verdictEventId ?? null,
-				terminal ? 1 : 0,
-				opts.notifiedAt ? 1 : 0,
-				parentExecutionId,
-				targetPrHeadSha,
-			],
-		);
-		this.save();
-	}
-
-	/** Mark all of a parent's still-active records superseded EXCEPT keepSha. */
-	supersedeOtherAutoQaRecords(
-		parentExecutionId: string,
-		keepSha: string,
-	): void {
-		this.db.run(
-			`UPDATE auto_qa_record SET status = 'superseded'
-			  WHERE parent_execution_id = ? AND target_pr_head_sha != ?
-			    AND status IN ('running','awaiting_retest','retry_pending','retry_starting','stuck')`,
-			[parentExecutionId, keepSha],
-		);
-		this.save();
 	}
 
 	getAutoQaRecord(
@@ -9231,24 +8973,6 @@ export class StateStore {
 			    SET merge_block_reason = NULL, merge_block_head = NULL, merge_block_at = NULL
 			  WHERE execution_id = ?`,
 			[executionId],
-		);
-		this.save();
-	}
-
-	/**
-	 * FLY-869 A-1: persist the IMMUTABLE qa_required snapshot (1=required, 0=exempt)
-	 * at auto-qa-policy eval time. Immutable = written ONLY when currently NULL, so a
-	 * later config/label change can never retroactively rewrite the ship verdict.
-	 */
-	setQaRequiredSnapshot(input: {
-		executionId: string;
-		required: 0 | 1;
-		reason: string;
-	}): void {
-		this.db.run(
-			`UPDATE sessions SET qa_required = ?, qa_required_reason = ?
-			  WHERE execution_id = ? AND qa_required IS NULL`,
-			[input.required, input.reason, input.executionId],
 		);
 		this.save();
 	}
@@ -10212,8 +9936,7 @@ export class StateStore {
 	/**
 	 * FLY-827: the core durable predicate — is Codex code review satisfied for this
 	 * exact head? True iff an approved OR skipped row exists (lower-cased sha).
-	 * `isCodexGateSatisfied` layers session.codex_skip + the hard-gate kill-switch
-	 * on top of this.
+	 * `isCodexGateSatisfied` layers the sanctioned session.codex_skip on top of this.
 	 */
 	isCodexCodeReviewApproved(executionId: string, sha: string): boolean;
 	isCodexCodeReviewApproved(
@@ -10466,147 +10189,6 @@ export class StateStore {
 		}
 		stmt.free();
 		return out;
-	}
-
-	/**
-	 * FLY-752: RETARGET a parent's QA owner record to a NEW reviewed head (a fix
-	 * round), REUSING the same QA issue/runner. CAS + crash-safe:
-	 *   - Guard: the (parent, oldSha) row must currently be in `expectStatuses`
-	 *     (running / awaiting_retest / passed / stuck / legacy failed). A status
-	 *     drift (already moved on / concurrent retarget) → false, no write.
-	 *   - Conflict: a stale TERMINAL/superseded (parent, newSha) row can exist
-	 *     (force-push back to an old sha, prior round on that exact head) — the
-	 *     in-place UPDATE would violate the PK. Delete only such stale rows first;
-	 *     never an active (running/awaiting_retest) one.
-	 *   - Reset: status→running; clear verdict_event_id / completed_at AND
-	 *     notified_at (notification state is scoped to (parent, head), not the
-	 *     reusable row — else a retargeted old PASS keeps its old notified_at and a
-	 *     new-head PASS could be dropped by reconcile); set the durable
-	 *     retest_wake_pending_at marker.
-	 * Returns true iff the retarget row was updated.
-	 */
-	retargetAutoQaRecord(input: {
-		parentExecutionId: string;
-		oldSha: string;
-		newSha: string;
-		expectStatuses: AutoQaRecord["status"][];
-	}): boolean {
-		if (input.newSha === input.oldSha) return false;
-		const current = this.getAutoQaRecord(input.parentExecutionId, input.oldSha);
-		if (!current || !input.expectStatuses.includes(current.status)) {
-			return false; // CAS miss — status drift / concurrent retarget.
-		}
-		try {
-			// Remove a stale conflicting (parent, newSha) row so the PK-column UPDATE
-			// cannot hit SQLITE_CONSTRAINT. Only NON-active rows — an active row for
-			// newSha would mean the invariant is already broken; bail then.
-			const conflicting = this.getAutoQaRecord(
-				input.parentExecutionId,
-				input.newSha,
-			);
-			if (conflicting) {
-				if (
-					conflicting.status === "running" ||
-					conflicting.status === "awaiting_retest"
-				) {
-					return false; // active row already owns newSha — do not clobber.
-				}
-				this.db.run(
-					"DELETE FROM auto_qa_record WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
-					[input.parentExecutionId, input.newSha],
-				);
-			}
-			this.db.run(
-				`UPDATE auto_qa_record
-				    SET target_pr_head_sha = ?,
-				        status = 'running',
-				        verdict_event_id = NULL,
-				        completed_at = NULL,
-				        notified_at = NULL,
-				        retest_wake_pending_at = datetime('now')
-				  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
-				[input.newSha, input.parentExecutionId, input.oldSha],
-			);
-			const updated = this.db.getRowsModified() > 0;
-			this.save();
-			return updated;
-		} catch (err) {
-			console.warn(
-				`[auto-qa] retargetAutoQaRecord failed for ${input.parentExecutionId} ${input.oldSha.slice(0, 8)}→${input.newSha.slice(0, 8)}: ${
-					err instanceof Error ? err.message : String(err)
-				}`,
-			);
-			return false;
-		}
-	}
-
-	/** FLY-752: clear the durable retest-wake marker once the wake is confirmed. */
-	clearRetestWakePending(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-	): void {
-		this.db.run(
-			"UPDATE auto_qa_record SET retest_wake_pending_at = NULL WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
-			[parentExecutionId, targetPrHeadSha],
-		);
-		this.save();
-	}
-
-	/**
-	 * FLY-752: reopen an EXISTING (parent, sha) row for a fresh QA re-spawn on the
-	 * SAME head. Used only in the rare case where the QA owner lookup found no
-	 * active record but a superseded/terminal row for the current head still exists
-	 * (e.g. reconcile superseded it, then the parent re-entered review on the same
-	 * head). Resets to running + clears terminal fields (keeps qa_issue_id so the
-	 * same QA issue is reused). Returns true iff a row was updated.
-	 */
-	reopenAutoQaRecordForRespawn(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'running',
-			        qa_execution_id = NULL,
-			        verdict_event_id = NULL,
-			        completed_at = NULL,
-			        notified_at = NULL,
-			        retest_wake_pending_at = NULL
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status IN ('superseded','failed','stuck')`,
-			[parentExecutionId, targetPrHeadSha],
-		);
-		const updated = this.db.getRowsModified() > 0;
-		this.save();
-		return updated;
-	}
-
-	/**
-	 * FLY-1251: bounded same-head manual escape hatch. Only a terminal non-pass
-	 * row can be revived; active QA and already-passed evidence are immutable.
-	 * The status predicate is the CAS against a concurrent auto/manual admission.
-	 */
-	reviveAutoQaRecordForManualSpawn(
-		parentExecutionId: string,
-		targetPrHeadSha: string,
-	): boolean {
-		this.db.run(
-			`UPDATE auto_qa_record
-			    SET status = 'running',
-			        enrollment_source = 'manual',
-			        qa_execution_id = NULL,
-			        verdict_event_id = NULL,
-			        completed_at = NULL,
-			        notified_at = NULL,
-			        retest_wake_pending_at = NULL,
-			        started_at = datetime('now')
-			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?
-			    AND status IN ('stuck','failed')`,
-			[parentExecutionId, targetPrHeadSha],
-		);
-		const updated = this.db.getRowsModified() > 0;
-		if (updated) this.save();
-		return updated;
 	}
 
 	/**

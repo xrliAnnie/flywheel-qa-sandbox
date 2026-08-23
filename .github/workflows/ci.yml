@@ -717,6 +717,11 @@ jobs:
       - name: Test — FLY-1463 QA executor ship-report contract
         run: bash scripts/__tests__/test-qa-executor-ship-report-contract.sh
 
+      # FLY-1981: shipped QA roles retain only the valid DAG/manual protocol;
+      # retired auto-QA spawn, park, and parent-targeting instructions stay gone.
+      - name: Test — FLY-1981 runtime role auto-QA retirement
+        run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
+
       # FLY-913: restart-guard deployment guardrail. Hermetic — the hook runs
       # against stdin JSON fixtures with the alert seam stubbed (plus one
       # integration case through the REAL lead-alert.sh with a fake curl); the

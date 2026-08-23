@@ -8,17 +8,12 @@
  *
  * env flags are Bridge-global → single `effective`.
  * project_config flags are per-project → `effectiveByProject[]` (env is global,
- * but qa.auto / doc_flow / etc. differ per project). Config-load errors are
+ * but doc_flow / proofshot / etc. differ per project). Config-load errors are
  * surfaced as data, never silently defaulted. Dormant flags (ponytail: validated
  * by ConfigLoader but not loaded by run-infra) report no effective value.
  */
 
-import { resolveDecisionMode } from "../decision-mode.js";
-import {
-	type EnvFileSource,
-	readEnvFileValue,
-	readEnvValueFromContent,
-} from "../env-file.js";
+import { type EnvFileSource, readEnvFileValue } from "../env-file.js";
 import type { FlywheelConfig } from "../types.js";
 import {
 	FEATURE_FLAGS,
@@ -198,18 +193,9 @@ function withEnvSources(
 	const fileRaw = fileValue.raw;
 	let fileEffective: boolean | string;
 	try {
-		fileEffective =
-			spec.envVar === "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE"
-				? resolveDecisionMode({
-						FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: fileRaw,
-						FLYWHEEL_FOUNDER_CONSENT_ENABLED: readEnvValueFromContent(
-							ctx.envFile.content,
-							"FLYWHEEL_FOUNDER_CONSENT_ENABLED",
-						),
-					})
-				: resolveEnvEffective(spec, {
-						...(spec.envVar ? { [spec.envVar]: fileRaw } : {}),
-					});
+		fileEffective = resolveEnvEffective(spec, {
+			...(spec.envVar ? { [spec.envVar]: fileRaw } : {}),
+		});
 	} catch {
 		return {
 			...common,
@@ -268,20 +254,6 @@ export function resolveFlag(
 	};
 
 	if (spec.scope === "bridge_global") {
-		// DECISION_MODE: reuse the real parser (throws on invalid). A dashboard must
-		// not crash on a bad env var, but must NOT present the raw invalid string as
-		// a valid governance mode — surface an explicit display-only error instead.
-		if (spec.envVar === "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE") {
-			try {
-				const effective = resolveDecisionMode(env);
-				return withEnvSources(base, spec, effective, ctx);
-			} catch {
-				return {
-					...base,
-					error: `invalid ${spec.envVar}: ${env[spec.envVar]}`,
-				};
-			}
-		}
 		// FLY-1329 A2 (Codex R2 LOW): the activity window is a wording-only value the
 		// runtime (`activityWindowMs`) sanitizes — junk / ≤0 / non-finite all become
 		// the default. Report the SANITIZED effective value, not the raw env string,

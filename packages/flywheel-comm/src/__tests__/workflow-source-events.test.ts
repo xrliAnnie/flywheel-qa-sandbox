@@ -234,6 +234,99 @@ describe("CommDB workflow source events", () => {
 		]);
 	});
 
+	it("rejects bridge-founder-consent as a fresh atomic source writer", () => {
+		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+
+		expect(() =>
+			db.insertFounderApprovalResponseWithSource({
+				project: "flywheel",
+				sourceEventId: `founder-approval:${questionId}`,
+				questionId,
+				fromAgent: "bridge-founder-consent",
+				content: '{"approved":true}',
+				expectedOwner: "exec-1",
+				payload: {
+					schema_version: 1,
+					response: { approved: true },
+					classification: "founder_consent_enforce",
+				},
+			}),
+		).toThrow(/historical-only/i);
+		expect(db.getResponse(questionId)).toBeUndefined();
+		expect(db.listWorkflowSourceEvents()).toEqual([]);
+	});
+
+	it("keeps a historical bridge-founder-consent row idempotently readable", () => {
+		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+		const raw = (
+			db as unknown as {
+				db: {
+					prepare: (sql: string) => {
+						run: (...args: unknown[]) => unknown;
+					};
+				};
+			}
+		).db;
+		const responseId = `historical-response:${questionId}`;
+		const deliveryId = `historical-delivery:${questionId}`;
+		raw
+			.prepare(
+				"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+			)
+			.run(responseId, deliveryId, "historical-test-fixture");
+		raw
+			.prepare(
+				`INSERT INTO mailbox
+				 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+				  ref_id, created_at, expires_at, relay_state)
+				 VALUES (?, ?, 'bridge-founder-consent', 'exec-1', 'runner', 'response',
+				         '{"approved":true}', ?, '2026-08-22T00:00:00.000Z',
+				         '2026-08-25T00:00:00.000Z', 'terminal_disposed')`,
+			)
+			.run(responseId, deliveryId, questionId);
+		raw
+			.prepare(
+				"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+			)
+			.run(questionId);
+		const existing = db.getResponse(questionId);
+
+		expect(
+			db.trustedFounderGateResponse({
+				questionId,
+				fromAgent: "bridge-founder-consent",
+				content: '{"approved":true}',
+				expectedOwner: "exec-1",
+				msgId: "historical-message",
+				now: "2026-08-22T00:00:00.000Z",
+			}),
+		).toEqual({ responseId: existing?.id });
+		expect(db.getResponse(questionId)).toEqual(existing);
+		expect(db.listWorkflowSourceEvents()).toEqual([]);
+	});
+
+	it("rejects bridge-founder-consent on the fresh trusted-message writer", () => {
+		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
+			checkpoint: "approve_to_ship",
+		});
+
+		expect(() =>
+			db.trustedFounderGateResponse({
+				questionId,
+				fromAgent: "bridge-founder-consent",
+				content: '{"approved":true}',
+				expectedOwner: "exec-1",
+				msgId: "new-message",
+				now: "2026-08-22T00:00:00.000Z",
+			}),
+		).toThrow(/historical-only/i);
+		expect(db.getResponse(questionId)).toBeUndefined();
+	});
+
 	it("writes founder feedback as a distinct immutable source event", () => {
 		const questionId = db.insertQuestion("exec-1", "lead", "ship?", {
 			checkpoint: "approve_to_ship",

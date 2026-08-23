@@ -31,12 +31,10 @@ runners:
 # NOTE: `runners.available.claude.model` above is legacy and is NOT read by
 # the resolver — this `roles:` block is.
 #
-# FLY-1496 / Annie: this is a PROJECT-WIDE FALLBACK for every runner spawn that
-# has no vendor/model label AND no dispatch `model` param — includes but is
-# NOT limited to the FLY-579 auto-QA pipeline (which creates a fresh
-# `QA·FLY-XX` issue and dispatches it without a label or dispatchModel, so it
-# lands exactly here). Unclassified work now follows the founder's Fable/Codex
-# preference; the explicit DAG workflow QA row remains the only Opus 5 default.
+# FLY-1496 / Annie: this is a PROJECT-WIDE FALLBACK for every runner dispatch
+# that has no vendor/model label AND no dispatch `model` param. Unclassified
+# work follows the founder's Fable/Codex preference; the explicit DAG workflow
+# QA row remains the only Opus 5 default.
 roles:
   runner:
     backend: claude-tmux
@@ -78,21 +76,6 @@ checkpoints:
     timeout_ms: 86400000
     timeout_behavior: fail-close
 
-# FLY-707 (enablement, FLY-698 epic): flywheel default-enables built workflow
-# features instead of leaving them dormant behind a per-project opt-in.
-#
-# qa (FLY-579 auto-QA pipeline): after code review passes, the Bridge spawns an
-# INDEPENDENT QA Runner on a separate QA·FLY-XX issue pinned to the reviewed
-# commit and HOLDS the founder until QA is green. Read from this CANONICAL root
-# only (auto-qa-config-source.ts → ConfigLoader → cfg.qa); a runner can't edit
-# its own PR's config to skip its own QA. The global env FLYWHEEL_AUTO_QA=0 is a
-# hard kill-switch on top of this. The qa-executor agent is wired in agents.qa.
-qa:
-  auto: true
-  # Issue labels that skip auto-QA even when auto is true — docs/chore PRs have
-  # nothing to functionally verify. A per-issue Linear `no-qa` label also skips.
-  skip_labels: [docs, chore]
-
 # doc_flow (FLY-205 department-first process docs): Runners receive a DOC-FLOW
 # system-prompt block to write exploration/research/plan under
 # `<department>/doc/<ISSUE-KEY>-<slug>/`. department-first folder; flywheel's
@@ -102,19 +85,6 @@ qa:
 doc_flow:
   enabled: true
   default_department: engineering
-
-# founder_milestone_report (FLY-725): when a Runner reaches a ZERO-SIGNAL terminal
-# milestone (failed / blocked) the Bridge pushes ONE @founder-pinged report to the
-# issue's [FLY-XX] chat thread — a mechanism-guaranteed, ground-truth "push" so the
-# founder is never forced to pull. Content is generated from the real session event
-# (route / PR / last_error), NOT the possibly-lagging thread title. v1 = failed +
-# blocked only: routine `completed` → FLY-727 daily digest; `ship_ready` is already
-# an @founder ping via the FLY-605 approve_to_ship gate (not duplicated here).
-# Absent/enabled:false = off (byte-compatible). Loaded from this CANONICAL root
-# only, so a runner can't edit its own PR config to change founder notifications.
-founder_milestone_report:
-  enabled: true
-  milestones: [failed, blocked]
 
 # Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
 # by issue label — the GeoForge3D "Peter covers many roles" pattern, narrowed by

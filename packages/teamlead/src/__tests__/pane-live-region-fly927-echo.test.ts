@@ -63,6 +63,15 @@ describe("FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START)", () =>
 		).toBe(true);
 	});
 
+	it("a retired founder milestone alert remains echo-only compatible", () => {
+		expect(
+			ALERT_ECHO_START.test(
+				"⚠️ **Delivery failed** (flywheel-eng-lead / founder_milestone_undelivered)",
+			),
+		).toBe(true);
+		expect(ALERT_EVENT_TYPES).not.toContain("founder_milestone_undelivered");
+	});
+
 	it("a normal Lead output line does NOT match (no over-stripping)", () => {
 		for (const line of [
 			"⏺ Working on the ticket queue implementation now.",

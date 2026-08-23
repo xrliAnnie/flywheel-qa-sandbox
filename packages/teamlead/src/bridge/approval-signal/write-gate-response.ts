@@ -34,7 +34,7 @@ import {
 import {
 	isDeferrableReviewHoldReason,
 	type ReviewHoldReason,
-} from "../auto-qa-held.js";
+} from "../review-hold.js";
 import type { GateAuthorityView } from "./gate-authority-view.js";
 
 export type FounderApprovalRouteSource =
@@ -416,6 +416,18 @@ export async function writeGateResponseAndRunPostWrite(
 		};
 	}
 
+	// FLY-1981: the former enforce-mode service writer is historical read-side
+	// compatibility only. Existing identical rows remain idempotent above, but a
+	// new response may never mint this retired attribution.
+	if (args.actor === "bridge-founder-consent") {
+		return {
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "historical_actor_retired",
+		};
+	}
+
 	if (!isApproval(args.answer) && !hasExplicitKickback(args)) {
 		return {
 			written: false,
@@ -495,9 +507,7 @@ export async function writeGateResponseAndRunPostWrite(
 				classification:
 					args.actor === "bridge"
 						? "dashboard_founder_action"
-						: args.actor === "bridge-founder-consent"
-							? "founder_consent_enforce"
-							: "founder_direct_signal",
+						: "founder_direct_signal",
 				authorityId: args.questionId,
 			}
 		: activeRun &&
@@ -512,9 +522,7 @@ export async function writeGateResponseAndRunPostWrite(
 					classification:
 						args.actor === "bridge"
 							? "dashboard_founder_action"
-							: args.actor === "bridge-founder-consent"
-								? "founder_consent_enforce"
-								: "founder_direct_signal",
+							: "founder_direct_signal",
 					authorityId: args.questionId,
 				}
 			: undefined;

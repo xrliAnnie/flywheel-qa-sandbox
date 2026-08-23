@@ -29,6 +29,7 @@ import type { BridgeConfig } from "../bridge/types.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { setHistoricalQaRequiredSnapshot } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -127,12 +128,12 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	beforeEach(async () => {
 		originalHome = process.env.HOME;
 		originalCompleteMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the
-		// marker-replay FSM parity, not the approval gate.
+		// FLY-869: bypass the merge-approval gate — these tests exercise marker
+		// replay parity. QA exemptions are modeled durably per test when needed.
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
-		store = await StateStore.create(":memory:");
+		tmp = mkdtempSync(join(tmpdir(), "fly172-int-"));
+		store = await StateStore.create(join(tmp, "teamlead.db"));
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
@@ -149,7 +150,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = buildLoopbackBaseUrl("127.0.0.1", port);
 
-		tmp = mkdtempSync(join(tmpdir(), "fly172-int-"));
 		markerDir = join(tmp, "complete-failed");
 		quarantineDir = join(tmp, "quarantine");
 	});
@@ -163,7 +163,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = originalCompleteMarkerDir;
 		}
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -225,6 +224,11 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 
 	it("auto_approve + merged → completed through real FSM", async () => {
 		await startRunning("execB", "iss-execB");
+		setHistoricalQaRequiredSnapshot(store, {
+			executionId: "execB",
+			required: 0,
+			reason: "marker parity fixture",
+		});
 		writeMarker("execB", "auto_approve", true);
 
 		const r = await tryReconcileComplete("execB", deps());

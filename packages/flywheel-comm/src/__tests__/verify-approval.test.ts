@@ -17,7 +17,6 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	resolveCodexHardGateOn,
 	verifyApproval,
 	verifyApprovalWithBridgeHead,
 } from "../commands/verify-approval.js";
@@ -60,6 +59,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		worktree_path?: string;
 		project_name?: string;
 		issue_id?: string;
+		codexEvidence?: "approved" | "missing";
 	}): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -89,6 +89,13 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			row.issue_id ?? "FLY-1434",
 		);
 		db.close();
+		if (
+			row.codexEvidence !== "missing" &&
+			row.pr_head_sha &&
+			/^[0-9a-f]{40}$/i.test(row.pr_head_sha)
+		) {
+			writeCodexRecord(row.execution_id, row.pr_head_sha, "approved");
+		}
 	}
 
 	/** FLY-827: write a codex_review_record row for (exec, head).
@@ -145,22 +152,53 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		}
 	}
 
+	function seedHistoricalFounderConsentAnswer(
+		questionId: string,
+		content: string,
+	): void {
+		const raw = new Database(commDbPath);
+		const responseId = `historical-response:${questionId}`;
+		const deliveryId = `historical-delivery:${questionId}`;
+		try {
+			raw.transaction(() => {
+				raw
+					.prepare(
+						"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+					)
+					.run(responseId, deliveryId, "historical-test-fixture");
+				raw
+					.prepare(
+						`INSERT INTO mailbox
+						 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+						  ref_id, created_at, expires_at, relay_state)
+						 VALUES (?, ?, 'bridge-founder-consent', ?, 'runner', 'response', ?, ?,
+						         '2026-08-22T00:00:00.000Z', '2026-08-25T00:00:00.000Z',
+						         'terminal_disposed')`,
+					)
+					.run(responseId, deliveryId, EXEC, content, questionId);
+				raw
+					.prepare(
+						"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+					)
+					.run(questionId);
+			})();
+		} finally {
+			raw.close();
+		}
+	}
+
 	function run(prHead = HEAD) {
 		return verifyApproval({
 			execId: EXEC,
 			prHead,
 			dbPath: commDbPath,
 			stateDbPath,
-			// FLY-827: these FLY-191 tests predate the codex hard gate + verify the
-			// founder-approval semantics. Run gate-OFF (byte-compat) so they don't
-			// require a codex_review_record. Codex-gate behavior has its own block.
-			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 			codexDotenvPath: join(tmpDir, "nonexistent.env"),
 			ciProbe: () => ({ green: true, reason: "ci_green" }),
 		});
 	}
 
-	/** FLY-827: run with the codex hard gate ON (env has no key → resolver reads .env → absent path → process.env). */
+	/** Run the permanent Codex predicate with optional unrelated env seams. */
 	function runGateOn(opts?: {
 		prHead?: string;
 		env?: NodeJS.ProcessEnv;
@@ -240,7 +278,6 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			prHead: HEAD,
 			dbPath: commDbPath,
 			stateDbPath,
-			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 			codexDotenvPath: join(tmpDir, "nonexistent.env"),
 			ciProbe: () => ({
 				green: false,
@@ -296,7 +333,6 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				dbPath: commDbPath,
 				stateDbPath,
 				env: {
-					FLYWHEEL_CODEX_HARD_GATE: "0",
 					FLYWHEEL_ISSUE_GATE_SUPERSEDE: "0",
 				} as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmpDir, "nonexistent.env"),
@@ -324,7 +360,6 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				bridgeUrl: "http://127.0.0.1:9876",
 				fetchImpl: fetchImpl as never,
 				env: {
-					FLYWHEEL_CODEX_HARD_GATE: "0",
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 				} as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmpDir, "nonexistent.env"),
@@ -409,13 +444,10 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 	describe("FLY-945 Fix E: response attribution must be founder-side", () => {
 		const FOUNDER = "123456789012345678";
 
-		/** .env with founder id (codex gate kept OFF — same file feeds all flags). */
+		/** .env with founder id. */
 		function founderEnv(extra = ""): string {
 			const p = join(tmpDir, "founder.env");
-			writeFileSync(
-				p,
-				`DISCORD_OWNER_USER_ID=${FOUNDER}\nFLYWHEEL_CODEX_HARD_GATE=0\n${extra}`,
-			);
+			writeFileSync(p, `DISCORD_OWNER_USER_ID=${FOUNDER}\n${extra}`);
 			return p;
 		}
 
@@ -442,18 +474,66 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			});
 		}
 
-		it.each([["bridge"], ["bridge-founder-consent"]])(
-			"trusted bridge writer %s → approved",
-			(from) => {
-				setupApprovedBy(from);
-				const r = runWithDotenv(founderEnv());
-				expect(r.approved).toBe(true);
-			},
-		);
+		it("trusted bridge writer bridge → approved", () => {
+			setupApprovedBy("bridge");
+			const r = runWithDotenv(founderEnv());
+			expect(r.approved).toBe(true);
+		});
+
+		it("historical bridge-founder-consent writer remains readable → approved", () => {
+			const qid = createGateQuestion();
+			seedHistoricalFounderConsentAnswer(
+				qid,
+				JSON.stringify({ approved: true }),
+			);
+			writeStateSession({
+				execution_id: EXEC,
+				status: "approved_to_ship",
+				pr_head_sha: HEAD,
+				review_question_id: qid,
+			});
+
+			expect(runWithDotenv(founderEnv()).approved).toBe(true);
+		});
 
 		it("the canonical founder Discord id → approved", () => {
 			setupApprovedBy(FOUNDER);
 			expect(runWithDotenv(founderEnv()).approved).toBe(true);
+		});
+
+		it("a matching canonical and legacy founder identity → approved", () => {
+			setupApprovedBy(FOUNDER);
+			expect(
+				runWithDotenv(founderEnv(`FLYWHEEL_FOUNDER_USER_ID=${FOUNDER}\n`))
+					.approved,
+			).toBe(true);
+		});
+
+		it("a legacy-only founder identity enforces the founder writer", () => {
+			const p = join(tmpDir, "legacy-founder.env");
+			writeFileSync(p, `FLYWHEEL_FOUNDER_USER_ID=${FOUNDER}\n`);
+			setupApprovedBy(FOUNDER);
+
+			expect(runWithDotenv(p).approved).toBe(true);
+		});
+
+		it("a legacy-only founder identity rejects a Lead writer", () => {
+			const p = join(tmpDir, "legacy-founder.env");
+			writeFileSync(p, `FLYWHEEL_FOUNDER_USER_ID=${FOUNDER}\n`);
+			setupApprovedBy(LEAD);
+
+			expect(runWithDotenv(p)).toMatchObject({
+				approved: false,
+				reason: "response_not_founder_attributed",
+				responseFrom: LEAD,
+			});
+		});
+
+		it("mismatched canonical and legacy identities fail closed", () => {
+			setupApprovedBy(LEAD);
+			const p = founderEnv("FLYWHEEL_FOUNDER_USER_ID=987654321098765432\n");
+
+			expect(() => runWithDotenv(p)).toThrowError("Founder identity mismatch");
 		});
 
 		it("🔴 a Lead id (respond self-approval — the FLY-921 door) → response_not_founder_attributed", () => {
@@ -476,14 +556,18 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		it("honest boundary: founder id UNRESOLVABLE → attribution step skipped (feature-off)", () => {
 			setupApprovedBy(LEAD);
 			const p = join(tmpDir, "no-founder.env");
-			writeFileSync(p, "FLYWHEEL_CODEX_HARD_GATE=0\n");
+			writeFileSync(p, "SOME_OTHER=1\n");
 			expect(runWithDotenv(p).approved).toBe(true);
 		});
 
-		it("kill-switch FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 (live .env) → byte-compat pass for a lead write", () => {
+		it("retired FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 in live .env cannot authorize a Lead write", () => {
 			setupApprovedBy(LEAD);
 			const p = founderEnv("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0\n");
-			expect(runWithDotenv(p).approved).toBe(true);
+			expect(runWithDotenv(p)).toMatchObject({
+				approved: false,
+				reason: "response_not_founder_attributed",
+				responseFrom: LEAD,
+			});
 		});
 
 		it("🔴 spoof guard (Codex code R1 HIGH): reserved attributions cannot be caller-supplied via respond --lead", async () => {
@@ -521,29 +605,27 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			db.close();
 		});
 
-		it("QA-room bypass: a PROCESS-env =0 wins over a readable .env (slots share the production .env)", async () => {
-			const { resolveFounderAttributionGateOn } = await import(
-				"../founder-attribution.js"
-			);
-			const envPath = founderEnv(); // readable .env, key absent → would be ON
-			expect(
-				resolveFounderAttributionGateOn({
-					argsEnv: undefined,
-					processEnv: {
+		it.each([
+			["bridge", true, "approved"],
+			[LEAD, false, "response_not_founder_attributed"],
+		] as const)(
+			"retired process-env =0 has no effect for writer %s",
+			(from, approved, reason) => {
+				setupApprovedBy(from);
+				const result = verifyApproval({
+					execId: EXEC,
+					prHead: HEAD,
+					dbPath: commDbPath,
+					stateDbPath,
+					env: {
 						FLYWHEEL_FOUNDER_ATTRIBUTION_GATE: "0",
 					} as NodeJS.ProcessEnv,
-					dotenvPath: envPath,
-				}),
-			).toBe(false);
-			// and without the process key, the same .env resolves ON
-			expect(
-				resolveFounderAttributionGateOn({
-					argsEnv: undefined,
-					processEnv: {} as NodeJS.ProcessEnv,
-					dotenvPath: envPath,
-				}),
-			).toBe(true);
-		});
+					codexDotenvPath: founderEnv(),
+					ciProbe: () => ({ green: true, reason: "ci_green" }),
+				});
+				expect(result).toMatchObject({ approved, reason });
+			},
+		);
 	});
 
 	// ── Input validation ──
@@ -750,9 +832,9 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.questionId).toBe(newQ); // verdict bound to the current request
 	});
 
-	// ── FLY-827: Codex code-review hard gate (merge chokepoint) ──
+	// ── FLY-827: permanent Codex code-review predicate ──
 
-	describe("FLY-827 codex hard gate", () => {
+	describe("FLY-827 Codex review predicate", () => {
 		/** Founder side fully approved (bound + answered + status + head). */
 		function founderApproved(): void {
 			const qid = createGateQuestion();
@@ -762,6 +844,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				status: "approved_to_ship",
 				pr_head_sha: HEAD,
 				review_question_id: qid,
+				codexEvidence: "missing",
 			});
 		}
 
@@ -817,20 +900,21 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				pr_head_sha: HEAD,
 				review_question_id: qid,
 				codex_skip: 1,
+				codexEvidence: "missing",
 			});
 			expect(runGateOn().approved).toBe(true);
 		});
 
-		it("byte-compat: gate OFF (env FLYWHEEL_CODEX_HARD_GATE=0) → approved without a codex record", () => {
+		it("FLY-1981: args env =0 cannot bypass a missing exact-head Codex review", () => {
 			founderApproved();
 			const r = runGateOn({
 				env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 			});
-			expect(r.approved).toBe(true);
-			expect(r.reason).toBe("approved");
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
 		});
 
-		it("R3-HIGH-1 OFF live: inherited env has no key + .env has =0 → gate off → approved", () => {
+		it("FLY-1981: live .env =0 cannot bypass a missing exact-head Codex review", () => {
 			founderApproved();
 			const envPath = join(tmpDir, "off.env");
 			writeFileSync(envPath, "FLYWHEEL_CODEX_HARD_GATE=0\n");
@@ -838,33 +922,32 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				env: {} as NodeJS.ProcessEnv,
 				dotenvPath: envPath,
 			});
-			expect(r.approved).toBe(true);
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
 		});
 
-		it("R3-HIGH-1 re-arm live: stale inherited =0 + readable .env with key ABSENT → gate ON (NOT bypassed by stale env)", () => {
-			// The re-arm case: a runner spawned with FLYWHEEL_CODEX_HARD_GATE=0 in its
-			// inherited process.env, then the operator toggles the gate back ON (which
-			// DELETES the .env line). A readable .env with the key ABSENT must resolve
-			// to default-on — never fall back to the stale inherited 0.
-			const envPath = join(tmpDir, "rearm.env");
-			writeFileSync(envPath, "SOME_OTHER=1\n"); // key absent, file readable
-			expect(
-				resolveCodexHardGateOn({
-					argsEnv: undefined,
-					processEnv: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
-					dotenvPath: envPath,
-				}),
-			).toBe(true);
-		});
-
-		it("legacy: .env unreadable + inherited =0 → gate off (fallback)", () => {
-			expect(
-				resolveCodexHardGateOn({
-					argsEnv: undefined,
-					processEnv: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
-					dotenvPath: join(tmpDir, "does-not-exist.env"),
-				}),
-			).toBe(false);
+		it("FLY-1981: inherited process env =0 cannot bypass a missing exact-head Codex review", () => {
+			founderApproved();
+			const previous = process.env.FLYWHEEL_CODEX_HARD_GATE;
+			process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+			try {
+				const r = verifyApproval({
+					execId: EXEC,
+					prHead: HEAD,
+					dbPath: commDbPath,
+					stateDbPath,
+					codexDotenvPath: join(tmpDir, "does-not-exist.env"),
+					ciProbe: () => ({ green: true, reason: "ci_green" }),
+				});
+				expect(r.approved).toBe(false);
+				expect(r.reason).toBe("codex_review_not_approved");
+			} finally {
+				if (previous === undefined) {
+					delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+				} else {
+					process.env.FLYWHEEL_CODEX_HARD_GATE = previous;
+				}
+			}
 		});
 	});
 
@@ -883,6 +966,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				pr_head_sha: HEAD,
 				review_question_id: qid,
 				adapter_type: adapterType,
+				codexEvidence: "missing",
 			});
 		}
 

@@ -154,11 +154,6 @@ import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-
 import { makeGateAuthorityView } from "./approval-signal/gate-authority-view.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import type { GateResponseDb } from "./approval-signal/write-gate-response.js";
-import { loadQaConfigByProject } from "./auto-qa-config-source.js";
-import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
-import { AutoQaEffects } from "./auto-qa-effects.js";
-import { founderApprovalHoldGuard, reviewHoldReason } from "./auto-qa-held.js";
-import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { BridgeEventLoopGuard } from "./BridgeEventLoopGuard.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { makeShipRemoteBranchCleanup } from "./branch-cleanup.js";
@@ -186,6 +181,9 @@ import {
 import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
 import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
+import { CodexReviewEffects } from "./codex-review-effects.js";
+import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
+import { CodexReviewIngest } from "./codex-review-ingest.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
@@ -267,8 +265,9 @@ import {
 	type FlagStoreRuntime,
 	initializeFlagStore,
 	storeFlagRetirementScanEnabled,
+	storeLoopProfilerEnabled,
+	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
-	storeWorkflowResumeEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 } from "./flag-store-runtime.js";
@@ -303,7 +302,6 @@ import {
 	recordFounderDecisionAck,
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
-import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
 // FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import {
@@ -427,10 +425,6 @@ import { ManagementProjectSource } from "./management-project-source.js";
 import { ManagementSectionRegistry } from "./management-section-registry.js";
 import { createManagementSsotProviders } from "./management-ssot-providers.js";
 import { ManagementWriterRegistry } from "./management-writer.js";
-import {
-	handleManualQaApply,
-	handleManualQaStage,
-} from "./manual-qa-routes.js";
 import { receiptBackedMaterializedHeadAuthority } from "./materialized-head-authority.js";
 import { reapMcpOrphans } from "./mcp-descendant-reaper.js";
 import { createMemoryRouter } from "./memory-route.js";
@@ -444,6 +438,7 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
+import { reconcileDefaultDagCategoryBindings } from "./pipeline-config-source.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
@@ -483,12 +478,15 @@ import {
 	runResidueAwareBootSweep,
 } from "./residue-harvest.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import {
 	createReviewAlertEmitter,
 	toReviewFindingRulingSnapshot,
 } from "./review-governance-effects.js";
+import { founderApprovalHoldGuard, reviewHoldReason } from "./review-hold.js";
 import { ReviewRequestCoordinator } from "./review-request-coordinator.js";
 import { createReviewRulingHandler } from "./review-ruling-route.js";
+import { ReviewThreadEffect } from "./review-thread-effect.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { makeChannelArchiveDefaultProvider } from "./roundtable/channel-archive-default.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
@@ -526,11 +524,8 @@ import {
 	isCaptureError,
 } from "./session-capture.js";
 import { createShipApprovalHandler } from "./ship-approval-route.js";
-import {
-	defaultHasGateResponse,
-	defaultIsAncestor,
-} from "./ship-gate-rebind.js";
 import { ShipRelevantDiffService } from "./ship-relevant-diff.js";
+import { forceShippedHusks } from "./shipped-husk-escalation.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -955,15 +950,6 @@ function safeCompare(a: string, b: string): boolean {
 	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-/** FLY-203: parse FLYWHEEL_REPORTS_TTL_DAYS (days) → ms. Invalid/absent →
- * default 7 days; "0" disables age-based expiry. */
-function resolveReportsTtlMs(raw: string | undefined): number {
-	if (raw !== undefined && /^\d+$/.test(raw.trim())) {
-		return Number(raw.trim()) * 24 * 60 * 60 * 1000;
-	}
-	return DEFAULT_RETENTION_MAX_AGE_MS;
-}
-
 /**
  * FLY-1018 M4: the scoped gemini-agent token's reachable set — server-side
  * enforcement of the client-side whitelist (method + exact path). Everything
@@ -1232,8 +1218,6 @@ export interface BridgeAppOptions {
 	vercelToken?: string;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
-	/** FLY-1251: manual-QA confirm tokens (independent of Fleet console uptime). */
-	manualQaTokens?: ConfirmTokenStore;
 	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
 	workKindCutoverTokens?: ConfirmTokenStore;
 	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
@@ -1271,14 +1255,11 @@ export interface BridgeAppOptions {
 	 * or clear), which is byte-compatible with pre-FLY-623 behavior.
 	 */
 	reconnectHolder?: { current: ReconnectController | null };
-	/**
-	 * FLY-579: late-bound holder for the auto-QA coordinator. The /events route
-	 * mounts inside createBridgeApp (pre-listen), but the coordinator is built
-	 * later in startBridge (it needs the LeadAlertNotifier) — so the event router
-	 * reads `.current` at request time. Absent / `.current` undefined ⇒ auto-QA
-	 * fully dormant (no held records, byte-compatible).
-	 */
-	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined };
+	codexReviewIngest?: { current: CodexReviewIngest | undefined };
+	reviewAuthorizationAlerts?: {
+		current: ReviewAuthorizationAlerts | undefined;
+	};
 	/**
 	 * FLY-1188 §7.1: late-bound holder for the codex-author review-request
 	 * coordinator. The /review-requests route mounts inside createBridgeApp
@@ -1323,8 +1304,8 @@ export interface BridgeAppOptions {
 	 * FLY-907: late-bound holder for the unified issue-display refresher. The
 	 * /events router, the actions router, the stale-blocker guard, and the
 	 * founder-consent gate-response hook all mount inside createBridgeApp
-	 * (pre-listen), but the refresher is built post-listen in startBridge (it
-	 * needs AutoQaEffects) — so every surface reads `.current` at fire time.
+	 * (pre-listen), but the refresher is built post-listen in startBridge — so
+	 * every surface reads `.current` at fire time.
 	 * Absent / `.current` undefined ⇒ triggers dormant and the stage_changed
 	 * path falls back to legacy stamp+pin when the refresher is unavailable.
 	 */
@@ -2006,7 +1987,9 @@ export function createBridgeApp(
 			removeCleanWorktree,
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 			opts?.reconnectHolder,
-			opts?.autoQaCoordinator,
+			opts?.codexReviewHold,
+			opts?.codexReviewIngest,
+			opts?.reviewAuthorizationAlerts,
 			opts?.turnBeltReconciler,
 			opts?.accountRotationPost,
 			opts?.issueDisplayRefresh, // FLY-907
@@ -2093,59 +2076,6 @@ export function createBridgeApp(
 			opts?.reviewCoordinator ?? { current: undefined },
 		),
 	);
-
-	// FLY-1251: manual QA is a server-owned enrollment, never a client-minted
-	// verdict or executor identity. The stage endpoint issues a single-use token
-	// bound to the exact {executionId, prHeadSha}; apply carries that token in a
-	// header so its JSON body remains the strict two-field schema. The token store
-	// is independent of Fleet console availability in production.
-	const manualQaTokens = opts?.manualQaTokens ?? opts?.fleetConsole?.tokens;
-	if (manualQaTokens) {
-		const requestHeaders = (
-			req: express.Request,
-		): Record<string, string | undefined> => ({
-			origin:
-				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
-			referer:
-				typeof req.headers.referer === "string"
-					? req.headers.referer
-					: undefined,
-		});
-		app.post("/api/qa/manual-spawn/stage", (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const result = handleManualQaStage(manualQaTokens, req.body);
-			res.status(result.code).json(result.body);
-		});
-		app.post("/api/qa/manual-spawn", async (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(requestHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const token = req.headers["x-flywheel-confirm-token"];
-			const result = await handleManualQaApply(
-				{
-					tokens: manualQaTokens,
-					coordinator: opts?.autoQaCoordinator?.current,
-				},
-				req.body,
-				typeof token === "string" ? token : undefined,
-			);
-			res.status(result.code).json(result.body);
-		});
-	}
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
@@ -4128,7 +4058,6 @@ export function createBridgeApp(
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
 			},
-			flagStore ? () => storeWorkflowResumeEnabled(flagStore) : undefined,
 			flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
 		);
 		if (config.apiToken) {
@@ -4190,10 +4119,7 @@ export function createBridgeApp(
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
 		registry: new ReportRegistry(reportsBaseDir, {
 			// FLY-203 follow-up (founder): report links expire after 7 days.
-			// FLYWHEEL_REPORTS_TTL_DAYS overrides (positive integer; 0 disables).
-			retentionMaxAgeMs: resolveReportsTtlMs(
-				process.env.FLYWHEEL_REPORTS_TTL_DAYS,
-			),
+			retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS,
 		}),
 	});
 	app.use(
@@ -4452,6 +4378,7 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	const flagStore = initializeFlagStore(store, process.env);
 	const eventLoopAttribution = new EventLoopAttribution({
 		diagnosticsDir: resolve(
 			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
@@ -4462,10 +4389,9 @@ export async function startBridge(
 					"diagnostics",
 				),
 		),
-		profilerEnabled: process.env.FLYWHEEL_LOOP_PROFILER !== "0",
+		profilerEnabled: () => storeLoopProfilerEnabled(flagStore),
 	});
 	await eventLoopAttribution.start();
-	const flagStore = initializeFlagStore(store, process.env);
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
 	// SQLite work lives behind the queue; transition hooks remain enqueue-only.
@@ -4494,6 +4420,13 @@ export async function startBridge(
 	const menuBindings = reconcileMenuCategoryBindings(store, projects);
 	console.warn(
 		`[workflow-menu] binding reconcile: bound=${menuBindings.bound} existing=${menuBindings.existing} errors=${JSON.stringify(menuBindings.errors)}`,
+	);
+	const defaultDagBindings = reconcileDefaultDagCategoryBindings(
+		store,
+		projects,
+	);
+	console.warn(
+		`[workflow-menu] FLY-1981 DAG-default reconcile: bound=${defaultDagBindings.bound} existing=${defaultDagBindings.existing} disabled=${defaultDagBindings.disabled} menuManaged=${defaultDagBindings.menuManaged} errors=${JSON.stringify(defaultDagBindings.errors)}`,
 	);
 	const strandedGeneralized = store.holdStrandedGeneralizedExecutions();
 	if (strandedGeneralized.length > 0) {
@@ -4630,7 +4563,7 @@ export async function startBridge(
 	let retryDispatcher = opts?.retryDispatcher;
 	// FLY-907: unified issue-display refresh. The holder is threaded into every
 	// trigger surface NOW (they read `.current` at fire time); the refresher
-	// itself is built post-listen (it needs AutoQaEffects).
+	// itself is built post-listen.
 	const issueDisplayRefreshHolder: IssueDisplayRefreshHolder = {};
 	const pendingIssueDisplayRefreshes = new Set<string>();
 	const enqueueIssueDisplayRefresh = (issueId: string): void => {
@@ -5404,14 +5337,20 @@ export async function startBridge(
 	// so a single instance serves both roles.
 	// Track the internal dispatcher separately for cleanup — if a caller injects
 	// retryDispatcher but not startDispatcher, they are different instances.
-	// FLY-579: late-bound auto-QA coordinator holder — read by the event router
-	// (createBridgeApp) AND the in-process DirectEventSink (via
-	// setupRunInfrastructure below). The coordinator is built post-listen (it
-	// needs the LeadAlertNotifier), so .current stays undefined until then =
-	// auto-QA dormant (byte-compatible).
-	const autoQaCoordinatorHolder: { current: AutoQaCoordinator | undefined } = {
-		current: undefined,
+	const codexReviewHoldHolder: {
+		current: CodexReviewHoldCoordinator | undefined;
+	} = { current: undefined };
+	const codexReviewIngestHolder: {
+		current: CodexReviewIngest | undefined;
+	} = {
+		current: new CodexReviewIngest({
+			store,
+			logger: console,
+		}),
 	};
+	const reviewAuthorizationAlertsHolder: {
+		current: ReviewAuthorizationAlerts | undefined;
+	} = { current: undefined };
 
 	// FLY-1188 §7.1: late-bound review-request coordinator holder — read by the
 	// /review-requests route (createBridgeApp). Built post-listen; until then
@@ -5534,6 +5473,11 @@ export async function startBridge(
 			closeoutOpts,
 		);
 	const lifecycleInfra: LifecycleShipInfra = {
+		forceShippedHusks: (input, stateStore, deps = {}) =>
+			forceShippedHusks(input, stateStore, {
+				...deps,
+				forceEnabled: () => storeShippedHuskForceEnabled(flagStore),
+			}),
 		// Codex R2#8: ship pre-arbitration — an active park tombstone or a
 		// canceled disposition (fresh Linear when available, persisted
 		// observation as the durable floor) refuses the ENTIRE ship DAG
@@ -5942,9 +5886,8 @@ export async function startBridge(
 							store.closeLaunchAndReleaseDoa(executionId);
 						},
 					},
-					// FLY-579: the in-process completed path drives auto-QA + holds
-					// the founder via this same holder.
-					autoQaCoordinator: autoQaCoordinatorHolder,
+					codexReviewHold: codexReviewHoldHolder,
+					reviewAuthorizationAlerts: reviewAuthorizationAlertsHolder,
 					// FLY-793: the in-process completion path drives DAG workflow
 					// Design→Implement→QA phase handoffs via this same holder.
 					turnBeltReconciler: turnBeltReconcilerHolder,
@@ -6291,7 +6234,6 @@ export async function startBridge(
 				startDispatcher,
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
-				workflowResumeEnabled: () => storeWorkflowResumeEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
 				env: process.env,
 				resolveLeadId: (executionId) => {
@@ -6623,14 +6565,14 @@ export async function startBridge(
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
 			fleetConsole,
-			manualQaTokens: fleetConsole?.tokens ?? new ConfirmTokenStore(),
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
 			livenessHealthProvider,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
 			reconnectHolder,
-			// FLY-579: event router reads this to drive the auto-QA pipeline.
-			autoQaCoordinator: autoQaCoordinatorHolder,
+			codexReviewHold: codexReviewHoldHolder,
+			codexReviewIngest: codexReviewIngestHolder,
+			reviewAuthorizationAlerts: reviewAuthorizationAlertsHolder,
 			// FLY-1188 §7.1: /review-requests route reads this holder.
 			reviewCoordinator: reviewCoordinatorHolder,
 			// FLY-793: event router reads this to drive DAG workflow handoffs.
@@ -6643,18 +6585,9 @@ export async function startBridge(
 		},
 	);
 	const reconcileDesignReviewManifestOutbox = (): void => {
-		if (process.env.FLYWHEEL_INSTRUCTION_PATH_CHECK === "0") return;
 		reconcileDesignReviewInstructions(store);
 	};
 	reconcileDesignReviewManifestOutbox();
-
-	// FLY-725 (Codex R2 #1): capture the milestone-report baseline cutoff BEFORE
-	// the Bridge starts accepting events. On the first patrol after this project
-	// first enables the feature, terminal sessions with `last_activity_at <= cutoff`
-	// are treated as pre-boot history (marker-seeded, not pinged); a Runner that
-	// completes AFTER we start listening (but before the first patrol) is > cutoff
-	// and still pings, so the startup window cannot swallow a real milestone.
-	const founderMilestoneBaselineCutoffMs = Date.now();
 
 	const server = app.listen(config.port, config.host);
 
@@ -6827,16 +6760,22 @@ export async function startBridge(
 			materializedHeadAuthority,
 			commDbPathForProject,
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
-			alertShipAttemptFailed: (session, reason) => {
-				void autoQaCoordinatorHolder.current?.alertShipAttemptFailed(
+			alertMergeWithoutApproval: (session, reason) => {
+				void reviewAuthorizationAlertsHolder.current?.alertMergeWithoutApproval(
 					session,
 					reason,
 				);
 			},
+			alertShipAttemptFailed: (session, reason) => {
+				const alerts = reviewAuthorizationAlertsHolder.current;
+				return alerts
+					? alerts.alertShipAttemptFailed(session, reason)
+					: Promise.reject(new Error("ship-attempt alert sink unavailable"));
+			},
 			alertCompleteMarkerHeld: (args) => {
-				const coordinator = autoQaCoordinatorHolder.current;
-				return coordinator
-					? coordinator.alertCompleteMarkerHeld(args)
+				const alerts = reviewAuthorizationAlertsHolder.current;
+				return alerts
+					? alerts.alertCompleteMarkerHeld(args)
 					: Promise.reject(new Error("complete-marker alert sink unavailable"));
 			},
 		},
@@ -7782,10 +7721,6 @@ export async function startBridge(
 		}),
 	);
 
-	// FLY-725: per-project founder milestone-report config, read from each
-	// project's CANONICAL root (never a runner's PR worktree).
-	const founderMilestoneReportByProject =
-		await loadFounderMilestoneReportConfigByProject(projects);
 	// FLY-945 Fix D: external-merge convergence sweeper (backstop — Fix F
 	// simultaneously retires executor-merge; this is NOT permission for it).
 	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
@@ -8789,17 +8724,6 @@ export async function startBridge(
 		onFounderDecisionConvergenceTick: async () => {
 			await founderDecisionConvergenceTick();
 		},
-		// FLY-1279 B2: the holder is populated after GatePoller construction;
-		// periodic recovery and boot reconcile share the coordinator's single-flight.
-		onQaReconcileTick: () =>
-			autoQaCoordinatorHolder.current?.sweepOrphanedQaRecords(),
-		qaReconcileEveryNTicks: (() => {
-			const n = Number.parseInt(
-				process.env.FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS ?? "",
-				10,
-			);
-			return Number.isFinite(n) && n > 0 ? n : undefined;
-		})(),
 		// FLY-1282 Part D: disposition-receipt delivery has its own stage and
 		// single-flight. Receipt delivery is permanently enabled.
 		onDispositionReceiptTick: createDispositionReceiptPass({
@@ -8858,9 +8782,6 @@ export async function startBridge(
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
-		// FLY-725: founder milestone-report patrol (Bridge-primary @founder push).
-		founderMilestoneReportByProject,
-		founderMilestoneBaselineCutoffMs,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
 		onHealthTick: codexHealthEnabled
@@ -9285,11 +9206,10 @@ export async function startBridge(
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
 			join(homedir(), ".flywheel", "comm");
-		const reviewThreadEffects = new AutoQaEffects({
+		const reviewThreadEffects = new ReviewThreadEffect({
 			store,
 			projects,
 			config,
-			chatThreadCreator,
 		});
 		const emitReviewAlert = createReviewAlertEmitter({
 			store,
@@ -9331,28 +9251,38 @@ export async function startBridge(
 		}
 	}
 
-	// FLY-579: build the auto-QA coordinator now that the LeadAlertNotifier exists
-	// (the effects need it for Lead-only pipeline-error alerts). Per-project qa
-	// config is loaded from the CANONICAL project roots (never a PR worktree). The
-	// holder is read lazily by the event router, so filling it here (post-listen)
-	// is correct; the durable `auto_qa_record` table — NOT the reconcile timing —
-	// guarantees GatePoller/Heartbeat suppression survives a restart, so the
-	// startup reconcile (re-spawn / re-notify / mark-stuck) safely runs after the
-	// timers. No startDispatcher (can't spawn QA) ⇒ coordinator stays dormant.
-	const autoQaEffects = new AutoQaEffects({
-		store,
+	const codexReviewEffects = new CodexReviewEffects({
 		projects,
-		config,
-		// FLY-927 (W1): route ticket-class alerts through the shared funnel.
 		leadAlertNotifier: {
-			alert: (p) =>
-				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(p),
+			alert: (payload) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
 		},
-		chatThreadCreator,
-		transitionOpts,
-		globalBotToken: config.discordBotToken,
-		mergedGateGuard,
 	});
+	const reviewAuthorizationAlerts = new ReviewAuthorizationAlerts({
+		projects,
+		leadAlertNotifier: {
+			alert: (payload) =>
+				(routedAlertSinkHolder.current ?? leadAlertNotifier).alert(payload),
+		},
+		logger: console,
+	});
+	reviewAuthorizationAlertsHolder.current = reviewAuthorizationAlerts;
+	codexReviewHoldHolder.current = new CodexReviewHoldCoordinator({
+		store,
+		queueCodexInstruction: ({ session }) =>
+			codexReviewEffects.queueCodexInstruction({ session }),
+		alertMissingHead: ({ session }) =>
+			codexReviewEffects.alertCodexGateBlocked({ session }),
+		logger: console,
+	});
+	// Neutral review recovery is independent of dispatcher availability.
+	void codexReviewHoldHolder.current
+		.reconcileCodexHolds()
+		.catch((err) =>
+			console.warn(
+				`[codex-review-hold] reconcileCodexHolds failed: ${(err as Error).message}`,
+			),
+		);
 
 	// FLY-172/FLY-1505: drain complete-failed markers only AFTER the durable
 	// LeadAlertNotifier-backed effects exist. Settling a ship-attempt marker can
@@ -9368,14 +9298,20 @@ export async function startBridge(
 			getTmuxTarget: getTmuxTargetFromCommDb,
 			isTmuxWindowAlive,
 			onTerminalStatusPersisted: onMarkerTerminalStatusPersisted,
+			alertMergeWithoutApproval: (session, reason) => {
+				void reviewAuthorizationAlerts.alertMergeWithoutApproval(
+					session,
+					reason,
+				);
+			},
 			alertShipAttemptFailed: (session, reason) => {
-				return autoQaEffects.alertShipAttemptFailed({ session, reason });
+				return reviewAuthorizationAlerts.alertShipAttemptFailed(
+					session,
+					reason,
+				);
 			},
 			alertCompleteMarkerHeld: (args) => {
-				const coordinator = autoQaCoordinatorHolder.current;
-				return coordinator
-					? coordinator.alertCompleteMarkerHeld(args)
-					: Promise.reject(new Error("complete-marker alert sink unavailable"));
+				return reviewAuthorizationAlerts.alertCompleteMarkerHeld(args);
 			},
 		});
 	} catch (err) {
@@ -9387,72 +9323,6 @@ export async function startBridge(
 	// runner. Start it only after durable failed-attempt markers have restored
 	// their suppression state (or the drain has failed loudly and retained them).
 	gatePoller.start();
-
-	if (startDispatcher) {
-		try {
-			const qaConfigByProject = await loadQaConfigByProject(projects);
-			// FLY-752: auto-QA is opt-OUT now — count projects NOT opted out
-			// (absent config / no explicit `auto: false` / not malformed).
-			const optedOutCount = projects.filter((p) => {
-				const cfg = qaConfigByProject.get(p.projectName);
-				return (
-					cfg?.kind === "malformed" ||
-					(cfg?.kind === "config" && cfg.auto === false)
-				);
-			}).length;
-			const enabledCount = projects.length - optedOutCount;
-			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
-				store,
-				startDispatcher,
-				resolveQaPolicy: (session) =>
-					resolveAutoQaPolicy({
-						qaConfig: qaConfigByProject.get(session.project_name),
-						issueLabels: parseJsonStringArray(session.issue_labels),
-					}),
-				effects: autoQaEffects,
-				ensureShipRelevantDiff,
-				// FLY-827: the codex hard-gate kill-switch is read live from
-				// process.env (the direct feature-flag toggle mutates it in place).
-				env: process.env,
-				// FLY-945 Fix B: environment probes for the ship-gate head rebind
-				// (gate-unanswered check via CommDB + real-git ancestry proof).
-				shipGateRebind: {
-					hasGateResponse: defaultHasGateResponse,
-					isAncestor: defaultIsAncestor,
-				},
-				logger: {
-					log: (m) => console.log(m),
-					warn: (m) => console.warn(m),
-				},
-			});
-			void autoQaCoordinatorHolder.current
-				.reconcileOnStartup()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
-					),
-				);
-			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (re-queue
-			// instruction) for awaiting_review sessions still lacking a Codex approval
-			// after this restart / default-ON flip. The founder HOLD is already
-			// guaranteed by the durable table + isReviewHeld, so running this after the
-			// timers start is safe (side-effects only).
-			void autoQaCoordinatorHolder.current
-				.reconcileCodexHolds()
-				.catch((err) =>
-					console.warn(
-						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
-					),
-				);
-			console.log(
-				`[auto-qa] coordinator wired (opt-out default: ${enabledCount}/${projects.length} projects auto-QA ON)`,
-			);
-		} catch (err) {
-			console.warn(
-				`[auto-qa] coordinator wiring failed: ${(err as Error).message} — auto-QA disabled this boot`,
-			);
-		}
-	}
 
 	try {
 		const activateWakeHolder = (

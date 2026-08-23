@@ -24,10 +24,10 @@ import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { deriveCanonicalFounderId } from "../approval-signal/canonical-founder-id.js";
 import { makeGateAuthorityView } from "../approval-signal/gate-authority-view.js";
-import { reviewHoldReason } from "../auto-qa-held.js";
 import type { MaterializedHeadAuthority } from "../materialized-head-authority.js";
 import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { makeFinalizeWorkflowPhaseRoles } from "../post-ship-finalization.js";
+import { reviewHoldReason } from "../review-hold.js";
 import { sendRunnerWake } from "../runner-wake.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {

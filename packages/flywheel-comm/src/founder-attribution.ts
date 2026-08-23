@@ -7,9 +7,9 @@
  *   - "bridge"                 — dashboard `/api/actions/approve`
  *                                (approveExecution; the endpoint itself is
  *                                governed by the FLY-175 contract/enforce);
- *   - "bridge-founder-consent" — the FLY-175 enforce-path gate-response
- *                                router after a PASSING founder-consent
- *                                evaluation (Fix E writes this attribution).
+ *   - "bridge-founder-consent" — historical FLY-175 enforce-path rows only;
+ *                                FLY-1981 forbids fresh writes while retaining
+ *                                read-side trust for existing approvals.
  *
  * Everything else — a Lead id (respond.ts pass-through / audit_only), the
  * FLY-605 non-gated relay agent ("founder-bridge-auto", which must never
@@ -30,7 +30,9 @@ export const TRUSTED_BRIDGE_APPROVAL_WRITERS = new Set([
 ]);
 
 const FOUNDER_ID_KEY = "DISCORD_OWNER_USER_ID";
-const ATTRIBUTION_GATE_KEY = "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE";
+const LEGACY_FOUNDER_ID_KEY = "FLYWHEEL_FOUNDER_USER_ID";
+const FOUNDER_ID_MISMATCH_ERROR =
+	"Founder identity mismatch: DISCORD_OWNER_USER_ID does not match the configured founder identity; remove the founder override or set it to the same Discord user ID";
 
 /** True when `from` is a founder-side approval writer. */
 export function isTrustedApprovalAttribution(
@@ -57,9 +59,9 @@ const DISCORD_SNOWFLAKE_RE = /^\d{17,20}$/;
  * like "flywheel-eng-lead", never bare 17-20-digit numbers, so this rejects
  * founder-id spoofing without having to resolve the id at every call site).
  * Every caller-controlled approve_to_ship write path must refuse these; only
- * server-internal writers (approveExecution → "bridge", the FLY-799 gate
- * writer → the verified founder id, the enforce-path router →
- * "bridge-founder-consent") may use them.
+ * server-internal writers (approveExecution → "bridge" and the FLY-799 gate
+ * writer → the verified founder id) may use active names. The historical
+ * "bridge-founder-consent" name remains reserved but cannot be minted anew.
  */
 export function isReservedApprovalAttribution(from: string): boolean {
 	return (
@@ -86,59 +88,61 @@ function readEnvValueFromContent(
 }
 
 /**
+ * Resolve one source's founder identity using the same policy as Teamlead's
+ * founder-consent config: canonical first, legacy fallback, mismatch rejected.
+ * Values are deliberately omitted from the error because they are identities.
+ */
+function resolveFounderIdFromSource(
+	canonicalRaw: string | undefined,
+	legacyRaw: string | undefined,
+): string | undefined {
+	const canonical = canonicalRaw?.trim() || undefined;
+	const legacy = legacyRaw?.trim() || undefined;
+	if (canonical && legacy && canonical !== legacy) {
+		throw new Error(FOUNDER_ID_MISMATCH_ERROR);
+	}
+	return canonical ?? legacy;
+}
+
+/**
  * Resolve the canonical founder Discord id, LIVE from `~/.flywheel/.env`
  * (FLY-827 pattern: a runner CLI's inherited process.env is a stale spawn
- * snapshot). Precedence: explicit test env (key present) → `.env` →
- * inherited process env. Returns undefined when unconfigured — callers
- * treat that as feature-off (documented honest boundary: a project without
- * a Discord founder cannot be attribution-gated).
+ * snapshot). Precedence: explicit test env (either identity key present) →
+ * `.env` → inherited process env. Canonical and legacy values are always
+ * evaluated together within one source; values from different precedence
+ * layers are never combined. Returns undefined when unconfigured — callers
+ * retain the documented honest boundary for projects without a Discord founder.
  */
 export function resolveFounderId(args: {
 	argsEnv?: NodeJS.ProcessEnv;
 	processEnv: NodeJS.ProcessEnv;
 	dotenvPath?: string;
 }): string | undefined {
-	if (args.argsEnv && FOUNDER_ID_KEY in args.argsEnv) {
-		return args.argsEnv[FOUNDER_ID_KEY]?.trim() || undefined;
+	if (
+		args.argsEnv &&
+		(FOUNDER_ID_KEY in args.argsEnv || LEGACY_FOUNDER_ID_KEY in args.argsEnv)
+	) {
+		return resolveFounderIdFromSource(
+			args.argsEnv[FOUNDER_ID_KEY],
+			args.argsEnv[LEGACY_FOUNDER_ID_KEY],
+		);
 	}
 	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
+	let dotenvContent: string | undefined;
 	try {
-		const content = readFileSync(path, "utf-8");
-		const v = readEnvValueFromContent(content, FOUNDER_ID_KEY)?.trim();
-		if (v) return v;
+		dotenvContent = readFileSync(path, "utf-8");
 	} catch {
-		/* fall through */
+		/* missing/unreadable dotenv falls through */
 	}
-	return args.processEnv[FOUNDER_ID_KEY]?.trim() || undefined;
-}
-
-/**
- * FLY-945 Fix E kill-switch. Precedence:
- *   1. explicit test env (key present in argsEnv);
- *   2. PROCESS env (key present) — this is how QA rooms bypass: slots share
- *      the production `~/.flywheel/.env` (which resolves a real founder id),
- *      so an env-file-first read could never be slot-overridden. Production
- *      never spawns with this key set, so the codex-gate stale-snapshot
- *      re-arm hazard does not apply here;
- *   3. `~/.flywheel/.env` (live; key-absent = ON);
- *   4. unreadable `.env` → ON (default).
- */
-export function resolveFounderAttributionGateOn(args: {
-	argsEnv?: NodeJS.ProcessEnv;
-	processEnv: NodeJS.ProcessEnv;
-	dotenvPath?: string;
-}): boolean {
-	if (args.argsEnv && ATTRIBUTION_GATE_KEY in args.argsEnv) {
-		return args.argsEnv[ATTRIBUTION_GATE_KEY] !== "0";
+	if (dotenvContent !== undefined) {
+		const dotenvFounderId = resolveFounderIdFromSource(
+			readEnvValueFromContent(dotenvContent, FOUNDER_ID_KEY),
+			readEnvValueFromContent(dotenvContent, LEGACY_FOUNDER_ID_KEY),
+		);
+		if (dotenvFounderId) return dotenvFounderId;
 	}
-	if (ATTRIBUTION_GATE_KEY in args.processEnv) {
-		return args.processEnv[ATTRIBUTION_GATE_KEY] !== "0";
-	}
-	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
-	try {
-		const content = readFileSync(path, "utf-8");
-		return readEnvValueFromContent(content, ATTRIBUTION_GATE_KEY) !== "0";
-	} catch {
-		return true;
-	}
+	return resolveFounderIdFromSource(
+		args.processEnv[FOUNDER_ID_KEY],
+		args.processEnv[LEGACY_FOUNDER_ID_KEY],
+	);
 }

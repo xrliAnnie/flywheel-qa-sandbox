@@ -286,6 +286,42 @@ describe("ReportRegistry", () => {
 		expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
 	});
 
+	it.each(["0", "30"])(
+		"FLY-1981 keeps the Bridge report TTL at seven days when the retired env is %s",
+		(raw) => {
+			const previous = process.env.FLYWHEEL_REPORTS_TTL_DAYS;
+			process.env.FLYWHEEL_REPORTS_TTL_DAYS = raw;
+			try {
+				let clock = Date.parse("2026-06-04T00:00:00Z");
+				const reg = makeRegistry({ now: () => clock });
+				const old = reg.stagePublish("p", HTML, "old");
+				old.commit();
+				clock += 7 * 24 * 60 * 60 * 1000;
+				const current = reg.stagePublish("p", HTML, "current");
+				expect(current.deployFiles.map((file) => file.file)).not.toContain(
+					`r/${old.entry.token}/index.html`,
+				);
+				current.abort();
+
+				const pluginSource = readFileSync(
+					new URL("../bridge/plugin.ts", import.meta.url),
+					"utf8",
+				);
+				expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+				expect(pluginSource).toContain(
+					"retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS",
+				);
+				expect(pluginSource).not.toContain("FLYWHEEL_REPORTS_TTL_DAYS");
+			} finally {
+				if (previous === undefined) {
+					delete process.env.FLYWHEEL_REPORTS_TTL_DAYS;
+				} else {
+					process.env.FLYWHEEL_REPORTS_TTL_DAYS = previous;
+				}
+			}
+		},
+	);
+
 	it("entries older than the TTL are pruned at the next publish", () => {
 		let clock = Date.parse("2026-06-04T00:00:00Z");
 		const reg = makeRegistry({ now: () => clock });

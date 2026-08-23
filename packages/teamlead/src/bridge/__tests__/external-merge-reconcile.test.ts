@@ -14,6 +14,10 @@ import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	insertHistoricalAutoQaRecord,
+	setHistoricalQaRequiredSnapshot,
+} from "../../__tests__/helpers/historical-qa.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { type Session, StateStore } from "../../StateStore.js";
 import { buildWorkflowRunSnapshotV1 } from "../../workflow-run-snapshot.js";
@@ -77,7 +81,11 @@ const config = {
 // Pin "now" shortly after OLD_TS so TTL passes AND the 7-day window contains it.
 const NOW_MS = new Date("2026-07-02T00:00:00Z").getTime();
 
-function seedSession(store: StateStore, over: Partial<Session> = {}): void {
+function seedSession(
+	store: StateStore,
+	over: Partial<Session> = {},
+	qaRequired: 0 | 1 = 0,
+): void {
 	const id = (over.execution_id as string) ?? "exec-1";
 	store.upsertSession({
 		execution_id: id,
@@ -96,6 +104,11 @@ function seedSession(store: StateStore, over: Partial<Session> = {}): void {
 	// upsertSession — persist it the way production does.
 	store.patchSessionMetadata(id, {
 		pr_head_sha: (over.pr_head_sha as string) ?? HEAD,
+	});
+	setHistoricalQaRequiredSnapshot(store, {
+		executionId: id,
+		required: qaRequired,
+		reason: "external merge fixture",
 	});
 }
 
@@ -194,9 +207,9 @@ async function setup(opts?: {
 			},
 	);
 	const env = {
-		// Ship gates bypassed by default (eligible path); individual tests re-arm.
+		// Merge approval is bypassed by default; seedSession records the intended
+		// durable QA policy for each candidate.
 		FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-		FLYWHEEL_QA_DONE_GATE: "0",
 		FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
 		...(opts?.env ?? {}),
 	};
@@ -231,8 +244,6 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 	beforeEach(() => {
 		envBak = {
 			FLYWHEEL_MERGE_APPROVAL_GATE: process.env.FLYWHEEL_MERGE_APPROVAL_GATE,
-			FLYWHEEL_QA_DONE_GATE: process.env.FLYWHEEL_QA_DONE_GATE,
-			FLYWHEEL_CODEX_HARD_GATE: process.env.FLYWHEEL_CODEX_HARD_GATE,
 		};
 		tmpRoot = mkdtempSync(join(tmpdir(), "fly945-external-merge-"));
 		worktreePath = join(tmpRoot, "worktree");
@@ -313,11 +324,9 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		const s = await setup({
 			env: {
 				FLYWHEEL_MERGE_APPROVAL_GATE: "1",
-				FLYWHEEL_QA_DONE_GATE: "1",
-				FLYWHEEL_CODEX_HARD_GATE: "1",
 			},
 		});
-		seedSession(s.store);
+		seedSession(s.store, {}, 1);
 		const db = new CommDB(join(tmpRoot, "comm", "proj", "comm.db"));
 		const qid = db.insertQuestion("exec-1", "lead-1", "ship?", {
 			checkpoint: "approve_to_ship",
@@ -328,18 +337,13 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 			questionId: qid,
 			prHeadSha: HEAD,
 		});
-		s.store.setQaRequiredSnapshot({
-			executionId: "exec-1",
-			required: 1,
-			reason: "test",
-		});
-		s.store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(s.store, {
 			parentExecutionId: "exec-1",
 			targetPrHeadSha: HEAD,
 			issueId: "FLY-921",
 			projectName: "proj",
+			status: "passed",
 		});
-		s.store.setAutoQaStatus("exec-1", HEAD, "passed", {});
 		s.store.recordCodexReviewApproved({
 			executionId: "exec-1",
 			targetPrHeadSha: HEAD,
@@ -391,7 +395,7 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		// in tests); an awaiting_review row's entered_at is stamped to real-now
 		// by upsertSession, so it can't be aged in a unit test. Prod covers both.
 		const s = await setup({
-			env: { FLYWHEEL_MERGE_APPROVAL_GATE: "1", FLYWHEEL_QA_DONE_GATE: "0" },
+			env: { FLYWHEEL_MERGE_APPROVAL_GATE: "1" },
 		});
 		seedSession(s.store);
 		await s.pass();
@@ -814,7 +818,6 @@ describe("FLY-1314: external-merge TURN-belt reclaim", () => {
 			projects,
 			env: {
 				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-				FLYWHEEL_QA_DONE_GATE: "0",
 				...(args?.env ?? {}),
 			},
 			now: args?.now ?? (() => NOW_MS),
@@ -1006,7 +1009,44 @@ describe("FLY-945 Fix D: hasTrustedFounderApproval (real CommDB)", () => {
 		const qid = db.insertQuestion("exec-1", "lead-1", "ship?", {
 			checkpoint: "approve_to_ship",
 		});
-		db.insertResponse(qid, from, content);
+		if (from === "bridge-founder-consent") {
+			// Read compatibility is intentionally broader than write authority. Seed
+			// the pre-FLY-1981 historical row at the migration layer so this fixture
+			// cannot accidentally exercise a now-forbidden production write API.
+			const raw = (
+				db as unknown as {
+					db: {
+						prepare: (sql: string) => {
+							run: (...args: unknown[]) => unknown;
+						};
+					};
+				}
+			).db;
+			const responseId = `historical-response:${qid}`;
+			const deliveryId = `historical-delivery:${qid}`;
+			raw
+				.prepare(
+					"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+				)
+				.run(responseId, deliveryId, "historical-test-fixture");
+			raw
+				.prepare(
+					`INSERT INTO mailbox
+					 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+					  ref_id, created_at, expires_at, relay_state)
+					 VALUES (?, ?, 'bridge-founder-consent', 'exec-1', 'runner', 'response',
+					         ?, ?, '2026-08-22T00:00:00.000Z',
+					         '2026-08-25T00:00:00.000Z', 'terminal_disposed')`,
+				)
+				.run(responseId, deliveryId, content, qid);
+			raw
+				.prepare(
+					"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+				)
+				.run(qid);
+		} else {
+			db.insertResponse(qid, from, content);
+		}
 		db.close();
 		return {
 			execution_id: "exec-1",

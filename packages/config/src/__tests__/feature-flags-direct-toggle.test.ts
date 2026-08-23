@@ -6,8 +6,8 @@ import { resolveFlag } from "../feature-flags/resolve.js";
 // FLY-709 F1: every `direct`-toggleable flag must be genuinely live — a change to
 // process.env must be observed by the NEXT resolve without reconstructing
 // anything. This is the resolver-layer proof of the `call_time` read timing that
-// `directToggleProof` promises. (The owning-code proof — resolveAutoQaPolicy,
-// GatePoller, HeartbeatService reading process.env each call — lives with the P2
+// `directToggleProof` promises. (The owning-code proofs for each live reader
+// live with the P2
 // toggle handler in teamlead.)
 
 const DIRECT = FEATURE_FLAGS.filter((f) => f.toggleable === "direct");

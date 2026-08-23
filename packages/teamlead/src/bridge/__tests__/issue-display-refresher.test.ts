@@ -3,7 +3,7 @@
  *
  * Real in-memory StateStore; the Discord writers and CommDB probes are stubbed
  * at their seams (the writers' own network behavior is covered by the
- * ChatThreadCreator / AutoQaEffects suites). Every row of the plan's lifecycle
+ * ChatThreadCreator / review-effect suites). Every row of the plan's lifecycle
  * matrix asserts what each of the three faces was asked to render:
  *   design running / park+handoff / awaiting_review(park) / qa FAIL wake /
  *   qa PASS / kill QA / operator-reset / finalize / attach cross-wire.

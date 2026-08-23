@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import {
 	type ApplyResult,
+	FEATURE_FLAGS,
 	type FlywheelConfig,
 	resolveAllFlags,
+	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { buildTargetId } from "../bridge/management-console-contract.js";
@@ -263,7 +265,7 @@ describe("existing management writer adapters", () => {
 			effort: "high",
 		});
 
-		const env = { FLYWHEEL_AUTO_QA: "0" };
+		const env = { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" };
 		const flagProvider = createManagementFlagProvider({
 			views: () => resolveAllFlags({ env, projectConfigs: configs() }),
 			revision: () => "registry:flags-v1",
@@ -271,22 +273,23 @@ describe("existing management writer adapters", () => {
 		});
 		const flags = flagProvider.read().fragment.flags ?? [];
 		expect(
-			flags.find((flag) => flag.name === "auto_qa_killswitch")?.global,
+			flags.find((flag) => flag.name === "founder_review_orphan_monitor")
+				?.global,
 		).toMatchObject({
 			current: false,
 			writeCapability: { writable: true, consequence: "hot" },
 		});
 		expect(
-			flags.find((flag) => flag.name === "qa_auto")?.projectOverrides[0]?.value
+			flags.find((flag) => flag.name === "doc_flow")?.projectOverrides[0]?.value
 				.writeCapability,
 		).toMatchObject({ writable: false });
 	});
 
 	it("projects store-managed flags as read-only even when registry metadata is direct", () => {
 		const view = resolveAllFlags({ env: {} }).find(
-			(flag) => flag.name === "workflow_resume",
+			(flag) => flag.name === "workflow_turn_divergence_alerts",
 		);
-		if (!view) throw new Error("missing workflow_resume");
+		if (!view) throw new Error("missing workflow_turn_divergence_alerts");
 		const value = createManagementFlagProvider({
 			views: () => [
 				{
@@ -311,10 +314,10 @@ describe("existing management writer adapters", () => {
 		const flagProvider = createManagementFlagProvider({
 			views: () =>
 				resolveAllFlags({
-					env: { FLYWHEEL_WORKFLOW_RESUME: "1" },
+					env: { FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1" },
 					envFile: {
 						status: "readable",
-						content: "FLYWHEEL_WORKFLOW_RESUME=0\n",
+						content: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS=0\n",
 					},
 					projectConfigs: configs(),
 				}),
@@ -323,7 +326,9 @@ describe("existing management writer adapters", () => {
 		});
 		const value = flagProvider
 			.read()
-			.fragment.flags?.find((flag) => flag.name === "workflow_resume")?.global;
+			.fragment.flags?.find(
+				(flag) => flag.name === "workflow_turn_divergence_alerts",
+			)?.global;
 		expect(value?.current).toBeNull();
 		expect(value?.writeCapability).toMatchObject({
 			writable: false,
@@ -340,9 +345,9 @@ describe("existing management writer adapters", () => {
 		"localhost flag DTO explains %s with the observable sources and no write capability",
 		(divergence, message) => {
 			const base = resolveAllFlags({ env: {} }).find(
-				(flag) => flag.name === "workflow_resume",
+				(flag) => flag.name === "workflow_turn_divergence_alerts",
 			);
-			if (!base) throw new Error("missing workflow_resume");
+			if (!base) throw new Error("missing workflow_turn_divergence_alerts");
 			const flagProvider = createManagementFlagProvider({
 				views: () => [
 					{
@@ -387,17 +392,20 @@ describe("existing management writer adapters", () => {
 			flagLock: (fn) => fn(),
 			applyLeadCanonical: async () => ({ status: "applied" }),
 		});
-		const targetId = buildTargetId("flag", ["auto_qa_killswitch", "global"]);
+		const targetId = buildTargetId("flag", [
+			"founder_review_orphan_monitor",
+			"global",
+		]);
 		const target = await flag.resolve(targetId);
 		expect(target?.currentValue).toBe(true);
 		const ready = await flag.preflight(target!, false, target!.sourceRevision);
 		if (!ready.ok) throw new Error(ready.reason);
 		expect(await flag.apply(ready.change)).toMatchObject({ status: "applied" });
-		expect(env.FLYWHEEL_AUTO_QA).toBe("0");
+		expect(env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBe("0");
 		expect((await flag.resolve(targetId))?.currentValue).toBe(false);
 
 		const projectFlag = buildTargetId("flag", [
-			"qa_auto",
+			"doc_flow",
 			"project",
 			"flywheel",
 		]);
@@ -411,7 +419,7 @@ describe("existing management writer adapters", () => {
 		).toMatchObject({ ok: false, code: "readonly_registry_policy" });
 
 		const globalOnlyOverride = buildTargetId("flag", [
-			"auto_qa_killswitch",
+			"founder_review_orphan_monitor",
 			"project",
 			"flywheel",
 		]);
@@ -419,7 +427,7 @@ describe("existing management writer adapters", () => {
 		expect(globalOnlyTarget?.writeCapability.reason).toMatch(/global/i);
 	});
 
-	it("writer preflight independently refuses a store-managed flag", async () => {
+	it("writer preflight independently refuses every store-managed flag", async () => {
 		const { flag } = createExistingManagementWriters({
 			projects,
 			projectsRevision: () => PROJECTS_REVISION,
@@ -431,16 +439,33 @@ describe("existing management writer adapters", () => {
 			flagViews: () => resolveAllFlags({ env: {} }),
 			applyLeadCanonical: async () => ({ status: "applied" }),
 		});
-		const target = await flag.resolve(
-			buildTargetId("flag", ["workflow_resume", "global"]),
-		);
-		expect(
-			await flag.preflight(target!, true, target!.sourceRevision),
-		).toMatchObject({
-			ok: false,
-			code: "readonly_registry_policy",
-			reason: expect.stringContaining("SQLite flag store"),
-		});
+		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
+		for (const name of STORE_MANAGED_FLAGS) {
+			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			expect(spec, name).toBeDefined();
+			if (!spec) continue;
+			const target = await flag.resolve(
+				buildTargetId("flag", [name, "global"]),
+			);
+			expect(target, name).toBeDefined();
+			if (!target) continue;
+			const desired =
+				spec.valueKind === "enum"
+					? spec.enumValues?.find((value) => value !== spec.default)
+					: spec.valueKind === "bool"
+						? !spec.default
+						: undefined;
+			expect(desired, `${name} needs a management target`).toBeDefined();
+			if (desired === undefined) continue;
+			expect(
+				await flag.preflight(target, desired, target.sourceRevision),
+				name,
+			).toMatchObject({
+				ok: false,
+				code: "readonly_registry_policy",
+				reason: expect.stringContaining("SQLite flag store"),
+			});
+		}
 	});
 
 	it("direct flag rejects an out-of-band .env edit that lands after apply revalidation", async () => {
@@ -470,7 +495,10 @@ describe("existing management writer adapters", () => {
 			flagLock: (fn) => fn(),
 			applyLeadCanonical: async () => ({ status: "applied" }),
 		});
-		const targetId = buildTargetId("flag", ["auto_qa_killswitch", "global"]);
+		const targetId = buildTargetId("flag", [
+			"founder_review_orphan_monitor",
+			"global",
+		]);
 		const target = await flag.resolve(targetId);
 		const ready = await flag.preflight(target!, false, target!.sourceRevision);
 		if (!ready.ok) throw new Error(ready.reason);
@@ -480,7 +508,7 @@ describe("existing management writer adapters", () => {
 			reason: expect.stringMatching(/changed|stale/i),
 		});
 		expect(persisted).toBe(edited);
-		expect(env.FLYWHEEL_AUTO_QA).toBeUndefined();
+		expect(env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBeUndefined();
 	});
 
 	it("ignores client-only authority fields because desired values are closed-shape", async () => {
@@ -567,7 +595,7 @@ describe("existing management writer adapters", () => {
 		expect(fleetBatches[0]).toMatchObject({ changes: [{}, {}] });
 
 		const flagChanges = [];
-		for (const name of ["auto_qa_killswitch", "codex_hard_gate_killswitch"]) {
+		for (const name of ["founder_review_orphan_monitor", "mailbox_queue"]) {
 			const target = await writers.flag.resolve(
 				buildTargetId("flag", [name, "global"]),
 			);
@@ -584,8 +612,8 @@ describe("existing management writer adapters", () => {
 			expect.objectContaining({ status: "applied" }),
 		]);
 		expect(env).toMatchObject({
-			FLYWHEEL_AUTO_QA: "0",
-			FLYWHEEL_CODEX_HARD_GATE: "0",
+			FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0",
+			FLYWHEEL_MAILBOX_QUEUE: "0",
 		});
 	});
 });

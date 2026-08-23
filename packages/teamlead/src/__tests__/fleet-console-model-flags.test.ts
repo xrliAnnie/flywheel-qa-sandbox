@@ -21,11 +21,14 @@ describe("buildConsoleSnapshot — feature flags", () => {
 			featureFlags: flags,
 		});
 		expect(snap.featureFlags?.length).toBe(flags.length);
-		// governance gates come through read-only.
-		const gate = snap.featureFlags?.find(
-			(f) => f.name === "founder_consent_decision_mode",
-		);
+		// Surviving governance gates come through read-only; consent is solidified.
+		const gate = snap.featureFlags?.find((f) => f.name === "lead_lease_bypass");
 		expect(gate?.toggleable).toBe("readonly");
+		expect(
+			snap.featureFlags?.some(
+				(f) => f.name === "founder_consent_decision_mode",
+			),
+		).toBe(false);
 	});
 
 	it("omits featureFlags entirely when not provided (byte-compat)", () => {

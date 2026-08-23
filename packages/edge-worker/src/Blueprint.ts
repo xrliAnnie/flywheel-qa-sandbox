@@ -480,8 +480,6 @@ export interface BlueprintContext {
 	 * fails closed to A — never the hash bucket — on a broken read. split-only.
 	 */
 	skillFrameworkModeStampReadFailed?: boolean;
-	/** Parent session's recorded mode for an auto-QA spawn (R1#3). split-only. */
-	skillFrameworkModeParent?: SkillFrameworkMode;
 	// FLY-793 — Bridge-INTERNAL DAG workflow flag (workflow engine only; never
 	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
 	// phase-sessions share ONE branch B (worktree key = parent main key,
@@ -622,11 +620,10 @@ export interface BlueprintContext {
 	runnerTransportMode?: "none";
 
 	/**
-	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
-	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
-	 * coordinator passes the parent main session's `pr_head_sha` so the QA
-	 * worktree is pinned to the exact reviewed commit. Absent ⇒ existing
-	 * behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
+	 * Explicit git start point for the worktree (a commit SHA / ref). Threaded to
+	 * `WorktreeManager.create({ startPoint })` so internal pinned dispatches can
+	 * run at an exact reviewed commit. Absent ⇒ existing behavior
+	 * (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
 	/** FLY-1707: quarantine stale state, then rebuild at the admitted anchor. */
@@ -665,13 +662,6 @@ export interface BlueprintContext {
 		effectiveStage?: string;
 	};
 
-	/**
-	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
-	 * Auto-QA spawns. Blueprint renders a QA-mode prompt (independent
-	 * verification — no implement/branch/push/PR, no approve-gate/ship) and the
-	 * QA runner reports its verdict via `flywheel-comm qa-result`.
-	 */
-	qaContext?: QaContext;
 	/** FLY-1244: Bridge-minted per-execution verdict submission credential. */
 	workflowSubmissionCredential?: string;
 	/** FLY-1425: engine-owned verdict lane; missing credential must fail loud. */
@@ -688,112 +678,6 @@ export interface BlueprintContext {
 	workflowCapabilities?: Record<string, boolean | string>;
 	workflowAgentContent?: string;
 	workflowOutputCredential?: string;
-}
-
-/**
- * FLY-579: context injected into an Auto-QA runner's prompt so it knows which
- * PR / commit / parent session it is independently verifying.
- */
-export interface QaContext {
-	/** The main (implementer) session this QA run gates. */
-	parentExecutionId: string;
-	/** The reviewed commit the QA worktree is pinned to (`pr_head_sha`). */
-	prHeadSha: string;
-	/** GitHub PR number, when known. */
-	prNumber?: number;
-	/** The implementer's branch name, when known. */
-	branch?: string;
-	/**
-	 * FLY-643: the PARENT (implementer) issue identifier being verified (e.g.
-	 * "FLY-643"). When auto-QA runs on a SEPARATE `QA·FLY-XX` issue, the runner's
-	 * own `issueId` is the QA issue — this carries the actual issue under test so
-	 * the prompt says "verifying FLY-643" not "verifying the QA issue". Absent on
-	 * the legacy same-issue / manual path (falls back to the runner's issueId).
-	 */
-	parentIssueIdentifier?: string;
-	/** FLY-643: the PARENT issue URL, so the QA runner can read what it gates. */
-	parentIssueUrl?: string;
-}
-
-/**
- * FLY-579: build the QA-mode runner prompt lines. An Auto-QA runner does
- * INDEPENDENT verification of an already-implemented + code-reviewed change at a
- * pinned commit. It must NOT implement / branch / push / PR / approve / ship — its
- * action is a structured `qa-result` verdict; FLY-752 fix-loop reuse then has it
- * STOP on PASS (the pipeline finalizes + cleans it up) or `park` +
- * wait for a RE-TEST on FAIL (never a terminal `complete`), which is how the
- * pipeline gates the founder while reusing the SAME QA runner.
- *
- * Exported so the QA prompt contract can be unit-tested directly (in addition to
- * the Blueprint.run() integration test that asserts a QA ctx produces these
- * lines and omits the implement/ship contract).
- */
-export function buildQaModeSystemPromptLines(
-	qaContext: QaContext,
-	issueId: string,
-	commCliPath: string,
-	executionId: string,
-	/**
-	 * FLY-1188: codex-tmux QA runner — drops the Claude-only tooling wording
-	 * (browser automation, context compaction, teammate-messaging ban) for
-	 * capability-honest equivalents. Default false = claude text byte-identical
-	 * to pre-FLY-1188.
-	 */
-	isCodexRunner = false,
-): string[] {
-	const prNote = qaContext.prNumber ? ` (PR #${qaContext.prNumber})` : "";
-	const branchNote = qaContext.branch ? ` on branch ${qaContext.branch}` : "";
-	// FLY-643: when auto-QA runs on a SEPARATE QA·FLY-XX issue, `issueId` is the
-	// QA issue itself — verify the PARENT issue instead. Falls back to `issueId`
-	// on the legacy same-issue / manual path (no parentIssueIdentifier).
-	const verifying = qaContext.parentIssueIdentifier ?? issueId;
-	const parentUrlNote = qaContext.parentIssueUrl
-		? ` — read the issue at ${qaContext.parentIssueUrl}`
-		: "";
-	return [
-		"You are an INDEPENDENT QA Runner (Flywheel Auto-QA, FLY-579). You did NOT implement this change and you must NOT modify it (qa-developer-separation).",
-		`You are verifying ${verifying}${prNote} at the reviewed commit ${qaContext.prHeadSha}${branchNote}${parentUrlNote}. Your git worktree is already checked out at that exact commit (clean, read-only).`,
-		...(qaContext.parentIssueIdentifier &&
-		qaContext.parentIssueIdentifier !== issueId
-			? [
-					`(This QA runs on its own tracking issue ${issueId}; the change under test lives on ${verifying} — verify ${verifying}, not this QA issue.)`,
-				]
-			: []),
-		"",
-		"Steps:",
-		"1. Read the issue, its product spec / plan, and the PR diff at the pinned commit.",
-		"2. Plan the verification scenarios from the product spec — who actually uses this and is the flow right.",
-		isCodexRunner
-			? "3. Run the package's own tests plus every real flow your terminal tooling can exercise (CLI paths, curl against a running service). You have NO browser automation — name any user-facing surface you could NOT exercise as an explicit coverage gap in your qa-result summary. API-returns-200 is not a product pass."
-			: "3. Run real-machine E2E for user-facing flows (Claude-in-Chrome for browser surfaces, NOT Playwright) plus the package's own tests. API-returns-200 is not a product pass.",
-		"4. Do NOT implement, do NOT create a feature branch, do NOT push, do NOT open a GitHub PR, do NOT run an approve/ship gate. Read-only git inspection is fine; never modify source/config.",
-		"",
-		"QA VERDICT (MANDATORY — this is how the pipeline gates the founder):",
-		`a. Report your verdict STRUCTURALLY: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${qaContext.parentExecutionId} --status pass|fail --summary "<what you tested + verdict + any blocking issue>"\``,
-		// FLY-752: ONE QA per issue, REUSED in a fix loop — never a fresh QA2/QA3.
-		isCodexRunner
-			? "b. PASS → report qa-result pass and STOP. Do NOT run `complete` — the pipeline finalizes + cleans up this QA runner for you."
-			: "b. PASS → report qa-result pass, then RELEASE heavy resources (close all Claude-in-Chrome tabs / any browser you opened) and STOP. Do NOT run `complete` — the pipeline finalizes + cleans up this QA runner for you.",
-		// FLY-1188 transitional contract (Codex M2 review HIGH-1): the codex
-		// wording must NOT promise the park/re-wake lifecycle — the adapter's
-		// continuous-turn loop lands in a later milestone; until then a codex
-		// exit ends this process, so the retest step is phrased CONDITIONALLY
-		// (what to do IF a re-test arrives as input).
-		isCodexRunner
-			? "c. FAIL → report qa-result fail with a specific report (exact scenario / expected-vs-actual / severity), then make your final message that report and END YOUR TURN. Do NOT `complete`."
-			: `c. FAIL → report qa-result fail with a specific report (exact scenario / expected-vs-actual / severity), then RELEASE heavy resources (close Claude-in-Chrome tabs; if your context is large, \`/compact\`), then \`node ${commCliPath} park --reason "auto-QA awaiting implementer retest"\`, then STOP and WAIT. Do NOT \`complete\`. You will be re-woken with a RE-TEST message when the implementer pushes a new head.`,
-		isCodexRunner
-			? "d. RE-TEST (if a new reviewed head arrives as your next input): re-fetch + re-checkout your worktree to the NEW commit, re-run your scenarios, then emit `qa-result` again (pass or fail)."
-			: "d. RE-TEST (when you are woken with a new reviewed head): re-fetch + re-checkout your worktree to the NEW commit, re-run your scenarios, then emit `qa-result` again (pass or fail). Same QA session — keep looping until PASS. This is why you release the browser + park between rounds: don't hold heavy resources while the implementer fixes.",
-		// FLY-1188 (Codex M2 review R4 HIGH-1): the codex variant drops the
-		// same-session re-test promise (transitional contract).
-		isCodexRunner
-			? "PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix; the founder is NOT notified."
-			: "PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix and re-tests with THIS SAME QA session (not a new one); the founder is NOT notified.",
-		isCodexRunner
-			? "The structured qa-result IS your deliverable — emit it even if the run is rough."
-			: 'The structured qa-result IS your deliverable — emit it even if the run is rough. Never use the stock SendMessage to:"team-lead" channel.',
-	];
 }
 
 /**
@@ -1047,8 +931,8 @@ export class Blueprint {
 			issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
 			issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
 			...(ctx.routeSummary && { routeSummary: ctx.routeSummary }),
-			// FLY-807: caller-provided labels (e.g. auto-QA's parent-issue labels, which
-			// drive Discord chat-thread routing via resolveLeadForIssue) take precedence
+			// FLY-807: caller-provided labels for an internal pinned dispatch (which drive
+			// Discord chat-thread routing via resolveLeadForIssue) take precedence
 			// over a fresh Linear re-fetch of THIS run's own issue — matching the same
 			// ctx.issueLabels ?? hydrated.labels precedence already used below for
 			// ponytail resolution and AgentDispatcher backend selection.
@@ -1062,8 +946,8 @@ export class Blueprint {
 			...(ctx.designBackend && { designBackend: ctx.designBackend }),
 			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
 			// place shareParentBranch is known) — a DAG workflow carries its
-			// phase role; everything else (incl. auto-QA's own sessionRole==='qa' on
-			// a separate issue) is 'main'. Persisted by both started sinks.
+			// phase role; everything else (including historical separate-issue QA
+			// compatibility rows) is 'main'. Persisted by both started sinks.
 			chatThreadRole:
 				ctx.shareParentBranch && ctx.sessionRole ? ctx.sessionRole : "main",
 			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
@@ -1231,7 +1115,6 @@ export class Blueprint {
 			override: ctx.skillFrameworkModeOverride,
 			priorStamp: ctx.skillFrameworkModePrior,
 			priorStampReadFailed: ctx.skillFrameworkModeStampReadFailed,
-			parentMode: ctx.skillFrameworkModeParent,
 			projectSplitParticipation: participation,
 		});
 		// Flag at default (unset or invalid) → record nothing (byte-compat).
@@ -1706,37 +1589,20 @@ export class Blueprint {
 			: landingEnabled && (skillInjectionSucceeded || hasLandCommand);
 
 		// ── Build prompt + system prompt ──────────────────────
-		// FLY-579: an Auto-QA runner (sessionRole="qa", qaContext present) does
-		// INDEPENDENT verification of an already-implemented + code-reviewed change.
-		// It must NOT receive the implement/branch/push/PR or approve-gate/ship
-		// contract (that contradicts its read-only QA role). Its detailed protocol
-		// comes from the shipped qa-executor agent file (injected as agentContext);
-		// the QA base steps + structured verdict are appended after commCliPath is
-		// resolved. So we start the QA prompt empty here and skip the implement /
-		// land / doc-flow / brainstorm / approve-gate blocks below.
-		const isQaRunner = !!ctx.qaContext;
-
 		// FLY-793: DAG workflow internal phases (Design / Implement). A DAG workflow
 		// run is ONE issue with Design → Implement → QA phase-sessions sharing one
-		// branch B (shareParentBranch is the signal). The QA phase runs through the
-		// isQaRunner (qaContext) path. Absent shareParentBranch → not DAG workflow →
-		// the default single-session prompt below is byte-identical to before.
+		// branch B (shareParentBranch is the signal).
 		const isDesignPhase =
-			!isQaRunner &&
-			ctx.shareParentBranch === true &&
-			ctx.sessionRole === "design";
+			ctx.shareParentBranch === true && ctx.sessionRole === "design";
 		const isImplementPhase =
-			!isQaRunner &&
-			ctx.shareParentBranch === true &&
-			ctx.sessionRole === "implement";
+			ctx.shareParentBranch === true && ctx.sessionRole === "implement";
 		// FLY-793 Step 8: the DAG workflow QA phase is a WRITER on the shared branch
 		// B (Annie 2026-07-02: "give it more permissions") — it runs the tests,
-		// commits its test/report to B, and reports a verdict. It is DISTINCT from
-		// the auto-QA `isQaRunner` path (read-only verification of a SEPARATE
-		// QA·FLY-XX issue): DAG workflow QA is a writer on the parent issue's branch,
+		// commits its test/report to B, and reports a verdict. DAG workflow QA is a
+		// writer on the parent issue's branch,
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
-			!isQaRunner && ctx.shareParentBranch === true && ctx.sessionRole === "qa";
+			ctx.shareParentBranch === true && ctx.sessionRole === "qa";
 		// Shared DAG workflow sessions always remain parked for same-context
 		// handoffs. The retired kill switch no longer creates a second lifecycle.
 		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
@@ -1790,12 +1656,6 @@ export class Blueprint {
 		const approveGateCiPrecondition =
 			"CI PRECONDITION (HARD): Before opening any approve_to_ship gate, run one short probe: `gh pr checks <NUMBER>` (never use `--watch`). Exit 0 means every reported check passed and you may continue. Exit 8 means checks are still pending: this is NOT a CI failure; do NOT open the approve gate, keep the runner/session alive, and re-run the short probe on the next turn or wake. Any other non-zero exit, including no reported checks, is a real precondition failure: diagnose/fix CI before opening the gate.";
 
-		// FLY-643: an Auto-QA runner verifies the PARENT issue under test. When it
-		// runs on a SEPARATE QA·FLY-XX issue, `hydrated.issueId` is the QA issue —
-		// point the prompt at the parent (qaContext.parentIssueIdentifier) so it
-		// doesn't read "QA the QA issue". Falls back to its own issueId on the
-		// legacy same-issue / manual path.
-		const qaTarget = ctx.qaContext?.parentIssueIdentifier ?? hydrated.issueId;
 		// FLY-1059: a UI/design-flavored Design phase runs the mockup-first
 		// Designer workflow (concept images → founder design gate → high-fidelity)
 		// instead of the generic text design. Labels are the trusted Linear
@@ -1809,8 +1669,6 @@ export class Blueprint {
 		let prompt: string;
 		if (isGeneralizedExecution) {
 			prompt = `Execute generalized workflow node ${ctx.generalizedExecutionContext!.nodeId} for ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
-		} else if (isQaRunner) {
-			prompt = `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`;
 		} else if (isDesignerPhase) {
 			prompt = `Design phase (mockup-first) for ${hydrated.issueId}: ${hydrated.issueTitle}. This is a UI/design-flavored issue: do VISUAL design first — confirm the mockup type, explore concept directions A/B/C (dual-model), get the founder to pick one at a design gate, then produce a high-fidelity mockup + one-page spec. Do NOT write implementation code — the Implement phase does that on the same branch.\n\n${hydrated.issueDescription}`;
 		} else if (isDesignPhase) {
@@ -1896,8 +1754,6 @@ export class Blueprint {
 						: `When the bounded work is complete, run \`node ${commCliPath} complete --route ${completionRoute}\`.`,
 				);
 			}
-		} else if (isQaRunner) {
-			systemPromptLines = [];
 		} else if (isDesignerPhase) {
 			// FLY-1059: mockup-first Designer workflow for a UI/design-flavored
 			// Design phase. Self-contained (the loaded agent role may be engineer /
@@ -1945,10 +1801,9 @@ export class Blueprint {
 			// FLY-859: explicit PASS/FAIL sequencing. The QA phase is this
 			// pipeline's ship-gate holder AND ship executor on PASS (Model A: the
 			// Design/Implement runners were closed at their handoffs — only the QA
-			// runner is alive at approval time). On FAIL it stops and lets the
-			// workflow engine close it + start an Implement-fix phase (never the
-			// auto-QA park/retest protocol — that belongs to the separate
-			// QA·FLY-XX flow).
+			// runner is alive at approval time). On FAIL it follows the active DAG
+			// workflow mode: keep-alive wakes the existing phase pair, while the
+			// fallback closes this attempt and starts an Implement-fix phase.
 			systemPromptLines = [
 				"You are the QA phase of a DAG workflow (Design → Implement → QA), all on ONE shared branch. The IMPLEMENT phase already committed the code and opened a PR on THIS branch.",
 				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
@@ -1965,7 +1820,7 @@ export class Blueprint {
 						isCodexRunner
 						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
 						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
+					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest in this non-keep-alive mode, do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 			// FLY-939 (G-B): the founder-feedback KICKBACK contract. When you (the QA
 			// phase) are woken with FEEDBACK on your OWN approve_to_ship gate — after a
@@ -2044,13 +1899,7 @@ export class Blueprint {
 			);
 		}
 
-		if (
-			!gateCarrierEpoch1 &&
-			!isQaRunner &&
-			!isDesignPhase &&
-			!isQaPhase &&
-			canLand
-		) {
+		if (!gateCarrierEpoch1 && !isDesignPhase && !isQaPhase && canLand) {
 			// v0.6: land after PR creation (v1.0 Phase 2: no merge — report readiness only)
 			// FLY-793: the Design phase has no PR/CI/land — it completes via
 			// phase_design_complete. The QA phase inherits the Implement phase's
@@ -2072,12 +1921,7 @@ export class Blueprint {
 				"6. After writing the landing signal (ready_to_merge or failed), exit the session.",
 				`Landing signal path: ${landSignalPath}`,
 			);
-		} else if (
-			!isGeneralizedExecution &&
-			!isQaRunner &&
-			!isDesignPhase &&
-			!isQaPhase
-		) {
+		} else if (!isGeneralizedExecution && !isDesignPhase && !isQaPhase) {
 			// Legacy behavior: stop after PR
 			systemPromptLines.push(
 				"5. Verify CI passes. If CI fails, fix and push again.",
@@ -2089,8 +1933,8 @@ export class Blueprint {
 		// phases. Instead of exiting at their handoff, they PARK (stay alive to
 		// ship) so the QA↔implement fix loop keeps full context; the Bridge closes
 		// them at ship. Appended AFTER the land block so "park, do NOT exit"
-		// overrides any "exit the session" step above. Gated on the keep-alive
-		// kill-switch (=0 → these lines are absent → legacy exit behavior).
+		// overrides any "exit the session" step above. FLY-1981 retired the
+		// keep-alive kill switch; shared DAG phases always receive this lifecycle.
 		if (!gateCarrierEpoch1 && sharedPhaseKeepAlive && isDesignPhase) {
 			systemPromptLines.push(
 				"",
@@ -2137,21 +1981,6 @@ export class Blueprint {
 
 		// (commCliPath is hoisted above the role prompts — see FLY-859 note.)
 
-		// FLY-579: QA-mode skeleton + structured verdict (needs commCliPath +
-		// executionId). The shipped qa-executor agent file carries the detailed
-		// protocol; these lines are the minimal base steps + the qa-result gate.
-		if (isQaRunner && ctx.qaContext) {
-			systemPromptLines.push(
-				...buildQaModeSystemPromptLines(
-					ctx.qaContext,
-					hydrated.issueId,
-					commCliPath,
-					executionId,
-					isCodexRunner, // FLY-1188: capability-honest QA wording
-				),
-			);
-		}
-
 		// FLY-205: DOC-FLOW block — project doc conventions, injected ONLY when
 		// the project's .flywheel/config.yaml enables doc_flow. Unshifted BEFORE
 		// the onboard preamble unshift below, so the final order reads:
@@ -2159,8 +1988,7 @@ export class Blueprint {
 		// Controls DOCUMENT OUTPUT ONLY — checkpoint gates and executor hard
 		// gates apply at every tier (locked semantics, Codex design R1 #5).
 		// Disabled/absent config → zero lines added (byte-compatible prompt).
-		// FLY-579: a QA runner produces no docs → skip doc-flow.
-		if (!isQaRunner && this.docFlowConfig?.enabled === true) {
+		if (this.docFlowConfig?.enabled === true) {
 			const defaultDepartment = this.docFlowConfig.default_department;
 			if (!defaultDepartment) {
 				// ConfigLoader enforces presence when enabled; defensive fail-safe
@@ -2239,16 +2067,15 @@ export class Blueprint {
 		}
 
 		// FLY-795 (code-review HIGH-1): PROGRESS LEDGER write-discipline. Every
-		// non-QA WRITER runner (fresh OR resume) is told to keep a `progress.md`
+		// writer runner (fresh OR resume) is told to keep a `progress.md`
 		// cursor committed to its branch as it works — otherwise a re-dispatch has
 		// nothing to resume from and the FLY-709 "never finishes" churn persists.
 		// Co-located in the runner's doc folder (matches FLY-793's convention +
 		// doc-flow naming — no forced slug); resume detection finds it on the branch
 		// regardless of slug. `flywheel-comm progress` path-limited commits ONLY
-		// progress.md (never sweeps code). QA runners write no ledger (isQaRunner
-		// skip). Byte-compat: the command is new; a runner that never calls it just
+		// progress.md (never sweeps code). A runner that never calls it just
 		// doesn't write a ledger (= current behavior).
-		if (!isQaRunner) {
+		{
 			const progressLedgerLines = [
 				"PROGRESS LEDGER (restart-resilient — keep this current as you work):",
 				"Maintain a `progress.md` cursor in YOUR doc folder (the SAME folder as your",
@@ -2465,13 +2292,10 @@ export class Blueprint {
 					this.checkpointConfig,
 				)) {
 					if (!cpConfig.enabled) continue;
-					// FLY-579/FLY-1281: QA and generalized runners do not brainstorm
-					// or ship — skip those gates. They keep the `question` gate (they
-					// can ask their Lead). FLY-752: QA's action is the qa-result verdict
-					// then STOP (PASS) / park + wait for retest (FAIL). A generalized
-					// node follows its pinned completion_route instead.
+					// Generalized runners follow their pinned completion route and do
+					// not receive legacy brainstorm/ship gates.
 					if (
-						(isQaRunner || isGeneralizedExecution) &&
+						isGeneralizedExecution &&
 						(cpName === "brainstorm" || cpName === "approve_to_ship")
 					) {
 						continue;
@@ -2645,7 +2469,7 @@ export class Blueprint {
 									: 'f. If the wake is FEEDBACK (changes requested — not an approval): for THIS role (DAG workflow QA) FEEDBACK = KICKBACK — do NOT edit code yourself. Follow step 5-fb above: emit `qa-result --status fail --summary "founder feedback kickback: ..."`, then park and WAIT for the RE-TEST wake. The implement phase does the fixing; you re-verify.'
 								: "f. If the wake is FEEDBACK (changes requested — not an approval): address it, push your fixes, then RE-REQUEST review — repeat the CI PRECONDITION and APPROVE GATE steps a-b (not steps a-b alone), using a NEW gate --no-block + a fresh `complete --route needs_review`; the review window resets. verify-approval will refuse to ship the old head anyway (pr_head_sha mismatch).",
 							"g. Ordinary messages (questions, instructions — not approval/feedback): handle them, reply if needed, then keep waiting at this checkpoint.",
-							"h. HEAD DISCIPLINE after the gate opens (FLY-945): once you ran steps a+b, do NOT push new commits in principle — your review request is bound to the exact head you completed with. If you MUST push (e.g. QA-evidence docs): immediately re-run Codex code review for the NEW head (resume-based, incremental) AND make sure a fresh QA PASS verdict is reported for the new head sha (the `qa_result` event) — the Bridge then auto-rebinds the ship gate to it. NEVER let the head drift silently without a re-review: the founder's approval would bind a head that no longer exists and verify-approval would refuse forever (FLY-921).",
+							"h. HEAD DISCIPLINE after the gate opens (FLY-945): once you ran steps a+b, do NOT push new commits in principle — your review request is bound to the exact head you completed with. If you MUST push (e.g. QA-evidence docs), the old review window is invalid: immediately re-run Codex code review for the NEW head (resume-based, incremental), then repeat the CI PRECONDITION and APPROVE GATE steps a-b to open and bind a fresh gate. NEVER let the head drift silently without a re-review: the founder's approval would bind a head that no longer exists and verify-approval would refuse forever (FLY-921).",
 							"i. If verify-approval keeps failing with pr_head_sha_mismatch AFTER an approval landed (the head moved after the founder approved): the approval is expired — recovery is a fresh review lap, NOT a workaround. Re-run code review for the new head, then repeat the CI PRECONDITION and APPROVE GATE steps a-b to open and bind a fresh gate. Do NOT ask your Lead to merge for you — executor-merge is retired (FLY-945).",
 						);
 					} else if (cpName === "question") {

@@ -109,29 +109,16 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		}
 	});
 
-	it("split + project opt-out → superpowers via project_opt_out (beats override/stamp/parent)", () => {
+	it("split + project opt-out → superpowers via project_opt_out (beats override/stamp)", () => {
 		expect(
 			resolveSkillFrameworkMode({
 				env: envWith("split"),
 				issueIdentifier: ID,
 				override: "bare",
 				priorStamp: "matt",
-				parentMode: "matt",
 				projectSplitParticipation: false,
 			}),
 		).toEqual({ mode: "superpowers", via: "project_opt_out" });
-	});
-
-	it("split + QA parent mode → inherited (beats override/stamp/hash) (R1#3)", () => {
-		expect(
-			resolveSkillFrameworkMode({
-				env: envWith("split"),
-				issueIdentifier: ID,
-				override: "bare",
-				priorStamp: "bare",
-				parentMode: "matt",
-			}),
-		).toEqual({ mode: "matt", via: "inherited" });
 	});
 
 	it("split + per-dispatch override → override (beats stamp/hash)", () => {
@@ -160,7 +147,6 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 	it.each([
 		["override", { override: "bare-ponytail" }, "override"],
 		["prior stamp", { priorStamp: "bare-ponytail" }, "sticky"],
-		["parent", { parentMode: "bare-ponytail" }, "inherited"],
 	] as const)(
 		"split + D-arm %s carrier preserves D attribution",
 		(_name, carrier, via) => {
@@ -205,7 +191,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		}
 	});
 
-	it("garbage override / priorStamp / parentMode values are ignored, never thrown on", () => {
+	it("garbage override / priorStamp values are ignored, never thrown on", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
 			expect(
@@ -215,7 +201,6 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 					// simulate corrupted DB / boundary bypass values
 					override: "garbage" as never,
 					priorStamp: "junk" as never,
-					parentMode: 42 as never,
 				}),
 			).toEqual({ mode: hashModeBucket(ID), via: "hash" });
 		} finally {
@@ -271,17 +256,6 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 				priorStampReadFailed: true,
 			}),
 		).toEqual({ mode: "matt", via: "override" });
-	});
-
-	it("parentMode still wins under readFailed (inherited carrier)", () => {
-		expect(
-			resolveSkillFrameworkMode({
-				env: envWith("split"),
-				issueIdentifier: ID,
-				parentMode: "bare",
-				priorStampReadFailed: true,
-			}),
-		).toEqual({ mode: "bare", via: "inherited" });
 	});
 
 	it("forced env ignores readFailed (kill-switch semantics)", () => {

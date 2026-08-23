@@ -46,6 +46,18 @@ describe("FLY-1505 approval preservation integration", () => {
 			pr_number: 715,
 		});
 		store.setReviewBinding(EXEC, { questionId, prHeadSha: HEAD });
+		store.recordCodexReviewApproved({
+			executionId: EXEC,
+			targetPrHeadSha: HEAD,
+			issueId: "FLY-1505",
+			projectName: "flywheel",
+			authorFamily: "claude",
+			reviewerFamily: "codex",
+		});
+		expect(store.getCodexReviewRecord(EXEC, HEAD)).toMatchObject({
+			author_family: "claude",
+			reviewer_family: "codex",
+		});
 		store.persistTransition(EXEC, "approved_to_ship", {
 			issue_id: "FLY-1505",
 			project_name: "flywheel",
@@ -70,7 +82,6 @@ describe("FLY-1505 approval preservation integration", () => {
 				prHead: HEAD,
 				dbPath: commDbPath,
 				stateDbPath,
-				env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmp, "missing.env"),
 				ciProbe: () => ({ green: true, reason: "ci_green" }),
 			}),

@@ -57,10 +57,9 @@ export interface BridgeConfig {
 	 */
 	issuePrefixes: string[];
 	/**
-	 * FLY-175 Track 2: founder-consent hard gate. Parsed from
-	 * `FLYWHEEL_FOUNDER_CONSENT_*` env. Optional — when absent or
-	 * `decisionMode === "off"` the evaluator is never constructed and Bridge
-	 * behavior is byte-identical to pre-Track-2.
+	 * FLY-175 Track 2: founder-consent policy. Production config always parses
+	 * this block and runs in `audit_only`; optionality exists only for directly
+	 * injected module-capability test configs.
 	 */
 	founderConsent?: FounderConsentConfig;
 	/**

@@ -279,11 +279,9 @@ describe("FLY-1455 config-schema enumeration", () => {
 		expect(paths).toEqual([
 			"checkpoints.*.enabled",
 			"doc_flow.enabled",
-			"founder_milestone_report.enabled",
 			"pipeline.dag",
 			"pipeline.work_kind",
 			"ponytail.enabled",
-			"qa.auto",
 			"skill_framework.split",
 			"skills.enabled",
 			"skills.proofshot.enabled",
@@ -292,7 +290,8 @@ describe("FLY-1455 config-schema enumeration", () => {
 			"xiaohongshu_learning.enabled",
 			"xiaohongshu_learning.video_opt_in",
 		]);
-		expect(paths).toContain("qa.auto");
+		expect(paths).not.toContain("qa.auto");
+		expect(paths).not.toContain("founder_milestone_report.enabled");
 	});
 });
 
@@ -312,6 +311,8 @@ describe("FLY-1455 registry-or-exemption accounting", () => {
 		nonFlagEnv: {} as Record<string, string>,
 		nonFlagConfigKeys: {} as Record<string, string>,
 		retiredEnvVars: new Set<string>(),
+		retiredConfigPaths: new Set<string>(),
+		storeManagedEnvVars: new Set<string>(),
 	};
 
 	it("rejects an unregistered env read and boolean config key", () => {
@@ -425,6 +426,18 @@ describe("FLY-1455 registry-or-exemption accounting", () => {
 			]),
 		);
 	});
+
+	it("rejects a boolean descendant under a retired top-level config path", () => {
+		const issues = auditFlagAccounts({
+			...base,
+			exemptions: [],
+			registeredEnvVars: new Set(["FLYWHEEL_GATE"]),
+			retiredConfigPaths: new Set(["qa"]),
+		});
+		expect(issues).toEqual([
+			"retired config path qa has a boolean schema descendant qa.auto",
+		]);
+	});
 });
 
 describe("FLY-1455 reverse read-site evidence", () => {
@@ -447,25 +460,25 @@ describe("FLY-1455 reverse read-site evidence", () => {
 	it("requires the canonical delegated import and call", () => {
 		const site = {
 			file: "packages/teamlead/src/bridge/consumer.ts",
-			symbol: "codexHardGateEnabled",
+			symbol: "readRetirementScan",
 			pattern: "delegated" as const,
 			timing: "call_time" as const,
-			resolverModule: "packages/teamlead/src/bridge/codex-gate.ts",
-			resolverSymbol: "codexHardGateEnabled",
+			resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+			resolverSymbol: "storeFlagRetirementScanEnabled",
 		};
 		expect(
 			validateReadSiteEvidence({
 				file: site.file,
-				text: "function codexHardGateEnabled() {}\ncodexHardGateEnabled();",
-				envVar: "FLYWHEEL_CODEX_HARD_GATE",
+				text: "function storeFlagRetirementScanEnabled() {}\nfunction readRetirementScan() { storeFlagRetirementScanEnabled(); }",
+				envVar: "FLYWHEEL_FLAG_RETIREMENT_SCAN",
 				site,
 			}),
 		).toMatch(/canonical import/i);
 		expect(
 			validateReadSiteEvidence({
 				file: site.file,
-				text: 'import { codexHardGateEnabled as gate } from "./codex-gate.js";\ngate();',
-				envVar: "FLYWHEEL_CODEX_HARD_GATE",
+				text: 'import { storeFlagRetirementScanEnabled as gate } from "./flag-store-runtime.js";\nfunction readRetirementScan() { return gate(); }',
+				envVar: "FLYWHEEL_FLAG_RETIREMENT_SCAN",
 				site,
 			}),
 		).toBeNull();
@@ -806,8 +819,7 @@ describe("FLY-1852 registry-wide readSite pass", () => {
 		// one. Each drop removes a distinct message. The shapes are:
 		// env-param + env-param (external_merge_reconcile, done_thread_reconcile),
 		// dynamic + dynamic (ship-eligibility.ts / resolveDefaultOnGate), and
-		// env-param + config across patterns (auto_qa_killswitch + qa_auto both
-		// on resolveAutoQaPolicy).
+		// env-param + config across patterns on one shared resolver symbol.
 		{
 			name: "flag_seven",
 			envVar: "FLYWHEEL_ABSENT_ENVPARAM_ONE",

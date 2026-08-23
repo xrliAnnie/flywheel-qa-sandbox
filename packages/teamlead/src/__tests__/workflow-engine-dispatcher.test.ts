@@ -3360,7 +3360,7 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
-		expect(probeLaunchLiveness).not.toHaveBeenCalled();
+		expect(probeLaunchLiveness).toHaveBeenCalledOnce();
 		expect(fake.requests).toHaveLength(1);
 		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
 		expect(store.getWorkflowRunNode("run-1", "implement", 1)).toMatchObject({
@@ -3409,7 +3409,7 @@ describe("WorkflowEngineDispatcher", () => {
 
 	it("gives a ready resume target one durable bounded window before dead-exec replacement", async () => {
 		const store = await storeWithIntent("design");
-		const env = { ...WORKFLOW_ON, FLYWHEEL_WORKFLOW_RESUME: "1" };
+		const env = { ...WORKFLOW_ON };
 		const initial = fakeStartDispatcher(store, {
 			prepareIssueDelivery: "authoritative",
 		});
@@ -3418,7 +3418,6 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: initial.dispatcher,
 				env,
-				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date("2026-07-16T00:01:00.000Z"),
 				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-start-")),
 			}).reconcile(),
@@ -3458,7 +3457,6 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
-				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base),
 				stateRoot: mkdtempSync(join(tmpdir(), "fly1707-resume-window-open-")),
 				resolvePredecessorHead: async () => HEAD,
@@ -3485,7 +3483,6 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
-				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base + 9 * 60_000),
 				stateRoot: mkdtempSync(
 					join(tmpdir(), "fly1707-resume-window-restart-"),
@@ -3513,7 +3510,6 @@ describe("WorkflowEngineDispatcher", () => {
 				store,
 				startDispatcher: replacement.dispatcher,
 				env,
-				workflowResumeEnabled: () => env.FLYWHEEL_WORKFLOW_RESUME === "1",
 				now: () => new Date(base + 10 * 60_000),
 				stateRoot: mkdtempSync(
 					join(tmpdir(), "fly1707-resume-window-expired-"),

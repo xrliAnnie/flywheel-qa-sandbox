@@ -315,6 +315,7 @@ export type LifecycleShipInfra = Pick<
 	| "postShipSweep"
 	| "preArbitrate"
 	| "withIssueLifecycleMutex"
+	| "forceShippedHusks"
 >;
 
 export interface PostShipDeps {

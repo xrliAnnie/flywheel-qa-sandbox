@@ -455,46 +455,6 @@ describe("RunDispatcher", () => {
 		expect(result.executionId).toBe("qa-recovery-exec");
 	});
 
-	it("FLY-1279 auto-QA skips phase resume and preserves fresh-worktree false", async () => {
-		const [name, runtime] = makeRuntime("TestProject");
-		const resumeComputer = vi.fn(() => ({
-			startPoint: "resume-tip",
-			progressPath: "engineering/doc/progress.md",
-			priorExecutionId: "old-phase",
-			resumeKind: "restart" as const,
-		}));
-		const dispatcher = new RunDispatcher(
-			new Map([[name, runtime]]),
-			[],
-			RunnerAdmissionController.alwaysAdmit(),
-			undefined,
-			undefined,
-			resumeComputer,
-		);
-
-		await dispatcher.start({
-			issueId: "qa-issue-uuid",
-			projectName: "TestProject",
-			sessionRole: "qa",
-			shareParentBranch: false,
-			startPoint: "a".repeat(40),
-			qaContext: {
-				parentExecutionId: "parent-exec",
-				prHeadSha: "a".repeat(40),
-			},
-		});
-
-		expect(resumeComputer).not.toHaveBeenCalled();
-		const ctx = (
-			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
-		).run.mock.calls[0]?.[2];
-		expect(ctx).toMatchObject({
-			shareParentBranch: false,
-			startPoint: "a".repeat(40),
-		});
-		expect(ctx.progressResume).toBeUndefined();
-	});
-
 	it("FLY-1259: start() carries designBackend into Blueprint context", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
 		const dispatcher = new RunDispatcher(
@@ -1488,9 +1448,7 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 		expect(runnerDisplayName("something-else", true)).toBe("claude");
 	});
 
-	it("byte-compat: FLY-579 Auto-QA (role='qa' but NO shareParentBranch) stays 'claude'", () => {
-		// The Codex R2 regression: Auto-QA shares sessionRole "qa" but is not a
-		// DAG workflow (no shareParentBranch), so it must NOT flip to "-qa-".
+	it("a phase role without the shared-branch marker stays 'claude'", () => {
 		expect(runnerDisplayName("qa", false)).toBe("claude");
 		expect(runnerDisplayName("qa", undefined)).toBe("claude");
 		// A phase role without the DAG workflow marker is likewise unchanged.
@@ -1515,7 +1473,7 @@ describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () 
 		expect(
 			buildWindowLabel("FLY-800", runnerDisplayName("main", true), title),
 		).toBe("FLY-800-claude-DAG workflow");
-		// Auto-QA (qa role, no shareParentBranch) is unchanged — still 'claude'.
+		// A QA role without the shared-branch phase marker stays legacy `claude`.
 		expect(
 			buildWindowLabel("FLY-801", runnerDisplayName("qa", false), title),
 		).toBe("FLY-801-claude-DAG workflow");

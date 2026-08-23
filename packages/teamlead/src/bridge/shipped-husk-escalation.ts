@@ -28,12 +28,6 @@ import {
 	type TmuxTarget,
 } from "./tmux-lookup.js";
 
-export function shippedHuskForceEnabled(
-	env: Record<string, string | undefined> = process.env,
-): boolean {
-	return env.FLYWHEEL_SHIPPED_HUSK_FORCE !== "0";
-}
-
 export type ShippedHuskPaneEvidence =
 	| { kind: "alive"; tmuxWindow: string }
 	| { kind: "gone" | "indeterminate" };
@@ -203,7 +197,7 @@ export async function forceShippedHusks(
 	store: StateStore,
 	deps: ForceShippedHusksDeps = {},
 ): Promise<ForceShippedHusksResult> {
-	if (!(deps.forceEnabled ?? shippedHuskForceEnabled)()) return { cleared: [] };
+	if (!(deps.forceEnabled ?? (() => true))()) return { cleared: [] };
 	const now = deps.now ?? Date.now;
 	const lookupTarget = deps.lookupTarget ?? lookupTmuxTarget;
 	const probe = deps.probe ?? probeRunnerProcessLiveness;

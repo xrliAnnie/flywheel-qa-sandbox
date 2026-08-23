@@ -9,6 +9,7 @@
 
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { describe, expect, it, vi } from "vitest";
+import { insertHistoricalAutoQaRecord } from "../../__tests__/helpers/historical-qa.js";
 import type { ApplyTransitionOpts } from "../../applyTransition.js";
 import { StateStore } from "../../StateStore.js";
 import { assertIssueNotLifecycleClosed } from "../lifecycle-admission.js";
@@ -250,13 +251,13 @@ describe("closeoutIssue — canceled disposition", () => {
 	it("FLY-1066 A4: a QA record without a session row finalizes CommDB directly", async () => {
 		const store = await freshStore();
 		seedSession(store, "parent", "completed");
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "parent",
 			targetPrHeadSha: "head-a",
 			issueId: UUID,
 			projectName: "proj",
+			qaExecutionId: "qa-no-row",
 		});
-		store.setAutoQaQaExecutionId("parent", "head-a", "qa-no-row");
 		const finalizeCommDbSessionFn = vi.fn(() => ({
 			ok: true,
 			outcome: "finalized" as const,
@@ -328,13 +329,13 @@ describe("closeoutIssue — shipped disposition", () => {
 		const store = await freshStore();
 		seedSession(store, "root-e", "completed");
 		seedSession(store, "qa-e", "running", "qa-child-uuid");
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "root-e",
 			targetPrHeadSha: "sha",
 			issueId: UUID,
 			projectName: "proj",
+			qaExecutionId: "qa-e",
 		});
-		store.setAutoQaQaExecutionId("root-e", "sha", "qa-e");
 		const report = await closeoutIssue(baseDeps(store), {
 			issueKey: UUID,
 			projectName: "proj",
@@ -1535,7 +1536,7 @@ describe("Codex R2 fixes", () => {
 		};
 
 		// R10#1: qaStatus drift (running→passed) with UNCHANGED session status —
-		// AutoQaCoordinator flipping the QA verdict between approval and resume.
+		// historical QA evidence changing between approval and resume.
 		const qaDrift = await run(
 			"h-qadrift",
 			{

@@ -17,6 +17,10 @@ export interface CodeHit {
 	form: string;
 	start: number;
 	end: number;
+	code?: string;
+	anchorSymbol?: string;
+	anchorStart?: number;
+	anchorEnd?: number;
 }
 
 export interface RegexCandidate extends CodeHit {}
@@ -223,6 +227,27 @@ function diagnosticText(diagnostic: ts.Diagnostic): string {
 	return ts.flattenDiagnosticMessageText(diagnostic.messageText, " ");
 }
 
+function enclosingFunctionAnchor(
+	node: ts.Node,
+): { symbol: string; start: number; end: number } | undefined {
+	let current: ts.Node | undefined = node.parent;
+	while (current) {
+		if (
+			(ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current)) &&
+			current.name &&
+			ts.isIdentifier(current.name)
+		) {
+			return {
+				symbol: current.name.text,
+				start: current.getStart(),
+				end: current.getEnd(),
+			};
+		}
+		current = current.parent;
+	}
+	return undefined;
+}
+
 function addHit(
 	hits: CodeHit[],
 	source: ScanSource,
@@ -231,12 +256,21 @@ function addHit(
 	node: ts.Node,
 ): void {
 	if (!FLAG_NAME_RE.test(name)) return;
+	const anchor = enclosingFunctionAnchor(node);
 	const hit = {
 		name,
 		file: source.file,
 		form,
 		start: node.getStart(),
 		end: node.getEnd(),
+		code: source.text.slice(node.getStart(), node.getEnd()),
+		...(anchor
+			? {
+					anchorSymbol: anchor.symbol,
+					anchorStart: anchor.start,
+					anchorEnd: anchor.end,
+				}
+			: {}),
 	};
 	if (
 		!hits.some(
@@ -533,6 +567,22 @@ export interface AuditFlagAccountsInput {
 	nonFlagConfigKeys: Readonly<Record<string, string>>;
 	exemptions: readonly FlagExemption[];
 	retiredEnvVars: ReadonlySet<string>;
+	retiredConfigPaths: ReadonlySet<string>;
+	storeManagedEnvVars: ReadonlySet<string>;
+}
+
+function isSkillModeCompatibilityRead(hit: CodeHit): boolean {
+	return (
+		hit.name === "FLYWHEEL_SKILL_FRAMEWORK_MODE" &&
+		hit.file === "packages/config/src/skill-framework-mode.ts" &&
+		hit.form === "const-key" &&
+		hit.code === "args.env[SKILL_FRAMEWORK_MODE_ENV]" &&
+		hit.anchorSymbol === "resolveSkillFrameworkMode" &&
+		typeof hit.anchorStart === "number" &&
+		typeof hit.anchorEnd === "number" &&
+		hit.anchorStart <= hit.start &&
+		hit.end <= hit.anchorEnd
+	);
 }
 
 function duplicateValues(values: readonly string[]): string[] {
@@ -557,6 +607,27 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 			.filter((entry) => entry.kind === "config_key")
 			.map((entry) => entry.name),
 	);
+	const retiredConfigRoot = (path: string): string | undefined =>
+		[...input.retiredConfigPaths].find(
+			(retired) => path === retired || path.startsWith(`${retired}.`),
+		);
+	const skillModeCompatibilityReads = input.rawCodeHits.filter(
+		isSkillModeCompatibilityRead,
+	);
+	const allowedManagedRawRead =
+		skillModeCompatibilityReads.length === 1
+			? skillModeCompatibilityReads[0]
+			: undefined;
+	for (const hit of input.rawCodeHits) {
+		if (
+			input.storeManagedEnvVars.has(hit.name) &&
+			hit !== allowedManagedRawRead
+		) {
+			issues.push(
+				`${hit.name}: store-managed flag has raw production read at ${hit.file}:${hit.form}`,
+			);
+		}
+	}
 
 	for (const name of [...envNames].sort()) {
 		if (input.retiredEnvVars.has(name)) {
@@ -573,10 +644,17 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		}
 	}
 	for (const path of [...configPaths].sort()) {
+		const retired = retiredConfigRoot(path);
+		if (retired) {
+			issues.push(
+				`retired config path ${retired} has a boolean schema descendant ${path}`,
+			);
+		}
 		if (
 			!input.registeredConfigKeys.has(path) &&
 			!(path in input.nonFlagConfigKeys) &&
-			!configExemptions.has(path)
+			!configExemptions.has(path) &&
+			!retired
 		) {
 			issues.push(
 				`${path}: register this boolean config gate, classify it in NON_FLAG_CONFIG_KEYS with a reason, or add an owned FLAG_EXEMPTION`,
@@ -628,13 +706,18 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		if (!configPaths.has(path)) {
 			issues.push(`stale registered config key ${path}`);
 		}
+		if (retiredConfigRoot(path)) {
+			issues.push(`ledger overlap for config key ${path}`);
+		}
 	}
 	for (const path of Object.keys(input.nonFlagConfigKeys)) {
-		if (configExemptions.has(path)) {
+		if (configExemptions.has(path) || retiredConfigRoot(path)) {
 			issues.push(`ledger overlap for config key ${path}`);
 		}
 	}
 	for (const path of configExemptions) {
+		if (retiredConfigRoot(path))
+			issues.push(`ledger overlap for config key ${path}`);
 		if (!configPaths.has(path))
 			issues.push(`stale config FLAG_EXEMPTION ${path}`);
 	}
@@ -793,6 +876,7 @@ function delegatedEvidence(
 	importer: string,
 	modulePath: string,
 	exportName: string,
+	consumerAnchor: ts.Node,
 ): boolean {
 	const locals = new Set<string>();
 	const expected = normalizeFile(modulePath).replace(/\.(?:js|mjs)$/, ".ts");
@@ -824,7 +908,7 @@ function delegatedEvidence(
 		}
 		ts.forEachChild(node, visit);
 	};
-	visit(file);
+	visit(consumerAnchor);
 	return called;
 }
 
@@ -864,6 +948,15 @@ function findSymbolNode(file: ts.SourceFile, symbol: string): ts.Node | null {
 	let found: ts.Node | null = null;
 	const visit = (node: ts.Node): void => {
 		if (found) return;
+		if (
+			memberName &&
+			ts.isBinaryExpression(node) &&
+			node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+			accessPath(node.left) === symbol
+		) {
+			found = node;
+			return;
+		}
 		if (memberName) {
 			if (ts.isClassDeclaration(node) && node.name?.text === className) {
 				found =
@@ -987,10 +1080,11 @@ export function validateReadSitesForFile(input: {
 	file: string;
 	text: string;
 	requests: readonly ReadSiteEvidenceRequest[];
+	parsedFile?: ts.SourceFile;
 }): (string | null)[] {
 	const source = { file: input.file, text: input.text };
 	const isShell = input.file.endsWith(".sh");
-	let parsedFile: ts.SourceFile | undefined;
+	let parsedFile: ts.SourceFile | undefined = input.parsedFile;
 	const parseOnce = (): ts.SourceFile => {
 		parsedFile ??= sourceFile(source);
 		return parsedFile;
@@ -1015,12 +1109,19 @@ export function validateReadSitesForFile(input: {
 					"delegated site requires resolverModule and resolverSymbol",
 				);
 			}
+			const anchor = findSymbolNode(parseOnce(), site.symbol);
+			if (!anchor) {
+				return recordVerdict(
+					`delegated consumer anchor ${site.symbol} not found`,
+				);
+			}
 			return recordVerdict(
 				delegatedEvidence(
 					parseOnce(),
 					input.file,
 					site.resolverModule,
 					site.resolverSymbol,
+					anchor,
 				)
 					? null
 					: "delegated site lacks canonical import and call",
@@ -1066,6 +1167,37 @@ export interface DeclaredFlagLike {
 	readSites: readonly ReadSiteLike[];
 }
 
+const FLAG_STORE_RUNTIME_MODULE =
+	"packages/teamlead/src/bridge/flag-store-runtime.ts";
+
+function storeResolverReadsExactFlag(
+	file: ts.SourceFile,
+	resolverSymbol: string,
+	flagName: string,
+): boolean {
+	const resolver = findSymbolNode(file, resolverSymbol);
+	if (!resolver) return false;
+	let found = false;
+	const visit = (node: ts.Node): void => {
+		if (found) return;
+		if (
+			ts.isCallExpression(node) &&
+			ts.isIdentifier(node.expression) &&
+			(node.expression.text === "readBoolean" ||
+				node.expression.text === "readFlagValue") &&
+			node.arguments.length >= 2 &&
+			ts.isStringLiteralLike(node.arguments[1] as ts.Expression) &&
+			(node.arguments[1] as ts.StringLiteralLike).text === flagName
+		) {
+			found = true;
+			return;
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(resolver);
+	return found;
+}
+
 /**
  * FLY-1852: the whole registry-wide readSite evidence pass, in one place.
  *
@@ -1095,6 +1227,7 @@ export function validateDeclaredReadSites(input: {
 	}
 	const slots: (string | null)[] = [];
 	const byFile = new Map<string, Entry[]>();
+	const parsedStoreResolvers = new Map<string, ts.SourceFile>();
 	for (const flag of input.flags) {
 		for (const site of flag.readSites) {
 			const slot = slots.length;
@@ -1117,15 +1250,48 @@ export function validateDeclaredReadSites(input: {
 			else byFile.set(site.file, [entry]);
 		}
 	}
+	for (const bucket of byFile.values()) {
+		for (const entry of bucket) {
+			if (entry.site.resolverModule !== FLAG_STORE_RUNTIME_MODULE) continue;
+			const text = input.sourceByFile.get(FLAG_STORE_RUNTIME_MODULE);
+			if (!text || parsedStoreResolvers.has(FLAG_STORE_RUNTIME_MODULE))
+				continue;
+			parsedStoreResolvers.set(
+				FLAG_STORE_RUNTIME_MODULE,
+				sourceFile({ file: FLAG_STORE_RUNTIME_MODULE, text }),
+			);
+		}
+	}
 	for (const [file, bucket] of byFile) {
 		const issues = validateReadSitesForFile({
 			file,
 			text: input.sourceByFile.get(file) as string,
 			requests: bucket,
+			parsedFile: parsedStoreResolvers.get(file),
 		});
 		issues.forEach((issue, index) => {
 			const entry = bucket[index] as Entry;
 			if (issue) slots[entry.slot] = `${entry.flag} @ ${file}: ${issue}`;
+			if (
+				!issue &&
+				entry.site.resolverModule === FLAG_STORE_RUNTIME_MODULE &&
+				entry.site.resolverSymbol
+			) {
+				const resolverFile = parsedStoreResolvers.get(
+					FLAG_STORE_RUNTIME_MODULE,
+				);
+				if (
+					!resolverFile ||
+					!storeResolverReadsExactFlag(
+						resolverFile,
+						entry.site.resolverSymbol,
+						entry.flag,
+					)
+				) {
+					slots[entry.slot] =
+						`${entry.flag} @ ${file}: resolver ${entry.site.resolverSymbol} does not read exact managed flag ${entry.flag}`;
+				}
+			}
 		});
 	}
 	return slots.filter((entry): entry is string => entry !== null);

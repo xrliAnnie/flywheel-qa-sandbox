@@ -57,8 +57,8 @@ import {
 	type StateStore,
 } from "../StateStore.js";
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
-import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { ContinuityAudit } from "./continuity-audit.js";
 import {
 	lookupOpenPullRequests,
@@ -83,6 +83,7 @@ import {
 	type ProgressResumeDeps,
 	type ProgressResumeInfo,
 } from "./progress-resume.js";
+import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js";
 import {
 	type ContinuityComputer,
 	type DoaBackoffAdmissionFn,
@@ -639,12 +640,10 @@ export interface RunInfraOptions {
 	 * root, set on the DirectEventSink so its post-ship finalization can clean.
 	 */
 	removeCleanWorktree?: WorktreeCleanupFn;
-	/**
-	 * FLY-579: late-bound auto-QA coordinator holder, set on the DirectEventSink
-	 * so the in-process completed path drives auto-QA + suppresses the founder
-	 * gate (Codex R1 HIGH-1). Absent → byte-compatible.
-	 */
-	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	codexReviewHold?: { current: CodexReviewHoldCoordinator | undefined };
+	reviewAuthorizationAlerts?: {
+		current: ReviewAuthorizationAlerts | undefined;
+	};
 	turnBeltReconciler?: { current: TurnBeltReconciler | undefined };
 	/**
 	 * FLY-887: ship-time DAG workflow finalizer (closes parked design +
@@ -1040,9 +1039,9 @@ export async function setupRunInfrastructure(
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
 			// FLY-1185: entry-A bundle for the in-process ship path.
 			directSink.lifecycleInfra = runInfraOpts?.lifecycleInfra;
-			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
-			// auto-QA coordinator holder so it spawns QA + holds the founder.
-			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
+			directSink.codexReviewHold = runInfraOpts?.codexReviewHold;
+			directSink.reviewAuthorizationAlerts =
+				runInfraOpts?.reviewAuthorizationAlerts;
 			directSink.turnBeltReconciler = runInfraOpts?.turnBeltReconciler;
 			// FLY-887: ship-time finalizer for keep-alive parked design/implement phases.
 			directSink.finalizeWorkflowPhaseRoles =

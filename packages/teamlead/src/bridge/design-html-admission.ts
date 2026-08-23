@@ -8,7 +8,7 @@ export const DESIGN_HTML_EVIDENCE_ERROR = "design_html_evidence_missing";
 const ISSUE_IDENTIFIER = /^[A-Z]+-\d+$/;
 
 type AdmissionResult =
-	| { ok: true; required: boolean; disabled: boolean }
+	| { ok: true; required: boolean }
 	| {
 			ok: false;
 			code: typeof DESIGN_HTML_EVIDENCE_ERROR;
@@ -41,13 +41,9 @@ export function validateDesignHtmlCompletion(input: {
 	route: unknown;
 	payload: unknown;
 	authoritativeIssueIdentifier: unknown;
-	gateDisabled?: boolean;
 }): AdmissionResult {
 	if (input.route !== "phase_design_complete") {
-		return { ok: true, required: false, disabled: false };
-	}
-	if (input.gateDisabled) {
-		return { ok: true, required: true, disabled: true };
+		return { ok: true, required: false };
 	}
 	if (
 		typeof input.authoritativeIssueIdentifier !== "string" ||
@@ -78,5 +74,5 @@ export function validateDesignHtmlCompletion(input: {
 	if (headSha !== parsed.headSha) {
 		return rejected("attested head SHA does not match completion evidence");
 	}
-	return { ok: true, required: true, disabled: false };
+	return { ok: true, required: true };
 }

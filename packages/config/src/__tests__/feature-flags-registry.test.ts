@@ -12,6 +12,42 @@ import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 // restricted to flags the running Bridge will actually observe live.
 
 describe("feature-flag registry invariants", () => {
+	it("exports the FLY-1981 authoring guard through the public feature-flags surface", () => {
+		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
+	});
+
+	it.each([
+		["auto_qa_killswitch", "FLYWHEEL_AUTO_QA"],
+		["reports_ttl_days", "FLYWHEEL_REPORTS_TTL_DAYS"],
+		["workflow_resume", "FLYWHEEL_WORKFLOW_RESUME"],
+		["instruction_path_check", "FLYWHEEL_INSTRUCTION_PATH_CHECK"],
+		["design_html_gate", "FLYWHEEL_DESIGN_HTML_GATE"],
+		["ship_ci_guard", "FLYWHEEL_SHIP_CI_GUARD"],
+		["qa_done_gate_killswitch", "FLYWHEEL_QA_DONE_GATE"],
+		["codex_hard_gate_killswitch", "FLYWHEEL_CODEX_HARD_GATE"],
+		["founder_attribution_gate", "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE"],
+		["founder_consent_decision_mode", "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE"],
+	] as const)(
+		"FLY-1981 retires %s after solidifying its behavior",
+		(name, envVar) => {
+			expect(FEATURE_FLAGS.some((flag) => flag.name === name)).toBe(false);
+			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1981" });
+		},
+	);
+
+	it("FLY-1981 removes the consent and duplicate mention rows in Batch 4", () => {
+		expect(
+			FEATURE_FLAGS.some((flag) => flag.name === "lead_core_mention_gated"),
+		).toBe(false);
+		expect(FEATURE_FLAGS.some((flag) => flag.name === "qa_auto")).toBe(false);
+		expect(
+			FEATURE_FLAGS.some(
+				(flag) => flag.name === "founder_milestone_report_enabled",
+			),
+		).toBe(false);
+	});
+
 	it("FLY-1781 registers one default-on weekly-scan kill switch", () => {
 		const flag = FEATURE_FLAGS.find(
 			(entry) => entry.name === "flag_retirement_scan",
@@ -245,37 +281,6 @@ describe("feature-flag registry invariants", () => {
 		);
 	});
 
-	it("FLY-1404 registers the topology-neutral design HTML governance gate", () => {
-		const flag = FEATURE_FLAGS.find((f) => f.name === "design_html_gate");
-		expect(flag).toMatchObject({
-			category: "governance_gate",
-			envVar: "FLYWHEEL_DESIGN_HTML_GATE",
-			polarity: "default_on",
-			default: true,
-			toggleable: "readonly",
-		});
-		expect(flag?.readSites).toEqual(
-			expect.arrayContaining([
-				expect.objectContaining({
-					file: "packages/flywheel-comm/src/commands/complete.ts",
-					timing: "cli_invocation",
-				}),
-				expect.objectContaining({
-					file: "packages/teamlead/src/bridge/event-route.ts",
-					timing: "call_time",
-				}),
-				expect.objectContaining({
-					file: "packages/teamlead/src/DirectEventSink.ts",
-					timing: "call_time",
-				}),
-				expect.objectContaining({
-					file: "packages/teamlead/src/bridge/complete-marker-reconciler.ts",
-					timing: "call_time",
-				}),
-			]),
-		);
-	});
-
 	it("FLY-1645 retires receipt rollout switches without active readers", () => {
 		const retired = [
 			"FLYWHEEL_RECEIPT_FOUNDATION",
@@ -309,24 +314,6 @@ describe("feature-flag registry invariants", () => {
 				timing: "call_time",
 			}),
 		]);
-
-		const shipCiGuard = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_SHIP_CI_GUARD",
-		);
-		expect(shipCiGuard).toMatchObject({
-			name: "ship_ci_guard",
-			category: "kill_switch",
-			polarity: "default_on",
-			default: true,
-			toggleable: "readonly",
-		});
-		expect(shipCiGuard?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/flywheel-comm/src/ship-ci-guard.ts",
-				symbol: "probeShipCiGreen",
-				timing: "cli_invocation",
-			}),
-		]);
 	});
 
 	it("FLY-1423 keeps workflow re-entry as a default-on kill switch", () => {
@@ -342,8 +329,8 @@ describe("feature-flag registry invariants", () => {
 			toggleable: "direct",
 		});
 		expect(flag?.readSites.map((site) => site.symbol)).toEqual([
-			"WorkflowReworkCoordinator reentry injection",
-			"WorkflowEngineDispatcher reentry injection",
+			"workflowReworkCoordinatorHolder.current",
+			"workflowEngineDispatcher",
 		]);
 		expect(flag?.directToggleProof).toMatch(/workflow-engine-dispatcher/i);
 		expect(
@@ -402,17 +389,13 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
-	it("FLY-1344 leaves true authorization surfaces governance-readonly", () => {
-		for (const name of [
-			"founder_consent_decision_mode",
-			"founder_attribution_gate",
-			"lead_lease_bypass",
-		]) {
-			expect(FEATURE_FLAGS.find((flag) => flag.name === name)).toMatchObject({
-				category: "governance_gate",
-				toggleable: "readonly",
-			});
-		}
+	it("FLY-1344 leaves the surviving authorization surface governance-readonly", () => {
+		expect(
+			FEATURE_FLAGS.find((flag) => flag.name === "lead_lease_bypass"),
+		).toMatchObject({
+			category: "governance_gate",
+			toggleable: "readonly",
+		});
 	});
 });
 

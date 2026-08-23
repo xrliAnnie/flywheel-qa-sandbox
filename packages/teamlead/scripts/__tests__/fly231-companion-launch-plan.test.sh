@@ -223,8 +223,7 @@ normalize_plan() {
 # the role changes. The FLY-231 goldens predate later base rules that
 # claude-lead.sh now emits for standard/cos leads — discord-reply-contract.md
 # (FLY-387), runner-reengage-rules.md (FLY-229), xiaohongshu-memory-rules.md
-# (FLY-222), and (added in this FLY-879 refresh) auto-qa-pipeline.md (FLY-579),
-# default-enable-policy.md (FLY-707), model-routing.md (FLY-728), and
+# (FLY-222), default-enable-policy.md (FLY-707), model-routing.md (FLY-728), and
 # runner-patrol-rules.md (FLY-369). Proven pre-existing: HEAD's claude-lead.sh
 # appends all four but the committed golden lacked them, and the FLY-879 external
 # role diff never touches these dept-branch appends. This sentinel is not wired
@@ -271,7 +270,6 @@ env=USER=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard
-rule=auto-qa-pipeline.md
 rule=cross-dept-channel-rules.md
 rule=default-enable-policy.md
 rule=department-lead-rules.md

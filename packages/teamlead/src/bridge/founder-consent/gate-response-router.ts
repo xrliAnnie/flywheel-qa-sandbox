@@ -28,7 +28,7 @@ import {
 	type GateResponseStore,
 	writeGateResponseAndRunPostWrite,
 } from "../approval-signal/write-gate-response.js";
-import type { ReviewHoldReason } from "../auto-qa-held.js";
+import type { ReviewHoldReason } from "../review-hold.js";
 import type { FounderConsentEvaluator } from "./evaluator.js";
 import type { ConsentContextResolver } from "./middleware.js";
 
@@ -184,12 +184,10 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 			return;
 		}
 		// FLY-945 Fix E (Codex code R1 HIGH): `leadId` is caller-controlled and
-		// this endpoint's pass-through / audit_only paths write it VERBATIM as
+		// this endpoint writes it VERBATIM as
 		// the response attribution. Refuse the reserved founder-side writer
 		// names (and anything Discord-snowflake-shaped — the founder id) so a
-		// caller cannot forge a verify-approval-trusted attribution; the
-		// enforce path assigns "bridge-founder-consent" itself after a PASSING
-		// consent evaluation.
+		// caller cannot forge a verify-approval-trusted attribution.
 		if (isReservedApprovalAttribution(leadId)) {
 			res.status(400).json({
 				error: "reserved_attribution",
@@ -447,25 +445,10 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 
 			// 5. Allow: write the response (same path approveExecution uses).
 			//
-			// FLY-945 Fix E (write side, Codex R1 #2 / R2 #2): attribution now
-			// carries authority — verify-approval refuses non-founder writers.
-			//   - ENFORCE allow/bypass: the consent evaluator VERIFIED founder
-			//     consent → write the trusted "bridge-founder-consent" attribution
-			//     (the leadId stays in the founder_consent_audit row — no audit
-			//     loss). Without this, Fix E's read-side gate would also reject
-			//     legitimately-consented approvals.
-			//   - AUDIT_ONLY: deliberately KEEP leadId — audit_only allows EVERY
-			//     write (even evaluator-DENIED ones), so a trusted attribution
-			//     here would re-open the Lead self-approval door. The read side
-			//     then refuses it (that IS Fix E's point; QA rooms / emergencies
-			//     use the kill-switch).
-			//   (Pass-through/off keeps leadId too — see the !evaluator branch.)
-			const enforceVerified =
-				deps.evaluator.decisionMode !== "audit_only" &&
-				(decision.decision === "allow" || decision.decision === "bypass");
-			const result = await writeThroughBoundary(
-				enforceVerified ? "bridge-founder-consent" : leadId,
-			);
+			// Production is permanently audit_only, so this Lead relay never mints
+			// trusted founder attribution. Directly injected evaluator modes retain
+			// their decision capability for unit tests but share this writer policy.
+			const result = await writeThroughBoundary(leadId);
 			if (rejectBoundaryResult(result)) return;
 			res.json({
 				success: true,

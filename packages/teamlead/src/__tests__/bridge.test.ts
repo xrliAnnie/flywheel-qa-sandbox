@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
@@ -27,13 +27,19 @@ describe("Bridge scaffold", () => {
 	let closeFn: (() => Promise<void>) | undefined;
 
 	beforeEach(() => {
-		process.env.TEAMLEAD_DEFAULT_LEAD_AGENT = "product-lead";
+		vi.stubEnv("TEAMLEAD_DEFAULT_LEAD_AGENT", "product-lead");
+		vi.stubEnv("DISCORD_OWNER_USER_ID", "test-founder");
+		vi.stubEnv("FLYWHEEL_FOUNDER_USER_ID", undefined);
 	});
 
 	afterEach(async () => {
-		if (closeFn) {
-			await closeFn();
-			closeFn = undefined;
+		try {
+			if (closeFn) {
+				await closeFn();
+				closeFn = undefined;
+			}
+		} finally {
+			vi.unstubAllEnvs();
 		}
 	});
 
@@ -476,6 +482,16 @@ describe("Bridge scaffold", () => {
 		} finally {
 			if (prev !== undefined) process.env.TEAMLEAD_HOST = prev;
 		}
+	});
+
+	it("loadConfig() boots from the canonical founder identity provisioned by fresh setup", () => {
+		vi.stubEnv("DISCORD_OWNER_USER_ID", "canonical-founder");
+		vi.stubEnv("FLYWHEEL_FOUNDER_USER_ID", undefined);
+
+		const config = loadConfig();
+		expect(config.discordOwnerUserId).toBe("canonical-founder");
+		expect(config.founderConsent?.founderUserId).toBe("canonical-founder");
+		expect(config.founderConsent?.decisionMode).toBe("audit_only");
 	});
 
 	it("loadConfig() rejects a missing default Lead identity", () => {

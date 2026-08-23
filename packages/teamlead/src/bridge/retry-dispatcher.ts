@@ -1,8 +1,5 @@
 /** GEO-168: IRetryDispatcher interface — retry creates a new execution. */
 
-// FLY-579: QaContext is defined in edge-worker (Blueprint owns the prompt
-// rendering); teamlead depends on edge-worker, so we import the type here for
-// StartRequest. Defining it in teamlead would invert the dependency.
 import type {
 	DesignBackend,
 	PonytailInput,
@@ -13,12 +10,11 @@ import type {
 } from "flywheel-config";
 import type { LaunchPrecommitOutcome } from "flywheel-core";
 import type {
-	QaContext,
 	WorkflowIssueDeliveryInput,
 	WorkflowResumeContext,
 } from "flywheel-edge-worker/dist/Blueprint.js";
 
-export type { QaContext, WorkflowResumeContext };
+export type { WorkflowResumeContext };
 
 export interface GeneralizedExecutionDispatch {
 	/** True only for a typed run whose transitions are owned by the DAG engine. */
@@ -245,16 +241,8 @@ export interface StartRequest {
 	 */
 	skillFrameworkMode?: SkillFrameworkMode;
 	/**
-	 * FLY-1356 (R1#3): the parent implement session's recorded arm, set ONLY by
-	 * the Auto-QA coordinator (Bridge-internal, never from the HTTP body) — the
-	 * QA runner inherits the implement arm instead of hashing its own QA issue.
-	 */
-	skillFrameworkModeParent?: SkillFrameworkMode;
-	/**
-	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
-	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
-	 * coordinator passes the parent main session's `pr_head_sha` so the QA
-	 * worktree is pinned to the exact reviewed commit (NOT `origin/main`).
+	 * Explicit git start point for the worktree (a commit SHA / ref), threaded to
+	 * `WorktreeManager.create({ startPoint })` for internal resume/dispatch flows.
 	 * Absent → existing behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
@@ -271,36 +259,15 @@ export interface StartRequest {
 		reason: string;
 	};
 	/**
-	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
-	 * Auto-QA spawns. Blueprint renders it into a QA-mode prompt (independent
-	 * verification of `parentExecutionId`'s PR at `prHeadSha`) and the QA runner
-	 * reports its verdict back via `flywheel-comm qa-result --target-exec
-	 * <parentExecutionId>`.
-	 */
-	qaContext?: QaContext;
-	/**
 	 * FLY-643: when true, the runner's executor backend is resolved WITHOUT the
 	 * issue's vendor labels (project roles config > env > built-in claude-tmux).
 	 * `issueLabels` is still carried on the BlueprintContext for Lead/thread
 	 * routing — only the backend-selection label layer is bypassed.
 	 *
-	 * Auto-QA sets this so a QA runner spawned on a separate QA·FLY-XX issue (or
-	 * mirroring the parent's labels) cannot inherit the parent task's vendor
-	 * backend (e.g. `agy`/`kimi` → no-transport) and must run on the normal
-	 * transported Claude lane (Claude-in-Chrome E2E). Absent → existing
-	 * label-driven backend resolution (byte-compatible).
+	 * Generalized DAG dispatches use this so the phase table, not issue vendor
+	 * labels, selects the execution backend.
 	 */
 	ignoreRunnerLabelSelection?: boolean;
-	/**
-	 * FLY-752: require a MAILBOX-CAPABLE executor backend. Auto-QA sets this so the
-	 * QA runner can always receive a `retest_wake` across the fix loop. If backend
-	 * resolution would pick a no-transport lane (antigravity/kimi → transport:none,
-	 * even after `ignoreRunnerLabelSelection` because project roles / env default
-	 * still apply), it is FORCED to `claude-tmux` (and the no-transport role/env
-	 * runner model is dropped to the Claude account default, since it may be
-	 * Claude-incompatible). Absent → no forcing (byte-compatible).
-	 */
-	requireMailboxTransport?: boolean;
 	/**
 	 * FLY-615: per-run + per-issue ponytail signal (run-param override + issue
 	 * labels + read status), built by runs-route. Resolved against project

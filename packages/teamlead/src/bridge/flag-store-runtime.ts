@@ -72,6 +72,16 @@ export function storeFlagRetirementScanEnabled(
 	return readBoolean(runtime, "flag_retirement_scan");
 }
 
+export function storeLoopProfilerEnabled(runtime: FlagStoreRuntime): boolean {
+	return readBoolean(runtime, "loop_profiler");
+}
+
+export function storeShippedHuskForceEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "shipped_husk_force");
+}
+
 export function storeWorkflowReworkReentryEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {
@@ -82,10 +92,6 @@ export function storeSkillFrameworkModeControl(
 	runtime: FlagStoreRuntime,
 ): FlagStoreRawValue {
 	return readFlagValue(runtime, "skill_framework_mode");
-}
-
-export function storeWorkflowResumeEnabled(runtime: FlagStoreRuntime): boolean {
-	return readBoolean(runtime, "workflow_resume");
 }
 
 export function storeWorkflowTurnDivergenceAlertsEnabled(

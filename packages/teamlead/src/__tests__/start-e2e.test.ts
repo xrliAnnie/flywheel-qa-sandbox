@@ -15,6 +15,7 @@ import {
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { LEGACY_ROUTING_OVERRIDE_LABEL } from "../work-kind.js";
 
 // Mock @linear/sdk for pre-flight issue check.
 // FLY-127: default issue carries "Product" label so the default product-lead
@@ -31,7 +32,11 @@ vi.mock("@linear/sdk", () => ({
 			url: "https://linear.app/test/issue/GEO-TEST",
 			// FLY-80 + FLY-127: Auto-resolve leadId AND dept-scope check use labels.
 			labels: vi.fn().mockResolvedValue({
-				nodes: [{ name: "Product" }],
+				// This suite exercises the classic dispatcher boundary. FLY-1981
+				// makes an unconfigured main-role request enter schema-v2 by default;
+				// keep this fixture on the explicit legacy compatibility route while
+				// runs-route.dag-entry.test.ts owns the fleet-default positive control.
+				nodes: [{ name: "Product" }, { name: LEGACY_ROUTING_OVERRIDE_LABEL }],
 			}),
 		}),
 	})),
@@ -238,7 +243,7 @@ describe("Start API E2E", () => {
 			// lowercased Linear labels; owningDept resolved via
 			// DepartmentRegistry from the "Product" mock label.
 			agentName: undefined,
-			issueLabels: ["product"],
+			issueLabels: ["product", LEGACY_ROUTING_OVERRIDE_LABEL],
 			owningDept: "product",
 			// FLY-137 Phase 5: codex-skip label snapshot at run start.
 			// Mock issue has no codex-skip label → false.
@@ -251,7 +256,10 @@ describe("Start API E2E", () => {
 			// runOverride; labels from the mock issue; readable.
 			ponytailInput: {
 				kind: "start_signal",
-				signal: { labels: ["product"], labelStatus: "readable" },
+				signal: {
+					labels: ["product", LEGACY_ROUTING_OVERRIDE_LABEL],
+					labelStatus: "readable",
+				},
 			},
 		});
 	}, 15_000);
@@ -527,7 +535,9 @@ describe("Start API E2E", () => {
 					title: "Test Issue",
 					identifier: "GEO-FLY127",
 					labels: vi.fn().mockResolvedValue({
-						nodes: labels.map((name) => ({ name })),
+						nodes: [...labels, LEGACY_ROUTING_OVERRIDE_LABEL].map((name) => ({
+							name,
+						})),
 					}),
 				}),
 			}));

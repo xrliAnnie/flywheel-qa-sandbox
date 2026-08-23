@@ -42,18 +42,14 @@
  * in off/audit_only the Bridge writes the response without blocking consent.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import {
-	crossFamilyReviewSatisfied,
-	readEnvValueFromContent,
-} from "flywheel-config";
+import { crossFamilyReviewSatisfied } from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	isTrustedApprovalAttribution,
-	resolveFounderAttributionGateOn,
 	resolveFounderId,
 } from "../founder-attribution.js";
 import { resolveFounderReviewVerdictAtCommit } from "../founder-review.js";
@@ -69,10 +65,7 @@ export interface VerifyApprovalArgs {
 	/** StateStore (teamlead.db) path override. */
 	stateDbPath?: string;
 	env?: NodeJS.ProcessEnv;
-	/**
-	 * FLY-827: override for the authoritative `~/.flywheel/.env` path the codex
-	 * hard-gate kill-switch is read from at call time (test injection only).
-	 */
+	/** Shared live-dotenv override used by founder-attribution checks. */
 	codexDotenvPath?: string;
 	/** Test seam; production probes the bound PR in its persisted worktree. */
 	ciProbe?: (args: {
@@ -269,44 +262,6 @@ export function resolveStateDbPath(
 		env.TEAMLEAD_DB_PATH?.trim() ||
 		join(homedir(), ".flywheel", "teamlead.db")
 	);
-}
-
-const CODEX_HARD_GATE_KEY = "FLYWHEEL_CODEX_HARD_GATE";
-
-/**
- * FLY-827 (Codex R2 HIGH-1 + R3 HIGH-1): resolve whether the Codex hard gate is
- * ON, BIDIRECTIONALLY LIVE for an already-running runner shell. verify-approval
- * runs in the runner CLI process, whose inherited `process.env` is a stale
- * snapshot from spawn time. The authoritative live source is `~/.flywheel/.env`
- * (the direct feature-flag toggle writes it):
- *
- *   1. explicit test override (`args.env` HAS the key) — wins.
- *   2. `~/.flywheel/.env` READABLE → authoritative, INCLUDING key-absent. The
- *      default-on toggle turns the gate back ON by DELETING the `.env` line, so
- *      key-absent MUST mean ON — never fall back to a stale inherited `0`, or a
- *      runner that inherited `=0` during an emergency OFF would stay bypassed
- *      after re-arm. A readable-but-corrupt file with no exact `KEY=0` → ON
- *      (fail-closed).
- *   3. `.env` unreadable/missing → inherited `process.env` (legacy fallback).
- */
-export function resolveCodexHardGateOn(args: {
-	argsEnv?: NodeJS.ProcessEnv;
-	processEnv: NodeJS.ProcessEnv;
-	dotenvPath?: string;
-}): boolean {
-	// 1. explicit test injection.
-	if (args.argsEnv && CODEX_HARD_GATE_KEY in args.argsEnv) {
-		return args.argsEnv[CODEX_HARD_GATE_KEY] !== "0";
-	}
-	// 2. authoritative ~/.flywheel/.env (readable ⇒ key-absent = default-on).
-	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
-	try {
-		const content = readFileSync(path, "utf-8");
-		return readEnvValueFromContent(content, CODEX_HARD_GATE_KEY) !== "0";
-	} catch {
-		// 3. .env unreadable/missing → legacy inherited env.
-		return args.processEnv[CODEX_HARD_GATE_KEY] !== "0";
-	}
 }
 
 export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
@@ -556,35 +511,29 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 
 	// 3.5 FLY-945 Fix E: FOUNDER ATTRIBUTION. The structured shape alone is not
 	// authority — the WRITER must be founder-side: the canonical founder Discord
-	// id (FLY-799 text/✅), "bridge" (/api/actions/approve), or
-	// "bridge-founder-consent" (the enforce-path gate-response router). A Lead
+	// id (FLY-799 text/✅), "bridge" (/api/actions/approve), or the historical
+	// "bridge-founder-consent" actor retained for read compatibility. A Lead
 	// id here means a `respond` self-approval (the FLY-921 door) → refused.
 	// Honest boundaries (documented in founder-attribution.ts): the founder id
 	// resolves LIVE from ~/.flywheel/.env; unresolvable id → this step is
 	// SKIPPED (a project without a Discord founder cannot be attribution-gated).
-	// Kill-switch FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0 (live .env read; QA rooms
-	// set it). `args.codexDotenvPath` doubles as the .env override for tests —
-	// all three live flags read the same ~/.flywheel/.env file.
-	const attributionGateOn = resolveFounderAttributionGateOn({
+	// `args.codexDotenvPath` is the shared test override for the live
+	// ~/.flywheel/.env source used by merge approval and founder identity/config
+	// resolution. Attribution is permanently enforced whenever that identity
+	// resolves; there is no environment bypass.
+	const founderId = resolveFounderId({
 		argsEnv: args.env,
 		processEnv: env,
 		dotenvPath: args.codexDotenvPath,
 	});
-	if (attributionGateOn) {
-		const founderId = resolveFounderId({
-			argsEnv: args.env,
-			processEnv: env,
-			dotenvPath: args.codexDotenvPath,
+	if (
+		founderId !== undefined &&
+		!isTrustedApprovalAttribution(responseFrom, founderId)
+	) {
+		return notApproved("response_not_founder_attributed", {
+			questionId,
+			responseFrom,
 		});
-		if (
-			founderId !== undefined &&
-			!isTrustedApprovalAttribution(responseFrom, founderId)
-		) {
-			return notApproved("response_not_founder_attributed", {
-				questionId,
-				responseFrom,
-			});
-		}
 	}
 
 	// 4. Status + PR-head binding.
@@ -672,16 +621,10 @@ export function verifyApproval(args: VerifyApprovalArgs): VerifyApprovalResult {
 		}
 	}
 
-	// 5. FLY-827 Codex code-review HARD GATE (defense-in-depth: even a verified
-	// founder approval must not merge without Codex APPROVED for THIS head). Live
-	// kill-switch via the authoritative ~/.flywheel/.env (bidirectional). A
-	// codex-skip session bypasses (sanctioned). Gate off → skipped (byte-compat).
-	const codexGateOn = resolveCodexHardGateOn({
-		argsEnv: args.env,
-		processEnv: env,
-		dotenvPath: args.codexDotenvPath,
-	});
-	if (codexGateOn && !row.codex_skip && !codexApprovedForHead) {
+	// 5. FLY-827 Codex code-review predicate (defense-in-depth: even a verified
+	// founder approval must not merge without exact-head Codex approval). A
+	// session-level codex_skip remains the sanctioned bypass.
+	if (!row.codex_skip && !codexApprovedForHead) {
 		return notApproved("codex_review_not_approved", {
 			questionId,
 			responseFrom,

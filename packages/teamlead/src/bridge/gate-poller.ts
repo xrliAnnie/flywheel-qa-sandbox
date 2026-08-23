@@ -24,14 +24,9 @@ import { createHash } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import { parseFounderReviewQuestionContent } from "flywheel-comm/founder-review";
 import { readContentRef } from "flywheel-comm/utils";
-// FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
+// FLY-927: gate patrol wake primitive.
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import {
-	type FounderMilestoneReportConfig,
-	type MilestoneKind,
-	phaseMessageTag,
-	SUPPORTED_MILESTONE_KINDS_V1,
-} from "flywheel-config";
+import { phaseMessageTag } from "flywheel-config";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import {
 	encodeReactionEmoji,
@@ -58,7 +53,6 @@ import {
 	runDeferredApprovalRebindPass,
 } from "./approval-signal/deferred-approval.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { type ReviewHoldReason, reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { DISCORD_API, postDiscordMessageToChannel } from "./discord-utils.js";
 import { drainFounderActionLedger } from "./founder-action-drain.js";
@@ -66,7 +60,6 @@ import {
 	isDiscordSnowflake,
 	parseSqliteUtcMs,
 } from "./founder-notify-utils.js";
-
 import {
 	emitFounderReplyDeliveryForThread,
 	type FounderReplyDeliverDeps,
@@ -77,20 +70,17 @@ import {
 import { FounderReplyUnreachableReconcile } from "./founder-reply-unreachable.js";
 import { founderReviewCheckpointEnabled } from "./founder-review-authority.js";
 import { tryFounderReviewReactionResponse } from "./founder-review-response.js";
-import {
-	emitFounderMilestoneNotification,
-	emitFounderThreadNotification,
-} from "./founder-thread-notifier.js";
+import { emitFounderThreadNotification } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { MergedGateGuard } from "./merged-gate-guard.js";
-import { decideMilestoneReport } from "./milestone-report-policy.js";
 import {
 	isAutoMigratableClaudeTmux,
 	parsePaneLossGenerationParams,
 } from "./pane-loss-reconcile.js";
 import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
+import { type ReviewHoldReason, reviewHoldReason } from "./review-hold.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import {
 	dispatchLeadEventCompat as dispatchLeadEvent,
@@ -185,14 +175,6 @@ export interface GatePollerConfig {
 	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
 	 */
 	displayReconcileEveryNTicks?: number;
-	/**
-	 * FLY-1279 B2: event-independent dead auto-QA recovery. Piggybacks the
-	 * existing timer.
-	 */
-	onQaReconcileTick?: () => void | Promise<void>;
-	/** Cadence in poll ticks (default 20, about 60s in production). */
-	qaReconcileEveryNTicks?: number;
-
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
 	/** Global Discord bot token fallback (lead.botToken takes precedence). */
 	discordBotToken?: string;
@@ -315,31 +297,6 @@ export interface GatePollerConfig {
 	 * The LeadAlertNotifier queues transient failures and never throws.
 	 */
 	leadAlertSink?: { alert(payload: AlertPayload): Promise<AlertResult> };
-
-	// ── FLY-725: founder milestone report ──
-	/**
-	 * Per-project founder milestone-report config, loaded from each project's
-	 * CANONICAL root (see founder-milestone-config-source.ts). Absent map / entry
-	 * / enabled:false → the patrol no-ops for that project (byte-compatible).
-	 */
-	founderMilestoneReportByProject?: Map<
-		string,
-		FounderMilestoneReportConfig | undefined
-	>;
-	/**
-	 * Boot timestamp captured BEFORE `app.listen()` — the first-enablement baseline
-	 * cutoff (Codex R2 #1). Terminal sessions with `last_activity_at <= cutoff`
-	 * (pre-boot history) are marker-seeded (not pinged) on the first patrol; those
-	 * arriving after the cutoff still ping. Consumed only during first-enable
-	 * seeding; later boots (baseline marker present) ignore it. Absent → Date.now().
-	 */
-	founderMilestoneBaselineCutoffMs?: number;
-	/** FLY-725: patrol cadence in poll ticks (default 20 ≈ 60s at 3s). */
-	milestonePatrolEveryNTicks?: number;
-	/** FLY-725: lookback window (hours) bounding the terminal-session scan (default 24). */
-	founderMilestoneLookbackHours?: number;
-	/** FLY-725: grace (ms) since the terminal transition before pinging (default 90s). */
-	founderMilestoneGraceMs?: number;
 }
 
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
@@ -356,12 +313,6 @@ const DEFAULT_EVICTION_RETRY_TICKS = 20;
 function positiveIntEnv(raw: string | undefined, fallback: number): number {
 	const n = Number.parseInt(raw ?? "", 10);
 	return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-/** FLY-725: parse a non-negative int env (0 allowed, e.g. grace=0 = immediate). */
-function nonNegativeIntEnv(raw: string | undefined, fallback: number): number {
-	const n = Number.parseInt(raw ?? "", 10);
-	return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 interface PendingQuestion {
@@ -493,9 +444,7 @@ export class GatePoller {
 					title: `Ship readiness held — ${issue}`,
 					body:
 						`Founder approval remains hidden for ${issue} because ${reason}. ` +
-						"Bridge will retry the server-owned PR classification. For a code-bearing run, use the two-step same-origin flow: " +
-						"POST /api/qa/manual-spawn/stage with executionId and prHeadSha, then POST /api/qa/manual-spawn with the returned x-flywheel-confirm-token header. " +
-						"Both requests require Origin: http://127.0.0.1:<port> matching the Bridge origin.",
+						"Bridge will retry the server-owned PR classification. If the evidence remains missing, cancel the held run and redispatch it through the DAG QA pipeline.",
 					severity: "warning",
 					sessionKey: session.execution_id,
 				}),
@@ -792,24 +741,6 @@ export class GatePoller {
 				}
 			}
 
-			// FLY-1279 B2: retained dead auto-QA state-convergence sweep.
-			if (
-				this.config.onQaReconcileTick &&
-				(this.tickCount - 1) % this.qaReconcileEveryNTicks() === 0
-			) {
-				void Promise.resolve()
-					.then(() =>
-						this.withSpan("gate-poller.qa-reconcile", () =>
-							this.config.onQaReconcileTick?.(),
-						),
-					)
-					.catch((err) =>
-						console.warn(
-							`[GatePoller] FLY-1279 auto-QA reconcile error (non-fatal): ${(err as Error).message}`,
-						),
-					);
-			}
-
 			// FLY-161: iterate (project, lead) pairs directly instead of starting
 			// from getActiveSessions(). This lets runner_question survive Runner
 			// completion — a question whose source session has transitioned to
@@ -985,27 +916,6 @@ export class GatePoller {
 						// best-effort StateStore self-heal so the next lead/cycle is healthy.
 						// Complementary to the FLY-307 circuit: circuit isolates the poisoned
 						// path, recover repairs the underlying store.
-						this.maybeRecoverStore(err);
-					}
-				}
-
-				// FLY-725: founder milestone-report patrol — per-project (NOT
-				// per-lead), cadence-gated, fully isolated (own catch → warn + skip,
-				// never a poll abort). Zero new timer (piggybacks this tick). Pushes
-				// one @founder ping to the issue thread when a Runner reached a
-				// terminal milestone the founder was never told about.
-				if (this.tickCount % this.milestonePatrolEveryNTicks() === 1) {
-					try {
-						await this.withSpan("gate-poller.milestone-report", () =>
-							this.maybeEmitMilestoneReports(project),
-						);
-					} catch (err) {
-						console.warn(
-							`[GatePoller] milestone patrol error for ${project.projectName}:`,
-							err instanceof Error ? err.message : String(err),
-						);
-						// FLY-639: touches StateStore (getRecentTerminalSessionsForNotify /
-						// getEventsByExecution / getChatThreadByIssue / insertEvent).
 						this.maybeRecoverStore(err);
 					}
 				}
@@ -1347,11 +1257,6 @@ export class GatePoller {
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
 	private displayReconcileEveryNTicks(): number {
 		return this.config.displayReconcileEveryNTicks ?? 60;
-	}
-
-	/** FLY-1279 B2: dead auto-QA recovery cadence (default 20 ≈ 60s). */
-	private qaReconcileEveryNTicks(): number {
-		return this.config.qaReconcileEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
 	}
 
 	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
@@ -2135,8 +2040,8 @@ export class GatePoller {
 	 * could NOT be delivered — a config skip (no bot token / owner / bad owner) or
 	 * the transient retry budget elapsed — surface it on the FLY-368 alert channel
 	 * so the founder is not left in hours of silence. Reuses the already-wired
-	 * `leadAlertSink`; `founder_milestone_undelivered` event type (title
-	 * distinguishes gate vs milestone). One alert per undelivered ping — the
+	 * `leadAlertSink`; `founder_gate_delivery_failed` event type. One alert per
+	 * undelivered ping — the
 	 * terminal marker written alongside stops re-processing.
 	 */
 	private async escalateFounderThreadUndelivered(
@@ -2154,7 +2059,7 @@ export class GatePoller {
 				leadId: lead.agentId,
 				projectName: session.project_name,
 				eventId: `founder-thread-undelivered:${session.execution_id}:${question.id}`,
-				eventType: "founder_milestone_undelivered",
+				eventType: "founder_gate_delivery_failed",
 				title: `Founder ping undelivered — ${issue} (${cp})`,
 				body:
 					`Bridge could not deliver the ${cp} @founder ping for ${issue} ` +
@@ -2166,336 +2071,6 @@ export class GatePoller {
 		} catch (err) {
 			console.warn(
 				`[GatePoller] founder-thread undelivered-escalation failed for ${issue}: ${err instanceof Error ? err.message : String(err)}`,
-			);
-		}
-	}
-
-	// ── FLY-725: founder milestone-report patrol (Bridge-primary @founder push) ──
-
-	/** In-process dedup key = `${execution_id}:${status}` (durable marker mirrors it). */
-	private readonly milestoneNotifyDone = new Set<string>();
-	private readonly milestoneNotifyRetry = new Map<
-		string,
-		{ firstFailedAtMs: number; nextAttemptAtMs: number; attempts: number }
-	>();
-	/** Per-process cache: projects whose first-enable baseline was already seeded. */
-	private readonly milestoneBaselineSeeded = new Set<string>();
-
-	// FLY-725 tuning: config override → env knob → default. The env reads make the
-	// cadence / lookback / grace ops-tunable without a config edit (Codex code R1).
-	private milestonePatrolEveryNTicks(): number {
-		return (
-			this.config.milestonePatrolEveryNTicks ??
-			positiveIntEnv(
-				process.env.FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS,
-				DEFAULT_PATROL_EVERY_N_TICKS,
-			)
-		);
-	}
-
-	private founderMilestoneLookbackHours(): number {
-		return (
-			this.config.founderMilestoneLookbackHours ??
-			positiveIntEnv(process.env.FLYWHEEL_FOUNDER_MILESTONE_LOOKBACK_HOURS, 24)
-		);
-	}
-
-	private founderMilestoneGraceMs(): number {
-		return (
-			this.config.founderMilestoneGraceMs ??
-			nonNegativeIntEnv(process.env.FLYWHEEL_FOUNDER_MILESTONE_GRACE_MS, 90_000)
-		);
-	}
-
-	/**
-	 * FLY-725 v1 (B) zero-signal terminal status → milestone kind. `completed` is
-	 * NOT mapped — routine completions go to the FLY-727 digest, and ship-ready is
-	 * covered by the FLY-605 approve gate ping; only failed/blocked are pushed here.
-	 */
-	private statusToMilestone(status: string): MilestoneKind | null {
-		if (status === "failed") return "failed";
-		if (status === "blocked") return "blocked";
-		return null;
-	}
-
-	/**
-	 * FLY-725 ground-truth guard (Annie 2026-07-01): only ping when the session
-	 * carries REAL evidence, so a bare/erroneous FSM flip cannot produce a false
-	 * @founder ping. failed → needs a real `last_error`; blocked → needs a real
-	 * blocked route or an error reason. Until the FSM edge-case bugs FLY-232
-	 * (awaiting_review→blocked silent-reject) and FLY-172 (restart mislabels failed)
-	 * are fixed (fast-follow), this keeps the ping trustworthy rather than noise.
-	 */
-	private hasMilestoneGroundTruth(
-		session: Session,
-		milestone: MilestoneKind,
-	): boolean {
-		// failed → a real error is the canonical failure signal (a restart-mislabel,
-		// FLY-172, carries none → skipped).
-		if (milestone === "failed") return !!session.last_error?.trim();
-		// blocked → the reason lives in last_error / summary / decision_reasoning
-		// (`complete --route blocked --summary "…"`; Codex code R1). Require a REAL
-		// reason so every blocked ping carries one — a bare status flip with no
-		// route+reason (FLY-232 silent-reject) is skipped, not falsely pinged.
-		if (milestone === "blocked")
-			return !!(
-				session.last_error?.trim() ||
-				session.summary?.trim() ||
-				session.decision_reasoning?.trim()
-			);
-		return false;
-	}
-
-	private milestoneMarkerId(executionId: string, status: string): string {
-		return `founder-milestone-notify-${executionId}-${status}`;
-	}
-
-	/** Terminal per-(session, status) marker: posted / permanent / budget-exhausted / baseline. */
-	private writeMilestoneMarker(
-		session: Session,
-		milestone: MilestoneKind,
-		reason: string,
-	): void {
-		const key = `${session.execution_id}:${session.status}`;
-		this.config.store.insertEvent({
-			event_id: this.milestoneMarkerId(session.execution_id, session.status),
-			execution_id: session.execution_id,
-			issue_id: session.issue_id,
-			project_name: session.project_name,
-			event_type: "founder_milestone_notify_done",
-			severity: reason === "transient_budget_exhausted" ? "warning" : "info",
-			source: "bridge.gate-poller",
-			payload: { milestone, reason },
-		});
-		this.milestoneNotifyDone.add(key);
-		this.milestoneNotifyRetry.delete(key);
-	}
-
-	private hasMilestoneMarker(executionId: string, status: string): boolean {
-		const marker = this.milestoneMarkerId(executionId, status);
-		return this.config.store
-			.getEventsByExecution(executionId)
-			.some((e) => e.event_id === marker);
-	}
-
-	/**
-	 * Per-project milestone patrol. Pushes ONE @founder-pinged report to the issue
-	 * thread for each Runner that reached a terminal milestone (completed/failed/
-	 * blocked) the founder wasn't told about. Reuses emitFounderMilestoneNotification
-	 * (retry budget) + durable event markers (restart-safe dedup). The first patrol
-	 * after this project first enables the feature marker-seeds pre-cutoff history
-	 * (no post) then falls through so cutoff-after sessions still ping this pass.
-	 */
-	private async maybeEmitMilestoneReports(
-		project: ProjectEntry,
-	): Promise<void> {
-		if (!this.config.chatThreadsEnabled) return;
-		const cfg = this.config.founderMilestoneReportByProject?.get(
-			project.projectName,
-		);
-		if (!cfg?.enabled) return;
-		const milestones =
-			cfg.milestones && cfg.milestones.length > 0
-				? cfg.milestones
-				: [...SUPPORTED_MILESTONE_KINDS_V1];
-
-		const sessions = this.config.store.getRecentTerminalSessionsForNotify(
-			project.projectName,
-			this.founderMilestoneLookbackHours(),
-		);
-
-		// ── First-enable baseline seed (Codex R1 #1 + R2 #1): mark pre-cutoff
-		// history as already-notified WITHOUT posting; cutoff-after sessions are
-		// NOT seeded so they still ping (this same pass — no early return, R3). ──
-		const baselineExecId = `milestone-baseline-${project.projectName}`;
-		const baselineMarker = `founder-milestone-baseline-${project.projectName}`;
-		const baselineDone =
-			this.milestoneBaselineSeeded.has(project.projectName) ||
-			this.config.store
-				.getEventsByExecution(baselineExecId)
-				.some((e) => e.event_id === baselineMarker);
-		if (!baselineDone) {
-			const cutoff = this.config.founderMilestoneBaselineCutoffMs ?? Date.now();
-			for (const s of sessions) {
-				const ms = parseSqliteUtcMs(s.last_activity_at ?? null);
-				const milestone = this.statusToMilestone(s.status);
-				if (milestone && ms !== null && ms <= cutoff) {
-					this.writeMilestoneMarker(s, milestone, "baseline_preexisting");
-				}
-			}
-			this.config.store.insertEvent({
-				event_id: baselineMarker,
-				execution_id: baselineExecId,
-				issue_id: "milestone-baseline",
-				project_name: project.projectName,
-				event_type: "founder_milestone_baseline_seeded",
-				source: "bridge.gate-poller",
-				payload: { cutoffMs: cutoff },
-			});
-			this.milestoneBaselineSeeded.add(project.projectName);
-		}
-
-		const now = Date.now();
-		for (const s of sessions) {
-			const milestone = this.statusToMilestone(s.status);
-			if (!milestone) continue;
-			const dedupKey = `${s.execution_id}:${s.status}`;
-			if (this.milestoneNotifyDone.has(dedupKey)) continue;
-			if (this.hasMilestoneMarker(s.execution_id, s.status)) {
-				this.milestoneNotifyDone.add(dedupKey);
-				continue;
-			}
-
-			// Locate the owning Lead WITHIN this project (Codex R1 #2: matchesLead is
-			// the label/lead guard, NOT the project boundary — the SQL already scoped
-			// project_name).
-			const lead = project.leads.find((l) => {
-				try {
-					return matchesLead(s, l.agentId, this.config.projects);
-				} catch {
-					return false;
-				}
-			});
-			if (!lead) continue;
-
-			const decision = decideMilestoneReport(
-				{
-					status: s.status,
-					session_role: s.session_role,
-					lastActivityMs: parseSqliteUtcMs(s.last_activity_at ?? null),
-				},
-				milestones,
-				false,
-				now,
-				this.founderMilestoneGraceMs(),
-			);
-			if (decision.kind !== "notify") continue;
-
-			// FLY-725 ground-truth guard: skip (no marker) a bare/erroneous FSM flip
-			// with no real evidence — if evidence lands later it can still ping; if it
-			// never does, it ages out of the lookback window. Keeps the ping accurate
-			// while FLY-232 / FLY-172 (FSM edge-case bugs) are fixed as fast-follow.
-			if (!this.hasMilestoneGroundTruth(s, decision.milestone)) continue;
-
-			const retry = this.milestoneNotifyRetry.get(dedupKey);
-			if (retry && now < retry.nextAttemptAtMs) continue;
-
-			// FLY-892 (converge): milestone ping goes to the single issue thread.
-			const thread = this.config.store.getChatThreadByIssue(
-				s.issue_id,
-				lead.chatChannel,
-			);
-			const result = await emitFounderMilestoneNotification(
-				{
-					executionId: s.execution_id,
-					issueId: s.issue_id,
-					issueIdentifier: s.issue_identifier,
-					issueTitle: s.issue_title,
-					projectName: s.project_name,
-					milestone: decision.milestone,
-					route: s.decision_route,
-					prNumber: s.pr_number,
-					summary: s.summary,
-					lastError: s.last_error,
-					decisionReasoning: s.decision_reasoning,
-					thread,
-					botToken: lead.botToken ?? this.config.discordBotToken,
-					ownerUserId: this.config.discordOwnerUserId,
-					// FLY-892 (Step 3): tag which phase reached the milestone; "" for main.
-					phasePrefix: phaseMessageTag(
-						s.chat_thread_role,
-						s.runner_model,
-						s.design_backend,
-					),
-				},
-				{ store: this.config.store, fetchImpl: this.config.fetchImpl },
-			);
-
-			if (result.kind === "transient_failed") {
-				// Same TIME-budget retry structure as the FLY-605 fallback.
-				const prev = retry ?? {
-					firstFailedAtMs: now,
-					nextAttemptAtMs: now,
-					attempts: 0,
-				};
-				const attempts = prev.attempts + 1;
-				if (now - prev.firstFailedAtMs >= this.founderThreadRetryBudgetMs()) {
-					// Never silently drop (Annie 2026-07-01): the founder was not pinged
-					// after the whole retry budget → surface it on the alert channel.
-					await this.escalateMilestoneUndelivered(
-						lead,
-						s,
-						decision.milestone,
-						"transient_budget_exhausted",
-					);
-					this.writeMilestoneMarker(
-						s,
-						decision.milestone,
-						"transient_budget_exhausted",
-					);
-					continue;
-				}
-				const backoff = Math.min(
-					result.retryAfterMs ?? 30_000 * 2 ** (attempts - 1),
-					5 * 60_000,
-				);
-				this.milestoneNotifyRetry.set(dedupKey, {
-					firstFailedAtMs: prev.firstFailedAtMs,
-					nextAttemptAtMs: now + backoff,
-					attempts,
-				});
-				continue;
-			}
-
-			// posted → success. permanent_failed / skipped → the thread delivery gave
-			// up (4xx / missing thread|token|owner), so surface it on the alert channel
-			// before marking terminal — a failed/blocked ping is never silently dropped.
-			if (result.kind !== "posted") {
-				await this.escalateMilestoneUndelivered(
-					lead,
-					s,
-					decision.milestone,
-					result.kind,
-				);
-			}
-			this.writeMilestoneMarker(s, decision.milestone, result.kind);
-		}
-	}
-
-	/**
-	 * FLY-725 (Annie 2026-07-01: "never silently drop"): when the thread ping for a
-	 * failed/blocked milestone could NOT be delivered (permanent 4xx, missing
-	 * thread/token/owner, or the transient retry budget elapsed), surface it on the
-	 * FLY-368 unified alert channel so the founder is not left in the dark. Fires
-	 * once per undelivered milestone — the terminal marker written alongside stops
-	 * re-processing, and the eventId is deterministic for the alert sink's dedup.
-	 */
-	private async escalateMilestoneUndelivered(
-		lead: LeadConfig,
-		session: Session,
-		milestone: MilestoneKind,
-		reason: string,
-	): Promise<void> {
-		const sink = this.config.leadAlertSink;
-		if (!sink) return;
-		const issue = session.issue_identifier ?? session.issue_id;
-		try {
-			await sink.alert({
-				leadId: lead.agentId,
-				projectName: session.project_name,
-				eventId: `founder-milestone-undelivered:${session.execution_id}:${session.status}`,
-				eventType: "founder_milestone_undelivered",
-				title: `Milestone ping undelivered — ${issue} (${milestone})`,
-				body:
-					`Bridge could not push the ${milestone} @founder report for ${issue} ` +
-					`(execution ${session.execution_id}) to its thread — reason: ${reason}. ` +
-					"The founder was NOT pinged; check the issue thread / bot token / owner config.",
-				severity: "warning",
-				sessionKey: session.execution_id,
-			});
-		} catch (err) {
-			console.warn(
-				`[GatePoller] milestone undelivered-escalation failed for ${issue}: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}
 	}

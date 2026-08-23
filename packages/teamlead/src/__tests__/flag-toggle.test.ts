@@ -41,21 +41,23 @@ function deps(over: Partial<FlagToggleDeps> = {}): FlagToggleDeps & {
 
 describe("isDirectToggleable", () => {
 	it("true for a call-time env flag, false for governance / conversational", () => {
-		const autoQa = FEATURE_FLAGS.find((f) => f.name === "auto_qa_killswitch");
-		const gov = FEATURE_FLAGS.find(
-			(f) => f.name === "founder_consent_decision_mode",
+		const direct = FEATURE_FLAGS.find(
+			(f) => f.name === "founder_review_orphan_monitor",
 		);
+		const gov = FEATURE_FLAGS.find((f) => f.name === "lead_lease_bypass");
 		const restart = FEATURE_FLAGS.find(
 			(f) => f.name === "voice_qa_presence_override",
 		);
-		expect(isDirectToggleable(autoQa as never)).toBe(true);
+		expect(isDirectToggleable(direct as never)).toBe(true);
 		expect(isDirectToggleable(gov as never)).toBe(false);
 		expect(isDirectToggleable(restart as never)).toBe(false);
 	});
 
 	it("rejects non-boolean value flags even if later marked direct", () => {
-		const autoQa = FEATURE_FLAGS.find((f) => f.name === "auto_qa_killswitch")!;
-		expect(isDirectToggleable({ ...autoQa, valueKind: "value" } as never)).toBe(
+		const direct = FEATURE_FLAGS.find(
+			(f) => f.name === "founder_review_orphan_monitor",
+		)!;
+		expect(isDirectToggleable({ ...direct, valueKind: "value" } as never)).toBe(
 			false,
 		);
 	});
@@ -64,11 +66,11 @@ describe("isDirectToggleable", () => {
 describe("applyFlagToggle", () => {
 	it("a successful apply heals a pre-existing live/file divergence", () => {
 		const spec = FEATURE_FLAGS.find(
-			(flag) => flag.name === "auto_qa_killswitch",
+			(flag) => flag.name === "founder_review_orphan_monitor",
 		)!;
-		let file = "FLYWHEEL_AUTO_QA=0\n";
+		let file = "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0\n";
 		const d = deps({
-			env: { FLYWHEEL_AUTO_QA: "1" },
+			env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "1" },
 			readFile: () => file,
 			writeFile: vi.fn((_path: string, content: string) => {
 				file = content;
@@ -99,7 +101,7 @@ describe("applyFlagToggle", () => {
 	it("refuses a store-managed flag even when its registry metadata is direct", () => {
 		expect(
 			applyFlagToggle(deps(), {
-				name: "workflow_resume",
+				name: "workflow_turn_divergence_alerts",
 				rawFrom: null,
 				rawTo: "1",
 				fileSha: SHA,
@@ -107,14 +109,15 @@ describe("applyFlagToggle", () => {
 		).toMatchObject({
 			ok: false,
 			code: 409,
-			reason: "workflow_resume is managed by the SQLite flag store",
+			reason:
+				"workflow_turn_divergence_alerts is managed by the SQLite flag store",
 		});
 	});
 
 	it("happy path: turns a direct flag off — persists then mutates process.env", () => {
 		const d = deps();
 		const r = applyFlagToggle(d, {
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			rawFrom: null, // was absent (default ON)
 			rawTo: "0", // turn the kill-switch on (feature off)
 			fileSha: SHA,
@@ -122,21 +125,21 @@ describe("applyFlagToggle", () => {
 		expect(r.ok).toBe(true);
 		expect(r.code).toBe(0);
 		expect(d.writeFile).toHaveBeenCalledTimes(1);
-		expect(d.env.FLYWHEEL_AUTO_QA).toBe("0");
+		expect(d.env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBe("0");
 	});
 
 	it("delete (rawTo null) removes the live key + persists", () => {
-		const d = deps({ env: { FLYWHEEL_AUTO_QA: "0" } });
-		const content = "FLYWHEEL_AUTO_QA=0\n";
+		const d = deps({ env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" } });
+		const content = "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0\n";
 		d.readFile = () => content;
 		const r = applyFlagToggle(d, {
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			rawFrom: "0",
 			rawTo: null, // back to default (absent)
 			fileSha: computeEnvSha(content),
 		});
 		expect(r.ok).toBe(true);
-		expect("FLYWHEEL_AUTO_QA" in d.env).toBe(false);
+		expect("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR" in d.env).toBe(false);
 	});
 
 	it("rejects an unknown flag", () => {
@@ -163,7 +166,7 @@ describe("applyFlagToggle", () => {
 
 	it("rejects a governance gate", () => {
 		const r = applyFlagToggle(deps(), {
-			name: "founder_consent_decision_mode",
+			name: "lead_lease_bypass",
 			rawFrom: null,
 			rawTo: "enforce",
 			fileSha: SHA,
@@ -173,7 +176,7 @@ describe("applyFlagToggle", () => {
 
 	it("denies when .env changed since review (fileSha mismatch)", () => {
 		const r = applyFlagToggle(deps(), {
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			rawFrom: null,
 			rawTo: "0",
 			fileSha: "stale-sha",
@@ -183,9 +186,11 @@ describe("applyFlagToggle", () => {
 	});
 
 	it("denies when the live value changed since review (rawFrom mismatch)", () => {
-		const d = deps({ env: { FLYWHEEL_AUTO_QA: "0" } }); // live already 0
+		const d = deps({
+			env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" },
+		}); // live already 0
 		const r = applyFlagToggle(d, {
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			rawFrom: null, // reviewed as absent, but live is "0"
 			rawTo: "1",
 			fileSha: SHA,
@@ -200,13 +205,13 @@ describe("applyFlagToggle", () => {
 			throw new Error("disk full");
 		});
 		const r = applyFlagToggle(d, {
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			rawFrom: null,
 			rawTo: "0",
 			fileSha: SHA,
 		});
 		expect(r.code).toBe(500);
-		expect("FLYWHEEL_AUTO_QA" in d.env).toBe(false); // live untouched
+		expect("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR" in d.env).toBe(false); // live untouched
 	});
 });
 

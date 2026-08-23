@@ -244,13 +244,24 @@ CARD
   # Known sub-gaps section (must surface per plan §5)
   cat >> "$out" <<'GAPS'
 <div class="section-title">
+  <span style="color:#007aff;">●</span> Approval Wire
+</div>
+<div class="card">
+  <strong>Approval wire under test.</strong>
+  The Runner opens <code>gate approve_to_ship --no-block</code>, persists
+  <code>complete --route needs_review --question-id &lt;id&gt;</code> with the bound
+  question/head, then the approval source POSTs exactly
+  <code>{"execution_id":"&lt;execution-id&gt;"}</code> to
+  <code>/api/actions/approve</code>. Bridge advances and wakes the legacy Runner;
+  the Runner must pass <code>verify-approval</code> for that exact head before shipping.
+</div>
+<div class="section-title">
   <span style="color:#ff9500;">●</span> Known Sub-Gaps (acknowledged, not regressions)
 </div>
 <div class="gaps">
   <ul>
     <li><strong>G3 has 0 code-level enforcement</strong>. V6 baseline is informational only; Lead shutdown defense is purely prompt-based. Follow-up: decide whether to add an enforcement layer.</li>
     <li><strong>V3 Discord push is not validated</strong>. <code>scripts/test-deploy.sh</code> does not configure <code>alertChannel</code>, so V3 verifies <code>~/.flywheel/alerts/claims.db</code> + <code>~/.flywheel/alert-queue/*.json</code> only. Follow-up: extend test-slot config to wire alertChannel for full Discord verification.</li>
-    <li><strong>Bridge <code>approveExecution</code> deadlocks under live gate</strong>. Calling it while the Runner is gate-blocked fails because the FSM is still <code>running</code>; production never goes through this endpoint. Follow-up: clarify whether the endpoint should be reworked or removed.</li>
     <li><strong>Brainstorm checkpoint not exercised</strong>. test-slot config only enables <code>approve_to_ship</code>; Runner skips brainstorm gate. Follow-up: enable in test-slot config if a brainstorm-gate suite is needed.</li>
     <li><strong><code>:cool:</code> auto-trigger out of scope</strong>. GHA <code>ship-on-comment.yml</code> cannot host Discord, so this suite stays manual-trigger.</li>
   </ul>
@@ -307,13 +318,16 @@ ${table_rows}
 - V6 BEHAVIOR_FAIL is informational; INFRA_FAIL >= N (all V6 trials failing infra) → **INCONCLUSIVE**
 - MANUAL_PENDING means a Chrome-MCP-driven step is awaiting evidence attachment by the QA agent
 
+## Approval wire under test
+
+The Runner opens \`gate approve_to_ship --no-block\`, persists \`complete --route needs_review --question-id <id>\` with the bound question/head, then the approval source POSTs exactly \`{"execution_id":"<execution-id>"}\` to \`/api/actions/approve\`. Bridge advances and wakes the legacy Runner; the Runner must pass \`verify-approval\` for that exact head before shipping.
+
 ## Known Sub-Gaps (must accompany every baseline run)
 
 1. **G3 has 0 code-level enforcement** — V6 reports informational raw pass rate. Follow-up: decide whether to add a Lead-shutdown intercept.
 2. **V3 Discord push not validated** — test-slot \`FLYWHEEL_PROJECTS\` config does not include \`alertChannel\`, so the alert is queued to \`~/.flywheel/alert-queue/*.json\` instead of posted to Discord. Follow-up: extend \`scripts/test-deploy.sh\` to optionally wire \`alertChannel\`.
-3. **Bridge \`approveExecution\` API deadlocks** when called while Runner is gate-blocked (FSM \`running\`, can't transition to \`awaiting_review\`). Production bypasses it via \`flywheel-comm respond\`; follow-up may rework or remove the endpoint.
-4. **Brainstorm checkpoint not enabled in test-slot config** — Runner runs brainstorm phase straight through; HP doesn't exercise that gate. Follow-up: configurable enable.
-5. **\`:cool:\` auto-trigger out of scope** — GHA \`ship-on-comment.yml\` cannot host Discord; this suite stays manual-trigger.
+3. **Brainstorm checkpoint not enabled in test-slot config** — Runner runs brainstorm phase straight through; HP doesn't exercise that gate. Follow-up: configurable enable.
+4. **\`:cool:\` auto-trigger out of scope** — GHA \`ship-on-comment.yml\` cannot host Discord; this suite stays manual-trigger.
 
 ## How to run
 

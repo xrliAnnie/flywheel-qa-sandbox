@@ -4,10 +4,8 @@
  * Emitted by `await-codex-gate code` after it validates the local
  * `code-review.json` (status APPROVED + reviewedHeadSha === git HEAD). It is the
  * authoritative signal — NOT a PR comment — that Codex approved THIS exact head.
- * The Bridge's AutoQaCoordinator.onCodexReviewResult consumes the
- * `codex_review_result` event, records the durable approval keyed to the head,
- * and (race closure) re-drives auto-QA if the parent already reached
- * awaiting_review.
+ * The Bridge's neutral Codex review ingest consumes the
+ * `codex_review_result` event and records durable approval keyed to the head.
  *
  * Reliability mirrors qa-result.ts: retry with backoff + a fail-close marker on
  * exhaustion. A lost verdict must never be silently treated as "Codex passed" —

@@ -101,6 +101,55 @@ describe("FLY-1995 event-loop attribution", () => {
 		]);
 	});
 
+	it("observes the profiler control on each attribution window", async () => {
+		const calls: string[] = [];
+		let enabled = false;
+		const attribution = new EventLoopAttribution({
+			diagnosticsDir: join(makeHome("dynamic"), "diagnostics"),
+			profilerEnabled: () => enabled,
+			createInspectorSession: () =>
+				({
+					connect: () => calls.push("connect"),
+					disconnect: () => calls.push("disconnect"),
+					post(method: string, ...args: unknown[]) {
+						calls.push(method);
+						const callback = args.at(-1) as (
+							error: Error | null,
+							result?: object,
+						) => void;
+						callback(null, method === "Profiler.stop" ? { profile: {} } : {});
+					},
+				}) as never,
+		});
+		await attribution.start();
+		expect(attribution.snapshot().state).toBe("disabled");
+		expect(calls).toEqual([]);
+
+		enabled = true;
+		await (
+			attribution as unknown as { rollWindow: () => Promise<void> }
+		).rollWindow();
+		expect(attribution.snapshot().state).toBe("running");
+		expect(calls).toEqual([
+			"connect",
+			"Profiler.enable",
+			"Profiler.setSamplingInterval",
+			"Profiler.start",
+		]);
+
+		enabled = false;
+		await (
+			attribution as unknown as { rollWindow: () => Promise<void> }
+		).rollWindow();
+		expect(attribution.snapshot().state).toBe("disabled");
+		expect(calls.slice(-3)).toEqual([
+			"Profiler.stop",
+			"Profiler.disable",
+			"disconnect",
+		]);
+		await attribution.stop();
+	});
+
 	it("bounds cross-restart profile inventory, removes own temp files, and never follows unrelated symlinks", async () => {
 		const home = makeHome("retention");
 		const profileDir = join(home, "diagnostics", "loop-profiles");

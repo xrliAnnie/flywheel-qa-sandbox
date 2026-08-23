@@ -132,6 +132,60 @@ describe("writeGateResponseAndRunPostWrite — happy path", () => {
 });
 
 describe("writeGateResponseAndRunPostWrite — guards (no write)", () => {
+	it("rejects bridge-founder-consent for a fresh write because it is historical-only", async () => {
+		const db = {
+			...fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" }),
+			insertFounderApprovalResponseWithSource: vi.fn().mockReturnValue(true),
+		};
+		const result = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			actor: "bridge-founder-consent",
+			db,
+			store: store("awaiting_review"),
+			founderId: "founder-discord",
+			founderSource: {
+				project: "flywheel",
+				runId: "run-1",
+				issueId: "FLY-1981",
+				approvedHead: "a".repeat(40),
+				classification: "founder_consent_enforce",
+				authorityId: "Q-1",
+			},
+		});
+
+		expect(result).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "reject",
+			reason: "historical_actor_retired",
+		});
+		expect(db.insertFounderApprovalResponseWithSource).not.toHaveBeenCalled();
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("keeps an existing bridge-founder-consent response idempotently readable", async () => {
+		const db = fakeDb(
+			{ checkpoint: "approve_to_ship", from_agent: "E-1" },
+			{ content: APPROVE, from_agent: "bridge-founder-consent" },
+		);
+		const onResponseWritten = vi.fn().mockResolvedValue({ ok: true });
+		const result = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			actor: "bridge-founder-consent",
+			db,
+			store: store("approved_to_ship"),
+			onResponseWritten,
+		});
+
+		expect(result).toMatchObject({
+			written: false,
+			retrySafe: true,
+			disposition: "already_applied",
+		});
+		expect(db.insertResponse).not.toHaveBeenCalled();
+		expect(onResponseWritten).toHaveBeenCalledOnce();
+	});
+
 	it.each([
 		"OK, now what is left for me to decide?",
 		"【页面意见汇总】FLY-1847\nPlease change this section.",

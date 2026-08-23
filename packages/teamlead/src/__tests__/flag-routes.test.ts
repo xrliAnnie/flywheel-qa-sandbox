@@ -1,6 +1,11 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+	FEATURE_FLAGS,
+	getFlagStoreCodec,
+	STORE_MANAGED_FLAGS,
+} from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { computeEnvSha } from "../bridge/env-file-writer.js";
 import {
@@ -11,6 +16,7 @@ import {
 	handleFlagApply,
 	handleFlagStage,
 } from "../bridge/flag-routes.js";
+import * as FlagStoreReaders from "../bridge/flag-store-runtime.js";
 import {
 	initializeFlagStore,
 	storeWorkflowTurnDivergenceAlertsEnabled,
@@ -56,13 +62,15 @@ describe("handleFlagStage", () => {
 		const deps = makeDeps();
 		const r = handleFlagStage(
 			deps,
-			{ name: "auto_qa_killswitch", to: false },
+			{ name: "founder_review_orphan_monitor", to: false },
 			"http://localhost",
 		);
 		expect(r.code).toBe(200);
 		const body = r.body as { canonical: FlagCanonical; confirmToken: string };
 		expect(body.canonical.kind).toBe("flag");
-		expect(body.canonical.envVar).toBe("FLYWHEEL_AUTO_QA");
+		expect(body.canonical.envVar).toBe(
+			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
+		);
 		expect(body.canonical.rawTo).toBe("0"); // default_on off → write "0"
 		expect(body.canonical.fileSha).toBe(computeEnvSha(ENV_CONTENT));
 		expect(body.confirmToken).toBeTruthy();
@@ -78,11 +86,7 @@ describe("handleFlagStage", () => {
 			).code,
 		).toBe(400);
 		expect(
-			handleFlagStage(
-				deps,
-				{ name: "founder_consent_decision_mode", to: false },
-				"o",
-			).code,
+			handleFlagStage(deps, { name: "lead_lease_bypass", to: false }, "o").code,
 		).toBe(400);
 	});
 
@@ -93,7 +97,7 @@ describe("handleFlagStage", () => {
 			expect(
 				handleFlagStage(
 					deps,
-					{ name: "auto_qa_killswitch", to: bad as never },
+					{ name: "founder_review_orphan_monitor", to: bad as never },
 					"o",
 				).code,
 			).toBe(400);
@@ -109,7 +113,11 @@ describe("handleFlagStage", () => {
 		expect(
 			handleFlagStage(
 				deps,
-				{ name: "workflow_resume", to: true, reason: "   " },
+				{
+					name: "workflow_turn_divergence_alerts",
+					to: true,
+					reason: "   ",
+				},
 				"o",
 			).code,
 		).toBe(400);
@@ -117,7 +125,7 @@ describe("handleFlagStage", () => {
 		const result = handleFlagStage(
 			deps,
 			{
-				name: "workflow_resume",
+				name: "workflow_turn_divergence_alerts",
 				to: true,
 				reason: "enable resumable runs",
 				actor: "caller-claim",
@@ -131,7 +139,7 @@ describe("handleFlagStage", () => {
 		};
 		expect(body.canonical).toMatchObject({
 			kind: "flag_store",
-			name: "workflow_resume",
+			name: "workflow_turn_divergence_alerts",
 			rawFrom: null,
 			rawTo: "1",
 			revision: 1,
@@ -148,7 +156,11 @@ describe("handleFlagStage", () => {
 		const { deps } = await makeManagedDeps({ audit: audit as never });
 		const result = handleFlagStage(
 			deps,
-			{ name: "workflow_resume", to: true, reason: "audit me" },
+			{
+				name: "workflow_turn_divergence_alerts",
+				to: true,
+				reason: "audit me",
+			},
 			"o",
 		);
 		expect(result).toEqual({
@@ -163,12 +175,12 @@ describe("handleFlagApply", () => {
 		const deps = makeDeps();
 		const staged = handleFlagStage(
 			deps,
-			{ name: "auto_qa_killswitch", to: false },
+			{ name: "founder_review_orphan_monitor", to: false },
 			"o",
 		).body as { canonical: FlagCanonical; confirmToken: string };
 		const r = handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
 		expect(r.code).toBe(200);
-		expect(deps.env.FLYWHEEL_AUTO_QA).toBe("0");
+		expect(deps.env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBe("0");
 		expect(deps.writeFile).toHaveBeenCalledTimes(1);
 	});
 
@@ -176,7 +188,7 @@ describe("handleFlagApply", () => {
 		const deps = makeDeps();
 		const staged = handleFlagStage(
 			deps,
-			{ name: "auto_qa_killswitch", to: false },
+			{ name: "founder_review_orphan_monitor", to: false },
 			"o",
 		).body as { canonical: FlagCanonical; confirmToken: string };
 		handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
@@ -193,7 +205,7 @@ describe("handleFlagApply", () => {
 		const deps = makeDeps();
 		const staged = handleFlagStage(
 			deps,
-			{ name: "auto_qa_killswitch", to: false },
+			{ name: "founder_review_orphan_monitor", to: false },
 			"o",
 		).body as { canonical: FlagCanonical; confirmToken: string };
 		const tampered = { ...staged.canonical, rawTo: null };
@@ -298,6 +310,111 @@ describe("handleFlagApply", () => {
 		});
 	});
 
+	it("round-trips every store-managed state through its declared runtime reader", async () => {
+		const { deps, flagStore, store } = await makeManagedDeps();
+		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
+
+		for (const name of STORE_MANAGED_FLAGS) {
+			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			const codec = getFlagStoreCodec(name);
+			expect(spec, name).toBeDefined();
+			expect(codec, name).toBeDefined();
+			if (!spec || !codec) continue;
+			const resolverSymbols = [
+				...new Set(spec.readSites.map((site) => site.resolverSymbol)),
+			];
+			expect(resolverSymbols, name).toHaveLength(1);
+			const reader = Reflect.get(FlagStoreReaders, resolverSymbols[0] ?? "") as
+				| ((runtime: typeof flagStore) => unknown)
+				| undefined;
+			expect(reader, `${name} runtime reader`).toBeTypeOf("function");
+			if (!reader) continue;
+
+			const applyTarget = (target: boolean | string): void => {
+				const reason = `exercise management route for ${name} => ${String(target)}`;
+				const before = store.getFlagValueRow(name);
+				expect(before, name).toBeDefined();
+				if (!before) return;
+				const effectiveFrom = codec.parse({
+					hasOverride: before.raw !== null,
+					raw: before.raw,
+				});
+				const expectedRaw =
+					spec.valueKind === "enum"
+						? String(target)
+						: target === spec.default
+							? null
+							: target
+								? "1"
+								: "0";
+				const staged = handleFlagStage(deps, { name, to: target, reason }, "o");
+				expect(staged.code, `${name}:${String(target)}`).toBe(200);
+				const body = staged.body as {
+					canonical: FlagStoreCanonical;
+					confirmToken: string;
+				};
+				expect(body.canonical, name).toMatchObject({
+					kind: "flag_store",
+					name,
+					revision: before.revision,
+					rawTo: expectedRaw,
+					effectiveFrom,
+					effectiveTo: target,
+					actor: "bridge-local-operator",
+					reason,
+				});
+				expect(
+					handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+					name,
+				).toBe(200);
+				expect(store.getFlagValueRow(name), name).toMatchObject({
+					revision: before.revision + 1,
+					raw: expectedRaw,
+					lastEffective: String(target),
+				});
+				expect(store.listFlagValueChanges(name).at(-1), name).toMatchObject({
+					action: expectedRaw === null ? "clear" : "set",
+					changedBy: "bridge-local-operator",
+					reason,
+				});
+				const runtimeValue = reader(flagStore);
+				if (spec.valueKind === "bool") {
+					expect(runtimeValue, `${name} runtime effective`).toBe(target);
+				} else {
+					expect(runtimeValue, `${name} runtime raw`).toMatchObject({
+						hasOverride: true,
+						raw: target,
+					});
+				}
+			};
+
+			if (spec.valueKind === "bool") {
+				applyTarget(!spec.default);
+				applyTarget(spec.default);
+			} else if (spec.valueKind === "enum") {
+				for (const member of spec.enumValues ?? []) applyTarget(member);
+				applyTarget(spec.default);
+				const current = store.getFlagValueRow(name);
+				expect(current, name).toBeDefined();
+				if (!current) continue;
+				expect(
+					store.applyFlagValueChange({
+						name,
+						rawTo: "__unsupported__",
+						expectedRevision: current.revision,
+						actor: "test",
+						reason: "invalid enum fallback proof",
+					}),
+				).toMatchObject({ ok: true });
+				const runtimeValue = reader(flagStore);
+				expect(runtimeValue).toMatchObject({ raw: "__unsupported__" });
+				expect(codec.parse(runtimeValue as never), name).toBe(spec.default);
+			}
+		}
+
+		expect(deps.writeFile).not.toHaveBeenCalled();
+	});
+
 	it("managed apply audit failure is pre-mutation; stale revisions are 409", async () => {
 		const records: Array<Record<string, unknown>> = [];
 		const audit = {
@@ -309,7 +426,11 @@ describe("handleFlagApply", () => {
 		const { deps, store } = await makeManagedDeps({ audit: audit as never });
 		const staged = handleFlagStage(
 			deps,
-			{ name: "workflow_resume", to: true, reason: "audited" },
+			{
+				name: "workflow_turn_divergence_alerts",
+				to: true,
+				reason: "audited",
+			},
 			"o",
 		).body as { canonical: FlagStoreCanonical; confirmToken: string };
 		expect(
@@ -318,7 +439,9 @@ describe("handleFlagApply", () => {
 			code: 500,
 			body: { error: "could not record apply-requested flag change" },
 		});
-		expect(store.getFlagValueRow("workflow_resume")?.revision).toBe(1);
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts")?.revision,
+		).toBe(1);
 
 		const goodDeps = makeDeps({
 			flagStore: deps.flagStore,
@@ -326,11 +449,15 @@ describe("handleFlagApply", () => {
 		});
 		const stale = handleFlagStage(
 			goodDeps,
-			{ name: "workflow_resume", to: true, reason: "stale proof" },
+			{
+				name: "workflow_turn_divergence_alerts",
+				to: true,
+				reason: "stale proof",
+			},
 			"o",
 		).body as { canonical: FlagStoreCanonical; confirmToken: string };
 		store.applyFlagValueChange({
-			name: "workflow_resume",
+			name: "workflow_turn_divergence_alerts",
 			rawTo: "1",
 			expectedRevision: 1,
 			actor: "other",
@@ -351,7 +478,11 @@ describe("handleFlagApply", () => {
 		const { deps, store } = await makeManagedDeps({ audit: audit as never });
 		const staged = handleFlagStage(
 			deps,
-			{ name: "workflow_resume", to: true, reason: "post-audit proof" },
+			{
+				name: "workflow_turn_divergence_alerts",
+				to: true,
+				reason: "post-audit proof",
+			},
 			"o",
 		).body as { canonical: FlagStoreCanonical; confirmToken: string };
 		expect(
@@ -360,7 +491,9 @@ describe("handleFlagApply", () => {
 			code: 200,
 			body: { ok: true, warn: "apply-result audit write failed" },
 		});
-		expect(store.getFlagValueRow("workflow_resume")).toMatchObject({
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
 			lastEffective: "true",
 			revision: 2,
 		});
@@ -375,8 +508,8 @@ describe("handleFlagApply", () => {
 		const canonical: FlagCanonical = {
 			kind: "flag",
 			batchId: "forged-managed-legacy",
-			name: "workflow_resume",
-			envVar: "FLYWHEEL_WORKFLOW_RESUME",
+			name: "workflow_turn_divergence_alerts",
+			envVar: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS",
 			rawFrom: null,
 			rawTo: "1",
 			fileSha: computeEnvSha(ENV_CONTENT),
@@ -385,7 +518,9 @@ describe("handleFlagApply", () => {
 		};
 		const token = deps.tokens.issue(flagCanonicalSha(canonical));
 		expect(handleFlagApply(deps, canonical, token, "o").code).toBe(409);
-		expect(store.getFlagValueRow("workflow_resume")?.revision).toBe(1);
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts")?.revision,
+		).toBe(1);
 		expect(deps.writeFile).not.toHaveBeenCalled();
 	});
 
@@ -397,14 +532,18 @@ describe("handleFlagApply", () => {
 		expect(
 			handleFlagStage(
 				deps,
-				{ name: "workflow_resume", to: true, reason: "must wait" },
+				{
+					name: "workflow_turn_divergence_alerts",
+					to: true,
+					reason: "must wait",
+				},
 				"o",
 			).code,
 		).toBe(409);
 		const canonical: FlagStoreCanonical = {
 			kind: "flag_store",
 			batchId: "bypass-apply",
-			name: "workflow_resume",
+			name: "workflow_turn_divergence_alerts",
 			rawFrom: null,
 			rawTo: "1",
 			revision: 1,

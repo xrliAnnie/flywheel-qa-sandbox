@@ -426,7 +426,7 @@ function snapshotDriftsApproved(
 		// R10#1: role + qaStatus are set-once provenance this closeout never
 		// mutates — any drift changes WHICH executor branch applies (terminate vs
 		// finalizeDone), so a byte-exact mismatch is a whole-issue reject. This
-		// catches e.g. AutoQaCoordinator flipping a non-PASS QA to `passed`
+		// catches e.g. historical QA evidence changing during closeout
 		// between the approval and a partial-resume while the session status is
 		// unchanged (which the status check alone would wave through).
 		if ((n.role ?? "") !== (a.role ?? "")) {

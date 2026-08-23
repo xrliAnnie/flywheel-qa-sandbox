@@ -170,6 +170,11 @@ function snapshotGate(snapshot) {
 	return manifest?.approval_gate ?? manifest?.approvalGate;
 }
 
+function snapshotTerminalNodeId(snapshot) {
+	const manifest = snapshot?.manifest ?? snapshot;
+	return manifest?.terminal_node?.node ?? manifest?.terminalNode?.node;
+}
+
 function executionRows(db, runId) {
 	return all(
 		db,
@@ -1123,27 +1128,50 @@ async function runDrill(context) {
 		);
 	}
 	if (holder.state !== "approved") {
-		runComm(
-			context.commCli,
-			context.commDbPath,
-			room.flywheelProjectsFile,
-			context.leadIdentity,
-			[
-				"respond",
-				holder.question_id,
-				"approve",
-				"--lead",
-				room.agentId,
-				"--expect-owner",
-				holder.source_execution_id,
-				"--expect-checkpoint",
-				"approve_to_ship",
-				"--bridge-url",
-				room.bridgeUrl,
-			],
-			{ TEAMLEAD_API_TOKEN: token, BRIDGE_URL: room.bridgeUrl },
-		);
+		await httpJson(`${room.bridgeUrl}/api/actions/approve`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${token}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ execution_id: holder.source_execution_id }),
+		});
 	}
+	const approvedProjection = await waitFor(
+		"founder approval durable projection",
+		() => {
+			const projectedHolder = one(
+				db,
+				"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
+				holder.question_id,
+			);
+			if (projectedHolder?.state !== "approved") return false;
+			const currentRun = one(
+				db,
+				"SELECT * FROM workflow_run WHERE run_id = ?",
+				runId,
+			);
+			if (!currentRun) return false;
+			const terminalNodeId = snapshotTerminalNodeId(
+				parseSnapshot(currentRun.snapshot),
+			);
+			if (!terminalNodeId || currentRun.current_node_id !== terminalNodeId) {
+				return false;
+			}
+			const terminalNode = one(
+				db,
+				`SELECT * FROM workflow_run_node
+				  WHERE run_id = ? AND node_id = ?
+				  ORDER BY attempt DESC LIMIT 1`,
+				runId,
+				terminalNodeId,
+			);
+			return terminalNode?.state === "pending"
+				? { holder: projectedHolder, run: currentRun, terminalNode }
+				: false;
+		},
+		timeoutMs,
+	);
 	const landed = await waitFor(
 		"step 8 land completion",
 		() => {
@@ -1154,6 +1182,7 @@ async function runDrill(context) {
 			);
 			if (!currentRun || currentRun.status === "active") return false;
 			return {
+				approval: approvedProjection,
 				currentRun,
 				holder: one(
 					db,

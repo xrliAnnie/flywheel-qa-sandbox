@@ -2602,23 +2602,11 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
 
-  # ── FLY-579: auto-QA pipeline contract (non-cos dept leads only) ──
-  # Describes the automatic code-review → independent-QA → founder-gate flow so a
-  # Lead never has to remember to spawn QA and never surfaces the founder before
-  # QA is green. INERT unless the project opts in (qa.auto in its config.yaml);
-  # the prose is harmless on non-opted-in projects. Optional — missing base file
-  # is a no-op (backward compat with older flywheel checkouts).
-  BASE_AUTO_QA_RULES="${BASE_RULES_DIR}/auto-qa-pipeline.md"
-  if [ -f "$BASE_AUTO_QA_RULES" ] && [ -r "$BASE_AUTO_QA_RULES" ]; then
-    rules_bundle_add "$BASE_AUTO_QA_RULES" base
-    log "Appending base auto-QA pipeline rules: ${BASE_AUTO_QA_RULES}"
-  fi
-
   # ── FLY-707 (FLY-698 epic): Default-Enable Policy (non-cos dept leads only) ──
-  # Built features ship ENABLED for the project (config opt-ins like qa.auto /
-  # doc_flow, default-off env flags), not left dormant behind an un-flipped
-	# opt-in — with security/governance gates (founder_consent and branch
-	# protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
+  # Built features ship ENABLED for the project (config opt-ins like doc_flow
+  # and default-off env flags), not left dormant behind an un-flipped
+  # opt-in — with security/governance gates (founder_consent and branch
+  # protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
   # merge/ship). Pure guidance prose; harmless everywhere. Optional — missing
   # base file is a no-op (backward compat with older flywheel checkouts).
   BASE_DEFAULT_ENABLE_RULES="${BASE_RULES_DIR}/default-enable-policy.md"

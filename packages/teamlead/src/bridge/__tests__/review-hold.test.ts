@@ -5,7 +5,7 @@ import {
 	founderApprovalHoldGuard,
 	isQaHeld,
 	type QaHeldSession,
-} from "../auto-qa-held.js";
+} from "../review-hold.js";
 
 const SHA = "a".repeat(40);
 
@@ -108,19 +108,21 @@ describe("founderApprovalHoldGuard (FLY-1041 Chunk 5)", () => {
 	} as Parameters<typeof founderApprovalHoldGuard>[0];
 
 	it("delegates to isReviewHeld (held session → true)", () => {
-		expect(founderApprovalHoldGuard(guardStore, heldSession, {})).toBe(true);
+		expect(founderApprovalHoldGuard(guardStore, heldSession)).toBe(true);
 	});
 
 	it("un-held session → false", () => {
-		expect(founderApprovalHoldGuard(guardStore, main, {})).toBe(false);
-		expect(founderApprovalHoldGuard(guardStore, undefined, {})).toBe(false);
+		expect(founderApprovalHoldGuard(guardStore, main)).toBe(false);
+		expect(founderApprovalHoldGuard(guardStore, undefined)).toBe(false);
 	});
 
 	it("FLYWHEEL_ATTRIBUTION_HOLD_ALIGN=0 cannot bypass a live hold", () => {
 		expect(
-			founderApprovalHoldGuard(guardStore, heldSession, {
-				FLYWHEEL_ATTRIBUTION_HOLD_ALIGN: "0",
-			}),
+			Reflect.apply(founderApprovalHoldGuard, undefined, [
+				guardStore,
+				heldSession,
+				{ FLYWHEEL_ATTRIBUTION_HOLD_ALIGN: "0" },
+			]),
 		).toBe(true);
 	});
 });

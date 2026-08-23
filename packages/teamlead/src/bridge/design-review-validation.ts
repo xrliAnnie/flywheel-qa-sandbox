@@ -22,10 +22,7 @@ function requiredString(
 export function validateDesignReviewProjection(
 	store: StateStore,
 	body: Record<string, unknown>,
-	env: NodeJS.ProcessEnv = process.env,
 ): DesignReviewValidationResult {
-	if (env.FLYWHEEL_INSTRUCTION_PATH_CHECK === "0") return { allowed: true };
-
 	const executionId = requiredString(body, "executionId");
 	const requestId = requiredString(body, "requestId");
 	const reviewedTarget = requiredString(body, "reviewedTarget");

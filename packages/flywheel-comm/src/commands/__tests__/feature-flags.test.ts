@@ -1,3 +1,4 @@
+import { STORE_MANAGED_FLAGS } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { type FeatureFlagsDeps, runFeatureFlags } from "../feature-flags.js";
 
@@ -113,6 +114,8 @@ describe("flywheel-comm feature-flags apply", () => {
 	});
 
 	it("requires --reason only for store-managed flags", async () => {
+		const storeManagedFlag = STORE_MANAGED_FLAGS.values().next().value;
+		expect(storeManagedFlag).toBeDefined();
 		const httpJson = httpMock(
 			{
 				ok: true,
@@ -124,17 +127,17 @@ describe("flywheel-comm feature-flags apply", () => {
 		const deps = baseDeps({ httpJson });
 		await expect(
 			runFeatureFlags(
-				["apply", "--name", "workflow_resume", "--to", "on"],
+				["apply", "--name", storeManagedFlag!, "--to", "on"],
 				deps,
 			),
 		).rejects.toThrow("exit 1");
 
 		await runFeatureFlags(
-			["apply", "--name", "auto_qa_killswitch", "--to", "off"],
+			["apply", "--name", "founder_review_orphan_monitor", "--to", "off"],
 			deps,
 		);
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			to: false,
 		});
 	});
@@ -153,7 +156,7 @@ describe("flywheel-comm feature-flags apply", () => {
 			[
 				"apply",
 				"--name",
-				"auto_qa_killswitch",
+				"founder_review_orphan_monitor",
 				"--to",
 				"off",
 				"--reason",
@@ -165,7 +168,7 @@ describe("flywheel-comm feature-flags apply", () => {
 		// stage POST carries the sparse {name, to}; apply POST carries {canonical, confirmToken}
 		expect(httpJson.mock.calls[0]?.[0]).toContain("/api/fleet/flag/stage");
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "auto_qa_killswitch",
+			name: "founder_review_orphan_monitor",
 			to: false,
 			reason: "operator test",
 		});

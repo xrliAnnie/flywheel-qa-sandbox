@@ -1723,6 +1723,14 @@ export class CommDB {
 					return { written: false, reason: "gate_not_open" };
 				}
 			}
+			if (
+				question.checkpoint === "approve_to_ship" &&
+				fromAgent === "bridge-founder-consent"
+			) {
+				throw new Error(
+					"bridge-founder-consent is a historical-only approval writer",
+				);
+			}
 			new MailboxQueue(this.db).enqueue({
 				id: randomUUID(),
 				fromAgent,
@@ -1874,6 +1882,14 @@ export class CommDB {
 					this.getResponse(input.questionId)
 				) {
 					return false;
+				}
+				if (
+					question.checkpoint === "approve_to_ship" &&
+					input.fromAgent === "bridge-founder-consent"
+				) {
+					throw new Error(
+						"bridge-founder-consent is a historical-only approval writer",
+					);
 				}
 				new MailboxQueue(this.db).enqueue({
 					id: randomUUID(),
@@ -2067,6 +2083,11 @@ export class CommDB {
 					)
 					.get(input.questionId, input.expectedOwner) as Message | undefined;
 				if (!question) return false;
+				if (input.fromAgent === "bridge-founder-consent") {
+					throw new Error(
+						"bridge-founder-consent is a historical-only approval writer",
+					);
+				}
 				new MailboxQueue(this.db).enqueue({
 					id: randomUUID(),
 					fromAgent: input.fromAgent,
@@ -2309,6 +2330,14 @@ export class CommDB {
 				| Message
 				| undefined;
 			if (!question || this.getResponse(input.questionId)) return false;
+			if (
+				question.checkpoint === "approve_to_ship" &&
+				input.fromAgent === "bridge-founder-consent"
+			) {
+				throw new Error(
+					"bridge-founder-consent is a historical-only approval writer",
+				);
+			}
 			new MailboxQueue(this.db).enqueue({
 				id: randomUUID(),
 				fromAgent: input.fromAgent,
@@ -2807,6 +2836,11 @@ export class CommDB {
 				}
 				let response = this.getResponse(input.questionId);
 				if (!response) {
+					if (input.fromAgent === "bridge-founder-consent") {
+						throw new Error(
+							"bridge-founder-consent is a historical-only approval writer",
+						);
+					}
 					if (input.approvalSource) {
 						const wrote = this.insertFounderApprovalResponseWithSource({
 							project: input.approvalSource.project,

@@ -754,6 +754,10 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${SLOT_DIR}/state/loop-diagnos
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
+# FLY-1981: consent policy is permanently audit-only, so every QA Bridge opens
+# an audit store. Keep synthetic slot decisions out of the resident calibration
+# ledger even when alerts/roundtable mode is disabled.
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")
 if [[ "$GENERALIZED" == "1" ]]; then
   BRIDGE_EXTRA_ENV+=("BRIDGE_DEPT_SCOPE_REJECT=${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}")
   LEAD_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
@@ -893,15 +897,6 @@ if [[ "$ALERTS" == "1" ]]; then
   log "alerts mode: channel=${ALERT_CHANNEL_ID} repairBotEnv=${ALERT_REPAIR_BOT_TOKEN_ENV} (queue/claims/deadletter isolated to ${SLOT_DIR})"
 fi
 
-# FLY-945 Fix E: QA slots approve ship gates via lead-attributed
-# `flywheel-comm respond` (test-auto-approve.sh / the 529 drivers) — the
-# founder-attribution gate would refuse those in verify-approval (slots share
-# the production ~/.flywheel/.env, which resolves a real founder id). Bypass
-# for the slot Bridge AND its spawned Runners (Runners inherit the Bridge env;
-# the resolver honors a process-env key over the .env read for this exact case).
-BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
-LEAD_EXTRA_ENV+=("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE=0")
-
 # FLY-1165: the done-thread reconcile sweep hits the REAL Linear API (fresh
 # per-issue lookups) and would archive the slot's isolated threads against
 # production Linear state. Explicitly OFF for every slot Bridge; a QA that
@@ -964,11 +959,12 @@ TEST_PROJECT_NAME="test-slot-${SLOT}"
 # Root cause (Round 3 §S6, sandbox): `xrliAnnie/flywheel-qa-sandbox` has no
 # `.flywheel/config.yaml`, so Bridge's run-infra.ts:328-345 leaves
 # checkpointConfig=undefined. Blueprint.ts:341-380 then skips the
-# "APPROVE GATE (MANDATORY)" injection, so the Runner never calls
-# `flywheel-comm gate approve_to_ship` after writing land-status.json.
-# That makes Bridge.actions.approveExecution() find no pending gate
-# (`getPendingGateByRunner` returns undefined) and respond with
-# `gateUnblocked=false`, which fails test-auto-approve.sh's exit-0 contract.
+# "APPROVE GATE (MANDATORY)" injection, so the Runner never opens
+# `flywheel-comm gate approve_to_ship --no-block` and never persists
+# `complete --route needs_review --question-id <id>` with the exact reviewed
+# head. Without that durable question/head binding, POST /api/actions/approve
+# is correctly refused: no Bridge approval response is written and the session
+# cannot advance. There is no unbound approval fallback.
 #
 # Fix: drop a minimal-but-validator-complete config into HOST_REPO before
 # Bridge starts (Step 3 below), enabling **only** approve_to_ship. We do not
@@ -1196,11 +1192,11 @@ NOT interact with any production channel.
 
 ${CHANNEL_SCOPE_BLOCK}
 
-### Lead ID for API calls (FLY-60 W6 — overrides production identity name)
+### Lead ID for scoped API calls (FLY-60 W6 — overrides production identity name)
 
-The production identity below uses the production lead name (\`product-lead\` / \`cos-lead\` / \`ops-lead\`) when invoking Bridge HTTP APIs and \`flywheel-comm\` CLI. **In this test slot you are NOT that lead — you are \`${AGENT_ID}\`.** The Bridge scope-checks every API call against the slot-configured \`agentId=${AGENT_ID}\` and 403-rejects any call that uses a production lead name.
+The production identity below uses the production lead name (\`product-lead\` / \`cos-lead\` / \`ops-lead\`) when invoking scoped Bridge HTTP APIs and \`flywheel-comm\` CLI. **In this test slot you are NOT that lead — you are \`${AGENT_ID}\`.** APIs that accept a \`leadId\` scope-check it against the slot-configured \`agentId=${AGENT_ID}\` and 403-reject a production lead name.
 
-- **Your leadId for ALL API calls**: \`${AGENT_ID}\` (NOT \`product-lead\` / \`cos-lead\` / \`ops-lead\` from the production template below).
+- **Your leadId for scoped API calls that accept one**: \`${AGENT_ID}\` (NOT \`product-lead\` / \`cos-lead\` / \`ops-lead\` from the production template below).
 - **Override scope**: every \`leadId\` value in the sections below — whether it's a literal string in JSON bodies (\`"leadId": "product-lead"\`), a CLI flag (\`--lead product-lead\`), a shell variable reference (\`\${LEAD_ID}\`, \`\${FLYWHEEL_LEAD_ID}\`), or anywhere else — MUST be substituted to \`${AGENT_ID}\` before you run the command. The production examples below are templates; you are running as \`${AGENT_ID}\`.
 - **Env vars for this slot**: \`LEAD_ID=${AGENT_ID}\` and \`FLYWHEEL_LEAD_ID=${AGENT_ID}\`. Prefer using these in shell commands rather than hardcoded production names.
 - **Forbidden literal strings** in any API call body / CLI flag (Bridge will 403-reject these as scope-mismatched against \`agentId=${AGENT_ID}\`):
@@ -1208,9 +1204,9 @@ The production identity below uses the production lead name (\`product-lead\` / 
   - \`cos-lead\`
   - \`ops-lead\`
 - Examples of correct usage in this slot:
-  - \`flywheel-comm respond --lead ${AGENT_ID} --db ... <question_id> approve\`
   - \`curl -X POST .../api/sessions/<exec_id>/close-runner -d '{"leadId":"${AGENT_ID}","reason":"..."}'\`
   - \`curl -X POST .../api/runs/start -d '{"leadId":"${AGENT_ID}","issueId":"FLY-XXX"}'\`
+- **Ship approval is not a leadId-scoped call and never uses \`respond\`**. The Runner opens \`gate approve_to_ship --no-block\`, then persists \`complete --route needs_review --question-id <id>\` with the bound question/head. The approval source POSTs \`{"execution_id":"<exec-id>"}\` and no other body fields to \`/api/actions/approve\`. Bridge writes the authoritative response, advances and wakes the legacy Runner; the Runner must then pass \`verify-approval\` for the exact head before shipping.
 
 ---
 
@@ -1785,6 +1781,7 @@ else
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
+    DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
     TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \

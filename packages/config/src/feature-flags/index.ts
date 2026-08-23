@@ -39,17 +39,23 @@ export {
 	FLAG_SCAN_INTERVAL_MS,
 } from "./scan.js";
 export type {
+	FlagAuthoringPolicyInput,
 	FlagStoreCodec,
 	FlagStoreRawValue,
 } from "./store-policy.js";
 export {
+	FLAG_AUTHORING_RUNBOOK,
 	getFlagStoreCodec,
 	getStoreEligibility,
+	LEGACY_UNMANAGED_BASELINE,
 	PROTECTED_LEGACY_FLAG_NAMES,
+	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
+	validateFlagAuthoringPolicy,
 } from "./store-policy.js";
 export {
 	NON_FLAG_ALLOWLIST,
+	RETIRED_CONFIG_PATHS,
 	RETIRED_FLAGS,
 	validateFlagTruthEnvironment,
 	validateLivenessManifest,

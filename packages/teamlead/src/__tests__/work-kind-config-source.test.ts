@@ -63,13 +63,13 @@ describe("loadWorkKindConfigStrict", () => {
 		).toEqual({ ok: true, workKind: false, dag: false });
 	});
 
-	it("treats a missing file as work-kind disabled", () => {
+	it("defaults a missing project config to DAG-on with work-kind disabled", () => {
 		expect(
 			loadWorkKindConfigStrict(PROJECT, () => {
 				const error = new Error("missing") as NodeJS.ErrnoException;
 				error.code = "ENOENT";
 				throw error;
 			}),
-		).toEqual({ ok: true, workKind: false, dag: false });
+		).toEqual({ ok: true, workKind: false, dag: true });
 	});
 });

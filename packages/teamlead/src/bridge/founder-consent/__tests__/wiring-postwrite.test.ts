@@ -26,6 +26,7 @@ import {
 import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { insertHistoricalAutoQaRecord } from "../../../__tests__/helpers/historical-qa.js";
 import { createLeadIdentityFixture } from "../../../__tests__/helpers/lead-identity-fixture.js";
 import type { ApplyTransitionOpts } from "../../../applyTransition.js";
 import type { ProjectEntry } from "../../../ProjectConfig.js";
@@ -127,13 +128,12 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			pr_number: 191,
 			codex_skip: 1,
 		});
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: EXEC,
 			targetPrHeadSha: head,
 			issueId: "FLY-191",
 			projectName: PROJECT,
-		});
-		store.setAutoQaStatus(EXEC, head, "passed", {
+			status: "passed",
 			verdictEventId: "qa-pass-wiring",
 		});
 

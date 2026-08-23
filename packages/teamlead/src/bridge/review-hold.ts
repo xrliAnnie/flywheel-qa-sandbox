@@ -23,7 +23,6 @@
 import type { AutoQaRecord } from "../StateStore.js";
 import {
 	type CodexGateStore,
-	codexHardGateEnabled,
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
@@ -75,20 +74,17 @@ const FULL_SHA = /^[0-9a-f]{40}$/;
  * emitCompleted push) consume THIS predicate so they cannot drift.
  *
  * Missing/invalid pr_head_sha (Codex R2-MED-3): a head-specific Codex review can't
- * run without a head, so under the hard gate (and not codex_skip) an awaiting_review
- * main session with no valid head is HELD (fail-closed — never surface an unmergeable
- * review). Gate-off / codex_skip → fall through to isQaHeld's no-sha behavior (false).
- *
- * Byte-compat: with the hard gate OFF, isReviewHeld === isQaHeld exactly.
+ * run without a head, so an awaiting_review session with no valid head is held
+ * fail-closed unless the PR-owning implement session carries sanctioned codex_skip.
+ * Main sessions remain evidence-unknown because they also need PR identity for QA.
  */
 export function isReviewHeld(
 	store: AutoQaHeldStore & CodexGateStore,
 	session: QaHeldSession | undefined,
-	env: Record<string, string | undefined> = process.env,
 ): boolean {
 	// FLY-1099 §4.1: isReviewHeld and reviewHoldReason share ONE implementation
 	// so the boolean and the reason classification can never drift.
-	return reviewHoldReason(store, session, env) !== null;
+	return reviewHoldReason(store, session) !== null;
 }
 
 /**
@@ -121,7 +117,6 @@ export function isDeferrableReviewHoldReason(
 export function reviewHoldReason(
 	store: AutoQaHeldStore & CodexGateStore,
 	session: QaHeldSession | undefined,
-	env: Record<string, string | undefined> = process.env,
 ): ReviewHoldReason | null {
 	if (!session) return null;
 	// FLY-869 B (design R2 HIGH-4 + Codex guardrail #1): a merged-but-unapproved
@@ -140,17 +135,16 @@ export function reviewHoldReason(
 		if (!sha || !FULL_SHA.test(sha)) {
 			// FLY-1251: a main review with no objective PR head cannot be classified
 			// as docs-only or matched to QA evidence. Unknown must hold regardless of
-			// the Codex gate switch. Implement keeps its historical Codex behavior.
+			// Codex evidence. Implement is Codex-held unless it carries the sanctioned
+			// session-level skip.
 			if (mainRole) return "qa_evidence_unknown";
-			return codexHardGateEnabled(env) && !session.codex_skip
-				? "codex_pending"
-				: null;
+			return session.codex_skip ? null : "codex_pending";
 		}
 		if (mainRole && session.pr_number == null) {
 			return "qa_evidence_unknown";
 		}
 		// Codex gate first: not satisfied → held (independent of QA policy).
-		if (!isCodexGateSatisfied(store, session, sha, env)) return "codex_pending";
+		if (!isCodexGateSatisfied(store, session, sha)) return "codex_pending";
 
 		const record = store.getAutoQaRecord(session.execution_id, sha);
 		if (record) return record.status === "passed" ? null : "qa_not_green";
@@ -202,9 +196,8 @@ export function reviewHoldReason(
 export function founderApprovalHoldGuard(
 	store: AutoQaHeldStore & CodexGateStore,
 	session: QaHeldSession | undefined,
-	env: Record<string, string | undefined> = process.env,
 ): boolean {
-	return isReviewHeld(store, session, env);
+	return isReviewHeld(store, session);
 }
 
 export function isQaHeld(

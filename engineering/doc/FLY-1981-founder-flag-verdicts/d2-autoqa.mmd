@@ -1,0 +1,16 @@
+flowchart TB
+    subgraph DEAD["随本单删除(休眠 40+ 天的旧 auto-QA)"]
+        direction TB
+        D1["自动派 QA 工人的决策器<br/>(auto-qa-policy)"]
+        D2["QA 派工协调器里的<br/>spawn / 重测 / 孤儿清扫"]
+        D3["手动派 QA 的 API 入口<br/>(manual-qa-routes)"]
+        D4["配置项 qa.auto 整块<br/>+ 环境开关 FLYWHEEL_AUTO_QA"]
+    end
+    subgraph ALIVE["搬家存活(属于焊死的安全门,不许陪葬)"]
+        direction TB
+        A1["评审证据登记<br/>(Codex 通过记录 → 硬门凭据)"]
+        A2["三类 ship 告警<br/>(未批合入 / 合入失败 / 卡单)"]
+        A3["评审卡门谓词<br/>(review-hold,9+ 模块共用)"]
+        A4["历史 QA 台账只读<br/>(auto_qa_record,74 行冻结)"]
+    end
+    DEAD -.->|"拆解时逐符号核对调用方"| ALIVE

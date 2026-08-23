@@ -229,6 +229,41 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		expect(mockedAlive).not.toHaveBeenCalled();
 	});
 
+	it("propagates every review-authorization alert into periodic marker replay", async () => {
+		const alertMergeWithoutApproval = vi.fn();
+		const alertShipAttemptFailed = vi.fn(async () => {});
+		const alertCompleteMarkerHeld = vi.fn(async () => {});
+		service = new HeartbeatService(
+			store as never,
+			notifier as never,
+			15,
+			60_000,
+			60,
+			undefined,
+			24,
+			6 * 3_600_000,
+			{
+				bridgeBaseUrl: "http://127.0.0.1:9876",
+				ingestToken: "tok",
+				alertMergeWithoutApproval,
+				alertShipAttemptFailed,
+				alertCompleteMarkerHeld,
+			},
+		);
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+
+		expect(mockedTry).toHaveBeenCalledWith(
+			"exec-1",
+			expect.objectContaining({
+				alertMergeWithoutApproval,
+				alertShipAttemptFailed,
+				alertCompleteMarkerHeld,
+			}),
+		);
+	});
+
 	it("held marker suppresses liveness probing and orphan reaping", async () => {
 		mockedTry.mockResolvedValue({
 			kind: "held_for_lead",

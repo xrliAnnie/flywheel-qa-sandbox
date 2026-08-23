@@ -1,6 +1,6 @@
 /**
  * FLY-709 — load each project's config into the feature-flag resolver's
- * per-project map, from the CANONICAL root (mirrors auto-qa-config-source.ts).
+ * per-project map from each project's CANONICAL root.
  *
  * ENOENT (no config file) → "no project config", so the flag reads as its
  * absent/default value (entry with an undefined config, no error). A MALFORMED

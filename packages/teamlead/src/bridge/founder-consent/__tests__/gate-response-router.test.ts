@@ -115,7 +115,11 @@ afterEach(() => {
 
 describe("gate-response-router (Surface B)", () => {
 	it.each([
-		["enforce", fakeEvaluator("allow", "enforce"), "bridge-founder-consent"],
+		[
+			"injected enforce capability",
+			fakeEvaluator("allow", "enforce"),
+			"lead-x",
+		],
 		["audit", fakeEvaluator("allow", "audit_only"), "lead-x"],
 	] as const)(
 		"routes %s writes through the shared founder boundary",
@@ -259,7 +263,7 @@ describe("gate-response-router (Surface B)", () => {
 
 	// ── FLY-945 Fix E write-side attribution matrix (Codex R1 #2 / R2 #2) ──
 
-	it("FLY-945: ENFORCE allow → response attributed 'bridge-founder-consent' (verify-approval trusted set)", async () => {
+	it("FLY-1981: injected ENFORCE allow cannot mint the historical attribution", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("allow", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
@@ -270,11 +274,11 @@ describe("gate-response-router (Surface B)", () => {
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
+		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
 		db.close();
 	});
 
-	it("FLY-945: ENFORCE bypass → also 'bridge-founder-consent'", async () => {
+	it("FLY-1981: injected ENFORCE bypass also keeps Lead attribution", async () => {
 		const qid = seedQuestion("approve_to_ship");
 		mkServer(fakeEvaluator("bypass", "enforce"));
 		await request("POST", "/api/founder-consent/runner-gate-response", {
@@ -285,7 +289,7 @@ describe("gate-response-router (Surface B)", () => {
 			executionId: "exec-1",
 		});
 		const db = new CommDB(commDbPath, false);
-		expect(db.getResponse(qid)?.from_agent).toBe("bridge-founder-consent");
+		expect(db.getResponse(qid)?.from_agent).toBe("lead-x");
 		db.close();
 	});
 

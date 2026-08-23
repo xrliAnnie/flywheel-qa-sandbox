@@ -11,69 +11,71 @@ const base = (
 	over: Record<string, string | undefined> = {},
 ): NodeJS.ProcessEnv => ({ ...over }) as NodeJS.ProcessEnv;
 
-describe("resolveDecisionMode precedence (§8.1.1)", () => {
-	it("DECISION_MODE wins over ENABLED and warns", () => {
+describe("resolveDecisionMode solidified policy", () => {
+	it("ignores both retired env controls and emits no compatibility warning", () => {
 		const warn = vi.fn();
-		const mode = resolveDecisionMode(
-			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
-				FLYWHEEL_FOUNDER_CONSENT_ENABLED: "false",
-			}),
-			warn,
-		);
-		expect(mode).toBe("enforce");
-		expect(warn).toHaveBeenCalledOnce();
-	});
-
-	it("ENABLED=true → enforce when DECISION_MODE absent", () => {
-		expect(
-			resolveDecisionMode(base({ FLYWHEEL_FOUNDER_CONSENT_ENABLED: "true" })),
-		).toBe("enforce");
-	});
-
-	it("both absent → off", () => {
-		expect(resolveDecisionMode(base())).toBe("off");
-	});
-
-	it("ENABLED=false / unset → off", () => {
-		expect(
-			resolveDecisionMode(base({ FLYWHEEL_FOUNDER_CONSENT_ENABLED: "false" })),
-		).toBe("off");
-	});
-
-	it("invalid DECISION_MODE throws", () => {
-		expect(() =>
-			resolveDecisionMode(
-				base({ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "bogus" }),
-			),
-		).toThrow(/off\|audit_only\|enforce/);
+		for (const env of [
+			base(),
+			base({ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce" }),
+			base({ FLYWHEEL_FOUNDER_CONSENT_ENABLED: "true" }),
+			base({ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "bogus" }),
+		]) {
+			expect(resolveDecisionMode(env, warn)).toBe("audit_only");
+		}
+		expect(warn).not.toHaveBeenCalled();
 	});
 });
 
 describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
-	it("off mode does NOT require FOUNDER_USER_ID", () => {
-		const c = parseFounderConsentConfig(base(), () => {});
-		expect(c.decisionMode).toBe("off");
-		expect(c.founderUserId).toBe("");
+	it("accepts DISCORD_OWNER_USER_ID as the canonical founder identity", () => {
+		const c = parseFounderConsentConfig(
+			base({ DISCORD_OWNER_USER_ID: "canonical-founder" }),
+			() => {},
+		);
+		expect(c.founderUserId).toBe("canonical-founder");
 	});
 
-	it("enforce mode requires FOUNDER_USER_ID", () => {
-		expect(() =>
-			parseFounderConsentConfig(
-				base({ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce" }),
-				() => {},
-			),
-		).toThrow(/FLYWHEEL_FOUNDER_USER_ID is required/);
-	});
-
-	it("enforce mode with founder id parses defaults", () => {
+	it("accepts matching canonical and legacy founder identities", () => {
 		const c = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
+				DISCORD_OWNER_USER_ID: "same-founder",
+				FLYWHEEL_FOUNDER_USER_ID: "same-founder",
+			}),
+			() => {},
+		);
+		expect(c.founderUserId).toBe("same-founder");
+	});
+
+	it("fails closed with actionable retired-env-free guidance when founder identities differ", () => {
+		expect(() =>
+			parseFounderConsentConfig(
+				base({
+					DISCORD_OWNER_USER_ID: "canonical-founder",
+					FLYWHEEL_FOUNDER_USER_ID: "different-founder",
+				}),
+				() => {},
+			),
+		).toThrowError(
+			new Error(
+				"Founder identity mismatch: DISCORD_OWNER_USER_ID does not match the configured founder identity; remove the founder override or set it to the same Discord user ID",
+			),
+		);
+	});
+
+	it("audit_only always requires the canonical founder identity", () => {
+		expect(() => parseFounderConsentConfig(base(), () => {})).toThrowError(
+			new Error("DISCORD_OWNER_USER_ID is required for founder consent"),
+		);
+	});
+
+	it("audit_only with founder id parses defaults", () => {
+		const c = parseFounderConsentConfig(
+			base({
 				FLYWHEEL_FOUNDER_USER_ID: "12345",
 			}),
 			() => {},
 		);
+		expect(c.decisionMode).toBe("audit_only");
 		expect(c.threshold).toBe(0.85);
 		expect(c.windowHours).toBe(24);
 		expect(c.maxMsgs).toBe(50);
@@ -86,7 +88,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 	it("per-action threshold JSON parses + applies", () => {
 		const c = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 				FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION:
 					'{"terminate":0.95,"defer":0.6}',
@@ -102,7 +103,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 		expect(() =>
 			parseFounderConsentConfig(
 				base({
-					FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "audit_only",
 					FLYWHEEL_FOUNDER_USER_ID: "1",
 					FLYWHEEL_FOUNDER_CONSENT_THRESHOLD_PER_ACTION: "{not json",
 				}),
@@ -114,7 +114,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 	it("per-action fail mode applies", () => {
 		const c = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 				FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE: "closed",
 				FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION: '{"defer":"open"}',
@@ -128,7 +127,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 	it("pins workflow rework to threshold 0.85 and fail-closed", () => {
 		const c = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 				FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_THRESHOLD: "0.9",
 			}),
@@ -142,7 +140,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 		expect(() =>
 			parseFounderConsentConfig(
 				base({
-					FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 					FLYWHEEL_FOUNDER_USER_ID: "1",
 					FLYWHEEL_FOUNDER_CONSENT_WORKFLOW_REWORK_FAIL_MODE: "open",
 				}),
@@ -152,7 +149,6 @@ describe("parseFounderConsentConfig validation tolerance (§8.1)", () => {
 		expect(() =>
 			parseFounderConsentConfig(
 				base({
-					FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 					FLYWHEEL_FOUNDER_USER_ID: "1",
 					FLYWHEEL_FOUNDER_CONSENT_FAIL_MODE_PER_ACTION:
 						'{"workflow_rework":"open"}',
@@ -167,14 +163,12 @@ describe("configHash", () => {
 	it("is stable for identical config and changes with threshold", () => {
 		const a = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 			}),
 			() => {},
 		);
 		const b = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 			}),
 			() => {},
@@ -182,7 +176,6 @@ describe("configHash", () => {
 		expect(configHash(a)).toBe(configHash(b));
 		const c = parseFounderConsentConfig(
 			base({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 				FLYWHEEL_FOUNDER_USER_ID: "1",
 				FLYWHEEL_FOUNDER_CONSENT_THRESHOLD: "0.6",
 			}),

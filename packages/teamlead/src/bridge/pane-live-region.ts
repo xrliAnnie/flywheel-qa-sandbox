@@ -72,6 +72,11 @@ export function liveRegion(pane: string): string {
  */
 const INBOUND_ECHO_LINE = /^\s*←/;
 
+// Retired kinds can remain in pane scrollback and durable alert rows after
+// their producer disappears. Recognize them only for echo suppression; keeping
+// them outside ALERT_EVENT_TYPES prevents any new alert from being emitted.
+const RETIRED_ALERT_ECHO_TYPES = ["founder_milestone_undelivered"] as const;
+
 /**
  * FLY-927 (Task 1.2): the kind alternation is DERIVED from the shared
  * `ALERT_EVENT_TYPES` table (LeadAlertNotifier) — the old hand-enumerated list
@@ -83,7 +88,10 @@ const INBOUND_ECHO_LINE = /^\s*←/;
  * TUI never renders it about itself).
  */
 export const ALERT_ECHO_START = new RegExp(
-	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${ALERT_EVENT_TYPES.join("|")})\\s*\\)` +
+	`\\(\\s*[a-z0-9-]+\\s*\\/\\s*(?:${[
+		...ALERT_EVENT_TYPES,
+		...RETIRED_ALERT_ECHO_TYPES,
+	].join("|")})\\s*\\)` +
 		"|^\\s*🎫\\s" +
 		"|\\blead hit (?:rate|usage) limit\\b|\\blead login expired\\b|\\blead waiting on permission prompt\\b|\\blead pane has been frozen\\b|\\blead crash-looping\\b|\\brunner stuck unhandled\\b",
 	"i",

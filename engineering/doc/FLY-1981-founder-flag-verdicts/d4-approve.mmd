@@ -1,0 +1,8 @@
+flowchart LR
+    subgraph BEFORE["改造前(QA 测试房)"]
+        B1["测试房把『归属核验门』<br/>整个关掉 (=0)"] --> B2["用 Lead 名义写批准<br/>(这条路在最新代码里已被拒收)"]
+    end
+    subgraph AFTER["改造后(与生产同一条可信路)"]
+        A1["测试驱动调用 Bridge 的<br/>正式批准接口"] --> A2["以可信身份 bridge 写回执<br/>+ 合法状态推进 + 唤醒工人"] --> A3["工人自己跑 verify-approval<br/>三重核验全真过"]
+    end
+    BEFORE -.->|"本单汰换"| AFTER

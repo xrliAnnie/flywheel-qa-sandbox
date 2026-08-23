@@ -217,12 +217,12 @@ export function launchCommitPath(executionId: string): string {
  * keeping that phase prefix authoritative for shared-branch runs.
  *
  * Gated on `shareParentBranch` (the DAG workflow marker), NOT `sessionRole` alone:
- * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
- * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
- * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
- * DAG workflow discriminator (`ctx.shareParentBranch && ctx.sessionRole`). When
- * no model is resolved, every non-DAG workflow run (main + Auto-QA) stays
- * `claude` → byte-compatible. With a resolved model, non-phase runs use the
+ * historical standalone QA sessions also carried `sessionRole: "qa"` without
+ * `shareParentBranch`, so keying on the role alone would change their window
+ * identity. Mirrors Blueprint's DAG workflow discriminator
+ * (`ctx.shareParentBranch && ctx.sessionRole`). When no model is resolved,
+ * every non-DAG workflow run stays `claude` → byte-compatible. With a resolved
+ * model, non-phase runs use the
  * narrow `runner-<family>-<model>` namespace consumed by cmux cleanup.
  *
  * SCOPE (FLY-840 → resolved by FLY-1224): the RETRY path (actions.ts
@@ -318,16 +318,6 @@ export function buildRunnerSpawnFields(
 	 */
 	dispatchModel?: string,
 	/**
-	 * FLY-752: require a MAILBOX-CAPABLE backend. When the resolved backend would be
-	 * no-transport (antigravity/kimi → transport:"none", which project roles / env
-	 * default can still select even under `ignoreRunnerLabelSelection`), FORCE the
-	 * transported `claude-tmux` lane and DROP the (possibly Claude-incompatible)
-	 * model/effort from the no-transport source (→ Claude account defaults). Auto-QA
-	 * sets this so its QA runner can always receive a `retest_wake`. Default false →
-	 * byte-compatible (no forcing).
-	 */
-	requireMailboxTransport?: boolean,
-	/**
 	 * FLY-1224: the phase table's explicit vendor for this dispatch — resolves
 	 * the executor backend on the 1b dispatch layer via the ONE existing
 	 * VENDOR_TO_EXECUTOR map. Only ever set for DAG workflow dispatches
@@ -363,19 +353,7 @@ export function buildRunnerSpawnFields(
 		...(dispatchEffort && { dispatchEffort }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
-	// FLY-752: force a mailbox-capable lane when required. A no-transport backend
-	// (antigravity/kimi) has no mailbox → a QA runner on it could never receive its
-	// retest_wake. Rewrite to claude-tmux + drop the source model/effort so the
-	// forced Claude lane uses account defaults (the no-transport role's model may be
-	// Claude-incompatible; Blueprint forwards runnerModel to the adapter).
-	const resolved: ResolvedRoleAdapter =
-		requireMailboxTransport && resolvedRaw.transport === "none"
-			? {
-					backend: "claude-tmux",
-					transport: "claude-code",
-					vendor: "claude-code",
-				}
-			: resolvedRaw;
+	const resolved: ResolvedRoleAdapter = resolvedRaw;
 	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
 	// an EXPLICIT marker so the absence of vendor/Agent-Team identity below is an
 	// intentional contract, not the legacy/rollback "default claude" absence.
@@ -927,9 +905,6 @@ export class RetryDispatcher implements IRetryDispatcher {
 				// FLY-751 Codex R1 #2).
 				req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
 				req.generalizedExecution?.dispatch.model ?? req.dispatchModel,
-				// FLY-1224: retry has no requireMailboxTransport source (positional gap);
-				// phase-row retries re-derive vendor/effort from the table (actions.ts).
-				undefined,
 				req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor,
 				req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
 			);
@@ -1513,36 +1488,30 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.successorExecutionId ??
 			randomUUID();
 
-		// Auto-QA owns a separate bounded retry loop. Every other re-dispatch must
-		// reconcile its canonical predecessor before branch continuity or network IO.
-		if (!req.qaContext) {
-			await this.admitDoaBackoff({
-				issueKey: req.issueId,
-				issueIdentifier: req.issueIdentifier,
-				projectName: req.projectName,
-				executionId,
-				role,
-				leadId: req.leadId,
-			});
-		}
+		await this.admitDoaBackoff({
+			issueKey: req.issueId,
+			issueIdentifier: req.issueIdentifier,
+			projectName: req.projectName,
+			executionId,
+			role,
+			leadId: req.leadId,
+		});
 
 		// FLY-1718 P1: reconcile branch state BEFORE lifecycle admission, CommDB
 		// pre-registration, TURN, or worktree mutation. Progress resume remains the
 		// richer first choice; only a true fresh start consults origin continuity.
-		// A caller-pinned startPoint and Auto-QA already carry explicit head
-		// authority and must not be rewritten here.
-		if (req.freshStart && (req.startPoint || req.qaContext)) {
+		// A caller-pinned startPoint already carries explicit head authority.
+		if (req.freshStart && req.startPoint) {
 			this.abortPreLaunch(key, executionId, req.projectName);
 			throw new FreshStartAuditError(
-				"freshStart cannot be combined with a caller-pinned or Auto-QA start",
+				"freshStart cannot be combined with a caller-pinned start",
 			);
 		}
 		let computedResume: ProgressResumeInfo | null;
 		try {
-			computedResume = req.qaContext
-				? null
-				: ((await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
-					null);
+			computedResume =
+				(await this.resumeComputer?.(req.issueId, role, req.projectName)) ??
+				null;
 		} catch (error) {
 			this.abortPreLaunch(key, executionId, req.projectName);
 			throw error;
@@ -1551,12 +1520,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		let continuityInherit: ContinuityInherit | undefined;
 		let continuityBranch: string | undefined;
 		let skippedOriginTip: string | undefined;
-		if (
-			!req.startPoint &&
-			!req.qaContext &&
-			!resume &&
-			this.continuityComputer
-		) {
+		if (!req.startPoint && !resume && this.continuityComputer) {
 			let continuity: ContinuityStartPoint;
 			try {
 				continuity = await this.continuityComputer({
@@ -1643,9 +1607,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		try {
 			// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
 			// resolution (labels > roles config > env > claude).
-			// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
-			// vendor labels can't pick the QA backend (issueLabels still flow below
-			// for Lead/thread routing).
+			// Generalized DAG starts bypass issue vendor labels; the phase table owns
+			// the backend selection.
 			// FLY-1188: resolved BEFORE the CommDB pre-registration so the pending
 			// row already carries the runner's transport vendor (pure function —
 			// no ordering dependency on the TURN grant / resume computation below).
@@ -1656,7 +1619,6 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				runtime.rolesConfig,
 				req.generalizedExecution ? true : req.ignoreRunnerLabelSelection,
 				req.generalizedExecution?.dispatch.model ?? req.dispatchModel, // FLY-728 Part C
-				req.requireMailboxTransport, // FLY-752
 				req.generalizedExecution?.dispatch.vendor ?? req.dispatchVendor, // FLY-1224/1281
 				req.generalizedExecution?.dispatch.effort ?? req.dispatchEffort,
 			);
@@ -1756,13 +1718,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				leadId: req.leadId,
 				sessionRole: req.sessionRole,
 				...(req.designBackend && { designBackend: req.designBackend }),
-				// FLY-1356: explicit per-dispatch arm (529) + auto-QA parent inherit
-				// + sticky stamp. The resolver owns precedence and kill semantics.
+				// FLY-1356: explicit per-dispatch arm (529) + sticky stamp. The
+				// resolver owns precedence and kill semantics.
 				...(req.skillFrameworkMode && {
 					skillFrameworkModeOverride: req.skillFrameworkMode,
-				}),
-				...(req.skillFrameworkModeParent && {
-					skillFrameworkModeParent: req.skillFrameworkModeParent,
 				}),
 				...this.skillFrameworkPriorCtx(req.issueId),
 				// FLY-793: DAG workflows share one branch B (Bridge-internal).
@@ -1786,14 +1745,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// FLY-1372 §2.5: Bridge-trusted behavior snapshot for the durable
 				// emitStarted seam (pipeline.dag entry / engine successor only).
 				codexSkip: req.codexSkip,
-				// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context.
 				// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
 				// rebuilds WITH the committed progress.md (never override a caller's own).
 				startPoint:
 					req.startPoint ?? resume?.startPoint ?? continuityInherit?.sha,
 				...(req.workflowResume && { workflowResume: req.workflowResume }),
 				...(continuityInherit && { continuityInherit }),
-				qaContext: req.qaContext,
 				...(req.generalizedExecution && {
 					generalizedExecutionContext: {
 						runId: req.generalizedExecution.runId,

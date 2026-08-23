@@ -96,7 +96,7 @@ export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 		"three_stage_stuck",
 		"three_stage_takeover_failed",
 		"workflow_engine_issue_alert",
-		"founder_milestone_undelivered",
+		"founder_gate_delivery_failed",
 		"runner_lead_pending_unhandled",
 	]);
 

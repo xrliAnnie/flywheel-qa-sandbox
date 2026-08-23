@@ -8,7 +8,7 @@
  *    enables the vendored matt-skills plugin (research.md S1/S2 mechanism)
  *  - matt readiness probe failure → superpowers + via=fallback_superpowers
  *    (red line #2: never silently run a crippled B)
- *  - split: hash / override / sticky / inherited / project_opt_out vias
+ *  - split: hash / override / sticky / project_opt_out vias
  *  - participation reader throwing → fail-closed pin to A (project_opt_out)
  *  - capability=none backend → via=noop_backend, zero plugin/prompt effect
  *  - Claude and Codex preserve one arm while applying backend-native assembly
@@ -567,15 +567,6 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		}
 	});
 
-	it("split + parent mode: via=inherited (auto-QA rides the implement arm)", async () => {
-		const { envelope } = await runBlueprint({
-			envValue: "split",
-			ctxExtra: { skillFrameworkModeParent: "bare", sessionRole: "qa" },
-		});
-		expect(envelope.skillFrameworkMode).toBe("bare");
-		expect(envelope.skillFrameworkModeVia).toBe("inherited");
-	});
-
 	it("split + project opt-out: pinned to superpowers via project_opt_out", async () => {
 		const { envelope, execArgs } = await runBlueprint({
 			envValue: "split",
@@ -639,11 +630,6 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		["hash", {}, undefined],
 		["override", { skillFrameworkModeOverride: "bare" }, "bare"],
 		["sticky", { skillFrameworkModePrior: "bare" }, "bare"],
-		[
-			"inherited",
-			{ skillFrameworkModeParent: "bare", sessionRole: "implement" },
-			"bare",
-		],
 	] as const)(
 		"codex-tmux preserves resolver via=%s instead of noop_backend",
 		async (expectedVia, ctxExtra, expectedMode) => {
@@ -727,14 +713,14 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		);
 	});
 
-	it("one inherited arm applies backend-native assembly in Claude design and Codex implement", async () => {
+	it("an explicit successor arm applies backend-native assembly in Claude design and Codex implement", async () => {
 		const design = await runBlueprint({ envValue: "matt" });
 		const implement = await runBlueprint({
 			envValue: "split",
 			ctxExtra: {
 				runnerBackend: "codex-tmux",
 				sessionRole: "implement",
-				skillFrameworkModeParent: design.envelope.skillFrameworkMode,
+				skillFrameworkModeOverride: design.envelope.skillFrameworkMode,
 			},
 			codexProbe: () => ({
 				disableNames: ["superpowers:using-superpowers"],
@@ -748,7 +734,7 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 			MATT_SKILLS_PLUGIN_KEY,
 		);
 		expect(implement.envelope.skillFrameworkMode).toBe("matt");
-		expect(implement.envelope.skillFrameworkModeVia).toBe("inherited");
+		expect(implement.envelope.skillFrameworkModeVia).toBe("override");
 		expect(implement.execArgs.disabledPlugins).toBeUndefined();
 		expect(implement.execArgs.skillFrameworkMode).toBe("matt");
 		expect(implement.execArgs.codexSkillDisableNames).toEqual([

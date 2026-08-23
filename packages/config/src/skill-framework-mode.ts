@@ -51,7 +51,7 @@ export const SKILL_FRAMEWORK_VIAS = [
 	"default", // env unset or invalid (fail-closed)
 	"forced", // env explicitly one of the three modes (global force / kill)
 	"project_opt_out", // split, but project config skill_framework.split=false
-	"inherited", // split, auto-QA session inherits its parent session's mode
+	"inherited", // historical attribution value; no fresh resolver path emits it
 	"override", // split, per-dispatch override (529 eval; successor-carried)
 	"sticky", // split, same issue already stamped (sessions lookup by issue_id)
 	"hash", // split, first admission → stable hash bucket
@@ -131,8 +131,6 @@ export interface SkillFrameworkResolveArgs {
 	 * closed to A, never land the issue in an experimental arm. split-only.
 	 */
 	priorStampReadFailed?: boolean;
-	/** Parent session's mode for an auto-QA spawn (inherited, R1#3). split-only. */
-	parentMode?: SkillFrameworkMode;
 	/** Project participation (skill_framework.split); default true. */
 	projectSplitParticipation?: boolean;
 }
@@ -162,7 +160,6 @@ export function resolveSkillFrameworkMode(args: SkillFrameworkResolveArgs): {
 	const raw = args.env[SKILL_FRAMEWORK_MODE_ENV];
 	const override = sanitizeMode(args.override, "override");
 	const priorStamp = sanitizeMode(args.priorStamp, "priorStamp");
-	const parentMode = sanitizeMode(args.parentMode, "parentMode");
 
 	// env unset → default A. A stale override outside `split` is ignored (R1#1).
 	if (raw === undefined || raw === "") {
@@ -189,8 +186,6 @@ export function resolveSkillFrameworkMode(args: SkillFrameworkResolveArgs): {
 		if (args.projectSplitParticipation === false) {
 			return { mode: "superpowers", via: "project_opt_out" };
 		}
-		// Auto-QA inherits the implement arm — one issue, one arm end to end.
-		if (parentMode) return { mode: parentMode, via: "inherited" };
 		// Explicit per-dispatch arm (529 eval), sticky for the whole pipeline.
 		if (override) return { mode: override, via: "override" };
 		// Same issue already admitted → keep its bucket (identifier drift-proof).

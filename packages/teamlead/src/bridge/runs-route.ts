@@ -341,7 +341,6 @@ export function createRunsRouter(
 			receiptKey: string,
 		) => Promise<WorkflowRunCollectReceiptRow>;
 	},
-	workflowResumeEnabled: () => boolean = () => false,
 	skillFrameworkModeControl: () => {
 		hasOverride: boolean;
 		raw: string | null;
@@ -1091,7 +1090,7 @@ export function createRunsRouter(
 		// downstream code reads `req.body.projectName` directly. Unknown projects
 		// pass through unchanged and still reject normally below.
 		const projectName = resolveCanonicalProjectName(projects, rawProjectName);
-		const resumeRequested = workflowResumeEnabled() && req.body.resume === true;
+		const resumeRequested = req.body.resume === true;
 		const requestedResumeAttachment = resumeRequested
 			? typeof req.body.attachmentId === "string"
 				? req.body.attachmentId.trim()
@@ -2100,11 +2099,8 @@ export function createRunsRouter(
 			}
 		}
 
-		const freshMasterMain =
-			!engineRecovery &&
-			!replayReservation &&
-			role === "main" &&
-			requestAuthKind === "master";
+		const freshMain = !engineRecovery && !replayReservation && role === "main";
+		const freshMasterMain = freshMain && requestAuthKind === "master";
 		const freshLegacyEntry =
 			!engineRecovery &&
 			!replayReservation &&
@@ -2119,7 +2115,7 @@ export function createRunsRouter(
 		let menuTemplateOverride:
 			| ReturnType<typeof resolveMenuOverrides>["templateOverride"]
 			| undefined;
-		if (freshMasterMain) {
+		if (freshMain) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
 				const strict = loadWorkKindConfigStrict(project);
@@ -2132,7 +2128,17 @@ export function createRunsRouter(
 					});
 					return;
 				}
-				workKindActiveAtEntry = strict.workKind;
+				if (!strict.dag) {
+					res.status(409).json({
+						success: false,
+						code: "DAG_DISPATCH_DISABLED",
+						reason:
+							"pipeline.dag is explicitly disabled or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG",
+						silent: false,
+					});
+					return;
+				}
+				if (freshMasterMain) workKindActiveAtEntry = strict.workKind;
 			}
 		}
 		if (workKindActiveAtEntry) {
@@ -2574,6 +2580,16 @@ export function createRunsRouter(
 				code: "WORK_KIND_ENTRY_NOT_MATERIALIZED",
 				reason:
 					"work-kind entry selected no workflow candidate (flag flipped mid-request or binding removed) — refusing silent legacy fallback",
+			});
+			return;
+		}
+		if (freshMain && !freshNoWorkflowPhaseLegacy && !generalizedSelection) {
+			res.status(409).json({
+				success: false,
+				code: "DAG_ENTRY_NOT_MATERIALIZED",
+				reason:
+					"fresh main-role code dispatch did not resolve a schema-v2 workflow binding; refusing a legacy runner with no QA evidence path",
+				silent: false,
 			});
 			return;
 		}

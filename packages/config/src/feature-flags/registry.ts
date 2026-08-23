@@ -12,8 +12,7 @@
  * This registry is a CATALOG + declaration; the effective (current) value is
  * computed by `resolve.ts` from process.env + per-project config, reusing each
  * flag's real in-line semantics (byte-compat). It does NOT replace compound
- * policy functions (e.g. resolveAutoQaPolicy) — those stay; the registry lists
- * the individual layers (e.g. FLYWHEEL_AUTO_QA and qa.auto as two rows).
+ * policy functions; the registry lists each independently controllable layer.
  *
  * Read `packages/teamlead/lead-rules-base/default-enable-policy.md` for the two
  * idioms (`!== "0"` default-on kill-switch vs `=== "1"` opt-in) and the
@@ -61,14 +60,14 @@ export interface FlagReadSite {
 }
 
 export interface FeatureFlagSpec {
-	/** Stable key, e.g. "auto_qa_killswitch". */
+	/** Stable key, e.g. "founder_review_orphan_monitor". */
 	name: string;
 	category: FlagCategory;
 	source: FlagSource;
 	scope: FlagScope;
 	/** Present when source === "env". */
 	envVar?: string;
-	/** Present when source === "project_config" (dot path, e.g. "qa.auto"). */
+	/** Present when source === "project_config" (dot path, e.g. "doc_flow.enabled"). */
 	configKey?: string;
 	polarity: FlagPolarity;
 	valueKind: FlagValueKind;
@@ -216,13 +215,15 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1995: capture bounded Node CPU profiles for Bridge event-loop delay episodes",
 		readSites: [
-			envSite(
+			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
 				"startBridge",
-				"object_construction",
+				"storeLoopProfilerEnabled",
 			),
 		],
-		toggleable: "conversational",
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
 	},
 	{
 		name: "flag_store",
@@ -284,16 +285,15 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1992: after one failed post-merge closeout, force-reap an evidence-proven stale workflow-node husk before thread archive; =0 restores cooperative-only shutdown",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/shipped-husk-escalation.ts",
-				"shippedHuskForceEnabled",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeShippedHuskForceEnabled",
 			),
 		],
 		toggleable: "direct",
 		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/shipped-husk-escalation.test.ts: observes the default-on kill switch at call time",
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
 		note: "Only disables new forced teardown intents; strict land-lease and tmux execution-identity fences remain mandatory when enabled.",
 	},
 	// ─── FLY-1781: weekly retirement candidate scan ───
@@ -311,7 +311,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"flag scan enabled injection",
+				"flagRetirementScanner",
 				"storeFlagRetirementScanEnabled",
 			),
 		],
@@ -470,79 +470,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
 	},
 	{
-		name: "auto_qa_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_AUTO_QA",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉 code-review 后的 auto-QA runner spawn（叠在 qa.auto 上）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/auto-qa-policy.ts",
-				"resolveAutoQaPolicy",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"resolve.direct-toggle.test:auto_qa_killswitch live-observe",
-	},
-	{
-		// FLY-827: the Codex code-review HARD GATE kill-switch. Default-ON: any PR
-		// must pass Codex code review (for its current head) before auto-QA spawns
-		// and before verify-approval permits merge; not passed → founder held +
-		// alert. `=0` is the emergency release. `direct` toggle: the Bridge reads
-		// process.env live (mutated in place by the flag apply). The runner-CLI
-		// verify-approval ALSO honors it live but via a call-time read of
-		// ~/.flywheel/.env (NOT a Bridge process.env readSite) — that CLI live-read
-		// is proven separately and deliberately NOT listed as a call_time readSite
-		// here so isDirectToggleable (which requires every listed readSite be
-		// Bridge call_time) still accepts this flag.
-		name: "codex_hard_gate_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CODEX_HARD_GATE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉 Codex code-review 硬门（=0 应急放行；默认 ON=任何 PR 没过 Codex APPROVED 就卡住 auto-QA + merge）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/codex-gate.ts",
-				"isCodexGateSatisfied / codexHardGateEnabled",
-				"call_time",
-				"env-param",
-			),
-			{
-				file: "packages/teamlead/src/bridge/auto-qa-held.ts",
-				symbol: "codexHardGateEnabled",
-				pattern: "delegated",
-				timing: "call_time",
-				resolverModule: "packages/teamlead/src/bridge/codex-gate.ts",
-				resolverSymbol: "codexHardGateEnabled",
-			},
-		],
-		toggleable: "direct",
-		// Two live-observe proofs: the Bridge-side registry direct-toggle test AND
-		// the runner-CLI verify-approval .env bidirectional live-toggle test.
-		directToggleProof:
-			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
-	},
-	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
 		// landing maps to completed/Done ONLY when verifyApproval confirms a bound,
 		// answered approve_to_ship for the current head (+ FLY-827 Codex gate) — else the
 		// session is parked with a merge_block marker (决定③, no auto-revert) + a loud
-		// alert. `=0` is the emergency release (restores the pre-FLY-869 merged→completed
-		// short-circuit). INDEPENDENT of the QA gate below (R2 HIGH-3). Read via the
-		// shared evaluateShipEligibility predicate (const key in ship-eligibility.ts).
+		// alert. `=0` bypasses only this merge-approval half; the independent QA
+		// check remains always armed. Read via the shared evaluateShipEligibility
+		// predicate (const key in ship-eligibility.ts).
 		name: "merge_approval_gate_killswitch",
 		category: "kill_switch",
 		source: "env",
@@ -552,7 +486,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		valueKind: "bool",
 		default: true,
 		description:
-			"全局关掉 merge-抢跑 ship 闸（=0 应急放行；默认 ON=merged 只有经 verifyApproval 批准才 completed/Done，否则挂 merge_block 不自动 revert + 响亮 alert）",
+			"全局关掉 ship 判定中的 merge-approval 半闸（=0 只绕过 verifyApproval；QA 校验固定开启，仍须通过）",
 		readSites: [
 			envSite(
 				"packages/flywheel-comm/src/ship-eligibility.ts",
@@ -568,80 +502,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "readonly",
-		note: "B 与 A（FLYWHEEL_QA_DONE_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
-	},
-	{
-		// FLY-869 A: the QA-done ship gate kill-switch. Default-ON (决定②/④): a session
-		// whose persisted qa_required snapshot is 1 needs a PASSED auto_qa_record for the
-		// head before completed/Done; exempt (snapshot 0 / no-code / no-PR / no-qa label /
-		// qa.auto:false) passes. `=0` is the emergency release. INDEPENDENT of the merge
-		// gate above (R2 HIGH-3). Read via the shared evaluateQaShipGate predicate.
-		name: "qa_done_gate_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_QA_DONE_GATE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉 QA-done ship 闸（=0 应急放行；默认 ON=qa_required=1 的 session 必须有 head 的 passed auto_qa_record 才 completed/Done；豁免口=快照0/no-code/no-PR/no-qa/qa.auto:false）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate argsEnv-wins Bridge caller (QA_DONE_GATE_KEY)",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "readonly",
-		note: "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；Bridge caller 与 CLI live-.env 均在下一次调用生效,分歧时可能 split-brain；授权面保持 readonly。",
-	},
-	{
-		// FLY-1404: every design node — independent of DAG shape — must attach
-		// committed, issue-scoped founder design HTML evidence before completion.
-		// The CLI mints the attestation and every completion ingress validates it.
-		// `=0` is an operator-only emergency escape, never a product toggle.
-		name: "design_html_gate",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DESIGN_HTML_GATE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"design node 完成前必须提交 issue-scoped founder 设计 HTML 并携带 HEAD 绑定的可信证据；=0 仅作 operator 应急放行，与 DAG 是否三段式无关 (FLY-1404)",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/commands/complete.ts",
-				"collectDesignHtmlEvidence",
-				"cli_invocation",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/event-route.ts",
-				"POST /events completion admission",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/DirectEventSink.ts",
-				"emitCompleted",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/complete-marker-reconciler.ts",
-				"tryReconcileComplete",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "CLI 每次调用即时读取；Bridge 进程在每次 completion admission 读取 process.env，但修改共享 .env 后仍需重启 Bridge。",
+		note: "B 的逃生开关只影响 merge approval；A（QA）固定开启且没有环境变量旁路。B 的 Bridge caller 与 CLI live-.env 均在下一次调用生效，分歧时可能 split-brain；授权面保持 readonly。",
 	},
 	{
 		name: "issue_gate_supersede_mode",
@@ -666,29 +527,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "已写入 superseded_at/superseded_by 的 disposition 永久有效；=0 只停止新的 mutation，不回滚历史 stamp。",
 	},
-	{
-		name: "ship_ci_guard",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_CI_GUARD",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1314: approve gate 与最终 ship authority 的即时 GitHub CI 守卫（=0 紧急旁路 GitHub evidence axis）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/ship-ci-guard.ts",
-				"probeShipCiGreen",
-				"cli_invocation",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "由每次 flywheel-comm CLI invocation 读取；默认开启，=0 仅用于 GitHub/gh 证据链故障的紧急恢复。",
-	},
-
 	// ─── FLY-799: founder-in-thread ship approval + auto-finalize ───
 	// ─── FLY-1099: founder-reply ingest reliability ───
 	{
@@ -743,12 +581,12 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"WorkflowReworkCoordinator reentry injection",
+				"workflowReworkCoordinatorHolder.current",
 				"storeWorkflowReworkReentryEnabled",
 			),
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"WorkflowEngineDispatcher reentry injection",
+				"workflowEngineDispatcher",
 				"storeWorkflowReworkReentryEnabled",
 			),
 		],
@@ -862,54 +700,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 
-	// ─── env features read via an injected `env` param (Codex R1 caught; the
-	//     drift scanner now also matches `env.FLYWHEEL_*`). Conservative `mixed`
-	//     timing → not direct. ───
-	{
-		name: "lead_core_mention_gated",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_CORE_MENTION_GATED",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"core-room 无-@ 消息只让 CoS 回、非-CoS lead 需被点名才回（FLY-898，launcher 从 projects.json 计算）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
-				"codex-lead-runtime",
-				"mixed",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
 	// ─── value-type env (non-boolean) → readonly display ───
 	// FLY-1809: `lead_cross_dept_channel_ids` used to sit here. It is a Discord
 	// channel id, not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to
 	// its FLYWHEEL_ROUNDTABLE_CHANNEL_ID sibling. Not deleted (that would inline
 	// the id) and not tombstoned (production still reads it).
-	{
-		name: "reports_ttl_days",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_REPORTS_TTL_DAYS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "7",
-		description: "报告链接保留天数（默认 7）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"resolveReportsTtlMs",
-				"object_construction",
-			),
-		],
-		toggleable: "readonly",
-	},
 	{
 		name: "ghost_guard_wait_ms",
 		category: "feature",
@@ -932,48 +727,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 
 	// ─── governance gates → ALWAYS readonly (default-enable-policy hard exemption) ───
-	{
-		name: "founder_consent_decision_mode",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
-		polarity: "opt_in",
-		valueKind: "enum",
-		enumValues: ["off", "audit_only", "enforce"],
-		default: "off",
-		description: "founder-consent 硬门模式（治理门，只读）",
-		readSites: [
-			envSite(
-				"packages/config/src/decision-mode.ts",
-				"resolveDecisionMode",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "founder_attribution_gate",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"verify-approval 要求 approve gate 答复归属 founder 侧(founder id / bridge / bridge-founder-consent;=0 仅供 QA 房/应急;治理门,只读;FLY-945 Fix E)",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/founder-attribution.ts",
-				"resolveFounderAttributionGateOn",
-				"cli_invocation",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
 	{
 		// FLY-1309: this is a loud, audited break-glass override for the Lead
 		// identity authorization gate. It is intentionally a governance gate, not
@@ -1066,27 +819,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
-		name: "founder_milestone_report_enabled",
-		category: "feature",
-		source: "project_config",
-		scope: "project",
-		configKey: "founder_milestone_report.enabled",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "项目级 founder terminal-milestone push",
-		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/gate-poller.ts",
-				symbol: "GatePoller.maybeEmitMilestoneReports",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "cfg.enabled",
-			},
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "xiaohongshu_auto_create",
 		category: "feature",
 		source: "project_config",
@@ -1103,27 +835,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				pattern: "config",
 				timing: "call_time",
 				configAccess: "col.auto_create",
-			},
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "qa_auto",
-		category: "feature",
-		source: "project_config",
-		scope: "project",
-		configKey: "qa.auto",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "code-review 后自动 spawn 独立 QA runner（per-project）",
-		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/auto-qa-policy.ts",
-				symbol: "resolveAutoQaPolicy",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "cfg.auto",
 			},
 		],
 		toggleable: "conversational",
@@ -1172,17 +883,17 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"runs route skill mode injection",
+				"runsRouter",
 				"storeSkillFrameworkModeControl",
 			),
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
-				"Blueprint skill mode injection",
+				"skillFrameworkModeControl",
 				"storeSkillFrameworkModeControl",
 			),
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
-				"RunDispatcher sticky mode injection",
+				"createRunInfraDispatcher",
 				"storeSkillFrameworkModeControl",
 			),
 		],
@@ -1348,34 +1059,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 	},
 	{
-		name: "workflow_resume",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_WORKFLOW_RESUME",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1707: admit same-run workflow resume requests from durable checkpoints; default off preserves the existing /runs/start path.",
-		readSites: [
-			flagStoreSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"runs route resume injection",
-				"storeWorkflowResumeEnabled",
-			),
-			flagStoreSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"WorkflowEngineDispatcher resume injection",
-				"storeWorkflowResumeEnabled",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/runs-route.dag-entry.test.ts",
-		note: "Only explicit resume:true requests enter the T3/T4 admission namespace; existing start reservation keys are untouched.",
-	},
-	{
 		name: "workflow_turn_divergence_alerts",
 		category: "feature",
 		source: "env",
@@ -1389,7 +1072,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/plugin.ts",
-				"workflow TURN divergence alert injection",
+				"gatePoller",
 				"storeWorkflowTurnDivergenceAlertsEnabled",
 			),
 		],
@@ -1404,48 +1087,4 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// isolation override with it) and not tombstoned (production still reads it).
 	// ─── FLY-1282: zombie-session liveness + folded family defects ───
 	// ─── FLY-1718: re-dispatch inventory reconciliation ───
-	{
-		name: "instruction_path_check",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_INSTRUCTION_PATH_CHECK",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1718 P3: design-review 自动指令绑定已提交 plan path/blob，并由 Bridge 校验结果投影",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"reconcileDesignReviewManifestOutbox",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/event-route.ts",
-				"handleStageChanged design review manifest",
-				"call_time",
-			),
-			envSite(
-				"packages/teamlead/src/bridge/design-review-validation.ts",
-				"validateDesignReviewProjection",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/commands/await-codex-gate.ts",
-				"validateResult",
-				"cli_invocation",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/commands/await-codex-gate.ts",
-				"validateDesignProjectionWithBridge",
-				"cli_invocation",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "Bridge 与独立 flywheel-comm CLI 均读取；跨进程授权安全面不提供 web toggle。",
-	},
 ];

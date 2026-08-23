@@ -16,6 +16,7 @@ import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import { insertHistoricalAutoQaRecord } from "./helpers/historical-qa.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -186,13 +187,12 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 			pr_number: 1,
 			codex_skip: 1,
 		});
-		store.claimAutoQaRecord({
+		insertHistoricalAutoQaRecord(store, {
 			parentExecutionId: "exec-lc",
 			targetPrHeadSha: head,
 			issueId: "issue-lc",
 			projectName: "test-proj",
-		});
-		store.setAutoQaStatus("exec-lc", head, "passed", {
+			status: "passed",
 			verdictEventId: "qa-pass-lifecycle",
 		});
 

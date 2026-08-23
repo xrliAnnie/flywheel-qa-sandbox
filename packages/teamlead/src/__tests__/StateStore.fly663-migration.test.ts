@@ -285,19 +285,6 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 	});
 
 	describe("getRowsModified / lastInsertRowid equivalence", () => {
-		it("claimAutoQaRecord dedups via getRowsModified()", async () => {
-			const store = await StateStore.create(dbPath);
-			const input = {
-				parentExecutionId: "p-1",
-				targetPrHeadSha: "sha-1",
-				issueId: "FLY-663",
-				projectName: "flywheel",
-			};
-			expect(store.claimAutoQaRecord(input)).toBe(true); // inserted
-			expect(store.claimAutoQaRecord(input)).toBe(false); // dedup (no rows modified)
-			store.close();
-		});
-
 		it("appendLeadEvent returns a positive seq and dedups by (lead,event)", async () => {
 			const store = await StateStore.create(dbPath);
 			const seq1 = store.appendLeadEvent("lead-1", "evt-1", "t", "{}");

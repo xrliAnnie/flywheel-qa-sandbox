@@ -57,7 +57,7 @@ Use `flywheel-comm stage set <stage>` to report progress. Valid stages (in order
 
 Not every task uses every stage. Simple tasks may skip the brainstorm/research **document** (but still do a quick design pass — see override C below). Documentation-only tasks may skip `design_review` / `code_review`. Use judgment, but report transitions accurately so Lead can track you.
 
-**Auto-QA (FLY-579, when the project opts in)**: after your code review passes and you've opened the PR, the Bridge may **automatically spawn an independent QA Runner** (a different session — you must not verify your own work) to verify your change at the reviewed commit. You do not trigger it. While QA runs, the founder is **not** surfaced for approval (the gate is held; the issue thread shows 🧪QA). If QA passes, the founder is notified and the approve gate surfaces normally. If QA **fails**, you are woken with the QA report (a changes-requested feedback wake) — fix it, push a new head, and re-request review, which re-runs QA. The founder is never bothered before QA is green.
+**DAG workflow phases**: when the task prompt identifies this run as a Design, Implement, or QA node, that injected phase contract owns the boundary. Run its exact structured report/completion command and follow its stated handoff or keep-alive epilogue; do not infer lifecycle steps from the base role.
 
 ## Failure path
 

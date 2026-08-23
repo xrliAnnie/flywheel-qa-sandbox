@@ -52,8 +52,6 @@ describe("loadFeatureFlagProjectConfigs", () => {
 			"decision_layer:",
 			"  autonomy_level: advisor",
 			"  escalation_channel: discord",
-			"qa:",
-			"  auto: true",
 			"",
 		].join("\n");
 		const map = await loadFeatureFlagProjectConfigs(PROJECTS, (p) => {
@@ -64,7 +62,7 @@ describe("loadFeatureFlagProjectConfigs", () => {
 				throw err;
 			}
 			// broken → invalid yaml
-			return "qa:\n  auto: true\n:::garbage";
+			return "project: broken\n:::garbage";
 		});
 
 		// ok → loaded config

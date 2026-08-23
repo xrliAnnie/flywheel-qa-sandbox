@@ -4,6 +4,40 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 
+type RawDatabase = {
+	prepare: (sql: string) => { run: (...args: unknown[]) => unknown };
+};
+
+function seedHistoricalFounderConsentResponse(
+	db: CommDB,
+	questionId: string,
+): string {
+	const raw = (db as unknown as { db: RawDatabase }).db;
+	const responseId = `historical-response:${questionId}`;
+	const deliveryId = `historical-delivery:${questionId}`;
+	raw
+		.prepare(
+			"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+		)
+		.run(responseId, deliveryId, "historical-test-fixture");
+	raw
+		.prepare(
+			`INSERT INTO mailbox
+			 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+			  ref_id, created_at, expires_at, relay_state)
+			 VALUES (?, ?, 'bridge-founder-consent', 'exec-1', 'runner', 'response',
+			         '{"approved":true}', ?, '2026-08-22T00:00:00.000Z',
+			         '2026-08-25T00:00:00.000Z', 'terminal_disposed')`,
+		)
+		.run(responseId, deliveryId, questionId);
+	raw
+		.prepare(
+			"UPDATE mailbox SET relay_state = 'terminal_disposed' WHERE id = ?",
+		)
+		.run(questionId);
+	return responseId;
+}
+
 describe("CommDB gate methods", () => {
 	let db: CommDB;
 	let tmpDir: string;
@@ -246,6 +280,83 @@ describe("CommDB gate methods", () => {
 				)
 				.run(id);
 			expect(db.insertResponseIfGateOpen(args(id))).toBe(true);
+		});
+
+		it("rejects bridge-founder-consent as a fresh approve_to_ship writer", () => {
+			const id = db.insertQuestion("exec-1", "bridge", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			expect(() =>
+				db.insertResponseIfGateOpen({
+					questionId: id,
+					fromAgent: "bridge-founder-consent",
+					content: '{"approved":true}',
+					expectedOwner: "exec-1",
+					expectedCheckpoint: "approve_to_ship",
+				}),
+			).toThrow(/historical-only/i);
+			expect(db.getResponse(id)).toBeUndefined();
+		});
+	});
+
+	describe("historical founder-consent primitive boundary", () => {
+		it("insertResponse rejects fresh approve_to_ship writes", () => {
+			const id = db.insertQuestion("exec-1", "bridge", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			expect(() =>
+				db.insertResponse(id, "bridge-founder-consent", '{"approved":true}'),
+			).toThrow(/historical-only/i);
+			expect(db.getResponse(id)).toBeUndefined();
+		});
+
+		it("preserves existing historical approve_to_ship rows idempotently", () => {
+			const id = db.insertQuestion("exec-1", "bridge", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+			const responseId = seedHistoricalFounderConsentResponse(db, id);
+
+			expect(
+				db.insertResponse(id, "bridge-founder-consent", '{"approved":true}'),
+			).toEqual({ written: false, reason: "gate_not_open" });
+			expect(
+				db.insertResponseIfGateOpen({
+					questionId: id,
+					fromAgent: "bridge-founder-consent",
+					content: '{"approved":true}',
+					expectedOwner: "exec-1",
+					expectedCheckpoint: "approve_to_ship",
+				}),
+			).toBe(false);
+			expect(db.getResponse(id)?.id).toBe(responseId);
+		});
+
+		it("does not reject the actor for an unrelated checkpoint", () => {
+			const directId = db.insertQuestion("exec-1", "bridge", "review?", {
+				checkpoint: "review_code",
+			});
+			expect(
+				db.insertResponse(
+					directId,
+					"bridge-founder-consent",
+					'{"reviewVerdict":"APPROVED"}',
+				),
+			).toEqual({ written: true });
+
+			const atomicId = db.insertQuestion("exec-1", "bridge", "review?", {
+				checkpoint: "review_code",
+			});
+			expect(
+				db.insertResponseIfGateOpen({
+					questionId: atomicId,
+					fromAgent: "bridge-founder-consent",
+					content: '{"reviewVerdict":"APPROVED"}',
+					expectedOwner: "exec-1",
+					expectedCheckpoint: "review_code",
+				}),
+			).toBe(true);
 		});
 	});
 
@@ -526,6 +637,57 @@ describe("CommDB gate methods", () => {
 			expect(db.insertTimeoutResponse(timeoutArgs(id))).toBe(false);
 			// the real answer is intact, not overwritten by the timeout text
 			expect(db.getResponse(id)?.content).toBe("APPROVED — go");
+		});
+
+		it("rejects bridge-founder-consent as a fresh approve_to_ship timeout writer", () => {
+			const id = db.insertQuestion("exec-1", "lead-1", "ship gate", {
+				checkpoint: "approve_to_ship",
+			});
+			rawExpire(id);
+
+			expect(() =>
+				db.insertTimeoutResponse({
+					...timeoutArgs(id),
+					fromAgent: "bridge-founder-consent",
+					expectedCheckpoint: "approve_to_ship",
+				}),
+			).toThrow(/historical-only/i);
+			expect(db.getResponse(id)).toBeUndefined();
+		});
+
+		it("returns false for an existing historical approve_to_ship timeout row", () => {
+			const id = db.insertQuestion("exec-1", "lead-1", "ship gate", {
+				checkpoint: "approve_to_ship",
+			});
+			const responseId = seedHistoricalFounderConsentResponse(db, id);
+			// Keep the question synthetically answerable so this proves the existing-row
+			// check wins before the historical-actor fresh-write guard.
+			(db as unknown as { db: RawDatabase }).db
+				.prepare(
+					"UPDATE mailbox SET relay_state = 'protected', resolved_at = NULL WHERE id = ?",
+				)
+				.run(id);
+
+			expect(
+				db.insertTimeoutResponse({
+					...timeoutArgs(id),
+					fromAgent: "bridge-founder-consent",
+					expectedCheckpoint: "approve_to_ship",
+				}),
+			).toBe(false);
+			expect(db.getResponse(id)?.id).toBe(responseId);
+		});
+
+		it("allows bridge-founder-consent timeout responses on unrelated checkpoints", () => {
+			const id = openExpiredGate();
+
+			expect(
+				db.insertTimeoutResponse({
+					...timeoutArgs(id),
+					fromAgent: "bridge-founder-consent",
+				}),
+			).toBe(true);
+			expect(db.getResponse(id)?.from_agent).toBe("bridge-founder-consent");
 		});
 
 		it("wrong owner / wrong checkpoint / missing question → false", () => {

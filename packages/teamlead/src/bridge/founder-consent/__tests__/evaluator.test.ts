@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FounderConsentAuditRow } from "../audit.js";
 import { ConsentCache } from "../cache.js";
-import { parseFounderConsentConfig } from "../config.js";
+import { type DecisionMode, parseFounderConsentConfig } from "../config.js";
 import type { FetchImpl } from "../discord-fetch.js";
 import {
 	type EvaluateInput,
@@ -12,15 +12,18 @@ import {
 
 const FOUNDER = "founder-123";
 
-function mkConfig(over: Record<string, string | undefined> = {}) {
-	return parseFounderConsentConfig(
+function mkConfig(
+	over: Record<string, string | undefined> = {},
+	decisionMode: DecisionMode = "enforce",
+) {
+	const parsed = parseFounderConsentConfig(
 		{
-			FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce",
 			FLYWHEEL_FOUNDER_USER_ID: FOUNDER,
 			...over,
 		} as NodeJS.ProcessEnv,
 		() => {},
 	);
+	return { ...parsed, decisionMode };
 }
 
 function mkAudit() {
@@ -319,9 +322,7 @@ describe("FounderConsentEvaluator decision paths", () => {
 			},
 		};
 		const { ev } = mkEvaluator({
-			config: mkConfig({
-				FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "audit_only",
-			}),
+			config: mkConfig({}, "audit_only"),
 			audit: throwingAudit as unknown as ReturnType<typeof mkAudit>,
 			fetchImpl: mkFetch([{ id: "m-f", content: "停", authorId: FOUNDER }]),
 			llm: mkLLM({

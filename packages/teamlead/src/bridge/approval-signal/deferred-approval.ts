@@ -21,13 +21,13 @@ import type {
 	SessionEvent,
 } from "../../StateStore.js";
 import type { FounderReworkHint } from "../../workflow-rework-hint.js";
-import type { ReviewHoldReason } from "../auto-qa-held.js";
 import {
 	parseSqliteUtcMs,
 	snowflakeToMs,
 	truncate,
 } from "../founder-notify-utils.js";
 import type { MergedGateGuard } from "../merged-gate-guard.js";
+import type { ReviewHoldReason } from "../review-hold.js";
 import { reactToFounderMessage } from "./founder-ack.js";
 import type { DeferralSupport } from "./founder-ship-approval-handler.js";
 import type { GateAuthorityView } from "./gate-authority-view.js";

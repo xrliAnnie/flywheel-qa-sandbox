@@ -1,20 +1,12 @@
 /**
- * FLY-579 P1: Runner-driven QA verdict emitter (`flywheel-comm qa-result`).
+ * Runner-driven DAG QA verdict emitter (`flywheel-comm qa-result`).
  *
- * An auto-spawned QA Runner (sessionRole="qa") emits this AFTER it finishes
- * verifying the implementer's PR and BEFORE `complete --route no_code`. It is
- * the structured verdict that gates the founder: the Bridge's AutoQaCoordinator
- * consumes the `qa_result` event and either RELEASES the founder ship-ready
- * notification (pass) or routes the report back to the implementer (fail) —
- * the founder is never notified on fail.
+ * A DAG QA Runner emits this after verification. The scoped workflow
+ * submission credential binds the decision to its durable DAG activation.
  *
  * Reliability mirrors `complete.ts`: retry with backoff + fail-close marker on
- * exhaustion. A lost verdict must never be silently treated as "QA passed" —
- * the coordinator's lost-event reconcile marks the record `stuck` and pings the
- * Lead, never auto-releases.
- *
- * Payload is consumed by `event-route.ts` (event_type === "qa_result") →
- * `AutoQaCoordinator.onQaResult`.
+ * exhaustion. There is deliberately no legacy `/events` fallback: an event
+ * acknowledgement is not a consumed DAG decision.
  */
 
 import { execFileSync } from "node:child_process";
@@ -32,10 +24,7 @@ import {
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import {
-	normalizeOptionalBearer,
-	parseGitHubPushEndpoint,
-} from "flywheel-config";
+import { parseGitHubPushEndpoint } from "flywheel-config";
 import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 const VALID_STATUSES = new Set(["pass", "fail"]);
@@ -111,22 +100,6 @@ export interface QaResultOpts {
 	execId?: string;
 	/** Reviewed PR head the QA worktree was pinned to. Defaults to git HEAD. */
 	prHeadSha?: string;
-}
-
-export interface QaResultBody {
-	event_id: string;
-	execution_id: string;
-	issue_id: string;
-	project_name: string;
-	event_type: "qa_result";
-	source: string;
-	payload: {
-		status: "pass" | "fail";
-		targetExecutionId: string;
-		qaExecutionId: string;
-		prHeadSha?: string;
-		summary?: string;
-	};
 }
 
 export interface WorkflowQaDecisionBody {
@@ -574,38 +547,6 @@ function runQaGit(
 	});
 }
 
-/**
- * Pure builder for the `qa_result` event body. Extracted so the verdict shape
- * is unit-testable without the network/marker machinery.
- */
-export function buildQaResultBody(args: {
-	status: "pass" | "fail";
-	qaExecutionId: string;
-	targetExecutionId: string;
-	issueId: string;
-	projectName: string;
-	prHeadSha?: string;
-	summary?: string;
-	eventId?: string;
-}): QaResultBody {
-	const payload: QaResultBody["payload"] = {
-		status: args.status,
-		targetExecutionId: args.targetExecutionId,
-		qaExecutionId: args.qaExecutionId,
-	};
-	if (args.prHeadSha) payload.prHeadSha = args.prHeadSha;
-	if (args.summary) payload.summary = args.summary;
-	return {
-		event_id: args.eventId ?? randomUUID(),
-		execution_id: args.qaExecutionId,
-		issue_id: args.issueId,
-		project_name: args.projectName,
-		event_type: "qa_result",
-		source: "flywheel-comm",
-		payload,
-	};
-}
-
 export async function qaResult(
 	opts: QaResultOpts,
 	dependencies: QaResultDependencies = {},
@@ -642,9 +583,6 @@ export async function qaResult(
 	const issueId = process.env.FLYWHEEL_ISSUE_ID?.trim() ?? "";
 	const projectName = process.env.FLYWHEEL_PROJECT_NAME?.trim() ?? "";
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL?.trim() ?? "";
-	const ingestToken = normalizeOptionalBearer(
-		process.env.FLYWHEEL_INGEST_TOKEN,
-	);
 	const requestId = randomUUID();
 	const suppliedPrHeadSha = opts.prHeadSha?.trim() || undefined;
 	const recoverableVerdict: RecoverableQaVerdict = {
@@ -687,16 +625,22 @@ export async function qaResult(
 			lastError: `qa_activation_context_unavailable: ${sanitizeText(errorMessage(error), 240)}`,
 		});
 	}
-	const workflowSubmissionExpected =
-		process.env.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED === "1";
+	if (!workflowCredential) {
+		writeDeterministicFailure({
+			execId: qaExecId,
+			requestId,
+			body: recoverableVerdict,
+			recoverableVerdict,
+			lastError:
+				"workflow submission credential is required; legacy /events QA delivery is retired",
+		});
+	}
 
 	let prHeadSha: string | undefined;
 	try {
-		// Credential-backed decisions are server-attested. Avoid touching git on
-		// the first POST so receipt-backed/no-worktree review nodes can submit.
-		prHeadSha =
-			suppliedPrHeadSha ??
-			(workflowCredential ? undefined : deriveHeadSha(getGit()));
+		// Decisions are server-attested. Avoid touching git on the first POST so
+		// receipt-backed/no-worktree review nodes can submit.
+		prHeadSha = suppliedPrHeadSha;
 	} catch (error) {
 		writeDeterministicFailure({
 			execId: qaExecId,
@@ -708,46 +652,18 @@ export async function qaResult(
 	}
 	if (prHeadSha) recoverableVerdict.prHeadSha = prHeadSha;
 
-	const body = buildQaResultBody({
+	let submissionBody: WorkflowQaDecisionBody = {
+		credential: workflowCredential,
+		client_request_id: requestId,
 		status: status as "pass" | "fail",
-		qaExecutionId: qaExecId,
-		targetExecutionId: targetExec,
-		issueId,
-		projectName,
-		prHeadSha,
-		summary: opts.summary?.trim() || undefined,
-		eventId: requestId,
-	});
-	if (workflowSubmissionExpected && !workflowCredential) {
-		const lastError =
-			"workflow submission credential was expected but FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL is missing; do not use env -u or a shell that drops the runner environment";
-		writeDeterministicFailure({
-			execId: qaExecId,
-			requestId: body.event_id,
-			body,
-			recoverableVerdict,
-			lastError,
-		});
-	}
-	let submissionBody: QaResultBody | WorkflowQaDecisionBody = workflowCredential
-		? {
-				credential: workflowCredential,
-				client_request_id: body.event_id,
-				status: status as "pass" | "fail",
-				...(prHeadSha ? { client_pr_head_sha: prHeadSha } : {}),
-				...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
-			}
-		: body;
-	const endpoint = workflowCredential
-		? `${bridgeUrl.replace(/\/$/, "")}/api/workflow/decision`
-		: `${bridgeUrl.replace(/\/$/, "")}/events`;
+		...(prHeadSha ? { client_pr_head_sha: prHeadSha } : {}),
+		...(opts.summary?.trim() ? { summary: opts.summary.trim() } : {}),
+	};
+	const endpoint = `${bridgeUrl.replace(/\/$/, "")}/api/workflow/decision`;
 
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
-	if (!workflowCredential && ingestToken) {
-		headers.Authorization = `Bearer ${ingestToken}`;
-	}
 
 	let lastError: string | undefined;
 	let landHeadPushUsed = false;
@@ -779,31 +695,22 @@ export async function qaResult(
 			const detail = parsed?.detail;
 
 			if (response.ok && parsed?.ok === true) {
-				if (workflowCredential) {
-					if (
-						typeof parsed.claimId !== "number" ||
-						!Number.isFinite(parsed.claimId) ||
-						typeof parsed.serverSeq !== "number" ||
-						!Number.isFinite(parsed.serverSeq) ||
-						typeof parsed.idempotentReplay !== "boolean"
-					) {
-						lastError = `Malformed workflow decision acknowledgement from ${endpoint} (status ${response.status})`;
-					} else {
-						clearMarker(qaExecId);
-						console.log(
-							`[qa-result] decision consumed (claimId=${parsed.claimId} serverSeq=${parsed.serverSeq} idempotentReplay=${parsed.idempotentReplay}) for target=${targetExec} (attempt ${attempt}/${ATTEMPT_COUNT})`,
-						);
-						return;
-					}
+				if (
+					typeof parsed.claimId !== "number" ||
+					!Number.isFinite(parsed.claimId) ||
+					typeof parsed.serverSeq !== "number" ||
+					!Number.isFinite(parsed.serverSeq) ||
+					typeof parsed.idempotentReplay !== "boolean"
+				) {
+					lastError = `Malformed workflow decision acknowledgement from ${endpoint} (status ${response.status})`;
 				} else {
 					clearMarker(qaExecId);
 					console.log(
-						`[qa-result] accepted by /events (event stored; NOT a DAG decision) for target=${targetExec} (attempt ${attempt}/${ATTEMPT_COUNT})`,
+						`[qa-result] decision consumed (claimId=${parsed.claimId} serverSeq=${parsed.serverSeq} idempotentReplay=${parsed.idempotentReplay}) for target=${targetExec} (attempt ${attempt}/${ATTEMPT_COUNT})`,
 					);
 					return;
 				}
 			} else if (
-				workflowCredential &&
 				response.status === 409 &&
 				reason === "land_head_pr_not_at_tip"
 			) {
@@ -963,11 +870,11 @@ export async function qaResult(
 			}
 			writeDeterministicFailure({
 				execId: qaExecId,
-				requestId: activeClientRequestId(submissionBody, body.event_id),
+				requestId: activeClientRequestId(submissionBody, requestId),
 				body: submissionBody,
 				recoverableVerdict: {
 					...recoverableVerdict,
-					clientRequestId: activeClientRequestId(submissionBody, body.event_id),
+					clientRequestId: activeClientRequestId(submissionBody, requestId),
 				},
 				lastError: deterministicFailure.lastError,
 			});
@@ -985,11 +892,11 @@ export async function qaResult(
 
 	const markerWritten = writeMarker({
 		execId: qaExecId,
-		requestId: activeClientRequestId(submissionBody, body.event_id),
+		requestId: activeClientRequestId(submissionBody, requestId),
 		body: submissionBody,
 		recoverableVerdict: {
 			...recoverableVerdict,
-			clientRequestId: activeClientRequestId(submissionBody, body.event_id),
+			clientRequestId: activeClientRequestId(submissionBody, requestId),
 		},
 		lastError,
 	});
@@ -1443,16 +1350,6 @@ function writeDeterministicFailure(args: {
 		} ${args.lastError}`,
 	);
 	process.exit(1);
-}
-
-function deriveHeadSha(git: QaGitContext): string {
-	const sha = runQaGit(git, ["rev-parse", "HEAD"], git.repoPath, true)
-		.trim()
-		.toLowerCase();
-	if (!/^[0-9a-f]{40}$/.test(sha)) {
-		throw new Error("git HEAD did not resolve to a 40-character SHA");
-	}
-	return sha;
 }
 
 function sleep(ms: number): Promise<void> {

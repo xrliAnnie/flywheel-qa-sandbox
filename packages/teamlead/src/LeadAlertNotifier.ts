@@ -82,17 +82,16 @@ export const ALERT_EVENT_TYPES = [
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
 	"runner_stuck_unhandled",
-	// FLY-579: the auto-QA pipeline could not proceed (spawn failed, QA ended
-	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
-	// founder is intentionally never surfaced for a non-green QA. NOT a
-	// founder-facing notification (those go to the issue thread).
+	// Retained historical kind for review/ship authorization holds. Current
+	// callers provide neutral merge-authorization or DAG recovery copy; old rows
+	// remain readable. Lead-only, never a founder-facing notification.
 	"auto_qa_stuck",
 	// FLY-1573: mailbox messages exhausted their agent-ack lease. This alert is
 	// deliberately delivered outside the mailbox to break recursive dead-lettering.
 	"mailbox_dead_letter",
 	// FLY-827: a session reached awaiting_review but Codex code review is NOT
-	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
-	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
+	// APPROVED for the current PR head → the hard gate blocked review/ship
+	// readiness. A Lead-only alert (founder never surfaced pre-Codex).
 	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
 	"codex_gate_blocked",
 	// FLY-1278: review convergence/audit channel. Advisories pass the hard gate;
@@ -128,11 +127,11 @@ export const ALERT_EVENT_TYPES = [
 	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
 	"runner_lead_pending_unhandled",
 	// FLY-725 (Annie 2026-07-01: "never silently drop"): the Bridge could not
-	// deliver a failed/blocked milestone @founder ping to its issue thread
+	// deliver a founder-gate fallback ping to its issue thread
 	// (permanent 4xx / missing thread|token|owner / transient retry budget
 	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
 	// stuck event — the runner is fine; the notification channel failed.
-	"founder_milestone_undelivered",
+	"founder_gate_delivery_failed",
 	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
 	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
 	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.

@@ -142,7 +142,7 @@ describe("canonicalizeFlagSample", () => {
 			source: "project_config",
 			scope: "project",
 			envVar: undefined,
-			configKey: "qa.auto",
+			configKey: "doc_flow.enabled",
 		});
 		const view = flagView(spec, {
 			effective: undefined,

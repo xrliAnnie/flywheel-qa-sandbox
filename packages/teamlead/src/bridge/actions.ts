@@ -39,7 +39,6 @@ import {
 	type FounderApprovalCardAuthority,
 	writeGateResponseAndRunPostWrite,
 } from "./approval-signal/write-gate-response.js";
-import { reviewHoldReason } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import {
 	AUTO_CLOSE_STATES,
@@ -65,6 +64,7 @@ import type {
 	GeneralizedExecutionDispatch,
 	IRetryDispatcher,
 } from "./retry-dispatcher.js";
+import { reviewHoldReason } from "./review-hold.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";

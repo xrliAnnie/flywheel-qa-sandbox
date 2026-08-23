@@ -364,9 +364,6 @@ compute_lead_rule_bundle() {
       # both mailbox and commdb), unlike runner-messaging-rules above.
       _lrb_emit "${base}/runner-patrol-rules.md" 0 || return 10
       _lrb_emit "${base}/doc-flow-rules.md" 0 || return 10
-      # FLY-579: auto-QA pipeline contract — code-review → independent QA →
-      # founder-gate, encoded so no Lead has to remember to run QA.
-      _lrb_emit "${base}/auto-qa-pipeline.md" 0 || return 10
       _lrb_emit "${base}/xiaohongshu-memory-rules.md" 0 || return 10
       ;;
     *)

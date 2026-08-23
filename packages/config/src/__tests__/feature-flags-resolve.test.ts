@@ -12,58 +12,30 @@ function spec(name: string) {
 
 describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	it("default_on kill-switch: on unless env === '0' (matches !== '0')", () => {
-		const s = spec("auto_qa_killswitch"); // FLYWHEEL_AUTO_QA
+		const s = spec("founder_review_orphan_monitor");
 		expect(resolveFlag(s, { env: {} }).effective).toBe(true);
-		expect(resolveFlag(s, { env: { FLYWHEEL_AUTO_QA: "0" } }).effective).toBe(
-			false,
-		);
-		expect(resolveFlag(s, { env: { FLYWHEEL_AUTO_QA: "1" } }).effective).toBe(
-			true,
-		);
 		expect(
-			resolveFlag(s, { env: { FLYWHEEL_AUTO_QA: "anything" } }).effective,
+			resolveFlag(s, { env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" } })
+				.effective,
+		).toBe(false);
+		expect(
+			resolveFlag(s, { env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "1" } })
+				.effective,
+		).toBe(true);
+		expect(
+			resolveFlag(s, {
+				env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "anything" },
+			}).effective,
 		).toBe(true);
 	});
 
 	it("isDefault reflects whether effective == default", () => {
-		const s = spec("auto_qa_killswitch");
+		const s = spec("founder_review_orphan_monitor");
 		expect(resolveFlag(s, { env: {} }).isDefault).toBe(true);
-		expect(resolveFlag(s, { env: { FLYWHEEL_AUTO_QA: "0" } }).isDefault).toBe(
-			false,
-		);
-	});
-
-	it("value type surfaces the raw string (or default)", () => {
-		const s = spec("reports_ttl_days");
-		expect(resolveFlag(s, { env: {} }).effective).toBe("7");
 		expect(
-			resolveFlag(s, { env: { FLYWHEEL_REPORTS_TTL_DAYS: "30" } }).effective,
-		).toBe("30");
-	});
-
-	it("DECISION_MODE enum reuses the real parser (off/audit_only/enforce + legacy alias)", () => {
-		const s = spec("founder_consent_decision_mode");
-		expect(resolveFlag(s, { env: {} }).effective).toBe("off");
-		expect(
-			resolveFlag(s, {
-				env: { FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce" },
-			}).effective,
-		).toBe("enforce");
-		expect(
-			resolveFlag(s, { env: { FLYWHEEL_FOUNDER_CONSENT_ENABLED: "true" } })
-				.effective,
-		).toBe("enforce");
-	});
-
-	it("DECISION_MODE: malformed env → explicit error, NOT a fake valid effective", () => {
-		const s = spec("founder_consent_decision_mode");
-		const view = resolveFlag(s, {
-			env: { FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "bogus" },
-		});
-		// must not present "bogus" as a valid mode
-		expect(view.effective).toBeUndefined();
-		expect(view.error).toMatch(/invalid/);
-		expect(view.error).toContain("bogus");
+			resolveFlag(s, { env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" } })
+				.isDefault,
+		).toBe(false);
 	});
 
 	// FLY-1356 (Bar-Raiser R1#8): a generic enum flag must never present a raw
@@ -126,35 +98,13 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		expect(valid.isDefault).toBe(false);
 	});
 
-	it.each([
-		[
-			"legacy alias",
-			{ FLYWHEEL_FOUNDER_CONSENT_ENABLED: "true" },
-			"FLYWHEEL_FOUNDER_CONSENT_ENABLED=true\n",
-		],
-		[
-			"canonical whitespace",
-			{ FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE: "enforce" },
-			"FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE=  enforce  \n",
-		],
-	] as const)(
-		"DECISION_MODE dual-source reuses the real parser for %s",
-		(_label, env, content) => {
-			const view = resolveFlag(spec("founder_consent_decision_mode"), {
-				env,
-				envFile: { status: "readable", content },
-			});
-			expect(view.bridgeEffective).toBe("enforce");
-			expect(view.fileEffective).toBe("enforce");
-			expect(view.displayEffective).toBe("enforce");
-			expect(view.divergence).toBeUndefined();
-		},
-	);
-
 	it("dual-source: readable agreement exposes one display value and preserves effective as the Bridge alias", () => {
-		const view = resolveFlag(spec("auto_qa_killswitch"), {
-			env: { FLYWHEEL_AUTO_QA: "0" },
-			envFile: { status: "readable", content: "FLYWHEEL_AUTO_QA=0\n" },
+		const view = resolveFlag(spec("founder_review_orphan_monitor"), {
+			env: { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" },
+			envFile: {
+				status: "readable",
+				content: "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0\n",
+			},
 		});
 		expect(view.bridgeEffective).toBe(false);
 		expect(view.fileEffective).toBe(false);
@@ -164,7 +114,7 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	});
 
 	it("dual-source: a readable file with the key absent resolves the deterministic default", () => {
-		const view = resolveFlag(spec("auto_qa_killswitch"), {
+		const view = resolveFlag(spec("founder_review_orphan_monitor"), {
 			env: {},
 			envFile: { status: "readable", content: "OTHER=1\n" },
 		});
@@ -175,7 +125,7 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	});
 
 	it("dual-source: unavailable is degraded instead of being mistaken for key absence", () => {
-		const view = resolveFlag(spec("auto_qa_killswitch"), {
+		const view = resolveFlag(spec("founder_review_orphan_monitor"), {
 			env: {},
 			envFile: { status: "unavailable" },
 		});
@@ -186,14 +136,14 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	});
 
 	it.each([
-		["all call_time", spec("auto_qa_killswitch"), "bridge_stale"],
+		["all call_time", spec("founder_review_orphan_monitor"), "bridge_stale"],
 		[
 			"boot-captured",
 			{
-				...spec("auto_qa_killswitch"),
+				...spec("founder_review_orphan_monitor"),
 				readSites: [
 					{
-						...spec("auto_qa_killswitch").readSites[0],
+						...spec("founder_review_orphan_monitor").readSites[0],
 						timing: "object_construction",
 					},
 				],
@@ -203,9 +153,9 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 		[
 			"mixed dotenv-live",
 			{
-				...spec("auto_qa_killswitch"),
+				...spec("founder_review_orphan_monitor"),
 				readSites: [
-					...spec("auto_qa_killswitch").readSites,
+					...spec("founder_review_orphan_monitor").readSites,
 					{
 						file: "packages/flywheel-comm/src/ship-eligibility.ts",
 						symbol: "test live reader",
@@ -233,12 +183,12 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 
 describe("resolveFlag — project scope", () => {
 	const cfgA: FlywheelConfig = {
-		qa: { auto: true },
+		doc_flow: { enabled: true, default_department: "engineering" },
 	} as unknown as FlywheelConfig;
 	const cfgB: FlywheelConfig = {} as unknown as FlywheelConfig;
 
 	it("per-project effectiveByProject, each project independent", () => {
-		const s = spec("qa_auto");
+		const s = spec("doc_flow");
 		const view = resolveFlag(s, {
 			projectConfigs: new Map([
 				["projA", { config: cfgA }],
@@ -252,7 +202,7 @@ describe("resolveFlag — project scope", () => {
 	});
 
 	it("malformed config load error is surfaced as data, not silently defaulted", () => {
-		const s = spec("qa_auto");
+		const s = spec("doc_flow");
 		const view = resolveFlag(s, {
 			projectConfigs: new Map([["projX", { error: "invalid yaml" }]]),
 		});
@@ -262,13 +212,13 @@ describe("resolveFlag — project scope", () => {
 	});
 
 	it("absent config (ENOENT → {}) shows the default, NOT an error", () => {
-		const s = spec("qa_auto");
+		const s = spec("doc_flow");
 		const view = resolveFlag(s, {
 			projectConfigs: new Map([["missing", {}]]),
 		});
 		const row = view.effectiveByProject?.[0];
 		expect(row?.error).toBeUndefined();
-		expect(row?.value).toBe(false); // qa.auto default OFF
+		expect(row?.value).toBe(false); // doc_flow.enabled default OFF
 		expect(row?.isDefault).toBe(true);
 	});
 
@@ -336,7 +286,7 @@ describe("resolveFlag — project scope", () => {
 	});
 
 	it("no projectConfigs → empty effectiveByProject (not a crash)", () => {
-		const view = resolveFlag(spec("qa_auto"), {});
+		const view = resolveFlag(spec("doc_flow"), {});
 		expect(view.effectiveByProject).toEqual([]);
 	});
 

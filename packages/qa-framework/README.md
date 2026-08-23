@@ -106,7 +106,7 @@ A specialized 1 happy path + 6 variants suite that validates the spec-defined Ha
 
 ### Key wire facts (matters for evidence interpretation)
 
-- **HP follows the production approve wire**: `flywheel-comm respond` (CommDB write) + Runner self-posts `:cool:`. Bridge `approveExecution` is *not* on the production path — calling it while Runner is gate-blocked deadlocks (`scripts/test-auto-approve.sh:18-40` documents this).
+- **HP follows the production approve wire**: the Runner opens `gate approve_to_ship --no-block`, completes with `--route needs_review --question-id <id>`, and the driver calls `POST /api/actions/approve` with only `execution_id`. Bridge writes the authoritative response, advances the legacy session, wakes the Runner, and the Runner's `verify-approval` check authorizes shipping.
 - **DB paths are distinct**: StateStore = `${SLOT_DIR}/teamlead.db` (= `/tmp/flywheel-test-slot-N/teamlead.db`, taken from deploy JSON `dbPath`). CommDB = `~/.flywheel/comm/test-slot-N/comm.db`. They are not the same database.
 - **CommDB authority is `mailbox` plus `mailbox_message_projection`**. Base `notified_at` records MCP transport success; projection `delivered_at`/`read_at` appear only after Lead ACK. Don't conflate transport with receipt.
 - **V3 alert evidence** comes from `~/.flywheel/alerts/claims.db` + `~/.flywheel/alert-queue/*.json` (filesystem queue). Discord channel push is **not** validated in this suite because test-slot config does not wire `alertChannel`.
@@ -136,7 +136,7 @@ The driver fails fast on preflight if `LINEAR_API_KEY` is missing or `FLY-SBX-1`
 The driver emits `MANUAL_PENDING` gates whenever Chrome MCP-driven Discord interaction is required:
 
 - **HP-3**: Annie posts task to chat-test-{N}
-- **HP-7**: Annie posts ship approval
+- **HP-7**: Annie posts ship approval; the driver invokes the supported approval endpoint
 - **V4-b**: confirm Runner is in Claude REPL before injecting bypass instruction
 - **V6**: per-trial shutdown phrase posting + Lead-reply classification
 
@@ -379,14 +379,11 @@ absolute path with `/` and `.` replaced by `-`), then sum
 `message.usage.{input_tokens,output_tokens,cache_*}` across entries —
 ground truth, no classifier in the loop.
 
-## Auto-QA Is OFF in Test Rooms (by design)
+## QA in Test Rooms
 
-The canonical slot config written by test-deploy
-(`qa_multilead_config_yaml`) contains no `qa:` block, and `qa.auto`
-defaults to off (`packages/config/src/ConfigLoader.ts`) — so a 529-Room
-Bridge never spawns its own auto-QA sessions. Room QA is suite-driven by
-definition; a QA that tests the auto-QA machinery itself opts in by adding
-`qa.auto` to the generated config in its own harness.
+Room QA is suite-driven by definition. The retired Bridge auto-QA spawn
+mechanism has no project-config opt-in; DAG QA nodes and explicit test-room
+suites remain the supported paths.
 
 ## Contracts
 

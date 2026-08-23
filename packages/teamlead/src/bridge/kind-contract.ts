@@ -145,7 +145,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		arc: "human_by_design",
 		remediationRef: "FLY-1385 dead-execution activity tripwire",
 	},
-	founder_milestone_undelivered: { owner: "claude", arc: "human_by_design" },
+	founder_gate_delivery_failed: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },
 	restart_storm_hold: {

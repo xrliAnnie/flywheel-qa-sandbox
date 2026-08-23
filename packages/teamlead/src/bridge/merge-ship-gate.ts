@@ -56,10 +56,10 @@ export const mergedPrCiProbe: NonNullable<
  * contradict design R2 HIGH-2: HIGH-2 forbids the *runner CLI* (whose inherited
  * env is a stale spawn-time snapshot) from passing env, so verify-approval must
  * read the authoritative `~/.flywheel/.env`. The BRIDGE process env is current;
- * and because the gate resolvers only honor `argsEnv` when the KEY IS PRESENT,
+ * and because the merge gate resolver only honors `argsEnv` when the KEY IS PRESENT,
  * a normal production Bridge (kill-switch keys absent) still falls through to the
  * live `~/.flywheel/.env` read — so an operator re-arm is honored — while a test
- * that sets `process.env.FLYWHEEL_{MERGE_APPROVAL,QA_DONE}_GATE` can bypass.
+ * that sets `process.env.FLYWHEEL_MERGE_APPROVAL_GATE` can bypass merge approval.
  */
 export function computeShipDecision(
 	store: Partial<Pick<StateStore, "getDbPath">>,

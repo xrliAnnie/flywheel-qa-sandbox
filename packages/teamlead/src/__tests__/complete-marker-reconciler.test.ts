@@ -349,7 +349,6 @@ describe("tryReconcileComplete", () => {
 	beforeEach(() => {
 		originalHome = process.env.HOME;
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		dir = mkdtempSync(join(tmpdir(), "fly172-"));
 		markerDir = join(dir, "complete-failed");
 		quarantineDir = join(dir, "quarantine");
@@ -358,7 +357,6 @@ describe("tryReconcileComplete", () => {
 		if (originalHome === undefined) delete process.env.HOME;
 		else process.env.HOME = originalHome;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 		rmSync(dir, { recursive: true, force: true });
 		vi.restoreAllMocks();
@@ -1956,7 +1954,6 @@ describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {
 	let quarantineDir: string;
 	beforeEach(() => {
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		dir = mkdtempSync(join(tmpdir(), "fly172-boot-"));
 		markerDir = join(dir, "complete-failed");
 		quarantineDir = join(dir, "quarantine");

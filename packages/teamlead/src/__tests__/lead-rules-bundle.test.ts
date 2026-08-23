@@ -122,7 +122,6 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"runner-reengage-rules.md",
 			"runner-patrol-rules.md",
 			"doc-flow-rules.md",
-			"auto-qa-pipeline.md",
 			"xiaohongshu-memory-rules.md",
 			"founder-local-time.md",
 			"founder-only-authority.md",

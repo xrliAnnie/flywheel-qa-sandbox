@@ -2,9 +2,8 @@
 
 Flywheel keeps shipping features that are **built, merged, and deployed — but
 never turned on**, because they hide behind a per-project opt-in that nobody
-flipped. Real cases: ponytail (FLY-615), the token channel, and the auto-QA
-pipeline (FLY-579) — auto-QA was live for weeks yet *never fired once* for the
-flywheel project, because its `qa.auto` config key was simply absent (default
+flipped. Real cases include ponytail (FLY-615) and the token channel: a shipped
+capability can remain dormant when an applicable opt-in is absent (default
 OFF). This is the FLY-698 enablement disease, and it wastes the whole build.
 
 ## The rule
@@ -17,7 +16,7 @@ follow-up that gets forgotten.
 Opt-ins come in two shapes; both count:
 
 - **Config opt-ins** in `<your-project>/.flywheel/config.yaml` — e.g.
-  `qa.auto: true`, `doc_flow.enabled: true`, `proofshot.enabled: true`. These
+  `doc_flow.enabled: true`, `proofshot.enabled: true`. These
   are repo changes and ship in the feature's PR (or a fast-follow enablement PR).
 - **Deployment env flags** (`FLYWHEEL_*`) set in the production launchd / wrapper
   / `~/.flywheel/.env`. Distinguish the two flag idioms before touching anything:
@@ -39,10 +38,10 @@ for a deliberate, staged rollout with a calibration corpus. Blindly enabling the
 can wedge merge/ship for the whole fleet.
 
 Exempt (leave at their shipped default unless the founder approves a dedicated
-rollout — and then `audit_only` before `enforce`, never straight to `enforce`):
+rollout):
 
-- **`founder_consent` / `FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE`** (FLY-175) — the
-  server-side hard gate on merge / ship / runner-lifecycle actions.
+- **`founder_consent`** (FLY-175/FLY-1981) — production is permanently
+  `audit_only`; there is no feature-flag control to change this policy.
 - **Branch-protection / merge gates** and anything whose "on" state *enforces
   consent* or *blocks the pipeline* rather than adding a capability.
 

@@ -9,7 +9,7 @@ import {
 	isReviewHeld,
 	type QaHeldSession,
 	reviewHoldReason,
-} from "../auto-qa-held.js";
+} from "../review-hold.js";
 
 const SHA = "a".repeat(40);
 
@@ -74,7 +74,7 @@ const awaitingMain: QaHeldSession = {
 describe("FLY-827 isReviewHeld", () => {
 	it("codex NOT approved → held (even with no QA record)", () => {
 		const store = fakeStore({ codexApproved: false });
-		expect(isReviewHeld(store, awaitingMain, {})).toBe(true);
+		expect(isReviewHeld(store, awaitingMain)).toBe(true);
 	});
 
 	it("codex approved + QA record not passed → held (QA hold)", () => {
@@ -82,7 +82,7 @@ describe("FLY-827 isReviewHeld", () => {
 			codexApproved: true,
 			qaRecord: { status: "running" },
 		});
-		expect(isReviewHeld(store, awaitingMain, {})).toBe(true);
+		expect(isReviewHeld(store, awaitingMain)).toBe(true);
 	});
 
 	it("codex approved + QA passed → released", () => {
@@ -90,19 +90,17 @@ describe("FLY-827 isReviewHeld", () => {
 			codexApproved: true,
 			qaRecord: { status: "passed" },
 		});
-		expect(isReviewHeld(store, awaitingMain, {})).toBe(false);
+		expect(isReviewHeld(store, awaitingMain)).toBe(false);
 	});
 
 	it("E1: code PR with qa_required=0 and no QA record is evidence-held", () => {
 		const store = fakeStore({ codexApproved: true, shipRelevant: 1 });
-		expect(reviewHoldReason(store, awaitingMain, {})).toBe(
-			"qa_evidence_missing",
-		);
+		expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_missing");
 	});
 
 	it("E2: server-classified docs-only PR is the only no-evidence release", () => {
 		const store = fakeStore({ codexApproved: true, shipRelevant: 0 });
-		expect(isReviewHeld(store, awaitingMain, {})).toBe(false);
+		expect(isReviewHeld(store, awaitingMain)).toBe(false);
 	});
 
 	it("E2: an expired docs-only classification fails closed when refresh stops", () => {
@@ -111,29 +109,25 @@ describe("FLY-827 isReviewHeld", () => {
 			shipRelevant: 0,
 			snapshotComputedAt: "2000-01-01T00:00:00.000Z",
 		});
-		expect(reviewHoldReason(store, awaitingMain, {})).toBe(
-			"qa_evidence_unknown",
-		);
+		expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_unknown");
 	});
 
 	it("E3: a missing diff snapshot fails closed until classification completes", () => {
 		const store = fakeStore({ codexApproved: true });
-		expect(reviewHoldReason(store, awaitingMain, {})).toBe(
-			"qa_evidence_missing",
-		);
+		expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_missing");
 	});
 
 	it("E4: missing PR identity is an unknown-evidence hold", () => {
 		const store = fakeStore({ codexApproved: true, shipRelevant: 0 });
 		expect(
-			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }, {}),
+			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }),
 		).toBe("qa_evidence_unknown");
 	});
 
 	it("E4: missing PR identity fails closed before a Codex-pending result can defer", () => {
 		const store = fakeStore({ codexApproved: false });
 		expect(
-			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }, {}),
+			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }),
 		).toBe("qa_evidence_unknown");
 	});
 
@@ -143,7 +137,7 @@ describe("FLY-827 isReviewHeld", () => {
 			qaRecord: { status: "passed" },
 		});
 		expect(
-			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }, {}),
+			reviewHoldReason(store, { ...awaitingMain, pr_number: undefined }),
 		).toBe("qa_evidence_unknown");
 	});
 
@@ -151,85 +145,102 @@ describe("FLY-827 isReviewHeld", () => {
 		"E4: a %s store read failure fails closed for main",
 		(throwAt) => {
 			const store = fakeStore({ codexApproved: true, throwAt });
-			expect(reviewHoldReason(store, awaitingMain, {})).toBe(
-				"qa_evidence_unknown",
-			);
+			expect(reviewHoldReason(store, awaitingMain)).toBe("qa_evidence_unknown");
 		},
 	);
 
 	it("preserves the non-main exception contract for store failures", () => {
 		const store = fakeStore({ codexApproved: true, throwAt: "qa" });
 		expect(() =>
-			reviewHoldReason(
-				store,
-				{ ...awaitingMain, session_role: "implement" },
-				{},
-			),
+			reviewHoldReason(store, {
+				...awaitingMain,
+				session_role: "implement",
+			}),
 		).toThrow("QA read failed");
 	});
 
-	it("gate OFF does not exempt a code PR from QA evidence", () => {
-		const store = fakeStore({ codexApproved: false });
+	it("FLY-1981: env argument =0 cannot bypass the Codex founder hold", () => {
+		const store = fakeStore({ codexApproved: false, shipRelevant: 0 });
 		expect(
-			isReviewHeld(store, awaitingMain, { FLYWHEEL_CODEX_HARD_GATE: "0" }),
-		).toBe(true);
+			Reflect.apply(reviewHoldReason, undefined, [
+				store,
+				awaitingMain,
+				{ FLYWHEEL_CODEX_HARD_GATE: "0" },
+			]),
+		).toBe("codex_pending");
 	});
 
 	it("codex_skip bypasses review only, not QA evidence", () => {
 		const store = fakeStore({ codexApproved: false });
-		expect(isReviewHeld(store, { ...awaitingMain, codex_skip: 1 }, {})).toBe(
-			true,
-		);
+		expect(isReviewHeld(store, { ...awaitingMain, codex_skip: 1 })).toBe(true);
 	});
 
-	it("missing sha + hard gate on + not codex_skip → held (R2-MED-3)", () => {
+	it("missing sha + not codex_skip → held (R2-MED-3)", () => {
 		const store = fakeStore({ codexApproved: false });
 		expect(
-			isReviewHeld(store, { ...awaitingMain, pr_head_sha: undefined }, {}),
+			isReviewHeld(store, { ...awaitingMain, pr_head_sha: undefined }),
 		).toBe(true);
 	});
 
-	it("missing sha + gate OFF → unknown-evidence hold for main", () => {
+	it("missing sha is an unknown-evidence hold for main", () => {
 		const store = fakeStore({ codexApproved: false });
 		expect(
-			reviewHoldReason(
-				store,
-				{
-					...awaitingMain,
-					pr_head_sha: undefined,
-					// gate off
-				} as QaHeldSession,
-				{ FLYWHEEL_CODEX_HARD_GATE: "0" },
-			),
+			reviewHoldReason(store, {
+				...awaitingMain,
+				pr_head_sha: undefined,
+			} as QaHeldSession),
 		).toBe("qa_evidence_unknown");
+	});
+
+	it("missing sha is permanently Codex-held for implement", () => {
+		const store = fakeStore({ codexApproved: false });
+		expect(
+			reviewHoldReason(store, {
+				...awaitingMain,
+				session_role: "implement",
+				pr_head_sha: undefined,
+			}),
+		).toBe("codex_pending");
+	});
+
+	it("missing sha implement honors the sanctioned session codex_skip", () => {
+		const store = fakeStore({ codexApproved: false });
+		expect(
+			reviewHoldReason(store, {
+				...awaitingMain,
+				session_role: "implement",
+				pr_head_sha: undefined,
+				codex_skip: 1,
+			}),
+		).toBeNull();
 	});
 
 	it("non-awaiting_review / non-reviewable-role → not held", () => {
 		const store = fakeStore({ codexApproved: false });
-		expect(
-			isReviewHeld(store, { ...awaitingMain, status: "running" }, {}),
-		).toBe(false);
+		expect(isReviewHeld(store, { ...awaitingMain, status: "running" })).toBe(
+			false,
+		);
 		// qa (auto-QA runner OR FLY-793 qa phase) is the verifier — never held.
-		expect(
-			isReviewHeld(store, { ...awaitingMain, session_role: "qa" }, {}),
-		).toBe(false);
+		expect(isReviewHeld(store, { ...awaitingMain, session_role: "qa" })).toBe(
+			false,
+		);
 		// design never reaches awaiting_review / owns no PR.
 		expect(
-			isReviewHeld(store, { ...awaitingMain, session_role: "design" }, {}),
+			isReviewHeld(store, { ...awaitingMain, session_role: "design" }),
 		).toBe(false);
 	});
 
 	it("FLY-793 implement phase (PR-owning) + codex NOT approved → held", () => {
 		const store = fakeStore({ codexApproved: false });
 		expect(
-			isReviewHeld(store, { ...awaitingMain, session_role: "implement" }, {}),
+			isReviewHeld(store, { ...awaitingMain, session_role: "implement" }),
 		).toBe(true);
 	});
 
 	it("FLY-793 implement phase + codex approved → released", () => {
 		const store = fakeStore({ codexApproved: true });
 		expect(
-			isReviewHeld(store, { ...awaitingMain, session_role: "implement" }, {}),
+			isReviewHeld(store, { ...awaitingMain, session_role: "implement" }),
 		).toBe(false);
 	});
 });

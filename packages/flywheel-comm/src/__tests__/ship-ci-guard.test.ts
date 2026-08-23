@@ -85,21 +85,49 @@ describe("FLY-1314 ship CI guard", () => {
 		expect(checksCall?.[1]).not.toContain("--required");
 	});
 
-	it("can be disabled explicitly without querying GitHub", () => {
-		const run = vi.fn();
-		expect(
-			probeShipCiGreen({
-				cwd: "",
-				run,
-				env: { FLYWHEEL_SHIP_CI_GUARD: "0" },
-			}),
-		).toEqual({
-			green: true,
-			reason: "ci_guard_disabled",
-			mergeStateStatus: "BYPASSED",
-			checks: [],
-		});
-		expect(run).not.toHaveBeenCalled();
+	it("FLY-1981 exposes no env override and retired process state still runs the real probe", () => {
+		const args: Parameters<typeof probeShipCiGreen>[0] = {
+			cwd: "/worktree",
+			expectedHead: HEAD,
+			run: runner(),
+		};
+		const legacyOverride: Parameters<typeof probeShipCiGreen>[0] = {
+			...args,
+			// @ts-expect-error FLY-1981 removed environment injection from this API.
+			env: {},
+		};
+		void legacyOverride;
+
+		const previous = process.env.FLYWHEEL_SHIP_CI_GUARD;
+		process.env.FLYWHEEL_SHIP_CI_GUARD = "0";
+		try {
+			expect(probeShipCiGreen(args)).toMatchObject({
+				green: true,
+				reason: "ci_green",
+			});
+			expect(args.run).toHaveBeenCalledTimes(2);
+
+			const failingRun = runner({
+				checks: [
+					{
+						bucket: "fail",
+						name: "Build & Test",
+						state: "FAILURE",
+					},
+				],
+			});
+			expect(
+				probeShipCiGreen({
+					cwd: "/worktree",
+					expectedHead: HEAD,
+					run: failingRun,
+				}),
+			).toMatchObject({ green: false, reason: "ci_not_green" });
+			expect(failingRun).toHaveBeenCalledTimes(2);
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_SHIP_CI_GUARD;
+			else process.env.FLYWHEEL_SHIP_CI_GUARD = previous;
+		}
 	});
 
 	it.each(["UNSTABLE", "DIRTY"])(

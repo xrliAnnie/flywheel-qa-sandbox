@@ -5,21 +5,19 @@
  * reach completed/Done", so the CLI and the Bridge can never diverge (design
  * R1/R2 HIGH-2).
  *
- * Composed of TWO independently-gated sub-checks (design R2 HIGH-3 — the B and
- * A kill-switches must be independent):
+ * Composed of the merge-approval gate and the always-enforced QA check:
  *
  *   - B (merge approval): reuses `verifyApproval` VERBATIM (durable bound
  *     approve_to_ship question + structured `{approved:true}` + status +
  *     pr_head match + FLY-827 Codex gate). Kill-switch `FLYWHEEL_MERGE_APPROVAL_GATE=0`
  *     bypasses ONLY this check — QA stays enforced.
- *   - A (QA): `evaluateQaShipGate` — reads the immutable `qa_required` snapshot
- *     persisted at auto-qa-policy eval time and checks a passing `auto_qa_record`
- *     for the head. Kill-switch `FLYWHEEL_QA_DONE_GATE=0` bypasses ONLY this
- *     check — merge approval stays enforced.
+ *   - A (QA): `evaluateQaShipGate` — reads the frozen historical `qa_required`
+ *     snapshot and read-only `auto_qa_record` ledger. Fresh code-PR rows have no
+ *     legacy snapshot and therefore fail closed.
  *
- * Both kill-switches use the same BIDIRECTIONALLY-LIVE `~/.flywheel/.env`
- * resolution as the FLY-827 Codex gate (a re-arm by deleting the `.env` line
- * turns the gate back ON even for a runner that inherited `=0`).
+ * The remaining merge kill-switch uses the same BIDIRECTIONALLY-LIVE
+ * `~/.flywheel/.env` resolution as the FLY-827 Codex gate (a re-arm by deleting
+ * the `.env` line turns the gate back ON even for a runner that inherited `=0`).
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -36,7 +34,6 @@ import {
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
-const QA_DONE_GATE_KEY = "FLYWHEEL_QA_DONE_GATE";
 
 /**
  * Resolve a DEFAULT-ON gate flag with the FLY-827 live-`.env` semantics:
@@ -67,7 +64,6 @@ function resolveDefaultOnGate(
 
 export type QaShipReason =
 	| "qa_ok"
-	| "qa_gate_off"
 	| "qa_not_required"
 	| "qa_not_passed"
 	| "qa_claim_ok"
@@ -88,8 +84,6 @@ export interface QaShipGateArgs {
 	/** StateStore (teamlead.db) path override. */
 	stateDbPath?: string;
 	env?: NodeJS.ProcessEnv;
-	/** Test-only override for the `~/.flywheel/.env` live-read path. */
-	qaDotenvPath?: string;
 }
 
 export interface QaShipGateResult {
@@ -219,24 +213,18 @@ function resolveEnrolledQaClaim(
 const NO_QA_ROUTES = new Set(["no_code", "pr_handoff"]);
 
 /**
- * FLY-869 A-1: the QA ship gate. Reads the IMMUTABLE `qa_required` snapshot from
- * the session row (persisted Bridge-side at auto-qa-policy eval, where the trusted
- * signals live) and, when required, verifies a passing `auto_qa_record` for the head.
+ * FLY-869 A-1: the QA ship gate. Reads the frozen legacy `qa_required` snapshot
+ * from the session row and, when historically required, verifies a passing
+ * read-only `auto_qa_record` for the head.
  *
  * `qa_required` snapshot semantics:
  *   - 1  → QA applies → require a passed record for this head, else `qa_not_passed`.
- *   - 0  → exempt (no-code / pure-docs / no-qa label / qa.auto:false) → pass.
- *   - NULL (never evaluated — the "该起没起" hole / pre-migration) → fail-closed for a
- *     real code PR (`qa_snapshot_missing_failclosed`); exempt for a no-code/no-PR route.
+ *   - 0  → historically exempt → pass.
+ *   - NULL (all fresh sessions and unevaluated legacy sessions) → fail-closed for
+ *     a real code PR (`qa_snapshot_missing_failclosed`); exempt for no-code/no-PR.
  */
 export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 	const env = args.env ?? process.env;
-	const gateOn = resolveDefaultOnGate(QA_DONE_GATE_KEY, {
-		argsEnv: args.env,
-		processEnv: env,
-		dotenvPath: args.qaDotenvPath,
-	});
-	if (!gateOn) return { passed: true, reason: "qa_gate_off" };
 	const prHead = args.prHead.trim().toLowerCase();
 	if (!FULL_SHA_RE.test(prHead)) {
 		return { passed: false, reason: "invalid_pr_head_format" };
@@ -295,9 +283,12 @@ export function evaluateQaShipGate(args: QaShipGateArgs): QaShipGateResult {
 			? { passed: true, reason: "qa_ok", qaRequired: 1 }
 			: { passed: false, reason: "qa_not_passed", qaRequired: 1 };
 	}
-	// NULL snapshot (never evaluated). Exempt only for a route that produces no
-	// mergeable PR; a real code PR is fail-closed (the ship gate blocks until the
-	// A-3 orphan sweep spawns QA).
+	// NULL snapshot. Exempt only for a route that produces no mergeable PR; a real
+	// code PR is fail-closed. Workflow-engine ownership is deliberately not an
+	// exemption: an externally merged/recovered DAG execution still needs durable
+	// QA evidence for its exact head, otherwise recovery remains terminal. Bridge
+	// completion recovery cancels a legacy session and requests a unique DAG
+	// redispatch rather than spawning legacy auto-QA.
 	const route = row.decision_route ?? undefined;
 	if ((route && NO_QA_ROUTES.has(route)) || row.pr_number == null) {
 		return { passed: true, reason: "qa_snapshot_missing_exempt" };
@@ -314,9 +305,8 @@ export interface ShipEligibilityArgs {
 	/** StateStore (teamlead.db) path override. */
 	stateDbPath?: string;
 	env?: NodeJS.ProcessEnv;
-	/** Test-only `.env` overrides for the Codex / QA live gates. */
+	/** Shared live-dotenv override for merge approval and founder attribution. */
 	codexDotenvPath?: string;
-	qaDotenvPath?: string;
 	/** Test seam; production verifyApproval probes GitHub directly. */
 	ciProbe?: VerifyApprovalArgs["ciProbe"];
 }
@@ -326,7 +316,7 @@ export interface ShipEligibilityDecision {
 	eligible: boolean;
 	/** B side: merge approval satisfied (or its kill-switch is off). */
 	mergeApprovalOk: boolean;
-	/** A side: QA satisfied (or its kill-switch is off). */
+	/** A side: the always-armed QA check is satisfied. */
 	qaOk: boolean;
 	/** verifyApproval's reason (approved | why-not | merge_gate_off). */
 	mergeReason: string;
@@ -349,7 +339,8 @@ export function evaluateShipEligibility(
 	const mergeGateOn = resolveDefaultOnGate(MERGE_APPROVAL_GATE_KEY, {
 		argsEnv: args.env,
 		processEnv: env,
-		// Reuse the Codex dotenv override for the shared `.env` file in tests.
+		// Use the shared live-dotenv test override; verifyApproval reuses it for
+		// founder attribution and founder identity/config resolution.
 		dotenvPath: args.codexDotenvPath,
 	});
 	let mergeApprovalOk: boolean;
@@ -372,13 +363,12 @@ export function evaluateShipEligibility(
 		mergeReason = approval.reason;
 	}
 
-	// A side — QA gate (independently kill-switchable).
+	// A side — QA gate (always enforced).
 	const qa = evaluateQaShipGate({
 		execId: args.execId,
 		prHead: args.prHead,
 		stateDbPath: args.stateDbPath,
 		env: args.env,
-		qaDotenvPath: args.qaDotenvPath,
 	});
 
 	return {

@@ -484,6 +484,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID: "config value: roundtable Discord channel id",
 	FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:
 		"config value: comma-separated cross-department Discord channel ids (FLY-267), read by BOTH the Codex lead-actions MCP child (poll + mention-gate) and the Bridge voice router; configured per Lead via the launcher / ~/.flywheel/.env, moved off the flag table by FLY-1809 because it is a channel id, not a switch",
+	FLYWHEEL_LEAD_CORE_MENTION_GATED:
+		"launcher-owned projects.json-derived plumbing (FLY-898/FLY-1981); codex-lead.sh recomputes it for the runtime, so it is not a founder-controlled flag",
 	FLYWHEEL_ROUNDTABLE_BOT_TOKEN_ENV:
 		"config value: roundtable bot token env name",
 	FLYWHEEL_ROUNDTABLE_BOT_USER_ID:
@@ -498,8 +500,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_DIGEST_TZ: "config value: daily digest timezone (FLY-727)",
 	FLYWHEEL_FOUNDER_TZ:
 		"config value: founder local timezone override (FLY-1319)",
-	FLYWHEEL_FOUNDER_CONSENT_ENABLED:
-		"legacy alias of DECISION_MODE (the enum gate is registered)",
 	FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE:
 		"internal derived var (SET by mcp-config to propagate, not a founder gate)",
 	// FLY-766 chrome-reaper: the enable gate itself is a registered kill_switch
@@ -557,20 +557,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_PARKED_PHASE_STALE_HOURS:
 		"tuning knob: parked DAG workflow reclaim time backstop hours (FLY-1204)",
 	FLYWHEEL_BRIDGE_SHUTDOWN_TIMEOUT_MS: "tuning knob: bridge shutdown timeout",
-	FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS:
-		"tuning knob: milestone patrol cadence (FLY-725)",
-	FLYWHEEL_FOUNDER_MILESTONE_LOOKBACK_HOURS:
-		"tuning knob: milestone patrol lookback (FLY-725)",
-	FLYWHEEL_FOUNDER_MILESTONE_GRACE_MS:
-		"tuning knob: milestone notify grace window (FLY-725)",
 	FLYWHEEL_FOUNDER_REVIEW_ORPHAN_STALE_HOURS:
 		"numeric tuning: unanswered founder_review age threshold in hours (FLY-1940)",
 	FLYWHEEL_FOUNDER_REVIEW_ORPHAN_DELIVERY_GRACE_MINUTES:
 		"numeric tuning: missing founder card grace period with a 10-minute minimum (FLY-1940)",
 	FLYWHEEL_CRON_STALE_TTL_MIN:
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
-	FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS:
-		"tuning knob: dead auto-QA recovery reconcile cadence (FLY-1279 D3b)",
 	FLYWHEEL_POOL_REBUILD_TIMEOUT_MS:
 		"tuning knob: pool-rebuild launchd transition and health wait timeout (FLY-1182)",
 	FLYWHEEL_RECEIPT_EXEC_PUSH_CAP:
@@ -609,7 +601,15 @@ export const NON_FLAG_CONFIG_KEYS: Record<string, string> = {
 		"explicit consent to send video to Gemini, not a rollout gate; consent must never be inferred, retired, or cleaned by flag scans",
 };
 
+/** Top-level project-config blocks retired as mechanisms, never ignored. */
+export const RETIRED_CONFIG_PATHS = [
+	{ path: "qa", retiredBy: "FLY-1981" },
+	{ path: "founder_milestone_report", retiredBy: "FLY-1981" },
+] as const;
+
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_AUTO_QA", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_CODEX_HARD_GATE", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG", retiredBy: "FLY-1560" },
 	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG_LOG", retiredBy: "FLY-1560" },
 	{
@@ -821,6 +821,18 @@ export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_ALERT_ROUTING", retiredBy: "FLY-1831" },
 	{ envVar: "FLYWHEEL_ALERT_TICKETS", retiredBy: "FLY-1831" },
 	{ envVar: "FLYWHEEL_DETECTION_AI_CLASSIFY", retiredBy: "FLY-1831" },
+	{ envVar: "FLYWHEEL_REPORTS_TTL_DAYS", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_WORKFLOW_RESUME", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_INSTRUCTION_PATH_CHECK", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_DESIGN_HTML_GATE", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_SHIP_CI_GUARD", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_QA_DONE_GATE", retiredBy: "FLY-1981" },
+	{ envVar: "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE", retiredBy: "FLY-1981" },
+	{
+		envVar: "FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
+		retiredBy: "FLY-1981",
+	},
+	{ envVar: "FLYWHEEL_FOUNDER_CONSENT_ENABLED", retiredBy: "FLY-1981" },
 ] as const;
 
 export interface FlagTruthValidation {

@@ -65,10 +65,10 @@ describe("automated Discord sender inventory", () => {
 		}
 
 		expect(refs.sort()).toEqual([
-			"bridge/auto-qa-effects.ts",
 			"bridge/gate-poller.ts",
 			"bridge/infra-notify.ts",
 			"bridge/reports-route.ts",
+			"bridge/review-thread-effect.ts",
 			"bridge/tools.ts",
 			"lead-backends/codex/DirectDiscordOutboundSender.ts",
 			"lead-backends/codex/discord-send-core.ts",

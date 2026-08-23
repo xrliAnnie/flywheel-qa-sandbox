@@ -108,6 +108,14 @@ function attachGitHeadAuthority(
 		status: session?.status ?? "running",
 		worktree_path: repo,
 	});
+	(
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db.run(
+		"UPDATE sessions SET qa_required = 0, qa_required_reason = ? WHERE execution_id = ?",
+		["event-route lifecycle fixture", executionId],
+	);
 	const head = git("rev-parse", "HEAD");
 	store.setReviewBinding(executionId, {
 		questionId: session?.review_question_id ?? null,
@@ -288,11 +296,17 @@ describe("Event route", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let turnBeltReconciler: { current: TurnBeltReconciler | undefined };
+	let onSessionAwaitingReview: ReturnType<typeof vi.fn>;
+	let onCodexReviewResult: ReturnType<typeof vi.fn>;
+	let stateRoot: string;
 
 	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
+		stateRoot = mkdtempSync(join(tmpdir(), "event-route-state-"));
+		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const config = makeConfig();
 		turnBeltReconciler = { current: undefined };
+		onSessionAwaitingReview = vi.fn(async () => undefined);
+		onCodexReviewResult = vi.fn(async () => undefined);
 		const app = createBridgeApp(
 			store,
 			testProjects,
@@ -310,36 +324,38 @@ describe("Event route", () => {
 			undefined,
 			undefined,
 			undefined,
-			{ turnBeltReconciler },
+			{
+				turnBeltReconciler,
+				codexReviewHold: {
+					current: { onSessionAwaitingReview } as never,
+				},
+				codexReviewIngest: {
+					current: { onCodexReviewResult } as never,
+				},
+			},
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass merge approval. Merged fixtures carry an explicit durable
+		// QA exemption through attachGitHeadAuthority.
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		// FLY-1385: this block exercises legacy event semantics. The retired
 		// FORCE_LEGACY switch can no longer mask a host-level claims-read setting.
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	it("POST /events with valid session_started creates session", async () => {
@@ -359,6 +375,35 @@ describe("Event route", () => {
 		expect(session).toBeDefined();
 		expect(session!.status).toBe("running");
 		expect(session!.issue_identifier).toBe("GEO-95");
+	});
+
+	it("routes fresh Codex review evidence through neutral HTTP ingest", async () => {
+		const event = makeEvent({
+			event_id: "codex-result-neutral-ingest",
+			event_type: "codex_review_result",
+			payload: {
+				reviewType: "code",
+				status: "APPROVED",
+				targetExecutionId: "exec-1",
+				prHeadSha: "a".repeat(40),
+			},
+		});
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(event),
+		});
+
+		expect(res.status).toBe(200);
+		expect(onCodexReviewResult).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				event_id: "codex-result-neutral-ingest",
+				event_type: "codex_review_result",
+			}),
+		);
 	});
 
 	it("FLY-1709 R1: session_started preserves a pre-registered started_at", async () => {
@@ -479,7 +524,7 @@ describe("Event route", () => {
 		).toBe(false);
 	});
 
-	it("preserves shadow qa_result delivery on /events", async () => {
+	it("rejects shadow qa_result on /events before persisting it", async () => {
 		store.createWorkflowRun({
 			runId: "shadow-run",
 			issueId: "issue-1",
@@ -518,13 +563,16 @@ describe("Event route", () => {
 			),
 		});
 
-		expect(res.status).toBe(200);
-		expect(await res.json()).toMatchObject({ ok: true });
+		expect(res.status).toBe(409);
+		expect(await res.json()).toMatchObject({
+			ok: false,
+			reason: "workflow_submission_required",
+		});
 		expect(
 			store
 				.getEventsByExecution("shadow-qa")
 				.some((event) => event.event_id === "shadow-round-two-qa-result"),
-		).toBe(true);
+		).toBe(false);
 	});
 
 	it("commits explicit generalized completion before audit and suppresses legacy issue completion", async () => {
@@ -1531,6 +1579,12 @@ describe("Event route", () => {
 		const session = store.getSession("exec-1");
 		expect(session!.status).toBe("awaiting_review");
 		expect(session!.commit_count).toBe(3);
+		expect(onSessionAwaitingReview).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({
+				execution_id: "exec-1",
+				status: "awaiting_review",
+			}),
+		);
 	});
 
 	it("POST /events with session_failed records error", async () => {
@@ -1743,22 +1797,15 @@ describe("Event route — structured hook payload", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
+		// mapping, not that gate (covered by ship-eligibility + integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		// FLY-1385: keep this legacy FSM suite independent of the host rollout.
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -1920,21 +1967,14 @@ describe("Event route — EventFilter integration", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
+		// mapping, not that gate (covered by ship-eligibility + integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -1960,6 +2000,18 @@ describe("Event route — EventFilter integration", () => {
 		store.patchSessionMetadata("exec-1", {
 			pr_head_sha: head,
 			pr_number: 42,
+		});
+		store.recordCodexReviewApproved({
+			executionId: "exec-1",
+			targetPrHeadSha: head,
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+			authorFamily: "claude",
+			reviewerFamily: "codex",
+		});
+		expect(store.getCodexReviewRecord("exec-1", head)).toMatchObject({
+			author_family: "claude",
+			reviewer_family: "codex",
 		});
 		store.putShipRelevantDiffSnapshot({
 			execution_id: "exec-1",
@@ -2085,20 +2137,13 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
+		// mapping, not that gate (covered by ship-eligibility + integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -2145,9 +2190,11 @@ describe("Event route — GEO-292 stage tracking", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let a5CommRoot: string; // FLY-1329 (A5): isolated CommDB declared-state root
+	let stateRoot: string;
 
 	beforeEach(async () => {
-		store = await StateStore.create(":memory:");
+		stateRoot = mkdtempSync(join(tmpdir(), "event-route-stage-state-"));
+		store = await StateStore.create(join(stateRoot, "teamlead.db"));
 		const config = makeConfig();
 		// FLY-1329 (A5): isolate the CommDB declared-state root so the FLY-324 live
 		// handler's parked-veto read never touches ~/.flywheel/comm in tests.
@@ -2171,21 +2218,14 @@ describe("Event route — GEO-292 stage tracking", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass merge approval. Merged fixtures carry an explicit durable
+		// QA exemption through attachGitHeadAuthority.
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_COMM_DIR;
 		if (a5CommRoot) rmSync(a5CommRoot, { recursive: true, force: true });
@@ -2193,6 +2233,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(stateRoot, { recursive: true, force: true });
 	});
 
 	async function postEvent(overrides: Record<string, unknown> = {}) {
@@ -2929,20 +2970,13 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
+		// mapping, not that gate (covered by ship-eligibility + integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -3126,20 +3160,13 @@ describe("Event route — stage_context honesty (FLY-208 7a)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		// FLY-827: these tests predate the Codex hard gate and verify notification /
-		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
-		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
-		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
-		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
-		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
+		// mapping, not that gate (covered by ship-eligibility + integration tests).
 		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
-		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
-		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

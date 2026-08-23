@@ -358,7 +358,6 @@ async function startHarness(options: {
 				scopedToken: SCOPED,
 				verifyWorkflowResumeAnchor: options.verifyWorkflowResumeAnchor,
 			},
-			() => process.env.FLYWHEEL_WORKFLOW_RESUME === "1",
 			() => ({
 				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
 				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
@@ -547,7 +546,7 @@ function seedResumeTarget(store: StateStore, projectRoot: string): string {
 }
 
 describe("FLY-1707 workflow resume entry", () => {
-	it("observes the opt-in live and admits a new key before the legacy start-key guard", async () => {
+	it("FLY-1981 admits resume before the legacy start-key guard even when the retired env is 0", async () => {
 		const h = await startHarness({ verifyWorkflowResumeAnchor: () => true });
 		const attachmentId = seedResumeTarget(h.store, h.projectRoot);
 		const request = {
@@ -557,11 +556,6 @@ describe("FLY-1707 workflow resume entry", () => {
 		};
 
 		process.env.FLYWHEEL_WORKFLOW_RESUME = "0";
-		const disabled = await post(h.url, request);
-		expect(disabled.status).toBe(409);
-		expect(disabled.json.code).not.toBe("WORKFLOW_RESUME_PENDING");
-
-		process.env.FLYWHEEL_WORKFLOW_RESUME = "1";
 		const admitted = await post(h.url, request);
 		expect(admitted).toMatchObject({
 			status: 202,
@@ -628,7 +622,7 @@ describe("FLY-1707 workflow resume entry", () => {
 
 describe("Authenticated fresh-start controls", () => {
 	it("FLY-1718: authenticated freshStart is minted by runs-route and reaches generalized dispatch", async () => {
-		const h = await startHarness({});
+		const h = await startHarness({ templateSchema: 2 });
 		const { status } = await post(h.url, {
 			freshStart: true,
 			freshStartReason: "founder requested a clean redesign",
@@ -641,15 +635,16 @@ describe("Authenticated fresh-start controls", () => {
 		});
 	});
 
-	it("FLY-1718: scoped Lead auth may request freshStart but tokenless callers may not", async () => {
-		const scoped = await startHarness({});
+	it("FLY-1718: scoped Lead auth cannot start a legacy main run and tokenless callers remain denied", async () => {
+		const scoped = await startHarness({ templateSchema: 2 });
 		const scopedResult = await post(
 			scoped.url,
 			{ freshStart: true, freshStartReason: "approved redo" },
 			SCOPED,
 		);
-		expect(scopedResult.status).toBe(200);
-		expect(scoped.calls[0]?.freshStart?.actor).toBe("scoped");
+		expect(scopedResult.status).toBe(409);
+		expect(scopedResult.json.code).toBe("DAG_ENTRY_NOT_MATERIALIZED");
+		expect(scoped.calls).toHaveLength(0);
 
 		if (server) {
 			await new Promise((resolve) => server?.close(resolve));
@@ -753,25 +748,47 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		).toEqual([1, 2]);
 	});
 
-	it("starts a keyless master v2 request with a synthetic durable entry key", async () => {
+	it("rejects a fresh code dispatch when pipeline.dag is explicitly false", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
 			prepareIssueDelivery: true,
 			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
 		});
 		const { status, json } = await post(h.url, {});
+		expect(status).toBe(409);
+		expect(json).toMatchObject({
+			success: false,
+			code: "DAG_DISPATCH_DISABLED",
+		});
+		expect(h.calls).toHaveLength(0);
+		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
+	});
+
+	it("defaults an absent pipeline block to the generalized code path", async () => {
+		const h = await startHarness({
+			templateSchema: 2,
+			prepareIssueDelivery: true,
+			configYaml: CONFIG_BASE,
+		});
+		const { status, json } = await post(h.url, {});
 		expect(status).toBe(200);
 		expect(json.generalized).toBe(true);
 		const run = h.store.getWorkflowRun(json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
-		const reservation = h.store.getWorkflowStartReservationForRun(run.run_id)!;
-		expect(reservation.idempotency_key).toMatch(/^wf2-auto-/);
-		expect(
-			h.store
-				.listWorkflowRunEvents(run.run_id)
-				.filter((event) => event.kind === "issue_delivery"),
-		).toHaveLength(1);
-		expect(json.templateAuthority).toBeUndefined();
+	});
+
+	it("fails closed instead of starting legacy when a default-on project lacks a binding", async () => {
+		const h = await startHarness({
+			seedBinding: false,
+			configYaml: CONFIG_BASE,
+		});
+		const { status, json } = await post(h.url, {});
+		expect(status).toBe(409);
+		expect(json).toMatchObject({
+			success: false,
+			code: "DAG_ENTRY_NOT_MATERIALIZED",
+		});
+		expect(h.calls).toHaveLength(0);
 	});
 
 	it("treats a fresh no-three-stage request as candidate-free", async () => {
@@ -875,10 +892,14 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 	it("ignores retired dispatch zero while preserving master-only active v2 recovery", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: false\n`,
+			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n`,
 		});
 		const first = await post(h.url, {});
 		expect(first.status).toBe(200);
+		writeFileSync(
+			join(h.projectRoot, ".flywheel", "config.yaml"),
+			`${CONFIG_BASE}pipeline:\n  dag: false\n`,
+		);
 		const scoped = await post(h.url, {}, SCOPED);
 		expect(scoped.status).toBe(409);
 		expect(scoped.json.code).toBe("WORKFLOW_RUN_ACTIVE");

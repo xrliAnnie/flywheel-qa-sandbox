@@ -1,12 +1,12 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
+import { RETIRED_CONFIG_PATHS } from "./feature-flags/truth.js";
 import { getModelConfigSnapshot } from "./model-config.js";
 import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
 	ROLE_EFFORT_LEVELS,
-	SUPPORTED_MILESTONE_KINDS_V1,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -28,7 +28,16 @@ export class ConfigLoader {
 		const content = await this.readFile(path);
 		const raw = parse(content);
 		this.validate(raw);
-		return raw as FlywheelConfig;
+		const config = raw as FlywheelConfig;
+		// FLY-1981: auto-QA is gone, so every fresh code run must enter the
+		// generalized workflow whose QA node supplies the durable evidence. The
+		// fleet-safe default is DAG-on; an explicit false remains observable so the
+		// dispatch boundary can reject it instead of silently starting legacy.
+		config.pipeline = {
+			...config.pipeline,
+			dag: config.pipeline?.dag ?? true,
+		};
+		return config;
 	}
 
 	private validate(config: unknown): asserts config is FlywheelConfig {
@@ -40,6 +49,13 @@ export class ConfigLoader {
 		}
 
 		const c = config as Record<string, unknown>;
+		for (const retired of RETIRED_CONFIG_PATHS) {
+			if (Object.hasOwn(c, retired.path)) {
+				throw new Error(
+					`${retired.path} is retired by ${retired.retiredBy}; remove the entire top-level block`,
+				);
+			}
+		}
 
 		// Required top-level fields
 		if (!c.project || typeof c.project !== "string") {
@@ -391,37 +407,6 @@ export class ConfigLoader {
 			}
 		}
 
-		// qa (optional — FLY-579). Absent or auto:false → off (byte-compatible).
-		// Shape validated whenever PRESENT so a malformed config fails loudly.
-		const qa = c.qa as Record<string, unknown> | undefined;
-		if (qa != null) {
-			if (typeof qa !== "object" || Array.isArray(qa)) {
-				throw new Error(
-					"qa must be a YAML mapping (object), not an array or scalar",
-				);
-			}
-			// FLY-752: `auto` is OPTIONAL (opt-out default). Absent → ON downstream.
-			// A PRESENT non-boolean is still malformed → throw (fails CLOSED at the
-			// policy resolver, never silently on).
-			if (qa.auto != null && typeof qa.auto !== "boolean") {
-				throw new Error("qa.auto must be a boolean");
-			}
-			if (qa.skip_labels != null) {
-				if (
-					!Array.isArray(qa.skip_labels) ||
-					qa.skip_labels.some((l) => typeof l !== "string")
-				) {
-					throw new Error("qa.skip_labels must be an array of strings");
-				}
-			}
-			if (
-				qa.agent != null &&
-				(typeof qa.agent !== "string" || qa.agent.length === 0)
-			) {
-				throw new Error("qa.agent must be a non-empty string");
-			}
-		}
-
 		// pipeline (optional). Shape validated
 		// whenever PRESENT so a malformed block fails loudly at load (mirrors
 		// doc_flow), instead of silently no-op-ing the toggle later.
@@ -448,44 +433,6 @@ export class ConfigLoader {
 					"[ConfigLoader] pipeline.work_kind must be a boolean — dropping only work_kind; other pipeline settings remain active",
 				);
 				delete pipeline.work_kind;
-			}
-		}
-
-		// founder_milestone_report (optional — FLY-725). Absent or enabled:false →
-		// off (byte-compatible). Shape validated whenever PRESENT so a malformed
-		// config fails loudly. `milestones` values are restricted to
-		// SUPPORTED_MILESTONE_KINDS_V1 — `ship_ready` and unknown kinds are
-		// REJECTED so an operator cannot silently opt into an unimplemented no-op.
-		const fmr = c.founder_milestone_report as
-			| Record<string, unknown>
-			| undefined;
-		if (fmr != null) {
-			if (typeof fmr !== "object" || Array.isArray(fmr)) {
-				throw new Error(
-					"founder_milestone_report must be a YAML mapping (object), not an array or scalar",
-				);
-			}
-			if (typeof fmr.enabled !== "boolean") {
-				throw new Error("founder_milestone_report.enabled must be a boolean");
-			}
-			if (fmr.milestones != null) {
-				if (!Array.isArray(fmr.milestones)) {
-					throw new Error(
-						"founder_milestone_report.milestones must be an array of strings",
-					);
-				}
-				for (const m of fmr.milestones) {
-					if (
-						typeof m !== "string" ||
-						!SUPPORTED_MILESTONE_KINDS_V1.includes(
-							m as (typeof SUPPORTED_MILESTONE_KINDS_V1)[number],
-						)
-					) {
-						throw new Error(
-							`founder_milestone_report.milestones: "${String(m)}" is not supported in v1 (allowed: ${SUPPORTED_MILESTONE_KINDS_V1.join(" | ")})`,
-						);
-					}
-				}
 			}
 		}
 

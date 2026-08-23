@@ -92,9 +92,11 @@ export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
 # room (resolveCoreRoomGate). We compute the decision from the SAME projects.json
 # the Claude side uses and export FLYWHEEL_LEAD_CORE_MENTION_GATED=1 so the
 # runtime turns the gate on (both headless + TUI). CoS / core-less / core-no-CoS
-# → not set → byte-compat (core always handled). Never overrides an explicit env
-# value; best-effort (a failure leaves the gate off, never aborts the launch).
-if [ -z "${FLYWHEEL_LEAD_CORE_MENTION_GATED:-}" ] && [ -n "${FLYWHEEL_LEAD_CORE_CHANNEL_ID:-}" ]; then
+# → not set → byte-compat (core always handled). This launcher is the sole
+# authority: clear any inherited value before recomputing from projects.json.
+# Best-effort failures leave the gate off and never abort the launch.
+unset FLYWHEEL_LEAD_CORE_MENTION_GATED
+if [ -n "${FLYWHEEL_LEAD_CORE_CHANNEL_ID:-}" ]; then
   _cg_cli="${SCRIPT_DIR}/../dist/core-room-gate-cli.js"
   if [ -f "$_cg_cli" ] && command -v jq >/dev/null 2>&1; then
     _cg_gate="$(node "$_cg_cli" --lead-id "$FLYWHEEL_LEAD_ID" --project "$FLYWHEEL_PROJECT_NAME" 2>/dev/null \

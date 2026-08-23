@@ -198,7 +198,7 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 
 	it("issue-progress kind, NO bound thread → fail-safe rawSink (queue)", async () => {
 		const { sink, rawSink, deliver } = makeDeps({ resolve: () => null });
-		await sink.alert(payload("founder_milestone_undelivered"));
+		await sink.alert(payload("founder_gate_delivery_failed"));
 		expect(rawSink.alert).toHaveBeenCalledTimes(1);
 		expect(deliver).not.toHaveBeenCalled();
 	});

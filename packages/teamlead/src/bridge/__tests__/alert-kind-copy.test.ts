@@ -10,4 +10,13 @@ describe("alert kind copy", () => {
 			"A Lead could not prove the configured Discord plugin came from the Flywheel fork at the expected remote SHA. Keep that Lead stopped, repair the pointer install, then rerun the integrity check before restarting it.",
 		);
 	});
+
+	it("keeps the historical auto_qa_stuck kind but gives it neutral recovery copy", () => {
+		expect(titleFor("auto_qa_stuck")).toBe("Review or ship authorization held");
+		const body = bodyFor("auto_qa_stuck", "ignored");
+		expect(body).toContain("authorization invariant");
+		expect(body).toContain("cancel unsafe state");
+		expect(body).toContain("DAG recovery and redispatch");
+		expect(body).not.toMatch(/spawn|auto-QA|QA Runner/i);
+	});
 });

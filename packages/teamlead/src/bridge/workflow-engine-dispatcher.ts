@@ -67,7 +67,6 @@ interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
-	workflowResumeEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
 	stateRoot?: string;
 	log?: (message: string) => void;
@@ -141,7 +140,6 @@ const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
 export class WorkflowEngineDispatcher {
 	private readonly env: Record<string, string | undefined>;
 	private readonly workflowReworkReentryEnabled: () => boolean;
-	private readonly workflowResumeEnabled: () => boolean;
 	private readonly stateRoot: string;
 	private readonly log: (message: string) => void;
 	private readonly now: () => Date;
@@ -222,7 +220,6 @@ export class WorkflowEngineDispatcher {
 		this.env = options.env ?? process.env;
 		this.workflowReworkReentryEnabled =
 			options.workflowReworkReentryEnabled ?? (() => true);
-		this.workflowResumeEnabled = options.workflowResumeEnabled ?? (() => false);
 		this.stateRoot =
 			options.stateRoot ??
 			join(homedir(), ".flywheel", "state", "launch-commits");
@@ -1767,7 +1764,6 @@ export class WorkflowEngineDispatcher {
 		attempt: number;
 		executionId: string;
 	}): boolean {
-		if (!this.workflowResumeEnabled()) return false;
 		const delivery = this.options.store
 			.listWorkflowRunEvents(input.runId)
 			.filter(
@@ -1872,29 +1868,27 @@ export class WorkflowEngineDispatcher {
 						continue;
 					}
 					if (session?.status === "completed") {
-						if (this.workflowResumeEnabled()) {
-							let liveness: GeneralizedLaunchLiveness;
-							try {
-								liveness = await this.probeTerminalLaunchLiveness(
-									node.execution_id,
-									run.project_name,
-								);
-							} catch {
-								liveness = "unknown";
-							}
-							if (
-								liveness === "dead" &&
-								this.deferDeadExecutionForReadyResume({
-									runId: run.run_id,
-									issueId: run.issue_id,
-									projectName: run.project_name,
-									nodeId: workflowNode.id,
-									attempt: node.attempt,
-									executionId: node.execution_id,
-								})
-							) {
-								continue;
-							}
+						let liveness: GeneralizedLaunchLiveness;
+						try {
+							liveness = await this.probeTerminalLaunchLiveness(
+								node.execution_id,
+								run.project_name,
+							);
+						} catch {
+							liveness = "unknown";
+						}
+						if (
+							liveness === "dead" &&
+							this.deferDeadExecutionForReadyResume({
+								runId: run.run_id,
+								issueId: run.issue_id,
+								projectName: run.project_name,
+								nodeId: workflowNode.id,
+								attempt: node.attempt,
+								executionId: node.execution_id,
+							})
+						) {
+							continue;
 						}
 						const held = store.holdCompletedWorkflowExecutionWithoutReceipt({
 							runId: run.run_id,

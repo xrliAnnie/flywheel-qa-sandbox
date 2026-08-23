@@ -4,6 +4,7 @@ import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import {
 	NON_FLAG_ALLOWLIST,
+	RETIRED_CONFIG_PATHS,
 	RETIRED_FLAGS,
 	validateFlagTruthEnvironment,
 	validateLivenessManifest,
@@ -59,6 +60,52 @@ const FLY_1806_RETIRED_FLAGS = [
 ] as const;
 
 describe("FLY-1393 flag truth", () => {
+	it("FLY-1981 tombstones consent controls but preserves launcher-owned mention plumbing", () => {
+		for (const envVar of [
+			"FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",
+			"FLYWHEEL_FOUNDER_CONSENT_ENABLED",
+		]) {
+			expect(RETIRED_FLAGS).toContainEqual({
+				envVar,
+				retiredBy: "FLY-1981",
+			});
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+		}
+		expect(
+			RETIRED_FLAGS.some(
+				(entry) => entry.envVar === "FLYWHEEL_LEAD_CORE_MENTION_GATED",
+			),
+		).toBe(false);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_CORE_MENTION_GATED).toMatch(
+			/launcher.*projects\.json.*plumbing/i,
+		);
+	});
+
+	it("FLY-1981 tombstones auto-QA and leaves deleted tuning envs out of every ledger", () => {
+		expect(
+			RETIRED_FLAGS.filter((entry) => entry.retiredBy === "FLY-1981"),
+		).toHaveLength(11);
+		expect(RETIRED_FLAGS).toContainEqual({
+			envVar: "FLYWHEEL_AUTO_QA",
+			retiredBy: "FLY-1981",
+		});
+		for (const envVar of [
+			"FLYWHEEL_QA_RECONCILE_EVERY_N_TICKS",
+			"FLYWHEEL_FOUNDER_MILESTONE_PATROL_TICKS",
+			"FLYWHEEL_FOUNDER_MILESTONE_LOOKBACK_HOURS",
+			"FLYWHEEL_FOUNDER_MILESTONE_GRACE_MS",
+		]) {
+			expect(RETIRED_FLAGS.some((entry) => entry.envVar === envVar)).toBe(
+				false,
+			);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
+		}
+		expect(RETIRED_CONFIG_PATHS).toEqual([
+			{ path: "qa", retiredBy: "FLY-1981" },
+			{ path: "founder_milestone_report", retiredBy: "FLY-1981" },
+		]);
+	});
+
 	it("FLY-1831 closes the eight direct-env residues with the exact 3+3+2 disposition", () => {
 		const disposition = {
 			deleted: [
@@ -71,7 +118,7 @@ describe("FLY-1393 flag truth", () => {
 				"FLYWHEEL_QUOTA_QA_INJECTION",
 				"FLYWHEEL_SYNC_BIN_ALLOW_TEMP_ROOT",
 			],
-			registered: [
+			solidified: [
 				"FLYWHEEL_DESIGN_HTML_GATE",
 				"FLYWHEEL_INSTRUCTION_PATH_CHECK",
 			],
@@ -115,20 +162,20 @@ describe("FLY-1393 flag truth", () => {
 				envVar,
 			).toBe(false);
 		}
-		for (const envVar of disposition.registered) {
+		for (const envVar of disposition.solidified) {
 			expect(
 				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
 				envVar,
-			).toBe(true);
+			).toBe(false);
 			expect(
 				FLAG_EXEMPTIONS.some((entry) => entry.name === envVar),
 				envVar,
 			).toBe(false);
 			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toBeUndefined();
-			expect(
-				RETIRED_FLAGS.some((entry) => entry.envVar === envVar),
+			expect(RETIRED_FLAGS, envVar).toContainEqual({
 				envVar,
-			).toBe(false);
+				retiredBy: "FLY-1981",
+			});
 		}
 	});
 

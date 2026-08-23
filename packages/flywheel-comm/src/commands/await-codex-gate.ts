@@ -181,10 +181,7 @@ function validateResult(
 	if (ageMs > MAX_RESULT_AGE_MS) {
 		return `timestamp older than 24h: ${payload.timestamp}`;
 	}
-	if (
-		opts.reviewType === "design" &&
-		(opts.env ?? process.env).FLYWHEEL_INSTRUCTION_PATH_CHECK !== "0"
-	) {
+	if (opts.reviewType === "design") {
 		if (typeof payload.requestId !== "string" || !payload.requestId.trim()) {
 			return `design review result missing/invalid requestId`;
 		}
@@ -274,10 +271,7 @@ async function validateDesignProjectionWithBridge(
 	opts: AwaitCodexGateOpts,
 	payload: ResultPayload,
 ): Promise<string | null> {
-	if (
-		opts.reviewType !== "design" ||
-		(opts.env ?? process.env).FLYWHEEL_INSTRUCTION_PATH_CHECK === "0"
-	) {
+	if (opts.reviewType !== "design") {
 		return null;
 	}
 	const env = opts.env ?? process.env;
