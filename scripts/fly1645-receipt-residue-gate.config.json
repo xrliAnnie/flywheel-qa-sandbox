@@ -153,6 +153,7 @@
 		"packages/flywheel-comm/src/mailbox-queue.ts",
 		"packages/flywheel-comm/src/mailbox-schema.ts",
 		"packages/flywheel-comm/src/receipt-teardown-closeout.ts",
-		"packages/flywheel-comm/src/types.ts"
+		"packages/flywheel-comm/src/types.ts",
+		"scripts/fly-1998-database-retention-sweep.mjs"
 	]
 }
