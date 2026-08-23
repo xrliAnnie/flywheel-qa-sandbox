@@ -10,7 +10,7 @@
 
 ---
 
-### Task 0: Verify branch-base parity (hard precondition — added 2026-08-14)
+### Task 0: Verify branch-base parity (hard precondition — added 2026-08-14; 2026-08-23 slot-3 audit: clean, ahead=0/behind=0, remote branch absent)
 
 **Files:** none (read-only Git checks; remediation only rewrites the never-pushed local branch)
 
@@ -31,10 +31,10 @@ Expected: ahead contains only this issue's docs/progress commits; behind is 0 (o
 Run:
 
 ```bash
-git ls-remote origin refs/heads/project-slot-2-FLY-202
+git ls-remote origin "refs/heads/$(git branch --show-current)"
 ```
 
-Empty output → safe to re-anchor: `git switch -C project-slot-2-FLY-202 origin/main` (note: `git reset --hard` is permission-denied in this harness; `switch -C` is the working equivalent), then report the re-anchor via non-blocking `flywheel-comm ask`. Non-empty output → STOP; never rewrite a published branch (FORCE-PUSH GUARD) — escalate to the Lead and wait for an explicit ruling.
+Empty output → safe to re-anchor: `git switch -C "$(git branch --show-current)" origin/main` (note: `git reset --hard` is permission-denied in this harness; `switch -C` is the working equivalent), then report the re-anchor via non-blocking `flywheel-comm ask`. Non-empty output → STOP; never rewrite a published branch (FORCE-PUSH GUARD) — escalate to the Lead and wait for an explicit ruling.
 
 ### Task 1: Capture the current repository snapshot
 

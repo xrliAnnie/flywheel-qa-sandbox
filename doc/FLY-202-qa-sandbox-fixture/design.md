@@ -2,9 +2,9 @@
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
 https://linear.app/studio/issue/FLY-202
-**Date**: 2026-08-14 (design 节点本轮刷新;上一轮 2026-08-10)
+**Date**: 2026-08-23 (design 节点本轮刷新;上一轮 2026-08-14)
 **Status**: Active (repeatable fixture refresh)
-**Node**: sandbox real-Runner E2E execution · run `7c13c0ce` design attempt 1
+**Node**: sandbox real-Runner E2E execution · run `9b90fc91` design attempt 1 · slot-3
 
 ## 1. 一句话总结
 
@@ -49,15 +49,19 @@ https://linear.app/studio/issue/FLY-202
 
 ### 3.3 分支与 PR
 
-- 分支:slot 预建分支 `project-slot-2-FLY-202`(与 main 齐平),push 后对
-  `xrliAnnie/flywheel-qa-sandbox` main 开 PR。
+- 分支:slot 预建分支 `project-slot-N-FLY-202`(本轮 = `project-slot-3-FLY-202`,与 main 齐平),
+  push 后对 `xrliAnnie/flywheel-qa-sandbox` main 开 PR。
 - PR 内容**只允许**本 issue 文档(`doc/qa/sandbox-notes.md` + 本 issue 文件夹),
   零生产代码改动 — 顺手修代码违反 Lead guardrail(见 memory: qa-sandbox-smoke-conventions)。
 - merge 是 founder-gated,不在 Runner 权限内;implement 节点走 approve gate,本 design 节点不碰。
 
-### 3.4 分支基线卫生(Task 0,本轮 2026-08-14 新增的硬前置)
+### 3.4 分支基线卫生(Task 0,2026-08-14 轮新增的硬前置,永久保留)
 
-背景:本轮 design 节点入场审计发现 slot 预建分支本地基线漂移 —— 领先 `origin/main`
+> **本轮(2026-08-23,slot-3,run `9b90fc91`)入场审计结果:基线干净** ——
+> `ahead=0 / behind=0`,远端 `project-slot-3-FLY-202` 尚不存在(push 时 `-u` 新建),
+> 无需重锚。以下为该硬前置的由来(2026-08-14 轮实况),作为规程依据保留。
+
+背景:2026-08-14 轮 design 节点入场审计发现 slot 预建分支本地基线漂移 —— 领先 `origin/main`
 **2088 个无关 commit / 3803 文件**(merge-base 停在 FLY-115 时代,分支上挂着生产仓
 FLY-1765 的 teamlead 源码改动)。这正是历史事故 task#55(4863-file PR)的同一形态:
 harness 从上一个 campaign 的 checkout HEAD 建分支,而不是从 sandbox main。
@@ -83,7 +87,7 @@ harness 从上一个 campaign 的 checkout HEAD 建分支,而不是从 sandbox m
 | 任务类型 | 纯文档 5 步 | 改代码任务 — 有生产风险且 CI 不稳;单步任务 — mid-work 窗口太短,QA 观察不到中间态 |
 | 文档落点 | `doc/qa/sandbox-notes.md` | 仓库根 — 与现有 QA 文档区(doc/qa/)割裂;每次 run 新文件名 — 破坏幂等,垃圾堆积 |
 | 幂等策略 | 同名文件按当前快照原位刷新 | 删除后原样重建 — 没有有效 review 信号;每次新增 run-stamped 文件 — 垃圾累积且破坏稳定路径 |
-| 漂移基线处置(本轮新增) | 远端分支缺席时本地重锚到 origin/main(Task 0)+ ask 报备 | 带漂移直接 push — 复刻 task#55 的 4863-file PR 事故;rebase 2088 个无关 commit — 无意义且冲突面巨大;阻塞等 Lead — 节点合同要求优先独立推进,重锚可逆(reflog 在)且不碰远端 |
+| 漂移基线处置(2026-08-14 轮新增) | 远端分支缺席时本地重锚到 origin/main(Task 0)+ ask 报备 | 带漂移直接 push — 复刻 task#55 的 4863-file PR 事故;rebase 2088 个无关 commit — 无意义且冲突面巨大;阻塞等 Lead — 节点合同要求优先独立推进,重锚可逆(reflog 在)且不碰远端 |
 
 ## 5. 诚实边界
 
@@ -97,6 +101,6 @@ harness 从上一个 campaign 的 checkout HEAD 建分支,而不是从 sandbox m
 - 不供生产 Lead/Runner 使用:issue 标题已标 "do not pick up",本 fixture 仅限 test-slot 注入。
 - 设计交付不等 founder review(节点合同);后续 founder 意见由当时 TURN 持有者以
   design-correction.md 增量修正。
-- 不承诺修复 slot 环境已知缺陷:本轮观察到 Lead nudge 与 design-HTML publish 存在
+- 不承诺修复 slot 环境已知缺陷:2026-08-14 轮曾观察到 Lead nudge 与 design-HTML publish 存在
   401(task#51/#52,harness 侧问题)。本设计只要求各节点**如实上报** publish-failed,
   不隐藏失败,修复归 harness issue 处理。
