@@ -1,0 +1,7 @@
+url=http://localhost:9876
+mode=sentinel blocks=1 block_seconds=90 endpoints=L1
+clock=epochrealtime
+bridge_worker_pid=45953
+bridge_identity=Sat Aug 22 09:28:38 2026 /opt/homebrew/Cellar/node/25.6.1/bin/node --require /Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/preflight.cjs --import file:///Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/loader.mjs scripts/run-bridge.ts
+tool_semantics: ps %cpu = decaying average over up to one minute (man ps); top -l 2 second sample = instantaneous
+note: conservative bound counts timer_late as a violation

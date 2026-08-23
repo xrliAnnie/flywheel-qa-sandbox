@@ -1,0 +1,4 @@
+block_id,endpoint,tick,scheduled,start,end,outcome,secs
+b1,L1,0,1787425228.105597,1787425228.169065,1787425228.335156,met,0.134714
+b1,L1,1,1787425230.105597,1787425230.201663,1787425230.430445,met,0.179749
+      46 /private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-1986/781ddb50-23b2-4a5d-aae4-e0c23c4d6dfb/scratchpad/probe-run2/samples.csv

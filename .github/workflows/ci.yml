@@ -169,6 +169,10 @@ jobs:
     # serial lane into two independent shards; this cmux/session shard measured
     # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
     # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
+    # ⚠ 2026-08-23: contemporaneous branches measured this shard at 15m51s-15m58s,
+    # NOT the ~10.9min recorded below — roughly 65s of headroom under the 17min
+    # tripwire. That drift is not from any one step and is reported separately;
+    # FLY-1986 was placed on shard 2 rather than here because of it.
     # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
     # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
     # 1663=97, 1678=78 (test total ~544s). Dependency preflight is ~0s when
@@ -410,7 +414,8 @@ jobs:
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
     # 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
     # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, 1855=5,
-    # tripwire-test~1 (test total ~542s). Dependency preflight is ~0s when tools verify; the rg
+    # 1986=95 (measured 2026-08-23; was 162s before its sleep budget was trimmed),
+    # tripwire-test~1 (test total ~637s). Dependency preflight is ~0s when tools verify; the rg
     # fast-install path is normally ~5-15s and is bounded below the job ceiling.
     timeout-minutes: 20
     steps:
@@ -845,6 +850,15 @@ jobs:
 
       - name: Test — FLY-1855 executable Lead patrol snapshot
         run: bash scripts/__tests__/lead-patrol-snapshot.test.sh
+
+      # FLY-1986: the Phase-0 load probe is read-only by contract. This suite
+      # mutates the probe and requires every contract to go RED, so a check that
+      # can no longer fail is itself caught. ⚠ Placed on THIS shard, not shard 1:
+      # shard 1 measured 15m55s on contemporaneous branches against a 17min
+      # tripwire (85% of the 20min cap), i.e. ~65s of headroom, while this shard
+      # measured 11m36s. Rebalancing whole named steps is the sanctioned lever.
+      - name: Test — FLY-1986 load probe contract
+        run: bash scripts/__tests__/qa-fly-1986-load-probe.test.sh
 
       - name: Test — FLY-1870 job elapsed tripwire contract
         run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh
