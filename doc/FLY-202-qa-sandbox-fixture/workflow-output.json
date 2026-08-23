@@ -3,8 +3,8 @@
 	"status": "needs_review",
 	"summary": "Refreshed doc/qa/sandbox-notes.md from the current sandbox repository snapshot and verified all five fixture requirements.",
 	"pr": {
-		"number": 61,
-		"url": "https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/61",
+		"number": 106,
+		"url": "https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/106",
 		"base": "main",
 		"head": "project-slot-2-FLY-202"
 	},
@@ -13,6 +13,11 @@
 		"all 17 tracked top-level directories",
 		"exactly 10 QA framework README summary bullets",
 		"embedded output exactly matches ls -R doc/ | head -50",
-		"git diff --check"
+		"git diff --check",
+		"pnpm lint (zero errors; 14 pre-existing warnings)",
+		"pnpm -r build (passed after pnpm install --frozen-lockfile restored the clone's missing dependencies)",
+		"pnpm test:packages:run attempted; unrelated baseline/environment failures remain in unchanged packages: macOS Terminal UI automation is unavailable, one Claude lock-release test is order-dependent, and Teamlead includes sandbox-permission plus existing state-machine failures",
+		"core substitute excluding the unavailable Terminal UI integration: 17 files and 206 tests passed",
+		"the order-dependent Claude lock-release test passed in isolation; packages/core, packages/claude-runner, and packages/teamlead are byte-identical to origin/main"
 	]
 }

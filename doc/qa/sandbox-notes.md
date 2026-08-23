@@ -68,6 +68,8 @@ FLY-202-d2-five-steps.mmd
 FLY-202-d2-five-steps.svg
 FLY-202-d3-doc-model.mmd
 FLY-202-d3-doc-model.svg
+FLY-202-d4-branch-hygiene.mmd
+FLY-202-d4-branch-hygiene.svg
 FLY-202-design.html
 design.md
 plan.md
@@ -96,6 +98,4 @@ onboarding
 plan
 qa
 research
-
-doc//engineer/deep-research:
 ```
