@@ -55,6 +55,45 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		}
 	});
 
+	it("warns when a ready store-managed flag still has an ignored .env line", () => {
+		const managed = FLAGS.find((flag) => flag.name === "skill_framework_mode");
+		if (!managed) throw new Error("missing skill_framework_mode");
+		const html = renderFlagCard(
+			{
+				...managed,
+				storeManaged: true,
+				clockReadiness: "ready",
+				fileConfigured: true,
+				fileEffective: undefined,
+				divergence: undefined,
+			},
+			"console",
+		);
+		expect(html).toContain("SQLite flag store");
+		expect(html).toContain("stage/apply");
+		expect(html).not.toContain("CLI 与 Bridge 见值不同");
+	});
+
+	it.each(["no_clock:bypass", "no_clock:degraded"] as const)(
+		"does not tell operators to delete an authoritative .env line in %s mode",
+		(clockReadiness) => {
+			const managed = FLAGS.find(
+				(flag) => flag.name === "skill_framework_mode",
+			);
+			if (!managed) throw new Error("missing skill_framework_mode");
+			const html = renderFlagCard(
+				{
+					...managed,
+					storeManaged: true,
+					clockReadiness,
+					fileConfigured: true,
+				},
+				"console",
+			);
+			expect(html).not.toContain("legacy .env 行已忽略");
+		},
+	);
+
 	it("effect label maps timing → 生效路径", () => {
 		const direct = FLAGS.find(
 			(f) => f.name === "founder_review_orphan_monitor",

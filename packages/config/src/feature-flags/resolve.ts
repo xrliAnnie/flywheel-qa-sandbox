@@ -66,6 +66,8 @@ export interface FlagView {
 	bridgeEffective?: boolean | string;
 	/** Current shared .env value; absent when the file is unavailable. */
 	fileEffective?: boolean | string;
+	/** Whether the readable shared .env still contains this exact assignment. */
+	fileConfigured?: boolean;
 	/** Safe display/control value; absent whenever sources disagree/degrade. */
 	displayEffective?: boolean | string;
 	divergence?:
@@ -191,6 +193,7 @@ function withEnvSources(
 		return { ...common, divergence: "source_unavailable" };
 	}
 	const fileRaw = fileValue.raw;
+	const fileConfigured = fileRaw !== undefined;
 	let fileEffective: boolean | string;
 	try {
 		fileEffective = resolveEnvEffective(spec, {
@@ -199,14 +202,21 @@ function withEnvSources(
 	} catch {
 		return {
 			...common,
+			fileConfigured,
 			error: `invalid ${spec.envVar} in shared .env: ${fileRaw}`,
 		};
 	}
 	if (fileEffective === bridgeEffective) {
-		return { ...common, fileEffective, displayEffective: bridgeEffective };
+		return {
+			...common,
+			fileConfigured,
+			fileEffective,
+			displayEffective: bridgeEffective,
+		};
 	}
 	return {
 		...common,
+		fileConfigured,
 		fileEffective,
 		divergence: divergenceFor(spec),
 	};

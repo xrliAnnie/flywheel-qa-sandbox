@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
+import { STORE_MANAGED_FLAGS } from "../feature-flags/store-policy.js";
 import {
 	NON_FLAG_ALLOWLIST,
 	RETIRED_CONFIG_PATHS,
@@ -60,6 +61,22 @@ const FLY_1806_RETIRED_FLAGS = [
 ] as const;
 
 describe("FLY-1393 flag truth", () => {
+	it("rejects every SQLite-managed flag from persistent environments", () => {
+		const managedEnvVars = FEATURE_FLAGS.filter((flag) =>
+			STORE_MANAGED_FLAGS.has(flag.name),
+		).map((flag) => flag.envVar);
+		expect(managedEnvVars).toHaveLength(STORE_MANAGED_FLAGS.size);
+		for (const envVar of managedEnvVars) {
+			expect(envVar).toBeTruthy();
+			expect(validateFlagTruthEnvironment([`${envVar}=1`]), envVar).toEqual({
+				ok: false,
+				errors: [
+					`${envVar}: 值已由 SQLite flag store 接管,删这行;改值走 stage/apply`,
+				],
+			});
+		}
+	});
+
 	it("FLY-1981 tombstones consent controls but preserves launcher-owned mention plumbing", () => {
 		for (const envVar of [
 			"FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE",

@@ -209,6 +209,12 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			{ FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "0" },
 			100,
 		);
+		const rowsBeforeBypass = new Map(
+			[...STORE_MANAGED_FLAGS].map((name) => [
+				name,
+				store.getFlagValueRow(name),
+			]),
+		);
 		const staleRevision = store.getFlagValueRow(
 			"workflow_turn_divergence_alerts",
 		)!.revision;
@@ -228,7 +234,12 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(runtime.mode).toBe("ready");
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(runtime)).toBe(true);
 		for (const name of STORE_MANAGED_FLAGS) {
-			expect(store.getFlagValueRow(name)?.valueLastChanged, name).toBe(300);
+			const row = store.getFlagValueRow(name);
+			if (name === "workflow_turn_divergence_alerts") {
+				expect(row?.valueLastChanged, name).toBe(300);
+			} else {
+				expect(row, name).toEqual(rowsBeforeBypass.get(name));
+			}
 			expect(store.listFlagValueChanges(name).at(-1)?.action, name).toBe(
 				"bypass_recovery",
 			);
@@ -250,6 +261,124 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 				reason: "stale pre-bypass token",
 			}),
 		).toMatchObject({ ok: false, reason: "stale_revision" });
+	});
+
+	it("preserves a store override when bypass recovery has no legacy env authority", () => {
+		initializeFlagStore(store, {}, 100);
+		const initial = store.getFlagValueRow("skill_framework_mode")!;
+		store.applyFlagValueChange({
+			name: "skill_framework_mode",
+			rawTo: "split",
+			expectedRevision: initial.revision,
+			actor: "bridge-local-operator",
+			reason: "pre-bypass managed override",
+			now: 200,
+		});
+		const beforeBypass = store.getFlagValueRow("skill_framework_mode");
+
+		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 300);
+		const runtime = initializeFlagStore(store, {}, 400);
+
+		expect(runtime.mode).toBe("ready");
+		expect(store.getFlagValueRow("skill_framework_mode")).toEqual(beforeBypass);
+		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
+			hasOverride: true,
+			raw: "split",
+		});
+		expect(
+			store.listFlagValueChanges("skill_framework_mode").at(-1),
+		).toMatchObject({
+			action: "bypass_recovery",
+			fromRaw: "split",
+			toRaw: "split",
+			fromEffective: "split",
+			toEffective: "split",
+		});
+	});
+
+	it("treats an empty legacy enum assignment as absent during recovery", () => {
+		initializeFlagStore(store, {}, 100);
+		const initial = store.getFlagValueRow("skill_framework_mode")!;
+		store.applyFlagValueChange({
+			name: "skill_framework_mode",
+			rawTo: "split",
+			expectedRevision: initial.revision,
+			actor: "bridge-local-operator",
+			reason: "pre-bypass managed override",
+			now: 200,
+		});
+		const beforeBypass = store.getFlagValueRow("skill_framework_mode");
+
+		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 300);
+		const runtime = initializeFlagStore(
+			store,
+			{ FLYWHEEL_SKILL_FRAMEWORK_MODE: "" },
+			400,
+		);
+
+		expect(runtime.mode).toBe("ready");
+		expect(store.getFlagValueRow("skill_framework_mode")).toEqual(beforeBypass);
+		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
+			hasOverride: true,
+			raw: "split",
+		});
+		expect(
+			store.listFlagValueChanges("skill_framework_mode").at(-1),
+		).toMatchObject({
+			action: "bypass_recovery",
+			fromRaw: "split",
+			toRaw: "split",
+			fromEffective: "split",
+			toEffective: "split",
+		});
+	});
+
+	it("imports an empty legacy boolean assignment with its existing semantics", () => {
+		initializeFlagStore(store, { FLYWHEEL_WORKFLOW_REWORK_REENTRY: "0" }, 100);
+		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 200);
+
+		const runtime = initializeFlagStore(
+			store,
+			{ FLYWHEEL_WORKFLOW_REWORK_REENTRY: "" },
+			300,
+		);
+
+		expect(runtime.mode).toBe("ready");
+		expect(store.getFlagValueRow("workflow_rework_reentry")).toMatchObject({
+			hasOverride: true,
+			raw: "",
+			lastEffective: "true",
+			valueLastChanged: 300,
+			revision: 2,
+		});
+		expect(storeWorkflowReworkReentryEnabled(runtime)).toBe(true);
+	});
+
+	it("reconciles a default shift while recovering without a legacy env line", () => {
+		initializeFlagStore(store, {}, 100);
+		rawFlagStoreDb(store).exec(
+			"UPDATE flag_values SET last_effective='false' WHERE flag_name='flag_retirement_scan'",
+		);
+		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 200);
+
+		const runtime = initializeFlagStore(store, {}, 300);
+
+		expect(runtime.mode).toBe("ready");
+		expect(store.getFlagValueRow("flag_retirement_scan")).toMatchObject({
+			hasOverride: false,
+			raw: null,
+			lastEffective: "true",
+			valueLastChanged: 300,
+			revision: 2,
+			updatedBy: "flag-store-recovery",
+		});
+		expect(
+			store.listFlagValueChanges("flag_retirement_scan").at(-1),
+		).toMatchObject({
+			action: "bypass_recovery",
+			fromEffective: "false",
+			toEffective: "true",
+		});
 	});
 
 	it("recovery-seeds after a first-deployment bypass with a non-null clock", () => {
@@ -343,19 +472,85 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		});
 	});
 
-	it("keeps stale .env visible when it differs from the managed store", () => {
+	it.each([
+		["missing", { status: "readable", content: "OTHER=1\n" }, false],
+		[
+			"stale",
+			{
+				status: "readable",
+				content: "FLYWHEEL_SKILL_FRAMEWORK_MODE=bare\n",
+			},
+			true,
+		],
+		["unavailable", { status: "unavailable" }, undefined],
+		[
+			"invalid",
+			{
+				status: "readable",
+				content: "FLYWHEEL_SKILL_FRAMEWORK_MODE=not-a-mode\n",
+			},
+			true,
+		],
+	] as const)(
+		"treats the ready store as sole authority when legacy .env is %s",
+		(_case, envFile, fileConfigured) => {
+			const env = { FLYWHEEL_SKILL_FRAMEWORK_MODE: "split" };
+			const runtime = initializeFlagStore(store, env, 100);
+			const view = enrichFlagViewsWithStore(
+				resolveAllFlags({ env, envFile }),
+				runtime,
+			).find(({ name }) => name === "skill_framework_mode");
+			expect(view).toMatchObject({
+				storeManaged: true,
+				storeEffective: "split",
+				bridgeEffective: "split",
+				displayEffective: "split",
+				clockReadiness: "ready",
+			});
+			expect(view?.fileEffective).toBeUndefined();
+			expect(view?.fileConfigured).toBe(fileConfigured);
+			expect(view?.divergence).toBeUndefined();
+			expect(view?.error).toBeUndefined();
+		},
+	);
+
+	it("projects a public store write when process and file env are both absent", () => {
 		const runtime = initializeFlagStore(store, {}, 100);
+		const row = store.getFlagValueRow("skill_framework_mode")!;
 		store.applyFlagValueChange({
-			name: "workflow_turn_divergence_alerts",
-			rawTo: "1",
-			expectedRevision: 1,
+			name: "skill_framework_mode",
+			rawTo: "split",
+			expectedRevision: row.revision,
 			actor: "bridge-local-operator",
-			reason: "display divergence",
+			reason: "prove post-cleanup shape",
 			now: 200,
 		});
 		const view = enrichFlagViewsWithStore(
 			resolveAllFlags({
 				env: {},
+				envFile: { status: "readable", content: "OTHER=1\n" },
+			}),
+			runtime,
+		).find(({ name }) => name === "skill_framework_mode");
+		expect(view).toMatchObject({
+			storeEffective: "split",
+			displayEffective: "split",
+			fileConfigured: false,
+		});
+		expect(view?.fileEffective).toBeUndefined();
+		expect(view?.divergence).toBeUndefined();
+		expect(view?.error).toBeUndefined();
+	});
+
+	it("keeps stale .env comparison visible during explicit store bypass", () => {
+		const env = {
+			FLYWHEEL_FLAG_STORE: "0",
+			FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
+		};
+		const runtime = initializeFlagStore(store, env, 100);
+		const view = enrichFlagViewsWithStore(
+			resolveAllFlags({
+				env,
 				envFile: {
 					status: "readable",
 					content: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS=0\n",
@@ -369,6 +564,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			fileEffective: false,
 			displayEffective: true,
 			divergence: "split_brain",
+			clockReadiness: "no_clock:bypass",
 		});
 	});
 

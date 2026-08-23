@@ -29,6 +29,15 @@ else
   fail "retired tombstone failed without the expected error: $(cat "$TMP/tombstone.out")"
 fi
 
+printf '%s\n' 'FLYWHEEL_SKILL_FRAMEWORK_MODE=bare' > "$TMP/store-managed.env"
+if "$REPO_ROOT/scripts/check-flag-truth.ts" --env-file "$TMP/store-managed.env" > "$TMP/store-managed.out" 2>&1; then
+  fail "SQLite-managed persistent env line unexpectedly passed"
+elif grep -q 'FLYWHEEL_SKILL_FRAMEWORK_MODE.*SQLite flag store.*删这行.*stage/apply' "$TMP/store-managed.out"; then
+  pass "SQLite-managed persistent env line fails with an actionable error"
+else
+  fail "SQLite-managed persistent env line failed without the expected error: $(cat "$TMP/store-managed.out")"
+fi
+
 echo ""
 echo "check-flag-truth: PASSED=$PASSED FAILED=$FAILED"
 (( FAILED == 0 ))

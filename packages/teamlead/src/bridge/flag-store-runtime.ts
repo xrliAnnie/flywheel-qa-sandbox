@@ -124,8 +124,12 @@ export function enrichFlagViewsWithStore(
 			if (valueLastChanged === undefined) {
 				throw new Error(`missing managed flag row: ${view.name}`);
 			}
-			const divergence =
-				view.divergence === "source_unavailable"
+			// Ready SQLite rows are sole authority; static truth validation owns
+			// detection of retired persistent-env inputs. Bypass still uses env.
+			const legacyEnvIsAuthority = runtime.mode === "bypass";
+			const divergence = !legacyEnvIsAuthority
+				? undefined
+				: view.divergence === "source_unavailable"
 					? "source_unavailable"
 					: view.fileEffective !== undefined &&
 							view.fileEffective !== storeEffective
@@ -140,9 +144,9 @@ export function enrichFlagViewsWithStore(
 				effective: storeEffective,
 				bridgeEffective: storeEffective,
 				displayEffective: storeEffective,
-				fileEffective: view.fileEffective,
+				fileEffective: legacyEnvIsAuthority ? view.fileEffective : undefined,
 				divergence,
-				error: view.error,
+				error: legacyEnvIsAuthority ? view.error : undefined,
 				isDefault: storeEffective === view.default,
 			};
 		} catch (error) {

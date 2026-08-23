@@ -4724,8 +4724,52 @@ export class StateStore {
 				}
 				const existing = this.getFlagValueRow(name);
 				if (recovering) {
-					const raw = args.env[spec.envVar] ?? null;
-					const hasOverride = args.env[spec.envVar] !== undefined;
+					const envRaw = args.env[spec.envVar];
+					const recoveryRaw =
+						spec.valueKind === "enum" && envRaw === "" ? undefined : envRaw;
+					if (existing && recoveryRaw === undefined) {
+						const effective = codec.canonicalEffective(
+							codec.parse({
+								hasOverride: existing.hasOverride,
+								raw: existing.raw,
+							}),
+						);
+						const effectiveChanged = effective !== existing.lastEffective;
+						if (effectiveChanged) {
+							this.db.raw
+								.prepare(
+									`UPDATE flag_values SET last_effective = ?,
+										value_last_changed = ?, revision = revision + 1,
+										updated_at = ?, updated_by = 'flag-store-recovery'
+									 WHERE flag_name = ?`,
+								)
+								.run(effective, now, now, name);
+						}
+						this.db.raw
+							.prepare(
+								`INSERT INTO flag_value_changelog (
+									flag_name, action, from_present, from_raw, to_present, to_raw,
+									from_effective, to_effective, changed_by, changed_at, reason
+								) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
+									'flag-store-recovery', ?, ?)`,
+							)
+							.run(
+								name,
+								existing.hasOverride ? 1 : 0,
+								existing.raw,
+								existing.hasOverride ? 1 : 0,
+								existing.raw,
+								existing.lastEffective,
+								effective,
+								now,
+								effectiveChanged
+									? "reconcile SQLite effective after boot bypass; legacy env absent"
+									: "preserve SQLite authority after boot bypass; legacy env absent",
+							);
+						continue;
+					}
+					const raw = recoveryRaw ?? null;
+					const hasOverride = recoveryRaw !== undefined;
 					const effective = codec.canonicalEffective(
 						codec.parse({ hasOverride, raw }),
 					);

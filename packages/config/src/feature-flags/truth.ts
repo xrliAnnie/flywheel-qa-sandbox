@@ -1,5 +1,6 @@
 import { FLAG_EXEMPTIONS } from "./exemptions.js";
 import { FEATURE_FLAGS } from "./registry.js";
+import { STORE_MANAGED_FLAGS } from "./store-policy.js";
 
 // FLY-1455 first full-surface census. These are values/context/plumbing or
 // per-invocation choices, not persistent on/off gates. Keeping the names
@@ -847,6 +848,11 @@ export function validateFlagTruthEnvironment(
 		FEATURE_FLAGS.flatMap((flag) => (flag.envVar ? [flag.envVar] : [])),
 	);
 	const tombstones = new Set(RETIRED_FLAGS.map((flag) => flag.envVar));
+	const storeManagedPersistentEnvVars = new Set(
+		FEATURE_FLAGS.flatMap((flag) =>
+			flag.envVar && STORE_MANAGED_FLAGS.has(flag.name) ? [flag.envVar] : [],
+		),
+	);
 	const persistentExemptions = new Set(
 		FLAG_EXEMPTIONS.filter(
 			(entry) => entry.kind === "env" && entry.persistentEnvAllowed,
@@ -863,6 +869,12 @@ export function validateFlagTruthEnvironment(
 		if (!name?.startsWith("FLYWHEEL_")) continue;
 		if (tombstones.has(name as (typeof RETIRED_FLAGS)[number]["envVar"])) {
 			errors.push(`${name}: 已退役假开关,删这行`);
+			continue;
+		}
+		if (storeManagedPersistentEnvVars.has(name)) {
+			errors.push(
+				`${name}: 值已由 SQLite flag store 接管,删这行;改值走 stage/apply`,
+			);
 			continue;
 		}
 		if (transientExemptions.has(name)) {
