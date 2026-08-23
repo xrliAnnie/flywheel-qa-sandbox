@@ -304,6 +304,24 @@ require(
     ci_structure_in_quick == 1 and ci_structure_in_scripts == 0 and ci_structure_in_scripts_2 == 0,
     "ci-structure.test.sh must run exactly once in the always-on quick-gate",
 )
+retention_consumer_steps = [
+    step for step in quick_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Enforce FLY-2006 retention consumer gate"
+]
+require(
+    len(retention_consumer_steps) == 1,
+    "quick-gate must contain exactly one FLY-2006 retention consumer gate step",
+)
+require(
+    str(retention_consumer_steps[0].get("run", "")).strip()
+    == "node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs\nnode scripts/fly-2006-retention-consumer-gate.mjs",
+    "FLY-2006 retention consumer gate commands drifted",
+)
+require(
+    "continue-on-error" not in retention_consumer_steps[0],
+    "FLY-2006 retention consumer gate must fail closed",
+)
 script_steps_2 = script_tests_2.get("steps")
 require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
 

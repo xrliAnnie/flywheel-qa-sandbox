@@ -101,6 +101,11 @@ jobs:
           node --test scripts/__tests__/fly1645-receipt-residue-gate.test.mjs
           node scripts/fly1645-receipt-residue-gate.mjs --main-only
 
+      - name: Enforce FLY-2006 retention consumer gate
+        run: |
+          node --test scripts/__tests__/fly-2006-retention-consumer-gate.test.mjs
+          node scripts/fly-2006-retention-consumer-gate.mjs
+
   unit-tests:
     name: Unit (${{ matrix.name }})
     runs-on: ubuntu-latest

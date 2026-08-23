@@ -35,8 +35,13 @@
 		{
 			"id": "receipt-root-lineage",
 			"pattern": "receipt_root_lineage",
-			"expectedAllowedMatches": 8,
+			"expectedAllowedMatches": 9,
 			"allows": [
+				{
+					"repo": "main",
+					"path": "scripts/lib/fly-2006-retention-registry.mjs",
+					"linePattern": "^land_cool_adjudication_receipt land_cool_attempt receipt_root_lineage$"
+				},
 				{
 					"repo": "main",
 					"path": "packages/flywheel-comm/src/mailbox-schema.ts",
@@ -104,8 +109,13 @@
 		{
 			"id": "receipt-handle-table",
 			"pattern": "receipt_handle_requests",
-			"expectedAllowedMatches": 2,
+			"expectedAllowedMatches": 3,
 			"allows": [
+				{
+					"repo": "main",
+					"path": "scripts/lib/fly-2006-retention-registry.mjs",
+					"linePattern": "^receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents runbook_issues$"
+				},
 				{
 					"repo": "main",
 					"path": "packages/flywheel-comm/src/mailbox-schema.ts",
@@ -154,6 +164,9 @@
 		"packages/flywheel-comm/src/mailbox-schema.ts",
 		"packages/flywheel-comm/src/receipt-teardown-closeout.ts",
 		"packages/flywheel-comm/src/types.ts",
+		"scripts/lib/fly-2006-mailbox-archive.mjs",
+		"scripts/lib/fly-2006-retention-engine.mjs",
+		"scripts/lib/fly-2006-retention-registry.mjs",
 		"scripts/fly-1998-database-retention-sweep.mjs"
 	]
 }

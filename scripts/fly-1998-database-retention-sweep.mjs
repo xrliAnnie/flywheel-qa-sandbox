@@ -24,6 +24,14 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+	executeFly2006Apply,
+	executeFly2006Inventory,
+	executeFly2006Vacuum,
+} from "./lib/fly-2006-retention-engine.mjs";
+
+export { executeFly2006Apply, executeFly2006Inventory, executeFly2006Vacuum };
+
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "..");
 const packageRequire = createRequire(
@@ -1520,16 +1528,49 @@ export async function executeRotateLog(input) {
 	return { ...receipt, rotationReceiptPath };
 }
 
-function parseArgs(argv) {
+export function parseFly2006Args(argv) {
 	const [command, ...rest] = argv;
-	if (!["inventory", "apply", "rotate-log"].includes(command))
+	if (!["inventory", "apply", "vacuum", "rotate-log"].includes(command))
 		throw new Error("command_required");
 	const contracts = {
-		inventory: ["--teamlead-db", "--comm-db", "--evidence-dir", "--health-url"],
-		apply: ["--manifest"],
-		"rotate-log": ["--manifest", "--bridge-log"],
+		inventory: {
+			required: [
+				"--teamlead-db",
+				"--comm-db",
+				"--evidence-dir",
+				"--health-url",
+			],
+			optional: [],
+		},
+		apply: {
+			required: [
+				"--manifest",
+				"--founder-source",
+				"--founder-channel-id",
+				"--founder-message-id",
+				"--founder-author-id",
+				"--founder-responded-at",
+				"--founder-response-digest",
+			],
+			optional: [],
+		},
+		vacuum: {
+			required: [
+				"--manifest",
+				"--database",
+				"--quiescence-ack",
+				"--rehearsal-summary",
+				"--max-duration-ms",
+			],
+			optional: [],
+		},
+		"rotate-log": {
+			required: ["--manifest", "--bridge-log"],
+			optional: [],
+		},
 	};
-	const allowed = new Set(contracts[command]);
+	const contract = contracts[command];
+	const allowed = new Set([...contract.required, ...contract.optional]);
 	const args = { command };
 	for (let index = 0; index < rest.length; index += 1) {
 		const key = rest[index];
@@ -1538,7 +1579,7 @@ function parseArgs(argv) {
 		if (args[key]) throw new Error(`duplicate_argument:${key}`);
 		args[key] = rest[++index];
 	}
-	for (const required of contracts[command]) {
+	for (const required of contract.required) {
 		if (!args[required]) throw new Error(`missing_argument:${required}`);
 	}
 	return args;
@@ -1546,17 +1587,35 @@ function parseArgs(argv) {
 
 async function runCli() {
 	try {
-		const args = parseArgs(process.argv.slice(2));
+		const args = parseFly2006Args(process.argv.slice(2));
 		let result;
 		if (args.command === "inventory") {
-			result = await executeInventory({
+			result = await executeFly2006Inventory({
 				teamleadDbPath: args["--teamlead-db"],
 				commDbPath: args["--comm-db"],
 				evidenceDir: args["--evidence-dir"],
 				healthUrl: args["--health-url"],
 			});
 		} else if (args.command === "apply") {
-			result = await executeApply({ manifestPath: args["--manifest"] });
+			result = await executeFly2006Apply({
+				manifestPath: args["--manifest"],
+				founderGateAudit: {
+					source: args["--founder-source"],
+					channelId: args["--founder-channel-id"],
+					messageId: args["--founder-message-id"],
+					authorId: args["--founder-author-id"],
+					respondedAt: args["--founder-responded-at"],
+					responseDigest: args["--founder-response-digest"],
+				},
+			});
+		} else if (args.command === "vacuum") {
+			result = await executeFly2006Vacuum({
+				manifestPath: args["--manifest"],
+				database: args["--database"],
+				quiescenceAckPath: args["--quiescence-ack"],
+				rehearsalSummaryPath: args["--rehearsal-summary"],
+				maxDurationMs: Number(args["--max-duration-ms"]),
+			});
 		} else {
 			const manifestPath = args["--manifest"];
 			result = await executeRotateLog({
@@ -1570,19 +1629,22 @@ async function runCli() {
 				status: result.status,
 				manifestPath: result.manifestPath,
 				applyReceiptPath: result.applyReceiptPath,
+				vacuumReceiptPath: result.receiptPath,
 				rotationReceiptPath: result.rotationReceiptPath,
 				deleted: result.deleted,
-				counts: result.measurements
-					? {
-							teamlead: result.measurements.teamlead.counts,
-							comm: result.measurements.comm.counts,
-						}
+				counts: result.manifest?.targets
+					? Object.fromEntries(
+							Object.entries(result.manifest.targets).map(([key, target]) => [
+								key,
+								target.candidateCount,
+							]),
+						)
 					: undefined,
 			})}\n`,
 		);
 	} catch (error) {
 		process.stderr.write(
-			`fly1998_retention_error: ${error instanceof Error ? error.message : String(error)}\n`,
+			`fly2006_retention_error: ${error instanceof Error ? error.message : String(error)}\n`,
 		);
 		process.exitCode = 1;
 	}

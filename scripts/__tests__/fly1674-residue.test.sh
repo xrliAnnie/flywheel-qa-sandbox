@@ -31,6 +31,7 @@ allowed_hits=(
   'packages/flywheel-comm/src/__tests__/db.patrol-loop.test.ts|three_stage_turn'
   'packages/flywheel-comm/src/commands/turn.ts|three_stage_turn'
   'packages/flywheel-comm/src/db.ts|three_stage_turn'
+  'scripts/lib/fly-2006-retention-registry.mjs|three_stage_turn'
   'packages/teamlead/lead-rules-base/runner-patrol-rules.md|three_stage_turn'
   'packages/teamlead/src/__tests__/fly369-patrol-rule.test.ts|three_stage_turn'
   'scripts/lead-patrol-snapshot.sh|three_stage_turn'

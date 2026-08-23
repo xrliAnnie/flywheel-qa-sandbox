@@ -1,0 +1,403 @@
+{
+	"version": 1,
+	"targetTables": [
+		"alert_repair_attempts",
+		"alert_threads",
+		"chat_threads",
+		"deployment_events",
+		"detection_escalations",
+		"founder_page_ledger",
+		"lead_event_delivery_attempts",
+		"lead_events",
+		"legacy_cutover_quarantine",
+		"legacy_render_fallback",
+		"legacy_stock_suppressed",
+		"phase_chat_threads",
+		"quiet_wake_notified",
+		"roundtable_topic_threads",
+		"session_events",
+		"ticket_escalations",
+		"tmux_hold",
+		"workflow_run_event",
+		"content_ref_gc_outbox",
+		"mailbox",
+		"mailbox_log",
+		"receipt_alert_outbox",
+		"runner_phase_wakes",
+		"runner_shutdown_controls",
+		"runner_wake_failure_episode"
+	],
+	"consumers": [
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "receipt_alert_outbox",
+			"baseTable": "receipt_alert_outbox",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "receipt_alert_outbox",
+			"baseTable": "receipt_alert_outbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "runner_phase_wakes",
+			"baseTable": "runner_phase_wakes",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "runner_shutdown_controls",
+			"baseTable": "runner_shutdown_controls",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/db.ts",
+			"relation": "runner_wake_failure_episode",
+			"baseTable": "runner_wake_failure_episode",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-migration.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-migration.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
+			"relation": "content_ref_gc_outbox",
+			"baseTable": "content_ref_gc_outbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-queue.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-schema.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/flywheel-comm/src/receipt-teardown-closeout.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "read",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/receipt-teardown-closeout.ts",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "alert_threads",
+			"baseTable": "alert_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "chat_threads",
+			"baseTable": "chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "deployment_events",
+			"baseTable": "deployment_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "detection_escalations",
+			"baseTable": "detection_escalations",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "founder_page_ledger",
+			"baseTable": "founder_page_ledger",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "lead_event_delivery_attempts",
+			"baseTable": "lead_event_delivery_attempts",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "legacy_cutover_quarantine",
+			"baseTable": "legacy_cutover_quarantine",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "legacy_cutover_quarantine",
+			"baseTable": "legacy_cutover_quarantine",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "legacy_render_fallback",
+			"baseTable": "legacy_render_fallback",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "legacy_stock_suppressed",
+			"baseTable": "legacy_stock_suppressed",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "legacy_stock_suppressed",
+			"baseTable": "legacy_stock_suppressed",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "phase_chat_threads",
+			"baseTable": "phase_chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "quiet_wake_notified",
+			"baseTable": "quiet_wake_notified",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "roundtable_topic_threads",
+			"baseTable": "roundtable_topic_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "ticket_escalations",
+			"baseTable": "ticket_escalations",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "tmux_hold",
+			"baseTable": "tmux_hold",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/teamlead/src/StateStore.ts",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/cycle-time/lib/collect.mjs",
+			"relation": "runner_phase_wakes",
+			"baseTable": "runner_phase_wakes",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/cycle-time/lib/collect.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/fly-1995-session-events-residue-surgery.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/fly1165-archive-done-threads.mjs",
+			"relation": "chat_threads",
+			"baseTable": "chat_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/fly1686-gate-entry-audit.mjs",
+			"relation": "workflow_run_event",
+			"baseTable": "workflow_run_event",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/fly-2006-mailbox-archive.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "alert_threads",
+			"baseTable": "alert_threads",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "lead_events",
+			"baseTable": "lead_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "lead_event_delivery_attempts",
+			"baseTable": "lead_event_delivery_attempts",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "legacy_cutover_quarantine",
+			"baseTable": "legacy_cutover_quarantine",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "legacy_render_fallback",
+			"baseTable": "legacy_render_fallback",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "legacy_stock_suppressed",
+			"baseTable": "legacy_stock_suppressed",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/lib/fly-2006-retention-engine.mjs",
+			"relation": "session_events",
+			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		}
+	]
+}
