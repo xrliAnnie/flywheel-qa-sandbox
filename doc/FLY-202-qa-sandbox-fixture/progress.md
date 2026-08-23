@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 4/4
-updated: 2026-08-21T20:43:48.263Z
-nextStep: Commit fixture refresh, push branch, verify PR head, and submit
-  needs_review handoff
+phaseCursor: 5/5
+updated: 2026-08-23T03:04:32.371Z
+nextStep: "CI green on merged head; opening approve_to_ship gate on PR #85 then
+  parking (awaiting_review)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (4/4)
-**next**: Commit fixture refresh, push branch, verify PR head, and submit needs_review handoff
+**phase**: implement (5/5)
+**next**: CI green on merged head; opening approve_to_ship gate on PR #85 then parking (awaiting_review)
