@@ -38,10 +38,8 @@ The sandbox is disposable integration-test infrastructure, not a second source o
 - Three scripts drive a slot: `test-deploy.sh` (clone + slot Bridge + slot Lead), `inject-linear-issue.sh` (POST `/api/runs/start` to spawn the Runner), and `test-teardown.sh` (kill processes, clean worktrees, branches, `SLOT_DIR`, and CommDB).
 - Real-Runner runs require `LINEAR_API_KEY`, an authenticated `gh` with push access to the fork, the fork itself, and the branch under test pushed to it; `test-deploy.sh` fails fast (exit 2) at pre-flight otherwise.
 - `FLYWHEEL_RUNNER_START_POINT` is read by `WorktreeManager.create()` as a fallback start point and is set on the slot Bridge only — production launchers keep the default `origin/main` behavior.
-- The FLY-60 hard-gate suite (1 happy path + 6 variants) regression-tests gates G1/G2/G3 and documents the wire facts that make evidence readable: the production approve path is `flywheel-comm respond` plus the Runner self-posting `:cool:` (calling Bridge `approveExecution` while the Runner is gate-blocked deadlocks), and StateStore (`${SLOT_DIR}/teamlead.db`) is a different database from CommDB (`~/.flywheel/comm/test-slot-N/comm.db`).
-- Mirror mode (FLY-153) puts slots 1–3 on one shared `#test-core-mirror` channel to reproduce prod `#geoforge3d-core` reply-discipline scenarios; Runner E2E is intentionally out of scope there and refused unless `--allow-mirror` is passed.
-- Roundtable mirror and alert mirror (FLY-529) add isolated `#test-leads-roundtable` (with exactly one auto-thread host so no duplicate threads) and `#test-flywheel-alerts` (both the Bridge `LeadAlertNotifier` and shell `lead-alert.sh` writer paths isolated, byte-compatible when the flags are off).
-- Two contracts anchor extensions: `contracts/PLAN_SOURCE_CONTRACT.md` for how QA agents obtain plan files across worktrees, and `skills/SKILL_INTERFACE.md` for implementing QA test skills.
+- The specialized suites cover the FLY-60 hard gates (one happy path plus six variants), shared-channel mirror mode (FLY-153), and FLY-529 roundtable and alert mirrors; the shared-channel modes intentionally reject Runner E2E unless their explicit escape flags are supplied, while alert overrides remain byte-compatible when disabled.
+- The framework's guides document real-Runner operation and sandbox synchronization, while `contracts/PLAN_SOURCE_CONTRACT.md` defines plan discovery across worktrees and `skills/SKILL_INTERFACE.md` defines the contract for QA test skills.
 
 ## `doc/` listing
 

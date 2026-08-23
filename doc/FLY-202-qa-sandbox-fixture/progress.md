@@ -1,14 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 5/5
-updated: 2026-08-23T03:04:32.371Z
-nextStep: "CI green on merged head; opening approve_to_ship gate on PR #85 then
-  parking (awaiting_review)"
+phaseCursor: 4/4
+updated: 2026-08-23T08:11:52.392Z
+nextStep: Commit and push the final workflow output, then submit the
+  needs_review handoff for PR 136
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/5)
-**next**: CI green on merged head; opening approve_to_ship gate on PR #85 then parking (awaiting_review)
+**phase**: implement (4/4)
+**next**: Commit and push the final workflow output, then submit the needs_review handoff for PR 136
