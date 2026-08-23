@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-23T08:10:44.603Z
-nextStep: Finalize workflow output, commit, push, and open the PR
+phaseCursor: 4/4
+updated: 2026-08-23T08:11:52.392Z
+nextStep: Commit and push the final workflow output, then submit the
+  needs_review handoff for PR 136
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (3/4)
-**next**: Finalize workflow output, commit, push, and open the PR
+**phase**: implement (4/4)
+**next**: Commit and push the final workflow output, then submit the needs_review handoff for PR 136
