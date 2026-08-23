@@ -650,10 +650,43 @@ export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
  */
 export type RunnerLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
 
-export async function probeRunnerProcessLiveness(
+export interface RunnerLivenessProbeFailure {
+	stage: "tmux-throw" | "empty-output";
+	errorType: string;
+	message: string;
+	timedOut: boolean;
+	durationMs: number;
+}
+
+export interface RunnerLivenessProbeResult {
+	liveness: RunnerLiveness;
+	failure?: RunnerLivenessProbeFailure;
+}
+
+function errorType(err: unknown): string {
+	if (err instanceof Error) return err.name || err.constructor.name;
+	return typeof err;
+}
+
+function isTimeoutError(err: unknown, message: string): boolean {
+	const candidate = err as {
+		code?: unknown;
+		killed?: unknown;
+		signal?: unknown;
+	};
+	return (
+		candidate.code === "ETIMEDOUT" ||
+		candidate.killed === true ||
+		candidate.signal === "SIGTERM" ||
+		/\btime(?:d)?\s*out\b/i.test(message)
+	);
+}
+
+export async function probeRunnerProcessLivenessDetailed(
 	tmuxWindow: string,
 	runTmux: TmuxRunner = defaultTmuxRunner,
-): Promise<RunnerLiveness> {
+): Promise<RunnerLivenessProbeResult> {
+	const startedAt = Date.now();
 	let stdout: string;
 	try {
 		({ stdout } = await runTmux([
@@ -664,22 +697,51 @@ export async function probeRunnerProcessLiveness(
 			"#{pane_dead}",
 		]));
 	} catch (err) {
-		const msg = (err as Error).message ?? String(err);
-		if (isTmuxAbsenceMessage(msg)) return "absent";
-		console.error(
-			`[tmux-lookup] pane-dead probe INDETERMINATE (fail-closed): ${msg}`,
-		);
-		return "indeterminate";
+		const message = err instanceof Error ? err.message : String(err);
+		if (isTmuxAbsenceMessage(message)) return { liveness: "absent" };
+		return {
+			liveness: "indeterminate",
+			failure: {
+				stage: "tmux-throw",
+				errorType: errorType(err),
+				message,
+				timedOut: isTimeoutError(err, message),
+				durationMs: Math.max(0, Date.now() - startedAt),
+			},
+		};
 	}
 	const panes = stdout
 		.split("\n")
-		.map((l) => l.trim())
+		.map((line) => line.trim())
 		.filter(Boolean);
-	// No panes parsed (empty output) — we learned nothing definitive.
-	if (panes.length === 0) return "indeterminate";
-	// Every pane is a remain-on-exit corpse → the Runner process is dead while
-	// the window still exists. Any live pane → alive.
-	return panes.every((p) => p === "1") ? "dead_pin" : "alive";
+	if (panes.length === 0) {
+		return {
+			liveness: "indeterminate",
+			failure: {
+				stage: "empty-output",
+				errorType: "EmptyOutput",
+				message: "tmux list-panes returned no pane states",
+				timedOut: false,
+				durationMs: Math.max(0, Date.now() - startedAt),
+			},
+		};
+	}
+	return {
+		liveness: panes.every((pane) => pane === "1") ? "dead_pin" : "alive",
+	};
+}
+
+export async function probeRunnerProcessLiveness(
+	tmuxWindow: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<RunnerLiveness> {
+	const result = await probeRunnerProcessLivenessDetailed(tmuxWindow, runTmux);
+	if (result.failure?.stage === "tmux-throw") {
+		console.error(
+			`[tmux-lookup] pane-dead probe INDETERMINATE (fail-closed): ${result.failure.message}`,
+		);
+	}
+	return result.liveness;
 }
 
 /**

@@ -8,6 +8,14 @@ export interface InboxLoopHealthTarget {
 	queue: MailboxQueue;
 }
 
+export interface LivenessProbeForensics {
+	lookup_error: number;
+	probe_throw: number;
+	probe_unclear: number;
+	pending_sentinel: number;
+	last_at: string | null;
+}
+
 const DEFAULT_INBOX_LOOP_STALL_MS = 10 * 60_000;
 
 export function inboxLoopStallMs(env: NodeJS.ProcessEnv = process.env): number {
@@ -127,6 +135,7 @@ export function buildLivenessManifest(input: {
 	deliveryLoopWired: boolean;
 	loopStallMs: number;
 	loopTargets: readonly InboxLoopHealthTarget[];
+	probeForensics?: LivenessProbeForensics;
 }) {
 	const nowMs = input.nowMs ?? Date.now();
 	const tracked = (
@@ -159,6 +168,9 @@ export function buildLivenessManifest(input: {
 		schema_version: 2 as const,
 		generated_at: new Date(nowMs).toISOString(),
 		bridge_started_at: new Date(input.bridgeStartedAtMs).toISOString(),
+		...(input.probeForensics === undefined
+			? {}
+			: { probe_forensics: { ...input.probeForensics } }),
 		components: {
 			w1_process_liveness: tracked(
 				input.trackers.liveness,

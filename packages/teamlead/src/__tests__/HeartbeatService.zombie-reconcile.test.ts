@@ -26,6 +26,11 @@ vi.mock("../bridge/tmux-lookup.js", () => {
 			},
 		})),
 		probeRunnerProcessLiveness,
+		probeRunnerProcessLivenessDetailed: vi.fn(
+			async (...args: Parameters<typeof probeRunnerProcessLiveness>) => ({
+				liveness: await probeRunnerProcessLiveness(...args),
+			}),
+		),
 		probeTmuxServer,
 	};
 });

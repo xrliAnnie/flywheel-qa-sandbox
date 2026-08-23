@@ -550,6 +550,32 @@ describe("FLY-1393 flag truth", () => {
 		};
 		expect(validateLivenessManifest(valid)).toEqual({ ok: true, errors: [] });
 
+		const withProbeForensics = {
+			...valid,
+			probe_forensics: {
+				lookup_error: 1,
+				probe_throw: 2,
+				probe_unclear: 3,
+				pending_sentinel: 4,
+				last_at: "2026-08-23T13:42:04.000Z",
+			},
+		};
+		expect(validateLivenessManifest(withProbeForensics)).toEqual({
+			ok: true,
+			errors: [],
+		});
+		const malformedProbe = structuredClone(withProbeForensics);
+		malformedProbe.probe_forensics.probe_throw = -1;
+		malformedProbe.probe_forensics.last_at = 42 as never;
+		const malformedProbeResult = validateLivenessManifest(malformedProbe);
+		expect(malformedProbeResult.ok).toBe(false);
+		expect(malformedProbeResult.errors.join("\n")).toMatch(
+			/probe_forensics.*probe_throw/,
+		);
+		expect(malformedProbeResult.errors.join("\n")).toMatch(
+			/probe_forensics.*last_at/,
+		);
+
 		const wrong = structuredClone(valid);
 		delete (wrong.components as Record<string, unknown>).w1_process_liveness;
 		wrong.components.w2_delivery_loop.wired = false;

@@ -908,9 +908,39 @@ export function validateLivenessManifest(value: unknown): FlagTruthValidation {
 	const manifest = value as {
 		schema_version?: unknown;
 		components?: Record<string, unknown>;
+		probe_forensics?: unknown;
 	};
 	if (manifest.schema_version !== 2) {
 		errors.push("liveness manifest schema_version must be 2");
+	}
+	if (manifest.probe_forensics !== undefined) {
+		if (
+			!manifest.probe_forensics ||
+			typeof manifest.probe_forensics !== "object" ||
+			Array.isArray(manifest.probe_forensics)
+		) {
+			errors.push("liveness manifest probe_forensics must be an object");
+		} else {
+			const probe = manifest.probe_forensics as Record<string, unknown>;
+			for (const field of [
+				"lookup_error",
+				"probe_throw",
+				"probe_unclear",
+				"pending_sentinel",
+			] as const) {
+				const count = probe[field];
+				if (!Number.isSafeInteger(count) || (count as number) < 0) {
+					errors.push(
+						`liveness manifest probe_forensics ${field} must be a non-negative safe integer`,
+					);
+				}
+			}
+			if (probe.last_at !== null && typeof probe.last_at !== "string") {
+				errors.push(
+					"liveness manifest probe_forensics last_at must be an ISO string or null",
+				);
+			}
+		}
 	}
 	for (const row of REQUIRED_LIVENESS_ROWS) {
 		const component = manifest.components?.[row];

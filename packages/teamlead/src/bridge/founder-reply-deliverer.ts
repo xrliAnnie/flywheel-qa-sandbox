@@ -181,7 +181,10 @@ export interface FounderReplyDeliverDeps {
 	store: StateStore;
 	fetchImpl?: typeof fetch;
 	cursorStore?: InboundCursorStore;
-	commDbFactory?: (path: string) => CommDB;
+	commDbLeaseFactory?: (path: string) => {
+		db: CommDB;
+		release(): void;
+	};
 	/** FLY-1099 §7.1: bounded retry + dead-letter (absent → legacy behavior). */
 	retryLedger?: FounderReplyRetryLedger;
 	/**
@@ -293,7 +296,10 @@ export async function emitFounderReplyDeliveryForThread(
 		store,
 		fetchImpl = fetch,
 		cursorStore,
-		commDbFactory = (p) => new CommDB(p, false),
+		commDbLeaseFactory = (path) => {
+			const db = new CommDB(path, false);
+			return { db, release: () => db.close() };
+		},
 	} = deps;
 	// ── (A) READ THE THREAD ONCE ──
 	const cursor = cursorStore?.load(ctx.threadId);
@@ -389,7 +395,8 @@ export async function emitFounderReplyDeliveryForThread(
 	// Discord returns newest-first; process oldest-first.
 	messages.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
 
-	const db = commDbFactory(ctx.commDbPath);
+	const lease = commDbLeaseFactory(ctx.commDbPath);
+	const { db } = lease;
 	try {
 		// Snapshot of still-pending qids (catch a Lead that just relayed).
 		const pendingNow = new Set(
@@ -576,7 +583,7 @@ export async function emitFounderReplyDeliveryForThread(
 					: "noop",
 		};
 	} finally {
-		db.close();
+		lease.release();
 	}
 }
 

@@ -143,6 +143,14 @@ CREATE INDEX IF NOT EXISTS mailbox_claim_bridge
 CREATE INDEX IF NOT EXISTS mailbox_bridge_reclaim
   ON mailbox(from_agent, priority, seq)
   WHERE carrier = 'inbox' AND state = 'LEASED' AND recipient_kind = 'bridge';
+CREATE INDEX IF NOT EXISTS mailbox_legacy_adopt
+  ON mailbox(to_agent)
+  WHERE carrier = 'inbox' AND type = 'instruction' AND batch_id IS NULL
+    AND recipient_kind <> 'lead';
+CREATE INDEX IF NOT EXISTS mailbox_questions_by_recipient
+  ON mailbox(to_agent, created_at) WHERE type = 'question';
+CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
+  ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response
   ON mailbox(ref_id) WHERE type = 'response';
 CREATE INDEX IF NOT EXISTS mailbox_archive_acked

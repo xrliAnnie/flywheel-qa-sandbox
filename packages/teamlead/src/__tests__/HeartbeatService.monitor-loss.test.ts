@@ -15,6 +15,11 @@ vi.mock("../bridge/tmux-lookup.js", () => {
 	// existing `isTmuxWindowAlive` mock by DERIVING the pane probe from it
 	// (true → "alive", false → "absent"), so the existing test bodies are unchanged.
 	const isTmuxWindowAlive = vi.fn(async () => true);
+	const probeRunnerProcessLivenessDetailed = vi.fn(async () => ({
+		liveness: (await isTmuxWindowAlive("geoforge3d:@0"))
+			? ("alive" as const)
+			: ("absent" as const),
+	}));
 	return {
 		getTmuxTargetFromCommDb: vi.fn(() => ({
 			tmuxWindow: "geoforge3d:@0",
@@ -25,6 +30,7 @@ vi.mock("../bridge/tmux-lookup.js", () => {
 			kind: "found",
 			target: { tmuxWindow: "geoforge3d:@0", sessionName: "geoforge3d" },
 		})),
+		probeRunnerProcessLivenessDetailed,
 		probeRunnerProcessLiveness: vi.fn(async () =>
 			(await isTmuxWindowAlive("geoforge3d:@0")) ? "alive" : "absent",
 		),
@@ -44,6 +50,7 @@ import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
+	probeRunnerProcessLivenessDetailed,
 } from "../bridge/tmux-lookup.js";
 import { HeartbeatService } from "../HeartbeatService.js";
 import type { Session } from "../StateStore.js";
@@ -53,6 +60,7 @@ const mockedFallback = vi.mocked(applyQuarantineFallback);
 const mockedAlive = vi.mocked(isTmuxWindowAlive);
 const mockedTarget = vi.mocked(getTmuxTargetFromCommDb);
 const mockedLookup = vi.mocked(lookupTmuxTarget);
+const mockedDetailedProbe = vi.mocked(probeRunnerProcessLivenessDetailed);
 
 function sess(overrides: Partial<Session> = {}): Session {
 	return {
@@ -133,6 +141,11 @@ beforeEach(() => {
 		kind: "found",
 		target: { tmuxWindow: "geoforge3d:@0", sessionName: "geoforge3d" },
 	});
+	mockedDetailedProbe.mockReset().mockImplementation(async () => ({
+		liveness: (await mockedAlive("geoforge3d:@0"))
+			? ("alive" as const)
+			: ("absent" as const),
+	}));
 });
 
 describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
@@ -425,5 +438,126 @@ describe("HeartbeatService re-adopt (FLY-623 readopt ON, default)", () => {
 		service.clearReconnecting("exec-1");
 		expect(service.isReconnecting("exec-1")).toBe(false);
 		expect(notifier.clearReconnectStamp).not.toHaveBeenCalled();
+	});
+
+	it("exposes zero-filled probe-forensics counters before the first failure", () => {
+		expect(service.probeForensicsSnapshot()).toEqual({
+			lookup_error: 0,
+			probe_throw: 0,
+			probe_unclear: 0,
+			pending_sentinel: 0,
+			last_at: null,
+		});
+	});
+
+	it("records lookup errors without changing the indeterminate verdict", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		mockedLookup.mockReturnValue({
+			kind: "error",
+			error: "database is locked",
+		});
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+
+		expect(service.probeForensicsSnapshot()).toMatchObject({
+			lookup_error: 1,
+			probe_throw: 0,
+			probe_unclear: 0,
+			pending_sentinel: 0,
+			last_at: expect.any(String),
+		});
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining('[fly2008-probe] {"source":"lookup_error"'),
+		);
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		warn.mockRestore();
+	});
+
+	it("separates tmux throws from unclear probe output", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		store.getOrphanSessions.mockReturnValue([sess()]);
+		mockedDetailedProbe
+			.mockResolvedValueOnce({
+				liveness: "indeterminate",
+				failure: {
+					stage: "tmux-throw",
+					errorType: "Error",
+					message: "timeout",
+					timedOut: true,
+					durationMs: 5_001,
+				},
+			})
+			.mockResolvedValueOnce({
+				liveness: "indeterminate",
+				failure: {
+					stage: "empty-output",
+					errorType: "EmptyOutput",
+					message: "empty",
+					timedOut: false,
+					durationMs: 3,
+				},
+			});
+
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+
+		expect(service.probeForensicsSnapshot()).toMatchObject({
+			probe_throw: 1,
+			probe_unclear: 1,
+		});
+		expect(store.updateHeartbeat).not.toHaveBeenCalled();
+		vi.mocked(console.warn).mockRestore();
+	});
+
+	it("keeps pending-target absence, timeout, and success verdicts while counting each probe", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		mockedLookup.mockReturnValue({
+			kind: "found",
+			target: { tmuxWindow: "geoforge3d:pending", sessionName: "geoforge3d" },
+		});
+		mockedDetailedProbe
+			.mockResolvedValueOnce({ liveness: "absent" })
+			.mockResolvedValueOnce({
+				liveness: "indeterminate",
+				failure: {
+					stage: "tmux-throw",
+					errorType: "Error",
+					message: "timeout",
+					timedOut: true,
+					durationMs: 5_001,
+				},
+			})
+			.mockResolvedValueOnce({ liveness: "alive" });
+		store.getOrphanSessions.mockReturnValue([sess()]);
+
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+
+		expect(service.probeForensicsSnapshot()).toMatchObject({
+			pending_sentinel: 3,
+			probe_throw: 1,
+			probe_unclear: 0,
+		});
+		expect(store.updateHeartbeat).toHaveBeenCalledWith("exec-1");
+		expect(store.updateHeartbeat).toHaveBeenCalledTimes(1);
+		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
+			1,
+			"geoforge3d:pending",
+		);
+		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
+			2,
+			"geoforge3d:pending",
+		);
+		expect(mockedDetailedProbe).toHaveBeenNthCalledWith(
+			3,
+			"geoforge3d:pending",
+		);
+		expect(warn.mock.calls.flat().join("\n")).toContain(
+			'"source":"probe_throw"',
+		);
+		expect(warn.mock.calls.flat().join("\n")).toContain('"pendingTarget":true');
+		warn.mockRestore();
 	});
 });

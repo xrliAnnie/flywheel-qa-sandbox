@@ -207,6 +207,8 @@ export interface GatePollerConfig {
 	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
 	founderReplyDeliverEveryNTicks?: number;
+	/** FLY-2008: rotating budget for pure ingress-scan threads (question lane excluded). */
+	founderReplyScanBudget?: number;
 	/** FLY-1448: durable decision convergence on this existing cadence. */
 	onFounderDecisionConvergenceTick?: () => void | Promise<void>;
 	/** Part B thread-read cursor store (default in-memory). */
@@ -302,12 +304,17 @@ export interface GatePollerConfig {
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
 export const DEFAULT_LEAD_RECONCILE_EVERY_N_TICKS = 200;
 export const DEFAULT_RUNNER_QUOTA_SCAN_EVERY_N_TICKS = 20;
+export const FOUNDER_REPLY_SCAN_BUDGET_PER_PASS = 25;
 // FLY-307 B: per-lead circuit breaker defaults.
 const DEFAULT_CIRCUIT_THRESHOLD = 3;
 const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
 const FOUNDER_REPLY_RETRY_MAX = 10;
 // FLY-307 A: backoff before retrying a failed stale-gate eviction write.
 const DEFAULT_EVICTION_RETRY_TICKS = 20;
+const yieldToEventLoop = (): Promise<void> =>
+	new Promise((resolve) => setImmediate(resolve));
+const compareThreadIds = (left: string, right: string): number =>
+	left < right ? -1 : left > right ? 1 : 0;
 
 /** FLY-725: parse a strictly-positive int env, else fall back. */
 function positiveIntEnv(raw: string | undefined, fallback: number): number {
@@ -757,6 +764,7 @@ export class GatePoller {
 					// FLY-307 B: while a lead's circuit is open, skip question relay for
 					// that lead. `tickCount` still advances once per poll (above).
 					if (this.circuitOpen(leadKey)) {
+						await yieldToEventLoop();
 						continue;
 					}
 					const dbPath = projectDbPath;
@@ -918,6 +926,7 @@ export class GatePoller {
 						// path, recover repairs the underlying store.
 						this.maybeRecoverStore(err);
 					}
+					await yieldToEventLoop();
 				}
 			}
 
@@ -938,6 +947,7 @@ export class GatePoller {
 					// getChatThreadByIssue / appendLeadEvent) — self-heal on corruption.
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 
 			// FLY-1099 §4.3: deferred-approval rebind pass — same sub-cadence,
@@ -959,6 +969,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 
 			// FLY-1099 §3.3 + §8: founder action-ledger drain. Already-committed
@@ -976,6 +987,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 				try {
 					await this.withSpan("gate-poller.founder-decision-convergence", () =>
 						this.config.onFounderDecisionConvergenceTick?.(),
@@ -987,6 +999,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 				// FLY-1099 §7.2: retained unreachable-runner detector tick.
 				try {
 					await this.withSpan("gate-poller.founder-reply-unreachable", () =>
@@ -999,6 +1012,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 
 			// FLY-1099 §5: zombie gate hygiene on the patrol cadence — Z1 retires
@@ -1016,6 +1030,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 			// FLY-799: founder ✅-reaction ship approval on the same sub-cadence
 			// (piggyback; zero new timer). Only runs when the reaction callback is
@@ -1035,6 +1050,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 
 			// FLY-799 Part B: re-wake sessions stranded in approved_to_ship (a
@@ -1051,6 +1067,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 
 			// FLY-945 Fix D: external-merge convergence sweeper on the patrol
@@ -1072,6 +1089,7 @@ export class GatePoller {
 					);
 					this.maybeRecoverStore(err);
 				}
+				await yieldToEventLoop();
 			}
 		} finally {
 			this.polling = false;
@@ -1597,6 +1615,7 @@ export class GatePoller {
 	 * Without it, every sub-cadence would re-scan from the oldest pending question.
 	 */
 	private readonly defaultReplyCursor = new InMemoryInboundCursorStore();
+	private founderReplyScanCursor: string | null = null;
 	private readonly founderNotifyDone = new Set<string>();
 	/** qid → transient-failure retry state (TIME budget, not a fast tick count). */
 	private readonly founderNotifyRetry = new Map<
@@ -2104,6 +2123,13 @@ export class GatePoller {
 		);
 	}
 
+	private founderReplyScanBudget(): number {
+		const configured = this.config.founderReplyScanBudget;
+		return Number.isSafeInteger(configured) && (configured as number) >= 0
+			? (configured as number)
+			: FOUNDER_REPLY_SCAN_BUDGET_PER_PASS;
+	}
+
 	/**
 	 * Per (project, lead): take the past-grace pending questions, group them by
 	 * issue thread, and let `emitFounderReplyDeliveryForThread` read each thread
@@ -2120,86 +2146,77 @@ export class GatePoller {
 		// failed on a prior pass BEFORE scanning (the store may have self-healed).
 		this.retryPendingDeadLetters();
 
-		for (const project of this.config.projects) {
-			for (const lead of project.leads) {
-				const botToken = lead.botToken ?? this.config.discordBotToken;
-				if (!botToken) continue;
+		const sessions = this.config.store.listNonTerminalSessions();
+		const resources = new Map<
+			string,
+			{ readonlyDb: CommDB; writerDb: CommDB }
+		>();
+		const tasks: Array<{
+			ctx: FounderReplyThreadCtx;
+			questions: PendingQuestionForThread[];
+			writerDb: CommDB;
+			deliverAmbiguousToLead: NonNullable<
+				FounderReplyDeliverDeps["deliverAmbiguousToLead"]
+			>;
+		}> = [];
+		try {
+			for (const project of this.config.projects) {
 				const dbPath = defaultGetCommDbPath(project.projectName);
-
-				let pending: PendingQuestion[];
+				let readonlyDb: CommDB;
+				let writerDb: CommDB;
 				try {
-					const db = CommDB.openReadonly(dbPath);
+					readonlyDb = CommDB.openReadonly(dbPath);
 					try {
-						pending = db.getPendingQuestions(lead.agentId) as PendingQuestion[];
-					} finally {
-						db.close();
+						writerDb = new CommDB(dbPath, false);
+					} catch {
+						readonlyDb.close();
+						continue;
 					}
 				} catch {
 					continue; // CommDB not present yet
 				}
+				resources.set(project.projectName, { readonlyDb, writerDb });
 
-				// Build every live issue thread first, then attach pending questions as
-				// Lead context. Question age never gates founder ingress in v2.
-				const byThread = new Map<
-					string,
-					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
-				>();
-				for (const session of this.config.store.listNonTerminalSessions()) {
-					if (session.project_name !== project.projectName) continue;
+				for (const lead of project.leads) {
+					const botToken = lead.botToken ?? this.config.discordBotToken;
+					if (!botToken) {
+						await yieldToEventLoop();
+						continue;
+					}
+
+					let pending: PendingQuestion[];
 					try {
-						if (!matchesLead(session, lead.agentId, this.config.projects))
-							continue;
+						pending = readonlyDb.getPendingQuestions(
+							lead.agentId,
+						) as PendingQuestion[];
 					} catch {
-						continue;
+						await yieldToEventLoop();
+						continue; // CommDB not present yet
 					}
-					const thread = this.config.store.getChatThreadByIssue(
-						session.issue_id,
-						lead.chatChannel,
-					);
-					if (!thread?.thread_id || byThread.has(thread.thread_id)) continue;
-					byThread.set(thread.thread_id, {
-						ctx: {
-							issueId: session.issue_id,
-							projectName: project.projectName,
-							threadId: thread.thread_id,
-							botToken,
-							ownerUserId: ownerUserId as string,
-							graceMs,
-							commDbPath: dbPath,
-							leadId: lead.agentId,
-						},
-						questions: [],
-					});
-				}
-				for (const q of pending) {
-					// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
-					// is NEVER a founder-reply binding candidate — it neither absorbs
-					// a founder "ship" nor inflates the ambiguity denominator. This is
-					// the ONLY place reports are special-cased: relayToLead, the
-					// pending CLI, and liveness all keep treating them as questions.
-					if (q.kind === "report") continue;
-					// FLY-1314: cross-family design/code review gates are reviewer
-					// transport, never founder-answerable. Leaving them in this set
-					// makes a one-letter founder reply ambiguous with the actual ship
-					// gate. This exclusion deliberately does not alter relay/pending/
-					// liveness semantics for review gates.
-					if (isReviewGateCheckpoint(q.checkpoint)) {
-						continue;
-					}
-					const createdMs = parseSqliteUtcMs(q.created_at);
-					if (createdMs === null) continue;
-					const session = this.config.store.getSession(q.from_agent);
-					if (!session) continue;
-					// FLY-892 (converge): group founder replies by the single issue
-					// thread the from_agent session shares.
-					const thread = this.config.store.getChatThreadByIssue(
-						session.issue_id,
-						lead.chatChannel,
-					);
-					if (!thread?.thread_id) continue;
-					let group = byThread.get(thread.thread_id);
-					if (!group) {
-						group = {
+
+					// Build every live issue thread first, then attach pending questions as
+					// Lead context. Question age never gates founder ingress in v2.
+					const byThread = new Map<
+						string,
+						{
+							ctx: FounderReplyThreadCtx;
+							questions: PendingQuestionForThread[];
+						}
+					>();
+					for (const session of sessions) {
+						if (session.project_name !== project.projectName) continue;
+						try {
+							if (!matchesLead(session, lead.agentId, this.config.projects))
+								continue;
+						} catch {
+							continue;
+						}
+						const thread = this.config.store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						if (!thread?.thread_id || byThread.has(thread.thread_id)) continue;
+						byThread.set(thread.thread_id, {
 							ctx: {
 								issueId: session.issue_id,
 								projectName: project.projectName,
@@ -2211,50 +2228,147 @@ export class GatePoller {
 								leadId: lead.agentId,
 							},
 							questions: [],
-						};
-						byThread.set(thread.thread_id, group);
-					}
-					group.questions.push({
-						questionId: q.id,
-						checkpoint: q.checkpoint,
-						executionId: q.from_agent,
-						createdAtMs: createdMs,
-						checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
-					});
-				}
-
-				const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
-					lead,
-					project.projectName,
-				);
-				for (const { ctx, questions } of byThread.values()) {
-					// Founder ingress scans every live issue thread. Pending questions
-					// remain context for the Lead, never a Bridge-side admission gate.
-					try {
-						await emitFounderReplyDeliveryForThread(ctx, questions, {
-							store: this.config.store,
-							fetchImpl: this.config.fetchImpl,
-							cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
-							deliverAmbiguousToLead,
-							tryFounderShipApproval: this.config.tryFounderShipApproval,
-							readCurrentBinding: this.config.readCurrentBinding,
-							ensureDecisionConvergence: (input) => {
-								this.config.store.ensureFounderDecisionConvergence(input);
-							},
-							classifyDecisionConvergence: (input) => {
-								this.config.store.classifyFounderDecisionConvergence(input);
-							},
-							// FLY-1099 §7.1: bounded retry + dead-letter.
-							retryLedger: this.founderReplyRetryLedger(),
 						});
-					} catch (err) {
-						console.warn(
-							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
-							err instanceof Error ? err.message : String(err),
-						);
-						// FLY-639 (Codex code R1 HIGH): per-thread founder-reply delivery touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / flush / recordDeliveryFailure) — self-heal on corruption.
-						this.maybeRecoverStore(err);
 					}
+					for (const q of pending) {
+						// FLY-1041 Chunk 9 (Fix D): a runner's `ask --report` status report
+						// is NEVER a founder-reply binding candidate — it neither absorbs
+						// a founder "ship" nor inflates the ambiguity denominator. This is
+						// the ONLY place reports are special-cased: relayToLead, the
+						// pending CLI, and liveness all keep treating them as questions.
+						if (q.kind === "report") continue;
+						// FLY-1314: cross-family design/code review gates are reviewer
+						// transport, never founder-answerable. Leaving them in this set
+						// makes a one-letter founder reply ambiguous with the actual ship
+						// gate. This exclusion deliberately does not alter relay/pending/
+						// liveness semantics for review gates.
+						if (isReviewGateCheckpoint(q.checkpoint)) {
+							continue;
+						}
+						const createdMs = parseSqliteUtcMs(q.created_at);
+						if (createdMs === null) continue;
+						const session = this.config.store.getSession(q.from_agent);
+						if (!session) continue;
+						// FLY-892 (converge): group founder replies by the single issue
+						// thread the from_agent session shares.
+						const thread = this.config.store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						if (!thread?.thread_id) continue;
+						let group = byThread.get(thread.thread_id);
+						if (!group) {
+							group = {
+								ctx: {
+									issueId: session.issue_id,
+									projectName: project.projectName,
+									threadId: thread.thread_id,
+									botToken,
+									ownerUserId: ownerUserId as string,
+									graceMs,
+									commDbPath: dbPath,
+									leadId: lead.agentId,
+								},
+								questions: [],
+							};
+							byThread.set(thread.thread_id, group);
+						}
+						group.questions.push({
+							questionId: q.id,
+							checkpoint: q.checkpoint,
+							executionId: q.from_agent,
+							createdAtMs: createdMs,
+							checkpointGraceMs: this.checkpointGraceMsFor(q.checkpoint),
+						});
+					}
+
+					const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
+						lead,
+						project.projectName,
+					);
+					for (const { ctx, questions } of byThread.values()) {
+						tasks.push({
+							ctx,
+							questions,
+							writerDb,
+							deliverAmbiguousToLead,
+						});
+					}
+					await yieldToEventLoop();
+				}
+			}
+
+			tasks.sort((left, right) =>
+				compareThreadIds(left.ctx.threadId, right.ctx.threadId),
+			);
+			const questioned = tasks.filter((task) => task.questions.length > 0);
+			const scan = tasks.filter((task) => task.questions.length === 0);
+			const scanBudget = Math.min(this.founderReplyScanBudget(), scan.length);
+			const firstAfterCursor =
+				this.founderReplyScanCursor === null
+					? 0
+					: scan.findIndex(
+							(task) =>
+								compareThreadIds(
+									task.ctx.threadId,
+									this.founderReplyScanCursor!,
+								) > 0,
+						);
+			const start = firstAfterCursor < 0 ? 0 : firstAfterCursor;
+			const selectedScan = Array.from(
+				{ length: scanBudget },
+				(_, index) => scan[(start + index) % scan.length]!,
+			);
+
+			for (const task of [
+				...questioned.map((value) => ({ value, advancesScanCursor: false })),
+				...selectedScan.map((value) => ({ value, advancesScanCursor: true })),
+			]) {
+				const { ctx, questions, writerDb, deliverAmbiguousToLead } = task.value;
+				try {
+					await emitFounderReplyDeliveryForThread(ctx, questions, {
+						store: this.config.store,
+						fetchImpl: this.config.fetchImpl,
+						cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
+						commDbLeaseFactory: () => ({ db: writerDb, release: () => {} }),
+						deliverAmbiguousToLead,
+						tryFounderShipApproval: this.config.tryFounderShipApproval,
+						readCurrentBinding: this.config.readCurrentBinding,
+						ensureDecisionConvergence: (input) => {
+							this.config.store.ensureFounderDecisionConvergence(input);
+						},
+						classifyDecisionConvergence: (input) => {
+							this.config.store.classifyFounderDecisionConvergence(input);
+						},
+						retryLedger: this.founderReplyRetryLedger(),
+					});
+				} catch (err) {
+					console.warn(
+						`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				} finally {
+					if (task.advancesScanCursor) {
+						this.founderReplyScanCursor = ctx.threadId;
+					}
+					await yieldToEventLoop();
+				}
+			}
+		} finally {
+			for (const { readonlyDb, writerDb } of resources.values()) {
+				try {
+					writerDb.close();
+				} catch (err) {
+					console.warn("[GatePoller] founder-reply writer close failed:", err);
+				}
+				try {
+					readonlyDb.close();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-reply readonly close failed:",
+						err,
+					);
 				}
 			}
 		}

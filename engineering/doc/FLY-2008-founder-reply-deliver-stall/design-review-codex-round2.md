@@ -1,0 +1,33 @@
+# FLY-2008 plan.md — Codex Design Review (Round 2)
+
+Date: 2026-08-23
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+Round 2 correctly moves tmux failure attribution to the layer that still has the error, specifies the missing health-manifest composition, and resolves the scan-cursor and pass-boundary ambiguities. The A-side remains ready to implement, with correct claim semantics, index design, governance, and acceptance thresholds. Changes are still required because the new `:pending` analysis references a different lookup API than HeartbeatService uses, and the proposed borrowed-DB interface omits transitive methods used by live founder-review and ship-approval paths.
+
+## What's Good (Keep)
+
+- Keep the detailed sibling API for runner-process liveness. Returning the existing four-state result plus optional `tmux-throw` or `empty-output` evidence at the lower layer resolves the original observability blocker; making the legacy API a thin projection preserves existing callers and behavior.
+- Keep the explicit `probeForensicsSnapshot()` shape, late-bound plugin holder, additive `probe_forensics` manifest field, optional-field validation, and no-schema-version-bump decision. Those choices fit the existing `livenessHealthProvider` composition pattern.
+- B1 now has precise, fair cursor semantics: a strict upper-bound lookup survives deletion of the prior cursor, wrap occurs only at the end, question-bound work neither consumes nor advances the pure-scan budget, and restart remains an idempotent rescan.
+- The revised wording correctly acknowledges that only the background scan lane is bounded while the question lane intentionally remains unlimited to preserve its delivery contract. Reporting questioned-thread count with pass duration makes that tradeoff observable.
+- B2's pass-owned writer lifetime, per-call borrowed lifetime, and outer `try/finally` are the right ownership model. Hoisting read-only opens and the non-terminal session snapshot remains semantically safe under the current serial pass.
+- A1 remains exactly equivalent: the mutually exclusive state branches each produce their `(priority, seq)` minimum, their global minimum matches the old union query, and the unchanged fenced update preserves races. The three partial indexes and `ORDER BY +seq` rewrite remain valid under SQLite's bound-parameter planning behavior.
+- No new environment variable or feature flag is introduced. Acceptance still matches `event-loop-attribution.ts`: 30-second windows, episodes at max delay ≥1,000 ms, and >500 ms spans used only for correlation.
+
+## Issues & Recommendations
+
+1. **BLOCKER — `lookupTmuxTarget` does not have the proposed `unresolved` path.** The plan cites `tmux-lookup.ts:181`, but that line is in the separate `resolveCmuxAttachTarget` function. The function HeartbeatService actually calls, `lookupTmuxTarget`, has the closed union `found | gone | error` and returns `found` for every non-empty `tmux_window`, including `runner-flywheel:pending`. Therefore no `lookup.target` TypeError occurs: the pending string is passed to `probeRunnerProcessLiveness`, and today's result depends on the real pane probe (for example, a tmux absence becomes `dead`, while a timeout becomes `indeterminate`). An `if (lookup.kind === "unresolved")` implementation will not type-check unless the lookup contract is broadened, which would be a new cross-call-site behavior change. **Suggested fix:** record `pending_sentinel` orthogonally when a `found` target ends in `:pending`, then continue through the same detailed process probe and unchanged verdict mapping. Characterize and preserve pending plus injected `absent`, `indeterminate`, and successful-pane outcomes; do not add an unresolved return/throw branch. Remove `invalid_target` from this path unless separately scoped. Also include the existing optional `runTmux` argument in the detailed API and forward it through the legacy wrapper so lower-layer tests exercise the real implementation seam.
+
+2. **MAJOR — the proposed `FounderReplyCommDb` Pick is too narrow for the deliverer's transitive call graph.** The deliverer directly calls `getPendingQuestions` and `ingestDiscordChat`, but it also passes the DB to `writeTrustedFounderReviewResponse` and `tryFounderShipApproval`. The former currently requires concrete `CommDB` and calls `getMessageById`, `getQuestionsByCheckpoint`, `getFounderReviewFamily`, and `insertFounderReviewResponseIfGateOpen`; the latter consumes the broader structural `GateResponseDb`. A facade containing only the three listed methods will fail type-checking or omit live runtime behavior. **Suggested fix:** preferably make the seam a lease `{ db: CommDB; release(): void }`, so the default lease owns and closes a real connection while the pass lease borrows the shared real connection with a no-op release; the outer pass owner still closes it once. Alternatively, define a complete structural intersection and propagate it through every helper/callback signature. Add shared-connection tests that execute founder-review and ship-gate branches, not only pure ingress scans.
+
+3. **MEDIUM — the stated `/health` route test stops at the manifest builder.** Section 5.3 currently proves snapshot → `buildLivenessManifest` → validator, but it does not exercise the late-bound holder or the HTTP response, despite Section 4.2 calling it a route test. That leaves the new production composition edge unguarded. **Suggested fix:** extend the existing late-bound `/health` test in `packages/teamlead/src/__tests__/bridge.test.ts` so its provider calls the real manifest builder and asserts the returned `liveness.probe_forensics` before and after the HeartbeatService reference is populated. Keep separate builder/validator tests for field shape and optional absence.
+
+4. **MINOR — several summary and risk statements still describe the superseded design.** Sections 0 and 1 and the Mermaid node still locate the evidence loss in the HeartbeatService catch; Section 1 still promises an absolutely bounded pass; the source table still describes pending as an indeterminate return on this path; and the logging-risk row estimates volume from nine deduplicated alerts even though pending is now an orthogonal, undeduplicated probe classification. These contradictions can steer implementation back toward the rejected design and understate log volume. **Suggested fix:** update those passages to name the detailed tmux-probe seam, say scan-lane-bounded consistently, describe pending as a target classification whose existing probe verdict is preserved, and size logging from probe cadence × affected sessions rather than alert count.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

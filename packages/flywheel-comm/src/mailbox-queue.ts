@@ -705,14 +705,20 @@ export class MailboxQueue {
 	}
 
 	countDeliverable(toAgent?: string): number {
-		const row = this.db
-			.prepare(
-				`SELECT COUNT(*) AS count FROM mailbox
-				  WHERE carrier = 'inbox' AND state = 'QUEUED'
-				    AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-				    AND (? IS NULL OR to_agent = ?)`,
-			)
-			.get(toAgent ?? null, toAgent ?? null) as { count: number };
+		const duePredicate = `carrier = 'inbox' AND state = 'QUEUED'
+			AND (next_retry_at IS NULL OR next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))`;
+		const row =
+			toAgent === undefined
+				? (this.db
+						.prepare(
+							`SELECT COUNT(*) AS count FROM mailbox WHERE ${duePredicate}`,
+						)
+						.get() as { count: number })
+				: (this.db
+						.prepare(
+							`SELECT COUNT(*) AS count FROM mailbox WHERE ${duePredicate} AND to_agent = ?`,
+						)
+						.get(toAgent) as { count: number });
 		return row.count;
 	}
 
@@ -1298,7 +1304,7 @@ export class MailboxQueue {
 						 WHERE recipient_kind = 'lead' AND to_agent = ? AND carrier = 'inbox'
 						   AND state = 'LEASED' AND claimed_by = 'legacy-push'
 						   AND batch_id IS NULL AND claim_expires_at <= ?
-						 ORDER BY seq LIMIT ?`,
+						 ORDER BY +seq LIMIT ?`,
 					)
 					.all(input.toAgent, input.now, input.maxRows) as Array<{
 					id: string;
@@ -2240,20 +2246,32 @@ export class MailboxQueue {
 		return this.db
 			.transaction(() => {
 				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
-				const row = this.db
+				const queued = this.db
 					.prepare(
 						`SELECT * FROM mailbox
 						  WHERE recipient_kind = 'bridge' AND carrier = 'inbox'
-						    AND from_agent = ? AND msg_class = 'protocol'
+						    AND from_agent = ? AND msg_class = 'protocol' AND state = 'QUEUED'
 						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
-						    AND (state = 'QUEUED' OR
-						      (state = 'LEASED' AND
-						       (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at < ?)))
 						  ORDER BY priority, seq LIMIT 1`,
 					)
-					.get(input.fromAgent, input.now, input.ownerEpoch, input.now) as
+					.get(input.fromAgent, input.now) as MailboxRow | undefined;
+				const reclaimable = this.db
+					.prepare(
+						`SELECT * FROM mailbox
+						  WHERE recipient_kind = 'bridge' AND carrier = 'inbox'
+						    AND from_agent = ? AND msg_class = 'protocol' AND state = 'LEASED'
+						    AND (claimed_by IS NULL OR claimed_by = ? OR claim_expires_at < ?)
+						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
+						  ORDER BY priority, seq LIMIT 1`,
+					)
+					.get(input.fromAgent, input.ownerEpoch, input.now, input.now) as
 					| MailboxRow
 					| undefined;
+				const row = [queued, reclaimable]
+					.filter(
+						(candidate): candidate is MailboxRow => candidate !== undefined,
+					)
+					.sort((a, b) => a.priority - b.priority || a.seq - b.seq)[0];
 				if (!row) return undefined;
 				const updated = this.db
 					.prepare(

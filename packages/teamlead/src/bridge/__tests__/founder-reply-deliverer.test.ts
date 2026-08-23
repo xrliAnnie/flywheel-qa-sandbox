@@ -555,6 +555,8 @@ describe("FLY-1392 v2 founder ingress", () => {
 			{ checkpoint: "approve_to_ship" },
 		);
 		db.close();
+		const borrowedDb = new CommDB(dbPath, false);
+		const release = vi.fn();
 		const handoff = vi.fn(async () => true);
 		const tryFounderShipApproval = vi.fn(async () => ({
 			bound: [{ questionId: shipQuestionId, decision: "approve" as const }],
@@ -606,6 +608,7 @@ describe("FLY-1392 v2 founder ingress", () => {
 					},
 				]),
 				cursorStore: cursor,
+				commDbLeaseFactory: () => ({ db: borrowedDb, release }),
 				deliverAmbiguousToLead: handoff,
 				tryFounderShipApproval,
 				readCurrentBinding,
@@ -618,6 +621,10 @@ describe("FLY-1392 v2 founder ingress", () => {
 			shipGates: [{ questionId: shipQuestionId }],
 			replyToCard: true,
 		});
+		expect(tryFounderShipApproval.mock.calls[0]?.[0].db).toBe(borrowedDb);
+		expect(release).toHaveBeenCalledOnce();
+		expect(borrowedDb.getPendingQuestions("test-lead")).toHaveLength(2);
+		borrowedDb.close();
 		expect(handoff).not.toHaveBeenCalled();
 	});
 
@@ -720,6 +727,8 @@ describe("FLY-1392 v2 founder ingress", () => {
 			const db = new CommDB(dbPath);
 			const questionId = insertFounderReviewQuestion(db, "review-1", 1);
 			db.close();
+			const borrowedDb = new CommDB(dbPath, false);
+			const release = vi.fn();
 			const messageId = snowflakeAt(Date.now() - 10_000);
 			const reactToFounderMessage = vi.fn(async () => true);
 
@@ -749,18 +758,19 @@ describe("FLY-1392 v2 founder ingress", () => {
 						},
 					]),
 					cursorStore: cursor,
+					commDbLeaseFactory: () => ({ db: borrowedDb, release }),
 					deliverAmbiguousToLead: vi.fn(async () => true),
 					reactToFounderMessage,
 				},
 			);
 
 			expect(outcome.result).toBe("advanced");
+			expect(release).toHaveBeenCalledOnce();
 			expect(reactToFounderMessage).toHaveBeenCalledWith(messageId);
-			const verify = new CommDB(dbPath);
 			expect(
-				JSON.parse(verify.getResponse(questionId)?.content ?? "{}"),
+				JSON.parse(borrowedDb.getResponse(questionId)?.content ?? "{}"),
 			).toMatchObject({ passed: true });
-			verify.close();
+			borrowedDb.close();
 		},
 	);
 

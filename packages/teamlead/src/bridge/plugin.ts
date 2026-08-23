@@ -5146,6 +5146,7 @@ export async function startBridge(
 		return { accepted: receipt.queued };
 	};
 	const deliveryLoopWired = true;
+	const heartbeatServiceRef: { current?: HeartbeatService } = {};
 	const livenessHealthProvider: { current?: () => unknown } = {
 		current: () =>
 			buildLivenessManifest({
@@ -5155,6 +5156,12 @@ export async function startBridge(
 				deliveryLoopWired,
 				loopStallMs: inboxLoopStallMs(process.env),
 				loopTargets: leadInboxRuntime.healthTargets(),
+				...(heartbeatServiceRef.current
+					? {
+							probeForensics:
+								heartbeatServiceRef.current.probeForensicsSnapshot(),
+						}
+					: {}),
 			}),
 	};
 
@@ -6960,6 +6967,7 @@ export async function startBridge(
 		(name, startMs, endMs) =>
 			eventLoopAttribution.recordSpan(name, startMs, endMs),
 	);
+	heartbeatServiceRef.current = heartbeatService;
 	livenessWiring.liveness = true;
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event

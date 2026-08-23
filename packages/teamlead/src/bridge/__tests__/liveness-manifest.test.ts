@@ -91,6 +91,13 @@ describe("FLY-1393 liveness manifest", () => {
 					},
 				},
 			] as never,
+			probeForensics: {
+				lookup_error: 2,
+				probe_throw: 1,
+				probe_unclear: 3,
+				pending_sentinel: 4,
+				last_at: "2026-07-21T11:59:59.750Z",
+			},
 		});
 
 		expect(manifest.schema_version).toBe(2);
@@ -120,6 +127,30 @@ describe("FLY-1393 liveness manifest", () => {
 			switch: "required/no_switch",
 		});
 		expect(manifest.components).not.toHaveProperty("w4_lead_blocked");
+		expect(manifest.probe_forensics).toEqual({
+			lookup_error: 2,
+			probe_throw: 1,
+			probe_unclear: 3,
+			pending_sentinel: 4,
+			last_at: "2026-07-21T11:59:59.750Z",
+		});
+		expect(validateLivenessManifest(manifest)).toEqual({
+			ok: true,
+			errors: [],
+		});
+	});
+
+	it("omits probe forensics until the late-bound HeartbeatService exists", () => {
+		const tracker = new LivenessCheckTracker({ cadenceMs: 30_000 });
+		const manifest = buildLivenessManifest({
+			bridgeStartedAtMs: Date.now(),
+			wiring: { liveness: true, externalDrift: true },
+			trackers: { liveness: tracker },
+			deliveryLoopWired: true,
+			loopStallMs: 60_000,
+			loopTargets: [],
+		});
+		expect(manifest).not.toHaveProperty("probe_forensics");
 	});
 
 	// FLY-1560 刀 6: the schema-v2 contract is only real if the producer here and

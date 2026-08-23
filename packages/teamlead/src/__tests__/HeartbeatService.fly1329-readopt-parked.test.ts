@@ -21,6 +21,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../bridge/tmux-lookup.js", () => {
 	const isTmuxWindowAlive = vi.fn(async () => true);
+	const probeRunnerProcessLiveness = vi.fn(async () =>
+		(await isTmuxWindowAlive("flywheel:@0")) ? "alive" : "absent",
+	);
 	return {
 		getTmuxTargetFromCommDb: vi.fn(() => ({
 			tmuxWindow: "flywheel:@0",
@@ -31,8 +34,11 @@ vi.mock("../bridge/tmux-lookup.js", () => {
 			kind: "found",
 			target: { tmuxWindow: "flywheel:@0", sessionName: "flywheel" },
 		})),
-		probeRunnerProcessLiveness: vi.fn(async () =>
-			(await isTmuxWindowAlive("flywheel:@0")) ? "alive" : "absent",
+		probeRunnerProcessLiveness,
+		probeRunnerProcessLivenessDetailed: vi.fn(
+			async (...args: Parameters<typeof probeRunnerProcessLiveness>) => ({
+				liveness: await probeRunnerProcessLiveness(...args),
+			}),
 		),
 	};
 });

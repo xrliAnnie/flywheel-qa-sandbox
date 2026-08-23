@@ -42,7 +42,9 @@ import {
 	isTmuxWindowAlive,
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
+	probeRunnerProcessLivenessDetailed,
 	probeTmuxServer,
+	type RunnerLivenessProbeFailure,
 } from "./bridge/tmux-lookup.js";
 import {
 	GHOST_PROBE_MAX_ROWS,
@@ -176,6 +178,20 @@ export interface SessionLiveness {
 	target?: string;
 	/** ISO timestamp of this probe. */
 	probedAt: string;
+}
+
+export type ProbeForensicsSource =
+	| "lookup_error"
+	| "probe_throw"
+	| "probe_unclear"
+	| "pending_sentinel";
+
+export interface ProbeForensicsSnapshot {
+	lookup_error: number;
+	probe_throw: number;
+	probe_unclear: number;
+	pending_sentinel: number;
+	last_at: string | null;
 }
 
 /**
@@ -425,6 +441,14 @@ export class HeartbeatService implements ReconnectController {
 	/** FLY-1282 (R5 #3): backfill fair-rotation watermark + single-flight. */
 	private zombieBackfillWatermark = "";
 	private backfillInFlight = false;
+	private readonly probeForensicsCounts: Record<ProbeForensicsSource, number> =
+		{
+			lookup_error: 0,
+			probe_throw: 0,
+			probe_unclear: 0,
+			pending_sentinel: 0,
+		};
+	private probeForensicsLastAt: string | null = null;
 
 	constructor(
 		private store: StateStore,
@@ -533,6 +557,40 @@ export class HeartbeatService implements ReconnectController {
 			clearInterval(this.timer);
 			this.timer = null;
 		}
+	}
+
+	probeForensicsSnapshot(): ProbeForensicsSnapshot {
+		return {
+			...this.probeForensicsCounts,
+			last_at: this.probeForensicsLastAt,
+		};
+	}
+
+	private recordProbeForensics(
+		source: ProbeForensicsSource,
+		session: Session,
+		input: {
+			target?: string;
+			pendingTarget?: boolean;
+			lookupError?: string;
+			failure?: RunnerLivenessProbeFailure;
+		} = {},
+	): void {
+		const at = new Date().toISOString();
+		this.probeForensicsCounts[source] += 1;
+		this.probeForensicsLastAt = at;
+		console.warn(
+			`[fly2008-probe] ${JSON.stringify({
+				source,
+				at,
+				execution_id: session.execution_id,
+				project_name: session.project_name ?? null,
+				target: input.target ?? null,
+				pendingTarget: input.pendingTarget === true,
+				...(input.lookupError ? { lookup_error: input.lookupError } : {}),
+				...(input.failure ? { failure: input.failure } : {}),
+			})}`,
+		);
 	}
 
 	async check(): Promise<void> {
@@ -897,16 +955,57 @@ export class HeartbeatService implements ReconnectController {
 		if (!session.project_name) return { verdict: "gone", probedAt };
 		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);
 		if (lookup.kind === "gone") return { verdict: "gone", probedAt };
-		if (lookup.kind === "error") return { verdict: "indeterminate", probedAt };
+		if (lookup.kind === "error") {
+			this.recordProbeForensics("lookup_error", session, {
+				lookupError: lookup.error,
+			});
+			return { verdict: "indeterminate", probedAt };
+		}
 		const target = lookup.target.tmuxWindow;
+		const pendingTarget = target.endsWith(":pending");
+		if (pendingTarget) {
+			this.recordProbeForensics("pending_sentinel", session, {
+				target,
+				pendingTarget,
+			});
+		}
 		try {
-			const liveness = await probeRunnerProcessLiveness(target);
+			const result = await probeRunnerProcessLivenessDetailed(target);
+			if (result.failure?.stage === "tmux-throw") {
+				this.recordProbeForensics("probe_throw", session, {
+					target,
+					pendingTarget,
+					failure: result.failure,
+				});
+			} else if (
+				result.failure?.stage === "empty-output" ||
+				(result.liveness === "indeterminate" && !result.failure)
+			) {
+				this.recordProbeForensics("probe_unclear", session, {
+					target,
+					pendingTarget,
+					failure: result.failure,
+				});
+			}
+			const { liveness } = result;
 			if (liveness === "alive") return { verdict: "alive", target, probedAt };
 			if (liveness === "absent") return { verdict: "dead", target, probedAt };
 			if (liveness === "dead_pin")
 				return { verdict: "dead_pin", target, probedAt };
 			return { verdict: "indeterminate", target, probedAt };
-		} catch {
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			this.recordProbeForensics("probe_throw", session, {
+				target,
+				pendingTarget,
+				failure: {
+					stage: "tmux-throw",
+					errorType: err instanceof Error ? err.name : typeof err,
+					message,
+					timedOut: /\btime(?:d)?\s*out\b/i.test(message),
+					durationMs: 0,
+				},
+			});
 			return { verdict: "indeterminate", target, probedAt };
 		}
 	}

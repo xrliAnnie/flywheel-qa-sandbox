@@ -2,6 +2,10 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
+import {
+	buildLivenessManifest,
+	LivenessCheckTracker,
+} from "../bridge/liveness-manifest.js";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -369,7 +373,29 @@ describe("Bridge scaffold", () => {
 
 	it("GET /health reads the liveness manifest from a late-bound provider", async () => {
 		const store = await StateStore.create(":memory:");
-		const holder: { current?: () => unknown } = {};
+		const heartbeatRef: {
+			current?: {
+				probeForensicsSnapshot(): Record<string, number | string | null>;
+			};
+		} = {};
+		const tracker = new LivenessCheckTracker({ cadenceMs: 30_000 });
+		const holder: { current?: () => unknown } = {
+			current: () =>
+				buildLivenessManifest({
+					bridgeStartedAtMs: Date.now(),
+					wiring: { liveness: true, externalDrift: true },
+					trackers: { liveness: tracker },
+					deliveryLoopWired: true,
+					loopStallMs: 60_000,
+					loopTargets: [],
+					...(heartbeatRef.current
+						? {
+								probeForensics:
+									heartbeatRef.current.probeForensicsSnapshot() as never,
+							}
+						: {}),
+				}),
+		};
 		const app = createBridgeApp(
 			store,
 			[],
@@ -390,15 +416,25 @@ describe("Bridge scaffold", () => {
 			{ livenessHealthProvider: holder },
 		);
 		const url = await startAndGetUrl(app, "/health");
-		expect((await (await fetch(url)).json()).liveness).toBeUndefined();
+		const before = (await (await fetch(url)).json()).liveness;
+		expect(before.schema_version).toBe(2);
+		expect(before.probe_forensics).toBeUndefined();
 
-		holder.current = () => ({
-			schema_version: 2,
-			components: {},
-		});
-		expect((await (await fetch(url)).json()).liveness).toEqual({
-			schema_version: 2,
-			components: {},
+		heartbeatRef.current = {
+			probeForensicsSnapshot: () => ({
+				lookup_error: 1,
+				probe_throw: 2,
+				probe_unclear: 3,
+				pending_sentinel: 4,
+				last_at: "2026-08-23T13:42:04.000Z",
+			}),
+		};
+		expect((await (await fetch(url)).json()).liveness.probe_forensics).toEqual({
+			lookup_error: 1,
+			probe_throw: 2,
+			probe_unclear: 3,
+			pending_sentinel: 4,
+			last_at: "2026-08-23T13:42:04.000Z",
 		});
 
 		holder.current = () => {
